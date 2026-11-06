@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal, TypedDict
 
+from sglang_omni.scheduling.types import SpecTokensDetailsDict
+
 
 class TokenUsageDict(TypedDict):
     prompt_tokens: int | None
@@ -186,6 +188,7 @@ class GenerateChunk:
     model_finish_reason: str | None = None
     usage: UsageInfo | None = None
     weight_version: str | None = None
+    spec_tokens_details: SpecTokensDetailsDict | None = None
     stage_id: int | None = None
     stage_name: str | None = None
     modality: str = "text"
@@ -345,6 +348,7 @@ class CompletionResult:
     output_token_logprobs: list[list[float | int]] | None = None
     omni_rollout: dict[str, object] | None = None
     weight_version: str | None = None
+    spec_tokens_details: SpecTokensDetailsDict | None = None
     language: str | None = None
     diarization: DiarizationResult | None = None
     image: str | None = None  # base64-encoded PNG
@@ -360,6 +364,7 @@ class CompletionStreamChunk:
     audio_b64: str | None = None  # already base64-encoded
     finish_reason: str | None = None
     usage: UsageInfo | None = None
+    spec_tokens_details: SpecTokensDetailsDict | None = None
     stage_name: str | None = None
 
 
@@ -390,6 +395,7 @@ class SpeechResult:
     format: str
     sample_rate: int | None = None
     usage: UsageInfo | None = None
+    spec_tokens_details: SpecTokensDetailsDict | None = None
     finish_reason: str = UNKNOWN_FINISH_REASON
 
 

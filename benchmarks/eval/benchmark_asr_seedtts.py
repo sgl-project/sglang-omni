@@ -295,6 +295,7 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
     summary = benchmark_result["summary"]
     speed = benchmark_result["speed"]
     has_evaluated_samples = summary["evaluated"] > 0
+    has_transcribed_samples = speed["evaluated"] > 0
     has_rtf = speed["rtf_p95"] is not None
     result = {
         "concurrency": concurrency,
@@ -302,6 +303,7 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
         "evaluated": summary["evaluated"],
         "total": summary["total_samples"],
         "skipped": summary["skipped"],
+        "failed": speed["failed_requests"],
         "corpus_wer": summary["corpus_wer"] if has_evaluated_samples else None,
         "per_sample_wer_max": (
             summary["wer_per_sample_max"] if has_evaluated_samples else None
@@ -309,12 +311,14 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
         "wall_clock_s": benchmark_result["wall_clock_s"],
         "throughput_samples_per_s": speed["throughput_samples_per_s"],
         "rtfx": speed["rtfx"],
-        "latency_mean_s": (speed["latency_mean_s"] if has_evaluated_samples else None),
-        "latency_median_s": (
-            speed["latency_median_s"] if has_evaluated_samples else None
+        "latency_mean_s": (
+            speed["latency_mean_s"] if has_transcribed_samples else None
         ),
-        "latency_p95_s": (speed["latency_p95_s"] if has_evaluated_samples else None),
-        "latency_p99_s": (speed["latency_p99_s"] if has_evaluated_samples else None),
+        "latency_median_s": (
+            speed["latency_median_s"] if has_transcribed_samples else None
+        ),
+        "latency_p95_s": (speed["latency_p95_s"] if has_transcribed_samples else None),
+        "latency_p99_s": (speed["latency_p99_s"] if has_transcribed_samples else None),
         "rtf_mean": speed["rtf_mean"] if has_rtf else None,
         "rtf_p95": speed["rtf_p95"],
         "worker": benchmark_result["worker"],
@@ -389,6 +393,7 @@ def _aggregate(repeats: list[dict]) -> dict:
         "evaluated": evaluated,
         "total": total_requests,
         "skipped": skipped,
+        "failed": sum(repeat["failed"] for repeat in repeats),
         "corpus_wer": _stat("corpus_wer"),
         "per_sample_wer_max": _stat("per_sample_wer_max"),
         "wall_clock_s": _stat("wall_clock_s"),

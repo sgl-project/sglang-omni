@@ -45,6 +45,7 @@ from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.streaming_vocoder import StreamingVocoderBase
+from sglang_omni.scheduling.types import SpecTokensDetailsDict
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 logger = logging.getLogger(__name__)
@@ -857,13 +858,19 @@ class FunCosyVoice3StreamingVocoderScheduler(
         request_id: str,
         payload: StagePayload,
         state: CosyVoice3StreamState,
-    ) -> dict[str, str | int | dict[str, int | float]]:
-        final_data: dict[str, str | int | dict[str, int | float]] = {
+    ) -> dict[str, str | int | dict[str, int | float] | SpecTokensDetailsDict]:
+        final_data: dict[
+            str, str | int | dict[str, int | float] | SpecTokensDetailsDict
+        ] = {
             "modality": "audio",
             "sample_rate": self.sample_rate,
         }
         pipeline_state = FunCosyVoice3State.from_dict(payload.data)
         final_data["finish_reason"] = pipeline_state.finish_reason
+        if pipeline_state.spec_tokens_details is not None:
+            final_data["spec_tokens_details"] = pipeline_state.spec_tokens_details
+        else:
+            pass
         usage = build_usage(pipeline_state)
         if usage is None:
             return final_data

@@ -42,8 +42,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.format == "json":
         text = json.dumps(report, indent=2)
     else:
+        completeness = report["completeness"]
+        reasons = ", ".join(completeness["incomplete_reasons"])
+        completeness_line = f"# Completeness: {completeness['state']}"
+        if reasons:
+            completeness_line += f" ({reasons})"
+        else:
+            pass
         text = (
             f"# Requests: {report['request_count']}\n\n"
+            f"{completeness_line}\n\n"
             "## Stage breakdown\n"
             + format_table(
                 report["stage_breakdown"],

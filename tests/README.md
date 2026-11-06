@@ -373,12 +373,12 @@ Relevant model CI ownership:
   benchmarks retain concurrency 32.
 - CI env alignment on the H100 repro host: `source .github/scripts/ci_env.sh`
   then `source omni/bin/activate`.
-  Omni CI (`omni-ci.yaml`) runs benchmark suites sequentially after one shared
-  setup: PR Test (`test.yaml` unit tests) → ASR CI → TTS CI → MPS CI → Omni
-  model CI. Any CI stage label runs PR Test; each other suite runs only when
-  its stage is selected (see the CI section of the pull request template). A
-  failed or skipped suite does not skip later ones; only a failed setup blocks
-  the chain.
+  Omni CI (`omni-ci.yaml`) runs PR Test (`test.yaml` unit tests) after one
+  shared setup. When PR Test finishes, ASR CI, TTS CI and Omni model CI start
+  together and their stages run in parallel; MPS CI runs after them. Any CI
+  stage label runs PR Test; each other suite runs only when its stage is
+  selected (see the CI section of the pull request template). A failed or
+  skipped suite does not skip any other; only a failed setup blocks them.
   Full WER sweep: `.github/scripts/run_all_wer_ci_aligned.sh` (milestones on
   stdout; details in `/tmp/wer_ci_qwen3.log` and `/tmp/wer_ci_tts.log`).
 - GPU handoff between stages: `.github/scripts/delete_gpu_process.sh --kill-orphans` (kills orphan
@@ -445,7 +445,7 @@ python3 -m pytest tests/test_model/test_ming_tp_parity_ci.py -q -s
   `ASR_CI_MODEL` environment variable, then `fun`.
 - CLI flag `--omni-ci-model {qwen3-omni,minicpmo}` selects the offline Omni
   model tests. It defaults to `OMNI_CI_MODEL`, then `qwen3-omni`.
-  GitHub CI runs the Omni stage with `run-omni-ci` or `run-all-ci`. The
+  GitHub CI runs the Omni stage with `run-omni-ci`. The
   mutually exclusive `run-qwen3-omni-30b-a3b-instruct` and
   `run-minicpm-o-4.5` labels select the model; without either, the stage
   draws one at random. A manual dispatch takes the same labels through its
@@ -904,7 +904,8 @@ that happened to contain an older version of the test.
   and 24 kHz vocoder output contracts.
 
 - `unit_test/cli/`: SGLang backend registration, option forwarding,
-  configuration-only launch behavior, and backend-specific help ownership.
+  configuration-only launch behavior, and parity between
+  `sglang serve --model-type omni` and `sgl-omni serve`.
 
 - `unit_test/client/`: Audio conversion, resampling, channel preservation, and
   response decoding for completion, speech, log-probability, and rollout fields.
