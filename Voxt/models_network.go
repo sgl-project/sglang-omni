@@ -148,7 +148,7 @@ func (a *app) networkDialog(c *ui.Context) {
 				caption(c, f.proxyErr).TextColor(t.Danger)
 			}
 		}
-		a.networkFamilyLine(c, actnow.KeyProxy, i18n.T("Other ActNow apps use a different proxy."))
+		a.networkFamilyLine(c, actnow.KeyProxy, i18n.T("Other apps that share this model library use a different proxy."))
 
 		ui.Box(c).Height(px(t, sp2)).Shrink(0)
 		ui.Text(c, i18n.T("Download source")).FontWeight(600)
@@ -165,7 +165,7 @@ func (a *app) networkDialog(c *ui.Context) {
 		default:
 			caption(c, i18n.T("Custom servers: %s", f.sourceURL))
 		}
-		a.networkFamilyLine(c, actnow.KeyHFEndpoints, i18n.T("Other ActNow apps use a different download source."))
+		a.networkFamilyLine(c, actnow.KeyHFEndpoints, i18n.T("Other apps that share this model library use a different download source."))
 	}, func() {
 		ui.Spacer(c)
 		if ui.Button(c.Key("net-cancel"), i18n.T("Cancel")).Clicked() {
@@ -201,18 +201,18 @@ func (a *app) networkFamilyLine(c *ui.Context, key, other string) {
 	}
 	ui.Row(c.Key("net-family-" + keySuffix(key))).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
 		if follows && a.fam.ReadOnly() {
-			caption(c, i18n.T("Another ActNow app updated the shared format. Update this app to change these settings."))
+			caption(c, i18n.T("Another app updated the shared format. Update this app to change these settings."))
 			return
 		}
 		if follows {
-			caption(c, i18n.T("Applies to all ActNow apps"))
+			caption(c, i18n.T("Applies to all apps that use this model library"))
 			if ui.Link(c.Key("own"), i18n.T("Use a different setting for this app"), "").FontSize(px(t, fsCaption)).Clicked() {
 				a.followNetwork(key, false)
 			}
 			return
 		}
-		caption(c, i18n.T("Only VoxtNew uses this setting."))
-		if ui.Link(c.Key("follow"), i18n.T("Use the same setting as the other ActNow apps"), "").FontSize(px(t, fsCaption)).Clicked() {
+		caption(c, i18n.T("Only Voxt uses this setting."))
+		if ui.Link(c.Key("follow"), i18n.T("Use the same setting as the other apps that share this model library"), "").FontSize(px(t, fsCaption)).Clicked() {
 			a.followNetwork(key, true)
 		}
 	})

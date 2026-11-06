@@ -30,18 +30,15 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
-// The project's addresses: the product page and the downloads are on
-// actnow.dev (the ActNow family's site, which also serves the updates);
-// issuesURL is where bugs are reported; the licence, the source and the
-// third-party notices are linked from Settings → About.
+// The project's addresses: issuesURL is where bugs are reported; the
+// licence, the source and the third-party notices are linked from
+// Settings → About.
 const (
-	websiteURL  = "https://actnow.dev/voxtnew"
-	downloadURL = "https://actnow.dev/download/voxtnew"
-	repoURL     = "https://github.com/sgl-project/sglang-omni"
-	sourceURL   = repoURL + "/tree/main/Voxt"
-	issuesURL   = repoURL + "/issues/new"
-	licenceURL  = repoURL + "/blob/main/Voxt/LICENSE"
-	noticeURL   = repoURL + "/blob/main/Voxt/NOTICE"
+	repoURL    = "https://github.com/sgl-project/sglang-omni"
+	sourceURL  = repoURL + "/tree/main/Voxt"
+	issuesURL  = repoURL + "/issues/new"
+	licenceURL = repoURL + "/blob/main/Voxt/LICENSE"
+	noticeURL  = repoURL + "/blob/main/Voxt/NOTICE"
 )
 
 // aboutState is the Diagnostics page's state.
@@ -71,7 +68,7 @@ func (a *app) diagnosticsText() string {
 		ver = "dev"
 	}
 	st := a.helperStatus()
-	line("VoxtNew", ver)
+	line("Voxt", ver)
 	hv := string(st.State)
 	if st.Hello != nil {
 		hv = st.Hello.Version + " (" + hv + ")"
@@ -231,7 +228,7 @@ var bundleDir string
 // saveBundle asks where, then writes the diagnostic bundle.
 func (a *app) saveBundle() {
 	diag, prefs, logs := a.diagnosticsText(), a.prefs, a.logDir
-	name := "VoxtNew diagnostics " + time.Now().Format("2006-01-02 1504") + ".zip"
+	name := "Voxt diagnostics " + time.Now().Format("2006-01-02 1504") + ".zip"
 	write := func(dst string) {
 		a.async(func() {
 			err := writeBundle(dst, diag, prefs, logs)
@@ -285,7 +282,7 @@ func (a *app) aboutSettings(c *ui.Context) {
 		hv = st.Hello.Version
 	}
 	rows := [][2]string{
-		{"VoxtNew", ver},
+		{"Voxt", ver},
 		{i18n.T("Helper"), hv},
 		{i18n.T("Helper protocol"), fmt.Sprint(proto.Version)},
 	}
@@ -304,11 +301,9 @@ func (a *app) aboutSettings(c *ui.Context) {
 	})
 	// The legal notices: the copyright, the licence (Apache-2.0), the
 	// source, and NOTICE (where the code came from, third parties).
-	caption(c, i18n.T("Copyright © 2026 ActNow and the SGLang-Omni Team."))
-	caption(c, i18n.T("VoxtNew is licensed under the Apache License 2.0 and comes with no warranty."))
+	caption(c, i18n.T("Copyright © 2026 the SGLang-Omni Team."))
+	caption(c, i18n.T("Voxt is licensed under the Apache License 2.0 and comes with no warranty."))
 	ui.Row(c.Key("about-licence")).Gap(px(t, sp3)).AlignItems(ui.Center).Wrap().Children(func() {
-		ui.Link(c.Key("about-website"), i18n.T("Website"), websiteURL).FontSize(px(t, fsCaption))
-		ui.Link(c.Key("about-download"), i18n.T("Download"), downloadURL).FontSize(px(t, fsCaption))
 		ui.Link(c.Key("about-licence-apache"), i18n.T("Licence"), licenceURL).FontSize(px(t, fsCaption))
 		ui.Link(c.Key("about-licence-source"), i18n.T("Source code"), sourceURL).FontSize(px(t, fsCaption))
 		ui.Link(c.Key("about-licence-notices"), i18n.T("Third-party notices"), noticeURL).FontSize(px(t, fsCaption))
@@ -321,7 +316,7 @@ func (a *app) aboutSettings(c *ui.Context) {
 	a.updateSettingsSection(c) // updates.go
 
 	sectionTitle(c, i18n.T("Self-check"))
-	settingRow(c, "about-check", i18n.T("Check VoxtNew"), i18n.T("The library, the helper, the models, the data folder and the permissions."), func() {
+	settingRow(c, "about-check", i18n.T("Check Voxt"), i18n.T("The library, the helper, the models, the data folder and the permissions."), func() {
 		if a.selfChecking {
 			ui.Spinner(c)
 		}

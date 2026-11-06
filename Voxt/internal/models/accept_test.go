@@ -79,7 +79,7 @@ func TestAcceptReuse(t *testing.T) {
 }
 
 // TestAcceptDeleteShared (scenario 2): with AudioSmith claiming the fast
-// speech model, VoxtNew's "Remove from VoxtNew" keeps its files; once
+// speech model, VoxtNew's "Remove from Voxt" keeps its files; once
 // AudioSmith deletes it too, they go. In a scratch $HUB of APFS clones.
 func TestAcceptDeleteShared(t *testing.T) {
 	acceptOnly(t)

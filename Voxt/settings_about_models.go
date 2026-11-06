@@ -75,7 +75,7 @@ func (a *app) modelCheckInput() modelCheckInput {
 // modelChecks checks each kind of model: its runtime is there (a look
 // on the disk: off the main thread), and a model of it is installed.
 func modelChecks(in modelCheckInput, add func(id, title, status, detail string)) {
-	missing := i18n.T("Its runtime is missing from this copy of VoxtNew.")
+	missing := i18n.T("Its runtime is missing from this copy of Voxt.")
 	title := i18n.T("Speech recognition")
 	switch _, err := omniLocate(); {
 	case err != nil:

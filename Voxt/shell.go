@@ -210,7 +210,7 @@ func (a *app) openWindow() {
 	a.applyLocale() // the system's language, unless the settings name one
 	a.buildMenu()
 	a.win = mygo.NewWindow(mygo.WindowOptions{
-		Title:          "VoxtNew",
+		Title:          "Voxt",
 		Width:          windowWidth,
 		Height:         windowHeight,
 		MinWidth:       windowMinWidth,
@@ -334,10 +334,10 @@ func showFatal(err error) {
 			dataDir, _ := mygo.App.Path(mygo.PathUserData)
 			res, _ := mygo.Dialog.Message(mygo.MessageOptions{
 				Type:    mygo.MessageError,
-				Title:   "VoxtNew",
-				Message: i18n.T("VoxtNew cannot open its library"),
+				Title:   "Voxt",
+				Message: i18n.T("Voxt cannot open its library"),
 				Detail: i18n.T("Your history, dictionary and settings are kept in a database in %s. It could not be opened: %v", dataDir, err) +
-					"\n\n" + i18n.T("If a newer VoxtNew created it, use that version. Nothing was changed."),
+					"\n\n" + i18n.T("If a newer Voxt created it, use that version. Nothing was changed."),
 				Buttons: []string{i18n.T("Quit"), i18n.T("Show the folder")},
 			})
 			if res.Button == 1 {

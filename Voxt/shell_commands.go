@@ -317,19 +317,19 @@ func (a *app) buildMenu() {
 		}
 	}
 	// Check for Updates… goes after About (updates.go).
-	appItems := append([]*mygo.MenuItem{{Role: mygo.RoleAbout, Label: i18n.T("About VoxtNew")}}, a.updateMenuItems(act)...)
+	appItems := append([]*mygo.MenuItem{{Role: mygo.RoleAbout, Label: i18n.T("About Voxt")}}, a.updateMenuItems(act)...)
 	mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
-		{Label: "VoxtNew", Submenu: append(appItems,
+		{Label: "Voxt", Submenu: append(appItems,
 			mygo.Separator(),
 			&mygo.MenuItem{Label: i18n.T("Settings…"), Accelerator: "CmdOrCtrl+,", Click: act(func() { a.navigate("/settings") })},
 			mygo.Separator(),
 			&mygo.MenuItem{Role: mygo.RoleServices, Label: i18n.T("Services")},
 			mygo.Separator(),
-			&mygo.MenuItem{Role: mygo.RoleHide, Label: i18n.T("Hide VoxtNew")},
+			&mygo.MenuItem{Role: mygo.RoleHide, Label: i18n.T("Hide Voxt")},
 			&mygo.MenuItem{Role: mygo.RoleHideOthers, Label: i18n.T("Hide Others")},
 			&mygo.MenuItem{Role: mygo.RoleUnhide, Label: i18n.T("Show All")},
 			mygo.Separator(),
-			&mygo.MenuItem{Role: mygo.RoleQuit, Label: i18n.T("Quit VoxtNew")},
+			&mygo.MenuItem{Role: mygo.RoleQuit, Label: i18n.T("Quit Voxt")},
 		)},
 		{Label: i18n.T("Edit"), Submenu: []*mygo.MenuItem{
 			{Role: mygo.RoleUndo, Label: i18n.T("Undo")},

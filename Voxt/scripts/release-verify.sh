@@ -30,7 +30,7 @@ case "$mode" in
   developer-id | signed | ad-hoc) ;;
   *) echo "release-verify.sh: the mode is developer-id, signed or ad-hoc, not $mode" >&2; exit 2 ;;
 esac
-app="$dir/VoxtNew.app"
+app="$dir/Voxt.app"
 res="$app/Contents/Resources"
 helper="$app/Contents/Resources/helper/voxtnew-helper"
 fails=0
@@ -102,8 +102,8 @@ if [[ "$mode" != ad-hoc ]]; then
   team_app="$(details "$app" | sed -n 's/^TeamIdentifier=//p')"
   for c in "${code[@]}"; do
     name="${c#"$res"/}"
-    name="${name##*/VoxtNew.app}"
-    name="${name:-VoxtNew.app}"
+    name="${name##*/Voxt.app}"
+    name="${name:-Voxt.app}"
     [[ "$mode" == developer-id ]] && check "$name: Developer ID Application" has "$c" '^Authority=Developer ID Application: '
     check "$name: hardened runtime" has "$c" '^CodeDirectory .*flags=0x[0-9a-f]*\(.*runtime.*\)'
     check "$name: secure timestamp" has "$c" '^Timestamp='

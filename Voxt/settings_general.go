@@ -18,7 +18,7 @@ import (
 func (a *app) generalSettings(c *ui.Context) {
 	t := c.Theme()
 	sectionTitle(c, i18n.T("Languages"))
-	settingRow(c, "language", i18n.T("App language"), i18n.T("The language of VoxtNew's own text. Following the system uses English unless the system's language is supported."), func() {
+	settingRow(c, "language", i18n.T("App language"), i18n.T("The language of Voxt's own text. Following the system uses English unless the system's language is supported."), func() {
 		opts := languageOptions()
 		if ui.Select(c.Key("language-select"), &a.settingsForm.language, opts).Label(i18n.T("App language")).Width(px(t, 220)).Changed() {
 			tag := ""
@@ -41,13 +41,13 @@ func (a *app) generalSettings(c *ui.Context) {
 	a.otherLanguagesRow(c)
 
 	sectionTitle(c, i18n.T("Menu bar and login"))
-	settingRow(c, "menu-bar", i18n.T("Show in the menu bar"), i18n.T("An icon in the menu bar to start a transcription, see the last result and open VoxtNew."), func() {
+	settingRow(c, "menu-bar", i18n.T("Show in the menu bar"), i18n.T("An icon in the menu bar to start a transcription, see the last result and open Voxt."), func() {
 		if ui.Switch(c.Key("menu-bar-switch"), &a.settingsForm.menuBar).Label(i18n.T("Show in the menu bar")).Changed() {
 			on := a.settingsForm.menuBar
 			a.updateSettings(func(s *settings.Settings) { s.General.MenuBar = on })
 		}
 	})
-	settingRow(c, "close-to-tray", i18n.T("Keep running when the window closes"), i18n.T("Closing the window leaves VoxtNew in the menu bar, so its shortcuts keep working. Quit from the menu bar icon or with ⌘Q."), func() {
+	settingRow(c, "close-to-tray", i18n.T("Keep running when the window closes"), i18n.T("Closing the window leaves Voxt in the menu bar, so its shortcuts keep working. Quit from the menu bar icon or with ⌘Q."), func() {
 		sw := ui.Switch(c.Key("close-to-tray-switch"), &a.settingsForm.closeToTray).Label(i18n.T("Keep running when the window closes")).Disabled(!a.prefs.General.MenuBar)
 		if sw.Changed() {
 			on := a.settingsForm.closeToTray

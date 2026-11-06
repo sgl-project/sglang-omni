@@ -218,7 +218,7 @@ func (a *app) overlaySync() {
 		return // tests: the state is enough
 	}
 	if a.ov.win == nil {
-		opts := floatingWindowOptions("VoxtNew", frame.Width, frame.Height, hudContent(a.overlayView))
+		opts := floatingWindowOptions("Voxt", frame.Width, frame.Height, hudContent(a.overlayView))
 		opts.Vibrancy = mygo.VibrancyHUD
 		a.ov.win = mygo.NewWindow(opts)
 		a.ov.passThrough = false

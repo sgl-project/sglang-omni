@@ -72,7 +72,7 @@ const beforeLoadTimeout = 5 * time.Second
 // Locate finds the runtime: $VOXTNEW_OMNI_RUNTIME (a directory with
 // bin/qwen3_asr_server, or the binary itself), else the app bundle's
 // Contents/Resources/omni beside exe (the running executable,
-// Contents/MacOS/VoxtNew). It returns the server binary's path.
+// Contents/MacOS/Voxt). It returns the server binary's path.
 func Locate(exe string) (string, error) {
 	var tried []string
 	try := func(p string) (string, bool) {

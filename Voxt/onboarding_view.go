@@ -32,7 +32,7 @@ func (a *app) onboarding(c *ui.Context) {
 		backdrop.Background(ui.RGBA(0, 0, 0, 0.35))
 		dw, dh := onboardingDialogSize(t, w, h)
 		panel.Width(dw).Height(dh).Radius(px(t, radiusCard)).Background(k.Bg).Border(1, k.Line).
-			Shadow(0, 16, 40, 0, ui.RGBA(0, 0, 0, 0.3)).Label(i18n.T("Set up VoxtNew"))
+			Shadow(0, 16, 40, 0, ui.RGBA(0, 0, 0, 0.3)).Label(i18n.T("Set up Voxt"))
 		ui.Column(c).Fill().Children(func() {
 			a.obHeader(c)
 			ui.Scroll(c.Key("ob-scroll-" + itoa(a.ob.step))).Grow(1).MinHeight(0).Children(func() {
@@ -154,13 +154,13 @@ func (a *app) obTitle(c *ui.Context) {
 	var title, sub string
 	switch a.ob.step {
 	case obWelcome:
-		title = i18n.T("Welcome to VoxtNew")
+		title = i18n.T("Welcome to Voxt")
 		sub = i18n.T("Speak in any app and get text where your cursor is: transcribe, translate and rewrite with models that run on this Mac. A few short steps; you can skip any of them.")
 	case obPermissions:
 		title = i18n.T("Permissions")
 	case obModels:
 		title = i18n.T("Local models")
-		sub = i18n.T("VoxtNew runs its models on this Mac. These two are the best start; the Local models page has the others.")
+		sub = i18n.T("Voxt runs its models on this Mac. These two are the best start; the Local models page has the others.")
 	case obTranscribe:
 		title = i18n.T("Try Transcribe")
 		sub = i18n.T("Press the shortcut (or Start), read the sentence below or say anything, then press it again to stop. The result shows here.")
@@ -172,7 +172,7 @@ func (a *app) obTitle(c *ui.Context) {
 		sub = i18n.T("With nothing selected, say what to write; with text selected, say how to change it. Press the shortcut (or Start) and ask for something short.")
 	default:
 		title = i18n.T("More to explore")
-		sub = i18n.T("VoxtNew is ready. Two more things make it yours.")
+		sub = i18n.T("Voxt is ready. Two more things make it yours.")
 	}
 	ui.Column(c).Gap(px(t, sp1)).Margin(px(t, sp3), 0, px(t, sp2)).Children(func() {
 		ui.Text(c, title).FontSize(px(t, fsTitle)).FontWeight(600)
@@ -202,7 +202,7 @@ func (a *app) obFooter(c *ui.Context) {
 		}
 		switch {
 		case a.ob.step == obMore:
-			if primaryButton(c.Key("ob-finish"), i18n.T("Start using VoxtNew")).Clicked() {
+			if primaryButton(c.Key("ob-finish"), i18n.T("Start using Voxt")).Clicked() {
 				a.closeOnboarding()
 				a.navigate("/home")
 			}

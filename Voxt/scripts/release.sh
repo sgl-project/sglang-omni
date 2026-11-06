@@ -2,7 +2,7 @@
 # The release build of VoxtNew, on an Apple silicon Mac (docs/release.md):
 # the helper, the Omni runtime (speech) and voxtnew-llm (language models)
 # are built and staged into resources/darwin-arm64/, then go tool mygo
-# build makes build/darwin-arm64/VoxtNew.app and its disk image with all
+# build makes build/darwin-arm64/Voxt.app and its disk image with all
 # of them inside, and scripts/release-verify.sh checks the result.
 #
 #   scripts/release.sh                                  # ad hoc: a release-style test build
@@ -237,4 +237,4 @@ if compgen -G "build/darwin-arm64/update-*.json" >/dev/null; then
 else
   echo "no update files: nothing to publish"
 fi
-du -sh build/darwin-arm64/VoxtNew.app build/darwin-arm64/*.dmg 2>/dev/null | sed 's/^/built /'
+du -sh build/darwin-arm64/Voxt.app build/darwin-arm64/*.dmg 2>/dev/null | sed 's/^/built /'

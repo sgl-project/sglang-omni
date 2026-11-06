@@ -1,6 +1,6 @@
 // Package appbundle reads what the app bundle on disk says about itself,
 // for the time between an update replacing the bundle and the app
-// restarting: MyGo's updater swaps VoxtNew.app while the old version
+// restarting: MyGo's updater swaps Voxt.app while the old version
 // still runs, so the running app compares its version with the one on
 // disk (Updated) and, when they differ, asks to be restarted instead of
 // starting the new version's helper.

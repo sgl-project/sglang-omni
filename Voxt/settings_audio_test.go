@@ -20,7 +20,7 @@ func TestAudioSettingsDevices(t *testing.T) {
 	if !slices.Contains(fs.methods(), proto.MethodCaptureDevices) {
 		t.Fatalf("the section did not list the inputs: %v", fs.methods())
 	}
-	if !has(tt, "No microphone chosen: VoxtNew records from the system's default input.") || !has(tt, "MacBook Air Microphone") {
+	if !has(tt, "No microphone chosen: Voxt records from the system's default input.") || !has(tt, "MacBook Air Microphone") {
 		t.Fatalf("empty list: %q", firstTexts(tt))
 	}
 	if !has(tt, "Skip silence") || !has(tt, "Optimize sound") {

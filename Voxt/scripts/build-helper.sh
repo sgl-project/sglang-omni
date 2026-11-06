@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds voxtnew-helper (helper/, Swift, release, arm64) on a Mac and
 # stages it where mygo ships it: resources/darwin-arm64/helper/ becomes
-# VoxtNew.app/Contents/Resources/helper/ (go tool mygo build, mygo dev).
+# Voxt.app/Contents/Resources/helper/ (go tool mygo build, mygo dev).
 #
 #   scripts/build-helper.sh              # stage it for the app
 #   scripts/build-helper.sh --out DIR    # build it into DIR instead: a helper

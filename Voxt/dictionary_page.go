@@ -295,8 +295,8 @@ func (a *app) termDialog(c *ui.Context) {
 		title = i18n.T("Edit term")
 	}
 	dialogFrame(c, "term-dlg", &d.editOpen, title, "", 460, func() {
-		fieldInfo(c, i18n.T("Term"), i18n.T("As it must be written: VoxtNew, Kubernetes, 豆包."), func() {
-			in := ui.TextInput(c.Key("term-term"), &e.term).Label(i18n.T("Term as written")).Placeholder("VoxtNew").AutoFocus()
+		fieldInfo(c, i18n.T("Term"), i18n.T("As it must be written: Voxt, Kubernetes, 豆包."), func() {
+			in := ui.TextInput(c.Key("term-term"), &e.term).Label(i18n.T("Term as written")).Placeholder("Voxt").AutoFocus()
 			if in.Changed() {
 				e.err = ""
 			}
@@ -304,8 +304,8 @@ func (a *app) termDialog(c *ui.Context) {
 				a.submitTerm()
 			}
 		})
-		fieldInfo(c, i18n.T("Aliases"), i18n.T("What speech recognition writes instead, separated by commas: Vox Tunew, 沃克斯牛. VoxtNew puts the term in their place, also without a language model."), func() {
-			ui.TextInput(c.Key("term-aliases"), &e.aliases).Label(i18n.T("Aliases of the term")).Placeholder(i18n.T("Vox Tunew, 沃克斯牛"))
+		fieldInfo(c, i18n.T("Aliases"), i18n.T("What speech recognition writes instead, separated by commas: Vox T, 沃克斯特. Voxt puts the term in their place, also without a language model."), func() {
+			ui.TextInput(c.Key("term-aliases"), &e.aliases).Label(i18n.T("Aliases of the term")).Placeholder(i18n.T("Vox T, 沃克斯特"))
 		})
 		fieldInfo(c, i18n.T("Note"), i18n.T("For you only: it is sent nowhere."), func() {
 			ui.TextArea(c.Key("term-note"), &e.note).Label(i18n.T("Note on the term")).MinHeight(px(t, 56))

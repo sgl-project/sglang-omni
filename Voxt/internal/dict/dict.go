@@ -133,7 +133,7 @@ var csvHeader = []string{"term", "aliases", "note", "enabled"}
 func Export(terms []store.Term, format string) []byte {
 	var b bytes.Buffer
 	if format == Text {
-		b.WriteString("# VoxtNew dictionary: a term per line, \"Term = alias, alias\" for what speech recognition hears instead.\n")
+		b.WriteString("# Voxt dictionary: a term per line, \"Term = alias, alias\" for what speech recognition hears instead.\n")
 		for _, t := range terms {
 			line := t.Term
 			if len(t.Aliases) > 0 {

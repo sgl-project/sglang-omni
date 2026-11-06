@@ -102,7 +102,7 @@ func StampKeys(prefs *settings.Settings, now time.Time) bool {
 // Manifest is VoxtNew's manifest for prefs (memory only).
 func (f *Family) Manifest(prefs settings.Settings) registry.Manifest {
 	return registry.Manifest{
-		App: AppID, BundleID: f.bundleID, Name: "VoxtNew", Version: f.version,
+		App: AppID, BundleID: f.bundleID, Name: "Voxt", Version: f.version,
 		Path: registry.BundlePath(), TeamID: registry.TeamID(), URLScheme: "voxtnew",
 		Links: Links, Capabilities: Capabilities,
 		Models:    &registry.ModelsInfo{Root: f.Hub()},

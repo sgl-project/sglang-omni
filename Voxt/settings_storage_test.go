@@ -33,7 +33,7 @@ func TestStorageModels(t *testing.T) {
 	if r == nil || r.modelsShared != fast.Size() || r.modelsMine != vad.Size()+tr.Size() {
 		t.Fatalf("usage: %+v (want shared %d, mine %d)", r, fast.Size(), vad.Size()+tr.Size())
 	}
-	for _, s := range []string{"Model folder", "Shared by all ActNow apps", "Only VoxtNew", "Shared with other ActNow apps"} {
+	for _, s := range []string{"Model folder", "Shared by all apps that use this model library", "Only Voxt", "Shared with other apps that use this model library"} {
 		if !has(tt, s) {
 			t.Errorf("no %q", s)
 		}
@@ -56,7 +56,7 @@ func TestStorageModels(t *testing.T) {
 	}
 	a.askErase()
 	frames(tt)
-	if !has(tt, "These models are also used by other ActNow apps and will be kept: Fast speech recognition (712.8 MB)") {
+	if !has(tt, "These models are also used by other apps and will be kept: Fast speech recognition (712.8 MB)") {
 		t.Fatalf("no kept models: %q", tt.Texts())
 	}
 	a.resetText = "DELETE"

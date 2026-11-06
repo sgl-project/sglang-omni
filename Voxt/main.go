@@ -55,7 +55,9 @@ func main() {
 		os.Exit(runSmoke(dir))
 	}
 	// Dev builds are "VoxtNew Dev"; share data with the installed app.
-	mygo.App.SetName("VoxtNew")
+	if err := nameApp(); err != nil {
+		log.Fatal(err)
+	}
 	// One VoxtNew at a time (one library, one set of global shortcuts);
 	// a second launch shows the first one's window.
 	if !mygo.App.RequestSingleInstanceLock() {
@@ -121,4 +123,20 @@ func main() {
 	if err := mygo.App.Run(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// nameApp names the app Voxt (the update window, the single-instance
+// lock) and keeps its data, logs and cache in the VoxtNew folders that
+// MyGo named after the app before 1.0.0, where testers' libraries are.
+func nameApp() error {
+	mygo.App.SetName("VoxtNew")
+	for _, p := range []mygo.PathName{mygo.PathUserData, mygo.PathLogs, mygo.PathCache} {
+		dir, err := mygo.App.Path(p)
+		if err != nil {
+			return err
+		}
+		mygo.App.SetPath(p, dir)
+	}
+	mygo.App.SetName("Voxt")
+	return nil
 }

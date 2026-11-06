@@ -193,6 +193,23 @@ func TestKeyParity(t *testing.T) {
 	}
 }
 
+// TestNoOldNames: the app is called Voxt and its text names no other
+// brand: VoxtNew (its name before 1.0.0, still that of its folders,
+// processes and code), ActNow and actnow.dev are in no message (every
+// message is a key of each translation: TestKeyParity) and no
+// translation.
+func TestNoOldNames(t *testing.T) {
+	for _, tag := range Supported() {
+		for k, v := range readLocale(t, tag) {
+			for _, name := range []string{"VoxtNew", "ActNow", "actnow.dev"} {
+				if strings.Contains(k, name) || strings.Contains(v, name) {
+					t.Errorf("%s: %q names %s", tag, k, name)
+				}
+			}
+		}
+	}
+}
+
 func TestVerbs(t *testing.T) {
 	if got := verbs("%[2]s of %[1]d, %.1f%% done"); !slices.Equal(got, []string{"%.1f", "%d", "%s"}) {
 		t.Error(got)

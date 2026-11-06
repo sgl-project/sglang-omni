@@ -157,7 +157,7 @@ install_v0() {
 
 # run REPORT: the installed app's update check.
 run_check() {
-  SSL_CERT_FILE="$WORK/cert.pem" nice -n 10 "$WORK/inst/VoxtNew.app/Contents/MacOS/VoxtNew" --update-check "$1"
+  SSL_CERT_FILE="$WORK/cert.pem" nice -n 10 "$WORK/inst/Voxt.app/Contents/MacOS/Voxt" --update-check "$1"
 }
 
 step "build $V0"
@@ -165,8 +165,8 @@ build "$V0"
 publish "$V0"
 step "build $V1 (with its delta from $V0)"
 build "$V1"
-NEW="$WORK/out-$V1/darwin-arm64/VoxtNew.app"
-OLD="$WORK/out-$V0/darwin-arm64/VoxtNew.app"
+NEW="$WORK/out-$V1/darwin-arm64/Voxt.app"
+OLD="$WORK/out-$V0/darwin-arm64/Voxt.app"
 check "$V1 has a delta from $V0" bash -c "compgen -G '$WORK/out-$V1/darwin-arm64/*-to-$V1-*.delta' >/dev/null"
 check "the helpers of the two versions differ" \
   bash -c "! cmp -s '$OLD/Contents/Resources/helper/voxtnew-helper' '$NEW/Contents/Resources/helper/voxtnew-helper'"
@@ -185,7 +185,7 @@ echo "  delta $delta_size bytes, archive $archive_size bytes"
 # verify REPORT TOTALS: the installed app is V1, exactly the published
 # bundle; TOTALS the downloads the report must show.
 verify() {
-  local r="$1" totals="$2" app="$WORK/inst/VoxtNew.app"
+  local r="$1" totals="$2" app="$WORK/inst/Voxt.app"
   check "it found $V1" test "$(jq -r .found "$r")" = "$V1"
   check "it was enabled and ran $V0" test "$(jq -r '"\(.enabled) \(.running)"' "$r")" = "true $V0"
   check "the notes are $V1's, English and Chinese" bash -c "jq -r .notes '$r' | grep -q 'The update test' && jq -r .notes '$r' | grep -q '更新测试'"
@@ -199,7 +199,7 @@ verify() {
   check "the helper's signature verifies" codesign --verify --strict "$app/Contents/Resources/helper/voxtnew-helper"
   check "the old app sees the update" test "$(jq -r '"\(.diskVersion) \(.stale)"' "$r")" = "$V1 true"
   check "its supervisor starts no helper (updated)" test "$(jq -r '"\(.helperState) \(.helperReason) \(.helperPID)"' "$r")" = "failed updated 0"
-  check "nothing left next to the app" test -z "$(find "$WORK/inst" -maxdepth 1 -name '.VoxtNew.app.*' -print)"
+  check "nothing left next to the app" test -z "$(find "$WORK/inst" -maxdepth 1 -name '.Voxt.app.*' -print)"
 }
 
 step "A: the delta"
@@ -219,7 +219,7 @@ verify "$WORK/report-archive.json" "[$archive_size]"
 step "C: the archive after a delta that fails (the installed app was changed)"
 cp "$WORK/manifest-with-delta.json" "$MANIFEST"
 install_v0
-printf 'x' >>"$WORK/inst/VoxtNew.app/Contents/Resources/icon.png"
+printf 'x' >>"$WORK/inst/Voxt.app/Contents/Resources/icon.png"
 run_check "$WORK/report-fallback.json"
 verify "$WORK/report-fallback.json" "[$delta_size,$archive_size]"
 
@@ -227,7 +227,7 @@ step "D: $V1 is up to date"
 run_check "$WORK/report-current.json"
 check "nothing found" test "$(jq -r '"\(.running) [\(.found)] [\(.checkErr)] \(.stale)"' "$WORK/report-current.json")" = "$V1 [] [] false"
 
-if pgrep -f "$WORK/inst/VoxtNew.app/Contents/Resources/helper/voxtnew-helper" >/dev/null; then
+if pgrep -f "$WORK/inst/Voxt.app/Contents/Resources/helper/voxtnew-helper" >/dev/null; then
   echo "  FAIL a helper is running" && FAILS=$((FAILS + 1))
 fi
 if (( FAILS > 0 )); then

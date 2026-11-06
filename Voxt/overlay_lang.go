@@ -116,7 +116,7 @@ func (a *app) syncLangMenu() {
 		return // tests: the state is enough
 	}
 	if m.win == nil {
-		m.win = mygo.NewWindow(floatingWindowOptions("VoxtNew languages", frame.Width, frame.Height, hudContent(a.langMenuView)))
+		m.win = mygo.NewWindow(floatingWindowOptions("Voxt languages", frame.Width, frame.Height, hudContent(a.langMenuView)))
 	}
 	if moved {
 		m.win.SetContentBounds(frame)

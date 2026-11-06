@@ -211,7 +211,7 @@ func (s *supervisor) handshake(p *proc) {
 }
 
 // errUpdated is Status.Err of FailUpdated.
-const errUpdated = "VoxtNew was updated: restart it to finish the update (the helper on disk is the new version's)"
+const errUpdated = "Voxt was updated: restart it to finish the update (the helper on disk is the new version's)"
 
 // stale asks Config.Stale.
 func (s *supervisor) stale() bool { return s.cfg.Stale != nil && s.cfg.Stale() }

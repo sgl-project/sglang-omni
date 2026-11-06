@@ -55,11 +55,11 @@ func TestKeepLoadedRow(t *testing.T) {
 		t.Fatalf("open: %q", tt.Texts())
 	}
 	click(t, tt, "Automatic")
-	click(t, tt, "Until VoxtNew quits")
+	click(t, tt, "Until Voxt quits")
 	if got := a.settings.Get().Models.KeepLoaded; got != settings.KeepUntilQuit {
 		t.Errorf("saved %q", got)
 	}
-	if !hasExact(tt, "Until VoxtNew quits") || hasExact(tt, "Automatic") {
+	if !hasExact(tt, "Until Voxt quits") || hasExact(tt, "Automatic") {
 		t.Errorf("after the choice: %q", tt.Texts())
 	}
 	a.updateSettings(func(s *settings.Settings) { s.Models.KeepLoaded = settings.Keep1Hour })

@@ -118,7 +118,7 @@ func TestUpdatesSettings(t *testing.T) {
 	}
 	// A change from the update window (its checkbox) shows.
 	f.change(func(p *updatePrefs) { p.AutoCheck = true; p.LastCheck = time.Time{} })
-	if !has(tt, "New versions come from actnow.dev, with their notes. Not checked yet.") || !a.updPrefs.AutoCheck {
+	if !has(tt, "New versions come with their notes. Not checked yet.") || !a.updPrefs.AutoCheck {
 		t.Errorf("after a change: %+v %q", a.updPrefs, firstTexts(tt))
 	}
 	// A development build, or one in a folder it cannot write to.
@@ -267,12 +267,12 @@ func TestAppUpdated(t *testing.T) {
 	appRelaunch = func() { relaunched++ }
 	t.Cleanup(func() { appRelaunch = old })
 
-	fs.set(helper.Status{State: helper.Failed, Reason: helper.FailUpdated, Err: "VoxtNew was updated"})
+	fs.set(helper.Status{State: helper.Failed, Reason: helper.FailUpdated, Err: "Voxt was updated"})
 	a.navigate("/home")
-	if !has(tt, "Update installed") || !has(tt, "Restart VoxtNew to finish updating.") || has(tt, "Helper stopped unexpectedly") {
+	if !has(tt, "Update installed") || !has(tt, "Restart Voxt to finish updating.") || has(tt, "Helper stopped unexpectedly") {
 		t.Fatalf("card: %q", firstTexts(tt))
 	}
-	if !has(tt, "VoxtNew was updated: restart it to finish.") {
+	if !has(tt, "Voxt was updated: restart it to finish.") {
 		t.Errorf("home: %q", firstTexts(tt))
 	}
 	n := slices.IndexFunc(a.notices, func(n core.Notification) bool { return n.ID == problemUpdate })
@@ -287,12 +287,12 @@ func TestAppUpdated(t *testing.T) {
 	a.clearNotices()
 	a.navigate("/logs")
 	a.navigate("/settings/about")
-	see(t, tt, "Restart VoxtNew")
-	click(t, tt, "Restart VoxtNew")
+	see(t, tt, "Restart Voxt")
+	click(t, tt, "Restart Voxt")
 	if relaunched != 2 {
 		t.Errorf("about: relaunched %d", relaunched)
 	}
-	if cardActionLabel(linkRelaunch) != "Restart VoxtNew" {
+	if cardActionLabel(linkRelaunch) != "Restart Voxt" {
 		t.Error("card action label")
 	}
 }
