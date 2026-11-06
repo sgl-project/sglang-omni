@@ -131,6 +131,14 @@ class SupervisedServer:
             {"Content-Type": "application/json"},
         )
 
+    def post_chat(self, request: dict[str, object]) -> HttpResponse:
+        return self.request(
+            "POST",
+            "/v1/chat/completions",
+            json.dumps(request).encode(),
+            {"Content-Type": "application/json"},
+        )
+
     def open_request(self, path: str, content_type: str, body: bytes) -> socket.socket:
         """A request whose client stays connected, without reading its answer."""
         client = socket.create_connection(

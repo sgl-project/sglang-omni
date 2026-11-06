@@ -104,6 +104,22 @@ turned on by an engine builder's own defaults, would stay on. A new drafter
 follows the same rule, including one that is the model's own code rather than
 an SGLang draft worker.
 
+Every published draft a stage serves has one entry in
+`sglang_omni/speculative/draft_registry.py`: the draft repo, its full
+revision, the algorithm and its other `speculative_*` settings, the license
+and whether the model turns it on by default. A draft whose model card states
+no license stays off by default. No two entries share a draft repo. A stage
+that names a registry draft without a `speculative_draft_model_revision` key
+loads the entry's revision. A revision the stage sets wins, and `none` loads
+the repo's default branch. A cookbook command, an example config or a model's
+defaults that serve the draft give that entry's algorithm, draft repo and
+settings. They leave the revision out, and a revision they do give must match
+the entry. A model's defaults turn the draft on only for that entry's model
+path. `sgl-omni config resolve` shows the engine block as written, and the
+pinned revision is added when the stage's server args are built.
+`tests/unit_test/speculative/test_draft_registry.py` checks these rules, so a
+new draft adds its entry in the same change.
+
 ## Setting Values: YAML and CLI
 
 There are exactly two user-facing spellings of one path language.
