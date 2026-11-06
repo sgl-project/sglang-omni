@@ -19,6 +19,7 @@ You will need:
 
 - A Mac running macOS 15.0 or later.
 - Xcode with Swift and macOS development support. CI currently runs with Xcode 26.5.
+- Xcode's Metal Toolchain, which mlx-swift needs to build its kernels. If `xcrun metal --version` fails, install it with `xcodebuild -downloadComponent MetalToolchain`.
 - Git and network access for Swift package dependencies.
 
 Clone the repository and open the project:
@@ -42,14 +43,18 @@ xcodebuild build \
   -project Voxt.xcodeproj \
   -scheme Voxt \
   -destination 'platform=macOS' \
+  -skipPackagePluginValidation \
   CODE_SIGNING_ALLOWED=NO
 
 xcodebuild test \
   -project Voxt.xcodeproj \
   -scheme Voxt \
   -destination 'platform=macOS' \
+  -skipPackagePluginValidation \
   CODE_SIGNING_ALLOWED=NO
 ```
+
+Without `-skipPackagePluginValidation`, a command-line build stops at `Validate plug-in "CudaBuild" in package "mlx-swift"`. CI passes the same flag.
 
 For a focused test run, use `-only-testing`, for example:
 
@@ -59,6 +64,7 @@ xcodebuild test \
   -scheme Voxt \
   -destination 'platform=macOS' \
   -only-testing:VoxtTests/SQLiteStorageRepositoryTests \
+  -skipPackagePluginValidation \
   CODE_SIGNING_ALLOWED=NO
 ```
 
@@ -151,7 +157,7 @@ The model weights are not included in the DMG. After installation, Voxt
 downloads the selected MLX model into the user's model cache, so testers can
 install the same notarized app and download models independently.
 
-If Swift package resolution behaves differently locally than in CI, reproduce the package settings from [`.github/workflows/tests.yml`](.github/workflows/tests.yml), including the resolved package file and isolated cache paths.
+If Swift package resolution behaves differently locally than in CI, reproduce the package settings from [`.github/workflows/voxt-mac-ci.yaml`](../.github/workflows/voxt-mac-ci.yaml), including the resolved package file and isolated cache paths.
 
 ## Making changes
 
