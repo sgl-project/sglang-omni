@@ -333,13 +333,15 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
 
 Raw WAV streaming returns `audio/wav` with one file header followed by 16-bit mono PCM chunks. Set `"response_format": "pcm"` to receive the same PCM bytes without a file header (`audio/pcm`). Both formats include sample-rate metadata in response headers and carry no in-band JSON events, final usage, or terminal sentinel.
 
-Set `"stream_format": "sse"` to receive Server-Sent Events; `sse` streams even when `stream` is omitted. SSE accepts `response_format="pcm"` or `"wav"` (the default) and supports the same `speed` range as raw audio streaming. Each named `speech.audio.delta` event carries base64 audio in `audio` and its `response_format`. WAV sends one file header before the PCM chunks. Both transports keep `X-Request-Id`, `X-Sample-Rate`, `X-Channels`, and `X-Bit-Depth` response headers.
+Set `"stream_format": "sse"` to receive Server-Sent Events; `sse` streams even when `stream` is omitted. SSE accepts `response_format="pcm"` or `"wav"` (the default) and supports the same `speed` range as raw audio streaming. Each `speech.audio.delta` event carries base64 audio in `audio` and its `response_format`. WAV sends one file header before the PCM chunks. Both transports keep `X-Request-Id`, `X-Sample-Rate`, `X-Channels`, and `X-Bit-Depth` response headers.
+
+See [SSE Event Framing](#sse-event-framing) for response examples, client event listeners, and the server option that enables named events.
 
 Omitting both `stream` and `stream_format` keeps the response non-streaming, with WAV as the default audio format. An explicit `response_format` overrides the format default in every mode.
 
 The stream ends with one `speech.audio.done` event carrying `finish_reason`, emitted audio `duration` in seconds after speed adjustment, and `usage`. Missing usage remains `null`; actual zero counts remain zero. Qwen3-TTS counts target text tokens, nonblank instructions, and reference audio frames used for in-context cloning as input, and generated Talker steps including EOS as output. Other models use their reported prompt and completion counts. SSE does not include a `[DONE]` sentinel.
 
-Request validation and generation failures before the first audio chunk remain HTTP JSON errors. Failures after SSE starts emit `speech.audio.error` instead of `speech.audio.done`. An error after any audio delta includes `partial_audio=true` and `action="discard"`.
+Request validation and generation failures before the first audio chunk remain HTTP JSON errors. Failures after SSE starts emit an error event instead of `speech.audio.done`, using the mode-specific framing and JSON `type` in the [SSE Event Framing table](#sse-event-framing). Both modes carry the failure details in `error`. An error after any audio delta includes `partial_audio=true` and `action="discard"`.
 
 For raw WAV or PCM, use the response's `X-SGLang-Omni-Speech-Id` with `GET /v1/audio/speech/{request_id}` after the stream ends to retrieve its `finish_reason` and `usage`. This generated speech ID is independent of the `X-Request-Id` correlation header. Behind a router, also echo the response's `X-SGLang-Omni-Worker` as `X-SGLang-Omni-Route-Worker` on the GET. Only the most recent outcomes are retained; missing outcomes do not establish a natural stop or a cap hit.
 
@@ -356,6 +358,48 @@ to override that default, or set it to `0` to use the model's steady chunk size
 from the start. Ming-Omni-TTS is the only model that rejects the field: its
 initial and steady cadence are the audio_decode stage's `factory` settings, so a
 request that sets it fails.
+
+### SSE Event Framing
+
+SSE responses use data-only frames by default to preserve clients that listen for the default `message` event. The client reads the JSON `type` to distinguish audio chunks, completion, and errors.
+
+To enable named events, add `--enable-speech-sse-named-events` when starting the server:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-Base \
+  --enable-speech-sse-named-events \
+  --port 8000
+```
+
+This is a server startup flag, rather than a JSON request field. It applies to every SSE speech response from that server. Requests still select SSE with `"stream_format": "sse"`; `response_format` independently selects WAV or PCM. Requests using the raw `audio` transport keep their binary response format.
+
+| Server startup option | SSE framing | Client event listener | JSON error `type` after streaming starts |
+| --- | --- | --- | --- |
+| Flag omitted (default) | `data:` only | `message`; dispatch using JSON `type` | `error` |
+| `--enable-speech-sse-named-events` | `event:` followed by `data:` | `speech.audio.delta`, `speech.audio.done`, and `speech.audio.error` | `speech.audio.error` |
+
+For the same request with `"stream_format": "sse"` and `"response_format": "pcm"`, a successful response without the flag has this form. Audio is abbreviated and duration is illustrative; generation may produce multiple audio delta frames:
+
+```text
+data: {"type":"speech.audio.delta","audio":"<base64 PCM>","response_format":"pcm"}
+
+data: {"type":"speech.audio.done","duration":0.2,"usage":null,"finish_reason":"stop"}
+
+```
+
+With the flag enabled, the same events include explicit SSE event names:
+
+```text
+event: speech.audio.delta
+data: {"type":"speech.audio.delta","audio":"<base64 PCM>","response_format":"pcm"}
+
+event: speech.audio.done
+data: {"type":"speech.audio.done","duration":0.2,"usage":null,"finish_reason":"stop"}
+
+```
+
+The `event:` line controls SSE event dispatch; it is separate from the `type` field inside JSON. A client that subscribes only to `message` will not receive these named events. Enable the flag when clients subscribe to the named events or their parser handles both framing styles.
 
 ### Batch Speech
 
@@ -651,7 +695,7 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `response_format` | string | `"wav"` | Output audio format: `wav`, `mp3`, `flac`, `pcm`, `aac`, or `opus`. Explicit values override the default in every mode. HTTP streaming accepts only `wav` or `pcm` |
 | `speed` | float | `1.0` | Playback speed multiplier from `0.25` to `4.0` |
 | `stream` | bool | `false` | Enable raw WAV streaming by default. Set `response_format="pcm"` for raw PCM, or `stream_format="sse"` for SSE events |
-| `stream_format` | string | `"audio"` | Streaming transport: `audio` for raw WAV or PCM bytes, `sse` for named audio delta, done, and error events. `sse` streams without `stream=true` |
+| `stream_format` | string | `"audio"` | Streaming transport: `audio` returns raw WAV or PCM bytes when streaming is enabled; `sse` enables SSE even when `stream` is omitted or false. SSE uses data-only `message` events by default. The server startup flag `--enable-speech-sse-named-events` selects the framing and error type shown in the [SSE Event Framing table](#sse-event-framing) |
 | `initial_codec_chunk_frames` | int | `null` | Optional first codec chunk size for streaming TTFA / playback-continuity tuning. When omitted, each model applies its own default: Qwen3-TTS ramps `1 -> 2 -> 4` into the steady stride, Higgs TTS uses `20`, MOSS-TTS Local uses `5`, and ZONOS2 uses `40`. An explicit `0` uses the model's steady chunk size from the start. Ming-Omni-TTS rejects the field entirely |
 | `stream_codec_output` | bool | `true` | Qwen3-TTS only. Forward codec frames to the vocoder as they are generated. Set `false` to restore whole-utterance decoding for CustomVoice / VoiceDesign |
 | `suppress_bootstrap_silence` | bool | `true` | Qwen3-TTS only. Withhold the silent bootstrap codec frame's audio from streamed CustomVoice output on validated voice/language pairs; an audible first frame is always emitted unchanged. Set `false` to keep the leading silence |

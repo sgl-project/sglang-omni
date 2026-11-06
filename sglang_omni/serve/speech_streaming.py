@@ -85,9 +85,17 @@ def create_speech_sse_response(
     stream_outcome: SpeechStreamOutcome,
     sample_rate: int,
     response_format: Literal["pcm", "wav"],
+    enable_speech_sse_named_events: bool,
     headers: dict[str, str],
 ) -> ClosableStreamingResponse:
-    """Wrap PCM chunks in named SSE events with terminal metadata."""
+    """Wrap PCM chunks in SSE events with terminal metadata."""
+
+    def sse_frame(event_type: str, event_json: str) -> str:
+        # note (Xin Gao): existing clients listen for unnamed "message" events.
+        if enable_speech_sse_named_events:
+            return f"event: {event_type}\ndata: {event_json}\n\n"
+        else:
+            return f"data: {event_json}\n\n"
 
     async def stream_events() -> AsyncIterator[str]:
         emitted_audio = False
@@ -113,7 +121,7 @@ def create_speech_sse_response(
                         "response_format": response_format,
                     }
                     emitted_audio = True
-                    yield f"event: speech.audio.delta\ndata: {json.dumps(delta)}\n\n"
+                    yield sse_frame(delta["type"], json.dumps(delta))
 
             final_usage = stream_outcome.usage
             usage: dict[str, int | None] | None
@@ -146,7 +154,7 @@ def create_speech_sse_response(
                 "usage": usage,
                 "finish_reason": stream_outcome.finish_reason,
             }
-            yield f"event: speech.audio.done\ndata: {json.dumps(done)}\n\n"
+            yield sse_frame(done["type"], json.dumps(done))
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -166,8 +174,11 @@ def create_speech_sse_response(
                 error.update(partial_audio=True, action="discard")
             else:
                 pass
-            payload = {"type": "speech.audio.error", "error": error}
-            yield f"event: speech.audio.error\ndata: {json.dumps(payload)}\n\n"
+            error_type = (
+                "speech.audio.error" if enable_speech_sse_named_events else "error"
+            )
+            payload = {"type": error_type, "error": error}
+            yield sse_frame(error_type, json.dumps(payload))
         finally:
             with anyio.CancelScope(shield=True):
                 await pcm_chunks.aclose()

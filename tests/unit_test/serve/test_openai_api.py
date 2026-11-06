@@ -1848,6 +1848,7 @@ def test_raw_audio_send_failure_aborts_inner_speech_stream(
             speed=1.0,
             response_format=response_format,
             speech_stream_outcomes=speech_stream_outcomes,
+            enable_speech_sse_named_events=False,
         )
 
         async def receive() -> Message:
@@ -1889,6 +1890,7 @@ def test_raw_pcm_response_disconnect_before_first_chunk_aborts_request() -> None
                 request_id="req-1",
                 speed=1.0,
                 speech_stream_outcomes=SpeechStreamOutcomes(max_entries=8),
+                enable_speech_sse_named_events=False,
             )
         )
         await client.started.wait()
@@ -1912,22 +1914,47 @@ def test_sse_speech_response_close_aborts_inner_speech_stream() -> None:
             stream_format="sse",
             response_format="pcm",
             speech_stream_outcomes=SpeechStreamOutcomes(max_entries=8),
+            enable_speech_sse_named_events=False,
         )
         body = response.body_iterator
-        assert (await anext(body)).startswith("event: speech.audio.delta\ndata: ")
+        assert (await anext(body)).startswith("data: ")
         await body.aclose()
         assert client.aborted == ["req-1"]
 
     asyncio.run(drive())
 
 
+def parse_speech_sse_events(
+    response_text: str, enable_speech_sse_named_events: bool
+) -> list[dict[str, object]]:
+    events = []
+    for event_block in response_text.strip().split("\n\n"):
+        frame_lines = event_block.splitlines()
+        data_line = frame_lines[-1]
+        assert data_line.startswith("data: ")
+        event = json.loads(data_line.removeprefix("data: "))
+        if enable_speech_sse_named_events:
+            assert frame_lines == [f"event: {event['type']}", data_line]
+        else:
+            assert frame_lines == [data_line]
+        events.append(event)
+    return events
+
+
 @pytest.mark.parametrize(
-    ("response_format", "usage_first", "usage_kind", "finish_reason"),
+    (
+        "response_format",
+        "usage_first",
+        "usage_kind",
+        "finish_reason",
+        "enable_speech_sse_named_events",
+    ),
     [
-        (None, False, "speech", "length"),
-        ("wav", True, "pipeline", "stop"),
-        ("pcm", False, "missing", "unknown"),
-        ("pcm", False, "zero", "stop"),
+        (None, False, "speech", "length", False),
+        ("wav", True, "pipeline", "stop", False),
+        ("pcm", False, "missing", "unknown", False),
+        ("pcm", False, "zero", "stop", False),
+        ("wav", True, "pipeline", "stop", True),
     ],
 )
 def test_speech_sse_preserves_audio_and_reports_terminal_usage(
@@ -1935,6 +1962,7 @@ def test_speech_sse_preserves_audio_and_reports_terminal_usage(
     usage_first: bool,
     usage_kind: Literal["speech", "pipeline", "missing", "zero"],
     finish_reason: Literal["stop", "length", "unknown"],
+    enable_speech_sse_named_events: bool,
 ) -> None:
     """SSE preserves audio, terminal state, and absent or explicitly zero usage."""
     usage = UsageInfo(prompt_tokens=3, completion_tokens=2, total_tokens=5)
@@ -1980,7 +2008,13 @@ def test_speech_sse_preserves_audio_and_reports_terminal_usage(
         )
     )
     speech_client = ScriptedStreamingSpeechClient(chunks)
-    client = TestClient(create_app(speech_client, model_name="tts"))
+    client = TestClient(
+        create_app(
+            speech_client,
+            model_name="tts",
+            enable_speech_sse_named_events=enable_speech_sse_named_events,
+        )
+    )
     request_body = {"input": "hello", "stream_format": "sse"}
     if response_format is not None:
         request_body["response_format"] = response_format
@@ -1994,13 +2028,7 @@ def test_speech_sse_preserves_audio_and_reports_terminal_usage(
     assert response.headers["x-sample-rate"] == "24000"
     assert response.headers["x-channels"] == "1"
     assert response.headers["x-bit-depth"] == "16"
-    events = []
-    for event_block in response.text.strip().split("\n\n"):
-        event_line, data_line = event_block.splitlines()
-        assert data_line.startswith("data: ")
-        event = json.loads(data_line.removeprefix("data: "))
-        assert event_line == f"event: {event['type']}"
-        events.append(event)
+    events = parse_speech_sse_events(response.text, enable_speech_sse_named_events)
     selected_format = response_format or "wav"
     delta_events = events[:-1]
     for event in delta_events:
@@ -2102,12 +2130,70 @@ def test_speech_sse_speed_changes_audio_length_and_duration(
         "expected_error_type",
         "expected_status_code",
         "expected_error_code",
+        "enable_speech_sse_named_events",
+        "expected_error_event_type",
     ),
     [
-        ("before-audio", False, "vocoder failed", "server_error", 500, None),
-        ("empty-audio", False, "No audio output generated", "server_error", 500, None),
-        ("after-audio", True, "vocoder failed", "server_error", 200, 500),
-        ("sample-rate-change", True, "sample rate changed", "server_error", 200, 500),
+        (
+            "before-audio",
+            False,
+            "vocoder failed",
+            "server_error",
+            500,
+            None,
+            False,
+            "error",
+        ),
+        (
+            "empty-audio",
+            False,
+            "No audio output generated",
+            "server_error",
+            500,
+            None,
+            False,
+            "error",
+        ),
+        (
+            "after-audio",
+            True,
+            "vocoder failed",
+            "server_error",
+            200,
+            500,
+            False,
+            "error",
+        ),
+        (
+            "sample-rate-change",
+            True,
+            "sample rate changed",
+            "server_error",
+            200,
+            500,
+            False,
+            "error",
+        ),
+        (
+            "after-audio",
+            True,
+            "vocoder failed",
+            "server_error",
+            200,
+            500,
+            True,
+            "speech.audio.error",
+        ),
+        (
+            "sample-rate-change",
+            True,
+            "sample rate changed",
+            "server_error",
+            200,
+            500,
+            True,
+            "speech.audio.error",
+        ),
         (
             "invalid-input",
             False,
@@ -2115,8 +2201,19 @@ def test_speech_sse_speed_changes_audio_length_and_duration(
             "BadRequestError",
             400,
             400,
+            False,
+            "error",
         ),
-        ("queue-full", False, QueueFullError.MESSAGE, "server_error", 503, None),
+        (
+            "queue-full",
+            False,
+            QueueFullError.MESSAGE,
+            "server_error",
+            503,
+            None,
+            False,
+            "error",
+        ),
     ],
 )
 def test_speech_sse_generation_errors_preserve_http_and_stream_contracts(
@@ -2133,6 +2230,8 @@ def test_speech_sse_generation_errors_preserve_http_and_stream_contracts(
     expected_error_type: Literal["BadRequestError", "server_error"],
     expected_status_code: int,
     expected_error_code: int | None,
+    enable_speech_sse_named_events: bool,
+    expected_error_event_type: Literal["error", "speech.audio.error"],
 ) -> None:
     """Failures retain HTTP errors before audio and terminal events after audio."""
     first_chunk = GenerateChunk(
@@ -2170,7 +2269,13 @@ def test_speech_sse_generation_errors_preserve_http_and_stream_contracts(
             ),
         ]
     speech_client = ScriptedStreamingSpeechClient(chunks)
-    client = TestClient(create_app(speech_client, model_name="tts"))
+    client = TestClient(
+        create_app(
+            speech_client,
+            model_name="tts",
+            enable_speech_sse_named_events=enable_speech_sse_named_events,
+        )
+    )
 
     response = client.post(
         "/v1/audio/speech",
@@ -2185,15 +2290,10 @@ def test_speech_sse_generation_errors_preserve_http_and_stream_contracts(
     assert response.status_code == expected_status_code
     if has_partial_audio:
         assert response.headers["content-type"].startswith("text/event-stream")
-        events = []
-        for event_block in response.text.strip().split("\n\n"):
-            event_line, data_line = event_block.splitlines()
-            event = json.loads(data_line.removeprefix("data: "))
-            assert event_line == f"event: {event['type']}"
-            events.append(event)
+        events = parse_speech_sse_events(response.text, enable_speech_sse_named_events)
         assert [event["type"] for event in events] == [
             "speech.audio.delta",
-            "speech.audio.error",
+            expected_error_event_type,
         ]
         assert base64.b64decode(events[0]["audio"]) == encode_pcm([0.0, 0.1], 24000)
         error = events[-1]["error"]
@@ -2277,7 +2377,7 @@ def test_speech_sse_disconnect_aborts_generation(
 
         assert len(speech_client.aborted) == 1
         assert b"speech.audio.done" not in b"".join(response_bodies)
-        assert b"speech.audio.error" not in b"".join(response_bodies)
+        assert b'"type": "error"' not in b"".join(response_bodies)
 
     asyncio.run(drive())
 

@@ -241,6 +241,7 @@ def create_app(
     allowed_media_domains: list[str] | None = None,
     admin_api_key: str | None = None,
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
+    enable_speech_sse_named_events: bool = False,
     architectures: list[str] | None = None,
     audio_chunking: ResolvedAudioChunking | None = None,
     interleaved_output: bool = False,
@@ -290,6 +291,8 @@ def create_app(
         admin_api_key: Optional API key for admin-control endpoints.
         tts_batch_max_items: Maximum items accepted by
             ``/v1/audio/speech/batch``.
+        enable_speech_sse_named_events: Add event names to speech SSE frames
+            and report stream failures as speech.audio.error.
         audio_chunking: Long-audio chunking policy for ``/v1/audio/transcriptions``,
             declared by the pipeline config. None keeps chunking off.
         interleaved_output: Whether results are ordered interleaved (UMM)
@@ -332,6 +335,7 @@ def create_app(
     app.state.speech_stream_outcomes = SpeechStreamOutcomes(
         max_entries=MAX_SPEECH_STREAM_OUTCOMES
     )
+    app.state.enable_speech_sse_named_events = enable_speech_sse_named_events
     app.state.speech_service = SpeechRequestValidator(
         default_model=app.state.model_name,
         custom_voice_config=custom_voice_config,
@@ -1925,6 +1929,7 @@ def register_speech(app: FastAPI) -> None:
                     speech_stream_outcomes=app.state.speech_stream_outcomes,
                     stream_format=req.stream_format,
                     response_format="wav" if req.response_format == "wav" else "pcm",
+                    enable_speech_sse_named_events=app.state.enable_speech_sse_named_events,
                 )
             except ClientError as exc:
                 return speech_generation_failure_response(request_id, exc)
@@ -2106,6 +2111,7 @@ async def speech_audio_response(
     response_format: Literal["pcm", "wav"] = "pcm",
     *,
     speech_stream_outcomes: SpeechStreamOutcomes,
+    enable_speech_sse_named_events: bool,
 ) -> StreamingResponse:
     """Stream PCM/WAV bytes or SSE after the first audio sets the headers."""
     emitted_samples = 0
@@ -2264,6 +2270,7 @@ async def speech_audio_response(
             stream_outcome=stream_outcome,
             sample_rate=stream_sample_rate,
             response_format=response_format,
+            enable_speech_sse_named_events=enable_speech_sse_named_events,
             headers=headers,
         )
     else:
