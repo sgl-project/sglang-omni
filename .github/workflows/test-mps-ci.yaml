@@ -26,9 +26,8 @@ env:
         && inputs.omni_ci_home
         || format('/data/omni-ci/run-{0}', github.run_id) }}
 
-# Invoked by omni-ci.yaml after every other selected suite because omni-setup
-# may rebuild the shared OMNI_CI_HOME if environment validation fails.
-# Restores omni only.
+# Invoked by omni-ci.yaml when MPS is selected. omni-setup may rebuild the
+# shared OMNI_CI_HOME if environment validation fails. Restores omni only.
 # These tests do not consume one another's results. A shared per-run concurrency
 # group serializes MPS use; the queued execution order is unspecified.
 

@@ -1,20 +1,18 @@
 name: Omni CI
 
 # DAG:
-#   preflight -> setup -> pr-test -> {asr-ci, tts-ci, qwen3-omni-ci, duplex-ci}
-#     -> mps-ci
+#   preflight -> setup -> pr-test -> {asr-ci, tts-ci, qwen3-omni-ci, duplex-ci, mps-ci}
 #   setup + unit/model suites -> cleanup (dispatch only)
 #
 # preflight resolves the CI labels with .github/scripts/resolve_ci_labels.py:
 # any stage label, including run-unit-test-ci-only, runs pr-test, and each model
 # suite runs only when its stage is selected. run-lint-only passes the gate and
-# skips setup. Model suites start together once pr-test finishes and use always()
+# skips setup. Model suites, including MPS, start after pr-test and use always()
 # so a failed or skipped suite never skips another one. Only setup blocks all
 # downstream model CI.
 #
-# mps-ci runs last because omni-setup may rebuild the shared OMNI_CI_HOME if its
-# environment validation fails. Running it last keeps that rebuild away from
-# stages that are still using the home.
+# MPS has no result dependency on other model suites and uses the same
+# workflow SHA, so it does not wait for those suites to finish.
 #
 # PR-scoped homes (/data/omni-ci/pr-<N>) persist on the runner for reuse across
 # pushes (runner TTL, e.g. 3 days). reconcile_omni_ci_env.sh validates fingerprint,
@@ -264,7 +262,7 @@ jobs:
 
   mps-ci:
     name: MPS CI
-    needs: [preflight, setup, pr-test, asr-ci, tts-ci, qwen3-omni-ci, duplex-ci]
+    needs: [preflight, setup, pr-test]
     if: >-
       always() && !cancelled() &&
       needs.setup.result == 'success' &&
