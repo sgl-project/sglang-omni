@@ -69,6 +69,11 @@ DRIVER_CLIENT_FLAGS = (
     "--use-existing-server",
     "--dataset",
     "--lang",
+    # note (wilsonzheng0327): these send a leg's requests to another server, replay saved outputs instead of sending them, or move the result files the sweep reads.
+    "--base-url",
+    "--reuse-asr-results",
+    "--asr-results-file",
+    "--speed-results-file",
 )
 
 
@@ -248,7 +253,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         for flag in DRIVER_CLIENT_FLAGS
     ):
         parser.error(
-            f"the sweep sets {', '.join(DRIVER_CLIENT_FLAGS)} for the client itself, and refuses abbreviations of them"
+            f"the client may not get {', '.join(DRIVER_CLIENT_FLAGS)} or an abbreviation of one: the sweep sets them itself, or they would change what it measures"
         )
     else:
         pass

@@ -558,12 +558,32 @@ def test_arguments_after_the_separator_go_to_the_client(monkeypatch) -> None:
         pytest.param(
             "0", [*REQUIRED, "--", "--max-conc", "16"], id="client-flag-abbreviation"
         ),
+        pytest.param(
+            "0",
+            [*REQUIRED, "--", "--base-url", "http://127.0.0.1:8000"],
+            id="client-base-url",
+        ),
+        pytest.param(
+            "0",
+            [*REQUIRED, "--", "--base-url=http://127.0.0.1:8000"],
+            id="client-base-url-equals",
+        ),
+        pytest.param(
+            "0",
+            [*REQUIRED, "--", "--reuse-asr-results", "/tmp/old-asr.json"],
+            id="client-reused-results",
+        ),
+        pytest.param(
+            "0",
+            [*REQUIRED, "--", "--reuse", "/tmp/old-asr.json"],
+            id="client-reused-results-abbreviation",
+        ),
     ],
 )
 def test_the_sweep_refuses_to_start_on_a_bad_setup(
     monkeypatch, visible_gpus: str, argv: list[str]
 ) -> None:
-    """Between legs the managed server ends every process on every visible GPU, and the sweep owns the load settings."""
+    """Between legs the managed server ends every process on every visible GPU, and the sweep owns the load settings and where each leg's requests go."""
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", visible_gpus)
 
     with pytest.raises(SystemExit):
