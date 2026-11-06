@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Small native MOSS models and scoped attention pools for regression tests."""
+"""Native MOSS test models and attention-pool helpers."""
 
 from collections.abc import Iterator
 from contextlib import contextmanager

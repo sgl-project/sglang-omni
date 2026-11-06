@@ -35,7 +35,7 @@ from sglang_omni.models.moss_speech.sglang_model import (
 )
 from sglang_omni.scheduling.types import SchedulerRequest
 from tests.unit_test.fixtures.accelerator import require_cuda
-from tests.unit_test.fixtures.moss_speech_model import (
+from tests.unit_test.moss_speech.model_helpers import (
     checkpoint_weights,
     decode,
     native_runtime,
