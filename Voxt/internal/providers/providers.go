@@ -1,0 +1,173 @@
+// Package providers joins the user's setup of the remote language models
+// (settings.Providers) to the code that talks to them (internal/llm's
+// OpenAI transport): which setups are ready, building a client from a
+// setup and its key, the connection test, and Services, which offers the
+// ready ones to the features beside the local models. It is Auralink's
+// internal/providers (@748cf55) for language models only.
+//
+// It never reads the Keychain itself: callers pass keys in (read off the
+// main thread with internal/secrets) and a hasKey function for the
+// decisions that only need to know whether one is saved.
+//
+// Imports: llm, local, settings.
+package providers
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+)
+
+// Setup is the user's setup of service id, and whether there is one.
+func Setup(s settings.Settings, id string) (settings.Provider, bool) {
+	for _, p := range s.Providers.LLM {
+		if p.ID == id {
+			return p, true
+		}
+	}
+	return settings.Provider{ID: id}, false
+}
+
+// Put sets p in s, replacing the setup with its ID or appending it. It
+// writes a new list: copies of the settings share the old one's array.
+func Put(s *settings.Settings, p settings.Provider) {
+	l := slices.Clone(s.Providers.LLM)
+	if i := slices.IndexFunc(l, func(x settings.Provider) bool { return x.ID == p.ID }); i >= 0 {
+		l[i] = p
+	} else {
+		l = append(l, p)
+	}
+	s.Providers.LLM = l
+}
+
+// Remove takes setup id out of s (a new list, as Put), and out of the
+// features that use it (they go back to automatic).
+func Remove(s *settings.Settings, id string) {
+	s.Providers.LLM = slices.DeleteFunc(slices.Clone(s.Providers.LLM), func(p settings.Provider) bool { return p.ID == id })
+	for _, f := range []*settings.Feature{&s.Features.Transcribe.Feature, &s.Features.Translate.Feature, &s.Features.Rewrite.Feature} {
+		if f.LLM == id {
+			f.LLM = ""
+		}
+	}
+}
+
+// Config is the llm package's configuration of a setup.
+func Config(p settings.Provider) llm.ProviderConfig {
+	return llm.ProviderConfig{ID: p.ID, BaseURL: p.Endpoint, Model: p.Model}
+}
+
+// Model is the model a setup uses: its own, else its preset's default.
+func Model(p settings.Provider) string {
+	if m := strings.TrimSpace(p.Model); m != "" {
+		return m
+	}
+	pr, _ := llm.LookupPreset(p.ID)
+	return pr.DefaultModel
+}
+
+// What a setup can lack (Missing).
+const (
+	MissingKey      = "key"
+	MissingEndpoint = "endpoint"
+	MissingModel    = "model"
+)
+
+// Missing says what a setup lacks before it can be used: "" when it is
+// ready.
+func Missing(p settings.Provider, hasKey bool) string {
+	pr, ok := llm.LookupPreset(p.ID)
+	switch {
+	case !ok || pr.BaseURL == "" && strings.TrimSpace(p.Endpoint) == "":
+		return MissingEndpoint
+	case Model(p) == "":
+		return MissingModel
+	case !hasKey && !pr.KeyOptional:
+		return MissingKey
+	}
+	return ""
+}
+
+// Ready lists the setups that can be used now, in the presets' order.
+func Ready(s settings.Settings, hasKey func(id string) bool) []settings.Provider {
+	var out []settings.Provider
+	for _, pr := range llm.Presets() {
+		if p, ok := Setup(s, pr.ID); ok && Missing(p, hasKey(p.ID)) == "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// NewLLM is the backend of a setup with its key, over client (nil:
+// http.DefaultClient). It fails when the setup's address is not allowed
+// (llm.ProviderConfig.Resolve).
+func NewLLM(p settings.Provider, key string, client *http.Client) (*llm.OpenAI, error) {
+	pr, err := Config(p).Resolve()
+	if err != nil {
+		return nil, err
+	}
+	return llm.NewOpenAI(pr, key, client), nil
+}
+
+// Open is a setup as a session uses it: an llm.Client (two attempts,
+// JSON repair, thinking stripped) over its backend.
+func Open(p settings.Provider, key string, client *http.Client) (local.Chat, error) {
+	b, err := NewLLM(p, key, client)
+	if err != nil {
+		return nil, err
+	}
+	return &llm.Client{Backend: b, Retry: llm.RetryPolicy{MaxAttempts: 2}}, nil
+}
+
+// TestResult is the outcome of a connection test.
+type TestResult struct {
+	Latency time.Duration
+	Err     error // nil: it works
+	At      time.Time
+}
+
+// Test checks that a setup works: one tiny request (llm.Probe).
+func Test(ctx context.Context, p settings.Provider, key string, client *http.Client) TestResult {
+	res := TestResult{At: time.Now()}
+	b, err := NewLLM(p, key, client)
+	if err == nil {
+		res.Latency, err = llm.Probe(ctx, b)
+	}
+	res.Err = err
+	return res
+}
+
+// TestLog is the log line of a connection test: the service, its model,
+// the outcome, how long it took and, for a failure, the error (its code,
+// HTTP status and the service's message, clipped). Never the key
+// (removed should an error quote it).
+func TestLog(p settings.Provider, res TestResult, key string) (level, msg string) {
+	head := fmt.Sprintf("connection test of remote language model %s (model %s)", p.ID, Model(p))
+	if res.Err == nil {
+		return "info", fmt.Sprintf("%s: ok in %v", head, res.Latency.Round(time.Millisecond))
+	}
+	return "warning", fmt.Sprintf("%s: failed: %s", head, ErrorLog(res.Err, key))
+}
+
+// ErrorLog is err for the log: clipped to about 400 bytes, with key (when
+// not empty) blanked out.
+func ErrorLog(err error, key string) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	if key = strings.TrimSpace(key); len(key) >= 4 {
+		s = strings.ReplaceAll(s, key, "[key]")
+	}
+	if len(s) > 400 {
+		s = s[:400] + "…"
+	}
+	return s
+}

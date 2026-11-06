@@ -88,7 +88,7 @@ func voxtnewClaim(t *testing.T, a *app, id string) (fammodels.Claim, bool) {
 
 // TestOnboardingReuse: the speech models AudioSmith installed make the
 // reuse card; Use them claims them for VoxtNew (origin reused) and
-// downloads nothing; the language model is still to download.
+// downloads nothing; the language model is still to set up.
 func TestOnboardingReuse(t *testing.T) {
 	asked := countingHub(t)
 	a, tt := obTester(t)
@@ -100,8 +100,8 @@ func TestOnboardingReuse(t *testing.T) {
 	a.models.Refresh()
 	a.obGo(obModels)
 	for _, s := range []string{"2 models are already on this Mac", "Installed by AudioSmith · 2.5 GB · no download needed",
-		"Accurate speech recognition · Voice detection", "Use them", "Choose models…", "Installed · from AudioSmith",
-		"3.3 GB still to download", "Download (3.3 GB)"} {
+		"Qwen3-ASR 1.7B (8bit) · Silero VAD v6", "Use them", "Choose models…", "Installed · from AudioSmith",
+		"Set up a language model"} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, tt.Texts())
 		}
@@ -115,7 +115,7 @@ func TestOnboardingReuse(t *testing.T) {
 			t.Errorf("%s: claim %+v %v", id, c, ok)
 		}
 	}
-	if has(tt, "Use them") || !has(tt, "Ready: Accurate speech recognition") || !has(tt, "Download (3.3 GB)") || has(tt, "3.3 GB still to download") {
+	if has(tt, "Use them") || !has(tt, "Ready: Qwen3-ASR 1.7B (8bit)") || !has(tt, "Set up a language model") || hasPrefix(tt, "Download (") {
 		t.Errorf("after Use them: %q", tt.Texts())
 	}
 	for _, m := range models.Catalog() {
@@ -167,20 +167,20 @@ func TestOnboardingAlternative(t *testing.T) {
 	drain()
 	a.obGo(obModels)
 	drain()
-	line := "Accurate speech recognition isn't installed, but Fast speech recognition (from AudioSmith) is. Use it for now?"
-	for _, s := range []string{line, "Download Accurate speech recognition", "Use Fast speech recognition",
-		"1 model is already on this Mac", "Voice detection", "Download (3.3 GB)"} {
+	line := "Qwen3-ASR 1.7B (8bit) isn't installed, but Qwen3-ASR 0.6B (4bit) (from AudioSmith) is. Use it for now?"
+	for _, s := range []string{line, "Download Qwen3-ASR 1.7B (8bit)", "Use Qwen3-ASR 0.6B (4bit)",
+		"1 model is already on this Mac", "Silero VAD v6", "Set up a language model"} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, tt.Texts())
 		}
 	}
-	if has(tt, "Download both") || has(tt, "Ready: Fast speech recognition") {
-		t.Errorf("the speech model is in Download both, or ready: %q", tt.Texts())
+	if hasPrefix(tt, "Download (") || has(tt, "Ready: Qwen3-ASR 0.6B (4bit)") {
+		t.Errorf("the speech model is in the step's Download, or ready: %q", tt.Texts())
 	}
 
 	// Download (the default) starts the accurate one.
-	obScrollTo(tt, "Download Accurate speech recognition")
-	click(t, tt, "Download Accurate speech recognition")
+	obScrollTo(tt, "Download Qwen3-ASR 1.7B (8bit)")
+	click(t, tt, "Download Qwen3-ASR 1.7B (8bit)")
 	deadline := time.Now().Add(5 * time.Second)
 	for asked.Load() == 0 && time.Now().Before(deadline) {
 		drain()
@@ -194,13 +194,13 @@ func TestOnboardingAlternative(t *testing.T) {
 	}
 
 	// Use it for now.
-	obScrollTo(tt, "Use Fast speech recognition")
-	click(t, tt, "Use Fast speech recognition")
+	obScrollTo(tt, "Use Qwen3-ASR 0.6B (4bit)")
+	click(t, tt, "Use Qwen3-ASR 0.6B (4bit)")
 	drain()
 	if c, ok := voxtnewClaim(t, a, models.ASRFast); !ok || c.Origin != fammodels.OriginReused {
 		t.Errorf("claim %+v %v", c, ok)
 	}
-	if has(tt, line) || !has(tt, "Ready: Fast speech recognition") {
+	if has(tt, line) || !has(tt, "Ready: Qwen3-ASR 0.6B (4bit)") {
 		t.Errorf("after Use: %q", tt.Texts())
 	}
 }
@@ -359,7 +359,7 @@ func TestShortcutRecorderUsedBy(t *testing.T) {
 // obFamilyShots saves the guide's models step with the models other
 // ActNow apps installed (onboardingShots): the reuse card (the speech
 // models AudioSmith installed, the language model still to download),
-// and the alternative lines (Fast speech recognition from AudioSmith, the
+// and the alternative lines (Qwen3-ASR 0.6B (4bit) from AudioSmith, the
 // all-round language model from Dicta). From memory: the survey's
 // findings and the models' statuses.
 func obFamilyShots(a *app, save func(string)) {

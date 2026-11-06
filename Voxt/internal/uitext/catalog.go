@@ -1,9 +1,9 @@
 package uitext
 
 // The words of the model catalogue (internal/models): what a model is
-// called, what it is good at and which languages it knows, in plain words
-// (no family, size or quantisation: the plan's model policy), and why a
-// download failed.
+// called (its family, size and quantisation, as Voxt 1.x listed them:
+// the catalogue's Name), what it is good at and which languages it knows,
+// and why a download failed.
 
 import (
 	"errors"
@@ -15,28 +15,26 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 )
 
-// ModelName is what the UI calls model id (its id when it is not in the
-// catalogue).
+// ModelName is what the UI calls model id: "Qwen3-ASR 1.7B (8bit)" (its
+// id when it is not in the catalogue).
 func ModelName(id string) string {
-	switch id {
-	case models.ASRAccurate:
-		return i18n.T("Accurate speech recognition")
-	case models.ASRFast:
-		return i18n.T("Fast speech recognition")
-	case models.VADSilero:
-		return i18n.T("Voice detection")
-	case models.LLMBalanced:
-		return i18n.T("Balanced language model")
-	case models.LLMFast:
-		return i18n.T("Fast language model")
-	case models.LLMTranslate:
-		return i18n.T("Translation model")
-	case models.LLMQwen3:
-		return i18n.T("All-round language model")
-	case models.LLMGemma4:
-		return i18n.T("Large language model")
+	if m, ok := models.Lookup(id); ok {
+		return m.Name
 	}
 	return id
+}
+
+// ModelTags are model id's short labels on its card, as Voxt 1.x showed
+// them: where it runs, what it is best at, whether it shows the text
+// while you speak. No ratings: they had no basis.
+func ModelTags(id string) []string {
+	switch id {
+	case models.ASRAccurate:
+		return []string{i18n.T("Local"), i18n.T("Accurate"), i18n.T("Realtime")}
+	case models.ASRFast:
+		return []string{i18n.T("Local"), i18n.T("Fast"), i18n.T("Realtime")}
+	}
+	return []string{i18n.T("Local")}
 }
 
 // ModelAbout says what model id is good at.

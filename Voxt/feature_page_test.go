@@ -185,13 +185,13 @@ func TestTranscribePasteLast(t *testing.T) {
 func TestTranscribeServicesAndSwitches(t *testing.T) {
 	a, tt := trTester(t)
 	readyModels(a)
-	a.local.(*fakeLocal).MoreLLM = []local.Model{{Kind: local.LLM, ID: models.LLMFast, Name: "Fast language model"}}
+	a.local.(*fakeLocal).MoreLLM = []local.Model{{Kind: local.LLM, ID: models.LLMFast, Name: "Qwen3.5 2B (4bit)"}}
 	frames(tt)
 	if has(tt, "No speech model is installed: install one to transcribe.") {
 		t.Error("notice with a model installed")
 	}
 	click(t, tt, "Language model for Transcribe")
-	click(t, tt, "Fast language model")
+	click(t, tt, "Qwen3.5 2B (4bit)")
 	if id := a.lib.settings.Get().Features.Transcribe.LLM; id != models.LLMFast {
 		t.Errorf("LLM %q", id)
 	}

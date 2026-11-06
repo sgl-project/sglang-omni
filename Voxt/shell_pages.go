@@ -35,6 +35,7 @@ var navGroups = []navGroup{
 	}},
 	{"Resources", []navPage{
 		{modelsPath, "Local models", modelsIcon},
+		{remotePath, "Language models", remoteIcon},
 		{"/dictionary", "Dictionary", dictionaryIcon},
 	}},
 	{"System", []navPage{
@@ -100,6 +101,8 @@ func pageTitle(path string) string {
 		return i18n.T("App enhancement")
 	case modelsPath:
 		return i18n.T("Local models")
+	case remotePath:
+		return i18n.T("Language models")
 	case "/dictionary":
 		return i18n.T("Dictionary")
 	case "/logs":
@@ -125,6 +128,7 @@ var (
 	rewriteIcon        = icons.PenNewRound
 	appEnhancementIcon = icons.Target
 	modelsIcon         = icons.Cpu
+	remoteIcon         = icons.Cloud
 	dictionaryIcon     = icons.NotebookBookmark
 	permissionsIcon    = icons.ShieldKeyhole
 	logsIcon           = icons.ClipboardList

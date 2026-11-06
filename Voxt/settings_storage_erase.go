@@ -22,7 +22,6 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/actnow"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/datadir"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
@@ -119,8 +118,8 @@ func (a *app) eraseAll() {
 	home, logs := a.home(), a.logDir
 	ids, fam := a.claimedModels(), a.fam
 	del := a.models.Delete
-	if lib, ok := a.local.(*local.Library); ok {
-		del = lib.Delete // the runtimes let the models go first
+	if a.localLib != nil {
+		del = a.localLib.Delete // the runtimes let the models go first
 	}
 	a.resetAsk, a.erasing = "", true
 	h := a.lib.store.History()

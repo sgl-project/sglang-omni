@@ -10,6 +10,7 @@ global                  # Translate
 pen-new-round           # Rewrite
 target                  # App enhancement
 cpu                     # Local models
+cloud                   # Remote models
 notebook-bookmark       # Dictionary
 shield-keyhole          # Permissions
 clipboard-list          # Logs
@@ -86,3 +87,6 @@ turntable-music-note-line-duotone   # play a sound (a duotone variant: both Line
 volume-cross             # volume: muted
 volume-small             # volume: low
 volume-loud              # volume: high
+
+# The Remote models page (remote_page.go).
+key-minimalistic-square # a saved API key

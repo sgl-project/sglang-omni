@@ -1,8 +1,8 @@
 # VoxtNew architecture
 
-*State: M1 (2026-10-17): the speech models run on the Omni native MLX servers (internal/omni), downloaded by internal/models; the language models run in voxtnew-llm, a Swift process of their own (internal/llmrt, M2). M0 was the skeleton: Auralink copied, renamed and stripped of its remote services. Plan and milestones: [plan.md](plan.md). Behaviour compared with Voxt: [behavior.md](behavior.md). Helper wire format: [helper-protocol.md](helper-protocol.md); the language models' process: [llm-protocol.md](llm-protocol.md), its models and their measurements: [llm-models.md](llm-models.md).*
+*State: 2.1 (2026-11-06): language models are remote, OpenAI-compatible services (internal/llm's OpenAI, internal/providers, internal/secrets, the Language models page); the local ones are retired. M1 (2026-10-17): the speech models run on the Omni native MLX servers (internal/omni), downloaded by internal/models; the language models run in voxtnew-llm, a Swift process of their own (internal/llmrt, M2). M0 was the skeleton: Auralink copied, renamed and stripped of its remote services. Plan and milestones: [plan.md](plan.md). Behaviour compared with Voxt: [behavior.md](behavior.md). Helper wire format: [helper-protocol.md](helper-protocol.md); the language models' process: [llm-protocol.md](llm-protocol.md), its models and their measurements: [llm-models.md](llm-models.md).*
 
-VoxtNew is a Go app on MyGo (native UI, no cgo) with one small Swift helper process, on local models only. It is a copy of Auralink (@748cf55, the same author's app on remote models), whose code it keeps but for the remote layer (§5): sessions get their speech and language models from `internal/local`, which M1 (the Omni native MLX servers) and M2 (the `voxtnew-llm` process) fill in. Auralink itself reused AudioSmith's engineering (AudioSmith @f171c86, Apache-2.0): its window shell, UI kit and tokens, settings, store, i18n, logs and notification code, and its engine supervisor reduced to one helper. Milestone names up to M6 in comments are Auralink's; VoxtNew's are M0–M4 (plan.md).
+VoxtNew is a Go app on MyGo (native UI, no cgo) with one small Swift helper process; speech is recognised on this Mac, and the language models are remote services the user sets up (2.1). It is a copy of Auralink (@748cf55, the same author's app on remote models), whose code it keeps but for the remote layer (§5): sessions get their speech and language models from `internal/local`, which M1 (the Omni native MLX servers) and M2 (the `voxtnew-llm` process) fill in. Auralink itself reused AudioSmith's engineering (AudioSmith @f171c86, Apache-2.0): its window shell, UI kit and tokens, settings, store, i18n, logs and notification code, and its engine supervisor reduced to one helper. Milestone names up to M6 in comments are Auralink's; VoxtNew's are M0–M4 (plan.md).
 
 **Names.** The app is Voxt (2.0.0 on): `Voxt.app` (`mygo.json`'s name), its menus, windows and texts, this directory and the Go module. Some names inside stay VoxtNew: the Swift packages (`VoxtNewHelper`, `VoxtNewLLM`), the bundle id `dev.hehehai.voxtnew`, the data, logs and cache folders (`main.go` keeps them at `…/VoxtNew`), the processes `voxtnew-helper` and `voxtnew-llm`, the URL scheme `voxtnew://`, the `VOXTNEW_*` variables and the family's app id. `internal/i18n`'s `TestNoOldNames` keeps VoxtNew, ActNow and actnow.dev out of the UI's text.
 
@@ -32,14 +32,22 @@ github.com/sgl-project/sglang-omni/Voxt
 │   ├── asr/              the shape of speech recognition: FileTranscriber, Streamer/Stream, error
 │   │                     kinds, WAV/PCM helpers (the models are internal/local's)
 │   ├── llm/              chat models (from AudioSmith): request and response types, skills, Backend,
-│   │                     Client (retries, JSON repair, thinking stripped), schemas, usage
+│   │                     Client (retries, JSON repair, thinking stripped), schemas, usage; OpenAI (Auralink's
+│   │                     OpenAI-compatible chat completions transport), the services' presets (presets.json),
+│   │                     ProviderConfig.Resolve (https, or http to this Mac), Probe (the connection test)
+│   ├── providers/        the remote language models the user set up (settings.Providers): Ready, Missing,
+│   │                     Open (an llm.Client over llm.OpenAI), Test, TestLog (no key); Services: local.Services
+│   │                     with the ready ones after the local models
+│   ├── secrets/          the API keys in the login Keychain (/usr/bin/security; service "VoxtNew",
+│   │                     account "llm.<id>"), Mask                                                 (leaf)
 │   ├── local/            the local models as sessions open them: Services (Installed, ASR, LLM),
 │   │                     Library (the installed models of internal/models, opened by Openers: the
 │   │                     runtimes' ASROpener and LLMOpener; ErrNoRuntime without one), Choose,
 │   │                     ForFeature, ErrNotInstalled; NotInstalled; VoiceActivity (a speech
 │   │                     provider that brings its VAD model)
 │   ├── models/           the model catalogue (six curated models pinned to the family's commits,
-│   │   │                 every file's SHA-256; two borrowed family LLMs), the models in the
+│   │   │                 every file's SHA-256; two borrowed family LLMs; the language models
+│   │   │                 Retired since 2.1; Name: "Qwen3-ASR 1.7B (8bit)"), the models in the
 │   │   │                 ActNow family's library ($HUB, the Hugging Face cache) through
 │   │   │                 actnowkit's hfhub (downloads: mirrors raced, ranges, resume, the
 │   │   │                 family's locks and claims) and models (claims, deletion decisions,
@@ -134,6 +142,7 @@ uitext ──▶ i18n and the domain's types (appctx, asr, compose, core, delive
 helper ──▶ core, helper/proto  helper/helpertest ──▶ helper/proto
 notify, logs ──▶ core
 asr ──▶ core                  llm ──▶ core                  local ──▶ asr, llm, models, vad     models/modelstest ──▶ models
+providers ──▶ asr, llm, local, settings                       uitext ──▶ providers
 omni ──▶ asr, lang, resident, vad      eval ──▶ asr
 llmrt ──▶ asr, core, lang, llm, llmrt/wire, local, macx, resident    llmrt/llmrttest ──▶ llmrt/wire
 session ──▶ appctx, asr, compose, core, deliver, dict, dsp, helper/proto, lang, llm, settings, store, vad
@@ -142,7 +151,7 @@ compose ──▶ lang              deliver ──▶ helper/proto      hotkey �
 appctx ──▶ helper/proto, hotkey, settings                    dict ──▶ store
 appicons ──▶ helper/proto        outmute ──▶ helper/proto
 actnow ──▶ settings
-core, settings, helper/proto, llmrt/wire, i18n, lang, permission, macx, vad, appbundle, models, resident ──▶ (nothing internal)
+core, settings, helper/proto, llmrt/wire, i18n, lang, permission, macx, vad, appbundle, models, resident, secrets ──▶ (nothing internal)
 actnow, models, local, uitext ──▶ github.com/hehehai/actnowkit (archtest: actnowUsers; its conformance package only in tests)
 icons ──▶ mygo/ui
 ```
@@ -268,6 +277,7 @@ While a session is live (or the answer card shows) the bindings go to the helper
 | `a.toast(msg)`, `a.notify(…)`, `a.post(fn)`, `a.async(fn)` | app.go, shell_notices.go | everyone |
 | `a.onSession`, `a.afterSession`, `a.onSessionEnd`, `a.onHistory` (observers, in order; `connectEvents` lists them all), published by `sessionChanged` / `sessionEnded` (session_link.go) and `historyChanged` (history_page.go) | events.go | the setup guide, the sounds, the menu bar, the overlay, Home, History: an area that cares about sessions or the history adds itself there, instead of the publisher calling it |
 | `a.local` (`local.Services`; `newLocalServices`, tests swap in fakes), `a.localOpeners()` (the runtimes: M1's speech models through `a.openOmniASR` and `a.unloadOmni`, models_omni.go, which also stops the servers on quit, `a.closeOmni`; M2's language models through `a.openLLM`, llm_link.go, whose `a.llmRuntime()` is made on first use and stopped on quit, `a.stopLLM`; `a.unloadModel` sends a delete's Unload to the runtime of the model's kind; `a.withDevLLM` adds VOXTNEW_DEV_LLM's models), `a.models` (`*models.Manager`), `a.modelStatus` (the statuses' copy, `modelsChanged`), `a.downloadModel(id)` / `cancelModel` / `askDeleteModel` (the family's delete rules: `Manager.Decide`, then the plain or the "Remove from VoxtNew" dialog, models_delete.go) / `deleteModel` / `useModel` (another app's model: `Manager.Use`), the family's line of a card (`modelFamilyText`: Shared with, Downloading in, Deleted in, Installed by; models_cards.go), the Network… dialog (`openNetwork`, the shared proxy and Hub endpoints, models_network.go), the Advanced section (`modelsAdvanced`: how long models stay loaded, `settings.Models`; `keepIdle` maps it to the runtimes' idle times, `a.applyKeepLoaded` gives them a change at once, models_keep.go), `a.modelMem` (the loaded models' memory: `a.loadedModels()` lists the runtimes' processes, `omni.Runtime.Processes` and `llmrt.Runtime.Status`, measured by pid with `macx.Memory` off the main thread while the page shows, models_memory.go), `a.installed(kind)` (memory only), `a.featureModel(kind, feature)` (only models that serve the feature: the translation model only translates), `featureOf(s, feature)`, `setFeatureModel`, `modelsPath`; `uitext.ModelName` / `ModelAbout` / `ModelLanguages` / `DownloadErrorText` | models_page.go, models_cards.go, models_delete.go, models_network.go, models_memory.go, models_keep.go, models_runtimes.go, models_omni.go, llm_link.go | the Local models page, the feature pages' Models section (feature_models.go), Home's readiness, the setup guide, `sessionBlocker`, `checkModels`, History's details; sessions open models through `resolver(a.local)` off the main thread (session_link.go) |
+| `a.remote` (`*providers.Services` over `a.local`'s base: the remote language models, `SetReady` by `a.syncRemote()` after a change of the settings, the keys or the family's proxy), `a.keys` (`keyring`: the Keychain; `memKeys` in tests), `a.keyMasks`, `a.openRemote` (a session's open: the key, then `providers.Open` through the downloads' proxy, `a.remoteHTTP`), `a.provTests`, `a.provDlg` (the service dialog: key, address, model, Test connection, Save, Remove); `a.localLib` (the `*local.Library` under them, for deletions) | remote_link.go, remote_page.go, remote_dialog.go | the Language models page, every language model menu (`a.installed`), sessions (`resolver(a.local)`), the setup guide, Home |
 | `a.textIO()` (the text I/O every paste goes through: the family's paste rule), `a.modelEvents(worker)` and `a.beforeLoad()` (a runtime's `OnModel` and `BeforeLoad`), `a.unloadIdleModel(id)` (the family's memory requests), `a.famRuntime()` | family_runtime.go | session_link.go, session_control.go, session_answer.go; models_omni.go, llm_link.go; family.go (`openFamily`) |
 | `a.notices` (the centre's, newest first), `a.noticeStack(c)` (the cards at the foot of the sidebar; the rail's popover), `a.setProblem(id, code, n)` (a problem's card: shown once, withdrawn when solved, kept away this run once dismissed), `a.checkModels()`, `a.checkHelper()` | shell_notices.go | the sidebar, the rail; `openModels`, `settingsChanged`, `helperChanged` |
 | `uitext.HotkeyGlyphs(keys)` | internal/uitext (keys.go) | ? sheet, menu bar, feature pages |
@@ -278,6 +288,7 @@ While a session is live (or the answer card shows) the bindings go to the helper
 
 | What | Where |
 |---|---|
+| Remote language models' API keys | the login Keychain: generic passwords of service `VoxtNew`, account `llm.<id>` (`internal/secrets`); the settings keep the setups (`providers`: id, address, model), never a key |
 | Database: history (+ `history_fts`; `rule_source` since migration 2), dictionary terms, documents (`settings:app`, `appctx:rules`, `notifications`) | `~/Library/Application Support/VoxtNew/voxtnew.db` (WAL; `voxtnew.db.bak-<v>` before each migration) |
 | Local models | the ActNow family's model library `$HUB` (family spec §7.1, v1.0.9: the family's `models.root`, else `$ACTNOW_FAMILY_DIR/models/hub`, i.e. `~/Library/Application Support/ActNow/models/hub`; the Hugging Face caches `$HF_HUB_CACHE`, `$HF_HOME/hub` and `~/.cache/huggingface/hub` are only where models are imported from), the Hugging Face layout `models--<owner>--<name>/{blobs,snapshots/<commit>,refs}`, shared with the other ActNow apps; the runtimes load `snapshots/<commit>` (`models.Manager.Dir`); locks in `$HUB/.locks/models--…/` |
 | The ActNow family | `~/Library/Application Support/ActNow/` (`$ACTNOW_FAMILY_DIR`): `family.json`, `apps/dev.hehehai.voxtnew.json` (the manifest: version, path, capabilities, shortcuts, links, `models.root`), `models/claims/dev.hehehai.voxtnew.json` (the models VoxtNew uses), `models/removed.json` (deleted for all apps), `runtime/dev.hehehai.voxtnew.json` (while it runs: loaded models, the paste flag), `settings.json` (shared settings; VoxtNew's follow flags are in its own `settings:app`, `family`) |
@@ -292,7 +303,7 @@ While a session is live (or the answer card shows) the bindings go to the helper
 
 ## 5. What came from Auralink, and from AudioSmith before it
 
-VoxtNew is Auralink @748cf55 with these changes (M0): renamed (module `github.com/sgl-project/sglang-omni/Voxt`, bundle `dev.hehehai.voxtnew`, scheme `voxtnew`, helper `voxtnew-helper`, `VOXTNEW_*` variables, its own data, cache and log folders); removed: `internal/asr/{openai,doubao,aliyun,asrtest}` and asr's WebSocket dial and endpoint policy, llm's OpenAI and Anthropic transports, presets and `Probe`, `internal/providers`, `internal/secrets` (the Keychain), `internal/netx` (the proxy), `internal/demo` and the demo build, the Model services page and dialog, Settings → Network, the setup guide's key cards, the README's media and the tests that called real services; new: `internal/local` and the Local models page (`models_page.go`), the feature pages' Models section, the in-process fake models of the tests (`local_fakes_test.go`). The settings document lost `Network` and `Providers`; `Feature.ASR`/`LLM` hold a local model's id.
+VoxtNew is Auralink @748cf55 with these changes (M0; 2.1 brought back llm's OpenAI transport, its presets and Probe, `internal/providers` and `internal/secrets` for language models, and the Model services page as the Language models page): renamed (module `github.com/sgl-project/sglang-omni/Voxt`, bundle `dev.hehehai.voxtnew`, scheme `voxtnew`, helper `voxtnew-helper`, `VOXTNEW_*` variables, its own data, cache and log folders); removed: `internal/asr/{openai,doubao,aliyun,asrtest}` and asr's WebSocket dial and endpoint policy, llm's OpenAI and Anthropic transports, presets and `Probe`, `internal/providers`, `internal/secrets` (the Keychain), `internal/netx` (the proxy), `internal/demo` and the demo build, the Model services page and dialog, Settings → Network, the setup guide's key cards, the README's media and the tests that called real services; new: `internal/local` and the Local models page (`models_page.go`), the feature pages' Models section, the in-process fake models of the tests (`local_fakes_test.go`). The settings document lost `Network` and `Providers`; `Feature.ASR`/`LLM` hold a local model's id.
 
 What Auralink took from AudioSmith:
 

@@ -320,6 +320,22 @@ func TestBorrowed(t *testing.T) {
 	}
 }
 
+// TestMigrateRetired: a retired model on disk is not claimed at the first
+// start, so that a new user is never shown a model Voxt no longer uses.
+func TestMigrateRetired(t *testing.T) {
+	cat := testCatalog()
+	cat[2].Retired = true
+	e := newEnv(t, cat, Options{})
+	e.fx.Install(repoLLM)
+	e.m.Refresh()
+	if err := e.m.Migrate(ctxT(t)); err != nil {
+		t.Fatal(err)
+	}
+	if s := e.m.Status("llm"); !s.OnDisk || s.Mine || len(e.fx.Claims(voxtnew).Claims) != 0 {
+		t.Fatalf("migrated a retired model: %+v", s)
+	}
+}
+
 // TestMigrate: the first start claims what of the catalogue is on disk
 // and no other app claims, origin migrated, reading the disk only;
 // another app's model waits for "Use them".

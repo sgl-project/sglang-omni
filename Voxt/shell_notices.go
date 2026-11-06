@@ -107,8 +107,8 @@ func (a *app) setProblem(id, code string, n *core.Notification) {
 	a.notes.Post(*n) // noticePosted adds it
 }
 
-// checkModels shows a card while no speech model or no language model
-// is installed (what the status bar said).
+// checkModels shows a card while no speech model is installed or no
+// language model is set up (what the status bar said).
 func (a *app) checkModels() {
 	if a.notes == nil {
 		return
@@ -117,19 +117,20 @@ func (a *app) checkModels() {
 	llmOK := len(a.installed(local.LLM)) > 0
 	var n *core.Notification
 	code := ""
+	link := modelsPath
 	switch {
 	case !asrOK && !llmOK:
 		code = "both"
-		n = &core.Notification{Title: i18n.T("No models installed"), Body: i18n.T("Install a speech model and a language model to start.")}
+		n = &core.Notification{Title: i18n.T("No models"), Body: i18n.T("Install a speech model, then set up a language model, to start.")}
 	case !asrOK:
 		code = "asr"
 		n = &core.Notification{Title: i18n.T("No speech model"), Body: i18n.T("Transcribe, Translate and Rewrite need one to hear you.")}
 	case !llmOK:
-		code = "llm"
+		code, link = "llm", remotePath
 		n = &core.Notification{Title: i18n.T("No language model"), Body: i18n.T("Translate and Rewrite need one; Transcribe types what it hears.")}
 	}
 	if n != nil {
-		n.Severity, n.Link = core.SeverityWarning, modelsPath
+		n.Severity, n.Link = core.SeverityWarning, link
 	}
 	a.setProblem(problemModels, code, n)
 }
@@ -299,6 +300,8 @@ func cardActionLabel(link string) string {
 		return i18n.T("Restart Voxt")
 	case modelsPath:
 		return i18n.T("Open Local models")
+	case remotePath:
+		return i18n.T("Open Language models")
 	case linkImportLegacy:
 		return i18n.T("Import") // the card's title says from where
 	}

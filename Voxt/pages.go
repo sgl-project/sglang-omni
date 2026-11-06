@@ -3,7 +3,8 @@ package main
 // The pages of the sidebar: Home (home_page.go), History
 // (history_page.go), Transcribe, Translate and Rewrite
 // (feature_page.go), App enhancement (appenhance_page.go), Local models
-// (models_page.go), Dictionary (dictionary_page.go) and Logs
+// (models_page.go), Language models (remote_page.go), Dictionary
+// (dictionary_page.go) and Logs
 // (shell_logs.go). Permissions is a section of the settings dialog
 // (permissions.go).
 
@@ -57,6 +58,9 @@ func (a *app) page(c *ui.Context, p navPage) {
 		return
 	case modelsPath:
 		a.modelsPage(c) // models_page.go
+		return
+	case remotePath:
+		a.remotePage(c) // remote_page.go
 		return
 	case "/transcribe":
 		a.transcribePage(c) // feature_page.go

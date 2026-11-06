@@ -185,6 +185,7 @@ func (a *app) familyShared() {
 		a.updateSettings(func(s *settings.Settings) { s.General.Language, s.Network = next.General.Language, next.Network })
 	}
 	a.models.SetNetwork(a.networkFor(next))
+	a.syncRemote() // remote_link.go: the remote models' proxy
 }
 
 // familySettingsChanged follows VoxtNew's own settings: a shared setting

@@ -19,6 +19,8 @@ package main
 // (checkModels, shell_notices.go).
 
 import (
+	"strings"
+
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
@@ -32,8 +34,11 @@ const modelsPath = "/models"
 
 // modelsState is the local models and the Local models page's state.
 type modelsState struct {
-	local  local.Services
-	models *models.Manager
+	local local.Services
+	// localLib is the Library under local (nil when tests swap in fakes):
+	// a deletion unloads the model through it first.
+	localLib *local.Library
+	models   *models.Manager
 	// modelStatus is each catalogue model's status, as modelsChanged
 	// last read it.
 	modelStatus map[string]models.Status
@@ -66,7 +71,9 @@ func (a *app) openModels() {
 		a.models = models.Open(a.managerOptions(func() { a.post(a.modelsChanged) }))
 	}
 	if a.local == nil {
-		a.local = a.withDevLLM(newLocalServices(a)) // llm_link.go: VOXTNEW_DEV_LLM
+		base := newLocalServices(a)
+		a.localLib, _ = base.(*local.Library)
+		a.local = a.withRemote(a.withDevLLM(base)) // remote_link.go; llm_link.go: VOXTNEW_DEV_LLM
 	}
 	a.readModelStatus()
 	a.checkModels() // shell_notices.go
@@ -140,6 +147,25 @@ func (a *app) featureModel(kind local.Kind, feature string) (local.Model, bool) 
 		want = f.LLM
 	}
 	return local.Choose(local.ForFeature(a.installed(kind), feature), want)
+}
+
+// usedBy says which features use model id of kind now, as Voxt 1.x's
+// model list did ("Used by Transcribe · Rewrite"), "" for none. A
+// language model serves Transcribe only while its clean-up is on.
+func (a *app) usedBy(kind local.Kind, id string) string {
+	var names []string
+	for _, f := range []string{hotkey.Transcribe, hotkey.Translate, hotkey.Rewrite} {
+		if kind == local.LLM && f == hotkey.Transcribe && !a.prefs.Features.Transcribe.Enhance {
+			continue
+		}
+		if m, ok := a.featureModel(kind, f); ok && m.ID == id {
+			names = append(names, uitext.FeatureTitle(f))
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	return i18n.T("Used by %s", strings.Join(names, " · "))
 }
 
 // featureOf is a feature's part of the settings (hotkey.Transcribe…).

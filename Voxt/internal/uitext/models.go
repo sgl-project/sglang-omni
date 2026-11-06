@@ -1,7 +1,8 @@
 package uitext
 
-// The words of a local model's failure (the notices of a session and the
-// Try areas): what went wrong and its detail, for the ⓘ.
+// The words of a model's failure, local or remote (the notices of a
+// session, the Try areas, a remote model's connection test): what went
+// wrong and its detail, for the ⓘ.
 
 import (
 	"errors"
@@ -12,7 +13,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 )
 
-// ModelErrorText says what went wrong with a local model, and its detail
+// ModelErrorText says what went wrong with a model, and its detail
 // (the error itself, for the ⓘ).
 func ModelErrorText(err error) (msg, more string) {
 	if err == nil {
@@ -44,6 +45,14 @@ func ModelErrorText(err error) (msg, more string) {
 	var le *llm.Error
 	if errors.As(err, &le) {
 		switch le.Code {
+		case llm.CodeNoKey:
+			return i18n.T("No API key is saved for the remote model: add one on the Language models page."), more
+		case llm.CodeAuth:
+			return i18n.T("The remote service refused the API key."), more
+		case llm.CodeModelNotFound:
+			return i18n.T("The remote service does not have this model."), more
+		case llm.CodeConfig:
+			return i18n.T("The remote model's address is not allowed: use https://, or http:// to this Mac."), more
 		case llm.CodeTimeout:
 			return i18n.T("The language model did not answer in time."), more
 		case llm.CodeNetwork, llm.CodeServer, llm.CodeOverloaded, llm.CodeRateLimited:

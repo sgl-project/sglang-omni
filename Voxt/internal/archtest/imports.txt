@@ -77,8 +77,13 @@ uitext store
 local models
 models/modelstest models
 uitext models
+uitext providers
 eval asr
 omni resident
 llmrt resident
+providers asr
+providers llm
+providers local
+providers settings
 recordings datadir
 recordings store

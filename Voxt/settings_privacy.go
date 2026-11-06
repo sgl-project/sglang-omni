@@ -1,8 +1,9 @@
 package main
 
-// Settings → Privacy: nothing leaves this Mac (the models run here; the
-// network is for update checks and model downloads only), and what
-// VoxtNew keeps here: the history, its recordings, the text in the logs.
+// Settings → Privacy: what leaves this Mac (only text, to the language
+// model the user set up; the speech models run here; the network is also
+// for update checks and model downloads), and what VoxtNew keeps here:
+// the history, its recordings, the text in the logs.
 // Where the recordings go and how long the history keeps entries are in
 // the History settings dialog (history_settings.go), which a row opens.
 
@@ -16,14 +17,15 @@ import (
 
 func (a *app) privacySettings(c *ui.Context) {
 	t := c.Theme()
-	sectionTitle(c, i18n.T("Nothing leaves this Mac"))
-	online := i18n.T("Voxt goes online only to download models: once they are installed, it works offline.")
+	sectionTitle(c, i18n.T("What leaves this Mac"))
+	online := i18n.T("Otherwise Voxt goes online only to download models.")
 	if a.upd != nil { // a build with an update feed (updates.go)
-		online = i18n.T("Voxt goes online only to check for updates and to download models: once the models are installed, it works offline.")
+		online = i18n.T("Otherwise Voxt goes online only to check for updates and to download models.")
 	}
 	ui.Column(c.Key("priv-list")).Gap(px(t, sp1)).Children(func() {
 		for _, s := range []string{
-			i18n.T("Your recordings and the text to clean up, translate or rewrite stay on this Mac: the speech and language models run here. Voxt has no server of its own."),
+			i18n.T("Your recordings stay on this Mac: speech is recognised here. Voxt has no server of its own."),
+			i18n.T("The text to clean up, translate or rewrite goes to the language model you set up (the Language models page): it stays on this Mac with a server here, such as Ollama, and goes to the service otherwise."),
 			online,
 			i18n.T("The address of the browser tab in front is read only to pick your app enhancement rules: the language model never sees it, only the app's name."),
 			i18n.T("Voxt collects no usage data, crash reports or identifiers."),
