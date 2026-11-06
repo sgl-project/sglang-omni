@@ -118,13 +118,6 @@ jobs:
           exit 1
 
       - name: Checkout workflow scripts
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-
-      - name: Checkout workflow scripts for manual dispatch
-        if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/checkout@v4
 
       - name: Resolve CI stages and models
