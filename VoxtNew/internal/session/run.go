@@ -31,9 +31,13 @@ type run struct {
 	cancel    context.CancelFunc
 	cancelled atomic.Bool
 	stop      chan struct{}
-	stopOnce  sync.Once
-	pcm       *pcmBuffer
-	ended     bool // guarded by m.mu
+	// recorded is closed once listen's recording loop has the capture's
+	// end: the stream's Finish waits for it, so that the Final's answer
+	// never comes while that loop still runs.
+	recorded chan struct{}
+	stopOnce sync.Once
+	pcm      *pcmBuffer
+	ended    bool // guarded by m.mu
 
 	svc   Services
 	terms []store.Term

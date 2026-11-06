@@ -139,6 +139,13 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 						r.logf("info", "voice activity: held back %v of silence before the speech", pcmDuration(gate.Dropped()).Round(10*time.Millisecond))
 					}
 				}
+				// The Final's answer must come after the recording loop
+				// (listen), which has no Final to fall back from.
+				select {
+				case <-r.recorded:
+				case <-r.ctx.Done():
+					return
+				}
 				if err := st.Finish(); err != nil {
 					sendErr <- err
 				}

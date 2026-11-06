@@ -187,6 +187,7 @@ func (r *run) listen() (string, bool) {
 			capCancel()
 		case c := <-capDone:
 			recordDone, captured = true, c
+			close(r.recorded)
 		}
 	}
 	if r.cancelled.Load() {
