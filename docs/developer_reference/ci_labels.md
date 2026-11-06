@@ -147,7 +147,7 @@ Each job runs a fixed Full-Duplex-Bench selection on one interaction strategy, t
 | `run-turn-based-duplex` | Full-Duplex-Bench - turn based | Qwen3-Omni with server VAD turn detection (`examples/qwen3_omni/session_h100.yaml`) |
 | `run-cascaded-duplex` | Full-Duplex-Bench - cascaded | Qwen3-ASR-1.7B, Qwen3.8-27B with thinking off and Qwen3-TTS Base cloning one Vivian recording, with server VAD, on two GPUs (`examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian`) |
 
-The three jobs share the pull request's Full-Duplex-Bench assets, so they run one after another, and a failed job does not skip the next. Each stage has one system and no model label. Turn based fails by design until it is calibrated.
+The three jobs share the pull request's Full-Duplex-Bench assets, so they run one after another, and a failed job does not skip the next. Each stage has one system and no model label.
 
 ## Hardware workflows
 
@@ -173,7 +173,7 @@ The stage label is `run-mac-ci`.
 
 ## Label rules
 
-1. A stage runs only when its stage label is on the pull request. There is no label that selects every stage; add the stage labels the change needs. If a fundamental change really needs all of CI, add `run-asr-ci`, `run-tts-ci`, `run-mps-ci`, `run-omni-ci`, `run-native-duplex`, `run-cascaded-duplex`, `run-intel-cpu-ci`, `run-intel-xpu-ci` and `run-mac-ci`, or comment `/tag-and-rerun-ci asr tts mps omni full-duplex cascaded intel-cpu intel-xpu mac`. Leave out `run-turn-based-duplex`, which fails by design until it is calibrated.
+1. A stage runs only when its stage label is on the pull request. There is no label that selects every stage; add the stage labels the change needs. If a fundamental change really needs all of CI, add `run-asr-ci`, `run-tts-ci`, `run-mps-ci`, `run-omni-ci`, `run-native-duplex`, `run-turn-based-duplex`, `run-cascaded-duplex`, `run-intel-cpu-ci`, `run-intel-xpu-ci` and `run-mac-ci`, or comment `/tag-and-rerun-ci asr tts mps omni full-duplex turn-based cascaded intel-cpu intel-xpu mac`.
 2. Self-hosted CI needs a stage label or `run-lint-only`. Without one, the Omni CI gate fails with `No CI label found`; unselected hardware workflows skip their tests without failing. The checks on GitHub-hosted runners do not depend on labels. `run-lint-only` runs no self-hosted job, so a green lint check leaves no self-hosted failure. It does not turn off a stage label that is also present.
 3. Any stage label also runs PR Test. A pull request labeled only `run-mac-ci` still runs PR Test on H100.
 4. A model label names a model, not a stage. It picks that model for every selected stage that accepts it, and never selects a stage by itself. Higgs and MOSS labels are accepted by TTS and MPS. If no selected stage accepts the label, the gate prints a warning.
