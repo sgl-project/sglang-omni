@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The delayed timeline must place every stream where the reference reads it."""
 
+import numpy as np
 import pytest
 import torch
 
@@ -19,6 +20,7 @@ from sglang_omni.models.personaplex.timeline import (
     build_prompt_frames,
     build_timeline,
     delay_stream,
+    extend_rows,
     output_frame,
     voice_tail_codes_from_cache,
 )
@@ -138,3 +140,26 @@ def test_caller_frames_appended_one_by_one_match_the_whole_timeline():
     assert torch.equal(timeline.user_frames, whole.user_frames)
     assert torch.equal(timeline.user_rows, whole.user_rows)
     assert timeline.num_frames == whole.num_frames
+
+
+def test_caller_frames_appended_in_chunks_match_the_whole_timeline():
+    prompt = build_prompt_frames(voice_frames=0, text_prompt_ids=[7, 8])
+    caller = make_user_codes(7)
+    whole = build_timeline(prompt, caller)
+    timeline = build_timeline(prompt, caller[:0])
+    for start, end in [(0, 3), (3, 4), (4, 7)]:
+        timeline.append_caller_frames(caller[start:end])
+    assert torch.equal(timeline.user_rows, whole.user_rows)
+
+
+def test_extended_rows_keep_every_earlier_prefix():
+    buffer = np.arange(6, dtype=np.int64).reshape(3, 2)
+    count = 3
+    prefixes = []
+    for step in range(5):
+        buffer = extend_rows(buffer, count, np.full((step + 1, 2), step))
+        count += step + 1
+        prefixes.append((buffer[:count], buffer[:count].copy()))
+    assert count == 3 + sum(range(1, 6))
+    assert all(np.array_equal(view, copy) for view, copy in prefixes)
+    assert np.array_equal(buffer[:3], np.arange(6).reshape(3, 2))
