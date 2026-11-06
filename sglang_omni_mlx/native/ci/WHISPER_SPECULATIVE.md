@@ -4,4 +4,4 @@ Convert the pinned `wilsonzheng0327/Whisper-large-v3-distil-draft` checkpoint wi
 
 Both `whisper_server` and `whisper_transcribe` accept `--draft-model-path NATIVE_DIRECTORY --draft-steps 7`. Startup checks the shared encoder weights and releases the draft encoder. Greedy requests verify draft blocks; positive-temperature requests use ordinary sampling. Omitting the draft preserves ordinary decoding. This is an independent distil decoder, not MTP.
 
-Run `NATIVE_RUNTIME_BIN=BUILD_DIRECTORY python -m pytest tests/test_whisper_speculative.py` from the native directory. Full-corpus accuracy, long-audio performance and Mac CI remain required before this draft is ready.
+Run `NATIVE_RUNTIME_BIN=BUILD_DIRECTORY python -m pytest tests/test_whisper_speculative.py` from the native directory. Report full-corpus accuracy and long-audio performance, and require successful Mac CI before merging.
