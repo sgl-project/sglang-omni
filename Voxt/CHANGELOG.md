@@ -49,6 +49,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - A translation or rewrite that stopped at the language model's length limit is no longer inserted, nor put over your selection: it shows in the answer card, which says it may be incomplete.
 - **Clear the history** (Settings → Privacy) now also removes the cleared texts from the database file. Before, they stayed in its free space until it was reused, readable by anyone who opened the file.
 - A long recording recognised in parts (Transcribe again and Retry in History) no longer loses the space where two parts meet ("the Republic.Socrates begins"); Chinese still gets none.
+- A dictation of over a minute no longer ends with a word you did not say ("Okay.") when you pause before you stop: the pause at the end is no longer cut off and recognised on its own.
 
 ### 中文
 
@@ -97,3 +98,4 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - 翻译或改写的回答到了语言模型的长度上限就停了时，不再插入，也不再替换你选中的文字：它显示在答案卡片里，并提示可能不完整。
 - **清空历史**（设置 → 隐私）现在也会把清掉的文字从数据库文件里抹掉。以前它们留在文件的空闲空间里，直到被覆盖，打开文件的人都能读到。
 - 分段识别的长录音（历史里的“重新识别”和“重试”）在两段相接的地方不会再丢掉空格（“the Republic.Socrates begins”）；中文照旧不加空格。
+- 一分钟以上的口述，停止前停顿一下时，结尾不会再多出一个没说过的词（“Okay.”）：结尾的停顿不再被单独切出来识别。
