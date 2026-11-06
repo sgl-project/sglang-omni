@@ -150,7 +150,7 @@ dsp ──▶ vad
 compose ──▶ lang              deliver ──▶ helper/proto      hotkey ──▶ helper/proto, settings
 appctx ──▶ helper/proto, hotkey, settings                    dict ──▶ store
 appicons ──▶ helper/proto        outmute ──▶ helper/proto
-actnow ──▶ settings
+actnow ──▶ models (HubIn: VoxtNew's own model folder), settings
 core, settings, helper/proto, llmrt/wire, i18n, lang, permission, macx, vad, appbundle, models, resident, secrets ──▶ (nothing internal)
 actnow, models, local, uitext ──▶ github.com/hehehai/actnowkit (archtest: actnowUsers; its conformance package only in tests)
 icons ──▶ mygo/ui
@@ -290,7 +290,7 @@ While a session is live (or the answer card shows) the bindings go to the helper
 |---|---|
 | Remote language models' API keys | the login Keychain: generic passwords of service `VoxtNew`, account `llm.<id>` (`internal/secrets`); the settings keep the setups (`providers`: id, address, model), never a key |
 | Database: history (+ `history_fts`; `rule_source` since migration 2), dictionary terms, documents (`settings:app`, `appctx:rules`, `notifications`) | `~/Library/Application Support/VoxtNew/voxtnew.db` (WAL; `voxtnew.db.bak-<v>` before each migration) |
-| Local models | the ActNow family's model library `$HUB` (family spec §7.1, v1.0.9: the family's `models.root` (Settings → Storage → Change… sets it, after `models.Manager.MoveTo` brought the models there), else `$ACTNOW_FAMILY_DIR/models/hub`, i.e. `~/Library/Application Support/ActNow/models/hub`; the Hugging Face caches `$HF_HUB_CACHE`, `$HF_HOME/hub` and `~/.cache/huggingface/hub` are only where models are imported from), the Hugging Face layout `models--<owner>--<name>/{blobs,snapshots/<commit>,refs}`, shared with the other ActNow apps; the runtimes load `snapshots/<commit>` (`models.Manager.Dir`); locks in `$HUB/.locks/models--…/` |
+| Local models | the model library `$HUB` (family spec §7.1, v1.0.9: the family's `models.root` when VoxtNew follows it (Settings → Storage → Change… sets it, after `models.Manager.MoveTo` brought the models there), else VoxtNew's own folder `SGLang Omni/models` beside the family directory (`models.HubIn`), i.e. `~/Library/Application Support/SGLang Omni/models`; the family's default library `$ACTNOW_FAMILY_DIR/models/hub`, VoxtNew's up to 2.0.0, and the Hugging Face caches `$HF_HUB_CACHE`, `$HF_HOME/hub` and `~/.cache/huggingface/hub` are only where models are imported from, at the start), the Hugging Face layout `models--<owner>--<name>/{blobs,snapshots/<commit>,refs}`, shared with the other ActNow apps when it is the family's `models.root`; the runtimes load `snapshots/<commit>` (`models.Manager.Dir`); locks in `$HUB/.locks/models--…/` |
 | The ActNow family | `~/Library/Application Support/ActNow/` (`$ACTNOW_FAMILY_DIR`): `family.json`, `apps/dev.hehehai.voxtnew.json` (the manifest: version, path, capabilities, shortcuts, links, `models.root`), `models/claims/dev.hehehai.voxtnew.json` (the models VoxtNew uses), `models/removed.json` (deleted for all apps), `runtime/dev.hehehai.voxtnew.json` (while it runs: loaded models, the paste flag), `settings.json` (shared settings; VoxtNew's follow flags are in its own `settings:app`, `family`) |
 | Recordings kept with history entries | `…/VoxtNew/audio/<id>.wav` (only with Settings → Privacy → Keep the recordings) |
 | Data folder location | `…/VoxtNew/location.json` when the user moved it (Settings → Storage); `move.json`, `reset.json` while a move or an erase waits for the next start |

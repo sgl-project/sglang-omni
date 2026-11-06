@@ -3,6 +3,7 @@
 # sees it (docs/architecture.md, "Code structure rules"); a line no import
 # needs any more fails until it is removed. package main imports what it
 # likes and is not listed.
+actnow models
 actnow settings
 appctx helper/proto
 appctx hotkey

@@ -31,6 +31,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Changed
 
+- **Models are kept in ~/Library/Application Support/SGLang Omni/models**, named after SGLang Omni, whose runtime serves them, instead of the ActNow model library (~/Library/Application Support/ActNow/models). The models Voxt 2.0.0 downloaded are brought over at the first start without downloading them again (hard links: no space is used), and the old folder stays as it was for the other apps that use it. A folder chosen in Settings → Storage still applies to every app that shares it.
 - **Models are named by what they are**: the Local models page, the feature pages' model menus, the setup guide and History name a model by its family, size and quantisation (Qwen3-ASR 1.7B (8bit), Qwen3-ASR 0.6B (4bit)), as Voxt 1.x did, instead of "Accurate speech recognition"; its card has short labels (Local, Accurate or Fast, Realtime, whether it knows your main language), says which features use it, and has no rating.
 - **Language models are remote only.** Voxt no longer downloads or runs language models on this Mac: set one up on the Language models page (Ollama runs one here, for free). Those Voxt 2.0.0 downloaded are listed under Local models → "Language models no longer used", to delete. Settings → Privacy, the setup guide and Home say where the text goes.
 - **Voxt 2.0.0 replaces the Swift Voxt 1.x.** Installing it replaces Voxt.app in Applications. The settings, dictionary and history of Voxt 1.x stay in its own folder and are not brought over, and Voxt asks for its permissions again (the setup guide walks you through them).
@@ -85,6 +86,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 变更
 
+- **模型放在 ~/Library/Application Support/SGLang Omni/models**，以运行这些模型的 SGLang Omni 命名，不再放在 ActNow 模型库（~/Library/Application Support/ActNow/models）。Voxt 2.0.0 下载的模型在第一次启动时搬过来，不用重新下载（硬链接，不占新空间）；原来的文件夹保持不变，留给还在用它的其他 app。在“设置 → 存储”里选的文件夹仍然对所有共用它的 app 生效。
 - **模型写清楚是哪一个**：本地模型页、各功能页的模型菜单、设置引导和历史都按系列、尺寸和量化称呼模型（Qwen3-ASR 1.7B (8bit)、Qwen3-ASR 0.6B (4bit)），和 Voxt 1.x 一样，不再写“精准语音识别”；卡片上有简短的标签（本地、准确或快速、实时、是否支持主语言）和使用位置，没有评分。
 - **语言模型只用远程服务。** Voxt 不再在这台 Mac 上下载和运行语言模型：请在“语言模型”页设置一个（用 Ollama 可以在本机免费运行）。Voxt 2.0.0 下载过的语言模型列在本地模型页的“不再使用的语言模型”里，可以删除。设置 → 隐私、设置引导和首页都写明了文字会发到哪里。
 - **Voxt 2.0.0 取代 Swift 版 Voxt 1.x。** 装上它会替换“应用程序”里的 Voxt.app。Voxt 1.x 的设置、词典和历史留在它自己的文件夹里，不会带过来；Voxt 会重新请求权限（设置引导会带你完成）。

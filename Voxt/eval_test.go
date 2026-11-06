@@ -3,7 +3,7 @@ package main
 // The quality evaluation of the curated models on a Mac (docs/eval.md):
 // the eval set (testdata/eval, internal/eval) through the real runtimes,
 // with the catalogue's models from the model library ($HUB, models.Hub():
-// by default ~/Library/Application Support/ActNow/models/hub, the
+// by default ~/Library/Application Support/SGLang Omni/models, the
 // snapshots of their pinned commits):
 //
 //	VOXTNEW_EVAL=1 \

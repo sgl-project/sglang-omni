@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -66,6 +68,53 @@ func onDisk(a *app, id string) bool {
 // toasted reports whether msg was toasted (still queued, or shown).
 func toasted(a *app, tt *ui.Tester, msg string) bool {
 	return slices.Contains(a.toasts, msg) || has(tt, msg)
+}
+
+// TestModelsFromTheFamilyLibrary: 2.0.0 kept the models in the family's
+// default library (ActNow/models/hub); this version's start brings them
+// into its own folder (hard links: no space used) and claims them there.
+func TestModelsFromTheFamilyLibrary(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	ctx := context.Background()
+	old := &fammodels.Store{Family: a.fam.Dir(), Hub: fammodels.DefaultHubIn(a.fam.Dir()), BundleID: a.fam.BundleID(), AppID: "voxtnew"}
+	fast, _ := models.Lookup(models.ASRFast)
+	if err := modelstest.SeedModel(old.Hub, fast); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Claim(ctx, fast.Claim("", fammodels.OriginDownloaded)); err != nil {
+		t.Fatal(err)
+	}
+	if onDisk(a, models.ASRFast) {
+		t.Fatal("in the library before the import")
+	}
+	if n, _, err := a.models.Import(ctx, false); err != nil || n != 1 || !onDisk(a, models.ASRFast) {
+		t.Fatalf("imported %d: %v", n, err)
+	}
+	files, _ := filepath.Glob(filepath.Join(models.Installed(old.Hub, fast), "*"))
+	if len(files) == 0 {
+		t.Fatal("no files in 2.0.0's snapshot")
+	}
+	was, _ := os.Stat(files[0])
+	now, err := os.Stat(filepath.Join(models.Installed(a.models.Hub(), fast), filepath.Base(files[0])))
+	if err != nil || !os.SameFile(was, now) {
+		t.Errorf("%s is not the same file: %v", filepath.Base(files[0]), err)
+	}
+	if cs, _ := fammodels.ReadClaims(a.fam.Dir(), a.fam.BundleID()); !fammodels.SameHub(cs.Root, a.models.Hub()) || len(cs.Claims) != 1 {
+		t.Errorf("VoxtNew's claims: %+v", cs)
+	}
+	// AudioSmith keeps its models in the family's library, not in VoxtNew's
+	// folder: Storage does not call the folder shared.
+	audioSmith := &fammodels.Store{Family: a.fam.Dir(), Hub: old.Hub, BundleID: audioSmithID, AppID: "audiosmith"}
+	if err := audioSmith.Claim(ctx, fast.Claim("", fammodels.OriginDownloaded)); err != nil {
+		t.Fatal(err)
+	}
+	addPeer(t, a, audioSmithID, nil)
+	a.familyFound(a.fam.Discover())
+	a.navigate("/settings/storage")
+	frames(tt)
+	if !has(tt, "Model folder") || has(tt, "Shared by all apps that use this model library") {
+		t.Errorf("Storage: %q", firstTexts(tt))
+	}
 }
 
 func TestModelDeleteShared(t *testing.T) {

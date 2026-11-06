@@ -76,16 +76,20 @@ func (m *Manager) Migrate(ctx context.Context) error {
 }
 
 // Import brings the catalogue's models (at the pinned and accepted
-// commits) over from the Hugging Face caches into the library, once
-// (family spec v1.0.9: the library moved to
-// ~/Library/Application Support/ActNow/models/hub): hard links, nothing
-// downloaded, the caches untouched. VoxtNew's previous claims are made
+// commits) over into the library, once: from the family's default
+// library, where 2.0.0 kept them (ActNow/models/hub, now that VoxtNew has
+// its own folder, HubIn), and from the Hugging Face caches (family spec
+// v1.0.9). Hard links, nothing downloaded, the sources untouched. VoxtNew's previous claims are made
 // again there; the others are left to Migrate and the reuse card. A
 // retired model is left where it is: a new user is never shown a model
 // Voxt no longer uses. It returns how many models it brought and their
 // bytes.
 func (m *Manager) Import(ctx context.Context, backup bool) (n int, bytes int64, err error) {
-	res, err := m.store.Import(ctx, fammodels.LegacyHubs(m.store.Hub), backup, m.wanted()...)
+	from := fammodels.LegacyHubs(m.store.Hub)
+	if def := fammodels.DefaultHubIn(m.store.Family); !fammodels.SameHub(def, m.store.Hub) {
+		from = append([]string{def}, from...) // 2.0.0's library (HubIn)
+	}
+	res, err := m.store.Import(ctx, from, backup, m.wanted()...)
 	for _, r := range res {
 		if r.Action == fammodels.ImportImported {
 			n++

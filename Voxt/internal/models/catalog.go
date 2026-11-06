@@ -3,10 +3,10 @@
 // file's size and SHA-256), which of them are installed, their downloads
 // (resumable, verified, cancellable) and deletions.
 //
-// The models live in the ActNow family's model library ($HUB, by
-// default ~/Library/Application Support/ActNow/models/hub; family spec
-// §7), in the Hugging Face cache's layout, shared with the other ActNow
-// apps: actnowkit's hfhub downloads them holding the family's locks and
+// The models live in the model library ($HUB, by default
+// ~/Library/Application Support/SGLang Omni/models, HubIn; the family's
+// models.root when VoxtNew follows it, family spec §7), in the Hugging
+// Face cache's layout, shared with the other ActNow apps that use it: actnowkit's hfhub downloads them holding the family's locks and
 // claims them for VoxtNew, and actnowkit's models decides what a deletion
 // may remove (only what no other app claims, unless the user deletes for
 // all apps).
