@@ -193,8 +193,8 @@ def generate_tokens(
     else:
         while len(decode_graphs) < len(prefixes):
             decode_graphs.append(DecodeGraph(model))
-        conditional = decode_graphs[0].prefill(prefix)
-        positive_cache = decode_graphs[0].cache
+        conditional = decode_graphs[0].prefill([prefix])
+        positive_cache = None
     negative_cache = None
     unconditional = None
     if cfg_scale != 1:
@@ -205,8 +205,7 @@ def generate_tokens(
                 torch.tensor([negative], device=device), negative_cache
             )
         else:
-            unconditional = decode_graphs[1].prefill(negative)
-            negative_cache = decode_graphs[1].cache
+            unconditional = decode_graphs[1].prefill([negative])
     else:
         pass
     history: list[int] = []
@@ -249,7 +248,7 @@ def generate_tokens(
                 if decode_graphs is None
                 else decode_graphs[0].step(next_token)
             )
-            if negative_cache is not None:
+            if cfg_scale != 1:
                 unconditional = (
                     model(next_token, negative_cache)
                     if decode_graphs is None

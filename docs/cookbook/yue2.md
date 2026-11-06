@@ -12,7 +12,7 @@ CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
   --port 8000
 ```
 
-The worker loads the BF16 transformer and FP32 decoder once and processes queued requests sequentially. Each request owns its sampling generators. CUDA graph buffers, when enabled, are reused sequentially with request-local lengths and sampling history. Cross-request token batching is not supported.
+The worker loads the BF16 transformer and FP32 decoder once. By default it processes queued requests sequentially. Each request owns its sampling generators, lengths and sampling history; optional AR batching is described below.
 
 Both the transformer and decoder accept local checkpoint directories or Hugging Face model identifiers. The default decoder is `m-a-p/YuE2-Vae`. Select the benchmark decoder with `--synthesis.factory.vae_path m-a-p/YuE2-Vae-legacy`. Checkpoint identifiers can pin a revision with `repository@revision`.
 
@@ -80,6 +80,14 @@ sgl-omni serve --model-path m-a-p/YuE2-3B \
 AR decode graphs reserve one full-context KV buffer per guidance branch and reuse it across requests. NAR graphs capture the velocity evaluation for each acoustic chunk. Sampling graphs preserve the vocabulary mask, top-k ties, repetition window and request-local random generator. Projection fusion combines QKV and gate/up projections without changing checkpoint names.
 
 AR graph attention uses the packed FlashAttention path, matching the model's reference graph implementation. AR graph attention and projection fusion can change BF16 rounding, so a fixed seed can produce different songs. NAR graph replay and projection fusion are checked against their eager counterparts; full song-quality evaluation is still required before changing the defaults.
+
+### Optional AR batching
+
+With AR and sampling graphs enabled, set `--synthesis.factory.max_batch_size 4` to batch concurrent score planning and semantic generation. `max_batch_wait_ms` controls the collection window (default 25 ms). `batch_graph_cache_size` bounds the number of cached batch shapes (default 2); each shape reserves KV capacity for its request count and token budgets.
+
+Requests retain independent seeds, sampling parameters, token budgets and cancellation state. Invalid requests fail individually. External ABC and `cot=off` with `cfg_scale=1` can join a batch; requests with guidance other than 1 use the single-request path. Acoustic synthesis and VAE decoding remain sequential. Batch results are returned after all active requests finish, so throughput gains can increase a short request's latency when it shares a batch with a long song.
+
+Batch shapes can change BF16 rounding and sampled tokens even with the same seed. Compare both song quality and request latency under the intended concurrency before enabling batching in production.
 
 ## Validation
 

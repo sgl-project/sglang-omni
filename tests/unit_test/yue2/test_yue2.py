@@ -138,7 +138,9 @@ def test_scheduler_classifies_request_and_compute_failures() -> None:
     """Invalid stage options must not become HTTP 500 responses."""
     runtime = Mock(spec=Yue2Runtime)
     runtime.generate.side_effect = ValueError("Invalid tensor shape")
-    scheduler = Yue2Scheduler(runtime)
+    scheduler = Yue2Scheduler(
+        runtime, max_batch_size=1, max_batch_wait_ms=0, batch_graph_cache_size=2
+    )
     with pytest.raises(ValueError) as invalid_request:
         scheduler.generate(payload(cot="unknown"))
     assert generation_error_status_code(RuntimeError(str(invalid_request.value))) == 400
@@ -366,7 +368,9 @@ def test_scheduler_queues_distinct_requests_and_handles_abort() -> None:
         )
 
     runtime.generate.side_effect = generate
-    scheduler = Yue2Scheduler(runtime)
+    scheduler = Yue2Scheduler(
+        runtime, max_batch_size=1, max_batch_wait_ms=0, batch_graph_cache_size=2
+    )
     worker = threading.Thread(target=scheduler.start)
     worker.start()
     try:
@@ -448,16 +452,16 @@ def test_decode_graph_replay_and_request_reset(device_index: int) -> None:
     )
     runner = DecodeGraph(model)
     for prefix in [[1, 2, 3, 4, 5], [9, 8]]:
-        runner.prefill(prefix)
+        runner.prefill([prefix])
         token = torch.tensor([[7]], device=device)
         runner.tokens.copy_(token)
         expected = runner.forward().clone()
-        runner.position.fill_(len(prefix))
-        actual = runner.step(token)
+        runner.positions.fill_(len(prefix))
+        actual = runner.step(token, [True])
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
         fresh = DecodeGraph(model)
-        fresh.prefill(prefix)
-        torch.testing.assert_close(actual, fresh.step(token), rtol=0, atol=0)
+        fresh.prefill([prefix])
+        torch.testing.assert_close(actual, fresh.step(token, [True]), rtol=0, atol=0)
         sampling = SamplingConfig(min_tokens=1, max_tokens=2)
         sampler = SamplingGraph(actual, sampling, "semantic", False)
         torch.testing.assert_close(

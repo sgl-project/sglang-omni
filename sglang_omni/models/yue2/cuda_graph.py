@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Reusable single-branch AR decode graph with device-resident cache length."""
+"""Reusable AR decode graphs with independent request positions."""
 
 import ctypes
 import weakref
@@ -44,47 +44,57 @@ class CapturedGraph:
 
 
 class DecodeGraph:
-    def __init__(self, model: Yue2Model) -> None:
+    def __init__(
+        self, model: Yue2Model, request_count: int = 1, capacity: int | None = None
+    ) -> None:
+        capacity = (
+            model.config.max_position_embeddings if capacity is None else capacity
+        )
         self.model = model
+        self.request_count = request_count
+        self.capacity = capacity
         weight = model.model.embed_tokens.weight
-        self.capacity = model.config.max_position_embeddings
+        self.device = weight.device
         shape = (
-            1,
-            self.capacity,
+            request_count * capacity,
             model.config.num_key_value_heads,
             model.config.head_dim,
         )
-        self.cache = TokenCache(capacity=self.capacity)
-        for layer in model.model.layers:
-            self.cache.keys.append(weight.new_zeros(shape).transpose(1, 2))
-            self.cache.values.append(weight.new_zeros(shape).transpose(1, 2))
-        self.position = torch.zeros(1, dtype=torch.long, device=weight.device)
-        self.tokens = torch.zeros((1, 1), dtype=torch.long, device=weight.device)
-        self.query_offsets = torch.tensor(
-            [0, 1], dtype=torch.int32, device=weight.device
+        self.cache = [
+            (weight.new_zeros(shape), weight.new_zeros(shape))
+            for _ in model.model.layers
+        ]
+        self.positions = torch.zeros(
+            request_count, dtype=torch.long, device=self.device
         )
-        self.key_offsets = self.query_offsets * self.capacity
+        self.active = torch.ones_like(self.positions)
+        self.tokens = torch.zeros(
+            (request_count, 1), dtype=torch.long, device=self.device
+        )
+        self.row_offsets = torch.arange(request_count, device=self.device) * capacity
+        self.query_offsets = torch.arange(
+            request_count + 1, dtype=torch.int32, device=self.device
+        )
+        self.key_offsets = self.query_offsets * capacity
         self.graph: CapturedGraph | None = None
         self.output: torch.Tensor | None = None
 
     def forward(self) -> torch.Tensor:
         model = self.model
-        cosine, sine = model.model.rotary_emb(self.position[None])
+        cosine, sine = model.model.rotary_emb(self.positions[:, None])
         hidden_states = model.model.embed_tokens(self.tokens)
-        used_lengths = (self.position + 1).to(torch.int32)
-        for layer, keys, values in zip(
-            model.model.layers, self.cache.keys, self.cache.values
-        ):
+        write_indices = self.row_offsets + self.positions
+        used_lengths = (self.positions + 1).to(torch.int32)
+        for layer, (keys, values) in zip(model.model.layers, self.cache):
             query, key, value = layer.self_attn.project_qkv(
                 layer.input_layernorm(hidden_states), cosine, sine
             )
-            keys.index_copy_(2, self.position, key)
-            values.index_copy_(2, self.position, value)
-            # note (ruiling): The packed FlashAttention entrypoint honors used lengths; the fixed-batch entrypoint does not.
+            keys.index_copy_(0, write_indices, key[:, :, 0])
+            values.index_copy_(0, write_indices, value[:, :, 0])
             attended = torch.ops.aten._flash_attention_forward(  # noqa: leading-underscore -- PyTorch operator name
-                query.transpose(1, 2)[0],
-                keys.transpose(1, 2)[0],
-                values.transpose(1, 2)[0],
+                query[:, :, 0],
+                keys,
+                values,
                 self.query_offsets,
                 self.key_offsets,
                 1,
@@ -97,43 +107,61 @@ class DecodeGraph:
                 0
             ]
             hidden_states = hidden_states + layer.self_attn.o_proj(
-                attended.flatten(1)[None]
+                attended.flatten(1)[:, None]
             )
             hidden_states = hidden_states + layer.mlp(
                 layer.post_attention_layernorm(hidden_states)
             )
         logits = model.lm_head(model.model.norm(hidden_states))[:, 0]
-        self.position.add_(1)
+        self.positions.add_(self.active)
         return logits
 
-    def prefill(self, prefix: list[int]) -> torch.Tensor:
-        self.cache.length = 0
-        logits = self.model(
-            torch.tensor([prefix], device=self.tokens.device), self.cache
+    def prefill(self, prefixes: list[list[int]]) -> torch.Tensor:
+        assert len(prefixes) == self.request_count
+        logits: list[torch.Tensor] = []
+        for row, prefix in enumerate(prefixes):
+            assert 0 < len(prefix) < self.capacity
+            start = row * self.capacity
+            end = start + self.capacity
+            cache = TokenCache(
+                capacity=self.capacity,
+                keys=[keys[start:end].transpose(0, 1)[None] for keys, _ in self.cache],
+                values=[
+                    values[start:end].transpose(0, 1)[None] for _, values in self.cache
+                ],
+            )
+            logits.append(self.model(torch.tensor([prefix], device=self.device), cache))
+        positions = torch.tensor(
+            [len(prefix) for prefix in prefixes], device=self.device
         )
-        self.position.fill_(len(prefix))
+        self.positions.copy_(positions)
+        self.active.fill_(1)
         if self.graph is None:
-            graph = CapturedGraph(self.tokens.device)
+            graph = CapturedGraph(self.device)
             stream = graph.stream
-            stream.wait_stream(torch.cuda.current_stream(self.tokens.device))
+            stream.wait_stream(torch.cuda.current_stream(self.device))
             with torch.cuda.stream(stream):
                 for _ in range(3):
-                    self.position.fill_(len(prefix))
+                    self.positions.copy_(positions)
                     self.forward()
-                self.position.fill_(len(prefix))
-            torch.cuda.current_stream(self.tokens.device).wait_stream(stream)
+                self.positions.copy_(positions)
+            torch.cuda.current_stream(self.device).wait_stream(stream)
             with torch.cuda.graph(graph.graph, stream=stream):
                 output = self.forward()
             self.graph, self.output = graph, output
-            self.position.fill_(len(prefix))
+            self.positions.copy_(positions)
         else:
             pass
-        return logits
+        return torch.cat(logits)
 
-    def step(self, token: torch.Tensor) -> torch.Tensor:
-        assert self.cache.length < self.capacity
+    def step(
+        self, tokens: torch.Tensor, active: list[bool] | None = None
+    ) -> torch.Tensor:
         assert self.graph is not None and self.output is not None
-        self.tokens.copy_(token)
+        self.tokens.copy_(tokens)
+        if active is not None:
+            self.active.copy_(torch.tensor(active, device=self.device))
+        else:
+            pass
         self.graph.replay()
-        self.cache.length += 1
         return self.output

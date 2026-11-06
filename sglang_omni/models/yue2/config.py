@@ -13,6 +13,9 @@ class Yue2FactoryArgs(FactoryArgs):
     nar_cuda_graph: bool = False
     sampling_cuda_graph: bool = False
     fuse_projections: bool = False
+    max_batch_size: int = Field(default=1, gt=0)
+    max_batch_wait_ms: int = Field(default=25, ge=0)
+    batch_graph_cache_size: int = Field(default=2, gt=0)
     vae_path: str = "m-a-p/YuE2-Vae"
     vae_core_frames: int = Field(default=1024, gt=0)
     vae_halo_frames: int = Field(default=16, ge=0)

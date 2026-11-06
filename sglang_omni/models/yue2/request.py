@@ -78,6 +78,18 @@ class Yue2Request(BaseModel):
     semantic_sampling: SamplingConfig
 
     @property
+    def planning_sampling(self) -> SamplingConfig:
+        return SamplingConfig(
+            temperature=0.7,
+            top_p=0.9,
+            top_k=30,
+            repetition_penalty=1.005,
+            penalty_window=100,
+            min_tokens=min(32, self.options.abc_max_tokens),
+            max_tokens=self.options.abc_max_tokens,
+        )
+
+    @property
     def guidance(self) -> float:
         if self.options.cfg_scale is not None:
             return self.options.cfg_scale

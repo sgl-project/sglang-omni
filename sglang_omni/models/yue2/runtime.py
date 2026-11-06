@@ -2,6 +2,7 @@
 """YuE2 weight loading and complete song generation."""
 
 import json
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,14 +11,14 @@ from safetensors import safe_open
 from torch import nn
 
 from sglang_omni.models.yue2.acoustic import synthesize_latents
+from sglang_omni.models.yue2.batch_generation import TokenRequest, generate_batch_tokens
 from sglang_omni.models.yue2.cuda_graph import DecodeGraph
-from sglang_omni.models.yue2.generation import generate_tokens
+from sglang_omni.models.yue2.generation import TokenResult, generate_tokens
 from sglang_omni.models.yue2.layers import Yue2ModelConfig
 from sglang_omni.models.yue2.model import Yue2Model
 from sglang_omni.models.yue2.request import (
     CODEC_OFFSET,
     CancellationCheck,
-    SamplingConfig,
     Yue2Request,
     Yue2Tokenizer,
     check_cancelled,
@@ -76,6 +77,7 @@ class Yue2Runtime:
     ) -> None:
         self.model = model
         self.decode_graphs: list[DecodeGraph] | None = [] if ar_cuda_graph else None
+        self.batch_graphs: OrderedDict[tuple[int, int], DecodeGraph] = OrderedDict()
         self.nar_cuda_graph = nar_cuda_graph
         self.sampling_cuda_graph = sampling_cuda_graph
         if fuse_projections:
@@ -157,19 +159,10 @@ class Yue2Runtime:
         elif options.abc is not None:
             abc_tokens = self.tokenizer.encode(options.abc)
         else:
-            planning = SamplingConfig(
-                temperature=0.7,
-                top_p=0.9,
-                top_k=30,
-                repetition_penalty=1.005,
-                penalty_window=100,
-                min_tokens=min(32, options.abc_max_tokens),
-                max_tokens=options.abc_max_tokens,
-            )
             plan = generate_tokens(
                 self.model,
                 self.tokenizer.prefix(request, None),
-                planning,
+                request.planning_sampling,
                 request.seed,
                 "abc",
                 cancelled,
@@ -196,13 +189,31 @@ class Yue2Runtime:
             decode_graphs=self.decode_graphs,
             sampling_cuda_graph=self.sampling_cuda_graph,
         )
+        return self.render(
+            request,
+            prefix,
+            TokenResult(tokens=abc_tokens, truncated=abc_truncated),
+            semantic,
+            cancelled,
+        )
+
+    @torch.inference_mode()
+    def render(
+        self,
+        request: Yue2Request,
+        prefix: list[int],
+        planning: TokenResult,
+        semantic: TokenResult,
+        cancelled: CancellationCheck,
+    ) -> SongResult:
+        check_cancelled(cancelled)
         codec_tokens = [token - CODEC_OFFSET for token in semantic.tokens]
         latents = synthesize_latents(
             self.model,
             prefix,
             codec_tokens,
             request.seed,
-            options.ode_steps,
+            request.options.ode_steps,
             cancelled,
             cuda_graph=self.nar_cuda_graph,
         )
@@ -216,8 +227,99 @@ class Yue2Runtime:
         return SongResult(
             audio=audio,
             sample_rate=self.vae.config.sample_rate,
-            abc_tokens=abc_tokens,
+            abc_tokens=planning.tokens,
             codec_tokens=codec_tokens,
-            abc_truncated=abc_truncated,
+            abc_truncated=planning.truncated,
             semantic_truncated=semantic.truncated,
         )
+
+    @torch.inference_mode()
+    def generate_batch(
+        self,
+        requests: list[Yue2Request],
+        cancelled: list[CancellationCheck],
+        graph_cache_size: int,
+    ) -> list[SongResult | Exception]:
+        assert len(requests) == len(cancelled) and graph_cache_size > 0
+        results: dict[int, SongResult | Exception] = {}
+        candidates: list[int] = []
+        planning_inputs: list[TokenRequest] = []
+        planning_indices: list[int] = []
+        plans: dict[int, TokenResult] = {}
+        for index, request in enumerate(requests):
+            if cancelled[index]():
+                results[index] = InterruptedError("YuE2 request cancelled")
+            elif (
+                len(requests) == 1
+                or self.decode_graphs is None
+                or request.guidance != 1
+            ):
+                try:
+                    results[index] = self.generate(request, cancelled[index])
+                except (ValueError, InterruptedError, FloatingPointError) as error:
+                    results[index] = error
+            else:
+                candidates.append(index)
+                if request.options.cot == "off":
+                    plans[index] = TokenResult(tokens=[], truncated=False)
+                elif request.options.abc is not None:
+                    plans[index] = TokenResult(
+                        tokens=self.tokenizer.encode(request.options.abc),
+                        truncated=False,
+                    )
+                else:
+                    planning_indices.append(index)
+                    planning_inputs.append(
+                        TokenRequest(
+                            prefix=self.tokenizer.prefix(request, None),
+                            sampling=request.planning_sampling,
+                            seed=request.seed,
+                            cancelled=cancelled[index],
+                            legacy_off=False,
+                        )
+                    )
+        planning_outputs = generate_batch_tokens(
+            self.model, planning_inputs, "abc", self.batch_graphs, graph_cache_size
+        )
+        for index, planning in zip(planning_indices, planning_outputs):
+            if isinstance(planning, Exception):
+                results[index] = planning
+            else:
+                plans[index] = planning
+        semantic_inputs: list[TokenRequest] = []
+        semantic_indices: list[int] = []
+        for index in candidates:
+            if index in results:
+                continue
+            else:
+                request = requests[index]
+                semantic_indices.append(index)
+                semantic_inputs.append(
+                    TokenRequest(
+                        prefix=self.tokenizer.prefix(request, plans[index].tokens),
+                        sampling=request.semantic_sampling,
+                        seed=request.seed,
+                        cancelled=cancelled[index],
+                        legacy_off=request.options.cot == "off",
+                    )
+                )
+        semantic_outputs = generate_batch_tokens(
+            self.model, semantic_inputs, "semantic", self.batch_graphs, graph_cache_size
+        )
+        for index, token_request, semantic in zip(
+            semantic_indices, semantic_inputs, semantic_outputs
+        ):
+            if isinstance(semantic, Exception):
+                results[index] = semantic
+            else:
+                try:
+                    results[index] = self.render(
+                        requests[index],
+                        token_request.prefix,
+                        plans[index],
+                        semantic,
+                        cancelled[index],
+                    )
+                except (ValueError, InterruptedError, FloatingPointError) as error:
+                    results[index] = error
+        return [results[index] for index in range(len(requests))]
