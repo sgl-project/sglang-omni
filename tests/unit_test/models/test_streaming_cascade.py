@@ -6,6 +6,8 @@ import base64
 import io
 import json
 import re
+import threading
+import time
 import wave
 from dataclasses import replace
 from pathlib import Path
@@ -36,7 +38,13 @@ from sglang_omni.models.streaming_cascade.config import (
     ComponentGraphConfig,
     StreamingCascadePipelineConfig,
 )
-from sglang_omni.models.streaming_cascade.dialog import CUT_REPLY_NOTE, heard_prefix
+from sglang_omni.models.streaming_cascade.dialog import (
+    CUT_REPLY_NOTE,
+    SHORT_UTTERANCE_NOTE,
+    Dialog,
+    DialogConfig,
+    heard_prefix,
+)
 from sglang_omni.models.streaming_cascade.generators import ChatDelta
 from sglang_omni.models.streaming_cascade.numerals import spoken_text
 from sglang_omni.models.streaming_cascade.recognizers import probe_realtime_service
@@ -44,6 +52,8 @@ from sglang_omni.models.streaming_cascade.running_transcript import (
     RunningTranscript,
     RunningTranscriptConfig,
 )
+from sglang_omni.models.streaming_cascade.session import ComponentHooks
+from sglang_omni.proto import StagePayload
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.proto.streams import (
@@ -57,6 +67,7 @@ from sglang_omni.proto.streams import (
     REPLY_DELIVERED,
     REPLY_HEARD,
     REPLY_PROGRESS,
+    REPLY_SENTENCE,
     SESSION_CONTROL,
     SPEECH_STARTED,
     SPEECH_STOPPED,
@@ -71,10 +82,16 @@ from sglang_omni.proto.streams import (
     SessionPorts,
     control_type,
 )
+from sglang_omni.scheduling.message import IncomingMessage
+from sglang_omni.scheduling.session import SessionScheduler
 from sglang_omni.utils.imports import import_string
 from tests.unit_test.fixtures.cascade_backends import CHAT_MODEL
 from tests.unit_test.fixtures.cascade_fakes import QUIET, build, drain
 from tests.unit_test.fixtures.session_outputs import control_chunk
+from tests.unit_test.fixtures.session_pipeline import (
+    compute_registered,
+    operation_metadata,
+)
 
 PROFILES = Path("examples/streaming_cascade/profiles")
 PROFILE_NAMES = (
@@ -1089,6 +1106,131 @@ async def test_a_dialog_without_audio_answers_the_next_utterance_after_a_cancell
     ]
 
 
+def dialog_stage(identity):
+    """The text dialog under its session scheduler, a builder of the stage's operations, and a runner of one on its own thread."""
+    settings = ComponentGraphConfig.model_validate(yaml.safe_load(TEXT_ONLY_STOPPABLE))
+    scheduler = SessionScheduler(
+        ComponentHooks("dialog", settings, timeout_s=5), max_concurrency=2
+    )
+
+    def operation(request_id, kind, chunk=None, *, should_preempt=False):
+        metadata = operation_metadata(
+            kind, identity, chunk, should_preempt=should_preempt
+        )
+        return StagePayload(request_id, OmniRequest(None, metadata=metadata), {})
+
+    def start(payload):
+        scheduler.inbox.put(IncomingMessage(payload.request_id, "new_request", payload))
+        message = scheduler.inbox.get_nowait()
+        thread = threading.Thread(target=scheduler.compute, args=(message.data,))
+        thread.start()
+        return thread
+
+    return scheduler, operation, start
+
+
+def streamed(scheduler):
+    """The request id and chunk of each stream message the stage sent so far."""
+    messages = []
+    while not scheduler.outbox.empty():
+        message = scheduler.outbox.get_nowait()
+        if message.type == "stream":
+            messages.append((message.request_id, TimedChunk.from_dict(message.data)))
+        else:
+            pass
+    return messages
+
+
+def test_a_client_cancel_while_a_dialog_append_is_in_flight_keeps_the_session(
+    monkeypatch,
+):
+    """A client cancel preempts the dialog stage's in-flight appends; the dialog still takes the chunk and the session stays open."""
+    entered, release = threading.Event(), threading.Event()
+    handle = Dialog.handle
+
+    def held_handle(dialog, chunk):
+        if chunk.format == TRANSCRIPT_FORMAT and not release.is_set():
+            entered.set()
+            release.wait(5)
+        else:
+            pass
+        handle(dialog, chunk)
+
+    monkeypatch.setattr(Dialog, "handle", held_handle)
+    identity = SessionIdentity("session")
+    scheduler, operation, start = dialog_stage(identity)
+    compute_registered(scheduler, operation("open", "open"))
+    scheduler.inbox.put(
+        IncomingMessage("read", "new_request", operation("read", "read"))
+    )
+    question = start(operation("question", "append", transcript_chunk("hi", True)))
+    assert entered.wait(5)
+    cancel = start(
+        operation("cancel", "control", control_chunk(INTERRUPT), should_preempt=True)
+    )
+    assert scheduler.append_cancel_events["question"].wait(5)
+    # note (luojiaxuan): the dialog takes the chunk only after the preempt has cancelled its append.
+    time.sleep(0.1)
+    release.set()
+    for thread in (question, cancel):
+        thread.join(10)
+    assert not question.is_alive() and not cancel.is_alive()
+    assert identity in scheduler.open_sessions
+    assert prompts([chunk for _, chunk in streamed(scheduler)]) == [
+        [("system", DialogConfig().system_prompt), ("user", "hi")]
+    ]
+    later = compute_registered(
+        scheduler, operation("later", "append", transcript_chunk("again", True))
+    )
+    assert later.data == {"accepted": True}
+    compute_registered(scheduler, operation("close", "close"))
+
+
+def test_a_client_cancel_while_the_dialog_interrupts_its_reply_keeps_the_interrupt(
+    monkeypatch,
+):
+    """A client cancel that lands as the dialog cuts its reply for speech.started leaves the dialog's interrupt to reach the graph, since every dialog output goes out on the session's read."""
+    identity = SessionIdentity("session")
+    scheduler, operation, _ = dialog_stage(identity)
+    interrupt_reply = Dialog.interrupt_reply
+
+    def preempted_interrupt_reply(dialog):
+        scheduler.inbox.put(
+            IncomingMessage(
+                "cancel",
+                "new_request",
+                operation(
+                    "cancel", "control", control_chunk(INTERRUPT), should_preempt=True
+                ),
+            )
+        )
+        assert scheduler.append_cancel_events["speech"].is_set()
+        interrupt_reply(dialog)
+
+    monkeypatch.setattr(Dialog, "interrupt_reply", preempted_interrupt_reply)
+    compute_registered(scheduler, operation("open", "open"))
+    scheduler.inbox.put(
+        IncomingMessage("read", "new_request", operation("read", "read"))
+    )
+    compute_registered(
+        scheduler, operation("question", "append", transcript_chunk("hi", True))
+    )
+    speech = compute_registered(
+        scheduler, operation("speech", "append", control_chunk(SPEECH_STARTED))
+    )
+    assert speech.data == {"accepted": True}
+    scheduler.compute(scheduler.inbox.get_nowait().data)
+    assert identity in scheduler.open_sessions
+    outputs = streamed(scheduler)
+    assert [
+        (control_type(chunk), chunk.turn)
+        for _, chunk in outputs
+        if control_type(chunk) in (INTERRUPT, TURN_INTERRUPTED)
+    ] == [(INTERRUPT, 1), (TURN_INTERRUPTED, 1)]
+    assert {request_id for request_id, _ in outputs} == {"read"}
+    compute_registered(scheduler, operation("close", "close"))
+
+
 def test_the_profile_dialog_waits_for_the_audio_its_synthesizer_delivered():
     assert profile_config(
         "qwen3-asr-qwen3.8-27b-vivian"
@@ -1219,7 +1361,9 @@ async def test_openai_speech_flushes_each_reply_before_turn_done(backends):
         control_chunk(TURN_DONE, turn=2),
     ]
     outputs = await drain(build({**tts, "max_sentence_words": 24}), inputs)
-    outputs = [o for o in outputs if control_type(o) != REPLY_PROGRESS]
+    outputs = [
+        o for o in outputs if control_type(o) not in (REPLY_PROGRESS, REPLY_SENTENCE)
+    ]
     assert spoken == ["Hello world.", "Second sentence here", "Again"]
     labels = [control_type(o) or o.format for o in outputs]
     runs = [label for i, label in enumerate(labels) if i == 0 or labels[i - 1] != label]
@@ -1277,6 +1421,36 @@ async def test_openai_speech_reports_each_sentence_end_as_a_character_offset(bac
         ),
         pytest.param(
             "今天最高25℃，体感20°。", ["今天最高25℃，体感20°。"], id="unit_symbols_stay"
+        ),
+        pytest.param(
+            "## 睡眠小贴士\n- 保持规律的作息。\n> 睡前别看手机。",
+            ["睡眠小贴士", "保持规律的作息。", "睡前别看手机。"],
+            id="line_markers",
+        ),
+        pytest.param(
+            "| Feature | Python |\n|---|---|\n| Speed | Slow |",
+            ["Feature, Python", "Speed, Slow"],
+            id="table_rows",
+        ),
+        pytest.param(
+            "Visit `https://python.org` or https://www.python.org/downloads to get Python.",
+            ["Visit python.org or python.org to get Python."],
+            id="bare_url",
+        ),
+        pytest.param(
+            "Did you visit https://python.org? Try http://localhost:8000/v1.",
+            ["Did you visit python.org?", "Try localhost."],
+            id="bare_url_before_punctuation_and_with_port",
+        ),
+        pytest.param(
+            "访问https://www.python.org/downloads下载。",
+            ["访问python.org下载。"],
+            id="bare_url_between_chinese",
+        ),
+        pytest.param(
+            "两种都行 - 看需求。",
+            ["两种都行 - 看需求。"],
+            id="dash_inside_a_line_stays",
         ),
     ],
 )
@@ -1887,6 +2061,36 @@ async def test_the_forced_method_sends_the_language_of_the_reply_deltas(language
         assert [body["language"] for body in bodies] == [language, language]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "session_language, reply, languages",
+    [
+        ("Chinese", "今年是2024年。 The year is 2024.", ["Chinese", "English"]),
+        (None, "今年是2024年。 The year is 2024.", ["Chinese", "English"]),
+        (
+            "English",
+            "请看 https://example.com/a/very/long/path/name 这个网页的说明。",
+            ["Chinese"],
+        ),
+    ],
+)
+async def test_the_forced_method_aligns_each_sentence_in_the_language_the_synthesizer_spoke_it_in(
+    session_language, reply, languages
+):
+    """The worker aligned a sentence in another language than the speech service spoke it in: "The year is 2024." of a Chinese session in Chinese, reading 2024 as 二千零二十四, every sentence before the session language was known in none, and a Chinese sentence of an English session in English for the URL the speech service never read."""
+    deltas = [text_chunk(reply, 1, session_language)]
+    speech_requests, speech = await synthesized({"language": "auto"}, deltas)
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return worker_reply(request)
+
+    await drain(await forced_aligner(handler), [*deltas, *speech])
+    assert [body["language"] for body in speech_requests] == languages
+    assert [body.get("language") for body in bodies] == languages
+
+
 HEARD_ASR_URL = "http://asr:8002/v1"
 
 
@@ -2005,6 +2209,61 @@ async def test_asr_normalization_preserves_complete_original_units(
         (len(earlier_text), 2000),
         (len(earlier_text) + 1 + len(prefix), 2600),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "requests_heard, cuts, languages, progress",
+    [
+        (
+            1,
+            [control_chunk(REPLY_DELIVERED, turn=1, audio_ms=500)],
+            ["English"],
+            [(11, 500)],
+        ),
+        (
+            2,
+            [
+                control_chunk(REPLY_DELIVERED, turn=1, audio_ms=1500),
+                control_chunk(TRUNCATE, t_ms=500),
+            ],
+            ["Chinese", "English"],
+            [(19, 1000), (11, 500)],
+        ),
+    ],
+)
+async def test_a_cut_in_a_long_sentence_is_heard_in_the_language_its_request_was_spoken_in(
+    requests_heard, cuts, languages, progress
+):
+    """In a Chinese session the first request of a long sentence, English up to a Chinese clause, was spoken in English, but a cut inside it was transcribed in Chinese, the language of the whole sentence."""
+    deltas = [text_chunk("Please call me back tomorrow, 我们明天再聊。", 1, "Chinese")]
+    speech_requests, speech = await synthesized(
+        {"language": "auto", "max_sentence_words": 4}, deltas
+    )
+    request_ends = [
+        index
+        for index, chunk in enumerate(speech)
+        if control_type(chunk) == REPLY_PROGRESS
+    ]
+    requests = []
+    outputs = await drain(
+        await hearing_aligner("asr", transcribing("Please call", requests)),
+        [
+            *deltas,
+            *speech[: request_ends[requests_heard - 1]],
+            control_chunk(TURN_INTERRUPTED, turn=1),
+            *cuts,
+        ],
+    )
+    assert [(body["input"], body["language"]) for body in speech_requests] == [
+        ("Please call me back", "English"),
+        ("tomorrow, 我们明天再聊。", "Chinese"),
+    ]
+    assert [
+        re.search(rb'name="language"\r\n\r\n(\w+)', request.content).group(1).decode()
+        for request in requests
+    ] == languages
+    assert spoken_progress(outputs) == progress
 
 
 @pytest.mark.asyncio
@@ -2200,27 +2459,78 @@ async def test_openai_transcription_leaves_the_language_out_when_the_service_nam
 
 
 @pytest.mark.asyncio
-async def test_the_dialog_keeps_the_language_of_the_last_answered_turn():
+async def test_a_short_utterance_in_another_language_keeps_the_session_language():
+    """A noise recognized as Chinese ("嗯。") switched an English session to Chinese, and the next reply came in Chinese."""
+    dialog = build({"kind": "dialog"})
+    turns = [
+        transcript_chunk("Count to three.", True, "English"),
+        transcript_chunk("Okay.", True, "English"),
+        transcript_chunk("嗯。", True, "Chinese"),
+        transcript_chunk("我们换个话题吧。", True, "Chinese"),
+        transcript_chunk("ありがとうございました。", True, "Japanese"),
+    ]
+    inputs = []
+    for turn, utterance in enumerate(turns, 1):
+        inputs += [
+            utterance,
+            text_chunk("Sure.", turn),
+            control_chunk(TURN_DONE, turn=turn),
+            control_chunk(COMMIT),
+        ]
+    outputs = await drain(dialog, inputs)
+    chunks = [o for o in outputs if o.format == MESSAGES]
+    assert [o.payload.get("language") for o in chunks] == [
+        "English",
+        "English",
+        "English",
+        "Chinese",
+        "Japanese",
+    ]
+    note = SHORT_UTTERANCE_NOTE.format(language="English")
+    assert [messages_of(o)[0].content for o in chunks] == [
+        dialog.config.system_prompt
+    ] * 5
+    assert [messages_of(o)[-1].content for o in chunks] == [
+        "Count to three.",
+        "Okay.",
+        f"嗯。\n\n[{note}]",
+        "我们换个话题吧。",
+        "ありがとうございました。",
+    ]
+    replacement = build({"kind": "dialog"})
+    replacement.adopt(dialog)
+    assert replacement.language == "Japanese"
+
+
+@pytest.mark.asyncio
+async def test_a_short_first_utterance_names_no_language_and_adds_no_note():
     dialog = build({"kind": "dialog"})
     outputs = await drain(
         dialog,
         [
-            transcript_chunk("数到三。", True, "Chinese"),
-            text_chunk("1,2,3.", 1),
+            transcript_chunk("嗯。", True, "Chinese"),
+            text_chunk("Hi.", 1),
             control_chunk(TURN_DONE, turn=1),
             control_chunk(COMMIT),
-            transcript_chunk("Again.", True),
-            text_chunk("1,2,3.", 2),
-            control_chunk(TURN_DONE, turn=2),
-            control_chunk(COMMIT),
-            transcript_chunk("Now in English.", True, "English"),
         ],
     )
-    languages = [o.payload.get("language") for o in outputs if o.format == MESSAGES]
-    assert languages == ["Chinese", "Chinese", "English"]
-    replacement = build({"kind": "dialog"})
-    replacement.adopt(dialog)
-    assert replacement.language == "English"
+    chunk = next(o for o in outputs if o.format == MESSAGES)
+    assert chunk.payload.get("language") is None
+    assert messages_of(chunk)[0].content == dialog.config.system_prompt
+
+
+def test_a_short_switch_after_a_cut_reply_adds_both_notes():
+    dialog = build({"kind": "dialog"})
+    dialog.language = "English"
+    dialog.messages += [
+        ChatMessage(role="user", content="Tell me a story."),
+        ChatMessage(role="assistant", content="Once upon a time", is_cut=True),
+    ]
+    note = SHORT_UTTERANCE_NOTE.format(language="English")
+    _, chunk = dialog.respond(1, "嗯。", "Chinese")
+    messages = messages_of(chunk)
+    assert messages[0].content == f"{dialog.config.system_prompt} {CUT_REPLY_NOTE}"
+    assert messages[-1].content == f"嗯。\n\n[{note}]"
 
 
 @pytest.mark.asyncio
@@ -2248,21 +2558,29 @@ async def test_chat_deltas_carry_the_language_of_their_messages():
     ]
 
 
-async def spoken_requests(
+async def synthesized(
     spec: dict, deltas: list[TimedChunk]
-) -> list[tuple[str, str]]:
-    """The language tag and the input of each sentence the synthesizer speaks for the deltas of turn 1."""
+) -> tuple[list[dict], list[TimedChunk]]:
+    """The speech requests and the outputs of a synthesizer speaking the deltas of turn 1, one second of audio per request."""
     bodies = []
 
     def answer(request: httpx.Request) -> httpx.Response:
         bodies.append(json.loads(request.content))
         return httpx.Response(
-            200, content=b"\x00\x00" * 4, headers={"X-Sample-Rate": "24000"}
+            200, content=b"\x00\x00" * 24000, headers={"X-Sample-Rate": "24000"}
         )
 
     tts = build({"kind": "openai_speech", **HTTP_SERVICE, **spec})
     tts.client = httpx.AsyncClient(transport=httpx.MockTransport(answer))
-    await drain(tts, [*deltas, control_chunk(TURN_DONE, turn=1)])
+    outputs = await drain(tts, [*deltas, control_chunk(TURN_DONE, turn=1)])
+    return bodies, outputs
+
+
+async def spoken_requests(
+    spec: dict, deltas: list[TimedChunk]
+) -> list[tuple[str, str]]:
+    """The language tag and the input of each sentence the synthesizer speaks for the deltas of turn 1."""
+    bodies, _ = await synthesized(spec, deltas)
     return [(body["language"], body["input"]) for body in bodies]
 
 
@@ -2271,14 +2589,16 @@ async def spoken_languages(spec: dict, deltas: list[TimedChunk]) -> list[str]:
 
 
 @pytest.mark.asyncio
-async def test_openai_speech_keeps_the_digits_of_a_chinese_script_sentence_tagged_english():
+async def test_openai_speech_keeps_the_digits_of_a_chinese_sentence_in_an_english_session():
     deltas = [
         text_chunk("This year is 2024. ", 1, "English"),
+        text_chunk("We said 谢谢 in 2024. ", 1, "English"),
         text_chunk("今年是2024年。", 1, "English"),
     ]
     assert await spoken_requests({"language": "auto"}, deltas) == [
         ("English", "This year is twenty twenty four."),
-        ("English", "今年是2024年。"),
+        ("English", "We said 谢谢 in twenty twenty four."),
+        ("Chinese", "今年是2024年。"),
     ]
 
 
@@ -2300,6 +2620,30 @@ async def test_openai_speech_auto_language_follows_the_user(
         text_chunk("你好。", 1, user_language),
     ]
     assert await spoken_languages({"language": language}, deltas) == tags
+
+
+@pytest.mark.parametrize(
+    "session_language, sentence, tag",
+    [
+        ("French", "Bonjour.", "French"),
+        ("English", "你好。", "Chinese"),
+        ("English", "In Chinese, thank you is 谢谢.", "English"),
+        ("English", "In Japanese, hello is こんにちは.", "English"),
+        ("English", "In Korean, hello is 안녕하세요.", "English"),
+        ("English", "東京へ行きたいです。", "Japanese"),
+        ("Chinese", "Hello there.", "English"),
+        ("Chinese", "안녕하세요.", "Korean"),
+        ("Japanese", "こんにちは、東京。", "Japanese"),
+        ("Japanese", "東京大学。", "Japanese"),
+        ("Japanese", "Hello there.", "English"),
+    ],
+)
+def test_a_sentence_whose_script_contradicts_the_session_is_tagged_by_its_script(
+    session_language, sentence, tag
+):
+    synthesizer = build({"kind": "openai_speech", **HTTP_SERVICE, "language": "auto"})
+    synthesizer.session_language = session_language
+    assert synthesizer.sentence_language(sentence) == tag
 
 
 def test_openai_speech_keeps_the_user_language_across_a_replacement():

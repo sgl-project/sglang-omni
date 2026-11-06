@@ -76,3 +76,75 @@ print(response.json()["choices"][0]["message"]["content"])
 ```
 
 The chat response keeps the generated answer. Set `modalities` to `["text", "audio"]` to synthesize that answer as well. The same recording can be sent inside a message as `input_audio` or `audio_url` instead of `audios`.
+
+## Apple Silicon: native MLX
+
+The standalone `ming3_audio_server` serves `/v1/chat/completions` on an Apple Silicon Mac using [Ming-3.0-audio-tiny](https://huggingface.co/inclusionAI/Ming-3.0-audio-tiny). Inference runs in C++ with the native runtime's MLX 0.32.3 toolchain, without Python, PyTorch or CUDA.
+
+```bash
+python sglang_omni_mlx/native/ci/provision_models.py "$MING3_AUDIO_DATA" \
+  --model inclusionAI/Ming-3.0-audio-tiny
+sglang_omni_mlx/native/scripts/build_runtime.sh "$MING3_AUDIO_RUNTIME" "$MING3_AUDIO_BUILD"
+"$MING3_AUDIO_RUNTIME/bin/ming3_audio_server" \
+  --model-path "$MING3_AUDIO_DATA/models/inclusionAI_Ming-3.0-audio-tiny" \
+  --model-name inclusionAI/Ming-3.0-audio-tiny --port 8000
+```
+
+Set `MING3_AUDIO_DATA`, `MING3_AUDIO_RUNTIME` and `MING3_AUDIO_BUILD` to separate local directories. Model provisioning uses the existing CI Python requirements and verifies the revision and hashes in `ci/model_pins.json`. The BF16 weights occupy about 17.7 GB; on an M4 Pro with 48 GiB of memory, the server's peak memory footprint was 18.8 GB. Quantized checkpoints are not supported.
+
+Send the recording as base64 in an `input_audio` content part:
+
+```python
+import base64
+from pathlib import Path
+
+import requests
+
+audio_base64 = base64.b64encode(Path("input.wav").read_bytes()).decode()
+response = requests.post(
+    "http://127.0.0.1:8000/v1/chat/completions",
+    json={
+        "model": "inclusionAI/Ming-3.0-audio-tiny",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_audio",
+                        "input_audio": {"format": "wav", "data": audio_base64},
+                    },
+                    {"type": "text", "text": "What does the speaker say?"},
+                ],
+            }
+        ],
+        "temperature": 0,
+        "max_completion_tokens": 64,
+        "stream": False,
+    },
+    timeout=180,
+)
+response.raise_for_status()
+print(response.json()["choices"][0]["message"]["content"])
+```
+
+The native server supports audio questions with text responses, with these limits:
+
+- One user message containing exactly one audio clip, with an optional leading system message. Text may appear before or after the audio part.
+- Input is nonempty 16 kHz mono PCM16 or float32 WAV. Audio is encoded in 30-second chunks. Top-level `audios`, file paths and `audio_url` are not supported.
+- Generation is greedy (`temperature=0`), with a positive output token budget. Both `ming3_audio_server` and `ming3_audio_chat` accept `--context-length N` (default: 8,192); the effective limit is the smaller of this value and the checkpoint's `max_position_embeddings`. The prompt, including audio tokens, and the requested output budget must fit within that limit. `max_completion_tokens` takes precedence over `max_tokens`.
+- Streaming, speech output and multi-turn conversations are not supported. The transcription and speech endpoints above are not available on this server.
+- Request bodies are limited to 4 MiB. One generation runs at a time; concurrent requests receive 429. `/health` and `/v1/models` are supported.
+
+To convert another recording to the accepted WAV format:
+
+```bash
+ffmpeg -i recording.mp3 -ar 16000 -ac 1 -c:a pcm_s16le input.wav
+```
+
+For offline inference, `ming3_audio_chat` accepts the same checkpoint and WAV input and prints JSON containing the answer, finish reason and token counts. `--prompt` is the text after the audio, and `--system` adds a system message:
+
+```bash
+"$MING3_AUDIO_RUNTIME/bin/ming3_audio_chat" \
+  --model-path "$MING3_AUDIO_DATA/models/inclusionAI_Ming-3.0-audio-tiny" \
+  --audio input.wav --prompt 'What does the speaker say?' --max-new-tokens 64
+```

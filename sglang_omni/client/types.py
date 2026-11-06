@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal, TypedDict
 
+from sglang_omni.scheduling.types import SpecTokensDetailsDict
+
 
 class TokenUsageDict(TypedDict):
     prompt_tokens: int | None
@@ -98,6 +100,7 @@ class SamplingParams:
     top_p: float | None = None
     top_k: int | None = None
     min_p: float | None = None
+    epsilon_cutoff: float | None = None
     repetition_penalty: float | None = None
     stop: list[str] = field(default_factory=list)
     stop_token_ids: list[int] = field(default_factory=list)
@@ -112,6 +115,7 @@ class SamplingParams:
             "top_p": self.top_p,
             "top_k": self.top_k,
             "min_p": self.min_p,
+            "epsilon_cutoff": self.epsilon_cutoff,
             "repetition_penalty": self.repetition_penalty,
             "seed": self.seed,
             "max_new_tokens": self.max_new_tokens,
@@ -184,6 +188,7 @@ class GenerateChunk:
     model_finish_reason: str | None = None
     usage: UsageInfo | None = None
     weight_version: str | None = None
+    spec_tokens_details: SpecTokensDetailsDict | None = None
     stage_id: int | None = None
     stage_name: str | None = None
     modality: str = "text"
@@ -343,6 +348,7 @@ class CompletionResult:
     output_token_logprobs: list[list[float | int]] | None = None
     omni_rollout: dict[str, object] | None = None
     weight_version: str | None = None
+    spec_tokens_details: SpecTokensDetailsDict | None = None
     language: str | None = None
     diarization: DiarizationResult | None = None
     image: str | None = None  # base64-encoded PNG
@@ -358,6 +364,7 @@ class CompletionStreamChunk:
     audio_b64: str | None = None  # already base64-encoded
     finish_reason: str | None = None
     usage: UsageInfo | None = None
+    spec_tokens_details: SpecTokensDetailsDict | None = None
     stage_name: str | None = None
 
 
@@ -388,6 +395,7 @@ class SpeechResult:
     format: str
     sample_rate: int | None = None
     usage: UsageInfo | None = None
+    spec_tokens_details: SpecTokensDetailsDict | None = None
     finish_reason: str = UNKNOWN_FINISH_REASON
 
 

@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 import torch
 from sglang.srt.platforms.device_mixin import PlatformEnum
 
-from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.interface import OmniPlatform, RMSNormKernel
 
 if TYPE_CHECKING:
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
@@ -31,6 +31,20 @@ class NPUOmniPlatform(OmniPlatform):
 
     def enable_code2wav_graph(self):
         return False
+
+    def get_rmsnorm(self) -> RMSNormKernel:
+        import torch_npu
+
+        def npu_rmsnorm(
+            hidden_states: torch.Tensor, weight: torch.Tensor, variance_epsilon: float
+        ) -> torch.Tensor:
+            return torch_npu.npu_rms_norm(hidden_states, weight, variance_epsilon)[0]
+
+        return npu_rmsnorm
+
+    def enable_mimi_decode_graph(self) -> bool:
+        """Capture PersonaPlex's Mimi streaming decode in NPU graphs."""
+        return True
 
     def enable_tts_predictor_graph(self) -> bool:
         return True
