@@ -187,6 +187,15 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
     --similarity-only --output-dir results/qwen3_omni_en --device cuda:0
 ```
 
+TTS `--stream` sends `response_format="pcm"` and `stream_format="audio"` to
+request raw audio instead of a backend's default SSE transport. The benchmark
+requires an `audio/pcm` streaming response. For each format field, SGLang's
+`X-Sample-Rate` and `X-Channels` headers take precedence over the compatible
+`X-Audio-Sample-Rate` and `X-Audio-Channels` aliases. Missing fields default to
+24,000 Hz, one channel, and 16 bits per sample. Present but invalid values fail
+the request rather than falling back. `X-Bit-Depth` specifies the sample width.
+Nonstream requests still default to WAV and use its embedded format metadata.
+
 ## Eval Scripts
 
 | Script | Task | Model | API |
