@@ -18,6 +18,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -226,33 +227,56 @@ func legacyReusable(mod models.Model) bool {
 	return !mod.Borrowed && !mod.Retired && len(mod.Files) > 0
 }
 
+// legacyModelRoots are the folders the previous Voxt kept its models in:
+// model-storage in its Application Support folder (voxtDir), and the
+// folder the user chose instead in its Settings → Model, which its
+// preferences keep as modelStorageRootPath (Library/Preferences, readable
+// when the import reads the whole Data/Library). plutil reads the binary
+// plist; without it, or without the key, only model-storage is looked in.
+func legacyModelRoots(voxtDir string) []string {
+	roots := []string{filepath.Join(voxtDir, "model-storage")}
+	prefs := filepath.Join(voxtDir, "..", "..", "Preferences", legacyBundleID+".plist")
+	out, err := exec.Command("/usr/bin/plutil", "-extract", "modelStorageRootPath", "raw", "-o", "-", prefs).Output()
+	if p := strings.TrimSpace(string(out)); err == nil && filepath.IsAbs(p) && p != roots[0] {
+		roots = append(roots, p)
+	}
+	return roots
+}
+
+// legacyModelDir is where the previous Voxt kept a speech model under one
+// of its roots: mlx-audio/<owner>_<name> (MLXModelStorageSupport.cacheDirectory).
+func legacyModelDir(root string, mod models.Model) string {
+	return filepath.Join(root, "mlx-audio", strings.ReplaceAll(mod.Repo, "/", "_"))
+}
+
 // reuseLegacyModels brings the models the previous Voxt downloaded into the
 // library when its files are the catalogue's: every file of the pinned
 // commit at its size, the large ones also at their SHA-256. The previous
-// Voxt kept each model flat in model-storage/<owner>_<name>; the library
-// wants $HUB/models--<owner>--<name>/snapshots/<commit>. Files are hard
-// linked (copied across volumes), so nothing is downloaded and no space is
-// used twice. It returns the models brought and their bytes.
+// Voxt kept each model in <root>/mlx-audio/<owner>_<name> (legacyModelRoots,
+// legacyModelDir); the library wants
+// $HUB/models--<owner>--<name>/snapshots/<commit>. Files are hard linked
+// (copied across volumes), so nothing is downloaded and no space is used
+// twice. It returns the models brought and their bytes.
 func reuseLegacyModels(ctx context.Context, m *models.Manager, voxtDir string) (ids []string, bytes int64) {
-	root := filepath.Join(voxtDir, "model-storage")
-	if st, err := os.Stat(root); err != nil || !st.IsDir() {
-		return nil, 0
-	}
+	roots := legacyModelRoots(voxtDir)
 	for _, mod := range models.Catalog() {
 		if !legacyReusable(mod) || m.Installed(mod.ID) || ctx.Err() != nil {
 			continue
 		}
-		src := filepath.Join(root, strings.ReplaceAll(mod.Repo, "/", "_"))
-		if !legacyModelMatches(src, mod) {
-			continue
+		for _, root := range roots {
+			src := legacyModelDir(root, mod)
+			if !legacyModelMatches(src, mod) {
+				continue
+			}
+			dst := models.SnapshotDir(m.Hub(), mod, mod.Revision)
+			n, err := linkModelFiles(src, dst, mod)
+			if err != nil {
+				log.Printf("legacy import: model %s: %v", mod.ID, err)
+				continue
+			}
+			ids, bytes = append(ids, mod.ID), bytes+n
+			break
 		}
-		dst := models.SnapshotDir(m.Hub(), mod, mod.Revision)
-		n, err := linkModelFiles(src, dst, mod)
-		if err != nil {
-			log.Printf("legacy import: model %s: %v", mod.ID, err)
-			continue
-		}
-		ids, bytes = append(ids, mod.ID), bytes+n
 	}
 	if len(ids) > 0 {
 		m.Refresh()

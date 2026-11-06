@@ -289,3 +289,32 @@ func TestImportEndsTheOffer(t *testing.T) {
 		t.Error("offered again after an import")
 	}
 }
+
+// The previous Voxt kept speech models in <root>/mlx-audio/<owner>_<name>,
+// under model-storage or under the folder the user chose (its preference
+// modelStorageRootPath).
+func TestLegacyModelRoots(t *testing.T) {
+	mod := models.Model{Repo: "mlx-community/Qwen3-ASR-0.6B-4bit"}
+	if got, want := legacyModelDir("/r", mod), filepath.Join("/r", "mlx-audio", "mlx-community_Qwen3-ASR-0.6B-4bit"); got != want {
+		t.Errorf("model dir %q, want %q", got, want)
+	}
+	lib := t.TempDir()
+	voxtDir := filepath.Join(lib, "Application Support", "Voxt")
+	if got := legacyModelRoots(voxtDir); len(got) != 1 || got[0] != filepath.Join(voxtDir, "model-storage") {
+		t.Errorf("no preferences: roots %v", got)
+	}
+	if _, err := os.Stat("/usr/bin/plutil"); err != nil {
+		t.Skip("no plutil: the chosen folder is read on macOS only")
+	}
+	chosen := t.TempDir()
+	prefs := filepath.Join(lib, "Preferences", legacyBundleID+".plist")
+	os.MkdirAll(filepath.Dir(prefs), 0o755)
+	plist := `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>modelStorageRootPath</key><string>` + chosen + `</string></dict></plist>`
+	if err := os.WriteFile(prefs, []byte(plist), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := legacyModelRoots(voxtDir); len(got) != 2 || got[1] != chosen {
+		t.Errorf("with a chosen folder: roots %v, want it second", got)
+	}
+}
