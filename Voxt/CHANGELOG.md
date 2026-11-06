@@ -7,7 +7,41 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Added
 
 - **Remote language models** (the new Language models page): Transcribe's clean-up, Translate and Rewrite use a language model of a service you set up, over its OpenAI-compatible API: OpenAI, Anthropic, Google Gemini, DeepSeek, Qwen (Alibaba Cloud), Kimi, GLM, Doubao (Volcengine), MiniMax, StepFun, Xiaomi MiMo, xAI, OpenRouter, any other compatible server (Custom), or one on this Mac (Ollama, LM Studio, oMLX), so that the text stays here. Each service takes an API key, an address and a model, with Test connection; the key is kept in the macOS Keychain only, never in Voxt's settings or logs. Every feature's language model menu lists the services set up; Automatic uses the first one, and each card says which features use it. The page groups the servers that run on this Mac (free) apart from the online services. Only the recognised or selected text is sent, never audio.
+- **Import from the Swift Voxt 1.x.** When Voxt 1.x's data is on the Mac, the setup guide starts with a card that brings over its dictionary (replacement terms become "heard as" aliases, disabled terms stay disabled), its dictation, translation and rewrite history, and the speech models it downloaded that Voxt uses, so they are not downloaded again (its language models are not: Voxt no longer runs language models on this Mac). Voxt 1.x's data is only read. If you set up 2.0.0, which had no import, a card in the sidebar offers it once; it is also in the dictionary's ••• menu ([docs/voxt-migration.md](docs/voxt-migration.md)).
+- Import terms takes the dictionary file Voxt 1.x exports (Dictionary → More → Export): its terms, with their replacement terms as aliases.
 - **System dictation** is back as a speech model (Local models → Speech recognition): macOS's own speech recognition, on this Mac, with nothing to download, and the text shown as you speak. It hears your main language (Settings → General; without one, the Mac's dictation language), and your dictionary's terms help it. Choose it on a feature's page; Automatic still uses a speech model you downloaded. The first time, macOS asks for Speech Recognition (Settings → Permissions has it too); a language this Mac cannot recognise on device fails with a notice that says so.
+
+### Changed
+
+- **Models are named by what they are**: the Local models page, the feature pages' model menus, the setup guide and History name a model by its family, size and quantisation (Qwen3-ASR 1.7B (8bit), Qwen3-ASR 0.6B (4bit)), as Voxt 1.x did, instead of "Accurate speech recognition"; its card has short labels (Local, Accurate or Fast, Realtime, whether it knows your main language), says which features use it, and has no rating.
+- **Language models are remote only.** Voxt no longer downloads or runs language models on this Mac: set one up on the Language models page (Ollama runs one here, for free). Those Voxt 2.0.0 downloaded are listed under Local models → "Language models no longer used", to delete. Settings → Privacy, the setup guide and Home say where the text goes.
+
+### Fixed
+
+- Import terms no longer adds each line of a JSON file as a term: Voxt 1.x's export is read as a dictionary, and any other JSON file is refused.
+
+### 中文
+
+#### 新增
+
+- **远程语言模型**（新的“语言模型”页）：转录的整理、翻译和转写使用你设置的服务的语言模型，通过它的 OpenAI 兼容 API 调用：OpenAI、Anthropic、Google Gemini、DeepSeek、通义千问（阿里云百炼）、Kimi、智谱 GLM、豆包（火山方舟）、MiniMax、阶跃星辰、小米 MiMo、xAI、OpenRouter、其他兼容的服务（自定义），或者本机的服务（Ollama、LM Studio、oMLX），让文字留在这台 Mac 上。每个服务填 API Key、地址和模型，可以测试连接；Key 只保存在 macOS 钥匙串里，不会写进 Voxt 的设置或日志。各功能的语言模型菜单列出设置好的服务，“自动”用第一个，卡片上写明使用位置。页面把本机运行的服务（免费）和在线服务分开列出。只发送识别出的文字或选中的文字，不发送音频。
+- **从 Swift 版 Voxt 1.x 导入。** 这台 Mac 上有 Voxt 1.x 的数据时，设置引导第一页有一张卡片，把它的词典（替换词变成"可能被听成"，停用的词还是停用）、听写、翻译和改写的历史，以及它下载过、Voxt 也在用的语音模型带过来，不用再下载（它的语言模型不带：Voxt 不再在本机运行语言模型）。Voxt 1.x 的数据只读不改。装过 2.0.0（那一版没有导入）的，侧栏会出一次卡片；词典的 ••• 菜单里也有（[docs/voxt-migration.md](docs/voxt-migration.md)）。
+- "导入词条"认 Voxt 1.x 导出的词典文件（词典 → 更多 → 导出）：词条，以及作为别名的替换词。
+- **系统听写**回来了，作为语音识别模型（本地模型 → 语音识别）：macOS 自带的语音识别，在这台 Mac 上运行，无需下载，说话时实时显示文字。它识别你的主要语言（设置 → 通用；没有设置时用这台 Mac 的听写语言），词典里的词条也会帮它识别。在功能页里选择它；“自动”仍然优先用你下载的语音识别模型。第一次使用时 macOS 会请求“语音识别”权限（设置 → 权限里也有）；这台 Mac 不能在本机识别的语言会提示失败原因。
+
+#### 变更
+
+- **模型写清楚是哪一个**：本地模型页、各功能页的模型菜单、设置引导和历史都按系列、尺寸和量化称呼模型（Qwen3-ASR 1.7B (8bit)、Qwen3-ASR 0.6B (4bit)），和 Voxt 1.x 一样，不再写“精准语音识别”；卡片上有简短的标签（本地、准确或快速、实时、是否支持主语言）和使用位置，没有评分。
+- **语言模型只用远程服务。** Voxt 不再在这台 Mac 上下载和运行语言模型：请在“语言模型”页设置一个（用 Ollama 可以在本机免费运行）。Voxt 2.0.0 下载过的语言模型列在本地模型页的“不再使用的语言模型”里，可以删除。设置 → 隐私、设置引导和首页都写明了文字会发到哪里。
+
+#### 修复
+
+- "导入词条"不再把 JSON 文件的每一行当成一个词：Voxt 1.x 的导出文件按词典读，别的 JSON 文件会被拒绝。
+
+## [2.0.0] - 2026-11-06
+
+### Added
+
 - Voxt 2.0.0, rebuilt from scratch: voice input for macOS on local models only. Press a shortcut in any app, speak, and the text appears where your cursor is. Audio and text never leave your Mac.
 - Local speech recognition: two models, accurate (recommended) and fast, with the text shown live as you speak, and a voice detector that sends only speech to them.
 - Local language models: a balanced one (recommended), a fast one and a translation model, for clean-up, translation and rewriting.
@@ -31,8 +65,6 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Changed
 
-- **Models are named by what they are**: the Local models page, the feature pages' model menus, the setup guide and History name a model by its family, size and quantisation (Qwen3-ASR 1.7B (8bit), Qwen3-ASR 0.6B (4bit)), as Voxt 1.x did, instead of "Accurate speech recognition"; its card has short labels (Local, Accurate or Fast, Realtime, whether it knows your main language), says which features use it, and has no rating.
-- **Language models are remote only.** Voxt no longer downloads or runs language models on this Mac: set one up on the Language models page (Ollama runs one here, for free). Those Voxt 2.0.0 downloaded are listed under Local models → "Language models no longer used", to delete. Settings → Privacy, the setup guide and Home say where the text goes.
 - **Voxt 2.0.0 replaces the Swift Voxt 1.x.** Installing it replaces Voxt.app in Applications. The settings, dictionary and history of Voxt 1.x stay in its own folder and are not brought over, and Voxt asks for its permissions again (the setup guide walks you through them).
 - **Models are kept in ~/Library/Application Support/ActNow/models**, shared with other apps that use this model library, instead of the Hugging Face cache (~/.cache/huggingface), which cleaning tools treat as a cache. Models already there are brought over at the first start without downloading them again (hard links: the cache stays as it is). Time Machine leaves models out; Settings → Storage → "Back up models with Time Machine" turns it on for all of them.
 - The note of which output device Voxt muted is kept in Application Support instead of ~/Library/Caches, so that a cache cleaner run after a crash cannot leave your speakers muted.
@@ -60,8 +92,6 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 新增
 
-- **远程语言模型**（新的“语言模型”页）：转录的整理、翻译和转写使用你设置的服务的语言模型，通过它的 OpenAI 兼容 API 调用：OpenAI、Anthropic、Google Gemini、DeepSeek、通义千问（阿里云百炼）、Kimi、智谱 GLM、豆包（火山方舟）、MiniMax、阶跃星辰、小米 MiMo、xAI、OpenRouter、其他兼容的服务（自定义），或者本机的服务（Ollama、LM Studio、oMLX），让文字留在这台 Mac 上。每个服务填 API Key、地址和模型，可以测试连接；Key 只保存在 macOS 钥匙串里，不会写进 Voxt 的设置或日志。各功能的语言模型菜单列出设置好的服务，“自动”用第一个，卡片上写明使用位置。页面把本机运行的服务（免费）和在线服务分开列出。只发送识别出的文字或选中的文字，不发送音频。
-- **系统听写**回来了，作为语音识别模型（本地模型 → 语音识别）：macOS 自带的语音识别，在这台 Mac 上运行，无需下载，说话时实时显示文字。它识别你的主要语言（设置 → 通用；没有设置时用这台 Mac 的听写语言），词典里的词条也会帮它识别。在功能页里选择它；“自动”仍然优先用你下载的语音识别模型。第一次使用时 macOS 会请求“语音识别”权限（设置 → 权限里也有）；这台 Mac 不能在本机识别的语言会提示失败原因。
 - Voxt 2.0.0，从头重写：只用本地模型的 macOS 语音输入。在任意 App 里按下快捷键说话，文字出现在光标处。音频和文字不会离开你的 Mac。
 - 本地语音识别：精准（推荐）和快速两个模型，说话时实时显示文字；声音检测只把说话的部分交给它们。
 - 本地语言模型：均衡（推荐）、快速和翻译专用三个模型，用于整理、翻译和改写。
@@ -85,8 +115,6 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 变更
 
-- **模型写清楚是哪一个**：本地模型页、各功能页的模型菜单、设置引导和历史都按系列、尺寸和量化称呼模型（Qwen3-ASR 1.7B (8bit)、Qwen3-ASR 0.6B (4bit)），和 Voxt 1.x 一样，不再写“精准语音识别”；卡片上有简短的标签（本地、准确或快速、实时、是否支持主语言）和使用位置，没有评分。
-- **语言模型只用远程服务。** Voxt 不再在这台 Mac 上下载和运行语言模型：请在“语言模型”页设置一个（用 Ollama 可以在本机免费运行）。Voxt 2.0.0 下载过的语言模型列在本地模型页的“不再使用的语言模型”里，可以删除。设置 → 隐私、设置引导和首页都写明了文字会发到哪里。
 - **Voxt 2.0.0 取代 Swift 版 Voxt 1.x。** 装上它会替换“应用程序”里的 Voxt.app。Voxt 1.x 的设置、词典和历史留在它自己的文件夹里，不会带过来；Voxt 会重新请求权限（设置引导会带你完成）。
 - **模型放在 ~/Library/Application Support/ActNow/models**，与使用这个模型库的其他 app 共用，不再放在会被清理工具当成缓存的 Hugging Face 缓存（~/.cache/huggingface）里。那里已有的模型在首次启动时直接拿过来（硬链接，原缓存不动），不用重新下载。Time Machine 默认不备份模型，可在 设置 → 存储 →“用 Time Machine 备份模型”中为所有这些 app 打开。
 - Voxt 静音了哪个输出设备的记录改放在 Application Support，不再放在 ~/Library/Caches，崩溃后即使清理了缓存，扬声器也不会一直静音。

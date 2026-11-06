@@ -30,12 +30,37 @@ func obRow(c *ui.Context, key string, ic icons.Icon, title, detail string) {
 
 // obWelcomeStep is the privacy promise.
 func (a *app) obWelcomeStep(c *ui.Context) {
+	if legacyLibrary() != "" { // first, so it shows without scrolling
+		a.obLegacyCard(c)
+	}
 	obRow(c, "ob-p-local-models", modelsIcon, i18n.T("Your audio stays on this Mac"),
 		i18n.T("Speech is recognised on this Mac; text goes only to the language model you set up. Voxt has no server of its own, no account and no analytics."))
 	obRow(c, "ob-p-local", icons.Database, i18n.T("History stays on this Mac"),
 		i18n.T("Results (and, if you choose, their recordings) are kept here only. Turn them off in Settings → Privacy."))
 	obRow(c, "ob-p-urls", appEnhancementIcon, i18n.T("Browser addresses only pick your rules"),
 		i18n.T("With App enhancement, the address of the tab in front chooses a group of rules; the language model never sees it."))
+}
+
+// obLegacyCard offers the previous Voxt's dictionary when that app's data
+// is on this Mac: one button, then one click in the panel it opens.
+func (a *app) obLegacyCard(c *ui.Context) {
+	t := c.Theme()
+	card(c.Key("ob-legacy")).Children(func() {
+		ui.Column(c).Gap(px(t, sp2)).Children(func() {
+			ui.Text(c, i18n.T("The previous Voxt is on this Mac")).FontWeight(600)
+			caption(c, i18n.T("Click Import from the previous Voxt to bring its dictionary and history over. The previous Voxt keeps all its data."))
+			if a.ob.legacyMsg != "" {
+				caption(c, a.ob.legacyMsg)
+			}
+			button, label := primaryButton, i18n.T("Import from the previous Voxt")
+			if a.ob.legacyDone {
+				button, label = ghostButton, i18n.T("Import again")
+			}
+			if button(c.Key("ob-legacy-import"), label).Clicked() {
+				a.importLegacy()
+			}
+		})
+	})
 }
 
 // obTryStep is a try step: the shortcut, a sample, the Try area, and
