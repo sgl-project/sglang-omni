@@ -119,7 +119,7 @@ func TestRemoteErrorKeepsNoKey(t *testing.T) {
 		fmt.Fprintf(w, `{"error":{"message":"invalid header %s"}}`, r.Header.Get("Authorization"))
 	}))
 	t.Cleanup(srv.Close)
-	useKeys(t, &memKeys{m: map[string]string{llm.Custom: key}})
+	useKeys(t, &memKeys{m: map[string]string{"llm." + llm.Custom: key}})
 	ev := script(t, hotkeyLine(0, "translate/0", proto.PhaseTrigger))
 	a := newSessionApp(t, helpertest.Opt("selection", "Good morning, team.")+","+ev, func(s *settings.Settings) {
 		s.Features.Translate.Target = "zh-Hans"

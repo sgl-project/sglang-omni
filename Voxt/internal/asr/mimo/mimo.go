@@ -83,6 +83,11 @@ func language(lang string) string {
 
 // Transcribe sends req's audio in one request.
 func (c *Client) Transcribe(ctx context.Context, req asr.FileRequest) (asr.Result, error) {
+	res, err := c.transcribe(ctx, req)
+	return res, asr.HideKey(err, c.key)
+}
+
+func (c *Client) transcribe(ctx context.Context, req asr.FileRequest) (asr.Result, error) {
 	audio := req.Audio
 	if req.Format == "pcm" {
 		audio = asr.WAV(req.Audio, req.SampleRate)

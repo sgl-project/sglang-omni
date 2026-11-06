@@ -126,6 +126,14 @@ func (c *Client) Model() string { return c.model }
 // accept them (its first answer), so that bad credentials, an unopened
 // resource or a refused parameter fail here.
 func (c *Client) Open(ctx context.Context, req asr.StreamRequest) (asr.Stream, error) {
+	s, err := c.connect(ctx, req)
+	if err != nil {
+		return nil, asr.HideKey(err, c.token)
+	}
+	return s, nil
+}
+
+func (c *Client) connect(ctx context.Context, req asr.StreamRequest) (asr.Stream, error) {
 	if req.SampleRate != 0 && req.SampleRate != asr.SampleRate {
 		return nil, asr.Errorf(ID, asr.KindAudio, "takes %d Hz audio only, not %d Hz", asr.SampleRate, req.SampleRate)
 	}

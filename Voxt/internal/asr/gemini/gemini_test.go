@@ -170,6 +170,14 @@ func TestErrors(t *testing.T) {
 	if _, err := asr.StreamAll(context.Background(), testClient(t, url), asr.StreamRequest{}, make([]byte, 32000), asr.Feed{Pace: 4}); asr.KindOf(err) != asr.KindServer {
 		t.Errorf("broken: %v", err)
 	}
+	url = asrtest.WSServer(t, "/ws", func(c *asrtest.Conn) {
+		serverSetup(c)
+		c.Read()
+		c.Close(websocket.StatusInternalError, "internal error for "+testKey)
+	})
+	if _, err := asr.StreamAll(context.Background(), testClient(t, url), asr.StreamRequest{}, make([]byte, 32000), asr.Feed{Pace: 4}); err == nil || strings.Contains(err.Error(), testKey) || !strings.Contains(err.Error(), "[key]") {
+		t.Errorf("a stream's error quotes the key: %v", err)
+	}
 }
 
 func TestJoin(t *testing.T) {

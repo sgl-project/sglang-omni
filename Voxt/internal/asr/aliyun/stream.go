@@ -46,6 +46,7 @@ type stream struct {
 	p      protocol
 	model  string
 	rate   int
+	key    string // blanked out of errors (asr.HideKey)
 	events chan asr.Event
 
 	startc     chan error    // the reader's verdict on the start (buffered)
@@ -68,7 +69,7 @@ func open(ctx context.Context, c *Client, h http.Header, p protocol, req asr.Str
 		return nil, err
 	}
 	s := &stream{
-		ctx: ctx, conn: conn, p: p, model: c.model, rate: req.SampleRate,
+		ctx: ctx, conn: conn, p: p, model: c.model, rate: req.SampleRate, key: c.key,
 		events:     make(chan asr.Event, 32),
 		startc:     make(chan error, 1),
 		done:       make(chan struct{}),
@@ -108,6 +109,7 @@ func (s *stream) read() {
 	defer close(s.events)
 	started := false
 	fail := func(e error) {
+		e = asr.HideKey(e, s.key)
 		if !started {
 			s.startc <- e
 			return

@@ -89,6 +89,35 @@ func TestRemoteSpeechUpload(t *testing.T) {
 	}
 }
 
+// TestRemoteSpeechErrorKeepsNoKey: an upload service that quotes the key
+// in its refusal fails the session, and the error kept in the history has
+// the key blanked out.
+func TestRemoteSpeechErrorKeepsNoKey(t *testing.T) {
+	const key = "sk-asr-secret-55"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, `{"error":{"message":"invalid header `+r.Header.Get("Authorization")+`"}}`)
+	}))
+	defer srv.Close()
+	useKeys(t, &memKeys{m: map[string]string{"asr.openai": key}})
+	set, lm, _ := fileSetup(t, "the local model's text", nil)
+	ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(400, "transcribe/0", proto.PhaseTrigger))
+	a := newSessionApp(t, ev, func(s *settings.Settings) {
+		set(s)
+		s.Features.Transcribe.Enhance = false
+		s.Features.Transcribe.ASR = "openai"
+		s.Providers.ASR = []settings.Provider{{ID: "openai", Endpoint: srv.URL + "/v1"}}
+	}, lm)
+	a.pump("the end", func() bool { return a.sess.State.Ended() })
+	if a.sess.State != session.Failed {
+		t.Fatalf("end %+v", a.sess)
+	}
+	es := a.history()
+	if len(es) != 1 || !strings.Contains(es[0].Error, "invalid header Bearer [key]") || strings.Contains(es[0].Error, key) {
+		t.Fatalf("history %+v", es)
+	}
+}
+
 // TestRemoteSpeechStreaming: with no local speech model, Transcribe
 // streams the recording to Gemini while it records (the key in the
 // handshake's header) and pastes the transcription once the audio ends.

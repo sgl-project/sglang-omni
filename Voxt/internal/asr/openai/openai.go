@@ -108,6 +108,11 @@ func (c *Client) Model() string { return c.model }
 // Transcribe uploads req's audio. Network failures, 5xx and rate limits
 // are retried once.
 func (c *Client) Transcribe(ctx context.Context, req asr.FileRequest) (asr.Result, error) {
+	res, err := c.transcribe(ctx, req)
+	return res, asr.HideKey(err, c.key)
+}
+
+func (c *Client) transcribe(ctx context.Context, req asr.FileRequest) (asr.Result, error) {
 	audio, name := req.Audio, "audio.wav"
 	switch req.Format {
 	case "", "wav":

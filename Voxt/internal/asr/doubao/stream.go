@@ -183,6 +183,7 @@ func (s *stream) fail(err error) {
 	if err == nil || s.closed.Load() {
 		return
 	}
+	err = asr.HideKey(err, s.c.token)
 	s.ended.CompareAndSwap(nil, &endState{Err: err})
 	s.emit(asr.Event{Kind: asr.EventError, Err: err})
 	s.conn.CloseNow()

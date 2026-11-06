@@ -114,6 +114,14 @@ func vocabulary(hints []string) []string {
 // Open connects, sends the setup and waits for setupComplete, so that a
 // refused key or model fails here.
 func (c *Client) Open(ctx context.Context, req asr.StreamRequest) (asr.Stream, error) {
+	s, err := c.connect(ctx, req)
+	if err != nil {
+		return nil, asr.HideKey(err, c.key)
+	}
+	return s, nil
+}
+
+func (c *Client) connect(ctx context.Context, req asr.StreamRequest) (asr.Stream, error) {
 	if req.SampleRate != 0 && req.SampleRate != asr.SampleRate {
 		return nil, asr.Errorf(ID, asr.KindAudio, "takes %d Hz audio only, not %d Hz", asr.SampleRate, req.SampleRate)
 	}
@@ -328,7 +336,7 @@ func (s *stream) final(text string) {
 
 func (s *stream) fail(err error) {
 	s.ended.Store(true)
-	s.emit(asr.Event{Kind: asr.EventError, Err: err})
+	s.emit(asr.Event{Kind: asr.EventError, Err: asr.HideKey(err, s.c.key)})
 	s.conn.CloseNow()
 }
 

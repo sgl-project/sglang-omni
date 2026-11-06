@@ -119,6 +119,24 @@ func Errorf(provider string, kind Kind, format string, args ...any) *Error {
 	return &Error{Kind: kind, Provider: provider, Detail: fmt.Sprintf(format, args...)}
 }
 
+// HideKey blanks key out of err's Detail and Code when err is an *Error
+// (in place) and returns err: a service may quote the key in its error
+// message, and errors reach the log and the history.
+func HideKey(err error, key string) error {
+	var e *Error
+	if key = strings.TrimSpace(key); len(key) < 4 || !errors.As(err, &e) {
+		return err
+	}
+	e.Detail = strings.ReplaceAll(e.Detail, key, "[key]")
+	e.Code = strings.ReplaceAll(e.Code, key, "[key]")
+	// A cause that quotes the server (a WebSocket close reason) is replaced
+	// by its text; it loses its type, which only the key's text needed.
+	if e.Err != nil && strings.Contains(e.Err.Error(), key) {
+		e.Err = errors.New(strings.ReplaceAll(e.Err.Error(), key, "[key]"))
+	}
+	return err
+}
+
 // HTTPError classifies an HTTP error status and the server's message
 // (an error body, or a handshake's refusal).
 func HTTPError(provider string, status int, code, detail string) *Error {

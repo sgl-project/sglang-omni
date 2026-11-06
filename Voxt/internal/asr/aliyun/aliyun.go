@@ -271,6 +271,14 @@ func (c *Client) Caps() asr.Caps {
 // Open connects, starts the task or session, and returns once the service
 // accepted it (task-started, session.updated).
 func (c *Client) Open(ctx context.Context, req asr.StreamRequest) (asr.Stream, error) {
+	s, err := c.connect(ctx, req)
+	if err != nil {
+		return nil, asr.HideKey(err, c.key)
+	}
+	return s, nil
+}
+
+func (c *Client) connect(ctx context.Context, req asr.StreamRequest) (asr.Stream, error) {
 	if req.SampleRate <= 0 {
 		req.SampleRate = asr.SampleRate
 	}

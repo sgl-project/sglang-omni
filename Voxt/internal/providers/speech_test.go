@@ -7,8 +7,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/asr/asrtest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
@@ -139,5 +141,26 @@ func TestSpeechTest(t *testing.T) {
 	}
 	if level, msg := SpeechTestLog(p, res, "zk-secret-9"); level != "warning" || strings.Contains(msg, "zk-secret-9") || !strings.Contains(msg, "speech service zhipu (model glm-asr-2512)") {
 		t.Errorf("log %s %q", level, msg)
+	}
+}
+
+// TestSpeechErrorsHideKey: every speech service whose server quotes the
+// key in a refusal (an upload's 400, a WebSocket handshake's) returns the
+// error with the key blanked out.
+func TestSpeechErrorsHideKey(t *testing.T) {
+	const key = "sk-speech-secret-31"
+	for _, pr := range speechPresets {
+		url := asrtest.RefuseServer(t, 400, `{"error":{"message":"bad key `+key+`"}}`)
+		if !pr.Stream {
+			url = "http" + strings.TrimPrefix(url, "ws")
+		}
+		c, err := NewASR(settings.Provider{ID: pr.ID, Endpoint: url}, key, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", pr.ID, err)
+		}
+		_, err = asr.Recognize(context.Background(), c, asr.Silence(time.Second), "", nil, "", asr.Feed{})
+		if err == nil || strings.Contains(err.Error(), key) || !strings.Contains(err.Error(), "[key]") {
+			t.Errorf("%s: %v", pr.ID, err)
+		}
 	}
 }
