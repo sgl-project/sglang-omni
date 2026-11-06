@@ -75,7 +75,7 @@ func errText(err error) string {
 func noticeActionLabel(action string) string {
 	switch action {
 	case actionModels:
-		return i18n.T("Open Local models")
+		return i18n.T("Open Speech models")
 	case actionLanguage:
 		return i18n.T("Open Language models")
 	case actionPermissions:

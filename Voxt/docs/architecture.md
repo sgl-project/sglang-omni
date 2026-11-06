@@ -30,7 +30,10 @@ github.com/sgl-project/sglang-omni/Voxt
 │   │                     heard); the system's web proxies (CFNetwork);
 │   │                     a process's memory (proc_pid_rusage)
 │   ├── asr/              the shape of speech recognition: FileTranscriber, Streamer/Stream, error
-│   │                     kinds, WAV/PCM helpers (the models are internal/local's)
+│   │                     kinds, WAV/PCM helpers, the remote endpoint policy and WebSocket dial
+│   │                     (the local models are internal/local's); its subpackages are the
+│   │                     remote speech services' clients: openai (OpenAI, StepFun, Zhipu
+│   │                     uploads), doubao, aliyun, gemini (streams), mimo, asrtest
 │   ├── llm/              chat models (from AudioSmith): request and response types, skills, Backend,
 │   │                     Client (retries, JSON repair, thinking stripped), schemas, usage; OpenAI (Auralink's
 │   │                     OpenAI-compatible chat completions transport), the services' presets (presets.json),
@@ -303,7 +306,7 @@ While a session is live (or the answer card shows) the bindings go to the helper
 
 ## 5. What came from Auralink, and from AudioSmith before it
 
-VoxtNew is Auralink @748cf55 with these changes (M0; 2.1 brought back llm's OpenAI transport, its presets and Probe, `internal/providers` and `internal/secrets` for language models, and the Model services page as the Language models page): renamed (module `github.com/sgl-project/sglang-omni/Voxt`, bundle `dev.hehehai.voxtnew`, scheme `voxtnew`, helper `voxtnew-helper`, `VOXTNEW_*` variables, its own data, cache and log folders); removed: `internal/asr/{openai,doubao,aliyun,asrtest}` and asr's WebSocket dial and endpoint policy, llm's OpenAI and Anthropic transports, presets and `Probe`, `internal/providers`, `internal/secrets` (the Keychain), `internal/netx` (the proxy), `internal/demo` and the demo build, the Model services page and dialog, Settings → Network, the setup guide's key cards, the README's media and the tests that called real services; new: `internal/local` and the Local models page (`models_page.go`), the feature pages' Models section, the in-process fake models of the tests (`local_fakes_test.go`). The settings document lost `Network` and `Providers`; `Feature.ASR`/`LLM` hold a local model's id.
+VoxtNew is Auralink @748cf55 with these changes (M0; 2.1 brought back llm's OpenAI transport, its presets and Probe, `internal/providers` and `internal/secrets` for language models, and the Model services page as the Language models page; then `internal/asr/{openai,doubao,aliyun,asrtest}` with asr's endpoint policy and WebSocket dial, the new `gemini` and `mimo` clients, and the Speech models page (the Local models page renamed) with its Remote services, for the remote speech services): renamed (module `github.com/sgl-project/sglang-omni/Voxt`, bundle `dev.hehehai.voxtnew`, scheme `voxtnew`, helper `voxtnew-helper`, `VOXTNEW_*` variables, its own data, cache and log folders); removed: `internal/asr/{openai,doubao,aliyun,asrtest}` and asr's WebSocket dial and endpoint policy, llm's OpenAI and Anthropic transports, presets and `Probe`, `internal/providers`, `internal/secrets` (the Keychain), `internal/netx` (the proxy), `internal/demo` and the demo build, the Model services page and dialog, Settings → Network, the setup guide's key cards, the README's media and the tests that called real services; new: `internal/local` and the Local models page (`models_page.go`), the feature pages' Models section, the in-process fake models of the tests (`local_fakes_test.go`). The settings document lost `Network` and `Providers`; `Feature.ASR`/`LLM` hold a local model's id.
 
 What Auralink took from AudioSmith:
 

@@ -295,7 +295,7 @@ func cardActionLabel(link string) string {
 	case linkRelaunch:
 		return i18n.T("Restart Voxt")
 	case modelsPath:
-		return i18n.T("Open Local models")
+		return i18n.T("Open Speech models")
 	case remotePath:
 		return i18n.T("Open Language models")
 	}

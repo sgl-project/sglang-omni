@@ -1,6 +1,6 @@
 package main
 
-// The memory the loaded models use, on the Local models page: the speech
+// The memory the loaded models use, on the Speech models page: the speech
 // models' servers (internal/omni) and the language models' process
 // (internal/llmrt) are processes of their own, measured by their process
 // ids (macx.Memory: the footprint, or the resident memory when the
@@ -18,7 +18,7 @@ import (
 // memPoll is how often the page measures the loaded models again.
 const memPoll = 3 * time.Second
 
-// memoryState is what the Local models page knows of the loaded models.
+// memoryState is what the Speech models page knows of the loaded models.
 type memoryState struct {
 	// modelMem is each loaded model's memory in bytes (0: loaded, not
 	// measured); a model that is not loaded is absent.
@@ -91,7 +91,7 @@ func (a *app) readModelMemory() {
 	})
 }
 
-// modelsShown runs when the Local models page shows: it measures now,
+// modelsShown runs when the Speech models page shows: it measures now,
 // then every memPoll while the page stays in front.
 func (a *app) modelsShown() {
 	a.readModelMemory()

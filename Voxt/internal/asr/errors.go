@@ -17,13 +17,15 @@ type Kind string
 const (
 	// KindConfig: the setup is incomplete or wrong before anything was
 	// sent: a model that is not installed or not a speech model, a
-	// missing folder.
+	// missing folder, no key, a bad endpoint.
 	KindConfig Kind = "config"
-	// KindAuth: the server refused the request (HTTP 401/403); the
-	// local runtimes do not ask for credentials.
+	// KindAuth: the server refused the request (HTTP 401/403): a remote
+	// service rejected the key (or App ID); the local runtimes do not ask
+	// for credentials.
 	KindAuth Kind = "auth"
 	// KindQuota: the server is busy or refused for its own limits
-	// (HTTP 429, 402).
+	// (HTTP 429, 402): rate limited, out of credit, or the model is not
+	// enabled for the account.
 	KindQuota Kind = "quota"
 	// KindNetwork: the server could not be reached, or the connection
 	// broke or timed out.
@@ -47,13 +49,13 @@ const (
 // Error is every error this package and the speech models return.
 type Error struct {
 	Kind     Kind
-	Provider string // the speech runtime's id ("omni"), "" when none
+	Provider string // the speech runtime's or remote service's id ("omni", "doubao"), "" when none
 	// Status is the HTTP status (or the WebSocket handshake's), 0 for
 	// none; Code is the server's own error code, "" for none.
 	Status int
 	Code   string
 	// Detail is the server's message or what went wrong, for the log
-	// and the ⓘ of an error.
+	// and the ⓘ of an error: never a key.
 	Detail string
 	// Retryable: the same request may succeed later (network, server,
 	// rate limits).

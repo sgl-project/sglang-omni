@@ -1,6 +1,6 @@
 package main
 
-// The Local models page's Network… dialog (voxtnew://models/network):
+// The Speech models page's Network… dialog (voxtnew://models/network):
 // how model downloads reach the Hub, two of the ActNow family's shared
 // settings (family spec §9.1): the proxy (automatic: the environment's,
 // else the Mac's; none; or a proxy's URL) and the download source

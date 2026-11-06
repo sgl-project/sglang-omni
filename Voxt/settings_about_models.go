@@ -81,7 +81,7 @@ func modelChecks(in modelCheckInput, add func(id, title, status, detail string))
 	case err != nil:
 		add("speech", title, "fail", missing)
 	case len(in.asr) == 0:
-		add("speech", title, "warn", i18n.T("No model installed: download one on the Local models page."))
+		add("speech", title, "warn", i18n.T("No model installed: download one on the Speech models page."))
 	default:
 		add("speech", title, "pass", strings.Join(in.asr, ", "))
 	}

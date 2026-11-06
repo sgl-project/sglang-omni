@@ -44,7 +44,7 @@ func TestTranscribePageRenders(t *testing.T) {
 	for _, s := range []string{
 		"Transcribe", "Shortcuts", "Right ⌥", "Tap", "Double tap", "Long press", "Add a shortcut",
 		"Paste the last result", "⌃⌥V",
-		"Models", "No speech model is installed: install one to transcribe.", "Open Local models",
+		"Models", "No speech model is installed: install one to transcribe.", "Open Speech models",
 		"Clean-up", "Clean up with a language model", "Basic clean-up", "Structure",
 		"Your rules", "{{USER_MAIN_LANGUAGE}}", "{{APP_NAME}}", "Show the full prompt",
 		"Try it", "Start",
@@ -288,7 +288,7 @@ func TestTranscribeTry(t *testing.T) {
 	if a.sess.State.Live() || !has(tt, "No speech model is installed.") {
 		t.Fatalf("blocked try: %+v %q", a.sess, tt.Texts())
 	}
-	click(t, tt, "Open Local models")
+	click(t, tt, "Open Speech models")
 	if a.shownPath() != modelsPath {
 		t.Fatalf("went to %s", a.shownPath())
 	}

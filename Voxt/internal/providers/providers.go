@@ -1,15 +1,17 @@
 // Package providers joins the user's setup of the remote language models
-// (settings.Providers) to the code that talks to them (internal/llm's
-// OpenAI transport): which setups are ready, building a client from a
-// setup and its key, the connection test, and Services, which offers the
-// ready ones to the features beside the local models. It is Auralink's
-// internal/providers (@748cf55) for language models only.
+// and speech services (settings.Providers) to the code that talks to them
+// (internal/llm's OpenAI transport, internal/asr's clients: speech.go):
+// which setups are ready, building a client from a setup and its key, the
+// connection test, and Services, which offers the ready ones to the
+// features beside the local models. It is Auralink's internal/providers
+// (@748cf55).
 //
 // It never reads the Keychain itself: callers pass keys in (read off the
 // main thread with internal/secrets) and a hasKey function for the
 // decisions that only need to know whether one is saved.
 //
-// Imports: llm, local, settings.
+// Imports: asr (+ openai, doubao, aliyun, gemini, mimo), llm, local,
+// settings.
 package providers
 
 import (
@@ -25,9 +27,17 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
+// Account is the Keychain account of a setup's key (internal/secrets):
+// "llm.<id>", "asr.<id>". The two lists share ids ("openai").
+func Account(kind local.Kind, id string) string { return string(kind) + "." + id }
+
 // Setup is the user's setup of service id, and whether there is one.
 func Setup(s settings.Settings, id string) (settings.Provider, bool) {
-	for _, p := range s.Providers.LLM {
+	return setupIn(s.Providers.LLM, id)
+}
+
+func setupIn(list []settings.Provider, id string) (settings.Provider, bool) {
+	for _, p := range list {
 		if p.ID == id {
 			return p, true
 		}
@@ -37,14 +47,16 @@ func Setup(s settings.Settings, id string) (settings.Provider, bool) {
 
 // Put sets p in s, replacing the setup with its ID or appending it. It
 // writes a new list: copies of the settings share the old one's array.
-func Put(s *settings.Settings, p settings.Provider) {
-	l := slices.Clone(s.Providers.LLM)
+func Put(s *settings.Settings, p settings.Provider) { s.Providers.LLM = put(s.Providers.LLM, p) }
+
+func put(list []settings.Provider, p settings.Provider) []settings.Provider {
+	l := slices.Clone(list)
 	if i := slices.IndexFunc(l, func(x settings.Provider) bool { return x.ID == p.ID }); i >= 0 {
 		l[i] = p
 	} else {
 		l = append(l, p)
 	}
-	s.Providers.LLM = l
+	return l
 }
 
 // Remove takes setup id out of s (a new list, as Put), and out of the
@@ -149,7 +161,10 @@ func Test(ctx context.Context, p settings.Provider, key string, client *http.Cli
 // HTTP status and the service's message, clipped). Never the key
 // (removed should an error quote it).
 func TestLog(p settings.Provider, res TestResult, key string) (level, msg string) {
-	head := fmt.Sprintf("connection test of remote language model %s (model %s)", p.ID, Model(p))
+	return testLog(fmt.Sprintf("connection test of remote language model %s (model %s)", p.ID, Model(p)), res, key)
+}
+
+func testLog(head string, res TestResult, key string) (level, msg string) {
 	if res.Err == nil {
 		return "info", fmt.Sprintf("%s: ok in %v", head, res.Latency.Round(time.Millisecond))
 	}

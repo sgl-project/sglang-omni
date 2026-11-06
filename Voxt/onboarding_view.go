@@ -160,7 +160,7 @@ func (a *app) obTitle(c *ui.Context) {
 		title = i18n.T("Permissions")
 	case obModels:
 		title = i18n.T("Models")
-		sub = i18n.T("Voxt recognises speech with a model on this Mac (this one is the best start; the Local models page has the others), and cleans up, translates and rewrites with a language model you set up.")
+		sub = i18n.T("Voxt recognises speech with a model on this Mac (this one is the best start; the Speech models page has the others), and cleans up, translates and rewrites with a language model you set up.")
 	case obTranscribe:
 		title = i18n.T("Try Transcribe")
 		sub = i18n.T("Press the shortcut (or Start), read the sentence below or say anything, then press it again to stop. The result shows here.")

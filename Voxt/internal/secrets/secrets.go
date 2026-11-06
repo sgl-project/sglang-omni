@@ -1,8 +1,8 @@
 // Package secrets keeps Voxt's secrets (the API keys of the remote
-// language models) in the macOS login Keychain, as generic password items
-// of the service "VoxtNew" (an inside name, as the data folders), one
-// account per secret: "llm.<provider>"
-// (settings.Provider.ID). Secrets never go into the settings, the
+// language models and speech services) in the macOS login Keychain, as
+// generic password items of the service "VoxtNew" (an inside name, as the
+// data folders), one account per secret: "llm.<provider>",
+// "asr.<provider>" (settings.Provider.ID). Secrets never go into the settings, the
 // database or the logs.
 //
 // It is Auralink's (@748cf55), which runs /usr/bin/security as
@@ -33,10 +33,11 @@ var ErrNoKeychain = errors.New("no keychain on this system")
 // uses "Voxt <account>".
 type Item struct{ Service, Account, Label, File string }
 
-// LLM is the Keychain item of a remote language model's key, by its
-// settings id: LLM("deepseek", "Voxt DeepSeek API key").
-func LLM(provider, label string) Item {
-	return Item{Service: Service, Account: "llm." + provider, Label: label}
+// Key is the Keychain item of a remote service's key, by its account
+// (providers.Account: "llm.deepseek", "asr.doubao"):
+// Key("llm.deepseek", "Voxt DeepSeek API key").
+func Key(account, label string) Item {
+	return Item{Service: Service, Account: account, Label: label}
 }
 
 // with appends the keychain file to a security command, when there is one.

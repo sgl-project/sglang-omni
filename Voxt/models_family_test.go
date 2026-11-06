@@ -1,6 +1,6 @@
 package main
 
-// The Local models page in the ActNow family (models_cards.go,
+// The Speech models page in the ActNow family (models_cards.go,
 // models_delete.go): the other apps are played with actnowkit, in the test
 // app's family directory and model library.
 

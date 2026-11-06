@@ -70,7 +70,7 @@ func omniLoads(t *testing.T) <-chan resident.Event {
 	return ch
 }
 
-// TestModelsMemory: the Local models page says the memory of the models
+// TestModelsMemory: the Speech models page says the memory of the models
 // loaded in the fake Omni server and the fake voxtnew-llm, measured by
 // their pids (the language model's own report when its process cannot
 // be measured), every memPoll while the page shows; nothing for a model

@@ -22,7 +22,7 @@ func TestItems(t *testing.T) {
 		}
 		return nil, nil
 	}
-	k := LLM("deepseek", "Voxt DeepSeek API key")
+	k := Key("llm.deepseek", "Voxt DeepSeek API key")
 	if k.Service != "VoxtNew" || k.Account != "llm.deepseek" {
 		t.Fatalf("items: %+v", k)
 	}

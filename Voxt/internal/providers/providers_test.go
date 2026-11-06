@@ -83,11 +83,11 @@ func TestServices(t *testing.T) {
 	defer srv.Close()
 	p := settings.Provider{ID: llm.Custom, Endpoint: srv.URL + "/v1", Model: "qwen3"}
 	keys := map[string]string{llm.Custom: "sk-local"}
-	svc := NewServices(localModels{}, func(p settings.Provider) string { return "Custom · " + Model(p) },
+	svc := NewServices(localModels{}, func(_ local.Kind, p settings.Provider) string { return "Custom · " + Model(p) },
 		func(_ context.Context, p settings.Provider) (local.Chat, error) {
 			return Open(p, keys[p.ID], srv.Client())
-		})
-	svc.SetReady([]settings.Provider{p})
+		}, nil)
+	svc.SetReady(local.LLM, []settings.Provider{p})
 	list := svc.Installed(local.LLM)
 	if len(list) != 2 || list[0].ID != localLLM.ID || list[1].ID != llm.Custom || list[1].Name != "Custom · qwen3" {
 		t.Fatalf("installed %+v", list)
@@ -104,7 +104,7 @@ func TestServices(t *testing.T) {
 	if err != nil || resp.Text != "hi" || strings.Join(deltas, "") != "hi" || strings.Join(got, ";") != "/v1/chat/completions Bearer sk-local qwen3" {
 		t.Fatalf("chat %+v %v %q %q", resp, err, deltas, got)
 	}
-	svc.SetReady(nil)
+	svc.SetReady(local.LLM, nil)
 	if _, m, err := svc.LLM(context.Background(), llm.Custom); err != nil || m.ID != localLLM.ID || len(svc.Installed(local.LLM)) != 1 {
 		t.Fatalf("not ready any more: %+v %v", m, err)
 	}

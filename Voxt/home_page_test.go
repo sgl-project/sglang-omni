@@ -65,7 +65,7 @@ func TestHomeReadiness(t *testing.T) {
 	}
 	// The whole line is the way to fix it: speech models are local,
 	// language models are set up on their page.
-	click(t, tt, "Speech recognition: Open Local models")
+	click(t, tt, "Speech recognition: Open Speech models")
 	if a.shownPath() != modelsPath {
 		t.Fatalf("went to %s", a.shownPath())
 	}

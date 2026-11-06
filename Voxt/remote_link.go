@@ -1,14 +1,17 @@
 package main
 
-// The remote language models (Auralink's model services, language models
-// only): the user's setups (settings.Providers), their keys in the
-// Keychain, and a.remote, the local.Services that offers the ready ones to
-// the features after the local models (internal/providers). The page and
-// its dialog are remote_page.go and remote_dialog.go.
+// The remote services (Auralink's model services): language models and
+// speech recognition, the user's setups (settings.Providers), their keys in
+// the Keychain, and a.remote, the local.Services that offers the ready
+// ones to the features after the local models of their kind
+// (internal/providers). The pages and their dialog are remote_page.go and
+// remote_dialog.go.
 //
 // Keys live in the Keychain only (keyring, internal/secrets): the app
 // keeps their masks ("sk-…wxyz"), read in the background, never a key; a
-// session's open reads the key off the main thread.
+// session's open reads the key off the main thread. Masks, tests and the
+// keyring go by Keychain account (providers.Account: "llm.openai",
+// "asr.openai"), as both lists have services of the same id.
 
 import (
 	"context"
@@ -16,7 +19,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/secrets"
@@ -27,18 +32,98 @@ import (
 // remotePath is the Language models page's path.
 const remotePath = "/language-models"
 
-// keyring keeps the remote models' keys, by setup id ("openai"). Its
-// calls may block: off the main thread only.
+// service is a remote service as its page and dialog show it: a language
+// model's preset (internal/llm) or a speech service (providers.Speech).
+type service struct {
+	kind     local.Kind
+	id, name string
+	// endpoint is the default address ("": the user gives one), model the
+	// default model ("": none).
+	endpoint, model string
+	models          []string
+	keyOptional     bool
+	appID           bool // Doubao: an App ID may come with the key
+	stream          bool // speech recognised while the user speaks
+	keyURL          string
+}
+
+// services are kind's remote services, in the page's order.
+func services(kind local.Kind) []service {
+	var out []service
+	if kind == local.ASR {
+		for _, p := range providers.SpeechPresets() {
+			out = append(out, service{kind: kind, id: p.ID, name: uitext.SpeechName(p.ID), endpoint: p.Endpoint, model: p.Model, models: p.Models,
+				appID: p.AppID, stream: p.Stream, keyURL: p.KeyURL})
+		}
+		return out
+	}
+	for _, p := range llm.Presets() {
+		out = append(out, service{kind: kind, id: p.ID, name: uitext.PresetName(p.ID), endpoint: p.BaseURL, model: p.DefaultModel,
+			models: p.Models, keyOptional: p.KeyOptional, keyURL: p.KeyURL})
+	}
+	return out
+}
+
+// lookupService is kind's service id (its id alone when unknown).
+func lookupService(kind local.Kind, id string) service {
+	for _, sv := range services(kind) {
+		if sv.id == id {
+			return sv
+		}
+	}
+	return service{kind: kind, id: id, name: id}
+}
+
+// setupOf is the user's setup of kind's service id, and whether there is
+// one.
+func (a *app) setupOf(kind local.Kind, id string) (settings.Provider, bool) {
+	if kind == local.ASR {
+		return providers.SpeechSetup(a.prefs, id)
+	}
+	return providers.Setup(a.prefs, id)
+}
+
+// setupModel is the model a setup uses: its own, else its service's
+// default.
+func setupModel(kind local.Kind, p settings.Provider) string {
+	if kind == local.ASR {
+		return providers.SpeechModel(p)
+	}
+	return providers.Model(p)
+}
+
+// setupName is how a ready setup is named where a model is chosen: its
+// service and model ("OpenAI · gpt-4.1-mini").
+func setupName(kind local.Kind, p settings.Provider) string {
+	return lookupService(kind, p.ID).name + " · " + setupModel(kind, p)
+}
+
+// setupMissing says what a setup lacks before it can be used (a speech
+// service: its key only), "" when it is ready.
+func (a *app) setupMissing(kind local.Kind, p settings.Provider) string {
+	switch {
+	case kind == local.LLM:
+		return providers.Missing(p, a.hasKey(kind, p.ID))
+	case a.hasKey(kind, p.ID), providers.SpeechKeyOptional(p):
+		return ""
+	}
+	return providers.MissingKey
+}
+
+// keyring keeps the remote services' keys, by Keychain account
+// ("llm.openai"). Its calls may block: off the main thread only.
 type keyring interface {
-	Get(id string) (string, error)
-	Set(id, label, value string) error // "" deletes
+	Get(account string) (string, error)
+	Set(account, label, value string) error // "" deletes
 }
 
 // keychain is the macOS Keychain (internal/secrets).
 type keychain struct{}
 
-func (keychain) Get(id string) (string, error)     { return secrets.LLM(id, "").Get() }
-func (keychain) Set(id, label, value string) error { return secrets.LLM(id, label).Set(value) }
+func (keychain) Get(account string) (string, error) { return secrets.Key(account, "").Get() }
+func (keychain) Set(account, label, value string) error {
+	return secrets.Key(account, label).Set(value)
+}
 
 // newKeyring is the keyring a new app uses; tests swap in a memory one.
 var newKeyring = func() keyring { return keychain{} }
@@ -53,10 +138,10 @@ type remoteState struct {
 	// read by opens.
 	remoteHTTP atomic.Pointer[http.Client]
 	keys       keyring
-	// keyMasks are the saved keys' masks by setup id, "" for none; an id
-	// not in it was not read yet.
+	// keyMasks are the saved keys' masks by account, "" for none; an
+	// account not in it was not read yet.
 	keyMasks map[string]string
-	// provTests are the last connection tests, by setup id.
+	// provTests are the last connection tests, by account.
 	provTests map[string]providerTest
 	provDlg   providerDialog
 }
@@ -74,51 +159,66 @@ func (a *app) withRemote(base local.Services) local.Services {
 	a.keys = newKeyring()
 	a.keyMasks = map[string]string{}
 	a.provTests = map[string]providerTest{}
-	a.remote = providers.NewServices(base, uitext.ProviderName, a.openRemote)
-	var ids []string
+	a.remote = providers.NewServices(base, setupName, a.openRemote, a.openSpeech)
+	var accounts []string
 	for _, p := range a.prefs.Providers.LLM {
-		ids = append(ids, p.ID)
+		accounts = append(accounts, providers.Account(local.LLM, p.ID))
 	}
-	a.loadKeyMasks(ids)
+	for _, p := range a.prefs.Providers.ASR {
+		accounts = append(accounts, providers.Account(local.ASR, p.ID))
+	}
+	a.loadKeyMasks(accounts)
 	a.syncRemote()
 	return a.remote
 }
 
-// openRemote opens a setup for a session (off the main thread): its key
-// from the Keychain, then its client.
+// openRemote opens a language model setup for a session (off the main
+// thread): its key from the Keychain, then its client.
 func (a *app) openRemote(_ context.Context, p settings.Provider) (local.Chat, error) {
-	key, err := a.keys.Get(p.ID)
+	key, err := a.keys.Get(providers.Account(local.LLM, p.ID))
 	if err != nil {
 		return nil, err
 	}
 	return providers.Open(p, key, a.remoteHTTP.Load())
 }
 
+// openSpeech opens a speech setup for a session, as openRemote.
+func (a *app) openSpeech(_ context.Context, p settings.Provider) (asr.Provider, error) {
+	key, err := a.keys.Get(providers.Account(local.ASR, p.ID))
+	if err != nil {
+		return nil, err
+	}
+	return providers.NewASR(p, key, a.remoteHTTP.Load())
+}
+
 // syncRemote gives a.remote the setups that are ready and the network,
-// after a change of the settings or the keys.
+// after a change of the settings or the keys, and updates the sidebar's
+// card about missing models.
 func (a *app) syncRemote() {
 	if a.remote == nil {
 		return
 	}
 	a.remoteHTTP.Store(a.networkFor(a.prefs).Client)
-	a.remote.SetReady(providers.Ready(a.prefs, a.hasKey))
+	a.remote.SetReady(local.LLM, providers.Ready(a.prefs, func(id string) bool { return a.hasKey(local.LLM, id) }))
+	a.remote.SetReady(local.ASR, providers.SpeechReady(a.prefs, func(id string) bool { return a.hasKey(local.ASR, id) }))
+	a.checkModels() // shell_notices.go: a ready remote model is a model
 }
 
-// loadKeyMasks reads the keys of ids from the keyring, in the
+// loadKeyMasks reads the keys of accounts from the keyring, in the
 // background, and keeps their masks.
-func (a *app) loadKeyMasks(ids []string) {
-	if len(ids) == 0 {
+func (a *app) loadKeyMasks(accounts []string) {
+	if len(accounts) == 0 {
 		return
 	}
 	kr := a.keys
 	a.async(func() {
 		masks := map[string]string{}
-		for _, id := range ids {
-			v, err := kr.Get(id)
+		for _, acct := range accounts {
+			v, err := kr.Get(acct)
 			if err != nil {
 				v = ""
 			}
-			masks[id] = maskKey(v)
+			masks[acct] = maskKey(v)
 		}
 		a.post(func() {
 			for k, v := range masks {
@@ -129,8 +229,11 @@ func (a *app) loadKeyMasks(ids []string) {
 	})
 }
 
-// hasKey reports whether a key is saved for setup id (as last read).
-func (a *app) hasKey(id string) bool { return a.keyMasks[id] != "" }
+// hasKey reports whether a key is saved for kind's setup id (as last
+// read).
+func (a *app) hasKey(kind local.Kind, id string) bool {
+	return a.keyMasks[providers.Account(kind, id)] != ""
+}
 
 func maskKey(v string) string {
 	if v == "" {
@@ -139,34 +242,49 @@ func maskKey(v string) string {
 	return secrets.Mask(v)
 }
 
-// testProvider runs a connection test of setup p with key (any
+// testProvider runs a connection test of kind's setup p with key (any
 // goroutine's), then shows it on its card and, when it is open, in the
 // dialog.
-func (a *app) testProvider(p settings.Provider, key func() (string, error)) {
-	a.provTests[p.ID] = providerTest{running: true}
-	if a.provDlg.open && a.provDlg.id == p.ID {
+func (a *app) testProvider(kind local.Kind, p settings.Provider, key func() (string, error)) {
+	acct := providers.Account(kind, p.ID)
+	a.provTests[acct] = providerTest{running: true}
+	dialog := func() bool { return a.provDlg.open && providers.Account(a.provDlg.kind, a.provDlg.id) == acct }
+	if dialog() {
 		a.provDlg.test = providerTest{running: true}
 	}
 	client, logs := a.remoteHTTP.Load(), a.logs
 	a.async(func() {
 		k, err := key()
 		res := providers.TestResult{Err: err, At: time.Now()}
-		if err == nil {
+		var level, msg string
+		switch {
+		case err != nil:
+		case kind == local.ASR:
+			res = runSpeechTest(context.Background(), p, k, client)
+		default:
 			res = runProviderTest(context.Background(), p, k, client)
 		}
+		if kind == local.ASR {
+			level, msg = providers.SpeechTestLog(p, res, k)
+		} else {
+			level, msg = providers.TestLog(p, res, k)
+		}
 		if logs != nil {
-			level, msg := providers.TestLog(p, res, k)
 			logs.Append(core.LogEntry{Time: time.Now(), Level: core.Severity(level), Source: "app", Message: msg})
 		}
 		tr := providerTest{res: res, detail: providers.ErrorLog(res.Err, k)}
 		a.post(func() {
-			a.provTests[p.ID] = tr
-			if a.provDlg.open && a.provDlg.id == p.ID {
+			a.provTests[acct] = tr
+			if dialog() {
 				a.provDlg.test = tr
 			}
 		})
 	})
 }
 
-// runProviderTest is providers.Test; tests swap it for a fake.
-var runProviderTest = providers.Test
+// runProviderTest is providers.Test, runSpeechTest providers.TestSpeech;
+// tests swap them for fakes.
+var (
+	runProviderTest = providers.Test
+	runSpeechTest   = providers.TestSpeech
+)
