@@ -341,6 +341,8 @@ def test_each_execution_shape_completes_with_ordered_segments(
         {name: value for name, value in segment.items() if name != "data"}
         for segment in streamed
     ]
+    # An adapter that reports nothing completes with stop and no usage.
+    assert result.data["finish_reason"] == "stop" and "usage" not in result.data
     assert adapter.closed == ["completed"]
     assert not controller.contexts and not getattr(adapter, "histories", None)
 
@@ -553,6 +555,42 @@ def test_unconsumed_engine_context_fails_the_request():
     with pytest.raises(RuntimeError, match="unconsumed"):
         drive(controller, {"bagel": bagel}, initial())
     assert adapter.closed == ["failed"] and not controller.contexts
+
+
+class ReportingAdapter(SplitAdapter):
+    """Reports how the request ends while its next phases still run."""
+
+    def __init__(self, token_usage) -> None:
+        super().__init__()
+        self.token_usage = token_usage
+
+    def advance(self, context, phase, result):
+        step = super().advance(context, phase, result)
+        if phase == "reason" and step.phase == "generate":
+            return replace(step, finish_reason="length", token_usage=self.token_usage)
+        else:
+            return step
+
+
+@pytest.mark.parametrize(
+    "token_usage",
+    [
+        {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7},
+        {"prompt_tokens": 3, "completion_tokens": -4, "total_tokens": -1},
+    ],
+)
+def test_reported_finish_reason_and_token_usage_reach_the_result(token_usage):
+    adapter = ReportingAdapter(token_usage)
+    controller = make_controller(adapter)
+    stages = SPLIT[2]()
+    if token_usage["completion_tokens"] < 0:
+        with pytest.raises(TypeError, match="token_usage must map"):
+            drive(controller, stages, initial())
+        assert adapter.closed == ["failed"]
+    else:
+        result, _ = drive(controller, stages, initial())
+        assert result.data["finish_reason"] == "length"
+        assert result.data["usage"] == token_usage
 
 
 def umm_stages(**changes):
