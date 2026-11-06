@@ -66,6 +66,11 @@ type onboardingState struct {
 		// this Mac, as the models step's survey found them
 		// (onboarding_models.go).
 		found []models.Found
+		// legacyMsg is the result of importing the previous Voxt's
+		// dictionary from the welcome step (legacy_import.go).
+		legacyMsg string
+		// legacyDone: that import brought the dictionary over.
+		legacyDone bool
 	}
 }
 

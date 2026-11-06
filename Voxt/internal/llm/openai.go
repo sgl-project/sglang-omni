@@ -114,6 +114,24 @@ func (o *OpenAI) body(req Request, model string, stream, streamUsage, extra bool
 // Chat makes one attempt. It streams when the request does (OnDelta) or
 // bounds its progress (FirstTokenTimeout, StallTimeout).
 func (o *OpenAI) Chat(ctx context.Context, req Request) (Response, error) {
+	out, err := o.chat(ctx, req)
+	return out, o.scrub(err)
+}
+
+// scrub blanks the key out of err's details: a server may quote it in its
+// error message, and session errors are kept in the history.
+func (o *OpenAI) scrub(err error) error {
+	var e *Error
+	if len(o.key) < 4 || !errors.As(err, &e) {
+		return err
+	}
+	for k, v := range e.Params {
+		e.Params[k] = strings.ReplaceAll(v, o.key, "[key]")
+	}
+	return err
+}
+
+func (o *OpenAI) chat(ctx context.Context, req Request) (Response, error) {
 	model := req.Model
 	if model == "" {
 		model = o.preset.DefaultModel
