@@ -82,6 +82,11 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
 
         return XpuDeviceGraphBackend()
 
+    def get_default_stream(self, device: torch.device) -> torch.Stream:
+        # note (anupa): torch.xpu exposes no default_stream, and the stream that is
+        # current outside an explicit stream context is the one consumers run on.
+        return torch.xpu.current_stream(device)
+
     def get_decode_cuda_graph_backend(self) -> str | None:
         # SGLang leaves XPU decode capture opt-in and accepts only full.
         from sglang.srt.model_executor.cuda_graph_config import Backend

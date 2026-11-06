@@ -211,6 +211,35 @@ The streaming encoder captures its subsequent-window batch sizes at startup on X
 
 **Expected result:** The JSON response contains the transcription and segment timestamps.
 
+### Ming-3.0-ASR-Tiny (speech-to-text, single XPU)
+
+Serves on the stock defaults. The Whisper audio encoder and the Ling V3 mixture-of-experts language model share one card and hold about 22 GB of a 24 GB card, so give the model an otherwise-idle GPU.
+
+**Launch**
+
+```bash
+ZE_AFFINITY_MASK=0 sgl-omni serve \
+  --model-path inclusionAI/Ming-3.0-asr-tiny \
+  --host 0.0.0.0 --port 8000
+```
+
+**Request**
+
+```bash
+curl -s -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F "file=@tests/data/query_to_cars.wav" \
+  -F "model=inclusionAI/Ming-3.0-asr-tiny" \
+  -F "response_format=json"
+```
+
+Keep the default `triton` attention backend. `intel_xpu` cannot capture this model's decode graph, and on a clip near the 30-second limit it answers with a few unrelated characters instead of the transcript unless `language` is set.
+
+The backbone mixes linear-attention and full-attention layers whose Triton kernels are compiled and tuned on first use, so the first request of each new audio length or encoder batch size costs seconds to minutes while later ones do not. The tuning cache is on disk, so a restart reuses it.
+
+See the [Ming-3.0-ASR cookbook](../cookbook/ming3_asr.md) for request parameters.
+
+**Expected result:** The JSON response contains `how many cars are there in the picture` under `text`.
+
 ### Qwen3-TTS (text-to-speech, single XPU)
 
 Qwen3-TTS automatically selects the `intel_xpu` attention backend when the platform and the engine stage device are both XPU. Setting any of `attention_backend`, `prefill_attention_backend`, or `decode_attention_backend` in `server_args_overrides` takes precedence over this default. CPU stages on an XPU host are unaffected.
