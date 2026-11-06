@@ -7,6 +7,43 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Added
 
 - **Remote language models** (the new Language models page): Transcribe's clean-up, Translate and Rewrite use a language model of a service you set up, over its OpenAI-compatible API: OpenAI, Anthropic, Google Gemini, DeepSeek, Qwen (Alibaba Cloud), Kimi, GLM, Doubao (Volcengine), MiniMax, StepFun, Xiaomi MiMo, xAI, OpenRouter, any other compatible server (Custom), or one on this Mac (Ollama, LM Studio, oMLX), so that the text stays here. Each service takes an API key, an address and a model, with Test connection; the key is kept in the macOS Keychain only, never in Voxt's settings or logs. Every feature's language model menu lists the services set up; Automatic uses the first one, and each card says which features use it. The page groups the servers that run on this Mac (free) apart from the online services. Only the recognised or selected text is sent, never audio.
+- **Import from the Swift Voxt 1.x.** When Voxt 1.x's data is on the Mac, the setup guide starts with a card that brings over its dictionary (replacement terms become "heard as" aliases, disabled terms stay disabled), its dictation, translation and rewrite history, and the speech models it downloaded that Voxt uses, so they are not downloaded again (its language models are not: Voxt no longer runs language models on this Mac). Voxt 1.x's data is only read. If you set up 2.0.0, which had no import, a card in the sidebar offers it once; it is also in the dictionary's ••• menu ([docs/voxt-migration.md](docs/voxt-migration.md)).
+- Import terms takes the dictionary file Voxt 1.x exports (Dictionary → More → Export): its terms, with their replacement terms as aliases.
+- **Remote speech recognition** (the Speech models page's Remote services): OpenAI Transcribe, Doubao (Volcengine), Zhipu GLM-ASR, Aliyun Bailian ASR, StepFun, Xiaomi MiMo and Google Gemini, as in Voxt 1.x. Doubao, Aliyun Bailian and Gemini show the text while you speak (tagged Realtime); the others get the recording once you stop. Set one up with its key (Doubao also takes its App ID), address and model, and test the connection before saving; keys stay in the Mac's Keychain, never in Voxt's settings or logs. OpenAI Transcribe, StepFun and Zhipu pointed at a server on this Mac (a local Whisper server) need no key. A service that is set up is offered after the speech models of this Mac in every feature's speech model menu, and used when you choose it there or when no speech model on this Mac is installed. Doubao, Gemini and Aliyun Bailian's Fun-ASR and Qwen-Audio models get your dictionary's terms as hot words; OpenAI Transcribe, StepFun and Zhipu get them in their prompt; Xiaomi MiMo takes none.
+
+### Changed
+
+- **Models are named by what they are**: the Local models page, the feature pages' model menus, the setup guide and History name a model by its family, size and quantisation (Qwen3-ASR 1.7B (8bit), Qwen3-ASR 0.6B (4bit)), as Voxt 1.x did, instead of "Accurate speech recognition"; its card has short labels (Local, Accurate or Fast, Realtime, whether it knows your main language), says which features use it, and has no rating.
+- **Language models are remote only.** Voxt no longer downloads or runs language models on this Mac: set one up on the Language models page (Ollama runs one here, for free). Those Voxt 2.0.0 downloaded are listed under Local models → "Language models no longer used", to delete. Settings → Privacy, the setup guide and Home say where the text goes.
+- **The Local models page is now Speech models**: the speech models of this Mac, then the remote speech services, each tagged Local or Remote; language models are on the Language models page.
+
+### Fixed
+
+- Import terms no longer adds each line of a JSON file as a term: Voxt 1.x's export is read as a dictionary, and any other JSON file is refused.
+
+### 中文
+
+#### 新增
+
+- **远程语言模型**（新的“语言模型”页）：转录的整理、翻译和转写使用你设置的服务的语言模型，通过它的 OpenAI 兼容 API 调用：OpenAI、Anthropic、Google Gemini、DeepSeek、通义千问（阿里云百炼）、Kimi、智谱 GLM、豆包（火山方舟）、MiniMax、阶跃星辰、小米 MiMo、xAI、OpenRouter、其他兼容的服务（自定义），或者本机的服务（Ollama、LM Studio、oMLX），让文字留在这台 Mac 上。每个服务填 API Key、地址和模型，可以测试连接；Key 只保存在 macOS 钥匙串里，不会写进 Voxt 的设置或日志。各功能的语言模型菜单列出设置好的服务，“自动”用第一个，卡片上写明使用位置。页面把本机运行的服务（免费）和在线服务分开列出。只发送识别出的文字或选中的文字，不发送音频。
+- **从 Swift 版 Voxt 1.x 导入。** 这台 Mac 上有 Voxt 1.x 的数据时，设置引导第一页有一张卡片，把它的词典（替换词变成"可能被听成"，停用的词还是停用）、听写、翻译和改写的历史，以及它下载过、Voxt 也在用的语音模型带过来，不用再下载（它的语言模型不带：Voxt 不再在本机运行语言模型）。Voxt 1.x 的数据只读不改。装过 2.0.0（那一版没有导入）的，侧栏会出一次卡片；词典的 ••• 菜单里也有（[docs/voxt-migration.md](docs/voxt-migration.md)）。
+- "导入词条"认 Voxt 1.x 导出的词典文件（词典 → 更多 → 导出）：词条，以及作为别名的替换词。
+- **远程语音识别**（语音模型页的“远程服务”）：OpenAI Transcribe、豆包（火山引擎）、智谱 GLM-ASR、阿里云百炼 ASR、阶跃星辰、小米 MiMo 和 Google Gemini，与 Voxt 1.x 相同。豆包、阿里云百炼和 Gemini 边说边出文字（标为“实时”），其他服务在你说完后识别整段录音。填写密钥（豆包还可以填 App ID）、地址和模型即可设置，保存前可以测试连接；密钥只保存在 Mac 的钥匙串里，不会写进 Voxt 的设置或日志。OpenAI Transcribe、阶跃星辰和智谱指向本机的服务（本地 Whisper 服务）时不需要密钥。设置好的服务排在这台 Mac 上的语音模型之后，出现在每个功能的语音识别模型菜单里；在那里选中它、或这台 Mac 上没有安装语音模型时使用。豆包、Gemini 以及阿里云百炼的 Fun-ASR 和 Qwen-Audio 模型把词典里的词当作热词，OpenAI Transcribe、阶跃星辰和智谱把它们放进提示词，小米 MiMo 不使用词典。
+
+#### 变更
+
+- **模型写清楚是哪一个**：本地模型页、各功能页的模型菜单、设置引导和历史都按系列、尺寸和量化称呼模型（Qwen3-ASR 1.7B (8bit)、Qwen3-ASR 0.6B (4bit)），和 Voxt 1.x 一样，不再写“精准语音识别”；卡片上有简短的标签（本地、准确或快速、实时、是否支持主语言）和使用位置，没有评分。
+- **语言模型只用远程服务。** Voxt 不再在这台 Mac 上下载和运行语言模型：请在“语言模型”页设置一个（用 Ollama 可以在本机免费运行）。Voxt 2.0.0 下载过的语言模型列在本地模型页的“不再使用的语言模型”里，可以删除。设置 → 隐私、设置引导和首页都写明了文字会发到哪里。
+- **本地模型页改名为语音模型**：先列这台 Mac 上的语音模型，再列远程语音识别服务，各自标为“本地”或“远程”；语言模型在语言模型页。
+
+#### 修复
+
+- "导入词条"不再把 JSON 文件的每一行当成一个词：Voxt 1.x 的导出文件按词典读，别的 JSON 文件会被拒绝。
+
+## [2.0.0] - 2026-11-06
+
+### Added
+
 - Voxt 2.0.0, rebuilt from scratch: voice input for macOS on local models only. Press a shortcut in any app, speak, and the text appears where your cursor is. Audio and text never leave your Mac.
 - Local speech recognition: two models, accurate (recommended) and fast, with the text shown live as you speak, and a voice detector that sends only speech to them.
 - Local language models: a balanced one (recommended), a fast one and a translation model, for clean-up, translation and rewriting.
@@ -27,13 +64,9 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Long dictations are recognised while you speak**: after a minute, finished stretches are recognised in the background, cut at pauses, so Stop leaves only the last half-minute or so (on a busy Mac, 104 s of speech: 26 s → 2.4 s after Stop).
 - **The overlay says what a recording is waiting for.** When the microphone is slow to start (the first dictation after Voxt starts on a Mac short of memory), the microphone icon pulses inside a ring and the overlay says "Starting the microphone…": what you say before the bars light up is not recorded. While the speech model is still loading (the first dictation, or after it was unloaded), only the icon pulses and the bars keep showing your voice: the recording works, and the live text comes once the model is ready.
 - **A customizable cancel shortcut**: Settings → Shortcuts lists Cancel transcription; change its key or turn it off on the Transcribe page (Escape by default). The key is taken only while a recording runs or the answer card shows, and a cancelled recording now stays in History, ready to Retry.
-- **Remote speech recognition** (the Speech models page's Remote services): OpenAI Transcribe, Doubao (Volcengine), Zhipu GLM-ASR, Aliyun Bailian ASR, StepFun, Xiaomi MiMo and Google Gemini, as in Voxt 1.x. Doubao, Aliyun Bailian and Gemini show the text while you speak (tagged Realtime); the others get the recording once you stop. Set one up with its key (Doubao also takes its App ID), address and model, and test the connection before saving; keys stay in the Mac's Keychain, never in Voxt's settings or logs. OpenAI Transcribe, StepFun and Zhipu pointed at a server on this Mac (a local Whisper server) need no key. A service that is set up is offered after the speech models of this Mac in every feature's speech model menu, and used when you choose it there or when no speech model on this Mac is installed. Doubao, Gemini and Aliyun Bailian's Fun-ASR and Qwen-Audio models get your dictionary's terms as hot words; OpenAI Transcribe, StepFun and Zhipu get them in their prompt; Xiaomi MiMo takes none.
 
 ### Changed
 
-- **The Local models page is now Speech models**: the speech models of this Mac, then the remote speech services, each tagged Local or Remote; language models are on the Language models page.
-- **Models are named by what they are**: the Local models page, the feature pages' model menus, the setup guide and History name a model by its family, size and quantisation (Qwen3-ASR 1.7B (8bit), Qwen3-ASR 0.6B (4bit)), as Voxt 1.x did, instead of "Accurate speech recognition"; its card has short labels (Local, Accurate or Fast, Realtime, whether it knows your main language), says which features use it, and has no rating.
-- **Language models are remote only.** Voxt no longer downloads or runs language models on this Mac: set one up on the Language models page (Ollama runs one here, for free). Those Voxt 2.0.0 downloaded are listed under Local models → "Language models no longer used", to delete. Settings → Privacy, the setup guide and Home say where the text goes.
 - **Voxt 2.0.0 replaces the Swift Voxt 1.x.** Installing it replaces Voxt.app in Applications. The settings, dictionary and history of Voxt 1.x stay in its own folder and are not brought over, and Voxt asks for its permissions again (the setup guide walks you through them).
 - **Models are kept in ~/Library/Application Support/ActNow/models**, shared with other apps that use this model library, instead of the Hugging Face cache (~/.cache/huggingface), which cleaning tools treat as a cache. Models already there are brought over at the first start without downloading them again (hard links: the cache stays as it is). Time Machine leaves models out; Settings → Storage → "Back up models with Time Machine" turns it on for all of them.
 - The note of which output device Voxt muted is kept in Application Support instead of ~/Library/Caches, so that a cache cleaner run after a crash cannot leave your speakers muted.
@@ -61,7 +94,6 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 新增
 
-- **远程语言模型**（新的“语言模型”页）：转录的整理、翻译和转写使用你设置的服务的语言模型，通过它的 OpenAI 兼容 API 调用：OpenAI、Anthropic、Google Gemini、DeepSeek、通义千问（阿里云百炼）、Kimi、智谱 GLM、豆包（火山方舟）、MiniMax、阶跃星辰、小米 MiMo、xAI、OpenRouter、其他兼容的服务（自定义），或者本机的服务（Ollama、LM Studio、oMLX），让文字留在这台 Mac 上。每个服务填 API Key、地址和模型，可以测试连接；Key 只保存在 macOS 钥匙串里，不会写进 Voxt 的设置或日志。各功能的语言模型菜单列出设置好的服务，“自动”用第一个，卡片上写明使用位置。页面把本机运行的服务（免费）和在线服务分开列出。只发送识别出的文字或选中的文字，不发送音频。
 - Voxt 2.0.0，从头重写：只用本地模型的 macOS 语音输入。在任意 App 里按下快捷键说话，文字出现在光标处。音频和文字不会离开你的 Mac。
 - 本地语音识别：精准（推荐）和快速两个模型，说话时实时显示文字；声音检测只把说话的部分交给它们。
 - 本地语言模型：均衡（推荐）、快速和翻译专用三个模型，用于整理、翻译和改写。
@@ -82,13 +114,9 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **长口述边说边识别**：说到 1 分钟以后，已经说完的部分在停顿处切开、在后台识别，停止后只剩最后半分钟左右（Mac 内存紧张时，104 秒口述停止后的等待 26 秒 → 2.4 秒）。
 - **浮窗说明录音在等什么。** 麦克风启动慢时（Mac 内存紧张时 Voxt 启动后的第一次口述），麦克风图标在一个圆环里闪动，浮窗显示“正在启动麦克风…”：波形亮起之前说的话不会被录下。语音识别模型还在加载时（第一次口述，或者模型被卸载之后），只有图标在动，波形照常跟着你的声音：录音不受影响，模型就绪后实时文字随即出现。
 - **取消转录的按键可自定义**：设置→快捷键里新增“取消转录”一行，在转录页可以换成别的键或关掉（默认 Esc）。只在录音或答案卡片显示时拦截这个键；取消的录音现在会留在历史里，可以用“重试”找回。
-- **远程语音识别**（语音模型页的“远程服务”）：OpenAI Transcribe、豆包（火山引擎）、智谱 GLM-ASR、阿里云百炼 ASR、阶跃星辰、小米 MiMo 和 Google Gemini，与 Voxt 1.x 相同。豆包、阿里云百炼和 Gemini 边说边出文字（标为“实时”），其他服务在你说完后识别整段录音。填写密钥（豆包还可以填 App ID）、地址和模型即可设置，保存前可以测试连接；密钥只保存在 Mac 的钥匙串里，不会写进 Voxt 的设置或日志。OpenAI Transcribe、阶跃星辰和智谱指向本机的服务（本地 Whisper 服务）时不需要密钥。设置好的服务排在这台 Mac 上的语音模型之后，出现在每个功能的语音识别模型菜单里；在那里选中它、或这台 Mac 上没有安装语音模型时使用。豆包、Gemini 以及阿里云百炼的 Fun-ASR 和 Qwen-Audio 模型把词典里的词当作热词，OpenAI Transcribe、阶跃星辰和智谱把它们放进提示词，小米 MiMo 不使用词典。
 
 #### 变更
 
-- **本地模型页改名为语音模型**：先列这台 Mac 上的语音模型，再列远程语音识别服务，各自标为“本地”或“远程”；语言模型在语言模型页。
-- **模型写清楚是哪一个**：本地模型页、各功能页的模型菜单、设置引导和历史都按系列、尺寸和量化称呼模型（Qwen3-ASR 1.7B (8bit)、Qwen3-ASR 0.6B (4bit)），和 Voxt 1.x 一样，不再写“精准语音识别”；卡片上有简短的标签（本地、准确或快速、实时、是否支持主语言）和使用位置，没有评分。
-- **语言模型只用远程服务。** Voxt 不再在这台 Mac 上下载和运行语言模型：请在“语言模型”页设置一个（用 Ollama 可以在本机免费运行）。Voxt 2.0.0 下载过的语言模型列在本地模型页的“不再使用的语言模型”里，可以删除。设置 → 隐私、设置引导和首页都写明了文字会发到哪里。
 - **Voxt 2.0.0 取代 Swift 版 Voxt 1.x。** 装上它会替换“应用程序”里的 Voxt.app。Voxt 1.x 的设置、词典和历史留在它自己的文件夹里，不会带过来；Voxt 会重新请求权限（设置引导会带你完成）。
 - **模型放在 ~/Library/Application Support/ActNow/models**，与使用这个模型库的其他 app 共用，不再放在会被清理工具当成缓存的 Hugging Face 缓存（~/.cache/huggingface）里。那里已有的模型在首次启动时直接拿过来（硬链接，原缓存不动），不用重新下载。Time Machine 默认不备份模型，可在 设置 → 存储 →“用 Time Machine 备份模型”中为所有这些 app 打开。
 - Voxt 静音了哪个输出设备的记录改放在 Application Support，不再放在 ~/Library/Caches，崩溃后即使清理了缓存，扬声器也不会一直静音。

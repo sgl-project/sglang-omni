@@ -104,7 +104,7 @@ The store's tests use MyGo's SQLite plugin, which downloads its library once (ch
 - [AGENTS.md](AGENTS.md): the rules for changes (strings, threading, the protocols).
 - [CHANGELOG.md](CHANGELOG.md): changes by version. [CONTRIBUTING.md](CONTRIBUTING.md): how to send a change.
 
-Voxt takes the place of the Swift Voxt (1.x) that this repository held before 2.0.0: installing it replaces that app's Voxt.app in Applications, and the two keep their data apart. Some names inside stay VoxtNew (its Swift packages, processes, bundle id and data folders). It started as a copy of [Auralink](https://github.com/hehehai/Auralink), the same author's app on remote models, which rewrote [Voxt](https://github.com/hehehai/voxt) on Go and MyGo with [AudioSmith](https://github.com/hehehai/AudioSmith)'s interface; its local model runtimes and their request policies follow Voxt's.
+Voxt takes the place of the Swift Voxt (1.x) that this repository held before 2.0.0: installing it replaces that app's Voxt.app in Applications, and the two keep their data apart; Voxt can import the old app's dictionary, history and downloaded speech models ([docs/voxt-migration.md](docs/voxt-migration.md)). Some names inside stay VoxtNew (its Swift packages, processes, bundle id and data folders). It started as a copy of [Auralink](https://github.com/hehehai/Auralink), the same author's app on remote models, which rewrote [Voxt](https://github.com/hehehai/voxt) on Go and MyGo with [AudioSmith](https://github.com/hehehai/AudioSmith)'s interface; its local model runtimes and their request policies follow Voxt's.
 
 ## Licence
 
