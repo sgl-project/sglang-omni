@@ -32,8 +32,13 @@ from tests.utils import (
 
 MODEL_PATH = "Qwen/Qwen3-ASR-1.7B"
 MODEL_NAME = MODEL_PATH
-SERVER_MODEL_ARGS = {
-    "no_draft": ["--model-path", MODEL_PATH],
+DRAFT_SERVE_FLAGS = {
+    "no_draft": [
+        "--model-path",
+        MODEL_PATH,
+        "--asr.engine.disable_speculative_decoding",
+        "true",
+    ],
     "dflash": ["--config", "examples/configs/qwen3_asr_1_7b_dflash.yaml"],
 }
 STARTUP_TIMEOUT = 600
@@ -42,7 +47,7 @@ SAMPLE_RATE = 16000
 AUDIO_FIXTURE = Path(__file__).parent.parent / "data" / "query_to_draw.wav"
 
 
-@pytest.fixture(scope="module", params=list(SERVER_MODEL_ARGS))
+@pytest.fixture(scope="module", params=list(DRAFT_SERVE_FLAGS))
 def server_process(
     request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory
 ) -> Iterator[subprocess.Popen]:
@@ -55,7 +60,7 @@ def server_process(
         "-m",
         "sglang_omni.cli",
         "serve",
-        *SERVER_MODEL_ARGS[request.param],
+        *DRAFT_SERVE_FLAGS[request.param],
         "--model-name",
         MODEL_NAME,
         "--enable-realtime",
