@@ -1,6 +1,7 @@
 package main
 
-// Settings → Storage's model folder and its Erase everything (family spec
+// Settings → Storage's model folder, choosing another one (family spec
+// §7.1: the family's models.root), and its Erase everything (family spec
 // §7.6 step 3). The models are in the ActNow family's library, not in
 // VoxtNew's data folder, and not VoxtNew's alone: erasing removes from it
 // each model VoxtNew claims, deleting the files only of those no other
@@ -12,7 +13,9 @@ package main
 import (
 	"context"
 	"log"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
@@ -22,6 +25,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/actnow"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/datadir"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
@@ -40,6 +44,10 @@ func (a *app) modelFolderRows(c *ui.Context, r *storageReport, open func(key, di
 	sectionTitle(c, i18n.T("Model folder"))
 	settingRowNote(c, "st-models", uitext.ShortPath(hub), note, func() {
 		open("st-open-models", hub)
+		if fam := a.fam; fam != nil && !fam.ReadOnly() &&
+			ui.Button(c.Key("st-models-change"), i18n.T("Change…")).Disabled(a.modelMoving).Clicked() {
+			chooseDir(a, i18n.T("Keep the models in…"), i18n.T("Use this folder"), a.startModelMove)
+		}
 	})
 	if fam := a.fam; fam != nil && !fam.ReadOnly() {
 		// Time Machine (family spec §7.12): the family's models.backup,
@@ -76,6 +84,92 @@ func (a *app) modelFolderRows(c *ui.Context, r *storageReport, open func(key, di
 			ui.Text(c, uitext.HumanBytes(row.bytes)).TextColor(t.TextMuted).TextAlign(ui.End)
 			ui.Box(c)
 		}
+	})
+}
+
+// modelsDirName is the library's folder made in a folder the user chose
+// that holds other files.
+const modelsDirName = "Voxt Models"
+
+// modelsTarget is the library's folder for dir, the folder the user
+// chose: dir itself when it is empty or already a library (it holds
+// models--… folders, as a Hugging Face cache does), else a folder in it.
+func modelsTarget(dir string) string {
+	ents, _ := os.ReadDir(dir)
+	empty := !slices.ContainsFunc(ents, func(e os.DirEntry) bool { return !strings.HasPrefix(e.Name(), ".") })
+	if empty || slices.ContainsFunc(ents, func(e os.DirEntry) bool { return strings.HasPrefix(e.Name(), "models--") }) {
+		return dir
+	}
+	return filepath.Join(dir, modelsDirName)
+}
+
+// startModelMove makes dir's library the model folder of every app that
+// shares it (the family's models.root): the models are brought there
+// (models.Manager.MoveTo), the setting written, and VoxtNew restarts to
+// use it, as moving the data folder does. The old folder stays as it was:
+// another app, or an older version, may still read it.
+func (a *app) startModelMove(dir string) {
+	from, to := a.models.Hub(), modelsTarget(dir)
+	if fammodels.SameHub(from, to) {
+		a.toast(i18n.T("The models are already there"))
+		return
+	}
+	if rel, err := filepath.Rel(from, to); err == nil && !strings.HasPrefix(rel, "..") {
+		a.toast(i18n.T("Choose a folder outside the model folder."))
+		return
+	}
+	if slices.ContainsFunc(a.models.Catalog(), func(m models.Model) bool { return a.models.Status(m.ID).Downloading }) {
+		a.toast(i18n.T("Wait for the downloads to finish, or cancel them, then try again."))
+		return
+	}
+	value := to
+	if fammodels.SameHub(to, fammodels.DefaultHubIn(a.fam.Dir())) {
+		value = "" // the default rules
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	a.modelMoving, a.modelMoveTo, a.modelMoveCancel = true, to, cancel
+	fam, m, prefs := a.fam, a.models, a.prefs
+	a.async(func() {
+		err := m.MoveTo(ctx, to, fam.Backup(), func() error {
+			return fam.Set(ctx, prefs, actnow.KeyModelsRoot, value)
+		})
+		a.post(func() {
+			a.modelMoveCancel = nil
+			if err != nil {
+				a.modelMoving = false
+				if ctx.Err() == nil {
+					log.Printf("models: moving the library to %s: %v", to, err)
+					a.toast(i18n.T("The models were not moved: %v", err))
+				}
+				return
+			}
+			appRelaunch() // the start opens the library in its new folder
+		})
+	})
+}
+
+// modelMoveDialog is the model folder change's progress.
+func (a *app) modelMoveDialog(c *ui.Context) {
+	t := c.Theme()
+	moving := a.modelMoving
+	ui.DialogBase(c.Key("st-models-moving"), &moving, func(backdrop, panel ui.Element) {
+		backdrop.Background(ui.RGBA(0, 0, 0, 0.3))
+		panel.Width(px(t, 440)).Radius(px(t, radiusCard)).Background(t.Background).Border(1, t.Border).Padding(px(t, sp5)).Label(i18n.T("Moving the models"))
+		ui.Column(c).Gap(px(t, 10)).Children(func() {
+			ui.Text(c, i18n.T("Moving the models")).Bold()
+			body := i18n.T("Bringing the models to %s: linked on the same disk, copied to another. Then Voxt restarts. The old folder stays as it was.", uitext.ShortPath(a.modelMoveTo))
+			if a.familyOthers() {
+				body = i18n.T("Bringing the models to %s: linked on the same disk, copied to another. Then all apps that use this model library keep their models there, and Voxt restarts. The old folder stays as it was.", uitext.ShortPath(a.modelMoveTo))
+			}
+			ui.Text(c, body).FontSize(px(t, fsCaption))
+			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
+				ui.Spinner(c)
+				ui.Row(c).Grow(1)
+				if ui.Button(c.Key("st-models-move-cancel"), i18n.T("Cancel")).Disabled(a.modelMoveCancel == nil).Clicked() && a.modelMoveCancel != nil {
+					a.modelMoveCancel()
+				}
+			})
+		})
 	})
 }
 

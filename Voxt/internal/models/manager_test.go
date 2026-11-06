@@ -336,6 +336,55 @@ func TestMigrateRetired(t *testing.T) {
 	}
 }
 
+// TestMoveTo: choosing another model folder brings VoxtNew's models
+// there, claimed again, and the models other apps claim too (not a model
+// no app claims); the library stays as it was.
+func TestMoveTo(t *testing.T) {
+	e := newEnv(t, testCatalog(), Options{})
+	other := conformance.TestRepo("mlx-community/other-app", "4444444444444444444444444444444444444444", 8<<10)
+	stray := conformance.TestRepo("someone/stray", "5555555555555555555555555555555555555555", 8<<10)
+	for _, r := range []conformance.Repo{repoSpeech, repoVAD, repoLLM, other, stray} {
+		e.fx.Install(r)
+	}
+	e.m.Refresh()
+	if err := e.m.Migrate(ctxT(t)); err != nil {
+		t.Fatal(err)
+	}
+	e.claim(t, dicta, other)
+	to := filepath.Join(t.TempDir(), "Models")
+	// The setting cannot be written: VoxtNew's claims stay here.
+	if err := e.m.MoveTo(ctxT(t), to, false, func() error { return errors.New("read-only") }); err == nil {
+		t.Fatal("moved without the setting")
+	}
+	if cs := e.fx.Claims(voxtnew); !fammodels.SameHub(cs.Root, e.fx.Hub) || len(cs.Claims) != 3 {
+		t.Fatalf("claims after a failed move: %+v", cs)
+	}
+	// Again, the first attempt's files gone: every model is brought again.
+	os.RemoveAll(to)
+	committed := false
+	if err := e.m.MoveTo(ctxT(t), to, false, func() error { committed = true; return nil }); err != nil || !committed {
+		t.Fatal(err, committed)
+	}
+	for _, r := range []conformance.Repo{repoSpeech, repoVAD, repoLLM, other} {
+		if st := fammodels.Check(to, fammodels.Claim{Repo: r.Ref.Repo, Revision: r.Ref.Revision}).State; st != fammodels.Installed {
+			t.Errorf("%s in the new folder: %v", r.Ref, st)
+		}
+		if !e.fx.Installed(r.Ref) {
+			t.Errorf("%s left the library", r.Ref)
+		}
+	}
+	if _, err := os.Stat(fammodels.RepoDir(to, stray.Ref.Repo)); !os.IsNotExist(err) {
+		t.Errorf("a model no app claims was brought: %v", err)
+	}
+	cs := e.fx.Claims(voxtnew)
+	if !fammodels.SameHub(cs.Root, to) || len(cs.Claims) != 3 {
+		t.Errorf("VoxtNew's claims: %+v", cs)
+	}
+	if cs := e.fx.Claims(dicta); !fammodels.SameHub(cs.Root, e.fx.Hub) {
+		t.Errorf("Dicta's claims changed: %+v", cs)
+	}
+}
+
 // TestMigrate: the first start claims what of the catalogue is on disk
 // and no other app claims, origin migrated, reading the disk only;
 // another app's model waits for "Use them".
