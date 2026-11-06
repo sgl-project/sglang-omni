@@ -1,0 +1,9 @@
+{"to":"llm","msg":{"id":"c0","method":"model.status"}}
+{"to":"app","msg":{"id":"c0","error":{"code":"not_initialized","message":"llm.hello must come first"}}}
+{"to":"llm","msg":{"id":"c1","method":"llm.hello","params":{"protocol":1,"app":"0.1.0-beta.1","logLevel":"info"}}}
+{"to":"app","msg":{"method":"log","params":{"level":"info","message":"voxtnew-llm 0.1.0-beta.1 ready (app 0.1.0-beta.1)"}}}
+{"to":"app","msg":{"id":"c1","result":{"protocol":1,"version":"0.1.0-beta.1","pid":4242,"methods":["llm.hello","llm.shutdown","job.cancel","model.load","model.unload","model.status","chat"],"device":{"name":"Mac16,13","os":"macOS 26.7","memoryBytes":25769803776}}}}
+{"to":"llm","msg":{"id":"c2","method":"model.status"}}
+{"to":"app","msg":{"id":"c2","result":{"memory":{"footprintBytes":31457280,"peakFootprintBytes":33554432,"residentBytes":31457280}}}}
+{"to":"llm","msg":{"id":"c3","method":"llm.shutdown"}}
+{"to":"app","msg":{"id":"c3","result":{}}}

@@ -202,6 +202,13 @@
       }
     }
   },
+  "wilsonzheng0327/MOSS-Transcribe-Diarize-dflash": {
+    "revision": "2e3f00b0932112e4f92a4ef67a4cd60ee855056c",
+    "files": {
+      "config.json": "c240f41c98040d6eec7ca8f0f6bd548d3d9df302cbe10f5a91e2e833d1463250",
+      "model.safetensors": "b7ee3fde257d5f0c95a0f8805f62934e202e4d6b7d993f04dd53e4d512045a10"
+    }
+  },
   "inclusionAI/Ming-3.0-audio-tiny": {
     "revision": "3c9578f641b6745abf2d1239dc8419726f37c0e2",
     "files": {

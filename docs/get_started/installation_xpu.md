@@ -211,6 +211,36 @@ The streaming encoder captures its subsequent-window batch sizes at startup on X
 
 **Expected result:** The JSON response contains the transcription and segment timestamps.
 
+### Hy-SimulMT (speech translation, multi-XPU tensor parallel)
+
+The 57 GiB of bf16 weights do not fit one 24 GB card, so the single-card configuration in the [cookbook](../cookbook/hy_simulmt.md) needs tensor parallelism here. Four cards are the minimum: each rank then holds 14.37 GiB of weights and `--mem-fraction-static 0.75` leaves room for a 3.56 GiB KV cache (155321 tokens), measured on Arc Pro B60.
+
+**Launch**
+
+```bash
+sgl-omni serve \
+  --model-path /path/to/Hy-SimulMT-30B-A3B \
+  --asr.tp_size 4 --asr.gpu "[0, 1, 2, 3]" \
+  --mem-fraction-static 0.75 \
+  --enable-realtime \
+  --host 0.0.0.0 --port 8000
+```
+
+**Request**
+
+```bash
+# Chinese speech to English text:
+curl -s -X POST http://localhost:8000/v1/audio/translations \
+  -F "file=@chinese.wav" -F "language=zh" -F "response_format=json"
+# English speech to Chinese text, over the shared transcription route:
+curl -s -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F "file=@english.wav" -F "language=en" -F "response_format=json"
+```
+
+Decode graphs capture on XPU for this model and stay on by default, as on CUDA. On the four-rank layout above the tensor-parallel all-reduce is recorded in that capture, checked by replaying a captured all-reduce against its eager result on every rank. That measurement does not carry to wider layouts: the oneCCL 2022.1.1 which `torch==2.14.0+xpu` pins has been seen elsewhere to drop a captured collective without raising, which a decode graph then replays as a no-op, so re-check that before raising `--asr.tp_size` and pass `--asr.engine.disable_cuda_graph true` if it does not hold.
+
+**Expected result:** The JSON response contains the translated text in `text`.
+
 ### Qwen3-TTS (text-to-speech, single XPU)
 
 Qwen3-TTS automatically selects the `intel_xpu` attention backend when the platform and the engine stage device are both XPU. Setting any of `attention_backend`, `prefill_attention_backend`, or `decode_attention_backend` in `server_args_overrides` takes precedence over this default. CPU stages on an XPU host are unaffected.

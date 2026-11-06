@@ -1,0 +1,196 @@
+VoxtNew
+Copyright 2026 ActNow (https://actnow.dev) and the SGLang-Omni Team. Licensed under the Apache License 2.0
+(LICENSE).
+
+VoxtNew derives from Auralink (https://github.com/hehehai/Auralink) at
+commit 748cf55, by the same author, who licenses that code for VoxtNew
+under the Apache License 2.0: almost all of VoxtNew's Go code, the Swift
+helper, its tests and its documentation started there, and were renamed
+and stripped of Auralink's remote services (docs/architecture.md, §5).
+
+Third-party material
+====================
+
+VoxtNew includes the material below. Each part keeps its own licence:
+the Apache License 2.0, the Unicode License v3, MIT, ISC, BSD-3-Clause and
+CC BY 4.0 (for the icons, which are artwork rather than code) ask for
+their notices to be kept, which this file and LICENSES/ do. Full licence
+texts: LICENSES/Apache-2.0.txt, LICENSES/Unicode-3.0.txt,
+third_party/mygo/LICENSE, LICENSES/go/ (the Go modules' own files,
+copied unchanged), LICENSES/omni/ and LICENSES/llm/ (the runtimes'
+libraries).
+
+AudioSmith
+  Portions of this product come from AudioSmith
+  (https://github.com/hehehai/AudioSmith) at commit f171c86, Copyright 2026
+  the AudioSmith authors, licensed under the Apache License 2.0
+  (LICENSES/Apache-2.0.txt): the window shell and UI kit, the settings,
+  store, i18n, logs, notification and Keychain code, the MyGo patches 0001
+  and 0002, and the helper supervisor (adapted from its engine
+  supervisor). They have been modified; docs/architecture.md lists what
+  was taken and how it changed.
+
+Voxt overlay preview background
+  assets/overlay-preview-background.png, the desktop picture behind the
+  overlay's preview in Settings → Overlay style, is taken unchanged from
+  Voxt (https://github.com/hehehai/voxt) at commit baa6f31
+  (Voxt/Assets.xcassets/OverlayPreviewBackground.imageset), Copyright the
+  Voxt authors, licensed under the Apache License 2.0.
+
+Voxt overlay icons
+  internal/icons/voxt.go holds the overlay's mode icons (transcription,
+  translation, rewrite), its answer icon and its small spinner, drawn from
+  the path data of Voxt (https://github.com/hehehai/voxt) at commit baa6f31
+  (Voxt/Windows/WaveformIconPathData.swift, WaveformIconViews.swift),
+  Copyright the Voxt authors, licensed under the Apache License 2.0; the
+  paths are unchanged.
+
+Voxt menu bar icon
+  internal/trayicon/voxt.png, the microphone of the menu bar icon, is
+  taken unchanged from Voxt (https://github.com/hehehai/voxt) at commit
+  baa6f31 (Voxt/Assets.xcassets/voxt.imageset/voxt.png), Copyright the Voxt
+  authors, licensed under the Apache License 2.0. internal/trayicon/gen
+  scales it to the 36 px menubar.png and adds the recording dot for
+  menubar-recording.png.
+
+VoxtNew app icon
+  resources/icon.png is Voxt's app icon, taken unchanged from Voxt
+  (Voxt/Assets.xcassets/VoxtIcon.appiconset/icon_512x512@2x.png) and only
+  scaled onto the 1024 px canvas with macOS's standard margin, Copyright the
+  Voxt authors, licensed under the Apache License 2.0.
+
+Solar icon set
+  by 480 Design — https://www.figma.com/community/file/1166831539721848736
+  Licensed under Creative Commons Attribution 4.0 International (CC BY 4.0),
+  https://creativecommons.org/licenses/by/4.0/
+  Taken from the npm package @iconify-json/solar 1.2.13 (Iconify,
+  https://icon-sets.iconify.design/solar/). Only the icons VoxtNew uses are
+  included, converted to Go source in internal/icons/solar_gen.go
+  (internal/icons/gen); their shapes are unchanged.
+
+Language data
+  internal/lang/languages.tsv and aliases.tsv are built by
+  internal/lang/gen from:
+  - OmniVoice's language list (https://github.com/k2-fsa/OmniVoice,
+    docs/lang_id_name_map.tsv), licensed under the Apache License 2.0;
+  - Whisper's LANGUAGES table (https://github.com/openai/whisper,
+    whisper/tokenizer.py), Copyright (c) 2022 OpenAI, licensed under the
+    MIT License:
+      Permission is hereby granted, free of charge, to any person obtaining
+      a copy of this software and associated documentation files (the
+      "Software"), to deal in the Software without restriction, including
+      without limitation the rights to use, copy, modify, merge, publish,
+      distribute, sublicense, and/or sell copies of the Software, and to
+      permit persons to whom the Software is furnished to do so, subject to
+      the following conditions: The above copyright notice and this
+      permission notice shall be included in all copies or substantial
+      portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT
+      WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+      TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+      PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+      COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+      LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+      ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE
+      OR OTHER DEALINGS IN THE SOFTWARE.
+  - Unicode CLDR 48.2 (the npm packages cldr-localenames-full and
+    cldr-core), Copyright © 1991-2026 Unicode, Inc., licensed under the
+    Unicode License v3 (LICENSES/Unicode-3.0.txt).
+
+Speech sample
+  testdata/speech/sample-zh-en.wav is synthetic speech made with
+  Qwen3-TTS-12Hz-0.6B-CustomVoice (Alibaba Qwen, Apache-2.0), which puts no
+  condition on its outputs; it is distributed with VoxtNew under
+  VoxtNew's licence. testdata/speech/README.md says how it was made.
+
+MyGo
+  Copyright (c) 2026 MyGo contributors — https://github.com/egoist/mygo
+  Licensed under the MIT License (third_party/mygo/LICENSE). VoxtNew
+  builds against a copy with its own patches (third_party/mygo-patches),
+  made by scripts/vendor-mygo.sh, until upstream releases the fixes. The
+  patches are licensed under MyGo's MIT License, so that they can go
+  upstream (third_party/mygo-patches/README.md).
+  VoxtNew.app also carries MyGo's prebuilt SQLite library (SQLite 3.53.4,
+  https://sqlite.org, in the public domain).
+
+The Omni native runtime (VoxtNew.app/Contents/Resources/omni)
+  bin/qwen3_asr_server is built from sglang-omni's sglang_omni_mlx/native
+  (this repository, Apache License 2.0) by scripts/build-omni.sh. It
+  carries, linked in or beside it:
+  - MLX 0.32.3 (libmlx.dylib, libjaccl.dylib, mlx.metallib), Copyright
+    2023 Apple Inc., MIT (LICENSES/omni/mlx.LICENSE.txt)
+  - CivetWeb 1.16, Copyright 2013-2021 the CivetWeb developers, 2004-2013
+    Sergey Lyubka, MIT (LICENSES/omni/civetweb.LICENSE.md; only its own
+    licence applies: none of the optional parts it lists is built)
+  - JSON for Modern C++ 3.11.3, Copyright 2013-2022 Niels Lohmann, MIT
+    (LICENSES/omni/nlohmann_json.LICENSE.txt)
+  - PCRE2 10.44, Copyright University of Cambridge and the PCRE2
+    authors, BSD-3-Clause with its binary exemption
+    (LICENSES/omni/pcre2.LICENCE.txt)
+  The models it runs are downloaded by the user, not shipped:
+  Qwen3-ASR (Qwen, Apache License 2.0) in the MLX conversions of
+  mlx-community, and Silero VAD (MIT).
+
+The language models' runtime (VoxtNew.app/Contents/Resources/llm)
+  voxtnew-llm is built from llm/ (this repository, Apache License 2.0)
+  by scripts/build-llm.sh. Its MLX loader (ModelLoader.swift,
+  PrequantizedModelLoading.swift, LocalTokenizerLoader.swift) and its
+  GGUF runtime come from Voxt (https://github.com/hehehai/voxt,
+  Voxt/Core/Models), Copyright the Voxt authors, Apache License 2.0. It
+  carries, linked in or beside it (licence texts in LICENSES/llm/):
+  - mlx-swift 0.31.6, Copyright (c) 2023 ml-explore, MIT, with MLX
+    (mlx.metallib), Copyright 2023 Apple Inc., MIT; mlx-c, Copyright 2023
+    Apple Inc., MIT; {fmt}, Copyright (c) 2012 - present Victor Zverovich
+    and {fmt} contributors, MIT; JSON for Modern C++, Copyright 2013-2022
+    Niels Lohmann, MIT; metal-cpp, Copyright 2022 Apple Inc., Apache
+    License 2.0
+  - mlx-swift-lm (revision c6446cf), Copyright (c) 2024 ml-explore, MIT
+  - llama.cpp b10549 (llama.framework), Copyright (c) 2023-2026 The ggml
+    authors, MIT, through llama.swift 2.10549.0, Copyright 2025 Mattt, MIT
+  - swift-transformers 1.3.4 (Tokenizers, Hub;
+    swift-transformers_Hub.bundle), swift-huggingface 0.13.0, swift-jinja
+    2.5.1 (Hugging Face), swift-collections 1.7.3, swift-numerics 1.1.1,
+    swift-crypto 4.5.2 and swift-asn1 1.7.3 (Apple; their NOTICE files are
+    in LICENSES/llm/), all Apache License 2.0 (LICENSES/Apache-2.0.txt)
+  - EventSource 1.5.1, Copyright 2025 Mattt, MIT; yyjson 0.12.0,
+    Copyright (c) 2020 YaoYuan, MIT
+  The models it runs are downloaded by the user, not shipped: Qwen3.5
+  (Qwen, Apache License 2.0) in the MLX conversions of mlx-community, and
+  Hy-MT2 (Tencent, Apache License 2.0).
+
+React Bits Sound Lab (the recording's cues, in official builds only)
+  VoxtNew's official builds (from actnow.dev) carry sounds from React Bits
+  Sound Lab (https://reactbits.dev/tools/sound-lab), Copyright (c) 2026
+  David Haz, licensed under MIT + Commons Clause License Condition v1.0
+  (LICENSES/React-Bits.md): they may be used as part of an application but
+  not sold or redistributed on their own. They are NOT part of this
+  repository and NOT licensed under the Apache License 2.0: the official
+  build fetches them from the ActNow family's private sound library
+  (scripts/sync-sounds.sh) into Contents/Resources/sounds. A build from
+  this source without them plays macOS's system sounds.
+
+Go modules compiled into VoxtNew
+  Their licence files are copied unchanged into LICENSES/go/.
+  - github.com/coder/websocket v1.8.15, Copyright (c) 2025 Coder, ISC
+  - github.com/ebitengine/purego v0.11.1, Copyright the Ebitengine
+    authors, Apache License 2.0 (LICENSES/Apache-2.0.txt)
+  - github.com/hehehai/actnowkit v0.9.1, Copyright 2026 ActNow
+    (https://actnow.dev), Apache License 2.0 (LICENSES/Apache-2.0.txt):
+    the ActNow family's shared code (the family directory, model
+    library, claims and locks, settings, shortcuts, runtime files, the
+    logs' line selection, the cue sounds' catalogue and player, without
+    audio) and its Hugging Face downloader. Its NOTICE reads: "Package hfhub derives from
+    Dicta's internal/hub, which was ported from AudioSmith's internal/hub
+    at version 0.3.0 (commit f171c86), when AudioSmith was released under
+    the Apache License 2.0 (as it was up to and including version
+    0.4.0-beta.1). The copyright holder, hehehai, releases that code in
+    actnowkit under the Apache License 2.0. Portions Copyright 2026 the
+    AudioSmith authors."
+  - github.com/go-text/typesetting v0.3.5, Copyright 2021 The go-text
+    authors, Unlicense OR BSD-3-Clause
+  - golang.org/x/image v0.46.0, Copyright 2009 The Go Authors,
+    BSD-3-Clause, with Google's patent grant (PATENTS)
+  - golang.org/x/text v0.43.0, Copyright 2009 The Go Authors,
+    BSD-3-Clause, with Google's patent grant (PATENTS)
+
+The Swift helper (helper/) has no third-party dependencies: it uses
+Apple's system frameworks only.
