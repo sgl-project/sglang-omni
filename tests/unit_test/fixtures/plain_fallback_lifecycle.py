@@ -238,13 +238,10 @@ def probe_plain_fallback(
                     batch_measurements.append(batch_measurement)
                     if decode_path == "plain":
                         assert batch_measurement["sampler"] > 0
-                        if model_family == "qwen3_asr":
-                            assert not sampler.call_args.args[1].is_all_greedy
-                        else:
-                            assert all(
-                                request.sampling_params.repetition_penalty == 1.2
-                                for request in batch.reqs
-                            )
+                        assert all(
+                            request.sampling_params.repetition_penalty == 1.2
+                            for request in batch.reqs
+                        )
                         assert (
                             batch_measurement["draft_forward"]
                             == batch_measurement["draft_kv_write"]
