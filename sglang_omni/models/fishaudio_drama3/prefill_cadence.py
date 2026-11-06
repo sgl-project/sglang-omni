@@ -229,13 +229,17 @@ class PrefillCadence:
         `0.3 + 28.6 n` where the same engine under load fitted `20.6 + 7.15 n`. A fixed part of zero
         says the interval can buy nothing, and the policy then takes the shortest interval there is.
         So with no spread, read the prefill as **all** fixed cost, which is the side the measurements
-        fall on: the fixed part dominates at the small cohorts this regime produces.
+        fall on: the fixed part dominates at the small cohorts this regime produces. "All fixed" means
+        the prefill time measured **now**, not the smallest ever seen — one cohort size does not mean
+        a constant prefill, because the same cohort costs more under load. A run that pinned it to
+        the lifetime minimum estimated 31 ms where the cell's prefills were taking 200, which made
+        the wait cap 371 ms instead of 202 and took first audio p95 to 1106 ms.
         """
         weight, count, total, squares, products = self.prefill_line
         spread = weight * squares - count**2
         least, most = self.cohort_seen
         if weight < 2 or spread <= 0 or most - least < COHORT_SPREAD:
-            return self.prefill_least_s or (self.prefill_s or 0.0)
+            return self.prefill_s or self.prefill_least_s or 0.0
         else:
             per_request = (weight * products - count * total) / spread
             fixed = (total - per_request * count) / weight
@@ -244,7 +248,7 @@ class PrefillCadence:
                 # few large cohorts a window sees arrive when the engine is busiest, so they lever
                 # the line below zero: one H200 cell at C64 fitted -1.2 + 5.39 n. Read it as all
                 # fixed cost instead, the same reading as no spread at all.
-                return self.prefill_least_s or (self.prefill_s or 0.0)
+                return self.prefill_s or self.prefill_least_s or 0.0
             else:
                 return fixed + max(0.0, per_request) * cohort
 

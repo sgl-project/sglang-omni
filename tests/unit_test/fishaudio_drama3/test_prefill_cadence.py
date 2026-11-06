@@ -269,6 +269,13 @@ def test_one_cohort_size_reads_the_prefill_as_all_fixed_cost() -> None:
     assert policy.latency_interval(now_s, 0.0093, 0.030) > 4
 
 
+def test_all_fixed_means_the_prefill_now_not_the_smallest_ever_seen() -> None:
+    """One cohort size is not a constant prefill: the same cohort costs more under load."""
+    policy, _ = loaded([(0.030, 1)] * 20 + [(0.200, 1)] * 20)
+    assert policy.prefill_estimate_s(1) > 0.10
+    assert policy.wait_cap_s(1) < 0.30
+
+
 def test_a_fixed_part_of_zero_is_what_made_the_policy_take_the_shortest_interval() -> None:
     """The defect the guard removes: an identifiable fit whose fixed part is zero amortises nothing."""
     policy, now_s = loaded([(0.030, 1), (0.120, 4), (0.240, 8)])
