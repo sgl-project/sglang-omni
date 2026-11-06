@@ -145,7 +145,8 @@ endforeach()
 add_library(swift_port STATIC src/common/swift_port.cpp)
 target_include_directories(swift_port PUBLIC src)
 target_link_libraries(swift_port PUBLIC mlx)
-add_library(whisper_asr STATIC src/whisper/whisper_model.cpp src/whisper/whisper_transcriber.cpp)
+add_library(whisper_asr STATIC src/whisper/whisper_model.cpp src/whisper/whisper_transcriber.cpp
+  src/whisper/whisper_speculative.cpp)
 target_link_libraries(whisper_asr PUBLIC qwen3_asr swift_port)
 # Note (khazic): CPU float math rounds each operation, as Swift does: no fused multiply-add.
 target_compile_options(swift_port PRIVATE -Wall -Wextra -ffp-contract=off)

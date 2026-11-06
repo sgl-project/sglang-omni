@@ -60,6 +60,13 @@ private:
                                 int max_new_tokens, float temperature,
                                 const std::atomic<bool> &cancel) const;
 
+  mlx::core::array NextToken(mlx::core::array logits, bool first_step,
+                             float temperature) const;
+  WindowResult TranscribeWithDraft(const mlx::core::array &encoder_states,
+                                   const std::vector<int> &prompt_ids,
+                                   int max_new_tokens,
+                                   const std::atomic<bool> &cancel) const;
+
   WhisperModel model_;
   std::optional<WhisperModel> draft_;
   int draft_steps_;
