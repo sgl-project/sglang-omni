@@ -101,13 +101,13 @@ from benchmarks.benchmarker.fingerprint import (
     collect_environment_fingerprint,
     collect_server_identity,
 )
-from benchmarks.dataset.prepare import DATASETS
+from benchmarks.dataset.prepare import DATASETS, SEEDTTS_DATASET_REVISION
 from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
-from benchmarks.defaults import QWEN3_ASR_MODEL_PATH, SEEDTTS_DATASET_REVISION
 from benchmarks.eval.asr_profiling import UtilizationSampler, run_profiled_pass
 from benchmarks.runtime_metrics import ResourceMonitor, collect_benchmark_provenance
 from benchmarks.tasks.asr import (
     FUN_ASR_MODEL_PATH,
+    QWEN3_ASR_MODEL_PATH,
     build_asr_eval_results,
     run_asr_transcription,
 )

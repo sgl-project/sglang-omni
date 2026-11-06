@@ -8,7 +8,7 @@ from statistics import mean
 
 from pydantic import BaseModel, Field
 
-from benchmarks.defaults import SEEDTTS_DATASET_ID
+from benchmarks.dataset.prepare import SEEDTTS_DATASET_ID
 from benchmarks.eval.speculative_workloads import (
     HOST,
     LoadSettings,

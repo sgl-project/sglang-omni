@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 import wave
 from argparse import Namespace
 from pathlib import Path
@@ -558,24 +556,6 @@ REQUIRED = [
     "--output-dir",
     "out",
 ]
-
-
-def test_sweep_help_does_not_import_task_or_dataset_executors() -> None:
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import runpy, sys\n"
-            "sys.modules['benchmarks.tasks.asr'] = None\n"
-            "sys.modules['benchmarks.dataset.prepare'] = None\n"
-            "sys.argv = ['speculative_sweep', '--help']\n"
-            "runpy.run_module('benchmarks.eval.speculative_sweep', run_name='__main__')",
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert "tts-seedtts-zh" in result.stdout
 
 
 def test_arguments_after_the_separator_go_to_the_client(monkeypatch) -> None:

@@ -16,7 +16,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from benchmarks.defaults import SEEDTTS_DATASET_ID, SEEDTTS_DATASET_REVISION
+from benchmarks.dataset.prepare import SEEDTTS_DATASET_ID, SEEDTTS_DATASET_REVISION
 
 logger = logging.getLogger(__name__)
 

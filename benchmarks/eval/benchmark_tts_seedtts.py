@@ -107,17 +107,16 @@ from benchmarks.benchmarker.runner import (
 )
 from benchmarks.benchmarker.utils import managed_omni_server
 from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
-from benchmarks.defaults import (
-    DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
-    QWEN3_ASR_MODEL_PATH,
-    SEEDTTS_DATASET_ID,
-)
 from benchmarks.metrics.performance import (
     build_speed_results,
     compute_speed_metrics,
     print_speed_summary,
 )
 from benchmarks.runtime_metrics import ResourceMonitor
+from benchmarks.tasks.asr import (
+    DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+    QWEN3_ASR_MODEL_PATH,
+)
 from benchmarks.tasks.tts import (
     MOSS_TTS_TOKEN_COUNT_AUTO,
     build_base_url,
@@ -868,7 +867,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--testset",
         dest="meta",
         type=str,
-        default=SEEDTTS_DATASET_ID,
+        default="zhaochenyang20/seed-tts-eval-arrow",
         help="HuggingFace Arrow/Parquet dataset repo id or local meta.lst path.",
     )
     parser.add_argument(

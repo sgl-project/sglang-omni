@@ -20,8 +20,11 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from benchmarks.defaults import QWEN3_ASR_MODEL_PATH
-from benchmarks.tasks.asr import FUN_ASR_MODEL_PATH, OMNI_WHISPER_MODEL_PATH
+from benchmarks.tasks.asr import (
+    FUN_ASR_MODEL_PATH,
+    OMNI_WHISPER_MODEL_PATH,
+    QWEN3_ASR_MODEL_PATH,
+)
 from tests.utils import apply_wer_slack
 
 

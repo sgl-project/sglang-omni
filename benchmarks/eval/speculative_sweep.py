@@ -32,7 +32,6 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from benchmarks.benchmarker.utils import managed_omni_server
-from benchmarks.defaults import DEFAULT_ASR_TRANSCRIBE_CONCURRENCY, QWEN3_ASR_MODEL_PATH
 from benchmarks.eval.speculative_tts import generate_tts, measure_tts
 from benchmarks.eval.speculative_workloads import (
     HOST,
@@ -50,6 +49,10 @@ from benchmarks.metrics.speculative import (
     compare,
     read_server_log,
     render,
+)
+from benchmarks.tasks.asr import (
+    DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+    QWEN3_ASR_MODEL_PATH,
 )
 from sglang_omni.config.manager import ConfigManager
 

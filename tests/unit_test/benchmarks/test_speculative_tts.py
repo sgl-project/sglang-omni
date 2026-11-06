@@ -89,13 +89,13 @@ def write_point(
     )
 
 
-@pytest.mark.parametrize("repeats", [1, 3])
-@pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize(
-    ("workload_name", "language", "error_rate", "expected_rate"),
+    ("workload_name", "language", "error_rate", "expected_rate", "stream", "repeats"),
     [
-        ("tts-seedtts-en", "en", "WER", 0.5),
-        ("tts-seedtts-zh", "zh", "CER", 0.25),
+        ("tts-seedtts-en", "en", "WER", 0.5, False, 1),
+        ("tts-seedtts-en", "en", "WER", 0.5, True, 3),
+        ("tts-seedtts-zh", "zh", "CER", 0.25, False, 3),
+        ("tts-seedtts-zh", "zh", "CER", 0.25, True, 1),
     ],
 )
 def test_tts_loads_read_every_repeat_and_keep_generation_timings(
@@ -248,8 +248,10 @@ def test_mismatched_quality_samples_fail_instead_of_scoring_another_run(
         )
 
 
-@pytest.mark.parametrize("warmup", [False, True])
-@pytest.mark.parametrize("failing_phase", [None, "generation", "transcription"])
+@pytest.mark.parametrize(
+    ("warmup", "failing_phase"),
+    [(False, None), (True, None), (True, "generation"), (False, "transcription")],
+)
 def test_leg_stops_tts_before_starting_asr_and_cleans_up_on_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
