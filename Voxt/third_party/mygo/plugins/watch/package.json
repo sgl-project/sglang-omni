@@ -1,0 +1,42 @@
+{
+  "name": "@mygo-plugins/watch",
+  "version": "0.5.5",
+  "description": "Watches for changes to files in the directories a MyGo desktop app lets its pages watch",
+  "keywords": [
+    "mygo",
+    "desktop",
+    "webview",
+    "go",
+    "watch",
+    "filesystem"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/egoist/mygo.git",
+    "directory": "plugins/watch"
+  },
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "bun run ../build.ts",
+    "test": "bun test"
+  },
+  "peerDependencies": {
+    "mygo-runtime": "^0.5.5"
+  },
+  "devDependencies": {
+    "mygo-runtime": "^0.5.5"
+  }
+}
