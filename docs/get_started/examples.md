@@ -11,7 +11,7 @@ Pick a task below. These examples use the [CUDA installation](installation.md).
 ## Stream a transcript
 
 **What you need:** The Qwen3-ASR-1.7B server and `query_to_cars.wav` from the
-[Quickstart](apiserver_quickstart.md).
+[Quickstart](quickstart.md).
 
 **Start or reuse the server:** Keep the Quickstart server running on port `8000`.
 

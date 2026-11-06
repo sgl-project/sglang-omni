@@ -110,7 +110,7 @@ The native server differs from the CUDA server in that:
 
 Measured on an Apple M5 (24 GB, macOS 26.3.1), warm, over 8 utterances (76 s of audio): 0.2 s load, real-time factor 0.33, about 2.4 GB peak MLX memory (3.2 GB with a reference). With the same speech tokens, the legacy Python MLX implementation from [#1964](https://github.com/sgl-project/sglang-omni/pull/1964) takes RTF 0.36 on the same MLX build. Transcribed back with Qwen3-ASR-1.7B-8bit, 16 English corpus sentences give 0.62% WER and 16 Chinese ones 0.97% CER. Against the official ONNX front end, the native one gives identical reference speech tokens on 20 of 20 corpus clips (speaker embedding cosine 0.99999, prompt mel within 7e-4), and with the same seed identical cloned speech tokens; cloned output transcribes at 1.03% WER (English) and 5.83% CER (Chinese, mostly digits and Latin names), the same with either front end. Mac CI checks seven seeded requests' speech tokens (English, Chinese, Chinese with instructions, a `max_new_tokens` cap, the default length limit, an English clone and a cross-lingual clone) against `sglang_omni_mlx/native/ci/model_golden/fun-cosyvoice3-0.5b-2512.json`, and on every chip the mel of two of them vocoded from the recorded tokens, within a tolerance.
 
-For Intel GPUs, follow the [Fun-CosyVoice3 XPU recipe](../get_started/installation_xpu.md#fun-cosyvoice3-text-to-speech-single-xpu).
+For Intel GPUs, follow the [Fun-CosyVoice3 XPU recipe](../other_platforms/installation_xpu.md#fun-cosyvoice3-text-to-speech-single-xpu).
 
 ## Synthesizing Speech
 

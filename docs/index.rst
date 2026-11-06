@@ -8,12 +8,12 @@ Serve speech and multimodal models with SGLang-Omni.
 - **Speech & Multimodal Models.** Transcribe audio, generate speech, and serve models that accept audio, images, and video through OpenAI-compatible APIs.
 - **Streaming & Realtime.** Stream transcripts and speech as they are generated. Use realtime sessions for live audio input and interactive voice applications.
 - **Multi-stage Runtime.** Run preprocessing, inference, and audio generation as stages with independent scheduling. The runtime is built on `SGLang <https://github.com/sgl-project/sglang>`_.
-- **Hardware Support.** Choose the installation guide for your hardware: :doc:`CUDA <get_started/installation>`, :doc:`Apple Silicon <get_started/installation_apple_silicon>`, :doc:`Ascend NPU <get_started/installation_npu>`, :doc:`Intel XPU <get_started/installation_xpu>`, :doc:`Intel CPU <get_started/installation_cpu>`, or :doc:`MUSA <get_started/installation_musa>`. Model support varies by platform.
+- **Hardware Support.** Choose the installation guide for your hardware: :doc:`CUDA <get_started/installation>`, :doc:`Apple Silicon <other_platforms/installation_apple_silicon>`, :doc:`Ascend NPU <other_platforms/installation_npu>`, :doc:`Intel XPU <other_platforms/installation_xpu>`, :doc:`Intel CPU <other_platforms/installation_cpu>`, or :doc:`MUSA <other_platforms/installation_musa>`. Model support varies by platform.
 
 Get Started
 -----------
 
-- :doc:`Quickstart <get_started/apiserver_quickstart>` — Start a model server and transcribe one audio clip.
+- :doc:`Quickstart <get_started/quickstart>` — Start a model server and transcribe one audio clip.
 - :doc:`Installation <get_started/installation>` — Choose an installation method for your hardware.
 - :doc:`Examples <get_started/examples>` — Stream a transcript, generate speech, or send an audio chat request.
 - Browse supported models under **Cookbook** in the sidebar.
@@ -149,7 +149,7 @@ Community & Resources
    :caption: Get Started
 
    Welcome to SGLang-Omni <self>
-   Quickstart <get_started/apiserver_quickstart>
+   Quickstart <get_started/quickstart>
    Installation <get_started/installation>
    get_started/examples
    get_started/troubleshooting.md
@@ -160,11 +160,11 @@ Community & Resources
    :maxdepth: 2
    :caption: Other Platforms
 
-   Apple Silicon <get_started/installation_apple_silicon>
-   Ascend NPU <get_started/installation_npu>
-   Intel XPU <get_started/installation_xpu>
-   Intel CPU <get_started/installation_cpu>
-   Moore Threads MUSA <get_started/installation_musa>
+   Apple Silicon <other_platforms/installation_apple_silicon>
+   Ascend NPU <other_platforms/installation_npu>
+   Intel XPU <other_platforms/installation_xpu>
+   Intel CPU <other_platforms/installation_cpu>
+   Moore Threads MUSA <other_platforms/installation_musa>
 
 
 .. toctree::
@@ -212,6 +212,7 @@ Community & Resources
 
    developer_reference/main.md
    developer_reference/contribution_guide.md
+   Native MLX <developer_reference/mlx/index>
    developer_reference/apiserver_design.md
    developer_reference/pipeline.md
    developer_reference/config.md

@@ -60,3 +60,7 @@ models/<model>/
 Only model-local behavior belongs here. The framework-owned layers are still
 `Stage`, `Coordinator`, schedulers, model-runner bases, relay, runtime prep, and
 runners.
+
+<a id="naming-and-lint-checks"></a>
+<a id="documentation-checks"></a>
+See the [Contribution Guide](contribution_guide.md#naming-and-lint-checks) for code lint and the [documentation README](https://github.com/sgl-project/sglang-omni/blob/main/docs/README.md#documentation-checks) for documentation checks.
