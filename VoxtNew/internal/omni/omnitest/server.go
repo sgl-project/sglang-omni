@@ -14,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -64,6 +65,11 @@ func Main() {
 		os.Exit(1)
 	}
 	kind := arg(args, "--model-kind")
+	// A shutdown ends the open live sessions and waits for their records
+	// before it exits; mu keeps a new session from starting meanwhile.
+	var mu sync.Mutex
+	var sessions sync.WaitGroup
+	ending, endSessions := context.WithCancel(context.Background())
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "healthy", "running": true})
@@ -73,7 +79,13 @@ func Main() {
 		mux.HandleFunc("/v1/vad/stream", func(w http.ResponseWriter, r *http.Request) { vadStream(o, w, r) })
 	} else {
 		mux.HandleFunc("/v1/audio/transcriptions", func(w http.ResponseWriter, r *http.Request) { final(o, w, r) })
-		mux.HandleFunc("/v1/realtime", func(w http.ResponseWriter, r *http.Request) { realtime(o, w, r) })
+		mux.HandleFunc("/v1/realtime", func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			sessions.Add(1)
+			mu.Unlock()
+			defer sessions.Done()
+			realtime(o, w, r.WithContext(ending))
+		})
 	}
 	go func() { _ = http.Serve(ln, mux) }()
 	emit(map[string]any{"event": "ready", "host": "127.0.0.1", "port": ln.Addr().(*net.TCPAddr).Port,
@@ -81,6 +93,9 @@ func Main() {
 	sc := bufio.NewScanner(os.Stdin)
 	for sc.Scan() {
 		if strings.Contains(sc.Text(), `"shutdown"`) {
+			mu.Lock()
+			endSessions()
+			sessions.Wait()
 			record(o, Record{Event: "shutdown"})
 			emit(map[string]any{"event": "stopped"})
 			os.Exit(0)

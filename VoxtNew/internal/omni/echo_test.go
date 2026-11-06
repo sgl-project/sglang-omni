@@ -126,14 +126,15 @@ func TestHeardAgain(t *testing.T) {
 // TestLivePiecesEcho: the pieces of a long live session and its rest go
 // through the same guard.
 func TestLivePiecesEcho(t *testing.T) {
-	f := newFake(t, omnitest.Opts{Text: "p{n}。", Echo: true}, nil)
+	var twoPieces func(*testing.T)
+	f := newFake(t, omnitest.Opts{Text: "p{n}。", Echo: true}, func(c *Config) { twoPieces = watchLog(c, "piece 2 of the recording") })
 	a := piecesASR(t, f)
 	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate, Lang: "zh", Hints: []string{"VoxtNew"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	sendAll(t, st, speechAndPauses(2))
-	eventually(t, "two pieces", func() bool { return piecesDone(st) == 2 })
+	twoPieces(t)
 	if err := st.Finish(); err != nil {
 		t.Fatal(err)
 	}

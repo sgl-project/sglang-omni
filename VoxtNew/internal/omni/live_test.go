@@ -3,6 +3,7 @@ package omni
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,6 +30,26 @@ func drain(t *testing.T, st asr.Stream) []asr.Event {
 	}
 }
 
+// watchLog makes c's Log look for a line with sub; the func it returns
+// waits for the first one.
+func watchLog(c *Config, sub string) func(*testing.T) {
+	seen, once, log := make(chan struct{}), new(sync.Once), c.Log
+	c.Log = func(level, msg string) {
+		log(level, msg)
+		if strings.Contains(msg, sub) {
+			once.Do(func() { close(seen) })
+		}
+	}
+	return func(t *testing.T) {
+		t.Helper()
+		select {
+		case <-seen:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("no log line with %q", sub)
+		}
+	}
+}
+
 func TestLive(t *testing.T) {
 	f := newFake(t, omnitest.Opts{Text: "最终文本"}, nil)
 	a := f.asr(t, ASRFast)
@@ -37,18 +58,18 @@ func TestLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	pcm := tone(2500*time.Millisecond, 0.3)
-	for _, fr := range asr.Frames(pcm, 100*time.Millisecond, 16000) {
-		if err := st.Send(fr); err != nil {
-			t.Fatal(err)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	sendAll(t, st, pcm)
 	// Partials come while the audio does.
-	eventually(t, "a partial", func() bool { return len(st.Events()) > 0 })
+	var first asr.Event
+	select {
+	case first = <-st.Events():
+	case <-time.After(10 * time.Second):
+		t.Fatal("no partial before Finish")
+	}
 	if err := st.Finish(); err != nil {
 		t.Fatal(err)
 	}
-	evs := drain(t, st)
+	evs := append([]asr.Event{first}, drain(t, st)...)
 	if len(evs) < 2 {
 		t.Fatalf("events %+v", evs)
 	}
@@ -66,8 +87,8 @@ func TestLive(t *testing.T) {
 	if len(finals) != 1 || finals[0].Samples != 40000 || finals[0].Fields["prompt"] != "VoxtNew" || finals[0].Fields["language"] != "zh" {
 		t.Errorf("finals %+v", finals)
 	}
-	eventually(t, "the live record", func() bool { return len(f.records("live")) == 1 })
-	if l := f.records("live")[0]; l.Fields["language"] != "zh" || l.Samples == 0 {
+	f.rt.Close() // the server records its live sessions before it exits
+	if l := f.records("live"); len(l) != 1 || l[0].Fields["language"] != "zh" || l[0].Samples == 0 {
 		t.Errorf("live %+v", l)
 	}
 	if err := st.Send(pcm[:3200]); err == nil {
@@ -107,6 +128,7 @@ func TestLiveLargeFirstSend(t *testing.T) {
 func TestLiveClose(t *testing.T) {
 	f := newFake(t, omnitest.Opts{}, func(c *Config) { c.IdleTimeout = 200 * time.Millisecond })
 	a := f.asr(t, ASRFast)
+	clock := new(fakeClock).install(f.rt)
 	st, err := a.Open(context.Background(), asr.StreamRequest{})
 	if err != nil {
 		t.Fatal(err)
@@ -118,15 +140,20 @@ func TestLiveClose(t *testing.T) {
 			t.Errorf("after Close: %+v", ev)
 		}
 	}
-	// The lease is back: the idle unload happens.
-	eventually(t, "the unload", func() bool { return len(f.records("shutdown")) == 1 })
+	// The lease is back: the idle unload happens (the idle stop returns
+	// once the process exited).
+	clock.advance(200 * time.Millisecond)
+	if n := len(f.records("shutdown")); n != 1 {
+		t.Errorf("%d shutdowns after the idle time", n)
+	}
 	if len(f.records("final")) != 0 {
 		t.Error("Close ran a Final")
 	}
 }
 
 func TestLiveCancelled(t *testing.T) {
-	f := newFake(t, omnitest.Opts{Delay: 5 * time.Second}, nil)
+	var finalSent func(*testing.T)
+	f := newFake(t, omnitest.Opts{Delay: 5 * time.Second}, func(c *Config) { finalSent = watchLog(c, "Final request") })
 	a := f.asr(t, ASRFast)
 	ctx, cancel := context.WithCancel(context.Background())
 	st, err := a.Open(ctx, asr.StreamRequest{})
@@ -135,7 +162,7 @@ func TestLiveCancelled(t *testing.T) {
 	}
 	_ = st.Send(tone(time.Second, 0.3))
 	_ = st.Finish()
-	time.Sleep(100 * time.Millisecond)
+	finalSent(t) // the cancel comes during the Final
 	cancel()
 	evs := drain(t, st)
 	if last := evs[len(evs)-1]; last.Kind != asr.EventError || asr.KindOf(last.Err) != asr.KindCancelled {
