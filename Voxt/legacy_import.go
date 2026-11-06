@@ -64,6 +64,26 @@ func legacyDatabase(picked string) string {
 	return ""
 }
 
+// legacyReadable reports whether the database in lib opens and reads without
+// asking: so it does for a build signed by the previous Voxt's team
+// (RY2TQTYSKQ), as macOS lets one team's apps read each other's
+// containers. Other builds get EPERM, ad hoc ones without a prompt, and ask
+// with the open panel. It reads a byte, as the container may let a file be
+// found and not opened.
+func legacyReadable(lib string) bool {
+	path := legacyDatabase(lib)
+	if path == "" {
+		return false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	_, err = f.Read(make([]byte, 1))
+	return err == nil
+}
+
 func fileExists(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && !st.IsDir()
@@ -303,11 +323,16 @@ func copyFile(from, to string) error {
 	return out.Close()
 }
 
-// importLegacy asks for the previous Voxt's data folder (one click: the
-// panel opens on it) and merges its dictionary in.
+// importLegacy merges the previous Voxt's data in: at once when it reads
+// without asking (legacyReadable), else after the user picks its data folder
+// (one click: the panel opens on it).
 func (a *app) importLegacy() {
 	lib := legacyLibrary()
 	if lib == "" || a.dv.importing {
+		return
+	}
+	if legacyReadable(lib) {
+		a.importLegacyFrom(lib)
 		return
 	}
 	go func() {

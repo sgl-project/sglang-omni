@@ -1094,7 +1094,7 @@
   "From the previous Voxt: %d new, %d updated; %d left out (too long or empty).": "已从旧版 Voxt 导入：新增 %d 个，更新 %d 个；%d 个太长或为空，没有导入。",
   "The previous Voxt is on this Mac": "这台 Mac 上有旧版 Voxt",
   "Import": "导入",
-  "Bring its dictionary and history over: click Import from the previous Voxt, then Import in the window that opens. The previous Voxt keeps all its data.": "把它的词典和历史记录带过来：点“从旧版 Voxt 导入”，再在打开的窗口里点“导入”。旧版 Voxt 的数据保持不变。",
+  "Click Import from the previous Voxt to bring its dictionary and history over. The previous Voxt keeps all its data.": "点“从旧版 Voxt 导入”，把它的词典和历史记录带过来。旧版 Voxt 的数据保持不变。",
   "History: %d entries added.": "历史记录：新增 %d 条。",
   "%d model (%s) came over too: no download needed.": "还带过来了 %d 个模型（%s），不用再下载。",
   "%d models (%s) came over too: no download needed.": "还带过来了 %d 个模型（%s），不用再下载。",

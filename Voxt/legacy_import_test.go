@@ -174,3 +174,24 @@ func TestParseLegacyExport(t *testing.T) {
 		t.Error("a JSON file that is not an export was accepted")
 	}
 }
+
+// The import reads the previous Voxt's database directly only when it opens
+// and reads; a database that is found but cannot be opened (the container's
+// EPERM, here a file without permissions) sends the user to the open panel.
+func TestLegacyReadable(t *testing.T) {
+	lib := copyFixture(t, "real")
+	if !legacyReadable(lib) {
+		t.Fatal("a readable database is not readable")
+	}
+	if legacyReadable(t.TempDir()) {
+		t.Error("a folder without a database is readable")
+	}
+	db := legacyDatabase(lib)
+	if err := os.Chmod(db, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(db, 0o644) })
+	if legacyReadable(lib) {
+		t.Error("a database that cannot be opened is readable")
+	}
+}
