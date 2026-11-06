@@ -19,6 +19,8 @@ from pathlib import Path
 
 import requests as requests_lib
 
+from sglang_omni.utils.json import JsonValue
+
 logger = logging.getLogger(__name__)
 
 STARTUP_TIMEOUT = 600
@@ -432,11 +434,33 @@ def wait_for_service(
         time.sleep(1)
 
 
-def save_json_results(results: dict, output_dir: str, filename: str) -> str:
+def normalize_request_rates(benchmark_result: JsonValue) -> JsonValue:
+    """Encode unlimited request rates without changing other numeric values."""
+    if isinstance(benchmark_result, dict):
+        return {
+            field_name: (
+                "inf"
+                if field_name == "request_rate" and field_value == float("inf")
+                else normalize_request_rates(field_value)
+            )
+            for field_name, field_value in benchmark_result.items()
+        }
+    elif isinstance(benchmark_result, list):
+        return [normalize_request_rates(result) for result in benchmark_result]
+    else:
+        return benchmark_result
+
+
+def save_json_results(
+    results: dict[str, JsonValue], output_dir: str, filename: str
+) -> str:
     """Write results as JSON to output_dir/filename and return the path."""
+    serialized_results = json.dumps(
+        normalize_request_rates(results), indent=2, ensure_ascii=False, allow_nan=False
+    )
     os.makedirs(output_dir, exist_ok=True)
     path = os.path.join(output_dir, filename)
-    with open(path, "w") as f:
-        json.dump(results, f, indent=2, ensure_ascii=False)
+    with open(path, "w", encoding="utf-8") as output_file:
+        output_file.write(serialized_results)
     logger.info(f"Results saved to {path}")
     return path
