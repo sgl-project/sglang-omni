@@ -875,6 +875,7 @@
   "The look is back to its defaults": "外观已恢复默认",
   "The menu bar icon could not be made: %v": "无法创建菜单栏图标：%v",
   "The model could not be saved to the disk.": "无法把模型保存到磁盘。",
+  "The model hit its length limit: the answer may be incomplete.": "模型到了长度上限，回答可能不完整。",
   "The model is not installed.": "模型未安装。",
   "The model stopped or did not answer. Try again in a moment.": "模型已停止或没有响应。请稍后再试。",
   "The models download in the background: continue, and they are ready when the bar fills.": "模型在后台下载：可以继续下一步，进度条走满即可使用。",

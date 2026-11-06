@@ -111,6 +111,10 @@ const (
 	// ProblemEmpty: the language model answered nothing (Translate,
 	// Rewrite).
 	ProblemEmpty = "empty"
+	// ProblemTruncated: the language model stopped at its length limit
+	// (Translate, Rewrite; Degraded). The answer goes to the card, which
+	// says it may be incomplete; nothing is inserted or replaced.
+	ProblemTruncated = "truncated"
 	// ProblemUnsupported: the feature does not work (an unknown kind).
 	ProblemUnsupported = "unsupported"
 	// ProblemInternal: anything else.
