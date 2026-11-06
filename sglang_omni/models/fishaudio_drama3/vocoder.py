@@ -82,7 +82,7 @@ class WindowGraphDecoder:
             pass
         self.decode = decode
         self.frame_length = frame_length
-        self.window_lengths = tuple(sorted(window_lengths))
+        self.window_lengths = tuple(sorted(set(window_lengths)))
         self.static_indices: dict[int, torch.Tensor] = {}
         self.static_audio: dict[int, torch.Tensor] = {}
         self.graphs: dict[int, ReplayableGraph] = {}

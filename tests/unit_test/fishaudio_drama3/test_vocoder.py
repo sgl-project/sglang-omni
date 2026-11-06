@@ -24,6 +24,7 @@ from sglang_omni.models.fishaudio_drama3.request_builders import (
 from sglang_omni.models.fishaudio_drama3.stream_windows import (
     frames_in_complete_windows,
     stream_window_lengths,
+    utterance_graph_lengths,
 )
 from sglang_omni.models.fishaudio_drama3.vocoder import (
     Drama3VocoderScheduler,
@@ -333,6 +334,19 @@ def test_the_stream_window_lengths_follow_the_window_config(
         )
         == window_frame_counts
     )
+
+
+@pytest.mark.parametrize(
+    ("max_frames", "lengths"),
+    [
+        pytest.param(20, (8, 16, 20), id="ends-at-the-cap"),
+        pytest.param(0, (), id="off"),
+    ],
+)
+def test_utterance_graph_lengths_cover_every_frame_count_up_to_the_cap(
+    max_frames: int, lengths: tuple[int, ...]
+) -> None:
+    assert utterance_graph_lengths(max_frames, frame_step=8) == lengths
 
 
 def test_every_streamed_window_decodes_through_the_given_window_decoder() -> None:
