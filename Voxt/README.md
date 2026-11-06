@@ -16,7 +16,7 @@ With a history, the overlay, shortcuts, the menu bar, a setup guide, settings an
 
 **Updates**: this version does not update itself; a new version is installed by hand.
 
-> **Status: 1.0.0**. Every feature above works on the local models; see [CHANGELOG.md](CHANGELOG.md).
+> **Status: 2.0.0**. Every feature above works on the local models; see [CHANGELOG.md](CHANGELOG.md).
 
 ## What runs on your Mac
 
@@ -58,7 +58,7 @@ go tool mygo build                   # build/darwin-arm64/Voxt.app and its disk 
 
 The helper and `voxtnew-llm` must be built before `go tool mygo build` or `mygo dev`: `mygo.json` gives both their entitlements and fails without them. Without the Omni runtime the app runs but cannot recognise speech (or point `VOXTNEW_OMNI_RUNTIME` at one built with `scripts/build-omni.sh --out DIR`; likewise `VOXTNEW_LLM` for `scripts/build-llm.sh --out DIR`).
 
-**The release build** is one command, on the Mac: `scripts/release.sh` builds the three, packages and signs the app, and checks the result (`--runtimes DIR` takes prebuilt runtimes; with the Developer ID of the team 779M533DL5, `--notarize` notarises it (1.0.0 has no update feed, so nothing to `--publish`); over ssh it runs through `scripts/mac-gui.sh`). See [docs/release.md](docs/release.md).
+**The release build** is one command, on the Mac: `scripts/release.sh` builds the three, packages and signs the app, and checks the result (`--runtimes DIR` takes prebuilt runtimes; with a Developer ID identity, `--notarize` notarises it (2.0.0 has no update feed, so nothing to `--publish`); over ssh it runs through `scripts/mac-gui.sh`). A release is that build on GitHub: a `voxt-vX.Y.Z` tag runs the Voxt Release workflow, which signs it with the Developer ID of the team TB2S44TFQS, notarises it and puts its disk image on a draft GitHub release. See [docs/release.md](docs/release.md).
 
 From Linux, `scripts/mac.sh <command>` mirrors the project to a Mac (`MAC_HOST`, default `mac-air`; `MAC_DIR`, default `code/VoxtNew`) and runs the command there: `scripts/mac.sh 'scripts/build-helper.sh && scripts/build-llm.sh && go tool mygo build'`.
 
@@ -106,7 +106,7 @@ The store's tests use MyGo's SQLite plugin, which downloads its library once (ch
 - [AGENTS.md](AGENTS.md): the rules for changes (strings, threading, the protocols).
 - [CHANGELOG.md](CHANGELOG.md): changes by version. [CONTRIBUTING.md](CONTRIBUTING.md): how to send a change.
 
-Voxt takes the place of the Swift Voxt that this repository held before 1.0.0: installing it replaces that app's Voxt.app in Applications, and the two keep their data apart. Some names inside stay VoxtNew (its Swift packages, processes, bundle id and data folders). It started as a copy of [Auralink](https://github.com/hehehai/Auralink), the same author's app on remote models, which rewrote [Voxt](https://github.com/hehehai/voxt) on Go and MyGo with [AudioSmith](https://github.com/hehehai/AudioSmith)'s interface; its local model runtimes and their request policies follow Voxt's.
+Voxt takes the place of the Swift Voxt (1.x) that this repository held before 2.0.0: installing it replaces that app's Voxt.app in Applications, and the two keep their data apart. Some names inside stay VoxtNew (its Swift packages, processes, bundle id and data folders). It started as a copy of [Auralink](https://github.com/hehehai/Auralink), the same author's app on remote models, which rewrote [Voxt](https://github.com/hehehai/voxt) on Go and MyGo with [AudioSmith](https://github.com/hehehai/AudioSmith)'s interface; its local model runtimes and their request policies follow Voxt's.
 
 ## Licence
 

@@ -120,7 +120,7 @@ if [[ "$mode" == developer-id ]]; then
   check "the app's ticket is stapled" xcrun stapler validate "$app"
   [[ -n "$dmg" ]] && check "the disk image's ticket is stapled" xcrun stapler validate "$dmg"
   [[ -n "$dmg" ]] && check "Gatekeeper accepts the disk image" spctl -a -vv -t open --context context:primary-signature "$dmg"
-  # The update files, when the release has a feed (1.0.0 has none).
+  # The update files, when the release has a feed (2.0.0 has none).
   if jq -e .updates "$(dirname "$0")/../release/mygo.release.json" >/dev/null; then
     manifest="$dir/update-darwin-arm64.json"
     check "the update archive" bash -c "compgen -G '$dir/*-$version-darwin-arm64.tar.gz'"

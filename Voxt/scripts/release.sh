@@ -31,7 +31,7 @@
 # LLM and then every Mach-O file and framework inside the app are signed
 # with it, with the hardened runtime and a secure timestamp (mygo build:
 # signNestedCode), and the build takes the update feed of
-# release/mygo.release.json if it has one (scripts/release-config.sh; 1.0.0
+# release/mygo.release.json if it has one (scripts/release-config.sh; 2.0.0
 # has none and never updates itself), or its beta/ feed for a version with
 # a "-". With a feed, the update files are signed with VoxtNew's update key:
 # MYGO_UPDATER_PRIVATE_KEY (the key itself) or the file VOXTNEW_UPDATE_KEY
@@ -94,7 +94,7 @@ if [[ -n "$IDENTITY" ]] && ((FEED)); then
   fi
 fi
 if ((PUBLISH)) && ((FEED == 0)); then
-  echo "--publish needs an update feed: release/mygo.release.json has none (1.0.0 does not update itself; docs/release.md)" >&2
+  echo "--publish needs an update feed: release/mygo.release.json has none (2.0.0 does not update itself; docs/release.md)" >&2
   exit 2
 fi
 if ((PUBLISH)) && [[ -z "$PROFILE" || $HAVE_KEY == 0 || -z "${ACTNOW_INGEST_TOKEN:-}" ]]; then
