@@ -689,10 +689,8 @@ URL, or a base64 <strong>data URI</strong> (<code class="docutils literal notran
 </section>
 <section id="streaming">
 <h3>Streaming<a class="headerlink" href="#streaming" title="Link to this heading">#</a></h3>
-<p>Set <code class="docutils literal notranslate"><span class="pre">&quot;stream&quot;:</span> <span class="pre">true</span></code> with <code class="docutils literal notranslate"><span class="pre">&quot;response_format&quot;:</span> <span class="pre">&quot;pcm&quot;</span></code> to receive raw signed 16-bit
-little-endian PCM bytes. The response is not SSE or base64. ZONOS2 returns mono 44.1 kHz
-audio with <code class="docutils literal notranslate"><span class="pre">Content-Type:</span> <span class="pre">audio/pcm</span></code> and the <code class="docutils literal notranslate"><span class="pre">X-Sample-Rate</span></code>, <code class="docutils literal notranslate"><span class="pre">X-Channels</span></code>, and
-<code class="docutils literal notranslate"><span class="pre">X-Bit-Depth</span></code> headers.</p>
+<p>Set <code class="docutils literal notranslate"><span class="pre">&quot;stream&quot;:</span> <span class="pre">true</span></code> and <code class="docutils literal notranslate"><span class="pre">&quot;response_format&quot;:</span> <span class="pre">&quot;pcm&quot;</span></code> to receive raw signed 16-bit little-endian PCM bytes. <code class="docutils literal notranslate"><span class="pre">stream_format</span></code> defaults to <code class="docutils literal notranslate"><span class="pre">&quot;audio&quot;</span></code>, and <code class="docutils literal notranslate"><span class="pre">response_format</span></code> defaults to <code class="docutils literal notranslate"><span class="pre">&quot;wav&quot;</span></code>. With PCM selected, ZONOS2 returns mono 44.1 kHz audio with <code class="docutils literal notranslate"><span class="pre">Content-Type:</span> <span class="pre">audio/pcm</span></code> and the <code class="docutils literal notranslate"><span class="pre">X-Sample-Rate</span></code>, <code class="docutils literal notranslate"><span class="pre">X-Channels</span></code>, and <code class="docutils literal notranslate"><span class="pre">X-Bit-Depth</span></code> headers.</p>
+<p>Omit <code class="docutils literal notranslate"><span class="pre">response_format</span></code> or set it to <code class="docutils literal notranslate"><span class="pre">&quot;wav&quot;</span></code> for raw WAV streaming with one header followed by PCM chunks. Set <code class="docutils literal notranslate"><span class="pre">stream_format=&quot;sse&quot;</span></code> for SSE events, which can omit <code class="docutils literal notranslate"><span class="pre">stream=true</span></code>. Every HTTP mode defaults to WAV; an explicit <code class="docutils literal notranslate"><span class="pre">response_format</span></code> overrides that default.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-sS<span class="w"> </span>-D<span class="w"> </span>output.headers<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
@@ -749,37 +747,41 @@ from the resulting text.</p>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">response_format</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">wav</span></code></p></td>
-<td><p>Use <code class="docutils literal notranslate"><span class="pre">pcm</span></code> when <code class="docutils literal notranslate"><span class="pre">stream=true</span></code></p></td>
+<td><p>Explicit values override the default in every mode. HTTP streaming accepts <code class="docutils literal notranslate"><span class="pre">pcm</span></code> or <code class="docutils literal notranslate"><span class="pre">wav</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stream</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
-<td><p>Stream raw mono 44.1 kHz PCM16 bytes; requires <code class="docutils literal notranslate"><span class="pre">response_format=pcm</span></code></p></td>
+<td><p>Stream raw mono 44.1 kHz WAV by default; set <code class="docutils literal notranslate"><span class="pre">response_format=&quot;pcm&quot;</span></code> for raw PCM16 bytes</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">language</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">stream_format</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">audio</span></code></p></td>
+<td><p>Raw audio bytes by default; explicit <code class="docutils literal notranslate"><span class="pre">sse</span></code> enables SSE events even when <code class="docutils literal notranslate"><span class="pre">stream</span></code> is omitted</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">language</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
 <td><p>Optional NeMo text-normalization language; <code class="docutils literal notranslate"><span class="pre">Auto</span></code> preserves raw text</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code></p></td>
 <td><p>(model default)</p></td>
 <td><p>Maximum generated frames; an explicit value must be <code class="docutils literal notranslate"><span class="pre">&gt;</span> <span class="pre">0</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">temperature</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">temperature</span></code></p></td>
 <td><p>(model default)</p></td>
 <td><p>Sampling temperature</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">top_p</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">top_p</span></code></p></td>
 <td><p>(model default)</p></td>
 <td><p>Top-p sampling</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">top_k</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">top_k</span></code></p></td>
 <td><p>(model default)</p></td>
 <td><p>Top-k sampling</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">min_p</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">min_p</span></code></p></td>
 <td><p>(model default)</p></td>
 <td><p>Min-p sampling</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code></p></td>
 <td><p>(model default)</p></td>
 <td><p>Audio repetition penalty</p></td>
 </tr>

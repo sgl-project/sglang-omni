@@ -578,6 +578,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#launch-the-server">Launch the Server</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#use-curl">Use Curl</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#fish-speech-voice-cloning">Fish Speech Voice Cloning</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#sse-event-framing">SSE Event Framing</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#batch-speech">Batch Speech</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#websocket-speech-streaming">WebSocket Speech Streaming</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#uploaded-voices">Uploaded Voices</a></li>
@@ -926,8 +927,7 @@ for four flow steps:</p>
 <ol class="arabic simple" start="2">
 <li><p>Streaming</p></li>
 </ol>
-<p>Enable streaming to receive raw PCM audio chunks in real time. HTTP streaming
-requires both <code class="docutils literal notranslate"><span class="pre">&quot;stream&quot;:</span> <span class="pre">true</span></code> and <code class="docutils literal notranslate"><span class="pre">&quot;response_format&quot;:</span> <span class="pre">&quot;pcm&quot;</span></code>:</p>
+<p>Set <code class="docutils literal notranslate"><span class="pre">&quot;stream&quot;:</span> <span class="pre">true</span></code> to receive raw audio chunks in real time. <code class="docutils literal notranslate"><span class="pre">stream_format</span></code> defaults to <code class="docutils literal notranslate"><span class="pre">&quot;audio&quot;</span></code>, and <code class="docutils literal notranslate"><span class="pre">response_format</span></code> defaults to <code class="docutils literal notranslate"><span class="pre">&quot;wav&quot;</span></code> in every HTTP mode:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-N<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
@@ -938,29 +938,18 @@ requires both <code class="docutils literal notranslate"><span class="pre">&quot
 <span class="s1">      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",</span>
 <span class="s1">      "text": "We asked over twenty different people, and they all said it was his."</span>
 <span class="s1">    }],</span>
-<span class="s1">    "stream": true,</span>
-<span class="s1">    "response_format": "pcm"</span>
+<span class="s1">    "stream": true</span>
 <span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--output<span class="w"> </span>output.pcm
+<span class="w">  </span>--output<span class="w"> </span>output.wav
 </pre></div>
 </div>
-<p>Streaming returns 16-bit mono PCM bytes (<code class="docutils literal notranslate"><span class="pre">audio/pcm</span></code>) with sample-rate metadata
-in response headers. It does not include in-band JSON events, final usage, or a
-terminal sentinel. Set <code class="docutils literal notranslate"><span class="pre">&quot;stream_format&quot;:</span> <span class="pre">&quot;sse&quot;</span></code> to receive the same PCM as
-Server-Sent Events instead; <code class="docutils literal notranslate"><span class="pre">sse</span></code> streams even when <code class="docutils literal notranslate"><span class="pre">stream</span></code> is omitted. Each
-<code class="docutils literal notranslate"><span class="pre">speech.audio.delta</span></code> event carries base64 PCM in <code class="docutils literal notranslate"><span class="pre">audio</span></code>, and the stream ends
-with one <code class="docutils literal notranslate"><span class="pre">speech.audio.done</span></code> event carrying <code class="docutils literal notranslate"><span class="pre">usage</span></code> and <code class="docutils literal notranslate"><span class="pre">finish_reason</span></code>, or with an <code class="docutils literal notranslate"><span class="pre">error</span></code> event if
-generation fails mid-stream. The sample-rate headers are the same for both
-formats. <code class="docutils literal notranslate"><span class="pre">usage</span></code> reports the model’s own token counts, so what <code class="docutils literal notranslate"><span class="pre">input_tokens</span></code>
-covers depends on the model: Qwen3-TTS counts reference-audio codec frames, not
-text tokens.</p>
-<p>For raw PCM, use the response’s <code class="docutils literal notranslate"><span class="pre">X-SGLang-Omni-Speech-Id</span></code> with
-<code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/v1/audio/speech/{request_id}</span></code> after the stream ends to retrieve its
-<code class="docutils literal notranslate"><span class="pre">finish_reason</span></code> and <code class="docutils literal notranslate"><span class="pre">usage</span></code>. This generated speech ID is independent of the
-<code class="docutils literal notranslate"><span class="pre">X-Request-Id</span></code> correlation header. Behind a router, also echo the response’s
-<code class="docutils literal notranslate"><span class="pre">X-SGLang-Omni-Worker</span></code> as <code class="docutils literal notranslate"><span class="pre">X-SGLang-Omni-Route-Worker</span></code> on the GET.
-Only the most recent outcomes are retained; missing outcomes do not establish
-a natural stop or a cap hit.</p>
+<p>Raw WAV streaming returns <code class="docutils literal notranslate"><span class="pre">audio/wav</span></code> with one file header followed by 16-bit mono PCM chunks. Set <code class="docutils literal notranslate"><span class="pre">&quot;response_format&quot;:</span> <span class="pre">&quot;pcm&quot;</span></code> to receive the same PCM bytes without a file header (<code class="docutils literal notranslate"><span class="pre">audio/pcm</span></code>). Both formats include sample-rate metadata in response headers and carry no in-band JSON events, final usage, or terminal sentinel.</p>
+<p>Set <code class="docutils literal notranslate"><span class="pre">&quot;stream_format&quot;:</span> <span class="pre">&quot;sse&quot;</span></code> to receive Server-Sent Events; <code class="docutils literal notranslate"><span class="pre">sse</span></code> streams even when <code class="docutils literal notranslate"><span class="pre">stream</span></code> is omitted. SSE accepts <code class="docutils literal notranslate"><span class="pre">response_format=&quot;pcm&quot;</span></code> or <code class="docutils literal notranslate"><span class="pre">&quot;wav&quot;</span></code> (the default) and supports the same <code class="docutils literal notranslate"><span class="pre">speed</span></code> range as raw audio streaming. Each <code class="docutils literal notranslate"><span class="pre">speech.audio.delta</span></code> event carries base64 audio in <code class="docutils literal notranslate"><span class="pre">audio</span></code> and its <code class="docutils literal notranslate"><span class="pre">response_format</span></code>. WAV sends one file header before the PCM chunks. Both transports keep <code class="docutils literal notranslate"><span class="pre">X-Request-Id</span></code>, <code class="docutils literal notranslate"><span class="pre">X-Sample-Rate</span></code>, <code class="docutils literal notranslate"><span class="pre">X-Channels</span></code>, and <code class="docutils literal notranslate"><span class="pre">X-Bit-Depth</span></code> response headers.</p>
+<p>See <a class="reference internal" href="#sse-event-framing"><span class="std std-ref">SSE Event Framing</span></a> for response examples, client event listeners, and the server option that enables named events.</p>
+<p>Omitting both <code class="docutils literal notranslate"><span class="pre">stream</span></code> and <code class="docutils literal notranslate"><span class="pre">stream_format</span></code> keeps the response non-streaming, with WAV as the default audio format. An explicit <code class="docutils literal notranslate"><span class="pre">response_format</span></code> overrides the format default in every mode.</p>
+<p>The stream ends with one <code class="docutils literal notranslate"><span class="pre">speech.audio.done</span></code> event carrying <code class="docutils literal notranslate"><span class="pre">finish_reason</span></code>, emitted audio <code class="docutils literal notranslate"><span class="pre">duration</span></code> in seconds after speed adjustment, and <code class="docutils literal notranslate"><span class="pre">usage</span></code>. Missing usage remains <code class="docutils literal notranslate"><span class="pre">null</span></code>; actual zero counts remain zero. Qwen3-TTS counts target text tokens, nonblank instructions, and reference audio frames used for in-context cloning as input, and generated Talker steps including EOS as output. Other models use their reported prompt and completion counts. SSE does not include a <code class="docutils literal notranslate"><span class="pre">[DONE]</span></code> sentinel.</p>
+<p>Request validation and generation failures before the first audio chunk remain HTTP JSON errors. Failures after SSE starts emit an error event instead of <code class="docutils literal notranslate"><span class="pre">speech.audio.done</span></code>, using the mode-specific framing and JSON <code class="docutils literal notranslate"><span class="pre">type</span></code> in the <a class="reference internal" href="#sse-event-framing"><span class="std std-ref">SSE Event Framing table</span></a>. Both modes carry the failure details in <code class="docutils literal notranslate"><span class="pre">error</span></code>. An error after any audio delta includes <code class="docutils literal notranslate"><span class="pre">partial_audio=true</span></code> and <code class="docutils literal notranslate"><span class="pre">action=&quot;discard&quot;</span></code>.</p>
+<p>For raw WAV or PCM, use the response’s <code class="docutils literal notranslate"><span class="pre">X-SGLang-Omni-Speech-Id</span></code> with <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/v1/audio/speech/{request_id}</span></code> after the stream ends to retrieve its <code class="docutils literal notranslate"><span class="pre">finish_reason</span></code> and <code class="docutils literal notranslate"><span class="pre">usage</span></code>. This generated speech ID is independent of the <code class="docutils literal notranslate"><span class="pre">X-Request-Id</span></code> correlation header. Behind a router, also echo the response’s <code class="docutils literal notranslate"><span class="pre">X-SGLang-Omni-Worker</span></code> as <code class="docutils literal notranslate"><span class="pre">X-SGLang-Omni-Route-Worker</span></code> on the GET. Only the most recent outcomes are retained; missing outcomes do not establish a natural stop or a cap hit.</p>
 <p>The SeedTTS benchmark collects raw PCM outcomes over a separate connection pool.
 Collection still consumes server resources during generation. Use
 <code class="docutils literal notranslate"><span class="pre">--no-collect-stream-outcomes</span></code> for an instrumentation control, and keep the setting
@@ -973,6 +962,55 @@ to override that default, or set it to <code class="docutils literal notranslate
 from the start. Ming-Omni-TTS is the only model that rejects the field: its
 initial and steady cadence are the audio_decode stage’s <code class="docutils literal notranslate"><span class="pre">factory</span></code> settings, so a
 request that sets it fails.</p>
+</section>
+<section id="sse-event-framing">
+<h3>SSE Event Framing<a class="headerlink" href="#sse-event-framing" title="Link to this heading">#</a></h3>
+<p>SSE responses use data-only frames by default to preserve clients that listen for the default <code class="docutils literal notranslate"><span class="pre">message</span></code> event. The client reads the JSON <code class="docutils literal notranslate"><span class="pre">type</span></code> to distinguish audio chunks, completion, and errors.</p>
+<p>To enable named events, add <code class="docutils literal notranslate"><span class="pre">--enable-speech-sse-named-events</span></code> when starting the server:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-TTS-12Hz-1.7B-Base<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--enable-speech-sse-named-events<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>This is a server startup flag, rather than a JSON request field. It applies to every SSE speech response from that server. Requests still select SSE with <code class="docutils literal notranslate"><span class="pre">&quot;stream_format&quot;:</span> <span class="pre">&quot;sse&quot;</span></code>; <code class="docutils literal notranslate"><span class="pre">response_format</span></code> independently selects WAV or PCM. Requests using the raw <code class="docutils literal notranslate"><span class="pre">audio</span></code> transport keep their binary response format.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Server startup option</p></th>
+<th class="head"><p>SSE framing</p></th>
+<th class="head"><p>Client event listener</p></th>
+<th class="head"><p>JSON error <code class="docutils literal notranslate"><span class="pre">type</span></code> after streaming starts</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Flag omitted (default)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">data:</span></code> only</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">message</span></code>; dispatch using JSON <code class="docutils literal notranslate"><span class="pre">type</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">error</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--enable-speech-sse-named-events</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">event:</span></code> followed by <code class="docutils literal notranslate"><span class="pre">data:</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">speech.audio.delta</span></code>, <code class="docutils literal notranslate"><span class="pre">speech.audio.done</span></code>, and <code class="docutils literal notranslate"><span class="pre">speech.audio.error</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">speech.audio.error</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>For the same request with <code class="docutils literal notranslate"><span class="pre">&quot;stream_format&quot;:</span> <span class="pre">&quot;sse&quot;</span></code> and <code class="docutils literal notranslate"><span class="pre">&quot;response_format&quot;:</span> <span class="pre">&quot;pcm&quot;</span></code>, a successful response without the flag has this form. Audio is abbreviated and duration is illustrative; generation may produce multiple audio delta frames:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>data: {"type":"speech.audio.delta","audio":"&lt;base64 PCM&gt;","response_format":"pcm"}
+
+data: {"type":"speech.audio.done","duration":0.2,"usage":null,"finish_reason":"stop"}
+</pre></div>
+</div>
+<p>With the flag enabled, the same events include explicit SSE event names:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>event: speech.audio.delta
+data: {"type":"speech.audio.delta","audio":"&lt;base64 PCM&gt;","response_format":"pcm"}
+
+event: speech.audio.done
+data: {"type":"speech.audio.done","duration":0.2,"usage":null,"finish_reason":"stop"}
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">event:</span></code> line controls SSE event dispatch; it is separate from the <code class="docutils literal notranslate"><span class="pre">type</span></code> field inside JSON. A client that subscribes only to <code class="docutils literal notranslate"><span class="pre">message</span></code> will not receive these named events. Enable the flag when clients subscribe to the named events or their parser handles both framing styles.</p>
 </section>
 <section id="batch-speech">
 <h3>Batch Speech<a class="headerlink" href="#batch-speech" title="Link to this heading">#</a></h3>
@@ -1269,7 +1307,7 @@ the SGLang-Omni server:</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">response_format</span></code></p></td>
 <td><p>string</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">&quot;wav&quot;</span></code></p></td>
-<td><p>Output audio format: <code class="docutils literal notranslate"><span class="pre">wav</span></code>, <code class="docutils literal notranslate"><span class="pre">mp3</span></code>, <code class="docutils literal notranslate"><span class="pre">flac</span></code>, <code class="docutils literal notranslate"><span class="pre">pcm</span></code>, <code class="docutils literal notranslate"><span class="pre">aac</span></code>, or <code class="docutils literal notranslate"><span class="pre">opus</span></code></p></td>
+<td><p>Output audio format: <code class="docutils literal notranslate"><span class="pre">wav</span></code>, <code class="docutils literal notranslate"><span class="pre">mp3</span></code>, <code class="docutils literal notranslate"><span class="pre">flac</span></code>, <code class="docutils literal notranslate"><span class="pre">pcm</span></code>, <code class="docutils literal notranslate"><span class="pre">aac</span></code>, or <code class="docutils literal notranslate"><span class="pre">opus</span></code>. Explicit values override the default in every mode. HTTP streaming accepts only <code class="docutils literal notranslate"><span class="pre">wav</span></code> or <code class="docutils literal notranslate"><span class="pre">pcm</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">speed</span></code></p></td>
 <td><p>float</p></td>
@@ -1279,12 +1317,12 @@ the SGLang-Omni server:</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">stream</span></code></p></td>
 <td><p>bool</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
-<td><p>Enable raw PCM streaming. When true, <code class="docutils literal notranslate"><span class="pre">response_format</span></code> must be <code class="docutils literal notranslate"><span class="pre">pcm</span></code></p></td>
+<td><p>Enable raw WAV streaming by default. Set <code class="docutils literal notranslate"><span class="pre">response_format=&quot;pcm&quot;</span></code> for raw PCM, or <code class="docutils literal notranslate"><span class="pre">stream_format=&quot;sse&quot;</span></code> for SSE events</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stream_format</span></code></p></td>
 <td><p>string</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">&quot;audio&quot;</span></code></p></td>
-<td><p>Streaming transport: <code class="docutils literal notranslate"><span class="pre">audio</span></code> for raw PCM bytes, <code class="docutils literal notranslate"><span class="pre">sse</span></code> for <code class="docutils literal notranslate"><span class="pre">speech.audio.delta</span></code> / <code class="docutils literal notranslate"><span class="pre">speech.audio.done</span></code> events. <code class="docutils literal notranslate"><span class="pre">sse</span></code> streams without <code class="docutils literal notranslate"><span class="pre">stream=true</span></code> and requires <code class="docutils literal notranslate"><span class="pre">response_format=&quot;pcm&quot;</span></code></p></td>
+<td><p>Streaming transport: <code class="docutils literal notranslate"><span class="pre">audio</span></code> returns raw WAV or PCM bytes when streaming is enabled; <code class="docutils literal notranslate"><span class="pre">sse</span></code> enables SSE even when <code class="docutils literal notranslate"><span class="pre">stream</span></code> is omitted or false. SSE uses data-only <code class="docutils literal notranslate"><span class="pre">message</span></code> events by default. The server startup flag <code class="docutils literal notranslate"><span class="pre">--enable-speech-sse-named-events</span></code> selects the framing and error type shown in the <a class="reference internal" href="#sse-event-framing"><span class="std std-ref">SSE Event Framing table</span></a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">initial_codec_chunk_frames</span></code></p></td>
 <td><p>int</p></td>
@@ -1379,15 +1417,15 @@ the SGLang-Omni server:</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">return_spec_tokens_details</span></code></p></td>
 <td><p>bool</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
-<td><p>With a speculative draft, return this request’s acceptance statistics: <code class="docutils literal notranslate"><span class="pre">X-SGLang-Omni-Spec-*</span></code> headers on buffered audio, <code class="docutils literal notranslate"><span class="pre">sglext.spec_tokens_details</span></code> on <code class="docutils literal notranslate"><span class="pre">speech.audio.done</span></code> and on the raw PCM outcome</p></td>
+<td><p>With a speculative draft, return this request’s acceptance statistics: <code class="docutils literal notranslate"><span class="pre">X-SGLang-Omni-Spec-*</span></code> headers on buffered audio, <code class="docutils literal notranslate"><span class="pre">sglext.spec_tokens_details</span></code> on <code class="docutils literal notranslate"><span class="pre">speech.audio.done</span></code> and on the raw audio outcome</p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p>Invalid speech requests return an OpenAI-style error envelope:</p>
+<p>Invalid speech requests return an OpenAI-style error envelope. For example, streaming with <code class="docutils literal notranslate"><span class="pre">response_format=&quot;mp3&quot;</span></code> or <code class="docutils literal notranslate"><span class="pre">&quot;flac&quot;</span></code> returns HTTP 400:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
 <span class="w">  </span><span class="nt">"error"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">"message"</span><span class="p">:</span><span class="w"> </span><span class="s2">"stream=true requires response_format='pcm'"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"message"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Streaming requires response_format='pcm' or 'wav'"</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"BadRequestError"</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">"param"</span><span class="p">:</span><span class="w"> </span><span class="s2">"response_format"</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">"code"</span><span class="p">:</span><span class="w"> </span><span class="mi">400</span>
@@ -1530,6 +1568,7 @@ python<span class="w"> </span>-m<span class="w"> </span>benchmarks.eval.benchmar
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#launch-the-server">Launch the Server</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#use-curl">Use Curl</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#fish-speech-voice-cloning">Fish Speech Voice Cloning</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#sse-event-framing">SSE Event Framing</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#batch-speech">Batch Speech</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#websocket-speech-streaming">WebSocket Speech Streaming</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#uploaded-voices">Uploaded Voices</a></li>

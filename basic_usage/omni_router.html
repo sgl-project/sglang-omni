@@ -1062,7 +1062,7 @@ binary is written to <code class="docutils literal notranslate"><span class="pre
 <td><p>Multimodal chat with text or audio output</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">examples/tts.toml</span></code></p></td>
-<td><p>Speech synthesis, including PCM streaming</p></td>
+<td><p>Speech synthesis, including WAV and PCM streaming</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">examples/asr.toml</span></code></p></td>
 <td><p>Transcription and speech-to-English translation</p></td>
@@ -1148,6 +1148,7 @@ workers, or changing process limits.</p>
 health path, session capacity, and one or more correlated service profiles.
 A profile row describes a combination the worker supports; the router never
 combines independent fields from different rows.</p>
+<p>Streaming <code class="docutils literal notranslate"><span class="pre">speech_http</span></code> profiles may advertise <code class="docutils literal notranslate"><span class="pre">pcm</span></code>, <code class="docutils literal notranslate"><span class="pre">wav</span></code>, or both. Other audio formats require a separate non-streaming profile. <code class="docutils literal notranslate"><span class="pre">speech_websocket</span></code> streaming profiles remain PCM-only.</p>
 <p>DNS worker authorities are resolved when an upstream connection is opened, so
 health probes and new data connections follow DNS changes. Worker membership
 remains static for the process lifetime.</p>
@@ -1178,11 +1179,11 @@ limits, and timeouts from the expected workload and worker topology.</p>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">POST</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code></p></td>
-<td><p>Encoded speech or streaming PCM</p></td>
+<td><p>Encoded speech or streaming WAV/PCM</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">GET</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">/v1/audio/speech/{request_id}</span></code></p></td>
-<td><p>Terminal state of a finished PCM stream, on the worker named by <code class="docutils literal notranslate"><span class="pre">x-sglang-omni-route-worker</span></code></p></td>
+<td><p>Terminal state of a finished WAV/PCM stream, on the worker named by <code class="docutils literal notranslate"><span class="pre">x-sglang-omni-route-worker</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">POST</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">/v1/audio/speech/batch</span></code></p></td>
@@ -1236,7 +1237,7 @@ encoding, and oversized uploads are rejected before dispatch.</p>
 preserved; otherwise the router generates one. The same value is sent to the
 worker and returned to the client.</p>
 <p>Media responses carry <code class="docutils literal notranslate"><span class="pre">x-sglang-omni-worker</span></code>, the configured id of the worker
-that answered. A streaming PCM speech response also carries
+that answered. A streaming WAV or PCM speech response also carries
 <code class="docutils literal notranslate"><span class="pre">x-sglang-omni-speech-id</span></code>, a generated resource ID independent of <code class="docutils literal notranslate"><span class="pre">x-request-id</span></code>.
 After the stream ends, use that speech ID in <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/v1/audio/speech/{request_id}</span></code>
 and echo the worker ID as <code class="docutils literal notranslate"><span class="pre">x-sglang-omni-route-worker</span></code>. The router pins the lookup
