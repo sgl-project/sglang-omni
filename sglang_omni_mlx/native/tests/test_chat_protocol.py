@@ -13,7 +13,7 @@ import pytest
 from native_server import SupervisedServer, silent_wav
 
 SAMPLE_COUNT = 400
-MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024
+MAX_REQUEST_BODY_BYTES = 32 * 1024 * 1024
 PROMPT_TOKEN_COUNT = 17
 COMPLETION_TOKEN_COUNT = 3
 CHAT_PATH = "/v1/chat/completions"
@@ -199,6 +199,26 @@ def test_invalid_audio_gets_400(
     )
     assert response.status == 400
     assert response.json()["error"]["type"] == "invalid_request_error"
+
+
+def test_a_five_minute_audio_request_reaches_generation(
+    chat_server: SupervisedServer,
+    chat_body: dict[str, object],
+    audio_part: dict[str, object],
+) -> None:
+    """The former 4 MiB body cap rejected long audio before inference."""
+    sample_count = 310 * 16000
+    audio_part["input_audio"] = {
+        "format": "wav",
+        "data": base64.b64encode(silent_wav(sample_count)).decode(),
+    }
+    response = chat_server.post_chat(chat_body)
+    assert response.status == 200
+    reply = response.json()
+    samples = json.loads(reply["choices"][0]["message"]["content"])["samples"]
+    assert len(samples) == sample_count
+    assert all(sample == 0.0 for sample in samples)
+    assert reply["usage"]["completion_tokens"] == COMPLETION_TOKEN_COUNT
 
 
 def test_methods_routes_and_body_limit(chat_server: SupervisedServer) -> None:
