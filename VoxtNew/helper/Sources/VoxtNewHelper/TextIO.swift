@@ -15,6 +15,9 @@ import Foundation
 final class TextIO: @unchecked Sendable {
     let front: FrontApps
 
+    /// The clipboard restores still to come: an exit does them first.
+    let restores = PendingRestores()
+
     init(front: FrontApps) { self.front = front }
 
     static let textRoles: Set<String> = ["AXTextArea", "AXTextField", "AXComboBox", "AXSearchField"]
@@ -250,13 +253,17 @@ final class TextIO: @unchecked Sendable {
         } else if restore {
             let delay = check == PasteCheck.inserted ? 150 : Double(max(0, p.restoreDelayMs ?? 500))
             let wait = check == PasteCheck.inserted ? delay - (monotonicMs() - posted) : delay
-            if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000)) }
-            (restored, taken) = await onMain { () -> (Bool, Bool) in
+            let putBack = { @MainActor () -> (Bool, Bool) in
                 let pb = NSPasteboard.general
                 guard pb.changeCount == ours else { return (false, true) }
                 Clipboard.restore(pb, snap)
                 return (true, false)
             }
+            // An exit meanwhile (restores.finish) does it now.
+            let pending = restores.add { onMainSync { _ = putBack() } }
+            if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000)) }
+            (restored, taken) = await onMain { putBack() }
+            restores.done(pending)
         }
         return PasteResult(posted: true, restored: restored, clipboardTaken: taken, ms: round1(monotonicMs() - t0),
                            check: check, checkMs: checkMs, field: field, secureInput: secure,

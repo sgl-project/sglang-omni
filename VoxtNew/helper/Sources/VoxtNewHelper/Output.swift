@@ -27,8 +27,9 @@ final class Output: @unchecked Sendable {
         claims = MuteClaims(hardware: hardware)
     }
 
-    /// Starts the undo on signals and sleep (once, at hello).
-    func start() {
+    /// Starts the undo on signals and sleep (once, at hello); a signal
+    /// calls exiting (the helper's whole exit, these mutes included).
+    func start(exiting: @escaping @Sendable (String) -> Void) {
         let first = lock.withLock { () -> Bool in
             defer { started = true }
             return !started
@@ -37,8 +38,8 @@ final class Output: @unchecked Sendable {
         for sig in [SIGTERM, SIGINT, SIGHUP] {
             signal(sig, SIG_IGN)
             let src = DispatchSource.makeSignalSource(signal: sig, queue: queue)
-            src.setEventHandler { [self] in
-                undo("signal \(sig)")
+            src.setEventHandler {
+                exiting("signal \(sig)")
                 exit(0)
             }
             src.resume()
