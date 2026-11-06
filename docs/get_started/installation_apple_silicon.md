@@ -8,7 +8,7 @@ Choose the runtime you want to use on Apple Silicon:
   to run Qwen3-ASR and Fun-ASR with PyTorch on macOS 14 or newer.
 - **Native MLX / Voxt:** The C++ runtime in `sglang_omni_mlx/native/` has its
   own build and run workflow. See the [Native MLX / Voxt guide](../mlx/index.md)
-  and [Voxt's README](https://github.com/sgl-project/sglang-omni/blob/main/VoxtNew/README.md).
+  and [Voxt's README](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/README.md).
 
 For NVIDIA GPUs, see the [CUDA installation](./installation.md).
 
