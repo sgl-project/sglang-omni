@@ -139,7 +139,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tts-stage-mps-nonstream-evidence
+          name: tts-stage-mps-nonstream-evidence-attempt-${{ github.run_attempt }}
           # Evidence only: the canonical directory also holds 1088 generated
           # wavs, which the TTS stages likewise never upload.
           path: |
@@ -150,7 +150,6 @@ jobs:
             ${{ env.TTS_MPS_OUTPUT_ROOT }}/raw/**
           if-no-files-found: error
           retention-days: 7
-          overwrite: true
 
       - name: Remove TTS MPS run outputs
         if: always()
