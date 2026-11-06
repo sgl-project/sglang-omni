@@ -296,6 +296,8 @@ func cardActionLabel(link string) string {
 		return i18n.T("Restart Voxt")
 	case modelsPath:
 		return i18n.T("Open Local models")
+	case remotePath:
+		return i18n.T("Open Language models")
 	}
 	return i18n.T("Open")
 }

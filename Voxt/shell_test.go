@@ -223,7 +223,7 @@ func TestProblemCards(t *testing.T) {
 	// Solved, then wrong again: it shows again, with the new text.
 	a.local = &fakeLocal{ASRP: &fakeTranscriptions{}}
 	a.checkModels() // as installing a model does
-	if !hasExact(tt, "No language model") {
+	if !hasExact(tt, "No language model") || !has(tt, "Open Language models") {
 		t.Errorf("language model card: %+v", a.notices)
 	}
 	// The rail: a dot on Settings, which opens the cards.
