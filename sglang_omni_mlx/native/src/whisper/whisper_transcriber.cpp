@@ -128,8 +128,17 @@ std::optional<mx::array> SuppressionMask(const std::vector<int> &token_ids,
 } // namespace
 
 WhisperTranscriber::WhisperTranscriber(
-    const std::filesystem::path &model_directory)
-    : model_(model_directory), tokenizer_(model_directory) {
+    const std::filesystem::path &model_directory,
+    const std::filesystem::path &draft_directory, int draft_steps)
+    : model_(model_directory), draft_steps_(draft_steps),
+      tokenizer_(model_directory) {
+  if (draft_steps < 1 || draft_steps > 16) {
+    throw std::invalid_argument("draft steps must be between 1 and 16");
+  } else if (!draft_directory.empty()) {
+    draft_.emplace(draft_directory);
+    draft_->PrepareDraft(model_);
+  } else {
+  }
   const nlohmann::json tokenizer_config =
       ReadJson(model_directory / "tokenizer_config.json");
   clean_up_tokenization_spaces_ =
@@ -277,6 +286,88 @@ WhisperTranscriber::TranscribeWindow(const std::vector<float> &window_samples,
   mx::async_eval({token});
   WindowResult result;
   std::vector<int> generated_ids;
+  if (draft_.has_value() && temperature == 0.0f) {
+    std::vector<DecoderLayerCache> draft_caches(
+        draft_->config().text_layer_count);
+    const auto draft_prefill =
+        draft_->Decode(prompt, 0, encoder_states, draft_caches);
+    mx::eval({draft_prefill});
+    int position = prompt_ids.size();
+    bool stopped = false;
+    while (static_cast<int>(generated_ids.size()) < max_new_tokens) {
+      if (cancel.load()) {
+        throw qwen3_asr::TranscriptionCancelled();
+      } else {
+      }
+      const int anchor = token.item<uint32_t>();
+      if (anchor == end_of_text_id_) {
+        stopped = true;
+        break;
+      } else {
+        generated_ids.push_back(anchor);
+      }
+      const int remaining = max_new_tokens - generated_ids.size();
+      if (remaining == 0) {
+        break;
+      } else {
+      }
+      const int proposal_count = std::min(draft_steps_, remaining - 1);
+      std::vector<int> block = {anchor};
+      for (int i = 0; i < proposal_count; ++i) {
+        if (cancel.load()) {
+          throw qwen3_asr::TranscriptionCancelled();
+        } else {
+        }
+        const mx::array input(&block.back(), {1, 1}, mx::int32);
+        auto proposal = next_token(
+            draft_->Decode(input, position + i, encoder_states, draft_caches),
+            false);
+        block.push_back(proposal.item<uint32_t>());
+      }
+      auto predictions =
+          next_token(model_.Decode(mx::array(block.data(),
+                                             {1, int(block.size())}, mx::int32),
+                                   position, encoder_states, caches, true),
+                     false);
+      mx::eval({predictions});
+      ++result.verify_round_count;
+      result.proposed_draft_token_count += proposal_count;
+      const auto *predicted_ids = predictions.data<uint32_t>();
+      int accepted = 0;
+      while (accepted < proposal_count &&
+             block[accepted + 1] == int(predicted_ids[accepted])) {
+        ++accepted;
+        ++result.accepted_draft_token_count;
+        if (block[accepted] == end_of_text_id_) {
+          stopped = true;
+          break;
+        } else {
+          generated_ids.push_back(block[accepted]);
+        }
+      }
+      if (stopped) {
+        break;
+      } else {
+      }
+      token = mx::array(predicted_ids[accepted], mx::uint32);
+      // note (ruiling): The last proposal has not yet entered the draft cache.
+      if (accepted == proposal_count) {
+        const mx::array input(&block.back(), {1, 1}, mx::int32);
+        const auto catch_up = draft_->Decode(input, position + accepted,
+                                             encoder_states, draft_caches);
+        mx::eval({catch_up});
+      } else {
+      }
+      position += accepted + 1;
+      WhisperModel::TruncateCaches(caches, position);
+      WhisperModel::TruncateCaches(draft_caches, position);
+    }
+    result.reached_token_limit = !stopped;
+    result.text = DecodeText(generated_ids);
+    result.generated_token_count = generated_ids.size();
+    return result;
+  } else {
+  }
   for (int step = 0;; ++step) {
     if (cancel.load()) {
       throw qwen3_asr::TranscriptionCancelled();
@@ -367,6 +458,9 @@ WhisperTranscriber::Transcribe(const std::vector<float> &samples,
     } else {
     }
     result.generated_token_count += window.generated_token_count;
+    result.verify_round_count += window.verify_round_count;
+    result.proposed_draft_token_count += window.proposed_draft_token_count;
+    result.accepted_draft_token_count += window.accepted_draft_token_count;
     if (window.reached_token_limit) {
       result.finish_reason = qwen3_asr::FinishReason::kLength;
     } else {

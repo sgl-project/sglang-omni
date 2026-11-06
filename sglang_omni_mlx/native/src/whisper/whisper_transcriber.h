@@ -32,7 +32,9 @@ class WhisperTranscriber {
 public:
   // Reads the checkpoint and the tokenizer files Voxt places beside it:
   // vocab.json, merges.txt, tokenizer_config.json and generation_config.json.
-  explicit WhisperTranscriber(const std::filesystem::path &model_directory);
+  explicit WhisperTranscriber(const std::filesystem::path &model_directory,
+                              const std::filesystem::path &draft_directory = {},
+                              int draft_steps = 7);
 
   qwen3_asr::TranscriptionResult
   Transcribe(const std::vector<float> &samples, const WhisperOptions &options,
@@ -43,6 +45,9 @@ private:
     std::string text;
     int generated_token_count = 0;
     bool reached_token_limit = false;
+    int verify_round_count = 0;
+    int proposed_draft_token_count = 0;
+    int accepted_draft_token_count = 0;
   };
 
   // The code of the language token a language names, when there is one.
@@ -56,6 +61,8 @@ private:
                                 const std::atomic<bool> &cancel) const;
 
   WhisperModel model_;
+  std::optional<WhisperModel> draft_;
+  int draft_steps_;
   omni_common::Tokenizer tokenizer_;
   bool clean_up_tokenization_spaces_ = true;
   bool is_multilingual_ = false;

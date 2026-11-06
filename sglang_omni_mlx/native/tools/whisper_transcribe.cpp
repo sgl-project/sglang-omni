@@ -19,6 +19,8 @@
 
 int main(int argc, char **argv) {
   std::string model_path;
+  std::string draft_path;
+  int draft_steps = 7;
   whisper::WhisperOptions options;
   std::vector<std::string> files;
   for (int i = 1; i < argc; ++i) {
@@ -33,6 +35,10 @@ int main(int argc, char **argv) {
     };
     if (argument == "--model-path") {
       model_path = value();
+    } else if (argument == "--draft-model-path") {
+      draft_path = value();
+    } else if (argument == "--draft-steps") {
+      draft_steps = std::stoi(value());
     } else if (argument == "--language") {
       options.language = value();
     } else if (argument == "--max-new-tokens") {
@@ -47,7 +53,8 @@ int main(int argc, char **argv) {
     }
   }
   const auto load_started = std::chrono::steady_clock::now();
-  const whisper::WhisperTranscriber transcriber(model_path);
+  const whisper::WhisperTranscriber transcriber(model_path, draft_path,
+                                                draft_steps);
   std::cerr << "loaded in "
             << std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                              load_started)
@@ -68,6 +75,9 @@ int main(int argc, char **argv) {
                          ? nlohmann::json(*result.language)
                          : nlohmann::json()},
         {"generated_token_count", result.generated_token_count},
+        {"verify_round_count", result.verify_round_count},
+        {"proposed_draft_token_count", result.proposed_draft_token_count},
+        {"accepted_draft_token_count", result.accepted_draft_token_count},
         {"finish_reason", qwen3_asr::FinishReasonName(result.finish_reason)},
         {"seconds", std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - started)

@@ -18,8 +18,10 @@ namespace {
 
 class WhisperModelService : public asr_service::ServedModel {
 public:
-  explicit WhisperModelService(const std::filesystem::path &model_directory)
-      : transcriber_(model_directory) {}
+  explicit WhisperModelService(const std::filesystem::path &model_directory,
+                               const std::filesystem::path &draft_directory,
+                               int draft_steps)
+      : transcriber_(model_directory, draft_directory, draft_steps) {}
 
   asr_service::Transcription
   Prepare(std::vector<float> samples,
@@ -50,10 +52,24 @@ private:
 } // namespace
 
 int main(int argc, char **argv) {
+  std::filesystem::path draft_directory;
+  int draft_steps = 7;
   asr_service::ServedKind kind;
+  kind.flags = {{"--draft-model-path",
+                 [&](const std::string &value) { draft_directory = value; }},
+                {"--draft-steps", [&](const std::string &value) {
+                   draft_steps = std::stoi(value);
+                 }}};
+  kind.check_flags = [&]() {
+    if (draft_steps < 1 || draft_steps > 16) {
+      throw std::invalid_argument("draft steps must be between 1 and 16");
+    } else {
+    }
+  };
   kind.model_kind = "whisper";
-  kind.load = [](const std::filesystem::path &model_directory) {
-    return std::make_unique<WhisperModelService>(model_directory);
+  kind.load = [&](const std::filesystem::path &model_directory) {
+    return std::make_unique<WhisperModelService>(model_directory,
+                                                 draft_directory, draft_steps);
   };
   return asr_service::Serve(argc, argv, kind);
 }

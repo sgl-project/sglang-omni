@@ -62,6 +62,8 @@ struct TranscriptionResult {
   std::vector<SpeakerSegment> segments;
   // Rounds of draft verification; 0 when decoding without a draft.
   int verify_round_count = 0;
+  int proposed_draft_token_count = 0;
+  int accepted_draft_token_count = 0;
 };
 
 class TranscriptionCancelled : public std::runtime_error {
