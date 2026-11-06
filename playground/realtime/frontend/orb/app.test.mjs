@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-import { DuplexSession } from "./session.js";
+import { DuplexSession, registerPluginRenderer } from "./session.js";
 
 const appSource = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/^import .+;$/gm, "");
 const workletSource = readFileSync(new URL("./worklet.js", import.meta.url), "utf8");
@@ -137,6 +137,15 @@ function grant(socket, unitMilliseconds, outputSampleRate = 24000, interaction =
 function status(generation) {
   return { type: "status", generation, droppedMs: 10, rate: 1, queueMs: 500, targetMs: 300, playedMs: 1000, buffering: false, underruns: 2, outputRms: 0.2, responseOpen: true, responseId: "unattributed" };
 }
+
+test("a registered renderer draws sglang.output_chunk of its format and other formats are dropped", () => {
+  const session = new DuplexSession({ transport: () => {}, now: () => 0 });
+  const drawn = [];
+  registerPluginRenderer("image_asset", (event, owner) => drawn.push([event.payload.url, owner === session]));
+  session.handle({ type: "sglang.output_chunk", response_id: null, modality: "image", format: "image_asset", t_start_ms: 0, duration_ms: 0, turn: null, payload: { url: "a.png" } });
+  session.handle({ type: "sglang.output_chunk", response_id: "resp_0", modality: "motion", format: "smplx_motion", t_start_ms: 0, duration_ms: 80, turn: 1, payload_b64: "cG9zZQ==" });
+  assert.deepEqual(drawn, [["a.png", true]]);
+});
 
 test("reused nodes restore each granted profile and attribute status only to its session", async () => {
   const app = createApp({ actualSampleRate: 48000 });
