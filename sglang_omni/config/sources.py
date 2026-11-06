@@ -68,9 +68,23 @@ class DuplicateKeyRefusingLoader(yaml.SafeLoader):
     true for the file surface too.
     """
 
+    def __init__(self, stream):
+        super().__init__(stream)
+        self.written_pairs: dict[yaml.Node, list[tuple[yaml.Node, yaml.Node]]] = {}
+
+    def flatten_mapping(self, node):
+        # note (WenJing95): a parent merge flattens an anchored mapping in place before its own construct_mapping runs, so keep the pairs as written.
+        self.written_pairs.setdefault(node, list(node.value))
+        super().flatten_mapping(node)
+
     def construct_mapping(self, node, deep=False):  # type: ignore[override]
         seen: set[Hashable] = set()
-        for key_node, _value_node in node.value:
+        for key_node, _value_node in self.written_pairs.get(node, node.value):
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                # note (WenJing95): keys a merge brings in may be overridden by keys written beside it, so they are not duplicates.
+                continue
+            else:
+                pass
             key = self.construct_object(key_node, deep=deep)
             if isinstance(key, (dict, list, set)):
                 continue  # unhashable; let SafeLoader produce its own error
