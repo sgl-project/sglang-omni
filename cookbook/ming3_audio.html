@@ -62,7 +62,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.2.0" />
-    <meta name="docbuild:last-update" content="Nov 05, 2026"/>
+    <meta name="docbuild:last-update" content="Nov 06, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -574,6 +574,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#transcription">Transcription</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-synthesis">Speech synthesis</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#audio-chat">Audio chat</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#apple-silicon-native-mlx">Apple Silicon: native MLX</a></li>
 </ul>
             </nav>
         </div>
@@ -657,6 +658,70 @@
 </div>
 <p>The chat response keeps the generated answer. Set <code class="docutils literal notranslate"><span class="pre">modalities</span></code> to <code class="docutils literal notranslate"><span class="pre">[&quot;text&quot;,</span> <span class="pre">&quot;audio&quot;]</span></code> to synthesize that answer as well. The same recording can be sent inside a message as <code class="docutils literal notranslate"><span class="pre">input_audio</span></code> or <code class="docutils literal notranslate"><span class="pre">audio_url</span></code> instead of <code class="docutils literal notranslate"><span class="pre">audios</span></code>.</p>
 </section>
+<section id="apple-silicon-native-mlx">
+<h2>Apple Silicon: native MLX<a class="headerlink" href="#apple-silicon-native-mlx" title="Link to this heading">#</a></h2>
+<p>The standalone <code class="docutils literal notranslate"><span class="pre">ming3_audio_server</span></code> serves <code class="docutils literal notranslate"><span class="pre">/v1/chat/completions</span></code> on an Apple Silicon Mac using <a class="reference external" href="https://huggingface.co/inclusionAI/Ming-3.0-audio-tiny">Ming-3.0-audio-tiny</a>. Inference runs in C++ with the native runtime’s MLX 0.32.3 toolchain, without Python, PyTorch or CUDA.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>sglang_omni_mlx/native/ci/provision_models.py<span class="w"> </span><span class="s2">"</span><span class="nv">$MING3_AUDIO_DATA</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model<span class="w"> </span>inclusionAI/Ming-3.0-audio-tiny
+sglang_omni_mlx/native/scripts/build_runtime.sh<span class="w"> </span><span class="s2">"</span><span class="nv">$MING3_AUDIO_RUNTIME</span><span class="s2">"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$MING3_AUDIO_BUILD</span><span class="s2">"</span>
+<span class="s2">"</span><span class="nv">$MING3_AUDIO_RUNTIME</span><span class="s2">/bin/ming3_audio_server"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span><span class="s2">"</span><span class="nv">$MING3_AUDIO_DATA</span><span class="s2">/models/inclusionAI_Ming-3.0-audio-tiny"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-name<span class="w"> </span>inclusionAI/Ming-3.0-audio-tiny<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>Set <code class="docutils literal notranslate"><span class="pre">MING3_AUDIO_DATA</span></code>, <code class="docutils literal notranslate"><span class="pre">MING3_AUDIO_RUNTIME</span></code> and <code class="docutils literal notranslate"><span class="pre">MING3_AUDIO_BUILD</span></code> to separate local directories. Model provisioning uses the existing CI Python requirements and verifies the revision and hashes in <code class="docutils literal notranslate"><span class="pre">ci/model_pins.json</span></code>. The BF16 weights occupy about 17.7 GB; on an M4 Pro with 48 GiB of memory, the server’s peak memory footprint was 18.8 GB. Quantized checkpoints are not supported.</p>
+<p>Send the recording as base64 in an <code class="docutils literal notranslate"><span class="pre">input_audio</span></code> content part:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">base64</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">requests</span>
+
+<span class="n">audio_base64</span> <span class="o">=</span> <span class="n">base64</span><span class="o">.</span><span class="n">b64encode</span><span class="p">(</span><span class="n">Path</span><span class="p">(</span><span class="s2">"input.wav"</span><span class="p">)</span><span class="o">.</span><span class="n">read_bytes</span><span class="p">())</span><span class="o">.</span><span class="n">decode</span><span class="p">()</span>
+<span class="n">response</span> <span class="o">=</span> <span class="n">requests</span><span class="o">.</span><span class="n">post</span><span class="p">(</span>
+    <span class="s2">"http://127.0.0.1:8000/v1/chat/completions"</span><span class="p">,</span>
+    <span class="n">json</span><span class="o">=</span><span class="p">{</span>
+        <span class="s2">"model"</span><span class="p">:</span> <span class="s2">"inclusionAI/Ming-3.0-audio-tiny"</span><span class="p">,</span>
+        <span class="s2">"messages"</span><span class="p">:</span> <span class="p">[</span>
+            <span class="p">{</span>
+                <span class="s2">"role"</span><span class="p">:</span> <span class="s2">"user"</span><span class="p">,</span>
+                <span class="s2">"content"</span><span class="p">:</span> <span class="p">[</span>
+                    <span class="p">{</span>
+                        <span class="s2">"type"</span><span class="p">:</span> <span class="s2">"input_audio"</span><span class="p">,</span>
+                        <span class="s2">"input_audio"</span><span class="p">:</span> <span class="p">{</span><span class="s2">"format"</span><span class="p">:</span> <span class="s2">"wav"</span><span class="p">,</span> <span class="s2">"data"</span><span class="p">:</span> <span class="n">audio_base64</span><span class="p">},</span>
+                    <span class="p">},</span>
+                    <span class="p">{</span><span class="s2">"type"</span><span class="p">:</span> <span class="s2">"text"</span><span class="p">,</span> <span class="s2">"text"</span><span class="p">:</span> <span class="s2">"What does the speaker say?"</span><span class="p">},</span>
+                <span class="p">],</span>
+            <span class="p">}</span>
+        <span class="p">],</span>
+        <span class="s2">"temperature"</span><span class="p">:</span> <span class="mi">0</span><span class="p">,</span>
+        <span class="s2">"max_completion_tokens"</span><span class="p">:</span> <span class="mi">64</span><span class="p">,</span>
+        <span class="s2">"stream"</span><span class="p">:</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="p">},</span>
+    <span class="n">timeout</span><span class="o">=</span><span class="mi">180</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">response</span><span class="o">.</span><span class="n">raise_for_status</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">response</span><span class="o">.</span><span class="n">json</span><span class="p">()[</span><span class="s2">"choices"</span><span class="p">][</span><span class="mi">0</span><span class="p">][</span><span class="s2">"message"</span><span class="p">][</span><span class="s2">"content"</span><span class="p">])</span>
+</pre></div>
+</div>
+<p>The native server supports audio questions with text responses, with these limits:</p>
+<ul class="simple">
+<li><p>One user message containing exactly one audio clip, with an optional leading system message. Text may appear before or after the audio part.</p></li>
+<li><p>Input is nonempty 16 kHz mono PCM16 or float32 WAV. Audio is encoded in 30-second chunks. Top-level <code class="docutils literal notranslate"><span class="pre">audios</span></code>, file paths and <code class="docutils literal notranslate"><span class="pre">audio_url</span></code> are not supported.</p></li>
+<li><p>Generation is greedy (<code class="docutils literal notranslate"><span class="pre">temperature=0</span></code>), with a positive output token budget. Both <code class="docutils literal notranslate"><span class="pre">ming3_audio_server</span></code> and <code class="docutils literal notranslate"><span class="pre">ming3_audio_chat</span></code> accept <code class="docutils literal notranslate"><span class="pre">--context-length</span> <span class="pre">N</span></code> (default: 8,192); the effective limit is the smaller of this value and the checkpoint’s <code class="docutils literal notranslate"><span class="pre">max_position_embeddings</span></code>. The prompt, including audio tokens, and the requested output budget must fit within that limit. <code class="docutils literal notranslate"><span class="pre">max_completion_tokens</span></code> takes precedence over <code class="docutils literal notranslate"><span class="pre">max_tokens</span></code>.</p></li>
+<li><p>Streaming, speech output and multi-turn conversations are not supported. The transcription and speech endpoints above are not available on this server.</p></li>
+<li><p>Request bodies are limited to 4 MiB. One generation runs at a time; concurrent requests receive 429. <code class="docutils literal notranslate"><span class="pre">/health</span></code> and <code class="docutils literal notranslate"><span class="pre">/v1/models</span></code> are supported.</p></li>
+</ul>
+<p>To convert another recording to the accepted WAV format:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ffmpeg<span class="w"> </span>-i<span class="w"> </span>recording.mp3<span class="w"> </span>-ar<span class="w"> </span><span class="m">16000</span><span class="w"> </span>-ac<span class="w"> </span><span class="m">1</span><span class="w"> </span>-c:a<span class="w"> </span>pcm_s16le<span class="w"> </span>input.wav
+</pre></div>
+</div>
+<p>For offline inference, <code class="docutils literal notranslate"><span class="pre">ming3_audio_chat</span></code> accepts the same checkpoint and WAV input and prints JSON containing the answer, finish reason and token counts. <code class="docutils literal notranslate"><span class="pre">--prompt</span></code> is the text after the audio, and <code class="docutils literal notranslate"><span class="pre">--system</span></code> adds a system message:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="s2">"</span><span class="nv">$MING3_AUDIO_RUNTIME</span><span class="s2">/bin/ming3_audio_chat"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span><span class="s2">"</span><span class="nv">$MING3_AUDIO_DATA</span><span class="s2">/models/inclusionAI_Ming-3.0-audio-tiny"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--audio<span class="w"> </span>input.wav<span class="w"> </span>--prompt<span class="w"> </span><span class="s1">'What does the speaker say?'</span><span class="w"> </span>--max-new-tokens<span class="w"> </span><span class="m">64</span>
+</pre></div>
+</div>
+</section>
 </section>
 
 
@@ -710,6 +775,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#transcription">Transcription</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-synthesis">Speech synthesis</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#audio-chat">Audio chat</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#apple-silicon-native-mlx">Apple Silicon: native MLX</a></li>
 </ul>
   </nav></div>
 
@@ -743,7 +809,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Nov 05, 2026.
+  Last updated on Nov 06, 2026.
   <br/>
 </p>
   </div>

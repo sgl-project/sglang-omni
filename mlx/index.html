@@ -62,7 +62,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.2.0" />
-    <meta name="docbuild:last-update" content="Nov 05, 2026"/>
+    <meta name="docbuild:last-update" content="Nov 06, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -599,7 +599,7 @@
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sglang_omni_mlx/native/</span></code></p></td>
-<td><p>C++ runtime on MLX: one server binary per model, a parity CLI per model in <code class="docutils literal notranslate"><span class="pre">tools/</span></code>. Each model’s code is in <code class="docutils literal notranslate"><span class="pre">src/&lt;model&gt;/</span></code>; code shared across models (<code class="docutils literal notranslate"><span class="pre">audio</span></code>, <code class="docutils literal notranslate"><span class="pre">form</span></code>, <code class="docutils literal notranslate"><span class="pre">layers</span></code>, <code class="docutils literal notranslate"><span class="pre">npz</span></code>, <code class="docutils literal notranslate"><span class="pre">tokenizer</span></code>, built as the <code class="docutils literal notranslate"><span class="pre">common</span></code> library, plus <code class="docutils literal notranslate"><span class="pre">swift_port</span></code> and <code class="docutils literal notranslate"><span class="pre">http</span></code>) is in <code class="docutils literal notranslate"><span class="pre">src/common/</span></code>. The shared ASR server code (<code class="docutils literal notranslate"><span class="pre">asr_service</span></code>, <code class="docutils literal notranslate"><span class="pre">worker</span></code>, <code class="docutils literal notranslate"><span class="pre">realtime</span></code>) is still in <code class="docutils literal notranslate"><span class="pre">src/qwen3_asr/</span></code>, and so is the <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> API that <code class="docutils literal notranslate"><span class="pre">voxtral_tts_server</span></code> and <code class="docutils literal notranslate"><span class="pre">fishaudio_drama3_server</span></code> share (<code class="docutils literal notranslate"><span class="pre">speech_service</span></code>), built on <code class="docutils literal notranslate"><span class="pre">asr_service</span></code>.</p></td>
+<td><p>C++ runtime on MLX: one server binary per model, a parity CLI per model in <code class="docutils literal notranslate"><span class="pre">tools/</span></code>. Each model’s code is in <code class="docutils literal notranslate"><span class="pre">src/&lt;model&gt;/</span></code>; code shared across models (<code class="docutils literal notranslate"><span class="pre">audio</span></code>, <code class="docutils literal notranslate"><span class="pre">form</span></code>, <code class="docutils literal notranslate"><span class="pre">layers</span></code>, <code class="docutils literal notranslate"><span class="pre">npz</span></code>, <code class="docutils literal notranslate"><span class="pre">tokenizer</span></code>, built as the <code class="docutils literal notranslate"><span class="pre">common</span></code> library, plus <code class="docutils literal notranslate"><span class="pre">swift_port</span></code> and <code class="docutils literal notranslate"><span class="pre">http</span></code>) is in <code class="docutils literal notranslate"><span class="pre">src/common/</span></code>. The shared ASR server code (<code class="docutils literal notranslate"><span class="pre">asr_service</span></code>, <code class="docutils literal notranslate"><span class="pre">worker</span></code>, <code class="docutils literal notranslate"><span class="pre">realtime</span></code>) is still in <code class="docutils literal notranslate"><span class="pre">src/qwen3_asr/</span></code>, and so is the <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> API that <code class="docutils literal notranslate"><span class="pre">voxtral_tts_server</span></code> and <code class="docutils literal notranslate"><span class="pre">fishaudio_drama3_server</span></code> share (<code class="docutils literal notranslate"><span class="pre">speech_service</span></code>), built on <code class="docutils literal notranslate"><span class="pre">asr_service</span></code>. <code class="docutils literal notranslate"><span class="pre">ming3_audio_server</span></code> serves <code class="docutils literal notranslate"><span class="pre">/v1/chat/completions</span></code> from its own service in <code class="docutils literal notranslate"><span class="pre">src/ming3_audio/</span></code>.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sglang_omni_mlx/native/ci/</span></code></p></td>
 <td><p>Model pins, the 392-clip corpus, golden outputs, server API tests.</p></td>
@@ -623,7 +623,7 @@
 <li><p>No shared backend interface, base class or registry across the two paths.
 Share code freely inside the MLX path, not across paths.</p></li>
 <li><p>The paths meet only at the OpenAI-style HTTP API (<code class="docutils literal notranslate"><span class="pre">/v1/audio/transcriptions</span></code>,
-<code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code>, <code class="docutils literal notranslate"><span class="pre">/v1/realtime</span></code>, <code class="docutils literal notranslate"><span class="pre">/health</span></code>).</p></li>
+<code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code>, <code class="docutils literal notranslate"><span class="pre">/v1/chat/completions</span></code>, <code class="docutils literal notranslate"><span class="pre">/v1/realtime</span></code>, <code class="docutils literal notranslate"><span class="pre">/health</span></code>).</p></li>
 </ul>
 <p>Why:</p>
 <ul class="simple">
@@ -825,7 +825,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Nov 05, 2026.
+  Last updated on Nov 06, 2026.
   <br/>
 </p>
   </div>
