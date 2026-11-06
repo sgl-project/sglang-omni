@@ -14,6 +14,9 @@ from sglang_omni.native_generation import ROUTE_PREFIXES
 
 class Cosmos3PipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = "Cosmos3ForConditionalGeneration"
+    architecture_aliases: ClassVar[tuple[str, ...]] = (
+        "Cosmos3EdgeForConditionalGeneration",
+    )
 
     model_path: str
     stages: list[StageConfig] = [

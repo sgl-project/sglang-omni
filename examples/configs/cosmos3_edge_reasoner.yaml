@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+
+config_cls: Cosmos3ReasonerPipelineConfig
+name: cosmos3-edge-reasoner
+model_path: nvidia/Cosmos3-Edge@a9d944e2c6a1bf9f48b92ad16348e70c5f1836ba
+
+stages:
+  reasoner:
+    engine:
+      context_length: 131072
+      mem_fraction_static: 0.4
+      attention_backend: triton
+      disable_cuda_graph: true
+      disable_custom_all_reduce: true
+      mm_process_config:
+        video:
+          fps: 2.0
+          max_frames: 128
