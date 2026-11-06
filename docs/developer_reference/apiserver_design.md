@@ -4,6 +4,10 @@ This page explains the API server at the level that is most useful for maintenan
 
 If you only want to launch the server and call it, start with [API Server Quickstart](../get_started/apiserver_quickstart.md).
 
+## Launch commands
+
+Run `sgl-omni serve --help` for CLI options. If your SGLang installation supports serve backend plugins, you can also run `sglang serve MODEL_PATH --model-type omni` with the same options. To launch from a config that already sets `model_path`, use `--config path/to/config.yaml` in place of the model path.
+
 ## Role in the System
 
 The API server is the outer protocol layer on top of the `sglang-omni` pipeline runtime.
