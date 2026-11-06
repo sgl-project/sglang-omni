@@ -193,6 +193,7 @@ func TestIdleStopAndRestart(t *testing.T) {
 // back to never, it stays.
 func TestSetIdleTimeout(t *testing.T) {
 	rt, logs := newRuntime(t, "", nil) // IdleTimeout -1
+	clock := new(fakeClock).install(rt)
 	b, err := NewModel(rt, Fast, mlxDir(t))
 	if err != nil {
 		t.Fatal(err)
@@ -204,31 +205,77 @@ func TestSetIdleTimeout(t *testing.T) {
 		}
 	}
 	chat()
-	time.Sleep(150 * time.Millisecond)
+	clock.advance(time.Hour)
 	if st := rt.Status(); st.State != Ready {
 		t.Fatalf("kept: %+v", st)
 	}
-	changed := time.Now()
 	rt.SetIdleTimeout(200 * time.Millisecond)
 	if d := rt.IdleTimeout(); d != 200*time.Millisecond {
 		t.Errorf("IdleTimeout %v", d)
 	}
-	waitFor(t, "the idle stop", func() bool { return rt.Status().State == Stopped })
-	if took := time.Since(changed); took < 200*time.Millisecond {
-		t.Errorf("stopped %v after the change", took)
+	clock.advance(199 * time.Millisecond)
+	if st := rt.Status(); st.State != Ready {
+		t.Fatalf("stopped before the new time: %+v", st)
+	}
+	clock.advance(time.Millisecond) // the idle stop returns once the process exited
+	if st := rt.Status(); st.State != Stopped {
+		t.Fatalf("not stopped at the new time: %+v", st)
 	}
 	if !logs.has("unused for 200ms") {
 		t.Error("no idle line with the new time")
 	}
 	chat()
 	rt.SetIdleTimeout(-1)
-	time.Sleep(400 * time.Millisecond)
+	clock.advance(time.Hour)
 	if st := rt.Status(); st.State != Ready || st.Starts != 2 {
 		t.Errorf("never: %+v", st)
 	}
 	rt.SetIdleTimeout(0)
 	if d := rt.IdleTimeout(); d != DefaultIdleTimeout {
 		t.Errorf("0 is %v", d)
+	}
+}
+
+// fakeClock stands for the idle timer's clock: tests move it on by hand,
+// and the timers due run in the caller.
+type fakeClock struct {
+	mu     sync.Mutex
+	now    time.Duration
+	timers []*fakeTimer
+}
+
+type fakeTimer struct {
+	at   time.Duration
+	fn   func()
+	done bool // stopped or run
+}
+
+// install makes r's idle timer run on c.
+func (c *fakeClock) install(r *Runtime) *fakeClock {
+	r.afterFunc = func(d time.Duration, fn func()) func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		t := &fakeTimer{at: c.now + d, fn: fn}
+		c.timers = append(c.timers, t)
+		return func() { c.mu.Lock(); t.done = true; c.mu.Unlock() }
+	}
+	return c
+}
+
+// advance moves the clock on by d and runs the timers then due.
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	c.now += d
+	var due []*fakeTimer
+	for _, t := range c.timers {
+		if !t.done && t.at <= c.now {
+			t.done = true
+			due = append(due, t)
+		}
+	}
+	c.mu.Unlock()
+	for _, t := range due {
+		t.fn()
 	}
 }
 

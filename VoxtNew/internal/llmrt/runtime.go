@@ -23,9 +23,12 @@ type Runtime struct {
 	status   Status
 	proc     *proc         // the running process; nil when none
 	starting chan struct{} // closed when the current start ends; nil when none
-	idle     *time.Timer
-	inFlight int // calls between ensure and their end
-	stopped  bool
+	idle     func()        // stops the idle timer
+	// afterFunc runs the idle timer (time.AfterFunc; tests move a clock
+	// of their own) and returns its Stop.
+	afterFunc func(time.Duration, func()) func()
+	inFlight  int // calls between ensure and their end
+	stopped   bool
 	// mismatch: the process speaks another protocol; it is not started
 	// again (rebuild it).
 	mismatch string
@@ -40,7 +43,11 @@ type Runtime struct {
 // New returns a Runtime for cfg.
 func New(cfg Config) *Runtime {
 	cfg.defaults()
-	return &Runtime{cfg: cfg, events: newEvents(cfg), status: Status{State: Stopped, Since: time.Now()}}
+	return &Runtime{cfg: cfg, events: newEvents(cfg), status: Status{State: Stopped, Since: time.Now()},
+		afterFunc: func(d time.Duration, f func()) func() {
+			t := time.AfterFunc(d, f)
+			return func() { t.Stop() }
+		}}
 }
 
 // Status returns a snapshot (memory only).
@@ -90,7 +97,7 @@ func (r *Runtime) ensure(ctx context.Context) (*proc, error) {
 		case r.proc != nil && r.status.State == Ready:
 			r.inFlight++
 			if r.idle != nil {
-				r.idle.Stop()
+				r.idle()
 			}
 			p := r.proc
 			r.mu.Unlock()
@@ -134,14 +141,14 @@ func (r *Runtime) release() {
 // armIdle stops p after the idle timeout, from now (r.mu held).
 func (r *Runtime) armIdle(p *proc) {
 	if r.idle != nil {
-		r.idle.Stop()
+		r.idle()
 		r.idle = nil
 	}
 	d := r.cfg.IdleTimeout
 	if d < 0 {
 		return
 	}
-	r.idle = time.AfterFunc(d, func() { r.idleStop(p, d) })
+	r.idle = r.afterFunc(d, func() { r.idleStop(p, d) })
 }
 
 // IdleTimeout is how long the process stays without a call (< 0: until
@@ -252,7 +259,7 @@ func (r *Runtime) exited(p *proc, msg string) {
 	}
 	r.gone(p)
 	if r.idle != nil {
-		r.idle.Stop()
+		r.idle()
 	}
 	r.status.PID, r.status.Hello, r.status.Model, r.status.Since = 0, nil, nil, time.Now()
 	if p.intentional.Load() {
@@ -298,7 +305,7 @@ func (r *Runtime) Stop() {
 	r.mu.Lock()
 	r.stopped = true
 	if r.idle != nil {
-		r.idle.Stop()
+		r.idle()
 	}
 	p := r.proc
 	r.mu.Unlock()
