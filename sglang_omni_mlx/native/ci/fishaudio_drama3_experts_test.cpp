@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "fishaudio_drama3/fishaudio_drama3_experts.h"
 
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <mutex>
 #include <stdexcept>
 #include <type_traits>
+
+#include "qwen3_asr/worker.h"
 
 namespace mx = mlx::core;
 namespace drama = fishaudio_drama3;
@@ -54,6 +58,106 @@ private:
   std::mutex mutex_;
 };
 
+class BlockingReader : public CountingReader {
+public:
+  BlockingReader(const std::string &path, std::promise<void> &reading,
+                 std::shared_future<void> resume)
+      : CountingReader(path), reading_(reading), resume_(std::move(resume)) {}
+  void read(char *destination, size_t count, size_t offset) override {
+    reading_.set_value();
+    resume_.wait();
+    CountingReader::read(destination, count, offset);
+  }
+
+private:
+  std::promise<void> &reading_;
+  std::shared_future<void> resume_;
+};
+
+void VerifyCancelledWorker(const std::filesystem::path &directory,
+                           const nlohmann::json &config, size_t expert_bytes) {
+  std::promise<void> reading;
+  auto reading_future = reading.get_future();
+  std::promise<void> resume;
+  auto resume_future = resume.get_future().share();
+  std::promise<std::exception_ptr> cancelled;
+  auto cancelled_future = cancelled.get_future();
+  std::promise<qwen3_asr::TranscriptionResult> next;
+  auto next_future = next.get_future();
+  std::unique_ptr<drama::ExpertCache> cache;
+  std::unique_ptr<omni_common::Checkpoint> checkpoint;
+  qwen3_asr::TranscriptionWorker worker(
+      [&] {
+        cache = std::make_unique<drama::ExpertCache>(directory, config,
+                                                     expert_bytes);
+        checkpoint = std::make_unique<omni_common::Checkpoint>(
+            cache->TakeResidentWeights(), config);
+        mx::save_safetensors(std::make_shared<mx::io::FileWriter>(
+                                 (directory / "input.pending").string()),
+                             {{"input", mx::ones({1, 256, 128})}});
+      },
+      [] {});
+  const auto cancel = qwen3_asr::NewCancelFlag();
+  worker.Submit(
+      [&](const std::atomic<bool> &cancelled) {
+        auto reader = std::make_shared<BlockingReader>(
+            (directory / "input.pending").string(), reading, resume_future);
+        const auto [loaded, metadata] = mx::load_safetensors(reader);
+        cache->Routed(
+            loaded.at("input"),
+            mx::broadcast_to(mx::arange(17, mx::uint32), {1, 256, 17}),
+            mx::full({1, 256, 17}, 1.0f / 17), kPrefix, *checkpoint,
+            &cancelled);
+        return qwen3_asr::TranscriptionResult{};
+      },
+      cancel,
+      [&](std::optional<qwen3_asr::TranscriptionResult>,
+          std::exception_ptr error) { cancelled.set_value(error); });
+  Require(reading_future.wait_for(std::chrono::seconds(5)) ==
+              std::future_status::ready,
+          "worker never reached routed input reading");
+  worker.Submit(
+      [&](const std::atomic<bool> &cancelled) {
+        Require(cache->misses() == 0 && cache->payload_read_bytes() == 0,
+                "cancelled prefill kept loading experts before queued request");
+        cache->Release();
+        const auto output = cache->Routed(
+            mx::ones({1, 1, 128}), mx::zeros({1, 1, 1}, mx::uint32),
+            mx::ones({1, 1, 1}), kPrefix, *checkpoint, &cancelled);
+        Require(mx::all(mx::isfinite(output)).item<bool>(),
+                "queued request could not reuse cache after cancellation");
+        qwen3_asr::TranscriptionResult result;
+        result.text = "next request finished";
+        return result;
+      },
+      qwen3_asr::NewCancelFlag(),
+      [&](std::optional<qwen3_asr::TranscriptionResult> result,
+          std::exception_ptr error) {
+        if (error) {
+          next.set_exception(error);
+        } else {
+          next.set_value(*result);
+        }
+      });
+  cancel->store(true);
+  resume.set_value();
+  Require(next_future.wait_for(std::chrono::seconds(5)) ==
+              std::future_status::ready,
+          "queued worker request did not finish after cancellation");
+  const auto error = cancelled_future.get();
+  Require(error != nullptr, "offloaded prefill ignored cancellation");
+  bool rejected = false;
+  try {
+    std::rethrow_exception(error);
+  } catch (const qwen3_asr::TranscriptionCancelled &) {
+    rejected = true;
+  }
+  Require(rejected && next_future.get().text == "next request finished",
+          "worker cancellation protocol or queue progression changed");
+  std::cout
+      << "cancelled offloaded prefill yielded worker before any expert read\n";
+}
+
 void Verify(const std::filesystem::path &directory, int bits, mx::Dtype dtype) {
   std::filesystem::create_directories(directory);
   omni_common::WeightMap weights;
@@ -93,7 +197,37 @@ void Verify(const std::filesystem::path &directory, int bits, mx::Dtype dtype) {
   const auto path = directory / "model.safetensors";
   mx::save_safetensors(path.string(), weights);
   const nlohmann::json config = {
+      {"text_config", {{"num_hidden_layers", 2}, {"num_experts", 17}}},
       {"quantization", {{"group_size", 64}, {"bits", bits}}}};
+  std::ofstream(directory / "config.json") << config;
+  if (bits == 4 && dtype == mx::float32) {
+    VerifyCancelledWorker(directory, config, expert_bytes);
+  } else {
+  }
+  for (const bool entire_layer : {false, true}) {
+    const auto malformed_directory =
+        directory / (entire_layer ? "missing-layer" : "missing-up-weight");
+    std::filesystem::create_directories(malformed_directory);
+    auto malformed_weights = weights;
+    std::erase_if(malformed_weights, [&](const auto &named) {
+      return entire_layer ? named.first.starts_with(other_prefix + ".")
+                          : named.first == other_prefix + ".up_proj.weight";
+    });
+    mx::save_safetensors((malformed_directory / "model.safetensors").string(),
+                         malformed_weights);
+    bool rejected = false;
+    try {
+      drama::ExpertCache malformed(malformed_directory, config);
+    } catch (const std::runtime_error &error) {
+      rejected =
+          std::string(error.what()) ==
+          "missing routed expert tensor: " + other_prefix + ".up_proj.weight";
+    }
+    Require(rejected, "startup accepted an incomplete configured expert layer");
+    std::cout << "startup rejected "
+              << (entire_layer ? "missing-layer" : "missing-up-weight")
+              << " bits=" << bits << " dtype=" << dtype << '\n';
+  }
   auto reader = std::make_shared<CountingReader>(path.string());
   auto [lazy_weights, metadata] = mx::load_safetensors(reader);
   Require(reader->payload_bytes == 0, "MLX load read payload eagerly");
@@ -410,6 +544,8 @@ int main(int argc, char **argv) {
     const auto malformed_directory =
         std::filesystem::path(argv[1]) / "malformed";
     std::filesystem::create_directories(malformed_directory);
+    std::ofstream(malformed_directory / "config.json") << nlohmann::json{
+        {"text_config", {{"num_hidden_layers", 2}, {"num_experts", 17}}}};
     {
       std::ofstream malformed(malformed_directory / "broken.safetensors",
                               std::ios::binary);

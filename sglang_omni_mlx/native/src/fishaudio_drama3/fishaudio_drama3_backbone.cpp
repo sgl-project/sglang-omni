@@ -196,7 +196,8 @@ mx::array Drama3Model::AttentionLayer(const mx::array &x,
 }
 
 mx::array Drama3Model::MixtureOfExperts(const mx::array &x,
-                                        const std::string &prefix) const {
+                                        const std::string &prefix,
+                                        const std::atomic<bool> &cancel) const {
   const mx::array gates = mx::softmax(checkpoint_.Linear(x, prefix + ".gate"),
                                       std::vector<int>{-1}, true);
   const mx::array experts =
@@ -208,7 +209,7 @@ mx::array Drama3Model::MixtureOfExperts(const mx::array &x,
   mx::array combined = x;
   if (expert_cache_) {
     combined = expert_cache_->Routed(x, experts, scores, prefix + ".switch_mlp",
-                                     checkpoint_);
+                                     checkpoint_, &cancel);
   } else {
     // Rows [..., 1, 1, dim] per token, each gathered by its experts; once
     // enough rows route, they are sorted by expert so weights stream in order.
@@ -266,7 +267,8 @@ mx::array Drama3Model::MixtureOfExperts(const mx::array &x,
 }
 
 mx::array Drama3Model::Backbone(const mx::array &embeddings,
-                                std::vector<LayerCache> &caches) const {
+                                std::vector<LayerCache> &caches,
+                                const std::atomic<bool> &cancel) const {
   mx::array hidden = embeddings;
   for (int layer = 0; layer < layer_count_; ++layer) {
     const std::string prefix =
@@ -284,7 +286,7 @@ mx::array Drama3Model::Backbone(const mx::array &embeddings,
         residual, MixtureOfExperts(
                       Fp32Norm(residual, prefix + ".post_attention_layernorm",
                                rms_norm_eps_),
-                      prefix + ".mlp"));
+                      prefix + ".mlp", cancel));
   }
   return Fp32Norm(hidden, std::string(kBackbone) + ".norm", rms_norm_eps_);
 }

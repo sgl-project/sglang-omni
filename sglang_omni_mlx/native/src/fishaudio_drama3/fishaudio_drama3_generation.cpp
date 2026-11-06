@@ -102,8 +102,8 @@ mx::array Drama3Model::Prefill(const mx::array &frames, ModelCaches &caches,
       expert_cache_->SetProfileContext("prefill", begin);
     } else {
     }
-    hidden =
-        Backbone(Embed(SliceAxis(batched, 1, begin, end)), caches.backbone);
+    hidden = Backbone(Embed(SliceAxis(batched, 1, begin, end)), caches.backbone,
+                      cancel);
     const int labelled = std::min(end, last);
     if (labelled > begin) {
       // The tower is teacher-forced: row t is labelled by row t + 1.
@@ -150,11 +150,11 @@ mx::array Drama3Model::Prefill(const mx::array &frames, ModelCaches &caches,
   return SliceAxis(*hidden, 1, hidden->shape(1) - 1, hidden->shape(1));
 }
 
-Drama3Model::Step Drama3Model::DecodeStep(const mx::array &hidden,
-                                          const mx::array &frame,
-                                          const mx::array &history,
-                                          ModelCaches &caches,
-                                          const Sampling &sampling) const {
+Drama3Model::Step
+Drama3Model::DecodeStep(const mx::array &hidden, const mx::array &frame,
+                        const mx::array &history, ModelCaches &caches,
+                        const Sampling &sampling,
+                        const std::atomic<bool> &cancel) const {
   const mx::array logits = mx::astype(
       checkpoint_.Linear(mx::squeeze(hidden, 1), "semantic_head"), mx::float32);
   const mx::array first = mx::take(
@@ -199,7 +199,8 @@ Drama3Model::Step Drama3Model::DecodeStep(const mx::array &hidden,
       mx::astype(mx::expand_dims(mx::concatenate(columns, -1), 1), mx::int32);
   const mx::array frame_codes = mx::reshape(
       SliceLast(new_frame, 1, 1 + codebook_count_), {codebook_count_});
-  const mx::array next_hidden = Backbone(Embed(new_frame), caches.backbone);
+  const mx::array next_hidden =
+      Backbone(Embed(new_frame), caches.backbone, cancel);
   const mx::array next_history =
       mx::concatenate({SliceAxis(history, 0, 1, history.shape(0)), main_token});
   return {new_frame, frame_codes, next_hidden, next_history, main_token};
@@ -236,7 +237,8 @@ bool Drama3Model::GenerateChunk(
     expert_cache_->SetProfileContext("decode", 0);
   } else {
   }
-  Step pending = DecodeStep(hidden, last_row, history, caches, sampling);
+  Step pending =
+      DecodeStep(hidden, last_row, history, caches, sampling, cancel);
   mx::async_eval({pending.frame, pending.frame_codes, pending.hidden,
                   pending.history, pending.main_token});
   // Note (Yitong Li): a turn often ends with <|semantic:0|> right before the
@@ -255,7 +257,7 @@ bool Drama3Model::GenerateChunk(
       } else {
       }
       pending = DecodeStep(current.hidden, current.frame, current.history,
-                           caches, sampling);
+                           caches, sampling, cancel);
       mx::async_eval({pending.frame, pending.frame_codes, pending.hidden,
                       pending.history, pending.main_token});
     } else {

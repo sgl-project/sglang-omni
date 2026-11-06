@@ -29,6 +29,9 @@ public:
   using ExpertWeights = omni_common::WeightMap;
   explicit ExpertCache(const std::filesystem::path &model_directory,
                        size_t capacity_bytes = kExpertCacheBytes);
+  ExpertCache(const std::filesystem::path &model_directory,
+              const nlohmann::json &config,
+              size_t capacity_bytes = kExpertCacheBytes);
   ExpertCache(const ExpertCache &) = delete;
   ExpertCache &operator=(const ExpertCache &) = delete;
   omni_common::WeightMap TakeResidentWeights();
@@ -38,7 +41,8 @@ public:
                           const mlx::core::array &expert_ids,
                           const mlx::core::array &scores,
                           const std::string &prefix,
-                          const omni_common::Checkpoint &checkpoint);
+                          const omni_common::Checkpoint &checkpoint,
+                          const std::atomic<bool> *cancel = nullptr);
   // The caller must synchronize GPU consumers before releasing entries.
   void Release();
   size_t released_entries() const { return released_entries_; }

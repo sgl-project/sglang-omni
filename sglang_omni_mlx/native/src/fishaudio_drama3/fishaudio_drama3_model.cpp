@@ -90,9 +90,9 @@ nlohmann::json CheckedConfig(const std::filesystem::path &model_directory) {
 Drama3Model::Drama3Model(const std::filesystem::path &model_directory,
                          bool offload_experts)
     : config_(CheckedConfig(model_directory)),
-      expert_cache_(offload_experts
-                        ? std::make_unique<ExpertCache>(model_directory)
-                        : nullptr),
+      expert_cache_(offload_experts ? std::make_unique<ExpertCache>(
+                                          model_directory, config_)
+                                    : nullptr),
       checkpoint_(expert_cache_ ? expert_cache_->TakeResidentWeights()
                                 : LoadDrama3Weights(model_directory, false),
                   config_),

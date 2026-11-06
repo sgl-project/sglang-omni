@@ -14,6 +14,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "qwen3_asr/qwen3_asr_transcriber.h"
+
 namespace fishaudio_drama3 {
 namespace mx = mlx::core;
 
@@ -221,6 +223,12 @@ bool IsRoutedExpertWeight(const std::string &name) {
 
 ExpertCache::ExpertCache(const std::filesystem::path &model_directory,
                          size_t capacity_bytes)
+    : ExpertCache(model_directory,
+                  omni_common::ReadJson(model_directory / "config.json"),
+                  capacity_bytes) {}
+
+ExpertCache::ExpertCache(const std::filesystem::path &model_directory,
+                         const nlohmann::json &config, size_t capacity_bytes)
     : capacity_bytes_(capacity_bytes),
       profile_(std::getenv("DRAMA3_EXPERT_PROFILE") != nullptr) {
   if (capacity_bytes == 0 || capacity_bytes > kExpertCacheBytes) {
@@ -288,19 +296,34 @@ ExpertCache::ExpertCache(const std::filesystem::path &model_directory,
     throw std::runtime_error("no routed expert tensors found");
   } else {
   }
-  for (const auto &[name, tensor] : slices_) {
-    if (!name.ends_with(".up_proj.weight")) {
-      continue;
-    } else {
-    }
-    const auto separator = name.rfind('.');
-    const auto projection_separator = name.rfind('.', separator - 1);
-    const std::string prefix = name.substr(0, projection_separator);
+  const auto &text = config.at("text_config");
+  const size_t layer_count = text.at("num_hidden_layers").get<size_t>();
+  const int expert_count = text.at("num_experts").get<int>();
+  const auto mlp_layer_types =
+      text.value("mlp_layer_types",
+                 nlohmann::json(std::vector<std::string>(layer_count, "moe")));
+  if (mlp_layer_types !=
+      nlohmann::json(std::vector<std::string>(layer_count, "moe"))) {
+    throw std::runtime_error(
+        "expected a mixture-of-experts MLP in every layer");
+  } else {
+  }
+  for (size_t layer = 0; layer < layer_count; ++layer) {
+    const std::string prefix =
+        "backbone.model.layers." + std::to_string(layer) + ".mlp.switch_mlp";
     for (const char *projection : {"up_proj", "gate_proj", "down_proj"}) {
-      const auto &weight = slices_.at(prefix + "." + projection + ".weight");
-      const auto &scales = slices_.at(prefix + "." + projection + ".scales");
-      const auto &biases = slices_.at(prefix + "." + projection + ".biases");
-      if (weight.dtype != mx::uint32 || weight.shape[0] != tensor.shape[0] ||
+      const std::string projection_prefix = prefix + "." + projection;
+      for (const char *suffix : {"weight", "scales", "biases"}) {
+        if (!slices_.contains(projection_prefix + "." + suffix)) {
+          throw std::runtime_error("missing routed expert tensor: " +
+                                   projection_prefix + "." + suffix);
+        } else {
+        }
+      }
+      const auto &weight = slices_.at(projection_prefix + ".weight");
+      const auto &scales = slices_.at(projection_prefix + ".scales");
+      const auto &biases = slices_.at(projection_prefix + ".biases");
+      if (weight.dtype != mx::uint32 || weight.shape[0] != expert_count ||
           scales.shape != biases.shape || scales.shape[0] != weight.shape[0] ||
           scales.shape[1] != weight.shape[1] || scales.dtype != biases.dtype ||
           (scales.dtype != mx::float16 && scales.dtype != mx::bfloat16 &&
@@ -432,7 +455,8 @@ mx::array ExpertCache::Routed(const mx::array &input,
                               const mx::array &expert_ids,
                               const mx::array &scores,
                               const std::string &prefix,
-                              const omni_common::Checkpoint &checkpoint) {
+                              const omni_common::Checkpoint &checkpoint,
+                              const std::atomic<bool> *cancel) {
   const auto routed_started = profile_
                                   ? std::chrono::steady_clock::now()
                                   : std::chrono::steady_clock::time_point{};
@@ -458,6 +482,11 @@ mx::array ExpertCache::Routed(const mx::array &input,
   }
   std::vector<std::optional<mx::array>> routed(flat_ids.size());
   for (const auto &[expert_id, positions] : positions_by_expert) {
+    if (cancel != nullptr && cancel->load()) {
+      mx::synchronize();
+      throw qwen3_asr::TranscriptionCancelled();
+    } else {
+    }
     const auto lease = Acquire(prefix, expert_id);
     std::vector<int32_t> rows;
     for (const int position : positions) {
