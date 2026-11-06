@@ -15,7 +15,7 @@ Fish Audio requires its model-specific DAC dependencies. Complete the
 before starting the server.
 
 Qwen3-TTS uses the upstream `qwen-tts` package. Install it without dependencies
-so the SGLang-Omni Transformers 5.19 / SGLang 0.5.22 stack remains in place:
+so the SGLang-Omni Transformers 5.19 / SGLang 0.5.23 stack remains in place:
 
 ```bash
 apt-get update && apt-get install -y sox
@@ -714,6 +714,7 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `top_k` | int | `null` | Top-k sampling |
 | `repetition_penalty` | float | `null` | Repetition penalty |
 | `seed` | int | `null` | Model-specific. Qwen3-TTS Base accepts request-scoped seed, Voxtral TTS currently rejects seed |
+| `return_spec_tokens_details` | bool | `false` | With a speculative draft, return this request's acceptance statistics: `X-SGLang-Omni-Spec-*` headers on buffered audio, `sglext.spec_tokens_details` on `speech.audio.done` and on the raw audio outcome |
 
 Invalid speech requests return an OpenAI-style error envelope. For example, streaming with `response_format="mp3"` or `"flac"` returns HTTP 400:
 

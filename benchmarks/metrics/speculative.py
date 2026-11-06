@@ -43,6 +43,7 @@ class ClientResult(BaseModel):
     concurrency: int
     total: int
     skipped: int
+    failed: int
     throughput_samples_per_s: MetricMean
     latency_p95_s: MetricMean
     corpus_wer: MetricMean
@@ -168,7 +169,7 @@ def compare(legs: list[Leg], *, k_gain: float) -> Comparison:
                     values.append(value)
                 else:
                     pass
-            measured.failed_requests += result.skipped
+            measured.failed_requests += result.failed
     rows = []
     for concurrency in concurrencies:
         baseline = sides[("baseline", concurrency)]
@@ -225,9 +226,10 @@ def percent(fraction: float | None) -> str:
 
 def gap_percent(values: list[float]) -> float | None:
     """The spread between one side's legs, relative to their mean."""
+    mean_value = mean_or_none(values)
     return (
-        (max(values) - min(values)) / statistics.mean(values) * 100
-        if len(values) > 1
+        (max(values) - min(values)) / mean_value * 100
+        if len(values) > 1 and mean_value
         else None
     )
 

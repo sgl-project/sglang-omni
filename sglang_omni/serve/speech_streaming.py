@@ -154,6 +154,10 @@ def create_speech_sse_response(
                 "usage": usage,
                 "finish_reason": stream_outcome.finish_reason,
             }
+            if stream_outcome.sglext is not None:
+                done["sglext"] = stream_outcome.sglext.model_dump()
+            else:
+                pass
             yield sse_frame(done["type"], json.dumps(done))
         except asyncio.CancelledError:
             raise
