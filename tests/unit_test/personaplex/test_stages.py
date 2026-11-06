@@ -207,8 +207,11 @@ def test_realtime_engine_decodes_synchronously(monkeypatch, tmp_path):
             enable_async_decode,
             depformer_cuda_graph_batch_sizes,
             depformer_cuda_graph_sampling,
+            live_rows_as_decode,
+            steady_units_as_decode,
         ):
             built["enable_async_decode"] = enable_async_decode
+            built["live_rows_as_decode"] = live_rows_as_decode
             built["depformer_cuda_graph_batch_sizes"] = depformer_cuda_graph_batch_sizes
             built["depformer_cuda_graph_sampling"] = depformer_cuda_graph_sampling
 
@@ -224,6 +227,7 @@ def test_realtime_engine_decodes_synchronously(monkeypatch, tmp_path):
         audio_top_k=7,
     )
     assert built["enable_async_decode"] is False
+    assert built["live_rows_as_decode"] is False
     assert built["depformer_cuda_graph_batch_sizes"] == [1, 4]
     assert built["depformer_cuda_graph_sampling"] == stages.AudioSampling(0.5, 7)
 

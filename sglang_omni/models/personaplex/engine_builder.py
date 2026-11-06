@@ -229,6 +229,8 @@ class PersonaPlexSessionEngineBuilder(PersonaPlexEngineBuilder):
         depformer_cuda_graph_batch_sizes: list[int],
         depformer_cuda_graph_sampling: AudioSampling,
         context_length: int | None = None,
+        live_rows_as_decode: bool = False,
+        steady_units_as_decode: bool = False,
     ) -> None:
         super().__init__(
             enable_async_decode=enable_async_decode,
@@ -237,6 +239,18 @@ class PersonaPlexSessionEngineBuilder(PersonaPlexEngineBuilder):
             context_length=context_length,
         )
         self.tokenizer = tokenizer
+        self.live_rows_as_decode = live_rows_as_decode
+        self.steady_units_as_decode = steady_units_as_decode
+
+    def make_model_runner(
+        self,
+        model_worker: ModelWorker,
+        output_proc: SGLangOutputProcessor,
+    ) -> PersonaPlexModelRunner:
+        runner = super().make_model_runner(model_worker, output_proc)
+        runner.live_rows_as_decode = self.live_rows_as_decode
+        runner.steady_units_as_decode = self.steady_units_as_decode
+        return runner
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         return {
@@ -244,12 +258,16 @@ class PersonaPlexSessionEngineBuilder(PersonaPlexEngineBuilder):
             "enable_streaming_session": True,
         }
 
-    def extra_scheduler_kwargs(self) -> dict[str, PersonaPlexSessionAdapter]:
+    def extra_scheduler_kwargs(self) -> dict[str, PersonaPlexSessionAdapter | bool]:
         # Note (wilsonzheng0327): The shim config's vocabulary is TEXT_CARD.
         return {
             "session_adapter": PersonaPlexSessionAdapter(
                 vocab_size=TEXT_CARD,
                 context_length=self.context_length,
                 tokenizer=self.tokenizer,
-            )
+            ),
+            "steady_session_units_as_decode": self.steady_units_as_decode,
+            # Note (Junnan Li): A new prompt in the batch would make it an extend, which
+            # cannot replay the decode graph.
+            "separate_session_openings": self.live_rows_as_decode,
         }
