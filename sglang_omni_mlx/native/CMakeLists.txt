@@ -316,7 +316,8 @@ set_target_properties(fishaudio_drama3_server fishaudio_drama3_synthesize PROPER
 install(TARGETS fishaudio_drama3_server fishaudio_drama3_synthesize RUNTIME DESTINATION bin)
 
 add_library(ming3_audio STATIC src/ming3_audio/ming3_audio_model.cpp
-  src/ming3_audio/ming3_audio_attention.cpp)
+  src/ming3_audio/ming3_audio_attention.cpp
+  src/ming3_audio/ming3_audio_mtp.cpp)
 target_link_libraries(ming3_audio PUBLIC qwen3_asr)
 target_compile_options(ming3_audio PRIVATE -Wall -Wextra)
 add_library(ming3_audio_service STATIC src/ming3_audio/ming3_audio_service.cpp)
@@ -341,3 +342,10 @@ target_link_libraries(stub_server PRIVATE speech_service ming3_audio_service)
 target_compile_options(stub_server PRIVATE -Wall -Wextra)
 set_target_properties(stub_server PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
+
+option(SGLANG_OMNI_MLX_BUILD_TESTS "Build native model regression probes" OFF)
+if(SGLANG_OMNI_MLX_BUILD_TESTS)
+  add_executable(ming3_mtp_probe tests/ming3_mtp_probe.cpp)
+  target_link_libraries(ming3_mtp_probe PRIVATE ming3_audio)
+  set_target_properties(ming3_mtp_probe PROPERTIES BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
+endif()
