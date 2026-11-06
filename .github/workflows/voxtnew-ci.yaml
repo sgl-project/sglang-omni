@@ -1,22 +1,22 @@
 name: VoxtNew CI
 
-# VoxtNew (VoxtNew/: Go + MyGo, no cgo) on Linux: gofmt, every Go test (the
+# Voxt (Voxt/: Go + MyGo, no cgo; VoxtNew inside) on Linux: gofmt, every Go test (the
 # views in MyGo's ui.Tester, the store, the session against fake models, the
 # helper and model runtime protocols against their fixtures and fakes, i18n
 # key parity, archtest), MyGo's vet, and the vendored MyGo checked against
 # its patches. The Swift helper, voxtnew-llm, the Omni runtime and the real
-# models are checked on a Mac by hand: VoxtNew/scripts/mac-regress.sh and
-# VoxtNew/docs/manual-test.md.
+# models are checked on a Mac by hand: Voxt/scripts/mac-regress.sh and
+# Voxt/docs/manual-test.md.
 
 on:
   pull_request:
     paths:
-      - "VoxtNew/**"
+      - "Voxt/**"
       - ".github/workflows/voxtnew-ci.yaml"
   push:
     branches: [main]
     paths:
-      - "VoxtNew/**"
+      - "Voxt/**"
       - ".github/workflows/voxtnew-ci.yaml"
   workflow_dispatch:
 
@@ -29,7 +29,7 @@ permissions:
 
 defaults:
   run:
-    working-directory: VoxtNew
+    working-directory: Voxt
 
 jobs:
   go:
@@ -51,8 +51,8 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: VoxtNew/go.mod
-          cache-dependency-path: VoxtNew/go.sum
+          go-version-file: Voxt/go.mod
+          cache-dependency-path: Voxt/go.sum
 
       # The MyGo SQLite plugin loads a prebuilt library. Tests would download
       # it on first use; CI fetches it once, checks its sha256 against the
