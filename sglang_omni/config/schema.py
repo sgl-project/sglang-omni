@@ -431,6 +431,10 @@ class StageConfig(BaseModel):
     stream_done_to_fn: str | None = None
     can_accept_stream_before_payload: bool = False
     disable_direct_cuda_ipc_payload: bool = False
+    batch_payloads: bool = Field(
+        default=False,
+        description="Send the small CPU payloads this stage emits to a stage in another process together, one control message per target for every result the stage has ready.",
+    )
     project_payload: dict[str, str] = Field(default_factory=dict)
     comm: CommConfig | None = None
     http_routes: list[str] = Field(
