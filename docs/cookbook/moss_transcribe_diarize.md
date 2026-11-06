@@ -223,7 +223,6 @@ sgl-omni serve \
   --model-path OpenMOSS-Team/MOSS-Transcribe-Diarize \
   --asr.engine.speculative_algorithm DFLASH \
   --asr.engine.speculative_draft_model_path wilsonzheng0327/MOSS-Transcribe-Diarize-dflash \
-  --asr.engine.speculative_draft_model_revision 2e3f00b0932112e4f92a4ef67a4cd60ee855056c \
   --port 8000
 ```
 
