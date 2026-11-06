@@ -55,6 +55,35 @@ def test_codec_suppress_tokens_matches_reference(share_rows):
         assert torch.equal(logits_output.next_token_logits, expected)
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="stream synchronization requires CUDA"
+)
+@pytest.mark.parametrize("share_rows", [True, False])
+def test_codec_suppress_tokens_do_not_synchronize(share_rows):
+    """Suppressing codec tokens waited for every queued kernel of the step to finish."""
+    shared = [5, 90, 95]
+    suppress_per_row = [shared] * 4 if share_rows else [shared, [1, 2], None, shared]
+    requests = make_suppress_requests(suppress_per_row)
+    runner = types.SimpleNamespace()
+    logits = torch.randn(4, 96, device="cuda")
+    ModelRunner.apply_codec_suppress_tokens(
+        runner, types.SimpleNamespace(next_token_logits=logits.clone()), requests
+    )
+    logits_output = types.SimpleNamespace(next_token_logits=logits.clone())
+    torch.cuda.synchronize()
+
+    torch.cuda.set_sync_debug_mode("error")
+    try:
+        ModelRunner.apply_codec_suppress_tokens(runner, logits_output, requests)
+    finally:
+        torch.cuda.set_sync_debug_mode("default")
+
+    assert torch.equal(
+        logits_output.next_token_logits, suppress_reference(logits, requests)
+    )
+
+
 def test_suppress_cache_holds_one_entry_across_requests():
     """Fresh list objects with identical content must share one device tensor."""
     device = "cuda" if torch.cuda.is_available() else "cpu"
