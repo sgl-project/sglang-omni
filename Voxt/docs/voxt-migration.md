@@ -24,6 +24,7 @@ Voxt 2 replaces the Swift Voxt 1.x at `/Applications/Voxt.app`. To macOS they ar
    ![The dictionary after the import](screenshots/migration-4-dictionary.png)
 
 5. **Grant the microphone and Accessibility again** in the setup guide's Permissions step. macOS keeps permissions per app, and Voxt 2 is a different app.
+6. **Set up a language model** on the Language models page for clean-up, Translate and Rewrite. Voxt 2 no longer runs language models itself, so Voxt 1.x's local language models do not come over: Ollama, LM Studio or oMLX keep the text on this Mac, or pick an online service.
 
 ### If you set up 2.0.0 first
 
@@ -54,7 +55,8 @@ Reinstall Voxt 1.16.3 from its release. Its dictionary, history and settings are
 | Disabled terms | Disabled terms. |
 | History: dictation, translation, rewrite | Transcribe, Translate and Rewrite entries, with the app, the models, the time and the length. Their ids are `legacy-<old id>`, so importing again adds nothing. |
 | History: meeting transcripts | Left out: Voxt 2 has no meetings. |
-| Models in `model-storage/<owner>_<name>` | Hard-linked into the model library when every file matches the version Voxt pins (size, and SHA-256 for the large files); otherwise left alone, and Voxt downloads them as usual. |
+| Speech models in `model-storage/<owner>_<name>` | Hard-linked into the model library when every file matches the version Voxt pins (size, and SHA-256 for the large files); otherwise left alone, and Voxt downloads them as usual. |
+| Language models in `model-storage` | Left alone: Voxt no longer runs language models on this Mac (`legacyReusable` skips retired models). |
 | Settings, shortcuts, app enhancement groups, notes | Not imported. |
 
 Terms merge by name, ignoring case: an existing term gains the aliases it lacks. An import that stops halfway, for example when Voxt is force-quit, leaves the database consistent; importing again adds what is missing.
@@ -67,6 +69,7 @@ Terms merge by name, ignoring case: an existing term gains the aliases it lacks.
 - **Reading without asking.** `legacyReadable` opens Voxt 1.x's `voxt.sqlite` and reads one byte. macOS lets apps signed by the same team read each other's containers, so the signed release should get through and import at once. An ad hoc build is refused with EPERM and no prompt, and falls back to the open panel. Reading a byte, not only finding the file, matters: a container can let a file be found and not opened.
 - **The open panel.** It opens on the container's `Data/Library` (`DefaultPath`), and the folder the user picks is readable for the rest of the run. Any of the three levels down to `Application Support/Voxt` works (`legacyDatabase`).
 - **The database** is read read-only together with its `-wal` and `-shm`: Voxt 1.x's rows can live only in the WAL, and opening the main file alone does not see them.
+- **Models.** `reuseLegacyModels` looks for each catalogue model that `legacyReusable` allows (not borrowed, not retired) under Voxt 1.x's `model-storage`, checks every file, hard-links them into the library and claims them (`Manager.Use`).
 - **The cards.** The setup guide's welcome step shows its card on a fresh install. `offerLegacy` posts the sidebar card at start when the guide will not open, once: the document `legacy-import-offered` records that it was posted.
 - **Tests and fake homes.** `VOXTNEW_LEGACY_HOME` replaces the home folder the container is looked for in, for tests that run the app with a fake `HOME`.
 

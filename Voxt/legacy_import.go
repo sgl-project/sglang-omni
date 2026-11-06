@@ -218,6 +218,14 @@ func number(v any) float64 {
 	return 0
 }
 
+// legacyReusable says whether a catalogue model may come over from the
+// previous Voxt: not a borrowed one (another app's), not a retired one
+// (Voxt no longer runs it, and Manager.Import leaves those where they
+// are), and one with files to match.
+func legacyReusable(mod models.Model) bool {
+	return !mod.Borrowed && !mod.Retired && len(mod.Files) > 0
+}
+
 // reuseLegacyModels brings the models the previous Voxt downloaded into the
 // library when its files are the catalogue's: every file of the pinned
 // commit at its size, the large ones also at their SHA-256. The previous
@@ -231,7 +239,7 @@ func reuseLegacyModels(ctx context.Context, m *models.Manager, voxtDir string) (
 		return nil, 0
 	}
 	for _, mod := range models.Catalog() {
-		if mod.Borrowed || len(mod.Files) == 0 || m.Installed(mod.ID) || ctx.Err() != nil {
+		if !legacyReusable(mod) || m.Installed(mod.ID) || ctx.Err() != nil {
 			continue
 		}
 		src := filepath.Join(root, strings.ReplaceAll(mod.Repo, "/", "_"))

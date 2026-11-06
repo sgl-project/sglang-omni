@@ -104,7 +104,7 @@ scripts/mac.sh scripts/mac-regress.sh   # Mac 上的真实模型：运行时、�
 - [AGENTS.md](AGENTS.md)：改动规则（文字、线程、协议）。
 - [CHANGELOG.md](CHANGELOG.md)：各版本的变化。[CONTRIBUTING.md](CONTRIBUTING.md)：怎么提交改动。
 
-Voxt 取代了本仓在 2.0.0 之前的 Swift 版 Voxt（1.x）：装上它会替换“应用程序”里那个 Voxt.app，两者的数据互不相干；Voxt 可以把旧版的词典、历史和下载好的模型导入过来（[docs/voxt-migration.md](docs/voxt-migration.md)）。内部有些名字仍叫 VoxtNew（Swift 包、进程、bundle id 和数据目录）。它由 [Auralink](https://github.com/hehehai/Auralink) 复制而来。Auralink 是同一作者基于远程模型的应用，它用 Go 和 MyGo 以 [AudioSmith](https://github.com/hehehai/AudioSmith) 的界面重写了 [Voxt](https://github.com/hehehai/voxt)；VoxtNew 的本地模型运行时和请求策略沿用 Voxt 的做法。
+Voxt 取代了本仓在 2.0.0 之前的 Swift 版 Voxt（1.x）：装上它会替换“应用程序”里那个 Voxt.app，两者的数据互不相干；Voxt 可以把旧版的词典、历史和下载好的语音模型导入过来（[docs/voxt-migration.md](docs/voxt-migration.md)）。内部有些名字仍叫 VoxtNew（Swift 包、进程、bundle id 和数据目录）。它由 [Auralink](https://github.com/hehehai/Auralink) 复制而来。Auralink 是同一作者基于远程模型的应用，它用 Go 和 MyGo 以 [AudioSmith](https://github.com/hehehai/AudioSmith) 的界面重写了 [Voxt](https://github.com/hehehai/voxt)；VoxtNew 的本地模型运行时和请求策略沿用 Voxt 的做法。
 
 ## 许可
 

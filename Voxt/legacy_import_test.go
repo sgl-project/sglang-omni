@@ -237,3 +237,21 @@ func TestOfferLegacyOnce(t *testing.T) {
 		t.Error("the dismissed card came back on the next start")
 	}
 }
+
+// The previous Voxt's language models stay where they are: Voxt no longer
+// runs language models on this Mac, so no retired model is offered for
+// reuse, while the speech models are.
+func TestLegacyReusableSkipsRetired(t *testing.T) {
+	speech := 0
+	for _, mod := range models.Catalog() {
+		if mod.Retired && legacyReusable(mod) {
+			t.Errorf("%s is retired but would come over", mod.ID)
+		}
+		if mod.Kind == models.ASR && legacyReusable(mod) {
+			speech++
+		}
+	}
+	if speech == 0 {
+		t.Error("no speech model would come over")
+	}
+}
