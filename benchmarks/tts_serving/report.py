@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
+import math
 import statistics
 from collections import Counter, defaultdict
-from typing import Any
+from typing import Any, TypedDict
 
 from benchmarks.tts_serving import voice_contracts
 from benchmarks.tts_serving.metrics import ScenarioResult
@@ -36,6 +37,73 @@ from benchmarks.tts_serving.spec import (
     redact_sensitive_metadata,
     workload_spec_hash,
 )
+
+
+class OutputThroughputSummary(TypedDict):
+    observation_wall_time_s: float | None
+    audio_throughput_s_per_s: float | None
+    completion_tokens_per_s: float | None
+    audio_duration_sample_count: int
+    completion_token_sample_count: int
+
+
+def summarize_output_throughput(
+    results: list[ScenarioResult],
+) -> OutputThroughputSummary:
+    traffic_results = [
+        result for result in results if result.category != "capability_probe"
+    ]
+    actual_starts = [
+        result.actual_start_s
+        for result in traffic_results
+        if result.actual_start_s is not None
+    ]
+    completions = [
+        result.completed_s
+        for result in traffic_results
+        if result.completed_s is not None
+    ]
+    observation_wall_time_s = None
+    if (
+        actual_starts
+        and len(actual_starts) == len(traffic_results)
+        and len(completions) == len(traffic_results)
+    ):
+        elapsed_s = max(completions) - min(actual_starts)
+        if elapsed_s > 0:
+            observation_wall_time_s = elapsed_s
+        else:
+            observation_wall_time_s = None
+    else:
+        observation_wall_time_s = None
+
+    successful_results = _performance_results(traffic_results)
+    audio_durations = [
+        result.audio_duration_s
+        for result in successful_results
+        if result.audio_duration_s > 0 and math.isfinite(result.audio_duration_s)
+    ]
+    completion_token_values = [
+        result.completion_tokens
+        for result in successful_results
+        if result.completion_tokens is not None
+    ]
+    return {
+        "observation_wall_time_s": observation_wall_time_s,
+        "audio_throughput_s_per_s": (
+            sum(audio_durations) / observation_wall_time_s
+            if observation_wall_time_s is not None
+            and len(audio_durations) == len(successful_results)
+            else None
+        ),
+        "completion_tokens_per_s": (
+            sum(completion_token_values) / observation_wall_time_s
+            if observation_wall_time_s is not None and completion_token_values
+            else None
+        ),
+        "audio_duration_sample_count": len(audio_durations),
+        "completion_token_sample_count": len(completion_token_values),
+    }
 
 
 def build_results_report(
@@ -97,7 +165,7 @@ def build_results_report(
         and _is_benchmark_passed(spec, results, capabilities)
     )
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "scenario_schema_version": SCENARIO_SCHEMA_VERSION,
         "scenario_set_hash": scenario_set_hash(scenarios) if scenarios else None,
         "workload_spec_hash": workload_spec_hash(spec),
@@ -150,6 +218,7 @@ def build_results_report(
         "capabilities": capabilities,
         "operation_capabilities": operation_capabilities,
         "metrics": {
+            "output_throughput": summarize_output_throughput(results),
             "latency_s": _summary(latencies),
             "ttfa_s": _summary(ttfas),
             "queue_wait_s": _summary(queue_waits),
@@ -1709,6 +1778,7 @@ def _result_group_summary(
     succeeded = sum(1 for result in results if _result_passed(spec, result))
     failed = len(results) - succeeded
     return {
+        "output_throughput": summarize_output_throughput(results),
         "total": len(results),
         "successful_request_count": len(successful_results),
         "metric_sample_counts": _metric_sample_counts(successful_results),
