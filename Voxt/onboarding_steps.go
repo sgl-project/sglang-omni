@@ -52,7 +52,11 @@ func (a *app) obLegacyCard(c *ui.Context) {
 			if a.ob.legacyMsg != "" {
 				caption(c, a.ob.legacyMsg)
 			}
-			if primaryButton(c.Key("ob-legacy-import"), i18n.T("Import from the previous Voxt")).Clicked() {
+			button, label := primaryButton, i18n.T("Import from the previous Voxt")
+			if a.ob.legacyDone {
+				button, label = ghostButton, i18n.T("Import again")
+			}
+			if button(c.Key("ob-legacy-import"), label).Clicked() {
 				a.importLegacy()
 			}
 		})

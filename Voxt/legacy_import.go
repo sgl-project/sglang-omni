@@ -312,7 +312,7 @@ func (a *app) importLegacy() {
 	}
 	go func() {
 		files, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.win, Title: i18n.T("Import from the previous Voxt"),
-			Message:     i18n.T("This is the previous Voxt's data. Click Import to bring its dictionary over; the previous Voxt keeps everything as it is."),
+			Message:     i18n.T("This is the previous Voxt's data. Click Import to bring its dictionary and history over; the previous Voxt keeps everything as it is."),
 			ButtonLabel: i18n.T("Import"), DefaultPath: lib, Directory: true})
 		if err != nil || len(files) == 0 {
 			return
@@ -325,6 +325,7 @@ func (a *app) importLegacyFrom(picked string) {
 	a.dv.importing = true
 	repo, hist, mods := a.lib.store.Dictionary(), a.lib.store.History(), a.models
 	a.async(func() {
+		done := false // the dictionary came over: the card offers the import again, quietly
 		msg := func() string {
 			path := legacyDatabase(picked)
 			if path == "" {
@@ -344,6 +345,7 @@ func (a *app) importLegacyFrom(picked string) {
 			if err != nil {
 				return i18n.T("Could not import: %v", err)
 			}
+			done = true
 			msg := i18n.T("From the previous Voxt: %d new, %d updated.", added, updated)
 			if skipped > 0 {
 				msg = i18n.T("From the previous Voxt: %d new, %d updated; %d left out (too long or empty).", added, updated, skipped)
@@ -373,7 +375,7 @@ func (a *app) importLegacyFrom(picked string) {
 		a.post(func() {
 			a.dv.importing = false
 			a.modelsChanged()
-			a.ob.legacyMsg = msg
+			a.ob.legacyMsg, a.ob.legacyDone = msg, done
 			a.toast(msg)
 			a.loadDict()
 		})
