@@ -246,7 +246,9 @@ def test_qwen_thinker_to_decode_projection_drops_multimodal_tensors() -> None:
         request_id="req-1",
         request=OmniRequest(inputs="hi"),
         data={
+            "raw_inputs": [{"role": "user", "content": "hi"}],
             "prompt": {"input_ids": torch.tensor([1, 2]), "prompt_text": "hi"},
+            "mm_inputs": {"audio": {"audio_feature_lengths": torch.tensor([2])}},
             "thinker_inputs": {
                 "model_inputs": {
                     "audio_embeds": audio_embeds,
@@ -271,6 +273,8 @@ def test_qwen_thinker_to_decode_projection_drops_multimodal_tensors() -> None:
     projected = project_thinker_to_decode(payload)
     state = Qwen3OmniPipelineState.from_dict(projected.data)
 
+    assert set(projected.data) == {"prompt", "thinker_out", "engine_outputs"}
+    assert torch.equal(state.prompt["input_ids"], torch.tensor([1, 2]))
     assert state.thinker_inputs == {}
     assert state.thinker_out["output_ids"] == [3]
     assert state.thinker_out["extra_model_outputs"] == {}
@@ -305,6 +309,7 @@ def test_qwen_apply_thinker_result_preserves_empty_logprob_list() -> None:
         extra_model_outputs={},
         finish_reason=None,
         weight_version=None,
+        spec_tokens_details=None,
         output_token_logprobs=[],
     )
 
@@ -318,12 +323,15 @@ def test_qwen_apply_thinker_result_preserves_empty_logprob_list() -> None:
 
 def test_qwen_apply_thinker_result_omits_missing_optional_fields() -> None:
     state = Qwen3OmniPipelineState()
-    result = SimpleNamespace(output_ids=[8], extra_model_outputs={})
+    result = SimpleNamespace(
+        output_ids=[8], extra_model_outputs={}, spec_tokens_details=None
+    )
 
     thinker_out = apply_thinker_result(state, stage_name="thinker", result=result)
 
     assert "finish_reason" not in thinker_out
     assert "weight_version" not in thinker_out
+    assert "spec_tokens_details" not in thinker_out
     assert "output_token_logprobs" not in thinker_out
     assert state.thinker_out is thinker_out
     assert state.engine_outputs["thinker"] is thinker_out
@@ -1380,11 +1388,16 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     )
     monkeypatch.setattr(bootstrap, "QwenThinkerSessionAdapter", session_adapter)
     scheduler = bootstrap.create_thinker_scheduler(
-        server_args, speech_enabled=speech_enabled, execution_mode=execution_mode
+        server_args,
+        speech_enabled=speech_enabled,
+        execution_mode=execution_mode,
+        enable_async_decode=False,
     )
 
     is_capturing = speech_enabled and execution_mode == "request"
     assert infrastructure_saw_graph_disabled == [False]
+    assert infrastructure_kwargs[0]["enable_async_decode"] is False
+    assert scheduler.enable_async_decode is False
     assert infrastructure_kwargs[0]["defer_cuda_graph_capture"] is is_capturing
     assert infrastructure_saw_return_hidden == [is_capturing]
     assert graph_init_workers == (
@@ -1418,7 +1431,6 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
             [] if speech_enabled else [(model_worker, output_proc, False)]
         )
         assert getattr(scheduler, "session_adapter", None) is None
-        assert scheduler.enable_async_decode is True
     else:
         assert generic_runner_calls == qwen_runner_calls == []
         session_runner.assert_called_once_with(
@@ -1539,7 +1551,9 @@ def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
     )
     monkeypatch.setattr(omni_scheduler, "OmniScheduler", SimpleNamespace)
 
-    scheduler = bootstrap.create_thinker_scheduler(server_args, speech_enabled=True)
+    scheduler = bootstrap.create_thinker_scheduler(
+        server_args, speech_enabled=True, enable_async_decode=False
+    )
 
     assert captured["enable_prefill_input_embeds"] is True
     assert captured["defer_cuda_graph_capture"] is True

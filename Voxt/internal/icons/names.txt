@@ -1,0 +1,88 @@
+# The Solar icons VoxtNew uses (base names; the generator writes the
+# -linear and -bold variants of each). Keep it sorted by use; add an icon
+# here when a page uses it, then go generate ./internal/icons.
+
+# Sidebar pages (shell.go).
+home-2                  # Home
+history                 # History
+microphone-3            # Transcribe
+global                  # Translate
+pen-new-round           # Rewrite
+target                  # App enhancement
+cpu                     # Local models
+notebook-bookmark       # Dictionary
+shield-keyhole          # Permissions
+clipboard-list          # Logs
+settings                # Settings, Settings → General
+
+# Shell.
+magnifer                # search, palette
+sidebar-minimalistic    # collapse / expand the sidebar
+command                 # palette rows
+keyboard                # shortcut sheet
+
+# Settings sections.
+pallete-2               # appearance
+shield-check            # privacy
+database                # storage
+info-circle             # about, ⓘ info tooltip
+microphone-large        # audio
+monitor                 # overlay style
+
+# Actions and marks (the kit and the pages).
+menu-dots               # overflow "⋯"
+close                   # close, remove
+close-circle            # failed check
+check                   # the chosen language (the answer card's menu)
+check-circle            # success
+danger-triangle         # warning
+danger-circle           # error
+copy
+copy-check              # copied (the answer card)
+pen                     # insert (the answer card)
+folder-open             # show in Finder
+trash-bin-minimalistic  # delete (a history entry, a shortcut)
+refresh                 # check again
+square-arrow-right-up   # open System Settings
+alt-arrow-up            # move up (the microphone list)
+alt-arrow-down          # chevrons, move down
+alt-arrow-right
+play                    # playButton (history recordings, M3)
+pause
+stop
+minus                   # numberInput
+add
+
+# Settings → Audio (settings_sounds.go).
+
+# Local models (models_page.go).
+soundwave                # speech models
+chat-round-line          # language models
+download-minimalistic    # download a model
+
+# The feature pages (feature_keys.go).
+accessibility            # a shortcut that needs Accessibility
+
+# App enhancement (appenhance_page.go).
+widget-2                 # member apps
+link-minimalistic-2      # website rules
+arrow-to-down-left       # the key after inserting (↵)
+window-frame             # the app in front (preview)
+
+# Dictionary (dictionary_page.go).
+pen-2                    # edit a term
+import                   # import terms
+export                   # export terms
+
+# Home and the setup guide (home_page.go, onboarding.go).
+compass                  # open the setup guide
+alt-arrow-left           # Back
+
+# History (history_settings.go).
+tuning-2                # History settings
+
+# The sound picker (settings_soundpicker.go): ▶ on a sound, the volume.
+turntable-music-note-line-duotone   # play a sound (a duotone variant: both Linear and Bold)
+volume-cross             # volume: muted
+volume-small             # volume: low
+volume-loud              # volume: high

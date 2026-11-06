@@ -46,26 +46,46 @@ The reply text is the thinker's spoken tokens only; frames where the model is li
 
 For Intel GPUs, follow the [Nemotron VoiceChat XPU recipe](../get_started/installation_xpu.md#nemotron-voicechat-speech-to-speech-two-xpus).
 
-## Realtime conversation
+### Streaming codec chunk sizes
+
+The offline pipeline enables the `(1, 1, 1, 1, 2, 2, 4)` chunk ramp by default to reduce decoder calls and audio transfers. To disable the ramp and decode one codec frame at a time, set the code2wav factory's `chunk_frames`:
 
 ```bash
-python examples/run_nemotron_voicechat_duplex.py \
+python examples/run_nemotron_voicechat.py \
   --model-path /path/to/NVIDIA-NemotronLabs-VoiceChat-11B \
-  --serve --port 8097 --max-sessions 1
+  --audio /path/to/NVIDIA-NemotronLabs-VoiceChat-11B/turn_taking.wav \
+  --out reply.wav \
+  --code2wav.factory.chunk_frames '[1]'
 ```
 
-Open http://localhost:8097, click **Start**, and allow microphone access.
-If the server runs on a remote GPU host, forward port 8097 to your local machine first.
-Headphones help avoid acoustic feedback. The example uses the shared realtime
-playground with a four-minute browser limit. It defaults to one session and uses
-the checkpoint's default prompt and voice.
+The equivalent YAML setting, for commands that take `--config`, is:
 
-`--max-sessions` controls concurrent conversations. The default remains one.
-Each admitted session owns independent perception, transformer KV, and codec
-state; the thinker and talker KV pools are sized for the session limit plus one
-incoming request row. Perception and codec execution remain serialized in this
-foundation, so benchmark the 80 ms unit deadline before raising the limit in a
-latency-sensitive deployment.
+```yaml
+config_cls: NemotronVoiceChatPipelineConfig
+model_path: /path/to/NVIDIA-NemotronLabs-VoiceChat-11B
+stages:
+  code2wav:
+    factory:
+      chunk_frames: [1]
+```
+
+CLI settings override YAML settings. Preview the resolved schedule and its source:
+
+```bash
+sgl-omni config resolve --config voicechat.yaml \
+  --code2wav.factory.chunk_frames '[1, 2, 4]'
+sgl-omni config explain stages.code2wav.factory.chunk_frames \
+  --config voicechat.yaml --code2wav.factory.chunk_frames '[1, 2, 4]'
+```
+
+Each entry is the number of **new** codec frames to collect for a decode; the last entry repeats for the rest of the request. The default ramp emits four small chunks before growing to two frames and then four (320 ms of audio per steady chunk). `(1,)` restores the previous single-frame cadence. The schedule restarts for each request, and end-of-stream flushes a partially filled chunk.
+
+Larger chunks trade playback arrival frequency for fewer decoder calls. Measure both first-chunk latency and playback underruns with the intended client buffer when choosing a schedule. This setting does not control the native realtime duplex pipeline. Chunk sizes must be positive integers and leave enough history in the 16-frame decode window for the checkpoint's causal decoder and held-back tail; empty or null schedules and non-positive or non-integer entries fail during configuration resolution. The decoder-dependent window limit is checked when the code2wav scheduler is created.
+
+
+## Realtime conversation
+
+VoiceChat also serves live full-duplex voice sessions on `/v1/realtime` with its `session` variant. Launching, settings and the protocol are in [Full-Duplex Guide](../developer_reference/full_duplex_guide.md#native-full-duplex-nemotron-voicechat).
 
 ## Offline request parameters
 

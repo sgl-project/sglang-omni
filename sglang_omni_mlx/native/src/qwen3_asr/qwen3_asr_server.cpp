@@ -18,11 +18,21 @@ namespace {
 using qwen3_asr::AudioLayout;
 using qwen3_asr::TranscriptionOptions;
 
+constexpr size_t kCacheLimitBytes = 2ULL << 30;
+
 class Qwen3ASRModel : public asr_service::ServedModel {
 public:
   Qwen3ASRModel(const std::filesystem::path &model_directory,
-                qwen3_asr::RealtimeSettings realtime)
-      : transcriber_(model_directory), realtime_(realtime) {}
+                qwen3_asr::RealtimeSettings realtime,
+                const std::filesystem::path &draft_directory,
+                int draft_quantization_bits)
+      : transcriber_(model_directory, draft_directory, draft_quantization_bits),
+        realtime_(realtime) {
+    // Note (XXXXRT666): a long request's KV caches grow in steps, and no later
+    // step fits a buffer an earlier one freed; unlimited, MLX keeps them until
+    // active and cached memory reach 95% of the recommended working set.
+    mlx::core::set_cache_limit(kCacheLimitBytes);
+  }
 
   asr_service::Transcription
   Prepare(std::vector<float> samples,
@@ -34,14 +44,26 @@ public:
                            : std::nullopt;
     options.context = asr_service::TextField(form, "prompt");
     options.max_new_tokens = asr_service::IntegerField(form, "max_new_tokens");
+    options.repetition_penalty =
+        asr_service::NumberField(form, "repetition_penalty")
+            .value_or(options.repetition_penalty);
     if (options.max_new_tokens.value_or(0) < 0) {
       throw std::invalid_argument("max_new_tokens must not be negative");
+    } else if (options.repetition_penalty <= 0) {
+      throw std::invalid_argument("repetition_penalty must be positive");
     } else {
     }
     options.stop_at_end_of_text = omni_common::FormFlag(
         asr_service::TextField(form, "stop_at_end_of_text"));
-    options.stop_on_token_loop = omni_common::FormFlag(
-        asr_service::TextField(form, "stop_on_token_loop"));
+    const auto stop_on_token_loop =
+        asr_service::TextField(form, "stop_on_token_loop");
+    // Note (Minyi Tang): greedy decoding loops on audio with little speech, so
+    // the guard is on unless a request turns it off.
+    if (stop_on_token_loop.has_value()) {
+      options.stop_on_token_loop = omni_common::FormFlag(stop_on_token_loop);
+    } else {
+      options.stop_on_token_loop = true;
+    }
     const std::string layout =
         asr_service::TextField(form, "audio_layout").value_or("");
     if (layout.empty() || layout == "reference") {
@@ -132,6 +154,9 @@ int main(int argc, char **argv) {
   int decode_interval_ms = 1000;
   int first_decode_ms = 100;
   double max_segment_seconds = 30.0;
+  long long cache_limit_mb = -1;
+  std::filesystem::path draft_directory;
+  int draft_quantization_bits = 0;
   asr_service::ServedKind qwen3_asr;
   qwen3_asr.model_kind = "qwen3_asr";
   qwen3_asr.flags = {
@@ -145,6 +170,14 @@ int main(int argc, char **argv) {
        [&](const std::string &value) {
          max_segment_seconds = std::stod(value);
        }},
+      {"--cache-limit-mb",
+       [&](const std::string &value) { cache_limit_mb = std::stoll(value); }},
+      {"--draft-model-path",
+       [&](const std::string &value) { draft_directory = value; }},
+      {"--draft-bits",
+       [&](const std::string &value) {
+         draft_quantization_bits = std::stoi(value);
+       }},
   };
   qwen3_asr.check_flags = [&]() {
     const double max_segment_samples =
@@ -157,14 +190,34 @@ int main(int argc, char **argv) {
                  max_segment_samples <= std::numeric_limits<int>::max())) {
       throw std::invalid_argument(
           "--max-segment-seconds must span one sample to 134217 s");
+    } else if (cache_limit_mb < -1 || cache_limit_mb > (1LL << 30)) {
+      throw std::invalid_argument(
+          "--cache-limit-mb must be 0 to 1073741824, or -1 for MLX's limit");
+    } else if (draft_quantization_bits != 0 && draft_quantization_bits != 4 &&
+               draft_quantization_bits != 6 && draft_quantization_bits != 8) {
+      throw std::invalid_argument("--draft-bits must be 4, 6 or 8");
+    } else if (draft_quantization_bits != 0 && draft_directory.empty()) {
+      throw std::invalid_argument("--draft-bits needs --draft-model-path");
     } else {
     }
   };
   qwen3_asr.load = [&](const std::filesystem::path &model_directory) {
-    return std::make_unique<Qwen3ASRModel>(
+    auto model = std::make_unique<Qwen3ASRModel>(
         model_directory,
         qwen3_asr::MakeRealtimeSettings(decode_interval_ms, first_decode_ms,
-                                        max_segment_seconds));
+                                        max_segment_seconds),
+        draft_directory, draft_quantization_bits);
+    // Note (hehehai): within one long Final MLX keeps every freed buffer
+    // for reuse (the growing KV cache, the encoder's activations), several
+    // GB beside the weights; a client can bound it. Decoding reuses buffers
+    // of a few sizes, so a few hundred MB keep its speed.
+    // Note (cosekii): set after construction so the flag overrides the
+    // model's default cap.
+    if (cache_limit_mb >= 0) {
+      mlx::core::set_cache_limit(static_cast<size_t>(cache_limit_mb) << 20);
+    } else {
+    }
+    return model;
   };
   // Note (khazic): Voxt passes the realtime flags to every kind.
   asr_service::ServedKind silero_vad = qwen3_asr;

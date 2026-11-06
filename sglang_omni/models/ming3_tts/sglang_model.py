@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import ClassVar
@@ -19,17 +20,37 @@ from sglang.srt.runtime_context import get_exec, get_schedule
 from torch import nn
 from transformers import Qwen2Config
 
+from sglang_omni.models.ming3_tts.acoustic import (
+    FLOW_STEPS,
+    AcousticInputs,
+    AcousticStep,
+    FlowConstants,
+    PackedProjection,
+    build_flow_constants,
+    can_fuse_flow_head,
+    compute_acoustic_step,
+    pack_projections,
+)
 from sglang_omni.modules.ming_audio.flow.aggregator import Aggregator
 from sglang_omni.modules.ming_audio.flow.cfm import get_epss_timesteps
 from sglang_omni.modules.ming_audio.flow.flow_loss import FlowLoss
 
+logger = logging.getLogger(__name__)
+
 BACKBONE_WEIGHT_PREFIX = "model."
 VOCODER_WEIGHT_PREFIX = "audio."
-SPEECH_HEAD_PREFIXES = ("flowloss.", "linear_proj_audio.", "stop_head.", "spk_head.")
-FLOW_STEPS = 10
+AGGREGATOR_WEIGHT_PREFIX = "linear_proj_audio."
+SPEECH_HEAD_PREFIXES = (
+    "flowloss.",
+    AGGREGATOR_WEIGHT_PREFIX,
+    "stop_head.",
+    "spk_head.",
+)
 GUIDANCE_SCALE = 2.0
 SOLVER_NOISE_SCALE = 0.25
 ACOUSTIC_GRAPH_WARMUP_STEPS = 2
+# Acoustic graphs are captured for every batch size up to this one.
+EXACT_ACOUSTIC_BUCKETS = 16
 
 
 class Ming3TTSConfig(BailingHybridConfig):
@@ -93,6 +114,17 @@ class Ming3DenseTTSConfig(Qwen2Config):
         )
 
 
+def build_audio_aggregator(
+    hidden_size: int, latent_dim: int, aggregator_config: dict[str, JsonValue]
+) -> Aggregator:
+    """Build the aggregator that projects one latent into one backbone embedding."""
+    aggregator_kwargs = dict(aggregator_config)
+    aggregator_kwargs.setdefault("in_channels", latent_dim)
+    # The 0.5B checkpoint omits this key. Tiny checkpoints set it explicitly.
+    aggregator_kwargs.setdefault("attn_backend", "torch")
+    return Aggregator(llm_input_dim=hidden_size, **aggregator_kwargs)
+
+
 def install_speech_heads(
     module: nn.Module, config: Ming3TTSConfig | Ming3DenseTTSConfig
 ) -> None:
@@ -100,15 +132,11 @@ def install_speech_heads(
     latent_dim = int(config.tts_config["latent_dim"])
     flow_config = dict(config.flow_config)
     flow_config.pop("z_channels", None)
-    aggregator_config = dict(config.aggregator_config)
-    aggregator_config.setdefault("in_channels", latent_dim)
-    # The 0.5B checkpoint omits this key. Tiny checkpoints set it explicitly.
-    aggregator_config.setdefault("attn_backend", "torch")
     module.flowloss = FlowLoss(
         z_channels=latent_dim, llm_cond_dim=config.hidden_size, **flow_config
     )
-    module.linear_proj_audio = Aggregator(
-        llm_input_dim=config.hidden_size, **aggregator_config
+    module.linear_proj_audio = build_audio_aggregator(
+        config.hidden_size, latent_dim, config.aggregator_config
     )
     module.stop_head = nn.Linear(config.hidden_size, 2)
     module.spk_head = nn.Linear(
@@ -118,6 +146,10 @@ def install_speech_heads(
         FLOW_STEPS, module.stop_head.weight.device, torch.float32
     )
     module.acoustic_graphs = {}
+    module.enable_fused_flow_head = False
+    module.flow_head_path_logged = False
+    module.weights_loaded = False
+    module.flow_head_projections = None
     # note (chenyang): decode reads feedback rows from a fixed table by
     # row id, so the backbone CUDA graph replays them through input_ids.
     graph_config = get_exec().graph
@@ -133,44 +165,53 @@ def install_speech_heads(
     module.decode_feedback_rows = torch.arange(
         decode_batch_capacity, device=module.decode_feedback.weight.device
     )
-
-
-@dataclass(kw_only=True)
-class AcousticInputs:
-    """Batch-major step inputs; solver_noise is [flow steps - 1, batch, 1, latent]."""
-
-    hidden_states: torch.Tensor
-    latent_history: torch.Tensor
-    initial_noise: torch.Tensor
-    solver_noise: torch.Tensor
-    temperatures: torch.Tensor
-
-
-@dataclass(kw_only=True)
-class AcousticStep:
-    latents: torch.Tensor
-    feedback_embeddings: torch.Tensor
-    stop_probabilities: torch.Tensor
+    if isinstance(config, Ming3DenseTTSConfig):
+        # note (rsi): prefill reads its input rows from a fixed table by row id
+        # too, so a prefill CUDA graph that embeds input_ids replays the rows the
+        # runner staged; token embeddings are taken from the weight directly.
+        schedule = get_schedule()
+        prefill_capacity = (
+            max(schedule.max_prefill_tokens, schedule.chunked_prefill_size)
+            + decode_batch_capacity
+        )
+        module.prefill_inputs = nn.Embedding(prefill_capacity, config.hidden_size)
+        module.prefill_inputs.weight.requires_grad_(False)
+        module.prefill_input_rows = torch.arange(
+            prefill_capacity, device=module.prefill_inputs.weight.device
+        )
+        module.get_input_embeddings().forward = module.prefill_inputs.forward
+    else:
+        pass
 
 
 @dataclass(kw_only=True)
 class AcousticGraph:
+    """A captured step; the graph reads sampling_scales and constants, so they must outlive capture."""
+
     graph: torch.cuda.CUDAGraph
     inputs: AcousticInputs
+    sampling_scales: torch.Tensor
+    constants: FlowConstants | None
     outputs: AcousticStep
 
 
 class SpeechHeadModel:
     """Flow, stop, and feedback heads shared by the MoE and dense backbones."""
 
+    enable_fused_flow_head: bool
+    flow_head_path_logged: bool
+    weights_loaded: bool
     flowloss: FlowLoss
     linear_proj_audio: Aggregator
     stop_head: nn.Linear
     spk_head: nn.Linear
     flow_timesteps: torch.Tensor
     acoustic_graphs: dict[int, AcousticGraph]
+    flow_head_projections: tuple[list[PackedProjection], list[PackedProjection]] | None
     decode_feedback: nn.Embedding
     decode_feedback_rows: torch.Tensor
+    prefill_inputs: nn.Embedding
+    prefill_input_rows: torch.Tensor
     config: Ming3TTSConfig | Ming3DenseTTSConfig
 
     def stage_decode_feedback(self, feedback_embeddings: torch.Tensor) -> torch.Tensor:
@@ -180,30 +221,51 @@ class SpeechHeadModel:
         return self.decode_feedback_rows[:batch_size]
 
     def compute_acoustic_step(
-        self, inputs: AcousticInputs, sampling_scales: torch.Tensor
+        self,
+        inputs: AcousticInputs,
+        sampling_scales: torch.Tensor,
+        constants: FlowConstants | None,
     ) -> AcousticStep:
-        """Sample one latent per row; sampling_scales holds [guidance, noise] per row."""
-        hidden_states = inputs.hidden_states
-        conditioning = hidden_states.unsqueeze(1)
-        with torch.autocast(
-            device_type=hidden_states.device.type, dtype=torch.bfloat16
-        ):
-            latents = self.flowloss.sample(
-                z=conditioning,
-                latent_history=inputs.latent_history,
-                noise=inputs.initial_noise,
-                timesteps=self.flow_timesteps,
-                sde_random=inputs.solver_noise,
-                cfg=sampling_scales[:, 0],
-                sigma=sampling_scales[:, 1],
-                temperature=inputs.temperatures,
+        return compute_acoustic_step(
+            self.flowloss,
+            self.linear_proj_audio,
+            self.stop_head,
+            self.flow_timesteps,
+            inputs,
+            sampling_scales,
+            constants,
+        )
+
+    def build_flow_constants(self, batch_size: int) -> FlowConstants | None:
+        """Return None when the flow head must run its own module forwards."""
+        use_fused = self.enable_fused_flow_head and can_fuse_flow_head(
+            self.flowloss, self.linear_proj_audio
+        )
+        if not self.flow_head_path_logged:
+            logger.info(
+                f"Ming 3 TTS acoustic flow head: {'fused' if use_fused else 'module'}"
             )
-            feedback_embeddings = self.linear_proj_audio(latents)
-            stop_logits = self.stop_head(conditioning)
-        return AcousticStep(
-            latents=latents,
-            feedback_embeddings=feedback_embeddings.reshape(hidden_states.shape),
-            stop_probabilities=stop_logits.softmax(dim=-1)[:, 0, 1],
+            self.flow_head_path_logged = True
+        else:
+            pass
+        if not use_fused:
+            return None
+        elif self.flow_head_projections is None:
+            # note (rsi): packed after load_weights filled the q, k, v projections.
+            self.flow_head_projections = (
+                pack_projections(self.flowloss.cfm.model),
+                pack_projections(self.linear_proj_audio),
+            )
+        else:
+            pass
+        flow_projections, aggregator_projections = self.flow_head_projections
+        return build_flow_constants(
+            self.flowloss,
+            self.linear_proj_audio,
+            self.flow_timesteps,
+            batch_size,
+            flow_projections,
+            aggregator_projections,
         )
 
     def build_sampling_scales(self, batch_size: int) -> torch.Tensor:
@@ -214,14 +276,17 @@ class SpeechHeadModel:
 
     @torch.no_grad()
     def capture_acoustic_graphs(self, max_batch_size: int) -> None:
-        """Capture power-of-two batch buckets up to max_batch_size in one memory pool."""
+        """Capture batch buckets up to max_batch_size in one memory pool."""
         device = self.stop_head.weight.device
         latent_dim = int(self.config.tts_config["latent_dim"])
         memory_pool = torch.cuda.graph_pool_handle()
-        powers_of_two = [
-            1 << exponent for exponent in range(max_batch_size.bit_length())
-        ]
-        bucket_batch_sizes = {size for size in powers_of_two if size < max_batch_size}
+        # note (rsi): a replay pays for every padded row of its bucket, so
+        # small batches, where decode spends most steps, get exact buckets.
+        bucket_batch_sizes = {
+            size
+            for size in [*range(1, EXACT_ACOUSTIC_BUCKETS + 1), *range(24, 1025, 8)]
+            if size < max_batch_size
+        }
         for batch_size in sorted(bucket_batch_sizes | {max_batch_size}, reverse=True):
             inputs = AcousticInputs(
                 hidden_states=torch.zeros(
@@ -237,25 +302,32 @@ class SpeechHeadModel:
                 temperatures=torch.zeros(batch_size, device=device),
             )
             sampling_scales = self.build_sampling_scales(batch_size)
+            constants = self.build_flow_constants(batch_size)
             stream = torch.cuda.Stream(device=device)
             stream.wait_stream(torch.cuda.current_stream(device))
             with torch.cuda.stream(stream):
                 for _ in range(ACOUSTIC_GRAPH_WARMUP_STEPS):
-                    self.compute_acoustic_step(inputs, sampling_scales)
+                    self.compute_acoustic_step(inputs, sampling_scales, constants)
             torch.cuda.current_stream(device).wait_stream(stream)
             graph = torch.cuda.CUDAGraph()
             with torch.cuda.graph(graph, pool=memory_pool, stream=stream):
-                outputs = self.compute_acoustic_step(inputs, sampling_scales)
+                outputs = self.compute_acoustic_step(inputs, sampling_scales, constants)
             self.acoustic_graphs[batch_size] = AcousticGraph(
-                graph=graph, inputs=inputs, outputs=outputs
+                graph=graph,
+                inputs=inputs,
+                sampling_scales=sampling_scales,
+                constants=constants,
+                outputs=outputs,
             )
 
     @torch.no_grad()
     def sample_acoustic_step(self, inputs: AcousticInputs) -> AcousticStep:
         batch_size = inputs.hidden_states.shape[0]
-        if not self.acoustic_graphs:
+        if not self.acoustic_graphs or batch_size > max(self.acoustic_graphs):
             return self.compute_acoustic_step(
-                inputs, self.build_sampling_scales(batch_size)
+                inputs,
+                self.build_sampling_scales(batch_size),
+                self.build_flow_constants(batch_size),
             )
         else:
             pass
@@ -277,6 +349,12 @@ class SpeechHeadModel:
         )
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
+        if self.weights_loaded:
+            raise RuntimeError(
+                "Ming 3 TTS live weight updates are unsupported; restart the pipeline to refresh reference caches and acoustic graphs"
+            )
+        else:
+            pass
         head_tensors = {
             name: tensor
             for name, tensor in self.state_dict(keep_vars=True).items()
@@ -306,6 +384,7 @@ class SpeechHeadModel:
             raise ValueError(f"Missing Ming 3 TTS head weights: {missing_head_names}")
         else:
             pass
+        self.weights_loaded = True
         return loaded_names | loaded_head_names
 
 

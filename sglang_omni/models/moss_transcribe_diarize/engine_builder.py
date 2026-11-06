@@ -3,10 +3,14 @@
 
 from __future__ import annotations
 
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Callable
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
+from sglang.srt.mem_cache.allocation_sizing import get_alloc_reserve_per_decode
 from sglang.srt.server_args import ServerArgs
+from sglang.srt.speculative.base_spec_worker import BaseSpecWorker
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from transformers import PreTrainedTokenizerBase, ProcessorMixin
 
 from sglang_omni.models.moss_transcribe_diarize import CAPABILITIES, request_builders
@@ -18,6 +22,7 @@ from sglang_omni.models.moss_transcribe_diarize.request_builders import (
 )
 from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
+from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.engine_factory import (
     AsrEngineBuilder,
     GenerationDefaults,
@@ -108,6 +113,8 @@ class MossTranscribeDiarizeEngineBuilder(
         self.processor: ProcessorMixin | None = None
         self.tokenizer: PreTrainedTokenizerBase | None = None
         self.audio_encoder_service: BatchedAudioEncoderService | None = None
+        self.speculative_worker_class: type[BaseSpecWorker] | None = None
+        self.draft_checkpoint: TemporaryDirectory[str] | None = None
         self.max_new_tokens = 0
         self.context_length = 0
         self.full_prefill_enabled = False
@@ -134,14 +141,10 @@ class MossTranscribeDiarizeEngineBuilder(
         )
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
-        # note (Xinyu): cached-prefix extends commonly contain one or two new
-        # tokens, so keep exact graph buckets below the shared ladder's 4-token
-        # floor instead of failing the prefill padding-factor replay guard.
-        prefill_cuda_graph_bs = [
-            1,
-            2,
-            *build_default_prefill_cuda_graph_bs(4096),
-        ]
+        # note (Yuhao): cached-prefix extends need exact one- and two-token buckets below the shared four-token floor.
+        prefill_cuda_graph_bs = build_default_prefill_cuda_graph_bs(
+            4096, extra_token_buckets=(1, 2)
+        )
         return {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
@@ -193,10 +196,60 @@ class MossTranscribeDiarizeEngineBuilder(
         else:
             pass
 
+        draft_model_path = overrides.get("speculative_draft_model_path")
+        speculative_algorithm = SpeculativeAlgorithm.from_string(
+            overrides.get("speculative_algorithm")
+        )
+        if speculative_algorithm.is_none():
+            if draft_model_path is not None:
+                raise ValueError(
+                    "speculative_draft_model_path needs a speculative_algorithm"
+                )
+            else:
+                pass
+        elif not speculative_algorithm.is_dflash():
+            raise ValueError(
+                f"{self.model_name} speculative decoding supports DFLASH, "
+                f"not {speculative_algorithm.name}"
+            )
+        elif draft_model_path is None:
+            raise ValueError(
+                "speculative_algorithm=DFLASH needs speculative_draft_model_path"
+            )
+        elif not current_platform.is_cuda():
+            raise ValueError(f"{self.model_name} DFLASH needs a CUDA GPU")
+        else:
+            # note (wilsonzheng0327): hosts without a draft never load its kernels.
+            from sglang_omni.speculative.dflash_draft import (
+                ReducedVocabularyDFlashWorker,
+                materialize_draft_checkpoint,
+            )
+
+            # note (wilsonzheng0327): SGLang reads the draft config while resolving
+            # the server args, so the flat copy must exist before that.
+            self.draft_checkpoint = materialize_draft_checkpoint(
+                str(draft_model_path), overrides.get("speculative_draft_model_revision")
+            )
+            overrides["speculative_draft_model_path"] = self.draft_checkpoint.name
+            overrides["speculative_draft_model_revision"] = None
+            self.speculative_worker_class = ReducedVocabularyDFlashWorker
+            # note (wilsonzheng0327): async decode under a draft means speculative
+            # overlap, which this runner has not opted into.
+            self.enable_async_decode = False
+
     def customize_server_args(self, server_args: ServerArgs) -> None:
         # note (Dayuxiaoshui): adapters must use the context length finalized by
         # ServerArgs, matching the pre-refactor factory behavior.
         self.context_length = int(server_args.context_length)
+
+    def infra_kwargs(self) -> InfrastructureOptions:
+        if self.speculative_worker_class is None:
+            return {}
+        else:
+            return {
+                "supports_speculative_decoding": True,
+                "speculative_worker_class": self.speculative_worker_class,
+            }
 
     def setup_model_resources(
         self,
@@ -244,6 +297,11 @@ class MossTranscribeDiarizeEngineBuilder(
             duration_scaled_default=self.requested_max_new_tokens is None,
             audio_encoder_service=self.audio_encoder_service,
             enable_trimmed_fbank=self.enable_trimmed_fbank,
+            speculative_reserve_tokens=(
+                0
+                if self.speculative_worker_class is None
+                else get_alloc_reserve_per_decode()
+            ),
         )
 
     def extra_scheduler_kwargs(
