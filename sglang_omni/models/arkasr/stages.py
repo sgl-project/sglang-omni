@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from sglang_omni.models.arkasr.engine_builder import ArkasrEngineBuilder
+
 
 def create_sglang_arkasr_executor(
     model_path: str,
@@ -37,9 +39,7 @@ def create_sglang_arkasr_executor(
     stream_emit_interval_s: float = 0.05,
     server_args_overrides: Mapping[str, object] | None = None,
 ):
-    from sglang_omni.models.arkasr.engine_builder import ArkasrEngineBuilder
-
-    return ArkasrEngineBuilder(
+    builder = ArkasrEngineBuilder(
         max_running_requests=max_running_requests,
         encoder_max_batch_size=encoder_max_batch_size,
         max_new_tokens=max_new_tokens,
@@ -65,13 +65,20 @@ def create_sglang_arkasr_executor(
         pre_lm_max_pending=pre_lm_max_pending,
         enable_encoder_cuda_graph=enable_encoder_cuda_graph,
         stream_emit_interval_s=stream_emit_interval_s,
-    ).build(
-        model_path,
-        device=device,
-        gpu_id=gpu_id,
-        dtype=dtype,
-        server_args_overrides=server_args_overrides,
     )
+    try:
+        return builder.build(
+            model_path,
+            device=device,
+            gpu_id=gpu_id,
+            dtype=dtype,
+            server_args_overrides=server_args_overrides,
+        )
+    finally:
+        if builder.draft_checkpoint is not None:
+            builder.draft_checkpoint.cleanup()
+        else:
+            pass
 
 
 def create_arkasr_executor(*args, **kwargs):
