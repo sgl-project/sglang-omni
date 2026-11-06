@@ -143,6 +143,7 @@ def test_a_load_without_a_checkpoint_reports_failed(
         ("music3_server", ("--stage-offload-components", ""), "requires both ar,dit"),
         ("cosyvoice3_server", ("--max-queued-requests", "-1"), "--max-queued-requests must not be negative"),
         ("ming3_audio_server", ("--context-length", "0"), "--context-length must be a positive integer"),
+        ("ming3_audio_server", ("--speculative-algorithm", "EAGLE3"), "--speculative-algorithm must be NEXTN"),
         ("fish_s2_pro_server", ("--max-queued-requests", "-1"), "--max-queued-requests must not be negative"),
         ("fish_s2_pro_server", ("--request-timeout-s", "0"), "--request-timeout-s must be above 0"),
     ],
@@ -170,6 +171,7 @@ def test_invalid_server_flags_exit_before_the_load(
         ],
         ("music3_synthesize", ("--stage-offload-components", "dit"), "requires both ar,dit"),
         ("ming3_audio_chat", ("--context-length", "0"), "--context-length must be a positive integer"),
+        ("ming3_audio_chat", ("--speculative-algorithm", "EAGLE3"), "--speculative-algorithm must be NEXTN"),
     ],
 )  # fmt: skip
 def test_invalid_tool_flags_fail_before_the_load(

@@ -408,7 +408,8 @@ set_target_properties(fishaudio_drama3_server fishaudio_drama3_synthesize PROPER
 install(TARGETS fishaudio_drama3_server fishaudio_drama3_synthesize RUNTIME DESTINATION bin)
 
 add_library(ming3_audio STATIC src/ming3_audio/ming3_audio_model.cpp
-  src/ming3_audio/ming3_audio_attention.cpp)
+  src/ming3_audio/ming3_audio_attention.cpp
+  src/ming3_audio/ming3_audio_mtp.cpp)
 target_link_libraries(ming3_audio PUBLIC qwen3_asr)
 target_compile_options(ming3_audio PRIVATE -Wall -Wextra)
 add_library(ming3_audio_service STATIC src/ming3_audio/ming3_audio_service.cpp)

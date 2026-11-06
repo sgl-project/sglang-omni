@@ -41,9 +41,16 @@ def running_chat(
         yield server
 
 
-@pytest.fixture(scope="module")
-def chat_port(tmp_path_factory: pytest.TempPathFactory) -> Iterator[int]:
-    with running_chat(tmp_path_factory.mktemp("ming3-audio")) as (port, _):
+@pytest.fixture(
+    scope="module",
+    params=[(), ("--speculative-algorithm", "NEXTN")],
+    ids=["plain", "nextn"],
+)
+def chat_port(
+    request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory
+) -> Iterator[int]:
+    log_directory = tmp_path_factory.mktemp("ming3-audio")
+    with running_chat(log_directory, request.param) as (port, _):
         yield port
 
 
