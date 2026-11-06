@@ -12,6 +12,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -100,6 +101,39 @@ func readLegacyTerms(ctx context.Context, path string) (terms []store.Term, skip
 	}
 	for _, t := range all {
 		t = dict.Clean(t)
+		if dict.Check(t) != nil {
+			skipped++
+			continue
+		}
+		terms = append(terms, t)
+	}
+	return terms, skipped, nil
+}
+
+// legacyExport is the previous Voxt's dictionary export (Dictionary >
+// Export, "Voxt-Dictionary.json", version 3): its terms and their
+// replacement terms. Its groups and categories have no place here.
+type legacyExport struct {
+	Version int `json:"version"`
+	Entries []struct {
+		Term             string   `json:"term"`
+		ReplacementTerms []string `json:"replacementTerms"`
+	} `json:"entries"`
+}
+
+// parseLegacyExport reads the previous Voxt's dictionary export as terms,
+// the replacement terms as aliases; terms the dictionary would refuse are
+// counted in skipped.
+func parseLegacyExport(data []byte) (terms []store.Term, skipped int, err error) {
+	var x legacyExport
+	if err := json.Unmarshal(data, &x); err != nil {
+		return nil, 0, fmt.Errorf("%w: %v", dict.ErrFormat, err)
+	}
+	if x.Entries == nil {
+		return nil, 0, fmt.Errorf("%w: no entries", dict.ErrFormat)
+	}
+	for _, e := range x.Entries {
+		t := dict.Clean(store.Term{Term: e.Term, Aliases: e.ReplacementTerms, Enabled: true})
 		if dict.Check(t) != nil {
 			skipped++
 			continue

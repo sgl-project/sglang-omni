@@ -234,7 +234,6 @@
   "Could not erase: %v": "无法清除：%v",
   "Could not export the recordings: %v": "无法导出录音：%v",
   "Could not export: %v": "无法导出：%v",
-  "Could not import %s: it is not a CSV or text list of terms.": "无法导入 %s：它不是 CSV 或文本格式的词条列表。",
   "Could not import: %v": "无法导入：%v",
   "Could not insert: %v": "无法插入：%v",
   "Could not list the microphones: %s": "无法列出麦克风：%s",
@@ -296,7 +295,6 @@
   "Dictating in one of these apps uses the group. A browser here covers the websites no website rule of any group matches.": "在这些应用里口述时使用这个分组。放在这里的浏览器，会覆盖所有分组的网站规则都没有命中的网站。",
   "Dictation": "听写",
   "Dictionary": "词典",
-  "Dictionary (CSV or text)": "词典（CSV 或文本）",
   "Dismiss": "关闭",
   "Distance from the edge": "离屏幕边缘",
   "Done": "完成",
@@ -1098,5 +1096,7 @@
   "Bring its dictionary and history over: click Import from the previous Voxt, then Import in the window that opens. The previous Voxt keeps all its data.": "把它的词典和历史记录带过来：点“从旧版 Voxt 导入”，再在打开的窗口里点“导入”。旧版 Voxt 的数据保持不变。",
   "History: %d entries added.": "历史记录：新增 %d 条。",
   "%d model (%s) came over too: no download needed.": "还带过来了 %d 个模型（%s），不用再下载。",
-  "%d models (%s) came over too: no download needed.": "还带过来了 %d 个模型（%s），不用再下载。"
+  "%d models (%s) came over too: no download needed.": "还带过来了 %d 个模型（%s），不用再下载。",
+  "Dictionary (CSV, text or the previous Voxt's export)": "词典（CSV、文本或旧版 Voxt 导出的文件）",
+  "Could not import %s: it is not a CSV or text list of terms, or the previous Voxt's dictionary export.": "无法导入 %s：它不是 CSV 或文本格式的词条列表，也不是旧版 Voxt 导出的词典。"
 }

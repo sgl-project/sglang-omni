@@ -155,3 +155,22 @@ func TestReuseLegacyModelFiles(t *testing.T) {
 		t.Fatal("a changed file still matches")
 	}
 }
+
+// The previous Voxt's dictionary export (Dictionary > Export, version 3):
+// terms with their replacement terms as aliases; a term too long is skipped.
+func TestParseLegacyExport(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(legacyFixtures, "export", "Voxt-Dictionary.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	terms, skipped, err := parseLegacyExport(data)
+	if err != nil || len(terms) != 3 || skipped != 1 {
+		t.Fatalf("terms %v, skipped %d, err %v", terms, skipped, err)
+	}
+	if terms[0].Term != "SGLang-Omni" || len(terms[0].Aliases) != 2 || terms[2].Aliases[0] != "张三峰" {
+		t.Errorf("%+v", terms)
+	}
+	if _, _, err := parseLegacyExport([]byte(`{"hello": 1}`)); err == nil {
+		t.Error("a JSON file that is not an export was accepted")
+	}
+}

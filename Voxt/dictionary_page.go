@@ -72,7 +72,7 @@ var (
 	chooseImportFile = func(a *app, then func(string)) {
 		go func() {
 			files, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.win, Title: i18n.T("Import terms"),
-				Filters: []mygo.FileFilter{{Name: i18n.T("Dictionary (CSV or text)"), Extensions: []string{"csv", "txt"}}}})
+				Filters: []mygo.FileFilter{{Name: i18n.T("Dictionary (CSV, text or the previous Voxt's export)"), Extensions: []string{"csv", "txt", "json"}}}})
 			if err != nil || len(files) == 0 {
 				return
 			}
@@ -411,9 +411,15 @@ func (a *app) importFile(path string) {
 			if err != nil {
 				return i18n.T("Could not import: %v", err)
 			}
-			terms, skipped, err := dict.Import(data, dict.FormatOf(path))
+			var terms []store.Term
+			var skipped int
+			if strings.EqualFold(filepath.Ext(path), ".json") {
+				terms, skipped, err = parseLegacyExport(data) // legacy_import.go
+			} else {
+				terms, skipped, err = dict.Import(data, dict.FormatOf(path))
+			}
 			if err != nil {
-				return i18n.T("Could not import %s: it is not a CSV or text list of terms.", filepath.Base(path))
+				return i18n.T("Could not import %s: it is not a CSV or text list of terms, or the previous Voxt's dictionary export.", filepath.Base(path))
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
