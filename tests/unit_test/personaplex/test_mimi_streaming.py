@@ -158,10 +158,10 @@ def test_encode_graph_matches_eager_across_mixed_rows_and_slot_reuse(
     random_codec: MimiCodec,
 ) -> None:
     codec = random_codec.cuda()
-    graphed = MimiEncodeSlots(codec, num_slots=3, max_batch_size=2, enable_graphs=True)
-    eager = MimiEncodeSlots(codec, num_slots=3, max_batch_size=2, enable_graphs=False)
-    assert set(graphed.graphs) == {1, 2}
-    plan = [((0,), 1), ((1, 0), 1), ((2, 0), 2), ((0, 2), 1), ((1,), 1)]
+    graphed = MimiEncodeSlots(codec, num_slots=3, enable_graphs=True)
+    eager = MimiEncodeSlots(codec, num_slots=3, enable_graphs=False)
+    assert set(graphed.graphs) == {1, 2, 3}
+    plan = [((0,), 1), ((1, 0), 1), ((2, 0), 2), ((0, 2), 1), ((2, 1, 0), 1), ((1,), 1)]
     generator = torch.Generator().manual_seed(6)
     waveforms = [
         torch.randn(
@@ -174,14 +174,9 @@ def test_encode_graph_matches_eager_across_mixed_rows_and_slot_reuse(
     ]
     first_round_codes: list[torch.Tensor] = []
     for round_index in range(2):
-        pool_slots: list[list[int]] = []
-        for pool in (graphed, eager):
-            acquired_slots: list[int] = []
-            for _ in range(3):
-                slot_index = pool.acquire_slot()
-                assert slot_index is not None
-                acquired_slots.append(slot_index)
-            pool_slots.append(acquired_slots)
+        pool_slots: list[list[int]] = [
+            [pool.acquire_slot() for _ in range(3)] for pool in (graphed, eager)
+        ]
         for step_index, ((streams, _), waveform) in enumerate(
             zip(plan, waveforms, strict=True)
         ):

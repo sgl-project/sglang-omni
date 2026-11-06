@@ -113,7 +113,6 @@ class MimiEncodeHooks(BatchedSessionHooks):
     def warm_up_serving_thread(self) -> None:
         """Warm up the serving thread without advancing any session's state."""
         slot_index = self.encode_slots.acquire_slot()
-        assert slot_index is not None
         self.encode_slots.encode_step(
             torch.zeros(1, 1, SAMPLES_PER_FRAME, device=self.encode_slots.codec.device),
             [slot_index],
@@ -121,9 +120,7 @@ class MimiEncodeHooks(BatchedSessionHooks):
         self.encode_slots.release_slot(slot_index)
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
-        slot_index = self.encode_slots.acquire_slot()
-        assert slot_index is not None
-        self.states[session_identity] = slot_index
+        self.states[session_identity] = self.encode_slots.acquire_slot()
 
     @torch.inference_mode()
     def append_batch(self, appends: list[SessionAppend]) -> list[StagePayload]:

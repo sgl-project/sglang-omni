@@ -100,9 +100,7 @@ def test_streaming_encode_batches_calls_without_advancing_empty_end(
     expected_codes = [
         random_codec.encode(waveform.view(1, 1, -1))[0].T for waveform in waveforms
     ]
-    encode_slots = MimiEncodeSlots(
-        random_codec, num_slots=2, max_batch_size=2, enable_graphs=False
-    )
+    encode_slots = MimiEncodeSlots(random_codec, num_slots=2, enable_graphs=False)
     encode_step = Mock(wraps=encode_slots.encode_step)
     monkeypatch.setattr(encode_slots, "encode_step", encode_step)
     hooks = MimiEncodeHooks(encode_slots)
@@ -268,9 +266,7 @@ def test_an_empty_end_of_input_emits_only_the_end(random_codec):
 
 def test_warm_up_runs_both_codecs_and_opens_no_call(random_codec):
     encode = MimiEncodeHooks(
-        MimiEncodeSlots(
-            random_codec, num_slots=1, max_batch_size=1, enable_graphs=False
-        )
+        MimiEncodeSlots(random_codec, num_slots=1, enable_graphs=False)
     )
     decode = Code2WavHooks(decode_slots(random_codec, 1))
     encode.warm_up_serving_thread()

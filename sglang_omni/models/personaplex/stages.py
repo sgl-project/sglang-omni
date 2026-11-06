@@ -245,7 +245,6 @@ def create_session_mimi_encode_executor(
     encode_slots = MimiEncodeSlots(
         codec,
         num_slots=max_open_sessions,
-        max_batch_size=max_open_sessions,
         enable_graphs=enable_cuda_graph,
     )
     return SessionScheduler(

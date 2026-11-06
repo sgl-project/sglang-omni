@@ -33,13 +33,11 @@ class MimiEncodeSlots:
         codec: MimiCodec,
         *,
         num_slots: int,
-        max_batch_size: int,
         enable_graphs: bool,
     ) -> None:
-        assert num_slots > 0 and max_batch_size > 0
+        assert num_slots > 0
         self.codec: MimiCodec = codec
         self.num_slots: int = num_slots
-        self.max_batch_size: int = min(max_batch_size, num_slots)
         self.encode_state: MimiEncodeState = codec.init_encode_state(num_slots)
         self.free_slots: list[int] = list(reversed(range(num_slots)))
         self.graphs: dict[int, CapturedEncode] = {}
@@ -68,7 +66,7 @@ class MimiEncodeSlots:
             current_platform.graph_capture_attention(),
         ):
             capture_stream.wait_stream(device_module.current_stream(device))
-            for batch_size in range(self.max_batch_size, 0, -1):
+            for batch_size in range(self.num_slots, 0, -1):
                 with device_module.stream(capture_stream):
                     slot_indices = torch.arange(batch_size, device=device)
                     input_waveform = torch.zeros(
@@ -93,19 +91,16 @@ class MimiEncodeSlots:
             device_module.synchronize(device)
         graph_bytes = device_module.memory_allocated(device) - allocated_bytes_before
         logger.info(
-            f"PersonaPlex Mimi encode graphs: batches of 1-{self.max_batch_size} "
-            f"over {self.num_slots} slots in {time.perf_counter() - capture_started:.1f}s, "
+            f"PersonaPlex Mimi encode graphs: batches of 1-{self.num_slots} "
+            f"in {time.perf_counter() - capture_started:.1f}s, "
             f"{graph_bytes / 2**20:.0f}MiB"
         )
 
     @torch.inference_mode()
-    def acquire_slot(self) -> int | None:
-        if not self.free_slots:
-            return None
-        else:
-            slot_index = self.free_slots.pop()
-            self.encode_state.reset_row(slot_index)
-            return slot_index
+    def acquire_slot(self) -> int:
+        slot_index = self.free_slots.pop()
+        self.encode_state.reset_row(slot_index)
+        return slot_index
 
     def release_slot(self, slot_index: int) -> None:
         self.free_slots.append(slot_index)
