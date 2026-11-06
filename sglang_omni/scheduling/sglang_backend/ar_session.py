@@ -696,7 +696,16 @@ class ARSessionBridge:
                     continue
                 else:
                     active_session_request = active_append_unit.session_request
-                    allocated_kv_tokens = active_session_request.kv.kv_allocated_len
+                    active_record = records.get(active_append_unit.session_identity.id)
+                    # note (jli2786): Queued appends borrow their session's record only at prefix matching.
+                    allocated_kv_tokens = max(
+                        active_session_request.kv.kv_allocated_len,
+                        (
+                            active_record.kv_allocated_len
+                            if active_record is not None
+                            else 0
+                        ),
+                    )
                     reserved_kv_tokens += max(
                         0,
                         len(active_session_request.origin_input_ids)

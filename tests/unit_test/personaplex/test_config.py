@@ -15,6 +15,7 @@ from sglang_omni.config.sources import patches_from_stages_mapping
 from sglang_omni.models.personaplex.config import (
     DEFAULT_LM_MAX_RUNNING_REQUESTS,
     PersonaPlexPipelineConfig,
+    PersonaPlexSessionPipelineConfig,
 )
 
 
@@ -136,3 +137,55 @@ def test_code2wav_decode_capacity_follows_the_lm_until_pinned() -> None:
     rebuild(config, "--lm.engine.max_running_requests", "24")
     with pytest.raises(ValueError, match="Omit num_decode_slots to derive it"):
         rebuild(config, "--lm.engine.max_running_requests", "25")
+
+
+def test_session_kv_capacity_tracks_concurrency_context_and_explicit_budgets() -> None:
+    """Changing session capacity must resize its derived pool without pinning it."""
+    config = PersonaPlexSessionPipelineConfig(model_path="dummy")
+    for session_count, context_positions in [(1, 8192), (4, 4096), (2, 16384)]:
+        manager = ConfigManager(config)
+        config = manager.merge_config(
+            manager.parse_extra_args(
+                [
+                    "--max-sessions",
+                    str(session_count),
+                    "--lm.engine.context_length",
+                    str(context_positions),
+                ]
+            )
+        )
+        arguments = resolve_stage_factory_args(config.stage_named("lm"), config)
+        assert arguments["kv_cache_tokens"] == session_count * context_positions
+        assert config.stage_named("lm").engine.kv_cache_bytes is None
+    factory_context = PersonaPlexSessionPipelineConfig(model_path="dummy")
+    manager = ConfigManager(factory_context)
+    factory_context = manager.merge_config(
+        manager.parse_extra_args(["--lm.factory.context_length", "16384"])
+    )
+    assert (
+        resolve_stage_factory_args(factory_context.stage_named("lm"), factory_context)[
+            "kv_cache_tokens"
+        ]
+        == 16384
+    )
+    patches = patches_from_stages_mapping(
+        {"lm": {"engine": {"context_length": None}}}, type(factory_context), ["lm"]
+    )
+    unset_context = ConfigResolver(factory_context).resolve(patches).config
+    assert (
+        resolve_stage_factory_args(unset_context.stage_named("lm"), unset_context)[
+            "kv_cache_tokens"
+        ]
+        == 8192
+    )
+    for option, value in [
+        ("mem_fraction_static", "0.65"),
+        ("max_total_tokens", "16000"),
+        ("kv_cache_bytes", "4GiB"),
+    ]:
+        manager = ConfigManager(config)
+        explicit = manager.merge_config(
+            manager.parse_extra_args([f"--lm.engine.{option}", value])
+        )
+        arguments = resolve_stage_factory_args(explicit.stage_named("lm"), explicit)
+        assert "kv_cache_tokens" not in arguments
