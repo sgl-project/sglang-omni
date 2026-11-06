@@ -14,6 +14,7 @@ from typing_extensions import NotRequired
 SESSION_METADATA_KEY: Literal["omni_session"] = "omni_session"
 LM_STEP_MS_KEY = "omni_lm_step_ms"
 NS_PER_MS = 1_000_000
+STEP_COHORT_KEY = "omni_step_cohort"
 GRAPH_INPUT = "input"
 # Note (Junnan Li): msgspec encodes bytes as base64 text by default; keep them native on both sides.
 BUILTIN_TYPES = (bytes,)

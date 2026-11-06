@@ -215,3 +215,45 @@ def test_warm_up_runs_both_codecs_and_opens_no_call(random_codec):
     decode.warm_up_serving_thread()
     assert encode.states == {} and decode.states == {}
     assert decode.decode_slots.active_slot_count == 0
+
+
+def test_code2wav_on_its_own_stream_emits_the_same_audio(random_codec):
+    sessions = [SessionIdentity("a"), SessionIdentity("b"), SessionIdentity("c")]
+    codes = {session: torch.randint(0, 2048, (3, 8)) for session in sessions}
+    frames_per_unit = {sessions[0]: [2, 1], sessions[1]: [1, 2], sessions[2]: [1, 1]}
+    outputs = []
+    for decode_stream in (False, True):
+        hooks = Code2WavHooks(
+            decode_slots(random_codec, 3), decode_stream=decode_stream
+        )
+        emitted: dict[SessionIdentity, list[TimedChunk]] = {}
+        for session in sessions:
+            hooks.open(session, OmniRequest(inputs=None))
+            emitted[session] = []
+        starts = dict.fromkeys(sessions, 0)
+        for index in range(2):
+            appends = []
+            for session in sessions:
+                count = frames_per_unit[session][index]
+                start = starts[session]
+                starts[session] += count
+                state = PersonaPlexState(codes=codes[session][start : start + count])
+                appends.append(
+                    SessionAppend(
+                        chunk=unit(index),
+                        payload=payload(state),
+                        context=SessionContext(
+                            session_identity=session,
+                            cancelled=threading.Event(),
+                            emit=emitted[session].append,
+                        ),
+                    )
+                )
+            hooks.append_batch(appends)
+        outputs.append(
+            {
+                session: [chunk.payload["pcm"] for chunk in emitted[session]]
+                for session in sessions
+            }
+        )
+    assert outputs[0] == outputs[1]

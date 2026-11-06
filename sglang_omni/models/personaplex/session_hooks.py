@@ -5,6 +5,7 @@ first unit, the streaming Mimi encoder and the streaming Mimi decoder."""
 from __future__ import annotations
 
 from collections import defaultdict
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -61,9 +62,13 @@ def pcm16_to_waveform(chunk: TimedChunk) -> torch.Tensor:
         return torch.from_numpy(samples / PCM16_SCALE)
 
 
-def pcm16_samples(waveform: torch.Tensor) -> np.ndarray:
+def pcm16_device_samples(waveform: torch.Tensor) -> torch.Tensor:
     samples = (waveform.float().clamp(-1.0, 1.0) * (PCM16_SCALE - 1)).round()
-    return samples.to(torch.int16).cpu().numpy().astype("<i2")
+    return samples.to(torch.int16)
+
+
+def pcm16_samples(waveform: torch.Tensor) -> np.ndarray:
+    return pcm16_device_samples(waveform).cpu().numpy().astype("<i2")
 
 
 def waveform_to_pcm16(waveform: torch.Tensor) -> bytes:
@@ -281,29 +286,51 @@ class Code2WavHooks(BatchedSessionHooks):
     """Decodes the ready sessions' agent frames on their decode slots, one batch per
     frame count, and emits each unit's audio with the words spoken in it."""
 
-    def __init__(self, decode_slots: MimiDecodeSlots) -> None:
+    def __init__(
+        self, decode_slots: MimiDecodeSlots, *, decode_stream: bool = False
+    ) -> None:
         self.decode_slots = decode_slots
         self.states: dict[SessionIdentity, Code2WavState] = {}
+        device = decode_slots.codec.device
+        # Note (Junnan Li): Its own stream, so a read-back does not wait for queued LM
+        # steps.
+        self.decode_stream: torch.Stream | None = None
+        if decode_stream and device.type == "cuda":
+            device_module = torch.get_device_module(device)
+            self.decode_stream = device_module.Stream(device=device)
+            self.decode_stream.wait_stream(device_module.current_stream(device))
+        else:
+            pass
+
+    def decode_context(self) -> AbstractContextManager[None]:
+        if self.decode_stream is None:
+            return nullcontext()
+        else:
+            return torch.get_device_module(self.decode_stream.device).stream(
+                self.decode_stream
+            )
 
     @torch.inference_mode()
     def warm_up_serving_thread(self) -> None:
         """Decode silence as a session's units arrive, on a slot freed again, so the
         codec's first use on the serving thread happens before the first session."""
-        slot_index = self.decode_slots.acquire()
-        silence = torch.tensor(
-            SILENCE_CODES, dtype=torch.long, device=self.decode_slots.codec.device
-        )
-        for num_frames in FRAMES_PER_UNIT:
-            self.decode_slots.decode_step(
-                silence.repeat(num_frames, 1).T[None], [slot_index]
+        with self.decode_context():
+            slot_index = self.decode_slots.acquire()
+            silence = torch.tensor(
+                SILENCE_CODES, dtype=torch.long, device=self.decode_slots.codec.device
             )
-        self.decode_slots.release(slot_index)
+            for num_frames in FRAMES_PER_UNIT:
+                self.decode_slots.decode_step(
+                    silence.repeat(num_frames, 1).T[None], [slot_index]
+                )
+            self.decode_slots.release(slot_index)
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
         # Note (Junnan Li): The stage opens at most as many sessions as it has slots.
-        self.states[session_identity] = Code2WavState(
-            slot_index=self.decode_slots.acquire()
-        )
+        with self.decode_context():
+            self.states[session_identity] = Code2WavState(
+                slot_index=self.decode_slots.acquire()
+            )
 
     def append_batch(self, appends: list[SessionAppend]) -> list[StagePayload]:
         units = [PersonaPlexState.from_dict(append.payload.data) for append in appends]
@@ -314,19 +341,16 @@ class Code2WavHooks(BatchedSessionHooks):
                 rows_by_width[unit.codes.shape[0]].append(index)
             else:
                 pass
-        for indices in rows_by_width.values():
-            codes_BKF = torch.stack([units[index].codes.T for index in indices])
-            waveform = self.decode_slots.decode_step(
-                codes_BKF.to(device=self.decode_slots.codec.device),
-                [
-                    self.states[appends[index].context.session_identity].slot_index
-                    for index in indices
-                ],
-            )
-            for samples, index in zip(
-                pcm16_samples(waveform[:, 0]), indices, strict=True
-            ):
-                pcm[index] = samples.tobytes()
+        if self.decode_stream is None:
+            for indices in rows_by_width.values():
+                waveform = self.decode_width(appends, units, indices)
+                for samples, index in zip(
+                    pcm16_samples(waveform[:, 0]), indices, strict=True
+                ):
+                    pcm[index] = samples.tobytes()
+        else:
+            with self.decode_context():
+                self.decode_widths(appends, units, rows_by_width, pcm)
         for append, unit, unit_pcm in zip(appends, units, pcm, strict=True):
             session = self.states[append.context.session_identity]
             num_samples = len(unit_pcm) // PCM16_BYTES_PER_SAMPLE
@@ -343,6 +367,50 @@ class Code2WavHooks(BatchedSessionHooks):
             session.num_samples += num_samples
             append.payload.data = {}
         return [append.payload for append in appends]
+
+    def decode_width(
+        self,
+        appends: list[SessionAppend],
+        units: list[PersonaPlexState],
+        indices: list[int],
+    ) -> torch.Tensor:
+        """Valid only until the next decode."""
+        codes_BKF = torch.stack([units[index].codes.T for index in indices])
+        return self.decode_slots.decode_step(
+            codes_BKF.to(device=self.decode_slots.codec.device),
+            [
+                self.states[appends[index].context.session_identity].slot_index
+                for index in indices
+            ],
+        )
+
+    def decode_widths(
+        self,
+        appends: list[SessionAppend],
+        units: list[PersonaPlexState],
+        rows_by_width: dict[int, list[int]],
+        pcm: list[bytes],
+    ) -> None:
+        device_pcm = [
+            pcm16_device_samples(self.decode_width(appends, units, indices)[:, 0])
+            for indices in rows_by_width.values()
+        ]
+        if not device_pcm:
+            return
+        else:
+            pass
+        host_pcm = (
+            torch.cat([samples.reshape(-1) for samples in device_pcm])
+            .cpu()
+            .numpy()
+            .astype("<i2")
+        )
+        offset = 0
+        for samples, indices in zip(device_pcm, rows_by_width.values(), strict=True):
+            row_samples = samples.shape[-1]
+            for index in indices:
+                pcm[index] = host_pcm[offset : offset + row_samples].tobytes()
+                offset += row_samples
 
     def close(self, session_identity: SessionIdentity) -> None:
         self.decode_slots.release(self.states.pop(session_identity).slot_index)
