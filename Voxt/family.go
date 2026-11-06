@@ -165,7 +165,7 @@ func (a *app) familyFound(found []registry.Found) {
 
 // familyOthers reports whether the last discovery found a release of
 // another ActNow app installed on this Mac (spec §6.3): only then do the
-// shared settings speak of the family ("Applies to all ActNow apps"); the
+// shared settings speak of the family ("Applies to all apps that use this model library"); the
 // data still follows the family's files either way.
 func (a *app) familyOthers() bool {
 	for _, f := range a.famApps {

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # VoxtNew beside Auralink (docs/release.md §8, the ActNow family's first-
 # release check): on a Mac where Auralink runs with its fn shortcuts, the
-# helper of a built VoxtNew.app gets VoxtNew's default shortcuts (right ⌥,
+# helper of a built Voxt.app gets VoxtNew's default shortcuts (right ⌥,
 # right ⌥ ⇧, ⌃ right ⌥, ⌃⌥V) and installs its event tap; synthetic key
 # events (scripts/hotkey-coexist/poster.swift, posted at the HID level with
 # a real keyboard's flags) then go through both apps' taps, and:
@@ -28,7 +28,7 @@
 #
 #   MAC_DIR=code/VoxtNew-f2 scripts/mac.sh 'VOXTNEW_COEXIST_OK=1 scripts/mac-hotkey-coexist.sh [APP]'
 #
-# APP defaults to build/darwin-arm64/VoxtNew.app (go tool mygo build or
+# APP defaults to build/darwin-arm64/Voxt.app (go tool mygo build or
 # scripts/release.sh); a helper binary works too
 # (resources/darwin-arm64/helper/voxtnew-helper of scripts/build-helper.sh).
 set -euo pipefail
@@ -42,7 +42,7 @@ if [[ "${VOXTNEW_COEXIST_OK:-}" != 1 ]]; then
   exit 2
 fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP="${1:-$ROOT/build/darwin-arm64/VoxtNew.app}"
+APP="${1:-$ROOT/build/darwin-arm64/Voxt.app}"
 HELPER="$APP/Contents/Resources/helper/voxtnew-helper"
 [[ -f "$APP" && -x "$APP" ]] && HELPER="$APP" # the helper itself (scripts/build-helper.sh)
 [[ -x "$HELPER" ]] || { echo "no helper in $APP" >&2; exit 1; }

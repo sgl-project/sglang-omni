@@ -76,7 +76,7 @@ func HelperFailText(st helper.Status) string {
 	case helper.FailProtocol:
 		return i18n.T("Helper out of date")
 	case helper.FailUpdated:
-		return i18n.T("VoxtNew was updated: restart it to finish.")
+		return i18n.T("Voxt was updated: restart it to finish.")
 	}
 	if st.State == helper.Stopped {
 		return i18n.T("Helper stopped")

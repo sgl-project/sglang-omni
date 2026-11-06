@@ -19,7 +19,7 @@
 // # Processes (Runtime)
 //
 // A Runtime knows where the binaries are (Locate: $VOXTNEW_OMNI_RUNTIME,
-// else VoxtNew.app/Contents/Resources/omni) and owns the servers. A
+// else Voxt.app/Contents/Resources/omni) and owns the servers. A
 // server starts on first use: qwen3_asr_server --supervised on 127.0.0.1
 // port 0, which prints {"event":"ready","port":…} on stdout once its model
 // is loaded; a server that says nothing within StartTimeout is killed.

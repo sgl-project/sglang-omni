@@ -8,7 +8,7 @@ package main
 // dev.go) lists those curated models as installed from those folders
 // (an HF snapshot, say), ahead of the catalogue's:
 //
-//	VOXTNEW_DEV_LLM=llm.balanced=~/models/qwen open build/darwin-arm64/VoxtNew.app
+//	VOXTNEW_DEV_LLM=llm.balanced=~/models/qwen open build/darwin-arm64/Voxt.app
 
 import (
 	"context"

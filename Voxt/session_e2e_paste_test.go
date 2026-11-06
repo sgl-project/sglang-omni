@@ -31,8 +31,8 @@ func TestSessionPasteChecked(t *testing.T) {
 			why:   "The text did not show up where you type. It is on the clipboard: press ⌘V, or insert it again.",
 			again: "The text did not show up where you type: it is on the clipboard, press ⌘V."},
 		{name: "secure input", opts: "paste-check=unchanged,secure-input=Terminal", reason: deliver.ReasonSecureInput,
-			why:   "Secure input is on in another app, which can block the keys VoxtNew sends. The text is on the clipboard: press ⌘V, or insert it again.",
-			again: "Secure input is on in Terminal, which can block the keys VoxtNew sends: the text is on the clipboard, press ⌘V."},
+			why:   "Secure input is on in another app, which can block the keys Voxt sends. The text is on the clipboard: press ⌘V, or insert it again.",
+			again: "Secure input is on in Terminal, which can block the keys Voxt sends: the text is on the clipboard, press ⌘V."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(400, "transcribe/0", proto.PhaseTrigger))

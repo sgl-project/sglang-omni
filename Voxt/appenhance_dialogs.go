@@ -192,7 +192,7 @@ func (a *app) aeBrowsersDialog(c *ui.Context) {
 					others = append(others, b.Name)
 				}
 			}
-			caption(c, i18n.T("At each shortcut in a browser, VoxtNew reads its tab's address. A browser that shows none matches only as an app."))
+			caption(c, i18n.T("At each shortcut in a browser, Voxt reads its tab's address. A browser that shows none matches only as an app."))
 			ui.Column(c.Key("ae-browser-list")).Gap(px(t, 2)).Children(func() {
 				for _, b := range shown {
 					ui.Row(c.Key("ae-browser-" + b.BundleID)).Gap(px(t, sp2)).AlignItems(ui.Center).MinHeight(px(t, 30)).Children(func() {

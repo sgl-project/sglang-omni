@@ -234,7 +234,7 @@ func (a *app) histCleanupSection(c *ui.Context) {
 		hs.formFor = "asking"
 		a.askCleanup(next)
 	}
-	settingRow(c, "hist-set-clean", i18n.T("Clean up automatically"), i18n.T("Deletes old entries with their recordings: when VoxtNew starts, after each new entry, and when you change these settings."), func() {
+	settingRow(c, "hist-set-clean", i18n.T("Clean up automatically"), i18n.T("Deletes old entries with their recordings: when Voxt starts, after each new entry, and when you change these settings."), func() {
 		if ui.Switch(c.Key("hist-set-clean"), &hs.cleanOn).Label(i18n.T("Clean up the history")).Changed() {
 			next := a.prefs.History
 			next.CleanupOff = !hs.cleanOn

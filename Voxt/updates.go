@@ -9,7 +9,7 @@ package main
 // Release builds only: `updates` is put in mygo.json by the release
 // workflow (docs/release.md), so other builds cannot update themselves.
 //
-// The updater replaces VoxtNew.app while the old version runs. Until it
+// The updater replaces Voxt.app while the old version runs. Until it
 // restarts, the helper on disk is the new version's: the supervisor does
 // not start it (helper.FailUpdated), and a card asks to restart VoxtNew
 // (appUpdated), which a timer, a check and the helper's failure look for
@@ -231,24 +231,27 @@ func (a *app) checkBundle() {
 func (a *app) appUpdated() {
 	a.bundleUpdated = true
 	a.setProblem(problemUpdate, "installed", &core.Notification{Severity: core.SeverityWarning,
-		Title: i18n.T("Update installed"), Body: i18n.T("Restart VoxtNew to finish updating."), Link: linkRelaunch})
+		Title: i18n.T("Update installed"), Body: i18n.T("Restart Voxt to finish updating."), Link: linkRelaunch})
 }
 
 // relaunch restarts VoxtNew into the version on disk: the quit stops the
 // helper (OnQuit), the new version starts its own.
 func (a *app) relaunch() { appRelaunch() }
 
-// updateSettingsSection is the Updates part of Settings → About.
+// updateSettingsSection is the Updates part of Settings → About; a build
+// without the updater only says that it does not update.
 func (a *app) updateSettingsSection(c *ui.Context) {
 	if a.upd == nil {
+		sectionTitle(c, i18n.T("Updates"))
+		caption(c, i18n.T("This version does not update automatically."))
 		return
 	}
 	a.loadUpdates()
 	p := a.updPrefs
 	sectionTitle(c, i18n.T("Updates"))
 	if a.bundleUpdated {
-		settingRowNote(c, "about-relaunch", i18n.T("Update installed"), i18n.T("The new version runs once VoxtNew restarts."), func() {
-			if primaryButton(c.Key("about-relaunch"), i18n.T("Restart VoxtNew")).Clicked() {
+		settingRowNote(c, "about-relaunch", i18n.T("Update installed"), i18n.T("The new version runs once Voxt restarts."), func() {
+			if primaryButton(c.Key("about-relaunch"), i18n.T("Restart Voxt")).Clicked() {
 				a.relaunch()
 			}
 		})
@@ -257,11 +260,11 @@ func (a *app) updateSettingsSection(c *ui.Context) {
 	switch {
 	case !a.updKnown:
 	case !p.Enabled:
-		desc = i18n.T("This copy cannot update itself: it is a development build, or it is in a folder VoxtNew cannot write to. Move VoxtNew to Applications.")
+		desc = i18n.T("This copy cannot update itself: it is a development build, or it is in a folder Voxt cannot write to. Move Voxt to Applications.")
 	case p.LastCheck.IsZero():
-		desc = i18n.T("New versions come from actnow.dev, with their notes. Not checked yet.")
+		desc = i18n.T("New versions come with their notes. Not checked yet.")
 	default:
-		desc = i18n.T("New versions come from actnow.dev, with their notes. Last checked %s.", uitext.TimeAgo(p.LastCheck))
+		desc = i18n.T("New versions come with their notes. Last checked %s.", uitext.TimeAgo(p.LastCheck))
 	}
 	settingRowNote(c, "about-update", i18n.T("Check for updates"), desc, func() {
 		if ui.Button(c.Key("about-update"), i18n.T("Check for Updates…")).Clicked() {
@@ -282,14 +285,14 @@ func (a *app) updateSettingsSection(c *ui.Context) {
 	case beta:
 		note = i18n.T("Betas and releases, whichever is newer. Betas bring new features sooner, and more bugs.")
 	case strings.Contains(a.version, "-"):
-		note = i18n.T("Releases only. This beta stays until a release newer than it comes out: VoxtNew never goes back to an older version.")
+		note = i18n.T("Releases only. This beta stays until a release newer than it comes out: Voxt never goes back to an older version.")
 	}
 	settingRowNote(c, "about-update-beta", i18n.T("Beta updates"), note, func() {
 		if ui.Switch(c.Key("about-update-beta-switch"), &beta).Label(i18n.T("Get beta versions")).Changed() {
 			a.setBeta(beta)
 		}
 	})
-	settingRow(c, "about-update-install", i18n.T("Install updates automatically"), i18n.T("Updates found in the background download and install without asking; VoxtNew then asks to restart. Off by default."), func() {
+	settingRow(c, "about-update-install", i18n.T("Install updates automatically"), i18n.T("Updates found in the background download and install without asking; Voxt then asks to restart. Off by default."), func() {
 		if ui.Switch(c.Key("about-update-install-switch"), &a.updPrefs.AutoInstall).Label(i18n.T("Install updates without asking")).Disabled(!a.updPrefs.AutoCheck).Changed() {
 			a.setAutoInstall(a.updPrefs.AutoInstall)
 		}

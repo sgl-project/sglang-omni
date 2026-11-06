@@ -19,10 +19,10 @@ func (a *app) privacySettings(c *ui.Context) {
 	sectionTitle(c, i18n.T("Nothing leaves this Mac"))
 	ui.Column(c.Key("priv-list")).Gap(px(t, sp1)).Children(func() {
 		for _, s := range []string{
-			i18n.T("Your recordings and the text to clean up, translate or rewrite stay on this Mac: the speech and language models run here. VoxtNew has no server of its own."),
-			i18n.T("VoxtNew goes online only to check for updates and to download models: once the models are installed, it works offline."),
+			i18n.T("Your recordings and the text to clean up, translate or rewrite stay on this Mac: the speech and language models run here. Voxt has no server of its own."),
+			i18n.T("Voxt goes online only to check for updates and to download models: once the models are installed, it works offline."),
 			i18n.T("The address of the browser tab in front is read only to pick your app enhancement rules: the language model never sees it, only the app's name."),
-			i18n.T("VoxtNew collects no usage data, crash reports or identifiers."),
+			i18n.T("Voxt collects no usage data, crash reports or identifiers."),
 		} {
 			ui.Text(c, "• "+s).FontSize(px(t, fsCaption)).TextColor(t.TextMuted)
 		}

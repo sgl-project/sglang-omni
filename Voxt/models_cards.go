@@ -28,7 +28,7 @@ func (a *app) modelsPage(c *ui.Context) {
 	})
 	ui.Scroll(c.Key("models-scroll")).Grow(1).MinHeight(0).Children(func() {
 		ui.Column(c).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp3)).MaxWidth(px(t, 880)).Children(func() {
-			caption(c, i18n.T("VoxtNew recognises speech and runs its language models on this Mac: your audio and text never leave it."))
+			caption(c, i18n.T("Voxt recognises speech and runs its language models on this Mac: your audio and text never leave it."))
 			sectionTitleTip(c, i18n.T("Speech recognition"), i18n.T("Turns what you say into text. Every feature needs one to work by voice."))
 			a.modelCards(c, models.ASR)
 			sectionTitleTip(c, i18n.T("Language models"), i18n.T("Cleans up, translates and rewrites the text. Without one, Transcribe types the text as recognised."))

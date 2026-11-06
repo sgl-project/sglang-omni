@@ -31,16 +31,16 @@ func DeliveryText(res deliver.Result, target proto.App) string {
 	case deliver.ReasonNotEditable:
 		return i18n.T("No text field is focused: click where the text should go, then insert.")
 	case deliver.ReasonSecure:
-		return i18n.T("A password field is focused: VoxtNew never types into one.")
+		return i18n.T("A password field is focused: Voxt never types into one.")
 	case deliver.ReasonFailed:
 		return i18n.T("Could not insert: %v", res.Err)
 	case deliver.ReasonUnconfirmed:
 		return i18n.T("The text did not show up where you type: it is on the clipboard, press ⌘V.")
 	case deliver.ReasonSecureInput:
 		if s := res.Paste.SecureInput; s != nil && s.Name != "" {
-			return i18n.T("Secure input is on in %s, which can block the keys VoxtNew sends: the text is on the clipboard, press ⌘V.", s.Name)
+			return i18n.T("Secure input is on in %s, which can block the keys Voxt sends: the text is on the clipboard, press ⌘V.", s.Name)
 		}
-		return i18n.T("Secure input is on, which can block the keys VoxtNew sends: the text is on the clipboard, press ⌘V.")
+		return i18n.T("Secure input is on, which can block the keys Voxt sends: the text is on the clipboard, press ⌘V.")
 	}
 	return ""
 }
@@ -193,13 +193,13 @@ func WhyInCard(r deliver.Reason, selection bool, name string) string {
 		}
 		return i18n.T("No text field is focused: click where it should go, then insert, or copy it.")
 	case deliver.ReasonSecure:
-		return i18n.T("A password field is focused, and VoxtNew never types into one: copy it, or click another field and insert.")
+		return i18n.T("A password field is focused, and Voxt never types into one: copy it, or click another field and insert.")
 	case deliver.ReasonNoAccess:
 		return i18n.T("Allow Accessibility to insert results where you type.")
 	case deliver.ReasonUnconfirmed:
 		return i18n.T("The text did not show up where you type. It is on the clipboard: press ⌘V, or insert it again.")
 	case deliver.ReasonSecureInput:
-		return i18n.T("Secure input is on in another app, which can block the keys VoxtNew sends. The text is on the clipboard: press ⌘V, or insert it again.")
+		return i18n.T("Secure input is on in another app, which can block the keys Voxt sends. The text is on the clipboard: press ⌘V, or insert it again.")
 	}
 	return ""
 }

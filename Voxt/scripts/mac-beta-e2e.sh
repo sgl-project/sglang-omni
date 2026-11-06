@@ -112,7 +112,7 @@ SITE="$(cat "$WORK/url.txt")"
 URL="$SITE/updates/voxtnew"
 # The release's updates (url, s3, prereleases) with the test key and feed.
 jq --arg id "$ID" --arg key "$(cat "$WORK/keys/mygo-update.pub")" --arg url "$URL" \
-  '.identifier = $id | .updates.publicKey = $key | .updates.url = $url' release/mygo.release.json >"$WORK/overlay.json"
+  '.identifier = $id | .updates.publicKey = $key | .updates.url = $url | .updates.prereleases = true' release/mygo.release.json >"$WORK/overlay.json"
 jq -e '.updates.prereleases == true' "$WORK/overlay.json" >/dev/null
 echo "  feed $URL"
 
@@ -177,7 +177,7 @@ channels() {
 # (notPublished, an error's words, or "" for nothing).
 expect() {
   local name="$1" from="$2" beta="$3" want="$4" how="${5:-}" note="${6:-}"
-  local r="$WORK/report-$name.json" app="$WORK/inst/VoxtNew.app" args=()
+  local r="$WORK/report-$name.json" app="$WORK/inst/Voxt.app" args=()
   RUNS=$((RUNS + 1))
   echo "-- $name: $from, beta $beta → ${want:-nothing}${how:+ ($how)}"
   rm -rf "$WORK/inst" && mkdir -p "$WORK/inst"
@@ -186,7 +186,7 @@ expect() {
   [[ "$beta" != default ]] && args=(--update-beta "$beta")
   local before
   before="$(wc -l <"$WORK/server.log")"
-  local_feed nice -n 10 "$app/Contents/MacOS/VoxtNew" --update-check "$r" ${args[@]+"${args[@]}"}
+  local_feed nice -n 10 "$app/Contents/MacOS/Voxt" --update-check "$r" ${args[@]+"${args[@]}"}
   local served
   served="$(tail -n +"$((before + 1))" "$WORK/server.log")"
   local on=false
@@ -214,14 +214,14 @@ expect() {
   check "installed without an error" test -z "$(jq -r '.checkErr + .installErr' "$r")"
   check "downloaded $how $totals" test "$(jq -c .totals "$r")" = "$totals"
   check "the notes are $want's, English and Chinese" bash -c "jq -r .notes '$r' | grep -qF 'Test version $want.' && jq -r .notes '$r' | grep -qF '测试版本 ${want}。'"
-  check "the bundle is $want's, file for file" diff -r "$app" "$WORK/out-$want/darwin-arm64/VoxtNew.app"
+  check "the bundle is $want's, file for file" diff -r "$app" "$WORK/out-$want/darwin-arm64/Voxt.app"
   check "its signature verifies (deep, strict)" codesign --verify --deep --strict "$app"
   check "CFBundleVersion is $want's numbers" test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" = "${want%%-*}"
   check "the old app starts no helper (updated)" test "$(jq -r '"\(.diskVersion) \(.helperState) \(.helperReason) \(.helperPID)"' "$r")" = "$want failed updated 0"
   if [[ "$how" == delta ]]; then
     check "the feed served the delta, not the archive" bash -c "grep -q '\.delta' <<<\"\$1\" && ! grep -q '\.tar\.gz' <<<\"\$1\"" _ "$served"
   fi
-  check "nothing left next to the app" test -z "$(find "$WORK/inst" -maxdepth 1 -name '.VoxtNew.app.*' -print)"
+  check "nothing left next to the app" test -z "$(find "$WORK/inst" -maxdepth 1 -name '.Voxt.app.*' -print)"
 }
 
 step "build $B1, the first beta: nothing published yet"
@@ -280,7 +280,7 @@ step "the feed"
 echo "  $(wc -l <"$WORK/server.log" | tr -d ' ') requests, $RUNS update checks"
 check "nothing but /updates/voxtnew/ was asked" bash -c "! grep -E ' (GET|HEAD) /' '$WORK/server.log' | grep -v ' /updates/voxtnew/'"
 check "no disk image was uploaded (-no-dmg) nor asked" bash -c "! find '$BUCKET' -name '*.dmg' | grep -q . && ! grep -q '\.dmg' '$WORK/server.log'"
-if pgrep -f "$WORK/inst/VoxtNew.app/Contents/Resources/helper/voxtnew-helper" >/dev/null; then
+if pgrep -f "$WORK/inst/Voxt.app/Contents/Resources/helper/voxtnew-helper" >/dev/null; then
   echo "  FAIL a helper is running" && FAILS=$((FAILS + 1))
 fi
 if ((FAILS > 0)); then

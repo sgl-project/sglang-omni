@@ -2,7 +2,7 @@
 # Builds the Omni native runtime (sglang_omni_mlx/native, C++ on MLX) on a
 # Mac and stages what VoxtNew runs of it where mygo ships it:
 # resources/darwin-arm64/omni/bin/ becomes
-# VoxtNew.app/Contents/Resources/omni/bin/ (go tool mygo build, mygo dev):
+# Voxt.app/Contents/Resources/omni/bin/ (go tool mygo build, mygo dev):
 # qwen3_asr_server (Qwen3-ASR and, with --model-kind silero_vad, Silero
 # VAD), MLX's libraries and mlx.metallib, which MLX loads from beside its
 # library. mygo build signs the binaries and libraries with the app (they

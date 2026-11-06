@@ -31,7 +31,7 @@ func obRow(c *ui.Context, key string, ic icons.Icon, title, detail string) {
 // obWelcomeStep is the privacy promise.
 func (a *app) obWelcomeStep(c *ui.Context) {
 	obRow(c, "ob-p-local-models", modelsIcon, i18n.T("Your audio and text stay on this Mac"),
-		i18n.T("Speech recognition and the language models run here. VoxtNew has no server of its own, no account and no analytics."))
+		i18n.T("Speech recognition and the language models run here. Voxt has no server of its own, no account and no analytics."))
 	obRow(c, "ob-p-local", icons.Database, i18n.T("History stays on this Mac"),
 		i18n.T("Results (and, if you choose, their recordings) are kept here only. Turn them off in Settings → Privacy."))
 	obRow(c, "ob-p-urls", appEnhancementIcon, i18n.T("Browser addresses only pick your rules"),
@@ -58,7 +58,7 @@ func (a *app) obTryStep(c *ui.Context) {
 		ui.Text(c, uitext.HotkeyText(h.Keys)).FontSize(px(t, fsCaption)).Font("monospace").Padding(px(t, 2), px(t, 8)).Radius(px(t, 4)).Background(k.Hover)
 		caption(c, uitext.TriggerHowText(h.Trigger))
 		if hotkey.NeedsTap(h) && !a.hotkeys.Installed {
-			warnLine(c, i18n.T("This shortcut works once VoxtNew may use Accessibility; Start works now."))
+			warnLine(c, i18n.T("This shortcut works once Voxt may use Accessibility; Start works now."))
 		}
 	})
 	problemLines(c, a.conflictLines(feature, 0)) // another ActNow app's keys too

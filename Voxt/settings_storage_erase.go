@@ -36,7 +36,7 @@ func (a *app) modelFolderRows(c *ui.Context, r *storageReport, open func(key, di
 	others := a.familyOthers()
 	note := ""
 	if others {
-		note = i18n.T("Shared by all ActNow apps")
+		note = i18n.T("Shared by all apps that use this model library")
 	}
 	sectionTitle(c, i18n.T("Model folder"))
 	settingRowNote(c, "st-models", uitext.ShortPath(hub), note, func() {
@@ -48,7 +48,7 @@ func (a *app) modelFolderRows(c *ui.Context, r *storageReport, open func(key, di
 		on := fam.Backup()
 		hint := i18n.T("Models can be downloaded again, so Time Machine leaves them out.")
 		if others {
-			hint = i18n.T("Models can be downloaded again, so Time Machine leaves them out. Applies to all ActNow apps.")
+			hint = i18n.T("Models can be downloaded again, so Time Machine leaves them out. Applies to all apps that use this model library.")
 		}
 		settingRow(c, "st-models-backup", i18n.T("Back up models with Time Machine"), hint, func() {
 			if ui.Switch(c.Key("st-models-backup-switch"), &on).Changed() {
@@ -67,9 +67,9 @@ func (a *app) modelFolderRows(c *ui.Context, r *storageReport, open func(key, di
 		title string
 		bytes int64
 	}
-	rows := []useRow{{i18n.T("Used by VoxtNew"), r.modelsMine}}
+	rows := []useRow{{i18n.T("Used by Voxt"), r.modelsMine}}
 	if others || r.modelsShared > 0 {
-		rows = []useRow{{i18n.T("Only VoxtNew"), r.modelsMine}, {i18n.T("Shared with other ActNow apps"), r.modelsShared}}
+		rows = []useRow{{i18n.T("Only Voxt"), r.modelsMine}, {i18n.T("Shared with other apps that use this model library"), r.modelsShared}}
 	}
 	ui.Grid(c.Key("st-models-use")).ColumnTracks(ui.Fr(1), ui.Fixed(px(t, 90)), ui.Fixed(px(t, 80))).GapX(px(t, sp3)).GapY(px(t, 6)).AlignItems(ui.Center).Children(func() {
 		for _, row := range rows {
@@ -182,7 +182,7 @@ func (a *app) eraseDialog(c *ui.Context) {
 	erase := a.resetAsk == "everything"
 	ui.Modal(c.Key("st-ask-erase"), &erase, func() {
 		ui.Text(c, i18n.T("Erase everything?")).Bold()
-		ui.Text(c, i18n.T("This deletes your history and its recordings, your dictionary, your app enhancement rules, the local models no other ActNow app uses, every setting and the logs. It cannot be undone. VoxtNew restarts as on its first day, and the models download again.")).Width(px(t, 420))
+		ui.Text(c, i18n.T("This deletes your history and its recordings, your dictionary, your app enhancement rules, the local models no other app uses, every setting and the logs. It cannot be undone. Voxt restarts as on its first day, and the models download again.")).Width(px(t, 420))
 		if kept := keptModelsText(a.eraseKept, a.eraseKeptBytes); kept != "" { // models_delete.go
 			ui.Text(c, kept).Width(px(t, 420))
 		}

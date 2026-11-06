@@ -131,8 +131,8 @@ app_build() {
     mkdir -p "$res" &&
     cp -Rc "$R/omni" "$res/omni" && cp -Rc "$R/llm" "$res/llm" && cp -Rc "$OUT/helper" "$res/helper" &&
     go tool mygo build &&
-    codesign --verify --deep --strict build/darwin-arm64/VoxtNew.app &&
-    du -sh build/darwin-arm64/VoxtNew.app | sed 's/^/built /'
+    codesign --verify --deep --strict build/darwin-arm64/Voxt.app &&
+    du -sh build/darwin-arm64/Voxt.app | sed 's/^/built /'
 }
 smoke() {
   local dir="$OUT/smoke"
@@ -146,7 +146,7 @@ smoke() {
   mkdir -p "$dir/ActNow/models" && cp -Rc "$hub" "$dir/ActNow/models/hub" || { echo "smoke: FAIL cloning the model library $hub"; return 1; }
   env -u VOXTNEW_HELPER -u VOXTNEW_OMNI_RUNTIME -u VOXTNEW_LLM \
     ACTNOW_FAMILY_DIR="$dir/ActNow" VOXTNEW_SMOKE_MODELS=asr.fast,llm.fast \
-    "$ROOT/build/darwin-arm64/VoxtNew.app/Contents/MacOS/VoxtNew" --smoke "$dir" &
+    "$ROOT/build/darwin-arm64/Voxt.app/Contents/MacOS/Voxt" --smoke "$dir" &
   local pid=$! t=0 rt="$dir/ActNow/runtime" most=0
   # The family's runtime file (spec §11.1) while it runs: the models it
   # holds; it must be gone after quit.
@@ -168,7 +168,7 @@ smoke() {
   wait $pid || return 1
   sleep 1
   local left
-  left="$(pgrep -fl 'qwen3_asr_server|voxtnew-llm|voxtnew-helper' | grep -F "$ROOT/build/darwin-arm64/VoxtNew.app" || true)"
+  left="$(pgrep -fl 'qwen3_asr_server|voxtnew-llm|voxtnew-helper' | grep -F "$ROOT/build/darwin-arm64/Voxt.app" || true)"
   if [[ -n "$left" ]]; then
     echo "smoke: FAIL left running after quit: $left"
     return 1
