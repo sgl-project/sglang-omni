@@ -605,6 +605,7 @@
 </pre></div>
 </div>
 <p>The BF16 weights occupy approximately 57 GiB before KV cache and runtime allocations. A single H200 can host this configuration. Decode CUDA graphs are enabled and Torch compilation is disabled by default.</p>
+<p>For Intel GPUs, follow the <a class="reference internal" href="../get_started/installation_xpu.html#hy-simulmt-speech-translation-multi-xpu-tensor-parallel"><span class="std std-ref">Hy-SimulMT XPU recipe</span></a>: 24 GB cards need the stage sharded across four of them.</p>
 </section>
 <section id="translate-an-audio-file">
 <h2>Translate an audio file<a class="headerlink" href="#translate-an-audio-file" title="Link to this heading">#</a></h2>
