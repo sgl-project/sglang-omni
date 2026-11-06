@@ -62,7 +62,8 @@ namespace {
 omni_common::WeightMap LoadWeights(const std::filesystem::path &directory,
                                    const nlohmann::json &config,
                                    const TextConfig &text_config,
-                                   const AudioConfig &audio_config) {
+                                   const AudioConfig &audio_config,
+                                   bool use_mtp) {
   const auto &text = config.at("text_config");
   if (config.at("model_type") != "bailing_moe_v3_audio" ||
       config.contains("quantization") || !text.at("no_kda_lora").get<bool>() ||
@@ -79,15 +80,21 @@ omni_common::WeightMap LoadWeights(const std::filesystem::path &directory,
         "expected an unquantized Ming-3.0-audio-tiny checkpoint");
   } else {
   }
+  if (use_mtp && (text.at("num_nextn_predict_layers") != 1 ||
+                  text.value("mtp_use_kda", false))) {
+    throw std::invalid_argument(
+        "Ming3 MTP requires one latent-attention prediction layer");
+  } else {
+  }
   auto weights = omni_common::LoadSafetensors(directory);
   const auto prediction_prefix =
       "model.layers." + std::to_string(text_config.num_hidden_layers) + ".";
   std::erase_if(weights, [&](const auto &parameter) {
     return parameter.first.starts_with("linear_proj.") ||
-           parameter.first.starts_with(prediction_prefix);
+           (!use_mtp && parameter.first.starts_with(prediction_prefix));
   });
   for (int layer = text_config.first_k_dense_replace;
-       layer < text_config.num_hidden_layers; ++layer) {
+       layer < text_config.num_hidden_layers + int(use_mtp); ++layer) {
     const std::string prefix =
         "model.layers." + std::to_string(layer) + ".mlp.experts.";
     for (const auto *projection : {"gate_proj", "up_proj", "down_proj"}) {
@@ -187,16 +194,19 @@ std::string ChatPrompt(const ChatRequest &request, int audio_tokens) {
 
 } // namespace
 
-Model::Model(const std::filesystem::path &directory, int context_tokens)
+Model::Model(const std::filesystem::path &directory, int context_tokens,
+             bool use_mtp)
     : Model(directory, omni_common::ReadJson(directory / "config.json"),
-            context_tokens) {}
+            context_tokens, use_mtp) {}
 
 Model::Model(const std::filesystem::path &directory,
-             const nlohmann::json &config, int context_tokens)
+             const nlohmann::json &config, int context_tokens, bool use_mtp)
     : text_(TextConfig::FromJson(config.at("text_config"))),
       audio_(AudioConfig::FromJson(config.at("audio_config"))),
       context_tokens_(std::min(context_tokens, text_.max_position_embeddings)),
-      checkpoint_(LoadWeights(directory, config, text_, audio_), config),
+      use_mtp_(use_mtp),
+      checkpoint_(LoadWeights(directory, config, text_, audio_, use_mtp),
+                  config),
       tokenizer_(directory),
       stop_tokens_(omni_common::ReadJson(directory / "generation_config.json")
                        .at("eos_token_id")
@@ -393,7 +403,9 @@ mx::array Model::Moe(const mx::array &hidden, const std::string &prefix) const {
 }
 
 mx::array Model::Forward(const mx::array &embeddings,
-                         std::vector<LayerCache> &caches) const {
+                         std::vector<LayerCache> &caches,
+                         std::optional<mx::array> *hidden_states,
+                         bool all_positions) const {
   auto hidden = embeddings;
   for (int layer = 0; layer < text_.num_hidden_layers; ++layer) {
     const auto prefix = "model.layers." + std::to_string(layer);
@@ -411,6 +423,15 @@ mx::array Model::Forward(const mx::array &embeddings,
                                  : Moe(mlp_input, prefix + ".mlp"));
   }
   hidden = RmsNorm(hidden, "model.norm");
+  if (hidden_states != nullptr) {
+    *hidden_states = hidden;
+  } else {
+  }
+  if (all_positions) {
+    return mx::reshape(checkpoint_.Linear(hidden, "lm_head"),
+                       {hidden.shape(1), -1});
+  } else {
+  }
   return mx::reshape(
       checkpoint_.Linear(
           mx::slice(hidden, {0, hidden.shape(1) - 1, 0}, hidden.shape()),
@@ -464,6 +485,10 @@ ChatResult Model::Generate(const PreparedChatRequest &prepared,
   embeddings = mx::slice_update(
       embeddings, mx::expand_dims(audio, 0), {0, prepared.audio_start, 0},
       {1, prepared.audio_start + prepared.audio_tokens, embeddings.shape(2)});
+  if (use_mtp_) {
+    return GenerateWithMtp(prepared, embeddings, cancel);
+  } else {
+  }
   std::vector<LayerCache> caches(text_.num_hidden_layers);
   ChatResult result;
   result.prompt_tokens = prepared.prompt_ids.size();

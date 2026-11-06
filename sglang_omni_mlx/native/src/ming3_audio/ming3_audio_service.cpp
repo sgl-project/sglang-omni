@@ -21,7 +21,8 @@ namespace ming3_audio {
 namespace {
 using omni_server::Json;
 
-constexpr size_t kMaxRequestBodyBytes = 4 * 1024 * 1024;
+// Note (ruiling): base64 WAV audio from a five-minute clip exceeds 4 MiB.
+constexpr size_t kMaxRequestBodyBytes = 32 * 1024 * 1024;
 
 Json ErrorBody(int status, const std::string &message) {
   return {{"error",
@@ -212,6 +213,10 @@ int Ming3AudioService::Handle(mg_connection *connection) {
               {{{"index", 0},
                 {"message", {{"role", "assistant"}, {"content", result.text}}},
                 {"finish_reason", result.finish_reason}}})},
+         {"generation_metadata",
+          {{"verify_round_count", result.verify_round_count},
+           {"proposed_draft_token_count", result.proposed_draft_token_count},
+           {"accepted_draft_token_count", result.accepted_draft_token_count}}},
          {"usage",
           {{"prompt_tokens", result.prompt_tokens},
            {"completion_tokens", result.completion_tokens},

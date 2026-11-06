@@ -38,6 +38,9 @@ struct ChatResult {
   std::string finish_reason = "length";
   int prompt_tokens = 0;
   int completion_tokens = 0;
+  int verify_round_count = 0;
+  int proposed_draft_token_count = 0;
+  int accepted_draft_token_count = 0;
 };
 
 struct PreparedChatRequest {
@@ -84,7 +87,8 @@ struct AudioConfig {
 
 class Model {
 public:
-  Model(const std::filesystem::path &directory, int context_tokens);
+  Model(const std::filesystem::path &directory, int context_tokens,
+        bool use_mtp = false);
   PreparedChatRequest Prepare(ChatRequest request) const;
   ChatResult Generate(const PreparedChatRequest &prepared,
                       const Cancellation &cancel) const;
@@ -97,11 +101,19 @@ private:
   };
 
   Model(const std::filesystem::path &directory, const nlohmann::json &config,
-        int context_tokens);
+        int context_tokens, bool use_mtp);
   mlx::core::array Encode(const mlx::core::array &mel) const;
   mlx::core::array Embed(const mlx::core::array &token_ids) const;
-  mlx::core::array Forward(const mlx::core::array &embeddings,
-                           std::vector<LayerCache> &caches) const;
+  mlx::core::array
+  Forward(const mlx::core::array &embeddings, std::vector<LayerCache> &caches,
+          std::optional<mlx::core::array> *hidden_states = nullptr,
+          bool all_positions = false) const;
+  mlx::core::array PredictNext(const mlx::core::array &hidden_states,
+                               const mlx::core::array &next_token_ids,
+                               qwen3_asr::KVCache &cache) const;
+  ChatResult GenerateWithMtp(const PreparedChatRequest &prepared,
+                             const mlx::core::array &embeddings,
+                             const Cancellation &cancel) const;
   int AudioTokenCount(int mel_frames) const;
   mlx::core::array RmsNorm(const mlx::core::array &hidden,
                            const std::string &prefix) const;
@@ -119,6 +131,7 @@ private:
   TextConfig text_;
   AudioConfig audio_;
   int context_tokens_;
+  bool use_mtp_;
   omni_common::Checkpoint checkpoint_;
   omni_common::Tokenizer tokenizer_;
   std::vector<int> stop_tokens_;
