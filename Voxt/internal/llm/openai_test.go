@@ -207,6 +207,28 @@ func TestOpenAIKeys(t *testing.T) {
 	}
 }
 
+// TestOpenAIErrorsHideKey: a server that quotes the key in an error (a
+// rejection, a body that is not JSON, a stream event that is not JSON) gets
+// it blanked out of the error.
+func TestOpenAIErrorsHideKey(t *testing.T) {
+	const key = "sk-secret-4242"
+	for name, h := range map[string]http.HandlerFunc{
+		"400":    jsonReply(400, map[string]any{"error": map[string]any{"message": "bad header: Authorization: Bearer " + key}}),
+		"body":   func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "<html>echo "+key+"</html>") },
+		"stream": sse("data: rejected " + key + "\n\n"),
+	} {
+		f := newFakeServer(t, h)
+		req := Request{Messages: msgs("x")}
+		if name == "stream" {
+			req.OnDelta = func(string) {}
+		}
+		_, err := NewOpenAI(presetAt(t, "openai", f.srv.URL), key, f.srv.Client()).Chat(context.Background(), req)
+		if err == nil || strings.Contains(err.Error(), key) || !strings.Contains(err.Error(), "[key]") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
 // TestResolveAddress: keys go over https, plain http only to this Mac,
 // never with credentials in the URL; a custom server needs an address.
 func TestResolveAddress(t *testing.T) {
