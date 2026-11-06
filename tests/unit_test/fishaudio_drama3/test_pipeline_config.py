@@ -87,6 +87,9 @@ def test_each_factory_gets_the_defaults_written_once() -> None:
         **VOCODER_WINDOWS,
         "window_cuda_graphs": True,
         "decode_dtype": "float16",
+        "stream_decode": "incremental",
+        "max_stream_batch_size": 16,
+        "stream_slot_count": 256,
         "max_new_tokens": 2048,
     }
 
