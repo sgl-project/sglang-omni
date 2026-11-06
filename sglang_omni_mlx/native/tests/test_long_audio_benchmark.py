@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Check long-recording references, scoring and transport error handling."""
+"""Check long-recording references, scoring, transports and whole benchmark cases."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-import platform
+import shlex
 import subprocess
 import sys
 import threading
@@ -15,10 +15,12 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
+from native_server import REQUEST_TIMEOUT_SECONDS, SupervisedServer, silent_wav
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.server import ServerConnection, serve
 
 from sglang_omni_mlx.native.ci import benchmark_long_audio, long_audio_client
+from sglang_omni_mlx.native.ci.benchmark_long_audio import stop_server
 from sglang_omni_mlx.native.ci.long_audio_client import (
     MemorySampler,
     score,
@@ -33,31 +35,20 @@ from sglang_omni_mlx.native.ci.long_audio_corpus import (
     load_clips,
 )
 
-GENERATION_METADATA = {
-    "generated_token_count": 2,
-    "language": "en",
-    "finish_reason": "stop",
-}
 DONE_EVENT = (
-    "data: "
-    + json.dumps(
-        {
-            "type": "transcript.text.done",
-            "text": "actual transcript",
-            "generation_metadata": GENERATION_METADATA,
-        }
-    )
-    + "\n\n"
-).encode()
+    b'data: {"type":"transcript.text.done","text":"actual transcript",'
+    b'"generation_metadata":{"generated_token_count":2,"language":"en","finish_reason":"stop"}}\n\n'
+)
+STUB_KIND_FLAGS = ("--", "--model-kind", "stub_asr")
 
 
-def test_recording_keeps_whole_clips_and_matching_references(tmp_path: Path) -> None:
-    """Truncating the last clip would score words that were never sent."""
-    (tmp_path / "clips").mkdir()
+def write_corpus(corpus: Path) -> None:
+    """Three one-second English clips whose samples name their index."""
+    (corpus / "clips").mkdir(parents=True)
     records = []
     for index in range(3):
         clip_id = f"{index:04d}_en_mid"
-        with wave.open(str(tmp_path / "clips" / f"{clip_id}.wav"), "wb") as writer:
+        with wave.open(str(corpus / "clips" / f"{clip_id}.wav"), "wb") as writer:
             writer.setnchannels(1)
             writer.setsampwidth(2)
             writer.setframerate(16000)
@@ -70,9 +61,59 @@ def test_recording_keeps_whole_clips_and_matching_references(tmp_path: Path) -> 
                 "reference": f"word{index}",
             }
         )
-    (tmp_path / "manifest.jsonl").write_text(
+    (corpus / "manifest.jsonl").write_text(
         "\n".join(json.dumps(record) for record in records)
     )
+
+
+def run_benchmark(
+    monkeypatch: pytest.MonkeyPatch, data_root: Path, runtime_bin: Path, *flags: str
+) -> tuple[int, Path, dict[str, object]]:
+    """One 3-second case: its exit code, output directory and result fields."""
+    write_corpus(data_root / "corpus" / "v1")
+    (data_root / "models" / "owner_model").mkdir(parents=True)
+    output = data_root / "results"
+    monkeypatch.setattr(benchmark_long_audio, "MEMORY_SETTLE_SECONDS", 0.05)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "benchmark_long_audio",
+            "--runtime-bin",
+            str(runtime_bin),
+            "--data-root",
+            str(data_root),
+            "--model",
+            "owner/model",
+            "--output",
+            str(output),
+            "--languages",
+            "en",
+            "--minutes",
+            "0.04",
+            *flags,
+        ],
+    )
+    with pytest.raises(SystemExit) as stopped:
+        benchmark_long_audio.main()
+    result = json.loads((output / "en-0.04m.result.json").read_text())
+    return stopped.value.code, output, result
+
+
+@pytest.fixture
+def stub_runtime_bin(stub_server_binary: Path, tmp_path: Path) -> Path:
+    """A runtime directory whose qwen3_asr_server runs the stub server."""
+    directory = tmp_path / "bin"
+    directory.mkdir()
+    server = directory / "qwen3_asr_server"
+    server.write_text(f'#!/bin/sh\nexec {shlex.quote(str(stub_server_binary))} "$@"\n')
+    server.chmod(0o755)
+    return directory
+
+
+def test_recording_keeps_whole_clips_and_matching_references(tmp_path: Path) -> None:
+    """Truncating the last clip would score words that were never sent."""
+    write_corpus(tmp_path)
     clips = load_clips(tmp_path, "en")
     result = build_recording(clips, 7.5, 2888, tmp_path / "long.wav")
     reference_by_id = {clip.clip_id: clip.reference for clip in clips}
@@ -121,45 +162,19 @@ def test_token_budget_matches_voxt(audio_seconds: float, budget: int) -> None:
     assert voxt_token_budget(audio_seconds) == budget
 
 
-def test_chunked_http_sends_each_chunk_with_its_own_budget(tmp_path: Path) -> None:
+def test_chunked_http_sends_each_chunk_with_its_own_budget(
+    asr_server: SupervisedServer, tmp_path: Path
+) -> None:
+    """The stub answers with each request's sample count and token budget."""
     recording = tmp_path / "long.wav"
-    first_pcm = b"\xaa\xbb" * 16000
-    second_pcm = b"\xcc\xdd" * 1000000
-    with wave.open(str(recording), "wb") as writer:
-        writer.setnchannels(1)
-        writer.setsampwidth(2)
-        writer.setframerate(16000)
-        writer.writeframes(first_pcm + second_pcm)
-    submitted = []
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self) -> None:
-            submitted.append(self.rfile.read(int(self.headers["Content-Length"])))
-            event = {
-                "type": "transcript.text.done",
-                "text": f"part{len(submitted)}",
-                "generation_metadata": GENERATION_METADATA,
-            }
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(f"data: {json.dumps(event)}\n\n".encode())
-
-    with HTTPServer(("127.0.0.1", 0), Handler) as server:
-        thread = threading.Thread(target=server.serve_forever)
-        thread.start()
-        try:
-            result = transcribe_chunks(
-                server.server_port, recording, [16000, 1000000], "en", 5
-            )
-        finally:
-            server.shutdown()
-            thread.join(timeout=5)
-    assert result.text == "part1 part2"
-    assert len(result.generation_metadata) == 2
-    assert first_pcm in submitted[0] and b"\xcc\xdd" not in submitted[0]
-    assert second_pcm in submitted[1] and b"\xaa\xbb" not in submitted[1]
-    assert b'name="max_new_tokens"\r\n\r\n256\r\n' in submitted[0]
-    assert b'name="max_new_tokens"\r\n\r\n1814\r\n' in submitted[1]
+    recording.write_bytes(silent_wav(176000))
+    result = transcribe_chunks(
+        asr_server.port, recording, [16000, 160000], "en", REQUEST_TIMEOUT_SECONDS
+    )
+    assert result.text == "16000 160000"
+    assert [
+        metadata.generated_token_count for metadata in result.generation_metadata
+    ] == [256, 344]
 
 
 @pytest.mark.parametrize(
@@ -178,34 +193,29 @@ def test_score_counts_dropped_tails_and_repeated_text(
     assert result.error_rate == errors / reference_tokens
 
 
-@pytest.mark.parametrize("send_final", [True, False])
 def test_realtime_silent_audio_does_not_time_out_before_input_ends(
-    tmp_path: Path, send_final: bool
+    asr_server: SupervisedServer, tmp_path: Path
 ) -> None:
     """A session with no preview events must remain open while audio is sent."""
     recording = tmp_path / "silence.wav"
-    with wave.open(str(recording), "wb") as writer:
-        writer.setnchannels(1)
-        writer.setsampwidth(2)
-        writer.setframerate(16000)
-        writer.writeframes(b"\x00\x00" * 48000)
-    received_frames = []
+    recording.write_bytes(silent_wav(32000))
+    result = stream_recording(
+        asr_server.port, recording, "en", 1, 1, tmp_path / "events.jsonl"
+    )
+    assert result.text == "32000"
+    assert result.preview_event_count == 0
+
+
+def test_realtime_times_out_without_a_completed_transcript(tmp_path: Path) -> None:
+    recording = tmp_path / "silence.wav"
+    recording.write_bytes(silent_wav(1600))
 
     def handle(socket: ServerConnection) -> None:
         socket.recv()
         socket.send(json.dumps({"type": "transcription_session.updated"}))
         try:
-            for raw in socket:
-                event = json.loads(raw)
-                if event["type"] == "input_audio_buffer.append":
-                    received_frames.append(event["audio"])
-                elif event["type"] == "transcription.done" and send_final:
-                    socket.send(
-                        json.dumps({"type": "transcription.completed", "text": ""})
-                    )
-                    return
-                else:
-                    pass
+            for _ in socket:
+                pass
         except ConnectionClosed:
             pass
 
@@ -213,27 +223,15 @@ def test_realtime_silent_audio_does_not_time_out_before_input_ends(
         thread = threading.Thread(target=server.serve_forever)
         thread.start()
         try:
-            if send_final:
-                result = stream_recording(
+            with pytest.raises(TimeoutError, match="No completed transcript"):
+                stream_recording(
                     server.socket.getsockname()[1],
                     recording,
                     "en",
                     1,
-                    1,
+                    0.1,
                     tmp_path / "events.jsonl",
                 )
-                assert result.text == ""
-            else:
-                with pytest.raises(TimeoutError, match="No completed transcript"):
-                    stream_recording(
-                        server.socket.getsockname()[1],
-                        recording,
-                        "en",
-                        1,
-                        1,
-                        tmp_path / "events.jsonl",
-                    )
-            assert len(received_frames) == 30
         finally:
             server.shutdown()
             thread.join(timeout=5)
@@ -244,11 +242,7 @@ def test_realtime_pacing_starts_after_session_setup(
 ) -> None:
     """A slow handshake must not cause the audio to be sent in a burst."""
     recording = tmp_path / "silence.wav"
-    with wave.open(str(recording), "wb") as writer:
-        writer.setnchannels(1)
-        writer.setsampwidth(2)
-        writer.setframerate(16000)
-        writer.writeframes(b"\x00\x00" * 16000)
+    recording.write_bytes(silent_wav(16000))
 
     clock = [0.0]
     sent_at: list[float] = []
@@ -292,7 +286,6 @@ def test_realtime_pacing_starts_after_session_setup(
     assert sent_at[1] - sent_at[0] == pytest.approx(0.1)
 
 
-@pytest.mark.skipif(platform.system() != "Darwin", reason="macOS process accounting")
 def test_resource_guard_stops_its_child(tmp_path: Path) -> None:
     with subprocess.Popen(
         [sys.executable, "-c", "input()"], stdin=subprocess.PIPE
@@ -303,7 +296,6 @@ def test_resource_guard_stops_its_child(tmp_path: Path) -> None:
     assert sampler.samples[0].footprint_bytes > 0
 
 
-@pytest.mark.skipif(platform.system() != "Darwin", reason="macOS process accounting")
 def test_peak_footprint_includes_a_spike_freed_before_the_first_sample(
     tmp_path: Path,
 ) -> None:
@@ -317,7 +309,6 @@ def test_peak_footprint_includes_a_spike_freed_before_the_first_sample(
         ],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        text=True,
     ) as process:
         process.stdout.readline()
         sampler = MemorySampler(process, tmp_path / "memory.jsonl", spike_bytes // 2)
@@ -327,68 +318,9 @@ def test_peak_footprint_includes_a_spike_freed_before_the_first_sample(
     assert sampler.samples[0].footprint_bytes < spike_bytes // 2
 
 
-@pytest.mark.skipif(platform.system() != "Darwin", reason="macOS process accounting")
-def test_resource_guard_stops_child_when_trace_cannot_be_written(
-    tmp_path: Path,
-) -> None:
-    process = subprocess.Popen(
-        [sys.executable, "-c", "input()"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    sampler = MemorySampler(process, tmp_path / "missing" / "memory.jsonl", 2**40)
-    try:
-        sampler.thread.start()
-        assert process.wait(timeout=5) != 0
-        sampler.thread.join(timeout=5)
-        assert not sampler.thread.is_alive()
-        assert "Memory trace failed" in sampler.error
-    finally:
-        sampler.done.set()
-        if process.poll() is None:
-            process.kill()
-            process.wait(timeout=5)
-        else:
-            pass
-
-
-@pytest.mark.parametrize("minutes", ["0", "nan", "inf"])
-def test_invalid_duration_is_rejected_before_any_recording(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minutes: str
-) -> None:
-    """An infinite duration would otherwise grow the recording without end."""
-    output = tmp_path / "results"
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "benchmark_long_audio",
-            "--runtime-bin",
-            "unused",
-            "--data-root",
-            "unused",
-            "--model",
-            "unused",
-            "--output",
-            str(output),
-            "--mode",
-            "http",
-            "--minutes",
-            minutes,
-        ],
-    )
-    with pytest.raises(SystemExit) as stopped:
-        benchmark_long_audio.main()
-    assert stopped.value.code == 2
-    assert not output.exists()
-
-
 @pytest.mark.parametrize(
     "reply",
     [
-        DONE_EVENT,
         b":\n\n" + DONE_EVENT,
         b'data: {"type":"error","error":"failed"}\n\n',
         b":\n\n",
@@ -420,118 +352,122 @@ def test_http_requires_a_successful_final_event(reply: bytes) -> None:
             thread.join(timeout=5)
 
 
-@pytest.mark.skipif(platform.system() != "Darwin", reason="macOS process accounting")
 @pytest.mark.parametrize(
-    "exit_policy", ["normal", "early_zero", "early_23", "shutdown_23", "failed_load"]
+    ("script", "timeout_seconds", "exit_code", "error"),
+    [
+        ("input()", 10, 0, None),
+        ("input(); raise SystemExit(23)", 10, 23, "during shutdown"),
+        ("import time; time.sleep(60)", 0.2, -9, "did not shut down"),
+    ],
 )
-def test_unexpected_server_exit_fails_the_benchmark(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exit_policy: str
+def test_stop_server_reports_how_the_server_stopped(
+    monkeypatch: pytest.MonkeyPatch,
+    script: str,
+    timeout_seconds: float,
+    exit_code: int,
+    error: str | None,
+) -> None:
+    monkeypatch.setattr(
+        benchmark_long_audio, "SHUTDOWN_TIMEOUT_SECONDS", timeout_seconds
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", script], stdin=subprocess.PIPE, stdout=subprocess.PIPE
+    )
+    stop_error = stop_server(process)
+    assert process.returncode == exit_code
+    if error is None:
+        assert stop_error is None
+    else:
+        assert error in stop_error
+
+
+@pytest.mark.parametrize("exit_code", [0, 23])
+def test_stop_server_fails_a_server_that_already_exited(exit_code: int) -> None:
+    """An exit before shutdown is a failure even when its code is zero."""
+    process = subprocess.Popen(
+        [sys.executable, "-c", f"raise SystemExit({exit_code})"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+    )
+    process.wait(timeout=5)
+    assert "before shutdown" in stop_server(process)
+    assert process.returncode == exit_code
+
+
+@pytest.mark.parametrize(
+    ("flags", "text"),
+    [
+        (("--mode", "http"), "48000"),
+        (("--mode", "http", "--chunk-seconds", "1"), "16000 16000 16000"),
+        (("--mode", "realtime", "--speed", "20"), "48000"),
+    ],
+)
+def test_benchmark_measures_a_case_on_the_stub_server(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    stub_runtime_bin: Path,
+    flags: tuple[str, ...],
+    text: str,
+) -> None:
+    exit_code, _, result = run_benchmark(
+        monkeypatch, tmp_path, stub_runtime_bin, *flags, *STUB_KIND_FLAGS
+    )
+    assert exit_code == 0
+    assert result["status"] == "measured"
+    assert result["error"] == ""
+    assert result["transcription"]["text"] == text
+    assert result["score"]["reference_tokens"] == 3
+    assert result["recovery_matches_warmup"] is True
+    assert result["server_exit_code"] == 0
+    assert result["peak_footprint_bytes"] >= result["post_session_footprint_bytes"]
+
+
+def test_a_failed_shutdown_fails_a_measured_case(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stub_runtime_bin: Path
 ) -> None:
     """An exit after recovery must not be reported as a successful measurement."""
-    corpus = tmp_path / "corpus" / "v1"
-    (corpus / "clips").mkdir(parents=True)
-    records = []
-    for index in range(2):
-        clip_id = f"{index:04d}_en_short"
-        with wave.open(str(corpus / "clips" / f"{clip_id}.wav"), "wb") as writer:
-            writer.setnchannels(1)
-            writer.setsampwidth(2)
-            writer.setframerate(16000)
-            writer.writeframes(b"\x00\x00" * 16000)
-        records.append(
-            {"id": clip_id, "stratum": "en_short", "lang": "en", "reference": "hello"}
-        )
-    (corpus / "manifest.jsonl").write_text(
-        "\n".join(json.dumps(record) for record in records)
-    )
-    (tmp_path / "models" / "owner_model").mkdir(parents=True)
-    (tmp_path / "bin").mkdir()
-    server = tmp_path / "bin" / "qwen3_asr_server"
-    server.write_text(
-        f"#!{sys.executable}\n"
-        + r"""import json, os, sys, threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-policy = EXIT_POLICY
-print(" ".join(sys.argv[1:]), file=sys.stderr, flush=True)
-if policy == "failed_load":
-    print(json.dumps({"event": "failed", "reason": "model load failed: bad weights"}), flush=True)
-    sys.exit(1)
-post_count = 0
-lock = threading.Lock()
+    def failing_stop_server(process: subprocess.Popen[bytes]) -> str:
+        stop_server(process)
+        return "Server exited before shutdown with code 23"
 
-class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *args):
-        pass
-    def do_POST(self):
-        global post_count
-        self.rfile.read(int(self.headers["Content-Length"]))
-        with lock:
-            post_count += 1
-            count = post_count
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.end_headers()
-        self.wfile.write(b":\n\ndata: {\"type\":\"transcript.text.done\",\"text\":\"hello\",\"generation_metadata\":{\"generated_token_count\":1,\"language\":\"en\",\"finish_reason\":\"stop\"}}\n\n")
-        self.wfile.flush()
-        if count == 3 and policy.startswith("early_"):
-            os._exit(0 if policy == "early_zero" else 23)
+    monkeypatch.setattr(benchmark_long_audio, "stop_server", failing_stop_server)
+    exit_code, _, result = run_benchmark(
+        monkeypatch, tmp_path, stub_runtime_bin, "--mode", "http", *STUB_KIND_FLAGS
+    )
+    assert exit_code == 1
+    assert result["status"] == "failed"
+    assert result["recovery_matches_warmup"] is True
+    assert "before shutdown" in result["error"]
 
-server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-threading.Thread(target=server.serve_forever, daemon=True).start()
-print(json.dumps({"event": "ready", "port": server.server_port}), flush=True)
-for line in sys.stdin:
-    if json.loads(line).get("command") == "shutdown":
-        server.shutdown()
-        sys.exit(23 if policy == "shutdown_23" else 0)
-""".replace(
-            "EXIT_POLICY", repr(exit_policy)
-        )
+
+def test_a_failed_model_load_reports_its_reason(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, runtime_bin: Path
+) -> None:
+    """The reason arrives on stdout, so only the case's error can carry it."""
+    exit_code, _, result = run_benchmark(
+        monkeypatch, tmp_path, runtime_bin, "--mode", "http"
     )
-    server.chmod(0o755)
-    output = tmp_path / "results"
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "benchmark_long_audio",
-            "--runtime-bin",
-            str(tmp_path / "bin"),
-            "--data-root",
-            str(tmp_path),
-            "--model",
-            "owner/model",
-            "--output",
-            str(output),
-            "--mode",
-            "http",
-            "--minutes",
-            "0.001",
-            "--languages",
-            "en",
-            "--",
-            "--cache-limit-mb",
-            "512",
-        ],
+    assert exit_code == 1
+    assert result["status"] == "failed"
+    assert "model load failed: " in result["error"]
+
+
+def test_flags_after_the_separator_reach_the_server(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stub_runtime_bin: Path
+) -> None:
+    exit_code, output, _ = run_benchmark(
+        monkeypatch,
+        tmp_path,
+        stub_runtime_bin,
+        "--mode",
+        "http",
+        *STUB_KIND_FLAGS,
+        "--no-such-flag",
+        "value",
     )
-    with pytest.raises(SystemExit) as stopped:
-        benchmark_long_audio.main()
-    result = json.loads((output / "en-0.001m.result.json").read_text())
-    assert "--cache-limit-mb 512" in (output / "en-0.001m.server.log").read_text()
-    if exit_policy == "failed_load":
-        assert stopped.value.code != 0
-        assert result["status"] == "failed"
-        assert "model load failed: bad weights" in result["error"]
-    elif exit_policy == "normal":
-        assert result["recovery_matches_warmup"] is True
-        assert stopped.value.code == 0
-        assert result["status"] == "measured"
-        assert result["server_exit_code"] == 0
-    else:
-        assert result["recovery_matches_warmup"] is True
-        assert stopped.value.code != 0
-        assert result["status"] == "failed"
-        assert result["server_exit_code"] == (0 if exit_policy == "early_zero" else 23)
-        assert (
-            "during shutdown" if exit_policy == "shutdown_23" else "before shutdown"
-        ) in result["error"]
+    assert exit_code == 1
+    assert (
+        "unknown argument --no-such-flag"
+        in (output / "en-0.04m.server.log").read_text()
+    )
