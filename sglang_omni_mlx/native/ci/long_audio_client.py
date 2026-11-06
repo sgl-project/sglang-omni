@@ -13,7 +13,6 @@ import threading
 import time
 import unicodedata
 import wave
-from contextlib import closing
 from pathlib import Path
 from typing import TypedDict
 
@@ -43,14 +42,6 @@ class Measurement(TypedDict, total=False):
     type: str
     generation_metadata: GenerationMetadata
     wall_seconds: float
-    observed_running: bool
-    disconnect_monotonic: float
-    disconnect_to_idle_seconds: float
-    natural_completion_seconds: float
-    heartbeat_to_completion_seconds: float | None
-    heartbeat_to_disconnect_seconds: float
-    paired_baseline_remaining_seconds: float | None
-    idle_before_paired_baseline: bool | None
     finalization_seconds: float
     final_segments: int
     preview_events: int
@@ -175,26 +166,8 @@ def score(
         }
 
 
-def compare_cancellation_timing(
-    heartbeat_to_completion_seconds: float | None,
-    heartbeat_to_disconnect_seconds: float,
-    disconnect_to_idle_seconds: float,
-) -> tuple[float | None, bool | None]:
-    """Compare paired runs from their first heartbeat without declaring causality."""
-    if (
-        heartbeat_to_completion_seconds is None
-        or heartbeat_to_completion_seconds <= heartbeat_to_disconnect_seconds
-    ):
-        return None, None
-    else:
-        remaining_seconds = (
-            heartbeat_to_completion_seconds - heartbeat_to_disconnect_seconds
-        )
-        return remaining_seconds, disconnect_to_idle_seconds < remaining_seconds
-
-
 def transcribe_http(
-    port: int, wav: bytes, language: str, timeout_seconds: float, cancel: bool = False
+    port: int, wav: bytes, language: str, timeout_seconds: float
 ) -> Measurement:
     boundary = "omni-long-audio-benchmark"
     fields = {"language": language, **HTTP_TRANSCRIPTION_FIELDS}
@@ -209,7 +182,6 @@ def transcribe_http(
     )
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout_seconds)
     started = time.monotonic()
-    first_heartbeat_at: float | None = None
     try:
         connection.request(
             "POST",
@@ -226,42 +198,10 @@ def transcribe_http(
             while line := response.readline():
                 if time.monotonic() - started > timeout_seconds:
                     raise TimeoutError("HTTP transcription deadline exceeded")
-                elif line.startswith(b":"):
-                    if first_heartbeat_at is None:
-                        first_heartbeat_at = time.monotonic()
-                    else:
-                        pass
-                    if cancel:
-                        with closing(
-                            http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-                        ) as health:
-                            health.request("GET", "/health")
-                            states = json.loads(health.getresponse().read())[
-                                "request_states"
-                            ]
-                        disconnect_at = time.monotonic()
-                        return {
-                            "observed_running": states.get("running", 0) == 1,
-                            "disconnect_monotonic": disconnect_at,
-                            "heartbeat_to_disconnect_seconds": disconnect_at
-                            - first_heartbeat_at,
-                        }
-                    else:
-                        pass
                 elif line.startswith(b"data: ") and line.strip() != b"data: [DONE]":
                     event = json.loads(line[6:])
                     if event.get("type") == "transcript.text.done":
-                        finished = time.monotonic()
-                        return {
-                            **event,
-                            "wall_seconds": finished - started,
-                            "heartbeat_to_completion_seconds": (
-                                finished - first_heartbeat_at
-                                if first_heartbeat_at is not None
-                                else None
-                            ),
-                            "observed_running": False,
-                        }
+                        return {**event, "wall_seconds": time.monotonic() - started}
                     else:
                         raise RuntimeError(f"Unexpected SSE event: {event}")
                 else:

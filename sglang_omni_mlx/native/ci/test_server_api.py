@@ -306,6 +306,7 @@ def test_repetition_penalty_ends_a_token_loop(server: Server) -> None:
 
 
 def test_a_disconnected_stream_stops_its_decode(server: Server) -> None:
+    transcript_before = server.post_form({}, clip("0006_en_short"))
     boundary = uuid.uuid4().hex
     body = (
         (
@@ -341,6 +342,7 @@ def test_a_disconnected_stream_stops_its_decode(server: Server) -> None:
             time.monotonic() - closed_at < 1.5
         ), "the decode kept running after its client left"
         time.sleep(0.05)
+    assert server.post_form({}, clip("0006_en_short")) == transcript_before
 
 
 def test_realtime_manual_session(server: Server) -> None:

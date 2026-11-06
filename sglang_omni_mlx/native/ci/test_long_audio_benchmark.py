@@ -11,7 +11,7 @@ import sys
 import threading
 import types
 import wave
-from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
@@ -21,7 +21,6 @@ from websockets.sync.server import ServerConnection, serve
 from sglang_omni_mlx.native.ci import benchmark_long_audio, long_audio_client
 from sglang_omni_mlx.native.ci.long_audio_client import (
     MemorySampler,
-    compare_cancellation_timing,
     score,
     stream_recording,
     transcribe_http,
@@ -99,34 +98,6 @@ def test_score_counts_dropped_tails_and_repeated_text(
 def test_empty_reference_is_not_a_perfect_score() -> None:
     with pytest.raises(ValueError, match="empty reference"):
         score("", "hallucinated text", "en")
-
-
-@pytest.mark.parametrize(
-    (
-        "natural_seconds",
-        "disconnect_seconds",
-        "idle_seconds",
-        "remaining_seconds",
-        "earlier",
-    ),
-    [
-        (6.0, 2.0, 3.9, 4.0, True),
-        (6.0, 2.0, 4.1, 4.0, False),
-        (None, 1.0, 1.0, None, None),
-        (1.0, 1.0, 0.1, None, None),
-    ],
-)
-def test_cancellation_timing_uses_the_same_heartbeat_origin(
-    natural_seconds: float | None,
-    disconnect_seconds: float,
-    idle_seconds: float,
-    remaining_seconds: float | None,
-    earlier: bool | None,
-) -> None:
-    """Time spent before disconnect is not counted as remaining baseline time."""
-    assert compare_cancellation_timing(
-        natural_seconds, disconnect_seconds, idle_seconds
-    ) == (remaining_seconds, earlier)
 
 
 @pytest.mark.parametrize("send_final", [True, False])
@@ -349,45 +320,12 @@ def test_http_requires_a_successful_final_event(reply: bytes) -> None:
             if b"transcript.text.done" in reply:
                 result = transcribe_http(server.server_port, b"audio", "en", 2)
                 assert result["text"] == "actual transcript"
-                assert (
-                    result["heartbeat_to_completion_seconds"] is not None
-                ) == reply.startswith(b":")
             else:
                 with pytest.raises(RuntimeError):
                     transcribe_http(server.server_port, b"audio", "en", 2)
             assert b'name="audio_layout"\r\n\r\nvoxt_swift' in submitted[0]
             assert b'name="stop_on_token_loop"\r\n\r\ntrue' in submitted[0]
         finally:
-            thread.join(timeout=5)
-
-
-def test_http_disconnect_records_the_first_heartbeat_and_running_state() -> None:
-    release = threading.Event()
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self) -> None:
-            self.rfile.read(int(self.headers["Content-Length"]))
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b":\n\n")
-            self.wfile.flush()
-            release.wait(timeout=5)
-
-        def do_GET(self) -> None:
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b'{"request_states":{"running":1}}')
-
-    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
-        thread = threading.Thread(target=server.serve_forever)
-        thread.start()
-        try:
-            result = transcribe_http(server.server_port, b"audio", "en", 2, cancel=True)
-            assert result["observed_running"] is True
-            assert result["heartbeat_to_disconnect_seconds"] >= 0
-        finally:
-            release.set()
-            server.shutdown()
             thread.join(timeout=5)
 
 
@@ -425,21 +363,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 policy = EXIT_POLICY
 post_count = 0
-health_count = 0
 lock = threading.Lock()
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
-    def do_GET(self):
-        global health_count
-        with lock:
-            health_count += 1
-            states = {"running": 1} if health_count == 1 else {}
-        payload = json.dumps({"request_states": states}).encode()
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(payload)
     def do_POST(self):
         global post_count
         self.rfile.read(int(self.headers["Content-Length"]))
@@ -451,7 +379,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b":\n\ndata: {\"type\":\"transcript.text.done\",\"text\":\"hello\"}\n\n")
         self.wfile.flush()
-        if count == 5 and policy.startswith("early_"):
+        if count == 3 and policy.startswith("early_"):
             os._exit(0 if policy == "early_zero" else 23)
 
 server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -487,11 +415,6 @@ for line in sys.stdin:
             "--languages",
             "en",
         ],
-    )
-    monkeypatch.setattr(
-        benchmark_long_audio,
-        "compare_cancellation_timing",
-        lambda *arguments: (1.0, True),
     )
     with pytest.raises(SystemExit) as stopped:
         benchmark_long_audio.main()

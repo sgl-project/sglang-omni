@@ -59,7 +59,7 @@ Both drafts are pinned in `ci/models.json`. A draft for another target is one pi
 
 ## Rule 2: Contribution requirements
 
-For reproducible long-session quality, memory and cancellation measurements, see [Qwen3-ASR long recordings](long_audio.md).
+For reproducible long-session quality and memory measurements, see [Qwen3-ASR long recordings](long_audio.md).
 
 **Placement and reuse**
 

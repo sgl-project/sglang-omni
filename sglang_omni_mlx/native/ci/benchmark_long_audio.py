@@ -5,14 +5,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import http.client
 import json
 import math
 import platform
 import selectors
 import subprocess
 import time
-from contextlib import closing, suppress
+from contextlib import suppress
 from importlib.metadata import version
 from pathlib import Path
 
@@ -20,7 +19,6 @@ from sglang_omni_mlx.native.ci.long_audio_client import (
     HTTP_TRANSCRIPTION_FIELDS,
     MEMORY_SAMPLE_INTERVAL_SECONDS,
     MemorySampler,
-    compare_cancellation_timing,
     score,
     stream_recording,
     transcribe_http,
@@ -128,11 +126,6 @@ def main() -> None:
     failures = 0
     for language in arguments.languages:
         clips = load_clips(arguments.corpus_directory, language)
-        cancel_path = arguments.output / f"{language}-cancel.wav"
-        cancellation_input = build_recording(clips, 300, arguments.seed, cancel_path)
-        (arguments.output / f"{language}-cancel.input.json").write_text(
-            json.dumps(cancellation_input, ensure_ascii=False, indent=2) + "\n"
-        )
         for minutes in arguments.minutes:
             name = f"{language}-{minutes:g}m"
             wav_path = arguments.output / f"{name}.wav"
@@ -164,7 +157,7 @@ def main() -> None:
                     int(arguments.max_footprint_gib * 1024**3),
                     60
                     + recording["audio_seconds"] / arguments.speed
-                    + 4 * arguments.timeout_seconds,
+                    + 3 * arguments.timeout_seconds,
                 )
                 sampler.thread.start()
                 try:
@@ -224,49 +217,6 @@ def main() -> None:
                             / recording["audio_seconds"],
                         }
                     )
-                    sampler.phase = "cancellation_baseline"
-                    natural = transcribe_http(
-                        port,
-                        cancel_path.read_bytes(),
-                        language,
-                        arguments.timeout_seconds,
-                    )
-                    sampler.phase = "cancellation"
-                    cancellation = transcribe_http(
-                        port,
-                        cancel_path.read_bytes(),
-                        language,
-                        arguments.timeout_seconds,
-                        cancel=True,
-                    )
-                    result["cancellation"] = cancellation
-                    cancellation["natural_completion_seconds"] = natural["wall_seconds"]
-                    if not cancellation["observed_running"]:
-                        raise RuntimeError(
-                            "Cancellation inconclusive: no running request observed at disconnect"
-                        )
-                    else:
-                        pass
-                    deadline = time.monotonic() + arguments.timeout_seconds
-                    while True:
-                        with closing(
-                            http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-                        ) as health:
-                            health.request("GET", "/health")
-                            states = json.loads(health.getresponse().read())[
-                                "request_states"
-                            ]
-                        if not states:
-                            cancellation["disconnect_to_idle_seconds"] = (
-                                time.monotonic() - cancellation["disconnect_monotonic"]
-                            )
-                            break
-                        elif time.monotonic() > deadline:
-                            raise TimeoutError(
-                                "Cancelled request did not return to idle"
-                            )
-                        else:
-                            time.sleep(0.05)
                     sampler.phase = "recovery"
                     recovery = transcribe_http(
                         port,
@@ -281,24 +231,10 @@ def main() -> None:
                     result["post_recovery_footprint_bytes"] = sampler.samples[-1][
                         "footprint_bytes"
                     ]
-                    (
-                        cancellation["paired_baseline_remaining_seconds"],
-                        cancellation["idle_before_paired_baseline"],
-                    ) = compare_cancellation_timing(
-                        natural["heartbeat_to_completion_seconds"],
-                        cancellation["heartbeat_to_disconnect_seconds"],
-                        cancellation["disconnect_to_idle_seconds"],
-                    )
                     if not result["recovery_matches_warmup"]:
                         raise RuntimeError(
-                            "Post-cancellation transcript differs from warmup"
+                            "Post-session transcript differs from warmup"
                         )
-                    elif cancellation["idle_before_paired_baseline"] is not True:
-                        result["status"] = "inconclusive"
-                        result["error"] = (
-                            "Paired timing does not establish an earlier return to idle"
-                        )
-                        failures += 1
                     else:
                         result["status"] = "measured"
                 except Exception as error:
