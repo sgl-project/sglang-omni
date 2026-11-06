@@ -194,6 +194,9 @@ Supported Models
    * - `MiniMaxAI/MiniMax-Music3 <https://huggingface.co/MiniMaxAI/MiniMax-Music3>`_
      - Music
      - Text-to-music; lyrics + caption → 32 kHz stereo song
+   * - `m-a-p/YuE2-3B <https://huggingface.co/m-a-p/YuE2-3B>`_
+     - Music
+     - Lyrics + style or supplied ABC score → 48 kHz stereo song
    * - `Qwen/Qwen3-ASR-1.7B <https://huggingface.co/Qwen/Qwen3-ASR-1.7B>`_
      - ASR
      - Multilingual transcription with 30 language hints
@@ -286,6 +289,7 @@ Community & Resources
    cookbook/companies/openbmb.md
    cookbook/companies/boson_ai.md
    cookbook/companies/minimax.md
+   cookbook/companies/map.md
    cookbook/companies/inclusionai.md
    cookbook/companies/tencent.md
    cookbook/companies/zyphra.md
