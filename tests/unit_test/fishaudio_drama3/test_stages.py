@@ -19,6 +19,7 @@ from sglang_omni.models.fishaudio_drama3.config import (
 )
 from sglang_omni.models.fishaudio_drama3.engine_builder import Drama3EngineBuilder
 from sglang_omni.models.fishaudio_drama3.reference_encode import (
+    GRAPH_WARMUP_RUNS,
     Drama3ReferenceEncodeHook,
     reference_codes_of,
 )
@@ -311,6 +312,57 @@ def test_graphed_reference_encodes_return_the_eager_codes() -> None:
         eager_codes = hooks[0.0].encode_waveform(waveform)
         assert graphed_codes.shape[-1] == -(-sample_count // codec.frame_length)
         assert torch.equal(graphed_codes, eager_codes), sample_count
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize(
+    "autocast_dtype", [torch.bfloat16, None], ids=["bfloat16", "float32"]
+)
+def test_the_prepared_codec_encodes_bitwise_like_the_module(
+    autocast_dtype: torch.dtype | None,
+) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    else:
+        pass
+    # tiny_codec seeds its weights, so the two copies hold the same values.
+    module_codec = tiny_codec().cuda()
+    module_codec.fold_weight_norm()
+    hook_codec = tiny_codec().cuda()
+    hook_codec.fold_weight_norm()
+    torch.manual_seed(0)
+    audio = (
+        0.1 * torch.randn(1, 1, 5 * module_codec.frame_length, device="cuda")
+    ).clamp(-1, 1)
+    hook = Drama3ReferenceEncodeHook(
+        codec=hook_codec,
+        checkpoint_id="codec.pth",
+        device="cuda",
+        autocast_dtype=autocast_dtype,
+        max_reference_audio_seconds=60.0,
+        graph_max_seconds=0.0,
+    )
+
+    with (
+        torch.no_grad(),
+        torch.autocast(
+            "cuda",
+            dtype=autocast_dtype or torch.bfloat16,
+            enabled=autocast_dtype is not None,
+            cache_enabled=False,
+        ),
+    ):
+        # The served graphs replay the scripted snake's specialized kernels, which
+        # TorchScript installs after a shape's first runs.
+        for _ in range(GRAPH_WARMUP_RUNS):
+            expected_latent = module_codec.encoder(audio)
+        expected_codes = reference_codes_of(module_codec.quantizer, expected_latent)
+        codes = hook.encode_padded(audio)
+        latent = hook.codec_encoder(audio)
+
+    assert latent.dtype == expected_latent.dtype
+    assert torch.equal(latent, expected_latent)
+    assert torch.equal(codes, expected_codes)
 
 
 def test_the_engine_factory_hands_its_knobs_to_the_builder(

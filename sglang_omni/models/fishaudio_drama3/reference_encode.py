@@ -12,6 +12,7 @@ import torch
 import torchaudio
 from dac.nn.quantize import VectorQuantize
 
+from sglang_omni.models.fishaudio_drama3.codec_encoder import CodecEncoder
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.dac.modded_dac import DAC
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.dac.rvq import (
     DownsampleResidualVectorQuantize,
@@ -22,9 +23,20 @@ from sglang_omni.platforms.device_graph import ReplayableGraph
 
 logger = logging.getLogger(__name__)
 
-# TorchScript specializes the codec's snake activation on a new shape's first runs, so
-# each shape runs twice before its capture records the specialized kernels.
+# A new shape's first runs compile and specialize its kernels, so each shape runs
+# twice before its capture records the final ones.
 GRAPH_WARMUP_RUNS = 2
+
+
+def cast_autocast_weights(module: torch.nn.Module, dtype: torch.dtype) -> None:
+    """The conv and linear weights, which autocast with cache_enabled=False casts on
+    every call, cast once to the same values."""
+    for layer in module.modules():
+        if isinstance(layer, (torch.nn.Conv1d, torch.nn.Linear)):
+            for parameter in layer.parameters(recurse=False):
+                parameter.data = parameter.data.to(dtype)
+        else:
+            pass
 
 
 def vector_quantized(
@@ -81,6 +93,8 @@ class Drama3ReferenceEncodeHook(FishReferenceEncodeHook):
             max_reference_audio_seconds=max_reference_audio_seconds,
         )
         self.frame_length = int(codec.frame_length)
+        # Built on the first encode: CPU hooks and test stand-in codecs never get one.
+        self.codec_encoder: CodecEncoder | None = None
         self.graphs: dict[int, ReplayableGraph] = {}
         self.graph_audio: dict[int, torch.Tensor] = {}
         self.graph_codes: dict[int, torch.Tensor] = {}
@@ -147,9 +161,30 @@ class Drama3ReferenceEncodeHook(FishReferenceEncodeHook):
             f"{time.perf_counter() - started_seconds:.1f} s"
         )
 
+    def prepare_codec(self) -> None:
+        """Before the first encode: the weights autocast would cast on every call are
+        cast once, and the encoder gets its fused walker."""
+        quantizer = self.codec.quantizer
+        if self.autocast_dtype is not None:
+            for module in (
+                self.codec.encoder,
+                quantizer.downsample,
+                quantizer.pre_module,
+                quantizer.semantic_quantizer,
+                quantizer.quantizer,
+            ):
+                cast_autocast_weights(module, self.autocast_dtype)
+        else:
+            pass
+        self.codec_encoder = CodecEncoder(self.codec.encoder, self.autocast_dtype)
+
     def encode_padded(self, audio: torch.Tensor) -> torch.Tensor:
         """[1, codebooks, frames] codes of [1, 1, samples] device audio that is a whole
         number of frames long."""
+        if self.codec_encoder is None:
+            self.prepare_codec()
+        else:
+            pass
         with (
             torch.no_grad(),
             torch.autocast(
@@ -159,7 +194,7 @@ class Drama3ReferenceEncodeHook(FishReferenceEncodeHook):
                 cache_enabled=False,
             ),
         ):
-            return reference_codes_of(self.codec.quantizer, self.codec.encoder(audio))
+            return reference_codes_of(self.codec.quantizer, self.codec_encoder(audio))
 
     def encode_reference_waveform(self, audio: torch.Tensor, sr: int) -> torch.Tensor:
         if self.device.type == "cpu":
