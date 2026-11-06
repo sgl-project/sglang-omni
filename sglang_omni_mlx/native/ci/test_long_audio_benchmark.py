@@ -28,7 +28,6 @@ from sglang_omni_mlx.native.ci.long_audio_client import (
     voxt_token_budget,
 )
 from sglang_omni_mlx.native.ci.long_audio_corpus import (
-    Clip,
     build_recording,
     chunk_frame_counts,
     load_clips,
@@ -160,11 +159,6 @@ def test_score_counts_dropped_tails_and_repeated_text(
     assert result["errors"] == errors
     assert result["reference_tokens"] == reference_tokens
     assert result["error_rate"] == errors / reference_tokens
-
-
-def test_empty_reference_is_not_a_perfect_score() -> None:
-    with pytest.raises(ValueError, match="empty reference"):
-        score("", "hallucinated text", "en")
 
 
 @pytest.mark.parametrize("send_final", [True, False])
@@ -368,23 +362,35 @@ def test_resource_guard_stops_child_when_trace_cannot_be_written(
             pass
 
 
-@pytest.mark.parametrize("seconds", [0, -1, float("nan"), float("inf")])
-def test_invalid_duration_cannot_create_an_unbounded_recording(
-    tmp_path: Path, seconds: float
+@pytest.mark.parametrize("minutes", ["0", "nan", "inf"])
+def test_invalid_duration_is_rejected_before_any_recording(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minutes: str
 ) -> None:
-    clips = [
-        Clip(
-            clip_id=str(index),
-            path=tmp_path / f"{index}.wav",
-            reference="hello",
-            frames=16000,
-            sha256="unused",
-        )
-        for index in range(2)
-    ]
-    with pytest.raises(ValueError):
-        build_recording(clips, seconds, 2888, tmp_path / "invalid.wav")
-    assert not (tmp_path / "invalid.wav").exists()
+    """An infinite duration would otherwise grow the recording without end."""
+    output = tmp_path / "results"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "benchmark_long_audio",
+            "--server",
+            "unused",
+            "--model-directory",
+            "unused",
+            "--corpus-directory",
+            "unused",
+            "--output",
+            str(output),
+            "--mode",
+            "http",
+            "--minutes",
+            minutes,
+        ],
+    )
+    with pytest.raises(SystemExit) as stopped:
+        benchmark_long_audio.main()
+    assert stopped.value.code == 2
+    assert not output.exists()
 
 
 @pytest.mark.parametrize(

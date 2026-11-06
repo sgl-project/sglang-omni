@@ -3,13 +3,13 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-import math
 import random
 import wave
 from dataclasses import dataclass
 from pathlib import Path
+
+from sglang_omni_mlx.native.ci.provision import sha256
 
 SAMPLE_RATE = 16000
 SAMPLE_BYTES = 2
@@ -21,7 +21,6 @@ class Clip:
     path: Path
     reference: str
     frames: int
-    sha256: str
 
 
 def load_clips(corpus_directory: Path, language: str) -> list[Clip]:
@@ -48,7 +47,6 @@ def load_clips(corpus_directory: Path, language: str) -> list[Clip]:
                     path=path,
                     reference=record["reference"],
                     frames=frames,
-                    sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
                 )
             )
         else:
@@ -63,15 +61,6 @@ def build_recording(
     clips: list[Clip], seconds: float, seed: int, destination: Path
 ) -> dict[str, str | int | float | list[str] | list[int]]:
     """End at a complete clip, at or just beyond the requested duration."""
-    if (
-        not math.isfinite(seconds)
-        or seconds <= 0
-        or len(clips) < 2
-        or any(clip.frames <= 0 for clip in clips)
-    ):
-        raise ValueError("Positive duration and at least two clips are required")
-    else:
-        pass
     generator = random.Random(seed)
     selected: list[Clip] = []
     frame_count = 0
@@ -94,19 +83,14 @@ def build_recording(
                     break
                 else:
                     pass
-    with destination.open("rb") as recording:
-        digest = hashlib.file_digest(recording, "sha256").hexdigest()
     return {
         "requested_seconds": seconds,
         "audio_seconds": frame_count / SAMPLE_RATE,
         "seed": seed,
         "clip_ids": [clip.clip_id for clip in selected],
         "clip_frames": [clip.frames for clip in selected],
-        "clip_sha256": [clip.sha256 for clip in selected],
-        "unique_clips": len({clip.clip_id for clip in selected}),
-        "reused_clips": len(selected) - len({clip.clip_id for clip in selected}),
         "reference": " ".join(clip.reference for clip in selected),
-        "wav_sha256": digest,
+        "wav_sha256": sha256(destination),
     }
 
 

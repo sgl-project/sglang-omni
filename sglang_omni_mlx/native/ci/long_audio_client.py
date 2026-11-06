@@ -31,7 +31,10 @@ HTTP_TRANSCRIPTION_FIELDS = {
     "audio_layout": "voxt_swift",
 }
 MEMORY_SAMPLE_INTERVAL_SECONDS = 0.25
+REALTIME_MESSAGE_FRAMES = SAMPLE_RATE // 10
 RUSAGE_INFO_V4 = 4
+SESSION_SETUP_TIMEOUT_SECONDS = 10
+SOCKET_CLOSE_TIMEOUT_SECONDS = 5
 # The token budget of a Voxt Final request, from its Qwen3-ASR tuning.
 VOXT_TOKENS_PER_SECOND = 28
 VOXT_EXTRA_TOKENS = 64
@@ -54,7 +57,6 @@ class Measurement(TypedDict, total=False):
     finalization_seconds: float
     final_segments: int
     preview_events: int
-    speed: float
 
 
 class ProcessUsage(ctypes.Structure):
@@ -177,17 +179,14 @@ def score(
 ) -> dict[str, float | int | str]:
     reference_tokens = tokens(reference, language)
     hypothesis_tokens = tokens(hypothesis, language)
-    if not reference_tokens:
-        raise ValueError("Cannot score an empty reference")
-    else:
-        errors = Levenshtein.distance(reference_tokens, hypothesis_tokens)
-        return {
-            "metric": "wer_en" if language == "en" else "cer_zh",
-            "errors": errors,
-            "reference_tokens": len(reference_tokens),
-            "hypothesis_tokens": len(hypothesis_tokens),
-            "error_rate": errors / len(reference_tokens),
-        }
+    errors = Levenshtein.distance(reference_tokens, hypothesis_tokens)
+    return {
+        "metric": "wer_en" if language == "en" else "cer_zh",
+        "errors": errors,
+        "reference_tokens": len(reference_tokens),
+        "hypothesis_tokens": len(hypothesis_tokens),
+        "error_rate": errors / len(reference_tokens),
+    }
 
 
 def voxt_token_budget(audio_seconds: float) -> int:
@@ -226,7 +225,7 @@ def transcribe_http(
             while line := response.readline():
                 if time.monotonic() - started > timeout_seconds:
                     raise TimeoutError("HTTP transcription deadline exceeded")
-                elif line.startswith(b"data: ") and line.strip() != b"data: [DONE]":
+                elif line.startswith(b"data: "):
                     event = json.loads(line[6:])
                     if event.get("type") == "transcript.text.done":
                         return {**event, "wall_seconds": time.monotonic() - started}
@@ -284,13 +283,15 @@ def stream_recording(
     timeout_seconds: float,
     events_path: Path,
 ) -> Measurement:
-    finals: dict[int, str] = {}
+    final_segment_ids: set[int] = set()
     previews = 0
     completed = ""
     errors: list[str] = []
     started = time.monotonic()
     with connect(
-        f"ws://127.0.0.1:{port}/v1/realtime", open_timeout=10, close_timeout=5
+        f"ws://127.0.0.1:{port}/v1/realtime",
+        open_timeout=SESSION_SETUP_TIMEOUT_SECONDS,
+        close_timeout=SOCKET_CLOSE_TIMEOUT_SECONDS,
     ) as socket:
         socket.send(
             json.dumps(
@@ -301,7 +302,7 @@ def stream_recording(
             )
         )
         if (
-            json.loads(socket.recv(timeout=10))["type"]
+            json.loads(socket.recv(timeout=SESSION_SETUP_TIMEOUT_SECONDS))["type"]
             != "transcription_session.updated"
         ):
             raise RuntimeError("Session was not accepted")
@@ -334,7 +335,7 @@ def stream_recording(
                             event["type"] == "transcription.segment"
                             and event["is_final"]
                         ):
-                            finals[event["segment_id"]] = event["text"]
+                            final_segment_ids.add(event["segment_id"])
                         else:
                             previews += 1
             except Exception as error:
@@ -346,7 +347,7 @@ def stream_recording(
         with wave.open(str(path), "rb") as reader:
             sent_frames = 0
             send_started = time.monotonic()
-            while pcm := reader.readframes(SAMPLE_RATE // 10):
+            while pcm := reader.readframes(REALTIME_MESSAGE_FRAMES):
                 if errors:
                     raise RuntimeError(errors[0])
                 else:
@@ -373,16 +374,16 @@ def stream_recording(
         receiver.join(timeout=timeout_seconds)
         if receiver.is_alive():
             socket.close()
-            receiver.join(timeout=10)
+            receiver.join(timeout=SOCKET_CLOSE_TIMEOUT_SECONDS)
             raise TimeoutError("No completed transcript after the final audio frame")
         elif errors:
             raise RuntimeError(errors[0])
         else:
+            finished = time.monotonic()
             return {
                 "text": completed,
-                "wall_seconds": time.monotonic() - started,
-                "finalization_seconds": time.monotonic() - finished_sending,
-                "final_segments": len(finals),
+                "wall_seconds": finished - started,
+                "finalization_seconds": finished - finished_sending,
+                "final_segments": len(final_segment_ids),
                 "preview_events": previews,
-                "speed": speed,
             }

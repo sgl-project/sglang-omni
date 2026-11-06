@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import platform
@@ -23,13 +22,62 @@ from sglang_omni_mlx.native.ci.long_audio_client import (
     transcribe_http,
 )
 from sglang_omni_mlx.native.ci.long_audio_corpus import (
+    Clip,
     build_recording,
     chunk_frame_counts,
     load_clips,
 )
-from sglang_omni_mlx.native.tests.native_server import read_supervised_event
+from sglang_omni_mlx.native.ci.provision import sha256
+from sglang_omni_mlx.native.tests.native_server import (
+    EVENT_TIMEOUT_SECONDS,
+    read_supervised_event,
+)
 
+# The worker returns MLX's cache after a request, with no signal to wait for.
+MEMORY_SETTLE_SECONDS = 2
+SAMPLER_JOIN_TIMEOUT_SECONDS = 5
 SHUTDOWN_TIMEOUT_SECONDS = 10
+
+
+def write_metadata(arguments: argparse.Namespace) -> None:
+    metadata = {
+        "arguments": {
+            name: str(value) if isinstance(value, Path) else value
+            for name, value in vars(arguments).items()
+        },
+        "chip": subprocess.check_output(
+            ["sysctl", "-n", "machdep.cpu.brand_string"], text=True
+        ).strip(),
+        "macos": platform.mac_ver()[0],
+        "measurement_dependencies": {
+            "rapidfuzz": version("rapidfuzz"),
+            "websockets": version("websockets"),
+        },
+        "protocol": {
+            "http_fields": HTTP_TRANSCRIPTION_FIELDS,
+            "realtime_turn_detection": None,
+            "realtime_audio_layout_and_stop_rules": "server defaults",
+        },
+        "memory_guard": {
+            "kind": "sampled_soft",
+            "sample_interval_seconds": MEMORY_SAMPLE_INTERVAL_SECONDS,
+        },
+        "git_commit": subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], text=True
+        ).strip(),
+        "git_status": subprocess.check_output(
+            ["git", "status", "--porcelain"], text=True
+        ),
+        "binary_sha256": sha256(arguments.server),
+        "model_files_sha256": {
+            path.name: sha256(path)
+            for path in sorted(arguments.model_directory.iterdir())
+            if path.is_file()
+        },
+    }
+    (arguments.output / "metadata.json").write_text(
+        json.dumps(metadata, indent=2) + "\n"
+    )
 
 
 def stop_server(process: subprocess.Popen[bytes]) -> str | None:
@@ -51,6 +99,145 @@ def stop_server(process: subprocess.Popen[bytes]) -> str | None:
         return f"Server exited with code {process.returncode} during shutdown"
     else:
         return None
+
+
+def run_case(
+    arguments: argparse.Namespace, clips: list[Clip], language: str, minutes: float
+) -> bool:
+    """Measure one recording on a dedicated server; returns whether it was measured."""
+    name = f"{language}-{minutes:g}m"
+    wav_path = arguments.output / f"{name}.wav"
+    recording = build_recording(clips, minutes * 60, arguments.seed, wav_path)
+    (arguments.output / f"{name}.input.json").write_text(
+        json.dumps(recording, ensure_ascii=False, indent=2) + "\n"
+    )
+    warmup_wav = clips[0].path.read_bytes()
+    result = {
+        "case": name,
+        "status": "failed",
+        "audio_seconds": recording["audio_seconds"],
+    }
+    errors: list[str] = []
+    with (arguments.output / f"{name}.server.log").open("w") as log:
+        process = subprocess.Popen(
+            [
+                str(arguments.server.resolve()),
+                "--supervised",
+                "--model-directory",
+                str(arguments.model_directory.resolve()),
+                *arguments.server_arguments,
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=log,
+        )
+    sampler = MemorySampler(
+        process,
+        arguments.output / f"{name}.memory.jsonl",
+        int(arguments.max_footprint_gib * 1024**3),
+        EVENT_TIMEOUT_SECONDS
+        + recording["audio_seconds"] / arguments.speed
+        + 3 * arguments.timeout_seconds,
+    )
+    sampler.thread.start()
+    try:
+        ready = read_supervised_event(process)
+        if ready["event"] != "ready":
+            raise RuntimeError(f"Server failed to start: {ready['reason']}")
+        else:
+            port = ready["port"]
+        sampler.phase = "warmup"
+        warmup = transcribe_http(port, warmup_wav, language, arguments.timeout_seconds)
+        time.sleep(MEMORY_SETTLE_SECONDS)
+        baseline = sampler.samples[-1]
+        sampler.phase = "long_recording"
+        if arguments.chunk_seconds is not None:
+            transcription = transcribe_chunks(
+                port,
+                wav_path,
+                chunk_frame_counts(recording["clip_frames"], arguments.chunk_seconds),
+                language,
+                arguments.timeout_seconds,
+            )
+        elif arguments.mode == "http":
+            transcription = transcribe_http(
+                port, wav_path.read_bytes(), language, arguments.timeout_seconds
+            )
+        else:
+            transcription = stream_recording(
+                port,
+                wav_path,
+                language,
+                arguments.speed,
+                arguments.timeout_seconds,
+                arguments.output / f"{name}.events.jsonl",
+            )
+        sampler.phase = "post_session"
+        time.sleep(MEMORY_SETTLE_SECONDS)
+        session_end = sampler.samples[-1]
+        result.update(transcription)
+        result.update(score(recording["reference"], transcription["text"], language))
+        result.update(
+            {
+                "baseline_footprint_bytes": baseline["footprint_bytes"],
+                "warmup_peak_footprint_bytes": baseline["peak_footprint_bytes"],
+                "peak_footprint_bytes": session_end["peak_footprint_bytes"],
+                "post_session_footprint_bytes": session_end["footprint_bytes"],
+            }
+        )
+        if arguments.mode == "http":
+            result["real_time_factor"] = (
+                transcription["wall_seconds"] / recording["audio_seconds"]
+            )
+        else:
+            pass
+        sampler.phase = "recovery"
+        recovery = transcribe_http(
+            port, warmup_wav, language, arguments.timeout_seconds
+        )
+        result["recovery_matches_warmup"] = recovery["text"] == warmup["text"]
+        time.sleep(MEMORY_SETTLE_SECONDS)
+        result["post_recovery_footprint_bytes"] = sampler.samples[-1]["footprint_bytes"]
+        if recovery["text"] != warmup["text"]:
+            raise RuntimeError("Post-session transcript differs from warmup")
+        else:
+            result["status"] = "measured"
+    except Exception as error:
+        errors.append(f"{type(error).__name__}: {error}")
+    finally:
+        sampler.done.set()
+        sampler.thread.join(timeout=SAMPLER_JOIN_TIMEOUT_SECONDS)
+        shutdown_error = stop_server(process)
+    if shutdown_error is not None:
+        errors.append(shutdown_error)
+    else:
+        pass
+    if errors or sampler.error or sampler.exceeded:
+        result["status"] = "failed"
+    else:
+        pass
+    result.update(
+        {
+            "error": "; ".join(errors),
+            "process_peak_footprint_bytes": max(
+                (sample["peak_footprint_bytes"] for sample in sampler.samples),
+                default=0,
+            ),
+            "server_exit_code": process.returncode,
+            "memory_limit_exceeded": sampler.exceeded,
+            "memory_sampling_error": sampler.error,
+        }
+    )
+    (arguments.output / f"{name}.result.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2) + "\n"
+    )
+    print(
+        json.dumps(
+            {field: value for field, value in result.items() if field != "text"}
+        ),
+        flush=True,
+    )
+    return result["status"] == "measured"
 
 
 def main() -> None:
@@ -85,7 +272,7 @@ def main() -> None:
         "--max-footprint-gib",
         type=float,
         default=8,
-        help="Sampled soft guard for the server footprint; allocations can overshoot between samples",
+        help="Soft guard on the server's peak footprint; allocations can overshoot before the next read",
     )
     parser.add_argument("--seed", type=int, default=2888)
     parser.add_argument(
@@ -94,25 +281,18 @@ def main() -> None:
         help="Server flags after --, such as -- --cache-limit-mb 512",
     )
     arguments = parser.parse_args()
-    if (
-        platform.system() != "Darwin"
-        or not all(
-            math.isfinite(value)
-            for value in [
-                *arguments.minutes,
-                arguments.speed,
-                arguments.timeout_seconds,
-                arguments.max_footprint_gib,
-            ]
-        )
-        or min(arguments.minutes) <= 0
-        or arguments.speed <= 0
-        or arguments.timeout_seconds <= 0
-        or arguments.max_footprint_gib <= 0
+    if platform.system() != "Darwin":
+        parser.error("Requires macOS for its process accounting")
+    elif not all(
+        0 < value < math.inf
+        for value in [
+            *arguments.minutes,
+            arguments.speed,
+            arguments.timeout_seconds,
+            arguments.max_footprint_gib,
+        ]
     ):
-        parser.error(
-            "Requires macOS and positive duration, speed, timeout and memory limit"
-        )
+        parser.error("Duration, speed, timeout and memory limit must be positive")
     elif arguments.chunk_seconds is not None and (
         arguments.mode != "http" or not 0 < arguments.chunk_seconds < math.inf
     ):
@@ -120,214 +300,14 @@ def main() -> None:
     else:
         pass
     arguments.output.mkdir(parents=True, exist_ok=False)
-    metadata = {
-        "arguments": {
-            name: str(value) if isinstance(value, Path) else value
-            for name, value in vars(arguments).items()
-        },
-        "chip": subprocess.check_output(
-            ["sysctl", "-n", "machdep.cpu.brand_string"], text=True
-        ).strip(),
-        "macos": platform.mac_ver()[0],
-        "measurement_dependencies": {
-            "rapidfuzz": version("rapidfuzz"),
-            "websockets": version("websockets"),
-        },
-        "protocol": {
-            "http_fields": HTTP_TRANSCRIPTION_FIELDS,
-            "realtime_turn_detection": None,
-            "realtime_audio_layout_and_stop_rules": "server defaults",
-        },
-        "memory_guard": {
-            "kind": "sampled_soft",
-            "sample_interval_seconds": MEMORY_SAMPLE_INTERVAL_SECONDS,
-        },
-        "git_commit": subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], text=True
-        ).strip(),
-    }
-    metadata["git_status"] = subprocess.check_output(
-        ["git", "status", "--porcelain"], text=True
-    )
-    metadata["binary_sha256"] = hashlib.sha256(
-        arguments.server.read_bytes()
-    ).hexdigest()
-    metadata["model_files_sha256"] = {}
-    for path in sorted(arguments.model_directory.iterdir()):
-        if path.is_file():
-            with path.open("rb") as model_file:
-                metadata["model_files_sha256"][path.name] = hashlib.file_digest(
-                    model_file, "sha256"
-                ).hexdigest()
-        else:
-            pass
-    (arguments.output / "metadata.json").write_text(
-        json.dumps(metadata, indent=2) + "\n"
-    )
-    failures = 0
+    write_metadata(arguments)
+    all_measured = True
     for language in arguments.languages:
         clips = load_clips(arguments.corpus_directory, language)
         for minutes in arguments.minutes:
-            name = f"{language}-{minutes:g}m"
-            wav_path = arguments.output / f"{name}.wav"
-            recording = build_recording(clips, minutes * 60, arguments.seed, wav_path)
-            (arguments.output / f"{name}.input.json").write_text(
-                json.dumps(recording, ensure_ascii=False, indent=2) + "\n"
-            )
-            result = {
-                "case": name,
-                "status": "failed",
-                "audio_seconds": recording["audio_seconds"],
-            }
-            with (arguments.output / f"{name}.server.log").open("w") as log:
-                process = subprocess.Popen(
-                    [
-                        str(arguments.server.resolve()),
-                        "--supervised",
-                        "--model-directory",
-                        str(arguments.model_directory.resolve()),
-                        *arguments.server_arguments,
-                    ],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=log,
-                )
-                sampler = MemorySampler(
-                    process,
-                    arguments.output / f"{name}.memory.jsonl",
-                    int(arguments.max_footprint_gib * 1024**3),
-                    60
-                    + recording["audio_seconds"] / arguments.speed
-                    + 3 * arguments.timeout_seconds,
-                )
-                sampler.thread.start()
-                try:
-                    ready = read_supervised_event(process)
-                    if ready["event"] != "ready":
-                        raise RuntimeError(f"Server failed to start: {ready['reason']}")
-                    else:
-                        port = ready["port"]
-                    sampler.phase = "warmup"
-                    warmup = transcribe_http(
-                        port,
-                        clips[0].path.read_bytes(),
-                        language,
-                        arguments.timeout_seconds,
-                    )
-                    time.sleep(2)
-                    baseline = sampler.samples[-1]
-                    sampler.phase = "long_recording"
-                    if arguments.chunk_seconds is not None:
-                        transcription = transcribe_chunks(
-                            port,
-                            wav_path,
-                            chunk_frame_counts(
-                                recording["clip_frames"], arguments.chunk_seconds
-                            ),
-                            language,
-                            arguments.timeout_seconds,
-                        )
-                    elif arguments.mode == "http":
-                        transcription = transcribe_http(
-                            port,
-                            wav_path.read_bytes(),
-                            language,
-                            arguments.timeout_seconds,
-                        )
-                    else:
-                        transcription = stream_recording(
-                            port,
-                            wav_path,
-                            language,
-                            arguments.speed,
-                            arguments.timeout_seconds,
-                            arguments.output / f"{name}.events.jsonl",
-                        )
-                    sampler.phase = "post_session"
-                    time.sleep(2)
-                    result.update(transcription)
-                    result.update(
-                        score(
-                            str(recording["reference"]), transcription["text"], language
-                        )
-                    )
-                    session_end = sampler.samples[-1]
-                    result.update(
-                        {
-                            "baseline_footprint_bytes": baseline["footprint_bytes"],
-                            "warmup_peak_footprint_bytes": baseline[
-                                "peak_footprint_bytes"
-                            ],
-                            "peak_footprint_bytes": session_end["peak_footprint_bytes"],
-                            "post_session_footprint_bytes": session_end[
-                                "footprint_bytes"
-                            ],
-                            "rtf": transcription["wall_seconds"]
-                            / recording["audio_seconds"],
-                        }
-                    )
-                    sampler.phase = "recovery"
-                    recovery = transcribe_http(
-                        port,
-                        clips[0].path.read_bytes(),
-                        language,
-                        arguments.timeout_seconds,
-                    )
-                    result["recovery_matches_warmup"] = (
-                        recovery["text"] == warmup["text"]
-                    )
-                    time.sleep(2)
-                    result["post_recovery_footprint_bytes"] = sampler.samples[-1][
-                        "footprint_bytes"
-                    ]
-                    if not result["recovery_matches_warmup"]:
-                        raise RuntimeError(
-                            "Post-session transcript differs from warmup"
-                        )
-                    else:
-                        result["status"] = "measured"
-                except Exception as error:
-                    result["error"] = f"{type(error).__name__}: {error}"
-                    failures += 1
-                finally:
-                    sampler.done.set()
-                    sampler.thread.join(timeout=5)
-                    result["process_peak_footprint_bytes"] = max(
-                        (sample["peak_footprint_bytes"] for sample in sampler.samples),
-                        default=0,
-                    )
-                    shutdown_error = stop_server(process)
-                    result["server_exit_code"] = process.returncode
-                    if shutdown_error is not None:
-                        result["status"] = "failed"
-                        if "error" in result:
-                            result["error"] = f"{result['error']}; {shutdown_error}"
-                        else:
-                            result["error"] = shutdown_error
-                        failures += 1
-                    else:
-                        pass
-                    result["memory_limit_exceeded"] = sampler.exceeded
-                    result["memory_sampling_error"] = sampler.error
-                    if sampler.error or sampler.exceeded:
-                        result["status"] = "failed"
-                        failures += 1
-                    else:
-                        pass
-                    (arguments.output / f"{name}.result.json").write_text(
-                        json.dumps(result, ensure_ascii=False, indent=2) + "\n"
-                    )
-                    print(
-                        json.dumps(
-                            {
-                                key: value
-                                for key, value in result.items()
-                                if key != "text"
-                            }
-                        ),
-                        flush=True,
-                    )
-    raise SystemExit(1 if failures else 0)
+            is_measured = run_case(arguments, clips, language, minutes)
+            all_measured = all_measured and is_measured
+    raise SystemExit(0 if all_measured else 1)
 
 
 if __name__ == "__main__":
