@@ -139,12 +139,13 @@ func percent(done, total int64) int {
 }
 
 // modelFamilyText is what the family says of a model ("" nothing): the
-// apps that installed a borrowed model VoxtNew does not use yet, the other
+// apps that installed a model VoxtNew does not use yet (a borrowed one,
+// or one of its own another app downloaded), the other
 // apps that share it, another app downloading what VoxtNew's download
 // waits for or the model itself, or the app that deleted it for all apps.
 func modelFamilyText(m models.Model, st models.Status) string {
 	switch {
-	case m.Borrowed && !st.Installed:
+	case (m.Borrowed || st.OnDisk) && !st.Installed:
 		if len(st.Users) == 0 {
 			return i18n.T("Already on this Mac")
 		}
@@ -194,7 +195,9 @@ func (a *app) modelActions(c *ui.Context, m models.Model, st models.Status) {
 		if ghostButton(c.Key("delete"), label).Label(tip).Disabled(a.modelDeciding == m.ID).Clicked() {
 			a.askDeleteModel(m.ID) // models_delete.go
 		}
-	case m.Borrowed:
+	case m.Borrowed || st.OnDisk:
+		// On disk but not VoxtNew's: another app installed it. Download
+		// has nothing to fetch; using it claims it.
 		if st.OnDisk && ui.Button(c.Key("use"), i18n.T("Use it")).Label(i18n.T("Use %s", name)).Clicked() {
 			a.useModel(m.ID)
 		}

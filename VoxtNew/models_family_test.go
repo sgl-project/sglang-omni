@@ -257,35 +257,71 @@ func TestModelFamilyText(t *testing.T) {
 	}
 }
 
-// TestBorrowedModel: a model of another app on this Mac: Use it, then
-// Remove from VoxtNew (its files stay for the app).
+// TestBorrowedModel: a model another app installed on this Mac, a
+// borrowed one or one of VoxtNew's own catalogue: Use it, then Remove
+// from VoxtNew (its files stay for the app). For a catalogue model the
+// card used to offer Download, which does nothing for a model already
+// on disk, so it never became VoxtNew's.
 func TestBorrowedModel(t *testing.T) {
-	a, _, tt := newTestApp(t)
-	tt.SetSize(windowWidth, 1600)
-	name := uitext.ModelName(models.LLMQwen3)
-	a.navigate(modelsPath)
-	if has(tt, name) {
-		t.Fatal("a borrowed model not on this Mac is listed")
-	}
-	qwen, _ := models.Lookup(models.LLMQwen3)
-	if err := modelstest.SeedModel(a.models.Hub(), qwen); err != nil {
-		t.Fatal(err)
-	}
-	claimFor(t, a, dictaID, models.LLMQwen3)
-	if !has(tt, name) || !has(tt, "Installed by Dicta") || has(tt, "Download "+name) {
-		t.Fatalf("borrowed: %q", tt.Texts())
-	}
-	click(t, tt, "Use "+name)
-	if st := a.models.Status(models.LLMQwen3); !st.Installed || !st.Mine || !has(tt, "Shared with Dicta") {
-		t.Fatalf("used: %+v %q", st, tt.Texts())
-	}
-	click(t, tt, "Remove "+name+"…")
-	if !has(tt, fmt.Sprintf("Remove %q from VoxtNew?", name)) {
-		t.Fatalf("dialog: %q", tt.Texts())
-	}
-	click(t, tt, "Remove from VoxtNew")
-	if st := a.models.Status(models.LLMQwen3); st.Installed || !st.OnDisk || !has(tt, "Installed by Dicta") {
-		t.Errorf("removed: %+v %q", st, tt.Texts())
+	for _, tc := range []struct {
+		id         string
+		borrowed   bool
+		remove     string // the card's button once used
+		needsThere bool   // Dicta installed what it needs too
+	}{
+		{models.LLMQwen3, true, "Remove", false},
+		{models.ASRFast, false, "Delete", false},
+		{models.ASRFast, false, "Delete", true},
+	} {
+		t.Run(fmt.Sprintf("%s/needs-installed=%v", tc.id, tc.needsThere), func(t *testing.T) {
+			a, _, tt := newTestApp(t)
+			tt.SetSize(windowWidth, 1600)
+			name := uitext.ModelName(tc.id)
+			a.navigate(modelsPath)
+			if tc.borrowed && has(tt, name) {
+				t.Fatal("a borrowed model not on this Mac is listed")
+			}
+			m, _ := models.Lookup(tc.id)
+			if err := modelstest.SeedModel(a.models.Hub(), m); err != nil {
+				t.Fatal(err)
+			}
+			claimFor(t, a, dictaID, tc.id)
+			if tc.needsThere {
+				for _, need := range m.Needs {
+					n, _ := models.Lookup(need)
+					if err := modelstest.SeedModel(a.models.Hub(), n); err != nil {
+						t.Fatal(err)
+					}
+					claimFor(t, a, dictaID, need)
+				}
+			}
+			if has(tt, "Download "+name) {
+				t.Fatalf("the card offers Download, which does nothing for a model on disk")
+			}
+			if !has(tt, name) || !has(tt, "Installed by Dicta") {
+				t.Fatalf("installed by Dicta: %q", tt.Texts())
+			}
+			click(t, tt, "Use "+name)
+			if st := a.models.Status(tc.id); !st.Installed || !st.Mine || !has(tt, "Shared with Dicta") {
+				t.Fatalf("used: %+v %q", st, tt.Texts())
+			}
+			// What it needs comes with it: Dicta's voice detection is used,
+			// a missing one is downloaded.
+			for _, need := range m.Needs {
+				st := a.models.Status(need)
+				if tc.needsThere && (!st.Installed || !st.Mine) || !st.Downloading && !st.Installed && st.Err == nil {
+					t.Errorf("%s needs %s: neither used nor downloading (%+v)", tc.id, need, st)
+				}
+			}
+			click(t, tt, tc.remove+" "+name+"…")
+			if !has(tt, fmt.Sprintf("Remove %q from VoxtNew?", name)) {
+				t.Fatalf("dialog: %q", tt.Texts())
+			}
+			click(t, tt, "Remove from VoxtNew")
+			if st := a.models.Status(tc.id); st.Installed || !st.OnDisk || !has(tt, "Installed by Dicta") {
+				t.Errorf("removed: %+v %q", st, tt.Texts())
+			}
+		})
 	}
 }
 
