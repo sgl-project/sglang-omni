@@ -1,7 +1,7 @@
 # Installation — Intel CPU
 
 Install SGLang-Omni for CPU-only inference on Intel Xeon. For NVIDIA GPUs,
-use the [CUDA installation](./installation.md).
+use the [CUDA installation](../get_started/installation.md).
 
 ## Prerequisites
 

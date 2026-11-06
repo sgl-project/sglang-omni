@@ -7,7 +7,7 @@ Qwen3-ASR does not support `/v1/audio/translations`; that endpoint returns HTTP 
 ## Prerequisites
 
 Install `sglang-omni` by following the [CUDA installation](../get_started/installation.md)
-or [Apple Silicon installation](../get_started/installation_apple_silicon.md),
+or [Apple Silicon installation](../other_platforms/installation_apple_silicon.md),
 then download the model:
 
 ```bash
@@ -21,7 +21,7 @@ MODEL_PATH="$(
 
 ### Ascend NPU graph execution
 
-See [Qwen3-ASR graph execution on Ascend NPU](../get_started/installation_npu.md#qwen3-asr-graph-execution) for queue settings and runtime restrictions.
+See [Qwen3-ASR graph execution on Ascend NPU](../other_platforms/installation_npu.md#qwen3-asr-graph-execution) for queue settings and runtime restrictions.
 
 <a id="apple-silicon-torch-mps"></a>
 
