@@ -375,6 +375,33 @@ func TestCancelResume(t *testing.T) {
 	}
 }
 
+// TestNeedsAfterAnotherJob: a second speech model leaves the VAD it
+// needs to the job already fetching it. When that job is cancelled, the
+// second still gets the VAD: it waits for that job, then fetches what is
+// missing. It used to end installed with no VAD on disk.
+func TestNeedsAfterAnotherJob(t *testing.T) {
+	second := repoModel("asr2", ASR, repoLLM)
+	second.Needs = []string{"vad"}
+	e := newEnv(t, append(testCatalog(), second), Options{})
+	reached, release := e.hub.Pause(repoVAD.Ref.Repo, "model.safetensors", 4<<10)
+	t.Cleanup(release)
+	if err := e.m.Download("asr"); err != nil { // vad first, then asr
+		t.Fatal(err)
+	}
+	<-reached
+	if err := e.m.Download("asr2"); err != nil { // vad is the other job's
+		t.Fatal(err)
+	}
+	e.m.Cancel("asr") // vad half fetched, not installed
+	release()
+	if s := wait(t, e.m, "asr2"); !s.Installed || s.Err != nil {
+		t.Fatalf("asr2 %+v", s)
+	}
+	if s := e.m.Status("vad"); !s.OnDisk {
+		t.Errorf("asr2 installed without the VAD it needs: %+v", s)
+	}
+}
+
 // TestDiskSpace: a download that would leave less than the reserve
 // fails before fetching, with hfhub's error.
 func TestDiskSpace(t *testing.T) {
