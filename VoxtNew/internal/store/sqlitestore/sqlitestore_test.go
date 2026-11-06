@@ -5,8 +5,10 @@ package sqlitestore
 // checked) into os.UserCacheDir()/mygo/natives; see the README's Tests.
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -255,6 +257,60 @@ func TestHistory(t *testing.T) {
 	}
 	if n, err := h.DeleteAll(ctx, ""); n != 1 || err != nil {
 		t.Errorf("delete all: %d %v", n, err)
+	}
+}
+
+// TestClearHistoryLeavesNoText: after Clear history, the texts are gone
+// from the database's files too, not only from its tables: neither the
+// text itself nor the search index's trigrams of it. A plain DELETE left
+// them in freed pages (and in the write-ahead log), and the index kept
+// its trigrams, readable by anyone who opens the file.
+func TestClearHistoryLeavesNoText(t *testing.T) {
+	dir := t.TempDir()
+	s := openTest(t, dir)
+	h := s.History()
+	const secret = "zebra-qzxjv-7731 my bank PIN" // qzx, zxj, xjv: trigrams found nowhere else
+	for i := range 50 {                           // enough rows to fill pages of their own
+		e := store.Entry{ID: fmt.Sprintf("e%d", i), Kind: store.KindTranscribe, CreatedAt: time.Now(), Result: secret + strings.Repeat(" padding", 40), RawText: secret}
+		if err := h.Put(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := h.DeleteAll(ctx, ""); n != 50 || err != nil {
+		t.Fatalf("clear: %d %v", n, err)
+	}
+	for _, name := range []string{FileName, FileName + "-wal"} {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		for _, s := range []string{"zebra-qzxjv-7731", "qzx", "zxj", "xjv"} {
+			if bytes.Contains(data, []byte(s)) {
+				t.Errorf("%s still holds %q of the cleared text", name, s)
+			}
+		}
+	}
+}
+
+// TestClearHistoryCompactionFails: a compaction that fails after Clear
+// history does not make it a failure: the entries are gone, so DeleteAll
+// reports them and no error, and the app says so and refreshes the
+// history instead of "Could not clear the history".
+func TestClearHistoryCompactionFails(t *testing.T) {
+	s := openTest(t, t.TempDir())
+	h := s.History()
+	for _, id := range []string{"a", "b"} {
+		if err := h.Put(ctx, store.Entry{ID: id, Kind: store.KindTranscribe, CreatedAt: time.Now(), Result: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer func(c []string) { compaction = c }(compaction)
+	compaction = []string{"VACUUM no_such_schema"}
+	if n, err := h.DeleteAll(ctx, ""); n != 2 || err != nil {
+		t.Errorf("clear, the compaction failing: %d %v", n, err)
+	}
+	if st, _ := s.Stats(ctx); st.History != 0 {
+		t.Errorf("stats %+v", st)
 	}
 }
 

@@ -37,6 +37,7 @@ All notable changes to VoxtNew. The format follows [Keep a Changelog](https://ke
 - Chinese dictation is no longer turned into English on a Mac whose first language is English. Without a main language set in Settings → General, the speech model was told to expect the interface's language (English there) and the Fast model translated most Chinese recordings; now it detects the language itself unless you set a main language or use VoxtNew in Chinese.
 - Translating what you say no longer removes 额 and 唔 from inside words first: 金额 (amount) became 金, and Cantonese 唔 (not) was dropped, which reversed the meaning. They are now removed only as a hesitation that opens a clause, before a pause.
 - A translation or rewrite that stopped at the language model's length limit is no longer inserted, nor put over your selection: it shows in the answer card, which says it may be incomplete.
+- **Clear the history** (Settings → Privacy) now also removes the cleared texts from the database file. Before, they stayed in its free space until it was reused, readable by anyone who opened the file.
 
 ### 中文
 
@@ -73,6 +74,7 @@ All notable changes to VoxtNew. The format follows [Keep a Changelog](https://ke
 - 系统首选语言是英文的 Mac 上，中文口述不会再被转成英文。以前没在 设置 → 通用 里设主语言时，语音模型会被告知按界面语言（那里是英文）识别，快速模型把大部分中文录音翻成了英文；现在除非你设了主语言或者用中文界面，否则由模型自己判断语言。
 - 口述翻译不会再先把词里的“额”“唔”去掉：“金额”变成了“金”，粤语的“唔”（不）被去掉、意思反了。现在只有分句开头、后面有停顿的“额”“唔”才当作语气词去掉。
 - 翻译或改写的回答到了语言模型的长度上限就停了时，不再插入，也不再替换你选中的文字：它显示在答案卡片里，并提示可能不完整。
+- **清空历史**（设置 → 隐私）现在也会把清掉的文字从数据库文件里抹掉。以前它们留在文件的空闲空间里，直到被覆盖，打开文件的人都能读到。
 
 ## [0.1.0-beta.1] - 2026-10-17
 
