@@ -739,6 +739,51 @@ def test_the_channels_last_decoder_decodes_like_the_codec(
     )
 
 
+@pytest.mark.accelerator
+@pytest.mark.parametrize("batch_size", [1, 3])
+@pytest.mark.parametrize("frame_count", [57, 2048 * 3 + 7])
+def test_the_decoder_tail_fuses_snake_conv_and_tanh_like_the_modules(
+    monkeypatch: pytest.MonkeyPatch, batch_size: int, frame_count: int
+) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    else:
+        pass
+    torch.manual_seed(1)
+    tail = torch.nn.Sequential(
+        Snake1d(96), CausalConvNet(96, 1, kernel_size=7), torch.nn.Tanh()
+    ).cuda()
+    with torch.no_grad():
+        tail[0].alpha.uniform_(0.1, 4.0)
+    codec = tiny_codec().cuda()
+    codec.fold_weight_norm()
+    codec.decoder.model = tail
+    decoder = ChannelsLastDecoder(codec, dtype=torch.float16)
+    activation = torch.randn(
+        batch_size, frame_count + 5, 96, device="cuda", dtype=torch.float16
+    )[:, :frame_count]
+
+    with torch.no_grad():
+        expected = tail(activation.transpose(1, 2).contiguous()).transpose(1, 2)
+        separate = torch.tanh(
+            decoder.causal_conv(
+                tail[1],
+                decoder.snake(tail[0], activation, tail[1].padding, 0),
+                original_frame_count=frame_count,
+            )
+        )
+        monkeypatch.setattr(
+            decoder, "causal_conv", lambda *_: pytest.fail("the tail used cuDNN")
+        )
+        fused = decoder.apply_sequence(tail, activation)
+
+    assert fused.shape == expected.shape == (batch_size, frame_count, 1)
+    assert fused.dtype == torch.float16
+    # One half ulp from the cuDNN path, within the fp16 modules' own rounding.
+    torch.testing.assert_close(fused.float(), separate.float(), rtol=0, atol=5e-4)
+    torch.testing.assert_close(fused.float(), expected.float(), rtol=0, atol=4e-3)
+
+
 @pytest.mark.parametrize(
     "chunk_frame_counts",
     [
