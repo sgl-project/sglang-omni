@@ -10,4 +10,4 @@ curl -s http://127.0.0.1:8005/v1/audio/speech -H 'Content-Type: application/json
   | ffmpeg -f s16le -ar 24000 -ac 1 -i - vivian.wav
 ```
 
-[`openai_speech`](../../../docs/developer_reference/full_duplex_interactive_model.md#openai_speech) says why the profiles clone one recording instead of naming a CustomVoice speaker.
+[`openai_speech`](../../../docs/developer_reference/full_duplex_guide.md#openai_speech) says why the profiles clone one recording instead of naming a CustomVoice speaker.

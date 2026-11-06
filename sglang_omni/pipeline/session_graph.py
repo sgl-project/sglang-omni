@@ -21,6 +21,7 @@ from sglang_omni.pipeline.sessions import (
     check_timing,
     output_chunk,
 )
+from sglang_omni.pipeline.types import SessionOutputBudgetError
 from sglang_omni.proto import OmniRequest
 from sglang_omni.proto.session import (
     GRAPH_INPUT,
@@ -30,6 +31,7 @@ from sglang_omni.proto.session import (
     SessionIdentity,
     SessionLimits,
     TimedChunk,
+    fragment_chunk,
     wire_size,
 )
 from sglang_omni.proto.streams import (
@@ -95,16 +97,26 @@ class SessionGraphRunner(CoordinatorSessions):
         *,
         should_preempt: bool = False,
     ) -> None:
-        """An interrupt naming a turn first drops what the Session still holds of that turn on its way to the target and from it.
+        """Fence the event at the target, then deliver it to the target's owners."""
+        if await self.fence_control_edge(graph, target, event):
+            await self.deliver_control_edge(
+                graph, target, edge, event, should_preempt=should_preempt
+            )
+        else:
+            pass
+
+    async def fence_control_edge(
+        self, graph: SessionGraphRuntime, target: str, event: TimedChunk
+    ) -> bool:
+        """An interrupt naming a turn first drops what the Session still holds of that turn on its way to the target and from it; returns whether the event still goes to the target's owners.
 
         The target's inbox and its node session's unsent appends lose the
-        turn's chunks from other nodes, and a later chunk of the turn no
-        longer enters the inbox; the target's pacer drops the turn's output,
-        the client's queue drops the turn's unread reply data, and the
-        target's readers are told how much of the turn's audio the
-        connection took. A preempting interrupt also names the turn's
-        appends already sent, and every owner of the target aborts them. The
-        client's own input stays.
+        turn's chunks from other nodes other than the controls about the
+        interruption, and a later chunk of the turn no longer enters the
+        inbox; the target's pacer drops the turn's output, the client's queue
+        drops the turn's unread reply data, and the target's readers are told
+        how much of the turn's audio the connection took. The client's own
+        input stays.
         """
         if control_type(event) == INTERRUPT and event.turn is not None:
             graph.interrupted_turns.setdefault(target, set()).add(event.turn)
@@ -112,7 +124,8 @@ class SessionGraphRunner(CoordinatorSessions):
             inbox.queued = deque(
                 item
                 for item in inbox.queued
-                if item[0] == GRAPH_INPUT or item[1].turn != event.turn
+                if item[0] == GRAPH_INPUT
+                or not is_interrupted_reply(item[1], event.turn)
             )
             inbox.counts = Counter(source for source, _, _ in inbox.queued)
             inbox.wake.set()
@@ -120,7 +133,7 @@ class SessionGraphRunner(CoordinatorSessions):
             kept = deque(
                 pending
                 for pending in node.pending
-                if pending.chunk.turn != event.turn
+                if not is_interrupted_reply(pending.chunk, event.turn)
                 or pending.chunk.seq in graph.client_sequences[target]
             )
             node.pending_count -= len(node.pending) - len(kept)
@@ -153,10 +166,22 @@ class SessionGraphRunner(CoordinatorSessions):
             else:
                 pass
             await self.report_delivered(graph, target, event.turn)
+            return True
         elif control_type(event) is None and self.is_interrupted(graph, target, event):
-            return
+            return False
         else:
-            pass
+            return True
+
+    async def deliver_control_edge(
+        self,
+        graph: SessionGraphRuntime,
+        target: str,
+        edge: ControlEdge,
+        event: TimedChunk,
+        *,
+        should_preempt: bool = False,
+    ) -> None:
+        """Hand a fenced event to every owner of the target; a preempting interrupt also names the turn's appends already sent, other than the controls about the interruption, and every owner aborts them."""
         should_preempt = edge.should_preempt or should_preempt
         if (
             should_preempt
@@ -171,7 +196,7 @@ class SessionGraphRunner(CoordinatorSessions):
             preempted_request_ids = tuple(
                 request_id
                 for request_id, chunk in node.submitted_appends.items()
-                if chunk.turn == event.turn
+                if is_interrupted_reply(chunk, event.turn)
                 and chunk.seq not in graph.client_sequences[target]
             )
         else:
@@ -433,10 +458,15 @@ class SessionGraphRunner(CoordinatorSessions):
         graph.eos_wake.set()
 
     async def forward_graph_inputs(self, graph: SessionGraphRuntime, name: str) -> None:
-        """Append one node's inbox in that node's own seq order; a chunk leaves the inbox once its node session accepts it."""
+        """Append one node's inbox in that node's own seq order; a chunk leaves the inbox once its node session accepts it.
+
+        A node's chunk over the node session's max_chunk_bytes leaves the
+        inbox as its fragments start to enter; the client's input was
+        admitted within the same bound.
+        """
         identity = graph.nodes[name]
         inbox = graph.inboxes[name]
-        loop = asyncio.get_running_loop()
+        max_chunk_bytes = self.sessions[identity.id].limits.max_chunk_bytes
         seq = 0
         deadline: float | None = None
         while True:
@@ -469,18 +499,22 @@ class SessionGraphRunner(CoordinatorSessions):
                     pass
             else:
                 pass
+            if (
+                client_seq is None
+                and wire_size(replace(chunk, seq=seq).to_dict()) > max_chunk_bytes
+            ):
+                inbox.queued.popleft()
+                inbox.counts[source] -= 1
+                inbox.wake.set()
+                seq = await self.append_fragments(graph, name, chunk, seq)
+                deadline = None
+                continue
+            else:
+                pass
             try:
                 await self.append_session(identity, replace(chunk, seq=seq))
             except QueueFullError:
-                if deadline is None:
-                    deadline = loop.time() + graph.limits.operation_timeout_s
-                elif loop.time() >= deadline:
-                    raise TimeoutError(
-                        f"graph node {name!r} rejected input seq {seq} for "
-                        f"{graph.limits.operation_timeout_s} s"
-                    ) from None
-                else:
-                    pass
+                deadline = self.full_input_deadline(graph, name, seq, deadline)
                 await asyncio.sleep(FULL_QUEUE_RETRY_S)
             else:
                 # Note (Junnan Li): The append completes without yielding, so the head is still the chunk it took.
@@ -494,13 +528,67 @@ class SessionGraphRunner(CoordinatorSessions):
                 seq += 1
                 deadline = None
 
+    async def append_fragments(
+        self, graph: SessionGraphRuntime, name: str, chunk: TimedChunk, seq: int
+    ) -> int:
+        """Append a node's chunk over max_chunk_bytes to node `name` as fragments from `seq`; returns the seq after the last one taken.
+
+        Every fragment but the last continues: the node session sends it to
+        its route's first owner, which holds it until the append of the last
+        restores the chunk. Once the chunk's turn is interrupted at `name`,
+        no more of its fragments enter, and the first owner drops the ones
+        it holds when input of another turn arrives.
+        """
+        identity = graph.nodes[name]
+        fragments = fragment_chunk(
+            chunk, seq, self.sessions[identity.id].limits.max_chunk_bytes
+        )
+        fragment, continues = next(fragments)
+        deadline: float | None = None
+        while not self.is_interrupted(graph, name, chunk):
+            try:
+                await self.append_session(identity, fragment, continues=continues)
+            except QueueFullError:
+                deadline = self.full_input_deadline(graph, name, fragment.seq, deadline)
+                await asyncio.sleep(FULL_QUEUE_RETRY_S)
+            else:
+                if continues:
+                    fragment, continues = next(fragments)
+                    deadline = None
+                else:
+                    return fragment.seq + 1
+        return fragment.seq
+
+    def full_input_deadline(
+        self,
+        graph: SessionGraphRuntime,
+        name: str,
+        seq: int,
+        deadline: float | None,
+    ) -> float:
+        """When node `name` must have taken input seq `seq` it refused as full; past it, the refusal fails the graph."""
+        now = asyncio.get_running_loop().time()
+        if deadline is None:
+            return now + graph.limits.operation_timeout_s
+        elif now >= deadline:
+            raise TimeoutError(
+                f"graph node {name!r} rejected input seq {seq} for "
+                f"{graph.limits.operation_timeout_s} s"
+            ) from None
+        else:
+            return deadline
+
     async def route_graph_outputs(self, graph: SessionGraphRuntime, name: str) -> None:
         """Deliver one node's outputs to its readers and, when published, to the client.
 
         A node with a pacer hands it what it publishes, and its published
         turn.done reaches the readers only when the pacer releases it; a
         node without one gets its published turn.done back once published.
+        A control is fenced at its targets at once and reaches their owners
+        in the background: until it has, the node's input confirmations and
+        the outputs only the client hears go on, and every other output waits.
         """
+        delivery: asyncio.Task[None] | None = None
         async for output in self.session_outputs(graph.nodes[name]):
             if output.kind == "input_done":
                 client_seq = graph.client_sequences[name].pop(output.input_seq, None)
@@ -533,8 +621,32 @@ class SessionGraphRunner(CoordinatorSessions):
                 pass
             is_published = self.is_client_output(graph, name, chunk)
             control_targets = graph.graph.control_targets(name, edge_event(chunk))
-            for target, edge in control_targets:
-                await self.control_edge(graph, target, edge, chunk)
+            pacer = graph.pacers.get(name)
+            readers = graph.graph.reading_nodes(name, output.format)
+            if delivery is None or (
+                is_published
+                and not control_targets
+                and not readers
+                and pacer is None
+                and control_type(chunk) != TURN_DONE
+            ):
+                pass
+            else:
+                await delivery
+                delivery = None
+            fenced_targets = [
+                (target, edge)
+                for target, edge in control_targets
+                if await self.fence_control_edge(graph, target, chunk)
+            ]
+            if fenced_targets:
+                delivery = asyncio.create_task(
+                    self.deliver_node_control(graph, name, fenced_targets, chunk)
+                )
+                graph.tasks.append(delivery)
+                delivery.add_done_callback(graph.tasks.remove)
+            else:
+                pass
             if control_targets and not (
                 is_published and control_type(chunk) in REPORT_CONTROLS
             ):
@@ -546,9 +658,8 @@ class SessionGraphRunner(CoordinatorSessions):
                 chunk = output_chunk(output)
             else:
                 pass
-            pacer = graph.pacers.get(name)
             if not holds_turn_end(chunk, pacer is not None, is_published):
-                for reader in graph.graph.reading_nodes(name, output.format):
+                for reader in readers:
                     await self.put_graph_inbox(graph, reader, name, chunk)
                     # Note (ruoyu): The chunk passed the fence before a full edge held it, and the interrupt may have landed during the wait.
                     if any(
@@ -577,6 +688,32 @@ class SessionGraphRunner(CoordinatorSessions):
                 self.return_turn_end(graph.nodes[name], output)
             else:
                 pass
+        if delivery is None:
+            pass
+        else:
+            await delivery
+
+    async def deliver_node_control(
+        self,
+        graph: SessionGraphRuntime,
+        name: str,
+        fenced_targets: list[tuple[str, ControlEdge]],
+        chunk: TimedChunk,
+    ) -> None:
+        """Deliver node `name`'s fenced control to its targets' owners in edge order; a failure outside a close fails the graph."""
+        try:
+            for target, edge in fenced_targets:
+                await self.deliver_control_edge(graph, target, edge, chunk)
+        except Exception as error:
+            if graph.is_closing:
+                pass
+            else:
+                logger.warning(
+                    f"graph {graph.session_identity.id} node {name} control failed",
+                    exc_info=error,
+                )
+                graph.error = graph.error or error
+                self.begin_graph_close(graph)
 
     def is_client_output(
         self, graph: SessionGraphRuntime, name: str, chunk: TimedChunk
@@ -675,7 +812,7 @@ class SessionGraphRunner(CoordinatorSessions):
         """Count an output against max_output_bytes until the client takes it; over the budget fails the graph."""
         size = wire_size(output.to_dict())
         if graph.output_bytes + size > graph.limits.max_output_bytes:
-            raise RuntimeError(
+            raise SessionOutputBudgetError(
                 f"output of graph node {name!r} exceeds max_output_bytes "
                 f"{graph.limits.max_output_bytes}; the client is not reading"
             )
@@ -747,7 +884,7 @@ class SessionGraphRunner(CoordinatorSessions):
             kind="input_done",
         )
         if graph.outputs.full():
-            raise RuntimeError(
+            raise SessionOutputBudgetError(
                 f"graph node {name!r} confirmed input seq {chunk.seq} while "
                 "max_output_chunks outputs wait for the client"
             )
@@ -838,3 +975,4 @@ class SessionGraphRunner(CoordinatorSessions):
         graph.output_bytes = 0
         graph.outputs.put_nowait(None)
         self.graphs.pop(graph.session_identity.id, None)
+        self.notify_session_closed()

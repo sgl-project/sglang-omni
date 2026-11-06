@@ -138,6 +138,24 @@ def test_two_unheard_interruptions_ask_both_utterances_again(dialog) -> None:
     assert len(unit.payload["pcm"]) == 3 * 640
 
 
+def test_a_truncate_names_the_reply_of_its_turn(dialog) -> None:
+    """A client truncate went to the latest reply whose turn.started the dialog saw, so a late or stale one for an earlier reply cut the next one."""
+    hooks, outputs, context = dialog
+    append(hooks, context, audio(0))
+    append(hooks, context, control_chunk(COMMIT))
+    append(hooks, context, control_chunk(TURN_STARTED, turn=1))
+    append(hooks, context, control_chunk(TURN_DONE, turn=1))
+    append(hooks, context, audio(20))
+    append(hooks, context, control_chunk(COMMIT))
+    append(hooks, context, control_chunk(TURN_STARTED, turn=2))
+    append(hooks, context, control_chunk(TRUNCATE, turn=1, t_ms=200))
+    append(hooks, context, control_chunk(TRUNCATE, t_ms=300))
+    assert [chunk.payload for chunk in outputs if chunk.format == TRUNCATE_FORMAT] == [
+        {"turn": 1, "t_ms": 200.0},
+        {"turn": 2, "t_ms": 300.0},
+    ]
+
+
 def test_a_client_interrupt_targets_the_turn_being_answered(dialog) -> None:
     hooks, outputs, context = dialog
     append(hooks, context, audio(0))

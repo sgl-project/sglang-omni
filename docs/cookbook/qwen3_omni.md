@@ -17,7 +17,7 @@ pip install --upgrade pip
 pip install uv
 
 uv venv .venv -p 3.12 && source .venv/bin/activate
-uv pip install --prerelease=allow "sglang-omni==0.1.9"
+uv pip install --prerelease=allow "sglang-omni==0.2.0"
 ```
 
 See [Installation](../get_started/installation.md) for Docker digests and source installs.
@@ -151,4 +151,40 @@ Current limits:
 - After an interruption, send `truncate` with the milliseconds of reply audio the listener heard (`conversation.item.truncate`); the model's history then keeps only that much of the reply. Without it, the whole reply generated so far stays in the history.
 - `instructions` cannot change after the first user turn is processed; open a new session instead.
 
-See [Session Graph](../developer_reference/full_duplex_interactive_model.md#session-graph) for the shared routing and delivery contracts.
+See [Session Graph](../developer_reference/full_duplex_guide.md#session-graph) for the shared routing and delivery contracts.
+
+## Speculative Decoding
+
+The thinker can verify tokens proposed by SpeechSpec's DFlash draft [`yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8`](https://huggingface.co/yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8) or EAGLE3 draft [`yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio`](https://huggingface.co/yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio) on a text-only server.
+
+```bash
+# DFlash: one 8-token block per step
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --text-only \
+  --thinker.engine.speculative_algorithm DFLASH \
+  --thinker.engine.speculative_draft_model_path yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8 \
+  --thinker.engine.speculative_num_draft_tokens 8 \
+  --port 8000
+
+# EAGLE3: a 3-step chain
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --text-only \
+  --thinker.engine.speculative_algorithm EAGLE3 \
+  --thinker.engine.speculative_draft_model_path yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio \
+  --thinker.engine.speculative_num_steps 3 \
+  --thinker.engine.speculative_eagle_topk 1 \
+  --thinker.engine.speculative_num_draft_tokens 4 \
+  --port 8000
+```
+
+- **Context.** The drafts shown above have an 8,192-token context. The prompt, output budget and speculative reservations must fit within it. Use `--preprocessing.factory.max_seq_len 8192` to reject oversized prompts early.
+- **Sampling.** Keep `repetition_penalty=1`, `frequency_penalty=0`, `presence_penalty=0`, and `min_p=0`. Disable logprobs and `return_hidden_states`. For `/generate`, send `return_logprob: false`.
+- **Scheduling.** Speculative decoding is synchronous by default. Add `--thinker.factory.enable_async_decode true` to either command to enable overlap, keeping `async_decode_min_batch_size=1`. Mixed prefill/decode batches (`enable_mixed_chunk=true`), sessions and weight updates are unsupported with a draft.
+- **Overlap trade-offs.** Overlap can improve decode throughput. Prefill-heavy workloads or short outputs can see higher TTFT and lower throughput.
+- **Prefill boundary.** Set `SGLANG_DISABLE_CONSECUTIVE_PREFILL_OVERLAP=1` before launch to process the previous prefill batch's result before launching the next consecutive prefill batch. This can lower TTFT at a throughput cost. Decode rounds continue to overlap.
+- **Execution failure.** An execution failure in speculative overlap stops the pipeline and fails its pending requests.
+- **Speech output.** Speech generation is unsupported with a draft; use `--text-only`.
+
+Compare modes with matching workloads and prefix-cache conditions. Measure TTFT, throughput and accuracy for your workload.

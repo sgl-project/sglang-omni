@@ -78,9 +78,11 @@ accepts finite nonnegative values (default 1.7).
 
 Responses are complete stereo PCM16 `wav` or raw interleaved `pcm` at
 32 kHz. `stream=true`, other formats and speed changes return 400. Only one
-song is generated at a time; a concurrent request returns 429. A disconnected
-client's generation releases the worker when computation finishes. Supervisor
-shutdown cancels between frames, acoustic windows and Euler steps. Voxt's
+song is generated at a time; a concurrent request returns 503. A request not
+answered `--request-timeout-s` seconds (1800 by default) after it is admitted
+returns 504. That deadline, a client disconnect and supervisor shutdown each
+cancel generation at its next frame, acoustic window or Euler step, which frees
+the server for the next request. Voxt's
 `--supervised` lifecycle, `/health` and `/v1/models` are supported; this does
 not add a Music3 interface to Voxt.
 
@@ -99,7 +101,7 @@ Startup loads configuration and the tokenizer and validates checkpoint shapes an
 
 The checkpoint directory is resolved once at startup; keep its contents unchanged while the server runs. No second host weight copy is retained. Reloading weights adds disk I/O and latency; file-backed pages can remain in the operating system's cache.
 
-The existing single-request worker owns both stages and returns 429 for concurrent submissions. Omitting the flag keeps both stages resident. Component names accept either order, surrounding whitespace and mixed case, matching the CUDA CLI. This option belongs to the native executable; CUDA continues to use the `sgl-omni serve` option described below.
+The existing single-request worker owns both stages and returns 503 for concurrent submissions. Omitting the flag keeps both stages resident. Component names accept either order, surrounding whitespace and mixed case, matching the CUDA CLI. This option belongs to the native executable; CUDA continues to use the `sgl-omni serve` option described below.
 
 `music3_synthesize` accepts the same flag and reports per-request elapsed time, AR elapsed time and peak active MLX allocation in bytes. Its diagnostic `--check-cancellation` flag cancels at the fully evaluated AR handoff before synthesizing a retry, and reports active MLX allocation before and after cancellation. The Mac golden harness runs short and cross-window cases in separate resident and offload processes and requires identical waveform digests and metadata. HTTP seeded-repeat and busy cases run in both modes; the remaining HTTP cases run resident. CI uploads WAVs from both modes for review. The earlier resident validation record below does not establish offload memory or latency results.
 
@@ -158,7 +160,8 @@ macOS 26.6.2 and MLX 0.32.3. The native CMake build, 21 selected Music3 tests,
 seven golden-harness tests, six server model-kind checks and two existing
 Whisper supervisor lifecycle checks passed. The Music3 tests cover WAV/PCM
 responses, exact seeded repeats, invalid requests and a concurrent request
-returning 429.
+refused as busy. They also cover the busy, deadline and disconnect paths
+above, each checking that the server returns to idle.
 
 | Reference case | Frames | Samples per channel | Peak PCM error | RMS PCM error |
 | --- | ---: | ---: | ---: | ---: |
@@ -593,6 +596,17 @@ CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --
 ```
 
 That serves 32 concurrent requests as 64 rows. Do not pass `engine.cuda_graph_max_bs` here: this model computes the cap itself so the graphs always cover the doubled batch, and a value you supply is discarded rather than honoured.
+
+### FP32 flex attention
+
+On CUDA, the default FP32 acoustic DIT uses PyTorch flex attention while retaining FP32 inputs and TF32 matmuls. To restore the previous SDPA path:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --port 8000 \
+  --dit_dav.factory.fp32_flex_attention false
+```
+
+The option resolves to flex attention only on CUDA with `dtype=float32` and `attention_backend=torch_sdpa`; MUSA, XPU, and other dtype/backend combinations retain their existing attention path. Flex-attention output is not byte-identical to SDPA, so validate generated audio for your workload when comparing the two paths.
 
 Send clients in parallel rather than in sequence:
 

@@ -14,6 +14,9 @@ from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.pending_text_queue import PendingTextTensorQueue
 from sglang_omni.scheduling.types import ARRequestData
 
+# ARRequestData.finish_reason of SGLang's FINISH_LENGTH: the request used up its token budget.
+FINISH_LENGTH_KIND = "length"
+
 
 @dataclass(frozen=True, kw_only=True)
 class EmbeddingSpan:
@@ -88,6 +91,7 @@ class SGLangARRequestData(ARRequestData):
     # note (Junnan Li): The bridge binds unit-relative spans to retained session history.
     unit_embedding_spans: list[EmbeddingSpan] = field(default_factory=list)
     session_embedding_spans: list[EmbeddingSpan] = field(default_factory=list)
+    session_history_length: int = 0
     synced: bool = False
     generation_steps: int = 0
     # Output tokens already handed to the runner and stream builder under

@@ -77,6 +77,7 @@ def adapter(monkeypatch: pytest.MonkeyPatch) -> QwenThinkerSessionAdapter:
             ),
             output_ids=[],
             stage_payload=None,
+            finish_reason=None,
         )
 
     monkeypatch.setattr(thinker_session, "build_sglang_thinker_request", build_request)

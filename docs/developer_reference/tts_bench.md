@@ -25,7 +25,7 @@ Each command does the whole cycle by itself:
 
 One GPU is enough. The TTS server and Qwen3-ASR run one after the other on it.
 
-The server uses the benchmark's engine settings (`--max-running-requests 64` and `--cuda-graph-max-bs 64`), not the model's own serve defaults. `server_logs/tts_server.log` in each output directory shows the exact server command. Fun-CosyVoice3 requests send no `max_new_tokens`, so the server applies the model's own length rule. The other models send 2048.
+The server uses the benchmark's engine settings (`--max-running-requests 64` and `--cuda-graph-max-bs 64`), not the model's own serve defaults. `server_logs/tts_server.log` in each output directory shows the exact server command. Qwen3-TTS and Fun-CosyVoice3 profiles omit `max_new_tokens`, so the server applies their model-specific length rules. Other model profiles send 2048.
 
 Every metric is in a JSON file in the model's output directory, under `summary`:
 

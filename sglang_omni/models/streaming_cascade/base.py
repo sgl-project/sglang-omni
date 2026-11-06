@@ -7,7 +7,7 @@ import os
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterable
 from functools import partial
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 import httpx
 import numpy as np
@@ -29,6 +29,11 @@ from sglang_omni.proto.streams import (
     control_type,
 )
 from sglang_omni.scheduling.session import ChunkEmitter
+
+if TYPE_CHECKING:
+    from sglang_omni.models.streaming_cascade.config import ComponentGraphConfig
+else:
+    pass
 
 SPEECH_SAMPLE_RATE_HZ = 24000
 PROBE_TIMEOUT_S = 10.0
@@ -64,16 +69,20 @@ class StreamComponent:
         """Whether replacing this component would discard work in progress."""
         return True
 
+    def place(self, settings: "ComponentGraphConfig", name: str) -> None:
+        """Learn what the graph around this node, named `name`, provides; a kind that needs nothing of it ignores it."""
+
     def state_bytes(self) -> int:
         return 0
 
 
 class ChatMessage(BaseModel):
-    """One history entry; `uncertain` marks an assistant reply cut where the listener may have heard part of the next sentence, and stays out of the model's prompt."""
+    """One history entry; uncertain marks an assistant reply cut where the listener may have heard part of the next sentence, and is_cut an assistant reply the listener cut before its end. Neither field goes into the request; is_cut changes how the prompt shows the reply."""
 
     role: Literal["system", "user", "assistant"]
     content: str = ""
     uncertain: bool = False
+    is_cut: bool = False
 
 
 def control_chunk(
@@ -142,7 +151,7 @@ def messages_chunk(
 
 
 def message_dict(message: ChatMessage) -> dict[str, object]:
-    return message.model_dump(exclude_none=True, exclude={"uncertain"})
+    return message.model_dump(exclude_none=True, exclude={"uncertain", "is_cut"})
 
 
 def audio_chunk(samples: np.ndarray, sample_rate_hz: int, turn: int) -> TimedChunk:
