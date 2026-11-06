@@ -58,14 +58,14 @@ func (m *Manager) Use(ctx context.Context, ids ...string) error {
 }
 
 // Migrate claims, with origin "migrated", the catalogue's models that are
-// on disk and no other app claims (not the borrowed ones): the first
-// start with the family's protocol (spec §15.2 step 3). Another app's
+// on disk and no other app claims (not the borrowed or retired ones): the
+// first start with the family's protocol (spec §15.2 step 3). Another app's
 // models are VoxtNew's when the user uses them (the setup guide's reuse
 // card). Disk only, no network; idempotent.
 func (m *Manager) Migrate(ctx context.Context) error {
 	var ids []string
 	for _, mod := range m.catalog {
-		if s := m.Status(mod.ID); !mod.Borrowed && len(s.Users) == 0 {
+		if s := m.Status(mod.ID); !mod.Borrowed && !mod.Retired && len(s.Users) == 0 {
 			ids = append(ids, mod.ID)
 		}
 	}
@@ -77,11 +77,16 @@ func (m *Manager) Migrate(ctx context.Context) error {
 // (family spec v1.0.9: the library moved to
 // ~/Library/Application Support/ActNow/models/hub): hard links, nothing
 // downloaded, the caches untouched. VoxtNew's previous claims are made
-// again there; the others are left to Migrate and the reuse card. It
-// returns how many models it brought and their bytes.
+// again there; the others are left to Migrate and the reuse card. A
+// retired model is left where it is: a new user is never shown a model
+// Voxt no longer uses. It returns how many models it brought and their
+// bytes.
 func (m *Manager) Import(ctx context.Context, backup bool) (n int, bytes int64, err error) {
 	var want []fammodels.Claim
 	for _, mod := range m.catalog {
+		if mod.Retired {
+			continue
+		}
 		for _, rev := range append([]string{mod.Revision}, mod.Accept...) {
 			if fammodels.IsCommit(rev) {
 				want = append(want, mod.Claim(rev, fammodels.OriginImported))
