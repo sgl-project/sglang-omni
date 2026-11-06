@@ -37,7 +37,7 @@ func TestAboutModels(t *testing.T) {
 	}
 	seedModels(t, a, models.ASRFast, models.VADSilero, models.LLMTranslate)
 	a.runSelfCheck()
-	if s := status(); s["speech"] != "pass Fast speech recognition" || s["language"] != "pass Translation model" {
+	if s := status(); s["speech"] != "pass Qwen3-ASR 0.6B (4bit)" || s["language"] != "pass Hy-MT2 1.8B (Q4_K_M)" {
 		t.Errorf("installed: %v", s)
 	}
 

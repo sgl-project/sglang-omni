@@ -32,7 +32,7 @@ func (a *app) featureModels(c *ui.Context, feature string) {
 		u.svcSeen = seen
 		u.asr, u.llm = modelLabel(readyA, f.ASR, autoA), modelLabel(readyL, f.LLM, autoL)
 	}
-	sectionTitleTip(c, i18n.T("Models"), i18n.T("Automatic uses the recommended model among those installed on the Local models page."))
+	sectionTitleTip(c, i18n.T("Models"), i18n.T("Automatic uses the recommended model among those installed on the Local models page. A remote language model (the Remote models page) is used when you choose it here, or when no local one is installed."))
 	opened := false // one "Open Local models" per page
 	openModels := func() {
 		if opened {

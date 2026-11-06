@@ -16,7 +16,6 @@ import (
 	"github.com/egoist/mygo/ui"
 	fammodels "github.com/hehehai/actnowkit/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -60,8 +59,8 @@ func (a *app) askDeleteModel(id string) {
 // stayed.
 func (a *app) deleteModel(id string, scope fammodels.Scope) {
 	del := a.models.Delete
-	if lib, ok := a.local.(*local.Library); ok {
-		del = lib.Delete
+	if a.localLib != nil {
+		del = a.localLib.Delete
 	}
 	a.async(func() {
 		res, err := del(context.Background(), id, scope)

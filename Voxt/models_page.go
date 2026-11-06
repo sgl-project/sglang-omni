@@ -32,8 +32,11 @@ const modelsPath = "/models"
 
 // modelsState is the local models and the Local models page's state.
 type modelsState struct {
-	local  local.Services
-	models *models.Manager
+	local local.Services
+	// localLib is the Library under local (nil when tests swap in fakes):
+	// a deletion unloads the model through it first.
+	localLib *local.Library
+	models   *models.Manager
 	// modelStatus is each catalogue model's status, as modelsChanged
 	// last read it.
 	modelStatus map[string]models.Status
@@ -66,7 +69,9 @@ func (a *app) openModels() {
 		a.models = models.Open(a.managerOptions(func() { a.post(a.modelsChanged) }))
 	}
 	if a.local == nil {
-		a.local = a.withDevLLM(newLocalServices(a)) // llm_link.go: VOXTNEW_DEV_LLM
+		base := newLocalServices(a)
+		a.localLib, _ = base.(*local.Library)
+		a.local = a.withRemote(a.withDevLLM(base)) // remote_link.go; llm_link.go: VOXTNEW_DEV_LLM
 	}
 	a.readModelStatus()
 	a.checkModels() // shell_notices.go

@@ -41,8 +41,9 @@ type Settings struct {
 	Updates        Updates        `json:"updates,omitzero"`
 	Network        Network        `json:"network,omitzero"`
 	Family         Family         `json:"family,omitzero"`
-	Models         Models         `json:"models,omitzero"`  // models.go
-	History        History        `json:"history,omitzero"` // history.go
+	Models         Models         `json:"models,omitzero"`    // models.go
+	History        History        `json:"history,omitzero"`   // history.go
+	Providers      Providers      `json:"providers,omitzero"` // providers.go
 }
 
 // General: languages and how the app stays around.
@@ -238,10 +239,11 @@ type Features struct {
 	Cancel Hotkey `json:"cancel"`
 }
 
-// Feature is what every feature has: its shortcuts, the local models it
-// uses (internal/local's Model.ID; "" = the first one installed, the
-// recommended one) and the user's addition to its task prompt, which the
-// composer merges with the built-in rules.
+// Feature is what every feature has: its shortcuts, the models it uses
+// (internal/local's Model.ID: a local model's, or LLM a remote one's,
+// Provider.ID; "" = the first one installed, the recommended one) and the
+// user's addition to its task prompt, which the composer merges with the
+// built-in rules.
 type Feature struct {
 	Hotkeys []Hotkey `json:"hotkeys,omitempty"`
 	ASR     string   `json:"asr,omitempty"`

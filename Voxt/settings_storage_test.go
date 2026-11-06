@@ -56,7 +56,7 @@ func TestStorageModels(t *testing.T) {
 	}
 	a.askErase()
 	frames(tt)
-	if !has(tt, "These models are also used by other apps and will be kept: Fast speech recognition (712.8 MB)") {
+	if !has(tt, "These models are also used by other apps and will be kept: Qwen3-ASR 0.6B (4bit) (712.8 MB)") {
 		t.Fatalf("no kept models: %q", tt.Texts())
 	}
 	a.resetText = "DELETE"

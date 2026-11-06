@@ -253,7 +253,7 @@ func TestLLMOpenerThroughLibrary(t *testing.T) {
 		t.Errorf("status %+v", st)
 	}
 	// Deleting another model leaves the process; deleting the loaded one stops it.
-	lib := a.local.(*local.Library)
+	lib := a.localLib
 	if _, err := lib.Delete(context.Background(), models.LLMBalanced, fammodels.ThisApp); err != nil || rt.Status().State != llmrt.Ready {
 		t.Errorf("delete balanced: %v %+v", err, rt.Status())
 	}
