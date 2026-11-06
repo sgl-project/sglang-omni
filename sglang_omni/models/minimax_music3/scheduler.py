@@ -6,6 +6,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from sglang.srt.managers.schedule_batch import NextBatchPlan, Req, ScheduleBatch
+from sglang.srt.mem_cache.prefill_budget import PrefillBudget
 
 from sglang_omni.models.minimax_music3.serial_offload import get_coordinator
 from sglang_omni.models.minimax_music3.sglang_request_builder import (
@@ -69,8 +70,14 @@ class MiniMaxMusic3Scheduler(OmniScheduler["MiniMaxMusic3SGLangRequestData"]):
     def get_new_batch_prefill(self, running_batch: ScheduleBatch) -> NextBatchPlan:
         queue = self.waiting_queue
         limit = self.pair_admission_limit(queue, running_batch)
-        if limit >= len(queue):
-            return super().get_new_batch_prefill(running_batch)
+        input_budget = self.max_prefill_tokens
+        if limit:
+            # note (Codex): The first-input exception must cover both CFG rows.
+            first_pair_tokens = sum(
+                -(-len(request.origin_input_ids) // self.page_size) * self.page_size
+                for request in queue[:2]
+            )
+            self.max_prefill_tokens = max(input_budget, first_pair_tokens + 1)
         else:
             pass
         deferred = queue[limit:]
@@ -78,7 +85,49 @@ class MiniMaxMusic3Scheduler(OmniScheduler["MiniMaxMusic3SGLangRequestData"]):
         try:
             return super().get_new_batch_prefill(running_batch)
         finally:
+            self.max_prefill_tokens = input_budget
             self.waiting_queue.extend(deferred)
+
+    def request_kv_capacity_error(
+        self, req: Req, *, session_capacity_checked: bool = False
+    ) -> str | None:
+        if session_capacity_checked:
+            error = super().request_kv_capacity_error(
+                req, session_capacity_checked=True
+            )
+        else:
+            error = super().request_kv_capacity_error(req)
+        if error is not None:
+            return error
+        else:
+            pass
+        memory_budget = self.token_to_kv_pool_allocator.create_prefill_budget(
+            self.tree_cache
+        )
+        self.reserve_request(memory_budget, req)
+        self.reserve_request(memory_budget, req)
+        pair_tokens = memory_budget.total_offset
+        capacity_tokens = self.token_to_kv_pool_allocator.size
+        if pair_tokens >= capacity_tokens:
+            return (
+                f"MiniMax Music 3 requires {pair_tokens} KV tokens for the full "
+                f"CFG pair, above the usable {capacity_tokens - 1}-token budget. "
+                "Raise engine.kv_cache_bytes or lower max_new_tokens."
+            )
+        else:
+            return None
+
+    def reserve_request(self, memory_budget: PrefillBudget, request: Req) -> None:
+        """Full prompt and decode reservation for a row that cannot be replayed."""
+        prompt_tokens = len(request.origin_input_ids)
+        memory_budget.reserve(
+            prompt_tokens,
+            request.sampling_params.max_new_tokens,
+            extra_tokens=self.token_to_kv_pool_allocator.request_slot_reserve(
+                has_req_pool_slot=request.kv.req_pool_idx is not None,
+                prefill_tokens=prompt_tokens,
+            ),
+        )
 
     def pair_admission_limit(
         self, queue: list[Req], running_batch: ScheduleBatch
@@ -89,11 +138,35 @@ class MiniMaxMusic3Scheduler(OmniScheduler["MiniMaxMusic3SGLangRequestData"]):
         limit -= limit % 2
         budget = int(self.max_prefill_tokens)
         tokens = 0
-        for index in range(0, limit, 2):
-            pair_tokens = len(queue[index].origin_input_ids) + len(
-                queue[index + 1].origin_input_ids
+        memory_budget = self.token_to_kv_pool_allocator.create_prefill_budget(
+            self.tree_cache
+        )
+        # note (Codex): Music3 cannot replay a retracted row's audio feedback.
+        for request in running_batch.reqs:
+            if request.finished():
+                continue
+            else:
+                pass
+            memory_budget.reserve(
+                0,
+                max(
+                    request.sampling_params.max_new_tokens - len(request.output_ids), 0
+                ),
             )
-            if index and tokens + pair_tokens > budget:
+        for index in range(0, limit, 2):
+            pair = queue[index : index + 2]
+            pair_tokens = sum(
+                memory_budget.ceil_paged_tokens(len(request.origin_input_ids))
+                for request in pair
+            )
+            if index and tokens + pair_tokens >= budget:
+                limit = index
+                break
+            else:
+                pass
+            for request in pair:
+                self.reserve_request(memory_budget, request)
+            if not memory_budget.has_capacity():
                 limit = index
                 break
             else:

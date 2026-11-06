@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
+from importlib import import_module
 from types import MethodType
 
 import torch
@@ -123,10 +124,17 @@ class MiniMaxMusic3DAV(nn.Module):
 
     def enable_compiled_decoder(self, *, warmup_mel_length: int) -> None:
         """Compile the upsampling stack, which runs on a crippled conv path."""
-        self.decoder.forward = MethodType(
-            torch.compile(type(self.decoder).forward, dynamic=True), self.decoder
-        )
         parameter = next(self.parameters())
+        backend = "inductor"
+        if parameter.device.type == "npu":
+            # Keep dynamic tail lengths compiled with the existing NPU backend.
+            backend = import_module("torchair").get_npu_backend()
+        else:
+            pass
+        self.decoder.forward = MethodType(
+            torch.compile(type(self.decoder).forward, backend=backend, dynamic=True),
+            self.decoder,
+        )
         with torch.inference_mode():
             self(
                 torch.zeros(
