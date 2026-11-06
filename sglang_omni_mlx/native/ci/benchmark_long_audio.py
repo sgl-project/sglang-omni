@@ -8,6 +8,7 @@ import json
 import math
 import platform
 import subprocess
+import threading
 import time
 from dataclasses import asdict, dataclass
 from importlib.metadata import version
@@ -40,7 +41,6 @@ from sglang_omni_mlx.native.tests.native_server import (
 
 # The worker returns MLX's cache after a request, with no signal to wait for.
 MEMORY_SETTLE_SECONDS = 2
-SAMPLER_JOIN_TIMEOUT_SECONDS = 5
 SHUTDOWN_TIMEOUT_SECONDS = 10
 
 
@@ -161,79 +161,89 @@ def run_case(
             stdout=subprocess.PIPE,
             stderr=log,
         )
-    sampler = MemorySampler(
-        process,
-        arguments.output / f"{name}.memory.jsonl",
-        int(arguments.max_footprint_gib * 1024**3),
+
+    def kill_at_deadline() -> None:
+        errors.append("Case wall-clock deadline exceeded")
+        process.kill()
+
+    # Every HTTP call has its own timeout; a stuck realtime send has none.
+    case_deadline = threading.Timer(
         EVENT_TIMEOUT_SECONDS
         + recording.audio_seconds / arguments.speed
         + 3 * arguments.timeout_seconds,
+        kill_at_deadline,
     )
-    sampler.thread.start()
-    try:
-        ready = read_supervised_event(process)
-        if ready["event"] != "ready":
-            raise RuntimeError(f"Server failed to start: {ready['reason']}")
-        else:
-            port = ready["port"]
-        sampler.phase = "warmup"
-        warmup = transcribe_http(port, warmup_wav, language, arguments.timeout_seconds)
-        time.sleep(MEMORY_SETTLE_SECONDS)
-        baseline = sampler.samples[-1]
-        sampler.phase = "long_recording"
-        if arguments.chunk_seconds is not None:
-            transcription = transcribe_chunks(
-                port,
-                wav_path,
-                chunk_frame_counts(recording.clip_frames, arguments.chunk_seconds),
-                language,
-                arguments.timeout_seconds,
+    case_deadline.daemon = True
+    case_deadline.start()
+    with MemorySampler(
+        process,
+        arguments.output / f"{name}.memory.jsonl",
+        int(arguments.max_footprint_gib * 1024**3),
+    ) as sampler:
+        try:
+            ready = read_supervised_event(process)
+            if ready["event"] != "ready":
+                raise RuntimeError(f"Server failed to start: {ready['reason']}")
+            else:
+                port = ready["port"]
+            sampler.phase = "warmup"
+            warmup = transcribe_http(
+                port, warmup_wav, language, arguments.timeout_seconds
             )
-        elif arguments.mode == "http":
-            transcription = transcribe_http(
-                port, wav_path.read_bytes(), language, arguments.timeout_seconds
+            time.sleep(MEMORY_SETTLE_SECONDS)
+            baseline = sampler.samples[-1]
+            sampler.phase = "long_recording"
+            if arguments.chunk_seconds is not None:
+                transcription = transcribe_chunks(
+                    port,
+                    wav_path,
+                    chunk_frame_counts(recording.clip_frames, arguments.chunk_seconds),
+                    language,
+                    arguments.timeout_seconds,
+                )
+            elif arguments.mode == "http":
+                transcription = transcribe_http(
+                    port, wav_path.read_bytes(), language, arguments.timeout_seconds
+                )
+            else:
+                transcription = stream_recording(
+                    port,
+                    wav_path,
+                    language,
+                    arguments.speed,
+                    arguments.timeout_seconds,
+                    arguments.output / f"{name}.events.jsonl",
+                )
+            sampler.phase = "post_session"
+            time.sleep(MEMORY_SETTLE_SECONDS)
+            session_end = sampler.samples[-1]
+            result.transcription = transcription
+            result.score = score(recording.reference, transcription.text, language)
+            result.baseline_footprint_bytes = baseline.footprint_bytes
+            result.warmup_peak_footprint_bytes = baseline.peak_footprint_bytes
+            result.peak_footprint_bytes = session_end.peak_footprint_bytes
+            result.post_session_footprint_bytes = session_end.footprint_bytes
+            if arguments.mode == "http":
+                result.real_time_factor = (
+                    transcription.wall_seconds / recording.audio_seconds
+                )
+            else:
+                pass
+            sampler.phase = "recovery"
+            recovery = transcribe_http(
+                port, warmup_wav, language, arguments.timeout_seconds
             )
-        else:
-            transcription = stream_recording(
-                port,
-                wav_path,
-                language,
-                arguments.speed,
-                arguments.timeout_seconds,
-                arguments.output / f"{name}.events.jsonl",
-            )
-        sampler.phase = "post_session"
-        time.sleep(MEMORY_SETTLE_SECONDS)
-        session_end = sampler.samples[-1]
-        result.transcription = transcription
-        result.score = score(recording.reference, transcription.text, language)
-        result.baseline_footprint_bytes = baseline.footprint_bytes
-        result.warmup_peak_footprint_bytes = baseline.peak_footprint_bytes
-        result.peak_footprint_bytes = session_end.peak_footprint_bytes
-        result.post_session_footprint_bytes = session_end.footprint_bytes
-        if arguments.mode == "http":
-            result.real_time_factor = (
-                transcription.wall_seconds / recording.audio_seconds
-            )
-        else:
-            pass
-        sampler.phase = "recovery"
-        recovery = transcribe_http(
-            port, warmup_wav, language, arguments.timeout_seconds
-        )
-        result.recovery_matches_warmup = recovery.text == warmup.text
-        time.sleep(MEMORY_SETTLE_SECONDS)
-        result.post_recovery_footprint_bytes = sampler.samples[-1].footprint_bytes
-        if recovery.text != warmup.text:
-            raise RuntimeError("Post-session transcript differs from warmup")
-        else:
-            result.status = "measured"
-    except Exception as error:
-        errors.append(f"{type(error).__name__}: {error}")
-    finally:
-        sampler.done.set()
-        sampler.thread.join(timeout=SAMPLER_JOIN_TIMEOUT_SECONDS)
-        shutdown_error = stop_server(process)
+            result.recovery_matches_warmup = recovery.text == warmup.text
+            time.sleep(MEMORY_SETTLE_SECONDS)
+            result.post_recovery_footprint_bytes = sampler.samples[-1].footprint_bytes
+            if recovery.text != warmup.text:
+                raise RuntimeError("Post-session transcript differs from warmup")
+            else:
+                result.status = "measured"
+        except Exception as error:
+            errors.append(f"{type(error).__name__}: {error}")
+    case_deadline.cancel()
+    shutdown_error = stop_server(process)
     if shutdown_error is not None:
         errors.append(shutdown_error)
     else:

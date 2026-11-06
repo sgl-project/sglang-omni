@@ -293,37 +293,14 @@ def test_realtime_pacing_starts_after_session_setup(
 
 
 @pytest.mark.skipif(platform.system() != "Darwin", reason="macOS process accounting")
-@pytest.mark.parametrize("limit_bytes,limit_seconds", [(1, 60), (2**40, 0)])
-def test_resource_guard_stops_its_child(
-    tmp_path: Path, limit_bytes: int, limit_seconds: float
-) -> None:
-    process = subprocess.Popen(
-        [sys.executable, "-c", "input()"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    sampler = MemorySampler(
-        process, tmp_path / "memory.jsonl", limit_bytes, limit_seconds
-    )
-    try:
-        sampler.thread.start()
-        assert process.wait(timeout=5) != 0
-        sampler.thread.join(timeout=5)
-        assert not sampler.thread.is_alive()
-        if limit_seconds == 0:
-            assert sampler.error == "Case wall-clock deadline exceeded"
-        else:
-            assert sampler.exceeded
-        assert sampler.samples[0].footprint_bytes > 0
-    finally:
-        sampler.done.set()
-        if process.poll() is None:
-            process.kill()
-            process.wait(timeout=5)
-        else:
-            pass
+def test_resource_guard_stops_its_child(tmp_path: Path) -> None:
+    with subprocess.Popen(
+        [sys.executable, "-c", "input()"], stdin=subprocess.PIPE
+    ) as process:
+        with MemorySampler(process, tmp_path / "memory.jsonl", 1) as sampler:
+            assert process.wait(timeout=5) != 0
+    assert sampler.exceeded
+    assert sampler.samples[0].footprint_bytes > 0
 
 
 @pytest.mark.skipif(platform.system() != "Darwin", reason="macOS process accounting")
@@ -343,9 +320,7 @@ def test_peak_footprint_includes_a_spike_freed_before_the_first_sample(
         text=True,
     ) as process:
         process.stdout.readline()
-        sampler = MemorySampler(
-            process, tmp_path / "memory.jsonl", spike_bytes // 2, 60
-        )
+        sampler = MemorySampler(process, tmp_path / "memory.jsonl", spike_bytes // 2)
         sampler.sample()
     assert sampler.exceeded
     assert sampler.samples[0].peak_footprint_bytes >= spike_bytes
@@ -363,7 +338,7 @@ def test_resource_guard_stops_child_when_trace_cannot_be_written(
         stderr=subprocess.PIPE,
         text=True,
     )
-    sampler = MemorySampler(process, tmp_path / "missing" / "memory.jsonl", 2**40, 60)
+    sampler = MemorySampler(process, tmp_path / "missing" / "memory.jsonl", 2**40)
     try:
         sampler.thread.start()
         assert process.wait(timeout=5) != 0

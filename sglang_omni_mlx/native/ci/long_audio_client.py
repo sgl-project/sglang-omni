@@ -15,6 +15,7 @@ import time
 import wave
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from types import TracebackType
 from typing import Literal
 
 from rapidfuzz.distance import Levenshtein
@@ -34,6 +35,7 @@ HTTP_TRANSCRIPTION_FIELDS = {
 MEMORY_SAMPLE_INTERVAL_SECONDS = 0.25
 REALTIME_MESSAGE_FRAMES = SAMPLE_RATE // 10
 RUSAGE_INFO_V4 = 4
+SAMPLER_JOIN_TIMEOUT_SECONDS = 5
 SESSION_SETUP_TIMEOUT_SECONDS = 10
 SOCKET_CLOSE_TIMEOUT_SECONDS = 5
 # The token budget of a Voxt Final request, from its Qwen3-ASR tuning.
@@ -130,23 +132,23 @@ class ProcessUsage(ctypes.Structure):
 
 
 class MemorySampler:
+    """Reads a server's memory on a thread while its context is open."""
+
     def __init__(
         self,
         process: subprocess.Popen[bytes],
         destination: Path,
         limit_bytes: int,
-        limit_seconds: float,
     ) -> None:
         self.process = process
         self.destination = destination
         self.limit_bytes = limit_bytes
-        self.limit_seconds = limit_seconds
         self.samples: list[MemorySample] = []
         self.phase = "startup"
         self.exceeded = False
         self.error = ""
         self.done = threading.Event()
-        self.library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        self.library = ctypes.CDLL(None, use_errno=True)
         self.library.proc_pid_rusage.argtypes = [
             ctypes.c_int,
             ctypes.c_int,
@@ -154,6 +156,19 @@ class MemorySampler:
         ]
         self.library.proc_pid_rusage.restype = ctypes.c_int
         self.thread = threading.Thread(target=self.sample, daemon=True)
+
+    def __enter__(self) -> MemorySampler:
+        self.thread.start()
+        return self
+
+    def __exit__(
+        self,
+        exception_type: type[BaseException] | None,
+        exception: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.done.set()
+        self.thread.join(timeout=SAMPLER_JOIN_TIMEOUT_SECONDS)
 
     def stop_on_error(self, message: str) -> None:
         self.error = message
@@ -186,10 +201,7 @@ class MemorySampler:
                         self.samples.append(sample)
                         output.write(json.dumps(asdict(sample)) + "\n")
                         output.flush()
-                    if time.monotonic() - started > self.limit_seconds:
-                        self.stop_on_error("Case wall-clock deadline exceeded")
-                        return
-                    elif usage.peak_footprint_bytes > self.limit_bytes:
+                    if usage.peak_footprint_bytes > self.limit_bytes:
                         self.exceeded = True
                         self.process.kill()
                         return
