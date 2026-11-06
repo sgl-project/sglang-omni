@@ -3,6 +3,90 @@
 Rules for Apple Silicon work. They write down what the native runtime PRs under
 [#2537](https://github.com/sgl-project/sglang-omni/issues/2537) already do.
 
+## Quickstart
+
+This example builds the native MLX runtime on an Apple Silicon Mac and generates speech with the Voxtral TTS 4-bit checkpoint.
+
+### Prerequisites
+
+Prepare the following tools:
+
+- An Apple Silicon Mac.
+- Xcode Command Line Tools, including a C++ compiler.
+- [`uv`](https://docs.astral.sh/uv/getting-started/installation/).
+- The [Hugging Face CLI](https://huggingface.co/docs/huggingface_hub/guides/cli), with `hf` available on your `PATH`.
+
+The checkpoint occupies about 2.5 GB. Allow additional disk space for build dependencies and artifacts.
+
+### Get the source and build
+
+```bash
+git clone https://github.com/sgl-project/sglang-omni.git
+cd sglang-omni
+
+sglang_omni_mlx/native/scripts/build_runtime.sh ~/omni-runtime
+```
+
+The build script prepares its build environment and installs the server binaries and runtime libraries into `~/omni-runtime/bin/`.
+
+### Download the model and start the server
+
+In the same terminal, from the repository root, download the pinned checkpoint:
+
+```bash
+hf download mlx-community/Voxtral-4B-TTS-2603-mlx-4bit \
+  --revision f98fc91b9cb5adc7dab56102c690458276c14c6a \
+  --local-dir voxtral-4b-tts-mlx-4bit
+```
+
+Start the server:
+
+```bash
+~/omni-runtime/bin/voxtral_tts_server \
+  --model-path voxtral-4b-tts-mlx-4bit \
+  --model-name mistralai/Voxtral-4B-TTS-2603 \
+  --port 8000
+```
+
+Keep this terminal running. In another terminal, check the server's health:
+
+```bash
+curl --fail-with-body --show-error \
+  http://127.0.0.1:8000/health
+```
+
+### Generate speech
+
+Send an English sentence and save the generated speech to `output.wav`:
+
+```bash
+curl --fail-with-body --show-error \
+  http://127.0.0.1:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "mistralai/Voxtral-4B-TTS-2603",
+    "voice": "cheerful_female",
+    "input": "SGLang-Omni is a great project!"
+  }' \
+  --output output.wav
+```
+
+When finished, press Ctrl-C in the server terminal to stop it.
+
+For other preset voices, streaming output, and native server limitations, see the [Voxtral TTS cookbook](../cookbook/voxtral_tts.md#apple-silicon-native-mlx).
+
+## Supported models
+
+The following models have native MLX setup instructions in the cookbook, listed in cookbook navigation order. Each model links directly to its native MLX section.
+
+| Model | Checkpoint variant | Task |
+| --- | --- | --- |
+| [Qwen3-TTS](../cookbook/qwen3_tts.md#apple-silicon-native-mlx) | 0.6B CustomVoice, BF16 | Text-to-speech |
+| [Fish Audio Drama3](../cookbook/fishaudio_drama3.md#apple-silicon-native-mlx) | 4-bit / 8-bit | Text-to-speech, voice cloning |
+| [Fun-CosyVoice3](../cookbook/fun_cosyvoice3.md#native-mlx-runtime) | 0.5B, FP16 | Text-to-speech, voice cloning |
+| [MiniMax Music3](../cookbook/minimax_music3.md#apple-silicon-native-mlx) | MXFP8 | Music generation |
+| [Voxtral TTS](../cookbook/voxtral_tts.md#apple-silicon-native-mlx) | 4B, 4-bit | Text-to-speech |
+
 ## Layout
 
 | Path | Contents |
