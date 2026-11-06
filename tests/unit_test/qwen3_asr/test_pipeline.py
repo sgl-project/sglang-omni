@@ -413,6 +413,16 @@ def test_qwen3_asr_torch_mps_profile_overrides_typed_torch_compile_default() -> 
     assert overrides["enable_torch_compile"] is False
 
 
+def test_qwen3_asr_torch_mps_keeps_requests_greedy_only(monkeypatch) -> None:
+    builder = make_engine_builder()
+    builder.device = "mps"
+    monkeypatch.setattr(
+        request_builders, "make_qwen3_asr_scheduler_adapters", lambda **kwargs: kwargs
+    )
+
+    assert builder.make_adapters(object())["greedy_only"] is True
+
+
 def test_qwen3_asr_config_uses_batched_stage_with_64_running_requests() -> None:
     config = Qwen3ASRPipelineConfig(model_path="Qwen/Qwen3-ASR-1.7B")
 
@@ -763,7 +773,7 @@ def test_qwen3_asr_dflash_build_uses_sync_runtime_and_cleans_resources(
     )
     assert scheduler.enable_async_decode is False
     assert scheduler.async_prefill is False
-    assert recorded.adapter_kwargs["greedy_only"] is True
+    assert recorded.adapter_kwargs["greedy_only"] is False
     assert recorded.build_kwargs["enable_mixed_chunk"] is False
     assert recorded.build_kwargs["disable_overlap_schedule"] is True
     assert not recorded.build_kwargs.get("disable_cuda_graph", False)

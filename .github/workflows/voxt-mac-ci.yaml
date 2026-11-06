@@ -55,7 +55,7 @@ jobs:
             const labels = pr.data.labels.map((label) => label.name);
             core.setOutput("labels", JSON.stringify(labels));
             core.setOutput("draft", pr.data.draft ? "true" : "false");
-            core.setOutput("is_selected", labels.includes("run-all-ci") || labels.includes("run-mac-ci"));
+            core.setOutput("is_selected", labels.includes("run-mac-ci"));
 
       - name: Block draft PR
         if: ${{ steps.pr.outputs.is_selected == 'true' && fromJson(steps.pr.outputs.draft) }}
