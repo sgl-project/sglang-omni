@@ -31,6 +31,7 @@ type harness struct {
 	mu         sync.Mutex
 	asr        asr.Provider
 	llm        LLM
+	fallback   LLM // Translate's fallback model (nil: none)
 	resolveErr error
 	logs       []string
 	// vadModel is the voice activity model the services have (nil: none).
@@ -53,6 +54,9 @@ func newHarness(t *testing.T, prov asr.Provider, model LLM, cfgFn func(*Config, 
 			svc := Services{ASR: h.asr, ASRInfo: Model{ID: "doubao", Name: "Doubao", Model: "seed"}, VAD: h.vadModel}
 			if h.llm != nil {
 				svc.LLM, svc.LLMInfo = h.llm, Model{ID: "deepseek", Name: "DeepSeek", Model: "deepseek-chat"}
+			}
+			if h.fallback != nil {
+				svc.Fallback, svc.FallbackInfo = h.fallback, Model{ID: "ollama", Name: "Ollama", Model: "qwen3"}
 			}
 			return svc, nil
 		},

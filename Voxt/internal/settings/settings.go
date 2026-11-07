@@ -283,6 +283,9 @@ type Translate struct {
 	// ShowCard shows the result in a card instead of inserting it (speech
 	// and selections alike).
 	ShowCard bool `json:"showCard,omitempty"`
+	// Fallback is the language model asked once more when LLM fails or
+	// does not open; "" = none.
+	Fallback string `json:"fallback,omitempty"`
 }
 
 // Rewrite: a spoken instruction rewrites the selection, or writes new
