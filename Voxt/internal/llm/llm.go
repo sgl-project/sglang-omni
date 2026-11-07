@@ -4,9 +4,11 @@
 //
 //   - the request and response types a session sends (Request, Response,
 //     Message, Format, Schema) and the skills that tag them;
-//   - Backend: one model, one attempt per call. VoxtNew's language models
-//     are local (internal/local: mlx-swift-lm and a few GGUF models in
-//     the voxtnew-llm process, internal/llmrt); there is no backend here;
+//   - Backend: one model, one attempt per call. VoxtNew's local language
+//     models run in the voxtnew-llm process (internal/llmrt, behind
+//     internal/local); the remote ones the user sets up are OpenAI here:
+//     Auralink's OpenAI-compatible chat completions transport and its
+//     services' presets (presets.json), with Probe for a connection test;
 //   - Client: a Backend plus timeouts, retries with backoff, usage
 //     accounting, thinking stripped from the text and JSON / structured
 //     output (schema validation and a repair retry).

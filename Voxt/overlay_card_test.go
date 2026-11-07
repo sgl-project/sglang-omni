@@ -222,7 +222,7 @@ func TestAnswerCardInteraction(t *testing.T) {
 		t.Fatal(err)
 	}
 	frames(mt)
-	if a.answer.langOpen || a.ov.lang.shown || a.answer.msg != "No language model is installed." || a.answer.lang != "zh-Hans" || !a.answer.open || a.ov.frame.Y+a.ov.frame.Height != card.Y+card.Height {
+	if a.answer.langOpen || a.ov.lang.shown || a.answer.msg != "No language model is set up." || a.answer.lang != "zh-Hans" || !a.answer.open || a.ov.frame.Y+a.ov.frame.Height != card.Y+card.Height {
 		t.Errorf("another language: %+v, menu %v", a.answer, a.ov.lang.shown)
 	}
 	// Escape closes the menu, not the card.

@@ -215,10 +215,11 @@ func TestLLMTranslateModel(t *testing.T) {
 	t.Logf("→ %q (llm %v)\n%s", end.Result, end.Timings.LLM.Round(time.Millisecond), strings.Join(chats, "\n"))
 }
 
-// TestLLMOpenerThroughLibrary: the catalogue's installed models open
-// through local.Openers' LLM (models_runtimes.go), and deleting the loaded
-// one stops the process first (Openers.Unload).
-func TestLLMOpenerThroughLibrary(t *testing.T) {
+// TestLLMOpener: the catalogue's installed models open through
+// local.Openers' LLM (models_runtimes.go; the Library offers none since
+// they are retired), and deleting the loaded one through the Library stops
+// the process first (Openers.Unload).
+func TestLLMOpener(t *testing.T) {
 	// The fake process and seeded models, also beside VOXTNEW_LLM_REAL's
 	// variables (scripts/mac-regress.sh runs TestLLM* with them).
 	t.Setenv(llmrt.DevEnv, "")
@@ -229,9 +230,9 @@ func TestLLMOpenerThroughLibrary(t *testing.T) {
 	a.llmrt = rt
 	t.Cleanup(rt.Stop)
 	seedModels(t, a, models.LLMBalanced, models.LLMTranslate)
-	chat, m, err := a.local.LLM(context.Background(), "")
-	if err != nil || m.ID != models.LLMBalanced {
-		t.Fatalf("LLM: %+v %v", m, err)
+	chat, err := a.openLLM(context.Background(), models.LLMBalanced, a.models.Dir(models.LLMBalanced))
+	if err != nil {
+		t.Fatal(err)
 	}
 	resp, err := chat.Chat(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.User, Content: "hi"}}, Skill: llm.SkillRewrite})
 	if err != nil || resp.Text != "Done." {
@@ -241,7 +242,7 @@ func TestLLMOpenerThroughLibrary(t *testing.T) {
 		t.Errorf("status %+v", st)
 	}
 	// The translation model's file is the catalogue's.
-	tr, _, err := a.local.LLM(context.Background(), models.LLMTranslate)
+	tr, err := a.openLLM(context.Background(), models.LLMTranslate, a.models.Dir(models.LLMTranslate))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +254,7 @@ func TestLLMOpenerThroughLibrary(t *testing.T) {
 		t.Errorf("status %+v", st)
 	}
 	// Deleting another model leaves the process; deleting the loaded one stops it.
-	lib := a.local.(*local.Library)
+	lib := a.localLib
 	if _, err := lib.Delete(context.Background(), models.LLMBalanced, fammodels.ThisApp); err != nil || rt.Status().State != llmrt.Ready {
 		t.Errorf("delete balanced: %v %+v", err, rt.Status())
 	}

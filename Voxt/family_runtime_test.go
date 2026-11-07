@@ -150,7 +150,7 @@ func TestFamilyRuntimeLLM(t *testing.T) {
 	events := make(chan resident.Event, 256)
 	a.llmrt = llmrt.New(llmrt.Config{Bin: self, Env: env, IdleTimeout: -1,
 		OnModel: reportTo(events, a.modelEvents(workerLLM)), BeforeLoad: a.beforeLoad()})
-	chat, _, err := a.local.LLM(context.Background(), models.LLMFast)
+	chat, err := a.openLLM(context.Background(), models.LLMFast, a.models.Dir(models.LLMFast))
 	if err != nil {
 		t.Fatal(err)
 	}

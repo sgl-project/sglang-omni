@@ -2,7 +2,7 @@
 
 [English](README.md) · **简体中文**
 
-**只用本地模型**的 macOS 语音输入：在任意 App 里按下快捷键说话，文字出现在光标处。
+macOS 语音输入：在任意 App 里按下快捷键说话，文字出现在光标处。语音**在你的 Mac 上**识别；整理、翻译和改写用的语言模型由你选择：服务商的 API，或者用 Ollama 在这台 Mac 上运行的模型。
 
 - **转录**：把说的话输入到光标处，说话时实时显示文字，可以再由语言模型整理（去掉口头语和说了一半的话，补上标点）。
 - **翻译**：把选中的文字，或者说的话，译成另一种语言。
@@ -20,29 +20,27 @@
 
 ## 在你的 Mac 上运行什么
 
-所有听到、读到你的话的部分都在本机：
+所有听到你说话的部分都在本机：
 
 - **语音识别**和**声音检测**跑在 sglang-omni 的原生 MLX 服务上（[`sglang_omni_mlx/native`](../sglang_omni_mlx/native)，C++，不用 Python），每个模型一个进程，用到时启动，10 分钟不用就停（本地模型页的“高级”里可以改）。
-- **语言模型**跑在 Voxt 自己的 Swift 进程 `voxtnew-llm` 里（MLX，其中一个模型用 llama.cpp），5 分钟不用就停（同样可以改）。
 - 一个小的 Swift 辅助进程负责要用苹果框架的事：麦克风、全局快捷键、辅助功能、粘贴。
 
 Voxt 只提供少数几个为它调好的模型，在你需要时从 Hugging Face（或镜像）下载，每个文件都按固定的 SHA-256 校验：
 
 | 模型 | 擅长什么 | 下载大小 |
 |---|---|---|
-| 精准语音识别（推荐） | 最准确；口音、方言、人名、一句话里夹几种语言；实时显示文字 | 2.5 GB |
-| 快速语音识别 | 更快、更省内存，适合在安静环境里清晰地说话 | 713 MB |
-| 均衡语言模型（推荐） | 整理、翻译和改写：质量和速度最均衡 | 3.3 GB |
-| 快速语言模型 | 回答更快、内存更少；简短的整理和简单的改写 | 1.7 GB |
-| 翻译专用模型 | 专门做翻译，快而自然；只有翻译用它 | 1.1 GB |
+| Qwen3-ASR 1.7B (8bit)（推荐） | 最准确；口音、方言、人名、一句话里夹几种语言；实时显示文字 | 2.5 GB |
+| Qwen3-ASR 0.6B (4bit) | 更快、更省内存，适合在安静环境里清晰地说话 | 713 MB |
 
-声音检测（1.2 MB）随第一个语音识别模型一起安装。语音识别模型支持 30 种语言和 22 种中文方言；通用语言模型中英文最好。
+声音检测（Silero VAD v6，1.2 MB）随第一个语音识别模型一起安装。语音识别模型支持 30 种语言和 22 种中文方言。
 
-**需要** Apple 芯片、macOS 15 及以上的 Mac。app 约 280 MB；推荐的两个模型共需下载 5.8 GB（五个模型全装 9.4 GB）。两个推荐模型都加载时约占 7 GB 内存，16 GB 内存的 Mac 比较从容；8 GB 内存的 Mac 请选快速的模型。
+**语言模型**是你在“语言模型”页设置的服务，通过它们的 OpenAI 兼容 API 调用：OpenAI、Anthropic、Google Gemini、DeepSeek、通义千问（阿里云百炼）、Kimi、智谱 GLM、豆包（火山方舟）、MiniMax、阶跃星辰、小米 MiMo、xAI、OpenRouter，其他兼容的服务，或者本机的服务（Ollama、LM Studio、oMLX：免费，文字不离开这台 Mac）。没有语言模型时，转录直接输入识别出的原文；翻译和转写需要它。
+
+**需要** Apple 芯片、macOS 15 及以上的 Mac。app 约 280 MB；推荐的语音识别模型需下载 2.5 GB。8 GB 内存的 Mac 请选 Qwen3-ASR 0.6B (4bit)。
 
 ## 隐私
 
-音频和文字不会离开这台 Mac：识别、整理、翻译和改写都在本机完成。Voxt 没有自己的服务器，不需要账号，也不做统计。它只在一种情况下联网：下载你选择的模型（从 Hugging Face，走系统代理；连不上时用 hf-mirror.com）。历史、可选保存的录音、词典和设置都在 `~/Library/Application Support/VoxtNew/`。
+语音在这台 Mac 上识别；如果你在语音模型页给某个功能设置了在线语音服务（OpenAI、豆包、阿里云等），这个功能的录音会发给那个服务。要整理、翻译或改写的文字只发给你设置的语言模型；用 Ollama、LM Studio 或 oMLX 时文字也留在本机。API Key 保存在 macOS 钥匙串里。Voxt 没有自己的服务器，不需要账号，也不做统计。除此之外它只在下载你选择的模型时联网（从 Hugging Face，走系统代理；连不上时用 hf-mirror.com）。历史、可选保存的录音、词典和设置都在 `~/Library/Application Support/VoxtNew/`。
 
 ## 从源码构建
 
@@ -106,7 +104,7 @@ scripts/mac.sh scripts/mac-regress.sh   # Mac 上的真实模型：运行时、�
 - [AGENTS.md](AGENTS.md)：改动规则（文字、线程、协议）。
 - [CHANGELOG.md](CHANGELOG.md)：各版本的变化。[CONTRIBUTING.md](CONTRIBUTING.md)：怎么提交改动。
 
-Voxt 取代了本仓在 2.0.0 之前的 Swift 版 Voxt（1.x）：装上它会替换“应用程序”里那个 Voxt.app，两者的数据互不相干。内部有些名字仍叫 VoxtNew（Swift 包、进程、bundle id 和数据目录）。它由 [Auralink](https://github.com/hehehai/Auralink) 复制而来。Auralink 是同一作者基于远程模型的应用，它用 Go 和 MyGo 以 [AudioSmith](https://github.com/hehehai/AudioSmith) 的界面重写了 [Voxt](https://github.com/hehehai/voxt)；VoxtNew 的本地模型运行时和请求策略沿用 Voxt 的做法。
+Voxt 取代了本仓在 2.0.0 之前的 Swift 版 Voxt（1.x）：装上它会替换“应用程序”里那个 Voxt.app，两者的数据互不相干；Voxt 可以把旧版的词典、历史和下载好的语音模型导入过来（[docs/voxt-migration.md](docs/voxt-migration.md)）。内部有些名字仍叫 VoxtNew（Swift 包、进程、bundle id 和数据目录）。它由 [Auralink](https://github.com/hehehai/Auralink) 复制而来。Auralink 是同一作者基于远程模型的应用，它用 Go 和 MyGo 以 [AudioSmith](https://github.com/hehehai/AudioSmith) 的界面重写了 [Voxt](https://github.com/hehehai/voxt)；VoxtNew 的本地模型运行时和请求策略沿用 Voxt 的做法。
 
 ## 许可
 

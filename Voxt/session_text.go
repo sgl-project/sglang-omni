@@ -9,6 +9,7 @@ import (
 	"errors"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -36,9 +37,12 @@ func sessionProblemText(p *session.Problem) (text, more, action string) {
 			}
 			return i18n.T("Used the live text: full recognition failed."), more, actionNone
 		}
+		if errors.Is(p.Err, dictation.ErrNotAllowed) {
+			return i18n.T("Speech recognition failed: %s", msg), more, actionPermissions
+		}
 		return i18n.T("Speech recognition failed: %s", msg), more, actionModels
 	case session.ProblemNoLLM:
-		return i18n.T("No language model is installed."), "", actionModels
+		return i18n.T("No language model is set up."), "", actionLanguage
 	case session.ProblemEmpty:
 		return i18n.T("The language model answered nothing."), "", actionNone
 	case session.ProblemTruncated:
@@ -46,7 +50,7 @@ func sessionProblemText(p *session.Problem) (text, more, action string) {
 	case session.ProblemLLM:
 		if !p.Degraded {
 			msg, more := uitext.ModelErrorText(p.Err)
-			return i18n.T("The language model failed: %s", msg), more, actionModels
+			return i18n.T("The language model failed: %s", msg), more, actionLanguage
 		}
 		_, more := uitext.ModelErrorText(p.Err)
 		var le *llm.Error
@@ -75,7 +79,9 @@ func errText(err error) string {
 func noticeActionLabel(action string) string {
 	switch action {
 	case actionModels:
-		return i18n.T("Open Local models")
+		return i18n.T("Open Speech models")
+	case actionLanguage:
+		return i18n.T("Open Language models")
 	case actionPermissions:
 		return i18n.T("Open Permissions")
 	case actionHelper:

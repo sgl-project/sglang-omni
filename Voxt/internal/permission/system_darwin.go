@@ -35,6 +35,7 @@ func load() error {
 			"objc":   "/usr/lib/libobjc.A.dylib",
 			"appsvc": "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices",
 			"av":     "/System/Library/Frameworks/AVFoundation.framework/AVFoundation",
+			"speech": "/System/Library/Frameworks/Speech.framework/Speech", // SFSpeechRecognizer's class
 		} {
 			h, err := purego.Dlopen(path, rtld)
 			if err != nil {
@@ -75,10 +76,12 @@ func pooled(fn func()) {
 }
 
 var (
-	selAuthStatus = objc.RegisterName("authorizationStatusForMediaType:")
-	selRequest    = objc.RegisterName("requestAccessForMediaType:completionHandler:")
-	selNumberBool = objc.RegisterName("numberWithBool:")
-	selDictWith   = objc.RegisterName("dictionaryWithObject:forKey:")
+	selAuthStatus   = objc.RegisterName("authorizationStatusForMediaType:")
+	selRequest      = objc.RegisterName("requestAccessForMediaType:completionHandler:")
+	selSpeechStatus = objc.RegisterName("authorizationStatus")
+	selSpeechAsk    = objc.RegisterName("requestAuthorization:")
+	selNumberBool   = objc.RegisterName("numberWithBool:")
+	selDictWith     = objc.RegisterName("dictionaryWithObject:forKey:")
 )
 
 type native struct{}
@@ -148,6 +151,47 @@ func (native) RequestMicrophone(done func(bool)) {
 	})
 	pooled(func() {
 		objc.ID(objc.GetClass("AVCaptureDevice")).Send(selRequest, mac.avMediaTypeAudio, block)
+	})
+	block.Release()
+}
+
+func (native) SpeechRecognition() State {
+	if load() != nil {
+		return Unknown
+	}
+	var st int
+	pooled(func() {
+		st = objc.Send[int](objc.ID(objc.GetClass("SFSpeechRecognizer")), selSpeechStatus)
+	})
+	return speechState(st)
+}
+
+// speechState is an SFSpeechRecognizerAuthorizationStatus's State (not
+// AVAuthorizationStatus's order).
+func speechState(st int) State {
+	switch st {
+	case 0:
+		return NotDetermined
+	case 1:
+		return Denied
+	case 2:
+		return Restricted
+	case 3:
+		return Granted
+	}
+	return Unknown
+}
+
+func (native) RequestSpeechRecognition(done func(bool)) {
+	if load() != nil {
+		go done(false)
+		return
+	}
+	block := objc.NewBlock(func(_ objc.Block, status int) {
+		go done(speechState(status) == Granted)
+	})
+	pooled(func() {
+		objc.ID(objc.GetClass("SFSpeechRecognizer")).Send(selSpeechAsk, block)
 	})
 	block.Release()
 }

@@ -181,6 +181,9 @@ else
   VOXTNEW_SIGN_IDENTITY="${IDENTITY:--}" scripts/build-llm.sh
 fi
 [[ -x "$RES/omni/bin/qwen3_asr_server" ]] || { echo "no Omni runtime in $RES/omni" >&2; exit 1; }
+# A runtime built before silero_vad_server (Silero VAD's copy of
+# qwen3_asr_server, internal/omni Spec.Binary) gets it here.
+[[ -x "$RES/omni/bin/silero_vad_server" ]] || cp -c "$RES/omni/bin/qwen3_asr_server" "$RES/omni/bin/silero_vad_server"
 [[ -x "$RES/llm/voxtnew-llm" ]] || { echo "no voxtnew-llm in $RES/llm" >&2; exit 1; }
 
 echo "== configuration"

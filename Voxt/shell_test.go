@@ -185,10 +185,10 @@ func TestProblemCards(t *testing.T) {
 	if has(tt, "Helper ready") || has(tt, "No provider set up") {
 		t.Errorf("a status bar: %q", firstTexts(tt))
 	}
-	if !hasExact(tt, "No models installed") || !has(tt, "Install a speech model and a language model to start.") {
+	if !hasExact(tt, "No models") || !has(tt, "Install a speech model, then set up a language model, to start.") {
 		t.Fatalf("no models card: %q", firstTexts(tt))
 	}
-	click(t, tt, "Open Local models")
+	click(t, tt, "Open Speech models")
 	if a.router.Path() != modelsPath {
 		t.Errorf("its action: %s", a.router.Path())
 	}
@@ -213,17 +213,17 @@ func TestProblemCards(t *testing.T) {
 	}
 	// Dismissed: not again while the problem lasts, even as settings change.
 	click(t, tt, "Dismiss")
-	if hasExact(tt, "No models installed") || len(a.notices) != 0 {
+	if hasExact(tt, "No models") || len(a.notices) != 0 {
 		t.Fatalf("dismissed: %+v", a.notices)
 	}
 	a.updateSettings(func(s *settings.Settings) { s.Appearance.Theme = "dark" })
-	if hasExact(tt, "No models installed") {
+	if hasExact(tt, "No models") {
 		t.Error("came back")
 	}
 	// Solved, then wrong again: it shows again, with the new text.
 	a.local = &fakeLocal{ASRP: &fakeTranscriptions{}}
 	a.checkModels() // as installing a model does
-	if !hasExact(tt, "No language model") {
+	if !hasExact(tt, "No language model") || !has(tt, "Open Language models") {
 		t.Errorf("language model card: %+v", a.notices)
 	}
 	// The rail: a dot on Settings, which opens the cards.
@@ -250,7 +250,7 @@ func TestPermissionsSettings(t *testing.T) {
 	if a.shownPath() != "/settings/permissions" {
 		t.Fatalf("shown %s", a.shownPath())
 	}
-	for _, s := range []string{"Microphone", "Accessibility", "Not asked yet", "Check again"} {
+	for _, s := range []string{"Microphone", "Accessibility", "Speech Recognition", "Not asked yet", "Check again"} {
 		if !has(tt, s) {
 			t.Errorf("section lacks %q", s)
 		}
@@ -262,7 +262,7 @@ func TestPermissionsSettings(t *testing.T) {
 	}
 	// The helper's view of the permissions wins: the microphone is not
 	// asked yet there.
-	if !slices.Contains(fs.methods(), proto.MethodPermissionsStatus) || a.perms.mic != permission.NotDetermined || a.perms.access {
+	if !slices.Contains(fs.methods(), proto.MethodPermissionsStatus) || a.perms.mic != permission.NotDetermined || a.perms.access || a.perms.speech != permission.NotDetermined {
 		t.Errorf("permissions %+v after %v", a.perms, fs.methods())
 	}
 	if slices.ContainsFunc(fs.methods(), func(m string) bool { return strings.HasPrefix(m, "automation.") }) {
@@ -275,6 +275,11 @@ func TestPermissionsSettings(t *testing.T) {
 	}
 	if f := a.permSys.(*permission.Fake); f.Prompted != 0 {
 		t.Errorf("asked from the app: %d", f.Prompted)
+	}
+	// Speech Recognition is asked through the helper too, and its answer shows.
+	a.askPermission(proto.PermissionSpeechRecognition)
+	if a.perms.speech != permission.Granted {
+		t.Errorf("speech recognition after asking: %+v", a.perms)
 	}
 	// Without the helper, Accessibility is asked from the app.
 	fs.set(helper.Status{State: helper.Failed, Reason: helper.FailCrashed})
@@ -317,15 +322,40 @@ func TestPrivacyGoesOnline(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate("/settings/privacy")
 	frames(tt)
-	if !has(tt, "Voxt goes online only to check for updates and to download models: once the models are installed, it works offline.") {
+	if !has(tt, "Otherwise Voxt goes online only to check for updates and to download models.") {
 		t.Errorf("with an update feed: %q", firstTexts(tt))
 	}
 	a.upd = nil
 	a.navigate("/home")
 	a.navigate("/settings/privacy")
 	frames(tt)
-	if !has(tt, "Voxt goes online only to download models: once they are installed, it works offline.") || has(tt, "check for updates") {
+	if !has(tt, "Otherwise Voxt goes online only to download models.") || has(tt, "check for updates") {
 		t.Errorf("without an update feed: %q", firstTexts(tt))
+	}
+}
+
+// TestPrivacyNamesSpeechServices: a remote speech service gets the
+// recordings, so Settings → Privacy and the microphone prompts (the app's
+// and the helper's) say so instead of "the audio never leaves the Mac".
+func TestPrivacyNamesSpeechServices(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/privacy")
+	frames(tt)
+	if !slices.ContainsFunc(tt.Texts(), func(s string) bool {
+		return strings.Contains(s, "Your recordings") && strings.Contains(s, "speech service")
+	}) {
+		t.Errorf("Privacy: %q", firstTexts(tt))
+	}
+	for file, next := range map[string]int{"mygo.json": 0, "helper/Support/Info.plist": 1} {
+		b, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(string(b), "\n")
+		i := slices.IndexFunc(lines, func(l string) bool { return strings.Contains(l, "NSMicrophoneUsageDescription") })
+		if i < 0 || i+next >= len(lines) || !strings.Contains(lines[i+next], "speech service") {
+			t.Errorf("%s: the microphone prompt does not name the speech service", file)
+		}
 	}
 }
 
@@ -335,6 +365,9 @@ func TestPrivacyClearsHistory(t *testing.T) {
 	for i, id := range []string{"a", "b"} {
 		h.Put(context.Background(), store.Entry{ID: id, Kind: store.KindTranscribe, CreatedAt: time.Now().Add(time.Duration(i) * time.Second), Result: "x"})
 	}
+	// Room for the whole page: a click below the window lands nowhere, and
+	// how far down Clear… is depends on the fonts (CI's wrap more lines).
+	tt.SetSize(windowWidth, 1000)
 	a.navigate("/settings/privacy")
 	click(t, tt, "Clear…")
 	if !a.clearHistoryAsk {

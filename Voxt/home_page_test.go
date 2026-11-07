@@ -50,7 +50,8 @@ func allowAll(a *app) {
 func TestHomeReadiness(t *testing.T) {
 	a, tt := homeTester(t)
 	for _, s := range []string{
-		"No speech model or language model is installed: install one of each to start.",
+		"No speech model is installed: install one to transcribe, translate and rewrite by voice.",
+		"No language model is set up: Translate and Rewrite need one, and Transcribe types the text as recognised.",
 		"Without Accessibility results are copied for you to paste, and shortcuts such as Right ⌥ do not work.",
 		"Right ⌥ (once Accessibility is allowed)",
 		"Try it", "Today", "Recent results", "Results show here once you use a shortcut.",
@@ -62,16 +63,22 @@ func TestHomeReadiness(t *testing.T) {
 	if !hasSuffix(tt, " steps to go") {
 		t.Errorf("no steps to go: %q", tt.Texts())
 	}
-	// The whole line is the way to fix it.
-	click(t, tt, "Models: Open Local models")
+	// The whole line is the way to fix it: speech models are local,
+	// language models are set up on their page.
+	click(t, tt, "Speech recognition: Open Speech models")
 	if a.shownPath() != modelsPath {
+		t.Fatalf("went to %s", a.shownPath())
+	}
+	a.navigate("/home")
+	click(t, tt, "Language model: Open Language models")
+	if a.shownPath() != remotePath {
 		t.Fatalf("went to %s", a.shownPath())
 	}
 	a.navigate("/home")
 
 	// A speech model only: the language model is missing.
 	a.local = &fakeLocal{ASRP: &fakeTranscriptions{}}
-	if !has(tt, "No language model is installed: Translate and Rewrite need one, and Transcribe types the text as recognised.") || !has(tt, fakeASRModel.Name) {
+	if !has(tt, "No language model is set up: Translate and Rewrite need one, and Transcribe types the text as recognised.") || !has(tt, fakeASRModel.Name) {
 		t.Errorf("no language model: %q", tt.Texts())
 	}
 
@@ -124,7 +131,7 @@ func TestHomeReadinessLive(t *testing.T) {
 	}
 	// The language model removed.
 	a.local.(*fakeLocal).Chat = nil
-	if !has(tt, "1 step to go") || !has(tt, "No language model is installed: Translate and Rewrite need one, and Transcribe types the text as recognised.") {
+	if !has(tt, "1 step to go") || !has(tt, "No language model is set up: Translate and Rewrite need one, and Transcribe types the text as recognised.") {
 		t.Errorf("model deleted: %q", tt.Texts())
 	}
 	readyModels(a)

@@ -32,14 +32,14 @@ func (a *app) featureModels(c *ui.Context, feature string) {
 		u.svcSeen = seen
 		u.asr, u.llm = modelLabel(readyA, f.ASR, autoA), modelLabel(readyL, f.LLM, autoL)
 	}
-	sectionTitleTip(c, i18n.T("Models"), i18n.T("Automatic uses the recommended model among those installed on the Local models page."))
-	opened := false // one "Open Local models" per page
+	sectionTitleTip(c, i18n.T("Models"), i18n.T("Automatic uses the recommended speech model on this Mac (the Speech models page), and the first language model set up on the Language models page. A remote speech service is used when you choose it here, or when no speech model on this Mac is installed."))
+	opened := false // one "Open Speech models" per page
 	openModels := func() {
 		if opened {
 			return
 		}
 		opened = true
-		if ui.Button(c.Key(p+"-open-models"), i18n.T("Open Local models")).Clicked() {
+		if ui.Button(c.Key(p+"-open-models"), i18n.T("Open Speech models")).Clicked() {
 			a.navigate(modelsPath)
 		}
 	}
@@ -53,12 +53,17 @@ func (a *app) featureModels(c *ui.Context, feature string) {
 			notice(c, p+"-no-asr", noticeWarn, i18n.T("No speech model is installed: install one to transcribe."), "", openModels, nil)
 		}
 	}
+	setUpLLM := func() {
+		if ui.Button(c.Key(p+"-open-llm"), i18n.T("Set up a language model")).Clicked() {
+			a.navigate(remotePath)
+		}
+	}
 	if len(readyL) == 0 {
 		switch feature {
 		case hotkey.Translate:
-			notice(c, p+"-no-llm", noticeWarn, i18n.T("No language model is installed: install one to translate."), "", openModels, nil)
+			notice(c, p+"-no-llm", noticeWarn, i18n.T("No language model is set up: set one up to translate."), "", setUpLLM, nil)
 		case hotkey.Rewrite:
-			notice(c, p+"-no-llm", noticeWarn, i18n.T("No language model is installed: install one to rewrite."), "", openModels, nil)
+			notice(c, p+"-no-llm", noticeWarn, i18n.T("No language model is set up: set one up to rewrite."), "", setUpLLM, nil)
 		}
 	}
 	var asrDesc, asrLabel, llmDesc, llmLabel string
@@ -89,7 +94,7 @@ func (a *app) featureModels(c *ui.Context, feature string) {
 		}
 	})
 	if feature == hotkey.Transcribe && len(readyL) == 0 && enhance {
-		notice(c, "tr-no-llm", noticeInfo, i18n.T("No language model is installed: the text is typed as recognised, without clean-up."), "", openModels, nil)
+		notice(c, "tr-no-llm", noticeInfo, i18n.T("No language model is set up: the text is typed as recognised, without clean-up."), "", setUpLLM, nil)
 	}
 }
 
