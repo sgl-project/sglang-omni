@@ -7,7 +7,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from numbers import Integral
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import torch
 import torch.nn as nn
@@ -23,6 +23,12 @@ from sglang_omni.modules.ming_audio.vae.vae_modules import (
     Decoder,
     StreamingLinearUpsample,
 )
+from sglang_omni.platforms import current_platform
+
+if TYPE_CHECKING:
+    from sglang_omni.platforms.device_graph import ReplayableGraph
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -783,7 +789,7 @@ class AudioVAEFixedStreamingTransition:
 
 @dataclass(frozen=True, slots=True)
 class CapturedAudioVAEGraph:
-    graph: torch.cuda.CUDAGraph
+    graph: ReplayableGraph
     output: AudioVAEFixedStreamingOutput
 
 
@@ -968,42 +974,46 @@ class MingAudioStreamingRunner:
             )
         else:
             pass
-        candidate_graph: torch.cuda.CUDAGraph | None = None
+        candidate_graph: ReplayableGraph | None = None
+        device = self.transition.device
+        device_module = self.transition.device_module
+        graph_backend = current_platform.get_device_graph_backend(device)
+        if graph_backend is None:
+            raise RuntimeError(
+                "Ming-Omni-TTS streaming AudioVAE graph has no device graph "
+                f"backend for {device}"
+            )
+        else:
+            pass
         try:
             with self.transition.device_context():
-                torch.cuda.synchronize(self.transition.device)
-                allocated_before = int(
-                    torch.cuda.memory_allocated(self.transition.device)
-                )
-                reserved_before = int(
-                    torch.cuda.memory_reserved(self.transition.device)
-                )
+                device_module.synchronize(device)
+                allocated_before = int(device_module.memory_allocated(device))
+                reserved_before = int(device_module.memory_reserved(device))
                 self.transition.reset_all()
                 self.latents.zero_()
                 self.latent_lengths.fill_(self.transition.max_step_latents)
                 self.exec_mask.fill_(True)
                 self.terminal_mask.fill_(True)
-                current_stream = torch.cuda.current_stream(self.transition.device)
-                build_stream = torch.cuda.Stream(device=self.transition.device)
+                current_stream = device_module.current_stream(device)
+                build_stream = device_module.Stream(device=device)
                 build_stream.wait_stream(current_stream)
-                with torch.cuda.stream(build_stream):
+                with device_module.stream(build_stream):
                     for _ in range(self.CUDA_GRAPH_WARMUP_ITERATIONS):
                         warm_output = self.execute_device()
                 current_stream.wait_stream(build_stream)
                 current_stream.synchronize()
                 del warm_output
                 self.transition.reset_all()
-                candidate_graph = torch.cuda.CUDAGraph()
                 build_stream.wait_stream(current_stream)
                 try:
-                    with torch.cuda.graph(
-                        candidate_graph,
+                    with graph_backend.capture(
                         stream=build_stream,
-                        capture_error_mode="thread_local",
-                    ):
+                        thread_local_errors=True,
+                    ) as candidate_graph:
                         candidate_output = self.execute_device()
                 finally:
-                    torch.cuda.set_stream(current_stream)
+                    device_module.set_stream(current_stream)
                 current_stream.wait_stream(build_stream)
                 current_stream.synchronize()
                 self.require_output_contract(candidate_output)
@@ -1011,10 +1021,8 @@ class MingAudioStreamingRunner:
                 candidate_graph.replay()
                 current_stream.synchronize()
                 self.transition.reset_all()
-                allocated_after = int(
-                    torch.cuda.memory_allocated(self.transition.device)
-                )
-                reserved_after = int(torch.cuda.memory_reserved(self.transition.device))
+                allocated_after = int(device_module.memory_allocated(device))
+                reserved_after = int(device_module.memory_reserved(device))
                 self.captured_graph = CapturedAudioVAEGraph(
                     graph=candidate_graph, output=candidate_output
                 )
