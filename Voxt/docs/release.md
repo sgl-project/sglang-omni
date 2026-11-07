@@ -57,6 +57,48 @@ scripts/mac-gui.sh scripts/release.sh（在 Mac 上，ssh 里经 mac-gui.sh 进�
 
 不带 tag 的运行（改了这个工作流、`scripts/release*.sh` 或 `scripts/build-*.sh` 的 PR，或者手动运行）做同样的构建和 `release-verify.sh ad-hoc`，不签名、不公证，dmg 作为 artifact 保留 14 天：打开时要在 系统设置 → 隐私与安全性 里点“仍要打开”。
 
+## 1.x → 2.x 升级测试（GitHub Actions）
+
+[Voxt Upgrade Test](../../.github/workflows/voxt-upgrade-test.yaml) 在 GitHub 的一台全新的 macOS runner 上，让 Swift 版 Voxt 1.x 用它自己的 Sparkle 从 beta 通道更新到 Voxt 2，再检查装好的 app 和导入。它不在开发用的 Mac 上跑：1.x 是沙盒 app，数据在 `~/Library/Containers/com.voxt.Voxt`，假 HOME 隔离不了，会碰到真实的 1.x 数据。每一步都在 [scripts/upgrade-test.sh](../scripts/upgrade-test.sh) 里。
+
+**什么时候跑**：版本发到 1.x 的 beta 通道以后（Voxt Appcast 工作流，channel 选 beta），发到 stable 之前。只能手动运行，Actions → Voxt Upgrade Test → Run workflow，或者：
+
+```sh
+gh workflow run voxt-upgrade-test.yaml --repo sgl-project/sglang-omni -f from_tag=voxt-v1.16.3 -f to_version=X.Y.Z
+```
+
+`from_tag` 是起点的 1.x Release（默认 `voxt-v1.16.3`），`to_version` 是 beta 通道上的 Voxt 2 版本。
+
+**它做什么**：
+
+1. 从 `from_tag` 的 Release 下载 1.x 的 dmg，用 `.sha256` 校验，拷进 `/Applications`，用 `spctl` 检查。
+2. 用 `open -g` 启动一次 1.x，让 macOS 建好它的沙盒容器，再退出；把 `testdata/legacy/real`（1.16.3 写的数据库，3 个词条，只在 WAL 里）放进容器。
+3. 先确认 beta 通道的 appcast 里有 `to_version`，没有就停下。在容器的偏好里把 `SUEnableAutomaticChecks`、`SUAutomaticallyUpdate`、`betaUpdatesEnabled` 设成 YES，`SULastCheckTime` 设成 2020 年，用 `open -g --env VOXT_UPDATE_CHANNEL=beta` 启动 1.x，等 Sparkle 下载好（最多 20 分钟），再让 1.x 退出、安装（见下面的两种装法）。
+4. 检查 `/Applications/Voxt.app`：bundle id 是 `dev.hehehai.voxtnew`，版本是 `to_version`，`codesign -dv` 的 Team 是 RY2TQTYSKQ，`codesign --verify --deep --strict` 通过，`spctl` 认它是公证过的 Developer ID，`stapler validate` 通过。
+5. 用 `open` 启动装好的 app：`VOXTNEW_SMOKE_LEGACY=1`，`Voxt --smoke <dir>`。它不弹选择文件夹的窗口，直接读 1.x 的数据库（`legacyReadable`），像侧栏的导入卡片一样导入到 `<dir>` 自己的数据文件夹，打印那里的词条和历史条数，要是 `3 terms, 0 history entries`（`TestSmokeLegacy` 在 Linux 上对同一个数据库断言同一行）。这一步同时验证 #3593 还没验证的一项：Developer ID 构建不弹窗就能读 1.x 的数据。
+6. 不管成败，都把证据传成 artifact `voxt-upgrade-test`，保留 30 天。
+
+**看结果**：这次运行的 Summary 里有一张表，每项是 ✅、❌ 或 ℹ️，❌ 那一行写卡在哪一步。artifact 里有：
+
+| 文件 | 内容 |
+|---|---|
+| `results.md` | 同一张表 |
+| `sparkle.log` | 运行期间 Sparkle、它的安装进程、1.x 的系统日志，以及提到 Voxt 的 TCC 日志 |
+| `voxt-1x-logs/` | 1.x 自己的日志：`current.log` 里有 `Sparkle found update`、`Sparkle finished downloading update` 这些行 |
+| `shots/` | `screencapture` 的截图：启动后、下载完、点按钮时、装好后、结束时 |
+| `appcast-beta.xml` | 当时 beta 通道的 appcast |
+| `codesign.txt`、`spctl.txt`、`stapler.txt` | 第 4 步的原始输出 |
+| `smoke.txt` | 第 5 步打印的行 |
+
+**第一次跑之前不知道的两件事**。第 3 步依次试两种装法，表里写哪一种装上了、另一种卡在哪：
+
+- **装法 1**（开着自动更新的用户就是这样装的）：让 1.x 退出，Sparkle 在退出时安装。先用 AppleScript 让它退出，runner 上这可能要“自动化”授权；60 秒没退出就发 SIGTERM，但 Sparkle 可能不把 SIGTERM 当成退出，也就不安装。
+- **装法 2**（点界面的用户）：把 `SUAutomaticallyUpdate` 改成 NO，再启动 1.x，通过 System Events 在 Sparkle 的窗口里点 “Install Update” 和 “Install and Relaunch”。这要 runner 上的 `osascript` 有辅助功能权限：步骤先检查，没有就停下并写明。
+
+两种都不行时，看 ❌ 那一行和截图，再决定改工作流，还是在真机上补测（manual-test.md）。
+
+**只有之后的版本能查导入**：第 5 步用的是装好的 app 自己的 `--smoke`，2.0.1 和更早的版本没有 `VOXTNEW_SMOKE_LEGACY`，表里会写 “it predates VOXTNEW_SMOKE_LEGACY, so the import is not checked”。
+
 ## 0. 两个通道
 
 **2.0.0 没有更新通道**：`release/mygo.release.json` 是 `{}`，构建里没有更新源，app 不检查更新（菜单里没有“检查更新…”，关于面板写“这个版本不会自动更新”，`main.go` 用补丁 0008 的 `mygo.Updater.HasFeed` 判断），`release.sh --publish` 直接报错，不走 `actnow-publish.sh`。下面是有通道时的做法，代码都留着：以后有了 sgl-project 自己的通道，把 `updates`（公钥、`url`、`prereleases`）加回 `release/mygo.release.json` 就照旧。

@@ -11,6 +11,10 @@ package main
 // of silence; a short chat), then quits as the app does. The script then
 // checks that nothing it started is left running. Lines starting
 // "smoke:" say what happened; the exit status is 0 when all of it worked.
+//
+// With VOXTNEW_SMOKE_LEGACY=1 it only imports the previous Voxt's data
+// into that folder, as the import card does, and prints the terms and
+// history entries there (.github/workflows/voxt-upgrade-test.yaml).
 
 import (
 	"context"
@@ -26,6 +30,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 func runSmoke(dir string) int {
@@ -66,6 +71,38 @@ func runSmoke(dir string) int {
 		pump(300*time.Millisecond, func() bool { return false })
 		say("quit")
 		return code
+	}
+	if os.Getenv("VOXTNEW_SMOKE_LEGACY") == "1" {
+		legacy := legacyLibrary()
+		switch {
+		case legacy == "":
+			say("FAIL no previous Voxt on this Mac (no %s container)", legacyBundleID)
+			return quit(1)
+		case !legacyReadable(legacy):
+			// The Developer ID build must read it without the open panel.
+			say("FAIL the previous Voxt's database in %s is not readable without asking", legacy)
+			return quit(1)
+		default:
+			say("legacy readable: %s", legacyDatabase(legacy))
+		}
+		a.importLegacyFrom(legacy)
+		if !pump(time.Minute, func() bool { return !a.dv.importing }) || !a.ob.legacyDone {
+			say("FAIL the import: %s", a.ob.legacyMsg)
+			return quit(1)
+		}
+		ctx := context.Background()
+		terms, err := a.lib.store.Dictionary().List(ctx, "")
+		if err != nil {
+			say("FAIL the dictionary: %v", err)
+			return quit(1)
+		}
+		entries, err := a.lib.store.History().List(ctx, store.HistoryQuery{})
+		if err != nil {
+			say("FAIL the history: %v", err)
+			return quit(1)
+		}
+		say("legacy import: %d terms, %d history entries (%s)", len(terms), len(entries), a.ob.legacyMsg)
+		return quit(0)
 	}
 	a.connectHelper()
 	a.startHelper()
