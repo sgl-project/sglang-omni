@@ -11,6 +11,7 @@ import threading
 import time
 import types
 import wave
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -591,6 +592,155 @@ def test_codec_model_and_lock_are_shared_between_stages(
     assert first is second is codec
     assert first_lock is second_lock
     assert loads == 1
+
+
+def install_fake_neucodec(
+    monkeypatch: pytest.MonkeyPatch,
+    neu_codec: type,
+    feature_extractor: type,
+    w2v_model: type,
+) -> types.ModuleType:
+    model_module = types.ModuleType("neucodec.model")
+    model_module.NeuCodec = neu_codec
+    model_module.AutoFeatureExtractor = feature_extractor
+    model_module.Wav2Vec2BertModel = w2v_model
+    package = types.ModuleType("neucodec")
+    package.__path__ = []
+    package.NeuCodec = neu_codec
+    package.model = model_module
+    monkeypatch.setitem(sys.modules, "neucodec", package)
+    monkeypatch.setitem(sys.modules, "neucodec.model", model_module)
+    return model_module
+
+
+def recording_pretrained(name: str, calls: list[tuple[str, object, bool]]) -> type:
+    class RecordingPretrained:
+        @classmethod
+        def from_pretrained(cls, model: object, *args: Any, **kwargs: Any) -> object:
+            calls.append((name, model, kwargs["local_files_only"]))
+            return object()
+
+    return RecordingPretrained
+
+
+def test_load_codec_constructs_a_local_directory_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codec_dir = tmp_path / "neucodec"
+    w2v_dir = tmp_path / "facebook_w2v_bert_2_0"
+    codec_dir.mkdir()
+    w2v_dir.mkdir()
+    weights_path = codec_dir / "pytorch_model.bin"
+    weights_path.touch()
+    constructed: list[tuple[int, int]] = []
+    pretrained_calls: list[tuple[str, object, bool]] = []
+    loaded: list[tuple[dict[str, object], bool]] = []
+    devices: list[str] = []
+    feature_extractor = recording_pretrained("feature_extractor", pretrained_calls)
+    w2v_model = recording_pretrained("w2v", pretrained_calls)
+
+    class RecordingCodec:
+        def __init__(self, sample_rate: int, hop_length: int) -> None:
+            constructed.append((sample_rate, hop_length))
+            model_module.Wav2Vec2BertModel.from_pretrained("facebook/w2v-bert-2.0")
+            model_module.AutoFeatureExtractor.from_pretrained("facebook/w2v-bert-2.0")
+
+        def load_state_dict(self, state_dict: dict[str, object], strict: bool) -> None:
+            loaded.append((state_dict, strict))
+
+        def eval(self) -> "RecordingCodec":
+            return self
+
+        def to(self, device: str) -> "RecordingCodec":
+            devices.append(device)
+            return self
+
+    model_module = install_fake_neucodec(
+        monkeypatch, RecordingCodec, feature_extractor, w2v_model
+    )
+    state_dict = {"kept": object(), "unexpected": object()}
+    torch_loads: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def fake_torch_load(*args: object, **kwargs: object) -> dict[str, object]:
+        torch_loads.append((args, kwargs))
+        return state_dict
+
+    monkeypatch.setattr(stages.torch, "load", fake_torch_load)
+    stages.load_codec.cache_clear()
+    try:
+        codec = stages.load_codec(
+            str(codec_dir),
+            "ignored",
+            "cpu",
+            codec_w2v_model_path=str(w2v_dir),
+        )
+        assert isinstance(codec, RecordingCodec)
+        assert constructed == [(24000, 480)]
+        assert torch_loads == [
+            ((weights_path,), {"map_location": "cpu", "weights_only": True})
+        ]
+        assert loaded == [(state_dict, False)]
+        assert devices == ["cpu"]
+        assert pretrained_calls == [
+            ("w2v", str(w2v_dir), True),
+            ("feature_extractor", str(w2v_dir), True),
+        ]
+        assert model_module.AutoFeatureExtractor is feature_extractor
+        assert model_module.Wav2Vec2BertModel is w2v_model
+
+        class FailingCodec:
+            def __init__(self, sample_rate: int, hop_length: int) -> None:
+                raise RuntimeError("constructor failed")
+
+        sys.modules["neucodec"].NeuCodec = FailingCodec
+        model_module.NeuCodec = FailingCodec
+        stages.load_codec.cache_clear()
+        with pytest.raises(RuntimeError, match="constructor failed"):
+            stages.load_codec(
+                str(codec_dir),
+                "ignored",
+                "cpu",
+                codec_w2v_model_path=str(w2v_dir),
+            )
+        assert model_module.AutoFeatureExtractor is feature_extractor
+        assert model_module.Wav2Vec2BertModel is w2v_model
+    finally:
+        stages.load_codec.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["pytorch_model.bin", "w2v snapshot"],
+)
+def test_load_codec_rejects_incomplete_local_snapshot(
+    tmp_path: Path,
+    missing: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codec_dir = tmp_path / "neucodec"
+    w2v_dir = tmp_path / "w2v"
+    codec_dir.mkdir()
+    if missing != "pytorch_model.bin":
+        (codec_dir / "pytorch_model.bin").touch()
+    else:
+        pass
+    if missing != "w2v snapshot":
+        w2v_dir.mkdir()
+    else:
+        pass
+    monkeypatch.setitem(sys.modules, "neucodec", types.SimpleNamespace(NeuCodec=object))
+    stages.load_codec.cache_clear()
+    try:
+        with pytest.raises(FileNotFoundError, match="local NeuCodec"):
+            stages.load_codec(
+                str(codec_dir),
+                "ignored",
+                "cpu",
+                codec_w2v_model_path=str(w2v_dir),
+            )
+    finally:
+        stages.load_codec.cache_clear()
 
 
 def test_llama_cpp_stage_keeps_a_cpu_resolution_off_the_gpu(
