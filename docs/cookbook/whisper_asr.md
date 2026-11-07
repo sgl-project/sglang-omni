@@ -4,15 +4,51 @@ Whisper ASR checkpoints can be started through the OpenAI-compatible `/v1/audio/
 
 ## Prerequisites
 
-Install `sglang-omni` by following [Installation](../get_started/installation.md), then download a Whisper checkpoint:
+For CUDA, install `sglang-omni` by following [Installation](../get_started/installation.md). For Ascend, use the installation profile below. Download a Whisper checkpoint:
 
 ```bash
 hf download openai/whisper-large-v3
 ```
 
+## Ascend NPU
+
+The single-card NPU path uses `openai/whisper-large-v3` in FP16 with ordinary decode execution. Whisper uses the existing attention backend without a model-specific attention implementation or a SGLang source patch.
+
+Use the A3 runtime pinned by `base-image-a3` in `[tool.sglang-omni.npu]` in `pyproject_npu.toml`, rather than a rolling image tag. The current runtime selects SGLang 0.5.23, CANN 9.1.0, Python 3.12, PyTorch 2.10.0 and torch_npu 2.10.0.post6. The host driver and firmware must support this CANN release; see [Ascend prerequisites](../get_started/installation_npu.md#prerequisites). Install this checkout inside that prepared runtime:
+
+```bash
+bash scripts/npu/install_npu.sh --install-system-deps
+```
+
+The system-dependency option installs FFmpeg, libsndfile and SoX and requires root inside the container. Omit it if those dependencies are already present. For the tested deployment, save the following as `whisper-npu.yaml` to explicitly select a memory fraction of `0.50`:
+
+```yaml
+config_cls: WhisperASRPipelineConfig
+name: whisper
+model_path: openai/whisper-large-v3
+stages:
+  asr:
+    engine:
+      mem_fraction_static: 0.50
+```
+
+Select a device and start the service:
+
+```bash
+export ASCEND_RT_VISIBLE_DEVICES=0
+export SGLANG_OMNI_PLATFORM_SPEC=sglang_omni.platforms.npu.NPUOmniPlatform
+sgl-omni serve --config whisper-npu.yaml --port 8000
+```
+
+When `mem_fraction_static` is omitted, Whisper selects `0.50` on NPU and `0.85` on other platforms. Explicit values always take precedence, including `0.85` on NPU. Set `stages.asr.engine.mem_fraction_static` in the pipeline YAML to choose the memory budget for your device or workload.
+
+Whisper defaults to `disable_decode_cuda_graph=True` on NPU. This adaptation uses ordinary decode after compiled decode capture failed on data-dependent cache slicing in the previously tested SGLang 0.5.22 encoder-decoder attention path. Prefill graph and compilation settings are unchanged. Explicit `server_args_overrides` retain SGLang's configuration precedence; enabling NPU decode graphs is outside this adaptation's validation scope. Graph-compatible encoder-decoder attention is a separate follow-up; disabling decode graphs can reduce throughput.
+
+The encoder CUDA Graph section below describes the CUDA path; the NPU encoder uses device SDPA. The optional dense-prefill CUDA optimization is also CUDA-only. These paths are separate from the decoder prefill graph.
+
 ## Server Configuration
 
-Whisper ASR runs a single ASR stage on one GPU.
+Whisper ASR runs a single ASR stage on one GPU or on one Ascend NPU with the setup above.
 
 ```bash
 sgl-omni serve \

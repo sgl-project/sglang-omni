@@ -7,6 +7,10 @@ from collections.abc import Mapping
 from typing import Literal
 
 from sglang_omni.models.whisper_asr.config import WhisperASRFactoryArgs
+from sglang_omni.platforms import current_platform
+
+DEFAULT_MEM_FRACTION_STATIC = 0.85
+DEFAULT_MEM_FRACTION_STATIC_NPU = 0.50
 
 
 def create_sglang_whisper_asr_executor(
@@ -19,7 +23,7 @@ def create_sglang_whisper_asr_executor(
     max_running_requests: int = 64,
     max_new_tokens: int = 256,
     stream_emit_interval_s: float = 0.05,
-    mem_fraction_static: float = 0.85,
+    mem_fraction_static: float | None = None,
     enable_encoder_cuda_graph: bool = False,
     enable_dense_prefill_cuda_graph: bool = False,
     cpu_intra_op_threads: int | None = None,
@@ -43,6 +47,14 @@ def create_sglang_whisper_asr_executor(
     server_args_overrides: Mapping[str, object] | None = None,
 ):
     from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
+
+    if mem_fraction_static is None:
+        if current_platform.is_npu():
+            mem_fraction_static = DEFAULT_MEM_FRACTION_STATIC_NPU
+        else:
+            mem_fraction_static = DEFAULT_MEM_FRACTION_STATIC
+    else:
+        pass
 
     if encoder_attention_backend is None:
         encoder_attention_backend = WhisperASRFactoryArgs().encoder_attention_backend
