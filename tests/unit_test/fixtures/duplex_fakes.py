@@ -252,7 +252,25 @@ PeerMode = Literal[
 
 
 class DuplexPeer:
-    def __init__(self, mode: PeerMode = "healthy") -> None:
+    def __init__(
+        self,
+        mode: PeerMode = "healthy",
+        *,
+        input_sample_rate: int = 16000,
+        output_sample_rate: int = 22050,
+        initial_extra_output_frames: int = 0,
+        tail_holdback_samples: int = TAIL_HOLDBACK_SAMPLES,
+        terminal_reason: str = "stop",
+    ) -> None:
+        self.input_bytes_per_ms: float = input_sample_rate * 2 / 1000
+        self.unit_bytes: int = input_sample_rate * PACKET_MS // 1000 * 2
+        self.output_samples_per_frame: int = output_sample_rate * PACKET_MS // 1000
+        self.initial_extra_output_frames: int = initial_extra_output_frames
+        self.tail_holdback_samples: int = tail_holdback_samples
+        self.terminal_reason: str = terminal_reason
+        self.granted: dict[str, JsonValue] = copy.deepcopy(GRANTED)
+        self.granted["input_audio_format"]["rate"] = input_sample_rate
+        self.granted["output_audio_format"]["rate"] = output_sample_rate
         self.mode = mode
         self.received: list[dict[str, JsonValue]] = []
         self.sent: list[dict[str, JsonValue]] = []
@@ -264,7 +282,9 @@ class DuplexPeer:
         self.release = asyncio.Event()
 
     def codec_fresh(self, frames: int, *, final: bool) -> int:
-        available = frames * SAMPLES_PER_FRAME - (0 if final else TAIL_HOLDBACK_SAMPLES)
+        available = (
+            frames + self.initial_extra_output_frames
+        ) * self.output_samples_per_frame - (0 if final else self.tail_holdback_samples)
         fresh = available - self.emitted
         self.frames = frames
         self.emitted = available
@@ -276,6 +296,9 @@ class DuplexPeer:
                 websocket,
                 {
                     "type": "response.created",
+                    "sglang": {
+                        "media_time": {"t_start_ms": 0, "duration_ms": PACKET_MS}
+                    },
                     "response": {
                         "id": "response_0",
                         "object": "realtime.response",
@@ -289,6 +312,10 @@ class DuplexPeer:
     async def emit_audio(
         self, websocket: ServerConnection, samples: int, unit: int
     ) -> None:
+        if samples == 0:
+            return
+        else:
+            pass
         await self.send(
             websocket,
             {
@@ -437,7 +464,7 @@ class DuplexPeer:
                             "type": "realtime",
                             "model": "fixture",
                             "output_modalities": ["audio"],
-                            "sglang": {"granted": GRANTED},
+                            "sglang": {"granted": self.granted},
                         },
                     },
                 )
@@ -477,11 +504,11 @@ class DuplexPeer:
                         {
                             "type": "sglang.input_audio.accepted",
                             "seq": event["sglang"]["seq"],
-                            "accepted_end_ms": len(self.pcm) / 32,
+                            "accepted_end_ms": len(self.pcm) / self.input_bytes_per_ms,
                             "client_event_id": event["event_id"],
                         },
                     )
-                    while (self.frames + 1) * UNIT_BYTES <= len(self.pcm):
+                    while (self.frames + 1) * self.unit_bytes <= len(self.pcm):
                         unit = self.frames
                         await self.open_response(websocket)
                         await self.emit_audio(
@@ -491,8 +518,8 @@ class DuplexPeer:
                         )
                         await self.emit_unit_done(websocket, unit, PACKET_MS)
             elif kind == "sglang.input_audio.end":
-                accepted_ms = len(self.pcm) / 32
-                units = -(-len(self.pcm) // UNIT_BYTES)
+                accepted_ms = len(self.pcm) / self.input_bytes_per_ms
+                units = -(-len(self.pcm) // self.unit_bytes)
                 await self.send(
                     websocket,
                     {
@@ -507,7 +534,7 @@ class DuplexPeer:
                 await self.emit_audio(
                     websocket, self.codec_fresh(units, final=True), tail_unit
                 )
-                await self.finish_response(websocket, "completed", "stop")
+                await self.finish_response(websocket, "completed", self.terminal_reason)
                 await self.emit_unit_done(
                     websocket, tail_unit, accepted_ms - tail_unit * PACKET_MS
                 )

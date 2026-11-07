@@ -62,13 +62,8 @@ REQUIRED_CAPABILITIES = {
     "supports_resume": False,
 }
 
-TERMINAL_REASONS = {
-    "stop": ("completed", "sglang.input_audio.end"),
-    "client_closed": ("cancelled", "session.close"),
-}
 # note (luojiaxuan): A native reply whose turn ended before its talker spoke all of its text ends incomplete, where it would end completed/stop; no client command causes it.
 NATIVE_CUT_TERMINAL = ("incomplete", "max_output_tokens")
-NATIVE_ENDED_TERMINALS = {("completed", "stop"), NATIVE_CUT_TERMINAL}
 
 # note (luojiaxuan): A turn-based server takes turns by server VAD and flushes the
 # partial last unit; whether it truncates a cancelled reply, accepts client
@@ -148,11 +143,23 @@ def evaluate_trace(
     else:
         pass
     turn_based = profile_contract.protocol == "turn_based"
+    input_end_reason = profile_contract.input_end_terminal_reason
+    terminal_reasons = {
+        input_end_reason: ("completed", "sglang.input_audio.end"),
+        "client_closed": ("cancelled", "session.close"),
+    }
+    native_ended_terminals = {("completed", input_end_reason), NATIVE_CUT_TERMINAL}
     unit_duration_ms = profile_contract.native_unit_ms
-    input_bytes_per_unit = INPUT_SAMPLE_RATE * unit_duration_ms // 1000 * 2
+    input_bytes_per_second = profile_contract.input_sample_rate * 2
+    input_bytes_per_ms = input_bytes_per_second / 1000
+    input_bytes_per_unit = input_bytes_per_second * unit_duration_ms // 1000
     required_capabilities = {
         **(TURN_BASED_CAPABILITIES if turn_based else REQUIRED_CAPABILITIES),
         "native_unit_ms": unit_duration_ms,
+        "input_audio_format": {
+            "type": "audio/pcm",
+            "rate": profile_contract.input_sample_rate,
+        },
         "output_audio_format": {
             "type": "audio/pcm",
             "rate": profile_contract.output_sample_rate,
@@ -259,7 +266,7 @@ def evaluate_trace(
                         event.sglang.t_start_ms is None
                         or math.isclose(
                             event.sglang.t_start_ms,
-                            input_byte_count / INPUT_BYTES_PER_MS,
+                            input_byte_count / input_bytes_per_ms,
                             rel_tol=0,
                             abs_tol=1e-7,
                         ),
@@ -277,7 +284,7 @@ def evaluate_trace(
                         f"client command outside this scenario: {event_type}"
                     )
                 sent_commands[event.event_id] = SentCommand(
-                    event, event_time_s, input_byte_count / INPUT_BYTES_PER_MS
+                    event, event_time_s, input_byte_count / input_bytes_per_ms
                 )
                 continue
             else:
@@ -380,7 +387,7 @@ def evaluate_trace(
                     pass
             elif event_type == "sglang.input_audio.ended":
                 check(
-                    event.accepted_end_ms == input_byte_count / INPUT_BYTES_PER_MS,
+                    event.accepted_end_ms == input_byte_count / input_bytes_per_ms,
                     "ended input duration mismatch",
                 )
                 check(
@@ -390,7 +397,7 @@ def evaluate_trace(
                 ended = True
             elif event_type == "sglang.input_audio.drained":
                 check(ended, "input drained before ended receipt")
-                expected_ms = input_byte_count / INPUT_BYTES_PER_MS
+                expected_ms = input_byte_count / input_bytes_per_ms
                 check(
                     event.accepted_end_ms == expected_ms,
                     "drained input duration mismatch",
@@ -503,12 +510,12 @@ def evaluate_trace(
                             )
                         else:
                             check(
-                                reason in TERMINAL_REASONS
+                                reason in terminal_reasons
                                 or (status, reason) == NATIVE_CUT_TERMINAL,
                                 f"unsupported response terminal reason: {reason}",
                             )
-                        if not turn_based and reason in TERMINAL_REASONS:
-                            expected_status, required_command_type = TERMINAL_REASONS[
+                        if not turn_based and reason in terminal_reasons:
+                            expected_status, required_command_type = terminal_reasons[
                                 reason
                             ]
                             check(
@@ -526,7 +533,7 @@ def evaluate_trace(
                             pass
                         # note (wenyao): The pump consumes EOS before enqueueing drain.
                         check(
-                            (status, reason) not in NATIVE_ENDED_TERMINALS
+                            (status, reason) not in native_ended_terminals
                             or not drained,
                             "native completed terminal after the drain receipt",
                         )
@@ -609,7 +616,7 @@ def evaluate_trace(
             f"expected exactly one {direction} {event_type}",
         )
     check(bool(input_times), "missing audio input")
-    input_ms = input_byte_count / INPUT_BYTES_PER_MS
+    input_ms = input_byte_count / input_bytes_per_ms
     expected_units = math.ceil(input_byte_count / input_bytes_per_unit)
     # note (wenyao): Only unit-aligned input produces an extra empty EOS unit.
     nonempty_unit_durations = [duration for _, duration in units if duration]
@@ -637,7 +644,7 @@ def evaluate_trace(
     )
     if profile_contract.continuous_output:
         expected_output = (
-            expected_units
+            (expected_units + profile_contract.initial_extra_output_frames)
             * profile_contract.output_sample_rate
             * unit_duration_ms
             // 1000
@@ -667,9 +674,9 @@ def evaluate_trace(
         else:
             check(
                 (response_state.terminal, response_state.reason)
-                in NATIVE_ENDED_TERMINALS,
+                in native_ended_terminals,
                 f"response {response_id} ended {response_state.terminal}/"
-                f"{response_state.reason}, expected completed/stop or "
+                f"{response_state.reason}, expected completed/{input_end_reason} or "
                 "incomplete/max_output_tokens",
             )
     coverage = {
@@ -680,7 +687,7 @@ def evaluate_trace(
         )
     }
     metrics = {
-        "input_audio_s": input_byte_count / INPUT_BYTES_PER_S,
+        "input_audio_s": input_byte_count / input_bytes_per_second,
         "output_audio_s": output_byte_count / (profile_contract.output_sample_rate * 2),
         "admission_denials": admissions,
         "first_audio_packet_s": (
