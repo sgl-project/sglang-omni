@@ -4,6 +4,7 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -105,6 +106,13 @@ public:
   explicit CodecStream(const AudioCodec &codec) : codec_(codec) {}
   // Audio [frames * kCodecFrameSamples] of codes [codebooks, frames], lazy.
   mlx::core::array Push(const mlx::core::array &codes);
+
+  // The native worker serializes MLX jobs; the idle-cache budget is
+  // process-wide.
+  std::vector<float>
+  Decode(const std::vector<mlx::core::array> &codes, size_t begin, size_t end,
+         bool limit_idle_cache, bool synchronize,
+         const std::function<void(const char *, size_t, size_t)> &profile);
 
 private:
   mlx::core::array CausalStep(const mlx::core::array &x,

@@ -356,6 +356,7 @@ SpeechSpec's DSpark draft [`yuekai/cosyvoice3_llm_dspark`](https://huggingface.c
 ```bash
 sgl-omni serve \
   --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --tts_engine.engine.speculative_algorithm DSPARK \
   --tts_engine.engine.speculative_draft_model_path yuekai/cosyvoice3_llm_dspark \
   --port 8000
 ```

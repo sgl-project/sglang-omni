@@ -1,0 +1,7 @@
+{
+  "source": "Constructed: a full server response (type 9, flags seq, JSON, gzip) whose 4-byte payload is not gzip.",
+  "frames": [
+    {"after": 1, "seq": 1, "payload": {"audio_info": {"duration": 0}, "result": {"text": ""}}},
+    {"after": 2, "kind": "raw", "hex": "119111000000000200000004deadbeef"}
+  ]
+}

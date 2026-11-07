@@ -526,12 +526,16 @@ impl ServiceProfile {
                     false,
                 )?;
                 if stream_modes.contains(&StreamMode::Streaming)
-                    && (response_formats.len() != 1
-                        || response_formats[0] != SpeechResponseFormat::Pcm)
+                    && response_formats.iter().any(|format| {
+                        !matches!(
+                            format,
+                            SpeechResponseFormat::Pcm | SpeechResponseFormat::Wav
+                        )
+                    })
                 {
                     return Err(ConfigError::invalid(
                         "workers.service_profiles.response_formats",
-                        "a streaming speech row may contain only pcm",
+                        "a streaming speech row may contain only pcm or wav",
                     ));
                 }
                 Ok(())
@@ -1227,7 +1231,7 @@ mod tests {
     }
 
     #[test]
-    fn streaming_speech_rows_are_pcm_only() {
+    fn streaming_speech_rows_allow_wav_only_for_http() {
         let speech = |response_formats| ServiceProfile::SpeechHttp {
             model_ids: vec![String::from("tts")],
             response_formats,
@@ -1236,9 +1240,15 @@ mod tests {
             reference_forms: vec![ReferenceForm::None],
             voice_name_policy: VoiceNamePolicy::Preset,
         };
-        assert!(speech(vec![SpeechResponseFormat::Pcm]).validate().is_ok());
+        for formats in [
+            vec![SpeechResponseFormat::Pcm],
+            vec![SpeechResponseFormat::Wav],
+            vec![SpeechResponseFormat::Pcm, SpeechResponseFormat::Wav],
+        ] {
+            assert!(speech(formats).validate().is_ok());
+        }
         assert!(
-            speech(vec![SpeechResponseFormat::Pcm, SpeechResponseFormat::Wav])
+            speech(vec![SpeechResponseFormat::Pcm, SpeechResponseFormat::Mp3])
                 .validate()
                 .is_err()
         );
