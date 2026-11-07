@@ -28,6 +28,15 @@ type providerDialog struct {
 	err, errMore       string // a save or check error
 	saving, removeKey  bool
 	test               providerTest
+	// was is the setup the dialog opened with: a click beside the dialog,
+	// or Escape, does not close it while the form differs (unsaved).
+	was settings.Provider
+}
+
+// unsaved says whether the form holds what Save has not kept: a key typed
+// or to remove, or a changed address, model or App ID.
+func (d *providerDialog) unsaved() bool {
+	return d.key != "" || d.removeKey || d.setup() != d.was
 }
 
 // otherModel is the model menu's last choice: a model id typed in.
@@ -41,6 +50,7 @@ func (a *app) openProviderDialog(kind local.Kind, id string) {
 	if d.model == "" || !slices.Contains(sv.models, d.model) {
 		d.model, d.customModel = otherModel(), d.model
 	}
+	d.was = d.setup()
 	a.provDlg = d
 	if acct := providers.Account(kind, id); !a.keyRead(acct) {
 		a.loadKeyMasks([]string{acct})
@@ -81,7 +91,7 @@ func (a *app) providerDialogView(c *ui.Context) {
 	case d.kind == local.ASR:
 		sub = i18n.T("Remote speech recognition · the recording, once you stop")
 	}
-	dialogFrame(c, "remote-dialog", &d.open, name, sub, 560, func() {
+	if dialogFrame(c, "remote-dialog", &d.open, name, sub, 560, func() {
 		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
 			what := i18n.T("Recognised and selected text is sent to %s.", name)
 			switch {
@@ -164,7 +174,9 @@ func (a *app) providerDialogView(c *ui.Context) {
 		if primaryButton(c.Key("remote-dlg-save"), i18n.T("Save")).Disabled(d.saving).Shrink(0).Clicked() {
 			a.saveProviderDialog()
 		}
-	})
+	}).Dismissed() && d.unsaved() {
+		d.open = true // a stray click or Escape: keep what was typed
+	}
 }
 
 // check says what the form lacks before it can be tested or saved ("" for

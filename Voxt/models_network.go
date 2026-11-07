@@ -49,6 +49,7 @@ func (a *app) openNetwork() {
 	a.netForm = networkForm{}
 	a.fillNetwork(actnow.KeyProxy)
 	a.fillNetwork(actnow.KeyHFEndpoints)
+	a.netWas = a.netForm
 	a.netOpen = true
 }
 
@@ -134,7 +135,7 @@ func (a *app) networkDialog(c *ui.Context) {
 	t := c.Theme()
 	f := &a.netForm
 	open := true
-	dialogFrame(c, "net-dlg", &open, i18n.T("Network"), i18n.T("How model downloads reach Hugging Face"), 540, func() {
+	if dialogFrame(c, "net-dlg", &open, i18n.T("Network"), i18n.T("How model downloads reach Hugging Face"), 540, func() {
 		ui.Text(c, i18n.T("Proxy")).FontWeight(600)
 		segmentedFit(c.Key("net-proxy"), &f.proxyMode, i18n.T("Automatic"), i18n.T("No proxy"), i18n.T("Custom")).Label(i18n.T("Proxy"))
 		switch f.proxyMode {
@@ -174,7 +175,9 @@ func (a *app) networkDialog(c *ui.Context) {
 		if primaryButton(c.Key("net-save"), i18n.T("Save")).Clicked() && a.saveNetwork() {
 			open = false
 		}
-	})
+	}).Dismissed() && a.netForm != a.netWas {
+		open = true // a stray click or Escape: keep what was typed
+	}
 	if !open {
 		a.closeNetwork()
 	}
