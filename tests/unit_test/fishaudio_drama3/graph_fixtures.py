@@ -81,6 +81,7 @@ class GraphEngineSpec(BaseModel):
     tower_fused_layers: bool = True
     enable_async_decode: bool = False
     async_decode_min_batch_size: int = 1
+    expert_trace_dir: str | None = None
     prompts: dict[str, list[list[int]]] = PROMPTS
     scenarios: list[GraphScenario]
 

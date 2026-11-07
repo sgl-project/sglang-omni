@@ -8,6 +8,8 @@ Decode steps go through the model's fixed buffers, which a decode CUDA graph rea
 
 from __future__ import annotations
 
+import logging
+
 import torch
 from sglang.srt.layers.attention.hybrid_linear_attn_backend import (
     HybridLinearAttnBackend,
@@ -44,6 +46,11 @@ from sglang_omni.vendor.sglang.core import (
     GenerationBatchResult,
     ScheduleBatch,
 )
+
+# Decode steps between two routed expert cache reports.
+EXPERT_CACHE_REPORT_STEPS = 1000
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "Drama3ModelRunner",
@@ -136,6 +143,19 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
         self.row_upload_buffers: list[torch.Tensor] = []
         self.row_upload_slot = 0
         self.prefill_inputs: Drama3StepInputs | None = None
+        self.decode_steps = 0
+        routed_expert_cache = model.routed_expert_cache
+        if routed_expert_cache is not None and routed_expert_cache.slot_count < min(
+            routed_expert_cache.expert_count,
+            request_pool.size * text_config.num_experts_per_tok,
+        ):
+            raise RuntimeError(
+                f"the routed expert cache holds {routed_expert_cache.slot_count} "
+                f"experts per layer, fewer than one decode step over "
+                f"{request_pool.size} request slots can need"
+            )
+        else:
+            pass
 
     def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
         return True
@@ -379,6 +399,26 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
     ) -> None:
         """Collect the next frames; the batch arguments are the interface contract."""
         self.collect_frames(result, requests, self.publish_decode_frames(len(requests)))
+        self.report_expert_cache()
+
+    def report_expert_cache(self) -> None:
+        """Log the routed expert cache totals every EXPERT_CACHE_REPORT_STEPS steps."""
+        routed_expert_cache = self.model.routed_expert_cache
+        self.decode_steps += 1
+        if (
+            routed_expert_cache is None
+            or self.decode_steps % EXPERT_CACHE_REPORT_STEPS != 0
+        ):
+            pass
+        else:
+            statistics = routed_expert_cache.read_statistics()
+            logger.info(
+                f"Drama 3 routed expert cache after {self.decode_steps} decode steps: "
+                f"decode hit rate {statistics.decode_hit_rate:.4f} "
+                f"({statistics.decode_misses} misses of {statistics.lookups}), "
+                f"{statistics.decode_misses * statistics.bytes_per_expert / 2**30:.2f} "
+                f"GiB copied in decode, {statistics.prefill_misses} prefill host reads"
+            )
 
     def post_decode_launch(
         self,

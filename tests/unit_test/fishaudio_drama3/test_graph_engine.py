@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 import torch
 
+from benchmarks.expert_cache_simulation import load_trace
 from sglang_omni.models.fishaudio_drama3.sampling_kernels import (
     VALIDATED_COMPUTE_CAPABILITY,
 )
@@ -947,3 +948,88 @@ def test_retracted_requests_reprefill_their_history_between_replays(
             and any(step.request_id == request_id for step in record.steps)
         ]
         assert True in steps_around and False in steps_around, request_id
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExpertTraceRuns:
+    untraced_eager: GraphEngineRun
+    traced: dict[EngineKind, GraphEngineRun]
+    trace_dirs: dict[EngineKind, Path]
+
+
+@pytest.fixture(scope="module")
+def expert_trace_runs(tmp_path_factory: pytest.TempPathFactory) -> ExpertTraceRuns:
+    """Its own engines, so the trace case runs without the module's other pairs."""
+    require_cuda()
+    require_free_gpu_memory(TOTAL_GPU_MEMORY_FRACTION)
+    workdir = tmp_path_factory.mktemp("drama3_expert_trace")
+    checkpoint_dir = workdir / "checkpoint"
+    write_synthetic_checkpoint(checkpoint_dir)
+    untraced_eager = run_engine(
+        "untraced-eager",
+        GraphEngineSpec(
+            model_dir=str(checkpoint_dir), kind="eager", scenarios=MAIN_SCENARIOS
+        ),
+        workdir,
+        {},
+    )
+    traced = {}
+    trace_dirs: dict[EngineKind, Path] = {}
+    for kind in ("eager", "prefill_graph"):
+        trace_dirs[kind] = workdir / f"expert-trace-{kind}"
+        traced[kind] = run_engine(
+            f"expert-trace-{kind}",
+            GraphEngineSpec(
+                model_dir=str(checkpoint_dir),
+                kind=kind,
+                expert_trace_dir=str(trace_dirs[kind]),
+                scenarios=MAIN_SCENARIOS,
+            ),
+            workdir,
+            {},
+        )
+    print(f"Artifacts: {workdir}")
+    return ExpertTraceRuns(
+        untraced_eager=untraced_eager, traced=traced, trace_dirs=trace_dirs
+    )
+
+
+def test_expert_trace_records_the_same_experts_eager_and_replayed(
+    expert_trace_runs: ExpertTraceRuns,
+) -> None:
+    """A traced engine serves the untraced bits, and replayed prefill and decode
+    graphs trace the expert ids eager forwards route to."""
+    traces = {}
+    for kind, run in expert_trace_runs.traced.items():
+        assert not schedule_problems(
+            EnginePair(
+                eager=expert_trace_runs.untraced_eager,
+                graph=run,
+                scenarios=MAIN_SCENARIOS,
+            )
+        ), kind
+        problems = bit_problems(
+            EnginePair(
+                eager=expert_trace_runs.untraced_eager,
+                graph=run,
+                scenarios=MAIN_SCENARIOS,
+            )
+        )
+        assert not problems, f"traced {kind}:\n{first_problems(problems)}"
+        (process_dir,) = expert_trace_runs.trace_dirs[kind].iterdir()
+        traces[kind] = load_trace(process_dir)
+    assert any(
+        record.is_graph_replay
+        for record in expert_trace_runs.traced["prefill_graph"].forwards
+    )
+    eager_metadata, eager_forwards = traces["eager"]
+    graph_metadata, graph_forwards = traces["prefill_graph"]
+    assert eager_metadata == graph_metadata
+    assert any(forward.is_prefill for forward in graph_forwards)
+    assert any(not forward.is_prefill for forward in graph_forwards)
+    for eager_forward, graph_forward in zip(
+        eager_forwards, graph_forwards, strict=True
+    ):
+        assert eager_forward.is_prefill == graph_forward.is_prefill
+        assert eager_forward.request_count == graph_forward.request_count
+        assert (eager_forward.expert_used == graph_forward.expert_used).all()

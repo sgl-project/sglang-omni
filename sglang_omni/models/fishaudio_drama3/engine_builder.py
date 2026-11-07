@@ -10,6 +10,7 @@ from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.layers.attention.hybrid_linear_attn_backend import (
     HybridLinearAttnBackend,
 )
+from sglang.srt.layers.moe.fused_moe_triton import FusedMoE
 from sglang.srt.layers.quantization import QUANTIZATION_METHODS
 from sglang.srt.mem_cache.memory_pool import HybridLinearKVPool
 from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
@@ -32,12 +33,18 @@ from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_MAX_PROMPT_ROWS,
     DEFAULT_REFERENCE_SAMPLING,
     DEFAULT_REFERENCE_SAMPLING_FALLBACK,
+    DEFAULT_ROUTED_EXPERT_CACHE_SLOTS,
     DEFAULT_STREAM_FOLLOWUP_STRIDE,
     DEFAULT_STREAM_FOLLOWUP_STRIDE_RAMP,
     DEFAULT_STREAM_STRIDE,
     DEFAULT_TOWER_FUSED_LAYERS,
     DEFAULT_TRITON_SAMPLING,
     ReferenceSamplingFallback,
+)
+from sglang_omni.models.fishaudio_drama3.expert_cache import (
+    EXPERT_TENSOR_NAMES,
+    RoutedExpertCache,
+    pinned_host_copy,
 )
 from sglang_omni.models.fishaudio_drama3.first_frame_graphs import (
     Drama3FirstFrameGraphs,
@@ -50,6 +57,7 @@ from sglang_omni.models.fishaudio_drama3.quantization import (
     QUANTIZATION_METHOD,
     ExpertDenseInt4Config,
     ExpertFp8Config,
+    ExpertMarlinMoEMethod,
 )
 from sglang_omni.models.fishaudio_drama3.request_builders import (
     Drama3FrameStreamer,
@@ -118,6 +126,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS,
         enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
         async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
+        routed_expert_cache_slots: int | None = DEFAULT_ROUTED_EXPERT_CACHE_SLOTS,
     ) -> None:
         self.context_length = context_length
         self.max_running_requests = max_running_requests
@@ -134,6 +143,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         self.tower_fused_layers = tower_fused_layers
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
+        self.routed_expert_cache_slots = routed_expert_cache_slots
         self.frame_streamer: Drama3FrameStreamer | None = None
         self.sglang_runner: SGLModelRunner | None = None
 
@@ -223,6 +233,11 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
                 f"tp/pp/dp={parallel_sizes} and "
                 f"speculative_algorithm={server_args.speculative_algorithm}"
             )
+        elif self.routed_expert_cache_slots is not None and self.enable_async_decode:
+            raise ValueError(
+                "tts_engine.factory.routed_expert_cache_slots needs "
+                "enable_async_decode=false"
+            )
         elif self.context_length > max_position_embeddings:
             raise ValueError(
                 f"Drama 3 context_length ({self.context_length}) exceeds the model's "
@@ -231,6 +246,94 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             )
         else:
             pass
+
+    def before_memory_pool(
+        self,
+        *,
+        model_worker: ModelWorker,
+        checkpoint_dir: str,
+        device: str,
+        gpu_id: int,
+        server_args: ServerArgs,
+    ) -> None:
+        """Move the routed experts to pinned host memory before the KV pool reads
+        free memory; the checkpoint and GPU arguments are the interface contract."""
+        slot_count = self.routed_expert_cache_slots
+        sglang_runner = model_worker.model_runner
+        model = sglang_runner.model
+        assert isinstance(model, Drama3ForCausalLM)
+        expert_layers = [
+            module
+            for module in model.modules()
+            if isinstance(module, FusedMoE)
+            and isinstance(module.quant_method, ExpertMarlinMoEMethod)
+        ]
+        text_config = model.config.text_config
+        top_k = text_config.num_experts_per_tok
+        expert_count = text_config.num_experts
+        # The request pool, which bounds a decode batch and its padded graph rows,
+        # is allocated after this hook from max_running_requests.
+        max_decode_rows = server_args.max_running_requests
+        smallest_slot_count = min(expert_count, max_decode_rows * top_k)
+        if slot_count is None:
+            logger.info("Drama 3 routed expert cache: off, every expert on the GPU")
+        elif not expert_layers:
+            raise ValueError(
+                "tts_engine.factory.routed_expert_cache_slots needs an int4 "
+                f"({INT4_QUANTIZATION_METHOD}) checkpoint"
+            )
+        elif slot_count < smallest_slot_count:
+            raise ValueError(
+                f"tts_engine.factory.routed_expert_cache_slots={slot_count} cannot "
+                f"hold the experts of one decode step: {max_decode_rows} rows x "
+                f"top_k {top_k} need at least {smallest_slot_count}"
+            )
+        else:
+            free_bytes_before = torch.cuda.mem_get_info(torch.device(device))[0]
+            # note (zengjiahua): every layer moves to host memory and drops its GPU
+            # experts before any slot is allocated; a small card has no room for
+            # the slots next to the full layers.
+            layer_host_weights = []
+            for layer in expert_layers:
+                layer_host_weights.append(
+                    pinned_host_copy(
+                        {name: getattr(layer, name) for name in EXPERT_TENSOR_NAMES}
+                    )
+                )
+                # Marlin reads no zero points for symmetric int4.
+                for name in (*EXPERT_TENSOR_NAMES, "w13_qzeros", "w2_qzeros"):
+                    setattr(
+                        layer,
+                        name,
+                        torch.nn.Parameter(
+                            getattr(layer, name).new_empty((0,)), requires_grad=False
+                        ),
+                    )
+                torch.cuda.empty_cache()
+            routed_expert_cache = RoutedExpertCache(
+                layer_host_weights, slot_count, torch.device(device)
+            )
+            for layer, layer_cache in zip(
+                expert_layers, routed_expert_cache.layers, strict=True
+            ):
+                for name in EXPERT_TENSOR_NAMES:
+                    setattr(
+                        layer,
+                        name,
+                        torch.nn.Parameter(
+                            layer_cache.slot_weights[name], requires_grad=False
+                        ),
+                    )
+                layer.quant_method.routed_expert_cache = layer_cache
+            model.routed_expert_cache = routed_expert_cache
+            freed_bytes = (
+                torch.cuda.mem_get_info(torch.device(device))[0] - free_bytes_before
+            )
+            logger.info(
+                f"Drama 3 routed expert cache: {slot_count} of {expert_count} experts "
+                f"per layer on the GPU over {len(expert_layers)} layers, "
+                f"{freed_bytes / 2**30:.2f} GiB freed, prefill scratch included"
+            )
 
     def setup_model(
         self,
