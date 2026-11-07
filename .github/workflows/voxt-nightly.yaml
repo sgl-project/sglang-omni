@@ -1,0 +1,28 @@
+name: Voxt Nightly
+
+# Builds main every night with the release workflow: signed with the Developer
+# ID of the voxt-release environment and notarized, version
+# X.Y.Z-nightly.YYYYMMDD, its disk image an artifact of the run. A schedule
+# only runs from main, so a pull request that changes this file runs it too,
+# ad hoc and unsigned: the environment lets in only main and voxt-v tags.
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/voxt-nightly.yaml"
+  schedule:
+    - cron: "34 12 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nightly:
+    if: github.event_name != 'schedule' || github.repository == 'sgl-project/sglang-omni'
+    uses: ./.github/workflows/voxt-release.yaml
+    # A called job cannot ask for more than its caller grants. Only a tag's draft release uses this.
+    permissions:
+      contents: write
+    with:
+      nightly: true
