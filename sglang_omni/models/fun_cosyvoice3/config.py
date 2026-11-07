@@ -11,7 +11,7 @@ from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
 )
-from sglang_omni.config.schema import stage_process_name
+from sglang_omni.config.schema import CommConfig, stage_process_name
 
 _PKG = "sglang_omni.models.fun_cosyvoice3"
 
@@ -121,6 +121,8 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
         EngineStageConfig(
             name="tts_engine",
             process="pipeline",
+            # note (yaourt): the first stream chunk and its three prompt tensors must all fit before the receiver is notified.
+            comm=CommConfig(credits=4),
             factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
             factory=FactoryArgs(
                 dtype="bfloat16",
