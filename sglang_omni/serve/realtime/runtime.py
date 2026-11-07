@@ -8,6 +8,7 @@ import logging
 import math
 import time
 import uuid
+from collections import deque
 from collections.abc import AsyncIterator
 from contextvars import ContextVar
 from dataclasses import replace
@@ -80,6 +81,7 @@ class SessionRuntime:
         adapter_factory: AdapterFactory,
         limits: RuntimeLimits,
         tick_clock: TickClock | None = None,
+        max_units_in_flight: int = 1,
     ) -> None:
         self.session_id = "sess_" + uuid.uuid4().hex
         self.model = model
@@ -87,6 +89,7 @@ class SessionRuntime:
         self.adapter_factory = adapter_factory
         self.limits = limits
         self.tick_clock = tick_clock
+        self.max_units_in_flight = max_units_in_flight
         self.negotiation = SessionNegotiation(
             model=model, capabilities=capabilities, limits=limits
         )
@@ -117,6 +120,7 @@ class SessionRuntime:
         self.admission_deadline_seconds: float | None = None
         self.is_admitting: bool = False
         self.is_unit_in_flight: bool = False
+        self.unit_tasks: deque[asyncio.Task[None]] = deque()
         self.output_buffer = OutputBuffer(limits)
         self.pump_task: asyncio.Task[None] | None = None
         self.watchdog_task: asyncio.Task[None] | None = None
@@ -628,6 +632,10 @@ class SessionRuntime:
         assert self.adapter is not None
         try:
             while self.state == "OPEN":
+                if self.tick_clock is not None:
+                    await self.settle_unit_tasks(self.max_units_in_flight - 1)
+                else:
+                    pass
                 await self.input_ready.wait()
                 async with self.command_lock:
                     self.input_ready.clear()
@@ -658,6 +666,7 @@ class SessionRuntime:
                         unit = None
                         is_waiting_for_tick = False
                     else:
+                        tick = None
                         unit, receipt = self.cut_next_unit()
                         is_waiting_for_tick = False
                     self.is_unit_in_flight = not is_waiting_for_tick
@@ -689,6 +698,7 @@ class SessionRuntime:
                 else:
                     pass
                 if unit is None:
+                    await self.settle_unit_tasks(0)
                     try:
                         await self.adapter.commit()
                     finally:
@@ -699,74 +709,34 @@ class SessionRuntime:
                 else:
                     pass
                 self.processing_unit.set(unit)
+                if tick is not None and not unit.eos and self.max_units_in_flight > 1:
+                    # Note (Junnan Li): The unit runs while the pump waits for the next
+                    # tick; units finish in order.
+                    previous = self.unit_tasks[-1] if self.unit_tasks else None
+                    self.unit_tasks.append(
+                        asyncio.create_task(
+                            self.finish_unit_in_flight(
+                                unit,
+                                receipt,
+                                asyncio.create_task(self.adapter.process(unit)),
+                                previous,
+                            )
+                        )
+                    )
+                    continue
+                else:
+                    await self.settle_unit_tasks(0)
                 try:
                     consumption = await self.adapter.process(unit)
                 finally:
                     self.is_unit_in_flight = False
-                self.mark_activity()
-                if (
-                    self.tick_clock is not None
-                    and self.adapter.model_step_ms is not None
-                ):
-                    self.tick_clock.observe_step_ms(self.adapter.model_step_ms)
-                else:
-                    pass
-                if isinstance(consumption, tuple):
-                    consumed_samples, discarded_samples = consumption
-                else:
-                    consumed_samples = consumption
-                    discarded_samples = unit.real_samples - consumption
-                if (
-                    any(
-                        type(sample_count) is not int or sample_count < 0
-                        for sample_count in (consumed_samples, discarded_samples)
-                    )
-                    or self.consumed_samples
-                    + self.discarded_samples
-                    + consumed_samples
-                    + discarded_samples
-                    > self.accepted_samples
-                ):
-                    raise RuntimeError(
-                        "adapter did not provide valid media consumption"
-                    )
-                else:
-                    pass
-                self.consumed_samples += consumed_samples
-                self.discarded_samples += discarded_samples
-                if self.close_task is not None:
-                    pass
-                elif receipt is not None:
-                    self.output_buffer.enqueue(
-                        Envelope(event=UnitCompleted(receipt.unit_id), unit=receipt)
-                    )
-                elif self.cleared_unit_receipt is not None:
-                    self.output_buffer.enqueue(
-                        Envelope(
-                            event=UnitCompleted(self.cleared_unit_receipt.unit_id),
-                            unit=self.cleared_unit_receipt,
-                        )
-                    )
-                else:
-                    pass
-                self.cleared_unit_receipt = None
-                if not unit.eos:
-                    self.input_ready.set()
-                elif self.close_task is not None:
+                if self.finish_unit(unit, receipt, consumption):
                     return
                 else:
-                    assert self.end_event_id is not None
-                    self.notify(
-                        Drained(
-                            self.capabilities.input_duration_ms(self.accepted_samples),
-                            self.capabilities.input_duration_ms(self.consumed_samples),
-                            self.capabilities.input_duration_ms(self.discarded_samples),
-                            self.capabilities.input_duration_ms(self.padding_samples),
-                            self.end_event_id,
-                        )
-                    )
-                    return
+                    pass
         except asyncio.CancelledError:
+            for task in self.unit_tasks:
+                task.cancel()
             if self.close_task is None:
                 logger.error(f"Realtime session {self.session_id} input pump cancelled")
                 self.state = "CLOSING"
@@ -786,6 +756,104 @@ class SessionRuntime:
                 exc_info=code == CLOSE_REASON_INTERNAL,
             )
             self.fail(str(exc), code)
+
+    def finish_unit(
+        self,
+        unit: Unit,
+        receipt: Unit | None,
+        consumption: int | tuple[int, int],
+    ) -> bool:
+        self.mark_activity()
+        if self.tick_clock is not None and self.adapter.model_step_ms is not None:
+            self.tick_clock.observe_step_ms(self.adapter.model_step_ms)
+        else:
+            pass
+        if isinstance(consumption, tuple):
+            consumed_samples, discarded_samples = consumption
+        else:
+            consumed_samples = consumption
+            discarded_samples = unit.real_samples - consumption
+        if (
+            any(
+                type(sample_count) is not int or sample_count < 0
+                for sample_count in (consumed_samples, discarded_samples)
+            )
+            or self.consumed_samples
+            + self.discarded_samples
+            + consumed_samples
+            + discarded_samples
+            > self.accepted_samples
+        ):
+            raise RuntimeError("adapter did not provide valid media consumption")
+        else:
+            pass
+        self.consumed_samples += consumed_samples
+        self.discarded_samples += discarded_samples
+        if self.close_task is not None:
+            pass
+        elif receipt is not None:
+            self.output_buffer.enqueue(
+                Envelope(event=UnitCompleted(receipt.unit_id), unit=receipt)
+            )
+        elif self.cleared_unit_receipt is not None:
+            self.output_buffer.enqueue(
+                Envelope(
+                    event=UnitCompleted(self.cleared_unit_receipt.unit_id),
+                    unit=self.cleared_unit_receipt,
+                )
+            )
+        else:
+            pass
+        self.cleared_unit_receipt = None
+        if not unit.eos:
+            self.input_ready.set()
+        elif self.close_task is not None:
+            return True
+        else:
+            assert self.end_event_id is not None
+            self.notify(
+                Drained(
+                    self.capabilities.input_duration_ms(self.accepted_samples),
+                    self.capabilities.input_duration_ms(self.consumed_samples),
+                    self.capabilities.input_duration_ms(self.discarded_samples),
+                    self.capabilities.input_duration_ms(self.padding_samples),
+                    self.end_event_id,
+                )
+            )
+            return True
+        return False
+
+    async def finish_unit_in_flight(
+        self,
+        unit: Unit,
+        receipt: Unit | None,
+        processing: asyncio.Task[int | tuple[int, int]],
+        previous: asyncio.Task[None] | None,
+    ) -> None:
+        try:
+            consumption = await processing
+            if previous is not None:
+                await previous
+            else:
+                pass
+            self.finish_unit(unit, receipt, consumption)
+        except BaseException:
+            processing.cancel()
+            self.input_ready.set()
+            raise
+        finally:
+            self.is_unit_in_flight = any(
+                not task.done()
+                for task in self.unit_tasks
+                if task is not asyncio.current_task()
+            )
+
+    async def settle_unit_tasks(self, limit: int) -> None:
+        while self.unit_tasks and (
+            len(self.unit_tasks) > limit or self.unit_tasks[0].done()
+        ):
+            await self.unit_tasks[0]
+            self.unit_tasks.popleft()
 
     async def watch_activity(self) -> None:
         # note (Haiyang Luo): OPEN has no wake-up event; cap waits at the idle timeout.

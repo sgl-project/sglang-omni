@@ -317,3 +317,47 @@ async def test_coordinator_failure_without_pending_unit_fails_the_session_withou
 
     assert sink.published == [(TurnFailure("server_error", code, str(error)), None)]
     assert not any(record.name == ADAPTER_LOGGER_NAME for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_a_unit_sent_behind_one_in_flight_keeps_its_outputs_until_its_turn() -> (
+    None
+):
+    coordinator = SessionCoordinator([b"reply"])
+    coordinator.auto_done = False
+    sink = RecordingSink()
+    adapter = build_adapter(coordinator)
+    await adapter.open("sess_1", SESSION_CONFIG, sink)
+    first = asyncio.create_task(adapter.process(build_unit(0)))
+    second = asyncio.create_task(adapter.process(build_unit(1)))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    # The second unit's output arrives before the first unit is done.
+    coordinator.done(0)
+    assert await asyncio.wait_for(first, PROCESS_TIMEOUT_S) == UNIT_SAMPLES
+    assert not second.done()
+    coordinator.done(1)
+    assert await asyncio.wait_for(second, PROCESS_TIMEOUT_S) == UNIT_SAMPLES
+    assert [unit.index for _, unit in sink.published] == [0, 1]
+    assert adapter.active_unit is None and not adapter.queued_units
+    await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_a_queued_units_outputs_over_the_unit_budget_fail_it() -> None:
+    coordinator = SessionCoordinator([b"a"])
+    coordinator.auto_done = False
+    sink = RecordingSink()
+    adapter = build_adapter(coordinator, limits=SessionLimits(max_output_chunks=1))
+    await adapter.open("sess_1", SESSION_CONFIG, sink)
+    first = asyncio.create_task(adapter.process(build_unit(0)))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    coordinator.replies = [b"b", b"c"]
+    second = asyncio.create_task(adapter.process(build_unit(1)))
+    with pytest.raises(OutputBudgetError, match="output budget"):
+        await asyncio.wait_for(second, PROCESS_TIMEOUT_S)
+    with pytest.raises(OutputBudgetError, match="output budget"):
+        await asyncio.wait_for(first, PROCESS_TIMEOUT_S)
+    await adapter.close()
+    assert sink.published == []

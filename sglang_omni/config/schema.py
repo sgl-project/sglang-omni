@@ -832,6 +832,8 @@ class PipelineConfig(BaseModel):
     "Quiet time after which waiting units leave, with follow_arrivals."
     realtime_tick_growth_margin: float = Field(default=1.5, gt=1, allow_inf_nan=False)
     "Headroom one more group's steps must leave in a unit before the grid adds it."
+    realtime_units_in_flight: int = Field(default=1, ge=1)
+    "Units a session may have in flight on the unit grid; units finish in order."
     services: list[ServiceConfig] = Field(default_factory=list)
     "The services started in this order before the pipeline, each waited for until its /v1/models answers."
 
