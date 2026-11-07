@@ -35,6 +35,7 @@ def build_requests(
         tokenizer=None,
         vocab_size=256,
         capture_prompt_hidden_states=False,
+        speech_enabled=False,
         is_speculative=is_speculative,
     )
     return [
