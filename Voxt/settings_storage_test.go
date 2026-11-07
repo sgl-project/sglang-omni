@@ -173,3 +173,18 @@ func TestModelFolderChange(t *testing.T) {
 		t.Errorf("VoxtNew's claims: %+v", cs)
 	}
 }
+
+// TestTimeMachineSwitch: VoiceOver names Storage's Time Machine switch
+// and can turn it on; it had no label, so it read as a bare "switch".
+func TestTimeMachineSwitch(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/storage")
+	frames(tt)
+	if a.fam.Backup() {
+		t.Fatal("Time Machine is on by default")
+	}
+	if err := tt.ClickControl("Back up models with Time Machine"); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the family's models.backup on", func() bool { return a.fam.ReadBackup() })
+}

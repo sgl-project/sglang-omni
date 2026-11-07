@@ -58,7 +58,7 @@ func (a *app) modelFolderRows(c *ui.Context, r *storageReport, open func(key, di
 			hint = i18n.T("Models can be downloaded again, so Time Machine leaves them out. Applies to all apps that use this model library.")
 		}
 		settingRow(c, "st-models-backup", i18n.T("Back up models with Time Machine"), hint, func() {
-			if ui.Switch(c.Key("st-models-backup-switch"), &on).Changed() {
+			if ui.Switch(c.Key("st-models-backup-switch"), &on).Label(i18n.T("Back up models with Time Machine")).Changed() {
 				a.async(func() {
 					if err := fam.SetBackup(context.Background(), on); err != nil {
 						log.Printf("family: Time Machine: %v", err)

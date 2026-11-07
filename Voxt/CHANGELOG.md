@@ -29,7 +29,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - Import terms no longer adds each line of a JSON file as a term: Voxt 1.x's export is read as a dictionary, and any other JSON file is refused.
 - Clicking beside a dialog, or pressing Escape, no longer closes it while it holds what you typed: a key you had just pasted was lost when the click that brought Voxt's window back landed beside the dialog. Cancel and × still close it.
-- VoiceOver now reaches the Retry button of a history entry and the Test button of a remote service's card.
+- VoiceOver now reaches the Retry button of a history entry and the Test button of a remote service's card, and reads the name of Storage's Time Machine switch.
 
 ### 中文
 
@@ -58,7 +58,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - "导入词条"不再把 JSON 文件的每一行当成一个词：Voxt 1.x 的导出文件按词典读，别的 JSON 文件会被拒绝。
 - 对话框里填了内容时，点对话框旁边或按 Esc 不会再把它关掉。以前刚粘贴进去的 key，可能因为点回 Voxt 窗口时点在了对话框旁边而丢失。“取消”和 × 照常关闭。
-- 读屏（VoiceOver）现在能点到历史记录里的“重试”，以及远程服务卡片上的“测试”。
+- 读屏（VoiceOver）现在能点到历史记录里的“重试”和远程服务卡片上的“测试”，也能读出 设置 → 存储 里 Time Machine 开关的名字。
 
 ## [2.0.0] - 2026-11-06
 
