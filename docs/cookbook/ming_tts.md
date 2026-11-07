@@ -121,8 +121,6 @@ consume `steady_chunk_patches` at a time. The provided configuration uses two in
 four steady patches, and the terminal step flushes any remainder. Pipe the response to `ffplay`
 to play it during generation:
 
-Streaming AudioVAE automatically uses Triton BTH upsampling when Triton is available and the input is a non-empty CUDA BF16 BTH tensor with non-negative strides; other streaming inputs use the existing PyTorch upsampler, and non-streaming AudioVAE decode is unchanged.
-
 ```bash
 curl -sS --fail --no-buffer -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
@@ -259,7 +257,9 @@ Streaming playback continuity:
 
 `N/A` means that a request returned one PCM payload, so it had no inter-payload seam to score. Every scored slice has zero P95 and P99 measured playback underrun.
 
-## Known Limitations
+## Known limitations
+
+### All platforms
 
 - **Serving optimizations.** Prefix/radix cache and `torch.compile` are not supported and remain
   disabled in the provided configuration.
@@ -272,3 +272,37 @@ Streaming playback continuity:
   is a pipeline-level setting.
 - **Checkpoint coverage.** The current serving implementation supports only the 16.8B-A3B MoE
   checkpoint; the dense 0.5B checkpoint is not supported.
+
+### CUDA
+
+- The provided configuration enables the AR and acoustic-tail CUDA graphs and a fixed-width CUDA
+  graph for streaming AudioVAE transitions. Non-streaming full-sequence AudioVAE decode remains
+  compact eager.
+- Streaming AudioVAE automatically uses Triton BTH upsampling when Triton is available and the
+  input is a non-empty CUDA BF16 BTH tensor with non-negative strides; other streaming inputs use
+  the existing PyTorch upsampler, and non-streaming AudioVAE decode is unchanged.
+
+### Ascend NPU
+
+Start the server with the NPU pipeline configuration:
+
+```bash
+sgl-omni serve \
+  --model-path inclusionAI/Ming-omni-tts-16.8B-A3B \
+  --config examples/configs/ming_omni_tts_npu.yaml \
+  --port 8000
+```
+
+- On Ascend NPU, `preprocessing` stays on CPU, and `reference_encode`, `tts_engine` and
+  `audio_decode` co-locate on one NPU device with declared memory fractions (0.08 / 0.72 / 0.12).
+  `tts_engine` uses SGLang's `ascend` attention backend and keeps AR decode graphs enabled.
+- On Ascend NPU, the acoustic tail rotates Q/K with the Ascend fused rotary op, wrapped to the
+  joint in-place ABI in [npu.py](../../sglang_omni/platforms/npu.py).
+- On Ascend NPU, the ISTFT overlap-add runs on the device: `torch.nn.functional.fold` faults the
+  Ascend vector core once its kernel reaches 3071 samples, and Ming's `n_fft=3528` exceeds that,
+  so the NPU platform supplies a slice-summed equivalent.
+- On Ascend NPU, streaming `audio_decode` captures and replays its AudioVAE graph; the transition
+  state holds no CUDA-specific calls.
+- On Ascend NPU, reference audio is decoded through the soundfile fallback when TorchCodec is
+  unavailable.
+- Validated on Ascend 910 / CANN 9.1.0 / torch 2.10 / torch_npu 2.10.0.post6 / SGLang 0.5.22.
