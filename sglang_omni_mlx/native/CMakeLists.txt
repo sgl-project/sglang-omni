@@ -339,6 +339,11 @@ install(TARGETS ming3_audio_chat ming3_audio_server RUNTIME DESTINATION bin)
 install(FILES licenses/music3-MIT.txt licenses/fishaudio_drama3-MIT.txt
   DESTINATION licenses)
 
+# Optional real-weight Qwen3-TTS stream schedule and codec golden fixture.
+add_executable(qwen3_tts_stream_schedule_test EXCLUDE_FROM_ALL
+  ci/qwen3_tts_stream_schedule_test.cpp)
+target_link_libraries(qwen3_tts_stream_schedule_test PRIVATE qwen3_tts)
+
 # Optional local codec fixture; requires a checkpoint and saved codes.
 add_executable(fishaudio_drama3_codec_test EXCLUDE_FROM_ALL
   ci/fishaudio_drama3_codec_test.cpp)

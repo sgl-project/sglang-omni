@@ -538,6 +538,31 @@ def test_qwen3_tts_rejects_another_model_than_its_chosen_name() -> None:
         named_server.stop()
 
 
+def test_stream_bridge_preserves_first_chunk_and_default(
+    qwen3_tts_server: Server,
+) -> None:
+    body = {
+        "input": SENTENCE,
+        "voice": "vivian",
+        "language": "English",
+        "seed": 42,
+        "stream": True,
+        "response_format": "pcm",
+    }
+    default_status, _, default_pcm = speak(qwen3_tts_server, body)
+    disabled_status, _, disabled_pcm = speak(
+        qwen3_tts_server, {**body, "initial_codec_bridge_frames": 0}
+    )
+    bridge_status, _, bridge_pcm = speak(
+        qwen3_tts_server, {**body, "initial_codec_bridge_frames": 10}
+    )
+    assert (default_status, disabled_status, bridge_status) == (200, 200, 200)
+    assert len(default_pcm) > 15 * FRAME_BYTES
+    assert default_pcm == disabled_pcm
+    assert len(default_pcm) == len(bridge_pcm)
+    assert default_pcm[: 5 * FRAME_BYTES] == bridge_pcm[: 5 * FRAME_BYTES]
+
+
 @pytest.mark.parametrize(
     ("body", "detail"),
     [
@@ -608,6 +633,36 @@ def test_qwen3_tts_rejects_another_model_than_its_chosen_name() -> None:
             "max_new_tokens must be at most",
         ),
         ({"input": "hi", "seed": -1}, "seed must be greater than or equal to 0"),
+        (
+            {"input": "hi", "initial_codec_bridge_frames": -1},
+            "initial_codec_bridge_frames must be between 0 and 25",
+        ),
+        (
+            {"input": "hi", "initial_codec_bridge_frames": 26},
+            "initial_codec_bridge_frames must be between 0 and 25",
+        ),
+        (
+            {"input": "hi", "initial_codec_bridge_frames": 18446744073709551615},
+            "initial_codec_bridge_frames must be between 0 and 25",
+        ),
+        (
+            {"input": "hi", "initial_codec_bridge_frames": True},
+            "initial_codec_bridge_frames must be an integer",
+        ),
+        (
+            {"input": "hi", "initial_codec_bridge_frames": 10},
+            "initial_codec_bridge_frames requires stream=true",
+        ),
+        (
+            {
+                "input": "hi",
+                "stream": True,
+                "response_format": "pcm",
+                "speed": 1.3,
+                "initial_codec_bridge_frames": 10,
+            },
+            "initial_codec_bridge_frames requires speed=1.0",
+        ),
         ({"input": "hi", "token_count": 0}, "token_count must be greater than 0"),
         ({"input": "hi", "stream_codec_output": 1}, "stream_codec_output must be"),
         (

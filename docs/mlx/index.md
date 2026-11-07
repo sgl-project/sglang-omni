@@ -60,6 +60,18 @@ The Qwen3-ASR drafts are pinned in `ci/models.json`; the MOSS-TD draft is pinned
 
 `moss_transcribe_diarize_server` and `moss_transcribe` take the same two flags; the CLI's `verify_rounds` sums over audio chunks.
 
+## Qwen3-TTS streaming bridge
+
+The native Qwen3-TTS server accepts an optional `initial_codec_bridge_frames` integer in a streaming PCM request. A value from 1 through 25 decodes one intermediate chunk of that many frames after the initial chunk, then resumes 25-frame chunks; 0 or an omitted value preserves the original schedule. Positive values require `stream: true`, `response_format: "pcm"`, and `speed: 1.0`. The initial chunk still follows `initial_codec_chunk_frames`, including its default of 5 frames.
+
+```json
+{"input": "Hello.", "voice": "vivian", "stream": true, "response_format": "pcm", "initial_codec_bridge_frames": 10}
+```
+
+The intermediate chunk can reduce an early playback-buffer gap, at the cost of an extra codec invocation for some lengths. It changes chunk boundaries and may change PCM; validate speech quality and playback for the chosen workload.
+
+The optional `qwen3_tts_stream_schedule_test` build target checks frame-by-frame scheduling and tails with real weights. `ci/test_qwen3_tts_stream_schedule.py` runs it when `NATIVE_CODEC_STREAM_TEST` and `CI_DATA_ROOT` are set; set `NATIVE_CODEC_GOLDEN` to the M5 Pro fixture only with its recorded checkpoint and exact MLX builds.
+
 ## Rule 2: Contribution requirements
 
 **Placement and reuse**

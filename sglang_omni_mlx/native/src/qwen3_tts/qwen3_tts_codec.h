@@ -14,6 +14,9 @@
 
 namespace qwen3_tts {
 
+inline constexpr int kStreamedChunkFrames = 25;
+inline constexpr int kNoBridgeChunkFrames = 0;
+
 class SpeechDecoder {
 public:
   // Reads speech_tokenizer/config.json and its safetensors.
@@ -67,14 +70,17 @@ private:
 // Frames decoded in chunks, each with up to 25 frames of left context.
 // Note (Jiaxin Deng): a whole request decodes in the CUDA vocoder's 300-frame
 // chunks and returns every sample at Finish; a streamed one decodes a first
-// chunk (5 frames by default), then 25-frame chunks, so its first audio comes
-// early and its samples differ only near chunk edges.
+// chunk (5 frames by default), then 25-frame chunks; an optional bridge can
+// select a different second chunk and may change the samples.
 class SpeechStream {
 public:
   // first_chunk_frames sets a streamed request's first chunk, at most the
-  // steady chunk; 0 starts at the steady chunk.
+  // steady chunk; 0 starts at the steady chunk. A positive bridge_chunk_frames
+  // selects one chunk of at most 25 frames after the first; 0 keeps the
+  // schedule.
   SpeechStream(const SpeechDecoder &decoder, bool streamed,
-               int first_chunk_frames = 5);
+               int first_chunk_frames = 5,
+               int bridge_chunk_frames = kNoBridgeChunkFrames);
 
   // Adds one frame's codes [codebooks]; returns the samples a completed
   // chunk adds, empty until one does.
@@ -89,6 +95,7 @@ private:
   const SpeechDecoder &decoder_;
   const bool streamed_;
   const int first_chunk_frames_;
+  const int bridge_chunk_frames_;
   std::vector<mlx::core::array> frames_;
   int emitted_frames_ = 0;
   // Frames whose first code is not 0.

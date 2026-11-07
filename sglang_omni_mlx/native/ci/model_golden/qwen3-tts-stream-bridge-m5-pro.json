@@ -1,0 +1,15 @@
+{
+  "device": "Apple M5 Pro",
+  "model": "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16",
+  "model_revision": "6415d95f88be018ff9e46813119dc3bc12261328",
+  "speech_tokenizer_sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+  "mlx_wheel_sha256": "a6241ea8f56a08a6c3a06bbaad7d7fc2fc1c05f23757c61fe0a8797325ac6d46",
+  "mlx_metal_wheel_sha256": "feea99fe4d01f9e9f33ca73d869f988219a1725de1c18870baa7d5cd5aef6cb3",
+  "input": "Apple M5 English codes from qwen3-tts-12hz-0.6b-customvoice.json, repeated to 461 frames",
+  "samples": 885120,
+  "sha256_f32": {
+    "long-default": "f57af1c4f12a85473a9c88b377afcc35690e7b12883d5db6674672b39d9018bd",
+    "long-bridge": "393717bfc890a725e69e0654bf5ff6cddc18802416dd8a42772d76e6224f61b6"
+  },
+  "macos": "27.2 (26B123)"
+}

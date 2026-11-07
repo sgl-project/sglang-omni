@@ -26,7 +26,6 @@ constexpr std::array<int, 3> kResidualDilations = {1, 3, 9};
 // chunks, each with up to 25 frames of left context.
 constexpr int kChunkFrames = 300;
 constexpr int kLeftContextFrames = 25;
-constexpr int kStreamedChunkFrames = 25;
 
 // Note (Codex): on M5 Pro, this limit reduced long-chunk footprint without
 // slowing generation. Note (Codex): MLX cache limits are process-wide; the
@@ -354,18 +353,23 @@ mx::array SpeechDecoder::Decode(const mx::array &codes) const {
 }
 
 SpeechStream::SpeechStream(const SpeechDecoder &decoder, bool streamed,
-                           int first_chunk_frames)
+                           int first_chunk_frames, int bridge_chunk_frames)
     : decoder_(decoder), streamed_(streamed),
       first_chunk_frames_(
           first_chunk_frames > 0
               ? std::min(first_chunk_frames, kStreamedChunkFrames)
-              : kStreamedChunkFrames) {}
+              : kStreamedChunkFrames),
+      bridge_chunk_frames_(std::clamp(bridge_chunk_frames, kNoBridgeChunkFrames,
+                                      kStreamedChunkFrames)) {}
 
 int SpeechStream::ChunkFrames() const {
   if (!streamed_) {
     return kChunkFrames;
   } else if (emitted_frames_ == 0) {
     return first_chunk_frames_;
+  } else if (bridge_chunk_frames_ > 0 &&
+             emitted_frames_ == first_chunk_frames_) {
+    return bridge_chunk_frames_;
   } else {
     return kStreamedChunkFrames;
   }
