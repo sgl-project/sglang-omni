@@ -60,6 +60,7 @@ from sglang_omni.models.ming3_tts.sglang_model import (
 from sglang_omni.models.ming3_tts.vocoder import create_vocoder_executor
 from sglang_omni.modules.ming_audio.flow.aggregator import Aggregator
 from sglang_omni.modules.ming_audio.vae.modeling_audio_vae import AudioVAE
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
 from sglang_omni.scheduling.generation_batch_policy import (
@@ -606,7 +607,11 @@ def create_tts_engine_executor(
         disables_prefill = overrides.get("disable_cuda_graph") or overrides.get(
             "disable_prefill_cuda_graph"
         )
-        if not disables_prefill and prefill_graph_token_counts:
+        if (
+            not disables_prefill
+            and prefill_graph_token_counts
+            and current_platform.enable_ming3_tts_prefill_graph()
+        ):
             if not operator_selected_prefill_backend(overrides):
                 overrides.setdefault(
                     "cuda_graph_backend_prefill", CudaGraphBackend.FULL
