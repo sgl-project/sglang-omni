@@ -13,7 +13,7 @@ import threading
 import time
 import types
 from collections import deque
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from concurrent.futures import Future
 from multiprocessing.connection import Connection
 from pathlib import Path
@@ -85,6 +85,7 @@ from sglang_omni.models.qwen3_tts.sglang_model import (
 )
 from sglang_omni.models.qwen3_tts.streaming_vocoder import (
     DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE,
+    IncrementalDecodeBatch,
     IncrementalDecodePlan,
     PendingIncrementalGroup,
     Qwen3TTSDecodeHandle,
@@ -93,6 +94,7 @@ from sglang_omni.models.qwen3_tts.streaming_vocoder import (
     Qwen3TTSInvalidCodeRows,
     Qwen3TTSStreamingVocoderScheduler,
     Qwen3TTSStreamState,
+    Qwen3TTSWholeRequest,
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
@@ -4243,7 +4245,9 @@ def test_qwen3_tts_whole_request_that_cannot_start_fails_only_itself(
     scheduler, _, _ = whole_request_scheduler(monkeypatch)
     build_whole_request = scheduler.build_whole_request
 
-    def fail_one(request_id: str, payload: StagePayload, state: Qwen3TTSState):
+    def fail_one(
+        request_id: str, payload: StagePayload, state: Qwen3TTSState
+    ) -> Qwen3TTSWholeRequest:
         if request_id == "faulted":
             raise RuntimeError("device fault")
         else:
@@ -4301,8 +4305,13 @@ def test_qwen3_tts_whole_request_aborted_in_flight_publishes_nothing(
     message = whole_request_message("whole", 8)
     launch_decode_plans = scheduler.launch_decode_plans
 
-    def launch_then_abort(plans, **kwargs):
-        handle = launch_decode_plans(plans, **kwargs)
+    def launch_then_abort(
+        plans: Sequence[IncrementalDecodePlan],
+        *,
+        stream: torch.Stream | None,
+        incremental: IncrementalDecodeBatch | None = None,
+    ) -> Qwen3TTSDecodeHandle:
+        handle = launch_decode_plans(plans, stream=stream, incremental=incremental)
         scheduler.abort("whole")
         return handle
 
