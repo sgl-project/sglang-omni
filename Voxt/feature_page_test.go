@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -153,8 +154,8 @@ func TestTranscribeMouseButton(t *testing.T) {
 	if hs := a.lib.settings.Get().Features.Transcribe.Hotkeys; hs[0].Keys != "Mouse4" {
 		t.Fatalf("saved %+v", hs)
 	}
-	if b := a.hotkeyPlan().Bindings[0]; b.ID != hotkey.ID(hotkey.Transcribe, 0) || b.Button == nil || *b.Button != 3 || b.Key != nil {
-		t.Errorf("binding %+v", b)
+	if b, _ := json.Marshal(a.hotkeyPlan().Bindings[0]); string(b) != `{"id":"transcribe/0","modifiers":{},"button":3,"behavior":"tap"}` {
+		t.Errorf("sent the helper %s", b)
 	}
 	if !has(tt, "Press Mouse button 4 or Start and say a sentence or two: the result shows here and is not typed anywhere.") {
 		t.Errorf("the try card does not name the button: %q", tt.Texts())

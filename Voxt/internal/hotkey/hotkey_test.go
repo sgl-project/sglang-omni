@@ -1,6 +1,7 @@
 package hotkey
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -162,18 +163,16 @@ func TestBuildMouseButtons(t *testing.T) {
 		Cancel: settings.Hotkey{Keys: "Mouse5"},
 	}
 	p := Build(f, Features)
-	if len(p.Bindings) != 2 || len(p.Carbon) != 0 {
-		t.Fatalf("plan %+v", p)
+	if len(p.Carbon) != 0 {
+		t.Errorf("carbon %+v", p.Carbon)
 	}
-	side, mid := p.Bindings[0], p.Bindings[1]
-	if side.Button == nil || *side.Button != 3 || side.Key != nil || len(side.Modifiers) != 0 || side.Behavior != proto.BehaviorLongPress {
-		t.Errorf("side button %+v", side)
-	}
-	if mid.Button == nil || *mid.Button != 2 || mid.Key != nil || mid.Modifiers[proto.ModOption] != proto.SideAny {
-		t.Errorf("middle button %+v", mid)
-	}
-	if p.Cancel == nil || p.Cancel.Button == nil || *p.Cancel.Button != 4 || p.Cancel.Key != nil {
-		t.Errorf("cancel %+v", p.Cancel)
+	// What hotkey.configure sends: the wire form is what the helper judges.
+	got, _ := json.Marshal(map[string]any{"bindings": p.Bindings, "cancel": p.Cancel})
+	want := `{"bindings":[{"id":"transcribe/0","modifiers":{},"button":3,"behavior":"longPress"},` +
+		`{"id":"transcribe/1","modifiers":{"option":"any"},"button":2,"behavior":"tap"}],` +
+		`"cancel":{"id":"cancel","modifiers":{},"button":4,"behavior":"tap"}}`
+	if string(got) != want {
+		t.Errorf("sent %s\nwant %s", got, want)
 	}
 }
 
