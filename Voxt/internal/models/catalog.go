@@ -34,8 +34,8 @@ type Runtime string
 
 const (
 	Omni Runtime = "omni" // sglang_omni_mlx/native's servers
-	MLX  Runtime = "mlx"  // voxtnew-llm, mlx-swift-lm
-	GGUF Runtime = "gguf" // voxtnew-llm, llama.cpp
+	MLX  Runtime = "mlx"  // the retired language models' (mlx-swift-lm, no longer in Voxt)
+	GGUF Runtime = "gguf" // the retired translation model's (llama.cpp, no longer in Voxt)
 )
 
 // The catalogue's ids.

@@ -5,11 +5,12 @@ name: Voxt Beta
 # the release workflow with beta: true, signed with the Developer ID of the
 # voxt-release environment and notarized, version X.Y.Z-beta.YYYYMMDD.N (N
 # this workflow's run number), its disk image an artifact of the run. Unlike
-# a release or the nightly, it takes the runtimes' builds from the cache
-# (voxt-release.yaml). The merged change passed Voxt CI as a pull request,
-# so the beta does not test it again. A newer merge cancels a beta still
-# building. A pull request that changes this file runs it too, ad hoc and
-# unsigned, since the environment lets in only main and voxt-v tags.
+# a release or the nightly, it takes the Omni runtime from the cache when
+# one was built from the same sources (voxt-release.yaml). The merged change
+# passed Voxt CI as a pull request, so the beta does not test it again. A
+# newer merge cancels a beta still building. A pull request that changes
+# this file runs it too, ad hoc and unsigned, since the environment lets in
+# only main and voxt-v tags.
 
 on:
   push:
