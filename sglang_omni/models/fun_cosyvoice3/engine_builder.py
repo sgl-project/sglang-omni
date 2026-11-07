@@ -214,16 +214,19 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
             # a Torch MPS host of this builder cannot load.
             from sglang_omni.models.fun_cosyvoice3.dspark_draft import (
                 DRAFT_TOKENS_PER_STEP,
-                VERIFY_TOKENS_PER_STEP,
                 materialize_draft_checkpoint,
             )
 
-            if overrides.get("speculative_dspark_block_size") not in (
-                None,
-                DRAFT_TOKENS_PER_STEP,
+            draft_tokens_per_step = overrides.get("speculative_dspark_block_size")
+            if draft_tokens_per_step is None:
+                draft_tokens_per_step = DRAFT_TOKENS_PER_STEP
+            elif (
+                not isinstance(draft_tokens_per_step, int)
+                or isinstance(draft_tokens_per_step, bool)
+                or not 1 <= draft_tokens_per_step <= DRAFT_TOKENS_PER_STEP
             ):
                 raise ValueError(
-                    f"the published draft proposes {DRAFT_TOKENS_PER_STEP} tokens per step"
+                    f"speculative_dspark_block_size must be between 1 and {DRAFT_TOKENS_PER_STEP}"
                 )
             else:
                 pass
@@ -231,14 +234,16 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
             # the server args, so the stage-vocabulary copy must exist before that.
             overrides["speculative_algorithm"] = SpeculativeAlgorithm.DSPARK.name
             overrides["speculative_draft_model_path"] = materialize_draft_checkpoint(
-                draft_model_path, overrides.get("speculative_draft_model_revision")
+                draft_model_path,
+                overrides.get("speculative_draft_model_revision"),
+                draft_tokens_per_step=draft_tokens_per_step,
             )
             overrides["speculative_draft_model_revision"] = None
-            overrides["speculative_dspark_block_size"] = DRAFT_TOKENS_PER_STEP
+            overrides["speculative_dspark_block_size"] = draft_tokens_per_step
             # note (wilsonzheng0327): matches the scheduler's per-decode reservation,
             # two verify windows past each request's tokens, which the server args
             # cannot report before they are resolved.
-            speculative_reserve_tokens = 2 * VERIFY_TOKENS_PER_STEP
+            speculative_reserve_tokens = 2 * (draft_tokens_per_step + 1)
             self.has_draft_model = True
         # Note (Jiaxin Deng): the fraction alone sized a 62 GB pool on an
         # H100 that the running requests can never fill; the vocoder shares

@@ -159,6 +159,7 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 token_max_hop_len=100,
                 disable_hop_growth=False,
                 flow_prefix_cache_gb=None,
+                should_complete_first_chunk_immediately=False,
             ),
             gpu=0,
             terminal=True,

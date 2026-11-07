@@ -66,7 +66,9 @@ DRAFT_CONFIG_FIELDS = (
 )
 
 
-def materialize_draft_checkpoint(draft_model_path: str, revision: str | None) -> str:
+def materialize_draft_checkpoint(
+    draft_model_path: str, revision: str | None, *, draft_tokens_per_step: int
+) -> str:
     """Write a loadable copy of a speculators-format CosyVoice3 DSpark draft.
 
     The copy has a flat qwen3 config that names the stage-vocabulary draft class
@@ -114,7 +116,7 @@ def materialize_draft_checkpoint(draft_model_path: str, revision: str | None) ->
         architectures=[DRAFT_ARCHITECTURE],
         vocab_size=TOTAL_VOCAB_SIZE,
         tie_word_embeddings=False,
-        block_size=DRAFT_TOKENS_PER_STEP,
+        block_size=draft_tokens_per_step,
         sample_from_anchor=False,
         mask_token_id=MASK_TOKEN_ID,
         markov_rank=int(source_config["markov_rank"]),
@@ -123,7 +125,7 @@ def materialize_draft_checkpoint(draft_model_path: str, revision: str | None) ->
         dflash_config={
             "target_layer_ids": target_layer_ids,
             "mask_token_id": MASK_TOKEN_ID,
-            "block_size": DRAFT_TOKENS_PER_STEP,
+            "block_size": draft_tokens_per_step,
         },
     )
     draft_dir = tempfile.mkdtemp(prefix="fun-cosyvoice3-dspark-")

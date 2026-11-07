@@ -351,7 +351,7 @@ This result is only demonstrative, since we have further optimization after the 
 
 ### Speculative Decoding
 
-SpeechSpec's DSpark draft [`yuekai/cosyvoice3_llm_dspark`](https://huggingface.co/yuekai/cosyvoice3_llm_dspark) proposes 7 speech tokens per step from three of the LLM's hidden layers, and the LLM verifies them in one forward pass.
+SpeechSpec's DSpark draft [`yuekai/cosyvoice3_llm_dspark`](https://huggingface.co/yuekai/cosyvoice3_llm_dspark) proposes 7 speech tokens per step by default from three of the LLM's hidden layers, and the LLM verifies them in one forward pass.
 
 ```bash
 sgl-omni serve \
@@ -364,6 +364,8 @@ sgl-omni serve \
 Send `return_spec_tokens_details: true` with a speech request to get its acceptance statistics. Buffered audio adds `X-SGLang-Omni-Spec-Accept-Length`, `X-SGLang-Omni-Spec-Accept-Rate`, `X-SGLang-Omni-Spec-Num-Correct-Drafts`, `X-SGLang-Omni-Spec-Num-Proposed-Drafts` and `X-SGLang-Omni-Spec-Verify-Ct` headers; the SSE `speech.audio.done` event and the raw PCM outcome from `GET /v1/audio/speech/{request_id}` carry `sglext.spec_tokens_details`, which also holds the per-verify histogram. `spec_accept_length` is speech tokens per verify, including the token sampled at prefill, so it can read higher than the scheduler log's `accept len`, which counts only verified tokens. `spec_accept_rate` and `spec_num_proposed_drafts`, and their headers, are left out when no drafts were proposed or the draft width is adaptive.
 
 Verification reproduces CosyVoice3's sampler exactly: temperature, top-k/top-p, the repetition penalty, the minimum-length stop mask and the repetition-aware redraw. The speech tokens therefore follow the same distribution as without the draft. A request's `seed` fixes every draft and verify draw, so a seeded request reproduces its speech tokens while the draft is on; they differ from the tokens the same seed gives without the draft, which samples differently.
+
+Set `tts_engine.engine.speculative_dspark_block_size` to an integer from 1 through 7 to tune the number of proposals per step. Shorter blocks reduce the work of one verification but can require more decoding steps; measure both first-chunk latency and throughput at the intended concurrency. The adapter keeps the draft model's block configuration and KV reservation consistent with the selected length. The sampler and audio chunk size are unchanged, but changing the proposal count can change a seeded request's speech tokens.
 
 LLM speech-token throughput without the vocoder (Seed-TTS zh, 2,020 utterances, one H200 141GB with SGLang 0.5.22, target and draft on FA3, each batch run to completion), with the default sampling and about 3.0 tokens accepted per verify:
 
@@ -385,6 +387,27 @@ End-to-end streaming on the same GPU (`benchmark_tts_seedtts --stream`, all 2,02
 | 16 | 18.02 → 21.08 req/s | 0.169 → 0.146 | 0.306 → 0.333 s | 0.76% → 0.73% |
 
 The vocoder takes a growing share of each request as concurrency rises, so the end-to-end gain is largest at low concurrency.
+
+### Separate Vocoder on H100
+
+The experimental [H100 configuration](../../examples/configs/fun_cosyvoice3_dspark_h100.yaml) puts the vocoder in a separate process on the same GPU. Start NVIDIA MPS and set both CPU thread variables in the launch environment. The configuration assigns 15% of GPU memory to the TTS engine and 75% to the vocoder, with a 32 GiB Flow prefix cache cap. It uses one draft proposal per step.
+
+```bash
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
+export CUDA_MPS_PIPE_DIRECTORY="$(mktemp -d)"
+export CUDA_MPS_LOG_DIRECTORY="$(mktemp -d)"
+nvidia-cuda-mps-control -d
+sgl-omni serve \
+  --config examples/configs/fun_cosyvoice3_dspark_h100.yaml \
+  --model-name FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --host 127.0.0.1 --port 8000
+# After stopping the server:
+echo quit | nvidia-cuda-mps-control
+```
+
+Use a dedicated GPU for this MPS instance. Setting only the stage's environment defaults does not replace an existing `MKL_NUM_THREADS` value. The server log should report `torch_num_threads=1` for the vocoder warmup.
+
+The preset enables `vocoder.factory.should_complete_first_chunk_immediately`: a step containing first audio completes before the next step is launched, while subsequent steps keep launch/read overlap. The regular pipeline leaves this option off.
 
 ### Zero-shot Voice Cloning
 
