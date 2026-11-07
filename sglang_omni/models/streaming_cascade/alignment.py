@@ -44,6 +44,7 @@ from sglang_omni.proto.streams import (
     REPLY_SENTENCE,
     TEXT_DELTA,
     TRUNCATE,
+    WAIT_REPLY,
     chunk_language,
     control_type,
 )
@@ -284,7 +285,9 @@ class Alignment(StreamComponent):
         sentences: asyncio.Queue[SentenceAudio | HeardAudio | None],
     ) -> None:
         event = control_type(chunk)
-        if chunk.format == TEXT_DELTA:
+        if chunk.format == TEXT_DELTA and chunk.payload.get("text") == WAIT_REPLY:
+            pass
+        elif chunk.format == TEXT_DELTA:
             reply = self.reply_of(chunk.turn)
             reply.text += str(chunk.payload["text"])
             language = chunk_language(chunk)
