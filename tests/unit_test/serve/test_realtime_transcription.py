@@ -204,7 +204,7 @@ async def make_session(
 async def test_g711_input_is_decoded_to_16khz_pcm(
     monkeypatch: pytest.MonkeyPatch, audio_format: str
 ) -> None:
-    session, _websocket, _client = await make_session(
+    session, websocket, _client = await make_session(
         monkeypatch, audio_format=audio_format
     )
 
@@ -212,6 +212,30 @@ async def test_g711_input_is_decoded_to_16khz_pcm(
 
     assert session.session_object().input_audio_format == audio_format
     assert session.audio_buffer.num_samples == 1600
+    updated = next(
+        event for event in websocket.events if event["type"] == "session.updated"
+    )
+    assert updated["session"]["input_audio_format"] == audio_format
+    await session.teardown()
+
+
+@pytest.mark.asyncio
+async def test_g711_format_change_is_rejected_while_audio_is_buffered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, websocket, _client = await make_session(monkeypatch)
+    await session.dispatch(audio_event(make_pcm(0.05)))
+
+    await session.dispatch(
+        {
+            "type": "session.update",
+            "session": {"input_audio_format": "g711_ulaw"},
+        }
+    )
+
+    assert websocket.events[-1]["type"] == "error"
+    assert websocket.events[-1]["error"]["code"] == "session_active"
+    assert session.session_object().input_audio_format == "pcm16"
     await session.teardown()
 
 
