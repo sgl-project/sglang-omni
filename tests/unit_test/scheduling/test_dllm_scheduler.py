@@ -87,6 +87,22 @@ def make_scheduler(
     return scheduler
 
 
+@pytest.mark.parametrize("tp_rank,expected_errors", [(0, 1), (1, 0)])
+def test_tp_request_rejection_is_reported_by_leader_only(
+    tp_rank: int, expected_errors: int
+) -> None:
+    errors: list[object] = []
+    scheduler = make_scheduler(fdfo=False)
+    scheduler.tp_size = 2
+    scheduler.tp_rank = tp_rank
+    scheduler.outbox = SimpleNamespace(put=errors.append)
+    scheduler.cond_to_unconds = {"request": []}
+
+    scheduler.reject_waiting_request_group("request", "request group is too large")
+
+    assert len(errors) == expected_errors
+
+
 @pytest.mark.parametrize("tp_size,tp_rank", [(1, 0), (2, 0), (2, 1)])
 def test_dllm_scheduler_owns_tp_work_broadcast(
     monkeypatch: pytest.MonkeyPatch, tp_size: int, tp_rank: int

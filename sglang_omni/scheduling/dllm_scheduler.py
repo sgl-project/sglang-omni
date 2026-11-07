@@ -136,6 +136,19 @@ class DllmScheduler:
         with self.abort_lock:
             self.aborted_request_ids.add(request_id)
 
+    def emit_request_error(self, request_id: str, error: object) -> None:
+        """Report a request failure once while every TP rank cleans up locally."""
+        if self.tp_size == 1 or self.tp_rank == 0:
+            self.outbox.put(
+                OutgoingMessage(
+                    request_id=request_id,
+                    type="error",
+                    data=error,
+                )
+            )
+        else:
+            pass
+
     def _event_loop(self) -> None:
         while self.drain_and_purge():
             batch = self.schedule_next_batch()
@@ -209,11 +222,7 @@ class DllmScheduler:
                     logger.exception(
                         f"DllmScheduler: request builder failed for {msg.request_id}"
                     )
-                    self.outbox.put(
-                        OutgoingMessage(
-                            request_id=msg.request_id, type="error", data=exc
-                        )
-                    )
+                    self.emit_request_error(msg.request_id, exc)
                     continue
                 req = req_data.req
                 self.rid_to_req_data[req.rid] = req_data
@@ -365,13 +374,7 @@ class DllmScheduler:
             self.uncond_to_cond.pop(companion_rid, None)
             self.uncond_rids.discard(companion_rid)
             self.orphaned_uncond_rids.discard(companion_rid)
-        self.outbox.put(
-            OutgoingMessage(
-                request_id=cond_rid,
-                type="error",
-                data=error,
-            )
-        )
+        self.emit_request_error(cond_rid, error)
 
     def apply_cfg_padding_metadata(
         self,
@@ -804,15 +807,15 @@ class DllmScheduler:
                     message_type = "result"
                 except Exception as exc:
                     logger.exception(f"DLLM result adapter failed for {req.rid}")
-                    result = str(exc)
-                    message_type = "error"
-                self.outbox.put(
-                    OutgoingMessage(
-                        request_id=req.rid,
-                        type=message_type,
-                        data=result,
+                    self.emit_request_error(req.rid, str(exc))
+                else:
+                    self.outbox.put(
+                        OutgoingMessage(
+                            request_id=req.rid,
+                            type=message_type,
+                            data=result,
+                        )
                     )
-                )
             else:
                 pass
 
