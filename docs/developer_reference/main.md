@@ -139,6 +139,10 @@ Only these pages are exempt from navigation inclusion; emoji, fence-label, and f
 - `get_started/apiserver_quickstart.md`: legacy exemption; this page is now listed in the Get Started sidebar.
 - `basic_usage/python_router.md`: retained until the Python router is removed separately.
 
+Identical fenced bodies across at least two Markdown files are reported as `duplicated-block` when the normalized body contains at least three lines and 70 characters. Both limits must be met. Each body line has trailing whitespace removed; internal indentation and blank lines remain significant. Character counts use Python `len()` and include the newlines between body lines, excluding the fence lines. Fence info strings do not affect comparison. Repetition confined to one file is ignored. Every matching opening-fence location is reported in deterministic file and occurrence order, with duplicate groups ordered by their first occurrence.
+
+The 3-line/70-character threshold is an engineering choice supporting the documentation roadmap's shared-source policy, not a proven optimum. At commit `247e43ccd96055f16766089c225bd000546a44d5`, a single extraction of 88 Markdown files found 733 completed blocks, 709 unique normalized bodies, and eight cross-file duplicate groups. An initial 36-combination experiment tested minimum line counts of 3, 4, 5, 6, 8, and 10 against minimum character counts of 80, 120, 160, 200, 250, and 300: 6/200 reported no groups and 3/80 reported four. A supplemental calculation on that inventory found five groups at 3/70, adding a three-line, 71-character Whisper launch command. Those five groups have ten occurrences across seven files. This small snapshot does not establish precision or recall; earlier AI-only editorial classifications are not validated labels. Single-line duplicates remain outside this rule, and non-identical bodies require editorial review.
+
 ```bash
 python -m pip install -r scripts/requirements-doc-lint.txt
 python scripts/check_doc_style.py

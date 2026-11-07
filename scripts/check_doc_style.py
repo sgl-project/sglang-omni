@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Check Markdown documentation navigation, filenames, emoji, and fence labels."""
+"""Check Markdown documentation style without rewriting source files."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import fnmatch
 import posixpath
 import re
 import sys
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,6 +16,8 @@ import emoji
 
 DOCS_ROOT = Path(__file__).resolve().parents[1] / "docs"
 FENCE_PATTERN = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+MINIMUM_DUPLICATE_BLOCK_LINES = 3
+MINIMUM_DUPLICATE_BLOCK_CHARACTERS = 70
 EXTERNAL_TARGET_PATTERN = re.compile(r"(?:[a-zA-Z][a-zA-Z0-9+.-]*:|//|www\.)")
 RST_DIRECTIVE_PATTERN = re.compile(r"\.\.\s+([\w-]+)::(?:\s+(.*))?$")
 GLOB_TOKEN_PATTERN = re.compile(r"\[[!]?\]?[^]]*\]|\*\*|\*|\?|.")
@@ -41,11 +44,23 @@ class Violation:
     detail: str
 
 
-def check_source(path: Path, source: str) -> list[Violation]:
-    """Check fence labels and emoji presentation with complete sequence matches."""
+@dataclass(frozen=True, kw_only=True)
+class FencedBlock:
+    path: Path
+    line_number: int
+    body: str
+
+
+def check_source(
+    path: Path,
+    source: str,
+    fenced_blocks: list[FencedBlock] | None = None,
+) -> list[Violation]:
+    """Check one Markdown source and optionally collect completed fenced blocks."""
     violations: list[Violation] = []
     fence_marker = ""
     fence_start_line_number = 0
+    body_lines: list[str] = []
     for line_number, line in enumerate(source.splitlines(), start=1):
         fence = FENCE_PATTERN.match(line)
         if fence_marker:
@@ -55,12 +70,24 @@ def check_source(path: Path, source: str) -> list[Violation]:
                 and len(fence.group(1)) >= len(fence_marker)
                 and not fence.group(2).strip()
             ):
+                if fenced_blocks is not None:
+                    fenced_blocks.append(
+                        FencedBlock(
+                            path=path,
+                            line_number=fence_start_line_number,
+                            body="\n".join(body_lines),
+                        )
+                    )
+                else:
+                    pass
                 fence_marker = ""
+                body_lines = []
             else:
-                pass
+                body_lines.append(line.rstrip())
         elif fence:
             fence_marker = fence.group(1)
             fence_start_line_number = line_number
+            body_lines = []
             if not fence.group(2).strip():
                 violations.append(
                     Violation(
@@ -315,8 +342,9 @@ def toctree_targets(docs_root: Path) -> set[Path]:
 
 
 def check_docs(docs_root: Path = DOCS_ROOT) -> list[Violation]:
-    """Scan all Markdown documentation without rewriting files."""
+    """Scan Markdown documents for local rules, navigation, and duplicate blocks."""
     violations: list[Violation] = []
+    blocks_by_body: dict[str, list[FencedBlock]] = defaultdict(list)
     published_paths = toctree_targets(docs_root)
     for path in document_paths(docs_root, "*.md"):
         if path != docs_root / "README.md" and not re.fullmatch(
@@ -346,7 +374,35 @@ def check_docs(docs_root: Path = DOCS_ROOT) -> list[Violation]:
             )
         else:
             pass
-        violations.extend(check_source(path, path.read_text(encoding="utf-8")))
+        fenced_blocks: list[FencedBlock] = []
+        violations.extend(
+            check_source(path, path.read_text(encoding="utf-8"), fenced_blocks)
+        )
+        for block in fenced_blocks:
+            if (
+                len(block.body.split("\n")) >= MINIMUM_DUPLICATE_BLOCK_LINES
+                and len(block.body) >= MINIMUM_DUPLICATE_BLOCK_CHARACTERS
+            ):
+                blocks_by_body[block.body].append(block)
+            else:
+                pass
+    for blocks in blocks_by_body.values():
+        if len({block.path for block in blocks}) >= 2:
+            locations = ", ".join(
+                f"{block.path.relative_to(docs_root)}:{block.line_number}"
+                for block in blocks
+            )
+            violations.extend(
+                Violation(
+                    path=block.path,
+                    line_number=block.line_number,
+                    rule="duplicated-block",
+                    detail=f"identical fenced body at {locations}",
+                )
+                for block in blocks
+            )
+        else:
+            pass
     return violations
 
 
