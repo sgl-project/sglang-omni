@@ -220,7 +220,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 ### Streaming
 
-Incremental Flow + HiFT decoding supports streaming. Set `stream: true` and `response_format: "pcm"` to emit audio before AR generation completes. The vocoder uses CosyVoice3's causal chunk loop: 25 speech tokens per hop (~1 s of audio). The first PCM chunk is emitted once AR produces `28 + prompt_pad` tokens (where `prompt_pad` rounds the Flow prompt length to a 25-token multiple). Later hops grow from 25 to 50 to 100 tokens in vocoder to increase batching efficiency without affecting audio continuity or real-time factor, only the decoding granularity changes, not the total synthesis time. The scheduler processes at most one hop per request per step to prevent backlogged streams from monopolizing the GPU. Non-streaming requests decode the entire utterance in one pass.
+Incremental Flow + HiFT decoding supports streaming. Set `stream: true` and `response_format: "pcm"` to emit audio before AR generation completes. The vocoder uses CosyVoice3's causal chunk loop: 25 speech tokens per hop (~1 s of audio). The first causal PCM chunk becomes eligible after AR produces 28 generated tokens (25 for the hop and 3 for lookahead); Flow prompt tensors are padded separately to align the reference to a hop boundary. Later hops grow from 25 to 50 to 100 tokens in vocoder to increase batching efficiency without affecting audio continuity or real-time factor, only the decoding granularity changes, not the total synthesis time. The scheduler processes at most one hop per request per step to prevent backlogged streams from monopolizing the GPU. Non-streaming requests decode the entire utterance in one pass.
 
 Optional serving knobs (vocoder factory):
 
@@ -260,7 +260,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 | `repetition_penalty` | `1.21` | Repetition penalty |
 | `max_new_tokens` | `min(2048, 20x target text tokens)` | Maximum number of generated speech tokens. If omitted, derived from the target text length (capped at 2048); stop tokens are also suppressed until at least `2x` that length has been generated |
 | `seed` | `null` | Random seed for reproducibility |
-| `stream` | `false` | Incremental causal Flow + HiFT; first PCM chunk after `28 + prompt_pad` speech tokens (`prompt_pad` rounds the prompt length to a multiple of 25) |
+| `stream` | `false` | Incremental causal Flow + HiFT; first causal PCM chunk after 28 generated speech tokens; reference hop alignment is applied to Flow prompt tensors |
 
 ## Serving Optimization
 
@@ -394,9 +394,29 @@ An attribution run on one Runpod H100 SXM 80 GB at commit `c8a513228f59c079480ae
 | 16 | 1.20x | 1.33x |
 | 64 | 1.03x | 1.24x |
 
-The isolated pipeline ran without Nsight and includes preprocessing and terminal transport, so its gain is not a pure decode-kernel speedup. At c1, its mean time outside the AR engine was about 56 ms on both sides. At higher concurrency, isolated vocoder replay reached about 30–34 requests/s, while the complete pipeline plateaued around 23–24 requests/s: both stages share GPU and host resources, and live token arrival changes vocoder batching. In separate diagnostics over 128 prewarmed references, the mean tail after AR completion rose from 71 ms without the draft to 104–110 ms with it at c16. Both AR configurations used synchronous scheduling; the ASR explanation that a draft disables baseline overlap does not apply to this comparison.
+The isolated pipeline ran without Nsight and measured preprocessing, AR and terminal transport. It disabled streaming and changed terminal routing, so its latency difference from the complete pipeline combines vocoder work with those execution changes. At c1, its mean time outside the AR engine was about 56 ms on both sides. Isolated vocoder replay supplied all tokens immediately and reached about 30–34 requests/s, while the complete pipeline plateaued around 23–24 requests/s. These are capacity controls with different arrival and batching conditions. In separate diagnostics over 128 prewarmed references, the mean tail after AR completion rose from 71 ms without the draft to 104–110 ms with it at c16. Both AR configurations used synchronous scheduling.
 
-The small c64 end-to-end gain was within the draft's observed repeat spread. At c16, first-audio p95 pooled across the two runs increased from 315.6 to 337.5 ms, exceeding the 5% gate despite overlapping per-run ranges. These measurements explain the loss of end-to-end gain; they do not establish default-on eligibility or replace the full model CI.
+The small c64 end-to-end gain was within the draft's observed repeat spread. At c16, first-audio p95 pooled across the two runs increased from 315.6 to 337.5 ms, exceeding the 5% gate despite overlapping per-run ranges.
+
+A separate controlled follow-up on a Runpod H100 NVL 94 GB used the same source and model revisions, 128 prewarmed SeedTTS ZH references at offset 1024, and the coordinator streaming API without HTTP/SSE. High-concurrency points repeated those references four times for 512 requests. At c1, replacing only the vocoder with a token-counting streaming sink retained a 1.54x draft gain across two independent loads per side; the complete pipeline retained 1.26x. The sink preserved streaming and downstream routing and verified that every generated token arrived. It measures preprocessing, AR and transport with vocoder contention removed.
+
+The primary NVL controls gave the following ratios of mean draft/baseline request throughput:
+
+| Concurrency | Streaming sink gain | Complete pipeline gain | Separate vocoder process gain |
+|-------------|---------------------|------------------------|-------------------------------|
+| 1 | 1.54x | 1.26x | 1.33x |
+| 16 | 1.12x | 0.96x | 0.96x |
+| 64 | 0.84x | 0.98x | 1.04x |
+
+Repeated runs varied substantially: c64 sink throughput ranged from 24.4–36.3 requests/s for baseline and 22.5–34.4 for draft. The loss of draft gain with the vocoder removed points to an additional bottleneck in the streaming producer path.
+
+A within-load host intervention changed Python's thread switch interval in 5/1/1/5 ms order, with settling batches between settings. At c64, the first baseline and draft loads both improved about 35% at 1 ms; the later loads improved only 0.4% and 6.2%, respectively. The earlier improvement raised both pipelines' throughput without restoring their relative draft gain. The sensitivity to the thread switch interval varied across model loads. This single-host experiment tests interpreter scheduling; cross-host CPU hardware effects remain unmeasured.
+
+A final c64 sink control first warmed 512 requests at c64, then repeated the same 5/1/1/5 ms intervention within one baseline and one draft load. Baseline throughput changed from 24.16/24.37 requests/s at 5 ms to 28.02/27.90 at 1 ms (1.15x); draft changed from 22.10/22.78 to 30.05/29.70 (1.33x). Every result recorded the requested interval. These passes had no cgroup-throttling increments. The return to the slower rate at 5 ms establishes a scheduling limitation in the streaming producer path before vocoder computation.
+
+Moving the vocoder into a separate process on the same NVL GPU, without MPS, yielded draft gains of 1.33x, 0.96x and 1.04x at c1, c16 and c64. It did not restore a substantial high-concurrency gain. The absolute-rate comparison includes changes to IPC, CUDA contexts and GIL sharing, as well as variation between the separate measurement blocks. The split control declared 16/70 GiB AR/vocoder allocator ceilings and set `tts_engine.comm.credits=16`: the default two shared-memory credits stalled before publishing a token message carrying three prompt tensors. A CPU-only reproduction confirmed that four credits suffice for that message; the experimental configuration uses sixteen. Model computation and the transport implementation were unchanged.
+
+A fixed-token replay recorded 512 requests, checked all 80,610 tokens against the AR outputs, and held token content, chunk boundaries, reference features and each request's first-arrival schedule fixed. On one vocoder load, each of four source/concurrency groups ran paced/collapsed/collapsed/paced after a separate warmup. Collapsing later arrivals to the first arrival increased mean batch size and shortened completion time in all four groups, but increased mean first-audio latency. For the draft c64 trace, completion from first input fell from 1.93 to 0.31 s while first audio rose from 66 to 134 ms and mean batch size rose from 1.47 to 1.79. Injection-lateness p95 stayed below 1 ms. The replay measures open-loop downstream latency from each request's first token arrival, with INFO logging enabled in both arms. Earlier token availability trades faster completion and larger batches for higher first-audio latency in these controls.
 
 To investigate that gap, collect request events separately from throughput measurements. The streaming vocoder records batch launch, Flow submission, HiFT submission and audio completion without adding CUDA synchronization. Allocate enough event storage for the whole diagnostic cohort:
 
@@ -412,7 +432,7 @@ python -m benchmarks.eval.cosyvoice_profile /tmp/cosyvoice-events \
   --output /tmp/cosyvoice-attribution.json
 ```
 
-The report decomposes the first-audio path and the tail after AR completion, and includes vocoder batch sizes and per-request durations. If the recorded workload starts with benchmark warmup, pass its request count with `--skip-first-requests`. Event storage must be complete; increase the capacity and recollect if the recorder reports overflow. Flow and HiFT submission spans include host work and CUDA waits, and deferred audio completion can overlap another hop. They are not pure GPU execution times. Use a GPU timeline to distinguish device contention from host scheduling, and do not add overlapping AR and vocoder residence times or phase percentiles.
+The report decomposes the first-audio path and the tail after AR completion, and includes vocoder batch sizes and per-request durations. If the recorded workload starts with benchmark warmup, pass its request count with `--skip-first-requests`. Event storage must be complete; increase the capacity and recollect if the recorder reports overflow. Flow and HiFT submission spans measure host work and CUDA waits together, and deferred audio completion can overlap another hop. Use a GPU timeline to distinguish device contention from host scheduling, and do not add overlapping AR and vocoder residence times or phase percentiles.
 
 ### Zero-shot Voice Cloning
 
@@ -507,9 +527,10 @@ generation finishes.
 
 The vocoder follows CosyVoice3's causal chunk loop: 25 speech tokens per hop
 (`pre_lookahead_len=3`, 25 Hz → about 1 s of audio per chunk). The first PCM
-chunk is emitted once the AR stage has produced `28 + prompt_pad` tokens,
-where `prompt_pad` (0–24) rounds the Flow prompt-token length up to a
-multiple of 25. Later hops grow 25 → 50 → 100 tokens like the upstream
+chunk becomes eligible once the AR stage has produced 28 generated tokens.
+Flow prompt tensors are padded separately to a multiple of 25; reference
+alignment does not require extra generated tokens. Later hops grow
+25 → 50 → 100 tokens like the upstream
 `CosyVoice3Model` (default; keep growth on). Each scheduler step runs at most
 one hop per request so a backlogged stream cannot monopolize the GPU.
 Non-streaming requests still use the buffered Flow + HiFT path for the whole utterance.
@@ -553,7 +574,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 | `repetition_penalty` | `1.21` | Repetition penalty |
 | `max_new_tokens` | `min(2048, 20x target text tokens)` | Maximum number of generated speech tokens. If omitted, derived from the target text length (capped at 2048); stop tokens are also suppressed until at least `2x` that length has been generated |
 | `seed` | `null` | Random seed for reproducibility |
-| `stream` | `false` | Incremental causal Flow + HiFT; first PCM chunk after `28 + prompt_pad` speech tokens (`prompt_pad` rounds the prompt length to a multiple of 25) |
+| `stream` | `false` | Incremental causal Flow + HiFT; first causal PCM chunk after 28 generated speech tokens; reference hop alignment is applied to Flow prompt tensors |
 
 Sampling is repetition-aware, as in upstream CosyVoice: a sampled speech token that already appears among the last 10 generated tokens is masked and redrawn once from the full distribution at the request temperature. Greedy requests (`top_k = 1`) sample without the redraw.
 
