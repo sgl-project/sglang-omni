@@ -97,11 +97,13 @@ def score_session(
     reply_opening_unit: dict[str, MediaTime] = {}
     reply_first_audio_unit: dict[str, MediaTime] = {}
     reply_chunks: dict[str, list[tuple[float, float]]] = {}
+    # Note (wenyao): Tail-silence units are padding, not the input under test, so they are neither expected nor timed.
+    input_ms = (variant_dir / "input.pcm").stat().st_size / INPUT_BYTES_PER_MS
     for record in (record for record in records if record.direction == "receive"):
         event = WireEvent.model_validate(record.event)
         if event.type == "sglang.unit.done" and is_native:
             media_time = unit_media_time(event)
-            if media_time.duration_ms > 0:
+            if media_time.duration_ms > 0 and media_time.t_start_ms < input_ms:
                 unit_lags_s.append(record.time_s - ready_s(media_time))
             else:
                 pass
@@ -243,6 +245,12 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
     sessions_failed = sum(
         variant_state["status"] in FAILED_STATUSES for variant_state in attempted
     )
+    # Note (wenyao): Runs recorded before --end-wait carry no end_wait state.
+    end_wait_closes = [
+        variant_state["end_wait"]
+        for variant_state in attempted
+        if variant_state.get("end_wait") is not None
+    ]
     # note (jeffro): a native reply comes out one unit per input unit, so its
     # real-time factor tracks the input pace.
     real_time_factor = (
@@ -288,6 +296,10 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
         ),
         "sessions": len(attempted),
         "sessions_failed": sessions_failed,
+        "sessions_closed_at_end_wait": len(end_wait_closes),
+        "replies_open_at_end_wait": sum(
+            len(end_wait["open_response_ids"]) for end_wait in end_wait_closes
+        ),
         "admission_denials": load["variants_with_admission_denials"],
         "input_pacing_violations": load["input_pacing_violations"],
         "units_expected": units_expected,

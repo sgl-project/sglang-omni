@@ -248,6 +248,7 @@ PeerMode = Literal[
     "nonfinite",
     "linger",
     "close_without_update",
+    "unfinished",
 ]
 
 
@@ -276,6 +277,12 @@ class DuplexPeer:
                 websocket,
                 {
                     "type": "response.created",
+                    "sglang": {
+                        "media_time": {
+                            "t_start_ms": self.frames * PACKET_MS,
+                            "duration_ms": PACKET_MS,
+                        },
+                    },
                     "response": {
                         "id": "response_0",
                         "object": "realtime.response",
@@ -502,6 +509,10 @@ class DuplexPeer:
                         "client_event_id": event["event_id"],
                     },
                 )
+                if self.mode == "unfinished":
+                    continue
+                else:
+                    pass
                 await self.open_response(websocket)
                 tail_unit = self.frames if units > self.frames else units
                 await self.emit_audio(
@@ -523,6 +534,10 @@ class DuplexPeer:
                     },
                 )
             elif kind == "session.close":
+                if self.response_open:
+                    await self.finish_response(websocket, "cancelled", "client_closed")
+                else:
+                    pass
                 await self.close_session(websocket, "client_closed", event["event_id"])
                 if self.mode == "linger":
                     await self.release.wait()

@@ -9,6 +9,7 @@ from pydantic import JsonValue, ValidationError
 
 from benchmarks.duplex.oracle_models import (
     AdmissionEvent,
+    EndWaitEvent,
     Identifier,
     MediaTime,
     Metadata,
@@ -30,6 +31,7 @@ from benchmarks.duplex.profiles import (
 
 __all__ = [
     "AdmissionEvent",
+    "EndWaitEvent",
     "Identifier",
     "MediaTime",
     "Metadata",
@@ -66,6 +68,10 @@ TERMINAL_REASONS = {
     "stop": ("completed", "sglang.input_audio.end"),
     "client_closed": ("cancelled", "session.close"),
 }
+# Note (wenyao): The session.close after an end-wait expiry ends each open reply this way; such a reply is unfinished, not a failure.
+CLOSE_TERMINAL = ("cancelled", "client_closed")
+# Note (wenyao): The expiry is timed on the loop clock and the trace on perf_counter, whose resolutions differ.
+END_WAIT_CLOCK_TOLERANCE_S = 0.001
 # note (luojiaxuan): A native reply whose turn ended before its talker spoke all of its text ends incomplete, where it would end completed/stop; no client command causes it.
 NATIVE_CUT_TERMINAL = ("incomplete", "max_output_tokens")
 NATIVE_ENDED_TERMINALS = {("completed", "stop"), NATIVE_CUT_TERMINAL}
@@ -179,7 +185,8 @@ def evaluate_trace(
     session_id = requested_type = None
     updated = ended = drained = closed = False
     previous_time = -math.inf
-    drain_after_eos_s = close_ack_s = None
+    drain_after_eos_s = close_ack_s = end_of_input_s = None
+    end_wait: EndWaitEvent | None = None
     acknowledgments = {
         "session.updated": "session.update",
         "sglang.input_audio.accepted": "input_audio_buffer.append",
@@ -215,6 +222,31 @@ def evaluate_trace(
                 pass
             if record.direction == "error":
                 violations.append(f"client error: {record.event.get('message')}")
+                continue
+            elif record.direction == "end_wait":
+                expiry = EndWaitEvent.model_validate(record.event)
+                check(end_wait is None, "duplicate end wait expiry")
+                check(
+                    end_of_input_s is not None
+                    and record.time_s - end_of_input_s
+                    >= expiry.end_wait_s - END_WAIT_CLOCK_TOLERANCE_S,
+                    "end wait expired before end_wait_s after EOS",
+                )
+                check(not drained, "end wait expired after input drained")
+                check(
+                    not counts["send", "session.close"],
+                    "end wait expired after session.close",
+                )
+                check(
+                    expiry.open_response_ids
+                    == [
+                        response_id
+                        for response_id, response_state in response_states.items()
+                        if response_state.terminal is None
+                    ],
+                    "end wait open responses differ from the trace",
+                )
+                end_wait = expiry
                 continue
             else:
                 pass
@@ -270,8 +302,12 @@ def evaluate_trace(
                     input_times.append(event_time_s)
                 elif event_type == "sglang.input_audio.end":
                     check(updated, "EOS before session.updated")
+                    end_of_input_s = event_time_s
                 elif event_type == "session.close":
-                    check(drained, "session.close before input drained")
+                    check(
+                        drained or end_wait is not None,
+                        "session.close before input drained",
+                    )
                 else:
                     violations.append(
                         f"client command outside this scenario: {event_type}"
@@ -498,7 +534,12 @@ def evaluate_trace(
                             interruptions += 1
                         elif turn_based:
                             check(
-                                (status, reason) in TURN_BASED_TERMINALS,
+                                (status, reason) in TURN_BASED_TERMINALS
+                                or (
+                                    (status, reason) == CLOSE_TERMINAL
+                                    and end_wait is not None
+                                    and bool(counts["send", "session.close"])
+                                ),
                                 f"unsupported response terminal {status}/{reason}",
                             )
                         else:
@@ -574,7 +615,10 @@ def evaluate_trace(
                 else:
                     pass
             elif event_type == "session.closed":
-                check(drained, "session.closed before input drained")
+                check(
+                    drained or end_wait is not None,
+                    "session.closed before input drained",
+                )
                 check(
                     event.reason == "client_closed", "unexpected session close reason"
                 )
@@ -600,7 +644,6 @@ def evaluate_trace(
         ("receive", "session.updated"),
         ("send", "sglang.input_audio.end"),
         ("receive", "sglang.input_audio.ended"),
-        ("receive", "sglang.input_audio.drained"),
         ("send", "session.close"),
         ("receive", "session.closed"),
     ):
@@ -608,9 +651,16 @@ def evaluate_trace(
             counts[direction, event_type] == 1,
             f"expected exactly one {direction} {event_type}",
         )
+    check(
+        counts["receive", "sglang.input_audio.drained"] == 1
+        or (end_wait is not None and not drained),
+        "expected exactly one receive sglang.input_audio.drained",
+    )
     check(bool(input_times), "missing audio input")
     input_ms = input_byte_count / INPUT_BYTES_PER_MS
     expected_units = math.ceil(input_byte_count / input_bytes_per_unit)
+    # Note (wenyao): A session closed at its end wait can leave the last units undecided; the serving report counts them missed.
+    is_cut_at_end_wait = end_wait is not None and not drained
     # note (wenyao): Only unit-aligned input produces an extra empty EOS unit.
     nonempty_unit_durations = [duration for _, duration in units if duration]
     check(
@@ -618,7 +668,8 @@ def evaluate_trace(
         "native unit receipts are not contiguous from zero",
     )
     check(
-        len(nonempty_unit_durations) == expected_units,
+        len(nonempty_unit_durations) == expected_units
+        or (is_cut_at_end_wait and len(nonempty_unit_durations) < expected_units),
         f"expected {expected_units} nonempty native units, "
         f"observed {len(nonempty_unit_durations)}",
     )
@@ -632,7 +683,8 @@ def evaluate_trace(
         "an empty EOS unit requires exactly unit-aligned input",
     )
     check(
-        sum(duration for _, duration in units) == input_ms,
+        sum(duration for _, duration in units) == input_ms
+        or (is_cut_at_end_wait and sum(duration for _, duration in units) < input_ms),
         "native unit durations do not account for the accepted input",
     )
     if profile_contract.continuous_output:
@@ -644,7 +696,8 @@ def evaluate_trace(
             * 2
         )
         check(
-            output_byte_count == expected_output,
+            output_byte_count == expected_output
+            or (is_cut_at_end_wait and output_byte_count < expected_output),
             f"output audio is not conserved: {output_byte_count} of "
             f"{expected_output} bytes for {expected_units} units",
         )
@@ -667,7 +720,12 @@ def evaluate_trace(
         else:
             check(
                 (response_state.terminal, response_state.reason)
-                in NATIVE_ENDED_TERMINALS,
+                in NATIVE_ENDED_TERMINALS
+                or (
+                    end_wait is not None
+                    and (response_state.terminal, response_state.reason)
+                    == CLOSE_TERMINAL
+                ),
                 f"response {response_id} ended {response_state.terminal}/"
                 f"{response_state.reason}, expected completed/stop or "
                 "incomplete/max_output_tokens",
@@ -715,6 +773,11 @@ def evaluate_trace(
         "violations": violations,
         "coverage": coverage,
         "metrics": metrics,
+        "end_wait": (
+            None
+            if end_wait is None
+            else end_wait.model_dump(include={"end_wait_s", "open_response_ids"})
+        ),
     }
 
 
