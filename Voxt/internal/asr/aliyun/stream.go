@@ -129,7 +129,7 @@ func (s *stream) read() {
 		st, herr := s.p.handle(data, s.finishing.Load())
 		if herr != nil {
 			fail(herr)
-			go s.conn.Close(websocket.StatusNormalClosure, "")
+			s.conn.CloseNow()
 			return
 		}
 		switch st {
@@ -162,7 +162,9 @@ func (s *stream) read() {
 				r.Latency = time.Since(time.Unix(0, at))
 			}
 			s.emit(asr.Event{Kind: asr.EventFinal, Text: text, Result: r})
-			go s.conn.Close(websocket.StatusNormalClosure, "")
+			// Not Close: its handshake would hold the session's Close, and
+			// the text's insertion, until the service answers it.
+			s.conn.CloseNow()
 			return
 		}
 	}

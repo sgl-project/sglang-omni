@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/asr/asrtest"
 )
 
 func TestProtocolFor(t *testing.T) {
@@ -240,5 +242,36 @@ func TestOpenRejectsRealtimeRate(t *testing.T) {
 	st, err := c.Open(t.Context(), asr.StreamRequest{SampleRate: 44100})
 	if st != nil || asr.KindOf(err) != asr.KindAudio {
 		t.Fatalf("%v %v", st, err)
+	}
+}
+
+// TestCloseAfterFinal: once the final text is in, Close returns at once,
+// although the service answers the close frame only later: the session
+// closes the stream before it inserts the text.
+func TestCloseAfterFinal(t *testing.T) {
+	url := asrtest.WSServer(t, inferencePath, func(c *asrtest.Conn) {
+		c.Read() // run-task
+		c.WriteText(`{"header":{"event":"task-started"},"payload":{}}`)
+		for {
+			if _, data := c.Read(); len(data) > 0 && data[0] == '{' {
+				break // finish-task
+			}
+		}
+		c.WriteText(`{"header":{"event":"task-finished"},"payload":{}}`)
+		time.Sleep(2 * time.Second) // reads nothing: the close frame waits
+	})
+	c, _ := New(asr.Config{Key: testKey, Endpoint: url})
+	st, err := c.Open(t.Context(), asr.StreamRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Send(make([]byte, 3200))
+	st.Finish()
+	for range st.Events() {
+	}
+	start := time.Now()
+	st.Close()
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("Close took %v", d)
 	}
 }
