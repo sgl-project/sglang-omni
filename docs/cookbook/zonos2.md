@@ -23,6 +23,20 @@ uv pip install \
   "descript-audio-codec==1.0.0"
 ```
 
+On Ascend NPU, install the same packages with `--no-deps`: the DAC codec pins
+`protobuf<3.20`, which would downgrade the NPU image's `protobuf`. List the
+codec's own dependencies explicitly:
+
+```bash
+uv pip install --no-deps \
+  "descript-audiotools==0.7.2" \
+  "descript-audio-codec==1.0.0" \
+  argbind julius pyloudnorm pystoi torch-stoi flatten-dict randomname \
+  ffmpy fire markdown2 importlib_resources \
+  tensorboard tensorboard-data-server absl-py Markdown Werkzeug
+python -c "import dac; print('ok')"
+```
+
 Then download the model:
 
 ```bash
@@ -212,6 +226,8 @@ Set `stream_emit_chunk_frames=1` for per-frame streaming. The 2-GPU `multi_gpu` 
 
 ## Known Limitations
 
+### All platforms
+
 - **Reference transcripts are not used.** The shared API accepts `text` / `ref_text`, but
   ZONOS2 currently conditions only on reference audio.
 - **Language controls text normalization only.** It does not add a separate model-side
@@ -220,3 +236,18 @@ Set `stream_emit_chunk_frames=1` for per-frame streaming. The 2-GPU `multi_gpu` 
   has an isolated request RNG.
 - **Rare runaway generation.** A small fraction of utterances can loop and generate up to
   `max_new_tokens`; lowering `max_new_tokens` bounds the output.
+
+### CUDA
+
+- The benchmark configuration above runs on CUDA with fp8 MoE experts, replayed decode
+  graphs, asynchronous decode and a compiled sampler.
+- The 2-GPU `multi_gpu` pipeline keeps the decoder on `cuda:0` and places the codec and
+  speaker encoder on `cuda:1`.
+
+### Ascend NPU
+
+- MoE experts stay in bf16 because no fp8 expert kernel is registered for the NPU SoCs.
+- `torch.compile` stays off because the torch_npu inductor backend cannot compile
+  ZONOS2's graphs, so the decode graphs stay on over batch sizes `[1, 2, 4, 8, 16]`.
+  Both follow from the platform capabilities, with no request-level setting.
+- Validated on Ascend 910 / CANN 9.1.0 / torch 2.10 / torch_npu 2.10.0.post6 / SGLang 0.5.22.

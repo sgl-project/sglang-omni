@@ -52,6 +52,17 @@ class NPUOmniPlatform(OmniPlatform):
     def enable_tts_vocoder_fast_path(self) -> bool:
         return False
 
+    def supports_fp8_moe(self) -> bool:
+        """No fp8 expert kernel is registered for the SoCs this backend targets,
+        so serving MoE in fp8 fails while loading the weights."""
+        return False
+
+    def enable_zonos2_torch_compile(self) -> bool:
+        """The torch_npu inductor backend cannot compile ZONOS2's graphs, so
+        enabling compile would abort startup; the decode NPU graph still carries
+        the backbone launches."""
+        return False
+
     def supports_torchaudio_resample(self) -> bool:
         """Disabled as it run on CPU and faced errors during inference for now"""
         return False
