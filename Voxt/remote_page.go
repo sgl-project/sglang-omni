@@ -127,7 +127,8 @@ func (a *app) providerCard(c *ui.Context, sv service, w float32) {
 	dot, state := a.providerState(c, kind, p, configured)
 	missing := a.setupMissing(kind, p)
 	b := ui.ButtonBase(c.Key("remote-card-"+acct)).Width(w).Padding(px(t, sp3), px(t, sp4)).Radius(px(t, radiusCard)).Border(1, k.Line).
-		Label(sv.name).Tooltip(i18n.T("Set up %s", sv.name)).AlignItems(ui.Stretch).Shrink(0)
+		Label(sv.name).Tooltip(i18n.T("Set up %s", sv.name)).AlignItems(ui.Stretch).Shrink(0).
+		Role(ui.RoleGroup) // a group, not a button: assistive technology reaches its Test button too; pressing it still opens the dialog
 	if b.Hovered() {
 		b.Background(k.Subtle)
 	}
