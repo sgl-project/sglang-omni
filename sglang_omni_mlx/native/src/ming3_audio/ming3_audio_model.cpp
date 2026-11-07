@@ -62,7 +62,8 @@ namespace {
 omni_common::WeightMap LoadWeights(const std::filesystem::path &directory,
                                    const nlohmann::json &config,
                                    const TextConfig &text_config,
-                                   const AudioConfig &audio_config) {
+                                   const AudioConfig &audio_config,
+                                   bool speculative) {
   const auto &text = config.at("text_config");
   if (config.at("model_type") != "bailing_moe_v3_audio" ||
       config.contains("quantization") || !text.at("no_kda_lora").get<bool>() ||
@@ -77,6 +78,10 @@ omni_common::WeightMap LoadWeights(const std::filesystem::path &directory,
       config.at("audio_config").at("n_mels") != 128) {
     throw std::invalid_argument(
         "expected an unquantized Ming-3.0-audio-tiny checkpoint");
+  } else if (speculative && (text.at("num_nextn_predict_layers") != 1 ||
+                             text.at("mtp_use_kda").get<bool>())) {
+    throw std::invalid_argument(
+        "speculative decoding needs one latent-attention prediction layer");
   } else {
   }
   auto weights = omni_common::LoadSafetensors(directory);
@@ -84,10 +89,11 @@ omni_common::WeightMap LoadWeights(const std::filesystem::path &directory,
       "model.layers." + std::to_string(text_config.num_hidden_layers) + ".";
   std::erase_if(weights, [&](const auto &parameter) {
     return parameter.first.starts_with("linear_proj.") ||
-           parameter.first.starts_with(prediction_prefix);
+           (!speculative && parameter.first.starts_with(prediction_prefix));
   });
-  for (int layer = text_config.first_k_dense_replace;
-       layer < text_config.num_hidden_layers; ++layer) {
+  const int moe_layers = text_config.num_hidden_layers + (speculative ? 1 : 0);
+  for (int layer = text_config.first_k_dense_replace; layer < moe_layers;
+       ++layer) {
     const std::string prefix =
         "model.layers." + std::to_string(layer) + ".mlp.experts.";
     for (const auto *projection : {"gate_proj", "up_proj", "down_proj"}) {
@@ -187,16 +193,19 @@ std::string ChatPrompt(const ChatRequest &request, int audio_tokens) {
 
 } // namespace
 
-Model::Model(const std::filesystem::path &directory, int context_tokens)
+Model::Model(const std::filesystem::path &directory, int context_tokens,
+             bool speculative)
     : Model(directory, omni_common::ReadJson(directory / "config.json"),
-            context_tokens) {}
+            context_tokens, speculative) {}
 
 Model::Model(const std::filesystem::path &directory,
-             const nlohmann::json &config, int context_tokens)
+             const nlohmann::json &config, int context_tokens, bool speculative)
     : text_(TextConfig::FromJson(config.at("text_config"))),
       audio_(AudioConfig::FromJson(config.at("audio_config"))),
       context_tokens_(std::min(context_tokens, text_.max_position_embeddings)),
-      checkpoint_(LoadWeights(directory, config, text_, audio_), config),
+      speculative_(speculative),
+      checkpoint_(LoadWeights(directory, config, text_, audio_, speculative),
+                  config),
       tokenizer_(directory),
       stop_tokens_(omni_common::ReadJson(directory / "generation_config.json")
                        .at("eos_token_id")
@@ -410,12 +419,15 @@ mx::array Model::Forward(const mx::array &embeddings,
                                  ? Mlp(mlp_input, prefix + ".mlp")
                                  : Moe(mlp_input, prefix + ".mlp"));
   }
-  hidden = RmsNorm(hidden, "model.norm");
-  return mx::reshape(
-      checkpoint_.Linear(
-          mx::slice(hidden, {0, hidden.shape(1) - 1, 0}, hidden.shape()),
-          "lm_head"),
-      {-1});
+  return RmsNorm(hidden, "model.norm");
+}
+
+mx::array Model::LastPosition(const mx::array &hidden) {
+  return mx::slice(hidden, {0, hidden.shape(1) - 1, 0}, hidden.shape());
+}
+
+mx::array Model::Logits(const mx::array &hidden) const {
+  return checkpoint_.Linear(hidden, "lm_head");
 }
 
 PreparedChatRequest Model::Prepare(ChatRequest request) const {
@@ -472,32 +484,43 @@ ChatResult Model::Generate(const PreparedChatRequest &prepared,
     throw Cancelled();
   } else {
   }
-  auto next_token = mx::argmax(Forward(embeddings, caches));
-  mx::async_eval({next_token});
-  for (int step = 0; step < request.max_new_tokens; ++step) {
-    if (cancel()) {
-      throw Cancelled();
-    } else {
+  if (speculative_) {
+    GenerateWithDraft(embeddings, caches, prepared, cancel, generated);
+  } else {
+    auto next_token =
+        mx::argmax(Logits(LastPosition(Forward(embeddings, caches))));
+    mx::async_eval({next_token});
+    for (int step = 0; step < request.max_new_tokens; ++step) {
+      if (cancel()) {
+        throw Cancelled();
+      } else {
+      }
+      const auto token = next_token;
+      if (step + 1 < request.max_new_tokens) {
+        next_token = mx::argmax(
+            Logits(Forward(Embed(mx::reshape(token, {1, 1})), caches)));
+        mx::async_eval({next_token});
+      } else {
+      }
+      generated.push_back(token.item<int>());
+      if (IsStopToken(generated.back())) {
+        break;
+      } else {
+      }
     }
-    const auto token = next_token;
-    if (step + 1 < request.max_new_tokens) {
-      next_token =
-          mx::argmax(Forward(Embed(mx::reshape(token, {1, 1})), caches));
-      mx::async_eval({next_token});
-    } else {
-    }
-    const int token_id = token.item<int>();
-    generated.push_back(token_id);
-    if (std::find(stop_tokens_.begin(), stop_tokens_.end(), token_id) !=
-        stop_tokens_.end()) {
-      result.finish_reason = "stop";
-      break;
-    } else {
-    }
+  }
+  if (IsStopToken(generated.back())) {
+    result.finish_reason = "stop";
+  } else {
   }
   result.text = tokenizer_.Decode(generated, true);
   result.completion_tokens = generated.size();
   return result;
+}
+
+bool Model::IsStopToken(int token) const {
+  return std::find(stop_tokens_.begin(), stop_tokens_.end(), token) !=
+         stop_tokens_.end();
 }
 
 } // namespace ming3_audio

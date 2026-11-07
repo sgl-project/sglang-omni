@@ -41,9 +41,16 @@ def running_chat(
         yield server
 
 
-@pytest.fixture(scope="module")
-def chat_port(tmp_path_factory: pytest.TempPathFactory) -> Iterator[int]:
-    with running_chat(tmp_path_factory.mktemp("ming3-audio")) as (port, _):
+@pytest.fixture(
+    scope="module",
+    params=[(), ("--speculative-algorithm", "NEXTN")],
+    ids=["plain", "nextn"],
+)
+def chat_port(
+    request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory
+) -> Iterator[int]:
+    log_directory = tmp_path_factory.mktemp("ming3-audio")
+    with running_chat(log_directory, request.param) as (port, _):
         yield port
 
 
@@ -370,6 +377,33 @@ def test_completion_limit_overrides_max_tokens(chat_port: int, chat_body: str) -
     reply = json.loads(response)
     assert reply["usage"]["completion_tokens"] == 1
     assert reply["choices"][0]["finish_reason"] == "length"
+
+
+@pytest.mark.parametrize("max_new_tokens", [1, 2, 3, 8, 9])
+def test_nextn_stops_at_the_token_budget(max_new_tokens: int) -> None:
+    """A budget ending inside a verify round must not commit extra tokens."""
+    result = subprocess.run(
+        [
+            str(Path(RUNTIME_BIN) / "ming3_audio_chat"),
+            "--model-path",
+            str(Path(DATA_ROOT) / "models" / MODEL_REPO.replace("/", "_")),
+            "--audio",
+            str(Path(DATA_ROOT) / "corpus" / "v1" / "clips" / "0006_en_short.wav"),
+            "--prompt",
+            ASR_PROMPT,
+            "--speculative-algorithm",
+            "NEXTN",
+            "--max-new-tokens",
+            str(max_new_tokens),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=120,
+    )
+    output = json.loads(result.stdout)
+    assert output["completion_tokens"] == max_new_tokens
+    assert output["finish_reason"] == "length"
 
 
 @pytest.mark.parametrize(

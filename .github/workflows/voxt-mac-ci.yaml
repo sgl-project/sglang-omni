@@ -93,10 +93,10 @@ jobs:
 
       - uses: astral-sh/setup-uv@v6
 
-      - name: Build the runtime and the stub server
+      - name: Build the runtime, the stub server and the Ming3 MTP probe
         run: |
           sglang_omni_mlx/native/scripts/build_runtime.sh "$RUNNER_TEMP/runtime" "$RUNNER_TEMP/runtime-build"
-          "$RUNNER_TEMP/runtime-build/venv/bin/cmake" --build "$RUNNER_TEMP/runtime-build/cmake" --target stub_server
+          "$RUNNER_TEMP/runtime-build/venv/bin/cmake" --build "$RUNNER_TEMP/runtime-build/cmake" --target stub_server ming3_mtp_probe
 
       - name: Set up the test Python
         run: |
@@ -106,6 +106,7 @@ jobs:
       - name: Protocol and startup tests
         env:
           NATIVE_STUB_SERVER: ${{ runner.temp }}/runtime-build/cmake/stub_server
+          NATIVE_MING3_MTP_PROBE: ${{ runner.temp }}/runtime-build/cmake/ming3_mtp_probe
           NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
         run: |
           "$RUNNER_TEMP/test-venv/bin/python" -m pytest -q sglang_omni_mlx/native/tests
