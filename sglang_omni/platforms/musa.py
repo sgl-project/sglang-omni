@@ -49,6 +49,11 @@ class MUSAOmniPlatform(CUDAOmniPlatform):
         # Use the native QK-norm + RoPE path on MUSA.
         return None
 
+    def enable_async_prefill(self) -> bool:
+        # Launch-first prefill has not been measured on MUSA; keep the
+        # synchronous prefill this platform has always run.
+        return False
+
     def enable_codec_decode_graph(self) -> bool:
         return False
 
