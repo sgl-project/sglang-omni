@@ -41,6 +41,7 @@ type settingsForm struct {
 	scale        int
 	reduceMotion bool
 	menuBar      bool
+	dock         bool
 	closeToTray  bool
 	openAtLogin  bool
 	keepHistory  bool
@@ -123,6 +124,9 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 	}
 	if old.General.MenuBar != new.General.MenuBar {
 		a.applyTray() // tray.go
+	}
+	if old.General.HideDock != new.General.HideDock {
+		a.applyDock() // tray.go
 	}
 	if old.Updates.BetaOn(a.version) != new.Updates.BetaOn(a.version) {
 		a.applyBeta() // updates.go
@@ -210,6 +214,7 @@ func (a *app) loadSettingsForm() {
 	f.scale = max(0, slices.Index(settings.Scales, s.Appearance.Scale))
 	f.reduceMotion = s.Appearance.ReduceMotion
 	f.menuBar, f.closeToTray, f.openAtLogin = s.General.MenuBar, s.General.CloseToTray, s.General.LaunchAtLogin
+	f.dock = !s.General.HideDock
 	f.keepHistory, f.keepAudio, f.logText = s.Privacy.KeepHistory, s.Privacy.KeepAudio, s.Privacy.LogText
 	f.sounds = s.Audio.Sounds
 	f.skipSilence = !s.Audio.VAD.Off

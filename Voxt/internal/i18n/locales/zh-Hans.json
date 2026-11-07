@@ -1226,5 +1226,7 @@
   "Verbosity": "详略程度",
   "e.g. 4096": "例如 4096",
   "e.g. 5m": "例如 5m",
-  "e.g. low": "例如 low"
+  "e.g. low": "例如 low",
+  "Show in the Dock": "在 Dock 中显示",
+  "Off, Voxt is in the menu bar only.": "关掉后，Voxt 只在菜单栏里。"
 }

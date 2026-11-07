@@ -65,6 +65,9 @@ type General struct {
 	// there when its window closes, so the shortcuts keep working.
 	MenuBar     bool `json:"menuBar"`
 	CloseToTray bool `json:"closeToTray"`
+	// HideDock leaves VoxtNew out of the Dock (Voxt 1.x's "Show in Dock"
+	// off); the menu bar icon is then on, so that VoxtNew can be reached.
+	HideDock bool `json:"hideDock,omitempty"`
 }
 
 // Appearance: theme, scale and the sidebar.

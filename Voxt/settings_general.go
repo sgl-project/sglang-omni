@@ -44,7 +44,23 @@ func (a *app) generalSettings(c *ui.Context) {
 	settingRow(c, "menu-bar", i18n.T("Show in the menu bar"), i18n.T("An icon in the menu bar to start a transcription, see the last result and open Voxt."), func() {
 		if ui.Switch(c.Key("menu-bar-switch"), &a.settingsForm.menuBar).Label(i18n.T("Show in the menu bar")).Changed() {
 			on := a.settingsForm.menuBar
-			a.updateSettings(func(s *settings.Settings) { s.General.MenuBar = on })
+			a.updateSettings(func(s *settings.Settings) {
+				s.General.MenuBar = on
+				if !on {
+					s.General.HideDock = false // VoxtNew must stay reachable
+				}
+			})
+		}
+	})
+	settingRow(c, "dock", i18n.T("Show in the Dock"), i18n.T("Off, Voxt is in the menu bar only."), func() {
+		if ui.Switch(c.Key("dock-switch"), &a.settingsForm.dock).Label(i18n.T("Show in the Dock")).Changed() {
+			on := a.settingsForm.dock
+			a.updateSettings(func(s *settings.Settings) {
+				s.General.HideDock = !on
+				if !on {
+					s.General.MenuBar = true // VoxtNew must stay reachable
+				}
+			})
 		}
 	})
 	settingRow(c, "close-to-tray", i18n.T("Keep running when the window closes"), i18n.T("Closing the window leaves Voxt in the menu bar, so its shortcuts keep working. Quit from the menu bar icon or with ⌘Q."), func() {

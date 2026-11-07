@@ -1,19 +1,22 @@
-MyGo patch 0009 (VoxtNew): Tester.AccessLabels, so that a test can
-check what assistive technology reaches.
+MyGo patch 0009 (VoxtNew): Tester.AccessLabels and Tester.ClickControl,
+so that a test can check what assistive technology reaches and click a
+control by its label.
 
 A Tester never turned assistive technology on, so a test could not tell
 whether VoiceOver reaches a control: one inside a button does not (a
 button is a leaf to assistive technology), as VoxtNew's Test button on a
 remote service's card did not. AccessLabels turns it on, as VoiceOver
 reading the window would, runs a frame and returns the labels of the
-elements it sees. TestAccessLabels.
+elements it sees. ClickControl clicks the element of a label that can be
+pressed: a switch, not the row title beside it that shares its label,
+which Click finds first. TestAccessLabels, TestClickControl.
 
 diff --git a/ui/access_labels_test.go b/ui/access_labels_test.go
 new file mode 100644
-index 0000000..efbdc77
+index 0000000..231caa2
 --- /dev/null
 +++ b/ui/access_labels_test.go
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,52 @@
 +package ui
 +
 +import (
@@ -44,11 +47,33 @@ index 0000000..efbdc77
 +		t.Errorf("a button inside a button is reached: %q", labels)
 +	}
 +}
++
++// TestClickControl: the control named label is clicked, not a text that
++// shares the label.
++func TestClickControl(t *testing.T) {
++	on := false
++	tt := NewTester(func(c *Context) {
++		Row(c).Children(func() {
++			Text(c, "Dock")
++			Switch(c.Key("dock"), &on).Label("Dock")
++		})
++	}, 400, 300)
++	if err := tt.ClickControl("Dock"); err != nil {
++		t.Fatal(err)
++	}
++	tt.Frame()
++	if !on {
++		t.Error("the switch is off")
++	}
++	if tt.ClickControl("Nothing") == nil {
++		t.Error("clicked a control that is not there")
++	}
++}
 diff --git a/ui/headless.go b/ui/headless.go
-index 8849acd..d3f72d3 100644
+index 8849acd..ed0d1e0 100644
 --- a/ui/headless.go
 +++ b/ui/headless.go
-@@ -436,6 +436,24 @@ func (t *Tester) SetFontSmoothing(on bool) {
+@@ -436,6 +436,41 @@ func (t *Tester) SetFontSmoothing(on bool) {
  // Frame renders another frame, as when the view's state changed.
  func (t *Tester) Frame() { t.h.requested.Store(true); t.settle() }
  
@@ -68,6 +93,23 @@ index 8849acd..d3f72d3 100644
 +		}
 +	}
 +	return out
++}
++
++// ClickControl clicks the control assistive technology names label: an
++// element it can press, so a switch rather than the title beside it that
++// shares its label. It fails when there is none.
++func (t *Tester) ClickControl(label string) error {
++	t.rt.accessibilityOn()
++	t.Frame()
++	if t.h.access != nil {
++		for _, n := range t.h.access.Nodes {
++			if n.Label == label && n.Actions&platform.ActionPress != 0 {
++				t.ClickAt(float32(n.Bounds.X+n.Bounds.W/2), float32(n.Bounds.Y+n.Bounds.H/2))
++				return nil
++			}
++		}
++	}
++	return fmt.Errorf("ui: no control named %q", label)
 +}
 +
  // FramePending reports whether the view still asks for a frame, as one
