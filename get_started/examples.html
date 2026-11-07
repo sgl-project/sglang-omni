@@ -208,24 +208,18 @@
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
 <ul class="current nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../index.html">Welcome to SGLang-Omni</a></li>
-<li class="toctree-l1"><a class="reference internal" href="apiserver_quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="quickstart.html">Quickstart</a></li>
 <li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">Examples</a></li>
 <li class="toctree-l1"><a class="reference internal" href="troubleshooting.html">Troubleshooting</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Other Platforms</span></p>
 <ul class="nav bd-sidenav">
-<li class="toctree-l1 has-children"><a class="reference internal" href="installation_apple_silicon.html">Apple Silicon</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l2 has-children"><a class="reference internal" href="../mlx/index.html">Native MLX</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l3"><a class="reference internal" href="../mlx/long_audio.html">Qwen3-ASR long-recording measurements</a></li>
-</ul>
-</details></li>
-</ul>
-</details></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_npu.html">Ascend NPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_xpu.html">Intel XPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_cpu.html">Intel CPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_musa.html">Moore Threads MUSA</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_apple_silicon.html">Apple Silicon</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_npu.html">Ascend NPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_xpu.html">Intel XPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_cpu.html">Intel CPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_musa.html">Moore Threads MUSA</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
 <ul class="nav bd-sidenav">
@@ -323,6 +317,11 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Reference</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/main.html">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/contribution_guide.html">Contribution Guide</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../developer_reference/mlx/index.html">Native MLX</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../developer_reference/mlx/long_audio.html">Qwen3-ASR long-recording measurements</a></li>
+</ul>
+</details></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/apiserver_design.html">API Server Design</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/pipeline.html">Pipeline Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/config.html">Config</a></li>
@@ -612,7 +611,7 @@
 <section id="stream-a-transcript">
 <h2>Stream a transcript<a class="headerlink" href="#stream-a-transcript" title="Link to this heading">#</a></h2>
 <p><strong>What you need:</strong> The Qwen3-ASR-1.7B server and <code class="docutils literal notranslate"><span class="pre">query_to_cars.wav</span></code> from the
-<a class="reference internal" href="apiserver_quickstart.html"><span class="std std-doc">Quickstart</span></a>.</p>
+<a class="reference internal" href="quickstart.html"><span class="std std-doc">Quickstart</span></a>.</p>
 <p><strong>Start or reuse the server:</strong> Keep the Quickstart server running on port <code class="docutils literal notranslate"><span class="pre">8000</span></code>.</p>
 <p><strong>Send a request:</strong> From the terminal where you downloaded the clip, upload it
 with <code class="docutils literal notranslate"><span class="pre">stream=true</span></code>. <code class="docutils literal notranslate"><span class="pre">curl</span> <span class="pre">-N</span></code> prints events as they arrive.</p>
@@ -686,9 +685,7 @@ GPU. Start a separate Qwen3-Omni server on port <code class="docutils literal no
 </pre></div>
 </div>
 <p><strong>Expected result:</strong> Check <code class="docutils literal notranslate"><span class="pre">choices[0].message.content</span></code> for a text answer that
-identifies the question about the number of cars in the picture. See
-<a class="reference internal" href="../basic_usage/qwen3_omni.html#text-only-mode"><span class="std std-ref">Omni Model Usage</span></a> and the
-<a class="reference internal" href="apiserver_quickstart.html#multi-modal-input-and-output"><span class="std std-ref">API server reference</span></a> for more requests.</p>
+identifies the question about the number of cars in the picture. See <a class="reference internal" href="../basic_usage/qwen3_omni.html#request-parameters"><span class="std std-ref">Omni Model Usage</span></a> for more request options.</p>
 </section>
 </section>
 

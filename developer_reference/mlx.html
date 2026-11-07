@@ -2,14 +2,17 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <title>MLX Path has moved</title>
-    <link rel="canonical" href="../mlx/index.html">
+    <title>This page has moved</title>
+    <link rel="canonical" href="mlx/index.html">
     <script>
-      window.location.replace("../mlx/index.html" + window.location.search + window.location.hash);
+      const destination = new URL("mlx/index.html", window.location.href);
+      destination.search = window.location.search;
+      destination.hash = window.location.hash;
+      window.location.replace(destination.href);
     </script>
   </head>
   <body>
-    <h1>MLX Path has moved</h1>
-    <p>Continue to <a href="../mlx/index.html">MLX Path</a>.</p>
+    <h1>This page has moved</h1>
+    <p>Continue to <a href="mlx/index.html">the new page</a>.</p>
   </body>
 </html>

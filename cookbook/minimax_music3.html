@@ -208,24 +208,18 @@
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../index.html">Welcome to SGLang-Omni</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../get_started/apiserver_quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/quickstart.html">Quickstart</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../get_started/installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../get_started/examples.html">Examples</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../get_started/troubleshooting.html">Troubleshooting</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Other Platforms</span></p>
 <ul class="nav bd-sidenav">
-<li class="toctree-l1 has-children"><a class="reference internal" href="../get_started/installation_apple_silicon.html">Apple Silicon</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l2 has-children"><a class="reference internal" href="../mlx/index.html">Native MLX</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l3"><a class="reference internal" href="../mlx/long_audio.html">Qwen3-ASR long-recording measurements</a></li>
-</ul>
-</details></li>
-</ul>
-</details></li>
-<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_npu.html">Ascend NPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_xpu.html">Intel XPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_cpu.html">Intel CPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_musa.html">Moore Threads MUSA</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_apple_silicon.html">Apple Silicon</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_npu.html">Ascend NPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_xpu.html">Intel XPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_cpu.html">Intel CPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_musa.html">Moore Threads MUSA</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
 <ul class="current nav bd-sidenav">
@@ -323,6 +317,11 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Reference</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/main.html">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/contribution_guide.html">Contribution Guide</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../developer_reference/mlx/index.html">Native MLX</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../developer_reference/mlx/long_audio.html">Qwen3-ASR long-recording measurements</a></li>
+</ul>
+</details></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/apiserver_design.html">API Server Design</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/pipeline.html">Pipeline Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/config.html">Config</a></li>
@@ -664,7 +663,7 @@ uv<span class="w"> </span>venv<span class="w"> </span>.venv<span class="w"> </sp
 uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>-v<span class="w"> </span>-e<span class="w"> </span>.<span class="w">   </span><span class="c1"># drop -e for a non-editable install</span>
 </pre></div>
 </div>
-<p>On Intel GPUs, first follow the <a class="reference internal" href="../get_started/installation_xpu.html"><span class="std std-doc">Intel XPU installation instructions</span></a>, then replace <code class="docutils literal notranslate"><span class="pre">CUDA_VISIBLE_DEVICES</span></code> in the commands below with <code class="docutils literal notranslate"><span class="pre">ZE_AFFINITY_MASK</span></code> (for example, <code class="docutils literal notranslate"><span class="pre">ZE_AFFINITY_MASK=0</span></code> or <code class="docutils literal notranslate"><span class="pre">ZE_AFFINITY_MASK=0,1</span></code>).</p>
+<p>On Intel GPUs, first follow the <a class="reference internal" href="../other_platforms/installation_xpu.html"><span class="std std-doc">Intel XPU installation instructions</span></a>, then replace <code class="docutils literal notranslate"><span class="pre">CUDA_VISIBLE_DEVICES</span></code> in the commands below with <code class="docutils literal notranslate"><span class="pre">ZE_AFFINITY_MASK</span></code> (for example, <code class="docutils literal notranslate"><span class="pre">ZE_AFFINITY_MASK=0</span></code> or <code class="docutils literal notranslate"><span class="pre">ZE_AFFINITY_MASK=0,1</span></code>).</p>
 <p><strong>Single GPU</strong> (colocate both stages):</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">CUDA_VISIBLE_DEVICES</span><span class="o">=</span><span class="m">0</span><span class="w"> </span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>MiniMaxAI/MiniMax-Music3<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
@@ -1189,7 +1188,7 @@ curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </spa
 <section id="concurrency">
 <h2>Concurrency<a class="headerlink" href="#concurrency" title="Link to this heading">#</a></h2>
 <p>The server batches continuously. Admission defaults to 16 concurrent requests (<code class="docutils literal notranslate"><span class="pre">max_running_requests=16</span></code>), which is <strong>32 decode rows</strong>, because guidance gives every request a second row. Raise admission at serve time with <code class="docutils literal notranslate"><span class="pre">--minimax_music3_ar.engine.max_running_requests</span></code>; the row count, the decode device graph and the RVQ depth device graph are all derived from it:</p>
-<p>On Intel GPUs, first follow the <a class="reference internal" href="../get_started/installation_xpu.html"><span class="std std-doc">Intel XPU installation instructions</span></a>, then replace <code class="docutils literal notranslate"><span class="pre">CUDA_VISIBLE_DEVICES</span></code> in the commands below with <code class="docutils literal notranslate"><span class="pre">ZE_AFFINITY_MASK</span></code> (for example, <code class="docutils literal notranslate"><span class="pre">ZE_AFFINITY_MASK=0</span></code> or <code class="docutils literal notranslate"><span class="pre">ZE_AFFINITY_MASK=0,1</span></code>).</p>
+<p>On Intel GPUs, first follow the <a class="reference internal" href="../other_platforms/installation_xpu.html"><span class="std std-doc">Intel XPU installation instructions</span></a>, then replace <code class="docutils literal notranslate"><span class="pre">CUDA_VISIBLE_DEVICES</span></code> in the commands below with <code class="docutils literal notranslate"><span class="pre">ZE_AFFINITY_MASK</span></code> (for example, <code class="docutils literal notranslate"><span class="pre">ZE_AFFINITY_MASK=0</span></code> or <code class="docutils literal notranslate"><span class="pre">ZE_AFFINITY_MASK=0,1</span></code>).</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">CUDA_VISIBLE_DEVICES</span><span class="o">=</span><span class="m">0</span>,1<span class="w"> </span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>MiniMaxAI/MiniMax-Music3<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--minimax_music3_ar.engine.max_running_requests<span class="w"> </span><span class="m">32</span>
 </pre></div>

@@ -58,7 +58,7 @@
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
     <link rel="next" title="Examples" href="examples.html" />
-    <link rel="prev" title="Quickstart" href="apiserver_quickstart.html" />
+    <link rel="prev" title="Quickstart" href="quickstart.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.2.0" />
@@ -208,24 +208,18 @@
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
 <ul class="current nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../index.html">Welcome to SGLang-Omni</a></li>
-<li class="toctree-l1"><a class="reference internal" href="apiserver_quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="quickstart.html">Quickstart</a></li>
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="examples.html">Examples</a></li>
 <li class="toctree-l1"><a class="reference internal" href="troubleshooting.html">Troubleshooting</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Other Platforms</span></p>
 <ul class="nav bd-sidenav">
-<li class="toctree-l1 has-children"><a class="reference internal" href="installation_apple_silicon.html">Apple Silicon</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l2 has-children"><a class="reference internal" href="../mlx/index.html">Native MLX</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l3"><a class="reference internal" href="../mlx/long_audio.html">Qwen3-ASR long-recording measurements</a></li>
-</ul>
-</details></li>
-</ul>
-</details></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_npu.html">Ascend NPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_xpu.html">Intel XPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_cpu.html">Intel CPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_musa.html">Moore Threads MUSA</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_apple_silicon.html">Apple Silicon</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_npu.html">Ascend NPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_xpu.html">Intel XPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_cpu.html">Intel CPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_musa.html">Moore Threads MUSA</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
 <ul class="nav bd-sidenav">
@@ -323,6 +317,11 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Reference</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/main.html">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/contribution_guide.html">Contribution Guide</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../developer_reference/mlx/index.html">Native MLX</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../developer_reference/mlx/long_audio.html">Qwen3-ASR long-recording measurements</a></li>
+</ul>
+</details></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/apiserver_design.html">API Server Design</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/pipeline.html">Pipeline Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/config.html">Config</a></li>
@@ -600,11 +599,11 @@ The current stable release is <a class="reference external" href="https://pypi.o
 <section id="other-platforms">
 <h2>Other platforms<a class="headerlink" href="#other-platforms" title="Link to this heading">#</a></h2>
 <p>Using a different device? Choose the installation guide for your hardware:
-<a class="reference internal" href="installation_apple_silicon.html"><span class="std std-doc">Apple Silicon</span></a>,
-<a class="reference internal" href="installation_npu.html"><span class="std std-doc">Ascend NPU</span></a>,
-<a class="reference internal" href="installation_xpu.html"><span class="std std-doc">Intel XPU</span></a>,
-<a class="reference internal" href="installation_cpu.html"><span class="std std-doc">Intel CPU</span></a>, and
-<a class="reference internal" href="installation_musa.html"><span class="std std-doc">Moore Threads MUSA</span></a>.</p>
+<a class="reference internal" href="../other_platforms/installation_apple_silicon.html"><span class="std std-doc">Apple Silicon</span></a>,
+<a class="reference internal" href="../other_platforms/installation_npu.html"><span class="std std-doc">Ascend NPU</span></a>,
+<a class="reference internal" href="../other_platforms/installation_xpu.html"><span class="std std-doc">Intel XPU</span></a>,
+<a class="reference internal" href="../other_platforms/installation_cpu.html"><span class="std std-doc">Intel CPU</span></a>, and
+<a class="reference internal" href="../other_platforms/installation_musa.html"><span class="std std-doc">Moore Threads MUSA</span></a>.</p>
 </section>
 <section id="install-sglang-omni">
 <h2>Install SGLang-Omni<a class="headerlink" href="#install-sglang-omni" title="Link to this heading">#</a></h2>
@@ -695,7 +694,7 @@ uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </s
 </section>
 <section id="next-steps">
 <h2>Next steps<a class="headerlink" href="#next-steps" title="Link to this heading">#</a></h2>
-<p><a class="reference internal" href="apiserver_quickstart.html#install-and-start"><span class="std std-ref">Start the Qwen3-ASR server, send a request, and check the transcript</span></a>.
+<p><a class="reference internal" href="quickstart.html#install-and-start"><span class="std std-ref">Start the Qwen3-ASR server, send a request, and check the transcript</span></a>.
 For model-specific configuration and other request formats, see the
 <a class="reference internal" href="../cookbook/qwen3_asr.html"><span class="std std-doc">Qwen3-ASR Cookbook</span></a>.</p>
 </section>
@@ -718,7 +717,7 @@ For model-specific configuration and other request formats, see the
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="apiserver_quickstart.html"
+       href="quickstart.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">

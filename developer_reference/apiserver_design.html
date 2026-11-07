@@ -58,7 +58,7 @@
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
     <link rel="next" title="Pipeline Overview" href="pipeline.html" />
-    <link rel="prev" title="Architecture" href="main.html" />
+    <link rel="prev" title="Qwen3-ASR long-recording measurements" href="mlx/long_audio.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.2.0" />
@@ -208,24 +208,18 @@
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../index.html">Welcome to SGLang-Omni</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../get_started/apiserver_quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/quickstart.html">Quickstart</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../get_started/installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../get_started/examples.html">Examples</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../get_started/troubleshooting.html">Troubleshooting</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Other Platforms</span></p>
 <ul class="nav bd-sidenav">
-<li class="toctree-l1 has-children"><a class="reference internal" href="../get_started/installation_apple_silicon.html">Apple Silicon</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l2 has-children"><a class="reference internal" href="../mlx/index.html">Native MLX</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l3"><a class="reference internal" href="../mlx/long_audio.html">Qwen3-ASR long-recording measurements</a></li>
-</ul>
-</details></li>
-</ul>
-</details></li>
-<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_npu.html">Ascend NPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_xpu.html">Intel XPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_cpu.html">Intel CPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_musa.html">Moore Threads MUSA</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_apple_silicon.html">Apple Silicon</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_npu.html">Ascend NPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_xpu.html">Intel XPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_cpu.html">Intel CPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_musa.html">Moore Threads MUSA</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
 <ul class="nav bd-sidenav">
@@ -323,6 +317,11 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Reference</span></p>
 <ul class="current nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="main.html">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contribution_guide.html">Contribution Guide</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="mlx/index.html">Native MLX</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="mlx/long_audio.html">Qwen3-ASR long-recording measurements</a></li>
+</ul>
+</details></li>
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">API Server Design</a></li>
 <li class="toctree-l1"><a class="reference internal" href="pipeline.html">Pipeline Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="config.html">Config</a></li>
@@ -573,6 +572,7 @@
             </div>
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#launch-commands">Launch commands</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#role-in-the-system">Role in the System</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#key-files">Key Files</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#create-app-vs-launch-server"><code class="docutils literal notranslate"><span class="pre">create_app()</span></code> vs <code class="docutils literal notranslate"><span class="pre">launch_server()</span></code></a><ul class="pst-show_toc_level nav section-nav flex-column">
@@ -592,6 +592,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-tts">Speech / TTS</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#common-errors">Common errors</a></li>
 </ul>
             </nav>
         </div>
@@ -606,7 +607,11 @@
   <section class="tex2jax_ignore mathjax_ignore" id="api-server-design">
 <h1>API Server Design<a class="headerlink" href="#api-server-design" title="Link to this heading">#</a></h1>
 <p>This page explains the API server at the level that is most useful for maintenance: where it sits in the system, which files matter, and how requests are mapped into the runtime.</p>
-<p>If you only want to launch the server and call it, start with <a class="reference internal" href="../get_started/apiserver_quickstart.html"><span class="std std-doc">API Server Quickstart</span></a>.</p>
+<p>If you only want to launch the server and call it, start with <a class="reference internal" href="../get_started/quickstart.html"><span class="std std-doc">API Server Quickstart</span></a>.</p>
+<section id="launch-commands">
+<h2>Launch commands<a class="headerlink" href="#launch-commands" title="Link to this heading">#</a></h2>
+<p>Run <code class="docutils literal notranslate"><span class="pre">sgl-omni</span> <span class="pre">serve</span> <span class="pre">--help</span></code> for CLI options. If your SGLang installation supports serve backend plugins, you can also run <code class="docutils literal notranslate"><span class="pre">sglang</span> <span class="pre">serve</span> <span class="pre">MODEL_PATH</span> <span class="pre">--model-type</span> <span class="pre">omni</span></code> with the same options. To launch from a config that already sets <code class="docutils literal notranslate"><span class="pre">model_path</span></code>, use <code class="docutils literal notranslate"><span class="pre">--config</span> <span class="pre">path/to/config.yaml</span></code> in place of the model path.</p>
+</section>
 <section id="role-in-the-system">
 <h2>Role in the System<a class="headerlink" href="#role-in-the-system" title="Link to this heading">#</a></h2>
 <p>The API server is the outer protocol layer on top of the <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> pipeline runtime.</p>
@@ -842,6 +847,15 @@ the speech route leaves it unset and each model applies its own streaming
 default.</p>
 </section>
 </section>
+<section id="common-errors">
+<h2>Common errors<a class="headerlink" href="#common-errors" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">400</span> <span class="pre">Bad</span> <span class="pre">Request</span></code>: The server rejected the request parameters. Check the response detail.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">422</span> <span class="pre">Unprocessable</span> <span class="pre">Entity</span></code>: A request field failed schema validation. Check the field named in the response.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">500</span> <span class="pre">Internal</span> <span class="pre">Server</span> <span class="pre">Error</span></code>: Check the server logs for the runtime error.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">503</span> <span class="pre">Service</span> <span class="pre">Unavailable</span></code>: The server could not accept the request. Check <code class="docutils literal notranslate"><span class="pre">/health</span></code> and the server logs before retrying.</p></li>
+</ul>
+</section>
 </section>
 
 
@@ -856,12 +870,12 @@ default.</p>
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="main.html"
+       href="mlx/long_audio.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Architecture</p>
+        <p class="prev-next-title">Qwen3-ASR long-recording measurements</p>
       </div>
     </a>
     <a class="right-next"
@@ -891,6 +905,7 @@ default.</p>
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#launch-commands">Launch commands</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#role-in-the-system">Role in the System</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#key-files">Key Files</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#create-app-vs-launch-server"><code class="docutils literal notranslate"><span class="pre">create_app()</span></code> vs <code class="docutils literal notranslate"><span class="pre">launch_server()</span></code></a><ul class="pst-show_toc_level nav section-nav flex-column">
@@ -910,6 +925,7 @@ default.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-tts">Speech / TTS</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#common-errors">Common errors</a></li>
 </ul>
   </nav></div>
 

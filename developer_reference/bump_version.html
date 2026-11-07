@@ -207,24 +207,18 @@
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../index.html">Welcome to SGLang-Omni</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../get_started/apiserver_quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/quickstart.html">Quickstart</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../get_started/installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../get_started/examples.html">Examples</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../get_started/troubleshooting.html">Troubleshooting</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Other Platforms</span></p>
 <ul class="nav bd-sidenav">
-<li class="toctree-l1 has-children"><a class="reference internal" href="../get_started/installation_apple_silicon.html">Apple Silicon</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l2 has-children"><a class="reference internal" href="../mlx/index.html">Native MLX</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l3"><a class="reference internal" href="../mlx/long_audio.html">Qwen3-ASR long-recording measurements</a></li>
-</ul>
-</details></li>
-</ul>
-</details></li>
-<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_npu.html">Ascend NPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_xpu.html">Intel XPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_cpu.html">Intel CPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_musa.html">Moore Threads MUSA</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_apple_silicon.html">Apple Silicon</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_npu.html">Ascend NPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_xpu.html">Intel XPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_cpu.html">Intel CPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_musa.html">Moore Threads MUSA</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
 <ul class="nav bd-sidenav">
@@ -322,6 +316,11 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Reference</span></p>
 <ul class="current nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="main.html">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contribution_guide.html">Contribution Guide</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="mlx/index.html">Native MLX</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="mlx/long_audio.html">Qwen3-ASR long-recording measurements</a></li>
+</ul>
+</details></li>
 <li class="toctree-l1"><a class="reference internal" href="apiserver_design.html">API Server Design</a></li>
 <li class="toctree-l1"><a class="reference internal" href="pipeline.html">Pipeline Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="config.html">Config</a></li>
@@ -640,7 +639,7 @@ comment that says a pin matches the sglang stack marks a line to revisit.</p>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pyproject_cpu.toml</span></code>, <code class="docutils literal notranslate"><span class="pre">pyproject_xpu.toml</span></code>, <code class="docutils literal notranslate"><span class="pre">scripts/cpu/install_cpu.sh</span></code>, <code class="docutils literal notranslate"><span class="pre">scripts/xpu/install_xpu.sh</span></code></p></td>
 <td><p>The verified SGLang tag; the provider pyprojects cannot pin <code class="docutils literal notranslate"><span class="pre">sglang</span></code> because every wheel pulls CUDA torch</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">docs/get_started/installation.md</span></code>, <code class="docutils literal notranslate"><span class="pre">docs/get_started/installation_cpu.md</span></code>, <code class="docutils literal notranslate"><span class="pre">docs/get_started/installation_xpu.md</span></code>, <code class="docutils literal notranslate"><span class="pre">docs/basic_usage/tts.md</span></code>, <code class="docutils literal notranslate"><span class="pre">docs/cookbook/*.md</span></code>, model READMEs</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">docs/get_started/installation.md</span></code>, <code class="docutils literal notranslate"><span class="pre">docs/other_platforms/installation_cpu.md</span></code>, <code class="docutils literal notranslate"><span class="pre">docs/other_platforms/installation_xpu.md</span></code>, <code class="docutils literal notranslate"><span class="pre">docs/basic_usage/tts.md</span></code>, <code class="docutils literal notranslate"><span class="pre">docs/cookbook/*.md</span></code>, model READMEs</p></td>
 <td><p>Version names in install instructions</p></td>
 </tr>
 <tr class="row-even"><td><p>Comments in <code class="docutils literal notranslate"><span class="pre">sglang_omni/</span></code></p></td>

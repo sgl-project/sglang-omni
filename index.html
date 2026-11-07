@@ -57,7 +57,7 @@
     <link rel="icon" href="_static/logo.ico"/>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
-    <link rel="next" title="Quickstart" href="get_started/apiserver_quickstart.html" />
+    <link rel="next" title="Quickstart" href="get_started/quickstart.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.2.0" />
@@ -209,24 +209,18 @@
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
 <ul class="current nav bd-sidenav">
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">Welcome to SGLang-Omni</a></li>
-<li class="toctree-l1"><a class="reference internal" href="get_started/apiserver_quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="get_started/quickstart.html">Quickstart</a></li>
 <li class="toctree-l1"><a class="reference internal" href="get_started/installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="get_started/examples.html">Examples</a></li>
 <li class="toctree-l1"><a class="reference internal" href="get_started/troubleshooting.html">Troubleshooting</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Other Platforms</span></p>
 <ul class="nav bd-sidenav">
-<li class="toctree-l1 has-children"><a class="reference internal" href="get_started/installation_apple_silicon.html">Apple Silicon</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l2 has-children"><a class="reference internal" href="mlx/index.html">Native MLX</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l3"><a class="reference internal" href="mlx/long_audio.html">Qwen3-ASR long-recording measurements</a></li>
-</ul>
-</details></li>
-</ul>
-</details></li>
-<li class="toctree-l1"><a class="reference internal" href="get_started/installation_npu.html">Ascend NPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="get_started/installation_xpu.html">Intel XPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="get_started/installation_cpu.html">Intel CPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="get_started/installation_musa.html">Moore Threads MUSA</a></li>
+<li class="toctree-l1"><a class="reference internal" href="other_platforms/installation_apple_silicon.html">Apple Silicon</a></li>
+<li class="toctree-l1"><a class="reference internal" href="other_platforms/installation_npu.html">Ascend NPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="other_platforms/installation_xpu.html">Intel XPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="other_platforms/installation_cpu.html">Intel CPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="other_platforms/installation_musa.html">Moore Threads MUSA</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
 <ul class="nav bd-sidenav">
@@ -324,6 +318,11 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Reference</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="developer_reference/main.html">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="developer_reference/contribution_guide.html">Contribution Guide</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="developer_reference/mlx/index.html">Native MLX</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="developer_reference/mlx/long_audio.html">Qwen3-ASR long-recording measurements</a></li>
+</ul>
+</details></li>
 <li class="toctree-l1"><a class="reference internal" href="developer_reference/apiserver_design.html">API Server Design</a></li>
 <li class="toctree-l1"><a class="reference internal" href="developer_reference/pipeline.html">Pipeline Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="developer_reference/config.html">Config</a></li>
@@ -576,9 +575,6 @@
                 <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#get-started">Get Started</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#news-and-latest-blogs">News and latest blogs</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#about">About</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#supported-models">Supported Models</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#releases-blog">Releases &amp; Blog</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#community-resources">Community &amp; Resources</a><ul class="pst-show_toc_level nav section-nav flex-column">
 </ul>
 </li>
@@ -600,14 +596,15 @@
 <li><p><strong>Speech &amp; Multimodal Models.</strong> Transcribe audio, generate speech, and serve models that accept audio, images, and video through OpenAI-compatible APIs.</p></li>
 <li><p><strong>Streaming &amp; Realtime.</strong> Stream transcripts and speech as they are generated. Use realtime sessions for live audio input and interactive voice applications.</p></li>
 <li><p><strong>Multi-stage Runtime.</strong> Run preprocessing, inference, and audio generation as stages with independent scheduling. The runtime is built on <a class="reference external" href="https://github.com/sgl-project/sglang">SGLang</a>.</p></li>
-<li><p><strong>Hardware Support.</strong> Choose the installation guide for your hardware: <a class="reference internal" href="get_started/installation.html"><span class="doc">CUDA</span></a>, <a class="reference internal" href="get_started/installation_apple_silicon.html"><span class="doc">Apple Silicon</span></a>, <a class="reference internal" href="get_started/installation_npu.html"><span class="doc">Ascend NPU</span></a>, <a class="reference internal" href="get_started/installation_xpu.html"><span class="doc">Intel XPU</span></a>, <a class="reference internal" href="get_started/installation_cpu.html"><span class="doc">Intel CPU</span></a>, or <a class="reference internal" href="get_started/installation_musa.html"><span class="doc">MUSA</span></a>. Model support varies by platform.</p></li>
+<li><p><strong>Hardware Support.</strong> Choose the installation guide for your hardware: <a class="reference internal" href="get_started/installation.html"><span class="doc">CUDA</span></a>, <a class="reference internal" href="other_platforms/installation_apple_silicon.html"><span class="doc">Apple Silicon</span></a>, <a class="reference internal" href="other_platforms/installation_npu.html"><span class="doc">Ascend NPU</span></a>, <a class="reference internal" href="other_platforms/installation_xpu.html"><span class="doc">Intel XPU</span></a>, <a class="reference internal" href="other_platforms/installation_cpu.html"><span class="doc">Intel CPU</span></a>, or <a class="reference internal" href="other_platforms/installation_musa.html"><span class="doc">MUSA</span></a>. Model support varies by platform.</p></li>
 </ul>
 <section id="get-started">
 <h2>Get Started<a class="headerlink" href="#get-started" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p><a class="reference internal" href="get_started/apiserver_quickstart.html"><span class="doc">Quickstart</span></a> — Start a model server and transcribe one audio clip.</p></li>
+<li><p><a class="reference internal" href="get_started/quickstart.html"><span class="doc">Quickstart</span></a> — Start a model server and transcribe one audio clip.</p></li>
 <li><p><a class="reference internal" href="get_started/installation.html"><span class="doc">Installation</span></a> — Choose an installation method for your hardware.</p></li>
 <li><p><a class="reference internal" href="get_started/examples.html"><span class="doc">Examples</span></a> — Stream a transcript, generate speech, or send an audio chat request.</p></li>
+<li><p>Browse supported models under <strong>Cookbook</strong> in the sidebar.</p></li>
 </ul>
 </section>
 <section id="news-and-latest-blogs">
@@ -722,147 +719,6 @@
   </li>
 </ul><p><a class="reference external" href="https://github.com/sgl-project/sglang-omni/releases">View all releases</a></p>
 </section>
-<section id="about">
-<h2>About<a class="headerlink" href="#about" title="Link to this heading">#</a></h2>
-<p>Modern omni models — such as speech-output LLMs and multimodal generation systems — decompose into heterogeneous stages with fundamentally different computational profiles: a compute-bound thinker, a memory-bound talker, a latency-sensitive codec. SGLang-Omni is built around a <strong>computation-centric design</strong>: each stage runs its own independent scheduler tuned to its bottleneck, communicates through a shared inbox/outbox abstraction, and transfers tensors via zero-copy shared memory. This prevents any single stage from degrading the others and allows new models to plug into the framework by declaring a pipeline topology rather than building an inference system from scratch.</p>
-<p>Core features:</p>
-<ul class="simple">
-<li><p><strong>Multi-Stage Pipeline</strong>: Flexible framework for orchestrating preprocessing, AR engine, codec, and vocoder stages across processes and GPUs.</p></li>
-<li><p><strong>Native SGLang Integration</strong>: Leverages SGLang’s RadixAttention, continuous batching, and CUDA Graph optimizations for the AR backbone.</p></li>
-<li><p><strong>OpenAI-Compatible Server</strong>: Drop-in <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code>, <code class="docutils literal notranslate"><span class="pre">/v1/audio/transcriptions</span></code>, <code class="docutils literal notranslate"><span class="pre">/v1/audio/translations</span></code>, and <code class="docutils literal notranslate"><span class="pre">/v1/chat/completions</span></code> endpoints with real-time streaming support.</p></li>
-<li><p><strong>Broad Model Support</strong>: TTS (Higgs, Fish S2-Pro, Voxtral, Qwen3-TTS, MOSS-TTS / Local, Ming-Omni-TTS, Ming-3.0-TTS, dots.tts, ZONOS2), Music (MiniMax Music 3), ASR (Qwen3-ASR, Fun-ASR, ARK-ASR, Nemotron 3.5 ASR, Whisper, MOSS-Transcribe-Diarize, Ming-3.0-ASR), Omni (Qwen3-Omni, MiniCPM-o, Ming-Omni, Ming-3.0-audio), and LLaDA2.0-Uni.</p></li>
-</ul>
-</section>
-<section id="supported-models">
-<h2>Supported Models<a class="headerlink" href="#supported-models" title="Link to this heading">#</a></h2>
-<div class="pst-scrollable-table-container"><table class="table">
-<colgroup>
-<col style="width: 45.0%" />
-<col style="width: 15.0%" />
-<col style="width: 40.0%" />
-</colgroup>
-<thead>
-<tr class="row-odd"><th class="head"><p>Model</p></th>
-<th class="head"><p>Type</p></th>
-<th class="head"><p>Notes</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><a class="reference external" href="https://huggingface.co/boson-sglang/higgs-audio-v3-tts-4b-base">boson-sglang/higgs-audio-v3-tts-4b-base</a></p></td>
-<td><p>TTS</p></td>
-<td><p>Voice cloning, streaming, 100+ languages</p></td>
-</tr>
-<tr class="row-odd"><td><p><a class="reference external" href="https://huggingface.co/fishaudio/s2-pro">fishaudio/s2-pro</a></p></td>
-<td><p>TTS</p></td>
-<td><p>Voice cloning, streaming</p></td>
-</tr>
-<tr class="row-even"><td><p><a class="reference external" href="https://huggingface.co/mistralai/Voxtral-4B-TTS-2603">mistralai/Voxtral-4B-TTS-2603</a></p></td>
-<td><p>TTS</p></td>
-<td><p>Named voices, streaming, 9 languages</p></td>
-</tr>
-<tr class="row-odd"><td><p><a class="reference external" href="https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base">Qwen/Qwen3-TTS-12Hz-Base</a></p></td>
-<td><p>TTS</p></td>
-<td><p>Voice cloning, streaming, 10 languages, 0.6B / 1.7B</p></td>
-</tr>
-<tr class="row-even"><td><p><a class="reference external" href="https://huggingface.co/OpenMOSS-Team/MOSS-TTS-v1.5">OpenMOSS-Team/MOSS-TTS-v1.5</a></p></td>
-<td><p>TTS</p></td>
-<td><p>Delay-pattern MOSS-TTS; voice cloning, streaming, 31 languages</p></td>
-</tr>
-<tr class="row-odd"><td><p><a class="reference external" href="https://huggingface.co/OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5">OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5</a></p></td>
-<td><p>TTS</p></td>
-<td><p>Local-transformer MOSS-TTS; 48 kHz stereo, streaming</p></td>
-</tr>
-<tr class="row-even"><td><p><a class="reference external" href="https://huggingface.co/inclusionAI/Ming-omni-tts-16.8B-A3B">inclusionAI/Ming-omni-tts-16.8B-A3B</a></p></td>
-<td><p>TTS</p></td>
-<td><p>Text-to-speech and zero-shot voice cloning</p></td>
-</tr>
-<tr class="row-odd"><td><p><a class="reference external" href="https://huggingface.co/inclusionAI/Ming-3.0-tts-tiny">inclusionAI/Ming-3.0-tts-tiny</a></p></td>
-<td><p>TTS</p></td>
-<td><p>44.1 kHz voice cloning from one reference recording</p></td>
-</tr>
-<tr class="row-even"><td><p><a class="reference external" href="https://huggingface.co/inclusionAI/Ming-3.0-tts-0.5B">inclusionAI/Ming-3.0-tts-0.5B</a></p></td>
-<td><p>TTS</p></td>
-<td><p>Dense 0.5B backbone, 44.1 kHz voice cloning from one reference recording</p></td>
-</tr>
-<tr class="row-odd"><td><p><a class="reference external" href="https://huggingface.co/dots-studio/dots.tts-mf">dots-studio/dots.tts-mf</a></p></td>
-<td><p>TTS</p></td>
-<td><p>48 kHz continuous-latent TTS; also <code class="docutils literal notranslate"><span class="pre">dots.tts-soar</span></code> / <code class="docutils literal notranslate"><span class="pre">dots.tts-base</span></code></p></td>
-</tr>
-<tr class="row-even"><td><p><a class="reference external" href="https://huggingface.co/Zyphra/zonos2">Zyphra/zonos2</a></p></td>
-<td><p>TTS</p></td>
-<td><p>MoE TTS, 9 DAC codebooks, voice cloning</p></td>
-</tr>
-<tr class="row-odd"><td><p><a class="reference external" href="https://huggingface.co/MiniMaxAI/MiniMax-Music3">MiniMaxAI/MiniMax-Music3</a></p></td>
-<td><p>Music</p></td>
-<td><p>Text-to-music; lyrics + caption → 32 kHz stereo song</p></td>
-</tr>
-<tr class="row-even"><td><p><a class="reference external" href="https://huggingface.co/Qwen/Qwen3-ASR-1.7B">Qwen/Qwen3-ASR-1.7B</a></p></td>
-<td><p>ASR</p></td>
-<td><p>Multilingual transcription with 30 language hints</p></td>
-</tr>
-<tr class="row-odd"><td><p><a class="reference external" href="https://huggingface.co/inclusionAI/Ming-3.0-asr-tiny">inclusionAI/Ming-3.0-asr-tiny</a></p></td>
-<td><p>ASR</p></td>
-<td><p>Chinese and English transcription</p></td>
-</tr>
-<tr class="row-even"><td><p><a class="reference external" href="https://huggingface.co/FunAudioLLM/Fun-ASR-Nano-2512-hf">FunAudioLLM/Fun-ASR-Nano-2512-hf</a></p></td>
-<td><p>ASR</p></td>
-<td><p>Multilingual Fun-ASR-Nano</p></td>
-</tr>
-<tr class="row-odd"><td><p><a class="reference external" href="https://huggingface.co/AutoArk-AI/ARK-ASR-3B">AutoArk-AI/ARK-ASR-3B</a></p></td>
-<td><p>ASR</p></td>
-<td><p>Multilingual ARK-ASR</p></td>
-</tr>
-<tr class="row-even"><td><p><a class="reference external" href="https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b">nvidia/nemotron-3.5-asr-streaming-0.6b</a></p></td>
-<td><p>ASR</p></td>
-<td><p>Multilingual RNN-T transcription; internal native PCM streaming runtime (see <a class="reference external" href="cookbook/nemotron3_5_asr.html">cookbook</a>)</p></td>
-</tr>
-<tr class="row-odd"><td><p><a class="reference external" href="https://huggingface.co/nvidia/Nemotron-3.5-Transcribe-30B-A4B">nvidia/Nemotron-3.5-Transcribe-30B-A4B</a></p></td>
-<td><p>ASR</p></td>
-<td><p>Whole-file transcription with native speech and speaker-fusion encoders (see <a class="reference external" href="cookbook/nemotron_transcribe.html">cookbook</a>)</p></td>
-</tr>
-<tr class="row-even"><td><p><a class="reference external" href="https://huggingface.co/OpenMOSS-Team/MOSS-Transcribe-Diarize">OpenMOSS-Team/MOSS-Transcribe-Diarize</a></p></td>
-<td><p>ASR</p></td>
-<td><p>Multi-speaker transcription + diarization + timestamps</p></td>
-</tr>
-<tr class="row-odd"><td><p><a class="reference external" href="https://huggingface.co/nvidia/Nemotron-3-Diarization">nvidia/Nemotron-3-Diarization</a></p></td>
-<td><p>Diarization</p></td>
-<td><p>Up to eight overlapping speakers for uploads and live audio (see <a class="reference external" href="cookbook/nemotron_diarization.html">cookbook</a>)</p></td>
-</tr>
-<tr class="row-even"><td><p><a class="reference external" href="https://huggingface.co/openai/whisper-large-v3">openai/whisper-large-v3</a></p></td>
-<td><p>ASR</p></td>
-<td><p>Experimental transcription and speech-to-English translation routes; see the <a class="reference external" href="basic_usage/audio_translations.html">audio translation support matrix</a></p></td>
-</tr>
-<tr class="row-odd"><td><p><a class="reference external" href="https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct">Qwen/Qwen3-Omni-30B-A3B-Instruct</a></p></td>
-<td><p>Omni</p></td>
-<td><p>Text, image, audio, video → text + audio</p></td>
-</tr>
-<tr class="row-even"><td><p><a class="reference external" href="https://huggingface.co/openbmb/MiniCPM-o-4_5">openbmb/MiniCPM-o-4_5</a></p></td>
-<td><p>Omni</p></td>
-<td><p>Text, image, audio, video → text + audio</p></td>
-</tr>
-<tr class="row-odd"><td><p><a class="reference external" href="https://huggingface.co/inclusionAI/Ming-flash-omni-2.0">inclusionAI/Ming-flash-omni-2.0</a></p></td>
-<td><p>Omni</p></td>
-<td><p>Streaming TTS</p></td>
-</tr>
-<tr class="row-even"><td><p><a class="reference external" href="https://huggingface.co/inclusionAI/Ming-3.0-audio-flash">inclusionAI/Ming-3.0-audio-flash</a></p></td>
-<td><p>Omni</p></td>
-<td><p>Transcription, audio chat, and 44.1 kHz speech</p></td>
-</tr>
-<tr class="row-odd"><td><p><a class="reference external" href="https://huggingface.co/inclusionAI/LLaDA2.0-Uni">inclusionAI/LLaDA2.0-Uni</a></p></td>
-<td><p>Multimodal</p></td>
-<td><p>Text + image understanding and generation</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-</section>
-<section id="releases-blog">
-<h2>Releases &amp; Blog<a class="headerlink" href="#releases-blog" title="Link to this heading">#</a></h2>
-<ul class="simple">
-<li><p><a class="reference external" href="https://github.com/sgl-project/sglang-omni/releases">GitHub releases</a> and <a class="reference external" href="https://pypi.org/project/sglang-omni/">PyPI</a>.</p></li>
-<li><p><a class="reference external" href="https://www.sglang.io/blog/omni-interactive-runtime">The unified interactive runtime</a> and <a class="reference external" href="https://www.sglang.io/blog/spg-topology">the Stage–Process–GPU topology</a>.</p></li>
-</ul>
-</section>
 <section id="community-resources">
 <h2>Community &amp; Resources<a class="headerlink" href="#community-resources" title="Link to this heading">#</a></h2>
 <ul class="simple">
@@ -870,177 +726,14 @@
 <li><p><a class="reference external" href="https://github.com/sgl-project/sglang-omni">GitHub</a> and <a class="reference internal" href="developer_reference/main.html"><span class="doc">Developer Reference</span></a> — Find the source and contribution resources.</p></li>
 </ul>
 <div class="toctree-wrapper compound">
-<p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
-<ul class="current">
-<li class="toctree-l1 current"><a class="current reference internal" href="#">Welcome to SGLang-Omni</a></li>
-<li class="toctree-l1"><a class="reference internal" href="get_started/apiserver_quickstart.html">Quickstart</a></li>
-<li class="toctree-l1"><a class="reference internal" href="get_started/installation.html">Installation</a></li>
-<li class="toctree-l1"><a class="reference internal" href="get_started/examples.html">Examples</a></li>
-<li class="toctree-l1"><a class="reference internal" href="get_started/troubleshooting.html">Troubleshooting</a></li>
-</ul>
 </div>
 <div class="toctree-wrapper compound">
-<p aria-level="2" class="caption" role="heading"><span class="caption-text">Other Platforms</span></p>
-<ul>
-<li class="toctree-l1"><a class="reference internal" href="get_started/installation_apple_silicon.html">Apple Silicon</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="get_started/installation_apple_silicon.html#prerequisites">Prerequisites</a></li>
-<li class="toctree-l2"><a class="reference internal" href="get_started/installation_apple_silicon.html#install-with-the-hosted-installer">Install with the hosted installer</a></li>
-<li class="toctree-l2"><a class="reference internal" href="get_started/installation_apple_silicon.html#install-from-a-checkout">Install from a checkout</a></li>
-<li class="toctree-l2"><a class="reference internal" href="get_started/installation_apple_silicon.html#next-steps">Next steps</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="get_started/installation_npu.html">Ascend NPU</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="get_started/installation_npu.html#prerequisites">Prerequisites</a></li>
-<li class="toctree-l2"><a class="reference internal" href="get_started/installation_npu.html#docker-recommended">Docker (recommended)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="get_started/installation_npu.html#manual-install">Manual install</a></li>
-<li class="toctree-l2"><a class="reference internal" href="get_started/installation_npu.html#verify-the-installation">Verify the installation</a></li>
-<li class="toctree-l2"><a class="reference internal" href="get_started/installation_npu.html#qwen3-asr-graph-execution">Qwen3-ASR graph execution</a></li>
-<li class="toctree-l2"><a class="reference internal" href="get_started/installation_npu.html#model-notes">Model notes</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="get_started/installation_xpu.html">Intel XPU</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="get_started/installation_xpu.html#prerequisites">Prerequisites</a></li>
-<li class="toctree-l2"><a class="reference internal" href="get_started/installation_xpu.html#docker">Docker</a></li>
-<li class="toctree-l2"><a class="reference internal" href="get_started/installation_xpu.html#install-into-an-existing-xpu-environment">Install into an existing XPU environment</a></li>
-<li class="toctree-l2"><a class="reference internal" href="get_started/installation_xpu.html#verify-the-installation">Verify the installation</a></li>
-<li class="toctree-l2"><a class="reference internal" href="get_started/installation_xpu.html#serve-a-model">Serve a model</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="get_started/installation_cpu.html">Intel CPU</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="get_started/installation_cpu.html#prerequisites">Prerequisites</a></li>
-<li class="toctree-l2"><a class="reference internal" href="get_started/installation_cpu.html#docker">Docker</a></li>
-<li class="toctree-l2"><a class="reference internal" href="get_started/installation_cpu.html#manual-install">Manual install</a></li>
-<li class="toctree-l2"><a class="reference internal" href="get_started/installation_cpu.html#verify-the-installation">Verify the installation</a></li>
-<li class="toctree-l2"><a class="reference internal" href="get_started/installation_cpu.html#serve-a-model">Serve a model</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="get_started/installation_musa.html">Moore Threads MUSA</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="get_started/installation_musa.html#prerequisites">Prerequisites</a></li>
-<li class="toctree-l2"><a class="reference internal" href="get_started/installation_musa.html#install-sglang-omni">Install SGLang-Omni</a></li>
-<li class="toctree-l2"><a class="reference internal" href="get_started/installation_musa.html#verify-the-installation">Verify the installation</a></li>
-</ul>
-</li>
-</ul>
 </div>
 <div class="toctree-wrapper compound">
-<p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
-<ul>
-<li class="toctree-l1"><a class="reference internal" href="cookbook/companies/qwen.html">Qwen</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/qwen3_tts.html">Qwen3-TTS</a></li>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/qwen3_omni.html">Qwen3-Omni</a></li>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/qwen3_asr.html">Qwen3-ASR</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="cookbook/companies/openmoss.html">OpenMOSS</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/moss_tts.html">MOSS-TTS</a></li>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/moss_tts_local.html">MOSS-TTS-Local</a></li>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/moss_transcribe_diarize.html">MOSS-Transcribe-Diarize</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="cookbook/companies/openai.html">OpenAI</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/whisper_asr.html">Whisper ASR</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="cookbook/companies/nvidia.html">NVIDIA</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/nemotron3_5_asr.html">Nemotron 3.5 ASR</a></li>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/nemotron_transcribe.html">Nemotron Transcribe</a></li>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/nemotron_voicechat.html">NemotronLabs VoiceChat</a></li>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/personaplex.html">PersonaPlex</a></li>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/cosmos3_nano.html">Cosmos3 Nano serving</a></li>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/nemotron_diarization.html">Nemotron 3 Diarization</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="cookbook/companies/fish_audio.html">Fish Audio</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/fishaudio_s2_pro.html">Fish Audio S2-Pro</a></li>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/fishaudio_drama3.html">Fish Audio Drama 3</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="cookbook/companies/fun_audio_llm.html">FunAudioLLM</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/fun_cosyvoice3.html">Fun-CosyVoice3</a></li>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/fun_asr.html">Fun-ASR-Nano</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="cookbook/companies/openbmb.html">OpenBMB</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/minicpm_o.html">MiniCPM-o</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="cookbook/companies/boson_ai.html">Boson AI</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/higgs_tts.html">Higgs TTS</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="cookbook/companies/minimax.html">MiniMax</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/minimax_music3.html">MiniMax Music 3</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="cookbook/companies/inclusionai.html">InclusionAI</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/ming_omni.html">Ming-Omni</a></li>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/llada2_uni.html">LLaDA2.0-Uni</a></li>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/ming_tts.html">Ming-Omni-TTS</a></li>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/ming3_asr.html">Ming-3.0-asr-tiny</a></li>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/ming3_audio.html">Ming-3.0-audio-flash</a></li>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/ming3_tts.html">Ming-3.0-TTS</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="cookbook/companies/tencent.html">Tencent</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/auk.html">AuK</a></li>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/hy_simulmt.html">Hy-SimulMT</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="cookbook/companies/zyphra.html">Zyphra</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/zonos2.html">ZONOS2</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="cookbook/companies/autoark_ai.html">AutoArk AI</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/arkasr.html">ARK-ASR-3B</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="cookbook/companies/mistral_ai.html">Mistral AI</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/voxtral_tts.html">Voxtral TTS</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="cookbook/companies/dots_studio.html">Dots Studio</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="cookbook/dots_tts.html">dots.tts</a></li>
-</ul>
-</li>
-</ul>
 </div>
 <div class="toctree-wrapper compound">
-<p aria-level="2" class="caption" role="heading"><span class="caption-text">General Usage</span></p>
-<ul>
-<li class="toctree-l1"><a class="reference internal" href="basic_usage/qwen3_omni.html">Omni Model Usage</a></li>
-<li class="toctree-l1"><a class="reference internal" href="basic_usage/native_chat_stage.html">Native Chat Stage</a></li>
-<li class="toctree-l1"><a class="reference internal" href="basic_usage/audio_translations.html">Audio Translations</a></li>
-<li class="toctree-l1"><a class="reference internal" href="basic_usage/tts.html">TTS Model Usage</a></li>
-<li class="toctree-l1"><a class="reference internal" href="basic_usage/process_topology.html">Process Topology, Replicas, and GPU Sharing</a></li>
-<li class="toctree-l1"><a class="reference internal" href="basic_usage/tts_process_topology.html">TTS Process Topology</a></li>
-<li class="toctree-l1"><a class="reference internal" href="basic_usage/process_topology_migration.html">Process Topology Migration</a></li>
-<li class="toctree-l1"><a class="reference internal" href="basic_usage/omni_router.html">SGLang-Omni Router</a></li>
-<li class="toctree-l1"><a class="reference internal" href="basic_usage/mps_dp.html">Same-GPU Data Parallelism with CUDA MPS</a></li>
-<li class="toctree-l1"><a class="reference internal" href="basic_usage/native_media_routes.html">Native Media Routes</a></li>
-</ul>
 </div>
 <div class="toctree-wrapper compound">
-<p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Reference</span></p>
-<ul>
-<li class="toctree-l1"><a class="reference internal" href="developer_reference/main.html">Architecture</a></li>
-<li class="toctree-l1"><a class="reference internal" href="developer_reference/apiserver_design.html">API Server Design</a></li>
-<li class="toctree-l1"><a class="reference internal" href="developer_reference/pipeline.html">Pipeline Overview</a></li>
-<li class="toctree-l1"><a class="reference internal" href="developer_reference/config.html">Config</a></li>
-<li class="toctree-l1"><a class="reference internal" href="developer_reference/adding_parameters.html">Adding a Parameter</a></li>
-<li class="toctree-l1"><a class="reference internal" href="developer_reference/communication.html">Communication</a></li>
-<li class="toctree-l1"><a class="reference internal" href="developer_reference/reference_encode_service.html">Reference Encode Service</a></li>
-<li class="toctree-l1"><a class="reference internal" href="developer_reference/profiler.html">Request-level profiler</a></li>
-<li class="toctree-l1"><a class="reference internal" href="developer_reference/qwen3_asr_concurrency_profile.html">Qwen3-ASR High-Concurrency Benchmark and Bottleneck Profile</a></li>
-<li class="toctree-l1"><a class="reference internal" href="developer_reference/full_duplex_guide.html">Full-Duplex Guide</a></li>
-<li class="toctree-l1"><a class="reference internal" href="developer_reference/duplex_load_generator_pacing.html">Duplex Load Generator Pacing</a></li>
-<li class="toctree-l1"><a class="reference internal" href="developer_reference/tts_bench.html">TTS benchmark runbook</a></li>
-<li class="toctree-l1"><a class="reference internal" href="developer_reference/tts_model_integration.html">TTS Model Integration</a></li>
-<li class="toctree-l1"><a class="reference internal" href="developer_reference/asr_bench.html">ASR benchmark runbook</a></li>
-<li class="toctree-l1"><a class="reference internal" href="developer_reference/omni_offline_bench.html">MiniCPM-o offline benchmark runbook</a></li>
-<li class="toctree-l1"><a class="reference internal" href="developer_reference/rl_admin_control.html">RL Admin Control</a></li>
-<li class="toctree-l1"><a class="reference internal" href="developer_reference/ci_labels.html">CI Workflows and Labels</a></li>
-<li class="toctree-l1"><a class="reference internal" href="developer_reference/bump_version.html">Bumping the SGLang Pin</a></li>
-</ul>
 </div>
 </section>
 </section>
@@ -1057,7 +750,7 @@
                   
 <div class="prev-next-area">
     <a class="right-next"
-       href="get_started/apiserver_quickstart.html"
+       href="get_started/quickstart.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
@@ -1085,9 +778,6 @@
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#get-started">Get Started</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#news-and-latest-blogs">News and latest blogs</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#about">About</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#supported-models">Supported Models</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#releases-blog">Releases &amp; Blog</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#community-resources">Community &amp; Resources</a><ul class="pst-show_toc_level nav section-nav flex-column">
 </ul>
 </li>

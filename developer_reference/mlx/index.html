@@ -1,0 +1,858 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>MLX Path &#8212; SGLang</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../../_static/styles/sphinx-book-theme.css?v=4418a689" />
+    <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../../_static/css/custom_log.css?v=3b484c19" />
+    <link rel="stylesheet" type="text/css" href="../../_static/css/custom_log.css?v=3b484c19" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="../../_static/documentation_options.js?v=7f7c277e"></script>
+    <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../../_static/copybutton.js?v=ccdb6887"></script>
+    <script src="../../_static/scripts/sphinx-book-theme.js?v=fab101a9"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'developer_reference/mlx/index';</script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <script src="../../_static/js/sidebar_company_toggle.js?v=4014cbb0"></script>
+    <script src="../../_static/js/qwen3_omni_server_generator.js?v=d7738e8a"></script>
+    <script src="../../_static/js/ming_omni_server_generator.js?v=7979a72f"></script>
+    <link rel="icon" href="../../_static/logo.ico"/>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Qwen3-ASR long-recording measurements" href="long_audio.html" />
+    <link rel="prev" title="Contribution Guide" href="../contribution_guide.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.2.0" />
+    <meta name="docbuild:last-update" content="Nov 07, 2026"/>
+  
+    
+    <script src="../../_static/searchtools.js"></script>
+    <script src="../../_static/language_data.js"></script>
+    <script src="../../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search..."
+         aria-label="Search..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../_static/sgl-omni-logo.svg" class="logo__image only-light" alt="SGLang - Home"/>
+    <img src="../../_static/sgl-omni-logo.svg" class="logo__image only-dark pst-js-only" alt="SGLang - Home"/>
+  
+  
+</a></div>
+        <div class="sidebar-primary-item">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button></div>
+        <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
+    <div class="bd-toc-item navbar-nav active">
+        <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../index.html">Welcome to SGLang-Omni</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../get_started/quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../get_started/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../get_started/examples.html">Examples</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../get_started/troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Other Platforms</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../other_platforms/installation_apple_silicon.html">Apple Silicon</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../other_platforms/installation_npu.html">Ascend NPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../other_platforms/installation_xpu.html">Intel XPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../other_platforms/installation_cpu.html">Intel CPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../other_platforms/installation_musa.html">Moore Threads MUSA</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="../../cookbook/companies/qwen.html">Qwen</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/qwen3_tts.html">Qwen3-TTS</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/qwen3_omni.html">Qwen3-Omni</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/qwen3_asr.html">Qwen3-ASR</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../../cookbook/companies/openmoss.html">OpenMOSS</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/moss_tts.html">MOSS-TTS</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/moss_tts_local.html">MOSS-TTS-Local</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/moss_transcribe_diarize.html">MOSS-Transcribe-Diarize</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../../cookbook/companies/openai.html">OpenAI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/whisper_asr.html">Whisper ASR</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../../cookbook/companies/nvidia.html">NVIDIA</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/nemotron3_5_asr.html">Nemotron 3.5 ASR</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/nemotron_transcribe.html">Nemotron Transcribe</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/nemotron_voicechat.html">NemotronLabs VoiceChat</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/personaplex.html">PersonaPlex</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/cosmos3_nano.html">Cosmos3 Nano serving</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/nemotron_diarization.html">Nemotron 3 Diarization</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../../cookbook/companies/fish_audio.html">Fish Audio</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/fishaudio_s2_pro.html">Fish Audio S2-Pro</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/fishaudio_drama3.html">Fish Audio Drama 3</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../../cookbook/companies/fun_audio_llm.html">FunAudioLLM</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/fun_cosyvoice3.html">Fun-CosyVoice3</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/fun_asr.html">Fun-ASR-Nano</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../../cookbook/companies/openbmb.html">OpenBMB</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/minicpm_o.html">MiniCPM-o</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../../cookbook/companies/boson_ai.html">Boson AI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/higgs_tts.html">Higgs TTS</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../../cookbook/companies/minimax.html">MiniMax</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/minimax_music3.html">MiniMax Music 3</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../../cookbook/companies/inclusionai.html">InclusionAI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/ming_omni.html">Ming-Omni</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/llada2_uni.html">LLaDA2.0-Uni</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/ming_tts.html">Ming-Omni-TTS</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/ming3_asr.html">Ming-3.0-asr-tiny</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/ming3_audio.html">Ming-3.0-audio-flash</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/ming3_tts.html">Ming-3.0-TTS</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../../cookbook/companies/tencent.html">Tencent</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/auk.html">AuK</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/hy_simulmt.html">Hy-SimulMT</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../../cookbook/companies/zyphra.html">Zyphra</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/zonos2.html">ZONOS2</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../../cookbook/companies/autoark_ai.html">AutoArk AI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/arkasr.html">ARK-ASR-3B</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../../cookbook/companies/mistral_ai.html">Mistral AI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/voxtral_tts.html">Voxtral TTS</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../../cookbook/companies/dots_studio.html">Dots Studio</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../../cookbook/dots_tts.html">dots.tts</a></li>
+</ul>
+</details></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">General Usage</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../basic_usage/qwen3_omni.html">Omni Model Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../basic_usage/native_chat_stage.html">Native Chat Stage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../basic_usage/audio_translations.html">Audio Translations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../basic_usage/tts.html">TTS Model Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../basic_usage/process_topology.html">Process Topology, Replicas, and GPU Sharing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../basic_usage/tts_process_topology.html">TTS Process Topology</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../basic_usage/process_topology_migration.html">Process Topology Migration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../basic_usage/omni_router.html">SGLang-Omni Router</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../basic_usage/mps_dp.html">Same-GPU Data Parallelism with CUDA MPS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../basic_usage/native_media_routes.html">Native Media Routes</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Reference</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../main.html">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../contribution_guide.html">Contribution Guide</a></li>
+<li class="toctree-l1 current active has-children"><a class="current reference internal" href="#">Native MLX</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="long_audio.html">Qwen3-ASR long-recording measurements</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../apiserver_design.html">API Server Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../pipeline.html">Pipeline Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../config.html">Config</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../adding_parameters.html">Adding a Parameter</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../communication.html">Communication</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../reference_encode_service.html">Reference Encode Service</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../profiler.html">Request-level profiler</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../qwen3_asr_concurrency_profile.html">Qwen3-ASR High-Concurrency Benchmark and Bottleneck Profile</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../full_duplex_guide.html">Full-Duplex Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../duplex_load_generator_pacing.html">Duplex Load Generator Pacing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../tts_bench.html">TTS benchmark runbook</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../tts_model_integration.html">TTS Model Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../asr_bench.html">ASR benchmark runbook</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../omni_offline_bench.html">MiniCPM-o offline benchmark runbook</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../rl_admin_control.html">RL Admin Control</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../ci_labels.html">CI Workflows and Labels</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../bump_version.html">Bumping the SGLang Pin</a></li>
+</ul>
+
+    </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+
+<div class="sbt-scroll-pixel-helper"></div>
+
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item"><button class="sidebar-toggle primary-toggle btn btn-sm" title="Toggle primary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <span class="fa-solid fa-bars"></span>
+</button></div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+
+<div class="article-header-buttons">
+
+
+
+
+
+<div class="dropdown dropdown-source-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Source repositories">
+    <i class="fab fa-github"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sglang-omni" target="_blank"
+   class="btn btn-sm btn-source-repository-button dropdown-item"
+   title="Source repository"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fab fa-github"></i>
+  </span>
+<span class="btn__text-container">Repository</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sglang-omni/blob/main/docs/developer_reference/mlx/index.md?plain=1" target="_blank"
+   class="btn btn-sm btn-source-file-button dropdown-item"
+   title="Show source"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-code"></i>
+  </span>
+<span class="btn__text-container">Show source</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sglang-omni/edit/main/docs/developer_reference/mlx/index.md" target="_blank"
+   class="btn btn-sm btn-source-edit-button dropdown-item"
+   title="Suggest edit"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-pencil-alt"></i>
+  </span>
+<span class="btn__text-container">Suggest edit</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sglang-omni/issues/new?title=Issue%20on%20page%20%2Fdeveloper_reference/mlx/index.html&body=Your%20issue%20content%20here." target="_blank"
+   class="btn btn-sm btn-source-issues-button dropdown-item"
+   title="Open an issue"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-lightbulb"></i>
+  </span>
+<span class="btn__text-container">Open issue</span>
+</a>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+
+
+<div class="dropdown dropdown-download-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Download this page">
+    <i class="fas fa-download"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="../../_sources/developer_reference/mlx/index.md" target="_blank"
+   class="btn btn-sm btn-download-source-button dropdown-item"
+   title="Download source file"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file"></i>
+  </span>
+<span class="btn__text-container">.md</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li>
+<button onclick="window.print()"
+  class="btn btn-sm btn-download-pdf-button dropdown-item"
+  title="Print to PDF"
+  data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file-pdf"></i>
+  </span>
+<span class="btn__text-container">.pdf</span>
+</button>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+<button onclick="toggleFullScreen()"
+  class="btn btn-sm btn-fullscreen-button pst-navbar-icon"
+  title="Fullscreen mode"
+  data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-expand"></i>
+  </span>
+
+</button>
+
+
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div>
+
+
+<button class="btn btn-sm pst-navbar-icon search-button search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass fa-lg"></i>
+</button>
+<button class="sidebar-toggle secondary-toggle btn btn-sm pst-navbar-icon" title="Toggle secondary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <span class="fa-solid fa-list"></span>
+</button>
+</div></div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="jb-print-docs-body" class="onlyprint">
+    <h1>MLX Path</h1>
+    <!-- Table of contents -->
+    <div id="print-main-content">
+        <div id="jb-print-toc">
+            
+            <div>
+                <h2> Contents </h2>
+            </div>
+            <nav aria-label="Page">
+                <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#layout">Layout</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#rule-1-mlx-is-a-separate-path">Rule 1: MLX is a separate path</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speculative-decoding">Speculative decoding</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#rule-2-contribution-requirements">Rule 2: Contribution requirements</a></li>
+</ul>
+            </nav>
+        </div>
+    </div>
+</div>
+
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section class="tex2jax_ignore mathjax_ignore" id="mlx-path">
+<h1>MLX Path<a class="headerlink" href="#mlx-path" title="Link to this heading">#</a></h1>
+<div class="toctree-wrapper compound">
+</div>
+<p>Rules for Apple Silicon work. They write down what the native runtime PRs under
+<a class="reference external" href="https://github.com/sgl-project/sglang-omni/issues/2537">#2537</a> already do.</p>
+<section id="layout">
+<h2>Layout<a class="headerlink" href="#layout" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Path</p></th>
+<th class="head"><p>Contents</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sglang_omni_mlx/native/</span></code></p></td>
+<td><p>C++ runtime on MLX: one server binary per model, a parity CLI per model in <code class="docutils literal notranslate"><span class="pre">tools/</span></code>. Each model’s code is in <code class="docutils literal notranslate"><span class="pre">src/&lt;model&gt;/</span></code>; code shared across models (<code class="docutils literal notranslate"><span class="pre">audio</span></code>, <code class="docutils literal notranslate"><span class="pre">form</span></code>, <code class="docutils literal notranslate"><span class="pre">layers</span></code>, <code class="docutils literal notranslate"><span class="pre">npz</span></code>, <code class="docutils literal notranslate"><span class="pre">tokenizer</span></code>, built as the <code class="docutils literal notranslate"><span class="pre">common</span></code> library, plus <code class="docutils literal notranslate"><span class="pre">swift_port</span></code> and <code class="docutils literal notranslate"><span class="pre">http</span></code>) is in <code class="docutils literal notranslate"><span class="pre">src/common/</span></code>. The shared ASR server code (<code class="docutils literal notranslate"><span class="pre">asr_service</span></code>, <code class="docutils literal notranslate"><span class="pre">worker</span></code>, <code class="docutils literal notranslate"><span class="pre">realtime</span></code>) is still in <code class="docutils literal notranslate"><span class="pre">src/qwen3_asr/</span></code>, and so is the <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> API that <code class="docutils literal notranslate"><span class="pre">voxtral_tts_server</span></code> and <code class="docutils literal notranslate"><span class="pre">fishaudio_drama3_server</span></code> share (<code class="docutils literal notranslate"><span class="pre">speech_service</span></code>), built on <code class="docutils literal notranslate"><span class="pre">asr_service</span></code>. <code class="docutils literal notranslate"><span class="pre">ming3_audio_server</span></code> serves <code class="docutils literal notranslate"><span class="pre">/v1/chat/completions</span></code> from its own service in <code class="docutils literal notranslate"><span class="pre">src/ming3_audio/</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sglang_omni_mlx/native/ci/</span></code></p></td>
+<td><p>Model pins, the 392-clip corpus, golden outputs, server API tests and the <a class="reference internal" href="long_audio.html"><span class="std std-doc">long-recording benchmark</span></a>.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sglang_omni_mlx/&lt;model&gt;/</span></code></p></td>
+<td><p>Python MLX servers, e.g. the Qwen3-ASR reference server.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Voxt/</span></code></p></td>
+<td><p>Voxt, the macOS app that runs the native servers. See <a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/Voxt/README.md"><code class="docutils literal notranslate"><span class="pre">Voxt/README.md</span></code></a>.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="rule-1-mlx-is-a-separate-path">
+<h2>Rule 1: MLX is a separate path<a class="headerlink" href="#rule-1-mlx-is-a-separate-path" title="Link to this heading">#</a></h2>
+<p>MLX code is not abstracted together with the CUDA path in <code class="docutils literal notranslate"><span class="pre">sglang_omni</span></code>.</p>
+<ul class="simple">
+<li><p>New MLX models, kernels and servers go under <code class="docutils literal notranslate"><span class="pre">sglang_omni_mlx/</span></code>.</p></li>
+<li><p>Do not add MLX branches, workers or platform hooks to <code class="docutils literal notranslate"><span class="pre">sglang_omni/</span></code>.</p></li>
+<li><p>No shared backend interface, base class or registry across the two paths.
+Share code freely inside the MLX path, not across paths.</p></li>
+<li><p>The paths meet only at the OpenAI-style HTTP API (<code class="docutils literal notranslate"><span class="pre">/v1/audio/transcriptions</span></code>,
+<code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code>, <code class="docutils literal notranslate"><span class="pre">/v1/chat/completions</span></code>, <code class="docutils literal notranslate"><span class="pre">/v1/realtime</span></code>, <code class="docutils literal notranslate"><span class="pre">/health</span></code>).</p></li>
+</ul>
+<p>Why:</p>
+<ul class="simple">
+<li><p><strong>Runtimes differ.</strong> <code class="docutils literal notranslate"><span class="pre">sglang_omni</span></code> is a multi-process CUDA pipeline on
+PyTorch; the MLX path is one process per model on unified memory, shipped as
+C++ binaries. An interface over both hides what makes each fast.</p></li>
+<li><p><strong>Dependencies differ.</strong> SGLang’s wheel pulls CUDA. Keeping MLX out lets Voxt
+run without CUDA, PyTorch or Python.</p></li>
+<li><p><strong>CI differs.</strong> Mac CI only runs on <code class="docutils literal notranslate"><span class="pre">sglang_omni_mlx/**</span></code> and the app’s Swift packages, and
+GPU CI never runs on a Mac. A shared layer would break one side without CI
+noticing.</p></li>
+</ul>
+<p>The legacy MLX code in <code class="docutils literal notranslate"><span class="pre">sglang_omni</span></code> (<code class="docutils literal notranslate"><span class="pre">mlx_model_worker.py</span></code>,
+<code class="docutils literal notranslate"><span class="pre">MlxTpModelWorker</span></code>, the per-model <code class="docutils literal notranslate"><span class="pre">mlx/</span></code> packages) is removed in
+<a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/2725">#2725</a>; do not add it
+back. If a change really needs a cross-path abstraction, open an issue and
+agree on it with a maintainer first.</p>
+</section>
+<section id="speculative-decoding">
+<h2>Speculative decoding<a class="headerlink" href="#speculative-decoding" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">qwen3_asr_server</span></code> and <code class="docutils literal notranslate"><span class="pre">qwen3_asr_transcribe</span></code> take <code class="docutils literal notranslate"><span class="pre">--draft-model-path</span> <span class="pre">DIR</span></code> (and <code class="docutils literal notranslate"><span class="pre">--draft-bits</span> <span class="pre">4|6|8</span></code> to quantize the draft at load). The Qwen3-ASR target then verifies a DFlash draft’s block of proposals each step and keeps its own greedy transcript; the parity tool reports <code class="docutils literal notranslate"><span class="pre">verify_rounds</span></code> per clip. The draft is a Speculators-layout DFlash checkpoint (<code class="docutils literal notranslate"><span class="pre">aux_hidden_state_layer_ids</span></code>, <code class="docutils literal notranslate"><span class="pre">block_size</span></code>, <code class="docutils literal notranslate"><span class="pre">mask_token_id</span></code>, <code class="docutils literal notranslate"><span class="pre">transformer_layer_config</span></code>; weights <code class="docutils literal notranslate"><span class="pre">fc</span></code>, <code class="docutils literal notranslate"><span class="pre">hidden_norm</span></code>, <code class="docutils literal notranslate"><span class="pre">layers.*</span></code>, <code class="docutils literal notranslate"><span class="pre">norm</span></code>, <code class="docutils literal notranslate"><span class="pre">lm_head</span></code>, <code class="docutils literal notranslate"><span class="pre">d2t</span></code>) checked against the target at load: hidden size, the layers it reads (in order), the <code class="docutils literal notranslate"><span class="pre">fc</span></code>, <code class="docutils literal notranslate"><span class="pre">lm_head</span></code> and <code class="docutils literal notranslate"><span class="pre">d2t</span></code> shapes, <code class="docutils literal notranslate"><span class="pre">d2t</span></code> landing inside the target’s vocabulary, and a causal block; one that does not fit is refused at load. A request that sets <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code> decodes without the draft.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Target</p></th>
+<th class="head"><p>Draft</p></th>
+<th class="head"><p>Golden</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">mlx-community/Qwen3-ASR-0.6B-4bit</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">wilsonzheng0327/Qwen3-ASR-0.6B-dflash</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ci/golden/qwen3-asr-0.6b-4bit-dflash.json</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">mlx-community/Qwen3-ASR-1.7B-{6bit,8bit}</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">wilsonzheng0327/Qwen3-ASR-1.7B-dflash</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ci/golden/qwen3-asr-1.7b-8bit-dflash.json</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">OpenMOSS-Team/MOSS-Transcribe-Diarize</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">wilsonzheng0327/MOSS-Transcribe-Diarize-dflash</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ci/model_golden/moss-transcribe-diarize-dflash.json</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The Qwen3-ASR drafts are pinned in <code class="docutils literal notranslate"><span class="pre">ci/models.json</span></code>; the MOSS-TD draft is pinned in <code class="docutils literal notranslate"><span class="pre">ci/model_pins.json</span></code>. A draft for another target is one pin and one golden whose request names it under <code class="docutils literal notranslate"><span class="pre">draft_model_path</span></code>. Verifying a block moves the target’s low-precision logits slightly, so a few percent of clips differ from plain decoding in punctuation or a near-tie word; the goldens hold each chip’s draft outputs like any other.</p>
+<p><code class="docutils literal notranslate"><span class="pre">moss_transcribe_diarize_server</span></code> and <code class="docutils literal notranslate"><span class="pre">moss_transcribe</span></code> take the same two flags; the CLI’s <code class="docutils literal notranslate"><span class="pre">verify_rounds</span></code> sums over audio chunks.</p>
+</section>
+<section id="rule-2-contribution-requirements">
+<h2>Rule 2: Contribution requirements<a class="headerlink" href="#rule-2-contribution-requirements" title="Link to this heading">#</a></h2>
+<p><strong>Placement and reuse</strong></p>
+<ul class="simple">
+<li><p>A native model adds <code class="docutils literal notranslate"><span class="pre">src/&lt;model&gt;/</span></code> with <code class="docutils literal notranslate"><span class="pre">&lt;model&gt;_model</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;model&gt;_transcriber</span></code>
+and a server on the shared <code class="docutils literal notranslate"><span class="pre">asr_service</span></code> (a speech model’s on
+<code class="docutils literal notranslate"><span class="pre">speech_service</span></code>), a CLI in <code class="docutils literal notranslate"><span class="pre">tools/</span></code>, and CMake
+targets: a library for the model’s own sources that links what it reuses
+(<code class="docutils literal notranslate"><span class="pre">common</span></code>, <code class="docutils literal notranslate"><span class="pre">swift_port</span></code>, <code class="docutils literal notranslate"><span class="pre">silero_vad</span></code>, <code class="docutils literal notranslate"><span class="pre">sortformer</span></code>). Shared code goes in
+<code class="docutils literal notranslate"><span class="pre">src/common/</span></code>, not in another model’s directory or library. Include project
+headers by their path under <code class="docutils literal notranslate"><span class="pre">src/</span></code>, e.g. <code class="docutils literal notranslate"><span class="pre">#include</span> <span class="pre">&quot;common/layers.h&quot;</span></code>.</p></li>
+<li><p>Shared audio, checkpoint/layer, tokenizer and multipart APIs use the <code class="docutils literal notranslate"><span class="pre">omni_common</span></code> namespace and the <code class="docutils literal notranslate"><span class="pre">common</span></code> library. HTTP helpers use <code class="docutils literal notranslate"><span class="pre">omni_server</span></code> and the <code class="docutils literal notranslate"><span class="pre">common_http</span></code> library; neither library depends on a model. Qwen3-ASR audio layouts, log-mel extraction and encoder token counts belong to <code class="docutils literal notranslate"><span class="pre">qwen3_asr/qwen3_audio.h</span></code>. Shared decoder and ASR serving types still live under <code class="docutils literal notranslate"><span class="pre">qwen3_asr/</span></code>; their extraction is separate from the common primitive APIs.</p></li>
+<li><p>Reuse <code class="docutils literal notranslate"><span class="pre">layers</span></code>, <code class="docutils literal notranslate"><span class="pre">swift_port</span></code>, the Sortformer front end and the Silero VAD
+port. If your code duplicates something on <code class="docutils literal notranslate"><span class="pre">main</span></code>, move it into the shared
+file in the same PR.</p></li>
+</ul>
+<p><strong>Parity</strong></p>
+<ul class="simple">
+<li><p>Name the reference (mlx-audio-swift at a pinned commit,
+or a Python MLX reference) and use the same weights and MLX version.</p></li>
+<li><p>Keep the reference’s behavior. Behavior changes go in a separate PR.</p></li>
+<li><p>Report English WER, Chinese CER and mixed MER on the 392-clip corpus,
+reference vs native, plus the count of identical clips. Explain where
+differing clips diverge.</p></li>
+</ul>
+<p><strong>Golden and pins</strong></p>
+<ul class="simple">
+<li><p>Pin every checkpoint file by revision and SHA-256 in <code class="docutils literal notranslate"><span class="pre">ci/model_pins.json</span></code>.</p></li>
+<li><p>Add a golden under <code class="docutils literal notranslate"><span class="pre">ci/model_golden/</span></code>: record a chip’s outputs with
+<code class="docutils literal notranslate"><span class="pre">check_model_golden.py</span> <span class="pre">--outputs</span></code> and add them with <code class="docutils literal notranslate"><span class="pre">--import</span></code>. Mac CI does
+not run it, so give its result on your Mac in the PR. A speech model’s
+golden holds seeded requests’ codes (<code class="docutils literal notranslate"><span class="pre">ci/speech_golden.py</span></code>).</p></li>
+<li><p>Add a second golden for paths the corpus misses (long-audio chunking, VAD).</p></li>
+</ul>
+<p><strong>Tests</strong></p>
+<ul class="simple">
+<li><p>Real-model server tests in <code class="docutils literal notranslate"><span class="pre">ci/test_model_servers.py</span></code>, or in the model’s
+own <code class="docutils literal notranslate"><span class="pre">ci/test_&lt;model&gt;_api.py</span></code> once that file would pass ~400 lines, run by
+hand: JSON, SSE and realtime success paths; every invalid input returns 400;
+session-state errors and cancel on disconnect.</p></li>
+<li><p>Assert structure, not one chip’s exact text; exact text lives in the golden.</p></li>
+<li><p>Mac CI runs <code class="docutils literal notranslate"><span class="pre">tests/</span></code> with no checkpoint. List a new server and its model
+kinds in <code class="docutils literal notranslate"><span class="pre">tests/test_runtime_binaries.py</span></code>, with a row for each flag its
+startup rejects. A change to the shared protocol (<code class="docutils literal notranslate"><span class="pre">common/service.cpp</span></code>,
+<code class="docutils literal notranslate"><span class="pre">qwen3_asr/asr_service.cpp</span></code>, <code class="docutils literal notranslate"><span class="pre">speech_service.cpp</span></code>, <code class="docutils literal notranslate"><span class="pre">realtime.cpp</span></code>) gets a
+case against <code class="docutils literal notranslate"><span class="pre">tests/stub_server.cpp</span></code>.</p></li>
+</ul>
+<p><strong>Robustness</strong></p>
+<ul class="simple">
+<li><p>Check the checkpoint config at load, so bad checkpoints fail at load, not
+mid-request.</p></li>
+<li><p>Validate requests before they reach the worker.</p></li>
+<li><p>Streaming sessions use bounded memory: trim consumed audio, cap session
+length, clear the MLX cache.</p></li>
+</ul>
+<p><strong>Performance</strong></p>
+<ul class="simple">
+<li><p>Mac CI checks neither outputs nor speed. Report total time, realtime
+factor, peak memory and load time against the reference, with the device
+stated.</p></li>
+</ul>
+<p><strong>CI and style</strong></p>
+<ul class="simple">
+<li><p>Target <code class="docutils literal notranslate"><span class="pre">main</span></code> (stacked PRs get no Mac CI), non-draft, with the <code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code> label. Both Mac CI jobs must pass on a real run.</p></li>
+<li><p>Run pre-commit and follow
+<a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/.claude/skills/code-review/coding-style.md">coding-style.md</a>.</p></li>
+<li><p>Follow the PR format of
+<a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/2676">#2676</a> or</p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="../contribution_guide.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Contribution Guide</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="long_audio.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Qwen3-ASR long-recording measurements</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item"><div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> Contents
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#layout">Layout</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#rule-1-mlx-is-a-separate-path">Rule 1: MLX is a separate path</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speculative-decoding">Speculative decoding</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#rule-2-contribution-requirements">Rule 2: Contribution requirements</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+<div class="bd-footer-content__inner container">
+  
+  <div class="footer-item">
+    
+<p class="component-author">
+By SGLang-Omni Team
+</p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+
+  <p class="copyright">
+    
+      © Copyright 2025-2026, SGLang-Omni.
+      <br/>
+    
+  </p>
+
+  </div>
+  
+  <div class="footer-item">
+    <p class="last-updated">
+  Last updated on Nov 07, 2026.
+  <br/>
+</p>
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+</div>
+          </footer>
+        
+
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+  </footer>
+  </body>
+</html>
