@@ -44,8 +44,9 @@ scripts/mac-gui.sh scripts/release.sh（在 Mac 上，ssh 里经 mac-gui.sh 进�
 
 1. 说明写在 [CHANGELOG.md](../CHANGELOG.md) 最上面一节（格式见 §2.1 第 2 步）：发布时用这个版本的一节，没有就用 `## [Unreleased]`。要在 main 上留下版本号，就在发布前的提交里把 `## [Unreleased]` 改成 `## [X.Y.Z] - 日期`，mygo.json 和两个 Info.plist 也改成 X.Y.Z（§2.1 第 1 步）；不改也可以，发布的版本号由 tag 决定。
 2. 在 main 上推 tag：`git tag -a voxt-vX.Y.Z -m "Voxt X.Y.Z" && git push origin voxt-vX.Y.Z`。版本号只能往上走：要比所有 `voxt-v` tag 都新（包括 Swift 版 Voxt 1.x 的 `voxt-v1.16.x`），只能是 `X.Y.Z`，没有 beta。失败了可以删掉 tag，修好再推同一个。
-3. 工作流把 tag 的版本号写进 mygo.json 和两个 Info.plist，导入 `voxt-release` 环境的 Developer ID（[scripts/release-identity.sh](../scripts/release-identity.sh) 检查它是 RY2TQTYSKQ 的），用 App Store Connect API key 建 notarytool 配置，跑 `scripts/release.sh --notarize voxt-notary --keychain …`（`EXPECT_TEAM=RY2TQTYSKQ`，`release-verify.sh developer-id` 全部通过才继续），再把 `Voxt-X.Y.Z-arm64.dmg` 和它的 `.sha256` 传到草稿 Release “Voxt vX.Y.Z”。说明依次是要求、安装、CHANGELOG 里的那一节和构建来源。
+3. 工作流把 tag 的版本号写进 mygo.json 和两个 Info.plist，导入 `voxt-release` 环境的 Developer ID（[scripts/release-identity.sh](../scripts/release-identity.sh) 检查它是 RY2TQTYSKQ 的），用 App Store Connect API key 建 notarytool 配置，跑 `scripts/release.sh --notarize voxt-notary --keychain …`（`EXPECT_TEAM=RY2TQTYSKQ`，`release-verify.sh developer-id` 全部通过才继续），再把 `Voxt-X.Y.Z-arm64.dmg`、app 的 ZIP `Voxt-X.Y.Z-macOS.zip`（给 Voxt 1.x 的应用内更新和 Homebrew）和它们的 `.sha256` 传到草稿 Release “Voxt vX.Y.Z”。说明依次是要求、安装、CHANGELOG 里的那一节和构建来源。
 4. 在 Release 页面检查说明后发布（默认标成 Latest）。用户下载 dmg，把 Voxt 拖进“应用程序”，会替换 Swift 版 Voxt 1.x 的 Voxt.app。2.0.0 不会自动更新，新版本也这样装。
+5. 推给 Voxt 1.x 的用户和 Homebrew：发布后 Voxt Appcast 工作流自动把它放进 1.x 的 beta 通道，在真机上测通后再手动发到 stable，见 [Voxt 1.x 的应用内更新和 Homebrew](#voxt-1x-的应用内更新和-homebrew)。
 
 `voxt-release` 环境是 Swift 版 Voxt 1.x 发版时建的，部署规则只放行 `main` 和 `voxt-v*` tag。这个工作流用到它的这些 secret：
 
@@ -172,7 +173,7 @@ MAC_DIR=code/VoxtNew-rel scripts/mac.sh 'export VOXTNEW_SIGN_IDENTITY="$(scripts
    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $v" helper/Support/Info.plist   # macOS
    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $v" llm/Support/Info.plist
    ```
-   app 的 `CFBundleShortVersionString` 是完整版本号（更新比较用它）；`CFBundleVersion` 由 MyGo 写成数字部分（`2.0.1-beta.1` 写成 `2.0.1`，补丁 0007）。
+   app 的 `CFBundleShortVersionString` 是完整版本号（更新比较用它）；`CFBundleVersion` 由 MyGo 写成数字部分（`2.0.1-beta.1` 写成 `2.0.1`，补丁 0007），`release.sh` 的构建再改成 Voxt 1.x 的构建号（见 [Voxt 1.x 的应用内更新和 Homebrew](#voxt-1x-的应用内更新和-homebrew)）。
 2. **写 CHANGELOG.md**：把最上面的 `## [Unreleased]` 改成 `## [2.0.1] - 2026-11-20`（版本号和 mygo.json 完全一样），英文在前（`### Added`、`### Fixed`…），然后是 `### 中文`，下面用 `####` 小标题（`#### 新增`、`#### 修复`…）。更新窗口显示整节；官网用同一节：发布脚本从第一个含汉字的 `###` 标题（`### 中文`，这个标题本身去掉）分成 `notes`（英文）和 `notesZh`，后台还要求清单里的 notes（整节）包含英文部分。`--publish` 时没有这一节就失败。
 3. 提交、推到 main，等 CI（[voxtnew-ci.yaml](../../.github/workflows/voxtnew-ci.yaml)）通过，在 mac-air 上跑一遍回归（`scripts/mac-regress.sh`，[manual-test.md](manual-test.md) §10）。
 4. 从 Linux 同步到发布用的 checkout 并构建（§1.1 的 `mac-gui.sh`；更新私钥 `release.sh` 自己从 `~/.config/voxtnew-release/` 读，§1.3）：
@@ -354,6 +355,44 @@ MAC_DIR=code/VoxtNew-upd scripts/mac.sh scripts/mac-beta-e2e.sh     # 两个通�
 - **ssh 里经 `mac-gui.sh` 签名**：不需要密码、不改钥匙串的设置（分区列表），只借用已经登录的图形会话。
 - **两个更新源，beta 取较新的**：官网的约定，和 Auralink 一样；打开 Beta 更新时 app 读 beta 清单，失败时退回正式版。beta 的地址不单独配置：`updates.url` 是正式版的，MyGo（补丁 0006 的 `prereleases`）按版本号把 beta 放进它的 `beta/`，所以 `release/mygo.release.json` 只有一个 url。
 - **按 SHA-1 选签名身份**：codesign 遇到两张同名证书会报 “ambiguous”，按哈希签不会。
+
+## Voxt 1.x 的应用内更新和 Homebrew
+
+Swift 版 Voxt 1.x 用 Sparkle 2.10 更新：读 `https://voxt.actnow.dev/updates/stable/appcast.xml`，1.x 的 设置 → 关于 里打开 **Beta 更新**（Beta Updates）时读 `…/beta/appcast.xml`。[Voxt Appcast](../../.github/workflows/voxt-appcast.yaml) 工作流把一个已发布的 Release 放进其中一个通道：用 Sparkle 私钥给 `Voxt-X.Y.Z-macOS.zip` 签名，把 ZIP 和 dmg 传到 Voxt 的更新服务，设成这个通道的最新一项，再等 appcast 里出现它的构建号。通道是 stable 时，它还把 `hehehai/homebrew-tap` 的 `Casks/voxt.rb` 指向这个 ZIP。Release 发布时它自动运行，只发 beta；stable 只能手动运行时选。它是 1.x 的同名工作流（#3043 合并时删掉了）移植过来的，构建号、条目、更新说明和 cask 由 [scripts/release-appcast.sh](../scripts/release-appcast.sh) 生成（测试：`go test -run TestReleaseAppcast .`）。
+
+Sparkle 要满足下面几条才装 2.x（Sparkle 2.10 的 `SUPlainInstaller.m`、`SUUpdateValidator.m`、`SUInstaller.m`）：
+
+- **appcast 里的 `sparkle:version` 比 1.x 的 `CFBundleVersion` 大**，Sparkle 才提示更新。1.x 的构建号是 主×10⁸ + 次×10⁵ + 补丁×100 + 99，1.16.3 是 101600399，2.0.1 是 200000199。
+- **新 app 的 `CFBundleVersion` 不比 1.x 的小**，否则 Sparkle 当成降级，拒绝安装。MyGo 默认把 2.0.1 的 `CFBundleVersion` 写成 `2.0.1`，按 Sparkle 的比较方法比 101600399 小，所以 `release.sh` 把每个发布构建的 `CFBundleVersion` 写成同一个构建号（预发布版本，比如 nightly，末两位是 00，排在正式版前面）。`CFBundleShortVersionString` 还是 `2.0.1`，2.x 的界面和更新比较都只看它。
+- **新 app 的 Info.plist 有 EdDSA 公钥**（`SUPublicEDKey`）：1.x 有公钥，新 app 没有的话 Sparkle 拒绝。`release.sh` 写进 1.x 的公钥 `iMt1voRd…`。2.x 自己不用 Sparkle，这个键只给 1.x 的 Sparkle 看。
+- **ZIP 里是 `Voxt.app`**：Sparkle 按文件名找要装的 app，和 1.x 同名。
+- **ZIP 的 EdDSA 签名用 1.x 的公钥验证通过**。通过以后，Sparkle 只要求新 app 的代码签名有效，不要求它和 1.x 的代码签名一致。1.x 的 bundle id 是 `com.voxt.Voxt`，2.x 是 `dev.hehehai.voxtnew`，代码签名的要求对不上，所以从源码看，换 bundle id 不影响安装，只是还没在真机上测过。macOS 会把 2.x 当成另一个 app，麦克风和辅助功能要重新授权。
+
+工作流检查 ZIP 里的 app：版本号、`CFBundleVersion` 和 `SUPublicEDKey` 不对就停下，不上传。只有带 ZIP 的 Release 能发：2.0.0 和更早的 Release 没有 ZIP。
+
+它用 `voxt-release` 环境里 1.x 留下的这些 secret：
+
+| Secret | 内容 |
+|---|---|
+| `SPARKLE_PRIVATE_KEY` | Sparkle 的 EdDSA 私钥，和 1.x 的 `SUPublicEDKey` 配对，给 ZIP 签名 |
+| `VOXT_UPDATE_API_BASE`、`VOXT_RELEASE_API_KEY` | Voxt 更新服务的地址和发布用的 key |
+| `HOMEBREW_TAP_TOKEN` | 能推 `hehehai/homebrew-tap` 的 token，只在 stable 时用 |
+
+### 发一个版本给 1.x 用户
+
+1. **发到 beta**：Release 发布后（上面“从 tag 发布”的第 4 步），Voxt Appcast 自动把它放进 beta。手动运行：Actions → Voxt Appcast → Run workflow，或者
+   ```sh
+   gh workflow run voxt-appcast.yaml --repo sgl-project/sglang-omni -f tag=voxt-vX.Y.Z -f channel=beta
+   ```
+   成功时最后一步写“The beta appcast offers Voxt X.Y.Z (构建号)”。`curl -s https://voxt.actnow.dev/updates/beta/appcast.xml | grep -m1 sparkle:version` 也能看到这个构建号。
+2. **在真机上测 1.x → 2.x**：按 [manual-test.md](manual-test.md) §11 在一台装着 1.x 的 Mac 上更新一次。
+3. **发到 stable**：测通以后先在群里告诉 1.x 的维护者，再用同一个工作流，channel 选 `stable`：
+   ```sh
+   gh workflow run voxt-appcast.yaml --repo sgl-project/sglang-omni -f tag=voxt-vX.Y.Z -f channel=stable
+   ```
+   它把 stable 的最新一项换成这个版本，所有 1.x 用户都会收到；然后更新 Homebrew 的 cask（`brew install --cask hehehai/tap/voxt`）：URL 指向这个 ZIP，`depends_on arch: :arm64`（只给 Apple 芯片），不写 `auto_updates`（2.x 不会自己更新，这样 `brew upgrade` 会升级它）。
+
+某一步失败时，修好后对同一个 tag 和通道再跑一次。1.x 的工作流也是这样重发的。
 
 ## 实测记录
 

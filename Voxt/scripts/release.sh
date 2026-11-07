@@ -38,7 +38,10 @@
 # (default ~/.config/voxtnew-release/update-keys/mygo-update.key), which
 # must match the public key of release/mygo.release.json. Without an
 # identity everything is signed ad hoc and the app has no update feed, as
-# every development build.
+# every development build. Every release build's Info.plist has the
+# CFBundleVersion and SUPublicEDKey that Voxt 1.x's in-app update needs
+# (scripts/release-appcast.sh info-plist): CFBundleVersion 200000199 for
+# 2.0.1, where other builds have 2.0.1.
 #
 # Over ssh, codesign cannot use a key of the login keychain
 # (errSecInternalComponent): the script checks that first, and stops. Run
@@ -198,6 +201,11 @@ if [[ -n "$IDENTITY" ]]; then
 else
   echo "ad hoc: mygo.json as it is (no update feed, no notarization)"
 fi
+# Voxt 1.x's in-app update installs this app only with Voxt 1.x's build number and EdDSA key (scripts/release-appcast.sh).
+plist="$(scripts/release-appcast.sh info-plist "$version")"
+jq --argjson plist "$plist" '.macos.infoPlist += $plist' mygo.json >"$saved/mygo.next.json"
+cat "$saved/mygo.next.json" >mygo.json
+echo "Info.plist for Voxt 1.x's update: $plist"
 
 echo "== sounds"
 # The family's cue sounds (React Bits Sound Lab's audio, from the private

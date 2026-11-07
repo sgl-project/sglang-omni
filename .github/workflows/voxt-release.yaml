@@ -170,7 +170,7 @@ jobs:
           fi
           rm -f "$RUNNER_TEMP/notary.p8"
 
-      - name: Collect the disk image
+      - name: Collect the disk image and the ZIP
         run: |
           set -euo pipefail
           dmg="$(compgen -G 'build/darwin-arm64/*.dmg' | head -1 || true)"
@@ -180,12 +180,23 @@ jobs:
           else
             :
           fi
+          # What Voxt 1.x's Sparkle checks before it installs the ZIP's app (scripts/release.sh writes it).
+          want="$(scripts/release-appcast.sh info-plist "$VERSION" | jq -c .)"
+          got="$(plutil -convert json -o - build/darwin-arm64/Voxt.app/Contents/Info.plist | jq -c '{CFBundleVersion, SUPublicEDKey}')"
+          if [[ "$got" != "$want" ]]; then
+            echo "::error::Voxt.app's Info.plist has $got, Voxt 1.x's update needs $want"
+            exit 1
+          else
+            :
+          fi
           out="$RUNNER_TEMP/artifacts"
-          name="Voxt-$VERSION-arm64.dmg"
+          read -r zip_name name <<< "$(scripts/release-appcast.sh assets "$VERSION")"
           mkdir -p "$out"
           cp "$dmg" "$out/$name"
-          # The SHA-256 file names the artifact, not a local path, so shasum -c works after a download.
-          (cd "$out" && shasum -a 256 "$name" > "$name.sha256")
+          # Voxt 1.x's in-app update and the Homebrew cask install the app from this ZIP (voxt-appcast.yaml), as Voxt 1.x's release made it.
+          ditto -c -k --sequesterRsrc --keepParent build/darwin-arm64/Voxt.app "$out/$zip_name"
+          # The SHA-256 files name the artifacts, not local paths, so shasum -c works after a download.
+          (cd "$out" && shasum -a 256 "$name" > "$name.sha256" && shasum -a 256 "$zip_name" > "$zip_name.sha256")
           echo "ARTIFACTS_DIR=$out" >> "$GITHUB_ENV"
           ls -l "$out"
 

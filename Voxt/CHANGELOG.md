@@ -4,6 +4,16 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Added
+
+- **Voxt 1.x updates to Voxt 2 by itself**: each release also has the app as `Voxt-X.Y.Z-macOS.zip`, which Voxt 1.x's in-app update installs (first for those who turned on Beta Updates, then for everyone) and the Homebrew cask (`brew install --cask hehehai/tap/voxt`, Apple silicon only) installs. After the update, allow the microphone and accessibility again: macOS sees Voxt 2 as another app.
+
+### 中文
+
+#### 新增
+
+- **Voxt 1.x 自己更新到 Voxt 2**：每个版本还附带 app 的 `Voxt-X.Y.Z-macOS.zip`，Voxt 1.x 的应用内更新安装它（先给打开了“Beta 更新”的用户，再给所有人），Homebrew 的 cask（`brew install --cask hehehai/tap/voxt`，只支持 Apple 芯片）也装它。更新后要重新允许麦克风和辅助功能：macOS 把 Voxt 2 当成另一个 app。
+
 ## [2.0.1] - 2026-11-07
 
 ### Added
