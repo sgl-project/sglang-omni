@@ -296,6 +296,8 @@ class AuKStepCudaGraphRunner:
         x: torch.Tensor,
         time: torch.Tensor,
     ) -> CapturedStep | None:
+        # The capture empties the allocator cache before it records, so cached blocks count as free.
+        self.module.empty_cache()
         free, _ = self.module.mem_get_info(self.device)
         if free < self.min_free_bytes:
             logger.warning(

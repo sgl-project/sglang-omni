@@ -1,17 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
 """Shape declaration, lookup, and the eager fallbacks the step graph runner takes."""
 
+from contextlib import AbstractContextManager, nullcontext
 from unittest.mock import Mock
 
 import pytest
 import torch
 
+from sglang_omni.models.auk.dit import AuKDit
+from sglang_omni.models.auk.flow_matching import AuKFlowMatching, AuKSampleItem
+from sglang_omni.models.auk.stages import warmup_flow
 from sglang_omni.models.auk.step_cuda_graph import (
     DEFAULT_CAPTURE_SHAPES,
     AuKGraphShape,
     AuKStepCudaGraphRunner,
     verify_capture_shapes,
 )
+from sglang_omni.platforms import current_platform
 
 
 def runner(*shapes: tuple[int, int, int, int]) -> AuKStepCudaGraphRunner:
@@ -133,3 +138,94 @@ def test_a_shape_that_fails_to_capture_is_left_out_rather_than_raising(caplog):
 
     assert declared.ready == set()
     assert "will run eager" in caplog.text
+
+
+class CachingDeviceModule:
+    def __init__(self) -> None:
+        self.cached_bytes = 3 * 1024**3
+
+    def empty_cache(self) -> None:
+        self.cached_bytes = 0
+
+    def mem_get_info(self, device: torch.device) -> tuple[int, int]:
+        return 5 * 1024**3 - self.cached_bytes, 24 * 1024**3
+
+    def device(self, device: torch.device) -> AbstractContextManager[None]:
+        return nullcontext()
+
+
+def test_the_headroom_counts_the_blocks_the_capture_releases() -> None:
+    declared = runner((1, 192, 0, 192))
+    declared.module = CachingDeviceModule()
+    declared.capture = Mock(return_value="captured")
+
+    entry = declared.prepare(("key",), Mock(), {}, torch.zeros(1), torch.zeros(1))
+
+    assert entry == "captured"
+    assert declared.graphs == {("key",): "captured"}
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.xpu.is_available(), reason="records an XPU graph")
+def test_an_xpu_step_graph_replays_each_request_as_padded_eager() -> None:
+    device = torch.device("xpu", 0)
+    torch.manual_seed(42)
+    flow = AuKFlowMatching(
+        AuKDit(
+            dim=32,
+            heads=2,
+            dim_head=16,
+            latent_dim=8,
+            text_hidden_dim=16,
+            num_layers=1,
+            num_single_layers=1,
+        ),
+        num_llm_layers=2,
+    )
+    for parameter in flow.parameters():
+        torch.nn.init.uniform_(parameter, -0.2, 0.2)
+    flow = flow.to(device).eval()
+    shape = AuKGraphShape(batch=1, frames=32, ref=8, text=16)
+
+    def sample_request(
+        text_tokens: int, target_frames: int, reference_frames: int, seed: int
+    ) -> AuKSampleItem:
+        return AuKSampleItem(
+            torch.randn(text_tokens, 16, device=device),
+            torch.ones(text_tokens, dtype=torch.bool, device=device),
+            target_frames,
+            torch.randn(reference_frames, 8, device=device),
+            seed=seed,
+            ref_length=reference_frames,
+        )
+
+    first = sample_request(10, 20, 6, seed=3)
+    second = sample_request(14, 28, 8, seed=5)
+    requests = [first, second, first]
+    sampling = dict(steps=4, cfg_strength=2.0)
+    graphed = AuKStepCudaGraphRunner(
+        backend=current_platform.get_device_graph_backend(device),
+        device=device,
+        capture_shapes=[shape],
+        min_free_gb=0,
+    )
+    padded = AuKStepCudaGraphRunner(
+        backend=Mock(), device=device, capture_shapes=[shape]
+    )
+    padded.ready.add(shape)
+    with torch.inference_mode():
+        warmup_flow(flow, device, torch.float32, sampling, graphed)
+        expected = [
+            flow.sample_batch([request], **sampling, step_graph=padded)[0]
+            for request in requests
+        ]
+        replayed = [
+            flow.sample_batch([request], **sampling, step_graph=graphed)[0]
+            for request in requests
+        ]
+
+    assert graphed.ready == {shape}
+    assert len(graphed.graphs) == 1
+    assert [latent.shape[0] for latent in replayed] == [20, 28, 20]
+    for latent, reference in zip(replayed, expected):
+        torch.testing.assert_close(latent, reference, rtol=1e-5, atol=1e-6)
