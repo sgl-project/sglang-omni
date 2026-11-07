@@ -22,7 +22,7 @@ import soundfile as sf
 import torch
 
 from sglang_omni.client.client import build_params
-from sglang_omni.config import FactoryArgs
+from sglang_omni.config import FactoryArgs, StageConfig
 from sglang_omni.models.minicpm_o import stages
 from sglang_omni.models.minicpm_o.components import code2wav
 from sglang_omni.models.minicpm_o.components.code2wav import (
@@ -32,14 +32,19 @@ from sglang_omni.models.minicpm_o.components.code2wav import (
 from sglang_omni.models.minicpm_o.components.token2wav.hift_layers import (
     SourceModuleHnNSF2,
 )
-from sglang_omni.models.minicpm_o.components.token2wav.vocoder import SpeakerPrompt
+from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
+    SpeakerPrompt,
+    SpeakerReferenceFeatures,
+)
 from sglang_omni.models.minicpm_o.config import MiniCPMOSpeechPipelineConfig
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.routing import (
     code2wav_reference_audio,
+    payload_with_state,
     project_talker_to_code2wav,
 )
 from sglang_omni.models.minicpm_o.stages import vocode_code2wav_payloads
+from sglang_omni.pipeline.stage.input import AggregatedInput
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
@@ -48,6 +53,7 @@ from sglang_omni.serve.openai_api import (
     build_chat_generate_request,
 )
 from sglang_omni.utils.device import resolve_concrete_device
+from sglang_omni.utils.imports import import_string
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CHECKPOINT_CODEC_TOKENS = [1498, 1734, 3732, 3726, 3645]
@@ -105,6 +111,27 @@ def fake_prepare_prompt(source: str | io.BytesIO) -> SpeakerPrompt:
     else:
         reference_audio = source.getvalue()
     return fake_speaker_prompt(reference_audio)
+
+
+def fake_reference_features(reference_audio: bytes) -> SpeakerReferenceFeatures:
+    """One frame per reference byte, with every tensor tagged by its first byte."""
+    reference_id = float(reference_audio[0])
+    frame_count = len(reference_audio)
+    return SpeakerReferenceFeatures(
+        tokenizer_mel=torch.full((1, FAKE_MEL_BINS, frame_count), reference_id),
+        speaker_embedding=torch.full((1, 4), reference_id),
+        prompt_mel=torch.full(
+            (1, frame_count * FAKE_UP_RATE, FAKE_MEL_BINS), reference_id
+        ),
+    )
+
+
+def fake_prepare_prompt_from_features(
+    features: SpeakerReferenceFeatures,
+) -> SpeakerPrompt:
+    reference_id = int(features["speaker_embedding"][0, 0])
+    frame_count = features["tokenizer_mel"].shape[2]
+    return fake_speaker_prompt(bytes([reference_id]) * frame_count)
 
 
 def fake_flow_inference(
@@ -347,9 +374,13 @@ def require_checkpoint_dir() -> Path:
     return checkpoint
 
 
-def code2wav_stage_factory() -> FactoryArgs:
+def speech_stage(stage_name: str) -> StageConfig:
     config = MiniCPMOSpeechPipelineConfig(model_path="unused")
-    return next(stage for stage in config.stages if stage.name == "code2wav").factory
+    return next(stage for stage in config.stages if stage.name == stage_name)
+
+
+def code2wav_stage_factory() -> FactoryArgs:
+    return speech_stage("code2wav").factory
 
 
 def build_code2wav_stage(
@@ -1163,3 +1194,282 @@ def test_code2wav_stage_batch_releases_its_references(
     scheduler.batch_fn([scheduler.inbox.get_nowait().data for _ in QUEUED_REFERENCES])
     model.prepare_references([b"a"])
     assert fake_token2wav.prepare_prompt.call_count == len(QUEUED_REFERENCES) + 1
+
+
+@pytest.mark.parametrize(
+    ("params", "metadata", "takes_reference_branch"),
+    [
+        ({}, {}, False),
+        ({"ref_audio": "/tmp/ref.wav"}, {}, False),
+        ({"ref_audio": wav_data_uri(b"a")}, {"output_modalities": ["text"]}, False),
+        ({"ref_audio": wav_data_uri(b"a")}, {}, True),
+    ],
+    ids=["default_voice", "invalid_reference", "text_output", "voice_clone"],
+)
+def test_preprocessing_sends_only_voice_clones_to_the_reference_stage(
+    params: dict[str, str],
+    metadata: dict[str, list[str]],
+    takes_reference_branch: bool,
+) -> None:
+    route = import_string(speech_stage("preprocessing").route_fn)
+
+    destinations = route("clone", talker_payload(params=params, metadata=metadata))
+
+    assert ("reference" in destinations) == takes_reference_branch, destinations
+
+
+@pytest.mark.parametrize(
+    ("params", "arrival_order"),
+    [
+        ({}, ["talker"]),
+        ({"ref_audio": "/tmp/ref.wav"}, ["talker"]),
+        ({"ref_audio": wav_data_uri(b"a")}, ["talker", "reference"]),
+        ({"ref_audio": wav_data_uri(b"a")}, ["reference", "talker"]),
+    ],
+    ids=["default_voice", "invalid_reference", "talker_first", "reference_first"],
+)
+def test_code2wav_waits_for_the_reference_branch_only_when_it_runs(
+    params: dict[str, str], arrival_order: list[str]
+) -> None:
+    stage = speech_stage("code2wav")
+    fan_in = AggregatedInput(
+        set(stage.wait_for),
+        import_string(stage.merge_fn),
+        expected_sources_fn=import_string(stage.wait_for_fn),
+    )
+    talker = talker_payload(request_id="clone", codec_tokens=[7, 8], params=params)
+    features = fake_reference_features(b"a")
+    branches = {
+        "talker": talker,
+        "reference": payload_with_state(
+            talker, MiniCPMOPipelineState(reference_features=features)
+        ),
+    }
+
+    *waiting, joined = [
+        fan_in.receive("clone", source, branches[source]) for source in arrival_order
+    ]
+
+    assert waiting == [None] * len(waiting), "code2wav starts after every branch"
+    state = MiniCPMOPipelineState.from_dict(joined.data)
+    expected_features = features if "reference" in arrival_order else None
+    assert state.reference_features is expected_features, "reference features"
+    assert state.engine_outputs["talker"]["codec_tokens"].tolist() == [7, 8], "codec"
+
+
+def test_code2wav_stage_skips_cpu_reference_work_for_prepared_features(
+    build_code2wav_model: Code2WavBuilder,
+    fake_token2wav: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_token2wav.prepare_prompt_from_features.side_effect = (
+        fake_prepare_prompt_from_features
+    )
+    scheduler = build_code2wav_stage(build_code2wav_model(), monkeypatch)
+    talker = talker_payload(
+        request_id="clone", params={"ref_audio": wav_data_uri(b"a")}
+    )
+    state = MiniCPMOPipelineState.from_dict(talker.data)
+    state.reference_features = fake_reference_features(b"a")
+
+    scheduler.enqueue(
+        IncomingMessage("clone", "new_request", payload_with_state(talker, state))
+    )
+    (output,) = scheduler.batch_fn([scheduler.inbox.get_nowait().data])
+
+    fake_token2wav.prepare_prompt.assert_not_called()
+    fake_token2wav.prepare_prompt_from_features.assert_called_once()
+    np.testing.assert_array_equal(
+        np.frombuffer(output.data["audio_waveform"], dtype=np.float32),
+        expected_waveform([1, 2], b"a"),
+    )
+
+
+def test_a_stage_prepared_prompt_is_dropped_when_its_requests_finish(
+    build_code2wav_model: Code2WavBuilder,
+    fake_token2wav: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reference stage caches a cloned voice, so Code2Wav keeps its prompt only while a request holds it."""
+    fake_token2wav.prepare_prompt_from_features.side_effect = (
+        fake_prepare_prompt_from_features
+    )
+    model = build_code2wav_model()
+    scheduler = build_code2wav_stage(model, monkeypatch)
+    for request_id in ("clone-first", "clone-second"):
+        talker = talker_payload(
+            request_id=request_id, params={"ref_audio": wav_data_uri(b"a")}
+        )
+        state = MiniCPMOPipelineState.from_dict(talker.data)
+        state.reference_features = fake_reference_features(b"a")
+        scheduler.enqueue(
+            IncomingMessage(
+                request_id, "new_request", payload_with_state(talker, state)
+            )
+        )
+        scheduler.batch_fn([scheduler.inbox.get_nowait().data])
+
+    assert (
+        fake_token2wav.prepare_prompt_from_features.call_count == 2
+    ), "each request tokenizes the prompt the stage prepared for it"
+    fake_token2wav.prepare_prompt.assert_not_called()
+    assert not model.prompt_cache, "a cloned voice leaves no entry in the prompt cache"
+    assert not model.prepared_reference_keys, "and no bookkeeping behind it"
+
+
+def test_an_aborted_clone_leaves_the_request_that_shares_its_reference_alone(
+    build_code2wav_model: Code2WavBuilder,
+    fake_token2wav: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two requests share one prepared reference; aborting one keeps the other's prompt and leaves no state."""
+    fake_token2wav.prepare_prompt_from_features.side_effect = (
+        fake_prepare_prompt_from_features
+    )
+    model = build_code2wav_model()
+    scheduler = build_code2wav_stage(model, monkeypatch)
+    features = fake_reference_features(b"a")
+    queued = []
+    for request_id in ("clone-keep", "clone-abort"):
+        talker = talker_payload(
+            request_id=request_id, params={"ref_audio": wav_data_uri(b"a")}
+        )
+        state = MiniCPMOPipelineState.from_dict(talker.data)
+        state.reference_features = features
+        scheduler.enqueue(
+            IncomingMessage(
+                request_id, "new_request", payload_with_state(talker, state)
+            )
+        )
+        queued.append(scheduler.inbox.get_nowait().data)
+
+    # note (0xtoward): the stage hands an abort to release_reference, the same callback a finished batch uses.
+    model.release_reference("clone-abort")
+    (output,) = scheduler.batch_fn([queued[0]])
+
+    np.testing.assert_array_equal(
+        np.frombuffer(output.data["audio_waveform"], dtype=np.float32),
+        expected_waveform([1, 2], b"a"),
+    )
+    fake_token2wav.prepare_prompt_from_features.assert_called_once()
+    assert not model.prompt_cache, "the surviving request released the prompt too"
+    assert not model.reference_reservations, "the abort left no reservation"
+
+
+def test_a_prompt_prepared_after_its_only_request_aborted_is_not_cached(
+    build_code2wav_model: Code2WavBuilder,
+    fake_token2wav: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A clone's prompt finishes after its only request aborted, so Code2Wav drops it on arrival."""
+    preparing = threading.Event()
+    released = threading.Event()
+
+    def prepare_once_released(
+        features: SpeakerReferenceFeatures,
+    ) -> SpeakerPrompt:
+        preparing.set()
+        released.wait(THREAD_WAIT_SECONDS)
+        return fake_prepare_prompt_from_features(features)
+
+    fake_token2wav.prepare_prompt_from_features.side_effect = prepare_once_released
+    model = build_code2wav_model(reference_workers=1)
+    scheduler = build_code2wav_stage(model, monkeypatch)
+    talker = talker_payload(
+        request_id="clone-abort", params={"ref_audio": wav_data_uri(b"a")}
+    )
+    state = MiniCPMOPipelineState.from_dict(talker.data)
+    state.reference_features = fake_reference_features(b"a")
+    scheduler.enqueue(
+        IncomingMessage(
+            "clone-abort", "new_request", payload_with_state(talker, state)
+        )
+    )
+
+    assert preparing.wait(THREAD_WAIT_SECONDS), "the worker began preparing the prompt"
+    model.release_reference("clone-abort")
+    released.set()
+    drain_reference_worker(model)
+
+    assert not model.prompt_cache, "the aborted clone's prompt reached the cache"
+    assert not model.prepared_reference_keys, "the aborted clone left its key behind"
+    assert not model.pending_references, "the preparation finished"
+
+
+def test_a_reference_the_stage_cannot_encode_fails_in_the_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reference the CPU encoder rejects fails the request in the reference stage, not in Code2Wav."""
+
+    class RejectingService:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.hits = 0
+            self.misses = 0
+
+        def get_or_encode(self, _reference: bytes) -> SpeakerReferenceFeatures:
+            raise ValueError("could not decode the uploaded audio")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(stages, "SpeakerReferenceEncoder", MagicMock())
+    monkeypatch.setattr(stages, "resolve_model_path", lambda path: path)
+    monkeypatch.setattr(stages, "ReferenceEncodeService", RejectingService)
+    factory = speech_stage("reference").factory
+    scheduler = stages.create_reference_executor(
+        "unused",
+        max_concurrency=factory.max_concurrency,
+        cache_entries=factory.cache_entries,
+        cache_bytes=factory.cache_bytes,
+    )
+    payload = talker_payload(
+        request_id="clone-bad", params={"ref_audio": wav_data_uri(b"a")}
+    )
+
+    with pytest.raises(ValueError, match="could not decode"):
+        scheduler.fn(payload)
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize(
+    ("sample_rate", "channels", "seconds"),
+    [(16000, 1, 3.0), (44100, 1, 3.0), (48000, 2, 3.0), (16000, 1, 0.6)],
+    ids=["16k_mono", "44k_mono", "48k_stereo", "short"],
+)
+def test_reference_stage_hooks_build_the_prompt_the_vocoder_prepares_itself(
+    sample_rate: int, channels: int, seconds: float
+) -> None:
+    """The hooks the reference stage calls return host tensors that build the prompt Code2Wav's own call builds."""
+    model = load_checkpoint_model(require_checkpoint_dir())
+    token2wav = model.token2wav
+    generator = torch.Generator().manual_seed(sample_rate + channels)
+    samples = (
+        torch.randn(int(sample_rate * seconds), channels, generator=generator) * 0.1
+    )
+    clip = io.BytesIO()
+    sf.write(clip, samples.numpy(), sample_rate, format="WAV")
+    reference = clip.getvalue()
+
+    encoder = token2wav.reference_encoder
+    with model.device_context:
+        expected = token2wav.prepare_prompt(io.BytesIO(reference))
+        features = encoder.load_artifact(
+            encoder.store_artifact(
+                encoder.encode_one(encoder.normalize_input(reference))
+            )
+        )
+        actual = token2wav.prepare_prompt_from_features(features)
+
+    assert set(features) == {"tokenizer_mel", "speaker_embedding", "prompt_mel"}
+    assert {tensor.device.type for tensor in features.values()} == {
+        "cpu"
+    }, "the stage sends host tensors"
+    for field in (
+        "prompt_tokens",
+        "prompt_token_lengths",
+        "prompt_mel",
+        "speaker_embedding",
+    ):
+        torch.testing.assert_close(
+            getattr(actual, field), getattr(expected, field), rtol=0, atol=0
+        )
