@@ -631,11 +631,12 @@ Turns the running text of the `asr` stage into utterances: partial transcripts w
 **`dialog`**
 
 
-Keeps the conversation history, opens a turn for each final transcript and sends the history to the language model. An utterance that arrives during a reply waits for it to end; after an interruption it also waits until the audio the graph delivered (`reply.delivered`) or the client's truncate says how much of the reply the history keeps. Speech that starts during a reply interrupts it, and so does speech that started after the utterance ended and has not stopped when the reply begins, so that reply ends before any of it is heard. The language the recognizer heard in the last utterance of at least 3 words or 3 Chinese, Japanese or Korean characters is the session language; a shorter utterance, often a noise such as "嗯。", leaves it unchanged, and when the recognizer heard another language in it, that turn's latest user message asks for a reply in the session language.
+Keeps the conversation history, opens a turn for each final transcript and sends the history to the language model. An utterance that arrives during a reply waits for it to end; after an interruption it also waits until the audio the graph delivered (`reply.delivered`) or the client's truncate says how much of the reply the history keeps. Speech that starts during a reply interrupts it, and so does speech that started after the utterance ended and has not stopped when the reply begins, so that reply ends before any of it is heard. A clear utterance carries the language the recognizer heard. A shorter utterance leaves that remembered language unchanged and carries `language` when set, otherwise the remembered language; when the recognizer heard another language in it, or named none while `language` is set, that turn's latest user message asks for a reply in the language it carries.
 
 | Option | Type | Default | Effect |
 | --- | --- | --- | --- |
 | `system_prompt` | string | `You are a helpful voice assistant. Answer concisely.` | The system message; realtime `instructions` set it. |
+| `language` | string | `""` | The reply language preferred for a short utterance, written as the recognizer reports it. It must be one of the `supported_languages` of every `openai_speech` node, which by default are the languages of Qwen3-TTS, the speech model of the bundled profiles. Empty follows the language remembered from the last utterance of at least 3 words; a clear utterance carries the language the recognizer heard instead. |
 | `max_history_chars` | integer > 0 | `65536` | The bound on the history: a turn whose history plus utterance plus `max_text_chars` would exceed it fails the session. |
 | `max_text_chars` | integer > 0 | `16000` | The longest utterance transcript and the longest reply. |
 
@@ -677,6 +678,7 @@ Every sentence is its own request, and Qwen3-TTS samples each request with a fre
 | `reference_audio_path` | string | `""` | A WAV the speech service reads, for voice cloning. |
 | `reference_text` | string | `""` | The transcript of the reference, sent with it when set. |
 | `language` | string | `""` | The language tag: empty sends none; `auto` tags every sentence with the dialog's session language, except a sentence whose script contradicts it, as in a reply the user asked for in another language, which is tagged by its script: `Japanese` for kana, `Korean` for hangul, `Chinese` for Chinese characters in a session that is not Chinese, Cantonese, Japanese or Korean, and `English` for Latin letters without those in one that is; a sentence whose Chinese, Japanese or Korean characters, each about one syllable, are no more than the syllables of its Latin words, such as "In Japanese, hello is こんにちは.", keeps the session language; any other name tags every sentence with that name. With a fixed name, and with `auto` before the session language is known, a sentence containing Chinese characters is tagged `Chinese`; `auto` tags the others `English` until then. |
+| `supported_languages` | list of strings | the languages of Qwen3-TTS | The language tags the speech service takes, by default `Chinese`, `English`, `French`, `German`, `Italian`, `Japanese`, `Korean`, `Portuguese`, `Russian` and `Spanish`. A `dialog`'s `language` must be one of them, so set this for a service that speaks other languages. |
 | `max_sentence_words` | integer > 0 | `24` | The most words sent in one request. A longer sentence is cut into requests of at most this many words and at least half as many, at a comma, colon or dash when one falls in that range; the first request of such a sentence waits for up to half as many words more, so its rest is never a word or two on its own. |
 | `api_key_env` | string | `OPENAI_API_KEY` | As above. |
 | `timeout_s` | number > 0 | `120` | The request timeout. |
@@ -782,6 +784,7 @@ Each rule is followed by the error it raises.
 - `method: asr` without them — `the asr method needs heard_asr_url and heard_asr_model`.
 - `heard_asr_url` with `method: sentence` — `heard_asr_url belongs to the asr and forced methods`.
 - `extra_body` sets `model`, `messages`, `stream`, `max_tokens` or `temperature` — `extra_body cannot set [...]`.
+- A `dialog` `language` that is not one of the `supported_languages` of an `openai_speech` node, also when an open frame or a `configure` sets it — `language '<language>' of node '<name>' is not one of the supported_languages of node '<name>': [...]`.
 - `temperature` outside 0 to 2, a non-positive `max_tokens`, `max_sentence_words`, `max_history_chars`, `max_text_chars` or `timeout_s`, or a negative `tail_ms` — a pydantic range error naming the field.
 - Two `services` with one name or one port — `services must have distinct names and ports`.
 - An empty `model_path` — `Model path is required`.

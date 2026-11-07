@@ -55,6 +55,18 @@ def has_chinese_characters(sentence: str) -> bool:
 
 
 CJK_LANGUAGES = frozenset({"Chinese", "Cantonese", "Japanese", "Korean"})
+QWEN3_TTS_LANGUAGES = (
+    "Chinese",
+    "English",
+    "French",
+    "German",
+    "Italian",
+    "Japanese",
+    "Korean",
+    "Portuguese",
+    "Russian",
+    "Spanish",
+)
 KANA = re.compile("[\u3040-\u30ff]")
 HANGUL = re.compile("[\uac00-\ud7af]")
 LATIN_WORD = re.compile(r"[A-Za-z]+")
@@ -71,7 +83,9 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     it, which is tagged by its script, and any other name tags every sentence
     without Chinese characters. Without a known user language `auto` tags by
     script like `English`. A sentence tagged English reaches the service with
-    its numbers read out as words.
+    its numbers read out as words. supported_languages are the tags the
+    service takes, Qwen3-TTS's by default; a dialog's language must be one of
+    them.
     """
 
     kind: Literal["openai_speech"] = "openai_speech"
@@ -81,6 +95,7 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     reference_audio_path: str = ""
     reference_text: str = ""
     language: str = ""
+    supported_languages: tuple[str, ...] = QWEN3_TTS_LANGUAGES
     max_sentence_words: int = Field(default=24, gt=0)
     api_key_env: str = "OPENAI_API_KEY"
 
