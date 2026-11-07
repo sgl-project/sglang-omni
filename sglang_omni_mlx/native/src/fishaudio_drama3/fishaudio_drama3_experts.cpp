@@ -21,6 +21,14 @@ namespace mx = mlx::core;
 
 namespace {
 
+void CheckCancelled(const std::atomic<bool> *cancel) {
+  if (cancel != nullptr && cancel->load()) {
+    mx::synchronize();
+    throw qwen3_asr::TranscriptionCancelled();
+  } else {
+  }
+}
+
 bool IsDrama3Weight(const std::string &name) {
   return name.starts_with("backbone.") || name.starts_with("semantic_head.") ||
          name.starts_with("tower.");
@@ -235,9 +243,29 @@ ExpertCache::ExpertCache(const std::filesystem::path &model_directory,
     throw std::invalid_argument("expert cache capacity must be in (0, 2 GiB]");
   } else {
   }
+  const auto &text = config.at("text_config");
+  const int layer_count = text.at("num_hidden_layers").get<int>();
+  const int expert_count = text.at("num_experts").get<int>();
+  const int hidden_size = text.at("hidden_size").get<int>();
+  const int intermediate_size = text.at("moe_intermediate_size").get<int>();
+  const int experts_per_token = text.at("num_experts_per_tok").get<int>();
+  if (layer_count <= 0 || expert_count <= 0 || hidden_size <= 0 ||
+      intermediate_size <= 0 || experts_per_token <= 0 ||
+      experts_per_token > expert_count) {
+    throw std::runtime_error("invalid routed expert dimensions in text_config");
+  } else {
+  }
+  const omni_common::Checkpoint settings({}, config);
+  const auto mlp_layer_types =
+      text.value("mlp_layer_types",
+                 nlohmann::json(std::vector<std::string>(layer_count, "moe")));
+  if (mlp_layer_types !=
+      nlohmann::json(std::vector<std::string>(layer_count, "moe"))) {
+    throw std::runtime_error(
+        "expected a mixture-of-experts MLP in every layer");
+  } else {
+  }
   for (const auto &path : DramaWeightFiles(model_directory)) {
-    // Note (Codex): MLX validates extents and dtypes without evaluating
-    // payloads.
     auto shard = std::make_shared<ShardReader>(path);
     const auto [weights, metadata] = mx::load_safetensors(shard);
     uint64_t header_bytes = 0;
@@ -251,22 +279,12 @@ ExpertCache::ExpertCache(const std::filesystem::path &model_directory,
     shard->read(header.data(), header.size(), sizeof(header_bytes));
     const auto tensors = nlohmann::json::parse(header);
     for (const auto &[name, weight] : weights) {
-      if (!IsRoutedExpertWeight(name)) {
-        if (IsDrama3Weight(name)) {
-          resident_weights_.insert_or_assign(name, weight);
-        } else {
-        }
-        continue;
-      } else if (weight.ndim() != 3 || weight.shape(0) <= 0 ||
-                 weight.nbytes() == 0) {
-        throw std::runtime_error("invalid expert tensor shape: " + name);
-      } else {
-      }
       size_t expected_bytes = weight.itemsize();
       for (const int dimension : weight.shape()) {
-        if (dimension <= 0 ||
-            expected_bytes > std::numeric_limits<size_t>::max() / dimension) {
-          throw std::runtime_error("invalid expert tensor length: " + name);
+        if (dimension < 0 ||
+            (dimension > 0 &&
+             expected_bytes > std::numeric_limits<size_t>::max() / dimension)) {
+          throw std::runtime_error("invalid shard tensor length: " + name);
         } else {
         }
         expected_bytes *= dimension;
@@ -278,7 +296,18 @@ ExpertCache::ExpertCache(const std::filesystem::path &model_directory,
           offsets[1] - offsets[0] != expected_bytes ||
           8 + header_bytes > file_bytes ||
           offsets[1] > file_bytes - 8 - header_bytes) {
-        throw std::runtime_error("invalid expert tensor extent: " + name);
+        throw std::runtime_error("invalid shard tensor extent: " + name);
+      } else {
+      }
+      if (!IsRoutedExpertWeight(name)) {
+        if (IsDrama3Weight(name)) {
+          resident_weights_.insert_or_assign(name, weight);
+        } else {
+        }
+        continue;
+      } else if (weight.ndim() != 3 || weight.shape(0) <= 0 ||
+                 weight.nbytes() == 0) {
+        throw std::runtime_error("invalid expert tensor shape: " + name);
       } else {
       }
       const size_t offset_bytes = offsets[0];
@@ -296,19 +325,7 @@ ExpertCache::ExpertCache(const std::filesystem::path &model_directory,
     throw std::runtime_error("no routed expert tensors found");
   } else {
   }
-  const auto &text = config.at("text_config");
-  const size_t layer_count = text.at("num_hidden_layers").get<size_t>();
-  const int expert_count = text.at("num_experts").get<int>();
-  const auto mlp_layer_types =
-      text.value("mlp_layer_types",
-                 nlohmann::json(std::vector<std::string>(layer_count, "moe")));
-  if (mlp_layer_types !=
-      nlohmann::json(std::vector<std::string>(layer_count, "moe"))) {
-    throw std::runtime_error(
-        "expected a mixture-of-experts MLP in every layer");
-  } else {
-  }
-  for (size_t layer = 0; layer < layer_count; ++layer) {
+  for (int layer = 0; layer < layer_count; ++layer) {
     const std::string prefix =
         "backbone.model.layers." + std::to_string(layer) + ".mlp.switch_mlp";
     for (const char *projection : {"up_proj", "gate_proj", "down_proj"}) {
@@ -323,8 +340,25 @@ ExpertCache::ExpertCache(const std::filesystem::path &model_directory,
       const auto &weight = slices_.at(projection_prefix + ".weight");
       const auto &scales = slices_.at(projection_prefix + ".scales");
       const auto &biases = slices_.at(projection_prefix + ".biases");
+      const auto &quantization = settings.Quantization(projection_prefix);
+      if (quantization.mode != "affine" || quantization.bits < 2 ||
+          quantization.bits > 8 || quantization.bits == 7 ||
+          (quantization.group_size != 32 && quantization.group_size != 64 &&
+           quantization.group_size != 128)) {
+        throw std::runtime_error("unsupported routed expert quantization: " +
+                                 projection_prefix);
+      } else {
+      }
+      const bool down = std::string(projection) == "down_proj";
+      const int64_t input_columns = down ? intermediate_size : hidden_size;
+      const int output_columns = down ? hidden_size : intermediate_size;
       if (weight.dtype != mx::uint32 || weight.shape[0] != expert_count ||
           scales.shape != biases.shape || scales.shape[0] != weight.shape[0] ||
+          weight.shape[1] != output_columns ||
+          static_cast<int64_t>(weight.shape[2]) * 32 !=
+              input_columns * quantization.bits ||
+          static_cast<int64_t>(scales.shape[2]) * quantization.group_size !=
+              input_columns ||
           scales.shape[1] != weight.shape[1] || scales.dtype != biases.dtype ||
           (scales.dtype != mx::float16 && scales.dtype != mx::bfloat16 &&
            scales.dtype != mx::float32)) {
@@ -457,6 +491,7 @@ mx::array ExpertCache::Routed(const mx::array &input,
                               const std::string &prefix,
                               const omni_common::Checkpoint &checkpoint,
                               const std::atomic<bool> *cancel) {
+  CheckCancelled(cancel);
   const auto routed_started = profile_
                                   ? std::chrono::steady_clock::now()
                                   : std::chrono::steady_clock::time_point{};
@@ -482,12 +517,9 @@ mx::array ExpertCache::Routed(const mx::array &input,
   }
   std::vector<std::optional<mx::array>> routed(flat_ids.size());
   for (const auto &[expert_id, positions] : positions_by_expert) {
-    if (cancel != nullptr && cancel->load()) {
-      mx::synchronize();
-      throw qwen3_asr::TranscriptionCancelled();
-    } else {
-    }
+    CheckCancelled(cancel);
     const auto lease = Acquire(prefix, expert_id);
+    CheckCancelled(cancel);
     std::vector<int32_t> rows;
     for (const int position : positions) {
       rows.push_back(position / top_k);
@@ -523,6 +555,7 @@ mx::array ExpertCache::Routed(const mx::array &input,
         linear(Swiglu(linear(hidden, "gate_proj"), linear(hidden, "up_proj")),
                "down_proj");
     mx::eval(result);
+    CheckCancelled(cancel);
     for (size_t position = 0; position < positions.size(); ++position) {
       routed[positions[position]] =
           mx::take(result, mx::array(static_cast<int>(position)), 0);
@@ -538,6 +571,7 @@ mx::array ExpertCache::Routed(const mx::array &input,
                    mx::expand_dims(flat_scores, -1)),
       -2);
   mx::eval(combined);
+  CheckCancelled(cancel);
   if (profile_) {
     std::cerr
         << nlohmann::

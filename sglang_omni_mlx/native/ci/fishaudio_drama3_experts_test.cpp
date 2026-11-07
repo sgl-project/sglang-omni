@@ -7,6 +7,8 @@
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <iterator>
+#include <limits>
 #include <mutex>
 #include <stdexcept>
 #include <type_traits>
@@ -158,6 +160,226 @@ void VerifyCancelledWorker(const std::filesystem::path &directory,
       << "cancelled offloaded prefill yielded worker before any expert read\n";
 }
 
+void VerifyAlreadyCancelled(const std::filesystem::path &directory,
+                            const nlohmann::json &config, size_t expert_bytes) {
+  const auto path = directory / "cancelled-input.pending";
+  mx::save_safetensors(std::make_shared<mx::io::FileWriter>(path.string()),
+                       {{"input", mx::ones({1, 1, 128})}});
+  auto reader = std::make_shared<CountingReader>(path.string());
+  const auto [loaded, metadata] = mx::load_safetensors(reader);
+  drama::ExpertCache cache(directory, config, expert_bytes);
+  const omni_common::Checkpoint checkpoint(cache.TakeResidentWeights(), config);
+  const std::atomic<bool> cancel = true;
+  bool rejected = false;
+  try {
+    cache.Routed(loaded.at("input"), mx::zeros({1, 1, 1}, mx::uint32),
+                 mx::ones({1, 1, 1}), kPrefix, checkpoint, &cancel);
+  } catch (const qwen3_asr::TranscriptionCancelled &) {
+    rejected = true;
+  }
+  Require(rejected && reader->payload_bytes == 0 && cache.misses() == 0 &&
+              cache.payload_read_bytes() == 0,
+          "already-cancelled routing evaluated its input or loaded experts");
+  cache.Release();
+  const auto recovered =
+      cache.Routed(mx::ones({1, 1, 128}), mx::zeros({1, 1, 1}, mx::uint32),
+                   mx::ones({1, 1, 1}), kPrefix, checkpoint);
+  Require(mx::all(mx::isfinite(recovered)).item<bool>(),
+          "already-cancelled call prevented the next routed request");
+  std::cout << "already-cancelled routing skipped lazy input and recovered\n";
+}
+
+void VerifyConfiguredLayout(const std::filesystem::path &directory) {
+  std::filesystem::create_directories(directory);
+  nlohmann::json config = {
+      {"text_config",
+       {{"num_hidden_layers", 1},
+        {"num_experts", 2},
+        {"num_experts_per_tok", 2},
+        {"hidden_size", 128},
+        {"moe_intermediate_size", 256}}},
+      {"quantization",
+       {{"group_size", 64},
+        {"bits", 8},
+        {kPrefix + ".up_proj", {{"group_size", 32}, {"bits", 4}}},
+        {kPrefix + ".down_proj", {{"group_size", 128}, {"bits", 4}}}}}};
+  const omni_common::Checkpoint settings({}, config);
+  omni_common::WeightMap weights;
+  omni_common::WeightMap first_shard;
+  omni_common::WeightMap second_shard;
+  for (const std::string projection : {"up_proj", "gate_proj", "down_proj"}) {
+    const bool down = projection == "down_proj";
+    const auto values = mx::reshape(
+        mx::multiply(mx::sin(mx::arange(2 * 128 * 256, mx::float32)),
+                     mx::array(0.05f)),
+        {2, down ? 128 : 256, down ? 256 : 128});
+    const std::string prefix = kPrefix + "." + projection;
+    const auto &quantization = settings.Quantization(prefix);
+    const auto quantized =
+        mx::quantize(values, quantization.group_size, quantization.bits);
+    int index = 0;
+    for (const std::string suffix : {"weight", "scales", "biases"}) {
+      const std::string name = prefix + "." + suffix;
+      weights.emplace(name, quantized[index]);
+      (down ? second_shard : first_shard).emplace(name, quantized[index]);
+      ++index;
+    }
+  }
+  first_shard.emplace("tower.test", mx::ones({1}));
+  mx::save_safetensors((directory / "first.safetensors").string(), first_shard);
+  mx::save_safetensors((directory / "second.safetensors").string(),
+                       second_shard);
+  drama::ExpertCache cache(directory, config);
+  const omni_common::Checkpoint checkpoint(cache.TakeResidentWeights(), config);
+  const auto ids = mx::array({0, 1}, {1, 1, 2}, mx::uint32);
+  const auto input = mx::ones({1, 1, 128});
+  const auto linear = [&](const mx::array &value,
+                          const std::string &projection) {
+    const std::string prefix = kPrefix + "." + projection;
+    const auto &quantization = settings.Quantization(prefix);
+    return mx::gather_qmm(value, weights.at(prefix + ".weight"),
+                          weights.at(prefix + ".scales"),
+                          weights.at(prefix + ".biases"), std::nullopt, ids,
+                          true, quantization.group_size, quantization.bits);
+  };
+  const auto rows = mx::expand_dims(input, {-2, -3});
+  const auto expected =
+      mx::mean(mx::squeeze(linear(drama::Swiglu(linear(rows, "gate_proj"),
+                                                linear(rows, "up_proj")),
+                                  "down_proj"),
+                           -2),
+               -2);
+  const auto actual =
+      cache.Routed(input, ids, mx::full({1, 1, 2}, 0.5f), kPrefix, checkpoint);
+  Require(mx::max(mx::abs(mx::subtract(actual, expected))).item<float>() ==
+              0.0f,
+          "non-square multi-shard per-projection quantization changed output");
+  bool rejected = false;
+  try {
+    cache.Routed(input, mx::array({0, 2}, {1, 1, 2}, mx::uint32),
+                 mx::full({1, 1, 2}, 0.5f), kPrefix, checkpoint);
+  } catch (const std::runtime_error &) {
+    rejected = true;
+  }
+  mx::synchronize();
+  cache.Release();
+  const auto recovered =
+      cache.Routed(input, ids, mx::full({1, 1, 2}, 0.5f), kPrefix, checkpoint);
+  Require(
+      rejected &&
+          mx::max(mx::abs(mx::subtract(recovered, expected))).item<float>() ==
+              0.0f,
+      "failed routing retained leases or corrupted the next request");
+  std::cout
+      << "non-square mixed-quantization shards and exception recovery passed\n";
+
+  std::string accepted;
+  for (const std::string malformed :
+       {"up-output", "gate-input", "down-output", "down-input", "group-columns",
+        "hidden-size", "moe-width", "zero-layers", "top-k", "zero-bits",
+        "one-bit", "group-size", "non-affine", "no-quantization"}) {
+    auto invalid_weights = weights;
+    auto invalid_config = config;
+    if (malformed == "up-output" || malformed == "down-output" ||
+        malformed == "gate-input" || malformed == "down-input" ||
+        malformed == "group-columns") {
+      const std::string projection = malformed.starts_with("down") ? "down_proj"
+                                     : malformed.starts_with("gate")
+                                         ? "gate_proj"
+                                         : "up_proj";
+      for (const std::string suffix : {"weight", "scales", "biases"}) {
+        if ((malformed == "gate-input" && suffix != "weight") ||
+            (malformed == "group-columns" && suffix == "weight")) {
+          continue;
+        } else {
+        }
+        auto &weight =
+            invalid_weights.at(kPrefix + "." + projection + "." + suffix);
+        auto stop = weight.shape();
+        stop[malformed.ends_with("output") ? 1 : 2] /= 2;
+        weight = mx::slice(weight, {0, 0, 0}, stop);
+      }
+    } else if (malformed == "hidden-size" || malformed == "moe-width") {
+      invalid_config["text_config"][malformed == "hidden-size"
+                                        ? "hidden_size"
+                                        : "moe_intermediate_size"] = 512;
+    } else if (malformed == "zero-layers" || malformed == "top-k") {
+      invalid_config["text_config"]
+                    [malformed == "zero-layers" ? "num_hidden_layers"
+                                                : "num_experts_per_tok"] =
+                        malformed == "zero-layers" ? 0 : 3;
+    } else if (malformed == "no-quantization") {
+      invalid_config.erase("quantization");
+    } else {
+      auto &quantization = invalid_config["quantization"][kPrefix + ".up_proj"];
+      if (malformed == "zero-bits" || malformed == "one-bit") {
+        quantization["bits"] = malformed == "one-bit" ? 1 : 0;
+      } else if (malformed == "group-size") {
+        quantization["group_size"] = 16;
+      } else {
+        quantization["mode"] = "mxfp4";
+      }
+    }
+    const auto malformed_directory = directory / malformed;
+    std::filesystem::create_directories(malformed_directory);
+    mx::save_safetensors((malformed_directory / "model.safetensors").string(),
+                         invalid_weights);
+    bool rejected = false;
+    try {
+      drama::ExpertCache invalid(malformed_directory, invalid_config);
+    } catch (const std::runtime_error &) {
+      rejected = true;
+    }
+    if (rejected) {
+      std::cout << "startup rejected malformed layout: " << malformed << '\n';
+    } else {
+      accepted += " " + malformed;
+    }
+  }
+  const auto wrapped_directory = directory / "wrapped-resident-extent";
+  std::filesystem::create_directories(wrapped_directory);
+  const auto wrapped_path = wrapped_directory / "model.safetensors";
+  auto wrapped_weights = weights;
+  wrapped_weights.emplace("tower.test", mx::ones({1}));
+  mx::save_safetensors(wrapped_path.string(), wrapped_weights);
+  std::ifstream original(wrapped_path, std::ios::binary);
+  uint64_t header_bytes = 0;
+  original.read(reinterpret_cast<char *>(&header_bytes), 8);
+  std::string header(header_bytes, '\0');
+  original.read(header.data(), header.size());
+  const std::string payload{std::istreambuf_iterator<char>(original),
+                            std::istreambuf_iterator<char>()};
+  original.close();
+  auto tensors = nlohmann::json::parse(header);
+  do {
+    header_bytes = header.size();
+    const size_t offset =
+        std::numeric_limits<size_t>::max() - 8 - header_bytes + 1;
+    tensors["tower.test"]["data_offsets"] = {offset, offset + sizeof(float)};
+    header = tensors.dump();
+  } while (header.size() != header_bytes);
+  {
+    std::ofstream wrapped(wrapped_path, std::ios::binary);
+    wrapped.write(reinterpret_cast<const char *>(&header_bytes), 8);
+    wrapped << header << payload;
+  }
+  rejected = false;
+  try {
+    drama::ExpertCache invalid(wrapped_directory, config);
+    const omni_common::Checkpoint loaded(invalid.TakeResidentWeights(), config);
+    std::cout << "wrapped resident interpreted header as value "
+              << loaded.Weight("tower.test").item<float>() << '\n';
+  } catch (const std::runtime_error &) {
+    rejected = true;
+  }
+  if (rejected) {
+    std::cout << "startup rejected malformed layout: wrapped-resident-extent\n";
+  } else {
+    accepted += " wrapped-resident-extent";
+  }
+  Require(accepted.empty(), "startup accepted malformed layouts:" + accepted);
+}
+
 void Verify(const std::filesystem::path &directory, int bits, mx::Dtype dtype) {
   std::filesystem::create_directories(directory);
   omni_common::WeightMap weights;
@@ -197,10 +419,16 @@ void Verify(const std::filesystem::path &directory, int bits, mx::Dtype dtype) {
   const auto path = directory / "model.safetensors";
   mx::save_safetensors(path.string(), weights);
   const nlohmann::json config = {
-      {"text_config", {{"num_hidden_layers", 2}, {"num_experts", 17}}},
+      {"text_config",
+       {{"num_hidden_layers", 2},
+        {"num_experts", 17},
+        {"num_experts_per_tok", 2},
+        {"hidden_size", 128},
+        {"moe_intermediate_size", 128}}},
       {"quantization", {{"group_size", 64}, {"bits", bits}}}};
   std::ofstream(directory / "config.json") << config;
   if (bits == 4 && dtype == mx::float32) {
+    VerifyAlreadyCancelled(directory, config, expert_bytes);
     VerifyCancelledWorker(directory, config, expert_bytes);
   } else {
   }
@@ -533,6 +761,8 @@ void Verify(const std::filesystem::path &directory, int bits, mx::Dtype dtype) {
 int main(int argc, char **argv) {
   try {
     Require(argc == 2, "expected fixture directory");
+    VerifyConfiguredLayout(std::filesystem::path(argv[1]) /
+                           "configured-layout");
     for (const int bits : {4, 8}) {
       for (const auto dtype : {mx::float32, mx::float16, mx::bfloat16}) {
         Verify(std::filesystem::path(argv[1]) /
@@ -544,8 +774,13 @@ int main(int argc, char **argv) {
     const auto malformed_directory =
         std::filesystem::path(argv[1]) / "malformed";
     std::filesystem::create_directories(malformed_directory);
-    std::ofstream(malformed_directory / "config.json") << nlohmann::json{
-        {"text_config", {{"num_hidden_layers", 2}, {"num_experts", 17}}}};
+    std::ofstream(malformed_directory / "config.json")
+        << nlohmann::json{{"text_config",
+                           {{"num_hidden_layers", 2},
+                            {"num_experts", 17},
+                            {"num_experts_per_tok", 2},
+                            {"hidden_size", 128},
+                            {"moe_intermediate_size", 128}}}};
     {
       std::ofstream malformed(malformed_directory / "broken.safetensors",
                               std::ios::binary);
