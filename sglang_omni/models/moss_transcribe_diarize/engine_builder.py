@@ -236,6 +236,8 @@ class MossTranscribeDiarizeEngineBuilder(
             # note (wilsonzheng0327): async decode under a draft means speculative
             # overlap, which this runner has not opted into.
             self.enable_async_decode = False
+            # note (wilsonzheng0327): on SGLang 0.5.23 the compiled path makes each DFlash verify step about four times slower, while decode without a draft still gains from it.
+            overrides["enable_torch_compile"] = False
 
     def customize_server_args(self, server_args: ServerArgs) -> None:
         # note (Dayuxiaoshui): adapters must use the context length finalized by
