@@ -80,3 +80,18 @@ func TestGenerationNumbers(t *testing.T) {
 		}
 	}
 }
+
+// TestGenerationDialogUntouched: StepFun's Think has no Default (off
+// only); its dialog opens with off chosen, and untouched it does not count
+// as unsaved, so Escape and a click beside it close it.
+func TestGenerationDialogUntouched(t *testing.T) {
+	useKeys(t, &memKeys{m: map[string]string{}})
+	a, _, tt := newTestApp(t)
+	a.navigate(remotePath)
+	frames(tt)
+	a.openProviderDialog(local.LLM, "stepfun")
+	frames(tt)
+	if a.provDlg.unsaved() {
+		t.Errorf("an untouched dialog counts as unsaved: Think %q", a.provDlg.gen.think)
+	}
+}

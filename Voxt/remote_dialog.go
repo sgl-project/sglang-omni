@@ -52,6 +52,7 @@ func (a *app) openProviderDialog(kind local.Kind, id string) {
 	if d.model == "" || !slices.Contains(sv.models, d.model) {
 		d.model, d.customModel = otherModel(), d.model
 	}
+	d.gen.fit(providers.Capabilities(id, d.setup().Model))
 	d.was = d.setup()
 	a.provDlg = d
 	if acct := providers.Account(kind, id); !a.keyRead(acct) {

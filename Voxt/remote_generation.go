@@ -213,6 +213,20 @@ func (f *genForm) settings() (g settings.Generation, bad string) {
 	return g, bad
 }
 
+// fit makes f's Think, and its effort, ones that caps offers, as the
+// dialog shows them: opening the dialog must not count as a change.
+func (f *genForm) fit(caps providers.GenCaps) {
+	if len(caps.ThinkModes) == 0 {
+		return
+	}
+	if modes := titles(caps.ThinkModes, thinkTitle); !slices.Contains(modes, f.think) {
+		f.think = modes[0]
+	}
+	if valueOf(f.think, caps.ThinkModes, thinkTitle) == llm.ThinkEffort && len(caps.Efforts) > 0 && !slices.Contains(caps.Efforts, f.effort) {
+		f.effort = caps.Efforts[0]
+	}
+}
+
 // generationFields draws d's generation settings, those its service
 // takes for the model chosen.
 func (a *app) generationFields(c *ui.Context, d *providerDialog) {
@@ -229,11 +243,9 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 	pair := func(fn func()) { ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Start).Children(fn) }
 
 	sectionTitle(c, i18n.T("Generation settings"))
+	f.fit(caps) // the model changed: a mode it lacks
 	if len(caps.ThinkModes) > 0 {
 		modes := titles(caps.ThinkModes, thinkTitle)
-		if !slices.Contains(modes, f.think) {
-			f.think = modes[0] // the model changed: a mode it lacks
-		}
 		fieldInfo(c, i18n.T("Think"), "", func() {
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
 				ui.Select(c.Key("gen-think"), &f.think, modes).Label(i18n.T("Think")).Width(px(t, 240))
