@@ -407,9 +407,7 @@ func Migrate(data []byte) (Settings, error) {
 		s.Overlay.Radius = DefaultRadius // version 3: rounder, as Voxt's
 	}
 	if s.Version < 4 {
-		// Version 4: version 3's default shortcuts, Auralink's (fn), become
-		// the family's (right Option) one by one; the user's stay.
-		ApplyPreset(&s.Features, PresetOption)
+		migrateShortcuts(&s.Features)
 	}
 	migrateSoundPreset(&s.Audio)
 	s.Version = Version
@@ -458,6 +456,34 @@ func migrateSoundPreset(a *Audio) {
 		a.StartSound, a.StopSound = "system:"+p[0], "system:"+p[1]
 	}
 	a.SoundPreset = ""
+}
+
+// migrateShortcuts moves version 3's default shortcuts, Auralink's (fn,
+// fn+Shift, fn+Control, Control+Command+V), to the family's (version 4):
+// each one that is still exactly its default; a shortcut the user
+// changed, added or removed stays. It is history, kept apart from
+// ApplyPreset: a preset added later must not take a version 3 user's keys.
+func migrateShortcuts(f *Features) {
+	old := func(hs []Hotkey, keys string) bool {
+		return len(hs) == 1 && oldDefault(hs[0], keys)
+	}
+	if old(f.Transcribe.Hotkeys, "Fn") {
+		f.Transcribe.Hotkeys = []Hotkey{{Keys: DefaultTranscribe, Trigger: TriggerTap}}
+	}
+	if old(f.Translate.Hotkeys, "Fn+Shift") {
+		f.Translate.Hotkeys = []Hotkey{{Keys: DefaultTranslate, Trigger: TriggerTap}}
+	}
+	if old(f.Rewrite.Hotkeys, "Fn+Control") {
+		f.Rewrite.Hotkeys = []Hotkey{{Keys: DefaultRewrite, Trigger: TriggerTap}}
+	}
+	if oldDefault(f.PasteLast, "Control+Command+V") {
+		f.PasteLast = Hotkey{Keys: DefaultPasteLast, Trigger: TriggerTap}
+	}
+}
+
+// oldDefault reports whether h is keys tapped, as version 3 wrote it.
+func oldDefault(h Hotkey, keys string) bool {
+	return h.Keys == keys && (h.Trigger == "" || h.Trigger == TriggerTap)
 }
 
 // Changed is published after an update is saved. Topic "settings.changed".

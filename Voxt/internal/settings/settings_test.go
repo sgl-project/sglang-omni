@@ -295,6 +295,18 @@ func TestMigrateShortcuts(t *testing.T) {
 		f.Rewrite.Hotkeys[0].Keys != "RightCommand" || f.PasteLast != (Hotkey{"Control+Command+V", TriggerDouble}) {
 		t.Fatalf("chosen: %+v %v", f, err)
 	}
+	// Keys a later preset may use (Voxt 1.x's Command combo) are still the
+	// user's choice in version 3.
+	command := `{"version":3,"features":{
+		"transcribe":{"hotkeys":[{"keys":"RightCommand","trigger":"tap"}]},
+		"translate":{"hotkeys":[{"keys":"RightCommand+Shift","trigger":"tap"}]},
+		"rewrite":{"hotkeys":[{"keys":"RightCommand+Option","trigger":"tap"}]}}}`
+	s, err = Migrate([]byte(command))
+	f = s.Features
+	if err != nil || f.Transcribe.Hotkeys[0].Keys != "RightCommand" || f.Translate.Hotkeys[0].Keys != "RightCommand+Shift" ||
+		f.Rewrite.Hotkeys[0].Keys != "RightCommand+Option" || f.PasteLast.Keys != DefaultPasteLast {
+		t.Fatalf("version 3 right Command: %+v %v", f, err)
+	}
 	// Version 4 documents are the user's, even with fn.
 	s, err = Migrate([]byte(strings.Replace(old, `"version":3`, `"version":4`, 1)))
 	if err != nil || s.Features.Transcribe.Hotkeys[0].Keys != "Fn" || s.Features.PasteLast.Keys != "Control+Command+V" {

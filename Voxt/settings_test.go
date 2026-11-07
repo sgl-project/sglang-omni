@@ -104,6 +104,9 @@ func TestShortcutPreset(t *testing.T) {
 		s.Features.Rewrite.Hotkeys = []settings.Hotkey{{Keys: "RightCommand", Trigger: settings.TriggerTap}}
 	})
 	click(t, tt, "Shortcut preset")
+	if hasExact(tt, "Custom") {
+		t.Errorf("Custom offered while the shortcuts follow a preset: %q", tt.Texts())
+	}
 	click(t, tt, "fn (Auralink's keys)")
 	f := a.settings.Get().Features
 	if f.Transcribe.Hotkeys[0].Keys != "Fn" || f.Translate.Hotkeys[0].Keys != "Fn+Shift" ||
@@ -122,10 +125,24 @@ func TestShortcutPreset(t *testing.T) {
 		t.Fatalf("custom: %q", firstTexts(tt))
 	}
 	click(t, tt, "Shortcut preset")
+	if n := countText(tt, "Custom"); n != 2 { // the select's and its item's
+		t.Errorf("Custom shows %d times with the list open: %q", n, tt.Texts())
+	}
 	click(t, tt, "Right ⌥ (default)")
 	if !has(tt, "You changed every shortcut yourself: the preset keeps them.") || a.settings.Get().Features.PasteLast.Keys != "F6" {
 		t.Errorf("nothing to change: %q, %+v", tt.Texts(), a.settings.Get().Features.PasteLast)
 	}
+}
+
+// countText is how many texts on screen are s.
+func countText(tt *ui.Tester, s string) int {
+	n := 0
+	for _, x := range tt.Texts() {
+		if x == s {
+			n++
+		}
+	}
+	return n
 }
 
 func TestOtherLanguages(t *testing.T) {
