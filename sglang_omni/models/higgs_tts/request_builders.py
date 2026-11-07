@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Callable, TypedDict
@@ -27,6 +28,97 @@ from sglang_omni.scheduling.streaming_vocoder import (
     INITIAL_CODEC_CHUNK_FRAMES_PARAM,
     resolve_initial_codec_chunk_frames,
 )
+
+
+HIGGS_CODEC_FRAMES_PER_S = 25.0
+# note (JiaxinD / #1116): Higgs TTS 4B AR generation runs at 25 fps (~40 ms per token,
+# 2048 completion tokens = 81.6 s of speech). Natural stops take ~1.5 s base (lead-in,
+# delay winddown) plus ~0.4 s per target text token. A budget margin of 2.0x allows twice
+# the slowest observed duration, so slow speech and pauses end naturally at codec EOC while
+# unseeded runaway stragglers stop within seconds instead of hitting the global 2048 cap.
+HIGGS_TTS_SLOWEST_STOP_S = 1.5
+HIGGS_TTS_SLOWEST_STOP_S_PER_TOKEN = 0.4
+HIGGS_TTS_BUDGET_MARGIN = 2.0
+HIGGS_TTS_MIN_NEW_TOKENS = 50
+HIGGS_DEFAULT_MAX_NEW_TOKENS = 2048
+
+
+def estimate_text_tokens(text: str) -> int:
+    """Heuristic token count estimate when a tokenizer is not available.
+
+    Treats CJK / wide characters as 1 token each and Latin / non-CJK words as
+    ~0.28 tokens per character (~3.5 characters per subword token).
+    """
+    if not text or not text.strip():
+        return 0
+    cjk_count = 0
+    non_cjk_chars = 0
+    for ch in text:
+        if ord(ch) >= 0x2E80:
+            cjk_count += 1
+        elif not ch.isspace():
+            non_cjk_chars += 1
+    return max(1, cjk_count + math.ceil(non_cjk_chars * 0.28))
+
+
+def text_length_budget(
+    text_tokens: int,
+    *,
+    safety_factor: float = HIGGS_TTS_BUDGET_MARGIN,
+    max_cap: int = HIGGS_DEFAULT_MAX_NEW_TOKENS,
+    min_tokens: int = HIGGS_TTS_MIN_NEW_TOKENS,
+) -> int:
+    """The codec frames a target text of `text_tokens` tokens may take without an explicit max_new_tokens.
+
+    Caps runaway unseeded AR sampling stragglers (Issue #1116).
+    """
+    if safety_factor <= 0:
+        raise ValueError(f"safety_factor must be > 0, got {safety_factor}")
+    budget = math.ceil(
+        safety_factor
+        * (
+            HIGGS_TTS_SLOWEST_STOP_S
+            + HIGGS_TTS_SLOWEST_STOP_S_PER_TOKEN * max(0, text_tokens)
+        )
+        * HIGGS_CODEC_FRAMES_PER_S
+    )
+    budget = max(min_tokens, budget)
+    if max_cap is not None and max_cap > 0:
+        budget = min(max_cap, budget)
+    return budget
+
+
+def calculate_higgs_max_new_tokens(
+    text_or_tokens: str | int,
+    *,
+    tokenizer: object | None = None,
+    safety_factor: float = HIGGS_TTS_BUDGET_MARGIN,
+    max_cap: int = HIGGS_DEFAULT_MAX_NEW_TOKENS,
+    min_tokens: int = HIGGS_TTS_MIN_NEW_TOKENS,
+) -> int:
+    """Derive dynamic max_new_tokens from text or token count."""
+    if isinstance(text_or_tokens, (int, float)) and not isinstance(
+        text_or_tokens, bool
+    ):
+        tokens = int(text_or_tokens)
+    elif isinstance(text_or_tokens, str):
+        if not text_or_tokens.strip():
+            tokens = 0
+        elif tokenizer is not None and hasattr(tokenizer, "encode"):
+            try:
+                tokens = len(tokenizer.encode(text_or_tokens, add_special_tokens=False))
+            except Exception:
+                tokens = estimate_text_tokens(text_or_tokens)
+        else:
+            tokens = estimate_text_tokens(text_or_tokens)
+    else:
+        tokens = 0
+    return text_length_budget(
+        tokens,
+        safety_factor=safety_factor,
+        max_cap=max_cap,
+        min_tokens=min_tokens,
+    )
 
 
 class HiggsSamplingOptions(TypedDict, total=False):
@@ -269,10 +361,25 @@ def make_higgs_scheduler_adapters(
 
 
 __all__ = [
+    "DEFAULT_HIGGS_INITIAL_CHUNK_FRAMES",
+    "DEFAULT_HIGGS_STREAM_FOLLOWUP_STRIDE",
+    "DEFAULT_HIGGS_STREAM_STRIDE",
+    "HIGGS_CODEC_FRAMES_PER_S",
+    "HIGGS_DEFAULT_MAX_NEW_TOKENS",
+    "HIGGS_STREAM_FOLLOWUP_STRIDE_METADATA",
+    "HIGGS_STREAM_STRIDE_METADATA",
+    "HIGGS_TTS_BUDGET_MARGIN",
+    "HIGGS_TTS_MIN_NEW_TOKENS",
+    "HIGGS_TTS_SLOWEST_STOP_S",
+    "HIGGS_TTS_SLOWEST_STOP_S_PER_TOKEN",
     "HiggsSGLangRequestData",
+    "HiggsSamplingOptions",
     "INITIAL_CODEC_CHUNK_FRAMES_PARAM",
     "apply_higgs_result",
     "build_higgs_stream_metadata",
     "build_sglang_higgs_request",
+    "calculate_higgs_max_new_tokens",
+    "estimate_text_tokens",
     "make_higgs_scheduler_adapters",
+    "text_length_budget",
 ]
