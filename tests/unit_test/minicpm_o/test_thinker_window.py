@@ -57,6 +57,7 @@ def make_adapter(window: MiniCPMODuplexWindow) -> ThinkerAdapter:
     adapter = ThinkerAdapter(
         tokenizer,
         64,
+        random_seed=0,
         window=window,
         rotary_embedding=SimpleNamespace(
             head_size=HEAD_DIM,
@@ -112,7 +113,7 @@ def test_window_keeps_the_units_the_checkpoint_window_keeps(seed: int) -> None:
         )
         cut = adapter.plan_history_cut(
             IDENTITY,
-            SimpleNamespace(unit_token_index=unit_token_index),
+            SimpleNamespace(unit_token_index=unit_token_index, draft_token_ids=[]),
             history_length,
             history_capacity=4096,
         )
@@ -142,7 +143,7 @@ def test_window_keeps_the_units_the_checkpoint_window_keeps(seed: int) -> None:
 def test_window_cuts_early_when_the_next_unit_would_not_fit() -> None:
     adapter = make_adapter(MiniCPMODuplexWindow())
     adapter.states[IDENTITY].unit_starts = [10, 110, 210, 310]
-    request = SimpleNamespace(unit_token_index=1)
+    request = SimpleNamespace(unit_token_index=1, draft_token_ids=[])
 
     assert adapter.plan_history_cut(IDENTITY, request, 409, 500) is None
     cut = adapter.plan_history_cut(IDENTITY, request, 409, 250)

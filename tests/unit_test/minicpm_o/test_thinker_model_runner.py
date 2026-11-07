@@ -5,16 +5,21 @@ from __future__ import annotations
 
 import math
 import wave
+from array import array
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 from unittest.mock import Mock
 
 import numpy as np
 import pytest
 import torch
 from sglang.srt.environ import envs
+from sglang.srt.layers.logits_processor import LogitsMetadata
+from sglang.srt.managers.schedule_batch import Req, ReqKvInfo
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
+from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.audio.vad import StatelessVAD
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
@@ -30,6 +35,7 @@ from sglang_omni.models.minicpm_o.duplex_sampler import filter_top_k_top_p
 from sglang_omni.models.minicpm_o.native_config import (
     DEFAULT_WINDOW_SETTINGS,
     MiniCPMODuplexSampling,
+    MiniCPMODuplexWindow,
 )
 from sglang_omni.models.minicpm_o.native_thinker_model_runner import (
     MiniCPMOThinkerModelRunner as DuplexThinkerModelRunner,
@@ -55,6 +61,7 @@ from sglang_omni.proto.streams import (
     TRUNCATE,
 )
 from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionPreparation
+from sglang_omni.scheduling.sglang_backend.history_cut import HistoryCut
 from sglang_omni.scheduling.sglang_backend.request_data import (
     EmbeddingSpan,
     SGLangARRequestData,
@@ -596,12 +603,28 @@ def unit_request(
     *,
     generation_step: int = 1,
     is_listen_forced: bool = False,
+    draft_token_ids: tuple[int, ...] = (),
+    is_draft: bool = False,
+    pending_unit_token: int | None = None,
+    prompt_length: int = 1,
 ) -> SimpleNamespace:
+    """A unit's scheduler request, its prompt of prompt_length ids followed by the draft tokens."""
     return SimpleNamespace(
         data=SimpleNamespace(
             thinker_state=state,
             generation_steps=generation_step,
             is_listen_forced=is_listen_forced,
+            draft_token_ids=list(draft_token_ids),
+            accepted_draft_count=0,
+            unit_index=0,
+            is_draft=is_draft,
+            pending_unit_token=pending_unit_token,
+            talker_conditions=[],
+            generated_unit_ids=[],
+            req=SimpleNamespace(
+                origin_input_ids=[PLAIN_TOKEN_ID]
+                * (prompt_length + len(draft_token_ids))
+            ),
         )
     )
 
@@ -628,6 +651,7 @@ def make_thinker_adapter(tokenizer: Mock) -> ThinkerAdapter:
     return ThinkerAdapter(
         tokenizer,
         VOCAB_SIZE,
+        random_seed=0,
         window=DEFAULT_WINDOW_SETTINGS,
         rotary_embedding=SimpleNamespace(
             head_size=64, rotary_dim=64, is_neox_style=True, cos_sin_cache=None
@@ -700,7 +724,12 @@ def step_plan_payload(request: OmniRequest) -> StagePayload:
     return StagePayload(
         "unit",
         request,
-        {"token_ids": UNIT_INPUT_IDS, "input_embeds": None, "embedding_spans": []},
+        {
+            "token_ids": UNIT_INPUT_IDS,
+            "input_embeds": None,
+            "embedding_spans": [],
+            "silence_unit_plan": None,
+        },
     )
 
 
@@ -1136,6 +1165,7 @@ def perception_payload(request: OmniRequest, unit_index: int) -> StagePayload:
                     "embedding_end": 1,
                 }
             ],
+            "silence_unit_plan": None,
         },
     )
 
@@ -1176,6 +1206,137 @@ def spans_of(unit_request: DuplexUnitRequestData) -> list[tuple[int, int, float]
         (span.start, span.end, span.input_embeds[0, 0].item())
         for span in unit_request.unit_embedding_spans
     ]
+
+
+def test_a_draft_unit_leaves_the_session_as_the_last_unit_left_it_and_hands_its_output_to_the_next_unit() -> (
+    None
+):
+    """No draft follows a spoken unit; a finished draft after a listen unit samples at the next unit's index, preserves the session's model state and hands its nonterminal tokens to the next unit without requesting a model-history rewind."""
+    adapter, request = open_duplex_adapter()
+    state = adapter.states[SESSION]
+    payload = perception_payload(request, 0)
+    payload.data["silence_unit_plan"] = perception_payload(request, 1).data
+    spoken = adapter.build(SESSION, audio_unit(0), payload)
+    spoken_output_ids, generated_unit_ids = spoken_output(
+        PLAIN_TOKEN_ID, ends_turn=False
+    )
+    complete_unit(
+        adapter,
+        spoken,
+        prompt_length=FIRST_UNIT_PROMPT_LENGTH,
+        output_ids=spoken_output_ids,
+        generated_unit_ids=generated_unit_ids,
+    )
+
+    assert (
+        adapter.build_draft(
+            SESSION, StagePayload("draft", request, None), audio_unit(0)
+        )
+        is None
+    )
+
+    payload = perception_payload(request, 1)
+    payload.data["silence_unit_plan"] = perception_payload(request, 2).data
+    listened = adapter.build(SESSION, audio_unit(1), payload)
+    output_ids = [SPECIAL_TOKENS.listen]
+    listened_prompt_length = FIRST_UNIT_PROMPT_LENGTH + len(spoken_output_ids) + 3
+    complete_unit(
+        adapter,
+        listened,
+        prompt_length=listened_prompt_length,
+        output_ids=output_ids,
+        generated_unit_ids=[],
+    )
+
+    snapshot = replace(
+        state,
+        generated_history=list(state.generated_history),
+        reply_units=list(state.reply_units),
+    )
+    draft = adapter.build_draft(
+        SESSION, StagePayload("draft", request, None), audio_unit(1)
+    )
+    draft.thinker_state.generated_history.append(OTHER_TOKEN_ID)
+    draft.thinker_state.is_turn_ended = True
+    adapter.keep_draft(
+        SESSION, [OTHER_TOKEN_ID, THIRD_TOKEN_ID, SPECIAL_TOKENS.chunk_eos]
+    )
+    preparation = adapter.prepare_unit(
+        SESSION, audio_unit(2), perception_payload(request, 2)
+    )
+    following = adapter.build(SESSION, audio_unit(2), perception_payload(request, 2))
+
+    assert draft.input_ids.tolist() == [
+        SPECIAL_TOKENS.unit_end,
+        SPECIAL_TOKENS.unit,
+        AUDIO_PLACEHOLDER_ID_BASE + 2,
+    ]
+    assert spans_of(draft) == [(2, 3, 2.0)]
+    assert draft.unit_index == 2
+    assert state == snapshot
+    assert preparation == ARSessionPreparation()
+    assert following.input_ids.tolist() == [
+        SPECIAL_TOKENS.unit_end,
+        SPECIAL_TOKENS.unit,
+        AUDIO_PLACEHOLDER_ID_BASE + 2,
+        OTHER_TOKEN_ID,
+        THIRD_TOKEN_ID,
+    ]
+    assert following.draft_token_ids == [OTHER_TOKEN_ID, THIRD_TOKEN_ID]
+
+
+@pytest.mark.parametrize(
+    (
+        "history_length",
+        "window_mode",
+        "draft_token_ids",
+        "kept_draft_token_count",
+        "expected_cut",
+    ),
+    [
+        (955, "basic", [PLAIN_TOKEN_ID] * 10, 0, None),
+        (965, "basic", [PLAIN_TOKEN_ID] * 10, 10, HistoryCut(((100, 300),))),
+        (965, "off", [PLAIN_TOKEN_ID] * 10, 0, None),
+        # A <unit> the draft spells is not the unit's own.
+        (900, "basic", [SPECIAL_TOKENS.unit], 1, None),
+    ],
+    ids=["dropped", "kept-after-cut", "window-off", "unit-marker"],
+)
+def test_drafts_use_remaining_capacity_without_forcing_an_extra_history_cut(
+    history_length: int,
+    window_mode: Literal["basic", "off"],
+    draft_token_ids: list[int],
+    kept_draft_token_count: int,
+    expected_cut: HistoryCut | None,
+) -> None:
+    """A draft takes only the space left after the real input and its output budget: it never forces a cut, one that does not fit goes whole from the local and native prompts, and a <unit> inside it never moves the unit's own boundary."""
+    adapter, request = open_duplex_adapter()
+    adapter.window = MiniCPMODuplexWindow(
+        sliding_window_mode=window_mode,
+        basic_window_high_tokens=2000,
+        basic_window_low_tokens=800,
+    )
+    state = adapter.states[SESSION]
+    state.unit_starts = [100, 300, 500, 700]
+    state.is_prefix_pending = False
+    state.draft_token_ids = list(draft_token_ids)
+    plan = perception_payload(request, 1)
+    unit = adapter.build(SESSION, audio_unit(1), plan)
+    unit.req.refresh_fill_ids()
+    prompt_token_ids = unit.input_ids.tolist()[: -len(draft_token_ids)]
+    output_token_budget = unit.req.sampling_params.max_new_tokens
+
+    cut = adapter.plan_history_cut(SESSION, unit, history_length, history_capacity=950)
+
+    assert cut == expected_cut
+    assert unit.draft_token_ids == draft_token_ids[:kept_draft_token_count]
+    assert unit.unit_token_index == prompt_token_ids.index(SPECIAL_TOKENS.unit)
+    expected_input_token_ids = [*prompt_token_ids, *unit.draft_token_ids]
+    assert list(unit.req.origin_input_ids) == expected_input_token_ids
+    assert unit.req.origin_input_ids_unpadded is unit.req.origin_input_ids
+    assert list(unit.req.full_untruncated_fill_ids) == expected_input_token_ids
+    assert unit.input_ids.tolist() == expected_input_token_ids
+    assert unit.req.sampling_params.max_new_tokens == output_token_budget
 
 
 @pytest.mark.parametrize(
@@ -1619,7 +1780,7 @@ FREQUENCY_TOLERANCE = 0.03
 def test_sampled_tokens_follow_the_filtered_softmax(
     top_p: float, expected_frequencies: dict[int, float]
 ) -> None:
-    torch.manual_seed(0)
+    """Draws across sessions follow the filtered softmax, and a session draws the same token again at the same unit and step."""
     runner = duplex_runner(SPECIAL_TOKENS)
     state = session_state(greedy=False, temperature=1.0, top_k=-1, top_p=top_p)
     logits = unit_logits(
@@ -1631,12 +1792,15 @@ def test_sampled_tokens_follow_the_filtered_softmax(
     )
     counts = {token_id: 0 for token_id in expected_frequencies}
 
-    for _ in range(DRAW_COUNT):
-        (token_id,) = sample(runner, logits, [unit_request(state)])
-        counts[token_id] += 1
+    for noise_seed in range(DRAW_COUNT):
+        state.noise_seed = noise_seed
+        (drawn_token_id,) = sample(runner, logits, [unit_request(state)])
+        counts[drawn_token_id] += 1
+    (repeated_token_id,) = sample(runner, logits, [unit_request(state)])
 
     for token_id, expected in expected_frequencies.items():
         assert abs(counts[token_id] / DRAW_COUNT - expected) <= FREQUENCY_TOLERANCE
+    assert repeated_token_id == drawn_token_id
 
 
 def test_top_k_and_top_p_filter_each_row_of_a_batch() -> None:
@@ -1750,3 +1914,165 @@ def test_mixed_decode_tail_prefill_rows_follow_the_batch_span() -> None:
     assert torch.equal(rows[:3], runner.embed_tokens(torch.tensor([5, 6, 9])))
     assert torch.equal(rows[3], span_rows[2])
     assert (tail_request.prefix_len, tail_request.extend_end) == (100, 104)
+
+
+# The logits each position of a drafted prefill gives, in order: the unit's first position, then one per draft.
+DRAFTED_POSITION_TOKEN_IDS = (
+    PLAIN_TOKEN_ID,
+    OTHER_TOKEN_ID,
+    SPECIAL_TOKENS.chunk_eos,
+    THIRD_TOKEN_ID,
+)
+DRAFTED_PROMPT_LENGTH = 5
+
+
+@pytest.mark.parametrize(
+    ("draft_token_ids", "decided_token_ids", "is_draft"),
+    [
+        # Every draft the sampler would produce is accepted, and the unit closes where it would.
+        (
+            [PLAIN_TOKEN_ID, OTHER_TOKEN_ID, THIRD_TOKEN_ID],
+            [PLAIN_TOKEN_ID, OTHER_TOKEN_ID, SPECIAL_TOKENS.chunk_eos],
+            False,
+        ),
+        # The first wrong draft is replaced by the sampler's own token.
+        ([PLAIN_TOKEN_ID, THIRD_TOKEN_ID], [PLAIN_TOKEN_ID, OTHER_TOKEN_ID], False),
+        ([OTHER_TOKEN_ID, OTHER_TOKEN_ID], [PLAIN_TOKEN_ID], False),
+        (
+            [PLAIN_TOKEN_ID, OTHER_TOKEN_ID],
+            [PLAIN_TOKEN_ID, OTHER_TOKEN_ID, SPECIAL_TOKENS.chunk_eos],
+            True,
+        ),
+    ],
+    ids=["all-accepted", "second-disagrees", "first-disagrees", "draft-unit"],
+)
+def test_a_drafted_prefill_commits_the_agreeing_tokens_and_hands_the_talker_their_hidden_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    draft_token_ids: list[int],
+    decided_token_ids: list[int],
+    is_draft: bool,
+) -> None:
+    """Each position is sampled on its own logits after the drafts accepted before it, at its own step of the unit; the unit then commits the agreeing tokens, pairs each pending token with the hidden row that decided the token after it, as one-token steps would, and keeps its verified prefix on its native request and its batch row, while a draft unit collects nothing."""
+    monkeypatch.setattr(
+        LogitsMetadata, "from_forward_batch", staticmethod(lambda forward_batch: None)
+    )
+    runner = duplex_runner(SPECIAL_TOKENS)
+    # note (bianyutong): The stand-in logits processor is the identity, so each hidden row is its position's logits.
+    runner.outer_model = SimpleNamespace(
+        lm_head=None,
+        language_model=SimpleNamespace(
+            logits_processor=SimpleNamespace(
+                _get_logits=lambda hidden_states, lm_head, logits_metadata, use_logits_buffer: hidden_states
+            )
+        ),
+    )
+    position_logits = unit_logits(
+        *(
+            {token_id: 1.0}
+            for token_id in DRAFTED_POSITION_TOKEN_IDS[: len(draft_token_ids) + 1]
+        )
+    )
+    drafted_rows = torch.cat(
+        [
+            unit_logits(*([{THIRD_TOKEN_ID: 1.0}] * DRAFTED_PROMPT_LENGTH)),
+            position_logits,
+        ]
+    )
+    state = session_state()
+    drafted = unit_request(
+        state,
+        generation_step=2,
+        draft_token_ids=tuple(draft_token_ids),
+        is_draft=is_draft,
+        pending_unit_token=THIRD_TOKEN_ID,
+        prompt_length=DRAFTED_PROMPT_LENGTH,
+    )
+    prompt_ids = [PLAIN_TOKEN_ID] * DRAFTED_PROMPT_LENGTH
+    input_ids = [*prompt_ids, *draft_token_ids]
+    req = Req(
+        "unit",
+        "",
+        array("q", input_ids),
+        SamplingParams(max_new_tokens=8),
+        vocab_size=VOCAB_SIZE,
+    )
+    req.kv = ReqKvInfo(
+        req_pool_idx=0,
+        kv_committed_len=len(input_ids),
+        kv_allocated_len=len(input_ids),
+    )
+    req.refresh_fill_ids()
+    drafted.data.req = req
+    freed: list[tuple[int, int]] = []
+    batch = SimpleNamespace(
+        reqs=[req],
+        tree_cache=SimpleNamespace(
+            page_size=1, free_kv_row=lambda kv, ranges: freed.extend(ranges)
+        ),
+        seq_lens=torch.tensor([len(input_ids)]),
+        seq_lens_cpu=torch.tensor([len(input_ids)]),
+        orig_seq_lens=torch.tensor([len(input_ids)]),
+        seq_lens_sum=len(input_ids),
+    )
+
+    token_ids = runner.sample_next_token_ids(
+        SimpleNamespace(
+            next_token_logits=position_logits[-1:], hidden_states=drafted_rows
+        ),
+        SimpleNamespace(extend_seq_lens_cpu=[drafted_rows.shape[0]]),
+        None,
+        [drafted],
+    ).tolist()
+    runner.post_process_outputs(
+        None,
+        SimpleNamespace(
+            requests=[SimpleNamespace(request_id="unit", data=drafted.data)],
+            batch_data=batch,
+        ),
+        {
+            "unit": SimpleNamespace(
+                data=token_ids[0], extra={"hidden_states": drafted_rows}
+            )
+        },
+    )
+
+    accepted_count = len(decided_token_ids) - 1
+    kept_token_count = DRAFTED_PROMPT_LENGTH + accepted_count
+    spoken_token_ids = [
+        token_id
+        for token_id in decided_token_ids
+        if token_id != SPECIAL_TOKENS.chunk_eos
+    ]
+    assert token_ids == [decided_token_ids[-1]]
+    assert drafted.data.accepted_draft_count == accepted_count
+    assert state.generated_history == spoken_token_ids
+    if is_draft:
+        assert drafted.data.talker_conditions == []
+        assert list(req.origin_input_ids) == input_ids
+        assert freed == []
+    else:
+        assert [
+            (token_id, condition.tolist(), ends_turn)
+            for token_id, condition, ends_turn in drafted.data.talker_conditions
+        ] == [
+            (pending_token_id, position_logits[position].tolist(), False)
+            for position, pending_token_id in enumerate(
+                [THIRD_TOKEN_ID, *decided_token_ids[:-1]]
+            )
+        ]
+        assert drafted.data.generated_unit_ids == spoken_token_ids
+        assert drafted.data.pending_unit_token == (
+            None
+            if decided_token_ids[-1] == SPECIAL_TOKENS.chunk_eos
+            else decided_token_ids[-1]
+        )
+        assert drafted.data.generation_steps == 2 + accepted_count
+        assert drafted.data.draft_token_ids == []
+        assert list(req.output_ids) == draft_token_ids[:accepted_count]
+        assert list(req.origin_input_ids) == prompt_ids
+        assert list(req.full_untruncated_fill_ids) == input_ids[:kept_token_count]
+        assert req.extend_end == kept_token_count
+        assert req.kv.kv_allocated_len == kept_token_count
+        assert int(batch.seq_lens_cpu[0]) == kept_token_count
+        assert batch.seq_lens_sum == kept_token_count
+        assert freed == [(kept_token_count, len(input_ids))]
