@@ -39,7 +39,12 @@ DRAFT_SERVE_FLAGS = {
         "--asr.engine.disable_speculative_decoding",
         "true",
     ],
-    "dflash": ["--config", "examples/configs/qwen3_asr_1_7b_dflash.yaml"],
+    "dflash_sync": [
+        "--config",
+        "examples/configs/qwen3_asr_1_7b_dflash.yaml",
+        "--asr.factory.enable_async_decode",
+        "false",
+    ],
     "dflash_overlap": [
         "--config",
         "examples/configs/qwen3_asr_1_7b_dflash.yaml",
