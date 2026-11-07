@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 
+from sglang_omni.platforms import current_platform
+
 
 class ISTFT(nn.Module):
     """
@@ -62,8 +64,6 @@ class ISTFT(nn.Module):
         self,
         spec: torch.Tensor,
         valid_frame_mask: torch.Tensor | None = None,
-        # Let the NPU fallback pass a CPU-local window without moving the module buffer.
-        window: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Return the unnormalized audio numerator and window denominator."""
         assert spec.dim() == 3, "Expected a 3D tensor as input"
@@ -75,8 +75,24 @@ class ISTFT(nn.Module):
             pass
 
         inverse = torch.fft.irfft(spec, self.n_fft, dim=1, norm="backward")
-        window = self.window if window is None else window
-        inverse = inverse * window[None, :, None]
+        inverse = inverse * self.window[None, :, None]
+
+        window_frames = self.window.square().expand(1, frame_count, -1).transpose(1, 2)
+        if valid_frame_mask is not None:
+            window_frames = window_frames * valid_frame_mask.unsqueeze(1)
+        else:
+            pass
+
+        overlap_add = current_platform.get_overlap_add_impl()
+        if overlap_add is not None:
+            return overlap_add(
+                inverse,
+                window_frames,
+                hop_length=self.hop_length,
+                win_length=self.win_length,
+            )
+        else:
+            pass
 
         output_size = (frame_count - 1) * self.hop_length + self.win_length
         numerator = torch.nn.functional.fold(
@@ -86,11 +102,6 @@ class ISTFT(nn.Module):
             stride=(1, self.hop_length),
         )[:, 0, 0, :]
 
-        window_frames = window.square().expand(1, frame_count, -1).transpose(1, 2)
-        if valid_frame_mask is not None:
-            window_frames = window_frames * valid_frame_mask.unsqueeze(1)
-        else:
-            pass
         denominator = torch.nn.functional.fold(
             window_frames,
             output_size=(1, output_size),
@@ -122,17 +133,6 @@ class ISTFT(nn.Module):
         Returns:
             Tensor: Reconstructed time-domain signal of shape (B, L), where L is the length of the output signal.
         """
-        if spec.device.type == "npu":
-            # The large overlap-add used by Ming (n_fft=3528) can trigger an
-            # Ascend vector-core fault in torch.nn.functional.fold. Keep the
-            # neural decoder and spectrogram on NPU, but run only ISTFT on CPU.
-            spec = spec.cpu()
-            audio_buffer = audio_buffer.cpu() if audio_buffer is not None else None
-            window_buffer = window_buffer.cpu() if window_buffer is not None else None
-            window = self.window.float().cpu()
-        else:
-            window = self.window
-
         if self.padding == "center":
             # Fallback to pytorch native implementation
             return torch.istft(
@@ -140,7 +140,7 @@ class ISTFT(nn.Module):
                 self.n_fft,
                 self.hop_length,
                 self.win_length,
-                window,
+                self.window,
                 center=True,
             )
         elif self.padding == "same":
@@ -148,7 +148,7 @@ class ISTFT(nn.Module):
         else:
             raise ValueError("Padding must be 'center' or 'same'.")
 
-        y, window_envelope = self.overlap_add_components(spec, window=window)
+        y, window_envelope = self.overlap_add_components(spec)
 
         y, audio_buffer = self.__buffer_process(
             y, audio_buffer, pad, last_chunk=last_chunk, streaming=streaming

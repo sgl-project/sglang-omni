@@ -5,11 +5,15 @@ from typing import TYPE_CHECKING
 import torch
 from sglang.srt.platforms.device_mixin import PlatformEnum
 
-from sglang_omni.platforms.interface import OmniPlatform, RMSNormKernel
+from sglang_omni.platforms.interface import (
+    JointRopeInplaceKernel,
+    OmniPlatform,
+    OverlapAddImpl,
+    RMSNormKernel,
+)
 
 if TYPE_CHECKING:
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
-    from sglang_omni.platforms.interface import JointRopeInplaceKernel
 else:
     pass
 
@@ -45,6 +49,46 @@ def joint_rope_inplace(
             tensor.contiguous().unsqueeze(0), cos, sin, rotary_mode
         )
         tensor.copy_(rotated.squeeze(0))
+
+
+def overlap_add_by_shifts(
+    frames: torch.Tensor,
+    window_frames: torch.Tensor,
+    *,
+    hop_length: int,
+    win_length: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Rebuild the overlap-add from stride-aligned slice sums.
+
+    `torch.nn.functional.fold` faults the Ascend vector core once its kernel
+    reaches 3071 samples, which Ming's n_fft=3528 exceeds. Splitting the window
+    into hop-sized taps and adding each tap at its own offset matches fold and
+    keeps every step on the vector core's elementwise path.
+    """
+    _, _, frame_count = frames.shape
+    taps = -(-win_length // hop_length)
+    padded = taps * hop_length
+    span = frame_count * hop_length
+
+    def add(tensor: torch.Tensor) -> torch.Tensor:
+        # fold keeps each input's own batch, so the window envelope stays at batch 1.
+        batch = tensor.shape[0]
+        if padded != win_length:
+            tail = tensor.new_zeros(batch, padded - win_length, frame_count)
+            tensor = torch.cat((tensor, tail), dim=1)
+        else:
+            pass
+        blocks = tensor.reshape(batch, taps, hop_length, frame_count)
+        merged = tensor.new_zeros(batch, (frame_count - 1) * hop_length + padded)
+        for tap in range(taps):
+            start = tap * hop_length
+            merged[:, start : start + span] += (
+                blocks[:, tap].transpose(1, 2).reshape(batch, span)
+            )
+        # Zero padding contributes nothing, so the folded tail is dropped here.
+        return merged[:, : (frame_count - 1) * hop_length + win_length]
+
+    return add(frames), add(window_frames)
 
 
 class NPUOmniPlatform(OmniPlatform):
@@ -89,6 +133,10 @@ class NPUOmniPlatform(OmniPlatform):
     def supports_torchaudio_resample(self) -> bool:
         """Disabled as it run on CPU and faced errors during inference for now"""
         return False
+
+    def get_overlap_add_impl(self) -> OverlapAddImpl:
+        """Slice-summed overlap-add, used because fold faults on large windows."""
+        return overlap_add_by_shifts
 
     def get_joint_rope_inplace_kernel(self) -> JointRopeInplaceKernel:
         """The Ascend fused rotary op, wrapped to the joint in-place ABI.
