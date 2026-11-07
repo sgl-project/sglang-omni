@@ -12,8 +12,8 @@ package main
 // Developers' options, from the environment: HF_ENDPOINT=<url> downloads
 // from that Hub only (huggingface_hub's variable); ACTNOW_FAMILY_DIR
 // moves the family directory and with it the default model library
-// ($ACTNOW_FAMILY_DIR/models/hub), unless the family's settings name one
-// (models.root); HF_HUB_CACHE and HF_HOME only name Hugging Face caches
+// (SGLang Omni/models beside it, models.HubIn), unless the family's
+// settings name one (models.root); HF_HUB_CACHE and HF_HOME only name Hugging Face caches
 // that models are imported from.
 
 import (

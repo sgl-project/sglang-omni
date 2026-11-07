@@ -4,12 +4,13 @@ package main
 // room, opening the folders, moving the data folder (internal/datadir) and
 // the reset tiers: the look, all settings, everything
 // (settings_storage_erase.go). The local models are not in the data
-// folder: they are in the ActNow family's library ($HUB, by default
-// ~/Library/Application Support/ActNow/models/hub), which every family
-// app shares; the page shows how much of it is VoxtNew's alone and how
-// much it shares.
+// folder: they are in the model library ($HUB, by default
+// ~/Library/Application Support/SGLang Omni/models, models.HubIn, or the
+// family's models.root, which the family apps share); the page shows how
+// much of it is VoxtNew's alone and how much it shares.
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	fammodels "github.com/hehehai/actnowkit/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/datadir"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/recordings"
@@ -68,6 +70,9 @@ type storageReport struct {
 	// other ActNow apps (blobs counted once).
 	models                   string
 	modelsMine, modelsShared int64
+	// shared: another app keeps its models in the folder too (its claims
+	// name it; VoxtNew's own folder, models.HubIn, is its alone).
+	shared bool
 }
 
 // storageCat is a category of files.
@@ -126,13 +131,21 @@ func (a *app) loadStorage() {
 	hist := a.lib.store.History()
 	data, logs, audio := a.dataDir(), a.logDir, hist.AudioDir()
 	m := a.models
-	family := a.fam.Dir().Root
+	fam, bundleID := a.fam.Dir(), a.fam.BundleID()
+	family := fam.Root
 	a.stLoc = datadir.ReadLocation(a.home())
 	a.async(func() {
 		ctx := context.Background()
 		r := &storageReport{models: m.Hub()}
 		if u, err := m.Usage(); err == nil {
 			r.modelsMine, r.modelsShared = u.Mine, u.Shared
+		}
+		all, _ := fammodels.ReadAllClaims(fam)
+		for id, cs := range all {
+			// An empty root is the family's default library.
+			if id != bundleID && fammodels.SameHub(cmp.Or(cs.Root, fammodels.DefaultHubIn(fam)), r.models) {
+				r.shared = true
+			}
 		}
 		rec, _ := datadir.TreeSize(ctx, audio, nil)
 		if audio != hist.DefaultAudioDir() {

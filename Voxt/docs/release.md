@@ -36,7 +36,7 @@ scripts/mac-gui.sh scripts/release.sh（在 Mac 上，ssh 里经 mac-gui.sh 进�
 | `Resources/omni/bin/qwen3_asr_server`、`*.dylib`、`mlx.metallib` | Omni 原生运行时（sglang_omni_mlx/native）：Qwen3-ASR 和 Silero VAD | 保留原 entitlement（没有） |
 | `Resources/llm/voxtnew-llm`、`llama.framework`、`mlx.metallib`、`swift-transformers_Hub.bundle` | 语言模型进程（mlx-swift-lm 和 llama.cpp） | `llm/Support/llm.entitlements`（空：Metal 不需要） |
 
-`mlx.metallib` 不是代码，是资源，由 app 的签名封住。模型本身不在 app 里，用户在 app 里下载到 ActNow 家族的模型库 `$HUB`（默认 `~/Library/Application Support/ActNow/models/hub`，和家族其他 app 共用；见 [architecture.md](architecture.md)）。
+`mlx.metallib` 不是代码，是资源，由 app 的签名封住。模型本身不在 app 里，用户在 app 里下载到模型库 `$HUB`（默认 `~/Library/Application Support/SGLang Omni/models`；家族设置了 `models.root` 时用它，和家族其他 app 共用；见 [architecture.md](architecture.md)）。
 
 更新用的是 MyGo 官方方案（`mygo.Updater` + updater 插件的 `native.Plugin` 窗口），说明见 MyGo 的 `docs/updates.md`、`docs/plugins/updater.md`；beta 通道是我们的补丁 0006（`third_party/mygo-patches/`，和 Auralink 的同一个）。
 
@@ -291,7 +291,7 @@ macOS 按 bundle ID + 代码签名的要求记住麦克风和辅助功能授权�
 - **之后的更新**（同一个 Team ID、同一个 bundle ID）授权保留，beta 和正式版之间也一样。`identifier` 发布后就不能再改。
 - 开发时用 Apple Development 证书签名的构建，与发布版之间切换也要 reset 一次。
 - **换 Team 也要 reset 一次**：10-19 起从 RY2TQTYSKQ 换成 779M533DL5（§1.1）。用户在 mac-air 上装着的版本（37a3063d，10-17 23:12 装的）是 RY2TQTYSKQ 签的，装上第一个 779M533DL5 签的版本后，麦克风和辅助功能的授权都对不上。还没有发布过版本（0.1.0-beta.1 没发出去），第一个公开版本就是 779M533DL5 签的，别的用户不受影响。
-- 下载好的模型（`$HUB`，默认 `~/Library/Application Support/ActNow/models/hub`）不受签名影响，换版本、更新都保留。
+- 下载好的模型（`$HUB`，默认 `~/Library/Application Support/SGLang Omni/models`）不受签名影响，换版本、更新都保留。2.0.0 的模型在 `~/Library/Application Support/ActNow/models/hub`，新版本第一次启动时硬链接过来。
 
 ### 4.1 给用户装新构建（mac-air，换 Team 那一次）
 

@@ -20,6 +20,7 @@ package actnow
 import (
 	"fmt"
 	"log"
+	"path/filepath"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -28,6 +29,7 @@ import (
 	fammodels "github.com/hehehai/actnowkit/models"
 	"github.com/hehehai/actnowkit/registry"
 	famsettings "github.com/hehehai/actnowkit/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
@@ -135,15 +137,16 @@ func runningBundleID() string {
 }
 
 // hubFor is $HUB for VoxtNew's flags (spec §7.1): the family's
-// models.root when following it, else the environment's rules (VoxtNew
-// has no folder of its own).
+// models.root when VoxtNew follows it and it is set, else VoxtNew's own
+// folder (models.HubIn: SGLang Omni/models), not the family's default.
 func (f *Family) hubFor(prefs settings.Settings) string {
 	if f.hub != "" {
 		return f.hub
 	}
-	root, _ := f.Shared().Get(famsettings.KeyModelsRoot)
-	hub, _ := fammodels.ResolveHub(prefs.Family.Follows(famsettings.KeyModelsRoot), root, "")
-	return hub
+	if root, _ := f.Shared().Get(famsettings.KeyModelsRoot); root != "" && prefs.Family.Follows(famsettings.KeyModelsRoot) {
+		return filepath.Clean(root)
+	}
+	return models.HubIn(f.dir)
 }
 
 // Dir is the family directory.

@@ -38,7 +38,7 @@ func (a *app) modelFolderRows(c *ui.Context, r *storageReport, open func(key, di
 	hub := a.models.Hub()
 	others := a.familyOthers()
 	note := ""
-	if others {
+	if others && r != nil && r.shared {
 		note = i18n.T("Shared by all apps that use this model library")
 	}
 	sectionTitle(c, i18n.T("Model folder"))
@@ -75,7 +75,7 @@ func (a *app) modelFolderRows(c *ui.Context, r *storageReport, open func(key, di
 		bytes int64
 	}
 	rows := []useRow{{i18n.T("Used by Voxt"), r.modelsMine}}
-	if others || r.modelsShared > 0 {
+	if others && r.shared || r.modelsShared > 0 {
 		rows = []useRow{{i18n.T("Only Voxt"), r.modelsMine}, {i18n.T("Shared with other apps that use this model library"), r.modelsShared}}
 	}
 	ui.Grid(c.Key("st-models-use")).ColumnTracks(ui.Fr(1), ui.Fixed(px(t, 90)), ui.Fixed(px(t, 80))).GapX(px(t, sp3)).GapY(px(t, 6)).AlignItems(ui.Center).Children(func() {
@@ -122,16 +122,12 @@ func (a *app) startModelMove(dir string) {
 		a.toast(i18n.T("Wait for the downloads to finish, or cancel them, then try again."))
 		return
 	}
-	value := to
-	if fammodels.SameHub(to, fammodels.DefaultHubIn(a.fam.Dir())) {
-		value = "" // the default rules
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	a.modelMoving, a.modelMoveTo, a.modelMoveCancel = true, to, cancel
 	fam, m, prefs := a.fam, a.models, a.prefs
 	a.async(func() {
 		err := m.MoveTo(ctx, to, fam.Backup(), func() error {
-			return fam.Set(ctx, prefs, actnow.KeyModelsRoot, value)
+			return fam.Set(ctx, prefs, actnow.KeyModelsRoot, to)
 		})
 		a.post(func() {
 			a.modelMoveCancel = nil

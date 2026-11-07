@@ -140,7 +140,9 @@ func TestFamilyLinesNeedAnotherApp(t *testing.T) {
 	a.famStarted = true
 	family := []string{"Applies to all apps that use this model library", "Only Voxt uses this setting.", "Use the same setting as the other apps that share this model library",
 		"Use a different setting for this app"}
-	check := func(when string, want bool) {
+	// want: the network dialog's family lines; shared: Storage's, which
+	// also need the other app's models in Voxt's folder.
+	check := func(when string, want, shared bool) {
 		t.Helper()
 		a.navigate(modelsPath)
 		a.openNetwork()
@@ -156,11 +158,11 @@ func TestFamilyLinesNeedAnotherApp(t *testing.T) {
 		click(t, tt, "Cancel")
 		a.navigate("/settings/storage")
 		frames(tt)
-		if has(tt, "Shared by all apps that use this model library") != want || has(tt, "Shared with other apps that use this model library") != want || has(tt, "Used by Voxt") == want {
+		if has(tt, "Shared by all apps that use this model library") != shared || has(tt, "Shared with other apps that use this model library") != shared || has(tt, "Used by Voxt") == shared {
 			t.Errorf("%s: storage %q", when, tt.Texts())
 		}
 	}
-	check("alone", false)
+	check("alone", false, false)
 	if got := familyValue(t, a, actnow.KeyProxy); got != "" {
 		t.Errorf("family's proxy %q before any change", got)
 	}
@@ -171,11 +173,14 @@ func TestFamilyLinesNeedAnotherApp(t *testing.T) {
 
 	addPeer(t, a, dictaID+".dev", nil)
 	a.familyFound(a.fam.Discover())
-	check("a dev build of Dicta", false)
+	check("a dev build of Dicta", false, false)
 
 	addPeer(t, a, dictaID, nil)
 	a.familyFound(a.fam.Discover())
-	check("Dicta installed", true)
+	check("Dicta installed, its models elsewhere", true, false)
+	seedModels(t, a, models.ASRFast)
+	claimFor(t, a, dictaID, models.ASRFast)
+	check("Dicta's models in Voxt's folder", true, true)
 
 	for _, id := range []string{models.LLMQwen3, models.LLMGemma4} {
 		if about := uitext.ModelAbout(id); about == "" || strings.Contains(strings.ToLower(about), "another") {
