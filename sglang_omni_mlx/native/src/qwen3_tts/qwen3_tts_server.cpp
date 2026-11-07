@@ -12,7 +12,8 @@
 // Request fields: input, model (the served name, when given), voice (or
 // speaker; "default" is Vivian), language, instructions, response_format (wav
 // or pcm), stream (pcm only), speed, max_new_tokens (audio frames, 12.5 a
-// second), temperature, top_p, top_k, repetition_penalty, seed, and the
+// second), initial_codec_bridge_frames, temperature, top_p, top_k,
+// repetition_penalty, seed, and the
 // talker and subtalker settings of stage_params.tts_engine. One request runs
 // at a time and N more (2 by default) may wait; the rest get 503. A request
 // not done S seconds (600 by default) after it arrives is cancelled, with 504
@@ -30,6 +31,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdint>
 #include <deque>
 #include <filesystem>
 #include <iostream>
@@ -88,10 +90,14 @@ constexpr std::array<const char *, 11> kLanguages = {
 constexpr std::array<const char *, 10> kStringFields = {
     "model",     "input",    "voice",        "speaker",   "response_format",
     "task_type", "language", "instructions", "ref_audio", "ref_text"};
-constexpr std::array<const char *, 6> kIntegerFields = {
-    "max_new_tokens", "initial_codec_chunk_frames",
-    "token_count",    "duration_tokens",
-    "seed",           "top_k"};
+constexpr std::array<const char *, 7> kIntegerFields = {
+    "max_new_tokens",
+    "initial_codec_chunk_frames",
+    "initial_codec_bridge_frames",
+    "token_count",
+    "duration_tokens",
+    "seed",
+    "top_k"};
 constexpr std::array<const char *, 4> kNumberFields = {
     "speed", "temperature", "top_p", "repetition_penalty"};
 constexpr std::array<const char *, 4> kBooleanFields = {
@@ -108,6 +114,7 @@ struct SpeechRequest {
   int max_frames = kDefaultAudioFrames;
   // A streamed request's first chunk; 0 starts at the steady chunk.
   int first_chunk_frames = kDefaultFirstChunkFrames;
+  int bridge_chunk_frames = qwen3_tts::kNoBridgeChunkFrames;
 };
 
 // Audio one synthesis hands from the worker thread to its request's thread.
@@ -439,6 +446,36 @@ SpeechRequest ParseRequest(const Json &body,
                                   " must be greater than or equal to 0");
     } else {
     }
+  }
+  const Json bridge_chunk_frames = FieldOr(body, "initial_codec_bridge_frames",
+                                           Json(request.bridge_chunk_frames));
+  if (bridge_chunk_frames.is_number_unsigned()) {
+    const uint64_t frames = bridge_chunk_frames.get<uint64_t>();
+    if (frames > qwen3_tts::kStreamedChunkFrames) {
+      throw std::invalid_argument(
+          "initial_codec_bridge_frames must be between 0 and 25");
+    } else {
+      request.bridge_chunk_frames = static_cast<int>(frames);
+    }
+  } else if (bridge_chunk_frames.is_number_integer()) {
+    const int64_t frames = bridge_chunk_frames.get<int64_t>();
+    if (frames < 0 || frames > qwen3_tts::kStreamedChunkFrames) {
+      throw std::invalid_argument(
+          "initial_codec_bridge_frames must be between 0 and 25");
+    } else {
+      request.bridge_chunk_frames = static_cast<int>(frames);
+    }
+  } else {
+  }
+  if (request.bridge_chunk_frames > qwen3_tts::kNoBridgeChunkFrames &&
+      !request.stream) {
+    throw std::invalid_argument(
+        "initial_codec_bridge_frames requires stream=true");
+  } else if (request.bridge_chunk_frames > qwen3_tts::kNoBridgeChunkFrames &&
+             request.speed != 1.0) {
+    throw std::invalid_argument(
+        "initial_codec_bridge_frames requires speed=1.0");
+  } else {
   }
   const qwen3_tts::SamplingConfig defaults;
   request.sampling.talker =
@@ -911,7 +948,8 @@ private:
              const std::atomic<bool> &cancel,
              std::chrono::steady_clock::time_point deadline) const {
     qwen3_tts::SpeechStream stream(model_.speech_decoder(), request.stream,
-                                   request.first_chunk_frames);
+                                   request.first_chunk_frames,
+                                   request.bridge_chunk_frames);
     const auto send = [&channel](std::vector<float> samples) {
       if (!samples.empty()) {
         std::lock_guard<std::mutex> lock(channel.mutex);
