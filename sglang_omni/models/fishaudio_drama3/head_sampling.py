@@ -19,7 +19,6 @@ from torch import nn
 
 from sglang_omni.models.fishaudio_drama3.sampling_kernels import (
     SAMPLER_WARPS,
-    SCORE_KEY_BITS,
     SELECTED_CANDIDATES,
     CodebookSampler,
     untested_gpu_reason,

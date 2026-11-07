@@ -612,7 +612,8 @@ class AudioDecoder(nn.Module):
             if (
                 head_sampling is not None
                 and head_sampling.covers(row_count)
-                and not head._forward_hooks
+                # torch.nn.Module keeps its hooks under this private name.
+                and not head._forward_hooks  # noqa: leading-underscore
                 and hidden_states.stride(1) == 1
             ):
                 head_sampling.sample(
