@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
+import subprocess
+import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import aiohttp
@@ -302,3 +307,46 @@ def test_run_config_preserves_positional_arrival_seed() -> None:
     config = RunConfig(4, 2.0, 0, True, 60, 42)
     assert config.arrival_seed == 42
     assert config.trust_env is False
+
+
+def test_saved_json_round_trips_unicode_without_locale_encoding(tmp_path: Path) -> None:
+    """Non-ASCII benchmark results must survive a non-UTF-8 client locale."""
+    expected_report = {
+        "per_sample": [{"text": "普通话 🎵", "is_success": True}],
+        "speed": {"completed_requests": 1, "failed_requests": 0},
+    }
+    child_environment = os.environ.copy()
+    child_environment.update(PYTHONUTF8="0", PYTHONCOERCECLOCALE="0", LC_ALL="C")
+    script = """
+import json
+import sys
+from pathlib import Path
+from benchmarks.benchmarker.utils import save_json_results
+
+expected_report = json.loads(sys.argv[2])
+report_path = Path(save_json_results(expected_report, sys.argv[1], "results.json"))
+report_text = report_path.read_text(encoding="utf-8")
+assert json.loads(report_text) == expected_report
+assert expected_report["per_sample"][0]["text"] in report_text
+"""
+    completed_process = subprocess.run(
+        [
+            sys.executable,
+            "-X",
+            "utf8=0",
+            "-X",
+            "warn_default_encoding",
+            "-W",
+            "error::EncodingWarning",
+            "-c",
+            script,
+            str(tmp_path / "nested"),
+            json.dumps(expected_report),
+        ],
+        env=child_environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        creationflags=0 | getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert completed_process.returncode == 0, completed_process.stderr
