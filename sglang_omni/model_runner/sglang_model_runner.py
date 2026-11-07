@@ -871,6 +871,7 @@ class SGLModelRunner(ModelRunner):
             "MiniCPMO": "sglang_omni.models.minicpm_o.components.sglang_thinker:MiniCPMOThinkerForCausalLM",
             "LlamaForCausalLMEagle3": "sglang_omni.speculative.eagle3_draft:OmniLlamaForCausalLMEagle3",
             "ReducedVocabularyDFlashDraftModel": "sglang_omni.speculative.dflash_draft:ReducedVocabularyDFlashDraftModel",
+            "ReducedVocabularyDSparkDraftModel": "sglang_omni.speculative.dspark_draft:ReducedVocabularyDSparkDraftModel",
         }
         for arch, path in sglang_omni_models.items():
             module_path, _, attr = path.partition(":")

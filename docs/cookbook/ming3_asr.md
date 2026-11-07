@@ -15,6 +15,22 @@ sgl-omni serve --model-path inclusionAI/Ming-3.0-asr-tiny
 
 Send one audio file to `POST /v1/audio/transcriptions`. The examples below use `tests/data/query_to_cars.wav` and return `how many cars are there in the picture`.
 
+## DSpark decoding
+
+[DSpark](https://huggingface.co/wirybeaver/Ming-3.0-asr-tiny-dspark) is enabled by default on one CUDA GPU and requires `temperature=0`. Start the server with:
+
+```bash
+SGLANG_DSPARK_USE_GREEDY_DRAFT=1 SGLANG_RAGGED_VERIFY_MODE=static \
+  sgl-omni serve --model-path inclusionAI/Ming-3.0-asr-tiny
+```
+
+To disable DSpark, including when using a nonzero `temperature`:
+
+```bash
+sgl-omni serve --model-path inclusionAI/Ming-3.0-asr-tiny \
+  --thinker.engine.disable_speculative_decoding true
+```
+
 ## Transcription
 
 The prompt is the checkpoint's transcription instruction followed by the audio. The chat template is not used. The model answers with a language label, a tab, and the transcript, and this endpoint returns only the transcript. Decoding is greedy unless `temperature` is set. Generation stops at the end-of-text token or after 256 new tokens.
