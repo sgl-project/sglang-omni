@@ -102,6 +102,7 @@ from sglang_omni.proto.request import StagePayload
 from sglang_omni.proto.session import (
     LM_STEP_MS_KEY,
     NS_PER_MS,
+    STEP_COHORT_KEY,
     Cohort,
     find_session_operation,
 )
@@ -283,6 +284,31 @@ class NoOpGrammarManager:
 _REQUEST_BUILD_ADMISSION_WAIT_S = 0.002
 
 
+class StepOutbox(_queue_mod.Queue):
+    """Holds only the holding thread's puts; other threads' puts go straight in."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.holder: int | None = None
+        self.held: list[OutgoingMessage] = []
+
+    def hold(self) -> list[OutgoingMessage]:
+        self.held = []
+        self.holder = threading.get_ident()
+        return self.held
+
+    def release(self) -> None:
+        self.holder = None
+
+    def put(
+        self, item: OutgoingMessage, block: bool = True, timeout: float | None = None
+    ) -> None:
+        if self.holder == threading.get_ident():
+            self.held.append(item)
+        else:
+            super().put(item, block, timeout)
+
+
 class OmniSchedulerArguments(TypedDict, Generic[RequestDataT], total=False):
     tp_worker: ModelWorker
     tree_cache: BasePrefixCache
@@ -352,6 +378,7 @@ class OmniScheduler(Generic[RequestDataT]):
 
     session_bridge: ARSessionBridge | None = None
     separate_session_openings: bool = False
+    whole_step_results: bool = False
     last_prefill_continued_sessions: bool = False
     scheduler_thread_id: int | None = None
     previous_pending_decode: PendingDecode | None = None
@@ -403,9 +430,12 @@ class OmniScheduler(Generic[RequestDataT]):
         continuation_aware_admission: bool = True,
         separate_session_openings: bool = False,
         steady_session_units_as_decode: bool = False,
+        whole_step_results: bool = False,
     ) -> None:
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
-        self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
+        self.outbox: _queue_mod.Queue[OutgoingMessage] | StepOutbox = (
+            StepOutbox() if whole_step_results else _queue_mod.Queue()
+        )
         self.requires_tp_work_fanout: bool = False
 
         # --- Request builder: StagePayload → SGLangARRequestData ----------
@@ -420,6 +450,7 @@ class OmniScheduler(Generic[RequestDataT]):
         self.held_prompt_units: dict[str, HeldPromptUnit] = {}
         self.continuation_aware_admission = continuation_aware_admission
         self.separate_session_openings = separate_session_openings
+        self.whole_step_results = whole_step_results
         self.steady_session_units_as_decode = steady_session_units_as_decode
         if session_adapter is not None and not server_args.enable_streaming_session:
             raise ValueError("session_adapter requires enable_streaming_session")
@@ -2519,6 +2550,39 @@ class OmniScheduler(Generic[RequestDataT]):
         finally:
             self.note_step_cost(is_tick_step, launch_ns, time.monotonic_ns())
 
+    def process_step_batch_result(self, batch, result) -> None:
+        if self.whole_step_results and self.session_bridge is not None:
+            held = self.outbox.hold()
+            try:
+                self.process_batch_result(batch, result)
+            finally:
+                self.outbox.release()
+                self.publish_step_results(batch, held)
+        else:
+            self.process_batch_result(batch, result)
+
+    def publish_step_results(self, batch, messages: list[OutgoingMessage]) -> None:
+        """Puts the whole step at once, so a drain never takes part of it."""
+        unit_results = [
+            message
+            for message in messages
+            if message.type == "result"
+            and isinstance(message.data, StagePayload)
+            and find_session_operation(message.data.request.metadata) is not None
+        ]
+        step_ns = round((self.lm_step_ms or 0.0) * NS_PER_MS)
+        cohort = Cohort(
+            index=batch.forward_iter,
+            size=len(unit_results),
+            due_ns=time.monotonic_ns() + step_ns,
+        ).to_dict()
+        for message in unit_results:
+            message.data.request = replace(
+                message.data.request,
+                metadata={**message.data.request.metadata, STEP_COHORT_KEY: cohort},
+            )
+        put_messages(self.outbox, messages)
+
     def process_batch_result(self, batch, result) -> None:
         if self.enable_overlap and batch.forward_mode.is_extend():
             result.copy_done.synchronize()
@@ -4205,7 +4269,7 @@ class OmniScheduler(Generic[RequestDataT]):
             if batch:
                 result = self.run_batch(batch)
                 if result is not _FAILED_BATCH_RESULT:
-                    self.process_batch_result(batch, result)
+                    self.process_step_batch_result(batch, result)
                 else:
                     pass
             else:
@@ -4325,7 +4389,7 @@ class OmniScheduler(Generic[RequestDataT]):
             )
             if consume_before_launch:
                 pending_batch, pending_result = self.result_queue.popleft()
-                self.process_batch_result(pending_batch, pending_result)
+                self.process_step_batch_result(pending_batch, pending_result)
             else:
                 pass
 
@@ -4349,7 +4413,7 @@ class OmniScheduler(Generic[RequestDataT]):
 
             if has_pending_result and not consume_before_launch:
                 pending_batch, pending_result = self.result_queue.popleft()
-                self.process_batch_result(pending_batch, pending_result)
+                self.process_step_batch_result(pending_batch, pending_result)
             else:
                 pass
             self.last_batch = batch
@@ -4487,7 +4551,7 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
         if batch.reqs:
-            self.process_batch_result(batch, result)
+            self.process_step_batch_result(batch, result)
         else:
             pass
 
@@ -4507,7 +4571,7 @@ class OmniScheduler(Generic[RequestDataT]):
         if self.enable_overlap:
             while self.result_queue:
                 batch, result = self.result_queue.popleft()
-                self.process_batch_result(batch, result)
+                self.process_step_batch_result(batch, result)
         elif self.session_bridge is not None:
             # note (Junnan Li): Wait before clearing ownership; clear before reentrant callbacks.
             if self.previous_pending_decode is not None:
@@ -4784,7 +4848,7 @@ class OmniScheduler(Generic[RequestDataT]):
                 if batch:
                     result = self.run_batch(batch)
                     if result is not _FAILED_BATCH_RESULT:
-                        self.process_batch_result(batch, result)
+                        self.process_step_batch_result(batch, result)
                     else:
                         pass
                 else:

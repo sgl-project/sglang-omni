@@ -244,6 +244,7 @@ class PersonaPlexSessionEngineBuilder(PersonaPlexEngineBuilder):
         steady_units_as_decode: bool = False,
         live_step_graph: bool = False,
         share_prompt_kv: bool = False,
+        whole_step_results: bool = False,
     ) -> None:
         super().__init__(
             enable_async_decode=enable_async_decode,
@@ -256,6 +257,7 @@ class PersonaPlexSessionEngineBuilder(PersonaPlexEngineBuilder):
         self.steady_units_as_decode = steady_units_as_decode
         self.live_step_graph = live_step_graph
         self.share_prompt_kv = share_prompt_kv
+        self.whole_step_results = whole_step_results
 
     def make_model_runner(
         self,
@@ -323,6 +325,7 @@ class PersonaPlexSessionEngineBuilder(PersonaPlexEngineBuilder):
                 share_prompt_kv=self.share_prompt_kv,
             ),
             "steady_session_units_as_decode": self.steady_units_as_decode,
+            "whole_step_results": self.whole_step_results,
             # Note (Junnan Li): A new prompt in the batch would make it an extend, which
             # cannot replay the decode graph.
             "separate_session_openings": self.live_rows_as_decode,

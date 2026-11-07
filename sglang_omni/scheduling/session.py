@@ -61,6 +61,7 @@ from sglang_omni.profiler.duplex_events import (
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
     SESSION_METADATA_KEY,
+    STEP_COHORT_KEY,
     Cohort,
     ResourceUsage,
     SessionIdentity,
@@ -504,31 +505,47 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
 
     def collect_tick(self, batch: list[IncomingMessage]) -> None:
         cohorts = TickCohorts()
-        for message in batch:
+        steps = TickCohorts()
+
+        def arrive(message: IncomingMessage) -> None:
             tick = self.message_tick(message)
             if tick is not None:
                 cohorts.arrive(tick)
             else:
                 pass
+            if (
+                message.type == "new_request"
+                and STEP_COHORT_KEY in message.data.request.metadata
+            ):
+                steps.arrive(Cohort(**message.data.request.metadata[STEP_COHORT_KEY]))
+            else:
+                pass
+
+        for message in batch:
+            arrive(message)
         while len(batch) < self.max_batch_size:
-            hold_until_ns = cohorts.hold_until_ns(time.monotonic_ns())
-            if hold_until_ns is None:
+            now_ns = time.monotonic_ns()
+            holds = [
+                hold_ns
+                for hold_ns in (
+                    cohorts.hold_until_ns(now_ns),
+                    steps.hold_until_ns(now_ns),
+                )
+                if hold_ns is not None
+            ]
+            if not holds:
                 return
             else:
                 pass
             try:
                 message = self.inbox.get(
-                    timeout=max(hold_until_ns - time.monotonic_ns(), 0) / 1e9
+                    timeout=max(max(holds) - time.monotonic_ns(), 0) / 1e9
                 )
             except queue.Empty:
                 return
             if message.type == "new_request":
                 batch.append(message)
-                tick = self.message_tick(message)
-                if tick is not None:
-                    cohorts.arrive(tick)
-                else:
-                    pass
+                arrive(message)
             else:
                 self.pending_messages.append(message)
 
