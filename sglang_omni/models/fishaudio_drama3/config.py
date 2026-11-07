@@ -51,6 +51,8 @@ class Drama3PreprocessingFactoryArgs(FactoryArgs):
     max_concurrency: int = Field(default=8, ge=1)
     reference_encode_dtype: Literal["float32", "bfloat16"] = "bfloat16"
     max_reference_audio_seconds: float = Field(default=60.0, gt=0)
+    reference_encode_max_batch_size: int = Field(default=8, ge=1)
+    reference_encode_max_batch_wait_ms: int = Field(default=2, ge=0)
 
 
 class Drama3PreprocessingStageConfig(StageConfig):
