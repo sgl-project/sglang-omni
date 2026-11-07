@@ -29,6 +29,7 @@ from benchmarks.duplex.reference_asr import (
 from benchmarks.duplex.reference_audio import (
     POLICY,
     POLICY_VERSION,
+    RATE,
     analyze_variant,
     diagnostics,
     load_runs,
@@ -119,12 +120,15 @@ def export(
             if capture_format is not TraceFormat.PCM16
             else None
         )
+        source_profile = PROFILES.get(read_json(run / "manifest.json").get("profile"))
+        input_sample_rate = source_profile.input_sample_rate if source_profile else RATE
         record, pcm, audio = analyze_variant(
             directory,
             capture_format,
             None if state["input"] is None else state["input"]["sha256"],
             receipts_required=send_receipts_required(run),
             profile_rate=profile_rate,
+            input_sample_rate=input_sample_rate,
         )
         reasons = record["window"]["reasons"]
         # note (luojiaxuan): A legacy or turn-based session that failed its
@@ -144,7 +148,9 @@ def export(
             source = dataset_root / state["source"]["file"]
             if file_sha256(source) != state["source"]["sha256"]:
                 reasons.append("dataset source sha256 differs from run.json")
-            elif sha_bytes(normalize_audio(source)[0]) != sha_bytes(pcm):
+            elif sha_bytes(
+                normalize_audio(source, sample_rate=input_sample_rate)[0]
+            ) != sha_bytes(pcm):
                 reasons.append("renormalized dataset source differs from input.pcm")
             elif (
                 annotation is not None

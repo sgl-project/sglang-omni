@@ -457,10 +457,13 @@ def test_run_samples_contains_a_preparation_failure_to_its_variant(
     real_normalize = v15_runner.normalize_audio
     broken = (dataset / "user_interruption" / "1" / "input.wav").resolve()
 
-    def flaky_normalize(path: Path):
+    def flaky_normalize(
+        path: Path, *, sample_rate: int
+    ) -> tuple[bytes, dict[str, JsonValue]]:
         if path == broken:
             raise soundfile.LibsndfileError(0, "decoder failed: ")
-        return real_normalize(path)
+        else:
+            return real_normalize(path, sample_rate=sample_rate)
 
     async def handler(websocket: ServerConnection) -> None:
         await DuplexPeer().handler(websocket)

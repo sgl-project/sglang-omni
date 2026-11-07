@@ -74,10 +74,14 @@ def run_offline(num_frames: int, tokens: list[int]):
         "offline",
         request=OmniRequest(inputs={}),
         data=PersonaPlexState(
-            text_prompt_ids=PROMPT_IDS, user_codes=caller_codes(num_frames)
+            text_prompt_ids=PROMPT_IDS,
+            user_codes=caller_codes(num_frames),
+            session_reference=True,
         ).to_dict(),
     )
     request = SimpleNamespace(data=build_lm_request(payload, vocab_size=32000))
+    assert request.data.max_new_tokens == len(tokens)
+    assert request.data.req.sampling_params.max_new_tokens == len(tokens)
     origin = list(request.data.req.origin_input_ids)
     inputs = step(runner, model, request, origin, tokens, 0)
     frames = torch.stack(request.data.talker_model_inputs["frames"])
@@ -151,15 +155,13 @@ class CallDriver:
 )
 def test_a_call_steps_exactly_as_the_offline_request(frames_per_unit: list[int]):
     num_caller_frames = sum(frames_per_unit)
-    # Note (wilsonzheng0327): Forward j reads caller frame j - 1, so an offline
-    # request of F + 1 frames runs the forwards a call runs on F frames.
     tokens = [77 + index for index in range(num_caller_frames + 1)]
     offline_inputs, offline_frames, offline_text, offline_calls = run_offline(
-        num_caller_frames + 1, tokens
+        num_caller_frames, tokens
     )
 
     driver = CallDriver(open_adapter())
-    codes = caller_codes(num_caller_frames + 1)
+    codes = caller_codes(num_caller_frames)
     inputs, frames, text = [], [], ""
     frame, token = 0, 0
     for index, count in enumerate(frames_per_unit):

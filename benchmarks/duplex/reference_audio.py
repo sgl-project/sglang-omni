@@ -31,7 +31,6 @@ COMPLETION_GRACE_S = 0.080
 APPEND = "input_audio_buffer.append"
 RATE = 16000
 PACKET_S = 0.08
-PACKET_SAMPLES = 1280
 FILES = {
     "overlap": ("input.wav", "output.wav"),
     "clean": ("clean_input.wav", "clean_output.wav"),
@@ -43,6 +42,24 @@ SEND_RECEIPTS = "input-send-receipts.json"
 
 def sha_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def resample_pcm16(
+    samples: NDArray[np.int16], sample_rate: int, output_sample_count: int | None = None
+) -> tuple[NDArray[np.int16], int]:
+    """Resample PCM16 to the scoring rate and count clipped samples."""
+    if sample_rate == RATE:
+        return samples[:output_sample_count].copy(), 0
+    else:
+        divisor = math.gcd(RATE, sample_rate)
+        resampled = resample_poly(
+            samples.astype(np.float64), RATE // divisor, sample_rate // divisor
+        )
+        rounded_samples = np.round(resampled[:output_sample_count])
+        clipped_samples = int(
+            np.count_nonzero((rounded_samples < -32768) | (rounded_samples > 32767))
+        )
+        return np.clip(rounded_samples, -32768, 32767).astype("<i2"), clipped_samples
 
 
 def response_id(event: dict[str, JsonValue]) -> JsonValue:
@@ -141,6 +158,7 @@ def analyze_variant(
     expected_input_sha: str | None,
     receipts_required: bool = False,
     profile_rate: int | None = None,
+    input_sample_rate: int = RATE,
 ) -> tuple[dict[str, JsonValue], bytes | None, NDArray[np.int16] | None]:
     """Stream one trace; return (record, input_pcm or None, output int16 at 16 kHz or None).
 
@@ -175,8 +193,9 @@ def analyze_variant(
     else:
         pass
     sample_count = len(samples)
-    window_s = sample_count / RATE
-    packet = PACKET_SAMPLES
+    window_s = sample_count / input_sample_rate
+    scoring_sample_count = math.ceil(sample_count * RATE / input_sample_rate)
+    packet = round(input_sample_rate * PACKET_S)
     expected_appends = -(-sample_count // packet)
     first_append_s = window_end_s = None
     out_rate = None
@@ -383,7 +402,9 @@ def analyze_variant(
                     pass
                 if playout is None:
                     out_rate = rate
-                    playout = np.zeros(math.ceil(sample_count * rate / RATE), "<i2")
+                    playout = np.zeros(
+                        math.ceil(sample_count * rate / input_sample_rate), "<i2"
+                    )
                     cursor = 0
                 else:
                     pass
@@ -467,7 +488,11 @@ def analyze_variant(
             "input_pcm_sha256": input_sha,
             "input_send_receipts_sha256": receipts_sha,
         },
-        "input": {"samples": sample_count, "sample_rate": RATE, "duration_s": window_s},
+        "input": {
+            "samples": sample_count,
+            "sample_rate": input_sample_rate,
+            "duration_s": window_s,
+        },
         "window": {
             "t0": "send start of first input_audio_buffer.append",
             "T_s": window_s,
@@ -528,21 +553,16 @@ def analyze_variant(
         native = playout if playout is not None else np.zeros(0, "<i2")
         rate = out_rate if playout is not None else RATE
         if playout is None:
-            out = np.zeros(sample_count, "<i2")
+            out = np.zeros(scoring_sample_count, "<i2")
             clipped = 0
         elif rate == RATE:
-            out = native[:sample_count].copy()
+            out = native[:scoring_sample_count].copy()
             clipped = 0
         else:
-            g = math.gcd(RATE, rate)
-            resampled = resample_poly(native.astype(np.float64), RATE // g, rate // g)
-            if len(resampled) < sample_count:
-                raise AssertionError("resampled timeline shorter than input")
-            else:
-                pass
-            scaled = np.round(resampled[:sample_count])
-            clipped = int(np.count_nonzero((scaled < -32768) | (scaled > 32767)))
-            out = np.clip(scaled, -32768, 32767).astype("<i2")
+            out, clipped = resample_pcm16(native, rate, scoring_sample_count)
+            assert (
+                len(out) >= scoring_sample_count
+            ), "resampled timeline shorter than input"
         crop_at = window_s * rate
         record["output"] = {
             "timeline": "fifo_zero_buffer_receipt_playout",

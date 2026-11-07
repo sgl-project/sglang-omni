@@ -18,6 +18,7 @@ from sglang_omni.models.personaplex.architecture import (
 )
 from sglang_omni.models.personaplex.components.mimi import MimiCodec, MimiEncodeState
 from sglang_omni.models.personaplex.mimi_decode_graph import MimiDecodeSlots
+from sglang_omni.models.personaplex.mimi_encode_graph import MimiEncodeGraph
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.timeline import no_codes
 from sglang_omni.proto.request import OmniRequest, StagePayload
@@ -61,7 +62,8 @@ def pcm16_to_waveform(chunk: TimedChunk) -> torch.Tensor:
 
 
 def waveform_to_pcm16(waveform: torch.Tensor) -> bytes:
-    samples = (waveform.float().clamp(-1.0, 1.0) * (PCM16_SCALE - 1)).round()
+    # note (yaourt137): Match the truncation used by the offline PCM/WAV encoder.
+    samples = waveform.float().clamp(-1.0, 1.0) * (PCM16_SCALE - 1)
     return samples.to(torch.int16).cpu().numpy().astype("<i2").tobytes()
 
 
@@ -104,22 +106,38 @@ class PreprocessingHooks(SessionHooks):
 class MimiEncodeHooks(SessionHooks):
     """Encodes each unit with the session's streaming encoder state."""
 
-    def __init__(self, codec: MimiCodec, device: torch.device) -> None:
+    def __init__(
+        self, codec: MimiCodec, device: torch.device, *, graph_slot_count: int = 0
+    ) -> None:
         self.codec = codec
         self.device = device
         self.states: dict[SessionIdentity, MimiEncodeState] = {}
+        self.graph_slot_count: int = graph_slot_count
+        self.free_graphs: list[MimiEncodeGraph] = []
+        self.graphs: dict[SessionIdentity, MimiEncodeGraph] = {}
 
     @torch.inference_mode()
     def warm_up_serving_thread(self) -> None:
-        """Encode a unit of silence on a throwaway state, so the codec's first use
-        on the serving thread happens before the first session."""
-        self.codec.encode_step(
-            torch.zeros(1, 1, SAMPLES_PER_FRAME, device=self.device),
-            self.codec.init_encode_state(batch_size=1),
-        )
+        """Warm the encoder or capture its session graphs before serving calls."""
+        if self.graph_slot_count:
+            self.free_graphs = [
+                MimiEncodeGraph(self.codec) for _ in range(self.graph_slot_count)
+            ]
+        else:
+            self.codec.encode_step(
+                torch.zeros(1, 1, SAMPLES_PER_FRAME, device=self.device),
+                self.codec.init_encode_state(batch_size=1),
+            )
 
+    @torch.inference_mode()
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
-        self.states[session_identity] = self.codec.init_encode_state(batch_size=1)
+        if self.graph_slot_count:
+            graph = self.free_graphs.pop()
+            graph.state.reset()
+            self.graphs[session_identity] = graph
+            self.states[session_identity] = graph.state
+        else:
+            self.states[session_identity] = self.codec.init_encode_state(batch_size=1)
 
     @torch.inference_mode()
     def append(
@@ -136,12 +154,16 @@ class MimiEncodeHooks(SessionHooks):
         if is_empty_end_of_input(chunk):
             state.user_codes = no_codes()
         else:
-            codes = self.codec.encode_step(
-                state.waveform.to(device=self.device, dtype=torch.float32).view(
-                    1, 1, -1
-                ),
-                self.states[context.session_identity],
+            waveform = state.waveform.to(device=self.device, dtype=torch.float32).view(
+                1, 1, -1
             )
+            graph = self.graphs.get(context.session_identity)
+            if graph is not None and waveform.shape[-1] == SAMPLES_PER_FRAME:
+                codes = graph.encode_step(waveform)
+            else:
+                codes = self.codec.encode_step(
+                    waveform, self.states[context.session_identity]
+                )
             state.user_codes = codes[0].T.cpu()
         state.waveform = None
         payload.data = state.to_dict()
@@ -149,6 +171,11 @@ class MimiEncodeHooks(SessionHooks):
 
     def close(self, session_identity: SessionIdentity) -> None:
         self.states.pop(session_identity)
+        graph = self.graphs.pop(session_identity, None)
+        if graph is not None:
+            self.free_graphs.append(graph)
+        else:
+            pass
 
 
 @dataclass(kw_only=True)

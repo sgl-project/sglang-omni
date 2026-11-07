@@ -101,6 +101,20 @@ def test_a_reset_decode_state_decodes_like_a_fresh_one(random_codec):
     assert torch.equal(stream(codes, state), fresh)
 
 
+def test_reset_encode_state_matches_a_fresh_stream(random_codec: MimiCodec) -> None:
+    waveform = torch.randn(1, 1, random_codec.samples_per_frame * 3)
+    state = random_codec.init_encode_state(batch_size=1)
+    for chunk in waveform.split(random_codec.samples_per_frame, dim=-1):
+        random_codec.encode_step(chunk, state)
+    state.reset()
+    fresh = random_codec.init_encode_state(batch_size=1)
+    for chunk in waveform.flip(-1).split(random_codec.samples_per_frame, dim=-1):
+        assert torch.equal(
+            random_codec.encode_step(chunk, state),
+            random_codec.encode_step(chunk, fresh),
+        )
+
+
 @pytest.mark.parametrize("mode", ["encode", "decode", "both"])
 @pytest.mark.parametrize(
     "device", ["cpu", pytest.param("cuda", marks=pytest.mark.accelerator)]

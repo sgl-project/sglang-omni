@@ -315,6 +315,12 @@ class MimiEncodeState:
     transformer: TransformerState
     downsample: ConvState
 
+    def reset(self) -> None:
+        """Reset stream history in place, including first-frame padding."""
+        reset_stack(self.encoder)
+        self.transformer.reset()
+        self.downsample.reset()
+
 
 @dataclass
 class MimiDecodeState:
