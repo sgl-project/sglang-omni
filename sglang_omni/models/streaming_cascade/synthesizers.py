@@ -71,7 +71,8 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     it, which is tagged by its script, and any other name tags every sentence
     without Chinese characters. Without a known user language `auto` tags by
     script like `English`. A sentence tagged English reaches the service with
-    its numbers read out as words.
+    its numbers read out as words. `sentence_pause_ms` of silence goes before
+    each request after the reply's first audio.
     """
 
     kind: Literal["openai_speech"] = "openai_speech"
@@ -82,6 +83,7 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     reference_text: str = ""
     language: str = ""
     max_sentence_words: int = Field(default=24, gt=0)
+    sentence_pause_ms: float = Field(default=0, ge=0)
     api_key_env: str = "OPENAI_API_KEY"
 
 
@@ -280,6 +282,9 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
     ) -> None:
         text_end = 0
         audio_ms = 0.0
+        pause_samples = round(
+            self.config.sentence_pause_ms * self.sample_rate_hz / 1000
+        )
         async for span in sentences(
             self.follow_language(deltas), self.config.max_sentence_words
         ):
@@ -297,6 +302,18 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
             )
             # Note (ruoyu): Qwen3-TTS answers 500 to a sentence with no word in it, which would close the session.
             if re.search(r"\w", sentence):
+                if audio_ms and pause_samples:
+                    # note (Haoling Pu): each request ends at its last word, so back-to-back requests leave about 0.12 s between sentences, against about 0.35 s when one request reads the whole reply.
+                    audio_ms += pause_samples * 1000 / self.sample_rate_hz
+                    emit(
+                        audio_chunk(
+                            np.zeros(pause_samples, dtype="<f4"),
+                            self.sample_rate_hz,
+                            turn,
+                        )
+                    )
+                else:
+                    pass
                 async for samples in self.speak(sentence, language):
                     audio_ms += len(samples) * 1000 / self.sample_rate_hz
                     emit(audio_chunk(samples, self.sample_rate_hz, turn))
