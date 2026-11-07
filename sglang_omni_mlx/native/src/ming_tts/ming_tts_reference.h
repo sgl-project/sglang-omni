@@ -3,18 +3,9 @@
 
 #include "common/campplus.h"
 #include "ming_tts/ming_tts_audio.h"
+#include "ming_tts/ming_tts_request.h"
 
 namespace ming_tts {
-
-// The sample rate the CampPlus speaker encoder takes.
-inline constexpr int kSpeakerSampleRate = 16000;
-
-// A reference recording at the rates its two encoders take: 16 kHz for
-// CampPlus and AudioVAE's 44.1 kHz.
-struct ReferenceAudio {
-  std::vector<float> samples_16k;
-  std::vector<float> samples_44k;
-};
 
 struct ReferenceConditioning {
   mlx::core::array latents;

@@ -75,6 +75,8 @@ build/native/runtime/bin/ming_tts_server \
 
 For native supervisor integration, launch with `--supervised --model-kind ming_tts --model-directory "$MING_MODEL_DIR"`. The shared native server defaults to a free port and a generated model name; pass `--port` and `--model-name` to fix them. Supervised mode reports them in a JSON `ready` event on stdout. Send `{"command":"shutdown"}` on stdin to stop. Closing stdin also stops the process.
 
+The native server reads requests by the CUDA rules under [Known Limitations](#known-limitations), with one difference for references. It cannot read a client's files, so `ref_audio` must be inline and `references` is rejected.
+
 Native voice cloning accepts one inline `data:audio/wav;base64,...` reference in `ref_audio`, together with its transcript in `ref_text`. The WAV must be mono 8/16/24/32-bit PCM or 32/64-bit float at any common sample rate and contain 0.1–30 seconds of audio. As on CUDA, it is resampled from its own rate to 44.1 kHz for AudioVAE and to 16 kHz for CampPlus. Request bodies are limited to 32 MiB, with larger bodies rejected with HTTP 413. Both non-streaming WAV/PCM and streaming PCM are supported. CampPlus and AudioVAE reference encoding run in C++ MLX and load at startup when the model directory has `campplus.safetensors`; without it, reference requests are rejected with HTTP 400.
 
 Voice cloning requires `campplus.safetensors` in the model directory. The Q4 checkpoint includes it. The official BF16 checkpoint instead includes ONNX weights, which the native server does not read. For BF16, place a copy of the Q4 checkpoint's `campplus.safetensors` alongside the model files. Its FP32 tensors are identical to the official CampPlus ONNX initializers.

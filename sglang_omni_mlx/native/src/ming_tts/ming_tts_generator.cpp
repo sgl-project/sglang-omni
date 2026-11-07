@@ -6,8 +6,6 @@
 #include <cassert>
 #include <stdexcept>
 
-#include "common/text.h"
-
 namespace ming_tts {
 namespace mx = mlx::core;
 
@@ -15,14 +13,17 @@ namespace {
 
 constexpr float kStopProbabilityThreshold = 0.5f;
 constexpr int kMinimumGeneratedPatches = 5;
+// CUDA's DEFAULT_TTS_PROMPT, the description every request gets.
+constexpr const char *kDescription =
+    "Please generate speech based on the following description.\n";
 
 } // namespace
 
 MingFrontend::MingFrontend(const std::filesystem::path &directory)
     : tokenizer_(omni_common::Tokenizer::FromJson(
           omni_common::ReadJson(directory / "tokenizer.json"))) {
-  for (const auto *token : {"<role>", "</role>", "<audio>", "<|endoftext|>",
-                            "<spk>", "</spk>", "<audioPatch>"}) {
+  for (const auto *token :
+       {"<role>", "</role>", "<audio>", "<spk>", "</spk>", "<audioPatch>"}) {
     const int id = tokenizer_.AddedTokenId(token);
     if (id < 0) {
       throw std::invalid_argument(std::string("missing Ming special token: ") +
@@ -33,19 +34,9 @@ MingFrontend::MingFrontend(const std::filesystem::path &directory)
 }
 
 Prompt MingFrontend::BuildPrompt(const std::string &text,
-                                 const std::string &description,
-                                 const std::string &instructions,
                                  const std::string &reference_text,
                                  int reference_tokens) const {
-  if (omni_common::StripUnicodeWhitespace(text).empty()) {
-    throw std::invalid_argument("input must be nonempty");
-  } else {
-  }
-  if (reference_tokens > 0 &&
-      omni_common::StripUnicodeWhitespace(reference_text).empty()) {
-    throw std::invalid_argument("ref_text must be nonempty");
-  } else {
-  }
+  assert(!text.empty() && (reference_tokens == 0 || !reference_text.empty()));
   Prompt prompt;
   auto &input_ids = prompt.input_ids;
   const auto append = [&](const std::string &part) {
@@ -53,9 +44,7 @@ Prompt MingFrontend::BuildPrompt(const std::string &text,
     input_ids.insert(input_ids.end(), tokens.begin(), tokens.end());
   };
   append("<role>HUMAN</role>");
-  append(description.empty()
-             ? "Please generate speech based on the following description.\n"
-             : description);
+  append(kDescription);
   if (reference_tokens > 0) {
     append("  speaker_1:<spk>");
     prompt.speaker_position = static_cast<int>(input_ids.size());
@@ -74,11 +63,6 @@ Prompt MingFrontend::BuildPrompt(const std::string &text,
   append(reference_text);
   append(text);
   append("<role>ASSISTANT</role>");
-  if (!instructions.empty()) {
-    append(instructions);
-    input_ids.push_back(tokenizer_.AddedTokenId("<|endoftext|>"));
-  } else {
-  }
   input_ids.push_back(tokenizer_.AddedTokenId("<audio>"));
   if (reference_tokens > 0) {
     prompt.reference_start = static_cast<int>(input_ids.size());

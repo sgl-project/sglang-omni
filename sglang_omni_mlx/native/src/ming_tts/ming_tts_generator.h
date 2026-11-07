@@ -17,9 +17,9 @@ struct Prompt {
 class MingFrontend {
 public:
   explicit MingFrontend(const std::filesystem::path &directory);
-  Prompt BuildPrompt(const std::string &text, const std::string &description,
-                     const std::string &instructions,
-                     const std::string &reference_text,
+  // The prompt of stripped, nonempty text and, when reference_tokens is
+  // not 0, its reference's stripped, nonempty transcript.
+  Prompt BuildPrompt(const std::string &text, const std::string &reference_text,
                      int reference_tokens) const;
 
 private:

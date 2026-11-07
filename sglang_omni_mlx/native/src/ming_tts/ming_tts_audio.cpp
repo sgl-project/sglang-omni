@@ -7,6 +7,7 @@
 #include <stdexcept>
 
 #include "ming_tts/ming_tts_model.h"
+#include "ming_tts/ming_tts_request.h"
 
 namespace ming_tts {
 namespace mx = mlx::core;
@@ -27,7 +28,7 @@ MingAudioDecoder::MingAudioDecoder(const nlohmann::json &config,
       sample_rate_(config.at("audio_tokenizer_config").at("sample_rate")),
       checkpoint_(
           [&] {
-            if (sample_rate_ != 44100 ||
+            if (sample_rate_ != kAudioSampleRate ||
                 std::min(hop_length_, latent_dim_) <= 0 ||
                 config.at("audio_tokenizer_config")
                         .at("enc_kwargs")
@@ -252,7 +253,7 @@ MingAudioEncoder::MingAudioEncoder(const nlohmann::json &config,
       checkpoint_(
           [&] {
             const auto &audio = config.at("audio_tokenizer_config");
-            if (audio.at("sample_rate") != 44100 ||
+            if (audio.at("sample_rate") != kAudioSampleRate ||
                 std::min({hop_length_, input_dim_, latent_dim_}) <= 0 ||
                 (patch_size_ != -1 && patch_size_ < 1) ||
                 !audio.value("semantic_module_kwargs", nlohmann::json())

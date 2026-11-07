@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Native Ming-TTS API and supervisor protocol tests."""
+"""Native Ming-TTS speech on a checkpoint: audio, voice cloning and disconnects.
+
+Request parsing is covered without weights in tests/test_ming_tts_protocol.py,
+and the supervisor protocol in tests/test_supervisor_protocol.py."""
 
 from __future__ import annotations
 
 import base64
-import errno
 import http.client
 import io
 import json
@@ -22,7 +24,7 @@ from typing import NotRequired, TypedDict
 import numpy as np
 import pytest
 
-MODEL_REPO = "inclusionAI/Ming-omni-tts-16.8B-A3B"
+MODEL_REPO = "mlx-community/Ming-omni-tts-16.8B-A3B-4bit"
 
 
 class SupervisorEvent(TypedDict):
@@ -145,66 +147,6 @@ def connection(server_url: str) -> Iterator[http.client.HTTPConnection]:
         connection.close()
 
 
-def test_supervisor_rejects_other_model_kinds(server_binary: Path) -> None:
-    completed = subprocess.run(
-        [
-            str(server_binary),
-            "--supervised",
-            "--model-kind",
-            "qwen3_asr",
-            "--model-directory",
-            "unused",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    assert completed.returncode == 2
-    assert completed.stdout == ""
-    assert "only --model-kind ming_tts" in completed.stderr
-
-
-def test_supervisor_reports_load_failure(server_binary: Path, tmp_path: Path) -> None:
-    with supervised_process(server_binary, tmp_path) as process:
-        failed = read_event(process)
-        assert failed["event"] == "failed"
-        assert failed["reason"]
-        assert process.wait(timeout=10) == 1
-
-
-@pytest.mark.parametrize("command", ["shutdown", "eof", "signal"])
-def test_supervisor_stops_during_loading(
-    server_binary: Path, tmp_path: Path, command: str
-) -> None:
-    os.mkfifo(tmp_path / "tokenizer.json")
-    with supervised_process(server_binary, tmp_path) as process:
-        deadline = time.monotonic() + 10
-        while True:
-            try:
-                writer = os.open(
-                    tmp_path / "tokenizer.json", os.O_WRONLY | os.O_NONBLOCK
-                )
-                break
-            except OSError as error:
-                if error.errno == errno.ENXIO and time.monotonic() < deadline:
-                    time.sleep(0.01)
-                else:
-                    raise
-        try:
-            assert process.stdin is not None
-            if command == "shutdown":
-                process.stdin.write('{"command":"shutdown"}\n')
-                process.stdin.flush()
-                assert read_event(process) == {"event": "stopped"}
-            elif command == "eof":
-                process.stdin.close()
-            else:
-                process.terminate()
-            assert process.wait(timeout=10) == 0
-        finally:
-            os.close(writer)
-
-
 def test_discovery(connection: http.client.HTTPConnection) -> None:
     for path in ("/health", "/v1/models"):
         connection.request("GET", path)
@@ -219,83 +161,6 @@ def test_discovery(connection: http.client.HTTPConnection) -> None:
     with connection.getresponse() as response:
         assert response.status == 404
         response.read()
-    connection.close()
-
-
-@pytest.mark.parametrize(
-    "changes,status",
-    [
-        ({"input": "\u3000\n "}, 400),
-        ({"input": "\u3000\n ", "stream": True, "response_format": "pcm"}, 400),
-        ({"stream": True}, 400),
-        ({"max_new_tokens": 1.5}, 400),
-        ({"stage_params": {"tts_engine": {"cfg": 1}}}, 400),
-        ({"temperature": -1}, 400),
-        ({"temperature": 0, "stage_params": {"tts_engine": {"temperature": -1}}}, 400),
-        ({"stream": None}, 400),
-        ({"response_format": None}, 400),
-        ({"voice": None}, 400),
-        ({"speed": None}, 400),
-        ({"stage_params": {"tts_engine": None}}, 400),
-        ({"ref_audio": "/unused.wav"}, 400),
-        ({"ref_text": "reference"}, 400),
-        ({"ref_audio": "/unused.wav", "ref_text": "reference"}, 400),
-        ({"ref_audio": "data:audio/wav;base64,AAAA=", "ref_text": "reference"}, 400),
-        ({"ref_audio": "data:audio/wav;base64,====", "ref_text": "reference"}, 400),
-    ],
-)
-def test_invalid_request(
-    connection: http.client.HTTPConnection,
-    changes: RequestChanges,
-    status: int,
-) -> None:
-    request = {"model": "ming-omni-tts", "input": "你好。", **changes}
-    connection.request(
-        "POST",
-        "/v1/audio/speech",
-        json.dumps(request),
-        {"Content-Type": "application/json"},
-    )
-    with connection.getresponse() as response:
-        assert response.status == status
-        assert json.load(response)["detail"]
-    connection.close()
-
-
-@pytest.mark.parametrize(
-    "declared_length,body_bytes,status",
-    [
-        (True, 32 * 1024 * 1024 + 1, 413),
-        (False, 32 * 1024 * 1024, 400),
-        (False, 32 * 1024 * 1024 + 1, 413),
-    ],
-)
-def test_request_body_limit(
-    connection: http.client.HTTPConnection,
-    declared_length: bool,
-    body_bytes: int,
-    status: int,
-) -> None:
-    """Reject oversized bodies early while allowing the exact limit to be parsed."""
-    if declared_length:
-        connection.putrequest("POST", "/v1/audio/speech")
-        connection.putheader("Content-Length", str(body_bytes))
-        connection.endheaders()
-    else:
-        body = json.dumps({"model": "ming-omni-tts", "input": ""}).encode()
-        connection.request(
-            "POST",
-            "/v1/audio/speech",
-            [body.ljust(body_bytes, b" ")],
-            {"Content-Type": "application/json"},
-        )
-    with connection.getresponse() as response:
-        assert response.status == status
-        detail = json.load(response)["detail"]
-        if status == 413:
-            assert detail == "request body must be at most 33554432 bytes"
-        else:
-            assert "input" in detail
     connection.close()
 
 
@@ -371,38 +236,6 @@ def test_audio(
     assert len(audio) > 0 and len(audio) % 2 == 0
     assert np.any(np.frombuffer(audio, dtype="<i2"))
     connection.close()
-
-
-@pytest.mark.parametrize(
-    "sample_rate,channels,samples",
-    [(44100, 1, 4409), (16000, 2, 1600), (16000, 1, 100)],
-)
-def test_invalid_reference_wav(
-    connection: http.client.HTTPConnection,
-    sample_rate: int,
-    channels: int,
-    samples: int,
-) -> None:
-    buffer = io.BytesIO()
-    with wave.open(buffer, "wb") as waveform:
-        waveform.setparams((channels, 2, sample_rate, 0, "NONE", "not compressed"))
-        waveform.writeframes(bytes(samples * channels * 2))
-    request = {
-        "model": "ming-omni-tts",
-        "input": "你好。",
-        "ref_text": "参考音频。",
-        "ref_audio": "data:audio/wav;base64,"
-        + base64.b64encode(buffer.getvalue()).decode(),
-    }
-    connection.request(
-        "POST",
-        "/v1/audio/speech",
-        json.dumps(request),
-        {"Content-Type": "application/json"},
-    )
-    with connection.getresponse() as response:
-        assert response.status == 400
-        assert json.load(response)["detail"]
 
 
 @pytest.mark.parametrize("stream", [False, True])

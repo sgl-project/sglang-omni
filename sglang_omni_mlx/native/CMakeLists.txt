@@ -245,8 +245,12 @@ add_library(ming_tts STATIC src/ming_tts/ming_tts_model.cpp src/ming_tts/ming_tt
   src/ming_tts/ming_tts_generator.cpp src/ming_tts/ming_tts_reference.cpp)
 target_link_libraries(ming_tts PUBLIC qwen3_asr)
 target_compile_options(ming_tts PRIVATE -Wall -Wextra)
+# Its request parsing, which stub_server shares.
+add_library(ming_tts_request STATIC src/ming_tts/ming_tts_request.cpp)
+target_link_libraries(ming_tts_request PUBLIC speech_service)
+target_compile_options(ming_tts_request PRIVATE -Wall -Wextra)
 add_executable(ming_tts_server src/ming_tts/ming_tts_server.cpp)
-target_link_libraries(ming_tts_server PRIVATE ming_tts speech_service)
+target_link_libraries(ming_tts_server PRIVATE ming_tts ming_tts_request)
 target_compile_options(ming_tts_server PRIVATE -Wall -Wextra)
 set_target_properties(ming_tts_server PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
@@ -392,7 +396,8 @@ install(TARGETS fish_s2_pro_server fish_s2_pro_synthesize RUNTIME DESTINATION bi
 # The protocol tests' stand-in server (tests/stub_server.cpp); built only on
 # request and never installed.
 add_executable(stub_server EXCLUDE_FROM_ALL tests/stub_server.cpp)
-target_link_libraries(stub_server PRIVATE speech_service ming3_audio_service)
+target_link_libraries(stub_server PRIVATE speech_service ming3_audio_service
+  ming_tts_request)
 target_compile_options(stub_server PRIVATE -Wall -Wextra)
 set_target_properties(stub_server PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
