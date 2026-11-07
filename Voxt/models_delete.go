@@ -1,6 +1,6 @@
 package main
 
-// Deleting a model from the Local models page by the ActNow family's
+// Deleting a model from the Speech models page by the ActNow family's
 // rules (family spec §7.6, §7.10.3): VoxtNew first weighs what deleting
 // would do (models.Manager.Decide, off the main thread). When no other
 // app uses the model, the usual confirmation deletes it; when one does,

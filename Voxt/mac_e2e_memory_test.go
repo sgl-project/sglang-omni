@@ -4,7 +4,7 @@ package main
 // VOXTNEW_OMNI_RUNTIME and VOXTNEW_LLM, the models in the model library,
 // models.Hub(), by default ~/Library/Application Support/ActNow/models/hub):
 // the app's own local models load asr.fast, then llm.fast and
-// llm.translate, and the Local models page's measurement (macx.Memory by
+// llm.translate, and the Speech models page's measurement (macx.Memory by
 // pid) is compared with what voxtnew-llm says of itself. It logs MEASURE
 // lines:
 //

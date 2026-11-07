@@ -2,7 +2,7 @@ package main
 
 // The pages of the sidebar: Home (home_page.go), History
 // (history_page.go), Transcribe, Translate and Rewrite
-// (feature_page.go), App enhancement (appenhance_page.go), Local models
+// (feature_page.go), App enhancement (appenhance_page.go), Speech models
 // (models_page.go), Language models (remote_page.go), Dictionary
 // (dictionary_page.go) and Logs
 // (shell_logs.go). Permissions is a section of the settings dialog

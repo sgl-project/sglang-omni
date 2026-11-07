@@ -51,6 +51,7 @@ type dictView struct {
 	// The term dialog.
 	editOpen bool
 	edit     termEdit
+	editWas  termEdit // the form as opened: a stray click or Escape keeps a changed one open
 	// importing: an import runs.
 	importing bool
 }
@@ -284,6 +285,7 @@ func (a *app) openTerm(term store.Term) {
 	d.editOpen = true
 	d.edit = termEdit{id: term.ID, term: term.Term, aliases: strings.Join(term.Aliases, ", "), note: term.Note,
 		enabled: term.Enabled, createdAt: term.CreatedAt, original: term.Term}
+	d.editWas = d.edit
 }
 
 func (a *app) termDialog(c *ui.Context) {
@@ -297,7 +299,7 @@ func (a *app) termDialog(c *ui.Context) {
 	if e.id != "" {
 		title = i18n.T("Edit term")
 	}
-	dialogFrame(c, "term-dlg", &d.editOpen, title, "", 460, func() {
+	if dialogFrame(c, "term-dlg", &d.editOpen, title, "", 460, func() {
 		fieldInfo(c, i18n.T("Term"), i18n.T("As it must be written: Voxt, Kubernetes, 豆包."), func() {
 			in := ui.TextInput(c.Key("term-term"), &e.term).Label(i18n.T("Term as written")).Placeholder("Voxt").AutoFocus()
 			if in.Changed() {
@@ -329,7 +331,9 @@ func (a *app) termDialog(c *ui.Context) {
 		if primaryButton(c.Key("term-save"), i18n.T("Save")).Disabled(e.saving).Clicked() {
 			a.submitTerm()
 		}
-	})
+	}).Dismissed() && d.edit != d.editWas {
+		d.editOpen = true // a stray click or Escape: keep what was typed
+	}
 }
 
 // submitTerm checks and saves the dialog's term.

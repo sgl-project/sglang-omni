@@ -34,7 +34,7 @@ func (a *app) obWelcomeStep(c *ui.Context) {
 		a.obLegacyCard(c)
 	}
 	obRow(c, "ob-p-local-models", modelsIcon, i18n.T("Your audio stays on this Mac"),
-		i18n.T("Speech is recognised on this Mac; text goes only to the language model you set up. Voxt has no server of its own, no account and no analytics."))
+		i18n.T("Speech is recognised on this Mac, unless you choose a remote speech service; text goes only to the language model you set up. Voxt has no server of its own, no account and no analytics."))
 	obRow(c, "ob-p-local", icons.Database, i18n.T("History stays on this Mac"),
 		i18n.T("Results (and, if you choose, their recordings) are kept here only. Turn them off in Settings → Privacy."))
 	obRow(c, "ob-p-urls", appEnhancementIcon, i18n.T("Browser addresses only pick your rules"),

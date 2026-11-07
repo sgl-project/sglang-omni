@@ -188,7 +188,7 @@ func TestProblemCards(t *testing.T) {
 	if !hasExact(tt, "No models") || !has(tt, "Install a speech model, then set up a language model, to start.") {
 		t.Fatalf("no models card: %q", firstTexts(tt))
 	}
-	click(t, tt, "Open Local models")
+	click(t, tt, "Open Speech models")
 	if a.router.Path() != modelsPath {
 		t.Errorf("its action: %s", a.router.Path())
 	}

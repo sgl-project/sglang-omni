@@ -1,6 +1,6 @@
 package main
 
-// The Local models page's view (models_page.go): a card per model, with
+// The Speech models page's view (models_page.go): a card per model, with
 // what the ActNow family says of it (family spec §7.10.2–§7.10.4): the
 // other apps that share it, another app downloading it, the app that
 // deleted it for all apps; and the models of other family apps VoxtNew
@@ -29,17 +29,19 @@ import (
 
 func (a *app) modelsPage(c *ui.Context) {
 	t := c.Theme()
-	pageHeader(c, i18n.T("Local models"), func() {
+	pageHeader(c, i18n.T("Speech models"), func() {
 		if ghostButton(c.Key("models-network"), i18n.T("Network…")).Tooltip(i18n.T("How model downloads reach Hugging Face")).Clicked() {
 			a.openNetwork()
 		}
 	})
 	ui.Scroll(c.Key("models-scroll")).Grow(1).MinHeight(0).Children(func() {
 		ui.Column(c).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp3)).MaxWidth(px(t, 880)).Children(func() {
-			caption(c, i18n.T("Voxt recognises speech on this Mac: your audio never leaves it. Language models are remote: set one up on the Language models page."))
-			sectionTitleTip(c, i18n.T("Speech recognition"), i18n.T("Turns what you say into text. Every feature needs one to work by voice."))
+			caption(c, i18n.T("A speech model turns what you say into text: every feature needs one to work by voice. Those on this Mac keep your audio here; a remote service gets your recording only when you choose it. Language models are on the Language models page."))
+			sectionTitle(c, i18n.T("On this Mac"))
+			caption(c, i18n.T("Free, and your audio stays here: download a model once, then it runs on this Mac."))
 			a.modelCards(c, models.ASR)
 			a.dictationCard(c)
+			a.providerCards(c, local.ASR) // remote_page.go
 			if a.anyModelShown(models.LLM) {
 				sectionTitleTip(c, i18n.T("Language models no longer used"), i18n.T("Voxt 2.0 ran these on this Mac; Voxt now uses the language models of the Language models page. Delete them to free the space: another app that uses one keeps it."))
 				a.modelCards(c, models.LLM)
@@ -49,6 +51,7 @@ func (a *app) modelsPage(c *ui.Context) {
 	})
 	a.modelDeleteDialogs(c) // models_delete.go
 	a.networkDialog(c)      // models_network.go
+	a.providerDialogView(c) // remote_dialog.go
 }
 
 // modelCards are kind's models of the catalogue that the page shows.

@@ -1,8 +1,8 @@
 package main
 
-// The Language models page's dialog (remote_page.go; Auralink's service
-// dialog): a service's key, address and model, with a connection test
-// before saving, and Remove.
+// The remote services' dialog (remote_page.go; Auralink's service
+// dialog): a service's key (and Doubao's App ID), address and model, with
+// a connection test before saving, and Remove.
 
 import (
 	"slices"
@@ -10,7 +10,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
@@ -19,41 +19,58 @@ import (
 // providerDialog is the open service dialog's form.
 type providerDialog struct {
 	open               bool
+	kind               local.Kind
 	id                 string
+	appID              string
 	exists             bool // the service was set up before
 	key, endpoint      string
 	model, customModel string // model: the select's label
 	err, errMore       string // a save or check error
 	saving, removeKey  bool
 	test               providerTest
+	// was is the setup the dialog opened with: a click beside the dialog,
+	// or Escape, does not close it while the form differs (unsaved).
+	was settings.Provider
+}
+
+// unsaved says whether the form holds what Save has not kept: a key typed
+// or to remove, or a changed address, model or App ID.
+func (d *providerDialog) unsaved() bool {
+	return d.key != "" || d.removeKey || d.setup() != d.was
 }
 
 // otherModel is the model menu's last choice: a model id typed in.
 func otherModel() string { return i18n.T("Other model…") }
 
-func (a *app) openProviderDialog(id string) {
-	pr, _ := llm.LookupPreset(id)
-	p, exists := providers.Setup(a.prefs, id)
-	d := providerDialog{open: true, id: id, exists: exists, endpoint: p.Endpoint}
-	d.model = providers.Model(p)
-	if d.model == "" || !slices.Contains(pr.Models, d.model) {
+func (a *app) openProviderDialog(kind local.Kind, id string) {
+	sv := lookupService(kind, id)
+	p, exists := a.setupOf(kind, id)
+	d := providerDialog{open: true, kind: kind, id: id, exists: exists, endpoint: p.Endpoint, appID: p.AppID}
+	d.model = setupModel(kind, p)
+	if d.model == "" || !slices.Contains(sv.models, d.model) {
 		d.model, d.customModel = otherModel(), d.model
 	}
+	d.was = d.setup()
 	a.provDlg = d
-	if _, read := a.keyMasks[id]; !read {
-		a.loadKeyMasks([]string{id})
+	if acct := providers.Account(kind, id); !a.keyRead(acct) {
+		a.loadKeyMasks([]string{acct})
 	}
+}
+
+// keyRead says whether account's key was read (its mask may be "").
+func (a *app) keyRead(account string) bool {
+	_, read := a.keyMasks[account]
+	return read
 }
 
 // setup is the setup the dialog's form describes.
 func (d *providerDialog) setup() settings.Provider {
-	pr, _ := llm.LookupPreset(d.id)
-	p := settings.Provider{ID: d.id, Endpoint: strings.TrimSpace(d.endpoint)}
+	p := settings.Provider{ID: d.id, Endpoint: strings.TrimSpace(d.endpoint), AppID: strings.TrimSpace(d.appID)}
 	model := d.model
 	if model == otherModel() {
 		model = strings.TrimSpace(d.customModel)
 	}
-	if model != pr.DefaultModel {
+	if model != lookupService(d.kind, d.id).model {
 		p.Model = model
 	}
 	return p
@@ -65,22 +82,37 @@ func (a *app) providerDialogView(c *ui.Context) {
 		return
 	}
 	t := c.Theme()
-	pr, _ := llm.LookupPreset(d.id)
-	name := uitext.PresetName(d.id)
-	dialogFrame(c, "remote-dialog", &d.open, name, i18n.T("Remote language model · OpenAI-compatible API"), 560, func() {
+	sv := lookupService(d.kind, d.id)
+	name := sv.name
+	sub := i18n.T("Remote language model · OpenAI-compatible API")
+	switch {
+	case d.kind == local.ASR && sv.stream:
+		sub = i18n.T("Remote speech recognition · realtime, while you speak")
+	case d.kind == local.ASR:
+		sub = i18n.T("Remote speech recognition · the recording, once you stop")
+	}
+	if dialogFrame(c, "remote-dialog", &d.open, name, sub, 560, func() {
 		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
 			what := i18n.T("Recognised and selected text is sent to %s.", name)
-			if pr.BaseURL == "" {
+			switch {
+			case d.kind == local.ASR:
+				what = i18n.T("Your recordings are sent to %s to be recognised.", name)
+			case sv.endpoint == "":
 				what = i18n.T("Recognised and selected text is sent to the server at the address below.")
 			}
 			caption(c, what).Grow(1).Basis(px(t, 240))
-			if pr.KeyURL != "" {
-				ui.Link(c.Key("remote-keyurl"), i18n.T("Get a key"), pr.KeyURL).FontSize(px(t, fsCaption))
+			if sv.keyURL != "" {
+				ui.Link(c.Key("remote-keyurl"), i18n.T("Get a key"), sv.keyURL).FontSize(px(t, fsCaption))
 			}
 		})
-		mask := a.keyMasks[d.id]
+		if sv.appID {
+			fieldInfo(c, i18n.T("App ID"), i18n.T("From the app in the Volcengine speech console, with its Access Token as the key below. A key of the newer console needs no App ID."), func() {
+				ui.TextInput(c.Key("remote-appid"), &d.appID).Placeholder(i18n.T("Optional")).Label(i18n.T("App ID"))
+			})
+		}
+		mask := a.keyMasks[providers.Account(d.kind, d.id)]
 		keyInfo := i18n.T("Saved in this Mac's Keychain, never in Voxt's settings or logs.")
-		if pr.KeyOptional {
+		if sv.keyOptional {
 			keyInfo = i18n.T("Optional for a server on this Mac. Saved in this Mac's Keychain, never in Voxt's settings or logs.")
 		}
 		fieldInfo(c, i18n.T("API key"), keyInfo, func() {
@@ -99,18 +131,23 @@ func (a *app) providerDialogView(c *ui.Context) {
 			}
 		})
 		epInfo := i18n.T("The API root, ending in /v1; leave it empty for the service's own. Only https://, or http:// to this Mac.")
-		if pr.BaseURL == "" {
+		switch {
+		case d.kind == local.ASR && sv.stream:
+			epInfo = i18n.T("Leave it empty for the service's own. Only wss://, or ws:// to this Mac.")
+		case d.kind == local.ASR:
+			epInfo = i18n.T("Leave it empty for the service's own. Only https://, or http:// to this Mac.")
+		case sv.endpoint == "":
 			epInfo = i18n.T("The API root of any OpenAI-compatible server, ending in /v1. Only https://, or http:// to this Mac.")
 		}
 		fieldInfo(c, i18n.T("Address"), epInfo, func() {
-			ph := pr.BaseURL
+			ph := sv.endpoint
 			if ph == "" {
 				ph = "https://…/v1"
 			}
 			ui.TextInput(c.Key("remote-endpoint"), &d.endpoint).Placeholder(ph).Label(i18n.T("Address"))
 		})
 		fieldInfo(c, i18n.T("Model"), "", func() {
-			opts := append(slices.Clone(pr.Models), otherModel())
+			opts := append(slices.Clone(sv.models), otherModel())
 			ui.Select(c.Key("remote-model"), &d.model, opts).Label(i18n.T("Model")).Width(px(t, 320))
 			if d.model == otherModel() {
 				ui.TextInput(c.Key("remote-model-custom"), &d.customModel).Placeholder(i18n.T("Model id")).Label(i18n.T("Model id"))
@@ -137,7 +174,9 @@ func (a *app) providerDialogView(c *ui.Context) {
 		if primaryButton(c.Key("remote-dlg-save"), i18n.T("Save")).Disabled(d.saving).Shrink(0).Clicked() {
 			a.saveProviderDialog()
 		}
-	})
+	}).Dismissed() && d.unsaved() {
+		d.open = true // a stray click or Escape: keep what was typed
+	}
 }
 
 // check says what the form lacks before it can be tested or saved ("" for
@@ -146,10 +185,20 @@ func (d *providerDialog) check(p settings.Provider) (msg, more string) {
 	if strings.TrimSpace(d.model) == "" || d.model == otherModel() && strings.TrimSpace(d.customModel) == "" {
 		return i18n.T("Choose a model, or type its id."), ""
 	}
-	if _, err := providers.Config(p).Resolve(); err != nil {
+	if err := checkSetup(d.kind, p); err != nil {
 		return uitext.ModelErrorText(err)
 	}
 	return "", ""
+}
+
+// checkSetup checks a setup's address before it is tested or saved.
+func checkSetup(kind local.Kind, p settings.Provider) error {
+	if kind == local.ASR {
+		_, err := providers.NewASR(p, "check", nil) // any key: only the address is checked here
+		return err
+	}
+	_, err := providers.Config(p).Resolve()
+	return err
 }
 
 // testDialog tests what the dialog's form describes, saved or not: with
@@ -161,15 +210,15 @@ func (a *app) testDialog() {
 	if d.err, d.errMore = d.check(p); d.err != "" {
 		return
 	}
-	typed, remove, kr := strings.TrimSpace(d.key), d.removeKey, a.keys
-	a.testProvider(p, func() (string, error) {
+	typed, remove, kr, acct := strings.TrimSpace(d.key), d.removeKey, a.keys, providers.Account(d.kind, d.id)
+	a.testProvider(d.kind, p, func() (string, error) {
 		switch {
 		case typed != "":
 			return typed, nil
 		case remove:
 			return "", nil
 		}
-		return kr.Get(p.ID)
+		return kr.Get(acct)
 	})
 }
 
@@ -181,17 +230,18 @@ func (a *app) saveProviderDialog() {
 	if d.err, d.errMore = d.check(p); d.err != "" {
 		return
 	}
-	key, remove := strings.TrimSpace(d.key), d.removeKey
-	label := "Voxt " + uitext.PresetName(p.ID) + " API key"
+	key, remove, kind := strings.TrimSpace(d.key), d.removeKey, d.kind
+	sv, acct := lookupService(kind, p.ID), providers.Account(kind, p.ID)
+	label := "Voxt " + sv.name + " API key"
 	d.saving = true
 	kr := a.keys
 	a.async(func() {
 		var err error
 		switch {
 		case key != "":
-			err = kr.Set(p.ID, label, key)
+			err = kr.Set(acct, label, key)
 		case remove:
-			err = kr.Set(p.ID, label, "")
+			err = kr.Set(acct, label, "")
 		}
 		a.post(func() {
 			a.provDlg.saving = false
@@ -201,15 +251,21 @@ func (a *app) saveProviderDialog() {
 			}
 			switch {
 			case key != "":
-				a.keyMasks[p.ID] = maskKey(key)
+				a.keyMasks[acct] = maskKey(key)
 			case remove:
-				a.keyMasks[p.ID] = ""
+				a.keyMasks[acct] = ""
 			}
-			delete(a.provTests, p.ID)
-			a.updateSettings(func(s *settings.Settings) { providers.Put(s, p) })
+			delete(a.provTests, acct)
+			a.updateSettings(func(s *settings.Settings) {
+				if kind == local.ASR {
+					providers.PutSpeech(s, p)
+				} else {
+					providers.Put(s, p)
+				}
+			})
 			a.syncRemote() // a new key: the settings may not have changed
 			a.provDlg = providerDialog{}
-			a.toast(i18n.T("%s saved", uitext.ProviderName(p)))
+			a.toast(i18n.T("%s saved", setupName(kind, p)))
 		})
 	})
 }
@@ -218,19 +274,26 @@ func (a *app) saveProviderDialog() {
 // the features that used it go back to automatic.
 func (a *app) removeProvider() {
 	d := &a.provDlg
-	id, name, kr := d.id, uitext.PresetName(d.id), a.keys
+	kind, id, kr := d.kind, d.id, a.keys
+	name, acct := lookupService(kind, id).name, providers.Account(kind, id)
 	d.saving = true
 	a.async(func() {
-		err := kr.Set(id, "", "")
+		err := kr.Set(acct, "", "")
 		a.post(func() {
 			a.provDlg.saving = false
 			if err != nil {
 				a.provDlg.err, a.provDlg.errMore = i18n.T("Could not remove the key from the Keychain."), err.Error()
 				return
 			}
-			a.keyMasks[id] = ""
-			delete(a.provTests, id)
-			a.updateSettings(func(s *settings.Settings) { providers.Remove(s, id) })
+			a.keyMasks[acct] = ""
+			delete(a.provTests, acct)
+			a.updateSettings(func(s *settings.Settings) {
+				if kind == local.ASR {
+					providers.RemoveSpeech(s, id)
+				} else {
+					providers.Remove(s, id)
+				}
+			})
 			a.provDlg = providerDialog{}
 			a.toast(i18n.T("%s removed", name))
 		})

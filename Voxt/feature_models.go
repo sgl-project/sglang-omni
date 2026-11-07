@@ -32,14 +32,14 @@ func (a *app) featureModels(c *ui.Context, feature string) {
 		u.svcSeen = seen
 		u.asr, u.llm = modelLabel(readyA, f.ASR, autoA), modelLabel(readyL, f.LLM, autoL)
 	}
-	sectionTitleTip(c, i18n.T("Models"), i18n.T("Automatic uses the recommended speech model among those installed on the Local models page, and the first language model set up on the Language models page."))
-	opened := false // one "Open Local models" per page
+	sectionTitleTip(c, i18n.T("Models"), i18n.T("Automatic uses the recommended speech model on this Mac (the Speech models page), and the first language model set up on the Language models page. A remote speech service is used when you choose it here, or when no speech model on this Mac is installed."))
+	opened := false // one "Open Speech models" per page
 	openModels := func() {
 		if opened {
 			return
 		}
 		opened = true
-		if ui.Button(c.Key(p+"-open-models"), i18n.T("Open Local models")).Clicked() {
+		if ui.Button(c.Key(p+"-open-models"), i18n.T("Open Speech models")).Clicked() {
 			a.navigate(modelsPath)
 		}
 	}

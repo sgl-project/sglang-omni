@@ -85,7 +85,7 @@ func mockOpenAI(t *testing.T, answer string) (*httptest.Server, func() []string)
 // its answer pasted and kept in the history.
 func TestRemoteModelEndToEnd(t *testing.T) {
 	srv, requests := mockOpenAI(t, "早上好，团队。")
-	useKeys(t, &memKeys{m: map[string]string{llm.Custom: "sk-mock-123"}})
+	useKeys(t, &memKeys{m: map[string]string{"llm." + llm.Custom: "sk-mock-123"}})
 	ev := script(t, hotkeyLine(0, "translate/0", proto.PhaseTrigger))
 	a := newSessionApp(t, helpertest.Opt("selection", "Good morning, team.")+","+ev, func(s *settings.Settings) {
 		s.Features.Translate.Target = "zh-Hans"
@@ -119,7 +119,7 @@ func TestRemoteErrorKeepsNoKey(t *testing.T) {
 		fmt.Fprintf(w, `{"error":{"message":"invalid header %s"}}`, r.Header.Get("Authorization"))
 	}))
 	t.Cleanup(srv.Close)
-	useKeys(t, &memKeys{m: map[string]string{llm.Custom: key}})
+	useKeys(t, &memKeys{m: map[string]string{"llm." + llm.Custom: key}})
 	ev := script(t, hotkeyLine(0, "translate/0", proto.PhaseTrigger))
 	a := newSessionApp(t, helpertest.Opt("selection", "Good morning, team.")+","+ev, func(s *settings.Settings) {
 		s.Features.Translate.Target = "zh-Hans"
@@ -153,7 +153,7 @@ func TestRemotePage(t *testing.T) {
 	a.provDlg.key = "sk-deep-0123456789"
 	click(t, tt, "Save")
 	frames(tt)
-	if keys.m["deepseek"] != "sk-deep-0123456789" {
+	if keys.m["llm.deepseek"] != "sk-deep-0123456789" {
 		t.Fatalf("keys %v", keys.m)
 	}
 	if p, ok := a.lib.settings.Get().Providers.LLM, true; !ok || len(p) != 1 || p[0].ID != "deepseek" || p[0].Model != "" {

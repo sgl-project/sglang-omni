@@ -127,7 +127,7 @@ func TestOnboardingReuse(t *testing.T) {
 		t.Errorf("the Hub was asked %d times", n)
 	}
 
-	// Choose models… opens the Local models page.
+	// Choose models… opens the Speech models page.
 	reuseAgain(t, a)
 	click(t, tt, "Choose models…")
 	if a.ob.open || a.shownPath() != modelsPath {

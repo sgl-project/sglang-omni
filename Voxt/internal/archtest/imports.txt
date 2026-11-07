@@ -9,6 +9,12 @@ appctx hotkey
 appctx settings
 appicons helper/proto
 asr core
+asr/aliyun asr
+asr/doubao asr
+asr/gemini asr
+asr/mimo asr
+asr/openai asr
+asr/openai core
 compose lang
 datadir store/sqlitestore
 deliver helper/proto
@@ -86,6 +92,12 @@ eval asr
 omni resident
 llmrt resident
 providers asr
+providers asr/aliyun
+providers asr/doubao
+providers asr/gemini
+providers asr/mimo
+providers asr/openai
+providers core
 providers llm
 providers local
 providers settings

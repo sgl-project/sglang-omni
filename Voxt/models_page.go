@@ -1,15 +1,17 @@
 package main
 
-// The Local models page (/models): the few models VoxtNew offers, by
-// kind (speech recognition, language models), each a card that says in
-// plain words what it is good at and which languages it knows, its size,
+// The Speech models page (/models; Local models until 2.1): the speech
+// models of this Mac, each a card that says in plain words what it is good
+// at and which languages it knows, its size,
 // whether it is installed or downloading, with Download, Cancel and
 // Delete, and, while it is loaded, the memory it uses (models_memory.go).
 // The models live in the ActNow family's library, so a card also says
 // which other family apps share the model, or download it, or deleted it
 // (models_cards.go); deleting follows the family's rules
 // (models_delete.go); Network… sets how downloads reach the Hub
-// (models_network.go).
+// (models_network.go). The remote speech services follow, as the
+// Language models page's cards (remote_page.go), and the language models
+// Voxt 2.0 ran on this Mac close it while they are on disk.
 //
 // The models on disk and their downloads are internal/models' (a.models);
 // what is installed, as the sessions open it, internal/local's (a.local,
@@ -31,10 +33,10 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
-// modelsPath is the Local models page's path.
+// modelsPath is the Speech models page's path.
 const modelsPath = "/models"
 
-// modelsState is the local models and the Local models page's state.
+// modelsState is the local models and the Speech models page's state.
 type modelsState struct {
 	local local.Services
 	// localLib is the Library under local (nil when tests swap in fakes):
@@ -61,6 +63,7 @@ type modelsState struct {
 	// (models_network.go).
 	netOpen bool
 	netForm networkForm
+	netWas  networkForm // the form as opened: a stray click or Escape keeps a changed one open
 	// modelAdvanced: the Advanced section is open; modelKeepSel is its
 	// select's label, modelKeepFor the setting and language it shows
 	// (models_keep.go).

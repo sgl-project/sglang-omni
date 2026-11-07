@@ -40,7 +40,7 @@ func TestKeepIdle(t *testing.T) {
 	}
 }
 
-// TestKeepLoadedRow: the Local models page's Advanced section is folded;
+// TestKeepLoadedRow: the Speech models page's Advanced section is folded;
 // open, its select shows the choice and saves another; a choice made
 // elsewhere shows too.
 func TestKeepLoadedRow(t *testing.T) {

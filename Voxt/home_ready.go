@@ -44,7 +44,7 @@ func (a *app) readinessList() []readiness {
 		out = append(out, readiness{key: "home-asr", title: i18n.T("Speech recognition"), ok: true, text: ma.Name})
 	} else {
 		out = append(out, readiness{key: "home-asr", title: i18n.T("Speech recognition"), kind: noticeWarn,
-			text: i18n.T("No speech model is installed: install one to transcribe, translate and rewrite by voice."), action: i18n.T("Open Local models"), fix: openModels})
+			text: i18n.T("No speech model is installed: install one to transcribe, translate and rewrite by voice."), action: i18n.T("Open Speech models"), fix: openModels})
 	}
 	switch {
 	case !okL:

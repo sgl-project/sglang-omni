@@ -12,7 +12,40 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 )
+
+// SpeechName is a remote speech service's name: its brand, untranslated,
+// but in Chinese for the Chinese services (as PresetName).
+func SpeechName(id string) string {
+	switch id {
+	case "doubao":
+		return i18n.T("Doubao (Volcengine)")
+	case providers.ZhipuASR:
+		return i18n.T("Zhipu GLM-ASR")
+	case "aliyun":
+		return i18n.T("Aliyun Bailian ASR")
+	case providers.StepFunASR:
+		return i18n.T("StepFun")
+	case "mimo":
+		return i18n.T("Xiaomi MiMo")
+	}
+	if pr, ok := providers.LookupSpeech(id); ok {
+		return pr.Name
+	}
+	return id
+}
+
+// RemoteSpeech says whether err is a remote speech service's (its
+// asr.Error names one of providers' speech services).
+func RemoteSpeech(err error) bool {
+	var ae *asr.Error
+	if !errors.As(err, &ae) {
+		return false
+	}
+	_, ok := providers.LookupSpeech(ae.Provider)
+	return ok
+}
 
 // ModelErrorText says what went wrong with a model, and its detail
 // (the error itself, for the ⓘ).
@@ -35,6 +68,12 @@ func ModelErrorText(err error) (msg, more string) {
 	}
 	var ae *asr.Error
 	if errors.As(err, &ae) {
+		switch remote := RemoteSpeech(err); {
+		case remote && ae.Kind == asr.KindAuth:
+			return i18n.T("The remote service refused the API key."), more
+		case remote && ae.Kind == asr.KindQuota:
+			return i18n.T("The remote service refused the request: it is busy, the account is out of credit, or the model is not enabled for it."), more
+		}
 		switch ae.Kind {
 		case asr.KindNetwork, asr.KindServer:
 			return i18n.T("The speech model stopped or did not answer. Try again in a moment."), more
@@ -45,7 +84,7 @@ func ModelErrorText(err error) (msg, more string) {
 		case asr.KindCancelled:
 			return i18n.T("Cancelled."), more
 		case asr.KindConfig:
-			return i18n.T("The speech model is not set up correctly: check it on the Local models page."), more
+			return i18n.T("The speech model is not set up correctly: check it on the Speech models page."), more
 		}
 		return i18n.T("The speech model answered something Voxt does not understand."), more
 	}

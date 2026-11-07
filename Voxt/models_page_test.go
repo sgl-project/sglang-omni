@@ -267,7 +267,7 @@ func fakeFileSize(p string) int64 {
 	return 0
 }
 
-// modelShots saves the Local models page with a model of each state
+// modelShots saves the Speech models page with a model of each state
 // (TestSnapshots): installed (one shared with another ActNow app),
 // downloading (waiting for a file another app downloads), stopped,
 // failed, another app's model VoxtNew can use; the family's states
