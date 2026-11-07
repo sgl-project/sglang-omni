@@ -551,6 +551,7 @@ def test_factory_serves_a_draft_on_the_synchronous_verify_loop(
             "speculative_algorithm": "DFLASH",
             "speculative_draft_model_path": str(tmp_path),
             "speculative_draft_model_revision": "pinned",
+            "enable_torch_compile": True,
         },
     )
 
@@ -562,6 +563,7 @@ def test_factory_serves_a_draft_on_the_synchronous_verify_loop(
         infrastructure_kwargs["speculative_worker_class"]
         is ReducedVocabularyDFlashWorker
     )
+    assert server_args_kwargs["enable_torch_compile"] is False
     assert adapter_kwargs["speculative_reserve_tokens"] == 16
     scheduler_kwargs = calls["scheduler_kwargs"][0]
     assert scheduler_kwargs["enable_async_decode"] is False
@@ -638,6 +640,30 @@ def test_unservable_speculative_settings_are_refused_before_the_engine_starts(
 
     with pytest.raises(ValueError, match=message):
         make_moss_engine_builder().adjust_overrides(dict(overrides))
+
+
+@pytest.mark.parametrize("with_draft", [False, True])
+def test_torch_compile_is_turned_off_only_under_the_draft(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, with_draft: bool
+) -> None:
+    """On SGLang 0.5.23 compile made the draft about four times slower at concurrency 1, while it still speeds up decode without a draft."""
+    monkeypatch.setattr(engine_builder.current_platform, "is_cuda", lambda: True)
+    write_speculators_config(tmp_path)
+    overrides: dict[str, object] = {"enable_torch_compile": True}
+    if with_draft:
+        overrides["speculative_algorithm"] = "DFLASH"
+        overrides["speculative_draft_model_path"] = str(tmp_path)
+    else:
+        pass
+    builder = make_moss_engine_builder()
+
+    builder.adjust_overrides(overrides)
+
+    assert overrides["enable_torch_compile"] is not with_draft
+    if with_draft:
+        builder.draft_checkpoint.cleanup()
+    else:
+        pass
 
 
 def test_dflash_worker_reaches_the_decoder_through_the_outer_model() -> None:

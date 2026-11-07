@@ -1,22 +1,18 @@
 name: Omni CI
 
 # DAG:
-#   preflight -> setup -> pr-test -> {asr-ci, tts-ci, qwen3-omni-ci, duplex-ci}
-#     -> mps-ci
+#   preflight -> setup -> pr-test -> {asr-ci, tts-ci, qwen3-omni-ci, duplex-ci, mps-ci}
 #   setup + unit/model suites -> cleanup (dispatch only)
 #
 # preflight resolves the CI labels with .github/scripts/resolve_ci_labels.py:
 # any stage label, including run-unit-test-ci-only, runs pr-test, and each model
 # suite runs only when its stage is selected. run-lint-only passes the gate and
-# skips setup. Model suites start together once pr-test finishes and use always()
+# skips setup. Model suites, including MPS, start after pr-test and use always()
 # so a failed or skipped suite never skips another one. Only setup blocks all
 # downstream model CI.
 #
-# mps-ci runs last on purpose: it checks out the PR head (exact_sha) while every
-# other job checks out the merge commit. When main changed pyproject.toml after
-# the PR branched, the two pin different dependencies, and the MPS job's
-# omni-setup rebuilds the shared PR home below with rm -rf. Running it last keeps
-# that rebuild away from stages that are still using the home.
+# MPS has no result dependency on other model suites and uses the same
+# workflow SHA, so it does not wait for those suites to finish.
 #
 # PR-scoped homes (/data/omni-ci/pr-<N>) persist on the runner for reuse across
 # pushes (runner TTL, e.g. 3 days). reconcile_omni_ci_env.sh validates fingerprint,
@@ -36,9 +32,8 @@ on:
     inputs:
       ci_labels:
         description: "Space-separated CI labels, resolved like PR labels (e.g. 'run-tts-ci run-moss-tts-local-transformer-v1.5')."
-        required: false
+        required: true
         type: string
-        default: run-all-ci
 
 concurrency:
   group: omni-ci-${{ github.event.pull_request.number || github.ref }}
@@ -121,13 +116,6 @@ jobs:
           exit 1
 
       - name: Checkout workflow scripts
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-
-      - name: Checkout workflow scripts for manual dispatch
-        if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/checkout@v4
 
       - name: Resolve CI stages and models
@@ -274,7 +262,7 @@ jobs:
 
   mps-ci:
     name: MPS CI
-    needs: [preflight, setup, pr-test, asr-ci, tts-ci, qwen3-omni-ci, duplex-ci]
+    needs: [preflight, setup, pr-test]
     if: >-
       always() && !cancelled() &&
       needs.setup.result == 'success' &&
@@ -283,7 +271,7 @@ jobs:
     with:
       mps_ci_model: ${{ needs.preflight.outputs.mps_ci_model }}
       mps_ci_config: ${{ needs.preflight.outputs.mps_ci_config }}
-      exact_sha: ${{ github.event.pull_request.head.sha || github.sha }}
+      exact_sha: ${{ github.sha }}
       omni_ci_home: >-
         ${{ github.event_name == 'pull_request'
             && format('/data/omni-ci/pr-{0}', github.event.pull_request.number)

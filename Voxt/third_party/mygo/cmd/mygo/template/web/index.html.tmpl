@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{html .Name}}</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <main>
+      <h1>{{html .Name}}</h1>
+      <p class="muted">Go ↔ TypeScript, fully typed.</p>
+      <form id="greet">
+        <input id="name" placeholder="Your name" autocomplete="off" autofocus />
+        <button type="submit">Greet</button>
+      </form>
+      <p id="greeting" class="card"></p>
+      <p class="muted"><span id="info"></span> · <span id="clock">--:--:--</span></p>
+    </main>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

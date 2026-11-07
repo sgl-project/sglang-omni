@@ -88,7 +88,9 @@ def build_default_prefill_cuda_graph_bs(
     else:
         pass
 
+    # note (Yuhao): a radix-cache hit can leave one token, which bucket 4 pads past the 2x replay limit.
     token_buckets = {
+        1,
         max_num_tokens,
         *generate_prefill_cuda_graph_batch_sizes(max_num_tokens),
         *extra_token_buckets,
@@ -216,7 +218,6 @@ def build_generation_batch_overrides(
     cuda_graph_max_bs: int | None = None,
     torch_compile_max_bs: int | None = None,
     server_args_overrides: Mapping[str, object] | None = None,
-    prefill_extra_token_buckets: Sequence[int] = (),
     **stage_defaults: Unpack[GenerationStageDefaults],
 ) -> dict[str, object]:
     incoming = dict(server_args_overrides or {})
@@ -275,9 +276,10 @@ def build_generation_batch_overrides(
         overrides["cuda_graph_bs"] = cuda_graph_bs
 
     # sglang resolves an explicit prefill backend after the disable flags;
-    # without this, a stage-default backend overrides a deployment's disable.
-    disables_prefill = bool(incoming.get("disable_cuda_graph")) or bool(
-        incoming.get("disable_prefill_cuda_graph")
+    # without this, a stage-default backend overrides a deployment's or the
+    # stage's own disable, so an eager-by-default stage would fail validation.
+    disables_prefill = bool(overrides.get("disable_cuda_graph")) or bool(
+        overrides.get("disable_prefill_cuda_graph")
     )
     if disables_prefill and "cuda_graph_backend_prefill" not in incoming:
         overrides["cuda_graph_backend_prefill"] = CudaGraphBackend.DISABLED
@@ -296,9 +298,7 @@ def build_generation_batch_overrides(
         # an unset chunk is only known inside ServerArgs.
         cap = explicit_prefill_cap(overrides)
         if cap is not None:
-            prefill_bs = build_default_prefill_cuda_graph_bs(
-                cap, extra_token_buckets=prefill_extra_token_buckets
-            )
+            prefill_bs = build_default_prefill_cuda_graph_bs(cap)
             prefill_max_bs = cap
             overrides["cuda_graph_bs_prefill"] = prefill_bs
             overrides["cuda_graph_max_bs_prefill"] = cap

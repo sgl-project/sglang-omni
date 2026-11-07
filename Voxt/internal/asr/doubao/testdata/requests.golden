@@ -1,0 +1,111 @@
+== async, plain
+{
+  "audio": {
+    "bits": 16,
+    "channel": 1,
+    "codec": "raw",
+    "format": "pcm",
+    "rate": 16000
+  },
+  "request": {
+    "enable_ddc": true,
+    "enable_itn": true,
+    "enable_nonstream": true,
+    "enable_punc": true,
+    "model_name": "bigmodel",
+    "show_utterances": true
+  },
+  "user": {
+    "uid": "voxt"
+  }
+}
+== async, lang en (not sent), hints, prompt
+{
+  "audio": {
+    "bits": 16,
+    "channel": 1,
+    "codec": "raw",
+    "format": "pcm",
+    "rate": 16000
+  },
+  "request": {
+    "corpus": {
+      "context": "{\"hotwords\":[{\"word\":\"Voxt\"},{\"word\":\"火山引擎\"}],\"context_type\":\"dialog_ctx\",\"context_data\":[{\"text\":\"A note about \\\"Voxt\\\".\"}]}"
+    },
+    "enable_ddc": true,
+    "enable_itn": true,
+    "enable_nonstream": true,
+    "enable_punc": true,
+    "model_name": "bigmodel",
+    "show_utterances": true
+  },
+  "user": {
+    "uid": "voxt"
+  }
+}
+== async, traditional Chinese
+{
+  "audio": {
+    "bits": 16,
+    "channel": 1,
+    "codec": "raw",
+    "format": "pcm",
+    "rate": 16000
+  },
+  "request": {
+    "enable_ddc": true,
+    "enable_itn": true,
+    "enable_nonstream": true,
+    "enable_punc": true,
+    "model_name": "bigmodel",
+    "output_zh_variant": "tw",
+    "show_utterances": true
+  },
+  "user": {
+    "uid": "voxt"
+  }
+}
+== duplex, hints
+{
+  "audio": {
+    "bits": 16,
+    "channel": 1,
+    "codec": "raw",
+    "format": "pcm",
+    "rate": 16000
+  },
+  "request": {
+    "corpus": {
+      "context": "{\"hotwords\":[{\"word\":\"MyGo\"}]}"
+    },
+    "enable_ddc": true,
+    "enable_itn": true,
+    "enable_punc": true,
+    "model_name": "bigmodel",
+    "show_utterances": true
+  },
+  "user": {
+    "uid": "voxt"
+  }
+}
+== nostream, lang ja
+{
+  "audio": {
+    "bits": 16,
+    "channel": 1,
+    "codec": "raw",
+    "format": "pcm",
+    "language": "ja-JP",
+    "rate": 16000
+  },
+  "request": {
+    "enable_ddc": true,
+    "enable_itn": true,
+    "enable_punc": true,
+    "model_name": "bigmodel",
+    "show_utterances": true
+  },
+  "user": {
+    "uid": "voxt"
+  }
+}

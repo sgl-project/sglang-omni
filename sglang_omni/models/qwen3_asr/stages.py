@@ -22,7 +22,7 @@ def create_sglang_qwen3_asr_executor(
     mm_embedding_cache_size_bytes: int = 0,
     enable_torch_compile: bool | None = None,
     torch_compile_max_bs: int = 1,
-    enable_async_decode: bool = True,
+    enable_async_decode: bool | None = None,
     async_decode_min_batch_size: int = 1,
     mm_attention_backend: str | None = None,
     request_build_max_workers: int = 8,

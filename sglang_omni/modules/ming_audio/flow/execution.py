@@ -28,3 +28,12 @@ class TalkerExecutionConfig:
     rope_max_batch_size: int | None = None
     norm_layer: NormLayerFactory | None = None
     qkv_layer: QKVProjectionConstructor | None = None
+    # note (Dayuxiaoshui): The fused path needs (norm(x + residual), x + residual) from
+    # norm_layer, so each residual add fuses into the next norm.
+    fuse_residual_norm: bool = False
+
+    def __post_init__(self) -> None:
+        if self.fuse_residual_norm and self.norm_layer is None:
+            raise ValueError("fuse_residual_norm requires a residual-aware norm_layer")
+        else:
+            pass
