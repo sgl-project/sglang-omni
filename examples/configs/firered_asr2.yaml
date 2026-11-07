@@ -1,0 +1,9 @@
+# Merged HF checkpoint referenced by the FireRedASR2 official serving guide.
+config_cls: FireRedASR2PipelineConfig
+name: firered-asr2-llm
+model_path: allendou/FireRedASR2-LLM-vllm
+
+stages:
+  asr:
+    engine:
+      mem_fraction_static: 0.70

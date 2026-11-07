@@ -84,6 +84,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+firered-asr2 = ["kaldi-native-fbank>=1.20.0"]
 # SeedTTS speaker-sim / WER eval + tests (device-agnostic).
 eval = [
     "s3prl>=0.4.18",
