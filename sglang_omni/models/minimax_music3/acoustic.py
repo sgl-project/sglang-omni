@@ -16,17 +16,17 @@ import torch
 from torch import Tensor
 
 from sglang_omni.models.minimax_music3.serial_offload import (
-    StageResidency,
     get_coordinator,
     torch_memory_saver,
 )
-from sglang_omni.models.minimax_music3.weight_cache import checkpoint_identity
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.pipeline_state import build_usage
+from sglang_omni.scheduling.stage_residency import StageResidency
 from sglang_omni.scheduling.streaming_simple_scheduler import StreamingSimpleScheduler
+from sglang_omni.scheduling.weight_cache import checkpoint_identity
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 from .checkpoint import load_torch_state, resolve_checkpoint

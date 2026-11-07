@@ -6,6 +6,7 @@ from unittest.mock import Mock
 import pytest
 import torch
 
+from sglang_omni.models.auk.dit import AudioPromptEmbedding
 from sglang_omni.models.auk.step_cuda_graph import (
     DEFAULT_CAPTURE_SHAPES,
     AuKGraphShape,
@@ -133,3 +134,29 @@ def test_a_shape_that_fails_to_capture_is_left_out_rather_than_raising(caplog):
 
     assert declared.ready == set()
     assert "will run eager" in caplog.text
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_reference_embedding_matches_graph_for_strided_latents() -> None:
+    """A reference's memory layout must not change its graph-replayed embedding."""
+    torch.manual_seed(42)
+    embedding = AudioPromptEmbedding(64, 128).cuda().to(torch.bfloat16).eval()
+    reference = torch.randn(1, 64, 195, device="cuda", dtype=torch.bfloat16).transpose(
+        1, 2
+    )
+    static_reference = reference.contiguous()
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.inference_mode(), torch.cuda.stream(stream):
+        for _ in range(3):
+            embedding.embed(static_reference)
+    torch.cuda.current_stream().wait_stream(stream)
+    graph = torch.cuda.CUDAGraph()
+    with torch.inference_mode():
+        with torch.cuda.graph(graph, stream=stream):
+            captured = embedding.embed(static_reference)
+        expected = embedding.embed(reference)
+        graph.replay()
+        torch.cuda.synchronize()
+    torch.testing.assert_close(captured, expected, rtol=0, atol=0)

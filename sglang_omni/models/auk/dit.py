@@ -425,7 +425,8 @@ class AudioPromptEmbedding(nn.Module):
         self.conv_pos_embed = ConvPositionEmbedding(out_dim)
 
     def embed(self, x: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
-        x = self.linear(x)
+        # note (guozhihao-224): Match graph buffers' fused BF16 linear/bias path for strided references.
+        x = self.linear(x.contiguous())
         return self.conv_pos_embed(x, mask=mask) + x
 
     def forward(

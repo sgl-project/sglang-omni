@@ -68,7 +68,7 @@ class StorageChunk:
 
 
 class StagingRing:
-    """One bounded host ring and copy stream shared by both stages."""
+    """One bounded host ring and copy stream shared by serial stages."""
 
     def __init__(self, device: torch.device) -> None:
         self.device = device
@@ -173,12 +173,12 @@ def writable_cache_directory(cache_dir: str | None) -> Path:
             pass
     if mount_type in {"tmpfs", "ramfs"}:
         raise ValueError(
-            f"Music3 runtime cache requires non-tmpfs storage: {directory}"
+            f"Runtime weight cache requires non-tmpfs storage: {directory}"
         )
     else:
         pass
     with tempfile.TemporaryFile(dir=directory) as probe:
-        probe.write(b"music3")
+        probe.write(b"runtime-weights")
         probe.flush()
         os.fsync(probe.fileno())
     return directory
@@ -245,7 +245,7 @@ class RuntimeWeights:
                     required_bytes = sum(storage_bytes) + SHARD_BYTES
                     if shutil.disk_usage(directory).free < required_bytes:
                         raise OSError(
-                            f"Insufficient disk space for Music3 runtime cache: "
+                            f"Insufficient disk space for Runtime weight cache: "
                             f"requires {required_bytes} bytes in {directory}"
                         )
                     else:
@@ -317,7 +317,7 @@ class RuntimeWeights:
                     or manifest.layouts != layouts
                     or manifest.storage_bytes != storage_bytes
                 ):
-                    raise ValueError(f"Invalid Music3 runtime cache: {self.cache_path}")
+                    raise ValueError(f"Invalid Runtime weight cache: {self.cache_path}")
                 else:
                     pass
                 restored_bytes = [0 for _ in storage_bytes]
@@ -327,7 +327,7 @@ class RuntimeWeights:
                         or shard.storage >= len(storage_bytes)
                         or shard.offset_bytes != restored_bytes[shard.storage]
                     ):
-                        raise ValueError("Invalid Music3 cache shard layout")
+                        raise ValueError("Invalid Runtime weight cache shard layout")
                     else:
                         pass
                     shard_path = self.cache_path / shard.filename
@@ -335,7 +335,9 @@ class RuntimeWeights:
                         shard_path.stat().st_size > SHARD_BYTES
                         or file_digest(shard_path) != shard.sha256
                     ):
-                        raise ValueError(f"Invalid Music3 cache shard: {shard_path}")
+                        raise ValueError(
+                            f"Invalid Runtime weight cache shard: {shard_path}"
+                        )
                     else:
                         pass
                     with safe_open(shard_path, framework="pt", device="cpu") as tensors:
@@ -344,14 +346,14 @@ class RuntimeWeights:
                             shard.length_bytes,
                         ):
                             raise ValueError(
-                                f"Invalid Music3 cache tensor: {shard_path}"
+                                f"Invalid Runtime weight cache tensor: {shard_path}"
                             )
                         else:
                             pass
                         del values
                     restored_bytes[shard.storage] += shard.length_bytes
                 if restored_bytes != storage_bytes:
-                    raise ValueError("Incomplete Music3 runtime cache")
+                    raise ValueError("Incomplete Runtime weight cache")
                 else:
                     pass
                 for shard in manifest.shards:
@@ -365,7 +367,7 @@ class RuntimeWeights:
                     if header["bytes"]["data_offsets"] != [0, shard.length_bytes]:
                         mapping.close()
                         raise ValueError(
-                            f"Invalid Music3 cache tensor offsets: {shard_path}"
+                            f"Invalid Runtime weight cache tensor offsets: {shard_path}"
                         )
                     else:
                         pass

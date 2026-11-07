@@ -10,6 +10,8 @@ import huggingface_hub
 import pytest
 
 from sglang_omni.config import manager
+from sglang_omni.config.path import ConfigPath
+from sglang_omni.config.schema import ProcessConfig
 from sglang_omni.models.auk.config import (
     CONDITIONING_STAGE,
     DECODE_STAGE,
@@ -85,3 +87,38 @@ def test_hub_config_yaml_resolves_without_snapshot(monkeypatch, tmp_path):
 
     monkeypatch.setattr("sglang_omni.utils.hf.hf_hub_download", fake_hub_download)
     assert manager.resolve_config_cls_for_model_path("tencent/AuK") is AuKPipelineConfig
+
+
+@pytest.mark.parametrize(
+    "invalid", ["gpu", "process", "device", "replica", "concurrency", "order"]
+)
+def test_offload_rejects_incompatible_placement(invalid: str) -> None:
+    config = AuKPipelineConfig(model_path="test")
+    for stage in config.stages[1:]:
+        stage.factory.device = "cuda"
+    if invalid == "gpu":
+        config.stage_named(ENGINE_STAGE).gpu = 1
+    elif invalid == "process":
+        config.stage_named(ENGINE_STAGE).process = "other"
+    elif invalid == "device":
+        config.stage_named(ENGINE_STAGE).factory.device = "cpu"
+    elif invalid == "replica":
+        config.processes["pipeline"] = ProcessConfig(num_replicas=2)
+    elif invalid == "concurrency":
+        config.stage_named(ENGINE_STAGE).factory.max_concurrency = 2
+    else:
+        config.stages[1], config.stages[2] = config.stages[2], config.stages[1]
+    with pytest.raises(ValueError, match="AuK offload requires"):
+        config.with_serial_offload(frozenset({"conditioning", "dit", "vae"}))
+
+
+def test_capture_shapes_cli_text_becomes_a_list_of_shapes() -> None:
+    """A dotted CLI value arrives as text; a raw string is not a shape."""
+    path = ConfigPath.parse(
+        "stages.auk_engine.factory.dit_cuda_graph_capture_shapes",
+        AuKPipelineConfig,
+    )
+    assert path.coerce("[[1,192,0,192],[1,320,320,384]]") == [
+        [1, 192, 0, 192],
+        [1, 320, 320, 384],
+    ]
