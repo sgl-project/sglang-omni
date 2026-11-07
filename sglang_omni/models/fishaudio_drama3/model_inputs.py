@@ -17,12 +17,14 @@ from sglang_omni.models.fishaudio_drama3.sampling import (
 class Drama3StepInputs:
     """What one prefill forward needs besides the batch, staged by the model runner.
 
-    frames holds the input frame of every forward row; the other tensors hold
-    one entry per request, in batch order.
+    frames holds the input frame of every forward row and next_frames each row's
+    next frame, the tower prefill's label; the other tensors hold one entry per
+    request, in batch order.
     """
 
     request_ids: list[str]
     frames: torch.Tensor
+    next_frames: torch.Tensor
     ras_windows: torch.Tensor
     temperature: torch.Tensor
     top_k: torch.Tensor
