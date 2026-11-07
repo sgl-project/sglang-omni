@@ -12,8 +12,9 @@
 # FROM_TAG is the Voxt 1.x release (voxt-v1.16.3), TO_VERSION the Voxt 2
 # version the beta appcast offers, OUT the folder the workflow keeps as its
 # artifact. Each check adds a row to $OUT/results.md; one that fails says
-# where it stopped (::error::) and exits 1.
-set -euo pipefail
+# where it stopped (::error::) and exits 1, and so does any other command
+# that fails (the ERR trap below).
+set -Eeuo pipefail
 
 : "${FROM_TAG:?the Voxt 1.x tag, e.g. voxt-v1.16.3}" "${TO_VERSION:?the Voxt 2 version, X.Y.Z}" "${OUT:?the artifact folder}"
 APP=/Applications/Voxt.app
@@ -33,6 +34,12 @@ row() { printf '| %s | %s | %s |\n' "$1" "$2" "${3//|/\\|}" >> "$OUT/results.md"
 pass() { row "$1" "✅" "$2"; echo "PASS $1: $2"; }
 note() { row "$1" "ℹ️" "$2"; echo "NOTE $1: $2"; }
 fail() { row "$1" "❌" "$2"; echo "::error title=$1::$2"; exit 1; }
+# A command that fails under set -e (hdiutil, cp into the container,
+# defaults write, ...) gets a ❌ row too. Not in a $(...) or a background
+# job: a step that goes on after those has not stopped there.
+STEP="${1:-}"
+stopped() { ((BASH_SUBSHELL)) || row "$STEP" "❌" "stopped at line $1: $2"; }
+trap 'stopped "$LINENO" "$BASH_COMMAND"' ERR
 # shot NAME: the screen now; without Screen Recording for the runner, the desktop only.
 shot() { screencapture -x "$OUT/shots/$(date +%H%M%S)-$1.png" 2> /dev/null || echo "screencapture $1 failed"; }
 info() { /usr/libexec/PlistBuddy -c "Print :$1" "$APP/Contents/Info.plist" 2> /dev/null || true; }
@@ -40,7 +47,10 @@ installed() { [[ "$(info CFBundleIdentifier)" == "$NEW_ID" ]]; }
 not_running() { ! pgrep -x Voxt > /dev/null; }
 installer_waiting() { pgrep -x Autoupdate > /dev/null; }
 update_log() { cat "$VOXT_DIR"/Logs/*.log 2> /dev/null || true; } # AppUpdateManager's lines
-start_1x() { open -g --env VOXT_UPDATE_CHANNEL=beta "$APP"; } # 1.x's own variable (resolvedUpdateChannel)
+# 1.x's resolvedUpdateChannel takes VOXT_UPDATE_CHANNEL=beta only with
+# VOXT_ENABLE_BETA_UPDATES=1 (canUseBetaFeed); alone it falls back to the
+# betaUpdatesEnabled preference.
+start_1x() { open -g --env VOXT_UPDATE_CHANNEL=beta --env VOXT_ENABLE_BETA_UPDATES=1 "$APP"; }
 
 # wait_for SECONDS COMMAND...: runs COMMAND until it succeeds; 1 after SECONDS.
 wait_for() {

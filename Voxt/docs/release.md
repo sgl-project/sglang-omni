@@ -86,7 +86,7 @@ gh workflow run voxt-upgrade-test.yaml --repo sgl-project/sglang-omni -f from_ta
 
 1. 从 `from_tag` 的 Release 下载 1.x 的 dmg，用 `.sha256` 校验，拷进 `/Applications`，用 `spctl` 检查。
 2. 用 `open -g` 启动一次 1.x，让 macOS 建好它的沙盒容器，再退出；把 `testdata/legacy/real`（1.16.3 写的数据库，3 个词条，只在 WAL 里）放进容器。
-3. 先确认 beta 通道的 appcast 里有 `to_version`，没有就停下。在容器的偏好里把 `SUEnableAutomaticChecks`、`SUAutomaticallyUpdate`、`betaUpdatesEnabled` 设成 YES，`SULastCheckTime` 设成 2020 年，用 `open -g --env VOXT_UPDATE_CHANNEL=beta` 启动 1.x，等 Sparkle 下载好（最多 20 分钟），再让 1.x 退出、安装（见下面的两种装法）。
+3. 先确认 beta 通道的 appcast 里有 `to_version`，没有就停下。在容器的偏好里把 `SUEnableAutomaticChecks`、`SUAutomaticallyUpdate`、`betaUpdatesEnabled` 设成 YES，`SULastCheckTime` 设成 2020 年，用 `open -g --env VOXT_UPDATE_CHANNEL=beta --env VOXT_ENABLE_BETA_UPDATES=1` 启动 1.x（1.x 只在两个变量都设了时才直接用 beta 通道，只设前一个等于没设，会退回 `betaUpdatesEnabled` 偏好），等 Sparkle 下载好（最多 20 分钟），再让 1.x 退出、安装（见下面的两种装法）。
 4. 检查 `/Applications/Voxt.app`：bundle id 是 `dev.hehehai.voxtnew`，版本是 `to_version`，`codesign -dv` 的 Team 是 RY2TQTYSKQ，`codesign --verify --deep --strict` 通过，`spctl` 认它是公证过的 Developer ID，`stapler validate` 通过。
 5. 用 `open` 启动装好的 app：`VOXTNEW_SMOKE_LEGACY=1`，`Voxt --smoke <dir>`。它不弹选择文件夹的窗口，直接读 1.x 的数据库（`legacyReadable`），像侧栏的导入卡片一样导入到 `<dir>` 自己的数据文件夹，打印那里的词条和历史条数，要是 `3 terms, 0 history entries`（`TestSmokeLegacy` 在 Linux 上对同一个数据库断言同一行）。这一步同时验证 #3593 还没验证的一项：Developer ID 构建不弹窗就能读 1.x 的数据。
 6. 不管成败，都把证据传成 artifact `voxt-upgrade-test`，保留 30 天。
