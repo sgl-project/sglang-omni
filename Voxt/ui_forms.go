@@ -175,7 +175,9 @@ func segmentedSome(c *ui.Context, selected *int, labels []string, off []bool, ti
 // to the window's height less margins, with a title row (title, a
 // caption under it, "" for none, and ×), body in a scroll, and footer
 // (the dialog's actions: one primaryButton at most) pinned under a
-// hairline. Escape, a click beside it or × close it (*open false).
+// hairline. Escape, a click beside it or × close it (*open false); a
+// form keeps itself open on a Dismissed Escape or click while it holds
+// unsaved input, so that a click back into the window loses nothing.
 func dialogFrame(c *ui.Context, key string, open *bool, title, sub string, width float32, body, footer func()) ui.Element {
 	t := c.Theme()
 	k := tok(t)

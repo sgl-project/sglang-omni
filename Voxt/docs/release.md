@@ -11,7 +11,7 @@ scripts/mac-gui.sh scripts/release.sh（在 Mac 上，ssh 里经 mac-gui.sh 进�
    │  先试签一个文件（ssh 里钥匙串锁着就立刻停下）；更新私钥和 release/mygo.release.json 的公钥配对
    │  检查版本号（mygo.json、helper 和 llm 的 Info.plist）、CHANGELOG
    ├─ build-helper.sh              → resources/darwin-arm64/helper/voxtnew-helper
-   ├─ build-omni.sh --clean        → resources/darwin-arm64/omni/bin/（qwen3_asr_server、MLX 的库、mlx.metallib）
+   ├─ build-omni.sh --clean        → resources/darwin-arm64/omni/bin/（qwen3_asr_server、silero_vad_server、MLX 的库、mlx.metallib）
    ├─ build-llm.sh                 → resources/darwin-arm64/llm/（voxtnew-llm、mlx.metallib、llama.framework、Hub bundle）
    │     （--runtimes DIR：直接用 DIR/omni 和 DIR/llm，不重新编译）
    ├─ release-config.sh            合并 release/mygo.release.json（公钥、url、prereleases）、签名身份、公证配置、
@@ -33,10 +33,10 @@ scripts/mac-gui.sh scripts/release.sh（在 Mac 上，ssh 里经 mac-gui.sh 进�
 |---|---|---|
 | `MacOS/VoxtNew` | Go + MyGo 的 app | `helper/Support/app.entitlements`（`audio-input`） |
 | `Resources/helper/voxtnew-helper` | Swift 辅助进程：麦克风、快捷键、辅助功能、粘贴 | `helper/Support/helper.entitlements`（`audio-input`） |
-| `Resources/omni/bin/qwen3_asr_server`、`*.dylib`、`mlx.metallib` | Omni 原生运行时（sglang_omni_mlx/native）：Qwen3-ASR 和 Silero VAD | 保留原 entitlement（没有） |
+| `Resources/omni/bin/qwen3_asr_server`、`silero_vad_server`（它的副本，给 Silero VAD 用，活动监视器里能分开）、`*.dylib`、`mlx.metallib` | Omni 原生运行时（sglang_omni_mlx/native）：Qwen3-ASR 和 Silero VAD | 保留原 entitlement（没有） |
 | `Resources/llm/voxtnew-llm`、`llama.framework`、`mlx.metallib`、`swift-transformers_Hub.bundle` | 语言模型进程（mlx-swift-lm 和 llama.cpp） | `llm/Support/llm.entitlements`（空：Metal 不需要） |
 
-`mlx.metallib` 不是代码，是资源，由 app 的签名封住。模型本身不在 app 里，用户在 app 里下载到 ActNow 家族的模型库 `$HUB`（默认 `~/Library/Application Support/ActNow/models/hub`，和家族其他 app 共用；见 [architecture.md](architecture.md)）。
+`mlx.metallib` 不是代码，是资源，由 app 的签名封住。模型本身不在 app 里，用户在 app 里下载到模型库 `$HUB`（默认 `~/Library/Application Support/SGLang Omni/models`；家族设置了 `models.root` 时用它，和家族其他 app 共用；见 [architecture.md](architecture.md)）。
 
 更新用的是 MyGo 官方方案（`mygo.Updater` + updater 插件的 `native.Plugin` 窗口），说明见 MyGo 的 `docs/updates.md`、`docs/plugins/updater.md`；beta 通道是我们的补丁 0006（`third_party/mygo-patches/`，和 Auralink 的同一个）。
 
@@ -47,15 +47,28 @@ scripts/mac-gui.sh scripts/release.sh（在 Mac 上，ssh 里经 mac-gui.sh 进�
 3. 工作流把 tag 的版本号写进 mygo.json 和两个 Info.plist，导入 `voxt-release` 环境的 Developer ID（[scripts/release-identity.sh](../scripts/release-identity.sh) 检查它是 RY2TQTYSKQ 的），用 App Store Connect API key 建 notarytool 配置，跑 `scripts/release.sh --notarize voxt-notary --keychain …`（`EXPECT_TEAM=RY2TQTYSKQ`，`release-verify.sh developer-id` 全部通过才继续），再把 `Voxt-X.Y.Z-arm64.dmg` 和它的 `.sha256` 传到草稿 Release “Voxt vX.Y.Z”。说明依次是要求、安装、CHANGELOG 里的那一节和构建来源。
 4. 在 Release 页面检查说明后发布（默认标成 Latest）。用户下载 dmg，把 Voxt 拖进“应用程序”，会替换 Swift 版 Voxt 1.x 的 Voxt.app。2.0.0 不会自动更新，新版本也这样装。
 
-`voxt-release` 环境是 Swift 版 Voxt 1.x 发版时建的，部署规则只放行 `main` 和 `voxt-v*` tag。这个工作流用到它的这些 secret：
+`voxt-release` 环境是 Swift 版 Voxt 1.x 发版时建的，部署规则只放行 `main` 和 `voxt-v*` tag，没有审批。这个工作流（tag 发布和 main 上的 nightly）用到它的这些 secret：
 
 | Secret | 内容 |
 |---|---|
-| `DEVELOPER_ID_APP_CERT_P12`、`DEVELOPER_ID_APP_CERT_PASSWORD` | RY2TQTYSKQ 的 Developer ID Application 证书（.p12 的 base64）和它的密码 |
+| `DEVELOPER_ID_APP_CERT_P12`、`DEVELOPER_ID_APP_CERT_PASSWORD` | RY2TQTYSKQ 的 Developer ID Application 证书（.p12 的 base64）和它的密码。证书到 2027-02-01 过期（签它的 Developer ID Certification Authority 同一天到期），之后签不了名，要在这之前换一张新证书 |
 | `APPLE_NOTARIZATION_KEY`、`APPLE_NOTARIZATION_KEY_ID`、`APPLE_NOTARIZATION_ISSUER` | 同一个 Team 的 App Store Connect API key（.p8 的内容）、key id 和 issuer id，用来公证 |
 | `ACTNOW_SOUNDS_TOKEN`（可选） | 能读 hehehai/actnow-sounds 的 token，官方构建的提示音库从那里来（[scripts/sync-sounds.sh](../scripts/sync-sounds.sh)）。没有它构建照常，提示音用 macOS 的系统声音，工作流给出 warning |
 
-不带 tag 的运行（改了这个工作流、`scripts/release*.sh` 或 `scripts/build-*.sh` 的 PR，或者手动运行）做同样的构建和 `release-verify.sh ad-hoc`，不签名、不公证，dmg 作为 artifact 保留 14 天：打开时要在 系统设置 → 隐私与安全性 里点“仍要打开”。
+其他不带 tag 的运行（改了这个工作流、`scripts/release*.sh` 或 `scripts/build-*.sh` 的 PR，或者手动运行）做同样的构建和 `release-verify.sh ad-hoc`，不签名、不公证，dmg 作为 artifact 保留 14 天：打开时要在 系统设置 → 隐私与安全性 里点“仍要打开”。
+
+## Nightly（GitHub Actions）
+
+[voxt-nightly.yaml](../../.github/workflows/voxt-nightly.yaml) 每天 12:34 UTC（北京时间 20:34）在 main 上先跑 Voxt CI（[voxtnew-ci.yaml](../../.github/workflows/voxtnew-ci.yaml)，Go 测试）和 Voxt Mac CI（[voxt-mac-ci.yaml](../../.github/workflows/voxt-mac-ci.yaml)，原生运行时和 Swift 测试），两个都通过才跑上面的工作流，版本号是 mygo.json 的版本加 `-nightly.YYYYMMDD`（UTC 日期）。它和 tag 发布一样进 `voxt-release` 环境，用 Developer ID 签名、公证，`release-verify.sh developer-id` 全部通过，只是不建 Release。改了 voxt-nightly.yaml 的 PR 也跑它，但 Voxt Mac CI 照旧要 `run-mac-ci` 标签，构建进不了环境，做的是 ad hoc 构建。GitHub 不保证定时任务准点开始，负载高时会晚一些；漏掉的一次可以在 Actions 页面从 main 手动运行。
+
+dmg 和它的 `.sha256` 是运行的 artifact `Voxt-X.Y.Z-nightly.YYYYMMDD-arm64`，保留 14 天：
+
+```bash
+gh run list --repo sgl-project/sglang-omni --workflow voxt-nightly.yaml --status success --limit 1
+gh run download RUN_ID --repo sgl-project/sglang-omni
+```
+
+它和正式版是同一个 app（同一个 bundle ID、同一个 Team），拖进“应用程序”会替换已装的版本，麦克风和辅助功能的授权保留（§4）。回到正式版时重新装正式版的 dmg。
 
 ## 0. 两个通道
 
@@ -291,7 +304,7 @@ macOS 按 bundle ID + 代码签名的要求记住麦克风和辅助功能授权�
 - **之后的更新**（同一个 Team ID、同一个 bundle ID）授权保留，beta 和正式版之间也一样。`identifier` 发布后就不能再改。
 - 开发时用 Apple Development 证书签名的构建，与发布版之间切换也要 reset 一次。
 - **换 Team 也要 reset 一次**：10-19 起从 RY2TQTYSKQ 换成 779M533DL5（§1.1）。用户在 mac-air 上装着的版本（37a3063d，10-17 23:12 装的）是 RY2TQTYSKQ 签的，装上第一个 779M533DL5 签的版本后，麦克风和辅助功能的授权都对不上。还没有发布过版本（0.1.0-beta.1 没发出去），第一个公开版本就是 779M533DL5 签的，别的用户不受影响。
-- 下载好的模型（`$HUB`，默认 `~/Library/Application Support/ActNow/models/hub`）不受签名影响，换版本、更新都保留。
+- 下载好的模型（`$HUB`，默认 `~/Library/Application Support/SGLang Omni/models`）不受签名影响，换版本、更新都保留。2.0.0 的模型在 `~/Library/Application Support/ActNow/models/hub`，新版本第一次启动时硬链接过来。
 
 ### 4.1 给用户装新构建（mac-air，换 Team 那一次）
 

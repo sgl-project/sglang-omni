@@ -9,8 +9,11 @@ import (
 	"testing"
 	"time"
 
+	fammodels "github.com/hehehai/actnowkit/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/actnow"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/datadir"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/models/modelstest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -56,7 +59,7 @@ func TestStorageModels(t *testing.T) {
 	}
 	a.askErase()
 	frames(tt)
-	if !has(tt, "These models are also used by other apps and will be kept: Fast speech recognition (712.8 MB)") {
+	if !has(tt, "These models are also used by other apps and will be kept: Qwen3-ASR 0.6B (4bit) (712.8 MB)") {
 		t.Fatalf("no kept models: %q", tt.Texts())
 	}
 	a.resetText = "DELETE"
@@ -121,4 +124,123 @@ func TestEraseStopsWhenRecordingsStay(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(a.home(), datadir.ResetFile)); !os.IsNotExist(err) {
 		t.Errorf("reset asked: %v", err)
 	}
+}
+
+// TestModelFolderChange: Change… brings the models into the folder the
+// user chose (a "Voxt Models" folder in one that holds other files), the
+// models another app claims too, writes the family's models.root and
+// restarts to use it; the library stays as it was.
+func TestModelFolderChange(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	seedModels(t, a, models.ASRFast, models.VADSilero, models.LLMTranslate)
+	useModels(t, a, models.ASRFast, models.VADSilero)
+	claimFor(t, a, audioSmithID, models.LLMTranslate) // retired for VoxtNew, AudioSmith's
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("mine"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	chosen := a.models.Hub()
+	relaunched := false
+	oldChoose, oldRelaunch := chooseDir, appRelaunch
+	chooseDir = func(_ *app, _, _ string, then func(string)) { then(chosen) }
+	appRelaunch = func() { relaunched = true }
+	defer func() { chooseDir, appRelaunch = oldChoose, oldRelaunch }()
+	a.navigate("/settings/storage")
+	click(t, tt, "Change…")
+	if relaunched || !toasted(a, tt, "The models are already there") {
+		t.Fatalf("the same folder: relaunched %v, toasts %q", relaunched, a.toasts)
+	}
+	chosen = a.dataDir() // Erase everything would delete the models with it
+	click(t, tt, "Change…")
+	if relaunched || !toasted(a, tt, "Choose a folder outside Voxt's data and logs.") {
+		t.Fatalf("Voxt's data folder: relaunched %v, toasts %q", relaunched, a.toasts)
+	}
+
+	chosen = dir
+	click(t, tt, "Change…")
+	frames(tt)
+	if !relaunched {
+		t.Fatalf("no restart: %q", a.toasts)
+	}
+	to := filepath.Join(dir, modelsDirName)
+	if root, _ := a.fam.Shared().Get(actnow.KeyModelsRoot); !fammodels.SameHub(root, to) {
+		t.Errorf("models.root = %q, want %q", root, to)
+	}
+	for _, id := range []string{models.ASRFast, models.VADSilero, models.LLMTranslate} {
+		m, _ := models.Lookup(id)
+		if models.Installed(to, m) == "" {
+			t.Errorf("%s not in the new folder", id)
+		}
+		if !onDisk(a, id) {
+			t.Errorf("%s left the library", id)
+		}
+	}
+	if cs, _ := fammodels.ReadClaims(a.fam.Dir(), a.fam.BundleID()); !fammodels.SameHub(cs.Root, to) || len(cs.Claims) != 2 {
+		t.Errorf("VoxtNew's claims: %+v", cs)
+	}
+}
+
+// TestModelFolderBringsOtherLibraries: the models are kept in one place.
+// Since 2.0.1, VoxtNew's library is its own folder while AudioSmith keeps
+// its models in the family's default library (ActNow/models/hub); Change…
+// writes models.root for both, so it brings AudioSmith's models from
+// there too, and AudioSmith finds them in the new folder; what no app
+// claims there stays.
+func TestModelFolderBringsOtherLibraries(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	seedModels(t, a, models.ASRFast)
+	useModels(t, a, models.ASRFast)
+	ctx := context.Background()
+	old := &fammodels.Store{Family: a.fam.Dir(), Hub: fammodels.DefaultHubIn(a.fam.Dir()), BundleID: audioSmithID, AppID: "audiosmith"}
+	vad, _ := models.Lookup(models.VADSilero)
+	if err := modelstest.SeedModel(old.Hub, vad); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Claim(ctx, vad.Claim("", fammodels.OriginDownloaded)); err != nil {
+		t.Fatal(err)
+	}
+	// One VoxtNew no longer has, left in the old library by 2.0.1's hard
+	// links and claimed by no one: it stays behind.
+	gone, _ := models.Lookup(models.ASRAccurate)
+	if err := modelstest.SeedModel(old.Hub, gone); err != nil {
+		t.Fatal(err)
+	}
+	if fammodels.SameHub(old.Hub, a.models.Hub()) {
+		t.Fatal("VoxtNew's library is the family's default")
+	}
+	dir := t.TempDir()
+	oldChoose, oldRelaunch := chooseDir, appRelaunch
+	chooseDir = func(_ *app, _, _ string, then func(string)) { then(dir) }
+	appRelaunch = func() {}
+	defer func() { chooseDir, appRelaunch = oldChoose, oldRelaunch }()
+	a.navigate("/settings/storage")
+	click(t, tt, "Change…")
+	frames(tt)
+	if root, _ := a.fam.Shared().Get(actnow.KeyModelsRoot); !fammodels.SameHub(root, dir) {
+		t.Fatalf("models.root = %q, toasts %q", root, a.toasts)
+	}
+	fast, _ := models.Lookup(models.ASRFast)
+	for _, m := range []models.Model{vad, fast} {
+		if models.Installed(dir, m) == "" {
+			t.Errorf("%s is not in the new folder", m.ID)
+		}
+	}
+	if models.Installed(dir, gone) != "" {
+		t.Errorf("%s, which no app has, came along", gone.ID)
+	}
+}
+
+// TestTimeMachineSwitch: VoiceOver names Storage's Time Machine switch
+// and can turn it on; it had no label, so it read as a bare "switch".
+func TestTimeMachineSwitch(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/storage")
+	frames(tt)
+	if a.fam.Backup() {
+		t.Fatal("Time Machine is on by default")
+	}
+	if err := tt.ClickControl("Back up models with Time Machine"); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the family's models.backup on", func() bool { return a.fam.ReadBackup() })
 }

@@ -51,6 +51,7 @@ type dictView struct {
 	// The term dialog.
 	editOpen bool
 	edit     termEdit
+	editWas  termEdit // the form as opened: a stray click or Escape keeps a changed one open
 	// importing: an import runs.
 	importing bool
 }
@@ -72,7 +73,7 @@ var (
 	chooseImportFile = func(a *app, then func(string)) {
 		go func() {
 			files, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.win, Title: i18n.T("Import terms"),
-				Filters: []mygo.FileFilter{{Name: i18n.T("Dictionary (CSV or text)"), Extensions: []string{"csv", "txt"}}}})
+				Filters: []mygo.FileFilter{{Name: i18n.T("Dictionary (CSV, text or the previous Voxt's export)"), Extensions: []string{"csv", "txt", "json"}}}})
 			if err != nil || len(files) == 0 {
 				return
 			}
@@ -146,6 +147,9 @@ func (a *app) dictionaryPage(c *ui.Context) {
 		moreMenu(c.Key("dict-more"), "", func(m *ui.Menu) {
 			if m.Item(i18n.T("Import…")).Chosen() {
 				a.importTerms()
+			}
+			if legacyLibrary() != "" && m.Item(i18n.T("Import from the previous Voxt…")).Chosen() {
+				a.importLegacy()
 			}
 			if m.Item(i18n.T("Export as CSV…")).Chosen() {
 				a.exportTerms(dict.CSV)
@@ -281,6 +285,7 @@ func (a *app) openTerm(term store.Term) {
 	d.editOpen = true
 	d.edit = termEdit{id: term.ID, term: term.Term, aliases: strings.Join(term.Aliases, ", "), note: term.Note,
 		enabled: term.Enabled, createdAt: term.CreatedAt, original: term.Term}
+	d.editWas = d.edit
 }
 
 func (a *app) termDialog(c *ui.Context) {
@@ -294,7 +299,7 @@ func (a *app) termDialog(c *ui.Context) {
 	if e.id != "" {
 		title = i18n.T("Edit term")
 	}
-	dialogFrame(c, "term-dlg", &d.editOpen, title, "", 460, func() {
+	if dialogFrame(c, "term-dlg", &d.editOpen, title, "", 460, func() {
 		fieldInfo(c, i18n.T("Term"), i18n.T("As it must be written: Voxt, Kubernetes, 豆包."), func() {
 			in := ui.TextInput(c.Key("term-term"), &e.term).Label(i18n.T("Term as written")).Placeholder("Voxt").AutoFocus()
 			if in.Changed() {
@@ -326,7 +331,9 @@ func (a *app) termDialog(c *ui.Context) {
 		if primaryButton(c.Key("term-save"), i18n.T("Save")).Disabled(e.saving).Clicked() {
 			a.submitTerm()
 		}
-	})
+	}).Dismissed() && d.edit != d.editWas {
+		d.editOpen = true // a stray click or Escape: keep what was typed
+	}
 }
 
 // submitTerm checks and saves the dialog's term.
@@ -408,26 +415,21 @@ func (a *app) importFile(path string) {
 			if err != nil {
 				return i18n.T("Could not import: %v", err)
 			}
-			terms, skipped, err := dict.Import(data, dict.FormatOf(path))
+			var terms []store.Term
+			var skipped int
+			if strings.EqualFold(filepath.Ext(path), ".json") {
+				terms, skipped, err = parseLegacyExport(data) // legacy_import.go
+			} else {
+				terms, skipped, err = dict.Import(data, dict.FormatOf(path))
+			}
 			if err != nil {
-				return i18n.T("Could not import %s: it is not a CSV or text list of terms.", filepath.Base(path))
+				return i18n.T("Could not import %s: it is not a CSV or text list of terms, or the previous Voxt's dictionary export.", filepath.Base(path))
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			have, err := repo.List(ctx, "")
+			added, updated, err := mergeImported(ctx, repo, terms)
 			if err != nil {
 				return i18n.T("Could not import: %v", err)
-			}
-			put, added, updated := dict.Merge(have, terms)
-			now := time.Now()
-			for i, tm := range put {
-				if tm.ID == "" {
-					tm.ID, tm.CreatedAt = core.NewID(now), now.Add(time.Duration(i))
-				}
-				tm.UpdatedAt = now
-				if err := repo.Put(ctx, tm); err != nil {
-					return i18n.T("Could not import: %v", err)
-				}
 			}
 			if skipped > 0 {
 				return i18n.T("Imported: %d new, %d updated, %d rows skipped.", added, updated, skipped)
@@ -440,6 +442,27 @@ func (a *app) importFile(path string) {
 			a.loadDict()
 		})
 	})
+}
+
+// mergeImported merges imported terms into the dictionary: a file import
+// and the previous Voxt's import share it.
+func mergeImported(ctx context.Context, repo store.Dictionary, terms []store.Term) (added, updated int, err error) {
+	have, err := repo.List(ctx, "")
+	if err != nil {
+		return 0, 0, err
+	}
+	put, added, updated := dict.Merge(have, terms)
+	now := time.Now()
+	for i, tm := range put {
+		if tm.ID == "" {
+			tm.ID, tm.CreatedAt = core.NewID(now), now.Add(time.Duration(i))
+		}
+		tm.UpdatedAt = now
+		if err := repo.Put(ctx, tm); err != nil {
+			return 0, 0, err
+		}
+	}
+	return added, updated, nil
 }
 
 // exportTerms writes every term to a file the user picks.

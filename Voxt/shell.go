@@ -222,6 +222,7 @@ func (a *app) openWindow() {
 		Hidden:         startHidden(mygo.App.WasOpenedAtLogin(), a.prefs.General),
 	})
 	a.maybeOnboard()    // onboarding.go: the setup guide, on the first start
+	a.offerLegacy()     // legacy_import.go: the previous Voxt's data, for who set up without the guide's card
 	a.syncOpenAtLogin() // shell_settings.go
 }
 

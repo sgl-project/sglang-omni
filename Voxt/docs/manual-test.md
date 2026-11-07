@@ -15,7 +15,7 @@
 |---|---|
 | 日志面板 | Voxt 里按 ⇧⌘L（来源 `session`、`omni`、`llm`、`helper`） |
 | 日志文件 | `~/Library/Logs/VoxtNew/voxtnew.log`（app，含 Omni 服务的启动、退出、卸载）、`helper.log`（辅助进程：热键、AX、粘贴、URL）、`llm.log`（voxtnew-llm 的 stderr） |
-| 模型文件 | 家族模型库 `$HUB`（默认 `~/Library/Application Support/ActNow/models/hub`）的 `models--<owner>--<name>/snapshots/<commit>/`；Voxt 的声明在 `~/Library/Application Support/ActNow/models/claims/dev.hehehai.voxtnew.json` |
+| 模型文件 | 模型库 `$HUB`（默认 `~/Library/Application Support/SGLang Omni/models`；2.0.0 是 `~/Library/Application Support/ActNow/models/hub`）的 `models--<owner>--<name>/snapshots/<commit>/`；Voxt 的声明在 `~/Library/Application Support/ActNow/models/claims/dev.hehehai.voxtnew.json` |
 | 模型进程 | `pgrep -fl 'qwen3_asr_server\|voxtnew-llm\|voxtnew-helper'`：`qwen3_asr_server` 每个模型一个（命令行里的 `--model-directory …/models--<owner>--<name>/snapshots/<commit>` 说明是哪个：语音识别模型或 `vad.silero`），`voxtnew-llm` 最多一个 |
 | 历史详情 | 每次会话的识别原文、结果、交付方式、用的语音识别模型和语言模型、各阶段耗时、命中的规则 |
 | 系统设置 | 隐私与安全 → 辅助功能 / 麦克风；网络 → 代理 |
@@ -77,6 +77,7 @@
 - **准备**：这台 Mac 上装着 AudioSmith（或另一个 ActNow app），它下载过 Qwen3-ASR-1.7B-8bit（或 0.6B-4bit），模型在家族的模型库（默认 `~/Library/Application Support/ActNow/models/hub`）。
 - **做**：第一次打开 Voxt（或 设置 → 通用 →“打开设置引导”），到“本地模型”一步。
 - **应看到**：
+  - 默认模型文件夹（`SGLang Omni/models`）：这些模型在启动时已经硬链接过来，直接是“可用”，没有下面的卡片，也没有下载。下面两条是 Voxt 和 AudioSmith 用同一个模型文件夹（家族的 `models.root`）时：
   - 1.7B 在时：顶部卡片“已在这台 Mac 上找到 N 个模型 / 由 AudioSmith 安装 · 2.5 GB · 无需下载”，下面是“精准语音识别 · 声音检测”，主按钮“直接使用”和“选择模型…”；页脚的“继续”是次要按钮。语言模型那一行写“还需下载 3.3 GB”。点“直接使用”：卡片消失，语音识别那一行变成“可用：精准语音识别”，没有开始任何下载；`~/Library/Application Support/ActNow/models/claims/<Voxt 的 bundle id>.json` 里有这两个模型，`origin` 是 `reused`。
   - 只有 0.6B 时：语音识别那一行多一段“未安装精准语音识别，但已有快速语音识别（来自 AudioSmith）。先用它吗？”，“下载精准语音识别”和“先用快速语音识别”；点后者，这一行变成“可用：快速语音识别”。
 - **不对时看**：截图；上面的 claims 文件；日志面板里 `family:` 的行。
@@ -91,7 +92,7 @@
   - 日志面板（来源 app）有一行 `models: system proxy https 127.0.0.1:7897`：没有 `https_proxy` 环境变量时，下载用系统代理。
   - mac-air 上走 7897 代理时约 16 MB/s（M3 用同一条路下载 8.6 GB 用了 9 分钟），推荐的两个模型大约 6 分钟。
   - 装好一个时出现提示“<名字> 已安装。”，引导里那一行变成“可用：<名字>”。
-- **不对时看**：本地模型页的错误提示和它的 ⓘ（完整错误）；`ls ~/Library/Application\ Support/ActNow/models/hub/models--*/blobs/*.incomplete`（下载中的文件）。
+- **不对时看**：本地模型页的错误提示和它的 ⓘ（完整错误）；`ls ~/Library/Application\ Support/SGLang\ Omni/models/models--*/blobs/*.incomplete`（下载中的文件）。
 
 **1.3 取消和继续下载**（在 1.2 的下载过程中做，或者下载另一个模型时做）
 - **做**：
@@ -102,7 +103,7 @@
   - 取消后卡片显示“已暂停：已下载 x / 2.5 GB”，有“继续下载”和“删除”（删除已下载的部分）。
   - 重启后仍是“已暂停”，数字不变：已下载的部分保留在 `$HUB` 里（`models--<owner>--<name>/blobs/<blob>.incomplete`）。
   - 继续下载从原来的位置接着走，不从 0 开始；完成后卡片变成“已安装”和“占用 2.5 GB”。
-- **不对时看**：日志面板；`du -sh ~/Library/Application\ Support/ActNow/models/hub/models--*/blobs/*.incomplete`。
+- **不对时看**：日志面板；`du -sh ~/Library/Application\ Support/SGLang\ Omni/models/models--*/blobs/*.incomplete`。
 
 **1.4 〔可选〕连不上 Hugging Face 时用镜像**
 - **做**：在 系统设置 → 网络 → Wi-Fi → 详细信息 → 代理 里把“安全网页代理（HTTPS）”关掉（中国大陆的网络通常直连不了 huggingface.co），然后在本地模型页下载“快速语音识别”（713 MB）。做完把代理打开。
@@ -118,22 +119,23 @@
   - 两节：“语音识别”和“语言模型”。推荐的两个带“默认”标签。每张卡片有名字、擅长什么、语言（地球图标）和大小：没装的是“需下载 x”，装好的是“已安装”和“占用 x”。
   - Silero（声音检测）不单独列出。
   - 删除前弹出确认：“删除快速语言模型？”“将释放 1.7 GB。之后可以重新下载。”取消什么都不删；确认后卡片回到“需下载 1.7 GB”，文件夹不见了。
-  - 设置 → 存储 的“模型文件夹”一行是 `~/Library/Application Support/ActNow/models/hub`，“由使用这个模型库的所有 app 共用”；下面“仅 Voxt”和“与使用这个模型库的其他 app 共享”两项加起来和装的模型对得上。没有装别的 ActNow app 时不写“由使用这个模型库的所有 app 共用”，只有一行“Voxt 使用”；“网络…”对话框里也没有“应用于使用这个模型库的所有 app”那一行。
-- **不对时看**：`ls -la ~/Library/Application\ Support/ActNow/models/hub/`（装好的模型在 `models--<owner>--<name>/snapshots/<commit>/` 里，Voxt 的声明在 `~/Library/Application Support/ActNow/models/claims/dev.hehehai.voxtnew.json`）。
+  - 设置 → 存储 的“模型文件夹”一行是 `~/Library/Application Support/SGLang Omni/models`；没装别的 ActNow app 时只有 Voxt 用这个文件夹，所以不写“由使用这个模型库的所有 app 共用”（和别的 app 用同一个模型文件夹时才写，见 1.5b）。下面“仅 Voxt”和“与使用这个模型库的其他 app 共享”两项加起来和装的模型对得上；没有装别的 ActNow app 时只有一行“Voxt 使用”；“网络…”对话框里也没有“应用于使用这个模型库的所有 app”那一行。
+- **不对时看**：`ls -la ~/Library/Application\ Support/SGLang\ Omni/models/`（装好的模型在 `models--<owner>--<name>/snapshots/<commit>/` 里，Voxt 的声明在 `~/Library/Application Support/ActNow/models/claims/dev.hehehai.voxtnew.json`）。
 
 **1.5b 与使用这个模型库的其他 app 共用模型**（需要装了 AudioSmith 或 Dicta；没有就跳过）
+- **准备**：装好 AudioSmith（或 Dicta）后打开 Voxt。启动时它把 AudioSmith 在 `~/Library/Application Support/ActNow/models/hub` 里的模型硬链接到 `SGLang Omni/models`，并把家族的 `models.root` 设成这个文件夹；再打开一次 AudioSmith，让它在新文件夹里认领自己的模型。看 `~/Library/Application Support/ActNow/settings.json` 里 `models.root` 是 `SGLang Omni/models`。
 - **做**：
   1. 在 AudioSmith（或 Dicta）里装上“快速语音识别”用的同一个模型（Qwen3-ASR 0.6B），回到 Voxt。
   2. 在 Voxt 的“快速语音识别”上点“删除”，先点“取消”；再点“删除”→“从 Voxt 移除”。
   3. 再点“删除”→“为所有 app 删除…”→“删除”。回到 AudioSmith 看它的模型页。
   4. 让 AudioSmith 开始下载一个 Voxt 也有的模型，同时看 Voxt 的本地模型页；下载时在 Voxt 里删除它。
-  5. 本地模型页右上角点“网络…”：选“自定义”，填 `ftp://x` 点“保存”；改成 `http://127.0.0.1:7897` 保存；再打开，点“仅为此 app 单独设置”，选“不使用代理”保存。终端里 `open voxtnew://models/network`。
+  5. 本地模型页右上角点“网络…”：选“自定义”，填 `ftp://x` 点“保存”；改成 `http://127.0.0.1:7897` 保存；再打开，点“只给这个 app 单独设置”，选“不使用代理”保存。终端里 `open voxtnew://models/network`。
 - **应看到**：
   - 第 1 步后卡片写“与 AudioSmith 共用”。装了 Dicta 的 Qwen3 4B / Gemma 4 E4B 时，语言模型里多一张“由 Dicta 安装”的卡片，只有“使用它”，没有“下载”。
   - 第 2 步弹“从 Voxt 移除“快速语音识别”？”“AudioSmith 也在使用这个模型，文件（712.8 MB）会保留在这台 Mac 上。”；移除后提示文件为 AudioSmith 保留，`ls ~/Library/Application\ Support/ActNow/models/hub/models--mlx-community--Qwen3-ASR-0.6B-4bit/snapshots/` 还在。
   - 第 3 步再确认一次“AudioSmith 再次使用时需要重新下载（712.8 MB）。”；删除后文件夹不见了，AudioSmith 的模型页显示“已在 Voxt 中删除 · 重新下载”。
   - 第 4 步卡片写“正在由 AudioSmith 下载…”，“下载”按钮是灰的，下完后自动变成“已安装”；下载时删除提示“AudioSmith 正在下载或使用这个模型，请稍后再试。”。
-  - 第 5 步：`ftp://x` 不保存，提示要以 http://、https:// 或 socks5:// 开头；保存后 AudioSmith 的代理设置也变了（跟随家族）；单独设置后行下写“此设置只用于 Voxt。”，AudioSmith 的不变；深链打开本地模型页和这个对话框。
+  - 第 5 步：`ftp://x` 不保存，提示要以 http://、https:// 或 socks5:// 开头；保存后 AudioSmith 的代理设置也变了（跟随家族）；单独设置后行下写“只有 Voxt 用这个设置。”，AudioSmith 的不变；深链打开本地模型页和这个对话框。
 - **不对时看**：`cat ~/Library/Application\ Support/ActNow/models/claims/*.json`（谁声明了哪个模型）、`~/Library/Application\ Support/ActNow/models/removed.json`（墓碑）、`~/Library/Application\ Support/ActNow/settings.json`（家族的代理和下载源）。
 
 **1.6 引导的其余几步**
@@ -178,7 +180,7 @@
   2. 在终端执行 `pgrep -fl voxtnew-llm`。
   3. 把开关打开，再转录一次。
 - **应看到**：
-  - 第 1 步：插入的是识别原文（口头语还在），停止后几乎马上插入；页面上写着“整理已关闭：不会发送任何内容给语言模型。”
+  - 第 1 步：插入的是识别原文（口头语还在），停止后几乎马上插入；页面上写着“整理已关闭，不会把任何内容发给语言模型。”
   - 第 2 步：没有 `voxtnew-llm` 进程：整理关着时根本不打开语言模型。
   - 第 3 步：又是整理后的文字；`voxtnew-llm` 出现。
 - **不对时看**：历史详情（关着时没有“语言模型”一项和它的耗时）。
@@ -252,7 +254,7 @@
   5. 在 Arc（用户平时出问题的地方）的网页输入框里各转录几次，中途切换窗口、标签页，结束时点回输入框。
 - **应看到**：
   - 第 1、2 步：文字插入，浮窗淡出；按 ⌘V 粘出的仍是准备时复制的文字（剪贴板已恢复）。日志 `delivery: focus AXTextArea in Safari (…); ⌘V posted, check inserted after N ms (AXTextArea: value a → value b…), clipboard restored`，N 一般在 200 ms 以内。
-  - 第 3 步：输入框里没有文字，结果进答案卡片，正文下面一行小字“文字没有出现在输入位置：已放到剪贴板，按 ⌘V 粘贴。”；在别处按 ⌘V 粘出的是这次的结果；历史详情的交付方式是“卡片”；日志里 `check unchanged after 1000 ms`，以及一行 warning `pasted into …, but the text did not show there (unconfirmed)`。
+  - 第 3 步：输入框里没有文字，结果进答案卡片，正文下面一行小字“文字没有出现在输入位置，已放到剪贴板，按 ⌘V 粘贴。”；在别处按 ⌘V 粘出的是这次的结果；历史详情的交付方式是“卡片”；日志里 `check unchanged after 1000 ms`，以及一行 warning `pasted into …, but the text did not show there (unconfirmed)`。
   - 第 4 步：如果文字照常插入，记下来（说明安全输入不拦截 ⌘V）；如果没插入，卡片小字说另一个 App 开着安全输入，日志有 `secure input on (Terminal, pid …)`。
   - 第 5 步：要么插入（`check inserted`），要么进卡片并说明；不会再出现“历史里有、输入框里没有、什么提示都没有”。如果出现，把那几次的 `delivery:` 日志行发回来（focus 的角色、value、check 结果都在里面）。
 - **不对时看**：`voxtnew.log` 的 `delivery:` 行；卡片多出来但文字其实进去了时，看 check 是不是 `unchanged`、before/after 的 value 是否相同（这个 App 的辅助功能值没有及时更新）。
@@ -300,7 +302,7 @@
 **2.15 长口述（约 8 分钟）**
 - **做**：在 TextEdit 里转录，连续说 4–5 分钟（可以念一段文章，句子之间正常停顿），然后停止。打开 日志，看 `omni` 的行。
 - **应看到**：说到 1 分钟以后，日志里每隔约半分钟出现一行 `piece N of the recording, … of audio …`；停止后几秒内文字就插入（不是等几十秒），日志有 `Final of …: N pieces while it recorded (…), the rest (…) in …`。说话时浮窗的实时文字偶尔停几秒是正常的（分段和预览共用模型）。1 分钟以内的口述没有 `piece` 行，和以前一样。
-- **兜底**：`kill -STOP` 识别服务（`pgrep -f qwen3_asr_server`，挑带 `Qwen3-ASR` 的那个）后马上停止录音，15 s 后 `kill -CONT` 它（或者让它被杀掉）。应看到：仍然插入了文字（实时预览里的），浮窗黄色警告“已使用实时识别的文字：完整识别失败。”，点它打开历史里这条记录并开始重试；历史里这条是完成、带错误、有录音。
+- **兜底**：`kill -STOP` 识别服务（`pgrep -f qwen3_asr_server`，挑带 `Qwen3-ASR` 的那个）后马上停止录音，15 s 后 `kill -CONT` 它（或者让它被杀掉）。应看到：仍然插入了文字（实时预览里的），浮窗黄色警告“完整识别失败，用了实时识别的文字。”，点它打开历史里这条记录并开始重试；历史里这条是完成、带错误、有录音。
 
 ---
 
@@ -495,7 +497,7 @@
   3. 再转录一次。
   4. 用 ⌘Q 退出，按平常的方式打开 Voxt，再转录一次。
 - **应看到**：
-  - 第 2 步：文字照常插入，不比平时慢；随后浮窗出现一行警告（黄色三角）“内存不足，模型变慢：可退出不用的应用。”，一行放得下，5 秒后消失。日志面板（来源 session）一行 `the overlay said the Mac is short of memory: llm.balanced (VOXTNEW_DEV_SHORT_OF_MEMORY) transcribe_enhance first token …; memory pressure …, swap 19.0 of 20.0 GB used`。
+  - 第 2 步：文字照常插入，不比平时慢；随后浮窗出现一行警告（黄色三角）“内存不足，模型变慢了。可以退出不用的应用。”，一行放得下，5 秒后消失。日志面板（来源 session）一行 `the overlay said the Mac is short of memory: llm.balanced (VOXTNEW_DEV_SHORT_OF_MEMORY) transcribe_enhance first token …; memory pressure …, swap 19.0 of 20.0 GB used`。
   - 第 3 步：不再出现（每次运行最多一次）。
   - 第 4 步：不出现。没有变量时，只有请求真的慢（日志里那次请求的行带 `; slow:`）并且 swap 用了九成以上（`sysctl vm.swapusage`）才会出现。
 - **不对时看**：日志面板（来源 session、llm）。
@@ -514,7 +516,7 @@
   - 第 4 步：不录音，浮窗提示“语音识别模型未安装。”（›“打开本地模型”）；侧边栏底部出现“没有语音识别模型”的卡片，首页的就绪清单也提示。
   - 第 5 步：`voxtnew-llm` 退出（它加载的是被删的模型）；转录改用快速语言模型整理；翻译用剩下的模型中能翻译的那个（“自动”）。
   - 第 6 步：装回来以后一切照旧，卡片和提示都消失。
-- **不对时看**：日志面板（来源 omni、llm）；`ls ~/Library/Application\ Support/ActNow/models/hub/`；删除的过程看日志面板（来源 app）。
+- **不对时看**：日志面板（来源 omni、llm）；`ls ~/Library/Application\ Support/SGLang\ Omni/models/`；删除的过程看日志面板（来源 app）。
 
 **7.3 运行时崩溃：两次会话之间**
 - **做**：
@@ -717,7 +719,7 @@
   - 第 3 步：你取消静音后声音一直在，停止时也不会再被静音或改动。
   - 第 4 步：新设备在录音中也被静音；停止后新旧两个设备都恢复（旧设备在切走时就恢复了）。
   - 第 5 步：每种录音都静音，取消时立即恢复。
-  - 第 6 步：浮窗胶囊下面出现一行“此输出设备无法静音，录音继续”，约 3 秒后消失，胶囊回到原来的大小；录音照常。
+  - 第 6 步：浮窗胶囊下面出现一行“这个输出设备不能静音，录音照常继续”，约 3 秒后消失，胶囊回到原来的大小；录音照常。
   - 第 7 步：两种情况下声音都会回来：结束辅助进程后，新的辅助进程起来时恢复；强制退出 Voxt 时立即恢复（辅助进程发现 app 不在了）。
   - 第 8 步：关掉后录音不再静音；录音中关掉，声音立即回来。
   - 第 9 步：Auralink 停止时声音就回来了（Voxt 没有接管 Auralink 做的静音，也不会再静音）；两边都停止后设备没有静音。
@@ -726,6 +728,8 @@
 **9.4 设置 → 浮窗样式**
 - **做**：开始一次转录，录音中按 ⌘, 打开 设置 → 浮窗样式（或先打开设置再按右 ⌥），拖动“离屏幕边缘”、不透明度和圆角滑块，切换“顶部居中”和“显示录音时长”。做完改回“底部居中”。
 - **应看到**：右边的预览跟着变（预览里的胶囊放在一半浅一半深的窗口上，能看出半透明）；正在显示的浮窗跟着移动和变化；有刘海的屏幕上，“顶部居中”不会被刘海挡住。
+- **再做**：关掉“显示实时文字”，转录一段长话。然后打开回来。
+- **应看到**：浮窗一直是小胶囊，只有波形，不长出文字；结果照常插入。打开以后下一次转录又有实时文字。
 
 **9.5 设置 → 快捷键**
 - **做**：打开 设置 → 快捷键，点“翻译”那一行。
@@ -748,15 +752,19 @@
   1. 在“其他语言”里添加英语，再把主要语言改成英语；转录一句中文。然后改回来。
   2. 打开“登录时打开”，然后到 系统设置 → 通用 → 登录项 里看；在登录项里把 Voxt 关掉，回到 Voxt 关窗再打开（或重启 app），看这个开关。
   3. 〔可选〕把“登录时打开”打开，注销再登录。
+  4. 先复制一段别的文字。打开“同时把结果复制到剪贴板”，在 TextEdit 里转录一句，然后按 ⌘V。再把焦点放在访达桌面上转录一次（结果进答案卡片），回到 TextEdit 按 ⌘V。做完关掉这个开关，再转录一次按 ⌘V。
+  5. 关掉“在程序坞中显示”。然后关掉“在菜单栏显示”。
 - **应看到**：
   - 第 1 步：主要语言改成英语后，“其他语言”里的英语自动去掉。主要语言是语音识别的语言提示：用快速语音识别说中文时，偶尔会被写成英文（[eval.md](eval.md) 的已知风险）；出现时记一笔。
   - 第 2 步：登录项里出现 Voxt；在系统设置里关掉以后，Voxt 里的开关也跟着变成关。
   - 第 3 步：登录后只有菜单栏图标，不弹主窗口（“在菜单栏显示”和“关闭窗口后继续运行”都开着时）。
+  - 第 4 步：开关打开时，两次 ⌘V 都粘出刚才的结果（插入以后剪贴板里留的是结果，不是先复制的那段）。关掉以后 ⌘V 粘出的是转录前剪贴板里的内容。
+  - 第 5 步：关掉后程序坞里的图标马上消失，窗口还在，“在菜单栏显示”自动打开；⌘Tab 里也没有 Voxt，点菜单栏图标能打开窗口。关掉“在菜单栏显示”时“在程序坞中显示”自动打开，程序坞图标回来，Voxt 不会两处都找不到。
 
 **9.7 设置 → 存储、隐私、诊断与关于**
 - **做**：看 设置 → 存储、隐私、诊断与关于；点“复制诊断信息”，粘到 TextEdit 里看一眼。
 - **应看到**：
-  - 存储：数据文件夹、所在磁盘的剩余空间；“模型文件夹”（`~/Library/Application Support/ActNow/models/hub`，由使用这个模型库的所有 app 共用）和“仅 Voxt”/“与使用这个模型库的其他 app 共享”的大小。
+  - 存储：数据文件夹、所在磁盘的剩余空间；“模型文件夹”（`~/Library/Application Support/SGLang Omni/models`；和别的 app 共用一个文件夹时写“由使用这个模型库的所有 app 共用”）和“仅 Voxt”/“与使用这个模型库的其他 app 共享”的大小。
   - 在“清除全部”一行点“清除…”（看完点“取消”，不要真的清除）：说明里写的是“没有使用这个模型库的其他 app 使用的本地模型”；有和其他 app 共用的模型时多一行“以下模型也被使用这个模型库的其他 app 使用，将被保留：…（x GB）”。
   - 隐私：说明语音识别和语言模型在本机运行、只在检查更新和下载模型时联网。
   - 诊断与关于：版本号、辅助进程的版本和协议、系统、芯片、内存；Beta 更新开关（当前是 beta 时默认打开）。诊断信息里没有说的话（除非打开了“记录说话内容”）。
@@ -774,6 +782,22 @@
 **9.9 〔可选〕两块显示器**
 - **做**：把光标放到第二块显示器上，转录一次。
 - **应看到**：浮窗出现在光标所在的那块显示器上。
+
+**9.10 〔可选〕语言模型页：在线服务和生成设置**（需要一个在线服务的 API Key，用测试用的 Key）
+- **做**：
+  1. 打开 语言模型 页，点“在线服务”里的一张卡片（比如 DeepSeek），填 API Key，选一个模型。在“生成设置”里把“思考”选成“关闭”，“最大输出 Token 数（可选）”填 `abc`，点“保存”。
+  2. 改成 `512`，保存。再点开同一张卡片。
+  3. 在对话框里改一个字段，不保存，在对话框外面的窗口上点一下，再按 Esc；然后点“取消”。然后不改任何东西再打开一次，在外面点一下。
+  4. 依次打开 OpenAI、Gemini、Ollama 的对话框，看“思考”下拉；展开“高级”和“专家”。
+  5. 点卡片上的“测试”。再按 ⌘F5 打开 VoiceOver，用 VO 键移到卡片上的“测试”按下；到 历史 找一条能重试的记录（9.2d），移到行上的“重试”。关掉 VoiceOver。
+  6. 用这个服务翻译一次选中的文字（3.1 的做法）。
+- **应看到**：
+  - 第 1 步：对话框里提示“最大输出 Token 数（可选） 只能填数字。”，没有保存，对话框不关。
+  - 第 2 步：保存后对话框关掉；再打开时“关闭”和 `512` 都还在。
+  - 第 3 步：有改动时点外面或按 Esc，对话框都不关，改的内容还在；点“取消”才关。没有改动时点外面直接关。
+  - 第 4 步：“思考”的选项跟着服务和模型变，和 Voxt 1.x 里同一个服务一样：不支持的选项不出现；选“推理强度”时出现强度下拉，选“预算”时出现 Token 数输入框。Ollama 有“模型保留时长”。
+  - 第 5 步：卡片右边先是“正在测试…”，然后是“连接正常 · x 毫秒”。VoiceOver 读出“测试 DeepSeek”和“重试”，都能按下。
+  - 第 6 步：译文正常，里面没有模型的思考过程。Key 只存在钥匙串里，在数据文件夹和日志（`voxtnew.log`）里都搜不到。
 
 ---
 

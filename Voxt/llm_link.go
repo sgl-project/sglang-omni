@@ -23,7 +23,7 @@ import (
 )
 
 // llmState is the language models' runtime; goroutine-safe (the openers
-// run on sessions' goroutines, the Local models page measures it on
+// run on sessions' goroutines, the Speech models page measures it on
 // others).
 type llmState struct {
 	llmMu  sync.Mutex
