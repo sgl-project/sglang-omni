@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Qwen3-Omni as a realtime voice assistant over the Session API, on two RTX PRO
+# 6000 Blackwell cards (96 GB each): the thinker alone on the first card, the
+# encoders, talker and code2wav on the second. The Python pipeline config owns
+# the stage topology; this file sets the stage placement, per-stage memory
+# budgets and the number of concurrent sessions those budgets hold.
+#
+# max_sessions: a session retains at most max_seq_len (32768) thinker tokens
+# of KV, and the thinker's KV pool at a 0.92 fraction holds 331,008 tokens.
+config_cls: Qwen3OmniSessionPipelineConfig
+model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
+max_sessions: 10
+
+stages:
+  image_encoder:
+    gpu: 1
+    gpu_memory_fraction: 0.03
+  audio_encoder:
+    gpu: 1
+    gpu_memory_fraction: 0.03
+  thinker:
+    gpu: 0
+    gpu_memory_fraction: 0.92
+  talker_ar:
+    gpu: 1
+    gpu_memory_fraction: 0.2
+  code2wav:
+    gpu: 1
+    gpu_memory_fraction: 0.03
+
+session_nodes:
+  vad:
+    stages: [vad]
+    inputs: ["input:pcm16", "input:session"]
+  qwen_omni:
+    stages: [preprocessing, image_encoder, audio_encoder, thinker, talker_ar, code2wav]
+    inputs:
+      - "dialog:qwen.unit"
+      - {kind: control, source: input, event: configure}
+      - {kind: control, source: dialog, event: interrupt, preempt: true}
+      - {kind: control, source: dialog, event: qwen.truncate}
+  dialog:
+    stages: [dialog]
+    inputs:
+      - "input:pcm16"
+      - "input:session"
+      - "input:image_frame"
+      - "vad:session"
+      - {kind: control, source: input, event: interrupt, preempt: true}
+      # A reply publishes three controls (turn.started, reply.progress, turn.done) and the dialog
+      # starts the next reply only once it took turn.done, so with an interrupted reply leaving at
+      # most two behind, the default capacity of 16 never drops one.
+      - {source: "qwen_omni:session", feedback: true, overflow: drop_oldest}
+
+session_publish:
+  vad: [session]
+  dialog: [session]
+  qwen_omni: [pcm_f32le, session, text_delta]
