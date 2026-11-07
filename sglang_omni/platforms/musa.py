@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
-import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
@@ -17,16 +16,6 @@ if TYPE_CHECKING:
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
 else:
     pass
-
-logger = logging.getLogger(__name__)
-
-try:
-    import torchada  # noqa: F401
-except ImportError as exc:
-    logger.warning(
-        f"Failed to import torchada: {exc}. MUSA platform compatibility will not work."
-    )
-
 
 class MUSAOmniPlatform(CUDAOmniPlatform):
     _enum = PlatformEnum.MUSA
