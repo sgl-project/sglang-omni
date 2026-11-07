@@ -5,7 +5,11 @@ from typing import TYPE_CHECKING
 import torch
 from sglang.srt.platforms.device_mixin import PlatformEnum
 
-from sglang_omni.platforms.interface import OmniPlatform, RMSNormKernel
+from sglang_omni.platforms.interface import (
+    OmniPlatform,
+    RMSNormAddKernel,
+    RMSNormKernel,
+)
 
 if TYPE_CHECKING:
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
@@ -41,6 +45,22 @@ class NPUOmniPlatform(OmniPlatform):
             return torch_npu.npu_rms_norm(hidden_states, weight, variance_epsilon)[0]
 
         return npu_rmsnorm
+
+    def get_add_rmsnorm(self) -> RMSNormAddKernel:
+        import torch_npu
+
+        def npu_add_rmsnorm(
+            hidden_states: torch.Tensor,
+            residual: torch.Tensor,
+            weight: torch.Tensor,
+            variance_epsilon: float,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            normalized, _, residual_sum = torch_npu.npu_add_rms_norm(
+                hidden_states, residual, weight, variance_epsilon
+            )
+            return normalized, residual_sum
+
+        return npu_add_rmsnorm
 
     def enable_mimi_decode_graph(self) -> bool:
         """Capture PersonaPlex's Mimi streaming decode in NPU graphs."""
