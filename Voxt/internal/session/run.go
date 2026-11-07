@@ -211,13 +211,21 @@ type finishOpts struct {
 	replace bool
 }
 
-// finish delivers result (unless it is a try or empty), keeps the
-// history entry and ends the session.
+// finish delivers result (unless it is a try or empty; a note's is
+// saved), keeps the history entry and ends the session.
 func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 	cfg := r.m.cfg
 	var dres deliver.Result
+	noted := false
 	switch {
 	case result == "" || r.req.Try:
+	case r.req.Note:
+		if err := r.saveNote(result); err != nil {
+			r.logf("error", "note not saved, the card shows it: %v", err)
+			problem = &Problem{Code: ProblemInternal, Err: err, Degraded: true}
+			break
+		}
+		noted = true
 	case o.card != "":
 		dres.Reason = o.card
 		r.m.update(r, func(s *Snapshot) { s.Result, s.Card = result, true })
@@ -260,7 +268,7 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 		if dres.Inserted {
 			s.InsertedInto = dres.To
 		}
-		s.Card = result != "" && !r.req.Try && !dres.Inserted
+		s.Card = result != "" && !r.req.Try && !dres.Inserted && !noted
 		s.Delivery = dres.Reason
 		s.Timings.Deliver, s.Timings.Total = dres.Elapsed, total
 	}, func(s Snapshot) { r.keep(s, store.StatusDone) })
@@ -336,11 +344,21 @@ func (r *run) timeoutProblem(ctx context.Context) *Problem {
 	return &Problem{Code: ProblemASR, Err: r.ctxErr(ctx)}
 }
 
+// saveNote saves a note session's result (Config.Notes).
+func (r *run) saveNote(text string) error {
+	if r.m.cfg.Notes == nil {
+		return errors.New("no notes store")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return r.m.cfg.Notes.Put(ctx, store.Note{ID: r.id, Text: text, CreatedAt: r.m.Current().StartedAt})
+}
+
 // keep writes the history entry of an ended session (and its recording),
-// when the settings keep history. Not for tries.
+// when the settings keep history. Not for tries and notes.
 func (r *run) keep(s Snapshot, status store.Status) {
 	cfg := r.m.cfg
-	if r.req.Try || cfg.History == nil || !r.settings.Privacy.KeepHistory {
+	if r.req.Try || r.req.Note || cfg.History == nil || !r.settings.Privacy.KeepHistory {
 		return
 	}
 	e := store.Entry{
@@ -403,10 +421,10 @@ func (r *run) keep(s Snapshot, status store.Status) {
 // keepsRecording reports whether the session's history entry keeps the
 // recording: the settings keep recordings, recognition failed, or the
 // user cancelled (for a while: Config.AudioRetention), so Retry can
-// recover it. Not for tries.
+// recover it. Not for tries and notes.
 func (r *run) keepsRecording() bool {
 	cfg := r.m.cfg
-	if r.req.Try || r.req.Text != nil || cfg.History == nil || !r.settings.Privacy.KeepHistory || len(r.pcm.bytes()) == 0 {
+	if r.req.Try || r.req.Note || r.req.Text != nil || cfg.History == nil || !r.settings.Privacy.KeepHistory || len(r.pcm.bytes()) == 0 {
 		return false
 	}
 	return r.settings.Privacy.KeepAudio || r.recognitionFailed || r.cancelled.Load()

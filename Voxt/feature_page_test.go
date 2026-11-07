@@ -69,6 +69,7 @@ func TestTranscribePageRenders(t *testing.T) {
 func TestTranscribeHotkeysEdit(t *testing.T) {
 	a, tt := trTester(t)
 	saved := func() []settings.Hotkey { return a.lib.settings.Get().Features.Transcribe.Hotkeys }
+	a.updateSettings(func(s *settings.Settings) { s.Features.Note = settings.Hotkey{} }) // its Right ⌘ (TestTranslatePage)
 
 	// Add one: the first preset no feature uses (Right ⌥, Right ⌥ ⇧, ⌃ Right ⌥ are taken).
 	click(t, tt, "Add a shortcut")

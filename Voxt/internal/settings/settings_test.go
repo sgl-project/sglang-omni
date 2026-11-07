@@ -272,6 +272,25 @@ func TestDefaultShortcutsAreTheFamilys(t *testing.T) {
 	}
 }
 
+// TestNoteShortcut: a document saved before the note shortcut existed
+// gets Voxt 1.x's right Command, tapped; one the user turned off stays
+// off, and a hand-written trigger is read as the tap it always is.
+func TestNoteShortcut(t *testing.T) {
+	s, err := Migrate([]byte(`{"version":4,"features":{"transcribe":{"hotkeys":[{"keys":"RightOption","trigger":"tap"}]}}}`))
+	if err != nil || s.Features.Note != (Hotkey{Keys: "RightCommand", Trigger: TriggerTap}) {
+		t.Fatalf("older document: %+v %v", s.Features.Note, err)
+	}
+	s.Features.Note = Hotkey{}
+	data, _ := json.Marshal(s)
+	if m, err := Migrate(data); err != nil || m.Features.Note.Keys != "" {
+		t.Errorf("off lost: %+v %v", m.Features.Note, err)
+	}
+	m, err := Migrate([]byte(`{"version":4,"features":{"note":{"keys":" F5 ","trigger":"long"}}}`))
+	if err != nil || m.Features.Note != (Hotkey{Keys: "F5", Trigger: TriggerTap}) {
+		t.Errorf("hand-written: %+v %v", m.Features.Note, err)
+	}
+}
+
 // TestMigrateShortcuts: version 4 moves the old defaults (Auralink's)
 // to the family's, one by one, and keeps every shortcut the user chose.
 func TestMigrateShortcuts(t *testing.T) {

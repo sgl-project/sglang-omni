@@ -89,3 +89,6 @@ volume-loud              # volume: high
 
 # The Remote models page (remote_page.go).
 key-minimalistic-square # a saved API key
+
+# Notes (notes_page.go).
+notes                    # the Notes page

@@ -1247,5 +1247,18 @@
   "%d speech service came over: paste its key again on the Speech models page.": "带过来了 %d 个语音服务，它的 API Key 要在“语音模型”页面重新粘贴。",
   "%d speech services came over: paste their keys again on the Speech models page.": "带过来了 %d 个语音服务，它们的 API Key 要在“语音模型”页面重新粘贴。",
   "Check %s on its page: its address or model may not work as it did in the previous Voxt.": "%s 的地址或模型在新版里可能不能照旧使用，请到对应页面检查。",
-  "Check %s on their pages: their addresses or models may not work as they did in the previous Voxt.": "%s 的地址或模型在新版里可能不能照旧使用，请到对应页面检查。"
+  "Check %s on their pages: their addresses or models may not work as they did in the previous Voxt.": "%s 的地址或模型在新版里可能不能照旧使用，请到对应页面检查。",
+  "Notes": "笔记",
+  "Saved to Notes": "已存到笔记",
+  "The note could not be saved: the card shows it.": "笔记没能保存，内容显示在答案卡片里。",
+  "%d note": "%d 条笔记",
+  "%d notes": "%d 条笔记",
+  "Could not read the notes.": "无法读取笔记。",
+  "No notes yet": "还没有笔记",
+  "Choose a shortcut above, then press it in any app and speak. What you say is saved here instead of typed.": "先在上面选一个快捷键，然后在任意 app 里按下它说话。说的内容会存到这里，不会输入到光标处。",
+  "Press %s in any app, speak, and press it again. What you say is saved here instead of typed.": "在任意 app 里按 %s，说完再按一次。说的内容会存到这里，不会输入到光标处。",
+  "Could not delete the note: %v": "无法删除笔记：%v",
+  "Press it in any app to start a note, and again to save it.": "在任意 app 里按一下开始记笔记，再按一下保存。",
+  "Keys to record a note": "记笔记的快捷键",
+  "Custom keys to record a note": "自定义记笔记的快捷键"
 }

@@ -56,7 +56,8 @@ type Decision struct {
 // HotkeyRules.zh-CN.md, simplified):
 //
 //   - Idle: a tap or double tap of a feature's binding starts it; a long
-//     press starts it on "down" and its "up" stops it; PasteLast pastes.
+//     press starts it on "down" and its "up" stops it; PasteLast pastes;
+//     Note starts a note (Decision.Feature Note).
 //   - Recording: any feature's binding stops (the "common stop"): a tap
 //     fires at once while active; the "up" of the long press that started
 //     the session stops it, other "up"s do nothing. The cancel shortcut

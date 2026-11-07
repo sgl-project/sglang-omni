@@ -212,6 +212,8 @@ func FeatureTitle(feature string) string {
 		return i18n.T("Paste the last result")
 	case hotkey.CancelID:
 		return i18n.T("Cancel transcription")
+	case hotkey.Note:
+		return i18n.T("Notes")
 	}
 	return i18n.T("Transcribe")
 }

@@ -4,6 +4,16 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Added
+
+- **Notes** (the new Notes page), as in Voxt 1.x: tap right ⌘ in any app, speak, and tap it again. Voxt saves what you said as a note instead of typing it. The Notes page lists your notes, newest first, with their time, and you can delete them. The shortcut changes on that page (off, or other keys). Notes stay out of History, and clearing History keeps them.
+
+### 中文
+
+#### 新增
+
+- **笔记**（新的“笔记”页），和 Voxt 1.x 一样：在任意 app 里单按右 ⌘，说完再按一次，说的内容会存成一条笔记，不会输入到光标处。笔记页按时间从新到旧列出笔记和时间，可以删除。快捷键在笔记页里改（可以关掉，也可以换成别的键）。笔记不进历史，清空历史也不会删掉笔记。
+
 ## [2.0.1] - 2026-11-07
 
 ### Added

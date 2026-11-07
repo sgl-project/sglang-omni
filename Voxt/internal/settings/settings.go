@@ -248,6 +248,10 @@ type Features struct {
 	// through the helper's event tap: it never takes the keys while
 	// nothing records.
 	Cancel Hotkey `json:"cancel"`
+	// Note records a note (Voxt 1.x's noteHotkeyBindings): a Transcribe
+	// session whose text goes to the Notes page instead of where the
+	// cursor is. Only a tap; empty keys: off.
+	Note Hotkey `json:"note"`
 }
 
 // Feature is what every feature has: its shortcuts, the models it uses
@@ -367,6 +371,9 @@ const (
 	// DefaultCancel is the cancel shortcut's default, in one place: it
 	// only acts while a session records or the answer card shows.
 	DefaultCancel = "Escape"
+	// DefaultNote is the note shortcut's default, Voxt 1.x's: right
+	// Command tapped alone, which no ActNow app has.
+	DefaultNote = "RightCommand"
 )
 
 // Defaults returns the settings of a fresh install.
@@ -384,6 +391,7 @@ func Defaults() Settings {
 			Rewrite:    Rewrite{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultRewrite, Trigger: TriggerTap}}}, Cleanup: true},
 			PasteLast:  Hotkey{Keys: DefaultPasteLast, Trigger: TriggerTap},
 			Cancel:     Hotkey{Keys: DefaultCancel, Trigger: TriggerTap},
+			Note:       Hotkey{Keys: DefaultNote, Trigger: TriggerTap},
 		},
 		AppEnhancement: AppEnhancement{Enabled: true},
 		Dictionary:     Dictionary{Enabled: true, ASRHints: true, Glossary: true},

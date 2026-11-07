@@ -265,6 +265,9 @@ const (
 	// CancelID is the binding id of Features.Cancel: the helper reports
 	// it only while active (proto.HotkeyCancel).
 	CancelID = proto.HotkeyCancel
+	// Note is the binding id of Features.Note: it starts a Transcribe
+	// session whose text becomes a note.
+	Note = "note"
 )
 
 // Features lists the three features in the settings' order.
@@ -273,11 +276,11 @@ var Features = []string{Transcribe, Translate, Rewrite}
 // ID is a feature binding's id: "transcribe/0".
 func ID(feature string, i int) string { return feature + "/" + strconv.Itoa(i) }
 
-// ParseID splits a binding id: ("transcribe", 0, true); PasteLast is
-// (PasteLast, 0, true); "cancel" and others are false.
+// ParseID splits a binding id: ("transcribe", 0, true); PasteLast and
+// Note are (id, 0, true); "cancel" and others are false.
 func ParseID(id string) (feature string, index int, ok bool) {
-	if id == PasteLast {
-		return PasteLast, 0, true
+	if id == PasteLast || id == Note {
+		return id, 0, true
 	}
 	f, n, found := strings.Cut(id, "/")
 	if !found || !slices.Contains(Features, f) {
@@ -307,6 +310,11 @@ func HotkeysOf(f settings.Features, feature string) []settings.Hotkey {
 			return nil
 		}
 		return []settings.Hotkey{f.Cancel}
+	case Note:
+		if f.Note.Keys == "" {
+			return nil
+		}
+		return []settings.Hotkey{f.Note}
 	}
 	return f.Transcribe.Hotkeys
 }
@@ -332,9 +340,9 @@ type Plan struct {
 	Carbon []Carbon
 }
 
-// Build turns the shortcuts of the features in enabled (and PasteLast)
-// into bindings, in the settings' order (Transcribe, Translate, Rewrite,
-// PasteLast), and Features.Cancel into the plan's cancel shortcut (a
+// Build turns the shortcuts of the features in enabled (and PasteLast
+// and Note) into bindings, in the settings' order (Transcribe, Translate,
+// Rewrite, PasteLast, Note), and Features.Cancel into the plan's cancel shortcut (a
 // tap, judged only while active). Hotkeys that do not parse are left out
 // (Check reports them); so is a later duplicate of the same keys and
 // behaviour.
@@ -378,6 +386,9 @@ func Build(f settings.Features, enabled []string) Plan {
 	}
 	if f.PasteLast.Keys != "" {
 		add(PasteLast, f.PasteLast, proto.BehaviorTap)
+	}
+	if f.Note.Keys != "" {
+		add(Note, f.Note, proto.BehaviorTap)
 	}
 	if f.Cancel.Keys != "" {
 		if c, err := Parse(f.Cancel.Keys); err == nil {
