@@ -24,7 +24,7 @@ func (a *app) privacySettings(c *ui.Context) {
 	}
 	ui.Column(c.Key("priv-list")).Gap(px(t, sp1)).Children(func() {
 		for _, s := range []string{
-			i18n.T("Your recordings stay on this Mac: speech is recognised here. Voxt has no server of its own."),
+			i18n.T("Your recordings are recognised on this Mac, unless a feature uses a speech service you set up (the Speech models page): its recordings then go to that service. Voxt has no server of its own."),
 			i18n.T("The text to clean up, translate or rewrite goes to the language model you set up (the Language models page): it stays on this Mac with a server here, such as Ollama, and goes to the service otherwise."),
 			online,
 			i18n.T("The address of the browser tab in front is read only to pick your app enhancement rules: the language model never sees it, only the app's name."),

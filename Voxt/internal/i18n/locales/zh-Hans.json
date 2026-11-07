@@ -1127,7 +1127,7 @@
   "Your history, dictionary and settings are kept in a database in %s. It could not be opened: %v": "你的历史、词典和设置保存在 %s 的数据库中，无法打开：%v",
   "Your instruction": "你的指令",
   "Your recordings are sent to %s to be recognised.": "你的录音会发给 %s 识别。",
-  "Your recordings stay on this Mac: speech is recognised here. Voxt has no server of its own.": "你的录音留在这台 Mac 上，语音在本机识别。Voxt 没有自己的服务器。",
+  "Your recordings are recognised on this Mac, unless a feature uses a speech service you set up (the Speech models page): its recordings then go to that service. Voxt has no server of its own.": "你的录音在这台 Mac 上识别。如果某个功能用的是你设置的在线语音服务（语音模型页），这个功能的录音会发给那个服务。Voxt 没有自己的服务器。",
   "Your rules": "你的规则",
   "Your rules for Rewrite": "转写的规则",
   "Your rules for Transcribe": "转录的规则",

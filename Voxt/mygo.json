@@ -16,7 +16,7 @@
     "minimumSystemVersion": "15.0",
     "infoPlist": {
       "LSApplicationCategoryType": "public.app-category.productivity",
-      "NSMicrophoneUsageDescription": "Voxt records your voice while you use its shortcut and recognises it on this Mac: the audio never leaves it. 录音只在你使用快捷键时进行，并在这台 Mac 上识别：音频不会离开这台 Mac。",
+      "NSMicrophoneUsageDescription": "Voxt records your voice while you use its shortcut and recognises it on this Mac, or with the speech service you set up. 录音只在你使用快捷键时进行，在这台 Mac 上识别，或交给你设置的语音服务识别。",
       "NSSpeechRecognitionUsageDescription": "System dictation recognises your voice with macOS's own speech recognition, on this Mac: the audio never leaves it. 系统听写用 macOS 自带的语音识别在这台 Mac 上识别你的声音：音频不会离开这台 Mac。"
     },
     "entitlements": "helper/Support/app.entitlements",

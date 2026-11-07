@@ -334,6 +334,31 @@ func TestPrivacyGoesOnline(t *testing.T) {
 	}
 }
 
+// TestPrivacyNamesSpeechServices: a remote speech service gets the
+// recordings, so Settings → Privacy and the microphone prompts (the app's
+// and the helper's) say so instead of "the audio never leaves the Mac".
+func TestPrivacyNamesSpeechServices(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/privacy")
+	frames(tt)
+	if !slices.ContainsFunc(tt.Texts(), func(s string) bool {
+		return strings.Contains(s, "Your recordings") && strings.Contains(s, "speech service")
+	}) {
+		t.Errorf("Privacy: %q", firstTexts(tt))
+	}
+	for file, next := range map[string]int{"mygo.json": 0, "helper/Support/Info.plist": 1} {
+		b, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(string(b), "\n")
+		i := slices.IndexFunc(lines, func(l string) bool { return strings.Contains(l, "NSMicrophoneUsageDescription") })
+		if i < 0 || i+next >= len(lines) || !strings.Contains(lines[i+next], "speech service") {
+			t.Errorf("%s: the microphone prompt does not name the speech service", file)
+		}
+	}
+}
+
 func TestPrivacyClearsHistory(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	h := a.lib.store.History()

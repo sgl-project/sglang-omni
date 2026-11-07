@@ -40,7 +40,7 @@ Voxt 只提供少数几个为它调好的模型，在你需要时从 Hugging Fac
 
 ## 隐私
 
-音频不会离开这台 Mac：语音在本机识别。要整理、翻译或改写的文字只发给你设置的语言模型；用 Ollama、LM Studio 或 oMLX 时文字也留在本机。API Key 保存在 macOS 钥匙串里。Voxt 没有自己的服务器，不需要账号，也不做统计。除此之外它只在下载你选择的模型时联网（从 Hugging Face，走系统代理；连不上时用 hf-mirror.com）。历史、可选保存的录音、词典和设置都在 `~/Library/Application Support/VoxtNew/`。
+语音在这台 Mac 上识别；如果你在语音模型页给某个功能设置了在线语音服务（OpenAI、豆包、阿里云等），这个功能的录音会发给那个服务。要整理、翻译或改写的文字只发给你设置的语言模型；用 Ollama、LM Studio 或 oMLX 时文字也留在本机。API Key 保存在 macOS 钥匙串里。Voxt 没有自己的服务器，不需要账号，也不做统计。除此之外它只在下载你选择的模型时联网（从 Hugging Face，走系统代理；连不上时用 hf-mirror.com）。历史、可选保存的录音、词典和设置都在 `~/Library/Application Support/VoxtNew/`。
 
 ## 从源码构建
 

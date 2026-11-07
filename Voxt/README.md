@@ -40,7 +40,7 @@ Voice detection (Silero VAD v6, 1.2 MB) comes with the first speech model. The s
 
 ## Privacy
 
-Audio never leaves the Mac: speech is recognised on it. The text to clean up, translate or rewrite goes to the language model you set up, and only there: with Ollama, LM Studio or oMLX it stays on this Mac. API keys stay in the macOS Keychain. Voxt has no server of its own, no account and no analytics. Otherwise it goes online only to download the models you choose (from Hugging Face, through the system's proxy, or hf-mirror.com when Hugging Face cannot be reached). The history, its optional recordings, the dictionary and the settings stay in `~/Library/Application Support/VoxtNew/`.
+Speech is recognised on the Mac, unless you set up a remote speech service for a feature on the Speech models page (OpenAI, Doubao, Aliyun and others): that feature's recordings then go to that service. The text to clean up, translate or rewrite goes to the language model you set up, and only there: with Ollama, LM Studio or oMLX it stays on this Mac. API keys stay in the macOS Keychain. Voxt has no server of its own, no account and no analytics. Otherwise it goes online only to download the models you choose (from Hugging Face, through the system's proxy, or hf-mirror.com when Hugging Face cannot be reached). The history, its optional recordings, the dictionary and the settings stay in `~/Library/Application Support/VoxtNew/`.
 
 ## Build from source
 
