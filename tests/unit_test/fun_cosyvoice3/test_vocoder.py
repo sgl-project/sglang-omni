@@ -172,7 +172,9 @@ def packed_compile_scheduler(
 
     vocoder.hop_batch = hop_batch
     vocoder.leftover_batch = leftover_batch
-    scheduler = FunCosyVoice3StreamingVocoderScheduler(vocoder)
+    scheduler = FunCosyVoice3StreamingVocoderScheduler(
+        vocoder, should_complete_first_chunk_immediately=False
+    )
     return scheduler, hop_batches, leftover_batches
 
 
@@ -855,6 +857,7 @@ def test_flow_admission_defers_request_after_long_singleton(monkeypatch) -> None
         device="cpu",
         flow_batch_admission_frames=2000,
         enable_dit_torch_compile=False,
+        should_complete_first_chunk_immediately=False,
     )
     long_state = make_state(prompt_tokens=0)
     long_state.audio_codes = make_codes(2200)
@@ -899,6 +902,7 @@ def test_admission_budget_below_the_first_tier_keeps_finals_eager(monkeypatch) -
         enable_hift_cuda_graph=False,
         flow_batch_admission_frames=3,
         enable_dit_torch_compile=False,
+        should_complete_first_chunk_immediately=False,
     )
 
     mels = scheduler.vocoder.leftover_batch([scheduler.make_warmup_flow_input(2200)])
@@ -949,10 +953,12 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
         flow_batch_admission_frames=200,
         flow_merge_max_gap_frames=0,
         flow_merge_pad_budget_percent=0,
+        should_complete_first_chunk_immediately=True,
     )
 
     assert isinstance(scheduler, FunCosyVoice3StreamingVocoderScheduler)
     assert scheduler.max_batch_size == 6
+    assert scheduler.should_complete_first_chunk_immediately
     assert scheduler.max_batch_wait_s == pytest.approx(0.007)
     assert scheduler.max_batch_cost == 200
     assert callable(scheduler.request_cost_fn)
@@ -997,6 +1003,7 @@ def test_create_vocoder_executor_threads_trt_flag(monkeypatch) -> None:
         max_batch_size=4,
         enable_dit_torch_compile=False,
         enable_flow_estimator_trt=True,
+        should_complete_first_chunk_immediately=False,
     )
 
     assert captured == {
@@ -1115,6 +1122,7 @@ def test_create_vocoder_executor_compiles_before_flow_graph_capture(
         enable_dit_torch_compile=enable_dit_torch_compile,
         enable_flow_cuda_graph=True,
         flow_cuda_graph_capture_shapes=FLOW_GRAPH_CAPTURE_SHAPES,
+        should_complete_first_chunk_immediately=False,
     )
 
     assert startup_events.count("graph_capture") == 1
@@ -1156,6 +1164,7 @@ def test_create_vocoder_executor_skips_the_padded_dit_startup_on_the_packed_rout
         enable_flow_prefix_cuda_graph=False,
         enable_flow_whole_history_cuda_graph=False,
         enable_hift_cuda_graph=False,
+        should_complete_first_chunk_immediately=False,
     )
 
     assert "runner_create" not in startup_events
@@ -1187,6 +1196,7 @@ def test_create_vocoder_executor_on_xpu_captures_flow_graphs_only_for_an_eager_d
         enable_dit_torch_compile=enable_dit_torch_compile,
         enable_flow_cuda_graph=True,
         flow_cuda_graph_capture_shapes=FLOW_GRAPH_CAPTURE_SHAPES,
+        should_complete_first_chunk_immediately=False,
     )
 
     assert ("graph_capture" in startup_events) is not enable_dit_torch_compile
@@ -1232,6 +1242,7 @@ def test_create_vocoder_executor_packs_buffered_flow_only_on_ragged_attention(
         enable_hift_cuda_graph=False,
         enable_dit_torch_compile=False,
         enable_flow_estimator_trt=enable_flow_estimator_trt,
+        should_complete_first_chunk_immediately=False,
     )
 
     assert scheduler.vocoder.flow.is_buffered_packed is is_buffered_packed
@@ -1247,6 +1258,7 @@ def test_create_vocoder_executor_rejects_trt_and_compile() -> None:
             enable_hift_cuda_graph=False,
             enable_dit_torch_compile=True,
             enable_flow_estimator_trt=True,
+            should_complete_first_chunk_immediately=False,
         )
 
 
@@ -1554,7 +1566,9 @@ def test_a_pool_of_the_prefix_warmup_blocks_runs_both_warmup_hops(
         stages.CosyVoice3Vocoder.release_prefix_cache(vocoder, pair)
     )
     scheduler = FunCosyVoice3StreamingVocoderScheduler(
-        vocoder, token_hop_len=token_hop_len
+        vocoder,
+        token_hop_len=token_hop_len,
+        should_complete_first_chunk_immediately=False,
     )
     capacity_frames = scheduler.prefix_warmup_block_count() * stages.BLOCK_FRAMES
     vocoder.flow.prefix_pool = stages.PrefixKVPool(
@@ -1682,6 +1696,7 @@ def test_prefix_pool_leaves_the_runtime_headroom_and_the_largest_step(
         flow_batch_admission_frames=3,
         enable_dit_torch_compile=False,
         total_gpu_memory_fraction=vocoder_fraction,
+        should_complete_first_chunk_immediately=False,
     )
 
     assert events == [
@@ -1785,6 +1800,7 @@ def test_a_share_that_holds_no_block_serves_without_the_prefix_cache(
         enable_hift_cuda_graph=False,
         enable_dit_torch_compile=False,
         total_gpu_memory_fraction=load_bytes / 2**35,
+        should_complete_first_chunk_immediately=False,
     )
 
     assert scheduler.vocoder.flow.prefix_pool is None
@@ -1815,6 +1831,7 @@ def test_a_cpu_vocoder_serves_without_the_default_prefix_cache(
         enable_flow_whole_history_cuda_graph=True,
         enable_hift_cuda_graph=False,
         enable_dit_torch_compile=False,
+        should_complete_first_chunk_immediately=False,
     )
 
     assert scheduler.vocoder.flow.prefix_pool is None
@@ -1872,7 +1889,9 @@ def test_largest_step_rows_hold_the_longest_reference_prompt(
     ref_text, whose whole reference reaches Flow and not the engine, outgrew it."""
     flow_rows: list[tuple[int, int]] = []
     vocoder = step_measurement_vocoder(flow_rows, [])
-    scheduler = FunCosyVoice3StreamingVocoderScheduler(vocoder, token_hop_len=40)
+    scheduler = FunCosyVoice3StreamingVocoderScheduler(
+        vocoder, token_hop_len=40, should_complete_first_chunk_immediately=False
+    )
     patch_step_memory(monkeypatch, [0, 0])
 
     scheduler.measure_peak_step_bytes(
@@ -1894,7 +1913,10 @@ def test_largest_step_reserves_the_larger_of_streaming_and_non_streaming(
     hift_shapes: list[tuple[int, int]] = []
     vocoder = step_measurement_vocoder([], hift_shapes)
     scheduler = FunCosyVoice3StreamingVocoderScheduler(
-        vocoder, max_batch_size=16, max_batch_cost=8000
+        vocoder,
+        max_batch_size=16,
+        max_batch_cost=8000,
+        should_complete_first_chunk_immediately=False,
     )
     patch_step_memory(monkeypatch, window_peaks)
 
@@ -1923,6 +1945,7 @@ def test_create_vocoder_executor_rejects_non_positive_admission_budget(
             device="cpu",
             flow_batch_admission_frames=0,
             enable_dit_torch_compile=False,
+            should_complete_first_chunk_immediately=False,
         )
 
 
@@ -2409,7 +2432,12 @@ def prefix_pool_scheduler(
         hop_batch_prefix=hop_batch_prefix,
         hop_batch=hop_batch,
     )
-    return FunCosyVoice3StreamingVocoderScheduler(vocoder), released
+    return (
+        FunCosyVoice3StreamingVocoderScheduler(
+            vocoder, should_complete_first_chunk_immediately=False
+        ),
+        released,
+    )
 
 
 def prefix_hop_item(tokens: int) -> stages.FlowBatchInput:
