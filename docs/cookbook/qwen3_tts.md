@@ -590,7 +590,7 @@ process, since requests bind to its replicas round-robin. Raise
 Intel XPU, CPU and Apple MPS decode synchronously by default. For NPU defaults
 and configuration, see [Ascend NPU baseline](#ascend-npu-baseline).
 To opt in on Intel GPUs, follow the
-[Qwen3-TTS XPU recipe](../get_started/installation_xpu.md#qwen3-tts-text-to-speech-single-xpu).
+[Qwen3-TTS XPU recipe](../other_platforms/installation_xpu.md#qwen3-tts-text-to-speech-single-xpu).
 
 Each follow-up batch sorts the stateful decoder's cohorts, and the rows within
 each, by playback deadline: the nearest cohort launches first and its nearest
