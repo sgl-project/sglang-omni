@@ -7,6 +7,7 @@ import torch
 from torch import nn
 
 from sglang_omni.models.nemotron_diarization.model import SortformerModules
+from sglang_omni.models.nemotron_transcribe.fp8_linear import attach_fp8_linears
 from sglang_omni.models.nemotron_transcribe.hf_config import decode_nemo_floats
 from sglang_omni.models.nemotron_transcribe.mel_features import LogMelFrontend
 from sglang_omni.models.nemotron_transcribe.parallel_expert import ParallelExpertEncoder
@@ -136,7 +137,12 @@ def load_perception_weights(
 ) -> None:
     # note (yhayaran): SGLang builds this in the serving dtype, so float the frontend before loading.
     perception.preprocessor.float()
-    incompatible = perception.load_state_dict(weights, strict=False)
+    # note (yhayaran): Cast before attaching FP8 linears; a dtype cast would also cast their FP8 weights.
+    perception.encoder.to(dtype)
+    perception.proj.to(dtype)
+    incompatible = perception.load_state_dict(
+        attach_fp8_linears(perception, weights), strict=False
+    )
     missing = [k for k in incompatible.missing_keys if "._extra_state" not in k]
     unexpected = [k for k in incompatible.unexpected_keys if "._extra_state" not in k]
     if missing or unexpected:
@@ -146,8 +152,6 @@ def load_perception_weights(
         )
     else:
         pass
-    perception.encoder.to(dtype)
-    perception.proj.to(dtype)
     perception.eval()
 
 
