@@ -2,6 +2,8 @@
 """Unit tests for the ARK-ASR-3B adapter (CPU-only, no checkpoint download)."""
 
 import inspect
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +13,7 @@ from sglang.srt.arg_groups.cuda_graph_hook import (
     generate_prefill_cuda_graph_batch_sizes,
 )
 from sglang.srt.managers.schedule_batch import Modality, MultimodalDataItem
+from sglang.srt.models.qwen2 import Qwen2ForCausalLM
 from transformers import WhisperConfig
 
 import sglang_omni.model_runner.base as model_runner_base
@@ -31,6 +34,7 @@ from sglang_omni.models.arkasr.request_builders import build_suppressed_token_id
 from sglang_omni.models.arkasr.sglang_model import ArkasrForConditionalGeneration
 from sglang_omni.models.arkasr.stages import create_sglang_arkasr_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.speculative.dflash_draft import ReducedVocabularyDFlashWorker
 
 
 def tiny_config():
@@ -308,6 +312,139 @@ def stub_arkasr_engine_build(
         model_worker=model_worker,
         build_kwargs=build_kwargs,
     )
+
+
+@pytest.mark.parametrize(
+    ("draft_tokens", "context_length", "fail_build", "expected_context_length"),
+    [
+        (None, None, False, 1280),
+        (4, None, False, 1272),
+        (4, 2048, False, 2048),
+        (None, None, True, 1280),
+    ],
+)
+def test_arkasr_dflash_build(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    draft_tokens: int | None,
+    context_length: int | None,
+    fail_build: bool,
+    expected_context_length: int,
+) -> None:
+    """The draft must reach synchronous verification with enough KV space and no leaked config."""
+    stub = stub_arkasr_engine_build(
+        monkeypatch,
+        want_cuda_graph=False,
+        encoder_service=SimpleNamespace(close=lambda: None),
+    )
+    monkeypatch.setattr(platforms.current_platform, "is_cuda", lambda: True)
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "speculators_model_type": "dflash",
+                "sliding_window_non_causal": False,
+                "dtype": "bfloat16",
+                "draft_vocab_size": 48000,
+                "aux_hidden_state_layer_ids": [2, 18, 33],
+                "mask_token_id": 151662,
+                "block_size": 8,
+                "transformer_layer_config": {"hidden_size": 2048},
+            }
+        )
+    )
+    overrides = {
+        "speculative_algorithm": "DFLASH",
+        "speculative_draft_model_path": str(tmp_path),
+        "speculative_draft_model_revision": "pinned",
+        "speculative_num_draft_tokens": draft_tokens,
+    }
+    if context_length is not None:
+        overrides["context_length"] = context_length
+    draft_directories: list[Path] = []
+    original_server_args_builder = sglang_backend.build_sglang_server_args
+
+    def capture_server_args(
+        model_path: str, context_length: int, **overrides: object
+    ) -> SimpleNamespace:
+        draft_directory = Path(str(overrides["speculative_draft_model_path"]))
+        draft_directories.append(draft_directory)
+        config = json.loads((draft_directory / "config.json").read_text())
+        assert config["dflash_config"]["target_layer_ids"] == [1, 17, 32]
+        assert overrides["speculative_draft_model_revision"] is None
+        assert context_length == expected_context_length
+        if fail_build:
+            raise RuntimeError("engine failed")
+        return original_server_args_builder(model_path, context_length, **overrides)
+
+    monkeypatch.setattr(sglang_backend, "build_sglang_server_args", capture_server_args)
+    if fail_build:
+        with pytest.raises(RuntimeError, match="engine failed"):
+            create_sglang_arkasr_executor("target", server_args_overrides=overrides)
+    else:
+        scheduler = create_sglang_arkasr_executor(
+            "target", server_args_overrides=overrides
+        )
+        assert scheduler.enable_async_decode is False
+        assert stub.infra_kwargs_seen["supports_speculative_decoding"] is True
+        assert (
+            stub.infra_kwargs_seen["speculative_worker_class"]
+            is ReducedVocabularyDFlashWorker
+        )
+    assert len(draft_directories) == 1
+    assert not draft_directories[0].exists()
+
+
+@pytest.mark.parametrize(
+    ("overrides", "is_cuda", "message"),
+    [
+        ({"speculative_algorithm": "EAGLE3"}, True, "supports DFLASH"),
+        ({"speculative_algorithm": "DFLASH"}, True, "needs speculative_draft"),
+        (
+            {"speculative_draft_model_path": "draft"},
+            True,
+            "needs a speculative_algorithm",
+        ),
+        (
+            {
+                "speculative_algorithm": "DFLASH",
+                "speculative_draft_model_path": "draft",
+            },
+            False,
+            "needs a CUDA GPU",
+        ),
+    ],
+)
+def test_arkasr_rejects_unsupported_speculative_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, object],
+    is_cuda: bool,
+    message: str,
+) -> None:
+    stub_arkasr_engine_build(
+        monkeypatch,
+        want_cuda_graph=False,
+        encoder_service=SimpleNamespace(close=lambda: None),
+    )
+    monkeypatch.setattr(platforms.current_platform, "is_cuda", lambda: is_cuda)
+    with pytest.raises(ValueError, match=message):
+        create_sglang_arkasr_executor("target", server_args_overrides=overrides)
+
+
+def test_arkasr_dflash_worker_reaches_the_decoder() -> None:
+    model = ArkasrForConditionalGeneration.__new__(ArkasrForConditionalGeneration)
+    nn.Module.__init__(model)
+    embedding = nn.Embedding(8, 4)
+    head = nn.Linear(4, 8, bias=False)
+    model.language_model = Qwen2ForCausalLM.__new__(Qwen2ForCausalLM)
+    nn.Module.__init__(model.language_model)
+    model.language_model.lm_head = head
+    model.language_model.model = SimpleNamespace(embed_tokens=embedding)
+    model.language_model.pp_group = SimpleNamespace(is_last_rank=True)
+    model.set_dflash_layers_to_capture([1, 17, 32])
+    assert model.get_input_embeddings() is embedding
+    assert model.lm_head is head
+    assert model.language_model.capture_aux_hidden_states is True
+    assert model.language_model.model.layers_to_capture == [2, 18, 33]
 
 
 def test_arkasr_prefill_graph_uses_resolved_auto_chunk_size(
