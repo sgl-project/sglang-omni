@@ -170,6 +170,7 @@ async def make_session(
     *,
     outputs: list[str] | None = None,
     max_segment_s: float | None = 60.0,
+    audio_format: str = "pcm16",
 ) -> tuple[RealtimeTranscriptionSession, RecordingWebSocket, FakeClient]:
     use_fake_speech_model(monkeypatch)
     websocket = RecordingWebSocket()
@@ -189,10 +190,29 @@ async def make_session(
     await session.dispatch(
         {
             "type": "session.update",
-            "session": {"turn_detection": None},
+            "session": {
+                "turn_detection": None,
+                "input_audio_format": audio_format,
+            },
         }
     )
     return session, websocket, client
+
+
+@pytest.mark.parametrize("audio_format", ["g711_ulaw", "g711_alaw"])
+@pytest.mark.asyncio
+async def test_g711_input_is_decoded_to_16khz_pcm(
+    monkeypatch: pytest.MonkeyPatch, audio_format: str
+) -> None:
+    session, _websocket, _client = await make_session(
+        monkeypatch, audio_format=audio_format
+    )
+
+    await session.dispatch(audio_event(b"\x00" * 800))
+
+    assert session.session_object().input_audio_format == audio_format
+    assert session.audio_buffer.num_samples == 1600
+    await session.teardown()
 
 
 @pytest.mark.asyncio
