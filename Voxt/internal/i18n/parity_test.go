@@ -224,6 +224,16 @@ func TestPlainChinese(t *testing.T) {
 	}
 }
 
+// TestDockInChinese: macOS's Simplified Chinese calls the Dock 程序坞,
+// and the strings use the same word.
+func TestDockInChinese(t *testing.T) {
+	for k, v := range readLocale(t, "zh-Hans") {
+		if strings.Contains(v, "Dock") {
+			t.Errorf("%q: %q says Dock, not 程序坞", k, v)
+		}
+	}
+}
+
 func TestVerbs(t *testing.T) {
 	if got := verbs("%[2]s of %[1]d, %.1f%% done"); !slices.Equal(got, []string{"%.1f", "%d", "%s"}) {
 		t.Error(got)

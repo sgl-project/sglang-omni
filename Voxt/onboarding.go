@@ -208,7 +208,7 @@ func (a *app) obGo(step int) {
 
 // onboardingRow is Settings → General's way back to the guide.
 func (a *app) onboardingRow(c *ui.Context) {
-	settingRow(c, "setup-guide", i18n.T("Setup guide"), i18n.T("Permissions, the local models, and a try of each feature, as on the first day."), func() {
+	settingRow(c, "setup-guide", i18n.T("Setup guide"), i18n.T("Permissions, the speech models, and a try of each feature, as on the first day."), func() {
 		if ui.Button(c.Key("setup-guide-open"), i18n.T("Open the setup guide")).Clicked() {
 			a.openOnboarding()
 		}
