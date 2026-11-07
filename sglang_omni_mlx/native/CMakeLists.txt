@@ -49,6 +49,7 @@ FetchContent_MakeAvailable(nlohmann_json pcre2 civetweb)
 
 add_library(common STATIC
   src/common/audio.cpp
+  src/common/campplus.cpp
   src/common/form.cpp
   src/common/layers.cpp
   src/common/npz.cpp
@@ -62,6 +63,10 @@ target_compile_options(common PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 # Note (Jiaxin Deng): npz keeps the no-fused-multiply-add rounding it was built
 # with as part of whisper_asr, and reference_audio as part of cosyvoice3.
 set_source_files_properties(src/common/npz.cpp src/common/reference_audio.cpp
+  PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
+# Note (XXXXRT666): campplus keeps the rounding it was built with as part of
+# cosyvoice3.
+set_source_files_properties(src/common/campplus.cpp
   PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 
 add_library(qwen3_asr STATIC
@@ -297,7 +302,7 @@ install(TARGETS qwen3_tts_server qwen3_tts_synthesize RUNTIME DESTINATION bin)
 # server's /v1/audio/speech API, and its parity tool; the Qwen2 decoder reuses
 # Qwen3's, and the WAV and PCM writers are shared in common/audio.
 add_library(cosyvoice3 STATIC src/cosyvoice3/cosyvoice3_vocoder.cpp
-  src/cosyvoice3/cosyvoice3_audio.cpp src/cosyvoice3/cosyvoice3_speaker.cpp
+  src/cosyvoice3/cosyvoice3_audio.cpp
   src/cosyvoice3/cosyvoice3_speech_tokenizer.cpp
   src/cosyvoice3/cosyvoice3_model.cpp)
 target_link_libraries(cosyvoice3 PUBLIC qwen3_asr)

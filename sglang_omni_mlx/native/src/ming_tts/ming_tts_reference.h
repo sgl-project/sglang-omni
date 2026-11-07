@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include "common/campplus.h"
 #include "ming_tts/ming_tts_audio.h"
 
 namespace ming_tts {
 
-// The sample rate CampPlus embeds.
+// The sample rate the CampPlus speaker encoder takes.
 inline constexpr int kSpeakerSampleRate = 16000;
 
 // A reference recording at the rates its two encoders take: 16 kHz for
@@ -20,20 +21,6 @@ struct ReferenceConditioning {
   mlx::core::array speaker;
 };
 
-class CampPlus {
-public:
-  explicit CampPlus(const std::filesystem::path &path);
-  mlx::core::array Encode(const std::vector<float> &samples) const;
-
-private:
-  mlx::core::array BatchNorm(const mlx::core::array &hidden,
-                             const std::string &prefix) const;
-  mlx::core::array Conv1d(const mlx::core::array &hidden,
-                          const std::string &weight, const std::string &bias,
-                          int stride = 1, int dilation = 1) const;
-  omni_common::Checkpoint speaker_;
-};
-
 class MingReferenceEncoder {
 public:
   explicit MingReferenceEncoder(const std::filesystem::path &directory);
@@ -42,7 +29,7 @@ public:
   int PatchCount(size_t sample_count) const;
 
 private:
-  CampPlus speaker_;
+  omni_common::CamPlusEncoder speaker_;
   MingAudioEncoder audio_;
   int alignment_samples_;
 };
