@@ -6,7 +6,7 @@ name: Voxt CI
 # key parity, archtest), MyGo's vet, and the vendored MyGo checked against
 # its patches. The Swift helper, voxtnew-llm, the Omni runtime and the real
 # models are checked on a Mac by hand: Voxt/scripts/mac-regress.sh and
-# Voxt/docs/manual-test.md.
+# Voxt/docs/manual-test.md. Voxt Nightly runs it before its build.
 
 on:
   pull_request:
@@ -19,9 +19,11 @@ on:
       - "Voxt/**"
       - ".github/workflows/voxtnew-ci.yaml"
   workflow_dispatch:
+  workflow_call:
 
+# The calling workflow's name keeps the nightly's run apart from a push to main.
 concurrency:
-  group: voxtnew-ci-${{ github.event.pull_request.number || github.ref }}
+  group: voxtnew-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:

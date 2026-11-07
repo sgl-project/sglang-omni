@@ -6,9 +6,11 @@ name: Voxt Release
 # ID of the voxt-release environment, notarized, checked by
 # scripts/release-verify.sh, and uploaded with its SHA-256 to a draft release
 # whose notes are the version's section of Voxt/CHANGELOG.md. Apple silicon
-# only. A run without a tag (a pull request that changes the release, or by
-# hand) builds the same app ad hoc, unsigned, and keeps its disk image as an
-# artifact.
+# only. The nightly from main (voxt-nightly.yaml, version
+# X.Y.Z-nightly.YYYYMMDD) is signed and notarized the same way and keeps its
+# disk image as an artifact. Any other run (a pull request that changes the
+# release, or by hand) builds the same app ad hoc, unsigned, and keeps its
+# disk image as an artifact.
 
 on:
   push:
@@ -19,9 +21,16 @@ on:
       - "Voxt/scripts/release*.sh"
       - "Voxt/scripts/build-*.sh"
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      nightly:
+        description: Set the version to X.Y.Z-nightly.YYYYMMDD, and from main sign and notarize it
+        type: boolean
+        default: false
 
+# The calling workflow's name keeps a nightly and a release run of one pull request from cancelling each other.
 concurrency:
-  group: voxt-release-${{ github.event.pull_request.number || github.ref }}
+  group: voxt-release-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -32,11 +41,14 @@ jobs:
     name: Voxt release package
     runs-on: macos-26
     timeout-minutes: 150
-    environment: ${{ startsWith(github.ref, 'refs/tags/voxt-v') && 'voxt-release' || '' }}
+    # The environment lets in only main and voxt-v tags: a release, or a nightly from main.
+    environment: ${{ (startsWith(github.ref, 'refs/tags/voxt-v') || (inputs.nightly == true && github.ref == 'refs/heads/main')) && 'voxt-release' || '' }}
     permissions:
       contents: write
     env:
       IS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/voxt-v') }}
+      IS_NIGHTLY: ${{ inputs.nightly == true }}
+      IS_SIGNED: ${{ startsWith(github.ref, 'refs/tags/voxt-v') || (inputs.nightly == true && github.ref == 'refs/heads/main') }}
       # The team of the voxt-release environment's Developer ID, as for the Swift Voxt 1.x.
       TEAM_ID: RY2TQTYSKQ
       GIT_TERMINAL_PROMPT: "0"
@@ -48,6 +60,8 @@ jobs:
         with:
           # A release compares its tag with every voxt-v tag.
           fetch-depth: ${{ startsWith(github.ref, 'refs/tags/voxt-v') && '0' || '1' }}
+          # The build runs third-party code, and only the draft release needs the write token.
+          persist-credentials: false
 
       - name: Resolve the version
         run: |
@@ -70,14 +84,20 @@ jobs:
             else
               :
             fi
-            # The tag sets the version of the app, the helper and voxtnew-llm, which scripts/release.sh checks agree.
+          elif [[ "$IS_NIGHTLY" == "true" ]]; then
+            version="$(jq -r .version mygo.json)-nightly.$(date -u +%Y%m%d)"
+          else
+            version="$(jq -r .version mygo.json)"
+          fi
+          # A tag or a nightly sets the version of the app, the helper and voxtnew-llm, which scripts/release.sh checks agree.
+          if [[ "$IS_RELEASE" == "true" || "$IS_NIGHTLY" == "true" ]]; then
             jq --arg v "$version" '.version = $v' mygo.json > mygo.json.tmp
             mv mygo.json.tmp mygo.json
             for plist in helper/Support/Info.plist llm/Support/Info.plist; do
               /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$plist"
             done
           else
-            version="$(jq -r .version mygo.json)"
+            :
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
           echo "Voxt $version, release: $IS_RELEASE"
@@ -103,7 +123,7 @@ jobs:
           xcrun metal --version
 
       - name: Import the signing identity
-        if: env.IS_RELEASE == 'true'
+        if: env.IS_SIGNED == 'true'
         env:
           DEVELOPER_ID_APP_CERT_P12: ${{ secrets.DEVELOPER_ID_APP_CERT_P12 }}
           DEVELOPER_ID_APP_CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_APP_CERT_PASSWORD }}
@@ -152,7 +172,7 @@ jobs:
             echo "::warning::No ACTNOW_SOUNDS_TOKEN: this build has no sound library and plays macOS's system sounds"
           fi
           args=()
-          if [[ "$IS_RELEASE" == "true" ]]; then
+          if [[ "$IS_SIGNED" == "true" ]]; then
             args+=(--notarize voxt-notary --keychain "$RELEASE_KEYCHAIN")
             export EXPECT_TEAM="$TEAM_ID"
           else
@@ -161,7 +181,7 @@ jobs:
           scripts/release.sh ${args[@]+"${args[@]}"}
 
       - name: Remove the signing identity
-        if: always() && env.IS_RELEASE == 'true'
+        if: always() && env.IS_SIGNED == 'true'
         run: |
           if [[ -n "${RELEASE_KEYCHAIN:-}" ]]; then
             security delete-keychain "$RELEASE_KEYCHAIN" || true
@@ -189,11 +209,11 @@ jobs:
           echo "ARTIFACTS_DIR=$out" >> "$GITHUB_ENV"
           ls -l "$out"
 
-      - name: Keep the unsigned disk image
+      - name: Keep the disk image
         if: env.IS_RELEASE != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: Voxt-${{ env.VERSION }}-arm64-unsigned
+          name: Voxt-${{ env.VERSION }}-arm64${{ env.IS_SIGNED != 'true' && '-unsigned' || '' }}
           path: ${{ env.ARTIFACTS_DIR }}
           retention-days: 14
 
