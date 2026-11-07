@@ -13,7 +13,8 @@ package main
 //
 // The models on disk and their downloads are internal/models' (a.models);
 // what is installed, as the sessions open it, internal/local's (a.local,
-// models_runtimes.go). Views read a.modelStatus, the copy of the
+// models_runtimes.go), with System dictation (internal/dictation) after
+// the speech models while the helper can recognise. Views read a.modelStatus, the copy of the
 // statuses modelsChanged takes on the main thread, and a.installed
 // (memory only). A card in the sidebar says when Transcribe lacks a model
 // (checkModels, shell_notices.go).
@@ -21,6 +22,7 @@ package main
 import (
 	"strings"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
@@ -38,7 +40,10 @@ type modelsState struct {
 	// localLib is the Library under local (nil when tests swap in fakes):
 	// a deletion unloads the model through it first.
 	localLib *local.Library
-	models   *models.Manager
+	// dictation lists System dictation while the helper can recognise
+	// (helperChanged).
+	dictation *dictation.Services
+	models    *models.Manager
 	// modelStatus is each catalogue model's status, as modelsChanged
 	// last read it.
 	modelStatus map[string]models.Status
@@ -73,7 +78,8 @@ func (a *app) openModels() {
 	if a.local == nil {
 		base := newLocalServices(a)
 		a.localLib, _ = base.(*local.Library)
-		a.local = a.withRemote(a.withDevLLM(base)) // remote_link.go; llm_link.go: VOXTNEW_DEV_LLM
+		a.dictation = dictation.NewServices(base, uitext.ModelName)
+		a.local = a.withRemote(a.withDevLLM(a.dictation)) // remote_link.go; llm_link.go: VOXTNEW_DEV_LLM
 	}
 	a.readModelStatus()
 	a.checkModels() // shell_notices.go

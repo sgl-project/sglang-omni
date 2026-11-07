@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
@@ -103,11 +104,12 @@ func (a *app) obAlternative() (models.Found, bool) {
 
 // obReady are the installed models of kind VoxtNew uses already: a model
 // another app installed counts once VoxtNew claims it (until then it is
-// an offer of the card or of an alternative line).
+// an offer of the card or of an alternative line). System dictation does
+// not: the step still offers the recommended speech model.
 func (a *app) obReady(kind local.Kind) []local.Model {
 	var out []local.Model
 	for _, m := range a.installed(kind) {
-		if _, offer := a.obFound(m.ID); !offer {
+		if _, offer := a.obFound(m.ID); !offer && m.ID != dictation.ModelID {
 			out = append(out, m)
 		}
 	}

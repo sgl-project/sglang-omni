@@ -109,7 +109,7 @@ type fakeSupervisor struct {
 
 func newFakeSupervisor(bus *core.Bus) *fakeSupervisor {
 	f := &fakeSupervisor{bus: bus, status: helper.Status{State: helper.Stopped}, handlers: map[string]func(json.RawMessage) (any, error){}}
-	perms := proto.PermissionsResult{Microphone: proto.PermNotDetermined}
+	perms := proto.PermissionsResult{Microphone: proto.PermNotDetermined, SpeechRecognition: proto.PermNotDetermined}
 	f.handlers[proto.MethodPermissionsStatus] = func(json.RawMessage) (any, error) { return perms, nil }
 	f.handlers[proto.MethodCaptureDevices] = func(json.RawMessage) (any, error) {
 		return proto.DevicesResult{Devices: helpertest.Devices()}, nil
@@ -139,8 +139,11 @@ func newFakeSupervisor(bus *core.Bus) *fakeSupervisor {
 	f.handlers[proto.MethodPermissionsRequest] = func(raw json.RawMessage) (any, error) {
 		var p proto.PermissionsRequestParams
 		json.Unmarshal(raw, &p)
-		if p.Permission == proto.PermissionMicrophone {
+		switch p.Permission {
+		case proto.PermissionMicrophone:
 			perms.Microphone = proto.PermGranted
+		case proto.PermissionSpeechRecognition:
+			perms.SpeechRecognition = proto.PermGranted
 		}
 		return perms, nil
 	}
