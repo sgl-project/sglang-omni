@@ -9,6 +9,8 @@
 #include <utility>
 #include <vector>
 
+#include "qwen3_asr/qwen3_asr_transcriber.h"
+
 namespace qwen3_asr {
 
 namespace mx = mlx::core;
@@ -172,10 +174,6 @@ DFlashDraft::DFlashDraft(LoadedDraft draft, int quantization_bits)
       block_size_(draft.config.at("block_size").get<int>()),
       mask_token_id_(draft.config.at("mask_token_id").get<int>()) {}
 
-std::vector<KVCache> DFlashDraft::NewCaches() const {
-  return decoder_.NewCaches();
-}
-
 // note (wilsonzheng0327): the draft's trained sliding window is not enforced:
 // on a 194 s recording a 1.7B draft trained with a 2,048 window accepts 3.8
 // tokens a round with the whole context and 3.2 with the window, and the
@@ -217,6 +215,112 @@ mx::array DFlashDraft::ProposeBlock(const mx::array &block_embeddings,
   const mx::array target_ids =
       mx::add(draft_ids, mx::take(checkpoint_.Weight("d2t"), draft_ids, 0));
   return mx::reshape(mx::astype(target_ids, mx::int32), {block_size_ - 1});
+}
+
+int DFlashDraft::Decode(const Qwen3Decoder &target, const mx::array &embeddings,
+                        int max_new_tokens, int prefill_step_tokens,
+                        const std::function<bool(int)> &commit,
+                        const std::atomic<bool> &cancel) const {
+  std::vector<KVCache> caches = target.NewCaches();
+  std::vector<KVCache> draft_caches = decoder_.NewCaches();
+  std::vector<mx::array> aux_hidden_states;
+  int processed = 0;
+  while (prefill_step_tokens > 0 && embeddings.shape(1) - processed > 1) {
+    if (cancel.load()) {
+      throw TranscriptionCancelled();
+    } else {
+    }
+    const int token_count =
+        std::min(prefill_step_tokens, embeddings.shape(1) - processed - 1);
+    const mx::array hidden = target.Forward(
+        mx::slice(embeddings, {0, processed, 0},
+                  {1, processed + token_count, embeddings.shape(2)}),
+        caches, aux_layers_, &aux_hidden_states);
+    AppendContext(aux_hidden_states, token_count, draft_caches);
+    std::vector<mx::array> evaluated = {hidden};
+    for (const KVCache &cache : draft_caches) {
+      const auto arrays = cache.Arrays();
+      evaluated.insert(evaluated.end(), arrays.begin(), arrays.end());
+    }
+    mx::eval(evaluated);
+    aux_hidden_states.clear();
+    processed += token_count;
+  }
+  if (cancel.load()) {
+    throw TranscriptionCancelled();
+  } else {
+  }
+  int anchor_id;
+  {
+    const mx::array prompt_hidden = target.Forward(
+        mx::slice(embeddings, {0, processed, 0}, embeddings.shape()), caches,
+        aux_layers_, &aux_hidden_states);
+    AppendContext(aux_hidden_states, embeddings.shape(1) - processed,
+                  draft_caches);
+    anchor_id = static_cast<int>(
+        mx::argmax(target.LastLogits(prompt_hidden)).item<uint32_t>());
+  }
+  if (cancel.load()) {
+    throw TranscriptionCancelled();
+  } else {
+  }
+  bool finished = commit(anchor_id);
+  int committed_token_count = 1;
+  int round_count = 0;
+  while (!finished) {
+    if (cancel.load()) {
+      throw TranscriptionCancelled();
+    } else {
+    }
+    std::vector<int> block_ids(block_size_, mask_token_id_);
+    block_ids[0] = anchor_id;
+    const mx::array proposed_ids =
+        ProposeBlock(target.EmbedTokens(mx::array(block_ids.data(),
+                                                  {1, block_size_}, mx::int32)),
+                     draft_caches);
+    // note (wilsonzheng0327): the block is cut to the tokens the budget still
+    // allows, so the caches never hold a position plain decoding would not
+    // have reached.
+    const int verify_count =
+        std::min(block_size_, max_new_tokens - committed_token_count);
+    const mx::array verify_ids =
+        mx::slice(mx::concatenate(
+                      {mx::array(&anchor_id, {1}, mx::int32), proposed_ids}, 0),
+                  {0}, {verify_count});
+    aux_hidden_states.clear();
+    const mx::array hidden = target.Forward(
+        target.EmbedTokens(mx::reshape(verify_ids, {1, verify_count})), caches,
+        aux_layers_, &aux_hidden_states);
+    const mx::array predictions = mx::argmax(target.Logits(hidden), -1);
+    mx::eval({proposed_ids, predictions});
+    ++round_count;
+    // note (wilsonzheng0327): prediction i follows block token i, so proposal
+    // i is accepted while every earlier one was and it matches prediction i;
+    // the prediction after the last accepted token is committed as well.
+    const int32_t *proposed = proposed_ids.data<int32_t>();
+    const uint32_t *predicted = predictions.data<uint32_t>();
+    int accepted_count = 0;
+    while (!finished && accepted_count < verify_count - 1 &&
+           proposed[accepted_count] ==
+               static_cast<int>(predicted[accepted_count])) {
+      finished = commit(proposed[accepted_count]);
+      ++accepted_count;
+    }
+    if (!finished) {
+      anchor_id = static_cast<int>(predicted[accepted_count]);
+      finished = commit(anchor_id);
+    } else {
+    }
+    committed_token_count += accepted_count + 1;
+    // note (wilsonzheng0327): the caches keep the anchor and the accepted
+    // proposals; the committed positions' hidden states become the draft's
+    // context.
+    for (KVCache &cache : caches) {
+      cache.Trim(verify_count - 1 - accepted_count);
+    }
+    AppendContext(aux_hidden_states, accepted_count + 1, draft_caches);
+  }
+  return round_count;
 }
 
 } // namespace qwen3_asr

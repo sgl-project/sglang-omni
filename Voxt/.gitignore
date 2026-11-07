@@ -1,43 +1,31 @@
-# macOS
+/build/
+/.mygo/
+mygo_windows_*.syso
 .DS_Store
-.AppleDouble
-.LSOverride
 
-# Xcode
-build/
-DerivedData/
-*.xcworkspace/xcuserdata/
-*.xcodeproj/xcuserdata/
-*.xcodeproj/project.xcworkspace/xcuserdata/
-*.xcworkspace/xcshareddata/WorkspaceSettings.xcsettings
-*.xcodeproj/xcshareddata/WorkspaceSettings.xcsettings
+# The family's cue sounds (scripts/sync-sounds.sh): React Bits Sound Lab's audio, never in
+# this public repository
+/resources/sounds/
 
-# SwiftPM
-.build/
-Package.resolved
-!Voxt.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+# Swift helper: build output, and the staged copy mygo ships
+/helper/.build/
+/helper/.swiftpm/
+/resources/darwin-arm64/helper/
 
-# User settings
-*.swp
-*.swo
-*.tmp
+# The Omni runtime: its build tree is under build/; the staged copy mygo
+# ships, and the sources scripts/mac.sh syncs on the Mac
+/resources/darwin-arm64/omni/
+/.omni-native/
 
-# App packaging
-*.dSYM
-*.ipa
-*.app
+# voxtnew-llm: build output, and the staged copy mygo ships
+/llm/.build/
+/llm/.swiftpm/
+/resources/darwin-arm64/llm/
+/Voxt
+/VoxtNew
 
-# Local tools / references
-/tmp/
-build.log
-build2.log
-
-# Local release/agent workflow folders (keep local only)
-.codex/
-scripts/
-.repos/
-
-# Local signing overrides
-Config/Signing.local.xcconfig
-
-ThirdParty/
+# The repository's root .gitignore drops *.txt, *.wav and *.log for the
+# Python tree; here they are sources (templates, fixtures, allowlists).
+!*.txt
+!*.wav
+!*.log
