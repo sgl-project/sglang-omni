@@ -220,6 +220,7 @@ type fakeStreamer struct {
 	mu      sync.Mutex
 	streams []*fakeStream
 	hints   []string
+	prompt  string // the last stream's prompt
 }
 
 func (f *fakeStreamer) Caps() asr.Caps { return asr.Caps{Stream: true, Hints: true} }
@@ -245,7 +246,7 @@ func (f *fakeStreamer) Open(ctx context.Context, req asr.StreamRequest) (asr.Str
 	s := &fakeStream{f: f, ctx: ctx, events: make(chan asr.Event, 1024)}
 	f.mu.Lock()
 	f.streams = append(f.streams, s)
-	f.hints = req.Hints
+	f.hints, f.prompt = req.Hints, req.Prompt
 	f.mu.Unlock()
 	return s, nil
 }
@@ -330,11 +331,12 @@ type fakeFile struct {
 	err  error
 	hang bool
 
-	mu    sync.Mutex
-	calls int
-	bytes int
-	audio []byte // the last request's audio
-	lang  string // the last request's language hint
+	mu     sync.Mutex
+	calls  int
+	bytes  int
+	audio  []byte // the last request's audio
+	lang   string // the last request's language hint
+	prompt string // the last request's prompt
 }
 
 func (f *fakeFile) Caps() asr.Caps { return asr.Caps{File: true, Prompt: true} }
@@ -344,7 +346,7 @@ func (f *fakeFile) Transcribe(ctx context.Context, req asr.FileRequest) (asr.Res
 	f.calls++
 	f.bytes = len(req.Audio)
 	f.audio = req.Audio
-	f.lang = req.Lang
+	f.lang, f.prompt = req.Lang, req.Prompt
 	f.mu.Unlock()
 	if f.hang {
 		<-ctx.Done()

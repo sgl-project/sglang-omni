@@ -1,7 +1,7 @@
 package main
 
 // The local models in Settings → About: their lines in the diagnostics
-// (installed, loaded and their memory, the language models' process) and
+// (installed, loaded and their memory) and
 // their self-checks (each kind's runtime is in this copy of VoxtNew, and
 // a model of it is installed).
 
@@ -9,20 +9,11 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/egoist/mygo"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/llmrt"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
-
-// llmLocate finds voxtnew-llm, "" when this copy has none (a test seam,
-// beside omniLocate).
-var llmLocate = func() string {
-	resources, _ := mygo.App.Path(mygo.PathResources)
-	return llmrt.Find(resources)
-}
 
 // modelDiagnostics adds the local models' lines to the diagnostics
 // (memory only: the main thread).
@@ -40,18 +31,6 @@ func (a *app) modelDiagnostics(line func(k, v string)) {
 	}
 	slices.Sort(loaded)
 	line("Models loaded", strings.Join(loaded, ", "))
-	if rt := a.llmMade(); rt != nil {
-		st := rt.Status()
-		v := string(st.State)
-		if st.Hello != nil {
-			v = st.Hello.Version + " (" + v + ")"
-		}
-		if st.Err != "" {
-			first, _, _ := strings.Cut(st.Err, "\n")
-			v += ": " + first
-		}
-		line("Language model process", v)
-	}
 }
 
 // modelCheckInput is what the models' self-checks need from the main

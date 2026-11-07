@@ -61,6 +61,7 @@ func TestTranslatePage(t *testing.T) {
 	if hs := a.lib.settings.Get().Features.Translate.Hotkeys; len(hs) != 2 || hs[1].Keys != "RightCommand" {
 		t.Errorf("shortcuts %+v", hs)
 	}
+	click(t, tt, "Your rules")
 	click(t, tt, "Your rules for Translate")
 	tt.Type("Use British spelling.")
 	click(t, tt, "Show the full prompt")
@@ -96,6 +97,7 @@ func TestRewritePage(t *testing.T) {
 	if has(tt, "Long answers in the card") {
 		t.Error("the card's length setting is back: every answer goes to the card")
 	}
+	click(t, tt, "Your rules")
 	click(t, tt, "Show the full prompt")
 	if !has(tt, "With a selection, as below; with nothing selected the model writes from the instruction and answers with a title and the text.") {
 		t.Errorf("preview %q", firstTexts(tt))
