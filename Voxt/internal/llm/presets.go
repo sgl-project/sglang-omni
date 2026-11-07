@@ -47,6 +47,9 @@ type Preset struct {
 	ExtraBody map[string]any `json:"extraBody,omitempty"`
 	// KeyURL is where to get a key.
 	KeyURL string `json:"keyURL,omitempty"`
+	// Generation is the user's request settings (ProviderConfig), not
+	// the preset's.
+	Generation Generation `json:"-"`
 }
 
 // Custom is the preset of a server the user names (any OpenAI-compatible
@@ -86,6 +89,8 @@ type ProviderConfig struct {
 	ID      string // the preset's id ("openai", "custom")
 	BaseURL string // overrides the preset's
 	Model   string // overrides the preset's default
+	// Generation is the user's request settings (Voxt 1.x's fields).
+	Generation Generation
 }
 
 // Resolve merges cfg over its preset and checks the address: keys go
@@ -103,6 +108,7 @@ func (cfg ProviderConfig) Resolve() (Preset, error) {
 	if m := strings.TrimSpace(cfg.Model); m != "" {
 		p.DefaultModel = m
 	}
+	p.Generation = cfg.Generation
 	p.BaseURL = strings.TrimSuffix(strings.TrimRight(p.BaseURL, "/"), "/chat/completions")
 	if p.BaseURL == "" {
 		return Preset{}, newErr(CodeConfig, "provider", p.ID, "field", "baseURL")

@@ -62,7 +62,8 @@ func (o *OpenAI) body(req Request, model string, stream, streamUsage, extra bool
 		oms[i] = oaMessage{Role: string(m.Role), Content: m.Content}
 	}
 	b := map[string]any{}
-	if extra {
+	// A thinking mode the user chose replaces the preset's (ExtraBody).
+	if extra && o.preset.Generation.Thinking.Mode == ThinkDefault {
 		for k, v := range o.preset.ExtraBody {
 			b[k] = v
 		}
@@ -108,6 +109,7 @@ func (o *OpenAI) body(req Request, model string, stream, streamUsage, extra bool
 			b["stream_options"] = map[string]any{"include_usage": true}
 		}
 	}
+	applyGeneration(b, o.preset, model, stream)
 	return b
 }
 
