@@ -114,7 +114,7 @@ Clients connect to `/v1/realtime` over WebSocket. They send 16 kHz mono PCM16 au
 
 1. After `session.created`, send `session.update` and wait for `session.updated`.
 2. Send audio with `input_audio_buffer.append` at the pace it is captured; replies arrive while you send.
-3. When the audio ends, send `sglang.input_audio.end`, wait for `sglang.input_audio.drained`, then send `session.close`.
+3. When the audio ends, send `sglang.input_audio.end`, wait for `sglang.input_audio.drained`, then send `session.close`. With MiniCPM-o natural finish, also wait for `response.done` before closing.
 
 When the session ends, the server closes the WebSocket with one of these codes:
 
@@ -135,6 +135,10 @@ Session settings go in the `sglang` field of `session.update`, before the first 
 | Voice | `reference_audio` | `{"media_type": "audio/wav", "data": "<base64>"}`, a PCM16 WAV of at most 30 s and 1 MiB; `tts_reference_audio` changes only the output voice |
 | Sampling | `sampling` | For example `temperature`, `top_p` and `listen_prob_scale`; unset fields keep the server's defaults (`sampling` above) |
 | Image detail | `max_slice_nums` | Higher is sharper but accepts fewer frames per second |
+| Reply finish | `finish_mode` | MiniCPM-o accepts `input_end` (default) or `natural`. Natural finish feeds silence on the server after input ends until the reply completes. |
+| Reply tail cap | `max_tail_units` | With natural finish, at most this many one-second silence units run after input ends; default 60, maximum 120. A reply stopped by the cap reports `incomplete/max_output_tokens`. |
+
+`session.updated` echoes the selected finish mode and tail cap for MiniCPM-o, and its capabilities report `supports_natural_finish: true`. With the default mode, an input end that cuts an unfinished reply reports `incomplete/input_end`; a natural model stop reports `completed/stop`. The input drain acknowledgement precedes the optional server-generated reply tail.
 
 Send camera frames with `sglang.input_image.append`: a base64 JPEG or PNG in `image`, and its position on the audio timeline in `sglang.t_ms`. By default up to 4 frames per second are accepted; `session.updated` reports the actual limit.
 
