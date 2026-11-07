@@ -96,7 +96,7 @@ def score_session(
     reply_created_s: dict[str, float] = {}
     reply_opening_unit: dict[str, MediaTime] = {}
     reply_first_audio_unit: dict[str, MediaTime] = {}
-    reply_chunks: dict[str, list[tuple[float, float]]] = {}
+    reply_chunks: dict[str, list[tuple[float, float, float]]] = {}
     for record in (record for record in records if record.direction == "receive"):
         event = WireEvent.model_validate(record.event)
         if event.type == "sglang.unit.done" and is_native:
@@ -120,10 +120,13 @@ def score_session(
                 )
             else:
                 pass
+            samples = np.frombuffer(base64.b64decode(event.delta), dtype="<i2")
+            audible = np.flatnonzero(samples)
             reply_chunks.setdefault(event.response_id, []).append(
                 (
                     record.time_s,
-                    len(base64.b64decode(event.delta)) / 2 / output_sample_rate,
+                    samples.size / output_sample_rate,
+                    (audible[0] if audible.size else samples.size) / output_sample_rate,
                 )
             )
         else:
@@ -137,16 +140,27 @@ def score_session(
         underrun_s = 0.0
         unbuffered_start_s = chunks[0][0]
         startup_buffer_needed_s = 0.0
-        for arrival_s, audio_s in chunks:
+        for arrival_s, audio_s, _ in chunks:
             underrun_s += max(0.0, arrival_s - playback_s)
             playback_s = max(playback_s, arrival_s) + audio_s
             startup_buffer_needed_s = max(
                 startup_buffer_needed_s, arrival_s - unbuffered_start_s
             )
             unbuffered_start_s += audio_s
+        # Note (wenyao): leading zero samples are silence, so a reply's audio starts at
+        # its first nonzero sample on a player that starts at the first arrival.
+        audible_s = None
+        heard_s = chunks[0][0]
+        for arrival_s, audio_s, silent_s in chunks:
+            heard_s = max(heard_s, arrival_s)
+            if silent_s < audio_s:
+                audible_s = heard_s + silent_s
+                break
+            else:
+                heard_s += audio_s
         # note (jeffro): the last chunk's own playback is not part of the generation
         # time, so the factor covers the audio that arrived before it.
-        streamed_audio_s = sum(audio_s for _, audio_s in chunks[:-1])
+        streamed_audio_s = sum(audio_s for _, audio_s, _ in chunks[:-1])
         if is_native:
             first_audio_unit = reply_first_audio_unit[response_id]
             # note (jeffro): a reply's first text can come one unit before its first audio,
@@ -167,9 +181,11 @@ def score_session(
         replies.append(
             {
                 "response_id": response_id,
-                "first_audio_latency_s": chunks[0][0] - reply_ready_s,
+                "first_audio_latency_s": (
+                    None if audible_s is None else audible_s - reply_ready_s
+                ),
                 "units_before_first_audio": units_before_first_audio,
-                "audio_s": sum(audio_s for _, audio_s in chunks),
+                "audio_s": sum(audio_s for _, audio_s, _ in chunks),
                 "underrun_s": underrun_s,
                 "startup_buffer_needed_s": startup_buffer_needed_s,
                 "real_time_factor": (
@@ -303,7 +319,11 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
             else None
         ),
         "first_audio_latency_s": quantiles(
-            [reply["first_audio_latency_s"] for reply in replies]
+            [
+                reply["first_audio_latency_s"]
+                for reply in replies
+                if reply["first_audio_latency_s"] is not None
+            ]
         ),
         "startup_buffer_needed_s": quantiles(
             [reply["startup_buffer_needed_s"] for reply in replies]
