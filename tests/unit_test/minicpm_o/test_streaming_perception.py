@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""CPU contracts for native duplex image and audio unit plans."""
+"""Contracts for native duplex image and audio unit plans; the history-row cases need CUDA."""
 
 import copy
 import wave
@@ -43,6 +43,7 @@ from sglang_omni.preprocessing.cache_key import hash_bytes
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.scheduling.session import SessionAppend
+from tests.unit_test.fixtures.accelerator import require_cuda
 from tests.unit_test.minicpm_o.test_audio_encoder import (
     checkpoint_dir,
     tiny_audio_encoder,
@@ -365,11 +366,13 @@ def checkpoint_mel_chunks(
 
 
 def run_staggered_sessions(
-    mel_filter_bank: LogMelFilterBank, units: dict[str, list[np.ndarray]]
+    mel_filter_bank: LogMelFilterBank,
+    units: dict[str, list[np.ndarray]],
+    encoder: MiniCPMOAudioEncoder,
 ) -> tuple[
     dict[str, list[torch.Tensor]],
     dict[str, list[PerceptionStepPlan]],
-    MiniCPMOAudioEncoder,
+    PerceptionHooks,
 ]:
     """Drive PerceptionHooks with sessions that start at different units, so batches mix first and later units."""
     tokenizer = Mock(unk_token_id=0)
@@ -380,7 +383,6 @@ def run_staggered_sessions(
         "<slice>": 4,
         "</slice>": 5,
     }.__getitem__
-    encoder = tiny_audio_encoder(pool_step=5)
     hooks = PerceptionHooks(
         tokenizer,
         Mock(),
@@ -432,7 +434,7 @@ def run_staggered_sessions(
                 pass
         for append, payload in zip(appends, hooks.append_batch(appends), strict=True):
             plans[append.context.session_identity.id].append(payload.data)
-    return features, plans, encoder
+    return features, plans, hooks
 
 
 @pytest.mark.parametrize("reference", ["whole_buffer", "checkpoint"])
@@ -464,7 +466,8 @@ def test_batched_perception_matches_each_session_alone(reference: str) -> None:
             name: whole_buffer_mel_chunks(session, mel_filter_bank)
             for name, session in units.items()
         }
-    features, plans, encoder = run_staggered_sessions(mel_filter_bank, units)
+    encoder = tiny_audio_encoder(pool_step=5)
+    features, plans, _ = run_staggered_sessions(mel_filter_bank, units, encoder)
     for name in units:
         assert len(features[name]) == UNITS_PER_SESSION
         state = None
@@ -486,6 +489,66 @@ def test_batched_perception_matches_each_session_alone(reference: str) -> None:
             torch.testing.assert_close(
                 plan["input_embeds"], alone_embeds, rtol=1e-5, atol=1e-5
             )
+
+
+# note (0xtoward): FA3 has kernels for head sizes from 64 up, not for the tiny encoder's default 16.
+HISTORY_ROW_HEAD_DIM = 64
+
+
+def move_to_cuda(encoder: MiniCPMOAudioEncoder) -> MiniCPMOAudioEncoder:
+    encoder.to(device="cuda", dtype=torch.bfloat16)
+    encoder.device, encoder.dtype = torch.device("cuda"), torch.bfloat16
+    return encoder
+
+
+def largest_relative_error(
+    plans: dict[str, list[PerceptionStepPlan]],
+    exact_plans: dict[str, list[PerceptionStepPlan]],
+) -> float:
+    """The largest per-unit difference from the exact embeddings, relative to their largest value."""
+    return max(
+        (
+            (plan["input_embeds"].float().cpu() - exact["input_embeds"]).abs().max()
+            / exact["input_embeds"].abs().max()
+        ).item()
+        for name, session_plans in plans.items()
+        for plan, exact in zip(session_plans, exact_plans[name], strict=True)
+    )
+
+
+@pytest.mark.accelerator
+def test_history_rows_encode_within_twice_the_padded_error_and_return_on_close() -> (
+    None
+):
+    """In BF16, history rows stay within twice the padded batch's error against the FP32 padded batch."""
+    require_cuda()
+    units = {
+        name: session_units(seed) for seed, name in enumerate(SESSION_STARTS, start=1)
+    }
+    mel_filter_bank = LogMelFilterBank.from_feature_extractor(
+        WhisperFeatureExtractor(feature_size=80)
+    )
+    exact_encoder = tiny_audio_encoder(pool_step=5, head_dim=HISTORY_ROW_HEAD_DIM)
+    padded_encoder = move_to_cuda(copy.deepcopy(exact_encoder))
+    row_encoder = move_to_cuda(copy.deepcopy(exact_encoder))
+    row_encoder.reserve_history_rows(len(SESSION_STARTS))
+
+    _, exact_plans, _ = run_staggered_sessions(mel_filter_bank, units, exact_encoder)
+    _, padded_plans, _ = run_staggered_sessions(mel_filter_bank, units, padded_encoder)
+    _, row_plans, row_hooks = run_staggered_sessions(
+        mel_filter_bank, units, row_encoder
+    )
+    rows_free_while_open = list(row_encoder.free_history_rows)
+    for name in SESSION_STARTS:
+        row_hooks.close(SessionIdentity(name))
+
+    assert rows_free_while_open == [], "every session encoded in a history row"
+    assert largest_relative_error(row_plans, exact_plans) <= 2 * largest_relative_error(
+        padded_plans, exact_plans
+    ), "rows stay within twice the padded batch's error"
+    assert sorted(row_encoder.free_history_rows) == list(
+        range(len(SESSION_STARTS))
+    ), "closing a session returns its row"
 
 
 REFERENCE_MEL_FRAMES = 200
@@ -570,3 +633,32 @@ def test_warm_up_keeps_no_session_state() -> None:
     hooks.warm_up(2)
     assert hooks.states == {}
     assert list(hooks.reference_embeds_cache) == [hash_bytes(hooks.reference_audio)]
+
+
+@pytest.mark.accelerator
+def test_warm_up_returns_every_history_row() -> None:
+    require_cuda()
+    encoder = move_to_cuda(
+        tiny_audio_encoder(pool_step=5, head_dim=HISTORY_ROW_HEAD_DIM)
+    )
+    # note (0xtoward): a spare row lets a leaked row reach the assert instead of failing warm-up itself.
+    encoder.reserve_history_rows(3)
+    hooks = PerceptionHooks(
+        Mock(unk_token_id=0),
+        reference_processor(),
+        encoder,
+        reference_audio=wav_bytes(seed=0),
+        image_encoder=Mock(),
+        mel_filter_bank=LogMelFilterBank.from_feature_extractor(
+            WhisperFeatureExtractor(feature_size=80)
+        ),
+        reference_cache_capacity=1,
+    )
+
+    hooks.warm_up(2)
+
+    assert sorted(encoder.free_history_rows) == [
+        0,
+        1,
+        2,
+    ], "warm-up holds no history row"
