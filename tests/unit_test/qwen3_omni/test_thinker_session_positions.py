@@ -6,6 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 import torch
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
     Qwen3OmniMoeThinkerConfig,
 )
@@ -54,8 +55,9 @@ def thinker_config() -> Qwen3OmniMoeThinkerConfig:
     )
 
 
-@pytest.fixture
-def adapter(monkeypatch: pytest.MonkeyPatch) -> QwenThinkerSessionAdapter:
+def make_adapter(
+    monkeypatch: pytest.MonkeyPatch, *, is_speculative: bool
+) -> QwenThinkerSessionAdapter:
     tokenizer = Mock()
     tokenizer.convert_tokens_to_ids.return_value = END
     tokenizer.encode.side_effect = lambda text, add_special_tokens: (
@@ -81,9 +83,16 @@ def adapter(monkeypatch: pytest.MonkeyPatch) -> QwenThinkerSessionAdapter:
         )
 
     monkeypatch.setattr(thinker_session, "build_sglang_thinker_request", build_request)
-    result = QwenThinkerSessionAdapter(tokenizer, 200, thinker_config())
+    result = QwenThinkerSessionAdapter(
+        tokenizer, 200, thinker_config(), is_speculative=is_speculative
+    )
     result.open(IDENTITY, OmniRequest(None))
     return result
+
+
+@pytest.fixture
+def adapter(monkeypatch: pytest.MonkeyPatch) -> QwenThinkerSessionAdapter:
+    return make_adapter(monkeypatch, is_speculative=False)
 
 
 def audio_span(feature_length: int) -> list[int]:
@@ -244,4 +253,34 @@ def test_every_prefill_takes_the_positions_of_the_whole_conversation(
     assert_positions_match(request, lengths, 1)
     assert request.omni_model_inputs["audio_embeds"].shape[0] == sum(
         feat_extract_output_lengths(length) for length in lengths
+    )
+
+
+def test_a_draft_verifies_a_session_turn_at_integer_positions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """compute_mrope_positions returns a float delta once a conversation holds an image, and a draft's verify adds it to the integer positions without the cast decode applies, so a session turn with a camera frame was verified at float positions."""
+    adapter = make_adapter(monkeypatch, is_speculative=True)
+    request = NativeSession().bind(
+        adapter,
+        adapter.build(IDENTITY, unit_chunk(1), turn_payload(1, 4000, with_image=True)),
+    )
+    _, delta = one_shot(request.origin_input_ids, [4000], 1)
+    prompt_length = len(request.origin_input_ids)
+    verify_positions = torch.arange(prompt_length, prompt_length + 4)
+    forward_batch = SimpleNamespace(seq_lens=torch.tensor([prompt_length]))
+
+    ForwardBatch.compute_spec_mrope_positions(
+        forward_batch,
+        SimpleNamespace(device="cpu"),
+        SimpleNamespace(
+            multimodal_inputs=[request.multimodal_inputs],
+            spec_info=SimpleNamespace(positions=verify_positions),
+        ),
+    )
+
+    assert forward_batch.mrope_positions.dtype == torch.int64
+    assert torch.equal(
+        forward_batch.mrope_positions,
+        (verify_positions + int(delta)).repeat(3, 1),
     )
