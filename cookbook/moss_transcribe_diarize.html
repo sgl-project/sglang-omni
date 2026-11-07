@@ -938,63 +938,71 @@ ready without it.</p>
 </div>
 <ul class="simple">
 <li><p><strong>Acceptance length.</strong> Send the form field <code class="docutils literal notranslate"><span class="pre">return_spec_tokens_details=true</span></code> to get <code class="docutils literal notranslate"><span class="pre">sglext.spec_tokens_details</span></code> (<code class="docutils literal notranslate"><span class="pre">spec_accept_length</span></code>, <code class="docutils literal notranslate"><span class="pre">spec_accept_rate</span></code>, the draft counts and the per-verify histogram) on <code class="docutils literal notranslate"><span class="pre">json</span></code> and <code class="docutils literal notranslate"><span class="pre">verbose_json</span></code> responses and on the streamed <code class="docutils literal notranslate"><span class="pre">transcript.text.done</span></code> event. Audio long enough to be transcribed in chunks returns none. <code class="docutils literal notranslate"><span class="pre">spec_accept_rate</span></code> and <code class="docutils literal notranslate"><span class="pre">spec_num_proposed_drafts</span></code> are left out when no drafts were proposed or the draft width is adaptive.</p></li>
-<li><p><strong>Transcripts.</strong> The target verifies every proposed token, so accuracy stays at the target’s level, but the text is not byte-identical to a run without the draft. MOSS-TD has many near-tied decisions, mostly the hundredths digits of timestamps and the odd filler word or comma, which any numeric change can flip. Without a draft, 229 of 800 <code class="docutils literal notranslate"><span class="pre">movies800times</span></code> clips differ between concurrency 1 and 16, and on an H200 all 20 <code class="docutils literal notranslate"><span class="pre">aishell4_long</span></code> transcripts differ between two identical runs, though they match on an H100.</p></li>
+<li><p><strong>Transcripts.</strong> The target verifies every proposed token, so accuracy stays at the target’s level, but the text is not byte-identical to a run without the draft: MOSS-TD has many near-tied decisions, mostly timestamp hundredths, which any numeric change, including batching, can flip.</p></li>
 <li><p><strong>Context.</strong> The duration-scaled budget leaves room for the few tokens each step reserves. An explicit <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code> that leaves no such room is rejected instead of clamped.</p></li>
 <li><p><strong>Capacity.</strong> The draft’s KV shares the pool, so one H100 80GB at <code class="docutils literal notranslate"><span class="pre">mem_fraction_static=0.80</span></code> holds about 480k tokens instead of 570k. Long audio at high concurrency fills it, and the scheduler then retracts requests and finishes them later: every <code class="docutils literal notranslate"><span class="pre">aishell4_long</span></code> file still completed at concurrency 16 and 32.</p></li>
 <li><p><strong>Compilation.</strong> Torch compile is turned off under the draft: on SGLang 0.5.23 the compiled path makes each verify step about four times slower. Without a draft it stays on.</p></li>
 <li><p><strong>Sampling.</strong> Requests with <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code>, <code class="docutils literal notranslate"><span class="pre">frequency_penalty</span></code>, <code class="docutils literal notranslate"><span class="pre">presence_penalty</span></code>, <code class="docutils literal notranslate"><span class="pre">min_p</span></code> or logprobs are rejected, because the draft worker applies penalties once per verify block, drops <code class="docutils literal notranslate"><span class="pre">min_p</span></code>, and skips the sampler that records logprobs.</p></li>
-<li><p><strong>Scheduling.</strong> Async decode and async prefill are turned off, because async decode under a draft means speculative overlap, which MOSS-TD has not opted into. Setting <code class="docutils literal notranslate"><span class="pre">enable_mixed_chunk</span></code> is rejected.</p></li>
+<li><p><strong>Scheduling.</strong> Scheduling is synchronous by default. Add <code class="docutils literal notranslate"><span class="pre">--asr.factory.enable_async_decode</span> <span class="pre">true</span></code> to overlap each verify round with host work, which is faster at every load below. Async prefill stays off under the draft. Setting <code class="docutils literal notranslate"><span class="pre">enable_mixed_chunk</span></code> is rejected.</p></li>
 </ul>
-<p>Paired runs on one H200 140GB with FA3 and SGLang 0.5.22, <code class="docutils literal notranslate"><span class="pre">max_running_requests=16</span></code>, <code class="docutils literal notranslate"><span class="pre">cuda_graph_max_bs=16</span></code> and <code class="docutils literal notranslate"><span class="pre">mem_fraction_static=0.80</span></code>, each on a fresh server, in audio seconds per second. Concurrency 1 rows are the mean of both orders; the other rows are one pair.</p>
+<p>Gain over the same server without a draft, on one H200 with SGLang 0.5.23, the default server config and the prefix cache off (<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">benchmarks.eval.speculative_sweep</span></code>):</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Dataset</p></th>
-<th class="head text-right"><p>Concurrency</p></th>
-<th class="head text-right"><p>Baseline</p></th>
-<th class="head text-right"><p>DFlash</p></th>
-<th class="head text-right"><p>Speedup</p></th>
-<th class="head text-right"><p>Baseline CER / DER</p></th>
-<th class="head text-right"><p>DFlash CER / DER</p></th>
+<th class="head"><p>Scheduling</p></th>
+<th class="head text-right"><p>Concurrency 1</p></th>
+<th class="head text-right"><p>4</p></th>
+<th class="head text-right"><p>16</p></th>
+<th class="head text-right"><p>64</p></th>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p>movies800times</p></td>
-<td class="text-right"><p>1</p></td>
-<td class="text-right"><p>45.1</p></td>
-<td class="text-right"><p>92.5</p></td>
-<td class="text-right"><p>2.05x</p></td>
-<td class="text-right"><p>5.87% / 21.11%</p></td>
-<td class="text-right"><p>5.82% / 21.01%</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">movies800times</span></code></p></td>
+<td><p>Synchronous</p></td>
+<td class="text-right"><p>1.68x</p></td>
+<td class="text-right"><p>1.54x</p></td>
+<td class="text-right"><p>1.34x</p></td>
+<td class="text-right"><p>1.15x</p></td>
 </tr>
-<tr class="row-odd"><td><p>movies800times</p></td>
-<td class="text-right"><p>16</p></td>
-<td class="text-right"><p>97.3</p></td>
-<td class="text-right"><p>253.7</p></td>
-<td class="text-right"><p>2.61x</p></td>
-<td class="text-right"><p>5.82% / 21.06%</p></td>
-<td class="text-right"><p>5.80% / 21.06%</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">movies800times</span></code></p></td>
+<td><p>Overlapped</p></td>
+<td class="text-right"><p>1.90x</p></td>
+<td class="text-right"><p>1.72x</p></td>
+<td class="text-right"><p>1.56x</p></td>
+<td class="text-right"><p>1.42x</p></td>
 </tr>
-<tr class="row-even"><td><p>aishell4_long</p></td>
-<td class="text-right"><p>1</p></td>
-<td class="text-right"><p>63.8</p></td>
-<td class="text-right"><p>167.2</p></td>
-<td class="text-right"><p>2.62x</p></td>
-<td class="text-right"><p>13.79% / 9.80%</p></td>
-<td class="text-right"><p>13.85% / 10.01%</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">aishell4_long</span></code></p></td>
+<td><p>Synchronous</p></td>
+<td class="text-right"><p>2.50x</p></td>
+<td class="text-right"><p>3.17x</p></td>
+<td class="text-right"><p>3.56x</p></td>
+<td class="text-right"><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>aishell4_long</p></td>
-<td class="text-right"><p>4</p></td>
-<td class="text-right"><p>103.8</p></td>
-<td class="text-right"><p>323.8</p></td>
-<td class="text-right"><p>3.12x</p></td>
-<td class="text-right"><p>13.75% / 10.20%</p></td>
-<td class="text-right"><p>13.88% / 10.33%</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">aishell4_long</span></code></p></td>
+<td><p>Overlapped</p></td>
+<td class="text-right"><p>3.19x</p></td>
+<td class="text-right"><p>3.64x</p></td>
+<td class="text-right"><p>3.89x</p></td>
+<td class="text-right"><p></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">googletime</span></code></p></td>
+<td><p>Synchronous</p></td>
+<td class="text-right"><p>2.97x</p></td>
+<td class="text-right"><p>4.14x</p></td>
+<td class="text-right"><p>4.27x</p></td>
+<td class="text-right"><p></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">googletime</span></code></p></td>
+<td><p>Overlapped</p></td>
+<td class="text-right"><p>3.73x</p></td>
+<td class="text-right"><p>4.68x</p></td>
+<td class="text-right"><p>4.57x</p></td>
+<td class="text-right"><p></p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p>The draft accepts 5.4 tokens per verify on <code class="docutils literal notranslate"><span class="pre">movies800times</span></code> and 5.1 on <code class="docutils literal notranslate"><span class="pre">aishell4_long</span></code> at concurrency 1. DER is <code class="docutils literal notranslate"><span class="pre">speaker_timestamp_der</span></code> at collar 0, which counts every small boundary shift. On <code class="docutils literal notranslate"><span class="pre">aishell4_long</span></code> the draft adds 0.21 and 0.13 points at collar 0 and at most 0.11 at a 0.25 s collar, while batching alone adds 0.40 and 0.25. One meeting in the set flips between five and seven detected speakers, which moves that file’s DER by about 11 points in either mode.</p>
-<p>On one H100 80GB with the same settings, <code class="docutils literal notranslate"><span class="pre">aishell4_long</span></code> goes from 58.0 to 159.0 audio seconds per second at concurrency 1 (2.74x), 100.0 to 355.3 at concurrency 16 (3.55x), and 96.0 to 356.5 at concurrency 32 with <code class="docutils literal notranslate"><span class="pre">max_running_requests=32</span></code> and <code class="docutils literal notranslate"><span class="pre">cuda_graph_max_bs=32</span></code> (3.71x). The last two fill the KV pool, so requests retract in both modes.</p>
+<p>Neither mode is slower than the server without a draft at any load measured, and CER and DER do not change.</p>
 </section>
 </section>
 <section id="benchmarking">
@@ -1051,7 +1059,7 @@ pass every worker serve URL with a comma-separated <code class="docutils literal
 </section>
 <section id="benchmark-results">
 <h2>Benchmark Results<a class="headerlink" href="#benchmark-results" title="Link to this heading">#</a></h2>
-<p>Here we provide the benchmark results of movies800times and aishell4_long on a single H100 80GB GPU. Each row is the <strong>mean of 3 runs</strong> against a server with <code class="docutils literal notranslate"><span class="pre">max_running_requests=16</span></code>, <code class="docutils literal notranslate"><span class="pre">cuda_graph_max_bs=16</span></code>, and <code class="docutils literal notranslate"><span class="pre">mem_fraction_static=0.80</span></code>.</p>
+<p>Here we provide the benchmark results of movies800times on a single H200 141GB GPU with SGLang 0.5.23, and of aishell4_long on a single H100 80GB GPU. Each row is the <strong>mean of 3 runs</strong> against a server with <code class="docutils literal notranslate"><span class="pre">max_running_requests=16</span></code>, <code class="docutils literal notranslate"><span class="pre">cuda_graph_max_bs=16</span></code>, and <code class="docutils literal notranslate"><span class="pre">mem_fraction_static=0.80</span></code>.</p>
 <section id="movies800times">
 <h3>movies800times<a class="headerlink" href="#movies800times" title="Link to this heading">#</a></h3>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -1065,34 +1073,34 @@ pass every worker serve URL with a comma-separated <code class="docutils literal
 </thead>
 <tbody>
 <tr class="row-even"><td class="text-right"><p>1</p></td>
-<td class="text-right"><p>2.57</p></td>
-<td class="text-right"><p>0.388</p></td>
-<td class="text-right"><p>0.0612</p></td>
-<td class="text-right"><p>29.76</p></td>
+<td class="text-right"><p>7.75</p></td>
+<td class="text-right"><p>0.129</p></td>
+<td class="text-right"><p>0.0120</p></td>
+<td class="text-right"><p>89.73</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>2</p></td>
-<td class="text-right"><p>4.89</p></td>
-<td class="text-right"><p>0.409</p></td>
-<td class="text-right"><p>0.0659</p></td>
-<td class="text-right"><p>56.55</p></td>
+<td class="text-right"><p>12.98</p></td>
+<td class="text-right"><p>0.154</p></td>
+<td class="text-right"><p>0.0149</p></td>
+<td class="text-right"><p>150.15</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>4</p></td>
-<td class="text-right"><p>6.62</p></td>
-<td class="text-right"><p>0.513</p></td>
-<td class="text-right"><p>0.0790</p></td>
-<td class="text-right"><p>76.64</p></td>
+<td class="text-right"><p>24.19</p></td>
+<td class="text-right"><p>0.165</p></td>
+<td class="text-right"><p>0.0160</p></td>
+<td class="text-right"><p>279.93</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>8</p></td>
-<td class="text-right"><p>6.80</p></td>
-<td class="text-right"><p>0.533</p></td>
-<td class="text-right"><p>0.0810</p></td>
-<td class="text-right"><p>78.70</p></td>
+<td class="text-right"><p>43.79</p></td>
+<td class="text-right"><p>0.182</p></td>
+<td class="text-right"><p>0.0175</p></td>
+<td class="text-right"><p>506.76</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>16</p></td>
-<td class="text-right"><p>7.08</p></td>
-<td class="text-right"><p>0.659</p></td>
-<td class="text-right"><p>0.0922</p></td>
-<td class="text-right"><p>81.98</p></td>
+<td class="text-right"><p>73.78</p></td>
+<td class="text-right"><p>0.215</p></td>
+<td class="text-right"><p>0.0207</p></td>
+<td class="text-right"><p>853.73</p></td>
 </tr>
 </tbody>
 </table>
