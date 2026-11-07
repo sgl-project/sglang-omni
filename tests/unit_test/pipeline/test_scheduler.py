@@ -2275,6 +2275,48 @@ def test_speculative_reserve_rejection_names_the_reserve(monkeypatch) -> None:
     assert_refusal_is_a_caller_error(message)
 
 
+@pytest.mark.parametrize(
+    ("context_len", "pool_tokens", "max_total_tokens", "expected_hint"),
+    [
+        (8192, 4096, 4096, "engine.max_total_tokens=4096 caps the KV pool"),
+        (8192, 4096, 1_000_000, "Current engine.mem_fraction_static is 0.813"),
+        (8192, 4096, None, "Current engine.mem_fraction_static is 0.813"),
+        (8192, 151_718, None, "The 8192-token model context sets this limit"),
+    ],
+)
+def test_kv_capacity_rejection_names_the_setting_that_sets_the_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    context_len: int,
+    pool_tokens: int,
+    max_total_tokens: int | None,
+    expected_hint: str,
+) -> None:
+    """A KV-capacity refusal told users to raise --thinker-mem-fraction-static, which sgl-omni serve rejects, whether engine.max_total_tokens or the model context set the limit."""
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.draft_worker = None
+    scheduler.model_config = SimpleNamespace(context_len=context_len)
+    scheduler.max_total_num_tokens = pool_tokens
+    scheduler.max_req_len = min(context_len, pool_tokens) - 1
+    scheduler.page_size = 1
+    scheduler.token_to_kv_pool_allocator = Mock()
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_schedule",
+        lambda: SimpleNamespace(
+            max_total_tokens=max_total_tokens, mem_fraction_static=0.813
+        ),
+    )
+    message = scheduler.request_kv_capacity_error(
+        SimpleNamespace(
+            origin_input_ids=[0] * 9009,
+            sampling_params=SimpleNamespace(max_new_tokens=64),
+            session=None,
+        )
+    )
+    assert expected_hint in message
+    assert "--thinker-mem-fraction-static" not in message
+    assert_refusal_is_a_caller_error(message)
+
+
 def test_streaming_pure_swa_uses_context_instead_of_physical_kv_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4642,7 +4684,7 @@ def test_omni_scheduler_follower_rejections_do_not_emit_errors(monkeypatch) -> N
     """Request-limit and KV-capacity rejections are entry-rank emissions only."""
     monkeypatch.setattr(
         "sglang.srt.runtime_context.get_schedule",
-        lambda: SimpleNamespace(mem_fraction_static=0.85),
+        lambda: SimpleNamespace(mem_fraction_static=0.85, max_total_tokens=None),
     )
     scheduler = object.__new__(OmniScheduler)
     scheduler.outbox = Queue()
@@ -4667,6 +4709,7 @@ def test_omni_scheduler_follower_rejections_do_not_emit_errors(monkeypatch) -> N
     scheduler.max_new_tokens_limit = None
     scheduler.page_size = 1
     scheduler.max_total_num_tokens = 128
+    scheduler.model_config = SimpleNamespace(context_len=7)
     scheduler.server_args = SimpleNamespace(mem_fraction_static=0.85)
     init_sync_request_build_state(scheduler)
 
