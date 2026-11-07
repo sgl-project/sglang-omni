@@ -3,8 +3,8 @@ package main
 // In-process local models for the app's tests (local.Services): a speech
 // model that transcribes recordings (fakeTranscriptions) or streams
 // (fakeStreamer), and a language model (fakeChat) behind llm.Client, as
-// internal/llmrt's backend is. They stand where the runtimes' processes
-// run in the app, and keep what the tests read: the chat requests in the
+// a remote service's backend is. They stand where the runtimes and the
+// services are in the app, and keep what the tests read: the chat requests in the
 // shape of an OpenAI request ({"messages": […], "stream": …}).
 
 import (

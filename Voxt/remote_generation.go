@@ -234,11 +234,15 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 	f := &d.gen
 	caps := providers.Capabilities(d.id, d.setup().Model)
 	num := func(key, title, placeholder string, value *string) {
-		ui.Column(c).Grow(1).Basis(0).MinWidth(0).Children(func() {
-			fieldInfo(c, title, "", func() {
-				ui.TextInput(c.Key(key), value).Placeholder(placeholder).Label(title)
-			})
+		fieldInfo(c, title, "", func() {
+			ui.TextInput(c.Key(key), value).Placeholder(placeholder).Label(title)
 		})
+	}
+	// half is a num in a pair's row: the two share its width. Alone in the
+	// dialog's column, Basis(0) would make a num 0 high and the rows after
+	// it would cover its field.
+	half := func(key, title, placeholder string, value *string) {
+		ui.Column(c).Grow(1).Basis(0).MinWidth(0).Children(func() { num(key, title, placeholder, value) })
 	}
 	pair := func(fn func()) { ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Start).Children(fn) }
 
@@ -273,10 +277,10 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 	}
 	pair(func() {
 		if caps.Temperature {
-			num("gen-temp", i18n.T("Temperature"), "0.2", &f.temperature)
+			half("gen-temp", i18n.T("Temperature"), "0.2", &f.temperature)
 		}
 		if caps.TopP {
-			num("gen-topp", "Top P", "0.9", &f.topP)
+			half("gen-topp", "Top P", "0.9", &f.topP)
 		}
 	})
 	if caps.Verbosity {
@@ -306,10 +310,10 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 		}
 		pair(func() {
 			if caps.TopK {
-				num("gen-topk", "Top K", "40", &f.topK)
+				half("gen-topk", "Top K", "40", &f.topK)
 			}
 			if caps.MinP {
-				num("gen-minp", "Min P", "0.05", &f.minP)
+				half("gen-minp", "Min P", "0.05", &f.minP)
 			}
 		})
 		if caps.Seed {
@@ -320,8 +324,8 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 			num("gen-frequency", i18n.T("Frequency penalty"), "0", &f.frequency)
 		case caps.Penalties:
 			pair(func() {
-				num("gen-presence", i18n.T("Presence penalty"), "0", &f.presence)
-				num("gen-frequency", i18n.T("Frequency penalty"), "0", &f.frequency)
+				half("gen-presence", i18n.T("Presence penalty"), "0", &f.presence)
+				half("gen-frequency", i18n.T("Frequency penalty"), "0", &f.frequency)
 			})
 			num("gen-repetition", i18n.T("Repetition penalty"), "1.1", &f.repetition)
 		}
