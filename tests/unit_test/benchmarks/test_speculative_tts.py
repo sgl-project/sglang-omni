@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -13,7 +14,7 @@ import pytest
 
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.eval import speculative_sweep, speculative_tts
-from benchmarks.eval.speculative_sweep import parse_args, run_leg
+from benchmarks.eval.speculative_sweep import parse_args
 from benchmarks.eval.speculative_workloads import WORKLOADS, LoadSettings, TtsWorkload
 from benchmarks.metrics.performance import compute_speed_metrics
 from benchmarks.metrics.speculative import Leg, compare, read_server_log, render
@@ -254,17 +255,31 @@ def test_mismatched_quality_samples_fail_instead_of_scoring_another_run(
 
 
 @pytest.mark.parametrize(
-    ("warmup", "failing_phase"),
-    [(False, None), (True, None), (True, "generation"), (False, "transcription")],
+    ("order", "warmup", "failing_phase"),
+    [
+        ("AB", False, None),
+        ("ABBA", True, None),
+        ("ABBA", True, "generation"),
+        ("ABBA", False, "transcription"),
+    ],
 )
-def test_leg_stops_tts_before_starting_asr_and_cleans_up_on_failure(
+def test_sweep_scores_all_legs_on_one_separate_asr_server_and_cleans_up(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    order: str,
     warmup: bool,
-    failing_phase: str | None,
+    failing_phase: Literal["generation", "transcription"] | None,
 ) -> None:
+    """Scoring used to restart ASR between TTS legs and reuse a generation port."""
     events: list[str] = []
     active_models: list[str] = []
+    server_ports: list[int] = []
+    quality_results: dict[Path, str] = {}
+    output_dir = tmp_path / "sweep"
+    leg_names = [
+        f"{index + 1}_{speculative_sweep.SIDE_BY_LETTER[letter]}"
+        for index, letter in enumerate(order)
+    ]
 
     @contextmanager
     def server(
@@ -277,7 +292,12 @@ def test_leg_stops_tts_before_starting_asr_and_cleans_up_on_failure(
     ) -> Iterator[None]:
         assert active_models == []
         active_models.append(model_path)
+        server_ports.append(port)
         events.append(f"start {model_path}")
+        if model_path == "test-asr":
+            assert log_file == output_dir / "asr_server.log"
+        else:
+            assert log_file.name == "server.log"
         log_file.write_text(
             f"KV Cache is allocated. #tokens: {100 if model_path == 'test-tts' else 999}"
         )
@@ -290,79 +310,121 @@ def test_leg_stops_tts_before_starting_asr_and_cleans_up_on_failure(
     def client(command: list[str], log_path: Path, *, check: bool) -> None:
         assert command[0] == "benchmarks.eval.benchmark_tts_seedtts"
         assert command[command.index("--lang") + 1] == "en"
+        assert command[command.index("--model") + 1] == "test-tts"
+        assert command[command.index("--port") + 1] == str(server_ports[-1])
+        assert command[command.index("--output-dir") + 1] == str(log_path.parent)
+        assert "--use-existing-server" in command
+        assert "--stream" in command
+        assert check
         if "--generate-only" in command:
             assert active_models == ["test-tts"]
-            assert "--use-existing-server" in command
             assert "--measure-gpu-memory" in command
             assert "--max-new-tokens" not in command
-            assert command[command.index("--model") + 1] == "test-tts"
             assert ("--warmup" in command) is not warmup
             if not warmup:
                 assert command[command.index("--warmup") + 1] == "0"
             else:
                 pass
-            events.append("generate")
+            events.append(f"generate {log_path.parent.name}")
             if failing_phase == "generation":
                 raise RuntimeError("generation failed")
             else:
-                write_point(log_path.parent / "c1", concurrency=1, stream=True)
+                for concurrency in (1, 2):
+                    for repeat in (1, 2):
+                        point_dir = log_path.parent / f"c{concurrency}_r{repeat}"
+                        write_point(point_dir, concurrency=concurrency, stream=True)
+                        quality_path = point_dir / "wer_results.json"
+                        quality_results[quality_path] = quality_path.read_text()
+                        quality_path.unlink()
         else:
+            assert "--transcribe-only" in command
             assert "--measure-gpu-memory" not in command
             assert active_models == ["test-asr"]
-            events.append("transcribe")
+            assert command[command.index("--asr-model-path") + 1] == "test-asr"
+            assert command[command.index("--asr-concurrency") + 1] == "3"
+            events.append(f"transcribe {log_path.parent.relative_to(output_dir)}")
             if failing_phase == "transcription":
                 raise RuntimeError("transcription failed")
             else:
-                pass
+                quality_path = log_path.parent / "wer_results.json"
+                quality_path.write_text(quality_results.pop(quality_path))
 
     monkeypatch.setattr(speculative_sweep, "managed_omni_server", server)
     monkeypatch.setattr(speculative_tts, "run_client", client)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
-    arguments = parse_args(
+    monkeypatch.setattr(
+        sys,
+        "argv",
         [
+            "speculative_sweep",
             "--draft-config",
-            "draft.yaml",
+            "examples/configs/fun_cosyvoice3_dspark.yaml",
+            "--model-path",
+            "test-tts",
             "--workload",
             "tts-seedtts-en",
             "--output-dir",
-            str(tmp_path),
+            str(output_dir),
+            "--order",
+            order,
+            "--port",
+            "9100",
             "--concurrencies",
-            "1",
+            "1,2",
             "--repeats",
-            "1",
+            "2",
             "--asr-model-path",
             "test-asr",
+            "--asr-concurrency",
+            "3",
             *([] if warmup else ["--no-warmup"]),
             "--",
             "--stream",
-        ]
+        ],
     )
     if failing_phase is not None:
         with pytest.raises(RuntimeError, match=f"{failing_phase} failed"):
-            run_leg(
-                name="1_baseline",
-                side="baseline",
-                port=8700,
-                model_path="test-tts",
-                server_config=Path("baseline.yaml"),
-                args=arguments,
-            )
+            speculative_sweep.main()
+        assert not (output_dir / "summary.md").exists()
+        assert not (output_dir / "sweep.json").exists()
     else:
-        measurement = run_leg(
-            name="1_baseline",
-            side="baseline",
-            port=8700,
-            model_path="test-tts",
-            server_config=Path("baseline.yaml"),
-            args=arguments,
+        speculative_sweep.main()
+        sweep = json.loads((output_dir / "sweep.json").read_text())
+        assert [leg["name"] for leg in sweep["legs"]] == leg_names
+        assert all(leg["kv_pool_tokens"] == 100 for leg in sweep["legs"])
+        assert list(sweep["loads"]) == leg_names
+        for loads in sweep["loads"].values():
+            assert [load["concurrency"] for load in loads] == [1, 2]
+            assert all(load["accuracy"] == {"WER": 0.5} for load in loads)
+            assert all(load["throughput_requests_per_s"] == 0.5 for load in loads)
+        assert quality_results == {}
+        assert "WER" in (output_dir / "summary.md").read_text()
+    if failing_phase == "generation":
+        expected_events = ["start test-tts", "generate 1_baseline", "stop test-tts"]
+        assert server_ports == [9100]
+    else:
+        expected_events = [
+            event
+            for name in leg_names
+            for event in ("start test-tts", f"generate {name}", "stop test-tts")
+        ]
+        transcriptions = [
+            f"transcribe {name}/c{concurrency}_r{repeat}"
+            for name in leg_names
+            for concurrency in (1, 2)
+            for repeat in (1, 2)
+        ]
+        expected_events += (
+            ["start test-asr"]
+            + (
+                transcriptions[:1]
+                if failing_phase == "transcription"
+                else transcriptions
+            )
+            + ["stop test-asr"]
         )
-        assert measurement.server.kv_pool_tokens == 100
-        assert measurement.loads[0].accuracy == {"WER": 0.5}
-    assert events == ["start test-tts", "generate", "stop test-tts"] + (
-        []
-        if failing_phase == "generation"
-        else ["start test-asr", "transcribe", "stop test-asr"]
-    )
+        assert server_ports == list(range(9100, 9100 + len(order) + 1))
+    assert events == expected_events
     assert active_models == []
 
 

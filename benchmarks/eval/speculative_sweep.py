@@ -7,7 +7,7 @@ The summary gives, per concurrency, both sides' throughput, the gain, p95 latenc
 
 Set CUDA_VISIBLE_DEVICES to one GPU that nothing else uses: after each leg the managed server ends every process still using it. Arguments after -- go to the client, such as --stream to measure first output.
 
-TTS workloads save generated audio at every load, stop the TTS server, then start one ASR server per leg to score that audio. Transcription is outside the TTS performance measurement and uses --asr-model-path and --asr-concurrency.
+TTS workloads save generated audio at every load in every leg before starting one ASR server to score all saved audio. The ASR server uses the port after the last generation leg. Transcription is outside the TTS performance measurement and uses --asr-model-path and --asr-concurrency.
 
 Usage:
 
@@ -176,15 +176,9 @@ def run_leg(
     model_path: str,
     server_config: Path,
     args: argparse.Namespace,
+    settings: LoadSettings,
 ) -> Leg:
     workload = WORKLOADS[args.workload]
-    settings = LoadSettings(
-        concurrencies=args.concurrencies,
-        repeats=args.repeats,
-        warmup=args.warmup,
-        max_samples=args.max_samples,
-        client_arguments=args.client_args,
-    )
     leg_dir = args.output_dir / name
     leg_dir.mkdir()
     server_log = leg_dir / "server.log"
@@ -206,28 +200,11 @@ def run_leg(
             generate_tts(
                 workload, settings, port=port, model_path=model_path, leg_dir=leg_dir
             )
+            loads = []
         else:
             loads = measure_transcribe_diarize(
                 workload, settings, port=port, model_path=model_path, leg_dir=leg_dir
             )
-    if isinstance(workload, TtsWorkload):
-        with managed_omni_server(
-            model_path=args.asr_model_path,
-            port=port,
-            host=HOST,
-            log_file=leg_dir / "asr_server.log",
-        ):
-            loads = measure_tts(
-                workload,
-                settings,
-                port=port,
-                model_path=model_path,
-                asr_model_path=args.asr_model_path,
-                asr_concurrency=args.asr_concurrency,
-                leg_dir=leg_dir,
-            )
-    else:
-        pass
     return Leg(
         name=name,
         side=side,
@@ -251,7 +228,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
         "--asr-model-path",
-        help="ASR model used to score saved TTS audio after each TTS server stops.",
+        help="ASR model used to score saved TTS audio after all generation legs finish.",
     )
     parser.add_argument(
         "--asr-concurrency",
@@ -288,7 +265,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--port",
         type=int,
         default=8700,
-        help="The first leg's port; each later leg takes the next.",
+        help="The first leg's port; each later leg takes the next. TTS scoring uses the port after the last leg.",
     )
     if "--" in argv:
         separator = argv.index("--")
@@ -388,6 +365,13 @@ def main() -> None:
     config_paths = write_side_configs(
         args.draft_config, args.output_dir, keep_prefix_cache=args.prefix_cache
     )
+    settings = LoadSettings(
+        concurrencies=args.concurrencies,
+        repeats=args.repeats,
+        warmup=args.warmup,
+        max_samples=args.max_samples,
+        client_arguments=args.client_args,
+    )
     legs = []
     for index, letter in enumerate(args.order):
         side = SIDE_BY_LETTER[letter]
@@ -399,8 +383,31 @@ def main() -> None:
                 model_path=model_path,
                 server_config=config_paths[side],
                 args=args,
+                settings=settings,
             )
         )
+    workload = WORKLOADS[args.workload]
+    if isinstance(workload, TtsWorkload):
+        asr_port = args.port + len(args.order)
+        with managed_omni_server(
+            model_path=args.asr_model_path,
+            port=asr_port,
+            host=HOST,
+            log_file=args.output_dir / "asr_server.log",
+        ):
+            for leg in legs:
+                logger.info(f"{leg.name}: scoring saved TTS audio")
+                leg.loads = measure_tts(
+                    workload,
+                    settings,
+                    port=asr_port,
+                    model_path=model_path,
+                    asr_model_path=args.asr_model_path,
+                    asr_concurrency=args.asr_concurrency,
+                    leg_dir=args.output_dir / leg.name,
+                )
+    else:
+        pass
     comparison = compare(legs, k_gain=K_GAIN)
     summary = render(
         comparison, legs, title=f"{args.draft_config.stem} on {args.workload}"
