@@ -24,6 +24,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 // legacyPreference is the previous Voxt's preference key as text, from
@@ -48,34 +49,48 @@ var legacyLLMServices = map[string]string{
 	"stepFun": "stepfun", "xiaomiMiMo": "mimo",
 }
 
-// legacyDefaultEndpoints are the previous Voxt's own addresses of its
-// services, as it saved them: one of them is the preset's address here.
-var legacyDefaultEndpoints = []string{
-	"https://api.anthropic.com/v1/messages", "https://generativelanguage.googleapis.com/v1beta/models",
-	"https://api.openai.com/v1/responses", "http://localhost:11434", "http://localhost:8000/v1",
-	"https://api.deepseek.com", "https://openrouter.ai/api/v1/models", "https://api.x.ai/v1/models",
-	"https://open.bigmodel.cn/api/paas/v4/models", "https://ark.cn-beijing.volces.com/api/v3/responses",
-	"https://api.moonshot.cn/v1/models", "http://127.0.0.1:1234/v1/models",
-	"https://api.minimax.chat/v1/text/chatcompletion_v2", "https://dashscope.aliyuncs.com/compatible-mode/v1/responses",
-	"https://api.stepfun.com/v1/chat/completions", "https://api.xiaomimimo.com/v1/chat/completions",
+// legacyDefaultEndpoints are the previous Voxt's own address of each of
+// its language model services, by its service id, as it saved it. Only a
+// setup's own service's becomes the preset's address here: a setup of one
+// service may point at another's (an OpenAI setup at StepFun).
+var legacyDefaultEndpoints = map[string]string{
+	"anthropic": "https://api.anthropic.com/v1/messages", "google": "https://generativelanguage.googleapis.com/v1beta/models",
+	"openAI": "https://api.openai.com/v1/responses", "ollama": "http://localhost:11434", "omlx": "http://localhost:8000/v1",
+	"deepseek": "https://api.deepseek.com", "openrouter": "https://openrouter.ai/api/v1/models", "grok": "https://api.x.ai/v1/models",
+	"zai": "https://open.bigmodel.cn/api/paas/v4/models", "volcengine": "https://ark.cn-beijing.volces.com/api/v3/responses",
+	"kimi": "https://api.moonshot.cn/v1/models", "lmStudio": "http://127.0.0.1:1234/v1/models",
+	"minimax": "https://api.minimax.chat/v1/text/chatcompletion_v2", "aliyunBailian": "https://dashscope.aliyuncs.com/compatible-mode/v1/responses",
+	"stepFun": "https://api.stepfun.com/v1/chat/completions", "xiaomiMiMo": "https://api.xiaomimimo.com/v1/chat/completions",
 }
 
-// legacyEndpoint is the previous Voxt's address of service id as an API
-// root here: "" (the preset's) for one of its own, else without the
-// request path it ended in. Its Ollama addresses were the native API's;
-// its custom Gemini ones too, which this app does not speak.
-func legacyEndpoint(id, endpoint string) string {
+// legacyEndpoint is the address of a setup of the previous Voxt's language
+// model service (its service id) as an API root here, and whether the user
+// should check it. The service's own default is the preset's (""); any
+// other address keeps its host, never replaced by the preset's, which
+// would send the requests elsewhere. It loses the request path it ended
+// in; Ollama's native API becomes its OpenAI-compatible /v1. The previous
+// Voxt spoke Anthropic's, Gemini's and MiniMax's own APIs, which this app
+// does not: their other addresses are kept (Gemini's native /v1beta/models
+// becomes /v1beta/openai on the same host), to check.
+func legacyEndpoint(service, endpoint string) (root string, check bool) {
+	id := legacyLLMServices[service]
 	e := strings.TrimRight(strings.TrimSpace(endpoint), "/")
-	if e == "" || slices.Contains(legacyDefaultEndpoints, e) || id == "gemini" {
-		return ""
+	if e == "" || e == legacyDefaultEndpoints[service] {
+		return "", false
 	}
-	paths := []string{"/chat/completions", "/responses", "/messages", "/models", "/text/chatcompletion_v2"}
-	if id == "ollama" {
-		paths = append(paths, "/api/chat", "/api/generate", "/api/tags", "/api")
+	paths := []string{"/chat/completions", "/responses", "/models", "/messages", "/text/chatcompletion_v2"}
+	switch id {
+	case "gemini":
+		paths = nil
+		if base, ok := strings.CutSuffix(e, "/models"); ok {
+			e = base + "/openai"
+		}
+	case "ollama":
+		paths = []string{"/chat/completions", "/api/chat", "/api/generate", "/api/tags", "/api"}
 	}
-	for _, p := range paths {
-		if root, ok := strings.CutSuffix(e, p); ok {
-			e = root
+	for _, path := range paths {
+		if base, ok := strings.CutSuffix(e, path); ok {
+			e = base
 			break
 		}
 	}
@@ -83,9 +98,9 @@ func legacyEndpoint(id, endpoint string) string {
 		e += "/v1"
 	}
 	if p, ok := llm.LookupPreset(id); ok && strings.TrimRight(p.BaseURL, "/") == e {
-		return ""
+		return "", false
 	}
-	return e
+	return e, id == "anthropic" || id == "gemini" || id == "minimax"
 }
 
 // legacyLLMSetup is a language model setup as the previous Voxt saved it
@@ -115,13 +130,14 @@ type legacyLLMSetup struct {
 	} `json:"generationSettings"`
 }
 
-// provider is s as a setup here; false for a service without a preset
+// provider is s as a setup here, and whether the user should check its
+// address (legacyEndpoint); ok is false for a service without a preset
 // here and for a setup never made (no model, address or key).
-func (s legacyLLMSetup) provider() (settings.Provider, bool) {
+func (s legacyLLMSetup) provider() (p settings.Provider, check, ok bool) {
 	id, ok := legacyLLMServices[s.ProviderID]
 	keyed := s.StoredCredentialPresence.APIKey || s.StoredCredentialPresence.AccessToken
 	if !ok || strings.TrimSpace(s.Model) == "" && strings.TrimSpace(s.Endpoint) == "" && !keyed {
-		return settings.Provider{}, false
+		return settings.Provider{}, false, false
 	}
 	g := s.Generation
 	gen := settings.Generation{
@@ -151,7 +167,8 @@ func (s legacyLLMSetup) provider() (settings.Provider, bool) {
 		usage := s.OmlxIncludeUsageStreamOptions
 		gen.IncludeUsage = &usage
 	}
-	return settings.Provider{ID: id, Endpoint: legacyEndpoint(id, s.Endpoint), Model: strings.TrimSpace(s.Model), Generation: gen}, true
+	endpoint, check := legacyEndpoint(s.ProviderID, s.Endpoint)
+	return settings.Provider{ID: id, Endpoint: endpoint, Model: strings.TrimSpace(s.Model), Generation: gen}, check, true
 }
 
 // legacySpeechServices are this app's speech services for the previous
@@ -161,41 +178,46 @@ var legacySpeechServices = map[string]string{
 	"stepFunASR": providers.StepFunASR, "xiaomiMiMoASR": "mimo", "googleGeminiASR": "gemini",
 }
 
-// legacyDefaultSpeechEndpoints are the previous Voxt's own addresses of its
-// speech services (Doubao's 1.0 and 2.0 ones, Aliyun's for each protocol):
-// one of them is the service's own here, which picks it by model.
-var legacyDefaultSpeechEndpoints = []string{
-	"https://api.openai.com/v1/audio/transcriptions",
-	"wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async", "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel",
-	"https://open.bigmodel.cn/api/paas/v4/audio/transcriptions",
-	"wss://dashscope.aliyuncs.com/api-ws/v1/inference", "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
-	"https://api.stepfun.com/v1/audio/asr/sse",
-	"https://api.xiaomimimo.com/v1/chat/completions",
-	"wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent",
+// legacyDefaultSpeechEndpoints are the previous Voxt's own addresses of
+// each of its speech services, by its service id (Doubao's 1.0, 2.0 and
+// file recognition ones, Aliyun's for each protocol): only a setup's own
+// service's becomes the service's own address here, which picks it by
+// model.
+var legacyDefaultSpeechEndpoints = map[string][]string{
+	"openAIWhisper": {"https://api.openai.com/v1/audio/transcriptions"},
+	"doubaoASR": {"wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async", "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel",
+		"https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash"},
+	"glmASR":           {"https://open.bigmodel.cn/api/paas/v4/audio/transcriptions"},
+	"aliyunBailianASR": {"wss://dashscope.aliyuncs.com/api-ws/v1/inference", "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"},
+	"stepFunASR":       {"https://api.stepfun.com/v1/audio/asr/sse"},
+	"xiaomiMiMoASR":    {"https://api.xiaomimimo.com/v1/chat/completions"},
+	"googleGeminiASR":  {"wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"},
 }
 
-// legacySpeechEndpoint is the previous Voxt's address of speech service
-// sp as one here: "" (the service's own) for one of its own, and for one
-// this app cannot use, as a streaming service's https:// (Doubao's file
-// recognition) or a file service's wss://. StepFun's was its SSE API;
-// here it is the OpenAI-compatible transcriptions on the same host.
-func legacySpeechEndpoint(sp providers.Speech, endpoint string) string {
+// legacySpeechEndpoint is the address of a setup of the previous Voxt's
+// speech service (its service id; sp here) as one here, and whether the
+// user should check it. The service's own default is its own here ("");
+// any other address is kept, never replaced by the service's, which would
+// send the audio elsewhere: to check when this app's client cannot use it
+// (a streaming service's https://, a file service's wss://). StepFun's
+// was its SSE API; here its transcriptions on the same host, to check.
+func legacySpeechEndpoint(service string, sp providers.Speech, endpoint string) (address string, check bool) {
 	e := strings.TrimRight(strings.TrimSpace(endpoint), "/")
-	if root, ok := strings.CutSuffix(e, "/audio/asr/sse"); ok && sp.ID == providers.StepFunASR {
-		e = root + "/audio/transcriptions"
+	if e == "" || slices.Contains(legacyDefaultSpeechEndpoints[service], e) {
+		return "", false
 	}
-	if e == "" || e == sp.Endpoint || slices.Contains(legacyDefaultSpeechEndpoints, e) {
-		return ""
+	if root, ok := strings.CutSuffix(e, "/audio/asr/sse"); ok && sp.ID == providers.StepFunASR {
+		e, check = root+"/audio/transcriptions", true
+	}
+	if e == sp.Endpoint {
+		return "", false
 	}
 	u, err := url.Parse(e)
 	schemes := []string{"https", "http"}
 	if sp.Stream {
 		schemes = []string{"wss", "ws"}
 	}
-	if err != nil || u.Host == "" || !slices.Contains(schemes, strings.ToLower(u.Scheme)) {
-		return ""
-	}
-	return e
+	return e, check || err != nil || u.Host == "" || !slices.Contains(schemes, strings.ToLower(u.Scheme))
 }
 
 // legacySpeechSetup is a speech service setup as the previous Voxt saved
@@ -207,21 +229,24 @@ type legacySpeechSetup struct {
 	StoredCredentialPresence    struct{ APIKey, AppID, AccessToken bool }
 }
 
-// provider is s as a setup here; false for a setup never made (no model,
-// address or credential). Its model comes over when this app's client of
-// the service takes it (OpenAI's takes any: a compatible server names its
-// own models), else the service's default does.
-func (s legacySpeechSetup) provider() (settings.Provider, bool) {
+// provider is s as a setup here, and whether the user should check it
+// (its address, legacySpeechEndpoint, or its model); ok is false for a
+// setup never made (no model, address or credential). Its model comes over
+// when this app's client of the service takes it (OpenAI's takes any: a
+// compatible server names its own models), else the service's default
+// does, to check.
+func (s legacySpeechSetup) provider() (p settings.Provider, check, ok bool) {
 	sp, ok := providers.LookupSpeech(legacySpeechServices[s.ProviderID])
 	c := s.StoredCredentialPresence
 	model := strings.TrimSpace(s.Model)
 	if !ok || model == "" && strings.TrimSpace(s.Endpoint) == "" && !c.APIKey && !c.AppID && !c.AccessToken {
-		return settings.Provider{}, false
+		return settings.Provider{}, false, false
 	}
-	if sp.ID != "openai" && !slices.Contains(sp.Models, model) {
-		model = ""
+	endpoint, check := legacySpeechEndpoint(s.ProviderID, sp, s.Endpoint)
+	if sp.ID != "openai" && model != "" && !slices.Contains(sp.Models, model) {
+		model, check = "", true
 	}
-	return settings.Provider{ID: sp.ID, Endpoint: legacySpeechEndpoint(sp, s.Endpoint), Model: model}, true
+	return settings.Provider{ID: sp.ID, Endpoint: endpoint, Model: model}, check, true
 }
 
 // legacyBuiltInPrompts are the SHA-256 digests of the previous Voxt's
@@ -306,6 +331,9 @@ type legacySettings struct {
 	// feature used ("": a local model or none), prompts its own prompt.
 	featureLLM, featureSpeech, prompts [3]string
 	speechContext                      string
+	// checkLLM and checkSpeech are the setups whose address or model may
+	// not work here as it did (by id): the result says so.
+	checkLLM, checkSpeech []string
 }
 
 // parseLegacySettings reads the previous Voxt's settings from its
@@ -321,15 +349,21 @@ func parseLegacySettings(llmSetups, speechSetups, features, tuning string) legac
 	var savedLLM []legacyLLMSetup
 	json.Unmarshal([]byte(llmSetups), &savedLLM) // not JSON: no setups
 	for _, s := range savedLLM {
-		if p, ok := s.provider(); ok && !has(l.llm, p.ID) {
+		if p, check, ok := s.provider(); ok && !has(l.llm, p.ID) {
 			l.llm = append(l.llm, p)
+			if check {
+				l.checkLLM = append(l.checkLLM, p.ID)
+			}
 		}
 	}
 	var savedSpeech []legacySpeechSetup
 	json.Unmarshal([]byte(speechSetups), &savedSpeech)
 	for _, s := range savedSpeech {
-		if p, ok := s.provider(); ok && !has(l.speech, p.ID) {
+		if p, check, ok := s.provider(); ok && !has(l.speech, p.ID) {
 			l.speech = append(l.speech, p)
+			if check {
+				l.checkSpeech = append(l.checkSpeech, p.ID)
+			}
 		}
 	}
 	var f struct {
@@ -401,4 +435,21 @@ func (l legacySettings) apply(s *settings.Settings) (llmAdded, speechAdded []set
 		prompts++
 	}
 	return llmAdded, speechAdded, prompts
+}
+
+// toCheck names the setups added (apply's llmAdded, speechAdded) whose
+// address or model the user should check, for the result.
+func (l legacySettings) toCheck(llmAdded, speechAdded []settings.Provider) []string {
+	var names []string
+	for _, p := range llmAdded {
+		if slices.Contains(l.checkLLM, p.ID) {
+			names = append(names, uitext.PresetName(p.ID))
+		}
+	}
+	for _, p := range speechAdded {
+		if slices.Contains(l.checkSpeech, p.ID) {
+			names = append(names, uitext.SpeechName(p.ID))
+		}
+	}
+	return names
 }

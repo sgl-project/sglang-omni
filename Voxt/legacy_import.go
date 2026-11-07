@@ -471,6 +471,10 @@ func (a *app) importLegacyFrom(picked string) {
 				msg += " " + i18n.N(n, "%d speech service came over: paste its key again on the Speech models page.",
 					"%d speech services came over: paste their keys again on the Speech models page.", n)
 			}
+			if names := l.toCheck(llmServices, speechServices); len(names) > 0 {
+				msg += " " + i18n.N(len(names), "Check %s on its page: its address or model may not work as it did in the previous Voxt.",
+					"Check %s on their pages: their addresses or models may not work as they did in the previous Voxt.", strings.Join(names, ", "))
+			}
 			if prompts > 0 {
 				msg += " " + i18n.N(prompts, "%d prompt came over.", "%d prompts came over.", prompts)
 			}

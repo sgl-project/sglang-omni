@@ -83,7 +83,8 @@ func builtInRewritePrompt(t *testing.T) string {
 }
 
 // The previous Voxt's settings as they come over: each setup at an API
-// root here ("" for its own addresses), with its model and generation
+// root here ("" for its own addresses; Gemini's native address on its
+// OpenAI-compatible path, to check), with its model and generation
 // settings, and without the services that have no place here; the setups a
 // feature used when they came over too; its own prompts without its
 // transcript variable, and none of its built-in ones; its Qwen3-ASR context
@@ -110,10 +111,13 @@ func TestParseLegacySettings(t *testing.T) {
 		g.ResponseFormat != llm.ResponseJSONSchema || g.JSONSchema != `{"type": "object"}` || g.OptionsJSON != `{"num_ctx": 8192}` {
 		t.Errorf("ollama %+v", ol)
 	}
-	for _, id := range []string{"deepseek", "gemini", "omlx"} {
+	for _, id := range []string{"deepseek", "omlx"} {
 		if by[id].Endpoint != "" {
 			t.Errorf("%s at %q, want the preset's address", id, by[id].Endpoint)
 		}
+	}
+	if g := by["gemini"].Endpoint; g != "https://example.com/v1beta/openai" || strings.Join(l.checkLLM, ",") != "gemini" {
+		t.Errorf("a custom Gemini address %q, to check %v", g, l.checkLLM)
 	}
 	if u := by["omlx"].Generation.IncludeUsage; u == nil || *u {
 		t.Errorf("oMLX usage %v, want off as the previous Voxt had it", u)
@@ -137,12 +141,34 @@ func TestParseLegacySettings(t *testing.T) {
 	}
 }
 
+// A language model setup's address is replaced by the preset's only when
+// it is its own service's default in the previous Voxt: an OpenAI setup at
+// StepFun's address went to OpenAI, with the StepFun key the user pastes.
+// An address of a service's own API this app does not speak stays, to
+// check, instead of becoming the preset's.
+func TestLegacyEndpoint(t *testing.T) {
+	for _, c := range []struct {
+		service, endpoint, want string
+		check                   bool
+	}{
+		{"openAI", "https://api.stepfun.com/v1/chat/completions", "https://api.stepfun.com/v1", false},
+		{"stepFun", "https://api.stepfun.com/v1/chat/completions", "", false},
+		{"anthropic", "https://claude-proxy.example.com/v1/messages", "https://claude-proxy.example.com/v1", true},
+		{"google", "https://gemini-proxy.example.com/gemini", "https://gemini-proxy.example.com/gemini", true},
+	} {
+		if got, check := legacyEndpoint(c.service, c.endpoint); got != c.want || check != c.check {
+			t.Errorf("%s at %s: %q, check %v; want %q, %v", c.service, c.endpoint, got, check, c.want, c.check)
+		}
+	}
+}
+
 // The previous Voxt's speech setups as they come over: the service's own
-// address for one of the previous Voxt's (Doubao's 2.0, StepFun's SSE API,
-// which this app reaches on the same host), a regional address kept; a
-// model this app has kept, one it lacks back to the service's default, any
-// model for OpenAI-compatible servers; an address this app's client cannot
-// use dropped; one setup per service, the first; never-made setups left out.
+// address for its own default (Doubao's 2.0, StepFun's SSE API), a regional
+// address kept; a model this app has kept, one it lacks back to the
+// service's default, to check, any model for OpenAI-compatible servers; one
+// setup per service, the first; never-made setups left out. Another
+// service's address and one this app's client cannot use are kept, never
+// replaced by the service's own; the second is to check.
 func TestParseLegacySpeech(t *testing.T) {
 	l := parseLegacySettings("", legacySpeechJSON, "", "")
 	want := []settings.Provider{
@@ -159,13 +185,21 @@ func TestParseLegacySpeech(t *testing.T) {
 			t.Errorf("setup %d: %+v, want %+v", i, p, want[i])
 		}
 	}
-	doubao, _ := providers.LookupSpeech("doubao")
-	if got := legacySpeechEndpoint(doubao, "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash"); got != "" {
-		t.Errorf("Doubao's file recognition address came over: %q", got)
+	if strings.Join(l.checkSpeech, ",") != providers.StepFunASR {
+		t.Errorf("to check %v, want StepFun (its model is not here)", l.checkSpeech)
 	}
-	stepfun, _ := providers.LookupSpeech(providers.StepFunASR)
-	if got := legacySpeechEndpoint(stepfun, "https://step.example.com/v1/audio/asr/sse"); got != "https://step.example.com/v1/audio/transcriptions" {
-		t.Errorf("a custom StepFun host: %q", got)
+	speech := func(id string) providers.Speech { sp, _ := providers.LookupSpeech(id); return sp }
+	for _, c := range []struct {
+		service, id, endpoint, want string
+		check                       bool
+	}{
+		{"openAIWhisper", "openai", "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions", "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions", false},
+		{"doubaoASR", "doubao", "https://doubao-proxy.example.com/asr", "https://doubao-proxy.example.com/asr", true},
+		{"stepFunASR", providers.StepFunASR, "https://step.example.com/v1/audio/asr/sse", "https://step.example.com/v1/audio/transcriptions", true},
+	} {
+		if got, check := legacySpeechEndpoint(c.service, speech(c.id), c.endpoint); got != c.want || check != c.check {
+			t.Errorf("%s at %s: %q, check %v; want %q, %v", c.service, c.endpoint, got, check, c.want, c.check)
+		}
 	}
 }
 
@@ -239,7 +273,7 @@ func TestImportLegacySettings(t *testing.T) {
 		s.Features.Transcribe.Prompt != "Keep my English terms." || s.Dictionary.SpeechContext != "Leo works on LLM serving." {
 		t.Fatalf("settings: setups %+v, transcribe %+v, speech context %q (message %q)", s.Providers.LLM, s.Features.Transcribe.Feature, s.Dictionary.SpeechContext, a.ob.legacyMsg)
 	}
-	for _, want := range []string{"5 language model services came over", "4 speech services came over", "2 prompts came over"} {
+	for _, want := range []string{"5 language model services came over", "4 speech services came over", "on their pages", "2 prompts came over"} {
 		if !strings.Contains(a.ob.legacyMsg, want) {
 			t.Errorf("message %q lacks %q", a.ob.legacyMsg, want)
 		}

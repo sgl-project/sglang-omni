@@ -1245,5 +1245,7 @@
   "%d character": "%d 字",
   "%d characters": "%d 字",
   "%d speech service came over: paste its key again on the Speech models page.": "带过来了 %d 个语音服务，它的 API Key 要在“语音模型”页面重新粘贴。",
-  "%d speech services came over: paste their keys again on the Speech models page.": "带过来了 %d 个语音服务，它们的 API Key 要在“语音模型”页面重新粘贴。"
+  "%d speech services came over: paste their keys again on the Speech models page.": "带过来了 %d 个语音服务，它们的 API Key 要在“语音模型”页面重新粘贴。",
+  "Check %s on its page: its address or model may not work as it did in the previous Voxt.": "%s 的地址或模型在新版里可能不能照旧使用，请到对应页面检查。",
+  "Check %s on their pages: their addresses or models may not work as they did in the previous Voxt.": "%s 的地址或模型在新版里可能不能照旧使用，请到对应页面检查。"
 }
