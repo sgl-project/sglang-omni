@@ -3843,14 +3843,7 @@ def expected_whole_samples(
 
 
 def run_initial_worker_pass(scheduler: Qwen3TTSStreamingVocoderScheduler) -> None:
-    scheduler.run_initial_work(
-        scheduler.collect_async_batch(
-            scheduler.initial_queue,
-            max_batch_size=scheduler.initial_max_batch_size,
-            batch_wait_s=0.0,
-            should_block=False,
-        )
-    )
+    scheduler.run_initial_work(scheduler.collect_initial_work())
 
 
 def run_whole_requests(
@@ -3998,8 +3991,7 @@ def test_qwen3_tts_initial_batch_holds_only_first_chunks(
     batch = scheduler.collect_async_batch(
         scheduler.initial_queue,
         max_batch_size=2,
-        batch_wait_s=0.0,
-        should_block=False,
+        batch_wait_s=60.0,
     )
 
     assert batch == streams[:2]
@@ -4007,34 +3999,32 @@ def test_qwen3_tts_initial_batch_holds_only_first_chunks(
     assert scheduler.initial_queue.get_nowait() == streams[2]
 
 
-def test_qwen3_tts_worker_with_replays_due_takes_every_queued_first_chunk(
+def test_qwen3_tts_first_chunks_past_one_batch_run_before_a_due_replay(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    scheduler, _, _ = whole_request_scheduler(monkeypatch)
+    scheduler, _, runner = whole_request_scheduler(monkeypatch)
+    scheduler.initial_max_batch_size = 2
+    scheduler.run_non_streaming_batch(
+        [whole_request_message("whole", 8)], asyncio.new_event_loop()
+    )
+    run_initial_worker_pass(scheduler)
     streams = [
-        (name, scheduler.create_stream_state(name)) for name in ("first", "second")
+        (name, scheduler.create_stream_state(name))
+        for name in ("first", "second", "third")
     ]
     for stream in streams:
         scheduler.initial_queue.put(stream)
+    dispatched = []
+    monkeypatch.setattr(
+        scheduler,
+        "run_initial_batch",
+        lambda batch: dispatched.append((batch, len(runner.calls))),
+    )
 
-    assert (
-        scheduler.collect_async_batch(
-            scheduler.initial_queue,
-            max_batch_size=8,
-            batch_wait_s=0.0,
-            should_block=False,
-        )
-        == streams
-    )
-    assert (
-        scheduler.collect_async_batch(
-            scheduler.initial_queue,
-            max_batch_size=8,
-            batch_wait_s=0.0,
-            should_block=False,
-        )
-        == []
-    )
+    run_initial_worker_pass(scheduler)
+
+    assert dispatched == [(streams[:2], 1), (streams[2:], 1)]
+    assert len(runner.calls) == 2
 
 
 def test_qwen3_tts_whole_requests_of_different_lengths_share_a_window(

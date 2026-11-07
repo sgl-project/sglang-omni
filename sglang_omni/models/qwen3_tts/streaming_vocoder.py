@@ -2764,17 +2764,10 @@ class Qwen3TTSStreamingVocoderScheduler(
         *,
         max_batch_size: int,
         batch_wait_s: float,
-        should_block: bool = True,
     ) -> list[tuple[str, Qwen3TTSStreamState]] | None:
-        """Collect first chunks; a whole request queued among them joins the worker's rows.
-
-        A worker with replays due takes all that has queued and waits for no more.
-        """
+        """Wait for up to max_batch_size first chunks; a whole request queued among them joins the worker's rows."""
         batch: list[tuple[str, Qwen3TTSStreamState]] = []
-        try:
-            queued = work_queue.get(block=should_block)
-        except queue.Empty:
-            return batch
+        queued = work_queue.get()
         if queued is None or self.async_stop.is_set():
             return None
         else:
@@ -2785,8 +2778,8 @@ class Qwen3TTSStreamingVocoderScheduler(
                 self.whole_request_rows.append(queued)
             else:
                 batch.append(queued)
-            remaining = deadline - time.monotonic() if should_block else 0.0
-            if len(batch) == max_batch_size or (should_block and remaining <= 0):
+            remaining = deadline - time.monotonic()
+            if len(batch) == max_batch_size or remaining <= 0:
                 return batch
             else:
                 pass
@@ -2964,25 +2957,41 @@ class Qwen3TTSStreamingVocoderScheduler(
     def run_initial_worker(self) -> None:
         self.activate_decode_worker(self.decode_stream)
         while True:
-            # note (ratish): a row waiting means a replay is due, so only an idle worker waits.
-            batch = self.collect_async_batch(
-                self.initial_queue,
-                max_batch_size=self.initial_max_batch_size,
-                batch_wait_s=self.initial_batch_wait_s,
-                should_block=not self.whole_request_rows,
-            )
+            batch = self.collect_initial_work()
             if batch is None:
                 return
             else:
                 pass
             self.run_initial_work(batch)
 
-    def run_initial_work(self, batch: list[tuple[str, Qwen3TTSStreamState]]) -> None:
-        """First chunks, then one replay of whole requests, so a first chunk waits for at most one replay."""
-        if batch:
-            self.run_initial_batch(batch)
+    def collect_initial_work(self) -> list[tuple[str, Qwen3TTSStreamState]] | None:
+        """One pass's first chunks; a whole request queued among them joins the worker's rows.
+
+        A row waiting means a replay is due, so the pass takes every first chunk queued now and waits for none.
+        """
+        if not self.whole_request_rows:
+            return self.collect_async_batch(
+                self.initial_queue,
+                max_batch_size=self.initial_max_batch_size,
+                batch_wait_s=self.initial_batch_wait_s,
+            )
         else:
             pass
+        batch: list[tuple[str, Qwen3TTSStreamState]] = []
+        for _ in range(self.initial_queue.qsize()):
+            queued = self.initial_queue.get_nowait()
+            if queued is None or self.async_stop.is_set():
+                return None
+            elif isinstance(queued, Qwen3TTSWholeRequest):
+                self.whole_request_rows.append(queued)
+            else:
+                batch.append(queued)
+        return batch
+
+    def run_initial_work(self, batch: list[tuple[str, Qwen3TTSStreamState]]) -> None:
+        """First chunks a batch at a time, then one replay of whole requests, so a first chunk waits for at most one replay."""
+        for start in range(0, len(batch), self.initial_max_batch_size):
+            self.run_initial_batch(batch[start : start + self.initial_max_batch_size])
         if self.whole_request_rows:
             self.run_whole_request_replay()
         else:
