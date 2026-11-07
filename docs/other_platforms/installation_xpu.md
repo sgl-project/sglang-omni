@@ -2,7 +2,7 @@
 
 Install SGLang-Omni on Intel GPUs (XPU). For the upstream runtime, see the
 [SGLang Intel XPU guide](https://docs.sglang.io/docs/hardware-platforms/xpu).
-For NVIDIA GPUs, use the [CUDA installation](./installation.md).
+For NVIDIA GPUs, use the [CUDA installation](../get_started/installation.md).
 
 ## Prerequisites
 

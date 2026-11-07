@@ -6,7 +6,7 @@ name: Voxt Mac CI
 # the stub server around stand-in models) and each server's startup checks; and
 # Voxt's Swift packages (the helper and the language-model runtime). No
 # checkpoint is downloaded. Model outputs are checked by hand per model PR with
-# the tools in sglang_omni_mlx/native/ci.
+# the tools in sglang_omni_mlx/native/ci. Voxt Nightly runs it before its build.
 
 on:
   pull_request:
@@ -17,10 +17,11 @@ on:
       - "Voxt/llm/**"
       - ".github/workflows/voxt-mac-ci.yaml"
   workflow_dispatch:
+  workflow_call:
 
-# One run per pull request; a new push replaces it.
+# One run per pull request; a new push replaces it. The calling workflow's name keeps the nightly's run apart.
 concurrency:
-  group: voxt-mac-ci-${{ github.event.pull_request.number || github.ref }}
+  group: voxt-mac-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -36,7 +37,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
-      run_mac: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.plan.outputs.run_mac }}
+      # Only a pull request goes through the label gate: a run by hand or from the nightly's schedule always tests.
+      run_mac: ${{ github.event_name != 'pull_request' && 'true' || steps.plan.outputs.run_mac }}
     steps:
       - name: Fetch latest PR gate state
         if: ${{ github.event_name == 'pull_request' }}
@@ -93,10 +95,32 @@ jobs:
 
       - uses: astral-sh/setup-uv@v6
 
-      - name: Build the runtime and the stub server
+      - name: Install ccache
         run: |
+          set -euo pipefail
+          if ! command -v ccache > /dev/null; then
+            HOMEBREW_NO_AUTO_UPDATE=1 brew install ccache
+          fi
+          ccache --version | head -1
+
+      # MLX comes prebuilt from its wheel: this keeps the objects of the runtime's own C and C++ and of its FetchContent dependencies.
+      - name: Restore the compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: voxt-native-ccache-${{ env.DEVELOPER_DIR }}-${{ github.run_id }}
+          restore-keys: voxt-native-ccache-${{ env.DEVELOPER_DIR }}-
+
+      - name: Build the runtime and the stub server
+        env:
+          CCACHE_DIR: ${{ runner.temp }}/ccache
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
+        run: |
+          ccache --zero-stats > /dev/null
           sglang_omni_mlx/native/scripts/build_runtime.sh "$RUNNER_TEMP/runtime" "$RUNNER_TEMP/runtime-build"
           "$RUNNER_TEMP/runtime-build/venv/bin/cmake" --build "$RUNNER_TEMP/runtime-build/cmake" --target stub_server
+          ccache --show-stats
 
       - name: Set up the test Python
         run: |
@@ -130,6 +154,14 @@ jobs:
 
       - name: Helper tests
         run: swift test --package-path Voxt/helper
+
+      # Voxt/llm's packages (mlx-swift and the rest) and their builds: restored files keep their mtimes, so only Voxt's own code rebuilds.
+      - name: Restore the LLM runtime's package build
+        uses: actions/cache@v4
+        with:
+          path: Voxt/llm/.build
+          key: voxt-llm-swiftpm-${{ env.DEVELOPER_DIR }}-${{ hashFiles('Voxt/llm/Package.resolved') }}
+          restore-keys: voxt-llm-swiftpm-${{ env.DEVELOPER_DIR }}-
 
       - name: LLM runtime tests
         run: swift test --package-path Voxt/llm

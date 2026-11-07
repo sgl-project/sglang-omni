@@ -99,7 +99,7 @@ Unlike TTS where the same reference voice is reused across many prompts (high hi
 ### Launching Commands
 
 Install `sglang-omni` with [Installation](../get_started/installation.md) on CUDA or
-[Intel XPU installation](../get_started/installation_xpu.md) on Intel GPUs, then download the model:
+[Intel XPU installation](../other_platforms/installation_xpu.md) on Intel GPUs, then download the model:
 
 ```bash
 hf download OpenMOSS-Team/MOSS-Transcribe-Diarize

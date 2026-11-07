@@ -20,7 +20,7 @@ hf download FunAudioLLM/Fun-ASR-Nano-2512-hf
 ## Apple Silicon
 
 Fun-ASR runs on Apple Silicon through a Torch/MPS compatibility path. Install
-with the [Apple Silicon installer](../get_started/installation_apple_silicon.md)
+with the [Apple Silicon installer](../other_platforms/installation_apple_silicon.md)
 and follow its environment-activation and `DYLD_LIBRARY_PATH` steps; TorchCodec
 needs Homebrew's keg-only FFmpeg libraries on the path before the server starts.
 
