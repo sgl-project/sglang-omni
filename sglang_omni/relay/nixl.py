@@ -18,18 +18,27 @@ logger = logging.getLogger(__name__)
 # ==========================================
 # Dependency Check
 # ==========================================
+NIXL_IMPORT_ERROR: ImportError | None = None
 try:
     from nixl._api import nixl_agent as NixlAgent
     from nixl._api import nixl_agent_config
 
     NIXL_AVAILABLE = True
-except ImportError as e:
-    logger.error(f"Failed to import nixl: {e}. NixlRelay will not work.")
+except ImportError as import_error:
+    # note (Minyi Tang): SHM-only installs omit nixl; Connection raises if it is selected.
+    logger.debug(f"nixl is unavailable: {import_error}")
+    NIXL_IMPORT_ERROR = import_error
     NIXL_AVAILABLE = False
 
 
 class Connection:
     def __init__(self, engine_id: str, num_threads: int = 2):
+        if NIXL_IMPORT_ERROR is not None:
+            raise RuntimeError(
+                f"NIXL relay requires the nixl package, which failed to import: {NIXL_IMPORT_ERROR}"
+            ) from NIXL_IMPORT_ERROR
+        else:
+            pass
         self.name = engine_id
         config = nixl_agent_config(num_threads=num_threads)
         self.nixl = NixlAgent(str(uuid.uuid4()), config)
