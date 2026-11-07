@@ -13,7 +13,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from multiprocessing.context import SpawnProcess
 from multiprocessing.queues import Queue
 from multiprocessing.synchronize import Event
@@ -37,6 +37,7 @@ from sglang_omni.pipeline.sessions import Session
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
+    LM_STEP_MS_KEY,
     SESSION_METADATA_KEY,
     ResourceUsage,
     SessionIdentity,
@@ -85,6 +86,7 @@ class HookState:
     reply_ms: float
     # note (luojiaxuan): Seconds between the reply's turn.started and its audio, the reply's first-audio latency.
     reply_after_s: float
+    step_ms: float
 
 
 def number_param(params: Mapping[str, object], key: str, default: float) -> float:
@@ -136,6 +138,7 @@ def read_hook_state(
         emit_after_s=number_param(params, "emit_after", 0),
         reply_ms=number_param(params, "emit_reply_ms", 0),
         reply_after_s=number_param(params, "emit_reply_after", 0),
+        step_ms=number_param(params, "step_ms", 0),
     )
 
 
@@ -197,6 +200,16 @@ class Hooks(SessionHooks):
         logical_name = self.name.partition(REPLICA_SEPARATOR)[0]
         if logical_name == "source":
             payload.data = {"tensor": torch.tensor([state.count])}
+            if state.step_ms:
+                payload.request = replace(
+                    payload.request,
+                    metadata={
+                        **payload.request.metadata,
+                        LM_STEP_MS_KEY: state.step_ms,
+                    },
+                )
+            else:
+                pass
         elif logical_name == "middle":
             assert payload.data["tensor"].item() == state.count
         else:

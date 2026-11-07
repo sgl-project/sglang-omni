@@ -36,6 +36,7 @@ class Loop:
     last_prefill_continued_sessions = False
     chunked_req = None
     last_batch = None
+    is_on_tick_grid = False
 
     def __init__(self, queue, holding):
         self.waiting_queue = queue

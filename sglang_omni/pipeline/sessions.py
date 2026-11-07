@@ -26,7 +26,9 @@ from sglang_omni.profiler.duplex_events import (
 from sglang_omni.proto import OmniRequest, StreamMessage
 from sglang_omni.proto.session import (
     DEFAULT_MAX_OUTPUT_LEAD_MS,
+    LM_STEP_MS_KEY,
     SESSION_METADATA_KEY,
+    Cohort,
     OutputChunk,
     SessionGraph,
     SessionIdentity,
@@ -52,6 +54,7 @@ class PendingSessionChunk:
     request_id: str
     # note (luojiaxuan): the chunk is a fragment the next input continues; it goes only to the route's first owner.
     continues: bool
+    tick: Cohort | None = None
 
 
 def check_timing(chunk: TimedChunk, modality_end_ms: dict[str, float] | None) -> None:
@@ -433,12 +436,14 @@ class CoordinatorSessions:
         ready_timestamp_ns: int | None = None,
         ready_run_id: str | None = None,
         continues: bool = False,
+        tick: Cohort | None = None,
     ) -> int:
         """Accept input in global seq order, independently of output consumption.
 
         Rejected input keeps its seq for retry; accepted input must not be
         resubmitted. A chunk that `continues` is a fragment of a graph node's
-        chunk over max_chunk_bytes, and the next input continues it.
+        chunk over max_chunk_bytes, and the next input continues it. A chunk
+        released on the server's unit grid carries its tick to the owners.
         """
         graph = self.graphs.get(session_identity.id)
         if graph is not None and graph.session_identity == session_identity:
@@ -472,6 +477,7 @@ class CoordinatorSessions:
                 encoded_bytes=encoded_bytes,
                 request_id=request_id,
                 continues=continues,
+                tick=tick,
             )
         )
         session.pending_count += 1
@@ -634,12 +640,18 @@ class CoordinatorSessions:
                 session.in_flight_append = "accepted"
                 try:
                     operation = "fragment" if pending_chunk.continues else "append"
+                    tick_kwargs = (
+                        {}
+                        if pending_chunk.tick is None
+                        else {"tick": pending_chunk.tick}
+                    )
                     request_id = await self.submit_session_operation(
                         session,
                         operation,
                         owner=session.stages[0] if pending_chunk.continues else None,
                         chunk=chunk,
                         request_id=pending_chunk.request_id,
+                        **tick_kwargs,
                     )
                     if operation == "append":
                         session.submitted_appends[request_id] = chunk
@@ -647,12 +659,22 @@ class CoordinatorSessions:
                         pass
                     session.in_flight_append = "submitted"
                     session.wake.set()
-                    await self.finish_session_operation(session, operation, request_id)
+                    result = await self.finish_session_operation(
+                        session, operation, request_id
+                    )
+                    step_ms = (
+                        result.get(LM_STEP_MS_KEY) if isinstance(result, dict) else None
+                    )
                     self.emit_session_output(
                         session,
                         pending_chunk.request_id,
                         chunk.seq,
-                        replace(chunk, payload=None),
+                        replace(
+                            chunk,
+                            payload=(
+                                None if step_ms is None else {LM_STEP_MS_KEY: step_ms}
+                            ),
+                        ),
                         kind="input_done",
                     )
                 finally:
@@ -808,6 +830,7 @@ class CoordinatorSessions:
         request_id: str | None = None,
         should_preempt: bool = False,
         preempted_request_ids: tuple[str, ...] = (),
+        tick: Cohort | None = None,
     ) -> str:
         """Send one operation to its owner, or an append along the route; the chunks an append or a read streams back enter the session's outputs."""
         session_identity = session.session_identity
@@ -818,6 +841,7 @@ class CoordinatorSessions:
             chunk=chunk,
             should_preempt=should_preempt,
             preempted_request_ids=preempted_request_ids,
+            tick=tick,
         )
         request = replace(
             session.request,
@@ -872,17 +896,17 @@ class CoordinatorSessions:
 
     async def finish_session_operation(
         self, session: Session, operation: SessionOperationKind, request_id: str
-    ) -> None:
+    ) -> object:
         """Await the operation's completion within the operation timeout; a close and a read have none."""
 
-        async def run() -> None:
-            await self.completion_futures[request_id]
+        async def run() -> object:
+            return await self.completion_futures[request_id]
 
         try:
             if operation in ("close", "read"):
-                await run()
+                return await run()
             else:
-                await asyncio.wait_for(run(), session.limits.operation_timeout_s)
+                return await asyncio.wait_for(run(), session.limits.operation_timeout_s)
         except asyncio.TimeoutError as exc:
             error = TimeoutError(f"session {operation} timed out")
             self.fail_session(session, error)

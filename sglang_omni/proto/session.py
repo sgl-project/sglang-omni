@@ -12,6 +12,8 @@ import msgspec
 from typing_extensions import NotRequired
 
 SESSION_METADATA_KEY: Literal["omni_session"] = "omni_session"
+LM_STEP_MS_KEY = "omni_lm_step_ms"
+NS_PER_MS = 1_000_000
 GRAPH_INPUT = "input"
 # Note (Junnan Li): msgspec encodes bytes as base64 text by default; keep them native on both sides.
 BUILTIN_TYPES = (bytes,)
@@ -66,6 +68,12 @@ class OutputChunkDict(TypedDict):
 SessionOperationKind = Literal["open", "append", "fragment", "close", "control", "read"]
 
 
+class CohortDict(TypedDict):
+    index: int
+    size: int
+    due_ns: int
+
+
 class SessionOperationDict(TypedDict):
     operation: SessionOperationKind
     session_identity: SessionIdentityDict
@@ -73,6 +81,7 @@ class SessionOperationDict(TypedDict):
     chunk: TimedChunkDict | None
     should_preempt: bool
     preempted_request_ids: NotRequired[list[str]]
+    tick: NotRequired[CohortDict]
 
 
 @dataclass(frozen=True)
@@ -84,6 +93,18 @@ class SessionIdentity:
 
     def to_dict(self) -> SessionIdentityDict:
         return {"id": self.id, "open_index": self.open_index}
+
+
+@dataclass(frozen=True)
+class Cohort:
+    """Appends a stage runs as one batch; due_ns is CLOCK_MONOTONIC."""
+
+    index: int
+    size: int
+    due_ns: int
+
+    def to_dict(self) -> CohortDict:
+        return {"index": self.index, "size": self.size, "due_ns": self.due_ns}
 
 
 @dataclass(frozen=True)
@@ -425,7 +446,8 @@ class SessionOperation:
     chunks the stage emits outside an append stream on it. A fragment carries
     one of the leading fragments of a chunk over max_chunk_bytes to the
     route's first owner, which holds it; the append of the last fragment
-    restores the chunk there and carries it on along the route.
+    restores the chunk there and carries it on along the route. An append
+    released on the server's unit grid carries its tick.
     """
 
     operation: SessionOperationKind
@@ -434,6 +456,7 @@ class SessionOperation:
     chunk: TimedChunk | None = None
     should_preempt: bool = False
     preempted_request_ids: tuple[str, ...] = ()
+    tick: Cohort | None = None
 
     def to_dict(self) -> SessionOperationDict:
         fields: SessionOperationDict = {
@@ -445,6 +468,10 @@ class SessionOperation:
         }
         if self.preempted_request_ids:
             fields["preempted_request_ids"] = list(self.preempted_request_ids)
+        else:
+            pass
+        if self.tick is not None:
+            fields["tick"] = self.tick.to_dict()
         else:
             pass
         return fields

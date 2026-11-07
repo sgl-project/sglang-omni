@@ -820,6 +820,18 @@ class PipelineConfig(BaseModel):
     "Seconds without input or output before a shared realtime session closes."
     ws_per_message_deflate: bool = True
     "Whether the server offers permessage-deflate to websocket clients."
+    realtime_tick_groups: int = Field(default=0, ge=0)
+    "Phase groups of the server's unit grid, at most; 0 turns the grid off."
+    realtime_tick_openings_per_unit: bool = False
+    "Release sessions' first units together, at most once per unit."
+    realtime_tick_follow_arrivals: bool = False
+    "Release units once they stop arriving instead of on even boundaries."
+    realtime_tick_arrivals_quiet_ms: float = Field(
+        default=2.0, gt=0, allow_inf_nan=False
+    )
+    "Quiet time after which waiting units leave, with follow_arrivals."
+    realtime_tick_growth_margin: float = Field(default=1.5, gt=1, allow_inf_nan=False)
+    "Headroom one more group's steps must leave in a unit before the grid adds it."
     services: list[ServiceConfig] = Field(default_factory=list)
     "The services started in this order before the pipeline, each waited for until its /v1/models answers."
 

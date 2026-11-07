@@ -42,6 +42,7 @@ from sglang_omni.pipeline.coordinator import Coordinator, CoordinatorHealth
 from sglang_omni.proto import OmniRequest, RequestState, StreamMessage
 from sglang_omni.proto.admin import AdminResponse
 from sglang_omni.proto.session import (
+    Cohort,
     OutputChunk,
     SessionIdentity,
     SessionLimits,
@@ -144,12 +145,15 @@ class Client:
         *,
         ready_timestamp_ns: int | None = None,
         ready_run_id: str | None = None,
+        tick: Cohort | None = None,
     ) -> int:
+        tick_kwargs = {} if tick is None else {"tick": tick}
         return await self.coordinator.append_session(
             session_identity,
             chunk,
             ready_timestamp_ns=ready_timestamp_ns,
             ready_run_id=ready_run_id,
+            **tick_kwargs,
         )
 
     def session_outputs(

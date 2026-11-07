@@ -28,6 +28,7 @@ from sglang_omni.admission import (
 from sglang_omni.profiler.event_recorder import get_recorder
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
+    Cohort,
     SessionIdentity,
     SessionOperation,
     TimedChunk,
@@ -255,6 +256,7 @@ class SessionUnit:
     embedding_spans: list[EmbeddingSpan] = field(default_factory=list)
     native_offset: int = 0
     prompt_length: int = 0
+    tick: Cohort | None = None
 
 
 @dataclass(kw_only=True)
