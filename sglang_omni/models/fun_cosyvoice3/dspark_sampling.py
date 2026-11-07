@@ -14,6 +14,7 @@ from typing import Protocol
 import torch
 from sglang.kernels.ops.sampling.murmur_hash import murmur_hash32
 
+from sglang_omni.models.fun_cosyvoice3.dspark_noise import draw_seeded_noise
 from sglang_omni.models.fun_cosyvoice3.model_runner import COSYVOICE3_RAS_WINDOW_SIZE
 from sglang_omni.models.fun_cosyvoice3.sglang_model import TOTAL_VOCAB_SIZE, VOCAB_SIZE
 
@@ -46,11 +47,19 @@ def seeded_exponential_noise(
     seeds: torch.Tensor, output_lengths: torch.Tensor, *, salt: int, column_count: int
 ) -> torch.Tensor:
     """Float32 Exp(1) draws fixed by each row's seed and output length."""
-    return (
-        -seeded_uniform_noise(
-            seeds, output_lengths, salt=salt, column_count=column_count
-        ).log()
-    ).float()
+    if seeds.device.type == "cuda":
+        return draw_seeded_noise(
+            seeds,
+            output_lengths,
+            exponential_columns=column_count,
+            exponential_salt=salt,
+        )[0]
+    else:
+        return (
+            -seeded_uniform_noise(
+                seeds, output_lengths, salt=salt, column_count=column_count
+            ).log()
+        ).float()
 
 
 @dataclass(kw_only=True)
