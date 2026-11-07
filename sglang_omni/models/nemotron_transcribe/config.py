@@ -37,6 +37,7 @@ class NemotronTranscribeFactoryArgs(FactoryArgs):
     compile_perception: bool | None = None
     perception_cuda_graphs: bool | None = None
     perception_compile_mode: EncoderCompileMode | None = None
+    perception_fp8: bool | None = None
 
 
 class NemotronTranscribeStageConfig(EngineStageConfig):
@@ -97,6 +98,7 @@ class NemotronTranscribePipelineConfig(PipelineConfig):
                 compile_perception=False,
                 perception_cuda_graphs=False,
                 perception_compile_mode="default",
+                perception_fp8=True,
             ),
             engine=EngineArgs(
                 max_running_requests=DEFAULT_MAX_RUNNING_REQUESTS,

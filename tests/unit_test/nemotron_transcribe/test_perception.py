@@ -2,9 +2,18 @@
 """Native frontend and encoder numerical contracts."""
 
 import librosa
+import pytest
 import torch
+from torch import nn
 
 from sglang_omni.models.nemotron_diarization.model import SortformerModules
+from sglang_omni.models.nemotron_transcribe.fp8_linear import (
+    FP8_DTYPE,
+    FP8_MAX,
+    Fp8Linear,
+    dequantize_fp8_linears,
+    fp8_gemm_supported,
+)
 from sglang_omni.models.nemotron_transcribe.hf_config import num_audio_tokens
 from sglang_omni.models.nemotron_transcribe.mel_features import (
     LogMelFrontend,
@@ -87,6 +96,117 @@ def test_frontend_stays_fp32_when_built_under_bfloat16() -> None:
     torch.testing.assert_close(featurizer.fb, checkpoint["preprocessor.featurizer.fb"])
     assert perception.encoder.asr_encoder.pre_encode.proj.weight.dtype == torch.bfloat16
     assert perception.proj.weight.dtype == torch.bfloat16
+
+
+def test_fp8_encoder_linears_keep_the_checkpoint_fp8_weights() -> None:
+    torch.manual_seed(2)
+    perception = small_perception()
+    checkpoint, names = fp8_checkpoint(perception)
+    load_perception_weights(perception, checkpoint, torch.bfloat16)
+
+    assert len(names) == 4
+    for name in names:
+        linear = perception.get_submodule(name)
+        assert isinstance(linear, Fp8Linear)
+        assert torch.equal(
+            linear.weight.view(torch.uint8),
+            checkpoint[f"{name}.weight"].view(torch.uint8),
+        )
+        assert linear.weight_scale.item() == checkpoint[f"{name}.weight_scale"].item()
+        assert linear.input_scale.item() == pytest.approx(0.01)
+    assert isinstance(perception.encoder.asr_encoder.pre_encode.proj, nn.Linear)
+    assert perception.proj.weight.dtype == torch.bfloat16
+
+
+def test_dequantized_fp8_linears_fold_the_weight_scale() -> None:
+    torch.manual_seed(3)
+    perception = small_perception()
+    checkpoint, names = fp8_checkpoint(perception)
+    load_perception_weights(perception, checkpoint, torch.bfloat16)
+
+    assert dequantize_fp8_linears(perception) == 4
+    for name in names:
+        linear = perception.get_submodule(name)
+        expected = (
+            checkpoint[f"{name}.weight"].float() * checkpoint[f"{name}.weight_scale"]
+        ).to(torch.bfloat16)
+        assert type(linear) is nn.Linear
+        assert linear.weight.dtype == torch.bfloat16
+        torch.testing.assert_close(linear.weight, expected, rtol=0, atol=0)
+
+
+def test_fp8_perception_weight_without_scale_is_rejected() -> None:
+    perception = small_perception()
+    checkpoint = dict(perception.state_dict())
+    checkpoint["proj.weight"] = checkpoint["proj.weight"].to(FP8_DTYPE)
+    with pytest.raises(ValueError, match="without a weight_scale"):
+        load_perception_weights(perception, checkpoint, torch.bfloat16)
+
+
+def test_fp8_linear_without_an_input_scale_is_rejected() -> None:
+    perception = small_perception()
+    checkpoint, names = fp8_checkpoint(perception)
+    del checkpoint[f"{names[0]}.input_scale"]
+    with pytest.raises(ValueError, match="one input_scale"):
+        load_perception_weights(perception, checkpoint, torch.bfloat16)
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or not fp8_gemm_supported(torch.device("cuda")),
+    reason="FP8 GEMMs need a CUDA GPU with compute capability 8.9 or newer",
+)
+@torch.no_grad()
+def test_fp8_linear_matches_a_dequantized_reference() -> None:
+    torch.manual_seed(5)
+    dense = nn.Linear(1280, 3840, device="cuda", dtype=torch.bfloat16)
+    fp8 = Fp8Linear.replacing(dense)
+    hidden = torch.randn(2, 37, 1280, device="cuda", dtype=torch.bfloat16)
+    weight_scale = dense.weight.float().abs().max() / FP8_MAX
+    input_scale = hidden.float().abs().max() / FP8_MAX
+    fp8.weight.copy_((dense.weight.float() / weight_scale).to(FP8_DTYPE))
+    fp8.weight_scale.copy_(weight_scale)
+    fp8.input_scale.copy_(input_scale)
+    fp8.bias.copy_(dense.bias)
+
+    actual = fp8(hidden)
+    quantized = (hidden / input_scale).clamp(-FP8_MAX, FP8_MAX).to(FP8_DTYPE)
+    reference = torch.nn.functional.linear(
+        quantized.float() * input_scale,
+        fp8.weight.float() * weight_scale,
+        dense.bias.float(),
+    )
+
+    assert actual.shape == (2, 37, 3840)
+    assert actual.dtype == torch.bfloat16
+    torch.testing.assert_close(actual.float(), reference, rtol=1e-2, atol=1e-2)
+
+
+def fp8_checkpoint(
+    perception: AudioPerception,
+) -> tuple[dict[str, torch.Tensor], list[str]]:
+    """ModelOpt's FP8 export: per-tensor FP8 weights and scales on the ASR layers."""
+    checkpoint = dict(perception.state_dict())
+    layers = perception.encoder.asr_encoder.layers
+    names = [
+        f"encoder.asr_encoder.layers.{name}"
+        for name, module in layers.named_modules()
+        if isinstance(module, nn.Linear)
+    ]
+    for name in names:
+        weight = checkpoint[f"{name}.weight"].float()
+        scale = weight.abs().max() / FP8_MAX
+        checkpoint[f"{name}.weight"] = (weight / scale).to(FP8_DTYPE)
+        checkpoint[f"{name}.weight_scale"] = scale
+        checkpoint[f"{name}.input_scale"] = torch.tensor(0.01)
+    return checkpoint, names
+
+
+def small_perception() -> AudioPerception:
+    return AudioPerception(
+        MelPreprocessor(LogMelFrontend(features=4)),
+        small_parallel_encoder(),
+        output_width=16,
+    )
 
 
 def small_parallel_encoder() -> ParallelExpertEncoder:
