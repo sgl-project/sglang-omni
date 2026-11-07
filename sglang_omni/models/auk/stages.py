@@ -21,6 +21,7 @@ from sglang_omni.models.auk.dit import AuKDit, AuKDitConfig
 from sglang_omni.models.auk.flow_matching import (
     AuKFlowMatching,
     AuKSampleItem,
+    AuKTimeModulationCache,
     fuse_hidden_states,
     request_generator,
 )
@@ -37,6 +38,7 @@ from sglang_omni.models.auk.step_cuda_graph import (
     build_step_graph_runner,
 )
 from sglang_omni.models.auk.vae import AuKVAEConfig, BigVGANFlowVAE
+from sglang_omni.models.auk.vae_decode import AuKVaeDecoder
 from sglang_omni.models.auk.weight_loader import (
     load_dit_weights,
     load_vae_weights,
@@ -81,7 +83,9 @@ def load_vae(checkpoint: str, device: str):
     config = make_runtime_config(checkpoint)
     vae = BigVGANFlowVAE(AuKVAEConfig.from_dict(config.vae_init_kwargs))
     load_vae_weights(vae, checkpoint)
-    return vae.to(device=device).eval().requires_grad_(False)
+    vae = vae.to(device=device).eval().requires_grad_(False)
+    vae.remove_weight_norm()
+    return vae
 
 
 # Order matches the ``fuse_hidden_states`` signature.
@@ -153,7 +157,9 @@ def warmup_flow(
     flow: AuKFlowMatching,
     device: torch.device,
     dtype: torch.dtype,
-    sampling: Mapping[str, int | float | tuple[float, ...] | None],
+    sampling: Mapping[
+        str, int | float | tuple[float, ...] | AuKTimeModulationCache | None
+    ],
     step_graph: AuKStepCudaGraphRunner | None = None,
 ) -> None:
     """Pay the block compile, and every declared graph capture, at startup.
@@ -164,7 +170,11 @@ def warmup_flow(
     started = time.perf_counter()
     # note(Dayuxiaoshui): the released time grid overrides steps where a
     # checkpoint declares one, and only the shapes matter here, so it goes.
-    one_step = {**sampling, "steps": 1, "t_grid": None}
+    if sampling.get("time_modulation_cache") is None:
+        one_step = {**sampling, "steps": 1, "t_grid": None}
+    else:
+        # note (BBuf): graph capture must select the same fixed-grid table as requests.
+        one_step = dict(sampling)
     # note(Dayuxiaoshui): under inference_mode like the request path, so
     # dynamo compiles once.
     with torch.inference_mode(), autocast(device, dtype):
@@ -271,6 +281,8 @@ def condition_batch(payloads, encoder, vae, fusion, device, dtype):
 def create_conditioning_executor(
     model_path: str,
     *,
+    weight_dtype: str,
+    text_cuda_graph_capture_lengths: Sequence[int],
     device: str | None = None,
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
@@ -279,10 +291,17 @@ def create_conditioning_executor(
     max_batch_wait_ms: int = 10,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     compute_dtype = resolve_dtype(field="dtype", name=dtype)
+    encoder_dtype = resolve_dtype(field="weight_dtype", name=weight_dtype)
     device = resolve_concrete_device(device, gpu_id)
     checkpoint = resolve_checkpoint(model_path)
     encoder = AuKConditionEncoder(
-        text_encoder_path, device=device, dtype=torch.bfloat16
+        text_encoder_path,
+        device=device,
+        dtype=torch.bfloat16,
+        weight_dtype=encoder_dtype,
+    )
+    encoder.capture_text_graphs(
+        text_cuda_graph_capture_lengths, compute_dtype=compute_dtype
     )
     vae = load_vae(checkpoint, str(device))
     fusion = load_fusion(checkpoint, str(device))
@@ -341,6 +360,7 @@ def create_auk_engine_executor(
     weight_dtype: str = "float32",
     enable_dit_torch_compile: bool = False,
     enable_dit_cuda_graph: bool = False,
+    enable_dit_time_modulation_cache: bool = False,
     dit_cuda_graph_capture_shapes: Sequence[Sequence[int]] | None = None,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     """Build the DiT sampling stage.
@@ -386,6 +406,20 @@ def create_auk_engine_executor(
         step_graph = build_step_graph_runner(device, dit_cuda_graph_capture_shapes)
     else:
         pass
+    if enable_dit_time_modulation_cache:
+        if backbone_dtype != torch.bfloat16:
+            raise ValueError(
+                "AuK modulation precompute requires bfloat16 backbone weights"
+            )
+        else:
+            pass
+        sampling["time_modulation_cache"] = AuKTimeModulationCache(
+            flow.transformer,
+            **sampling,
+            batch_sizes=tuple(range(1, min(max_batch_size, 2) + 1)),
+        )
+    else:
+        pass
     if enable_dit_torch_compile or step_graph is not None:
         warmup_flow(flow, device, autocast_dtype, sampling, step_graph)
     else:
@@ -409,7 +443,7 @@ def create_auk_engine_executor(
     )
 
 
-def decode_batch(payloads, vae, device):
+def decode_batch(payloads, vae, device, decoder: AuKVaeDecoder | None = None):
     started = time.perf_counter()
     states = [load_state(payload, AuKState) for payload in payloads]
     groups = defaultdict(list)
@@ -418,9 +452,12 @@ def decode_batch(payloads, vae, device):
     results = [None] * len(states)
     for indices in groups.values():
         latents = torch.stack([states[i].latent for i in indices]).to(device)
-        waveforms = vae.inference_from_latents(
-            vae.denormalize(latents).permute(0, 2, 1)
-        )
+        if decoder is None:
+            waveforms = vae.inference_from_latents(
+                vae.denormalize(latents).permute(0, 2, 1)
+            )
+        else:
+            waveforms = decoder.decode(latents)
         if not torch.isfinite(waveforms).all():
             raise RuntimeError("AuK generated audio contains NaN/Inf")
         else:
@@ -447,6 +484,8 @@ def decode_batch(payloads, vae, device):
 def create_decode_executor(
     model_path: str,
     *,
+    vae_cuda_graph_capture_shapes: Sequence[Sequence[int]],
+    enable_vae_torch_compile: bool,
     device: str | None = None,
     gpu_id: int | None = None,
     max_batch_size: int = 4,
@@ -455,8 +494,14 @@ def create_decode_executor(
     device = resolve_concrete_device(device, gpu_id)
     checkpoint = resolve_checkpoint(model_path)
     vae = load_vae(checkpoint, str(device))
+    decoder = AuKVaeDecoder(
+        vae,
+        device,
+        capture_shapes=vae_cuda_graph_capture_shapes,
+        compile_forward=enable_vae_torch_compile,
+    )
     return scheduler(
-        lambda payloads: decode_batch(payloads, vae, device),
+        lambda payloads: decode_batch(payloads, vae, device, decoder),
         device,
         max_batch_size,
         max_batch_wait_ms,
