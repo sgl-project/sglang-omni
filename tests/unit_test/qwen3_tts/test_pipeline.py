@@ -3845,7 +3845,7 @@ def expected_whole_samples(
 
 
 def run_initial_worker_pass(scheduler: Qwen3TTSStreamingVocoderScheduler) -> None:
-    scheduler.run_initial_work(scheduler.collect_initial_work())
+    scheduler.run_initial_pass()
 
 
 def run_whole_requests(
@@ -3976,45 +3976,20 @@ def test_qwen3_tts_first_chunk_behind_more_whole_requests_than_a_batch_runs_firs
     assert len(runner.calls) == 1
 
 
-def test_qwen3_tts_initial_batch_holds_only_first_chunks(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    scheduler, _, _ = whole_request_scheduler(monkeypatch)
-    scheduler.run_non_streaming_batch(
-        [whole_request_message("whole", 4)], asyncio.new_event_loop()
-    )
-    streams = [
-        (name, scheduler.create_stream_state(name))
-        for name in ("first", "second", "third")
-    ]
-    for stream in streams:
-        scheduler.initial_queue.put(stream)
-
-    batch = scheduler.collect_async_batch(
-        scheduler.initial_queue,
-        max_batch_size=2,
-        batch_wait_s=60.0,
-    )
-
-    assert batch == streams[:2]
-    assert [row.request_id for row in scheduler.whole_request_rows] == ["whole"]
-    assert scheduler.initial_queue.get_nowait() == streams[2]
-
-
-def test_qwen3_tts_first_chunks_past_one_batch_run_before_a_due_replay(
+def test_qwen3_tts_first_chunks_queued_when_a_replay_is_due_run_before_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scheduler, _, runner = whole_request_scheduler(monkeypatch)
     scheduler.initial_max_batch_size = 2
-    scheduler.run_non_streaming_batch(
-        [whole_request_message("whole", 8)], asyncio.new_event_loop()
-    )
-    run_initial_worker_pass(scheduler)
     streams = [
         (name, scheduler.create_stream_state(name))
-        for name in ("first", "second", "third")
+        for name in ("first", "second", "third", "fourth", "fifth")
     ]
-    for stream in streams:
+    scheduler.initial_queue.put(streams[0])
+    scheduler.run_non_streaming_batch(
+        [whole_request_message("whole", 4)], asyncio.new_event_loop()
+    )
+    for stream in streams[1:]:
         scheduler.initial_queue.put(stream)
     dispatched = []
     monkeypatch.setattr(
@@ -4025,8 +4000,8 @@ def test_qwen3_tts_first_chunks_past_one_batch_run_before_a_due_replay(
 
     run_initial_worker_pass(scheduler)
 
-    assert dispatched == [(streams[:2], 1), (streams[2:], 1)]
-    assert len(runner.calls) == 2
+    assert dispatched == [(streams[:2], 0), (streams[2:4], 0), (streams[4:], 0)]
+    assert len(runner.calls) == 1
 
 
 def test_qwen3_tts_whole_requests_of_different_lengths_share_a_window(
