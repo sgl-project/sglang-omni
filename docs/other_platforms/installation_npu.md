@@ -211,9 +211,7 @@ prints its help.
 
 ### Launch the server
 
-Use the NPU configuration for your model. For Docker, use the container model
-path under `/models`. See the [API server reference](apiserver_quickstart.md#start-the-server)
-for CLI flags and the [model notes](#model-notes) below for NPU examples and requirements.
+Use the NPU configuration for your model. For Docker, use the container model path under `/models`. Run `sgl-omni serve --help` for CLI flags and see the [model notes](#model-notes) below for NPU examples and requirements.
 
 ## Qwen3-ASR graph execution
 
