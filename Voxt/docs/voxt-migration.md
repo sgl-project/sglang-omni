@@ -57,7 +57,12 @@ Reinstall Voxt 1.16.3 from its release. Its dictionary, history and settings are
 | History: meeting transcripts | Left out: Voxt 2 has no meetings. |
 | Speech models in `model-storage/<owner>_<name>` | Hard-linked into the model library when every file matches the version Voxt pins (size, and SHA-256 for the large files); otherwise left alone, and Voxt downloads them as usual. |
 | Language models in `model-storage` | Left alone: Voxt no longer runs language models on this Mac (`legacyReusable` skips retired models). |
-| Settings, shortcuts, app enhancement groups, notes | Not imported. |
+| Language model services (Settings → Model, in its preferences) | Setups on the Language models page, with their model, address and generation settings. The previous Voxt's own addresses become the preset's; a custom address loses its request path (`…/v1/chat/completions` → `…/v1`), an Ollama address becomes its OpenAI-compatible `…/v1`, and a custom Gemini address (its native API) the preset's. Codex has no place in Voxt 2. A service already set up in Voxt 2 keeps its setup. |
+| Their API keys | Not imported: Voxt 1.x kept them in the Data Protection Keychain under its own keychain group (`RY2TQTYSKQ.com.voxt.Voxt`), which only an app signed with that group in a provisioning profile can read. The import's result asks to paste them again. |
+| The language model each feature used | The feature's model, when it was one of the setups that came over and the feature has none chosen in Voxt 2. |
+| Transcription, translation and rewrite prompts | The feature's Your rules, when the user wrote or changed them and the feature has none in Voxt 2; a built-in prompt (the previous Voxt saved a preset's text when one was picked: `legacyBuiltInPrompts` knows them by digest) stays behind, and `{{RAW_TRANSCRIPTION}}` goes (the input is never in the rules). |
+| The Qwen3-ASR context | The speech context (Speech models page), sent to the speech model before the dictionary's terms, when the user wrote one and Voxt 2 has none; `{{DICTIONARY_TERMS}}` goes. |
+| Shortcuts, other settings, app enhancement groups, notes | Not imported. |
 
 Terms merge by name, ignoring case: an existing term gains the aliases it lacks. An import that stops halfway, for example when Voxt is force-quit, leaves the database consistent; importing again adds what is missing.
 
@@ -69,10 +74,11 @@ Terms merge by name, ignoring case: an existing term gains the aliases it lacks.
 - **Reading without asking.** `legacyReadable` opens Voxt 1.x's `voxt.sqlite` and reads one byte. macOS lets apps signed by the same team read each other's containers, so the signed release should get through and import at once. An ad hoc build is refused with EPERM and no prompt, and falls back to the open panel. Reading a byte, not only finding the file, matters: a container can let a file be found and not opened.
 - **The open panel.** It opens on the container's `Data/Library` (`DefaultPath`), and the folder the user picks is readable for the rest of the run. Any of the three levels down to `Application Support/Voxt` works (`legacyDatabase`).
 - **The database** is read read-only together with its `-wal` and `-shm`: Voxt 1.x's rows can live only in the WAL, and opening the main file alone does not see them.
+- **Settings.** `legacy_settings.go` reads Voxt 1.x's preferences (`Library/Preferences/com.voxt.Voxt.plist`, binary) with `plutil` (`legacyPreference`): `remoteLLMProviderConfigurations`, `featureSettings` and `mlxLocalASRTuningSettings`, each a JSON document in a string. `parseLegacySettings` turns them into setups, prompts and the speech context, and `apply` fills only what Voxt 2 lacks.
 - **Models.** `reuseLegacyModels` looks for each catalogue model that `legacyReusable` allows (not borrowed, not retired) under Voxt 1.x's `model-storage`, checks every file, hard-links them into the library and claims them (`Manager.Use`).
 - **The cards.** The setup guide's welcome step shows its card on a fresh install. `offerLegacy` posts the sidebar card at start when the guide will not open, once: the document `legacy-import-offered` records that it was posted.
 - **Tests and fake homes.** `VOXTNEW_LEGACY_HOME` replaces the home folder the container is looked for in, for tests that run the app with a fake `HOME`.
 
 ## Telling Voxt 1.x users
 
-Voxt 1.x shows notices from `https://voxt.actnow.dev/api/app/notifications` (the `voxt-service` repo) in Settings → Notifications, as plain text. A notice is the way to reach users who never visit GitHub: tell them to quit Voxt 1.x before installing Voxt 2, and that Voxt 2 imports their dictionary and history.
+Voxt 1.x shows notices from `https://voxt.actnow.dev/api/app/notifications` (the `voxt-service` repo) in Settings → Notifications, as plain text. A notice is the way to reach users who never visit GitHub: tell them to quit Voxt 1.x before installing Voxt 2, and that Voxt 2 imports their dictionary, history and settings (their language models' keys excepted).

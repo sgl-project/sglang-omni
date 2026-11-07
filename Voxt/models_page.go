@@ -70,6 +70,8 @@ type modelsState struct {
 	modelAdvanced bool
 	modelKeepSel  string
 	modelKeepFor  string
+	// speechContext is the Speech context field (models_context.go).
+	speechContext speechContextState
 }
 
 // openModels reads the models on disk and sets up the local models,

@@ -6,7 +6,9 @@ package main
 // folder in an open panel, so the import asks for one pick of the
 // container's Data/Library, preset in the panel; it then reads the
 // database there read-only, with its -wal and -shm, and merges the terms
-// like a file import. Nothing in the old app's data is changed.
+// like a file import, then the history, the settings that have a place
+// here (legacy_settings.go) and the speech models. Nothing in the old
+// app's data is changed.
 
 import (
 	"context"
@@ -18,7 +20,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -30,6 +31,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -230,14 +232,12 @@ func legacyReusable(mod models.Model) bool {
 // legacyModelRoots are the folders the previous Voxt kept its models in:
 // model-storage in its Application Support folder (voxtDir), and the
 // folder the user chose instead in its Settings → Model, which its
-// preferences keep as modelStorageRootPath (Library/Preferences, readable
-// when the import reads the whole Data/Library). plutil reads the binary
-// plist; without it, or without the key, only model-storage is looked in.
+// preferences keep as modelStorageRootPath (legacyPreference, readable
+// when the import reads the whole Data/Library); without it only
+// model-storage is looked in.
 func legacyModelRoots(voxtDir string) []string {
 	roots := []string{filepath.Join(voxtDir, "model-storage")}
-	prefs := filepath.Join(voxtDir, "..", "..", "Preferences", legacyBundleID+".plist")
-	out, err := exec.Command("/usr/bin/plutil", "-extract", "modelStorageRootPath", "raw", "-o", "-", prefs).Output()
-	if p := strings.TrimSpace(string(out)); err == nil && filepath.IsAbs(p) && p != roots[0] {
+	if p := legacyPreference(voxtDir, "modelStorageRootPath"); filepath.IsAbs(p) && p != roots[0] {
 		roots = append(roots, p)
 	}
 	return roots
@@ -379,7 +379,7 @@ func (a *app) offerLegacy() {
 		return
 	}
 	a.notes.Post(core.Notification{ID: legacyOffered, Title: i18n.T("The previous Voxt is on this Mac"),
-		Body: i18n.T("Bring its dictionary and history over."), Link: linkImportLegacy})
+		Body: i18n.T("Bring its dictionary, history and settings over."), Link: linkImportLegacy})
 }
 
 // importLegacy merges the previous Voxt's data in: at once when it reads
@@ -396,7 +396,7 @@ func (a *app) importLegacy() {
 	}
 	go func() {
 		files, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.win, Title: i18n.T("Import from the previous Voxt"),
-			Message:     i18n.T("This is the previous Voxt's data. Click Import to bring its dictionary and history over; the previous Voxt keeps everything as it is."),
+			Message:     i18n.T("This is the previous Voxt's data. Click Import to bring its dictionary, history and settings over; the previous Voxt keeps everything as it is."),
 			ButtonLabel: i18n.T("Import"), DefaultPath: lib, Directory: true})
 		if err != nil || len(files) == 0 {
 			return
@@ -407,7 +407,7 @@ func (a *app) importLegacy() {
 
 func (a *app) importLegacyFrom(picked string) {
 	a.dv.importing = true
-	repo, hist, mods, docs := a.lib.store.Dictionary(), a.lib.store.History(), a.models, a.lib.store.Documents()
+	repo, hist, mods, docs, prefs := a.lib.store.Dictionary(), a.lib.store.History(), a.models, a.lib.store.Documents(), a.settings
 	a.async(func() {
 		done := false // the dictionary came over: the card offers the import again, quietly
 		msg := func() string {
@@ -454,7 +454,23 @@ func (a *app) importLegacyFrom(picked string) {
 			if n > 0 {
 				msg += " " + i18n.T("History: %d entries added.", n)
 			}
-			if ids, bytes := reuseLegacyModels(ctx, mods, filepath.Dir(path)); len(ids) > 0 {
+			voxtDir := filepath.Dir(path)
+			l := parseLegacySettings(legacyPreference(voxtDir, "remoteLLMProviderConfigurations"),
+				legacyPreference(voxtDir, "featureSettings"), legacyPreference(voxtDir, "mlxLocalASRTuningSettings"))
+			var services []settings.Provider
+			prompts := 0
+			if err := prefs.Update(ctx, func(s *settings.Settings) { services, prompts = l.apply(s) }); err != nil {
+				log.Printf("legacy import: settings: %v", err)
+				services, prompts = nil, 0 // not saved: nothing came over
+			}
+			if len(services) > 0 {
+				msg += " " + i18n.N(len(services), "%d language model service came over: paste its key again on the Language models page.",
+					"%d language model services came over: paste their keys again on the Language models page.", len(services))
+			}
+			if prompts > 0 {
+				msg += " " + i18n.N(prompts, "%d prompt came over.", "%d prompts came over.", prompts)
+			}
+			if ids, bytes := reuseLegacyModels(ctx, mods, voxtDir); len(ids) > 0 {
 				msg += " " + i18n.N(len(ids), "%d model (%s) came over too: no download needed.", "%d models (%s) came over too: no download needed.", len(ids), uitext.HumanBytes(bytes))
 			}
 			return msg
