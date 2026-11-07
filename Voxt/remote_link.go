@@ -198,10 +198,24 @@ func (a *app) syncRemote() {
 	if a.remote == nil {
 		return
 	}
-	a.remoteHTTP.Store(a.networkFor(a.prefs).Client)
+	a.remoteHTTP.Store(unboundedHeaders(a.networkFor(a.prefs).Client))
 	a.remote.SetReady(local.LLM, providers.Ready(a.prefs, func(id string) bool { return a.hasKey(local.LLM, id) }))
 	a.remote.SetReady(local.ASR, providers.SpeechReady(a.prefs, func(id string) bool { return a.hasKey(local.ASR, id) }))
 	a.checkModels() // shell_notices.go: a ready remote model is a model
+}
+
+// unboundedHeaders is c without the downloads' 30 s wait for an answer's
+// headers: an upload service answers a whole recording only once it is
+// recognised, which can take minutes. The session's deadline, or the
+// request's own timeout, bounds the request instead.
+func unboundedHeaders(c *http.Client) *http.Client {
+	t, ok := c.Transport.(*http.Transport)
+	if !ok {
+		return c
+	}
+	t = t.Clone()
+	t.ResponseHeaderTimeout = 0
+	return &http.Client{Transport: t}
 }
 
 // loadKeyMasks reads the keys of accounts from the keyring, in the

@@ -87,6 +87,11 @@ func TestRemoteSpeechUpload(t *testing.T) {
 	if es := a.history(); len(es) != 1 || es[0].ASRProvider != "openai" {
 		t.Errorf("history %+v", es)
 	}
+	// The upload is answered once recognised: the remote services' client
+	// does not give up after the downloads' 30 s wait for the headers.
+	if rt, ok := a.remoteHTTP.Load().Transport.(*http.Transport); !ok || rt.ResponseHeaderTimeout != 0 {
+		t.Errorf("the remote services' client bounds the wait for an answer")
+	}
 }
 
 // TestRemoteSpeechErrorKeepsNoKey: an upload service that quotes the key
