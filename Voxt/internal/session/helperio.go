@@ -89,3 +89,9 @@ func (h HelperText) Selection(ctx context.Context, p proto.SelectionParams) (pro
 func (h HelperText) Frontmost(ctx context.Context) (proto.App, error) {
 	return call[proto.App](ctx, h.H, proto.MethodAppFrontmost, nil)
 }
+
+// Read reads a range of the focused field of an app in front
+// (textio.read; dictionary learning).
+func (h HelperText) Read(ctx context.Context, p proto.ReadParams) (proto.ReadResult, error) {
+	return call[proto.ReadResult](ctx, h.H, proto.MethodTextRead, p)
+}

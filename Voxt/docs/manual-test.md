@@ -493,6 +493,33 @@
 - **应看到**：打开的 CSV 里中文不乱码；导入后提示“已导入：新增 1 个，更新 1 个。”，同名的词条合并了别名。
 - 做完把两个勾选都打开。
 
+**6.4 辅助进程读输入框（`textio.read`，约 10 分钟）**
+
+只测辅助进程读文字的能力：app 里还没有地方用它，以后的“从我的改正中学习”会用。从终端直接启动包里的辅助进程，给它发请求。这时系统按终端检查辅助功能权限：终端不在 系统设置 → 隐私与安全性 → 辅助功能 里、或者没打开，回答就是 `permission_denied`，这一节跳过并记下来，不要为它去点授权弹窗。
+- **准备**：在终端里定义这个函数（`APP` 换成你的 Voxt.app）：
+
+  ```sh
+  APP=~/code/VoxtNew/build/darwin-arm64/Voxt.app
+  readfield() { # 等 ${1:-5} 秒，然后读两次前台 App 焦点输入框的前 4000 个字符
+    { echo '{"id":"1","method":"helper.hello","params":{"protocol":1,"app":"manual"}}'; sleep "${1:-5}"
+      pid=$(lsappinfo info -only pid "$(lsappinfo front)" | tr -dc 0-9)
+      for i in 2 3; do echo '{"id":"'$i'","method":"textio.read","params":{"pid":'$pid',"range":{"location":0,"length":4000}}}'; sleep 1; done
+    } | "$APP/Contents/Resources/helper/voxtnew-helper" 2>/dev/null | grep '"id":"[23]"'
+  }
+  ```
+- **做**：每个 App 里先放一段有中文、英文和 emoji 的文字（比如“会议纪要 Claude Code 👍”）。在终端里运行 `readfield`，5 秒内切到那个 App 并点进输入框，等终端出两行回答：
+  1. TextEdit 的文稿。
+  2. 备忘录里的一条备忘录。
+  3. Chrome 里网页的多行输入框（textarea，比如 GitHub 的评论框）。
+  4. Slack 的消息框、VS Code 的编辑器，各做两次。先退出 Voxt，重新打开 Slack（VS Code），运行 `sleep 5; readfield 0`，5 秒内切过去并点进输入框：辅助进程启动时它已经在前台，不会给它设 `AXManualAccessibility`。然后再运行一次 `readfield`：切过去时辅助进程会给它设上。
+  5. Safari 或 Chrome 里一个登录页的密码框。
+  6. 终端：菜单 终端 → 安全键盘输入 打开，运行 `readfield`，不要切走（读的是终端自己）。做完把安全键盘输入关掉。
+- **应看到**：
+  - 1–3：`text` 是输入框里的文字（超过 4000 个字符时是前 4000 个），emoji 完整；`range` 是 `{"location":0,"length":N}`，N 和 `text` 一样长；`length` 是全文的长度。同一个输入框连读两次，`element` 应该是同一个数。
+  - 4：两次各记一笔：读到了文字，还是 `"error":"unreadable"`。
+  - 5、6：`"error":"secure"`，没有 `text`。
+- **不对时看**：`"error":"not front"`：5 秒内没切过去，或者焦点在别的进程的面板里；`"error":"no focus"`：没点进输入框。两次的 `element` 不一样时，记下是哪个 App：以后学习改正时会把它当成换了一个输入框。
+
 ---
 
 ## 7. 模型进程：删除、崩溃、空闲卸载、退出、内存（约 20 分钟，含两段等待）
