@@ -17,6 +17,9 @@ from sglang_omni.client import Client, GenerateRequest, Message, SamplingParams
 from sglang_omni.serve.realtime.audio_buffer import RealtimeAudioBuffer
 from sglang_omni.serve.realtime.events import (
     ClientEvent,
+    ConversationItemCreate,
+    ConversationItemDelete,
+    ConversationItemRetrieve,
     ConversationItemTruncate,
     InputAudioBufferAppend,
     InputAudioBufferClear,
@@ -51,6 +54,9 @@ HANDLERS: dict[type[ClientEvent], str] = {
     InputAudioBufferAppend: "handle_audio_append",
     InputAudioBufferClear: "handle_audio_clear",
     ResponseCancel: "handle_response_cancel",
+    ConversationItemCreate: "handle_conversation_item_create",
+    ConversationItemRetrieve: "handle_conversation_item_retrieve",
+    ConversationItemDelete: "handle_conversation_item_delete",
     ConversationItemTruncate: "handle_conversation_item_truncate",
 }
 
@@ -77,6 +83,30 @@ class ConversationItem:
     role: str  # "user" | "assistant"
     text: str
     item_id: str | None = None
+
+
+def conversation_item_payload(item: ConversationItem) -> dict[str, object]:
+    """Render one stored item in the OpenAI Realtime item shape."""
+    assert item.item_id is not None, "A stored conversation item must have an id."
+    content_type = "input_text" if item.role == "user" else "text"
+    return {
+        "id": item.item_id,
+        "object": "realtime.item",
+        "type": "message",
+        "status": "completed",
+        "role": item.role,
+        "content": [{"type": content_type, "text": item.text}],
+    }
+
+
+def conversation_item_index(
+    conversation: list[ConversationItem], item_id: str
+) -> int | None:
+    """Return the index of item_id in conversation, or None."""
+    return next(
+        (index for index, item in enumerate(conversation) if item.item_id == item_id),
+        None,
+    )
 
 
 @dataclass
@@ -546,6 +576,123 @@ class RealtimeSession:
             del self.cancelled_assistant_item_ids[oldest_item_id]
         else:
             pass
+
+    async def handle_conversation_item_create(
+        self, event: ConversationItemCreate
+    ) -> None:
+        if event.item.type != "message":
+            await self.send_error(
+                "invalid_request_error",
+                "invalid_item_type",
+                "Only message items are supported.",
+            )
+            return
+        else:
+            pass
+
+        if event.item.role not in {"user", "assistant"}:
+            await self.send_error(
+                "invalid_request_error",
+                "invalid_item_role",
+                "item.role must be 'user' or 'assistant'.",
+            )
+            return
+        else:
+            pass
+
+        if len(event.item.content) != 1:
+            await self.send_error(
+                "invalid_request_error",
+                "invalid_item_content",
+                "Exactly one input_text content part is required.",
+            )
+            return
+        else:
+            pass
+        content = event.item.content[0]
+        text = content.text
+        if content.type != "input_text" or text is None or not text:
+            await self.send_error(
+                "invalid_request_error",
+                "invalid_item_content",
+                "Only a non-empty input_text content part is supported.",
+            )
+            return
+        else:
+            pass
+
+        if event.previous_item_id is None:
+            insert_index = len(self.conversation)
+        else:
+            previous_index = conversation_item_index(
+                self.conversation, event.previous_item_id
+            )
+            if previous_index is None:
+                await self.send_error(
+                    "invalid_request_error",
+                    "item_not_found",
+                    f"Item {event.previous_item_id!r} was not found.",
+                )
+                return
+            else:
+                pass
+            insert_index = previous_index + 1
+
+        item = ConversationItem(
+            role=event.item.role,
+            text=text,
+            item_id=new_id("item"),
+        )
+        self.conversation.insert(insert_index, item)
+        await self.send(
+            make_event(
+                "conversation.item.created",
+                previous_item_id=event.previous_item_id,
+                item=conversation_item_payload(item),
+            )
+        )
+
+    async def handle_conversation_item_retrieve(
+        self, event: ConversationItemRetrieve
+    ) -> None:
+        item_index = conversation_item_index(self.conversation, event.item_id)
+        if item_index is None:
+            await self.send_error(
+                "invalid_request_error",
+                "item_not_found",
+                f"Item {event.item_id!r} was not found.",
+            )
+            return
+        else:
+            pass
+        item = self.conversation[item_index]
+        await self.send(
+            make_event(
+                "conversation.item.retrieved",
+                item=conversation_item_payload(item),
+            )
+        )
+
+    async def handle_conversation_item_delete(
+        self, event: ConversationItemDelete
+    ) -> None:
+        item_index = conversation_item_index(self.conversation, event.item_id)
+        if item_index is None:
+            await self.send_error(
+                "invalid_request_error",
+                "item_not_found",
+                f"Item {event.item_id!r} was not found.",
+            )
+            return
+        else:
+            pass
+        self.conversation.pop(item_index)
+        await self.send(
+            make_event(
+                "conversation.item.deleted",
+                item_id=event.item_id,
+            )
+        )
 
     async def handle_conversation_item_truncate(
         self, event: ConversationItemTruncate
