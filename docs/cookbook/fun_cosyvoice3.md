@@ -220,7 +220,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 ### Streaming
 
-Incremental Flow + HiFT decoding supports streaming. Set `stream: true` and `response_format: "pcm"` to emit audio before AR generation completes. The vocoder uses CosyVoice3's causal chunk loop: 25 speech tokens per hop (~1 s of audio). The first PCM chunk is emitted once AR produces `28 + prompt_pad` tokens (where `prompt_pad` rounds the Flow prompt length to a 25-token multiple). Later hops grow from 25 to 50 to 100 tokens in vocoder to increase batching efficiency without affecting audio continuity or real-time factor, only the decoding granularity changes, not the total synthesis time. The scheduler processes at most one hop per request per step to prevent backlogged streams from monopolizing the GPU. Non-streaming requests decode the entire utterance in one pass.
+Incremental Flow + HiFT decoding supports streaming. Set `stream: true` and `response_format: "pcm"` to emit audio before AR generation completes. The vocoder uses CosyVoice3's causal chunk loop: 25 speech tokens per hop (~1 s of audio). The first causal PCM chunk becomes eligible after AR produces 28 generated tokens (25 for the hop and 3 for lookahead); Flow prompt tensors are padded separately to align the reference to a hop boundary. Later hops grow from 25 to 50 to 100 tokens in vocoder to increase batching efficiency without affecting audio continuity or real-time factor, only the decoding granularity changes, not the total synthesis time. The scheduler processes at most one hop per request per step to prevent backlogged streams from monopolizing the GPU. Non-streaming requests decode the entire utterance in one pass.
 
 Optional serving knobs (vocoder factory):
 
@@ -260,7 +260,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 | `repetition_penalty` | `1.21` | Repetition penalty |
 | `max_new_tokens` | `min(2048, 20x target text tokens)` | Maximum number of generated speech tokens. If omitted, derived from the target text length (capped at 2048); stop tokens are also suppressed until at least `2x` that length has been generated |
 | `seed` | `null` | Random seed for reproducibility |
-| `stream` | `false` | Incremental causal Flow + HiFT; first PCM chunk after `28 + prompt_pad` speech tokens (`prompt_pad` rounds the prompt length to a multiple of 25) |
+| `stream` | `false` | Incremental causal Flow + HiFT; first causal PCM chunk after 28 generated speech tokens; reference hop alignment is applied to Flow prompt tensors |
 
 ## Serving Optimization
 
@@ -463,6 +463,23 @@ The c16 pooled first-chunk result has 0.34 percentage points of margin to the 5%
 
 Qwen3-ASR-1.7B evaluated all 8,080 full-corpus c16 outputs. Pooled Chinese corpus CER was 0.6625% without draft and 0.6637% with draft: 560 versus 561 errors over 84,532 reference characters per side. There were zero skipped samples and zero samples above 50% error. This completes the Chinese transcription check for this configuration; full model CI and default-on rollout remain separate roadmap work.
 
+### Profiling First Audio
+
+The request profiler records `vocoder_launch_start`, `vocoder_flow_submitted`, `vocoder_hift_submitted` and `vocoder_audio_ready` for each participating request. The shared profiler report pairs these events into Flow submission, HiFT submission and audio completion intervals. Record a small streaming workload separately from throughput measurements:
+
+```bash
+curl -X POST http://localhost:8000/start_request_profile \
+  -H 'Content-Type: application/json' \
+  -d '{"run_id":"cosyvoice-first-audio","event_dir":"/tmp/cosyvoice-events","event_buffer_capacity":131072}'
+# Run a small streaming workload, then stop recording.
+curl -X POST http://localhost:8000/stop_request_profile \
+  -H 'Content-Type: application/json' \
+  -d '{"run_id":"cosyvoice-first-audio"}'
+python -m sglang_omni.profiler /tmp/cosyvoice-events --format table
+```
+
+The events record host boundaries without adding CUDA synchronization. Submission intervals include host work and CUDA waits; the interval from HiFT submission to audio readiness includes deferred completion and may overlap the next hop. Use a GPU timeline to separate device execution from host scheduling. Check the report's event-storage completeness before interpreting the intervals; increase `event_buffer_capacity` and recollect when events were dropped.
+
 ### Zero-shot Voice Cloning
 
 CosyVoice3 clones a voice from a short reference audio clip. `ref_audio` can be a local
@@ -554,14 +571,7 @@ Incremental Flow + HiFT decoding is enabled. Set `stream: true` and use
 `response_format: "pcm"` so the server can emit audio before speech-token
 generation finishes.
 
-The vocoder follows CosyVoice3's causal chunk loop: 25 speech tokens per hop
-(`pre_lookahead_len=3`, 25 Hz → about 1 s of audio per chunk). The first PCM
-chunk is emitted once the AR stage has produced `28 + prompt_pad` tokens,
-where `prompt_pad` (0–24) rounds the Flow prompt-token length up to a
-multiple of 25. Later hops grow 25 → 50 → 100 tokens like the upstream
-`CosyVoice3Model` (default; keep growth on). Each scheduler step runs at most
-one hop per request so a backlogged stream cannot monopolize the GPU.
-Non-streaming requests still use the buffered Flow + HiFT path for the whole utterance.
+The vocoder follows CosyVoice3's causal chunk loop: 25 speech tokens per hop (`pre_lookahead_len=3`, 25 Hz → about 1 s of audio per chunk). The first causal PCM chunk becomes eligible once the AR stage has produced 28 generated tokens. Flow prompt tensors are padded separately to a multiple of 25. Later hops grow 25 → 50 → 100 tokens like the upstream `CosyVoice3Model` (default; keep growth on). Each scheduler step runs at most one hop per request so a backlogged stream cannot monopolize the GPU. Non-streaming requests still use the buffered Flow + HiFT path for the whole utterance.
 
 Optional serving knobs (vocoder factory; keep `tts_engine.factory.token_hop_len`
 in sync if you change the hop):
@@ -602,7 +612,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 | `repetition_penalty` | `1.21` | Repetition penalty |
 | `max_new_tokens` | `min(2048, 20x target text tokens)` | Maximum number of generated speech tokens. If omitted, derived from the target text length (capped at 2048); stop tokens are also suppressed until at least `2x` that length has been generated |
 | `seed` | `null` | Random seed for reproducibility |
-| `stream` | `false` | Incremental causal Flow + HiFT; first PCM chunk after `28 + prompt_pad` speech tokens (`prompt_pad` rounds the prompt length to a multiple of 25) |
+| `stream` | `false` | Incremental causal Flow + HiFT; first causal PCM chunk after 28 generated speech tokens; reference hop alignment is applied to Flow prompt tensors |
 
 Sampling is repetition-aware, as in upstream CosyVoice: a sampled speech token that already appears among the last 10 generated tokens is masked and redrawn once from the full distribution at the request temperature. Greedy requests (`top_k = 1`) sample without the redraw.
 

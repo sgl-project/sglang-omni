@@ -90,6 +90,35 @@ def test_reconstruct_timelines_sorts_per_request(tmp_path: Path) -> None:
     assert rel[-1]["t_rel_ms"] == 0.004
 
 
+def test_vocoder_intervals_pair_overlapping_hops_in_submission_order(
+    tmp_path: Path,
+) -> None:
+    """The next hop may be submitted before the previous hop's audio is read."""
+    boundaries = [
+        ("vocoder_launch_start", 0),
+        ("vocoder_flow_submitted", 10),
+        ("vocoder_hift_submitted", 20),
+        ("vocoder_launch_start", 30),
+        ("vocoder_flow_submitted", 40),
+        ("vocoder_hift_submitted", 50),
+        ("vocoder_audio_ready", 60),
+        ("vocoder_audio_ready", 70),
+    ]
+    write_events(
+        tmp_path / "events_vocoder_1.jsonl",
+        [
+            make_ev("r1", "vocoder", event, timestamp_milliseconds * 1_000_000)
+            for event, timestamp_milliseconds in boundaries
+        ],
+    )
+    rows = {row.interval_name: row for row in stage_breakdown(source=tmp_path)}
+    completion = rows["vocoder_hift_submitted->vocoder_audio_ready"]
+    assert completion.count == 2
+    assert completion.total_ms == 60
+    assert rows["vocoder_launch_start->vocoder_flow_submitted"].total_ms == 20
+    assert rows["vocoder_flow_submitted->vocoder_hift_submitted"].total_ms == 20
+
+
 def test_timeline_merges_multiple_files(tmp_path: Path) -> None:
     file_a = tmp_path / "events_coordinator_1.jsonl"
     file_b = tmp_path / "events_encoder_2.jsonl"
