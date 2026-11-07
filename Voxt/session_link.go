@@ -102,6 +102,7 @@ type answerCard struct {
 const (
 	actionNone        = ""
 	actionModels      = "models"
+	actionLanguage    = "language" // the Language models page (remote_page.go)
 	actionPermissions = "permissions"
 	actionHelper      = "helper"
 	actionRetry       = "retry" // the session's entry, in History (history_retry.go)
@@ -252,6 +253,9 @@ func (a *app) sessionEnded(s session.Snapshot) {
 		a.historyChanged() // a try keeps nothing, but the pages may show it
 		return
 	}
+	if a.prefs.General.CopyResult && s.Card && s.Result != "" && s.State != session.Failed {
+		a.copyRecent(s.Result) // tray.go: the clipboard keeps each result
+	}
 	switch {
 	case a.answer.open && a.answer.redo != "" && a.answer.redo == s.ID:
 		a.endRedo(s)
@@ -316,6 +320,9 @@ func (a *app) noticeAction(action string) {
 	case actionModels:
 		a.showMainWindow()
 		a.navigate(modelsPath)
+	case actionLanguage:
+		a.showMainWindow()
+		a.navigate(remotePath)
 	case actionPermissions:
 		a.showMainWindow()
 		a.navigate("/settings/permissions")

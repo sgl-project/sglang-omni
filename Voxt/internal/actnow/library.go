@@ -1,7 +1,7 @@
 package actnow
 
-// The model library moved to ~/Library/Application Support/ActNow/models/hub
-// (family spec v1.0.9, actnowkit v0.8.0). Time Machine leaves it out
+// The model library ($HUB: SGLang Omni/models by default, models.HubIn;
+// the family's default library ActNow/models/hub up to 2.0.0). Time Machine leaves it out
 // unless the family's models.backup is on; VoxtNew's claims file, lost
 // with the family folder, is written again when VoxtNew comes to the
 // front (internal/models Manager.Migrate).

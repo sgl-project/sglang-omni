@@ -18,10 +18,11 @@ import (
 //	trayState         tray.go         the menu bar icon
 //	permissionsState  permissions.go  Settings → Permissions
 //	familyState       family.go       the ActNow family (internal/actnow): the other apps, shared settings
-//	modelsState       models_page.go  the Local models page, the local models (internal/local)
-//	memoryState       models_memory.go  the loaded models' memory (the Local models page)
+//	modelsState       models_page.go  the Speech models page, the local models (internal/local)
+//	memoryState       models_memory.go  the loaded models' memory (the Speech models page)
 //	omniState         models_omni.go  the speech models' runtime (internal/omni)
 //	llmState          llm_link.go     the language models' runtime (internal/llmrt)
+//	remoteState       remote_link.go  the remote language models, the Language models page
 //	sessionState      session_link.go  sessions, shortcuts, the answer card
 //	overlayState      overlay.go      the recording overlay
 //	transcribeState   feature_page.go  the feature pages (Transcribe, Translate, Rewrite)
@@ -57,6 +58,7 @@ type app struct {
 	memoryState
 	omniState
 	llmState
+	remoteState
 	sessionState
 	shortMemoryState
 	overlayState

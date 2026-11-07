@@ -45,8 +45,9 @@ type Model struct {
 	// ID is the model's stable id in the catalogue; settings.Feature's
 	// ASR and LLM hold it ("" there: the first installed).
 	ID string
-	// Name is what the UI shows: a plain description of what it is good
-	// at, not its family, size or quantisation (the plan's model policy).
+	// Name is what the UI shows: the model's family, size and
+	// quantisation ("Qwen3-ASR 1.7B (8bit)"), or a remote model's service
+	// and model ("OpenAI · gpt-4.1-mini", internal/providers).
 	Name string
 	// Features are the only features it serves ("translate"), nil for
 	// every one (ForFeature).

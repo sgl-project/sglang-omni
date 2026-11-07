@@ -6,6 +6,8 @@
 
 A lean macOS voice input app on **local models only**: 转录 Transcribe, 翻译 Translate, 转写 Rewrite, 应用增强 App enhancement and the 词典 Dictionary, with the history, overlay, shortcuts, menu bar, setup guide, settings and updates. No remote models, meetings, notes, file transcription or sync. It is Auralink (the same author's Go/MyGo app on remote models) with its remote layer replaced, plus the Omni behaviour of the old Swift Voxt (removed from this repository).
 
+*2.1 (2026-11-06) changed two of these decisions, after the team's feedback on 2.0.0: the language models are remote services the user sets up (OpenAI-compatible, Ollama on this Mac included; the local ones are retired), and the UI names each model by its family, size and quantisation (behavior.md 3.32–3.34).*
+
 ## Runtimes
 
 - **Speech recognition and VAD**: sglang-omni's native MLX servers (`sglang_omni_mlx/native`, C++, no Python): `qwen3_asr_server` (also `--model-kind silero_vad`) and its siblings. HTTP `/v1/audio/transcriptions`, WebSocket `/v1/realtime`, `/v1/vad/stream`, `/v1/vad/speech_timestamps`; models pinned by revision and sha256 (`ci/models.json`). One process per model on a loopback port, started on first use, ready handshake on stdout, unloaded when idle, restarted after a crash, all stopped on quit (Voxt's `OmniASRRuntime.swift`).

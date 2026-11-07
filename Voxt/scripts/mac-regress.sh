@@ -22,7 +22,7 @@
 # --full runs the whole eval (about 20 minutes more) and writes its tables
 # to build/regress/eval; --keep keeps the app (build/darwin-arm64). No
 # microphone, speaker, window, key or clipboard: the helper plays files.
-# Another voxtnew-llm or qwen3_asr_server running (another thread's work)
+# Another voxtnew-llm, qwen3_asr_server or silero_vad_server running (another thread's work)
 # skews the times: the script says so.
 set -uo pipefail
 
@@ -64,7 +64,7 @@ done
 mkdir -p "$OUT/runtime"
 cp -Rc "$R/omni" "$OUT/runtime/omni" && cp -Rc "$R/llm" "$OUT/runtime/llm" || exit 2
 ours="$OUT|$ROOT/build/darwin-arm64"
-others="$(pgrep -fl 'voxtnew-llm|qwen3_asr_server' | grep -vE "$ours" || true)"
+others="$(pgrep -fl 'voxtnew-llm|qwen3_asr_server|silero_vad_server' | grep -vE "$ours" || true)"
 if [[ -n "$others" ]]; then
   echo "note: other model processes are running; the times are skewed:"
   echo "$others" | cut -c1-160
@@ -92,7 +92,7 @@ step() {
   local note
   note="$(grep -E "$grep" "$OUT/$name.log" | tail -1 | sed 's/^[[:space:]]*//' | cut -c1-90)"
   local left
-  left="$(pgrep -fl 'qwen3_asr_server|voxtnew-llm|voxtnew-helper' | grep -E "$ours" || true)"
+  left="$(pgrep -fl 'qwen3_asr_server|silero_vad_server|voxtnew-llm|voxtnew-helper' | grep -E "$ours" || true)"
   if [[ -n "$left" ]]; then
     status=1
     note="left running: $(echo "$left" | awk '{print $1}' | tr '\n' ' ')"
@@ -168,7 +168,7 @@ smoke() {
   wait $pid || return 1
   sleep 1
   local left
-  left="$(pgrep -fl 'qwen3_asr_server|voxtnew-llm|voxtnew-helper' | grep -F "$ROOT/build/darwin-arm64/Voxt.app" || true)"
+  left="$(pgrep -fl 'qwen3_asr_server|silero_vad_server|voxtnew-llm|voxtnew-helper' | grep -F "$ROOT/build/darwin-arm64/Voxt.app" || true)"
   if [[ -n "$left" ]]; then
     echo "smoke: FAIL left running after quit: $left"
     return 1

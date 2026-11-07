@@ -17,6 +17,8 @@
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2026 the SGLang-Omni Team. Licensed under the Apache License 2.0.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Voxt records your voice while you use its shortcut and recognises it on this Mac: the audio never leaves it.</string>
+	<string>Voxt records your voice while you use its shortcut and recognises it on this Mac, or with the speech service you set up.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>System dictation recognises your voice with macOS's own speech recognition, on this Mac: the audio never leaves it.</string>
 </dict>
 </plist>

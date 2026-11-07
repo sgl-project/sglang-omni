@@ -95,6 +95,7 @@ func snapshotsMain(t *testing.T, out string) {
 		transcribeShots(a, tt, save)     // the Try area's states (feature_page_test.go)
 		appEnhanceShots(a, fs, tt, save) // appenhance_page_test.go
 		dictShots(t, a, save)            // dictionary_page_test.go
+		speechShots(a, tt, save)         // remote_speech_e2e_test.go
 		// The settings dialog, section by section.
 		a.updateSettings(func(s *settings.Settings) {
 			s.General.OtherLanguages = []string{"zh", "en", "ja"} // the main language's is not shown

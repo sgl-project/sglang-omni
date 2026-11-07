@@ -17,6 +17,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/appbundle"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 )
@@ -94,8 +95,16 @@ func (a *app) helperStatus() helper.Status { return a.hstatus }
 // helperChanged keeps the snapshot; a helper that just became ready is
 // asked what Settings → Permissions shows.
 func (a *app) helperChanged(st helper.Status) {
-	was := a.hstatus.State
+	was, couldHear := a.hstatus.State, a.hstatus.Has(proto.MethodSpeechRecognize)
 	a.hstatus = st
+	if canHear := st.Has(proto.MethodSpeechRecognize); canHear != couldHear {
+		var h dictation.Caller
+		if canHear {
+			h = a.host.sup
+		}
+		a.dictation.SetHelper(h)
+		a.checkModels() // shell_notices.go: System dictation came or went
+	}
 	a.muteHelperChanged(was, st) // mute_link.go: a new helper undoes an earlier one's mutes first
 	if st.State == helper.Ready && was != helper.Ready {
 		a.recheckPermissions() // permissions.go
