@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "ming_tts/ming_tts_generator.h"
 
-#include <CoreFoundation/CoreFoundation.h>
-
 #include <algorithm>
 #include <array>
 #include <cassert>
 #include <stdexcept>
+
+#include "common/text.h"
 
 namespace ming_tts {
 namespace mx = mlx::core;
@@ -15,31 +15,6 @@ namespace {
 
 constexpr float kStopProbabilityThreshold = 0.5f;
 constexpr int kMinimumGeneratedPatches = 5;
-
-bool HasText(const std::string &text) {
-  CFStringRef unicode = CFStringCreateWithBytes(
-      kCFAllocatorDefault, reinterpret_cast<const UInt8 *>(text.data()),
-      static_cast<CFIndex>(text.size()), kCFStringEncodingUTF8, false);
-  if (unicode == nullptr) {
-    throw std::invalid_argument("text must be valid UTF-8");
-  } else {
-  }
-  const auto whitespace =
-      CFCharacterSetGetPredefined(kCFCharacterSetWhitespaceAndNewline);
-  bool found = false;
-  for (CFIndex i = 0; i < CFStringGetLength(unicode); ++i) {
-    const UniChar character = CFStringGetCharacterAtIndex(unicode, i);
-    // Note (altale): Python also strips the U+001C through U+001F separators.
-    if (!CFCharacterSetIsCharacterMember(whitespace, character) &&
-        !(character >= 0x1c && character <= 0x1f)) {
-      found = true;
-      break;
-    } else {
-    }
-  }
-  CFRelease(unicode);
-  return found;
-}
 
 } // namespace
 
@@ -62,11 +37,12 @@ Prompt MingFrontend::BuildPrompt(const std::string &text,
                                  const std::string &instructions,
                                  const std::string &reference_text,
                                  int reference_tokens) const {
-  if (!HasText(text)) {
+  if (omni_common::StripUnicodeWhitespace(text).empty()) {
     throw std::invalid_argument("input must be nonempty");
   } else {
   }
-  if (reference_tokens > 0 && !HasText(reference_text)) {
+  if (reference_tokens > 0 &&
+      omni_common::StripUnicodeWhitespace(reference_text).empty()) {
     throw std::invalid_argument("ref_text must be nonempty");
   } else {
   }
@@ -116,20 +92,28 @@ Prompt MingFrontend::BuildPrompt(const std::string &text,
 MingGenerator::MingGenerator(const std::filesystem::path &directory)
     : backbone_(directory), acoustic_(directory) {}
 
+void MingGenerator::CheckLength(const Prompt &prompt, int max_steps) const {
+  const auto &config = backbone_.config();
+  if (prompt.input_ids.size() + max_steps - 1 >
+      static_cast<size_t>(config.max_position_embeddings)) {
+    throw std::invalid_argument(
+        "prompt and max_new_tokens exceed the context length of " +
+        std::to_string(config.max_position_embeddings));
+  } else if (std::any_of(prompt.input_ids.begin(), prompt.input_ids.end(),
+                         [&](int token) {
+                           return token < 0 || token >= config.vocab_size;
+                         })) {
+    throw std::invalid_argument("prompt token ids exceed the vocabulary");
+  } else {
+  }
+}
+
 GenerationState MingGenerator::Start(
     const Prompt &prompt, int max_steps,
     const std::optional<ReferenceConditioning> &reference) const {
   const auto &input_ids = prompt.input_ids;
   assert(!input_ids.empty() && max_steps > 0);
   const auto &config = backbone_.config();
-  if (input_ids.size() + max_steps - 1 >
-          static_cast<size_t>(config.max_position_embeddings) ||
-      std::any_of(input_ids.begin(), input_ids.end(), [&](int token) {
-        return token < 0 || token >= config.vocab_size;
-      })) {
-    throw std::invalid_argument("invalid token ids or generation length");
-  } else {
-  }
   const int token_count = static_cast<int>(input_ids.size());
   mx::array embeddings =
       backbone_.EmbedTokens(mx::array(input_ids.data(), {1, token_count}));
@@ -195,6 +179,7 @@ mx::array MingGenerator::Step(GenerationState &state, const mx::array &noise,
                     state.steps + 1 >= kMinimumGeneratedPatches;
   const bool length = state.steps + 1 >= state.max_steps;
   ++state.steps;
+  state.stopped = stop;
   state.finished = stop || length;
   if (state.finished) {
     state.caches.clear();

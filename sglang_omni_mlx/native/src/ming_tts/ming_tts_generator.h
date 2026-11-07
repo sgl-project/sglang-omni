@@ -32,12 +32,16 @@ struct GenerationState {
   std::optional<mlx::core::array> feedback;
   int max_steps;
   int steps = 0;
+  // Whether the stop head ended it, rather than max_steps.
+  bool stopped = false;
   bool finished = false;
 };
 
 class MingGenerator {
 public:
   explicit MingGenerator(const std::filesystem::path &directory);
+  // Throws std::invalid_argument unless Start can run prompt for max_steps.
+  void CheckLength(const Prompt &prompt, int max_steps) const;
   GenerationState
   Start(const Prompt &prompt, int max_steps,
         const std::optional<ReferenceConditioning> &reference) const;

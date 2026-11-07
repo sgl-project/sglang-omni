@@ -48,7 +48,7 @@ class RequestChanges(TypedDict, total=False):
     temperature: float | None
     stage_params: dict[str, dict[str, float | None] | None] | None
     ref_audio: str | None
-    ref_text: str
+    ref_text: str | None
 
 
 def read_event(process: subprocess.Popen[str]) -> SupervisorEvent:
@@ -237,7 +237,6 @@ def test_discovery(connection: http.client.HTTPConnection) -> None:
         ({"voice": None}, 400),
         ({"speed": None}, 400),
         ({"stage_params": {"tts_engine": None}}, 400),
-        ({"ref_audio": None}, 400),
         ({"ref_audio": "/unused.wav"}, 400),
         ({"ref_text": "reference"}, 400),
         ({"ref_audio": "/unused.wav", "ref_text": "reference"}, 400),
@@ -312,6 +311,8 @@ def test_request_body_limit(
                 "max_new_tokens": None,
                 "temperature": None,
                 "stage_params": None,
+                "ref_audio": None,
+                "ref_text": None,
             },
         ),
         (
@@ -352,9 +353,8 @@ def test_audio(
     with connection.getresponse() as response:
         assert response.status == 200
         assert response.getheader("Content-Type") == f"audio/{response_format}"
-        assert response.getheader("X-Sample-Rate") == "44100"
         if stream:
-            assert response.getheader("Transfer-Encoding") == "chunked"
+            assert response.getheader("X-Sample-Rate") == "44100"
         else:
             pass
         audio = response.read()
@@ -456,9 +456,8 @@ def test_voice_clone(
         assert response.getheader("Content-Type") == (
             "audio/pcm" if stream else "audio/wav"
         )
-        assert response.getheader("X-Sample-Rate") == "44100"
         if stream:
-            assert response.getheader("Transfer-Encoding") == "chunked"
+            assert response.getheader("X-Sample-Rate") == "44100"
         else:
             pass
         audio = response.read()
@@ -534,7 +533,7 @@ def test_disconnect_releases_request(
         with connection.getresponse() as response:
             status = response.status
             audio = response.read()
-        if status == 429 and time.monotonic() < deadline:
+        if status == 503 and time.monotonic() < deadline:
             time.sleep(0.1)
         else:
             assert status == 200

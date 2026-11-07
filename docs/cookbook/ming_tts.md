@@ -75,7 +75,7 @@ build/native/runtime/bin/ming_tts_server \
 
 For native supervisor integration, launch with `--supervised --model-kind ming_tts --model-directory "$MING_MODEL_DIR"`. The shared native server defaults to a free port and a generated model name; pass `--port` and `--model-name` to fix them. Supervised mode reports them in a JSON `ready` event on stdout. Send `{"command":"shutdown"}` on stdin to stop. Closing stdin also stops the process.
 
-Native voice cloning accepts one inline `data:audio/wav;base64,...` reference in `ref_audio`, together with its transcript in `ref_text`. The WAV must be mono 16 kHz PCM16 or float32 and contain 0.1–30 seconds of audio. Request bodies are limited to 4 MiB, with larger bodies rejected with HTTP 413. Both non-streaming WAV/PCM and streaming PCM are supported. CampPlus and AudioVAE reference encoding run in C++ MLX and are loaded on the first reference request. Later requests reuse the encoder weights.
+Native voice cloning accepts one inline `data:audio/wav;base64,...` reference in `ref_audio`, together with its transcript in `ref_text`. The WAV must be mono 16 kHz PCM16 or float32 and contain 0.1–30 seconds of audio. Request bodies are limited to 4 MiB, with larger bodies rejected with HTTP 413. Both non-streaming WAV/PCM and streaming PCM are supported. CampPlus and AudioVAE reference encoding run in C++ MLX and load at startup when the model directory has `campplus.safetensors`; without it, reference requests are rejected with HTTP 400.
 
 Voice cloning requires `campplus.safetensors` in the model directory. The Q4 checkpoint includes it. The official BF16 checkpoint instead includes ONNX weights, which the native server does not read. For BF16, place a copy of the Q4 checkpoint's `campplus.safetensors` alongside the model files. Its FP32 tensors are identical to the official CampPlus ONNX initializers.
 
@@ -103,7 +103,7 @@ print(json.dumps({
 PY
 ```
 
-For 4-bit inference, download the MLX community checkpoint and use its local directory as `--model-path`. Quantization is read from the checkpoint; there is no native online-quantization flag. The checkpoint also quantizes acoustic and AudioVAE linear layers. The server accepts one active request; additional concurrent requests return HTTP 429. Serving does not require Python or SGLang workers.
+For 4-bit inference, download the MLX community checkpoint and use its local directory as `--model-path`. Quantization is read from the checkpoint; there is no native online-quantization flag. The checkpoint also quantizes acoustic and AudioVAE linear layers. One request runs at a time and `--max-queued-requests` more (2 by default) may wait; the rest get HTTP 503. A request not done `--request-timeout-s` seconds (600 by default) after it arrives is cancelled, with HTTP 504 or an early end to its stream. Serving does not require Python or SGLang workers.
 
 ## Synthesizing Speech
 
