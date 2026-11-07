@@ -3,6 +3,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
+import pytest
+
+import sglang_omni.platforms.xpu as xpu_platform
 import sglang_omni.utils.device as dev
 from sglang_omni.platforms import current_platform
 
@@ -78,3 +83,50 @@ def test_sglang_caps_xpu_free_memory_against_the_allocator(monkeypatch) -> None:
     free_gb = get_available_gpu_memory("xpu", 0, distributed=False, empty_cache=False)
 
     assert free_gb == (total_bytes - allocated_bytes) / (1 << 30)
+
+
+@pytest.fixture
+def fresh_video_decode_setting() -> Iterator[None]:
+    """The setting is read once per process; each case reads its own and leaves none behind."""
+    xpu_platform.video_decode_setting.cache_clear()
+    yield
+    xpu_platform.video_decode_setting.cache_clear()
+
+
+@pytest.mark.parametrize(
+    ("setting", "plugin_installed", "expected_device"),
+    [
+        (None, True, None),
+        ("0", True, None),
+        ("off", True, None),
+        ("ON", True, "xpu"),
+        ("XPU:3", True, "xpu:3"),
+        ("1", False, None),
+    ],
+)
+def test_xpu_decodes_video_on_the_media_engine_only_when_enabled_with_the_plugin(
+    fresh_video_decode_setting: None,
+    monkeypatch: pytest.MonkeyPatch,
+    setting: str | None,
+    plugin_installed: bool,
+    expected_device: str | None,
+) -> None:
+    """Off by default, since decoding on a card the thinker has filled slows serving; a named card is used as given; without torchcodec-xpu, video decodes on the CPU."""
+    if setting is None:
+        monkeypatch.delenv(xpu_platform.VIDEO_DECODE_ENV, raising=False)
+    else:
+        monkeypatch.setenv(xpu_platform.VIDEO_DECODE_ENV, setting)
+    monkeypatch.setattr(
+        xpu_platform, "torchcodec_xpu_installed", lambda: plugin_installed
+    )
+
+    assert xpu_platform.XPUOmniPlatform().get_video_decode_device() == expected_device
+
+
+@pytest.mark.parametrize("setting", ["sometimes", "xpu:", "cuda:0", "xpu:1,2"])
+def test_an_unknown_video_decode_setting_is_rejected(
+    fresh_video_decode_setting: None, monkeypatch: pytest.MonkeyPatch, setting: str
+) -> None:
+    monkeypatch.setenv(xpu_platform.VIDEO_DECODE_ENV, setting)
+    with pytest.raises(ValueError, match="SGLANG_OMNI_XPU_VIDEO_DECODE"):
+        xpu_platform.XPUOmniPlatform().get_video_decode_device()
