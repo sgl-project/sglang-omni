@@ -26,8 +26,8 @@ git ls-files '*.go' ':!:third_party/**' | xargs gofmt -l    # must print nothing
 go test -run TestKeyParity ./internal/i18n                   # strings and zh-Hans
 VOXTNEW_SNAPSHOTS=/tmp/shots go test -run TestSnapshots .   # every page as PNG
 cd helper && swift test                                      # the Swift helper (on a Mac)
-scripts/build-helper.sh && scripts/build-llm.sh && go tool mygo build   # build the app (on a Mac)
-scripts/release.sh                                           # the release build, runtimes inside (docs/release.md)
+scripts/build-helper.sh && go tool mygo build   # build the app (on a Mac)
+scripts/release.sh                                           # the release build, the Omni runtime inside (docs/release.md)
 ```
 
 The store's tests use MyGo's SQLite plugin, which downloads its library once (checked against its SHA-256) or uses `MYGO_SQLITE_LIBRARY`. On Linux the overlay's pixel checks of Chinese text need a CJK font (Ubuntu: `fonts-noto-cjk`). What needs permissions or a screen is checked by hand: [docs/manual-test.md](docs/manual-test.md).

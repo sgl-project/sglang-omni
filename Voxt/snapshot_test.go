@@ -126,13 +126,12 @@ func snapshotsMain(t *testing.T, out string) {
 				save("settings-about-beta-off")
 				a.prefs.Updates.Beta = nil
 				a.version = ver
-				// The self-check: both runtimes in the app, no model yet
+				// The self-check: the speech runtime in the app, no model yet
 				// (settings_about_models.go).
-				oldOmni, oldLLM := omniLocate, llmLocate
+				oldOmni := omniLocate
 				omniLocate = func() (string, error) { return "VoxtNew.app/Contents/Resources/omni/bin/qwen3_asr_server", nil }
-				llmLocate = func() string { return "VoxtNew.app/Contents/Resources/llm/voxtnew-llm" }
 				a.runSelfCheck()
-				omniLocate, llmLocate = oldOmni, oldLLM
+				omniLocate = oldOmni
 				scrollToText(tt, i18n.T("Self-check"))
 				save("settings-about-check")
 				a.checks = nil
