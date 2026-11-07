@@ -365,6 +365,9 @@ func TestPrivacyClearsHistory(t *testing.T) {
 	for i, id := range []string{"a", "b"} {
 		h.Put(context.Background(), store.Entry{ID: id, Kind: store.KindTranscribe, CreatedAt: time.Now().Add(time.Duration(i) * time.Second), Result: "x"})
 	}
+	// Room for the whole page: a click below the window lands nowhere, and
+	// how far down Clear… is depends on the fonts (CI's wrap more lines).
+	tt.SetSize(windowWidth, 1000)
 	a.navigate("/settings/privacy")
 	click(t, tt, "Clear…")
 	if !a.clearHistoryAsk {
