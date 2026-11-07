@@ -21,8 +21,8 @@
   "Apple M5": {
    "metrics": {
     "wer_en": 0.0206,
-    "cer_zh": 0.05256,
-    "mer_mixed": 0.12939
+    "cer_zh": 0.05194,
+    "mer_mixed": 0.13196
    },
    "clips": {
     "0000_en_short": {
@@ -662,9 +662,9 @@
      "finish_reason": "stop"
     },
     "0106_en_mid": {
-     "text": "The fact that it was churning day was another reason why it was inconvenient to have the widows, and why consequently Mrs. Poyser should scold Molly, the housemaid, with unusual severity.",
+     "text": "The fact that it was churning day was another reason why it was inconvenient to have the widows, and why consequently Mrs. Poysers should scold Molly the housemaid with unusual severity.",
      "language": "English",
-     "generated_token_count": 42,
+     "generated_token_count": 40,
      "finish_reason": "stop"
     },
     "0107_en_mid": {
@@ -812,9 +812,9 @@
      "finish_reason": "stop"
     },
     "0131_zh_numbers": {
-     "text": "大桥预计将于2017年9月全面投入使用。届时，巴西海关检查站预计也将完工。",
+     "text": "大桥预计将于2017年9月全面投入使用，届时巴西海关检查站预计也将完工。",
      "language": "English",
-     "generated_token_count": 23,
+     "generated_token_count": 22,
      "finish_reason": "stop"
     },
     "0132_zh_numbers": {
@@ -938,9 +938,9 @@
      "finish_reason": "stop"
     },
     "0152_zh_short": {
-     "text": "Internet combines elements of mass and interpersonal communication.",
+     "text": "Internet combines elements of mass communication and interpersonal communication.",
      "language": "English",
-     "generated_token_count": 9,
+     "generated_token_count": 10,
      "finish_reason": "stop"
     },
     "0153_zh_short": {
@@ -956,7 +956,7 @@
      "finish_reason": "stop"
     },
     "0155_zh_short": {
-     "text": "然而，在这方面，深根区有点像一个国家。",
+     "text": "然而，在这方面，生根区有点像一个国家。",
      "language": "English",
      "generated_token_count": 12,
      "finish_reason": "stop"
@@ -1664,9 +1664,9 @@
      "finish_reason": "stop"
     },
     "0273_zh_short": {
-     "text": "对，我的话也比较，就是。",
+     "text": "对我的话也比较，就是。",
      "language": "English",
-     "generated_token_count": 8,
+     "generated_token_count": 7,
      "finish_reason": "stop"
     },
     "0274_zh_short": {
@@ -1736,9 +1736,9 @@
      "finish_reason": "stop"
     },
     "0285_mixed": {
-     "text": "听起来也蛮 make sense. 我当初来。",
+     "text": "听起来也蛮 makes sense.我当初来。",
      "language": "English",
-     "generated_token_count": 11,
+     "generated_token_count": 10,
      "finish_reason": "stop"
     },
     "0286_mixed": {
@@ -1808,9 +1808,9 @@
      "finish_reason": "stop"
     },
     "0297_mixed": {
-     "text": "就是你申请那些 university，你不是要 apply 就是。",
+     "text": "就是你申请那些 university，你不是要 apply，就是。",
      "language": "English",
-     "generated_token_count": 14,
+     "generated_token_count": 13,
      "finish_reason": "stop"
     },
     "0298_mixed": {
@@ -1868,9 +1868,9 @@
      "finish_reason": "stop"
     },
     "0307_mixed": {
-     "text": "会有那种活动，或者是你去参加 lunch talk，就会请一些，比如说 fintech，就是你感兴趣的 fintech，然后或者是 AI 啊。",
+     "text": "会有那种活动，或者是你去参加 lunch talk，就会请一些，比如说 fintech，就是你感兴趣的 fintech，然后或者是 A I 啊。",
      "language": "English",
-     "generated_token_count": 31,
+     "generated_token_count": 32,
      "finish_reason": "stop"
     },
     "0308_mixed": {
@@ -1910,7 +1910,7 @@
      "finish_reason": "stop"
     },
     "0314_mixed": {
-     "text": "嗯，但是像 running 啊，或者是举重这种东西，就比较不可能。男男生肯定会比女。",
+     "text": "嗯，但是像 running 啊，或者是举重这种东西，就比较不可能，男男生肯定会比女。",
      "language": "English",
      "generated_token_count": 24,
      "finish_reason": "stop"
@@ -2054,9 +2054,9 @@
      "finish_reason": "stop"
     },
     "0338_mixed": {
-     "text": "就是像那些，就是没有 daylight 的时候，也不会那么 stress。",
+     "text": "就是像那些，就是没有 daylight的时候，也不会那么 stress。",
      "language": "English",
-     "generated_token_count": 14,
+     "generated_token_count": 13,
      "finish_reason": "stop"
     },
     "0339_mixed": {
@@ -2162,9 +2162,9 @@
      "finish_reason": "stop"
     },
     "0356_en_long": {
-     "text": "So they were quite willing to obey the orders of their girl queen, and in a short time the blast of trumpets and roll of drums and clashing of cymbals told Trot and Captain Bill that the blue bands had assembled before the palace. Then they all marched out a little way into the fields and found that the army of Pinkies had already formed, and was advancing steadily toward them. When the Blueskins saw Gitka Sizzle, they raised another great shout, for he was the favorite of the soldiers and very popular with all the people. Since last Thursday, I, Gitka Sizzle, have been the lawful Boolooroo of the Blue Country, but now that you are conquered by Queen Trot, I suppose I am conquered too, and you have no Boolooroo at all. When he finished, she said cheerfully, \"Don't worry, Sizzle dear, it'll all come right pretty soon. Now then, let's enter the city and enjoy the great feast that's being cooked. I'm nearly starved myself, for this conquering kingdoms is hard work.\"",
+     "text": "So they were quite willing to obey the orders of their girl queen, and in a short time the blast of trumpets and roll of drums and clashing of cymbals told Trot and Cap'n Bill that the blue bands had assembled before the palace. Then they all marched out a little way into the fields and found that the army of Pinkies had already formed, and was advancing steadily toward them. When the Blueskins saw Gitka Sizzle, they raised another great shout, for he was the favorite of the soldiers and very popular with all the people. Since last Thursday, I, Gitka Sizzle, have been the lawful Boolooroo of the Blue Country, but now that you are conquered by Queen Trot, I suppose I am conquered too, and you have no Boolooroo at all. When he finished, she said cheerfully, \"Don't worry, Sizzle dear, it'll all come right pretty soon. Now then, let's enter the city and enjoy the great feast that's being cooked. I'm nearly starved myself, for this conquering kingdoms is hard work.\"",
      "language": "English",
-     "generated_token_count": 222,
+     "generated_token_count": 223,
      "finish_reason": "stop"
     },
     "0357_en_long": {
@@ -2198,9 +2198,9 @@
      "finish_reason": "stop"
     },
     "0362_zh_long": {
-     "text": "杜瓦尔已婚，有两个已经成年的孩子。他并没有给故事的讲述者米勒留下太大印象。因此，一个组织在共同努力克服障碍的过程中，往往会带来新的创新流程，以满足客户的需求。结果，两种鱼类灭绝，另外两种鱼类濒临灭绝，其中包括弓背龟。医院遵循了感染控制规定，包括把患者与他人隔离，以防感染到其他人。这提供了一个可以看到北极光的绝佳机会，因为天空将或多或少连续一整天都是暗的。它们的热行为不像地球上的大型洞穴那么稳定。这些大型洞穴通常会保持相当恒定的温度，但它们与地下深穴的情况很相似。亚利桑那州旗杆镇，美国地质调查局太空地质团队和北亚利桑那大学的格伦·库辛说道。",
+     "text": "杜瓦尔已婚，有两个已经成年的孩子。他并没有给故事的讲述者米勒留下太大印象。因此，一个组织在共同努力克服障碍的过程中，往往会带来新的创新流程，以满足客户的需求。结果，两种鱼类灭绝，另外两种鱼类濒临灭绝，其中包括弓背龟。医院遵循了感染控制规定，包括把患者与他人隔离，以防感染到其他人。这提供了一个可以看到北极光的绝佳机会，因为天空将或多或少连续一整天都是暗的。它们的热行为不像地球上的大型洞穴那么稳定。这些大型洞穴通常会保持相当恒定的温度，但它们与地下深穴的情况很相似。亚利桑那州旗杆镇美国地质调查局太空地质团队和北亚利桑那大学的格伦·库辛说道。",
      "language": "English",
-     "generated_token_count": 172,
+     "generated_token_count": 171,
      "finish_reason": "stop"
     },
     "0363_zh_long": {
@@ -2252,13 +2252,13 @@
      "finish_reason": "stop"
     },
     "0371_zh_long": {
-     "text": "当所有可用的资源在一个组织的职能部门之间得到有效利用时，创造力和独创性就会发生。起初，他被送往位于大雅茅茨的詹姆斯·佩吉特医院进行救治。平时你总能在这里听到游客和小摊贩的声音，声光交织，就像在讲述一个动人的故事。该洞穴坐落在麦加北部的一座山顶上，与外界完全隔绝。一名观察者形容比什凯克正在陷入无政府状态，成群的人们在街上游荡，掠夺商店里的消费品。",
+     "text": "当所有可用的资源在一个组织的职能部门之间得到有效利用时，创造力和独创性就会发生。起初，他被送往位于大雅茅斯的詹姆斯佩吉特医院进行救治。平时你总能在这里听到游客和小摊贩的声音，声光交织，就像在讲述一个动人的故事。该洞穴坐落在麦加北部的一座山顶上，与外界完全隔绝。一名观察者形容比什凯克正在陷入无政府状态，成群的人们在街上游荡，掠夺商店里的消费品。",
      "language": "English",
-     "generated_token_count": 115,
+     "generated_token_count": 114,
      "finish_reason": "stop"
     },
     "0372_zh_long": {
-     "text": "较小的岛屿大多是独立国家，且所属于法国。它们以豪华海滩度假胜地而闻名。人工智能有很强的科幻色彩，但它其实是计算机科学非常重要的一个分支，研究的是机器的行为、学习和智能适应。也可以到北部参观法蒂玛圣母院圣地，它是举世闻名的圣母玛利亚显现之地。周日晚些时候，美国总统唐纳德·特朗普通过新闻秘书发表声明，宣布美军将撤离叙利亚。事实上，即使知道它的存在，也不容易找到。一旦进入洞穴，就完全与世隔绝了。取消政策各不相同，但截至三月末，大多数由于新冠病毒而出台的取消政策，并没有延长到二零二零年七月原定奥运会举办时间。",
+     "text": "较小的岛屿大多是独立国家，且所属于法国。它们以豪华海滩度假胜地而闻名。人工智能有很强的科幻色彩，但它其实是计算机科学非常重要的一个分支，研究的是机器的行为、学习和智能适应。也可以到北部参观法蒂玛圣母院圣地，它是举世闻名的圣母玛利亚显现之地。周日晚些时候，美国总统唐纳德·特朗普通过新闻秘书发表声明，宣布美军将撤离叙利亚。事实上，即使知道它的存在，也不容易找到。一旦进入洞穴，就完全与世隔绝了。取消政策各不相同，但截至三月末，大多数由于新冠病毒而出台的取消政策，并没有延长到2020年七月原定奥运会举办时间。",
      "language": "English",
      "generated_token_count": 154,
      "finish_reason": "stop"
@@ -2282,33 +2282,33 @@
      "finish_reason": "stop"
     },
     "0376_silence": {
-     "text": "Okay.",
+     "text": "I'm not sure.",
      "language": "English",
-     "generated_token_count": 2,
+     "generated_token_count": 5,
      "finish_reason": "stop"
     },
     "0377_silence": {
-     "text": "Okay.",
+     "text": "I'm not sure.",
      "language": "English",
-     "generated_token_count": 2,
+     "generated_token_count": 5,
      "finish_reason": "stop"
     },
     "0378_silence": {
-     "text": "Okay.",
+     "text": "I'm not sure.",
      "language": "English",
-     "generated_token_count": 2,
+     "generated_token_count": 5,
      "finish_reason": "stop"
     },
     "0379_silence": {
-     "text": "Okay.",
+     "text": "I'm not sure.",
      "language": "English",
-     "generated_token_count": 2,
+     "generated_token_count": 5,
      "finish_reason": "stop"
     },
     "0380_noise": {
-     "text": "I'm sorry.",
+     "text": "Okay.",
      "language": "English",
-     "generated_token_count": 4,
+     "generated_token_count": 2,
      "finish_reason": "stop"
     },
     "0381_noise": {
