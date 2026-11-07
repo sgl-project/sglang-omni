@@ -77,6 +77,23 @@ else:
     pass
 
 
+def conv_stack_left_context(sequence: torch.nn.Sequential, need: int = 0) -> int:
+    """Input positions before the first wanted output that the causal conv stack
+    reads to produce need positions of context at its output: the convs' left
+    padding, scaled down through each transposed conv's stride."""
+    for module in reversed(list(sequence)):
+        if isinstance(module, CausalConvNet):
+            need += module.padding
+        elif isinstance(module, CausalTransConvNet):
+            stride = module.stride
+            need = -(-need // stride) - (-(module.kernel_size - 1) // stride)
+        elif isinstance(module, (ResidualUnit, DecoderBlock)):
+            need = conv_stack_left_context(module.block, need)
+        else:
+            pass
+    return need
+
+
 class ChannelsLastDecoder:
     def __init__(self, codec: DAC, *, dtype: torch.dtype) -> None:
         if triton is None:
@@ -87,6 +104,10 @@ class ChannelsLastDecoder:
         else:
             pass
         self.codec = codec
+        self.hops_per_frame = int(codec.frame_length) // int(codec.hop_length)
+        self.samples_per_hop = int(codec.hop_length)
+        # Hop-rate positions the conv stack reads before the first kept frame.
+        self.conv_margin_hops = conv_stack_left_context(codec.decoder.model)
         self.snake_alphas: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
         for module in codec.decoder.modules():
             if isinstance(module, Snake1d):
@@ -102,11 +123,24 @@ class ChannelsLastDecoder:
             if isinstance(module, (torch.nn.Conv1d, torch.nn.ConvTranspose1d))
         }
 
-    def __call__(self, indices: torch.Tensor) -> torch.Tensor:
+    def __call__(
+        self, indices: torch.Tensor, *, keep_from_frame: int = 0
+    ) -> torch.Tensor:
+        """The audio of the frames from keep_from_frame on: the quantizer sees
+        every frame, the conv stack only the kept frames and its left context."""
         latent = self.codec.quantizer.decode(indices)
         hidden_states = latent.transpose(1, 2).contiguous()
-        hidden_states = self.apply_sequence(self.codec.decoder.model, hidden_states)
-        return hidden_states.transpose(1, 2)
+        start_hop = max(
+            0, keep_from_frame * self.hops_per_frame - self.conv_margin_hops
+        )
+        hidden_states = self.apply_sequence(
+            self.codec.decoder.model, hidden_states[:, start_hop:].contiguous()
+        )
+        audio = hidden_states.transpose(1, 2)
+        kept_from_sample = (
+            keep_from_frame * self.hops_per_frame - start_hop
+        ) * self.samples_per_hop
+        return audio[..., kept_from_sample:]
 
     def apply_sequence(
         self, sequence: torch.nn.Sequential, hidden_states: torch.Tensor

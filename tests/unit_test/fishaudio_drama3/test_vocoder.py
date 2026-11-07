@@ -101,6 +101,7 @@ def vocoder_with(
     factory_args: Drama3VocoderFactoryArgs | None = None,
     max_padded_frames_per_decode: int | None = None,
     window_batch_decoder: WindowBatchDecoder | None = None,
+    suffix_decoder: WindowGraphDecoder | None = None,
 ) -> Drama3VocoderScheduler:
     """The vocoder with the configured windows."""
     window_kwargs = (factory_args or Drama3VocoderFactoryArgs()).model_dump(
@@ -120,6 +121,7 @@ def vocoder_with(
         decode_window=decode_window,
         max_padded_frames_per_decode=max_padded_frames_per_decode,
         window_batch_decoder=window_batch_decoder,
+        suffix_decoder=suffix_decoder,
         **window_kwargs,
     )
 
@@ -371,12 +373,13 @@ def test_only_stream_windows_get_batched_graphs_capped_by_the_longest_window() -
         max_batch_size=factory_args.stream_window_batch_size,
     )
 
-    assert {length for batch_size, length in keys if batch_size == 1} == {
+    assert {length for batch_size, length, _ in keys if batch_size == 1} == {
         *window_lengths,
         *utterance_lengths,
     }
+    assert all(discard == 0 for _, _, discard in keys)
     # Stream windows (4, 14, 26, 58, 96) batch up to 4, within 2 x 96 frames.
-    assert {key for key in keys if key[0] > 1} == {
+    assert {key[:2] for key in keys if key[0] > 1} == {
         *((batch_size, 4) for batch_size in (2, 3, 4)),
         *((batch_size, 14) for batch_size in (2, 3, 4)),
         *((batch_size, 26) for batch_size in (2, 3, 4)),
@@ -384,6 +387,108 @@ def test_only_stream_windows_get_batched_graphs_capped_by_the_longest_window() -
         (3, 58),
         (2, 96),
     }
+
+
+def test_windows_with_a_discard_get_their_own_graphs_beside_the_whole_ones() -> None:
+    keys = window_graph_keys(
+        (4, 14, 96),
+        (8, 16),
+        max_batch_size=2,
+        window_discards={4: 0, 14: 4, 96: 32},
+        flush_keys=[(8, 4), (16, 14), (16, 0)],
+    )
+
+    assert keys[0] == (2, 96, 32)
+    assert set(keys) == {
+        *((1, length, 0) for length in (4, 8, 14, 16, 96)),
+        (1, 14, 4),
+        (1, 96, 32),
+        (1, 8, 4),
+        (1, 16, 14),
+        (2, 4, 0),
+        (2, 14, 4),
+        (2, 96, 32),
+    }
+
+
+class ZeroingSuffixDecoder:
+    """Decodes with the frame-number codec but zeroes the discarded frames' audio, as
+    a graph that skips them leaves it, and records each (frames, discard)."""
+
+    def __init__(self, codec: FrameNumberCodec) -> None:
+        self.codec = codec
+        self.shapes: list[tuple[int, int]] = []
+
+    def __call__(
+        self, indices: torch.Tensor, *, discard_frames: int = 0
+    ) -> torch.Tensor:
+        self.shapes.append((int(indices.shape[-1]), discard_frames))
+        audio = self.codec.from_indices(indices)
+        audio[..., : discard_frames * SAMPLES_PER_FRAME] = 0
+        return audio
+
+    def decode_windows(
+        self, codebook_codes: list[torch.Tensor], discard_frames: int = 0
+    ) -> list[torch.Tensor]:
+        return [
+            self(codes[None], discard_frames=discard_frames) for codes in codebook_codes
+        ]
+
+
+@pytest.mark.parametrize(
+    ("stream_crossfade_samples", "expected_shapes"),
+    [
+        pytest.param(
+            0,
+            [(4, 0), (14, 4), (26, 14), (58, 26), (96, 32), (96, 32), (60, 32)],
+            id="no-crossfade",
+        ),
+        pytest.param(
+            40,
+            [(4, 0), (14, 0), (26, 4), (58, 16), (96, 22), (96, 22), (60, 22)],
+            id="crossfade-keeps-ten-frames",
+        ),
+    ],
+)
+def test_the_stream_never_reads_the_frames_a_window_skips(
+    stream_crossfade_samples: int, expected_shapes: list[tuple[int, int]]
+) -> None:
+    codec = FrameNumberCodec()
+    decoder = ZeroingSuffixDecoder(codec)
+    vocoder = vocoder_with(
+        codec,
+        factory_args=Drama3VocoderFactoryArgs(
+            stream_crossfade_samples=stream_crossfade_samples
+        ),
+        window_batch_decoder=decoder,
+        suffix_decoder=decoder,  # type: ignore[arg-type]
+    )
+    frames = numbered_frames(214)
+    for chunk_id in range(214):
+        vocoder.inbox.put(
+            IncomingMessage(
+                request_id="request-a",
+                type="stream_chunk",
+                data=StreamItem(
+                    chunk_id=chunk_id,
+                    data=frames[chunk_id : chunk_id + 1].T,
+                    from_stage="tts_engine",
+                ),
+            )
+        )
+    while not vocoder.inbox.empty():
+        vocoder.handle_message(vocoder.get_batch_message(), None)
+    vocoder.handle_streaming_new_request(
+        "request-a", final_payload(frames, is_streaming=True)
+    )
+    vocoder.handle_stream_done("request-a")
+
+    assert decoder.shapes == expected_shapes
+    np.testing.assert_allclose(
+        streamed_audio(drained(vocoder)),
+        np.repeat(np.arange(214, dtype=np.float32), SAMPLES_PER_FRAME),
+        rtol=1e-6,
+    )
 
 
 def test_every_streamed_window_decodes_through_the_given_window_decoder() -> None:
@@ -412,7 +517,9 @@ class RecordingBatchDecoder:
         self.codec = codec
         self.window_counts: list[int] = []
 
-    def decode_windows(self, codebook_codes: list[torch.Tensor]) -> list[torch.Tensor]:
+    def decode_windows(
+        self, codebook_codes: list[torch.Tensor], discard_frames: int = 0
+    ) -> list[torch.Tensor]:
         self.window_counts.append(len(codebook_codes))
         return list(self.codec.from_indices(torch.stack(codebook_codes)).split(1))
 
@@ -507,11 +614,14 @@ def test_window_graphs_decode_every_window_length_like_eager() -> None:
         1, NUM_CODEBOOKS + 1, dtype=torch.float32, device=device
     )
 
-    def causal_decode(indices: torch.Tensor) -> torch.Tensor:
+    def causal_decode(
+        indices: torch.Tensor, *, keep_from_frame: int = 0
+    ) -> torch.Tensor:
         frame_values = (indices.float() * codebook_weights[:, None]).sum(
             dim=1, keepdim=True
         )
-        return frame_values.cumsum(dim=-1).repeat_interleave(SAMPLES_PER_FRAME, dim=-1)
+        audio = frame_values.cumsum(dim=-1).repeat_interleave(SAMPLES_PER_FRAME, dim=-1)
+        return audio[..., keep_from_frame * SAMPLES_PER_FRAME :]
 
     decoder = WindowGraphDecoder(
         causal_decode,
@@ -520,7 +630,17 @@ def test_window_graphs_decode_every_window_length_like_eager() -> None:
         device=device,
         window_lengths=(10, 20, 32, 64, 96),
         max_batch_size=3,
+        window_discards={64: 32, 96: 32},
+        flush_shapes=[(35, 32), (33, 32)],
     )
+    # The flush shapes pad to 64, whose graph the window discard already captures.
+    assert {key for key in decoder.graphs if key[2]} == {
+        (1, 64, 32),
+        (1, 96, 32),
+        (2, 64, 32),
+        (3, 64, 32),
+        (2, 96, 32),
+    }
     codes = torch.randint(0, 100, (3, NUM_CODEBOOKS, 100), device=device)
 
     replay_results: list[tuple[torch.Tensor, torch.Tensor]] = []
@@ -530,14 +650,34 @@ def test_window_graphs_decode_every_window_length_like_eager() -> None:
     for decoded_audio, expected_audio in replay_results:
         assert torch.equal(decoded_audio, expected_audio)
     assert torch.equal(decoder(codes[:, :, :20]), causal_decode(codes[:, :, :20]))
+    # A discard replays the graph that skips those frames and leaves their audio zero;
+    # a shape without one falls back to the whole-window graph.
+    for frame_count, discard in ((64, 32), (96, 32), (35, 32), (33, 32), (20, 10)):
+        window = codes[:1, :, :frame_count]
+        decoded_audio = decoder(window, discard_frames=discard)
+        skipped = discard * SAMPLES_PER_FRAME
+        assert torch.equal(
+            decoded_audio[..., skipped:], causal_decode(window)[..., skipped:]
+        )
+        assert decoded_audio.shape == causal_decode(window).shape
     # Replay the batched graphs whatever the startup timing enabled.
     decoder.batch_sizes = {64: (3, 2), 96: (2,)}
-    for frame_count, window_count in ((64, 3), (64, 2), (96, 3), (32, 2)):
+    for frame_count, window_count, discard in (
+        (64, 3, 0),
+        (64, 2, 32),
+        (96, 3, 32),
+        (32, 2, 0),
+    ):
         windows = [codes[row, :, :frame_count] for row in range(window_count)]
+        skipped = discard * SAMPLES_PER_FRAME
         for window, decoded_audio in zip(
-            windows, decoder.decode_windows(windows), strict=True
+            windows,
+            decoder.decode_windows(windows, discard_frames=discard),
+            strict=True,
         ):
-            assert torch.equal(decoded_audio, causal_decode(window[None]))
+            assert torch.equal(
+                decoded_audio[..., skipped:], causal_decode(window[None])[..., skipped:]
+            )
 
 
 def test_the_final_result_counts_prompt_rows_and_audio_frames() -> None:
@@ -887,6 +1027,39 @@ def test_the_channels_last_decoder_decodes_like_the_codec(
     assert decoded.shape == expected.shape
     torch.testing.assert_close(
         decoded.float(), expected, rtol=tolerance, atol=tolerance
+    )
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("batch_size", [1, 2])
+@pytest.mark.parametrize("keep_from_frame", [1, 5, 8, 23])
+def test_decoding_from_a_frame_on_matches_that_suffix_of_the_whole_decode(
+    monkeypatch: pytest.MonkeyPatch, batch_size: int, keep_from_frame: int
+) -> None:
+    """The conv stack starts at the kept frames minus its receptive field, so the
+    kept audio sees the same inputs as in a whole-window decode."""
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    else:
+        pass
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    codec = tiny_codec().cuda()
+    codec.fold_weight_norm()
+    decoder = ChannelsLastDecoder(codec, dtype=torch.float16)
+    codes = torch.randint(0, 16, (batch_size, 10, 24), device="cuda")
+    frame_length = int(codec.frame_length)
+
+    with torch.no_grad():
+        whole = decoder(codes.clone())
+        suffix = decoder(codes.clone(), keep_from_frame=keep_from_frame)
+
+    assert decoder.conv_margin_hops == 20
+    assert suffix.shape == whole[..., keep_from_frame * frame_length :].shape
+    torch.testing.assert_close(
+        suffix.float(),
+        whole[..., keep_from_frame * frame_length :].float(),
+        rtol=2e-3,
+        atol=2e-3,
     )
 
 
