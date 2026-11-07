@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import math
 
+import pytest
 import torch
 import torch.nn.functional as F
 
 from sglang_omni.models.ming_omni.talker.audio_vae.istft import ISTFT, ISTFTHead
+from sglang_omni.platforms.npu import overlap_add_by_shifts
 
 
 def test_predict_spectrum_matches_pre_refactor_inline_math() -> None:
@@ -88,3 +90,46 @@ def test_overlap_add_components_masks_audio_and_window_envelope() -> None:
     )
     assert torch.equal(corrupted_numerator, numerator)
     assert torch.equal(corrupted_denominator, denominator)
+
+
+@pytest.mark.parametrize(
+    ("n_fft", "hop_length", "frame_count"),
+    [
+        (3528, 882, 6),
+        (8, 3, 7),
+    ],
+)
+def test_npu_overlap_add_matches_fold(
+    n_fft: int, hop_length: int, frame_count: int
+) -> None:
+    """The Ascend slice-summed overlap-add has to reproduce fold sample for sample.
+
+    Ming's n_fft=3528 faults the vector core in fold, so the NPU platform rebuilds
+    the overlap-add from stride-aligned slice sums. The two parameter sets cover
+    the production geometry and a window that is not a multiple of the hop, where
+    the implementation pads the window tail.
+    """
+    istft = ISTFT(n_fft=n_fft, hop_length=hop_length, win_length=n_fft)
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(2)
+        frames = torch.randn(2, n_fft, frame_count)
+        window_frames = torch.rand(1, n_fft, frame_count)
+    output_size = (frame_count - 1) * hop_length + n_fft
+
+    def folded(tensor: torch.Tensor) -> torch.Tensor:
+        return F.fold(
+            tensor.expand(2, -1, -1),
+            output_size=(1, output_size),
+            kernel_size=(1, istft.win_length),
+            stride=(1, hop_length),
+        )[:, 0, 0, :]
+
+    numerator, denominator = overlap_add_by_shifts(
+        frames,
+        window_frames,
+        hop_length=hop_length,
+        win_length=istft.win_length,
+    )
+
+    torch.testing.assert_close(numerator, folded(frames), rtol=0, atol=0)
+    torch.testing.assert_close(denominator, folded(window_frames), rtol=0, atol=0)
