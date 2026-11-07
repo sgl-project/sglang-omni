@@ -180,6 +180,7 @@ def evaluate_trace(
     updated = ended = drained = closed = False
     previous_time = -math.inf
     drain_after_eos_s = close_ack_s = None
+    cancelled_items: set[str] = set()
     acknowledgments = {
         "session.updated": "session.update",
         "sglang.input_audio.accepted": "input_audio_buffer.append",
@@ -272,6 +273,11 @@ def evaluate_trace(
                     check(updated, "EOS before session.updated")
                 elif event_type == "session.close":
                     check(drained, "session.close before input drained")
+                elif turn_based and event_type == "conversation.item.truncate":
+                    check(
+                        event.item_id in cancelled_items,
+                        "truncate of an item no cancelled response carried",
+                    )
                 else:
                     violations.append(
                         f"client command outside this scenario: {event_type}"
@@ -535,6 +541,10 @@ def evaluate_trace(
                             "missing output_audio.done",
                         )
                         response_state.terminal, response_state.reason = status, reason
+                        if status == "cancelled" and response_state.item_id is not None:
+                            cancelled_items.add(response_state.item_id)
+                        else:
+                            pass
                     elif event_type == "response.output_audio.delta":
                         check(
                             not response_state.audio_done,
