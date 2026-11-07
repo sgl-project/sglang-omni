@@ -189,6 +189,7 @@
   "Check for updates automatically": "自动检查更新",
   "Chip": "芯片",
   "Choose a folder outside the model folder.": "请选择模型文件夹以外的文件夹。",
+  "Choose a folder outside Voxt's data and logs.": "请选择 Voxt 数据和日志文件夹以外的文件夹。",
   "Choose a model, or type its id.": "请选择一个模型，或输入模型 ID。",
   "Choose models…": "选择模型…",
   "Choose…": "选择…",

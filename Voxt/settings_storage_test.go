@@ -149,6 +149,11 @@ func TestModelFolderChange(t *testing.T) {
 	if relaunched || !toasted(a, tt, "The models are already there") {
 		t.Fatalf("the same folder: relaunched %v, toasts %q", relaunched, a.toasts)
 	}
+	chosen = a.dataDir() // Erase everything would delete the models with it
+	click(t, tt, "Change…")
+	if relaunched || !toasted(a, tt, "Choose a folder outside Voxt's data and logs.") {
+		t.Fatalf("Voxt's data folder: relaunched %v, toasts %q", relaunched, a.toasts)
+	}
 
 	chosen = dir
 	click(t, tt, "Change…")

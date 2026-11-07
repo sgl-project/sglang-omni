@@ -118,6 +118,14 @@ func (a *app) startModelMove(dir string) {
 		a.toast(i18n.T("Choose a folder outside the model folder."))
 		return
 	}
+	// Erase everything deletes these folders whole, and the model folder
+	// holds the other apps' models too.
+	for _, d := range []string{a.home(), a.dataDir(), a.stLoc.Previous, a.logDir} {
+		if rel, err := filepath.Rel(d, to); d != "" && err == nil && !strings.HasPrefix(rel, "..") {
+			a.toast(i18n.T("Choose a folder outside Voxt's data and logs."))
+			return
+		}
+	}
 	if slices.ContainsFunc(a.models.Catalog(), func(m models.Model) bool { return a.models.Status(m.ID).Downloading }) {
 		a.toast(i18n.T("Wait for the downloads to finish, or cancel them, then try again."))
 		return
