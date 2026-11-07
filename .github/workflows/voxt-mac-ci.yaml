@@ -4,7 +4,7 @@ name: Voxt Mac CI
 # runners, then checks what the app relies on without running a model: the
 # supervisor protocol, the transcription, speech, chat and realtime APIs (served by
 # the stub server around stand-in models) and each server's startup checks; and
-# Voxt's Swift packages (the helper and the language-model runtime). No
+# Voxt's Swift helper. No
 # checkpoint is downloaded. Model outputs are checked by hand per model PR with
 # the tools in sglang_omni_mlx/native/ci. Voxt Nightly runs it before its build.
 
@@ -14,7 +14,6 @@ on:
     paths:
       - "sglang_omni_mlx/**"
       - "Voxt/helper/**"
-      - "Voxt/llm/**"
       - ".github/workflows/voxt-mac-ci.yaml"
   workflow_dispatch:
   workflow_call:
@@ -135,7 +134,7 @@ jobs:
           "$RUNNER_TEMP/test-venv/bin/python" -m pytest -q sglang_omni_mlx/native/tests
 
   voxtnew-swift:
-    name: Voxt helper and LLM runtime tests
+    name: Voxt helper tests
     needs: [preflight]
     if: needs.preflight.outputs.run_mac == 'true'
     runs-on: macos-26
@@ -143,25 +142,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # mlx-swift needs it to build its kernels (Voxt/llm).
-      - name: Install the Metal toolchain
-        run: |
-          set -euo pipefail
-          if ! xcrun metal --version > /dev/null 2>&1; then
-            xcodebuild -downloadComponent MetalToolchain
-          fi
-          xcrun metal --version
-
       - name: Helper tests
         run: swift test --package-path Voxt/helper
-
-      # Voxt/llm's packages (mlx-swift and the rest) and their builds: restored files keep their mtimes, so only Voxt's own code rebuilds.
-      - name: Restore the LLM runtime's package build
-        uses: actions/cache@v4
-        with:
-          path: Voxt/llm/.build
-          key: voxt-llm-swiftpm-${{ env.DEVELOPER_DIR }}-${{ hashFiles('Voxt/llm/Package.resolved') }}
-          restore-keys: voxt-llm-swiftpm-${{ env.DEVELOPER_DIR }}-
-
-      - name: LLM runtime tests
-        run: swift test --package-path Voxt/llm

@@ -42,6 +42,7 @@ func (a *app) modelsPage(c *ui.Context) {
 			a.modelCards(c, models.ASR)
 			a.dictationCard(c)
 			a.providerCards(c, local.ASR) // remote_page.go
+			a.speechContextSection(c)     // models_context.go
 			if a.anyModelShown(models.LLM) {
 				sectionTitleTip(c, i18n.T("Language models no longer used"), i18n.T("Voxt 2.0 ran these on this Mac; Voxt now uses the language models of the Language models page. Delete them to free the space: another app that uses one keeps it."))
 				a.modelCards(c, models.LLM)
