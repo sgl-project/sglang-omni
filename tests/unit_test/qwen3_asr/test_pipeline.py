@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+import torch
 from sglang.srt.arg_groups.cuda_graph_hook import (
     generate_prefill_cuda_graph_batch_sizes,
 )
@@ -40,6 +41,7 @@ from sglang_omni.scheduling.generation_batch_policy import (
 @pytest.fixture(autouse=True)
 def select_cpu_platform_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: False)
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_rocm", lambda: False)
 
 
 def sglang_prefill_ladder(max_bs: int) -> list[int]:
@@ -136,6 +138,20 @@ def make_engine_builder(
     )
     builder.context_length = context_length
     return builder
+
+
+def fake_gcn_arch_name(
+    monkeypatch: pytest.MonkeyPatch, gcn_arch_name: str
+) -> list[int]:
+    """Report gcn_arch_name for every GPU; return the GPU ids that were queried."""
+    queried_gpu_ids: list[int] = []
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_device_properties",
+        lambda gpu_id: queried_gpu_ids.append(gpu_id)
+        or SimpleNamespace(gcnArchName=gcn_arch_name),
+    )
+    return queried_gpu_ids
 
 
 @pytest.mark.parametrize(
@@ -352,10 +368,11 @@ def test_qwen3_asr_defaults_prefill_to_triton_only_on_rocm_72_gfx95(
         "get_hip_version",
         lambda: hip_version,
     )
+    fake_gcn_arch_name(monkeypatch, "gfx950" if gfx95_supported else "gfx942")
+    builder = make_engine_builder(mm_attention_backend="fa3")
+    builder.gpu_id = 0
 
-    defaults = make_engine_builder(mm_attention_backend="fa3").generation_defaults(
-        dtype="bfloat16"
-    )
+    defaults = builder.generation_defaults(dtype="bfloat16")
 
     if expected_backend is None:
         assert "prefill_attention_backend" not in defaults
@@ -369,7 +386,9 @@ def test_qwen3_asr_explicit_prefill_backend_overrides_rocm_default(
     monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_rocm", lambda: True)
     monkeypatch.setattr(qwen3_asr_builder, "is_gfx95_supported", lambda: True)
     monkeypatch.setattr(qwen3_asr_builder, "get_hip_version", lambda: (7, 2, 0))
+    fake_gcn_arch_name(monkeypatch, "gfx950")
     builder = make_engine_builder(mm_attention_backend="fa3")
+    builder.gpu_id = 0
 
     overrides = build_generation_batch_overrides(
         **builder.generation_defaults(dtype="bfloat16"),
@@ -377,6 +396,51 @@ def test_qwen3_asr_explicit_prefill_backend_overrides_rocm_default(
     )
 
     assert overrides["prefill_attention_backend"] == "aiter"
+
+
+@pytest.mark.parametrize(
+    ("is_rocm", "gcn_arch_name", "expected_backend", "expected_lean"),
+    [
+        (True, "gfx1201", "triton", False),
+        (True, "gfx1100", "triton", False),
+        (True, "gfx1250", None, None),
+        (False, "gfx1201", None, None),
+    ],
+)
+def test_qwen3_asr_defaults_attention_to_triton_on_consumer_rdna(
+    monkeypatch: pytest.MonkeyPatch,
+    is_rocm: bool,
+    gcn_arch_name: str,
+    expected_backend: str | None,
+    expected_lean: bool | None,
+) -> None:
+    """Qwen3-ASR on consumer RDNA crashed at startup: the default AITER attention kernels fail to compile, and Triton's Lean decode kernel overflows the LDS when decode graphs for batch 16 and above are captured."""
+    monkeypatch.setattr(
+        qwen3_asr_builder.current_platform,
+        "is_rocm",
+        lambda: is_rocm,
+    )
+    monkeypatch.setattr(qwen3_asr_builder, "is_gfx95_supported", lambda: False)
+    queried_gpu_ids = fake_gcn_arch_name(monkeypatch, gcn_arch_name)
+    builder = make_engine_builder(mm_attention_backend="triton_attn")
+    builder.gpu_id = 1
+
+    overrides = build_generation_batch_overrides(
+        **builder.generation_defaults(dtype="bfloat16")
+    )
+    explicit_overrides = build_generation_batch_overrides(
+        **builder.generation_defaults(dtype="bfloat16"),
+        server_args_overrides={
+            "attention_backend": "aiter",
+            "enable_lean_attention": True,
+        },
+    )
+
+    assert overrides.get("attention_backend") == expected_backend
+    assert overrides.get("enable_lean_attention") == expected_lean
+    assert explicit_overrides["attention_backend"] == "aiter"
+    assert explicit_overrides["enable_lean_attention"] is True
+    assert queried_gpu_ids == ([1, 1] if is_rocm else [])
 
 
 def test_qwen3_asr_torch_mps_uses_eager_native_profile() -> None:
