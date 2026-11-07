@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 import torch
 from numpy.typing import NDArray
 
+import sglang_omni.models.firered_asr2.engine_builder as engine_builder
 from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.models.firered_asr2.audio import (
     FireRedAdapter,
@@ -110,6 +113,7 @@ def test_pipeline_config_resolves_factory_arguments() -> None:
     assert arguments["server_args_overrides"]["max_running_requests"] == 4
     assert arguments["max_new_tokens"] == 256
     assert arguments["mm_embedding_cache_size_bytes"] == 256 * 1024 * 1024
+    assert arguments["enable_encoder_cuda_graph"] is True
 
 
 def test_attention_respects_loader_device_and_dtype_context() -> None:
@@ -122,3 +126,29 @@ def test_attention_respects_loader_device_and_dtype_context() -> None:
         assert all(p.dtype == torch.bfloat16 for p in attention.parameters())
     finally:
         torch.set_default_dtype(original)
+
+
+def test_prefill_chunk_smaller_than_a_cache_page_fails_before_loading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        engine_builder.AsrEngineBuilder,
+        "validate_before_infrastructure",
+        lambda self, server_args: None,
+    )
+    monkeypatch.setattr(
+        engine_builder, "resolved_view", lambda server_args: server_args
+    )
+    builder = engine_builder.FireRedASR2EngineBuilder(
+        max_new_tokens=256,
+        max_running_requests=8,
+        mm_embedding_cache_size_bytes=0,
+        enable_encoder_cuda_graph=True,
+    )
+    with pytest.raises(ValueError, match="KV cache page"):
+        builder.validate_before_infrastructure(
+            SimpleNamespace(chunked_prefill_size=16, page_size=128)
+        )
+    builder.validate_before_infrastructure(
+        SimpleNamespace(chunked_prefill_size=128, page_size=128)
+    )
