@@ -18,7 +18,7 @@
 //     <a class="reference internal" href="...">Qwen</a>   page's own group
 //     <details open="open"><summary>...</summary><ul> ...models... </ul></details>
 //   </li>
-// Note (Akazaakane): Platform parents also have children. The custom animated
+// Note (kaizuo li): Platform parents also have children. The custom animated
 // toggle is limited to Cookbook company pages so platform links can open their
 // guides; the universal collapse pass above still applies to them.
 (function () {
