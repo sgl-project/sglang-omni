@@ -123,8 +123,10 @@ class RealtimeSessionManager:
 
     async def close(self, session_id: str) -> None:
         session = self.sessions[session_id]
-        await session.teardown()
-        del self.sessions[session_id]
+        try:
+            await session.teardown()
+        finally:
+            self.sessions.pop(session_id)
         logger.info(f"Realtime session closed: {session_id}")
 
     def active_sessions(self) -> list[str]:
