@@ -48,7 +48,9 @@ def test_ogg_vorbis_decodes_as_the_reference_loader() -> None:
     np.testing.assert_array_equal(decoded, libsndfile_mono(data))
 
 
-@pytest.mark.parametrize("subtype", ["PCM_U8", "PCM_16", "PCM_32", "FLOAT", "DOUBLE"])
+@pytest.mark.parametrize(
+    "subtype", ["PCM_U8", "PCM_16", "PCM_32", "FLOAT", "DOUBLE", "ULAW", "ALAW"]
+)
 def test_every_wav_the_parser_read_decodes_unchanged(subtype: str) -> None:
     data = encode_audio(tone(2), "WAV", subtype, SAMPLE_RATE)
 
