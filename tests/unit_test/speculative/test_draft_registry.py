@@ -240,25 +240,36 @@ def test_model_defaults_serve_exactly_the_default_on_drafts_and_only_on_cuda(
 
 
 @pytest.mark.parametrize(
-    "model_path",
+    ("model_path", "serves_draft"),
     [
-        "Qwen/Qwen3-ASR-1.7B@7278e1e70fe206f11671096ffdd38061171dd6e5",
-        "/root/.cache/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5",
+        ("Qwen/Qwen3-ASR-1.7B@7278e1e70fe206f11671096ffdd38061171dd6e5", True),
+        (
+            "/root/.cache/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5",
+            True,
+        ),
+        (
+            "/root/.cache/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B-without-a-draft/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5",
+            False,
+        ),
+        ("/checkpoints/Qwen/Qwen3-ASR-1.7B", False),
     ],
 )
 def test_a_pinned_revision_or_cache_snapshot_serves_the_default_draft(
-    monkeypatch: pytest.MonkeyPatch, model_path: str
+    monkeypatch: pytest.MonkeyPatch, model_path: str, serves_draft: bool
 ) -> None:
     monkeypatch.setattr(current_platform, "is_cuda", lambda: True)
-    overrides = (
-        Qwen3ASRPipelineConfig(model_path=model_path)
-        .stage_named("asr")
-        .engine.overrides()
+    (draft,) = [
+        draft
+        for draft in DRAFT_REGISTRY
+        if draft.model_path == "Qwen/Qwen3-ASR-1.7B" and draft.is_default_on
+    ]
+    engine_keys = engine_draft_keys(
+        Qwen3ASRPipelineConfig(model_path=model_path).stage_named("asr").engine
     )
-    assert (
-        overrides["speculative_draft_model_path"]
-        == "wilsonzheng0327/Qwen3-ASR-1.7B-dflash"
-    )
+    if serves_draft:
+        assert engine_keys == registered_keys(draft)
+    else:
+        assert engine_keys == {}
 
 
 def test_a_draft_swapped_on_the_command_line_outlasts_the_default(

@@ -116,12 +116,11 @@ defaults that serve the draft give that entry's algorithm, draft repo and
 settings. They leave the revision out, and a revision they do give must match
 the entry. A model's defaults turn the draft on only for that entry's model
 path, with or without an `@<revision>` pin, or a Hugging Face cache snapshot
-of it, and only on CUDA. A config
-file's stage entries apply on top of it. With both `--config` and
-`--model-path`, the file's `model_path` decides whether the draft is on, even
-when `--model-path` names other weights.
-`sgl-omni config resolve` shows the engine block as written, and the
-pinned revision is added when the stage's server args are built.
+of it, and only on CUDA. A config file's stage entries apply on top of the
+draft. With both `--config` and `--model-path`, the file's `model_path`
+decides whether the draft is on, even when `--model-path` names other weights.
+`sgl-omni config resolve` shows the engine block as written, and the pinned
+revision is added when the stage's server args are built.
 `tests/unit_test/speculative/test_draft_registry.py` checks these rules, so a
 new draft adds its entry in the same change.
 
