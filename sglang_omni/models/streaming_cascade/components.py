@@ -49,6 +49,7 @@ from sglang_omni.proto.streams import (
     TEXT_DELTA,
     TRANSCRIPT_FORMAT,
     TRUNCATE,
+    PluginPort,
 )
 from sglang_omni.utils.imports import import_string
 
@@ -82,6 +83,8 @@ class ComponentKind:
     optional: OptionalFormats = frozenset()
     probe: Callable[[ComponentConfig], Awaitable[None]] | None = None
     reads_events: frozenset[str] = frozenset()
+    # Note (Junnan Li): The ports of the plugin formats the kind produces; a node publishing one of them adds its port to the Session's plugin output.
+    plugin_ports: tuple[PluginPort, ...] = ()
 
     def required_of(self, config: ComponentConfig) -> frozenset[str]:
         if callable(self.optional):
@@ -107,6 +110,7 @@ class ComponentRegistry:
         optional: OptionalFormats = frozenset(),
         probe: Callable[[ComponentConfig], Awaitable[None]] | None = None,
         reads_events: frozenset[str] = frozenset(),
+        plugin_ports: tuple[PluginPort, ...] = (),
     ) -> None:
         kind = config_cls.model_fields["kind"].default
         if not isinstance(kind, str) or not kind:
@@ -125,6 +129,7 @@ class ComponentRegistry:
                 optional,
                 probe,
                 reads_events,
+                plugin_ports,
             )
 
     def kind(self, name: str) -> ComponentKind:
