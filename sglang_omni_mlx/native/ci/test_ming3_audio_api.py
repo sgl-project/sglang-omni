@@ -379,6 +379,33 @@ def test_completion_limit_overrides_max_tokens(chat_port: int, chat_body: str) -
     assert reply["choices"][0]["finish_reason"] == "length"
 
 
+@pytest.mark.parametrize("max_new_tokens", [1, 2, 3, 8, 9])
+def test_nextn_stops_at_the_token_budget(max_new_tokens: int) -> None:
+    """A budget ending inside a verify round must not commit extra tokens."""
+    result = subprocess.run(
+        [
+            str(Path(RUNTIME_BIN) / "ming3_audio_chat"),
+            "--model-path",
+            str(Path(DATA_ROOT) / "models" / MODEL_REPO.replace("/", "_")),
+            "--audio",
+            str(Path(DATA_ROOT) / "corpus" / "v1" / "clips" / "0006_en_short.wav"),
+            "--prompt",
+            ASR_PROMPT,
+            "--speculative-algorithm",
+            "NEXTN",
+            "--max-new-tokens",
+            str(max_new_tokens),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=120,
+    )
+    output = json.loads(result.stdout)
+    assert output["completion_tokens"] == max_new_tokens
+    assert output["finish_reason"] == "length"
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
