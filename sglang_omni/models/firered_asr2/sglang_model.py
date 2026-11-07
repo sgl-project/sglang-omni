@@ -25,6 +25,8 @@ from transformers import PretrainedConfig
 
 from sglang_omni.models.firered_asr2.audio import FireRedAdapter, num_audio_tokens
 from sglang_omni.models.firered_asr2.conformer import ConformerEncoder
+from sglang_omni.models.firered_asr2.encoder_graph import FireRedEncoderGraph
+from sglang_omni.models.firered_asr2.npu_prefill_graph import FireRedNpuPrefillGraph
 
 
 class FireRedASR2ForConditionalGeneration(nn.Module):
@@ -48,6 +50,11 @@ class FireRedASR2ForConditionalGeneration(nn.Module):
         )
         self.pattern = MultiModalityDataPaddingPatternMultimodalTokens()
         self.encoder_max_batch_size = 4
+        self.encoder_graph: FireRedEncoderGraph | None = None
+        self.prefill_graph: FireRedNpuPrefillGraph | None = None
+
+    def get_input_embeddings(self) -> nn.Embedding:
+        return self.language_model.get_input_embeddings()
 
     def pad_input_ids(
         self, input_ids: list[int], mm_inputs: MultimodalInputs
@@ -75,8 +82,11 @@ class FireRedASR2ForConditionalGeneration(nn.Module):
             padded = nn.utils.rnn.pad_sequence(audio_features, batch_first=True).to(
                 device=encoder_parameter.device, dtype=encoder_parameter.dtype
             )
-            encoded, encoder_lengths, _ = self.encoder(padded, lengths)
-            projected, _ = self.encoder_projector(encoded, encoder_lengths)
+            if self.encoder_graph is None:
+                encoded, encoder_lengths, _ = self.encoder(padded, lengths)
+                projected, _ = self.encoder_projector(encoded, encoder_lengths)
+            else:
+                projected = self.encoder_graph(padded, lengths)
             for index, feature in enumerate(audio_features):
                 audio_token_count = num_audio_tokens(
                     feature.shape[0], self.encoder_projector.ds
@@ -101,11 +111,15 @@ class FireRedASR2ForConditionalGeneration(nn.Module):
         forward_batch: ForwardBatch,
         **kwargs: torch.Tensor | None,
     ) -> LogitsProcessorOutput:
+        if self.prefill_graph is not None and forward_batch.forward_mode.is_extend():
+            language_model = self.prefill_graph
+        else:
+            language_model = self.language_model
         return general_mm_embed_routine(
             input_ids=input_ids,
             positions=positions,
             forward_batch=forward_batch,
-            language_model=self.language_model,
+            language_model=language_model,
             data_embedding_funcs={Modality.AUDIO: self.get_audio_feature},
         )
 

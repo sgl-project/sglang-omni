@@ -32,6 +32,7 @@ class FireRedASR2PipelineConfig(PipelineConfig):
                 dtype="bfloat16",
                 max_new_tokens=256,
                 mm_embedding_cache_size_bytes=256 * 1024 * 1024,
+                enable_encoder_cuda_graph=True,
             ),
             engine=EngineArgs(max_running_requests=8),
             gpu=0,

@@ -15,6 +15,7 @@ def create_sglang_firered_asr2_executor(
     max_new_tokens: int,
     max_running_requests: int,
     mm_embedding_cache_size_bytes: int,
+    enable_encoder_cuda_graph: bool,
     device: str | None = None,
     gpu_id: int | None = None,
     server_args_overrides: Mapping[str, object] | None = None,
@@ -23,6 +24,7 @@ def create_sglang_firered_asr2_executor(
         max_new_tokens=max_new_tokens,
         max_running_requests=max_running_requests,
         mm_embedding_cache_size_bytes=mm_embedding_cache_size_bytes,
+        enable_encoder_cuda_graph=enable_encoder_cuda_graph,
     ).build(
         model_path,
         device=device,
