@@ -299,12 +299,17 @@ add_library(fishaudio_drama3 STATIC
   src/fishaudio_drama3/fishaudio_drama3_prompt.cpp
   src/fishaudio_drama3/fishaudio_drama3_codec.cpp
   src/fishaudio_drama3/fishaudio_drama3_codec_stream.cpp
+  src/fishaudio_drama3/fishaudio_drama3_experts.cpp
   src/fishaudio_drama3/fishaudio_drama3_model.cpp
   src/fishaudio_drama3/fishaudio_drama3_backbone.cpp
   src/fishaudio_drama3/fishaudio_drama3_tower.cpp
   src/fishaudio_drama3/fishaudio_drama3_generation.cpp)
 target_link_libraries(fishaudio_drama3 PUBLIC qwen3_asr)
 target_compile_options(fishaudio_drama3 PRIVATE -Wall -Wextra -ffp-contract=off)
+add_executable(fishaudio_drama3_experts_test EXCLUDE_FROM_ALL
+  ci/fishaudio_drama3_experts_test.cpp)
+target_link_libraries(fishaudio_drama3_experts_test PRIVATE fishaudio_drama3)
+
 add_executable(fishaudio_drama3_server src/fishaudio_drama3/fishaudio_drama3_server.cpp)
 target_link_libraries(fishaudio_drama3_server PRIVATE fishaudio_drama3 speech_service)
 target_compile_options(fishaudio_drama3_server PRIVATE -Wall -Wextra)
@@ -315,13 +320,34 @@ set_target_properties(fishaudio_drama3_server fishaudio_drama3_synthesize PROPER
   INSTALL_RPATH "@loader_path")
 install(TARGETS fishaudio_drama3_server fishaudio_drama3_synthesize RUNTIME DESTINATION bin)
 
+add_library(ming3_audio STATIC src/ming3_audio/ming3_audio_model.cpp
+  src/ming3_audio/ming3_audio_attention.cpp)
+target_link_libraries(ming3_audio PUBLIC qwen3_asr)
+target_compile_options(ming3_audio PRIVATE -Wall -Wextra)
+add_library(ming3_audio_service STATIC src/ming3_audio/ming3_audio_service.cpp)
+target_link_libraries(ming3_audio_service PUBLIC omni_service)
+target_compile_options(ming3_audio_service PRIVATE -Wall -Wextra)
+add_executable(ming3_audio_chat tools/ming3_audio_chat.cpp)
+target_link_libraries(ming3_audio_chat PRIVATE ming3_audio)
+add_executable(ming3_audio_server src/ming3_audio/ming3_audio_server.cpp)
+target_link_libraries(ming3_audio_server PRIVATE ming3_audio ming3_audio_service)
+set_target_properties(ming3_audio_chat ming3_audio_server PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS ming3_audio_chat ming3_audio_server RUNTIME DESTINATION bin)
+
 install(FILES licenses/music3-MIT.txt licenses/fishaudio_drama3-MIT.txt
   DESTINATION licenses)
+
+# Optional local codec fixture; requires a checkpoint and saved codes.
+add_executable(fishaudio_drama3_codec_test EXCLUDE_FROM_ALL
+  ci/fishaudio_drama3_codec_test.cpp)
+target_link_libraries(fishaudio_drama3_codec_test PRIVATE fishaudio_drama3)
 
 # The protocol tests' stand-in server (tests/stub_server.cpp); built only on
 # request and never installed.
 add_executable(stub_server EXCLUDE_FROM_ALL tests/stub_server.cpp)
-target_link_libraries(stub_server PRIVATE speech_service)
+target_link_libraries(stub_server PRIVATE speech_service ming3_audio_service)
 target_compile_options(stub_server PRIVATE -Wall -Wextra)
 set_target_properties(stub_server PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")

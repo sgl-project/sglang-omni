@@ -1,0 +1,8 @@
+{"to":"helper","msg":{"id":"c2","method":"permissions.status"}}
+{"to":"app","msg":{"id":"c2","result":{"microphone":"notDetermined","accessibility":false}}}
+{"to":"helper","msg":{"id":"c3","method":"permissions.request","params":{"permission":"microphone"}}}
+{"to":"app","msg":{"id":"c3","result":{"microphone":"granted","accessibility":false}}}
+{"to":"helper","msg":{"id":"c4","method":"permissions.request","params":{"permission":"accessibility"}}}
+{"to":"app","msg":{"id":"c4","result":{"microphone":"granted","accessibility":false}}}
+{"to":"helper","msg":{"id":"c5","method":"permissions.request","params":{"permission":"camera"}}}
+{"to":"app","msg":{"id":"c5","error":{"code":"bad_request","message":"Unknown permission camera"}}}

@@ -1,0 +1,5 @@
+{"to":"helper","msg":{"id":"c1","method":"helper.hello","params":{"protocol":1,"app":"0.1.0","logLevel":"info"}}}
+{"to":"app","msg":{"method":"log","params":{"level":"info","message":"voxtnew-helper 0.1.0 ready"}}}
+{"to":"app","msg":{"id":"c1","result":{"protocol":1,"version":"0.1.0","pid":4242,"methods":["helper.hello","helper.shutdown","job.cancel","permissions.status","permissions.request","capture.devices","capture.start","capture.stop","hotkey.configure","hotkey.status","app.frontmost","app.list","app.configure","app.icons","textio.focus","textio.selection","textio.paste","browser.url","output.watch","output.mute","output.release","output.recover"],"device":{"name":"MacBook Air (M2)","os":"macOS 26.7"}}}}
+{"to":"helper","msg":{"id":"c2","method":"helper.shutdown"}}
+{"to":"app","msg":{"id":"c2","result":{}}}

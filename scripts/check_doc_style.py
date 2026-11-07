@@ -135,6 +135,22 @@ def check_source(path: Path, source: str) -> list[Violation]:
     return violations
 
 
+def document_paths(docs_root: Path, pattern: str) -> list[Path]:
+    """Enumerate documents while excluding verified macOS metadata sidecars."""
+    paths: list[Path] = []
+    for path in sorted(docs_root.rglob(pattern)):
+        if path.name.startswith("._"):
+            with path.open("rb") as source:
+                if source.read(8) == bytes.fromhex("0005160700020000"):
+                    continue
+                else:
+                    pass
+        else:
+            pass
+        paths.append(path)
+    return paths
+
+
 def toctree_glob_pattern(target: str) -> re.Pattern[str]:
     """Match document names with single wildcards confined to one directory."""
     pattern_parts: list[str] = []
@@ -205,12 +221,14 @@ def markdown_toctree_source(source: str) -> str:
 def toctree_targets(docs_root: Path) -> set[Path]:
     """Resolve explicit and glob entries in RST and Markdown toctrees."""
     targets: set[Path] = set()
-    markdown_paths = sorted(docs_root.rglob("*.md"))
+    markdown_paths = document_paths(docs_root, "*.md")
     markdown_documents = {
         path.relative_to(docs_root).with_suffix("").as_posix(): path.resolve()
         for path in markdown_paths
     }
-    for navigation_path in sorted([*docs_root.rglob("*.rst"), *markdown_paths]):
+    for navigation_path in sorted(
+        [*document_paths(docs_root, "*.rst"), *markdown_paths]
+    ):
         directive_indentation: int | None = None
         option_indentation: int | None = None
         inactive_indentation: int | None = None
@@ -300,7 +318,7 @@ def check_docs(docs_root: Path = DOCS_ROOT) -> list[Violation]:
     """Scan all Markdown documentation without rewriting files."""
     violations: list[Violation] = []
     published_paths = toctree_targets(docs_root)
-    for path in sorted(docs_root.rglob("*.md")):
+    for path in document_paths(docs_root, "*.md"):
         if path != docs_root / "README.md" and not re.fullmatch(
             r"[a-z0-9_]+\.md", path.name
         ):
