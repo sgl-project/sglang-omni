@@ -324,6 +324,24 @@ final class HotkeyRecognizerTests: XCTestCase {
         XCTAssertFalse(r.handle(.mouseDown(button: 0, flags: 0, t: 400)).swallow)
     }
 
+    /// A modifier + mouse button cancel is not its modifier alone: tapping
+    /// ⌥ while recording does not cancel when the cancel is ⌥ + a side button.
+    func testMouseButtonCancelIsNotItsModifier() {
+        let lOpt = RawFlags.option | 0x20
+        var r = HotkeyRecognizer(config: HotkeyConfig(bindings: [], active: true,
+                                                      cancel: Binding(id: "cancel", modifiers: [.option: .any], button: 3, behavior: .tap)))
+        var fired: [String] = []
+        for i: KeyInput in [.flagsChanged(keyCode: 58, flags: lOpt, t: 0), .flagsChanged(keyCode: 58, flags: 0, t: 50)] {
+            fired += r.handle(i).events.map(\.binding)
+        }
+        XCTAssertEqual(fired, [], "⌥ alone")
+        for i: KeyInput in [.flagsChanged(keyCode: 58, flags: lOpt, t: 100), .mouseDown(button: 3, flags: lOpt, t: 150),
+                            .mouseUp(button: 3, t: 200), .flagsChanged(keyCode: 58, flags: 0, t: 250)] {
+            fired += r.handle(i).events.map(\.binding)
+        }
+        XCTAssertEqual(fired, ["cancel"], "⌥ + side button")
+    }
+
     /// A long press of a button is down on its press and up on its release;
     /// a double tap is a second press within the window.
     func testMouseButtonLongPressAndDoubleTap() {

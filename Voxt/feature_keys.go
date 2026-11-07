@@ -343,10 +343,12 @@ func (a *app) customKeys(c *ui.Context, r *keyRow, label string, save func(keys 
 		warnLine(c, uitext.ParseErrorText(err))
 	case r.edited:
 		caption(c, i18n.T("Press Return to use %s.", uitext.HotkeyText(r.text)))
+		return
 	default:
 		caption(c, i18n.T("Modifiers first, then one key: Fn, RightCommand, Control+Option+Space, Fn+F5."))
-		caption(c, i18n.T("Mouse buttons work too: Mouse3 is the middle button, Mouse4 and up the side buttons, with modifiers or without (Option+Mouse4)."))
 	}
+	// Also under an error: Mouse1 is refused, mouse buttons are not.
+	caption(c, i18n.T("Mouse buttons work too: Mouse3 is the middle button, Mouse4 and up the side buttons, with modifiers or without (Option+Mouse4)."))
 }
 
 // problemLines are a binding's problems, in the warning colour.

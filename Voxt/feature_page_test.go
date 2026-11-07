@@ -132,20 +132,34 @@ func TestTranscribeHotkeysEdit(t *testing.T) {
 	}
 }
 
-// TestTranscribeMouseButton: Custom… says that mouse buttons work too; a
-// typed one is saved, shows by its name in the try card, and goes to the
-// helper as its button number.
+// TestTranscribeMouseButton: Custom… says that mouse buttons work too, also
+// when it refuses Mouse1 (the left button); a typed side button is saved,
+// shows by its name in the try card, and goes to the helper as its button
+// number.
 func TestTranscribeMouseButton(t *testing.T) {
+	const hint = "Mouse buttons work too: Mouse3 is the middle button, Mouse4 and up the side buttons, with modifiers or without (Option+Mouse4)."
 	a, tt := trTester(t)
 	if err := tt.ClickControl("Keys of shortcut 1"); err != nil {
 		t.Fatal(err)
 	}
 	click(t, tt, "Custom…")
-	if !has(tt, "Mouse buttons work too: Mouse3 is the middle button, Mouse4 and up the side buttons, with modifiers or without (Option+Mouse4).") {
+	if !has(tt, hint) {
 		t.Errorf("no mouse hint in %q", tt.Texts())
 	}
 	click(t, tt, "Custom keys of shortcut 1")
 	for range len(settings.DefaultTranscribe) {
+		tt.Key(0, ui.KeyBackspace)
+	}
+	tt.Type("mouse1")
+	tt.Key(0, ui.KeyEnter)
+	frames(tt)
+	if hs := a.lib.settings.Get().Features.Transcribe.Hotkeys; hs[0].Keys != settings.DefaultTranscribe {
+		t.Fatalf("Mouse1 saved %+v", hs)
+	}
+	if !has(tt, "A key is unknown. Write the modifiers first, then one key: Fn, RightCommand, Control+Option+Space, Fn+F5.") || !has(tt, hint) {
+		t.Errorf("Mouse1: no unknown-key warning or no mouse hint in %q", tt.Texts())
+	}
+	for range len("mouse1") {
 		tt.Key(0, ui.KeyBackspace)
 	}
 	tt.Type("mouse4")
