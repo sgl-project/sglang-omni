@@ -42,7 +42,12 @@ SELECTED_CANDIDATES = 32
 TAIL_BLOCK_WIDTH = 32
 MAX_BLOCK_WIDTH = 4096
 SCORE_KEY_BITS = 32
-SAMPLER_WARPS = 8
+# 16 warps: a row's 4096 keys split over more threads, so each thread runs a shorter top-k
+# network. Back to back the 8-warp kernel is 2 us faster, but inside the decode graph, after
+# a layer's weight stream and the head GEMM, 16 warps is the faster one. The warp count sets
+# the order in which a row's weights are summed, so it can change only a draw whose
+# cumulative probability rounds across top_p.
+SAMPLER_WARPS = 16
 PHILOX_SEED_MODULUS = 1 << 63
 FIRST_DRAW_STREAM = 0
 RAS_DRAW_STREAM = 1
