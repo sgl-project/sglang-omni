@@ -564,17 +564,24 @@ class RealtimeAdapter(CoordinatorAdapter):
         """Feed bounded silence so the reply can end without more client audio."""
         assert self.input_sample_rate_hz is not None
         next_unit_index = last_unit.index + (1 if last_unit.real_samples else 0)
+        last_real_input_unit_index = (
+            last_unit.index if last_unit.real_samples else last_unit.index - 1
+        )
         start_sample = (
             last_unit.start_sample + len(last_unit.pcm) // PCM16_BYTES_PER_SAMPLE
         )
         reply = self.output_converter.reply
         for _ in range(max_tail_units):
             if reply is not None and (
-                reply.is_cancelled
+                (
+                    reply.is_open
+                    and reply.is_cancelled
+                    and reply.last_delivered_unit >= last_real_input_unit_index
+                )
                 or (
                     not reply.is_open
                     and reply.completed_input_unit_index is not None
-                    and reply.completed_input_unit_index >= last_unit.index
+                    and reply.completed_input_unit_index >= last_real_input_unit_index
                 )
             ):
                 break
@@ -592,12 +599,10 @@ class RealtimeAdapter(CoordinatorAdapter):
             next_unit_index += 1
             start_sample += UNIT_SAMPLES
             reply = self.output_converter.reply
-        self.output_converter.tail_cap_reached = reply is None or (
-            not reply.is_cancelled
-            and (
-                reply.completed_input_unit_index is None
-                or reply.completed_input_unit_index < last_unit.index
-            )
+        self.output_converter.tail_cap_reached = (
+            reply is None
+            or reply.completed_input_unit_index is None
+            or reply.completed_input_unit_index < last_real_input_unit_index
         )
         try:
             await super().process(

@@ -168,15 +168,22 @@ class DelayedReplyCoordinator(TailCoordinator):
     """A completed first reply leaves listening units before the next reply starts."""
 
     def __init__(
-        self, second_reply_start_unit: int = 3, second_reply_end_unit: int = 4
+        self,
+        second_reply_start_unit: int = 3,
+        second_reply_end_unit: int = 4,
+        first_reply_end_unit: int = 0,
     ) -> None:
         super().__init__(end_on_unit=None)
         self.second_reply_start_unit = second_reply_start_unit
         self.second_reply_end_unit = second_reply_end_unit
+        self.first_reply_end_unit = first_reply_end_unit
 
     def answer(self, chunk: TimedChunk) -> None:
         if chunk.seq == 0:
-            payload = voice(HEARD_PCM, end_of_turn=True)
+            payload = voice(HEARD_PCM, end_of_turn=self.first_reply_end_unit == 0)
+            turn = 1
+        elif chunk.seq == self.first_reply_end_unit:
+            payload = voice(b"", end_of_turn=True)
             turn = 1
         elif chunk.seq == self.second_reply_start_unit:
             payload = voice(NEXT_REPLY_PCM)
@@ -357,6 +364,57 @@ async def test_natural_tail_cap_marks_a_late_reply_incomplete() -> None:
             "max_output_tokens",
         )
     )
+
+
+@pytest.mark.asyncio
+async def test_empty_input_end_after_a_completed_reply_skips_tail_silence() -> None:
+    """An empty end marker after a full unit must not spend the tail budget on an already completed reply."""
+    coordinator = TailCoordinator(end_on_unit=0)
+    adapter, events = await open_adapter(coordinator)
+    await adapter.process(unit(0))
+
+    await adapter.finish_tail(
+        Unit(index=1, start_sample=UNIT_SAMPLES, pcm=b"", real_samples=0, eos=True),
+        3,
+    )
+    await adapter.close()
+
+    assert [(chunk.seq, chunk.eos) for chunk in coordinator.appended] == [
+        (0, False),
+        (1, True),
+    ]
+    assert [event for event in events if isinstance(event, ResponseFinished)] == [
+        ResponseFinished(FIRST_RESPONSE, FIRST_ITEM, "", True, "completed", "stop")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_previous_reply_does_not_skip_the_next_reply_tail() -> None:
+    """A closed cancelled reply must not prevent a later reply from starting on server silence."""
+    coordinator = DelayedReplyCoordinator(first_reply_end_unit=1)
+    adapter, events = await open_adapter(coordinator)
+    await adapter.process(unit(0))
+    await adapter.cancel()
+    await adapter.process(unit(1))
+    await adapter.process(unit(2))
+
+    await adapter.finish_tail(replace(unit(2), eos=True), 3)
+    await adapter.close()
+
+    assert [(chunk.seq, chunk.eos) for chunk in coordinator.appended] == [
+        (0, False),
+        (1, False),
+        (2, False),
+        (3, False),
+        (4, False),
+        (5, True),
+    ]
+    assert [event for event in events if isinstance(event, ResponseFinished)] == [
+        ResponseFinished(
+            FIRST_RESPONSE, FIRST_ITEM, "", True, "cancelled", "interrupted"
+        ),
+        ResponseFinished(SECOND_RESPONSE, SECOND_ITEM, "", True, "completed", "stop"),
+    ]
 
 
 @pytest.mark.asyncio
