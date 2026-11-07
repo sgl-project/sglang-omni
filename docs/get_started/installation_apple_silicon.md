@@ -15,7 +15,7 @@ For NVIDIA GPUs, see the [CUDA installation](./installation.md).
 ```{toctree}
 :hidden:
 
-Native MLX / Voxt <../mlx/index>
+Native MLX <../mlx/index>
 ```
 
 ## Prerequisites
