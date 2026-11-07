@@ -42,6 +42,7 @@ sgl-omni config resolve --model-path openbmb/MiniCPM-o-4_5 --variant session
 | `max_sessions` | 2 | Conversations at the same time. Further connections get HTTP 503. The thinker and talker reserve GPU memory for this many full-length conversations, so raise it only as far as the GPU has room. Startup warms up perception at each batch size up to this value |
 | `batch_sessions` | `true` | Perception and speech handle the ready second of every conversation in one call. `false` gives each conversation's second a call of its own, one call at a time; `max_sessions`, memory and startup stay the same, and the thinker and talker still batch conversations |
 | `reference_audio` | checkpoint default | Voice used when a session sends no reference |
+| `mps` | `auto` | CUDA MPS lets the four stage processes on one GPU run their kernels at the same time, so many conversations keep their units on time. With one conversation, `off` answers each unit about 10 ms sooner |
 | `speech_state_bytes_per_session` | 2 GiB | Memory the speech stage may hold per conversation. A conversation that needs more is closed and the others keep running |
 | `speech.dtype` | `float32` | Precision of the voice decoder's flow model: `float32`, `float16` or `bfloat16`; the lower precisions change the voice slightly |
 | `speech.enable_dit_torch_compile` | `false` | Compile the voice decoder's flow model with `torch.compile` while the server starts; CUDA only |
