@@ -230,7 +230,7 @@ gh workflow run omni-ci.yaml --ref <branch> \
   -f ci_labels="run-tts-ci run-moss-tts-local-transformer-v1.5"
 ```
 
-Manual runs of CPU CI, XPU CI and Voxt Mac CI ignore labels and always run their tests.
+Manual runs of CPU CI, XPU CI and Voxt Mac CI ignore labels and always run their tests, and so does the run of Voxt Mac CI that Voxt Nightly starts each night.
 
 Maintainers with CI permissions can use `/tag-and-rerun-ci` with one or more short stage or model targets to re-run completed CI workflows:
 
