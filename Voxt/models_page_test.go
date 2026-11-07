@@ -409,12 +409,15 @@ func modelShots(t *testing.T, a *app, tt *ui.Tester, save func(string)) {
 	save("models-advanced-open")
 	a.modelAdvanced = false
 	// A hidden model, in its section opened (models_cards.go).
-	a.updateSettings(func(s *settings.Settings) { s.Models.Hidden = []string{models.ASRFast} })
-	a.modelHiddenOpen = true
+	fastName := uitext.ModelName(models.ASRFast)
+	a.navigate("/home")
+	a.navigate(modelsPath)
+	click(t, tt, i18n.T("Hide %s", fastName))
+	scrollToText(tt, i18n.T("Hidden models"))
+	click(t, tt, i18n.T("Hidden models"))
 	scrollToText(tt, i18n.T("Hidden models"))
 	save("models-hidden")
-	a.modelHiddenOpen = false
-	a.updateSettings(func(s *settings.Settings) { s.Models.Hidden = nil })
+	click(t, tt, i18n.T("Show %s", fastName))
 	// The page as it was: the setup guide's shots show it behind them.
 	a.navigate("/home")
 	a.navigate(modelsPath)
