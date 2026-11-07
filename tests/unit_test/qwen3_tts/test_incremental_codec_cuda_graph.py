@@ -141,7 +141,9 @@ class FakeArena:
         return torch.tensor(list(slots), dtype=torch.long)
 
 
-def make_runner(**kwargs) -> Qwen3TTSIncrementalCodecCudaGraphRunner:
+def make_runner(
+    graph_pool: IncrementalCodecGraphPool | None = None, **kwargs
+) -> Qwen3TTSIncrementalCodecCudaGraphRunner:
     runner = Qwen3TTSIncrementalCodecCudaGraphRunner(
         SimpleNamespace(),
         device=torch.device("cpu"),
@@ -151,7 +153,7 @@ def make_runner(**kwargs) -> Qwen3TTSIncrementalCodecCudaGraphRunner:
         fresh_frames=(8,),
         enabled=False,
         arena=FakeArena(),
-        graph_pool=IncrementalCodecGraphPool(stream_priority=0),
+        graph_pool=graph_pool or IncrementalCodecGraphPool(stream_priority=0),
         **kwargs,
     )
     runner.enabled = True
@@ -167,17 +169,31 @@ def no_op_synchronize(device: torch.device) -> None:
     It takes the device the contract passes and has nothing to wait for."""
 
 
+def fail_synchronize(device: torch.device) -> None:
+    raise RuntimeError("injected synchronize failure")
+
+
 def stub_device_runtime(
     monkeypatch: pytest.MonkeyPatch,
     runner: Qwen3TTSIncrementalCodecCudaGraphRunner,
     *,
     synchronize: DeviceSynchronizer = no_op_synchronize,
 ) -> None:
-    """Give a CPU runner the teardown path of a device that has streams."""
+    """Give a CPU runner the capture and teardown paths of a device that has streams."""
     monkeypatch.setattr(
         runner,
         "device_module",
-        SimpleNamespace(synchronize=synchronize, empty_cache=lambda: None),
+        SimpleNamespace(
+            synchronize=synchronize,
+            empty_cache=lambda: None,
+            mem_get_info=lambda device: (1 << 40, 1 << 40),
+            memory_allocated=lambda device: 0,
+            memory_reserved=lambda device: 0,
+            Stream=lambda device, priority: SimpleNamespace(),
+        ),
+    )
+    monkeypatch.setattr(
+        runner, "graph_backend", SimpleNamespace(graph_pool_handle=SimpleNamespace)
     )
     monkeypatch.setattr(
         incremental_codec_cuda_graph,
@@ -304,6 +320,81 @@ def test_incremental_codec_graph_replay_failure_disables_runner(
     assert key not in runner.graphs
 
 
+@pytest.mark.parametrize(
+    ("synchronize", "expected_resets"),
+    [(no_op_synchronize, 1), (fail_synchronize, 0)],
+)
+def test_incremental_codec_replay_failure_stops_every_runner_on_its_pool(
+    monkeypatch: pytest.MonkeyPatch,
+    synchronize: DeviceSynchronizer,
+    expected_resets: int,
+) -> None:
+    """A failed replay freed the capture stream's cuBLAS workspace while the runners
+    sharing that stream kept replaying, and their next replay hit an illegal address."""
+    graph_pool = IncrementalCodecGraphPool(stream_priority=0)
+    key = IncrementalCodecGraphKey(8, 1)
+    failing_runner = make_runner(graph_pool, batch_sizes=(1,))
+    failing_graph = FailingGraph()
+    failing_runner.graphs[key] = make_entry(1, graph=failing_graph)
+    sibling_runner = make_runner(graph_pool, batch_sizes=(1,))
+    sibling_graph = FakeGraph()
+    sibling_runner.graphs[key] = make_entry(1, graph=sibling_graph)
+    other_pool_runner = make_runner(batch_sizes=(1,))
+    other_pool_runner.graphs[key] = make_entry(1)
+    stub_device_runtime(monkeypatch, failing_runner, synchronize=synchronize)
+    codes = torch.zeros(1, 2, 8, dtype=torch.long)
+
+    with pytest.raises(RuntimeError, match="injected replay failure"):
+        failing_runner.decode_slots(codes, [0])
+
+    assert sibling_runner.decode_slots(codes, [0]) is None
+    assert sibling_graph.replays == 0
+    assert sibling_runner.stats()["disable_reason"].startswith("runtime_replay_failed")
+    assert failing_graph.resets == expected_resets
+    assert sibling_graph.resets == expected_resets
+    assert other_pool_runner.decode_slots(codes, [0]) is not None
+
+
+def test_incremental_codec_capture_failure_stops_every_runner_on_its_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed capture freed the cuBLAS workspace the runners already captured on its
+    stream read, and left them replaying with it while later runners captured there."""
+    graph_pool = IncrementalCodecGraphPool(stream_priority=0)
+    captured_graph = FakeGraph()
+    captured_runner = make_runner(graph_pool, batch_sizes=(1,))
+    failing_runner = make_runner(graph_pool, batch_sizes=(1,))
+    later_runner = make_runner(graph_pool, batch_sizes=(1,))
+    for runner in (captured_runner, failing_runner, later_runner):
+        runner.configured = True
+        runner.enabled = False
+        stub_device_runtime(monkeypatch, runner)
+
+    def capture_entry(key, *, pool, capture_stream):
+        return make_entry(1, graph=captured_graph)
+
+    def fail_capture(key, *, pool, capture_stream):
+        raise RuntimeError("injected capture failure")
+
+    def forbid_capture(key, *, pool, capture_stream):
+        raise AssertionError("a stopped pool captured a graph")
+
+    monkeypatch.setattr(captured_runner, "capture_graph", capture_entry)
+    monkeypatch.setattr(failing_runner, "capture_graph", fail_capture)
+    monkeypatch.setattr(later_runner, "capture_graph", forbid_capture)
+
+    captured_runner.capture()
+    assert captured_runner.enabled is True
+    failing_runner.capture()
+    later_runner.capture()
+
+    assert captured_graph.resets == 1
+    for runner in (captured_runner, failing_runner, later_runner):
+        assert runner.enabled is False
+        assert runner.graphs == {}
+        assert runner.stats()["disable_reason"].startswith("capture_failed")
+
+
 def test_incremental_codec_capture_rollback_retains_unsynchronized_resources(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -322,9 +413,6 @@ def test_incremental_codec_capture_rollback_retains_unsynchronized_resources(
     temporary = {key: SimpleNamespace()}
     pool = object()
     capture_stream = object()
-
-    def fail_synchronize(device: torch.device) -> None:
-        raise RuntimeError("injected synchronize failure")
 
     stub_device_runtime(monkeypatch, runner, synchronize=fail_synchronize)
 
