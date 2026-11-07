@@ -13,7 +13,6 @@ namespace mx = mlx::core;
 
 namespace {
 
-constexpr int kAudioSampleRate = 44100;
 constexpr int kWindowSamples = 400;
 constexpr int kHopSamples = 160;
 constexpr int kFftSamples = 512;
@@ -41,12 +40,12 @@ mx::array Fbank(const std::vector<float> &samples) {
   const auto spectrum = mx::abs(
       mx::fft::rfft((framed - 0.97f * previous) * window, kFftSamples, -1));
   const float low = 1127.0f * std::log1p(20.0f / 700.0f);
-  const float high = 1127.0f * std::log1p(kReferenceSampleRate / 2.0f / 700.0f);
+  const float high = 1127.0f * std::log1p(kSpeakerSampleRate / 2.0f / 700.0f);
   const float delta = (high - low) / (kMelBins + 1);
   std::vector<float> filters((kFftSamples / 2 + 1) * kMelBins, 0.0f);
   for (int i = 0; i < kFftSamples / 2; ++i) {
     const float mel =
-        1127.0f * std::log1p(static_cast<float>(i * kReferenceSampleRate) /
+        1127.0f * std::log1p(static_cast<float>(i * kSpeakerSampleRate) /
                              kFftSamples / 700.0f);
     for (int j = 0; j < kMelBins; ++j) {
       const float left = low + j * delta;
@@ -60,38 +59,6 @@ mx::array Fbank(const std::vector<float> &samples) {
                  mx::array(filters.data(), {kFftSamples / 2 + 1, kMelBins})),
       mx::array(std::numeric_limits<float>::epsilon())));
   return mx::expand_dims(features - mx::mean(features, 0, true), 0);
-}
-
-size_t ResampledLength(size_t sample_count) {
-  return (sample_count * kAudioSampleRate + kReferenceSampleRate - 1) /
-         kReferenceSampleRate;
-}
-
-std::vector<float> ResampleForVae(const std::vector<float> &samples) {
-  // Note (altale): Six-crossing Hann sinc with 0.99 rolloff matches the
-  // reference resampler.
-  constexpr double rolloff = 0.99;
-  constexpr int width = 7;
-  std::vector<float> output(ResampledLength(samples.size()));
-  for (size_t i = 0; i < output.size(); ++i) {
-    const double position =
-        static_cast<double>(i) * kReferenceSampleRate / kAudioSampleRate;
-    const int center = static_cast<int>(position);
-    for (int j = std::max(0, center - width);
-         j < std::min(static_cast<int>(samples.size()), center + width + 1);
-         ++j) {
-      const double offset = (j - position) * rolloff;
-      if (std::abs(offset) < 6.0) {
-        const double angle = std::numbers::pi * offset;
-        const double window = std::cos(angle / 12.0);
-        const double sinc = angle == 0.0 ? 1.0 : std::sin(angle) / angle;
-        output[i] +=
-            samples[j] * static_cast<float>(sinc * window * window * rolloff);
-      } else {
-      }
-    }
-  }
-  return output;
 }
 
 } // namespace
@@ -217,25 +184,24 @@ MingReferenceEncoder::MingReferenceEncoder(
 }
 
 ReferenceConditioning
-MingReferenceEncoder::Encode(const std::vector<float> &samples) const {
-  assert(samples.size() >= kWindowSamples);
-  auto resampled = ResampleForVae(samples);
-  resampled.resize(static_cast<size_t>(PatchCount(samples.size())) *
-                       alignment_samples_,
-                   0.0f);
-  const auto latents = mx::astype(
-      audio_.Encode(
-          mx::array(resampled.data(), {1, static_cast<int>(resampled.size())})),
-      mx::float32);
-  const auto speaker = speaker_.Encode(samples);
+MingReferenceEncoder::Encode(const ReferenceAudio &audio) const {
+  assert(audio.samples_16k.size() >= kWindowSamples);
+  std::vector<float> padded = audio.samples_44k;
+  padded.resize(static_cast<size_t>(PatchCount(padded.size())) *
+                    alignment_samples_,
+                0.0f);
+  const auto latents =
+      mx::astype(audio_.Encode(mx::array(padded.data(),
+                                         {1, static_cast<int>(padded.size())})),
+                 mx::float32);
+  const auto speaker = speaker_.Encode(audio.samples_16k);
   mx::eval(latents, speaker);
   return {latents, speaker};
 }
 
 int MingReferenceEncoder::PatchCount(size_t sample_count) const {
-  return static_cast<int>(
-      (ResampledLength(sample_count) + alignment_samples_ - 1) /
-      alignment_samples_);
+  return static_cast<int>((sample_count + alignment_samples_ - 1) /
+                          alignment_samples_);
 }
 
 } // namespace ming_tts

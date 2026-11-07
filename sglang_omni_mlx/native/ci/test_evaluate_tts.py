@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+import soundfile as sf
 
 from benchmarks.eval import benchmark_tts_seedtts as tts
 from sglang_omni_mlx.native.ci import evaluate_tts as native_tts
@@ -52,11 +53,15 @@ def test_native_reference_audio_preparation(
     )
     prefix, encoded = samples[0].ref_audio.split(",", 1)
     assert prefix == "data:audio/wav;base64"
-    with wave.open(io.BytesIO(base64.b64decode(encoded, validate=True))) as waveform:
-        assert waveform.getparams()[:4] == (1, 2, 16000, 1600)
-        pcm16 = array("h", waveform.readframes(waveform.getnframes()))
-    expected_amplitude = sum(channel_samples) / channel_count
-    assert pcm16[100:-100] == pytest.approx([expected_amplitude] * 1400, rel=0.001)
+    with sf.SoundFile(io.BytesIO(base64.b64decode(encoded, validate=True))) as waveform:
+        assert (
+            waveform.channels,
+            waveform.samplerate,
+            waveform.frames,
+            waveform.subtype,
+        ) == (1, sample_rate, sample_rate // 10, "FLOAT")
+        reference = waveform.read(dtype="float32")
+    assert reference == pytest.approx(sum(channel_samples) / channel_count / 32768)
     assert reference_path.read_bytes() == original_bytes
 
 

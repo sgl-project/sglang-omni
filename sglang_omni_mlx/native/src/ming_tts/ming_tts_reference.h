@@ -5,8 +5,15 @@
 
 namespace ming_tts {
 
-// The sample rate of the reference audio MingReferenceEncoder takes.
-inline constexpr int kReferenceSampleRate = 16000;
+// The sample rate CampPlus embeds.
+inline constexpr int kSpeakerSampleRate = 16000;
+
+// A reference recording at the rates its two encoders take: 16 kHz for
+// CampPlus and AudioVAE's 44.1 kHz.
+struct ReferenceAudio {
+  std::vector<float> samples_16k;
+  std::vector<float> samples_44k;
+};
 
 struct ReferenceConditioning {
   mlx::core::array latents;
@@ -30,8 +37,8 @@ private:
 class MingReferenceEncoder {
 public:
   explicit MingReferenceEncoder(const std::filesystem::path &directory);
-  ReferenceConditioning Encode(const std::vector<float> &samples) const;
-  // The acoustic patches Encode makes of sample_count samples.
+  ReferenceConditioning Encode(const ReferenceAudio &audio) const;
+  // The acoustic patches Encode makes of sample_count 44.1 kHz samples.
   int PatchCount(size_t sample_count) const;
 
 private:

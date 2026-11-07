@@ -13,11 +13,13 @@
 // default description), instructions, max_new_tokens (acoustic patches, 200
 // by default and at most 256), temperature, stage_params.tts_engine (cfg,
 // sigma, temperature), and ref_audio with ref_text to clone a voice: ref_audio
-// a base64 mono 16 kHz WAV data URL of 0.1 to 30 s, which needs
-// campplus.safetensors in the model directory. One request runs at a time and
-// N more (2 by default) may wait; the rest get 503. A request not done S
-// seconds (600 by default) after it arrives is cancelled, with 504 or an early
-// end to its stream, and so is a request whose client disconnects.
+// a base64 mono WAV data URL of 0.1 to 30 s at any common rate, which needs
+// campplus.safetensors in the model directory. As on CUDA, the reference is
+// resampled from its own rate to 44.1 kHz for AudioVAE and 16 kHz for
+// CampPlus. One request runs at a time and N more (2 by default) may wait; the
+// rest get 503. A request not done S seconds (600 by default) after it arrives
+// is cancelled, with 504 or an early end to its stream, and so is a request
+// whose client disconnects.
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -29,7 +31,7 @@
 #include <string_view>
 #include <vector>
 
-#include "common/audio.h"
+#include "common/reference_audio.h"
 #include "common/text.h"
 #include "ming_tts/ming_tts_audio.h"
 #include "ming_tts/ming_tts_generator.h"
@@ -54,9 +56,10 @@ constexpr float kDefaultCfg = 2.0f;
 constexpr float kMinCfg = 1e-5f;
 constexpr float kDefaultSigma = 0.25f;
 constexpr double kMinReferenceSeconds = 0.1;
-constexpr int kMaxReferenceSeconds = 30;
-// Room for kMaxReferenceSeconds of 16-bit 16 kHz WAV as base64.
-constexpr size_t kMaxRequestBodyBytes = 4 * 1024 * 1024;
+constexpr double kMaxReferenceSeconds = 30;
+// Room for kMaxReferenceSeconds of mono float32 WAV at up to 192 kHz as
+// base64 (29 MiB).
+constexpr size_t kMaxRequestBodyBytes = 32 * 1024 * 1024;
 constexpr std::string_view kReferenceAudioPrefix = "data:audio/wav;base64,";
 constexpr std::array<std::string_view, 14> kAcceptedFields = {
     "model",         "input",   "response_format", "stream",
@@ -86,8 +89,10 @@ float NumberField(const Json &source, const char *name, float fallback) {
   return value.get<float>();
 }
 
-// Mono 16 kHz samples of a base64 WAV data URL.
-std::vector<float> DecodeReferenceAudio(const std::string &url) {
+// A base64 mono WAV data URL at the rates the reference encoder takes;
+// vae_sample_rate is AudioVAE's.
+ming_tts::ReferenceAudio DecodeReferenceAudio(const std::string &url,
+                                              int vae_sample_rate) {
   if (!url.starts_with(kReferenceAudioPrefix)) {
     throw std::invalid_argument(
         "ref_audio must be a data:audio/wav;base64 URL on this server");
@@ -99,26 +104,26 @@ std::vector<float> DecodeReferenceAudio(const std::string &url) {
     throw std::invalid_argument("ref_audio must be valid base64");
   } else {
   }
-  std::vector<float> samples;
   try {
-    samples = omni_common::DecodeWav(
-        std::string_view(reinterpret_cast<const char *>(bytes->data()),
-                         bytes->size()),
-        ming_tts::kReferenceSampleRate);
+    const omni_common::DecodedAudio decoded =
+        omni_common::DecodeAnyWav(std::string_view(
+            reinterpret_cast<const char *>(bytes->data()), bytes->size()));
+    const double seconds =
+        static_cast<double>(decoded.samples.size()) / decoded.sample_rate;
+    if (seconds < kMinReferenceSeconds || seconds > kMaxReferenceSeconds) {
+      throw std::invalid_argument(
+          "reference audio must be between 0.1 and 30 seconds long");
+    } else if (decoded.channel_count != 1) {
+      throw std::invalid_argument("reference audio must be mono");
+    } else {
+    }
+    return {omni_common::Resample(decoded.samples, decoded.sample_rate,
+                                  ming_tts::kSpeakerSampleRate),
+            omni_common::Resample(decoded.samples, decoded.sample_rate,
+                                  vae_sample_rate)};
   } catch (const std::invalid_argument &error) {
     throw std::invalid_argument(std::string("ref_audio: ") + error.what());
   }
-  if (samples.size() < kMinReferenceSeconds * ming_tts::kReferenceSampleRate ||
-      samples.size() > static_cast<size_t>(kMaxReferenceSeconds *
-                                           ming_tts::kReferenceSampleRate)) {
-    throw std::invalid_argument(
-        "ref_audio must hold 0.1 to 30 seconds of mono 16 kHz audio");
-  } else if (!std::all_of(samples.begin(), samples.end(),
-                          [](float sample) { return std::isfinite(sample); })) {
-    throw std::invalid_argument("ref_audio samples must be finite");
-  } else {
-  }
-  return samples;
 }
 
 std::vector<float> Samples(const mx::array &waveform) {
@@ -131,7 +136,7 @@ std::vector<float> Samples(const mx::array &waveform) {
 // One parsed request: its prompt, reference audio and sampling.
 struct Synthesis {
   ming_tts::Prompt prompt;
-  std::vector<float> reference_samples;
+  std::optional<ming_tts::ReferenceAudio> reference;
   int max_patches = 0;
   float cfg = 0, sigma = 0, temperature = 0;
   bool stream = false;
@@ -241,11 +246,11 @@ private:
             "directory");
       } else {
       }
-      synthesis.reference_samples =
-          DecodeReferenceAudio(ref_audio.get<std::string>());
+      synthesis.reference = DecodeReferenceAudio(ref_audio.get<std::string>(),
+                                                 decoder_.sample_rate());
       reference_text = ref_text.get<std::string>();
-      reference_patches =
-          reference_encoder_->PatchCount(synthesis.reference_samples.size());
+      reference_patches = reference_encoder_->PatchCount(
+          synthesis.reference->samples_44k.size());
     } else {
     }
     synthesis.prompt = frontend_.BuildPrompt(
@@ -270,8 +275,8 @@ private:
       context.check_deadline();
     };
     std::optional<ming_tts::ReferenceConditioning> reference;
-    if (!synthesis.reference_samples.empty()) {
-      reference = reference_encoder_->Encode(synthesis.reference_samples);
+    if (synthesis.reference.has_value()) {
+      reference = reference_encoder_->Encode(*synthesis.reference);
     } else {
     }
     stop_if_cancelled();

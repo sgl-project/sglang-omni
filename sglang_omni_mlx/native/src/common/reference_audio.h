@@ -11,6 +11,8 @@ namespace omni_common {
 struct DecodedAudio {
   std::vector<float> samples;
   int sample_rate = 0;
+  // The file's channels, before they were averaged.
+  int channel_count = 0;
 };
 
 // A WAV file held in memory (8, 16, 24 or 32-bit PCM, 32 or 64-bit float,

@@ -265,9 +265,9 @@ def test_invalid_request(
 @pytest.mark.parametrize(
     "declared_length,body_bytes,status",
     [
-        (True, 4 * 1024 * 1024 + 1, 413),
-        (False, 4 * 1024 * 1024, 400),
-        (False, 4 * 1024 * 1024 + 1, 413),
+        (True, 32 * 1024 * 1024 + 1, 413),
+        (False, 32 * 1024 * 1024, 400),
+        (False, 32 * 1024 * 1024 + 1, 413),
     ],
 )
 def test_request_body_limit(
@@ -293,7 +293,7 @@ def test_request_body_limit(
         assert response.status == status
         detail = json.load(response)["detail"]
         if status == 413:
-            assert detail == "request body must be at most 4194304 bytes"
+            assert detail == "request body must be at most 33554432 bytes"
         else:
             assert "input" in detail
     connection.close()
@@ -375,7 +375,7 @@ def test_audio(
 
 @pytest.mark.parametrize(
     "sample_rate,channels,samples",
-    [(44100, 1, 4410), (16000, 2, 1600), (16000, 1, 100)],
+    [(44100, 1, 4409), (16000, 2, 1600), (16000, 1, 100)],
 )
 def test_invalid_reference_wav(
     connection: http.client.HTTPConnection,

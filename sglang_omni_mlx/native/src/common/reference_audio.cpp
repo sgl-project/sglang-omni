@@ -175,6 +175,7 @@ DecodedAudio DecodeAnyWav(std::string_view file_bytes) {
   const auto *bytes = reinterpret_cast<const unsigned char *>(data.data());
   DecodedAudio audio;
   audio.sample_rate = static_cast<int>(sample_rate);
+  audio.channel_count = channel_count;
   audio.samples.resize(frame_count);
   for (size_t frame = 0; frame < frame_count; ++frame) {
     const unsigned char *frame_bytes = bytes + frame * bytes_per_frame;

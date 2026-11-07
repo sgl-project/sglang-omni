@@ -32,7 +32,6 @@ from benchmarks.metrics.performance import print_speed_summary
 
 logger = logging.getLogger(__name__)
 ASR_SAMPLE_RATE = 16000
-REFERENCE_SAMPLE_RATE = 16000
 
 
 def prepare_reference_samples(config: TtsSeedttsBenchmarkConfig) -> list[SampleInput]:
@@ -53,17 +52,15 @@ def prepare_reference_samples(config: TtsSeedttsBenchmarkConfig) -> list[SampleI
         audio_samples, sample_rate = sf.read(
             sample.ref_audio, dtype="float32", always_2d=True
         )
-        waveform = torch.from_numpy(audio_samples).mean(dim=1)
-        waveform = torchaudio.functional.resample(
-            waveform, sample_rate, REFERENCE_SAMPLE_RATE
-        )
+        # note (XXXXRT666): the server resamples from the file's own rate, as
+        # CUDA does, and takes mono only; float32 keeps every sample as read.
         with io.BytesIO() as buffer:
             sf.write(
                 buffer,
-                waveform.numpy(),
-                REFERENCE_SAMPLE_RATE,
+                audio_samples.mean(axis=1),
+                sample_rate,
                 format="WAV",
-                subtype="PCM_16",
+                subtype="FLOAT",
             )
             reference_url = "data:audio/wav;base64," + base64.b64encode(
                 buffer.getvalue()
