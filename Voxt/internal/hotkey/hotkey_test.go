@@ -30,6 +30,14 @@ func TestParse(t *testing.T) {
 		{in: "F5", canon: "F5", code: 96},
 		{in: "Fn+A", canon: "Fn+A", code: 0},
 		{in: "RightCommand+Up", canon: "RightCommand+Up", code: 126},
+		{in: "Mouse3", canon: "Mouse3", code: 2},
+		{in: "option+mouse4", canon: "Option+Mouse4", code: 3},
+		{in: "Control+Command+Mouse32", canon: "Control+Command+Mouse32", code: 31},
+		{in: "Mouse1", err: ErrUnknown},
+		{in: "Mouse2", err: ErrUnknown},
+		{in: "Mouse33", err: ErrUnknown},
+		{in: "Mouse04", err: ErrUnknown},
+		{in: "Mouse4+V", err: ErrTwoKeys},
 		{in: "", err: ErrEmpty},
 		{in: "Hyper", err: ErrUnknown},
 		{in: "Control+A+B", err: ErrTwoKeys},
@@ -77,6 +85,9 @@ func TestOverlaps(t *testing.T) {
 		{"LeftCommand", "RightCommand", false},
 		{"Control+Command+V", "Command+Control+V", true},
 		{"Control+Command+V", "Control+Command+C", false},
+		{"Mouse4", "Mouse4", true},
+		{"Mouse4", "Mouse5", false},
+		{"Option+Mouse4", "Mouse4", false},
 	} {
 		if got := p(tc.a).Overlaps(p(tc.b)); got != tc.want {
 			t.Errorf("%s overlaps %s = %v", tc.a, tc.b, got)
@@ -137,6 +148,32 @@ func TestBuildSkipsBadAndDuplicates(t *testing.T) {
 	}
 	if len(p.Carbon) != 0 {
 		t.Errorf("carbon %+v", p.Carbon)
+	}
+}
+
+// TestBuildMouseButtons: a mouse button goes to the helper as its button
+// number (Mouse3, the middle button, is 2), with its modifiers and no key,
+// and never to Carbon, which has no mouse buttons.
+func TestBuildMouseButtons(t *testing.T) {
+	f := settings.Features{
+		Transcribe: settings.Transcribe{Feature: settings.Feature{Hotkeys: []settings.Hotkey{
+			{Keys: "Mouse4", Trigger: settings.TriggerLong}, {Keys: "Option+Mouse3"},
+		}}},
+		Cancel: settings.Hotkey{Keys: "Mouse5"},
+	}
+	p := Build(f, Features)
+	if len(p.Bindings) != 2 || len(p.Carbon) != 0 {
+		t.Fatalf("plan %+v", p)
+	}
+	side, mid := p.Bindings[0], p.Bindings[1]
+	if side.Button == nil || *side.Button != 3 || side.Key != nil || len(side.Modifiers) != 0 || side.Behavior != proto.BehaviorLongPress {
+		t.Errorf("side button %+v", side)
+	}
+	if mid.Button == nil || *mid.Button != 2 || mid.Key != nil || mid.Modifiers[proto.ModOption] != proto.SideAny {
+		t.Errorf("middle button %+v", mid)
+	}
+	if p.Cancel == nil || p.Cancel.Button == nil || *p.Cancel.Button != 4 || p.Cancel.Key != nil {
+		t.Errorf("cancel %+v", p.Cancel)
 	}
 }
 
@@ -239,6 +276,7 @@ func TestCheck(t *testing.T) {
 	f := settings.Features{
 		Transcribe: settings.Transcribe{Feature: settings.Feature{Hotkeys: []settings.Hotkey{
 			hk("Fn", ""), hk("Fn", settings.TriggerDouble), hk("Command+Space", ""), hk("K", ""), hk("F6", ""), hk("Bad+", ""),
+			hk("Mouse4", ""),
 		}}},
 		Translate: settings.Translate{Feature: settings.Feature{Hotkeys: []settings.Hotkey{
 			hk("Fn", settings.TriggerTap), hk("Fn", settings.TriggerLong),
@@ -269,7 +307,7 @@ func TestCheck(t *testing.T) {
 		}
 		delete(got, key)
 	}
-	// F6 alone is fine; Translate's fn long press is its own duplicate,
+	// F6 alone is fine, so is a mouse button; Translate's fn long press is its own duplicate,
 	// not a conflict with Transcribe's fn tap (other trigger).
 	if len(got) != 0 {
 		t.Errorf("unexpected problems %v", got)
@@ -290,6 +328,7 @@ func TestNeedsTap(t *testing.T) {
 		{settings.Hotkey{Keys: "Control+Command+V", Trigger: settings.TriggerDouble}, true},
 		{settings.Hotkey{Keys: "RightCommand+V"}, true},
 		{settings.Hotkey{Keys: "Option+Space", Trigger: settings.TriggerLong}, true},
+		{settings.Hotkey{Keys: "Control+Option+Mouse4"}, true},
 	} {
 		if got := NeedsTap(tc.h); got != tc.want {
 			t.Errorf("NeedsTap(%+v) = %v", tc.h, got)

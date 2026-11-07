@@ -238,13 +238,16 @@ func TestFixtures(t *testing.T) {
 	}
 }
 
-// validBinding: known families and sides, a behaviour, and a modifier for
-// a chord.
+// validBinding: known families and sides, a behaviour, a key or a mouse
+// button (2 and up) but not both, and a modifier for a chord.
 func validBinding(b HotkeyBinding) bool {
 	if b.ID == "" || !slices.Contains([]string{BehaviorTap, BehaviorDoubleTap, BehaviorLongPress}, b.Behavior) {
 		return false
 	}
-	if b.Key == nil && len(b.Modifiers) == 0 {
+	if b.Button != nil && (b.Key != nil || *b.Button < 2) {
+		return false
+	}
+	if b.Key == nil && b.Button == nil && len(b.Modifiers) == 0 {
 		return false
 	}
 	for fam, side := range b.Modifiers {

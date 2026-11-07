@@ -88,6 +88,11 @@ func keyGlyph(k string) string {
 		return "↖"
 	case "End":
 		return "↘"
+	case "Mouse3":
+		return i18n.T("Middle mouse button")
+	}
+	if n, ok := strings.CutPrefix(k, "Mouse"); ok {
+		return i18n.T("Mouse button %s", n)
 	}
 	return k
 }

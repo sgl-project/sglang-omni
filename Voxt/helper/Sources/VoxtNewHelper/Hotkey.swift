@@ -70,10 +70,12 @@ final class HotkeyTap: @unchecked Sendable {
         let ready = DispatchSemaphore(value: 0)
         let thread = Thread { [self] in
             // Mouse presses too (not moves or scrolls: too many): they spoil
-            // a modifier chord held for an ⌥-click or ⌥-drag, and always pass.
+            // a modifier chord held for an ⌥-click or ⌥-drag; the other
+            // buttons' presses and releases fire mouse bindings.
             let mask: CGEventMask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue) |
                 (1 << CGEventType.flagsChanged.rawValue) | (1 << CGEventType.leftMouseDown.rawValue) |
-                (1 << CGEventType.rightMouseDown.rawValue) | (1 << CGEventType.otherMouseDown.rawValue)
+                (1 << CGEventType.rightMouseDown.rawValue) | (1 << CGEventType.otherMouseDown.rawValue) |
+                (1 << CGEventType.otherMouseUp.rawValue)
             let callback: CGEventTapCallBack = { _, type, event, refcon in
                 guard let refcon else { return Unmanaged.passUnretained(event) }
                 let me = Unmanaged<HotkeyTap>.fromOpaque(refcon).takeUnretainedValue()
@@ -221,7 +223,9 @@ final class HotkeyTap: @unchecked Sendable {
         case .flagsChanged: input = .flagsChanged(keyCode: keyCode, flags: flags, t: start)
         case .keyDown: input = .keyDown(keyCode: keyCode, flags: flags, isRepeat: event.getIntegerValueField(.keyboardEventAutorepeat) != 0, t: start)
         case .keyUp: input = .keyUp(keyCode: keyCode, flags: flags, t: start)
-        case .leftMouseDown, .rightMouseDown, .otherMouseDown: input = .pointer(t: start)
+        case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+            input = .mouseDown(button: Int(event.getIntegerValueField(.mouseEventButtonNumber)), flags: flags, t: start)
+        case .otherMouseUp: input = .mouseUp(button: Int(event.getIntegerValueField(.mouseEventButtonNumber)), t: start)
         default: return false
         }
         let (fired, swallow, deadline): ([HotkeyEvent], Bool, Double?) = lock.withLock {

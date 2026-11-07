@@ -16,6 +16,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Show in the Dock** (Settings → General): off, Voxt is in the menu bar only, and its menu bar icon stays on.
 - **Also copy the result to the clipboard** (Settings → General): each result stays on the clipboard, also after it was pasted, and a result the answer card shows is copied too.
 - **Show live text** (Settings → Overlay style): off, the overlay shows no words while you speak or while the model writes.
+- **Mouse buttons as shortcuts**, as in Voxt 1.x: in a shortcut's Custom… field type Mouse3 (the middle button), Mouse4 or Mouse5 (the side buttons most mice have) up to Mouse32, alone or with modifiers (Option+Mouse4). Tap, double tap and long press work as with keys, and the button's clicks no longer reach the app in front. Like fn and single modifiers, mouse buttons need Accessibility.
 
 ### Changed
 
@@ -45,6 +46,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **在程序坞中显示**（设置 → 通用）。关掉后 Voxt 只在菜单栏里，菜单栏图标会一直开着。
 - **同时把结果复制到剪贴板**（设置 → 通用）。每次的结果都留在剪贴板里，粘贴过的也一样；只出现在答案卡片里的结果也会复制。
 - **显示实时文字**（设置 → 浮窗样式）。关掉后，你说话时和模型写回答时，浮窗里都不显示文字。
+- **鼠标按钮当快捷键**，同 Voxt 1.x：在快捷键的“自定义…”里输入 Mouse3（中键）、Mouse4 或 Mouse5（多数鼠标的两个侧键），最多到 Mouse32，可以单独用，也可以加修饰键（Option+Mouse4）。单按、双击、长按和键盘快捷键一样；这个按钮按下时不再传给前台 App。和 fn、单个修饰键一样，鼠标快捷键需要辅助功能权限。
 
 #### 变更
 
