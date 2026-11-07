@@ -72,7 +72,7 @@ func Remove(s *settings.Settings, id string) {
 
 // Config is the llm package's configuration of a setup.
 func Config(p settings.Provider) llm.ProviderConfig {
-	return llm.ProviderConfig{ID: p.ID, BaseURL: p.Endpoint, Model: p.Model}
+	return llm.ProviderConfig{ID: p.ID, BaseURL: p.Endpoint, Model: p.Model, Generation: Generation(p.Generation)}
 }
 
 // Model is the model a setup uses: its own, else its preset's default.

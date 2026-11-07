@@ -24,4 +24,41 @@ type Provider struct {
 	// AppID is Doubao's App ID (its older console: the key is then the
 	// Access Token); "" for its newer console's single API key.
 	AppID string `json:"appID,omitempty"`
+	// Generation is a language model's request settings (unset: Voxt's).
+	Generation Generation `json:"generation,omitzero"`
+}
+
+// Generation is a language model setup's request settings, the fields of
+// Voxt 1.x's service dialog (Generation Settings, Advanced, Expert, a
+// few services' own options); internal/providers turns them into the
+// request's (llm.Generation). An unset field leaves Voxt's value, or the
+// service's default.
+type Generation struct {
+	MaxOutputTokens   *int     `json:"maxOutputTokens,omitempty"`
+	Temperature       *float64 `json:"temperature,omitempty"`
+	TopP              *float64 `json:"topP,omitempty"`
+	TopK              *int     `json:"topK,omitempty"`
+	MinP              *float64 `json:"minP,omitempty"`
+	Seed              *int64   `json:"seed,omitempty"`
+	Stop              []string `json:"stop,omitempty"`
+	PresencePenalty   *float64 `json:"presencePenalty,omitempty"`
+	FrequencyPenalty  *float64 `json:"frequencyPenalty,omitempty"`
+	RepetitionPenalty *float64 `json:"repetitionPenalty,omitempty"`
+	Logprobs          bool     `json:"logprobs,omitempty"`
+	TopLogprobs       *int     `json:"topLogprobs,omitempty"`
+	// ResponseFormat is "" (plain text), "json" or "jsonSchema" (with
+	// JSONSchema).
+	ResponseFormat string `json:"responseFormat,omitempty"`
+	JSONSchema     string `json:"jsonSchema,omitempty"`
+	// Thinking is "" (Voxt's default), "off", "on", "effort" (with
+	// ThinkingEffort) or "budget" (with ThinkingBudget tokens).
+	Thinking       string `json:"thinking,omitempty"`
+	ThinkingEffort string `json:"thinkingEffort,omitempty"`
+	ThinkingBudget int    `json:"thinkingBudget,omitempty"`
+	Verbosity      string `json:"verbosity,omitempty"`    // OpenAI's
+	KeepAlive      string `json:"keepAlive,omitempty"`    // Ollama's
+	IncludeUsage   *bool  `json:"includeUsage,omitempty"` // oMLX's
+	OptionsJSON    string `json:"optionsJSON,omitempty"`  // Ollama's options: a JSON object
+	// ExtraBodyJSON is a JSON object merged into the request body last.
+	ExtraBodyJSON string `json:"extraBodyJSON,omitempty"`
 }

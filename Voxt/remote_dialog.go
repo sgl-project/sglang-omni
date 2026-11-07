@@ -5,6 +5,7 @@ package main
 // a connection test before saving, and Remove.
 
 import (
+	"reflect"
 	"slices"
 	"strings"
 
@@ -36,7 +37,7 @@ type providerDialog struct {
 // unsaved says whether the form holds what Save has not kept: a key typed
 // or to remove, or a changed address, model or App ID.
 func (d *providerDialog) unsaved() bool {
-	return d.key != "" || d.removeKey || d.setup() != d.was
+	return d.key != "" || d.removeKey || !reflect.DeepEqual(d.setup(), d.was)
 }
 
 // otherModel is the model menu's last choice: a model id typed in.
