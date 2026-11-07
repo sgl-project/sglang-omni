@@ -35,6 +35,7 @@ from sglang_omni.serve.protocol import (
     SpeechBatchResponse,
     SpeechBatchResult,
     SpeechReference,
+    normalize_speech_extra_parameters,
 )
 from sglang_omni.serve.speech_errors import (
     SpeechAPIError,
@@ -44,6 +45,7 @@ from sglang_omni.serve.speech_errors import (
     speech_generation_error,
 )
 from sglang_omni.serve.speech_limits import MAX_REFERENCE_AUDIO_BYTES
+from sglang_omni.utils.json import JsonValue
 
 if TYPE_CHECKING:
     from sglang_omni.client import Client
@@ -51,7 +53,6 @@ if TYPE_CHECKING:
         SpeakerSampleStore,
         UploadedVoiceReference,
     )
-    from sglang_omni.utils.json import JsonValue
 else:
     pass
 
@@ -284,6 +285,7 @@ class SpeechRequestValidator:
             raise bad_request("speech request body must be a JSON object")
         else:
             pass
+        payload = normalize_speech_extra_parameters(payload)
         self.validate_raw_payload(payload)
         self.validate_supported_fields(payload, CreateSpeechRequest)
         try:
@@ -1252,8 +1254,8 @@ def build_speech_prompt(
     return request.input
 
 
-def build_extra_params(request: CreateSpeechRequest) -> dict[str, int]:
-    extra_params: dict[str, int] = {}
+def build_extra_params(request: CreateSpeechRequest) -> dict[str, JsonValue]:
+    extra_params = dict(request.extra_params or {})
     if request.initial_codec_chunk_frames is not None:
         extra_params[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = (
             request.initial_codec_chunk_frames
