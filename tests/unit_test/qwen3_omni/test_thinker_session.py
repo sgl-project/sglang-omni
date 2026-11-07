@@ -12,7 +12,7 @@ from sglang_omni.models.qwen3_omni import thinker_session
 from sglang_omni.models.qwen3_omni.session_input import QwenInputHooks
 from sglang_omni.models.qwen3_omni.thinker_session import (
     CODEC_FRAME_MS,
-    PREFILL_TEXT_ROWS,
+    SPOKEN_FRAMES_PER_TOKEN,
     TRUNCATE_FORMAT,
     QwenThinkerSessionAdapter,
 )
@@ -37,9 +37,14 @@ END = 99
 NEWLINE = 10
 SYSTEM_PREFIX = [1, 2]
 PROMPT_TEXT = "<|im_start|>system\nbe brief<|im_end|>\n<|im_start|>user\n<audio><|im_end|>\n<|im_start|>assistant\n"
-DELIVERED_TWO_FRAMES = control_chunk(
-    REPLY_DELIVERED, turn=1, audio_ms=2.0 * CODEC_FRAME_MS
-)
+
+
+def spoken_ms(tokens: int) -> float:
+    """A playback time by which the talker has spoken that many reply tokens at its median pace."""
+    return (tokens + 0.5) * CODEC_FRAME_MS * SPOKEN_FRAMES_PER_TOKEN
+
+
+DELIVERED_FIVE_TOKENS = control_chunk(REPLY_DELIVERED, turn=1, audio_ms=spoken_ms(5))
 
 
 @pytest.fixture
@@ -171,10 +176,10 @@ def test_an_interrupted_turn_is_refilled_with_what_was_heard(
     finish(adapter, first, [50, END])
     adapter.build(IDENTITY, unit_chunk(2), payload(2, [7], audio_rows=[1.0, 2.0]))
     abort(adapter, [61, 62, 63, 64, 65, 66])
-    heard_ms = 2 * CODEC_FRAME_MS
+    heard_ms = spoken_ms(5)
     adapter.control(IDENTITY, truncate(2, t_ms=heard_ms))
     third = adapter.build(IDENTITY, unit_chunk(3), payload(3, [8], audio_rows=[3.0]))
-    heard = PREFILL_TEXT_ROWS + 2
+    heard = 5
     assert third.req.origin_input_ids == [
         NEWLINE,
         7,
@@ -192,6 +197,11 @@ def test_an_interrupted_turn_is_refilled_with_what_was_heard(
     assert fourth.req.origin_input_ids == [NEWLINE, 9]
 
 
+def test_a_cut_keeps_the_tokens_spoken_by_then_not_the_rows_the_talker_read() -> None:
+    """On an H200, the first 4033 ms of a reply's audio said 14 of its tokens while the talker had read 53 of its text rows; a cut there keeps a count within the spoken pace's range."""
+    assert 12 <= thinker_session.heard_tokens(4033) <= 15
+
+
 def test_without_truncate_the_whole_generated_reply_stays(
     adapter: QwenThinkerSessionAdapter,
 ) -> None:
@@ -204,22 +214,20 @@ def test_without_truncate_the_whole_generated_reply_stays(
 @pytest.mark.parametrize(
     ("reports", "heard"),
     [
+        pytest.param([DELIVERED_FIVE_TOKENS], 5, id="no_client_truncate"),
         pytest.param(
-            [DELIVERED_TWO_FRAMES], PREFILL_TEXT_ROWS + 2, id="no_client_truncate"
-        ),
-        pytest.param(
-            [DELIVERED_TWO_FRAMES, control_chunk(TRUNCATE, t_ms=CODEC_FRAME_MS)],
-            PREFILL_TEXT_ROWS + 1,
+            [DELIVERED_FIVE_TOKENS, control_chunk(TRUNCATE, t_ms=spoken_ms(4))],
+            4,
             id="client_below_delivered",
         ),
         pytest.param(
-            [DELIVERED_TWO_FRAMES, control_chunk(TRUNCATE, t_ms=4 * CODEC_FRAME_MS)],
-            PREFILL_TEXT_ROWS + 2,
+            [DELIVERED_FIVE_TOKENS, control_chunk(TRUNCATE, t_ms=spoken_ms(7))],
+            5,
             id="client_above_delivered",
         ),
         pytest.param(
-            [control_chunk(TRUNCATE, t_ms=4 * CODEC_FRAME_MS), DELIVERED_TWO_FRAMES],
-            PREFILL_TEXT_ROWS + 2,
+            [control_chunk(TRUNCATE, t_ms=spoken_ms(7)), DELIVERED_FIVE_TOKENS],
+            5,
             id="client_first",
         ),
     ],
@@ -234,7 +242,7 @@ def test_an_interrupted_reply_keeps_at_most_the_smaller_of_delivered_and_heard(
     heard: int,
     is_reply_finished: bool,
 ) -> None:
-    """The graph delivered two codec frames of the reply when the interrupt came: whether the thinker had finished the reply or was aborted, the history keeps those without a client truncate, fewer when the client heard less, and never more, whichever report reaches the dialog first."""
+    """The graph delivered the audio of five reply tokens when the interrupt came: whether the thinker had finished the reply or was aborted, the history keeps those without a client truncate, fewer when the client heard less, and never more, whichever report reaches the dialog first."""
     hooks, dialog_outputs, context = interrupted_dialog()
     first = adapter.build(IDENTITY, unit_chunk(1), payload(1, [5]))
     generated = [51, 52, 53, 54, 55, 56, 57, 58]
@@ -264,7 +272,7 @@ def test_truncating_past_the_end_of_a_finished_reply_keeps_its_kv(
 ) -> None:
     first = adapter.build(IDENTITY, unit_chunk(1), payload(1, [5]))
     finish(adapter, first, [51, 52, END])
-    adapter.control(IDENTITY, truncate(1, t_ms=10 * CODEC_FRAME_MS))
+    adapter.control(IDENTITY, truncate(1, t_ms=spoken_ms(13)))
     preparation = adapter.prepare_unit(IDENTITY, unit_chunk(2), payload(2, [7]))
     assert preparation.reset_history is False
     second = adapter.build(IDENTITY, unit_chunk(2), payload(2, [7]))
@@ -278,7 +286,7 @@ def test_a_truncate_of_an_earlier_reply_keeps_the_history(
     finish(adapter, first, [51, 52, 53, END])
     second = adapter.build(IDENTITY, unit_chunk(2), payload(2, [7]))
     finish(adapter, second, [71, 72, 73, END])
-    adapter.control(IDENTITY, truncate(1, t_ms=CODEC_FRAME_MS))
+    adapter.control(IDENTITY, truncate(1, t_ms=spoken_ms(4)))
     preparation = adapter.prepare_unit(IDENTITY, unit_chunk(3), payload(3, [8]))
     assert preparation.reset_history is False
     third = adapter.build(IDENTITY, unit_chunk(3), payload(3, [8]))
@@ -290,11 +298,11 @@ def test_truncating_a_finished_reply_rebuilds_the_native_session(
 ) -> None:
     first = adapter.build(IDENTITY, unit_chunk(1), payload(1, [5], audio_rows=[1.0]))
     finish(adapter, first, [51, 52, 53, 54, 55, END])
-    adapter.control(IDENTITY, truncate(1, t_ms=CODEC_FRAME_MS))
+    adapter.control(IDENTITY, truncate(1, t_ms=spoken_ms(4)))
     preparation = adapter.prepare_unit(IDENTITY, unit_chunk(2), payload(2, [7]))
     assert preparation.reset_history is True
     second = adapter.build(IDENTITY, unit_chunk(2), payload(2, [7], audio_rows=[2.0]))
-    heard = PREFILL_TEXT_ROWS + 1
+    heard = 4
     assert second.req.origin_input_ids == SYSTEM_PREFIX + [
         5,
         *[51, 52, 53, 54, 55][:heard],
@@ -357,11 +365,11 @@ def test_a_second_truncate_of_a_finished_reply_only_cuts_further(
 ) -> None:
     first = adapter.build(IDENTITY, unit_chunk(1), payload(1, [5]))
     finish(adapter, first, [51, 52, 53, 54, 55, 56, 57, END])
-    adapter.control(IDENTITY, truncate(1, t_ms=2 * CODEC_FRAME_MS))
-    adapter.control(IDENTITY, truncate(1, t_ms=3 * CODEC_FRAME_MS))
-    adapter.control(IDENTITY, truncate(1, t_ms=0))
+    adapter.control(IDENTITY, truncate(1, t_ms=spoken_ms(5)))
+    adapter.control(IDENTITY, truncate(1, t_ms=spoken_ms(6)))
+    adapter.control(IDENTITY, truncate(1, t_ms=spoken_ms(3)))
     second = adapter.build(IDENTITY, unit_chunk(2), payload(2, [7]))
-    heard = PREFILL_TEXT_ROWS
+    heard = 3
     assert second.req.origin_input_ids == SYSTEM_PREFIX + [
         5,
         *[51, 52, 53, 54, 55, 56, 57][:heard],
@@ -376,10 +384,10 @@ def test_a_later_truncate_of_an_interrupted_reply_only_cuts_further(
 ) -> None:
     adapter.build(IDENTITY, unit_chunk(1), payload(1, [5]))
     abort(adapter, [51, 52, 53, 54, 55, 56])
-    adapter.control(IDENTITY, truncate(1, t_ms=CODEC_FRAME_MS))
-    adapter.control(IDENTITY, truncate(1, t_ms=2 * CODEC_FRAME_MS))
+    adapter.control(IDENTITY, truncate(1, t_ms=spoken_ms(4)))
+    adapter.control(IDENTITY, truncate(1, t_ms=spoken_ms(5)))
     second = adapter.build(IDENTITY, unit_chunk(2), payload(2, [7]))
-    heard = PREFILL_TEXT_ROWS + 1
+    heard = 4
     assert second.req.origin_input_ids == SYSTEM_PREFIX + [
         5,
         *[51, 52, 53, 54, 55, 56][:heard],
@@ -430,7 +438,7 @@ def test_an_aborted_rebuild_keeps_the_history_for_the_next_unit(
 ) -> None:
     first = adapter.build(IDENTITY, unit_chunk(1), payload(1, [5]))
     finish(adapter, first, [51, 52, 53, 54, 55, END])
-    adapter.control(IDENTITY, truncate(1, t_ms=0))
+    adapter.control(IDENTITY, truncate(1, t_ms=spoken_ms(3)))
     assert adapter.prepare_unit(IDENTITY, unit_chunk(2), payload(2, [7])).reset_history
     adapter.build(IDENTITY, unit_chunk(2), payload(2, [7]))
     abort(adapter, [71])
@@ -438,7 +446,7 @@ def test_an_aborted_rebuild_keeps_the_history_for_the_next_unit(
     third = adapter.build(IDENTITY, unit_chunk(3), payload(3, [8]))
     assert third.req.origin_input_ids == SYSTEM_PREFIX + [
         5,
-        *[51, 52, 53, 54, 55][:PREFILL_TEXT_ROWS],
+        *[51, 52, 53, 54, 55][:3],
         END,
         NEWLINE,
         7,
@@ -470,14 +478,12 @@ CUT_REFILLED_REPLY_HISTORY = SYSTEM_PREFIX + [
     ("heard_ms", "is_next_reply_finished", "reset_history", "third_ids"),
     [
         pytest.param(
-            CODEC_FRAME_MS, True, True, CUT_REFILLED_REPLY_HISTORY, id="finished"
+            spoken_ms(4), True, True, CUT_REFILLED_REPLY_HISTORY, id="finished"
         ),
         pytest.param(
-            CODEC_FRAME_MS, False, False, CUT_REFILLED_REPLY_HISTORY, id="aborted"
+            spoken_ms(4), False, False, CUT_REFILLED_REPLY_HISTORY, id="aborted"
         ),
-        pytest.param(
-            10 * CODEC_FRAME_MS, True, False, [NEWLINE, 8], id="past-the-reply"
-        ),
+        pytest.param(spoken_ms(13), True, False, [NEWLINE, 8], id="past-the-reply"),
     ],
 )
 def test_a_truncate_of_an_aborted_reply_the_unit_in_flight_refills_still_cuts_it(
@@ -511,7 +517,7 @@ def test_a_cut_refilled_reply_stays_cut_when_the_dialog_asks_the_next_turn_again
     adapter.build(IDENTITY, unit_chunk(1), payload(1, [5]))
     abort(adapter, [51, 52, 53, 54, 55, 56])
     adapter.build(IDENTITY, unit_chunk(2), payload(2, [7]))
-    adapter.control(IDENTITY, truncate(1, t_ms=CODEC_FRAME_MS))
+    adapter.control(IDENTITY, truncate(1, t_ms=spoken_ms(4)))
     abort(adapter, [60])
     third = adapter.build(IDENTITY, unit_chunk(3, (2,)), payload(3, [8]))
     assert third.req.origin_input_ids == SYSTEM_PREFIX + [
@@ -534,13 +540,13 @@ def test_a_truncate_between_a_units_preparation_and_its_build_rebuilds_the_next_
     finish(adapter, first, [51, 52, 53, 54, 55, END])
     preparation = adapter.prepare_unit(IDENTITY, unit_chunk(2), payload(2, [7]))
     assert preparation.reset_history is False
-    adapter.control(IDENTITY, truncate(1, t_ms=CODEC_FRAME_MS))
+    adapter.control(IDENTITY, truncate(1, t_ms=spoken_ms(4)))
     second = adapter.build(IDENTITY, unit_chunk(2), payload(2, [7]))
     assert second.req.origin_input_ids == [NEWLINE, 7]
     finish(adapter, second, [60, END])
     assert adapter.prepare_unit(IDENTITY, unit_chunk(3), payload(3, [8])).reset_history
     third = adapter.build(IDENTITY, unit_chunk(3), payload(3, [8]))
-    heard = PREFILL_TEXT_ROWS + 1
+    heard = 4
     assert third.req.origin_input_ids == SYSTEM_PREFIX + [
         5,
         *[51, 52, 53, 54, 55][:heard],
@@ -566,14 +572,14 @@ def test_a_truncate_of_a_committed_reply_while_the_next_unit_is_in_flight_outliv
     first = adapter.build(IDENTITY, unit_chunk(1), payload(1, [5]))
     finish(adapter, first, [51, 52, 53, 54, 55, END])
     second = adapter.build(IDENTITY, unit_chunk(2), payload(2, [7]))
-    adapter.control(IDENTITY, truncate(1, t_ms=CODEC_FRAME_MS))
+    adapter.control(IDENTITY, truncate(1, t_ms=spoken_ms(4)))
     if is_next_reply_finished:
         finish(adapter, second, [60, END])
     else:
         abort(adapter, [60])
     assert adapter.prepare_unit(IDENTITY, unit_chunk(3), payload(3, [8])).reset_history
     third = adapter.build(IDENTITY, unit_chunk(3), payload(3, [8]))
-    heard = PREFILL_TEXT_ROWS + 1
+    heard = 4
     assert third.req.origin_input_ids == SYSTEM_PREFIX + [
         5,
         *[51, 52, 53, 54, 55][:heard],
