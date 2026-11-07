@@ -115,9 +115,9 @@ MyGo
   https://sqlite.org, in the public domain).
 
 The Omni native runtime (VoxtNew.app/Contents/Resources/omni)
-  bin/qwen3_asr_server is built from sglang-omni's sglang_omni_mlx/native
-  (this repository, Apache License 2.0) by scripts/build-omni.sh. It
-  carries, linked in or beside it:
+  bin/qwen3_asr_server (and its copy bin/silero_vad_server) is built from
+  sglang-omni's sglang_omni_mlx/native (this repository, Apache License
+  2.0) by scripts/build-omni.sh. It carries, linked in or beside it:
   - MLX 0.32.3 (libmlx.dylib, libjaccl.dylib, mlx.metallib), Copyright
     2023 Apple Inc., MIT (LICENSES/omni/mlx.LICENSE.txt)
   - CivetWeb 1.16, Copyright 2013-2021 the CivetWeb developers, 2004-2013

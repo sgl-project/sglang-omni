@@ -15,6 +15,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Changed
 
+- In Activity Monitor the voice detector (Silero VAD) runs as `silero_vad_server`, apart from the speech model's `qwen3_asr_server`, so that a recording no longer looks like two copies of the speech model.
 - **Models are named by what they are**: the Local models page, the feature pages' model menus, the setup guide and History name a model by its family, size and quantisation (Qwen3-ASR 1.7B (8bit), Qwen3-ASR 0.6B (4bit)), as Voxt 1.x did, instead of "Accurate speech recognition"; its card has short labels (Local, Accurate or Fast, Realtime, whether it knows your main language), says which features use it, and has no rating.
 - **Language models are remote only.** Voxt no longer downloads or runs language models on this Mac: set one up on the Language models page (Ollama runs one here, for free). Those Voxt 2.0.0 downloaded are listed under Local models → "Language models no longer used", to delete. Settings → Privacy, the setup guide and Home say where the text goes.
 - **The Local models page is now Speech models**: the speech models of this Mac, then the remote speech services, each tagged Local or Remote; language models are on the Language models page.
@@ -37,6 +38,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 变更
 
+- 活动监视器里，声音检测（Silero VAD）的进程叫 `silero_vad_server`，和语音识别模型的 `qwen3_asr_server` 分开，录音时不再像是开了两个语音识别进程。
 - **模型写清楚是哪一个**：本地模型页、各功能页的模型菜单、设置引导和历史都按系列、尺寸和量化称呼模型（Qwen3-ASR 1.7B (8bit)、Qwen3-ASR 0.6B (4bit)），和 Voxt 1.x 一样，不再写“精准语音识别”；卡片上有简短的标签（本地、准确或快速、实时、是否支持主语言）和使用位置，没有评分。
 - **语言模型只用远程服务。** Voxt 不再在这台 Mac 上下载和运行语言模型：请在“语言模型”页设置一个（用 Ollama 可以在本机免费运行）。Voxt 2.0.0 下载过的语言模型列在本地模型页的“不再使用的语言模型”里，可以删除。设置 → 隐私、设置引导和首页都写明了文字会发到哪里。
 - **本地模型页改名为语音模型**：先列这台 Mac 上的语音模型，再列远程语音识别服务，各自标为“本地”或“远程”；语言模型在语言模型页。

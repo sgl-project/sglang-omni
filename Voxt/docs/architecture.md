@@ -302,7 +302,7 @@ While a session is live (or the answer card shows) the bindings go to the helper
 | Logs | `~/Library/Logs/VoxtNew/voxtnew.log` (app, rotated at 5 MB), `helper.log` (the helper's stderr) and `llm.log` (voxtnew-llm's stderr) |
 | Helper | `VoxtNew.app/Contents/Resources/helper/voxtnew-helper` (or `$VOXTNEW_HELPER`) |
 | Language models' runtime | `VoxtNew.app/Contents/Resources/llm/`: `voxtnew-llm`, `mlx.metallib`, `llama.framework`, `swift-transformers_Hub.bundle` (`scripts/build-llm.sh`; or `$VOXTNEW_LLM`) |
-| Omni runtime | `VoxtNew.app/Contents/Resources/omni/bin/`: `qwen3_asr_server`, `libmlx.dylib`, `libjaccl.dylib`, `mlx.metallib` (`scripts/build-omni.sh`; or `$VOXTNEW_OMNI_RUNTIME`) |
+| Omni runtime | `VoxtNew.app/Contents/Resources/omni/bin/`: `qwen3_asr_server`, `silero_vad_server` (its copy, for Silero VAD, so that Activity Monitor tells the two apart), `libmlx.dylib`, `libjaccl.dylib`, `mlx.metallib` (`scripts/build-omni.sh`; or `$VOXTNEW_OMNI_RUNTIME`) |
 
 ## 5. What came from Auralink, and from AudioSmith before it
 

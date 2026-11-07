@@ -3,8 +3,8 @@
 # Mac and stages what VoxtNew runs of it where mygo ships it:
 # resources/darwin-arm64/omni/bin/ becomes
 # Voxt.app/Contents/Resources/omni/bin/ (go tool mygo build, mygo dev):
-# qwen3_asr_server (Qwen3-ASR and, with --model-kind silero_vad, Silero
-# VAD), MLX's libraries and mlx.metallib, which MLX loads from beside its
+# qwen3_asr_server (Qwen3-ASR), its copy silero_vad_server (Silero VAD,
+# --model-kind silero_vad), MLX's libraries and mlx.metallib, which MLX loads from beside its
 # library. mygo build signs the binaries and libraries with the app (they
 # keep the hardened runtime of a real identity); the metallib is a
 # resource the app's signature seals.
@@ -70,11 +70,14 @@ fi
 rm -rf "$OUT/bin"
 mkdir -p "$OUT/bin"
 cp -f "$WORK/runtime/bin/qwen3_asr_server" "$OUT/bin/"
+# silero_vad_server is a copy for Silero VAD, so that Activity Monitor tells
+# the voice detector from the speech model.
+cp -f "$WORK/runtime/bin/qwen3_asr_server" "$OUT/bin/silero_vad_server"
 cp -f "$WORK/runtime/bin/"*.dylib "$WORK/runtime/bin/mlx.metallib" "$OUT/bin/"
-chmod 0755 "$OUT/bin/qwen3_asr_server"
+chmod 0755 "$OUT/bin/qwen3_asr_server" "$OUT/bin/silero_vad_server"
 # Unsigned code does not run on Apple silicon: sign it ad hoc for a runtime
 # used outside the app (mygo build signs the app's copy again).
-for f in "$OUT/bin/qwen3_asr_server" "$OUT/bin/"*.dylib; do
+for f in "$OUT/bin/qwen3_asr_server" "$OUT/bin/silero_vad_server" "$OUT/bin/"*.dylib; do
   codesign --force --sign - "$f" >/dev/null 2>&1
 done
 # It loads (its libraries resolve) when it gets as far as refusing a kind.

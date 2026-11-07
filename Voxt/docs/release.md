@@ -11,7 +11,7 @@ scripts/mac-gui.sh scripts/release.sh（在 Mac 上，ssh 里经 mac-gui.sh 进�
    │  先试签一个文件（ssh 里钥匙串锁着就立刻停下）；更新私钥和 release/mygo.release.json 的公钥配对
    │  检查版本号（mygo.json、helper 和 llm 的 Info.plist）、CHANGELOG
    ├─ build-helper.sh              → resources/darwin-arm64/helper/voxtnew-helper
-   ├─ build-omni.sh --clean        → resources/darwin-arm64/omni/bin/（qwen3_asr_server、MLX 的库、mlx.metallib）
+   ├─ build-omni.sh --clean        → resources/darwin-arm64/omni/bin/（qwen3_asr_server、silero_vad_server、MLX 的库、mlx.metallib）
    ├─ build-llm.sh                 → resources/darwin-arm64/llm/（voxtnew-llm、mlx.metallib、llama.framework、Hub bundle）
    │     （--runtimes DIR：直接用 DIR/omni 和 DIR/llm，不重新编译）
    ├─ release-config.sh            合并 release/mygo.release.json（公钥、url、prereleases）、签名身份、公证配置、
@@ -33,7 +33,7 @@ scripts/mac-gui.sh scripts/release.sh（在 Mac 上，ssh 里经 mac-gui.sh 进�
 |---|---|---|
 | `MacOS/VoxtNew` | Go + MyGo 的 app | `helper/Support/app.entitlements`（`audio-input`） |
 | `Resources/helper/voxtnew-helper` | Swift 辅助进程：麦克风、快捷键、辅助功能、粘贴 | `helper/Support/helper.entitlements`（`audio-input`） |
-| `Resources/omni/bin/qwen3_asr_server`、`*.dylib`、`mlx.metallib` | Omni 原生运行时（sglang_omni_mlx/native）：Qwen3-ASR 和 Silero VAD | 保留原 entitlement（没有） |
+| `Resources/omni/bin/qwen3_asr_server`、`silero_vad_server`（它的副本，给 Silero VAD 用，活动监视器里能分开）、`*.dylib`、`mlx.metallib` | Omni 原生运行时（sglang_omni_mlx/native）：Qwen3-ASR 和 Silero VAD | 保留原 entitlement（没有） |
 | `Resources/llm/voxtnew-llm`、`llama.framework`、`mlx.metallib`、`swift-transformers_Hub.bundle` | 语言模型进程（mlx-swift-lm 和 llama.cpp） | `llm/Support/llm.entitlements`（空：Metal 不需要） |
 
 `mlx.metallib` 不是代码，是资源，由 app 的签名封住。模型本身不在 app 里，用户在 app 里下载到模型库 `$HUB`（默认 `~/Library/Application Support/SGLang Omni/models`；家族设置了 `models.root` 时用它，和家族其他 app 共用；见 [architecture.md](architecture.md)）。
