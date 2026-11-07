@@ -2,9 +2,10 @@ package main
 
 // The previous Voxt's settings that have a place here, read from its
 // preferences (Library/Preferences/com.voxt.Voxt.plist) when its data is
-// imported: its language model setups (settings.Providers), the setup
-// each feature used, its features' own prompts (Your rules) and its
-// Qwen3-ASR context (the speech context). A setup's key stays behind: the
+// imported: its language model and speech service setups
+// (settings.Providers), the setups each feature used, its features' own
+// prompts (Your rules) and its Qwen3-ASR context (the speech context). A
+// setup's key (and Doubao's App ID) stays behind: the
 // previous Voxt kept it in the Data Protection Keychain under its own
 // keychain group, which this app's signature cannot read, so the user
 // pastes it again. What the user set here already stays.
@@ -14,12 +15,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"net/url"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
@@ -151,6 +154,76 @@ func (s legacyLLMSetup) provider() (settings.Provider, bool) {
 	return settings.Provider{ID: id, Endpoint: legacyEndpoint(id, s.Endpoint), Model: strings.TrimSpace(s.Model), Generation: gen}, true
 }
 
+// legacySpeechServices are this app's speech services for the previous
+// Voxt's (its RemoteASRProvider): all seven are still here.
+var legacySpeechServices = map[string]string{
+	"openAIWhisper": "openai", "doubaoASR": "doubao", "glmASR": providers.ZhipuASR, "aliyunBailianASR": "aliyun",
+	"stepFunASR": providers.StepFunASR, "xiaomiMiMoASR": "mimo", "googleGeminiASR": "gemini",
+}
+
+// legacyDefaultSpeechEndpoints are the previous Voxt's own addresses of its
+// speech services (Doubao's 1.0 and 2.0 ones, Aliyun's for each protocol):
+// one of them is the service's own here, which picks it by model.
+var legacyDefaultSpeechEndpoints = []string{
+	"https://api.openai.com/v1/audio/transcriptions",
+	"wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async", "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel",
+	"https://open.bigmodel.cn/api/paas/v4/audio/transcriptions",
+	"wss://dashscope.aliyuncs.com/api-ws/v1/inference", "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
+	"https://api.stepfun.com/v1/audio/asr/sse",
+	"https://api.xiaomimimo.com/v1/chat/completions",
+	"wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent",
+}
+
+// legacySpeechEndpoint is the previous Voxt's address of speech service
+// sp as one here: "" (the service's own) for one of its own, and for one
+// this app cannot use, as a streaming service's https:// (Doubao's file
+// recognition) or a file service's wss://. StepFun's was its SSE API;
+// here it is the OpenAI-compatible transcriptions on the same host.
+func legacySpeechEndpoint(sp providers.Speech, endpoint string) string {
+	e := strings.TrimRight(strings.TrimSpace(endpoint), "/")
+	if root, ok := strings.CutSuffix(e, "/audio/asr/sse"); ok && sp.ID == providers.StepFunASR {
+		e = root + "/audio/transcriptions"
+	}
+	if e == "" || e == sp.Endpoint || slices.Contains(legacyDefaultSpeechEndpoints, e) {
+		return ""
+	}
+	u, err := url.Parse(e)
+	schemes := []string{"https", "http"}
+	if sp.Stream {
+		schemes = []string{"wss", "ws"}
+	}
+	if err != nil || u.Host == "" || !slices.Contains(schemes, strings.ToLower(u.Scheme)) {
+		return ""
+	}
+	return e
+}
+
+// legacySpeechSetup is a speech service setup as the previous Voxt saved
+// it (remoteASRProviderConfigurations), without its key and App ID. Its
+// services' own options (Aliyun's VAD, Doubao's dictionary modes, OpenAI's
+// pseudo-realtime chunks) have no place here.
+type legacySpeechSetup struct {
+	ProviderID, Model, Endpoint string
+	StoredCredentialPresence    struct{ APIKey, AppID, AccessToken bool }
+}
+
+// provider is s as a setup here; false for a setup never made (no model,
+// address or credential). Its model comes over when this app's client of
+// the service takes it (OpenAI's takes any: a compatible server names its
+// own models), else the service's default does.
+func (s legacySpeechSetup) provider() (settings.Provider, bool) {
+	sp, ok := providers.LookupSpeech(legacySpeechServices[s.ProviderID])
+	c := s.StoredCredentialPresence
+	model := strings.TrimSpace(s.Model)
+	if !ok || model == "" && strings.TrimSpace(s.Endpoint) == "" && !c.APIKey && !c.AppID && !c.AccessToken {
+		return settings.Provider{}, false
+	}
+	if sp.ID != "openai" && !slices.Contains(sp.Models, model) {
+		model = ""
+	}
+	return settings.Provider{ID: sp.ID, Endpoint: legacySpeechEndpoint(sp, s.Endpoint), Model: model}, true
+}
+
 // legacyBuiltInPrompts are the SHA-256 digests of the previous Voxt's
 // built-in prompts, by kind: every version of its prompt files in each of
 // its languages, and the older defaults it recognised itself. It saved a
@@ -227,44 +300,62 @@ func legacyOwnContext(context string) string {
 
 // legacySettings are the previous Voxt's settings the import brings.
 type legacySettings struct {
-	llm []settings.Provider
-	// featureLLM and prompts are by feature: Transcribe, Translate,
-	// Rewrite. featureLLM is the setup the feature used ("": a local model
-	// or none), prompts its own prompt.
-	featureLLM, prompts [3]string
-	speechContext       string
+	llm, speech []settings.Provider
+	// featureLLM, featureSpeech and prompts are by feature: Transcribe,
+	// Translate, Rewrite. featureLLM and featureSpeech are the setups the
+	// feature used ("": a local model or none), prompts its own prompt.
+	featureLLM, featureSpeech, prompts [3]string
+	speechContext                      string
 }
 
 // parseLegacySettings reads the previous Voxt's settings from its
-// preferences remoteLLMProviderConfigurations (setups),
-// featureSettings (features) and mlxLocalASRTuningSettings (tuning):
-// each a JSON document in a string, "" when it lacks one.
-func parseLegacySettings(setups, features, tuning string) legacySettings {
+// preferences remoteLLMProviderConfigurations (llmSetups),
+// remoteASRProviderConfigurations (speechSetups), featureSettings
+// (features) and mlxLocalASRTuningSettings (tuning): each a JSON document
+// in a string, "" when it lacks one.
+func parseLegacySettings(llmSetups, speechSetups, features, tuning string) legacySettings {
 	var l legacySettings
-	var saved []legacyLLMSetup
-	json.Unmarshal([]byte(setups), &saved) // not JSON: no setups
-	has := func(id string) bool {
-		return slices.ContainsFunc(l.llm, func(p settings.Provider) bool { return p.ID == id })
+	has := func(list []settings.Provider, id string) bool {
+		return slices.ContainsFunc(list, func(p settings.Provider) bool { return p.ID == id })
 	}
-	for _, s := range saved {
-		if p, ok := s.provider(); ok && !has(p.ID) {
+	var savedLLM []legacyLLMSetup
+	json.Unmarshal([]byte(llmSetups), &savedLLM) // not JSON: no setups
+	for _, s := range savedLLM {
+		if p, ok := s.provider(); ok && !has(l.llm, p.ID) {
 			l.llm = append(l.llm, p)
 		}
 	}
+	var savedSpeech []legacySpeechSetup
+	json.Unmarshal([]byte(speechSetups), &savedSpeech)
+	for _, s := range savedSpeech {
+		if p, ok := s.provider(); ok && !has(l.speech, p.ID) {
+			l.speech = append(l.speech, p)
+		}
+	}
 	var f struct {
-		Transcription struct{ LLMSelectionID, Prompt string }
-		Translation   struct{ ModelSelectionID, Prompt string }
-		Rewrite       struct{ LLMSelectionID, Prompt string }
+		Transcription struct{ ASRSelectionID, LLMSelectionID, Prompt string }
+		Translation   struct{ ASRSelectionID, ModelSelectionID, Prompt string }
+		Rewrite       struct{ ASRSelectionID, LLMSelectionID, Prompt string }
 	}
 	json.Unmarshal([]byte(features), &f)
-	used := func(selection string) string {
-		service, remote := strings.CutPrefix(selection, "remote-llm:")
-		if id := legacyLLMServices[service]; remote && has(id) {
+	// used is the setup here of a feature's remote selection ("remote-llm:openAI").
+	used := func(selection, prefix string, services map[string]string, list []settings.Provider) string {
+		service, remote := strings.CutPrefix(selection, prefix)
+		if id := services[service]; remote && has(list, id) {
 			return id
 		}
 		return ""
 	}
-	l.featureLLM = [3]string{used(f.Transcription.LLMSelectionID), used(f.Translation.ModelSelectionID), used(f.Rewrite.LLMSelectionID)}
+	l.featureLLM = [3]string{
+		used(f.Transcription.LLMSelectionID, "remote-llm:", legacyLLMServices, l.llm),
+		used(f.Translation.ModelSelectionID, "remote-llm:", legacyLLMServices, l.llm),
+		used(f.Rewrite.LLMSelectionID, "remote-llm:", legacyLLMServices, l.llm),
+	}
+	l.featureSpeech = [3]string{
+		used(f.Transcription.ASRSelectionID, "remote-asr:", legacySpeechServices, l.speech),
+		used(f.Translation.ASRSelectionID, "remote-asr:", legacySpeechServices, l.speech),
+		used(f.Rewrite.ASRSelectionID, "remote-asr:", legacySpeechServices, l.speech),
+	}
 	l.prompts = [3]string{
 		legacyOwnPrompt("transcription", f.Transcription.Prompt),
 		legacyOwnPrompt("translation", f.Translation.Prompt),
@@ -279,18 +370,26 @@ func parseLegacySettings(setups, features, tuning string) legacySettings {
 }
 
 // apply puts l into s where s has nothing of its own: a service set up
-// here, a feature's chosen model and rules, and the speech context stay.
-// It returns the setups it added and the prompts it filled.
-func (l legacySettings) apply(s *settings.Settings) (added []settings.Provider, prompts int) {
-	for _, p := range l.llm {
-		if !slices.ContainsFunc(s.Providers.LLM, func(q settings.Provider) bool { return q.ID == p.ID }) {
-			s.Providers.LLM = append(s.Providers.LLM, p)
-			added = append(added, p)
+// here, a feature's chosen models and rules, and the speech context stay.
+// It returns the language model and speech setups it added and the
+// prompts it filled.
+func (l legacySettings) apply(s *settings.Settings) (llmAdded, speechAdded []settings.Provider, prompts int) {
+	add := func(list *[]settings.Provider, from []settings.Provider) (added []settings.Provider) {
+		for _, p := range from {
+			if !slices.ContainsFunc(*list, func(q settings.Provider) bool { return q.ID == p.ID }) {
+				*list = append(*list, p)
+				added = append(added, p)
+			}
 		}
+		return added
 	}
+	llmAdded, speechAdded = add(&s.Providers.LLM, l.llm), add(&s.Providers.ASR, l.speech)
 	for i, f := range []*settings.Feature{&s.Features.Transcribe.Feature, &s.Features.Translate.Feature, &s.Features.Rewrite.Feature} {
 		if f.LLM == "" {
 			f.LLM = l.featureLLM[i]
+		}
+		if f.ASR == "" {
+			f.ASR = l.featureSpeech[i]
 		}
 		if f.Prompt == "" && l.prompts[i] != "" {
 			f.Prompt = l.prompts[i]
@@ -301,5 +400,5 @@ func (l legacySettings) apply(s *settings.Settings) (added []settings.Provider, 
 		s.Dictionary.SpeechContext = l.speechContext
 		prompts++
 	}
-	return added, prompts
+	return llmAdded, speechAdded, prompts
 }

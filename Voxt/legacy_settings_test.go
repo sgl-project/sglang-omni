@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
@@ -33,17 +34,36 @@ const legacySetupsJSON = `[
  {"providerID": "kimi", "model": "", "endpoint": ""}
 ]`
 
+// The previous Voxt's speech service setups (remoteASRProviderConfigurations):
+// Doubao at its 2.0 address with its App ID and token, Aliyun at its
+// Singapore address with a model this app has, StepFun at its own SSE
+// address with a model this app lacks, a local Whisper server, Doubao's
+// file recognition (https://, which this app's streaming client cannot
+// use) as a second Doubao, and a service never set up.
+const legacySpeechJSON = `[
+ {"providerID": "doubaoASR", "model": "volc.bigasr.sauc.duration", "endpoint": "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
+  "storedCredentialPresence": {"apiKey": false, "appID": true, "accessToken": true}, "doubaoDictionaryMode": "requestScoped"},
+ {"providerID": "aliyunBailianASR", "model": "qwen3-asr-flash-realtime", "endpoint": "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime",
+  "storedCredentialPresence": {"apiKey": true}, "aliyunASRSettings": {"serverVADThreshold": 0.35}},
+ {"providerID": "stepFunASR", "model": "stepaudio-2.5-asr", "endpoint": "https://api.stepfun.com/v1/audio/asr/sse", "storedCredentialPresence": {"apiKey": true}},
+ {"providerID": "openAIWhisper", "model": "large-v3", "endpoint": "http://127.0.0.1:9000/v1/audio/transcriptions"},
+ {"providerID": "doubaoASR", "model": "volc.bigasr.auc_turbo", "endpoint": "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash"},
+ {"providerID": "glmASR", "model": "", "endpoint": ""}
+]`
+
 // legacyFeaturesJSON is the previous Voxt's featureSettings: Transcribe on
-// the OpenAI setup with the user's own prompt, Translate on a local model,
-// Rewrite on Codex with its built-in prompt (testdata/legacy/prompts: the
+// the OpenAI setup with the user's own prompt and Doubao, Translate on
+// local models, Rewrite on Codex with its built-in prompt and Gemini (never
+// set up) (testdata/legacy/prompts: the
 // last version of its English rewrite prompt), which it saved when the
 // preset was picked.
 func legacyFeaturesJSON(t *testing.T, rewritePrompt string) string {
 	t.Helper()
 	b, err := json.Marshal(map[string]any{
-		"transcription": map[string]string{"llmSelectionID": "remote-llm:openAI", "prompt": "Keep my English terms.\n{{RAW_TRANSCRIPTION}}", "promptPresetID": "precise"},
-		"translation":   map[string]string{"modelSelectionID": "local-llm:mlx-community/Qwen3.5-4B-OptiQ-4bit", "prompt": "", "promptPresetID": "precise"},
-		"rewrite":       map[string]string{"llmSelectionID": "remote-llm:codex", "prompt": rewritePrompt, "promptPresetID": "strict"},
+		"transcription": map[string]string{"asrSelectionID": "remote-asr:doubaoASR", "llmSelectionID": "remote-llm:openAI", "prompt": "Keep my English terms.\n{{RAW_TRANSCRIPTION}}", "promptPresetID": "precise"},
+		"translation": map[string]string{"asrSelectionID": "mlx:mlx-community/Qwen3-ASR-0.6B-4bit", "modelSelectionID": "local-llm:mlx-community/Qwen3.5-4B-OptiQ-4bit",
+			"prompt": "", "promptPresetID": "precise"},
+		"rewrite": map[string]string{"asrSelectionID": "remote-asr:googleGeminiASR", "llmSelectionID": "remote-llm:codex", "prompt": rewritePrompt, "promptPresetID": "strict"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -64,13 +84,13 @@ func builtInRewritePrompt(t *testing.T) string {
 
 // The previous Voxt's settings as they come over: each setup at an API
 // root here ("" for its own addresses), with its model and generation
-// settings, and without the services that have no place here; the setup a
-// feature used when it came over too; its own prompts without its
+// settings, and without the services that have no place here; the setups a
+// feature used when they came over too; its own prompts without its
 // transcript variable, and none of its built-in ones; its Qwen3-ASR context
 // without its terms variable.
 func TestParseLegacySettings(t *testing.T) {
 	builtIn := builtInRewritePrompt(t)
-	l := parseLegacySettings(legacySetupsJSON, legacyFeaturesJSON(t, builtIn), legacyTuningJSON)
+	l := parseLegacySettings(legacySetupsJSON, legacySpeechJSON, legacyFeaturesJSON(t, builtIn), legacyTuningJSON)
 	var ids []string
 	by := map[string]settings.Provider{}
 	for _, p := range l.llm {
@@ -98,8 +118,8 @@ func TestParseLegacySettings(t *testing.T) {
 	if u := by["omlx"].Generation.IncludeUsage; u == nil || *u {
 		t.Errorf("oMLX usage %v, want off as the previous Voxt had it", u)
 	}
-	if l.featureLLM != [3]string{"openai", "", ""} {
-		t.Errorf("features' setups %q", l.featureLLM)
+	if l.featureLLM != [3]string{"openai", "", ""} || l.featureSpeech != [3]string{"doubao", "", ""} {
+		t.Errorf("features' setups %q, speech %q", l.featureLLM, l.featureSpeech)
 	}
 	if l.prompts != [3]string{"Keep my English terms.", "", ""} {
 		t.Errorf("prompts %q", l.prompts)
@@ -117,20 +137,68 @@ func TestParseLegacySettings(t *testing.T) {
 	}
 }
 
+// The previous Voxt's speech setups as they come over: the service's own
+// address for one of the previous Voxt's (Doubao's 2.0, StepFun's SSE API,
+// which this app reaches on the same host), a regional address kept; a
+// model this app has kept, one it lacks back to the service's default, any
+// model for OpenAI-compatible servers; an address this app's client cannot
+// use dropped; one setup per service, the first; never-made setups left out.
+func TestParseLegacySpeech(t *testing.T) {
+	l := parseLegacySettings("", legacySpeechJSON, "", "")
+	want := []settings.Provider{
+		{ID: "doubao", Model: "volc.bigasr.sauc.duration"},
+		{ID: "aliyun", Endpoint: "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime", Model: "qwen3-asr-flash-realtime"},
+		{ID: providers.StepFunASR},
+		{ID: "openai", Endpoint: "http://127.0.0.1:9000/v1/audio/transcriptions", Model: "large-v3"},
+	}
+	if len(l.speech) != len(want) {
+		t.Fatalf("speech setups %+v", l.speech)
+	}
+	for i, p := range l.speech {
+		if p.ID != want[i].ID || p.Endpoint != want[i].Endpoint || p.Model != want[i].Model {
+			t.Errorf("setup %d: %+v, want %+v", i, p, want[i])
+		}
+	}
+	doubao, _ := providers.LookupSpeech("doubao")
+	if got := legacySpeechEndpoint(doubao, "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash"); got != "" {
+		t.Errorf("Doubao's file recognition address came over: %q", got)
+	}
+	stepfun, _ := providers.LookupSpeech(providers.StepFunASR)
+	if got := legacySpeechEndpoint(stepfun, "https://step.example.com/v1/audio/asr/sse"); got != "https://step.example.com/v1/audio/transcriptions" {
+		t.Errorf("a custom StepFun host: %q", got)
+	}
+}
+
+// Every speech service of the previous Voxt maps to one here.
+func TestLegacySpeechServicesKnown(t *testing.T) {
+	for old, id := range legacySpeechServices {
+		if _, ok := providers.LookupSpeech(id); !ok {
+			t.Errorf("%s maps to %q, which is not a speech service here", old, id)
+		}
+	}
+}
+
 // What the user set here already stays: a service set up here keeps its
-// setup, a feature keeps its model and its rules; the rest comes over.
+// setup, a feature keeps its models and its rules; the rest comes over.
 func TestLegacySettingsApply(t *testing.T) {
-	l := parseLegacySettings(legacySetupsJSON, legacyFeaturesJSON(t, ""), legacyTuningJSON)
+	l := parseLegacySettings(legacySetupsJSON, legacySpeechJSON, legacyFeaturesJSON(t, ""), legacyTuningJSON)
 	s := settings.Defaults()
 	s.Providers.LLM = []settings.Provider{{ID: "openai", Model: "mine"}}
+	s.Providers.ASR = []settings.Provider{{ID: "aliyun", Model: "fun-asr-realtime"}}
 	s.Features.Transcribe.Prompt = "My rules."
-	added, prompts := l.apply(&s)
-	var ids []string
-	for _, p := range added {
-		ids = append(ids, p.ID)
+	llmAdded, speechAdded, prompts := l.apply(&s)
+	ids := func(ps []settings.Provider) string {
+		var out []string
+		for _, p := range ps {
+			out = append(out, p.ID)
+		}
+		return strings.Join(out, ",")
 	}
-	if strings.Join(ids, ",") != "ollama,deepseek,gemini,omlx" || len(s.Providers.LLM) != 5 || s.Providers.LLM[0].Model != "mine" {
-		t.Errorf("added %v, setups %+v", ids, s.Providers.LLM)
+	if ids(llmAdded) != "ollama,deepseek,gemini,omlx" || len(s.Providers.LLM) != 5 || s.Providers.LLM[0].Model != "mine" {
+		t.Errorf("added %v, setups %+v", ids(llmAdded), s.Providers.LLM)
+	}
+	if ids(speechAdded) != "doubao,stepfun,openai" || len(s.Providers.ASR) != 4 || s.Providers.ASR[0].Model != "fun-asr-realtime" || s.Features.Transcribe.ASR != "doubao" {
+		t.Errorf("speech added %v, setups %+v, transcribe %+v", ids(speechAdded), s.Providers.ASR, s.Features.Transcribe.Feature)
 	}
 	if s.Features.Transcribe.Prompt != "My rules." || s.Features.Transcribe.LLM != "openai" || prompts != 1 || s.Dictionary.SpeechContext != "Leo works on LLM serving." {
 		t.Errorf("prompts %d, transcribe %+v, speech context %q", prompts, s.Features.Transcribe.Feature, s.Dictionary.SpeechContext)
@@ -148,6 +216,7 @@ func TestImportLegacySettings(t *testing.T) {
 	plist.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n" + `<plist version="1.0"><dict>`)
 	for _, kv := range [][2]string{
 		{"remoteLLMProviderConfigurations", legacySetupsJSON},
+		{"remoteASRProviderConfigurations", legacySpeechJSON},
 		{"featureSettings", legacyFeaturesJSON(t, "")},
 		{"mlxLocalASRTuningSettings", legacyTuningJSON},
 	} {
@@ -166,11 +235,11 @@ func TestImportLegacySettings(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.importLegacyFrom(lib)
 	s := a.lib.settings.Get()
-	if len(s.Providers.LLM) != 5 || s.Providers.LLM[0].Endpoint != "https://inference.example.com/v1" ||
+	if len(s.Providers.LLM) != 5 || s.Providers.LLM[0].Endpoint != "https://inference.example.com/v1" || len(s.Providers.ASR) != 4 || s.Features.Transcribe.ASR != "doubao" ||
 		s.Features.Transcribe.Prompt != "Keep my English terms." || s.Dictionary.SpeechContext != "Leo works on LLM serving." {
 		t.Fatalf("settings: setups %+v, transcribe %+v, speech context %q (message %q)", s.Providers.LLM, s.Features.Transcribe.Feature, s.Dictionary.SpeechContext, a.ob.legacyMsg)
 	}
-	for _, want := range []string{"5 language model services came over", "2 prompts came over"} {
+	for _, want := range []string{"5 language model services came over", "4 speech services came over", "2 prompts came over"} {
 		if !strings.Contains(a.ob.legacyMsg, want) {
 			t.Errorf("message %q lacks %q", a.ob.legacyMsg, want)
 		}

@@ -455,17 +455,21 @@ func (a *app) importLegacyFrom(picked string) {
 				msg += " " + i18n.T("History: %d entries added.", n)
 			}
 			voxtDir := filepath.Dir(path)
-			l := parseLegacySettings(legacyPreference(voxtDir, "remoteLLMProviderConfigurations"),
+			l := parseLegacySettings(legacyPreference(voxtDir, "remoteLLMProviderConfigurations"), legacyPreference(voxtDir, "remoteASRProviderConfigurations"),
 				legacyPreference(voxtDir, "featureSettings"), legacyPreference(voxtDir, "mlxLocalASRTuningSettings"))
-			var services []settings.Provider
+			var llmServices, speechServices []settings.Provider
 			prompts := 0
-			if err := prefs.Update(ctx, func(s *settings.Settings) { services, prompts = l.apply(s) }); err != nil {
+			if err := prefs.Update(ctx, func(s *settings.Settings) { llmServices, speechServices, prompts = l.apply(s) }); err != nil {
 				log.Printf("legacy import: settings: %v", err)
-				services, prompts = nil, 0 // not saved: nothing came over
+				llmServices, speechServices, prompts = nil, nil, 0 // not saved: nothing came over
 			}
-			if len(services) > 0 {
-				msg += " " + i18n.N(len(services), "%d language model service came over: paste its key again on the Language models page.",
-					"%d language model services came over: paste their keys again on the Language models page.", len(services))
+			if n := len(llmServices); n > 0 {
+				msg += " " + i18n.N(n, "%d language model service came over: paste its key again on the Language models page.",
+					"%d language model services came over: paste their keys again on the Language models page.", n)
+			}
+			if n := len(speechServices); n > 0 {
+				msg += " " + i18n.N(n, "%d speech service came over: paste its key again on the Speech models page.",
+					"%d speech services came over: paste their keys again on the Speech models page.", n)
 			}
 			if prompts > 0 {
 				msg += " " + i18n.N(prompts, "%d prompt came over.", "%d prompts came over.", prompts)

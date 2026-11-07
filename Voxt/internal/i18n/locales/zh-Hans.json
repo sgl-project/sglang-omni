@@ -1243,5 +1243,7 @@
   "For example: I work on LLM serving and speak Chinese with English technical terms.": "例如：我从事大模型推理服务，说中文，夹杂英文技术词。",
   "Not set": "未设置",
   "%d character": "%d 字",
-  "%d characters": "%d 字"
+  "%d characters": "%d 字",
+  "%d speech service came over: paste its key again on the Speech models page.": "带过来了 %d 个语音服务，它的 API Key 要在“语音模型”页面重新粘贴。",
+  "%d speech services came over: paste their keys again on the Speech models page.": "带过来了 %d 个语音服务，它们的 API Key 要在“语音模型”页面重新粘贴。"
 }
