@@ -40,6 +40,14 @@ func (a *app) generalSettings(c *ui.Context) {
 	})
 	a.otherLanguagesRow(c)
 
+	sectionTitle(c, i18n.T("Results"))
+	settingRow(c, "copy-result", i18n.T("Also copy the result to the clipboard"), i18n.T("Each finished result stays on the clipboard, also when it was pasted, or waits in the answer card."), func() {
+		if ui.Switch(c.Key("copy-result-switch"), &a.settingsForm.copyResult).Label(i18n.T("Also copy the result to the clipboard")).Changed() {
+			on := a.settingsForm.copyResult
+			a.updateSettings(func(s *settings.Settings) { s.General.CopyResult = on })
+		}
+	})
+
 	sectionTitle(c, i18n.T("Menu bar and login"))
 	settingRow(c, "menu-bar", i18n.T("Show in the menu bar"), i18n.T("An icon in the menu bar to start a transcription, see the last result and open Voxt."), func() {
 		if ui.Switch(c.Key("menu-bar-switch"), &a.settingsForm.menuBar).Label(i18n.T("Show in the menu bar")).Changed() {

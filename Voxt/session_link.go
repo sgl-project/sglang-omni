@@ -253,6 +253,9 @@ func (a *app) sessionEnded(s session.Snapshot) {
 		a.historyChanged() // a try keeps nothing, but the pages may show it
 		return
 	}
+	if a.prefs.General.CopyResult && s.Card && s.Result != "" && s.State != session.Failed {
+		a.copyRecent(s.Result) // tray.go: the clipboard keeps each result
+	}
 	switch {
 	case a.answer.open && a.answer.redo != "" && a.answer.redo == s.ID:
 		a.endRedo(s)

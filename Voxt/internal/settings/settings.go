@@ -68,6 +68,10 @@ type General struct {
 	// HideDock leaves VoxtNew out of the Dock (Voxt 1.x's "Show in Dock"
 	// off); the menu bar icon is then on, so that VoxtNew can be reached.
 	HideDock bool `json:"hideDock,omitempty"`
+	// CopyResult leaves each finished result on the clipboard: a paste
+	// does not restore what was there, and a result the answer card shows
+	// is copied too (Voxt 1.x's "Also copy result to clipboard").
+	CopyResult bool `json:"copyResult,omitempty"`
 }
 
 // Appearance: theme, scale and the sidebar.
@@ -201,6 +205,10 @@ type Overlay struct {
 	// ShowTime shows the recording's time in the pill (off: Voxt's pill,
 	// an icon and the waveform).
 	ShowTime bool `json:"showTime,omitempty"`
+	// HideLiveText leaves the words out of the pill: what was heard while
+	// recording, and the answer as the model writes it (Voxt 1.x's
+	// "Show Realtime Text" off).
+	HideLiveText bool `json:"hideLiveText,omitempty"`
 }
 
 // DefaultOpacity and DefaultRadius are the overlay face's: translucent

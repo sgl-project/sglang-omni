@@ -1228,5 +1228,10 @@
   "e.g. 5m": "例如 5m",
   "e.g. low": "例如 low",
   "Show in the Dock": "在 Dock 中显示",
-  "Off, Voxt is in the menu bar only.": "关掉后，Voxt 只在菜单栏里。"
+  "Off, Voxt is in the menu bar only.": "关掉后，Voxt 只在菜单栏里。",
+  "Also copy the result to the clipboard": "同时把结果复制到剪贴板",
+  "Each finished result stays on the clipboard, also when it was pasted, or waits in the answer card.": "每次的结果都会留在剪贴板里，已经粘贴的和留在答案卡片里的都一样。",
+  "Results": "结果",
+  "Show live text": "显示实时文字",
+  "The words as Voxt hears them while you speak, and the answer as the model writes it.": "说话时显示 Voxt 听到的内容，生成时显示模型正在写的回答。"
 }
