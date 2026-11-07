@@ -71,17 +71,17 @@ sgl-omni serve \
 
 ### Speculative Decoding
 
-ARK-ASR supports DFlash on CUDA with an ARK-trained, causal speculators checkpoint. Pass the draft as engine settings of the `asr` stage:
+The decoder can verify tokens proposed by the 19-language DFlash draft [`wilsonzheng0327/ARK-ASR-3B-dflash`](https://huggingface.co/wilsonzheng0327/ARK-ASR-3B-dflash) on one CUDA GPU.
 
 ```bash
 sgl-omni serve \
   --model-path AutoArk-AI/ARK-ASR-3B \
   --asr.engine.speculative_algorithm DFLASH \
-  --asr.engine.speculative_draft_model_path /path/to/ark-dflash \
+  --asr.engine.speculative_draft_model_path wilsonzheng0327/ARK-ASR-3B-dflash \
   --port 8000
 ```
 
-Scheduling is synchronous by default. Add `--asr.factory.enable_async_decode true` to overlap verification with host work. The draft turns torch.compile off for the stage: on SGLang 0.5.23 the compiled path makes each verify step several times slower, and a draft that accepted 6.8 tokens per round gained nothing at one request at a time. On one H200 with greedy decoding and the prefix cache off, a 19-language DFlash draft against the server without one:
+Scheduling is synchronous by default. Add `--asr.factory.enable_async_decode true` to overlap verification with host work. The draft turns torch.compile off for the stage: on SGLang 0.5.23 the compiled path makes each verify step several times slower, and a draft that accepted 6.8 tokens per round gained nothing at one request at a time. On one H200 with greedy decoding and the prefix cache off, the draft against the server without one:
 
 | Concurrent requests | 1 | 2 | 4 | 8 | 16 | 32 | 64 |
 |---|---:|---:|---:|---:|---:|---:|---:|
