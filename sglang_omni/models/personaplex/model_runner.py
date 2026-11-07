@@ -36,6 +36,11 @@ from sglang_omni.models.personaplex.architecture import (
 from sglang_omni.models.personaplex.components.depformer_cuda_graph import (
     DepformerCudaGraphRunner,
 )
+from sglang_omni.models.personaplex.components.live_step_graph import (
+    CapturedLiveStep,
+    LiveRowGraphRunner,
+    LiveStepGraphRunner,
+)
 from sglang_omni.models.personaplex.sampling import (
     AudioTokenSampler,
     SamplingRun,
@@ -53,6 +58,7 @@ class DecodeFeedback:
     text_token: torch.Tensor | None = None
     launched_frames: int = 0
     audio_rng_state: torch.Tensor | None = None
+    host_row: np.ndarray | None = None
 
 
 @dataclass(kw_only=True)
@@ -69,6 +75,9 @@ class PersonaPlexModelRunner(ModelRunner):
     # in all but name.
     live_rows_as_decode: bool = False
     steady_units_as_decode: bool = False
+    live_step_graph: LiveStepGraphRunner | None = None
+    live_row_graph: LiveRowGraphRunner | None = None
+    live_step: CapturedLiveStep | None = None
 
     def sample_before_post_prefill(
         self,
@@ -84,7 +93,65 @@ class PersonaPlexModelRunner(ModelRunner):
         schedule_batch: ScheduleBatch,
         requests: list[SchedulerRequest],
     ) -> bool:
-        return True
+        self.live_step = self.live_step_for(requests)
+        return self.live_step is None
+
+    def live_step_for(
+        self, requests: list[SchedulerRequest]
+    ) -> CapturedLiveStep | None:
+        if self.live_step_graph is None:
+            return None
+        else:
+            pass
+        sampling = None
+        for request in requests:
+            data = request.data
+            request_sampling = data.talker_model_inputs["sampling"].live_step_sampling
+            if data.return_logprob or request_sampling is None:
+                return None
+            elif sampling is None:
+                sampling = request_sampling
+            elif request_sampling != sampling:
+                return None
+            else:
+                pass
+        if sampling is None:
+            return None
+        else:
+            return self.live_step_graph.graph_for(len(requests), sampling)
+
+    def run_live_step(
+        self,
+        captured: CapturedLiveStep,
+        result: GenerationBatchResult,
+        requests: list[SchedulerRequest],
+    ) -> PersonaPlexFrameBatch:
+        steps = self.model.depformer.spec.steps
+        feedbacks = [
+            request.data.talker_model_inputs["decode_feedback"] for request in requests
+        ]
+        packed = self.live_step_graph.run(
+            captured,
+            result.logits_output.next_token_logits,
+            [feedback.agent_row for feedback in feedbacks],
+        )
+        host_rows = packed.cpu()
+        result.next_token_ids = packed[:, 0].contiguous()
+        host_next_rows = np.concatenate(
+            (host_rows[:, :1].numpy(), host_rows[:, 1 + steps :].numpy()), axis=1
+        )
+        for feedback, row, host_row in zip(
+            feedbacks, packed.unbind(0), host_next_rows, strict=True
+        ):
+            feedback.text_token = row[0]
+            feedback.agent_row = row[1 + steps :]
+            feedback.host_row = host_row
+            feedback.launched_frames += 1
+        return PersonaPlexFrameBatch(
+            host_rows=host_rows[:, : 1 + steps],
+            agent_rows=packed[:, 1 + steps :],
+            audio_rng_states=[None] * len(requests),
+        )
 
     def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
         if self.model_device.type != "cuda" or not super().lookahead_eligible(batch):
@@ -249,6 +316,7 @@ class PersonaPlexModelRunner(ModelRunner):
         ):
             feedback.agent_row = codes
             feedback.text_token = text_token
+            feedback.host_row = None
             feedback.launched_frames += 1
             generator = request.data.talker_model_inputs.get("audio_generator")
             audio_rng_states.append(
@@ -406,6 +474,7 @@ class PersonaPlexModelRunner(ModelRunner):
                 pieces.append(self.missing_rows(data, req))
                 feedback.agent_row = self.agent_row_at(data, predicted - 1)
             feedback.launched_frames = predicted - timeline.num_prompt_positions
+            feedback.host_row = None
             generator = inputs.get("audio_generator")
             if generator is not None and feedback.audio_rng_state is not None:
                 # Note (edwardzh): Discarded lookahead must not consume a seeded audio draw.
@@ -521,7 +590,7 @@ class PersonaPlexModelRunner(ModelRunner):
         is_lookahead: bool = False,
     ) -> None:
         if self.steady_units_as_decode:
-            self.embed_steady_rows(requests)
+            self.embed_steady_rows(requests, is_lookahead=is_lookahead)
         else:
             model = self.model
             rows = []
@@ -543,21 +612,31 @@ class PersonaPlexModelRunner(ModelRunner):
                 model.fusion_buffer.dtype
             )
 
-    def embed_steady_rows(self, requests: list[SchedulerRequest]) -> None:
+    def embed_steady_rows(
+        self, requests: list[SchedulerRequest], *, is_lookahead: bool
+    ) -> None:
         rows = []
+        host_built = self.live_row_graph is not None and not is_lookahead
         for request in requests:
             data = request.data
             timeline = self.request_timeline(data)
             feedback = data.talker_model_inputs["decode_feedback"]
             position = timeline.input_position(feedback.launched_frames)
-            rows.append(
-                (
-                    feedback.text_token,
-                    feedback.agent_row,
-                    timeline.user_rows_buffer[position],
-                )
+            host_built = host_built and feedback.host_row is not None
+            rows.append((feedback, timeline.user_rows_buffer[position]))
+        if host_built:
+            staging = self.live_row_graph.staging(len(rows))
+            for row, (feedback, caller_row) in zip(staging, rows, strict=True):
+                row[:USER_STREAM_OFFSET] = feedback.host_row
+                row[USER_STREAM_OFFSET:] = caller_row
+            self.live_row_graph.embed(len(rows))
+        else:
+            self.model.fusion_buffer[: len(rows)] = self.embed_live_rows(
+                [
+                    (feedback.text_token, feedback.agent_row, caller_row)
+                    for feedback, caller_row in rows
+                ]
             )
-        self.model.fusion_buffer[: len(rows)] = self.embed_live_rows(rows)
 
     def post_decode(
         self,
@@ -566,6 +645,10 @@ class PersonaPlexModelRunner(ModelRunner):
         schedule_batch: ScheduleBatch,
         requests: list[SchedulerRequest],
     ) -> None:
-        free_BK = self.free_codes().expand(len(requests), -1)
-        frames = self.spell_frames(requests, result.next_token_ids, free_BK)
+        captured, self.live_step = self.live_step, None
+        if captured is None:
+            free_BK = self.free_codes().expand(len(requests), -1)
+            frames = self.spell_frames(requests, result.next_token_ids, free_BK)
+        else:
+            frames = self.run_live_step(captured, result, requests)
         self.commit_frames(frames, result, requests)
