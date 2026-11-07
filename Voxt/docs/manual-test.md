@@ -129,13 +129,13 @@
   2. 在 Voxt 的“快速语音识别”上点“删除”，先点“取消”；再点“删除”→“从 Voxt 移除”。
   3. 再点“删除”→“为所有 app 删除…”→“删除”。回到 AudioSmith 看它的模型页。
   4. 让 AudioSmith 开始下载一个 Voxt 也有的模型，同时看 Voxt 的本地模型页；下载时在 Voxt 里删除它。
-  5. 本地模型页右上角点“网络…”：选“自定义”，填 `ftp://x` 点“保存”；改成 `http://127.0.0.1:7897` 保存；再打开，点“仅为此 app 单独设置”，选“不使用代理”保存。终端里 `open voxtnew://models/network`。
+  5. 本地模型页右上角点“网络…”：选“自定义”，填 `ftp://x` 点“保存”；改成 `http://127.0.0.1:7897` 保存；再打开，点“只给这个 app 单独设置”，选“不使用代理”保存。终端里 `open voxtnew://models/network`。
 - **应看到**：
   - 第 1 步后卡片写“与 AudioSmith 共用”。装了 Dicta 的 Qwen3 4B / Gemma 4 E4B 时，语言模型里多一张“由 Dicta 安装”的卡片，只有“使用它”，没有“下载”。
   - 第 2 步弹“从 Voxt 移除“快速语音识别”？”“AudioSmith 也在使用这个模型，文件（712.8 MB）会保留在这台 Mac 上。”；移除后提示文件为 AudioSmith 保留，`ls ~/Library/Application\ Support/ActNow/models/hub/models--mlx-community--Qwen3-ASR-0.6B-4bit/snapshots/` 还在。
   - 第 3 步再确认一次“AudioSmith 再次使用时需要重新下载（712.8 MB）。”；删除后文件夹不见了，AudioSmith 的模型页显示“已在 Voxt 中删除 · 重新下载”。
   - 第 4 步卡片写“正在由 AudioSmith 下载…”，“下载”按钮是灰的，下完后自动变成“已安装”；下载时删除提示“AudioSmith 正在下载或使用这个模型，请稍后再试。”。
-  - 第 5 步：`ftp://x` 不保存，提示要以 http://、https:// 或 socks5:// 开头；保存后 AudioSmith 的代理设置也变了（跟随家族）；单独设置后行下写“此设置只用于 Voxt。”，AudioSmith 的不变；深链打开本地模型页和这个对话框。
+  - 第 5 步：`ftp://x` 不保存，提示要以 http://、https:// 或 socks5:// 开头；保存后 AudioSmith 的代理设置也变了（跟随家族）；单独设置后行下写“只有 Voxt 用这个设置。”，AudioSmith 的不变；深链打开本地模型页和这个对话框。
 - **不对时看**：`cat ~/Library/Application\ Support/ActNow/models/claims/*.json`（谁声明了哪个模型）、`~/Library/Application\ Support/ActNow/models/removed.json`（墓碑）、`~/Library/Application\ Support/ActNow/settings.json`（家族的代理和下载源）。
 
 **1.6 引导的其余几步**
@@ -180,7 +180,7 @@
   2. 在终端执行 `pgrep -fl voxtnew-llm`。
   3. 把开关打开，再转录一次。
 - **应看到**：
-  - 第 1 步：插入的是识别原文（口头语还在），停止后几乎马上插入；页面上写着“整理已关闭：不会发送任何内容给语言模型。”
+  - 第 1 步：插入的是识别原文（口头语还在），停止后几乎马上插入；页面上写着“整理已关闭，不会把任何内容发给语言模型。”
   - 第 2 步：没有 `voxtnew-llm` 进程：整理关着时根本不打开语言模型。
   - 第 3 步：又是整理后的文字；`voxtnew-llm` 出现。
 - **不对时看**：历史详情（关着时没有“语言模型”一项和它的耗时）。
@@ -254,7 +254,7 @@
   5. 在 Arc（用户平时出问题的地方）的网页输入框里各转录几次，中途切换窗口、标签页，结束时点回输入框。
 - **应看到**：
   - 第 1、2 步：文字插入，浮窗淡出；按 ⌘V 粘出的仍是准备时复制的文字（剪贴板已恢复）。日志 `delivery: focus AXTextArea in Safari (…); ⌘V posted, check inserted after N ms (AXTextArea: value a → value b…), clipboard restored`，N 一般在 200 ms 以内。
-  - 第 3 步：输入框里没有文字，结果进答案卡片，正文下面一行小字“文字没有出现在输入位置：已放到剪贴板，按 ⌘V 粘贴。”；在别处按 ⌘V 粘出的是这次的结果；历史详情的交付方式是“卡片”；日志里 `check unchanged after 1000 ms`，以及一行 warning `pasted into …, but the text did not show there (unconfirmed)`。
+  - 第 3 步：输入框里没有文字，结果进答案卡片，正文下面一行小字“文字没有出现在输入位置，已放到剪贴板，按 ⌘V 粘贴。”；在别处按 ⌘V 粘出的是这次的结果；历史详情的交付方式是“卡片”；日志里 `check unchanged after 1000 ms`，以及一行 warning `pasted into …, but the text did not show there (unconfirmed)`。
   - 第 4 步：如果文字照常插入，记下来（说明安全输入不拦截 ⌘V）；如果没插入，卡片小字说另一个 App 开着安全输入，日志有 `secure input on (Terminal, pid …)`。
   - 第 5 步：要么插入（`check inserted`），要么进卡片并说明；不会再出现“历史里有、输入框里没有、什么提示都没有”。如果出现，把那几次的 `delivery:` 日志行发回来（focus 的角色、value、check 结果都在里面）。
 - **不对时看**：`voxtnew.log` 的 `delivery:` 行；卡片多出来但文字其实进去了时，看 check 是不是 `unchanged`、before/after 的 value 是否相同（这个 App 的辅助功能值没有及时更新）。
@@ -302,7 +302,7 @@
 **2.15 长口述（约 8 分钟）**
 - **做**：在 TextEdit 里转录，连续说 4–5 分钟（可以念一段文章，句子之间正常停顿），然后停止。打开 日志，看 `omni` 的行。
 - **应看到**：说到 1 分钟以后，日志里每隔约半分钟出现一行 `piece N of the recording, … of audio …`；停止后几秒内文字就插入（不是等几十秒），日志有 `Final of …: N pieces while it recorded (…), the rest (…) in …`。说话时浮窗的实时文字偶尔停几秒是正常的（分段和预览共用模型）。1 分钟以内的口述没有 `piece` 行，和以前一样。
-- **兜底**：`kill -STOP` 识别服务（`pgrep -f qwen3_asr_server`，挑带 `Qwen3-ASR` 的那个）后马上停止录音，15 s 后 `kill -CONT` 它（或者让它被杀掉）。应看到：仍然插入了文字（实时预览里的），浮窗黄色警告“已使用实时识别的文字：完整识别失败。”，点它打开历史里这条记录并开始重试；历史里这条是完成、带错误、有录音。
+- **兜底**：`kill -STOP` 识别服务（`pgrep -f qwen3_asr_server`，挑带 `Qwen3-ASR` 的那个）后马上停止录音，15 s 后 `kill -CONT` 它（或者让它被杀掉）。应看到：仍然插入了文字（实时预览里的），浮窗黄色警告“完整识别失败，用了实时识别的文字。”，点它打开历史里这条记录并开始重试；历史里这条是完成、带错误、有录音。
 
 ---
 
@@ -497,7 +497,7 @@
   3. 再转录一次。
   4. 用 ⌘Q 退出，按平常的方式打开 Voxt，再转录一次。
 - **应看到**：
-  - 第 2 步：文字照常插入，不比平时慢；随后浮窗出现一行警告（黄色三角）“内存不足，模型变慢：可退出不用的应用。”，一行放得下，5 秒后消失。日志面板（来源 session）一行 `the overlay said the Mac is short of memory: llm.balanced (VOXTNEW_DEV_SHORT_OF_MEMORY) transcribe_enhance first token …; memory pressure …, swap 19.0 of 20.0 GB used`。
+  - 第 2 步：文字照常插入，不比平时慢；随后浮窗出现一行警告（黄色三角）“内存不足，模型变慢了。可以退出不用的应用。”，一行放得下，5 秒后消失。日志面板（来源 session）一行 `the overlay said the Mac is short of memory: llm.balanced (VOXTNEW_DEV_SHORT_OF_MEMORY) transcribe_enhance first token …; memory pressure …, swap 19.0 of 20.0 GB used`。
   - 第 3 步：不再出现（每次运行最多一次）。
   - 第 4 步：不出现。没有变量时，只有请求真的慢（日志里那次请求的行带 `; slow:`）并且 swap 用了九成以上（`sysctl vm.swapusage`）才会出现。
 - **不对时看**：日志面板（来源 session、llm）。
@@ -719,7 +719,7 @@
   - 第 3 步：你取消静音后声音一直在，停止时也不会再被静音或改动。
   - 第 4 步：新设备在录音中也被静音；停止后新旧两个设备都恢复（旧设备在切走时就恢复了）。
   - 第 5 步：每种录音都静音，取消时立即恢复。
-  - 第 6 步：浮窗胶囊下面出现一行“此输出设备无法静音，录音继续”，约 3 秒后消失，胶囊回到原来的大小；录音照常。
+  - 第 6 步：浮窗胶囊下面出现一行“这个输出设备不能静音，录音照常继续”，约 3 秒后消失，胶囊回到原来的大小；录音照常。
   - 第 7 步：两种情况下声音都会回来：结束辅助进程后，新的辅助进程起来时恢复；强制退出 Voxt 时立即恢复（辅助进程发现 app 不在了）。
   - 第 8 步：关掉后录音不再静音；录音中关掉，声音立即回来。
   - 第 9 步：Auralink 停止时声音就回来了（Voxt 没有接管 Auralink 做的静音，也不会再静音）；两边都停止后设备没有静音。
