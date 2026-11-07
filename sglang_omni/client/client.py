@@ -727,6 +727,11 @@ class Client:
             usage["engine_time_s"] = data.get("engine_time_s")
         else:
             pass
+        for field_name in ("speech_input_tokens", "speech_output_tokens"):
+            if field_name not in usage and data.get(field_name) is not None:
+                usage[field_name] = data.get(field_name)
+            else:
+                pass
         return UsageInfo.from_dict(usage)
 
     @staticmethod
