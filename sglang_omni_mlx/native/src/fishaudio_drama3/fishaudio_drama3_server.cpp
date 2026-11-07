@@ -141,10 +141,11 @@ std::string ReferenceText(const Json &text, const std::string &field) {
 class Drama3Service : public speech_service::SpeechServedModel {
 public:
   Drama3Service(const std::filesystem::path &model_directory,
-                int max_queued_requests, double request_timeout_seconds)
+                int max_queued_requests, double request_timeout_seconds,
+                bool offload_experts)
       : SpeechServedModel(kMaxRequestBodyBytes, max_queued_requests,
                           request_timeout_seconds),
-        model_(model_directory) {}
+        model_(model_directory, offload_experts) {}
 
 private:
   int SampleRate() const override { return fishaudio_drama3::kCodecSampleRate; }
@@ -384,13 +385,24 @@ private:
 } // namespace
 
 int main(int argc, char **argv) {
+  bool offload_experts = false;
   asr_service::ServedKind kind;
   kind.model_kind = "fishaudio_drama3";
   speech_service::AddSpeechFlags(
-      kind, [](const std::filesystem::path &model_directory,
-               int max_queued_requests, double request_timeout_seconds) {
+      kind, [&offload_experts](const std::filesystem::path &model_directory,
+                               int max_queued_requests,
+                               double request_timeout_seconds) {
         return std::make_unique<Drama3Service>(
-            model_directory, max_queued_requests, request_timeout_seconds);
+            model_directory, max_queued_requests, request_timeout_seconds,
+            offload_experts);
       });
+  kind.flags["--expert-offload"] =
+      [&offload_experts](const std::string &value) {
+        if (value != "2gib") {
+          throw std::invalid_argument("--expert-offload only accepts 2gib");
+        } else {
+        }
+        offload_experts = true;
+      };
   return asr_service::Serve(argc, argv, kind);
 }

@@ -90,7 +90,6 @@ class MingTTSTailInputs:
 class MingTTSTailOutputs:
     sampled: torch.Tensor
     feedback_embeddings: torch.Tensor
-    stop_prob: torch.Tensor
 
 
 class MingTTSTailGraph:
@@ -195,7 +194,6 @@ class MingTTSTailGraph:
         return MingTTSTailOutputs(
             sampled=self.outputs.sampled[:batch_size].clone(),
             feedback_embeddings=self.outputs.feedback_embeddings[:batch_size].clone(),
-            stop_prob=self.outputs.stop_prob[:batch_size].clone(),
         )
 
 
@@ -857,6 +855,7 @@ class MingTTSSGLangModel(nn.Module):
             rope_max_batch_size=aggregator_batch_capacity,
             norm_layer=norm_layer,
             qkv_layer=qkv_layer,
+            fuse_residual_norm=True,
         )
         ditar_config["execution_config"] = TalkerExecutionConfig(
             attn_backend=tail_attn_backend,
@@ -865,6 +864,7 @@ class MingTTSSGLangModel(nn.Module):
             rope_max_batch_size=2 * tail_batch_capacity,
             norm_layer=norm_layer,
             qkv_layer=qkv_layer,
+            fuse_residual_norm=True,
         )
 
         self.linear_proj_audio = Aggregator(
@@ -968,12 +968,21 @@ class MingTTSSGLangModel(nn.Module):
                 int(inputs.hidden_states.shape[0]),
                 -1,
             )
-            stop_prob = self.stop_head(inputs.hidden_states).softmax(dim=-1)[:, 0, 1]
         return MingTTSTailOutputs(
             sampled=sampled,
             feedback_embeddings=feedback,
-            stop_prob=stop_prob,
         )
+
+    @torch.no_grad()
+    def compute_stop_prob(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """Stop probability per row; it depends only on the backbone hidden state."""
+        weight = self.decode_input_embedding.weight
+        with torch.autocast(
+            device_type=weight.device.type,
+            dtype=weight.dtype,
+            enabled=weight.dtype in (torch.float16, torch.bfloat16),
+        ):
+            return self.stop_head(hidden_states).softmax(dim=-1)[:, 0, 1]
 
     def make_tail_sampling_inputs(
         self,
@@ -1016,8 +1025,11 @@ class MingTTSSGLangModel(nn.Module):
         forward_batch: ForwardBatch,
         input_embeds: Optional[torch.Tensor] = None,
         pp_proxy_tensors: object = None,
+        omni_prefill_rids: list[str] | None = None,
     ) -> LogitsProcessorOutput:
-        del pp_proxy_tensors
+        """Backbone logits; omni_prefill_rids accompanies the prefill embeddings
+        and the forward does not read it, because the rows are already composed."""
+        del pp_proxy_tensors, omni_prefill_rids
 
         if input_embeds is None:
             input_embeds = getattr(forward_batch, "input_embeds", None)
