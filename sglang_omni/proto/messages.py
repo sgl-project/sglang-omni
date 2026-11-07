@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Control plane messages."""
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, TypeAlias, TypedDict
@@ -13,6 +14,7 @@ from sglang_omni.proto.kv_transfer import (
     KVTransferReadyMessage,
 )
 from sglang_omni.proto.request import StagePayload
+from sglang_omni.proto.session import SessionIdentityDict
 
 
 class DirectCudaIpcTensor(TypedDict):
@@ -52,6 +54,7 @@ class DataReadyMessage:
     is_done: bool = False
     error: str | None = None
     replica_bindings: dict[str, int] | None = None
+    session_sampling_identity: SessionIdentityDict | None = None
 
     def to_dict(self) -> dict[str, object]:
         require_str(self.request_id, "request_id")
@@ -106,6 +109,12 @@ class DataReadyMessage:
             d["replica_bindings"] = dict(self.replica_bindings)
         else:
             pass
+        if self.session_sampling_identity is not None:
+            d["session_sampling_identity"] = require_session_sampling_identity(
+                self.session_sampling_identity
+            )
+        else:
+            pass
         return d
 
     @classmethod
@@ -156,6 +165,13 @@ class DataReadyMessage:
             is_done=is_done,
             error=error,
             replica_bindings=d.get("replica_bindings"),
+            session_sampling_identity=(
+                None
+                if d.get("session_sampling_identity") is None
+                else require_session_sampling_identity(
+                    d.get("session_sampling_identity")
+                )
+            ),
         )
 
 
@@ -175,9 +191,10 @@ class StreamChunkBatchMessage:
     tensor_bytes: list[bytes]
     pickled_metadata: bytes
     replica_bindings: dict[str, dict[str, int]]
+    session_sampling_identities: list[SessionIdentityDict | None] | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        d: dict[str, object] = {
             "type": "stream_chunk_batch",
             "from_stage": self.from_stage,
             "to_stage": self.to_stage,
@@ -189,6 +206,24 @@ class StreamChunkBatchMessage:
             "pickled_metadata": self.pickled_metadata,
             "replica_bindings": self.replica_bindings,
         }
+        if self.session_sampling_identities is not None:
+            if len(self.session_sampling_identities) != len(self.request_ids):
+                raise ValueError(
+                    "stream chunk batch session sampling identities must match chunks"
+                )
+            else:
+                pass
+            d["session_sampling_identities"] = [
+                (
+                    None
+                    if identity is None
+                    else require_session_sampling_identity(identity)
+                )
+                for identity in self.session_sampling_identities
+            ]
+        else:
+            pass
+        return d
 
     @classmethod
     def from_dict(cls, d: Mapping[str, object]) -> "StreamChunkBatchMessage":
@@ -209,6 +244,27 @@ class StreamChunkBatchMessage:
             require_str(request_id, "request_id")
         for chunk_id in chunk_ids:
             require_non_negative_int(chunk_id, "chunk_id")
+        session_sampling_identities = d.get("session_sampling_identities")
+        if session_sampling_identities is not None:
+            if type(session_sampling_identities) is not list:
+                raise TypeError(
+                    "stream chunk batch session sampling identities must be a list"
+                )
+            elif len(session_sampling_identities) != len(request_ids):
+                raise ValueError(
+                    "stream chunk batch session sampling identities must match chunks"
+                )
+            else:
+                session_sampling_identities = [
+                    (
+                        None
+                        if identity is None
+                        else require_session_sampling_identity(identity)
+                    )
+                    for identity in session_sampling_identities
+                ]
+        else:
+            pass
         pickled_metadata = d.get("pickled_metadata")
         if type(pickled_metadata) is not bytes:
             raise TypeError("stream chunk batch pickled_metadata must be bytes")
@@ -229,6 +285,7 @@ class StreamChunkBatchMessage:
             tensor_bytes=tensor_bytes,
             pickled_metadata=pickled_metadata,
             replica_bindings=replica_bindings,
+            session_sampling_identities=session_sampling_identities,
         )
 
 
@@ -451,9 +508,13 @@ class ProfilerStartMessage:
     event_dir: str | None = None  # Per-stage JSONL event sink dir for request profiling
     enable_torch: bool = True  # When False, only request-level events are captured
     event_buffer_capacity: int | None = None
+    mode: Literal["performance", "runtime"] = "performance"
+    sampling_unit: Literal["request", "session"] | None = None
+    sample_rate: float | None = None
+    max_event_file_bytes: int | None = None
 
-    def to_dict(self) -> dict[str, str | bool | int | None]:
-        message: dict[str, str | bool | int | None] = {
+    def to_dict(self) -> dict[str, str | bool | int | float | None]:
+        message: dict[str, str | bool | int | float | None] = {
             "type": "profiler_start",
             "run_id": self.run_id,
             "trace_path_template": self.trace_path_template,
@@ -462,6 +523,13 @@ class ProfilerStartMessage:
         }
         if self.event_buffer_capacity is not None:
             message["event_buffer_capacity"] = self.event_buffer_capacity
+        else:
+            pass
+        if self.mode == "runtime":
+            message["mode"] = self.mode
+            message["sampling_unit"] = self.sampling_unit
+            message["sample_rate"] = self.sample_rate
+            message["max_event_file_bytes"] = self.max_event_file_bytes
         else:
             pass
         return message
@@ -475,12 +543,61 @@ class ProfilerStartMessage:
             raise TypeError("event_buffer_capacity must be a positive integer")
         else:
             pass
+        mode = d.get("mode", "performance")
+        if mode not in ("performance", "runtime"):
+            raise TypeError("mode must be 'performance' or 'runtime'")
+        else:
+            pass
+        sampling_unit = d.get("sampling_unit")
+        if sampling_unit is not None and sampling_unit not in ("request", "session"):
+            raise TypeError("sampling_unit must be 'request' or 'session'")
+        else:
+            pass
+        raw_sample_rate = d.get("sample_rate")
+        if raw_sample_rate is not None and (
+            type(raw_sample_rate) not in (int, float)
+            or not math.isfinite(raw_sample_rate)
+            or not 0 < raw_sample_rate <= 1
+        ):
+            raise TypeError(
+                "sample_rate must be finite and satisfy 0 < sample_rate <= 1"
+            )
+        else:
+            pass
+        max_event_file_bytes = d.get("max_event_file_bytes")
+        if max_event_file_bytes is not None and (
+            type(max_event_file_bytes) is not int or max_event_file_bytes <= 0
+        ):
+            raise TypeError("max_event_file_bytes must be a positive integer")
+        else:
+            pass
+        if mode == "runtime":
+            if sampling_unit is None or raw_sample_rate is None:
+                raise TypeError("runtime mode requires sampling_unit and sample_rate")
+            elif bool(d.get("enable_torch", True)):
+                raise TypeError("runtime mode cannot enable torch profiling")
+            else:
+                pass
+        elif (
+            sampling_unit is not None
+            or raw_sample_rate is not None
+            or max_event_file_bytes is not None
+        ):
+            raise TypeError("runtime sampling and file limits require runtime mode")
+        else:
+            pass
         return cls(
             run_id=d["run_id"],
             trace_path_template=d["trace_path_template"],
             event_dir=d.get("event_dir"),
             enable_torch=bool(d.get("enable_torch", True)),
             event_buffer_capacity=event_buffer_capacity,
+            mode=mode,
+            sampling_unit=sampling_unit,
+            sample_rate=(
+                float(raw_sample_rate) if raw_sample_rate is not None else None
+            ),
+            max_event_file_bytes=max_event_file_bytes,
         )
 
 
@@ -603,3 +720,16 @@ def require_non_negative_int(value: object, name: str) -> int:
     else:
         pass
     return value
+
+
+def require_session_sampling_identity(value: object) -> SessionIdentityDict:
+    if not isinstance(value, Mapping):
+        raise TypeError("session_sampling_identity must be a mapping")
+    else:
+        pass
+    return {
+        "id": require_str(value.get("id"), "session_sampling_identity.id"),
+        "open_index": require_non_negative_int(
+            value.get("open_index"), "session_sampling_identity.open_index"
+        ),
+    }

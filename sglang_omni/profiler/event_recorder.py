@@ -7,6 +7,7 @@ import functools
 import threading
 import time
 from collections.abc import Iterable, Mapping
+from itertools import chain
 from pathlib import Path
 
 from sglang_omni.profiler.event_recorder_types import (
@@ -14,6 +15,7 @@ from sglang_omni.profiler.event_recorder_types import (
     MAX_EVENT_TEXT_LENGTH,
     PendingRequestEvent,
     ProducerBuffer,
+    RecorderRunState,
     RequestEvent,
     RequestEventFinalization,
     RequestEventSnapshot,
@@ -68,17 +70,89 @@ class RequestEventBuffer(threading.local):
     ) -> None:
         """Snapshot one cohort once into the current producer's buffer."""
         recorder = get_recorder()
-        try:
-            producer_buffer = recorder.begin_buffer_operation()
-        except Exception:
+        observed_state = recorder.active_state
+        if observed_state is None:
             return
         else:
             pass
+        expected_run_state: RecorderRunState | None = None
+        if observed_state.mode == "runtime":
+            if observed_state.writer_failed or observed_state.file_size_limit_reached:
+                return
+            else:
+                pass
+            expected_run_state = observed_state
+            try:
+                snapshot_iterator = iter(snapshots)
+                for snapshot in snapshot_iterator:
+                    if (
+                        observed_state.writer_failed
+                        or observed_state.file_size_limit_reached
+                    ):
+                        return
+                    else:
+                        pass
+                    if recorder.should_sample_request(
+                        observed_state,
+                        snapshot.request_id,
+                        event_metadata=metadata,
+                        request_metadata=snapshot.metadata,
+                    ):
+                        break
+                    else:
+                        pass
+                else:
+                    return
+            except Exception:
+                try:
+                    producer_buffer = recorder.begin_buffer_operation(
+                        expected_run_state=observed_state
+                    )
+                except Exception:
+                    return
+                if producer_buffer is None:
+                    return
+                else:
+                    pass
+                producer_buffer.dropped_events += 1
+                producer_buffer.incomplete_reasons.add(
+                    "runtime_capture_selection_failure"
+                )
+                producer_buffer.in_flight -= 1
+                return
+            snapshots = chain(
+                (snapshot,),
+                (
+                    snapshot
+                    for snapshot in snapshot_iterator
+                    if not observed_state.writer_failed
+                    and not observed_state.file_size_limit_reached
+                    and recorder.should_sample_request(
+                        observed_state,
+                        snapshot.request_id,
+                        event_metadata=metadata,
+                        request_metadata=snapshot.metadata,
+                    )
+                ),
+            )
+        else:
+            pass
+        try:
+            producer_buffer = recorder.begin_buffer_operation(
+                expected_run_state=expected_run_state
+            )
+        except Exception:
+            return
         if producer_buffer is None:
             return
         else:
             pass
         run_state = producer_buffer.run_state
+        if run_state.mode == "runtime" and run_state.file_size_limit_reached:
+            producer_buffer.in_flight -= 1
+            return
+        else:
+            pass
         timestamp_ns = time.time_ns()
         monotonic_seconds = time.monotonic()
         worker_name = threading.current_thread().name
@@ -89,6 +163,10 @@ class RequestEventBuffer(threading.local):
             else:
                 pass
             for snapshot in snapshots:
+                if run_state.mode == "runtime" and run_state.file_size_limit_reached:
+                    break
+                else:
+                    pass
                 if (
                     len(producer_buffer.events) + producer_buffer.pending_event_count
                     >= producer_buffer.capacity
@@ -121,8 +199,6 @@ class RequestEventBuffer(threading.local):
                     producer_buffer.dropped_events += 1
                     producer_buffer.incomplete_reasons.add("metadata_snapshot_failure")
                     continue
-                else:
-                    pass
                 if "__metadata_truncated__" in captured_metadata:
                     producer_buffer.metadata_truncations += 1
                     producer_buffer.incomplete_reasons.add("metadata_truncated")
@@ -212,6 +288,7 @@ def emit(
     event_name: str,
     metadata: Mapping[str, object] | None = None,
     timestamp_ns: int | None = None,
+    sampling_session_identity: tuple[str, int] | None = None,
 ) -> None:
     """Module-level shortcut for the process recorder."""
     RECORDER.emit(
@@ -220,6 +297,7 @@ def emit(
         event_name=event_name,
         metadata=metadata,
         timestamp_ns=timestamp_ns,
+        sampling_session_identity=sampling_session_identity,
     )
 
 

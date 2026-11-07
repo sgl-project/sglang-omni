@@ -7,6 +7,9 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
+from sglang_omni.profiler.__main__ import main as profiler_main
 from sglang_omni.profiler.views import (
     assess_completeness,
     build_report,
@@ -24,12 +27,18 @@ def write_events(path: Path, events: list[dict]) -> None:
             fp.write("\n")
 
 
-def write_status(path: Path, *, complete: bool, reasons: list[str]) -> None:
+def write_status(
+    path: Path,
+    *,
+    complete: bool,
+    reasons: list[str],
+    scope: str = "event_storage",
+) -> None:
     path.write_text(
         json.dumps(
             {
                 "complete": complete,
-                "completeness_scope": "event_storage",
+                "completeness_scope": scope,
                 "incomplete_reasons": reasons,
                 "accepted_events": 0,
                 "processed_events": 0,
@@ -500,6 +509,112 @@ def test_complete_status_sidecar_allows_complete_report(tmp_path: Path) -> None:
 
     assert report["completeness"]["state"] == "complete"
     assert report["completeness"]["complete"] is True
+    assert report["completeness"]["scope"] == "event_storage"
+
+
+def test_complete_runtime_status_and_cli_report_sampled_scope(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    process_id = os.getpid()
+    write_events(
+        tmp_path / f"events_coordinator_{process_id}.jsonl",
+        [make_ev("r1", "coordinator", "event", 1)],
+    )
+    write_status(
+        tmp_path / f"run_status_{process_id}.json",
+        complete=True,
+        reasons=[],
+        scope="sampled_event_storage",
+    )
+
+    report = build_report(tmp_path)
+
+    assert report["completeness"]["state"] == "complete"
+    assert report["completeness"]["complete"] is True
+    assert report["completeness"]["scope"] == "sampled_event_storage"
+    assert profiler_main([str(tmp_path), "--format", "json"]) == 0
+    assert (
+        json.loads(capsys.readouterr().out)["completeness"]["scope"]
+        == "sampled_event_storage"
+    )
+    assert profiler_main([str(tmp_path), "--format", "table"]) == 0
+    assert (
+        "# Completeness: complete (scope: sampled_event_storage)"
+        in capsys.readouterr().out
+    )
+
+
+def test_incomplete_runtime_status_preserves_scope_and_reasons(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    process_id = os.getpid()
+    write_events(
+        tmp_path / f"events_coordinator_{process_id}.jsonl",
+        [make_ev("r1", "coordinator", "event", 1)],
+    )
+    write_status(
+        tmp_path / f"run_status_{process_id}.json",
+        complete=False,
+        reasons=["event_file_open_failure"],
+        scope="sampled_event_storage",
+    )
+
+    report = build_report(tmp_path)
+
+    assert report["completeness"]["state"] == "incomplete"
+    assert report["completeness"]["complete"] is False
+    assert report["completeness"]["scope"] == "sampled_event_storage"
+    assert report["completeness"]["incomplete_reasons"] == ["event_file_open_failure"]
+    assert profiler_main([str(tmp_path), "--format", "table"]) == 0
+    assert (
+        "# Completeness: incomplete (scope: sampled_event_storage) "
+        "(event_file_open_failure)"
+    ) in capsys.readouterr().out
+
+
+def test_mixed_status_scopes_cannot_produce_complete_report(tmp_path: Path) -> None:
+    process_ids = (os.getpid(), os.getpid() + 1)
+    for request_id, process_id, scope in zip(
+        ("r1", "r2"), process_ids, ("event_storage", "sampled_event_storage")
+    ):
+        write_events(
+            tmp_path / f"events_coordinator_{process_id}.jsonl",
+            [make_ev(request_id, "coordinator", "event", 1)],
+        )
+        write_status(
+            tmp_path / f"run_status_{process_id}.json",
+            complete=True,
+            reasons=[],
+            scope=scope,
+        )
+
+    completeness = assess_completeness(tmp_path)
+
+    assert completeness["state"] == "incomplete"
+    assert completeness["complete"] is False
+    assert completeness["scope"] == "mixed"
+    assert "mixed_completeness_scopes" in completeness["incomplete_reasons"]
+
+
+def test_unrecognized_status_scope_is_not_complete(tmp_path: Path) -> None:
+    process_id = os.getpid()
+    write_events(
+        tmp_path / f"events_coordinator_{process_id}.jsonl",
+        [make_ev("r1", "coordinator", "event", 1)],
+    )
+    write_status(
+        tmp_path / f"run_status_{process_id}.json",
+        complete=True,
+        reasons=[],
+        scope="unexpected_scope",
+    )
+
+    completeness = assess_completeness(tmp_path)
+
+    assert completeness["state"] == "unknown"
+    assert completeness["complete"] is False
+    assert completeness["scope"] == "unknown"
+    assert "invalid_completeness_scope" in completeness["incomplete_reasons"]
 
 
 def test_status_without_event_file_prevents_complete_report(tmp_path: Path) -> None:
