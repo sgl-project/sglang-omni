@@ -1,21 +1,30 @@
-// Sidebar company-group toggle for the SGLang-Omni Cookbook.
+// Sidebar navigation collapse/toggle for SGLang-Omni docs.
 //
-// Goal (mirrors the SGLang docs / Mintlify model sidebar): clicking an H2
-// company heading in the sidebar must ONLY expand/collapse its H3 model
-// sub-items in place -- it must not navigate, and must not change the main
-// content area. Sub-item links (models) keep their normal navigation.
+// Two responsibilities:
+//
+// 1. On EVERY page, collapse every nav group that is not the current page's
+//    own group on first paint. sphinx-book-theme is configured with
+//    collapse_navbar: False, so it renders all <details open="open">. Without
+//    this pass, sections like "Other Platforms > Apple Silicon" pre-expand on
+//    the homepage even though the user never clicked them. The native
+//    <details> chevron still toggles a group open/closed after load.
+//
+// 2. On Cookbook company pages only, clicking the company heading toggles its
+//    model sub-items in place instead of navigating (mirrors the SGLang docs /
+//    Mintlify model sidebar). Sub-item links (models) keep normal navigation.
 //
 // Rendered DOM (sphinx-book-theme, with collapse_navbar: False):
 //   <li class="toctree-l1 has-children">          <- + "current active" on the
 //     <a class="reference internal" href="...">Qwen</a>   page's own group
 //     <details open="open"><summary>...</summary><ul> ...models... </ul></details>
 //   </li>
-// Note (Akazaakane): Platform parents also have children. Limit the custom
-// toggle to Cookbook company pages so platform links can open their guides.
+// Note (Akazaakane): Platform parents also have children. The custom animated
+// toggle is limited to Cookbook company pages so platform links can open their
+// guides; the universal collapse pass above still applies to them.
 (function () {
   "use strict";
 
-  var COMPANY_GROUP_SELECTOR = "nav.bd-links li.toctree-l1.has-children > a";
+  var NAV_GROUP_SELECTOR = "nav.bd-links li.has-children";
   var COMPANY_PAGE = /\/cookbook\/companies\/[^/]+\.html$/;
   var EXPAND_MS = 250;
   var COLLAPSE_MS = 200;
@@ -235,30 +244,36 @@
   };
 
   function init() {
-    var links;
+    var groups;
     try {
-      links = document.querySelectorAll(COMPANY_GROUP_SELECTOR);
+      groups = document.querySelectorAll(NAV_GROUP_SELECTOR);
     } catch (err) {
       if (window.console && console.warn) {
-        console.warn("sidebar company toggle: selector failed", err);
+        console.warn("sidebar nav: selector failed", err);
       }
       return;
     }
-    for (var i = 0; i < links.length; i++) {
+    for (var i = 0; i < groups.length; i++) {
       // One failure in a group must not prevent the remaining groups from
-      // getting their click behavior, so each group is handled on its own.
+      // being initialized, so each group is handled on its own.
       try {
-        var link = links[i];
-        if (!COMPANY_PAGE.test(link.pathname)) continue;
-        var li = link.parentElement;
-        if (!li || !li.classList.contains("has-children")) continue;
+        var li = groups[i];
         var details = li.querySelector(":scope > details");
         if (!details) continue;
-        var ctrl = new GroupController(link);
-        // On first paint keep only the current page's group expanded.
+        var link = li.querySelector(":scope > a");
+
+        // Pass 1 (all pages): collapse every group that is not the current
+        // page's own group. This stops "Apple Silicon" (and any other
+        // platform parent) from pre-expanding on the homepage.
         if (!isActiveGroup(li)) {
           details.removeAttribute("open");
         }
+
+        // Pass 2 (Cookbook company pages only): replace native navigation
+        // with an animated expand/collapse toggle.
+        if (!link || !COMPANY_PAGE.test(link.pathname)) continue;
+        if (!li.classList.contains("has-children")) continue;
+        var ctrl = new GroupController(link);
         ctrl.setAria();
         link.addEventListener(
           "click",
@@ -277,9 +292,15 @@
         );
       } catch (err) {
         if (window.console && console.warn) {
-          console.warn("sidebar company toggle: group init skipped", err);
+          console.warn("sidebar nav: group init skipped", err);
         }
       }
+    }
+    // Re-enable the anti-flash CSS that was hiding non-active groups
+    // before JS finished collapsing them.
+    var nav = document.querySelector("nav.bd-links");
+    if (nav) {
+      nav.classList.add("js-ready");
     }
   }
 
