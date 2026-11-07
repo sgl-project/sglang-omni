@@ -8,6 +8,7 @@ import contextlib
 import gc
 import hashlib
 import logging
+import math
 import multiprocessing
 import os
 import pickle
@@ -28,7 +29,6 @@ from benchmarks.duplex.client import (
     LEGACY_TRANSPORT,
     MAX_TIMEOUT_S,
     PACKET_MS,
-    SAMPLE_RATE,
     TRANSPORT,
     TURN_BASED_TRANSPORT,
     TurnDetection,
@@ -234,7 +234,9 @@ async def run_samples(
         raise ValueError("dataset_revision must be nonempty")
     else:
         pass
-    if not 0 < timeout_s <= MAX_TIMEOUT_S:
+    if not math.isfinite(timeout_s) or timeout_s <= 0:
+        raise ValueError("timeout_s must be finite and positive")
+    elif profile != "personaplex" and timeout_s > MAX_TIMEOUT_S:
         raise ValueError(f"timeout_s must be positive and at most {MAX_TIMEOUT_S}")
     else:
         pass
@@ -389,9 +391,10 @@ async def run_samples(
             variant_dir = output / variant_state["directory"]
             try:
                 pcm, normalization = normalize_audio(
-                    dataset_root / sample.paths[source_key]
+                    dataset_root / sample.paths[source_key],
+                    sample_rate=PROFILES[profile].input_sample_rate,
                 )
-                duration_s = len(pcm) / (SAMPLE_RATE * 2)
+                duration_s = len(pcm) / (PROFILES[profile].input_sample_rate * 2)
                 variant_state["normalization"] = normalization
                 variant_state["input"] = {
                     "sha256": hashlib.sha256(pcm).hexdigest(),
@@ -412,7 +415,7 @@ async def run_samples(
                 soundfile.write(
                     str(variant_dir / "input.wav"),
                     np.frombuffer(pcm, dtype="<i2"),
-                    SAMPLE_RATE,
+                    PROFILES[profile].input_sample_rate,
                     subtype="PCM_16",
                 )
                 write_json(
@@ -437,7 +440,7 @@ async def run_samples(
                         "input": {
                             "file": "input.pcm",
                             "sha256": variant_state["input"]["sha256"],
-                            "sample_rate": SAMPLE_RATE,
+                            "sample_rate": PROFILES[profile].input_sample_rate,
                         },
                         "cases": [
                             {
