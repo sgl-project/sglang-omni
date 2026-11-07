@@ -12,6 +12,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **System dictation** is back as a speech model (Local models → Speech recognition): macOS's own speech recognition, on this Mac, with nothing to download, and the text shown as you speak. It hears your main language (Settings → General; without one, the Mac's dictation language), and your dictionary's terms help it. Choose it on a feature's page; Automatic still uses a speech model you downloaded. The first time, macOS asks for Speech Recognition (Settings → Permissions has it too); a language this Mac cannot recognise on device fails with a notice that says so.
 - **Remote speech recognition** (the Speech models page's Remote services): OpenAI Transcribe, Doubao (Volcengine), Zhipu GLM-ASR, Aliyun Bailian ASR, StepFun, Xiaomi MiMo and Google Gemini, as in Voxt 1.x. Doubao, Aliyun Bailian and Gemini show the text while you speak (tagged Realtime); the others get the recording once you stop. Set one up with its key (Doubao also takes its App ID), address and model, and test the connection before saving; keys stay in the Mac's Keychain, never in Voxt's settings or logs. OpenAI Transcribe, StepFun and Zhipu pointed at a server on this Mac (a local Whisper server) need no key. A service that is set up is offered after the speech models of this Mac in every feature's speech model menu, and used when you choose it there or when no speech model on this Mac is installed. Doubao, Gemini and Aliyun Bailian's Fun-ASR and Qwen-Audio models get your dictionary's terms as hot words; OpenAI Transcribe, StepFun and Zhipu get them in their prompt; Xiaomi MiMo takes none.
 - **Choose the model folder** (Settings → Storage → Model folder → Change…): keep the models in another folder or on another disk. Voxt brings the models there first (hard links on the same disk, so no space is used; copies on another disk), including those other apps that use this model library keep in it, so that none is downloaded again; then those apps use the new folder too, and Voxt restarts. The old folder stays as it was: delete it in Finder once no app uses it.
+- **Generation settings for remote language models**, field for field as Voxt 1.x had them for each service: Think (default, off, on, effort, budget), max output tokens, temperature, top P, the service's own options (OpenAI's verbosity, Ollama's keep alive, oMLX's usage in stream events), and the folding Advanced (response format, top K, min P, seed, penalties, logprobs, stop sequences) and Expert (Extra Body JSON) sections. A service shows only the fields it takes.
+- **Show in the Dock** (Settings → General): off, Voxt is in the menu bar only, and its menu bar icon stays on.
+- **Also copy the result to the clipboard** (Settings → General): each result stays on the clipboard, also after it was pasted, and a result the answer card shows is copied too.
+- **Show live text** (Settings → Overlay style): off, the overlay shows no words while you speak or while the model writes.
 
 ### Changed
 
@@ -24,6 +28,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Fixed
 
 - Import terms no longer adds each line of a JSON file as a term: Voxt 1.x's export is read as a dictionary, and any other JSON file is refused.
+- Clicking beside a dialog, or pressing Escape, no longer closes it while it holds what you typed: a key you had just pasted was lost when the click that brought Voxt's window back landed beside the dialog. Cancel and × still close it.
+- VoiceOver now reaches the Retry button of a history entry and the Test button of a remote service's card.
 
 ### 中文
 
@@ -35,6 +41,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **系统听写**回来了，作为语音识别模型（本地模型 → 语音识别）：macOS 自带的语音识别，在这台 Mac 上运行，无需下载，说话时实时显示文字。它识别你的主要语言（设置 → 通用；没有设置时用这台 Mac 的听写语言），词典里的词条也会帮它识别。在功能页里选择它；“自动”仍然优先用你下载的语音识别模型。第一次使用时 macOS 会请求“语音识别”权限（设置 → 权限里也有）；这台 Mac 不能在本机识别的语言会提示失败原因。
 - **远程语音识别**（语音模型页的“远程服务”）：OpenAI Transcribe、豆包（火山引擎）、智谱 GLM-ASR、阿里云百炼 ASR、阶跃星辰、小米 MiMo 和 Google Gemini，与 Voxt 1.x 相同。豆包、阿里云百炼和 Gemini 边说边出文字（标为“实时”），其他服务在你说完后识别整段录音。填写密钥（豆包还可以填 App ID）、地址和模型即可设置，保存前可以测试连接；密钥只保存在 Mac 的钥匙串里，不会写进 Voxt 的设置或日志。OpenAI Transcribe、阶跃星辰和智谱指向本机的服务（本地 Whisper 服务）时不需要密钥。设置好的服务排在这台 Mac 上的语音模型之后，出现在每个功能的语音识别模型菜单里；在那里选中它、或这台 Mac 上没有安装语音模型时使用。豆包、Gemini 以及阿里云百炼的 Fun-ASR 和 Qwen-Audio 模型把词典里的词当作热词，OpenAI Transcribe、阶跃星辰和智谱把它们放进提示词，小米 MiMo 不使用词典。
 - **自己选模型文件夹**（设置 → 存储 → 模型文件夹 → 更改…）：把模型放到别的文件夹或别的磁盘。Voxt 先把模型放过去（同一磁盘上建硬链接，不占新空间；其他磁盘上复制），包括使用这个模型库的其他 app 放在里面的模型，谁都不用重新下载；之后这些 app 也改用新文件夹，Voxt 随即重启。原来的文件夹保持不变：没有 app 再用它之后，可以在访达里删掉。
+- **远程语言模型的生成设置**，和 1.x 一样按服务提供：思考（默认、关闭、开启、推理强度、预算）、最大输出 Token 数、温度、Top P、服务专属的选项（OpenAI 的详略程度、Ollama 的模型保留时长、oMLX 的流式用量），以及可以展开的“高级”（返回格式、Top K、Min P、随机种子、惩罚项、Logprobs、停止序列）和“专家”（额外请求体 JSON）。每个服务只显示它支持的字段。
+- **在 Dock 中显示**（设置 → 通用）。关掉后 Voxt 只在菜单栏里，菜单栏图标会一直开着。
+- **同时把结果复制到剪贴板**（设置 → 通用）。每次的结果都留在剪贴板里，粘贴过的也一样；只出现在答案卡片里的结果也会复制。
+- **显示实时文字**（设置 → 浮窗样式）。关掉后，你说话时和模型写回答时，浮窗里都不显示文字。
 
 #### 变更
 
@@ -47,6 +57,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 
 - "导入词条"不再把 JSON 文件的每一行当成一个词：Voxt 1.x 的导出文件按词典读，别的 JSON 文件会被拒绝。
+- 对话框里填了内容时，点对话框旁边或按 Esc 不会再把它关掉。以前刚粘贴进去的 key，可能因为点回 Voxt 窗口时点在了对话框旁边而丢失。“取消”和 × 照常关闭。
+- 读屏（VoiceOver）现在能点到历史记录里的“重试”，以及远程服务卡片上的“测试”。
 
 ## [2.0.0] - 2026-11-06
 
