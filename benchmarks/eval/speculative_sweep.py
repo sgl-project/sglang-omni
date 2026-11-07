@@ -46,7 +46,9 @@ from benchmarks.metrics.speculative import (
     read_server_log,
     render,
 )
+from sglang_omni.cli.serve import apply_default_draft_engine_overrides
 from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.sources import patches_from_model_path_flag
 
 logger = logging.getLogger(__name__)
 
@@ -93,10 +95,22 @@ class ServerConfigFile(BaseModel):
 
 
 def write_side_configs(
-    draft_config_path: Path, output_dir: Path, *, keep_prefix_cache: bool
+    draft_config_path: Path,
+    output_dir: Path,
+    *,
+    model_path: str,
+    keep_prefix_cache: bool,
 ) -> dict[Side, Path]:
-    """Write the draft config, and the same config with the draft switched off on every stage that runs one."""
-    resolved_config = ConfigManager.from_file(str(draft_config_path)).config
+    """Write the draft config, and the same config with the draft switched off on every stage that runs one.
+
+    Each leg launches with --model-path, so that path, not the file's, decides the draft the model gets by default.
+    """
+    manager = ConfigManager.from_file(str(draft_config_path))
+    resolved_config = apply_default_draft_engine_overrides(
+        manager.merge_config(
+            {}, extra_patches=patches_from_model_path_flag(model_path, manager.config)
+        )
+    )
     drafted_stages = [
         stage.name
         for stage in resolved_config.stages
@@ -277,7 +291,10 @@ def main() -> None:
         pass
     args.output_dir.mkdir(parents=True)
     config_paths = write_side_configs(
-        args.draft_config, args.output_dir, keep_prefix_cache=args.prefix_cache
+        args.draft_config,
+        args.output_dir,
+        model_path=model_path,
+        keep_prefix_cache=args.prefix_cache,
     )
     legs = []
     for index, letter in enumerate(args.order):

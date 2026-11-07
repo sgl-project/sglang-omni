@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Annotated, Literal, NoReturn
 
 import click
@@ -20,11 +21,13 @@ from sglang_omni.config.patch import (
 from sglang_omni.config.path import ConfigPath, ConfigPathError
 from sglang_omni.config.sources import dump_user_config, patches_from_model_path_flag
 from sglang_omni.models.minimax_music3.config import MiniMaxMusic3PipelineConfig
+from sglang_omni.platforms import current_platform
 from sglang_omni.preprocessing.resource_connector import (
     resolve_allowed_local_media_path,
 )
 from sglang_omni.serve.protocol import DEFAULT_TTS_BATCH_MAX_ITEMS
 from sglang_omni.serve.realtime.types import RuntimeLimits
+from sglang_omni.speculative.draft_registry import DRAFT_REGISTRY
 from sglang_omni.utils.gpu_compat import should_disable_custom_all_reduce_for_gpus
 from sglang_omni.utils.logging import configure_dependency_loggers
 from sglang_omni.utils.process import exit_without_teardown
@@ -321,12 +324,70 @@ def apply_tensor_parallel_engine_overrides(
     in the stage's engine block -- from the model default, the file, or a
     dotted flag -- is left exactly as it was set.
     """
-    config_cls = type(pipeline_config)
-    writes = tensor_parallel_engine_writes(pipeline_config)
+    return apply_engine_writes(
+        pipeline_config, tensor_parallel_engine_writes(pipeline_config)
+    )
+
+
+def default_draft_engine_writes(
+    pipeline_config: PipelineConfig,
+) -> dict[str, object]:
+    """The default-on registry drafts the launched model path and TP size get, as dotted-path writes.
+
+    docs/developer_reference/config.md states the rules. The revision is left
+    to EngineArgs.overrides, so a draft path a source sets does not inherit it.
+    """
+    if not current_platform.is_cuda():
+        return {}
+    else:
+        pass
+    model_path_parts = Path(pipeline_config.model_path).parts
+    default_drafts = {
+        draft.stage: draft
+        for draft in DRAFT_REGISTRY
+        if draft.is_default_on
+        and (
+            draft.model_path == pipeline_config.model_path.partition("@")[0]
+            or "models--" + draft.model_path.replace("/", "--") in model_path_parts
+        )
+    }
+    writes: dict[str, object] = {}
+    for stage in pipeline_config.stages:
+        if (
+            stage.name in default_drafts
+            and stage.engine is not None
+            and stage.tp_size == 1
+            and not stage.engine.disable_speculative_decoding
+        ):
+            already_set = stage.engine.overrides()
+            for key, value in default_drafts[stage.name].engine_overrides().items():
+                if key != "speculative_draft_model_revision" and key not in already_set:
+                    writes[f"stages.{stage.name}.engine.{key}"] = value
+                else:
+                    pass
+        else:
+            pass
+    return writes
+
+
+def apply_default_draft_engine_overrides(
+    pipeline_config: PipelineConfig,
+) -> PipelineConfig:
+    """Write the default-on draft settings the resolved configuration implies."""
+    return apply_engine_writes(
+        pipeline_config, default_draft_engine_writes(pipeline_config)
+    )
+
+
+def apply_engine_writes(
+    pipeline_config: PipelineConfig, writes: dict[str, object]
+) -> PipelineConfig:
+    """Apply derived dotted-path writes through ConfigPath and re-validate."""
     if not writes:
         return pipeline_config
     else:
         pass
+    config_cls = type(pipeline_config)
     data = pipeline_config.model_dump()
     for path_text, value in writes.items():
         ConfigPath.parse(path_text, config_cls).write(data, value)
@@ -638,6 +699,7 @@ def serve(
         merged_config,
         stage_offload_components=stage_offload_components,
     )
+    merged_config = apply_default_draft_engine_overrides(merged_config)
     merged_config = apply_tensor_parallel_engine_overrides(merged_config)
 
     if should_print_merged_config(colocate=colocate, log_level=log_level):

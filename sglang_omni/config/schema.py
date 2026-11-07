@@ -6,14 +6,12 @@ import logging
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.main import IncEx
 from typing_extensions import Unpack
 
-from sglang_omni.platforms import current_platform
 from sglang_omni.proto.session import (
     DEFAULT_IDLE_TIMEOUT_S,
     DEFAULT_MAX_OUTPUT_LEAD_MS,
@@ -854,28 +852,6 @@ class PipelineConfig(BaseModel):
         return {**data, "stages": stages}
 
     def model_post_init(self, __context: object = None) -> None:
-        # note (Haoling Pu): only the model's own stage defaults get the draft, so a rebuilt config keeps the keys applied on top. The revision is left to EngineArgs.overrides, so a draft path swapped later does not inherit it.
-        if "stages" not in self.model_fields_set and current_platform.is_cuda():
-            model_path_parts = Path(self.model_path).parts
-            default_drafts = {
-                draft.stage: draft
-                for draft in DRAFT_REGISTRY
-                if draft.is_default_on
-                and (
-                    draft.model_path == self.model_path.partition("@")[0]
-                    or "models--" + draft.model_path.replace("/", "--")
-                    in model_path_parts
-                )
-            }
-            for stage in self.stages:
-                if stage.name in default_drafts and stage.engine is not None:
-                    draft_keys = default_drafts[stage.name].engine_overrides()
-                    del draft_keys["speculative_draft_model_revision"]
-                    stage.engine = stage.engine.model_copy(update=draft_keys)
-                else:
-                    pass
-        else:
-            pass
         self.validate_general()
         self.validate_processes()
 

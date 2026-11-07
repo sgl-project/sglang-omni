@@ -39,6 +39,7 @@ from benchmarks.metrics.speculative import (
 )
 from benchmarks.tasks.asr import build_asr_eval_results
 from sglang_omni.config.manager import ConfigManager
+from sglang_omni.platforms import current_platform
 
 # Lines from SGLang 0.5.22 servers on H100: MOSS-TD with a DFlash draft, and a Qwen3-ASR server without one that meets the same prompt twice.
 DRAFT_SERVER_LOG = """\
@@ -279,7 +280,10 @@ def test_only_the_draft_side_serves_the_draft(
     output_dir.mkdir()
 
     config_paths = write_side_configs(
-        draft_config_path, output_dir, keep_prefix_cache=keep_prefix_cache
+        draft_config_path,
+        output_dir,
+        model_path="Qwen/Qwen3-ASR-1.7B",
+        keep_prefix_cache=keep_prefix_cache,
     )
 
     served = {
@@ -312,7 +316,46 @@ def test_a_config_without_a_draft_is_refused(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="runs no stage with a draft"):
-        write_side_configs(draft_config_path, tmp_path, keep_prefix_cache=False)
+        write_side_configs(
+            draft_config_path,
+            tmp_path,
+            model_path="Qwen/Qwen3-ASR-0.6B",
+            keep_prefix_cache=False,
+        )
+
+
+@pytest.mark.parametrize(
+    ("model_path", "drafted"),
+    [("Qwen/Qwen3-ASR-1.7B", True), ("/checkpoints/Qwen3-ASR-1.7B", False)],
+)
+def test_the_launched_model_path_decides_whether_the_default_draft_is_swept(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, model_path: str, drafted: bool
+) -> None:
+    """Every leg launches with --model-path, so a file's model_path with a default draft is not what decides it."""
+    monkeypatch.setattr(current_platform, "is_cuda", lambda: True)
+    draft_config_path = tmp_path / "qwen3_asr.yaml"
+    draft_config_path.write_text(
+        yaml.safe_dump(
+            {
+                "config_cls": "Qwen3ASRPipelineConfig",
+                "model_path": "Qwen/Qwen3-ASR-1.7B",
+            }
+        )
+    )
+    if drafted:
+        config_paths = write_side_configs(
+            draft_config_path, tmp_path, model_path=model_path, keep_prefix_cache=True
+        )
+        baseline = ConfigManager.from_file(str(config_paths["baseline"])).config
+        assert baseline.stage_named("asr").engine.disable_speculative_decoding is True
+    else:
+        with pytest.raises(ValueError, match="runs no stage with a draft"):
+            write_side_configs(
+                draft_config_path,
+                tmp_path,
+                model_path=model_path,
+                keep_prefix_cache=True,
+            )
 
 
 @pytest.mark.asyncio
