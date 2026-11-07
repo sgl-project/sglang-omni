@@ -299,3 +299,31 @@ def test_continuation_allows_asr_refresh_without_retained_kv(
     restored = rebuilt_req(request)
     assert restored.session is None
     assert restored.omni_data.stage_payload.request.params == parameters
+
+
+@pytest.mark.parametrize(
+    "extra_key,cache_salt", [(None, None), ("audio:reference-a:weights:2", "tenant-a")]
+)
+def test_continuation_preserves_cache_identity(extra_key, cache_salt) -> None:
+    """PD handoff must not discard the source request's cache namespace."""
+    source = prefill_req()
+    source.extra_key = extra_key
+    source.cache_salt = cache_salt
+    continuation = DecodeContinuation.decode(
+        continuation_from_req(source, "transfer-1", state_builder).encode()
+    )
+    restored = req_from_continuation(
+        continuation,
+        make_allocation(),
+        req_to_token_pool=ReqPool(),
+        state_restorer=lambda req, data, _resume: setattr(req, "tokenizer", None),
+    )
+    assert restored.extra_key == source.extra_key
+    assert restored.cache_salt == source.cache_salt
+
+
+@pytest.mark.parametrize("field", ["extra_key", "cache_salt"])
+def test_continuation_rejects_invalid_cache_identity(field) -> None:
+    """Malformed cache namespaces must fail before request reconstruction."""
+    with pytest.raises(ValueError, match=field):
+        replace(make_continuation(), **{field: 42})
