@@ -47,7 +47,7 @@ scripts/mac-gui.sh scripts/release.sh（在 Mac 上，ssh 里经 mac-gui.sh 进�
 3. 工作流把 tag 的版本号写进 mygo.json 和两个 Info.plist，导入 `voxt-release` 环境的 Developer ID（[scripts/release-identity.sh](../scripts/release-identity.sh) 检查它是 RY2TQTYSKQ 的），用 App Store Connect API key 建 notarytool 配置，跑 `scripts/release.sh --notarize voxt-notary --keychain …`（`EXPECT_TEAM=RY2TQTYSKQ`，`release-verify.sh developer-id` 全部通过才继续），再把 `Voxt-X.Y.Z-arm64.dmg` 和它的 `.sha256` 传到草稿 Release “Voxt vX.Y.Z”。说明依次是要求、安装、CHANGELOG 里的那一节和构建来源。
 4. 在 Release 页面检查说明后发布（默认标成 Latest）。用户下载 dmg，把 Voxt 拖进“应用程序”，会替换 Swift 版 Voxt 1.x 的 Voxt.app。2.0.0 不会自动更新，新版本也这样装。
 
-`voxt-release` 环境是 Swift 版 Voxt 1.x 发版时建的，部署规则只放行 `main` 和 `voxt-v*` tag，没有审批。这个工作流（tag 发布和 main 上的 nightly）用到它的这些 secret：
+`voxt-release` 环境是 Swift 版 Voxt 1.x 发版时建的，部署规则只放行 `main` 和 `voxt-v*` tag，没有审批。这个工作流（tag 发布，main 上的 nightly 和 beta）用到它的这些 secret：
 
 | Secret | 内容 |
 |---|---|
@@ -69,6 +69,22 @@ gh run download RUN_ID --repo sgl-project/sglang-omni
 ```
 
 它和正式版是同一个 app（同一个 bundle ID、同一个 Team），拖进“应用程序”会替换已装的版本，麦克风和辅助功能的授权保留（§4）。回到正式版时重新装正式版的 dmg。
+
+## Beta（GitHub Actions）
+
+[voxt-beta.yaml](../../.github/workflows/voxt-beta.yaml) 在 main 每合入一次 Voxt 的改动就跑一次上面的工作流：改了 `Voxt/` 或 app 里带的原生运行时 `sglang_omni_mlx/native/`（只改 Markdown 的不算），或者改了 voxt-beta.yaml、voxt-release.yaml。版本号是 mygo.json 的版本加 `-beta.YYYYMMDD.N`（UTC 日期，N 是 voxt-beta.yaml 的运行序号，区分同一天的几次）。签名、公证和 `release-verify.sh developer-id` 都和 nightly 一样，dmg 和它的 `.sha256` 是运行的 artifact `Voxt-X.Y.Z-beta.YYYYMMDD.N-arm64`，保留 14 天。合入的改动在 PR 里已经跑过 Voxt CI，beta 不再跑测试；新的合入会取消还没构建完的上一个 beta。改了 voxt-beta.yaml 的 PR 也跑它，构建进不了环境，做的是 ad hoc 构建。
+
+和正式版、nightly 不同（它们每次从头编），beta 用 GitHub Actions 的缓存复用两个运行时的构建，再交给 `release.sh --runtimes`：
+
+- **Omni 运行时**：缓存 `build-omni.sh --out` 编出来的成品，缓存键是 `sglang_omni_mlx/native/`、`build-omni.sh` 和 runner 上 Xcode 版本的哈希。成品和 app 的版本号、签名身份无关（它自己是 ad hoc 签名，mygo build 给 app 里的那份重新签名），源码没变就直接用，变了就从头编。
+- **voxtnew-llm**：二进制里链接了 app 的版本号（`Support/Info.plist`），每个 beta 都要重新链接，所以缓存的是 xcodebuild 的构建目录和 Swift 包（`llm/.build/xcode`、`llm/.build/xcode-packages`，约 2 GB）。缓存键是 `llm/` 的 Package.swift、Package.resolved、Sources 和 Xcode 版本的哈希；源码变了就取同一个 Xcode 下最近的一份，xcodebuild 只重编改过的部分，MLX 的 Metal 着色器和 llama.cpp 不用再编。
+
+main 的缓存只有 main 上的运行能写，PR 的运行只能读它、自己存的只在那个 PR 里用，所以签名构建用到的缓存都出自 main。缓存占仓库的 Actions 缓存额度（默认 10 GB，满了先删最久没用的）；voxtnew-llm 的源码每变一次就多存一份构建目录。要让 beta 从头编，在仓库 Actions 页面的 Caches 里删掉 `voxt-omni-` 或 `voxt-llm-xcode-` 开头的缓存。
+
+```bash
+gh run list --repo sgl-project/sglang-omni --workflow voxt-beta.yaml --status success --limit 1
+gh run download RUN_ID --repo sgl-project/sglang-omni
+```
 
 ## 0. 两个通道
 
