@@ -263,7 +263,7 @@ To run without the worker, switch the aligner on the command line: `--session_no
 
 Thanks to the OpenMoss team for the demo page.
 
-Once the terminal prints `Running on`, open <http://localhost:8080> and click **Start talking** to talk through your microphone; the camera can be turned on during the call. If the server is remote, first run `ssh -N -L 8080:127.0.0.1:8080 USER@SERVER` on your own machine. Open the page through `localhost`, or the browser will not grant microphone access.
+Once the terminal prints `Running on`, open <http://localhost:8080> (<http://localhost:8090> for the cascade page) and click **Start talking** to talk through your microphone; the camera can be turned on during the call. If the server is remote, first run `ssh -N -L 8080:127.0.0.1:8080 USER@SERVER` on your own machine (`8090:127.0.0.1:8090` for the cascade page). Open the page through `localhost`, or the browser will not grant microphone access.
 
 The settings panel shows only the controls the deployment declares in `/v1/realtime/capabilities`: the system prompt, the presets and a reference voice when `supports_reference_audio` is true (a preset pairs a MiniCPM-o duplex prompt with a voice, so no other backend gets them), a named voice when `voices` is listed, turn detection when `turn_control` lists `server_vad` or `semantic_vad`, camera detail when `input_image_format` allows more than one slice, and one numeric field per key in `sampling_parameters`, labelled for that backend (`max_new_tokens_per_unit` is tokens per 1 s unit on a native model and the reply token limit on a turn-based one). An empty field is not sent, so the deployment's default applies. The page sends every setting in its first `session.update`, so a change applies to the next conversation. Everything under `sglang` (sampling, voice, reference audio, image detail) is fixed once the session is open. Turn detection and `output_modalities` may change in a later `session.update`, and `instructions` only on a deployment that supports instruction updates, which is the cascade with a `system_prompt` node; MiniCPM-o, PersonaPlex and Qwen3-Omni freeze them with the first `session.update`. Settings are kept in the browser per deployment model. The download button in the top bar saves the conversation trace; attach it when reporting a problem.
 
@@ -607,7 +607,7 @@ Per-run choices (`--run-name`, `--repeat`, sample selection, `--num-shards`, `--
 
 ### Running jobs in parallel
 
-One job uses one GPU. To run several at once, open one terminal per GPU and give each its own GPU index and run name:
+With `ENGINE=minicpmo` one job uses one GPU. To run several at once, open one terminal per GPU and give each its own GPU index and run name:
 
 ```bash
 export FDB_WORK="${FDB_WORK:-$HOME/fdb}"
@@ -622,11 +622,13 @@ python -m benchmarks.duplex.fdb aggregate --run-name "$RUN"
 
 The ports, the judge config and the compile caches follow the GPU index: the model port is `8097 + 10×GPU`, the judge port `30000 + 10×GPU`, the judge config is in `$FDB_WORK/judge/port-<judge port>/` and the caches in `$FDB_WORK/cache/gpu-<index>/`. The first line `generate` prints confirms them, for example `Job GPU 1: model port 8107, judge port 30010 (nccl 30011), ...`. The `unset` line matters when a shell profile sets `GPU` or a port. Never point two terminals at the same run name.
 
+`ENGINE=qwen3-omni` and `ENGINE=cascade` run one server on two GPUs, so each job needs its own pair in `CUDA_VISIBLE_DEVICES`, and `generate` refuses `--gpus` with more than one GPU; raise `--num-shards` for parallel sessions instead. Only the model and judge ports follow the GPU: the cascade's services (8002, 8003, 8005) and the forced-alignment worker (8010) keep fixed ports, so run one cascade job per host.
+
 ### Serving metrics
 
 Serving metrics answer how well a server keeps up when several sessions share it. They are computed only from what the client records, which means any server that speaks the same realtime session protocol or the legacy turn-based protocol can be put in the same table.
 
-Start the server yourself, with `max_sessions` at least the largest level, then sweep:
+Start the server with `max_sessions` at least the largest level, then sweep. The command below targets `python -m benchmarks.duplex.fdb serve-model` on GPU 0, which serves MiniCPM-o with `max_sessions` 8 on port 8097; for a server started as in [Launch](#launch), point `--url` at port 8000:
 
 ```bash
 python -m benchmarks.eval.benchmark_duplex_serving sweep \
@@ -642,6 +644,21 @@ The options after `--` go unchanged to the `record` command of `benchmark_duplex
 Each level is one row:
 
 | Column | Meaning |
+|---|---|
+| `mean open` | Sessions open at once, averaged over the level's recording; the first and last sessions of a level have fewer neighbours |
+| `sessions failed` | Sessions whose protocol replay failed or that broke off |
+| `503`, `pacing violations` | Sessions denied admission, and sessions whose input drifted more than one 80 ms packet from its schedule. A pacing violation means the load generator fell behind, so the level does not measure the server |
+| `unit miss` | Native profiles only. Units whose lag exceeds one nominal unit (1000 ms for MiniCPM-o), plus every unit of a failed session |
+| `unit lag` | Native profiles only. Receipt of `sglang.unit.done` minus the time the client finished sending the packet holding the unit's last audio; the short last unit, which the server fills with silence, starts at the input end instead. On MiniCPM-o it matches the server-side `ready_to_finished_ms` of the request event recorder within a few milliseconds |
+| `first audio` | Native: from the unit carrying a reply's first audio being ready to that audio's receipt. Turn-based: from `response.created`, which arrives when the server ends the user's turn, to the first audio |
+| `buffer needed` | The smallest startup buffer with which a reply plays without a gap. It does not depend on `--playback-reserve-ms` |
+| `underrun replies` | Replies that a player starting `--playback-reserve-ms` (80 ms by default) after their first audio would have to pause. This column depends on the reserve: at concurrency 8 on MiniCPM-o, 21 of 35 replies pause at 80 ms while `buffer needed` p90 is 251 ms |
+| `RTF p90` | Turn-based only. The time from a reply's first to its last audio arrival over the audio before the last chunk. Native profiles show `-`, because a native reply comes out one unit per input unit and its factor stays near 1 whatever the load |
+| `meets targets` | `yes`, or the targets the level misses |
+
+A level meets the targets when no session failed, no session was denied admission, no input pacing was violated, and, for native profiles, the unit miss rate is at most 1%, or, for turn-based profiles, the reply RTF p90 is below 1. A turn-based server's unit receipts track input intake, so it is judged by how fast its replies stream. The capacity is the highest level below the first one that misses; when every recorded level meets the targets, the capacity is at least the highest one and a higher level has to be recorded.
+
+These are client-side times on the client's host: they include the network to the server and leave out the player's device and the acoustics. Where the time goes inside SGLang-Omni comes from the request event recorder instead; see [Full Duplex session Unit metrics](profiler.md#full-duplex-session-unit-metrics).
 
 The benchmark client keeps its 80 ms input pacing up to about 128 sessions in one process ([#3288](https://github.com/sgl-project/sglang-omni/pull/3288)); at higher levels, check `pacing violations` before reading a level as a server measurement.
 
@@ -686,6 +703,7 @@ python benchmarks/realtime_turn_latency.py --url ws://127.0.0.1:8765/v1/realtime
 | `ERROR: .../reference-manifest.json is missing` or `.../v10/reference/manifest.json is missing` | `generate` recorded that dataset but did not finish its export; delete the repeat and generate it again |
 | A shard log reports `fail` or `error` sessions | They stay in the denominators. Read `repeat-N/logs/record-shard-*.log` or `repeat-N/v10/logs/record-shard-*.log`; if most sessions fail, fix the server and redo the repeat |
 | `ERROR: --num-shards N over G GPU(s) exceeds the model server's max_sessions` | Lower `--num-shards` or add GPUs with `--gpus`; `generate` refuses more shards than the servers admit before recording |
+| `ERROR: ENGINE=... runs one server on every visible GPU` | `qwen3-omni` and `cascade` take two GPUs per server; leave out `--gpus` and raise `--num-shards` for parallel sessions |
 | `ERROR: --num-shards N leaves model servers idle` | Use at least as many shards as GPUs in `--gpus` |
 | `ERROR: SERVER_PORT gives every model server the same port` | Unset `SERVER_PORT` when `--gpus` lists several GPUs; each server then derives its port from its GPU |
 | HTTP 503 in a record log | Another client may hold the server's sessions; check for competing recordings |
@@ -871,7 +889,7 @@ CUDA_VISIBLE_DEVICES="" "$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_v1
     --tree "$OUT/reference" --reference-source "$FDB_SOURCE"
 ```
 
-- `reference-export` writes each sample's window as `<subset>/<id>/output.wav` with its annotation into a new directory, plus `manifest.json`. Repeated `--run` takes shards. An ineligible session gets no folder and keeps its reasons in the manifest. A recording made with a turn-based profile needs `--trace-format realtime-legacy-pcm16-v1`; as in the v1.5 export, the audio is resampled from the profile's output rate and a session is eligible only when its protocol verdict is `pass`.
+- `reference-export` writes each sample's window as `<subset>/<id>/output.wav` with its annotation into a new directory, plus `manifest.json`. Repeated `--run` takes shards. An ineligible session gets no folder and keeps its reasons in the manifest. A recording made with the `turn-based` profile needs `--trace-format realtime-turn-based-pcm16-v1`, and one made with the legacy `qwen3-omni-half-duplex` profile `--trace-format realtime-legacy-pcm16-v1`; as in the v1.5 export, the audio is resampled from the profile's output rate and a session is eligible only when its protocol verdict is `pass`.
 - `reference-asr` transcribes every sample with the local Parakeet checkpoint. For user interruption it cuts the audio at the end of the interruption and shifts the word times back, so the transcript holds only the reply. It writes `output.json` per sample and the receipt `asr.json`, and runs once per export.
 - `unified-score` reads the saved manifest, ASR transcript and annotations on CPU, then writes `unified.json` and `unified-samples.jsonl`. It is independent of the official evaluator and can be rerun for an existing export without repeating ASR. To backfill a runbook repeat, use `eval "$(python -m benchmarks.duplex.fdb env)"`, then `CUDA_VISIBLE_DEVICES="" "$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_v10 unified-score --tree "$FDB_WORK/runs/RUN_NAME/repeat-N/v10/reference"`, replacing `RUN_NAME` and `N` with the recorded run and repeat; rerun `aggregate` afterward.
 - `reference-evaluate` runs the evaluator per subset and stores the printed `[Result]` numbers, the counts and the log path in `summary.json`. `--subset` evaluates only the named subsets; the rest can follow later.
@@ -908,10 +926,10 @@ Export is deterministic: exporting a recording again reproduces every eligible W
 
 ### Duplex CI
 
-The `run-native-duplex`, `run-turn-based-duplex` and `run-cascaded-duplex` labels each run this runbook on one strategy, with the first samples of every v1.5 category and v1.0 subset, and gate the scores against that strategy's own baseline; [CI Labels](ci_labels.md#duplex) describes the gates. The same job runs locally, with `FDB_CI_STRATEGY` set to `full-duplex`, `turn-based` or `cascaded` and two GPUs visible:
+The `run-native-duplex`, `run-turn-based-duplex` and `run-cascaded-duplex` labels each run this runbook on one strategy, with the first 5 samples of every v1.5 category and v1.0 subset except `icc_backchannel`, and gate the scores against that strategy's own baseline; [CI Labels](ci_labels.md#duplex) describes the gates. The same job runs locally, with `FDB_CI_STRATEGY` set to `full-duplex`, `turn-based` or `cascaded`, two GPUs visible, and `OMNI_CI_HOME` set to a work directory. The job uses `$OMNI_CI_HOME/fdb` as its `FDB_WORK` and deletes its run `ci-<engine>` there before recording:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 FDB_CI_STRATEGY=turn-based pytest tests/test_model/test_fdb_ci.py -v -s -x
+CUDA_VISIBLE_DEVICES=0,1 OMNI_CI_HOME=$HOME/omni-ci FDB_CI_STRATEGY=turn-based pytest tests/test_model/test_fdb_ci.py -v -s -x
 ```
 
 The presets, sample counts and baselines are in `tests/test_model/fdb_ci_config.py`.
@@ -1122,7 +1140,7 @@ The same conversation runs without the realtime protocol through the Session API
 PYTHONPATH=. python examples/streaming_cascade/run.py question.wav followup.wav --output response.wav
 ```
 
-Each input is a 16 kHz mono signed 16-bit PCM WAV. The command runs the cascade in its own process without starting the profile's `services`, so start them first. It streams the files back to back through one Session of the profile named by `--config` and writes the reply audio to `response.wav`; the second file is answered with the first turn in the history. `--config` defaults to `nemotron-qwen3-tts`. Pass `--commit` for a profile without the VAD node. The `/v1/session` protocol is described in {ref}`Session API <session-api>`.
+Each input is a 16 kHz mono signed 16-bit PCM WAV. The command runs the cascade in its own process without starting the profile's `services`, so start them first. It streams the files back to back through one Session of the profile named by `--config` and writes the reply audio to `response.wav`; the second file is answered with the first turn in the history. `--config` defaults to `qwen3-asr-qwen3-tts-vivian`. Pass `--commit` for a profile without the VAD node. The `/v1/session` protocol is described in {ref}`Session API <session-api>`.
 
 (services-and-launch-modes)=
 
