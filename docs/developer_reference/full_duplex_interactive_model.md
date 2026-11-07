@@ -72,7 +72,6 @@ Once the terminal prints `Running on`, open <http://localhost:8080> and click **
 
 The settings panel switches between English and Chinese, changes the voice and adjusts sampling. The download button in the top bar saves the conversation trace; attach it when reporting a problem.
 
-The caption below the orb stays two lines tall and scrolls to the latest received text as the reply grows or the window is resized. Open **Transcript** in the top bar to read the full transcript. Caption scrolling follows text arrival and is not synchronized with audio playback.
 
 ### Full-duplex protocol
 

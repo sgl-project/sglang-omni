@@ -77,8 +77,6 @@ node --test playground/qwen-omni/realtime/playback.test.js
 | **Instructions** | System prompt sent in `session.update`. Affects the assistant reply only — transcription always runs verbatim. |
 | **Responses** | Each VAD-driven turn appears as a card. Assistant text is rendered from `response.text.delta`; text-only mode also renders `conversation.item.input_audio_transcription.delta`. |
 
-Long replies stay inside a scrollable response panel with a maximum height of 70% of the viewport. Scroll within the panel to read the full reply. The panel scrolls when a new turn is added, but incoming text for an existing turn preserves your reading position. In **Text + audio** mode, text may arrive ahead of speech; scrolling is not synchronized with audio playback.
-
 ## Notes
 
 - Turn detection is always server-side; there's no manual commit. The page
