@@ -57,6 +57,18 @@ func (a *app) openFamily() {
 	}
 }
 
+// gatherModels keeps every app's models in VoxtNew's folder (SGLang
+// Omni/models) when the family has no model folder (models.root unset)
+// and VoxtNew follows the family's: the other apps' models come over
+// from where they kept them (models.Manager.Gather), then models.root
+// names the folder. A folder the user chose stays.
+func gatherModels(ctx context.Context, fam *actnow.Family, m *models.Manager, prefs settings.Settings) error {
+	if root, _ := fam.Shared().Get(actnow.KeyModelsRoot); root != "" || fam.ReadOnly() || !prefs.Family.Follows(actnow.KeyModelsRoot) {
+		return nil
+	}
+	return m.Gather(ctx, fam.ReadBackup(), func() error { return fam.Set(ctx, prefs, actnow.KeyModelsRoot, m.Hub()) })
+}
+
 // startFamily runs the first start's migration (once), writes the
 // manifest, discovers the other apps and follows the family's
 // notifications; off the main thread.
@@ -88,6 +100,9 @@ func (a *app) startFamily() {
 				log.Printf("family: settings: %v", err)
 			}
 			prefs.Family.Migrated = true
+		}
+		if err := gatherModels(ctx, fam, m, prefs); err != nil {
+			log.Printf("family: keeping the other apps' models in %s: %v", m.Hub(), err)
 		}
 		actnow.StampKeys(&prefs, time.Now())
 		fam.Mirror(&prefs)

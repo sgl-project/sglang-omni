@@ -23,7 +23,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Models are named by what they are**: the Speech models page, the feature pages' model menus, the setup guide and History name a model by its family, size and quantisation (Qwen3-ASR 1.7B (8bit), Qwen3-ASR 0.6B (4bit)), as Voxt 1.x did, instead of "Accurate speech recognition"; its card has short labels (Local, Accurate or Fast, Realtime, whether it knows your main language), says which features use it, and has no rating.
 - **Language models are remote only.** Voxt no longer downloads or runs language models on this Mac: set one up on the Language models page (Ollama runs one here, for free). Those Voxt 2.0.0 downloaded are listed on the Speech models page under "Language models no longer used", to delete. Settings → Privacy, the setup guide and Home say where the text goes.
 - **The Local models page is now Speech models**: the speech models of this Mac, then the remote speech services, each tagged Local or Remote; language models are on the Language models page.
-- **Models are kept in ~/Library/Application Support/SGLang Omni/models**, named after SGLang Omni, whose runtime serves them, instead of the ActNow model library (~/Library/Application Support/ActNow/models). The models Voxt 2.0.0 downloaded are brought over at the first start without downloading them again (hard links: no space is used), and the old folder stays as it was for the other apps that use it. A folder chosen in Settings → Storage applies to every ActNow app, and their models are brought there.
+- **Models are kept in ~/Library/Application Support/SGLang Omni/models**, named after SGLang Omni, whose runtime serves them, instead of the ActNow model library (~/Library/Application Support/ActNow/models). The models Voxt 2.0.0 downloaded are brought over at the first start without downloading them again (hard links: no space is used), and so are the other ActNow apps' (AudioSmith, Dicta): the family's model folder becomes SGLang Omni/models, so every app keeps its models there. The old folder stays as it was. A folder chosen in Settings → Storage applies to every ActNow app, and their models are brought there.
 
 ### Fixed
 
@@ -52,7 +52,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **模型写清楚是哪一个**：语音模型页、各功能页的模型菜单、设置引导和历史都按系列、尺寸和量化称呼模型（Qwen3-ASR 1.7B (8bit)、Qwen3-ASR 0.6B (4bit)），和 Voxt 1.x 一样，不再写“精准语音识别”；卡片上有简短的标签（本地、准确或快速、实时、是否支持主语言）和使用位置，没有评分。
 - **语言模型只用远程服务。** Voxt 不再在这台 Mac 上下载和运行语言模型：请在“语言模型”页设置一个（用 Ollama 可以在本机免费运行）。Voxt 2.0.0 下载过的语言模型列在语音模型页的“不再使用的语言模型”里，可以删除。设置 → 隐私、设置引导和首页都写明了文字会发到哪里。
 - **本地模型页改名为语音模型**：先列这台 Mac 上的语音模型，再列远程语音识别服务，各自标为“本地”或“远程”；语言模型在语言模型页。
-- **模型放在 ~/Library/Application Support/SGLang Omni/models**，以运行这些模型的 SGLang Omni 命名，不再放在 ActNow 模型库（~/Library/Application Support/ActNow/models）。Voxt 2.0.0 下载的模型在第一次启动时搬过来，不用重新下载（硬链接，不占新空间）；原来的文件夹保持不变，留给还在用它的其他 app。在“设置 → 存储”里选的文件夹对所有 ActNow app 生效，它们的模型也会一起搬过去。
+- **模型放在 ~/Library/Application Support/SGLang Omni/models**，以运行这些模型的 SGLang Omni 命名，不再放在 ActNow 模型库（~/Library/Application Support/ActNow/models）。Voxt 2.0.0 下载的模型在第一次启动时搬过来，不用重新下载（硬链接，不占新空间）；其他 ActNow app（AudioSmith、Dicta）的模型也一起搬过来：家族的模型文件夹改成 SGLang Omni/models，所有 app 都把模型放在这里。原来的文件夹保持不变。在“设置 → 存储”里选的文件夹对所有 ActNow app 生效，它们的模型也会一起搬过去。
 
 #### 修复
 

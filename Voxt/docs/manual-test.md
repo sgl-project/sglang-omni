@@ -119,11 +119,11 @@
   - 两节：“语音识别”和“语言模型”。推荐的两个带“默认”标签。每张卡片有名字、擅长什么、语言（地球图标）和大小：没装的是“需下载 x”，装好的是“已安装”和“占用 x”。
   - Silero（声音检测）不单独列出。
   - 删除前弹出确认：“删除快速语言模型？”“将释放 1.7 GB。之后可以重新下载。”取消什么都不删；确认后卡片回到“需下载 1.7 GB”，文件夹不见了。
-  - 设置 → 存储 的“模型文件夹”一行是 `~/Library/Application Support/SGLang Omni/models`；只有 Voxt 用这个文件夹，所以不写“由使用这个模型库的所有 app 共用”（和别的 app 用同一个模型文件夹时才写，见 1.5b）。下面“仅 Voxt”和“与使用这个模型库的其他 app 共享”两项加起来和装的模型对得上；没有装别的 ActNow app 时只有一行“Voxt 使用”；“网络…”对话框里也没有“应用于使用这个模型库的所有 app”那一行。
+  - 设置 → 存储 的“模型文件夹”一行是 `~/Library/Application Support/SGLang Omni/models`；没装别的 ActNow app 时只有 Voxt 用这个文件夹，所以不写“由使用这个模型库的所有 app 共用”（和别的 app 用同一个模型文件夹时才写，见 1.5b）。下面“仅 Voxt”和“与使用这个模型库的其他 app 共享”两项加起来和装的模型对得上；没有装别的 ActNow app 时只有一行“Voxt 使用”；“网络…”对话框里也没有“应用于使用这个模型库的所有 app”那一行。
 - **不对时看**：`ls -la ~/Library/Application\ Support/SGLang\ Omni/models/`（装好的模型在 `models--<owner>--<name>/snapshots/<commit>/` 里，Voxt 的声明在 `~/Library/Application Support/ActNow/models/claims/dev.hehehai.voxtnew.json`）。
 
 **1.5b 与使用这个模型库的其他 app 共用模型**（需要装了 AudioSmith 或 Dicta；没有就跳过）
-- **准备**：让 Voxt 和 AudioSmith 用同一个模型文件夹：设置 → 存储 → 模型文件夹 →“更改…”，选 `~/Library/Application Support/ActNow/models/hub`（写进家族的 `models.root`，Voxt 重启）。默认的 `SGLang Omni/models` 只有 Voxt 用，下面的卡片都不会出现。
+- **准备**：装好 AudioSmith（或 Dicta）后打开 Voxt。启动时它把 AudioSmith 在 `~/Library/Application Support/ActNow/models/hub` 里的模型硬链接到 `SGLang Omni/models`，并把家族的 `models.root` 设成这个文件夹；再打开一次 AudioSmith，让它在新文件夹里认领自己的模型。看 `~/Library/Application Support/ActNow/settings.json` 里 `models.root` 是 `SGLang Omni/models`。
 - **做**：
   1. 在 AudioSmith（或 Dicta）里装上“快速语音识别”用的同一个模型（Qwen3-ASR 0.6B），回到 Voxt。
   2. 在 Voxt 的“快速语音识别”上点“删除”，先点“取消”；再点“删除”→“从 Voxt 移除”。

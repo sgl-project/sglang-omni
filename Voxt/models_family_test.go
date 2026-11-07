@@ -19,6 +19,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/hehehai/actnowkit/family"
 	fammodels "github.com/hehehai/actnowkit/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/actnow"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models/modelstest"
@@ -68,6 +69,43 @@ func onDisk(a *app, id string) bool {
 // toasted reports whether msg was toasted (still queued, or shown).
 func toasted(a *app, tt *ui.Tester, msg string) bool {
 	return slices.Contains(a.toasts, msg) || has(tt, msg)
+}
+
+// TestModelsInOnePlace: with no model folder chosen, the start keeps
+// every app's models in VoxtNew's folder (SGLang Omni/models): AudioSmith's
+// come over from the family's default library, where they were before
+// 2.0.1, and models.root names the folder, so that AudioSmith finds them
+// there. A folder the user chose stays.
+func TestModelsInOnePlace(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	ctx := context.Background()
+	old := &fammodels.Store{Family: a.fam.Dir(), Hub: fammodels.DefaultHubIn(a.fam.Dir()), BundleID: audioSmithID, AppID: "audiosmith"}
+	vad, _ := models.Lookup(models.VADSilero)
+	if err := modelstest.SeedModel(old.Hub, vad); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Claim(ctx, vad.Claim("", fammodels.OriginDownloaded)); err != nil {
+		t.Fatal(err)
+	}
+	if err := gatherModels(ctx, a.fam, a.models, a.prefs); err != nil {
+		t.Fatal(err)
+	}
+	if root, _ := a.fam.Shared().Get(actnow.KeyModelsRoot); !fammodels.SameHub(root, a.models.Hub()) {
+		t.Errorf("models.root = %q, not %s", root, a.models.Hub())
+	}
+	if models.Installed(a.models.Hub(), vad) == "" {
+		t.Error("AudioSmith's model did not come over")
+	}
+	chosen := t.TempDir()
+	if err := a.fam.Set(ctx, a.prefs, actnow.KeyModelsRoot, chosen); err != nil {
+		t.Fatal(err)
+	}
+	if err := gatherModels(ctx, a.fam, a.models, a.prefs); err != nil {
+		t.Fatal(err)
+	}
+	if root, _ := a.fam.Shared().Get(actnow.KeyModelsRoot); !fammodels.SameHub(root, chosen) {
+		t.Errorf("the folder the user chose became %q", root)
+	}
 }
 
 // TestModelsFromTheFamilyLibrary: 2.0.0 kept the models in the family's

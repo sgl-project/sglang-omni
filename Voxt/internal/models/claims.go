@@ -131,19 +131,8 @@ func (m *Manager) wanted() []fammodels.Claim {
 // brought stays in hub.
 func (m *Manager) MoveTo(ctx context.Context, hub string, backup bool, commit func() error) error {
 	from := m.store.Hub
-	srcs := []string{from}
-	want := slices.DeleteFunc(m.wanted(), func(w fammodels.Claim) bool { return fammodels.Check(from, w).State != fammodels.Installed })
-	all, _ := fammodels.ReadAllClaims(m.store.Family)
-	for id, cs := range all {
-		root := cmp.Or(cs.Root, fammodels.DefaultHubIn(m.store.Family))
-		if id == m.store.BundleID || fammodels.SameHub(root, hub) {
-			continue
-		}
-		if !slices.ContainsFunc(srcs, func(s string) bool { return fammodels.SameHub(s, root) }) {
-			srcs = append(srcs, root)
-		}
-		want = append(want, cs.Claims...)
-	}
+	srcs, want := m.others(hub, []string{from})
+	want = append(want, slices.DeleteFunc(m.wanted(), func(w fammodels.Claim) bool { return fammodels.Check(from, w).State != fammodels.Installed })...)
 	mine, err := m.store.Claims()
 	if err != nil {
 		return err
@@ -155,15 +144,8 @@ func (m *Manager) MoveTo(ctx context.Context, hub string, backup bool, commit fu
 	}
 	dst := &fammodels.Store{Family: m.store.Family, Hub: hub, BundleID: m.store.BundleID, AppID: m.store.AppID, Apps: m.store.Apps, Now: m.store.Now}
 	_, err = dst.Import(ctx, srcs, backup, want...)
-	var missing []string
-	for _, w := range want {
-		there := slices.ContainsFunc(srcs, func(s string) bool { return fammodels.Check(s, w).State == fammodels.Installed })
-		if there && fammodels.Check(hub, w).State != fammodels.Installed && !slices.Contains(missing, w.Repo) {
-			missing = append(missing, w.Repo)
-		}
-	}
-	if err == nil && len(missing) > 0 {
-		err = fmt.Errorf("not brought over: %s", strings.Join(missing, ", "))
+	if err == nil {
+		err = notBrought(srcs, hub, want)
 	}
 	if err == nil {
 		err = commit()
@@ -173,6 +155,66 @@ func (m *Manager) MoveTo(ctx context.Context, hub string, backup bool, commit fu
 		err = errors.Join(err, m.store.Claim(context.Background(), mine.Claims...))
 	}
 	return err
+}
+
+// Gather makes VoxtNew's library (SGLang Omni/models, HubIn) the library
+// of every app in the family, when the family has none (models.root
+// unset): the models in one place. It brings the models the other apps
+// claim there from the library each keeps them in (an empty root is the
+// family's default library, ActNow/models/hub, where they were before
+// 2.0.1): hard links on the same disk, nothing downloaded, the old
+// libraries untouched. Then commit writes the family's models.root, so
+// that the apps that follow it look for their models there. When a model
+// could not be brought (busy, no space, an error), commit is not called:
+// the next start tries again.
+func (m *Manager) Gather(ctx context.Context, backup bool, commit func() error) error {
+	hub := m.store.Hub
+	srcs, want := m.others(hub, nil)
+	if len(want) > 0 {
+		if _, err := m.store.Import(ctx, srcs, backup, want...); err != nil {
+			return err
+		}
+		if err := notBrought(srcs, hub, want); err != nil {
+			return err
+		}
+		m.Refresh()
+	}
+	return commit()
+}
+
+// others are the models the other apps claim outside hub, and srcs with
+// the libraries they keep them in (an empty root is the family's default
+// library).
+func (m *Manager) others(hub string, srcs []string) ([]string, []fammodels.Claim) {
+	var want []fammodels.Claim
+	all, _ := fammodels.ReadAllClaims(m.store.Family)
+	for id, cs := range all {
+		root := cmp.Or(cs.Root, fammodels.DefaultHubIn(m.store.Family))
+		if id == m.store.BundleID || fammodels.SameHub(root, hub) {
+			continue
+		}
+		if !slices.ContainsFunc(srcs, func(s string) bool { return fammodels.SameHub(s, root) }) {
+			srcs = append(srcs, root)
+		}
+		want = append(want, cs.Claims...)
+	}
+	return srcs, want
+}
+
+// notBrought names the models of want that one of srcs has and hub does
+// not.
+func notBrought(srcs []string, hub string, want []fammodels.Claim) error {
+	var missing []string
+	for _, w := range want {
+		there := slices.ContainsFunc(srcs, func(s string) bool { return fammodels.Check(s, w).State == fammodels.Installed })
+		if there && fammodels.Check(hub, w).State != fammodels.Installed && !slices.Contains(missing, w.Repo) {
+			missing = append(missing, w.Repo)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("not brought over: %s", strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 // forgetImported drops hub from the app's record of imports.

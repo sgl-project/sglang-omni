@@ -71,7 +71,7 @@ type storageReport struct {
 	models                   string
 	modelsMine, modelsShared int64
 	// shared: another app keeps its models in the folder too (its claims
-	// name it; VoxtNew's own folder, models.HubIn, is its alone).
+	// name it).
 	shared bool
 }
 
