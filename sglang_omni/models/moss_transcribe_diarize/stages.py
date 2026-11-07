@@ -90,7 +90,7 @@ def create_sglang_moss_transcribe_diarize_executor(
     torch_compile_max_bs: int = 4,
     # note (yichi): MOSS-TD overlaps host collect starting at batch size 1;
     # --asr.factory.enable_async_decode false remains the operator opt-out.
-    enable_async_decode: bool = True,
+    enable_async_decode: bool | None = None,
     async_decode_min_batch_size: int = 1,
     prefill_coalesce_requests: int = 4,
     prefill_coalesce_wait_ms: float = 12.0,
