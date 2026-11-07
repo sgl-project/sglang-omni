@@ -903,7 +903,7 @@ Developer ID 签名、公证、发布和更新的测试见 [release.md](release.
 **11.1 1.x 找到更新**
 - **做**：在 1.x 的 设置 → 关于 里打开“Beta 更新”（Beta Updates），点“检查更新”。
 - **应看到**：Sparkle 的窗口提示有新版本 X.Y.Z，说明是这个 Release 的说明。
-- **不对时看**：`curl -s https://voxt.actnow.dev/updates/beta/appcast.xml | grep -m1 sparkle:version` 是不是 X.Y.Z 的构建号（2.0.1 是 200000199）。
+- **不对时看**：在 `Voxt/` 里跑 `curl -s https://voxt.actnow.dev/updates/beta/appcast.xml | scripts/release-appcast.sh items`，第一行是不是“X.Y.Z 的构建号 arm64”（2.0.2 是 200000299）。
 
 **11.2 安装**
 - **做**：点“安装并重新启动”。
@@ -914,7 +914,11 @@ Developer ID 签名、公证、发布和更新的测试见 [release.md](release.
 - **做**：看设置引导，导入 1.x 的数据；然后转录一次。
 - **应看到**：引导第一页有“从上一个 Voxt 导入”的卡片，导入后词典和历史都在（§1）。macOS 重新请求麦克风；粘贴前要在 系统设置 → 隐私与安全性 → 辅助功能 里重新允许 Voxt。允许后录音、粘贴都正常。
 
-结果写进“结果怎么报”：11.1–11.3 每步 ✓ / ✗，✗ 附上截图和 sparkle.log。
+**11.4 Intel Mac 上的 1.x 看不到 2.x**（有 Intel Mac 时做）
+- **做**：在 Intel Mac 的 1.x 里打开“Beta 更新”，点“检查更新”。
+- **应看到**：提示已经是最新版本，不提示 X.Y.Z（appcast 这一项有 `sparkle:hardwareRequirements` arm64）。
+
+结果写进“结果怎么报”：11.1–11.4 每步 ✓ / ✗（没有 Intel Mac 时 11.4 写“没测”），✗ 附上截图和 sparkle.log。
 
 ---
 
