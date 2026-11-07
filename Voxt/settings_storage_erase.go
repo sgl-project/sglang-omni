@@ -163,7 +163,7 @@ func (a *app) modelMoveDialog(c *ui.Context) {
 			ui.Text(c, i18n.T("Moving the models")).Bold()
 			body := i18n.T("Bringing the models to %s: linked on the same disk, copied to another. Then Voxt restarts. The old folder stays as it was.", uitext.ShortPath(a.modelMoveTo))
 			if a.familyOthers() {
-				body = i18n.T("Bringing the models to %s: linked on the same disk, copied to another. Then all apps that use this model library keep their models there, and Voxt restarts. The old folder stays as it was.", uitext.ShortPath(a.modelMoveTo))
+				body = i18n.T("Bringing the models to %s, the other apps' too: linked on the same disk, copied to another. Then every app keeps its models there, and Voxt restarts. The old folders stay as they were.", uitext.ShortPath(a.modelMoveTo))
 			}
 			ui.Text(c, body).FontSize(px(t, fsCaption))
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {

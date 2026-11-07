@@ -5,6 +5,7 @@ package models
 // spec §7.3, §7.6).
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -117,22 +118,31 @@ func (m *Manager) wanted() []fammodels.Claim {
 }
 
 // MoveTo makes hub, the folder the user chose (Settings → Storage), the
-// library (family spec §7.1). It brings the models there: the
-// catalogue's, VoxtNew's claims (claimed again there), and the models the
-// other apps claim in this library, so that no app downloads one again
-// (same disk: hard links, no space used; another disk: copies). Then
-// commit writes the family's models.root. Nothing in the library
-// changes. When a model could not be brought (busy, no space, an error)
-// or commit fails, VoxtNew's claims stay with this library and the error
-// names the models; what was brought stays in hub.
+// library of every app in the family (family spec §7.1: the models in one
+// place). It brings the models there, so that no app downloads one again
+// (same disk: hard links, no space used; another disk: copies): the
+// catalogue's that are in VoxtNew's library, VoxtNew's claims (claimed
+// again there), and the models the other apps claim, from the library
+// each keeps them in (an empty root is the family's default library,
+// ActNow/models/hub). Then commit writes the family's models.root.
+// Nothing in the old libraries changes. When a model could not be
+// brought (busy, no space, an error) or commit fails, VoxtNew's claims
+// stay with this library and the error names the models; what was
+// brought stays in hub.
 func (m *Manager) MoveTo(ctx context.Context, hub string, backup bool, commit func() error) error {
 	from := m.store.Hub
-	want := m.wanted()
+	srcs := []string{from}
+	want := slices.DeleteFunc(m.wanted(), func(w fammodels.Claim) bool { return fammodels.Check(from, w).State != fammodels.Installed })
 	all, _ := fammodels.ReadAllClaims(m.store.Family)
 	for id, cs := range all {
-		if id != m.store.BundleID && (cs.Root == "" || fammodels.SameHub(cs.Root, from)) {
-			want = append(want, cs.Claims...)
+		root := cmp.Or(cs.Root, fammodels.DefaultHubIn(m.store.Family))
+		if id == m.store.BundleID || fammodels.SameHub(root, hub) {
+			continue
 		}
+		if !slices.ContainsFunc(srcs, func(s string) bool { return fammodels.SameHub(s, root) }) {
+			srcs = append(srcs, root)
+		}
+		want = append(want, cs.Claims...)
 	}
 	mine, err := m.store.Claims()
 	if err != nil {
@@ -144,11 +154,11 @@ func (m *Manager) MoveTo(ctx context.Context, hub string, backup bool, commit fu
 		return err
 	}
 	dst := &fammodels.Store{Family: m.store.Family, Hub: hub, BundleID: m.store.BundleID, AppID: m.store.AppID, Apps: m.store.Apps, Now: m.store.Now}
-	_, err = dst.Import(ctx, []string{from}, backup, want...)
+	_, err = dst.Import(ctx, srcs, backup, want...)
 	var missing []string
 	for _, w := range want {
-		if fammodels.Check(from, w).State == fammodels.Installed && fammodels.Check(hub, w).State != fammodels.Installed &&
-			!slices.Contains(missing, w.Repo) {
+		there := slices.ContainsFunc(srcs, func(s string) bool { return fammodels.Check(s, w).State == fammodels.Installed })
+		if there && fammodels.Check(hub, w).State != fammodels.Installed && !slices.Contains(missing, w.Repo) {
 			missing = append(missing, w.Repo)
 		}
 	}

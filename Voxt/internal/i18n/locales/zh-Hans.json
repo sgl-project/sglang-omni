@@ -159,7 +159,7 @@
   "Bottom centre": "底部居中",
   "Bring All to Front": "全部移到前面",
   "Bringing the models to %s: linked on the same disk, copied to another. Then Voxt restarts. The old folder stays as it was.": "正在把模型放到 %s。同一磁盘上建链接，其他磁盘上复制，完成后 Voxt 重启。原来的文件夹保持不变。",
-  "Bringing the models to %s: linked on the same disk, copied to another. Then all apps that use this model library keep their models there, and Voxt restarts. The old folder stays as it was.": "正在把模型放到 %s。同一磁盘上建链接，其他磁盘上复制。之后使用这个模型库的 app 都把模型放在那里，Voxt 随即重启。原来的文件夹保持不变。",
+  "Bringing the models to %s, the other apps' too: linked on the same disk, copied to another. Then every app keeps its models there, and Voxt restarts. The old folders stay as they were.": "正在把模型放到 %s，其他 app 的模型也一起带过去。同一磁盘上建链接，其他磁盘上复制。之后所有 app 都把模型放在那里，Voxt 随即重启。原来的文件夹保持不变。",
   "Browser": "浏览器",
   "Browser addresses only pick your rules": "浏览器网址只用来匹配规则",
   "Browsers": "浏览器",

@@ -13,6 +13,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/actnow"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/datadir"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/models/modelstest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -176,6 +177,56 @@ func TestModelFolderChange(t *testing.T) {
 	}
 	if cs, _ := fammodels.ReadClaims(a.fam.Dir(), a.fam.BundleID()); !fammodels.SameHub(cs.Root, to) || len(cs.Claims) != 2 {
 		t.Errorf("VoxtNew's claims: %+v", cs)
+	}
+}
+
+// TestModelFolderBringsOtherLibraries: the models are kept in one place.
+// Since 2.0.1, VoxtNew's library is its own folder while AudioSmith keeps
+// its models in the family's default library (ActNow/models/hub); Change…
+// writes models.root for both, so it brings AudioSmith's models from
+// there too, and AudioSmith finds them in the new folder; what no app
+// claims there stays.
+func TestModelFolderBringsOtherLibraries(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	seedModels(t, a, models.ASRFast)
+	useModels(t, a, models.ASRFast)
+	ctx := context.Background()
+	old := &fammodels.Store{Family: a.fam.Dir(), Hub: fammodels.DefaultHubIn(a.fam.Dir()), BundleID: audioSmithID, AppID: "audiosmith"}
+	vad, _ := models.Lookup(models.VADSilero)
+	if err := modelstest.SeedModel(old.Hub, vad); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Claim(ctx, vad.Claim("", fammodels.OriginDownloaded)); err != nil {
+		t.Fatal(err)
+	}
+	// One VoxtNew no longer has, left in the old library by 2.0.1's hard
+	// links and claimed by no one: it stays behind.
+	gone, _ := models.Lookup(models.ASRAccurate)
+	if err := modelstest.SeedModel(old.Hub, gone); err != nil {
+		t.Fatal(err)
+	}
+	if fammodels.SameHub(old.Hub, a.models.Hub()) {
+		t.Fatal("VoxtNew's library is the family's default")
+	}
+	dir := t.TempDir()
+	oldChoose, oldRelaunch := chooseDir, appRelaunch
+	chooseDir = func(_ *app, _, _ string, then func(string)) { then(dir) }
+	appRelaunch = func() {}
+	defer func() { chooseDir, appRelaunch = oldChoose, oldRelaunch }()
+	a.navigate("/settings/storage")
+	click(t, tt, "Change…")
+	frames(tt)
+	if root, _ := a.fam.Shared().Get(actnow.KeyModelsRoot); !fammodels.SameHub(root, dir) {
+		t.Fatalf("models.root = %q, toasts %q", root, a.toasts)
+	}
+	fast, _ := models.Lookup(models.ASRFast)
+	for _, m := range []models.Model{vad, fast} {
+		if models.Installed(dir, m) == "" {
+			t.Errorf("%s is not in the new folder", m.ID)
+		}
+	}
+	if models.Installed(dir, gone) != "" {
+		t.Errorf("%s, which no app has, came along", gone.ID)
 	}
 }
 
