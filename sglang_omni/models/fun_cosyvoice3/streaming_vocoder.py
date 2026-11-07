@@ -126,6 +126,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
         self,
         vocoder: CosyVoice3Vocoder,
         *,
+        should_complete_first_chunk_immediately: bool,
         max_batch_size: int = 8,
         max_batch_wait_ms: int = 2,
         sample_rate: int = SAMPLE_RATE,
@@ -148,6 +149,9 @@ class FunCosyVoice3StreamingVocoderScheduler(
             self.token_hop_len = hop
             self.token_max_hop_len = max_hop
             self.disable_hop_growth = bool(disable_hop_growth)
+            self.should_complete_first_chunk_immediately: bool = (
+                should_complete_first_chunk_immediately
+            )
             self.vocoder = vocoder
             self.clock: Callable[[], float] = time.monotonic
             self.launched_step: LaunchedStep | None = None
@@ -163,9 +167,10 @@ class FunCosyVoice3StreamingVocoderScheduler(
         )
 
     def pump_one_step(self) -> list[str] | None:
-        """Launch the next step, then complete the step launched before it, so the device
-        runs one while the host reads the other. None when no stream is ready and no step
-        is in flight; otherwise the request ids a failed step aborted."""
+        """Overlap launches and reads, optionally completing first audio immediately.
+
+        Return aborted request IDs, or None when no work is ready or in flight.
+        """
         previous = self.launched_step
         participants = self.select_step_participants()
         if not participants and previous is None:
@@ -174,6 +179,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
             pass
         failed: list[str] = []
         launched: LaunchedStep | None = None
+        has_first_audio = any(state.first_emit_at is None for _, state in participants)
         if participants:
             try:
                 with self.vocoder.stream_context:
@@ -186,9 +192,11 @@ class FunCosyVoice3StreamingVocoderScheduler(
             failed.extend(self.complete_step(previous))
         else:
             pass
-        # note (ratish): samples already on the host need no wait, so such a step
-        # completes at its launch, as before.
-        if launched is not None and launched.samples.copy_done is None:
+        # note (yaourt): a dedicated vocoder can send first audio without waiting for the next launch.
+        if launched is not None and (
+            launched.samples.copy_done is None
+            or (self.should_complete_first_chunk_immediately and has_first_audio)
+        ):
             failed.extend(self.complete_step(launched))
             launched = None
         else:
