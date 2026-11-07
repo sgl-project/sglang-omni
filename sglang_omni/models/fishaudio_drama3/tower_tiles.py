@@ -20,9 +20,9 @@ except ImportError:
     libdevice = None
     HAS_TRITON = False
 
-MAX_FUSED_ROWS = 16
+MAX_FUSED_ROWS = 32
 
-FUSED_BLOCK_M = MAX_FUSED_ROWS
+MIN_FUSED_BLOCK_M = 16
 
 MIX_BLOCK_N = 64
 
@@ -93,6 +93,11 @@ class SplitScratch:
     sum_of_squares: torch.Tensor
     norm_sums: torch.Tensor
     counters: torch.Tensor
+
+
+def fused_block_m(row_count: int) -> int:
+    """The row tile of a pass: 16 rows, or the next power of two up to MAX_FUSED_ROWS."""
+    return max(MIN_FUSED_BLOCK_M, 1 << (row_count - 1).bit_length())
 
 
 def split_count(
