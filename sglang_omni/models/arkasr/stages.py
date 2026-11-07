@@ -20,7 +20,7 @@ def create_sglang_arkasr_executor(
     mem_fraction_static: float | None = None,
     mm_embedding_cache_size_bytes: int = 0,
     enable_torch_compile: bool | None = None,
-    enable_async_decode: bool = True,
+    enable_async_decode: bool | None = None,
     async_decode_min_batch_size: int = 1,
     mm_attention_backend: str | None = None,
     request_build_max_workers: int = 2,

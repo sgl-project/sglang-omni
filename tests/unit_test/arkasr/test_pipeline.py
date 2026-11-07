@@ -16,7 +16,6 @@ from sglang.srt.managers.schedule_batch import Modality, MultimodalDataItem
 from sglang.srt.models.qwen2 import Qwen2ForCausalLM
 from transformers import WhisperConfig
 
-import sglang_omni.model_runner.base as model_runner_base
 import sglang_omni.models.arkasr.engine_builder as arkasr_builder
 import sglang_omni.platforms as platforms
 import sglang_omni.scheduling.bootstrap as bootstrap
@@ -295,8 +294,8 @@ def stub_arkasr_engine_build(
         lambda worker: graph_init_workers.append(worker),
     )
     monkeypatch.setattr(
-        model_runner_base,
-        "ModelRunner",
+        arkasr_builder,
+        "ArkasrModelRunner",
         lambda *args, **kwargs: object(),
     )
     monkeypatch.setattr(sglang_backend, "SGLangOutputProcessor", lambda **k: object())
@@ -311,6 +310,23 @@ def stub_arkasr_engine_build(
         encoder_batch_sizes=encoder_batch_sizes,
         model_worker=model_worker,
         build_kwargs=build_kwargs,
+    )
+
+
+def write_ark_dflash_checkpoint(directory: Path) -> None:
+    (directory / "config.json").write_text(
+        json.dumps(
+            {
+                "speculators_model_type": "dflash",
+                "sliding_window_non_causal": False,
+                "dtype": "bfloat16",
+                "draft_vocab_size": 48000,
+                "aux_hidden_state_layer_ids": [2, 18, 33],
+                "mask_token_id": 151662,
+                "block_size": 8,
+                "transformer_layer_config": {"hidden_size": 2048},
+            }
+        )
     )
 
 
@@ -338,20 +354,7 @@ def test_arkasr_dflash_build(
         encoder_service=SimpleNamespace(close=lambda: None),
     )
     monkeypatch.setattr(platforms.current_platform, "is_cuda", lambda: True)
-    (tmp_path / "config.json").write_text(
-        json.dumps(
-            {
-                "speculators_model_type": "dflash",
-                "sliding_window_non_causal": False,
-                "dtype": "bfloat16",
-                "draft_vocab_size": 48000,
-                "aux_hidden_state_layer_ids": [2, 18, 33],
-                "mask_token_id": 151662,
-                "block_size": 8,
-                "transformer_layer_config": {"hidden_size": 2048},
-            }
-        )
-    )
+    write_ark_dflash_checkpoint(tmp_path)
     overrides = {
         "speculative_algorithm": "DFLASH",
         "speculative_draft_model_path": str(tmp_path),
@@ -371,6 +374,8 @@ def test_arkasr_dflash_build(
         config = json.loads((draft_directory / "config.json").read_text())
         assert config["dflash_config"]["target_layer_ids"] == [1, 17, 32]
         assert overrides["speculative_draft_model_revision"] is None
+        assert overrides["disable_overlap_schedule"] is True
+        assert overrides["enable_torch_compile"] is False
         assert context_length == expected_context_length
         if fail_build:
             raise RuntimeError("engine failed")
@@ -385,6 +390,7 @@ def test_arkasr_dflash_build(
             "target", server_args_overrides=overrides
         )
         assert scheduler.enable_async_decode is False
+        assert stub.infra_kwargs_seen["enable_async_decode"] is False
         assert stub.infra_kwargs_seen["supports_speculative_decoding"] is True
         assert (
             stub.infra_kwargs_seen["speculative_worker_class"]
@@ -428,6 +434,83 @@ def test_arkasr_rejects_unsupported_speculative_settings(
     monkeypatch.setattr(platforms.current_platform, "is_cuda", lambda: is_cuda)
     with pytest.raises(ValueError, match=message):
         create_sglang_arkasr_executor("target", server_args_overrides=overrides)
+
+
+@pytest.mark.parametrize(
+    ("requested", "with_draft", "expected"),
+    [
+        (None, False, True),
+        (None, True, False),
+        (True, True, True),
+        (False, True, False),
+        (False, False, False),
+    ],
+)
+def test_arkasr_speculative_overlap_is_an_explicit_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    requested: bool | None,
+    with_draft: bool,
+    expected: bool,
+) -> None:
+    """Ordinary decode defaults to async; under a draft async decode means speculative overlap, so it runs only when the operator asks for it."""
+    stub = stub_arkasr_engine_build(
+        monkeypatch,
+        want_cuda_graph=False,
+        encoder_service=SimpleNamespace(close=lambda: None),
+    )
+    monkeypatch.setattr(platforms.current_platform, "is_cuda", lambda: True)
+    write_ark_dflash_checkpoint(tmp_path)
+    overrides = (
+        {
+            "speculative_algorithm": "DFLASH",
+            "speculative_draft_model_path": str(tmp_path),
+        }
+        if with_draft
+        else {}
+    )
+
+    scheduler = create_sglang_arkasr_executor(
+        "target", enable_async_decode=requested, server_args_overrides=overrides
+    )
+
+    assert scheduler.enable_async_decode is expected
+    # note (wilsonzheng0327): SGLang builds the draft worker for one loop or the other, so the infrastructure must hear the same choice as the scheduler.
+    if with_draft:
+        assert stub.infra_kwargs_seen["enable_async_decode"] is expected
+        assert stub.build_kwargs["disable_overlap_schedule"] is not expected
+    else:
+        assert "enable_async_decode" not in stub.infra_kwargs_seen
+
+
+def test_arkasr_runner_opts_into_speculative_overlap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        arkasr_builder.ArkasrModelRunner, "__init__", lambda self, *args: None
+    )
+    builder = arkasr_builder.ArkasrEngineBuilder(
+        max_running_requests=32,
+        encoder_max_batch_size=8,
+        max_new_tokens=256,
+        enable_async_decode=None,
+        async_decode_min_batch_size=1,
+        mem_fraction_static=None,
+        mm_embedding_cache_size_bytes=0,
+        enable_torch_compile=False,
+        mm_attention_backend=None,
+        request_build_max_workers=2,
+        request_build_max_pending=16,
+        prefill_coalesce_requests=16,
+        prefill_coalesce_wait_ms=32.0,
+        prefill_coalesce_when_idle=True,
+        prefill_coalesce_requires_pending_builds=True,
+    )
+
+    runner = builder.make_model_runner(object(), object())
+
+    assert isinstance(runner, arkasr_builder.ArkasrModelRunner)
+    assert runner.supports_speculative_async_decode is True
 
 
 def test_arkasr_dflash_worker_reaches_the_decoder() -> None:
@@ -745,6 +828,43 @@ def test_ark_suppressed_token_ids():
     assert 103 in ids and 104 in ids and 106 in ids  # <...> added tokens
     assert 105 not in ids  # normal token untouched
     assert ids == sorted(ids)  # deterministic order
+
+
+def test_ark_result_adapter_returns_spec_tokens_details() -> None:
+    class FakeTokenizer:
+        eos_token_id = 100
+        vocab_size = 200
+        all_special_ids = [100]
+
+        def get_added_vocab(self):
+            return {}
+
+        def decode(self, token_ids, skip_special_tokens, clean_up_tokenization_spaces):
+            return " ".join(str(token) for token in token_ids)
+
+    _, result_adapter = request_builders.make_arkasr_scheduler_adapters(
+        tokenizer=FakeTokenizer(),
+        max_new_tokens=8,
+        feature_extractor=object(),
+    )
+    data = request_builders.ArkASRRequestData(
+        input_ids=torch.tensor([1]),
+        output_ids=[7, 8],
+        stage_payload=SimpleNamespace(request_id="r", request=None),
+    )
+    data.spec_tokens_details = {
+        "spec_accept_rate": 0.5,
+        "spec_accept_length": 2.0,
+        "spec_num_correct_drafts": 1,
+        "spec_num_proposed_drafts": 2,
+        "spec_verify_ct": 1,
+        "spec_correct_drafts_histogram": [0, 1],
+    }
+
+    result = result_adapter(data)
+
+    assert result.data["text"] == "7 8"
+    assert result.data["spec_tokens_details"] == data.spec_tokens_details
 
 
 def test_ark_encoder_layer_fp16_clamp():
