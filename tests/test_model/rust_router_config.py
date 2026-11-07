@@ -198,34 +198,21 @@ def service_profiles(
             tasks = ["voice_clone"]
             reference_forms = ["direct", "list"]
             voice_name_policy = "uploaded"
-        return "\n\n".join(
-            [
-                speech_profile(
-                    service="speech_http",
-                    model_ids=model_ids,
-                    response_formats=["wav"],
-                    stream_modes=["non_streaming"],
-                    tasks=tasks,
-                    reference_forms=reference_forms,
-                    voice_name_policy=voice_name_policy,
-                ),
-                speech_profile(
-                    service="speech_http",
-                    model_ids=model_ids,
-                    response_formats=["pcm"],
-                    stream_modes=["non_streaming", "streaming"],
-                    tasks=tasks,
-                    reference_forms=reference_forms,
-                    voice_name_policy=voice_name_policy,
-                ),
-            ]
+        return speech_profile(
+            service="speech_http",
+            model_ids=model_ids,
+            response_formats=["pcm", "wav"],
+            stream_modes=["non_streaming", "streaming"],
+            tasks=tasks,
+            reference_forms=reference_forms,
+            voice_name_policy=voice_name_policy,
         )
     if topology is CiRouterTopology.TTS_SERVING:
         profiles = [
             speech_profile(
                 service="speech_http",
                 model_ids=model_ids,
-                response_formats=["mp3", "opus", "aac", "flac", "wav"],
+                response_formats=["mp3", "opus", "aac", "flac"],
                 stream_modes=["non_streaming"],
                 tasks=["text_to_speech", "voice_clone", "voice_design"],
                 reference_forms=["none", "direct", "list"],
@@ -234,7 +221,7 @@ def service_profiles(
             speech_profile(
                 service="speech_http",
                 model_ids=model_ids,
-                response_formats=["pcm"],
+                response_formats=["pcm", "wav"],
                 stream_modes=["non_streaming", "streaming"],
                 tasks=["text_to_speech", "voice_clone", "voice_design"],
                 reference_forms=["none", "direct", "list"],

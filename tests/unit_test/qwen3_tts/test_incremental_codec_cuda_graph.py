@@ -2,7 +2,7 @@
 
 import threading
 from types import SimpleNamespace
-from typing import Protocol
+from typing import NoReturn, Protocol
 
 import pytest
 import torch
@@ -21,6 +21,7 @@ from sglang_omni.models.qwen3_tts.streaming_vocoder import (
     IncrementalDecodePlan,
     Qwen3TTSStreamingVocoderScheduler,
 )
+from sglang_omni.platforms.device_graph import DeviceGraphPool
 from tests.unit_test.fixtures.accelerator import require_device_streams
 
 
@@ -361,7 +362,6 @@ def test_incremental_codec_capture_failure_stops_every_runner_on_its_pool(
     """A failed capture freed the cuBLAS workspace the runners already captured on its
     stream read, and left them replaying with it while later runners captured there."""
     graph_pool = IncrementalCodecGraphPool(stream_priority=0)
-    captured_graph = FakeGraph()
     captured_runner = make_runner(graph_pool, batch_sizes=(1,))
     failing_runner = make_runner(graph_pool, batch_sizes=(1,))
     later_runner = make_runner(graph_pool, batch_sizes=(1,))
@@ -370,21 +370,29 @@ def test_incremental_codec_capture_failure_stops_every_runner_on_its_pool(
         runner.enabled = False
         stub_device_runtime(monkeypatch, runner)
 
-    def capture_entry(key, *, pool, capture_stream):
-        return make_entry(1, graph=captured_graph)
+    def capture_entry(
+        key: IncrementalCodecGraphKey,
+        *,
+        pool: DeviceGraphPool,
+        capture_stream: torch.Stream,
+    ) -> SimpleNamespace:
+        return make_entry(1)
 
-    def fail_capture(key, *, pool, capture_stream):
+    def fail_capture(
+        key: IncrementalCodecGraphKey,
+        *,
+        pool: DeviceGraphPool,
+        capture_stream: torch.Stream,
+    ) -> NoReturn:
         raise RuntimeError("injected capture failure")
-
-    def forbid_capture(key, *, pool, capture_stream):
-        raise AssertionError("a stopped pool captured a graph")
 
     monkeypatch.setattr(captured_runner, "capture_graph", capture_entry)
     monkeypatch.setattr(failing_runner, "capture_graph", fail_capture)
-    monkeypatch.setattr(later_runner, "capture_graph", forbid_capture)
+    monkeypatch.setattr(later_runner, "capture_graph", capture_entry)
 
     captured_runner.capture()
     assert captured_runner.enabled is True
+    captured_graph = captured_runner.graphs[IncrementalCodecGraphKey(8, 1)].graph
     failing_runner.capture()
     later_runner.capture()
 

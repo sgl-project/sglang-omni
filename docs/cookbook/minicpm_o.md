@@ -101,8 +101,7 @@ The Thinker can verify tokens proposed by a DSpark draft trained on its own answ
 ```bash
 python -m sglang_omni.cli serve --model-path openbmb/MiniCPM-o-4_5 --port 8000 \
   --thinker.engine.speculative_algorithm DSPARK \
-  --thinker.engine.speculative_draft_model_path Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm \
-  --thinker.engine.speculative_dspark_block_size 7
+  --thinker.engine.speculative_draft_model_path Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm
 ```
 
 An EAGLE3 draft for Qwen3-8B, such as [`Tengyunw/qwen3_8b_eagle3`](https://huggingface.co/Tengyunw/qwen3_8b_eagle3), runs with `--thinker.engine.speculative_algorithm EAGLE3`, `speculative_num_steps 3`, `speculative_eagle_topk 1` and `speculative_num_draft_tokens 4`.
