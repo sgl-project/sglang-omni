@@ -11,3 +11,5 @@ stages:
     engine:
       mem_fraction_static: 0.20
       max_total_tokens: 40000
+      # Validated without the DFlash draft.
+      disable_speculative_decoding: true

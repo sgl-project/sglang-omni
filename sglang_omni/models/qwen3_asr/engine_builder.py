@@ -402,7 +402,10 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
                 "Qwen3-ASR speculative decoding currently supports DFLASH only"
             )
         elif not current_platform.is_cuda() or overrides.get("tp_size", 1) != 1:
-            raise ValueError("Qwen3-ASR DFlash currently requires one CUDA GPU")
+            raise ValueError(
+                "Qwen3-ASR DFlash currently requires one CUDA GPU; pass "
+                "--asr.engine.disable_speculative_decoding true to serve without it"
+            )
         else:
             # note (WilsonZheng0327): Draft modules import Triton kernels unavailable on Torch MPS hosts.
             from sglang_omni.speculative.dflash_draft import (

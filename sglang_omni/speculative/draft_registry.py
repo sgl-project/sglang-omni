@@ -44,6 +44,7 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         draft_model_revision="d62bd4051e68282e02f93de774036a35f22f1373",
         engine_settings={"speculative_num_draft_tokens": 8},
         license="apache-2.0",
+        is_default_on=True,
     ),
     PinnedDraft(
         model_path="OpenMOSS-Team/MOSS-Transcribe-Diarize",

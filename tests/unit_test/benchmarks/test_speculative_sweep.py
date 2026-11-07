@@ -305,7 +305,7 @@ def test_a_config_without_a_draft_is_refused(tmp_path: Path) -> None:
         yaml.safe_dump(
             {
                 "config_cls": "Qwen3ASRPipelineConfig",
-                "model_path": "Qwen/Qwen3-ASR-1.7B",
+                "model_path": "Qwen/Qwen3-ASR-0.6B",
                 "stages": {"asr": {"engine": {"mem_fraction_static": 0.7}}},
             }
         )

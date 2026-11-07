@@ -196,10 +196,12 @@ jobs:
           RUN_TURN_BASED: ${{ needs.preflight.outputs.run_turn_based }}
           RUN_CASCADED: ${{ needs.preflight.outputs.run_cascaded }}
         run: |
+          # Qwen3-ASR-1.7B serves its DFlash draft by default, at the revision sglang_omni/speculative/draft_registry.py pins.
           bash .github/scripts/ensure_hf_models.sh omni \
             Qwen/Qwen3-Omni-30B-A3B-Instruct \
             marksverdhei/Qwen3-Omni-30B-A3B-FP8 \
             "${QWEN3_ASR_MODEL_PATH}" \
+            wilsonzheng0327/Qwen3-ASR-1.7B-dflash@d62bd4051e68282e02f93de774036a35f22f1373 \
             "${MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH}" \
             "${TTS_MODEL_PATH}" \
             "${MOSS_TTS_MODEL_PATH}" \

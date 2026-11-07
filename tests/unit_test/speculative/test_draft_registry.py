@@ -14,7 +14,9 @@ import pytest
 
 from sglang_omni.config.manager import ConfigManager, normalize_flag_key
 from sglang_omni.config.schema import EngineArgs
+from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
 from sglang_omni.models.registry import resolve_variant
+from sglang_omni.platforms import current_platform
 from sglang_omni.speculative.draft_registry import DRAFT_REGISTRY, PinnedDraft
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -198,7 +200,11 @@ def test_every_draft_off_by_default_is_served_in_a_doc_or_example_config() -> No
     } <= served_drafts
 
 
-def test_model_defaults_serve_exactly_the_default_on_drafts() -> None:
+@pytest.mark.parametrize("is_cuda", [True, False])
+def test_model_defaults_serve_exactly_the_default_on_drafts_and_only_on_cuda(
+    monkeypatch: pytest.MonkeyPatch, is_cuda: bool
+) -> None:
+    monkeypatch.setattr(current_platform, "is_cuda", lambda: is_cuda)
     registry_paths = sorted({draft.model_path for draft in DRAFT_REGISTRY})
     # note (Haoling Pu): a near-miss path stands for a sibling checkpoint without an entry, such as Qwen3-ASR 0.6B next to 1.7B.
     model_paths = registry_paths + [
@@ -229,5 +235,55 @@ def test_model_defaults_serve_exactly_the_default_on_drafts() -> None:
     assert default_drafts == {
         (draft.model_path, draft.stage, frozenset(registered_keys(draft).items()))
         for draft in DRAFT_REGISTRY
-        if draft.is_default_on
+        if draft.is_default_on and is_cuda
     }
+
+
+@pytest.mark.parametrize(
+    "model_path",
+    [
+        "Qwen/Qwen3-ASR-1.7B@7278e1e70fe206f11671096ffdd38061171dd6e5",
+        "/root/.cache/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5",
+    ],
+)
+def test_a_pinned_revision_or_cache_snapshot_serves_the_default_draft(
+    monkeypatch: pytest.MonkeyPatch, model_path: str
+) -> None:
+    monkeypatch.setattr(current_platform, "is_cuda", lambda: True)
+    overrides = (
+        Qwen3ASRPipelineConfig(model_path=model_path)
+        .stage_named("asr")
+        .engine.overrides()
+    )
+    assert (
+        overrides["speculative_draft_model_path"]
+        == "wilsonzheng0327/Qwen3-ASR-1.7B-dflash"
+    )
+
+
+def test_a_draft_swapped_on_the_command_line_outlasts_the_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(current_platform, "is_cuda", lambda: True)
+    manager = ConfigManager(Qwen3ASRPipelineConfig(model_path="Qwen/Qwen3-ASR-1.7B"))
+    config = manager.merge_config(
+        manager.parse_extra_args(
+            ["--asr.engine.speculative_draft_model_path", "/drafts/another-draft"]
+        )
+    )
+    overrides = config.stage_named("asr").engine.overrides()
+    assert overrides["speculative_draft_model_path"] == "/drafts/another-draft"
+    assert "speculative_draft_model_revision" not in overrides
+
+
+def test_ci_prefetches_each_default_on_draft_at_its_pinned_revision() -> None:
+    workflow = (REPO_ROOT / ".github" / "workflows" / "omni-ci.yaml").read_text(
+        encoding="utf-8"
+    )
+    for draft in DRAFT_REGISTRY:
+        if draft.is_default_on:
+            assert (
+                f"{draft.draft_model_path}@{draft.draft_model_revision}" in workflow
+            ), draft
+        else:
+            pass

@@ -12,3 +12,5 @@ stages:
       cuda_graph_max_bs: 16
       mem_fraction_static: 0.65
       enable_torch_compile: false
+      # Validated without the DFlash draft.
+      disable_speculative_decoding: true

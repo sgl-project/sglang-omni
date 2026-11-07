@@ -10,3 +10,5 @@ stages:
     engine:
       max_running_requests: 16
       mem_fraction_static: 0.65
+      # Validated without the DFlash draft.
+      disable_speculative_decoding: true
