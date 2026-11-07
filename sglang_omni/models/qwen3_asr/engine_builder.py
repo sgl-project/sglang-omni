@@ -238,11 +238,14 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             defaults["prefill_attention_backend"] = "triton"
         else:
             pass
-        # note (Xinyu Zhang): the ROCm attention default is AITER, whose CK kernels fail to compile for consumer RDNA.
+        # note (estella-z99): the ROCm attention default is AITER, whose CK kernels
+        # fail to compile for consumer RDNA, and Triton's Lean decode kernel exceeds
+        # its LDS once decode graphs for batch 16 and above are captured.
         if current_platform.is_rocm() and torch.cuda.get_device_properties(
             self.gpu_id
         ).gcnArchName.startswith(CONSUMER_RDNA_GCN_ARCH_PREFIXES):
             defaults["attention_backend"] = "triton"
+            defaults["enable_lean_attention"] = False
         else:
             pass
         if self.mm_attention_backend is not None:

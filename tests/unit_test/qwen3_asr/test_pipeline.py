@@ -397,12 +397,12 @@ def test_qwen3_asr_explicit_prefill_backend_overrides_rocm_default(
 
 
 @pytest.mark.parametrize(
-    ("is_rocm", "gcn_arch_name", "expected_backend"),
+    ("is_rocm", "gcn_arch_name", "expected_backend", "expected_lean"),
     [
-        (True, "gfx1201", "triton"),
-        (True, "gfx1100", "triton"),
-        (True, "gfx1250", None),
-        (False, "gfx1201", None),
+        (True, "gfx1201", "triton", False),
+        (True, "gfx1100", "triton", False),
+        (True, "gfx1250", None, None),
+        (False, "gfx1201", None, None),
     ],
 )
 def test_qwen3_asr_defaults_attention_to_triton_on_consumer_rdna(
@@ -410,8 +410,9 @@ def test_qwen3_asr_defaults_attention_to_triton_on_consumer_rdna(
     is_rocm: bool,
     gcn_arch_name: str,
     expected_backend: str | None,
+    expected_lean: bool | None,
 ) -> None:
-    """Qwen3-ASR on consumer RDNA crashed at startup compiling the default AITER attention kernels."""
+    """Qwen3-ASR on consumer RDNA crashed at startup: the default AITER attention kernels fail to compile, and Triton's Lean decode kernel overflows the LDS when decode graphs for batch 16 and above are captured."""
     monkeypatch.setattr(
         qwen3_asr_builder.current_platform,
         "is_rocm",
@@ -427,11 +428,16 @@ def test_qwen3_asr_defaults_attention_to_triton_on_consumer_rdna(
     )
     explicit_overrides = build_generation_batch_overrides(
         **builder.generation_defaults(dtype="bfloat16"),
-        server_args_overrides={"attention_backend": "aiter"},
+        server_args_overrides={
+            "attention_backend": "aiter",
+            "enable_lean_attention": True,
+        },
     )
 
     assert overrides.get("attention_backend") == expected_backend
+    assert overrides.get("enable_lean_attention") == expected_lean
     assert explicit_overrides["attention_backend"] == "aiter"
+    assert explicit_overrides["enable_lean_attention"] is True
     assert queried_gpu_ids == ([1, 1] if is_rocm else [])
 
 
