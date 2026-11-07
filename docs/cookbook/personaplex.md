@@ -60,6 +60,10 @@ curl -s localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -
 
 ## Native Full-Duplex Ability
 
+Recorded session voices are Mimi-encoded during session open on the encoding worker, before the client starts sending audio. The first unit takes the prepared prompt without encoding the recording. Codes are cached by the normalized waveform's SHA-256 digest, so reopened and concurrent calls can reuse them while retaining separate streaming encoder states. The existing byte-bounded LRU holds at most 512 MiB; set `--mimi_encode.factory.voice_code_cache_bytes 0` to disable reuse, or pass another byte limit. Disabling reuse still prepares the voice at open. Packaged `.pt` voices already contain embeddings and need no voice encoding. Cold encoding moves work into open; it does not remove that work or guarantee lower connect-to-audio latency.
+
+The session prompt cache now belongs to `mimi_encode`, which prepares the prompt at open. Configure its waveform/embedding cache with `--mimi_encode.factory.voice_prompt_cache_bytes` (formerly `--preprocessing.factory.voice_prompt_cache_bytes`); the code cache has its own byte limit.
+
 PersonaPlex also serves live full-duplex voice sessions on `/v1/realtime` with its `session` variant. Launching, settings and the protocol are in [Full Duplex Interactive Model](../developer_reference/full_duplex_guide.md#native-full-duplex-personaplex).
 
 ## Request parameters
