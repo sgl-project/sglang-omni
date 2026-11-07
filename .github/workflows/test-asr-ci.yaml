@@ -121,6 +121,19 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
+      - name: Run Whisper realtime input tests
+        if: inputs.asr_ci_model == 'whisper'
+        shell: bash
+        run: |
+          source omni/bin/activate
+          export PYTHONPATH=$PWD
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/test_model/test_whisper_asr_realtime.py -v -s -x
+        env:
+          HF_ENDPOINT: https://huggingface.co
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
+
       - name: Post-stage cleanup
         if: always()
         uses: ./.github/actions/omni-post-stage
