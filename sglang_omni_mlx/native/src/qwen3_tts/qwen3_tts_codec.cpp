@@ -27,6 +27,9 @@ constexpr std::array<int, 3> kResidualDilations = {1, 3, 9};
 constexpr int kChunkFrames = 300;
 constexpr int kLeftContextFrames = 25;
 constexpr int kStreamedChunkFrames = 25;
+// Note (Codex): M5 Pro replay measurements cover windows of 25 to 50 frames.
+constexpr int kImplicitPaddingMinFrames = 25;
+constexpr int kImplicitPaddingMaxFrames = 50;
 
 // Note (Codex): on M5 Pro, this limit reduced long-chunk footprint without
 // slowing generation. Note (Codex): MLX cache limits are process-wide; the
@@ -178,12 +181,17 @@ mx::array SpeechDecoder::Snake(const mx::array &x,
 
 mx::array SpeechDecoder::CausalConvolution(const mx::array &x,
                                            const std::string &prefix,
-                                           int dilation, int groups) const {
+                                           int dilation, int groups,
+                                           bool use_implicit_padding) const {
   const mx::array &weight = checkpoint_.Weight(prefix + ".weight");
   const int padding = (weight.shape(1) - 1) * dilation;
-  const mx::array padded =
-      padding > 0 ? mx::pad(x, {{0, 0}, {padding, 0}, {0, 0}}) : x;
-  const mx::array y = mx::conv1d(padded, weight, 1, 0, dilation, groups);
+  const mx::array y =
+      use_implicit_padding && padding > 0
+          ? mx::conv_general(x, weight, {1}, {padding}, {0}, {dilation}, {1},
+                             groups, false, {})
+          : mx::conv1d(padding > 0 ? mx::pad(x, {{0, 0}, {padding, 0}, {0, 0}})
+                                   : x,
+                       weight, 1, 0, dilation, groups);
   if (checkpoint_.Has(prefix + ".bias")) {
     return mx::add(y, checkpoint_.Weight(prefix + ".bias"));
   } else {
@@ -254,6 +262,10 @@ mx::array SpeechDecoder::TransformerLayer(const mx::array &x, int layer,
 mx::array SpeechDecoder::Decode(const mx::array &codes) const {
   const std::string prefix = kPrefix;
   const int frame_count = codes.shape(0);
+  // Note (Codex): implicit padding saves small-window copies but its MLX
+  // convolution workspace grows substantially for long windows on M5 Pro.
+  const bool use_implicit_padding = frame_count >= kImplicitPaddingMinFrames &&
+                                    frame_count <= kImplicitPaddingMaxFrames;
   // [1, frames] per codebook; each quantizer sums its codebooks' rows and
   // projects them back to the codec's dimension.
   const auto quantized = [&](const std::string &quantizer, int first_codebook,
@@ -282,7 +294,8 @@ mx::array SpeechDecoder::Decode(const mx::array &codes) const {
                                   codebook_count_ - semantic_codebook_count_));
   } else {
   }
-  hidden = CausalConvolution(hidden, prefix + ".pre_conv.conv", 1, 1);
+  hidden = CausalConvolution(hidden, prefix + ".pre_conv.conv", 1, 1,
+                             use_implicit_padding);
 
   const std::string transformer = prefix + ".pre_transformer";
   hidden = checkpoint_.Linear(hidden, transformer + ".input_proj");
@@ -319,8 +332,8 @@ mx::array SpeechDecoder::Decode(const mx::array &codes) const {
                                    upsampling_ratios_[stage]);
     const std::string block = stage_prefix + ".1";
     const mx::array residual = hidden;
-    mx::array x =
-        CausalConvolution(hidden, block + ".dwconv.conv", 1, hidden.shape(2));
+    mx::array x = CausalConvolution(hidden, block + ".dwconv.conv", 1,
+                                    hidden.shape(2), use_implicit_padding);
     x = checkpoint_.LayerNorm(x, block + ".norm", kConvNextNormEps);
     x = omni_common::Gelu(checkpoint_.Linear(x, block + ".pwconv1"));
     x = checkpoint_.Linear(x, block + ".pwconv2");
@@ -329,7 +342,8 @@ mx::array SpeechDecoder::Decode(const mx::array &codes) const {
   }
 
   const std::string stack = prefix + ".decoder";
-  mx::array wave = CausalConvolution(hidden, stack + ".0.conv", 1, 1);
+  mx::array wave =
+      CausalConvolution(hidden, stack + ".0.conv", 1, 1, use_implicit_padding);
   for (size_t stage = 0; stage < upsample_rates_.size(); ++stage) {
     const std::string block =
         stack + "." + std::to_string(stage + 1) + ".block";
@@ -340,16 +354,18 @@ mx::array SpeechDecoder::Decode(const mx::array &codes) const {
       const std::string unit_prefix = block + "." + std::to_string(unit + 2);
       mx::array x = Snake(wave, unit_prefix + ".act1");
       x = CausalConvolution(x, unit_prefix + ".conv1.conv",
-                            kResidualDilations[unit], 1);
+                            kResidualDilations[unit], 1, use_implicit_padding);
       x = Snake(x, unit_prefix + ".act2");
-      x = CausalConvolution(x, unit_prefix + ".conv2.conv", 1, 1);
+      x = CausalConvolution(x, unit_prefix + ".conv2.conv", 1, 1,
+                            use_implicit_padding);
       wave = mx::add(x, wave);
     }
   }
   const int output_stage = static_cast<int>(upsample_rates_.size()) + 1;
   wave = Snake(wave, stack + "." + std::to_string(output_stage));
   wave = CausalConvolution(
-      wave, stack + "." + std::to_string(output_stage + 1) + ".conv", 1, 1);
+      wave, stack + "." + std::to_string(output_stage + 1) + ".conv", 1, 1,
+      use_implicit_padding);
   return mx::reshape(mx::clip(wave, mx::array(-1.0f), mx::array(1.0f)), {-1});
 }
 

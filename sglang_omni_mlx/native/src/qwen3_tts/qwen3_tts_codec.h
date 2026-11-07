@@ -42,7 +42,8 @@ private:
   // A causal convolution: left padding of the dilated kernel's reach.
   mlx::core::array CausalConvolution(const mlx::core::array &x,
                                      const std::string &prefix, int dilation,
-                                     int groups) const;
+                                     int groups,
+                                     bool use_implicit_padding) const;
   // A transposed convolution trimmed on the right to stride times its input.
   mlx::core::array TransposedConvolution(const mlx::core::array &x,
                                          const std::string &prefix,
