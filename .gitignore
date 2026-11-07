@@ -27,6 +27,8 @@ seedtts_testset/
 .coverage
 htmlcov/
 *.wav
+# Spoken clips the MiniCPM-o baseline trials are built from.
+!benchmarks/duplex/assets/minicpmo_baseline_clips/*.wav
 
 # Logs
 *.log
