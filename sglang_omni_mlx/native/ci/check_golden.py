@@ -16,9 +16,10 @@ import os
 import re
 import subprocess
 import sys
-import unicodedata
 from pathlib import Path
 from typing import Callable, Protocol
+
+from rapidfuzz.distance import Levenshtein
 
 # (runtime bin, data root, golden file, manifest of the clips to run) -> outputs
 TranscribeCorpus = Callable[[Path, Path, dict, dict[str, dict]], dict[str, dict]]
@@ -32,6 +33,7 @@ import speech_golden
 import vad_golden
 import voxtral_golden
 from speech_golden import SpeechCase, SpeechOutputs
+from transcript_tokens import tokens
 
 CI_DIRECTORY = Path(__file__).resolve().parent
 
@@ -62,31 +64,6 @@ QUALITY_GROUPS = {
 MOSS_TAG = re.compile(r"\[\d+(?:[.,]\d+)?\]|\[S\d+\]|\[[a-z][a-z0-9 _-]{0,31}\]")
 
 
-def tokens(text: str, lang: str) -> list[str]:
-    text = unicodedata.normalize("NFKC", text).lower()
-    if lang == "en":
-        text = re.sub(r"[^a-z0-9' ]+", " ", text)
-        return [token.strip("'") for token in text.split() if token.strip("'")]
-    else:
-        return re.findall(r"[㐀-鿿豈-﫿]|[a-z0-9']+", text)
-
-
-def edit_distance(reference: list[str], hypothesis: list[str]) -> int:
-    previous = list(range(len(hypothesis) + 1))
-    for i, expected in enumerate(reference, 1):
-        current = [i]
-        for j, actual in enumerate(hypothesis, 1):
-            current.append(
-                min(
-                    current[j - 1] + 1,
-                    previous[j] + 1,
-                    previous[j - 1] + (expected != actual),
-                )
-            )
-        previous = current
-    return previous[-1]
-
-
 def quality(manifest: dict[str, dict], texts: dict[str, str]) -> dict[str, float]:
     metrics = {}
     for name, keep in QUALITY_GROUPS.items():
@@ -96,7 +73,7 @@ def quality(manifest: dict[str, dict], texts: dict[str, str]) -> dict[str, float
             if keep(clip):
                 lang = "en" if clip["lang"] == "en" else "zh"
                 reference = tokens(clip["reference"], lang)
-                errors += edit_distance(reference, tokens(text, lang))
+                errors += Levenshtein.distance(reference, tokens(text, lang))
                 total += len(reference)
             else:
                 pass

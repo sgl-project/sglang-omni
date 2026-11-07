@@ -288,11 +288,12 @@ class Qwen3TTSModelRunner(ModelRunner):
             req_output = outputs[sched_req.request_id]
             # note (ratish): a middle prefill chunk samples at a prompt row; SGLang drops
             # that token, so it gives no frame, feedback or stream chunk either.
-            if (
-                sched_req.data.req.inflight_middle_chunks > 0
-                or req_output.data is None
-                or int(req_output.data) == eos_id
-            ):
+            if sched_req.data.req.inflight_middle_chunks > 0 or req_output.data is None:
+                continue
+            else:
+                pass
+            sched_req.data.speech_output_tokens += 1
+            if int(req_output.data) == eos_id:
                 continue
             else:
                 pass

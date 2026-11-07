@@ -4,6 +4,7 @@
 // reads a request, its own flags, and any handlers beyond that API.
 #pragma once
 
+#include <cstddef>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -23,6 +24,11 @@ namespace asr_service {
 
 using FormFields = std::map<std::string, omni_common::FormField>;
 using qwen3_asr::Transcription;
+
+// Note (XXXXRT666): a long request's KV caches grow in steps, and no later
+// step fits a buffer an earlier one freed; unlimited, MLX keeps them until
+// active and cached memory reach 95% of the recommended working set.
+constexpr size_t kDecodeBufferCacheLimitBytes = 2ULL << 30;
 
 // A loaded checkpoint of the served kind.
 class ServedModel {

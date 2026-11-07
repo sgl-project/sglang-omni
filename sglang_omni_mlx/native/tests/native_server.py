@@ -64,23 +64,7 @@ class SupervisedServer:
         return self.first_event["port"]
 
     def read_event(self) -> dict[str, object]:
-        """The next stdout line, waiting at most EVENT_TIMEOUT_SECONDS for it."""
-        line = b""
-        while not line.endswith(b"\n"):
-            readable, _, _ = select.select(
-                [self.process.stdout], [], [], EVENT_TIMEOUT_SECONDS
-            )
-            if not readable:
-                raise TimeoutError(f"no event after {line!r}")
-            else:
-                pass
-            byte = os.read(self.process.stdout.fileno(), 1)
-            if not byte:
-                raise EOFError(f"stdout closed after {line!r}")
-            else:
-                pass
-            line += byte
-        return json.loads(line)
+        return read_supervised_event(self.process)
 
     def remaining_stdout(self) -> bytes:
         return self.process.stdout.read()
@@ -163,6 +147,24 @@ class SupervisedServer:
                 )
             else:
                 time.sleep(STATE_POLL_SECONDS)
+
+
+def read_supervised_event(process: subprocess.Popen[bytes]) -> dict[str, object]:
+    """The next stdout line, waiting at most EVENT_TIMEOUT_SECONDS for it."""
+    line = b""
+    while not line.endswith(b"\n"):
+        readable, _, _ = select.select([process.stdout], [], [], EVENT_TIMEOUT_SECONDS)
+        if not readable:
+            raise TimeoutError(f"no event after {line!r}")
+        else:
+            pass
+        byte = os.read(process.stdout.fileno(), 1)
+        if not byte:
+            raise EOFError(f"stdout closed after {line!r}")
+        else:
+            pass
+        line += byte
+    return json.loads(line)
 
 
 def multipart_form(fields: dict[str, str], wav: bytes | None) -> tuple[str, bytes]:

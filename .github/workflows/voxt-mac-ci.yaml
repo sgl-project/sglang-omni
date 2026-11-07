@@ -1,22 +1,20 @@
 name: Voxt Mac CI
 
-# Builds Voxt's native MLX runtime (sglang_omni_mlx/native) and Voxt on GitHub's
-# macOS runners, then checks what Voxt relies on without running a model: the
+# Builds the native MLX runtime (sglang_omni_mlx/native) on GitHub's macOS
+# runners, then checks what the app relies on without running a model: the
 # supervisor protocol, the transcription, speech, chat and realtime APIs (served by
-# the stub server around stand-in models), each server's startup checks, and
-# Voxt's Omni unit tests. No checkpoint is downloaded. Model outputs are checked
-# by hand per model PR with the tools in sglang_omni_mlx/native/ci.
-#
-# The package job runs only when the repository variable
-# VOXT_ENABLE_CI_PACKAGE is true. Local development should use
-# Voxt/tools/package_local_app.sh instead.
+# the stub server around stand-in models) and each server's startup checks; and
+# Voxt's Swift packages (the helper and the language-model runtime). No
+# checkpoint is downloaded. Model outputs are checked by hand per model PR with
+# the tools in sglang_omni_mlx/native/ci.
 
 on:
   pull_request:
     types: [opened, labeled, synchronize, reopened, ready_for_review]
     paths:
-      - "Voxt/**"
       - "sglang_omni_mlx/**"
+      - "Voxt/helper/**"
+      - "Voxt/llm/**"
       - ".github/workflows/voxt-mac-ci.yaml"
   workflow_dispatch:
 
@@ -112,158 +110,26 @@ jobs:
         run: |
           "$RUNNER_TEMP/test-venv/bin/python" -m pytest -q sglang_omni_mlx/native/tests
 
-      - name: Archive tested native runtime
-        run: |
-          set -euo pipefail
-          tar -czf "$RUNNER_TEMP/voxt-native-runtime.tar.gz" -C "$RUNNER_TEMP/runtime" .
-
-      - name: Upload tested native runtime
-        uses: actions/upload-artifact@v4
-        with:
-          name: voxt-native-runtime
-          path: ${{ runner.temp }}/voxt-native-runtime.tar.gz
-          if-no-files-found: error
-
-  voxt-unit:
-    name: Voxt Omni unit tests
+  voxtnew-swift:
+    name: Voxt helper and LLM runtime tests
     needs: [preflight]
     if: needs.preflight.outputs.run_mac == 'true'
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
-      # mlx-swift needs it to build its kernels.
+      # mlx-swift needs it to build its kernels (Voxt/llm).
       - name: Install the Metal toolchain
         run: |
           set -euo pipefail
-          xcodebuild -version
-          if xcrun metal --version > /dev/null 2>&1; then
-            :
-          else
+          if ! xcrun metal --version > /dev/null 2>&1; then
             xcodebuild -downloadComponent MetalToolchain
           fi
           xcrun metal --version
 
-      - name: Restore the Swift package checkouts
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/swift-packages
-          key: voxt-swift-packages-${{ hashFiles('Voxt/Voxt.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+      - name: Helper tests
+        run: swift test --package-path Voxt/helper
 
-      - name: Standalone model artifact package tests
-        run: swift test --package-path Voxt/Packages/OmniModelArtifacts
-
-      - name: Voxt tooling tests
-        run: python3 -B -m unittest discover -s Voxt/tools -p 'test_*.py'
-
-      - name: Build for testing
-        working-directory: Voxt
-        run: |
-          xcodebuild build-for-testing -project Voxt.xcodeproj -scheme Voxt -configuration TestDebug \
-            -destination platform=macOS -derivedDataPath "$RUNNER_TEMP/voxt-derived" \
-            -clonedSourcePackagesDirPath "$RUNNER_TEMP/swift-packages" \
-            -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO > "$RUNNER_TEMP/voxt-build.log" 2>&1 \
-            || { tail -100 "$RUNNER_TEMP/voxt-build.log"; exit 1; }
-
-      - name: Omni, API, and hotkey unit tests
-        run: |
-          xctestrun="$(find "$RUNNER_TEMP/voxt-derived/Build/Products" -maxdepth 1 -name 'Voxt_*.xctestrun' -print -quit)"
-          xcodebuild test-without-building -xctestrun "$xctestrun" -destination platform=macOS \
-            -only-testing:VoxtTests/OmniTranscriptionRequestTests \
-            -only-testing:VoxtTests/OmniRealtimeSessionUpdateTests \
-            -only-testing:VoxtTests/OmniASRRuntimeLaunchTests \
-            -only-testing:VoxtTests/OmniASRRuntimeStorageOwnershipTests \
-            -only-testing:VoxtTests/OmniVoiceActivityTests \
-            -only-testing:VoxtTests/OmniSpeakerDiarizationTests \
-            -only-testing:VoxtTests/MeetingSortformerConfigurationTests \
-            -only-testing:VoxtTests/MeetingSortformerModelStorageTests \
-            -only-testing:VoxtTests/MeetingLocalInferenceCoordinatorTests \
-            -only-testing:VoxtTests/MeetingSpeakerFeedPolicyTests \
-            -only-testing:VoxtTests/OmniModelManagerRecoveryTests \
-            -only-testing:VoxtTests/OmniFailurePathTests \
-            -only-testing:VoxtTests/MLXModelManagerLifecycleTests \
-            -only-testing:VoxtTests/MLXNativeLiveRuntimeTests \
-            -only-testing:VoxtTests/HotkeyEventTapInstallationTests \
-            -only-testing:VoxtTests/HotkeyManagerTests \
-            -only-testing:VoxtTests/RecordingSessionLifecycleTests \
-            -only-testing:VoxtTests/RemoteLLMRuntimeClientGenerationSettingsTests \
-            -only-testing:VoxtTests/RemoteLLMRuntimeClientResponsesRequestTests
-
-  package:
-    name: Voxt native runtime package
-    if: ${{ vars.VOXT_ENABLE_CI_PACKAGE == 'true' }}
-    needs: [native-runtime, voxt-unit]
-    runs-on: macos-26
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install the Metal toolchain
-        run: |
-          set -euo pipefail
-          if xcrun metal --version > /dev/null 2>&1; then
-            :
-          else
-            xcodebuild -downloadComponent MetalToolchain
-          fi
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v6
-
-      - name: Download tested native runtime
-        uses: actions/download-artifact@v4
-        with:
-          name: voxt-native-runtime
-          path: ${{ runner.temp }}/voxt-native-runtime-artifact
-
-      - name: Extract tested native runtime
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/voxt-native-runtime"
-          tar -xzf "$RUNNER_TEMP/voxt-native-runtime-artifact/voxt-native-runtime.tar.gz" \
-            -C "$RUNNER_TEMP/voxt-native-runtime"
-
-      - name: Validate native runtime artifact
-        run: |
-          set -euo pipefail
-          bash Voxt/tools/validate_native_runtime.sh "$RUNNER_TEMP/voxt-native-runtime"
-
-      - name: Build unsigned PR package
-        working-directory: Voxt
-        run: |
-          set -euo pipefail
-          tools/package_local_app.sh \
-            --native-runtime "$RUNNER_TEMP/voxt-native-runtime" \
-            --output-dir "$RUNNER_TEMP/voxt-package" \
-            --no-sign
-
-      - name: Validate package contents
-        run: |
-          set -euo pipefail
-          package_dir="$(find "$RUNNER_TEMP/voxt-package" -mindepth 1 -maxdepth 1 -type d -print -quit)"
-          test -n "$package_dir"
-          zip_path="$(find "$package_dir" -maxdepth 1 -name 'Voxt-*-macOS.zip' -type f -print -quit)"
-          dmg_path="$(find "$package_dir" -maxdepth 1 -name 'Voxt-*.dmg' -type f -print -quit)"
-          pkg_path="$(find "$package_dir" -maxdepth 1 -name 'Voxt-*.pkg' -type f -print -quit)"
-          test -f "$zip_path"
-          test -f "$dmg_path"
-          test -f "$pkg_path"
-          package_contents="$(mktemp -d "$RUNNER_TEMP/voxt-package-contents.XXXXXX")"
-          trap 'rm -rf "$package_contents"' EXIT
-          unzip -q "$zip_path" -d "$package_contents"
-          bash Voxt/tools/validate_native_runtime.sh "$package_contents/Voxt.app/Contents/Resources/OmniRuntime"
-          hdiutil verify "$dmg_path"
-          shasum -a 256 -c "$zip_path.sha256"
-          shasum -a 256 -c "$pkg_path.sha256"
-
-      - name: Upload PR package
-        uses: actions/upload-artifact@v4
-        with:
-          name: voxt-native-runtime-package-${{ github.event.pull_request.number || github.run_id }}
-          path: |
-            ${{ runner.temp }}/voxt-package/*/Voxt-*-macOS.zip
-            ${{ runner.temp }}/voxt-package/*/Voxt-*.dmg
-            ${{ runner.temp }}/voxt-package/*/Voxt-*.pkg
-            ${{ runner.temp }}/voxt-package/*/*.sha256
-          if-no-files-found: error
+      - name: LLM runtime tests
+        run: swift test --package-path Voxt/llm
