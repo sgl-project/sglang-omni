@@ -70,6 +70,8 @@ type modelsState struct {
 	modelAdvanced bool
 	modelKeepSel  string
 	modelKeepFor  string
+	// modelHiddenOpen: the Hidden models section is open (models_cards.go).
+	modelHiddenOpen bool
 }
 
 // openModels reads the models on disk and sets up the local models,

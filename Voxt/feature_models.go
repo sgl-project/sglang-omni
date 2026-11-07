@@ -25,8 +25,9 @@ func (a *app) featureModels(c *ui.Context, feature string) {
 	enhance := feature != hotkey.Transcribe || a.prefs.Features.Transcribe.Enhance
 	readyA := a.installed(local.ASR)
 	readyL := local.ForFeature(a.installed(local.LLM), feature)
-	optsA, autoA := modelOptions(readyA)
-	optsL, autoL := modelOptions(readyL)
+	shownA := slices.DeleteFunc(slices.Clone(readyA), func(m local.Model) bool { return a.modelHidden(m.ID) }) // models_cards.go
+	optsA, autoA := modelOptions(readyA, shownA)
+	optsL, autoL := modelOptions(readyL, readyL)
 	fb := a.prefs.Features.Translate.Fallback
 	optsF := append([]string{i18n.T("None")}, optsL[1:]...)
 	seen := strings.Join([]string{f.ASR, f.LLM, fb, strings.Join(optsA, "\x00"), strings.Join(optsL, "\x00")}, "\x01")
@@ -83,7 +84,7 @@ func (a *app) featureModels(c *ui.Context, feature string) {
 	settingRow(c, p+"-asr", i18n.T("Speech recognition"), asrDesc, func() {
 		sel := ui.Select(c.Key(p+"-asr-sel"), &u.asr, optsA).Label(asrLabel).Width(px(t, 260)).Shrink(1).MinWidth(px(t, 160)).Disabled(len(readyA) == 0)
 		if sel.Changed() {
-			id := modelID(optsA, readyA, u.asr)
+			id := modelID(optsA, shownA, u.asr)
 			a.updateSettings(func(s *settings.Settings) { setFeatureModel(s, local.ASR, feature, id) })
 		}
 	})
@@ -110,15 +111,15 @@ func (a *app) featureModels(c *ui.Context, feature string) {
 	}
 }
 
-// modelOptions are a model select's labels: "Automatic: X", then the
-// installed models.
-func modelOptions(ready []local.Model) (opts []string, auto string) {
+// modelOptions are a model select's labels: "Automatic: X", X the first
+// of the installed models (ready), then the models the menu shows.
+func modelOptions(ready, shown []local.Model) (opts []string, auto string) {
 	auto = i18n.T("Automatic")
 	if len(ready) > 0 {
 		auto = i18n.T("Automatic: %s", ready[0].Name)
 	}
 	opts = []string{auto}
-	for _, m := range ready {
+	for _, m := range shown {
 		opts = append(opts, m.Name)
 	}
 	return opts, auto

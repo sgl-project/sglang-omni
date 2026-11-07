@@ -1237,5 +1237,13 @@
   "The words as Voxt hears them while you speak, and the answer as the model writes it.": "说话时显示 Voxt 听到的内容，生成时显示模型正在写的回答。",
   "Fallback model": "备用模型",
   "When the language model fails, translates once more with this model. The history names the model that answered.": "语言模型出错时，用这个模型再翻译一次。历史记录里写的是实际给出译文的模型。",
-  "Fallback language model for Translate": "翻译的备用语言模型"
+  "Fallback language model for Translate": "翻译的备用语言模型",
+  "Hidden models": "已隐藏的模型",
+  "The features' menus leave these models out. Show puts one back.": "功能页的模型菜单里不列出这些模型。点“显示”可以放回去。",
+  "Show": "显示",
+  "Show %s": "显示 %s",
+  "Offer it in the features' menus again": "重新在功能页的模型菜单里列出",
+  "Hide": "隐藏",
+  "Hide %s": "隐藏 %s",
+  "Leave it out of the features' menus": "不在功能页的模型菜单里列出"
 }
