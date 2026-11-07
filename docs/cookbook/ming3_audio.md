@@ -14,6 +14,28 @@ CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve \
   --thinker.tp_size 2
 ```
 
+## MTP decoding
+
+Multi-token prediction (MTP) can accelerate transcription and audio-chat text generation using the prediction layer included in the checkpoint. MTP is off by default. Enable it with:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve \
+  --model-path inclusionAI/Ming-3.0-audio-flash \
+  --thinker.tp_size 2 \
+  --thinker.engine.revision db94e0de19f6d05adc0413c255a28eb480cd1fae \
+  --thinker.engine.speculative_algorithm NEXTN
+```
+
+MTP uses additional GPU memory. Speedup depends on the workload and output length. Standalone speech synthesis is unaffected.
+
+Usage notes:
+
+- To disable MTP in a config that enables it, add `--thinker.engine.disable_speculative_decoding true`.
+- Overlap is off by default. Add `--thinker.factory.enable_async_decode true` to enable it. It can improve throughput, with a possible increase in time to first token.
+- Keep `speculative_eagle_topk=1` and `repetition_penalty=1`. Prefix caching and chunked prefill are unavailable for this model.
+
+For MTP acceptance statistics, set `return_spec_tokens_details=true` on chat or transcription requests and read `sglext.spec_tokens_details` in the JSON response.
+
 ## Transcription
 
 ```bash
