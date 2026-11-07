@@ -154,7 +154,7 @@ python -m sglang_omni.cli serve \
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `max_sessions` | 1 | Conversations at the same time. Further connections get HTTP 503. The LM keeps `max_sessions + 1` request slots, and a lower `--lm.engine.max_running_requests` is rejected at startup |
+| `max_sessions` | 1 | Conversations at the same time. Further connections get HTTP 503. The LM keeps `max_sessions + 1` request slots, and a lower `--lm.engine.max_running_requests` is rejected at startup. Startup records the Depformer as a CUDA graph at every batch size up to `max_sessions + 1`, so startup time and GPU memory grow with this value |
 | `voice` | `NATF2` | Packaged voice name, or the path of a voice recording, used when a session names no voice |
 | `instructions` | the offline role prompt | Role prompt used when a session sends no `instructions` |
 | `sampling` | the offline defaults | Default sampling when a session does not set its own: `temperature`, `top_k`, `top_p`, `min_p`, `repetition_penalty`, `audio_temperature`, `audio_top_k`, `seed` |

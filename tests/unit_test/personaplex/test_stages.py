@@ -273,7 +273,7 @@ def test_realtime_factories_get_no_offline_factory_fields_after_an_override():
         resolved.stage_named("code2wav"), resolved
     )
     assert "enable_async_decode" not in lm_args
-    assert lm_args["depformer_cuda_graph_batch_sizes"] == [1, 2, 4, 8, 16, 32]
+    assert lm_args["depformer_cuda_graph_batch_sizes"] == [1, 2]
     assert "chunk_ramp_frames" not in code2wav_args
 
 
@@ -287,6 +287,7 @@ def test_every_realtime_stage_holds_max_sessions_calls():
     for name in ["preprocessing", "mimi_encode", "code2wav"]:
         assert config.stage_factory_kwargs(name) == {"max_open_sessions": 3}
     assert config.stage_factory_kwargs("lm") == {
+        "depformer_cuda_graph_batch_sizes": [1, 2, 3, 4],
         "audio_temperature": 0.5,
         "audio_top_k": 7,
         "server_args_overrides": {
