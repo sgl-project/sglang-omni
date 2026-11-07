@@ -29,6 +29,7 @@ type providerDialog struct {
 	err, errMore       string // a save or check error
 	saving, removeKey  bool
 	test               providerTest
+	gen                genForm // a language model's generation settings (remote_generation.go)
 	// was is the setup the dialog opened with: a click beside the dialog,
 	// or Escape, does not close it while the form differs (unsaved).
 	was settings.Provider
@@ -46,7 +47,7 @@ func otherModel() string { return i18n.T("Other model…") }
 func (a *app) openProviderDialog(kind local.Kind, id string) {
 	sv := lookupService(kind, id)
 	p, exists := a.setupOf(kind, id)
-	d := providerDialog{open: true, kind: kind, id: id, exists: exists, endpoint: p.Endpoint, appID: p.AppID}
+	d := providerDialog{open: true, kind: kind, id: id, exists: exists, endpoint: p.Endpoint, appID: p.AppID, gen: genFormOf(p.Generation)}
 	d.model = setupModel(kind, p)
 	if d.model == "" || !slices.Contains(sv.models, d.model) {
 		d.model, d.customModel = otherModel(), d.model
@@ -73,6 +74,9 @@ func (d *providerDialog) setup() settings.Provider {
 	}
 	if model != lookupService(d.kind, d.id).model {
 		p.Model = model
+	}
+	if d.kind == local.LLM {
+		p.Generation, _ = d.gen.settings()
 	}
 	return p
 }
@@ -154,6 +158,9 @@ func (a *app) providerDialogView(c *ui.Context) {
 				ui.TextInput(c.Key("remote-model-custom"), &d.customModel).Placeholder(i18n.T("Model id")).Label(i18n.T("Model id"))
 			}
 		})
+		if d.kind == local.LLM {
+			a.generationFields(c, d) // remote_generation.go
+		}
 		if d.err != "" {
 			notice(c, "remote-dlg-err", noticeError, d.err, d.errMore, nil, func() { d.err, d.errMore = "", "" })
 		}
@@ -188,6 +195,19 @@ func (d *providerDialog) check(p settings.Provider) (msg, more string) {
 	}
 	if err := checkSetup(d.kind, p); err != nil {
 		return uitext.ModelErrorText(err)
+	}
+	if d.kind == local.LLM {
+		if _, bad := d.gen.settings(); bad != "" {
+			return i18n.T("%s is not a number.", bad), ""
+		}
+		switch providers.CheckGeneration(p.Generation) {
+		case providers.ErrJSONSchema:
+			return i18n.T("The JSON schema is not a JSON object."), ""
+		case providers.ErrOptions:
+			return i18n.T("Options JSON is not a JSON object."), ""
+		case providers.ErrExtraBody:
+			return i18n.T("Extra Body JSON is not a JSON object."), ""
+		}
 	}
 	return "", ""
 }
