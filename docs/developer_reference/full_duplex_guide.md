@@ -158,6 +158,7 @@ python -m sglang_omni.cli serve \
 | `voice` | `NATF2` | Packaged voice name, or the path of a voice recording, used when a session names no voice |
 | `instructions` | the offline role prompt | Role prompt used when a session sends no `instructions` |
 | `sampling` | the offline defaults | Default sampling when a session does not set its own: `temperature`, `top_k`, `top_p`, `min_p`, `repetition_penalty`, `audio_temperature`, `audio_top_k`, `seed` |
+| `--lm.engine.kv_cache_bytes` | derived | Without an explicit LM memory setting, reserve a full LM context per session, scaled by the resolved KV dtype and rank head count; [budget details](../cookbook/personaplex.md#session-kv-budgets) |
 | `--code2wav.factory.max_graph_frames` | 2 | Mimi decode replays CUDA graphs for units of up to this many frames, for up to `max_sessions` conversations decoded together; `0` turns the graphs off |
 | `--mimi_encode.factory.max_concurrency` | 1 | Conversations whose audio Mimi encodes at the same time |
 | `--preprocessing.factory.voice_prompt_cache_bytes` | 512 MiB | Memory for the voice prompts loaded so far |
