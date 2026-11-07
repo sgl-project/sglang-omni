@@ -1,0 +1,44 @@
+name: Voxt Nightly
+
+# Tests main every night with Voxt CI and Voxt Mac CI and, when both pass,
+# builds it with the release workflow: signed with the Developer ID of the
+# voxt-release environment and notarized, version X.Y.Z-nightly.YYYYMMDD, its
+# disk image an artifact of the run. A schedule only runs from main, so a pull
+# request that changes this file runs it too: Voxt Mac CI only with the
+# run-mac-ci label, and the build ad hoc and unsigned, since the environment
+# lets in only main and voxt-v tags.
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/voxt-nightly.yaml"
+  schedule:
+    - cron: "34 12 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  go-tests:
+    if: github.event_name != 'schedule' || github.repository == 'sgl-project/sglang-omni'
+    uses: ./.github/workflows/voxtnew-ci.yaml
+
+  mac-tests:
+    if: github.event_name != 'schedule' || github.repository == 'sgl-project/sglang-omni'
+    uses: ./.github/workflows/voxt-mac-ci.yaml
+    # Voxt Mac CI reads a pull request's labels.
+    permissions:
+      contents: read
+      pull-requests: read
+
+  nightly:
+    needs: [go-tests, mac-tests]
+    uses: ./.github/workflows/voxt-release.yaml
+    # A called job cannot ask for more than its caller grants. Only a tag's draft release uses this.
+    permissions:
+      contents: write
+    # A called workflow gets the voxt-release environment's secrets only when its caller passes them.
+    secrets: inherit
+    with:
+      nightly: true

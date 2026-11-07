@@ -227,14 +227,23 @@ func TestPaste(t *testing.T) {
 	if d := time.Since(start); d < famruntime.PasteWait-50*time.Millisecond || d > 2*time.Second {
 		t.Errorf("waited %v for a paste that does not end", d)
 	}
+	// The other paste ends about 100 ms in: Paste goes on soon after. On
+	// a busy machine that write itself can come late, past PasteWait, and
+	// Paste then rightly gives up waiting: time it from the write.
+	cleared := make(chan time.Time, 1)
 	go func() {
 		time.Sleep(100 * time.Millisecond)
 		other.Pasting = false
 		famruntime.Write(f.dir, other)
+		cleared <- time.Now()
 	}()
 	start = time.Now()
 	r.Paste(ctx, func() error { return nil })
-	if d := time.Since(start); d < 80*time.Millisecond || d > 400*time.Millisecond {
-		t.Errorf("waited %v for a paste of 100 ms", d)
+	done := time.Now()
+	switch at := <-cleared; {
+	case done.Before(at) && done.Sub(start) < famruntime.PasteWait-50*time.Millisecond:
+		t.Errorf("went on after %v, before the other paste ended", done.Sub(start))
+	case done.After(at) && done.Sub(at) > 300*time.Millisecond:
+		t.Errorf("waited %v after the other paste ended", done.Sub(at))
 	}
 }

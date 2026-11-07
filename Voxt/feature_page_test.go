@@ -44,9 +44,9 @@ func TestTranscribePageRenders(t *testing.T) {
 	for _, s := range []string{
 		"Transcribe", "Shortcuts", "Right ⌥", "Tap", "Double tap", "Long press", "Add a shortcut",
 		"Paste the last result", "⌃⌥V",
-		"Models", "No speech model is installed: install one to transcribe.", "Open Local models",
+		"Models", "No speech model is installed: install one to transcribe.", "Open Speech models",
 		"Clean-up", "Clean up with a language model", "Basic clean-up", "Structure",
-		"Your rules", "{{USER_MAIN_LANGUAGE}}", "{{APP_NAME}}", "Show the full prompt",
+		"Your rules", "Not set",
 		"Try it", "Start",
 	} {
 		if !has(tt, s) {
@@ -185,13 +185,13 @@ func TestTranscribePasteLast(t *testing.T) {
 func TestTranscribeServicesAndSwitches(t *testing.T) {
 	a, tt := trTester(t)
 	readyModels(a)
-	a.local.(*fakeLocal).MoreLLM = []local.Model{{Kind: local.LLM, ID: models.LLMFast, Name: "Fast language model"}}
+	a.local.(*fakeLocal).MoreLLM = []local.Model{{Kind: local.LLM, ID: models.LLMFast, Name: "Qwen3.5 2B (4bit)"}}
 	frames(tt)
 	if has(tt, "No speech model is installed: install one to transcribe.") {
 		t.Error("notice with a model installed")
 	}
 	click(t, tt, "Language model for Transcribe")
-	click(t, tt, "Fast language model")
+	click(t, tt, "Qwen3.5 2B (4bit)")
 	if id := a.lib.settings.Get().Features.Transcribe.LLM; id != models.LLMFast {
 		t.Errorf("LLM %q", id)
 	}
@@ -216,8 +216,17 @@ func TestTranscribeServicesAndSwitches(t *testing.T) {
 	}
 }
 
+// TestTranscribeRules: Your rules start folded, saying how long they are
+// (long rules pushed the rest of the page down); open, the field saves
+// what is typed, the preview fills its variables, Reset clears it, a
+// change elsewhere shows, and long rules scroll in a field at most 320
+// high.
 func TestTranscribeRules(t *testing.T) {
 	a, tt := trTester(t)
+	if has(tt, "{{USER_MAIN_LANGUAGE}}") || has(tt, "Show the full prompt") {
+		t.Fatal("Your rules are open at first")
+	}
+	click(t, tt, "Your rules")
 	click(t, tt, "Your rules for Transcribe")
 	tt.Type("Write {{USER_MAIN_LANGUAGE}} numbers as digits.")
 	frames(tt)
@@ -240,8 +249,15 @@ func TestTranscribeRules(t *testing.T) {
 	// A change elsewhere shows.
 	a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.Prompt = "Be brief." })
 	frames(tt)
-	if a.fui(hotkey.Transcribe).prompt != "Be brief." {
+	if a.fui(hotkey.Transcribe).prompt != "Be brief." || !has(tt, "9 characters") {
 		t.Errorf("not set from the settings: %q", a.fui(hotkey.Transcribe).prompt)
+	}
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Transcribe.Prompt = strings.Repeat("Keep every product name as it is written.\n", 400)
+	})
+	frames(tt)
+	if r, ok := tt.Find("Your rules for Transcribe"); !ok || r.H > 330 {
+		t.Errorf("the rules' field: found %v, %.0f high", ok, r.H)
 	}
 }
 
@@ -288,7 +304,7 @@ func TestTranscribeTry(t *testing.T) {
 	if a.sess.State.Live() || !has(tt, "No speech model is installed.") {
 		t.Fatalf("blocked try: %+v %q", a.sess, tt.Texts())
 	}
-	click(t, tt, "Open Local models")
+	click(t, tt, "Open Speech models")
 	if a.shownPath() != modelsPath {
 		t.Fatalf("went to %s", a.shownPath())
 	}
@@ -379,7 +395,7 @@ func TestTranscribeFullPage(t *testing.T) {
 			if feature == hotkey.Transcribe {
 				a.fui(feature).rows[1].custom = true
 			}
-			a.fui(feature).preview = true
+			a.fui(feature).rules, a.fui(feature).preview = true, true
 			s := trySnapshot(a, session.Done)
 			s.Kind = featureKind(feature)
 			switch feature {

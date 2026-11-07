@@ -85,6 +85,9 @@ type cardBubble struct {
 // cardNow is the card as it shows now.
 func (a *app) cardNow() cardView {
 	s := a.sess
+	if a.prefs.Overlay.HideLiveText {
+		s.Partial, s.Draft = "", "" // "Show live text" off: no words in a follow-up's bubbles either
+	}
 	if !a.answer.open {
 		return cardView{} // no card: the pill shows the session
 	}

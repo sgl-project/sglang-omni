@@ -33,6 +33,11 @@ type Spec struct {
 	Languages []string
 	ASR       *ASRTuning // speech models
 	VAD       *VADTuning // Silero
+	// Binary is the server's file name beside Config.Binary ("": that
+	// one, qwen3_asr_server). Silero runs as silero_vad_server, a copy of
+	// it, so that Activity Monitor tells the voice detector from the
+	// speech model.
+	Binary string
 }
 
 // ASRTuning is a speech model's request policy (Voxt's, for Qwen3-ASR).
@@ -140,8 +145,8 @@ var specs = []Spec{
 	},
 	{
 		ID: VADSilero, Repo: "mlx-community/silero-vad-v6", Revision: "2ebf4a5e10726a2e78ddd4d70eedfb6f1c33eb06",
-		Kind: kindSileroVAD,
-		VAD:  &VADTuning{Threshold: 0.5, MinSpeech: 250 * time.Millisecond, MinSilence: 100 * time.Millisecond, SpeechPad: 30 * time.Millisecond, Chunk: 512},
+		Kind: kindSileroVAD, Binary: "silero_vad_server",
+		VAD: &VADTuning{Threshold: 0.5, MinSpeech: 250 * time.Millisecond, MinSilence: 100 * time.Millisecond, SpeechPad: 30 * time.Millisecond, Chunk: 512},
 	},
 }
 

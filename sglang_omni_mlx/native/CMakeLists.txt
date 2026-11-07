@@ -299,12 +299,17 @@ add_library(fishaudio_drama3 STATIC
   src/fishaudio_drama3/fishaudio_drama3_prompt.cpp
   src/fishaudio_drama3/fishaudio_drama3_codec.cpp
   src/fishaudio_drama3/fishaudio_drama3_codec_stream.cpp
+  src/fishaudio_drama3/fishaudio_drama3_experts.cpp
   src/fishaudio_drama3/fishaudio_drama3_model.cpp
   src/fishaudio_drama3/fishaudio_drama3_backbone.cpp
   src/fishaudio_drama3/fishaudio_drama3_tower.cpp
   src/fishaudio_drama3/fishaudio_drama3_generation.cpp)
 target_link_libraries(fishaudio_drama3 PUBLIC qwen3_asr)
 target_compile_options(fishaudio_drama3 PRIVATE -Wall -Wextra -ffp-contract=off)
+add_executable(fishaudio_drama3_experts_test EXCLUDE_FROM_ALL
+  ci/fishaudio_drama3_experts_test.cpp)
+target_link_libraries(fishaudio_drama3_experts_test PRIVATE fishaudio_drama3)
+
 add_executable(fishaudio_drama3_server src/fishaudio_drama3/fishaudio_drama3_server.cpp)
 target_link_libraries(fishaudio_drama3_server PRIVATE fishaudio_drama3 speech_service)
 target_compile_options(fishaudio_drama3_server PRIVATE -Wall -Wextra)
@@ -334,6 +339,11 @@ install(TARGETS ming3_audio_chat ming3_audio_server RUNTIME DESTINATION bin)
 
 install(FILES licenses/music3-MIT.txt licenses/fishaudio_drama3-MIT.txt
   DESTINATION licenses)
+
+# Optional local codec fixture; requires a checkpoint and saved codes.
+add_executable(fishaudio_drama3_codec_test EXCLUDE_FROM_ALL
+  ci/fishaudio_drama3_codec_test.cpp)
+target_link_libraries(fishaudio_drama3_codec_test PRIVATE fishaudio_drama3)
 
 # The protocol tests' stand-in server (tests/stub_server.cpp); built only on
 # request and never installed.
