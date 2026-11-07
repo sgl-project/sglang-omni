@@ -29,7 +29,7 @@ TEXT_DELTA = "text_delta"
 MESSAGES = "messages"
 # {"text": str, "full_text": str, "is_first_output": bool}; an ASR stage's one running text
 RUNNING_TEXT = "text"
-# {"text": str, "is_final": bool, "language"?: str}
+# {"text": str, "is_final": bool, "language"?: str, "segments"?: [{"speaker": str, "start_ms": float, "end_ms": float, "text": str}, ...]}; segments are on the session clock
 TRANSCRIPT_FORMAT = "transcript"
 # {"calls": [{"id": str, "name": str, "arguments": object}, ...]}
 TOOL_CALL = "tool_call"

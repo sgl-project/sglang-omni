@@ -6,12 +6,14 @@ import base64
 import json
 import re
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import ClassVar, Literal
 from urllib.parse import urlencode
 
 import httpx
+import numpy as np
 from pydantic import BaseModel, Field
+from scipy.optimize import linear_sum_assignment
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 
@@ -24,6 +26,7 @@ from sglang_omni.audio.segmentation import (
 from sglang_omni.audio.wav import pcm16_wav
 from sglang_omni.models.streaming_cascade.base import (
     ComponentConfig,
+    SpeakerSegment,
     StreamComponent,
     audio_bytes,
     bearer_headers,
@@ -34,8 +37,22 @@ from sglang_omni.models.streaming_cascade.base import (
     with_language,
 )
 from sglang_omni.proto.session import TimedChunk
-from sglang_omni.proto.streams import SESSION_INPUT_SAMPLE_RATE_HZ
+from sglang_omni.proto.streams import (
+    PCM16_BYTES_PER_SAMPLE,
+    SESSION_INPUT_SAMPLE_RATE_HZ,
+)
 from sglang_omni.scheduling.session import ChunkEmitter
+
+PCM16_BYTES_PER_MS = PCM16_BYTES_PER_SAMPLE * SESSION_INPUT_SAMPLE_RATE_HZ // 1000
+# One [start][Sxx]text[end] segment of MOSS-Transcribe-Diarize, times in seconds.
+SPEAKER_SEGMENT = re.compile(
+    r"\[(\d+(?:[.,]\d+)?)\]\s*\[(S\d+)\](.*?)\[(\d+(?:[.,]\d+)?)\]", re.DOTALL
+)
+MARKUP_TAG = re.compile(r"\[[^\[\]]*\]")
+SPEAKER_TAG = re.compile(r"\[(S\d+)\]")
+# note (fweilun): the silence between the recent utterances and the new one, as measured on movies800time; the model still joins one speaker's words across it at times, which a segment over STRADDLE_MS on both sides of it shows.
+CONTEXT_SEPARATOR_MS = 600
+STRADDLE_MS = 300
 
 
 class OpenUtterance:
@@ -235,6 +252,234 @@ class OpenAITranscriptionRecognizer(UtteranceRecognizer):
         response.raise_for_status()
         result = TranscriptionResult.model_validate(response.json())
         yield transcript_chunk(result.text.strip(), True, result.language or None)
+
+    async def close(self) -> None:
+        await self.client.aclose()
+
+
+class SpeakerTranscriptionRecognizerConfig(ComponentConfig):
+    """Speaker-attributed transcripts from the /audio/transcriptions endpoint of a MOSS-Transcribe-Diarize service; one final transcript per utterance.
+
+    Each utterance is transcribed after the last context_s of the session's speech, so a speaker heard in it keeps one label; a speaker it does not hold gets a new label, and 0 transcribes each utterance alone.
+    """
+
+    kind: Literal["speaker_transcription"] = "speaker_transcription"
+    base_url: str = Field(pattern=r"^https?://[^/]+")
+    model: str
+    context_s: float = Field(default=20, ge=0)
+    api_key_env: str = "OPENAI_API_KEY"
+
+
+def seconds_ms(seconds: str) -> float:
+    return float(round(float(seconds.replace(",", ".")) * 1000))
+
+
+def spoken_words(text: str) -> str:
+    return " ".join(MARKUP_TAG.sub(" ", text).split())
+
+
+def parse_speaker_segments(markup: str, duration_ms: float) -> list[SpeakerSegment]:
+    """The segments of a MOSS-Transcribe-Diarize transcript; words without time markers are one segment over the whole audio, of the first speaker they name."""
+    segments: list[SpeakerSegment] = []
+    for start, speaker, text, end in SPEAKER_SEGMENT.findall(markup):
+        words = spoken_words(text)
+        if words:
+            start_ms = seconds_ms(start)
+            segments.append(
+                SpeakerSegment(
+                    speaker=speaker,
+                    start_ms=start_ms,
+                    end_ms=max(seconds_ms(end), start_ms),
+                    text=words,
+                )
+            )
+        else:
+            pass
+    words = spoken_words(markup)
+    if segments or not words:
+        return segments
+    else:
+        named = SPEAKER_TAG.search(markup)
+        return [
+            SpeakerSegment(
+                speaker="" if named is None else named.group(1),
+                start_ms=0,
+                end_ms=duration_ms,
+                text=words,
+            )
+        ]
+
+
+def shifted(segment: SpeakerSegment, delta_ms: float) -> SpeakerSegment:
+    return replace(
+        segment,
+        start_ms=segment.start_ms + delta_ms,
+        end_ms=segment.end_ms + delta_ms,
+    )
+
+
+def match_speakers(
+    known: list[SpeakerSegment], decoded: list[SpeakerSegment]
+) -> dict[str, str]:
+    """Each decoded label paired one to one with the known label it overlaps longest in all; a label that overlaps none stays unpaired."""
+    decoded_labels = sorted({segment.speaker for segment in decoded})
+    known_labels = sorted({segment.speaker for segment in known})
+    overlap_ms = np.zeros((len(decoded_labels), len(known_labels)))
+    for decoded_segment in decoded:
+        for known_segment in known:
+            overlap_ms[
+                decoded_labels.index(decoded_segment.speaker),
+                known_labels.index(known_segment.speaker),
+            ] += max(
+                0.0,
+                min(decoded_segment.end_ms, known_segment.end_ms)
+                - max(decoded_segment.start_ms, known_segment.start_ms),
+            )
+    rows, columns = linear_sum_assignment(overlap_ms, maximize=True)
+    return {
+        decoded_labels[row]: known_labels[column]
+        for row, column in zip(rows, columns)
+        if overlap_ms[row, column] > 0
+    }
+
+
+def speaker_lines(segments: list[SpeakerSegment]) -> str:
+    """One "[S01] words" line per run of one speaker's segments."""
+    lines: list[tuple[str, list[str]]] = []
+    for segment in segments:
+        if lines and lines[-1][0] == segment.speaker:
+            lines[-1][1].append(segment.text)
+        else:
+            lines.append((segment.speaker, [segment.text]))
+    return "\n".join(f"[{speaker}] {' '.join(words)}" for speaker, words in lines)
+
+
+class SpeakerTranscriptionRecognizer(UtteranceRecognizer):
+    """Transcribes each finished utterance with speaker labels that hold for the whole session."""
+
+    def __init__(self, config: SpeakerTranscriptionRecognizerConfig) -> None:
+        super().__init__()
+        self.config = config
+        self.client = httpx.AsyncClient(
+            timeout=config.timeout_s, headers=bearer_headers(config.api_key_env)
+        )
+        self.speaker_count = 0
+        # The last context_s of the session's speech, utterances apart by CONTEXT_SEPARATOR_MS of silence, and its segments with session labels on its own clock.
+        self.context_pcm = b""
+        self.context_segments: list[SpeakerSegment] = []
+
+    def adopt(self, previous: StreamComponent) -> None:
+        super().adopt(previous)
+        if isinstance(previous, SpeakerTranscriptionRecognizer):
+            self.speaker_count = previous.speaker_count
+            self.context_pcm = previous.context_pcm
+            self.context_segments = previous.context_segments
+        else:
+            pass
+
+    def state_bytes(self) -> int:
+        return len(self.context_pcm) + 4 * sum(
+            len(segment.text) for segment in self.context_segments
+        )
+
+    async def transcribe(self, pcm: bytes) -> list[SpeakerSegment]:
+        response = await request_transcription(
+            self.client,
+            self.config.base_url,
+            self.config.model,
+            pcm,
+            SESSION_INPUT_SAMPLE_RATE_HZ,
+            language=None,
+            response_format="json",
+        )
+        response.raise_for_status()
+        result = TranscriptionResult.model_validate(response.json())
+        return parse_speaker_segments(result.text, len(pcm) / PCM16_BYTES_PER_MS)
+
+    async def utterance(
+        self, audio: AsyncIterator[TimedChunk]
+    ) -> AsyncIterator[TimedChunk]:
+        chunks = [chunk async for chunk in audio]
+        if not chunks:
+            yield transcript_chunk("", True)
+            return
+        else:
+            pass
+        segments = await self.attribute(
+            b"".join(audio_bytes(chunk) for chunk in chunks)
+        )
+        yield transcript_chunk(
+            speaker_lines(segments),
+            True,
+            segments=[shifted(segment, chunks[0].t_start_ms) for segment in segments],
+        )
+
+    async def attribute(self, pcm: bytes) -> list[SpeakerSegment]:
+        """The utterance's segments with session labels on its own clock; the utterance then joins the context."""
+        separator = (
+            bytes(CONTEXT_SEPARATOR_MS * PCM16_BYTES_PER_MS)
+            if self.context_pcm
+            else b""
+        )
+        joined = self.context_pcm + separator + pcm
+        offset_ms = (len(joined) - len(pcm)) / PCM16_BYTES_PER_MS
+        if not self.context_pcm:
+            utterance_segments, labels = await self.transcribe(pcm), {}
+        else:
+            joined_segments = await self.transcribe(joined)
+            joined_to_session = match_speakers(self.context_segments, joined_segments)
+            joined_utterance_segments = [
+                shifted(segment, -offset_ms)
+                for segment in joined_segments
+                if (segment.start_ms + segment.end_ms) / 2 >= offset_ms
+            ]
+            straddles = any(
+                segment.start_ms < offset_ms - STRADDLE_MS
+                and segment.end_ms > offset_ms + STRADDLE_MS
+                for segment in joined_segments
+            )
+            # note (fweilun): after the context the model may join the utterance's first words to the last context segment, or skip a short utterance; the utterance alone then gives the words, and the joined transcription their speakers.
+            if joined_utterance_segments and not straddles:
+                utterance_segments, labels = (
+                    joined_utterance_segments,
+                    joined_to_session,
+                )
+            else:
+                utterance_segments = await self.transcribe(pcm)
+                joined_on_utterance_clock = [
+                    shifted(segment, -offset_ms) for segment in joined_segments
+                ]
+                labels = {
+                    label: joined_to_session[joined_label]
+                    for label, joined_label in match_speakers(
+                        joined_on_utterance_clock, utterance_segments
+                    ).items()
+                    if joined_label in joined_to_session
+                }
+        for label in dict.fromkeys(segment.speaker for segment in utterance_segments):
+            if label not in labels:
+                self.speaker_count += 1
+                labels[label] = f"S{self.speaker_count:02d}"
+            else:
+                pass
+        segments = [
+            replace(segment, speaker=labels[segment.speaker])
+            for segment in utterance_segments
+        ]
+        cut_bytes = max(
+            len(joined) - int(self.config.context_s * 1000) * PCM16_BYTES_PER_MS, 0
+        )
+        cut_ms = cut_bytes / PCM16_BYTES_PER_MS
+        self.context_pcm = joined[cut_bytes:]
+        self.context_segments = [
+            shifted(segment, -cut_ms)
+            for segment in [
+                *self.context_segments,
+                *(shifted(segment, offset_ms) for segment in segments),
+            ]
+            if segment.end_ms > cut_ms
+        ]
+        return segments
 
     async def close(self) -> None:
         await self.client.aclose()
