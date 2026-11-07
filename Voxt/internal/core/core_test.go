@@ -7,6 +7,18 @@ import (
 	"time"
 )
 
+func TestIsLoopback(t *testing.T) {
+	for host, want := range map[string]bool{
+		"localhost": true, "LocalHost": true, "ollama.localhost": true, "127.0.0.1": true, "127.0.0.2": true,
+		"::1": true, "[::1]": true,
+		"10.0.0.2": false, "192.168.1.5": false, "example.com": false, "localhost.example.com": false, "": false,
+	} {
+		if IsLoopback(host) != want {
+			t.Errorf("IsLoopback(%q) = %v", host, !want)
+		}
+	}
+}
+
 func TestNewID(t *testing.T) {
 	t0 := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
 	seen := map[string]bool{}

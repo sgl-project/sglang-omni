@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
 // TestAboutModels: Settings → About's self-check says whether each kind
@@ -25,19 +26,20 @@ func TestAboutModels(t *testing.T) {
 		return out
 	}
 	a.runSelfCheck()
-	if s := status(); s["speech"] != "fail Its runtime is missing from this copy of Voxt." || !strings.HasPrefix(s["language"], "fail ") {
+	if s := status(); s["speech"] != "fail Its runtime is missing from this copy of Voxt." || !strings.HasPrefix(s["language"], "warn No model set up") {
 		t.Errorf("no runtimes: %v", s)
 	}
 
 	omniLocate = func() (string, error) { return "/x/qwen3_asr_server", nil }
 	llmLocate = func() string { return "/x/voxtnew-llm" }
 	a.runSelfCheck()
-	if s := status(); !strings.HasPrefix(s["speech"], "warn No model installed") || !strings.HasPrefix(s["language"], "warn No model installed") {
+	if s := status(); !strings.HasPrefix(s["speech"], "warn No model installed") || !strings.HasPrefix(s["language"], "warn No model set up") {
 		t.Errorf("no models: %v", s)
 	}
-	seedModels(t, a, models.ASRFast, models.VADSilero, models.LLMTranslate)
+	seedModels(t, a, models.ASRFast, models.VADSilero, models.LLMTranslate) // a retired language model: not used
+	a.updateSettings(func(s *settings.Settings) { s.Providers.LLM = []settings.Provider{{ID: "ollama"}} })
 	a.runSelfCheck()
-	if s := status(); s["speech"] != "pass Fast speech recognition" || s["language"] != "pass Translation model" {
+	if s := status(); s["speech"] != "pass Qwen3-ASR 0.6B (4bit)" || s["language"] != "pass Ollama · qwen3" {
 		t.Errorf("installed: %v", s)
 	}
 

@@ -506,8 +506,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 ### Streaming
 
-Set `"stream": true` and `"response_format": "pcm"` to receive raw PCM audio
-chunks in real time:
+Set `"stream": true` to receive raw audio chunks in real time. `stream_format` defaults to `"audio"`, and `response_format` defaults to `"wav"`. Set `response_format="pcm"` for raw PCM bytes:
 
 ```bash
 curl -N -X POST http://localhost:8000/v1/audio/speech \
@@ -529,6 +528,8 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
 Streaming returns `audio/pcm` 16-bit mono PCM bytes with sample-rate metadata in
 the response headers. See the [Higgs TTS cookbook](../cookbook/higgs_tts.md#streaming)
 for a full Python raw PCM consumer.
+
+Omit `response_format` or set it to `"wav"` for raw WAV streaming with one header followed by PCM chunks. Set `stream_format="sse"` for SSE events, which can omit `stream=true`. Every HTTP mode defaults to WAV; an explicit `response_format` overrides that default.
 
 All three task types (Base/reference-cloning, CustomVoice and VoiceDesign) use
 true incremental codec and vocoder streaming, for both this HTTP endpoint and
@@ -589,7 +590,7 @@ process, since requests bind to its replicas round-robin. Raise
 Intel XPU, CPU and Apple MPS decode synchronously by default. For NPU defaults
 and configuration, see [Ascend NPU baseline](#ascend-npu-baseline).
 To opt in on Intel GPUs, follow the
-[Qwen3-TTS XPU recipe](../get_started/installation_xpu.md#qwen3-tts-text-to-speech-single-xpu).
+[Qwen3-TTS XPU recipe](../other_platforms/installation_xpu.md#qwen3-tts-text-to-speech-single-xpu).
 
 Each follow-up batch sorts the stateful decoder's cohorts, and the rows within
 each, by playback deadline: the nearest cohort launches first and its nearest
@@ -645,7 +646,9 @@ only the first chunk.
 | `repetition_penalty` | `1.05` | Repetition penalty |
 | `max_new_tokens` | Base: twice the slowest natural stop for the target text, at most `2048`. CustomVoice and VoiceDesign: the checkpoint's `generation_config.json` value, `8192` | Maximum number of generated codec tokens (80 ms each). The Base default is `ceil(2 × (1.38 s + 0.39 s × target-text tokens) × 12.5)`: about 5 s for a three-token word, 26 s for 30 tokens, 2048 for long text. Set it for speech deliberately slower than natural. The server lowers any limit to what the context and the KV pool can hold |
 | `seed` | `null` | Random seed for reproducibility |
-| `stream` | `false` | Stream raw PCM audio chunks |
+| `response_format` | `wav` | Explicit values override the default in every mode. HTTP streaming accepts `pcm` or `wav` |
+| `stream` | `false` | Stream raw WAV audio chunks by default; set `response_format="pcm"` for raw PCM |
+| `stream_format` | `audio` | Raw audio bytes by default; explicit `sse` enables SSE events even when `stream` is omitted |
 | `initial_codec_chunk_frames` | ramp `1 -> 2 -> 4` when omitted | First streaming vocoder chunk size in codec frames. An explicit value replaces the ramp's first chunk only. Smaller values lower TTFA but underrun more easily; `0` uses the steady stride from the start |
 | `stream_codec_output` | `true` | Forward codec frames to the vocoder as they are generated. Set `false` to restore whole-utterance decoding for CustomVoice/VoiceDesign |
 | `suppress_bootstrap_silence` | `true` | Withhold the silent bootstrap codec frame's audio from streamed CustomVoice output (validated voice/language pairs only, guarded by a runtime silence check). Set `false` to keep the leading silence |
@@ -671,7 +674,7 @@ CustomVoice generates speech with built-in speakers through the same pipeline. U
 
 Both released checkpoints provide `Serena`, `Vivian`, `Uncle_Fu`, `Ryan`, `Aiden`, `Ono_Anna`, `Sohee`, `Eric`, and `Dylan`. Speaker matching is case-insensitive; an omitted or `default` voice selects `Vivian`. `GET /v1/audio/voices` lists `default` and the served checkpoint's speakers. Unknown speakers or supplied cloning fields return HTTP 400; uploaded reference voices are not used for CustomVoice synthesis.
 
-Both sizes support buffered speech, batch requests, incremental HTTP PCM output, and WebSocket audio output. HTTP streaming requires `stream=true` with `response_format="pcm"`; WebSocket sessions use `stream_audio=true` with `response_format="pcm"`.
+Both sizes support buffered speech, batch requests, incremental HTTP audio output, and WebSocket audio output. HTTP streaming uses `stream=true` and defaults to raw WAV; explicit `response_format="pcm"` selects raw PCM. Set `stream_format="sse"` for SSE events, which default to WAV. WebSocket sessions use `stream_audio=true` with `response_format="pcm"`.
 
 **0.6B instruction compatibility:** SGLang-Omni continues to pass optional `instructions` into the 0.6B prompt, preserving existing behavior. The released 0.6B model does not provide reliable instruction control; omit this field or use 1.7B when style control is needed.
 

@@ -8,9 +8,12 @@ package proto
 type PermissionsResult struct {
 	Microphone    string `json:"microphone"`    // a Perm* state
 	Accessibility bool   `json:"accessibility"` // AXIsProcessTrusted: the event tap, AX reads, posting keys
+	// SpeechRecognition is a Perm* state: macOS's speech recognition
+	// (speech.recognize, System dictation); "" from a helper without it.
+	SpeechRecognition string `json:"speechRecognition,omitempty"`
 }
 
-// Microphone states.
+// Microphone and Speech Recognition states.
 const (
 	PermGranted       = "granted"
 	PermDenied        = "denied"
@@ -18,18 +21,20 @@ const (
 	PermRestricted    = "restricted"
 )
 
-// PermissionsRequestParams asks for one permission: the microphone shows
-// macOS's prompt once (answered when the user chose); accessibility shows
+// PermissionsRequestParams asks for one permission: the microphone and
+// speech recognition show macOS's prompt once (answered when the user
+// chose); accessibility shows
 // the prompt that adds VoxtNew to the list in System Settings (answered
 // at once: the user grants it there).
 type PermissionsRequestParams struct {
-	Permission string `json:"permission"` // PermissionMicrophone | PermissionAccessibility
+	Permission string `json:"permission"` // PermissionMicrophone | PermissionAccessibility | PermissionSpeechRecognition
 }
 
 // Permissions, as in permissions.request and permission_denied's data.
 const (
-	PermissionMicrophone    = "microphone"
-	PermissionAccessibility = "accessibility"
+	PermissionMicrophone        = "microphone"
+	PermissionAccessibility     = "accessibility"
+	PermissionSpeechRecognition = "speechRecognition"
 )
 
 // ---- app.* ----

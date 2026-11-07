@@ -6,7 +6,9 @@ VoxtNew derives from Auralink (https://github.com/hehehai/Auralink) at
 commit 748cf55, by the same author, who licenses that code for VoxtNew
 under the Apache License 2.0: almost all of VoxtNew's Go code, the Swift
 helper, its tests and its documentation started there, and were renamed
-and stripped of Auralink's remote services (docs/architecture.md, §5).
+and stripped of Auralink's remote services (docs/architecture.md, §5);
+its remote language models (the OpenAI-compatible transport, the services'
+presets and the Keychain code) came back in 2.1.
 
 Third-party material
 ====================
@@ -113,9 +115,9 @@ MyGo
   https://sqlite.org, in the public domain).
 
 The Omni native runtime (VoxtNew.app/Contents/Resources/omni)
-  bin/qwen3_asr_server is built from sglang-omni's sglang_omni_mlx/native
-  (this repository, Apache License 2.0) by scripts/build-omni.sh. It
-  carries, linked in or beside it:
+  bin/qwen3_asr_server (and its copy bin/silero_vad_server) is built from
+  sglang-omni's sglang_omni_mlx/native (this repository, Apache License
+  2.0) by scripts/build-omni.sh. It carries, linked in or beside it:
   - MLX 0.32.3 (libmlx.dylib, libjaccl.dylib, mlx.metallib), Copyright
     2023 Apple Inc., MIT (LICENSES/omni/mlx.LICENSE.txt)
   - CivetWeb 1.16, Copyright 2013-2021 the CivetWeb developers, 2004-2013

@@ -2,9 +2,9 @@ package main
 
 // The loaded models' memory on a Mac (VOXTNEW_MAC_E2E=1, the runtimes in
 // VOXTNEW_OMNI_RUNTIME and VOXTNEW_LLM, the models in the model library,
-// models.Hub(), by default ~/Library/Application Support/ActNow/models/hub):
+// models.Hub(), by default ~/Library/Application Support/SGLang Omni/models):
 // the app's own local models load asr.fast, then llm.fast and
-// llm.translate, and the Local models page's measurement (macx.Memory by
+// llm.translate, and the Speech models page's measurement (macx.Memory by
 // pid) is compared with what voxtnew-llm says of itself. It logs MEASURE
 // lines:
 //
@@ -61,7 +61,7 @@ func TestMacModelMemory(t *testing.T) {
 	}
 
 	for _, id := range []string{models.LLMFast, models.LLMTranslate} {
-		chat, _, err := a.local.LLM(ctx, id)
+		chat, err := a.openLLM(ctx, id, a.models.Dir(id))
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -11,7 +11,7 @@ It is a subset of AudioSmith's engine protocol 2 (`docs/protocol-v2.md` there): 
 - The app starts the helper with no arguments; its working directory is the executable's. It is `VoxtNew.app/Contents/Resources/helper/voxtnew-helper`, or `$VOXTNEW_HELPER` (development: README, "Signing during development").
 - One JSON message per line (UTF-8, `\n`), at most 4 MiB (`proto.MaxLine`); app → helper on stdin, helper → app on stdout. stderr is free-form text: the supervisor writes it to `~/Library/Logs/VoxtNew/helper.log` and to the logs panel (source `helper`).
 - The helper exits when stdin closes, on `helper.shutdown` or on SIGTERM, SIGINT or SIGHUP. Each exit first lets a paste put the old clipboard back (at most 500 ms, then at once), then undoes its output mutes, then cancels the recordings.
-- macOS checks the helper's permissions (Microphone, Accessibility) against VoxtNew.app, its responsible process: the prompts and System Settings name VoxtNew, and a grant reaches the running helper (the event tap installs within 2 s, no restart).
+- macOS checks the helper's permissions (Microphone, Accessibility, Speech Recognition) against VoxtNew.app, its responsible process: the prompts and System Settings name VoxtNew, and a grant reaches the running helper (the event tap installs within 2 s, no restart).
 
 ## 2. Messages
 
@@ -33,7 +33,7 @@ Errors are `{"code": "…", "message": "…", "data"?: {…}}` with a string cod
 | `protocol_mismatch` | hello with another protocol | `{"supported":[1]}` |
 | `busy` | a recording runs already | |
 | `cancelled` | the job was cancelled | |
-| `permission_denied` | macOS refused | `{"permission":"microphone"\|"accessibility"}` |
+| `permission_denied` | macOS refused | `{"permission":"microphone"\|"accessibility"\|"speechRecognition"}` |
 | `device_unavailable` | no input started, or none gave audio | `{"device":"…"}` |
 | `unsupported` | the helper cannot do it on this Mac | `{"capability":"…"}` |
 | `timeout` | the helper gave up waiting on macOS | |
@@ -43,7 +43,7 @@ Errors are `{"code": "…", "message": "…", "data"?: {…}}` with a string cod
 
 - `helper.hello` comes first; until it is answered every other request fails with `not_initialized`. The app refuses a helper whose `protocol` is not 1 (it is not restarted: rebuild it).
 - Requests are answered in any order; each control request runs on its own, so an app slow to answer Accessibility does not hold up `capture.stop`.
-- **Jobs** (`capture.start`) send notifications naming them in `job` (`capture.started`, `capture.level`, `capture.pcm`, `capture.restarted`, `log`) before their response; `job.cancel` makes them answer `cancelled`. `capture.stop` and `job.cancel` are answered after the job they end, so every frame has arrived when `capture.stop` answers.
+- **Jobs** (`capture.start`, `speech.recognize`) send notifications naming them in `job` (`capture.started`, `capture.level`, `capture.pcm`, `capture.restarted`; `speech.started`, `speech.partial`; `log`) before their response; `job.cancel` makes them answer `cancelled`. `capture.stop` and `job.cancel` are answered after the job they end, so every frame has arrived when `capture.stop` answers.
 - Notifications without `job` belong to no request: `hotkey.event`, `hotkey.state`, `app.activated`, `output.changed`, `output.released` (and `log`). The supervisor hands them to `Config.OnNotify`; a notification naming a job that already answered is dropped.
 - If the helper exits, its calls fail (`core.ErrHelper`) and the supervisor restarts it after 1 s, 2 s, 4 s… (at most 3 times in 10 minutes).
 - **Timing.** The supervisor times each call's phases (`helper.Trace`: waiting for a ready helper, writing, the helper's answer, waking the caller) and logs a control request slower than 500 ms with them; the helper logs its own side of a request slower than 250 ms on stderr (queued, ran, and the time it waited for its main thread, where the clipboard and NSWorkspace run). The spikes saw 1–2 s round trips while the helper worked for tens of milliseconds; the two lines tell where such a call waited.
@@ -57,8 +57,8 @@ Errors are `{"code": "…", "message": "…", "data"?: {…}}` with a string cod
 | `helper.hello` | `{protocol, app, logLevel?}` → `{protocol, version, pid, methods, device{name, os}}` |
 | `helper.shutdown` | → `{}`, then exit 0 (a paste's clipboard restore is done first, within 500 ms; a recording is cancelled) |
 | `job.cancel` | `{job}` → `{cancelled}` |
-| `permissions.status` | → `{microphone: "granted"\|"denied"\|"notDetermined"\|"restricted", accessibility}` |
-| `permissions.request` | `{permission: "microphone"\|"accessibility"}` → as `permissions.status` |
+| `permissions.status` | → `{microphone: "granted"\|"denied"\|"notDetermined"\|"restricted", accessibility, speechRecognition?}` (`speechRecognition` as `microphone`) |
+| `permissions.request` | `{permission: "microphone"\|"accessibility"\|"speechRecognition"}` → as `permissions.status` |
 | `capture.devices` | → `{devices: [{id, name, channels, sampleRate, default, transport?}]}` |
 | `capture.start` **job** | `{devices?, sampleRate?, frameMs?, levelHz?, maxSeconds?}` → `{device, reason, frames, samples, seconds, restarts, peak, firstFrameMs?, cpuSeconds}` |
 | `capture.stop` | `{job}` → `{stopped}` |
@@ -76,6 +76,8 @@ Errors are `{"code": "…", "message": "…", "data"?: {…}}` with a string cod
 | `output.mute` | `{device{id, uid, name?}, journal?}` → `{took, state}` |
 | `output.release` | `{device, unmute?}` → `{unmuted}` |
 | `output.recover` | `{journal}` → `{restored?: [device]}` |
+| `speech.recognize` **job** | `{lang?, sampleRate?, hints?}` → `{text}` |
+| `speech.audio` | `{job, data?, end?}` → `{}` |
 
 ### Notifications
 
@@ -90,6 +92,8 @@ Errors are `{"code": "…", "message": "…", "data"?: {…}}` with a string cod
 | `app.activated` | `{pid, bundleId?, name?}` |
 | `output.changed` | as `output.watch`'s result, when the default output device or its mute changed (while the watch is on) |
 | `output.released` | `{devices?, reason: "sleep"}`: the helper gave its claims back itself |
+| `speech.started` | `{job, locale}`: the recognizer runs (`locale` is its own, `zh-CN`) |
+| `speech.partial` | `{job, text}`: the text heard so far, the whole hypothesis |
 | `log` | `{level, message, job?}` |
 
 ### Notes
@@ -112,12 +116,15 @@ Errors are `{"code": "…", "message": "…", "data"?: {…}}` with a string cod
 
 **output.\*.** The system's output muted while a session records (Settings → Audio → Mute system audio while recording; `internal/outmute` decides, docs/behavior.md §9.3; ported from Auralink). Only `kAudioDevicePropertyMute` (output scope) of the default output device changes: nothing of the system's sound is read, so no permission is needed. A device is found by its `uid` (Core Audio's `DeviceUID`): its `id` is reused by another device after it is unplugged and changes when it is reconnected; `name` is for the logs of the helper only. `output.watch {on: true}` answers the default output and its mute (`muted` absent: it has none to read, or the device is gone; `settable`: the helper can set it) and from then on sends `output.changed` when the default device or its mute changes (Core Audio's listeners, read 20 ms after the first call, sent only when the state differs from the last one sent); `on: false` stops. `output.mute` mutes the device and takes a **claim** on it, unless it is muted already (`took: false`: a mute the user made, or another app's, is never claimed, so never undone); `unsupported` when it has no mute the helper can set, `device_unavailable` when no device has the UID now. The claim is written to `<journal>/<pid>.json` (`{"pid", "devices"}`) before the mute; a journal that cannot be written mutes nothing (`internal`). `output.release` gives a claim back, with `unmute` unmuting the device if it is still muted; without a claim on it the helper does nothing, so the app may release a mute whose answer it never got. The helper undoes its claims (unmuting each device still muted) and removes its journal when stdin closes, on `helper.shutdown`, on SIGTERM, SIGINT or SIGHUP, and before the Mac sleeps (`NSWorkspace.willSleepNotification`: it does not wait for the app, and sends `output.released`). `output.recover` undoes the journals of helpers that are gone (killed by the supervisor's restart, crashed, or killed with the app): a file whose `pid` is still a running process is left alone (another VoxtNew, a development build); only `<number>.json` files count; each device still muted is unmuted (`restored`), and the files are removed. The app sends it after each `helper.hello`, before any `output.mute`, with the journal in `~/Library/Caches/VoxtNew/output-mute` (MyGo's cache directory). A helper without these methods (not in hello's `methods`) only means the output is never muted, so adding them kept protocol 1. Rules and journal are the same in the Swift helper (`MuteClaims`, `VoxtNewHelperKit/OutputMute.swift`) and the fake (`helpertest/output.go`).
 
+**speech.\*.** System dictation (`internal/dictation`; Voxt 1.x's Direct Dictation): macOS's own speech recognition (`SFSpeechAudioBufferRecognitionRequest`, `requiresOnDeviceRecognition`: the audio never leaves the Mac), of the audio the app sends, so that it recognises a session's recording as it comes and a kept one again (Retry). `speech.recognize` asks for Speech Recognition when macOS has not asked yet (the job waits for the answer; `permission_denied` when it is not allowed), picks the recognizer for `lang` — the tag itself among `SFSpeechRecognizer.supportedLocales()`, else its language in the user's region (unless the tag names a script), else in the language's likely region, else the first of its language (`speechLocale`, VoxtNewHelperKit, `SpeechLocaleTests`); no `lang` is `SFSpeechRecognizer()`, the Mac's dictation language — and fails `unsupported` (`{"capability":"onDeviceSpeech"}`) when there is none or it has no on-device model. Then `speech.started`, and `speech.partial` as the recognizer hears (dictation task hint, punctuation added, `hints` as contextual strings). `speech.audio` appends mono PCM16 at `sampleRate` (16000) to the job, in order: the helper handles it on its reader thread, not in a task of its own; `end` ends the audio, and the job answers `{text}` once the recognizer gives its final result (`""` for "no speech detected"); another recognizer error is `internal`. A `speech.audio` for a job that is not running is `bad_request`. `job.cancel` and the helper's exit cancel the recognizer. Speech Recognition is the app's (`NSSpeechRecognitionUsageDescription` in mygo.json, and the helper's own Info.plist for a helper run from a terminal). A helper without these methods (not in hello's `methods`) only means no System dictation, so adding them kept protocol 1; the fake helper lists them only with its `speech` option.
+
 ## 5. Testing
 
 - `go test ./internal/helper/proto`: every fixture line decodes strictly with the Go types and encodes back to the same JSON; the sequencing rules hold (one response per request, a job's notifications before its response and after `capture.started`, frames without gaps, the result counting them); every method has a fixture; the handshake lists every request.
 - `cd helper && swift test` (on a Mac): every fixture line decodes with the Swift types and encodes back to the same JSON; the hotkey recognizer and the PCM framer.
 - `VOXTNEW_MAC_E2E=1 go test -run TestMac -v .` (on a Mac; `scripts/mac-e2e.sh`): the real supervisor and the real helper — its read-only methods, the file input above against the speech sample, and a whole session over the fake local models (`TestMacE2ESessionLocal`; the real models: `TestMacE2EOmni`, `scripts/mac-regress.sh`) — without a window, a key, a tap or the clipboard (manual-test.md, "自动真机测试（无界面）").
 - `go test ./internal/outmute`: the mute's rules over a helper in process (`helpertest.OutputHelper`), and the real supervisor against the fake helper process: the app going away (stdin closed: the helper unmutes), the helper crashing right after a mute (`crash-mute`: the next one recovers its journal), both dying, the output changing (`out-switch=`), the user unmuting (`out-unmute=`), devices without a mute (`out-default=`), an older helper (`no-output`). `cd helper && swift test` runs the same rules against a pretend Core Audio (`OutputMuteTests`). `VOXTNEW_MAC_E2E=1 VOXTNEW_MAC_OUTPUT=<UID> go test -run TestMacHelperOutputMute .` (opt-in, on a Mac): the real helper and Core Audio, each mute under a second (manual-test.md §10).
+- `go test ./internal/dictation`: System dictation over the real supervisor and the fake helper (`speech=`, `speech-perm=`): partials and the final text, a whole recording (Retry), a language without an on-device model, Speech Recognition not allowed; `TestSessionSystemDictation` (the app's tests) a whole Transcribe session over it.
 - `go test ./internal/helper`: the supervisor against `helpertest`, the fake helper the test binary becomes (`VOXTNEW_FAKE_HELPER`): handshake, capture with PCM frames (a tone, or a WAV played back), cancel, a stuck cancel, crash and restart, protocol mismatch, an app updated on disk (no helper started), missing executable, permissions, hotkey events and scripted notifications, text I/O, call traces, fixture replay.
 
 ## 6. Differences from the spikes' draft
@@ -143,4 +150,5 @@ Errors are `{"code": "…", "message": "…", "data"?: {…}}` with a string cod
 | — | `app.list` (M5) | App enhancement picks member apps from the running and installed ones |
 | — | `app.icons` (10-15) | The lists that name apps show their icons; the app has no AppKit of its own (no cgo), so the helper draws them |
 | — | `app.configure {manualAccessibility}`; `browser.url`'s `retried` | Chromium browsers build a page's tree only when asked (Arc read none); the browser list is the app's (the user adds some) |
+| — | `speech.recognize`, `speech.audio`; `speech.started`, `speech.partial`; `permissions.*`'s `speechRecognition` (11-06) | System dictation, Voxt 1.x's Direct Dictation: the helper runs the recognizer, the app decides the language and sends the audio it recorded |
 | — | `output.watch`, `output.mute`, `output.release`, `output.recover`; `output.changed`, `output.released` (Auralink's, 10-17) | The output muted while recording (Voxt's `SystemAudioMuteController`), with the policy in Go and claims the helper keeps in a journal, so that no crash leaves the output muted |

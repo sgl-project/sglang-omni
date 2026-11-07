@@ -1,7 +1,7 @@
 package main
 
 // How long the runtimes keep a model loaded unused (settings.Models,
-// the Local models page's Advanced section): Automatic leaves each its
+// the Speech models page's Advanced section): Automatic leaves each its
 // own idle time (omni's servers 10 min, voxtnew-llm 5 min); the other
 // choices set one for both, or keep them until VoxtNew quits. A change
 // applies to the running runtimes at once (their idle timers start
@@ -69,7 +69,7 @@ func keepLabel(v string) string {
 	return keepLabels()[i]
 }
 
-// modelsAdvanced is the Local models page's Advanced section, folded
+// modelsAdvanced is the Speech models page's Advanced section, folded
 // until opened: how long models stay loaded.
 func (a *app) modelsAdvanced(c *ui.Context) {
 	t := c.Theme()

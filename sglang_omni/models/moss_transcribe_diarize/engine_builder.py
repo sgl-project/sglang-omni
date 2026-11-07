@@ -13,6 +13,8 @@ from sglang.srt.speculative.base_spec_worker import BaseSpecWorker
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from transformers import PreTrainedTokenizerBase, ProcessorMixin
 
+from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.moss_transcribe_diarize import CAPABILITIES, request_builders
 from sglang_omni.models.moss_transcribe_diarize.encoder_service import (
     BatchedAudioEncoderService,
@@ -34,6 +36,7 @@ from sglang_omni.scheduling.generation_batch_policy import (
     build_default_prefill_cuda_graph_bs,
     get_prefill_cuda_graph_backend,
 )
+from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 
 if TYPE_CHECKING:
 
@@ -46,6 +49,15 @@ else:
 # Request slots baked into each full prefill graph; larger prefill batches
 # replay eagerly, so this covers the coalesced admission bursts of a C32 load.
 FULL_PREFILL_MAX_REQUESTS = 16
+
+
+class MossTranscribeDiarizeModelRunner(ModelRunner[MossTranscribeDiarizeRequestData]):
+    """The shared AR runner, opted into speculative overlap.
+
+    Audio embeddings enter only at prefill, so a decode round reads nothing but the tokens the previous round left on the device.
+    """
+
+    supports_speculative_async_decode: bool = True
 
 
 class MossTranscribeDiarizeEngineBuilder(
@@ -69,7 +81,7 @@ class MossTranscribeDiarizeEngineBuilder(
         encoder_cache_size_bytes: int,
         enable_torch_compile: bool | None,
         torch_compile_max_bs: int,
-        enable_async_decode: bool,
+        enable_async_decode: bool | None,
         async_decode_min_batch_size: int,
         prefill_coalesce_requests: int,
         prefill_coalesce_wait_ms: float,
@@ -141,9 +153,9 @@ class MossTranscribeDiarizeEngineBuilder(
         )
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
-        # note (Yuhao): cached-prefix extends need exact one- and two-token buckets below the shared four-token floor.
+        # note (Yuhao): cached-prefix extends also need an exact two-token bucket.
         prefill_cuda_graph_bs = build_default_prefill_cuda_graph_bs(
-            4096, extra_token_buckets=(1, 2)
+            4096, extra_token_buckets=(2,)
         )
         return {
             "max_running_requests": self.max_running_requests,
@@ -205,6 +217,8 @@ class MossTranscribeDiarizeEngineBuilder(
                 raise ValueError(
                     "speculative_draft_model_path needs a speculative_algorithm"
                 )
+            elif self.enable_async_decode is None:
+                self.enable_async_decode = True
             else:
                 pass
         elif not speculative_algorithm.is_dflash():
@@ -233,9 +247,14 @@ class MossTranscribeDiarizeEngineBuilder(
             overrides["speculative_draft_model_path"] = self.draft_checkpoint.name
             overrides["speculative_draft_model_revision"] = None
             self.speculative_worker_class = ReducedVocabularyDFlashWorker
-            # note (wilsonzheng0327): async decode under a draft means speculative
-            # overlap, which this runner has not opted into.
-            self.enable_async_decode = False
+            # note (wilsonzheng0327): async decode under a draft means speculative overlap, so it stays off unless the operator asks for it.
+            if self.enable_async_decode is None:
+                self.enable_async_decode = False
+            else:
+                pass
+            overrides["disable_overlap_schedule"] = not self.enable_async_decode
+            # note (wilsonzheng0327): on SGLang 0.5.23 the compiled path makes each DFlash verify step about four times slower, while decode without a draft still gains from it.
+            overrides["enable_torch_compile"] = False
 
     def customize_server_args(self, server_args: ServerArgs) -> None:
         # note (Dayuxiaoshui): adapters must use the context length finalized by
@@ -246,10 +265,19 @@ class MossTranscribeDiarizeEngineBuilder(
         if self.speculative_worker_class is None:
             return {}
         else:
+            # note (wilsonzheng0327): the worker is built for overlap or for the synchronous verify loop, so the choice must reach it at construction.
             return {
                 "supports_speculative_decoding": True,
                 "speculative_worker_class": self.speculative_worker_class,
+                "enable_async_decode": bool(self.enable_async_decode),
             }
+
+    def make_model_runner(
+        self,
+        model_worker: ModelWorker,
+        output_proc: SGLangOutputProcessor,
+    ) -> ModelRunner[MossTranscribeDiarizeRequestData]:
+        return MossTranscribeDiarizeModelRunner(model_worker, output_proc)
 
     def setup_model_resources(
         self,
@@ -318,7 +346,12 @@ class MossTranscribeDiarizeEngineBuilder(
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
             # The scheduler otherwise idles on every prefill's sampled-token
             # copy while the next decode could already launch.
-            "async_prefill": self.enable_async_decode and self.full_prefill_enabled,
+            # note (wilsonzheng0327): the speculative overlap loop never takes the async prefill path, so it stays a no-draft setting.
+            "async_prefill": (
+                self.enable_async_decode
+                and self.full_prefill_enabled
+                and self.speculative_worker_class is None
+            ),
             "prefill_coalesce_requests": self.prefill_coalesce_requests,
             "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
             "prefill_coalesce_when_idle": self.prefill_coalesce_when_idle,

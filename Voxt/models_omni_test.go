@@ -75,7 +75,7 @@ func TestSessionOmni(t *testing.T) {
 	}
 
 	// Deleting the model stops its server first.
-	if _, err := a.local.(*local.Library).Delete(context.Background(), models.ASRFast, fammodels.ThisApp); err != nil {
+	if _, err := a.localLib.Delete(context.Background(), models.ASRFast, fammodels.ThisApp); err != nil {
 		t.Fatal(err)
 	}
 	waitUnloaded(t, events, models.ASRFast)
