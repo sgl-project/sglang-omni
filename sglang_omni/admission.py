@@ -54,3 +54,13 @@ class ContextExhaustedError(ValueError):
     @classmethod
     def matches(cls, exc: BaseException) -> bool:
         return isinstance(exc, cls) or str(exc).startswith(f"{cls.CODE}:")
+
+
+class KVCapacityExhaustedError(ValueError):
+    """A session unit the shared KV pool has no room for: the server is overloaded, the session is not at fault."""
+
+    CODE = "kv_capacity_exhausted"
+
+    @classmethod
+    def matches(cls, exc: BaseException) -> bool:
+        return isinstance(exc, cls) or str(exc).startswith(f"{cls.CODE}:")

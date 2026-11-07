@@ -10,7 +10,7 @@ from functools import partial
 
 import numpy as np
 
-from sglang_omni.admission import ContextExhaustedError
+from sglang_omni.admission import ContextExhaustedError, KVCapacityExhaustedError
 from sglang_omni.client.client import Client
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import (
@@ -368,6 +368,8 @@ class SessionBridge(InteractionAdapter):
         except Exception as exc:
             if ContextExhaustedError.matches(exc):
                 code = ContextExhaustedError.CODE
+            elif KVCapacityExhaustedError.matches(exc):
+                code = KVCapacityExhaustedError.CODE
             else:
                 code = failure_code(exc)
             if code == CLOSE_REASON_INTERNAL:

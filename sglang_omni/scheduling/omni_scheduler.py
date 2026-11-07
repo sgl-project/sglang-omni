@@ -70,6 +70,7 @@ from typing_extensions import TypedDict
 from sglang_omni.admission import (
     AdminDroppedRequestError,
     ContextExhaustedError,
+    KVCapacityExhaustedError,
     QueueFullError,
 )
 from sglang_omni.model_runner.base import ModelRunner, PendingStep
@@ -1797,7 +1798,12 @@ class OmniScheduler(Generic[RequestDataT]):
             assert bridge is not None
             capacity_message = bridge.check_session_capacity(req_id)
             if capacity_message is not None:
-                self.emit_request_error(req_id, ValueError(capacity_message))
+                self.emit_request_error(
+                    req_id,
+                    KVCapacityExhaustedError(
+                        f"{KVCapacityExhaustedError.CODE}: {capacity_message}"
+                    ),
+                )
                 bridge.release_append_unit(req_id)
                 self.abort(req_id)
                 return
