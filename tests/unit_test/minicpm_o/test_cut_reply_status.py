@@ -16,6 +16,8 @@ from sglang_omni.serve.realtime.output import ResponseFinished
 IDENTITY = SessionIdentity("session", 0)
 HIDDEN_SIZE = 4
 CODEC_VOCAB_SIZE = 16
+# note (0xtoward): The checkpoint's talker request limit; these few units never roll the history over.
+TALKER_MAX_REQUEST_LENGTH = 4095
 
 
 class Unit(NamedTuple):
@@ -60,7 +62,9 @@ def talker_model() -> SimpleNamespace:
 
 
 def run_talker(units: list[Unit]) -> list[Spoken]:
-    adapter = TalkerAdapter(talker_model())
+    adapter = TalkerAdapter(
+        talker_model(), max_request_length=TALKER_MAX_REQUEST_LENGTH
+    )
     adapter.open(IDENTITY, None)
     spoken = []
     for unit in units:
