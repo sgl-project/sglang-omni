@@ -39,14 +39,17 @@ env:
 # Invoked by omni-ci.yaml. Each job runs a fixed Full-Duplex-Bench v1.0 and v1.5
 # selection on one interaction strategy, judges it with Qwen3.8-27B and gates the
 # result on that strategy's own calibrated baseline. The jobs share the PR home's
-# FDB assets, so they run one after another; a failed or skipped job does not
-# skip the next.
-# DAG: full-duplex -> turn-based -> cascaded
+# FDB assets, so one per-run concurrency group serializes them. Strategy results
+# are independent, and queued execution order is unspecified.
 
 jobs:
   full-duplex:
     name: Full-Duplex-Bench - full duplex (MiniCPM-o)
     if: inputs.run_full_duplex
+    concurrency: &fdb_serial
+      group: omni-fdb-${{ github.run_id }}
+      cancel-in-progress: false
+      queue: max
     runs-on: [self-hosted, h100]
     timeout-minutes: 45
     container:
@@ -89,13 +92,13 @@ jobs:
           artifact-search-root: ${{ env.OMNI_CI_HOME }}/fdb/runs
           artifact-path-globs: |
             */RESULTS.md
-          artifact-upload-name: fdb-full-duplex-results
+          artifact-upload-name: fdb-full-duplex-results-attempt-${{ github.run_attempt }}
           artifact-upload-path: ${{ env.OMNI_CI_HOME }}/fdb/runs/ci-minicpmo/RESULTS.md
 
   turn-based:
     name: Full-Duplex-Bench - turn based (Qwen3-Omni)
-    needs: full-duplex
-    if: always() && !cancelled() && inputs.run_turn_based
+    if: inputs.run_turn_based
+    concurrency: *fdb_serial
     runs-on: [self-hosted, h100]
     timeout-minutes: 45
     # The engine runs one server on two GPUs and reads them from
@@ -142,13 +145,13 @@ jobs:
           artifact-search-root: ${{ env.OMNI_CI_HOME }}/fdb/runs
           artifact-path-globs: |
             */RESULTS.md
-          artifact-upload-name: fdb-turn-based-results
+          artifact-upload-name: fdb-turn-based-results-attempt-${{ github.run_attempt }}
           artifact-upload-path: ${{ env.OMNI_CI_HOME }}/fdb/runs/ci-qwen3-omni/RESULTS.md
 
   cascaded:
     name: Full-Duplex-Bench - cascaded (Qwen3.8-27B)
-    needs: [full-duplex, turn-based]
-    if: always() && !cancelled() && inputs.run_cascaded
+    if: inputs.run_cascaded
+    concurrency: *fdb_serial
     runs-on: [self-hosted, h100]
     timeout-minutes: 45
     # The engine runs one server on two GPUs and reads them from
@@ -195,5 +198,5 @@ jobs:
           artifact-search-root: ${{ env.OMNI_CI_HOME }}/fdb/runs
           artifact-path-globs: |
             */RESULTS.md
-          artifact-upload-name: fdb-cascaded-results
+          artifact-upload-name: fdb-cascaded-results-attempt-${{ github.run_attempt }}
           artifact-upload-path: ${{ env.OMNI_CI_HOME }}/fdb/runs/ci-cascade/RESULTS.md

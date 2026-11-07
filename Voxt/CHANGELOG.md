@@ -4,6 +4,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-11-07
+
 ### Added
 
 - **Remote language models** (the new Language models page): Transcribe's clean-up, Translate and Rewrite use a language model of a service you set up, over its OpenAI-compatible API: OpenAI, Anthropic, Google Gemini, DeepSeek, Qwen (Alibaba Cloud), Kimi, GLM, Doubao (Volcengine), MiniMax, StepFun, Xiaomi MiMo, xAI, OpenRouter, any other compatible server (Custom), or one on this Mac (Ollama, LM Studio, oMLX), so that the text stays here. Each service takes an API key, an address and a model, with Test connection; the key is kept in the macOS Keychain only, never in Voxt's settings or logs. Every feature's language model menu lists the services set up; Automatic uses the first one, and each card says which features use it. The page groups the servers that run on this Mac (free) apart from the online services. Only the recognised or selected text is sent, never audio.
