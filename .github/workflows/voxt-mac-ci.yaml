@@ -96,7 +96,7 @@ jobs:
       - name: Build the runtime and the stub server
         run: |
           sglang_omni_mlx/native/scripts/build_runtime.sh "$RUNNER_TEMP/runtime" "$RUNNER_TEMP/runtime-build"
-          "$RUNNER_TEMP/runtime-build/venv/bin/cmake" --build "$RUNNER_TEMP/runtime-build/cmake" --target stub_server
+          "$RUNNER_TEMP/runtime-build/venv/bin/cmake" --build "$RUNNER_TEMP/runtime-build/cmake" --target stub_server kv_cache_test
 
       - name: Set up the test Python
         run: |

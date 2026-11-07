@@ -4,17 +4,20 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <limits>
+#include <stdexcept>
 
 namespace qwen3_asr {
 
 namespace mx = mlx::core;
 
-namespace {
-
-constexpr int kKvCacheStepTokens = 256;
-
-} // namespace
+KVCache::KVCache(int step_tokens) : step_tokens_(step_tokens) {
+  if (step_tokens <= 0) {
+    throw std::invalid_argument("KV cache step_tokens must be positive");
+  } else {
+  }
+}
 
 std::vector<mx::array> KVCache::Arrays() const {
   if (keys_.has_value()) {
@@ -45,13 +48,23 @@ Qwen3DecoderConfig::FromJson(const nlohmann::json &text_config) {
 std::pair<mx::array, mx::array>
 KVCache::UpdateAndFetch(const mx::array &keys, const mx::array &values) {
   const int new_token_count = keys.shape(2);
+  if (new_token_count > std::numeric_limits<int>::max() - offset_) {
+    throw std::overflow_error("KV cache token count overflow");
+  } else {
+  }
   const auto positions = [](const mx::array &heads, int token_count) {
     return mx::Shape{heads.shape(0), heads.shape(1), token_count,
                      heads.shape(3)};
   };
   if (!keys_.has_value() || offset_ + new_token_count > keys_->shape(2)) {
-    const int grown_token_count = (new_token_count + kKvCacheStepTokens - 1) /
-                                  kKvCacheStepTokens * kKvCacheStepTokens;
+    const int64_t rounded_tokens =
+        (static_cast<int64_t>(new_token_count) + step_tokens_ - 1) /
+        step_tokens_ * step_tokens_;
+    if (rounded_tokens > std::numeric_limits<int>::max() - offset_) {
+      throw std::overflow_error("KV cache capacity overflow");
+    } else {
+    }
+    const int grown_token_count = static_cast<int>(rounded_tokens);
     const mx::array extra_keys =
         mx::zeros(positions(keys, grown_token_count), keys.dtype());
     const mx::array extra_values =
@@ -281,6 +294,10 @@ mx::array Qwen3Decoder::Logits(const mx::array &hidden_states) const {
 
 std::vector<KVCache> Qwen3Decoder::NewCaches() const {
   return std::vector<KVCache>(config_.num_hidden_layers);
+}
+
+std::vector<KVCache> Qwen3Decoder::NewCaches(int step_tokens) const {
+  return std::vector<KVCache>(config_.num_hidden_layers, KVCache(step_tokens));
 }
 
 } // namespace qwen3_asr
