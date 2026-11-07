@@ -35,6 +35,27 @@ DEFAULT_REFERENCE_SAMPLING_FALLBACK: ReferenceSamplingFallback = "argmax"
 DEFAULT_TOWER_FUSED_LAYERS = True
 DEFAULT_ENABLE_ASYNC_DECODE = False
 DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE = 1
+# fixed: the engine's prefill_decode_interval decode steps between prefills. slo: the longest
+# interval the first-audio SLO leaves, but never shorter than max_stall needs (prefill_cadence).
+# longest: always longest_interval, so only the wait cap bounds first audio; the ablation that
+# shows whether the interval the SLOs compute does anything the cap does not already do.
+# latency: between the same two bounds, the interval with the shortest modelled wall time per
+# request, which is what a fixed concurrency rewards and what either bound alone misses.
+PrefillIntervalPolicy = Literal["fixed", "slo", "longest", "latency"]
+DEFAULT_PREFILL_INTERVAL_POLICY: PrefillIntervalPolicy = "fixed"
+DEFAULT_PREFILL_LONGEST_INTERVAL = 64
+DEFAULT_FIRST_AUDIO_SLO_MS = 500
+DEFAULT_MAX_STALL_MS = 100
+DEFAULT_CONTINUITY_MARGIN_MS = 8
+DEFAULT_VOCODER_MARGIN_MS = 30
+DEFAULT_RELEASE_MIN_ADMIT = 1
+# The latency policy's two knobs: the share of the stall budget held back for the spread between
+# the modelled worst stall and a measured percentile, and the window the request rate is read over.
+DEFAULT_CONTINUITY_MARGIN_SHARE = 0.35
+DEFAULT_RATE_WINDOW_S = 4.0
+# A timing run that measures the engine alone: the vocoder keeps the window schedule and returns
+# silence of each window's length instead of decoding it.
+DEFAULT_SILENT_DECODE = False
 # The codec of the public S2-Pro release, pinned to an immutable commit.
 DEFAULT_CODEC_PATH = "fishaudio/s2-pro@1de9996b6be38b745688de084d87a5633f714e4e"
 PREPROCESSING_TOTAL_RESERVE_BYTES = "6GiB"
@@ -80,6 +101,21 @@ class Drama3EngineFactoryArgs(FactoryArgs):
     async_decode_min_batch_size: int = Field(
         default=DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE, ge=1
     )
+    prefill_interval_policy: PrefillIntervalPolicy = DEFAULT_PREFILL_INTERVAL_POLICY
+    prefill_longest_interval: int = Field(
+        default=DEFAULT_PREFILL_LONGEST_INTERVAL, ge=1
+    )
+    prefill_first_audio_slo_ms: int = Field(default=DEFAULT_FIRST_AUDIO_SLO_MS, gt=0)
+    prefill_max_stall_ms: int = Field(default=DEFAULT_MAX_STALL_MS, ge=0)
+    prefill_continuity_margin_ms: int = Field(
+        default=DEFAULT_CONTINUITY_MARGIN_MS, ge=0
+    )
+    prefill_vocoder_margin_ms: int = Field(default=DEFAULT_VOCODER_MARGIN_MS, ge=0)
+    prefill_release_min_admit: int = Field(default=DEFAULT_RELEASE_MIN_ADMIT, ge=0)
+    prefill_continuity_margin_share: float = Field(
+        default=DEFAULT_CONTINUITY_MARGIN_SHARE, ge=0.0, lt=1.0
+    )
+    prefill_rate_window_s: float = Field(default=DEFAULT_RATE_WINDOW_S, gt=0)
 
 
 class Drama3EngineStageConfig(EngineStageConfig):
@@ -101,6 +137,7 @@ class Drama3VocoderFactoryArgs(FactoryArgs):
     max_batch_wait_ms: int = Field(default=2, ge=0)
     window_cuda_graphs: bool = True
     decode_dtype: Literal["float32", "float16"] = "float16"
+    silent_decode: bool = DEFAULT_SILENT_DECODE
 
 
 class Drama3VocoderStageConfig(StageConfig):
