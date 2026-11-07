@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import uuid
 from collections import deque
 from collections.abc import Awaitable, Mapping
+from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
@@ -22,6 +24,7 @@ from sglang_omni.client.audio import (
     encode_pcm,
     select_audio_delta,
 )
+from sglang_omni.sampling.seed import new_random_sampling_seed
 from sglang_omni.serve.protocol import CreateSpeechRequest, SpeechStreamSessionConfig
 from sglang_omni.serve.speech_errors import (
     SpeechAPIError,
@@ -96,6 +99,7 @@ class SpeechWebSocketSession:
         self.buffered_receive_messages: deque[Message] = deque()
         self.buffered_receive_message_bytes = 0
         self.config_prepared_request: PreparedSpeechRequest | None = None
+        self.previous_reference_descriptors: list[dict[str, Any]] | None = None
 
     async def run(self) -> None:
         try:
@@ -305,6 +309,10 @@ class SpeechWebSocketSession:
         }
         self.config_prepared_request = prepared
         config = config.model_copy(update=prepared_updates)
+        if config.seed is None:
+            config.seed = new_random_sampling_seed()
+        else:
+            pass
         return config
 
     async def generate_sentence(self, sentence: str) -> None:
@@ -380,7 +388,7 @@ class SpeechWebSocketSession:
         gen_req = self.speech_service.build_generate_request(
             request,
             validate=False,
-            reference_descriptors=self.config_reference_descriptors(),
+            reference_descriptors=self.current_reference_descriptors(),
             uploaded_voice=self.config_uploaded_voice(),
         )
         emitted_samples = 0
@@ -444,7 +452,7 @@ class SpeechWebSocketSession:
         gen_req = self.speech_service.build_generate_request(
             request,
             validate=False,
-            reference_descriptors=self.config_reference_descriptors(),
+            reference_descriptors=self.current_reference_descriptors(),
             uploaded_voice=self.config_uploaded_voice(),
         )
         result = await self.client.speech(
@@ -465,6 +473,10 @@ class SpeechWebSocketSession:
             sample_rate=result.sample_rate or DEFAULT_SAMPLE_RATE,
         )
         await self.send_audio_frame(result.audio_bytes)
+        if result.audio_bytes:
+            self.store_previous_audio(sentence, result.audio_bytes)
+        else:
+            pass
         return len(result.audio_bytes)
 
     def speech_request_from_config(
@@ -490,7 +502,7 @@ class SpeechWebSocketSession:
         config = config or self.config
         assert config is not None
         payload = config.model_dump(
-            exclude={"stream_audio", "split_granularity"},
+            exclude={"stream_audio", "split_granularity", "carry_previous_audio"},
             exclude_none=True,
         )
         payload["input"] = sentence
@@ -503,6 +515,29 @@ class SpeechWebSocketSession:
         else:
             pass
         return self.config_prepared_request.reference_descriptors
+
+    def current_reference_descriptors(self) -> list[dict[str, Any]]:
+        return (
+            self.previous_reference_descriptors or self.config_reference_descriptors()
+        )
+
+    def store_previous_audio(self, sentence: str, audio_bytes: bytes) -> None:
+        if (
+            self.config is None
+            or not self.config.carry_previous_audio
+            or not audio_bytes
+            or not self.config_reference_descriptors()
+        ):
+            return
+        else:
+            pass
+        self.previous_reference_descriptors = [
+            {
+                "data": base64.b64encode(audio_bytes).decode("ascii"),
+                "media_type": "audio/wav",
+                "text": sentence,
+            }
+        ]
 
     def config_uploaded_voice(self) -> UploadedVoiceReference | None:
         if self.config_prepared_request is None:

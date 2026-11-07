@@ -1080,6 +1080,27 @@ def _build_tts_payload(
     return payload
 
 
+def build_speech_ws_config(
+    sample: SampleInput,
+    model_name: str,
+    *,
+    seed: int | None = None,
+    stream_audio: bool = False,
+    carry_previous_audio: bool = False,
+    **payload_kwargs,
+) -> dict:
+    payload = _build_tts_payload(sample, model_name, **payload_kwargs)
+    payload.pop("input", None)
+    payload.pop("stream", None)
+    payload["type"] = "session.config"
+    payload["stream_audio"] = stream_audio
+    if seed is not None:
+        payload["seed"] = seed
+    if carry_previous_audio:
+        payload["carry_previous_audio"] = True
+    return payload
+
+
 def estimate_moss_tts_duration_tokens(text: str) -> int:
     """Estimate MOSS-TTS duration tokens using OpenMOSS app defaults."""
     normalized = text or ""
