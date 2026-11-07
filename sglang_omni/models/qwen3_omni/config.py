@@ -620,6 +620,9 @@ class Qwen3OmniSessionPipelineConfig(AudioSessionPipelineConfig):
         "thinker": EngineStageConfig,
         "talker_ar": EngineStageConfig,
     }
+    realtime_deployment_factory: ClassVar[str] = (
+        "sglang_omni.models.qwen3_omni.realtime.build_realtime_deployment"
+    )
     max_sessions: int = Field(ge=1)
     # The audio the dialog holds for one user turn before speech.stopped or a commit ends it; a client that never ends a turn is cut here.
     max_utterance_seconds: float = Field(default=60, gt=0)
