@@ -26,6 +26,7 @@ from sglang_omni.scheduling.audio_stream import (
 )
 from sglang_omni.scheduling.audio_vocoder import StreamingVocoderScheduler
 from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.streaming_vocoder import vocoder_decode_stream_priority
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 logger = logging.getLogger(__name__)
@@ -335,6 +336,30 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
         self.window_batch_decoder = window_batch_decoder
         self.can_batch_stream_chunks = window_batch_decoder is not None
         self.stream_chunk_batch_max = STREAM_CHUNK_DRAIN_LIMIT
+        # The vocoder shares the engine's process, so its decodes run on their own
+        # stream, ahead of the engine's default-priority stream, instead of queueing
+        # behind each decode step on the process's default stream.
+        torch_device = torch.device(device)
+        if torch_device.type == "cuda":
+            self.decode_stream: torch.cuda.Stream | None = torch.cuda.Stream(
+                device=torch_device,
+                priority=vocoder_decode_stream_priority(torch.cuda),
+            )
+        else:
+            self.decode_stream = None
+
+    def start(self) -> None:
+        if self.decode_stream is None:
+            super().start()
+        else:
+            # Construction wrote the codec weights and the window graphs' static
+            # buffers on this thread's default stream; a new stream does not wait
+            # for it, so serving waits once for that work.
+            self.decode_stream.wait_stream(
+                torch.cuda.current_stream(self.decode_stream.device)
+            )
+            with torch.cuda.stream(self.decode_stream):
+                super().start()
 
     def followup_stride(self, request_id: str) -> int:
         window_count = self.stream_window_counts.get(request_id, 0)

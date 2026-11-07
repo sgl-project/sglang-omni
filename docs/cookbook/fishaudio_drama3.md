@@ -206,16 +206,17 @@ The int4 checkpoint is about 8% slower per request and its WER stays at the FP8 
 
 ## Deployment Performance
 
-On one GPU the default placement works as is: every stage runs on GPU 0, with the vocoder in its own process. With two GPUs, put the vocoder on the second one, so its decoding no longer shares a GPU with the engine:
+On one GPU the default placement works as is: every stage runs on GPU 0, and the vocoder runs in the engine's process, decoding on its own high-priority CUDA stream. With two GPUs, put the vocoder in its own process on the second one, so its decoding no longer shares a GPU with the engine (one process cannot span two GPUs):
 
 ```bash
 sgl-omni serve \
   --model-path <checkpoint> \
   --tts_engine.gpu 0 \
+  --vocoder.process vocoder \
   --vocoder.gpu 1
 ```
 
-When the engine and the vocoder share one GPU, `--mps on` lets their processes share it through CUDA MPS (see [Same-GPU Data Parallelism with CUDA MPS](../basic_usage/mps_dp.md)). It can raise throughput under high concurrency but may make a single stream slower; measure it with your own load before you keep it.
+When the vocoder runs in its own process on the engine's GPU (`--vocoder.process vocoder`), `--mps on` lets the two processes share it through CUDA MPS (see [Same-GPU Data Parallelism with CUDA MPS](../basic_usage/mps_dp.md)). It can raise throughput under high concurrency but may make a single stream slower; measure it with your own load before you keep it.
 
 ### High Concurrency
 
@@ -246,7 +247,7 @@ All numbers below were measured on NVIDIA H200 GPUs with streaming requests on S
 
 *Table 1. Drama 3 streaming performance on one H200. Each cell is the mean of four runs.*
 
-A single stream gets its first audio in under 100 ms. At concurrency 16, audio is still generated about 2.7× faster than it plays back, and at concurrency 64 mean RTF stays at 0.80. In SGLang-Omni, how the pipeline stages are grouped into processes and placed on GPUs is deployment-time configuration rather than per-model code. Table 2 uses this to compare two vocoder placements at higher concurrency, with the vocoder's default GPU share, 1,088 requests per concurrency level, and the average of six server starts. Its throughput also counts the end-of-speech frame that ends each stream.
+A single stream gets its first audio in under 100 ms. At concurrency 16, audio is still generated about 2.7× faster than it plays back, and at concurrency 64 mean RTF stays at 0.80. In SGLang-Omni, how the pipeline stages are grouped into processes and placed on GPUs is deployment-time configuration rather than per-model code. Table 2 uses this to compare two vocoder placements at higher concurrency, with the vocoder in its own process and its default GPU share, 1,088 requests per concurrency level, and the average of six server starts. Its throughput also counts the end-of-speech frame that ends each stream.
 
 | Vocoder placement | Concurrency | Throughput (frames/s) | TTFA p50 | TTFA p95 |
 |---|---:|---:|---:|---:|
@@ -264,14 +265,15 @@ With the vocoder on the engine's GPU, at 256 streams the vocoder is fully loaded
 The vocoder decodes a non-streaming request's audio in one piece after the engine finishes it, one request at a time,
 replaying a CUDA graph for requests of up to 512 frames (`--vocoder.factory.non_streaming_cuda_graph_max_frames`).
 With `--vocoder.factory.max_batch_size` above 1 it instead batches requests that finish together, decoding them
-eagerly. Either way a decode takes at most a frame limit it sets at startup from its memory share
-(`--vocoder.gpu_memory_fraction`, 0.10 by default) and logs:
+eagerly. Either way a decode takes at most a frame limit it sets at startup from the room its process leaves in the
+process's memory share: the engine's and the vocoder's `gpu_memory_fraction` together (0.70 and 0.10 by default) while
+the vocoder runs in the engine's process, the vocoder's alone in its own process. It logs:
 
 ```text
 Drama 3 vocoder: a non-streaming decode takes up to <frames> padded frames of <bytes> bytes each; share <share> GiB, held <held> GiB
 ```
 
-The limit does not count the memory the vocoder process holds outside PyTorch's allocator, so it cannot guarantee that the process stays within its share. With the engine's share raised to 0.85 on the same GPU, concurrent non-streaming requests can run out of GPU memory. To avoid that, stream those requests (`"stream": true`), keep the engine's default share of 0.70 on the GPU that runs the vocoder, or put the vocoder on a second GPU, as under [Deployment](#deployment).
+The limit does not count the memory the vocoder's process holds outside PyTorch's allocator, so it cannot guarantee that the process stays within its share. With the engine's share raised to 0.85 on the same GPU, concurrent non-streaming requests can run out of GPU memory. To avoid that, stream those requests (`"stream": true`), keep the engine's default share of 0.70 on the GPU that runs the vocoder, or put the vocoder on a second GPU, as under [Deployment](#deployment).
 
 ## Defaults Parameters
 
@@ -288,6 +290,7 @@ The limit does not count the memory the vocoder process holds outside PyTorch's 
 | Vocoder CUDA graphs, up to 512 frames | Replays the decode of each streaming window length, and of non-streaming requests of up to 512 frames padded to a multiple of 8, at batch 1 as a CUDA graph; non-streaming batches and longer requests decode eagerly. Costs startup time and vocoder GPU memory. | `--vocoder.factory.window_cuda_graphs false`; the non-streaming cap with `--vocoder.factory.non_streaming_cuda_graph_max_frames` (0 keeps only the window graphs) |
 | Batched streaming windows, up to 4 | Same-length streaming windows already queued from different requests decode in one CUDA graph replay, shortest windows first; no window waits for others to arrive. At startup the vocoder times each batch size and keeps only those that save at least 5% of the GPU time of one-at-a-time replays, and logs the ratios. A batched decode can differ from a batch-1 decode in the last fp16 bits. | `--vocoder.factory.stream_window_batch_size 1` |
 | Vocoder fp16 decoding | Decodes frames into audio in fp16. | `--vocoder.factory.decode_dtype float32` |
+| Vocoder in the engine's process | The vocoder runs in the engine's process and decodes on its own CUDA stream, at a higher priority than the engine's stream, so its windows do not queue behind decode steps, and the engine hands it codes without a process hop. | `--vocoder.process vocoder` runs it in its own process |
 
 The same settings in a config file:
 

@@ -252,8 +252,8 @@ def measure_max_padded_frames_per_decode(
     max_padded_frames_per_decode = (share_bytes - held_bytes) // bytes_per_padded_frame
     if max_padded_frames_per_decode < max_new_tokens:
         raise ValueError(
-            f"the vocoder's GPU memory share of {share_bytes / 2**30:.2f} GiB holds "
-            f"{held_bytes / 2**30:.2f} GiB of codec weights and CUDA graphs and "
+            f"the vocoder process's GPU memory share of {share_bytes / 2**30:.2f} GiB "
+            f"holds {held_bytes / 2**30:.2f} GiB of weights and CUDA graphs and "
             f"leaves room for {max_padded_frames_per_decode} padded frames per "
             f"decode, fewer than one request of max_new_tokens={max_new_tokens} "
             f"frames; raise --vocoder.gpu_memory_fraction or lower "
@@ -289,6 +289,7 @@ def create_vocoder_executor(
     decode_dtype: Literal["float32", "float16"],
     max_new_tokens: int,
     total_gpu_memory_fraction: float | None = None,
+    process_total_gpu_memory_fraction: float | None = None,
 ) -> Drama3VocoderScheduler:
     resolved_device = str(resolve_concrete_device(device, gpu_id))
     torch_device = torch.device(resolved_device)
@@ -335,7 +336,13 @@ def create_vocoder_executor(
             decode,
             device=torch_device,
             num_codebooks=num_codebooks,
-            total_gpu_memory_fraction=total_gpu_memory_fraction,
+            # memory_reserved counts every stage loaded into this process, so the
+            # share it is held against is the process's, not the vocoder's alone.
+            total_gpu_memory_fraction=(
+                process_total_gpu_memory_fraction
+                if process_total_gpu_memory_fraction is not None
+                else total_gpu_memory_fraction
+            ),
             max_new_tokens=max_new_tokens,
         )
     return Drama3VocoderScheduler(
