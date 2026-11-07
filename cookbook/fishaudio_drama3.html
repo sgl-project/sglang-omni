@@ -62,7 +62,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.2.0" />
-    <meta name="docbuild:last-update" content="Nov 06, 2026"/>
+    <meta name="docbuild:last-update" content="Nov 07, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -595,6 +595,7 @@
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#defaults-parameters">Defaults Parameters</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#apple-silicon-native-mlx">Apple Silicon: native MLX</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#optional-native-expert-offload">Optional native expert offload</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#reference-parity-and-performance">Reference parity and performance</a></li>
 </ul>
 </li>
@@ -1101,6 +1102,15 @@ sglang_omni_mlx/native/scripts/build_runtime.sh<span class="w"> </span><span cla
 </table>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">fishaudio_drama3_synthesize</span></code> runs one request from the command line and prints its timings; with <code class="docutils literal notranslate"><span class="pre">--codes-output</span></code> it also writes the first chunk’s prompt ids and every frame’s codes, for parity checks.</p>
+<section id="optional-native-expert-offload">
+<h3>Optional native expert offload<a class="headerlink" href="#optional-native-expert-offload" title="Link to this heading">#</a></h3>
+<p>Both native binaries accept <code class="docutils literal notranslate"><span class="pre">--expert-offload</span> <span class="pre">2gib</span></code>. Without it, the existing resident loading and execution path is unchanged. Offload removes routed backbone experts before checkpoint evaluation and loads one expert’s packed up/gate/down weights, scales and biases on demand. Router, shared experts, attention and tower weights stay resident; the codec loads separately.</p>
+<p>The model owns one serial LRU cache with a 2,147,483,648-byte limit on live packed expert arrays, including a pending load. A pinned expert cannot be evicted; every expert computation completes before its lease is released. Prefill groups selected rows by expert and processes groups serially without changing top-k ids or scores. Small groups may repeat rows to preserve MLX 0.32.3’s sorted gather kernel; repeated outputs are discarded. This path prioritizes correctness over throughput and may perform many file reads.</p>
+<p>For N input rows and top-k K, one expert group processes at most max(N, 16) rows. Per-expert result batches hold at most (N<em>K + 15</em>E) hidden-width rows before assembly, where E is the number of selected experts. Assembly additionally uses tensors shaped up to [N, K, hidden] and a final [N, hidden] result; backend workspace has no separate byte limit. Padding outputs and operation graphs are released after the final weighted sum is evaluated. Cached expert arrays remain until LRU eviction, explicit release before non-streaming codec decoding, or model destruction. During offloaded codec decoding only, the native runtime sets a target of min(the caller’s existing limit, 256 MiB) for MLX idle allocator buffers and clears old idle buffers, then restores the caller’s previous cache limit on return or exception. This process-wide setting relies on the native server worker and CLI serializing MLX execution; concurrent embedded MLX jobs need their own coordination. It does not alter the 2 GiB expert capacity or AR-phase allocator limit. The idle-buffer target is soft and does not cap active tensors, workspace, process memory, or the operating system’s page cache.</p>
+<p>The limit is not a process or GPU memory cap. Resident model weights, output tensors, current operation workspace, MLX allocator reuse and CPU/GPU copies, and the operating system’s file cache are separate. No duplicate host payload cache is retained. Packed weights remain U32; F16/BF16/F32 quantization scales and biases retain their original dtype. Unquantized expert weights are unsupported by this offload path.</p>
+<p><code class="docutils literal notranslate"><span class="pre">fishaudio_drama3_experts_test</span></code> is an explicit CMake target; pass a disposable fixture directory as its only argument. It generates small safetensors files and checks actual MLX loading, excluded payload reads, cache limits, pinning, eviction, failed reads, and resident/cached quantized execution. These fixtures do not establish complete checkpoint/audio parity or real-model throughput; run the checkpoint parity suite separately before relying on the option in production.</p>
+<p><code class="docutils literal notranslate"><span class="pre">fishaudio_drama3_codec_test</span></code> is an optional local CMake target taking a checkpoint directory, saved codes JSON, output prefix, block frame count, <code class="docutils literal notranslate"><span class="pre">budget</span></code> or <code class="docutils literal notranslate"><span class="pre">resident</span></code>, and <code class="docutils literal notranslate"><span class="pre">success</span></code> or <code class="docutils literal notranslate"><span class="pre">failure</span></code>. It exercises the production codec decoder with actual weights, checks the cache target during decoding and restoration afterward, and can raise a callback exception after actual MLX evaluation. Codec-only checks do not establish full-model streaming, long-runtime, or request-cancellation behavior.</p>
+</section>
 <section id="reference-parity-and-performance">
 <h3>Reference parity and performance<a class="headerlink" href="#reference-parity-and-performance" title="Link to this heading">#</a></h3>
 <p>The numerical reference is mlx-audio 0.6.2 (<code class="docutils literal notranslate"><span class="pre">f6d5da9</span></code>: <code class="docutils literal notranslate"><span class="pre">mlx_audio/tts/models/fish_drama3</span></code> and <code class="docutils literal notranslate"><span class="pre">mlx_audio/codec/models/fish_s1_dac</span></code>) on the same checkpoint and MLX 0.32.3; <code class="docutils literal notranslate"><span class="pre">native/licenses/fishaudio_drama3-MIT.txt</span></code> holds its license. The native runtime runs the gated delta rule on MLX’s <code class="docutils literal notranslate"><span class="pre">mx::fast::gated_delta_update</span></code>, where mlx-audio runs its own Metal kernel, and the two round their bf16 outputs differently. With mlx-audio’s gated delta step on the same MLX primitive and the same seed (given to <code class="docutils literal notranslate"><span class="pre">fishaudio_drama3_synthesize</span></code>), the native runtime samples the same codes and decodes the same PCM16 samples on every seeded test request.</p>
@@ -1277,6 +1287,7 @@ sglang_omni_mlx/native/scripts/build_runtime.sh<span class="w"> </span><span cla
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#defaults-parameters">Defaults Parameters</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#apple-silicon-native-mlx">Apple Silicon: native MLX</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#optional-native-expert-offload">Optional native expert offload</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#reference-parity-and-performance">Reference parity and performance</a></li>
 </ul>
 </li>
@@ -1314,7 +1325,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Nov 06, 2026.
+  Last updated on Nov 07, 2026.
   <br/>
 </p>
   </div>
