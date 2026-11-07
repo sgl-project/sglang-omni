@@ -9,8 +9,87 @@ from sglang_omni.platforms.interface import OmniPlatform, RMSNormKernel
 
 if TYPE_CHECKING:
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
+    from sglang_omni.platforms.interface import JointRopeInplaceKernel, OverlapAddImpl
 else:
     pass
+
+
+def joint_rope_inplace(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    cos_sin_cache: torch.Tensor,
+    positions: torch.Tensor,
+    *,
+    is_neox: bool,
+) -> None:
+    """Rotate interleaved Q/K pairs in place with the Ascend fused op."""
+    if is_neox:
+        raise ValueError(
+            "The Ascend joint-RoPE kernel implements interleaved rotation only"
+        )
+    else:
+        pass
+    import torch_npu
+
+    cos_sin = cos_sin_cache.index_select(0, positions)
+    cos, sin = cos_sin.chunk(2, dim=-1)
+    # The fused op applies one cos/sin value per rotated pair.
+    cos = cos.repeat_interleave(2, dim=-1).unsqueeze(1).to(query.dtype)
+    sin = sin.repeat_interleave(2, dim=-1).unsqueeze(1).to(query.dtype)
+    # The fused op reads contiguous BSND input, while packed Q/K are views.
+    query_out = torch_npu.npu_rotary_mul(
+        query.contiguous().unsqueeze(0),
+        cos.unsqueeze(0),
+        sin.unsqueeze(0),
+        "interleave",
+    )
+    key_out = torch_npu.npu_rotary_mul(
+        key.contiguous().unsqueeze(0),
+        cos.unsqueeze(0),
+        sin.unsqueeze(0),
+        "interleave",
+    )
+    query.copy_(query_out.squeeze(0))
+    key.copy_(key_out.squeeze(0))
+
+
+def overlap_add_by_shifts(
+    frames: torch.Tensor,
+    window_frames: torch.Tensor,
+    *,
+    hop_length: int,
+    win_length: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Rebuild the overlap-add from stride-aligned slice sums.
+
+    `torch.nn.functional.fold` faults the Ascend vector core once its kernel
+    reaches 3071 samples, which Ming's n_fft=3528 exceeds. Splitting the window
+    into hop-sized taps and adding each tap at its own offset matches fold and
+    keeps every step on the vector core's elementwise path.
+    """
+    batch, _, frame_count = frames.shape
+    taps = -(-win_length // hop_length)
+    padded = taps * hop_length
+    span = frame_count * hop_length
+
+    def add(tensor: torch.Tensor) -> torch.Tensor:
+        tensor = tensor.expand(batch, -1, -1)
+        if padded != win_length:
+            tail = tensor.new_zeros(batch, padded - win_length, frame_count)
+            tensor = torch.cat((tensor, tail), dim=1)
+        else:
+            pass
+        blocks = tensor.reshape(batch, taps, hop_length, frame_count)
+        merged = tensor.new_zeros(batch, (frame_count - 1) * hop_length + padded)
+        for tap in range(taps):
+            start = tap * hop_length
+            merged[:, start : start + span] += (
+                blocks[:, tap].transpose(1, 2).reshape(batch, span)
+            )
+        # Zero padding contributes nothing, so the folded tail is dropped here.
+        return merged[:, : (frame_count - 1) * hop_length + win_length]
+
+    return add(frames), add(window_frames)
 
 
 class NPUOmniPlatform(OmniPlatform):
@@ -55,6 +134,19 @@ class NPUOmniPlatform(OmniPlatform):
     def supports_torchaudio_resample(self) -> bool:
         """Disabled as it run on CPU and faced errors during inference for now"""
         return False
+
+    def get_overlap_add_impl(self) -> OverlapAddImpl:
+        """Slice-summed overlap-add, used because fold faults on large windows."""
+        return overlap_add_by_shifts
+
+    def get_joint_rope_inplace_kernel(self) -> JointRopeInplaceKernel:
+        """The Ascend fused rotary op, wrapped to the joint in-place ABI.
+
+        The Ascend operator set exposes interleaved rotation only through the
+        single-tensor `npu_rotary_mul`, so the wrapper rotates Q and K with two
+        launches.
+        """
+        return joint_rope_inplace
 
     def get_torch_profiler(self) -> TorchProfiler:
         from sglang_omni.profiler.torch_profiler import TorchNPUProfiler

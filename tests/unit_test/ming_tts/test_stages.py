@@ -163,7 +163,7 @@ def test_ming_tts_audio_decode_factory_rejects_a_device_it_cannot_serve(
     monkeypatch.setattr(current_platform, "device_type", "mps", raising=False)
 
     with pytest.raises(
-        ValueError, match="requires an available CUDA, MUSA, or XPU device"
+        ValueError, match="requires an available CUDA, MUSA, XPU or NPU device"
     ):
         stages.create_audio_decode_executor("unused", device="mps", gpu_id=0)
 
