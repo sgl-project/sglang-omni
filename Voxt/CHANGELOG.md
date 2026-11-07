@@ -4,6 +4,16 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Added
+
+- **Fallback model for Translate** (Translate → Models): when the language model fails, Voxt translates once more with the model you choose here. History names the model that gave the translation.
+
+### 中文
+
+#### 新增
+
+- **翻译的备用模型**（翻译 → 模型）：语言模型出错时，Voxt 用这里选的模型再翻译一次。历史记录里写的是实际给出译文的模型。
+
 ## [2.0.1] - 2026-11-07
 
 ### Added
@@ -18,7 +28,6 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Show in the Dock** (Settings → General): off, Voxt is in the menu bar only, and its menu bar icon stays on.
 - **Also copy the result to the clipboard** (Settings → General): each result stays on the clipboard, also after it was pasted, and a result the answer card shows is copied too.
 - **Show live text** (Settings → Overlay style): off, the overlay shows no words while you speak or while the model writes.
-- **Fallback model for Translate** (Translate → Models): when the language model fails, Voxt translates once more with the model you choose here. History names the model that gave the translation.
 
 ### Changed
 
@@ -48,7 +57,6 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **在程序坞中显示**（设置 → 通用）。关掉后 Voxt 只在菜单栏里，菜单栏图标会一直开着。
 - **同时把结果复制到剪贴板**（设置 → 通用）。每次的结果都留在剪贴板里，粘贴过的也一样；只出现在答案卡片里的结果也会复制。
 - **显示实时文字**（设置 → 浮窗样式）。关掉后，你说话时和模型写回答时，浮窗里都不显示文字。
-- **翻译的备用模型**（翻译 → 模型）：语言模型出错时，Voxt 用这里选的模型再翻译一次。历史记录里写的是实际给出译文的模型。
 
 #### 变更
 
