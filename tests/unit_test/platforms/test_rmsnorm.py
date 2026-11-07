@@ -4,7 +4,8 @@ import torch
 import torch.nn.functional as F
 
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
-from sglang_omni.platforms.interface import reference_rmsnorm
+from sglang_omni.platforms.interface import OmniPlatform, reference_rmsnorm
+from sglang_omni.platforms.npu import NPUOmniPlatform
 
 HIDDEN_SIZE = 64
 VARIANCE_EPSILON = 1e-6
@@ -30,3 +31,10 @@ def test_cuda_platform_serves_the_aot_rmsnorm_kernel() -> None:
     sgl_kernel = pytest.importorskip("sgl_kernel")
 
     assert CUDAOmniPlatform().get_rmsnorm() is sgl_kernel.rmsnorm
+
+
+def test_only_the_npu_platform_folds_the_residual_add_into_the_norm() -> None:
+    """The add and the norm are one kernel on the NPU; everywhere else the
+    hook answers ``None`` and the caller adds before normalizing."""
+    assert NPUOmniPlatform.get_add_rmsnorm is not OmniPlatform.get_add_rmsnorm
+    assert OmniPlatform().get_add_rmsnorm() is None
