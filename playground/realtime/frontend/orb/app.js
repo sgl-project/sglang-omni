@@ -256,8 +256,8 @@ function renderTranscript() {
     return paragraph;
   }));
   ui.transcript.scrollTop = ui.transcript.scrollHeight;
-  // The caption follows the answer being spoken, or the last one once it ends.
   ui.caption.textContent = paragraphs.at(-1);
+  ui.caption.scrollTop = ui.caption.scrollHeight;
 }
 
 function renderFrames() {
@@ -615,6 +615,7 @@ try {
   const saved = localStorage.getItem("theme");
   if (saved) document.documentElement.dataset.theme = saved;
 } catch {}
+new ResizeObserver(() => { ui.caption.scrollTop = ui.caption.scrollHeight; }).observe(ui.caption);
 window.addEventListener("beforeunload", () => { if (session && isOpen()) session.close(); });
 setInterval(tick, 250);
 setInterval(pollStatus, STATUS_POLL_MS);

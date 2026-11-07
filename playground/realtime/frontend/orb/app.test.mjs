@@ -33,6 +33,7 @@ function createApp({ actualSampleRate, loadModule = async () => {} } = {}) {
     clearTimeout() {},
     setInterval() {},
     requestAnimationFrame() {},
+    ResizeObserver: class { observe() {} },
     Camera: class { stop() {} },
     Orb: class {},
     Settings: class {
