@@ -38,5 +38,7 @@ jobs:
     # A called job cannot ask for more than its caller grants. Only a tag's draft release uses this.
     permissions:
       contents: write
+    # A called workflow gets the voxt-release environment's secrets only when its caller passes them.
+    secrets: inherit
     with:
       nightly: true
