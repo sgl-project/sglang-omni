@@ -41,6 +41,7 @@ from sglang_omni.models.fun_cosyvoice3.streaming import (
     prompt_token_pad,
 )
 from sglang_omni.models.fun_cosyvoice3.utils import MAX_REFERENCE_SECONDS
+from sglang_omni.profiler.event_recorder import emit, get_recorder
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.pipeline_state import build_usage
@@ -113,6 +114,35 @@ class LaunchedStep:
     participants: list[tuple[str, CosyVoice3StreamState]]
     plan: Literal["causal_window", "leftover"]
     samples: HiftStepSamples
+
+
+def record_vocoder_batch_event(
+    event_name: Literal[
+        "vocoder_launch_start",
+        "vocoder_flow_submitted",
+        "vocoder_hift_submitted",
+        "vocoder_audio_ready",
+    ],
+    participants: list[tuple[str, CosyVoice3StreamState]],
+) -> None:
+    """Record host boundaries without synchronizing the vocoder CUDA stream."""
+    if not get_recorder().is_active():
+        return
+    else:
+        timestamp_nanoseconds = time.time_ns()
+        for request_id, state in participants:
+            emit(
+                request_id=request_id,
+                stage="vocoder",
+                event_name=event_name,
+                timestamp_ns=timestamp_nanoseconds,
+                metadata={
+                    "batch_size": len(participants),
+                    "token_offset": state.token_offset,
+                    "ready_since_seconds": state.ready_since,
+                    "monotonic_seconds": time.monotonic(),
+                },
+            )
 
 
 class FunCosyVoice3StreamingVocoderScheduler(
@@ -628,6 +658,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
         complete_step. A fallback decodes and completes here."""
         plan = participants[0][1].next_decode()
         assert plan != "wait"
+        record_vocoder_batch_event("vocoder_launch_start", participants)
         pin_memory = is_pin_memory_available(
             next(self.vocoder.flow.parameters()).device
         )
@@ -649,7 +680,9 @@ class FunCosyVoice3StreamingVocoderScheduler(
             ]
             logger.info(f"Fun-CosyVoice3 leftover Flow batch size={len(items)}")
             mels = self.vocoder.leftover_batch(items)
+            record_vocoder_batch_event("vocoder_flow_submitted", participants)
             samples = self.hift_step(participants, mels, is_final=True)
+            record_vocoder_batch_event("vocoder_hift_submitted", participants)
             for (_, state), offset in zip(
                 participants, samples.emitted_samples, strict=True
             ):
@@ -674,7 +707,9 @@ class FunCosyVoice3StreamingVocoderScheduler(
             ]
             logger.info(f"Fun-CosyVoice3 causal Flow batch size={len(items)}")
             mels = self.hop_batch_with_prefix(participants, items)
+            record_vocoder_batch_event("vocoder_flow_submitted", participants)
             samples = self.hift_step(participants, mels, is_final=False)
+            record_vocoder_batch_event("vocoder_hift_submitted", participants)
             now = self.clock()
             for (_, state), new_samples, offset in zip(
                 participants, samples.new_samples, samples.emitted_samples, strict=True
@@ -703,6 +738,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
         chunk and then its result. Streams cleared since the launch get nothing."""
         try:
             deltas = launched.samples.wait()
+            record_vocoder_batch_event("vocoder_audio_ready", launched.participants)
             for (request_id, state), delta in zip(
                 launched.participants, deltas, strict=True
             ):

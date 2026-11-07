@@ -386,6 +386,34 @@ End-to-end streaming on the same GPU (`benchmark_tts_seedtts --stream`, all 2,02
 
 The vocoder takes a growing share of each request as concurrency rises, so the end-to-end gain is largest at low concurrency.
 
+An attribution run on one Runpod H100 SXM 80 GB at commit `c8a513228f59c079480ae39f2cf88cb3a6e7c28e` used SGLang 0.5.23, FA3, AR radix caching disabled and a 32 GiB Flow prefix-cache budget. It measured the first 512 SeedTTS ZH samples with default sampling, two fresh servers per side in baseline/draft/draft/baseline order, and 16 warmup requests per point. All 14,336 formal requests succeeded. The separate component experiment removed the vocoder while retaining preprocessing and the real AR implementation:
+
+| Concurrency | Streaming end-to-end gain | Preprocessing + AR gain, single pair |
+|-------------|--------------------------|--------------------------------------|
+| 1 | 1.29x | 1.43x |
+| 16 | 1.20x | 1.33x |
+| 64 | 1.03x | 1.24x |
+
+The isolated pipeline ran without Nsight and includes preprocessing and terminal transport, so its gain is not a pure decode-kernel speedup. At c1, its mean time outside the AR engine was about 56 ms on both sides. At higher concurrency, isolated vocoder replay reached about 30–34 requests/s, while the complete pipeline plateaued around 23–24 requests/s: both stages share GPU and host resources, and live token arrival changes vocoder batching. In separate diagnostics over 128 prewarmed references, the mean tail after AR completion rose from 71 ms without the draft to 104–110 ms with it at c16. Both AR configurations used synchronous scheduling; the ASR explanation that a draft disables baseline overlap does not apply to this comparison.
+
+The small c64 end-to-end gain was within the draft's observed repeat spread. At c16, first-audio p95 pooled across the two runs increased from 315.6 to 337.5 ms, exceeding the 5% gate despite overlapping per-run ranges. These measurements explain the loss of end-to-end gain; they do not establish default-on eligibility or replace the full model CI.
+
+To investigate that gap, collect request events separately from throughput measurements. The streaming vocoder records batch launch, Flow submission, HiFT submission and audio completion without adding CUDA synchronization. Allocate enough event storage for the whole diagnostic cohort:
+
+```bash
+curl -X POST http://localhost:8000/start_request_profile \
+  -H 'Content-Type: application/json' \
+  -d '{"run_id":"cosyvoice-diagnostic","event_dir":"/tmp/cosyvoice-events","event_buffer_capacity":131072}'
+# Run a small streaming workload, then stop recording.
+curl -X POST http://localhost:8000/stop_request_profile \
+  -H 'Content-Type: application/json' \
+  -d '{"run_id":"cosyvoice-diagnostic"}'
+python -m benchmarks.eval.cosyvoice_profile /tmp/cosyvoice-events \
+  --output /tmp/cosyvoice-attribution.json
+```
+
+The report decomposes the first-audio path and the tail after AR completion, and includes vocoder batch sizes and per-request durations. If the recorded workload starts with benchmark warmup, pass its request count with `--skip-first-requests`. Event storage must be complete; increase the capacity and recollect if the recorder reports overflow. Flow and HiFT submission spans include host work and CUDA waits, and deferred audio completion can overlap another hop. They are not pure GPU execution times. Use a GPU timeline to distinguish device contention from host scheduling, and do not add overlapping AR and vocoder residence times or phase percentiles.
+
 ### Zero-shot Voice Cloning
 
 CosyVoice3 clones a voice from a short reference audio clip. `ref_audio` can be a local
