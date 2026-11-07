@@ -4,7 +4,7 @@
 requires = ["setuptools>=77.0.0"]
 build-backend = "setuptools.build_meta"
 
-# Ascend NPU variant of pyproject.toml (see docs/get_started/installation_npu.md).
+# Ascend NPU variant of pyproject.toml (see docs/other_platforms/installation_npu.md).
 # Mirrors upstream SGLang's pyproject_npu.toml where srt_npu = [] — torch,
 # torch_npu, triton-ascend, and memfabric are NOT pinned here and must be
 # installed manually before pip-installing sglang-omni.
