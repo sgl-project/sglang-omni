@@ -89,7 +89,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         *,
         max_running_requests: int,
         max_new_tokens: int,
-        enable_async_decode: bool | None,
+        enable_async_decode: bool,
         async_decode_min_batch_size: int,
         mem_fraction_static: float | None,
         mm_embedding_cache_size_bytes: int,
@@ -393,10 +393,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
     def adjust_overrides(self, overrides: dict[str, object]) -> None:
         algorithm = overrides.get("speculative_algorithm")
         if algorithm is None:
-            if self.enable_async_decode is None:
-                self.enable_async_decode = True
-            else:
-                pass
+            pass
         elif algorithm != "DFLASH":
             raise ValueError(
                 "Qwen3-ASR speculative decoding currently supports DFLASH only"
@@ -427,11 +424,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             )
             overrides["speculative_draft_model_path"] = self.draft_checkpoint.name
             overrides["speculative_draft_model_revision"] = None
-            # note (wilsonzheng0327): async decode under a draft means speculative overlap, so it stays off unless the operator asks for it.
-            if self.enable_async_decode is None:
-                self.enable_async_decode = False
-            else:
-                pass
+            # note (wilsonzheng0327): async decode under a draft is speculative overlap, which SGLang turns on through its overlap scheduler.
             overrides["disable_overlap_schedule"] = not self.enable_async_decode
             overrides["enable_mixed_chunk"] = False
         if "context_length" in overrides:
@@ -486,7 +479,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             return {
                 "supports_speculative_decoding": True,
                 "speculative_worker_class": ReducedVocabularyDFlashWorker,
-                "enable_async_decode": bool(self.enable_async_decode),
+                "enable_async_decode": self.enable_async_decode,
             }
 
     def setup_model_resources(
