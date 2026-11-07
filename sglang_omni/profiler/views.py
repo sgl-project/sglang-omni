@@ -337,6 +337,9 @@ _STAGE_INTERVAL_EVENTS = (
     ("scheduler_prefill_start", "stage_first_stream_chunk_sent"),
     ("scheduler_prefill_start", "scheduler_first_emit"),
     ("scheduler_first_emit", "stage_complete"),
+    ("vocoder_launch_start", "vocoder_flow_submitted"),
+    ("vocoder_flow_submitted", "vocoder_hift_submitted"),
+    ("vocoder_hift_submitted", "vocoder_audio_ready"),
 )
 
 
