@@ -64,6 +64,29 @@ def test_check_torchcodec_ready_probes_decoder_and_warns_once(
     assert len(fallback_records) == 1
 
 
+def test_load_audio_falls_back_when_torchcodec_imports_but_cannot_decode(
+    monkeypatch,
+) -> None:
+    """A FLAC upload returned HTTP 500 on a host without FFmpeg, where torchcodec imports but every decode fails."""
+
+    def fail_to_load_library(source):
+        raise RuntimeError("Could not load libtorchcodec")
+
+    fake_decoders = ModuleType("torchcodec.decoders")
+    fake_decoders.AudioDecoder = fail_to_load_library
+    monkeypatch.setitem(sys.modules, "torchcodec", ModuleType("torchcodec"))
+    monkeypatch.setitem(sys.modules, "torchcodec.decoders", fake_decoders)
+    monkeypatch.setattr(audio, "_TORCHCODEC_USABLE", None)
+    monkeypatch.setattr(audio.torchaudio, "load", fail_to_load_library)
+    flac = io.BytesIO()
+    sf.write(flac, np.linspace(-0.5, 0.5, 1600), 16000, format="FLAC")
+    reference, _ = sf.read(io.BytesIO(flac.getvalue()), dtype="float32")
+
+    samples = load_audio(flac.getvalue())
+
+    np.testing.assert_array_equal(samples, reference)
+
+
 def test_load_audio_falls_back_when_torchcodec_is_unavailable(monkeypatch) -> None:
     monkeypatch.setattr(audio, "check_torchcodec_ready", lambda: False)
 
@@ -305,7 +328,7 @@ def test_load_audio_fast_path_resamples(monkeypatch) -> None:
 
 @pytest.mark.parametrize("encoding", [MULAW, ALAW])
 def test_load_audio_fast_path_decodes_g711_wav(monkeypatch, encoding: str) -> None:
-    """A mu-law or A-law WAV upload returned HTTP 500 on a host whose torchcodec could not open it."""
+    """A mu-law or A-law WAV needed torchaudio, so it failed wherever torchaudio could not decode."""
     wav = wrap_g711_as_wav(bytes(range(256)), encoding)
     reference, _ = sf.read(io.BytesIO(wav), dtype="float32")
 
