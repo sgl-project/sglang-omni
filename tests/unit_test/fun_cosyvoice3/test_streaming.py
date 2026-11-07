@@ -140,6 +140,7 @@ def waveform(data: dict) -> np.ndarray:
 def make_scheduler(
     *,
     token_mel_ratio: int = TOKEN_MEL_RATIO,
+    should_complete_first_chunk_immediately: bool = False,
     **scheduler_kwargs,
 ) -> tuple[FakeFlow, FunCosyVoice3StreamingVocoderScheduler]:
     flow = FakeFlow(token_mel_ratio=token_mel_ratio)
@@ -148,6 +149,7 @@ def make_scheduler(
             stages.FunCosyVoice3Flow(flow, packed_estimator=flow.packed_estimator),
             FakeHiFT(),
         ),
+        should_complete_first_chunk_immediately=should_complete_first_chunk_immediately,
         **scheduler_kwargs,
     )
 
@@ -1035,3 +1037,38 @@ def test_token_max_hop_len_caps_growth() -> None:
     }
     state = scheduler.stream_states["req-a"]
     assert state.hop_len == 50
+
+
+def test_immediate_first_audio_preserves_follow_up_overlap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """First audio is sent before another launch; follow-ups retain overlap."""
+    _, scheduler = make_scheduler(
+        max_batch_size=1, should_complete_first_chunk_immediately=True
+    )
+    log = pending_copies(scheduler, monkeypatch)
+    for request_id in ("req-a", "req-b"):
+        scheduler.handle_streaming_new_request(request_id, stream_payload(request_id))
+        scheduler.ingest_stream_item(request_id, item(list(range(28))))
+    with scheduler.state_lock:
+        assert scheduler.pump_one_step() == []
+    assert stream_ids(drain(scheduler)) == ["req-a"]
+    assert log == ["launch 1", "read 1"]
+    with scheduler.state_lock:
+        assert scheduler.pump_one_step() == []
+    assert stream_ids(drain(scheduler)) == ["req-b"]
+    assert log == ["launch 1", "read 1", "launch 2", "read 2"]
+    log.clear()
+    for request_id in ("req-a", "req-b"):
+        scheduler.ingest_stream_item(request_id, item(list(range(28, 78))))
+    with scheduler.state_lock:
+        assert scheduler.pump_one_step() == []
+    assert drain(scheduler) == []
+    with scheduler.state_lock:
+        assert scheduler.pump_one_step() == []
+    assert stream_ids(drain(scheduler)) == ["req-a"]
+    with scheduler.state_lock:
+        assert scheduler.pump_one_step() == []
+        assert scheduler.pump_one_step() is None
+    assert stream_ids(drain(scheduler)) == ["req-b"]
+    assert log == ["launch 1", "launch 2", "read 1", "read 2"]

@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
+from contextlib import suppress
+from multiprocessing import shared_memory
 
 import pytest
 import torch
 
+from sglang_omni.comm.data_ref import TransportKind
+from sglang_omni.comm.stage_io import read_stream_chunk, write_stream_chunk
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import (
     apply_typed_stage_kwargs,
     resolve_stage_factory_kwargs,
     resolve_stage_typed_kwargs,
 )
+from sglang_omni.config.schema import CommConfig
 from sglang_omni.models.fun_cosyvoice3 import CAPABILITIES
 from sglang_omni.models.fun_cosyvoice3.config import (
     FUN_COSYVOICE3_DEFAULT_FLOW_CUDA_GRAPH_CAPTURE_SHAPES,
@@ -24,6 +30,7 @@ from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.pipeline.mp_runner import build_stage_groups
 from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
 from sglang_omni.pipeline.stage_workers import patched_spawn_env
+from sglang_omni.relay.shm import ShmPutOperation, ShmRelay, shm_create_from_tensor
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext
 from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
@@ -159,6 +166,7 @@ def test_fun_cosyvoice3_config_and_registry_contract() -> None:
         "token_max_hop_len": 100,
         "disable_hop_growth": False,
         "flow_prefix_cache_gb": None,
+        "should_complete_first_chunk_immediately": False,
     }
 
     build_compiled_process_topology(config)
@@ -241,3 +249,70 @@ def test_fun_cosyvoice3_state_round_trip_preserves_wire_contract() -> None:
         atol=0,
     )
     assert restored.audio_codes == [[20], [21]]
+
+
+def test_first_stream_chunk_fits_before_notifying_another_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A separate vocoder hung because prompt tensors exhausted the sender's credits."""
+    blocks: list[shared_memory.SharedMemory] = []
+
+    def record_block(tensor: torch.Tensor) -> shared_memory.SharedMemory:
+        block = shm_create_from_tensor(tensor)
+        blocks.append(block)
+        return block
+
+    monkeypatch.setattr("sglang_omni.relay.shm.shm_create_from_tensor", record_block)
+
+    async def scenario() -> None:
+        config = FunCosyVoice3PipelineConfig(model_path="model")
+        communication = config.stage_named("tts_engine").comm or CommConfig()
+        relay = ShmRelay(
+            engine_id="tts_engine", device="cpu", credits=communication.credits
+        )
+        codes = torch.arange(28, dtype=torch.int32)
+        metadata = {
+            "flow_prompt_speech_token": torch.arange(25).reshape(1, 25),
+            "flow_prompt_speech_feat": torch.ones(1, 50, 80),
+            "flow_embedding": torch.ones(1, 192),
+        }
+        write_task = asyncio.create_task(
+            write_stream_chunk(
+                relay,
+                request_id="first-chunk",
+                data=codes,
+                target_stage="vocoder",
+                from_stage="tts_engine",
+                chunk_id=0,
+                metadata=metadata,
+                transport=TransportKind.SHM,
+            )
+        )
+        try:
+            await asyncio.sleep(0)
+            assert (
+                write_task.done()
+            ), "The sender needs a receive notification to free its credits"
+            reference, operations = await write_task
+            received_codes, received_metadata = await read_stream_chunk(
+                relay, reference
+            )
+            assert torch.equal(received_codes, codes)
+            assert received_metadata is not None
+            for name, tensor in metadata.items():
+                received_tensor = received_metadata[name]
+                assert isinstance(received_tensor, torch.Tensor)
+                assert torch.equal(received_tensor, tensor)
+            for operation in operations:
+                assert isinstance(operation, ShmPutOperation)
+                operation.mark_receiver_done()
+                await operation.wait_for_completion()
+        finally:
+            write_task.cancel()
+            await asyncio.gather(write_task, return_exceptions=True)
+            for block in blocks:
+                block.close()
+                with suppress(FileNotFoundError):
+                    block.unlink()
+
+    asyncio.run(scenario())
