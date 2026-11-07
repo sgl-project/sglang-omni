@@ -26,6 +26,7 @@ from sglang_omni.scheduling.audio_stream import (
 )
 from sglang_omni.scheduling.audio_vocoder import StreamingVocoderScheduler
 from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 logger = logging.getLogger(__name__)
 
@@ -627,7 +628,10 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
             StagePayload(
                 request_id=payload.request_id,
                 request=payload.request,
-                data={**self.final_result_data(payload), "audio_data": audio.tolist()},
+                data={
+                    **self.final_result_data(payload),
+                    **audio_waveform_payload(audio, source_hint="Drama 3 codec"),
+                },
             )
             for payload, audio in zip(payloads, audios, strict=True)
         ]

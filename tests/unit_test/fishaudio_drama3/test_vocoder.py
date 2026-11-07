@@ -11,6 +11,7 @@ import torch
 import torch.nn.functional as F
 from dac.nn.layers import Snake1d
 
+from sglang_omni.client.audio import encode_pcm, to_numpy
 from sglang_omni.models.fishaudio_drama3.channels_last_decoder import (
     ChannelsLastDecoder,
     snake_channels_last_kernel,
@@ -136,6 +137,14 @@ def final_payload(
             finish_reason=finish_reason,
         ),
     )
+
+
+def final_audio(result: StagePayload) -> np.ndarray:
+    """The non-streaming audio as the client decodes it: float32 bytes plus shape."""
+    assert isinstance(result.data, dict)
+    assert result.data["audio_waveform_dtype"] == "float32"
+    samples = np.frombuffer(result.data["audio_waveform"], dtype=np.float32)
+    return samples.reshape(result.data["audio_waveform_shape"])
 
 
 def drained(vocoder: Drama3VocoderScheduler) -> list[OutgoingMessage]:
@@ -603,11 +612,9 @@ def test_a_non_streaming_batch_decodes_once() -> None:
         results, [5, 7], ["stop", "length"], strict=True
     ):
         assert isinstance(result.data, dict)
-        assert (
-            result.data["audio_data"]
-            == np.repeat(
-                np.arange(frame_count, dtype=np.float32), SAMPLES_PER_FRAME
-            ).tolist()
+        np.testing.assert_array_equal(
+            final_audio(result),
+            np.repeat(np.arange(frame_count, dtype=np.float32), SAMPLES_PER_FRAME),
         )
         assert result.data["usage"] == {
             "prompt_tokens": PROMPT_ROW_COUNT,
@@ -615,6 +622,25 @@ def test_a_non_streaming_batch_decodes_once() -> None:
             "total_tokens": PROMPT_ROW_COUNT + frame_count,
         }
         assert result.data["finish_reason"] == finish_reason
+
+
+def test_the_non_streaming_payload_encodes_to_the_same_pcm_as_the_float_list() -> None:
+    """The client converts both forms with to_numpy before encode_pcm; float32 bytes
+    must give the same float32 array, hence the same PCM, as the former float list."""
+    generator = torch.Generator().manual_seed(7)
+    audio = torch.rand(3 * SAMPLES_PER_FRAME, generator=generator) * 2 - 1
+    vocoder = vocoder_with(FrameNumberCodec())
+    vocoder.decode_codebook_codes = lambda codes: [audio]  # type: ignore[method-assign]
+
+    (result,) = vocoder.vocode_payloads(
+        [final_payload(numbered_frames(3), is_streaming=False)]
+    )
+
+    from_bytes = to_numpy(final_audio(result))
+    from_list = to_numpy(audio.tolist())
+    assert from_bytes.dtype == from_list.dtype == np.float32
+    np.testing.assert_array_equal(from_bytes, from_list)
+    assert encode_pcm(from_bytes, SAMPLE_RATE) == encode_pcm(from_list, SAMPLE_RATE)
 
 
 def test_a_non_streaming_batch_decodes_through_the_given_window_decoder() -> None:
@@ -635,7 +661,7 @@ def test_a_non_streaming_batch_decodes_through_the_given_window_decoder() -> Non
     )
 
     assert decoded_shapes == [(2, NUM_CODEBOOKS, 7)]
-    assert [len(result.data["audio_data"]) for result in results] == [
+    assert [final_audio(result).size for result in results] == [
         5 * SAMPLES_PER_FRAME,
         7 * SAMPLES_PER_FRAME,
     ]
@@ -1138,7 +1164,7 @@ def test_non_streaming_batch_preserves_request_audio_with_bounded_padding(
             np.arange(frame_count, dtype=np.float32) + request_index * 100,
             SAMPLES_PER_FRAME,
         )
-        np.testing.assert_array_equal(result.data["audio_data"], expected_samples)
+        np.testing.assert_array_equal(final_audio(result), expected_samples)
     assert all(
         codes.shape[0] == 1
         or codes.shape[0] * codes.shape[-1] <= max_padded_frames_per_decode
