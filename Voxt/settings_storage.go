@@ -51,6 +51,11 @@ type storageState struct {
 	eraseKept      []string
 	eraseKeptBytes int64
 	erasing        bool
+
+	// The model folder's change (settings_storage_erase.go).
+	modelMoving     bool
+	modelMoveTo     string
+	modelMoveCancel context.CancelFunc
 }
 
 // storageReport is what takes room.
@@ -74,11 +79,11 @@ type storageCat struct {
 
 // Test seams: relaunching the app, choosing a folder.
 var (
-	appRelaunch   = func() { mygo.App.Relaunch() }
-	chooseMoveDir = func(a *app, then func(string)) {
+	appRelaunch = func() { mygo.App.Relaunch() }
+	chooseDir   = func(a *app, title, button string, then func(string)) {
 		go func() {
-			dirs, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.win, Title: i18n.T("Move the data folder to…"),
-				Directory: true, CreateDirectories: true, ButtonLabel: i18n.T("Move here")})
+			dirs, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.win, Title: title,
+				Directory: true, CreateDirectories: true, ButtonLabel: button})
 			if err != nil || len(dirs) == 0 {
 				return
 			}
@@ -299,7 +304,7 @@ func (a *app) storageSettings(c *ui.Context) {
 	settingRow(c, "st-data", uitext.ShortPath(a.dataDir()), i18n.T("Your history and its recordings, your dictionary and the database."), func() {
 		open("st-open-data", a.dataDir())
 		if ui.Button(c.Key("st-move"), i18n.T("Move…")).Disabled(a.moving).Clicked() {
-			chooseMoveDir(a, a.startMove)
+			chooseDir(a, i18n.T("Move the data folder to…"), i18n.T("Move here"), a.startMove)
 		}
 	})
 	if dir := a.prefs.History.AudioDir; dir != "" {
@@ -386,7 +391,8 @@ func (a *app) storageDialogs(c *ui.Context) {
 	if !open && a.resetAsk == "settings" {
 		a.resetAsk = ""
 	}
-	a.eraseDialog(c) // settings_storage_erase.go
+	a.eraseDialog(c)     // settings_storage_erase.go
+	a.modelMoveDialog(c) // settings_storage_erase.go
 	moving := a.moving
 	ui.DialogBase(c.Key("st-moving"), &moving, func(backdrop, panel ui.Element) {
 		backdrop.Background(ui.RGBA(0, 0, 0, 0.3))

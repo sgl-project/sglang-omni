@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	fammodels "github.com/hehehai/actnowkit/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/actnow"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/datadir"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -120,5 +122,54 @@ func TestEraseStopsWhenRecordingsStay(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(a.home(), datadir.ResetFile)); !os.IsNotExist(err) {
 		t.Errorf("reset asked: %v", err)
+	}
+}
+
+// TestModelFolderChange: Change… brings the models into the folder the
+// user chose (a "Voxt Models" folder in one that holds other files), the
+// models another app claims too, writes the family's models.root and
+// restarts to use it; the library stays as it was.
+func TestModelFolderChange(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	seedModels(t, a, models.ASRFast, models.VADSilero, models.LLMTranslate)
+	useModels(t, a, models.ASRFast, models.VADSilero)
+	claimFor(t, a, audioSmithID, models.LLMTranslate) // retired for VoxtNew, AudioSmith's
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("mine"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	chosen := a.models.Hub()
+	relaunched := false
+	oldChoose, oldRelaunch := chooseDir, appRelaunch
+	chooseDir = func(_ *app, _, _ string, then func(string)) { then(chosen) }
+	appRelaunch = func() { relaunched = true }
+	defer func() { chooseDir, appRelaunch = oldChoose, oldRelaunch }()
+	a.navigate("/settings/storage")
+	click(t, tt, "Change…")
+	if relaunched || !toasted(a, tt, "The models are already there") {
+		t.Fatalf("the same folder: relaunched %v, toasts %q", relaunched, a.toasts)
+	}
+
+	chosen = dir
+	click(t, tt, "Change…")
+	frames(tt)
+	if !relaunched {
+		t.Fatalf("no restart: %q", a.toasts)
+	}
+	to := filepath.Join(dir, modelsDirName)
+	if root, _ := a.fam.Shared().Get(actnow.KeyModelsRoot); !fammodels.SameHub(root, to) {
+		t.Errorf("models.root = %q, want %q", root, to)
+	}
+	for _, id := range []string{models.ASRFast, models.VADSilero, models.LLMTranslate} {
+		m, _ := models.Lookup(id)
+		if models.Installed(to, m) == "" {
+			t.Errorf("%s not in the new folder", id)
+		}
+		if !onDisk(a, id) {
+			t.Errorf("%s left the library", id)
+		}
+	}
+	if cs, _ := fammodels.ReadClaims(a.fam.Dir(), a.fam.BundleID()); !fammodels.SameHub(cs.Root, to) || len(cs.Claims) != 2 {
+		t.Errorf("VoxtNew's claims: %+v", cs)
 	}
 }

@@ -8,7 +8,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 
+	"github.com/hehehai/actnowkit/family"
 	fammodels "github.com/hehehai/actnowkit/models"
 )
 
@@ -82,6 +85,19 @@ func (m *Manager) Migrate(ctx context.Context) error {
 // Voxt no longer uses. It returns how many models it brought and their
 // bytes.
 func (m *Manager) Import(ctx context.Context, backup bool) (n int, bytes int64, err error) {
+	res, err := m.store.Import(ctx, fammodels.LegacyHubs(m.store.Hub), backup, m.wanted()...)
+	for _, r := range res {
+		if r.Action == fammodels.ImportImported {
+			n++
+			bytes += r.Linked + r.Copied
+		}
+	}
+	m.Refresh()
+	return n, bytes, err
+}
+
+// wanted are the catalogue's models Import looks for (not the retired).
+func (m *Manager) wanted() []fammodels.Claim {
 	var want []fammodels.Claim
 	for _, mod := range m.catalog {
 		if mod.Retired {
@@ -93,15 +109,74 @@ func (m *Manager) Import(ctx context.Context, backup bool) (n int, bytes int64, 
 			}
 		}
 	}
-	res, err := m.store.Import(ctx, fammodels.LegacyHubs(m.store.Hub), backup, want...)
-	for _, r := range res {
-		if r.Action == fammodels.ImportImported {
-			n++
-			bytes += r.Linked + r.Copied
+	return want
+}
+
+// MoveTo makes hub, the folder the user chose (Settings → Storage), the
+// library (family spec §7.1). It brings the models there: the
+// catalogue's, VoxtNew's claims (claimed again there), and the models the
+// other apps claim in this library, so that no app downloads one again
+// (same disk: hard links, no space used; another disk: copies). Then
+// commit writes the family's models.root. Nothing in the library
+// changes. When a model could not be brought (busy, no space, an error)
+// or commit fails, VoxtNew's claims stay with this library and the error
+// names the models; what was brought stays in hub.
+func (m *Manager) MoveTo(ctx context.Context, hub string, backup bool, commit func() error) error {
+	from := m.store.Hub
+	want := m.wanted()
+	all, _ := fammodels.ReadAllClaims(m.store.Family)
+	for id, cs := range all {
+		if id != m.store.BundleID && (cs.Root == "" || fammodels.SameHub(cs.Root, from)) {
+			want = append(want, cs.Claims...)
 		}
 	}
-	m.Refresh()
-	return n, bytes, err
+	mine, err := m.store.Claims()
+	if err != nil {
+		return err
+	}
+	// Import skips the models it handled for hub before: an earlier
+	// attempt's, whose files may be gone. A move looks at every one.
+	if err := forgetImported(m.store.Family, m.store.BundleID, hub); err != nil {
+		return err
+	}
+	dst := &fammodels.Store{Family: m.store.Family, Hub: hub, BundleID: m.store.BundleID, AppID: m.store.AppID, Apps: m.store.Apps, Now: m.store.Now}
+	_, err = dst.Import(ctx, []string{from}, backup, want...)
+	var missing []string
+	for _, w := range want {
+		if fammodels.Check(from, w).State == fammodels.Installed && fammodels.Check(hub, w).State != fammodels.Installed &&
+			!slices.Contains(missing, w.Repo) {
+			missing = append(missing, w.Repo)
+		}
+	}
+	if err == nil && len(missing) > 0 {
+		err = fmt.Errorf("not brought over: %s", strings.Join(missing, ", "))
+	}
+	if err == nil {
+		err = commit()
+	}
+	if err != nil && len(mine.Claims) > 0 {
+		// The import claimed them in hub: claim them here again.
+		err = errors.Join(err, m.store.Claim(context.Background(), mine.Claims...))
+	}
+	return err
+}
+
+// forgetImported drops hub from the app's record of imports.
+func forgetImported(d family.Dir, bundleID, hub string) error {
+	path := fammodels.ImportedFile(d, bundleID)
+	var rec fammodels.Imported
+	if err := family.Load(path, fammodels.KindImported, 1, &rec); err != nil {
+		if family.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	n := len(rec.Hubs)
+	rec.Hubs = slices.DeleteFunc(rec.Hubs, func(h fammodels.ImportedHub) bool { return fammodels.SameHub(h.Root, hub) })
+	if len(rec.Hubs) == n {
+		return nil
+	}
+	return family.WriteJSON(path, rec)
 }
 
 func (m *Manager) claim(ctx context.Context, origin string, ids []string) error {
