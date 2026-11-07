@@ -6,7 +6,7 @@ name: Voxt Mac CI
 # the stub server around stand-in models) and each server's startup checks; and
 # Voxt's Swift packages (the helper and the language-model runtime). No
 # checkpoint is downloaded. Model outputs are checked by hand per model PR with
-# the tools in sglang_omni_mlx/native/ci.
+# the tools in sglang_omni_mlx/native/ci. Voxt Nightly runs it before its build.
 
 on:
   pull_request:
@@ -17,10 +17,11 @@ on:
       - "Voxt/llm/**"
       - ".github/workflows/voxt-mac-ci.yaml"
   workflow_dispatch:
+  workflow_call:
 
-# One run per pull request; a new push replaces it.
+# One run per pull request; a new push replaces it. The calling workflow's name keeps the nightly's run apart.
 concurrency:
-  group: voxt-mac-ci-${{ github.event.pull_request.number || github.ref }}
+  group: voxt-mac-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -36,7 +37,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
-      run_mac: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.plan.outputs.run_mac }}
+      # Only a pull request goes through the label gate: a run by hand or from the nightly's schedule always tests.
+      run_mac: ${{ github.event_name != 'pull_request' && 'true' || steps.plan.outputs.run_mac }}
     steps:
       - name: Fetch latest PR gate state
         if: ${{ github.event_name == 'pull_request' }}

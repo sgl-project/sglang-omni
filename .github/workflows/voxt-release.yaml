@@ -28,9 +28,9 @@ on:
         type: boolean
         default: false
 
-# The workflow's name keeps a nightly and a release run of one pull request from cancelling each other.
+# The calling workflow's name keeps a nightly and a release run of one pull request from cancelling each other.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: voxt-release-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
