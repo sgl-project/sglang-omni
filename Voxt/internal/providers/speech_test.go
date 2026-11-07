@@ -146,21 +146,24 @@ func TestSpeechTest(t *testing.T) {
 
 // TestSpeechErrorsHideKey: every speech service whose server quotes the
 // key in a refusal (an upload's 400, a WebSocket handshake's) returns the
-// error with the key blanked out.
+// error with the key blanked out, also when the message is long enough
+// for the detail's 300-byte clip to cut the key in two.
 func TestSpeechErrorsHideKey(t *testing.T) {
-	const key = "sk-speech-secret-31"
-	for _, pr := range speechPresets {
-		url := asrtest.RefuseServer(t, 400, `{"error":{"message":"bad key `+key+`"}}`)
-		if !pr.Stream {
-			url = "http" + strings.TrimPrefix(url, "ws")
-		}
-		c, err := NewASR(settings.Provider{ID: pr.ID, Endpoint: url}, key, nil)
-		if err != nil {
-			t.Fatalf("%s: %v", pr.ID, err)
-		}
-		_, err = asr.Recognize(context.Background(), c, asr.Silence(time.Second), "", nil, "", asr.Feed{})
-		if err == nil || strings.Contains(err.Error(), key) || !strings.Contains(err.Error(), "[key]") {
-			t.Errorf("%s: %v", pr.ID, err)
+	const key = "sk-speech-secret-31-0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz"
+	for _, pad := range []string{"", strings.Repeat("x", 252)} {
+		for _, pr := range speechPresets {
+			url := asrtest.RefuseServer(t, 400, `{"error":{"message":"`+pad+`bad key `+key+`"}}`)
+			if !pr.Stream {
+				url = "http" + strings.TrimPrefix(url, "ws")
+			}
+			c, err := NewASR(settings.Provider{ID: pr.ID, Endpoint: url}, key, nil)
+			if err != nil {
+				t.Fatalf("%s: %v", pr.ID, err)
+			}
+			_, err = asr.Recognize(context.Background(), c, asr.Silence(time.Second), "", nil, "", asr.Feed{})
+			if err == nil || strings.Contains(err.Error(), key[:12]) || !strings.Contains(err.Error(), "[key]") {
+				t.Errorf("%s (%d bytes before the key): %v", pr.ID, len(pad), err)
+			}
 		}
 	}
 }

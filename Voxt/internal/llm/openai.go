@@ -238,13 +238,13 @@ func (o *OpenAI) readOne(ctx context.Context, body io.Reader, timeout time.Durat
 	}
 	var r oaResponse
 	if err := json.Unmarshal(raw, &r); err != nil {
-		e := newErr(CodeBadResponse, "provider", o.preset.ID, "detail", clip(string(raw), 200))
+		e := newErr(CodeBadResponse, "provider", o.preset.ID, "detail", clip(string(o.hide(raw)), 200))
 		e.Err = err
 		return Response{}, e
 	}
 	if len(r.Error) > 0 && string(r.Error) != "null" {
 		// Some servers answer 200 with an error body.
-		return Response{}, HTTPError(o.preset.ID, r.Model, 500, errorDetail(raw), 0)
+		return Response{}, HTTPError(o.preset.ID, r.Model, 500, errorDetail(o.hide(raw)), 0)
 	}
 	if len(r.Choices) == 0 || r.Choices[0].Message == nil {
 		return Response{}, newErr(CodeBadResponse, "provider", o.preset.ID, "detail", "no choices")
@@ -275,13 +275,13 @@ func (o *OpenAI) readStream(ctx context.Context, body io.Reader, onDelta func(st
 		}
 		var r oaResponse
 		if err := json.Unmarshal([]byte(data), &r); err != nil {
-			e := newErr(CodeBadResponse, "provider", o.preset.ID, "detail", clip(data, 200))
+			e := newErr(CodeBadResponse, "provider", o.preset.ID, "detail", clip(string(o.hide([]byte(data))), 200))
 			e.Err = err
 			perr = e
 			return false
 		}
 		if len(r.Error) > 0 && string(r.Error) != "null" {
-			perr = HTTPError(o.preset.ID, r.Model, 500, errorDetail([]byte(data)), 0)
+			perr = HTTPError(o.preset.ID, r.Model, 500, errorDetail(o.hide([]byte(data))), 0)
 			return false
 		}
 		if r.Model != "" {

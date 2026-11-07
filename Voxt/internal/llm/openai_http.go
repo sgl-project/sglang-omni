@@ -50,7 +50,17 @@ func (o *OpenAI) send(ctx context.Context, url string, body any, model string, t
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-	return nil, HTTPError(o.preset.ID, model, resp.StatusCode, errorDetail(raw), parseRetryAfter(resp.Header))
+	return nil, HTTPError(o.preset.ID, model, resp.StatusCode, errorDetail(o.hide(raw)), parseRetryAfter(resp.Header))
+}
+
+// hide blanks the key out of a server's words before they are clipped
+// into an error's detail: once clipped, a key's first half no longer
+// matches the key that scrub looks for.
+func (o *OpenAI) hide(raw []byte) []byte {
+	if len(o.key) < 4 {
+		return raw
+	}
+	return bytes.ReplaceAll(raw, []byte(o.key), []byte("[key]"))
 }
 
 // errorDetail pulls the message out of the usual error bodies:

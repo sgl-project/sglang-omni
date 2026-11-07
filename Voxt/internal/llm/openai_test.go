@@ -209,22 +209,31 @@ func TestOpenAIKeys(t *testing.T) {
 
 // TestOpenAIErrorsHideKey: a server that quotes the key in an error (a
 // rejection, a body that is not JSON, a stream event that is not JSON) gets
-// it blanked out of the error.
+// it blanked out of the error, also when the quote is long enough for the
+// detail's clip (300 or 200 bytes) to cut the key in two.
 func TestOpenAIErrorsHideKey(t *testing.T) {
-	const key = "sk-secret-4242"
-	for name, h := range map[string]http.HandlerFunc{
-		"400":    jsonReply(400, map[string]any{"error": map[string]any{"message": "bad header: Authorization: Bearer " + key}}),
-		"body":   func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "<html>echo "+key+"</html>") },
-		"stream": sse("data: rejected " + key + "\n\n"),
-	} {
-		f := newFakeServer(t, h)
-		req := Request{Messages: msgs("x")}
-		if name == "stream" {
-			req.OnDelta = func(string) {}
+	const key = "sk-secret-4242-0123456789abcdefghijklmnopqrstuvwxyz"
+	for _, long := range []bool{false, true} {
+		pad := func(n int) string { // puts the key 10 bytes before the clip
+			if !long {
+				return ""
+			}
+			return strings.Repeat("x", n)
 		}
-		_, err := NewOpenAI(presetAt(t, "openai", f.srv.URL), key, f.srv.Client()).Chat(context.Background(), req)
-		if err == nil || strings.Contains(err.Error(), key) || !strings.Contains(err.Error(), "[key]") {
-			t.Errorf("%s: %v", name, err)
+		for name, h := range map[string]http.HandlerFunc{
+			"400":    jsonReply(400, map[string]any{"error": map[string]any{"message": pad(256) + "bad header: Authorization: Bearer " + key}}),
+			"body":   func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "<html>"+pad(179)+"echo "+key+"</html>") },
+			"stream": sse("data: " + pad(181) + "rejected " + key + "\n\n"),
+		} {
+			f := newFakeServer(t, h)
+			req := Request{Messages: msgs("x")}
+			if name == "stream" {
+				req.OnDelta = func(string) {}
+			}
+			_, err := NewOpenAI(presetAt(t, "openai", f.srv.URL), key, f.srv.Client()).Chat(context.Background(), req)
+			if err == nil || strings.Contains(err.Error(), key[:12]) || !strings.Contains(err.Error(), "[key]") {
+				t.Errorf("%s (long %v): %v", name, long, err)
+			}
 		}
 	}
 }

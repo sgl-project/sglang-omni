@@ -127,7 +127,7 @@ func HideKey(err error, key string) error {
 	if key = strings.TrimSpace(key); len(key) < 4 || !errors.As(err, &e) {
 		return err
 	}
-	e.Detail = strings.ReplaceAll(e.Detail, key, "[key]")
+	e.Detail = hideClipped(strings.ReplaceAll(e.Detail, key, "[key]"), key)
 	e.Code = strings.ReplaceAll(e.Code, key, "[key]")
 	// A cause that quotes the server (a WebSocket close reason) is replaced
 	// by its text; it loses its type, which only the key's text needed.
@@ -135,6 +135,21 @@ func HideKey(err error, key string) error {
 		e.Err = errors.New(strings.ReplaceAll(e.Err.Error(), key, "[key]"))
 	}
 	return err
+}
+
+// hideClipped blanks the first bytes of a key that Clip cut in two: the
+// detail then ends with them and "…", and no longer holds the whole key.
+func hideClipped(s, key string) string {
+	body, clipped := strings.CutSuffix(s, "…")
+	if !clipped {
+		return s
+	}
+	for n := len(key) - 1; n >= 4; n-- {
+		if strings.HasSuffix(body, key[:n]) {
+			return body[:len(body)-n] + "[key]…"
+		}
+	}
+	return s
 }
 
 // HTTPError classifies an HTTP error status and the server's message
