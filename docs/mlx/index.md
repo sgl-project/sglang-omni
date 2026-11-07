@@ -1,5 +1,11 @@
 # MLX Path
 
+```{toctree}
+:hidden:
+
+long_audio
+```
+
 Rules for Apple Silicon work. They write down what the native runtime PRs under
 [#2537](https://github.com/sgl-project/sglang-omni/issues/2537) already do.
 
@@ -8,9 +14,9 @@ Rules for Apple Silicon work. They write down what the native runtime PRs under
 | Path | Contents |
 | --- | --- |
 | `sglang_omni_mlx/native/` | C++ runtime on MLX: one server binary per model, a parity CLI per model in `tools/`. Each model's code is in `src/<model>/`; code shared across models (`audio`, `form`, `layers`, `npz`, `tokenizer`, built as the `common` library, plus `swift_port` and `http`) is in `src/common/`. The shared ASR server code (`asr_service`, `worker`, `realtime`) is still in `src/qwen3_asr/`, and so is the `/v1/audio/speech` API that `voxtral_tts_server` and `fishaudio_drama3_server` share (`speech_service`), built on `asr_service`. `ming3_audio_server` serves `/v1/chat/completions` from its own service in `src/ming3_audio/`. |
-| `sglang_omni_mlx/native/ci/` | Model pins, the 392-clip corpus, golden outputs, server API tests. |
+| `sglang_omni_mlx/native/ci/` | Model pins, the 392-clip corpus, golden outputs, server API tests and the [long-recording benchmark](long_audio.md). |
 | `sglang_omni_mlx/<model>/` | Python MLX servers, e.g. the Qwen3-ASR reference server. |
-| `Voxt/` | The macOS app that runs the native servers. See [`Voxt/backend/README.md`](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/backend/README.md). |
+| `Voxt/` | Voxt, the macOS app that runs the native servers. See [`Voxt/README.md`](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/README.md). |
 
 ## Rule 1: MLX is a separate path
 
@@ -30,7 +36,7 @@ Why:
   C++ binaries. An interface over both hides what makes each fast.
 - **Dependencies differ.** SGLang's wheel pulls CUDA. Keeping MLX out lets Voxt
   run without CUDA, PyTorch or Python.
-- **CI differs.** Mac CI only runs on `Voxt/**` and `sglang_omni_mlx/**`, and
+- **CI differs.** Mac CI only runs on `sglang_omni_mlx/**` and the app's Swift packages, and
   GPU CI never runs on a Mac. A shared layer would break one side without CI
   noticing.
 
@@ -48,8 +54,11 @@ agree on it with a maintainer first.
 | --- | --- | --- |
 | `mlx-community/Qwen3-ASR-0.6B-4bit` | `wilsonzheng0327/Qwen3-ASR-0.6B-dflash` | `ci/golden/qwen3-asr-0.6b-4bit-dflash.json` |
 | `mlx-community/Qwen3-ASR-1.7B-{6bit,8bit}` | `wilsonzheng0327/Qwen3-ASR-1.7B-dflash` | `ci/golden/qwen3-asr-1.7b-8bit-dflash.json` |
+| `OpenMOSS-Team/MOSS-Transcribe-Diarize` | `wilsonzheng0327/MOSS-Transcribe-Diarize-dflash` | `ci/model_golden/moss-transcribe-diarize-dflash.json` |
 
-Both drafts are pinned in `ci/models.json`. A draft for another target is one pin, one golden whose request names it under `draft_model_path`, and a row in Voxt's `OmniASRBackend.draftModelReposByRepo`. Verifying a block moves the target's low-precision logits slightly, so a few percent of clips differ from plain decoding in punctuation or a near-tie word; the goldens hold each chip's draft outputs like any other.
+The Qwen3-ASR drafts are pinned in `ci/models.json`; the MOSS-TD draft is pinned in `ci/model_pins.json`. A draft for another target is one pin and one golden whose request names it under `draft_model_path`. Verifying a block moves the target's low-precision logits slightly, so a few percent of clips differ from plain decoding in punctuation or a near-tie word; the goldens hold each chip's draft outputs like any other.
+
+`moss_transcribe_diarize_server` and `moss_transcribe` take the same two flags; the CLI's `verify_rounds` sums over audio chunks.
 
 ## Rule 2: Contribution requirements
 
@@ -66,12 +75,10 @@ Both drafts are pinned in `ci/models.json`. A draft for another target is one pi
 - Reuse `layers`, `swift_port`, the Sortformer front end and the Silero VAD
   port. If your code duplicates something on `main`, move it into the shared
   file in the same PR.
-- Voxt changes stay in `Omni*.swift`, `VoxtTests/Omni*` and `Voxt/backend/`,
-  plus minimal routing edits.
 
 **Parity**
 
-- Name the reference (Voxt's Swift backend at a pinned mlx-audio-swift commit,
+- Name the reference (mlx-audio-swift at a pinned commit,
   or a Python MLX reference) and use the same weights and MLX version.
 - Keep the reference's behavior. Behavior changes go in a separate PR.
 - Report English WER, Chinese CER and mixed MER on the 392-clip corpus,
@@ -99,7 +106,6 @@ Both drafts are pinned in `ci/models.json`. A draft for another target is one pi
   startup rejects. A change to the shared protocol (`common/service.cpp`,
   `qwen3_asr/asr_service.cpp`, `speech_service.cpp`, `realtime.cpp`) gets a
   case against `tests/stub_server.cpp`.
-- New Voxt Omni tests go into the `voxt-unit` job in `voxt-mac-ci.yaml`.
 
 **Robustness**
 
@@ -120,5 +126,5 @@ Both drafts are pinned in `ci/models.json`. A draft for another target is one pi
 - Target `main` (stacked PRs get no Mac CI), non-draft, with the `run-mac-ci` label. Both Mac CI jobs must pass on a real run.
 - Run pre-commit and follow
   [coding-style.md](https://github.com/sgl-project/sglang-omni/blob/main/.claude/skills/code-review/coding-style.md).
-- Update `Voxt/backend/README.md`. Follow the PR format of
+- Follow the PR format of
   [#2676](https://github.com/sgl-project/sglang-omni/pull/2676) or
