@@ -1241,5 +1241,8 @@
   "%d prompts came over.": "带过来了 %d 段提示词。",
   "Speech context": "识别上下文",
   "Tell the speech model who speaks and about what: names, fields, words to expect. It goes with every recording, before the dictionary's terms; a speech service that takes no prompt skips it.": "告诉语音模型谁在说话、在说什么：人名、领域、会出现的词。每次录音都会带上它，放在词典的词前面；不接受提示词的语音服务会忽略它。",
-  "For example: I work on LLM serving and speak Chinese with English technical terms.": "例如：我从事大模型推理服务，说中文，夹杂英文技术词。"
+  "For example: I work on LLM serving and speak Chinese with English technical terms.": "例如：我从事大模型推理服务，说中文，夹杂英文技术词。",
+  "Not set": "未设置",
+  "%d character": "%d 字",
+  "%d characters": "%d 字"
 }
