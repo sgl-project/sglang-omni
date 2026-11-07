@@ -1603,7 +1603,7 @@ class MossAudioTokenizerEncoder(nn.Module):
         )
         for index, waveform in enumerate(normalized):
             batch[index, :, : waveform.shape[-1]] = waveform
-        lengths = torch.tensor(lengths_cpu, device=device, dtype=torch.long)
+        lengths = torch.tensor(lengths_cpu, device="cpu", dtype=torch.long).to(device)
         return batch, lengths, lengths_cpu
 
     def flatten_channels(
@@ -2411,7 +2411,9 @@ class MossAudioVocoder:
         )
         for index, item in enumerate(codes_nq_t):
             audio_codes[:, index, : item.shape[1]] = item
-        lengths = torch.tensor(lengths_cpu, device=self.device, dtype=torch.int32)
+        lengths = torch.tensor(lengths_cpu, device="cpu", dtype=torch.int32).to(
+            self.device
+        )
         hidden = self.model.quantizer.decode_codes(audio_codes)
         hidden = hidden.to(dtype=self.model.decoder_dtype)
         audio, _ = self.model.decoder(

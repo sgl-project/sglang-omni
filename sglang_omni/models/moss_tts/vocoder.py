@@ -224,9 +224,9 @@ def decode_codes_batch(
         )
         input_lengths = torch.tensor(
             input_lengths_cpu,
-            device=device,
+            device="cpu",
             dtype=torch.int32,
-        )
+        ).to(device)
         output_lengths_cpu = decoder.output_lengths(input_lengths_cpu)
         audio, audio_lengths = decode_padded_codes(
             audio_codes,

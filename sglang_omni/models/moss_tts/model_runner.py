@@ -25,6 +25,7 @@ from sglang_omni.models.moss_tts.sampler import DelayGraphBatch
 from sglang_omni.models.moss_tts.sampling_kernels import (
     multinomial_with_seed_and_token_ids,
 )
+from sglang_omni.models.moss_tts.sampling_npu import multinomial_with_seed_npu
 from sglang_omni.scheduling.types import (
     RequestOutput,
     SchedulerOutput,
@@ -518,7 +519,7 @@ class MossTTSModelRunner(ModelRunner):
         device: torch.device,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Upload seeds and positions without a pageable copy blocking the forward."""
-        values = torch.tensor([seeds, positions], dtype=torch.long).t()
+        values = torch.tensor([seeds, positions], dtype=torch.long, device="cpu").t()
         if device.type != "cuda":
             metadata = values.to(device=device)
         else:
@@ -605,8 +606,8 @@ class MossTTSModelRunner(ModelRunner):
                     int(data.is_audio),
                 ],
                 dtype=torch.long,
-                device=device,
-            )
+                device="cpu",
+            ).to(device)
         data.delay_state = state
         return state
 
@@ -642,38 +643,38 @@ class MossTTSModelRunner(ModelRunner):
         delayed = delay_state[:, 1]
         audio_mask = delay_state[:, 2].bool()
         gen_steps = torch.tensor(
-            [int(d.generation_steps) for d in datas], dtype=torch.long, device=device
-        )
+            [int(d.generation_steps) for d in datas], dtype=torch.long, device="cpu"
+        ).to(device)
         text_temp = torch.tensor(
             [float(d.text_temperature) for d in datas],
             dtype=torch.float32,
-            device=device,
-        )
+            device="cpu",
+        ).to(device)
         audio_temp = torch.tensor(
             [float(d.audio_temperature) for d in datas],
             dtype=torch.float32,
-            device=device,
-        )
+            device="cpu",
+        ).to(device)
         text_top_p = torch.tensor(
-            [float(d.text_top_p) for d in datas], dtype=torch.float32, device=device
-        )
+            [float(d.text_top_p) for d in datas], dtype=torch.float32, device="cpu"
+        ).to(device)
         text_top_k = torch.tensor(
-            [int(d.text_top_k) for d in datas], dtype=torch.long, device=device
-        )
+            [int(d.text_top_k) for d in datas], dtype=torch.long, device="cpu"
+        ).to(device)
         audio_top_p = torch.tensor(
-            [float(d.audio_top_p) for d in datas], dtype=torch.float32, device=device
-        )
+            [float(d.audio_top_p) for d in datas], dtype=torch.float32, device="cpu"
+        ).to(device)
         audio_top_k = torch.tensor(
-            [int(d.audio_top_k) for d in datas], dtype=torch.long, device=device
-        )
+            [int(d.audio_top_k) for d in datas], dtype=torch.long, device="cpu"
+        ).to(device)
         audio_rep = torch.tensor(
             [float(d.audio_repetition_penalty) for d in datas],
             dtype=torch.float32,
-            device=device,
-        )
+            device="cpu",
+        ).to(device)
         sampling_seeds = torch.tensor(
-            [int(d.sampling_seed) for d in datas], dtype=torch.long, device=device
-        )
+            [int(d.sampling_seed) for d in datas], dtype=torch.long, device="cpu"
+        ).to(device)
         num_channels = n_vq + 1
 
         text_logits = channel_logits[0].to(torch.float32)
@@ -713,8 +714,8 @@ class MossTTSModelRunner(ModelRunner):
                         if 0 <= t < vocab
                     ],
                     dtype=torch.long,
-                    device=device,
-                )
+                    device="cpu",
+                ).to(device)
                 text_logits[not_audio] = text_logits[not_audio].index_fill(
                     -1, exclude, _NEG_INF
                 )
@@ -948,6 +949,12 @@ class MossTTSModelRunner(ModelRunner):
             if device.type == "cpu":
                 sampled[sample_mask] = MossTTSModelRunner.multinomial_with_seed_cpu(
                     probs[sample_mask],
+                    seeds_row[sample_mask],
+                    positions_row[sample_mask],
+                )
+            elif device.type == "npu":
+                sampled[sample_mask] = multinomial_with_seed_npu(
+                    scores[sample_mask],
                     seeds_row[sample_mask],
                     positions_row[sample_mask],
                 )
