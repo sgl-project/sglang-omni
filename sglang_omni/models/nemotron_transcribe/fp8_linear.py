@@ -57,7 +57,7 @@ class Fp8Linear(nn.Module):
     def forward(self, hidden: torch.Tensor) -> torch.Tensor:
         flat = hidden.reshape(-1, self.in_features)
         quantized = (flat / self.input_scale).clamp(-FP8_MAX, FP8_MAX).to(FP8_DTYPE)
-        output = torch._scaled_mm(
+        output = torch._scaled_mm(  # noqa: leading-underscore - PyTorch operator name
             quantized,
             self.weight.t(),
             scale_a=self.input_scale,
