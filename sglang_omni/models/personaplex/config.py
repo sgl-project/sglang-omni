@@ -55,6 +55,8 @@ class PersonaPlexSessionLMFactoryArgs(PersonaPlexDepformerFactoryArgs):
     "Keep each session one request that its later units feed."
     live_step_graph: bool = False
     "Replay a decode step's sampling, Depformer and row embedding from CUDA graphs."
+    share_prompt_kv: bool = False
+    "Share the prompt's KV between sessions that open with the same voice and role."
 
 
 class PersonaPlexSessionLMStageConfig(EngineStageConfig):

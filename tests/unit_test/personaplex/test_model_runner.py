@@ -884,6 +884,50 @@ def test_a_step_of_only_live_rows_can_run_as_a_decode_step() -> None:
     assert get_omni_prefill_inputs(forward_batch).input_embeds.shape[0] == 2 + prompt
 
 
+def test_a_first_unit_cached_to_its_last_prompt_row_joins_a_decode_step() -> None:
+    from sglang.srt.model_executor.forward_batch_info import ForwardMode
+
+    model = FakeModel(max_batch=3)
+    runner = make_runner(model)
+    runner.live_rows_as_decode = True
+    runner.share_prompt_kv = True
+    live = make_request(5, request_id="a")
+    generate(runner, live, [77, 78])
+    prompt = live.data.talker_model_inputs["timeline"].num_prompt_positions
+    live_req = scheduled(live, [77, 78], prefix_len=prompt + 1)
+    fresh = make_request(5, request_id="c")
+    fresh_req = scheduled(fresh, prefix_len=prompt - 1)
+    expected = torch.cat(
+        [
+            runner.missing_rows(live.data, live_req),
+            runner.prefill_rows(fresh.data)[-1:],
+        ]
+    )
+    forward_batch = SimpleNamespace(
+        replace_embeds=None, input_ids=torch.zeros(2), forward_mode=ForwardMode.EXTEND
+    )
+    runner.before_prefill(
+        forward_batch, SimpleNamespace(reqs=[live_req, fresh_req]), [live, fresh]
+    )
+    assert forward_batch.forward_mode == ForwardMode.DECODE
+    assert torch.equal(model.fusion_buffer[:2], expected)
+    forced = fresh.data.talker_model_inputs["timeline"].forced_agent_at_start
+    assert torch.equal(fresh.data.talker_model_inputs["prefill_forced"], forced)
+
+    # Without the option the same step is an extend.
+    runner.share_prompt_kv = False
+    fresh = make_request(5, request_id="d")
+    forward_batch = SimpleNamespace(
+        replace_embeds=None, input_ids=torch.zeros(1), forward_mode=ForwardMode.EXTEND
+    )
+    runner.before_prefill(
+        forward_batch,
+        SimpleNamespace(reqs=[scheduled(fresh, prefix_len=prompt - 1)]),
+        [fresh],
+    )
+    assert forward_batch.forward_mode == ForwardMode.EXTEND
+
+
 def test_steady_units_build_decode_rows_from_the_host_timeline_alike() -> None:
     def decode_rows(steady_units_as_decode: bool) -> torch.Tensor:
         model = FakeModel(max_batch=2)

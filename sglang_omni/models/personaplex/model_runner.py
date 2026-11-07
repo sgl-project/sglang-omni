@@ -75,6 +75,7 @@ class PersonaPlexModelRunner(ModelRunner):
     # in all but name.
     live_rows_as_decode: bool = False
     steady_units_as_decode: bool = False
+    share_prompt_kv: bool = False
     live_step_graph: LiveStepGraphRunner | None = None
     live_row_graph: LiveRowGraphRunner | None = None
     live_step: CapturedLiveStep | None = None
@@ -210,24 +211,30 @@ class PersonaPlexModelRunner(ModelRunner):
                 position - timeline.num_prompt_positions
             ]
 
-    def prefill_rows(self, data: SGLangARRequestData) -> torch.Tensor:
+    def prefill_rows(self, data: SGLangARRequestData, start: int = 0) -> torch.Tensor:
         timeline = self.request_timeline(data)
         model = self.model
-        tokens = timeline.prefill_tokens.to(self.model_device)
+        tokens = timeline.prefill_tokens[start:].to(self.model_device)
         dtype = model.fusion_buffer.dtype
-        if not timeline.prefill_embedding_positions:
+        stored_positions = [
+            position - start
+            for position in timeline.prefill_embedding_positions
+            if position >= start
+        ]
+        if not stored_positions:
             return model.embed_rows(tokens).to(dtype)
         else:
             pass
+        first_stored = len(timeline.prefill_embedding_positions) - len(stored_positions)
         stored = torch.as_tensor(
-            timeline.prefill_embeddings, device=self.model_device
+            timeline.prefill_embeddings[first_stored:], device=self.model_device
         ).to(dtype)
         known = torch.ones(tokens.shape[0], dtype=torch.bool, device=self.model_device)
-        known[timeline.prefill_embedding_positions] = False
+        known[stored_positions] = False
         rows = torch.empty(
             tokens.shape[0], stored.shape[1], dtype=dtype, device=self.model_device
         )
-        rows[timeline.prefill_embedding_positions] = stored
+        rows[stored_positions] = stored
         rows[known] = model.embed_rows(tokens[known]).to(dtype)
         return rows
 
@@ -411,7 +418,7 @@ class PersonaPlexModelRunner(ModelRunner):
         end = num_origin + len(req.output_ids)
         pieces = []
         if start < num_prompt:
-            pieces.append(self.prefill_rows(data)[start:])
+            pieces.append(self.prefill_rows(data, start))
         else:
             pass
         first = max(start, num_prompt)
@@ -491,15 +498,17 @@ class PersonaPlexModelRunner(ModelRunner):
                 else:
                     pass
                 inputs["prefill_forced"] = free_codes
+        # Note (Junnan Li): A first unit whose prompt is cached up to its last row
+        # lacks one row, as a live row does, so the step stays a decode step.
+        is_decode_step = self.live_rows_as_decode and (
+            len(live_rows) == len(pieces)
+            or (
+                self.share_prompt_kv
+                and all(piece is None or piece.shape[0] == 1 for piece in pieces)
+            )
+        )
         if len(live_rows) == len(pieces):
             input_embeds = self.embed_live_rows(live_rows)
-            if self.live_rows_as_decode:
-                model = self.model
-                model.fusion_buffer[: input_embeds.shape[0]] = input_embeds
-                forward_batch.forward_mode = ForwardMode.DECODE
-                return
-            else:
-                pass
         elif live_rows:
             live_embeds = self.embed_live_rows(live_rows)
             for row, index in enumerate(live_pieces):
@@ -507,12 +516,16 @@ class PersonaPlexModelRunner(ModelRunner):
             input_embeds = torch.cat(pieces, dim=0)
         else:
             input_embeds = torch.cat(pieces, dim=0)
-        attach_omni_prefill_inputs(
-            forward_batch,
-            OmniPrefillInputs(
-                input_embeds=input_embeds, input_embeds_are_projected=True
-            ),
-        )
+        if is_decode_step:
+            self.model.fusion_buffer[: input_embeds.shape[0]] = input_embeds
+            forward_batch.forward_mode = ForwardMode.DECODE
+        else:
+            attach_omni_prefill_inputs(
+                forward_batch,
+                OmniPrefillInputs(
+                    input_embeds=input_embeds, input_embeds_are_projected=True
+                ),
+            )
 
     def cleanup_prefill(
         self,

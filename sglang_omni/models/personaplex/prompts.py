@@ -10,6 +10,7 @@ does. The role prompt is SentencePiece text between <system> tags.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import shutil
 import tarfile
@@ -85,6 +86,19 @@ class VoicePrompt:
     embeddings: torch.Tensor | None = None
     tail_codes: torch.Tensor | None = None
     waveform: torch.Tensor | None = None
+    key: str = ""
+
+
+def tensors_digest(*tensors: torch.Tensor | None) -> str:
+    digest = hashlib.blake2b(digest_size=16)
+    for tensor in tensors:
+        if tensor is None:
+            digest.update(b"-")
+        else:
+            flat = tensor.detach().cpu().contiguous().reshape(-1)
+            digest.update(f"{flat.dtype}{tuple(tensor.shape)}".encode())
+            digest.update(flat.view(torch.uint8).numpy().tobytes())
+    return digest.hexdigest()
 
 
 def unpack_voices(archive: Path, parent: Path) -> Path:
@@ -213,12 +227,12 @@ def load_voice_prompt(
         embeddings = saved["embeddings"]
         embeddings = embeddings.reshape(embeddings.shape[0], -1).to(torch.float32)
         frames = int(embeddings.shape[0]) + 1
+        tail_codes = voice_tail_codes_from_cache(saved["cache"].to(torch.long), frames)
         return VoicePrompt(
             frames=frames,
             embeddings=embeddings,
-            tail_codes=voice_tail_codes_from_cache(
-                saved["cache"].to(torch.long), frames
-            ),
+            tail_codes=tail_codes,
+            key=tensors_digest(embeddings, tail_codes),
         )
     else:
         pass
@@ -229,7 +243,9 @@ def load_voice_prompt(
     )
     waveform = pad_to_whole_frames(torch.as_tensor(mono, dtype=torch.float32))
     return VoicePrompt(
-        frames=math.ceil(waveform.shape[-1] / SAMPLES_PER_FRAME), waveform=waveform
+        frames=math.ceil(waveform.shape[-1] / SAMPLES_PER_FRAME),
+        waveform=waveform,
+        key=tensors_digest(waveform),
     )
 
 
@@ -244,6 +260,7 @@ __all__ = [
     "packaged_voices",
     "pad_to_whole_frames",
     "resolve_voice_path",
+    "tensors_digest",
     "tokenize_text_prompt",
     "voices_dir",
     "wrap_system_tags",
