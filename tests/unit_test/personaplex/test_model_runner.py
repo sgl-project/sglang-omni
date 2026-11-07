@@ -838,3 +838,60 @@ def test_a_step_reads_every_row_back_in_one_host_copy(monkeypatch) -> None:
         frames = request.data.talker_model_inputs["frames"]
         assert len(frames) == 2
         assert request.data.talker_model_inputs["decode_feedback"].text_token == token
+
+
+def test_a_step_of_only_live_rows_can_run_as_a_decode_step() -> None:
+    from sglang.srt.model_executor.forward_batch_info import ForwardMode
+
+    model = FakeModel(max_batch=3)
+    runner = make_runner(model)
+    runner.live_rows_as_decode = True
+    live = [make_request(5, request_id=name) for name in "ab"]
+    tokens = [[77, 78, 79], [87, 88]]
+    for request, generated in zip(live, tokens, strict=True):
+        generate(runner, request, generated)
+    prompt = live[0].data.talker_model_inputs["timeline"].num_prompt_positions
+    reqs = [
+        scheduled(request, generated, prefix_len=prompt + len(generated) - 1)
+        for request, generated in zip(live, tokens, strict=True)
+    ]
+    expected = torch.cat(
+        [
+            runner.missing_rows(request.data, req)
+            for request, req in zip(live, reqs, strict=True)
+        ]
+    )
+    forward_batch = SimpleNamespace(
+        replace_embeds=None, input_ids=torch.zeros(2), forward_mode=ForwardMode.EXTEND
+    )
+    runner.before_prefill(forward_batch, SimpleNamespace(reqs=reqs), live)
+    assert forward_batch.forward_mode == ForwardMode.DECODE
+    assert get_omni_prefill_inputs(forward_batch) is None
+    assert torch.equal(model.fusion_buffer[:2], expected)
+    runner.cleanup_prefill(forward_batch, None, live)
+    assert forward_batch.forward_mode == ForwardMode.EXTEND
+
+    fresh = make_request(5, request_id="c")
+    forward_batch = SimpleNamespace(
+        replace_embeds=None,
+        input_ids=torch.zeros(2 + prompt),
+        forward_mode=ForwardMode.EXTEND,
+    )
+    runner.before_prefill(
+        forward_batch, SimpleNamespace(reqs=[*reqs, scheduled(fresh)]), [*live, fresh]
+    )
+    assert forward_batch.forward_mode == ForwardMode.EXTEND
+    assert get_omni_prefill_inputs(forward_batch).input_embeds.shape[0] == 2 + prompt
+
+
+def test_steady_units_build_decode_rows_from_the_host_timeline_alike() -> None:
+    def decode_rows(steady_units_as_decode: bool) -> torch.Tensor:
+        model = FakeModel(max_batch=2)
+        runner = make_runner(model)
+        runner.steady_units_as_decode = steady_units_as_decode
+        requests = [make_request(4, request_id=name) for name in "ab"]
+        run_prefill(runner, requests, [70, 71])
+        runner.before_decode(None, None, requests)
+        return model.fusion_buffer[:2].clone()
+
+    assert torch.equal(decode_rows(True), decode_rows(False))
