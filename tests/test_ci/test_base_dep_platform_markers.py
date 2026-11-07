@@ -26,7 +26,9 @@ def test_pynini_dependencies_skip_arm_platforms(
     requirements = [Requirement(dependency) for dependency in dependencies]
     environment = {"sys_platform": sys_platform, "platform_machine": platform_machine}
     for name, specifier in EXPECTED_SPECIFIERS.items():
-        matches = [req for req in requirements if req.name == name]
+        matches = [
+            requirement for requirement in requirements if requirement.name == name
+        ]
         assert len(matches) == 1, name
         requirement = matches[0]
         assert str(requirement.specifier) == specifier
