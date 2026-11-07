@@ -36,6 +36,7 @@ from sglang_omni.models.fishaudio_drama3.model_inputs import (
     Drama3DecodeBuffers,
     Drama3DecodeStatePool,
     Drama3StepInputs,
+    next_frame_labels,
 )
 from sglang_omni.models.fishaudio_drama3.request_builders import Drama3RequestData
 from sglang_omni.models.fishaudio_drama3.sglang_model import Drama3ForCausalLM
@@ -213,40 +214,56 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
             self.prefill_inputs = None
             raise
 
+    def pinned(self, host: torch.Tensor) -> torch.Tensor:
+        """A host tensor whose copies to the device need no host sync: a pinned
+        block from the caching host allocator stays reserved until the copy lands,
+        so the scheduler keeps launching while another process holds the GPU."""
+        if self.device.type == "cuda":
+            return host.pin_memory()
+        else:
+            return host
+
     def stage_step(
-        self, requests: list[SchedulerRequest], frames: torch.Tensor
+        self,
+        requests: list[SchedulerRequest],
+        frames: torch.Tensor,
+        next_frames: torch.Tensor,
     ) -> Drama3StepInputs:
         request_data = [request_data_of(request) for request in requests]
+
+        def staged(host: torch.Tensor) -> torch.Tensor:
+            return self.pinned(host).to(self.device, non_blocking=True)
+
         step_inputs = Drama3StepInputs(
             request_ids=request_ids_of(request_data),
-            frames=frames.to(self.device),
-            ras_windows=torch.tensor(
-                [ras_window(data.frame_rows) for data in request_data],
-                dtype=torch.int64,
-                device=self.device,
+            frames=staged(frames),
+            next_frames=staged(next_frames),
+            ras_windows=staged(
+                torch.tensor(
+                    [ras_window(data.frame_rows) for data in request_data],
+                    dtype=torch.int64,
+                )
             ),
-            temperature=torch.tensor(
-                [data.temperature for data in request_data],
-                dtype=torch.float32,
-                device=self.device,
+            temperature=staged(
+                torch.tensor(
+                    [data.temperature for data in request_data], dtype=torch.float32
+                )
             ),
-            top_k=torch.tensor(
-                [data.top_k for data in request_data],
-                dtype=torch.int64,
-                device=self.device,
+            top_k=staged(
+                torch.tensor([data.top_k for data in request_data], dtype=torch.int64)
             ),
-            top_p=torch.tensor(
-                [data.top_p for data in request_data],
-                dtype=torch.float32,
-                device=self.device,
+            top_p=staged(
+                torch.tensor([data.top_p for data in request_data], dtype=torch.float32)
             ),
         )
         self.decode_buffers.epsilon_cutoff[: len(request_data)].copy_(
-            torch.tensor(
-                [data.epsilon_cutoff for data in request_data],
-                dtype=torch.float32,
-                device=self.device,
-            )
+            self.pinned(
+                torch.tensor(
+                    [data.epsilon_cutoff for data in request_data],
+                    dtype=torch.float32,
+                )
+            ),
+            non_blocking=True,
         )
         self.model.step_exchange.stage(step_inputs)
         return step_inputs
@@ -257,13 +274,18 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
         schedule_batch: ScheduleBatch,
         requests: list[SchedulerRequest],
     ) -> None:
-        """Stage every request's whole frame history; the batch arguments are the
-        interface contract."""
+        """Stage every request's whole frame history and the next-frame labels on
+        the host; the batch arguments are the interface contract."""
         self.prefill_inputs = None
         histories = [
             extend_frame_history(request_data_of(request)) for request in requests
         ]
-        self.prefill_inputs = self.stage_step(requests, torch.cat(histories))
+        frames = torch.cat(histories)
+        last_rows = torch.tensor([len(history) for history in histories]).cumsum(0) - 1
+        next_frames = next_frame_labels(
+            frames, last_rows, self.model.config.eos_token_id
+        )
+        self.prefill_inputs = self.stage_step(requests, frames, next_frames)
 
     def cleanup_prefill(
         self,

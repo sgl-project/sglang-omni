@@ -703,6 +703,7 @@ def step_inputs(
     return Drama3StepInputs(
         request_ids=request_ids,
         frames=torch.full((row_count, FRAME_WIDTH), marker),
+        next_frames=torch.full((row_count, FRAME_WIDTH), marker),
         ras_windows=torch.full((request_count, 16), EMPTY_RAS_SLOT),
         temperature=torch.ones(request_count),
         top_k=torch.ones(request_count, dtype=torch.int64),
@@ -2069,6 +2070,84 @@ def test_next_frame_labels_pair_rows_within_each_request() -> None:
         placeholder,
     ]
     assert torch.equal(frames, original)
+
+
+def test_prefill_staging_pairs_each_row_with_its_requests_next_frame() -> None:
+    """before_prefill hands the model every request's history and, per row, the
+    next frame of the same request with the eos placeholder on each last row,
+    so a request boundary never leaks its neighbour's first frame as a label."""
+    rows_a, rows_b = frame_rows_of([3, 2], seed=6)
+    requests = []
+    for request_id, rows in (("a", rows_a), ("b", rows_b)):
+        data = built_request(rows, request_id)
+        admitted_for_prefill(data, 0, len(rows))
+        requests.append(SchedulerRequest(request_id=request_id, data=data))
+    runner = Drama3ModelRunner.__new__(Drama3ModelRunner)
+    runner.device = torch.device("cpu")
+    runner.model = SimpleNamespace(
+        config=SimpleNamespace(eos_token_id=EOS_TOKEN_ID), step_exchange=StepExchange()
+    )
+    runner.decode_buffers = Drama3DecodeBuffers.allocate(
+        row_count=4, frame_width=FRAME_WIDTH, device=torch.device("cpu")
+    )
+    runner.prefill_inputs = None
+
+    runner.before_prefill(None, SimpleNamespace(), requests)
+
+    staged = runner.model.step_exchange.take_inputs(["a", "b"], 5)
+    placeholder = [EOS_TOKEN_ID] + [0] * (FRAME_WIDTH - 1)
+    assert staged.frames.tolist() == rows_a + rows_b
+    assert staged.next_frames.tolist() == (
+        rows_a[1:] + [placeholder] + rows_b[1:] + [placeholder]
+    )
+    assert staged.ras_windows.tolist() == [ras_window(rows_a), ras_window(rows_b)]
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="stages onto a CUDA device")
+def test_prefill_staging_keeps_each_steps_copies_apart_without_a_sync() -> None:
+    """Two prefills staged back to back, with the stream still busy and no host
+    sync between them, each reach the device with their own frames, labels and
+    knobs: every copy's pinned source is a fresh block the caching host allocator
+    holds until the copy's event completes, so the second staging cannot
+    overwrite the first one's bytes in flight."""
+    rows_a = frame_rows_of([3], seed=7)[0]
+    rows_b = frame_rows_of([3], seed=8)[0]
+    assert rows_a != rows_b
+    requests = {}
+    for knob_index, (request_id, rows) in enumerate((("a", rows_a), ("b", rows_b))):
+        request = prompted_request(rows, request_id, knob_index)
+        admitted_for_prefill(request_data_of(request), 0, len(rows))
+        requests[request_id] = request
+    device = torch.device("cuda")
+    runner = Drama3ModelRunner.__new__(Drama3ModelRunner)
+    runner.device = device
+    runner.model = SimpleNamespace(
+        config=SimpleNamespace(eos_token_id=EOS_TOKEN_ID), step_exchange=StepExchange()
+    )
+    runner.decode_buffers = Drama3DecodeBuffers.allocate(
+        row_count=4, frame_width=FRAME_WIDTH, device=device
+    )
+    runner.prefill_inputs = None
+    exchange = runner.model.step_exchange
+
+    torch.cuda._sleep(
+        2_000_000_000
+    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    runner.before_prefill(None, SimpleNamespace(), [requests["a"]])
+    first = exchange.take_inputs(["a"], 3)
+    runner.before_prefill(None, SimpleNamespace(), [requests["b"]])
+    second = exchange.take_inputs(["b"], 3)
+    torch.cuda.synchronize()
+
+    placeholder = [EOS_TOKEN_ID] + [0] * (FRAME_WIDTH - 1)
+    assert first.frames.tolist() == rows_a
+    assert second.frames.tolist() == rows_b
+    assert first.next_frames.tolist() == rows_a[1:] + [placeholder]
+    assert second.next_frames.tolist() == rows_b[1:] + [placeholder]
+    assert first.ras_windows.tolist() == [ras_window(rows_a)]
+    assert second.ras_windows.tolist() == [ras_window(rows_b)]
+    assert (first.temperature.tolist(), first.top_k.tolist()) == ([0.5], [1])
+    assert (second.temperature.tolist(), second.top_k.tolist()) == ([0.75], [2])
 
 
 def tower_cache(attention: DenseAttention) -> dict[tuple[int, str, int], torch.Tensor]:
