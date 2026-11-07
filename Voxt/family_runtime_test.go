@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"os"
 	"reflect"
@@ -13,9 +12,6 @@ import (
 	famruntime "github.com/hehehai/actnowkit/runtime"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/llmrt"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/llmrt/llmrttest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni/omnitest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/resident"
@@ -133,42 +129,6 @@ func TestFamilyRuntimeOmni(t *testing.T) {
 	a.quit()
 	if _, ok := a.runtimeFile(t); ok {
 		t.Error("the runtime file is left after quitting")
-	}
-}
-
-// TestFamilyRuntimeLLM: the language model in the runtime file: loaded
-// with the memory the process reported (worker "llm"; the fake process
-// cannot be measured, as in TestFamilyRuntimeOmni), idle after its chat,
-// and gone when another app's request unloads it.
-func TestFamilyRuntimeLLM(t *testing.T) {
-	t.Setenv(llmrt.DevEnv, "")
-	(&fakeProcMemory{mem: map[int]int64{}}).install(t)
-	a, _, _ := newTestApp(t)
-	seedModels(t, a, models.LLMFast)
-	self, _ := os.Executable()
-	env := append(llmrttest.Env(""), omnitest.EnvFake+"=") // this one is no Omni server
-	events := make(chan resident.Event, 256)
-	a.llmrt = llmrt.New(llmrt.Config{Bin: self, Env: env, IdleTimeout: -1,
-		OnModel: reportTo(events, a.modelEvents(workerLLM)), BeforeLoad: a.beforeLoad()})
-	chat, err := a.openLLM(context.Background(), models.LLMFast, a.models.Dir(models.LLMFast))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := chat.Chat(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.User, Content: "hi"}}, Skill: llm.SkillRewrite}); err != nil {
-		t.Fatal(err)
-	}
-	a.waitIdle(t, events, models.LLMFast)
-	l, _ := a.loadedModel(t, models.LLMFast)
-	if rev := a.models.Status(models.LLMFast).Revision; l.Revision != rev || rev == "" || l.Worker != workerLLM || l.Bytes != 2<<30 {
-		t.Errorf("loaded %+v (revision %q)", l, rev)
-	}
-	a.unloadIdleModel(models.LLMFast)
-	waitUnloaded(t, events, models.LLMFast)
-	if f, _ := a.runtimeFile(t); len(f.Loaded) != 0 {
-		t.Errorf("loaded after the unload: %+v", f.Loaded)
-	}
-	if st := a.llmrt.Status(); st.State != llmrt.Stopped {
-		t.Errorf("the process %+v", st)
 	}
 }
 

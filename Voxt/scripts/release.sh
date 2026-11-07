@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # The release build of VoxtNew, on an Apple silicon Mac (docs/release.md):
-# the helper, the Omni runtime (speech) and voxtnew-llm (language models)
-# are built and staged into resources/darwin-arm64/, then go tool mygo
-# build makes build/darwin-arm64/Voxt.app and its disk image with all
-# of them inside, and scripts/release-verify.sh checks the result.
+# the helper and the Omni runtime (speech) are built and staged into
+# resources/darwin-arm64/, then go tool mygo build makes
+# build/darwin-arm64/Voxt.app and its disk image with both inside, and
+# scripts/release-verify.sh checks the result.
 #
 #   scripts/release.sh                                  # ad hoc: a release-style test build
 #   VOXTNEW_SIGN_IDENTITY="$(scripts/release-identity.sh 779M533DL5 | cut -f1)" \
@@ -11,10 +11,10 @@
 #   scripts/mac-gui.sh scripts/release.sh …              # the same over ssh (see below)
 #
 # Options:
-#   --runtimes DIR       take the runtimes prebuilt from DIR/omni and DIR/llm
-#                        (scripts/build-omni.sh --out DIR/omni, scripts/build-llm.sh
-#                        --out DIR/llm; mac-air: ~/voxtnew-runtime) instead of
-#                        building them (about 10 minutes and 3 GB of build trees)
+#   --runtimes DIR       take the Omni runtime prebuilt from DIR/omni
+#                        (scripts/build-omni.sh --out DIR/omni; mac-air:
+#                        ~/voxtnew-runtime) instead of building it (a few
+#                        minutes and 1 GB of build tree)
 #   --notarize PROFILE   notarize with notarytool's keychain profile PROFILE
 #                        (xcrun notarytool store-credentials PROFILE …), then
 #                        staple the app and the disk image; needs the identity
@@ -24,11 +24,11 @@
 #                        a notarized Developer ID build with update files.
 #                        Without it, a build with update files gets the
 #                        script's --dry-run
-#   --keep-runtimes      leave the staged runtimes in resources/darwin-arm64
+#   --keep-runtimes      leave the staged Omni runtime in resources/darwin-arm64
 #
 # With VOXTNEW_SIGN_IDENTITY (a Developer ID Application identity of the
-# team 779M533DL5, its SHA-1: scripts/release-identity.sh) the helper, the
-# LLM and then every Mach-O file and framework inside the app are signed
+# team 779M533DL5, its SHA-1: scripts/release-identity.sh) the helper and
+# then every Mach-O file and framework inside the app are signed
 # with it, with the hardened runtime and a secure timestamp (mygo build:
 # signNestedCode), and the build takes the update feed of
 # release/mygo.release.json if it has one (scripts/release-config.sh; 2.0.0
@@ -122,15 +122,13 @@ if [[ -n "$IDENTITY" ]]; then
   rm -rf "$probe"
 fi
 
-# One version everywhere: the app, the helper, the LLM, the notes.
+# One version everywhere: the app, the helper, the notes.
 version="$(jq -r .version mygo.json)"
-for plist in helper/Support/Info.plist llm/Support/Info.plist; do
-  v="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")"
-  if [[ "$v" != "$version" ]]; then
-    echo "$plist says $v, mygo.json $version: make them agree (docs/release.md §2.1)" >&2
-    exit 1
-  fi
-done
+v="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' helper/Support/Info.plist)"
+if [[ "$v" != "$version" ]]; then
+  echo "helper/Support/Info.plist says $v, mygo.json $version: make them agree (docs/release.md §2.1)" >&2
+  exit 1
+fi
 notes="$(awk -v v="$version" '/^## /{f = index($0, "[" v "]") || $2 == v; next} f' CHANGELOG.md)"
 if [[ -z "${notes//[[:space:]]/}" ]]; then
   if ((PUBLISH)); then
@@ -159,7 +157,7 @@ restore() {
   cp "$saved/mygo.json" "$ROOT/mygo.json"
   rm -rf "$saved"
   if ((KEEP == 0)); then
-    rm -rf "$RES/omni" "$RES/llm"
+    rm -rf "$RES/omni"
   else
     :
   fi
@@ -168,26 +166,23 @@ trap restore EXIT
 
 echo "== helper"
 VOXTNEW_SIGN_IDENTITY="${IDENTITY:--}" scripts/build-helper.sh
+# voxtnew-llm, which an older checkout staged here: mygo would ship it.
+rm -rf "${RES:?}/llm"
 if [[ -n "$RUNTIMES" ]]; then
-  echo "== runtimes from $RUNTIMES"
-  for part in omni llm; do
-    [[ -d "$RUNTIMES/$part" ]] || { echo "no $RUNTIMES/$part" >&2; exit 1; }
-    rm -rf "${RES:?}/$part"
-    mkdir -p "$RES"
-    # APFS clones: no copy on disk.
-    cp -Rc "$RUNTIMES/$part" "$RES/$part"
-  done
+  echo "== Omni runtime from $RUNTIMES"
+  [[ -d "$RUNTIMES/omni" ]] || { echo "no $RUNTIMES/omni" >&2; exit 1; }
+  rm -rf "${RES:?}/omni"
+  mkdir -p "$RES"
+  # An APFS clone: no copy on disk.
+  cp -Rc "$RUNTIMES/omni" "$RES/omni"
 else
   echo "== Omni runtime"
   scripts/build-omni.sh --clean
-  echo "== voxtnew-llm"
-  VOXTNEW_SIGN_IDENTITY="${IDENTITY:--}" scripts/build-llm.sh
 fi
 [[ -x "$RES/omni/bin/qwen3_asr_server" ]] || { echo "no Omni runtime in $RES/omni" >&2; exit 1; }
 # A runtime built before silero_vad_server (Silero VAD's copy of
 # qwen3_asr_server, internal/omni Spec.Binary) gets it here.
 [[ -x "$RES/omni/bin/silero_vad_server" ]] || cp -c "$RES/omni/bin/qwen3_asr_server" "$RES/omni/bin/silero_vad_server"
-[[ -x "$RES/llm/voxtnew-llm" ]] || { echo "no voxtnew-llm in $RES/llm" >&2; exit 1; }
 
 echo "== configuration"
 if [[ -n "$IDENTITY" ]]; then
