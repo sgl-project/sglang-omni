@@ -64,7 +64,8 @@ class ELU(StreamingModule):
 class ConvState:
     """The input tail the next chunk continues from, zeros before the first chunk.
 
-    Replicate padding fills it from the first chunk instead; has_started marks that.
+    Replicate padding fills it from the first chunk instead; has_started marks that,
+    per row, so rows of one state can start their streams at different steps.
     """
 
     previous: torch.Tensor
@@ -139,7 +140,9 @@ class CausalConv1d(StreamingModule):
             previous=weight.new_zeros(
                 batch_size, self.conv.in_channels, self.padding_total
             ),
-            has_started=torch.zeros((), dtype=torch.bool, device=weight.device),
+            has_started=torch.zeros(
+                (batch_size, 1, 1), dtype=torch.bool, device=weight.device
+            ),
         )
 
     def step(self, x: torch.Tensor, state: ConvState) -> torch.Tensor:
