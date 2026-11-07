@@ -1234,5 +1234,13 @@
   "Each finished result stays on the clipboard, also when it was pasted, or waits in the answer card.": "每次的结果都会留在剪贴板里，已经粘贴的和留在答案卡片里的都一样。",
   "Results": "结果",
   "Show live text": "显示实时文字",
-  "The words as Voxt hears them while you speak, and the answer as the model writes it.": "说话时显示 Voxt 听到的内容，生成时显示模型正在写的回答。"
+  "The words as Voxt hears them while you speak, and the answer as the model writes it.": "说话时显示 Voxt 听到的内容，生成时显示模型正在写的回答。",
+  "Preset": "预设",
+  "Shortcut preset": "快捷键预设",
+  "Right ⌥ (default)": "右 ⌥（默认）",
+  "fn (Auralink's keys)": "fn（和 Auralink 相同）",
+  "Sets Transcribe, Translate, Rewrite and Paste the last result at once. A shortcut you changed yourself stays as it is.": "一次设好转录、翻译、转写和粘贴最近结果的快捷键。你自己改过的快捷键保持不变。",
+  "Auralink uses fn too: while it runs, both apps react to these keys.": "Auralink 也用 fn：它运行时，按这些键两个应用都会响应。",
+  "macOS may react to fn too (the Globe key). If it gets in the way, set it to Do Nothing in System Settings → Keyboard.": "macOS 也可能响应 fn（地球键）。如果有影响，在系统设置 → 键盘里把它设为“不执行任何操作”。",
+  "You changed every shortcut yourself: the preset keeps them.": "每个快捷键都是你自己改过的，预设不会改动它们。"
 }

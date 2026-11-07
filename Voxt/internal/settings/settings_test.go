@@ -308,6 +308,62 @@ func TestMigrateShortcuts(t *testing.T) {
 	}
 }
 
+// TestShortcutPresets: a preset gives its keys to each shortcut still on
+// a preset's keys and keeps the ones the user changed, added or removed;
+// the preset shown is the one those shortcuts follow.
+func TestShortcutPresets(t *testing.T) {
+	tap := func(k string) []Hotkey { return []Hotkey{{Keys: k, Trigger: TriggerTap}} }
+	f := Defaults().Features
+	if got := PresetOf(f); got != PresetOption {
+		t.Fatalf("defaults: preset %q", got)
+	}
+	if !ApplyPreset(&f, PresetFn) {
+		t.Fatal("fn changed nothing")
+	}
+	want := Defaults().Features
+	want.Transcribe.Hotkeys, want.Translate.Hotkeys, want.Rewrite.Hotkeys = tap("Fn"), tap("Fn+Shift"), tap("Fn+Control")
+	want.PasteLast = Hotkey{Keys: "Control+Command+V", Trigger: TriggerTap}
+	if !reflect.DeepEqual(f, want) || PresetOf(f) != PresetFn {
+		t.Fatalf("fn: %+v, preset %q", f, PresetOf(f))
+	}
+	if !ApplyPreset(&f, PresetOption) || !reflect.DeepEqual(f, Defaults().Features) {
+		t.Fatalf("back to right Option: %+v", f)
+	}
+
+	// Other keys, another trigger, a second shortcut: the user's.
+	f.Transcribe.Hotkeys = tap("RightCommand")
+	f.Translate.Hotkeys = append(tap(DefaultTranslate), Hotkey{Keys: "F5"})
+	f.Rewrite.Hotkeys = []Hotkey{{Keys: DefaultRewrite, Trigger: TriggerLong}}
+	user := f
+	if !ApplyPreset(&f, PresetFn) || f.PasteLast != (Hotkey{Keys: "Control+Command+V", Trigger: TriggerTap}) {
+		t.Fatalf("paste last: %+v", f.PasteLast)
+	}
+	f.PasteLast = user.PasteLast
+	if !reflect.DeepEqual(f, user) {
+		t.Fatalf("the user's shortcuts changed:\n%+v\n%+v", f, user)
+	}
+	// Every shortcut the user's: no preset, and choosing one changes none.
+	f.PasteLast = Hotkey{Keys: "F6"}
+	f.Rewrite.Hotkeys = nil
+	user = f
+	if PresetOf(f) != "" || ApplyPreset(&f, PresetFn) || !reflect.DeepEqual(f, user) {
+		t.Fatalf("all the user's: %+v, preset %q", f, PresetOf(f))
+	}
+
+	// Two presets mixed: none shows; choosing one gives it every such shortcut.
+	f = Defaults().Features
+	f.Transcribe.Hotkeys = []Hotkey{{Keys: "Fn"}} // an older document's tap
+	if got := PresetOf(f); got != "" {
+		t.Fatalf("mixed: preset %q", got)
+	}
+	if !ApplyPreset(&f, PresetOption) || !reflect.DeepEqual(f, Defaults().Features) {
+		t.Fatalf("mixed to right Option: %+v", f)
+	}
+	if ApplyPreset(&f, "command") || !reflect.DeepEqual(f, Defaults().Features) {
+		t.Fatalf("unknown preset: %+v", f)
+	}
+}
+
 // TestBetaUpdates: betas follow the running version until the user
 // chooses, older documents have no choice, and a choice either way stays.
 func TestBetaUpdates(t *testing.T) {
