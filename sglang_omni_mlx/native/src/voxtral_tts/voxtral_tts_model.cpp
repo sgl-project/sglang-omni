@@ -35,7 +35,7 @@ mx::array Scale(const mx::array &x, double value) {
 VoxtralTtsModel::LoadedWeights
 VoxtralTtsModel::LoadWeights(const std::filesystem::path &directory) {
   LoadedWeights weights;
-  for (const auto &[name, array] : qwen3_asr::LoadSafetensors(directory)) {
+  for (const auto &[name, array] : omni_common::LoadSafetensors(directory)) {
     if (name.rfind(kCodecWeightPrefix, 0) == 0) {
       weights.codec.insert_or_assign(name, array);
     } else {
@@ -47,7 +47,7 @@ VoxtralTtsModel::LoadWeights(const std::filesystem::path &directory) {
 
 VoxtralTtsModel::VoxtralTtsModel(const std::filesystem::path &model_directory)
     : VoxtralTtsModel(model_directory,
-                      qwen3_asr::ReadJson(model_directory / "config.json"),
+                      omni_common::ReadJson(model_directory / "config.json"),
                       LoadWeights(model_directory)) {}
 
 VoxtralTtsModel::VoxtralTtsModel(const std::filesystem::path &model_directory,
@@ -301,7 +301,7 @@ mx::array VoxtralTtsModel::AcousticLayer(const mx::array &x, int layer) const {
   return mx::add(
       hidden,
       checkpoint_.Linear(
-          mx::multiply(qwen3_asr::Silu(checkpoint_.Linear(
+          mx::multiply(omni_common::Silu(checkpoint_.Linear(
                            feed_forward_input, prefix + ".feed_forward.w1")),
                        checkpoint_.Linear(feed_forward_input,
                                           prefix + ".feed_forward.w3")),

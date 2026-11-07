@@ -13,6 +13,7 @@
 #include "common/audio.h"
 #include "common/tokenizer.h"
 #include "nlohmann/json.hpp"
+#include "qwen3_asr/dflash_draft.h"
 #include "qwen3_asr/qwen3_asr_model.h"
 
 namespace qwen3_asr {
@@ -26,7 +27,12 @@ struct TranscriptionOptions {
   std::optional<std::string> context;
   std::optional<int> max_new_tokens;
   bool stop_at_end_of_text = false;
+  // Stops decoding at a greedy token loop and keeps one copy of its unit; the
+  // HTTP server turns it on when a request leaves it out.
   bool stop_on_token_loop = false;
+  // Divides the logits of tokens already generated (multiplies them when
+  // negative); 1 turns it off.
+  float repetition_penalty = 1.0f;
   AudioLayout layout = AudioLayout::kReference;
   // Realtime refreshes continue from text already shown, as ids and text.
   std::vector<int> prefix_token_ids;
@@ -53,6 +59,8 @@ struct TranscriptionResult {
   FinishReason finish_reason = FinishReason::kLength;
   // Timestamped speaker segments, for models that produce them.
   std::vector<SpeakerSegment> segments;
+  // Rounds of draft verification; 0 when decoding without a draft.
+  int verify_round_count = 0;
 };
 
 class TranscriptionCancelled : public std::runtime_error {
@@ -65,20 +73,18 @@ public:
 nlohmann::ordered_json
 SpeakerSegmentsJson(const std::vector<SpeakerSegment> &segments);
 
-bool IsUnicodeSpace(uint32_t code_point);
-std::vector<uint32_t> CodePoints(const std::string &text);
-// Strips every Unicode space from both ends.
-std::string StripUnicodeWhitespace(const std::string &text);
-// Greedy loop guard: the last 24 tokens use at most 3 distinct ids.
-bool IsTokenLoop(const std::vector<int> &output_ids);
-
 // The canonical prompt name for a Qwen3-ASR language code or name. Like
 // Voxt's Swift port, a name outside the table is used as given; blank is none.
 std::optional<std::string> NormalizeLanguage(const std::string &language);
 
 class Qwen3ASRTranscriber {
 public:
-  explicit Qwen3ASRTranscriber(const std::filesystem::path &model_directory);
+  // With a DFlash draft directory, decoding verifies the draft's proposals
+  // instead of one token per step; the transcript stays greedy.
+  explicit Qwen3ASRTranscriber(
+      const std::filesystem::path &model_directory,
+      const std::filesystem::path &draft_directory = {},
+      int draft_quantization_bits = 0);
 
   std::vector<int> PromptIds(int audio_token_count,
                              const TranscriptionOptions &options) const;
@@ -95,11 +101,12 @@ private:
               const TranscriptionOptions &options) const;
 
   Qwen3ASR model_;
-  Tokenizer tokenizer_;
+  omni_common::Tokenizer tokenizer_;
   int audio_pad_id_;
   int end_of_text_id_;
   int im_end_id_;
   std::vector<int> asr_text_ids_;
+  std::optional<DFlashDraft> draft_;
 };
 
 } // namespace qwen3_asr

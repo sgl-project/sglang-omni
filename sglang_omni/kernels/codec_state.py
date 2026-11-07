@@ -9,6 +9,7 @@ import triton
 import triton.language as tl
 
 CHANNEL_BLOCK = 64
+NO_PAD_SLOT = -1
 
 
 @triton.jit
@@ -26,20 +27,22 @@ def history_exchange_kernel(
     pool_slot_stride,
     pool_sample_stride,
     pool_channel_stride,
+    pad_slot,
     IS_COLD: tl.constexpr,
     IS_SHIFT: tl.constexpr,
     HISTORY_BLOCK: tl.constexpr,
     TAIL_BLOCK: tl.constexpr,
     CHANNEL_BLOCK: tl.constexpr,
 ):
-    # note (ratish): one program owns a row's channel block over the whole history, so
-    # every read of the slot's old history precedes every write of its new one.
+    # note (ratish): a program owns a row's channel block, so it reads the old history before
+    # writing the new; padding rows share one slot across programs, so they skip the pool.
     row = tl.program_id(0).to(tl.int64)
     channel = tl.program_id(1) * CHANNEL_BLOCK + tl.arange(0, CHANNEL_BLOCK)
     channel_mask = channel < channels
     slot = tl.load(slot_index_ptr + row).to(tl.int64)
     sample = tl.arange(0, HISTORY_BLOCK)
     history_mask = (sample < history_samples)[:, None] & channel_mask[None, :]
+    pool_mask = history_mask & (slot != pad_slot)
     padded_base = (
         padded_ptr + row * padded_row_stride + channel[None, :] * padded_channel_stride
     )
@@ -61,13 +64,13 @@ def history_exchange_kernel(
     else:
         old = tl.load(
             pool_base + sample[:, None] * pool_sample_stride,
-            mask=history_mask,
+            mask=pool_mask,
             other=0,
         )
         if IS_SHIFT:
             kept = tl.load(
                 pool_base + source[:, None] * pool_sample_stride,
-                mask=history_mask & (source < history_samples)[:, None],
+                mask=pool_mask & (source < history_samples)[:, None],
                 other=0,
             )
             new_history = tl.where(from_new, newest, kept)
@@ -82,7 +85,7 @@ def history_exchange_kernel(
     tl.store(
         pool_base + sample[:, None] * pool_sample_stride,
         new_history,
-        mask=history_mask,
+        mask=pool_mask,
     )
     tail = tl.arange(0, TAIL_BLOCK)
     tl.store(
@@ -107,6 +110,7 @@ def overlap_exchange_kernel(
     pool_slot_stride,
     pool_sample_stride,
     pool_channel_stride,
+    pad_slot,
     IS_COLD: tl.constexpr,
     OVERLAP_BLOCK: tl.constexpr,
     CHANNEL_BLOCK: tl.constexpr,
@@ -117,6 +121,7 @@ def overlap_exchange_kernel(
     slot = tl.load(slot_index_ptr + row).to(tl.int64)
     sample = tl.arange(0, OVERLAP_BLOCK)
     mask = (sample < overlap_samples)[:, None] & channel_mask[None, :]
+    pool_mask = mask & (slot != pad_slot)
     output_base = (
         output_ptr + row * output_row_stride + channel[None, :] * output_channel_stride
     )
@@ -134,7 +139,7 @@ def overlap_exchange_kernel(
         pass
     else:
         previous = tl.load(
-            pool_base + sample[:, None] * pool_sample_stride, mask=mask, other=0
+            pool_base + sample[:, None] * pool_sample_stride, mask=pool_mask, other=0
         )
         head = tl.load(
             output_base + sample[:, None] * output_sample_stride, mask=mask, other=0
@@ -144,7 +149,77 @@ def overlap_exchange_kernel(
             (head.to(tl.float32) + previous.to(tl.float32)).to(head.dtype),
             mask=mask,
         )
-    tl.store(pool_base + sample[:, None] * pool_sample_stride, tail, mask=mask)
+    tl.store(pool_base + sample[:, None] * pool_sample_stride, tail, mask=pool_mask)
+
+
+@triton.jit
+def ring_step_rows_kernel(
+    start_position_ptr,
+    slot_row_ptr,
+    write_row_ptr,
+    rotary_row_ptr,
+    page_table_ptr,
+    window_length_ptr,
+    fresh_frames,
+    ring_frames,
+    retained_frames,
+    FRAME_BLOCK: tl.constexpr,
+):
+    row = tl.program_id(0)
+    start_position = tl.load(start_position_ptr + row)
+    slot_row = tl.load(slot_row_ptr + row)
+    frame = tl.arange(0, FRAME_BLOCK)
+    is_fresh = frame < fresh_frames
+    tl.store(
+        write_row_ptr + row * fresh_frames + frame,
+        slot_row + (start_position + frame) % ring_frames,
+        mask=is_fresh,
+    )
+    tl.store(
+        rotary_row_ptr + row * fresh_frames + frame,
+        (row * fresh_frames + frame).to(tl.int64),
+        mask=is_fresh,
+    )
+    window_start = tl.maximum(start_position - retained_frames, 0)
+    tl.store(
+        page_table_ptr + row * ring_frames + frame,
+        (slot_row + (window_start + frame) % ring_frames).to(tl.int32),
+        mask=frame < ring_frames,
+    )
+    tl.store(
+        window_length_ptr + row,
+        (start_position - window_start + fresh_frames).to(tl.int32),
+    )
+
+
+def ring_step_rows(
+    start_positions: torch.Tensor,
+    slot_rows: torch.Tensor,
+    fresh_frames: int,
+    ring_frames: int,
+    retained_frames: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """The ring rows an in-place step writes its (B * fresh_frames) frames to, those frames'
+    rotary rows, its int32 (B, ring_frames) page table in window order, and its int32 (B,) window
+    lengths, in one launch."""
+    batch_size = start_positions.shape[0]
+    write_rows = start_positions.new_empty(batch_size * fresh_frames)
+    rotary_rows = start_positions.new_empty(batch_size * fresh_frames)
+    page_table = start_positions.new_empty(batch_size, ring_frames, dtype=torch.int32)
+    window_lengths = start_positions.new_empty(batch_size, dtype=torch.int32)
+    ring_step_rows_kernel[(batch_size,)](
+        start_positions,
+        slot_rows,
+        write_rows,
+        rotary_rows,
+        page_table,
+        window_lengths,
+        fresh_frames,
+        ring_frames,
+        retained_frames,
+        FRAME_BLOCK=triton.next_power_of_2(ring_frames),
+    )
+    return write_rows, rotary_rows, page_table, window_lengths
 
 
 def history_exchange(
@@ -153,11 +228,13 @@ def history_exchange(
     slot_index: torch.Tensor,
     new_samples: int,
     is_cold: bool,
+    pad_slot: int = NO_PAD_SLOT,
 ) -> None:
     """Fill a causal conv's (rows, history + new + tail, channels) input around the new samples
     a producer already wrote: the slot's history in front (zeros for a cold slot), the dilation's
     zeros after; then keep the last history samples of history and new samples as the slot's
-    history. history_pool is (slots, history, channels); slot_index names each row's slot.
+    history. history_pool is (slots, history, channels); slot_index names each row's slot, and
+    rows naming pad_slot take zeros in front and leave the pool unwritten.
     """
     rows, padded_samples, channels = padded.shape
     history_samples = int(history_pool.shape[1])
@@ -172,6 +249,7 @@ def history_exchange(
         channels,
         *padded.stride(),
         *history_pool.stride(),
+        pad_slot,
         IS_COLD=is_cold,
         IS_SHIFT=new_samples < history_samples,
         HISTORY_BLOCK=triton.next_power_of_2(max(history_samples, 1)),
@@ -187,10 +265,12 @@ def overlap_exchange(
     slot_index: torch.Tensor,
     emitted_samples: int,
     is_cold: bool,
+    pad_slot: int = NO_PAD_SLOT,
 ) -> None:
     """Add each slot's overlap into the front of a transposed conv's (rows, emitted + overlap,
     channels) output (not for a cold slot) and keep the samples past the emitted ones as the
-    slot's overlap. Needs emitted_samples >= the overlap, so the two ranges never meet.
+    slot's overlap; rows naming pad_slot add nothing and leave the pool unwritten. Needs
+    emitted_samples >= the overlap, so the two ranges never meet.
     """
     rows, _, channels = output.shape
     overlap_samples = int(overlap_pool.shape[1])
@@ -203,6 +283,7 @@ def overlap_exchange(
         channels,
         *output.stride(),
         *overlap_pool.stride(),
+        pad_slot,
         IS_COLD=is_cold,
         OVERLAP_BLOCK=triton.next_power_of_2(max(overlap_samples, 1)),
         CHANNEL_BLOCK=CHANNEL_BLOCK,

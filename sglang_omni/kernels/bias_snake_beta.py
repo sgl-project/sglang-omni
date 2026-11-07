@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """SnakeBeta of a conv's output plus its bias, and a residual when given, written into the
 caller's buffer: the activation of a channels-last conv stack fused with the adds in front of
-it, rounded where the eager adds and SnakeBeta round in the activations' dtype."""
+it, rounded where the eager adds and SnakeBeta round in the activations' dtype, or computed in
+fp32 and rounded once."""
 
 from __future__ import annotations
 
@@ -57,11 +58,12 @@ def bias_snake_beta_channels_last_kernel(
     channel_vectors,
     HAS_RESIDUAL: tl.constexpr,
     WRITE_SUM: tl.constexpr,
+    SHOULD_ROUND_LIKE_EAGER: tl.constexpr,
     VECTORS_PER_PROGRAM: tl.constexpr,
     VECTOR_ELEMENTS: tl.constexpr,
 ):
-    # note (ratish): every intermediate rounds to the output dtype where eager rounds it, the sums
-    # in the eager order, (conv + bias) then + residual.
+    # note (ratish): eager rounding lets the compiler pack bf16 pairs, about 6 % faster; the fp32
+    # path rounds each output once and lands closer to fp32.
     out_dtype = out_ptr.dtype.element_ty
     batch = tl.program_id(1).to(tl.int64)
     vector = tl.program_id(0) * VECTORS_PER_PROGRAM + tl.arange(0, VECTORS_PER_PROGRAM)
@@ -78,20 +80,31 @@ def bias_snake_beta_channels_last_kernel(
     conv_values = tl.load(
         conv_ptr + batch * conv_batch_stride + offsets, mask=mask, other=0
     ).to(tl.float32)
-    total = (conv_values + bias).to(out_dtype).to(tl.float32)
+    if SHOULD_ROUND_LIKE_EAGER:
+        total = (conv_values + bias).to(out_dtype).to(tl.float32)
+    else:
+        total = conv_values + bias
     if HAS_RESIDUAL:
         residual = tl.load(residual_ptr + contiguous_base + offsets, mask=mask, other=0)
-        total = (total + residual.to(tl.float32)).to(out_dtype).to(tl.float32)
+        total = total + residual.to(tl.float32)
+        if SHOULD_ROUND_LIKE_EAGER:
+            total = total.to(out_dtype).to(tl.float32)
+        else:
+            pass
     else:
         pass
     if WRITE_SUM:
         tl.store(sum_ptr + contiguous_base + offsets, total.to(out_dtype), mask=mask)
     else:
         pass
-    phase = (total * alpha_scale).to(out_dtype).to(tl.float32)
-    sine = libdevice.sin(phase).to(out_dtype).to(tl.float32)
-    sine_squared = (sine * sine).to(out_dtype).to(tl.float32)
-    scaled = (inverse_beta * sine_squared).to(out_dtype).to(tl.float32)
+    if SHOULD_ROUND_LIKE_EAGER:
+        phase = (total * alpha_scale).to(out_dtype).to(tl.float32)
+        sine = libdevice.sin(phase).to(out_dtype).to(tl.float32)
+        sine_squared = (sine * sine).to(out_dtype).to(tl.float32)
+        scaled = (inverse_beta * sine_squared).to(out_dtype).to(tl.float32)
+    else:
+        sine = libdevice.sin(total * alpha_scale)
+        scaled = inverse_beta * (sine * sine)
     tl.store(
         out_ptr + batch * out_batch_stride + offsets,
         (total + scaled).to(out_dtype),
@@ -107,10 +120,12 @@ def fused_bias_snake_beta(
     *,
     residual: torch.Tensor | None = None,
     sum_out: torch.Tensor | None = None,
+    should_round_like_eager: bool = True,
 ) -> None:
     """SnakeBeta(conv_output + bias, + residual if given) into out, the sum into sum_out if
-    given, rounded as the eager adds and SnakeBeta round. [B, L, C] bf16 or fp16 on CUDA; the
-    rows of conv_output and out may sit in longer buffers, residual and sum_out are contiguous.
+    given, rounded as the eager adds and SnakeBeta round, or with should_round_like_eager False
+    in fp32 and rounded once. [B, L, C] activations on CUDA; the rows of conv_output and out
+    may sit in longer buffers, residual and sum_out are contiguous.
     """
     batch_size, length, channels = conv_output.shape
     vector_elements = VECTOR_BYTES // out.element_size()
@@ -143,6 +158,7 @@ def fused_bias_snake_beta(
         channels // vector_elements,
         HAS_RESIDUAL=residual is not None,
         WRITE_SUM=sum_out is not None,
+        SHOULD_ROUND_LIKE_EAGER=should_round_like_eager,
         VECTORS_PER_PROGRAM=VECTORS_PER_PROGRAM,
         VECTOR_ELEMENTS=vector_elements,
         num_warps=VECTORS_PER_PROGRAM // 32,

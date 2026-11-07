@@ -100,6 +100,7 @@ def create_sglang_moss_transcribe_diarize_executor(
     encoder_chunk_buckets: list[int] | None = None,
     encoder_torch_compile: bool = False,
     encoder_max_batch_size: int = 2,
+    enable_trimmed_fbank: bool = True,
     # note (yichi): 8 parallel mel extractions measured optimal; fewer starve
     # the encoder feed, more oversubscribe the CPU.
     request_build_max_workers: int = 8,
@@ -116,7 +117,7 @@ def create_sglang_moss_transcribe_diarize_executor(
         if encoder_chunk_buckets is not None
         else _DEFAULT_ENCODER_CHUNK_BUCKETS
     )
-    return MossTranscribeDiarizeEngineBuilder(
+    builder = MossTranscribeDiarizeEngineBuilder(
         max_running_requests=max_running_requests,
         max_new_tokens=max_new_tokens,
         context_length=context_length,
@@ -130,6 +131,7 @@ def create_sglang_moss_transcribe_diarize_executor(
         encoder_chunk_buckets=buckets,
         encoder_torch_compile=encoder_torch_compile,
         encoder_max_batch_size=encoder_max_batch_size,
+        enable_trimmed_fbank=enable_trimmed_fbank,
         prefill_coalesce_requests=prefill_coalesce_requests,
         prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
         prefill_coalesce_when_idle=prefill_coalesce_when_idle,
@@ -142,13 +144,20 @@ def create_sglang_moss_transcribe_diarize_executor(
         request_build_max_workers=request_build_max_workers,
         request_build_max_pending=request_build_max_pending,
         stream_emit_interval_s=stream_emit_interval_s,
-    ).build(
-        model_path,
-        device=device,
-        gpu_id=gpu_id,
-        dtype=dtype,
-        server_args_overrides=server_args_overrides,
     )
+    try:
+        return builder.build(
+            model_path,
+            device=device,
+            gpu_id=gpu_id,
+            dtype=dtype,
+            server_args_overrides=server_args_overrides,
+        )
+    finally:
+        if builder.draft_checkpoint is not None:
+            builder.draft_checkpoint.cleanup()
+        else:
+            pass
 
 
 def create_moss_transcribe_diarize_executor(*args, **kwargs):

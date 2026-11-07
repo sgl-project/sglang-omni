@@ -11,6 +11,7 @@ from starlette.testclient import WebSocketTestSession
 
 from sglang_omni.serve.realtime.schema import CLIENT_EVENT, JsonObject
 from sglang_omni.serve.realtime.types import Capabilities
+from tests.unit_test.fixtures.realtime_fakes import ScriptedAdapter
 from tests.unit_test.serve.test_realtime_coordinator_adapter import (
     SESSION_CONFIG,
     RecordingSink,
@@ -21,7 +22,6 @@ from tests.unit_test.serve.test_realtime_coordinator_adapter import (
 from tests.unit_test.serve.test_realtime_duplex_negotiation import FRAMES_BY_SLICES
 from tests.unit_test.serve.test_realtime_duplex_session import (
     UNIT_BYTES,
-    ScriptedAdapter,
     append_audio,
     build_test_client,
     open_session,

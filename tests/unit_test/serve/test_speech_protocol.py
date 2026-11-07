@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import ipaddress
 from pathlib import Path
+from typing import Literal
 from unittest.mock import Mock
 
 import httpx
@@ -46,9 +47,12 @@ def test_speech_service_rejects_non_string_input() -> None:
 def test_speech_generation_uses_served_model_and_default_voice() -> None:
     service = SpeechRequestValidator(default_model="tts")
     prepared = service.parse_generation_request({"input": "hello"})
-    generate_request = service.build_generate_request(prepared.request, validate=False)
+    generate_request = service.build_generate_request(prepared.request)
 
     assert prepared.request.model is None
+    assert prepared.request.response_format == "wav"
+    assert prepared.request.stream is False
+    assert generate_request.stream is False
     assert prepared.request.voice == "default"
     assert generate_request.model == "tts"
     assert isinstance(generate_request.metadata["tts_params"], dict)
@@ -167,6 +171,143 @@ def test_custom_voice_config_rejects_invalid_inputs_before_io(
     assert store.mock_calls == []
 
 
+SPEAKER_EMBEDDING = [0.01] * 1024
+REFERENCE_DATA_URL = f"data:audio/wav;base64,{base64.b64encode(b'RIFF').decode()}"
+
+
+EMBEDDING_PARAM = "references.0.speaker_embedding"
+
+
+@pytest.mark.parametrize(
+    ("fields", "speaker_embedding_size", "param"),
+    [
+        ({"references": [{"speaker_embedding": []}]}, 1024, EMBEDDING_PARAM),
+        ({"references": [{"speaker_embedding": [0.01, "x"]}]}, 1024, EMBEDDING_PARAM),
+        (
+            {"references": [{"speaker_embedding": [True] * 1024}]},
+            1024,
+            EMBEDDING_PARAM,
+        ),
+        (
+            {"references": [{"speaker_embedding": SPEAKER_EMBEDDING[:-1]}]},
+            1024,
+            EMBEDDING_PARAM,
+        ),
+        (
+            {
+                "references": [
+                    {"speaker_embedding": [float("nan"), *SPEAKER_EMBEDDING[1:]]}
+                ]
+            },
+            1024,
+            EMBEDDING_PARAM,
+        ),
+        (
+            {"references": [{"speaker_embedding": [1e39, *SPEAKER_EMBEDDING[1:]]}]},
+            1024,
+            EMBEDDING_PARAM,
+        ),
+        (
+            {
+                "references": [
+                    {
+                        "speaker_embedding": SPEAKER_EMBEDDING,
+                        "audio": REFERENCE_DATA_URL,
+                    }
+                ]
+            },
+            1024,
+            EMBEDDING_PARAM,
+        ),
+        (
+            {
+                "references": [
+                    {"speaker_embedding": SPEAKER_EMBEDDING},
+                    {"audio": REFERENCE_DATA_URL},
+                ]
+            },
+            1024,
+            EMBEDDING_PARAM,
+        ),
+        (
+            {
+                "references": [{"speaker_embedding": SPEAKER_EMBEDDING}],
+                "ref_audio": REFERENCE_DATA_URL,
+            },
+            1024,
+            EMBEDDING_PARAM,
+        ),
+        (
+            {
+                "references": [{"speaker_embedding": SPEAKER_EMBEDDING}],
+                "x_vector_only_mode": False,
+            },
+            1024,
+            "x_vector_only_mode",
+        ),
+        (
+            {
+                "references": [{"speaker_embedding": SPEAKER_EMBEDDING}],
+                "task_type": "CustomVoice",
+            },
+            1024,
+            "task_type",
+        ),
+        (
+            {"references": [{"speaker_embedding": SPEAKER_EMBEDDING}]},
+            None,
+            EMBEDDING_PARAM,
+        ),
+    ],
+)
+def test_speaker_embedding_rejects_invalid_requests(
+    fields: dict[str, object], speaker_embedding_size: int | None, param: str
+) -> None:
+    """NaN, Infinity or a value past float32 once reached the talker, which answered
+    with babble to the length cap and a success status."""
+    service = SpeechRequestValidator(
+        default_model="tts", speaker_embedding_size=speaker_embedding_size
+    )
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_generation_request({"input": "hello", **fields})
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == param
+
+
+def test_batch_default_speaker_embedding_is_refused_before_any_item() -> None:
+    service = SpeechRequestValidator(default_model="tts", speaker_embedding_size=1024)
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_batch_request(
+            {
+                "references": [{"speaker_embedding": SPEAKER_EMBEDDING[:-1]}],
+                "items": [{"input": "first"}, {"input": "second"}],
+            }
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == EMBEDDING_PARAM
+
+
+def test_speaker_embedding_reference_lowers_into_the_prompt() -> None:
+    service = SpeechRequestValidator(default_model="tts", speaker_embedding_size=1024)
+    prepared = service.parse_generation_request(
+        {"input": "hello", "references": [{"speaker_embedding": SPEAKER_EMBEDDING}]}
+    )
+    generated = service.build_generate_request(
+        prepared.request,
+        validate=False,
+        reference_descriptors=prepared.reference_descriptors,
+    )
+
+    assert generated.prompt == {
+        "text": "hello",
+        "references": [{"speaker_embedding": SPEAKER_EMBEDDING}],
+    }
+
+
 def test_speech_generation_accepts_seedtts_reference_payload_without_voice() -> None:
     service = SpeechRequestValidator(default_model="served-model")
     ref_audio = base64.b64encode(b"RIFF").decode("ascii")
@@ -239,27 +380,70 @@ def test_speech_service_allows_reference_text_with_instructions_by_default() -> 
     assert request.instructions == "speak warmly"
 
 
-def test_speech_service_requires_pcm_for_http_streaming() -> None:
+@pytest.mark.parametrize(
+    "request_fields",
+    [
+        {"stream": True, "response_format": "mp3"},
+        {"stream_format": "sse", "response_format": "flac"},
+    ],
+)
+def test_speech_service_rejects_unsupported_stream_formats(
+    request_fields: dict[str, object],
+) -> None:
     service = SpeechRequestValidator(default_model="tts")
 
     with pytest.raises(SpeechAPIError) as exc_info:
-        service.parse_request(
-            {"input": "hello", "stream": True, "response_format": "wav"}
-        )
+        service.parse_request({"input": "hello", **request_fields})
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "response_format"
-    assert "stream=true" in exc_info.value.message
-
-
-def test_speech_service_sse_enables_streaming() -> None:
-    service = SpeechRequestValidator(default_model="tts")
-
-    request = service.parse_request(
-        {"input": "hello", "response_format": "pcm", "stream_format": "sse"}
+    assert exc_info.value.message == (
+        "Streaming requires response_format='pcm' or 'wav'"
     )
 
-    assert request.stream
+
+@pytest.mark.parametrize("stream_format", ["audio", "sse"])
+@pytest.mark.parametrize(
+    ("response_format", "speed"), [(None, 0.25), ("wav", 2.0), ("pcm", 4.0)]
+)
+def test_http_stream_accepts_audio_formats_and_speed_without_file_encoder(
+    stream_format: Literal["audio", "sse"],
+    response_format: Literal["wav", "pcm"] | None,
+    speed: float,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Audio and SSE streaming accept WAV or PCM without optional file encoders."""
+    service = SpeechRequestValidator(default_model="tts")
+    monkeypatch.setattr(
+        speech_service,
+        "audio_encoding_unavailable_reason",
+        Mock(return_value="File encoder is unavailable"),
+    )
+    payload: dict[str, object] = {
+        "input": "hello",
+        "stream_format": stream_format,
+        "speed": speed,
+    }
+    if stream_format == "audio":
+        payload["stream"] = True
+    else:
+        pass
+    if response_format is not None:
+        payload["response_format"] = response_format
+    else:
+        pass
+
+    request = service.parse_request(payload)
+    generated = service.build_generate_request(request)
+    expected_format = response_format or "wav"
+
+    assert request.stream is True
+    assert request.response_format == expected_format
+    assert request.speed == speed
+    assert generated.stream is True
+    tts_params = generated.metadata["tts_params"]
+    assert isinstance(tts_params, dict)
+    assert tts_params["response_format"] == expected_format
 
 
 def test_speech_service_reports_missing_encoder_dependency_as_capability_error(

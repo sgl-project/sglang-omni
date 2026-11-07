@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Terminal state of recent raw PCM speech streams, kept for a follow-up GET.
+"""Terminal state of recent raw audio streams, kept for a follow-up GET.
 
-A raw PCM stream sends its headers before generation ends and has no in-band
+A raw audio stream sends its headers before generation ends and has no in-band
 channel for trailing metadata, so the server keeps each finished stream's
 terminal state by request id for GET /v1/audio/speech/{request_id}.
 """
@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections import OrderedDict
 
 from sglang_omni.client.types import UsageInfo
-from sglang_omni.serve.protocol import SpeechStreamOutcome
+from sglang_omni.serve.protocol import SglExt, SpeechStreamOutcome
 
 
 class SpeechStreamOutcomes:
@@ -24,10 +24,17 @@ class SpeechStreamOutcomes:
         )
 
     def record(
-        self, request_id: str, finish_reason: str, usage: UsageInfo | None
+        self,
+        request_id: str,
+        finish_reason: str,
+        usage: UsageInfo | None,
+        sglext: SglExt | None,
     ) -> None:
         self.outcomes_by_request_id[request_id] = SpeechStreamOutcome(
-            request_id=request_id, finish_reason=finish_reason, usage=usage
+            request_id=request_id,
+            finish_reason=finish_reason,
+            usage=usage,
+            sglext=sglext,
         )
         while len(self.outcomes_by_request_id) > self.max_entries:
             self.outcomes_by_request_id.popitem(last=False)

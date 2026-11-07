@@ -141,12 +141,12 @@ int NextPowerOfTwo(int value) {
 } // namespace
 
 SenseVoiceModel::SenseVoiceModel(const std::filesystem::path &model_directory)
-    : SenseVoiceModel(qwen3_asr::ReadJson(model_directory / "config.json"),
+    : SenseVoiceModel(omni_common::ReadJson(model_directory / "config.json"),
                       model_directory) {}
 
 SenseVoiceModel::SenseVoiceModel(const nlohmann::json &config,
                                  const std::filesystem::path &model_directory)
-    : checkpoint_(qwen3_asr::LoadSafetensors(model_directory), config),
+    : checkpoint_(omni_common::LoadSafetensors(model_directory), config),
       mel_filters_(mx::array(0.0f)) {
   const nlohmann::json &encoder = config.at("encoder_conf");
   const nlohmann::json &front_end = config.at("frontend_conf");

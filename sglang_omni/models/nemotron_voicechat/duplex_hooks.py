@@ -50,14 +50,21 @@ class PerceptionState:
 
 
 class PerceptionHooks(SessionHooks):
-    def __init__(self, model: AudioPerception) -> None:
-        self.model = model
-        self.stream = GraphPerception(model)
+    def __init__(self, model: AudioPerception, *, max_open_sessions: int) -> None:
+        self.available_streams = [
+            GraphPerception(model, batch_size=1) for _ in range(max_open_sessions)
+        ]
         self.states: dict[SessionIdentity, PerceptionState] = {}
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
-        self.stream.reset()
-        self.states[session_identity] = PerceptionState(stream=self.stream)
+        stream = self.available_streams.pop()
+        stream.reset()
+        self.states[session_identity] = PerceptionState(stream=stream)
+
+    def warm_up(self) -> None:
+        for stream in self.available_streams:
+            stream.push(torch.zeros(1, SAMPLES_PER_FRAME, device=stream.device))
+            stream.reset()
 
     @torch.inference_mode()
     def append(
@@ -90,7 +97,9 @@ class PerceptionHooks(SessionHooks):
             waveform = torch.from_numpy(
                 np.frombuffer(raw, dtype="<i2").astype(np.float32)
             )
-            acoustic_features = state.stream.push(waveform / PCM16_INPUT_SCALE).cpu()
+            acoustic_features = state.stream.push(
+                waveform[None] / PCM16_INPUT_SCALE
+            ).cpu()
         else:
             pass
         state.is_ended = chunk.eos
@@ -125,7 +134,12 @@ class PerceptionHooks(SessionHooks):
             pass
 
     def close(self, session_identity: SessionIdentity) -> None:
-        self.states.pop(session_identity, None)
+        state = self.states.pop(session_identity, None)
+        if state is not None:
+            state.stream.reset()
+            self.available_streams.append(state.stream)
+        else:
+            pass
 
     def usage(self, session_identity: SessionIdentity) -> ResourceUsage:
         state = self.states.get(session_identity)

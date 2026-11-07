@@ -6,7 +6,11 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from sglang_omni.kernels.codec_state import history_exchange, overlap_exchange
+from sglang_omni.kernels.codec_state import (
+    history_exchange,
+    overlap_exchange,
+    ring_step_rows,
+)
 from sglang_omni.platforms import current_platform
 
 REQUIRES_CUDA = pytest.mark.skipif(
@@ -46,6 +50,50 @@ def overlap_exchange_reference(
         output[:, :overlap_samples] += overlap_pool.index_select(0, slot_index)
     overlap_pool.index_copy_(
         0, slot_index, output[:, emitted_samples : emitted_samples + overlap_samples]
+    )
+
+
+@pytest.mark.accelerator
+@REQUIRES_CUDA
+@pytest.mark.parametrize("fresh_frames", [1, 3, 8])
+@pytest.mark.parametrize("ring_frames", [16, 79])
+def test_ring_step_rows_are_the_rows_of_a_ring_window(
+    fresh_frames: int, ring_frames: int
+) -> None:
+    retained_frames = ring_frames - 8
+    start_positions = torch.tensor(
+        [0, 1, retained_frames, retained_frames + 1, ring_frames, 123_456],
+        device="cuda",
+    )
+    slot_rows = torch.tensor([5, 0, 3, 1, 2, 4], device="cuda") * ring_frames
+    frames = torch.arange(fresh_frames, device="cuda")
+    window_frames = torch.arange(ring_frames, device="cuda")
+    window_starts = (start_positions - retained_frames).clamp(min=0)
+
+    write_rows, rotary_rows, page_table, window_lengths = ring_step_rows(
+        start_positions, slot_rows, fresh_frames, ring_frames, retained_frames
+    )
+
+    torch.testing.assert_close(
+        write_rows,
+        (
+            slot_rows.unsqueeze(1)
+            + (start_positions.unsqueeze(1) + frames) % ring_frames
+        ).reshape(-1),
+    )
+    torch.testing.assert_close(
+        rotary_rows, torch.arange(fresh_frames * 6, device="cuda")
+    )
+    torch.testing.assert_close(
+        page_table,
+        (
+            slot_rows.unsqueeze(1)
+            + (window_starts.unsqueeze(1) + window_frames) % ring_frames
+        ).to(torch.int32),
+    )
+    torch.testing.assert_close(
+        window_lengths,
+        (start_positions - window_starts + fresh_frames).to(torch.int32),
     )
 
 
@@ -209,6 +257,62 @@ def test_overlap_exchange_kernel_equals_the_reference(
         expected_output, expected_pool, slot_index, emitted_samples, is_cold
     )
     overlap_exchange(output, overlap_pool, slot_index, emitted_samples, is_cold)
+
+    assert torch.equal(output, expected_output)
+    assert torch.equal(overlap_pool, expected_pool)
+
+
+@pytest.mark.accelerator
+@REQUIRES_CUDA
+@pytest.mark.parametrize("is_cold", [False, True])
+@pytest.mark.parametrize(
+    "history_samples,new_samples,tail_samples", [(6, 2, 0), (54, 1, 0), (54, 320, 8)]
+)
+def test_history_exchange_skips_rows_at_the_pad_slot(
+    is_cold: bool, history_samples: int, new_samples: int, tail_samples: int
+) -> None:
+    torch.manual_seed(history_samples * new_samples)
+    channels, pad_slot = 200, 7
+    slot_index = torch.tensor([pad_slot, 3, pad_slot, pad_slot], device="cuda")
+    history_pool = torch.randn(8, history_samples, channels, device="cuda")
+    padded = torch.randn(
+        4, history_samples + new_samples + tail_samples, channels, device="cuda"
+    )
+    expected_padded, expected_pool = padded.clone(), history_pool.clone()
+    history_exchange_reference(
+        expected_padded[1:2], expected_pool, slot_index[1:2], new_samples, is_cold
+    )
+    expected_padded[[0, 2, 3], :history_samples] = 0
+    expected_padded[[0, 2, 3], history_samples + new_samples :] = 0
+
+    history_exchange(
+        padded, history_pool, slot_index, new_samples, is_cold, pad_slot=pad_slot
+    )
+
+    assert torch.equal(padded, expected_padded)
+    assert torch.equal(history_pool, expected_pool)
+
+
+@pytest.mark.accelerator
+@REQUIRES_CUDA
+@pytest.mark.parametrize("is_cold", [False, True])
+@pytest.mark.parametrize("overlap_samples,emitted_samples", [(3, 3), (8, 320)])
+def test_overlap_exchange_skips_rows_at_the_pad_slot(
+    is_cold: bool, overlap_samples: int, emitted_samples: int
+) -> None:
+    torch.manual_seed(overlap_samples * emitted_samples)
+    channels, pad_slot = 200, 7
+    slot_index = torch.tensor([pad_slot, 3, pad_slot, pad_slot], device="cuda")
+    overlap_pool = torch.randn(8, overlap_samples, channels, device="cuda")
+    output = torch.randn(4, emitted_samples + overlap_samples, channels, device="cuda")
+    expected_output, expected_pool = output.clone(), overlap_pool.clone()
+    overlap_exchange_reference(
+        expected_output[1:2], expected_pool, slot_index[1:2], emitted_samples, is_cold
+    )
+
+    overlap_exchange(
+        output, overlap_pool, slot_index, emitted_samples, is_cold, pad_slot=pad_slot
+    )
 
     assert torch.equal(output, expected_output)
     assert torch.equal(overlap_pool, expected_pool)

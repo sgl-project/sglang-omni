@@ -15,6 +15,8 @@ namespace mx = mlx::core;
 namespace {
 
 constexpr float kLayerNormEps = 1e-5f;
+// Chunks, a second of audio each, that the convolutions take at a time.
+constexpr int kConvolutionBlockChunks = 64;
 
 mx::array SinusoidalPositions(int length, int channels) {
   const double timescale_step = std::log(10000.0) / (channels / 2 - 1);
@@ -30,11 +32,12 @@ mx::array SinusoidalPositions(int length, int channels) {
 } // namespace
 
 Qwen3ASR::Qwen3ASR(const std::filesystem::path &model_directory)
-    : Qwen3ASR(ReadJson(model_directory / "config.json"), model_directory) {}
+    : Qwen3ASR(omni_common::ReadJson(model_directory / "config.json"),
+               model_directory) {}
 
 Qwen3ASR::Qwen3ASR(const nlohmann::json &config,
                    const std::filesystem::path &model_directory)
-    : checkpoint_(LoadSafetensors(model_directory), config),
+    : checkpoint_(omni_common::LoadSafetensors(model_directory), config),
       decoder_(checkpoint_, "model",
                Qwen3DecoderConfig::FromJson(
                    config.at("thinker_config").at("text_config"))) {
@@ -78,7 +81,7 @@ mx::array Qwen3ASR::AudioEncoderLayer(const mx::array &x, int layer) const {
                             prefix + ".self_attn.out_proj"));
   return mx::add(
       hidden, checkpoint_.Linear(
-                  Gelu(checkpoint_.Linear(
+                  omni_common::Gelu(checkpoint_.Linear(
                       checkpoint_.LayerNorm(
                           hidden, prefix + ".final_layer_norm", kLayerNormEps),
                       prefix + ".fc1")),
@@ -98,26 +101,50 @@ mx::array Qwen3ASR::EncodeAudio(const mx::array &mel,
   }
   const int longest_chunk =
       *std::max_element(chunk_lengths.begin(), chunk_lengths.end());
-  std::vector<mx::array> padded_chunks;
-  for (size_t i = 0; i < chunk_starts.size(); ++i) {
-    const mx::array chunk =
-        mx::slice(mel, {0, chunk_starts[i]},
-                  {mel_bins, chunk_starts[i] + chunk_lengths[i]});
-    padded_chunks.push_back(
-        mx::pad(chunk, {{0, 0}, {0, longest_chunk - chunk_lengths[i]}}));
+  const int chunk_count = static_cast<int>(chunk_starts.size());
+  // The convolutions take one block of chunks at a time, so a long clip holds
+  // two blocks' activations at most: each block but the last starts on the GPU
+  // once built, after which the block before it is waited for. conv_out takes
+  // every chunk at once, since splitting its matmul changes the GEMM kernel and
+  // with it the output bits.
+  std::vector<mx::array> conv_blocks;
+  for (int block_start = 0; block_start < chunk_count;
+       block_start += kConvolutionBlockChunks) {
+    const int block_end =
+        std::min(block_start + kConvolutionBlockChunks, chunk_count);
+    std::vector<mx::array> padded_chunks;
+    for (int i = block_start; i < block_end; ++i) {
+      const mx::array chunk =
+          mx::slice(mel, {0, chunk_starts[i]},
+                    {mel_bins, chunk_starts[i] + chunk_lengths[i]});
+      padded_chunks.push_back(
+          mx::pad(chunk, {{0, 0}, {0, longest_chunk - chunk_lengths[i]}}));
+    }
+    mx::array x = mx::expand_dims(mx::stack(padded_chunks), -1);
+    x = omni_common::Gelu(Conv2d(x, "audio_tower.conv2d1"));
+    x = omni_common::Gelu(Conv2d(x, "audio_tower.conv2d2"));
+    x = omni_common::Gelu(Conv2d(x, "audio_tower.conv2d3"));
+    const int block_chunk_count = x.shape(0);
+    const int frequency_bins = x.shape(1);
+    const int conv_frames = x.shape(2);
+    const int channels = x.shape(3);
+    conv_blocks.push_back(mx::reshape(
+        mx::transpose(x, {0, 2, 3, 1}),
+        {block_chunk_count, conv_frames, channels * frequency_bins}));
+    if (block_end < chunk_count) {
+      mx::async_eval(conv_blocks.back());
+      if (conv_blocks.size() > 1) {
+        mx::eval(conv_blocks[conv_blocks.size() - 2]);
+      } else {
+      }
+    } else {
+    }
   }
-  mx::array x = mx::expand_dims(mx::stack(padded_chunks), -1);
-  x = Gelu(Conv2d(x, "audio_tower.conv2d1"));
-  x = Gelu(Conv2d(x, "audio_tower.conv2d2"));
-  x = Gelu(Conv2d(x, "audio_tower.conv2d3"));
-  const int chunk_count = x.shape(0);
-  const int frequency_bins = x.shape(1);
-  const int conv_frames = x.shape(2);
-  const int channels = x.shape(3);
-  x = checkpoint_.Linear(
-      mx::reshape(mx::transpose(x, {0, 2, 3, 1}),
-                  {chunk_count, conv_frames, channels * frequency_bins}),
-      "audio_tower.conv_out");
+  mx::array x = checkpoint_.Linear(conv_blocks.size() == 1
+                                       ? conv_blocks[0]
+                                       : mx::concatenate(conv_blocks, 0),
+                                   "audio_tower.conv_out");
+  const int conv_frames = x.shape(1);
   x = mx::add(
       x, mx::expand_dims(SinusoidalPositions(conv_frames, audio_.d_model), 0));
 
@@ -201,7 +228,7 @@ mx::array Qwen3ASR::EncodeAudio(const mx::array &mel,
   hidden_states = checkpoint_.LayerNorm(mx::concatenate(ordered, 0),
                                         "audio_tower.ln_post", kLayerNormEps);
   return checkpoint_.Linear(
-      Gelu(checkpoint_.Linear(hidden_states, "audio_tower.proj1")),
+      omni_common::Gelu(checkpoint_.Linear(hidden_states, "audio_tower.proj1")),
       "audio_tower.proj2");
 }
 

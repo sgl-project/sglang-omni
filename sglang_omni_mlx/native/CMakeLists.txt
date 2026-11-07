@@ -52,6 +52,7 @@ add_library(common STATIC
   src/common/form.cpp
   src/common/layers.cpp
   src/common/npz.cpp
+  src/common/text.cpp
   src/common/tokenizer.cpp)
 target_include_directories(common PUBLIC src)
 target_link_libraries(common PUBLIC mlx nlohmann_json::nlohmann_json pcre2-8-static
@@ -62,8 +63,10 @@ target_compile_options(common PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 set_source_files_properties(src/common/npz.cpp PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 
 add_library(qwen3_asr STATIC
+  src/qwen3_asr/qwen3_audio.cpp
   src/qwen3_asr/qwen3_asr_model.cpp
   src/qwen3_asr/qwen3_decoder.cpp
+  src/qwen3_asr/dflash_draft.cpp
   src/qwen3_asr/qwen3_asr_transcriber.cpp
   src/qwen3_asr/worker.cpp
   src/qwen3_asr/realtime.cpp)
@@ -75,7 +78,7 @@ add_library(silero_vad STATIC src/silero_vad/silero_vad.cpp src/silero_vad/speec
 # it was built with as part of cohere_asr.
 set_source_files_properties(src/silero_vad/speech_segments.cpp PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 target_include_directories(silero_vad PUBLIC src)
-target_link_libraries(silero_vad PUBLIC qwen3_asr)
+target_link_libraries(silero_vad PUBLIC common)
 target_compile_options(silero_vad PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 
 add_library(sortformer STATIC
@@ -84,22 +87,31 @@ add_library(sortformer STATIC
   src/sortformer/sortformer_features.cpp
   src/sortformer/sortformer_state.cpp)
 target_include_directories(sortformer PUBLIC src)
-target_link_libraries(sortformer PUBLIC qwen3_asr)
+target_link_libraries(sortformer PUBLIC common)
 target_compile_options(sortformer PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 
-add_library(asr_service STATIC src/qwen3_asr/asr_service.cpp src/common/http.cpp)
-target_link_libraries(asr_service PUBLIC qwen3_asr civetweb-c-library)
+add_library(omni_service STATIC src/common/service.cpp src/common/http.cpp)
+target_link_libraries(omni_service PUBLIC common civetweb-c-library)
+target_compile_options(omni_service PRIVATE -Wall -Wextra)
+
+add_library(asr_service STATIC src/qwen3_asr/asr_service.cpp)
+target_link_libraries(asr_service PUBLIC qwen3_asr omni_service)
 target_compile_options(asr_service PRIVATE -Wall -Wextra)
+
+# The /v1/audio/speech API the TTS servers share.
+add_library(speech_service STATIC src/qwen3_asr/speech_service.cpp)
+target_link_libraries(speech_service PUBLIC asr_service)
+target_compile_options(speech_service PRIVATE -Wall -Wextra)
 
 add_executable(qwen3_asr_server src/qwen3_asr/qwen3_asr_server.cpp src/silero_vad/vad_service.cpp
   src/sortformer/sortformer_service.cpp)
 target_link_libraries(qwen3_asr_server PRIVATE asr_service silero_vad sortformer)
 
 add_executable(silero_vad_probe tools/silero_vad_probe.cpp)
-target_link_libraries(silero_vad_probe PRIVATE silero_vad qwen3_asr)
+target_link_libraries(silero_vad_probe PRIVATE silero_vad)
 
 add_executable(sortformer_probe tools/sortformer_probe.cpp)
-target_link_libraries(sortformer_probe PRIVATE sortformer qwen3_asr)
+target_link_libraries(sortformer_probe PRIVATE sortformer)
 
 add_executable(qwen3_asr_transcribe tools/qwen3_asr_transcribe.cpp)
 target_link_libraries(qwen3_asr_transcribe PRIVATE qwen3_asr)
@@ -222,7 +234,7 @@ add_library(voxtral_tts STATIC src/voxtral_tts/voxtral_tts_tokenizer.cpp
 target_link_libraries(voxtral_tts PUBLIC qwen3_asr)
 target_compile_options(voxtral_tts PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(voxtral_tts_server src/voxtral_tts/voxtral_tts_server.cpp)
-target_link_libraries(voxtral_tts_server PRIVATE voxtral_tts asr_service)
+target_link_libraries(voxtral_tts_server PRIVATE voxtral_tts speech_service)
 target_compile_options(voxtral_tts_server PRIVATE -Wall -Wextra)
 add_executable(voxtral_tts_synthesize tools/voxtral_tts_synthesize.cpp)
 target_link_libraries(voxtral_tts_synthesize PRIVATE voxtral_tts)
@@ -230,3 +242,112 @@ set_target_properties(voxtral_tts_server voxtral_tts_synthesize PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
   INSTALL_RPATH "@loader_path")
 install(TARGETS voxtral_tts_server voxtral_tts_synthesize RUNTIME DESTINATION bin)
+
+add_library(music3 STATIC src/music3/music3_model.cpp src/music3/music3_ar.cpp
+  src/music3/music3_acoustic.cpp src/music3/music3_audio.cpp src/music3/music3_request.cpp)
+target_link_libraries(music3 PUBLIC qwen3_asr)
+target_compile_options(music3 PRIVATE -Wall -Wextra -ffp-contract=off)
+add_executable(music3_server src/music3/music3_server.cpp src/music3/music3_service.cpp)
+target_link_libraries(music3_server PRIVATE music3 omni_service)
+add_executable(music3_synthesize tools/music3_synthesize.cpp)
+target_link_libraries(music3_synthesize PRIVATE music3)
+set_target_properties(music3_server music3_synthesize PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS music3_server music3_synthesize RUNTIME DESTINATION bin)
+
+# Note (Jiaxin Deng): Qwen3-TTS CustomVoice: qwen3_tts_server, with the CUDA
+# server's /v1/audio/speech API, and its parity tool; the talker and code
+# predictor reuse Qwen3's decoder.
+add_library(qwen3_tts STATIC src/qwen3_tts/qwen3_tts_codec.cpp src/qwen3_tts/qwen3_tts_model.cpp)
+target_link_libraries(qwen3_tts PUBLIC qwen3_asr)
+target_compile_options(qwen3_tts PRIVATE -Wall -Wextra -ffp-contract=off)
+add_executable(qwen3_tts_server src/qwen3_tts/qwen3_tts_server.cpp)
+target_link_libraries(qwen3_tts_server PRIVATE qwen3_tts asr_service)
+target_compile_options(qwen3_tts_server PRIVATE -Wall -Wextra)
+add_executable(qwen3_tts_synthesize tools/qwen3_tts_synthesize.cpp)
+target_link_libraries(qwen3_tts_synthesize PRIVATE qwen3_tts)
+set_target_properties(qwen3_tts_server qwen3_tts_synthesize PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS qwen3_tts_server qwen3_tts_synthesize RUNTIME DESTINATION bin)
+
+# Note (Jiaxin Deng): Fun-CosyVoice3 0.5B: cosyvoice3_server, with the CUDA
+# server's /v1/audio/speech API, and its parity tool; the Qwen2 decoder reuses
+# Qwen3's, and the WAV and PCM writers are shared in common/audio.
+add_library(cosyvoice3 STATIC src/cosyvoice3/cosyvoice3_vocoder.cpp
+  src/cosyvoice3/cosyvoice3_audio.cpp src/cosyvoice3/cosyvoice3_speaker.cpp
+  src/cosyvoice3/cosyvoice3_speech_tokenizer.cpp
+  src/cosyvoice3/cosyvoice3_model.cpp)
+target_link_libraries(cosyvoice3 PUBLIC qwen3_asr)
+target_compile_options(cosyvoice3 PRIVATE -Wall -Wextra -ffp-contract=off)
+add_executable(cosyvoice3_server src/cosyvoice3/cosyvoice3_server.cpp)
+target_link_libraries(cosyvoice3_server PRIVATE cosyvoice3 asr_service)
+target_compile_options(cosyvoice3_server PRIVATE -Wall -Wextra)
+add_executable(cosyvoice3_synthesize tools/cosyvoice3_synthesize.cpp)
+target_link_libraries(cosyvoice3_synthesize PRIVATE cosyvoice3)
+set_target_properties(cosyvoice3_server cosyvoice3_synthesize PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS cosyvoice3_server cosyvoice3_synthesize RUNTIME DESTINATION bin)
+
+# Note (Yitong Li): Fish Audio Drama 3: fishaudio_drama3_server, with the CUDA
+# server's /v1/audio/speech API, and its parity tool; attention layers keep
+# Qwen3's KV cache.
+add_library(fishaudio_drama3 STATIC
+  src/fishaudio_drama3/fishaudio_drama3_text.cpp
+  src/fishaudio_drama3/fishaudio_drama3_prompt.cpp
+  src/fishaudio_drama3/fishaudio_drama3_codec.cpp
+  src/fishaudio_drama3/fishaudio_drama3_codec_stream.cpp
+  src/fishaudio_drama3/fishaudio_drama3_experts.cpp
+  src/fishaudio_drama3/fishaudio_drama3_model.cpp
+  src/fishaudio_drama3/fishaudio_drama3_backbone.cpp
+  src/fishaudio_drama3/fishaudio_drama3_tower.cpp
+  src/fishaudio_drama3/fishaudio_drama3_generation.cpp)
+target_link_libraries(fishaudio_drama3 PUBLIC qwen3_asr)
+target_compile_options(fishaudio_drama3 PRIVATE -Wall -Wextra -ffp-contract=off)
+add_executable(fishaudio_drama3_experts_test EXCLUDE_FROM_ALL
+  ci/fishaudio_drama3_experts_test.cpp)
+target_link_libraries(fishaudio_drama3_experts_test PRIVATE fishaudio_drama3)
+
+add_executable(fishaudio_drama3_server src/fishaudio_drama3/fishaudio_drama3_server.cpp)
+target_link_libraries(fishaudio_drama3_server PRIVATE fishaudio_drama3 speech_service)
+target_compile_options(fishaudio_drama3_server PRIVATE -Wall -Wextra)
+add_executable(fishaudio_drama3_synthesize tools/fishaudio_drama3_synthesize.cpp)
+target_link_libraries(fishaudio_drama3_synthesize PRIVATE fishaudio_drama3)
+set_target_properties(fishaudio_drama3_server fishaudio_drama3_synthesize PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS fishaudio_drama3_server fishaudio_drama3_synthesize RUNTIME DESTINATION bin)
+
+add_library(ming3_audio STATIC src/ming3_audio/ming3_audio_model.cpp
+  src/ming3_audio/ming3_audio_attention.cpp)
+target_link_libraries(ming3_audio PUBLIC qwen3_asr)
+target_compile_options(ming3_audio PRIVATE -Wall -Wextra)
+add_library(ming3_audio_service STATIC src/ming3_audio/ming3_audio_service.cpp)
+target_link_libraries(ming3_audio_service PUBLIC omni_service)
+target_compile_options(ming3_audio_service PRIVATE -Wall -Wextra)
+add_executable(ming3_audio_chat tools/ming3_audio_chat.cpp)
+target_link_libraries(ming3_audio_chat PRIVATE ming3_audio)
+add_executable(ming3_audio_server src/ming3_audio/ming3_audio_server.cpp)
+target_link_libraries(ming3_audio_server PRIVATE ming3_audio ming3_audio_service)
+set_target_properties(ming3_audio_chat ming3_audio_server PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS ming3_audio_chat ming3_audio_server RUNTIME DESTINATION bin)
+
+install(FILES licenses/music3-MIT.txt licenses/fishaudio_drama3-MIT.txt
+  DESTINATION licenses)
+
+# Optional local codec fixture; requires a checkpoint and saved codes.
+add_executable(fishaudio_drama3_codec_test EXCLUDE_FROM_ALL
+  ci/fishaudio_drama3_codec_test.cpp)
+target_link_libraries(fishaudio_drama3_codec_test PRIVATE fishaudio_drama3)
+
+# The protocol tests' stand-in server (tests/stub_server.cpp); built only on
+# request and never installed.
+add_executable(stub_server EXCLUDE_FROM_ALL tests/stub_server.cpp)
+target_link_libraries(stub_server PRIVATE speech_service ming3_audio_service)
+target_compile_options(stub_server PRIVATE -Wall -Wextra)
+set_target_properties(stub_server PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")

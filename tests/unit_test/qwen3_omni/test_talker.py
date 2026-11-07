@@ -467,6 +467,48 @@ def test_qwen_talker_prefill_appends_text_chunks_to_tensor_queue() -> None:
     assert torch.equal(req_data.pending_text_queue[0], torch.tensor([11.0, 12.0]))
 
 
+def test_qwen_talker_projects_each_assistant_token_id_once() -> None:
+    builder = object.__new__(TalkerPrefillBuilder)
+    builder.im_end_token_id = 99
+    builder.device = torch.device("cpu")
+    builder.dtype = torch.float32
+    builder.projected_text_cache = {}
+    projected_rows: list[torch.Tensor] = []
+
+    def text_projection(rows: torch.Tensor) -> torch.Tensor:
+        projected_rows.append(rows)
+        return rows * 2.0 + 1.0
+
+    builder.model = SimpleNamespace(text_projection=text_projection)
+    builder.load_prompt_token_embeddings = lambda token_ids: torch.stack(
+        [torch.full((2,), float(token_id)) for token_id in token_ids.tolist()]
+    )
+    first_request = SimpleNamespace(thinker_chunks_done=False, pending_text_queue=None)
+    second_request = SimpleNamespace(thinker_chunks_done=False, pending_text_queue=None)
+
+    for token_id in (11, 12):
+        builder.append_text_chunk(
+            first_request, SimpleNamespace(data=None, metadata={"token_id": token_id})
+        )
+    for token_id in (12, 11):
+        builder.append_text_chunk(
+            second_request, SimpleNamespace(data=None, metadata={"token_id": token_id})
+        )
+    builder.append_text_chunk(
+        second_request, SimpleNamespace(data=torch.tensor([5.0, 6.0]), metadata={})
+    )
+
+    assert torch.equal(
+        torch.stack(list(first_request.pending_text_queue)),
+        torch.tensor([[23.0, 23.0], [25.0, 25.0]]),
+    )
+    assert torch.equal(
+        torch.stack(list(second_request.pending_text_queue)),
+        torch.tensor([[25.0, 25.0], [23.0, 23.0], [11.0, 13.0]]),
+    )
+    assert len(projected_rows) == 3
+
+
 def test_qwen_code_predictor_keeps_4d_logits_token_shape() -> None:
     """Preserves 4D code-predictor logits as a two-dimensional token tensor."""
     logits = torch.tensor(
@@ -2275,6 +2317,8 @@ def talker_seed_self(
     fake = SimpleNamespace(
         repetition_mask=torch.zeros(max_bs, vocab, dtype=torch.bool, device=device),
         suppress_mask=torch.zeros(max_bs, vocab, dtype=torch.bool, device=device),
+        suppress_token_cache={},
+        suppress_token_ids_by_request={},
         repetition_penalties=torch.ones(max_bs, 1, device=device),
         sampling_temperatures=torch.ones(max_bs, 1, device=device),
         sampling_top_ps=torch.ones(max_bs, device=device),
@@ -2411,6 +2455,71 @@ def test_talker_prepare_decode_buffers_steady_state_reuse() -> None:
     Qwen3OmniTalker.prepare_decode_buffers(fresh, requests)
     assert torch.equal(fake.repetition_mask, fresh.repetition_mask)
     assert torch.equal(fake.suppress_mask, fresh.suppress_mask)
+
+
+SHARED_SUPPRESS_TOKEN_IDS = [1, 6, 7, 9, -2]
+
+
+@pytest.mark.parametrize(
+    "steps",
+    [
+        pytest.param(
+            [
+                [
+                    ("a", SHARED_SUPPRESS_TOKEN_IDS),
+                    ("b", SHARED_SUPPRESS_TOKEN_IDS),
+                    ("c", SHARED_SUPPRESS_TOKEN_IDS),
+                    ("d", SHARED_SUPPRESS_TOKEN_IDS),
+                ],
+                [
+                    ("e", SHARED_SUPPRESS_TOKEN_IDS),
+                    ("f", SHARED_SUPPRESS_TOKEN_IDS),
+                    ("g", SHARED_SUPPRESS_TOKEN_IDS),
+                ],
+            ],
+            id="shared",
+        ),
+        pytest.param(
+            [
+                [
+                    ("a", SHARED_SUPPRESS_TOKEN_IDS),
+                    ("b", [2, 3]),
+                    ("c", None),
+                    ("d", SHARED_SUPPRESS_TOKEN_IDS),
+                ],
+                [("e", [2, 3]), ("f", SHARED_SUPPRESS_TOKEN_IDS), ("g", [4])],
+            ],
+            id="distinct",
+        ),
+        pytest.param(
+            [
+                [("a", SHARED_SUPPRESS_TOKEN_IDS), ("b", [2, 3]), ("c", None)],
+                [("b", [2, 3]), ("d", [4]), ("a", SHARED_SUPPRESS_TOKEN_IDS)],
+            ],
+            id="kept-at-new-rows",
+        ),
+    ],
+)
+def test_talker_prepare_decode_buffers_masks_each_rows_own_suppress_set(
+    steps: list[list[tuple[str, list[int] | None]]],
+) -> None:
+    vocab = 8
+    fake = talker_seed_self(vocab=vocab)
+    requests_by_id: dict[str, SimpleNamespace] = {}
+    for step, rows in enumerate(steps):
+        requests = [
+            requests_by_id.setdefault(
+                request_id, talker_prep_req(request_id, suppress=suppress)
+            )
+            for request_id, suppress in rows
+        ]
+        Qwen3OmniTalker.prepare_decode_buffers(fake, requests)
+        expected = torch.zeros(len(requests), vocab, dtype=torch.bool)
+        for row, (_, suppress) in enumerate(rows):
+            expected[row, [token for token in suppress or [] if 0 <= token < vocab]] = (
+                True
+            )
+        assert torch.equal(fake.suppress_mask[: len(requests)], expected), step
 
 
 @pytest.mark.accelerator
@@ -2650,7 +2759,9 @@ def test_talker_sampling_buffers_hold_values_bf16_rounds(monkeypatch) -> None:
             self.model = SimpleNamespace(
                 layers=[
                     SimpleNamespace(
-                        self_attn=SimpleNamespace(num_kv_heads=1, head_dim=2)
+                        self_attn=SimpleNamespace(
+                            num_heads=1, num_kv_heads=1, head_dim=2
+                        )
                     )
                 ]
             )

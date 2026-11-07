@@ -97,7 +97,7 @@ private:
                                      const std::string &prefix) const;
 
   NemotronConfig config_;
-  qwen3_asr::Checkpoint checkpoint_;
+  omni_common::Checkpoint checkpoint_;
 };
 
 } // namespace nemotron

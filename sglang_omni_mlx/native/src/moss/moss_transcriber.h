@@ -11,6 +11,7 @@
 
 #include "common/tokenizer.h"
 #include "moss/moss_model.h"
+#include "qwen3_asr/dflash_draft.h"
 #include "qwen3_asr/qwen3_asr_transcriber.h"
 
 namespace moss {
@@ -32,7 +33,9 @@ struct MossOptions {
 
 class MossTranscriber {
 public:
-  explicit MossTranscriber(const std::filesystem::path &model_directory);
+  MossTranscriber(const std::filesystem::path &model_directory,
+                  const std::filesystem::path &draft_directory,
+                  int draft_quantization_bits);
 
   qwen3_asr::TranscriptionResult
   Transcribe(const std::vector<float> &samples, const MossOptions &options,
@@ -48,7 +51,8 @@ private:
   std::vector<int> AudioSpanIds(int audio_token_count) const;
 
   MossTranscribeDiarize model_;
-  qwen3_asr::Tokenizer tokenizer_;
+  std::optional<qwen3_asr::DFlashDraft> draft_;
+  omni_common::Tokenizer tokenizer_;
   std::vector<int> digit_token_ids_;
   int end_of_text_id_ = 0;
   int im_end_id_ = 0;

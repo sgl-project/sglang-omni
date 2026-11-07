@@ -19,6 +19,7 @@ from sglang_omni.models.personaplex.components.mimi import MimiCodec
 from sglang_omni.models.personaplex.config import (
     PersonaPlexPipelineConfig,
     PersonaPlexSessionPipelineConfig,
+    PersonaPlexSessionSampling,
 )
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.prompts import (
@@ -158,38 +159,73 @@ def test_engine_context_length_reaches_the_builder(monkeypatch):
 
     class Builder:
         def __init__(
-            self, *, max_running_requests, context_length, enable_async_decode
-        ):
+            self,
+            *,
+            max_running_requests: int,
+            context_length: int | None,
+            enable_async_decode: bool,
+            depformer_cuda_graph_batch_sizes: list[int],
+            depformer_cuda_graph_sampling: stages.AudioSampling,
+        ) -> None:
             built["context_length"] = context_length
+            built["depformer_cuda_graph_batch_sizes"] = depformer_cuda_graph_batch_sizes
+            built["depformer_cuda_graph_sampling"] = depformer_cuda_graph_sampling
 
         def build(self, model_path, **kwargs):
             built["overrides"] = kwargs["server_args_overrides"]
 
     monkeypatch.setattr(stages, "PersonaPlexEngineBuilder", Builder)
     stages.create_lm_executor(
-        "m", enable_async_decode=False, server_args_overrides={"context_length": 16384}
+        "m",
+        enable_async_decode=False,
+        depformer_cuda_graph_batch_sizes=[1, 4],
+        server_args_overrides={"context_length": 16384},
     )
     assert built["context_length"] == 16384
     assert built["overrides"] == {"context_length": 16384}
+    assert built["depformer_cuda_graph_sampling"] == stages.AudioSampling(0.8, 250)
 
-    stages.create_lm_executor("m", enable_async_decode=False, context_length=4096)
+    stages.create_lm_executor(
+        "m",
+        enable_async_decode=False,
+        context_length=4096,
+        depformer_cuda_graph_batch_sizes=[1, 4],
+    )
     assert built["context_length"] == 4096 and built["overrides"] is None
+    assert built["depformer_cuda_graph_batch_sizes"] == [1, 4]
 
 
 def test_realtime_engine_decodes_synchronously(monkeypatch, tmp_path):
     built = {}
 
     class Builder:
-        def __init__(self, *, tokenizer, context_length, enable_async_decode):
+        def __init__(
+            self,
+            *,
+            tokenizer,
+            context_length,
+            enable_async_decode,
+            depformer_cuda_graph_batch_sizes,
+            depformer_cuda_graph_sampling,
+        ):
             built["enable_async_decode"] = enable_async_decode
+            built["depformer_cuda_graph_batch_sizes"] = depformer_cuda_graph_batch_sizes
+            built["depformer_cuda_graph_sampling"] = depformer_cuda_graph_sampling
 
         def build(self, model_path, **kwargs):
             pass
 
     monkeypatch.setattr(stages, "load_text_tokenizer", lambda _: FakeTokenizer())
     monkeypatch.setattr(stages, "PersonaPlexSessionEngineBuilder", Builder)
-    stages.create_session_lm_executor(str(tmp_path))
+    stages.create_session_lm_executor(
+        str(tmp_path),
+        depformer_cuda_graph_batch_sizes=[1, 4],
+        audio_temperature=0.5,
+        audio_top_k=7,
+    )
     assert built["enable_async_decode"] is False
+    assert built["depformer_cuda_graph_batch_sizes"] == [1, 4]
+    assert built["depformer_cuda_graph_sampling"] == stages.AudioSampling(0.5, 7)
 
 
 def test_realtime_session_stages_hold_max_sessions_calls_and_run_codecs_serially(
@@ -237,18 +273,25 @@ def test_realtime_factories_get_no_offline_factory_fields_after_an_override():
         resolved.stage_named("code2wav"), resolved
     )
     assert "enable_async_decode" not in lm_args
+    assert lm_args["depformer_cuda_graph_batch_sizes"] == [1, 2, 4, 8, 16, 32]
     assert "chunk_ramp_frames" not in code2wav_args
 
 
 def test_every_realtime_stage_holds_max_sessions_calls():
     assert PersonaPlexSessionPipelineConfig(model_path="personaplex").max_sessions == 1
-    config = PersonaPlexSessionPipelineConfig(model_path="personaplex", max_sessions=3)
+    config = PersonaPlexSessionPipelineConfig(
+        model_path="personaplex",
+        max_sessions=3,
+        sampling=PersonaPlexSessionSampling(audio_temperature=0.5, audio_top_k=7),
+    )
     for name in ["preprocessing", "mimi_encode", "code2wav"]:
         assert config.stage_factory_kwargs(name) == {"max_open_sessions": 3}
     assert config.stage_factory_kwargs("lm") == {
+        "audio_temperature": 0.5,
+        "audio_top_k": 7,
         "server_args_overrides": {
             "max_running_requests": 3 + REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
-        }
+        },
     }
 
 
@@ -291,6 +334,8 @@ def test_session_stage_settings_reach_their_factories(monkeypatch, tmp_path):
     assert decode_slots.call_args.kwargs["max_graph_frames"] == 0
     lm_args = resolve_stage_factory_args(config.stage_named("lm"), config)
     assert lm_args["server_args_overrides"]["max_running_requests"] == 8
+    assert lm_args["audio_temperature"] == 0.8
+    assert lm_args["audio_top_k"] == 250
 
     config = resolve_session_config(mimi_encode={"factory": {"unknown": 1}})
     with pytest.raises(ValueError, match="does not accept"):

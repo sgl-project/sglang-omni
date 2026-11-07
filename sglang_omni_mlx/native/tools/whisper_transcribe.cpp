@@ -60,7 +60,7 @@ int main(int argc, char **argv) {
     bytes << stream.rdbuf();
     const auto started = std::chrono::steady_clock::now();
     const auto result = transcriber.Transcribe(
-        qwen3_asr::DecodeWav(bytes.str()), options, cancel);
+        omni_common::DecodeWav(bytes.str()), options, cancel);
     const nlohmann::json line = {
         {"file", file},
         {"text", result.text},

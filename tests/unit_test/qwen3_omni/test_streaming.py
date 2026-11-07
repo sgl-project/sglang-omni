@@ -34,8 +34,14 @@ from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
+from sglang_omni.scheduling.sglang_backend.prompt_hidden import PromptHiddenRequest
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
-from sglang_omni.scheduling.types import SchedulerOutput, SchedulerRequest
+from sglang_omni.scheduling.types import (
+    SchedulerOutput,
+    SchedulerRequest,
+    SpecTokensDetailsDict,
+)
+from tests.unit_test.fixtures.prompt_hidden import cuda_prompt_hidden_store
 from tests.unit_test.fixtures.qwen_fakes import deliver_code2wav_chunk
 
 
@@ -144,7 +150,9 @@ def test_qwen_thinker_stream_builder_sends_the_token_id_to_each_target(
     stream: bool,
     expected_targets: list[str],
 ):
-    builder = make_thinker_stream_output_builder(speech_enabled=speech_enabled)
+    builder = make_thinker_stream_output_builder(
+        speech_enabled=speech_enabled, prompt_hidden_store=None
+    )
     req_data = SimpleNamespace(
         req=SimpleNamespace(inflight_middle_chunks=0),
         stage_payload=thinker_stage_payload(output_modalities, stream=stream),
@@ -169,13 +177,48 @@ def test_qwen_thinker_stream_builder_emits_nothing_without_an_answer_token(
     token_id: int | None,
     inflight_middle_chunks: int,
 ):
-    builder = make_thinker_stream_output_builder(speech_enabled=True)
+    builder = make_thinker_stream_output_builder(
+        speech_enabled=True, prompt_hidden_store=None
+    )
     req_data = SimpleNamespace(
         req=SimpleNamespace(inflight_middle_chunks=inflight_middle_chunks),
         stage_payload=thinker_stage_payload(["text", "audio"]),
     )
 
     assert builder("req-1", req_data, SimpleNamespace(data=token_id)) == []
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="pinned host rows need CUDA")
+def test_the_first_talker_chunk_carries_the_prompt_rows_once():
+    req_to_token = torch.tensor([[0, 6, 0, 0, 7]], dtype=torch.int32, device="cuda")
+    hidden_states = torch.arange(4.0, device="cuda").view(2, 2)
+    request = object.__new__(PromptHiddenRequest)
+    request.inflight_middle_chunks = 0
+    request.kv = SimpleNamespace(req_pool_idx=0)
+    request.prompt_hidden_positions = torch.tensor([1, 4])
+    req_data = SimpleNamespace(
+        req=request, stage_payload=thinker_stage_payload(["text", "audio"])
+    )
+
+    with cuda_prompt_hidden_store(slot_count=8, req_to_token=req_to_token) as store:
+        store.stage(torch.tensor([6, 7], device="cuda"), hidden_states)
+        builder = make_thinker_stream_output_builder(
+            speech_enabled=True, prompt_hidden_store=store
+        )
+        decode_message, talker_message = builder(
+            "req-1", req_data, SimpleNamespace(data=11)
+        )
+        later_messages = builder("req-1", req_data, SimpleNamespace(data=12))
+
+    assert decode_message.data.tolist() == [11]
+    assert decode_message.metadata == {"token_id": 11}
+    assert torch.equal(talker_message.data, hidden_states.cpu())
+    assert talker_message.metadata == {
+        "token_id": 11,
+        "prompt_hidden_positions": [1, 4],
+    }
+    assert [message.data.tolist() for message in later_messages] == [[12], [12]]
 
 
 class TokenMetadataOnlyChunk:
@@ -197,7 +240,9 @@ def text_projected(*token_ids: int) -> torch.Tensor:
 
 
 def test_qwen_talker_conditions_on_streamed_token_ids():
-    builder = make_thinker_stream_output_builder(speech_enabled=True)
+    builder = make_thinker_stream_output_builder(
+        speech_enabled=True, prompt_hidden_store=None
+    )
     req_data = SimpleNamespace(
         req=SimpleNamespace(inflight_middle_chunks=0),
         stage_payload=thinker_stage_payload(["audio"], stream=False),
@@ -218,6 +263,7 @@ def test_qwen_talker_conditions_on_streamed_token_ids():
     )
     prefill_builder.device = torch.device("cpu")
     prefill_builder.dtype = torch.float32
+    prefill_builder.projected_text_cache = {}
     prefill_builder.audio_token_id = 30
     prefill_builder.image_token_id = None
     prefill_builder.video_token_id = None
@@ -418,6 +464,16 @@ def test_non_streaming_finalizes_on_new_request():
     assert len(result_msgs) == 1
 
 
+SPEC_TOKENS_DETAILS: SpecTokensDetailsDict = {
+    "spec_accept_rate": 0.5,
+    "spec_accept_length": 2.0,
+    "spec_num_correct_drafts": 1,
+    "spec_num_proposed_drafts": 2,
+    "spec_verify_ct": 1,
+    "spec_correct_drafts_histogram": [0, 1],
+}
+
+
 def payload_with_output_ids(stream: bool, output_ids: list[int]) -> StagePayload:
     """Variant of make_payload that injects a non-empty output_ids list so
     decode_events produces a text_final event with the full reconstructed
@@ -434,6 +490,7 @@ def payload_with_output_ids(stream: bool, output_ids: list[int]) -> StagePayload
                     "is_final": True,
                     "extra_model_outputs": {},
                     "finish_reason": "stop",
+                    "spec_tokens_details": SPEC_TOKENS_DETAILS,
                 }
             },
             "thinker_out": None,
@@ -472,6 +529,7 @@ def test_streaming_final_result_drops_full_text_to_avoid_duplication():
     assert "events" in final_data
     assert "usage" in final_data
     assert final_data.get("finish_reason") == "stop"
+    assert final_data["spec_tokens_details"] == SPEC_TOKENS_DETAILS
 
 
 def test_non_streaming_final_result_keeps_full_text():
@@ -490,6 +548,7 @@ def test_non_streaming_final_result_keeps_full_text():
     final_data = result_msgs[0].data.data
     assert final_data.get("text") == "hi there"
     assert final_data.get("finish_reason") == "stop"
+    assert final_data["spec_tokens_details"] == SPEC_TOKENS_DETAILS
 
 
 def test_abort_clears_state():

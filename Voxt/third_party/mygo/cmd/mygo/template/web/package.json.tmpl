@@ -1,0 +1,23 @@
+{
+  "name": "{{.Slug}}",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": {{json (print .Mygo " dev")}},
+    "build": {{json (print .Mygo " build")}},
+    "generate": {{json (print .Mygo " generate")}},
+    "dev:web": "vite",
+    "build:web": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "mygo-runtime": {{json .Runtime}}
+  },
+  "devDependencies": {
+{{- if .CLI}}
+    "mygo-cli": {{json .CLI}},
+{{- end}}
+    "typescript": "^7",
+    "vite": "^8"
+  }
+}

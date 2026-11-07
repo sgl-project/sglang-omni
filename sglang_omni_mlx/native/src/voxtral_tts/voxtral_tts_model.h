@@ -38,8 +38,8 @@ public:
 
 private:
   struct LoadedWeights {
-    qwen3_asr::WeightMap model;
-    qwen3_asr::WeightMap codec;
+    omni_common::WeightMap model;
+    omni_common::WeightMap codec;
   };
 
   VoxtralTtsModel(const std::filesystem::path &model_directory,
@@ -59,7 +59,7 @@ private:
   // The sum of a frame's codebook embeddings, [1, 1, dim].
   mlx::core::array EmbedFrame(const mlx::core::array &codes) const;
 
-  qwen3_asr::Checkpoint checkpoint_;
+  omni_common::Checkpoint checkpoint_;
   AudioCodec codec_;
   SpeechTokenizer tokenizer_;
   qwen3_asr::Qwen3Decoder decoder_;
