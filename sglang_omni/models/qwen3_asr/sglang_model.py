@@ -484,5 +484,19 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
                 weight_loader = getattr(param, "weight_loader", default_weight_loader)
                 weight_loader(param, loaded_weight)
 
+        # params_dict holds the bf16 parameters. Drop it first, so the FP8 swap
+        # below can free them.
+        del params_dict
+
+        # FP8 decoder linears on SM120. The kernels import CuTe DSL, so the module
+        # loads only here and never on other platforms.
+        if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] == 12:
+            from sglang_omni.models.qwen3_asr.fp8_linear import install_fp8_linears
+
+            count = install_fp8_linears(self.language_model)
+            logger.info(f"Qwen3-ASR FP8 linears: lm_head + {count} decoder linears")
+        else:
+            pass
+
 
 EntryClass = Qwen3ASRForConditionalGeneration
