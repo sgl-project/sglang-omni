@@ -60,6 +60,7 @@ def record(args: argparse.Namespace) -> int:
             concurrency=args.concurrency,
             turn_detection=args.turn_detection,
             legacy_tail_s=args.legacy_tail,
+            report_playback=args.report_playback,
         )
     )
     manifest, _, _ = load_run(args.output)

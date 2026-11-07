@@ -106,6 +106,13 @@ def add_protocol_args(parser: argparse.ArgumentParser) -> None:
         help="Seconds after the input ends before the liveness probe closes a "
         "legacy-protocol session",
     )
+    parser.add_argument(
+        "--report-playback",
+        action="store_true",
+        help="Turn-based profiles: when a response.done cancels a reply, send "
+        "conversation.item.truncate with the milliseconds of that reply the "
+        "simulated zero-buffer player had played by then",
+    )
 
 
 def served_models(url: str) -> dict[str, JsonValue]:
