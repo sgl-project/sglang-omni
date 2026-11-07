@@ -9,8 +9,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/hehehai/actnowkit/family"
 	fammodels "github.com/hehehai/actnowkit/models"
@@ -131,7 +133,7 @@ func (m *Manager) wanted() []fammodels.Claim {
 // brought stays in hub.
 func (m *Manager) MoveTo(ctx context.Context, hub string, backup bool, commit func() error) error {
 	from := m.store.Hub
-	srcs, want := m.others(hub, []string{from})
+	srcs, want := m.others(hub, []string{from}, nil)
 	want = append(want, slices.DeleteFunc(m.wanted(), func(w fammodels.Claim) bool { return fammodels.Check(from, w).State != fammodels.Installed })...)
 	mine, err := m.store.Claims()
 	if err != nil {
@@ -164,12 +166,18 @@ func (m *Manager) MoveTo(ctx context.Context, hub string, backup bool, commit fu
 // family's default library, ActNow/models/hub, where they were before
 // 2.0.1): hard links on the same disk, nothing downloaded, the old
 // libraries untouched. Then commit writes the family's models.root, so
-// that the apps that follow it look for their models there. When a model
-// could not be brought (busy, no space, an error), commit is not called:
-// the next start tries again.
-func (m *Manager) Gather(ctx context.Context, backup bool, commit func() error) error {
+// that the apps that follow it look for their models there. Only the
+// libraries keep accepts are looked at (the start: those on hub's volume,
+// hard links; a copy from another disk would hold the start for minutes,
+// and the app that keeps it there brings it over itself, spec v1.0.9).
+// When a model could not be brought (busy, an error), commit is not
+// called: the next start tries again.
+func (m *Manager) Gather(ctx context.Context, backup bool, keep func(root string) bool, commit func() error) error {
 	hub := m.store.Hub
-	srcs, want := m.others(hub, nil)
+	if err := fammodels.EnsureHub(m.store.Family, hub); err != nil {
+		return err
+	}
+	srcs, want := m.others(hub, nil, keep)
 	if len(want) > 0 {
 		if _, err := m.store.Import(ctx, srcs, backup, want...); err != nil {
 			return err
@@ -184,13 +192,13 @@ func (m *Manager) Gather(ctx context.Context, backup bool, commit func() error) 
 
 // others are the models the other apps claim outside hub, and srcs with
 // the libraries they keep them in (an empty root is the family's default
-// library).
-func (m *Manager) others(hub string, srcs []string) ([]string, []fammodels.Claim) {
+// library); keep, when set, picks the libraries.
+func (m *Manager) others(hub string, srcs []string, keep func(root string) bool) ([]string, []fammodels.Claim) {
 	var want []fammodels.Claim
 	all, _ := fammodels.ReadAllClaims(m.store.Family)
 	for id, cs := range all {
 		root := cmp.Or(cs.Root, fammodels.DefaultHubIn(m.store.Family))
-		if id == m.store.BundleID || fammodels.SameHub(root, hub) {
+		if id == m.store.BundleID || fammodels.SameHub(root, hub) || keep != nil && !keep(root) {
 			continue
 		}
 		if !slices.ContainsFunc(srcs, func(s string) bool { return fammodels.SameHub(s, root) }) {
@@ -199,6 +207,22 @@ func (m *Manager) others(hub string, srcs []string) ([]string, []fammodels.Claim
 		want = append(want, cs.Claims...)
 	}
 	return srcs, want
+}
+
+// SameVolume reports whether a and b are folders on one volume, where
+// a model is hard-linked instead of copied.
+func SameVolume(a, b string) bool {
+	sa, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	sb, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	da, ok := sa.Sys().(*syscall.Stat_t)
+	db, ok2 := sb.Sys().(*syscall.Stat_t)
+	return ok && ok2 && da.Dev == db.Dev
 }
 
 // notBrought names the models of want that one of srcs has and hub does

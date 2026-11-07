@@ -108,6 +108,29 @@ func TestModelsInOnePlace(t *testing.T) {
 	}
 }
 
+// TestGatherSkipsLibraries: a library keep refuses (at the start: one on
+// another disk, which would be copied before the window opens) is left to
+// its app, and models.root is written all the same.
+func TestGatherSkipsLibraries(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	ctx := context.Background()
+	old := &fammodels.Store{Family: a.fam.Dir(), Hub: fammodels.DefaultHubIn(a.fam.Dir()), BundleID: audioSmithID, AppID: "audiosmith"}
+	vad, _ := models.Lookup(models.VADSilero)
+	if err := modelstest.SeedModel(old.Hub, vad); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Claim(ctx, vad.Claim("", fammodels.OriginDownloaded)); err != nil {
+		t.Fatal(err)
+	}
+	committed := false
+	if err := a.models.Gather(ctx, false, func(string) bool { return false }, func() error { committed = true; return nil }); err != nil || !committed {
+		t.Fatalf("gather: %v, committed %v", err, committed)
+	}
+	if models.Installed(a.models.Hub(), vad) != "" {
+		t.Error("brought from a library keep refused")
+	}
+}
+
 // TestModelsFromTheFamilyLibrary: 2.0.0 kept the models in the family's
 // default library (ActNow/models/hub); this version's start brings them
 // into its own folder (hard links: no space used) and claims them there.
