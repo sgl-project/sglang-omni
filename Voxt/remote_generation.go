@@ -7,6 +7,7 @@ package main
 // (providers.Capabilities).
 
 import (
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -150,7 +151,7 @@ func (f *genForm) settings() (g settings.Generation, bad string) {
 			return nil
 		}
 		v, err := strconv.ParseFloat(s, 64)
-		if err != nil && bad == "" {
+		if (err != nil || math.IsNaN(v) || math.IsInf(v, 0)) && bad == "" {
 			bad = title
 		}
 		return &v
@@ -174,7 +175,11 @@ func (f *genForm) settings() (g settings.Generation, bad string) {
 			g.ThinkingBudget = *b
 		}
 	}
-	g.MaxOutputTokens = integer(f.maxTokens, i18n.T("Max output tokens (optional)"))
+	// 0 asks for no limit, as an empty field does (the request would ask
+	// for 1 token).
+	if g.MaxOutputTokens = integer(f.maxTokens, i18n.T("Max output tokens (optional)")); g.MaxOutputTokens != nil && *g.MaxOutputTokens < 1 {
+		g.MaxOutputTokens = nil
+	}
 	g.Temperature = float(f.temperature, i18n.T("Temperature"))
 	g.TopP = float(f.topP, "Top P")
 	g.TopK = integer(f.topK, "Top K")

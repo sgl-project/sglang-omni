@@ -64,3 +64,19 @@ func TestRemoteGenerationSettings(t *testing.T) {
 		t.Error("an untouched dialog counts as unsaved")
 	}
 }
+
+// TestGenerationNumbers: 0 output tokens (or fewer) asks for no limit, as
+// an empty field does, instead of answers cut to one token; NaN and Inf
+// are refused, since the settings cannot be saved with them.
+func TestGenerationNumbers(t *testing.T) {
+	for _, s := range []string{"0", "-5"} {
+		if g, bad := (&genForm{maxTokens: s}).settings(); bad != "" || g.MaxOutputTokens != nil {
+			t.Errorf("max output tokens %q: %v, bad %q", s, g.MaxOutputTokens, bad)
+		}
+	}
+	for _, s := range []string{"NaN", "inf", "-Inf"} {
+		if _, bad := (&genForm{temperature: s}).settings(); bad != "Temperature" {
+			t.Errorf("temperature %q: bad %q", s, bad)
+		}
+	}
+}
