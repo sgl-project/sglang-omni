@@ -110,8 +110,9 @@ case "${1:-}" in
   hardware-kept)
     (($# == 3)) || usage
     [[ "$2" =~ ^[0-9]+$ ]] || fail "'$2' is not a build number"
-    # The update service's reply to the entry, or the item of the build in the appcasts on stdin.
-    if grep -Eq "\"hardwareRequirements\"[[:space:]]*:[[:space:]]*\"$hardware\"" <<< "$3"; then
+    # The update service's reply to the entry: ok, with the requirement in the entry it kept (data),
+    # so that a reply that echoes the request fails. Or the item of the build in the appcasts on stdin.
+    if jq -e --arg hw "$hardware" '.ok == true and .data.hardwareRequirements == $hw' <<< "$3" >/dev/null 2>&1; then
       echo "The update service keeps hardwareRequirements $hardware"
     elif items | grep -xF "$2 $hardware" >/dev/null; then
       echo "The appcast's item of build $2 has sparkle:hardwareRequirements $hardware"

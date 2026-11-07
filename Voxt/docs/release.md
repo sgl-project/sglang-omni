@@ -394,9 +394,9 @@ Sparkle 要满足下面几条才装 2.x（Sparkle 2.10 的 `SUPlainInstaller.m`�
 
 ### 只给 Apple 芯片
 
-appcast 的 XML 由更新服务生成，这个仓库只往 `/api/pkg/update` 发条目。工作流在条目里发 `"hardwareRequirements": "arm64"`（`scripts/release-appcast.sh entry`）。设成最新一项（`replace-latest`）之前，它要确认更新服务留下了这个要求：`update` 的返回里有，或者 beta / stable 的 appcast 里这个构建号的那一项有 `<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>`（`scripts/release-appcast.sh hardware-kept`）。都没有就停下，什么都不会推给 1.x 用户，日志写“the update service does not output hardwareRequirements yet…”。设成最新以后，它还要求这个通道 appcast 的第一项既是这个构建号，又有这个元素。
+appcast 的 XML 由更新服务生成，这个仓库只往 `/api/pkg/update` 发条目。工作流在条目里发 `"hardwareRequirements": "arm64"`（`scripts/release-appcast.sh entry`）。设成最新一项（`replace-latest`）之前，它要确认更新服务留下了这个要求：`update` 的返回是 `"ok": true`，而且返回里它存下的条目（`data`）有 `"hardwareRequirements": "arm64"`（返回在别处原样回显请求不算），或者 beta / stable 的 appcast 里这个构建号的那一项有 `<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>`（`scripts/release-appcast.sh hardware-kept`）。都没有就停下，什么都不会推给 1.x 用户，日志写“the update service does not output hardwareRequirements yet…”。设成最新以后，它还要求这个通道 appcast 的第一项既是这个构建号，又有这个元素。
 
-现在的更新服务还不输出这个元素（两个 appcast 里只有 `sparkle:version` 和 `sparkle:shortVersionString`），所以两个通道都会在 `replace-latest` 之前停下。要在 voxt.actnow.dev 的服务端让 `/api/pkg/update` 接受 `hardwareRequirements`，并在生成 appcast 时输出 `<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>`（1.x 和 2.x 都要求 macOS 15，不用加 `sparkle:minimumSystemVersion`）。这一步在服务端做，这个仓库做不了。
+现在的更新服务还不输出这个元素（两个 appcast 里只有 `sparkle:version` 和 `sparkle:shortVersionString`），所以两个通道都会在 `replace-latest` 之前停下。要在 voxt.actnow.dev 的服务端让 `/api/pkg/update` 接受 `hardwareRequirements`、在返回的 `data` 里带上它，并在生成 appcast 时输出 `<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>`（1.x 和 2.x 都要求 macOS 15，不用加 `sparkle:minimumSystemVersion`）。这一步在服务端做，这个仓库做不了。
 
 服务端支持以后，想让 Release 发布时自动发 beta，在 voxt-appcast.yaml 里改回 1.x 的做法：`on:` 里加回 `release: types: [published]`；`appcast` job 加 `if: github.event_name == 'workflow_dispatch' || (startsWith(github.event.release.tag_name, 'voxt-v') && !github.event.release.prerelease)`；`TAG` 改成 `${{ github.event.release.tag_name || inputs.tag }}`，`CHANNEL` 改成 `${{ inputs.channel || 'beta' }}`（发布事件没有 inputs，只发 beta）。拦截那一步不用动，服务端支持以后它自己就会通过。
 

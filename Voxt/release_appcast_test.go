@@ -165,17 +165,24 @@ func TestReleaseAppcastHardwareRequirementKept(t *testing.T) {
 		t.Errorf("items: %v\n got %q\nwant %q", err, out, want)
 	}
 	// voxt-appcast.yaml makes the entry the channel's latest only when the
-	// update service kept its hardware requirement: in its reply to the
-	// entry, or in the appcasts' item of the build.
+	// update service kept its hardware requirement: in the entry of an ok
+	// reply (data, as Voxt 1.x's run got it), or in the appcasts' item of the
+	// build. A reply that echoes the request is no proof.
+	const voxt1Reply = `{"ok":true,"data":{"channel":"beta","version":"2.0.2","packageURL":"https://voxt.actnow.dev/p","zipURL":"https://voxt.actnow.dev/z","dmgURL":"https://voxt.actnow.dev/d","sha256":"ab","size":1,"updated":true}}`
+	withoutElement := strings.ReplaceAll(releaseAppcastXML, "<sparkle:hardwareRequirements> arm64 </sparkle:hardwareRequirements>", "")
 	for _, c := range []struct {
 		name, build, reply, appcast string
 		kept                        bool
 	}{
-		{"in the reply", "200000299", `{"ok":true,"data":{"entry":{"hardwareRequirements": "arm64"}}}`, "", true},
-		{"in the appcast", "200000299", `{"ok":true}`, releaseAppcastXML, true},
-		{"not in either", "200000299", `{"ok":true,"data":{"version":"2.0.2"}}`, strings.ReplaceAll(releaseAppcastXML, "<sparkle:hardwareRequirements> arm64 </sparkle:hardwareRequirements>", ""), false},
-		{"another build's", "200000399", `{"ok":true}`, releaseAppcastXML, false},
-		{"another requirement", "200000299", `{"hardwareRequirements":"x86_64"}`, "", false},
+		{"in the reply", "200000299", strings.Replace(voxt1Reply, `"updated":true`, `"updated":true,"hardwareRequirements": "arm64"`, 1), withoutElement, true},
+		{"in the appcast", "200000299", voxt1Reply, releaseAppcastXML, true},
+		{"not in either", "200000299", voxt1Reply, withoutElement, false},
+		{"an echoed request, not ok", "200000299", `{"ok":false,"error":"unknown field","received":{"hardwareRequirements":"arm64"}}`, withoutElement, false},
+		{"an echoed request, ok", "200000299", `{"ok":true,"data":{"version":"2.0.2"},"received":{"hardwareRequirements":"arm64"}}`, withoutElement, false},
+		{"not ok", "200000299", `{"ok":false,"data":{"hardwareRequirements":"arm64"}}`, withoutElement, false},
+		{"not JSON", "200000299", `"hardwareRequirements":"arm64"`, withoutElement, false},
+		{"another build's", "200000399", voxt1Reply, releaseAppcastXML, false},
+		{"another requirement", "200000299", `{"ok":true,"data":{"hardwareRequirements":"x86_64"}}`, withoutElement, false},
 	} {
 		_, err := runReleaseAppcast(t, c.appcast, "hardware-kept", c.build, c.reply)
 		var exit *exec.ExitError
