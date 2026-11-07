@@ -1,0 +1,75 @@
+MyGo patch 0009 (VoxtNew): Tester.AccessLabels, so that a test can
+check what assistive technology reaches.
+
+A Tester never turned assistive technology on, so a test could not tell
+whether VoiceOver reaches a control: one inside a button does not (a
+button is a leaf to assistive technology), as VoxtNew's Test button on a
+remote service's card did not. AccessLabels turns it on, as VoiceOver
+reading the window would, runs a frame and returns the labels of the
+elements it sees. TestAccessLabels.
+
+diff --git a/ui/access_labels_test.go b/ui/access_labels_test.go
+new file mode 100644
+index 0000000..efbdc77
+--- /dev/null
++++ b/ui/access_labels_test.go
+@@ -0,0 +1,30 @@
++package ui
++
++import (
++	"slices"
++	"testing"
++)
++
++// TestAccessLabels: assistive technology sees a group's buttons, not those
++// inside a button, which is a leaf to it.
++func TestAccessLabels(t *testing.T) {
++	tt := NewTester(func(c *Context) {
++		Column(c).Children(func() {
++			ButtonBase(c.Key("card")).Label("Card").Children(func() {
++				ButtonBase(c.Key("inner")).Label("Inner")
++			})
++			ButtonBase(c.Key("group")).Label("Group").Role(RoleGroup).Children(func() {
++				ButtonBase(c.Key("reach")).Label("Reach")
++			})
++		})
++	}, 400, 300)
++	labels := tt.AccessLabels()
++	for _, want := range []string{"Card", "Group", "Reach"} {
++		if !slices.Contains(labels, want) {
++			t.Errorf("no %q in %q", want, labels)
++		}
++	}
++	if slices.Contains(labels, "Inner") {
++		t.Errorf("a button inside a button is reached: %q", labels)
++	}
++}
+diff --git a/ui/headless.go b/ui/headless.go
+index 8849acd..d3f72d3 100644
+--- a/ui/headless.go
++++ b/ui/headless.go
+@@ -436,6 +436,24 @@ func (t *Tester) SetFontSmoothing(on bool) {
+ // Frame renders another frame, as when the view's state changed.
+ func (t *Tester) Frame() { t.h.requested.Store(true); t.settle() }
+ 
++// AccessLabels turns assistive technology on, as VoiceOver reading the
++// window would, runs a frame and returns the labels of the elements it
++// sees, in tree order: a test checks that a control can be reached (one
++// inside a button cannot: a button is a leaf to assistive technology).
++func (t *Tester) AccessLabels() []string {
++	t.rt.accessibilityOn()
++	t.Frame()
++	var out []string
++	if t.h.access != nil {
++		for _, n := range t.h.access.Nodes {
++			if n.Label != "" {
++				out = append(out, n.Label)
++			}
++		}
++	}
++	return out
++}
++
+ // FramePending reports whether the view still asks for a frame, as one
+ // that animates or never settles does after an input or Frame. The
+ // frames of After and Painter.After wait for Advance to reach their

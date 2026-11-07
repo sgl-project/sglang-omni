@@ -129,7 +129,7 @@ github.com/sgl-project/sglang-omni/Voxt
 │   └── tools/            developer commands (standard library only): snapcmp (snapshot comparison),
 │                         declhash (pure-move check), evalsynth (the speech fixtures, Qwen3-TTS on a Mac)
 ├── helper/               the Swift helper (helper/README.md): Sources/, Tests/, Fixtures/, Support/
-└── third_party/mygo/     MyGo 0.5.5 with seven patches (scripts/vendor-mygo.sh)
+└── third_party/mygo/     MyGo 0.5.5 with nine patches (scripts/vendor-mygo.sh)
 ```
 
 The plan's `textio` is the helper's `textio.*` (session.HelperText adapts it).
