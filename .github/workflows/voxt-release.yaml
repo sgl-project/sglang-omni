@@ -4,9 +4,10 @@ name: Voxt Release
 # voxtnew-llm inside) with scripts/release.sh for a voxt-vX.Y.Z tag, which
 # sets the version (newer than every voxt-v tag): signed with the Developer
 # ID of the voxt-release environment, notarized, checked by
-# scripts/release-verify.sh, and uploaded with its SHA-256 to a draft release
-# whose notes are the version's section of Voxt/CHANGELOG.md. Apple silicon
-# only. The nightly from main (voxt-nightly.yaml, version
+# scripts/release-verify.sh, and uploaded with the app's ZIP (for Voxt 1.x's
+# in-app update and Homebrew, voxt-appcast.yaml) and their SHA-256 to a draft
+# release whose notes are the version's section of Voxt/CHANGELOG.md. Apple
+# silicon only. The nightly from main (voxt-nightly.yaml, version
 # X.Y.Z-nightly.YYYYMMDD) is signed and notarized the same way and keeps its
 # disk image as an artifact. Any other run (a pull request that changes the
 # release, or by hand) builds the same app ad hoc, unsigned, and keeps its
