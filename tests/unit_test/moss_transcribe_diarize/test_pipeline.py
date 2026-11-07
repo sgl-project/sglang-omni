@@ -41,7 +41,9 @@ from sglang_omni.speculative.dflash_draft import (
 from sglang_omni.utils.imports import import_string
 
 
-def make_moss_engine_builder() -> MossTranscribeDiarizeEngineBuilder:
+def make_moss_engine_builder(
+    *, enable_async_decode: bool | None = True
+) -> MossTranscribeDiarizeEngineBuilder:
     return MossTranscribeDiarizeEngineBuilder(
         max_running_requests=16,
         max_new_tokens=None,
@@ -51,7 +53,7 @@ def make_moss_engine_builder() -> MossTranscribeDiarizeEngineBuilder:
         encoder_cache_size_bytes=0,
         enable_torch_compile=False,
         torch_compile_max_bs=4,
-        enable_async_decode=True,
+        enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=2,
         prefill_coalesce_requests=0,
         prefill_coalesce_wait_ms=0.0,
@@ -495,9 +497,9 @@ def write_speculators_config(directory: Path) -> None:
 def test_factory_serves_a_draft_on_the_synchronous_verify_loop(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Async decode under a draft needs an overlap opt-in this runner lacks, and SGLang
-    cannot read the speculators config, so the worker class and the flat copy must both
-    reach the build, and the copy must not outlive it.
+    """Unset, async decode stays off under a draft, where it means speculative overlap;
+    SGLang cannot read the speculators config, so the worker class and the flat copy must
+    both reach the build, and the copy must not outlive it.
     """
     calls = stub_factory_env(monkeypatch, want_cuda_graph=False)
     monkeypatch.setattr(engine_builder.current_platform, "is_cuda", lambda: True)
@@ -564,6 +566,8 @@ def test_factory_serves_a_draft_on_the_synchronous_verify_loop(
         is ReducedVocabularyDFlashWorker
     )
     assert server_args_kwargs["enable_torch_compile"] is False
+    assert infrastructure_kwargs["enable_async_decode"] is False
+    assert server_args_kwargs["disable_overlap_schedule"] is True
     assert adapter_kwargs["speculative_reserve_tokens"] == 16
     scheduler_kwargs = calls["scheduler_kwargs"][0]
     assert scheduler_kwargs["enable_async_decode"] is False
@@ -664,6 +668,72 @@ def test_torch_compile_is_turned_off_only_under_the_draft(
         builder.draft_checkpoint.cleanup()
     else:
         pass
+
+
+@pytest.mark.parametrize(
+    ("requested", "with_draft", "expected"),
+    [
+        (None, False, True),
+        (None, True, False),
+        (True, True, True),
+        (False, False, False),
+    ],
+)
+def test_speculative_overlap_is_an_explicit_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    requested: bool | None,
+    with_draft: bool,
+    expected: bool,
+) -> None:
+    """Ordinary decode defaults to async; under a draft async decode means speculative overlap, so it runs only when the operator asks for it."""
+    monkeypatch.setattr(engine_builder.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(
+        engine_builder.request_builders,
+        "make_moss_transcribe_diarize_stream_output_builder",
+        Mock(),
+    )
+    write_speculators_config(tmp_path)
+    builder = make_moss_engine_builder(enable_async_decode=requested)
+    builder.full_prefill_enabled = True
+    overrides: dict[str, object] = (
+        {
+            "speculative_algorithm": "DFLASH",
+            "speculative_draft_model_path": str(tmp_path),
+        }
+        if with_draft
+        else {}
+    )
+
+    builder.adjust_overrides(overrides)
+
+    scheduler_kwargs = builder.extra_scheduler_kwargs()
+    assert scheduler_kwargs["enable_async_decode"] is expected
+    # note (wilsonzheng0327): SGLang builds the draft worker for one loop or the other, so the infrastructure must hear the same choice as the scheduler.
+    if with_draft:
+        assert builder.infra_kwargs()["enable_async_decode"] is expected
+        assert overrides["disable_overlap_schedule"] is not expected
+        assert scheduler_kwargs["async_prefill"] is False
+        builder.draft_checkpoint.cleanup()
+    else:
+        assert builder.infra_kwargs() == {}
+        assert scheduler_kwargs["async_prefill"] is expected
+
+
+def test_builder_runner_opts_into_speculative_overlap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The scheduler refuses speculative overlap unless the runner the builder hands it opts in."""
+    monkeypatch.setattr(
+        engine_builder.MossTranscribeDiarizeModelRunner,
+        "__init__",
+        lambda self, *args: None,
+    )
+
+    runner = make_moss_engine_builder().make_model_runner(Mock(), Mock())
+
+    assert isinstance(runner, engine_builder.MossTranscribeDiarizeModelRunner)
+    assert runner.supports_speculative_async_decode is True
 
 
 def test_dflash_worker_reaches_the_decoder_through_the_outer_model() -> None:
