@@ -43,9 +43,15 @@ from sglang_omni.proto.streams import (
     TRUNCATE,
     control_type,
 )
+from sglang_omni.scheduling.history_policies import (
+    HistoryUnit,
+    UnitDropPolicy,
+    load_drop_policy,
+)
 from sglang_omni.scheduling.sglang_backend.ar_session import (
     ARSessionAdapter,
     ARSessionPreparation,
+    RetainedKeys,
 )
 from sglang_omni.scheduling.sglang_backend.history_cut import HistoryCut
 from sglang_omni.scheduling.sglang_backend.request_data import EmbeddingSpan
@@ -95,6 +101,7 @@ class ThinkerAdapter(ARSessionAdapter):
         self.tokenizer: PreTrainedTokenizerBase = tokenizer
         self.vocab_size: int = vocab_size
         self.window: MiniCPMODuplexWindow = window
+        self.drop_policy: UnitDropPolicy = load_drop_policy(window.drop_policy)
         self.rotary_embedding: RotaryEmbedding = rotary_embedding
         self.special: MiniCPMOSpecialTokenIds = resolve_special_token_ids(
             tokenizer, bad_token_ids=tuple(tokenizer.bad_token_ids)
@@ -321,10 +328,11 @@ class ThinkerAdapter(ARSessionAdapter):
         request_data: DuplexUnitRequestData,
         history_length: int,
         history_capacity: int,
+        retained_keys: RetainedKeys,
     ) -> HistoryCut | None:
-        """The checkpoint's StreamDecoder.enforce_window: past the high watermark, the oldest units go until the low one.
+        """The checkpoint's StreamDecoder.enforce_window: past the high watermark, units go in the drop policy's order until the low one.
 
-        It also cuts early when the next unit would not fit in the context.
+        It also cuts early when the next unit would not fit in the context. The newest protect_tokens go last, oldest first.
         """
         window = self.window
         # note (0xtoward): The checkpoint checks its cache length after </unit>, which here comes with the next unit, so that length is the next <unit>'s position.
@@ -337,8 +345,30 @@ class ThinkerAdapter(ARSessionAdapter):
             return None
         else:
             state = self.states[session_identity]
+            units = [
+                HistoryUnit(start, end)
+                for start, end in zip(state.unit_starts, state.unit_starts[1:])
+            ]
+            policy_order = (
+                self.drop_policy.drop_order(units, retained_keys) if units else []
+            )
+            assert sorted(policy_order) == list(
+                range(len(units))
+            ), f"drop policy order {policy_order} is not every unit once"
+            protected_start = next_unit_start - window.protect_tokens
             return state.drop_units(
-                range(len(state.unit_starts)),
+                [
+                    *(
+                        index
+                        for index in policy_order
+                        if units[index].start < protected_start
+                    ),
+                    *(
+                        index
+                        for index, unit in enumerate(units)
+                        if unit.start >= protected_start
+                    ),
+                ],
                 next_unit_start,
                 min(window.basic_window_low_tokens, fitting_start),
             )

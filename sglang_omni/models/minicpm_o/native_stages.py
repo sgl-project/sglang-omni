@@ -485,12 +485,16 @@ def create_thinker_scheduler(
     ] = DEFAULT_WINDOW_SETTINGS.sliding_window_mode,
     basic_window_high_tokens: int = DEFAULT_WINDOW_SETTINGS.basic_window_high_tokens,
     basic_window_low_tokens: int = DEFAULT_WINDOW_SETTINGS.basic_window_low_tokens,
+    drop_policy: str = DEFAULT_WINDOW_SETTINGS.drop_policy,
+    protect_tokens: int = DEFAULT_WINDOW_SETTINGS.protect_tokens,
 ) -> OmniScheduler:
     builder = MiniCPMOThinkerEngineBuilder(
         window=MiniCPMODuplexWindow(
             sliding_window_mode=sliding_window_mode,
             basic_window_high_tokens=basic_window_high_tokens,
             basic_window_low_tokens=basic_window_low_tokens,
+            drop_policy=drop_policy,
+            protect_tokens=protect_tokens,
         )
     )
     if kv_cache_tokens is None:

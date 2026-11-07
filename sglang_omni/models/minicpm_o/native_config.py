@@ -3,7 +3,14 @@
 
 from typing import ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    field_validator,
+    model_validator,
+)
 
 from sglang_omni.admission import REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
 from sglang_omni.config import (
@@ -12,6 +19,7 @@ from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
 )
+from sglang_omni.scheduling.history_policies import load_drop_policy
 
 PKG = "sglang_omni.models.minicpm_o.native_stages"
 DEFAULT_MAX_SESSIONS = 2
@@ -138,6 +146,16 @@ class MiniCPMODuplexWindow(BaseModel):
     sliding_window_mode: Literal["off", "basic"] = "basic"
     basic_window_high_tokens: int = Field(default=8000, ge=1)
     basic_window_low_tokens: int = Field(default=6000, ge=1)
+    drop_policy: str = "oldest"
+    "Which units a cut drops first: oldest, keydiff, or package.module:ClassName."
+    protect_tokens: int = Field(default=2000, ge=0)
+    "The newest history tokens a cut drops last."
+
+    @field_validator("drop_policy")
+    @classmethod
+    def check_drop_policy(cls, drop_policy: str) -> str:
+        load_drop_policy(drop_policy)
+        return drop_policy
 
     @model_validator(mode="after")
     def check_watermarks(self) -> "MiniCPMODuplexWindow":
