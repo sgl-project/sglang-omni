@@ -153,8 +153,14 @@ def voices_dir(model_dir: str | Path) -> Path:
 
 
 def packaged_voices(model_dir: str | Path) -> tuple[str, ...]:
-    """The names of the voices the checkpoint ships."""
-    return tuple(sorted(path.stem for path in voices_dir(model_dir).glob("*.pt")))
+    """The names of the voices the checkpoint ships; none for one without voices, such as Moshi's."""
+    model_dir = Path(model_dir)
+    if (model_dir / VOICES_DIR_NAME).is_dir() or (
+        model_dir / VOICES_ARCHIVE_NAME
+    ).is_file():
+        return tuple(sorted(path.stem for path in voices_dir(model_dir).glob("*.pt")))
+    else:
+        return ()
 
 
 def resolve_voice_path(model_dir: str | Path, voice: str) -> Path:

@@ -109,3 +109,8 @@ def test_interrupted_unpack_leaves_no_partial_voices(tmp_path, monkeypatch):
     with pytest.raises(tarfile.ReadError):
         prompts.voices_dir(tmp_path)
     assert sorted(p.name for p in tmp_path.iterdir()) == ["tmp", "voices.tgz"]
+
+
+def test_a_checkpoint_without_voices_lists_none(tmp_path):
+    """Moshi ships no voices.tgz; listing its voices must not fail the deployment."""
+    assert prompts.packaged_voices(tmp_path) == ()
