@@ -2765,7 +2765,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         max_batch_size: int,
         batch_wait_s: float,
     ) -> list[tuple[str, Qwen3TTSStreamState]] | None:
-        """Wait for up to max_batch_size first chunks; a whole request queued among them joins the worker's rows."""
+        """Wait for up to max_batch_size first chunks; a whole request joins the worker's rows and ends the wait, since its replay is due."""
         batch: list[tuple[str, Qwen3TTSStreamState]] = []
         queued = work_queue.get()
         if queued is None or self.async_stop.is_set():
@@ -2776,6 +2776,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         while True:
             if isinstance(queued, Qwen3TTSWholeRequest):
                 self.whole_request_rows.append(queued)
+                return batch
             else:
                 batch.append(queued)
             remaining = deadline - time.monotonic()

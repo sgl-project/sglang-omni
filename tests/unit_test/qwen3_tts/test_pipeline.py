@@ -4000,7 +4000,7 @@ def test_qwen3_tts_first_chunks_queued_when_a_replay_is_due_run_before_it(
 
     run_initial_worker_pass(scheduler)
 
-    assert dispatched == [(streams[:2], 0), (streams[2:4], 0), (streams[4:], 0)]
+    assert dispatched == [(streams[:1], 0), (streams[1:3], 0), (streams[3:], 0)]
     assert len(runner.calls) == 1
 
 
