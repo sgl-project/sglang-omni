@@ -37,10 +37,16 @@ from sglang_omni.models.fishaudio_drama3.config import (
 )
 from sglang_omni.models.fishaudio_drama3.engine_builder import Drama3EngineBuilder
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
+from sglang_omni.models.fishaudio_drama3.incremental_decoder import (
+    IncrementalDecoder,
+    IncrementalWindowDecoder,
+    incremental_window_lengths,
+)
 from sglang_omni.models.fishaudio_drama3.request_builders import Drama3RequestData
 from sglang_omni.models.fishaudio_drama3.speech_request import Drama3SpeechPreprocessor
 from sglang_omni.models.fishaudio_drama3.stream_windows import stream_window_lengths
 from sglang_omni.models.fishaudio_drama3.vocoder import (
+    Drama3IncrementalVocoderScheduler,
     Drama3VocoderScheduler,
     WindowGraphDecoder,
 )
@@ -281,6 +287,9 @@ def create_vocoder_executor(
     decode_dtype: Literal["float32", "float16"],
     max_new_tokens: int,
     total_gpu_memory_fraction: float | None = None,
+    stream_decode: Literal["incremental", "overlap"] = "overlap",
+    max_stream_batch_size: int = 16,
+    stream_slot_count: int = 256,
 ) -> Drama3VocoderScheduler:
     resolved_device = str(resolve_concrete_device(device, gpu_id))
     torch_device = torch.device(resolved_device)
@@ -294,8 +303,34 @@ def create_vocoder_executor(
         decode: WindowDecoder = ChannelsLastDecoder(codec, dtype=torch.float16)
     else:
         decode = codec.from_indices
-    if window_cuda_graphs:
-        decode_window: WindowDecoder = WindowGraphDecoder(
+    is_incremental = (
+        stream_decode == "incremental"
+        and decode_dtype == "float16"
+        and torch_device.type == "cuda"
+    )
+    if is_incremental:
+        window_decoder = build_incremental_window_decoder(
+            decode,
+            num_codebooks=num_codebooks,
+            device=torch_device,
+            strides=(
+                stream_stride,
+                *stream_followup_stride_ramp,
+                stream_followup_stride,
+            ),
+            max_stream_batch_size=max_stream_batch_size,
+            stream_slot_count=stream_slot_count,
+            use_graphs=window_cuda_graphs,
+        )
+        decode_window = decode
+        logger.info(
+            f"Drama 3 vocoder: incremental streams in up to {stream_slot_count} slots, "
+            f"grouped up to {max_stream_batch_size} windows of "
+            f"{window_decoder.window_lengths} frames"
+        )
+    elif window_cuda_graphs:
+        window_decoder = None
+        decode_window = WindowGraphDecoder(
             decode,
             num_codebooks=num_codebooks,
             frame_length=int(codec.frame_length),
@@ -308,6 +343,7 @@ def create_vocoder_executor(
             ),
         )
     else:
+        window_decoder = None
         decode_window = decode
     if torch_device.type == "cpu":
         max_padded_frames_per_decode = None
@@ -319,8 +355,7 @@ def create_vocoder_executor(
             total_gpu_memory_fraction=total_gpu_memory_fraction,
             max_new_tokens=max_new_tokens,
         )
-    return Drama3VocoderScheduler(
-        codec,
+    scheduler_args = dict(
         device=resolved_device,
         stream_stride=stream_stride,
         stream_followup_stride_ramp=stream_followup_stride_ramp,
@@ -331,4 +366,46 @@ def create_vocoder_executor(
         max_batch_wait_ms=max_batch_wait_ms,
         decode_window=decode_window,
         max_padded_frames_per_decode=max_padded_frames_per_decode,
+    )
+    if window_decoder is None:
+        return Drama3VocoderScheduler(codec, **scheduler_args)
+    else:
+        return Drama3IncrementalVocoderScheduler(
+            codec,
+            window_decoder=window_decoder,
+            max_stream_batch_size=max_stream_batch_size,
+            stream_slot_count=stream_slot_count,
+            max_stream_frames=int(codec.quantizer.post_module.freqs_cis.shape[0]),
+            **scheduler_args,
+        )
+
+
+def build_incremental_window_decoder(
+    decode: ChannelsLastDecoder,
+    *,
+    num_codebooks: int,
+    device: torch.device,
+    strides: tuple[int, ...],
+    max_stream_batch_size: int,
+    stream_slot_count: int,
+    use_graphs: bool,
+) -> IncrementalWindowDecoder:
+    batch_sizes = {max_stream_batch_size}
+    batch_size = 1
+    while batch_size < max_stream_batch_size:
+        batch_sizes.add(batch_size)
+        batch_size *= 2
+    return IncrementalWindowDecoder(
+        IncrementalDecoder(
+            decode,
+            stream_slots=stream_slot_count,
+            max_window_frames=max(strides),
+            device=device,
+        ),
+        num_codebooks=num_codebooks,
+        frame_length=int(decode.codec.frame_length),
+        device=device,
+        batch_sizes=tuple(batch_sizes),
+        window_lengths=incremental_window_lengths(strides),
+        use_graphs=use_graphs,
     )

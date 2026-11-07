@@ -101,6 +101,11 @@ class Drama3VocoderFactoryArgs(FactoryArgs):
     max_batch_wait_ms: int = Field(default=2, ge=0)
     window_cuda_graphs: bool = True
     decode_dtype: Literal["float32", "float16"] = "float16"
+    # Incremental streams decode only new frames, needing float16 on CUDA; elsewhere,
+    # and with "overlap", windows re-decode stream_overlap_tokens frames each.
+    stream_decode: Literal["incremental", "overlap"] = "incremental"
+    max_stream_batch_size: int = Field(default=16, ge=1)
+    stream_slot_count: int = Field(default=256, ge=1)
 
 
 class Drama3VocoderStageConfig(StageConfig):

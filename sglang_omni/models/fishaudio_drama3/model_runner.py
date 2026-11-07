@@ -24,6 +24,7 @@ from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.request_id_prefill_cuda_graph_runner import (
     RequestIdPrefillCudaGraphRunner,
 )
+from sglang_omni.models.fishaudio_drama3 import frame_kernels
 from sglang_omni.models.fishaudio_drama3.decode_state import (
     Drama3DecodeStatePool,
     extend_frame_rows,
@@ -136,6 +137,16 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
         self.row_upload_buffers: list[torch.Tensor] = []
         self.row_upload_slot = 0
         self.prefill_inputs: Drama3StepInputs | None = None
+        # One Triton launch each stages and publishes a decode step's rows; the
+        # fused frame embeddings already gate Triton on this device.
+        self.fused_row_staging: bool = (
+            getattr(
+                getattr(model, "audio_decoder", None), "fused_frame_embeddings", False
+            )
+            is True
+            and frame_kernels.HAS_TRITON
+            and torch.device(self.device).type == "cuda"
+        )
 
     def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
         return True
@@ -176,6 +187,25 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
             pass
         row_indices = state_pool.row_indices[:row_count]
         buffers = self.decode_buffers
+        if self.fused_row_staging:
+            frame_kernels.gather_decode_rows(
+                row_indices=row_indices,
+                state_frames=state_pool.frames,
+                state_ras_windows=state_pool.ras_windows,
+                state_temperature=state_pool.temperature,
+                state_top_k=state_pool.top_k,
+                state_top_p=state_pool.top_p,
+                state_epsilon_cutoff=state_pool.epsilon_cutoff,
+                frames=buffers.frames,
+                ras_windows=buffers.ras_windows,
+                temperature=buffers.temperature,
+                top_k=buffers.top_k,
+                top_p=buffers.top_p,
+                epsilon_cutoff=buffers.epsilon_cutoff,
+            )
+            return
+        else:
+            pass
         torch.index_select(
             state_pool.frames, 0, row_indices, out=buffers.frames[:row_count]
         )
@@ -201,6 +231,15 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
     def publish_decode_frames(self, row_count: int) -> torch.Tensor:
         state_pool = self.state_pool
         row_indices = state_pool.row_indices[:row_count]
+        if self.fused_row_staging:
+            return frame_kernels.publish_decode_frames(
+                row_indices=row_indices,
+                sampled_frames=self.decode_buffers.sampled_frames[:row_count],
+                state_frames=state_pool.frames,
+                state_ras_windows=state_pool.ras_windows,
+            )
+        else:
+            pass
         frames = self.decode_buffers.sampled_frames[:row_count].clone()
         ras_windows = state_pool.ras_windows.index_select(0, row_indices)
         state_pool.frames.index_copy_(0, row_indices, frames)

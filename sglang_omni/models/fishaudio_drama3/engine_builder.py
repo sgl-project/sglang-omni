@@ -313,7 +313,20 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             audio_decoder.enable_fused_layers(torch.device(device))
             logger.info(
                 f"Drama 3 tower fused layers: on for passes up to {MAX_FUSED_ROWS} "
-                f"rows ({', '.join(FUSED_KERNELS)})"
+                f"rows ({', '.join(FUSED_KERNELS)}); fused frame embeddings and "
+                f"decode-row staging: "
+                f"{'on' if audio_decoder.fused_frame_embeddings else 'off'}"
+            )
+        if audio_decoder.sampler is None:
+            pass
+        elif (
+            head_reason := audio_decoder.enable_head_sampling(torch.device(device))
+        ) is not None:
+            logger.info(f"Drama 3 fused codebook head sampling: off, {head_reason}")
+        else:
+            logger.info(
+                f"Drama 3 fused codebook head sampling: on for passes up to "
+                f"{MAX_FUSED_ROWS} rows"
             )
         sglang_runner.extra_prefill_graph_attention_layers = list(model.tower_attention)
         sglang_runner.prefill_graph_runner_class = RequestIdPrefillCudaGraphRunner
