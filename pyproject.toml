@@ -90,15 +90,17 @@ dependencies = [
     # Gradio playground
     "gradio>=4.0.0",
     # note (yexiaodong): dots.tts pulls Pynini, whose OpenFst build is not
-    # available on Apple arm64 and is unrelated to the Qwen3-ASR path.
-    "dots.tts==0.2.1; sys_platform != 'darwin' or platform_machine != 'arm64'",
+    # available on Apple arm64 or Linux aarch64 (no PyPI wheel; the sdist
+    # build needs OpenFst headers) and is unrelated to the Qwen3-ASR path.
+    "dots.tts==0.2.1; platform_machine != 'aarch64' and (sys_platform != 'darwin' or platform_machine != 'arm64')",
     # Ming-Omni
     "diffusers==0.37.0",      # Omni's own Ming-Omni pin; not an sglang core dependency
     "torchdiffeq>=0.2.4",     # LLaDA2-Uni image decoder sampling
     "x-transformers",          # Ming talker rotary embeddings
     # note (yexiaodong): ZONOS2 text normalization pulls Pynini/OpenFst, which
-    # has no usable Apple arm64 wheel and is unrelated to the Qwen3-ASR path.
-    "nemo_text_processing==1.2.0; sys_platform != 'darwin' or platform_machine != 'arm64'",
+    # has no usable Apple arm64 or Linux aarch64 wheel and is unrelated to the
+    # Qwen3-ASR path.
+    "nemo_text_processing==1.2.0; platform_machine != 'aarch64' and (sys_platform != 'darwin' or platform_machine != 'arm64')",
 ]
 
 [project.optional-dependencies]
