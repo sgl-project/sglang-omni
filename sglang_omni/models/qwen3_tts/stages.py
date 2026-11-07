@@ -134,6 +134,15 @@ def load_qwen3_tts_tokenizer(
     attn_implementation: str | None,
     float32_encoder: bool,
 ) -> "Qwen3TTSTokenizer":
+    # note (Mei Li): the vocoder loads this before the engine reaches SGLang's MPS rejection, and the load can segfault on MPS.
+    if torch.device(device).type == "mps":
+        raise ValueError(
+            "Qwen3-TTS does not run on Torch/MPS; on Apple Silicon, serve it "
+            "with the native MLX qwen3_tts_server; see Apple Silicon (Native MLX) "
+            "in docs/cookbook/qwen3_tts.md"
+        )
+    else:
+        pass
     apply_qwen_tts_transformers_compatibility_patches()
     try:
         from qwen_tts import Qwen3TTSTokenizer
