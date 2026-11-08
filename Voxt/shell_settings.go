@@ -142,6 +142,9 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 		a.syncHotkeys()   // session_hotkeys.go
 		a.buildTrayMenu() // the shortcuts it shows
 	}
+	if !slices.Equal(old.Audio.Devices, new.Audio.Devices) {
+		a.buildTrayMenu() // the microphone it checks
+	}
 	if old.General.LaunchAtLogin != new.General.LaunchAtLogin && new.General.LaunchAtLogin != a.loginIs && a.hasMenu {
 		on := new.General.LaunchAtLogin
 		go func() {

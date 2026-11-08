@@ -190,7 +190,7 @@ func (a *app) providerCard(c *ui.Context, sv service, w float32) {
 				}
 				ui.Row(c.Key("tags")).Gap(px(t, 6)).AlignItems(ui.Center).Wrap().Children(func() {
 					tagChip(c, whereText(sv, p))
-					if sv.stream {
+					if sv.speech.Streams(setupModel(kind, p)) {
 						tagChip(c, i18n.T("Realtime"))
 					}
 				})

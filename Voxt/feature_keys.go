@@ -215,6 +215,7 @@ func (a *app) featureShortcuts(c *ui.Context, feature string) {
 	case hotkey.Transcribe:
 		a.trPasteRow(c)
 		a.trCancelRow(c)
+		a.trEndWordRow(c) // feature_endword.go
 	case hotkey.Rewrite:
 		caption(c, i18n.T("While the answer card shows an answer, the shortcut records a follow-up that changes it (\"shorter\", \"in English\")."))
 	}

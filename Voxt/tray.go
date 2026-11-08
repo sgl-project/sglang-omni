@@ -1,7 +1,8 @@
 package main
 
 // The menu bar icon (AudioSmith's dictation tray, for
-// VoxtNew): Start transcribing, Paste the last result, the last three
+// VoxtNew): Start transcribing, Paste the last result, the microphones
+// (a click puts one first in Settings → Audio's list), the last three
 // results (a click copies one), Open VoxtNew, Settings, Quit. With
 // Settings → General → "Keep running when the window closes", closing
 // the window hides it, so the shortcuts keep working; the Dock icon or
@@ -136,6 +137,7 @@ func (a *app) trayItems() []*mygo.MenuItem {
 	items := []*mygo.MenuItem{
 		{Label: start, Click: act(a.toggleTranscribe)},
 		{Label: i18n.T("Paste the last result") + "    " + uitext.HotkeyGlyphs(f.PasteLast.Keys), Click: act(func() { a.pasteLast(a.front) })},
+		{Label: i18n.T("Microphone"), Submenu: a.trayMicrophones(act)},
 	}
 	if len(a.recent) > 0 {
 		items = append(items, mygo.Separator(), &mygo.MenuItem{Label: i18n.T("Recent results"), Disabled: true})
@@ -153,6 +155,20 @@ func (a *app) trayItems() []*mygo.MenuItem {
 		mygo.Separator(),
 		&mygo.MenuItem{Label: i18n.T("Quit Voxt"), Click: act(func() { a.quitting = true; mygo.App.Quit() })},
 	)
+}
+
+// trayMicrophones are the Microphone submenu's items: the inputs the
+// helper listed last, the one a recording would use checked.
+func (a *app) trayMicrophones(act func(func()) func(*mygo.MenuItem, *mygo.Window)) []*mygo.MenuItem {
+	if len(a.audio.devices) == 0 {
+		return []*mygo.MenuItem{{Label: i18n.T("No microphone available"), Disabled: true}}
+	}
+	inUse := deviceInUse(a.prefs.Audio.Devices, a.audio.devices)
+	var items []*mygo.MenuItem
+	for _, d := range a.audio.devices {
+		items = append(items, &mygo.MenuItem{Label: d.Name, Type: mygo.MenuItemRadio, Checked: d.ID == inUse, Click: act(func() { a.useDevice(d) })})
+	}
+	return items
 }
 
 // copyRecent copies a recent result (the menu bar).

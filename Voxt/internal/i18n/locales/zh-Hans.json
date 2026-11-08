@@ -1344,5 +1344,10 @@
   "%d prompts": "%d 条提示词",
   "%d speech model (%s): no download needed": "%d 个语音模型（%s），不用再下载",
   "%d speech models (%s): no download needed": "%d 个语音模型（%s），不用再下载",
-  "Check %s: its address or model may not work as it did in the previous Voxt.": "检查 %s：它的地址或模型可能和在旧版 Voxt 里不一样。"
+  "Check %s: its address or model may not work as it did in the previous Voxt.": "检查 %s：它的地址或模型可能和在旧版 Voxt 里不一样。",
+  "No microphone available": "没有可用的麦克风",
+  "End with a word": "说结束词停止",
+  "Say this word last and pause: the recording stops as if you pressed the shortcut, and the word is left out of the text. Only speech models that show the text as you speak hear it.": "最后说出这个词并停顿一下，录音就像按了快捷键一样停止，这个词不会写进文字。只有边说边出文字的语音模型能听到它。",
+  "Word that ends the recording": "结束录音的词",
+  "Your word that ends the recording": "自定义结束录音的词"
 }
