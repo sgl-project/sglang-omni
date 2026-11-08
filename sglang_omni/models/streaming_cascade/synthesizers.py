@@ -41,7 +41,7 @@ MARKDOWN_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 UNSPOKEN_SYMBOLS = re.compile(
     "[\U0001f000-\U0001faff\u2600-\u27bf\u2b50\u2b55\ufe0e\ufe0f\u200d\u20e3*`]"
 )
-# note (Haoling Pu): Qwen3-TTS Base cloning with a reference transcript opens each request with about 0.4 s of room tone, so a request's audio starts this pre-roll before its first sample above SPEECH_ONSET_AMPLITUDE, a fraction of full scale.
+# note (Haoling Pu): Qwen3-TTS Base cloning with a reference transcript opens each request with about 0.4 s of room tone, so with drop_quiet_start a request's audio starts this pre-roll before its first sample above SPEECH_ONSET_AMPLITUDE, a fraction of full scale.
 SPEECH_ONSET_AMPLITUDE = 0.01
 SPEECH_PREROLL_S = 0.05
 # Note (Haoling Pu): Qwen3-TTS reads a heading, list or quote marker as a word, garbles a table row and can run on for 40 s or more after either, and reads a bare URL out symbol by symbol.
@@ -85,6 +85,7 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     reference_text: str = ""
     language: str = ""
     max_sentence_words: int = Field(default=24, gt=0)
+    drop_quiet_start: bool = False
     api_key_env: str = "OPENAI_API_KEY"
 
 
@@ -269,7 +270,7 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
             preroll_samples = round(SPEECH_PREROLL_S * self.sample_rate_hz)
             carry = b""
             held_preroll = np.zeros(0, dtype="<f4")
-            has_spoken = False
+            is_playing = not self.config.drop_quiet_start
             async for data in response.aiter_bytes():
                 data = carry + data
                 usable = len(data) - len(data) % 2
@@ -279,7 +280,7 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
                 )
                 if not usable:
                     pass
-                elif has_spoken:
+                elif is_playing:
                     yield samples
                 else:
                     audio = np.concatenate([held_preroll, samples])
@@ -287,7 +288,7 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
                         np.abs(audio) > SPEECH_ONSET_AMPLITUDE
                     )
                     if loud_indices.size:
-                        has_spoken = True
+                        is_playing = True
                         yield audio[max(0, int(loud_indices[0]) - preroll_samples) :]
                     else:
                         held_preroll = audio[-preroll_samples:]
