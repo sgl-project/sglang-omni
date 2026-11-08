@@ -28,7 +28,9 @@ from sglang_omni.models.fishaudio_drama3.stream_windows import (
 )
 from sglang_omni.models.fishaudio_drama3.vocoder import (
     Drama3VocoderScheduler,
+    WindowBatchDecoder,
     WindowGraphDecoder,
+    window_graph_keys,
 )
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.dac.modded_dac import (
     CausalConvNet,
@@ -38,7 +40,7 @@ from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.dac.modded_dac impor
 from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import WindowDecoder
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto.request import OmniRequest, StagePayload
-from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.types import RequestOutput
 from tests.unit_test.fishaudio_s2_pro.test_vocoder import tiny_codec
 from tests.unit_test.fixtures.torch_backend_flags import (  # noqa: F401  # fixture
@@ -98,6 +100,7 @@ def vocoder_with(
     *,
     factory_args: Drama3VocoderFactoryArgs | None = None,
     max_padded_frames_per_decode: int | None = None,
+    window_batch_decoder: WindowBatchDecoder | None = None,
 ) -> Drama3VocoderScheduler:
     """The vocoder with the configured windows."""
     window_kwargs = (factory_args or Drama3VocoderFactoryArgs()).model_dump(
@@ -116,6 +119,7 @@ def vocoder_with(
         device="cpu",
         decode_window=decode_window,
         max_padded_frames_per_decode=max_padded_frames_per_decode,
+        window_batch_decoder=window_batch_decoder,
         **window_kwargs,
     )
 
@@ -349,6 +353,39 @@ def test_utterance_graph_lengths_cover_every_frame_count_up_to_the_cap(
     assert utterance_graph_lengths(max_frames, frame_step=8) == lengths
 
 
+def test_only_stream_windows_get_batched_graphs_capped_by_the_longest_window() -> None:
+    factory_args = Drama3VocoderFactoryArgs()
+    window_lengths = stream_window_lengths(
+        stream_stride=factory_args.stream_stride,
+        stream_followup_stride_ramp=factory_args.stream_followup_stride_ramp,
+        stream_followup_stride=factory_args.stream_followup_stride,
+        stream_overlap_tokens=factory_args.stream_overlap_tokens,
+    )
+    utterance_lengths = utterance_graph_lengths(
+        factory_args.non_streaming_cuda_graph_max_frames, frame_step=8
+    )
+
+    keys = window_graph_keys(
+        window_lengths,
+        utterance_lengths,
+        max_batch_size=factory_args.stream_window_batch_size,
+    )
+
+    assert {length for batch_size, length in keys if batch_size == 1} == {
+        *window_lengths,
+        *utterance_lengths,
+    }
+    # Stream windows (4, 14, 26, 58, 96) batch up to 4, within 2 x 96 frames.
+    assert {key for key in keys if key[0] > 1} == {
+        *((batch_size, 4) for batch_size in (2, 3, 4)),
+        *((batch_size, 14) for batch_size in (2, 3, 4)),
+        *((batch_size, 26) for batch_size in (2, 3, 4)),
+        (2, 58),
+        (3, 58),
+        (2, 96),
+    }
+
+
 def test_every_streamed_window_decodes_through_the_given_window_decoder() -> None:
     codec = FrameNumberCodec()
     decoded_frame_counts: list[int] = []
@@ -366,6 +403,97 @@ def test_every_streamed_window_decodes_through_the_given_window_decoder() -> Non
         streamed_audio(messages),
         np.repeat(np.arange(214, dtype=np.float32), SAMPLES_PER_FRAME),
     )
+
+
+class RecordingBatchDecoder:
+    """Decodes same-length windows together with the frame-number codec."""
+
+    def __init__(self, codec: FrameNumberCodec) -> None:
+        self.codec = codec
+        self.window_counts: list[int] = []
+
+    def decode_windows(self, codebook_codes: list[torch.Tensor]) -> list[torch.Tensor]:
+        self.window_counts.append(len(codebook_codes))
+        return list(self.codec.from_indices(torch.stack(codebook_codes)).split(1))
+
+
+def test_coalesced_chunks_vocode_each_request_like_one_chunk_at_a_time() -> None:
+    """Requests start out of phase, so a drained group holds several windows of one
+    request, windows of different lengths, and same-length windows of several
+    requests."""
+    frame_counts = {"request-a": 214, "request-b": 150, "request-c": 131}
+    start_steps = {"request-a": 0, "request-b": 64, "request-c": 70}
+    frames: dict[str, torch.Tensor] = {}
+    for index, (request_id, frame_count) in enumerate(frame_counts.items()):
+        frames[request_id] = numbered_frames(frame_count)
+        frames[request_id][:, 1] += 1000 * index
+    step_count = max(start_steps[r] + frame_counts[r] for r in frame_counts)
+    chunk_messages = [
+        IncomingMessage(
+            request_id=request_id,
+            type="stream_chunk",
+            data=StreamItem(
+                chunk_id=frame,
+                data=frames[request_id][frame : frame + 1].T,
+                from_stage="tts_engine",
+            ),
+        )
+        for step in range(step_count)
+        for request_id in frame_counts
+        if 0 <= (frame := step - start_steps[request_id]) < frame_counts[request_id]
+    ]
+    batch_decoder = RecordingBatchDecoder(FrameNumberCodec())
+    coalescing = vocoder_with(FrameNumberCodec(), window_batch_decoder=batch_decoder)
+    one_at_a_time = vocoder_with(FrameNumberCodec())
+
+    # 16 engine steps queue up behind each drain.
+    for group_start in range(0, step_count, 16):
+        group_end = group_start + 16
+        for message in chunk_messages:
+            if (
+                group_start
+                <= start_steps[message.request_id] + message.data.chunk_id
+                < group_end
+            ):
+                coalescing.inbox.put(message)
+                one_at_a_time.handle_stream_chunk(message.request_id, message.data)
+            else:
+                pass
+        coalescing.handle_message(coalescing.get_batch_message(), None)
+        assert coalescing.inbox.empty()
+    for vocoder in (coalescing, one_at_a_time):
+        for request_id in frame_counts:
+            vocoder.handle_streaming_new_request(
+                request_id,
+                StagePayload(
+                    request_id=request_id,
+                    request=OmniRequest(inputs="hello", params={"stream": True}),
+                    data=Drama3GenerationResult(
+                        frames=frames[request_id],
+                        prompt_row_count=PROMPT_ROW_COUNT,
+                        finish_reason="length",
+                    ),
+                ),
+            )
+            vocoder.handle_stream_done(request_id)
+    coalesced_messages = drained(coalescing)
+    one_at_a_time_messages = drained(one_at_a_time)
+
+    assert max(batch_decoder.window_counts) > 1
+    for index, request_id in enumerate(frame_counts):
+        coalesced = [m for m in coalesced_messages if m.request_id == request_id]
+        assert [(m.type, m.data) for m in coalesced] == [
+            (m.type, m.data)
+            for m in one_at_a_time_messages
+            if m.request_id == request_id
+        ]
+        np.testing.assert_array_equal(
+            streamed_audio(coalesced),
+            np.repeat(
+                np.arange(frame_counts[request_id], dtype=np.float32) + 1000 * index,
+                SAMPLES_PER_FRAME,
+            ),
+        )
 
 
 @pytest.mark.accelerator
@@ -391,8 +519,9 @@ def test_window_graphs_decode_every_window_length_like_eager() -> None:
         frame_length=SAMPLES_PER_FRAME,
         device=device,
         window_lengths=(10, 20, 32, 64, 96),
+        max_batch_size=3,
     )
-    codes = torch.randint(0, 100, (2, NUM_CODEBOOKS, 100), device=device)
+    codes = torch.randint(0, 100, (3, NUM_CODEBOOKS, 100), device=device)
 
     replay_results: list[tuple[torch.Tensor, torch.Tensor]] = []
     for frame_count in (96, 7, 10, 11, 64, 95, 97):
@@ -401,6 +530,14 @@ def test_window_graphs_decode_every_window_length_like_eager() -> None:
     for decoded_audio, expected_audio in replay_results:
         assert torch.equal(decoded_audio, expected_audio)
     assert torch.equal(decoder(codes[:, :, :20]), causal_decode(codes[:, :, :20]))
+    # Replay the batched graphs whatever the startup timing enabled.
+    decoder.batch_sizes = {64: (3, 2), 96: (2,)}
+    for frame_count, window_count in ((64, 3), (64, 2), (96, 3), (32, 2)):
+        windows = [codes[row, :, :frame_count] for row in range(window_count)]
+        for window, decoded_audio in zip(
+            windows, decoder.decode_windows(windows), strict=True
+        ):
+            assert torch.equal(decoded_audio, causal_decode(window[None]))
 
 
 def test_the_final_result_counts_prompt_rows_and_audio_frames() -> None:

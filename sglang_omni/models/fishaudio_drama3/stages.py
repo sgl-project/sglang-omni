@@ -285,6 +285,7 @@ def create_vocoder_executor(
     max_batch_wait_ms: int,
     window_cuda_graphs: bool,
     non_streaming_cuda_graph_max_frames: int,
+    stream_window_batch_size: int,
     decode_dtype: Literal["float32", "float16"],
     max_new_tokens: int,
     total_gpu_memory_fraction: float | None = None,
@@ -301,25 +302,30 @@ def create_vocoder_executor(
         decode: WindowDecoder = ChannelsLastDecoder(codec, dtype=torch.float16)
     else:
         decode = codec.from_indices
+    window_batch_decoder: WindowGraphDecoder | None = None
     if window_cuda_graphs:
-        decode_window: WindowDecoder = WindowGraphDecoder(
+        window_graph_decoder = WindowGraphDecoder(
             decode,
             num_codebooks=num_codebooks,
             frame_length=int(codec.frame_length),
             device=torch_device,
-            window_lengths=(
-                *stream_window_lengths(
-                    stream_stride=stream_stride,
-                    stream_followup_stride_ramp=stream_followup_stride_ramp,
-                    stream_followup_stride=stream_followup_stride,
-                    stream_overlap_tokens=stream_overlap_tokens,
-                ),
-                *utterance_graph_lengths(
-                    min(non_streaming_cuda_graph_max_frames, max_new_tokens),
-                    frame_step=UTTERANCE_GRAPH_FRAME_STEP,
-                ),
+            window_lengths=stream_window_lengths(
+                stream_stride=stream_stride,
+                stream_followup_stride_ramp=stream_followup_stride_ramp,
+                stream_followup_stride=stream_followup_stride,
+                stream_overlap_tokens=stream_overlap_tokens,
             ),
+            utterance_lengths=utterance_graph_lengths(
+                min(non_streaming_cuda_graph_max_frames, max_new_tokens),
+                frame_step=UTTERANCE_GRAPH_FRAME_STEP,
+            ),
+            max_batch_size=stream_window_batch_size,
         )
+        decode_window: WindowDecoder = window_graph_decoder
+        if stream_window_batch_size > 1:
+            window_batch_decoder = window_graph_decoder
+        else:
+            pass
     else:
         decode_window = decode
     if torch_device.type == "cpu":
@@ -344,4 +350,5 @@ def create_vocoder_executor(
         max_batch_wait_ms=max_batch_wait_ms,
         decode_window=decode_window,
         max_padded_frames_per_decode=max_padded_frames_per_decode,
+        window_batch_decoder=window_batch_decoder,
     )
