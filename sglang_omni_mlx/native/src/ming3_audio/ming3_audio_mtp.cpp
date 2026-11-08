@@ -105,9 +105,12 @@ void Model::GenerateWithDraft(const mx::array &embeddings,
     }
     // note (altale): the next round assumes this one's draft is accepted, so
     // the GPU runs it while this round is checked. Neither this round nor the
-    // next is committed yet, and each commits two tokens at most.
+    // next is committed yet, and each commits two tokens at most. A stop draft
+    // ends the request if accepted and rolls the next round back if not, so
+    // the next round is wasted either way.
     std::optional<Round> next;
-    if (int(generated.size()) + 4 <= max_tokens) {
+    if (int(generated.size()) + 4 <= max_tokens &&
+        !IsStopToken(current.draft.item<int>())) {
       next = submit(mx::slice(current.predictions, {0, 1}, {1, 2}),
                     current.following_draft);
     } else {
