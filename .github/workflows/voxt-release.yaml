@@ -10,10 +10,11 @@ name: Voxt Release
 # silicon only. The nightly from main (voxt-nightly.yaml, version
 # X.Y.Z-nightly.YYYYMMDD) and the beta of each Voxt change merged into main
 # (voxt-beta.yaml, version X.Y.Z-beta.YYYYMMDD.N) are signed and notarized
-# the same way and keep their disk image and ZIP as artifacts. A beta takes
-# the Omni runtime from the cache when one was built from the same sources.
+# the same way and keep their disk image and its SHA-256 as an artifact,
+# without the ZIP, which only a release's update uses. A beta takes the
+# Omni runtime from the cache when one was built from the same sources.
 # Any other run (a pull request that changes the release, or by hand) builds
-# the same app ad hoc, unsigned, and keeps its disk image and ZIP as artifacts.
+# the same app ad hoc, unsigned, and keeps its disk image the same way.
 
 on:
   push:
@@ -215,7 +216,7 @@ jobs:
           fi
           rm -f "$RUNNER_TEMP/notary.p8"
 
-      - name: Collect the disk image and the ZIP
+      - name: Collect the disk image, and a release's ZIP
         run: |
           set -euo pipefail
           dmg="$(compgen -G 'build/darwin-arm64/*.dmg' | head -1 || true)"
@@ -238,10 +239,15 @@ jobs:
           read -r zip_name name <<< "$(scripts/release-appcast.sh assets "$VERSION")"
           mkdir -p "$out"
           cp "$dmg" "$out/$name"
-          # Voxt 1.x's in-app update and the Homebrew cask install the app from this ZIP (voxt-appcast.yaml), as Voxt 1.x's release made it.
-          ditto -c -k --sequesterRsrc --keepParent build/darwin-arm64/Voxt.app "$out/$zip_name"
           # The SHA-256 files name the artifacts, not local paths, so shasum -c works after a download.
-          (cd "$out" && shasum -a 256 "$name" > "$name.sha256" && shasum -a 256 "$zip_name" > "$zip_name.sha256")
+          (cd "$out" && shasum -a 256 "$name" > "$name.sha256")
+          if [[ "$IS_RELEASE" == "true" ]]; then
+            # Voxt 1.x's in-app update and the Homebrew cask install the app from the release's ZIP (voxt-appcast.yaml), as Voxt 1.x's release made it.
+            ditto -c -k --sequesterRsrc --keepParent build/darwin-arm64/Voxt.app "$out/$zip_name"
+            (cd "$out" && shasum -a 256 "$zip_name" > "$zip_name.sha256")
+          else
+            :
+          fi
           echo "ARTIFACTS_DIR=$out" >> "$GITHUB_ENV"
           ls -l "$out"
 
