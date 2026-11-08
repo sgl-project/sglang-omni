@@ -222,6 +222,11 @@ func (a *app) obFooter(c *ui.Context) {
 			if ui.Button(c.Key("ob-next"), i18n.T("Continue")).Clicked() {
 				a.obGo(a.ob.step + 1)
 			}
+		case a.ob.step == obModels && a.modelStatus[obSpeech].Downloading:
+			tip := i18n.T("The speech model is still downloading: later steps work when it is ready, or you can skip them.")
+			if primaryButton(c.Key("ob-next"), i18n.T("Continue")).Tooltip(tip).Disabled(busy).Clicked() {
+				a.obGo(a.ob.step + 1)
+			}
 		default:
 			if primaryButton(c.Key("ob-next"), i18n.T("Continue")).Disabled(busy).Clicked() {
 				a.obGo(a.ob.step + 1)
