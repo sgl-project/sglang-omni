@@ -404,7 +404,7 @@ func TestErrors(t *testing.T) {
 			t.Errorf("notification %s", m)
 		}
 	}
-	if !IsJob(MethodCaptureStart) || !IsJob(MethodSpeechRecognize) || IsJob(MethodSpeechAudio) || IsJob(MethodBrowserURL) {
+	if !IsJob(MethodCaptureStart) || !IsJob(MethodCaptureSystem) || !IsJob(MethodSpeechRecognize) || IsJob(MethodSpeechAudio) || IsJob(MethodBrowserURL) {
 		t.Error("IsJob")
 	}
 }
