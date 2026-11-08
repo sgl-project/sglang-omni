@@ -24,6 +24,7 @@ from websockets.asyncio.server import ServerConnection
 
 from benchmarks.duplex.client import TurnDetection, run_session
 from benchmarks.duplex.oracle import evaluate_trace
+from benchmarks.duplex.playback import ReplyAudioChunk, played_sample_count
 from benchmarks.duplex.profiles import PROFILES, DuplexProfile
 from benchmarks.duplex.reference_capture import TraceFormat
 from benchmarks.duplex.reference_export import export_runs
@@ -367,12 +368,17 @@ class TurnBasedPeer:
                     },
                 )
                 return
+            elif kind == "conversation.item.truncate":
+                pass
             else:
                 raise AssertionError(f"Unexpected client event: {kind}")
 
 
 async def capture(
-    peer: TurnBasedPeer, trace_path: Path, timeout_s: float = 5.0
+    peer: TurnBasedPeer,
+    trace_path: Path,
+    timeout_s: float = 5.0,
+    truncate_start_buffer_ms: float | None = None,
 ) -> list[dict[str, JsonValue]]:
     existing_tasks = asyncio.all_tasks()
     async with websockets.serve(peer.handler, "127.0.0.1", 0) as server:
@@ -384,6 +390,7 @@ async def capture(
             timeout_s=timeout_s,
             profile=TURN_BASED,
             turn_detection=SERVER_VAD,
+            truncate_start_buffer_ms=truncate_start_buffer_ms,
         )
     assert asyncio.all_tasks() <= existing_tasks
     return [json.loads(line) for line in trace_path.read_text().splitlines()]
@@ -461,6 +468,85 @@ def test_client_records_an_empty_turn(tmp_path: Path) -> None:
     assert result["status"] == "pass", result
     assert result["metrics"]["responses_created"] == 2
     assert result["metrics"]["responses_interrupted"] == 0
+
+
+@pytest.mark.parametrize("start_buffer_ms", [0.0, 1000.0])
+def test_client_truncates_a_cancelled_reply_at_what_its_player_played(
+    tmp_path: Path, start_buffer_ms: float
+) -> None:
+    peer = TurnBasedPeer("interrupt")
+    records = asyncio.run(
+        capture(
+            peer,
+            tmp_path / "continuous.jsonl",
+            truncate_start_buffer_ms=start_buffer_ms,
+        )
+    )
+    cancel_s = next(
+        r["time_s"]
+        for r in records
+        if r["event"]["type"] == "response.done"
+        and r["event"]["response"]["status"] == "cancelled"
+    )
+    played_samples = played_sample_count(
+        [
+            ReplyAudioChunk(
+                received_s=r["time_s"],
+                sample_count=len(base64.b64decode(r["event"]["delta"])) // 2,
+            )
+            for r in records
+            if r["event"]["type"] == "response.output_audio.delta"
+            and r["event"]["response_id"] == "resp_0"
+        ],
+        sample_rate=OUTPUT_RATE,
+        start_buffer_ms=start_buffer_ms,
+        at_s=cancel_s,
+    )
+
+    assert evaluate_trace(records, profile=TURN_BASED)["violations"] == []
+    (truncate,) = [
+        event
+        for event in peer.received
+        if event["type"] == "conversation.item.truncate"
+    ]
+    assert {key: truncate[key] for key in ("item_id", "content_index")} == {
+        "item_id": "item_resp_0",
+        "content_index": 0,
+    }
+    assert truncate["audio_end_ms"] == played_samples * 1000 // OUTPUT_RATE
+    assert (truncate["audio_end_ms"] > 0) == (start_buffer_ms == 0.0)
+
+
+def test_a_truncating_client_needs_the_truncate_grant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(GRANTED, "supports_truncate", False)
+    records = asyncio.run(
+        capture(
+            TurnBasedPeer("interrupt"),
+            tmp_path / "trace.jsonl",
+            truncate_start_buffer_ms=0.0,
+        )
+    )
+
+    assert sent_types(records) == ["session.update"]
+    assert records[-1]["event"]["message"] == (
+        "RuntimeError: session.updated does not grant supports_truncate"
+    )
+
+
+def test_only_turn_based_profiles_truncate(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="Only turn-based profiles truncate"):
+        asyncio.run(
+            run_session(
+                "ws://127.0.0.1:1/v1/realtime",
+                FIXTURE_PCM,
+                trace_path=tmp_path / "trace.jsonl",
+                profile=NATIVE,
+                truncate_start_buffer_ms=0.0,
+            )
+        )
+    assert not list(tmp_path.iterdir())
 
 
 def test_client_fails_the_session_when_the_echo_lacks_turn_detection(
@@ -776,6 +862,91 @@ def test_progress_reports_must_name_a_created_response(event_type: str) -> None:
         with_progress("resp_missing", event_type), profile=TURN_BASED
     )
     assert unknown["violations"] == [f"{event_type}: unknown response"]
+
+
+def with_truncate(
+    *,
+    item_id: str = "item_resp_0",
+    after_event: str = "resp_0 done",
+    **fields: JsonValue,
+) -> list[dict[str, JsonValue]]:
+    """The turn-based trace with a client truncate after the named event; resp_0 delivered 100 ms."""
+    trace = turn_based_trace()
+    anchor = next(
+        index
+        for index, record in enumerate(trace)
+        if (after_event == "resp_0 done" and record["event"]["type"] == "response.done")
+        or (
+            after_event == "resp_0 audio"
+            and record["event"]["type"] == "response.output_audio.delta"
+        )
+    )
+    truncate = {
+        "type": "conversation.item.truncate",
+        "event_id": "truncate",
+        "item_id": item_id,
+        "content_index": 0,
+        "audio_end_ms": 75,
+        **fields,
+    }
+    record = {"direction": "send", "time_s": trace[anchor]["time_s"], "event": truncate}
+    return [*trace[: anchor + 1], record, *trace[anchor + 1 :]]
+
+
+@pytest.mark.parametrize("audio_end_ms", [75, 100])
+def test_truncate_of_the_interrupted_reply_passes(audio_end_ms: int) -> None:
+    """A player that played all 100 ms delivered truncates at exactly 100 ms."""
+    assert (
+        evaluate_trace(with_truncate(audio_end_ms=audio_end_ms), profile=TURN_BASED)[
+            "violations"
+        ]
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    ("trace", "violations"),
+    [
+        (
+            with_truncate(audio_end_ms=101),
+            ["truncate past the reply's delivered audio"],
+        ),
+        (
+            with_truncate(item_id="item_resp_1"),
+            ["truncate of a reply that was not interrupted"],
+        ),
+        (
+            with_truncate(after_event="resp_0 audio"),
+            ["truncate of a reply that was not interrupted"],
+        ),
+        (with_truncate(content_index=1), ["truncate content_index is not 0"]),
+    ],
+)
+def test_truncate_mutations_fail(
+    trace: list[dict[str, JsonValue]], violations: list[str]
+) -> None:
+    assert evaluate_trace(trace, profile=TURN_BASED)["violations"] == violations
+
+
+def test_truncate_needs_the_grant_and_happens_once() -> None:
+    ungranted = with_truncate()
+    granted_with("supports_truncate", False)(ungranted)
+    assert evaluate_trace(ungranted, profile=TURN_BASED)["violations"] == [
+        "truncate without supports_truncate"
+    ]
+
+    trace = with_truncate()
+    truncate_index = next(
+        index
+        for index, record in enumerate(trace)
+        if record["event"]["type"] == "conversation.item.truncate"
+    )
+    repeat = copy.deepcopy(trace[truncate_index])
+    repeat["event"]["event_id"] = "truncate_again"
+    trace.insert(truncate_index + 1, repeat)
+    assert evaluate_trace(trace, profile=TURN_BASED)["violations"] == [
+        "duplicate truncate"
+    ]
 
 
 def granted_with(name: str, value: JsonValue) -> Callable[[list], None]:

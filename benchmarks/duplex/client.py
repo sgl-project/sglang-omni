@@ -21,6 +21,7 @@ import websockets
 from pydantic import BaseModel, ConfigDict, JsonValue
 
 from benchmarks.duplex.oracle_models import turn_detection_type
+from benchmarks.duplex.playback import ReplyAudioChunk, played_sample_count
 from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES, ProfileName, Protocol
 
 SAMPLE_RATE = 16000
@@ -101,6 +102,12 @@ class SendReceipt(TypedDict):
     seq: int
     start_s: float
     completed_s: float
+
+
+class ItemTruncate(TypedDict):
+    item_id: str
+    content_index: int
+    audio_end_ms: int
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -277,17 +284,25 @@ async def run_session(
     profile: ProfileName = DEFAULT_PROFILE,
     turn_detection: TurnDetection | None = None,
     tail_s: float = LEGACY_TAIL_S,
+    truncate_start_buffer_ms: float | None = None,
 ) -> None:
     """Save observations and failures; classification belongs to offline replay.
 
     turn_detection configures a legacy-protocol or turn-based session; tail_s is the
     delay after the input end before a legacy-protocol session's liveness probe.
+    With truncate_start_buffer_ms, a turn-based client truncates each cancelled reply
+    at what a player starting after that much buffered audio had played.
     """
     if not pcm or len(pcm) % 2:
         raise ValueError("Input must be nonempty PCM16")
     else:
         pass
     protocol = profile_protocol(profile, turn_detection)
+    if truncate_start_buffer_ms is not None and protocol != "turn_based":
+        raise ValueError("Only turn-based profiles truncate cancelled replies")
+    else:
+        pass
+    output_sample_rate = PROFILES[profile].output_sample_rate
     legacy = protocol == "legacy"
     requested_type = turn_detection.type if turn_detection is not None else None
     configure: dict[str, JsonValue]
@@ -389,18 +404,22 @@ async def run_session(
                 latest: dict[str, dict[str, JsonValue]] = {}
                 aborted = asyncio.Event()
                 fatal = False
+                chunks_by_response: dict[str, list[ReplyAudioChunk]] = {}
+                item_ids_by_response: dict[str, str] = {}
 
                 async def send(
                     event_type: Literal[
                         "session.update",
                         "input_audio_buffer.append",
                         "sglang.input_audio.end",
+                        "conversation.item.truncate",
                         "session.close",
                     ],
                     *,
                     session: dict[str, JsonValue] | None = None,
                     audio: str | None = None,
                     sglang: InputAudioMetadata | None = None,
+                    truncate: ItemTruncate | None = None,
                 ) -> None:
                     event_id = uuid.uuid4().hex
                     event: dict[str, JsonValue] = {
@@ -417,6 +436,10 @@ async def run_session(
                         pass
                     if sglang is not None:
                         event["sglang"] = sglang
+                    else:
+                        pass
+                    if truncate is not None:
+                        event.update(truncate)
                     else:
                         pass
                     send_started_s = time.perf_counter()
@@ -475,6 +498,59 @@ async def run_session(
                             ) from exc
                         latest[event_type] = event
                         seen.setdefault(event_type, asyncio.Event()).set()
+                        if truncate_start_buffer_ms is None:
+                            pass
+                        elif event_type == "response.output_audio.delta":
+                            response_id = event.get("response_id")
+                            item_id = event.get("item_id")
+                            delta = event.get("delta")
+                            if not (
+                                isinstance(response_id, str)
+                                and isinstance(item_id, str)
+                                and isinstance(delta, str)
+                            ):
+                                raise ValueError(
+                                    "audio delta lacks a response_id, item_id or delta"
+                                )
+                            else:
+                                item_ids_by_response[response_id] = item_id
+                                chunks_by_response.setdefault(response_id, []).append(
+                                    ReplyAudioChunk(
+                                        received_s=received_s,
+                                        sample_count=len(base64.b64decode(delta)) // 2,
+                                    )
+                                )
+                        elif event_type == "response.done":
+                            response = event.get("response")
+                            if not (
+                                isinstance(response, dict)
+                                and isinstance(response.get("id"), str)
+                            ):
+                                raise ValueError("response.done lacks a response ID")
+                            elif (
+                                response.get("status") == "cancelled"
+                                and response["id"] in item_ids_by_response
+                            ):
+                                played_samples = played_sample_count(
+                                    chunks_by_response[response["id"]],
+                                    sample_rate=output_sample_rate,
+                                    start_buffer_ms=truncate_start_buffer_ms,
+                                    at_s=received_s,
+                                )
+                                await send(
+                                    "conversation.item.truncate",
+                                    truncate={
+                                        "item_id": item_ids_by_response[response["id"]],
+                                        "content_index": 0,
+                                        "audio_end_ms": played_samples
+                                        * 1000
+                                        // output_sample_rate,
+                                    },
+                                )
+                            else:
+                                pass
+                        else:
+                            pass
                         if event_type == "error":
                             # note (wenyao): Close waits for adapter teardown.
                             extension = event.get("sglang")
@@ -510,6 +586,26 @@ async def run_session(
                             raise RuntimeError(
                                 f"session.updated echoed turn_detection.type {echoed!r}, "
                                 f"requested {requested_type!r}"
+                            )
+                        else:
+                            pass
+                        session_fields = latest["session.updated"].get("session")
+                        extension = (
+                            session_fields.get("sglang")
+                            if isinstance(session_fields, dict)
+                            else None
+                        )
+                        granted = (
+                            extension.get("granted")
+                            if isinstance(extension, dict)
+                            else None
+                        )
+                        if truncate_start_buffer_ms is not None and not (
+                            isinstance(granted, dict)
+                            and granted.get("supports_truncate") is True
+                        ):
+                            raise RuntimeError(
+                                "session.updated does not grant supports_truncate"
                             )
                         else:
                             pass

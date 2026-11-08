@@ -177,7 +177,7 @@ def evaluate_trace(
     input_byte_count = output_byte_count = next_sequence = admissions = 0
     speech_starts = interruptions = 0
     session_id = requested_type = None
-    updated = ended = drained = closed = False
+    updated = ended = drained = closed = truncate_granted = False
     previous_time = -math.inf
     drain_after_eos_s = close_ack_s = None
     acknowledgments = {
@@ -272,6 +272,39 @@ def evaluate_trace(
                     check(updated, "EOS before session.updated")
                 elif event_type == "session.close":
                     check(drained, "session.close before input drained")
+                elif turn_based and event_type == "conversation.item.truncate":
+                    truncated_state = next(
+                        (
+                            response_state
+                            for response_state in response_states.values()
+                            if response_state.item_id == event.item_id
+                        ),
+                        None,
+                    )
+                    check(truncate_granted, "truncate without supports_truncate")
+                    check(event.content_index == 0, "truncate content_index is not 0")
+                    if (
+                        truncated_state is None
+                        or (
+                            truncated_state.terminal,
+                            truncated_state.reason,
+                        )
+                        != TURN_BASED_INTERRUPTED_TERMINAL
+                    ):
+                        violations.append(
+                            "truncate of a reply that was not interrupted"
+                        )
+                    else:
+                        check(
+                            event.audio_end_ms is not None
+                            and event.audio_end_ms
+                            <= truncated_state.audio_bytes
+                            * 1000
+                            / (profile_contract.output_sample_rate * 2),
+                            "truncate past the reply's delivered audio",
+                        )
+                        check(not truncated_state.is_truncated, "duplicate truncate")
+                        truncated_state.is_truncated = True
                 else:
                     violations.append(
                         f"client command outside this scenario: {event_type}"
@@ -344,6 +377,9 @@ def evaluate_trace(
                             isinstance(turn_control, list)
                             and "server_vad" in turn_control,
                             "unsupported capability: turn_control",
+                        )
+                        truncate_granted = (
+                            granted_capabilities.get("supports_truncate") is True
                         )
                     else:
                         pass
@@ -550,10 +586,12 @@ def evaluate_trace(
                             event.content_index == 0 and event.output_index == 0,
                             "invalid audio indexes",
                         )
-                        output_byte_count += len(pcm_bytes(event.delta))
+                        audio_byte_count = len(pcm_bytes(event.delta))
+                        output_byte_count += audio_byte_count
                         audio_times.append(event_time_s)
                         response_state.audio_seen = True
                         response_state.item_id = event.item_id
+                        response_state.audio_bytes += audio_byte_count
                     elif event_type == "response.output_audio.done":
                         check(
                             not response_state.audio_done, "duplicate output_audio.done"
