@@ -162,7 +162,8 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 		a.applyKeepLoaded(new.Models) // models_keep.go
 	}
 	if !reflect.DeepEqual(old.Providers, new.Providers) || old.Network != new.Network {
-		a.syncRemote() // remote_link.go
+		a.readUnreadKeys() // remote_link.go: a setup that came over
+		a.syncRemote()
 	}
 	a.historySettingsChanged(old, new) // history_settings_ops.go
 	// The problems' cards: the language of their text may have changed

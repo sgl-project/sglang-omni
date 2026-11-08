@@ -279,3 +279,36 @@ func TestOnboardingStepsOneLine(t *testing.T) {
 		}
 	}
 }
+
+// TestOnboardingComesBack: the bug was a guide left from its models step
+// for the Language models page, which then opened again at Welcome. That
+// page offers the way back to the models step; a guide closed before its
+// end opens again at its step, from Settings too; one finished starts
+// over.
+func TestOnboardingComesBack(t *testing.T) {
+	a, tt := obTester(t)
+	click(t, tt, "Get started")
+	click(t, tt, "Continue")
+	click(t, tt, "Set up a language model")
+	if a.ob.open || a.shownPath() != remotePath || !has(tt, "The setup guide waits at its Models step.") {
+		t.Fatalf("left: open %v, %s, %q", a.ob.open, a.shownPath(), tt.Texts())
+	}
+	click(t, tt, "Back to the setup guide")
+	if !a.ob.open || a.ob.step != obModels || !has(tt, "Set up a language model") {
+		t.Fatalf("back: open %v, step %d", a.ob.open, a.ob.step)
+	}
+	a.closeOnboarding() // its ×
+	a.navigate("/settings/general")
+	frames(tt)
+	tt.Scroll(windowWidth*0.7, windowHeight*0.6, 0, 600) // the row is under the fold
+	click(t, tt, "Open the setup guide")
+	if !a.ob.open || a.ob.step != obModels {
+		t.Fatalf("from Settings: open %v, step %d", a.ob.open, a.ob.step)
+	}
+	a.obGo(obMore)
+	click(t, tt, "Start using Voxt")
+	a.openOnboarding()
+	if a.ob.step != obWelcome {
+		t.Errorf("after finishing: step %d", a.ob.step)
+	}
+}

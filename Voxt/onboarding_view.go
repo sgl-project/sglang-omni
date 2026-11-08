@@ -203,7 +203,7 @@ func (a *app) obFooter(c *ui.Context) {
 		switch {
 		case a.ob.step == obMore:
 			if primaryButton(c.Key("ob-finish"), i18n.T("Start using Voxt")).Clicked() {
-				a.closeOnboarding()
+				a.finishOnboarding()
 				a.navigate("/home")
 			}
 		case a.ob.step == obWelcome:
