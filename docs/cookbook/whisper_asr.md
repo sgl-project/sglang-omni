@@ -20,7 +20,7 @@ sgl-omni serve \
   --port 8000
 ```
 
-For Intel XPU installation and launch, see the [Whisper XPU recipe](../get_started/installation_xpu.md#whisper-asr-speech-to-text-single-xpu).
+For Intel XPU installation and launch, see the [Whisper XPU recipe](../other_platforms/installation_xpu.md#whisper-asr-speech-to-text-single-xpu).
 
 ## Encoder CUDA Graph
 

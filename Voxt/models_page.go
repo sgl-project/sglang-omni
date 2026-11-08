@@ -72,6 +72,8 @@ type modelsState struct {
 	modelKeepFor  string
 	// modelHiddenOpen: the Hidden models section is open (models_cards.go).
 	modelHiddenOpen bool
+	// speechContext is the Speech context field (models_context.go).
+	speechContext speechContextState
 }
 
 // openModels reads the models on disk and sets up the local models,
@@ -84,7 +86,7 @@ func (a *app) openModels() {
 		base := newLocalServices(a)
 		a.localLib, _ = base.(*local.Library)
 		a.dictation = dictation.NewServices(base, uitext.ModelName)
-		a.local = a.withRemote(a.withDevLLM(a.dictation)) // remote_link.go; llm_link.go: VOXTNEW_DEV_LLM
+		a.local = a.withRemote(a.dictation) // remote_link.go
 	}
 	a.readModelStatus()
 	a.checkModels() // shell_notices.go
