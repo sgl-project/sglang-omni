@@ -61,7 +61,7 @@ func TestOpenMigratesAndReopens(t *testing.T) {
 	if fi, err := os.Stat(s.History().AudioDir()); err != nil || !fi.IsDir() || filepath.Dir(s.History().AudioDir()) != dir {
 		t.Errorf("audio dir: %v", err)
 	}
-	for _, table := range []string{"documents", "history", "history_fts", "dictionary_terms", "notes"} {
+	for _, table := range []string{"documents", "history", "history_fts", "dictionary_terms", "notes", "meetings", "meeting_segments", "meeting_segments_fts"} {
 		rows, err := s.db.Query(ctx, `SELECT name FROM sqlite_master WHERE name = ?`, table)
 		if err != nil || len(rows.Values) != 1 {
 			t.Errorf("table %s: %v", table, err)
