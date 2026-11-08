@@ -730,6 +730,7 @@
   "Recording and the shortcuts wait for it.": "它恢复运行前，录音和快捷键都不能用。",
   "Recording kept because recognition failed; deleted after %s.": "识别失败，录音暂时保留，%s 后删除。",
   "Recording kept for Retry; deleted after %s.": "录音先留着，方便重试，%s 后删除。",
+  "Recording mode: %s": "录音模式：%s",
   "Recordings": "录音",
   "Recordings folder": "录音文件夹",
   "Recordings kept with the history": "历史中保存的录音",
