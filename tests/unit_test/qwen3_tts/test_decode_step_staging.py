@@ -102,6 +102,7 @@ def test_collect_codes_stages_the_ids_before_the_predictor_runs():
     assert len(requests[1].data.pending_feedback_queue) == 0
     assert [c.tolist() for c in requests[2].data.output_codes] == [[9, 10, 11]]
     assert requests[2].data.pending_feedback_queue[0].tolist() == [9.0, 9.0]
+    assert [request.data.speech_output_tokens for request in requests] == [1, 1, 1]
 
 
 def test_a_middle_prefill_chunk_adds_no_frame_feedback_or_stream_chunk():
@@ -126,6 +127,7 @@ def test_a_middle_prefill_chunk_adds_no_frame_feedback_or_stream_chunk():
     assert requests[0].data.latest_stream_code_chunk is None
     assert [c.tolist() for c in requests[1].data.output_codes] == [[9, 10, 11]]
     assert requests[1].data.latest_stream_code_chunk is not None
+    assert [request.data.speech_output_tokens for request in requests] == [0, 1]
 
 
 def test_a_middle_prefill_chunk_does_not_advance_its_generation_step():

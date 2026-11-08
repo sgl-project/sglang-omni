@@ -27,7 +27,10 @@ def capture_session_unit_ready() -> SessionUnitReadyObservation | None:
     else:
         pass
     run_id, timestamp_ns = active_run
-    return SessionUnitReadyObservation(timestamp_ns=timestamp_ns, run_id=run_id)
+    return SessionUnitReadyObservation(
+        timestamp_ns=timestamp_ns,
+        run_id=run_id,
+    )
 
 
 def capture_session_stage_start() -> tuple[str, int] | None:

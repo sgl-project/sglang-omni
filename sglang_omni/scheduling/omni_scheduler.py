@@ -45,6 +45,7 @@ from sglang.srt.managers.schedule_batch import (
     retract_all,
 )
 from sglang.srt.managers.scheduler import (
+    PAUSE_WINDOWS_MAX,
     TEST_RETRACT,
     TEST_RETRACT_NO_PREFILL_BS,
     GenerationBatchResult,
@@ -54,6 +55,7 @@ from sglang.srt.managers.scheduler import validate_input_length
 from sglang.srt.managers.utils import allocate_distinct_stream
 from sglang.srt.mem_cache.allocation_sizing import get_alloc_reserve_per_decode
 from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
+from sglang.srt.mem_cache.allocator.swa import PureSWATokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
 from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool, ReqToTokenPool
@@ -117,6 +119,7 @@ from sglang_omni.scheduling.types import (
     RequestOutput,
     SchedulerOutput,
     SchedulerRequest,
+    SpecTokensDetailsDict,
     StreamOutputBuilder,
 )
 from sglang_omni.utils.process import terminate_gpu_worker
@@ -315,10 +318,12 @@ class OmniScheduler(Generic[RequestDataT]):
 
     Session admission:
         A queued session unit whose retained KV holds a request row reuses
-        that row, so a prefill batch admits it beyond the free rows.
-        ``continuation_aware_admission=False`` counts such units against the
-        free rows like any other request; the KV is still retained and the
-        row still reused.
+        that row, so a prefill batch admits it beyond the free rows: the
+        session bridge counts the queued units that reuse a row.
+        ``continuation_aware_admission=False`` leaves the count to upstream,
+        which credits a unit's held row once the unit is in the batch, so a
+        batch admits such units only when it has a free row for the first
+        one; the KV is still retained and the row still reused.
     """
 
     session_bridge: ARSessionBridge | None = None
@@ -595,6 +600,9 @@ class OmniScheduler(Generic[RequestDataT]):
         )
         self.dynamic_chunk_sizer = None
         self.prefill_decode_interval = get_schedule().prefill_decode_interval or 0
+        self.prefill_decode_interval_min_bs = (
+            get_schedule().prefill_decode_interval_min_bs
+        )
         self._prefill_decode_interval_remaining = 0  # noqa: leading-underscore
         self.processed_tokens_counter = 0
 
@@ -658,6 +666,8 @@ class OmniScheduler(Generic[RequestDataT]):
             self.spec_algorithm = SpeculativeAlgorithm.from_string(
                 get_spec().speculative_algorithm
             )
+        # note (ratish): the borrowed init_overlap starts this copy thread under confidential compute; shutdown_resources stops it.
+        self.async_d2h_worker = None
         if self.enable_overlap:
             if not current_platform.is_cuda():
                 raise ValueError("Speculative async decode requires CUDA")
@@ -816,6 +826,7 @@ class OmniScheduler(Generic[RequestDataT]):
         self.max_prefill_bs = 0
         self.use_ngram_embedding = False
         self.return_health_check_ipcs = []
+        self.rust_server = None
         self.enable_overlap_mlx = False
 
         # Instance state upstream's Scheduler.__init__ sets. We
@@ -902,6 +913,12 @@ class OmniScheduler(Generic[RequestDataT]):
         self._prev_step = None  # noqa: leading-underscore
         self._prev_prefill_end_ts = None  # noqa: leading-underscore
         self._sched_idled = False  # noqa: leading-underscore
+        self._pause_intervals: deque[tuple[float, float]] = deque(
+            maxlen=PAUSE_WINDOWS_MAX
+        )  # noqa: leading-underscore  # upstream name
+        self._pause_started_at: float | None = (
+            None  # noqa: leading-underscore  # upstream name
+        )
         self.init_load_publisher()
         self.load_inquirer = SchedulerLoadInquirer(
             disaggregation_mode=self.disaggregation_mode,
@@ -1789,7 +1806,7 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
         admission_error = self.request_kv_capacity_error(
-            req
+            req, session_capacity_checked=session_unit is not None
         ) or self.speculative_request_error(req, req_data)
         if admission_error is not None:
             logger.warning(
@@ -1953,7 +1970,9 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
 
-    def request_kv_capacity_error(self, req: Req) -> str | None:
+    def request_kv_capacity_error(
+        self, req: Req, *, session_capacity_checked: bool = False
+    ) -> str | None:
         input_len = len(req.origin_input_ids)
         max_new_tokens = int(req.sampling_params.max_new_tokens or 0)
         # note (wilsonzheng0327): each speculative step reserves token slots past
@@ -1962,15 +1981,40 @@ class OmniScheduler(Generic[RequestDataT]):
             0 if self.draft_worker is None else get_alloc_reserve_per_decode()
         )
         required_tokens = input_len + max_new_tokens + speculative_reserve_tokens
-        kv_capacity = int(self.max_req_len)
-        if required_tokens <= kv_capacity:
+        # note (ZaneZhang-67): the bridge prices physical PureSWA growth but does not include speculative draft reserves.
+        use_logical_context_limit = (
+            self.draft_worker is None
+            and session_capacity_checked
+            and isinstance(
+                self.token_to_kv_pool_allocator, PureSWATokenToKVPoolAllocator
+            )
+            and req.session is not None
+            and req.session.streaming
+        )
+        request_capacity = (
+            int(self.model_config.context_len) - 1
+            if use_logical_context_limit
+            else int(self.max_req_len)
+        )
+        if required_tokens <= request_capacity:
             return None
-        elif required_tokens - speculative_reserve_tokens <= kv_capacity:
+        elif required_tokens - speculative_reserve_tokens <= request_capacity:
             return (
                 f"Request needs {required_tokens} tokens, including the "
                 f"{speculative_reserve_tokens}-token speculative decoding reserve, above the "
-                f"{kv_capacity}-token limit (input_tokens={input_len}, "
+                f"{request_capacity}-token limit (input_tokens={input_len}, "
                 f"max_new_tokens={max_new_tokens}). Lower max_tokens."
+            )
+        else:
+            pass
+
+        if use_logical_context_limit:
+            return (
+                f"{ContextExhaustedError.CODE}: request requires more tokens "
+                "than the thinker context can hold "
+                f"(input_tokens={input_len}, max_new_tokens={max_new_tokens}, "
+                f"required_tokens={required_tokens}, "
+                f"context_capacity={request_capacity}). Start a new session."
             )
         else:
             pass
@@ -1994,7 +2038,7 @@ class OmniScheduler(Generic[RequestDataT]):
         return (
             "Request requires more tokens than the thinker KV cache can hold "
             f"(input_tokens={input_len}, max_new_tokens={max_new_tokens}, "
-            f"required_tokens={required_tokens}, kv_capacity={kv_capacity})."
+            f"required_tokens={required_tokens}, kv_capacity={request_capacity})."
             f"{mem_hint}"
         )
 
@@ -2007,6 +2051,12 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
         sampling_params = request.sampling_params
+        # note (0xtoward): the runner's own sampler draws a one-token request's token
+        # on the target prefill, which never reaches a verify.
+        if sampling_params.max_new_tokens == 1:
+            return None
+        else:
+            pass
         # note (wilsonzheng0327): SGLang's draft workers drop min_p and apply each
         # penalty once per verify block; logprobs come from the runner's sampler, which
         # speculative decode bypasses, and hidden-state results need the per-request
@@ -2017,6 +2067,14 @@ class OmniScheduler(Generic[RequestDataT]):
                 ("logprobs", request_data.return_logprob),
                 ("return_hidden_states", request.return_hidden_states),
                 ("min_p", sampling_params.min_p > 0.0),
+                (
+                    "seed",
+                    sampling_params.sampling_seed is not None
+                    and sampling_params.top_k != 1
+                    and self.spec_algorithm
+                    in (SpeculativeAlgorithm.DFLASH, SpeculativeAlgorithm.DSPARK)
+                    and self.model_runner.speculative_ignores_request_seed,
+                ),
                 ("frequency_penalty", sampling_params.frequency_penalty != 0.0),
                 ("presence_penalty", sampling_params.presence_penalty != 0.0),
                 (
@@ -2077,18 +2135,26 @@ class OmniScheduler(Generic[RequestDataT]):
         running_bs: int,
         beam_width: int | None = None,
         running_batch: ScheduleBatch | None = None,
+        num_held_rows: int = 0,
     ) -> int:
-        free_request_rows = _Upstream.get_num_allocatable_reqs(
-            self, running_bs, beam_width=beam_width, running_batch=running_batch
-        )
         bridge = self.session_bridge
         if (
             bridge is None
             or beam_width is not None
             or not self.continuation_aware_admission
         ):
-            return free_request_rows
+            return _Upstream.get_num_allocatable_reqs(
+                self,
+                running_bs,
+                beam_width=beam_width,
+                running_batch=running_batch,
+                num_held_rows=num_held_rows,
+            )
         else:
+            # note (ratish): the bridge counts every queued borrower below, so the rows admitted borrowers already hold stay out of the free count.
+            free_request_rows = _Upstream.get_num_allocatable_reqs(
+                self, running_bs, beam_width=beam_width, running_batch=running_batch
+            )
             # note (Junnan Li): A unit whose session slot holds a request row reuses that row, so it does not count against the free rows.
             per_batch_limit = get_parallel().pp_max_micro_batch_size - running_bs
             return min(
@@ -2098,6 +2164,19 @@ class OmniScheduler(Generic[RequestDataT]):
                     self.waiting_queue, free_request_rows
                 ),
             )
+
+    def running_batch_admits_prefill(self) -> bool:
+        """Whether the batch builder can admit a prefill beside the running batch.
+
+        Upstream's builder drops finished requests from the running batch on
+        every pass and clears its full flag when the batch shrank, so a full
+        batch that still holds a finished request admits a prefill this pass.
+        """
+        running_batch = self.running_batch
+        if not running_batch.batch_is_full:
+            return True
+        else:
+            return any(req.finished() for req in running_batch.reqs)
 
     def is_prefill_expected(self) -> bool:
         running_batch = self.running_batch
@@ -2115,7 +2194,7 @@ class OmniScheduler(Generic[RequestDataT]):
         allocatable_request_count = self.get_num_allocatable_reqs(
             running_request_count, running_batch=running_batch
         )
-        is_batch_full = running_batch.batch_is_full and not (
+        is_batch_full = not self.running_batch_admits_prefill() and not (
             self.enable_priority_preemption
             or self.is_hybrid_swa
             or self.enable_hisparse
@@ -2150,7 +2229,13 @@ class OmniScheduler(Generic[RequestDataT]):
             return None
         else:
             pass
-        decode_is_idle = running_batch is None or running_batch.is_empty()
+        # note (ratish): admission drops finished rows before this check, so the step that emptied the batch still counts as decode: its requests return within a round trip and join the prefill.
+        decode_just_ran = self.last_batch is not None and self.batch_is_decode(
+            self.last_batch
+        )
+        decode_is_idle = not decode_just_ran and (
+            running_batch is None or running_batch.is_empty()
+        )
         if not self.prefill_coalesce_when_idle and decode_is_idle:
             return None
         else:
@@ -2314,7 +2399,8 @@ class OmniScheduler(Generic[RequestDataT]):
 
     def run_speculative_batch(self, batch: ScheduleBatch) -> GenerationBatchResult:
         """Submit a draft/verify round; stream_output emits the committed tokens."""
-        if batch.forward_mode.is_extend():
+        is_prefill = batch.forward_mode.is_extend()
+        if is_prefill:
             # note (wilsonzheng0327): a re-prefilled request samples its next token
             # here, and speculative decode never cumulates penalty history.
             self.model_runner.restore_output_penalty_history(batch)
@@ -2367,10 +2453,22 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
         resolve_forward_inputs(batch, self.future_map)
+        if self.model_runner.speculative_verify_takes_logits_hooks:
+            # The next step of this loop replaces the list the verify reads here.
+            self.tp_worker.speculative_target_worker.verify_requests = (
+                self.build_sched_output(batch).requests
+            )
+        else:
+            pass
         with _Upstream._forward_isolation(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             self, batch, overlap=False
         ):
             result = self.draft_worker.forward_batch_generation(batch)
+        self.model_runner.after_speculative_step(
+            batch,
+            is_prefill=is_prefill,
+            num_draft_tokens=self.draft_worker.speculative_num_draft_tokens,
+        )
         batch.spec_info = result.next_draft_input
         new_sequence_lengths = result.new_seq_lens
         if (
@@ -2758,6 +2856,35 @@ class OmniScheduler(Generic[RequestDataT]):
                     else req.output_ids_through_stop
                 )
                 data.weight_version = get_serving().weight_version
+                if self.draft_worker is not None and req.spec_verify_ct > 0:
+                    # note (detemmienation): every verify commits the bonus token, so the accept length counts it while the accept rate does not.
+                    spec_tokens_details = SpecTokensDetailsDict(
+                        spec_accept_length=len(req.output_ids_through_stop)
+                        / req.spec_verify_ct,
+                        spec_num_correct_drafts=req.spec_num_correct_drafts,
+                        spec_verify_ct=req.spec_verify_ct,
+                        spec_correct_drafts_histogram=list(
+                            req.spec_correct_drafts_histogram
+                        ),
+                    )
+                    num_proposed_drafts = req.spec_verify_ct * (
+                        self.draft_worker.speculative_num_draft_tokens - 1
+                    )
+                    if get_spec().speculative_adaptive:
+                        # note (detemmienation): adaptive widths change between verifies, so the final width cannot count the proposals and the rate is omitted.
+                        pass
+                    elif num_proposed_drafts > 0:
+                        spec_tokens_details["spec_accept_rate"] = (
+                            req.spec_num_correct_drafts / num_proposed_drafts
+                        )
+                        spec_tokens_details["spec_num_proposed_drafts"] = (
+                            num_proposed_drafts
+                        )
+                    else:
+                        pass
+                    data.spec_tokens_details = spec_tokens_details
+                else:
+                    pass
                 self.flush_stream_output(rid, data)
                 session_unit = self.active_session_unit(rid)
                 if session_unit is None:
@@ -3026,6 +3153,12 @@ class OmniScheduler(Generic[RequestDataT]):
         with self.shutdown_lock:
             callback = self.shutdown_callback
             self.shutdown_callback = None
+            worker = self.async_d2h_worker
+            self.async_d2h_worker = None
+        if worker is not None:
+            worker.shutdown()
+        else:
+            pass
         if callback is not None:
             callback()
         else:
@@ -4231,9 +4364,10 @@ class OmniScheduler(Generic[RequestDataT]):
                 and self.is_mixed_chunk
                 and (
                     self.chunked_req is not None
-                    or (self.waiting_queue and not self.running_batch.batch_is_full)
+                    or (self.waiting_queue and self.running_batch_admits_prefill())
                 )
             ):
+                # note (ratish): a mixed prefill built here would carry the running rows the pending step is about to finish, and drop_stale_overrun cannot reslice a mixed batch, so drain first.
                 self.resolve_pending_async()
             elif (
                 self.async_decode_resolve_before_prefill

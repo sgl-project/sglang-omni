@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install sglang-omni for Intel XPU: swap in pyproject_xpu.toml and install
 # against the PyTorch XPU wheel index (the CUDA pyproject would clobber a working
-# torch+xpu stack). See docs/get_started/installation_xpu.md.
+# torch+xpu stack). See docs/other_platforms/installation_xpu.md.
 #
 # Usage:
 #   scripts/xpu/install_xpu.sh                    # lean core, editable
@@ -35,7 +35,7 @@ PYPROJECT="${REPO_ROOT}/pyproject.toml"
 PYPROJECT_XPU="${REPO_ROOT}/pyproject_xpu.toml"
 BACKUP="${REPO_ROOT}/.pyproject.cuda.bak"
 
-SGLANG_VERIFIED_VERSION="v0.5.22"
+SGLANG_VERIFIED_VERSION="v0.5.23"
 WHISPER_VERSION="20250625"
 
 [[ -f "${PYPROJECT_XPU}" ]] || { echo "ERROR: ${PYPROJECT_XPU} not found" >&2; exit 1; }
@@ -63,7 +63,7 @@ except Exception as e:
     print(f"  torch:       not importable ({e})")
 PY
 
-# --no-build-isolation is REQUIRED (see docs/get_started/installation_xpu.md):
+# --no-build-isolation is REQUIRED (see docs/other_platforms/installation_xpu.md):
 # with build isolation, pip spins up an isolated build env whose fallback
 # setuptools emits a legacy in-tree egg-info instead of a PEP 660 editable .pth
 # — the package then isn't importable outside the repo and no sgl-omni console

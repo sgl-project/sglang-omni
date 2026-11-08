@@ -99,7 +99,7 @@ Unlike TTS where the same reference voice is reused across many prompts (high hi
 ### Launching Commands
 
 Install `sglang-omni` with [Installation](../get_started/installation.md) on CUDA or
-[Intel XPU installation](../get_started/installation_xpu.md) on Intel GPUs, then download the model:
+[Intel XPU installation](../other_platforms/installation_xpu.md) on Intel GPUs, then download the model:
 
 ```bash
 hf download OpenMOSS-Team/MOSS-Transcribe-Diarize
@@ -214,6 +214,39 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
 `start`, `end`, and speaker-prefixed `text` (for example `[S01]...`).
 `json` / `text` return the full transcript string without segment parsing.
 
+### Speculative Decoding
+
+The decoder can verify tokens proposed by the DFlash draft [`wilsonzheng0327/MOSS-Transcribe-Diarize-dflash`](https://huggingface.co/wilsonzheng0327/MOSS-Transcribe-Diarize-dflash) on one CUDA GPU.
+
+```bash
+sgl-omni serve \
+  --model-path OpenMOSS-Team/MOSS-Transcribe-Diarize \
+  --asr.engine.speculative_algorithm DFLASH \
+  --asr.engine.speculative_draft_model_path wilsonzheng0327/MOSS-Transcribe-Diarize-dflash \
+  --port 8000
+```
+
+- **Acceptance length.** Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens_details` (`spec_accept_length`, `spec_accept_rate`, the draft counts and the per-verify histogram) on `json` and `verbose_json` responses and on the streamed `transcript.text.done` event. Audio long enough to be transcribed in chunks returns none. `spec_accept_rate` and `spec_num_proposed_drafts` are left out when no drafts were proposed or the draft width is adaptive.
+- **Transcripts.** The target verifies every proposed token, so accuracy stays at the target's level, but the text is not byte-identical to a run without the draft: MOSS-TD has many near-tied decisions, mostly timestamp hundredths, which any numeric change, including batching, can flip.
+- **Context.** The duration-scaled budget leaves room for the few tokens each step reserves. An explicit `max_new_tokens` that leaves no such room is rejected instead of clamped.
+- **Capacity.** The draft's KV shares the pool, so one H100 80GB at `mem_fraction_static=0.80` holds about 480k tokens instead of 570k. Long audio at high concurrency fills it, and the scheduler then retracts requests and finishes them later: every `aishell4_long` file still completed at concurrency 16 and 32.
+- **Compilation.** Torch compile is turned off under the draft: on SGLang 0.5.23 the compiled path makes each verify step about four times slower. Without a draft it stays on.
+- **Sampling.** Requests with `repetition_penalty`, `frequency_penalty`, `presence_penalty`, `min_p` or logprobs are rejected, because the draft worker applies penalties once per verify block, drops `min_p`, and skips the sampler that records logprobs.
+- **Scheduling.** Scheduling is synchronous by default. Add `--asr.factory.enable_async_decode true` to overlap each verify round with host work, which is faster at every load below. Async prefill stays off under the draft. Setting `enable_mixed_chunk` is rejected.
+
+Gain over the same server without a draft, on one H200 with SGLang 0.5.23, the default server config and the prefix cache off (`python -m benchmarks.eval.speculative_sweep`):
+
+| Dataset | Scheduling | Concurrency 1 | 4 | 16 | 64 |
+|---|---|---:|---:|---:|---:|
+| `movies800times` | Synchronous | 1.68x | 1.54x | 1.34x | 1.15x |
+| `movies800times` | Overlapped | 1.90x | 1.72x | 1.56x | 1.42x |
+| `aishell4_long` | Synchronous | 2.50x | 3.17x | 3.56x | |
+| `aishell4_long` | Overlapped | 3.19x | 3.64x | 3.89x | |
+| `googletime` | Synchronous | 2.97x | 4.14x | 4.27x | |
+| `googletime` | Overlapped | 3.73x | 4.68x | 4.57x | |
+
+Neither mode is slower than the server without a draft at any load measured, and CER and DER do not change.
+
 ## Benchmarking
 
 Thanks to the Moss team for providing the benchmark datasets, we prepare movies800times, aishell4_long, and googletime as benchmark datasets for multi-speaker ASR. movies800times is a short-sequence dataset with 800 dialog clips, aishell4_long with googletime are long-sequence dataset of long-form meeting audio, and English podcasts. These datasets are right now under private license, and you can contact the Moss team for access.
@@ -271,17 +304,17 @@ pass every worker serve URL with a comma-separated `--profile-urls` value.
 
 ## Benchmark Results
 
-Here we provide the benchmark results of movies800times and aishell4_long on a single H100 80GB GPU. Each row is the **mean of 3 runs** against a server with `max_running_requests=16`, `cuda_graph_max_bs=16`, and `mem_fraction_static=0.80`.
+Here we provide the benchmark results of movies800times on a single H200 141GB GPU with SGLang 0.5.23, and of aishell4_long on a single H100 80GB GPU. Each row is the **mean of 3 runs** against a server with `max_running_requests=16`, `cuda_graph_max_bs=16`, and `mem_fraction_static=0.80`.
 
 ### movies800times
 
 | Concurrency | Throughput (req/s) | Mean latency (s) | RTF mean | audio_s/s |
 |---:|---:|---:|---:|---:|
-| 1 | 2.57 | 0.388 | 0.0612 | 29.76 |
-| 2 | 4.89 | 0.409 | 0.0659 | 56.55 |
-| 4 | 6.62 | 0.513 | 0.0790 | 76.64 |
-| 8 | 6.80 | 0.533 | 0.0810 | 78.70 |
-| 16 | 7.08 | 0.659 | 0.0922 | 81.98 |
+| 1 | 7.75 | 0.129 | 0.0120 | 89.73 |
+| 2 | 12.98 | 0.154 | 0.0149 | 150.15 |
+| 4 | 24.19 | 0.165 | 0.0160 | 279.93 |
+| 8 | 43.79 | 0.182 | 0.0175 | 506.76 |
+| 16 | 73.78 | 0.215 | 0.0207 | 853.73 |
 
 ### aishell4_long
 

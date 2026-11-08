@@ -137,7 +137,7 @@ sgl-omni serve --config examples/qwen3_omni/session_h200.yaml --enable-realtime 
 
 `examples/qwen3_omni/session_h200.yaml` sets what depends on the device: the per-stage memory fractions (those of the colocated speech profile for one H200) and `max_sessions`. On another device, declare both for that device; colocated stages require explicit memory fractions. Each open session retains up to the thinker's `max_seq_len` (32768) tokens of KV, so `max_sessions` is the thinker's KV pool in tokens, which the thinker logs at startup as `KV Cache is allocated. ... #tokens`, divided by 32768: 555,988 tokens and 16 sessions with these fractions on one H200. The image and audio encoders run in their own processes under their own fractions, so the thinker's `encoder_mem_reserve` is 0.
 
-The thinker and talker keep each session's KV between units, and that KV holds a request row, so the session's next unit reuses the row. A prefill batch therefore admits the next unit of every waiting session, not only as many as there are free rows. `--thinker.factory.continuation_aware_admission false` and `--talker_ar.factory.continuation_aware_admission false` count those units against the free rows like new requests; the KV is still kept and the rows still reused.
+The thinker and talker keep each session's KV between units, and that KV holds a request row, so the session's next unit reuses the row. A prefill batch therefore admits the next unit of every waiting session, not only as many as there are free rows. `--thinker.factory.continuation_aware_admission false` and `--talker_ar.factory.continuation_aware_admission false` leave the count to SGLang, which credits a unit's held row once the unit is in the batch, so a batch admits waiting units only when it has a free row for the first of them; the KV is still kept and the rows still reused.
 
 The session takes 16 kHz PCM16 audio and camera frames. A user turn ends on `speech.stopped`, `commit`, or the end of input; the reply streams as `text_delta` and 24 kHz `pcm16` with `turn.queued`, `turn.started` and `turn.done`, and `turn.done` arrives once the reply's audio has left the server. The model hears each utterance whole and answers it with the conversation so far; it does not listen while it speaks. Speech that starts during a reply, or an `interrupt` control, stops the reply and publishes `turn.interrupted`. `max_utterance_seconds` (60) bounds the audio of one utterance and `max_queued_turns` (8) the finished utterances waiting behind the turn being answered; a client past either ends its session.
 
@@ -179,17 +179,13 @@ sgl-omni serve \
   --port 8000
 ```
 
-- **Context.** The thinker serves within the draft's context (8,192 tokens for both drafts), and a request whose prompt plus `max_tokens` exceeds it, less a few tokens each step reserves, is rejected with an error. Setting `--preprocessing.factory.max_seq_len 8192` rejects most of them before the thinker.
-- **Sampling.** Requests with `repetition_penalty`, `frequency_penalty`, `presence_penalty`, `min_p` or logprobs are rejected, because the draft workers apply penalties once per verify block, drop `min_p`, and skip the sampler that records logprobs. Rollout `/generate` requests default to `return_logprob: true`, so they must send `false`.
-- **Scheduling.** Async decode is turned off, and setting `enable_mixed_chunk` is rejected. Sessions and weight updates are refused while a draft is loaded.
-- **Speech output.** A draft is refused on a speech server for now. The thinker captures the layer the talker reads through the same hidden-state capture the drafts use, and the speculative prefill does not store the talker's prompt rows, so serve with `--text-only`.
+- **Acceptance length.** Send `return_spec_tokens_details: true` with a chat request to get its `sglext.spec_tokens_details`: `spec_accept_length` (output tokens per verify, including the token sampled at prefill, so it can read higher than the scheduler log's `accept len`, which counts only verified tokens), `spec_accept_rate`, the draft counts and the per-verify histogram. A streamed response sends it in a chunk with empty `choices` before `[DONE]`. `spec_accept_rate` and `spec_num_proposed_drafts` are left out when no drafts were proposed or the draft width is adaptive. Only the Thinker draft is reported for now; a per-stage field can follow once the Talker has a draft too.
+- **Context.** The drafts shown above have an 8,192-token context. The prompt, output budget and speculative reservations must fit within it. Use `--preprocessing.factory.max_seq_len 8192` to reject oversized prompts early.
+- **Sampling.** Keep `repetition_penalty=1`, `frequency_penalty=0`, `presence_penalty=0`, and `min_p=0`. Disable logprobs and `return_hidden_states`. For `/generate`, send `return_logprob: false`.
+- **Scheduling.** Speculative decoding is synchronous by default. Add `--thinker.factory.enable_async_decode true` to either command to enable overlap, keeping `async_decode_min_batch_size=1`. Mixed prefill/decode batches (`enable_mixed_chunk=true`), sessions and weight updates are unsupported with a draft.
+- **Overlap trade-offs.** Overlap can improve decode throughput. Prefill-heavy workloads or short outputs can see higher TTFT and lower throughput.
+- **Prefill boundary.** Set `SGLANG_DISABLE_CONSECUTIVE_PREFILL_OVERLAP=1` before launch to process the previous prefill batch's result before launching the next consecutive prefill batch. This can lower TTFT at a throughput cost. Decode rounds continue to overlap.
+- **Execution failure.** An execution failure in speculative overlap stops the pipeline and fails its pending requests.
+- **Speech output.** Speech generation is unsupported with a draft; use `--text-only`.
 
-Text-only ASR on LibriSpeech test-clean (`--text-only`, thinker on one H200 141GB with FA3 and SGLang 0.5.22, greedy, `max_tokens 200`), in requests per second; concurrency 1 over all 2,620 utterances, concurrency 4 and 8 over the two halves, each on a server that has not seen them:
-
-| Concurrency | Baseline | DFlash | EAGLE3 |
-|---|---|---|---|
-| 1 | 7.78 | 12.95 (1.66x) | 11.57 (1.49x) |
-| 4 | 16.54 | 24.23 (1.46x) | 21.43 (1.30x) |
-| 8 | 23.94 | 37.19 (1.55x) | 31.80 (1.33x) |
-
-DFlash accepts 4.7 tokens per verify and EAGLE3 3.4, with WER unchanged. Requests that repeat earlier audio hit the prefix cache, which speeds the baseline up and slows DFlash down, so benchmark each pass on utterances its server has not seen.
+Compare modes with matching workloads and prefix-cache conditions. Measure TTFT, throughput and accuracy for your workload.
