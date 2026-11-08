@@ -1408,7 +1408,7 @@ async def test_openai_speech_drops_the_quiet_start_of_a_sentence_except_a_prerol
     preroll_samples = 1200  # 50 ms at 24 kHz
     room_tone = np.full(3 * preroll_samples, 33, dtype="<i2")
     speech = np.full(preroll_samples, 16384, dtype="<i2")
-    stream = np.concatenate([room_tone, speech]).tobytes()
+    stream = np.concatenate([room_tone, speech, room_tone, speech]).tobytes()
 
     async def odd_chunks() -> AsyncIterator[bytes]:
         for start in range(0, len(stream), 1001):
@@ -1427,12 +1427,15 @@ async def test_openai_speech_drops_the_quiet_start_of_a_sentence_except_a_prerol
     played = np.concatenate(
         [np.frombuffer(o.payload, dtype="<f4") for o in outputs if o.modality == AUDIO]
     )
-    kept = [33] * preroll_samples + [16384] * preroll_samples
+    kept = (
+        [33] * preroll_samples
+        + [16384] * preroll_samples
+        + [33] * 3 * preroll_samples
+        + [16384] * preroll_samples
+    )
     assert (played * 32768).round().tolist() == kept
     progress = [o.payload for o in outputs if control_type(o) == REPLY_PROGRESS]
-    assert progress[-1]["audio_ms"] == pytest.approx(
-        2 * preroll_samples * 1000 / sample_rate_hz
-    )
+    assert progress[-1]["audio_ms"] == pytest.approx(len(kept) * 1000 / sample_rate_hz)
 
 
 @pytest.mark.asyncio
