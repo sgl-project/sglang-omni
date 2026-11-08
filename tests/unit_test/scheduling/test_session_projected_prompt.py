@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """A projected talker prompt rides a native session as the unit's one embedding span."""
 
+import json
 from array import array
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -10,6 +12,7 @@ import torch
 from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.sampling.sampling_params import SamplingParams
 
+from sglang_omni.profiler.event_recorder import get_recorder
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.scheduling.sglang_backend.ar_session import (
@@ -35,7 +38,7 @@ def adapter_request(ids: list[int]) -> Req:
 
 def bridge_with_unit(ids: list[int]) -> tuple[ARSessionBridge, SessionUnit]:
     identity = SessionIdentity("talker")
-    scheduler = Mock()
+    scheduler = Mock(max_req_len=4096)
     scheduler.model_config.vocab_size = 64
 
     def create_req(tokenized, tokenizer, vocab_size, eos_token_ids):
@@ -47,9 +50,9 @@ def bridge_with_unit(ids: list[int]) -> tuple[ARSessionBridge, SessionUnit]:
         )
 
     scheduler.session_controller.get.return_value = SimpleNamespace(
-        session_id="native", create_req=create_req
+        session_id="native", create_req=create_req, req_nodes={}
     )
-    bridge = ARSessionBridge(scheduler, Mock())
+    bridge = ARSessionBridge(scheduler, Mock(**{"plan_history_cut.return_value": None}))
     chunk = TimedChunk("text", 0, 0, 0, {"text": "hi"}, format="text_delta")
     unit = SessionUnit(
         request_id="unit-1", session_identity=identity, stages=("talker",), chunk=chunk
@@ -121,6 +124,57 @@ def test_a_completed_token_unit_keeps_no_decode_rows():
     data.decode_input_embeds = [torch.zeros(WIDTH)]
     bridge.complete("unit-1", data)
     assert bridge.sessions["talker"].embedding_spans == []
+
+
+def test_a_completed_unit_does_not_inspect_kv_without_profiling() -> None:
+    recorder = get_recorder()
+    assert not recorder.is_active()
+    bridge, _ = bridge_with_unit([1, 2])
+    bridge.complete("unit-1")
+    bridge.bridge_scheduler.tree_cache.session_records.assert_not_called()
+    bridge.bridge_scheduler.tree_cache.evictable_size.assert_not_called()
+    bridge.bridge_scheduler.token_to_kv_pool_allocator.available_size.assert_not_called()
+
+
+def test_a_completed_unit_records_the_checkpointed_session_kv(tmp_path: Path) -> None:
+    bridge, _ = bridge_with_unit([1, 2])
+    bridge.bridge_scheduler.tree_cache.session_records.return_value = {
+        "talker": SimpleNamespace(
+            kv_allocated_len=3127,
+            get_evicted_seqlen=lambda _component_type: 127,
+        )
+    }
+    bridge.bridge_scheduler.tree_cache.evictable_size.return_value = 17
+    bridge.bridge_scheduler.token_to_kv_pool_allocator.size = 5000
+    bridge.bridge_scheduler.token_to_kv_pool_allocator.available_size.return_value = (
+        4096
+    )
+    recorder = get_recorder()
+    event_path = recorder.start("window-kv", str(tmp_path), "lm")
+    try:
+        bridge.complete("unit-1")
+    finally:
+        recorder.stop(wait=True)
+
+    events = [json.loads(line) for line in Path(event_path).read_text().splitlines()]
+    assert len(events) == 1
+    event = events[0]
+    assert event["event_name"] == "session_kv_snapshot"
+    assert event["stage"] == "lm"
+    assert event["metadata"] == {
+        "session_id": "talker",
+        "session_open_index": 1,
+        "input_seq": 0,
+        "cache_type": "Mock",
+        "kv_allocator_type": "Mock",
+        "session_logical_length": 3127,
+        "session_swa_evicted_length": 127,
+        "session_window_kv_positions": 3000,
+        "kv_pool_capacity_positions": 5000,
+        "kv_pool_allocated_positions": 904,
+        "available_kv_positions": 4096,
+        "evictable_kv_positions": 17,
+    }
 
 
 def test_projected_session_prefill_rows_come_from_the_spans_and_fed_back_tokens():

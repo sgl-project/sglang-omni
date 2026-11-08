@@ -1,4 +1,4 @@
-from typing import ClassVar
+from typing import Annotated, ClassVar
 
 from pydantic import Field
 
@@ -18,8 +18,19 @@ from sglang_omni.models.nemotron_voicechat.duplex_config import (
 # The ckpt is all saved in float32.
 MODEL_DTYPE = "float32"
 PREPROCESSING_MAX_CONCURRENCY = 4
+CODE2WAV_MAX_BATCH_SIZE = 16
 
 MODEL_STAGES_PREFIX = "sglang_omni.models.nemotron_voicechat.stages"
+
+
+class Code2WavFactoryArgs(FactoryArgs):
+    chunk_frames: tuple[Annotated[int, Field(strict=True, gt=0)], ...] = Field(
+        default=(1, 1, 1, 1, 2, 2, 4), min_length=1
+    )
+
+
+class Code2WavStageConfig(StageConfig):
+    factory: Code2WavFactoryArgs = Field(default_factory=Code2WavFactoryArgs)
 
 
 def nemotron_voicechat_stages_factory() -> list[StageConfig]:
@@ -74,11 +85,13 @@ def nemotron_voicechat_stages_factory() -> list[StageConfig]:
             next="code2wav",
             stream_to=["code2wav"],
         ),
-        StageConfig(
+        Code2WavStageConfig(
             name="code2wav",
             process="talker",
             factory_path=f"{MODEL_STAGES_PREFIX}.create_code2wav_executor",
-            factory=FactoryArgs(dtype=MODEL_DTYPE),
+            factory=Code2WavFactoryArgs(
+                dtype=MODEL_DTYPE, max_batch_size=CODE2WAV_MAX_BATCH_SIZE
+            ),
             gpu=0,
             terminal=True,
             can_accept_stream_before_payload=True,
@@ -91,6 +104,7 @@ class NemotronVoiceChatPipelineConfig(PipelineConfig):
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         "thinker": EngineStageConfig,
         "talker": EngineStageConfig,
+        "code2wav": Code2WavStageConfig,
     }
 
     model_path: str
@@ -104,6 +118,6 @@ class NemotronVoiceChatPipelineConfig(PipelineConfig):
 
 EntryClass = NemotronVoiceChatPipelineConfig
 Variants = {
-    "duplex": NemotronVoiceChatDuplexPipelineConfig,
+    "session": NemotronVoiceChatDuplexPipelineConfig,
     "tool": NemotronVoiceChatToolPipelineConfig,
 }

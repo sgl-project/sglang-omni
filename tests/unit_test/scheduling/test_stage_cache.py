@@ -46,6 +46,21 @@ def test_stage_output_cache_allows_zero_capacity(capacity: str) -> None:
     assert cache.get("key") is None
 
 
+def test_stage_output_cache_stores_a_view_without_its_larger_storage() -> None:
+    cache = StageOutputCache(max_bytes=1024, cache_device="cpu")
+    transfer_buffer = torch.arange(1 << 20, dtype=torch.int64)
+    grid = transfer_buffer[8:11]
+    compact = torch.arange(3)
+
+    cache.put("view", {"grid": grid})
+    cache.put("compact", compact)
+
+    cached = cache.get("view")["grid"]
+    assert torch.equal(cached, grid)
+    assert cached.untyped_storage().nbytes() == 24
+    assert cache.get("compact").data_ptr() == compact.data_ptr()
+
+
 def test_remove_if_same_preserves_a_replacement() -> None:
     cache = StageOutputCache()
     cache.put("key", torch.zeros(1))
@@ -227,6 +242,20 @@ def test_pinned_cache_reuses_already_pinned_host_tensor() -> None:
     assert cached_host is not None
     # No second copy for a pre-pinned tensor: same storage, still pinned.
     assert cached_host.data_ptr() == host.data_ptr() and cached_host.is_pinned()
+
+
+@pytest.mark.accelerator
+@requires_cuda
+def test_pinned_cache_stores_a_pinned_view_without_its_larger_storage() -> None:
+    cache = StageOutputCache(cache_device="cpu", pin_memory=True)
+    host = torch.arange(1 << 20, dtype=torch.float32, pin_memory=True)
+    view = host[4:8]
+
+    cache.put("view", view)
+
+    cached = cache.get("view")
+    assert torch.equal(cached, view) and cached.is_pinned()
+    assert cached.untyped_storage().nbytes() == 16
 
 
 @pytest.mark.accelerator

@@ -129,6 +129,18 @@
       "voice_embedding/pt_male.safetensors": "4ccd63a39d35f483c89485112d35a8a2121cbb0e6d5d124e403e40d03e0c0e82"
     }
   },
+  "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16": {
+    "revision": "6415d95f88be018ff9e46813119dc3bc12261328",
+    "files": {
+      "config.json": "69c1b78421a5e408b5e91a74a9995213546613ffe2a1d87a00c7743900ead6ee",
+      "merges.txt": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3",
+      "model.safetensors": "e6eb20e645c5a28ee66bf8434edb5b67a5f151530dab63afe22787d71bcf5382",
+      "speech_tokenizer/config.json": "ee65bb901c876664ab8707c487157aa1a6ee57c65969b28fb5ec9dc211e68167",
+      "speech_tokenizer/model.safetensors": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+      "tokenizer_config.json": "dc3c31c3bdaedd5016382bb3cbe07323026775ad51f5a4fb564505992ae4a670",
+      "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+    }
+  },
   "mlx-community/MiniMax-Music3-mxfp8": {
     "revision": "d00a12c3c7f80eb66379dd02dd0f30ed0ce2d96e",
     "files": {
@@ -138,6 +150,86 @@
       "model-00003-of-00003.safetensors": "a71aa696d66edbe08972aece48d6304b6ae7a6ce3229dab1b496549c69ce816c",
       "tokenizer/tokenizer.json": "b1537fa9e59a537276ecbc2e12d0438edff635a1f4a4948e679774b5feb3e610",
       "tokenizer/tokenizer_config.json": "1689852cc9c45010de040c8302a8acdc0d2c4c6c740dd7e9dd0a8c704e16eada"
+    }
+  },
+  "mlx-community/fish-audio-drama-3-4bit": {
+    "revision": "1ac1b2108b63c2ef5bade463a121569363e293ce",
+    "files": {
+      "config.json": "e980dfd9128edeb5f5d066fd7c322a2dfc08fedcbea58019d8d2e8e5cf7b50d5",
+      "tokenizer.json": "0e9b9db76b2f0389b04b6ef057a2ac3b89100b7e96f2dd7034d19580a09654d6",
+      "codec.safetensors": "6ff9d6f07920b2155e3a48ada21956004b96df9114d255ed9f0788484ba73040",
+      "model-00001.safetensors": "de6eeebdd8c09316acd4f5fdd05482221e8596a19a6e8384d7fd129d70e894bf",
+      "model-00002.safetensors": "cdd874495884ba7a1f9ae5b2baf7fc8fed85f73799556e87a6406184b4f8cf9f",
+      "model-00003.safetensors": "eefa12cee1d032b511869de2a71666b4f07c82ca2fd8c94c3c5bcd1da431ef11",
+      "model-00004.safetensors": "cd4960872fc5ceff7c719bd5be9d9f770f3357068eca83af065db6ba68927a8a",
+      "model-00005.safetensors": "e0dbbeb7f66a2168fd744df15987b145780213d65cb6b3579a2531a78e92774e",
+      "model-00006.safetensors": "0b3e0b1b620080e4f4db53cc3b9c697c4179964be0e2172b339b605459470a7e"
+    }
+  },
+  "mlx-community/fish-audio-drama-3-8bit": {
+    "revision": "fedc7cc92bab5a180709cbaae6208d10b390bb97",
+    "files": {
+      "config.json": "076e54412c52b8d9f41197b07e8deb89d65fcf01853801a314632f7e7a12ffc0",
+      "tokenizer.json": "0e9b9db76b2f0389b04b6ef057a2ac3b89100b7e96f2dd7034d19580a09654d6",
+      "codec.safetensors": "6ff9d6f07920b2155e3a48ada21956004b96df9114d255ed9f0788484ba73040",
+      "model-00001.safetensors": "c29814a41d79e452c0e9c03a106ac7b7b2ac07b43b8f4f723bbe2f367d54d066",
+      "model-00002.safetensors": "4f457ebde3ccc3956c7c9300a56a8c1a6db64ee1417246e45c5dd18421304d6e",
+      "model-00003.safetensors": "29886d23ddacba4dd9a5d461fcbf51c04dcd1f5f967a592f08f748f8393283d2",
+      "model-00004.safetensors": "8c004deba5a0b760c7da81543a19d52db555a2edd45de2725d54566cbec038b5",
+      "model-00005.safetensors": "98e25de091972867f607397efb47126c3ea0528ec8d4f1aededa0ea4c829dd66",
+      "model-00006.safetensors": "a3d97fef461aec6fc78a99192e7bba7f45b7c8ba0733ce10d1ad766371eff227",
+      "model-00007.safetensors": "bf06dbda13a539e13936742b542d579ec76e5a2943ecfbeed4dc7821fb989b9a",
+      "model-00008.safetensors": "4d215a0b8bdda65cb56c942b8dbc8429b7974288cf064c499b789cde9c2babfd",
+      "model-00009.safetensors": "4483f5e06ff17f06cb8860fac6e9c3c7b7993a0af6156001bdb9b8023b975d20",
+      "model-00010.safetensors": "5a391679632c4f8cb94d990fa9e609ad3f693f66938c533f603d19c13234eb91"
+    }
+  },
+  "mlx-community/Fun-CosyVoice3-0.5B-2512-fp16": {
+    "revision": "18ccb7fbd7246e8cd3420d02f5dd28595cc0fcd9",
+    "files": {
+      "config.json": "9cc01133150556729617139abb8da29515badce819930e35c7da11a88b595a03",
+      "model.safetensors": "d7dc16402d2086e8b0996fe52462d9616e3eecd64f7cdb62f5c1acc898701374",
+      "tokenizer.json": "5e3855f008ece7e02f09bad5c0aa492cd1594529a796b80193f4ef640200e58b",
+      "tokenizer_config.json": "46a369aa40642d4be780e4842ea299e08764ff8edc64c2ad7738e04d94a51637"
+    },
+    "tokenizer": {
+      "repo": "mlx-community/S3TokenizerV3",
+      "revision": "b143914b3e912278104824da706edc9c2d317c4e",
+      "subdirectory": "speech_tokenizer",
+      "files": {
+        "config.json": "355c1cc1337107c89c786d7c2675d7a30322b204456f1a273acc037e291111cc",
+        "model.safetensors": "ee05a65d4472f089d55b5dfcd9e19f42e3245f4f19d612b90c04cb051a80105e"
+      }
+    }
+  },
+  "wilsonzheng0327/MOSS-Transcribe-Diarize-dflash": {
+    "revision": "2e3f00b0932112e4f92a4ef67a4cd60ee855056c",
+    "files": {
+      "config.json": "c240f41c98040d6eec7ca8f0f6bd548d3d9df302cbe10f5a91e2e833d1463250",
+      "model.safetensors": "b7ee3fde257d5f0c95a0f8805f62934e202e4d6b7d993f04dd53e4d512045a10"
+    }
+  },
+  "inclusionAI/Ming-3.0-audio-tiny": {
+    "revision": "3c9578f641b6745abf2d1239dc8419726f37c0e2",
+    "files": {
+      "config.json": "8f4f45090b7d74eebad38d0dd2767b46df178b82efb4bcdfc02f8b871f500f13",
+      "generation_config.json": "1da133d04c4f99a72e09b1565d0bb4fc0a2edc5c373a46b7076a3494edc7eb43",
+      "tokenizer.json": "2207eca933084436c15bb85ee648e28b2957934bc1da9506e10ea6c243bad869",
+      "tokenizer_config.json": "29c99ad0d76b663b5acd6cffcade4c1bc7897b2b44a64c8224b1222143002e7a",
+      "special_tokens_map.json": "2ac79f0a2ab99a3e6ffb7709b77246f5595584f8dcd006694cb940a6fec8cb8d",
+      "model.safetensors.index.json": "f61c0cc9a162c23afafaf9f2107a2b5a5a838bcf6e69daa61c4178ca327b0adc",
+      "model-00001-of-00002.safetensors": "53b7663c7c52aa36e487977d6e9bb2f5666b7aaa543bd5d5dd4e96ec88cfd957",
+      "model-00002-of-00002.safetensors": "08d9e7bd9d885a0d6608953c6bbe40dbfb67f673a0cce9382414b55a9380053a"
+    }
+  },
+  "mlx-community/fish-audio-s2-pro-8bit": {
+    "revision": "c8d4481b3f7cbfe64d855c8b7cda7739502fc3ff",
+    "files": {
+      "config.json": "363895eff17c1f15a18e9bbc8ffddf3d5546219378cc37d96862892d4f93aace",
+      "tokenizer.json": "f24e08099d45a8adf3f52f5f0b03276e433bb9d689bb15fcbcc48ce58744588b",
+      "tokenizer_config.json": "b8d149343ae425b0da67e6708686aceb51be7815d9792f265fc12ff04d5e9856",
+      "model.safetensors": "bf31b4e5fb713a565750e120ebadd54de245eb1214e46d14fc5108f1e79171a1",
+      "codec.safetensors": "c2096e27a1bb69a05151ccb502649a88744712270d9b029a68a3c9305f2b1edf"
     }
   }
 }

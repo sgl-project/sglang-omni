@@ -11,9 +11,14 @@ from sglang.srt.managers.schedule_batch import ScheduleBatch
 from sglang.srt.managers.scheduler import GenerationBatchResult
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.runtime_context import get_parallel
+from sglang.srt.utils.common import is_pin_memory_available
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.model_worker import ModelWorker
+from sglang_omni.model_runner.prefill_inputs import (
+    OmniPrefillInputs,
+    attach_omni_prefill_inputs,
+)
 from sglang_omni.model_runner.sglang_execution import attn_forward_context
 from sglang_omni.models.ming_tts.engine_io import (
     MingTTSLatentPatch,
@@ -23,6 +28,7 @@ from sglang_omni.models.ming_tts.sglang_model import (
     MingTTSSGLangModel,
     MingTTSTailInputs,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.types import SchedulerOutput, SchedulerRequest
 
@@ -97,6 +103,10 @@ class MingTTSModelRunner(ModelRunner):
         self.tp_rank = int(tp_worker.tp_rank)
         self.tp_size = int(get_parallel().tp_size)
         self.request_states: dict[str, MingTTSRequestState] = {}
+        if self.device.type == "cpu":
+            self.stop_prob_event: torch.Event | None = None
+        else:
+            self.stop_prob_event = torch.Event(device=self.device)
 
     def reset_request(self, request_id: str) -> None:
         self.request_states.pop(request_id, None)
@@ -201,10 +211,18 @@ class MingTTSModelRunner(ModelRunner):
         forward_batch: ForwardBatch | None,
         schedule_batch: ScheduleBatch | None,
         requests: list[SchedulerRequest],
-    ) -> GenerationBatchResult:
+    ) -> GenerationBatchResult | None:
         del schedule_batch
         input_embeds = self.build_prefill_input_embeds(forward_batch, requests)
-        return self.forward_with_input_embeds(forward_batch, input_embeds)
+        if current_platform.is_cuda():
+            # note (Dayuxiaoshui): Returning None leaves the prefill to the standard
+            # forward, which replays the transformer body from its token-bucket graph.
+            attach_omni_prefill_inputs(
+                forward_batch, OmniPrefillInputs(input_embeds=input_embeds)
+            )
+            return None
+        else:
+            return self.forward_with_input_embeds(forward_batch, input_embeds)
 
     def build_prefill_input_embeds(
         self,
@@ -327,7 +345,9 @@ class MingTTSModelRunner(ModelRunner):
             return
         else:
             pass
-        self.collect_ming_tts_step(result, forward_batch, schedule_batch, requests)
+        self.collect_ming_tts_step(
+            result, forward_batch, schedule_batch, requests, is_prefill=True
+        )
 
     def post_decode(
         self,
@@ -336,7 +356,9 @@ class MingTTSModelRunner(ModelRunner):
         schedule_batch: ScheduleBatch | None,
         requests: list[SchedulerRequest],
     ) -> None:
-        self.collect_ming_tts_step(result, forward_batch, schedule_batch, requests)
+        self.collect_ming_tts_step(
+            result, forward_batch, schedule_batch, requests, is_prefill=False
+        )
 
     def finalize_skip_rids(self, scheduler_output: SchedulerOutput | None) -> set[str]:
         batch = getattr(scheduler_output, "batch_data", None)
@@ -352,6 +374,8 @@ class MingTTSModelRunner(ModelRunner):
         forward_batch: ForwardBatch | None,
         schedule_batch: ScheduleBatch | None,
         requests: list[SchedulerRequest],
+        *,
+        is_prefill: bool,
     ) -> None:
         del forward_batch
         if not requests:
@@ -375,7 +399,10 @@ class MingTTSModelRunner(ModelRunner):
         )
         if self.is_entry_rank:
             try:
-                self.run_entry_tail_step(hidden_states, requests, step_update)
+                host_token_ids = self.run_entry_tail_step(
+                    hidden_states, requests, step_update, is_prefill=is_prefill
+                )
+                self.stage_token_ids(result, host_token_ids)
             except Exception:
                 step_update.control_tensor.zero_()
                 step_update.tail_failed.fill_(1)
@@ -395,71 +422,87 @@ class MingTTSModelRunner(ModelRunner):
         hidden_states: torch.Tensor,
         requests: list[SchedulerRequest],
         step_update: MingTTSTPStepUpdate,
-    ) -> None:
+        *,
+        is_prefill: bool,
+    ) -> torch.Tensor:
         device = hidden_states.device
+        pin_memory = is_pin_memory_available(device)
         next_ids: list[int] = []
+        feedback_mask: list[int] = []
 
         request_states = [self.request_states[req.request_id] for req in requests]
         steps = [int(req.data.generation_steps) for req in requests]
         max_steps = [int(req.data.max_new_tokens) for req in requests]
         histories = [state.latent_history for state in request_states]
         history_batch = torch.cat(histories, dim=0)
-        steps_tensor = torch.tensor(steps, dtype=torch.long, device=device)
-        max_steps_tensor = torch.tensor(
-            max_steps,
-            dtype=torch.long,
-            device=device,
-        )
-        cfg_tensor = torch.tensor(
-            [float(req.data.state.cfg) for req in requests],
+        sampling_parameters = torch.tensor(
+            [
+                [float(req.data.state.cfg) for req in requests],
+                [float(req.data.state.sigma) for req in requests],
+                [float(req.data.state.temperature) for req in requests],
+            ],
             dtype=torch.float32,
-            device=device,
-        )
-        sigma_tensor = torch.tensor(
-            [float(req.data.state.sigma) for req in requests],
-            dtype=torch.float32,
-            device=device,
-        )
-        temperature_tensor = torch.tensor(
-            [float(req.data.state.temperature) for req in requests],
-            dtype=torch.float32,
-            device=device,
-        )
+            pin_memory=pin_memory,
+        ).to(device=device, non_blocking=True)
+
+        stop_prob = self.model.compute_stop_prob(hidden_states)
+        stop_prob_host = stop_prob.to(device="cpu", non_blocking=True)
+        if self.stop_prob_event is None:
+            pass
+        else:
+            self.stop_prob_event.record()
 
         tail_outputs = self.model.run_tail_step(
             MingTTSTailInputs(
                 hidden_states=hidden_states,
                 latent_history=history_batch,
-                cfg=cfg_tensor,
-                sigma=sigma_tensor,
-                temperature=temperature_tensor,
+                cfg=sampling_parameters[0],
+                sigma=sampling_parameters[1],
+                temperature=sampling_parameters[2],
             )
         )
         sampled = tail_outputs.sampled
-        stop_prob = tail_outputs.stop_prob
         feedback_embeddings = tail_outputs.feedback_embeddings
-        stop_flags = (stop_prob > 0.5) & (steps_tensor > 3)
-        length_flags = steps_tensor + 1 >= max_steps_tensor
-        feedback_mask = ~(stop_flags | length_flags)
-        step_update.feedback_mask.copy_(feedback_mask)
-        decision_rows = torch.stack((stop_flags, length_flags)).cpu().tolist()
-        stop_list, length_list = decision_rows
+        is_streaming_step = any(req.data.is_streaming for req in requests)
+        if is_streaming_step:
+            sampled_host = sampled.to(device="cpu", non_blocking=True)
+        else:
+            sampled_host = None
+        if is_streaming_step and self.stop_prob_event is not None:
+            sampled_ready = torch.Event(device=device)
+            sampled_ready.record()
+        else:
+            sampled_ready = None
+        if self.stop_prob_event is None:
+            pass
+        else:
+            # note (Dayuxiaoshui): Recorded before the tail launch, so this waits
+            # for the stop head only; the decisions below overlap the running tail.
+            self.stop_prob_event.synchronize()
+        stop_list = [
+            probability > 0.5 and step > 3
+            for probability, step in zip(stop_prob_host.tolist(), steps)
+        ]
+        length_list = [step + 1 >= max_step for step, max_step in zip(steps, max_steps)]
         for row_idx, request_state in enumerate(request_states):
             data: MingTTSSGLangRequestData = requests[row_idx].data
             step = steps[row_idx]
             sampled_row = sampled[row_idx : row_idx + 1]
-            sampled_chunk = sampled_row.squeeze(0).detach()
 
             stop = stop_list[row_idx]
             length = length_list[row_idx]
             is_last = stop or length
+            feedback_mask.append(int(not is_last))
             if data.is_streaming:
-                data.pending_stream_patch = MingTTSLatentPatch(
-                    latent=sampled_chunk,
-                    is_last=is_last,
+                data.pending_stream_patches.append(
+                    MingTTSLatentPatch(
+                        latent=sampled_host[row_idx],
+                        is_last=is_last,
+                        ready=None if is_prefill else sampled_ready,
+                    )
                 )
             else:
-                request_state.generated_latents.append(sampled_chunk)
+                request_state.generated_latents.append(sampled_row.squeeze(0))
             if stop:
                 request_state.stop_step = step
                 next_ids.append(int(data.audio_eos_token_id))
@@ -501,9 +544,17 @@ class MingTTSModelRunner(ModelRunner):
                 dim=0,
             ).to(device="cpu", dtype=torch.float32)
 
-        step_update.next_token_ids.copy_(
-            torch.tensor(next_ids, dtype=torch.long, device=device)
+        control_rows = torch.tensor(
+            [next_ids, feedback_mask], dtype=torch.long, pin_memory=pin_memory
         )
+        step_update.control_tensor[:2].copy_(control_rows, non_blocking=True)
+        # note (Dayuxiaoshui): A prefill patch must not wait for the next batch,
+        # which can sit behind other prefills and delay this request's first audio.
+        if is_prefill and sampled_ready is not None:
+            sampled_ready.synchronize()
+        else:
+            pass
+        return control_rows[0]
 
     @staticmethod
     def advance_latent_history(

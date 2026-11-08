@@ -22,10 +22,21 @@ from sglang_omni.proto.streams import (
     TEXT_DELTA,
 )
 
+EXAMPLES = Path(__file__).resolve().parents[3] / "examples/qwen3_omni"
 
-def profile_config() -> Qwen3OmniSessionPipelineConfig:
-    path = Path(__file__).resolve().parents[3] / "examples/qwen3_omni/session_h200.yaml"
-    return ConfigManager.from_file(str(path)).config
+
+def profile_config(name: str = "session_h200.yaml") -> Qwen3OmniSessionPipelineConfig:
+    return ConfigManager.from_file(str(EXAMPLES / name)).config
+
+
+def test_device_profiles_differ_only_in_device_settings() -> None:
+    # A configure that /v1/realtime sends with the audio reaches qwen_omni through
+    # the dialog; a profile without that edge closes the session on a later
+    # session.update.
+    assert (
+        profile_config("session_h100.yaml").session_graph()
+        == profile_config().session_graph()
+    )
 
 
 def test_qwen3_omni_profile_declares_persistent_stage_routes_and_feedback() -> None:
@@ -105,6 +116,13 @@ def test_ar_stages_take_continuation_aware_admission_from_their_factory_settings
         )
         kwargs = resolve_stage_factory_args(config.stage_named(stage_name), config)
         assert kwargs["continuation_aware_admission"] is admission
+
+
+def test_every_session_stage_admits_the_configured_session_count() -> None:
+    config = profile_config().model_copy(update={"max_sessions": 32})
+    for stage_name in ("vad", "dialog"):
+        kwargs = resolve_stage_factory_args(config.stage_named(stage_name), config)
+        assert kwargs["max_open_sessions"] == 32
 
 
 def test_a_node_reading_every_input_format_must_take_camera_frames():

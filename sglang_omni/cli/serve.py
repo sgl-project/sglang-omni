@@ -3,8 +3,10 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Literal, NoReturn
 
+import click
 import typer
 import yaml
+from typer.core import TyperCommand
 
 from sglang_omni.config import PipelineConfig
 from sglang_omni.config.manager import ConfigManager
@@ -31,6 +33,20 @@ logger = logging.getLogger(__name__)
 
 
 _QWEN_COLOCATED_CONFIG_CLASS = "Qwen3OmniSpeechColocatedPipelineConfig"
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
+
+class ServeCommand(TyperCommand):
+    """Serve command that also takes the model path as its first argument."""
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        # note (Chenyang): sglang serve rewrites a leading positional the same
+        # way, so both CLIs parse one command line identically.
+        if args and not args[0].startswith("-"):
+            args = ["--model-path", *args]
+        else:
+            pass
+        return super().parse_args(ctx, args)
 
 
 def launch_server(*args: object, **kwargs: object) -> NoReturn:
@@ -360,6 +376,7 @@ def serve(
         typer.Option(
             help=(
                 "The Hugging Face model ID or the path to the model directory. "
+                "May also be given as the first positional argument. "
                 "Required unless --config provides model_path."
             )
         ),
@@ -433,6 +450,17 @@ def serve(
             help="Maximum number of items accepted by /v1/audio/speech/batch.",
         ),
     ] = DEFAULT_TTS_BATCH_MAX_ITEMS,
+    enable_speech_sse_named_events: Annotated[
+        bool,
+        typer.Option(
+            "--enable-speech-sse-named-events",
+            help=(
+                "Enable named SSE events for /v1/audio/speech with "
+                "stream_format=sse. Adds event lines and reports failures as "
+                "speech.audio.error. Omit to preserve data-only frames."
+            ),
+        ),
+    ] = False,
     mem_fraction_static: Annotated[
         float | None,
         typer.Option(
@@ -473,7 +501,7 @@ def serve(
         typer.Option(
             "--skip-server-warmup",
             "--skip_server_warmup",
-            help="Report ready without sending the pipeline's warmup requests first.",
+            help="Report ready without running the pipeline's warmup first.",
         ),
     ] = False,
     realtime_session_update_timeout_s: Annotated[
@@ -509,10 +537,17 @@ def serve(
     ``--vocoder.factory.max_concurrency 8``, ``--talker_ar.gpu 1``,
     ``--thinker.process thinker``.
     """
-    logging.basicConfig(
-        level=getattr(logging, log_level.upper()),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    root_logger = logging.getLogger()
+    logging.basicConfig(level=log_level.upper(), format=LOG_FORMAT)
+    # note (Chenyang): sglang serve installs a root console handler before this
+    # runs, which makes basicConfig a no-op. Set the level and the console
+    # format directly so both CLIs log alike, and keep plugin handlers intact.
+    root_logger.setLevel(log_level.upper())
+    for root_handler in root_logger.handlers:
+        if type(root_handler) is logging.StreamHandler:
+            root_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+        else:
+            pass
     configure_dependency_loggers()
 
     validate_colocate_cli_request(
@@ -624,5 +659,6 @@ def serve(
         ),
         allowed_media_domains=normalize_allowed_media_domains(allowed_media_domain),
         tts_batch_max_items=validate_tts_batch_max_items(tts_batch_max_items),
+        enable_speech_sse_named_events=enable_speech_sse_named_events,
         skip_server_warmup=skip_server_warmup,
     )
