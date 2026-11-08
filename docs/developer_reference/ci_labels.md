@@ -15,7 +15,7 @@ In this sense, two kinds of labels exist and they combine: a stage label decides
 | Docs Check | GitHub-hosted | Sphinx documentation build | Every pull request |
 | Rust Router | GitHub-hosted | Rust router format, lint, tests and release build | Every pull request |
 | Release Docker Images Nightly (NPU) | GitHub-hosted | NPU configuration checks and an ARM64 image build | Every pull request |
-| Omni CI: PR Test | H100 | The unit test suite twice: once with CUDA hidden, once for the tests that need a GPU | Any stage label |
+| Omni CI: PR Test | H100 | The unit test suite twice: once with CUDA hidden, once for the tests that need a GPU | Any stage label except `run-mac-ci` |
 | Omni CI: ASR | H100 | Multi-speaker transcription and diarization with MOSS-Transcribe-Diarize, then SeedTTS English and Chinese word error rate and speed on Fun-ASR-Nano-2512, Qwen3-ASR-1.7B or Whisper-large-v3 | `run-asr-ci` |
 | Omni CI: TTS | H100 | Voice cloning on SeedTTS with Higgs-TTS, MOSS-TTS, Qwen3-TTS or Fun-CosyVoice3: non-streaming and streaming speed, word error rate, speaker similarity and UTMOS, streaming consistency, first-audio latency for Qwen3-TTS, and a serving stress test on Higgs-TTS | `run-tts-ci` |
 | Omni CI: MPS | H100 | External CUDA MPS DP2 non-streaming validation, native MPS lifecycle validation, and native CUDA IPC weight-sharing lifecycle validation | `run-mps-ci` |
@@ -61,7 +61,7 @@ The CPU partitions run as independent matrix jobs with fail-fast disabled. Files
 
 The weights are per-file p90 elapsed estimates from three successful H100 A/B runs: [41197670240](https://github.com/sgl-project/sglang-omni/actions/runs/41197670240), [41161315193](https://github.com/sgl-project/sglang-omni/actions/runs/41161315193) and [41140707601](https://github.com/sgl-project/sglang-omni/actions/runs/41140707601). Each file has three observations. The estimates aggregate timestamp intervals between completed pytest cases, excluding initial collection; they are not isolated setup/call/teardown measurements. These are PR runs with different revisions, not scheduled main-branch observations. The weights are a committed snapshot, not an automatically refreshed model.
 
-`run-unit-test-ci-only` selects PR Test on H100 without selecting model or hardware stages. It does not run the Intel Xeon job `intel-cpu-ci (unit_test/cpu)`; that job needs `run-intel-cpu-ci` and the CPU path filter. Other stage labels remain additive, so keep them absent for unit tests only. Shared setup still runs, including model-weight provisioning. PR Test also runs whenever any other stage label selects a stage, the hardware stages included. `run-lint-only` does not run PR Test or setup.
+`run-unit-test-ci-only` selects PR Test on H100 without selecting model or hardware stages. It does not run the Intel Xeon job `intel-cpu-ci (unit_test/cpu)`; that job needs `run-intel-cpu-ci` and the CPU path filter. Other stage labels remain additive, so keep them absent for unit tests only. Shared setup still runs, including model-weight provisioning. PR Test also runs whenever any other stage label selects a stage, the Intel hardware stages included. `run-mac-ci` and `run-lint-only` do not run PR Test or setup.
 
 ### ASR
 
@@ -169,13 +169,13 @@ The stage label is `run-intel-xpu-ci`.
 
 Voxt Mac CI has two jobs on GitHub's macOS runners. The native runtime job builds the MLX runtime and a stub server, then tests the protocol every native server shares on the stub server, each server's startup checks, and that the installed runtime links only the system and itself. The Swift test job runs the tests of the Voxt app's helper (`Voxt/helper`). Model outputs are checked by hand per model PR with the tools in `sglang_omni_mlx/native/ci`. The workflow starts only when the pull request touches `sglang_omni_mlx/`, `Voxt/helper/` or the workflow itself; otherwise it does not appear on the pull request at all.
 
-The stage label is `run-mac-ci`.
+The stage label is `run-mac-ci`. It runs only Voxt Mac CI: the workflow waits for lint to pass, then starts the Mac jobs. It does not run PR Test or any other H100 job, because Voxt Mac CI tests neither the `sglang_omni` package nor a GPU path.
 
 ## Label rules
 
 1. A stage runs only when its stage label is on the pull request. There is no label that selects every stage; add the stage labels the change needs. If a fundamental change really needs all of CI, add `run-asr-ci`, `run-tts-ci`, `run-mps-ci`, `run-omni-ci`, `run-native-duplex`, `run-turn-based-duplex`, `run-cascaded-duplex`, `run-intel-cpu-ci`, `run-intel-xpu-ci` and `run-mac-ci`, or comment `/tag-and-rerun-ci asr tts mps omni full-duplex turn-based cascaded intel-cpu intel-xpu mac`.
 2. Self-hosted CI needs a stage label or `run-lint-only`. Without one, the Omni CI gate fails with `No CI label found`; unselected hardware workflows skip their tests without failing. The checks on GitHub-hosted runners do not depend on labels. `run-lint-only` runs no self-hosted job, so a green lint check leaves no self-hosted failure. It does not turn off a stage label that is also present.
-3. Any stage label also runs PR Test. A pull request labeled only `run-mac-ci` still runs PR Test on H100.
+3. Any stage label except `run-mac-ci` also runs PR Test. A pull request labeled only `run-mac-ci` runs Voxt Mac CI and no H100 job.
 4. A model label names a model, not a stage. It picks that model for every selected stage that accepts it, and never selects a stage by itself. Higgs and MOSS labels are accepted by TTS and MPS. If no selected stage accepts the label, the gate prints a warning.
 5. A selected stage without a model label draws its model at random from that stage's pool. The draw is seeded by the workflow run ID, so re-running jobs in the same run keeps the same model, while a new push or a newly added label starts a new run and draws again.
 6. Each stage takes at most one model label. Two model labels for the same stage fail the gate, even when that stage is not selected.
@@ -194,7 +194,7 @@ The stage label is `run-mac-ci`.
 | `run-cascaded-duplex` | Duplex cascaded in Omni CI |
 | `run-intel-cpu-ci` | Intel Xeon job `intel-cpu-ci (unit_test/cpu)`, when the CPU paths match |
 | `run-intel-xpu-ci` | XPU CI |
-| `run-mac-ci` | Voxt Mac CI |
+| `run-mac-ci` | Voxt Mac CI. Not PR Test. |
 
 ## Examples
 
@@ -210,7 +210,8 @@ The checks on GitHub-hosted runners run in every case below, so the table lists 
 | `run-mps-ci`, `run-higgs-tts-3-4b` | PR Test, then MPS on Higgs-TTS. TTS does not run. |
 | `run-tts-ci`, `run-mps-ci` | PR Test, TTS and MPS, each drawing its own model. |
 | `run-tts-ci`, `run-mps-ci`, `run-higgs-tts-3-4b` | PR Test, then TTS and MPS, both on Higgs-TTS. |
-| `run-mac-ci` | PR Test on H100 and Voxt Mac CI. No H100 model stage. |
+| `run-tts-ci`, `run-mac-ci` | PR Test and TTS on H100, and Voxt Mac CI. |
+| `run-mac-ci` | Voxt Mac CI only, once lint passes. Omni CI passes its gate and skips setup and PR Test. |
 | `run-tts-ci`, `run-minicpm-o-4.5` | PR Test and TTS. The Omni model label is ignored with a warning, because Omni is not selected. |
 | `run-minicpm-o-4.5` | Nothing. The gate fails, because a model label does not select a stage. |
 | `run-tts-ci`, `run-higgs-tts-3-4b`, `run-moss-tts-local-transformer-v1.5` | Nothing. The gate fails, because TTS and MPS accept two model labels. |
@@ -219,7 +220,7 @@ The checks on GitHub-hosted runners run in every case below, so the table lists 
 
 Adding a label manually, CI or not, starts a new run of Omni CI, CPU CI, XPU CI and Voxt Mac CI (when its paths match) and cancels the run of the same workflow in progress, so the new label set takes effect at once. Models that no label pins are drawn again in the new run.
 
-Removing a label cancels only the workflows that the remaining labels no longer select. Removing `run-mac-ci` while `run-tts-ci` stays cancels Voxt Mac CI and leaves Omni CI running. Removing the last stage label cancels Omni CI, CPU CI, XPU CI and Voxt Mac CI. `run-lint-only` does not keep any of them. A run that is still selected keeps the stages and models it resolved when it started; push again or re-run all jobs to pick up the change.
+Removing a label cancels only the workflows that the remaining labels no longer select. Removing `run-mac-ci` while `run-tts-ci` stays cancels Voxt Mac CI and leaves Omni CI running. Removing `run-tts-ci` while `run-mac-ci` stays cancels Omni CI and leaves Voxt Mac CI running. Removing the last stage label cancels Omni CI, CPU CI, XPU CI and Voxt Mac CI. `run-lint-only` does not keep any of them. A run that is still selected keeps the stages and models it resolved when it started; push again or re-run all jobs to pick up the change.
 
 Re-running jobs reuses the run ID, so every stage keeps the model it drew. The gate reads the live labels from the pull request, so re-running all jobs picks up labels added or removed since the run started.
 
