@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -271,11 +272,27 @@ func TestImportLegacySettings(t *testing.T) {
 	s := a.lib.settings.Get()
 	if len(s.Providers.LLM) != 5 || s.Providers.LLM[0].Endpoint != "https://inference.example.com/v1" || len(s.Providers.ASR) != 4 || s.Features.Transcribe.ASR != "doubao" ||
 		s.Features.Transcribe.Prompt != "Keep my English terms." || s.Dictionary.SpeechContext != "Leo works on LLM serving." {
-		t.Fatalf("settings: setups %+v, transcribe %+v, speech context %q (message %q)", s.Providers.LLM, s.Features.Transcribe.Feature, s.Dictionary.SpeechContext, a.ob.legacyMsg)
+		t.Fatalf("settings: setups %+v, transcribe %+v, speech context %q (report %q)", s.Providers.LLM, s.Features.Transcribe.Feature, s.Dictionary.SpeechContext, a.ob.legacy.text())
 	}
-	for _, want := range []string{"5 language model services came over", "4 speech services came over", "on their pages", "2 prompts came over"} {
-		if !strings.Contains(a.ob.legacyMsg, want) {
-			t.Errorf("message %q lacks %q", a.ob.legacyMsg, want)
+	r := a.ob.legacy
+	for _, want := range []string{"5 language model services", "4 speech services", "2 prompts"} {
+		if !slices.Contains(r.imported, want) {
+			t.Errorf("imported %q lacks %q", r.imported, want)
 		}
+	}
+	// The services' keys stay behind: those that need one are to
+	// complete (not Ollama, oMLX or the Whisper server on this Mac); so
+	// are the setups to check.
+	var todo []string
+	for _, d := range r.todo {
+		todo = append(todo, string(d.kind)+"/"+d.id)
+	}
+	for _, want := range []string{"llm/openai", "llm/deepseek", "llm/gemini", "asr/doubao", "asr/stepfun"} {
+		if !slices.Contains(todo, want) {
+			t.Errorf("to do %v lacks %s", todo, want)
+		}
+	}
+	if slices.Contains(todo, "llm/ollama") || slices.Contains(todo, "llm/omlx") || !strings.Contains(r.text(), "Check ") {
+		t.Errorf("to do %v (%q)", todo, r.text())
 	}
 }

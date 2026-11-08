@@ -82,6 +82,9 @@ func groupTitle(id string) string {
 // navBadge is what a page's sidebar item shows after its title: a count
 // or a state, "" for nothing. Areas answer for their pages.
 func (a *app) navBadge(path string) string {
+	if path == "/dictionary" && len(a.suggestions) > 0 {
+		return itoa(len(a.suggestions))
+	}
 	return ""
 }
 

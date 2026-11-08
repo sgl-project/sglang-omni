@@ -198,6 +198,7 @@ func (a *app) connectWindowLife() {
 	mygo.App.OnDidBecomeActive(func() {
 		a.post(a.recheckPermissions)
 		a.post(a.familyActivated) // family.go: the family's files again (notifications are hints)
+		a.post(a.checkAnnouncements)
 	})
 }
 

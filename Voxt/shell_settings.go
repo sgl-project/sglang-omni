@@ -120,6 +120,9 @@ func (a *app) updateSettings(fn func(*settings.Settings)) {
 func (a *app) settingsChanged(old, new settings.Settings) {
 	a.prefs = new
 	a.familySettingsChanged(old, new) // family.go: the shared settings, the manifest
+	if (old.Dictionary.Learn && !new.Dictionary.Learn) || (old.Dictionary.Enabled && !new.Dictionary.Enabled) {
+		a.learner.Stop() // learn_link.go: nothing read from now on, nothing proposed
+	}
 	if old.General.Language != new.General.Language {
 		a.applyLocale()
 	}
@@ -159,7 +162,8 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 		a.applyKeepLoaded(new.Models) // models_keep.go
 	}
 	if !reflect.DeepEqual(old.Providers, new.Providers) || old.Network != new.Network {
-		a.syncRemote() // remote_link.go
+		a.readUnreadKeys() // remote_link.go: a setup that came over
+		a.syncRemote()
 	}
 	a.historySettingsChanged(old, new) // history_settings_ops.go
 	// The problems' cards: the language of their text may have changed

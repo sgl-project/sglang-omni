@@ -13,6 +13,21 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Hide a speech model** (Speech models): a model's card has Hide, which leaves the model out of the features' speech model menus; the card moves to Hidden models at the foot of the page, where Show puts it back. A model a feature uses cannot be hidden.
 - **The update from Voxt 1.x is tested on a clean Mac**: a GitHub Actions workflow (Voxt Upgrade Test) installs Voxt 1.x, lets it update itself to the new Voxt from the beta channel, then checks the installed app (its bundle ID, Developer ID signature and notarization) and that it imports Voxt 1.x's dictionary without asking you to choose a folder.
 - **Voxt 1.x on Apple silicon updates to Voxt 2 by itself**: each release also has the app as `Voxt-X.Y.Z-macOS.zip`, which Voxt 1.x's in-app update installs on a Mac with Apple silicon (first for those who turned on Beta Updates, then for everyone there) and the Homebrew cask (`brew install --cask hehehai/tap/voxt`, Apple silicon only) installs. Voxt 1.x on an Intel Mac is not offered Voxt 2, which does not run there, and stays on Voxt 1.x. After the update, allow the microphone and accessibility again: macOS sees Voxt 2 as another app.
+- **Proxy user name and password** (Speech models → Network… → Custom), as in Voxt 1.x: a custom proxy (HTTP, HTTPS or SOCKS5) takes a user name and a password, sent only when both are set, with model downloads and the requests to remote services. The password is kept in the Keychain only, and only Voxt uses them: the other apps that share the model library do not get them.
+- **Announcements**, as in Voxt 1.x: when Voxt starts and each time you switch to it (at most every 10 minutes), it reads Voxt's announcements. A new one shows as a card above Settings in the sidebar: Read shows it whole, and once you dismiss it, it does not come back. The request sends nothing about you (no version, language or identifier), and Settings → Privacy says so.
+- **Add selected words to the dictionary**, as in Voxt 1.x: select a few words in any app (at most five, or ten Chinese, Japanese or Korean characters in a row) and press the transcribe shortcut. Voxt adds them to the dictionary instead of recording, and the overlay says "Added to the dictionary" or "Already in the dictionary". With a longer selection or nothing selected the shortcut records as usual, and with the dictionary off it always records.
+- **Dictionary suggestions**: terms Voxt suggests appear above the list on the Dictionary page, with what it heard instead and where the suggestion came from, and the sidebar shows how many wait. Add puts the term in the dictionary without aliases, Edit… lets you change it first, and Ignore hides it for 90 days.
+- **How the dictionary works** (Dictionary): a folded guide on the page says where a term applies: speech hints, the language model's glossary, and aliases replaced in the recognised text.
+- **Scan history for suggestions** (Dictionary → Scan history…), as in Voxt 1.x's one-click import: Voxt sends the Transcribe results it has not read yet, 12 at a time, to the language model Transcribe uses and suggests the names and terms it finds. The dialog says how many results go to which model before anything is sent; you add each term yourself, and nothing of your dictionary is sent.
+- **Learn from my corrections** (Dictionary): off by default. After Voxt inserts a Transcribe result into another app, it reads the text around that spot for up to 30 seconds; when you correct a word there, it suggests your spelling on the Dictionary page. Local rules only, nothing is sent, what it reads is not saved or logged, and password fields are never read.
+
+### Changed
+
+- **Automatic says which model it uses**: in a feature's speech model and language model menus, and Translate's target language, the Automatic entry reads "Automatic (now: Qwen3-ASR 1.7B (8bit))", so it no longer looks like a second copy of the model listed below it.
+- **The setup guide picks up where you left it**: reopened, it shows the step you left (until you finish it), and Set up a language model or Choose models… leaves a "Back to the setup guide" bar on that page.
+- **Ask for the required permissions in one go**: the permissions are grouped as Required (microphone, Accessibility) and Optional (Speech Recognition), and "Ask for the required permissions" shows macOS's prompts one after another.
+- **A service that needs its API key says so**: its card reads "API key needed" with Complete setup, and when no language model is ready the sidebar card names the service and opens its dialog. Services brought over from Voxt 1.x show this at once.
+- **The import from Voxt 1.x reads at a glance**: its result is grouped as Imported, Left out (with why) and To do, each to-do with Complete setup; an import from outside the setup guide shows it in a dialog.
 
 ### Fixed
 
@@ -29,6 +44,21 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **隐藏语音模型**（语音模型）：模型卡片上有“隐藏”，隐藏后功能页的语音识别菜单里不再列出它；卡片移到页面底部的“已隐藏的模型”，点“显示”放回去。功能正在用的模型不能隐藏。
 - **在一台全新的 Mac 上测试从 Voxt 1.x 更新**：GitHub Actions 工作流（Voxt Upgrade Test）装好 Voxt 1.x，让它从 beta 通道自己更新到新的 Voxt，再检查装好的 app（bundle ID、Developer ID 签名和公证），以及它不用你选文件夹就能导入 Voxt 1.x 的词典。
 - **Apple 芯片上的 Voxt 1.x 自己更新到 Voxt 2**：每个版本还附带 app 的 `Voxt-X.Y.Z-macOS.zip`，在 Apple 芯片的 Mac 上，Voxt 1.x 的应用内更新安装它（先给打开了“Beta 更新”的用户，再给其他人），Homebrew 的 cask（`brew install --cask hehehai/tap/voxt`，只支持 Apple 芯片）也装它。Intel Mac 上的 Voxt 1.x 不会收到 Voxt 2（Voxt 2 不能在 Intel 上运行），继续用 Voxt 1.x。更新后要重新允许麦克风和辅助功能：macOS 把 Voxt 2 当成另一个 app。
+- **代理的用户名和密码**（语音模型 → 网络… → 自定义），和 Voxt 1.x 一样：自定义代理（HTTP、HTTPS 或 SOCKS5）可以填用户名和密码，两个都填了才使用，模型下载和远程服务的请求都会带上。密码只保存在钥匙串里；它们只给 Voxt 用，共用模型库的其他 app 不会用到。
+- **公告**，和 Voxt 1.x 一样：Voxt 启动时和每次切回 Voxt 时（最多 10 分钟一次）读取 Voxt 的公告。新公告显示为侧边栏“设置”上方的一张卡片：点“查看全文”看完整内容，关掉以后不会再出现。读取公告不会发送任何关于你的信息（没有版本号、语言或标识），设置 → 隐私里也写明了。
+- **把选中的词加进词典**，和 Voxt 1.x 一样：在任意 app 里选中几个词（最多五个词，或连续最多十个中日韩字），按转录快捷键，Voxt 把它加进词典，不开始录音，浮窗显示“已加入词典”或“词典里已经有”。选中的文字更长或者没有选中文字时照常录音；词典关着时总是录音。
+- **词典建议**：Voxt 建议的词显示在词典页的列表上方，写明听成了什么、来自哪里，侧栏显示待处理的条数。“添加”只把词条加入词典，不加别名；“编辑…”可以先改再加入；“忽略”后 90 天内不再出现。
+- **词典的用法**（词典页）：页面上有一段可以展开的说明，讲清词条在哪里生效：语音识别提示、语言模型术语表，以及别名在识别文字里的替换。
+- **扫描历史，找词条建议**（词典 → 扫描历史…），对应 Voxt 1.x 的一键导入：Voxt 把还没读过的转录结果每 12 条发给转录用的语言模型，把找到的人名和术语放进建议。开始之前对话框写明要把多少条发给哪个模型；词条要你自己点“添加”，词典内容不会发出去。
+- **从我的改正中学习**（词典页）：默认关。把转录结果插入别的 App 后，Voxt 会在 30 秒内读取插入处附近的文字；你改了其中某个词，它在词典页建议你改后的写法。只用本地规则，不发送任何文字；读到的文字不保存、不写日志，也不读密码框。
+
+#### 变更
+
+- **“自动”写明现在用哪一个**：功能页的语音模型、语言模型菜单和翻译的目标语言菜单里，“自动”一项写成“自动（现在用：Qwen3-ASR 1.7B (8bit)）”，不再像是下面那个模型的重复项。
+- **设置引导接着上次的地方**：再打开时回到离开时的那一步（走完之前），点“设置语言模型”或“选择模型…”离开后，那一页顶部有“回到设置引导”。
+- **一次请求必需的权限**：权限分成“必需”（麦克风、辅助功能）和“可选”（语音识别），“依次请求必需的权限”会一个接一个地弹出 macOS 的提示。
+- **缺 API Key 的服务会说清楚**：卡片上写“需要 API Key”，带“完成设置”；没有可用的语言模型时，侧边栏的卡片写明是哪个服务，点一下打开它的设置。从 Voxt 1.x 导入的服务马上就显示这个状态。
+- **从 Voxt 1.x 导入的结果一眼看清**：分成“已导入”“没有导入”（写明原因）和“还要做”，每件要做的事带“完成设置”；不是在设置引导里导入时，结果显示在一个对话框里。
 
 #### 修复
 

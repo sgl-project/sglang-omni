@@ -28,7 +28,7 @@ func TestTranslatePage(t *testing.T) {
 	a, tt := pageTester(t, "/translate")
 	for _, s := range []string{
 		"Translate", "Shortcuts", "Right ⌥ ⇧", "Models", "No speech model is installed: only selected text can be translated.",
-		"No language model is set up: set one up to translate.", "Translation", "Translate into", "Automatic: Simplified Chinese",
+		"No language model is set up: set one up to translate.", "Translation", "Translate into", "Automatic (now: Simplified Chinese)",
 		"Basic clean-up", "Show the result in a card", "Your rules", "Try it",
 	} {
 		if !has(tt, s) {
@@ -52,7 +52,7 @@ func TestTranslatePage(t *testing.T) {
 		t.Errorf("target %q", got)
 	}
 	click(t, tt, "Target language")
-	click(t, tt, "Automatic: Simplified Chinese")
+	click(t, tt, "Automatic (now: Simplified Chinese)")
 	if got := a.lib.settings.Get().Features.Translate.Target; got != "" {
 		t.Errorf("target %q", got)
 	}

@@ -138,8 +138,39 @@ type Result struct {
 	Focus     proto.FocusResult
 	Paste     proto.PasteResult
 	Activated bool // the target was activated again first
-	Err       error
-	Elapsed   time.Duration
+	// Pressed: the keys after the paste (Request.Press) were posted: some
+	// were asked, the text did not move to another app, and the helper did
+	// not skip them (PasteResult.PressSkipped).
+	Pressed bool
+	Err     error
+	Elapsed time.Duration
+}
+
+// Landing is where an inserted result went: the app, where it starts in
+// the focused element and whether keys were posted after it (the auto key).
+type Landing struct {
+	App proto.App
+	// At is the UTF-16 location of the selection the paste's check read
+	// before ⌘V, only when the check saw the text go in (CheckInserted);
+	// -1 otherwise: unknown, or the focus moved to another element.
+	At      int
+	Role    string
+	Pressed bool
+}
+
+// Landing reports where the result went, when it was inserted.
+func (r Result) Landing() (Landing, bool) {
+	if !r.Inserted {
+		return Landing{}, false
+	}
+	l := Landing{App: r.To, At: -1, Pressed: r.Pressed}
+	if f := r.Paste.Field; f != nil {
+		l.Role = f.Role
+		if r.Paste.Check == proto.CheckInserted && f.Before != nil && f.Before.Selection != nil {
+			l.At = f.Before.Selection.Location
+		}
+	}
+	return l, true
 }
 
 // Moved reports whether the text went (or would go) into another app
@@ -237,6 +268,7 @@ func insert(ctx context.Context, io TextIO, r Request) Result {
 		return res
 	}
 	res.Inserted = true
+	res.Pressed = len(press) > 0 && !p.PressSkipped
 	return res
 }
 
