@@ -95,10 +95,13 @@ func TestServicesSpeech(t *testing.T) {
 			opened = p.ID
 			return NewASR(p, "k", nil)
 		})
-	svc.SetReady(local.ASR, []settings.Provider{{ID: "doubao"}})
+	svc.SetReady(local.ASR, []settings.Provider{{ID: "doubao"}, {ID: "openai"}})
 	list := svc.Installed(local.ASR)
-	if len(list) != 2 || list[0].ID != localASR.ID || list[1].ID != "doubao" || list[1].Name != "asr:doubao" || list[1].Kind != local.ASR || len(svc.Installed(local.LLM)) != 0 {
+	if len(list) != 3 || list[0].ID != localASR.ID || list[1].ID != "doubao" || list[1].Name != "asr:doubao" || list[1].Kind != local.ASR || len(svc.Installed(local.LLM)) != 0 {
 		t.Fatalf("installed %+v", list)
+	}
+	if !list[1].Stream || list[2].Stream {
+		t.Errorf("streams: doubao %v, openai %v", list[1].Stream, list[2].Stream)
 	}
 	if _, m, err := svc.ASR(context.Background(), ""); err != nil || m.ID != localASR.ID || opened != "" {
 		t.Fatalf("automatic: %+v %v %q", m, err, opened)

@@ -21,6 +21,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Scan history for suggestions** (Dictionary → Scan history…), as in Voxt 1.x's one-click import: Voxt sends the Transcribe results it has not read yet, 12 at a time, to the language model Transcribe uses and suggests the names and terms it finds. The dialog says how many results go to which model before anything is sent; you add each term yourself, and nothing of your dictionary is sent.
 - **Learn from my corrections** (Dictionary): off by default. After Voxt inserts a Transcribe result into another app, it reads the text around that spot for up to 30 seconds; when you correct a word there, it suggests your spelling on the Dictionary page. Local rules only, nothing is sent, what it reads is not saved or logged, and password fields are never read.
 - **Microphone in the menu bar**, back from Voxt 1.x: the menu bar icon's menu has a Microphone submenu that lists the connected inputs and checks the one recording uses. Choose one to move it to the top of Settings → Audio's list, so the next recording uses it. The list is read when Voxt starts, after each recording and when Settings → Audio opens.
+- **End with a word** (Transcribe → Shortcuts), back from Voxt 1.x: choose over, end, 完毕, 好了 or a word of your own, say it last and pause, and the recording stops as if you pressed the shortcut. The word is left out of the text. It works with speech models that show the text as you speak (the local Qwen3-ASR models, System dictation, Doubao, Aliyun Bailian, Gemini), in Transcribe, Translate and Rewrite.
 
 ### Changed
 
@@ -49,6 +50,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **扫描历史，找词条建议**（词典 → 扫描历史…），对应 Voxt 1.x 的一键导入：Voxt 把还没读过的转录结果每 12 条发给转录用的语言模型，把找到的人名和术语放进建议。开始之前对话框写明要把多少条发给哪个模型；词条要你自己点“添加”，词典内容不会发出去。
 - **从我的改正中学习**（词典页）：默认关。把转录结果插入别的 App 后，Voxt 会在 30 秒内读取插入处附近的文字；你改了其中某个词，它在词典页建议你改后的写法。只用本地规则，不发送任何文字；读到的文字不保存、不写日志，也不读密码框。
 - **菜单栏选麦克风**，Voxt 1.x 有过的功能：菜单栏图标的菜单里有“麦克风”子菜单，列出已连接的输入设备，录音会用的那个打勾。点一个就把它移到 设置 → 音频 列表的第一位，下一次录音用它。设备列表在 Voxt 启动时、每次录音结束后和打开 设置 → 音频 时读取。
+- **说结束词停止**（转录 → 快捷键），Voxt 1.x 有过的功能：选 over、end、完毕、好了，或者自己填一个词，最后说出它并停顿一下，录音就像按了快捷键一样停止，这个词不会写进文字。边说边出文字的语音模型（本地 Qwen3-ASR、系统听写、豆包、阿里云百炼、Gemini）才能用，转录、翻译、转写都管用。
 
 #### 变更
 

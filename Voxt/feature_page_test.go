@@ -287,7 +287,38 @@ func TestAutomaticNamesTheModelInUse(t *testing.T) {
 	check("/translate", "Target language", "Simplified Chinese")
 }
 
-// TestTranslateFallbackModel:Translate's Models section picks a
+// TestTranscribeEndWord: the word that ends a recording is Off, one of
+// Voxt 1.x's words or a typed one; the row shows only while Transcribe's
+// speech model streams.
+func TestTranscribeEndWord(t *testing.T) {
+	a, tt := trTester(t)
+	readyModels(a)
+	click(t, tt, "Word that ends the recording")
+	click(t, tt, "完毕")
+	if w := a.lib.settings.Get().Features.EndWord; w != "完毕" {
+		t.Fatalf("end word %q", w)
+	}
+	click(t, tt, "Word that ends the recording")
+	click(t, tt, "Custom…")
+	click(t, tt, "Your word that ends the recording")
+	tt.Type(" that's  all ")
+	tt.Key(0, ui.KeyEnter)
+	frames(tt)
+	if w := a.lib.settings.Get().Features.EndWord; w != "that's all" {
+		t.Fatalf("typed end word %q", w)
+	}
+	click(t, tt, "Word that ends the recording")
+	click(t, tt, "Off")
+	if w := a.lib.settings.Get().Features.EndWord; w != "" {
+		t.Fatalf("end word not off: %q", w)
+	}
+	a.local.(*fakeLocal).NoStream = true
+	if slices.Contains(tt.AccessLabels(), "Word that ends the recording") {
+		t.Error("the end word shows with a speech model that does not stream")
+	}
+}
+
+// TestTranslateFallbackModel: Translate's Models section picks a
 // fallback model, None by default, among the language models set up; a
 // fallback no longer set up reads None.
 func TestTranslateFallbackModel(t *testing.T) {
