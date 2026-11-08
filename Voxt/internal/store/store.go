@@ -30,6 +30,7 @@ type Store interface {
 	Documents() Documents
 	History() History
 	Dictionary() Dictionary
+	Notes() Notes
 	Close() error
 }
 
@@ -212,5 +213,22 @@ type Dictionary interface {
 	Get(ctx context.Context, id string) (Term, error)
 	// List returns the terms matching search ("" = all), A to Z.
 	List(ctx context.Context, search string) ([]Term, error)
+	Delete(ctx context.Context, id string) error
+}
+
+// Note is what the user said after the note shortcut (Voxt 1.x's notes):
+// kept apart from the history, so its clean-up and Clear never take it.
+type Note struct {
+	ID        string
+	Text      string
+	CreatedAt time.Time
+}
+
+// Notes stores the user's notes.
+type Notes interface {
+	// Put inserts or replaces a note (by ID); empty text is core.ErrInvalid.
+	Put(ctx context.Context, n Note) error
+	// List returns every note, newest first.
+	List(ctx context.Context) ([]Note, error)
 	Delete(ctx context.Context, id string) error
 }

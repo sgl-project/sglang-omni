@@ -86,6 +86,65 @@ func TestShortcutsSettings(t *testing.T) {
 	}
 }
 
+// TestShortcutPreset: a preset gives its keys to the shortcuts the user
+// did not change, fn's comes with Auralink's and macOS's warnings, and a
+// preset with nothing left to change says so.
+func TestShortcutPreset(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/shortcuts")
+	const auralink = "Auralink uses fn too: while it runs, both apps react to these keys."
+	const globe = "macOS may react to fn too (the Globe key). If it gets in the way, set it to Do Nothing in System Settings → Keyboard."
+	if !hasExact(tt, "Right ⌥ (default)") || has(tt, auralink) {
+		t.Fatalf("defaults: %q", firstTexts(tt))
+	}
+	if !slices.Contains(tt.AccessLabels(), "Shortcut preset") {
+		t.Errorf("no control named Shortcut preset: %q", tt.AccessLabels())
+	}
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Rewrite.Hotkeys = []settings.Hotkey{{Keys: "RightCommand", Trigger: settings.TriggerTap}}
+	})
+	click(t, tt, "Shortcut preset")
+	if hasExact(tt, "Custom") {
+		t.Errorf("Custom offered while the shortcuts follow a preset: %q", tt.Texts())
+	}
+	click(t, tt, "fn (Auralink's keys)")
+	f := a.settings.Get().Features
+	if f.Transcribe.Hotkeys[0].Keys != "Fn" || f.Translate.Hotkeys[0].Keys != "Fn+Shift" ||
+		f.PasteLast.Keys != "Control+Command+V" || f.Rewrite.Hotkeys[0].Keys != "RightCommand" {
+		t.Fatalf("fn: %+v", f)
+	}
+	if !hasExact(tt, "fn (Auralink's keys)") || !has(tt, auralink) || !has(tt, globe) || !has(tt, "fn ⇧") {
+		t.Errorf("fn shown: %q", tt.Texts())
+	}
+	// Every shortcut the user's: Custom, and a preset changes none.
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Transcribe.Hotkeys, s.Features.Translate.Hotkeys = nil, nil
+		s.Features.PasteLast = settings.Hotkey{Keys: "F6", Trigger: settings.TriggerTap}
+	})
+	if !hasExact(tt, "Custom") || has(tt, auralink) {
+		t.Fatalf("custom: %q", firstTexts(tt))
+	}
+	click(t, tt, "Shortcut preset")
+	if n := countText(tt, "Custom"); n != 2 { // the select's and its item's
+		t.Errorf("Custom shows %d times with the list open: %q", n, tt.Texts())
+	}
+	click(t, tt, "Right ⌥ (default)")
+	if !has(tt, "You changed every shortcut yourself: the preset keeps them.") || a.settings.Get().Features.PasteLast.Keys != "F6" {
+		t.Errorf("nothing to change: %q, %+v", tt.Texts(), a.settings.Get().Features.PasteLast)
+	}
+}
+
+// countText is how many texts on screen are s.
+func countText(tt *ui.Tester, s string) int {
+	n := 0
+	for _, x := range tt.Texts() {
+		if x == s {
+			n++
+		}
+	}
+	return n
+}
+
 func TestOtherLanguages(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate("/settings/general")

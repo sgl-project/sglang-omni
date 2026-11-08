@@ -11,8 +11,11 @@
 // sided: LeftShift, RightCommand… ("Right Command" with a space is read
 // too). Keys: A–Z, 0–9, F1–F20, Space, Return, Tab, Escape, Delete,
 // ForwardDelete, Home, End, PageUp, PageDown, Left, Right, Up, Down and
-// the punctuation keys - = [ ] ; ' , . / \ `. Examples: "Fn",
-// "Fn+Shift", "RightCommand", "Control+Command+V", "Option+Space".
+// the punctuation keys - = [ ] ; ' , . / \ `. A mouse button is a key
+// too: Mouse3 (the middle button) to Mouse32, counted from 1 (Mouse1 and
+// Mouse2, the left and right buttons, cannot be shortcuts). Examples:
+// "Fn", "Fn+Shift", "RightCommand", "Control+Command+V", "Option+Space",
+// "Mouse4", "Option+Mouse3".
 //
 // Imports: settings, helper/proto.
 package hotkey
@@ -32,8 +35,9 @@ import (
 // with their sides (proto.Side*), and an optional key.
 type Chord struct {
 	Mods map[string]string
-	// Key is the key's name in the grammar ("V", "Space"), "" for a
-	// modifier-only chord; Code its macOS virtual key code (kVK_*).
+	// Key is the key's name in the grammar ("V", "Space", "Mouse4"), ""
+	// for a modifier-only chord; Code its macOS virtual key code (kVK_*),
+	// or a mouse button's number in macOS's events (from 0: Mouse4 is 3).
 	Key  string
 	Code int
 }
@@ -104,6 +108,17 @@ func canonicalKey(p string) string {
 	return ""
 }
 
+// mouseButton reads a mouse button part ("mouse4"): its name in the
+// grammar and its number in macOS's events.
+func mouseButton(p string) (name string, code int, ok bool) {
+	digits, found := strings.CutPrefix(strings.ToLower(p), "mouse")
+	n, err := strconv.Atoi(digits)
+	if !found || err != nil || strconv.Itoa(n) != digits || n < 3 || n > 32 {
+		return "", 0, false
+	}
+	return "Mouse" + digits, n - 1, true
+}
+
 // modifierPart reads a modifier part: its family and side.
 func modifierPart(p string) (family, side string, ok bool) {
 	l := strings.ToLower(strings.ReplaceAll(p, " ", ""))
@@ -142,13 +157,17 @@ func Parse(keys string) (Chord, error) {
 			continue
 		}
 		k := canonicalKey(p)
-		if k == "" {
+		code, ok := keyCodes[k]
+		if !ok {
+			k, code, ok = mouseButton(p)
+		}
+		if !ok {
 			return Chord{}, fmt.Errorf("%w: %q", ErrUnknown, p)
 		}
 		if c.Key != "" {
 			return Chord{}, ErrTwoKeys
 		}
-		c.Key, c.Code = k, keyCodes[k]
+		c.Key, c.Code = k, code
 	}
 	if c.Key == "" && len(c.Mods) == 0 {
 		return Chord{}, ErrNoModifier
@@ -158,6 +177,9 @@ func Parse(keys string) (Chord, error) {
 
 // ModifierOnly reports whether the chord has no key (fn, right ⌘…).
 func (c Chord) ModifierOnly() bool { return c.Key == "" }
+
+// Mouse reports whether the chord's key is a mouse button.
+func (c Chord) Mouse() bool { return strings.HasPrefix(c.Key, "Mouse") }
 
 // String is the chord in the grammar's canonical spelling: fn first,
 // then ⌃⌥⇧⌘, then the key ("Fn+Shift", "Control+Command+V").
@@ -216,9 +238,9 @@ func (c Chord) Overlaps(o Chord) bool {
 
 // Accelerator is the chord as mygo.GlobalShortcut (Carbon) takes it, the
 // fallback without Accessibility: only a key with ⌃, ⌥, ⇧ or ⌘, without
-// fn and without sides.
+// fn and without sides (and not a mouse button).
 func (c Chord) Accelerator() (string, bool) {
-	if c.Key == "" || len(c.Mods) == 0 {
+	if c.Key == "" || c.Mouse() || len(c.Mods) == 0 {
 		return "", false
 	}
 	var parts []string
@@ -265,6 +287,9 @@ const (
 	// CancelID is the binding id of Features.Cancel: the helper reports
 	// it only while active (proto.HotkeyCancel).
 	CancelID = proto.HotkeyCancel
+	// Note is the binding id of Features.Note: it starts a Transcribe
+	// session whose text becomes a note.
+	Note = "note"
 )
 
 // Features lists the three features in the settings' order.
@@ -273,11 +298,11 @@ var Features = []string{Transcribe, Translate, Rewrite}
 // ID is a feature binding's id: "transcribe/0".
 func ID(feature string, i int) string { return feature + "/" + strconv.Itoa(i) }
 
-// ParseID splits a binding id: ("transcribe", 0, true); PasteLast is
-// (PasteLast, 0, true); "cancel" and others are false.
+// ParseID splits a binding id: ("transcribe", 0, true); PasteLast and
+// Note are (id, 0, true); "cancel" and others are false.
 func ParseID(id string) (feature string, index int, ok bool) {
-	if id == PasteLast {
-		return PasteLast, 0, true
+	if id == PasteLast || id == Note {
+		return id, 0, true
 	}
 	f, n, found := strings.Cut(id, "/")
 	if !found || !slices.Contains(Features, f) {
@@ -307,6 +332,11 @@ func HotkeysOf(f settings.Features, feature string) []settings.Hotkey {
 			return nil
 		}
 		return []settings.Hotkey{f.Cancel}
+	case Note:
+		if f.Note.Keys == "" {
+			return nil
+		}
+		return []settings.Hotkey{f.Note}
 	}
 	return f.Transcribe.Hotkeys
 }
@@ -332,9 +362,9 @@ type Plan struct {
 	Carbon []Carbon
 }
 
-// Build turns the shortcuts of the features in enabled (and PasteLast)
-// into bindings, in the settings' order (Transcribe, Translate, Rewrite,
-// PasteLast), and Features.Cancel into the plan's cancel shortcut (a
+// Build turns the shortcuts of the features in enabled (and PasteLast
+// and Note) into bindings, in the settings' order (Transcribe, Translate,
+// Rewrite, PasteLast, Note), and Features.Cancel into the plan's cancel shortcut (a
 // tap, judged only while active). Hotkeys that do not parse are left out
 // (Check reports them); so is a later duplicate of the same keys and
 // behaviour.
@@ -356,12 +386,7 @@ func Build(f settings.Features, enabled []string) Plan {
 			}
 		}
 		taken = append(taken, seen{c, behavior})
-		b := proto.HotkeyBinding{ID: id, Modifiers: c.Mods, Behavior: behavior}
-		if !c.ModifierOnly() {
-			code := c.Code
-			b.Key = &code
-		}
-		p.Bindings = append(p.Bindings, b)
+		p.Bindings = append(p.Bindings, binding(id, c, behavior))
 		if acc, ok := c.Accelerator(); ok {
 			p.Carbon = append(p.Carbon, Carbon{ID: id, Accelerator: acc})
 		}
@@ -379,6 +404,9 @@ func Build(f settings.Features, enabled []string) Plan {
 	if f.PasteLast.Keys != "" {
 		add(PasteLast, f.PasteLast, proto.BehaviorTap)
 	}
+	if f.Note.Keys != "" {
+		add(Note, f.Note, proto.BehaviorTap)
+	}
 	if f.Cancel.Keys != "" {
 		if c, err := Parse(f.Cancel.Keys); err == nil {
 			dup := false
@@ -388,16 +416,25 @@ func Build(f settings.Features, enabled []string) Plan {
 				}
 			}
 			if !dup {
-				b := proto.HotkeyBinding{ID: CancelID, Modifiers: c.Mods, Behavior: proto.BehaviorTap}
-				if !c.ModifierOnly() {
-					code := c.Code
-					b.Key = &code
-				}
+				b := binding(CancelID, c, proto.BehaviorTap)
 				p.Cancel = &b
 			}
 		}
 	}
 	return p
+}
+
+// binding is c as the helper's event tap takes it.
+func binding(id string, c Chord, behavior string) proto.HotkeyBinding {
+	b := proto.HotkeyBinding{ID: id, Modifiers: c.Mods, Behavior: behavior}
+	code := c.Code
+	switch {
+	case c.Mouse():
+		b.Button = &code
+	case !c.ModifierOnly():
+		b.Key = &code
+	}
+	return b
 }
 
 // UsesFn reports whether a binding of the plan holds fn (the helper then

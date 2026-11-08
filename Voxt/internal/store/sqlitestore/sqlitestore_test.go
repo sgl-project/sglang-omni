@@ -61,7 +61,7 @@ func TestOpenMigratesAndReopens(t *testing.T) {
 	if fi, err := os.Stat(s.History().AudioDir()); err != nil || !fi.IsDir() || filepath.Dir(s.History().AudioDir()) != dir {
 		t.Errorf("audio dir: %v", err)
 	}
-	for _, table := range []string{"documents", "history", "history_fts", "dictionary_terms"} {
+	for _, table := range []string{"documents", "history", "history_fts", "dictionary_terms", "notes"} {
 		rows, err := s.db.Query(ctx, `SELECT name FROM sqlite_master WHERE name = ?`, table)
 		if err != nil || len(rows.Values) != 1 {
 			t.Errorf("table %s: %v", table, err)
@@ -370,6 +370,53 @@ func TestDictionary(t *testing.T) {
 	}
 	if st, _ := s.Stats(ctx); st.Dictionary != 2 {
 		t.Errorf("stats %+v", st)
+	}
+}
+
+func TestNotes(t *testing.T) {
+	s := openTest(t, t.TempDir())
+	n := s.Notes()
+	t0 := time.Date(2026, 11, 7, 9, 0, 0, 0, time.UTC)
+	for i, text := range []string{" buy milk ", "call Ana", "写周报"} {
+		if err := n.Put(ctx, store.Note{ID: strconv.Itoa(i + 1), Text: text, CreatedAt: t0.Add(time.Duration(i) * time.Minute)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := n.Put(ctx, store.Note{ID: "4", Text: " \n "}); !errors.Is(err, core.ErrInvalid) {
+		t.Errorf("empty: %v", err)
+	}
+	texts := func() string {
+		list, err := n.List(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, x := range list {
+			out = append(out, x.Text)
+		}
+		return strings.Join(out, ",")
+	}
+	if got := texts(); got != "写周报,call Ana,buy milk" { // newest first, trimmed
+		t.Errorf("list: %q", got)
+	}
+	if list, _ := n.List(ctx); !list[2].CreatedAt.Equal(t0) || list[2].ID != "1" {
+		t.Errorf("oldest %+v", list[2])
+	}
+	if err := n.Delete(ctx, "2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.Delete(ctx, "2"); !errors.Is(err, core.ErrNotFound) {
+		t.Errorf("deleted twice: %v", err)
+	}
+	if got := texts(); got != "写周报,buy milk" {
+		t.Errorf("after delete: %q", got)
+	}
+	// They stay when the history is cleared.
+	if _, err := s.History().DeleteAll(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := texts(); got != "写周报,buy milk" {
+		t.Errorf("after clearing the history: %q", got)
 	}
 }
 
