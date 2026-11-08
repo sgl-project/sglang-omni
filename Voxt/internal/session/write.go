@@ -101,7 +101,7 @@ func (r *run) write(raw, selection string) {
 		source = selection
 	}
 	llmStart := r.now()
-	res, profile, truncated, err := r.ask(in)
+	res, profile, truncated, err := r.askOrFallback(in)
 	if err == nil && kind == store.KindTranslate && compose.Untranslated(source, res.Content, in.TargetLanguage) && r.ctx.Err() == nil {
 		r.logf("warning", "the translation looks untranslated: asking again, strictly")
 		r.m.update(r, func(s *Snapshot) { s.Retried, s.Draft = true, "" })
@@ -143,6 +143,20 @@ func (r *run) write(raw, selection string) {
 		r.m.update(r, func(s *Snapshot) { s.Card = !r.req.Try })
 	}
 	r.finish(Done, problem, res.Content, o)
+}
+
+// askOrFallback asks the language model and, when it fails, the
+// fallback model once, which then is the session's model: later
+// requests, the snapshot and the history entry use it.
+func (r *run) askOrFallback(in compose.Input) (compose.Answer, string, bool, error) {
+	res, profile, truncated, err := r.ask(in)
+	if err == nil || r.svc.Fallback == nil || r.ctx.Err() != nil {
+		return res, profile, truncated, err
+	}
+	r.logf("warning", "language model %s (model %s) failed: %v: asking the fallback %s (model %s)", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, err, r.svc.FallbackInfo.ID, r.svc.FallbackInfo.Model)
+	r.svc.LLM, r.svc.LLMInfo, r.svc.Fallback = r.svc.Fallback, r.svc.FallbackInfo, nil
+	r.m.update(r, func(s *Snapshot) { s.LLM, s.Draft = r.svc.LLMInfo, "" })
+	return r.ask(in)
 }
 
 // ask sends one request and streams its answer into the snapshot. It
