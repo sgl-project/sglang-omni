@@ -65,7 +65,11 @@ from sglang_omni.proto import (
 )
 from sglang_omni.proto.messages import PayloadBatchMessage, StreamChunkBatchMessage
 from sglang_omni.proto.request import RoutedPayloads
-from sglang_omni.proto.session import SessionOperation, find_session_operation
+from sglang_omni.proto.session import (
+    LM_STEP_MS_KEY,
+    SessionOperation,
+    find_session_operation,
+)
 from sglang_omni.relay.base import Relay
 from sglang_omni.scheduling.message import (
     IncomingMessage,
@@ -1990,11 +1994,20 @@ class Stage:
                 event_name="stage_complete",
                 metadata={"terminal": True},
             )
+            if not isinstance(result, StagePayload):
+                completion = result
+            elif LM_STEP_MS_KEY in result.request.metadata:
+                completion = {
+                    **result.data,
+                    LM_STEP_MS_KEY: result.request.metadata[LM_STEP_MS_KEY],
+                }
+            else:
+                completion = result.data
             message = CompleteMessage(
                 request_id=request_id,
                 from_stage=self.name,
                 success=True,
-                result=result.data if isinstance(result, StagePayload) else result,
+                result=completion,
             )
             if on_submitted is None:
                 await self.control_plane.send_complete(message)

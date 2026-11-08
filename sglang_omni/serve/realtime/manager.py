@@ -13,6 +13,7 @@ from sglang_omni.proto.session import SessionLimits
 from sglang_omni.serve.realtime.protocol import SharedRealtimeSession
 from sglang_omni.serve.realtime.runtime import SessionRuntime
 from sglang_omni.serve.realtime.session import RealtimeSession
+from sglang_omni.serve.realtime.tick_clock import TickClock
 from sglang_omni.serve.realtime.transcription_session import (
     RealtimeTranscriptionSession,
 )
@@ -34,10 +35,17 @@ class RealtimeDeployment:
     max_connections: int = 128
     # note (Junnan Li): called once with the warmup timeout in seconds, before the server reports ready.
     warmup: Callable[[float], Awaitable[None]] | None = None
+    tick_groups: int = 0
+    tick_openings_per_unit: bool = False
+    tick_follow_arrivals: bool = False
+    tick_arrivals_quiet_s: float = 0.0
+    tick_growth_margin: float = 0.0
 
     def __post_init__(self) -> None:
         if type(self.max_connections) is not int or self.max_connections < 1:
             raise ValueError("max_connections must be a positive integer")
+        elif self.tick_groups and self.capabilities.interaction != "native":
+            raise ValueError("the unit grid needs native full-duplex sessions")
         else:
             pass
 
@@ -76,6 +84,18 @@ class RealtimeSessionManager:
         self.supports_audio_output = supports_audio_output
         self.smart_turn_model = smart_turn_model
         self.sessions: dict[str, RealtimeConnection] = {}
+        self.tick_clock = (
+            TickClock(
+                deployment.capabilities.native_unit_ms,
+                growth_margin=deployment.tick_growth_margin,
+                groups=deployment.tick_groups,
+                openings_per_unit=deployment.tick_openings_per_unit,
+                follow_arrivals=deployment.tick_follow_arrivals,
+                arrivals_quiet_s=deployment.tick_arrivals_quiet_s,
+            )
+            if deployment is not None and deployment.tick_groups
+            else None
+        )
 
     def open(
         self, websocket: WebSocket, *, intent: str = "conversation"
@@ -113,8 +133,13 @@ class RealtimeSessionManager:
                 self.deployment.capabilities,
                 self.deployment.adapter_factory,
                 self.deployment.limits,
+                tick_clock=self.tick_clock,
             )
             session = SharedRealtimeSession(websocket, runtime)
+            if self.tick_clock is not None:
+                self.tick_clock.session_count_changed()
+            else:
+                pass
         self.sessions[session.session_id] = session
         logger.info(
             f"Realtime session opened: {session.session_id} intent={normalized_intent}"
@@ -125,6 +150,10 @@ class RealtimeSessionManager:
         session = self.sessions[session_id]
         await session.teardown()
         del self.sessions[session_id]
+        if self.tick_clock is not None:
+            self.tick_clock.session_count_changed()
+        else:
+            pass
         logger.info(f"Realtime session closed: {session_id}")
 
     def active_sessions(self) -> list[str]:

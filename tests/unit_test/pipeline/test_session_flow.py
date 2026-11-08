@@ -54,6 +54,21 @@ async def test_interleaved_cadences_input_during_output_eos_and_disconnect(linea
     assert not coordinator.requests
 
 
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_units_receipt_carries_the_lm_step_cost_of_its_request(linear_pair):
+    coordinator, _, _ = linear_pair
+    session_identity = await coordinator.open_session(
+        OmniRequest(None, {"step_ms": 21.5}), stages=["source", "sink"]
+    )
+    output = coordinator.session_outputs(session_identity)
+    await coordinator.append_session(session_identity, chunk(0, eos=True))
+    data = await asyncio.wait_for(anext(output), 5)
+    assert data.kind == "data"
+    receipt = await asyncio.wait_for(anext(output), 5)
+    assert receipt.kind == "input_done" and receipt.payload == {"omni_lm_step_ms": 21.5}
+    await output.aclose()
+
+
 @pytest.mark.asyncio
 async def test_configured_singleton_list_route_with_three_stages(tmp_path):
     async with pipeline(tmp_path, stage_count=3, list_next=True) as (

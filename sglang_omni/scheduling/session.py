@@ -61,6 +61,7 @@ from sglang_omni.profiler.duplex_events import (
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
     SESSION_METADATA_KEY,
+    Cohort,
     ResourceUsage,
     SessionIdentity,
     SessionOperation,
@@ -71,6 +72,7 @@ from sglang_omni.proto.session import (
 )
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.scheduling.tick import TickCohorts
 
 DEFAULT_MAX_OPEN_SESSIONS = 64
 DEFAULT_MAX_CONCURRENCY = 4
@@ -449,9 +451,14 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
         The wait ends at the window, once the batch holds an append of every
         open session, or when an operation other than an append is in the
         batch. Messages keep their inbox order, so the cursor contract above
-        is untouched.
+        is untouched. Appends released on the server's unit grid are waited
+        for until their tick's batch is whole or the tick is over.
         """
         batch = super().collect_batch(first_msg)
+        if self.batch_fn is not None:
+            self.collect_tick(batch)
+        else:
+            pass
         self.batch_gathers_peers = self.gather_window_seconds == 0 or any(
             self.gathers_peers(message) for message in batch
         )
@@ -494,6 +501,46 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
             else:
                 self.pending_messages.append(message)
         return batch
+
+    def collect_tick(self, batch: list[IncomingMessage]) -> None:
+        cohorts = TickCohorts()
+        for message in batch:
+            tick = self.message_tick(message)
+            if tick is not None:
+                cohorts.arrive(tick)
+            else:
+                pass
+        while len(batch) < self.max_batch_size:
+            hold_until_ns = cohorts.hold_until_ns(time.monotonic_ns())
+            if hold_until_ns is None:
+                return
+            else:
+                pass
+            try:
+                message = self.inbox.get(
+                    timeout=max(hold_until_ns - time.monotonic_ns(), 0) / 1e9
+                )
+            except queue.Empty:
+                return
+            if message.type == "new_request":
+                batch.append(message)
+                tick = self.message_tick(message)
+                if tick is not None:
+                    cohorts.arrive(tick)
+                else:
+                    pass
+            else:
+                self.pending_messages.append(message)
+
+    def message_tick(self, message: IncomingMessage) -> Cohort | None:
+        with self.session_table_lock:
+            arrival = self.arrivals_by_request_id.get(message.request_id)
+        if arrival is None or arrival.operation != "append":
+            return None
+        else:
+            session_operation = find_session_operation(message.data.request.metadata)
+            assert session_operation is not None
+            return session_operation.tick
 
     def gathers_peers(self, message: IncomingMessage) -> bool:
         """Whether holding the batch for more appends can batch this message's work."""

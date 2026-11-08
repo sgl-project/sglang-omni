@@ -12,6 +12,7 @@ from sglang_omni.profiler.duplex_events import SessionUnitReadyObservation
 from sglang_omni.proto.session import (
     DEFAULT_IDLE_TIMEOUT_S,
     DEFAULT_SESSION_UPDATE_TIMEOUT_S,
+    Cohort,
 )
 from sglang_omni.serve.realtime.constants import (
     CLOSE_REASON_CONTEXT_LIMIT,
@@ -222,6 +223,7 @@ class Unit:
     output_modalities: tuple[str, ...] | None = None
     images: tuple[bytes, ...] = ()
     ready_observation: SessionUnitReadyObservation | None = None
+    tick: Cohort | None = None
 
     @property
     def unit_id(self) -> str:
@@ -246,6 +248,8 @@ class OutputSink(Protocol):
 
 class InteractionAdapter:
     """Adapters override what they support; the runtime never probes for methods."""
+
+    model_step_ms: float | None = None
 
     def set_limits(self, limits: RuntimeLimits) -> None:
         pass

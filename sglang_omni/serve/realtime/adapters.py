@@ -13,6 +13,7 @@ from sglang_omni.client.client import Client
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import (
     DEFAULT_IDLE_TIMEOUT_S,
+    LM_STEP_MS_KEY,
     OutputChunk,
     SessionIdentity,
     SessionLimits,
@@ -131,6 +132,13 @@ class CoordinatorAdapter(InteractionAdapter):
                 ):
                     continue
                 elif output.kind == "input_done":
+                    if (
+                        isinstance(output.payload, dict)
+                        and LM_STEP_MS_KEY in output.payload
+                    ):
+                        self.model_step_ms = output.payload[LM_STEP_MS_KEY]
+                    else:
+                        pass
                     for event in self.unit_output_events:
                         await self.output_sink(event, self.active_unit)
                     self.reset_unit_outputs()
@@ -199,6 +207,7 @@ class CoordinatorAdapter(InteractionAdapter):
             format="pcm16",
             eos=unit.eos,
         )
+        tick_kwargs = {} if unit.tick is None else {"tick": unit.tick}
         try:
             ready_observation = unit.ready_observation
             await self.client.append_session(
@@ -212,6 +221,7 @@ class CoordinatorAdapter(InteractionAdapter):
                 ready_run_id=(
                     ready_observation.run_id if ready_observation is not None else None
                 ),
+                **tick_kwargs,
             )
             return await self.unit_completion
         finally:
