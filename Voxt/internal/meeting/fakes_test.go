@@ -36,10 +36,19 @@ type fakeAudio struct {
 	pcm      []byte
 	mu       sync.Mutex
 	stops    map[string]chan struct{}
+	jobs     []string
 }
 
 func newFakeAudio(pcm []byte) *fakeAudio {
 	return &fakeAudio{pcm: pcm, stops: map[string]chan struct{}{}}
+}
+
+func (f *fakeAudio) jobIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.jobs))
+	copy(out, f.jobs)
+	return out
 }
 
 func (f *fakeAudio) Record(ctx context.Context, id string, _ proto.CaptureParams, fn func(session.AudioEvent)) (proto.CaptureResult, error) {
@@ -49,6 +58,7 @@ func (f *fakeAudio) Record(ctx context.Context, id string, _ proto.CaptureParams
 	stop := make(chan struct{})
 	f.mu.Lock()
 	f.stops[id] = stop
+	f.jobs = append(f.jobs, id)
 	f.mu.Unlock()
 	fn(session.AudioEvent{Started: &proto.CaptureStartedParams{Job: id, SampleRate: asr.SampleRate}})
 	chunk := f.pcm

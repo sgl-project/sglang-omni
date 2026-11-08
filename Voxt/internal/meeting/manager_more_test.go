@@ -133,6 +133,97 @@ func TestRecoverFixesWAV(t *testing.T) {
 	}
 }
 
+func TestFinishKeepHistoryNoAsking(t *testing.T) {
+	m, ctx, _, _ := testManager(t, []byte{1}, nil, false)
+	id, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Finish(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if m.Current().State != meeting.StateIdle {
+		t.Fatalf("state %s", m.Current().State)
+	}
+}
+
+func TestSaveAfterAsking(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	s, err := sqlitestore.Open(ctx, filepath.Join(dir, "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	mic := newFakeAudio([]byte{2})
+	m := meeting.NewManager(meeting.Config{
+		Mic:     mic,
+		Store:   s.Meetings(),
+		Dir:     filepath.Join(dir, "meetings"),
+		Privacy: func() settings.Privacy { return settings.Privacy{KeepHistory: false} },
+		FreeSpace: func(string) (int64, error) {
+			return meeting.DiskMinStartBytes() + 1, nil
+		},
+	})
+	id, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Finish(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Save(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	mt, _, err := s.Meetings().Meeting(ctx, id)
+	if err != nil || mt.Status != store.MeetingDone {
+		t.Fatalf("saved row: %v %#v", err, mt)
+	}
+}
+
+func TestResumeUsesNewCaptureJob(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	s, err := sqlitestore.Open(ctx, filepath.Join(dir, "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	clk := newFakeClock(time.Unix(1_700_000_100, 0))
+	mic := newFakeAudio([]byte{3})
+	m := meeting.NewManager(meeting.Config{
+		Mic:     mic,
+		Store:   s.Meetings(),
+		Dir:     filepath.Join(dir, "meetings"),
+		Now:     clk.Now,
+		Privacy: func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
+		FreeSpace: func(string) (int64, error) {
+			return meeting.DiskMinStartBytes() + 1, nil
+		},
+	})
+	id, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Pause(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	clk.Advance(2 * time.Second)
+	if err := m.Resume(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	jobs := mic.jobIDs()
+	if len(jobs) < 2 {
+		t.Fatalf("want two jobs, got %v", jobs)
+	}
+	if jobs[0] == jobs[1] {
+		t.Fatalf("resume should start a new job: %v", jobs)
+	}
+	if err := m.Finish(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDiskLowEndsMeeting(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
