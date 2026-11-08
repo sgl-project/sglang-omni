@@ -252,8 +252,8 @@ type Features struct {
 	// session whose text goes to the Notes page instead of where the
 	// cursor is. Only a tap; empty keys: off.
 	Note Hotkey `json:"note"`
-	// ShowCard shows every feature's result in the answer card instead of
-	// inserting it (or replacing the selection): one switch for all.
+	// ShowCard is the legacy global card switch (FB19); migrated into each
+	// feature's ShowCard and no longer written.
 	ShowCard bool `json:"showCard,omitempty"`
 }
 
@@ -277,6 +277,8 @@ type Transcribe struct {
 	Enhance   bool `json:"enhance"`
 	Cleanup   bool `json:"cleanup"`
 	Structure bool `json:"structure,omitempty"`
+	ShowCard bool   `json:"showCard,omitempty"`   // answer card instead of insert
+	CardSize string `json:"cardSize,omitempty"` // CardSizeCompact or CardSizeLarge
 }
 
 // Translate: speech or selected text → a translation.
@@ -290,6 +292,8 @@ type Translate struct {
 	// Fallback is the language model asked once more when LLM fails or
 	// does not open; "" = none.
 	Fallback string `json:"fallback,omitempty"`
+	ShowCard bool   `json:"showCard,omitempty"`
+	CardSize string `json:"cardSize,omitempty"`
 }
 
 // Rewrite: a spoken instruction rewrites the selection, or writes new
@@ -300,6 +304,7 @@ type Rewrite struct {
 	// instruction (never applied to the selection). Every answer shows in
 	// the answer card (Voxt's; the field cardChars of 0.1.0 is dropped).
 	Cleanup bool `json:"cleanup"`
+	CardSize string `json:"cardSize,omitempty"` // answer-card text height tier
 }
 
 // AppEnhancement: scene rules by app and URL. The groups are the
@@ -425,7 +430,7 @@ func Migrate(data []byte) (Settings, error) {
 		migrateShortcuts(&s.Features)
 	}
 	migrateNoteKeys(data, &s.Features)
-	migrateShowCard(data, &s.Features)
+	migratePerModeCard(data, &s.Features)
 	migrateSoundPreset(&s.Audio)
 	s.Version = Version
 	return normalize(s), nil

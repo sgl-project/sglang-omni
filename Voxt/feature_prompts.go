@@ -64,18 +64,95 @@ func (a *app) translateSettings(c *ui.Context) {
 		})
 }
 
-// cardSetting is the answer card's switch on Transcribe and Translate
-// (p is the page's prefix); Rewrite always shows answers in the card.
-func (a *app) cardSetting(c *ui.Context, p string) {
+func cardSizeLabels() []string {
+	return []string{i18n.T("Compact"), i18n.T("Large")}
+}
+
+func cardSizeLabel(v string) string {
+	if v == settings.CardSizeLarge {
+		return cardSizeLabels()[1]
+	}
+	return cardSizeLabels()[0]
+}
+
+func cardSizeFromLabel(label string) string {
+	if label == cardSizeLabels()[1] {
+		return settings.CardSizeLarge
+	}
+	return settings.CardSizeCompact
+}
+
+// cardSizeRow is the card text-height picker for a feature page (p is the
+// prefix; size points at that feature's CardSize field).
+func (a *app) cardSizeRow(c *ui.Context, p string, size *string, u *featureUI) {
+	t := c.Theme()
+	help := i18n.T("Compact fits short answers. Large shows more lines before the text scrolls; only this feature's card is affected.")
+	settingRow(c, p+"-card-size", i18n.T("Card size"), help, func() {
+		want := *size + "\x00" + i18n.Locale()
+		if u.cardSizeFor != want {
+			u.cardSizeSel, u.cardSizeFor = cardSizeLabel(*size), want
+		}
+		opts := cardSizeLabels()
+		if ui.Select(c.Key(p+"-card-size-sel"), &u.cardSizeSel, opts).Label(i18n.T("Card size")).Width(px(t, 200)).Shrink(1).MinWidth(px(t, 140)).Changed() {
+			v := cardSizeFromLabel(u.cardSizeSel)
+			u.cardSizeFor = v + "\x00" + i18n.Locale()
+			a.updateSettings(func(s *settings.Settings) {
+				switch p {
+				case "tl":
+					s.Features.Translate.CardSize = v
+				case "rw":
+					s.Features.Rewrite.CardSize = v
+				default:
+					s.Features.Transcribe.CardSize = v
+				}
+			})
+		}
+	})
+}
+
+// cardSetting is the answer-card switch and size on Transcribe or
+// Translate (p is the page prefix); Rewrite always shows in the card
+// (see rewriteCardSize).
+func (a *app) cardSetting(c *ui.Context, p string, translate bool) {
+	feat := hotkey.Transcribe
+	if translate {
+		feat = hotkey.Translate
+	}
+	u := a.fui(feat)
 	sectionTitle(c, i18n.T("Answer card"))
-	f := &a.prefs.Features
-	settingRow(c, p+"-card", i18n.T("Show the result in a card"),
-		i18n.T("Shows transcribed and translated results in the answer card, to read, copy or insert, instead of typing them (or replacing the selection). Transcribe and Translate share this switch. Text that cannot go in, as with no text field in front, shows in the card anyway."), func() {
-			if ui.Switch(c.Key(p+"-card-switch"), &f.ShowCard).Label(i18n.T("Show the result in a card")).Changed() {
-				on := f.ShowCard
-				a.updateSettings(func(s *settings.Settings) { s.Features.ShowCard = on })
-			}
-		})
+	var show *bool
+	var size *string
+	tip := i18n.T("Shows transcription results in the answer card, to read, copy or insert, instead of typing them. Text that cannot go in, as with no text field in front, shows in the card anyway. This setting applies only to Transcribe.")
+	if translate {
+		show = &a.prefs.Features.Translate.ShowCard
+		size = &a.prefs.Features.Translate.CardSize
+		tip = i18n.T("Shows translations in the answer card, to read, copy or insert, instead of typing them (or replacing the selection). Text that cannot go in shows in the card anyway. This setting applies only to Translate.")
+	} else {
+		show = &a.prefs.Features.Transcribe.ShowCard
+		size = &a.prefs.Features.Transcribe.CardSize
+	}
+	settingRow(c, p+"-card", i18n.T("Show the result in a card"), tip, func() {
+		if ui.Switch(c.Key(p+"-card-switch"), show).Label(i18n.T("Show the result in a card")).Changed() {
+			on := *show
+			a.updateSettings(func(s *settings.Settings) {
+				if translate {
+					s.Features.Translate.ShowCard = on
+				} else {
+					s.Features.Transcribe.ShowCard = on
+				}
+			})
+		}
+	})
+	a.cardSizeRow(c, p, size, u)
+}
+
+// rewriteCardSize is Rewrite's answer-card size (answers always use the
+// card; there is no switch).
+func (a *app) rewriteCardSize(c *ui.Context) {
+	u := a.fui(hotkey.Rewrite)
+	sectionTitle(c, i18n.T("Answer card"))
+	caption(c, i18n.T("Rewrite always shows answers in the answer card. Pick how tall the text area is for Rewrite only."))
+	a.cardSizeRow(c, "rw", &a.prefs.Features.Rewrite.CardSize, u)
 }
 
 // rewriteSettings are Rewrite's own: the instruction's clean-up.

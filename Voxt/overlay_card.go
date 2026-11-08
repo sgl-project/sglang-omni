@@ -255,7 +255,8 @@ func (a *app) cardBodyHeight(v cardView) (int, bool) {
 		h += b.gap + bh
 		exact = exact && ok
 	}
-	return min(int(math.Ceil(float64(h))), layout.CardBodyMax), exact
+	max := a.prefs.Features.CardBodyMax(string(v.kind))
+	return min(int(math.Ceil(float64(h))), max), exact
 }
 
 // cardHeight is the card's height (its width is layout.AnswerW), and whether

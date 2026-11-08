@@ -158,10 +158,11 @@ const (
 	CardRuleTop = 12 // the header to the rule
 	CardRuleGap = 10 // the rule to the text
 	// Where the rule is.
-	CardRuleY   = CardPadTop + CardHeadH + CardRuleTop
-	CardBodyMax = 220
-	CardInset   = 10 // the text's right inset: the scroller's room
-	CardBodyW   = AnswerW - 2*CardPadX - CardInset
+	CardRuleY     = CardPadTop + CardHeadH + CardRuleTop
+	CardBodyMax   = 220
+	CardBodyLarge = 400 // answer card text area when the user picks Large (FB41)
+	CardInset     = 10  // the text's right inset: the scroller's room
+	CardBodyW     = AnswerW - 2*CardPadX - CardInset
 	// CardChrome is the card's height without its text.
 	CardChrome = CardPadTop + CardHeadH + CardRuleTop + 1 + CardRuleGap + CardPadY
 	CardMsgGap = 8

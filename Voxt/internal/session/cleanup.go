@@ -10,6 +10,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // spoken is the recognised text with the dictionary's aliases replaced
@@ -58,7 +59,7 @@ func (r *run) transcribe(text string) {
 		}
 	}
 	var o finishOpts
-	if r.settings.Features.ShowCard {
+	if r.settings.Features.ShowCardFor(string(store.KindTranscribe)) {
 		o.card = deliver.ReasonCard
 	}
 	r.finish(Done, problem, result, o)

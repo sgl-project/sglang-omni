@@ -35,7 +35,8 @@ func TestShowCard(t *testing.T) {
 			t.Run(fmt.Sprintf("%s, card %v", tc.name, on), func(t *testing.T) {
 				h := newHarness(t, &fakeFile{text: " hello aura link "}, &fakeLLM{text: tc.answer}, func(c *Config, s *settings.Settings) {
 					c.Select = &fakeSelector{text: tc.sel}
-					s.Features.ShowCard = on
+					s.Features.Transcribe.ShowCard = on
+					s.Features.Translate.ShowCard = on
 					s.Features.Transcribe.Enhance = true
 				})
 				id, err := h.m.Start(StartRequest{Kind: tc.kind, Target: slack, Previous: tc.previous})

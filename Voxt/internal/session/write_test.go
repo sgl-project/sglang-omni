@@ -146,7 +146,7 @@ func TestWrite(t *testing.T) {
 		},
 		{
 			name: "translate into a card", kind: store.KindTranslate, sel: &fakeSelector{text: "Good morning"}, llm: &fakeLLM{text: "早上好"},
-			set:    func(s *settings.Settings) { s.Features.ShowCard = true; s.Features.Translate.Target = "ja" },
+			set:    func(s *settings.Settings) { s.Features.Translate.ShowCard = true; s.Features.Translate.Target = "ja" },
 			states: "reading composing done", state: Done, result: "早上好", card: deliver.ReasonCard,
 			check: func(t *testing.T, h *harness, end Snapshot, model *fakeLLM, sel *fakeSelector) {
 				if end.TargetLanguage != "ja" || !strings.Contains(model.requests()[0].Messages[0].Content, "into Japanese") {

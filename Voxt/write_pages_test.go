@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -11,6 +12,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -39,7 +41,7 @@ func TestTranslatePage(t *testing.T) {
 		t.Error("paste-last belongs to Transcribe")
 	}
 	clickSwitch(t, tt, "Show the result in a card")
-	if !a.lib.settings.Get().Features.ShowCard {
+	if !a.lib.settings.Get().Features.Translate.ShowCard {
 		t.Error("show card not saved")
 	}
 	clickSwitch(t, tt, "Basic clean-up")
@@ -214,26 +216,33 @@ func TestSessionBlocker(t *testing.T) {
 	}
 }
 
-// TestCardSwitchShared: Transcribe and Translate share one answer-card
-// switch; Rewrite always shows answers in the card and has no switch.
-func TestCardSwitchShared(t *testing.T) {
+// TestCardSwitchPerMode: Transcribe and Translate each have their own
+// card switch and size; Rewrite has only card size.
+func TestCardSwitchPerMode(t *testing.T) {
 	a, tt := pageTester(t, "/translate")
-	for i, page := range []string{"/translate", "/transcribe"} {
-		a.navigate(page)
-		frames(tt)
-		n := 0
-		for _, s := range tt.AccessLabels() {
-			if s == "Show the result in a card" {
-				n++
-			}
-		}
-		if n != 2 { // one row: its title and its switch
-			t.Fatalf("%s: %d elements named for the card switch", page, n)
-		}
-		clickSwitch(t, tt, "Show the result in a card")
-		if on := a.lib.settings.Get().Features.ShowCard; on != (i%2 == 0) {
-			t.Errorf("%s: the card switch is %v after a click", page, on)
-		}
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Transcribe.ShowCard = false
+		s.Features.Translate.ShowCard = false
+	})
+	a.navigate("/translate")
+	frames(tt)
+	clickSwitch(t, tt, "Show the result in a card")
+	if !a.lib.settings.Get().Features.Translate.ShowCard || a.lib.settings.Get().Features.Transcribe.ShowCard {
+		t.Errorf("translate switch on alone: tr=%v tl=%v", a.lib.settings.Get().Features.Transcribe.ShowCard, a.lib.settings.Get().Features.Translate.ShowCard)
+	}
+	a.updateSettings(func(s *settings.Settings) { s.Features.Translate.ShowCard = false })
+	a.navigate("/transcribe")
+	frames(tt)
+	clickSwitch(t, tt, "Show the result in a card")
+	if !a.lib.settings.Get().Features.Transcribe.ShowCard || a.lib.settings.Get().Features.Translate.ShowCard {
+		t.Errorf("transcribe switch on alone: tr=%v tl=%v", a.lib.settings.Get().Features.Transcribe.ShowCard, a.lib.settings.Get().Features.Translate.ShowCard)
+	}
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Transcribe.ShowCard = true
+		s.Features.Translate.ShowCard = true
+	})
+	if !a.lib.settings.Get().Features.Transcribe.ShowCard || !a.lib.settings.Get().Features.Translate.ShowCard {
+		t.Errorf("both card switches may be on: tr=%v tl=%v", a.lib.settings.Get().Features.Transcribe.ShowCard, a.lib.settings.Get().Features.Translate.ShowCard)
 	}
 	a.navigate("/rewrite")
 	frames(tt)
@@ -241,5 +250,8 @@ func TestCardSwitchShared(t *testing.T) {
 		if s == "Show the result in a card" {
 			t.Fatalf("/rewrite: card switch should not appear on Rewrite")
 		}
+	}
+	if !strings.Contains(strings.Join(tt.AccessLabels(), "\n"), "Card size") {
+		t.Error("rewrite should offer card size")
 	}
 }

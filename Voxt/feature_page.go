@@ -49,6 +49,8 @@ type featureUI struct {
 	fallback string
 	// lang is Translate's target select.
 	lang string
+	// cardSizeSel and cardSizeFor mirror the card-size select.
+	cardSizeSel, cardSizeFor string
 	// prompt is the rules as typed; promptSeen the saved value it was
 	// last set from; promptDirty an edit not saved yet, promptSeq which
 	// edit (its timer saves only the last one).
@@ -121,12 +123,13 @@ func (a *app) featurePage(c *ui.Context, feature string) {
 			switch feature {
 			case hotkey.Translate:
 				a.translateSettings(c)
-				a.cardSetting(c, p)
+				a.cardSetting(c, p, true)
 			case hotkey.Rewrite:
 				a.rewriteSettings(c)
+				a.rewriteCardSize(c)
 			default:
 				a.trEnhance(c)
-				a.cardSetting(c, p)
+				a.cardSetting(c, p, false)
 			}
 			a.featureRules(c, feature)
 			a.featureTry(c, feature)

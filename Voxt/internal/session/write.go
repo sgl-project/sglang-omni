@@ -68,7 +68,7 @@ func (r *run) write(raw, selection string) {
 	switch kind {
 	case store.KindTranslate:
 		o.replace = selection != ""
-		if r.settings.Features.ShowCard {
+		if r.settings.Features.ShowCardFor(string(kind)) {
 			o.card = deliver.ReasonCard
 		}
 	case store.KindRewrite:

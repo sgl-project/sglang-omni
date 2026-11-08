@@ -478,30 +478,25 @@ func TestMuteOutput(t *testing.T) {
 	}
 }
 
-// TestMigrateShowCard: Translate's card switch, the only one before,
-// becomes every feature's; a document saved since keeps its choice.
-func TestMigrateShowCard(t *testing.T) {
+// TestMigratePerModeCard copies the old global or Translate-only card
+// switch into each feature when that feature has no showCard key.
+func TestMigratePerModeCard(t *testing.T) {
 	for _, tc := range []struct {
-		doc  string
-		want bool
+		doc            string
+		wantTr, wantTl bool
 	}{
-		{`{"version":4,"features":{"translate":{"showCard":true}}}`, true},
-		{`{"version":4,"features":{"translate":{"cleanup":true}}}`, false},
-		{`{"version":4,"features":{"showCard":true,"translate":{}}}`, true},
-		{`{"version":4,"features":{"translate":{}}}`, false},
+		{`{"version":4,"features":{"translate":{"showCard":true}}}`, false, true}, // legacy translate-only
+		{`{"version":4,"features":{"translate":{"cleanup":true}}}`, false, false},
+		{`{"version":4,"features":{"showCard":true,"translate":{}}}`, true, true},
+		{`{"version":4,"features":{"translate":{}}}`, false, false},
+		{`{"version":4,"features":{"transcribe":{"showCard":true},"translate":{"showCard":false}}}`, true, false},
 	} {
 		s, err := Migrate([]byte(tc.doc))
-		if err != nil || s.Features.ShowCard != tc.want {
-			t.Errorf("%s: ShowCard %v, want %v (%v)", tc.doc, s.Features.ShowCard, tc.want, err)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.doc, err)
 		}
-		out, _ := json.Marshal(s)
-		var doc struct {
-			Features struct {
-				Translate map[string]any `json:"translate"`
-			} `json:"features"`
-		}
-		if json.Unmarshal(out, &doc) != nil || doc.Features.Translate["showCard"] != nil {
-			t.Errorf("%s: Translate still has a card switch: %s", tc.doc, out)
+		if s.Features.Transcribe.ShowCard != tc.wantTr || s.Features.Translate.ShowCard != tc.wantTl {
+			t.Errorf("%s: tr=%v tl=%v, want tr=%v tl=%v", tc.doc, s.Features.Transcribe.ShowCard, s.Features.Translate.ShowCard, tc.wantTr, tc.wantTl)
 		}
 	}
 }
