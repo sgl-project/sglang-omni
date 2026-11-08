@@ -57,6 +57,8 @@ class PersonaPlexSessionLMFactoryArgs(PersonaPlexDepformerFactoryArgs):
     "Replay a decode step's sampling, Depformer and row embedding from CUDA graphs."
     share_prompt_kv: bool = False
     "Share the prompt's KV between sessions that open with the same voice and role."
+    whole_step_results: bool = False
+    "Send a step's unit results together, so code2wav decodes them in one batch."
 
 
 class PersonaPlexSessionLMStageConfig(EngineStageConfig):

@@ -96,6 +96,7 @@ class SchedulerExtras(TypedDict, Generic[RequestDataT], total=False):
     request_build_max_pending: int | None
     separate_session_openings: bool
     steady_session_units_as_decode: bool
+    whole_step_results: bool
 
 
 class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):

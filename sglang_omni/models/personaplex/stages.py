@@ -312,6 +312,7 @@ def create_session_lm_executor(
     steady_units_as_decode: bool = False,
     live_step_graph: bool = False,
     share_prompt_kv: bool = False,
+    whole_step_results: bool = False,
     dtype: str | None = None,
     device: str | None = None,
     gpu_id: int | None = None,
@@ -325,6 +326,7 @@ def create_session_lm_executor(
         steady_units_as_decode=steady_units_as_decode,
         live_step_graph=live_step_graph,
         share_prompt_kv=share_prompt_kv,
+        whole_step_results=whole_step_results,
         tokenizer=load_text_tokenizer(resolve_model_path(model_path)),
         context_length=server_args_overrides.get("context_length", context_length),
         # Note (Junnan Li): A unit decodes one or two frames, so async
@@ -408,6 +410,7 @@ def create_session_code2wav_executor(
     *,
     max_open_sessions: int,
     max_graph_frames: int = max(FRAMES_PER_UNIT),
+    decode_stream: bool = False,
     device: str | None = None,
     gpu_id: int | None = None,
 ) -> SessionScheduler:
@@ -423,7 +426,8 @@ def create_session_code2wav_executor(
         max_chunk_frames=max(FRAMES_PER_UNIT),
     )
     return SessionScheduler(
-        Code2WavHooks(decode_slots), max_open_sessions=max_open_sessions
+        Code2WavHooks(decode_slots, decode_stream=decode_stream),
+        max_open_sessions=max_open_sessions,
     )
 
 
