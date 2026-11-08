@@ -268,6 +268,12 @@ func (a *app) view(c *ui.Context) {
 	a.palette(c)
 	a.shortcutSheet(c)
 	a.toastsView(c) // last: over dialogs too
+	// A shortcut field took the focus or lost it.
+	if a.keysHeard != a.keysListening {
+		a.keysListening = a.keysHeard
+		a.syncHotkeys()
+	}
+	a.keysHeard = false
 }
 
 // toastsView gives the toasts their place and look: small ink toasts in
