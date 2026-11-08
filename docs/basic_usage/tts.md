@@ -1,23 +1,18 @@
 # TTS Model Usage
 
 Use the OpenAI-compatible `/v1/audio/speech` interface to synthesize text. This
-page covers the shared server interface; model setup, required inputs, and
+page covers common part in TTS cookbook inlcluding: model setup, required inputs, and
 implementation-specific options belong in the linked cookbooks. The examples
-use [Fish Speech S2-Pro](../cookbook/fishaudio_s2_pro.md), which accepts text-only
-requests. Replace the model and add any fields required by your checkpoint.
+use [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md#customvoice-checkpoints), which accepts text-only requests. Replace the model and add any fields required by your checkpoint.
 
 ## Prerequisites
 
 Install SGLang-Omni using the [installation guide](../get_started/installation.md)
-and follow your model's cookbook for its dependencies and weights. The examples
-use the Python server launched by `sgl-omni serve`; native Apple Silicon servers
-can have a narrower API, as described in their cookbooks.
+and follow your model's cookbook for its dependencies and weights. 
 
 ## Supported TTS Models
 
-The streaming column describes incremental audio for the Python serving pipeline,
-not just whether an HTTP connection can remain open. Features and supported
-request fields can differ by checkpoint and backend; follow the cookbook for the
+The streaming column describes incremental audio for the Python serving pipeline. follow the cookbook for the
 model you are serving.
 
 | Model | Incremental audio | Request requirements and model-specific behavior |
@@ -47,12 +42,12 @@ settings; it does not accept `initial_codec_chunk_frames` in a request.
 ## Start a TTS Server
 
 Choose a checkpoint and the matching configuration from its cookbook. For
-example, after installing the Fish-specific dependencies:
+example, after installing the [Qwen3-TTS dependencies](../cookbook/qwen3_tts.md#prerequisites):
 
 ```bash
 sgl-omni serve \
-  --model-path fishaudio/s2-pro \
-  --config examples/configs/s2pro_tts.yaml \
+  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
+  --config examples/configs/qwen3_tts_1_7b_customvoice.yaml \
   --port 8000
 ```
 
@@ -66,8 +61,7 @@ setup, and [TTS Process Topology](tts_process_topology.md) for stage placement.
 
 ## Non-streaming Speech
 
-The default response is a complete WAV file. Other models may require voice or
-reference fields even though this Fish example does not.
+The default response is a complete WAV file. This CustomVoice example selects a built-in speaker and sends no reference audio. Base checkpoints require a reference clip.
 
 ### cURL
 
@@ -75,8 +69,10 @@ reference fields even though this Fish example does not.
 curl -fS -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "fishaudio/s2-pro",
-    "input": "Hello from SGLang-Omni."
+    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+    "input": "Hello from SGLang-Omni.",
+    "voice": "Ryan",
+    "language": "English"
   }' \
   --output output.wav
 ```
@@ -93,7 +89,12 @@ import requests
 
 response = requests.post(
     "http://localhost:8000/v1/audio/speech",
-    json={"model": "fishaudio/s2-pro", "input": "Hello from SGLang-Omni."},
+    json={
+        "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        "input": "Hello from SGLang-Omni.",
+        "voice": "Ryan",
+        "language": "English",
+    },
     timeout=600,
 )
 response.raise_for_status()
@@ -107,8 +108,8 @@ from openai import OpenAI
 
 client = OpenAI(base_url="http://localhost:8000/v1", api_key="EMPTY")
 response = client.audio.speech.create(
-    model="fishaudio/s2-pro",
-    voice="default",
+    model="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+    voice="Ryan",
     input="Hello from SGLang-Omni.",
     response_format="wav",
 )
@@ -128,8 +129,10 @@ default; set `response_format="pcm"` for headerless PCM.
 curl -fS -N -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "fishaudio/s2-pro",
+    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
     "input": "Hello from SGLang-Omni.",
+    "voice": "Ryan",
+    "language": "English",
     "stream": true,
     "response_format": "wav"
   }' \
@@ -165,8 +168,10 @@ import requests
 with requests.post(
     "http://localhost:8000/v1/audio/speech",
     json={
-        "model": "fishaudio/s2-pro",
+        "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
         "input": "Hello from SGLang-Omni.",
+        "voice": "Ryan",
+        "language": "English",
         "stream": True,
         "response_format": "pcm",
     },
@@ -194,8 +199,10 @@ with requests.post(
 curl -fS -N -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "fishaudio/s2-pro",
+    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
     "input": "Hello from SGLang-Omni.",
+    "voice": "Ryan",
+    "language": "English",
     "stream_format": "sse",
     "response_format": "pcm"
   }'
@@ -217,8 +224,8 @@ To enable named events, add `--enable-speech-sse-named-events` when starting the
 
 ```bash
 sgl-omni serve \
-  --model-path fishaudio/s2-pro \
-  --config examples/configs/s2pro_tts.yaml \
+  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
+  --config examples/configs/qwen3_tts_1_7b_customvoice.yaml \
   --enable-speech-sse-named-events \
   --port 8000
 ```
@@ -279,8 +286,9 @@ async def main():
         await ws.send(json.dumps({
             "type": "session.config",
             "session": {
-                "model": "fishaudio/s2-pro",
-                "voice": "default",
+                "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+                "voice": "Ryan",
+                "language": "English",
                 "response_format": "pcm",
                 "stream_audio": True,
                 "split_granularity": "sentence",
@@ -348,15 +356,23 @@ particular task. Consult the model cookbook. A reference can be a permitted
 server-local path, data URL, or allowed HTTP URL; configure media access and
 redirect hosts before using a remote URL.
 
-### Fish Speech Voice Cloning
+### Qwen3-TTS Base Voice Cloning
 
-The examples below use a sample clip from [`seed-tts-eval-mini`](https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini). The `references` field accepts `audio_path` (a local path, file URL, data URL, or HTTP URL) and `text` (transcript of that audio).
+CustomVoice rejects reference audio. Start the Base checkpoint for this request, instead of the CustomVoice server above. The clip below is from [`seed-tts-eval-mini`](https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini). `references` accepts `audio_path` (a local path, file URL, data URL, or HTTP URL) and `text` (transcript of that audio). Supplying the transcript selects in-context cloning.
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-Base \
+  --config examples/configs/qwen3_tts_1_7b.yaml \
+  --allowed-media-domain huggingface.co \
+  --port 8000
+```
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "fishaudio/s2-pro",
+    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
     "voice": "default",
     "input": "Get the trust fund to the bank early.",
     "references": [{
@@ -367,10 +383,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   --output output.wav
 ```
 
-To stream the same reference, add `"stream": true` and use the
-[streaming examples](#streaming). For the remote sample above, start the server
-with `--allowed-media-domain huggingface.co` and permit the download redirect
-host as well.
+To stream the same reference, add `"stream": true` and use the [streaming examples](#streaming). Permit the download redirect host as well as `huggingface.co`.
 
 ## Batch Speech
 
@@ -384,21 +397,20 @@ It returns a single JSON response containing the completed results. For streamin
 output, use `/v1/audio/speech`. The server accepts up to 32 items by default;
 set `--tts-batch-max-items` at startup to change the envelope limit.
 
+CustomVoice rejects `ref_audio` on a batch item. A Base server accepts it, using the same reference fields as [Qwen3-TTS Base voice cloning](#qwen3-tts-base-voice-cloning).
+
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech/batch \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "fishaudio/s2-pro",
-    "voice": "default",
+    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+    "voice": "Ryan",
+    "language": "English",
     "response_format": "wav",
     "items": [
       {"input": "First sentence."},
       {"input": "Second sentence.", "speed": 1.1},
-      {
-        "input": "Use a reference clip for this item.",
-        "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-        "ref_text": "We asked over twenty different people, and they all said it was his."
-      }
+      {"input": "Third sentence.", "voice": "Vivian"}
     ]
   }'
 ```
@@ -434,15 +446,13 @@ List preset and uploaded voices:
 curl http://localhost:8000/v1/audio/voices
 ```
 
-For CustomVoice, the response's `voices` list contains `default` and the served checkpoint's built-in speakers. Uploaded reference voices are not used for CustomVoice synthesis.
-
-Use the uploaded voice by name:
+For CustomVoice, the response's `voices` list contains `default` and the served checkpoint's built-in speakers. Uploaded reference voices are not used for CustomVoice synthesis. Reuse an uploaded voice from a Base server:
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "fishaudio/s2-pro",
+    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
     "input": "The uploaded voice can now be reused without resending audio.",
     "voice": "narrator",
     "response_format": "wav"
