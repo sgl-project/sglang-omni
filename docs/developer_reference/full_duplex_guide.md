@@ -635,7 +635,7 @@ python -m benchmarks.eval.benchmark_duplex_serving sweep \
   --dataset v1.5 --concurrency 1,2,4,8 --output "$FDB_WORK/serving/minicpmo" -- \
   --url ws://127.0.0.1:8097/v1/realtime --profile minicpmo-native-pr2377 \
   --dataset-root "$FDB_WORK/dataset/v1.5" --dataset-revision "$(cat $FDB_WORK/dataset/v1.5.revision)" \
-  --server-revision "$(git rev-parse HEAD)" --model openbmb/MiniCPM-o-4_5 --model-revision 503e754 \
+  --server-revision "$(git rev-parse HEAD)" --model openbmb/MiniCPM-o-4_5 --model-revision 503e754207c94da6bb26850b4469f367c9ea3582 \
   --max-per-subset 4
 ```
 
@@ -672,7 +672,7 @@ On one H100 80 GB, a short v1.5 cohort (128 sessions of at most 16 s) met a stri
 
 **Turn latency**
 
-For a turn-based server, `benchmarks/realtime_turn_latency.py` streams one WAV for several turns and prints, per turn, the time from speech end to first text, first audio, final transcript and completion:
+`benchmarks/realtime_turn_latency.py` measures one conversation from the moment the user stops speaking: for each turn it prints when turn detection ended the turn, when the user transcript, the first text and the first audio arrived, and when the reply finished. Unlike the serving sweep, whose turn-based `first audio` starts at `response.created`, this includes the turn-detection wait, so it is the latency the listener hears. It streams one WAV, needs no dataset, and waits for each turn's user transcript, so it runs against servers that publish one, such as the streaming cascade; the Qwen3-Omni Session graph publishes none:
 
 ```bash
 python benchmarks/realtime_turn_latency.py --url ws://127.0.0.1:8765/v1/realtime --audio question.wav --turns 5
