@@ -104,7 +104,7 @@ func TestTranslateSpeechCard(t *testing.T) {
 	if len(a.pasted()) != 0 || tr.count() != 1 {
 		t.Errorf("pasted %+v, %d uploads", a.pasted(), tr.count())
 	}
-	if msgs := chatMessages(chat.requests()[0]); !strings.Contains(msgs[0][1], "基础清理") || len(msgs) != 4 || msgs[3][1] != "<input>\n周四见\n</input>" {
+	if msgs := chatMessages(chat.requests()[0]); len(msgs) != 4 || msgs[2][0] != "assistant" || msgs[3][1] != "<input>\n周四见\n</input>" {
 		t.Errorf("first request %q", msgs)
 	}
 	// Another language: into the card whatever the setting (Voxt's menu

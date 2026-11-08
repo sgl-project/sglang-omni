@@ -63,6 +63,9 @@ type run struct {
 	// retry's entry.
 	dsp    string
 	gainDB float64
+	// heard takes the stream's live texts to the recording loop while it
+	// listens for the end word (endword.go); nil otherwise.
+	heard chan string
 }
 
 type capResult struct {

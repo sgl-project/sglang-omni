@@ -260,13 +260,14 @@ func Build(in Input) (Output, error) {
 		return Render(template(set, name), vars, x)
 	}
 
+	if full := strings.TrimSpace(in.TaskPrompt); full != "" {
+		return buildFullPrompt(in, set, vars, flags, full)
+	}
+
 	add(string(in.Task), render("role-"+string(in.Task), nil))
 	switch in.Task {
 	case Transcribe:
 		add("input", render("input-speech", nil))
-		if in.Cleanup {
-			add("cleanup", render("cleanup", nil))
-		}
 		if in.Structure {
 			add("structure", render("structure", nil))
 		} else {
@@ -278,9 +279,6 @@ func Build(in Input) (Output, error) {
 			add("selection", render("input-selection", nil))
 		} else {
 			add("input", render("input-speech", nil))
-			if in.Cleanup {
-				add("cleanup", render("cleanup", nil))
-			}
 			add("form", render("form", nil))
 		}
 		add("task", render("task-translate", nil))
@@ -293,9 +291,6 @@ func Build(in Input) (Output, error) {
 			layer = "selection"
 		}
 		add(layer, render("input-rewrite", nil))
-		if in.Cleanup {
-			add("cleanup", render("cleanup-instruction", nil))
-		}
 		if selected {
 			add("task", render("task-rewrite", nil))
 		} else {
@@ -304,9 +299,6 @@ func Build(in Input) (Output, error) {
 		if len(in.Previous) > 0 {
 			add("followup", render("followup", nil))
 		}
-	}
-	if p := strings.TrimSpace(in.TaskPrompt); p != "" {
-		add("custom", render("custom", map[string]string{"TASK_PROMPT": Render(p, vars, nil)}))
 	}
 	if s := in.Scene; s != nil && strings.TrimSpace(s.AppName) != "" {
 		add("scene", render("scene", map[string]string{"SCENE_PROMPT": Render(strings.TrimSpace(s.Prompt), vars, nil)}))
@@ -332,6 +324,56 @@ func Build(in Input) (Output, error) {
 		add("output", render("output-rewrite", nil))
 	default:
 		add("output", render("output-"+string(in.Task), nil))
+	}
+	out.System, out.Layers = strings.Join(parts, "\n\n"), layers
+	if in.Task == Rewrite {
+		for _, t := range in.Previous {
+			out.History = append(out.History,
+				Message{Role: "user", Content: RewriteMessage(t.Instruction, t.Selection)},
+				Message{Role: "assistant", Content: t.Answer.reply(in.Answer)})
+		}
+		out.User = out.withGlossary(RewriteMessage(in.Instruction, in.Text))
+	} else {
+		out.User = out.withGlossary(UserMessage(in.Text))
+		if input, answer, ok := Example(in); ok {
+			out.History = []Message{{Role: "user", Content: UserMessage(input)}, {Role: "assistant", Content: answer}}
+		}
+	}
+	return out, nil
+}
+
+// buildFullPrompt sends the user's template as the system prompt, with
+// scene and glossary layers when they apply (FB3).
+func buildFullPrompt(in Input, set string, vars, flags map[string]string, full string) (Output, error) {
+	render := func(name string, extra map[string]string) string {
+		x := maps.Clone(flags)
+		maps.Copy(x, extra)
+		return Render(template(set, name), vars, x)
+	}
+	var parts, layers []string
+	add := func(layer, text string) {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return
+		}
+		parts = append(parts, text)
+		layers = append(layers, layer)
+	}
+	add("custom", strings.TrimSpace(Render(full, vars, flags)))
+	if s := in.Scene; s != nil && strings.TrimSpace(s.AppName) != "" {
+		add("scene", render("scene", map[string]string{"SCENE_PROMPT": Render(strings.TrimSpace(s.Prompt), vars, nil)}))
+	}
+	out := Output{Language: set}
+	g := Glossary(in.Glossary, in.Instruction+"\n"+in.Text, set)
+	if len(distinctTerms(in.Glossary)) <= GlossaryAllUpTo {
+		if g != "" {
+			add("glossary", render("glossary", map[string]string{"GLOSSARY": g}))
+		}
+	} else {
+		add("glossary", render("glossary-user", nil))
+		if g != "" {
+			out.Glossary = wrap("glossary", g)
+		}
 	}
 	out.System, out.Layers = strings.Join(parts, "\n\n"), layers
 	if in.Task == Rewrite {

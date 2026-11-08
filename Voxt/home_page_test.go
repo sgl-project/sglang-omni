@@ -98,7 +98,7 @@ func TestHomeReadiness(t *testing.T) {
 	a.updateSettings(func(s *settings.Settings) {
 		s.Features.Transcribe.Hotkeys = []settings.Hotkey{{Keys: "Command+Space", Trigger: settings.TriggerTap}}
 	})
-	if !has(tt, "1 step to go") || !has(tt, "Transcribe's shortcut ⌘ Space: macOS uses these keys for Spotlight.") {
+	if !has(tt, "1 step to go") || !has(tt, "Transcribe's shortcut ⌘Space: macOS uses these keys for Spotlight.") {
 		t.Errorf("no clash: %q", tt.Texts())
 	}
 	// What is ready shows again, quieter, under what is missing.
@@ -235,7 +235,7 @@ func TestSloganHint(t *testing.T) {
 		{&settings.Hotkey{Keys: "Fn", Trigger: settings.TriggerTap}, "Press [fn] to start", "按 [fn] 开始"},
 		{&settings.Hotkey{Keys: "Fn"}, "Press [fn] to start", "按 [fn] 开始"},
 		{&settings.Hotkey{Keys: "RightCommand", Trigger: settings.TriggerDouble}, "Double-press [Right ⌘] to start", "双击 [右 ⌘] 开始"},
-		{&settings.Hotkey{Keys: "Option+Space", Trigger: settings.TriggerLong}, "Hold [⌥ Space] and speak", "按住 [⌥ 空格] 说话"},
+		{&settings.Hotkey{Keys: "Option+Space", Trigger: settings.TriggerLong}, "Hold [⌥Space] and speak", "按住 [⌥空格] 说话"},
 		{nil, "Add a shortcut to start[]", "先设置一个快捷键[]"},
 	} {
 		i18n.SetLocale("en")
@@ -262,7 +262,7 @@ func TestHomeSlogan(t *testing.T) {
 	a.updateSettings(func(s *settings.Settings) {
 		s.Features.Transcribe.Hotkeys = []settings.Hotkey{{Keys: "Option+Space", Trigger: settings.TriggerLong}, {Keys: "Fn"}}
 	})
-	if !hasExact(tt, "Hold") || !hasExact(tt, "⌥ Space") || !hasExact(tt, "and speak") {
+	if !hasExact(tt, "Hold") || !hasExact(tt, "⌥Space") || !hasExact(tt, "and speak") {
 		t.Errorf("long: %q", tt.Texts())
 	}
 	a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.Hotkeys = nil })
