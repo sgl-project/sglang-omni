@@ -36,6 +36,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **A service that needs its API key says so**: its card reads "API key needed" with Complete setup, and when no language model is ready the sidebar card names the service and opens its dialog. Services brought over from Voxt 1.x show this at once.
 - **The import from Voxt 1.x reads at a glance**: its result is grouped as Imported, Left out (with why) and To do, each to-do with Complete setup; an import from outside the setup guide shows it in a dialog.
 - The rules box and the Speech hints checkbox say which stage they act on: hints go to the speech model, rules shape the text after recognition.
+- The setup guide says what each feature is before you try it: Transcribe writes down your words, Translate puts them into another language, Rewrite writes what you ask for. The Permissions step says why Voxt needs the microphone and Accessibility.
 
 ### Fixed
 
@@ -75,6 +76,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **缺 API Key 的服务会说清楚**：卡片上写“需要 API Key”，带“完成设置”；没有可用的语言模型时，侧边栏的卡片写明是哪个服务，点一下打开它的设置。从 Voxt 1.x 导入的服务马上就显示这个状态。
 - **从 Voxt 1.x 导入的结果一眼看清**：分成“已导入”“没有导入”（写明原因）和“还要做”，每件要做的事带“完成设置”；不是在设置引导里导入时，结果显示在一个对话框里。
 - “你的规则”和“语音识别提示”各自写明作用阶段：提示给语音模型，规则在识别之后整理文字。
+- 设置引导每一步先说明这个功能是什么再让你试：转录照录你说的话，翻译把它译成另一种语言，转写按你的要求写出内容。权限一步写明为什么需要麦克风和辅助功能。
 
 #### 修复
 
