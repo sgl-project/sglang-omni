@@ -53,6 +53,8 @@ class PersonaPlexSessionLMFactoryArgs(PersonaPlexDepformerFactoryArgs):
     "Run a step of only live rows as a decode step on the decode graph."
     steady_units_as_decode: bool = False
     "Keep each session one request that its later units feed."
+    live_step_graph: bool = False
+    "Replay a decode step's sampling, Depformer and row embedding from CUDA graphs."
 
 
 class PersonaPlexSessionLMStageConfig(EngineStageConfig):

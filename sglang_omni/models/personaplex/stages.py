@@ -309,6 +309,7 @@ def create_session_lm_executor(
     audio_top_k: int,
     live_rows_as_decode: bool = False,
     steady_units_as_decode: bool = False,
+    live_step_graph: bool = False,
     dtype: str | None = None,
     device: str | None = None,
     gpu_id: int | None = None,
@@ -320,6 +321,7 @@ def create_session_lm_executor(
     builder = PersonaPlexSessionEngineBuilder(
         live_rows_as_decode=live_rows_as_decode,
         steady_units_as_decode=steady_units_as_decode,
+        live_step_graph=live_step_graph,
         tokenizer=load_text_tokenizer(resolve_model_path(model_path)),
         context_length=server_args_overrides.get("context_length", context_length),
         # Note (Junnan Li): A unit decodes one or two frames, so async

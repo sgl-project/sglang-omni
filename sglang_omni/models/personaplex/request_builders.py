@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from functools import cached_property
 from typing import TypedDict
 
 import torch
@@ -21,6 +22,7 @@ from sglang_omni.models.personaplex.architecture import (
     TEXT_CARD,
     TEXT_PAD_ID,
 )
+from sglang_omni.models.personaplex.components.live_step_graph import LiveStepSampling
 from sglang_omni.models.personaplex.config import CODE2WAV_STAGE, LM_STAGE
 from sglang_omni.models.personaplex.model_runner import DecodeFeedback
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
@@ -64,6 +66,20 @@ class RequestSampling:
             if self.seed is None
             else derive_sampling_seed(SEED_NAMESPACE, self.seed, "audio")
         )
+
+    @cached_property
+    def live_step_sampling(self) -> LiveStepSampling | None:
+        if (
+            self.seed is not None
+            or self.top_p < 1.0
+            or self.min_p > 0.0
+            or self.repetition_penalty != 1.0
+        ):
+            return None
+        else:
+            return LiveStepSampling.of(
+                AudioSampling(self.text_temperature, self.text_top_k), self.audio
+            )
 
 
 def stage_param_overrides(params: dict, stage: str) -> dict:
