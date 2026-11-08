@@ -243,6 +243,7 @@ class PersonaPlexSessionEngineBuilder(PersonaPlexEngineBuilder):
         live_rows_as_decode: bool = False,
         steady_units_as_decode: bool = False,
         live_step_graph: bool = False,
+        share_prompt_kv: bool = False,
     ) -> None:
         super().__init__(
             enable_async_decode=enable_async_decode,
@@ -254,6 +255,7 @@ class PersonaPlexSessionEngineBuilder(PersonaPlexEngineBuilder):
         self.live_rows_as_decode = live_rows_as_decode
         self.steady_units_as_decode = steady_units_as_decode
         self.live_step_graph = live_step_graph
+        self.share_prompt_kv = share_prompt_kv
 
     def make_model_runner(
         self,
@@ -263,6 +265,7 @@ class PersonaPlexSessionEngineBuilder(PersonaPlexEngineBuilder):
         runner = super().make_model_runner(model_worker, output_proc)
         runner.live_rows_as_decode = self.live_rows_as_decode
         runner.steady_units_as_decode = self.steady_units_as_decode
+        runner.share_prompt_kv = self.share_prompt_kv
         server_args = model_worker.server_args
         if (
             self.live_step_graph
@@ -299,7 +302,16 @@ class PersonaPlexSessionEngineBuilder(PersonaPlexEngineBuilder):
         return {
             **super().generation_defaults(dtype=dtype),
             "enable_streaming_session": True,
+            # Note (Junnan Li): Requests are keyed by their prompt's digest, so the
+            # radix tree shares a prompt's KV only between identical prompts.
+            "disable_radix_cache": not self.share_prompt_kv,
         }
+
+    def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
+        if self.share_prompt_kv:
+            return
+        else:
+            super().validate_before_infrastructure(server_args)
 
     def extra_scheduler_kwargs(self) -> dict[str, PersonaPlexSessionAdapter | bool]:
         # Note (wilsonzheng0327): The shim config's vocabulary is TEXT_CARD.
@@ -308,6 +320,7 @@ class PersonaPlexSessionEngineBuilder(PersonaPlexEngineBuilder):
                 vocab_size=TEXT_CARD,
                 context_length=self.context_length,
                 tokenizer=self.tokenizer,
+                share_prompt_kv=self.share_prompt_kv,
             ),
             "steady_session_units_as_decode": self.steady_units_as_decode,
             # Note (Junnan Li): A new prompt in the batch would make it an extend, which

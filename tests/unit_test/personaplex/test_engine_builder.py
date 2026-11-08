@@ -264,3 +264,16 @@ def test_radix_caching_is_refused_at_startup() -> None:
             SimpleNamespace(disable_radix_cache=False)
         )
     builder.validate_before_infrastructure(SimpleNamespace(disable_radix_cache=True))
+
+
+def test_a_shared_prompt_turns_the_radix_tree_on():
+    builder = PersonaPlexSessionEngineBuilder(
+        tokenizer=object(),
+        enable_async_decode=False,
+        depformer_cuda_graph_batch_sizes=[1],
+        depformer_cuda_graph_sampling=AudioSampling(0.5, 7),
+        share_prompt_kv=True,
+    )
+    assert builder.generation_defaults(dtype="bfloat16")["disable_radix_cache"] is False
+    builder.validate_before_infrastructure(SimpleNamespace(disable_radix_cache=False))
+    assert builder.extra_scheduler_kwargs()["session_adapter"].share_prompt_kv is True

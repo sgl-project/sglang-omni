@@ -210,6 +210,7 @@ def test_realtime_engine_decodes_synchronously(monkeypatch, tmp_path):
             live_rows_as_decode,
             steady_units_as_decode,
             live_step_graph,
+            share_prompt_kv,
         ):
             built["enable_async_decode"] = enable_async_decode
             built["live_rows_as_decode"] = live_rows_as_decode
