@@ -7,24 +7,26 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // Rewrite's scenarios end to end, after Voxt's (10-15, docs/behavior.md
 // §6.9): the real session manager, the fake helper as a process (its
 // recording, its focus and selection, its paste log), a loopback
-// transcription service and a loopback chat service. Every answer waits
-// in the card; Insert pastes it (over the selection when there was one);
+// transcription service and a loopback chat service. With the answer
+// card switch on (§6.17, off inserts), every answer waits in the card;
+// Insert pastes it (over the selection when there was one);
 // Continue (or the Rewrite shortcut) records a follow-up in the card, a
 // conversation; Done stops it; Escape cancels a follow-up, then closes.
 
 // rewriteOnce runs a Rewrite session from its shortcut (pressed twice,
-// speech between) to its end.
+// speech between) to its end, with the answer card switch on.
 func rewriteOnce(t *testing.T, opts string, chat *fakeChat, said string) (*sessionApp, *fakeTranscriptions) {
 	t.Helper()
 	set, keys, tr := fileSetup(t, said, chat)
 	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger))
-	a := newSessionApp(t, opts+ev, set, keys)
+	a := newSessionApp(t, opts+ev, func(s *settings.Settings) { set(s); s.Features.ShowCard = true }, keys)
 	a.pump("the end", func() bool { return a.sess.State.Ended() })
 	return a, tr
 }

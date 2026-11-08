@@ -126,6 +126,7 @@ func (a *app) featurePage(c *ui.Context, feature string) {
 			default:
 				a.trEnhance(c)
 			}
+			a.cardSetting(c, p)
 			a.featureRules(c, feature)
 			a.featureTry(c, feature)
 		})

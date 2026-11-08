@@ -26,8 +26,8 @@ func trySample() string {
 
 // ---- Translate and Rewrite ----
 
-// translateSettings are Translate's own: the target language, the
-// clean-up of speech, the card.
+// translateSettings are Translate's own: the target language and the
+// clean-up of speech.
 func (a *app) translateSettings(c *ui.Context) {
 	t := c.Theme()
 	u := a.fui(hotkey.Translate)
@@ -62,17 +62,23 @@ func (a *app) translateSettings(c *ui.Context) {
 				a.updateSettings(func(s *settings.Settings) { s.Features.Translate.Cleanup = on })
 			}
 		})
-	settingRow(c, "tl-card", i18n.T("Show the result in a card"),
-		i18n.T("Shows the translation in the answer card, to read, copy or insert, instead of typing it (or replacing the selection). Selected text that cannot be edited, such as a web page, always goes to the card."), func() {
-			if ui.Switch(c.Key("tl-card-switch"), &f.ShowCard).Label(i18n.T("Show the result in a card")).Changed() {
+}
+
+// cardSetting is the answer card's switch, the same one on every
+// feature's page (p is the page's prefix).
+func (a *app) cardSetting(c *ui.Context, p string) {
+	sectionTitle(c, i18n.T("Answer card"))
+	f := &a.prefs.Features
+	settingRow(c, p+"-card", i18n.T("Show the result in a card"),
+		i18n.T("Shows every result, transcribed, translated or rewritten, in the answer card, to read, copy or insert, instead of typing it (or replacing the selection). It is one switch for the three: the same on each page. Text that cannot go in, as with no text field in front, shows in the card anyway."), func() {
+			if ui.Switch(c.Key(p+"-card-switch"), &f.ShowCard).Label(i18n.T("Show the result in a card")).Changed() {
 				on := f.ShowCard
-				a.updateSettings(func(s *settings.Settings) { s.Features.Translate.ShowCard = on })
+				a.updateSettings(func(s *settings.Settings) { s.Features.ShowCard = on })
 			}
 		})
 }
 
-// rewriteSettings are Rewrite's own: the instruction's clean-up. Every
-// answer shows in the answer card (Voxt's), nothing to choose there.
+// rewriteSettings are Rewrite's own: the instruction's clean-up.
 func (a *app) rewriteSettings(c *ui.Context) {
 	f := &a.prefs.Features.Rewrite
 	sectionTitle(c, i18n.T("Rewriting"))
