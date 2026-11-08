@@ -191,6 +191,8 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
             # note (wilsonzheng0327): async decode under a draft means speculative
             # overlap, which this runner has not opted into.
             self.enable_async_decode = False
+            # note (wilsonzheng0327): on SGLang 0.5.23 the compiled path makes the draft half as fast as no draft at concurrency 1, while without a draft it still speeds up concurrency 1 by about 17%.
+            overrides["enable_torch_compile"] = False
             dflash_block_size = overrides.get("speculative_dflash_block_size")
             num_draft_tokens = overrides.get("speculative_num_draft_tokens")
             # note (wilsonzheng0327): SGLang verifies speculative_dflash_block_size tokens per step, else speculative_num_draft_tokens, else the draft's block size.

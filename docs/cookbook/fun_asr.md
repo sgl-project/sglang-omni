@@ -117,21 +117,22 @@ sgl-omni serve --config examples/configs/fun_asr_nano_dflash.yaml --port 8000
 
 - **Accuracy.** The decoder verifies every proposed token. On SeedTTS, corpus WER is 1.86% in both modes for EN, and 1.44% without the draft against 1.42% with it for ZH.
 - **Sampling.** `temperature` works. Requests with `repetition_penalty` are rejected, because the draft worker applies penalties once per verify block.
-- **Latency.** Streaming time to first text is unchanged at concurrency 1 and 10 to 14% higher at concurrency 16.
-- **Cost.** The draft's KV takes about 15% of the pool, startup takes about a minute longer, and async decode is off.
+- **Latency.** Streaming time to first text is 5% higher at concurrency 1 (13.7 against 13.0 ms median), lower at 4, and about 20% higher at 16. At 64 the median is 70% higher and p95 about the same.
+- **Compilation.** Torch compile is turned off under the draft: on SGLang 0.5.23 the compiled path makes the draft half as fast as no draft at concurrency 1. Without a draft it stays on, since it speeds up concurrency 1 by about 17%. A server with the draft therefore starts in about 30 s, against about 3 minutes without it.
+- **Cost.** The draft's KV takes about 15% of the pool, and async decode is off.
 
-The 70-layer audio encoder takes a large share of each request, so the gain is well below the draft's accept length of about 5.3 tokens per verify, and it grows with clip length. Speedup over the same config without the draft, on two H100 80GB GPUs with paired fresh servers and clips the server had not seen:
+The 70-layer audio encoder takes a large share of each request, so the gain is well below the draft's accept length of about 5.3 tokens per verify. Speedup over the same config without the draft, on one H200 with SGLang 0.5.23, two fresh servers per side in A B B A order, and 600 SeedTTS clips per language with the prefix cache off:
 
-| Concurrency | SeedTTS EN | SeedTTS ZH | Held-out EN | Held-out ZH |
-|---:|---:|---:|---:|---:|
-| 1 | 1.19x | 1.22x | 1.25x | 1.06x |
-| 4 | 1.22x | 1.24x | 1.43x | 1.66x |
-| 8 | 1.19x | 1.25x | 1.40x | 1.33x |
-| 16 | 1.20x | 1.20x | 1.29x | 1.30x |
-| 32 | 1.01x | 1.11x | 1.20x | 1.26x |
-| 64 | 1.07x | 1.09x | 1.07x | 1.17x |
+| Concurrency | SeedTTS EN | SeedTTS ZH |
+|---:|---:|---:|
+| 1 | 1.34x | 1.28x |
+| 4 | 1.61x | 1.42x |
+| 8 | 1.29x | 1.20x |
+| 16 | 1.08x | 1.06x |
+| 32 | 1.13x | 1.10x |
+| 64 | 1.11x | 1.07x |
 
-SeedTTS clips average 4.7 s, and the held-out clips (the draft's LibriSpeech, FLEURS and YODAS2 test audio) 9.5 s. SeedTTS EN at concurrency 1 goes from 22.3 to 26.4 samples per second, and its single pairs at concurrency 16 and above range from 0.89x to 1.38x.
+SeedTTS clips average 4.7 s. SeedTTS EN at concurrency 1 goes from 32.4 to 43.2 samples per second, and p95 latency is 2 to 39% lower at every concurrency in both languages.
 
 ## Benchmarking
 

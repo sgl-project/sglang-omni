@@ -500,6 +500,30 @@ def test_the_context_reserve_follows_the_served_draft_width(
     assert builder.context_length == 286 + 2 * draft_width + 1
 
 
+@pytest.mark.parametrize("with_draft", [False, True])
+def test_torch_compile_is_turned_off_only_under_the_draft(
+    monkeypatch, tmp_path: Path, with_draft: bool
+) -> None:
+    """On SGLang 0.5.23 compile made the draft half as fast as no draft at concurrency 1, while without a draft it still speeds up concurrency 1."""
+    monkeypatch.setattr(fun_asr_builder.current_platform, "is_cuda", lambda: True)
+    write_speculators_config(tmp_path)
+    overrides: dict[str, object] = {"enable_torch_compile": True}
+    if with_draft:
+        overrides["speculative_algorithm"] = "DFLASH"
+        overrides["speculative_draft_model_path"] = str(tmp_path)
+    else:
+        pass
+    builder = capture_builder(monkeypatch)
+
+    builder.adjust_overrides(overrides)
+
+    assert overrides["enable_torch_compile"] is not with_draft
+    if with_draft:
+        builder.draft_checkpoint.cleanup()
+    else:
+        pass
+
+
 def test_without_a_draft_the_context_and_async_decode_are_unchanged(
     monkeypatch,
 ) -> None:
