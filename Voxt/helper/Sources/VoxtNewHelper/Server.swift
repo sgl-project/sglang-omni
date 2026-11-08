@@ -184,6 +184,15 @@ final class Server: @unchecked Sendable {
                 }
             }
             return
+        case Method.captureSystem:
+            Task {
+                do {
+                    try await capture.start(job: id, try msg.decodeParams(SystemParams.self).capture, system: true, clock: clock)
+                } catch {
+                    out.fail(id, rpcError(error))
+                }
+            }
+            return
         case Method.speechRecognize:
             Task {
                 do {

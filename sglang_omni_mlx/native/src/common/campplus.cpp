@@ -1,22 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 // Note (Jiaxin Deng): ported from the Chatterbox-Turbo CAM++ encoder
-// (chatterbox_speaker.cpp), the same network under the checkpoint's names;
-// both belong in src/common once they land.
-#include "cosyvoice3/cosyvoice3_speaker.h"
+// (chatterbox_speaker.cpp), the same network under the checkpoint's names.
+#include "common/campplus.h"
 
 #include <algorithm>
 #include <cmath>
 #include <complex>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
-namespace cosyvoice3 {
+namespace omni_common {
 
 namespace mx = mlx::core;
 
 namespace {
 
-const std::string kWeightPrefix = "campplus.";
 constexpr int kFbankSampleRate = 16000;
 constexpr int kFbankFrameSamples = 400;
 constexpr int kFbankShiftSamples = 160;
@@ -27,13 +26,8 @@ constexpr double kPreemphasis = 0.97;
 constexpr double kPoveyExponent = 0.85;
 constexpr float kBatchNormEps = 1e-5f;
 constexpr int kContextSegmentFrames = 100;
-// Layers per densely connected block and each block's dilation.
-constexpr int kBlockLayerCounts[] = {12, 24, 16};
+// Each densely connected block's dilation.
 constexpr int kBlockDilations[] = {1, 2, 2};
-
-std::string BlockLayerPrefix(int block, int layer) {
-  return "blocks." + std::to_string(block) + ".layers." + std::to_string(layer);
-}
 
 void FftInPlace(std::complex<double> *values, const std::complex<double> *input,
                 size_t input_stride, size_t size,
@@ -244,74 +238,33 @@ mx::array SegmentMeans(const mx::array &x) {
 
 } // namespace
 
-SpeakerEncoder::SpeakerEncoder(const omni_common::Checkpoint &checkpoint) {
-  // Note (Jiaxin Deng): the checkpoint stores the encoder in float16 and in
-  // MLX layout; it runs in float32, as the reference does.
-  const auto copy_weight = [&](const std::string &name) {
-    weights_.insert_or_assign(
-        name, mx::astype(checkpoint.Weight(kWeightPrefix + name), mx::float32));
-  };
-  const auto copy_batch_norm = [&](const std::string &prefix, bool affine) {
-    copy_weight(prefix + ".running_mean");
-    copy_weight(prefix + ".running_var");
-    if (affine) {
-      copy_weight(prefix + ".weight");
-      copy_weight(prefix + ".bias");
-    } else {
-    }
-  };
-  copy_weight("head.conv1.weight");
-  copy_batch_norm("head.bn1", true);
-  for (const std::string layer : {"head.layer1", "head.layer2"}) {
-    for (const std::string block : {".0", ".1"}) {
-      copy_weight(layer + block + ".conv1.weight");
-      copy_batch_norm(layer + block + ".bn1", true);
-      copy_weight(layer + block + ".conv2.weight");
-      copy_batch_norm(layer + block + ".bn2", true);
-    }
-    copy_weight(layer + ".0.shortcut.0.weight");
-    copy_batch_norm(layer + ".0.shortcut.1", true);
-  }
-  copy_weight("head.conv2.weight");
-  copy_batch_norm("head.bn2", true);
-  copy_weight("tdnn.linear.weight");
-  copy_batch_norm("tdnn.nonlinear.0", true);
-  for (int block = 0; block < 3; ++block) {
-    for (int layer = 0; layer < kBlockLayerCounts[block]; ++layer) {
-      const std::string prefix = BlockLayerPrefix(block, layer);
-      copy_batch_norm(prefix + ".nonlinear1.0", true);
-      copy_weight(prefix + ".linear1.weight");
-      copy_batch_norm(prefix + ".nonlinear2.0", true);
-      copy_weight(prefix + ".cam_layer.linear_local.weight");
-      copy_weight(prefix + ".cam_layer.linear1.weight");
-      copy_weight(prefix + ".cam_layer.linear1.bias");
-      copy_weight(prefix + ".cam_layer.linear2.weight");
-      copy_weight(prefix + ".cam_layer.linear2.bias");
-    }
-    const std::string transit = "transits." + std::to_string(block);
-    copy_batch_norm(transit + ".nonlinear.0", true);
-    copy_weight(transit + ".linear.weight");
-  }
-  copy_batch_norm("out_nonlinear.0", true);
-  copy_weight("dense.linear.weight");
-  copy_batch_norm("dense.nonlinear.0", false);
-  std::vector<mx::array> copied;
-  for (const auto &[name, weight] : weights_) {
-    copied.push_back(weight);
-  }
-  mx::eval(copied);
+std::string CamPlusLayerPrefix(int block, int layer) {
+  return "blocks." + std::to_string(block) + ".layers." + std::to_string(layer);
 }
 
-const mx::array &SpeakerEncoder::Weight(const std::string &name) const {
+CamPlusEncoder::CamPlusEncoder(WeightMap weights)
+    : weights_(std::move(weights)) {
+  std::vector<mx::array> loaded;
+  for (const auto &[name, weight] : weights_) {
+    loaded.push_back(weight);
+  }
+  mx::eval(loaded);
+}
+
+const mx::array &CamPlusEncoder::Weight(const std::string &name) const {
   const auto found = weights_.find(name);
   if (found == weights_.end()) {
-    throw std::runtime_error("missing speaker encoder weight " + name);
+    throw std::runtime_error("missing CAM++ weight " + name);
   } else {
   }
   return found->second;
 }
 
-mx::array SpeakerEncoder::BatchNorm(const mx::array &x,
+bool CamPlusEncoder::Has(const std::string &name) const {
+  return weights_.count(name) > 0;
+}
+
+mx::array CamPlusEncoder::BatchNorm(const mx::array &x,
                                     const std::string &prefix) const {
   const mx::array normalized =
       mx::multiply(mx::subtract(x, Weight(prefix + ".running_mean")),
@@ -325,33 +278,44 @@ mx::array SpeakerEncoder::BatchNorm(const mx::array &x,
   }
 }
 
+mx::array CamPlusEncoder::Normalized(const mx::array &x,
+                                     const std::string &convolution,
+                                     const std::string &norm) const {
+  if (Has(convolution + ".bias")) {
+    return mx::add(x, Weight(convolution + ".bias"));
+  } else {
+    return BatchNorm(x, norm);
+  }
+}
+
 // x is [batch, frequency, time, channels]; stride steps along frequency.
-mx::array SpeakerEncoder::ResidualBlock(const mx::array &x,
+mx::array CamPlusEncoder::ResidualBlock(const mx::array &x,
                                         const std::string &prefix,
                                         int stride) const {
-  mx::array out = Relu(BatchNorm(
+  mx::array out = Relu(Normalized(
       mx::conv2d(x, Weight(prefix + ".conv1.weight"), {stride, 1}, {1, 1}),
-      prefix + ".bn1"));
-  out = BatchNorm(
+      prefix + ".conv1", prefix + ".bn1"));
+  out = Normalized(
       mx::conv2d(out, Weight(prefix + ".conv2.weight"), {1, 1}, {1, 1}),
-      prefix + ".bn2");
+      prefix + ".conv2", prefix + ".bn2");
   const mx::array shortcut =
       stride != 1
-          ? BatchNorm(mx::conv2d(x, Weight(prefix + ".shortcut.0.weight"),
-                                 {stride, 1}, {0, 0}),
-                      prefix + ".shortcut.1")
+          ? Normalized(mx::conv2d(x, Weight(prefix + ".shortcut.0.weight"),
+                                  {stride, 1}, {0, 0}),
+                       prefix + ".shortcut.0", prefix + ".shortcut.1")
           : x;
   return Relu(mx::add(out, shortcut));
 }
 
 // One densely connected layer's new channels; x is [batch, channels, time].
-mx::array SpeakerEncoder::DenseLayer(const mx::array &x,
+mx::array CamPlusEncoder::DenseLayer(const mx::array &x,
                                      const std::string &prefix,
                                      int dilation) const {
   mx::array hidden = SwapTimeAndChannels(x);
   hidden = Relu(BatchNorm(hidden, prefix + ".nonlinear1.0"));
   hidden = mx::conv1d(hidden, Weight(prefix + ".linear1.weight"));
-  hidden = Relu(BatchNorm(hidden, prefix + ".nonlinear2.0"));
+  hidden =
+      Relu(Normalized(hidden, prefix + ".linear1", prefix + ".nonlinear2.0"));
   hidden = SwapTimeAndChannels(hidden);
 
   // Context-aware masking: local features gated by global and segment means.
@@ -369,7 +333,7 @@ mx::array SpeakerEncoder::DenseLayer(const mx::array &x,
   return SwapTimeAndChannels(mx::multiply(local, mask));
 }
 
-mx::array SpeakerEncoder::Embed(const std::vector<float> &samples_16k) const {
+mx::array CamPlusEncoder::Embed(const std::vector<float> &samples_16k) const {
   int frame_count = 0;
   const std::vector<float> fbank = FbankFeatures(samples_16k, frame_count);
   mx::array features(fbank.data(), {1, frame_count, kFbankBinCount},
@@ -378,14 +342,16 @@ mx::array SpeakerEncoder::Embed(const std::vector<float> &samples_16k) const {
 
   // Convolutional head over [batch, frequency, time, 1].
   mx::array x = mx::expand_dims(SwapTimeAndChannels(features), 3);
-  x = Relu(BatchNorm(mx::conv2d(x, Weight("head.conv1.weight"), {1, 1}, {1, 1}),
-                     "head.bn1"));
+  x = Relu(
+      Normalized(mx::conv2d(x, Weight("head.conv1.weight"), {1, 1}, {1, 1}),
+                 "head.conv1", "head.bn1"));
   for (const std::string layer : {"head.layer1", "head.layer2"}) {
     x = ResidualBlock(x, layer + ".0", 2);
     x = ResidualBlock(x, layer + ".1", 1);
   }
-  x = Relu(BatchNorm(mx::conv2d(x, Weight("head.conv2.weight"), {2, 1}, {1, 1}),
-                     "head.bn2"));
+  x = Relu(
+      Normalized(mx::conv2d(x, Weight("head.conv2.weight"), {2, 1}, {1, 1}),
+                 "head.conv2", "head.bn2"));
   const int batch = x.shape(0);
   const int reduced_frequency = x.shape(1);
   const int frames = x.shape(2);
@@ -396,11 +362,11 @@ mx::array SpeakerEncoder::Embed(const std::vector<float> &samples_16k) const {
   // Time-delay network over [batch, channels, time].
   x = SwapTimeAndChannels(x);
   x = mx::conv1d(x, Weight("tdnn.linear.weight"), 2, 2);
-  x = Relu(BatchNorm(x, "tdnn.nonlinear.0"));
+  x = Relu(Normalized(x, "tdnn.linear", "tdnn.nonlinear.0"));
   x = SwapTimeAndChannels(x);
   for (int block = 0; block < 3; ++block) {
-    for (int layer = 0; layer < kBlockLayerCounts[block]; ++layer) {
-      x = mx::concatenate({x, DenseLayer(x, BlockLayerPrefix(block, layer),
+    for (int layer = 0; layer < kCamPlusBlockLayerCounts[block]; ++layer) {
+      x = mx::concatenate({x, DenseLayer(x, CamPlusLayerPrefix(block, layer),
                                          kBlockDilations[block])},
                           1);
     }
@@ -411,7 +377,7 @@ mx::array SpeakerEncoder::Embed(const std::vector<float> &samples_16k) const {
     x = SwapTimeAndChannels(x);
   }
   x = SwapTimeAndChannels(x);
-  x = Relu(BatchNorm(x, "out_nonlinear.0"));
+  x = Relu(Normalized(x, "transits.2.linear", "out_nonlinear.0"));
   x = SwapTimeAndChannels(x);
 
   // Mean and population standard deviation over time, then the projection.
@@ -423,4 +389,4 @@ mx::array SpeakerEncoder::Embed(const std::vector<float> &samples_16k) const {
   return x;
 }
 
-} // namespace cosyvoice3
+} // namespace omni_common

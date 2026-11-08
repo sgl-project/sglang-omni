@@ -252,6 +252,10 @@ type Features struct {
 	// session whose text goes to the Notes page instead of where the
 	// cursor is. Only a tap; empty keys: off.
 	Note Hotkey `json:"note"`
+	// EndWord ends a recording when it is the last thing said (Voxt 1.x's
+	// voiceEndCommandText), and is left out of the text; "" is off. Only
+	// a speech model that streams hears it (internal/session).
+	EndWord string `json:"endWord,omitempty"`
 }
 
 // Feature is what every feature has: its shortcuts, the models it uses
