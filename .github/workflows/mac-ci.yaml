@@ -1,4 +1,4 @@
-name: Voxt Mac CI
+name: Mac CI
 
 # Builds the native MLX runtime (sglang_omni_mlx/native) on GitHub's macOS
 # runners, then checks what the app relies on without running a model: the
@@ -14,13 +14,13 @@ on:
     paths:
       - "sglang_omni_mlx/**"
       - "Voxt/helper/**"
-      - ".github/workflows/voxt-mac-ci.yaml"
+      - ".github/workflows/mac-ci.yaml"
   workflow_dispatch:
   workflow_call:
 
 # One run per pull request; a new push replaces it. The calling workflow's name keeps the nightly's run apart.
 concurrency:
-  group: voxt-mac-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: mac-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -32,7 +32,7 @@ env:
 
 jobs:
   preflight:
-    name: voxt-mac-ci-gate
+    name: mac-ci-gate
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -59,7 +59,7 @@ jobs:
       - name: Block draft PR
         if: ${{ steps.pr.outputs.is_selected == 'true' && fromJson(steps.pr.outputs.draft) }}
         run: |
-          echo "PR is draft. Blocking Voxt Mac CI."
+          echo "PR is draft. Blocking Mac CI."
           exit 1
 
       - name: Checkout CI label rules

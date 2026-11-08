@@ -136,7 +136,7 @@ CI_STAGES: tuple[CiStage, ...] = (
     CiStage(
         name="mac",
         label="run-mac-ci",
-        workflow="Voxt Mac CI",
+        workflow="Mac CI",
         runs_pr_test=False,
         preset_by_model_label={},
         random_presets=(),
