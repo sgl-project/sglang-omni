@@ -32,6 +32,59 @@ func obSnap(a *app, id string, kind store.Kind, st session.State) session.Snapsh
 	return s
 }
 
+// readyASROnly installs a speech model without a language model.
+func readyASROnly(a *app) {
+	a.local = &fakeLocal{ASRP: &fakeTranscriptions{}}
+	a.checkModels()
+}
+
+func TestOnboardingLanguageModelGuide(t *testing.T) {
+	a, tt := obTester(t)
+	readyASROnly(a)
+	a.obGo(obTranslate)
+	frames(tt)
+	for _, s := range []string{
+		"No language model is set up: set one up to translate.",
+		"Set up a language model",
+		"Set one up on the Language models page",
+		"Skip this step",
+	} {
+		if !has(tt, s) {
+			t.Errorf("translate without LLM: no %q in %q", s, tt.Texts())
+		}
+	}
+	if n := a.obTry(""); n == nil || n.action != actionLanguage {
+		t.Fatalf("Start should still need a language model: %+v", n)
+	}
+	readyModels(a)
+	frames(tt)
+	if has(tt, "set one up on the Language models page") {
+		t.Errorf("guide still shown with LLM: %q", tt.Texts())
+	}
+	if n := a.obTry(""); n != nil {
+		t.Fatalf("Start blocked with LLM: %+v", n)
+	}
+	a2, tt2 := obTester(t)
+	readyASROnly(a2)
+	a2.obGo(obRewrite)
+	frames(tt2)
+	if !has(tt2, "No language model is set up: set one up to rewrite.") {
+		t.Errorf("rewrite without LLM: %q", tt2.Texts())
+	}
+}
+
+func TestOnboardingSpeechDownloadGuide(t *testing.T) {
+	a, tt := obTester(t)
+	a.obGo(obModels)
+	m, _ := models.Lookup(obSpeech)
+	a.modelStatus[obSpeech] = models.Status{Downloading: true, Done: m.Size() / 3, Total: m.Size()}
+	a.obGo(obTranscribe)
+	frames(tt)
+	if !has(tt, "still downloading (33%)") {
+		t.Errorf("download guide: %q", tt.Texts())
+	}
+}
+
 func TestOnboardingSteps(t *testing.T) {
 	a, tt := obTester(t)
 	for _, s := range []string{"Welcome to Voxt", "Your audio stays on this Mac", "History stays on this Mac", "Get started"} {
