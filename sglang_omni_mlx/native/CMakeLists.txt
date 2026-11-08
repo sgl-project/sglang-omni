@@ -237,8 +237,8 @@ install(TARGETS sensevoice_server sensevoice_transcribe RUNTIME DESTINATION bin)
 # Ming-Omni-TTS 16.8B-A3B: ming_tts_server, with the CUDA server's
 # /v1/audio/speech API.
 add_library(ming_tts STATIC src/ming_tts/ming_tts_model.cpp src/ming_tts/ming_tts_acoustic.cpp
-  src/ming_tts/ming_tts_audio_transformer.cpp src/ming_tts/ming_tts_audio.cpp
-  src/ming_tts/ming_tts_generator.cpp src/ming_tts/ming_tts_reference.cpp)
+  src/ming_tts/ming_tts_audio.cpp src/ming_tts/ming_tts_generator.cpp
+  src/ming_tts/ming_tts_reference.cpp)
 target_link_libraries(ming_tts PUBLIC qwen3_asr)
 target_compile_options(ming_tts PRIVATE -Wall -Wextra)
 # Its request parsing, which stub_server shares.

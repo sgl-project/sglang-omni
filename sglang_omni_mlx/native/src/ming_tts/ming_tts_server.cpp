@@ -12,10 +12,10 @@
 // max_new_tokens (or stage_params.tts_engine.max_decode_steps) counts
 // acoustic patches, 200 by default and at most 256, and ref_audio with
 // ref_text clones a voice, ref_audio a base64 mono WAV data URL of 0.1 to 30 s
-// at any common rate, which needs campplus.safetensors in the model
-// directory. One request runs at a time and N more (2 by default) may wait;
-// the rest get 503. A request not done S seconds (600 by default) after it
-// arrives is cancelled, with 504 or an early end to its stream, and so is a
+// at any common rate, which needs campplus.safetensors or campplus.onnx in the
+// model directory. One request runs at a time and N more (2 by default) may
+// wait; the rest get 503. A request not done S seconds (600 by default) after
+// it arrives is cancelled, with 504 or an early end to its stream, and so is a
 // request whose client disconnects.
 #include <filesystem>
 #include <memory>
@@ -60,8 +60,7 @@ public:
                           request_timeout_seconds),
         frontend_(model_directory), generator_(model_directory),
         decoder_(model_directory) {
-    if (std::filesystem::is_regular_file(model_directory /
-                                         "campplus.safetensors")) {
+    if (ming_tts::HasCamPlusWeights(model_directory)) {
       reference_encoder_.emplace(model_directory);
     } else {
     }
@@ -80,8 +79,8 @@ private:
     if (request.reference_audio.has_value()) {
       if (!reference_encoder_.has_value()) {
         throw std::invalid_argument(
-            "voice cloning requires campplus.safetensors in the model "
-            "directory");
+            "voice cloning requires campplus.safetensors or campplus.onnx "
+            "in the model directory");
       } else {
       }
       reference_patches = reference_encoder_->PatchCount(

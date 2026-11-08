@@ -12,6 +12,10 @@ struct ReferenceConditioning {
   mlx::core::array speaker;
 };
 
+// Whether directory has CampPlus: campplus.safetensors, as the mlx-community
+// checkpoints carry it, or the official checkpoint's campplus.onnx.
+bool HasCamPlusWeights(const std::filesystem::path &directory);
+
 class MingReferenceEncoder {
 public:
   explicit MingReferenceEncoder(const std::filesystem::path &directory);

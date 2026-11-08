@@ -2,23 +2,216 @@
 #include "ming_tts/ming_tts_reference.h"
 
 #include <algorithm>
+#include <cstring>
+#include <fstream>
+#include <iterator>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <utility>
 
 namespace ming_tts {
 namespace mx = mlx::core;
 
 namespace {
 
-// campplus.safetensors, an ONNX export of CampPlus in PyTorch layout, as
-// CamPlusEncoder names its weights.
-omni_common::WeightMap CamPlusWeights(const std::filesystem::path &path) {
-  const auto stored = mx::load_safetensors(path.string()).first;
+constexpr const char *kCamPlusSafetensors = "campplus.safetensors";
+constexpr const char *kCamPlusOnnx = "campplus.onnx";
+// ONNX's ModelProto.graph, GraphProto.initializer and the TensorProto fields
+// read here, with its FLOAT data type and EXTERNAL data location.
+constexpr int kModelGraphField = 7;
+constexpr int kGraphInitializerField = 5;
+constexpr int kTensorDimsField = 1;
+constexpr int kTensorDataTypeField = 2;
+constexpr int kTensorFloatDataField = 4;
+constexpr int kTensorNameField = 8;
+constexpr int kTensorRawDataField = 9;
+constexpr int kTensorDataLocationField = 14;
+constexpr uint64_t kOnnxFloat = 1;
+constexpr uint64_t kOnnxExternalData = 1;
+// Protobuf wire types.
+constexpr int kVarint = 0;
+constexpr int kFixed64 = 1;
+constexpr int kLengthDelimited = 2;
+constexpr int kFixed32 = 5;
+
+// The fields of one protobuf message, read in wire order.
+class ProtobufFields {
+public:
+  explicit ProtobufFields(std::string_view bytes) : bytes_(bytes) {}
+
+  bool Done() const { return position_ == bytes_.size(); }
+
+  // The next field's number and wire type.
+  std::pair<int, int> Tag() {
+    const uint64_t tag = Varint();
+    return {static_cast<int>(tag >> 3), static_cast<int>(tag & 7)};
+  }
+
+  uint64_t Varint() {
+    uint64_t value = 0;
+    for (int shift = 0; shift < 64; shift += 7) {
+      const uint8_t byte = static_cast<uint8_t>(Take(1)[0]);
+      value |= static_cast<uint64_t>(byte & 0x7f) << shift;
+      if ((byte & 0x80) == 0) {
+        return value;
+      } else {
+      }
+    }
+    throw std::runtime_error("malformed ONNX file: varint too long");
+  }
+
+  std::string_view Bytes() { return Take(Varint()); }
+
+  std::string_view Take(uint64_t count) {
+    if (count > bytes_.size() - position_) {
+      throw std::runtime_error("malformed ONNX file: field past its message");
+    } else {
+    }
+    const std::string_view taken = bytes_.substr(position_, count);
+    position_ += count;
+    return taken;
+  }
+
+  void Skip(int wire_type) {
+    if (wire_type == kVarint) {
+      Varint();
+    } else if (wire_type == kFixed64) {
+      Take(8);
+    } else if (wire_type == kLengthDelimited) {
+      Bytes();
+    } else if (wire_type == kFixed32) {
+      Take(4);
+    } else {
+      throw std::runtime_error("malformed ONNX file: wire type " +
+                               std::to_string(wire_type));
+    }
+  }
+
+private:
+  std::string_view bytes_;
+  size_t position_ = 0;
+};
+
+// A TensorProto as an array, or nothing for a tensor that is not float32.
+std::optional<std::pair<std::string, mx::array>>
+OnnxTensor(std::string_view message) {
+  ProtobufFields fields(message);
+  std::string name;
+  mx::Shape shape;
+  uint64_t data_type = 0;
+  std::string_view raw_data;
+  std::vector<float> float_data;
+  bool external = false;
+  while (!fields.Done()) {
+    const auto [field, wire_type] = fields.Tag();
+    if (field == kTensorDimsField && wire_type == kVarint) {
+      shape.push_back(static_cast<int>(fields.Varint()));
+    } else if (field == kTensorDimsField && wire_type == kLengthDelimited) {
+      ProtobufFields dims(fields.Bytes());
+      while (!dims.Done()) {
+        shape.push_back(static_cast<int>(dims.Varint()));
+      }
+    } else if (field == kTensorDataTypeField && wire_type == kVarint) {
+      data_type = fields.Varint();
+    } else if (field == kTensorFloatDataField &&
+               wire_type == kLengthDelimited) {
+      const std::string_view packed = fields.Bytes();
+      const size_t start = float_data.size();
+      float_data.resize(start + packed.size() / sizeof(float));
+      std::memcpy(float_data.data() + start, packed.data(),
+                  packed.size() / sizeof(float) * sizeof(float));
+    } else if (field == kTensorFloatDataField && wire_type == kFixed32) {
+      float value;
+      std::memcpy(&value, fields.Take(sizeof(float)).data(), sizeof(float));
+      float_data.push_back(value);
+    } else if (field == kTensorNameField && wire_type == kLengthDelimited) {
+      name = std::string(fields.Bytes());
+    } else if (field == kTensorRawDataField && wire_type == kLengthDelimited) {
+      raw_data = fields.Bytes();
+    } else if (field == kTensorDataLocationField && wire_type == kVarint) {
+      external = fields.Varint() == kOnnxExternalData;
+    } else {
+      fields.Skip(wire_type);
+    }
+  }
+  size_t element_count = 1;
+  for (const int dimension : shape) {
+    element_count *= dimension;
+  }
+  if (data_type != kOnnxFloat) {
+    return std::nullopt;
+  } else if (external) {
+    throw std::runtime_error("ONNX tensor " + name +
+                             " keeps its data in another file");
+  } else if (!raw_data.empty()) {
+    if (raw_data.size() != element_count * sizeof(float)) {
+      throw std::runtime_error("malformed ONNX file: tensor " + name +
+                               " has the wrong byte count");
+    } else {
+    }
+    float_data.resize(element_count);
+    std::memcpy(float_data.data(), raw_data.data(), raw_data.size());
+  } else if (float_data.size() != element_count) {
+    throw std::runtime_error("malformed ONNX file: tensor " + name +
+                             " has the wrong element count");
+  } else {
+  }
+  return std::pair{name, mx::array(float_data.begin(), shape, mx::float32)};
+}
+
+// The float32 initializers of an ONNX model, by name.
+omni_common::WeightMap OnnxInitializers(const std::filesystem::path &path) {
+  std::ifstream stream(path, std::ios::binary);
+  if (!stream) {
+    throw std::runtime_error("cannot read " + path.string());
+  } else {
+  }
+  const std::string bytes((std::istreambuf_iterator<char>(stream)),
+                          std::istreambuf_iterator<char>());
+  omni_common::WeightMap initializers;
+  ProtobufFields model(bytes);
+  while (!model.Done()) {
+    const auto [field, wire_type] = model.Tag();
+    if (field == kModelGraphField && wire_type == kLengthDelimited) {
+      ProtobufFields graph(model.Bytes());
+      while (!graph.Done()) {
+        const auto [graph_field, graph_wire_type] = graph.Tag();
+        if (graph_field == kGraphInitializerField &&
+            graph_wire_type == kLengthDelimited) {
+          if (auto tensor = OnnxTensor(graph.Bytes())) {
+            initializers.insert_or_assign(tensor->first, tensor->second);
+          } else {
+          }
+        } else {
+          graph.Skip(graph_wire_type);
+        }
+      }
+    } else {
+      model.Skip(wire_type);
+    }
+  }
+  return initializers;
+}
+
+// CampPlus in a model directory, an ONNX export in PyTorch layout, as
+// CamPlusEncoder names its weights: campplus.safetensors, which the
+// mlx-community checkpoints carry, else the official campplus.onnx, whose
+// initializers it holds.
+omni_common::WeightMap CamPlusWeights(const std::filesystem::path &directory) {
+  const std::filesystem::path safetensors = directory / kCamPlusSafetensors;
+  const bool has_safetensors = std::filesystem::is_regular_file(safetensors);
+  const std::filesystem::path source =
+      has_safetensors ? safetensors : directory / kCamPlusOnnx;
+  const omni_common::WeightMap stored =
+      has_safetensors ? mx::load_safetensors(source.string()).first
+                      : OnnxInitializers(source);
   omni_common::WeightMap weights;
   const auto take = [&](const std::string &name) {
     const auto found = stored.find(name);
     if (found == stored.end()) {
-      throw std::runtime_error(path.string() + " has no " + name);
+      throw std::runtime_error(source.string() + " has no " + name);
     } else {
     }
     return mx::astype(found->second, mx::float32);
@@ -105,10 +298,14 @@ omni_common::WeightMap CamPlusWeights(const std::filesystem::path &path) {
 
 } // namespace
 
+bool HasCamPlusWeights(const std::filesystem::path &directory) {
+  return std::filesystem::is_regular_file(directory / kCamPlusSafetensors) ||
+         std::filesystem::is_regular_file(directory / kCamPlusOnnx);
+}
+
 MingReferenceEncoder::MingReferenceEncoder(
     const std::filesystem::path &directory)
-    : speaker_(CamPlusWeights(directory / "campplus.safetensors")),
-      audio_(directory) {
+    : speaker_(CamPlusWeights(directory)), audio_(directory) {
   const auto config = omni_common::ReadJson(directory / "config.json");
   const auto &audio = config.at("audio_tokenizer_config");
   // Note (altale): Pad to complete acoustic patches after both encoder
