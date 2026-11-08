@@ -28,7 +28,7 @@ func TestTranslatePage(t *testing.T) {
 	a, tt := pageTester(t, "/translate")
 	for _, s := range []string{
 		"Translate", "Shortcuts", "Right ⌥ ⇧", "Models", "No speech model is installed: only selected text can be translated.",
-		"No language model is set up: set one up to translate.", "Translation", "Translate into", "Automatic: Simplified Chinese",
+		"No language model is set up: set one up to translate.", "Translation", "Translate into", "Automatic (now: Simplified Chinese)",
 		"Basic clean-up", "Show the result in a card", "Your rules", "Try it",
 	} {
 		if !has(tt, s) {
@@ -39,7 +39,7 @@ func TestTranslatePage(t *testing.T) {
 		t.Error("paste-last belongs to Transcribe")
 	}
 	clickSwitch(t, tt, "Show the result in a card")
-	if !a.lib.settings.Get().Features.Translate.ShowCard {
+	if !a.lib.settings.Get().Features.ShowCard {
 		t.Error("show card not saved")
 	}
 	clickSwitch(t, tt, "Basic clean-up")
@@ -52,7 +52,7 @@ func TestTranslatePage(t *testing.T) {
 		t.Errorf("target %q", got)
 	}
 	click(t, tt, "Target language")
-	click(t, tt, "Automatic: Simplified Chinese")
+	click(t, tt, "Automatic (now: Simplified Chinese)")
 	if got := a.lib.settings.Get().Features.Translate.Target; got != "" {
 		t.Errorf("target %q", got)
 	}
@@ -62,9 +62,11 @@ func TestTranslatePage(t *testing.T) {
 		t.Errorf("shortcuts %+v", hs)
 	}
 	click(t, tt, "Your rules")
-	click(t, tt, "Your rules for Translate")
-	tt.Type("Use British spelling.")
-	click(t, tt, "Show the full prompt")
+	click(t, tt, "System prompt for Translate")
+	a.fui(hotkey.Translate).prompt = "Use British spelling."
+	a.fui(hotkey.Translate).promptDirty = true
+	a.savePrompt(hotkey.Translate)
+	click(t, tt, "Example user message")
 	if p := a.lib.settings.Get().Features.Translate.Prompt; p != "Use British spelling." || a.lib.settings.Get().Features.Transcribe.Prompt != "" {
 		t.Errorf("rules %q", p)
 	}
@@ -98,7 +100,7 @@ func TestRewritePage(t *testing.T) {
 		t.Error("the card's length setting is back: every answer goes to the card")
 	}
 	click(t, tt, "Your rules")
-	click(t, tt, "Show the full prompt")
+	click(t, tt, "Example user message")
 	if !has(tt, "With a selection, as below; with nothing selected the model writes from the instruction and answers with a title and the text.") {
 		t.Errorf("preview %q", firstTexts(tt))
 	}
@@ -209,6 +211,36 @@ func TestSessionBlocker(t *testing.T) {
 	for _, k := range []store.Kind{store.KindTranscribe, store.KindTranslate, store.KindRewrite} {
 		if n := a.sessionBlocker(k); n != nil {
 			t.Errorf("%s: %+v", k, n)
+		}
+	}
+}
+
+// TestCardSwitchShared: Transcribe and Translate share one answer-card
+// switch; Rewrite always shows answers in the card and has no switch.
+func TestCardSwitchShared(t *testing.T) {
+	a, tt := pageTester(t, "/translate")
+	for i, page := range []string{"/translate", "/transcribe"} {
+		a.navigate(page)
+		frames(tt)
+		n := 0
+		for _, s := range tt.AccessLabels() {
+			if s == "Show the result in a card" {
+				n++
+			}
+		}
+		if n != 2 { // one row: its title and its switch
+			t.Fatalf("%s: %d elements named for the card switch", page, n)
+		}
+		clickSwitch(t, tt, "Show the result in a card")
+		if on := a.lib.settings.Get().Features.ShowCard; on != (i%2 == 0) {
+			t.Errorf("%s: the card switch is %v after a click", page, on)
+		}
+	}
+	a.navigate("/rewrite")
+	frames(tt)
+	for _, s := range tt.AccessLabels() {
+		if s == "Show the result in a card" {
+			t.Fatalf("/rewrite: card switch should not appear on Rewrite")
 		}
 	}
 }

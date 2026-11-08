@@ -40,7 +40,7 @@ func TestLibrary(t *testing.T) {
 	name := func(id string) string { return "name of " + id }
 	var s Services = NewLibrary(m, Openers{}, name)
 
-	if l := s.Installed(ASR); len(l) != 1 || l[0].ID != models.ASRFast || l[0].Name != "name of asr.fast" {
+	if l := s.Installed(ASR); len(l) != 1 || l[0].ID != models.ASRFast || l[0].Name != "name of asr.fast" || !l[0].Stream {
 		t.Errorf("asr %+v", l)
 	}
 	// The local language models are retired (Voxt's are remote): on disk,

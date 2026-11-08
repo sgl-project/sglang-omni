@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
+from sglang.srt.mem_cache import allocation_sizing
 
 import sglang_omni.models.fun_asr.engine_builder as fun_asr_builder
+import sglang_omni.models.fun_asr.sglang_model as fun_asr_model
 import sglang_omni.models.fun_asr.stages as fun_asr_stages
 import sglang_omni.platforms as platforms
 import sglang_omni.scheduling.bootstrap as bootstrap
@@ -16,6 +21,10 @@ import sglang_omni.scheduling.sglang_backend as sglang_backend
 from sglang_omni.models.fun_asr import request_builders
 from sglang_omni.models.fun_asr.config import FunASRPipelineConfig
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.speculative.dflash_draft import (
+    DRAFT_ARCHITECTURE,
+    ReducedVocabularyDFlashWorker,
+)
 
 
 def test_fun_asr_config_uses_batched_stage_with_64_running_requests() -> None:
@@ -333,3 +342,299 @@ def test_apple_rejects_unsupported_runtime_options(monkeypatch, override, match)
     }
     with pytest.raises(ValueError, match=match):
         builder.validate_before_infrastructure(SimpleNamespace(**args))
+
+
+def capture_builder(monkeypatch) -> fun_asr_builder.FunASREngineBuilder:
+    captured = []
+    monkeypatch.setattr(
+        fun_asr_builder.FunASREngineBuilder,
+        "build",
+        lambda self, *args, **kwargs: captured.append(self),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "make_fun_asr_stream_output_builder",
+        lambda **kwargs: object(),
+    )
+    fun_asr_stages.create_sglang_fun_asr_executor("dummy")
+    return captured[0]
+
+
+def write_speculators_config(directory: Path) -> None:
+    (directory / "config.json").write_text(
+        json.dumps(
+            {
+                "speculators_model_type": "dflash",
+                "sample_from_anchor": False,
+                "sliding_window_non_causal": False,
+                "dtype": "bfloat16",
+                "draft_vocab_size": 48000,
+                "aux_hidden_state_layer_ids": [2, 14, 25],
+                "mask_token_id": 151705,
+                "block_size": 8,
+                "transformer_layer_config": {"hidden_size": 1024},
+            }
+        )
+    )
+
+
+def test_a_full_length_request_fits_the_engine_context_under_a_draft(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A 30 s clip at the full budget was refused under a draft, while requests keep the
+    limit they have without one."""
+    monkeypatch.setattr(fun_asr_builder.current_platform, "is_cuda", lambda: True)
+    write_speculators_config(tmp_path)
+    builder = capture_builder(monkeypatch)
+    builder.context_length = 286
+    overrides: dict[str, object] = {
+        "speculative_algorithm": "DFLASH",
+        "speculative_draft_model_path": str(tmp_path),
+        "speculative_draft_model_revision": "pinned",
+    }
+
+    builder.adjust_overrides(overrides)
+
+    draft_dir = Path(str(overrides["speculative_draft_model_path"]))
+    draft_config = json.loads((draft_dir / "config.json").read_text())
+    assert draft_config["architectures"] == [DRAFT_ARCHITECTURE]
+    assert overrides["speculative_draft_model_revision"] is None
+    monkeypatch.setattr(omni_scheduler, "get_alloc_reserve_per_decode", lambda: 16)
+    # The scheduler sets max_req_len to one token below the model context.
+    scheduler = SimpleNamespace(
+        draft_worker=object(), max_req_len=builder.context_length - 1
+    )
+    full_length_request = SimpleNamespace(
+        origin_input_ids=[0] * 86, sampling_params=SimpleNamespace(max_new_tokens=200)
+    )
+    assert (
+        omni_scheduler.OmniScheduler.request_kv_capacity_error(
+            scheduler, full_length_request
+        )
+        is None
+    )
+    assert builder.infra_kwargs() == {
+        "supports_speculative_decoding": True,
+        "speculative_worker_class": ReducedVocabularyDFlashWorker,
+    }
+    assert builder.extra_scheduler_kwargs()["enable_async_decode"] is False
+    monkeypatch.setattr(
+        request_builders, "make_fun_asr_scheduler_adapters", lambda **kwargs: kwargs
+    )
+    assert builder.make_adapters(object())["context_length"] == 286
+    builder.draft_checkpoint.cleanup()
+
+
+def test_the_context_reserve_must_match_the_scheduler(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The reserve is sized before the server args resolve; a mismatch with what the
+    scheduler later reserves would refuse full-length requests at runtime instead."""
+    monkeypatch.setattr(fun_asr_builder.current_platform, "is_cuda", lambda: True)
+    write_speculators_config(tmp_path)
+    builder = capture_builder(monkeypatch)
+    builder.adjust_overrides(
+        {
+            "speculative_algorithm": "DFLASH",
+            "speculative_draft_model_path": str(tmp_path),
+        }
+    )
+    builder.draft_checkpoint.cleanup()
+
+    monkeypatch.setattr(fun_asr_builder, "get_alloc_reserve_per_decode", lambda: 16)
+    builder.validate_after_model_setup(object(), object())
+    monkeypatch.setattr(fun_asr_builder, "get_alloc_reserve_per_decode", lambda: 24)
+    with pytest.raises(RuntimeError, match="16-token speculative reserve"):
+        builder.validate_after_model_setup(object(), object())
+
+
+@pytest.mark.parametrize(
+    ("width_overrides", "draft_width"),
+    [
+        ({}, 8),
+        ({"speculative_num_draft_tokens": 4}, 4),
+        ({"speculative_dflash_block_size": 4}, 4),
+        ({"speculative_dflash_block_size": 4, "speculative_num_draft_tokens": 4}, 4),
+    ],
+)
+def test_the_context_reserve_follows_the_served_draft_width(
+    monkeypatch,
+    tmp_path: Path,
+    width_overrides: dict[str, int],
+    draft_width: int,
+) -> None:
+    """A width below the block-8 draft's refused to start the server: the context was
+    padded for 8 tokens while SGLang reserves for the width it serves."""
+    monkeypatch.setattr(fun_asr_builder.current_platform, "is_cuda", lambda: True)
+    write_speculators_config(tmp_path)
+    builder = capture_builder(monkeypatch)
+    builder.context_length = 286
+    builder.adjust_overrides(
+        {
+            "speculative_algorithm": "DFLASH",
+            "speculative_draft_model_path": str(tmp_path),
+            **width_overrides,
+        }
+    )
+    builder.draft_checkpoint.cleanup()
+    # note (wilsonzheng0327): the speculative settings SGLang resolves for this width, read by its real reserve function.
+    spec = SimpleNamespace(
+        speculative_algorithm="DFLASH",
+        speculative_num_steps=1,
+        speculative_eagle_topk=1,
+        speculative_num_draft_tokens=draft_width,
+    )
+    monkeypatch.setattr(allocation_sizing, "get_spec", lambda: spec)
+    monkeypatch.setattr(
+        allocation_sizing, "max_speculative_num_draft_tokens", lambda: draft_width
+    )
+    monkeypatch.setattr(
+        allocation_sizing, "get_schedule", lambda: SimpleNamespace(page_size=1)
+    )
+    monkeypatch.setattr(
+        allocation_sizing, "get_parallel", lambda: SimpleNamespace(attn_dcp_size=1)
+    )
+
+    builder.validate_after_model_setup(object(), object())
+
+    assert builder.context_length == 286 + 2 * draft_width + 1
+
+
+@pytest.mark.parametrize("with_draft", [False, True])
+def test_torch_compile_is_turned_off_only_under_the_draft(
+    monkeypatch, tmp_path: Path, with_draft: bool
+) -> None:
+    """On SGLang 0.5.23 compile made the draft half as fast as no draft at concurrency 1, while without a draft it still speeds up concurrency 1."""
+    monkeypatch.setattr(fun_asr_builder.current_platform, "is_cuda", lambda: True)
+    write_speculators_config(tmp_path)
+    overrides: dict[str, object] = {"enable_torch_compile": True}
+    if with_draft:
+        overrides["speculative_algorithm"] = "DFLASH"
+        overrides["speculative_draft_model_path"] = str(tmp_path)
+    else:
+        pass
+    builder = capture_builder(monkeypatch)
+
+    builder.adjust_overrides(overrides)
+
+    assert overrides["enable_torch_compile"] is not with_draft
+    if with_draft:
+        builder.draft_checkpoint.cleanup()
+    else:
+        pass
+
+
+def test_without_a_draft_the_context_and_async_decode_are_unchanged(
+    monkeypatch,
+) -> None:
+    builder = capture_builder(monkeypatch)
+    builder.context_length = 286
+
+    builder.adjust_overrides({})
+    builder.validate_after_model_setup(object(), object())
+
+    assert builder.context_length == 286
+    assert builder.infra_kwargs() == {}
+    assert builder.extra_scheduler_kwargs()["enable_async_decode"] is True
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_the_stage_releases_the_draft_copy_after_the_build(
+    monkeypatch, tmp_path: Path, fails: bool
+) -> None:
+    """Every start, and every failed start, would otherwise leave a copy in the temp
+    directory."""
+    monkeypatch.setattr(fun_asr_builder.current_platform, "is_cuda", lambda: True)
+    write_speculators_config(tmp_path)
+    draft_paths: list[Path] = []
+
+    def build_after_materializing(
+        builder, model_path, *, server_args_overrides, **build_options
+    ):
+        del model_path, build_options
+        overrides = dict(server_args_overrides)
+        builder.adjust_overrides(overrides)
+        draft_paths.append(Path(str(overrides["speculative_draft_model_path"])))
+        assert draft_paths[0].is_dir()
+        if fails:
+            raise RuntimeError("engine failed")
+        else:
+            return "scheduler"
+
+    monkeypatch.setattr(
+        fun_asr_builder.FunASREngineBuilder, "build", build_after_materializing
+    )
+    overrides = {
+        "speculative_algorithm": "DFLASH",
+        "speculative_draft_model_path": str(tmp_path),
+    }
+
+    if fails:
+        with pytest.raises(RuntimeError, match="engine failed"):
+            fun_asr_stages.create_sglang_fun_asr_executor(
+                "dummy", server_args_overrides=overrides
+            )
+    else:
+        assert (
+            fun_asr_stages.create_sglang_fun_asr_executor(
+                "dummy", server_args_overrides=overrides
+            )
+            == "scheduler"
+        )
+
+    assert not draft_paths[0].exists()
+
+
+@pytest.mark.parametrize(
+    ("overrides", "is_cuda", "message"),
+    [
+        ({"speculative_algorithm": "EAGLE3"}, True, "supports DFLASH"),
+        ({"speculative_algorithm": "DFLASH"}, True, "needs speculative_draft"),
+        (
+            {"speculative_draft_model_path": "draft"},
+            True,
+            "needs a speculative_algorithm",
+        ),
+        (
+            {
+                "speculative_algorithm": "DFLASH",
+                "speculative_draft_model_path": "draft",
+            },
+            False,
+            "needs a CUDA GPU",
+        ),
+    ],
+)
+def test_unservable_speculative_settings_are_refused_before_the_engine_starts(
+    monkeypatch,
+    overrides: dict[str, object],
+    is_cuda: bool,
+    message: str,
+) -> None:
+    """Each of these otherwise fails deep in startup or silently serves no draft."""
+    monkeypatch.setattr(fun_asr_builder.current_platform, "is_cuda", lambda: is_cuda)
+    builder = capture_builder(monkeypatch)
+
+    with pytest.raises(ValueError, match=message):
+        builder.adjust_overrides(dict(overrides))
+
+
+def test_dflash_worker_reaches_the_decoder_through_the_outer_model() -> None:
+    """The worker addresses the outer model; its decoder owns the embedding, the head
+    and the capture."""
+    captured_layer_ids: list[list[int]] = []
+    decoder_embedding = object()
+    decoder_head = object()
+    model = object.__new__(fun_asr_model.FunAsrNanoForConditionalGeneration)
+    torch.nn.Module.__init__(model)
+    model.language_model = SimpleNamespace(
+        get_input_embeddings=lambda: decoder_embedding,
+        lm_head=decoder_head,
+        set_dflash_layers_to_capture=captured_layer_ids.append,
+    )
+
+    model.set_dflash_layers_to_capture([1, 13, 24])
+
+    assert model.get_input_embeddings() is decoder_embedding
+    assert model.lm_head is decoder_head
+    assert captured_layer_ids == [[1, 13, 24]]

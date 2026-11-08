@@ -12,6 +12,9 @@ import (
 // settingRow is a setting: its name, a ⓘ telling what it does (desc, ""
 // for none) and its control on the right (formRow in ui_layout.go).
 func settingRow(c *ui.Context, key, title, desc string, control func()) {
+	if !settingsTextMatches(settingsSearchQuery, title, desc) {
+		return
+	}
 	formRow(c, key, title, desc, control)
 }
 
@@ -24,6 +27,9 @@ func settingRowNote(c *ui.Context, key, title, note string, control func()) {
 // settingRowNoteTip is settingRowNote with a ⓘ beside the name telling
 // what the setting does (tip, "" for none).
 func settingRowNoteTip(c *ui.Context, key, title, tip, note string, control func()) {
+	if !settingsTextMatches(settingsSearchQuery, title, tip, note) {
+		return
+	}
 	t := c.Theme()
 	ui.Row(c.Key(key)).Wrap().GapX(px(t, sp4)).GapY(px(t, 6)).AlignItems(ui.Center).MinHeight(px(t, 32)).Children(func() {
 		ui.Column(c).Grow(1).Basis(px(t, 200)).MinWidth(px(t, 140)).Gap(px(t, 2)).Children(func() {
@@ -45,6 +51,9 @@ func settingRowNoteTip(c *ui.Context, key, title, tip, note string, control func
 
 // sectionTitle heads a group of settings.
 func sectionTitle(c *ui.Context, title string) {
+	if !settingsTextMatches(settingsSearchQuery, title) {
+		return
+	}
 	t := c.Theme()
 	sectionTitleText(c, title).Margin(px(t, sp2), 0, 0, 0)
 }

@@ -198,10 +198,10 @@ type Snapshot struct {
 	Inserted bool
 	Card     bool
 	Delivery deliver.Reason
-	// InsertedInto is the app the result was pasted into: Target, or the
-	// app the user went to and focused a text field in. Target stays the
-	// app the scene was chosen for (the history's app).
-	InsertedInto proto.App
+	// Landing says where the result was pasted (nil: not inserted): the
+	// app, Target or the app the user went to and focused a text field
+	// in. Target stays the app the scene was chosen for (the history's app).
+	Landing *deliver.Landing
 	// Scene is the app enhancement group the session falls in (scene.go);
 	// nil until it is decided.
 	Scene *appctx.Match
@@ -365,6 +365,10 @@ type Config struct {
 	// discarding the capture job (a capture.stop that raced its start);
 	// DefaultStopGrace.
 	StopGrace time.Duration
+	// EndWordPause is how long the live text must end with the end word
+	// (settings.Features.EndWord) before the recording stops;
+	// DefaultEndWordPause.
+	EndWordPause time.Duration
 }
 
 // Defaults of Config's limits.
@@ -383,6 +387,7 @@ const (
 	DefaultDeliverTimeout = 5 * time.Second
 	DefaultStopGrace      = 3 * time.Second
 	DefaultWaitNote       = 400 * time.Millisecond
+	DefaultEndWordPause   = time.Second // Voxt 1.x's silence after the end word
 )
 
 // StartRequest starts a session.
