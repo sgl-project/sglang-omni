@@ -24,6 +24,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Changed
 
 - **Automatic says which model it uses**: in a feature's speech model and language model menus, and Translate's target language, the Automatic entry reads "Automatic (now: Qwen3-ASR 1.7B (8bit))", so it no longer looks like a second copy of the model listed below it.
+- **The setup guide picks up where you left it**: reopened, it shows the step you left (until you finish it), and Set up a language model or Choose models… leaves a "Back to the setup guide" bar on that page.
+- **Ask for the required permissions in one go**: the permissions are grouped as Required (microphone, Accessibility) and Optional (Speech Recognition), and "Ask for the required permissions" shows macOS's prompts one after another.
+- **A service that needs its API key says so**: its card reads "API key needed" with Complete setup, and when no language model is ready the sidebar card names the service and opens its dialog. Services brought over from Voxt 1.x show this at once.
+- **The import from Voxt 1.x reads at a glance**: its result is grouped as Imported, Left out (with why) and To do, each to-do with Complete setup; an import from outside the setup guide shows it in a dialog.
 
 ### 中文
 
@@ -47,6 +51,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 变更
 
 - **“自动”写明现在用哪一个**：功能页的语音模型、语言模型菜单和翻译的目标语言菜单里，“自动”一项写成“自动（现在用：Qwen3-ASR 1.7B (8bit)）”，不再像是下面那个模型的重复项。
+- **设置引导接着上次的地方**：再打开时回到离开时的那一步（走完之前），点“设置语言模型”或“选择模型…”离开后，那一页顶部有“回到设置引导”。
+- **一次请求必需的权限**：权限分成“必需”（麦克风、辅助功能）和“可选”（语音识别），“依次请求必需的权限”会一个接一个地弹出 macOS 的提示。
+- **缺 API Key 的服务会说清楚**：卡片上写“需要 API Key”，带“完成设置”；没有可用的语言模型时，侧边栏的卡片写明是哪个服务，点一下打开它的设置。从 Voxt 1.x 导入的服务马上就显示这个状态。
+- **从 Voxt 1.x 导入的结果一眼看清**：分成“已导入”“没有导入”（写明原因）和“还要做”，每件要做的事带“完成设置”；不是在设置引导里导入时，结果显示在一个对话框里。
 
 ## [2.0.1] - 2026-11-07
 
