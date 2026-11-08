@@ -192,6 +192,18 @@ Realtime transcription sessions (`--enable-realtime`) use the draft too. On one 
 
 The draft's weights and KV cache come out of the stage's memory fraction. On an 80 GB H100 at `--mem-fraction-static 0.08`, as in the streaming cascade profiles, the KV cache holds 11,501 tokens with the draft and 20,705 without. At that fraction, 640 SeedTTS Chinese sessions, 16 at a time, ran with no errors.
 
+### Per-request plain fallback
+
+Set `asr.factory.enable_plain_fallback` to route requests that DFlash cannot serve through ordinary decoding. For example, `repetition_penalty=1.2` uses ordinary decoding, and supported sampling temperatures can still use DFlash. Requests that fit the target context but leave too little room for draft KV also use ordinary decoding.
+
+```bash
+sgl-omni serve \
+  --config examples/configs/qwen3_asr_1_7b_plain_fallback.yaml \
+  --port 8000
+```
+
+This option requires synchronous DFlash on one CUDA GPU, with prefill CUDA graphs, mixed chunks, and DP attention disabled. Decode CUDA graphs and radix caching can stay enabled. Both paths share the target model and KV pool, and each path caches its prefixes separately.
+
 ## Transcribe Audio
 
 ```bash

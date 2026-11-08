@@ -247,6 +247,18 @@ Gain over the same server without a draft, on one H200 with SGLang 0.5.23, the d
 
 Neither mode is slower than the server without a draft at any load measured, and CER and DER do not change.
 
+### Per-request plain fallback
+
+Set `asr.factory.enable_plain_fallback` to route requests with unsupported sampling options, such as `repetition_penalty=1.2`, through ordinary decoding. Requests that fit the target context but leave too little room for draft KV also use ordinary decoding.
+
+```bash
+sgl-omni serve \
+  --config examples/configs/moss_td_plain_fallback.yaml \
+  --port 8000
+```
+
+The [Qwen3-ASR fallback restrictions](qwen3_asr.md#per-request-plain-fallback) also apply to MOSS-TD.
+
 ## Benchmarking
 
 Thanks to the Moss team for providing the benchmark datasets, we prepare movies800times, aishell4_long, and googletime as benchmark datasets for multi-speaker ASR. movies800times is a short-sequence dataset with 800 dialog clips, aishell4_long with googletime are long-sequence dataset of long-form meeting audio, and English podcasts. These datasets are right now under private license, and you can contact the Moss team for access.
