@@ -274,11 +274,11 @@ type Transcribe struct {
 	Feature
 	// Enhance runs the LLM over the transcript; Cleanup and Structure
 	// are the composer's capability layers it uses.
-	Enhance   bool `json:"enhance"`
-	Cleanup   bool `json:"cleanup"`
-	Structure bool `json:"structure,omitempty"`
-	ShowCard bool   `json:"showCard,omitempty"`   // answer card instead of insert
-	CardSize string `json:"cardSize,omitempty"` // CardSizeCompact or CardSizeLarge
+	Enhance   bool   `json:"enhance"`
+	Cleanup   bool   `json:"cleanup"`
+	Structure bool   `json:"structure,omitempty"`
+	ShowCard  bool   `json:"showCard,omitempty"` // answer card instead of insert
+	CardSize  string `json:"cardSize,omitempty"` // CardSizeCompact or CardSizeLarge
 }
 
 // Translate: speech or selected text → a translation.
@@ -303,7 +303,7 @@ type Rewrite struct {
 	// Cleanup reads past fillers and self-corrections in the spoken
 	// instruction (never applied to the selection). Every answer shows in
 	// the answer card (Voxt's; the field cardChars of 0.1.0 is dropped).
-	Cleanup bool `json:"cleanup"`
+	Cleanup  bool   `json:"cleanup"`
 	CardSize string `json:"cardSize,omitempty"` // answer-card text height tier
 }
 
