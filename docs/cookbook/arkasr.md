@@ -150,7 +150,7 @@ differ from `done` by leading or trailing whitespace (the final adapter
 | `language` | string | `en` | Language hint recorded on the request. The transcription instruction is a fixed English prompt (`Please transcribe this audio.`); ARK-ASR auto-detects the spoken language, so this field does not switch prompt templates. |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
 | `stream` | boolean | `false` | Emit SSE text deltas. Streaming accepts only `json` or `text` response formats |
-| `temperature` | float | `0` (greedy) | Sampling temperature. When unset or `0`, SGLang's sampling normalization selects greedy decoding (`top_k=1`); no non-zero temperature is substituted. |
+| `temperature` | float | `0` (greedy) | Sampling temperature. When unset or `0`, SGLang's sampling normalization selects greedy decoding (`top_k=1`); no non-zero temperature is substituted. A negative value returns HTTP 422. |
 
 ### Response Formats
 

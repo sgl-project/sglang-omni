@@ -9,6 +9,8 @@
 #include <unordered_set>
 #include <utility>
 
+#include "common/reference_audio.h"
+
 namespace cosyvoice3 {
 
 namespace mx = mlx::core;
@@ -30,6 +32,10 @@ constexpr float kRopeTheta = 1000000.0f;
 constexpr size_t kRepetitionWindow = 10;
 constexpr int kMaxSilentRun = 5;
 constexpr float kGreedyTemperature = 1e-6f;
+// The longest reference the speech tokenizer takes, as on CUDA.
+constexpr double kMaxReferenceSeconds = 30.0;
+// The shortest reference the prompt mel's reflect padding takes, with margin.
+constexpr double kMinReferenceSeconds = 0.5;
 // Speech tokens of silence and breath.
 const std::unordered_set<int> kSilentTokens = {1,   2,    28,   29,   55,  248,
                                                494, 2241, 2242, 2322, 2323};
@@ -781,11 +787,20 @@ mx::array CosyVoice3Model::Vocode(const std::vector<int> &speech_tokens,
 }
 
 ReferenceAudio ReadReferenceAudio(std::string_view wav_bytes) {
-  const DecodedAudio decoded = DecodeWav(wav_bytes);
+  const omni_common::DecodedAudio decoded =
+      omni_common::DecodeAnyWav(wav_bytes);
+  const double seconds =
+      static_cast<double>(decoded.samples.size()) / decoded.sample_rate;
+  if (seconds < kMinReferenceSeconds || seconds > kMaxReferenceSeconds) {
+    throw std::invalid_argument(
+        "reference audio must be between 0.5 and 30 seconds long");
+  } else {
+  }
   // Note (Jiaxin Deng): each encoder's rate is resampled from the file's, as
   // the CUDA server loads the reference once per rate.
-  return {Resample(decoded.samples, decoded.sample_rate, 16000),
-          Resample(decoded.samples, decoded.sample_rate, kSampleRate)};
+  return {
+      omni_common::Resample(decoded.samples, decoded.sample_rate, 16000),
+      omni_common::Resample(decoded.samples, decoded.sample_rate, kSampleRate)};
 }
 
 std::vector<int> TrimSilentRuns(const std::vector<int> &speech_tokens) {
