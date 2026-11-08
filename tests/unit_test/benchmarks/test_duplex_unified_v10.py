@@ -145,6 +145,7 @@ def build_tree(root: Path, samples: list[tuple] = SAMPLES) -> Path:
             "eligible": words is not None,
             "reasons": [] if words is not None else ["input pacing deviation"],
             "window": {"T_s": window_s},
+            "input": {"samples": round(window_s * 16000), "sample_rate": 16000},
             "files": {},
         }
         rows.append(row)
@@ -773,9 +774,9 @@ def test_silero_segments_need_the_reference_wav_format(
     vad = unified_v10.load_silero_vad()
     silence = tmp_path / "silence.wav"
     soundfile.write(silence, np.zeros(16000, dtype=np.int16), 16000)
-    assert unified_v10.speech_segments(silence, 1.0, vad) == []
-    with pytest.raises(SystemExit, match="has 16000 samples; T is 2.0 s"):
-        unified_v10.speech_segments(silence, 2.0, vad)
+    assert unified_v10.speech_segments(silence, 16000, vad) == []
+    with pytest.raises(SystemExit, match="has 16000 samples; expected 32000"):
+        unified_v10.speech_segments(silence, 32000, vad)
     for name, rate, subtype in (
         ("cd.wav", 22050, "PCM_16"),
         ("float.wav", 16000, "FLOAT"),
@@ -784,7 +785,31 @@ def test_silero_segments_need_the_reference_wav_format(
             tmp_path / name, np.zeros(rate, dtype=np.float32), rate, subtype=subtype
         )
         with pytest.raises(SystemExit, match="reference layout"):
-            unified_v10.speech_segments(tmp_path / name, 1.0, vad)
+            unified_v10.speech_segments(tmp_path / name, 16000, vad)
+
+
+def test_resampled_interruption_keeps_the_last_partial_sample(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 24 kHz input ending between 16 kHz samples must remain scoreable."""
+    monkeypatch.undo()
+    tree = build_tree(
+        tmp_path,
+        [("synthetic_user_interruption/1", ("interrupt.json", INTERRUPT), [], 12.0)],
+    )
+    row = json.loads((tree / "manifest.json").read_text())["samples"][0]
+    row["input"] = {"samples": 288001, "sample_rate": 24000}
+    row["window"]["T_s"] = 288001 / 24000
+    soundfile.write(
+        tree / row["sample_id"] / "output.wav",
+        np.zeros(192001, dtype=np.int16),
+        16000,
+    )
+    result = unified_v10.score_eligible(
+        tree, row, "user_interruption", unified_v10.load_silero_vad()
+    )
+    assert result["words"] == 0
+    assert result["outcome"] == "not_exercised"
 
 
 @pytest.mark.parametrize(

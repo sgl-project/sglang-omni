@@ -410,6 +410,18 @@ def test_replay_rejects_unknown_manifest_version(recorded_run: Path) -> None:
         artifacts.replay_run(recorded_run)
 
 
+@pytest.mark.parametrize("sample_rate", [0, -16000])
+def test_replay_rejects_non_positive_input_sample_rate(
+    recorded_run: Path, sample_rate: int
+) -> None:
+    path = recorded_run / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["input"]["sample_rate"] = sample_rate
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ValidationError, match="sample_rate"):
+        artifacts.replay_run(recorded_run)
+
+
 @pytest.mark.parametrize(
     "status,exit_code", [("pass", 0), ("fail", 1), ("not_exercised", 1)]
 )

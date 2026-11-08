@@ -16,6 +16,7 @@ from sglang_omni.models.personaplex.architecture import (
     DEFAULT_AUDIO_TOP_K,
     MIMI_WEIGHTS_GLOB,
     SAMPLE_RATE,
+    SAMPLES_PER_FRAME,
 )
 from sglang_omni.models.personaplex.code2wav_stream import (
     PersonaPlexCode2WavScheduler,
@@ -151,7 +152,7 @@ def prompt_preparer(
 
 
 def create_preprocessing_executor(
-    model_path: str, **_
+    model_path: str, *, session_reference: bool = False, **_
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     model_dir = Path(resolve_model_path(model_path))
     prepare_prompt = prompt_preparer(
@@ -172,6 +173,11 @@ def create_preprocessing_executor(
         state = prepare_prompt(payload.request)
         state.num_samples = int(caller.shape[-1])
         state.waveform = pad_to_whole_frames(caller)
+        state.session_reference = session_reference
+        if session_reference:
+            state.num_samples = int(state.waveform.numel()) + SAMPLES_PER_FRAME
+        else:
+            pass
         payload.data = state.to_dict()
         return payload
 
@@ -215,7 +221,16 @@ def create_mimi_encode_executor(
     def encode(payload: StagePayload) -> StagePayload:
         state = PersonaPlexState.from_dict(payload.data)
         if state.waveform is not None:
-            state.user_codes = encode_waveform(codec, device, state.waveform)
+            if state.session_reference:
+                encoder_state = codec.init_encode_state(batch_size=1)
+                waveform = state.waveform.to(device=device, dtype=torch.float32)
+                codes = [
+                    codec.encode_step(unit.view(1, 1, -1), encoder_state)
+                    for unit in waveform.split(SAMPLES_PER_FRAME)
+                ]
+                state.user_codes = torch.cat(codes, dim=-1)[0].T.cpu()
+            else:
+                state.user_codes = encode_waveform(codec, device, state.waveform)
             state.waveform = None
         else:
             pass
@@ -234,6 +249,7 @@ def create_session_mimi_encode_executor(
     model_path: str,
     *,
     max_open_sessions: int,
+    enable_cuda_graph: bool,
     max_concurrency: int = 1,
     device: str | None = None,
     gpu_id: int | None = None,
@@ -242,7 +258,13 @@ def create_session_mimi_encode_executor(
     units encode at once."""
     codec, device = load_codec(model_path, device=device, gpu_id=gpu_id, mode="encode")
     return SessionScheduler(
-        MimiEncodeHooks(codec, device),
+        MimiEncodeHooks(
+            codec,
+            device,
+            graph_slot_count=(
+                max_open_sessions if enable_cuda_graph and device.type == "cuda" else 0
+            ),
+        ),
         max_open_sessions=max_open_sessions,
         max_concurrency=max_concurrency,
     )
@@ -335,6 +357,7 @@ def create_code2wav_executor(
     max_batch_size: int,
     max_graph_frames: int,
     chunk_ramp_frames: list[int],
+    session_reference: bool = False,
     device: str | None = None,
     gpu_id: int | None = None,
     **_,
@@ -343,6 +366,10 @@ def create_code2wav_executor(
     states, up to max_batch_size streams per step, with device graphs for
     chunks of up to max_graph_frames frames."""
     codec, device = load_codec(model_path, device=device, gpu_id=gpu_id, mode="decode")
+    if session_reference:
+        chunk_ramp_frames = list(FRAMES_PER_UNIT)
+    else:
+        pass
 
     @torch.inference_mode()
     def decode(payload: StagePayload) -> StagePayload:

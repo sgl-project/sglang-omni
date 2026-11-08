@@ -252,7 +252,25 @@ PeerMode = Literal[
 
 
 class DuplexPeer:
-    def __init__(self, mode: PeerMode = "healthy") -> None:
+    def __init__(
+        self,
+        mode: PeerMode = "healthy",
+        *,
+        input_sample_rate: int = 16000,
+        output_sample_rate: int = 22050,
+        initial_extra_output_frames: int = 0,
+        tail_holdback_samples: int = TAIL_HOLDBACK_SAMPLES,
+        terminal_reason: str = "stop",
+    ) -> None:
+        self.input_bytes_per_ms: float = input_sample_rate * 2 / 1000
+        self.unit_bytes: int = input_sample_rate * PACKET_MS // 1000 * 2
+        self.output_samples_per_frame: int = output_sample_rate * PACKET_MS // 1000
+        self.initial_extra_output_frames: int = initial_extra_output_frames
+        self.tail_holdback_samples: int = tail_holdback_samples
+        self.terminal_reason: str = terminal_reason
+        self.granted: dict[str, JsonValue] = copy.deepcopy(GRANTED)
+        self.granted["input_audio_format"]["rate"] = input_sample_rate
+        self.granted["output_audio_format"]["rate"] = output_sample_rate
         self.mode = mode
         self.received: list[dict[str, JsonValue]] = []
         self.sent: list[dict[str, JsonValue]] = []
@@ -264,7 +282,9 @@ class DuplexPeer:
         self.release = asyncio.Event()
 
     def codec_fresh(self, frames: int, *, final: bool) -> int:
-        available = frames * SAMPLES_PER_FRAME - (0 if final else TAIL_HOLDBACK_SAMPLES)
+        available = (
+            frames + self.initial_extra_output_frames
+        ) * self.output_samples_per_frame - (0 if final else self.tail_holdback_samples)
         fresh = available - self.emitted
         self.frames = frames
         self.emitted = available
@@ -276,6 +296,9 @@ class DuplexPeer:
                 websocket,
                 {
                     "type": "response.created",
+                    "sglang": {
+                        "media_time": {"t_start_ms": 0, "duration_ms": PACKET_MS}
+                    },
                     "response": {
                         "id": "response_0",
                         "object": "realtime.response",
@@ -289,6 +312,10 @@ class DuplexPeer:
     async def emit_audio(
         self, websocket: ServerConnection, samples: int, unit: int
     ) -> None:
+        if samples == 0:
+            return
+        else:
+            pass
         await self.send(
             websocket,
             {
@@ -437,7 +464,13 @@ class DuplexPeer:
                             "type": "realtime",
                             "model": "fixture",
                             "output_modalities": ["audio"],
-                            "sglang": {"granted": GRANTED},
+                            "sglang": {"granted": self.granted},
+                            "audio": {
+                                "input": {"format": self.granted["input_audio_format"]},
+                                "output": {
+                                    "format": self.granted["output_audio_format"]
+                                },
+                            },
                         },
                     },
                 )
@@ -477,11 +510,11 @@ class DuplexPeer:
                         {
                             "type": "sglang.input_audio.accepted",
                             "seq": event["sglang"]["seq"],
-                            "accepted_end_ms": len(self.pcm) / 32,
+                            "accepted_end_ms": len(self.pcm) / self.input_bytes_per_ms,
                             "client_event_id": event["event_id"],
                         },
                     )
-                    while (self.frames + 1) * UNIT_BYTES <= len(self.pcm):
+                    while (self.frames + 1) * self.unit_bytes <= len(self.pcm):
                         unit = self.frames
                         await self.open_response(websocket)
                         await self.emit_audio(
@@ -491,8 +524,8 @@ class DuplexPeer:
                         )
                         await self.emit_unit_done(websocket, unit, PACKET_MS)
             elif kind == "sglang.input_audio.end":
-                accepted_ms = len(self.pcm) / 32
-                units = -(-len(self.pcm) // UNIT_BYTES)
+                accepted_ms = len(self.pcm) / self.input_bytes_per_ms
+                units = -(-len(self.pcm) // self.unit_bytes)
                 await self.send(
                     websocket,
                     {
@@ -507,7 +540,7 @@ class DuplexPeer:
                 await self.emit_audio(
                     websocket, self.codec_fresh(units, final=True), tail_unit
                 )
-                await self.finish_response(websocket, "completed", "stop")
+                await self.finish_response(websocket, "completed", self.terminal_reason)
                 await self.emit_unit_done(
                     websocket, tail_unit, accepted_ms - tail_unit * PACKET_MS
                 )
@@ -518,7 +551,8 @@ class DuplexPeer:
                         "accepted_end_ms": accepted_ms,
                         "consumed_ms": accepted_ms,
                         "discarded_ms": 0,
-                        "padding_ms": units * PACKET_MS - accepted_ms,
+                        "padding_ms": (-len(self.pcm) % self.unit_bytes)
+                        / self.input_bytes_per_ms,
                         "client_event_id": event["event_id"],
                     },
                 )
@@ -815,6 +849,7 @@ def make_session_trace(
     *,
     audio_deltas: Sequence[tuple[float, bytes | str]] = (),
     output_sample_rate: int = SAMPLE_RATE,
+    input_sample_rate: int = SAMPLE_RATE,
     server_error_offsets_s: Sequence[float] = (),
     client_error_offsets_s: Sequence[float] = (),
     close_offset_s: float | Literal[False] | None = None,
@@ -826,7 +861,8 @@ def make_session_trace(
 ) -> str:
     """Records in time order; deltas are (elapsed_s, bytes or raw base64 string)."""
     input_samples = np.frombuffer(input_pcm, "<i2")
-    window_s = len(input_samples) / SAMPLE_RATE
+    window_s = len(input_samples) / input_sample_rate
+    packet_samples = round(input_sample_rate * 0.08)
     rows: list[tuple[float, TraceDirection, dict[str, JsonValue]]] = []
     append_delays_s = append_delays_s or {}
     rows.append(
@@ -845,13 +881,15 @@ def make_session_trace(
             },
         )
     )
-    frame_indexes = range(-(-len(input_samples) // 1280))
+    frame_indexes = range(-(-len(input_samples) // packet_samples))
     for index in frame_indexes:
         if omit_last_append and index == frame_indexes[-1]:
             continue
         else:
             pass
-        input_chunk = input_samples[index * 1280 : (index + 1) * 1280]
+        input_chunk = input_samples[
+            index * packet_samples : (index + 1) * packet_samples
+        ]
         audio_payload = (
             input_chunk.tobytes()
             if corrupted_append_index != index
@@ -861,7 +899,7 @@ def make_session_trace(
             "type": "input_audio_buffer.append",
             "event_id": f"a{index}",
             "audio": encode_audio(audio_payload),
-            "sglang": {"seq": index, "t_start_ms": index * 1280 / SAMPLE_RATE * 1000},
+            "sglang": {"seq": index, "t_start_ms": index * 80},
         }
         rows.append(
             (

@@ -54,6 +54,16 @@ class PersonaPlexSessionLMStageConfig(EngineStageConfig):
     )
 
 
+class PersonaPlexSessionEncodeFactoryArgs(FactoryArgs):
+    enable_cuda_graph: bool = False
+
+
+class PersonaPlexSessionEncodeStageConfig(StageConfig):
+    factory: PersonaPlexSessionEncodeFactoryArgs = Field(
+        default_factory=PersonaPlexSessionEncodeFactoryArgs
+    )
+
+
 class PersonaPlexCode2WavFactoryArgs(FactoryArgs):
     """Streaming decode: num_decode_slots streams resident at once, up to
     max_batch_size of them per step, device graphs for chunks of up to
@@ -128,7 +138,7 @@ def personaplex_session_stages_factory() -> list[StageConfig]:
             factory_path=f"{MODEL_STAGES_PREFIX}.create_session_preprocessing_executor",
             next=MIMI_ENCODE_STAGE,
         ),
-        StageConfig(
+        PersonaPlexSessionEncodeStageConfig(
             name=MIMI_ENCODE_STAGE,
             process="pipeline",
             factory_path=f"{MODEL_STAGES_PREFIX}.create_session_mimi_encode_executor",
@@ -162,6 +172,7 @@ class PersonaPlexPipelineConfig(PipelineConfig):
     }
 
     model_path: str
+    session_reference: bool = False
     placement: PlacementConfig = Field(
         default_factory=lambda: PlacementConfig(
             require_memory_fraction_for_colocation=False
@@ -171,6 +182,10 @@ class PersonaPlexPipelineConfig(PipelineConfig):
 
     def model_post_init(self, __context: object = None) -> None:
         super().model_post_init(__context)
+        if self.session_reference and self.is_realtime_only:
+            raise ValueError("session_reference selects the offline reference pipeline")
+        else:
+            pass
         # Note (nightdecode): An unset num_decode_slots stays unset and is
         # derived at launch in stage_factory_kwargs; writing the derivation
         # back would make it look pinned on the next merge. Only a pinned
@@ -188,15 +203,23 @@ class PersonaPlexPipelineConfig(PipelineConfig):
             pass
 
     def stage_factory_kwargs(self, stage_name: str) -> Mapping[str, object]:
-        if stage_name == CODE2WAV_STAGE:
+        if stage_name == PREPROCESSING_STAGE:
+            return {"session_reference": self.session_reference}
+        elif stage_name == CODE2WAV_STAGE:
             # Note (nightdecode): Match LM concurrency. Streams whose lifetimes
             # overlap while tail audio drains wait for a decode slot.
-            return {
+            arguments: dict[str, int | bool] = {
                 "num_decode_slots": self.lm_max_running_requests(),
+                "session_reference": self.session_reference,
                 "max_graph_frames": max(
                     self.stage_named(CODE2WAV_STAGE).factory.chunk_ramp_frames
                 ),
             }
+            if self.session_reference:
+                arguments["max_graph_frames"] = 2
+            else:
+                pass
+            return arguments
         else:
             return super().stage_factory_kwargs(stage_name)
 
@@ -244,7 +267,8 @@ class PersonaPlexSessionPipelineConfig(PersonaPlexPipelineConfig):
     # Note (wilsonzheng0327): Async LM decode and offline code2wav factory fields
     # have no session counterpart.
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
-        LM_STAGE: PersonaPlexSessionLMStageConfig
+        LM_STAGE: PersonaPlexSessionLMStageConfig,
+        MIMI_ENCODE_STAGE: PersonaPlexSessionEncodeStageConfig,
     }
 
     max_sessions: int = Field(default=1, ge=1)

@@ -67,8 +67,11 @@ def preprocess(monkeypatch, tmp_path):
     monkeypatch.setattr(stages, "resolve_voice_path", lambda _, voice: f"{voice}.pt")
     monkeypatch.setattr(stages, "load_voice_prompt", load_voice_prompt)
     scheduler = stages.create_preprocessing_executor(str(tmp_path))
+    reference_scheduler = stages.create_preprocessing_executor(
+        str(tmp_path), session_reference=True
+    )
 
-    def run(inputs=None, **params):
+    def run(inputs=None, *, session_reference=False, **params):
         payload = StagePayload(
             "r",
             request=OmniRequest(
@@ -76,7 +79,8 @@ def preprocess(monkeypatch, tmp_path):
             ),
             data={},
         )
-        return PersonaPlexState.from_dict(scheduler.fn(payload).data)
+        selected = reference_scheduler if session_reference else scheduler
+        return PersonaPlexState.from_dict(selected.fn(payload).data)
 
     run.loads = loads
     run.sources = sources
@@ -91,6 +95,18 @@ def test_caller_is_channel_zero_padded_to_whole_frames(preprocess):
     assert waveform.shape[-1] == SAMPLES_PER_FRAME * 2
     assert torch.all(waveform[:CALLER_SAMPLES] == 0.5)
     assert torch.all(waveform[CALLER_SAMPLES:] == 0.0)
+
+
+def test_session_reference_preserves_caller_audio_and_keeps_the_extra_output_frame(
+    preprocess,
+):
+    caller = preprocess()
+    reference = preprocess(session_reference=True)
+    assert reference.session_reference
+    assert not caller.session_reference
+    assert torch.equal(reference.waveform, caller.waveform)
+    assert reference.num_samples == reference.waveform.numel() + SAMPLES_PER_FRAME
+    assert reference.text_prompt_ids == caller.text_prompt_ids
 
 
 def test_role_prompt_default_alias_and_empty(preprocess):
@@ -245,7 +261,9 @@ def test_realtime_session_stages_hold_max_sessions_calls_and_run_codecs_serially
         str(tmp_path), max_open_sessions=3
     )
     codecs = [
-        stages.create_session_mimi_encode_executor(str(tmp_path), max_open_sessions=3),
+        stages.create_session_mimi_encode_executor(
+            str(tmp_path), max_open_sessions=3, enable_cuda_graph=False
+        ),
         stages.create_session_code2wav_executor(str(tmp_path), max_open_sessions=3),
     ]
     for scheduler in [prompt, *codecs]:
@@ -523,14 +541,15 @@ def test_voice_prompt_cache_byte_budget_preserves_request_results(
 
 
 @pytest.mark.parametrize(
-    "chunk_ramp_frames,max_graph_frames,expected_graph_frames",
+    "chunk_ramp_frames,max_graph_frames,expected_graph_frames,session_reference",
     [
-        ([1, 4], None, 4),
-        ([1, 16], None, 16),
-        ([1, 8, 2], None, 8),
-        ([1, 16], 0, 0),
-        ([1, 16], 2, 2),
-        ([1, 4], 16, 16),
+        ([1, 4], None, 4, False),
+        ([1, 16], None, 16, False),
+        ([1, 8, 2], None, 8, False),
+        ([1, 16], 0, 0, False),
+        ([1, 16], 2, 2, False),
+        ([1, 4], 16, 16, False),
+        ([1, 4], None, 2, True),
     ],
 )
 def test_code2wav_graph_limit_follows_resolved_configuration(
@@ -538,8 +557,11 @@ def test_code2wav_graph_limit_follows_resolved_configuration(
     chunk_ramp_frames: list[int],
     max_graph_frames: int | None,
     expected_graph_frames: int,
+    session_reference: bool,
 ) -> None:
-    config = PersonaPlexPipelineConfig(model_path="dummy")
+    config = PersonaPlexPipelineConfig(
+        model_path="dummy", session_reference=session_reference
+    )
     overrides: dict[str, int | list[int]] = {"chunk_ramp_frames": chunk_ramp_frames}
     if max_graph_frames is not None:
         overrides["max_graph_frames"] = max_graph_frames
@@ -562,11 +584,13 @@ def test_code2wav_graph_limit_follows_resolved_configuration(
     factory_args = resolve_stage_factory_args(
         resolved.stage_named("code2wav"), resolved
     )
-    stages.create_code2wav_executor(**factory_args)
+    scheduler = stages.create_code2wav_executor(**factory_args)
+    expected_ramp = [2, 1] if session_reference else chunk_ramp_frames
+    assert scheduler.chunk_ramp_frames == tuple(expected_ramp)
     decode_slots.assert_called_once_with(
         codec,
         num_slots=1,
         max_batch_size=8,
         max_graph_frames=expected_graph_frames,
-        max_chunk_frames=max(chunk_ramp_frames),
+        max_chunk_frames=max(expected_ramp),
     )

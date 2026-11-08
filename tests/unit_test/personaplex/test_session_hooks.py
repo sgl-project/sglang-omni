@@ -2,12 +2,16 @@
 """The stages around the LM keep per-call codec state and hand the prompt on once."""
 
 import threading
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
 import torch
 
+from sglang_omni.client.audio import encode_pcm
+from sglang_omni.models.personaplex import stages
 from sglang_omni.models.personaplex.architecture import SAMPLES_PER_FRAME
+from sglang_omni.models.personaplex.components.mimi import MimiCodec
 from sglang_omni.models.personaplex.mimi_decode_graph import MimiDecodeSlots
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.session_hooks import (
@@ -23,6 +27,12 @@ from sglang_omni.scheduling.session import SessionAppend, SessionContext
 
 CALL = SessionIdentity("call")
 PROMPT_IDS = [11, 12, 13]
+
+
+def test_session_and_offline_pcm_quantization_match() -> None:
+    """Identical float waveforms previously differed by one PCM unit across routes."""
+    waveform = torch.linspace(-1.1, 1.1, 65537, dtype=torch.float32)
+    assert waveform_to_pcm16(waveform) == encode_pcm(waveform.numpy(), 24000)
 
 
 def context(emitted: list[TimedChunk]) -> SessionContext:
@@ -78,7 +88,7 @@ def test_units_must_be_whole_frames_of_pcm16():
     assert pcm16_to_waveform(end).numel() == 0
 
 
-def test_streaming_encode_matches_the_whole_recording(random_codec):
+def test_streaming_encode_matches_the_whole_recording(random_codec, monkeypatch):
     frames = 3
     waveform = pcm16_to_waveform(
         unit(0, waveform_to_pcm16(torch.randn(frames * SAMPLES_PER_FRAME) * 0.3))
@@ -104,6 +114,25 @@ def test_streaming_encode_matches_the_whole_recording(random_codec):
     hooks.close(CALL)
 
     assert torch.equal(torch.cat(streamed), whole)
+    monkeypatch.setattr(
+        stages, "load_codec", lambda *a, **k: (random_codec, torch.device("cpu"))
+    )
+    encode_step = Mock(wraps=random_codec.encode_step)
+    monkeypatch.setattr(random_codec, "encode_step", encode_step)
+    reference = stages.create_mimi_encode_executor("dummy")
+    for _ in range(2):
+        result = reference.fn(
+            payload(PersonaPlexState(waveform=waveform, session_reference=True))
+        )
+        encoded = PersonaPlexState.from_dict(result.data)
+        assert torch.equal(encoded.user_codes, torch.cat(streamed))
+        assert encoded.waveform is None
+        assert encoded.session_reference
+    assert encode_step.call_count == 2 * frames
+    assert all(
+        call.args[0].shape == (1, 1, SAMPLES_PER_FRAME)
+        for call in encode_step.call_args_list
+    )
 
 
 def decode_slots(codec, num_slots: int) -> MimiDecodeSlots:
@@ -193,3 +222,76 @@ def test_warm_up_runs_both_codecs_and_opens_no_call(random_codec):
     decode.warm_up_serving_thread()
     assert encode.states == {} and decode.states == {}
     assert decode.decode_slots.active_slot_count == 0
+
+
+@pytest.mark.accelerator
+def test_encode_graph_preserves_interleaved_streams_and_reused_sessions(
+    random_codec: MimiCodec,
+) -> None:
+    """Graph replay preserves padding, ring wraps, eager chunks and session reset."""
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    else:
+        pass
+    codec = random_codec.to("cuda")
+    for layer in codec.encoder_transformer.layers:
+        layer.self_attn.context = 6
+    graph_hooks = MimiEncodeHooks(codec, codec.device, graph_slot_count=2)
+    eager_hooks = MimiEncodeHooks(codec, codec.device)
+    graph_hooks.warm_up_serving_thread()
+    generator = torch.Generator().manual_seed(23)
+    waveforms = torch.randn(2, 8, SAMPLES_PER_FRAME, generator=generator)
+    identities = [SessionIdentity("first"), SessionIdentity("second")]
+    for _ in range(2):
+        for identity in identities:
+            for hooks in [graph_hooks, eager_hooks]:
+                hooks.open(identity, OmniRequest(inputs=None))
+        frame_offset = 0
+        for unit_index, frame_count in enumerate((1, 1, 2, 1, 1, 1, 1)):
+            for index, identity in enumerate(identities):
+                session_context = SessionContext(
+                    session_identity=identity,
+                    cancelled=threading.Event(),
+                    emit=[].append,
+                )
+                outputs = []
+                for hooks in [graph_hooks, eager_hooks]:
+                    unit_payload = payload(
+                        PersonaPlexState(
+                            waveform=waveforms[
+                                index, frame_offset : frame_offset + frame_count
+                            ].flatten()
+                        )
+                    )
+                    chunk = TimedChunk(
+                        "audio",
+                        frame_offset * 80.0,
+                        frame_count * 80.0,
+                        unit_index,
+                        b"",
+                        "pcm16",
+                    )
+                    hooks.append(chunk, unit_payload, session_context)
+                    outputs.append(
+                        PersonaPlexState.from_dict(unit_payload.data).user_codes
+                    )
+                assert torch.equal(outputs[0], outputs[1])
+            frame_offset += frame_count
+        for identity in identities:
+            session_context = SessionContext(
+                session_identity=identity,
+                cancelled=threading.Event(),
+                emit=[].append,
+            )
+            for hooks in [graph_hooks, eager_hooks]:
+                unit_payload = payload(PersonaPlexState(waveform=torch.empty(0)))
+                hooks.append(
+                    TimedChunk("audio", 640.0, 0.0, 7, b"", "pcm16", eos=True),
+                    unit_payload,
+                    session_context,
+                )
+                assert (
+                    PersonaPlexState.from_dict(unit_payload.data).user_codes.numel()
+                    == 0
+                )
+                hooks.close(identity)

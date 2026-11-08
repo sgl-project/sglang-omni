@@ -1,24 +1,38 @@
-"""MiniCPM-o profile: protocol checks, 24 kHz reconstruction, capture and replay."""
+"""Native duplex profiles: audio rates, output conservation, capture and replay."""
 
 import asyncio
 import base64
 import copy
+import io
 import itertools
 import json
+import math
 import types
 from pathlib import Path
 
+import httpx
+import numpy as np
 import pytest
 import soundfile
 import websockets
+from pydantic import JsonValue
 from websockets.asyncio.server import ServerConnection
 
 from benchmarks.duplex.artifacts import replay_run
 from benchmarks.duplex.oracle import evaluate_trace
+from benchmarks.duplex.reference_export import export_runs
+from benchmarks.duplex.serving import score_session, summarize_level
 from benchmarks.duplex.v15_audio import reconstruct_output
 from benchmarks.duplex.v15_runner import run_samples
 from benchmarks.duplex.v15_transcribe import transcribe_run
-from tests.unit_test.fixtures.duplex_fakes import GRANTED, write_dataset
+from benchmarks.eval.benchmark_personaplex_parity import compare_pcm
+from benchmarks.eval.benchmark_personaplex_parity import main as parity_main
+from tests.unit_test.fixtures.duplex_fakes import (
+    GRANTED,
+    DuplexPeer,
+    trace_fixture,
+    write_dataset,
+)
 
 MINICPMO = "minicpmo-native-pr2377"
 
@@ -375,3 +389,325 @@ def test_minicpmo_pair_capture_and_replay(tmp_path: Path) -> None:
     assert samples == [320, 320]
     assert all(v["status"] == "transcribed" for v in result["variants"])
     assert result["run"]["kind"] == "full-duplex-bench-v1.5-paired"
+
+
+@pytest.mark.parametrize("input_samples", [2560, 1600, 1601])
+def test_personaplex_capture_replay_and_serving(
+    tmp_path: Path, input_samples: int
+) -> None:
+    """24 kHz captures must conserve the first extra frame and accept fractional-millisecond tail padding."""
+    dataset = tmp_path / "dataset"
+    write_dataset(dataset)
+    metadata_path = dataset / "user_interruption" / "1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata["timestamps"] = [0.01, 0.04]
+    metadata_path.write_text(json.dumps(metadata))
+    source_samples = np.round(
+        8000 * np.sin(2 * np.pi * 440 * np.arange(input_samples) / 16000)
+    ).astype("<i2")
+    for filename in ("input.wav", "clean_input.wav"):
+        soundfile.write(
+            dataset / "user_interruption" / "1" / filename,
+            source_samples,
+            16000,
+            subtype="PCM_16",
+        )
+    peers: list[DuplexPeer] = []
+
+    async def exercise() -> dict[str, JsonValue]:
+        async def handler(websocket: ServerConnection) -> None:
+            peer = DuplexPeer(
+                input_sample_rate=24000,
+                output_sample_rate=24000,
+                initial_extra_output_frames=1,
+                tail_holdback_samples=0,
+                terminal_reason="input_audio_ended",
+            )
+            peers.append(peer)
+            await peer.handler(websocket)
+
+        async with websockets.serve(handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            return await run_samples(
+                dataset,
+                url=f"ws://127.0.0.1:{port}",
+                output=tmp_path / "recording",
+                server={"revision": "a" * 40},
+                dataset_revision="pinned",
+                timeout_s=5,
+                sample_ids=["user_interruption/1"],
+                profile="personaplex",
+            )
+
+    result = asyncio.run(exercise())
+    assert result["summary"]["pairs_qualified"] == 1, result
+    exported = export_runs(
+        [tmp_path / "recording"],
+        tmp_path / "quality-export",
+        "personaplex",
+        dataset_root=dataset,
+    )
+    assert exported["counts"]["eligible_pairs"] == 1, exported
+    scoring_audio = soundfile.info(
+        tmp_path / "quality-export/user_interruption/1/input.wav"
+    )
+    assert scoring_audio.samplerate == 16000
+    expected_input_samples = math.ceil(input_samples * 3 / 2)
+    assert 0 <= scoring_audio.duration - expected_input_samples / 24000 < 1 / 16000
+    for peer, variant in zip(peers, result["samples"][0]["variants"].values()):
+        directory = tmp_path / "recording" / variant["directory"]
+        manifest = json.loads((directory / "manifest.json").read_text())
+        assert manifest["input"]["sample_rate"] == 24000
+        assert bytes(peer.pcm) == (directory / "input.pcm").read_bytes()
+        assert len(peer.pcm) == expected_input_samples * 2
+        restored_samples, sample_rate = soundfile.read(directory / "input.wav")
+        assert sample_rate == 24000
+        expected_tone = (
+            8000
+            / 32768
+            * np.sin(2 * np.pi * 440 * np.arange(expected_input_samples) / sample_rate)
+        )
+        assert np.max(np.abs(restored_samples[30:-30] - expected_tone[30:-30])) < 0.001
+        appends = [
+            event
+            for event in peer.received
+            if event["type"] == "input_audio_buffer.append"
+        ]
+        assert [len(base64.b64decode(event["audio"])) for event in appends] == [
+            3840,
+            (expected_input_samples - 1920) * 2,
+        ]
+        assert [event["sglang"]["t_start_ms"] for event in appends] == [0, 80]
+        replay = replay_run(directory)
+        assert replay["summary"]["passed"] == 1, replay
+        assert (
+            replay["cases"][0]["metrics"]["input_audio_s"]
+            == expected_input_samples / 24000
+        )
+        assert replay["cases"][0]["metrics"]["output_audio_s"] == pytest.approx(0.24)
+        assert soundfile.info(directory / "output-media.wav").frames == 5760
+        session = score_session(directory, "personaplex", 0.3)
+        assert session["units_expected"] == 2
+        assert len(session["unit_lag_s"]) == 2
+        manifest["input"]["sample_rate"] = 16000
+        (directory / "manifest.json").write_text(json.dumps(manifest))
+        assert replay_run(directory)["summary"]["failed"] == 1
+
+    for variant in result["samples"][0]["variants"].values():
+        variant["status"] = "fail"
+    (tmp_path / "recording" / "run.json").write_text(json.dumps(result))
+    failed_level = summarize_level(tmp_path / "recording", 0.3)
+    assert failed_level["units_expected"] == 4
+    assert failed_level["units_missed"] == 4
+
+
+def personaplex_trace() -> list[dict[str, JsonValue]]:
+    records = trace_fixture()
+    output_index = 0
+    for record in records:
+        event = record["event"]
+        if event["type"] == "session.updated":
+            granted = event["session"]["sglang"]["granted"]
+            granted["input_audio_format"]["rate"] = 24000
+            granted["output_audio_format"]["rate"] = 24000
+        elif event["type"] == "input_audio_buffer.append":
+            event["audio"] = base64.b64encode(bytes(3840)).decode()
+        elif event["type"] == "response.output_audio.delta":
+            samples = 3840 if output_index == 0 else 1920
+            event["delta"] = base64.b64encode(b"\x01\x00" * samples).decode()
+            output_index += 1
+        elif event["type"] == "response.done":
+            event["response"]["status_details"]["reason"] = "input_audio_ended"
+        else:
+            pass
+    return records
+
+
+@pytest.mark.parametrize("extra_samples", [-1920, 1920])
+def test_personaplex_conserves_initial_extra_frame(extra_samples: int) -> None:
+    """A missing or duplicated startup frame must fail conservation."""
+    records = personaplex_trace()
+    first_audio = next(
+        record["event"]
+        for record in records
+        if record["event"]["type"] == "response.output_audio.delta"
+    )
+    first_audio["delta"] = base64.b64encode(
+        b"\x01\x00" * (3840 + extra_samples)
+    ).decode()
+    result = evaluate_trace(records, profile="personaplex")
+    assert result["status"] == "fail", result
+    assert any("not conserved" in violation for violation in result["violations"])
+
+
+@pytest.mark.parametrize("invalid_contract", ["input_rate", "terminal_after_drain"])
+def test_personaplex_rejects_invalid_contract(invalid_contract: str) -> None:
+    """Correct output length must not hide a wrong input rate or an invalid terminal."""
+    records = personaplex_trace()
+    if invalid_contract == "input_rate":
+        updated = next(
+            record["event"]
+            for record in records
+            if record["event"]["type"] == "session.updated"
+        )
+        updated["session"]["sglang"]["granted"]["input_audio_format"]["rate"] = 16000
+    else:
+        terminal = next(
+            record for record in records if record["event"]["type"] == "response.done"
+        )
+        terminal["time_s"] = 100.275
+        records.sort(key=lambda record: record["time_s"])
+    assert evaluate_trace(records, profile="personaplex")["status"] == "fail"
+
+
+@pytest.mark.parametrize(
+    ("profile", "reason"),
+    [("personaplex", "stop"), ("nemotron-voicechat-pr2188", "input_audio_ended")],
+)
+def test_input_end_terminal_reason_is_profile_specific(
+    profile: str, reason: str
+) -> None:
+    """A native profile must reject the input-end terminal reason of another server."""
+    records = personaplex_trace() if profile == "personaplex" else trace_fixture()
+    terminal = next(
+        record["event"]
+        for record in records
+        if record["event"]["type"] == "response.done"
+    )
+    terminal["response"]["status_details"]["reason"] = reason
+    result = evaluate_trace(records, profile=profile)
+    assert result["status"] == "fail", result
+    assert any(reason in violation for violation in result["violations"])
+
+
+@pytest.mark.parametrize(
+    ("session_samples", "offline_samples", "first_difference"),
+    [
+        ([1, 2], [1, 2], None),
+        ([1, 3], [1, 2], 1),
+        ([1, 2, 3], [1, 2], 2),
+        ([1], [1, 2], 1),
+    ],
+)
+def test_personaplex_parity_reports_content_and_length_changes(
+    session_samples: list[int], offline_samples: list[int], first_difference: int | None
+) -> None:
+    report = compare_pcm(
+        np.array(session_samples, dtype="<i2").tobytes(),
+        np.array(offline_samples, dtype="<i2").tobytes(),
+    )
+    assert report["byte_identical"] == (first_difference is None)
+    assert report["first_differing_sample"] == first_difference
+    assert report["session_samples"] == len(session_samples)
+    assert report["offline_samples"] == len(offline_samples)
+
+
+@pytest.mark.parametrize("offline_text", ["Hello there.", "different transcript"])
+def test_parity_cli_records_offline_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline_text: str
+) -> None:
+    """The CLI preserves server identity and compares text across audio transcript chunks."""
+    run = tmp_path / "session"
+    run.mkdir()
+    pcm = np.array([1, -2], dtype="<i2").tobytes()
+    (run / "manifest.json").write_text('{"profile": "personaplex"}')
+    (run / "input.pcm").write_bytes(pcm)
+    (run / "continuous.jsonl").write_text(
+        "".join(
+            json.dumps({"time_s": 0.0, "direction": "receive", "event": event}) + "\n"
+            for event in [
+                {
+                    "type": "response.output_audio.delta",
+                    "delta": base64.b64encode(pcm).decode(),
+                },
+                {"type": "response.output_audio_transcript.delta", "delta": "Hello"},
+                {
+                    "type": "response.output_audio_transcript.delta",
+                    "delta": " there.",
+                },
+            ]
+        )
+    )
+    instructions = tmp_path / "instructions.txt"
+    instructions.write_text("Speak clearly.")
+    output = tmp_path / "comparison"
+    wave = io.BytesIO()
+    soundfile.write(
+        wave, np.frombuffer(pcm, dtype="<i2"), 24000, format="WAV", subtype="PCM_16"
+    )
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["stage_params"]["preprocessing"] == {
+            "voice": "NATF2",
+            "text_prompt": "Speak clearly.",
+        }
+        return httpx.Response(
+            200,
+            json={
+                "text": offline_text,
+                "audio": {
+                    "format": "wav",
+                    "data": base64.b64encode(wave.getvalue()).decode(),
+                },
+            },
+        )
+
+    client = httpx.Client
+    monkeypatch.setattr(
+        "benchmarks.duplex.artifacts.served_models",
+        lambda url: {"url": url, "ids": ["checkpoint"]},
+    )
+    monkeypatch.setattr(
+        "benchmarks.eval.benchmark_personaplex_parity.replay_run",
+        lambda path: {"summary": {"selected": 1, "passed": 1}},
+    )
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **options: client(transport=httpx.MockTransport(respond), **options),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "parity",
+            "--session-run",
+            str(run),
+            "--offline-url",
+            "http://offline.test",
+            "--offline-mode",
+            "session-reference",
+            "--voice",
+            "NATF2",
+            "--instructions",
+            str(instructions),
+            "--output",
+            str(output),
+            "--server-revision",
+            "a" * 40,
+            "--model",
+            "checkpoint",
+            "--model-revision",
+            "b" * 40,
+            "--runtime",
+            "pinned-image",
+        ],
+    )
+    if offline_text != "Hello there.":
+        with pytest.raises(SystemExit) as failure:
+            parity_main()
+        assert failure.value.code == 1
+    else:
+        parity_main()
+    report = json.loads((output / "parity.json").read_text())
+    assert report["offline_server"]["revision"] == "a" * 40
+    assert report["offline_server"]["model_revision"] == "b" * 40
+    assert report["offline_server"]["runtime"] == "pinned-image"
+    assert report["offline_mode"] == "session-reference"
+    assert report["text"] == {
+        "session": "Hello there.",
+        "offline": offline_text,
+        "equal": offline_text == "Hello there.",
+    }
+    assert report["offline_request_seconds"] >= 0
+    assert report["full_reply"]["byte_identical"] is True

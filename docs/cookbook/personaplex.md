@@ -62,6 +62,99 @@ curl -s localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -
 
 PersonaPlex also serves live full-duplex voice sessions on `/v1/realtime` with its `session` variant. Launching, settings and the protocol are in [Full Duplex Interactive Model](../developer_reference/full_duplex_guide.md#native-full-duplex-personaplex).
 
+### Duplex serving benchmark
+
+The shared recorder supports `--profile personaplex`: 80 ms input units, mono 24 kHz PCM16 input and output, and continuous output. Dataset audio is resampled before sessions start; `input.pcm`, `input.wav` and the input manifest describe the actual transmitted audio. Replay checks one extra 80 ms output frame at the start of each nonempty call, including calls whose final input unit needs padding. The empty end-of-input unit contributes no audio.
+
+For a single-call protocol check, start the session server above and pass a mono 16 kHz PCM16 WAV with trailing silence as `--audio`:
+
+```bash
+python -m benchmarks.eval.benchmark_duplex \
+  --url ws://localhost:8000/v1/realtime \
+  --profile personaplex --audio caller.wav --output personaplex-smoke \
+  --server-revision "$SERVER_REVISION" --model nvidia/personaplex-7b-v1
+python -m benchmarks.duplex.artifacts personaplex-smoke
+```
+
+Set `SERVER_REVISION` to the server checkout's full commit SHA. For an FDB v1.5 serving run, set `FDB_ROOT` to the dataset directory, set `FDB_REVISION` to its release or archive digest, and keep the requested concurrency within the server's `--max_sessions`:
+
+```bash
+python -m benchmarks.eval.benchmark_duplex_serving sweep \
+  --dataset v1.5 --concurrency 1 --output personaplex-serving -- \
+  --url ws://localhost:8000/v1/realtime --profile personaplex \
+  --dataset-root "$FDB_ROOT" --dataset-revision "$FDB_REVISION" \
+  --server-revision "$SERVER_REVISION" \
+  --model nvidia/personaplex-7b-v1
+```
+
+The serving report counts input units at 24 kHz, measures lag from input-send completion, and excludes empty end-of-input units. Inspect `serving.json` and `SERVING.md` for the 80 ms serving deadline verdict. FDB reference export validates the transmitted 24 kHz PCM and packet times, then resamples the scoring audio to mono 16 kHz PCM16. The scoring window keeps the original input duration.
+
+### Quality baseline
+
+The [single-call quality baseline](../developer_reference/personaplex_quality_baseline.md) records the H100 experiment configuration, subset coverage and greedy comparison results.
+
+Record FDB v1.0 and v1.5 at concurrency 1 with the same checkpoint, voice, role prompt and sampling configuration. Set `FDB10_ROOT` and `FDB15_ROOT` to the extracted datasets, and `FDB10_REVISION` and `FDB15_REVISION` to their archive digests. The following selection records three samples from each subset; the run manifests retain their IDs and source hashes.
+
+```bash
+python -m benchmarks.eval.benchmark_duplex_v15 record \
+  --url ws://localhost:8000/v1/realtime --profile personaplex \
+  --dataset-root "$FDB15_ROOT" --dataset-revision "$FDB15_REVISION" \
+  --server-revision "$SERVER_REVISION" --model nvidia/personaplex-7b-v1 \
+  --model-revision "$MODEL_REVISION" --concurrency 1 --max-per-subset 3 \
+  --timeout 230 --output quality-v15
+python -m benchmarks.eval.benchmark_duplex_v10 record \
+  --url ws://localhost:8000/v1/realtime --profile personaplex \
+  --dataset-root "$FDB10_ROOT" --dataset-revision "$FDB10_REVISION" \
+  --server-revision "$SERVER_REVISION" --model nvidia/personaplex-7b-v1 \
+  --model-revision "$MODEL_REVISION" --concurrency 1 --max-per-subset 3 \
+  --timeout 230 --output quality-v10
+FDB_SELECTION=()
+for subset in user_interruption user_backchannel talking_to_other background_speech; do
+  for sample in 1 2 3; do
+    FDB_SELECTION+=(--only "$subset/$sample")
+  done
+done
+python -m benchmarks.eval.benchmark_duplex_reference export "${FDB_SELECTION[@]}" \
+  --run quality-v15 --dataset-root "$FDB15_ROOT" \
+  --engine personaplex --out quality-v15-reference
+python -m benchmarks.eval.benchmark_duplex_v10 reference-export \
+  --run quality-v10 --dataset-root "$FDB10_ROOT" --out quality-v10-reference
+```
+
+Use the [FDB scoring commands](../developer_reference/full_duplex_guide.md) on these reference trees. Record the ASR checkpoint, evaluator revision, judge model and revision with the scores. Audio reconstruction uses receipt-time FIFO playout over the input duration, including initial silence and cropping audio at the observation window's end.
+
+### Greedy session and offline comparison
+
+For complete-reply equality, launch both servers with `--lm.engine.enable_deterministic_inference true`. Use greedy text and audio sampling on the session server, record a single call with the recorder above, then launch the offline server with `--session_reference true` from the same revision and checkpoint. Save the session's role prompt in `instructions.txt` and use the same voice on both routes:
+
+```bash
+python -m sglang_omni.cli serve \
+  --model-path "$MODEL_PATH" --variant session --enable-realtime --port 8000 \
+  --sampling.temperature 0 --sampling.audio_temperature 0 \
+  --voice NATF2 --instructions "$(cat instructions.txt)" \
+  --lm.engine.enable_deterministic_inference true
+
+# Record the call, stop the session server, then launch the offline reference.
+python -m sglang_omni.cli serve \
+  --model-path "$MODEL_PATH" --port 8001 --session_reference true \
+  --lm.engine.enable_deterministic_inference true
+```
+
+The offline reference processes the same caller PCM through its own request: Mimi encodes one 80 ms frame at a time, the LM generates one extra initial frame, and Mimi decodes two frames first followed by one frame per chunk. The returned waveform includes all generated frames and final caller-frame padding. This mode selects the session's codec chunk schedule, including when `code2wav.factory.chunk_ramp_frames` is set. The deterministic LM setting fixes attention reduction order while retaining CUDA graphs. Run the comparison at concurrency 1:
+
+```bash
+python -m benchmarks.eval.benchmark_personaplex_parity \
+  --session-run personaplex-smoke --offline-url http://localhost:8001 \
+  --offline-mode session-reference \
+  --voice NATF2 --instructions instructions.txt --output greedy-parity \
+  --server-revision "$SERVER_REVISION" --model nvidia/personaplex-7b-v1 \
+  --model-revision "$MODEL_REVISION"
+```
+
+The command sends the recorded 24 kHz PCM to the offline endpoint as a WAV data URI. It saves the request, response, both audio outputs and `parity.json`, including the first differing sample and SHA-256 of each PCM stream. It also records exact text equality and the elapsed HTTP request time in seconds. Its exit status is zero when the complete PCM replies are byte-identical and the text replies match. `--offline-mode` records the server mode in the report; the serving command selects that mode. The report also compares the prefix covering the caller's duration.
+
+Default offline serving generates one frame per caller frame and trims output to the caller's duration. To measure that contract, omit `--session_reference true` at launch and use `--offline-mode default` in the comparison. The [quality baseline report](../developer_reference/personaplex_quality_baseline.md) retains those measurements separately from the session reference experiment.
+
 ## Request parameters
 
 | Parameter | Effect |

@@ -1,0 +1,109 @@
+{
+  "experiment_date_utc": "2026-11-03",
+  "hardware": {
+    "gpu": "NVIDIA H100 80GB HBM3",
+    "gpu_count": 1,
+    "driver": "595.91.07"
+  },
+  "serving": {
+    "revision": "be967415da712799707e8988a0dbdd2291e17bd1",
+    "benchmark_revision": "b4c8d672ed931e0f58544c279234622db65f7aa6",
+    "image": "hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985",
+    "sglang": "0.5.22",
+    "torch": "2.14.1+cu130",
+    "model": "nvidia/personaplex-7b-v1",
+    "model_revision": "fdaf4090a61cb315c138a1faee287ffd6c716309"
+  },
+  "generation": {
+    "concurrency": 1,
+    "sample_rate_hz": 24000,
+    "input_unit_ms": 80,
+    "voice": "NATF2",
+    "instructions": "You are a wise and friendly teacher. Answer questions or provide advice in a clear and engaging way.",
+    "quality": {
+      "text_temperature": 0.7,
+      "text_top_k": 25,
+      "audio_temperature": 0.8,
+      "audio_top_k": 250,
+      "seed": null
+    },
+    "greedy": {
+      "text_temperature": 0,
+      "audio_temperature": 0
+    }
+  },
+  "selection": {
+    "v15": [
+      "background_speech/1",
+      "background_speech/2",
+      "background_speech/3",
+      "talking_to_other/1",
+      "talking_to_other/2",
+      "talking_to_other/3",
+      "user_backchannel/1",
+      "user_backchannel/2",
+      "user_backchannel/3",
+      "user_interruption/1",
+      "user_interruption/2",
+      "user_interruption/3"
+    ],
+    "v10": [
+      "candor_pause_handling/1",
+      "candor_pause_handling/2",
+      "candor_pause_handling/3",
+      "candor_turn_taking/1",
+      "candor_turn_taking/2",
+      "candor_turn_taking/3",
+      "icc_backchannel/0",
+      "icc_backchannel/1",
+      "icc_backchannel/2",
+      "synthetic_pause_handling/1",
+      "synthetic_pause_handling/2",
+      "synthetic_pause_handling/3",
+      "synthetic_user_interruption/1",
+      "synthetic_user_interruption/2",
+      "synthetic_user_interruption/3"
+    ]
+  },
+  "evaluation": {
+    "reference_revision": "3e799c45a045256f47d5f1c9cda90157e2d2ec9e",
+    "asr_model": "nvidia/parakeet-tdt-0.6b-v2",
+    "asr_revision": "ae9ad07059c7c739ffaf932226a8fe64ae2620b0",
+    "asr_sha256": "d99e39955c9d3d0350d8fb7c75e40c64a2b2eaeb003883d7c941fd2e8747b28c",
+    "judge": {
+      "decoding": {
+        "max_tokens": 512,
+        "min_p": 0.0,
+        "repetition_penalty": 1.0,
+        "temperature": 0.0,
+        "top_k": -1,
+        "top_p": 1.0
+      },
+      "enable_thinking": false,
+      "model_id": "Qwen/Qwen3.8-27B",
+      "model_revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+      "precision": "bf16",
+      "seeds": [
+        1,
+        2,
+        3
+      ],
+      "served_model": "qwen3.8-27b",
+      "server_launch_receipt": "launch-receipt.json",
+      "server_launch_receipt_sha256": "dcf0998a49f2912b2533db1b95f8377d8a61f7ecdc0c5173e8f658e1f2f81526",
+      "tokenizer_id": "Qwen/Qwen3.8-27B",
+      "tokenizer_revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
+    },
+    "reconstruction": {
+      "policy": "derived-analysis-v2-bounded-input-jitter",
+      "policy_version": 2,
+      "timeline": "fifo_zero_buffer_receipt_playout",
+      "scoring_sample_rate_hz": 16000,
+      "samples": "ceil(input_samples * scoring_sample_rate / input_sample_rate)"
+    }
+  },
+  "datasets": {
+    "v10": "ec8bc7aad155c16e319fdd247b8a90f0e49da628aa147aabd4e6d0bfe647c000",
+    "v15": "0043ec5f43faec5fd71ee57367b486df7e048a71455118e172af57c80a8337ea"
+  }
+}
