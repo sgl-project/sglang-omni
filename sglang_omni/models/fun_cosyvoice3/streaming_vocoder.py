@@ -11,6 +11,7 @@ the next step (or the stream-done flush) is when they become audio.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Callable
@@ -42,7 +43,7 @@ from sglang_omni.models.fun_cosyvoice3.streaming import (
 )
 from sglang_omni.models.fun_cosyvoice3.utils import MAX_REFERENCE_SECONDS
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.streaming_vocoder import StreamingVocoderBase
 from sglang_omni.scheduling.types import SpecTokensDetailsDict
@@ -51,6 +52,9 @@ from sglang_omni.utils.audio_payload import audio_waveform_payload
 logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 24000
+
+# note (zhaochenyang20): margin past the next whole-utterance batch for one stream step; 0.8 s cost 1-3% of mixed-load throughput on H100 with no playback gain.
+STREAM_STEP_HEADROOM_SECONDS = 0.4
 
 NextDecode = Literal["causal_window", "leftover", "fallback", "wait"]
 
@@ -587,6 +591,48 @@ class FunCosyVoice3StreamingVocoderScheduler(
             else:
                 return False
 
+    def run_non_streaming_batch(
+        self, batch: list[IncomingMessage], loop: asyncio.AbstractEventLoop
+    ) -> None:
+        """The step in flight is completed before a whole-utterance batch, and the batch is followed by one ready step when a stream waits for its first audio or would run dry before another such batch and a step finish."""
+        # note (zhaochenyang20): a launched step's audio is read only at the next ready step, which queued non-streaming requests can hold off for a whole batch.
+        with self.state_lock:
+            launched = self.launched_step
+            self.launched_step = None
+            failed = [] if launched is None else self.complete_step(launched)
+        for request_id in failed:
+            self.cleanup_aborted_request(request_id)
+        batch_start_seconds = self.clock()
+        super().run_non_streaming_batch(batch, loop)
+        with self.state_lock:
+            now_seconds = self.clock()
+            # note (zhaochenyang20): The serving loop drains its inbox before a ready step, and queued non-streaming requests kept it full: at 48 non-streaming plus 16 streaming SeedTTS EN clients on one H100, streams stalled up to 8.7 s mid-playback and first audio p99 reached 12 s. The next batch is taken to be as long as this one. A stream with more audio buffered still waits for an empty inbox.
+            horizon_seconds = (
+                now_seconds - batch_start_seconds + STREAM_STEP_HEADROOM_SECONDS
+            )
+            is_stream_waiting = any(
+                state.next_decode() != "wait"
+                and not self.is_aborted(request_id)
+                and (
+                    state.first_emit_at is None
+                    or self.playback_slack_seconds(state, now_seconds) < horizon_seconds
+                )
+                for request_id, state in self.stream_state_items()
+            )
+        if is_stream_waiting:
+            self.run_ready_step()
+        else:
+            pass
+
+    def playback_slack_seconds(
+        self, state: CosyVoice3StreamState, now_seconds: float
+    ) -> float:
+        """Seconds of emitted audio a started stream's client has yet to play."""
+        assert state.first_emit_at is not None
+        return state.speech_offset / self.sample_rate - (
+            now_seconds - state.first_emit_at
+        )
+
     def select_step_participants(
         self,
     ) -> list[tuple[str, CosyVoice3StreamState]]:
@@ -601,10 +647,14 @@ class FunCosyVoice3StreamingVocoderScheduler(
                 unstarted.append((state.ready_since, request_id, state))
             else:
                 assert state.ready_since is not None
-                playback_slack = state.speech_offset / self.sample_rate - (
-                    now - state.first_emit_at
+                started.append(
+                    (
+                        self.playback_slack_seconds(state, now),
+                        state.ready_since,
+                        request_id,
+                        state,
+                    )
                 )
-                started.append((playback_slack, state.ready_since, request_id, state))
         ranked = [(request_id, state) for _, _, request_id, state in sorted(started)]
         ranked += [(request_id, state) for _, request_id, state in sorted(unstarted)]
         if not ranked:

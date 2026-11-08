@@ -859,6 +859,33 @@ def test_stream_done_defers_the_final_to_a_step() -> None:
     assert not scheduler.has_ready_work()
 
 
+@pytest.mark.parametrize("is_stream_started", [False, True])
+def test_non_streaming_decode_yields_to_a_stream_waiting_for_audio(
+    is_stream_started: bool,
+) -> None:
+    """Queued non-streaming requests kept the vocoder from every stream step, so streams under mixed load got no audio until that traffic stopped; a stream with audio buffered may still wait."""
+    _, scheduler = make_scheduler(sample_rate=50)
+    scheduler.clock = Clock()
+    scheduler.handle_streaming_new_request("req-a", stream_payload("req-a"))
+    scheduler.ingest_stream_item("req-a", item(list(range(28))))
+    if is_stream_started:
+        assert serve(scheduler) == 1
+        drain(scheduler)
+        scheduler.ingest_stream_item("req-a", item(list(range(28, 78))))
+    else:
+        pass
+    whole = stream_payload("whole", codes=list(range(30)))
+    whole.request.params["stream"] = False
+
+    scheduler.handle_new_request_batch([IncomingMessage("whole", "new_request", whole)])
+
+    # At 50 Hz the first hop's samples play for about a second, past the horizon.
+    assert [(m.request_id, m.type) for m in drain(scheduler)] == [
+        ("whole", "result")
+    ] + ([] if is_stream_started else [("req-a", "stream")])
+    assert scheduler.has_ready_work() == is_stream_started
+
+
 def test_finals_share_one_non_streaming_flow_batch() -> None:
     flow, scheduler = make_scheduler()
     for request_id in ("req-a", "req-b"):
