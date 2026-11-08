@@ -169,7 +169,7 @@ The stage label is `run-intel-xpu-ci`.
 
 Voxt Mac CI has two jobs on GitHub's macOS runners. The native runtime job builds the MLX runtime and a stub server, then tests the protocol every native server shares on the stub server, each server's startup checks, and that the installed runtime links only the system and itself. The Swift test job runs the tests of the Voxt app's helper (`Voxt/helper`). Model outputs are checked by hand per model PR with the tools in `sglang_omni_mlx/native/ci`. The workflow starts only when the pull request touches `sglang_omni_mlx/`, `Voxt/helper/` or the workflow itself; otherwise it does not appear on the pull request at all.
 
-The stage label is `run-mac-ci`. It runs only Voxt Mac CI: the workflow waits for lint to pass, then starts the Mac jobs. It does not run PR Test or any other H100 job, because Voxt Mac CI tests neither the `sglang_omni` package nor a GPU path.
+The stage label is `run-mac-ci`. Use it for any change on the MLX path: the SGLang Omni MLX runtime in `sglang_omni_mlx/`, such as a runtime optimization or a new native server, as well as the Voxt app. It runs only this workflow, which waits for lint to pass and then starts the Mac jobs. It does not run PR Test or any other H100 job, because the Mac jobs test the MLX runtime and the Voxt helper, not the `sglang_omni` Python package that PR Test covers.
 
 ## Label rules
 
