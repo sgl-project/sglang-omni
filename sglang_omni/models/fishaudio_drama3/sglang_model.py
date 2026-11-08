@@ -4,7 +4,8 @@
 The tower keeps its key/value cache in the backbone's paged pool, under the
 layer ids that follow the backbone's. One forward runs the backbone, fills the
 tower cache of the extend rows, and samples the next frame of every request.
-A decode forward reads fixed-address buffers, so a CUDA graph can replay it.
+A decode forward gathers its rows from the state pool by req_pool_indices and
+publishes its frames back, all at fixed addresses, so a CUDA graph can replay it.
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ from sglang_omni.models.fishaudio_drama3.first_frame_graphs import (
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.model_inputs import (
     Drama3DecodeBuffers,
+    Drama3DecodeStatePool,
     Drama3StepInputs,
     StepExchange,
     next_frame_labels,
@@ -60,6 +62,7 @@ __all__ = [
     "Drama3ForCausalLM",
     "Drama3Backbone",
     "Drama3DecodeBuffers",
+    "Drama3DecodeStatePool",
     "Drama3StepInputs",
     "StepExchange",
     "next_frame_labels",
@@ -168,6 +171,7 @@ class Drama3ForCausalLM(nn.Module):
         self.step_exchange = StepExchange()
         # The engine builder allocates these once the request pool is sized.
         self.decode_buffers: Drama3DecodeBuffers | None = None
+        self.decode_state: Drama3DecodeStatePool | None = None
         self.first_frame_graphs: Drama3FirstFrameGraphs | None = None
 
     @property
@@ -188,15 +192,19 @@ class Drama3ForCausalLM(nn.Module):
     ) -> LogitsProcessorOutput:
         forward_mode = forward_batch.forward_mode
         decode_buffers = self.decode_buffers
+        decode_state = self.decode_state
         if forward_mode == ForwardMode.EXTEND:
             return self.forward_extend(input_ids, positions, forward_batch)
         elif forward_mode != ForwardMode.DECODE:
             raise NotImplementedError(f"forward mode {forward_mode} is not supported")
-        elif decode_buffers is None:
+        elif decode_buffers is None or decode_state is None:
             raise RuntimeError("the engine allocated no Drama 3 decode buffers")
         else:
-            # A CUDA graph replays this branch with the batch padded to its size.
+            # A CUDA graph replays this branch with the batch padded to its size;
+            # SGLang points every padded row at request slot 0.
             row_count = input_ids.shape[0]
+            request_slots = forward_batch.req_pool_indices.to(torch.int64)
+            self.stage_decode_rows(request_slots)
             frames = decode_buffers.frames[:row_count]
             hidden_states, logits_output = self.backbone_logits(
                 input_ids, positions, forward_batch, frames
@@ -214,7 +222,15 @@ class Drama3ForCausalLM(nn.Module):
                 decode_buffers.epsilon_cutoff[:row_count],
             )
             decode_buffers.sampled_frames[:row_count].copy_(sampled_frames)
+            decode_state.publish(request_slots, sampled_frames)
             return logits_output
+
+    def stage_decode_rows(self, request_slots: torch.Tensor) -> None:
+        """Gather each request slot's decode inputs into the decode buffers."""
+        decode_buffers = self.decode_buffers
+        decode_state = self.decode_state
+        assert decode_buffers is not None and decode_state is not None
+        decode_state.gather(request_slots, decode_buffers)
 
     def forward_extend(
         self,

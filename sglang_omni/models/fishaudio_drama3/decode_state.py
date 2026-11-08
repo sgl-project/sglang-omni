@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Persistent request rows and frame histories used to stage Drama 3 decode."""
+"""Frame histories and request lookups that stage Drama 3 forwards."""
 
 from __future__ import annotations
-
-import dataclasses
 
 import torch
 
@@ -16,41 +14,6 @@ from sglang_omni.models.fishaudio_drama3.sampling import (
     RAS_WINDOW_FRAMES,
 )
 from sglang_omni.scheduling.types import SchedulerRequest
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class Drama3DecodeStatePool:
-    frames: torch.Tensor
-    ras_windows: torch.Tensor
-    temperature: torch.Tensor
-    top_k: torch.Tensor
-    top_p: torch.Tensor
-    epsilon_cutoff: torch.Tensor
-    row_indices: torch.Tensor
-
-    @classmethod
-    def allocate(
-        cls, *, request_slot_count: int, frame_width: int, device: torch.device
-    ) -> Drama3DecodeStatePool:
-        row_count = request_slot_count + 1
-        return cls(
-            frames=torch.zeros(
-                (row_count, frame_width), dtype=torch.int64, device=device
-            ),
-            ras_windows=torch.full(
-                (row_count, RAS_WINDOW_FRAMES),
-                EMPTY_RAS_SLOT,
-                dtype=torch.int64,
-                device=device,
-            ),
-            temperature=torch.ones(row_count, dtype=torch.float32, device=device),
-            top_k=torch.ones(row_count, dtype=torch.int64, device=device),
-            top_p=torch.ones(row_count, dtype=torch.float32, device=device),
-            epsilon_cutoff=torch.zeros(row_count, dtype=torch.float32, device=device),
-            row_indices=torch.zeros(
-                request_slot_count, dtype=torch.int64, device=device
-            ),
-        )
 
 
 def ras_window(frame_rows: list[list[int]]) -> list[int]:
@@ -85,6 +48,20 @@ def extend_frame_rows(request_data: Drama3RequestData) -> list[list[int]]:
         )
     else:
         return request_data.frame_rows
+
+
+def extend_frame_history(request_data: Drama3RequestData) -> torch.Tensor:
+    """extend_frame_rows as an int64 CPU tensor [rows, frame width]: the prompt
+    tensor the request builder kept, then any frames sampled before a retraction."""
+    frame_rows = extend_frame_rows(request_data)
+    prompt_frames = request_data.prompt_frames
+    sampled_rows = frame_rows[request_data.prompt_row_count :]
+    if prompt_frames is None:
+        return torch.tensor(frame_rows, dtype=torch.int64)
+    elif not sampled_rows:
+        return prompt_frames
+    else:
+        return torch.cat((prompt_frames, torch.tensor(sampled_rows, dtype=torch.int64)))
 
 
 def request_data_of(request: SchedulerRequest) -> Drama3RequestData:

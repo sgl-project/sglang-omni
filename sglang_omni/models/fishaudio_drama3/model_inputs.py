@@ -30,13 +30,8 @@ class Drama3StepInputs:
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class Drama3DecodeBuffers:
-    """Decode inputs and sampled frames at fixed addresses, one row per batch slot;
-    rows past a batch keep earlier valid values that only padded graph rows read.
-
-    A prefill stages its requests' epsilon_cutoff rows here too, where the first-frame
-    step reads them.
-    """
+class Drama3SamplingRows:
+    """One row per request or batch slot: its newest frame, RAS window and sampling knobs."""
 
     frames: torch.Tensor
     ras_windows: torch.Tensor
@@ -44,27 +39,86 @@ class Drama3DecodeBuffers:
     top_k: torch.Tensor
     top_p: torch.Tensor
     epsilon_cutoff: torch.Tensor
+
+    @staticmethod
+    def greedy_rows(
+        row_count: int, frame_width: int, device: torch.device
+    ) -> dict[str, torch.Tensor]:
+        """Rows that sample like a greedy request with an empty window."""
+        return {
+            "frames": torch.zeros(
+                (row_count, frame_width), dtype=torch.int64, device=device
+            ),
+            "ras_windows": torch.full(
+                (row_count, RAS_WINDOW_FRAMES),
+                EMPTY_RAS_SLOT,
+                dtype=torch.int64,
+                device=device,
+            ),
+            "temperature": torch.ones(row_count, dtype=torch.float32, device=device),
+            "top_k": torch.ones(row_count, dtype=torch.int64, device=device),
+            "top_p": torch.ones(row_count, dtype=torch.float32, device=device),
+            "epsilon_cutoff": torch.zeros(
+                row_count, dtype=torch.float32, device=device
+            ),
+        }
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class Drama3DecodeBuffers(Drama3SamplingRows):
+    """Decode inputs and sampled frames at fixed addresses, one row per batch slot.
+
+    A decode forward gathers its rows here from the state pool, so a padded graph
+    row holds the pool's dummy row 0. A prefill stages its requests' epsilon_cutoff
+    rows here too, where the first-frame step reads them.
+    """
+
     sampled_frames: torch.Tensor
 
     @classmethod
     def allocate(
         cls, *, row_count: int, frame_width: int, device: torch.device
     ) -> Drama3DecodeBuffers:
-        """Rows that sample like a greedy request with an empty window."""
-        frames = torch.zeros((row_count, frame_width), dtype=torch.int64, device=device)
-        return cls(
-            frames=frames,
-            ras_windows=torch.full(
-                (row_count, RAS_WINDOW_FRAMES),
-                EMPTY_RAS_SLOT,
-                dtype=torch.int64,
-                device=device,
-            ),
-            temperature=torch.ones(row_count, dtype=torch.float32, device=device),
-            top_k=torch.ones(row_count, dtype=torch.int64, device=device),
-            top_p=torch.ones(row_count, dtype=torch.float32, device=device),
-            epsilon_cutoff=torch.zeros(row_count, dtype=torch.float32, device=device),
-            sampled_frames=torch.zeros_like(frames),
+        rows = cls.greedy_rows(row_count, frame_width, device)
+        return cls(**rows, sampled_frames=torch.zeros_like(rows["frames"]))
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class Drama3DecodeStatePool(Drama3SamplingRows):
+    """Each request slot's newest frame, RAS window and sampling knobs, indexed by
+    req_pool_indices; row 0 is the dummy row every padded graph row points at.
+
+    A decode forward gathers and publishes its rows inside the decode CUDA graph.
+    """
+
+    @classmethod
+    def allocate(
+        cls, *, request_slot_count: int, frame_width: int, device: torch.device
+    ) -> Drama3DecodeStatePool:
+        return cls(**cls.greedy_rows(request_slot_count + 1, frame_width, device))
+
+    def gather(self, request_slots: torch.Tensor, buffers: Drama3DecodeBuffers) -> None:
+        """Copy the slots' rows into the first rows of the decode buffers, in order."""
+        row_count = request_slots.shape[0]
+        for pooled, staged in (
+            (self.frames, buffers.frames),
+            (self.ras_windows, buffers.ras_windows),
+            (self.temperature, buffers.temperature),
+            (self.top_k, buffers.top_k),
+            (self.top_p, buffers.top_p),
+            (self.epsilon_cutoff, buffers.epsilon_cutoff),
+        ):
+            torch.index_select(pooled, 0, request_slots, out=staged[:row_count])
+
+    def publish(self, request_slots: torch.Tensor, frames: torch.Tensor) -> None:
+        """Make frames the slots' newest frames and slide their RAS windows.
+
+        The windows slide from the pool, not from the staged copy a forward read.
+        """
+        ras_windows = self.ras_windows.index_select(0, request_slots)
+        self.frames.index_copy_(0, request_slots, frames)
+        self.ras_windows.index_copy_(
+            0, request_slots, torch.cat((ras_windows[:, 1:], frames[:, :1]), dim=1)
         )
 
 

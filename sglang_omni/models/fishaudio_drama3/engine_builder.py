@@ -43,7 +43,10 @@ from sglang_omni.models.fishaudio_drama3.first_frame_graphs import (
     Drama3FirstFrameGraphs,
 )
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
-from sglang_omni.models.fishaudio_drama3.model_inputs import Drama3DecodeBuffers
+from sglang_omni.models.fishaudio_drama3.model_inputs import (
+    Drama3DecodeBuffers,
+    Drama3DecodeStatePool,
+)
 from sglang_omni.models.fishaudio_drama3.model_runner import Drama3ModelRunner
 from sglang_omni.models.fishaudio_drama3.quantization import (
     INT4_QUANTIZATION_METHOD,
@@ -241,15 +244,21 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         gpu_id: int,
         server_args: ServerArgs,
     ) -> None:
-        """Allocate the decode buffers before graph capture; the checkpoint and
-        GPU arguments are the interface contract."""
+        """Allocate the decode buffers and state pool before graph capture; the
+        checkpoint and GPU arguments are the interface contract."""
         sglang_runner = model_worker.model_runner
         model = sglang_runner.model
         assert isinstance(model, Drama3ForCausalLM)
+        frame_width = 1 + model.config.audio_decoder_config.num_codebooks
         # No decode batch or captured graph size exceeds the request slots.
         model.decode_buffers = Drama3DecodeBuffers.allocate(
             row_count=sglang_runner.req_to_token_pool.size,
-            frame_width=1 + model.config.audio_decoder_config.num_codebooks,
+            frame_width=frame_width,
+            device=torch.device(device),
+        )
+        model.decode_state = Drama3DecodeStatePool.allocate(
+            request_slot_count=sglang_runner.req_to_token_pool.size,
+            frame_width=frame_width,
             device=torch.device(device),
         )
         prefill_graph_config = resolved_view(server_args).cuda_graph_config.prefill
