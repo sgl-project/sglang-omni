@@ -208,7 +208,12 @@ func TestOverlayTwoSessionsEndToEnd(t *testing.T) {
 	if s := a.ovNow(); s.frame != pill || s.text != "" || !s.visible {
 		t.Fatalf("first starts: %+v", s)
 	}
-	a.pump("the first's end", func() bool { return a.sess.ID == first && a.sess.State.Ended() })
+	a.pump("the first's end", func() bool {
+		if a.sess.ID == first && a.ov.h == layout.LiveH {
+			t.Error("the first session's final text grew the overlay; the preview should stay the pill")
+		}
+		return a.sess.ID == first && a.sess.State.Ended()
+	})
 	ft.advance(ovGone)
 	if a.ov.visible {
 		t.Fatal("the first stays on screen")
