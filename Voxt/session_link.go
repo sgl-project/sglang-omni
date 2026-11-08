@@ -117,6 +117,7 @@ type sessionNotice struct {
 	action     string
 	entry      string // actionRetry's history entry
 	warn       bool   // a warning (the session went on), not an error
+	ok         bool   // done as asked (a term added), not a problem
 	seq        int    // which notice: its timer hides only itself
 	// then runs when its time is up (not when a click or the next
 	// session hides it): the notice that follows it.

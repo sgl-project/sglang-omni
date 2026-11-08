@@ -198,10 +198,10 @@ type Snapshot struct {
 	Inserted bool
 	Card     bool
 	Delivery deliver.Reason
-	// InsertedInto is the app the result was pasted into: Target, or the
-	// app the user went to and focused a text field in. Target stays the
-	// app the scene was chosen for (the history's app).
-	InsertedInto proto.App
+	// Landing says where the result was pasted (nil: not inserted): the
+	// app, Target or the app the user went to and focused a text field
+	// in. Target stays the app the scene was chosen for (the history's app).
+	Landing *deliver.Landing
 	// Scene is the app enhancement group the session falls in (scene.go);
 	// nil until it is decided.
 	Scene *appctx.Match

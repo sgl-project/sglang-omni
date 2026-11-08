@@ -18,9 +18,9 @@ import (
 func (a *app) privacySettings(c *ui.Context) {
 	t := c.Theme()
 	sectionTitle(c, i18n.T("What leaves this Mac"))
-	online := i18n.T("Otherwise Voxt goes online only to download models.")
+	online := i18n.T("Otherwise Voxt goes online only to download models and to read Voxt's announcements, which sends nothing about you.")
 	if a.upd != nil { // a build with an update feed (updates.go)
-		online = i18n.T("Otherwise Voxt goes online only to check for updates and to download models.")
+		online = i18n.T("Otherwise Voxt goes online only to check for updates, to download models and to read Voxt's announcements, which sends nothing about you.")
 	}
 	ui.Column(c.Key("priv-list")).Gap(px(t, sp1)).Children(func() {
 		for _, s := range []string{
