@@ -1,9 +1,7 @@
 # Qwen3-Omni
 
-[Qwen3-Omni](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct) is a multi-modal model
-that accepts text, image, audio, and video input and can produce text-only or text + audio output.
-This page covers every supported server configuration — use the generator to get the exact launch
-command for your hardware, then check the tables to confirm your combination is supported.
+[Qwen3-Omni](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct) accepts text, images, audio, and video, and can return text alone or with audio.
+Use the generator for a hardware-specific launch command, then check the tables for supported configurations.
 
 ## Prerequisites
 
@@ -32,8 +30,7 @@ Use the selector below to generate the exact launch command for your configurati
 
 ## Compatibility Matrix
 
-Colocated topology requires `--config examples/configs/qwen3_omni_colocated_h20.yaml`
-(or `qwen3_omni_colocated_h200.yaml` on H200) to set per-stage GPU memory budgets.
+Colocated topology requires `--config examples/configs/qwen3_omni_colocated_h20.yaml` (or `qwen3_omni_colocated_h200.yaml` on H200) to set per-stage GPU memory budgets.
 
 All configurations listed below are supported.
 
@@ -54,8 +51,7 @@ All configurations listed below are supported.
 
 ## Input / Output Modalities
 
-All input modality combinations work with both text-only and speech servers.
-`modalities: ["text", "audio"]` requires a **speech-mode server** (omit `--text-only`).
+All listed input combinations work with text-only and speech servers. To return audio, use a speech-mode server; on a text-only server, `modalities: ["text", "audio"]` has no effect and returns no audio.
 
 | Input | Output | Speech server | Minimal request body | Notes |
 |---|---|---|---|---|
@@ -76,9 +72,10 @@ All input modality combinations work with both text-only and speech servers.
 | Video + audio | Text + Audio | **Yes** | `{"messages": [{"role": "user", "content": ""}], "videos": ["path/or/url"], "audios": ["path/or/url"], "modalities": ["text", "audio"]}` | content must be "" when the query is spoken |
 | Video | Text + Audio | **Yes** | `{"messages": [{"role": "user", "content": ""}], "videos": ["path/or/url"], "modalities": ["text", "audio"]}` | content must be "" when query comes from video |
 
+
 ### Sampling Parameters
 
-Standard sampling parameters apply to the thinker stage. When `modalities` includes `"audio"`, the additional talker-specific parameters below control the speech generation independently.
+Standard sampling parameters apply to the thinker. When `modalities` includes `"audio"`, talker-specific parameters control speech generation.
 
 | Parameter | Type | Default | Applies to |
 |---|---|---|---|
@@ -89,7 +86,7 @@ Standard sampling parameters apply to the thinker stage. When `modalities` inclu
 | `repetition_penalty` | float | `1.0` | Thinker |
 | `max_tokens` | int | `2048` | Thinker |
 | `max_completion_tokens` | int | `null` | Thinker; OpenAI-compatible alias for `max_tokens` |
-| `stop` | str \| list | `null` | Thinker |
+| `stop` | str | list | `null` | Thinker |
 | `seed` | int | `null` | Thinker |
 | `stream` | bool | `false` | Both |
 | `audio` | dict | `null` | Speech response format config, e.g. `{"format": "wav"}` |
@@ -107,21 +104,16 @@ Standard sampling parameters apply to the thinker stage. When `modalities` inclu
 | `video_total_pixels` | int | `null` | Total pixel budget across all video frames |
 | `use_audio_in_video` | bool | `null` | Set to `true` to process embedded audio. Requests where all videos lack audio use video-only processing; mixing videos with and without audio is rejected. Audio decoding errors are reported. |
 
-Non-streaming chat requests return HTTP 400 for invalid media, HTTP 503 when the request queue is full, and HTTP 500 for other
-server failures. With `stream=true`, errors detected after the event stream
-starts are sent as `data: {"error": {"message": "...", "type": "invalid_request_error", "code": 400}}`,
-followed by `data: [DONE]`. A full request queue uses `type: "server_error"` and `code: 503`. Other server failures use `type: "server_error"` and
-`code: 500`. The HTTP status remains 200 once streaming has started; clients
-must check for an `error` event, including after partial output.
+Non-streaming requests return HTTP 400 for invalid media, 503 when the queue is full, and 500 for other failures.
+After streaming starts, errors use `data: {"error": {"message": "...", "type": "...", "code": ...}}` events; HTTP status remains 200. Invalid media uses `invalid_request_error`/400, a full queue `server_error`/503, and other failures `server_error`/500. The stream ends with `data: [DONE]`, so clients must check for errors, even after partial output.
 
 ### Known Limitations
 
-- **Multiple videos must have the same sampled frame rate.** The processor accepts one frame rate for video token timestamps. Requests with different sampled frame rates follow the invalid-input error contract above.
+- **Multiple videos must use the same sampled frame rate.** The processor uses one rate for video timestamps; different rates return an invalid-input error.
 
-- **`modalities: ["text", "audio"]` has no effect on a text-only server.** No error is raised — the response simply contains no audio. Use a speech-mode server (without `--text-only`) to get audio output.
-- **`content` must be `""` when the query is entirely in `audios`, `videos`, or `images`.** Leaving a text query in `content` alongside audio causes the model to process both, which is usually not what you want.
-- **Colocated topology does not support `--thinker.tp_size 2`.** The server raises a `ValueError` at startup ("Qwen Phase 1 colocation does not support thinker TP"). Use disaggregated topology for TP=2.
-- **Requests that exceed the model's context length are rejected with an error.** The preprocessor raises a `ValueError` when the prompt token count alone meets or exceeds `max_seq_len`, or when `prompt tokens + max_new_tokens ≥ max_seq_len`. Reduce input length or lower `max_tokens` to stay within the limit. Without `--preprocessing.factory.max_seq_len` and `--thinker.factory.max_seq_len`, the limit is the thinker's context in the checkpoint config (65,536 tokens for the Instruct checkpoint). Setting both to a lower value caps it. The talker's context is likewise the checkpoint's unless `--talker_ar.factory.max_seq_len` sets it. When a long spoken prompt leaves less room than `talker_max_new_tokens`, the talker generates only the frames that fit, so the audio can end before the text.
+- **`content` must be `""` when the query is entirely in `audios`, `videos`, or `images`.** Otherwise, any text in `content` is processed too.
+- **Colocated topology does not support `--thinker.tp_size 2`.** Startup raises a `ValueError`; use disaggregated topology for TP=2.
+- **Context limits apply to prompt and output.** The preprocessor rejects requests when prompt tokens meet or exceed `max_seq_len`, or when prompt tokens plus `max_new_tokens` meet or exceed it. Without both `--preprocessing.factory.max_seq_len` and `--thinker.factory.max_seq_len`, the limit is the thinker's checkpoint context (65,536 tokens for Instruct); setting both lower caps it. The talker uses its checkpoint limit unless `--talker_ar.factory.max_seq_len` sets it. A long spoken prompt may leave too little room for `talker_max_new_tokens`, so audio can end before the text.
 
 ## Qwen3-Omni persistent session stages
 
@@ -153,13 +145,13 @@ sgl-omni serve \
   --port 8000
 ```
 
-- **Acceptance length.** Send `return_spec_tokens_details: true` with a chat request to get its `sglext.spec_tokens_details`: `spec_accept_length` (output tokens per verify, including the token sampled at prefill, so it can read higher than the scheduler log's `accept len`, which counts only verified tokens), `spec_accept_rate`, the draft counts and the per-verify histogram. A streamed response sends it in a chunk with empty `choices` before `[DONE]`. `spec_accept_rate` and `spec_num_proposed_drafts` are left out when no drafts were proposed or the draft width is adaptive. Only the Thinker draft is reported for now; a per-stage field can follow once the Talker has a draft too.
-- **Context.** The drafts shown above have an 8,192-token context. The prompt, output budget and speculative reservations must fit within it. Use `--preprocessing.factory.max_seq_len 8192` to reject oversized prompts early.
-- **Sampling.** Keep `repetition_penalty=1`, `frequency_penalty=0`, `presence_penalty=0`, and `min_p=0`. Disable logprobs and `return_hidden_states`. For `/generate`, send `return_logprob: false`.
-- **Scheduling.** Speculative decoding is synchronous by default. Add `--thinker.factory.enable_async_decode true` to either command to enable overlap, keeping `async_decode_min_batch_size=1`. Mixed prefill/decode batches (`enable_mixed_chunk=true`), sessions and weight updates are unsupported with a draft.
-- **Overlap trade-offs.** Overlap can improve decode throughput. Prefill-heavy workloads or short outputs can see higher TTFT and lower throughput.
-- **Prefill boundary.** Set `SGLANG_DISABLE_CONSECUTIVE_PREFILL_OVERLAP=1` before launch to process the previous prefill batch's result before launching the next consecutive prefill batch. This can lower TTFT at a throughput cost. Decode rounds continue to overlap.
-- **Execution failure.** An execution failure in speculative overlap stops the pipeline and fails its pending requests.
-- **Speech output.** Speech generation is unsupported with a draft; use `--text-only`.
+- **Acceptance length.** Set `return_spec_tokens_details: true` to receive `sglext.spec_tokens_details`: `spec_accept_length` (output tokens per verify, including the prefill-sampled token, so it can exceed scheduler `accept len`), `spec_accept_rate`, draft counts, and a per-verify histogram. Streaming sends it in a chunk with empty `choices` before `[DONE]`. `spec_accept_rate` and `spec_num_proposed_drafts` are omitted when no drafts were proposed or draft width is adaptive. Only thinker drafts are reported; per-stage reporting can follow when Talker supports drafts.
+- **Context.** These drafts have an 8,192-token context; the prompt, output budget, and speculative reservations must fit. Set `--preprocessing.factory.max_seq_len 8192` to reject oversized prompts early.
+- **Sampling.** Use `repetition_penalty=1`, `frequency_penalty=0`, `presence_penalty=0`, and `min_p=0`; disable logprobs and `return_hidden_states`. For `/generate`, set `return_logprob: false`.
+- **Scheduling.** Speculative decoding is synchronous by default. Add `--thinker.factory.enable_async_decode true` to overlap work, keeping `async_decode_min_batch_size=1`. Mixed prefill/decode batches (`enable_mixed_chunk=true`), sessions, and weight updates are unsupported with a draft.
+- **Overlap trade-offs.** Overlap can improve decode throughput, but prefill-heavy workloads or short outputs may have higher TTFT and lower throughput.
+- **Prefill boundary.** Set `SGLANG_DISABLE_CONSECUTIVE_PREFILL_OVERLAP=1` before launch to process the previous prefill batch's result before launching the next consecutive prefill batch. This can lower TTFT at a throughput cost; decode rounds still overlap.
+- **Execution failure.** A failure during speculative overlap stops the pipeline and fails pending requests.
+- **Speech output.** Drafts do not support speech generation; use `--text-only`.
 
-Compare modes with matching workloads and prefix-cache conditions. Measure TTFT, throughput and accuracy for your workload.
+Compare modes with matching workloads and prefix-cache conditions; measure TTFT, throughput, and accuracy for your workload.
