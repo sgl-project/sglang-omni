@@ -127,6 +127,8 @@ sgl-omni serve \
 
 Speculative decoding is greedy: a request with a positive temperature or with segment timestamps is refused with 400. It runs synchronously, so async decode is off. The first startup compiles the verify graphs for every decode batch size, about 14 minutes on an H200 against 9 without a draft; with a warm compile cache both start in about 6 minutes.
 
+Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens_details` (`spec_accept_length`, `spec_accept_rate`, the draft counts and the per-verify histogram) on `json` and `verbose_json` responses and on the streamed `transcript.text.done` event. Audio long enough to be transcribed in chunks returns none.
+
 On one H200 with the default 64 running requests, 1,000 English clips of 1 to 16 s (pipecat-ai/stt-benchmark-data), one warmup and one measured pass per concurrency, against the same server without a draft. Fresh audio misses the encoder cache on every request; repeated audio is the warmup's clips again, so every request reuses its cached encoder output:
 
 | Audio | Concurrency | No draft req/s | Draft req/s | Throughput gain | No draft p95 latency (s) | Draft p95 latency (s) |

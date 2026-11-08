@@ -382,6 +382,29 @@ def test_result_adapter_reports_a_token_budget_stop() -> None:
     assert result_adapter(data).data["finish_reason"] == "length"
 
 
+def test_result_adapter_returns_the_speculative_acceptance_details() -> None:
+    _, result_adapter = make_whisper_scheduler_adapters(
+        processor=SimpleNamespace(),
+        tokenizer=FakeTokenizer(),
+        generation_config=generation_config(),
+        encoder_token_count=ENCODER_TOKEN_COUNT,
+        max_new_tokens=32,
+    )
+    data = whisper_request_builders.WhisperASRRequestData(
+        output_ids=[7, 8], stage_payload=make_payload()
+    )
+    data.spec_tokens_details = {
+        "spec_accept_rate": 0.5,
+        "spec_accept_length": 2.0,
+        "spec_num_correct_drafts": 1,
+        "spec_num_proposed_drafts": 2,
+        "spec_verify_ct": 1,
+        "spec_correct_drafts_histogram": [0, 1],
+    }
+
+    assert result_adapter(data).data["spec_tokens_details"] == data.spec_tokens_details
+
+
 def test_request_builder_pre_lm_encode_attaches_embeddings(monkeypatch) -> None:
     monkeypatch.setattr(
         transcription,
