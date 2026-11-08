@@ -37,6 +37,9 @@ from sglang_omni.models.fishaudio_drama3.config import (
 )
 from sglang_omni.models.fishaudio_drama3.engine_builder import Drama3EngineBuilder
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
+from sglang_omni.models.fishaudio_drama3.reference_encode import (
+    Drama3ReferenceEncodeHook,
+)
 from sglang_omni.models.fishaudio_drama3.request_builders import Drama3RequestData
 from sglang_omni.models.fishaudio_drama3.speech_request import Drama3SpeechPreprocessor
 from sglang_omni.models.fishaudio_drama3.stream_windows import stream_window_lengths
@@ -44,10 +47,7 @@ from sglang_omni.models.fishaudio_drama3.vocoder import (
     Drama3VocoderScheduler,
     WindowGraphDecoder,
 )
-from sglang_omni.models.fishaudio_s2_pro.stages import (
-    FishReferenceEncodeHook,
-    load_codec,
-)
+from sglang_omni.models.fishaudio_s2_pro.stages import load_codec
 from sglang_omni.scheduling.audio_stream import WindowDecoder
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
@@ -99,6 +99,7 @@ def create_preprocessing_executor(
     codec_path: str,
     reference_encode_dtype: Literal["float32", "bfloat16"],
     max_reference_audio_seconds: float,
+    reference_encode_graph_max_seconds: float,
 ) -> ThreadedSimpleScheduler:
     """Speech requests to prompt rows; reference audio encodes with the vocoder's codec."""
     resolved_device = str(resolve_concrete_device(device, gpu_id))
@@ -114,12 +115,14 @@ def create_preprocessing_executor(
     checkpoint_dir = resolve_checkpoint(model_path)
     codec_directory = resolve_codec_directory(codec_path)
     codec = load_codec(codec_directory, resolved_device)
-    reference_encode_hook = FishReferenceEncodeHook(
+    codec.fold_weight_norm()
+    reference_encode_hook = Drama3ReferenceEncodeHook(
         codec=codec,
         checkpoint_id=os.path.join(codec_directory, CODEC_FILE_NAME),
         device=resolved_device,
         autocast_dtype=torch.bfloat16 if reference_encode_dtype == "bfloat16" else None,
         max_reference_audio_seconds=max_reference_audio_seconds,
+        graph_max_seconds=reference_encode_graph_max_seconds,
     )
     if not is_on_cpu:
         warmup_seconds = min(
