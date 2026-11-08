@@ -157,6 +157,7 @@ func (a *app) obMoreStep(c *ui.Context) {
 		i18n.T("Names and jargon the speech model should expect and the language model should keep as written."),
 		i18n.T("Open Dictionary"), "/dictionary")
 	sectionTitle(c, i18n.T("Your shortcuts"))
+	a.shortcutPresetPicker(c, "ob")
 	ui.Column(c.Key("ob-keys")).Gap(px(t, sp1)).Children(func() {
 		row := func(feature, keys string) {
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {

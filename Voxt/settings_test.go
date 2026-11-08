@@ -103,9 +103,12 @@ func TestShortcutPreset(t *testing.T) {
 	a.updateSettings(func(s *settings.Settings) {
 		s.Features.Rewrite.Hotkeys = []settings.Hotkey{{Keys: "RightCommand", Trigger: settings.TriggerTap}}
 	})
+	if settings.PresetOf(a.settings.Get().Features) != "" {
+		t.Fatal("one changed shortcut: preset should be custom")
+	}
 	click(t, tt, "Shortcut preset")
-	if hasExact(tt, "Custom") {
-		t.Errorf("Custom offered while the shortcuts follow a preset: %q", tt.Texts())
+	if !hasExact(tt, "Custom") {
+		t.Errorf("Custom when one shortcut is yours: %q", tt.Texts())
 	}
 	click(t, tt, "fn (Auralink's keys)")
 	f := a.settings.Get().Features
@@ -113,8 +116,11 @@ func TestShortcutPreset(t *testing.T) {
 		f.PasteLast.Keys != "Control+Command+V" || f.Rewrite.Hotkeys[0].Keys != "RightCommand" {
 		t.Fatalf("fn: %+v", f)
 	}
-	if !hasExact(tt, "fn (Auralink's keys)") || !has(tt, auralink) || !has(tt, globe) || !has(tt, "fn ⇧") {
-		t.Errorf("fn shown: %q", tt.Texts())
+	if settings.PresetOf(f) != "" {
+		t.Fatalf("fn with your rewrite: preset %q", settings.PresetOf(f))
+	}
+	if !hasExact(tt, "Custom") {
+		t.Errorf("still custom after fn on other slots: %q", tt.Texts())
 	}
 	// Every shortcut the user's: Custom, and a preset changes none.
 	a.updateSettings(func(s *settings.Settings) {
