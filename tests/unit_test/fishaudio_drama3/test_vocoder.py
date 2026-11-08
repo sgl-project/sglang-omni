@@ -1008,12 +1008,19 @@ FIRST_CHUNK_WINDOWS = [
 
 
 @pytest.mark.parametrize(
-    ("total_frame_count", "chunk_frame_ranges", "is_done_first", "windows"),
+    (
+        "total_frame_count",
+        "chunk_frame_ranges",
+        "is_done_first",
+        "crossfade_samples",
+        "windows",
+    ),
     [
         pytest.param(
             150,
             [(0, 64), (64, 150)],
             False,
+            0,
             FIRST_CHUNK_WINDOWS + [(4, 1, 0, 64, 96), (5, -1, 1, 28, 60)],
             id="payload-before-done",
         ),
@@ -1021,6 +1028,7 @@ FIRST_CHUNK_WINDOWS = [
             150,
             [(0, 64), (64, 150)],
             True,
+            0,
             FIRST_CHUNK_WINDOWS + [(4, 1, 0, 64, 96), (5, -1, 1, 28, 60)],
             id="done-before-payload",
         ),
@@ -1028,6 +1036,7 @@ FIRST_CHUNK_WINDOWS = [
             122,
             [(0, 64), (64, 122)],
             False,
+            0,
             FIRST_CHUNK_WINDOWS + [(4, 1, 0, 64, 96)],
             id="ends-on-a-window",
         ),
@@ -1035,53 +1044,35 @@ FIRST_CHUNK_WINDOWS = [
             150,
             [(0, 64)],
             False,
+            0,
             FIRST_CHUNK_WINDOWS + [(4, -1, 0, 64, 96), (5, -1, 1, 28, 60)],
             id="window-only-in-the-final-result",
         ),
+        pytest.param(
+            150,
+            [(0, 64), (64, 150)],
+            False,
+            40,
+            FIRST_CHUNK_WINDOWS + [(4, 1, 0, 64, 96), (5, -1, 1, 28, 60)],
+            id="crossfade-tail-not-yet-sent",
+        ),
     ],
 )
-def test_every_decoded_window_records_its_decode_outside_the_handlers(
-    monkeypatch: pytest.MonkeyPatch,
+def test_every_decoded_window_records_its_decode(
     tmp_path: Path,
     total_frame_count: int,
     chunk_frame_ranges: list[tuple[int, int]],
     is_done_first: bool,
+    crossfade_samples: int,
     windows: list[tuple[int, int, int, int, int]],
 ) -> None:
-    vocoder = vocoder_with(FrameNumberCodec())
+    vocoder = vocoder_with(
+        FrameNumberCodec(),
+        factory_args=Drama3VocoderFactoryArgs(
+            stream_crossfade_samples=crossfade_samples
+        ),
+    )
     frames = numbered_frames(total_frame_count)
-    handling = False
-    flushed_while_handling: list[bool] = []
-    on_stream_chunk = vocoder.on_stream_chunk
-    on_stream_done = vocoder.on_stream_done
-
-    def tracked_on_stream_chunk(
-        request_id: str, chunk: StreamItem
-    ) -> list[OutgoingMessage]:
-        nonlocal handling
-        handling = True
-        messages = on_stream_chunk(request_id, chunk)
-        handling = False
-        return messages
-
-    def tracked_on_stream_done(request_id: str) -> list[OutgoingMessage]:
-        nonlocal handling
-        handling = True
-        messages = on_stream_done(request_id)
-        handling = False
-        return messages
-
-    original_flush = event_recorder.RequestEventBuffer.flush
-
-    def flush_events(
-        event_buffer: event_recorder.RequestEventBuffer, *, stage: str | None
-    ) -> None:
-        flushed_while_handling.append(handling)
-        original_flush(event_buffer, stage=stage)
-
-    monkeypatch.setattr(vocoder, "on_stream_chunk", tracked_on_stream_chunk)
-    monkeypatch.setattr(vocoder, "on_stream_done", tracked_on_stream_done)
-    monkeypatch.setattr(event_recorder.RequestEventBuffer, "flush", flush_events)
     chunk_messages = [
         IncomingMessage(
             request_id="request-a",
@@ -1115,7 +1106,6 @@ def test_every_decoded_window_records_its_decode_outside_the_handlers(
         loop.close()
 
     events = [json.loads(line) for line in Path(path).read_text().splitlines()]
-    assert flushed_while_handling and not any(flushed_while_handling)
     assert [
         (
             event["event_name"].removeprefix("drama3_vocoder_window_decode_"),
@@ -1131,6 +1121,11 @@ def test_every_decoded_window_records_its_decode_outside_the_handlers(
         for window_index, chunk_id, is_final, emitted, decoded in windows
         for phase in ("started", "finished")
     ]
+    # note (Haoling Pu): a crossfade holds back the last decoded samples, unsent, until the next window blends them.
     assert events[-1]["metadata"]["emitted_audio_s"] == pytest.approx(
-        sum(window[3] for window in windows[:-1]) * SAMPLES_PER_FRAME / SAMPLE_RATE
+        (
+            sum(window[3] for window in windows[:-1]) * SAMPLES_PER_FRAME
+            - crossfade_samples
+        )
+        / SAMPLE_RATE
     )

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import bisect
 
 import torch
@@ -13,11 +12,7 @@ from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.dac.modded_dac impor
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.device_graph import ReplayableGraph
-from sglang_omni.profiler.event_recorder import (
-    RequestEventBuffer,
-    RequestEventSnapshot,
-    get_recorder,
-)
+from sglang_omni.profiler.event_recorder import emit, get_recorder
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.audio_stream import (
     FinalAudioData,
@@ -26,7 +21,7 @@ from sglang_omni.scheduling.audio_stream import (
     build_stream_vocoder_chunk,
 )
 from sglang_omni.scheduling.audio_vocoder import StreamingVocoderScheduler
-from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 
 
 def generation_result_of(payload: StagePayload) -> Drama3GenerationResult:
@@ -178,7 +173,6 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
         self.stream_followup_stride_ramp = tuple(stream_followup_stride_ramp)
         self.stream_window_counts: dict[str, int] = {}
         self.max_padded_frames_per_decode = max_padded_frames_per_decode
-        self.decode_events = RequestEventBuffer()
 
     def followup_stride(self, request_id: str) -> int:
         window_count = self.stream_window_counts.get(request_id, 0)
@@ -187,7 +181,7 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
         else:
             return self.stream_followup_stride
 
-    def decode_event_snapshot(
+    def decode_event_metadata(
         self,
         request_id: str,
         state: StreamVocoderState,
@@ -195,7 +189,7 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
         new_frame_count: int,
         chunk_id: int,
         is_final: bool,
-    ) -> RequestEventSnapshot:
+    ) -> dict[str, int | float]:
         """The window a decode is about to run, once new_frame_count more frames
         join the stream; chunk_id is -1 when no stream chunk completed the window
         (frames only the final result holds, or the tail flush)."""
@@ -207,21 +201,17 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
             state.code_start_token,
             state.last_vocode_tokens - self.stream_overlap_tokens,
         )
-        return RequestEventSnapshot(
-            request_id=request_id,
-            metadata={
-                "window_index": self.stream_window_counts.get(request_id, 0),
-                "chunk_id": chunk_id,
-                "is_final": int(is_final),
-                "emitted_frames": total_frame_count - state.last_vocode_tokens,
-                "decoded_frames": total_frame_count - window_start_frame,
-                "emitted_audio_s": (
-                    state.last_vocode_tokens * self.codec.frame_length
-                    - held_sample_count
-                )
-                / self.codec.sample_rate,
-            },
-        )
+        return {
+            "window_index": self.stream_window_counts.get(request_id, 0),
+            "chunk_id": chunk_id,
+            "is_final": int(is_final),
+            "emitted_frames": total_frame_count - state.last_vocode_tokens,
+            "decoded_frames": total_frame_count - window_start_frame,
+            "emitted_audio_s": (
+                state.last_vocode_tokens * self.codec.frame_length - held_sample_count
+            )
+            / self.codec.sample_rate,
+        }
 
     def stream_frames(
         self, request_id: str, frame_codes: torch.Tensor, *, chunk_id: int
@@ -241,18 +231,21 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
                 end_frame_index = first_frame_index + remaining_window_frame_count
                 is_window_end = True
             if is_window_end and get_recorder().is_active():
-                decode_snapshot = self.decode_event_snapshot(
+                decode_metadata = self.decode_event_metadata(
                     request_id,
                     state,
                     new_frame_count=end_frame_index - first_frame_index,
                     chunk_id=chunk_id,
                     is_final=False,
                 )
-                self.decode_events.capture(
-                    "drama3_vocoder_window_decode_started", (decode_snapshot,), {}
+                emit(
+                    request_id=request_id,
+                    stage=None,
+                    event_name="drama3_vocoder_window_decode_started",
+                    metadata=decode_metadata,
                 )
             else:
-                decode_snapshot = None
+                decode_metadata = None
             audio_chunk = build_stream_vocoder_chunk(
                 state,
                 frame_codes[:, first_frame_index:end_frame_index],
@@ -264,9 +257,12 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
                 stream_crossfade_samples=self.stream_crossfade_samples,
                 decode_window=self.decode_window,
             )
-            if decode_snapshot is not None:
-                self.decode_events.capture(
-                    "drama3_vocoder_window_decode_finished", (decode_snapshot,), {}
+            if decode_metadata is not None:
+                emit(
+                    request_id=request_id,
+                    stage=None,
+                    event_name="drama3_vocoder_window_decode_finished",
+                    metadata=decode_metadata,
                 )
             else:
                 pass
@@ -322,30 +318,28 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
         state = self.stream_states[request_id]
         # note (Haoling Pu): the tail flush decodes only frames no window took.
         if get_recorder().is_active() and state.total_tokens > state.last_vocode_tokens:
-            tail_snapshot = self.decode_event_snapshot(
+            tail_metadata = self.decode_event_metadata(
                 request_id, state, new_frame_count=0, chunk_id=-1, is_final=True
             )
-            self.decode_events.capture(
-                "drama3_vocoder_window_decode_started", (tail_snapshot,), {}
+            emit(
+                request_id=request_id,
+                stage=None,
+                event_name="drama3_vocoder_window_decode_started",
+                metadata=tail_metadata,
             )
         else:
-            tail_snapshot = None
+            tail_metadata = None
         done_messages = super().on_stream_done(request_id)
-        if tail_snapshot is not None:
-            self.decode_events.capture(
-                "drama3_vocoder_window_decode_finished", (tail_snapshot,), {}
+        if tail_metadata is not None:
+            emit(
+                request_id=request_id,
+                stage=None,
+                event_name="drama3_vocoder_window_decode_finished",
+                metadata=tail_metadata,
             )
         else:
             pass
         return messages + done_messages
-
-    def handle_message(
-        self, msg: IncomingMessage, loop: asyncio.AbstractEventLoop
-    ) -> None:
-        super().handle_message(msg, loop)
-        # note (Haoling Pu): the handlers decode under the state lock; the events
-        # they captured are written here, outside it.
-        self.decode_events.flush(stage=None)
 
     def validate_non_streaming_payload(self, payload: StagePayload) -> None:
         generation_result_of(payload)
