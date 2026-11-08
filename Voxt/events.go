@@ -12,7 +12,8 @@ package main
 //	              recording's sounds and the output's mute
 //	afterSession  each new snapshot, after it: the menu bar (Start or
 //	              Stop), the overlay
-//	onSessionEnd  a session that ended, before its card or notice: Home
+//	onSessionEnd  a session that ended, before its card or notice: Home,
+//	              the menu bar's microphones
 //	onHistory     the history changed (an entry kept, changed, deleted, a
 //	              try ended): Home, the menu bar's recent results, the
 //	              History page, the automatic clean-up
@@ -46,9 +47,18 @@ func (a *app) connectEvents() {
 		},
 		func(_, _ session.Snapshot) { a.overlaySync() }, // overlay.go
 	)
-	a.onSessionEnd = append(a.onSessionEnd, func(s session.Snapshot) {
-		if s.State == session.Done && strings.TrimSpace(s.Result) != "" {
-			a.markTried() // home_try.go: Home stops offering its Try area
+	a.onSessionEnd = append(a.onSessionEnd,
+		func(s session.Snapshot) {
+			if s.State == session.Done && strings.TrimSpace(s.Result) != "" {
+				a.markTried() // home_try.go: Home stops offering its Try area
+			}
+		},
+		a.learnFromSession,                         // learn_link.go
+		func(session.Snapshot) { a.loadDevices() }, // settings_audio.go: the inputs again, for the menu bar
+	)
+	a.onSession = append(a.onSession, func(was, s session.Snapshot) {
+		if s.State.Live() && !was.State.Live() {
+			a.learner.Finish() // learn_link.go: a new session ends the watch of the last insert
 		}
 	})
 	a.onHistory = append(a.onHistory,

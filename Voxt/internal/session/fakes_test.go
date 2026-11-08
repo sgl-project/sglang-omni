@@ -215,7 +215,10 @@ type fakeStreamer struct {
 	openWait time.Duration // Open takes this long
 	openGate chan struct{} // Open waits for it to close (nil: no wait)
 	silent   bool          // no partials
-	salvage  string        // the text its streams salvage (asr.Salvager), "" for none
+	// partials are what its partials say, one per send, the last one
+	// repeated (nil: "partial").
+	partials []string
+	salvage  string // the text its streams salvage (asr.Salvager), "" for none
 
 	mu      sync.Mutex
 	streams []*fakeStream
@@ -294,7 +297,11 @@ func (s *fakeStream) Send(pcm []byte) error {
 		return nil
 	}
 	if !s.f.silent {
-		s.emit(asr.Event{Kind: asr.EventPartial, Text: "partial"})
+		text := "partial"
+		if len(s.f.partials) > 0 {
+			text = s.f.partials[min(n, len(s.f.partials))-1]
+		}
+		s.emit(asr.Event{Kind: asr.EventPartial, Text: text})
 	}
 	return nil
 }

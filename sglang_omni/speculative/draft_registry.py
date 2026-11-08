@@ -54,6 +54,14 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         license="apache-2.0",
     ),
     PinnedDraft(
+        model_path="FunAudioLLM/Fun-ASR-Nano-2512-hf",
+        stage="asr",
+        algorithm="DFLASH",
+        draft_model_path="wilsonzheng0327/Fun-ASR-Nano-dflash",
+        draft_model_revision="b3cb091f554c88274378d549d7e7d3c5a13052e6",
+        license="apache-2.0",
+    ),
+    PinnedDraft(
         model_path="openai/whisper-large-v3",
         stage="asr",
         algorithm="STANDALONE",

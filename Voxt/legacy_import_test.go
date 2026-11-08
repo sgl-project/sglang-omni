@@ -9,7 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
 // The previous Voxt's databases in testdata/legacy:
@@ -279,7 +282,7 @@ func TestImportEndsTheOffer(t *testing.T) {
 	a, _, _ := newTestAppIn(t, dir)
 	a.importLegacyFrom(copyFixture(t, "real")) // from the setup guide, before Setup is done
 	if !a.ob.legacyDone {
-		t.Fatalf("the import did not succeed: %q", a.ob.legacyMsg)
+		t.Fatalf("the import did not succeed: %q", a.ob.legacy.text())
 	}
 	a.quit()
 	b, _, _ := newTestAppIn(t, dir)
@@ -355,5 +358,38 @@ func TestSmokeLegacy(t *testing.T) {
 		if !strings.Contains(string(printed), c.want) || (code == 0) != (c.fixture != "") {
 			t.Errorf("%q: exit %d, printed:\n%s\nwant a line %q", c.fixture, code, printed, c.want)
 		}
+	}
+}
+
+// TestImportReportGroups: the bug was the import's result as one long
+// paragraph. It reads in groups: what came over, what was left out and
+// why (the history's meetings and empty entries), and what is left to do,
+// each with Complete setup. An import from outside the setup guide shows
+// them in a dialog; the guide's card shows them in place, and a to-do's
+// Complete setup opens the setup's dialog with the way back to the guide.
+func TestImportReportGroups(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "Library", "Containers", legacyBundleID), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VOXTNEW_LEGACY_HOME", home)
+	a, _, tt := newTestApp(t)
+	a.importLegacyFrom(copyFixture(t, "hist"))
+	if !a.ob.legacyOpen || !has(tt, "Imported from the previous Voxt") || !hasExact(tt, "Imported") || !has(tt, "History: 3 entries") ||
+		!hasExact(tt, "Left out") || !has(tt, "2 history entries: meetings or empty") || hasExact(tt, "To do") {
+		t.Fatalf("dialog: %q", tt.Texts())
+	}
+	click(t, tt, "Done")
+	a.ob.legacy.todo = []legacyTodo{{text: setupNeedsText(local.LLM, settings.Provider{ID: "deepseek"}, providers.MissingKey), kind: local.LLM, id: "deepseek"}}
+	a.openOnboarding()
+	if !has(tt, "History: 3 entries") || !hasExact(tt, "To do") || !has(tt, "DeepSeek needs its API key: paste it again to use it.") {
+		t.Fatalf("the guide's card: %q", tt.Texts())
+	}
+	if err := tt.ClickControl("Complete setup of DeepSeek"); err != nil {
+		t.Fatal(err)
+	}
+	frames(tt)
+	if a.ob.open || a.shownPath() != remotePath || !a.provDlg.open || a.provDlg.id != "deepseek" || a.ob.awayTo != remotePath {
+		t.Errorf("Complete setup: guide %v, %s, dialog %v %q", a.ob.open, a.shownPath(), a.provDlg.open, a.provDlg.id)
 	}
 }

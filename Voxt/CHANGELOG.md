@@ -4,29 +4,91 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+**How a recording starts.** Pressing the shortcut starts the microphone at once; Voxt does not wait for the speech model. The speech model and the voice detector load in the background while you speak, on the first dictation after Voxt opens and again after ten idle minutes unload them. Everything you say after the microphone has started is recorded and kept in memory until the model is ready, then sent to it: the live text appears later, but the result has all of it, up to the ten-minute limit of one recording. If the overlay says "Starting the microphone…", the microphone has not produced sound yet and words said then are not recorded; while only the icon pulses and the bars follow your voice, the model is still loading and the recording is fine.
+
 ### Added
 
+- **Editable full system prompts** (Transcribe, Translate, Rewrite → Your rules): edit the whole system prompt in one field (default shows the built-in text). What you save is what Voxt sends. Reset restores the built-in prompt. A preview shows the example user message used for cleanup and formatting when you use the built-in layers. **Settings search**: ⌘F in Settings focuses the search box and filters by title, description, and English keywords.
+- **Setup guide: language model on Translate and Rewrite try steps** (FB22): when no language model is set up, the step explains what is missing and offers **Set up a language model** (the guide stays open). Speech model downloads show progress on the models and try steps; you can continue while a model downloads.
 - **While you record, the overlay pill names the mode** (Transcribe, Translate or Rewrite) next to the icon. The shortcut you pressed to start sets the mode; pressing another feature's shortcut while recording only stops, the same as Voxt 1.x common stop (`hotkey.Route`).
 - **Notes** (the new Notes page), as in Voxt 1.x: tap right ⌘ in any app, speak, and tap it again. Voxt saves what you said as a note instead of typing it. The Notes page lists your notes, newest first, with their time, and you can delete them. The shortcut changes on that page (off, or other keys); if another shortcut already uses right ⌘, the note shortcut starts off: pick keys on the Notes page. Notes stay out of History, and clearing History keeps them; a note whose recognition failed, or that you cancelled, stays in History with its recording, so you can retry it.
 - **Shortcut presets** (Settings → Shortcuts → Preset), as in Voxt 1.x: Right ⌥ (the default) or fn (Auralink's keys: fn, fn ⇧, fn ⌃, ⌃⌘V) sets Transcribe, Translate, Rewrite and Paste the last result at once. A shortcut you changed yourself stays as it is. With fn, the page says that Auralink and macOS's Globe key react to fn too.
 - **Mouse buttons as shortcuts**, as in Voxt 1.x: in a shortcut's Custom… field type Mouse3 (the middle button), Mouse4 or Mouse5 (the side buttons most mice have) up to Mouse32, alone or with modifiers (Option+Mouse4). Tap, double tap and long press work as with keys, and the button's clicks no longer reach the app in front. Like fn and single modifiers, mouse buttons need Accessibility.
 - **Fallback model for Translate** (Translate → Models): when the language model fails, Voxt translates once more with the model you choose here. History names the model that gave the translation.
+- **Press the keys to set a shortcut**, as in Voxt 1.x: Custom… on the Transcribe, Translate, Rewrite and Notes pages (and for pasting the last result and cancelling) now takes the keys you press, such as ⌥Space, and saves them at once; your shortcuts pause while it listens. fn, a left or right modifier and mouse buttons cannot be pressed there: Type the keys instead keeps the old field for them. Shortcuts show Esc, Space, Return, Delete and Tab by name instead of ⎋ ↩ ⌫ ⇥, and Esc is in the Cancel transcription list.
+- **The answer card switch** (Answer card on the Transcribe and Translate pages): Show the result in a card applies to transcribe and translate and is the same switch on both pages. Off, the default, results type in or replace the selection; Rewrite's answers still always wait in the answer card, as in Voxt 1.x, with follow-ups in the card. Who had it on for Translate keeps it on. Before, turning it off in Translate left Rewrite's card with no way to turn it off, and Transcribe had no such option.
 - **Hide a speech model** (Speech models): a model's card has Hide, which leaves the model out of the features' speech model menus; the card moves to Hidden models at the foot of the page, where Show puts it back. A model a feature uses cannot be hidden.
 - **The update from Voxt 1.x is tested on a clean Mac**: a GitHub Actions workflow (Voxt Upgrade Test) installs Voxt 1.x, lets it update itself to the new Voxt from the beta channel, then checks the installed app (its bundle ID, Developer ID signature and notarization) and that it imports Voxt 1.x's dictionary without asking you to choose a folder.
 - **Voxt 1.x on Apple silicon updates to Voxt 2 by itself**: each release also has the app as `Voxt-X.Y.Z-macOS.zip`, which Voxt 1.x's in-app update installs on a Mac with Apple silicon (first for those who turned on Beta Updates, then for everyone there) and the Homebrew cask (`brew install --cask hehehai/tap/voxt`, Apple silicon only) installs. Voxt 1.x on an Intel Mac is not offered Voxt 2, which does not run there, and stays on Voxt 1.x. After the update, allow the microphone and accessibility again: macOS sees Voxt 2 as another app.
+- **Proxy user name and password** (Speech models → Network… → Custom), as in Voxt 1.x: a custom proxy (HTTP, HTTPS or SOCKS5) takes a user name and a password, sent only when both are set, with model downloads and the requests to remote services. The password is kept in the Keychain only, and only Voxt uses them: the other apps that share the model library do not get them.
+- **Announcements**, as in Voxt 1.x: when Voxt starts and each time you switch to it (at most every 10 minutes), it reads Voxt's announcements. A new one shows as a card above Settings in the sidebar: Read shows it whole, and once you dismiss it, it does not come back. The request sends nothing about you (no version, language or identifier), and Settings → Privacy says so.
+- **Add selected words to the dictionary**, as in Voxt 1.x: select a few words in any app (at most five, or ten Chinese, Japanese or Korean characters in a row) and press the transcribe shortcut. Voxt adds them to the dictionary instead of recording, and the overlay says "Added to the dictionary" or "Already in the dictionary". With a longer selection or nothing selected the shortcut records as usual, and with the dictionary off it always records.
+- **Dictionary suggestions**: terms Voxt suggests appear above the list on the Dictionary page, with what it heard instead and where the suggestion came from, and the sidebar shows how many wait. Add puts the term in the dictionary without aliases, Edit… lets you change it first, and Ignore hides it for 90 days.
+- **How the dictionary works** (Dictionary): a folded guide on the page says where a term applies: speech hints, the language model's glossary, and aliases replaced in the recognised text.
+- **Scan history for suggestions** (Dictionary → Scan history…), as in Voxt 1.x's one-click import: Voxt sends the Transcribe results it has not read yet, 12 at a time, to the language model Transcribe uses and suggests the names and terms it finds. The dialog says how many results go to which model before anything is sent; you add each term yourself, and nothing of your dictionary is sent.
+- **Learn from my corrections** (Dictionary): off by default. After Voxt inserts a Transcribe result into another app, it reads the text around that spot for up to 30 seconds; when you correct a word there, it suggests your spelling on the Dictionary page. Local rules only, nothing is sent, what it reads is not saved or logged, and password fields are never read.
+- **Microphone in the menu bar**, back from Voxt 1.x: the menu bar icon's menu has a Microphone submenu that lists the connected inputs and checks the one recording uses. Choose one to move it to the top of Settings → Audio's list, so the next recording uses it. The list is read when Voxt starts, after each recording and when Settings → Audio opens.
+- **End with a word** (Transcribe → Shortcuts), back from Voxt 1.x: choose over, end, 完毕, 好了 or a word of your own, say it last and pause, and the recording stops as if you pressed the shortcut. The word is left out of the text. It works with speech models that show the text as you speak (the local Qwen3-ASR models, System dictation, Doubao, Aliyun Bailian, Gemini), in Transcribe, Translate and Rewrite.
+- **Doubao's flash file recognition** (Speech models → Doubao → Model: `volc.bigasr.auc_turbo`), which Voxt 1.x could run but did not list: with the same App ID and token, Doubao gets the whole recording once you stop and answers in one go, instead of streaming. Your account needs the resource opened in the Volcengine console. Recordings over 100 MB (about 52 minutes) are not sent.
+
+### Changed
+
+- **Automatic says which model it uses**: in a feature's speech model and language model menus, and Translate's target language, the Automatic entry reads "Automatic (now: Qwen3-ASR 1.7B (8bit))", so it no longer looks like a second copy of the model listed below it.
+- **The setup guide picks up where you left it**: reopened, it shows the step you left (until you finish it), and Set up a language model or Choose models… leaves a "Back to the setup guide" bar on that page.
+- **Ask for the required permissions in one go**: the permissions are grouped as Required (microphone, Accessibility) and Optional (Speech Recognition), and "Ask for the required permissions" shows macOS's prompts one after another.
+- **A service that needs its API key says so**: its card reads "API key needed" with Complete setup, and when no language model is ready the sidebar card names the service and opens its dialog. Services brought over from Voxt 1.x show this at once.
+- **The import from Voxt 1.x reads at a glance**: its result is grouped as Imported, Left out (with why) and To do, each to-do with Complete setup; an import from outside the setup guide shows it in a dialog.
+- The rules box and the Speech hints checkbox say which stage they act on: hints go to the speech model, rules shape the text after recognition.
+- The setup guide says what each feature is before you try it: Transcribe writes down your words, Translate puts them into another language, Rewrite writes what you ask for. The Permissions step says why Voxt needs the microphone and Accessibility.
+
+### Fixed
+
+- **⌘W closes the window.** With "Keep running when the window closes" on (the default), Voxt stays in the menu bar and its shortcuts keep working, as the red × does; only ⌘Q quits. The Window menu had no Close Window item before.
+- **Dictation types into Voxt's own window again**, as in Voxt 1.x: with the cursor in a field of Voxt (a feature's Your rules, say), the shortcut records as in any other app, with the overlay, and the text goes into that field. Before, the shortcut on Home or a feature's page started a try on the page (no overlay; the result showed in its Try it area), and on other pages the result went to the answer card.
 
 ### 中文
 
+**录音是怎么开始的。** 按下快捷键的那一刻麦克风就开始录，Voxt 不等语音模型。语音模型和人声检测在你说话的同时后台加载：Voxt 打开后的第一次听写要加载，空闲十分钟卸载后的第一次也要。麦克风开始之后你说的每一句都录下来，模型就绪前先存在内存里，就绪后一并送过去：实时文字会晚一点出现，结果一句不少，上限是一次录音的十分钟。浮窗写着“正在启动麦克风…”时，麦克风还没出声音，那时说的话录不下来；只有图标在呼吸、波形跟着你的声音动时，是模型还在加载，录音没问题。
+
 #### 新增
 
+- **可编辑完整 system prompt**（转录、翻译、转写 → 你的规则）：在一个文本框里编辑整段 system prompt（默认显示内置文字）；保存后按所写原样发送；恢复默认回到内置；内置分层模式下另有示例用户消息预览（清理与格式）。**设置搜索**：在设置里按 ⌘F 聚焦搜索框，按标题、说明和英文关键词过滤。
+- **设置引导：翻译和转写试用步就地配置语言模型**（FB22）：没配语言模型时，这一步会说明缺什么，并提供「设置语言模型」按钮（引导不关闭）。语音模型下载时，模型步和试用步会显示进度；下载中也可以点继续。
 - **录音时浮窗胶囊在图标旁显示当前模式**（转录、翻译或转写）。开始录音的快捷键决定模式；录音中按别的功能的快捷键只会停止，和 Voxt 1.x 的 common stop 一样（`hotkey.Route`）。
 - **笔记**（新的“笔记”页），和 Voxt 1.x 一样：在任意 app 里单按右 ⌘，说完再按一次，说的内容会存成一条笔记，不会输入到光标处。笔记页按时间从新到旧列出笔记和时间，可以删除。快捷键在笔记页里改（可以关掉，也可以换成别的键）；右 ⌘ 已经被别的快捷键占用时，笔记键一开始是关的，去笔记页选一个。笔记不进历史，清空历史也不会删掉笔记；识别失败或取消的笔记会留在历史里，带着录音，可以重试。
 - **快捷键预设**（设置 → 快捷键 → 预设），和 Voxt 1.x 一样：选“右 ⌥”（默认）或“fn”（和 Auralink 相同：fn、fn ⇧、fn ⌃、⌃⌘V），一次设好转录、翻译、转写和粘贴最近结果的快捷键。你自己改过的快捷键保持不变。选 fn 时，页面会提示 Auralink 和 macOS 的地球键也会响应 fn。
 - **鼠标按钮当快捷键**，同 Voxt 1.x：在快捷键的“自定义…”里输入 Mouse3（中键）、Mouse4 或 Mouse5（多数鼠标的两个侧键），最多到 Mouse32，可以单独用，也可以加修饰键（Option+Mouse4）。单按、双击、长按和键盘快捷键一样；这个按钮按下时不再传给前台 App。和 fn、单个修饰键一样，鼠标快捷键需要辅助功能权限。
 - **翻译的备用模型**（翻译 → 模型）：语言模型出错时，Voxt 用这里选的模型再翻译一次。历史记录里写的是实际给出译文的模型。
+- **按键录入快捷键**，同 Voxt 1.x：转录、翻译、转写、笔记页（以及粘贴最近结果、取消转录）的“自定义…”改成直接按下组合键，比如 ⌥空格，按下就保存；录制时你的快捷键暂停。fn、分左右的修饰键和鼠标按钮在这里按不出来，点“改为手动输入”用原来的输入框。快捷键里的 Esc、空格、回车、删除、Tab 写成文字，不再是 ⎋ ↩ ⌫ ⇥；取消转录的下拉菜单里有 Esc。
+- **答案卡片的开关**（转录、翻译页的“答案卡片”一节）：“在卡片中显示结果”对转录和翻译生效，两页上是同一个开关。关着（默认）时直接插入，有选区就替换；转写的回答照旧一律进答案卡片，和 Voxt 1.x 一样，追问也在卡片里。之前在翻译里开着的，更新后仍是开的。以前在翻译里关掉，转写的卡片照样出现，也找不到关的地方；转录没有这个选项。
 - **隐藏语音模型**（语音模型）：模型卡片上有“隐藏”，隐藏后功能页的语音识别菜单里不再列出它；卡片移到页面底部的“已隐藏的模型”，点“显示”放回去。功能正在用的模型不能隐藏。
 - **在一台全新的 Mac 上测试从 Voxt 1.x 更新**：GitHub Actions 工作流（Voxt Upgrade Test）装好 Voxt 1.x，让它从 beta 通道自己更新到新的 Voxt，再检查装好的 app（bundle ID、Developer ID 签名和公证），以及它不用你选文件夹就能导入 Voxt 1.x 的词典。
 - **Apple 芯片上的 Voxt 1.x 自己更新到 Voxt 2**：每个版本还附带 app 的 `Voxt-X.Y.Z-macOS.zip`，在 Apple 芯片的 Mac 上，Voxt 1.x 的应用内更新安装它（先给打开了“Beta 更新”的用户，再给其他人），Homebrew 的 cask（`brew install --cask hehehai/tap/voxt`，只支持 Apple 芯片）也装它。Intel Mac 上的 Voxt 1.x 不会收到 Voxt 2（Voxt 2 不能在 Intel 上运行），继续用 Voxt 1.x。更新后要重新允许麦克风和辅助功能：macOS 把 Voxt 2 当成另一个 app。
+- **代理的用户名和密码**（语音模型 → 网络… → 自定义），和 Voxt 1.x 一样：自定义代理（HTTP、HTTPS 或 SOCKS5）可以填用户名和密码，两个都填了才使用，模型下载和远程服务的请求都会带上。密码只保存在钥匙串里；它们只给 Voxt 用，共用模型库的其他 app 不会用到。
+- **公告**，和 Voxt 1.x 一样：Voxt 启动时和每次切回 Voxt 时（最多 10 分钟一次）读取 Voxt 的公告。新公告显示为侧边栏“设置”上方的一张卡片：点“查看全文”看完整内容，关掉以后不会再出现。读取公告不会发送任何关于你的信息（没有版本号、语言或标识），设置 → 隐私里也写明了。
+- **把选中的词加进词典**，和 Voxt 1.x 一样：在任意 app 里选中几个词（最多五个词，或连续最多十个中日韩字），按转录快捷键，Voxt 把它加进词典，不开始录音，浮窗显示“已加入词典”或“词典里已经有”。选中的文字更长或者没有选中文字时照常录音；词典关着时总是录音。
+- **词典建议**：Voxt 建议的词显示在词典页的列表上方，写明听成了什么、来自哪里，侧栏显示待处理的条数。“添加”只把词条加入词典，不加别名；“编辑…”可以先改再加入；“忽略”后 90 天内不再出现。
+- **词典的用法**（词典页）：页面上有一段可以展开的说明，讲清词条在哪里生效：语音识别提示、语言模型术语表，以及别名在识别文字里的替换。
+- **扫描历史，找词条建议**（词典 → 扫描历史…），对应 Voxt 1.x 的一键导入：Voxt 把还没读过的转录结果每 12 条发给转录用的语言模型，把找到的人名和术语放进建议。开始之前对话框写明要把多少条发给哪个模型；词条要你自己点“添加”，词典内容不会发出去。
+- **从我的改正中学习**（词典页）：默认关。把转录结果插入别的 App 后，Voxt 会在 30 秒内读取插入处附近的文字；你改了其中某个词，它在词典页建议你改后的写法。只用本地规则，不发送任何文字；读到的文字不保存、不写日志，也不读密码框。
+- **菜单栏选麦克风**，Voxt 1.x 有过的功能：菜单栏图标的菜单里有“麦克风”子菜单，列出已连接的输入设备，录音会用的那个打勾。点一个就把它移到 设置 → 音频 列表的第一位，下一次录音用它。设备列表在 Voxt 启动时、每次录音结束后和打开 设置 → 音频 时读取。
+- **说结束词停止**（转录 → 快捷键），Voxt 1.x 有过的功能：选 over、end、完毕、好了，或者自己填一个词，最后说出它并停顿一下，录音就像按了快捷键一样停止，这个词不会写进文字。边说边出文字的语音模型（本地 Qwen3-ASR、系统听写、豆包、阿里云百炼、Gemini）才能用，转录、翻译、转写都管用。
+- **豆包极速版文件识别**（语音模型 → 豆包 → 模型：`volc.bigasr.auc_turbo`），Voxt 1.x 能用但菜单里没有：用同一组 App ID 和 Access Token，停止录音后把整段录音交给豆包，一次返回结果，不走流式。账号要在火山引擎控制台开通这个资源。超过 100 MB（约 52 分钟）的录音不发送。
+
+#### 变更
+
+- **“自动”写明现在用哪一个**：功能页的语音模型、语言模型菜单和翻译的目标语言菜单里，“自动”一项写成“自动（现在用：Qwen3-ASR 1.7B (8bit)）”，不再像是下面那个模型的重复项。
+- **设置引导接着上次的地方**：再打开时回到离开时的那一步（走完之前），点“设置语言模型”或“选择模型…”离开后，那一页顶部有“回到设置引导”。
+- **一次请求必需的权限**：权限分成“必需”（麦克风、辅助功能）和“可选”（语音识别），“依次请求必需的权限”会一个接一个地弹出 macOS 的提示。
+- **缺 API Key 的服务会说清楚**：卡片上写“需要 API Key”，带“完成设置”；没有可用的语言模型时，侧边栏的卡片写明是哪个服务，点一下打开它的设置。从 Voxt 1.x 导入的服务马上就显示这个状态。
+- **从 Voxt 1.x 导入的结果一眼看清**：分成“已导入”“没有导入”（写明原因）和“还要做”，每件要做的事带“完成设置”；不是在设置引导里导入时，结果显示在一个对话框里。
+- “你的规则”和“语音识别提示”各自写明作用阶段：提示给语音模型，规则在识别之后整理文字。
+- 设置引导每一步先说明这个功能是什么再让你试：转录照录你说的话，翻译把它译成另一种语言，转写按你的要求写出内容。权限一步写明为什么需要麦克风和辅助功能。
+
+#### 修复
+
+- **⌘W 关闭窗口。** 开着“关闭窗口后继续运行”（默认开）时，Voxt 留在菜单栏里，快捷键照常可用，和红色 × 一样；只有 ⌘Q 退出。之前窗口菜单里没有“关闭窗口”。
+- **在 Voxt 自己的窗口里听写，文字又能输进去了**，和 Voxt 1.x 一样：光标在 Voxt 的输入框里（比如功能页的“你的规则”）时，按快捷键和在别的 app 里一样录音、显示浮窗，文字输入到这个框里。以前在首页和功能页上按快捷键会在页面里开始一次试一试（没有浮窗，结果显示在“试一试”区域），在其他页面上结果进了答案卡片。
 
 ## [2.0.1] - 2026-11-07
 

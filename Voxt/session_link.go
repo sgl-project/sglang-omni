@@ -58,6 +58,9 @@ type sessionState struct {
 	// with MyGo while the event tap is missing.
 	hotkeysSent string
 	carbon      []string
+	// keysListening: a shortcut field takes pressed keys (key_recorder.go),
+	// and the shortcuts are off meanwhile; keysHeard is this frame's.
+	keysListening, keysHeard bool
 	// lastLoaded: the last result was read from the history at start.
 	lastLoaded bool
 	// followUp is the answer card's session a running Rewrite follows up
@@ -117,6 +120,7 @@ type sessionNotice struct {
 	action     string
 	entry      string // actionRetry's history entry
 	warn       bool   // a warning (the session went on), not an error
+	ok         bool   // done as asked (a term added), not a problem
 	seq        int    // which notice: its timer hides only itself
 	// then runs when its time is up (not when a click or the next
 	// session hides it): the notice that follows it.

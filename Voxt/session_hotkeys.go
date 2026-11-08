@@ -38,6 +38,9 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 	if e.Front != nil {
 		target = *e.Front
 	}
+	if a.pressDuringSelection(e) { // dictionary_selection.go
+		return
+	}
 	if e.Binding == proto.HotkeyCancel && a.answer.langOpen {
 		a.closeLangMenu() // the cancel shortcut closes the menu first, then the card
 		return
@@ -90,6 +93,10 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 			a.tryStarted(place, kind, id, n)
 			return
 		}
+		if kind == store.KindTranscribe {
+			a.transcribeOrAddSelection(req) // dictionary_selection.go: a few words selected go to the dictionary
+			return
+		}
 		a.startSession(req)
 	case hotkey.Stop:
 		a.stopSession()
@@ -108,6 +115,9 @@ func (a *app) hotkeyPlan() hotkey.Plan { return hotkey.Build(a.prefs.Features, l
 // fallback in step with the event tap.
 func (a *app) syncHotkeys() {
 	plan := a.hotkeyPlan()
+	if a.keysListening {
+		plan = hotkey.Plan{} // the keys go to the field that records them
+	}
 	a.syncCarbon(plan)
 	if !a.helperReady() {
 		a.hotkeysSent = ""
