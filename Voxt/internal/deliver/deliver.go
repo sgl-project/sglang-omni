@@ -70,8 +70,9 @@ const (
 	ReasonNoAccess Reason = "noAccess"
 	// ReasonFailed: the helper failed (Result.Err).
 	ReasonFailed Reason = "failed"
-	// ReasonCard: the result goes to the answer card by choice (Translate's
-	// "Show the result in a card"), or always (Rewrite, Voxt's); ReasonLong
+	// ReasonCard: the result goes to the answer card by choice ("Show the
+	// result in a card", every feature's), or always (a Rewrite follow-up,
+	// an answer cut at the length limit); ReasonLong
 	// was 0.1.0's: an answer longer than the card's limit. The session sets
 	// these, not Insert.
 	ReasonCard Reason = "card"

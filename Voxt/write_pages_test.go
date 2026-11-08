@@ -39,7 +39,7 @@ func TestTranslatePage(t *testing.T) {
 		t.Error("paste-last belongs to Transcribe")
 	}
 	clickSwitch(t, tt, "Show the result in a card")
-	if !a.lib.settings.Get().Features.Translate.ShowCard {
+	if !a.lib.settings.Get().Features.ShowCard {
 		t.Error("show card not saved")
 	}
 	clickSwitch(t, tt, "Basic clean-up")
@@ -212,6 +212,36 @@ func TestSessionBlocker(t *testing.T) {
 	for _, k := range []store.Kind{store.KindTranscribe, store.KindTranslate, store.KindRewrite} {
 		if n := a.sessionBlocker(k); n != nil {
 			t.Errorf("%s: %+v", k, n)
+		}
+	}
+}
+
+// TestCardSwitchShared: Transcribe and Translate share one answer-card
+// switch; Rewrite always shows answers in the card and has no switch.
+func TestCardSwitchShared(t *testing.T) {
+	a, tt := pageTester(t, "/translate")
+	for i, page := range []string{"/translate", "/transcribe"} {
+		a.navigate(page)
+		frames(tt)
+		n := 0
+		for _, s := range tt.AccessLabels() {
+			if s == "Show the result in a card" {
+				n++
+			}
+		}
+		if n != 2 { // one row: its title and its switch
+			t.Fatalf("%s: %d elements named for the card switch", page, n)
+		}
+		clickSwitch(t, tt, "Show the result in a card")
+		if on := a.lib.settings.Get().Features.ShowCard; on != (i%2 == 0) {
+			t.Errorf("%s: the card switch is %v after a click", page, on)
+		}
+	}
+	a.navigate("/rewrite")
+	frames(tt)
+	for _, s := range tt.AccessLabels() {
+		if s == "Show the result in a card" {
+			t.Fatalf("/rewrite: card switch should not appear on Rewrite")
 		}
 	}
 }
