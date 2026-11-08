@@ -543,3 +543,14 @@ func TestSectionTitleAdd(t *testing.T) {
 		}
 	}
 }
+
+// Your rules start folded, so open the section to see its two-stage
+// caption: the rules act after recognition, the speech hints before it.
+func TestRulesExplainTwoStages(t *testing.T) {
+	_, tt := trTester(t)
+	click(t, tt, "Your rules")
+	frames(tt)
+	if !strings.Contains(strings.Join(tt.Texts(), "\n"), "Rules act after recognition, on the text the speech model produced.") {
+		t.Errorf("no two-stage caption in %q", tt.Texts())
+	}
+}
