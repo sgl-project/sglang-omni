@@ -111,12 +111,12 @@ func (a *app) featureModels(c *ui.Context, feature string) {
 	}
 }
 
-// modelOptions are a model select's labels: "Automatic: X", X the first
-// of the installed models (ready), then the models the menu shows.
+// modelOptions are a model select's labels: "Automatic (now: X)", X the
+// first of the installed models (ready), then the models the menu shows.
 func modelOptions(ready, shown []local.Model) (opts []string, auto string) {
 	auto = i18n.T("Automatic")
 	if len(ready) > 0 {
-		auto = i18n.T("Automatic: %s", ready[0].Name)
+		auto = i18n.T("Automatic (now: %s)", ready[0].Name)
 	}
 	opts = []string{auto}
 	for _, m := range shown {

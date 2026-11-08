@@ -149,7 +149,7 @@
   "Automatic": "自动",
   "Automatic is English, or Chinese when your main language is English (Settings → General). The answer card can translate the same text into another language.": "“自动”译成英语；如果主要语言是英语，则译成中文（设置 → 通用）。在答案卡片里可以把同一段文字改译成其他语言。",
   "Automatic uses the recommended speech model on this Mac (the Speech models page), and the first language model set up on the Language models page. A remote speech service is used when you choose it here, or when no speech model on this Mac is installed.": "“自动”使用这台 Mac 上推荐的语音模型（语音模型页），以及语言模型页设置的第一个语言模型。远程语音识别服务只在你在这里选中它、或这台 Mac 上没有安装语音模型时使用。",
-  "Automatic: %s": "自动：%s",
+  "Automatic (now: %s)": "自动（现在用：%s）",
   "Back": "上一步",
   "Back up models with Time Machine": "用 Time Machine 备份模型",
   "Back, forward": "后退、前进",
