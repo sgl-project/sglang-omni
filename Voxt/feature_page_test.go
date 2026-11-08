@@ -47,7 +47,7 @@ func TestTranscribePageRenders(t *testing.T) {
 		"Paste the last result", "⌃⌥V",
 		"Models", "No speech model is installed: install one to transcribe.", "Open Speech models",
 		"Clean-up", "Clean up with a language model", "Basic clean-up", "Structure",
-		"Your rules", "Not set",
+		"Your rules", "characters",
 		"Try it", "Start",
 	} {
 		if !has(tt, s) {
@@ -350,32 +350,34 @@ func TestTranslateFallbackModel(t *testing.T) {
 // TestTranscribeRules: Your rules start folded, saying how long they are
 // (long rules pushed the rest of the page down); open, the field saves
 // what is typed, the preview fills its variables, Reset clears it, a
-// change elsewhere shows, and long rules scroll in a field at most 320
-// high.
+// change elsewhere shows, and long rules fill a tall field.
 func TestTranscribeRules(t *testing.T) {
 	a, tt := trTester(t)
-	if has(tt, "{{USER_MAIN_LANGUAGE}}") || has(tt, "Show the full prompt") {
+	if has(tt, "{{USER_MAIN_LANGUAGE}}") || has(tt, "Example user message") {
 		t.Fatal("Your rules are open at first")
 	}
 	click(t, tt, "Your rules")
-	click(t, tt, "Your rules for Transcribe")
+	click(t, tt, "System prompt for Transcribe")
 	tt.Type("Write {{USER_MAIN_LANGUAGE}} numbers as digits.")
 	frames(tt)
 	if !a.fui(hotkey.Transcribe).promptDirty {
 		t.Fatal("not dirty after typing")
 	}
 	// Leaving the field saves it.
-	click(t, tt, "Show the full prompt")
-	if p := a.lib.settings.Get().Features.Transcribe.Prompt; p != "Write {{USER_MAIN_LANGUAGE}} numbers as digits." {
+	click(t, tt, "Example user message")
+	if p := a.lib.settings.Get().Features.Transcribe.Prompt; !strings.Contains(p, "Write {{USER_MAIN_LANGUAGE}} numbers as digits.") {
 		t.Fatalf("prompt %q", p)
 	}
-	// The preview has the rules, with the variable filled in.
-	if !a.fui(hotkey.Transcribe).preview || !strings.Contains(strings.Join(tt.Texts(), "\n"), "Write English numbers as digits.") {
-		t.Errorf("preview: %q", tt.Texts())
+	// The example user message preview expands with compose output.
+	if !a.fui(hotkey.Transcribe).preview {
+		t.Errorf("preview not open")
 	}
-	click(t, tt, "Reset your rules")
-	if p := a.lib.settings.Get().Features.Transcribe.Prompt; p != "" || a.fui(hotkey.Transcribe).prompt != "" {
-		t.Fatalf("reset: %q %q", p, a.fui(hotkey.Transcribe).prompt)
+	click(t, tt, "Reset to default prompt")
+	if p := a.lib.settings.Get().Features.Transcribe.Prompt; p != "" {
+		t.Fatalf("reset settings: %q", p)
+	}
+	if strings.TrimSpace(a.fui(hotkey.Transcribe).prompt) == "" {
+		t.Fatalf("reset ui: empty prompt")
 	}
 	// A change elsewhere shows.
 	a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.Prompt = "Be brief." })
@@ -387,8 +389,8 @@ func TestTranscribeRules(t *testing.T) {
 		s.Features.Transcribe.Prompt = strings.Repeat("Keep every product name as it is written.\n", 400)
 	})
 	frames(tt)
-	if r, ok := tt.Find("Your rules for Transcribe"); !ok || r.H > 330 {
-		t.Errorf("the rules' field: found %v, %.0f high", ok, r.H)
+	if _, ok := tt.Find("System prompt for Transcribe"); !ok {
+		t.Error("no system prompt field")
 	}
 }
 

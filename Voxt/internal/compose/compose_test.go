@@ -94,15 +94,57 @@ func TestGoldenTranscribe(t *testing.T) {
 	}
 }
 
+func TestCleanupDoesNotChangeSystem(t *testing.T) {
+	cases := []Input{
+		{Task: Transcribe, Cleanup: false, MainLanguage: "en", Text: "x"},
+		{Task: Transcribe, Cleanup: true, MainLanguage: "en", Text: "x"},
+		{Task: Translate, Cleanup: false, MainLanguage: "en", TargetLanguage: "zh-Hans", Text: "x"},
+		{Task: Translate, Cleanup: true, MainLanguage: "en", TargetLanguage: "zh-Hans", Text: "x"},
+		{Task: Rewrite, Cleanup: false, MainLanguage: "en", Instruction: "shorter", Text: "hi"},
+		{Task: Rewrite, Cleanup: true, MainLanguage: "en", Instruction: "shorter", Text: "hi"},
+	}
+	for i := 0; i < len(cases); i += 2 {
+		off, on := cases[i], cases[i+1]
+		a, err := Build(off)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := Build(on)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a.System != b.System {
+			t.Errorf("%s cleanup changes system:\n--- off\n%s\n--- on\n%s", off.Task, a.System, b.System)
+		}
+	}
+}
+
+func TestFullPromptSentAsIs(t *testing.T) {
+	custom := "ONLY {{USER_MAIN_LANGUAGE}} {{TARGET_LANGUAGE}}"
+	in := Input{Task: Translate, MainLanguage: "en", TargetLanguage: "ja", Text: "hello", TaskPrompt: custom}
+	out, err := Build(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Render(custom, Variables(in, TemplateSet(in.MainLanguage)), map[string]string{
+		"FOR_TRANSCRIBE": "",
+		"FOR_TRANSLATE":  "1",
+		"SELECTED":       "",
+	})
+	if out.System != want {
+		t.Errorf("system %q want %q", out.System, want)
+	}
+}
+
 func TestLayersAndProfile(t *testing.T) {
 	out, err := Build(Input{Task: Transcribe, Cleanup: true, Structure: true, MainLanguage: "zh", Text: "x"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(out.Layers, " "); got != "transcribe input cleanup structure task output" {
+	if got := strings.Join(out.Layers, " "); got != "transcribe input structure task output" {
 		t.Errorf("layers %q", got)
 	}
-	if out.Profile() != "transcribe:cleanup+structure" {
+	if out.Profile() != "transcribe:structure" {
 		t.Errorf("profile %q", out.Profile())
 	}
 	out, _ = Build(Input{Task: Transcribe, MainLanguage: "en", Text: "x"})
@@ -287,9 +329,9 @@ func TestLayersOfTheTasks(t *testing.T) {
 		in             Input
 		layers, profle string
 	}{
-		{Input{Task: Translate, Cleanup: true, TargetLanguage: "en", Text: "x"}, "translate input cleanup form task output", "translate:cleanup"},
+		{Input{Task: Translate, Cleanup: true, TargetLanguage: "en", Text: "x"}, "translate input form task output", "translate"},
 		{Input{Task: Translate, Cleanup: true, Selected: true, Strict: true, TargetLanguage: "en", Text: "x"}, "translate selection task strict output", "translate:selection+strict"},
-		{Input{Task: Rewrite, Cleanup: true, Instruction: "y", Text: "x"}, "rewrite selection cleanup task output", "rewrite:selection+cleanup"},
+		{Input{Task: Rewrite, Cleanup: true, Instruction: "y", Text: "x"}, "rewrite selection task output", "rewrite:selection"},
 		{Input{Task: Rewrite, Instruction: "y", Answer: true}, "rewrite input task answer", "rewrite:answer"},
 		{Input{Task: Rewrite, Instruction: "y", Answer: true, Previous: []Turn{{Instruction: "z"}}}, "rewrite input task followup answer", "rewrite:followup+answer"},
 	} {

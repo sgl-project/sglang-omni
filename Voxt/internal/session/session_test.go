@@ -218,7 +218,7 @@ func TestPipeline(t *testing.T) {
 					strings.Contains(sys, "hello") || user != "<input>\nhello VoxtNew\n</input>" || reqs[0].Skill != llm.SkillTranscribeEnhance {
 					t.Errorf("request %+v", reqs[0])
 				}
-				if end.Profile != "transcribe:cleanup+custom+glossary" {
+				if end.Profile != "custom:glossary" {
 					t.Errorf("profile %q", end.Profile)
 				}
 			}
