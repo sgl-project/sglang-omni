@@ -30,7 +30,8 @@ type keyRow struct {
 // keyPresets are the shortcuts the selects offer, in the grammar of
 // internal/hotkey: the defaults first (the ActNow family's, right
 // Option), then fn's (Auralink's defaults, for those without it). No
-// more than ten: a longer list scrolls in the popup. Right Control is
+// more than ten: a longer list scrolls in the popup, and Custom… (where
+// mouse buttons are typed: Mouse4) goes out of sight. Right Control is
 // left out: Mac laptops' keyboards have none.
 var keyPresets = []string{
 	"RightOption", "RightOption+Shift", "Control+RightOption",
@@ -342,9 +343,12 @@ func (a *app) customKeys(c *ui.Context, r *keyRow, label string, save func(keys 
 		warnLine(c, uitext.ParseErrorText(err))
 	case r.edited:
 		caption(c, i18n.T("Press Return to use %s.", uitext.HotkeyText(r.text)))
+		return
 	default:
 		caption(c, i18n.T("Modifiers first, then one key: Fn, RightCommand, Control+Option+Space, Fn+F5."))
 	}
+	// Also under an error: Mouse1 is refused, mouse buttons are not.
+	caption(c, i18n.T("Mouse buttons work too: Mouse3 is the middle button, Mouse4 and up the side buttons, with modifiers or without (Option+Mouse4)."))
 }
 
 // problemLines are a binding's problems, in the warning colour.

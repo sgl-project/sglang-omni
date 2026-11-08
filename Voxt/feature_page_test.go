@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -131,6 +132,50 @@ func TestTranscribeHotkeysEdit(t *testing.T) {
 	}
 }
 
+// TestTranscribeMouseButton: Custom… says that mouse buttons work too, also
+// when it refuses Mouse1 (the left button); a typed side button is saved,
+// shows by its name in the try card, and goes to the helper as its button
+// number.
+func TestTranscribeMouseButton(t *testing.T) {
+	const hint = "Mouse buttons work too: Mouse3 is the middle button, Mouse4 and up the side buttons, with modifiers or without (Option+Mouse4)."
+	a, tt := trTester(t)
+	if err := tt.ClickControl("Keys of shortcut 1"); err != nil {
+		t.Fatal(err)
+	}
+	click(t, tt, "Custom…")
+	if !has(tt, hint) {
+		t.Errorf("no mouse hint in %q", tt.Texts())
+	}
+	click(t, tt, "Custom keys of shortcut 1")
+	for range len(settings.DefaultTranscribe) {
+		tt.Key(0, ui.KeyBackspace)
+	}
+	tt.Type("mouse1")
+	tt.Key(0, ui.KeyEnter)
+	frames(tt)
+	if hs := a.lib.settings.Get().Features.Transcribe.Hotkeys; hs[0].Keys != settings.DefaultTranscribe {
+		t.Fatalf("Mouse1 saved %+v", hs)
+	}
+	if !has(tt, "A key is unknown. Write the modifiers first, then one key: Fn, RightCommand, Control+Option+Space, Fn+F5.") || !has(tt, hint) {
+		t.Errorf("Mouse1: no unknown-key warning or no mouse hint in %q", tt.Texts())
+	}
+	for range len("mouse1") {
+		tt.Key(0, ui.KeyBackspace)
+	}
+	tt.Type("mouse4")
+	tt.Key(0, ui.KeyEnter)
+	frames(tt)
+	if hs := a.lib.settings.Get().Features.Transcribe.Hotkeys; hs[0].Keys != "Mouse4" {
+		t.Fatalf("saved %+v", hs)
+	}
+	if b, _ := json.Marshal(a.hotkeyPlan().Bindings[0]); string(b) != `{"id":"transcribe/0","modifiers":{},"button":3,"behavior":"tap"}` {
+		t.Errorf("sent the helper %s", b)
+	}
+	if !has(tt, "Press Mouse button 4 or Start and say a sentence or two: the result shows here and is not typed anywhere.") {
+		t.Errorf("the try card does not name the button: %q", tt.Texts())
+	}
+}
+
 func TestTranscribeTrigger(t *testing.T) {
 	a, tt := trTester(t)
 	click(t, tt, "Double tap")
@@ -213,6 +258,35 @@ func TestTranscribeServicesAndSwitches(t *testing.T) {
 	clickSwitch(t, tt, "Basic clean-up")
 	if !a.lib.settings.Get().Features.Transcribe.Cleanup {
 		t.Error("clean-up changed while disabled")
+	}
+}
+
+// TestTranslateFallbackModel: Translate's Models section picks a
+// fallback model, None by default, among the language models set up; a
+// fallback no longer set up reads None.
+func TestTranslateFallbackModel(t *testing.T) {
+	a, tt := trTester(t)
+	readyModels(a)
+	a.local.(*fakeLocal).MoreLLM = []local.Model{{Kind: local.LLM, ID: models.LLMFast, Name: "Qwen3.5 2B (4bit)"}}
+	a.navigate("/translate")
+	frames(tt)
+	if !has(tt, "Fallback model") || !has(tt, "None") || !slices.Contains(tt.AccessLabels(), "Fallback language model for Translate") {
+		t.Fatalf("no fallback row: %q", tt.AccessLabels())
+	}
+	click(t, tt, "Fallback language model for Translate")
+	click(t, tt, "Qwen3.5 2B (4bit)")
+	if id := a.lib.settings.Get().Features.Translate.Fallback; id != models.LLMFast {
+		t.Errorf("fallback %q", id)
+	}
+	click(t, tt, "Fallback language model for Translate")
+	click(t, tt, "None")
+	if id := a.lib.settings.Get().Features.Translate.Fallback; id != "" {
+		t.Errorf("fallback %q", id)
+	}
+	a.updateSettings(func(s *settings.Settings) { s.Features.Translate.Fallback = "gone" })
+	frames(tt)
+	if !has(tt, "None") {
+		t.Errorf("a fallback not set up: %q", tt.Texts())
 	}
 }
 
