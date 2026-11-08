@@ -71,6 +71,7 @@ func (a *app) checkAnnouncements() {
 	base, client, docs, notes := a.announceURL, a.networkFor(a.prefs).Client, a.lib.store.Documents(), a.notes
 	a.async(func() {
 		defer a.post(func() { a.announceBusy = false })
+		defer client.CloseIdleConnections() // a client of its own each time, whose idle connections never time out
 		ctx, cancel := context.WithTimeout(context.Background(), announceTimeout)
 		defer cancel()
 		var seen announceSeen
