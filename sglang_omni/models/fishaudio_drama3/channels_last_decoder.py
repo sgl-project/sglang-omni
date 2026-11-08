@@ -78,6 +78,25 @@ else:
     pass
 
 
+def is_single_channel_tail(module: CausalConvNet) -> bool:
+    """Whether snake_conv_tanh serves the conv: undilated, ungrouped, stride one,
+    biased, onto one channel."""
+    conv = module.conv
+    return (
+        conv.out_channels == 1
+        and conv.dilation[0] == 1
+        and conv.groups == 1
+        and conv.stride[0] == 1
+        and conv.bias is not None
+    )
+
+
+def tail_weight(conv: torch.nn.Conv1d) -> torch.Tensor:
+    """The (C, taps + 1) weight of a conv onto one channel, padded by a zero column
+    to an even GEMM width."""
+    return F.pad(conv.weight.data[0], (0, 1)).contiguous()
+
+
 class ChannelsLastDecoder:
     def __init__(self, codec: DAC, *, dtype: torch.dtype) -> None:
         if triton is None:
@@ -103,6 +122,11 @@ class ChannelsLastDecoder:
             for module in codec.decoder.modules()
             if isinstance(module, (torch.nn.Conv1d, torch.nn.ConvTranspose1d))
         }
+        self.tail_weights: dict[int, torch.Tensor] = {
+            id(module.conv): tail_weight(module.conv)
+            for module in codec.decoder.modules()
+            if isinstance(module, CausalConvNet) and is_single_channel_tail(module)
+        }
 
     def __call__(self, indices: torch.Tensor) -> torch.Tensor:
         # quantizer.decode(indices) with its transformer run by the fused forward.
@@ -123,13 +147,25 @@ class ChannelsLastDecoder:
     def apply_sequence(
         self, sequence: torch.nn.Sequential, hidden_states: torch.Tensor
     ) -> torch.Tensor:
-        modules = iter(sequence)
-        module = next(modules, None)
-        while module is not None:
-            if isinstance(module, Snake1d):
-                following = next(modules, None)
-                if isinstance(following, CausalConvNet):
-                    assert following.stride == 1
+        modules = list(sequence)
+        index = 0
+        while index < len(modules):
+            module = modules[index]
+            following = modules[index + 1] if index + 1 < len(modules) else None
+            if isinstance(module, Snake1d) and isinstance(following, CausalConvNet):
+                assert following.stride == 1
+                after = modules[index + 2] if index + 2 < len(modules) else None
+                if (
+                    isinstance(after, torch.nn.Tanh)
+                    and id(following.conv) in self.tail_weights
+                    and hidden_states.dtype == torch.float16
+                    and hidden_states.is_cuda
+                ):
+                    hidden_states = self.snake_conv_tanh(
+                        module, following, hidden_states
+                    )
+                    index += 3
+                else:
                     frame_count = hidden_states.shape[1]
                     alignment = (
                         -(following.padding + frame_count)
@@ -140,14 +176,38 @@ class ChannelsLastDecoder:
                     hidden_states = self.causal_conv(
                         following, padded, original_frame_count=frame_count
                     )
-                    module = next(modules, None)
-                else:
-                    hidden_states = self.apply(module, hidden_states)
-                    module = following
+                    index += 2
             else:
                 hidden_states = self.apply(module, hidden_states)
-                module = next(modules, None)
+                index += 1
         return hidden_states
+
+    def snake_conv_tanh(
+        self,
+        snake_module: Snake1d,
+        conv_module: CausalConvNet,
+        hidden_states: torch.Tensor,
+    ) -> torch.Tensor:
+        """tanh(conv_module(snake_module(x))) of a (B, L, C) half activation, for the
+        decoder's final conv onto one channel. cuDNN has only a slow engine for a
+        channels-last conv onto one channel, so the taps run as one GEMM over the
+        padded snake output and each frame sums its taps along a diagonal view."""
+        conv = conv_module.conv
+        taps = conv.kernel_size[0]
+        batch_size, frame_count, channel_count = hidden_states.shape
+        padded = self.snake(snake_module, hidden_states, conv_module.padding, 0)
+        tap_products = torch.mm(
+            padded.view(-1, channel_count),
+            self.tail_weights[id(conv)],
+            out_dtype=torch.float32,
+        ).view(batch_size, -1, taps + 1)
+        # Frame t's conv is tap_products[b, t + k, k] summed over the taps k.
+        framed = tap_products.as_strided(
+            (batch_size, frame_count, taps),
+            (tap_products.stride(0), taps + 1, taps + 2),
+        )
+        conv_output = framed.sum(-1, keepdim=True).to(hidden_states.dtype)
+        return torch.tanh(conv_output + conv.bias)
 
     def apply(
         self, module: torch.nn.Module, hidden_states: torch.Tensor
