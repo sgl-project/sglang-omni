@@ -1,132 +1,44 @@
 # Contributing to Voxt
 
-Thank you for helping improve Voxt. Contributions of code, tests, documentation, translations, and bug reports are welcome.
+**English** · [简体中文](#参与贡献)
 
-Please read this guide before opening an issue or pull request. For security vulnerabilities, do not disclose details in a public issue; use GitHub's private vulnerability reporting flow when it is available for the repository, or contact a maintainer privately through GitHub.
+Voxt lives in the [SGLang-Omni](https://github.com/sgl-project/sglang-omni) repository and takes its issues and pull requests there, under the repository's licence, the Apache License 2.0. No contributor licence agreement is needed.
 
-## Before you start
-
-- Check existing issues and pull requests so that you do not duplicate ongoing work.
-- For a larger feature or behavior change, open an issue first and describe the problem, proposed approach, and user impact.
-- Keep each pull request focused on one change whenever possible.
-- Do not include credentials, API keys, signing certificates, private user data, or generated build artifacts in a contribution.
-
-## Development environment
-
-Voxt is a Swift macOS menu bar app. The project currently targets macOS 15.0 or later and uses the shared `Voxt` Xcode scheme.
-
-You will need:
-
-- A Mac running macOS 15.0 or later.
-- Xcode with Swift and macOS development support. CI currently runs with Xcode 26.5.
-- Git and network access for Swift package dependencies.
-
-Clone the repository and open the project:
-
-```bash
-git clone <repository-url>
-cd Voxt
-open Voxt.xcodeproj
-```
-
-Most contributors can build and test without signing credentials. Local signing overrides are optional and must remain uncommitted.
-
-## Build and test
-
-Before submitting a pull request, run the checks relevant to your change. The standard commands are:
-
-```bash
-xcodebuild -list -project Voxt.xcodeproj
-
-xcodebuild build \
-  -project Voxt.xcodeproj \
-  -scheme Voxt \
-  -destination 'platform=macOS' \
-  CODE_SIGNING_ALLOWED=NO
-
-xcodebuild test \
-  -project Voxt.xcodeproj \
-  -scheme Voxt \
-  -destination 'platform=macOS' \
-  CODE_SIGNING_ALLOWED=NO
-```
-
-For a focused test run, use `-only-testing`, for example:
-
-```bash
-xcodebuild test \
-  -project Voxt.xcodeproj \
-  -scheme Voxt \
-  -destination 'platform=macOS' \
-  -only-testing:VoxtTests/SQLiteStorageRepositoryTests \
-  CODE_SIGNING_ALLOWED=NO
-```
-
-If Swift package resolution behaves differently locally than in CI, reproduce the package settings from [`.github/workflows/tests.yml`](.github/workflows/tests.yml), including the resolved package file and isolated cache paths.
-
-## Making changes
-
-Start with the [source map](docs/Architecture.md) and [documentation index](docs/index.md). The [refactoring checklist](docs/RefactoringAssessment.zh-CN.md) records known hotspots and validation requirements.
-
-- Follow the existing Swift style and the nearby SwiftUI/AppKit structure.
-- Prefer existing managers, stores, and support types before introducing new abstractions.
-- Keep behavior changes covered by deterministic tests where practical.
-- Split by responsibility; prefer roughly 200–500 lines for new files and review files exceeding 800 lines. These are review guidelines, not a reason to scatter shared mutable state across extensions.
-- Remove code only after checking production/test references, protocol and selector callbacks, resources, and migrations. Similar-looking provider or failure-path tests are not automatically duplicates.
-- Preserve actor isolation, cancellation, and access control when moving Swift declarations. Update focused-test scripts when renaming suites.
-- Use the shared test helpers in `VoxtTests/TestSupport/` and isolated `UserDefaults` suites or temporary directories for stateful tests.
-- Do not modify audio fixtures in `VoxtTests/Fixtures/Audio/` unless the change specifically requires a fixture update.
-- For UI changes, verify the affected menu bar, settings, window, and accessibility behavior on macOS.
-- For audio, permissions, model, or remote-provider changes, document any required hardware, permissions, downloads, credentials, or manual verification in the pull request.
-- Update the relevant documentation when a public behavior, setup step, or user-facing option changes.
-
-Generated files, local settings, build products, and downloaded model/runtime artifacts should stay out of commits. Review `git status` before creating a pull request.
-
-## Branches and commits
-
-Create a topic branch from the current default branch (`main`):
-
-```bash
-git switch main
-git pull --ff-only
-git switch -c fix/short-description
-```
-
-Use a short, descriptive branch name such as `feat/...`, `fix/...`, `docs/...`, or `test/...`. Write commit messages in the imperative mood and keep them specific, for example:
-
-```text
-Fix duplicate final transcription commit
-Add tests for meeting retention limits
-Update remote model documentation
-```
-
-Release tags are maintained by project maintainers. Do not create or push `vX.Y.Z` or `vX.Y.Z-beta.N` tags as part of a normal contribution.
+- **Bugs**: Settings → About → Report a problem opens a GitHub issue with the diagnostics filled in. Or open an [issue](https://github.com/sgl-project/sglang-omni/issues) by hand, with "[VoxtNew]" in its title: what happened, what you expected, the steps.
+- **Changes**: Voxt does Transcribe, Translate and Rewrite, with App enhancement and the dictionary, on local models only; remote services, meetings, file transcription and notes are out of its scope. For anything larger than a fix, open an issue first.
+- Read [AGENTS.md](AGENTS.md) (the rules for changes) and [docs/architecture.md](docs/architecture.md) before changing code.
 
 ## Pull requests
 
-A good pull request should:
+1. Keep a pull request to one change, with tests. Commit messages and code comments are in English.
+2. Every user-visible string goes through `i18n.T` with an English message, and its Simplified Chinese translation goes into `internal/i18n/locales/zh-Hans.json`.
+3. A change users notice gets a line in the `Unreleased` section of [CHANGELOG.md](CHANGELOG.md), in English and Chinese.
+4. Run the checks below, and say in the pull request what changed and how you checked it. For a change in the UI, add before and after screenshots.
 
-1. Explain the problem and the intended behavior.
-2. Summarize the implementation and call out important trade-offs.
-3. List the tests and manual checks you ran, including the exact command when useful.
-4. Include screenshots or a short recording for visible UI changes.
-5. Mention follow-up work, known limitations, migrations, or required configuration.
-6. Keep unrelated formatting or refactoring out of the change.
+## Development
 
-Pull requests are reviewed for correctness, regression risk, test coverage, user experience, privacy/security impact, and maintainability. CI must pass before merging. Be prepared to update the branch in response to review feedback.
+Voxt is a Go app on [MyGo](https://github.com/egoist/mygo) (native UI, no cgo) with a small Swift helper. Everything but the helper is plain Go and is tested on Linux; building the app needs a Mac with macOS 15 or later on Apple silicon and Xcode. Go 1.27.1 (`GOTOOLCHAIN=auto` fetches it). Run these from `Voxt/`:
 
-## Reporting bugs and requesting features
+```sh
+CGO_ENABLED=0 go test ./...                                  # all tests (Linux and Mac)
+go tool mygo vet .                                           # go vet and MyGo's UI checks
+git ls-files '*.go' ':!:third_party/**' | xargs gofmt -l    # must print nothing
+go test -run TestKeyParity ./internal/i18n                   # strings and zh-Hans
+VOXTNEW_SNAPSHOTS=/tmp/shots go test -run TestSnapshots .   # every page as PNG
+cd helper && swift test                                      # the Swift helper (on a Mac)
+scripts/build-helper.sh && go tool mygo build   # build the app (on a Mac)
+scripts/release.sh                                           # the release build, the Omni runtime inside (docs/release.md)
+```
 
-When reporting a bug, include:
+The store's tests use MyGo's SQLite plugin, which downloads its library once (checked against its SHA-256) or uses `MYGO_SQLITE_LIBRARY`. On Linux the overlay's pixel checks of Chinese text need a CJK font (Ubuntu: `fonts-noto-cjk`). What needs permissions or a screen is checked by hand: [docs/manual-test.md](docs/manual-test.md).
 
-- What you expected and what happened instead.
-- Steps to reproduce, including the relevant app mode, provider, model, shortcut, or input device.
-- macOS and Voxt versions, Mac model/architecture, and relevant configuration.
-- Logs or screenshots with personal data and secrets removed.
-- Whether the issue reproduces in the latest release or current `main`.
+---
 
-Feature requests are most useful when they describe the user problem, the proposed outcome, and alternatives considered rather than only prescribing an implementation.
+## 参与贡献
 
-## License
+Voxt 在 [SGLang-Omni](https://github.com/sgl-project/sglang-omni) 仓库里，问题和 PR 都提到那里，按仓库的 Apache License 2.0 授权，不需要签贡献者协议。
 
-By contributing to Voxt, you agree that your contribution is provided under the repository's [Apache License 2.0](LICENSE).
+- **报告问题**：设置 → 诊断与关于 → 反馈问题，会打开一个已填好诊断信息的 GitHub issue；也可以手动开 [issue](https://github.com/sgl-project/sglang-omni/issues)，标题带上“[VoxtNew]”，写清发生了什么、你期望什么、复现步骤。
+- **改动**：Voxt 只做转录、翻译、转写，加上应用增强和词典，只用本地模型；远程服务、会议、文件转录、笔记不在范围内。比修 bug 更大的改动，先开 issue 讨论。
+- 改代码前先读 [AGENTS.md](AGENTS.md)（改动规则）和 [docs/architecture.md](docs/architecture.md)。
+- PR：一个 PR 一件事，带测试；提交信息和代码注释用英文；界面文字都经过 `i18n.T`，并在 `internal/i18n/locales/zh-Hans.json` 补中文；用户能察觉的改动在 [CHANGELOG.md](CHANGELOG.md) 的 `Unreleased` 里中英文各写一行；跑一遍上面的检查。

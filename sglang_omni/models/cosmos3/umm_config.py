@@ -7,6 +7,11 @@ from typing import ClassVar
 from sglang_omni.config import EngineStageConfig, FactoryArgs, StageConfig
 from sglang_omni.config.runtime import resolve_stage_typed_kwargs
 from sglang_omni.models.cosmos3.config import Cosmos3PipelineConfig
+from sglang_omni.models.cosmos3.umm import (
+    MAX_PROMPT_CHARS,
+    MAX_TEXT_CHARS,
+    max_model_bytes,
+)
 from sglang_omni.pipeline.umm import (
     CONTROLLER_FACTORY_PATH,
     OUTPUT_FACTORY_PATH,
@@ -14,6 +19,9 @@ from sglang_omni.pipeline.umm import (
     STREAM_DONE_FN_PATH,
     UMMPipelineConfig,
 )
+
+# Each token is at least one byte, each character of a plainly written JSON decision at most six, and the field names fit in 128.
+MAX_DECISION_TOKENS = 6 * (MAX_TEXT_CHARS + MAX_PROMPT_CHARS) + 128
 
 
 class Cosmos3UMMPipelineConfig(UMMPipelineConfig, Cosmos3PipelineConfig):
@@ -72,6 +80,7 @@ class Cosmos3UMMPipelineConfig(UMMPipelineConfig, Cosmos3PipelineConfig):
             ),
             allow_child_processes=True,
             factory=FactoryArgs(stage_name="reasoner"),
+            env={"SGLANG_MAX_NEW_TOKENS_LIMIT": str(MAX_DECISION_TOKENS)},
             gpu=1,
             next="orchestrator",
         ),
@@ -90,10 +99,6 @@ class Cosmos3UMMPipelineConfig(UMMPipelineConfig, Cosmos3PipelineConfig):
 
     def model_post_init(self, __context: object = None) -> None:
         super().model_post_init(__context)
-        # The adapter module imports the native stages, which a configuration
-        # loaded for any model must not import.
-        from sglang_omni.models.cosmos3.umm import max_model_bytes
-
         # UMMPipelineConfig has validated every bound, so only the relations
         # Cosmos3 output needs remain.
         bounds = resolve_stage_typed_kwargs(self.stage_named("orchestrator"))

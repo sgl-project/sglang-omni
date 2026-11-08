@@ -58,8 +58,10 @@ def create_tree_cache(
         pass
     params = CacheInitParams(**cache_init_arguments)
 
-    if get_memory().disable_radix_cache and isinstance(
-        token_to_kv_pool_allocator, PureSWATokenToKVPoolAllocator
+    if (
+        get_memory().disable_radix_cache
+        and not get_serving().enable_streaming_session
+        and isinstance(token_to_kv_pool_allocator, PureSWATokenToKVPoolAllocator)
     ):
         return PureSWARadixCache(params)
     elif get_memory().disable_radix_cache or get_serving().enable_streaming_session:

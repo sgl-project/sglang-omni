@@ -1,15 +1,18 @@
 name: Omni CI
 
 # DAG:
-#   preflight -> setup -> pr-test -> asr-ci -> tts-ci -> mps-ci -> qwen3-omni-ci
+#   preflight -> setup -> pr-test -> {asr-ci, tts-ci, qwen3-omni-ci, duplex-ci, mps-ci}
 #   setup + unit/model suites -> cleanup (dispatch only)
 #
 # preflight resolves the CI labels with .github/scripts/resolve_ci_labels.py:
 # any stage label, including run-unit-test-ci-only, runs pr-test, and each model
 # suite runs only when its stage is selected. run-lint-only passes the gate and
-# skips setup. Model suites wait for the previous suite to finish but use always()
-# so a failed or skipped suite does not skip later suites. Only setup blocks all
+# skips setup. Model suites, including MPS, start after pr-test and use always()
+# so a failed or skipped suite never skips another one. Only setup blocks all
 # downstream model CI.
+#
+# MPS has no result dependency on other model suites and uses the same
+# workflow SHA, so it does not wait for those suites to finish.
 #
 # PR-scoped homes (/data/omni-ci/pr-<N>) persist on the runner for reuse across
 # pushes (runner TTL, e.g. 3 days). reconcile_omni_ci_env.sh validates fingerprint,
@@ -29,9 +32,8 @@ on:
     inputs:
       ci_labels:
         description: "Space-separated CI labels, resolved like PR labels (e.g. 'run-tts-ci run-moss-tts-local-transformer-v1.5')."
-        required: false
+        required: true
         type: string
-        default: run-all-ci
 
 concurrency:
   group: omni-ci-${{ github.event.pull_request.number || github.ref }}
@@ -69,6 +71,9 @@ jobs:
       run_tts: ${{ steps.plan.outputs.run_tts }}
       run_mps: ${{ steps.plan.outputs.run_mps }}
       run_omni: ${{ steps.plan.outputs.run_omni }}
+      run_full_duplex: ${{ steps.plan.outputs.run_full_duplex }}
+      run_turn_based: ${{ steps.plan.outputs.run_turn_based }}
+      run_cascaded: ${{ steps.plan.outputs.run_cascaded }}
       asr_ci_model: ${{ steps.plan.outputs.asr_ci_model }}
       tts_ci_model: ${{ steps.plan.outputs.tts_ci_model }}
       mps_ci_model: ${{ steps.plan.outputs.mps_ci_model }}
@@ -111,13 +116,6 @@ jobs:
           exit 1
 
       - name: Checkout workflow scripts
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-
-      - name: Checkout workflow scripts for manual dispatch
-        if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/checkout@v4
 
       - name: Resolve CI stages and models
@@ -147,7 +145,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -194,6 +192,9 @@ jobs:
           HF_ENDPOINT: https://huggingface.co
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           OMNI_CI_MODEL: ${{ needs.preflight.outputs.omni_ci_model }}
+          RUN_FULL_DUPLEX: ${{ needs.preflight.outputs.run_full_duplex }}
+          RUN_TURN_BASED: ${{ needs.preflight.outputs.run_turn_based }}
+          RUN_CASCADED: ${{ needs.preflight.outputs.run_cascaded }}
         run: |
           bash .github/scripts/ensure_hf_models.sh omni \
             Qwen/Qwen3-Omni-30B-A3B-Instruct \
@@ -208,8 +209,15 @@ jobs:
             "${FUN_ASR_MODEL_PATH}" \
             "${WHISPER_ASR_MODEL_PATH}"
 
-          if [[ "${OMNI_CI_MODEL}" == "minicpmo" ]]; then
+          if [[ "${OMNI_CI_MODEL}" == "minicpmo" || "${RUN_FULL_DUPLEX}" == "true" ]]; then
             bash .github/scripts/ensure_hf_models.sh omni openbmb/MiniCPM-o-4_5
+          fi
+          # Every duplex strategy is judged by Qwen3.8-27B, which the cascade also serves.
+          if [[ "${RUN_FULL_DUPLEX}" == "true" || "${RUN_TURN_BASED}" == "true" || "${RUN_CASCADED}" == "true" ]]; then
+            bash .github/scripts/ensure_hf_models.sh omni Qwen/Qwen3.8-27B
+          fi
+          if [[ "${RUN_CASCADED}" == "true" ]]; then
+            bash .github/scripts/ensure_hf_models.sh omni Qwen/Qwen3-ForcedAligner-0.6B
           fi
 
       - name: Mark PR environment complete
@@ -238,7 +246,7 @@ jobs:
 
   tts-ci:
     name: TTS CI
-    needs: [preflight, setup, pr-test, asr-ci]
+    needs: [preflight, setup, pr-test]
     if: >-
       always() && !cancelled() &&
       needs.setup.result == 'success' &&
@@ -254,7 +262,7 @@ jobs:
 
   mps-ci:
     name: MPS CI
-    needs: [preflight, setup, pr-test, asr-ci, tts-ci]
+    needs: [preflight, setup, pr-test]
     if: >-
       always() && !cancelled() &&
       needs.setup.result == 'success' &&
@@ -263,7 +271,7 @@ jobs:
     with:
       mps_ci_model: ${{ needs.preflight.outputs.mps_ci_model }}
       mps_ci_config: ${{ needs.preflight.outputs.mps_ci_config }}
-      exact_sha: ${{ github.event.pull_request.head.sha || github.sha }}
+      exact_sha: ${{ github.sha }}
       omni_ci_home: >-
         ${{ github.event_name == 'pull_request'
             && format('/data/omni-ci/pr-{0}', github.event.pull_request.number)
@@ -272,7 +280,7 @@ jobs:
 
   qwen3-omni-ci:
     name: Omni model CI (${{ needs.preflight.outputs.omni_ci_model }})
-    needs: [preflight, setup, pr-test, asr-ci, tts-ci, mps-ci]
+    needs: [preflight, setup, pr-test]
     if: >-
       always() && !cancelled() &&
       needs.setup.result == 'success' &&
@@ -280,6 +288,26 @@ jobs:
     uses: ./.github/workflows/test-qwen3-omni-ci.yaml
     with:
       omni_ci_model: ${{ needs.preflight.outputs.omni_ci_model }}
+      omni_ci_home: >-
+        ${{ github.event_name == 'pull_request'
+            && format('/data/omni-ci/pr-{0}', github.event.pull_request.number)
+            || format('/data/omni-ci/run-{0}', github.run_id) }}
+    secrets: inherit
+
+  duplex-ci:
+    name: Duplex CI
+    needs: [preflight, setup, pr-test]
+    if: >-
+      always() && !cancelled() &&
+      needs.setup.result == 'success' &&
+      (needs.preflight.outputs.run_full_duplex == 'true' ||
+       needs.preflight.outputs.run_turn_based == 'true' ||
+       needs.preflight.outputs.run_cascaded == 'true')
+    uses: ./.github/workflows/test-duplex-ci.yaml
+    with:
+      run_full_duplex: ${{ needs.preflight.outputs.run_full_duplex == 'true' }}
+      run_turn_based: ${{ needs.preflight.outputs.run_turn_based == 'true' }}
+      run_cascaded: ${{ needs.preflight.outputs.run_cascaded == 'true' }}
       omni_ci_home: >-
         ${{ github.event_name == 'pull_request'
             && format('/data/omni-ci/pr-{0}', github.event.pull_request.number)
@@ -301,7 +329,7 @@ jobs:
 
   cleanup:
     name: cleanup - reclaim ephemeral run home
-    needs: [setup, pr-test, asr-ci, tts-ci, mps-ci, qwen3-omni-ci]
+    needs: [setup, pr-test, asr-ci, tts-ci, mps-ci, qwen3-omni-ci, duplex-ci]
     if: >-
       always() && !cancelled() &&
       needs.setup.result == 'success' &&
@@ -309,7 +337,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 5
     container:
-      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES

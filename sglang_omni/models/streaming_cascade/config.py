@@ -26,6 +26,8 @@ from sglang_omni.models.nemotron3_5_asr.config import (
 )
 from sglang_omni.models.streaming_cascade.base import ComponentConfig
 from sglang_omni.models.streaming_cascade.components import COMPONENTS
+from sglang_omni.models.turn_detection.node import TURN_DETECTION_STAGE
+from sglang_omni.models.vad.node import VAD_STAGE
 from sglang_omni.proto.session import (
     GRAPH_INPUT,
     ControlEdge,
@@ -40,6 +42,7 @@ from sglang_omni.proto.streams import (
     CONFIGURE,
     INTERRUPT,
     PCM16,
+    REPLY_DELIVERED,
     REPLY_PROGRESS,
     SESSION_CONTROL,
     SESSION_INPUT_SAMPLE_RATE_HZ,
@@ -48,6 +51,7 @@ from sglang_omni.proto.streams import (
     SessionPorts,
     published_audio_port,
 )
+from sglang_omni.scheduling.session import NODE_STAGE_MAX_OPEN_SESSIONS
 
 NAME_PATTERN = r"^[a-z][a-z0-9_]*$"
 NODE_FIELDS = frozenset({"name", "inputs"})
@@ -226,6 +230,7 @@ class ComponentGraphConfig(BaseModel):
         self.check_published_audio()
         self.check_turn_roles()
         self.check_progress()
+        self.check_delivery()
         return self
 
     def check_names(self) -> None:
@@ -358,6 +363,43 @@ class ComponentGraphConfig(BaseModel):
             else:
                 pass
 
+    def check_delivery(self) -> None:
+        """A node that opens turns answers after a reply it interrupted only once the graph reports the audio of the reply it delivered, which the graph sends when the interrupt reaches, on a control edge, a node that publishes audio, to the readers of that node's session. A graph without audio whose turn opener interrupts no node is exempt."""
+        publishes_audio = bool(self.published_audio_ports())
+        for node in self.nodes:
+            takers = self.interrupt_takers(node.name)
+            if (
+                node.opens_turns
+                and (takers or publishes_audio)
+                and not self.delivery_reporters(node.name)
+            ):
+                raise ValueError(
+                    f"node {node.name!r} waits for {REPLY_DELIVERED} after it interrupts a reply: a node that publishes audio must take its {INTERRUPT} on a control edge, and {node.name!r} must read that node's {SESSION_CONTROL}"
+                )
+            else:
+                pass
+
+    def interrupt_takers(self, name: str) -> list[NodeSettings]:
+        """The nodes that take node `name`'s interrupt on a control edge."""
+        return [
+            other
+            for other in self.nodes
+            if any(
+                edge.source == name and edge.event == INTERRUPT
+                for edge in other.controls
+            )
+        ]
+
+    def delivery_reporters(self, name: str) -> list[str]:
+        """The nodes whose reply.delivered reaches node `name` after it interrupts a reply: each publishes audio, takes that interrupt on a control edge, and is a node whose session `name` reads."""
+        node = self.node(name)
+        return [
+            other.name
+            for other in self.interrupt_takers(name)
+            if AUDIO_FORMATS & set(self.publish.get(other.name, ()))
+            and SESSION_CONTROL in node.edges().get(other.name, frozenset())
+        ]
+
     def node(self, name: str) -> NodeSettings:
         return next(node for node in self.nodes if node.name == name)
 
@@ -445,11 +487,20 @@ class ComponentGraphConfig(BaseModel):
             )
             if any(node.has_option(f) for node in self.nodes for f in fields)
         )
+        # Note (ruoyu): A client interrupt travels the control edges from the input, so a graph without one fails the control; the other controls ride with the appended audio.
+        if any(
+            edge.source == GRAPH_INPUT and edge.event == INTERRUPT
+            for node in self.nodes
+            for edge in node.controls
+        ):
+            controls = frozenset({COMMIT, CONFIGURE, INTERRUPT, TRUNCATE})
+        else:
+            controls = frozenset({COMMIT, CONFIGURE, TRUNCATE})
         return SessionPorts(
             input=(AudioPort(PCM16, SESSION_INPUT_SAMPLE_RATE_HZ),),
             output=published_audio_port(self.published_audio_ports()),
             unit_ms=unit_ms,
-            controls=frozenset({COMMIT, CONFIGURE, INTERRUPT, TRUNCATE}),
+            controls=controls,
             hot_settings=hot_settings,
             sampling_parameters=(
                 tuple(SAMPLING_FIELDS) if "sampling" in hot_settings else ()
@@ -491,6 +542,8 @@ class StreamingCascadePipelineConfig(AudioSessionPipelineConfig):
         **Nemotron3_5ASRPipelineConfig.stage_config_types,
     }
     timeout_s: float = Field(default=120, gt=0, allow_inf_nan=False)
+    max_sessions: int = Field(default=NODE_STAGE_MAX_OPEN_SESSIONS, ge=1)
+    "Sessions that every component node, the VAD node and the turn detection node hold at once; a session beyond them is refused when it opens."
 
     @model_validator(mode="before")
     @classmethod
@@ -628,7 +681,10 @@ class StreamingCascadePipelineConfig(AudioSessionPipelineConfig):
                 "name": stage_name,
                 "settings": self.component_graph().model_dump(mode="json"),
                 "timeout_s": self.timeout_s,
+                "max_open_sessions": self.max_sessions,
             }
+        elif stage_name in {VAD_STAGE, TURN_DETECTION_STAGE}:
+            return {"max_open_sessions": self.max_sessions}
         else:
             return super().stage_factory_kwargs(stage_name)
 

@@ -51,7 +51,7 @@ public:
     options.language = asr_service::TextField(form, "language");
     const auto use_itn = asr_service::TextField(form, "use_itn");
     if (use_itn.has_value()) {
-      options.use_itn = qwen3_asr::FormFlag(use_itn);
+      options.use_itn = omni_common::FormFlag(use_itn);
     } else {
     }
     const std::optional<std::string> vad_directory =

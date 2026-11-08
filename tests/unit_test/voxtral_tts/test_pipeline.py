@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import json
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import torch
+from sglang.srt.utils.hf_transformers_utils import get_config
 
 from sglang_omni.models.voxtral_tts.acoustic_transformer import (
     FlowMatchingAudioTransformer,
@@ -16,6 +18,10 @@ from sglang_omni.models.voxtral_tts.acoustic_transformer import (
 from sglang_omni.models.voxtral_tts.audio_tokenizer import VoxtralTTSAudioTokenizer
 from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
 from sglang_omni.models.voxtral_tts.pipeline import stages
+from sglang_omni.models.voxtral_tts.pipeline.engine_builder import (
+    VOXTRAL_CONFIG_PARSER,
+    VoxtralTtsEngineBuilder,
+)
 from sglang_omni.models.voxtral_tts.request_builders import build_sglang_voxtral_request
 from sglang_omni.models.voxtral_tts.sglang_model import VoxtralSGLangTTSModel
 from sglang_omni.models.voxtral_tts.vocoder import (
@@ -669,11 +675,6 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
     )
     monkeypatch.setattr(
         stages,
-        "write_voxtral_sglang_config",
-        lambda checkpoint_dir: f"{checkpoint_dir}/config.json",
-    )
-    monkeypatch.setattr(
-        stages,
         "load_voxtral_voice_embeddings",
         lambda checkpoint_dir, device: {},
     )
@@ -764,6 +765,37 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
     assert scheduler.server_args.disable_cuda_graph is False
     assert scheduler.server_args.enable_torch_compile is True
     assert scheduler.server_args.torch_compile_max_bs == 16
+
+
+@pytest.mark.parametrize(
+    ("device", "expected_graph_batch_sizes"),
+    [
+        ("cpu", []),
+        ("cuda:0", [[1, 2, 4]]),
+    ],
+)
+def test_voxtral_acoustic_graphs_are_captured_only_on_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+    device: str,
+    expected_graph_batch_sizes: list[list[int]],
+) -> None:
+    from sglang_omni.models.voxtral_tts.pipeline import engine_builder
+
+    captured_batch_sizes: list[list[int]] = []
+
+    class FakeModel:
+        def init_acoustic_graphs(self, batch_sizes: list[int]) -> None:
+            captured_batch_sizes.append(batch_sizes)
+
+    monkeypatch.setattr(
+        engine_builder, "get_decode_cuda_graph_bs", lambda server_args: [1, 2, 4]
+    )
+    builder = engine_builder.VoxtralTtsEngineBuilder()
+    builder.device = device
+
+    builder.post_cuda_graph_setup(FakeModel(), SimpleNamespace())
+
+    assert captured_batch_sizes == expected_graph_batch_sizes
 
 
 def test_enable_inductor_gemm_autotune_sets_per_shape_autotuning() -> None:
@@ -918,3 +950,22 @@ def test_voxtral_acoustic_graphs_refresh_inputs_and_advance_rng() -> None:
         torch.testing.assert_close(actual_first, expected_first, rtol=0, atol=0)
         torch.testing.assert_close(actual_second, expected_second, rtol=0, atol=0)
         torch.testing.assert_close(actual_overflow, expected_overflow, rtol=0, atol=0)
+
+
+def test_voxtral_config_parser_builds_the_config_from_params_json(tmp_path) -> None:
+    """The checkpoint has no config.json, and ServerArgs reads its config at resolve time."""
+    (tmp_path / "params.json").write_text(
+        json.dumps({"dim": 64, "n_layers": 2, "n_heads": 8, "vocab_size": 256})
+    )
+    VoxtralTtsEngineBuilder().pre_infra_setup(str(tmp_path))
+
+    config = get_config(
+        str(tmp_path),
+        trust_remote_code=False,
+        model_config_parser=VOXTRAL_CONFIG_PARSER,
+    )
+
+    assert config.architectures == ["VoxtralSGLangTTSModel"]
+    assert config.hidden_size == 64
+    assert config.num_hidden_layers == 2
+    assert config.vocab_size == 256

@@ -7,13 +7,17 @@ import math
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from functools import cache
+from functools import cache, cached_property, partial
 from itertools import accumulate
+from typing import Literal
 
 import torch
 import torch.nn.functional as F
 from sglang.kernels.ops.attention.flash_attention import flash_attn_varlen_func
 from sglang.kernels.ops.attention.flash_attention_v3 import _is_fa3_supported
+from sglang.kernels.ops.attention.flash_attention_v4 import (
+    is_flash_attention_v4_available,
+)
 from torch import nn
 
 from sglang_omni.models.moss_tts.vocoder_kernels import (
@@ -53,6 +57,19 @@ def validate_attention_backend(attention_backend: str) -> str:
     return attention_backend
 
 
+@cache
+def packed_flash_version(device: torch.device) -> Literal[3, 4]:
+    device = torch.device(device)
+    if (
+        device.type == "cuda"
+        and torch.cuda.is_available()
+        and torch.cuda.get_device_capability(device)[0] == 12
+    ):
+        return 4
+    else:
+        return 3
+
+
 def packed_flash_device_unavailable_reason(device: torch.device) -> str | None:
     device = torch.device(device)
     if device.type != "cuda":
@@ -63,7 +80,12 @@ def packed_flash_device_unavailable_reason(device: torch.device) -> str | None:
         return "the CUDA runtime is unavailable"
     else:
         pass
-    if not _is_fa3_supported():
+    if packed_flash_version(device) == 4:
+        if is_flash_attention_v4_available():
+            return None
+        else:
+            return "SGLang packed FlashAttention (FA4) is unavailable"
+    elif not _is_fa3_supported():
         return "SGLang packed FlashAttention (FA3) is unavailable"
     else:
         pass
@@ -947,10 +969,18 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
         self.context = None if context is None else int(context)
         self.rope = rope
         self.attention_backend = validate_attention_backend(attention_backend)
-        self.flash_attn_varlen = flash_attn_varlen_func
         max_period = self.rope.max_period if self.rope is not None else 10000.0
         self.packed_rope_cache = packed_rope_cache or MossPackedRopeCache(
             max_period=max_period
+        )
+
+    @cached_property
+    def flash_attn_varlen(self) -> partial[torch.Tensor]:
+        # note (Zhang Yiyang): Bind only after weights leave the meta device.
+        return partial(
+            flash_attn_varlen_func,
+            ver=packed_flash_version(self.in_proj.weight.device),
+            num_splits=1,
         )
 
     def init_streaming_state(self, batch_size: int) -> AttentionStreamingState:
@@ -1622,3 +1652,34 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
             max_positions=max_positions,
             cache=self.packed_rope_cache,
         )
+
+
+@torch.inference_mode()
+def warmup_packed_attention(model: nn.Module) -> None:
+    device = next(model.parameters()).device
+    if packed_flash_version(device) != 4:
+        return
+    else:
+        pass
+    # note (Zhang Yiyang): Compile FA4 and packed RoPE before serving without graphs.
+    with torch.cuda.device(device):
+        cumulative_sequence_lengths = torch.tensor(
+            [0, 1], device=device, dtype=torch.int32
+        )
+        position_ids = torch.zeros(1, device=device, dtype=torch.long)
+        for attention in model.modules():
+            if not isinstance(attention, MossAudioTokenizerAttention):
+                continue
+            else:
+                pass
+            weight = attention.in_proj.weight
+            if not attention.supports_packed_attention(device, weight.dtype):
+                continue
+            else:
+                pass
+            attention(
+                weight.new_zeros((1, attention.embed_dim)),
+                cu_seqlens=cumulative_sequence_lengths,
+                max_seqlen=1,
+                position_ids=position_ids,
+            )

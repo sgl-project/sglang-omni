@@ -313,7 +313,7 @@ if errors:
     for error in errors:
         print(f"  - {error}", file=sys.stderr)
     print(
-        "\nSee docs/get_started/installation_npu.md for prerequisite links.",
+        "\nSee docs/other_platforms/installation_npu.md for prerequisite links.",
         file=sys.stderr,
     )
     sys.exit(1)

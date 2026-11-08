@@ -334,9 +334,13 @@ def find_checkpoint_dir() -> Path | None:
 
 def require_checkpoint_dir() -> Path:
     checkpoint = find_checkpoint_dir()
-    if checkpoint is None or resolve_concrete_device(None).type not in ("cuda", "xpu"):
+    if checkpoint is None or resolve_concrete_device(None).type not in (
+        "cuda",
+        "xpu",
+        "npu",
+    ):
         pytest.skip(
-            "Set MINICPMO_CHECKPOINT and provide CUDA or XPU for vocoder validation"
+            "Set MINICPMO_CHECKPOINT and provide CUDA, XPU, or NPU for vocoder validation"
         )
     else:
         pass
@@ -430,9 +434,11 @@ def test_source_module_noise_leaves_the_global_generator_unchanged() -> None:
 def test_native_vocoder_with_checkpoint() -> None:
     model = load_checkpoint_model(require_checkpoint_dir())
     device_module = torch.get_device_module(model.token2wav.device)
-    assert (
-        model.decode_stream.priority == code2wav_stage_factory().decode_stream_priority
-    )
+    if model.token2wav.device.type == "cuda":
+        assert (
+            model.decode_stream.priority
+            == code2wav_stage_factory().decode_stream_priority
+        )
     device_generator_state = device_module.get_rng_state(model.token2wav.device)
     output = model(codec_tokens=torch.tensor(CHECKPOINT_CODEC_TOKENS))
     assert torch.equal(
@@ -474,6 +480,8 @@ def test_mixed_reference_batch_matches_single_row_mels(
     max_relative_rms_error: float,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    if enable_flow_variable_length and resolve_concrete_device(None).type == "npu":
+        pytest.skip("packed flow reaches varlen_attn, which is CUDA-only")
     checkpoint = require_checkpoint_dir()
     model = load_checkpoint_model(
         checkpoint, enable_flow_variable_length=enable_flow_variable_length

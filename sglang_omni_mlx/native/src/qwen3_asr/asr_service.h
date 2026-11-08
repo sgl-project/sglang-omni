@@ -4,6 +4,7 @@
 // reads a request, its own flags, and any handlers beyond that API.
 #pragma once
 
+#include <cstddef>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -13,6 +14,7 @@
 #include <vector>
 
 #include "common/form.h"
+#include "common/service.h"
 #include "qwen3_asr/realtime.h"
 #include "qwen3_asr/worker.h"
 
@@ -20,13 +22,19 @@ struct mg_context;
 
 namespace asr_service {
 
-using FormFields = std::map<std::string, qwen3_asr::FormField>;
+using FormFields = std::map<std::string, omni_common::FormField>;
 using qwen3_asr::Transcription;
+
+// Note (XXXXRT666): a long request's KV caches grow in steps, and no later
+// step fits a buffer an earlier one freed; unlimited, MLX keeps them until
+// active and cached memory reach 95% of the recommended working set.
+constexpr size_t kDecodeBufferCacheLimitBytes = 2ULL << 30;
 
 // A loaded checkpoint of the served kind.
 class ServedModel {
 public:
   virtual ~ServedModel() = default;
+  virtual void ReleaseIdleMemory();
   // Binds one request's form fields to its samples; throws
   // std::invalid_argument for a field it does not accept.
   virtual Transcription Prepare(std::vector<float> samples,
@@ -40,6 +48,19 @@ public:
   RequestStates(const qwen3_asr::TranscriptionWorker &worker) const {
     return worker.RequestStates();
   }
+  // The name /v1/models lists, and whether --model-name chose it rather
+  // than the server generating it; set before AddHandlers runs.
+  const std::string &model_name() const { return model_name_; }
+  bool has_chosen_model_name() const { return has_chosen_model_name_; }
+  void set_model_name(const std::string &model_name,
+                      bool has_chosen_model_name) {
+    model_name_ = model_name;
+    has_chosen_model_name_ = has_chosen_model_name;
+  }
+
+private:
+  std::string model_name_;
+  bool has_chosen_model_name_ = false;
 };
 
 using ModelLoader =
@@ -72,6 +93,8 @@ using RealtimeFactory =
 
 // Serves the realtime API on /v1/realtime; factory must outlive the server.
 void AddRealtimeHandler(mg_context *context, const RealtimeFactory &factory);
+
+omni_server::ServedKind CreateServedKind(const ServedKind &kind);
 
 // Runs the server for the kind --model-kind names (the first by default)
 // until it is stopped; returns the exit code.

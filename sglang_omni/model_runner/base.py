@@ -17,7 +17,10 @@ import torch
 from sglang.srt.utils.common import is_pin_memory_available
 
 from sglang_omni.model_runner.model_worker import ModelWorker
-from sglang_omni.model_runner.prefill_inputs import clear_omni_prefill_inputs
+from sglang_omni.model_runner.prefill_inputs import (
+    clear_omni_prefill_inputs,
+    get_omni_prefill_inputs,
+)
 from sglang_omni.model_runner.sglang_execution import SGLangExecutionBridge
 from sglang_omni.platforms import current_platform
 from sglang_omni.sampling.seed import (
@@ -155,8 +158,19 @@ class ModelRunner(Generic[RequestDataInput]):
       - decode hooks for single-step autoregressive decode processing
     """
 
+    # note(YzXiao): opt in when next-round inputs are ready before CPU result collection and pending outputs retain their own storage.
+    supports_speculative_async_decode: bool = False
+
     # True when the model's own speculative verify applies repetition_penalty exactly.
     speculative_verifies_repetition_penalty: bool = False
+    # True when every verify row takes this runner's logits hooks, as its plain decode row would.
+    speculative_verify_takes_logits_hooks: bool = False
+    # True when the model's sampled DFlash or DSpark verify draws without the request seed.
+    speculative_ignores_request_seed: bool = False
+    # An EAGLE draft extends on the embeddings the target prefilled with, which a
+    # runner composing multimodal inputs keeps here for one prefill.
+    retain_prefill_input_embeds: bool = False
+    retained_prefill_input_embeds: torch.Tensor | None = None
 
     def __init__(
         self,
@@ -187,6 +201,8 @@ class ModelRunner(Generic[RequestDataInput]):
         self.suppress_tensor_cache: dict[
             tuple[tuple[int, ...], int, str], torch.Tensor | None
         ] = {}
+        self.sampling_seed_batch_key: tuple[tuple[str | None, int | None], ...] = ()
+        self.sampling_seed_batch_tensor: torch.Tensor | None = None
 
     def stage_token_ids(self, result: GenerationBatchResult, ids: torch.Tensor) -> None:
         # Note (wenyao): pinned host copy staged once at sample time so downstream
@@ -635,6 +651,7 @@ class ModelRunner(Generic[RequestDataInput]):
         block. Returns ``batch_result``."""
         try:
             if is_prefill:
+                self.retained_prefill_input_embeds = None
                 self.before_prefill(forward_batch, schedule_batch, requests)
                 batch_result = self.custom_prefill_forward(
                     forward_batch, schedule_batch, requests
@@ -675,13 +692,54 @@ class ModelRunner(Generic[RequestDataInput]):
                 )
             else:
                 pass
+            # The sidecar stays attached until cleanup, so a prefill that got this far
+            # can still hand its composed embeddings to the draft.
+            if is_prefill and self.retain_prefill_input_embeds:
+                prefill_inputs = get_omni_prefill_inputs(forward_batch)
+                if prefill_inputs is not None:
+                    self.retained_prefill_input_embeds = prefill_inputs.input_embeds
+                elif forward_batch.input_embeds is not None:
+                    self.retained_prefill_input_embeds = forward_batch.input_embeds
+                else:
+                    # A runner forwarding composed embeddings itself retains them.
+                    pass
+            else:
+                pass
             return batch_result
+        except BaseException:
+            # note (wilsonzheng0327): the target adapter releases the retained
+            # embeddings only from a returned result, so a failed forward, an OOM
+            # among them, must not keep its GPU tensor alive until the next prefill.
+            self.retained_prefill_input_embeds = None
+            raise
         finally:
             if is_prefill:
                 clear_omni_prefill_inputs(forward_batch)
                 self.cleanup_prefill(forward_batch, schedule_batch, requests)
             else:
                 pass
+
+    def apply_speculative_verify_logits(
+        self,
+        logits_output: LogitsProcessorOutput,
+        requests: list[SchedulerRequest],
+        rows_per_request: int,
+    ) -> None:
+        """Give every verify row the logits hooks its plain decode row would take.
+
+        Speculative verify samples outside sample_next_token_ids. The codec suppress
+        set and process_sampling_logits depend on the request but not the position,
+        so applying them to each of a request's rows is exact.
+        """
+        rows = [request for request in requests for _ in range(rows_per_request)]
+        self.apply_codec_suppress_tokens(logits_output, rows)
+        self.process_sampling_logits(logits_output, rows)
+
+    def after_speculative_step(
+        self, batch: ScheduleBatch, *, is_prefill: bool, num_draft_tokens: int
+    ) -> None:
+        """Hook right after a speculative step, before its tokens are emitted."""
+        return None
 
     def on_speculative_tokens(
         self, scheduler_request: SchedulerRequest, token_ids: list[int]
@@ -1104,14 +1162,31 @@ class ModelRunner(Generic[RequestDataInput]):
         else:
             pass
         self.validate_seeded_sampling_supported(sampling_info)
+        for sp in sampling_params:
+            if sp.sampling_seed is not None and not (
+                0 <= sp.sampling_seed <= SAMPLING_SEED_MASK
+            ):
+                sp.sampling_seed = resolve_row_seed(sp.sampling_seed)
+            else:
+                pass
+        # note (YifanLi3): the per-step sampling_info is a copy, so reuse the
+        # device tensor while the batch composition is unchanged instead of
+        # paying a host-to-device copy every decode step. The key holds the
+        # normalized seeds so an out-of-range user seed does not miss once.
+        batch_key = tuple(
+            (request.request_id, sp.sampling_seed)
+            for sp, request in zip(sampling_params, requests)
+        )
+        if batch_key == self.sampling_seed_batch_key:
+            sampling_info.sampling_seed = self.sampling_seed_batch_tensor
+            return
+        else:
+            pass
         row_seeds: list[int] = []
         for row_idx, (sp, request) in enumerate(zip(sampling_params, requests)):
             seed = sp.sampling_seed
             if seed is None:
                 seed = rank_shared_unseeded_sampling_seed(request, row_idx)
-            elif not (0 <= seed <= SAMPLING_SEED_MASK):
-                seed = resolve_row_seed(seed)  # mask and cache user seed
-                sp.sampling_seed = seed
             else:
                 pass
             row_seeds.append(seed)
@@ -1120,6 +1195,8 @@ class ModelRunner(Generic[RequestDataInput]):
             dtype=torch.long,
             pin_memory=is_pin_memory_available(sampling_info.device),
         ).to(sampling_info.device, non_blocking=True)
+        self.sampling_seed_batch_key = batch_key
+        self.sampling_seed_batch_tensor = sampling_info.sampling_seed
 
     @staticmethod
     def validate_seeded_sampling_supported(sampling_info: SamplingBatchInfo) -> None:

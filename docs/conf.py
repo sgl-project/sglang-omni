@@ -88,7 +88,24 @@ language = "en"
 
 exclude_patterns = ["build", "Thumbs.db", ".DS_Store", "developer_reference/mlx.md"]
 
-html_additional_pages = {"developer_reference/mlx": "mlx_redirect.html"}
+doc_redirects = {
+    "get_started/apiserver_quickstart": "get_started/quickstart",
+    "get_started/installation_apple_silicon": "other_platforms/installation_apple_silicon",
+    "get_started/installation_cpu": "other_platforms/installation_cpu",
+    "get_started/installation_musa": "other_platforms/installation_musa",
+    "get_started/installation_npu": "other_platforms/installation_npu",
+    "get_started/installation_xpu": "other_platforms/installation_xpu",
+    "developer_reference/mlx": "developer_reference/mlx/index",
+    "mlx/index": "developer_reference/mlx/index",
+    "mlx/long_audio": "developer_reference/mlx/long_audio",
+}
+
+html_additional_pages = {
+    **dict.fromkeys(doc_redirects, "doc_redirect.html"),
+    "developer_reference/full_duplex_bench": "full_duplex_bench_redirect.html",
+    "developer_reference/full_duplex_metrics": "full_duplex_metrics_redirect.html",
+    "developer_reference/full_duplex_interactive_model": "full_duplex_interactive_model_redirect.html",
+}
 
 pygments_style = "sphinx"
 
@@ -101,10 +118,11 @@ html_last_updated_fmt = ""
 
 html_theme_options = {
     "repository_url": "https://github.com/sgl-project/sglang-omni",
-    "repository_branch": "main/docs",
+    "repository_branch": "main",
+    "path_to_docs": "docs/",
     "show_navbar_depth": 3,
     "max_navbar_depth": 4,
-    "collapse_navbar": True,
+    "collapse_navbar": False,
     "use_edit_page_button": True,
     "use_source_button": True,
     "use_issues_button": True,
@@ -115,6 +133,7 @@ html_theme_options = {
 }
 
 html_context = {
+    "doc_redirects": doc_redirects,
     "display_github": True,
     "github_user": "sgl-project",
     "github_repo": "sgl-project.github.io",
@@ -125,6 +144,7 @@ html_context = {
 html_static_path = ["_static"]
 html_css_files = ["css/custom_log.css"]
 html_js_files = [
+    "js/sidebar_company_toggle.js",
     "js/qwen3_omni_server_generator.js",
     "js/ming_omni_server_generator.js",
 ]

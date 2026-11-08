@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from transformers import WhisperFeatureExtractor
 
 import sglang_omni.preprocessing.transcription as transcription
@@ -23,6 +24,7 @@ from sglang_omni.models.qwen3_asr.request_builders import (
 )
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.types import DeferredAdmission
+from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.utils import audio as audio_utils
 from sglang_omni.utils.audio import AudioDecodeError
 
@@ -143,6 +145,39 @@ def budget_test_builder(monkeypatch, num_samples: int):
         feature_extractor=feature_extractor,
     )
     return request_builder
+
+
+def test_speculative_verify_positions_support_partial_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ASR requests must not broadcast four MRoPE deltas over eight draft positions."""
+    request_builder = budget_test_builder(monkeypatch, num_samples=1600)
+    requests = [
+        request_builder(
+            StagePayload(
+                request_id=f"asr-spec-{i}",
+                request=OmniRequest(inputs={"audio_bytes": b"wav"}, params={}),
+                data={},
+            )
+        ).req
+        for i in range(4)
+    ]
+    forward_batch = object.__new__(ForwardBatch)
+    forward_batch.seq_lens = torch.tensor(
+        [len(request.origin_input_ids) + i for i, request in enumerate(requests)]
+    )
+    positions = forward_batch.seq_lens.unsqueeze(1) + torch.arange(8)
+    batch = SimpleNamespace(
+        multimodal_inputs=[request.multimodal_inputs for request in requests],
+        spec_info=SimpleNamespace(positions=positions),
+    )
+
+    forward_batch.compute_spec_mrope_positions(SimpleNamespace(device="cpu"), batch)
+
+    assert torch.equal(
+        forward_batch.mrope_positions,
+        positions.flatten().unsqueeze(0).expand(3, -1),
+    )
 
 
 def test_qwen3_asr_short_audio_keeps_the_floor_budget(monkeypatch) -> None:
@@ -485,7 +520,7 @@ def test_qwen3_asr_greedy_only_rejects_non_greedy_sampling(monkeypatch) -> None:
         transcription,
         "load_audio",
         lambda source, **kwargs: pytest.fail(
-            "non-greedy Apple request should fail before audio decoding"
+            "non-greedy request should fail before audio decoding"
         ),
     )
     request_builder, _ = make_qwen3_asr_scheduler_adapters(
@@ -503,8 +538,37 @@ def test_qwen3_asr_greedy_only_rejects_non_greedy_sampling(monkeypatch) -> None:
         data={},
     )
 
-    with pytest.raises(ValueError, match="supports only greedy decoding"):
+    with pytest.raises(ValueError, match="supports only greedy decoding") as refusal:
         request_builder(payload)
+
+    # The refusal crosses the stage boundary as text, and chunked transcription wraps it.
+    assert is_bad_request_error(RuntimeError(str(refusal.value)))
+    assert is_bad_request_error(RuntimeError(f"chunk 0 failed: {refusal.value}"))
+
+
+@pytest.mark.parametrize(
+    ("params", "expected_repetition_penalty"),
+    [
+        ({}, 1.0),
+        ({"repetition_penalty": 1.3}, 1.3),
+    ],
+)
+def test_qwen3_asr_request_builder_preserves_repetition_penalty(
+    monkeypatch,
+    params: dict[str, float],
+    expected_repetition_penalty: float,
+) -> None:
+    """A transcription request's repetition_penalty must reach decoding instead of being dropped."""
+    request_builder = budget_test_builder(monkeypatch, num_samples=1600)
+    payload = StagePayload(
+        request_id="req-asr-repetition-penalty",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}, params=params),
+        data={},
+    )
+
+    data = request_builder(payload)
+
+    assert data.req.sampling_params.repetition_penalty == expected_repetition_penalty
 
 
 def test_qwen3_asr_request_builder_preserves_audio_beyond_30_seconds(
@@ -843,12 +907,23 @@ def test_qwen3_asr_result_adapter_decodes_without_text_round_trip() -> None:
         output_ids=[10, 100, 101, 20, 21, 22, 99],
         stage_payload=payload,
         audio_duration_s=1.25,
+        finish_reason="length",
     )
+    data.spec_tokens_details = {
+        "spec_accept_rate": 0.5,
+        "spec_accept_length": 2.0,
+        "spec_num_correct_drafts": 1,
+        "spec_num_proposed_drafts": 2,
+        "spec_verify_ct": 1,
+        "spec_correct_drafts_histogram": [0, 1],
+    }
 
     result = result_adapter(data)
 
     assert result.data["text"] == " leading\u00a0middle  "
     assert result.data["language"] == "English"
+    assert result.data["finish_reason"] == "length"
+    assert result.data["spec_tokens_details"] == data.spec_tokens_details
     assert tokenizer.encode_calls == ["<asr_text>"]
     assert len(tokenizer.decode_calls) == 2
     assert tokenizer.decode_calls[-1] == {

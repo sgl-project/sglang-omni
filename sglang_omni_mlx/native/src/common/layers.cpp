@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace qwen3_asr {
+namespace omni_common {
 
 namespace mx = mlx::core;
 
@@ -27,11 +27,30 @@ std::vector<mx::array> GeluGraph(const std::vector<mx::array> &inputs) {
       mx::array(2.0f, dtype))};
 }
 
+std::vector<mx::array> TanhGeluGraph(const std::vector<mx::array> &inputs) {
+  const mx::array &x = inputs[0];
+  const mx::Dtype dtype = x.dtype();
+  const mx::array inner = mx::multiply(
+      mx::array(static_cast<float>(std::sqrt(2.0 / M_PI)), dtype),
+      mx::add(x, mx::multiply(mx::array(0.044715f, dtype),
+                              mx::power(x, mx::array(3.0f, dtype)))));
+  return {mx::multiply(mx::multiply(mx::array(0.5f, dtype), x),
+                       mx::add(mx::array(1.0f, dtype), mx::tanh(inner)))};
+}
+
 std::vector<mx::array> SiluGraph(const std::vector<mx::array> &inputs) {
   return {mx::multiply(inputs[0], mx::sigmoid(inputs[0]))};
 }
 
 } // namespace
+
+mx::array Scalar(float value, mx::Dtype dtype) {
+  return mx::array(value, dtype);
+}
+
+mx::array Scalar(float value, const mx::array &like) {
+  return Scalar(value, like.dtype());
+}
 
 // Note (Jiaxin Deng): compiled shapeless as mlx.nn does, so each activation
 // is one fused kernel instead of one per elementwise op.
@@ -40,9 +59,40 @@ mx::array Gelu(const mx::array &x) {
   return compiled({x})[0];
 }
 
+mx::array TanhGelu(const mx::array &x) {
+  static const auto compiled = mx::compile(TanhGeluGraph, true);
+  return compiled({x})[0];
+}
+
 mx::array Silu(const mx::array &x) {
   static const auto compiled = mx::compile(SiluGraph, true);
   return compiled({x})[0];
+}
+
+mx::array RouteToExperts(const mx::array &hidden, const mx::array &indices,
+                         const ExpertRunner &run_experts) {
+  const int tokens = hidden.shape(0), width = hidden.shape(1);
+  const int experts_per_token = indices.shape(1);
+  // Note (XXXXRT666): A decode token's experts are all distinct, so sorting
+  // leaves gather_mm nothing to group.
+  if (tokens > 1) {
+    const mx::array flat_indices = mx::reshape(indices, {-1});
+    const mx::array order = mx::argsort(flat_indices);
+    const mx::array token_indices =
+        mx::floor_divide(order, mx::array(experts_per_token, mx::uint32));
+    const mx::array routed =
+        run_experts(mx::expand_dims(mx::take(hidden, token_indices, 0), 1),
+                    mx::take(flat_indices, order, 0), true);
+    const mx::array inverse_order = mx::put_along_axis(
+        mx::zeros(order.shape(), mx::uint32), order,
+        mx::arange(tokens * experts_per_token, mx::uint32), 0);
+    return mx::reshape(mx::take(routed, inverse_order, 0),
+                       {tokens, experts_per_token, routed.shape(-1)});
+  } else {
+    return mx::squeeze(
+        run_experts(mx::reshape(hidden, {tokens, 1, 1, width}), indices, false),
+        -2);
+  }
 }
 
 nlohmann::json ReadJson(const std::filesystem::path &path) {
@@ -86,6 +136,16 @@ Checkpoint::Checkpoint(WeightMap weights, const nlohmann::json &config)
     quantization_ = {quantization.at("group_size").get<int>(),
                      quantization.at("bits").get<int>(),
                      quantization.value("mode", std::string("affine"))};
+    for (const auto &[prefix, layer_quantization] : quantization.items()) {
+      if (layer_quantization.is_object()) {
+        quantization_by_prefix_.insert_or_assign(
+            prefix, QuantizationConfig{
+                        layer_quantization.at("group_size").get<int>(),
+                        layer_quantization.at("bits").get<int>(),
+                        layer_quantization.value("mode", quantization_.mode)});
+      } else {
+      }
+    }
   } else {
   }
   std::vector<mx::array> parameters;
@@ -108,6 +168,16 @@ bool Checkpoint::Has(const std::string &name) const {
   return weights_.count(name) > 0;
 }
 
+const QuantizationConfig &
+Checkpoint::Quantization(const std::string &prefix) const {
+  const auto found = quantization_by_prefix_.find(prefix);
+  if (found != quantization_by_prefix_.end()) {
+    return found->second;
+  } else {
+    return quantization_;
+  }
+}
+
 mx::array Checkpoint::Linear(const mx::array &x,
                              const std::string &prefix) const {
   if (Has(prefix + ".scales")) {
@@ -115,9 +185,10 @@ mx::array Checkpoint::Linear(const mx::array &x,
         Has(prefix + ".biases")
             ? std::optional<mx::array>(Weight(prefix + ".biases"))
             : std::nullopt;
+    const QuantizationConfig &quantization = Quantization(prefix);
     mx::array y = mx::quantized_matmul(
         x, Weight(prefix + ".weight"), Weight(prefix + ".scales"), biases, true,
-        quantization_.group_size, quantization_.bits, quantization_.mode);
+        quantization.group_size, quantization.bits, quantization.mode);
     if (Has(prefix + ".bias")) {
       return mx::add(y, Weight(prefix + ".bias"));
     } else {
@@ -149,10 +220,11 @@ mx::array Checkpoint::Embed(const mx::array &ids,
         Has(prefix + ".biases") ? std::optional<mx::array>(mx::take(
                                       Weight(prefix + ".biases"), ids, 0))
                                 : std::nullopt;
+    const QuantizationConfig &quantization = Quantization(prefix);
     return mx::dequantize(mx::take(Weight(prefix + ".weight"), ids, 0),
                           mx::take(Weight(prefix + ".scales"), ids, 0), biases,
-                          quantization_.group_size, quantization_.bits,
-                          quantization_.mode);
+                          quantization.group_size, quantization.bits,
+                          quantization.mode);
   } else {
     return mx::take(Weight(prefix + ".weight"), ids, 0);
   }
@@ -165,9 +237,10 @@ mx::array Checkpoint::TiedProjection(const mx::array &x,
         Has(prefix + ".biases")
             ? std::optional<mx::array>(Weight(prefix + ".biases"))
             : std::nullopt;
+    const QuantizationConfig &quantization = Quantization(prefix);
     return mx::quantized_matmul(
         x, Weight(prefix + ".weight"), Weight(prefix + ".scales"), biases, true,
-        quantization_.group_size, quantization_.bits, quantization_.mode);
+        quantization.group_size, quantization.bits, quantization.mode);
   } else {
     return mx::matmul(x, mx::transpose(Weight(prefix + ".weight")));
   }
@@ -204,4 +277,4 @@ LstmCell LstmStep(const mx::array &gates, const std::optional<LstmCell> &state,
   return {mx::multiply(output_gate, mx::tanh(cell)), cell};
 }
 
-} // namespace qwen3_asr
+} // namespace omni_common

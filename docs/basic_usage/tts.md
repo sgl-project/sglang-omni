@@ -15,7 +15,7 @@ Fish Audio requires its model-specific DAC dependencies. Complete the
 before starting the server.
 
 Qwen3-TTS uses the upstream `qwen-tts` package. Install it without dependencies
-so the SGLang-Omni Transformers 5.19 / SGLang 0.5.22 stack remains in place:
+so the SGLang-Omni Transformers 5.19 / SGLang 0.5.23 stack remains in place:
 
 ```bash
 apt-get update && apt-get install -y sox
@@ -38,7 +38,7 @@ for details.
 |---|---|---|
 | [Fish Speech S2-Pro](../cookbook/fishaudio_s2_pro.md) | `examples/configs/s2pro_tts.yaml` | Supports plain TTS and voice cloning with `references` |
 | [Voxtral TTS](../cookbook/voxtral_tts.md) | `examples/configs/voxtral_tts.yaml` | Uses `input`, `voice`, `response_format`, and `max_new_tokens`. Use `--no-ref-audio` for SeedTTS benchmarking |
-| [Qwen3-TTS Base](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b.yaml`, `examples/configs/qwen3_tts_1_7b.yaml` | Requires reference audio through `ref_audio` or `references[0].audio_path`. `language` defaults to `auto` |
+| [Qwen3-TTS Base](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b.yaml`, `examples/configs/qwen3_tts_1_7b.yaml` | Requires reference audio through `ref_audio` or `references[0].audio_path`, or the reference's x-vector through `references[0].speaker_embedding`. `language` defaults to `auto` |
 | [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md#customvoice-checkpoints) | `examples/configs/qwen3_tts_0_6b_customvoice.yaml`, `examples/configs/qwen3_tts_1_7b_customvoice.yaml` | Text-only synthesis with built-in speakers; omit `voice` for Vivian. Both sizes support streaming; use 1.7B for instruction control |
 | [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` | Requires `task_type="VoiceDesign"` and non-empty `instructions`. No reference audio is required |
 | [Ming-Omni-TTS](../cookbook/ming_tts.md) | `examples/configs/ming_omni_tts.yaml` | Text-only synthesis or one local reference clip with its transcript; streaming; the provided config uses TP1 |
@@ -223,6 +223,22 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   --output output.wav
 ```
 
+A Qwen3-TTS Base reference can also be given as its speaker embedding instead of its audio, so a deployment that stores each voice's embedding sends no audio and keeps no voice state on the server. Here `speaker_embedding.json` holds one stored embedding as a JSON list:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"model\": \"Qwen/Qwen3-TTS-12Hz-0.6B-Base\",
+    \"voice\": \"default\",
+    \"input\": \"Get the trust fund to the bank early.\",
+    \"references\": [{\"speaker_embedding\": $(cat speaker_embedding.json)}]
+  }" \
+  --output output.wav
+```
+
+`references[0].speaker_embedding` is the x-vector the same checkpoint's speaker encoder computes from a reference clip: 1024 numbers for 0.6B Base, 2048 for 1.7B Base, each finite in the model's dtype, so an embedding from one size does not fit the other. That reference must be the only one, without audio and without `ref_audio`, and it implies `x_vector_only_mode`, so a transcript is neither required nor used. See [Precomputed speaker embedding](../cookbook/qwen3_tts.md#precomputed-speaker-embedding) for how to compute one.
+
 Qwen3-TTS CustomVoice uses a built-in speaker without reference audio:
 
 ```bash
@@ -297,8 +313,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 2. Streaming
 
-Enable streaming to receive raw PCM audio chunks in real time. HTTP streaming
-requires both `"stream": true` and `"response_format": "pcm"`:
+Set `"stream": true` to receive raw audio chunks in real time. `stream_format` defaults to `"audio"`, and `response_format` defaults to `"wav"` in every HTTP mode:
 
 ```bash
 curl -N -X POST http://localhost:8000/v1/audio/speech \
@@ -311,31 +326,24 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
       "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
       "text": "We asked over twenty different people, and they all said it was his."
     }],
-    "stream": true,
-    "response_format": "pcm"
+    "stream": true
   }' \
-  --output output.pcm
+  --output output.wav
 ```
 
-Streaming returns 16-bit mono PCM bytes (`audio/pcm`) with sample-rate metadata
-in response headers. It does not include in-band JSON events, final usage, or a
-terminal sentinel. Set `"stream_format": "sse"` to receive the same PCM as
-Server-Sent Events instead; `sse` streams even when `stream` is omitted. Each
-`speech.audio.delta` event carries base64 PCM in `audio`, and the stream ends
-with one `speech.audio.done` event carrying `usage` and `finish_reason`, or with an `error` event if
-generation fails mid-stream. The sample-rate headers are the same for both
-formats. `usage` reports the model's own token counts, so what `input_tokens`
-covers depends on the model: Qwen3-TTS counts reference-audio codec frames, not
-text tokens.
+Raw WAV streaming returns `audio/wav` with one file header followed by 16-bit mono PCM chunks. Set `"response_format": "pcm"` to receive the same PCM bytes without a file header (`audio/pcm`). Both formats include sample-rate metadata in response headers and carry no in-band JSON events, final usage, or terminal sentinel.
 
+Set `"stream_format": "sse"` to receive Server-Sent Events; `sse` streams even when `stream` is omitted. SSE accepts `response_format="pcm"` or `"wav"` (the default) and supports the same `speed` range as raw audio streaming. Each `speech.audio.delta` event carries base64 audio in `audio` and its `response_format`. WAV sends one file header before the PCM chunks. Both transports keep `X-Request-Id`, `X-Sample-Rate`, `X-Channels`, and `X-Bit-Depth` response headers.
 
-For raw PCM, use the response's `X-SGLang-Omni-Speech-Id` with
-`GET /v1/audio/speech/{request_id}` after the stream ends to retrieve its
-`finish_reason` and `usage`. This generated speech ID is independent of the
-`X-Request-Id` correlation header. Behind a router, also echo the response's
-`X-SGLang-Omni-Worker` as `X-SGLang-Omni-Route-Worker` on the GET.
-Only the most recent outcomes are retained; missing outcomes do not establish
-a natural stop or a cap hit.
+See [SSE Event Framing](#sse-event-framing) for response examples, client event listeners, and the server option that enables named events.
+
+Omitting both `stream` and `stream_format` keeps the response non-streaming, with WAV as the default audio format. An explicit `response_format` overrides the format default in every mode.
+
+The stream ends with one `speech.audio.done` event carrying `finish_reason`, emitted audio `duration` in seconds after speed adjustment, and `usage`. Missing usage remains `null`; actual zero counts remain zero. Qwen3-TTS counts target text tokens, nonblank instructions, and reference audio frames used for in-context cloning as input, and generated Talker steps including EOS as output. Other models use their reported prompt and completion counts. SSE does not include a `[DONE]` sentinel.
+
+Request validation and generation failures before the first audio chunk remain HTTP JSON errors. Failures after SSE starts emit an error event instead of `speech.audio.done`, using the mode-specific framing and JSON `type` in the [SSE Event Framing table](#sse-event-framing). Both modes carry the failure details in `error`. An error after any audio delta includes `partial_audio=true` and `action="discard"`.
+
+For raw WAV or PCM, use the response's `X-SGLang-Omni-Speech-Id` with `GET /v1/audio/speech/{request_id}` after the stream ends to retrieve its `finish_reason` and `usage`. This generated speech ID is independent of the `X-Request-Id` correlation header. Behind a router, also echo the response's `X-SGLang-Omni-Worker` as `X-SGLang-Omni-Route-Worker` on the GET. Only the most recent outcomes are retained; missing outcomes do not establish a natural stop or a cap hit.
 
 The SeedTTS benchmark collects raw PCM outcomes over a separate connection pool.
 Collection still consumes server resources during generation. Use
@@ -350,6 +358,48 @@ to override that default, or set it to `0` to use the model's steady chunk size
 from the start. Ming-Omni-TTS is the only model that rejects the field: its
 initial and steady cadence are the audio_decode stage's `factory` settings, so a
 request that sets it fails.
+
+### SSE Event Framing
+
+SSE responses use data-only frames by default to preserve clients that listen for the default `message` event. The client reads the JSON `type` to distinguish audio chunks, completion, and errors.
+
+To enable named events, add `--enable-speech-sse-named-events` when starting the server:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-Base \
+  --enable-speech-sse-named-events \
+  --port 8000
+```
+
+This is a server startup flag, rather than a JSON request field. It applies to every SSE speech response from that server. Requests still select SSE with `"stream_format": "sse"`; `response_format` independently selects WAV or PCM. Requests using the raw `audio` transport keep their binary response format.
+
+| Server startup option | SSE framing | Client event listener | JSON error `type` after streaming starts |
+| --- | --- | --- | --- |
+| Flag omitted (default) | `data:` only | `message`; dispatch using JSON `type` | `error` |
+| `--enable-speech-sse-named-events` | `event:` followed by `data:` | `speech.audio.delta`, `speech.audio.done`, and `speech.audio.error` | `speech.audio.error` |
+
+For the same request with `"stream_format": "sse"` and `"response_format": "pcm"`, a successful response without the flag has this form. Audio is abbreviated and duration is illustrative; generation may produce multiple audio delta frames:
+
+```text
+data: {"type":"speech.audio.delta","audio":"<base64 PCM>","response_format":"pcm"}
+
+data: {"type":"speech.audio.done","duration":0.2,"usage":null,"finish_reason":"stop"}
+
+```
+
+With the flag enabled, the same events include explicit SSE event names:
+
+```text
+event: speech.audio.delta
+data: {"type":"speech.audio.delta","audio":"<base64 PCM>","response_format":"pcm"}
+
+event: speech.audio.done
+data: {"type":"speech.audio.done","duration":0.2,"usage":null,"finish_reason":"stop"}
+
+```
+
+The `event:` line controls SSE event dispatch; it is separate from the `type` field inside JSON. A client that subscribes only to `message` will not receive these named events. Enable the flag when clients subscribe to the named events or their parser handles both framing styles.
 
 ### Batch Speech
 
@@ -642,18 +692,18 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `model` | string | served model | Served model identifier |
 | `input` | string | (required) | Text to synthesize |
 | `voice` | string | `"default"` | Preset or uploaded voice identifier |
-| `response_format` | string | `"wav"` | Output audio format: `wav`, `mp3`, `flac`, `pcm`, `aac`, or `opus` |
+| `response_format` | string | `"wav"` | Output audio format: `wav`, `mp3`, `flac`, `pcm`, `aac`, or `opus`. Explicit values override the default in every mode. HTTP streaming accepts only `wav` or `pcm` |
 | `speed` | float | `1.0` | Playback speed multiplier from `0.25` to `4.0` |
-| `stream` | bool | `false` | Enable raw PCM streaming. When true, `response_format` must be `pcm` |
-| `stream_format` | string | `"audio"` | Streaming transport: `audio` for raw PCM bytes, `sse` for `speech.audio.delta` / `speech.audio.done` events. `sse` streams without `stream=true` and requires `response_format="pcm"` |
+| `stream` | bool | `false` | Enable raw WAV streaming by default. Set `response_format="pcm"` for raw PCM, or `stream_format="sse"` for SSE events |
+| `stream_format` | string | `"audio"` | Streaming transport: `audio` returns raw WAV or PCM bytes when streaming is enabled; `sse` enables SSE even when `stream` is omitted or false. SSE uses data-only `message` events by default. The server startup flag `--enable-speech-sse-named-events` selects the framing and error type shown in the [SSE Event Framing table](#sse-event-framing) |
 | `initial_codec_chunk_frames` | int | `null` | Optional first codec chunk size for streaming TTFA / playback-continuity tuning. When omitted, each model applies its own default: Qwen3-TTS ramps `1 -> 2 -> 4` into the steady stride, Higgs TTS uses `20`, MOSS-TTS Local uses `5`, and ZONOS2 uses `40`. An explicit `0` uses the model's steady chunk size from the start. Ming-Omni-TTS rejects the field entirely |
 | `stream_codec_output` | bool | `true` | Qwen3-TTS only. Forward codec frames to the vocoder as they are generated. Set `false` to restore whole-utterance decoding for CustomVoice / VoiceDesign |
 | `suppress_bootstrap_silence` | bool | `true` | Qwen3-TTS only. Withhold the silent bootstrap codec frame's audio from streamed CustomVoice output on validated voice/language pairs; an audible first frame is always emitted unchanged. Set `false` to keep the leading silence |
-| `references` | list | `null` | Reference audio for voice cloning. Each item has `audio_path` (local path / file URL / data URL / remote URL) and `text` |
+| `references` | list | `null` | Reference audio for voice cloning. Each item has `audio_path` (local path / file URL / data URL / remote URL) and `text`. For Qwen3-TTS Base, the only item may instead carry `speaker_embedding`: the x-vector the same checkpoint's speaker encoder computes from the clip, 1024 numbers for 0.6B and 2048 for 1.7B, each finite in the model's dtype, which implies x-vector-only mode |
 | `ref_audio` | string | `null` | Reference audio path / URL / base64 string. Equivalent to `references[0].audio_path` |
 | `ref_text` | string | `null` | Transcript for `ref_audio`. Equivalent to `references[0].text` |
 | `language` | string | `null` | Language hint: `Auto`, `Chinese`, `English`, `Japanese`, `Korean`, `German`, `French`, `Russian`, `Portuguese`, `Spanish`, or `Italian` |
-| `task_type` | string | `null` | Qwen3-TTS task type: `Base`, `CustomVoice`, or `VoiceDesign`. Inferred as `Base` when reference audio/text is present, otherwise `CustomVoice` |
+| `task_type` | string | `null` | Qwen3-TTS task type: `Base`, `CustomVoice`, or `VoiceDesign`. Inferred as `Base` when reference audio/text or a reference's `speaker_embedding` is present, otherwise `CustomVoice` |
 | `instructions` | string | `null` | Qwen3-TTS style or VoiceDesign instructions |
 | `max_new_tokens` | int | `null` | Maximum number of generated tokens |
 | `token_count` | int | `null` | Model-specific duration token target |
@@ -664,13 +714,14 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `top_k` | int | `null` | Top-k sampling |
 | `repetition_penalty` | float | `null` | Repetition penalty |
 | `seed` | int | `null` | Model-specific. Qwen3-TTS Base accepts request-scoped seed, Voxtral TTS currently rejects seed |
+| `return_spec_tokens_details` | bool | `false` | With a speculative draft, return this request's acceptance statistics: `X-SGLang-Omni-Spec-*` headers on buffered audio, `sglext.spec_tokens_details` on `speech.audio.done` and on the raw audio outcome |
 
-Invalid speech requests return an OpenAI-style error envelope:
+Invalid speech requests return an OpenAI-style error envelope. For example, streaming with `response_format="mp3"` or `"flac"` returns HTTP 400:
 
 ```json
 {
   "error": {
-    "message": "stream=true requires response_format='pcm'",
+    "message": "Streaming requires response_format='pcm' or 'wav'",
     "type": "BadRequestError",
     "param": "response_format",
     "code": 400

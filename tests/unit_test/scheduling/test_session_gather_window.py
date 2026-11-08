@@ -152,6 +152,13 @@ def test_idle_stage_gathers_appends_within_the_window(
     assert len(scheduler.inbox.timeouts) == waits
 
 
+def test_hooks_without_session_batches_never_wait(monkeypatch):
+    scheduler = SessionScheduler(WindowHooks(), batch_sessions=False)
+    arrivals = [("a0", 0), ("b0", 0.005)]
+    assert run_batches(monkeypatch, scheduler, "ab", arrivals) == [["a0"], ["b0"]]
+    assert scheduler.inbox.timeouts == []
+
+
 def test_an_ordinary_request_in_the_batch_is_neither_held_nor_fatal(monkeypatch):
     """A message without session metadata has no arrival; the batch runs without waiting."""
     inbox = ScriptedInbox()

@@ -32,7 +32,11 @@ from benchmarks.eval.benchmark_tts_seedtts import (
     run_tts_concurrency_sweep,
     run_tts_sustained_overshoot,
 )
-from benchmarks.metrics.wer import SampleOutput, calculate_wer_metrics
+from benchmarks.metrics.wer import (
+    SampleOutput,
+    calculate_asr_speed_metrics,
+    calculate_wer_metrics,
+)
 from benchmarks.tasks import asr
 from benchmarks.tasks.tts import (
     _build_tts_payload,
@@ -183,7 +187,7 @@ def test_explicit_cli_overrides_model_profile_defaults(monkeypatch):
     "model, max_new_tokens",
     [
         ("FunAudioLLM/Fun-CosyVoice3-0.5B-2512", None),
-        ("Qwen/Qwen3-TTS-12Hz-1.7B-Base", 2048),
+        ("Qwen/Qwen3-TTS-12Hz-1.7B-Base", None),
     ],
 )
 def test_max_new_tokens_default_applies_without_cli(model, max_new_tokens):
@@ -494,7 +498,7 @@ def test_results_config_records_sampling_and_omits_fingerprint() -> None:
     "model, max_new_tokens",
     [
         ("FunAudioLLM/Fun-CosyVoice3-0.5B-2512", None),
-        ("Qwen/Qwen3-TTS-12Hz-1.7B-Base", 2048),
+        ("Qwen/Qwen3-TTS-12Hz-1.7B-Base", None),
     ],
 )
 def test_results_config_records_the_resolved_max_new_tokens(
@@ -747,3 +751,28 @@ async def test_sustained_overshoot_uses_open_loop_and_unique_output_dir(
     }
     assert len(set(seen_samples[0])) == 64
     assert (tmp_path / "overshoot" / "sustained_overshoot.json").is_file()
+
+
+def test_asr_speed_counts_scored_and_unscorable_transcriptions() -> None:
+    """Scored and unscorable transcriptions both contribute to speed, unlike request failures."""
+    outputs = [
+        SampleOutput(
+            is_transcribed=True,
+            is_success=True,
+            asr_latency_s=0.25,
+            audio_duration_s=1.0,
+        ),
+        SampleOutput(is_transcribed=True, asr_latency_s=0.75, audio_duration_s=3.0),
+        SampleOutput(error="Transcription failed", asr_latency_s=9.0),
+    ]
+    speed = calculate_asr_speed_metrics(outputs, wall_time_s=2.0)
+    wer = calculate_wer_metrics(outputs, "en")
+    assert speed["evaluated"] == 2
+    assert speed["failed_requests"] == 1
+    assert speed["asr_throughput_samples_per_s"] == 1.0
+    assert speed["asr_latency_mean_s"] == 0.5
+    assert speed["asr_latency_p95_s"] == pytest.approx(0.725)
+    assert speed["asr_audio_processed_s"] == 4.0
+    assert speed["asr_rtf_mean"] == 0.25
+    assert wer["evaluated"] == 1
+    assert wer["skipped"] == 2

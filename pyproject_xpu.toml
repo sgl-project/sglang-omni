@@ -5,9 +5,9 @@
 requires = ["setuptools>=77.0.0"]
 build-backend = "setuptools.build_meta"
 
-# Intel XPU variant of pyproject.toml (see docs/get_started/installation_xpu.md).
+# Intel XPU variant of pyproject.toml (see docs/other_platforms/installation_xpu.md).
 # Torch family pinned to +xpu; CUDA-only wheels dropped; deps scoped to the
-# XPU-supported models. sglang is verified against v0.5.22 but cannot be
+# XPU-supported models. sglang is verified against v0.5.23 but cannot be
 # pinned here -- every published wheel pulls CUDA torch.
 
 [project]
@@ -124,7 +124,6 @@ fun-cosyvoice3 = [
 
 [project.scripts]
 sgl-omni = "sglang_omni.cli:app"
-sgl-omni-router-py = "sglang_omni_router.python.serve:main"
 
 [project.entry-points."sglang.serve_backends"]
 omni = "sglang_omni.cli.sglang_backend:create_backend"
@@ -142,8 +141,6 @@ where = ["."]
 include = [
     "sglang_omni",
     "sglang_omni.*",
-    "sglang_omni_router.python",
-    "sglang_omni_router.python.*",
 ]
 namespaces = true
 

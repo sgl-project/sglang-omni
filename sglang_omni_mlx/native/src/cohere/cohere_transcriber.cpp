@@ -56,7 +56,7 @@ std::string LanguageCode(const std::string &language) {
 std::vector<std::pair<size_t, size_t>>
 EnergyCutChunks(const std::vector<float> &samples, float chunk_seconds) {
   const size_t total = samples.size();
-  const float sample_rate = static_cast<float>(qwen3_asr::kSampleRate);
+  const float sample_rate = static_cast<float>(omni_common::kSampleRate);
   if (static_cast<float>(total) / sample_rate <= chunk_seconds) {
     return {{0, total}};
   } else {
@@ -105,7 +105,7 @@ EnergyCutChunks(const std::vector<float> &samples, float chunk_seconds) {
       cut = search_start + minimum_index + energy_window / 2;
     } else {
     }
-    cut = std::max(cut, start + static_cast<size_t>(qwen3_asr::kSampleRate));
+    cut = std::max(cut, start + static_cast<size_t>(omni_common::kSampleRate));
     chunks.emplace_back(start, std::min(cut, total));
     start = cut;
   }
@@ -222,7 +222,7 @@ CohereTranscriber::Transcribe(const std::vector<float> &samples,
                              : model_.config().max_sequence_length;
   const size_t min_chunk_samples =
       static_cast<size_t>(options.min_chunk_duration_seconds *
-                          static_cast<float>(qwen3_asr::kSampleRate));
+                          static_cast<float>(omni_common::kSampleRate));
   qwen3_asr::TranscriptionResult result;
   // Note (khazic): the language actually decoded: an unknown one decodes as
   // English.

@@ -38,11 +38,18 @@ The other places a version lives:
 | `docker/cpu.Dockerfile` | `SGLANG_IMAGE` (digest of the new tag's `-xeon` manifest) |
 | `docker/xpu.Dockerfile` | `SGLANG_XPU_BRANCH` (the tag); SGLang's XPU manifest pins the `sglang-kernel-xpu` wheel |
 | `pyproject_cpu.toml`, `pyproject_xpu.toml`, `scripts/cpu/install_cpu.sh`, `scripts/xpu/install_xpu.sh` | The verified SGLang tag; the provider pyprojects cannot pin `sglang` because every wheel pulls CUDA torch |
-| `docs/get_started/installation.md`, `docs/get_started/installation_cpu.md`, `docs/get_started/installation_xpu.md`, `docs/basic_usage/tts.md`, `docs/cookbook/*.md`, model READMEs | Version names in install instructions |
+| `docs/get_started/installation.md`, `docs/other_platforms/installation_cpu.md`, `docs/other_platforms/installation_xpu.md`, `docs/basic_usage/tts.md`, `docs/cookbook/*.md`, model READMEs | Version names in install instructions |
 | Comments in `sglang_omni/` | Never name a version; state the invariant the code relies on so the text survives the next bump |
 
 Search the tree for the old versions and the old image digest; the table is
 what past bumps touched.
+
+List the registry's tags for the new version before saying that a provider
+image does not exist: `https://hub.docker.com/v2/repositories/lmsysorg/sglang/tags?name=v<tag>`
+names every `-xeon`, `-xpu`, `-rocm*` and `-cann*` tag with its digest, and
+the device set follows upstream's `release-docker-*.yml` matrices at the tag.
+One bump declared the NPU image absent when it had been published five days
+earlier under a new CANN and device suffix.
 
 The Intel CPU and XPU stacks pin their own SGLang tag and base images, and
 their CI workflows build `docker/cpu.Dockerfile` and `docker/xpu.Dockerfile`
@@ -58,10 +65,11 @@ one release moved the SYCL kernel from a git
 requirement to a pinned wheel and added `setuptools-rust` to the build
 requirements, which the image avoids by building without isolation.
 
-The ROCm, NPU and MUSA stacks (`docker/rocm.Dockerfile`, `pyproject_rocm.toml`)
-pin their own SGLang tag and base images. No project CI builds them, so a bump
-PR leaves them alone, says so in its description, and hands the provider owners
-the new tag, the matching provider image digest if one exists, and any platform
+The ROCm, NPU and MUSA stacks (`docker/rocm.Dockerfile`, `docker/musa.Dockerfile`,
+`pyproject_npu.toml`) pin their own SGLang tag and base images. No project CI
+builds them. A bump PR moves their tags and digests when the registry has an
+image for the new tag, says in its description that they are untested here,
+and hands the provider owners the list of what moved and any platform
 dispatch change made in `sglang_omni/platforms/`.
 
 ## Where Omni depends on SGLang
@@ -79,7 +87,11 @@ re-export resolves to the same origin, and that the signature or dataclass
 fields are unchanged. An import behind `except ImportError` gets the
 same check: the MOSS-TTS flash attention import was guarded that way, and
 when `sglang.jit_kernel` became `sglang.kernels.ops` it would have fallen
-back to SDPA without a word.
+back to SDPA without a word. A bare kernel imported from `sglang.kernels.ops.*`
+is not a stable surface either: one release dropped the `rmsnorm` dispatcher
+from that package while the kernel itself stayed in `sgl_kernel`. Take a
+kernel from the layer that wraps it, from `sgl_kernel`, or from the Omni
+platform, which carries the per-device forms.
 
 **Borrowed and subclassed classes.** `OmniScheduler` looks up the upstream
 `Scheduler` methods it does not override through `__getattr__` and runs them
@@ -94,9 +106,26 @@ wrapped `get_next_batch_to_run` in a stage timer whose first statement read an
 attribute only upstream's `__init__` set. Upstream also moves work between
 methods: request timeout aborts left `get_next_batch_to_run` for an intake
 method Omni's event loops never call, which disables them without an error.
+A borrowed body also writes state Omni reads before calling it: one release
+made `get_next_batch_to_run` drop finished requests from the running batch and
+clear its `batch_is_full` flag on every pass, so the async decode loop, which
+read the flag first to decide whether to drain its pending step, built a mixed
+prefill batch it could not reslice and died under load; audit the state a
+borrowed body writes as closely as the state it reads, and test the loop
+predicates against the builder's view.
 When a constructor gains or loses fields, pass the new shape;
 a helper that filters kwargs by signature or branches on field layout keeps
 two versions alive.
+
+A method Omni overrides on, or shadows for, an upstream class is called by
+upstream with upstream's argument list, so a parameter or a return value
+added upstream is a break that neither the import check nor the call-site
+check sees. Diff the upstream signature and return annotation of every such
+method between the tags with a script that walks Omni's classes for upstream
+bases and borrowed classes, and read the body of each one that changed. One
+bump changed `init_kv_cache_configurator`, `get_num_allocatable_reqs` and
+the prefill graph runner's `load_batch` this way, and every stage failed at
+boot, at admission or at the first graph replay.
 
 **The boot sequence.** `ModelWorker` runs upstream's worker
 boot itself: publish the resolved config together with the process
@@ -137,9 +166,11 @@ that upstream no longer builds for its own models is a surface to re-check at
 every bump: its base-class contract moves with the one upstream does build.
 
 **The vendor layer.** `sglang_omni/vendor/sglang/layers.py` patches
-`RMSNorm.forward_cuda` and `models.py` patches `apply_qk_norm`; the module
-docstrings state what each patch does, and `models.py` the condition for
-removing it. Check that the wrapped upstream body still has the shape the
+`RMSNorm.forward_cuda`, `models.py` patches `apply_qk_norm`, and
+`flashattention_backend.py` patches `FlashAttentionBackend.__init__` for
+DSpark drafts, installed by the bootstrap only when a DSpark draft is set;
+the module docstrings state what each patch does, and `models.py` and
+`flashattention_backend.py` the condition for removing it. Check that the wrapped upstream body still has the shape the
 patch assumes (a dispatch rewrite upstream can route around a patched method
 without an error) and that `tests/unit_test/vendor/` still pins it.
 
@@ -358,9 +389,11 @@ commits and image digests, sample counts and the profiler attribution for
 any delta outside noise. Measurements and inferences are labeled as what
 they are.
 
-Run CI with `run-all-ci`. A stage without a model label draws its model at
-random, so give each preset its own run on the new image before merge: keep
-`run-all-ci` and add one model label per stage, for example
+Run CI on every H100 model stage with
+`/tag-and-rerun-ci asr tts mps omni full-duplex cascaded`. A stage without a
+model label draws its model at random, so give each preset its own run on the
+new image before merge: keep those stage labels and add one model label per
+stage, for example
 `run-moss-tts-local-transformer-v1.5`, `run-fun-asr-nano-2512` and
 `run-minicpm-o-4.5`. The model labels within a stage are exclusive. The
 CI section of the pull request template lists every label.

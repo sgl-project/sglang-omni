@@ -6,9 +6,9 @@
 #include <string>
 #include <vector>
 
-#include "common/audio.h"
 #include "common/layers.h"
 #include "mlx/mlx.h"
+#include "qwen3_asr/qwen3_audio.h"
 #include "qwen3_asr/qwen3_decoder.h"
 
 namespace qwen3_asr {
@@ -37,6 +37,7 @@ public:
   mlx::core::array Decode(const mlx::core::array &embeddings,
                           std::vector<KVCache> &caches) const;
   std::vector<KVCache> NewCaches() const;
+  const Qwen3Decoder &decoder() const { return decoder_; }
 
 private:
   Qwen3ASR(const nlohmann::json &config,
@@ -47,7 +48,7 @@ private:
                                      int layer) const;
 
   AudioEncoderConfig audio_;
-  Checkpoint checkpoint_;
+  omni_common::Checkpoint checkpoint_;
   Qwen3Decoder decoder_;
 };
 

@@ -21,10 +21,13 @@ class SpeakerCache:
         cache_size: int,
         fifo_size: int,
         update_period: int,
+        batch: int = 1,
+        width: int = 512,
+        speakers: int = 8,
     ) -> None:
-        self.cache = reference.new_empty(1, 0, 512)
-        self.fifo = reference.new_empty(1, 0, 512)
-        self.cache_preds = reference.new_empty(1, 0, 8)
+        self.cache = reference.new_empty(batch, 0, width)
+        self.fifo = reference.new_empty(batch, 0, width)
+        self.cache_preds = reference.new_empty(batch, 0, speakers)
         self.compressed = False
         self.cache_size = cache_size
         self.fifo_size = fifo_size
@@ -65,13 +68,14 @@ class SpeakerCache:
 
     def compress(self, silence_embedding: torch.Tensor) -> None:
         cache_predictions = self.cache_preds
+        batch, _, speakers = cache_predictions.shape
         log_probs = torch.log(torch.clamp(cache_predictions, min=0.25))
         log_other = torch.log(torch.clamp(1.0 - cache_predictions, min=0.25))
         scores = (
             log_probs - log_other + log_other.sum(dim=2, keepdim=True) - math.log(0.5)
         )
         scores = torch.where(cache_predictions > 0.5, scores, float("-inf"))
-        frames_per_speaker = self.cache_size // 8 - 1
+        frames_per_speaker = self.cache_size // speakers - 1
         positive = scores > 0
         disable = (
             (~positive)
@@ -88,17 +92,18 @@ class SpeakerCache:
             (math.floor(frames_per_speaker * 1.5), 1),
         ]:
             indices = torch.topk(scores, boosted_frames, dim=1, sorted=False).indices
-            speakers = torch.arange(8, device=scores.device)[None, None, :]
             scores[
-                torch.zeros(1, 1, 1, dtype=torch.long, device=scores.device),
+                torch.arange(batch, device=scores.device)[:, None, None],
                 indices,
-                speakers,
+                torch.arange(speakers, device=scores.device)[None, None, :],
             ] -= boost_scale * math.log(0.5)
         # note (Ryan Stewart): One silence frame per speaker, then speaker-major order.
-        scores = torch.cat([scores, scores.new_full((1, 1, 8), float("inf"))], dim=1)
+        scores = torch.cat(
+            [scores, scores.new_full((batch, 1, speakers), float("inf"))], dim=1
+        )
         frame_count = scores.shape[1]
         values, indices = torch.topk(
-            scores.permute(0, 2, 1).reshape(1, -1), self.cache_size, sorted=False
+            scores.permute(0, 2, 1).reshape(batch, -1), self.cache_size, sorted=False
         )
         indices = (
             torch.where(values != float("-inf"), indices, 99999).sort(dim=1).values
@@ -108,10 +113,10 @@ class SpeakerCache:
         disabled |= indices >= frame_count - 1
         indices = indices.masked_fill(disabled, 0)
         embeddings = torch.gather(
-            self.cache, 1, indices.unsqueeze(-1).expand(-1, -1, 512)
+            self.cache, 1, indices.unsqueeze(-1).expand(-1, -1, self.cache.shape[2])
         )
         cache_predictions = torch.gather(
-            cache_predictions, 1, indices.unsqueeze(-1).expand(-1, -1, 8)
+            cache_predictions, 1, indices.unsqueeze(-1).expand(-1, -1, speakers)
         )
         self.cache = torch.where(
             disabled.unsqueeze(-1), silence_embedding[None, None, :], embeddings
