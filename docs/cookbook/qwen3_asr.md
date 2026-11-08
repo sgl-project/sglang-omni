@@ -171,7 +171,7 @@ sgl-omni serve \
   --port 8000
 ```
 
-DFlash serves any `temperature`. Above 0, verification accepts each drafted token with the target model's probability for it and otherwise samples from the target's remaining probabilities. ASR transcripts are confident, so sampling barely lowers acceptance: on one H100 with SeedTTS English and Chinese clips at 16 concurrent requests, each verification step committed 5.66 tokens at `temperature` 0, 5.66 at 0.7 and 5.62 at 1.0. On the same server at the default cap of 64 running requests, the speedup at 0.7 and 1.0 stayed close to its greedy speedup at every load tested, from 1 to 64 concurrent requests. DFlash retains CUDA graphs. Realtime sessions are not validated.
+DFlash serves any `temperature`. Above 0, verification accepts each drafted token with the target model's probability for it and otherwise samples from the target's remaining probabilities. ASR transcripts are confident, so sampling barely lowers acceptance: on one H100 with SeedTTS English and Chinese clips at 16 concurrent requests, each verification step committed 5.66 tokens at `temperature` 0, 5.66 at 0.7 and 5.62 at 1.0. On the same server at the default cap of 64 running requests, the speedup at 0.7 and 1.0 stayed close to its greedy speedup at every load tested, from 1 to 64 concurrent requests. DFlash retains CUDA graphs.
 
 DFlash does not apply `repetition_penalty`: a request that sets it to anything other than `1.0` returns HTTP 400. To use the penalty, serve without the draft (`--asr.engine.disable_speculative_decoding true`, shown below).
 
@@ -187,6 +187,10 @@ sgl-omni serve \
 ```
 
 Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens_details` (`spec_accept_length`, `spec_accept_rate`, the draft counts and the per-verify histogram) on `json` and `verbose_json` responses and on the streamed `transcript.text.done` event. Audio long enough to be transcribed in chunks returns none. `spec_accept_rate` and `spec_num_proposed_drafts` are left out when no drafts were proposed or the draft width is adaptive.
+
+Realtime transcription sessions (`--enable-realtime`) use the draft too. On one H100 at the default memory fraction and cap of 64 running requests, SeedTTS English and Chinese clips and 60-second LongLibriHeavy recordings streamed at wall-clock pace, 1 to 16 sessions at a time, with server VAD or manual commit. No session hit an error or a protocol violation, WER stayed within 0.03 percentage points of the server without the draft, and the median time to a segment's first partial was 11 to 28% lower with the synchronous draft, least at a 1000 ms decode interval, and to its final transcript 17 to 27% lower. Overlap, now the default, gave the same transcripts and median latencies as the synchronous draft on SeedTTS English sessions with server VAD, 1 and 16 at a time, with no errors or protocol violations.
+
+The draft's weights and KV cache come out of the stage's memory fraction. On an 80 GB H100 at `--mem-fraction-static 0.08`, as in the streaming cascade profiles, the KV cache holds 11,501 tokens with the draft and 20,705 without. At that fraction, 640 SeedTTS Chinese sessions, 16 at a time, ran with no errors.
 
 ## Transcribe Audio
 
@@ -329,7 +333,7 @@ rollback state.
 | `language` | string | none | Optional language hint as a supported code or canonical name (case-insensitive); omit it for automatic detection |
 | `prompt` | string | none | Vocabulary biasing: terms likely to appear in the audio, such as names and jargon. See the note below the table |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
-| `temperature` | float | `0` | Sampling temperature; `0` uses greedy decoding |
+| `temperature` | float | `0` | Sampling temperature; `0` uses greedy decoding. A negative value returns HTTP 422  |
 | `repetition_penalty` | float | `1.0` | Penalty in `(0, 2]` on tokens already generated. Values above `1` discourage repeats and can stop a runaway loop on noisy or silent audio, but they also lower accuracy on clean audio, so keep `1.0` unless loops occur |
 | `max_new_tokens` | integer | server stage limit | Per-request generation-token limit |
 | `stream` | boolean | `false` | Return SSE transcript deltas; supports `json` or `text` response format |
