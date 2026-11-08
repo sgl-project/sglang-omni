@@ -115,7 +115,7 @@ def make_batch(
 
 
 def fresh_pools(
-    slots: list[int], device: torch.device
+    state_dtype: torch.dtype, slots: list[int], device: torch.device
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Sentinel everywhere but the batch's slots, which a fresh prompt reads as zero."""
     qkv_dim = (2 * KEY_HEADS + VALUE_HEADS) * HEAD_DIM
@@ -128,7 +128,7 @@ def fresh_pools(
     ssm_states = torch.full(
         (SLOT_COUNT, VALUE_HEADS, HEAD_DIM, HEAD_DIM),
         SENTINEL,
-        dtype=torch.float32,
+        dtype=state_dtype,
         device=device,
     )
     conv_states[slots] = 0
@@ -189,7 +189,10 @@ def eager_extend(
 
 @accelerator
 @pytest.mark.accelerator
-def test_each_layout_replayed_through_one_bucket_matches_the_eager_bits() -> None:
+@pytest.mark.parametrize("state_dtype", [torch.float32, torch.bfloat16])
+def test_each_layout_replayed_through_one_bucket_matches_the_eager_bits(
+    state_dtype: torch.dtype,
+) -> None:
     """One graph per bucket, replayed for every layout after a refill: the real
     rows and their state slots carry the eager bits, and no other slot changes."""
     device = torch.device("cuda")
@@ -208,7 +211,7 @@ def test_each_layout_replayed_through_one_bucket_matches_the_eager_bits() -> Non
     with torch.no_grad():
         for seed, (bucket, lens, slots) in enumerate(LAYOUTS, start=100):
             batch = make_batch(seed, lens, slots, device)
-            eager_conv, eager_ssm = fresh_pools(slots, device)
+            eager_conv, eager_ssm = fresh_pools(state_dtype, slots, device)
             eager = eager_extend(layer, batch, eager_conv, eager_ssm)
             if bucket not in graphs:
                 qkv_dim = batch.mixed_qkv.shape[1]
@@ -231,7 +234,7 @@ def test_each_layout_replayed_through_one_bucket_matches_the_eager_bits() -> Non
                     cache_index_dtype=torch.int32,
                     device=device,
                 )
-                conv_states, ssm_states = fresh_pools([], device)
+                conv_states, ssm_states = fresh_pools(state_dtype, [], device)
                 # The capture batch fills the bucket with one prompt, as the runner's does.
                 meta.fill(
                     extend_seq_lens=[bucket],
