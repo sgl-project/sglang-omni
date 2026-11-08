@@ -35,6 +35,7 @@ from sglang_omni.models.personaplex.engine_builder import (
     PersonaPlexSessionEngineBuilder,
 )
 from sglang_omni.models.personaplex.mimi_decode_graph import MimiDecodeSlots
+from sglang_omni.models.personaplex.mimi_encode_graph import MimiEncodeSlots
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.prompts import (
     DEFAULT_TEXT_PROMPT,
@@ -51,6 +52,8 @@ from sglang_omni.models.personaplex.request_builders import stage_request_params
 from sglang_omni.models.personaplex.sampling import AudioSampling
 from sglang_omni.models.personaplex.session_hooks import (
     FRAMES_PER_UNIT,
+    BatchedMimiEncodeHooks,
+    BatchedPreprocessingHooks,
     Code2WavHooks,
     MimiEncodeHooks,
     PreprocessingHooks,
@@ -183,6 +186,7 @@ def create_session_preprocessing_executor(
     *,
     max_open_sessions: int,
     voice_prompt_cache_bytes: int = VOICE_PROMPT_CACHE_MAX_BYTES,
+    batch_sessions: bool = False,
 ) -> SessionScheduler:
     model_dir = Path(resolve_model_path(model_path))
     prepare_prompt = prompt_preparer(
@@ -190,9 +194,15 @@ def create_session_preprocessing_executor(
         load_text_tokenizer(model_dir),
         voice_prompt_cache_bytes=voice_prompt_cache_bytes,
     )
-    return SessionScheduler(
-        PreprocessingHooks(prepare_prompt), max_open_sessions=max_open_sessions
-    )
+    if batch_sessions:
+        return SessionScheduler(
+            BatchedPreprocessingHooks(prepare_prompt),
+            max_open_sessions=max_open_sessions,
+        )
+    else:
+        return SessionScheduler(
+            PreprocessingHooks(prepare_prompt), max_open_sessions=max_open_sessions
+        )
 
 
 def load_codec(
@@ -235,17 +245,26 @@ def create_session_mimi_encode_executor(
     *,
     max_open_sessions: int,
     max_concurrency: int = 1,
+    batch_sessions: bool = False,
     device: str | None = None,
     gpu_id: int | None = None,
 ) -> SessionScheduler:
     """Each session encodes on its own streaming state; max_concurrency sessions'
     units encode at once."""
     codec, device = load_codec(model_path, device=device, gpu_id=gpu_id, mode="encode")
-    return SessionScheduler(
-        MimiEncodeHooks(codec, device),
-        max_open_sessions=max_open_sessions,
-        max_concurrency=max_concurrency,
-    )
+    if batch_sessions:
+        return SessionScheduler(
+            BatchedMimiEncodeHooks(
+                MimiEncodeSlots(codec, num_slots=max_open_sessions),
+            ),
+            max_open_sessions=max_open_sessions,
+        )
+    else:
+        return SessionScheduler(
+            MimiEncodeHooks(codec, device),
+            max_open_sessions=max_open_sessions,
+            max_concurrency=max_concurrency,
+        )
 
 
 def create_lm_executor(
