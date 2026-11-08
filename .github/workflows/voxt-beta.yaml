@@ -9,8 +9,9 @@ name: Voxt Beta
 # one was built from the same sources (voxt-release.yaml). The merged change
 # passed Voxt CI as a pull request, so the beta does not test it again. A
 # newer merge cancels a beta still building. A pull request that changes
-# this file runs it too, ad hoc and unsigned, since the environment lets in
-# only main and voxt-v tags.
+# this file runs it too, ad hoc and unsigned. Run by hand from any branch,
+# it is signed the same way as from main, which needs the voxt-release
+# environment to let that branch in.
 
 on:
   push:
