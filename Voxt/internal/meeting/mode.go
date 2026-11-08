@@ -31,6 +31,15 @@ func toStoreMode(m Mode) store.MeetingMode {
 	}
 }
 
+func modeNeedsSource(mode Mode, src Source) bool {
+	for _, s := range mode.Sources() {
+		if s == src {
+			return true
+		}
+	}
+	return false
+}
+
 func fromStoreMode(m store.MeetingMode) Mode {
 	switch m {
 	case store.MeetingModeSubtitles:
