@@ -197,6 +197,7 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 			label = i18n.T("System prompt for Transcribe")
 			placeholder = i18n.T("For example: write numbers as digits; keep English product names as they are; end every sentence with a full stop.")
 		}
+		caption(c, i18n.T("Rules act after recognition, on the text the speech model produced. Speech hints (Dictionary page) only tell the speech model which words to expect; punctuation, format and fillers are decided here."))
 		in := ui.TextArea(c.Key(p+"-prompt"), &u.prompt).Label(label).Placeholder(placeholder).MinHeight(px(t, 88))
 		if in.Changed() {
 			u.promptDirty = true
