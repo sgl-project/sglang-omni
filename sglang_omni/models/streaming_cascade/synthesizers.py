@@ -71,8 +71,9 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     it, which is tagged by its script, and any other name tags every sentence
     without Chinese characters. Without a known user language `auto` tags by
     script like `English`. A sentence tagged English reaches the service with
-    its numbers read out as words. `sentence_pause_ms` of silence goes before
-    each request after the reply's first audio.
+    its numbers read out as words. sentence_pause_ms of silence goes before
+    each sentence after the reply's first audio, but not inside a sentence
+    cut by max_sentence_words.
     """
 
     kind: Literal["openai_speech"] = "openai_speech"
@@ -285,7 +286,8 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
         pause_samples = round(
             self.config.sentence_pause_ms * self.sample_rate_hz / 1000
         )
-        async for span in sentences(
+        follows_sentence_end = True
+        async for span, ends_sentence in sentences(
             self.follow_language(deltas), self.config.max_sentence_words
         ):
             text = UNSPOKEN_SYMBOLS.sub("", MARKDOWN_LINK.sub(r"\1", span))
@@ -302,8 +304,8 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
             )
             # Note (ruoyu): Qwen3-TTS answers 500 to a sentence with no word in it, which would close the session.
             if re.search(r"\w", sentence):
-                if audio_ms and pause_samples:
-                    # note (Haoling Pu): each request ends at its last word, so back-to-back requests leave about 0.12 s between sentences, against about 0.35 s when one request reads the whole reply.
+                if audio_ms and pause_samples and follows_sentence_end:
+                    # note (Haoling Pu): each request ends at its last word, so back-to-back requests leave about 0.12 s between sentences, against about 0.35 s when one request reads the whole reply; a cut inside a sentence gets no pause.
                     audio_ms += pause_samples * 1000 / self.sample_rate_hz
                     emit(
                         audio_chunk(
@@ -320,6 +322,7 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
             else:
                 pass
             text_end += len(span)
+            follows_sentence_end = ends_sentence
             self.progress(emit, turn, text_end, audio_ms)
 
     async def close(self) -> None:
