@@ -468,7 +468,8 @@ func migrateSoundPreset(a *Audio) {
 // migrateShortcuts moves version 3's default shortcuts, Auralink's (fn,
 // fn+Shift, fn+Control, Control+Command+V), to the family's (version 4):
 // each one that is still exactly its default; a shortcut the user
-// changed, added or removed stays.
+// changed, added or removed stays. It is history, kept apart from
+// ApplyPreset: a preset added later must not take a version 3 user's keys.
 func migrateShortcuts(f *Features) {
 	old := func(hs []Hotkey, keys string) bool {
 		return len(hs) == 1 && oldDefault(hs[0], keys)

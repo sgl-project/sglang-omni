@@ -6,7 +6,8 @@ package main
 // hotkey.Check finds wrong:
 // clashes, keys macOS uses, keys that need Accessibility while the event
 // tap is missing, keys another ActNow app uses too. A row opens its
-// feature's page, where it changes.
+// feature's page, where it changes. Above it, the preset sets several at
+// once (internal/settings' Presets).
 
 import (
 	"slices"
@@ -45,6 +46,7 @@ func (a *app) shortcutsSettings(c *ui.Context) {
 				}
 			}, nil)
 	}
+	a.shortcutPresetRow(c)
 	f := a.prefs.Features
 	keysW := px(t, 96)
 	card(c.Key("sc-table")).Gap(0).Padding(px(t, sp2)).Children(func() {
@@ -144,4 +146,53 @@ func (a *app) shortcutRow(c *ui.Context, feature string, i int, h *settings.Hotk
 	if b.Clicked() {
 		a.navigate(featurePath(feature))
 	}
+}
+
+// presetTitle is a shortcut preset's name ("": custom).
+func presetTitle(p string) string {
+	switch p {
+	case settings.PresetOption:
+		return i18n.T("Right ⌥ (default)")
+	case settings.PresetFn:
+		return i18n.T("fn (Auralink's keys)")
+	}
+	return i18n.T("Custom")
+}
+
+// shortcutPresetRow is the preset: the one the shortcuts follow (Custom
+// when none), and under fn's what else reacts to fn.
+func (a *app) shortcutPresetRow(c *ui.Context) {
+	t := c.Theme()
+	cur := settings.PresetOf(a.prefs.Features)
+	settingRow(c, "sc-preset", i18n.T("Preset"), i18n.T("Sets Transcribe, Translate, Rewrite and Paste the last result at once. A shortcut you changed yourself stays as it is."), func() {
+		var opts []string
+		for _, p := range settings.Presets {
+			opts = append(opts, presetTitle(p))
+		}
+		if cur == "" {
+			opts = append(opts, presetTitle(cur))
+		}
+		sel := presetTitle(cur)
+		if ui.Select(c.Key("sc-preset-sel"), &sel, opts).Label(i18n.T("Shortcut preset")).Width(px(t, 220)).Changed() {
+			for _, p := range settings.Presets {
+				if presetTitle(p) == sel {
+					a.applyShortcutPreset(p)
+				}
+			}
+		}
+	})
+	if cur == settings.PresetFn {
+		warnLine(c, i18n.T("Auralink uses fn too: while it runs, both apps react to these keys."))
+		warnLine(c, i18n.T("macOS may react to fn too (the Globe key). If it gets in the way, set it to Do Nothing in System Settings → Keyboard."))
+	}
+}
+
+// applyShortcutPreset gives the shortcuts the user did not change preset
+// p's keys, or says that there are none.
+func (a *app) applyShortcutPreset(p string) {
+	if f := a.prefs.Features; !settings.ApplyPreset(&f, p) {
+		a.toast(i18n.T("You changed every shortcut yourself: the preset keeps them."))
+		return
+	}
+	a.updateSettings(func(s *settings.Settings) { settings.ApplyPreset(&s.Features, p) })
 }
