@@ -273,9 +273,23 @@ To use services you already run, drop their `services` entries and point the nod
 
 The default Vivian cascade profile uses Qwen3.8-27B with thinking off on GPU 0 and Qwen3-ASR/Qwen3-TTS Base on GPU 1. The audio-file example in `examples/streaming_cascade/run.py` uses this profile when `--config` is omitted.
 
+It runs without speculative decoding:
+
 ```bash
 sgl-omni serve --config examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-vivian/launch.yaml --enable-realtime --port 8765
 ```
+
+To enable DFlash for chat and ASR, select the separate `qwen3-asr-qwen3-tts-vivian-dflash` profile:
+
+```bash
+sgl-omni serve --config examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-vivian-dflash/launch.yaml --enable-realtime --port 8765
+```
+
+The DFlash profile uses the `incoai/Qwen3.8-27B-DFlash2` chat draft pinned to revision `015e795645c74b1a0eeef3b570031fb62e769bc5` and the ASR draft configured in `examples/configs/qwen3_asr_1_7b_dflash.yaml`. Both verify blocks of eight tokens. Qwen3-TTS has no speculative decoding adapter. The profile keeps the default profile's GPU placement, memory fractions, ports and voice; the draft weights and caches also occupy GPU memory. Both profiles need the forced-alignment worker described above.
+
+Compared with the default profile, DFlash lowers the chat server's effective maximum concurrent requests. Without FlashInfer AOT kernels, the first start can spend about nine minutes JIT-compiling FlashInfer's `topk` module on H100; combined with model loading, this can exceed the 600 s service readiness timeout. Use AOT kernels or start the chat service separately and wait for readiness before launching the cascade.
+
+For a baseline comparison, select the default profile. For a chat-only comparison, copy the DFlash launch file and remove the ASR service's `--config` argument and its value. Stop the services between configurations: an existing service on the same port is reused, so changing a launch file alone does not change its decoding settings. Use the repository's `benchmarks.eval.benchmark_duplex_serving` with `--dataset v1.5 --profile turn-based` as shown in [v1.5 scoring](#v15-scoring), and set `--model` to the selected profile's `model_path`. Its first-audio latency starts at `response.created`, after the ASR transcript opens the reply; evaluating ASR's contribution also requires the speech-stop and transcription events in the recording's `continuous.jsonl`.
 
 `--enable-realtime` mounts `/v1/realtime`, `/v1/realtime/capabilities` and `/v1/session`; without it the server starts the cascade but serves none of them.
 
@@ -381,12 +395,13 @@ Every profile is a `launch.yaml` under `examples/streaming_cascade/profiles/`.
 | --- | --- | --- | --- | --- | --- | --- |
 | `qwen3-asr-qwen3.8-27b-vivian` | Qwen3-ASR-1.7B service on 8002 (`openai_transcription`) | Qwen3.8-27B on 8003, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` | 2: the language model on GPU 0, both speech models on GPU 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut) | Alignment worker on 8010 |
 | `qwen3-asr-qwen3-tts-vivian` (default) | Qwen3-ASR-1.7B service on 8002 | Qwen3.8-27B on 8000, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` | 2: the language model on GPU 0, both speech models on GPU 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
+| `qwen3-asr-qwen3-tts-vivian-dflash` | Qwen3-ASR-1.7B with DFlash on 8002 | Qwen3.8-27B with DFlash on 8000, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` | 2: the language model on GPU 0, both speech models on GPU 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
 | `qwen3-asr-streaming-qwen3-tts-vivian` | Qwen3-ASR-1.7B service on 8002 started with `--enable-realtime` (`streaming_transcription`, a partial transcript every 1000 ms of speech) | Qwen3.8-27B on 8000, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` | 2: the language model on GPU 0, both speech models on GPU 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
 | `qwen3-asr-qwen3-tts-base-clone` | Qwen3-ASR-1.7B service on 8002 | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `reference_zh.wav` in the profile directory | 1 | `vad`, `turn_detection` (published), `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
 | `nemotron-qwen3-tts` | Nemotron 3.5 streaming ASR service on 8001 (`realtime_transcription`) | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-0.6B-Base on 8004, cloning `reference.wav` | 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced) | Alignment worker on 8010; a recording at `reference.wav`, with `reference_text` set to its transcript |
 | `nemotron-stage-qwen3-tts` | Nemotron 3.5 ASR as the `asr` stage on GPU 0, with `running_transcript` | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-0.6B-Base on 8004, cloning `reference.wav` | 1 | `vad`, `asr` (stage), `transcript`, `dialog`, `llm`, `tts`, `aligner` (forced) | Alignment worker on 8010; a recording at `reference.wav`, with `reference_text` set to its transcript |
 
-`qwen3-asr-qwen3-tts-vivian` and `qwen3-asr-qwen3-tts-base-clone` publish their aligner's `session`, so their clients receive `sglang.response.progress`. Every profile cuts an interrupted reply at the word ends of the sentences whose audio was complete; the Qwen3-ASR profiles also send the delivered audio of the sentence at the cut to their own recognizer, so a sentence cut before its audio was complete keeps the part the listener heard.
+`qwen3-asr-qwen3-tts-vivian`, `qwen3-asr-qwen3-tts-vivian-dflash` and `qwen3-asr-qwen3-tts-base-clone` publish their aligner's `session`, so their clients receive `sglang.response.progress`. Every profile cuts an interrupted reply at the word ends of the sentences whose audio was complete; the Qwen3-ASR profiles also send the delivered audio of the sentence at the cut to their own recognizer, so a sentence cut before its audio was complete keeps the part the listener heard.
 
 (voice-conversation)=
 

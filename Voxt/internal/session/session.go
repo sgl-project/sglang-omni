@@ -365,6 +365,10 @@ type Config struct {
 	// discarding the capture job (a capture.stop that raced its start);
 	// DefaultStopGrace.
 	StopGrace time.Duration
+	// EndWordPause is how long the live text must end with the end word
+	// (settings.Features.EndWord) before the recording stops;
+	// DefaultEndWordPause.
+	EndWordPause time.Duration
 }
 
 // Defaults of Config's limits.
@@ -383,6 +387,7 @@ const (
 	DefaultDeliverTimeout = 5 * time.Second
 	DefaultStopGrace      = 3 * time.Second
 	DefaultWaitNote       = 400 * time.Millisecond
+	DefaultEndWordPause   = time.Second // Voxt 1.x's silence after the end word
 )
 
 // StartRequest starts a session.

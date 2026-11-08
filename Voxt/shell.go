@@ -224,6 +224,7 @@ func (a *app) openWindow() {
 		Content:        ui.View(a.view),
 		Hidden:         startHidden(mygo.App.WasOpenedAtLogin(), a.prefs.General),
 	})
+	a.life = a.win
 	a.maybeOnboard()    // onboarding.go: the setup guide, on the first start
 	a.offerLegacy()     // legacy_import.go: the previous Voxt's data, for who set up without the guide's card
 	a.syncOpenAtLogin() // shell_settings.go
@@ -274,6 +275,12 @@ func (a *app) view(c *ui.Context) {
 	a.palette(c)
 	a.shortcutSheet(c)
 	a.toastsView(c) // last: over dialogs too
+	// A shortcut field took the focus or lost it.
+	if a.keysHeard != a.keysListening {
+		a.keysListening = a.keysHeard
+		a.syncHotkeys()
+	}
+	a.keysHeard = false
 }
 
 // toastsView gives the toasts their place and look: small ink toasts in

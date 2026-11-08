@@ -7,10 +7,11 @@ package main
 // internal/vad) and whether its sound is cleaned up (Audio.Clean.Off,
 // internal/dsp), and the sounds a recording makes when it starts and
 // stops (their presets and previews: settings_sounds.go). The helper
-// lists the inputs
-// (capture.devices) when the section opens, when the helper becomes
-// ready while it shows, and with Refresh. The system's output is muted
-// while recording (Audio.MuteOutput, mute_link.go), unless turned off.
+// lists the inputs (capture.devices) when the section opens, when the
+// helper becomes ready, after each session and with Refresh; the menu
+// bar's Microphone submenu shows the last list (tray.go). The system's
+// output is muted while recording (Audio.MuteOutput, mute_link.go),
+// unless turned off.
 
 import (
 	"maps"
@@ -46,14 +47,6 @@ func (a *app) openAudio() {
 	a.playSound = a.playCueWait
 }
 
-// audioShown reads the inputs when the section shows; helperChanged
-// calls it too, as a helper that just became ready can list them.
-func (a *app) audioShown() {
-	if a.settingsOpen && a.setRouter.Path() == "/audio" {
-		a.loadDevices()
-	}
-}
-
 // loadDevices asks the helper for the audio inputs.
 func (a *app) loadDevices() {
 	if !a.helperReady() || a.audio.loading {
@@ -68,6 +61,7 @@ func (a *app) loadDevices() {
 		}
 		a.audio.devices, a.audio.read, a.audio.err = r.Devices, true, ""
 		a.rememberDeviceNames(r.Devices)
+		a.buildTrayMenu() // tray.go: the Microphone submenu
 	})
 }
 
@@ -116,13 +110,29 @@ func (a *app) addDevice(d proto.CaptureDevice) {
 			return
 		}
 		s.Audio.Devices = append(slices.Clone(s.Audio.Devices), d.ID)
-		m := maps.Clone(s.Audio.DeviceNames)
-		if m == nil {
-			m = map[string]string{}
-		}
-		m[d.ID] = d.Name
-		s.Audio.DeviceNames = m
+		s.Audio.DeviceNames = withDeviceName(s.Audio.DeviceNames, d)
 	})
+}
+
+// useDevice puts a connected input first in the list, so the next
+// recording uses it (the menu bar's Microphone submenu).
+func (a *app) useDevice(d proto.CaptureDevice) {
+	a.updateSettings(func(s *settings.Settings) {
+		rest := slices.DeleteFunc(slices.Clone(s.Audio.Devices), func(id string) bool { return id == d.ID })
+		s.Audio.Devices = append([]string{d.ID}, rest...)
+		s.Audio.DeviceNames = withDeviceName(s.Audio.DeviceNames, d)
+	})
+}
+
+// withDeviceName is names with d's name, to show it while d is not
+// connected.
+func withDeviceName(names map[string]string, d proto.CaptureDevice) map[string]string {
+	m := maps.Clone(names)
+	if m == nil {
+		m = map[string]string{}
+	}
+	m[d.ID] = d.Name
+	return m
 }
 
 // moveDevice moves the list's i-th input by delta places.

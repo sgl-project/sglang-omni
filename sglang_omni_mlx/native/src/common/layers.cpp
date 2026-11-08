@@ -27,6 +27,17 @@ std::vector<mx::array> GeluGraph(const std::vector<mx::array> &inputs) {
       mx::array(2.0f, dtype))};
 }
 
+std::vector<mx::array> TanhGeluGraph(const std::vector<mx::array> &inputs) {
+  const mx::array &x = inputs[0];
+  const mx::Dtype dtype = x.dtype();
+  const mx::array inner = mx::multiply(
+      mx::array(static_cast<float>(std::sqrt(2.0 / M_PI)), dtype),
+      mx::add(x, mx::multiply(mx::array(0.044715f, dtype),
+                              mx::power(x, mx::array(3.0f, dtype)))));
+  return {mx::multiply(mx::multiply(mx::array(0.5f, dtype), x),
+                       mx::add(mx::array(1.0f, dtype), mx::tanh(inner)))};
+}
+
 std::vector<mx::array> SiluGraph(const std::vector<mx::array> &inputs) {
   return {mx::multiply(inputs[0], mx::sigmoid(inputs[0]))};
 }
@@ -48,9 +59,40 @@ mx::array Gelu(const mx::array &x) {
   return compiled({x})[0];
 }
 
+mx::array TanhGelu(const mx::array &x) {
+  static const auto compiled = mx::compile(TanhGeluGraph, true);
+  return compiled({x})[0];
+}
+
 mx::array Silu(const mx::array &x) {
   static const auto compiled = mx::compile(SiluGraph, true);
   return compiled({x})[0];
+}
+
+mx::array RouteToExperts(const mx::array &hidden, const mx::array &indices,
+                         const ExpertRunner &run_experts) {
+  const int tokens = hidden.shape(0), width = hidden.shape(1);
+  const int experts_per_token = indices.shape(1);
+  // Note (XXXXRT666): A decode token's experts are all distinct, so sorting
+  // leaves gather_mm nothing to group.
+  if (tokens > 1) {
+    const mx::array flat_indices = mx::reshape(indices, {-1});
+    const mx::array order = mx::argsort(flat_indices);
+    const mx::array token_indices =
+        mx::floor_divide(order, mx::array(experts_per_token, mx::uint32));
+    const mx::array routed =
+        run_experts(mx::expand_dims(mx::take(hidden, token_indices, 0), 1),
+                    mx::take(flat_indices, order, 0), true);
+    const mx::array inverse_order = mx::put_along_axis(
+        mx::zeros(order.shape(), mx::uint32), order,
+        mx::arange(tokens * experts_per_token, mx::uint32), 0);
+    return mx::reshape(mx::take(routed, inverse_order, 0),
+                       {tokens, experts_per_token, routed.shape(-1)});
+  } else {
+    return mx::squeeze(
+        run_experts(mx::reshape(hidden, {tokens, 1, 1, width}), indices, false),
+        -2);
+  }
 }
 
 nlohmann::json ReadJson(const std::filesystem::path &path) {
