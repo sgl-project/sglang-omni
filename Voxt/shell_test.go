@@ -316,20 +316,20 @@ func TestPermissionsMoved(t *testing.T) {
 }
 
 // TestPrivacyGoesOnline: Settings → Privacy says what Voxt goes online
-// for: downloading models, and checking for updates only in a build
-// with an update feed (2.0.0 has none).
+// for: downloading models, Voxt's announcements, and checking for updates
+// only in a build with an update feed (2.0.0 has none).
 func TestPrivacyGoesOnline(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate("/settings/privacy")
 	frames(tt)
-	if !has(tt, "Otherwise Voxt goes online only to check for updates and to download models.") {
+	if !has(tt, "Otherwise Voxt goes online only to check for updates, to download models and to read Voxt's announcements, which sends nothing about you.") {
 		t.Errorf("with an update feed: %q", firstTexts(tt))
 	}
 	a.upd = nil
 	a.navigate("/home")
 	a.navigate("/settings/privacy")
 	frames(tt)
-	if !has(tt, "Otherwise Voxt goes online only to download models.") || has(tt, "check for updates") {
+	if !has(tt, "Otherwise Voxt goes online only to download models and to read Voxt's announcements, which sends nothing about you.") || has(tt, "check for updates") {
 		t.Errorf("without an update feed: %q", firstTexts(tt))
 	}
 }

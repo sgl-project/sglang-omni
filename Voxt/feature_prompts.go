@@ -33,7 +33,7 @@ func (a *app) translateSettings(c *ui.Context) {
 	u := a.fui(hotkey.Translate)
 	f := &a.prefs.Features.Translate
 	sectionTitle(c, i18n.T("Translation"))
-	opts := []string{i18n.T("Automatic: %s", uitext.TargetLanguageLabel(session.TranslateTarget(settings.Settings{General: a.prefs.General}, i18n.Locale(), "")))}
+	opts := []string{i18n.T("Automatic (now: %s)", uitext.TargetLanguageLabel(session.TranslateTarget(settings.Settings{General: a.prefs.General}, i18n.Locale(), "")))}
 	for _, code := range compose.TargetLanguages {
 		opts = append(opts, uitext.TargetLanguageLabel(code))
 	}

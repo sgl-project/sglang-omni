@@ -556,6 +556,11 @@ type Service interface {
 type Network struct {
 	Proxy       string `json:"proxy,omitempty"`
 	HFEndpoints string `json:"hfEndpoints,omitempty"`
+	// ProxyUser is a custom proxy's user name and ProxyAuthHost the proxy
+	// host it and its password (the Keychain's "proxy.<host>") are for:
+	// Voxt's only, never the family's (models_proxy_auth.go).
+	ProxyUser     string `json:"proxyUser,omitempty"`
+	ProxyAuthHost string `json:"proxyAuthHost,omitempty"`
 }
 
 // Family is VoxtNew's part in the ActNow family (internal/actnow).

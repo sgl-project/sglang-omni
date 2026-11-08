@@ -138,6 +138,9 @@ type remoteState struct {
 	// read by opens.
 	remoteHTTP atomic.Pointer[http.Client]
 	keys       keyring
+	// proxyPassword is a custom proxy's password, as read or saved
+	// (models_proxy_auth.go); networkFor reads it off the main thread too.
+	proxyPassword atomic.Pointer[proxySecret]
 	// keyMasks are the saved keys' masks by account, "" for none; an
 	// account not in it was not read yet.
 	keyMasks map[string]string
@@ -169,6 +172,7 @@ func (a *app) withRemote(base local.Services) local.Services {
 	}
 	a.loadKeyMasks(accounts)
 	a.syncRemote()
+	a.loadProxyPassword() // models_proxy_auth.go
 	return a.remote
 }
 
