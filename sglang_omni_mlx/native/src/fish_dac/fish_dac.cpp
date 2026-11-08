@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "fishaudio_drama3/fishaudio_drama3_codec.h"
+#include "fish_dac/fish_dac.h"
 
 #include <algorithm>
 #include <cmath>
@@ -10,7 +10,7 @@
 
 #include "common/layers.h"
 
-namespace fishaudio_drama3 {
+namespace fish_dac {
 
 namespace mx = mlx::core;
 
@@ -23,6 +23,14 @@ constexpr float kTransformerNormEps = 1e-5f;
 constexpr int kEncoderWindow = 512;
 constexpr float kConvNeXtNormEps = 1e-6f;
 constexpr float kMaskedScore = -1e9f;
+// The encoder's output and the decoder's input run at 4 latent frames per code
+// frame.
+constexpr int kLatentFrameSamples = kFrameSamples / 4;
+// Note (Jiaxin Deng): the encoder's convolutions reach about 14 latent frames
+// back and the decoder's about 19, so each runs in windows with this context:
+// a whole long utterance's convolution unfoldings would need tens of GB.
+constexpr int kConvolutionWindowFrames = 256;
+constexpr int kConvolutionContextFrames = 32;
 constexpr const char *kEncoderTransformer = "encoder.block.4.block.5";
 constexpr const char *kPreModule = "quantizer.pre_module";
 // The (g, v) name suffixes of a weight-normed convolution: parametrized, or
@@ -322,6 +330,23 @@ mx::array AudioCodec::TransformerLayer(
                                           prefix + ".ffn_layer_scale.gamma")));
 }
 
+mx::array AudioCodec::Transformer(const mx::array &x, const std::string &prefix,
+                                  int window) const {
+  mx::array hidden = mx::swapaxes(x, 1, 2);
+  const int time = hidden.shape(1);
+  const mx::array freqs_cis =
+      mx::slice(checkpoint_.Weight(prefix + ".freqs_cis"), {0, 0, 0},
+                {time, kTransformerHeadDim / 2, 2});
+  const mx::array mask = WindowMask(0, time, window, hidden.dtype());
+  for (int layer = 0; layer < LayerCount(prefix); ++layer) {
+    std::optional<std::pair<mx::array, mx::array>> no_cache;
+    hidden = TransformerLayer(hidden, Index(prefix + ".layers", layer),
+                              freqs_cis, mask, no_cache);
+  }
+  hidden = TransformerNorm(hidden, checkpoint_.Weight(prefix + ".norm.weight"));
+  return mx::swapaxes(hidden, 1, 2);
+}
+
 std::pair<mx::array, mx::array>
 AudioCodec::Quantize(const mx::array &latents,
                      const std::string &prefix) const {
@@ -371,9 +396,9 @@ mx::array AudioCodec::DecodeCode(const mx::array &codes,
 
 mx::array AudioCodec::Encode(const std::vector<float> &samples) const {
   const int length = static_cast<int>(samples.size());
-  const int padded_length = (length + kCodecFrameSamples - 1) /
-                            kCodecFrameSamples * kCodecFrameSamples;
-  const int frame_count = padded_length / kCodecFrameSamples;
+  const int padded_length =
+      (length + kFrameSamples - 1) / kFrameSamples * kFrameSamples;
+  const int frame_count = padded_length / kFrameSamples;
   const int encoder_positions =
       checkpoint_.Weight(std::string(kEncoderTransformer) + ".freqs_cis")
           .shape(0);
@@ -386,38 +411,34 @@ mx::array AudioCodec::Encode(const std::vector<float> &samples) const {
     throw std::invalid_argument("reference audio is too long");
   } else {
   }
-  mx::array x = mx::pad(mx::array(samples.data(), {1, 1, length}, mx::float32),
-                        {{0, 0}, {0, 0}, {0, padded_length - length}});
+  const mx::array audio =
+      mx::pad(mx::array(samples.data(), {1, 1, length}, mx::float32),
+              {{0, 0}, {0, 0}, {0, padded_length - length}});
 
-  x = CausalConvolve(x, "encoder.block.0", 7, 1, 1, 1);
-  for (int block = 0; block < 4; ++block) {
-    const std::string prefix = Index("encoder.block", block + 1) + ".block";
-    const int stride = kEncoderStrides[block];
-    for (int unit = 0; unit < 3; ++unit) {
-      x = ResidualUnit(x, Index(prefix, unit), kResidualDilations[unit]);
-    }
-    x = Snake(x, checkpoint_.Weight(Index(prefix, 3) + ".alpha"));
-    x = CausalConvolve(x, Index(prefix, 4), 2 * stride, stride, 1, 1);
-    if (Index(prefix, 5) == kEncoderTransformer) {
-      mx::array hidden = mx::swapaxes(x, 1, 2);
-      const int time = hidden.shape(1);
-      const mx::array freqs_cis =
-          mx::slice(checkpoint_.Weight(Index(prefix, 5) + ".freqs_cis"),
-                    {0, 0, 0}, {time, kTransformerHeadDim / 2, 2});
-      const mx::array mask =
-          WindowMask(0, time, kEncoderWindow, hidden.dtype());
-      for (int layer = 0; layer < LayerCount(Index(prefix, 5)); ++layer) {
-        std::optional<std::pair<mx::array, mx::array>> no_cache;
-        hidden =
-            TransformerLayer(hidden, Index(Index(prefix, 5) + ".layers", layer),
-                             freqs_cis, mask, no_cache);
+  const int latent_frames = padded_length / kLatentFrameSamples;
+  std::vector<mx::array> windows;
+  for (int start = 0; start < latent_frames;
+       start += kConvolutionWindowFrames) {
+    const int context = std::min(start, kConvolutionContextFrames);
+    const int stop = std::min(start + kConvolutionWindowFrames, latent_frames);
+    mx::array y =
+        CausalConvolve(SliceTime(audio, (start - context) * kLatentFrameSamples,
+                                 stop * kLatentFrameSamples),
+                       "encoder.block.0", 7, 1, 1, 1);
+    for (int block = 0; block < 4; ++block) {
+      const std::string prefix = Index("encoder.block", block + 1) + ".block";
+      const int stride = kEncoderStrides[block];
+      for (int unit = 0; unit < 3; ++unit) {
+        y = ResidualUnit(y, Index(prefix, unit), kResidualDilations[unit]);
       }
-      hidden = TransformerNorm(
-          hidden, checkpoint_.Weight(Index(prefix, 5) + ".norm.weight"));
-      x = mx::swapaxes(hidden, 1, 2);
-    } else {
+      y = Snake(y, checkpoint_.Weight(Index(prefix, 3) + ".alpha"));
+      y = CausalConvolve(y, Index(prefix, 4), 2 * stride, stride, 1, 1);
     }
+    windows.push_back(SliceTime(y, context, y.shape(2)));
+    mx::eval(windows.back());
   }
+  mx::array x = Transformer(mx::concatenate(windows, 2), kEncoderTransformer,
+                            kEncoderWindow);
   x = Snake(x, checkpoint_.Weight("encoder.block.5.alpha"));
   x = CausalConvolve(x, "encoder.block.6", 3, 1, 1, 1);
 
@@ -429,24 +450,7 @@ mx::array AudioCodec::Encode(const std::vector<float> &samples) const {
                           CausalConvolve(x, prefix + ".1.dwconv", 7, 1, 1, dim),
                           prefix + ".1");
   }
-  {
-    mx::array hidden = mx::swapaxes(x, 1, 2);
-    const int time = hidden.shape(1);
-    const mx::array freqs_cis =
-        mx::slice(checkpoint_.Weight(std::string(kPreModule) + ".freqs_cis"),
-                  {0, 0, 0}, {time, kTransformerHeadDim / 2, 2});
-    const mx::array mask =
-        WindowMask(0, time, kQuantizerWindow, hidden.dtype());
-    for (int layer = 0; layer < LayerCount(kPreModule); ++layer) {
-      std::optional<std::pair<mx::array, mx::array>> no_cache;
-      hidden = TransformerLayer(
-          hidden, Index(std::string(kPreModule) + ".layers", layer), freqs_cis,
-          mask, no_cache);
-    }
-    hidden = TransformerNorm(
-        hidden, checkpoint_.Weight(std::string(kPreModule) + ".norm.weight"));
-    x = mx::swapaxes(hidden, 1, 2);
-  }
+  x = Transformer(x, kPreModule, kQuantizerWindow);
 
   std::vector<mx::array> codes;
   auto [semantic_codes, semantic_quantized] =
@@ -515,4 +519,87 @@ std::vector<float> CodecStream::Decode(
   return audio;
 }
 
-} // namespace fishaudio_drama3
+mx::array AudioCodec::QuantizedFeatures(const mx::array &codes) const {
+  const int frames = codes.shape(1);
+  const mx::array indices = mx::expand_dims(codes, 0);
+  const int semantic_size =
+      checkpoint_
+          .Weight("quantizer.semantic_quantizer.quantizers.0.codebook.weight")
+          .shape(0);
+  const int residual_size =
+      checkpoint_.Weight("quantizer.quantizer.quantizers.0.codebook.weight")
+          .shape(0);
+  const auto codebook_codes = [&](int codebook) {
+    return mx::squeeze(
+        mx::slice(indices, {0, codebook, 0}, {1, codebook + 1, frames}), 1);
+  };
+  const auto from_codes = [&](const mx::array &codebook_indices,
+                              const std::string &prefix) {
+    return Convolve(DecodeCode(codebook_indices, prefix),
+                    Convolution(prefix + ".out_proj"), 1, 1, 1);
+  };
+  // A Python 0.0 that starts each sum takes the projection's dtype.
+  const mx::array semantic_projection =
+      from_codes(mx::clip(codebook_codes(0), mx::array(0, mx::int32),
+                          mx::array(semantic_size - 1, mx::int32)),
+                 "quantizer.semantic_quantizer.quantizers.0");
+  const mx::array semantic =
+      mx::add(omni_common::Scalar(0, semantic_projection), semantic_projection);
+  std::optional<mx::array> residual;
+  for (int codebook = 0; codebook < kResidualCodebookCount; ++codebook) {
+    const mx::array projection = from_codes(
+        mx::clip(codebook_codes(codebook + 1), mx::array(0, mx::int32),
+                 mx::array(residual_size - 1, mx::int32)),
+        Index("quantizer.quantizer.quantizers", codebook));
+    residual = mx::add(
+        residual.has_value() ? *residual : omni_common::Scalar(0, projection),
+        projection);
+  }
+  return mx::add(semantic, *residual);
+}
+
+mx::array AudioCodec::Decode(const mx::array &codes) const {
+  const auto upsample = [&](const mx::array &x, const std::string &prefix,
+                            int stride) {
+    return SliceTime(ConvolveTransposed(x, Convolution(prefix), stride), 0,
+                     x.shape(2) * stride);
+  };
+  mx::array x =
+      Transformer(QuantizedFeatures(codes), kPostModule, kQuantizerWindow);
+  for (int block = 0; block < kDownsampleCount; ++block) {
+    const std::string prefix = Index("quantizer.upsample", block);
+    x = upsample(x, prefix + ".0", 2);
+    const int dim = x.shape(1);
+    x = ConvNeXtPointwise(x,
+                          CausalConvolve(x, prefix + ".1.dwconv", 7, 1, 1, dim),
+                          prefix + ".1");
+  }
+  mx::eval(x);
+
+  const int latent_frames = x.shape(2);
+  std::vector<mx::array> windows;
+  for (int start = 0; start < latent_frames;
+       start += kConvolutionWindowFrames) {
+    const int context = std::min(start, kConvolutionContextFrames);
+    const int stop = std::min(start + kConvolutionWindowFrames, latent_frames);
+    mx::array y = CausalConvolve(SliceTime(x, start - context, stop),
+                                 "decoder.model.0", 7, 1, 1, 1);
+    for (int block = 0; block < 4; ++block) {
+      const std::string prefix = Index("decoder.model", block + 1) + ".block";
+      y = Snake(y, checkpoint_.Weight(Index(prefix, 0) + ".alpha"));
+      y = upsample(y, Index(prefix, 1), kDecoderStrides[block]);
+      for (int unit = 0; unit < 3; ++unit) {
+        y = ResidualUnit(y, Index(prefix, unit + 2), kResidualDilations[unit]);
+      }
+    }
+    y = Snake(y, checkpoint_.Weight("decoder.model.5.alpha"));
+    y = mx::tanh(CausalConvolve(y, "decoder.model.6", 7, 1, 1, 1));
+    windows.push_back(mx::slice(mx::reshape(y, {-1}),
+                                {context * kLatentFrameSamples},
+                                {static_cast<int>(y.size())}));
+    mx::eval(windows.back());
+  }
+  return mx::concatenate(windows, 0);
+}
+
+} // namespace fish_dac
