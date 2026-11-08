@@ -11,29 +11,35 @@ import (
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr/asrtest"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/asr/doubao"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
-// TestSpeechPresets: every speech service builds a client with its
-// defaults, which streams exactly when its preset says Realtime, and
-// refuses an address of the wrong scheme.
+// TestSpeechPresets: every model of every speech service builds a client
+// with the defaults, which streams exactly when the preset says the
+// model does (Realtime), and refuses an address of the wrong scheme.
 func TestSpeechPresets(t *testing.T) {
 	for _, pr := range SpeechPresets() {
-		c, err := NewASR(settings.Provider{ID: pr.ID}, "k", nil)
-		if err != nil {
-			t.Errorf("%s: %v", pr.ID, err)
-			continue
+		if pr.Model == "" || len(pr.Models) == 0 || pr.KeyURL == "" {
+			t.Errorf("%s: preset %+v", pr.ID, pr)
 		}
-		if caps := c.Caps(); caps.Stream != pr.Stream || caps.File == pr.Stream || pr.Model == "" || len(pr.Models) == 0 || pr.KeyURL == "" {
-			t.Errorf("%s: caps %+v, preset %+v", pr.ID, caps, pr)
-		}
-		bad := "http://example.com/x"
-		if pr.Stream {
-			bad = "ws://example.com/x"
-		}
-		if _, err := NewASR(settings.Provider{ID: pr.ID, Endpoint: bad}, "k", nil); asr.KindOf(err) != asr.KindConfig {
-			t.Errorf("%s accepts %s: %v", pr.ID, bad, err)
+		for _, model := range pr.Models {
+			c, err := NewASR(settings.Provider{ID: pr.ID, Model: model}, "k", nil)
+			if err != nil {
+				t.Errorf("%s %s: %v", pr.ID, model, err)
+				continue
+			}
+			if caps := c.Caps(); caps.Stream != pr.Streams(model) || caps.File == pr.Streams(model) {
+				t.Errorf("%s %s: caps %+v", pr.ID, model, caps)
+			}
+			bad := "http://example.com/x"
+			if pr.Streams(model) {
+				bad = "ws://example.com/x"
+			}
+			if _, err := NewASR(settings.Provider{ID: pr.ID, Model: model, Endpoint: bad}, "k", nil); asr.KindOf(err) != asr.KindConfig {
+				t.Errorf("%s %s accepts %s: %v", pr.ID, model, bad, err)
+			}
 		}
 		if _, err := NewASR(settings.Provider{ID: pr.ID}, "", nil); asr.KindOf(err) != asr.KindConfig {
 			t.Errorf("%s works without a key: %v", pr.ID, err)
@@ -110,6 +116,10 @@ func TestServicesSpeech(t *testing.T) {
 	if err != nil || m.ID != "doubao" || opened != "doubao" || !p.Caps().Stream {
 		t.Fatalf("remote: %+v %v %q", m, err, opened)
 	}
+	svc.SetReady(local.ASR, []settings.Provider{{ID: "doubao", Model: doubao.ModelFlash}})
+	if list := svc.Installed(local.ASR); list[1].Stream {
+		t.Error("Doubao's flash recognition streams")
+	}
 	svc.SetReady(local.ASR, nil)
 	if _, m, _ := svc.ASR(context.Background(), "doubao"); m.ID != localASR.ID {
 		t.Fatalf("not ready any more: %+v", m)
@@ -155,17 +165,19 @@ func TestSpeechErrorsHideKey(t *testing.T) {
 	const key = "sk-speech-secret-31-0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz"
 	for _, pad := range []string{"", strings.Repeat("x", 252)} {
 		for _, pr := range speechPresets {
-			url := asrtest.RefuseServer(t, 400, `{"error":{"message":"`+pad+`bad key `+key+`"}}`)
-			if !pr.Stream {
-				url = "http" + strings.TrimPrefix(url, "ws")
-			}
-			c, err := NewASR(settings.Provider{ID: pr.ID, Endpoint: url}, key, nil)
-			if err != nil {
-				t.Fatalf("%s: %v", pr.ID, err)
-			}
-			_, err = asr.Recognize(context.Background(), c, asr.Silence(time.Second), "", nil, "", asr.Feed{})
-			if err == nil || strings.Contains(err.Error(), key[:12]) || !strings.Contains(err.Error(), "[key]") {
-				t.Errorf("%s (%d bytes before the key): %v", pr.ID, len(pad), err)
+			for _, model := range append([]string{""}, pr.Uploads...) {
+				url := asrtest.RefuseServer(t, 400, `{"error":{"message":"`+pad+`bad key `+key+`"}}`)
+				if !pr.Streams(model) {
+					url = "http" + strings.TrimPrefix(url, "ws")
+				}
+				c, err := NewASR(settings.Provider{ID: pr.ID, Model: model, Endpoint: url}, key, nil)
+				if err != nil {
+					t.Fatalf("%s %s: %v", pr.ID, model, err)
+				}
+				_, err = asr.Recognize(context.Background(), c, asr.Silence(time.Second), "", nil, "", asr.Feed{})
+				if err == nil || strings.Contains(err.Error(), key[:12]) || !strings.Contains(err.Error(), "[key]") {
+					t.Errorf("%s %s (%d bytes before the key): %v", pr.ID, model, len(pad), err)
+				}
 			}
 		}
 	}

@@ -58,7 +58,7 @@ func (s *Services) Installed(kind local.Kind) []local.Model {
 	defer s.mu.Unlock()
 	for _, p := range s.ready[kind] {
 		speech, _ := LookupSpeech(p.ID)
-		out = append(out, local.Model{Kind: kind, ID: p.ID, Name: s.name(kind, p), Stream: kind == local.ASR && speech.Stream})
+		out = append(out, local.Model{Kind: kind, ID: p.ID, Name: s.name(kind, p), Stream: kind == local.ASR && speech.Streams(SpeechModel(p))})
 	}
 	return out
 }
