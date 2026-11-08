@@ -155,7 +155,7 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 	if old.Overlay != new.Overlay {
 		a.overlayRestyle() // overlay.go
 	}
-	if old.Models != new.Models {
+	if old.Models.KeepLoaded != new.Models.KeepLoaded {
 		a.applyKeepLoaded(new.Models) // models_keep.go
 	}
 	if !reflect.DeepEqual(old.Providers, new.Providers) || old.Network != new.Network {

@@ -56,9 +56,9 @@ func TestTranslatePage(t *testing.T) {
 	if got := a.lib.settings.Get().Features.Translate.Target; got != "" {
 		t.Errorf("target %q", got)
 	}
-	// Its own shortcuts and rules.
+	// Its own shortcuts and rules; the one added skips the keys Notes uses (Right ⌘).
 	click(t, tt, "Add a shortcut")
-	if hs := a.lib.settings.Get().Features.Translate.Hotkeys; len(hs) != 2 || hs[1].Keys != "RightCommand" {
+	if hs := a.lib.settings.Get().Features.Translate.Hotkeys; len(hs) != 2 || hs[1].Keys != "RightShift" {
 		t.Errorf("shortcuts %+v", hs)
 	}
 	click(t, tt, "Your rules")

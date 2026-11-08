@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 )
@@ -146,15 +147,81 @@ func (f *fake) textio(m proto.Message) {
 			f.result(m.ID, proto.PasteResult{MS: 0.1, Front: &front})
 			return
 		}
-		if path := f.opts["paste-log"]; path != "" {
-			line, _ := json.Marshal(p)
-			if fh, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
-				fh.Write(append(line, '\n'))
-				fh.Close()
+		appendLine(f.opts["paste-log"], p)
+		f.result(m.ID, f.pasteResult(p))
+	case proto.MethodTextRead:
+		var p proto.ReadParams
+		m.DecodeParams(&p)
+		appendLine(f.opts["read-log"], p)
+		if text, ok := f.opts["garble"]; ok {
+			f.writeRaw(`{"id":"` + m.ID + `","result":{"text":"` + text)
+			os.Exit(3)
+		}
+		f.result(m.ID, f.read(p, front))
+	}
+}
+
+// appendLine appends v to path as a JSON line (nothing when path is "").
+func appendLine(path string, v any) {
+	if path == "" {
+		return
+	}
+	line, _ := json.Marshal(v)
+	if fh, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+		fh.Write(append(line, '\n'))
+		fh.Close()
+	}
+}
+
+// Field is a state of the focused field textio.read sees (read=): its
+// value, its identity, or an error (proto.Read*).
+type Field struct {
+	Value   string `json:"value,omitempty"`
+	Element int    `json:"element,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+// read answers a textio.read: the field's next state from read=, and of
+// its value the range asked, clamped to it and to MaxRead (UTF-16; the
+// fake does not widen to whole characters).
+func (f *fake) read(p proto.ReadParams, front proto.App) proto.ReadResult {
+	switch {
+	case p.PID != front.PID:
+		return proto.ReadResult{Error: proto.ReadNotFront}
+	case f.opts["focus"] == "none":
+		return proto.ReadResult{Error: proto.ReadNoFocus}
+	case f.opts["focus"] == "secure":
+		return proto.ReadResult{Error: proto.ReadSecure}
+	}
+	var fields []Field
+	if path := f.opts["read"]; path != "" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "read:", err)
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			var fl Field
+			if strings.TrimSpace(line) != "" && json.Unmarshal([]byte(line), &fl) == nil {
+				fields = append(fields, fl)
 			}
 		}
-		f.result(m.ID, f.pasteResult(p))
 	}
+	f.mu.Lock()
+	n := f.reads
+	f.reads++
+	f.mu.Unlock()
+	fl := Field{Element: 1}
+	if len(fields) > 0 {
+		fl = fields[min(n, len(fields)-1)]
+	}
+	if fl.Error != "" {
+		return proto.ReadResult{Error: fl.Error}
+	}
+	u := utf16.Encode([]rune(fl.Value))
+	start := min(max(0, p.Range.Location), len(u))
+	end := min(max(start, p.Range.Location+p.Range.Length), len(u), start+proto.MaxRead)
+	return proto.ReadResult{Text: string(utf16.Decode(u[start:end])), Range: proto.TextRange{Location: start, Length: end - start},
+		Length: len(u), Element: fl.Element}
 }
 
 // pasteResult is a posted paste and, with VerifyMS, its check:

@@ -289,6 +289,75 @@ final class HotkeyRecognizerTests: XCTestCase {
         XCTAssertFalse(r.handle(.flagsChanged(keyCode: 56, flags: fn | shift, t: 10)).swallow)
         XCTAssertTrue(r.handle(.flagsChanged(keyCode: 63, flags: shift, t: 20)).swallow)
     }
+
+    /// A mouse button binding (2 the middle button, 3 and up the side
+    /// ones) is judged like a key: on its press, with exactly its modifier
+    /// keys, its press and release swallowed. The ⌥ held for ⌥+button fires
+    /// no ⌥ chord; other buttons and the left button pass.
+    func testMouseButtonBinding() {
+        let lOpt = RawFlags.option | 0x20
+        let c = HotkeyConfig(bindings: [
+            Binding(id: "opt", modifiers: [.option: .any], behavior: .tap),
+            Binding(id: "side", modifiers: [:], button: 3, behavior: .tap),
+            Binding(id: "opt-side", modifiers: [.option: .any], button: 3, behavior: .tap),
+        ])
+        var r = HotkeyRecognizer(config: c)
+        let down = r.handle(.mouseDown(button: 3, flags: 0, t: 0))
+        XCTAssertEqual(down.events.map(\.binding), ["side"])
+        XCTAssertTrue(down.swallow)
+        XCTAssertTrue(r.handle(.mouseUp(button: 3, t: 50)).swallow)
+
+        var fired: [String] = []
+        for i: KeyInput in [.flagsChanged(keyCode: 58, flags: lOpt, t: 100), .mouseDown(button: 3, flags: lOpt, t: 150),
+                            .mouseUp(button: 3, t: 200), .flagsChanged(keyCode: 58, flags: 0, t: 250)] {
+            fired += r.handle(i).events.map(\.binding)
+        }
+        XCTAssertEqual(fired, ["opt-side"])
+        var onlyOptSide = HotkeyRecognizer(config: HotkeyConfig(bindings: [c.bindings[2]]))
+        XCTAssertEqual(onlyOptSide.handle(.flagsChanged(keyCode: 58, flags: lOpt, t: 0)).events, [])
+        XCTAssertEqual(onlyOptSide.handle(.flagsChanged(keyCode: 58, flags: 0, t: 50)).events, [], "⌥ alone is not ⌥ + the side button")
+
+        let other = r.handle(.mouseDown(button: 4, flags: 0, t: 300))
+        XCTAssertEqual(other.events, [])
+        XCTAssertFalse(other.swallow)
+        XCTAssertFalse(r.handle(.mouseUp(button: 4, t: 320)).swallow)
+        XCTAssertFalse(r.handle(.mouseDown(button: 0, flags: 0, t: 400)).swallow)
+    }
+
+    /// A modifier + mouse button cancel is not its modifier alone: tapping
+    /// ⌥ while recording does not cancel when the cancel is ⌥ + a side button.
+    func testMouseButtonCancelIsNotItsModifier() {
+        let lOpt = RawFlags.option | 0x20
+        var r = HotkeyRecognizer(config: HotkeyConfig(bindings: [], active: true,
+                                                      cancel: Binding(id: "cancel", modifiers: [.option: .any], button: 3, behavior: .tap)))
+        var fired: [String] = []
+        for i: KeyInput in [.flagsChanged(keyCode: 58, flags: lOpt, t: 0), .flagsChanged(keyCode: 58, flags: 0, t: 50)] {
+            fired += r.handle(i).events.map(\.binding)
+        }
+        XCTAssertEqual(fired, [], "⌥ alone")
+        for i: KeyInput in [.flagsChanged(keyCode: 58, flags: lOpt, t: 100), .mouseDown(button: 3, flags: lOpt, t: 150),
+                            .mouseUp(button: 3, t: 200), .flagsChanged(keyCode: 58, flags: 0, t: 250)] {
+            fired += r.handle(i).events.map(\.binding)
+        }
+        XCTAssertEqual(fired, ["cancel"], "⌥ + side button")
+    }
+
+    /// A long press of a button is down on its press and up on its release;
+    /// a double tap is a second press within the window.
+    func testMouseButtonLongPressAndDoubleTap() {
+        let c = HotkeyConfig(bindings: [
+            Binding(id: "hold", modifiers: [:], button: 2, behavior: .longPress),
+            Binding(id: "dbl", modifiers: [:], button: 4, behavior: .doubleTap),
+        ], doubleTapMs: 400)
+        var r = HotkeyRecognizer(config: c)
+        var fired: [String] = []
+        for i: KeyInput in [.mouseDown(button: 2, flags: 0, t: 0), .mouseUp(button: 2, t: 900),
+                            .mouseDown(button: 4, flags: 0, t: 1000), .mouseUp(button: 4, t: 1050),
+                            .mouseDown(button: 4, flags: 0, t: 1200), .mouseUp(button: 4, t: 1250)] {
+            fired += r.handle(i).events.map { "\($0.binding):\($0.phase.rawValue)" }
+        }
+        XCTAssertEqual(fired, ["hold:down", "hold:up", "dbl:trigger"])
+    }
 }
 
 final class PCMFramerTests: XCTestCase {

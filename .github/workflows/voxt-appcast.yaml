@@ -1,0 +1,260 @@
+name: Voxt Appcast
+
+# Offers a published Voxt release to Voxt 1.x as an in-app update: Voxt 1.x
+# updates with Sparkle from https://voxt.actnow.dev/updates/stable/appcast.xml,
+# or .../beta/appcast.xml when its settings say so. This signs the release's
+# ZIP with the Sparkle EdDSA key, uploads the ZIP and the disk image to the
+# Voxt update service and makes them the latest entry of the channel; on
+# stable it then points the Homebrew cask (hehehai/homebrew-tap) at the
+# release. Beta first, then stable once the update from Voxt 1.x was tested
+# (Voxt/docs/release.md). Both are manual runs, and both stop before the
+# entry becomes the latest unless the update service keeps its
+# hardwareRequirements arm64: without it Voxt 1.x on an Intel Mac would get
+# a Voxt that does not open there.
+# Voxt/scripts/release-appcast.sh makes the entry, the notes and the cask.
+
+on:
+  # Not on a published release until the update service outputs
+  # sparkle:hardwareRequirements (Voxt/docs/release.md).
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to offer, e.g. voxt-v2.0.1"
+        required: true
+        type: string
+      channel:
+        description: "Appcast: beta first, stable once the update from Voxt 1.x was tested"
+        required: true
+        type: choice
+        options: [beta, stable]
+        default: beta
+
+concurrency:
+  group: voxt-appcast
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  appcast:
+    name: Voxt appcast
+    runs-on: macos-15
+    timeout-minutes: 30
+    environment: voxt-release
+    env:
+      TAG: ${{ inputs.tag }}
+      CHANNEL: ${{ inputs.channel }}
+      # Sparkle's release with the same version as Voxt 1.x's Sparkle package.
+      SPARKLE_VERSION: 2.10.0
+      SPARKLE_SHA256: c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # This workflow's commit, not the tag's: a manual run for an older tag uses today's scripts.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Resolve the release
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^voxt-v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "::error::The tag must be voxt-vX.Y.Z, got $TAG"
+            exit 1
+          else
+            :
+          fi
+          version="${BASH_REMATCH[1]}"
+          entry="$(Voxt/scripts/release-appcast.sh entry "$CHANNEL" "$version")"
+          release="$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,publishedAt,url)"
+          if [[ "$(jq -r '.isDraft or .isPrerelease' <<< "$release")" == "true" ]]; then
+            echo "::error::$TAG is a draft or a prerelease"
+            exit 1
+          else
+            :
+          fi
+          {
+            echo "VERSION=$version"
+            echo "ENTRY=$entry"
+            jq -r '"BUILD_NUMBER=\(.sparkleVersion)", "HARDWARE=\(.hardwareRequirements)", "ZIP_NAME=\(.assetFileName)", "DMG_NAME=\(.dmgFileName)"' <<< "$entry"
+            echo "PUBLISHED_AT=$(jq -r .publishedAt <<< "$release")"
+            echo "RELEASE_URL=$(jq -r .url <<< "$release")"
+          } >> "$GITHUB_ENV"
+          echo "Voxt $version for the $CHANNEL appcast: $entry"
+
+      - name: Download the release assets
+        run: |
+          set -euo pipefail
+          want="$(Voxt/scripts/release-appcast.sh info-plist "$VERSION")"
+          mkdir -p "$RUNNER_TEMP/assets"
+          cd "$RUNNER_TEMP/assets"
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" \
+            -p "$ZIP_NAME" -p "$ZIP_NAME.sha256" -p "$DMG_NAME" -p "$DMG_NAME.sha256"
+          shasum -a 256 -c "$ZIP_NAME.sha256" "$DMG_NAME.sha256"
+          ditto -x -k "$ZIP_NAME" app
+          # Sparkle installs the ZIP's Voxt.app only when its CFBundleVersion is not below Voxt 1.x's and it has an EdDSA key.
+          plist=app/Voxt.app/Contents/Info.plist
+          short_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")"
+          bundle_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")"
+          public_key="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$plist" 2>/dev/null || true)"
+          if [[ "$short_version" != "$VERSION" || "$bundle_version" != "$BUILD_NUMBER" || "$public_key" != "$(jq -r .SUPublicEDKey <<< "$want")" ]]; then
+            echo "::error::The ZIP holds Voxt $short_version ($bundle_version, SUPublicEDKey '$public_key'), expected $VERSION ($want)"
+            exit 1
+          else
+            :
+          fi
+          spctl --assess --type execute app/Voxt.app
+          rm -rf app
+
+      - name: Sign the update
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location -o sparkle.tar.xz \
+            "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz"
+          echo "$SPARKLE_SHA256  sparkle.tar.xz" | shasum -a 256 -c -
+          mkdir sparkle
+          tar -xJf sparkle.tar.xz -C sparkle
+          key="$RUNNER_TEMP/sparkle-private-key"
+          (umask 077 && printf '%s' "$SPARKLE_PRIVATE_KEY" > "$key")
+          zip="$RUNNER_TEMP/assets/$ZIP_NAME"
+          signature="$(sparkle/bin/sign_update -p -f "$key" "$zip")"
+          sparkle/bin/sign_update --verify -f "$key" "$zip" "$signature"
+          rm -f "$key"
+          {
+            echo "ED_SIGNATURE=$signature"
+            echo "ZIP_LENGTH=$(stat -f%z "$zip")"
+          } >> "$GITHUB_ENV"
+
+      - name: Publish to the update service
+        env:
+          VOXT_UPDATE_API_BASE: ${{ secrets.VOXT_UPDATE_API_BASE }}
+          VOXT_RELEASE_API_KEY: ${{ secrets.VOXT_RELEASE_API_KEY }}
+        run: |
+          set -euo pipefail
+          api="${VOXT_UPDATE_API_BASE%/}"
+          zip_path="$RUNNER_TEMP/assets/$ZIP_NAME"
+          dmg_path="$RUNNER_TEMP/assets/$DMG_NAME"
+          sha256="$(awk '{print $1}' "$zip_path.sha256")"
+          retry=(--retry 6 --retry-all-errors --retry-delay 10 --retry-max-time 180)
+          immutable="public, max-age=31536000, immutable"
+
+          # The update window shows the published release notes, as for Voxt 1.x.
+          body="$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json body --jq .body)"
+          if [[ -z "${body//[[:space:]]/}" ]]; then
+            echo "::error::Write the notes of $TAG on its release page, then run Voxt Appcast for it"
+            exit 1
+          else
+            :
+          fi
+          release_notes="$(Voxt/scripts/release-appcast.sh notes <<< "$body")"
+
+          prepare="$(jq '{action: "prepareUpload"} + del(.sparkleVersion)' <<< "$ENTRY" \
+            | curl --fail --silent --show-error "${retry[@]}" -X POST "$api/api/pkg/update" \
+              -H "Authorization: Bearer $VOXT_RELEASE_API_KEY" -H "X-Voxt-Source: github-actions" \
+              -H "Content-Type: application/json" --data-binary @-)"
+          zip_upload="$(jq -r '.data.uploads.zip.url // empty' <<< "$prepare")"
+          dmg_upload="$(jq -r '.data.uploads.dmg.url // empty' <<< "$prepare")"
+          if [[ -z "$zip_upload" || -z "$dmg_upload" ]]; then
+            echo "::error::The update service returned no upload URLs"
+            exit 1
+          else
+            :
+          fi
+          curl --fail --silent --show-error "${retry[@]}" -X PUT "$zip_upload" \
+            -H "Content-Type: application/zip" -H "Cache-Control: $immutable" --upload-file "$zip_path"
+          curl --fail --silent --show-error "${retry[@]}" -X PUT "$dmg_upload" \
+            -H "Content-Type: application/x-apple-diskimage" -H "Cache-Control: $immutable" \
+            -H "Content-Disposition: attachment; filename=\"$DMG_NAME\"" --upload-file "$dmg_path"
+
+          reply="$(jq --arg sha256 "$sha256" --arg size "$ZIP_LENGTH" --arg edSignature "$ED_SIGNATURE" \
+            --arg releaseNotes "$release_notes" --arg releaseURL "$RELEASE_URL" --arg publishedAt "$PUBLISHED_AT" \
+            '. + {sha256: $sha256, size: $size, edSignature: $edSignature,
+              releaseNotes: $releaseNotes, releaseURL: $releaseURL, publishedAt: $publishedAt}' <<< "$ENTRY" \
+            | curl --fail --silent --show-error "${retry[@]}" -X POST "$api/api/pkg/update" \
+              -H "Authorization: Bearer $VOXT_RELEASE_API_KEY" -H "X-Voxt-Source: github-actions" \
+              -H "Content-Type: application/json" --data-binary @-)"
+          echo "$reply"
+
+          # Sparkle skips an entry that needs arm64 on an Intel Mac. Until the update service keeps the
+          # entry's hardwareRequirements (its reply, or the build's item in an appcast), stop here.
+          appcasts="$(curl --fail --silent --show-error "${retry[@]}" \
+            https://voxt.actnow.dev/updates/beta/appcast.xml https://voxt.actnow.dev/updates/stable/appcast.xml)"
+          if kept="$(Voxt/scripts/release-appcast.sh hardware-kept "$BUILD_NUMBER" "$reply" 2>&1 <<< "$appcasts")"; then
+            echo "$kept"
+          else
+            echo "::error::$kept"
+            exit 1
+          fi
+
+          jq -n --arg channel "$CHANNEL" --arg version "$VERSION" \
+            '{channel: $channel, version: $version, mode: "replace-latest"}' \
+            | curl --fail --silent --show-error "${retry[@]}" -X POST "$api/api/pkg/appcast" \
+              -H "Authorization: Bearer $VOXT_RELEASE_API_KEY" -H "Content-Type: application/json" --data-binary @-
+          echo
+
+      - name: Check the appcast
+        run: |
+          set -euo pipefail
+          # Its first item: the build, only for Apple silicon.
+          for _ in 1 2 3 4 5 6; do
+            latest="$(curl --fail --silent --show-error "https://voxt.actnow.dev/updates/$CHANNEL/appcast.xml" \
+              | Voxt/scripts/release-appcast.sh items | sed -n 1p)"
+            if [[ "$latest" == "$BUILD_NUMBER $HARDWARE" ]]; then
+              echo "The $CHANNEL appcast offers Voxt $VERSION ($BUILD_NUMBER) for $HARDWARE"
+              exit 0
+            else
+              echo "The $CHANNEL appcast's first item is '$latest' (build, hardware requirement); retrying"
+              sleep 20
+            fi
+          done
+          echo "::error::The $CHANNEL appcast's first item is not build $BUILD_NUMBER with sparkle:hardwareRequirements $HARDWARE: if only the requirement is missing, Voxt 1.x on an Intel Mac gets a version it cannot open"
+          exit 1
+
+  homebrew:
+    name: Voxt Homebrew cask
+    needs: [appcast]
+    # Homebrew has no beta: the cask follows the stable appcast.
+    if: inputs.channel == 'stable'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: voxt-release
+    env:
+      TAG: ${{ inputs.tag }}
+      TAP: hehehai/homebrew-tap
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Update the cask
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${TAG#voxt-v}"
+          read -r zip_name _ <<< "$(Voxt/scripts/release-appcast.sh assets "$version")"
+          digest="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
+            --jq ".assets[] | select(.name == \"$zip_name\") | .digest")"
+          sha256="${digest#sha256:}"
+          if [[ ! "$sha256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::$TAG has no SHA-256 digest for $zip_name"
+            exit 1
+          else
+            :
+          fi
+          tap="$RUNNER_TEMP/tap"
+          git clone --depth 1 "https://x-access-token:$HOMEBREW_TAP_TOKEN@github.com/$TAP.git" "$tap"
+          mkdir -p "$tap/Casks"
+          Voxt/scripts/release-appcast.sh cask "$version" "$sha256" "$GITHUB_REPOSITORY" > "$tap/Casks/voxt.rb"
+          cd "$tap"
+          if git diff --quiet -- Casks/voxt.rb; then
+            echo "The cask already offers Voxt $version"
+          else
+            git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "Update voxt to $version" -- Casks/voxt.rb
+            git push origin HEAD
+          fi

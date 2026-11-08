@@ -4,16 +4,17 @@ name: Voxt Release
 # inside) with scripts/release.sh for a voxt-vX.Y.Z tag, which
 # sets the version (newer than every voxt-v tag): signed with the Developer
 # ID of the voxt-release environment, notarized, checked by
-# scripts/release-verify.sh, and uploaded with its SHA-256 to a draft release
-# whose notes are the version's section of Voxt/CHANGELOG.md. Apple silicon
-# only. The nightly from main (voxt-nightly.yaml, version
+# scripts/release-verify.sh, and uploaded with the app's ZIP (for Voxt 1.x's
+# in-app update and Homebrew, voxt-appcast.yaml) and their SHA-256 to a draft
+# release whose notes are the version's section of Voxt/CHANGELOG.md. Apple
+# silicon only. The nightly from main (voxt-nightly.yaml, version
 # X.Y.Z-nightly.YYYYMMDD) and the beta of each Voxt change merged into main
 # (voxt-beta.yaml, version X.Y.Z-beta.YYYYMMDD.N) are signed and notarized
-# the same way and keep their disk image as an artifact. A beta takes the
+# the same way and keep their disk image and its SHA-256 as an artifact,
+# without the ZIP, which only a release's update uses. A beta takes the
 # Omni runtime from the cache when one was built from the same sources.
-# Any other run (a pull request that
-# changes the release, or by hand) builds the same app ad hoc, unsigned, and
-# keeps its disk image as an artifact.
+# Any other run (a pull request that changes the release, or by hand) builds
+# the same app ad hoc, unsigned, and keeps its disk image the same way.
 
 on:
   push:
@@ -215,7 +216,7 @@ jobs:
           fi
           rm -f "$RUNNER_TEMP/notary.p8"
 
-      - name: Collect the disk image
+      - name: Collect the disk image, and a release's ZIP
         run: |
           set -euo pipefail
           dmg="$(compgen -G 'build/darwin-arm64/*.dmg' | head -1 || true)"
@@ -225,12 +226,28 @@ jobs:
           else
             :
           fi
+          # What Voxt 1.x's Sparkle checks before it installs the ZIP's app (scripts/release.sh writes it).
+          want="$(scripts/release-appcast.sh info-plist "$VERSION" | jq -c .)"
+          got="$(plutil -convert json -o - build/darwin-arm64/Voxt.app/Contents/Info.plist | jq -c '{CFBundleVersion, SUPublicEDKey}')"
+          if [[ "$got" != "$want" ]]; then
+            echo "::error::Voxt.app's Info.plist has $got, Voxt 1.x's update needs $want"
+            exit 1
+          else
+            :
+          fi
           out="$RUNNER_TEMP/artifacts"
-          name="Voxt-$VERSION-arm64.dmg"
+          read -r zip_name name <<< "$(scripts/release-appcast.sh assets "$VERSION")"
           mkdir -p "$out"
           cp "$dmg" "$out/$name"
-          # The SHA-256 file names the artifact, not a local path, so shasum -c works after a download.
+          # The SHA-256 files name the artifacts, not local paths, so shasum -c works after a download.
           (cd "$out" && shasum -a 256 "$name" > "$name.sha256")
+          if [[ "$IS_RELEASE" == "true" ]]; then
+            # Voxt 1.x's in-app update and the Homebrew cask install the app from the release's ZIP (voxt-appcast.yaml), as Voxt 1.x's release made it.
+            ditto -c -k --sequesterRsrc --keepParent build/darwin-arm64/Voxt.app "$out/$zip_name"
+            (cd "$out" && shasum -a 256 "$zip_name" > "$zip_name.sha256")
+          else
+            :
+          fi
           echo "ARTIFACTS_DIR=$out" >> "$GITHUB_ENV"
           ls -l "$out"
 

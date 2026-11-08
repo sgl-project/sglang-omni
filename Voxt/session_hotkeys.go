@@ -73,6 +73,11 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 			kind = store.KindRewrite
 		}
 		req := session.StartRequest{Kind: kind, Target: target, HoldBinding: hold}
+		if d.Feature == hotkey.Note { // a note, from any app and page: never a try
+			req.Note = true
+			a.startSession(req)
+			return
+		}
 		// VoxtNew in front, on a page with a Try area for it: a try there.
 		switch place := a.tryPlace(kind, target); place {
 		case placeNone:

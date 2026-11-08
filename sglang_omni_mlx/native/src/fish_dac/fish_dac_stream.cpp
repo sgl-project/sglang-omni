@@ -3,9 +3,9 @@
 #include <stdexcept>
 #include <vector>
 
-#include "fishaudio_drama3/fishaudio_drama3_codec.h"
+#include "fish_dac/fish_dac.h"
 
-namespace fishaudio_drama3 {
+namespace fish_dac {
 
 namespace mx = mlx::core;
 
@@ -111,45 +111,8 @@ mx::array CodecStream::TransformerStep(const mx::array &x,
 
 mx::array CodecStream::Push(const mx::array &codes) {
   const int frames = codes.shape(1);
-  const mx::array indices = mx::expand_dims(codes, 0);
-  const int semantic_size =
-      codec_.checkpoint_
-          .Weight("quantizer.semantic_quantizer.quantizers.0.codebook.weight")
-          .shape(0);
-  const int residual_size =
-      codec_.checkpoint_
-          .Weight("quantizer.quantizer.quantizers.0.codebook.weight")
-          .shape(0);
-  const auto codebook_codes = [&](int codebook) {
-    return mx::squeeze(
-        mx::slice(indices, {0, codebook, 0}, {1, codebook + 1, frames}), 1);
-  };
-  const auto from_codes = [&](const mx::array &codebook_indices,
-                              const std::string &prefix) {
-    return AudioCodec::Convolve(codec_.DecodeCode(codebook_indices, prefix),
-                                codec_.Convolution(prefix + ".out_proj"), 1, 1,
-                                1);
-  };
-  // A Python 0.0 that starts each sum takes the projection's dtype.
-  const mx::array semantic_projection =
-      from_codes(mx::clip(codebook_codes(0), mx::array(0, mx::int32),
-                          mx::array(semantic_size - 1, mx::int32)),
-                 "quantizer.semantic_quantizer.quantizers.0");
-  const mx::array semantic =
-      mx::add(omni_common::Scalar(0, semantic_projection), semantic_projection);
-  std::optional<mx::array> residual;
-  for (int codebook = 0; codebook < AudioCodec::kResidualCodebookCount;
-       ++codebook) {
-    const mx::array projection = from_codes(
-        mx::clip(codebook_codes(codebook + 1), mx::array(0, mx::int32),
-                 mx::array(residual_size - 1, mx::int32)),
-        AudioCodec::Index("quantizer.quantizer.quantizers", codebook));
-    residual = mx::add(
-        residual.has_value() ? *residual : omni_common::Scalar(0, projection),
-        projection);
-  }
   mx::array x =
-      TransformerStep(mx::add(semantic, *residual), AudioCodec::kPostModule);
+      TransformerStep(codec_.QuantizedFeatures(codes), AudioCodec::kPostModule);
   for (int block = 0; block < AudioCodec::kDownsampleCount; ++block) {
     const std::string prefix = AudioCodec::Index("quantizer.upsample", block);
     x = TransposedStep(x, prefix + ".0", 2);
@@ -181,8 +144,8 @@ mx::array CodecStream::Push(const mx::array &codes) {
   for (const auto &cached_overlap : overlaps_) {
     convolution_states.push_back(cached_overlap.second);
   }
-  return mx::depends({mx::reshape(x, {frames * kCodecFrameSamples})},
+  return mx::depends({mx::reshape(x, {frames * kFrameSamples})},
                      convolution_states)[0];
 }
 
-} // namespace fishaudio_drama3
+} // namespace fish_dac
