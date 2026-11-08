@@ -84,6 +84,34 @@ class PersonaPlexSessionAdapter(ARSessionAdapter):
         payload.data = PersonaPlexState(codes=no_codes()).to_dict()
         return payload
 
+    def feed(
+        self,
+        session_identity: SessionIdentity,
+        chunk: TimedChunk,
+        payload: StagePayload,
+    ) -> int:
+        caller_codes = PersonaPlexState.from_dict(payload.data).user_codes
+        history = self.states[session_identity].history
+        self.check_context(history.timeline, caller_codes)
+        history.timeline.append_caller_frames(caller_codes)
+        return int(caller_codes.shape[0])
+
+    def check_context(self, timeline: Timeline, caller_codes: torch.Tensor) -> None:
+        positions = (
+            timeline.num_prompt_positions
+            + timeline.num_frames
+            + int(caller_codes.shape[0])
+            + 1
+        )
+        if positions > self.context_length - 1:
+            raise ContextExhaustedError(
+                f"{ContextExhaustedError.CODE}: PersonaPlex session needs {positions} "
+                f"positions but the LM context holds {self.context_length - 1}; "
+                "raise the lm stage's context_length for longer sessions"
+            )
+        else:
+            pass
+
     def start_history(
         self, session: LMSessionState, state: PersonaPlexState
     ) -> LMHistory:
@@ -129,16 +157,7 @@ class PersonaPlexSessionAdapter(ARSessionAdapter):
         timeline = history.timeline
         caller_codes = state.user_codes
         num_forwards = timeline.num_frames + int(caller_codes.shape[0]) + 1
-        positions = timeline.num_prompt_positions + num_forwards
-        if positions > self.context_length - 1:
-            raise ContextExhaustedError(
-                f"{ContextExhaustedError.CODE}: PersonaPlex session needs {positions} "
-                f"positions but the LM context holds {self.context_length - 1}; "
-                "raise the lm stage's context_length for longer sessions"
-            )
-        else:
-            pass
-
+        self.check_context(timeline, caller_codes)
         timeline.append_caller_frames(caller_codes)
         forwards_done = len(history.model_inputs["agent_rows"])
         input_ids = prompt_input_ids(timeline) if forwards_done == 0 else []

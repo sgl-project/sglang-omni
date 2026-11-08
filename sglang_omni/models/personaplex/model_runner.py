@@ -20,7 +20,7 @@ import numpy as np
 import torch
 from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
 from sglang.srt.managers.utils import GenerationBatchResult
-from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
 from sglang.srt.utils.common import is_pin_memory_available
 
 from sglang_omni.model_runner.base import ModelRunner
@@ -65,6 +65,10 @@ class PersonaPlexFrameBatch:
 class PersonaPlexModelRunner(ModelRunner):
     depformer_cuda_graph: DepformerCudaGraphRunner | None = None
     live_row_staging: list[torch.Tensor] | None = None
+    # Note (Junnan Li): A batch that lacks only each request's next row is a decode step
+    # in all but name.
+    live_rows_as_decode: bool = False
+    steady_units_as_decode: bool = False
 
     def sample_before_post_prefill(
         self,
@@ -420,6 +424,13 @@ class PersonaPlexModelRunner(ModelRunner):
                 inputs["prefill_forced"] = free_codes
         if len(live_rows) == len(pieces):
             input_embeds = self.embed_live_rows(live_rows)
+            if self.live_rows_as_decode:
+                model = self.model
+                model.fusion_buffer[: input_embeds.shape[0]] = input_embeds
+                forward_batch.forward_mode = ForwardMode.DECODE
+                return
+            else:
+                pass
         elif live_rows:
             live_embeds = self.embed_live_rows(live_rows)
             for row, index in enumerate(live_pieces):
@@ -433,6 +444,17 @@ class PersonaPlexModelRunner(ModelRunner):
                 input_embeds=input_embeds, input_embeds_are_projected=True
             ),
         )
+
+    def cleanup_prefill(
+        self,
+        forward_batch: ForwardBatch,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
+    ) -> None:
+        if forward_batch.forward_mode.is_decode():
+            forward_batch.forward_mode = ForwardMode.EXTEND
+        else:
+            pass
 
     def embed_live_rows(
         self, live_rows: list[tuple[torch.Tensor, torch.Tensor, np.ndarray]]
@@ -498,23 +520,44 @@ class PersonaPlexModelRunner(ModelRunner):
         *,
         is_lookahead: bool = False,
     ) -> None:
-        model = self.model
+        if self.steady_units_as_decode:
+            self.embed_steady_rows(requests)
+        else:
+            model = self.model
+            rows = []
+            for request in requests:
+                data = request.data
+                timeline = self.request_timeline(data)
+                feedback = self.decode_feedback(data)
+                position = timeline.input_position(feedback.launched_frames)
+                row = torch.empty(
+                    NUM_STREAMS, dtype=torch.long, device=self.model_device
+                )
+                assert feedback.text_token is not None
+                row[0] = feedback.text_token
+                row[AGENT_STREAM_OFFSET:USER_STREAM_OFFSET] = feedback.agent_row
+                row[USER_STREAM_OFFSET:] = feedback.user_rows[position]
+                rows.append(row)
+            batch = len(rows)
+            model.fusion_buffer[:batch] = model.embed_rows(torch.stack(rows)).to(
+                model.fusion_buffer.dtype
+            )
+
+    def embed_steady_rows(self, requests: list[SchedulerRequest]) -> None:
         rows = []
         for request in requests:
             data = request.data
             timeline = self.request_timeline(data)
-            feedback = self.decode_feedback(data)
+            feedback = data.talker_model_inputs["decode_feedback"]
             position = timeline.input_position(feedback.launched_frames)
-            row = torch.empty(NUM_STREAMS, dtype=torch.long, device=self.model_device)
-            assert feedback.text_token is not None
-            row[0] = feedback.text_token
-            row[AGENT_STREAM_OFFSET:USER_STREAM_OFFSET] = feedback.agent_row
-            row[USER_STREAM_OFFSET:] = feedback.user_rows[position]
-            rows.append(row)
-        batch = len(rows)
-        model.fusion_buffer[:batch] = model.embed_rows(torch.stack(rows)).to(
-            model.fusion_buffer.dtype
-        )
+            rows.append(
+                (
+                    feedback.text_token,
+                    feedback.agent_row,
+                    timeline.user_rows_buffer[position],
+                )
+            )
+        self.model.fusion_buffer[: len(rows)] = self.embed_live_rows(rows)
 
     def post_decode(
         self,

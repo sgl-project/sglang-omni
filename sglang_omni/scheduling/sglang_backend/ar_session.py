@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 from array import array
+from collections import deque
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -169,6 +170,14 @@ class ARSessionAdapter:
         """Return a relayed EOS payload, or None to use normal generation."""
         return None
 
+    def feed(
+        self,
+        session_identity: SessionIdentity,
+        chunk: TimedChunk,
+        payload: StagePayload,
+    ) -> int:
+        raise NotImplementedError
+
     def bind_request(
         self,
         session_identity: SessionIdentity,
@@ -249,9 +258,31 @@ class SessionUnit:
 
 
 @dataclass(kw_only=True)
+class SteppedUnit:
+    unit: SessionUnit
+    payload: StagePayload
+    steps: int
+    is_cancelled: bool = False
+
+
+@dataclass(kw_only=True)
+class SteppedRequest:
+    """steps_reported counts output tokens already returned with earlier units."""
+
+    req: Req
+    request_data: SGLangARRequestData
+    units: deque[SteppedUnit]
+    steps_granted: int
+    steps_reported: int = 0
+    is_parked: bool = False
+    is_ended: bool = False
+
+
+@dataclass(kw_only=True)
 class BridgeSession:
     session_identity: SessionIdentity
     unit: SessionUnit | None = None
+    stepped: SteppedRequest | None = None
     # note (Junnan Li): KV rebuilds need embeddings from every completed unit.
     embedding_spans: list[EmbeddingSpan] = field(default_factory=list)
     # The session's read; an AR stage emits only inside appends, so the close answers it.
@@ -262,12 +293,19 @@ class ARSessionBridge:
     """Map pipeline open, append, and close onto one SGLang streaming session."""
 
     def __init__(
-        self, bridge_scheduler: BridgeScheduler, adapter: ARSessionAdapter
+        self,
+        bridge_scheduler: BridgeScheduler,
+        adapter: ARSessionAdapter,
+        *,
+        steps_in_place: bool = False,
     ) -> None:
+        """steps_in_place keeps each session one request that its later units feed."""
         self.bridge_scheduler = bridge_scheduler
         self.adapter = adapter
+        self.steps_in_place = steps_in_place
         self.sessions: dict[str, BridgeSession] = {}
         self.units_by_request_id: dict[str, SessionUnit] = {}
+        self.stepped_by_request_id: dict[str, BridgeSession] = {}
         self.cancelling_request_id: str | None = None
 
     def drain(self) -> None:
@@ -432,6 +470,11 @@ class ARSessionBridge:
     def create_session_request(
         self, payload: StagePayload, request_data: SGLangARRequestData
     ) -> None:
+        if self.steps_in_place:
+            self.create_stepped_request(payload, request_data)
+            return
+        else:
+            pass
         self.drain()
         unit = self.units_by_request_id[payload.request_id]
         adapter_request = request_data.req
@@ -614,6 +657,12 @@ class ARSessionBridge:
 
     def cancel(self, request_id: str) -> None:
         unit = self.units_by_request_id[request_id]
+        session = self.sessions[unit.session_identity.id]
+        if session.stepped is not None and not session.stepped.is_ended:
+            self.cancel_stepped_unit(session, request_id)
+            return
+        else:
+            pass
         session_request = unit.session_request
         previous_cancelling_request_id = self.cancelling_request_id
         self.cancelling_request_id = request_id
@@ -726,23 +775,38 @@ class ARSessionBridge:
         fresh_request_count = 0
         row_reusing_request_count = 0
         for queued_request in waiting_queue:
-            session = queued_request.session
-            if session is not None and session.streaming:
-                record = records.get(session.session_id)
-            else:
-                record = None
-            # note (Junnan Li): An aborted unit does not take its slot's row.
-            if (
-                record is not None
-                and record.holds_kv
-                and queued_request.to_finish is None
-            ):
+            if self.continues_session(queued_request, records):
                 row_reusing_request_count += 1
             elif fresh_request_count < free_request_rows:
                 fresh_request_count += 1
             else:
                 break
         return row_reusing_request_count
+
+    @staticmethod
+    def continues_session(
+        queued_request: Req, records: Mapping[str, SessionKV]
+    ) -> bool:
+        session = queued_request.session
+        if session is not None and session.streaming:
+            record = records.get(session.session_id)
+        else:
+            record = None
+        # note (Junnan Li): An aborted unit does not take its slot's row.
+        return (
+            record is not None and record.holds_kv and queued_request.to_finish is None
+        )
+
+    def split_openings(self, waiting_queue: list[Req]) -> tuple[list[Req], list[Req]]:
+        records = self.bridge_scheduler.tree_cache.session_records()
+        continuing: list[Req] = []
+        opening: list[Req] = []
+        for queued_request in waiting_queue:
+            if self.continues_session(queued_request, records):
+                continuing.append(queued_request)
+            else:
+                opening.append(queued_request)
+        return continuing, opening
 
     def stream_messages(
         self,
@@ -840,8 +904,155 @@ class ARSessionBridge:
         else:
             pass
 
+    def is_stepping(self, session_identity: SessionIdentity) -> bool:
+        return self.sessions[session_identity.id].stepped is not None
+
+    def create_stepped_request(
+        self, payload: StagePayload, request_data: SGLangARRequestData
+    ) -> None:
+        """Kept one past the granted steps: SGLang finishes at max_new_tokens."""
+        unit = self.units_by_request_id[payload.request_id]
+        session = self.sessions[unit.session_identity.id]
+        req = request_data.req
+        unit.session_request = req
+        session.stepped = SteppedRequest(
+            req=req,
+            request_data=request_data,
+            units=deque(
+                [
+                    SteppedUnit(
+                        unit=unit, payload=payload, steps=request_data.max_new_tokens
+                    )
+                ]
+            ),
+            steps_granted=request_data.max_new_tokens,
+        )
+        req.sampling_params.max_new_tokens = request_data.max_new_tokens + 1
+        self.stepped_by_request_id[req.rid] = session
+
+    def feed(self, unit: SessionUnit, payload: StagePayload) -> None:
+        stepped = self.sessions[unit.session_identity.id].stepped
+        if stepped.is_ended:
+            raise ValueError("the session's request has ended")
+        else:
+            pass
+        steps = self.adapter.feed(unit.session_identity, unit.chunk, payload)
+        stepped.units.append(SteppedUnit(unit=unit, payload=payload, steps=steps))
+        stepped.steps_granted += steps
+        stepped.req.sampling_params.max_new_tokens = stepped.steps_granted + 1
+        unit.session_request = stepped.req
+        unit.is_enqueued = True
+
+    def stepped_session(self, request_id: str) -> BridgeSession | None:
+        return self.stepped_by_request_id.get(request_id)
+
+    def take_stepped_results(
+        self, session: BridgeSession
+    ) -> list[tuple[str, StagePayload | None]]:
+        """A cancelled unit's steps still ran, but it returns nothing."""
+        stepped = session.stepped
+        output_ids = stepped.req.output_ids
+        results: list[tuple[str, StagePayload | None]] = []
+        while stepped.units and stepped.steps_reported + stepped.units[0].steps <= len(
+            output_ids
+        ):
+            entry = stepped.units.popleft()
+            start = stepped.steps_reported
+            data = stepped.request_data
+            data.output_ids = list(output_ids[start : start + entry.steps])
+            data.stage_payload = entry.payload
+            result = self.adapter.result(session.session_identity, data)
+            stepped.steps_reported = start + entry.steps
+            if entry.is_cancelled:
+                results.append((entry.unit.request_id, None))
+            else:
+                results.append((entry.unit.request_id, result))
+                self.complete(entry.unit.request_id)
+        return results
+
+    def should_park(self, req: Req) -> bool:
+        session = self.stepped_by_request_id.get(req.rid)
+        return (
+            session is not None
+            and not req.finished()
+            and len(req.output_ids) >= session.stepped.steps_granted
+        )
+
+    def park(self, req: Req) -> None:
+        self.stepped_by_request_id[req.rid].stepped.is_parked = True
+
+    def take_resumable(self) -> list[Req]:
+        resumable = []
+        for session in self.stepped_by_request_id.values():
+            stepped = session.stepped
+            if (
+                stepped.is_parked
+                and len(stepped.req.output_ids) < stepped.steps_granted
+            ):
+                stepped.is_parked = False
+                resumable.append(stepped.req)
+            else:
+                pass
+        return resumable
+
+    def end_stepped(self, session: BridgeSession) -> list[str]:
+        stepped = session.stepped
+        stepped.is_ended = True
+        self.stepped_by_request_id.pop(stepped.req.rid, None)
+        waiting = []
+        for entry in stepped.units:
+            self.units_by_request_id.pop(entry.unit.request_id, None)
+            if not entry.is_cancelled:
+                waiting.append(entry.unit.request_id)
+            else:
+                pass
+        stepped.units.clear()
+        session.unit = None
+        return waiting
+
+    def stop_stepped_request(self, session: BridgeSession) -> None:
+        stepped = session.stepped
+        req = stepped.req
+        if not stepped.is_parked:
+            # Note (Junnan Li): Take the steps in flight first: an aborted request runs
+            # one more step, and past its grant that step has no caller frame.
+            self.bridge_scheduler.resolve_pending_async()
+        else:
+            pass
+        has_taken_every_step = stepped.is_parked or (
+            not req.finished() and len(req.output_ids) >= stepped.steps_granted
+        )
+        self.end_stepped(session)
+        if has_taken_every_step:
+            req.finished_reason = FINISH_ABORT()
+            self.bridge_scheduler.release_request_kv_cache(req)
+            req.omni_data = None
+        else:
+            self.bridge_scheduler.abort(req.rid)
+
+    def cancel_stepped_unit(self, session: BridgeSession, request_id: str) -> None:
+        """Cancelling the first unit ends the request; it carries the conversation."""
+        stepped = session.stepped
+        if request_id == stepped.req.rid:
+            previous_cancelling_request_id = self.cancelling_request_id
+            self.cancelling_request_id = request_id
+            try:
+                self.stop_stepped_request(session)
+            finally:
+                self.cancelling_request_id = previous_cancelling_request_id
+        else:
+            for entry in stepped.units:
+                if entry.unit.request_id == request_id:
+                    entry.is_cancelled = True
+                else:
+                    pass
+            self.units_by_request_id.pop(request_id)
+            session.unit = None
+
     def close_streaming_session(self, session: BridgeSession) -> None:
-        if session.unit is not None:
+        if session.stepped is not None and not session.stepped.is_ended:
+            self.stop_stepped_request(session)
+        elif session.unit is not None:
             self.bridge_scheduler.abort(session.unit.request_id)
         else:
             pass

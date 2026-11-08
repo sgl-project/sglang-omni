@@ -60,6 +60,7 @@ from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
 from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool, ReqToTokenPool
 from sglang.srt.runtime_context import get_model, get_parallel, get_serving, get_spec
+from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.session.session_controller import SessionController
 from sglang.srt.speculative.base_spec_worker import BaseSpecWorker
@@ -107,6 +108,7 @@ from sglang_omni.scheduling.message import (
 from sglang_omni.scheduling.sglang_backend.ar_session import (
     ARSessionAdapter,
     ARSessionBridge,
+    BridgeSession,
     SessionUnit,
     is_close_request,
 )
@@ -300,6 +302,8 @@ class OmniSchedulerArguments(TypedDict, Generic[RequestDataT], total=False):
     request_build_max_pending: int | None
     shutdown_callback: Callable[[], None] | None
     continuation_aware_admission: bool
+    separate_session_openings: bool
+    steady_session_units_as_decode: bool
 
 
 class OmniScheduler(Generic[RequestDataT]):
@@ -324,9 +328,14 @@ class OmniScheduler(Generic[RequestDataT]):
         which credits a unit's held row once the unit is in the batch, so a
         batch admits such units only when it has a free row for the first
         one; the KV is still retained and the row still reused.
+        ``separate_session_openings=True`` keeps the first unit of a session out of
+        a prefill batch of units whose sessions hold KV, alternating the two while
+        both wait.
     """
 
     session_bridge: ARSessionBridge | None = None
+    separate_session_openings: bool = False
+    last_prefill_continued_sessions: bool = False
     scheduler_thread_id: int | None = None
     previous_pending_decode: PendingDecode | None = None
     async_decode_resolve_before_prefill: bool = False
@@ -375,6 +384,8 @@ class OmniScheduler(Generic[RequestDataT]):
         request_build_max_pending: int | None = None,
         shutdown_callback: Callable[[], None] | None = None,
         continuation_aware_admission: bool = True,
+        separate_session_openings: bool = False,
+        steady_session_units_as_decode: bool = False,
     ) -> None:
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
@@ -384,6 +395,8 @@ class OmniScheduler(Generic[RequestDataT]):
         self.session_adapter = session_adapter
         self.session_bridge: ARSessionBridge | None = None
         self.continuation_aware_admission = continuation_aware_admission
+        self.separate_session_openings = separate_session_openings
+        self.steady_session_units_as_decode = steady_session_units_as_decode
         if session_adapter is not None and not server_args.enable_streaming_session:
             raise ValueError("session_adapter requires enable_streaming_session")
         else:
@@ -850,7 +863,11 @@ class OmniScheduler(Generic[RequestDataT]):
 
         self.session_controller = SessionController(self.tree_cache)
         if self.session_adapter is not None:
-            self.session_bridge = ARSessionBridge(self, self.session_adapter)
+            self.session_bridge = ARSessionBridge(
+                self,
+                self.session_adapter,
+                steps_in_place=self.steady_session_units_as_decode,
+            )
         else:
             pass
         self.dllm_manager = SimpleNamespace(any_staging_reqs=lambda: False)
@@ -1247,6 +1264,13 @@ class OmniScheduler(Generic[RequestDataT]):
                         data=payload,
                     )
                 )
+                return False
+            elif not is_empty_eos and bridge.is_stepping(unit.session_identity):
+                try:
+                    bridge.feed(unit, payload)
+                except Exception:
+                    bridge.complete(payload.request_id)
+                    raise
                 return False
             elif not is_empty_eos:
                 return True
@@ -2126,9 +2150,96 @@ class OmniScheduler(Generic[RequestDataT]):
             running_batch.batch_is_full = False
         else:
             pass
-        plan = _Upstream.get_next_batch_to_run(self, running_batch, self.last_batch)
+        bridge = self.session_bridge
+        if bridge is not None and bridge.stepped_by_request_id:
+            running_batch = self.resume_parked_requests(running_batch)
+        else:
+            pass
+        if self.separate_session_openings and bridge is not None:
+            continuing, opening = bridge.split_openings(self.waiting_queue)
+        else:
+            continuing, opening = [], []
+        if not continuing or not opening:
+            take, defer = self.waiting_queue, []
+        elif self.last_prefill_continued_sessions:
+            take, defer = opening, continuing
+        else:
+            take, defer = continuing, opening
+        self.waiting_queue = take
+        try:
+            plan = _Upstream.get_next_batch_to_run(self, running_batch, self.last_batch)
+        finally:
+            self.waiting_queue = [*self.waiting_queue, *defer]
+        if defer and plan.batch_to_run is not None:
+            self.last_prefill_continued_sessions = take is continuing
+        else:
+            pass
         self.running_batch = plan.running_batch
         return plan.batch_to_run
+
+    def resume_parked_requests(self, running_batch: ScheduleBatch) -> ScheduleBatch:
+        resumable = self.session_bridge.take_resumable()
+        if not resumable:
+            return running_batch
+        else:
+            pass
+        resumed = self.build_resumed_decode_batch(resumable)
+        if running_batch.is_empty():
+            return resumed
+        else:
+            running_batch.merge_batch(resumed)
+            return running_batch
+
+    def build_resumed_decode_batch(self, reqs: list[Req]) -> ScheduleBatch:
+        batch = ScheduleBatch.init_new(
+            reqs=reqs,
+            req_to_token_pool=self.req_to_token_pool,
+            token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
+            tree_cache=self.tree_cache,
+            model_config=self.model_config,
+            enable_overlap=self.enable_overlap,
+            spec_algorithm=self.spec_algorithm,
+        )
+        # Note (Junnan Li): Every position but the last sampled one has KV.
+        seq_lens = [len(req.origin_input_ids) + len(req.output_ids) - 1 for req in reqs]
+        rows = torch.tensor(
+            [[req.kv.req_pool_idx for req in reqs], seq_lens], dtype=torch.int64
+        )
+        batch.req_pool_indices_cpu, batch.seq_lens_cpu = rows
+        batch.req_pool_indices, batch.seq_lens = rows.to(self.device)
+        batch.orig_seq_lens = batch.seq_lens.to(torch.int32)
+        batch.seq_lens_sum = sum(seq_lens)
+        # Note (Junnan Li): Merging concatenates per-request entries, so the batch needs
+        # one each.
+        batch.multimodal_inputs = [req.multimodal_inputs for req in reqs]
+        # Note (Junnan Li): The last sampled tokens stay in the token relay under each
+        # request's row.
+        batch.input_ids = None
+        batch.sampling_info = SamplingBatchInfo.from_schedule_batch(
+            batch, self.model_config.vocab_size
+        )
+        return batch
+
+    def update_running_batch(self, batch: ScheduleBatch) -> ScheduleBatch | None:
+        bridge = self.session_bridge
+        if bridge is not None and bridge.stepped_by_request_id:
+            keep = []
+            for index, req in enumerate(batch.reqs):
+                if bridge.should_park(req):
+                    bridge.park(req)
+                else:
+                    keep.append(index)
+            if len(keep) < len(batch.reqs):
+                batch.filter_batch(keep_indices=keep)
+            else:
+                pass
+            if batch.is_empty():
+                return batch
+            else:
+                pass
+        else:
+            pass
+        return _Upstream.update_running_batch(self, batch)
 
     def get_num_allocatable_reqs(
         self,
@@ -2738,6 +2849,38 @@ class OmniScheduler(Generic[RequestDataT]):
         for request_id in tuple(self.prefill_start_done):
             self.emit_model_path_end_once(request_id, status=status)
 
+    def stream_stepped_output(self, req: Req, session: BridgeSession) -> None:
+        bridge = self.session_bridge
+        try:
+            results = bridge.take_stepped_results(session)
+        except Exception as exc:
+            logger.exception(f"OmniScheduler stepped unit output failed for {req.rid}")
+            for request_id in bridge.end_stepped(session):
+                self.emit_request_error(request_id, exc)
+            if not req.finished():
+                self.abort(req.rid)
+            else:
+                pass
+            return
+        for request_id, result in results:
+            if result is not None:
+                self.outbox.put(
+                    OutgoingMessage(request_id=request_id, type="result", data=result)
+                )
+            else:
+                pass
+        if req.finished():
+            error = ValueError(f"session request finished: {req.finished_reason}")
+            for request_id in bridge.end_stepped(session):
+                self.emit_request_error(request_id, error)
+            self.emit_model_path_end_once(req.rid, status="aborted")
+            if self.close_completed_request(req):
+                self.run_abort_callback(req.rid)
+            else:
+                pass
+        else:
+            pass
+
     def stream_output(self, reqs, return_logprob=False, skip_req=None):
         """Intercept finished requests and emit to outbox.
 
@@ -2747,8 +2890,17 @@ class OmniScheduler(Generic[RequestDataT]):
         Under speculative decoding each request's newly committed tokens are
         emitted here, ahead of its flush and terminal result.
         """
+        bridge = self.session_bridge
         for req in reqs:
             if skip_req is not None and req is skip_req:
+                continue
+            else:
+                pass
+            stepped_session = (
+                bridge.stepped_session(req.rid) if bridge is not None else None
+            )
+            if stepped_session is not None:
+                self.stream_stepped_output(req, stepped_session)
                 continue
             else:
                 pass

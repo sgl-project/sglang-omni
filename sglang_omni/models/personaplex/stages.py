@@ -307,6 +307,8 @@ def create_session_lm_executor(
     depformer_cuda_graph_batch_sizes: list[int],
     audio_temperature: float,
     audio_top_k: int,
+    live_rows_as_decode: bool = False,
+    steady_units_as_decode: bool = False,
     dtype: str | None = None,
     device: str | None = None,
     gpu_id: int | None = None,
@@ -316,6 +318,8 @@ def create_session_lm_executor(
 ) -> OmniScheduler[SGLangARRequestData]:
     server_args_overrides = {**overrides, **(server_args_overrides or {})}
     builder = PersonaPlexSessionEngineBuilder(
+        live_rows_as_decode=live_rows_as_decode,
+        steady_units_as_decode=steady_units_as_decode,
         tokenizer=load_text_tokenizer(resolve_model_path(model_path)),
         context_length=server_args_overrides.get("context_length", context_length),
         # Note (Junnan Li): A unit decodes one or two frames, so async

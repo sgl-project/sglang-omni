@@ -94,6 +94,8 @@ class SchedulerExtras(TypedDict, Generic[RequestDataT], total=False):
     prefill_coalesce_after_builds_during_decode: bool
     request_build_max_workers: int
     request_build_max_pending: int | None
+    separate_session_openings: bool
+    steady_session_units_as_decode: bool
 
 
 class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):

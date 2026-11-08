@@ -48,9 +48,16 @@ class PersonaPlexLMStageConfig(EngineStageConfig):
     factory: PersonaPlexLMFactoryArgs = Field(default_factory=PersonaPlexLMFactoryArgs)
 
 
+class PersonaPlexSessionLMFactoryArgs(PersonaPlexDepformerFactoryArgs):
+    live_rows_as_decode: bool = False
+    "Run a step of only live rows as a decode step on the decode graph."
+    steady_units_as_decode: bool = False
+    "Keep each session one request that its later units feed."
+
+
 class PersonaPlexSessionLMStageConfig(EngineStageConfig):
-    factory: PersonaPlexDepformerFactoryArgs = Field(
-        default_factory=PersonaPlexDepformerFactoryArgs
+    factory: PersonaPlexSessionLMFactoryArgs = Field(
+        default_factory=PersonaPlexSessionLMFactoryArgs
     )
 
 
@@ -139,7 +146,7 @@ def personaplex_session_stages_factory() -> list[StageConfig]:
             name=LM_STAGE,
             process="lm",
             factory_path=f"{MODEL_STAGES_PREFIX}.create_session_lm_executor",
-            factory=PersonaPlexDepformerFactoryArgs(dtype="bfloat16"),
+            factory=PersonaPlexSessionLMFactoryArgs(dtype="bfloat16"),
             gpu=0,
             engine=EngineArgs(mem_fraction_static=0.3),
             next=CODE2WAV_STAGE,
