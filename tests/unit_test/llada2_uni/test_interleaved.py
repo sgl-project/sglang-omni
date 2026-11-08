@@ -64,10 +64,8 @@ def test_image_phase_generates_the_frame_grid_and_closes_it_with_eoi():
     # The rows share a block column, and no block of padding is left to encode.
     pad_length = req._uncond_pad_len  # noqa: leading-underscore  # DLLM protocol
     assert 0 <= pad_length < 4
-    uncond_input_ids = (
-        req._uncond_input_ids
-    )  # noqa: leading-underscore  # DLLM protocol
-    assert (len(req.origin_input_ids) - len(uncond_input_ids)) % 4 == 0
+    companion_ids = req._uncond_input_ids  # noqa: leading-underscore  # DLLM protocol
+    assert (len(req.origin_input_ids) - len(companion_ids)) % 4 == 0
     assert req._cfg_scale == 4.0  # noqa: leading-underscore  # DLLM protocol
     assert req._dllm_steps == 32  # noqa: leading-underscore  # DLLM protocol
 
