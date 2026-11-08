@@ -8,7 +8,7 @@ use [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md#customvoice-checkpoints), w
 ## Prerequisites
 
 Install SGLang-Omni using the [installation guide](../get_started/installation.md)
-and follow your model's cookbook for its dependencies and weights. 
+and follow your model's cookbook for its dependencies and weights.
 
 ## Supported TTS Models
 
@@ -51,11 +51,7 @@ sgl-omni serve \
   --port 8000
 ```
 
-The server reads reference paths on the server host and requires the relevant
-`--allowed-local-media-path`. Remote references require an
-`--allowed-media-domain`; redirect hosts must also be allowed. See the
-[installation guide](../get_started/installation.md) and your model cookbook for
-setup, and [TTS Process Topology](tts_process_topology.md) for stage placement.
+The server reads references on the server host. Bare local paths are allowed by default; `file://` URLs require `--allowed-local-media-path`, which also restricts bare paths to the configured directory. Public HTTP(S) references are allowed by default; use `--allowed-media-domain` to restrict them, including redirect hosts. See the [installation guide](../get_started/installation.md) and your model cookbook for setup, and [TTS Process Topology](tts_process_topology.md) for stage placement.
 
 <a id="use-curl"></a>
 
@@ -351,10 +347,7 @@ configuration returns an error and closes the session.
 Models that accept reference audio can use `references`, with an `audio_path`
 and optionally the reference transcript as `text`. `ref_audio` and `ref_text`
 are shorthand for the first reference on models supporting these fields.
-Requirements vary: some require a transcript, others use it only for a
-particular task. Consult the model cookbook. A reference can be a permitted
-server-local path, data URL, or allowed HTTP URL; configure media access and
-redirect hosts before using a remote URL.
+Requirements vary: some require a transcript, others use it only for a particular task. Consult the model cookbook. A reference can be a server-local path, data URL, or HTTP URL allowed by the server's media policy.
 
 ### Qwen3-TTS Base Voice Cloning
 
@@ -365,11 +358,12 @@ sgl-omni serve \
   --model-path Qwen/Qwen3-TTS-12Hz-1.7B-Base \
   --config examples/configs/qwen3_tts_1_7b.yaml \
   --allowed-media-domain huggingface.co \
+  --allowed-media-domain us.aws.cdn.hf.co \
   --port 8000
 ```
 
 ```bash
-curl -X POST http://localhost:8000/v1/audio/speech \
+curl --fail-with-body -sS -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
     "model": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
@@ -383,7 +377,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   --output output.wav
 ```
 
-To stream the same reference, add `"stream": true` and use the [streaming examples](#streaming). Permit the download redirect host as well as `huggingface.co`.
+To stream the same reference, add `"stream": true` and use the [streaming examples](#streaming). The example allows `us.aws.cdn.hf.co`, the redirect host observed for this clip; if the download redirects to a different host, allow that host too.
 
 ## Batch Speech
 
