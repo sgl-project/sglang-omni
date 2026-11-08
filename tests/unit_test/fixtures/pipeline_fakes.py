@@ -178,6 +178,12 @@ class RecordingStageControlPlane:
         self.completions.append(msg)
         self.log.append("stage_cp_send_complete", msg.request_id, msg.success)
 
+    def hold_coordinator_messages(self) -> None:
+        self.log.append("hold_coordinator_messages")
+
+    async def flush_coordinator_messages(self) -> None:
+        self.log.append("flush_coordinator_messages")
+
     async def send_admin_result(self, msg: Any) -> None:
         self.completions.append(msg)
         self.log.append("stage_cp_send_admin_result", msg.result.op_id)

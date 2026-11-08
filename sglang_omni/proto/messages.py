@@ -160,6 +160,78 @@ class DataReadyMessage:
 
 
 @dataclass
+class MessageBatchMessage:
+    """Control messages a stage sent the coordinator together, each serialized as sent alone, in order."""
+
+    messages: list[bytes]
+
+    def to_dict(self) -> dict[str, object]:
+        return {"type": "message_batch", "messages": self.messages}
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, object]) -> "MessageBatchMessage":
+        messages = d.get("messages")
+        if type(messages) is not list or not all(
+            type(message) is bytes for message in messages
+        ):
+            raise TypeError("message batch messages must be a list of bytes")
+        else:
+            pass
+        return cls(messages=messages)
+
+
+@dataclass
+class PayloadBatchMessage:
+    """Small CPU stage payloads of many requests for one target stage.
+
+    pickled_payloads is the pickled list of the payloads, payload i belonging to request_ids[i].
+    """
+
+    from_stage: str
+    to_stage: str
+    request_ids: list[str]
+    pickled_payloads: bytes
+    replica_bindings: dict[str, dict[str, int]]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "type": "payload_batch",
+            "from_stage": self.from_stage,
+            "to_stage": self.to_stage,
+            "request_ids": self.request_ids,
+            "pickled_payloads": self.pickled_payloads,
+            "replica_bindings": self.replica_bindings,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, object]) -> "PayloadBatchMessage":
+        request_ids = d.get("request_ids")
+        if type(request_ids) is not list:
+            raise TypeError("payload batch request_ids must be a list")
+        else:
+            pass
+        for request_id in request_ids:
+            require_str(request_id, "request_id")
+        pickled_payloads = d.get("pickled_payloads")
+        if type(pickled_payloads) is not bytes:
+            raise TypeError("payload batch pickled_payloads must be bytes")
+        else:
+            pass
+        replica_bindings = d.get("replica_bindings")
+        if type(replica_bindings) is not dict:
+            raise TypeError("payload batch replica_bindings must be dict")
+        else:
+            pass
+        return cls(
+            from_stage=require_str(d.get("from_stage"), "from_stage"),
+            to_stage=require_str(d.get("to_stage"), "to_stage"),
+            request_ids=request_ids,
+            pickled_payloads=pickled_payloads,
+            replica_bindings=replica_bindings,
+        )
+
+
+@dataclass
 class StreamChunkBatchMessage:
     """Small CPU stream chunks of many requests for one target stage.
 
@@ -534,6 +606,8 @@ def parse_message(
     | DataAckMessage
     | DataReadyMessage
     | StreamChunkBatchMessage
+    | PayloadBatchMessage
+    | MessageBatchMessage
     | KVTransferPrepareMessage
     | KVTransferReadyMessage
     | AbortMessage
@@ -551,6 +625,10 @@ def parse_message(
         return DataReadyMessage.from_dict(d)
     elif msg_type == "stream_chunk_batch":
         return StreamChunkBatchMessage.from_dict(d)
+    elif msg_type == "payload_batch":
+        return PayloadBatchMessage.from_dict(d)
+    elif msg_type == "message_batch":
+        return MessageBatchMessage.from_dict(d)
     elif msg_type == "data_ack":
         return DataAckMessage.from_dict(d)
     elif msg_type == "kv_transfer_prepare":
