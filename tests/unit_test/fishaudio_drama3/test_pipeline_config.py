@@ -41,7 +41,7 @@ def test_every_process_on_the_shared_gpu_declares_its_memory() -> None:
     assert topology.stage_to_process == {
         "preprocessing": "preprocessing",
         "tts_engine": "pipeline",
-        "vocoder": "vocoder",
+        "vocoder": "pipeline",
     }
     assert (preprocessing.total_reserve_bytes, preprocessing.enforce_total_reserve) == (
         6 * 1024**3,

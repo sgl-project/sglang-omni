@@ -172,7 +172,7 @@ class Drama3PipelineConfig(PipelineConfig):
         ),
         Drama3VocoderStageConfig(
             name="vocoder",
-            process="vocoder",
+            process="pipeline",
             factory_path=f"{PACKAGE}.stages.create_vocoder_executor",
             gpu=0,
             gpu_memory_fraction=VOCODER_GPU_MEMORY_FRACTION,
