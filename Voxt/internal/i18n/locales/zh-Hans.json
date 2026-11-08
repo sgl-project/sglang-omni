@@ -1285,5 +1285,12 @@
   "Could not delete the note: %v": "无法删除笔记：%v",
   "Press it in any app to start a note, and again to save it.": "在任意 app 里按一下开始记笔记，再按一下保存。",
   "Keys to record a note": "记笔记的快捷键",
-  "Custom keys to record a note": "自定义记笔记的快捷键"
+  "Custom keys to record a note": "自定义记笔记的快捷键",
+  "Proxy user name": "代理用户名",
+  "User name (optional)": "用户名（可选）",
+  "Proxy password": "代理密码",
+  "Password (optional)": "密码（可选）",
+  "Sent to the proxy only when both are set. The password is kept in the Keychain. Only Voxt uses them.": "两项都填了才发给代理。密码保存在钥匙串里。只有 Voxt 使用它们。",
+  "The password cannot have quotes, backslashes or line breaks.": "密码里不能有引号、反斜杠或换行。",
+  "Could not save the proxy's password in the Keychain.": "无法把代理密码保存到钥匙串。"
 }
