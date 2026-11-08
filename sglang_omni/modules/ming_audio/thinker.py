@@ -35,6 +35,10 @@ class Ming3AudioThinker(BailingMoeV3ForCausalLM):
             input_ids, positions, forward_batch, input_embeds, pp_proxy_tensors
         )
 
+    def set_dflash_layers_to_capture(self, layer_ids: list[int]) -> None:
+        """Capture the output of each named layer, which the DSpark hook already does here."""
+        self.set_dspark_layers_to_capture(layer_ids)
+
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         return super().load_weights(
             (name, weight)
