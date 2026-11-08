@@ -7,18 +7,18 @@ name: Mac CI
 # Voxt's Swift helper. No
 # checkpoint is downloaded. Model outputs are checked by hand per model PR with
 # the tools in sglang_omni_mlx/native/ci. Voxt Nightly runs it before its build.
-# A pull request runs only the job whose side it changes, Markdown aside, and
-# both when it changes .github/.
+# Omni CI skips a pull request that changes only the MLX path, so this gate
+# fails such a pull request without a CI label. A pull request runs only the
+# job whose side it changes, Markdown aside, and both when it changes this file.
 
 on:
   pull_request:
     types: [opened, labeled, synchronize, reopened, ready_for_review]
     paths:
       - "sglang_omni_mlx/**"
-      - "!sglang_omni_mlx/**/*.md"
-      - "Voxt/helper/**"
-      - "!Voxt/helper/**/*.md"
+      - "Voxt/**"
       - ".github/workflows/mac-ci.yaml"
+      - ".github/workflows/voxt*.yaml"
   workflow_dispatch:
   workflow_call:
 
@@ -42,8 +42,9 @@ jobs:
     outputs:
       # Only a pull request goes through the label gate: a run by hand or from the nightly's schedule always tests.
       run_mac: ${{ github.event_name != 'pull_request' && 'true' || steps.plan.outputs.run_mac }}
-      run_native_runtime: ${{ github.event_name != 'pull_request' && 'true' || steps.pr.outputs.has_native_runtime_changes }}
-      run_voxt_helper: ${{ github.event_name != 'pull_request' && 'true' || steps.pr.outputs.has_voxt_helper_changes }}
+      # A run off a pull request, or from Voxt Nightly, tests both sides.
+      run_native_runtime: ${{ (github.event_name != 'pull_request' || github.workflow != 'Mac CI') && 'true' || steps.pr.outputs.has_native_runtime_changes }}
+      run_voxt_helper: ${{ (github.event_name != 'pull_request' || github.workflow != 'Mac CI') && 'true' || steps.pr.outputs.has_voxt_helper_changes }}
     steps:
       - name: Fetch latest PR gate state
         if: ${{ github.event_name == 'pull_request' }}
@@ -71,9 +72,9 @@ jobs:
             const changedPaths = changedFiles.flatMap((file) =>
               file.previous_filename ? [file.filename, file.previous_filename] : [file.filename]
             );
-            const hasCiChanges = changedPaths.some((path) => path.startsWith(".github/"));
+            const hasWorkflowChanges = changedPaths.includes(".github/workflows/mac-ci.yaml");
             const hasChangesUnder = (directory) =>
-              hasCiChanges || changedPaths.some((path) => path.startsWith(directory) && !path.endsWith(".md"));
+              hasWorkflowChanges || changedPaths.some((path) => path.startsWith(directory) && !path.endsWith(".md"));
             core.setOutput("has_native_runtime_changes", hasChangesUnder("sglang_omni_mlx/"));
             core.setOutput("has_voxt_helper_changes", hasChangesUnder("Voxt/helper/"));
 
@@ -84,11 +85,12 @@ jobs:
           exit 1
 
       - name: Checkout CI label rules
-        if: ${{ steps.pr.outputs.is_selected == 'true' }}
+        if: ${{ github.event_name == 'pull_request' }}
         uses: actions/checkout@v4
 
+      # Fails without a CI label, as Omni CI's gate does.
       - name: Resolve CI stages
-        if: ${{ steps.pr.outputs.is_selected == 'true' }}
+        if: ${{ github.event_name == 'pull_request' }}
         id: plan
         env:
           LABELS_JSON: ${{ steps.pr.outputs.labels }}

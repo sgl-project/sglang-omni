@@ -4,10 +4,10 @@ name: Voxt Nightly
 # builds it with the release workflow: signed with the Developer ID of the
 # voxt-release environment and notarized, version X.Y.Z-nightly.YYYYMMDD, its
 # disk image an artifact of the run. A schedule only runs from main, so a pull
-# request that changes this file runs it too: Mac CI only with the
-# run-mac-ci label, and the build ad hoc and unsigned. Run by hand from any
-# branch, the build is signed the same way as from main, which needs the
-# voxt-release environment to let that branch in.
+# request that changes this file runs it too: Mac CI tests only with the
+# run-mac-ci label and fails without a CI label, and the build is ad hoc and
+# unsigned. Run by hand from any branch, the build is signed the same way as
+# from main, which needs the voxt-release environment to let that branch in.
 
 on:
   pull_request:

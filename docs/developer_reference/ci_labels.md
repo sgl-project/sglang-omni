@@ -30,7 +30,7 @@ The Omni CI stages are the core of the project's CI: they serve the main ASR, TT
 
 ## Checks On Every Pull Request
 
-These workflows run on GitHub-hosted runners for every pull request, drafts included, with no label. An MLX-only pull request changes nothing outside `sglang_omni_mlx/`, `Voxt/`, `.github/workflows/mac-ci.yaml` and `.github/workflows/voxt*.yaml`. It runs only Lint among these checks: Mac CI and Voxt CI test it.
+These workflows run on GitHub-hosted runners for every pull request, drafts included, with no label. An MLX-only pull request changes nothing outside `sglang_omni_mlx/`, `Voxt/`, `.github/workflows/mac-ci.yaml` and `.github/workflows/voxt*.yaml`. It runs only Lint among these checks and does not start Omni CI: Mac CI and Voxt CI test it, and Mac CI checks its labels.
 
 | Workflow | Job | What it checks |
 | --- | --- | --- |
@@ -169,14 +169,14 @@ The stage label is `run-intel-xpu-ci`.
 
 ### Mac CI
 
-Mac CI has two jobs on GitHub's macOS runners. The native runtime job builds the MLX runtime and a stub server, then tests the protocol every native server shares on the stub server, each server's startup checks, and that the installed runtime links only the system and itself. The Swift test job runs the tests of the Voxt app's helper (`Voxt/helper`). Model outputs are checked by hand per model PR with the tools in `sglang_omni_mlx/native/ci`. The workflow starts only when the pull request touches `sglang_omni_mlx/`, `Voxt/helper/` or the workflow itself, not counting Markdown files; otherwise it does not appear on the pull request at all. On a pull request, the native runtime job runs only when `sglang_omni_mlx/` changes and the Swift test job only when `Voxt/helper/` changes, again not counting Markdown files; a change under `.github/` runs both.
+Mac CI has two jobs on GitHub's macOS runners. The native runtime job builds the MLX runtime and a stub server, then tests the protocol every native server shares on the stub server, each server's startup checks, and that the installed runtime links only the system and itself. The Swift test job runs the tests of the Voxt app's helper (`Voxt/helper`). Model outputs are checked by hand per model PR with the tools in `sglang_omni_mlx/native/ci`. The workflow starts when the pull request touches `sglang_omni_mlx/`, `Voxt/`, `.github/workflows/mac-ci.yaml` or `.github/workflows/voxt*.yaml`; otherwise it does not appear on the pull request at all. Unlike the other hardware gates, its gate fails without a CI label, because Omni CI does not start on an MLX-only pull request. On a pull request, the native runtime job runs only when `sglang_omni_mlx/` changes and the Swift test job only when `Voxt/helper/` changes, not counting Markdown files; a change to the workflow itself runs both, and Voxt Nightly always runs both.
 
 The stage label is `run-mac-ci`. Use it for any change on the MLX path: the SGLang Omni MLX runtime in `sglang_omni_mlx/`, such as a runtime optimization or a new native server, as well as the Voxt app. It runs only this workflow, which waits for lint to pass and then starts the Mac jobs. It does not run PR Test or any other H100 job, because the Mac jobs test the MLX runtime and the Voxt helper, not the `sglang_omni` Python package that PR Test covers.
 
 ## Label rules
 
 1. A stage runs only when its stage label is on the pull request. There is no label that selects every stage; add the stage labels the change needs. If a fundamental change really needs all of CI, add `run-asr-ci`, `run-tts-ci`, `run-mps-ci`, `run-omni-ci`, `run-native-duplex`, `run-turn-based-duplex`, `run-cascaded-duplex`, `run-intel-cpu-ci`, `run-intel-xpu-ci` and `run-mac-ci`, or comment `/tag-and-rerun-ci asr tts mps omni full-duplex turn-based cascaded intel-cpu intel-xpu mac`.
-2. Self-hosted CI needs a stage label or `run-lint-only`. Without one, the Omni CI gate fails with `No CI label found`; unselected hardware workflows skip their tests without failing. An MLX-only pull request needs one too: `run-mac-ci` runs its Mac tests, and `run-lint-only` runs none. The checks on GitHub-hosted runners do not depend on labels. `run-lint-only` runs no self-hosted job, so a green lint check leaves no self-hosted failure. It does not turn off a stage label that is also present.
+2. Self-hosted CI needs a stage label or `run-lint-only`. Without one, the Omni CI gate fails with `No CI label found`, and so does the Mac CI gate when Mac CI starts; CPU CI and XPU CI skip their tests without failing. An MLX-only pull request does not start Omni CI, so the Mac CI gate is the one that fails: `run-mac-ci` runs its Mac tests, and `run-lint-only` runs none. The checks on GitHub-hosted runners do not depend on labels. `run-lint-only` runs no self-hosted job, so a green lint check leaves no self-hosted failure. It does not turn off a stage label that is also present.
 3. Any stage label except `run-mac-ci` also runs PR Test. A pull request labeled only `run-mac-ci` runs Mac CI and no H100 job.
 4. A model label names a model, not a stage. It picks that model for every selected stage that accepts it, and never selects a stage by itself. Higgs and MOSS labels are accepted by TTS and MPS. If no selected stage accepts the label, the gate prints a warning.
 5. A selected stage without a model label draws its model at random from that stage's pool. The draw is seeded by the workflow run ID, so re-running jobs in the same run keeps the same model, while a new push or a newly added label starts a new run and draws again.
@@ -200,11 +200,11 @@ The stage label is `run-mac-ci`. Use it for any change on the MLX path: the SGLa
 
 ## Examples
 
-The table lists only the self-hosted CI. The checks on GitHub-hosted runners run in every case, except that an MLX-only pull request runs only Lint among them.
+The table is for a pull request that is not MLX-only and lists only the self-hosted CI; the checks on GitHub-hosted runners run in every case. An MLX-only pull request starts Mac CI instead of Omni CI: with no label its gate fails, and `run-mac-ci` runs Mac CI alone.
 
 | Labels | What runs |
 | --- | --- |
-| none | Nothing. The Omni CI gate fails with `No CI label found`; hardware tests are skipped. |
+| none | Nothing. The Omni CI gate, and the Mac CI gate when Mac CI starts, fail with `No CI label found`; the other hardware tests are skipped. |
 | `run-lint-only` | Nothing self-hosted. The gates succeed. |
 | `run-unit-test-ci-only` | PR Test only, after shared setup. |
 | `run-tts-ci` | PR Test, then TTS on a random model from its pool. |
@@ -220,7 +220,7 @@ The table lists only the self-hosted CI. The checks on GitHub-hosted runners run
 
 ## Label changes, re-runs and manual runs
 
-Adding a label manually, CI or not, starts a new run of Omni CI, CPU CI, XPU CI and Mac CI (when its paths match) and cancels the run of the same workflow in progress, so the new label set takes effect at once. Models that no label pins are drawn again in the new run.
+Adding a label manually, CI or not, starts a new run of Omni CI (unless the pull request is MLX-only), CPU CI, XPU CI and Mac CI (when its paths match) and cancels the run of the same workflow in progress, so the new label set takes effect at once. Models that no label pins are drawn again in the new run.
 
 Removing a label cancels only the workflows that the remaining labels no longer select. Removing `run-mac-ci` while `run-tts-ci` stays cancels Mac CI and leaves Omni CI running. Removing `run-tts-ci` while `run-mac-ci` stays cancels Omni CI and leaves Mac CI running. Removing the last stage label cancels Omni CI, CPU CI, XPU CI and Mac CI. `run-lint-only` does not keep any of them. A run that is still selected keeps the stages and models it resolved when it started; push again or re-run all jobs to pick up the change.
 
