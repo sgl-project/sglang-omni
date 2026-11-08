@@ -265,6 +265,10 @@ type Services struct {
 	// LLM is nil when the feature has no language model ready.
 	LLM     LLM
 	LLMInfo Model
+	// Fallback is Translate's fallback model, asked once when LLM fails;
+	// nil: none.
+	Fallback     LLM
+	FallbackInfo Model
 	// VAD is the voice activity model (Silero) that finds the speech in
 	// the recording; nil: the energy detector of internal/vad does, as it
 	// does when the model fails (vad_model.go).
