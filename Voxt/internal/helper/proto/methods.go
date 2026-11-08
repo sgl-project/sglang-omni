@@ -33,6 +33,7 @@ const (
 	MethodTextFocus     = "textio.focus"     // request: the focused element of the app in front (can it take text?)
 	MethodTextSelection = "textio.selection" // request: the selected text (Accessibility, else ⌘C when allowed)
 	MethodTextPaste     = "textio.paste"     // request: insert text through the clipboard and ⌘V, then restore it
+	MethodTextRead      = "textio.read"      // request: a range of the focused element's text in an app in front
 
 	MethodAppList      = "app.list"      // request: running (and installed) apps, to pick from
 	MethodAppConfigure = "app.configure" // request: which apps get AXManualAccessibility as they come to the front
@@ -133,6 +134,8 @@ func ParamsFor(method string) any {
 		return new(SelectionParams)
 	case MethodTextPaste:
 		return new(PasteParams)
+	case MethodTextRead:
+		return new(ReadParams)
 	case MethodBrowserURL:
 		return new(BrowserURLParams)
 	case MethodAppList:
@@ -208,6 +211,8 @@ func ResultFor(method string) any {
 		return new(SelectionResult)
 	case MethodTextPaste:
 		return new(PasteResult)
+	case MethodTextRead:
+		return new(ReadResult)
 	case MethodBrowserURL:
 		return new(BrowserURLResult)
 	case MethodAppList:
@@ -237,7 +242,7 @@ var (
 		MethodCaptureDevices, MethodCaptureStart, MethodCaptureStop,
 		MethodHotkeyConfigure, MethodHotkeyStatus,
 		MethodAppFrontmost, MethodAppList, MethodAppConfigure, MethodAppIcons,
-		MethodTextFocus, MethodTextSelection, MethodTextPaste,
+		MethodTextFocus, MethodTextSelection, MethodTextPaste, MethodTextRead,
 		MethodBrowserURL,
 		MethodOutputWatch, MethodOutputMute, MethodOutputRelease, MethodOutputRecover,
 		MethodSpeechRecognize, MethodSpeechAudio,
