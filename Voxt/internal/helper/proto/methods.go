@@ -25,10 +25,10 @@ const (
 	MethodCaptureStart   = "capture.start"   // request, job: records until capture.stop
 	MethodCaptureStop    = "capture.stop"    // request: ends a capture.start, which answers first
 
-	MethodHotkeyConfigure    = "hotkey.configure"     // request: the bindings the event tap watches (replaces all)
-	MethodHotkeyStatus       = "hotkey.status"        // request: the tap's state and counters
-	MethodHotkeyRecord       = "hotkey.record"        // request: one chord through a short-lived event tap
-	MethodHotkeyCancelRecord = "hotkey.cancelRecord"  // request: cancel hotkey.record
+	MethodHotkeyConfigure    = "hotkey.configure"    // request: the bindings the event tap watches (replaces all)
+	MethodHotkeyStatus       = "hotkey.status"       // request: the tap's state and counters
+	MethodHotkeyRecord       = "hotkey.record"       // request: one chord through a short-lived event tap
+	MethodHotkeyCancelRecord = "hotkey.cancelRecord" // request: cancel hotkey.record
 
 	MethodAppFrontmost = "app.frontmost" // request: the app in front
 
