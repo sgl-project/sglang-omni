@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 from dac.nn.layers import Snake1d
 
+from sglang_omni.models.fishaudio_drama3.codec_transformer import codec_transformer
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.dac.modded_dac import (
     DAC,
     CausalConvNet,
@@ -96,6 +97,7 @@ class ChannelsLastDecoder:
                 pass
         codec.quantizer.to(dtype)
         codec.decoder.to(dtype)
+        self.transformer = codec_transformer(codec.quantizer.post_module)
         self.conv_weights: dict[int, torch.Tensor] = {
             id(module): channels_last_weight(module)
             for module in codec.decoder.modules()
@@ -103,7 +105,17 @@ class ChannelsLastDecoder:
         }
 
     def __call__(self, indices: torch.Tensor) -> torch.Tensor:
-        latent = self.codec.quantizer.decode(indices)
+        # quantizer.decode(indices) with its transformer run by the fused forward.
+        quantizer = self.codec.quantizer
+        indices[:, 0] = torch.clamp(
+            indices[:, 0], max=quantizer.semantic_quantizer.codebook_size - 1
+        )
+        indices[:, 1:] = torch.clamp(
+            indices[:, 1:], max=quantizer.quantizer.codebook_size - 1
+        )
+        latent = quantizer.semantic_quantizer.from_codes(indices[:, :1])[0]
+        latent = latent + quantizer.quantizer.from_codes(indices[:, 1:])[0]
+        latent = quantizer.upsample(self.transformer(latent))
         hidden_states = latent.transpose(1, 2).contiguous()
         hidden_states = self.apply_sequence(self.codec.decoder.model, hidden_states)
         return hidden_states.transpose(1, 2)

@@ -15,12 +15,17 @@ from sglang_omni.models.fishaudio_drama3.channels_last_decoder import (
     ChannelsLastDecoder,
     snake_channels_last_kernel,
 )
-from sglang_omni.models.fishaudio_drama3.config import Drama3VocoderFactoryArgs
+from sglang_omni.models.fishaudio_drama3.codec_transformer import CodecTransformer
+from sglang_omni.models.fishaudio_drama3.config import (
+    DEFAULT_CODEC_PATH,
+    Drama3VocoderFactoryArgs,
+)
 from sglang_omni.models.fishaudio_drama3.request_builders import (
     Drama3FrameStreamer,
     Drama3GenerationResult,
     Drama3RequestData,
 )
+from sglang_omni.models.fishaudio_drama3.stages import resolve_codec_directory
 from sglang_omni.models.fishaudio_drama3.stream_windows import (
     frames_in_complete_windows,
     stream_window_lengths,
@@ -33,10 +38,12 @@ from sglang_omni.models.fishaudio_drama3.vocoder import (
     window_graph_keys,
 )
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.dac.modded_dac import (
+    DAC,
     CausalConvNet,
     DecoderBlock,
     ResidualUnit,
 )
+from sglang_omni.models.fishaudio_s2_pro.stages import load_codec
 from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import WindowDecoder
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto.request import OmniRequest, StagePayload
@@ -888,6 +895,45 @@ def test_the_channels_last_decoder_decodes_like_the_codec(
     torch.testing.assert_close(
         decoded.float(), expected, rtol=tolerance, atol=tolerance
     )
+
+
+@pytest.fixture(scope="module")
+def float16_codec() -> DAC:
+    """The real codec with its quantizer in float16, as the vocoder runs it."""
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    else:
+        pass
+    codec = load_codec(resolve_codec_directory(DEFAULT_CODEC_PATH), "cuda")
+    codec.fold_weight_norm()
+    codec.quantizer.to(torch.float16)
+    return codec
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize(
+    ("batch_size", "frame_count"),
+    [(4, 96), (1, 220)],
+    ids=["4x96", "1x220-beyond-the-128-frame-window"],
+)
+def test_the_fused_post_module_decodes_like_the_codec_in_float16(
+    float16_codec: DAC, batch_size: int, frame_count: int
+) -> None:
+    quantizer = float16_codec.quantizer
+    module = quantizer.post_module
+    torch.manual_seed(frame_count)
+    codes = torch.randint(0, 1024, (batch_size, 10, frame_count), device="cuda")
+    with torch.no_grad():
+        latent = quantizer.semantic_quantizer.from_codes(codes[:, :1])[0]
+        latent = latent + quantizer.quantizer.from_codes(codes[:, 1:])[0]
+        expected = module(latent.clone())
+    assert latent.dtype == torch.float16
+
+    actual = CodecTransformer(module)(latent.clone())
+
+    assert actual.dtype == torch.float16
+    assert actual.shape == expected.shape
+    torch.testing.assert_close(actual.float(), expected.float(), rtol=1e-2, atol=1e-2)
 
 
 @pytest.mark.parametrize(
