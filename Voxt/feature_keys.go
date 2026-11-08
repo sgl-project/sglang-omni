@@ -20,13 +20,15 @@ import (
 
 // keyRow is a shortcut's controls.
 type keyRow struct {
-	sel     string // the select's label
-	custom  bool   // "Custom…" chosen: the keys are pressed (key_recorder.go)
-	typing  bool   // … or typed, when asked
-	text    string // the pressed or typed keys
-	trig    int    // 0 tap, 1 double tap, 2 long press
-	edited  bool   // the typed keys are not saved yet
-	unknown bool   // the last key pressed has no name in the grammar
+	sel          string // the select's label
+	custom       bool   // "Custom…" chosen: the keys are pressed (key_recorder.go)
+	typing       bool   // … or typed, when asked
+	text         string // the pressed or typed keys
+	trig         int    // 0 tap, 1 double tap, 2 long press
+	edited       bool   // the typed keys are not saved yet
+	unknown      bool   // the last key pressed has no name in the grammar
+	recFocused   bool   // the record box had focus last frame
+	recordDenied bool   // helper returned permission_denied for hotkey.record
 }
 
 // keyPresets are the shortcuts the selects offer, in the grammar of

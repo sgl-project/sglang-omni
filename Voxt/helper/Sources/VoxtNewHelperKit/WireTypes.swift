@@ -289,6 +289,16 @@ public struct HotkeyStatus: Codable, Sendable {
     }
 }
 
+public struct HotkeyRecordParams: Codable, Sendable {
+    public var timeoutSeconds: Double?
+    public init(timeoutSeconds: Double? = nil) { self.timeoutSeconds = timeoutSeconds }
+}
+
+public struct HotkeyRecordResult: Codable, Sendable {
+    public var keys: String
+    public init(keys: String) { self.keys = keys }
+}
+
 public struct HotkeyEventParams: Codable, Sendable {
     public var binding: String
     public var phase: Phase
@@ -714,6 +724,8 @@ public enum WireTypes {
         case Method.captureStart: CaptureParams.self
         case Method.captureStop: CaptureStopParams.self
         case Method.hotkeyConfigure: HotkeyConfigureParams.self
+        case Method.hotkeyRecord: HotkeyRecordParams.self
+        case Method.hotkeyCancelRecord: Empty.self
         case Method.textSelection: SelectionParams.self
         case Method.textPaste: PasteParams.self
         case Method.textRead: ReadParams.self
@@ -754,6 +766,8 @@ public enum WireTypes {
         case Method.captureStart: CaptureResult.self
         case Method.captureStop: CaptureStopResult.self
         case Method.hotkeyConfigure, Method.hotkeyStatus: HotkeyStatus.self
+        case Method.hotkeyRecord: HotkeyRecordResult.self
+        case Method.hotkeyCancelRecord: Empty.self
         case Method.appFrontmost: App.self
         case Method.textFocus: FocusResult.self
         case Method.textSelection: SelectionResult.self

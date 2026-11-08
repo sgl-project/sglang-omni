@@ -64,6 +64,8 @@ Errors are `{"code": "…", "message": "…", "data"?: {…}}` with a string cod
 | `capture.stop` | `{job}` → `{stopped}` |
 | `hotkey.configure` | `{bindings: [{id, modifiers, key?, button?, behavior, swallow?}], doubleTapMs?, longPressMs?, tapMaxMs?, swallowFn?, active?, cancel?}` → hotkey status |
 | `hotkey.status` | → `{installed, accessibility, bindings, events, disabledByTimeout, missedEvents, maxCallbackMicros, error?}` |
+| `hotkey.record` | `{timeoutSeconds?}` (default 15) → `{keys}` or `timeout`, `cancelled`, `permission_denied {permission:"accessibility"}` |
+| `hotkey.cancelRecord` | → `{}` (cancels the in-flight `hotkey.record`) |
 | `app.frontmost` | → `{pid, bundleId?, name?}` |
 | `app.list` | `{installed?}` → `{apps: [{bundleId, name, running, pid?, path?}]}` |
 | `app.configure` | `{manualAccessibility?: [bundleId]}` → `{}` |
