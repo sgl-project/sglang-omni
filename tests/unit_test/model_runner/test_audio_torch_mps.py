@@ -98,19 +98,23 @@ def test_shared_runner_retains_model_specific_errors():
 
 
 @pytest.mark.parametrize(
-    ("repeated_logit", "runner_up_logit"),
-    [(2.0, 1.9), (-0.10, -0.12)],
+    ("repeated_logit", "runner_up_logit", "dtype"),
+    [
+        (2.0, 1.9, torch.float32),
+        (-0.10, -0.12, torch.float32),
+        (2.0, 1.5390625, torch.bfloat16),
+    ],
 )
 def test_torch_runner_applies_repetition_penalty_to_emitted_tokens(
-    repeated_logit: float, runner_up_logit: float
+    repeated_logit: float, runner_up_logit: float, dtype: torch.dtype
 ) -> None:
-    """Torch MPS decoding must honor repetition_penalty instead of re-emitting a token it already emitted."""
+    """Torch MPS decoding must honor repetition_penalty, scored in float32 as on CUDA, instead of re-emitting a token it already emitted."""
     from sglang_omni.models.qwen3_asr.torch_mps_runner import (
         Qwen3ASRTorchMpsModelRunner,
     )
 
     repeated_token_id, runner_up_token_id = 5, 6
-    logits = torch.full((1, 1, 8), -10.0)
+    logits = torch.full((1, 1, 8), -10.0, dtype=dtype)
     logits[0, 0, repeated_token_id] = repeated_logit
     logits[0, 0, runner_up_token_id] = runner_up_logit
     runner = object.__new__(Qwen3ASRTorchMpsModelRunner)

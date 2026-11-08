@@ -64,6 +64,8 @@ class AudioTorchMpsModelRunner(ModelRunner):
             return logits
         else:
             pass
+        # note (wilsonzheng0327): SGLang applies the penalty to float32 logits on CUDA; in BF16 a penalized token can round onto the next token's logit and win the tie.
+        logits = logits.float()
         token_ids = torch.tensor(
             req.output_ids, dtype=torch.long, device=logits.device
         ).expand(logits.shape[0], -1)
