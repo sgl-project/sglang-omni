@@ -23,7 +23,7 @@ In this sense, two kinds of labels exist and they combine: a stage label decides
 | Omni CI: Duplex | H100 | Full-Duplex-Bench v1.0 and v1.5 on three interaction strategies: native full duplex (MiniCPM-o 4.5), turn based (Qwen3-Omni with server VAD) and cascaded (Qwen3-ASR-1.7B, Qwen3.8-27B and Qwen3-TTS Base cloning one Vivian recording). Each gates turn taking, overlap behavior, latency and listening quality against its own baseline | `run-native-duplex`, `run-turn-based-duplex` or `run-cascaded-duplex` |
 | CPU CI | Intel Xeon (`intel-omni-spr`) | Job `intel-cpu-ci (unit_test/cpu)`: `pytest tests/unit_test/cpu/` | `run-intel-cpu-ci` |
 | XPU CI | Intel GPU (`intel-omni-bmg`) | Intel GPU device layer tests | `run-intel-xpu-ci` |
-| Voxt Mac CI | GitHub macOS | MLX native runtime build and protocol, Voxt app tests | `run-mac-ci` |
+| Voxt Mac CI | GitHub macOS | MLX native runtime build and protocol, the Voxt app's Swift tests | `run-mac-ci` |
 
 The Omni CI stages are the core of the project's CI: they serve the main ASR, TTS and omni models end to end on H100 and gate their accuracy and speed.
 
@@ -147,7 +147,7 @@ Each job runs a fixed Full-Duplex-Bench selection on one interaction strategy, t
 | `run-turn-based-duplex` | Full-Duplex-Bench - turn based | Qwen3-Omni with server VAD turn detection (`examples/qwen3_omni/session_h100.yaml`) |
 | `run-cascaded-duplex` | Full-Duplex-Bench - cascaded | Qwen3-ASR-1.7B, Qwen3.8-27B with thinking off and Qwen3-TTS Base cloning one Vivian recording, with server VAD, on two GPUs (`examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian`) |
 
-The three jobs share the pull request's Full-Duplex-Bench assets, so they run one after another, and a failed job does not skip the next. Each stage has one system and no model label. Turn based fails by design until it is calibrated.
+The three jobs share the pull request's Full-Duplex-Bench assets, so they run one after another, and a failed job does not skip the next. Each stage has one system and no model label.
 
 ## Hardware workflows
 
@@ -167,13 +167,13 @@ The stage label is `run-intel-xpu-ci`.
 
 ### Voxt Mac CI
 
-Voxt Mac CI has two jobs on GitHub's macOS runners. The native runtime job builds the MLX runtime and a stub server, then tests the protocol every native server shares on the stub server, each server's startup checks, and that the installed runtime links only the system and itself. The Voxt unit test job builds the Voxt app with Xcode and runs its Omni and MLX test classes. Model outputs are checked by hand per model PR with the tools in `sglang_omni_mlx/native/ci`. The workflow starts only when the pull request touches `Voxt/`, `sglang_omni_mlx/` or the workflow itself; otherwise it does not appear on the pull request at all.
+Voxt Mac CI has two jobs on GitHub's macOS runners. The native runtime job builds the MLX runtime and a stub server, then tests the protocol every native server shares on the stub server, each server's startup checks, and that the installed runtime links only the system and itself. The Swift test job runs the tests of the Voxt app's helper (`Voxt/helper`). Model outputs are checked by hand per model PR with the tools in `sglang_omni_mlx/native/ci`. The workflow starts only when the pull request touches `sglang_omni_mlx/`, `Voxt/helper/` or the workflow itself; otherwise it does not appear on the pull request at all.
 
 The stage label is `run-mac-ci`.
 
 ## Label rules
 
-1. A stage runs only when its stage label is on the pull request. There is no label that selects every stage; add the stage labels the change needs. If a fundamental change really needs all of CI, add `run-asr-ci`, `run-tts-ci`, `run-mps-ci`, `run-omni-ci`, `run-native-duplex`, `run-cascaded-duplex`, `run-intel-cpu-ci`, `run-intel-xpu-ci` and `run-mac-ci`, or comment `/tag-and-rerun-ci asr tts mps omni full-duplex cascaded intel-cpu intel-xpu mac`. Leave out `run-turn-based-duplex`, which fails by design until it is calibrated.
+1. A stage runs only when its stage label is on the pull request. There is no label that selects every stage; add the stage labels the change needs. If a fundamental change really needs all of CI, add `run-asr-ci`, `run-tts-ci`, `run-mps-ci`, `run-omni-ci`, `run-native-duplex`, `run-turn-based-duplex`, `run-cascaded-duplex`, `run-intel-cpu-ci`, `run-intel-xpu-ci` and `run-mac-ci`, or comment `/tag-and-rerun-ci asr tts mps omni full-duplex turn-based cascaded intel-cpu intel-xpu mac`.
 2. Self-hosted CI needs a stage label or `run-lint-only`. Without one, the Omni CI gate fails with `No CI label found`; unselected hardware workflows skip their tests without failing. The checks on GitHub-hosted runners do not depend on labels. `run-lint-only` runs no self-hosted job, so a green lint check leaves no self-hosted failure. It does not turn off a stage label that is also present.
 3. Any stage label also runs PR Test. A pull request labeled only `run-mac-ci` still runs PR Test on H100.
 4. A model label names a model, not a stage. It picks that model for every selected stage that accepts it, and never selects a stage by itself. Higgs and MOSS labels are accepted by TTS and MPS. If no selected stage accepts the label, the gate prints a warning.
@@ -230,7 +230,7 @@ gh workflow run omni-ci.yaml --ref <branch> \
   -f ci_labels="run-tts-ci run-moss-tts-local-transformer-v1.5"
 ```
 
-Manual runs of CPU CI, XPU CI and Voxt Mac CI ignore labels and always run their tests.
+Manual runs of CPU CI, XPU CI and Voxt Mac CI ignore labels and always run their tests, and so does the run of Voxt Mac CI that Voxt Nightly starts each night.
 
 Maintainers with CI permissions can use `/tag-and-rerun-ci` with one or more short stage or model targets to re-run completed CI workflows:
 

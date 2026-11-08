@@ -101,10 +101,9 @@ URL, or a base64 **data URI** (`data:audio/wav;base64,<...>`, transcoded via `ff
 
 ### Streaming
 
-Set `"stream": true` with `"response_format": "pcm"` to receive raw signed 16-bit
-little-endian PCM bytes. The response is not SSE or base64. ZONOS2 returns mono 44.1 kHz
-audio with `Content-Type: audio/pcm` and the `X-Sample-Rate`, `X-Channels`, and
-`X-Bit-Depth` headers.
+Set `"stream": true` and `"response_format": "pcm"` to receive raw signed 16-bit little-endian PCM bytes. `stream_format` defaults to `"audio"`, and `response_format` defaults to `"wav"`. With PCM selected, ZONOS2 returns mono 44.1 kHz audio with `Content-Type: audio/pcm` and the `X-Sample-Rate`, `X-Channels`, and `X-Bit-Depth` headers.
+
+Omit `response_format` or set it to `"wav"` for raw WAV streaming with one header followed by PCM chunks. Set `stream_format="sse"` for SSE events, which can omit `stream=true`. Every HTTP mode defaults to WAV; an explicit `response_format` overrides that default.
 
 ```bash
 curl -sS -D output.headers -X POST http://localhost:8000/v1/audio/speech \
@@ -145,8 +144,9 @@ from the resulting text.
 | `input` | (required) | Text to synthesize |
 | `references` | `null` | Reference clip for cloning; `text` is accepted but currently unused |
 | `ref_audio` / `ref_text` | `null` | Shorthand fields; `ref_text` is currently unused |
-| `response_format` | `wav` | Use `pcm` when `stream=true` |
-| `stream` | `false` | Stream raw mono 44.1 kHz PCM16 bytes; requires `response_format=pcm` |
+| `response_format` | `wav` | Explicit values override the default in every mode. HTTP streaming accepts `pcm` or `wav` |
+| `stream` | `false` | Stream raw mono 44.1 kHz WAV by default; set `response_format="pcm"` for raw PCM16 bytes |
+| `stream_format` | `audio` | Raw audio bytes by default; explicit `sse` enables SSE events even when `stream` is omitted |
 | `language` | `null` | Optional NeMo text-normalization language; `Auto` preserves raw text |
 | `max_new_tokens` | (model default) | Maximum generated frames; an explicit value must be `> 0` |
 | `temperature` | (model default) | Sampling temperature |

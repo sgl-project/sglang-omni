@@ -129,7 +129,7 @@ jobs:
             */speed_results.json
             */wer_results.json
             */similarity_results.json
-          artifact-upload-name: ${{ inputs.omni_ci_model }}-tts-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-tts-results-attempt-${{ github.run_attempt }}
           artifact-upload-path: /tmp/**/*_results.json
 
   stage-3-mmmu:
@@ -173,7 +173,7 @@ jobs:
           stage-label: MMMU (accuracy + speed)
           artifact-path-globs: |
             */mmmu/mmmu_results.json
-          artifact-upload-name: ${{ inputs.omni_ci_model }}-mmmu-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-mmmu-results-attempt-${{ github.run_attempt }}
           artifact-upload-path: /tmp/**/mmmu_results.json
 
   stage-4-mmmu-talker:
@@ -217,7 +217,7 @@ jobs:
           stage-label: MMMU Talker (WER + speed)
           artifact-path-globs: |
             */mmmu_audio*/mmmu_results.json
-          artifact-upload-name: ${{ inputs.omni_ci_model }}-mmmu-talker-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-mmmu-talker-results-attempt-${{ github.run_attempt }}
           artifact-upload-path: /tmp/**/mmmu_audio*/mmmu_results.json
 
   stage-5-mmsu:
@@ -261,7 +261,7 @@ jobs:
           stage-label: MMSU (accuracy + speed, summary only)
           artifact-path-globs: |
             */mmsu/mmsu_results.json
-          artifact-upload-name: ${{ inputs.omni_ci_model }}-mmsu-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-mmsu-results-attempt-${{ github.run_attempt }}
           artifact-upload-path: /tmp/**/mmsu/mmsu_results.json
           summary-only: "true"
 
@@ -306,7 +306,7 @@ jobs:
           stage-label: MMSU Talker (WER + speed)
           artifact-path-globs: |
             */mmsu_audio*/mmsu_results.json
-          artifact-upload-name: ${{ inputs.omni_ci_model }}-mmsu-talker-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-mmsu-talker-results-attempt-${{ github.run_attempt }}
           artifact-upload-path: /tmp/**/mmsu_audio*/mmsu_results.json
 
   stage-7-videomme:
@@ -350,7 +350,7 @@ jobs:
           stage-label: Video-MME (accuracy + speed)
           artifact-path-globs: |
             */videomme/videomme_results.json
-          artifact-upload-name: ${{ inputs.omni_ci_model }}-videomme-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-videomme-results-attempt-${{ github.run_attempt }}
           artifact-upload-path: /tmp/**/videomme/videomme_results.json
 
   stage-8-videomme-talker:
@@ -394,7 +394,7 @@ jobs:
           stage-label: Video-MME Talker (WER + speed)
           artifact-path-globs: |
             */videomme_audio*/videomme_results.json
-          artifact-upload-name: ${{ inputs.omni_ci_model }}-videomme-talker-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-videomme-talker-results-attempt-${{ github.run_attempt }}
           artifact-upload-path: /tmp/**/videomme_audio*/videomme_results.json
 
   stage-9-videoamme:
@@ -438,7 +438,7 @@ jobs:
           stage-label: Video-AMME (accuracy + speed)
           artifact-path-globs: |
             */videoamme/videoamme_results.json
-          artifact-upload-name: ${{ inputs.omni_ci_model }}-videoamme-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-videoamme-results-attempt-${{ github.run_attempt }}
           artifact-upload-path: /tmp/**/videoamme/videoamme_results.json
 
   stage-10-videoamme-talker-tp2:
@@ -484,7 +484,7 @@ jobs:
           stage-label: Video-AMME Talker (accuracy + WER + speed)
           artifact-path-globs: |
             */videoamme_audio*/videoamme_results.json
-          artifact-upload-name: ${{ inputs.omni_ci_model }}-videoamme-talker-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-videoamme-talker-results-attempt-${{ github.run_attempt }}
           artifact-upload-path: /tmp/**/videoamme_audio*/videoamme_results.json
 
   stage-11-process-replicas:
