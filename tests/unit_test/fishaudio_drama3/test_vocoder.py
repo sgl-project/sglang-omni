@@ -13,6 +13,7 @@ from dac.nn.layers import Snake1d
 
 from sglang_omni.models.fishaudio_drama3.channels_last_decoder import (
     ChannelsLastDecoder,
+    add_bias,
     snake_channels_last_kernel,
 )
 from sglang_omni.models.fishaudio_drama3.codec_transformer import CodecTransformer
@@ -49,6 +50,10 @@ from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.types import RequestOutput
+from sglang_omni.utils.channels_last_conv import (
+    channels_last_conv1d,
+    channels_last_conv_transpose1d,
+)
 from tests.unit_test.fishaudio_s2_pro.test_vocoder import tiny_codec
 from tests.unit_test.fixtures.torch_backend_flags import (  # noqa: F401  # fixture
     CublasFlagSetter,
@@ -657,9 +662,15 @@ class CpuSnakeDecoder(ChannelsLastDecoder):
         hidden_states: torch.Tensor,
         pad_left: int = 0,
         pad_right: int = 0,
+        *,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         self.snake_padding.append((pad_left, pad_right))
-        activated = module(hidden_states.transpose(1, 2)).transpose(1, 2).contiguous()
+        activated = (
+            module(add_bias(hidden_states, bias).transpose(1, 2))
+            .transpose(1, 2)
+            .contiguous()
+        )
         return F.pad(activated, (0, 0, pad_left, pad_right))
 
 
@@ -697,7 +708,7 @@ def test_snake_padding_preserves_real_decoder_sequences(
         else:
             activation = torch.randn(2, frame_count + 5, 8)[:, :frame_count]
             expected = sequence(activation.transpose(1, 2)).transpose(1, 2)
-            actual = decoder.apply_sequence(sequence, activation)
+            actual = add_bias(*decoder.apply_sequence(sequence, activation))
     torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
     assert any(left > 0 for left, _ in decoder.snake_padding)
     if context == "sequence":
@@ -726,7 +737,8 @@ def test_prepadded_causal_conv_keeps_original_length(
         actual = decoder.causal_conv(module, padded, original_frame_count=frame_count)
         fallback = decoder.causal_conv(module, activation)
     assert actual.shape == (2, frame_count, 4)
-    torch.testing.assert_close(actual, expected)
+    # The conv leaves its bias to the next kernel.
+    torch.testing.assert_close(actual + module.conv.bias, expected)
     assert torch.equal(actual, fallback)
 
 
@@ -774,6 +786,7 @@ def test_fused_snake_padding_is_bitwise_equal_to_snake_then_pad(
             activation,
             alpha,
             inverse_alpha,
+            alpha,
             target,
             rows,
             frame_count,
@@ -809,6 +822,7 @@ def test_snake_new_lengths_reuse_the_compiled_kernel(dtype: torch.dtype) -> None
             activation,
             alpha,
             inverse_alpha,
+            alpha,
             output,
             rows,
             frame_count,
@@ -846,6 +860,7 @@ def test_the_snake_kernel_follows_the_formula_on_a_trimmed_activation(
         activation,
         alpha,
         inverse_alpha,
+        alpha,
         output,
         3 * 125,
         125,
@@ -859,6 +874,149 @@ def test_the_snake_kernel_follows_the_formula_on_a_trimmed_activation(
         alpha.double() * activation.double()
     ).pow(2)
     torch.testing.assert_close(output, exact.to(dtype))
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+@pytest.mark.parametrize("pad_left", [0, 6])
+def test_the_snake_folds_a_conv_bias_bitwise_like_a_separate_add(
+    dtype: torch.dtype, pad_left: int
+) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    else:
+        pass
+    generator = torch.Generator(device="cuda").manual_seed(11)
+    channel_count = 96
+    snake = Snake1d(channel_count).cuda()
+    snake.alpha.data = (
+        torch.rand(1, channel_count, 1, generator=generator, device="cuda") * 4 + 0.05
+    )
+    decoder = ChannelsLastDecoder.__new__(ChannelsLastDecoder)
+    alpha = snake.alpha.detach().float().reshape(-1).contiguous()
+    decoder.snake_alphas = {id(snake): (alpha, (alpha + 1e-9).reciprocal())}
+    activation = torch.randn(
+        (3, 77, channel_count), generator=generator, device="cuda"
+    ).to(dtype)
+    bias = (torch.randn(channel_count, generator=generator, device="cuda") * 3).to(
+        dtype
+    )
+
+    folded = decoder.snake(snake, activation, pad_left, 2, bias=bias)
+    separate = decoder.snake(snake, activation + bias, pad_left, 2)
+
+    assert torch.equal(folded.view(torch.uint8), separate.view(torch.uint8))
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+@pytest.mark.parametrize(
+    ("hidden_bias", "residual_bias"), [(True, True), (True, False), (False, False)]
+)
+def test_the_residual_add_folds_both_biases_bitwise_like_separate_adds(
+    dtype: torch.dtype, hidden_bias: bool, residual_bias: bool
+) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    else:
+        pass
+    generator = torch.Generator(device="cuda").manual_seed(12)
+    channel_count = 96
+    decoder = ChannelsLastDecoder.__new__(ChannelsLastDecoder)
+    # The residual is shorter than the activation it adds to, as after a conv.
+    hidden = torch.randn(
+        (3, 130, channel_count), generator=generator, device="cuda"
+    ).to(dtype)
+    residual = torch.randn(
+        (3, 125, channel_count), generator=generator, device="cuda"
+    ).to(dtype)
+    biases = [
+        (
+            (torch.randn(channel_count, generator=generator, device="cuda") * 3).to(
+                dtype
+            )
+            if wanted
+            else None
+        )
+        for wanted in (hidden_bias, residual_bias)
+    ]
+
+    fused = decoder.residual_add(hidden[:, :125], biases[0], residual, biases[1])
+    expected = hidden[:, :125]
+    if biases[0] is not None:
+        expected = expected + biases[0]
+    else:
+        pass
+    separate_residual = residual if biases[1] is None else residual + biases[1]
+    expected = expected + separate_residual
+
+    assert torch.equal(fused.view(torch.uint8), expected.view(torch.uint8))
+
+
+@pytest.mark.accelerator
+def test_graph_replays_of_the_decoder_keep_the_bits_of_convs_adding_their_own_bias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    else:
+        pass
+    decoders = []
+    for _ in range(2):
+        codec = tiny_codec().cuda()
+        codec.fold_weight_norm()
+        decoders.append(ChannelsLastDecoder(codec, dtype=torch.float16))
+    folding, reference = decoders
+    # The reference decodes as before the biases were folded: every conv adds its
+    # own bias inside its cuDNN call, no bias is left pending and the residual is
+    # a plain add.
+    reference.conv_biases = dict.fromkeys(reference.conv_biases)
+    reference.residual_add = lambda hidden_states, _, residual, __: (
+        hidden_states + residual
+    )
+
+    def with_own_bias(conv_function):
+        def conv(hidden_states, module, weight, bias, *rest):
+            assert bias is None
+            return conv_function(hidden_states, module, weight, module.bias, *rest)
+
+        return conv
+
+    # Batch-1 windows replay their CUDA graph, the 96-frame one twice; the batch of
+    # 3 decodes eagerly.
+    graphed = WindowGraphDecoder(
+        folding,
+        num_codebooks=NUM_CODEBOOKS,
+        frame_length=int(folding.codec.frame_length),
+        device=torch.device("cuda"),
+        window_lengths=(4, 26, 96),
+    )
+    generator = torch.Generator(device="cuda").manual_seed(13)
+    for batch_size, frame_count in ((1, 4), (1, 26), (1, 96), (1, 96), (3, 26)):
+        codes = torch.randint(
+            0,
+            16,
+            (batch_size, NUM_CODEBOOKS, frame_count),
+            generator=generator,
+            device="cuda",
+        )
+        with torch.no_grad():
+            decoded = graphed(codes.clone())
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    "sglang_omni.models.fishaudio_drama3.channels_last_decoder."
+                    "channels_last_conv1d",
+                    with_own_bias(channels_last_conv1d),
+                )
+                patch.setattr(
+                    "sglang_omni.models.fishaudio_drama3.channels_last_decoder."
+                    "channels_last_conv_transpose1d",
+                    with_own_bias(channels_last_conv_transpose1d),
+                )
+                expected = reference(codes.clone())
+
+        assert decoded.shape == expected.shape
+        assert torch.equal(decoded.view(torch.int16), expected.view(torch.int16))
 
 
 @pytest.mark.accelerator
@@ -968,12 +1126,14 @@ def test_the_decoder_tail_fuses_snake_conv_and_tanh_like_the_modules(
                 decoder.snake(tail[0], activation, tail[1].padding, 0),
                 original_frame_count=frame_count,
             )
+            + tail[1].conv.bias
         )
         monkeypatch.setattr(
             decoder, "causal_conv", lambda *_: pytest.fail("the tail used cuDNN")
         )
-        fused = decoder.apply_sequence(tail, activation)
+        fused, pending_bias = decoder.apply_sequence(tail, activation)
 
+    assert pending_bias is None
     assert fused.shape == expected.shape == (batch_size, frame_count, 1)
     assert fused.dtype == torch.float16
     # One half ulp from the cuDNN path, within the fp16 modules' own rounding.
