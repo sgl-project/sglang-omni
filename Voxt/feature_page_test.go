@@ -93,6 +93,7 @@ func TestTranscribeHotkeysEdit(t *testing.T) {
 	if !a.fui(hotkey.Transcribe).rows[1].custom || a.fui(hotkey.Transcribe).rows[1].text != "RightShift" {
 		t.Fatalf("custom row %+v", a.fui(hotkey.Transcribe).rows[1])
 	}
+	click(t, tt, "Type the keys instead")
 	click(t, tt, "Custom keys of shortcut 2")
 	for range len("RightShift") {
 		tt.Key(0, ui.KeyBackspace)
@@ -144,6 +145,7 @@ func TestTranscribeMouseButton(t *testing.T) {
 		t.Fatal(err)
 	}
 	click(t, tt, "Custom…")
+	click(t, tt, "Type the keys instead")
 	if !has(tt, hint) {
 		t.Errorf("no mouse hint in %q", tt.Texts())
 	}

@@ -20,11 +20,13 @@ import (
 
 // keyRow is a shortcut's controls.
 type keyRow struct {
-	sel    string // the select's label
-	custom bool   // "Custom…" chosen: the keys are typed
-	text   string // the typed keys
-	trig   int    // 0 tap, 1 double tap, 2 long press
-	edited bool   // the typed keys are not saved yet
+	sel     string // the select's label
+	custom  bool   // "Custom…" chosen: the keys are pressed (key_recorder.go)
+	typing  bool   // … or typed, when asked
+	text    string // the pressed or typed keys
+	trig    int    // 0 tap, 1 double tap, 2 long press
+	edited  bool   // the typed keys are not saved yet
+	unknown bool   // the last key pressed has no name in the grammar
 }
 
 // keyPresets are the shortcuts the selects offer, in the grammar of
@@ -108,15 +110,16 @@ func presetOf(keys string) string {
 }
 
 // keyOptions are a select's options for a binding whose keys are cur:
-// the presets, cur when it is none of them, then "Custom…" (and "Off"
-// first with off). byLabel maps each label to its keys.
-func keyOptions(cur string, off bool) (opts []string, byLabel map[string]string) {
+// the row's own presets (first), the presets, cur when it is none of
+// them, then "Custom…" (and "Off" first with off). byLabel maps each
+// label to its keys.
+func keyOptions(cur string, off bool, first ...string) (opts []string, byLabel map[string]string) {
 	byLabel = map[string]string{}
 	if off {
 		opts = append(opts, i18n.T("Off"))
 		byLabel[i18n.T("Off")] = ""
 	}
-	for _, p := range keyPresets {
+	for _, p := range slices.Concat(first, keyPresets) {
 		l := uitext.HotkeyText(p)
 		opts = append(opts, l)
 		byLabel[l] = p
@@ -276,7 +279,7 @@ func (a *app) keyRowView(c *ui.Context, feature string, i int, h settings.Hotkey
 			}
 		})
 		if r.custom {
-			a.customKeys(c, r, i18n.T("Custom keys of shortcut %d", n), func(keys string) {
+			a.keysField(c, r, i18n.T("Custom keys of shortcut %d", n), func(keys string) {
 				a.setHotkeys(feature, false, func(hs []settings.Hotkey) []settings.Hotkey {
 					if i < len(hs) {
 						hs[i].Keys = keys
@@ -398,7 +401,7 @@ func (a *app) trPasteRow(c *ui.Context) {
 			}
 		})
 		if r.custom {
-			a.customKeys(c, r, i18n.T("Custom keys to paste the last result"), a.setPasteLast)
+			a.keysField(c, r, i18n.T("Custom keys to paste the last result"), a.setPasteLast)
 		}
 		problemLines(c, problems)
 		a.usedByView(c, recordedKeys(*r, cur))
@@ -423,7 +426,7 @@ func (a *app) trCancelRow(c *ui.Context) {
 	problems := uitext.HotkeyProblems(a.prefs.Features, hotkey.CancelID)[0]
 	ui.Column(c.Key("tr-cancel")).Gap(px(t, 6)).Children(func() {
 		settingRow(c, "tr-cancel-row", i18n.T("Cancel transcription"), i18n.T("Cancels the recording or the answer card, and only while they show. The recording stays in History, ready to retry."), func() {
-			opts, byLabel := keyOptions(cur, true)
+			opts, byLabel := keyOptions(cur, true, settings.DefaultCancel)
 			if !slices.Contains(opts, r.sel) {
 				r.sel = chordLabel(cur)
 			}
@@ -444,7 +447,7 @@ func (a *app) trCancelRow(c *ui.Context) {
 			}
 		})
 		if r.custom {
-			a.customKeys(c, r, i18n.T("Custom keys to cancel transcription"), a.setCancelKeys)
+			a.keysField(c, r, i18n.T("Custom keys to cancel transcription"), a.setCancelKeys)
 		}
 		problemLines(c, problems)
 		a.usedByView(c, recordedKeys(*r, cur))
