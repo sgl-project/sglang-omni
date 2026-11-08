@@ -282,6 +282,7 @@ class RecordingDrama3Model(Drama3ForCausalLM):
         self.gathered_decode_inputs = Drama3StepInputs(
             request_ids=[],
             frames=decode_buffers.frames[:row_count].clone(),
+            next_frames=decode_buffers.frames[:0],
             ras_windows=decode_buffers.ras_windows[:row_count].clone(),
             temperature=decode_buffers.temperature[:row_count].clone(),
             top_k=decode_buffers.top_k[:row_count].clone(),

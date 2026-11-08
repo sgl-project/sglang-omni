@@ -247,9 +247,7 @@ class Drama3ForCausalLM(nn.Module):
         if tower_prefill is None:
             raise RuntimeError("the engine allocated no Drama 3 tower prefill buffers")
         else:
-            tower_prefill.stage(
-                frames, next_frame_labels(frames, last_rows, self.config.eos_token_id)
-            )
+            tower_prefill.stage(frames, step_inputs.next_frames)
         hidden_states, logits_output = self.backbone_logits(
             input_ids, positions, forward_batch, frames
         )
