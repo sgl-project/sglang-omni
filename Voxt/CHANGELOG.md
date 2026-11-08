@@ -32,6 +32,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **A service that needs its API key says so**: its card reads "API key needed" with Complete setup, and when no language model is ready the sidebar card names the service and opens its dialog. Services brought over from Voxt 1.x show this at once.
 - **The import from Voxt 1.x reads at a glance**: its result is grouped as Imported, Left out (with why) and To do, each to-do with Complete setup; an import from outside the setup guide shows it in a dialog.
 
+### Fixed
+
+- **⌘W closes the window.** With "Keep running when the window closes" on (the default), Voxt stays in the menu bar and its shortcuts keep working, as the red × does; only ⌘Q quits. The Window menu had no Close Window item before.
+
 ### 中文
 
 #### 新增
@@ -61,6 +65,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **一次请求必需的权限**：权限分成“必需”（麦克风、辅助功能）和“可选”（语音识别），“依次请求必需的权限”会一个接一个地弹出 macOS 的提示。
 - **缺 API Key 的服务会说清楚**：卡片上写“需要 API Key”，带“完成设置”；没有可用的语言模型时，侧边栏的卡片写明是哪个服务，点一下打开它的设置。从 Voxt 1.x 导入的服务马上就显示这个状态。
 - **从 Voxt 1.x 导入的结果一眼看清**：分成“已导入”“没有导入”（写明原因）和“还要做”，每件要做的事带“完成设置”；不是在设置引导里导入时，结果显示在一个对话框里。
+
+#### 修复
+
+- **⌘W 关闭窗口。** 开着“关闭窗口后继续运行”（默认开）时，Voxt 留在菜单栏里，快捷键照常可用，和红色 × 一样；只有 ⌘Q 退出。之前窗口菜单里没有“关闭窗口”。
 
 ## [2.0.1] - 2026-11-07
 

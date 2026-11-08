@@ -31,6 +31,8 @@ type trayState struct {
 	recent   []string // the last results, newest first (trayRecentN at most)
 	// copyText puts text on the clipboard (mygo.Clipboard); tests record.
 	copyText func(string) error
+	// life is the main window as the window life uses it: a.win, or a fake in tests.
+	life lifeWindow
 }
 
 // trayRecentN is how many results the menu lists (each as wide as
@@ -185,8 +187,8 @@ func (a *app) copyRecent(text string) {
 // showMainWindow brings the main window back (it may be hidden in the
 // menu bar).
 func (a *app) showMainWindow() {
-	if a.win != nil {
-		a.win.Show()
+	if a.life != nil {
+		a.life.Show()
 	}
 }
 
@@ -195,27 +197,54 @@ func (a *app) showMainWindow() {
 // reads the permissions again whenever VoxtNew comes to the front
 // (System Settings may have changed them).
 func (a *app) connectWindowLife() {
-	if a.win == nil {
+	if a.life == nil {
 		return
 	}
-	a.win.OnClose(func(e *mygo.CloseEvent) {
-		if a.prefs.General.CloseToTray && !a.quitting && a.tray != nil {
-			e.PreventDefault()
-			a.win.Hide()
-		}
-	})
-	a.win.OnClosed(func() { mygo.App.Quit() })
-	mygo.App.OnActivate(func(hasVisibleWindows bool) {
-		if !a.win.IsVisible() {
-			a.win.Show()
-		}
-	})
+	a.life.OnClose(a.windowClosing)
+	a.life.OnClosed(func() { mygo.App.Quit() })
+	mygo.App.OnActivate(func(bool) { a.reopenWindow() })
 	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { a.quitting = true })
 	mygo.App.OnDidBecomeActive(func() {
 		a.post(a.recheckPermissions)
 		a.post(a.familyActivated) // family.go: the family's files again (notifications are hints)
 		a.post(a.checkAnnouncements)
 	})
+}
+
+// lifeWindow is the main window as the window life uses it: a.win, or a
+// fake in tests.
+type lifeWindow interface {
+	Show()
+	Hide()
+	Close()
+	IsVisible() bool
+	OnClose(fn func(*mygo.CloseEvent)) (off func())
+	OnClosed(fn func()) (off func())
+}
+
+// windowClosing runs when the red × or ⌘W closes the window: with the
+// setting and the menu bar icon, the window hides and VoxtNew keeps running.
+func (a *app) windowClosing(e *mygo.CloseEvent) {
+	if a.prefs.General.CloseToTray && !a.quitting && a.tray != nil {
+		e.PreventDefault()
+		a.life.Hide()
+	}
+}
+
+// closeWindow is ⌘W (the Window menu): it closes the window as the red ×
+// does, so windowClosing decides.
+func (a *app) closeWindow() {
+	if a.life != nil {
+		a.life.Close()
+	}
+}
+
+// reopenWindow shows the window again when VoxtNew is opened (the Dock icon,
+// or the menu bar).
+func (a *app) reopenWindow() {
+	if !a.life.IsVisible() {
+		a.life.Show()
+	}
 }
 
 // setDockShown shows VoxtNew in the Dock or leaves it out (an accessory
