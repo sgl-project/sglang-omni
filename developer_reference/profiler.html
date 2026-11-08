@@ -964,7 +964,9 @@ reconstructed even when each stage runs in its own process.</p>
 <p>The torch profiler runs alongside the event recorder when
 <code class="docutils literal notranslate"><span class="pre">enable_torch=true</span></code> (the default for <code class="docutils literal notranslate"><span class="pre">/start_profile</span></code>). It records
 continuously between <code class="docutils literal notranslate"><span class="pre">start()</span></code> and <code class="docutils literal notranslate"><span class="pre">stop()</span></code> — no <code class="docutils literal notranslate"><span class="pre">schedule(...)</span></code>, no
-<code class="docutils literal notranslate"><span class="pre">step()</span></code> requirement — and exports a Chrome trace <code class="docutils literal notranslate"><span class="pre">*.trace.json.gz</span></code> on stop.</p>
+<code class="docutils literal notranslate"><span class="pre">step()</span></code> requirement — and exports a Chrome trace <code class="docutils literal notranslate"><span class="pre">*.trace.json.gz</span></code> on stop.
+CPU ops are recorded from every thread in the process, including scheduler
+threads that existed before <code class="docutils literal notranslate"><span class="pre">start()</span></code>.</p>
 <p>The expensive introspection flags are opt-in via env vars so the default
 trace stays small enough to load in <code class="docutils literal notranslate"><span class="pre">chrome://tracing</span></code> or
 <a class="reference external" href="https://ui.perfetto.dev"><code class="docutils literal notranslate"><span class="pre">ui.perfetto.dev</span></code></a>:</p>
@@ -979,7 +981,7 @@ trace stays small enough to load in <code class="docutils literal notranslate"><
 <td><p>Record input tensor shapes per op</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">SGLANG_TORCH_PROFILER_PROFILE_MEMORY=1</span></code></p></td>
-<td><p>Record tensor memory allocation / free events</p></td>
+<td><p>Record tensor memory allocation / free events. Disables all-thread capture: only the thread that starts the profiler is recorded, so worker thread CPU ops and memory events are excluded</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SGLANG_TORCH_PROFILER_WITH_STACK=1</span></code></p></td>
 <td><p>Record the Python (and C++) call stack per op</p></td>
