@@ -586,7 +586,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hardware-workflows">Hardware workflows</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cpu-ci">CPU CI</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#xpu-ci">XPU CI</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#voxt-mac-ci">Voxt Mac CI</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#mac-ci">Mac CI</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#label-rules">Label rules</a></li>
@@ -606,7 +606,7 @@
                   
   <section class="tex2jax_ignore mathjax_ignore" id="ci-workflows-and-labels">
 <h1>CI Workflows and Labels<a class="headerlink" href="#ci-workflows-and-labels" title="Link to this heading">#</a></h1>
-<p>SGLang-Omni CI has two parts. A few fast checks run on GitHub-hosted runners for every pull request. Everything else runs on self-hosted runners: H100 machines for the GPU stages, an Intel Xeon host, an Intel GPU host and an Apple Silicon Mac.</p>
+<p>SGLang-Omni CI has two parts. A few fast checks run on GitHub-hosted runners for every pull request, though one that changes only the MLX path runs just Lint among them. Everything else runs on self-hosted runners (H100 machines for the GPU stages, an Intel Xeon host and an Intel GPU host), except Mac CI, which runs on GitHub’s macOS runners but also needs its label.</p>
 <p><strong>A pull request runs none of the self-hosted CI until a maintainer adds CI labels.</strong> Once labeled, every later push re-runs CI for as long as the labels stay. Draft pull requests are blocked from self-hosted CI even when they are labeled.</p>
 <p>In this sense, two kinds of labels exist and they combine: a stage label decides whether a part of the self-hosted CI runs, and a model label names only the model. A model label never includes a stage name and never selects a stage by itself. <code class="docutils literal notranslate"><span class="pre">run-lint-only</span></code> is separate: it satisfies the gate and runs no self-hosted job. The full label rules come after the workflows. <code class="docutils literal notranslate"><span class="pre">.github/scripts/resolve_ci_labels.py</span></code> implements them, and every self-hosted workflow resolves its labels through that script.</p>
 <section id="overview">
@@ -622,70 +622,75 @@
 <tbody>
 <tr class="row-even"><td><p>Lint</p></td>
 <td><p>GitHub-hosted</p></td>
-<td><p>pre-commit and the realtime playback test</p></td>
+<td><p>pre-commit</p></td>
 <td><p>Every pull request</p></td>
 </tr>
 <tr class="row-odd"><td><p>Test Layout</p></td>
 <td><p>GitHub-hosted</p></td>
 <td><p>Test file location check</p></td>
-<td><p>Every pull request</p></td>
+<td><p>Every pull request except MLX-only ones</p></td>
 </tr>
 <tr class="row-even"><td><p>Docs Check</p></td>
 <td><p>GitHub-hosted</p></td>
-<td><p>Sphinx documentation build</p></td>
-<td><p>Every pull request</p></td>
+<td><p>Sphinx documentation build and the documentation style checker’s tests</p></td>
+<td><p>Every pull request except MLX-only ones</p></td>
 </tr>
-<tr class="row-odd"><td><p>Rust Router</p></td>
+<tr class="row-odd"><td><p>Playground Test</p></td>
+<td><p>GitHub-hosted</p></td>
+<td><p>The playground frontend tests</p></td>
+<td><p>Every pull request except MLX-only ones</p></td>
+</tr>
+<tr class="row-even"><td><p>Rust Router</p></td>
 <td><p>GitHub-hosted</p></td>
 <td><p>Rust router format, lint, tests and release build</p></td>
-<td><p>Every pull request</p></td>
+<td><p>Every pull request except MLX-only ones</p></td>
 </tr>
-<tr class="row-even"><td><p>Release Docker Images Nightly (NPU)</p></td>
+<tr class="row-odd"><td><p>Release Docker Images Nightly (NPU)</p></td>
 <td><p>GitHub-hosted</p></td>
 <td><p>NPU configuration checks and an ARM64 image build</p></td>
-<td><p>Every pull request</p></td>
+<td><p>Pull requests that change its Dockerfile, installer, pyproject files or workflows</p></td>
 </tr>
-<tr class="row-odd"><td><p>Omni CI: PR Test</p></td>
+<tr class="row-even"><td><p>Omni CI: PR Test</p></td>
 <td><p>H100</p></td>
 <td><p>The unit test suite twice: once with CUDA hidden, once for the tests that need a GPU</p></td>
-<td><p>Any stage label</p></td>
+<td><p>Any stage label except <code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p>Omni CI: ASR</p></td>
+<tr class="row-odd"><td><p>Omni CI: ASR</p></td>
 <td><p>H100</p></td>
 <td><p>Multi-speaker transcription and diarization with MOSS-Transcribe-Diarize, then SeedTTS English and Chinese word error rate and speed on Fun-ASR-Nano-2512, Qwen3-ASR-1.7B or Whisper-large-v3</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">run-asr-ci</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p>Omni CI: TTS</p></td>
+<tr class="row-even"><td><p>Omni CI: TTS</p></td>
 <td><p>H100</p></td>
 <td><p>Voice cloning on SeedTTS with Higgs-TTS, MOSS-TTS, Qwen3-TTS or Fun-CosyVoice3: non-streaming and streaming speed, word error rate, speaker similarity and UTMOS, streaming consistency, first-audio latency for Qwen3-TTS, and a serving stress test on Higgs-TTS</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">run-tts-ci</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p>Omni CI: MPS</p></td>
+<tr class="row-odd"><td><p>Omni CI: MPS</p></td>
 <td><p>H100</p></td>
 <td><p>External CUDA MPS DP2 non-streaming validation, native MPS lifecycle validation, and native CUDA IPC weight-sharing lifecycle validation</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">run-mps-ci</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p>Omni CI: Omni</p></td>
+<tr class="row-even"><td><p>Omni CI: Omni</p></td>
 <td><p>H100</p></td>
 <td><p>Qwen3-Omni or MiniCPM-o 4.5: thinker length limits, SeedTTS voice cloning, accuracy and speed on MMMU, MMSU, Video-MME and Video-AMME with text and spoken answers, a tensor parallel thinker, and Qwen3-Omni process replicas</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">run-omni-ci</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p>Omni CI: Duplex</p></td>
+<tr class="row-odd"><td><p>Omni CI: Duplex</p></td>
 <td><p>H100</p></td>
 <td><p>Full-Duplex-Bench v1.0 and v1.5 on three interaction strategies: native full duplex (MiniCPM-o 4.5), turn based (Qwen3-Omni with server VAD) and cascaded (Qwen3-ASR-1.7B, Qwen3.8-27B and Qwen3-TTS Base cloning one Vivian recording). Each gates turn taking, overlap behavior, latency and listening quality against its own baseline</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">run-native-duplex</span></code>, <code class="docutils literal notranslate"><span class="pre">run-turn-based-duplex</span></code> or <code class="docutils literal notranslate"><span class="pre">run-cascaded-duplex</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p>CPU CI</p></td>
+<tr class="row-even"><td><p>CPU CI</p></td>
 <td><p>Intel Xeon (<code class="docutils literal notranslate"><span class="pre">intel-omni-spr</span></code>)</p></td>
 <td><p>Job <code class="docutils literal notranslate"><span class="pre">intel-cpu-ci</span> <span class="pre">(unit_test/cpu)</span></code>: <code class="docutils literal notranslate"><span class="pre">pytest</span> <span class="pre">tests/unit_test/cpu/</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">run-intel-cpu-ci</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p>XPU CI</p></td>
+<tr class="row-odd"><td><p>XPU CI</p></td>
 <td><p>Intel GPU (<code class="docutils literal notranslate"><span class="pre">intel-omni-bmg</span></code>)</p></td>
 <td><p>Intel GPU device layer tests</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">run-intel-xpu-ci</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p>Voxt Mac CI</p></td>
+<tr class="row-even"><td><p>Mac CI</p></td>
 <td><p>GitHub macOS</p></td>
 <td><p>MLX native runtime build and protocol, the Voxt app’s Swift tests</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code></p></td>
@@ -697,7 +702,7 @@
 </section>
 <section id="checks-on-every-pull-request">
 <h2>Checks On Every Pull Request<a class="headerlink" href="#checks-on-every-pull-request" title="Link to this heading">#</a></h2>
-<p>These workflows run on GitHub-hosted runners for every pull request, drafts included, with no label.</p>
+<p>These workflows run on GitHub-hosted runners for every pull request, drafts included, with no label. An MLX-only pull request changes nothing outside <code class="docutils literal notranslate"><span class="pre">sglang_omni_mlx/</span></code>, <code class="docutils literal notranslate"><span class="pre">Voxt/</span></code>, <code class="docutils literal notranslate"><span class="pre">.github/workflows/mac-ci.yaml</span></code> and <code class="docutils literal notranslate"><span class="pre">.github/workflows/voxt*.yaml</span></code>. It runs only Lint among these checks and does not start Omni CI: Mac CI and Voxt CI test it, and Mac CI checks its labels.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Workflow</p></th>
@@ -710,25 +715,29 @@
 <td><p><code class="docutils literal notranslate"><span class="pre">lint</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">pre-commit</span> <span class="pre">run</span> <span class="pre">--all-files</span></code>: formatting, import order, Ruff, YAML and TOML syntax, and the other hooks in <code class="docutils literal notranslate"><span class="pre">.pre-commit-config.yaml</span></code>.</p></td>
 </tr>
-<tr class="row-odd"><td><p>Lint</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">playback-test</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">node</span> <span class="pre">--test</span></code> on the realtime playback state in <code class="docutils literal notranslate"><span class="pre">playground/qwen-omni/realtime/</span></code>.</p></td>
-</tr>
-<tr class="row-even"><td><p>Test Layout</p></td>
+<tr class="row-odd"><td><p>Test Layout</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">test-layout</span></code></p></td>
 <td><p>Every Python file under <code class="docutils literal notranslate"><span class="pre">tests/</span></code> lives in <code class="docutils literal notranslate"><span class="pre">tests/unit_test/</span></code>, <code class="docutils literal notranslate"><span class="pre">tests/test_model/</span></code>, <code class="docutils literal notranslate"><span class="pre">tests/test_ci/</span></code> or <code class="docutils literal notranslate"><span class="pre">tests/utils/</span></code>.</p></td>
 </tr>
-<tr class="row-odd"><td><p>Docs Check</p></td>
+<tr class="row-even"><td><p>Docs Check</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">build-docs</span></code></p></td>
 <td><p>The documentation builds with <code class="docutils literal notranslate"><span class="pre">docs/requirements.txt</span></code>.</p></td>
 </tr>
-<tr class="row-even"><td><p>Rust Router</p></td>
+<tr class="row-odd"><td><p>Docs Check</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">doc-style-test</span></code></p></td>
+<td><p>The tests of the documentation style checker in <code class="docutils literal notranslate"><span class="pre">scripts/</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p>Playground Test</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">playback-test</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">node</span> <span class="pre">--test</span></code> on the realtime playback state in <code class="docutils literal notranslate"><span class="pre">playground/qwen-omni/realtime/</span></code> and on the frontends in <code class="docutils literal notranslate"><span class="pre">playground/cascade/frontend/orb/</span></code> and <code class="docutils literal notranslate"><span class="pre">playground/realtime/frontend/orb/</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Rust Router</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">quality</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">fmt</span></code>, a check on the minimum supported Rust version, Clippy with warnings as errors, the tests, the docs, a release build, and <code class="docutils literal notranslate"><span class="pre">--check-config</span></code> on every example config.</p></td>
 </tr>
-<tr class="row-odd"><td><p>Release Docker Images Nightly (NPU)</p></td>
+<tr class="row-even"><td><p>Release Docker Images Nightly (NPU)</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">preprocess</span></code>, <code class="docutils literal notranslate"><span class="pre">build_and_publish_arm64</span></code></p></td>
-<td><p>The NPU configuration and installer tests without hardware, then an ARM64 build of <code class="docutils literal notranslate"><span class="pre">docker/npu.Dockerfile</span></code>, which copies the whole repository. Pull requests never publish the image, and a new push cancels the build still running for the previous one.</p></td>
+<td><p>Only when the pull request changes <code class="docutils literal notranslate"><span class="pre">docker/npu.Dockerfile</span></code>, the NPU installer, the pyproject files or these workflows: the NPU configuration and installer tests without hardware, then an ARM64 build of <code class="docutils literal notranslate"><span class="pre">docker/npu.Dockerfile</span></code>. Pull requests never publish the image, and a new push cancels the build still running for the previous one.</p></td>
 </tr>
 </tbody>
 </table>
@@ -765,7 +774,7 @@
 </div>
 <p>The CPU partitions run as independent matrix jobs with fail-fast disabled. Files stay intact and are balanced using <code class="docutils literal notranslate"><span class="pre">.github/unit_test_durations.json</span></code>. Pytest discovers new tests automatically; files without a timing entry receive a one-second estimate, and new cases in an existing file stay in that file’s partition. Local pytest remains unpartitioned unless the CI plugin is explicitly loaded.</p>
 <p>The weights are per-file p90 elapsed estimates from three successful H100 A/B runs: <a class="reference external" href="https://github.com/sgl-project/sglang-omni/actions/runs/41197670240">41197670240</a>, <a class="reference external" href="https://github.com/sgl-project/sglang-omni/actions/runs/41161315193">41161315193</a> and <a class="reference external" href="https://github.com/sgl-project/sglang-omni/actions/runs/41140707601">41140707601</a>. Each file has three observations. The estimates aggregate timestamp intervals between completed pytest cases, excluding initial collection; they are not isolated setup/call/teardown measurements. These are PR runs with different revisions, not scheduled main-branch observations. The weights are a committed snapshot, not an automatically refreshed model.</p>
-<p><code class="docutils literal notranslate"><span class="pre">run-unit-test-ci-only</span></code> selects PR Test on H100 without selecting model or hardware stages. It does not run the Intel Xeon job <code class="docutils literal notranslate"><span class="pre">intel-cpu-ci</span> <span class="pre">(unit_test/cpu)</span></code>; that job needs <code class="docutils literal notranslate"><span class="pre">run-intel-cpu-ci</span></code> and the CPU path filter. Other stage labels remain additive, so keep them absent for unit tests only. Shared setup still runs, including model-weight provisioning. PR Test also runs whenever any other stage label selects a stage, the hardware stages included. <code class="docutils literal notranslate"><span class="pre">run-lint-only</span></code> does not run PR Test or setup.</p>
+<p><code class="docutils literal notranslate"><span class="pre">run-unit-test-ci-only</span></code> selects PR Test on H100 without selecting model or hardware stages. It does not run the Intel Xeon job <code class="docutils literal notranslate"><span class="pre">intel-cpu-ci</span> <span class="pre">(unit_test/cpu)</span></code>; that job needs <code class="docutils literal notranslate"><span class="pre">run-intel-cpu-ci</span></code> and the CPU path filter. Other stage labels remain additive, so keep them absent for unit tests only. Shared setup still runs, including model-weight provisioning. PR Test also runs whenever any other stage label selects a stage, the Intel hardware stages included. <code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code> and <code class="docutils literal notranslate"><span class="pre">run-lint-only</span></code> do not run PR Test or setup.</p>
 </section>
 <section id="asr">
 <h3>ASR<a class="headerlink" href="#asr" title="Link to this heading">#</a></h3>
@@ -1003,18 +1012,18 @@
 <p>XPU CI pulls or builds the Intel GPU image from <code class="docutils literal notranslate"><span class="pre">docker/xpu.Dockerfile</span></code> and runs the device layer tests in <code class="docutils literal notranslate"><span class="pre">tests/unit_test/xpu/test_device_layer.py</span></code> and the dots.tts flow head and tail tests. Its tests run when the pull request touches <code class="docutils literal notranslate"><span class="pre">sglang_omni/</span></code>, <code class="docutils literal notranslate"><span class="pre">tests/unit_test/xpu/</span></code>, <code class="docutils literal notranslate"><span class="pre">tests/unit_test/dots_tts/</span></code>, <code class="docutils literal notranslate"><span class="pre">pyproject_xpu.toml</span></code>, <code class="docutils literal notranslate"><span class="pre">scripts/xpu/</span></code>, <code class="docutils literal notranslate"><span class="pre">docker/xpu.Dockerfile</span></code> or the workflow itself.</p>
 <p>The stage label is <code class="docutils literal notranslate"><span class="pre">run-intel-xpu-ci</span></code>.</p>
 </section>
-<section id="voxt-mac-ci">
-<h3>Voxt Mac CI<a class="headerlink" href="#voxt-mac-ci" title="Link to this heading">#</a></h3>
-<p>Voxt Mac CI has two jobs on GitHub’s macOS runners. The native runtime job builds the MLX runtime and a stub server, then tests the protocol every native server shares on the stub server, each server’s startup checks, and that the installed runtime links only the system and itself. The Swift test job runs the tests of the Voxt app’s helper (<code class="docutils literal notranslate"><span class="pre">Voxt/helper</span></code>). Model outputs are checked by hand per model PR with the tools in <code class="docutils literal notranslate"><span class="pre">sglang_omni_mlx/native/ci</span></code>. The workflow starts only when the pull request touches <code class="docutils literal notranslate"><span class="pre">sglang_omni_mlx/</span></code>, <code class="docutils literal notranslate"><span class="pre">Voxt/helper/</span></code> or the workflow itself; otherwise it does not appear on the pull request at all.</p>
-<p>The stage label is <code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code>.</p>
+<section id="mac-ci">
+<h3>Mac CI<a class="headerlink" href="#mac-ci" title="Link to this heading">#</a></h3>
+<p>Mac CI has two jobs on GitHub’s macOS runners. The native runtime job builds the MLX runtime and a stub server, then tests the protocol every native server shares on the stub server, each server’s startup checks, and that the installed runtime links only the system and itself. The Swift test job runs the tests of the Voxt app’s helper (<code class="docutils literal notranslate"><span class="pre">Voxt/helper</span></code>). Model outputs are checked by hand per model PR with the tools in <code class="docutils literal notranslate"><span class="pre">sglang_omni_mlx/native/ci</span></code>. The workflow starts when the pull request touches <code class="docutils literal notranslate"><span class="pre">sglang_omni_mlx/</span></code>, <code class="docutils literal notranslate"><span class="pre">Voxt/</span></code>, <code class="docutils literal notranslate"><span class="pre">.github/workflows/mac-ci.yaml</span></code> or <code class="docutils literal notranslate"><span class="pre">.github/workflows/voxt*.yaml</span></code>; otherwise it does not appear on the pull request at all. Unlike the other hardware gates, its gate fails without a CI label, because Omni CI does not start on an MLX-only pull request. On a pull request, the native runtime job runs only when <code class="docutils literal notranslate"><span class="pre">sglang_omni_mlx/</span></code> changes and the Swift test job only when <code class="docutils literal notranslate"><span class="pre">Voxt/helper/</span></code> changes, not counting Markdown files; a change to the workflow itself runs both, and Voxt Nightly always runs both.</p>
+<p>The stage label is <code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code>. Use it for any change on the MLX path: the SGLang Omni MLX runtime in <code class="docutils literal notranslate"><span class="pre">sglang_omni_mlx/</span></code>, such as a runtime optimization or a new native server, as well as the Voxt app. It runs only this workflow, which waits for lint to pass and then starts the Mac jobs. It does not run PR Test or any other H100 job, because the Mac jobs test the MLX runtime and the Voxt helper, not the <code class="docutils literal notranslate"><span class="pre">sglang_omni</span></code> Python package that PR Test covers.</p>
 </section>
 </section>
 <section id="label-rules">
 <h2>Label rules<a class="headerlink" href="#label-rules" title="Link to this heading">#</a></h2>
 <ol class="arabic simple">
 <li><p>A stage runs only when its stage label is on the pull request. There is no label that selects every stage; add the stage labels the change needs. If a fundamental change really needs all of CI, add <code class="docutils literal notranslate"><span class="pre">run-asr-ci</span></code>, <code class="docutils literal notranslate"><span class="pre">run-tts-ci</span></code>, <code class="docutils literal notranslate"><span class="pre">run-mps-ci</span></code>, <code class="docutils literal notranslate"><span class="pre">run-omni-ci</span></code>, <code class="docutils literal notranslate"><span class="pre">run-native-duplex</span></code>, <code class="docutils literal notranslate"><span class="pre">run-turn-based-duplex</span></code>, <code class="docutils literal notranslate"><span class="pre">run-cascaded-duplex</span></code>, <code class="docutils literal notranslate"><span class="pre">run-intel-cpu-ci</span></code>, <code class="docutils literal notranslate"><span class="pre">run-intel-xpu-ci</span></code> and <code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code>, or comment <code class="docutils literal notranslate"><span class="pre">/tag-and-rerun-ci</span> <span class="pre">asr</span> <span class="pre">tts</span> <span class="pre">mps</span> <span class="pre">omni</span> <span class="pre">full-duplex</span> <span class="pre">turn-based</span> <span class="pre">cascaded</span> <span class="pre">intel-cpu</span> <span class="pre">intel-xpu</span> <span class="pre">mac</span></code>.</p></li>
-<li><p>Self-hosted CI needs a stage label or <code class="docutils literal notranslate"><span class="pre">run-lint-only</span></code>. Without one, the Omni CI gate fails with <code class="docutils literal notranslate"><span class="pre">No</span> <span class="pre">CI</span> <span class="pre">label</span> <span class="pre">found</span></code>; unselected hardware workflows skip their tests without failing. The checks on GitHub-hosted runners do not depend on labels. <code class="docutils literal notranslate"><span class="pre">run-lint-only</span></code> runs no self-hosted job, so a green lint check leaves no self-hosted failure. It does not turn off a stage label that is also present.</p></li>
-<li><p>Any stage label also runs PR Test. A pull request labeled only <code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code> still runs PR Test on H100.</p></li>
+<li><p>Self-hosted CI needs a stage label or <code class="docutils literal notranslate"><span class="pre">run-lint-only</span></code>. Without one, the Omni CI gate fails with <code class="docutils literal notranslate"><span class="pre">No</span> <span class="pre">CI</span> <span class="pre">label</span> <span class="pre">found</span></code>, and so does the Mac CI gate when Mac CI starts; CPU CI and XPU CI skip their tests without failing. An MLX-only pull request does not start Omni CI, so the Mac CI gate is the one that fails: <code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code> runs its Mac tests, and <code class="docutils literal notranslate"><span class="pre">run-lint-only</span></code> runs none. The checks on GitHub-hosted runners do not depend on labels. <code class="docutils literal notranslate"><span class="pre">run-lint-only</span></code> runs no self-hosted job, so a green lint check leaves no self-hosted failure. It does not turn off a stage label that is also present.</p></li>
+<li><p>Any stage label except <code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code> also runs PR Test. A pull request labeled only <code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code> runs Mac CI and no H100 job.</p></li>
 <li><p>A model label names a model, not a stage. It picks that model for every selected stage that accepts it, and never selects a stage by itself. Higgs and MOSS labels are accepted by TTS and MPS. If no selected stage accepts the label, the gate prints a warning.</p></li>
 <li><p>A selected stage without a model label draws its model at random from that stage’s pool. The draw is seeded by the workflow run ID, so re-running jobs in the same run keeps the same model, while a new push or a newly added label starts a new run and draws again.</p></li>
 <li><p>Each stage takes at most one model label. Two model labels for the same stage fail the gate, even when that stage is not selected.</p></li>
@@ -1061,7 +1070,7 @@
 <td><p>XPU CI</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code></p></td>
-<td><p>Voxt Mac CI</p></td>
+<td><p>Mac CI. Not PR Test.</p></td>
 </tr>
 </tbody>
 </table>
@@ -1069,7 +1078,7 @@
 </section>
 <section id="examples">
 <h2>Examples<a class="headerlink" href="#examples" title="Link to this heading">#</a></h2>
-<p>The checks on GitHub-hosted runners run in every case below, so the table lists only the self-hosted CI.</p>
+<p>The table is for a pull request that is not MLX-only and lists only the self-hosted CI; the checks on GitHub-hosted runners run in every case. An MLX-only pull request starts Mac CI instead of Omni CI: with no label its gate fails, and <code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code> runs Mac CI alone.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Labels</p></th>
@@ -1078,7 +1087,7 @@
 </thead>
 <tbody>
 <tr class="row-even"><td><p>none</p></td>
-<td><p>Nothing. The Omni CI gate fails with <code class="docutils literal notranslate"><span class="pre">No</span> <span class="pre">CI</span> <span class="pre">label</span> <span class="pre">found</span></code>; hardware tests are skipped.</p></td>
+<td><p>Nothing. The Omni CI gate, and the Mac CI gate when Mac CI starts, fail with <code class="docutils literal notranslate"><span class="pre">No</span> <span class="pre">CI</span> <span class="pre">label</span> <span class="pre">found</span></code>; the other hardware tests are skipped.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-lint-only</span></code></p></td>
 <td><p>Nothing self-hosted. The gates succeed.</p></td>
@@ -1101,16 +1110,19 @@
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-tts-ci</span></code>, <code class="docutils literal notranslate"><span class="pre">run-mps-ci</span></code>, <code class="docutils literal notranslate"><span class="pre">run-higgs-tts-3-4b</span></code></p></td>
 <td><p>PR Test, then TTS and MPS, both on Higgs-TTS.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code></p></td>
-<td><p>PR Test on H100 and Voxt Mac CI. No H100 model stage.</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-tts-ci</span></code>, <code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code></p></td>
+<td><p>PR Test and TTS on H100, and Mac CI.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-tts-ci</span></code>, <code class="docutils literal notranslate"><span class="pre">run-minicpm-o-4.5</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code></p></td>
+<td><p>Mac CI only, once lint passes. Omni CI passes its gate and skips setup and PR Test.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-tts-ci</span></code>, <code class="docutils literal notranslate"><span class="pre">run-minicpm-o-4.5</span></code></p></td>
 <td><p>PR Test and TTS. The Omni model label is ignored with a warning, because Omni is not selected.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-minicpm-o-4.5</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-minicpm-o-4.5</span></code></p></td>
 <td><p>Nothing. The gate fails, because a model label does not select a stage.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-tts-ci</span></code>, <code class="docutils literal notranslate"><span class="pre">run-higgs-tts-3-4b</span></code>, <code class="docutils literal notranslate"><span class="pre">run-moss-tts-local-transformer-v1.5</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-tts-ci</span></code>, <code class="docutils literal notranslate"><span class="pre">run-higgs-tts-3-4b</span></code>, <code class="docutils literal notranslate"><span class="pre">run-moss-tts-local-transformer-v1.5</span></code></p></td>
 <td><p>Nothing. The gate fails, because TTS and MPS accept two model labels.</p></td>
 </tr>
 </tbody>
@@ -1119,15 +1131,15 @@
 </section>
 <section id="label-changes-re-runs-and-manual-runs">
 <h2>Label changes, re-runs and manual runs<a class="headerlink" href="#label-changes-re-runs-and-manual-runs" title="Link to this heading">#</a></h2>
-<p>Adding a label manually, CI or not, starts a new run of Omni CI, CPU CI, XPU CI and Voxt Mac CI (when its paths match) and cancels the run of the same workflow in progress, so the new label set takes effect at once. Models that no label pins are drawn again in the new run.</p>
-<p>Removing a label cancels only the workflows that the remaining labels no longer select. Removing <code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code> while <code class="docutils literal notranslate"><span class="pre">run-tts-ci</span></code> stays cancels Voxt Mac CI and leaves Omni CI running. Removing the last stage label cancels Omni CI, CPU CI, XPU CI and Voxt Mac CI. <code class="docutils literal notranslate"><span class="pre">run-lint-only</span></code> does not keep any of them. A run that is still selected keeps the stages and models it resolved when it started; push again or re-run all jobs to pick up the change.</p>
+<p>Adding a label manually, CI or not, starts a new run of Omni CI (unless the pull request is MLX-only), CPU CI, XPU CI and Mac CI (when its paths match) and cancels the run of the same workflow in progress, so the new label set takes effect at once. Models that no label pins are drawn again in the new run.</p>
+<p>Removing a label cancels only the workflows that the remaining labels no longer select. Removing <code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code> while <code class="docutils literal notranslate"><span class="pre">run-tts-ci</span></code> stays cancels Mac CI and leaves Omni CI running. Removing <code class="docutils literal notranslate"><span class="pre">run-tts-ci</span></code> while <code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code> stays cancels Omni CI and leaves Mac CI running. Removing the last stage label cancels Omni CI, CPU CI, XPU CI and Mac CI. <code class="docutils literal notranslate"><span class="pre">run-lint-only</span></code> does not keep any of them. A run that is still selected keeps the stages and models it resolved when it started; push again or re-run all jobs to pick up the change.</p>
 <p>Re-running jobs reuses the run ID, so every stage keeps the model it drew. The gate reads the live labels from the pull request, so re-running all jobs picks up labels added or removed since the run started.</p>
 <p>A maintainer can start Omni CI by hand from the Actions tab or with <code class="docutils literal notranslate"><span class="pre">gh</span> <span class="pre">workflow</span> <span class="pre">run</span></code>. The <code class="docutils literal notranslate"><span class="pre">ci_labels</span></code> input takes space-separated labels and resolves them exactly like pull request labels. It is required:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>gh<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>omni-ci.yaml<span class="w"> </span>--ref<span class="w"> </span>&lt;branch&gt;<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-f<span class="w"> </span><span class="nv">ci_labels</span><span class="o">=</span><span class="s2">"run-tts-ci run-moss-tts-local-transformer-v1.5"</span>
 </pre></div>
 </div>
-<p>Manual runs of CPU CI, XPU CI and Voxt Mac CI ignore labels and always run their tests, and so does the run of Voxt Mac CI that Voxt Nightly starts each night.</p>
+<p>Manual runs of CPU CI, XPU CI and Mac CI ignore labels and always run their tests, and so does the run of Mac CI that Voxt Nightly starts each night.</p>
 <p>Maintainers with CI permissions can use <code class="docutils literal notranslate"><span class="pre">/tag-and-rerun-ci</span></code> with one or more short stage or model targets to re-run completed CI workflows:</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>/tag-and-rerun-ci unit-test
 /tag-and-rerun-ci tts asr
@@ -1170,7 +1182,7 @@
 </tbody>
 </table>
 </div>
-<p>A branch created before these labels existed does not contain <code class="docutils literal notranslate"><span class="pre">resolve_ci_labels.py</span></code>. On such a branch, the Omni CI and Voxt Mac CI gates fail until the branch merges the current <code class="docutils literal notranslate"><span class="pre">main</span></code>.</p>
+<p>A branch created before these labels existed does not contain <code class="docutils literal notranslate"><span class="pre">resolve_ci_labels.py</span></code>. On such a branch, the Omni CI and Mac CI gates fail until the branch merges the current <code class="docutils literal notranslate"><span class="pre">main</span></code>.</p>
 </section>
 </section>
 
@@ -1235,7 +1247,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hardware-workflows">Hardware workflows</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cpu-ci">CPU CI</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#xpu-ci">XPU CI</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#voxt-mac-ci">Voxt Mac CI</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#mac-ci">Mac CI</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#label-rules">Label rules</a></li>
