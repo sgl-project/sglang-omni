@@ -18,7 +18,6 @@ from sglang_omni.config.runtime import (
     resolve_stage_factory_kwargs,
     resolve_stage_typed_kwargs,
 )
-from sglang_omni.config.schema import CommConfig
 from sglang_omni.models.fun_cosyvoice3 import CAPABILITIES
 from sglang_omni.models.fun_cosyvoice3.config import (
     FUN_COSYVOICE3_DEFAULT_FLOW_CUDA_GRAPH_CAPTURE_SHAPES,
@@ -28,7 +27,10 @@ from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
 from sglang_omni.models.fun_cosyvoice3.stages import create_vocoder_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.pipeline.mp_runner import build_stage_groups
-from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
+from sglang_omni.pipeline.runtime_config import (
+    build_comm_config,
+    prepare_pipeline_runtime,
+)
 from sglang_omni.pipeline.stage_workers import patched_spawn_env
 from sglang_omni.relay.shm import ShmPutOperation, ShmRelay, shm_create_from_tensor
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext
@@ -265,9 +267,9 @@ def test_first_stream_chunk_fits_before_notifying_another_process(
 
     async def scenario() -> None:
         config = FunCosyVoice3PipelineConfig(model_path="model")
-        communication = config.stage_named("tts_engine").comm or CommConfig()
+        communication = build_comm_config(config.stage_named("tts_engine"))
         relay = ShmRelay(
-            engine_id="tts_engine", device="cpu", credits=communication.credits
+            engine_id="tts_engine", device="cpu", credits=communication["credits"]
         )
         codes = torch.arange(28, dtype=torch.int32)
         metadata = {
