@@ -10,7 +10,8 @@ package main
 //
 // The page keeps the terms of its search in memory, read in the
 // background when it shows and after each change; sessions read the
-// store themselves, so a change applies to the next one.
+// store themselves, so a change applies to the next one. Suggested terms:
+// dictionary_suggest.go.
 
 import (
 	"context"
@@ -26,6 +27,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/learn"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
@@ -33,7 +35,10 @@ import (
 
 // dictionaryState is the Dictionary page's view state.
 type dictionaryState struct {
-	dv dictView
+	dv              dictView
+	book            *learn.Book
+	suggestions     []learn.Suggestion // the sidebar's count and the page's section
+	suggestionReads int                // numbers the reads: only the last one lands
 	// selPress is the transcribe shortcut whose selection is being read
 	// (dictionary_selection.go).
 	selPress *selectionPress
@@ -57,6 +62,8 @@ type dictView struct {
 	editWas  termEdit // the form as opened: a stray click or Escape keeps a changed one open
 	// importing: an import runs.
 	importing bool
+	// allSuggestions: the section shows every suggestion, not the first five.
+	allSuggestions bool
 }
 
 // termEdit is the term dialog's fields: a new term when id is "".
@@ -69,6 +76,7 @@ type termEdit struct {
 	saving          bool
 	createdAt       time.Time
 	original, title string
+	suggestion      string // the key of the suggestion the dialog accepts, if any
 }
 
 // Test seams: the file dialogs of Import and Export.
@@ -183,6 +191,7 @@ func (a *app) dictionaryPage(c *ui.Context) {
 			}, nil)
 		}
 	})
+	a.suggestionsSection(c)
 	list := d.list
 	ui.Column(c).Grow(1).MinHeight(0).Children(func() {
 		switch {
@@ -348,6 +357,10 @@ func (a *app) submitTerm() {
 		return
 	}
 	e.saving = true
+	if e.suggestion != "" {
+		a.acceptSuggestion(e.suggestion, term, true)
+		return
+	}
 	a.saveTerm(term, true)
 }
 

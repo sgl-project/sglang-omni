@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/learn"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -185,6 +186,12 @@ func dictShots(t *testing.T, a *app, save func(string)) {
 	a.navigate("/dictionary")
 	a.loadDict()
 	save("page-dictionary-terms")
+	a.suggestions = []learn.Suggestion{
+		{Term: "Claude Code", Heard: []string{"Cloud Code"}, Source: learn.FromEdit},
+		{Term: "Ghostty", Source: learn.FromHistory},
+	}
+	save("page-dictionary-suggestions")
+	a.suggestions = nil
 	a.openTerm(a.dv.list[0])
 	save("dictionary-edit")
 	a.dv.editOpen = false

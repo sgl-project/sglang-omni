@@ -95,3 +95,6 @@ providers local
 providers settings
 recordings datadir
 recordings store
+learn core
+learn dict
+learn store

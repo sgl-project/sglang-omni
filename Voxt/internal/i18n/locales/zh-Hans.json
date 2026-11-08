@@ -1297,5 +1297,15 @@
   "Added to the dictionary: %s": "已加入词典：%s",
   "Already in the dictionary: %s": "词典里已经有：%s",
   "Could not add it to the dictionary.": "无法加入词典。",
-  "Version %s": "版本 %s"
+  "Version %s": "版本 %s",
+  "Suggestions": "建议",
+  "All (%d)": "全部（%d）",
+  "Heard: %s": "听成：%s",
+  "From your correction": "来自你的改正",
+  "From your history": "来自历史记录",
+  "Edit…": "编辑…",
+  "Add %s to the dictionary": "把 %s 加入词典",
+  "Edit %s first, then add it": "先编辑 %s 再加入",
+  "Ignore %s": "忽略 %s",
+  "Could not ignore the suggestion: %v": "无法忽略这条建议：%v"
 }

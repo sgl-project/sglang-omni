@@ -87,6 +87,7 @@ func newApp(lib *library, h *helperHost) *app {
 	a.openAppEnhancement()  // appenhance.go
 	a.openAudio()           // settings_audio.go
 	a.openHistorySettings() // history_settings_ops.go: the recordings folder, the clean-up
+	a.openDictionary()      // dictionary_suggest.go: the suggestions, for the sidebar's count
 	return a
 }
 
