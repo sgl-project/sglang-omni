@@ -33,7 +33,7 @@ func (a *app) translateSettings(c *ui.Context) {
 	u := a.fui(hotkey.Translate)
 	f := &a.prefs.Features.Translate
 	sectionTitle(c, i18n.T("Translation"))
-	opts := []string{i18n.T("Automatic: %s", uitext.TargetLanguageLabel(session.TranslateTarget(settings.Settings{General: a.prefs.General}, i18n.Locale(), "")))}
+	opts := []string{i18n.T("Automatic (now: %s)", uitext.TargetLanguageLabel(session.TranslateTarget(settings.Settings{General: a.prefs.General}, i18n.Locale(), "")))}
 	for _, code := range compose.TargetLanguages {
 		opts = append(opts, uitext.TargetLanguageLabel(code))
 	}
@@ -113,13 +113,34 @@ func promptOf(s settings.Settings, feature string) string {
 	return featureOf(s, feature).Prompt
 }
 
+// promptBuiltin is the built-in system prompt before user overrides.
+func (a *app) promptBuiltin(feature string) string {
+	u := a.fui(feature)
+	was := u.prompt
+	wasDirty := u.promptDirty
+	u.prompt = ""
+	u.promptDirty = false
+	out, err := a.composedPreview(feature)
+	u.prompt, u.promptDirty = was, wasDirty
+	if err != nil {
+		return ""
+	}
+	return out.System
+}
+
 // promptSync sets the rules from the settings when they changed
 // elsewhere and nothing typed waits to be saved.
 func (a *app) promptSync(feature string) {
 	u := a.fui(feature)
 	saved := promptOf(a.prefs, feature)
-	if !u.promptDirty && saved != u.promptSeen {
-		u.prompt, u.promptSeen = saved, saved
+	builtin := a.promptBuiltin(feature)
+	if !u.promptDirty {
+		u.promptSeen = saved
+		if saved == "" {
+			u.prompt = builtin
+		} else {
+			u.prompt = saved
+		}
 	}
 }
 
@@ -128,7 +149,8 @@ func (a *app) savePrompt(feature string) {
 	u := a.fui(feature)
 	u.promptDirty = false
 	v := u.prompt
-	if strings.TrimSpace(v) == "" {
+	builtin := a.promptBuiltin(feature)
+	if strings.TrimSpace(v) == "" || strings.TrimSpace(v) == strings.TrimSpace(builtin) {
 		v = ""
 	}
 	u.promptSeen = v
@@ -169,19 +191,20 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 		var label, placeholder string
 		switch feature {
 		case hotkey.Translate:
-			caption(c, i18n.T("These rules are merged with the built-in translation rules; where they disagree, yours win."))
-			label = i18n.T("Your rules for Translate")
+			caption(c, i18n.T("This is sent to the model as the system prompt. Variables are filled in when you dictate or try a sample."))
+			label = i18n.T("System prompt for Translate")
 			placeholder = i18n.T("For example: use British spelling; keep product names in English; write dates as 15 October 2026.")
 		case hotkey.Rewrite:
-			caption(c, i18n.T("These rules are merged with the built-in writing rules; where they disagree, yours win."))
-			label = i18n.T("Your rules for Rewrite")
+			caption(c, i18n.T("This is sent to the model as the system prompt. Variables are filled in when you dictate or try a sample."))
+			label = i18n.T("System prompt for Rewrite")
 			placeholder = i18n.T("For example: write plainly, without emoji; sign mails with my first name.")
 		default:
-			caption(c, i18n.T("These rules are merged with the built-in clean-up rules; where they disagree, yours win."))
-			label = i18n.T("Your rules for Transcribe")
+			caption(c, i18n.T("This is sent to the model as the system prompt. Variables are filled in when you dictate or try a sample."))
+			label = i18n.T("System prompt for Transcribe")
 			placeholder = i18n.T("For example: write numbers as digits; keep English product names as they are; end every sentence with a full stop.")
 		}
-		in := ui.TextArea(c.Key(p+"-prompt"), &u.prompt).Label(label).Placeholder(placeholder).MinHeight(px(t, 88)).MaxHeight(px(t, 320))
+		caption(c, i18n.T("Rules act after recognition, on the text the speech model produced. Speech hints (Dictionary page) only tell the speech model which words to expect; punctuation, format and fillers are decided here."))
+		in := ui.TextArea(c.Key(p+"-prompt"), &u.prompt).Label(label).Placeholder(placeholder).MinHeight(px(t, 88))
 		if in.Changed() {
 			u.promptDirty = true
 			u.promptSeq++
@@ -199,9 +222,10 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 		}
 		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
 			caption(c, i18n.T("Variables (click one to copy it):")).Grow(1).MinWidth(0)
-			empty := u.prompt == "" && promptOf(a.prefs, feature) == ""
-			if ghostIconButton(c.Key(p+"-prompt-reset"), icons.Refresh, i18n.T("Reset to default")).Label(i18n.T("Reset your rules")).Disabled(empty).Clicked() {
-				u.prompt = ""
+			builtin := a.promptBuiltin(feature)
+			empty := promptOf(a.prefs, feature) == "" && strings.TrimSpace(u.prompt) == strings.TrimSpace(builtin)
+			if ghostIconButton(c.Key(p+"-prompt-reset"), icons.Refresh, i18n.T("Reset to default")).Label(i18n.T("Reset to default prompt")).Disabled(empty).Clicked() {
+				u.prompt = builtin
 				a.savePrompt(feature)
 			}
 		})
@@ -224,7 +248,7 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 				})
 			}
 		})
-		collapsible(c.Key(p+"-preview"), i18n.T("Show the full prompt"), &u.preview, nil, func() {
+		collapsible(c.Key(p+"-preview"), i18n.T("Example user message"), &u.preview, nil, func() {
 			a.previewBody(c, feature)
 		})
 	})
@@ -277,15 +301,11 @@ func (a *app) previewBody(c *ui.Context, feature string) {
 		caption(c, err.Error())
 		return
 	}
-	caption(c, i18n.T("Your dictionary's terms and App enhancement's scene are added when they apply."))
-	block := func(key, title, text string) {
-		ui.Column(c.Key(key)).Gap(px(t, 4)).Children(func() {
-			ui.Text(c, title).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(k.Text2)
-			fillCard(c).Padding(px(t, sp3)).Children(func() {
-				ui.Text(c, text).FontSize(px(t, fsCaption)).Font("monospace").Selectable()
-			})
+	caption(c, i18n.T("Your dictionary's terms and App enhancement's scene are added to the system prompt when they apply."))
+	ui.Column(c.Key(p + "-preview-user")).Gap(px(t, 4)).Children(func() {
+		ui.Text(c, i18n.T("User message (an example)")).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(k.Text2)
+		fillCard(c).Padding(px(t, sp3)).Children(func() {
+			ui.Text(c, out.User).FontSize(px(t, fsCaption)).Font("monospace").Selectable()
 		})
-	}
-	block(p+"-preview-system", i18n.T("System prompt"), out.System)
-	block(p+"-preview-user", i18n.T("User message (an example)"), out.User)
+	})
 }

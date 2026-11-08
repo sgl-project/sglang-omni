@@ -78,7 +78,7 @@ func TestDeliverWhereTyping(t *testing.T) {
 				}
 				return
 			}
-			if len(pasted) != 1 || !end.Inserted || end.Card || end.InsertedInto != tc.into || e.AppName != "Slack" || e.AppBundle != slack.BundleID || e.Delivery != "insert" {
+			if len(pasted) != 1 || !end.Inserted || end.Card || end.Landing == nil || end.Landing.App != tc.into || e.AppName != "Slack" || e.AppBundle != slack.BundleID || e.Delivery != "insert" {
 				t.Errorf("inserted: pasted %q, end %+v, entry %s %s %s", pasted, end, e.AppName, e.AppBundle, e.Delivery)
 			}
 			moved := tc.into.PID != slack.PID
@@ -90,6 +90,40 @@ func TestDeliverWhereTyping(t *testing.T) {
 			}
 			if tc.kind == store.KindTranscribe && e.RuleID != "g-chat" {
 				t.Errorf("rule %q: the start app's group composed it", e.RuleID)
+			}
+		})
+	}
+}
+
+// TestDeliverIntoOwnWindow (FB10): a session started in VoxtNew's own
+// window, a feature's rules being edited, types into that field, as in
+// any other app (Voxt 1.x); with a button focused there, the card shows
+// the result.
+func TestDeliverIntoOwnWindow(t *testing.T) {
+	voxt := proto.App{PID: 77, BundleID: "dev.hehehai.voxtnew", Name: "Voxt"}
+	for _, tc := range []struct {
+		name   string
+		focus  proto.FocusResult
+		insert bool
+	}{
+		{"its rules field", proto.FocusResult{PID: 77, App: &voxt, Role: "AXTextArea", Editable: true}, true},
+		{"a button there", proto.FocusResult{PID: 77, App: &voxt, Role: "AXButton"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, &fakeFile{text: "hello"}, &fakeLLM{text: "Hello."}, func(c *Config, _ *settings.Settings) { c.Self = 77 })
+			h.text.focus = tc.focus
+			id, err := h.m.Start(StartRequest{Kind: store.KindTranscribe, Target: voxt})
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.speak(id, 3)
+			end := h.rec.wait(t)
+			pasted := h.text.pastes()
+			if tc.insert && (len(pasted) != 1 || pasted[0] != "Hello." || !end.Inserted || end.Card || end.Landing == nil || end.Landing.App.PID != 77) {
+				t.Errorf("not typed into its own field: pasted %q, end %+v", pasted, end)
+			}
+			if !tc.insert && (len(pasted) != 0 || end.Inserted || !end.Card || end.Delivery != deliver.ReasonNotEditable) {
+				t.Errorf("pasted %q, end %+v", pasted, end)
 			}
 		})
 	}

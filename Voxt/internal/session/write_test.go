@@ -48,7 +48,7 @@ func TestWrite(t *testing.T) {
 			check: func(t *testing.T, h *harness, end Snapshot, model *fakeLLM, sel *fakeSelector) {
 				req := model.requests()[0]
 				sys, user := req.Messages[0].Content, req.Messages[len(req.Messages)-1].Content
-				if req.Skill != llm.SkillTranslateText || req.OnDelta == nil || !strings.Contains(sys, "Basic cleanup") || len(req.Messages) != 4 ||
+				if req.Skill != llm.SkillTranslateText || req.OnDelta == nil || strings.Contains(sys, "Basic cleanup") || len(req.Messages) != 4 ||
 					!strings.Contains(sys, "into Simplified Chinese") || user != "<input>\nhello VoxtNew\n</input>" {
 					t.Errorf("request %+v", req)
 				}
@@ -70,7 +70,8 @@ func TestWrite(t *testing.T) {
 					t.Errorf("recorded %d frames", h.audio.recorded())
 				}
 				req := model.requests()[0]
-				if sys := req.Messages[0].Content; strings.Contains(sys, "Basic cleanup") || !strings.Contains(sys, "text the user selected") || req.Messages[1].Content != "<input>\nGood morning\n</input>" {
+				user := req.Messages[len(req.Messages)-1].Content
+				if sys := req.Messages[0].Content; strings.Contains(sys, "Basic cleanup") || !strings.Contains(sys, "text the user selected") || user != "<input>\nGood morning\n</input>" {
 					t.Errorf("request %+v", req.Messages)
 				}
 				e := h.hist.all()[0]
@@ -184,9 +185,10 @@ func TestWrite(t *testing.T) {
 			speak: true, states: "recording recognizing composing done", state: Done, result: "Team: we ship on Friday.", card: deliver.ReasonCard,
 			check: func(t *testing.T, h *harness, end Snapshot, model *fakeLLM, sel *fakeSelector) {
 				req := model.requests()[0]
+				user := req.Messages[len(req.Messages)-1].Content
 				if req.Skill != llm.SkillRewrite || req.Format != llm.FormatText ||
-					req.Messages[1].Content != "<instruction>\nhello VoxtNew\n</instruction>\n\n<selected_text>\nhey team, ship friday?\n</selected_text>" ||
-					!strings.Contains(req.Messages[0].Content, "Reading the instruction") {
+					user != "<instruction>\nhello VoxtNew\n</instruction>\n\n<selected_text>\nhey team, ship friday?\n</selected_text>" ||
+					strings.Contains(req.Messages[0].Content, "Reading the instruction") {
 					t.Errorf("request %+v", req)
 				}
 				e := h.hist.all()[0]

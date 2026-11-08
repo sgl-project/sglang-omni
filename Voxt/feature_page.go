@@ -61,6 +61,8 @@ type featureUI struct {
 	preview bool
 	// block says why the Try area's Start did not start.
 	block *sessionNotice
+	// endWord is the end word's select and typed word (Transcribe).
+	endWord keyRow
 }
 
 // fui is feature's page state.

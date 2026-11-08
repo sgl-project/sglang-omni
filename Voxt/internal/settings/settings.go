@@ -252,6 +252,10 @@ type Features struct {
 	// session whose text goes to the Notes page instead of where the
 	// cursor is. Only a tap; empty keys: off.
 	Note Hotkey `json:"note"`
+	// EndWord ends a recording when it is the last thing said (Voxt 1.x's
+	// voiceEndCommandText), and is left out of the text; "" is off. Only
+	// a speech model that streams hears it (internal/session).
+	EndWord string `json:"endWord,omitempty"`
 	// ShowCard shows every feature's result in the answer card instead of
 	// inserting it (or replacing the selection): one switch for all.
 	ShowCard bool `json:"showCard,omitempty"`
@@ -329,6 +333,10 @@ type Dictionary struct {
 	// what) that the speech model gets before the hints, with the
 	// dictionary on or off; a service that takes no prompt ignores it.
 	SpeechContext string `json:"speechContext,omitempty"`
+	// Learn watches the field a Transcribe result was pasted into for
+	// 30 s and proposes a term when the user corrects a word of it
+	// (internal/learn). Off by default.
+	Learn bool `json:"learn,omitempty"`
 }
 
 // Setup: the first-run guide.
@@ -557,6 +565,11 @@ type Service interface {
 type Network struct {
 	Proxy       string `json:"proxy,omitempty"`
 	HFEndpoints string `json:"hfEndpoints,omitempty"`
+	// ProxyUser is a custom proxy's user name and ProxyAuthHost the proxy
+	// host it and its password (the Keychain's "proxy.<host>") are for:
+	// Voxt's only, never the family's (models_proxy_auth.go).
+	ProxyUser     string `json:"proxyUser,omitempty"`
+	ProxyAuthHost string `json:"proxyAuthHost,omitempty"`
 }
 
 // Family is VoxtNew's part in the ActNow family (internal/actnow).
