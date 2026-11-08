@@ -24,6 +24,13 @@ type Provider struct {
 	// AppID is Doubao's App ID (its older console: the key is then the
 	// Access Token); "" for its newer console's single API key.
 	AppID string `json:"appID,omitempty"`
+	// RecognitionPrompt is a remote speech service's own recognition hint
+	// template (Voxt 1.x's per-service ASR prompt). Session assembly puts
+	// the global speech context first, then this text with
+	// {{USER_MAIN_LANGUAGE}}, {{USER_OTHER_LANGUAGES}} and
+	// {{DICTIONARY_TERMS}} filled in. Services that take no prompt
+	// ignore it.
+	RecognitionPrompt string `json:"recognitionPrompt,omitempty"`
 	// Generation is a language model's request settings (unset: Voxt's).
 	Generation Generation `json:"generation,omitzero"`
 }
