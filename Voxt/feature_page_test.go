@@ -216,6 +216,35 @@ func TestTranscribeServicesAndSwitches(t *testing.T) {
 	}
 }
 
+// TestTranslateFallbackModel: Translate's Models section picks a
+// fallback model, None by default, among the language models set up; a
+// fallback no longer set up reads None.
+func TestTranslateFallbackModel(t *testing.T) {
+	a, tt := trTester(t)
+	readyModels(a)
+	a.local.(*fakeLocal).MoreLLM = []local.Model{{Kind: local.LLM, ID: models.LLMFast, Name: "Qwen3.5 2B (4bit)"}}
+	a.navigate("/translate")
+	frames(tt)
+	if !has(tt, "Fallback model") || !has(tt, "None") || !slices.Contains(tt.AccessLabels(), "Fallback language model for Translate") {
+		t.Fatalf("no fallback row: %q", tt.AccessLabels())
+	}
+	click(t, tt, "Fallback language model for Translate")
+	click(t, tt, "Qwen3.5 2B (4bit)")
+	if id := a.lib.settings.Get().Features.Translate.Fallback; id != models.LLMFast {
+		t.Errorf("fallback %q", id)
+	}
+	click(t, tt, "Fallback language model for Translate")
+	click(t, tt, "None")
+	if id := a.lib.settings.Get().Features.Translate.Fallback; id != "" {
+		t.Errorf("fallback %q", id)
+	}
+	a.updateSettings(func(s *settings.Settings) { s.Features.Translate.Fallback = "gone" })
+	frames(tt)
+	if !has(tt, "None") {
+		t.Errorf("a fallback not set up: %q", tt.Texts())
+	}
+}
+
 // TestTranscribeRules: Your rules start folded, saying how long they are
 // (long rules pushed the rest of the page down); open, the field saves
 // what is typed, the preview fills its variables, Reset clears it, a
