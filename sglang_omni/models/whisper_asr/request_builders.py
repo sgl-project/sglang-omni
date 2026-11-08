@@ -387,6 +387,7 @@ def make_whisper_scheduler_adapters(
                 "asr_latency_s": engine_time_s,
                 "finish_reason": data.finish_reason,
                 "usage": {"engine_time_s": engine_time_s},
+                "spec_tokens_details": data.spec_tokens_details,
                 "modality": "text",
             },
         )
