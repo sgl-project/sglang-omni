@@ -26,12 +26,13 @@ from tests.unit_test.fishaudio_drama3.mtp_fixtures import (
     CHECKPOINT_CONFIG,
     CONTEXT_LENGTH,
     DECODER_CONFIG,
+    EOS_CANDIDATE_COLUMN,
     EOS_TOKEN_ID,
     MAIN_SCENARIOS,
+    MAIN_TOKEN_CANDIDATE_IDS,
     MAX_RUNNING_REQUESTS,
     MAX_TOTAL_TOKENS,
     PROMPTS,
-    SEMANTIC_END_TOKEN_ID,
     SEMANTIC_START_TOKEN_ID,
     TEST_RETRACT_SCENARIOS,
     TEXT_CONFIG,
@@ -392,12 +393,10 @@ def tower_problems(run: EngineRun, decoder: AudioDecoder) -> list[str]:
                 semantic_logits = step.semantic_logits
                 # The test masks eos with -inf; any other non-finite logit is a fault.
                 is_masked_eos = (
-                    torch.arange(semantic_logits.numel()) == EOS_TOKEN_ID
+                    torch.arange(semantic_logits.numel()) == EOS_CANDIDATE_COLUMN
                 ) & (semantic_logits == float("-inf"))
                 expected_main_token = int(
-                    candidate_token_ids[
-                        torch.argmax(semantic_logits[candidate_token_ids])
-                    ]
+                    candidate_token_ids[torch.argmax(semantic_logits)]
                 )
                 expected_codebook_zero = min(
                     max(main_token - SEMANTIC_START_TOKEN_ID, 0), codebook_size - 1
@@ -560,9 +559,6 @@ def backbone_comparison(
         reference_request_ids = {steps[0].request_id for steps in single_runs.values()}
     else:
         reference_request_ids = set()
-    semantic_bias = torch.full((int(TEXT_CONFIG["vocab_size"]),), float("-inf"))
-    semantic_bias[SEMANTIC_START_TOKEN_ID : SEMANTIC_END_TOKEN_ID + 1] = 0.0
-    semantic_bias[EOS_TOKEN_ID] = 0.0
     for request_id, steps in steps_by_request.items():
         request_spec = run.outcomes[request_id].request_spec
         single_steps = single_runs.get(request_spec.prompt_name)
@@ -613,7 +609,8 @@ def backbone_comparison(
             chosen = int(sampled[frame_index][entry])
             single_step = single_steps[frame_index]
             if entry == 0:
-                logits = single_step.semantic_logits + semantic_bias
+                logits = single_step.semantic_logits
+                chosen = MAIN_TOKEN_CANDIDATE_IDS.index(chosen)
                 gap_limit = tolerances.semantic_gap
             elif entry >= 2:
                 logits = single_step.head_logits[entry - 2]

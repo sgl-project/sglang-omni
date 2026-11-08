@@ -20,7 +20,7 @@ hf download FunAudioLLM/Fun-ASR-Nano-2512-hf
 ## Apple Silicon
 
 Fun-ASR runs on Apple Silicon through a Torch/MPS compatibility path. Install
-with the [Apple Silicon installer](../get_started/installation_apple_silicon.md)
+with the [Apple Silicon installer](../other_platforms/installation_apple_silicon.md)
 and follow its environment-activation and `DYLD_LIBRARY_PATH` steps; TorchCodec
 needs Homebrew's keg-only FFmpeg libraries on the path before the server starts.
 
@@ -104,7 +104,7 @@ text; it does not change the final transcript.
 | `language` | string | unset | Language hint. `en`/`english`/`英文` transcribe to English; `zh`/`cn`/`chinese`/`中文` (or unset) transcribes to Chinese; other values pass through as the target language |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
 | `stream` | boolean | `false` | Emit SSE text deltas. Streaming accepts only `json` or `text` response formats |
-| `temperature` | float | `0.0` | Sampling temperature; `0.0` (greedy) is the correct decoding mode for Fun-ASR-Nano and the default |
+| `temperature` | float | `0.0` | Sampling temperature; `0.0` (greedy) is the correct decoding mode for Fun-ASR-Nano and the default. A negative value returns HTTP 422 |
 | `max_new_tokens` | integer | duration-based | Generation budget scaled to the audio duration. Explicit values must be between 1 and 200 |
 
 ## Benchmarking

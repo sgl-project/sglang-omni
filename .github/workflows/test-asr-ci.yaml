@@ -36,7 +36,7 @@ jobs:
     # movies800 + stream + aishell4_long + googletime on DP=2.
     timeout-minutes: 90
     container:
-      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -77,7 +77,7 @@ jobs:
             */moss_transcribe_diarize_aishell4_long_results.json
             */moss_transcribe_diarize_aishell4_long90_results.json
             */moss_transcribe_diarize_googletime_results.json
-          artifact-upload-name: asr-stage-multi-speaker-results
+          artifact-upload-name: asr-stage-multi-speaker-results-attempt-${{ github.run_attempt }}
           artifact-upload-path: |
             /tmp/**/moss_transcribe_diarize_results.json
             /tmp/**/moss_transcribe_diarize_stream_results.json
@@ -91,7 +91,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -129,7 +129,7 @@ jobs:
           artifact-path-globs: |
             */asr_seedtts_en_results.json
             */asr_seedtts_zh_results.json
-          artifact-upload-name: asr-stage-seedtts-results
+          artifact-upload-name: asr-stage-seedtts-results-attempt-${{ github.run_attempt }}
           artifact-upload-path: |
             /tmp/**/asr_seedtts_en_results.json
             /tmp/**/asr_seedtts_zh_results.json

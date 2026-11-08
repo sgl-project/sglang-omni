@@ -5,7 +5,6 @@ import logging
 from pathlib import Path
 
 import torch
-from einops import rearrange
 from torch import nn
 from transformers import AutoTokenizer
 
@@ -53,6 +52,8 @@ logger = logging.getLogger(__name__)
 PERCEPTION_PREFIX = "stt_model.perception."
 SAMPLES_PER_FRAME = 1_280
 INPUT_SAMPLE_RATE = 16_000
+# note (Xinhao Tan): no 16, on H200 one B=32 step (7.2 ms) is faster than one B=16 step (8.0 ms).
+PERCEPTION_BATCH_SIZES = (1, 2, 4, 8, 32)
 
 
 def perception_config(model_path: str) -> dict:
@@ -112,32 +113,60 @@ def create_perception_executor(
     )
     module.eval()
     parameter_dtype = module.proj.weight.dtype
-    perception_stream = (
-        GraphPerception(module) if enable_cuda_graph else StreamingPerception(module)
-    )
+    perception_streams = [
+        (
+            GraphPerception(module, batch_size=batch_size)
+            if enable_cuda_graph
+            else StreamingPerception(module, batch_size=batch_size)
+        )
+        for batch_size in PERCEPTION_BATCH_SIZES
+    ]
+    # note (Junnan Li): a bucket captured on its first batch would stall live requests, so every bucket captures before serving.
+    for perception_stream in perception_streams:
+        if enable_cuda_graph and perception_stream.device.type == "cuda":
+            perception_stream.push(
+                torch.zeros(
+                    perception_stream.batch_size,
+                    SAMPLES_PER_FRAME,
+                    device=perception_stream.device,
+                )
+            )
+            perception_stream.reset()
+        else:
+            pass
 
     @torch.inference_mode()
-    def encode(payload: StagePayload) -> StagePayload:
-        state = NemotronVoiceChatState.from_dict(payload.data)
-        waveform = state.waveform
-        waveform_1S = (
-            rearrange(waveform, "s -> 1 s") if waveform.ndim == 1 else waveform
+    def encode_batch(payloads: list[StagePayload]) -> list[StagePayload]:
+        states = [
+            NemotronVoiceChatState.from_dict(payload.data) for payload in payloads
+        ]
+        perception_stream = next(
+            stream for stream in perception_streams if stream.batch_size >= len(states)
         )
-
-        frames = module(
-            waveform_1S.to(device=device, dtype=parameter_dtype),
+        frames_list = module(
+            [
+                state.waveform.to(device=device, dtype=parameter_dtype)
+                for state in states
+            ],
             stream=perception_stream,
         )
-        assert frames.shape[1] == state.num_frames + 1, (
-            f"Perception returned {frames.shape[1]} rows for {state.num_frames} "
-            "frames of audio; expected one more than the frame count."
-        )
+        for payload, state, frames in zip(payloads, states, frames_list, strict=True):
+            assert frames.shape[0] == state.num_frames + 1, (
+                f"Perception returned {frames.shape[0]} rows for {state.num_frames} "
+                "frames of audio; expected one more than the frame count."
+            )
+            state.acoustic_frames = frames
+            payload.data = state.to_dict()
+        return payloads
 
-        state.acoustic_frames = frames[0]
-        payload.data = state.to_dict()
-        return payload
+    def encode(payload: StagePayload) -> StagePayload:
+        return encode_batch([payload])[0]
 
-    return SimpleScheduler(encode)
+    return SimpleScheduler(
+        encode,
+        batch_compute_fn=encode_batch,
+        max_batch_size=PERCEPTION_BATCH_SIZES[-1],
+    )
 
 
 def create_thinker_executor(
@@ -191,6 +220,8 @@ def create_talker_executor(
 def create_code2wav_executor(
     model_path: str,
     *,
+    chunk_frames: tuple[int, ...] = (1,),
+    max_batch_size: int = 1,
     dtype: str | None = None,
     device: str | None = None,
     gpu_id: int | None = None,
@@ -243,7 +274,13 @@ def create_code2wav_executor(
         )
         return payload
 
-    return NemotronCode2WavScheduler(stream_decoder, device, compute_fn=decode)
+    return NemotronCode2WavScheduler(
+        stream_decoder,
+        device,
+        chunk_frames=chunk_frames,
+        compute_fn=decode,
+        max_batch_size=max_batch_size,
+    )
 
 
 def create_decode_executor(model_path, **_):

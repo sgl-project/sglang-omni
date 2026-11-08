@@ -91,6 +91,7 @@ Supporting events used for finer-grained breakdown:
 | Stage | `stage_stream_chunk_received` | Each stream chunk materialized and ready for the receiver scheduler, including coordinator terminal chunks |
 | AR scheduler | `scheduler_queue_enter` | Built request entered the scheduler queue |
 | AR scheduler | `scheduler_first_emit` | First `stream_output_builder` emission per request |
+| AR scheduler | `session_kv_snapshot` | Streaming-session KV after a completed Unit has checkpointed: logical/session-window lengths, allocated/available pool positions and cache-evictable positions |
 | Code2Wav | `code2wav_decode_start` | Each window's decode start: trigger, start/end/new/context/window frames, `rows` (the windows its replay decodes together), active and threshold-ready requests, inbox depth |
 | Code2Wav | `code2wav_decode_launched` | Pipelined window whose vocoder work and asynchronous D2H copy have been enqueued; includes execution mode, window/new-frame counts and `rows` |
 | Code2Wav | `code2wav_decode_end` | Repeats start metadata and adds the current decode's `audio_samples` plus execution metadata; output-overlap runs also include `pipelined` and the previous window's post-EOS-scan `d2h_wait_ns` |
@@ -128,6 +129,8 @@ metadata to name the Unit as `(session_id, session_open_index, input_seq)`.
 Unit lifecycle and start events carry the input modality and media clock.
 Output events carry the output sequence, modality, media clock, duration, and
 kind. Payload bytes are never stored.
+
+`session_kv_snapshot` is emitted after a completed AR Unit releases its request row into the streaming-session cache. Its `cache_type` and `kv_allocator_type` fields identify the active cache path. `session_logical_length` is the record's logical sequence length and can exceed the physical pool for a sliding-window model. `session_swa_evicted_length` is the record's SWA eviction cursor, and `session_window_kv_positions` is their difference. `kv_pool_capacity_positions`, `kv_pool_allocated_positions`, `available_kv_positions`, and `evictable_kv_positions` describe the allocator at that boundary. For a single PureSWA session with radix caching disabled, the session-window and pool-allocated counts must agree; their plateau, not the logical length or process GPU memory, shows whether the pool reuses expired slots during a long call.
 
 The event boundaries have these meanings:
 
@@ -309,6 +312,8 @@ The torch profiler runs alongside the event recorder when
 `enable_torch=true` (the default for `/start_profile`). It records
 continuously between `start()` and `stop()` — no `schedule(...)`, no
 `step()` requirement — and exports a Chrome trace `*.trace.json.gz` on stop.
+CPU ops are recorded from every thread in the process, including scheduler
+threads that existed before `start()`.
 
 The expensive introspection flags are opt-in via env vars so the default
 trace stays small enough to load in `chrome://tracing` or
@@ -317,7 +322,7 @@ trace stays small enough to load in `chrome://tracing` or
 | Env var | Effect |
 |---|---|
 | `SGLANG_TORCH_PROFILER_RECORD_SHAPES=1` | Record input tensor shapes per op |
-| `SGLANG_TORCH_PROFILER_PROFILE_MEMORY=1` | Record tensor memory allocation / free events |
+| `SGLANG_TORCH_PROFILER_PROFILE_MEMORY=1` | Record tensor memory allocation / free events. Disables all-thread capture: only the thread that starts the profiler is recorded, so worker thread CPU ops and memory events are excluded |
 | `SGLANG_TORCH_PROFILER_WITH_STACK=1` | Record the Python (and C++) call stack per op |
 | `SGLANG_TORCH_PROFILER_WITH_FLOPS=1` | Estimate FLOPs per op |
 
