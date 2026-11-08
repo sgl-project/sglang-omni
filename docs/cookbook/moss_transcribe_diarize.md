@@ -259,7 +259,7 @@ sgl-omni serve \
 
 The [Qwen3-ASR fallback restrictions](qwen3_asr.md#per-request-plain-fallback) also apply to MOSS-TD.
 
-When both paths have work, the scheduler gives speculative batches one to four turns per plain turn, according to their live request counts. This reduces the cost of sparse fallback traffic on speculative requests, but increases latency for plain requests. The four-turn cap prevents plain requests from starving; it does not bound wall-clock waiting time because forward durations vary. Fallback requires synchronous decoding, while Qwen3-ASR DFlash on its own overlaps draft execution by default, so even 0% fallback can cost throughput relative to the default DFlash server. Benchmark both request cohorts before enabling this option.
+When both paths have work, the scheduler gives speculative batches one to two turns per plain turn, according to their live request counts. This reduces the cost of sparse fallback traffic on speculative requests, but increases latency for plain requests. The two-turn cap prevents plain requests from starving; it does not bound wall-clock waiting time because forward durations vary. Fallback requires synchronous decoding, while Qwen3-ASR DFlash on its own overlaps draft execution by default, so even 0% fallback can cost throughput relative to the default DFlash server. Benchmark both request cohorts before enabling this option.
 
 ## Benchmarking
 

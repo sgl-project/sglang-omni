@@ -2350,7 +2350,7 @@ class OmniScheduler(Generic[RequestDataT]):
         )
 
     def select_next_decode_path(self, *, force_other_path: bool = False) -> None:
-        """Weight speculative turns by live rows, with at most four before plain."""
+        """Weight speculative turns by live rows, with at most two before plain."""
         decode_batch_states = self.decode_batch_states
         assert decode_batch_states is not None
         decode_batch_states[self.decode_path] = DecodeBatchState(
@@ -2383,7 +2383,7 @@ class OmniScheduler(Generic[RequestDataT]):
             self.decode_path = "plain" if self.decode_path == "spec" else "spec"
             self.speculative_steps_since_plain = 0
         elif plain_rows and speculative_rows:
-            speculative_turns = min(4, max(1, speculative_rows // plain_rows))
+            speculative_turns = min(2, max(1, speculative_rows // plain_rows))
             if self.speculative_steps_since_plain >= speculative_turns:
                 self.decode_path = "plain"
                 self.speculative_steps_since_plain = 0

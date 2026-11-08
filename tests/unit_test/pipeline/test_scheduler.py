@@ -2576,7 +2576,7 @@ def test_plain_fallback_weights_sparse_traffic_without_starvation(
         selected_paths.append(scheduler.decode_path)
     assert "plain" in selected_paths
     assert "spec" in selected_paths
-    assert selected_paths.count("plain") == (5 if speculative_rows == 1 else 2)
+    assert selected_paths.count("plain") == (5 if speculative_rows == 1 else 3)
     scheduler.waiting_queue.remove(plain_request)
     scheduler.select_next_decode_path()
     assert scheduler.decode_path == "spec"
