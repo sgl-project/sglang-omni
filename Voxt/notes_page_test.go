@@ -84,3 +84,44 @@ func TestNoteNotices(t *testing.T) {
 		t.Errorf("not saved: %+v, card %v", a.notice, a.answer.open)
 	}
 }
+
+// TestNoteNoticesLanguageModel: a note whose language model failed is
+// saved as recognised, and the overlay says it went to Notes, not where
+// the cursor is.
+func TestNoteNoticesLanguageModel(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{errors.New("bad gateway"), "Saved to Notes as recognised: the language model failed."},
+		{context.DeadlineExceeded, "Saved to Notes as recognised: the language model did not answer in time."},
+	} {
+		a.sessionEnded(session.Snapshot{ID: "s3", Kind: store.KindTranscribe, State: session.Done, Note: true, Result: "buy milk",
+			Problem: &session.Problem{Code: session.ProblemLLM, Err: tc.err, Degraded: true}})
+		if a.notice == nil || a.notice.text != tc.want || !a.notice.warn {
+			t.Errorf("%v: %+v", tc.err, a.notice)
+		}
+	}
+}
+
+// TestNotesPageAsksForAShortcut: with the note's shortcut off, or taken by
+// another shortcut, the page asks for one and does not offer its keys.
+func TestNotesPageAsksForAShortcut(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 1200)
+	a.navigate("/notes")
+	a.updateSettings(func(s *settings.Settings) { s.Features.Note = settings.Hotkey{} })
+	frames(tt)
+	if !has(tt, "Set a shortcut to record notes.") {
+		t.Errorf("off: %q", firstTexts(tt))
+	}
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Note = settings.Hotkey{Keys: settings.DefaultNote, Trigger: settings.TriggerTap}
+		s.Features.Transcribe.Hotkeys = []settings.Hotkey{{Keys: settings.DefaultNote, Trigger: settings.TriggerTap}}
+	})
+	frames(tt)
+	if has(tt, "Press Right ⌘ in any app, speak, and press it again.") || !has(tt, "No notes yet") {
+		t.Errorf("taken: %q", firstTexts(tt))
+	}
+}

@@ -291,6 +291,30 @@ func TestNoteShortcut(t *testing.T) {
 	}
 }
 
+// TestNoteShortcutYieldsToTaken: a document from before the note shortcut
+// whose shortcut already taps right Command keeps the note off, rather than
+// the note's keys going silently to that shortcut.
+func TestNoteShortcutYieldsToTaken(t *testing.T) {
+	tapNote := Hotkey{Keys: DefaultNote, Trigger: TriggerTap}
+	for _, tc := range []struct {
+		name string
+		doc  string
+		want Hotkey
+	}{
+		{"transcribe taps it", `{"version":4,"features":{"transcribe":{"hotkeys":[{"keys":"RightCommand","trigger":"tap"}]}}}`, Hotkey{}},
+		{"rewrite taps it, no trigger", `{"version":4,"features":{"rewrite":{"hotkeys":[{"keys":"RightCommand"}]}}}`, Hotkey{}},
+		{"transcribe double taps it", `{"version":4,"features":{"transcribe":{"hotkeys":[{"keys":"RightCommand","trigger":"double"}]}}}`, tapNote},
+		{"the note has its own keys", `{"version":4,"features":{"transcribe":{"hotkeys":[{"keys":"RightCommand","trigger":"tap"}]},"note":{"keys":"RightCommand","trigger":"tap"}}}`, tapNote},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := Migrate([]byte(tc.doc))
+			if err != nil || s.Features.Note != tc.want {
+				t.Errorf("note %+v, want %+v (%v)", s.Features.Note, tc.want, err)
+			}
+		})
+	}
+}
+
 // TestMigrateShortcuts: version 4 moves the old defaults (Auralink's)
 // to the family's, one by one, and keeps every shortcut the user chose.
 func TestMigrateShortcuts(t *testing.T) {

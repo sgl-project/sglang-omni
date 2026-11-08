@@ -272,8 +272,11 @@ func (a *app) sessionEnded(s session.Snapshot) {
 	}
 	if p := s.Problem; p != nil && s.State != session.Cancelled && !(s.Card && s.State == session.Failed) {
 		text, more, action := sessionProblemText(p)
-		if s.Note && s.Card {
+		switch {
+		case s.Note && s.Card:
 			text = i18n.T("The note could not be saved: the card shows it.")
+		case s.Note && p.Code == session.ProblemLLM && p.Degraded:
+			text = degradedLLMText(p, true) // the recognised text went to Notes
 		}
 		if text != "" {
 			// Nothing heard is not a failure: a warning.

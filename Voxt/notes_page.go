@@ -99,7 +99,7 @@ func (a *app) notesPage(c *ui.Context) {
 		case !n.read:
 		case len(list) == 0:
 			hint := i18n.T("Choose a shortcut above, then press it in any app and speak. What you say is saved here instead of typed.")
-			if k := a.prefs.Features.Note.Keys; k != "" {
+			if k := a.prefs.Features.Note.Keys; k != "" && len(uitext.HotkeyProblems(a.prefs.Features, hotkey.Note)[0]) == 0 {
 				hint = i18n.T("Press %s in any app, speak, and press it again. What you say is saved here instead of typed.", uitext.HotkeyText(k))
 			}
 			emptyState(c, notesIcon, i18n.T("No notes yet"), hint, nil)
@@ -197,6 +197,9 @@ func (a *app) noteKeysRow(c *ui.Context) {
 		})
 		if r.custom {
 			a.customKeys(c, r, i18n.T("Custom keys to record a note"), a.setNoteKeys)
+		}
+		if cur == "" {
+			caption(c, i18n.T("Set a shortcut to record notes."))
 		}
 		problemLines(c, problems)
 		a.usedByView(c, recordedKeys(*r, cur))

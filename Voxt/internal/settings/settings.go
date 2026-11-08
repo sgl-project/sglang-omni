@@ -421,6 +421,7 @@ func Migrate(data []byte) (Settings, error) {
 	if s.Version < 4 {
 		migrateShortcuts(&s.Features)
 	}
+	migrateNoteKeys(data, &s.Features)
 	migrateSoundPreset(&s.Audio)
 	s.Version = Version
 	return normalize(s), nil
@@ -495,6 +496,37 @@ func migrateShortcuts(f *Features) {
 // oldDefault reports whether h is keys tapped, as version 3 wrote it.
 func oldDefault(h Hotkey, keys string) bool {
 	return h.Keys == keys && (h.Trigger == "" || h.Trigger == TriggerTap)
+}
+
+// migrateNoteKeys gives a document from before the note shortcut the
+// default, unless another shortcut already taps those keys: the note then
+// stays off, and the Notes page asks for a shortcut. Such a document has
+// no note key; one that has it is the user's.
+func migrateNoteKeys(data []byte, f *Features) {
+	var doc struct {
+		Features struct {
+			Note json.RawMessage `json:"note"`
+		} `json:"features"`
+	}
+	if json.Unmarshal(data, &doc) != nil || doc.Features.Note != nil {
+		return
+	}
+	if tapsKeys(*f, DefaultNote) {
+		f.Note = Hotkey{}
+	}
+}
+
+// tapsKeys reports whether a shortcut in f taps keys by itself, as
+// hotkey.Check counts a clash.
+func tapsKeys(f Features, keys string) bool {
+	all := append([]Hotkey{f.PasteLast, f.Cancel}, f.Transcribe.Hotkeys...)
+	all = append(append(all, f.Translate.Hotkeys...), f.Rewrite.Hotkeys...)
+	for _, h := range all {
+		if strings.TrimSpace(h.Keys) == keys && (h.Trigger == "" || h.Trigger == TriggerTap) {
+			return true
+		}
+	}
+	return false
 }
 
 // Changed is published after an update is saved. Topic "settings.changed".

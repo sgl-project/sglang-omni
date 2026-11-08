@@ -263,7 +263,7 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 	total := r.now().Sub(snap.StartedAt)
 	r.m.end(r, st, func(s *Snapshot) {
 		s.Result, s.Problem = result, problem
-		s.Recording = r.keepsRecording()
+		s.Recording = r.keepsRecording(store.StatusDone)
 		s.Inserted = dres.Inserted
 		if dres.Inserted {
 			s.InsertedInto = dres.To
@@ -295,7 +295,7 @@ func (r *run) endFailed(p *Problem, stream asr.Stream, more ...func(*Snapshot)) 
 		s.Problem = p
 		s.Timings.Total = total
 		s.Timings.Audio = audio
-		s.Recording = audio >= r.m.cfg.MinRecording && r.keepsRecording()
+		s.Recording = audio >= r.m.cfg.MinRecording && r.keepsRecording(store.StatusFailed)
 		for _, fn := range more {
 			fn(s)
 		}
@@ -317,7 +317,7 @@ func (r *run) endCancelled(stream asr.Stream) {
 	r.m.end(r, Cancelled, func(s *Snapshot) {
 		s.Timings.Total = total
 		s.Timings.Audio = audio
-		s.Recording = audio >= r.m.cfg.MinRecording && r.keepsRecording()
+		s.Recording = audio >= r.m.cfg.MinRecording && r.keepsRecording(store.StatusCancelled)
 	}, func(s Snapshot) {
 		if audio >= r.m.cfg.MinRecording {
 			r.keep(s, store.StatusCancelled)
@@ -355,10 +355,10 @@ func (r *run) saveNote(text string) error {
 }
 
 // keep writes the history entry of an ended session (and its recording),
-// when the settings keep history. Not for tries and notes.
+// when inHistory says so.
 func (r *run) keep(s Snapshot, status store.Status) {
 	cfg := r.m.cfg
-	if r.req.Try || r.req.Note || cfg.History == nil || !r.settings.Privacy.KeepHistory {
+	if !r.inHistory(status) {
 		return
 	}
 	e := store.Entry{
@@ -418,13 +418,23 @@ func (r *run) keep(s Snapshot, status store.Status) {
 	}
 }
 
+// inHistory reports whether the session's history entry is written: not
+// for a try, nor for a note saved from its recognition (the Notes page
+// keeps it). A note whose recognition failed, or that was cancelled, keeps
+// its entry and recording, as a dictation does.
+func (r *run) inHistory(status store.Status) bool {
+	if r.req.Try || r.m.cfg.History == nil || !r.settings.Privacy.KeepHistory {
+		return false
+	}
+	return !(r.req.Note && status == store.StatusDone && !r.recognitionFailed)
+}
+
 // keepsRecording reports whether the session's history entry keeps the
 // recording: the settings keep recordings, recognition failed, or the
 // user cancelled (for a while: Config.AudioRetention), so Retry can
-// recover it. Not for tries and notes.
-func (r *run) keepsRecording() bool {
-	cfg := r.m.cfg
-	if r.req.Try || r.req.Note || r.req.Text != nil || cfg.History == nil || !r.settings.Privacy.KeepHistory || len(r.pcm.bytes()) == 0 {
+// recover it.
+func (r *run) keepsRecording(status store.Status) bool {
+	if !r.inHistory(status) || r.req.Text != nil || len(r.pcm.bytes()) == 0 {
 		return false
 	}
 	return r.settings.Privacy.KeepAudio || r.recognitionFailed || r.cancelled.Load()
