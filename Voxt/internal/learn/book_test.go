@@ -228,6 +228,9 @@ func TestAWriterBetweenAnothersReadAndWriteIsNotLost(t *testing.T) {
 			return err
 		},
 		"dismiss": func(b *Book) error { return b.Dismiss(context.Background(), "first") },
+		"scan checkpoint": func(b *Book) error {
+			return b.setScanned(context.Background(), scanCheckpoint{At: bookStart, ID: "last"})
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			b, st, _ := newBook(t)

@@ -3,7 +3,7 @@
 // Book, which the Dictionary page shows; the user accepts or dismisses
 // them.
 //
-// Imports: core, dict, store.
+// Imports: compose, core, dict, llm, local, store.
 package learn
 
 import (

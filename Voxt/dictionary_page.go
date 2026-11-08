@@ -11,7 +11,7 @@ package main
 // The page keeps the terms of its search in memory, read in the
 // background when it shows and after each change; sessions read the
 // store themselves, so a change applies to the next one. Suggested terms:
-// dictionary_suggest.go.
+// dictionary_suggest.go; the history scan: dictionary_scan.go.
 
 import (
 	"context"
@@ -40,6 +40,7 @@ type dictionaryState struct {
 	book            *learn.Book
 	suggestions     []learn.Suggestion // the sidebar's count and the page's section
 	suggestionReads int                // numbers the reads: only the last one lands
+	scanner         *learn.Scanner
 	// selPress is the transcribe shortcut whose selection is being read
 	// (dictionary_selection.go).
 	selPress *selectionPress
@@ -67,6 +68,8 @@ type dictView struct {
 	importing bool
 	// allSuggestions: the section shows every suggestion, not the first five.
 	allSuggestions bool
+	// scan is the history scan's dialog (dictionary_scan.go).
+	scan scanState
 }
 
 // termEdit is the term dialog's fields: a new term when id is "".
@@ -144,6 +147,7 @@ func (a *app) dictionaryPage(c *ui.Context) {
 	if !d.read && !d.loading {
 		a.loadDict()
 	}
+	scanModel, canScan := a.scanModel()
 	pageHeader(c, i18n.T("Dictionary"), func() {
 		if d.total > 0 {
 			caption(c, i18n.N(d.total, "%d term", "%d terms", d.total)).SingleLine()
@@ -157,6 +161,9 @@ func (a *app) dictionaryPage(c *ui.Context) {
 		if ui.Switch(c.Key("dict-on"), on).Label(i18n.T("Use the dictionary")).Tooltip(i18n.T("Use the dictionary")).Changed() {
 			v := *on
 			a.updateSettings(func(s *settings.Settings) { s.Dictionary.Enabled = v })
+		}
+		if ui.Button(c.Key("dict-scan"), i18n.T("Scan history…")).Disabled(!canScan).Clicked() {
+			a.openScan(scanModel)
 		}
 		moreMenu(c.Key("dict-more"), "", func(m *ui.Menu) {
 			if m.Item(i18n.T("Import…")).Chosen() {
@@ -183,6 +190,14 @@ func (a *app) dictionaryPage(c *ui.Context) {
 			}
 			a.dictSwitches(c)
 		})
+		if !canScan {
+			ui.Row(c).Gap(px(t, sp1)).AlignItems(ui.Center).Children(func() {
+				caption(c, i18n.T("Choose a language model for Transcribe first")).SingleLine().MinWidth(0).Shrink(1)
+				if ghostButton(c.Key("dict-scan-model"), i18n.T("Open Transcribe")).Clicked() {
+					a.navigate("/transcribe")
+				}
+			})
+		}
 		a.dictGuide(c)
 		if !a.prefs.Dictionary.Enabled {
 			notice(c, "dict-off", noticeInfo, i18n.T("The dictionary is off: its terms go nowhere."), "", nil, nil)
@@ -210,6 +225,7 @@ func (a *app) dictionaryPage(c *ui.Context) {
 		}
 	})
 	a.termDialog(c)
+	a.scanDialog(c)
 }
 
 // dictSwitches say where the terms go.

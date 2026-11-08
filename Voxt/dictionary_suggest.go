@@ -25,6 +25,7 @@ const (
 
 func (a *app) openDictionary() {
 	a.book = learn.NewBook(a.lib.store.Documents(), a.lib.store.Dictionary())
+	a.scanner = &learn.Scanner{History: a.lib.store.History(), Book: a.book}
 	a.loadSuggestions()
 }
 

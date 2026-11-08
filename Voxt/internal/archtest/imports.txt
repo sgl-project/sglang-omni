@@ -98,3 +98,6 @@ recordings store
 learn core
 learn dict
 learn store
+learn compose
+learn llm
+learn local

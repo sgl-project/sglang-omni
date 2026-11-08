@@ -234,6 +234,11 @@ func dictShots(t *testing.T, a *app, save func(string)) {
 	}
 	save("page-dictionary-suggestions")
 	a.suggestions = nil
+	a.dv.scan = scanState{open: true, model: fakeLLMModel, counted: true, count: 24}
+	save("dictionary-scan")
+	a.dv.scan = scanState{open: true, running: true, read: 12, total: 24, found: 3, model: fakeLLMModel}
+	save("dictionary-scan-running")
+	a.dv.scan = scanState{}
 	a.openTerm(a.dv.list[0])
 	save("dictionary-edit")
 	a.dv.editOpen = false

@@ -28,6 +28,14 @@ type bookDocument struct {
 	Version   int               `json:"v"`
 	Items     []Suggestion      `json:"items"`
 	Dismissed map[string]string `json:"dismissed"`
+	Scanned   scanCheckpoint    `json:"scanned,omitzero"`
+}
+
+// scanCheckpoint is the last history entry a scan read, in the order of
+// History.List: an id is not a time (a legacy entry's is no ULID).
+type scanCheckpoint struct {
+	At time.Time `json:"at"`
+	ID string    `json:"id"`
 }
 
 // remove takes the suggestion key out of the items.
@@ -41,8 +49,8 @@ func (d *bookDocument) remove(key string) (Suggestion, bool) {
 	return s, true
 }
 
-// Book is the suggestions and the dismissed terms: one document and its
-// one owner. Goroutine-safe.
+// Book is the suggestions, the dismissed terms and the history scan's
+// checkpoint: one document and its one owner. Goroutine-safe.
 type Book struct {
 	docs  store.Documents
 	terms store.Dictionary
@@ -76,6 +84,24 @@ func (b *Book) save(ctx context.Context, doc bookDocument) error {
 		return err
 	}
 	return b.docs.Put(ctx, documentKey, data)
+}
+
+// scanned is the history scan's checkpoint (zero before the first scan).
+func (b *Book) scanned(ctx context.Context) (scanCheckpoint, error) {
+	doc, err := b.load(ctx)
+	return doc.Scanned, err
+}
+
+// setScanned moves the checkpoint.
+func (b *Book) setScanned(ctx context.Context, checkpoint scanCheckpoint) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	doc, err := b.load(ctx)
+	if err != nil {
+		return err
+	}
+	doc.Scanned = checkpoint
+	return b.save(ctx, doc)
 }
 
 // Pending lists the suggestions, newest first.
