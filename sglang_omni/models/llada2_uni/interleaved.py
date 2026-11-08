@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 import re
 from dataclasses import dataclass
 from typing import Literal
@@ -16,6 +17,8 @@ from sglang_omni.models.llada2_uni.payload_types import (
     InterleavedState,
     LLaDA2UniPipelineState,
 )
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT_INTERLEAVED = "You are a interleaved generation assistant."
 UNCONDITION_TOKEN = "<uncondition>"
@@ -250,9 +253,32 @@ def advance_text(
     finish_reason: str | None,
 ) -> None:
     interleaved = state.stream_state["interleaved"]
+    image_token_offset = state.stream_state["image_token_offset"]
+    old_ids = [
+        int(token_id) for token_id in state.prompt["input_ids"].flatten().tolist()
+    ]
     output_ids = [
         int(token_id) for token_id in (state.thinker_out or {}).get("output_ids", [])
     ]
+    # note (qiujiawei): right after an image the model can open the text with stray image tokens; drop them, not the request.
+    if old_ids[-1] == token_id(tokenizer, "<|/image|>"):
+        stray_length = next(
+            (
+                index
+                for index, generated_id in enumerate(output_ids)
+                if generated_id < image_token_offset
+            ),
+            len(output_ids),
+        )
+        if stray_length:
+            logger.warning(
+                f"Dropped {stray_length} image token(s) opening the text after an image"
+            )
+            output_ids = output_ids[stray_length:]
+        else:
+            pass
+    else:
+        pass
     if not output_ids:
         raise ValueError("interleaved text phase produced no tokens")
     else:
@@ -265,11 +291,9 @@ def advance_text(
             pass
         reject_image_tokens(
             output_ids,
-            image_token_offset=state.stream_state["image_token_offset"],
+            image_token_offset=image_token_offset,
             context="text phase",
         )
-        prompt_ids = state.prompt["input_ids"]
-        old_ids = [int(token_id) for token_id in prompt_ids.flatten().tolist()]
         full_ids = old_ids + output_ids
         segment_start = int(interleaved["segment_start"])
         interleaved["trailing_text"] = tokenizer.decode(
@@ -283,7 +307,7 @@ def advance_text(
     header = parse_image_header(output_ids, tokenizer)
     reject_image_tokens(
         output_ids[: header.soi_position],
-        image_token_offset=state.stream_state["image_token_offset"],
+        image_token_offset=image_token_offset,
         context="text phase",
     )
     config = InterleavedGenerationParams.model_validate(
@@ -300,8 +324,6 @@ def advance_text(
         raise ValueError("interleaved image token budget cannot fit the grid and EOI")
     else:
         pass
-    prompt_ids = state.prompt["input_ids"]
-    old_ids = [int(token_id) for token_id in prompt_ids.flatten().tolist()]
     full_ids = old_ids + output_ids
     plan = build_cfg_plan(
         full_ids=full_ids,

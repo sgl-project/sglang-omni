@@ -98,6 +98,20 @@ def test_image_phase_budget_counts_the_padding_of_the_longest_row():
         image_request(state)
 
 
+@pytest.mark.parametrize("text_ids", [[72, 10, 22, 23, 12], [75, 2]])
+def test_text_after_an_image_drops_the_image_tokens_it_opens_with(text_ids):
+    """Text that opened with an image token right after an image failed the request."""
+    state = LLaDA2UniPipelineState.from_dict(initial_payload().data)
+    advance(state, [71, 10, 22, 23, 12])
+    advance(state, [IMAGE_TOKEN_OFFSET + i for i in range(6)])
+    prompt_ids = state.prompt["input_ids"][0].tolist()
+
+    with pytest.raises(ValueError, match="text phase emitted image token"):
+        advance(state, [text_ids[0], IMAGE_TOKEN_OFFSET, *text_ids[1:]])
+    advance(state, [IMAGE_TOKEN_OFFSET + 6, IMAGE_TOKEN_OFFSET + 7, *text_ids])
+    assert state.prompt["input_ids"][0].tolist() == prompt_ids + text_ids
+
+
 @pytest.mark.parametrize(
     "scale, mode", [(0.0, "simple"), (1.0, "none"), (4.0, "simple")]
 )
