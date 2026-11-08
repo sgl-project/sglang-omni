@@ -84,7 +84,10 @@ def default_stages(dense: bool = False) -> list[StageConfig]:
             gpu=0,
             factory_path=f"{PACKAGE}.vocoder.create_vocoder_executor",
             factory=FactoryArgs(
-                graph_latent_steps=384 if dense else 0, stream_chunk_steps=8
+                graph_latent_steps=384 if dense else 0,
+                stream_chunk_steps=8,
+                stream_capacity=32,
+                streaming_cuda_graph=False,
             ),
             can_accept_stream_before_payload=True,
             terminal=True,

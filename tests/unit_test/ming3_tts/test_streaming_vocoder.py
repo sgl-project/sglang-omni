@@ -309,9 +309,12 @@ def test_first_packet_waits_for_lookahead(vocoder: Ming3StreamingVocoder) -> Non
 @pytest.mark.skipif(
     not torch.cuda.is_available(), reason="CUDA graph routing requires CUDA"
 )
+@pytest.mark.parametrize("streaming_cuda_graph", [False, True])
 @torch.inference_mode()
 def test_nonstream_keeps_graph_dispatch_and_stream_uses_cache(
-    vocoder: Ming3StreamingVocoder, monkeypatch: pytest.MonkeyPatch
+    vocoder: Ming3StreamingVocoder,
+    monkeypatch: pytest.MonkeyPatch,
+    streaming_cuda_graph: bool,
 ) -> None:
     """Streaming integration must not replace the non-streaming graph dispatcher."""
 
@@ -330,8 +333,17 @@ def test_nonstream_keeps_graph_dispatch_and_stream_uses_cache(
         factory_module.DecoderGraphs, "run", autospec=True, side_effect=original
     ) as full_decode:
         scheduler = factory_module.create_vocoder_executor(
-            "model", graph_latent_steps=8, device="cuda"
+            "model",
+            stream_capacity=2,
+            streaming_cuda_graph=streaming_cuda_graph,
+            graph_latent_steps=8,
+            device="cuda",
         )
+        scheduler.on_serving_start()
+        assert scheduler.decoder.stream_capacity == 2
+        assert (
+            scheduler.decoder.streaming_runner.captured_graph is not None
+        ) is streaming_cuda_graph
         latents = torch.randn(17, 1, 4, generator=torch.Generator().manual_seed(3))
         payload = StagePayload(
             "full",
@@ -360,6 +372,40 @@ def test_nonstream_keeps_graph_dispatch_and_stream_uses_cache(
         scheduler.handle_stream_done("stream")
         assert full_decode.call_count == 1
         assert "stream" not in scheduler.stream_states
+        actual = np.concatenate(
+            [
+                np.frombuffer(message.data["audio_waveform"], dtype=np.float32)
+                for message in scheduler.outbox.queue
+                if message.type == "stream"
+            ]
+        )
+        reference = Ming3StreamingVocoder(
+            scheduler.compute_fn,
+            vae=vocoder.vae,
+            sample_rate=44100,
+            stream_chunk_steps=8,
+            stream_capacity=2,
+        )
+        for index, latent in enumerate(latents):
+            reference.handle_stream_chunk(
+                "stream", StreamItem(index, latent, "tts_engine", {"stream": True})
+            )
+        reference.stream_payloads["stream"] = StagePayload(
+            "stream",
+            OmniRequest("text", params={"stream": True}),
+            {"usage": {}, "finish_reason": "stop"},
+        )
+        reference.handle_stream_done("stream")
+        expected = np.concatenate(
+            [
+                np.frombuffer(message.data["audio_waveform"], dtype=np.float32)
+                for message in reference.outbox.queue
+                if message.type == "stream"
+            ]
+        )
+        np.testing.assert_array_equal(actual, expected)
+        scheduler.on_serving_stop()
+        reference.on_serving_stop()
 
 
 @torch.inference_mode()
