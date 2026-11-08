@@ -414,3 +414,29 @@ func TestSessionSystemDictation(t *testing.T) {
 		}
 	})
 }
+
+// TestSessionInputSwitches: the chosen microphone goes away after three
+// frames; the next one in Settings → Audio's list records on, the pill
+// names it for a moment, and the recognition hears both.
+func TestSessionInputSwitches(t *testing.T) {
+	set, keys, tr := fileSetup(t, "hello aura link", &fakeChat{text: "Hello."})
+	ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(900, "transcribe/0", proto.PhaseTrigger))
+	a := newSessionApp(t, ev, func(s *settings.Settings) {
+		set(s)
+		s.Audio.Devices = []string{"lost", "AirPodsPro:input"}
+	}, keys)
+	a.pump("the switch", func() bool { return a.sess.Switched == 1 })
+	if s := a.sess; s.Device != "AirPods Pro" || s.State != session.Recording {
+		t.Fatalf("after the switch %+v", s)
+	}
+	if text, _ := pillLine(a.pillSession()); text != "Switched the microphone to AirPods Pro. Recording continues." {
+		t.Errorf("the pill says %q", text)
+	}
+	a.pump("the end", func() bool { return a.sess.State.Ended() })
+	if end := a.sess; end.State != session.Done || end.Switched != 1 {
+		t.Fatalf("end %+v", end)
+	}
+	if calls, size := tr.uploads(); calls != 1 || size < 6*3200 { // more than the lost input's three 100 ms frames
+		t.Errorf("uploads %d, %d bytes", calls, size)
+	}
+}

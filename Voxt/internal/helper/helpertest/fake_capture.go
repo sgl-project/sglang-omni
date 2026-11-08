@@ -123,12 +123,17 @@ func (f *fake) capture(id string, p proto.CaptureParams, system bool, stop chan 
 	}
 	dev := Devices()[0]
 	fellBack := false
+	lost := len(p.Devices) > 0 && p.Devices[0] == "lost"
 	for _, d := range p.Devices {
+		if lost {
+			dev = LostInput
+			break
+		}
 		if i := slices.IndexFunc(Devices(), func(x proto.CaptureDevice) bool { return x.ID == d }); i >= 0 {
 			dev = Devices()[i]
 			break
 		}
-		if d != "crash" && d != "lost" {
+		if d != "crash" {
 			fellBack = true
 		}
 	}
@@ -163,7 +168,7 @@ func (f *fake) capture(id string, p proto.CaptureParams, system bool, stop chan 
 	samples := rate * frameMS / 1000
 	tick := time.NewTicker(time.Duration(wallMS) * time.Millisecond)
 	defer tick.Stop()
-	seq, total, reason, peak := 0, 0, "", -120.0
+	seq, total, reason, peak, restarts := 0, 0, "", -120.0, 0
 	first := 0.0
 	t0 := time.Now()
 	for reason == "" {
@@ -192,15 +197,29 @@ func (f *fake) capture(id string, p proto.CaptureParams, system bool, stop chan 
 			fmt.Fprintln(os.Stderr, "fatal: the audio engine stopped")
 			os.Exit(3)
 		}
-		if len(p.Devices) > 0 && p.Devices[0] == "lost" && seq == 3 {
-			reason = proto.CaptureDeviceLost
+		if lost && seq == 3 {
+			// The helper's restartOrder: the next listed input still connected, else the default one.
+			next, ok := Devices()[0], !f.has("lost-all")
+			for _, d := range p.Devices[1:] {
+				if i := slices.IndexFunc(Devices(), func(x proto.CaptureDevice) bool { return x.ID == d }); i >= 0 {
+					next = Devices()[i]
+					break
+				}
+			}
+			if ok {
+				dev, restarts = next, restarts+1
+				f.notify(proto.MethodCaptureRestarted, proto.RestartedParams{Job: id, Reason: proto.CaptureDeviceLost, Attempt: restarts,
+					Device: dev.ID, DeviceName: dev.Name})
+			} else {
+				reason = proto.CaptureDeviceLost
+			}
 		}
 		if p.MaxSeconds > 0 && seconds >= p.MaxSeconds {
 			reason = proto.CaptureMaxSeconds
 		}
 	}
 	f.result(id, proto.CaptureResult{Device: dev.ID, Reason: reason, Frames: seq, Samples: total,
-		Seconds: float64(total) / float64(rate), Peak: peak, FirstFrameMS: first, CPUSeconds: 0.001})
+		Seconds: float64(total) / float64(rate), Restarts: restarts, Peak: peak, FirstFrameMS: first, CPUSeconds: 0.001})
 }
 
 // captureStop ends a recording; the job answers first.
