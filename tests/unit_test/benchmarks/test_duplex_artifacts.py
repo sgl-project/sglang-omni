@@ -74,6 +74,7 @@ def recorded_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     ) -> dict:
         return {
             "status": "pass",
+            "failure_kind": None,
             "violations": [],
             "coverage": {"input_output_overlap": True},
             "metrics": {"first_audio_packet_s": 0.2, "input_output_overlap": True},
@@ -92,7 +93,13 @@ def test_replay_uses_the_recorded_admission_limit(
         records: list[dict], profile: str, max_admission_attempts: int
     ) -> dict:
         limits.append(max_admission_attempts)
-        return {"status": "pass", "violations": [], "coverage": {}, "metrics": {}}
+        return {
+            "status": "pass",
+            "failure_kind": None,
+            "violations": [],
+            "coverage": {},
+            "metrics": {},
+        }
 
     monkeypatch.setattr(artifacts, "evaluate_trace", evaluate)
     manifest_path = recorded_run / "manifest.json"
@@ -212,6 +219,7 @@ def test_partial_send_preserves_client_failure_and_identity_diagnostic(
         "evaluate_trace",
         lambda records, profile, max_admission_attempts: {
             "status": "fail",
+            "failure_kind": "runtime",
             "violations": ["client error: connection timeout"],
             "coverage": {"input_output_overlap": False},
             "metrics": {},
@@ -280,6 +288,7 @@ def test_not_exercised_is_not_pass_or_qualified_timing(
         unexercised = records[-1]["time_s"] == 2.0
         return {
             "status": "not_exercised" if unexercised else "pass",
+            "failure_kind": None,
             "violations": [],
             "coverage": {"input_output_overlap": not unexercised},
             "metrics": {"first_audio_packet_s": 0.4 if unexercised else 0.2},
@@ -425,6 +434,7 @@ def test_cli_succeeds_only_when_every_case_passes(
         "evaluate_trace",
         lambda records, profile, max_admission_attempts: {
             "status": status,
+            "failure_kind": "runtime" if status == "fail" else None,
             "violations": [],
             "coverage": {},
             "metrics": {},
