@@ -30,7 +30,6 @@ constexpr float kMinCfg = 1e-5f;
 constexpr float kDefaultSigma = 0.25f;
 constexpr double kMinReferenceSeconds = 0.1;
 constexpr double kMaxReferenceSeconds = 30;
-constexpr std::string_view kReferenceAudioPrefix = "data:audio/wav;base64,";
 constexpr const char *kEngineStage = "tts_engine";
 // The logits sampling fields CUDA rejects when given, at the top level and
 // among the engine's stage parameters.
@@ -117,13 +116,13 @@ float FiniteNumber(const Json &value, const char *name, float fallback) {
 
 // A base64 mono WAV data URL at the rates the reference encoder takes.
 ReferenceAudio DecodeReferenceAudio(const std::string &url) {
-  if (!url.starts_with(kReferenceAudioPrefix)) {
+  if (!url.starts_with("data:")) {
     throw std::invalid_argument(
-        "ref_audio must be a data:audio/wav;base64 URL on this server");
+        "ref_audio must be a base64 audio data URL on this server");
   } else {
   }
-  const std::optional<std::vector<uint8_t>> bytes =
-      omni_common::DecodeBase64(url.substr(kReferenceAudioPrefix.size()));
+  const std::optional<std::vector<uint8_t>> bytes = omni_common::DecodeBase64(
+      omni_common::AudioDataUrlPayload(url, "ref_audio"));
   if (!bytes.has_value()) {
     throw std::invalid_argument("ref_audio must be valid base64");
   } else {

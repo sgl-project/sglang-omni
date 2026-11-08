@@ -19,8 +19,8 @@ SPEAKER_SAMPLE_RATE = 16000
 REFERENCE_SECONDS = 0.5
 
 
-def wav_url(wav: bytes) -> str:
-    return "data:audio/wav;base64," + base64.b64encode(wav).decode()
+def wav_url(wav: bytes, header: str = "data:audio/wav;base64") -> str:
+    return header + "," + base64.b64encode(wav).decode()
 
 
 def reference_url(
@@ -29,6 +29,11 @@ def reference_url(
     channel_count: int = 1,
 ) -> str:
     return wav_url(silent_wav(round(sample_rate * seconds), sample_rate, channel_count))
+
+
+REFERENCE_WAV = silent_wav(
+    round(SPEAKER_SAMPLE_RATE * REFERENCE_SECONDS), SPEAKER_SAMPLE_RATE
+)
 
 
 def speak(server: SupervisedServer, changes: dict[str, object]) -> HttpResponse:
@@ -119,7 +124,10 @@ REFERENCE_CONTRACT = (
         ({"stage_params": []}, "stage_params must be an object"),
         ({"ref_text": "参考。"}, "Ming-Omni-TTS reference text requires reference audio"),
         ({"ref_audio": reference_url()}, REFERENCE_CONTRACT),
-        ({"ref_audio": "/tmp/reference.wav", "ref_text": "参考。"}, "ref_audio must be a data:audio/wav;base64 URL on this server"),
+        ({"ref_audio": "/tmp/reference.wav", "ref_text": "参考。"}, "ref_audio must be a base64 audio data URL on this server"),
+        ({"ref_audio": wav_url(REFERENCE_WAV, "data:audio/wav"), "ref_text": "参考。"}, "ref_audio data URL must include base64 media data"),
+        ({"ref_audio": "data:audio/wav;base64,", "ref_text": "参考。"}, "ref_audio data URL must include base64 media data"),
+        ({"ref_audio": wav_url(REFERENCE_WAV, "data:text/plain;base64"), "ref_text": "参考。"}, "ref_audio data URL must use an audio media type"),
         ({"ref_audio": "data:audio/wav;base64,A", "ref_text": "参考。"}, "ref_audio must be valid base64"),
         ({"ref_audio": wav_url(b"not a wav"), "ref_text": "参考。"}, "ref_audio: reference audio must be a RIFF/WAVE file"),
         ({"ref_audio": reference_url(channel_count=2), "ref_text": "参考。"}, "ref_audio: Ming-Omni-TTS currently supports only mono reference audio"),
@@ -150,6 +158,24 @@ def test_a_reference_is_resampled_from_its_own_rate(
     with wave.open(io.BytesIO(response.body)) as reader:
         assert reader.getframerate() == MING_SAMPLE_RATE
         assert reader.getnframes() == round(SPEAKER_SAMPLE_RATE * REFERENCE_SECONDS)
+
+
+@pytest.mark.parametrize(
+    "header",
+    ["data:audio/x-wav;base64", "data:;BASE64", "data:audio/wav;charset=binary;base64"],
+)
+def test_reference_data_urls_are_read_as_on_cuda(
+    ming_speech_server: SupervisedServer, header: str
+) -> None:
+    """The server took only data:audio/wav;base64, refusing data URLs CUDA reads."""
+    response = speak(
+        ming_speech_server,
+        {"ref_audio": wav_url(REFERENCE_WAV, header), "ref_text": "参考。"},
+    )
+    assert response.status == 200
+    assert response.headers["X-Prompt-Tokens"] == str(
+        round(MING_SAMPLE_RATE * REFERENCE_SECONDS)
+    )
 
 
 def test_a_body_over_the_limit_gets_413(ming_speech_server: SupervisedServer) -> None:

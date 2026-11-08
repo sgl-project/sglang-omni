@@ -57,6 +57,7 @@
 #include "civetweb.h"
 #include "common/audio.h"
 #include "common/http.h"
+#include "common/reference_audio.h"
 #include "common/text.h"
 #include "cosyvoice3/cosyvoice3_model.h"
 #include "qwen3_asr/asr_service.h"
@@ -214,7 +215,7 @@ std::string ReadAllowedFile(const std::string &path,
   }
   std::string bytes;
   char opened_path[PATH_MAX] = "";
-  struct stat status {};
+  struct stat status{};
   const bool is_allowed =
       fcntl(file_descriptor, F_GETPATH, opened_path) == 0 &&
       IsInside(std::filesystem::path(opened_path), allowed_directory);
@@ -266,14 +267,8 @@ std::string
 ReferenceBytes(const std::string &source,
                const std::optional<std::filesystem::path> &allowed_directory) {
   if (source.rfind("data:", 0) == 0) {
-    const size_t comma = source.find(',');
-    if (comma == std::string::npos ||
-        !std::string_view(source).substr(0, comma).ends_with(";base64")) {
-      throw std::invalid_argument("a reference audio data URL must be base64 "
-                                  "(data:audio/wav;base64,...)");
-    } else {
-    }
-    return Base64Bytes(source.substr(comma + 1));
+    return Base64Bytes(
+        omni_common::AudioDataUrlPayload(source, "reference audio"));
   } else if (source.rfind("http://", 0) == 0 ||
              source.rfind("https://", 0) == 0) {
     throw std::invalid_argument(

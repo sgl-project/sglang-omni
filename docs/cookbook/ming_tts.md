@@ -302,7 +302,7 @@ Otherwise the server reads requests by the CUDA rules under [Known Limitations](
 
 | | CUDA server | Native MLX server |
 |---|---|---|
-| Reference audio | One local file in `references`, or `ref_audio` with `ref_text` | `ref_audio` with `ref_text` only, as a `data:audio/wav;base64,...` URL; `references` is refused. The WAV is mono 8/16/24/32-bit PCM or 32/64-bit float at any common rate, 0.1 to 30 seconds long, resampled from its own rate to 44.1 kHz for AudioVAE and 16 kHz for CampPlus as on CUDA |
+| Reference audio | One local file in `references`, or `ref_audio` with `ref_text` | `ref_audio` with `ref_text` only, as a base64 data URL with an audio media type, such as `data:audio/wav;base64,...`, read by the CUDA server's data URL rules; `references` is refused. The WAV is mono 8/16/24/32-bit PCM or 32/64-bit float at any common rate, 0.1 to 30 seconds long, resampled from its own rate to 44.1 kHz for AudioVAE and 16 kHz for CampPlus as on CUDA |
 | CampPlus | `campplus.onnx` through ONNX Runtime | The same `campplus.onnx` weights, or the `campplus.safetensors` copy that the 4-bit checkpoint carries, run in C++ MLX. They load at startup; without either file, reference requests get 400 |
 | Requests | Batched | One at a time; `--max-queued-requests` more may wait (2 by default), the rest get 503. A request not done `--request-timeout-s` seconds after it arrives (600 by default) gets 504 or an early end to its stream, and a disconnected client's request is cancelled. Bodies over 32 MiB get 413 |
 | Streaming | Two initial patches, then four-patch groups; each group's audio waits for the next group | The same groups, but each holds back only its last latent frame, so audio starts after the first two patches |

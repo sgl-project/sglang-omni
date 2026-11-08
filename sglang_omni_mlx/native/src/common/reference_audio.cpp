@@ -2,6 +2,8 @@
 #include "common/reference_audio.h"
 
 #include <algorithm>
+#include <cassert>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -99,6 +101,29 @@ ResampleFilterShape FilterShape(int from_rate, int to_rate) {
 }
 
 } // namespace
+
+std::string AudioDataUrlPayload(std::string_view url,
+                                const std::string &field) {
+  assert(url.starts_with("data:"));
+  const size_t comma = url.find(',');
+  std::string header(url.substr(0, comma));
+  std::transform(header.begin(), header.end(), header.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+  if (comma == std::string_view::npos ||
+      header.find(";base64") == std::string::npos || comma + 1 == url.size()) {
+    throw std::invalid_argument(field +
+                                " data URL must include base64 media data");
+  } else {
+  }
+  const std::string_view media_type =
+      url.substr(5, url.substr(0, comma).find(';') - 5);
+  if (!media_type.empty() && !media_type.starts_with("audio/")) {
+    throw std::invalid_argument(field +
+                                " data URL must use an audio media type");
+  } else {
+    return std::string(url.substr(comma + 1));
+  }
+}
 
 DecodedAudio DecodeAnyWav(std::string_view file_bytes) {
   if (file_bytes.size() < 12 || file_bytes.substr(0, 4) != "RIFF" ||
