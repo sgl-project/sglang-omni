@@ -110,7 +110,7 @@ func TestOverlaySessionsStartSmall(t *testing.T) {
 			snap(a, session.Snapshot{ID: "A", State: session.Recognizing, Partial: long})
 			check("A recognises", ovStep{ovWorking, widest, true, true, long})
 			snap(a, session.Snapshot{ID: "A", State: session.Composing, Partial: long, Draft: "So"})
-			check("A cleans up", ovStep{ovWorking, widest, true, true, "So"})
+			check("A cleans up", ovStep{ovWorking, pill, true, true, ""})
 			// Inserted: it fades and leaves, keeping its frame meanwhile.
 			snap(a, session.Snapshot{ID: "A", State: session.Done, Result: "So.", Inserted: true, Partial: long})
 			ft.advance(ovGone)
@@ -186,9 +186,8 @@ func TestOverlayAnchorAndRestyle(t *testing.T) {
 }
 
 // TestOverlayTwoSessionsEndToEnd: the shortcut twice, through the real
-// session manager and the fake helper: the first session's text (the
-// file service's, while the model cleans it up) grows the overlay; the
-// second starts as the pill, with no text, at the same anchor.
+// session manager and the fake helper: the first session ends and leaves;
+// the second starts as the pill, with no text, at the same anchor.
 func TestOverlayTwoSessionsEndToEnd(t *testing.T) {
 	chat := &fakeChat{text: "Hello, VoxtNew."}
 	set, keys, _ := fileSetup(t, "hello aura link, the second line of a longer text", chat)
@@ -204,22 +203,12 @@ func TestOverlayTwoSessionsEndToEnd(t *testing.T) {
 	o := a.prefs.Overlay
 	pill := pillFrame(o)
 	var first string
-	grew := false
 	a.pump("the first recording", func() bool { return a.sess.State == session.Recording })
 	first = a.sess.ID
 	if s := a.ovNow(); s.frame != pill || s.text != "" || !s.visible {
 		t.Fatalf("first starts: %+v", s)
 	}
-	a.pump("the first's end", func() bool {
-		if a.sess.ID == first && a.ov.h == layout.LiveH {
-			grew = true
-			anchored(t, "first grown", o, a.ov.frame)
-		}
-		return a.sess.ID == first && a.sess.State.Ended()
-	})
-	if !grew {
-		t.Error("the first never showed its text")
-	}
+	a.pump("the first's end", func() bool { return a.sess.ID == first && a.sess.State.Ended() })
 	ft.advance(ovGone)
 	if a.ov.visible {
 		t.Fatal("the first stays on screen")

@@ -22,7 +22,6 @@ func (r *run) spoken(raw string) string {
 	text := dict.Replace(raw, r.terms)
 	if text != raw {
 		r.logf("info", "the dictionary's aliases replaced: %s", r.logText(text))
-		r.m.update(r, func(s *Snapshot) { s.Partial = text })
 	}
 	return text
 }
