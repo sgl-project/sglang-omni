@@ -2026,7 +2026,13 @@ class OmniScheduler(Generic[RequestDataT]):
         )
         schedule = get_schedule()
         context_len = int(self.model_config.context_len)
-        if request_capacity == context_len - 1:
+        if request_capacity == context_len - 1 and self.draft_worker is not None:
+            capacity_hint = (
+                f" The {context_len}-token context sets this limit, not the KV "
+                "pool; a speculative draft keeps it within the draft's own "
+                "context. Lower max_tokens or shorten the input."
+            )
+        elif request_capacity == context_len - 1:
             capacity_hint = (
                 f" The {context_len}-token model context sets this limit, not the "
                 "KV pool; lower max_tokens or shorten the input."

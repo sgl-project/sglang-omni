@@ -2276,12 +2276,13 @@ def test_speculative_reserve_rejection_names_the_reserve(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize(
-    ("context_len", "pool_tokens", "max_total_tokens", "expected_hint"),
+    ("context_len", "pool_tokens", "max_total_tokens", "has_draft", "expected_hint"),
     [
-        (8192, 4096, 4096, "engine.max_total_tokens=4096 caps the KV pool"),
-        (8192, 4096, 1_000_000, "Current engine.mem_fraction_static is 0.813"),
-        (8192, 4096, None, "Current engine.mem_fraction_static is 0.813"),
-        (8192, 151_718, None, "The 8192-token model context sets this limit"),
+        (8192, 4096, 4096, False, "engine.max_total_tokens=4096 caps the KV pool"),
+        (8192, 4096, 1_000_000, False, "Current engine.mem_fraction_static is 0.813"),
+        (8192, 4096, None, False, "Current engine.mem_fraction_static is 0.813"),
+        (8192, 151_718, None, False, "The 8192-token model context sets this limit"),
+        (8192, 151_718, None, True, "a speculative draft keeps it within the draft's"),
     ],
 )
 def test_kv_capacity_rejection_names_the_setting_that_sets_the_limit(
@@ -2289,11 +2290,15 @@ def test_kv_capacity_rejection_names_the_setting_that_sets_the_limit(
     context_len: int,
     pool_tokens: int,
     max_total_tokens: int | None,
+    has_draft: bool,
     expected_hint: str,
 ) -> None:
-    """A KV-capacity refusal told users to raise --thinker-mem-fraction-static, which sgl-omni serve rejects, whether engine.max_total_tokens or the model context set the limit."""
+    """A KV-capacity refusal told users to raise --thinker-mem-fraction-static, which sgl-omni serve rejects, whether engine.max_total_tokens, the model context or a speculative draft's context set the limit."""
     scheduler = object.__new__(OmniScheduler)
-    scheduler.draft_worker = None
+    scheduler.draft_worker = SimpleNamespace() if has_draft else None
+    monkeypatch.setattr(
+        omni_scheduler_module, "get_alloc_reserve_per_decode", lambda: 16
+    )
     scheduler.model_config = SimpleNamespace(context_len=context_len)
     scheduler.max_total_num_tokens = pool_tokens
     scheduler.max_req_len = min(context_len, pool_tokens) - 1
