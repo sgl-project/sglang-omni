@@ -35,25 +35,26 @@ type settingsState struct {
 type settingsForm struct {
 	systemLocale string // mygo.App.Locale(), read when the window opens
 
-	language     string // label
-	mainLanguage string // label
-	theme        int
-	scale        int
-	reduceMotion bool
-	menuBar      bool
-	dock         bool
-	copyResult   bool
-	closeToTray  bool
-	openAtLogin  bool
-	keepHistory  bool
-	keepAudio    bool
-	logText      bool
-	sounds       bool
-	skipSilence  bool        // !Audio.VAD.Off
-	cleanSound   bool        // !Audio.Clean.Off
-	muteOutput   bool        // Audio.MuteOn()
-	sidebar      int         // automatic, names and icons, icons only (settings_appearance.go)
-	ovStyle      overlayForm // settings_overlay.go
+	language         string // label
+	mainLanguage     string // label
+	theme            int
+	scale            int
+	reduceMotion     bool
+	menuBar          bool
+	dock             bool
+	copyResult       bool
+	closeToTray      bool
+	openAtLogin      bool
+	keepHistory      bool
+	keepAudio        bool
+	logText          bool
+	sounds           bool
+	skipSilence      bool        // !Audio.VAD.Off
+	cleanSound       bool        // !Audio.Clean.Off
+	authoritativeASR bool        // Audio.AuthoritativeFinal()
+	muteOutput       bool        // Audio.MuteOn()
+	sidebar          int         // automatic, names and icons, icons only (settings_appearance.go)
+	ovStyle          overlayForm // settings_overlay.go
 
 	clearHistoryAsk bool // Privacy's Clear the history… dialog
 	// loginIs is whether macOS opens VoxtNew at login, as last read or
@@ -220,6 +221,7 @@ func (a *app) loadSettingsForm() {
 	f.sounds = s.Audio.Sounds
 	f.skipSilence = !s.Audio.VAD.Off
 	f.cleanSound = !s.Audio.Clean.Off
+	f.authoritativeASR = s.Audio.AuthoritativeFinal()
 	f.muteOutput = s.Audio.MuteOn()
 	f.sidebar = sidebarChoice(s.Appearance)
 	a.loadOverlayForm() // settings_overlay.go

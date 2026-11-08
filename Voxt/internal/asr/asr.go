@@ -91,6 +91,10 @@ type StreamRequest struct {
 	Lang       string // a language hint, "" detects
 	Hints      []string
 	Prompt     string
+	// StreamingOnly: when true, Finish keeps the live preview (and any
+	// pieces already recognised) and does not run an offline Final. Local
+	// Omni models honour this; remote streamers may ignore it.
+	StreamingOnly bool
 }
 
 // Streamer opens recognition streams.

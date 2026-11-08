@@ -267,6 +267,12 @@ func (a *app) audioSettings(c *ui.Context) {
 			a.updateSettings(func(s *settings.Settings) { s.Audio.Clean.Off = off })
 		}
 	})
+	settingRow(c, "audio-authoritative-asr", i18n.T("Refine after you stop"), i18n.T("When this is on, Voxt runs a full offline pass on the whole recording after you stop, with your dictionary. It is more accurate but you wait a few seconds. When this is off, Voxt keeps the live text from while you spoke and finishes right away."), func() {
+		if ui.Switch(c.Key("audio-authoritative-asr-switch"), &a.settingsForm.authoritativeASR).Label(i18n.T("Refine after you stop")).Changed() {
+			streaming := !a.settingsForm.authoritativeASR
+			a.updateSettings(func(s *settings.Settings) { s.Audio.StreamingOnly = streaming })
+		}
+	})
 
 	sectionTitle(c, i18n.T("Sounds"))
 	a.soundsRow(c) // settings_sounds.go

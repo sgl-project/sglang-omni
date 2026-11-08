@@ -98,6 +98,44 @@ func TestLive(t *testing.T) {
 	st.Close()
 }
 
+func TestLiveStreamingOnly(t *testing.T) {
+	f := newFake(t, omnitest.Opts{Text: "离线全文"}, nil)
+	a := f.asr(t, ASRFast)
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: 16000, Lang: "zh", StreamingOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pcm := tone(2500*time.Millisecond, 0.3)
+	sendAll(t, st, pcm)
+	var sawPartial bool
+	deadline := time.After(3 * time.Second)
+	for !sawPartial {
+		select {
+		case ev := <-st.Events():
+			if ev.Kind == asr.EventPartial && strings.HasPrefix(ev.Text, "partial ") {
+				sawPartial = true
+			}
+		case <-deadline:
+			t.Fatal("no partial before Finish")
+		}
+	}
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	evs := drain(t, st)
+	if len(evs) < 1 || evs[len(evs)-1].Kind != asr.EventFinal {
+		t.Fatalf("events %+v", evs)
+	}
+	last := evs[len(evs)-1]
+	if last.Text == "离线全文" || !strings.HasPrefix(last.Text, "partial ") {
+		t.Errorf("streaming text %q", last.Text)
+	}
+	if finals := f.records("final"); len(finals) != 0 {
+		t.Errorf("offline finals %+v", finals)
+	}
+	f.rt.Close()
+}
+
 // TestLiveLargeFirstSend: when the model is slow to load, the audio
 // recorded meanwhile goes in the stream's first Send, a second or more of
 // it. The preview must take it and send partials. The fake server

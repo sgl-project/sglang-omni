@@ -15,6 +15,22 @@ func TestDefaultsAreNormal(t *testing.T) {
 	if !reflect.DeepEqual(normalize(clone(d)), d) {
 		t.Fatalf("normalize changes the defaults:\n%+v\n%+v", normalize(d), d)
 	}
+	if !d.Audio.AuthoritativeFinal() {
+		t.Fatal("default uses offline Final after Stop")
+	}
+}
+
+func TestStreamingOnlySetting(t *testing.T) {
+	s := Defaults()
+	s.Audio.StreamingOnly = true
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Migrate(data)
+	if err != nil || !got.Audio.StreamingOnly || got.Audio.AuthoritativeFinal() {
+		t.Fatalf("round trip: %+v %v", got.Audio, err)
+	}
 }
 
 func TestMigrate(t *testing.T) {

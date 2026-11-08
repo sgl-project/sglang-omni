@@ -648,6 +648,8 @@
   "Opens a new issue on GitHub in your browser, with the diagnostics filled in. Nothing is sent until you submit it.": "在浏览器中打开 GitHub 新问题页面，并填好诊断信息。在你提交之前不会发送任何内容。",
   "Open…": "打开…",
   "Optimize sound": "声音优化",
+  "Refine after you stop": "停止后整段精修",
+  "When this is on, Voxt runs a full offline pass on the whole recording after you stop, with your dictionary. It is more accurate but you wait a few seconds. When this is off, Voxt keeps the live text from while you spoke and finishes right away.": "开启时，停止后会对整段录音再跑一次离线识别（带词典），更准确，但要等多几秒。关闭时，直接采用录音时的实时文字，几乎马上结束。",
   "Optional": "可选",
   "Optional for a server on this Mac. Saved in this Mac's Keychain, never in Voxt's settings or logs.": "本机上的服务可不填。保存在这台 Mac 的钥匙串里，不会写进 Voxt 的设置或日志。",
   "Other": "其他",

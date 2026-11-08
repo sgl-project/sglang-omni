@@ -134,7 +134,14 @@ type Audio struct {
 	// Clean is the light sound processing of the speech model's copy
 	// of a recording (10-16).
 	Clean Clean `json:"clean,omitzero"`
+	// StreamingOnly skips the offline Final after Stop and keeps the live
+	// preview text (faster, less accurate, no dictionary echo guard).
+	StreamingOnly bool `json:"streamingOnly,omitempty"`
 }
+
+// AuthoritativeFinal reports whether Stop should run an offline Final on
+// the whole recording (the default).
+func (a Audio) AuthoritativeFinal() bool { return !a.StreamingOnly }
 
 // MuteOn reports whether recordings mute the system's output: the user's
 // choice, else on.
