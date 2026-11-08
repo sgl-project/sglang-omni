@@ -31,6 +31,8 @@ public enum Method {
     public static let captureSystem = "capture.system"
     public static let hotkeyConfigure = "hotkey.configure"
     public static let hotkeyStatus = "hotkey.status"
+    public static let hotkeyRecord = "hotkey.record"
+    public static let hotkeyCancelRecord = "hotkey.cancelRecord"
     public static let appFrontmost = "app.frontmost"
     public static let textFocus = "textio.focus"
     public static let textSelection = "textio.selection"
@@ -63,7 +65,7 @@ public enum Method {
     /// Every request, in the order hello lists them.
     public static let requests = [
         hello, shutdown, jobCancel, permissionsStatus, permissionsRequest,
-        captureDevices, captureStart, captureStop, captureSystem, hotkeyConfigure, hotkeyStatus,
+        captureDevices, captureStart, captureStop, captureSystem, hotkeyConfigure, hotkeyStatus, hotkeyRecord, hotkeyCancelRecord,
         appFrontmost, appList, appConfigure, appIcons, textFocus, textSelection, textPaste, textRead,
         browserURL, outputWatch, outputMute, outputRelease, outputRecover, speechRecognize, speechAudio,
     ]

@@ -104,6 +104,7 @@ final class Server: @unchecked Sendable {
     let front: FrontApps
     let capture: CaptureManager
     let hotkeys: HotkeyTap
+    let keyRecorder: HotkeyRecorder
     let textio: TextIO
     let output: Output
     let speech: SpeechJobs
@@ -119,6 +120,7 @@ final class Server: @unchecked Sendable {
         front = FrontApps(out: out)
         capture = CaptureManager(out: out)
         hotkeys = HotkeyTap(out: out, front: front)
+        keyRecorder = HotkeyRecorder()
         textio = TextIO(front: front)
         output = Output(out: out)
         speech = SpeechJobs(out: out)
@@ -251,6 +253,12 @@ final class Server: @unchecked Sendable {
             return hotkeys.configure(try msg.decodeParams(HotkeyConfigureParams.self))
         case Method.hotkeyStatus:
             return hotkeys.status()
+        case Method.hotkeyRecord:
+            let p = try msg.decodeParams(HotkeyRecordParams.self)
+            return try await keyRecorder.record(timeoutSeconds: p.timeoutSeconds ?? 15)
+        case Method.hotkeyCancelRecord:
+            keyRecorder.cancel()
+            return Empty()
         case Method.appFrontmost:
             return await front.current()
         case Method.textFocus:

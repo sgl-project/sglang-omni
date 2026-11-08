@@ -417,6 +417,10 @@ func (f *fake) serve(m proto.Message) {
 		f.hotkeys(m)
 	case proto.MethodHotkeyStatus:
 		f.result(m.ID, f.hotkeyStatus())
+	case proto.MethodHotkeyRecord:
+		f.hotkeyRecord(m)
+	case proto.MethodHotkeyCancelRecord:
+		f.result(m.ID, proto.Empty{})
 	case proto.MethodAppFrontmost:
 		f.result(m.ID, f.front())
 	case proto.MethodTextFocus, proto.MethodTextSelection, proto.MethodTextPaste, proto.MethodTextRead:

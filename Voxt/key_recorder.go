@@ -4,9 +4,9 @@ package main
 // feature's, Paste the last result's, Cancel's and the note's
 // shortcuts): a key with the modifiers held, saved at once. While it
 // has the focus the app's shortcuts are off, so that the keys reach it
-// instead of starting a recording. The window sees no fn, no side of a
-// modifier and no mouse button: those are typed (Type the keys
-// instead).
+// instead of starting a recording. When the helper offers hotkey.record,
+// fn, sided modifiers and mouse buttons are captured there; otherwise
+// the window sees only plain chords (Type the keys instead for the rest).
 
 import (
 	"strings"
@@ -86,6 +86,14 @@ func (a *app) keyRecorder(c *ui.Context, r *keyRow, label string, save func(keys
 	box := ui.Box(c.Key("record")).Focusable().AutoFocus().Role(ui.RoleTextField).Label(label).
 		Padding(px(t, 5), px(t, sp2)).Radius(px(t, radiusControl)).MaxWidth(px(t, 360)).Cursor(ui.CursorPointer)
 	focused := box.Focused()
+	if focused && !r.recFocused {
+		r.recordDenied = false
+		a.beginHotkeyRecord(r, save)
+	}
+	if r.recFocused && !focused {
+		a.cancelHotkeyRecord()
+	}
+	r.recFocused = focused
 	if focused {
 		a.keysHeard = true
 		box.Border(1, k.Accent)
@@ -95,7 +103,14 @@ func (a *app) keyRecorder(c *ui.Context, r *keyRow, label string, save func(keys
 	if box.Clicked() {
 		box.Focus()
 	}
+	useWindow := !a.helperRecordsKeys()
 	box.HandleInput(func(ev ui.InputEvent) bool {
+		if !useWindow {
+			if ev.Kind == ui.InputKeyDown && ev.Key == ui.KeyTab && ev.Mods&^ui.Shift == 0 {
+				return false
+			}
+			return ev.Kind == ui.InputKeyDown || ev.Kind == ui.InputText || ev.Kind == ui.InputCompose || ev.Kind == ui.InputCommand
+		}
 		switch ev.Kind {
 		case ui.InputText, ui.InputCompose, ui.InputCommand:
 			return true // keys typing text come first as keys; menus' ⌘C and the like are not shortcuts here
@@ -129,12 +144,27 @@ func (a *app) keyRecorder(c *ui.Context, r *keyRow, label string, save func(keys
 		}
 	})
 	switch {
+	case r.recordDenied:
+		warnLine(c, i18n.T("Recording a shortcut needs Accessibility permission."))
+		ui.Row(c).Children(func() {
+			if ghostButton(c.Key("record-open-perms"), i18n.T("Open Permissions")).Clicked() {
+				a.navigate("/settings/permissions")
+			}
+		})
 	case r.unknown:
 		warnLine(c, i18n.T("Voxt cannot use that key. Press another, or type the keys instead."))
 	case focused:
-		caption(c, i18n.T("Press the keys you want, as ⌥Space. Each press replaces the last."))
+		if a.helperRecordsKeys() {
+			caption(c, i18n.T("Press the shortcut you want, including fn, a left or right modifier, or a mouse button. Each press replaces the last."))
+		} else {
+			caption(c, i18n.T("Press the keys you want, as ⌥Space. Each press replaces the last."))
+		}
 	default:
-		caption(c, i18n.T("Click the field and press the keys, as ⌥Space. fn, a left or right modifier and mouse buttons cannot be pressed here: type them instead."))
+		if a.helperRecordsKeys() {
+			caption(c, i18n.T("Click the field, then press the shortcut, including fn, a left or right modifier, or a mouse button."))
+		} else {
+			caption(c, i18n.T("Click the field and press the keys, as ⌥Space. fn, a left or right modifier and mouse buttons need Accessibility: open Permissions."))
+		}
 	}
 	if ghostButton(c.Key("type-keys"), i18n.T("Type the keys instead")).Clicked() {
 		r.typing, r.unknown = true, false
