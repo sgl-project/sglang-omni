@@ -16,7 +16,8 @@
 //
 // The fake serves every method of package proto, so whole sessions run on
 // Linux: capture.start plays a 440 Hz tone, or a recording (pcm=), in real
-// time as capture.pcm frames and capture.level; hotkey.configure installs
+// time as capture.pcm frames and capture.level, and capture.system the
+// same beside it (system=); hotkey.configure installs
 // a pretend tap and can play a script of notifications (events=, press=);
 // textio.* read a scripted selection and log what they paste (paste-log=);
 // textio.read reads a scripted field (read=) and logs its calls (read-log=);
@@ -47,6 +48,8 @@ package helpertest
 //	frame-ms=N       a capture.pcm frame (and level) every N ms of wall time (default 100)
 //	pcm=PATH         capture.pcm plays this WAV (16-bit mono, any rate) or raw
 //	                 PCM16 at the requested rate, then silence
+//	system=PATH      capture.system plays this recording, as pcm= (without it a tone)
+//	no-system        an older helper: no capture.system in hello, method_not_found
 //	events=PATH      once the tap is installed, play a script: JSON lines
 //	                 {"afterMs":N,"method":"hotkey.event","params":{…}}, any notification;
 //	                 an app.activated line also brings its app to the front (the user moved on)
@@ -195,7 +198,7 @@ type fake struct {
 	hkActive   bool
 	hkCancel   bool                     // hotkey.configure's cancel is set (the tap installs for it alone too)
 	manual     []string                 // app.configure's manualAccessibility
-	running    map[string]bool          // capture jobs
+	running    map[string]string        // capture jobs: their method (one of each at a time)
 	cancel     map[string]bool          // asked to stop by job.cancel
 	stop       map[string]chan struct{} // closed by capture.stop
 	finished   map[string]chan struct{}
@@ -219,7 +222,7 @@ func Run(optString string) {
 		}
 	}
 	f := &fake{opts: opts, out: bufio.NewWriter(os.Stdout), start: time.Now(), mic: proto.PermGranted, speechPerm: proto.PermGranted, trusted: true,
-		running: map[string]bool{}, cancel: map[string]bool{},
+		running: map[string]string{}, cancel: map[string]bool{},
 		stop: map[string]chan struct{}{}, finished: map[string]chan struct{}{}, speech: map[string]*speechJob{}}
 	if v, ok := opts["mic"]; ok {
 		f.mic = v
@@ -362,7 +365,7 @@ func (f *fake) serve(m proto.Message) {
 			return
 		}
 		f.mu.Lock()
-		running := f.running[p.Job]
+		_, running := f.running[p.Job]
 		if running && !f.has("hang-cancel") {
 			f.cancel[p.Job] = true
 		}
@@ -402,7 +405,11 @@ func (f *fake) serve(m proto.Message) {
 		f.result(m.ID, f.permissions())
 	case proto.MethodCaptureDevices:
 		f.result(m.ID, proto.DevicesResult{Devices: Devices()})
-	case proto.MethodCaptureStart:
+	case proto.MethodCaptureStart, proto.MethodCaptureSystem:
+		if m.Method == proto.MethodCaptureSystem && f.has("no-system") {
+			f.fail(m.ID, proto.CodeMethodNotFound, "Unknown method %s", m.Method)
+			return
+		}
 		f.startCapture(m)
 	case proto.MethodCaptureStop:
 		f.captureStop(m)
@@ -515,6 +522,9 @@ func (f *fake) handleHello(m proto.Message) {
 		Device: proto.Device{Name: "Fake Mac", OS: "test"}}
 	if f.has("no-output") {
 		res.Methods = oldMethods()
+	}
+	if f.has("no-system") {
+		res.Methods = slices.DeleteFunc(res.Methods, func(m string) bool { return m == proto.MethodCaptureSystem })
 	}
 	if f.has("speech") {
 		res.Methods = append(res.Methods, proto.MethodSpeechRecognize, proto.MethodSpeechAudio)

@@ -181,10 +181,15 @@ type captureRun struct {
 func (c *captureRun) frames() int { c.mu.Lock(); defer c.mu.Unlock(); return len(c.seqs) }
 
 func startCapture(ctx context.Context, h *harness, id string, p proto.CaptureParams) *captureRun {
+	return startRecording(ctx, h, proto.MethodCaptureStart, id, p)
+}
+
+// startRecording runs a capture.start or capture.system job.
+func startRecording(ctx context.Context, h *harness, method, id string, p any) *captureRun {
 	c := &captureRun{done: make(chan struct{})}
 	go func() {
 		defer close(c.done)
-		raw, err := h.sup.Call(ctx, id, proto.MethodCaptureStart, p, func(m proto.Message) {
+		raw, err := h.sup.Call(ctx, id, method, p, func(m proto.Message) {
 			c.mu.Lock()
 			defer c.mu.Unlock()
 			switch m.Method {

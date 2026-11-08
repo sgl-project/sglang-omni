@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 	"slices"
@@ -23,21 +24,22 @@ func (f *fake) cancelled(id string) bool {
 	return f.cancel[id]
 }
 
-// startCapture runs a capture.start job on a goroutine of its own; one at
-// a time.
+// startCapture runs a capture.start or capture.system job on a goroutine
+// of its own; one of each at a time.
 func (f *fake) startCapture(m proto.Message) {
-	var p proto.CaptureParams
+	system := m.Method == proto.MethodCaptureSystem
+	var p proto.CaptureParams // capture.system's: the same without devices
 	if err := m.DecodeParams(&p); err != nil {
 		f.fail(m.ID, proto.CodeBadRequest, "Bad params: %v", err)
 		return
 	}
 	f.mu.Lock()
-	if f.mic == proto.PermNotDetermined {
+	if f.mic == proto.PermNotDetermined && !system {
 		f.mic = proto.PermGranted
 	}
 	mic := f.mic
 	f.mu.Unlock()
-	if mic != proto.PermGranted {
+	if mic != proto.PermGranted && !system {
 		f.failData(m.ID, proto.CodePermissionDenied, map[string]string{"permission": proto.PermissionMicrophone}, "VoxtNew may not use the microphone")
 		return
 	}
@@ -46,12 +48,12 @@ func (f *fake) startCapture(m proto.Message) {
 		return
 	}
 	f.mu.Lock()
-	if len(f.running) > 0 {
+	if slices.Contains(slices.Collect(maps.Values(f.running)), m.Method) {
 		f.mu.Unlock()
 		f.fail(m.ID, proto.CodeBusy, "A recording is running already")
 		return
 	}
-	f.running[m.ID] = true
+	f.running[m.ID] = m.Method
 	stop, done := make(chan struct{}), make(chan struct{})
 	f.stop[m.ID], f.finished[m.ID] = stop, done
 	f.mu.Unlock()
@@ -65,7 +67,7 @@ func (f *fake) startCapture(m proto.Message) {
 			f.mu.Unlock()
 			close(done)
 		}()
-		f.capture(m.ID, p, stop)
+		f.capture(m.ID, p, system, stop)
 	}()
 }
 
@@ -114,7 +116,7 @@ func level(frame []byte) (rms, peak float64) {
 
 // capture records until capture.stop, job.cancel, maxSeconds or a fake
 // device's end.
-func (f *fake) capture(id string, p proto.CaptureParams, stop chan struct{}) {
+func (f *fake) capture(id string, p proto.CaptureParams, system bool, stop chan struct{}) {
 	rate := p.SampleRate
 	if rate <= 0 {
 		rate = 16000
@@ -130,8 +132,13 @@ func (f *fake) capture(id string, p proto.CaptureParams, stop chan struct{}) {
 			fellBack = true
 		}
 	}
+	recording := f.opts["pcm"]
+	if system {
+		// The mix of the default output, which has no name (as the helper's).
+		dev, recording = proto.CaptureDevice{ID: Speakers.UID, Channels: 1, SampleRate: 48000}, f.opts["system"]
+	}
 	src := &source{rate: rate}
-	if path := f.opts["pcm"]; path != "" {
+	if path := recording; path != "" {
 		pcm, err := ReadPCM(path, rate)
 		if err != nil {
 			f.fail(id, proto.CodeInternal, "pcm: %v", err)
