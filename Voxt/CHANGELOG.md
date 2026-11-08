@@ -4,6 +4,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+**How a recording starts.** Pressing the shortcut starts the microphone at once; Voxt does not wait for the speech model. The speech model and the voice detector load in the background while you speak, on the first dictation after Voxt opens and again after ten idle minutes unload them. Everything you say after the microphone has started is recorded and kept in memory until the model is ready, then sent to it: the live text appears later, but the result has all of it, up to the ten-minute limit of one recording. If the overlay says "Starting the microphone…", the microphone has not produced sound yet and words said then are not recorded; while only the icon pulses and the bars follow your voice, the model is still loading and the recording is fine.
+
 ### Added
 
 - **Editable full system prompts** (Transcribe, Translate, Rewrite → Your rules): edit the whole system prompt in one field (default shows the built-in text). What you save is what Voxt sends. Reset restores the built-in prompt. A preview shows the example user message used for cleanup and formatting when you use the built-in layers. **Settings search**: ⌘F in Settings focuses the search box and filters by title, description, and English keywords.
@@ -39,6 +41,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **⌘W closes the window.** With "Keep running when the window closes" on (the default), Voxt stays in the menu bar and its shortcuts keep working, as the red × does; only ⌘Q quits. The Window menu had no Close Window item before.
 
 ### 中文
+
+**录音是怎么开始的。** 按下快捷键的那一刻麦克风就开始录，Voxt 不等语音模型。语音模型和人声检测在你说话的同时后台加载：Voxt 打开后的第一次听写要加载，空闲十分钟卸载后的第一次也要。麦克风开始之后你说的每一句都录下来，模型就绪前先存在内存里，就绪后一并送过去：实时文字会晚一点出现，结果一句不少，上限是一次录音的十分钟。浮窗写着“正在启动麦克风…”时，麦克风还没出声音，那时说的话录不下来；只有图标在呼吸、波形跟着你的声音动时，是模型还在加载，录音没问题。
 
 #### 新增
 
