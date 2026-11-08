@@ -814,6 +814,8 @@ class PipelineConfig(BaseModel):
         default=DEFAULT_IDLE_TIMEOUT_S, gt=0, allow_inf_nan=False
     )
     "Seconds without input or output before a shared realtime session closes."
+    ws_per_message_deflate: bool = True
+    "Whether the server offers permessage-deflate to websocket clients."
     services: list[ServiceConfig] = Field(default_factory=list)
     "The services started in this order before the pipeline, each waited for until its /v1/models answers."
 
