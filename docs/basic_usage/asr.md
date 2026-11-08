@@ -38,11 +38,11 @@ packages a pipeline imports beyond the base installation.
 |---|---|---|
 | [Qwen3-ASR](../cookbook/qwen3_asr.md) | `examples/configs/qwen3_asr_rtx4090.yaml`, `examples/configs/qwen3_asr_rtx5090.yaml` | Multilingual transcription with 30 language hints; chunked uploads up to one hour; live PCM through `/v1/realtime?intent=transcription` |
 | [Ming-3.0-ASR](../cookbook/ming3_asr.md) | `--model-path` only | Chinese and English only; splits uploads longer than 30 s; `srt` and `vtt` rejected |
-| [Fun-ASR-Nano](../cookbook/fun_asr.md) | `--model-path` only | Multilingual transcription; no translation route |
-| [ARK-ASR-3B](../cookbook/arkasr.md) | `--model-path` only | Multilingual transcription; shares the LM prefill-admission gate |
-| [Nemotron 3.5 ASR](../cookbook/nemotron3_5_asr.md) | `--model-path` only | Multilingual RNN-T transcription; native PCM streaming through `/v1/realtime` without VAD or manual commit |
-| [Nemotron Transcribe](../cookbook/nemotron_transcribe.md) | `--model-path` only | Whole-file transcription up to one hour as one decoder request; validated on one H100 80 GB |
-| [MOSS-Transcribe-Diarize](../cookbook/moss_transcribe_diarize.md) | `--model-path` only | Multi-speaker transcription, diarization and timestamps in one pass; up to ~90 minutes; `verbose_json` segments |
+| [Fun-ASR-Nano](../cookbook/fun_asr.md) | `--model-path` only | Multilingual transcription; `language` also selects the output language; no translation route |
+| [ARK-ASR-3B](../cookbook/arkasr.md) | `--model-path` only | Multilingual transcription; `language` is recorded but does not change its fixed prompt; prefill coalescing is tuned per GPU |
+| [Nemotron 3.5 ASR](../cookbook/nemotron3_5_asr.md) | `--model-path` only | Multilingual RNN-T transcription; greedy decoding only; native PCM streaming through `/v1/realtime` without VAD or manual commit |
+| [Nemotron Transcribe](../cookbook/nemotron_transcribe.md) | `--model-path` only | Whole-file transcription up to one hour as one decoder request; no realtime, timestamps, or translation; validated on one H100 80 GB |
+| [MOSS-Transcribe-Diarize](../cookbook/moss_transcribe_diarize.md) | `--model-path` only | Multi-speaker transcription, diarization and timestamps in one pass; up to ~90 minutes; `verbose_json` speaker segments and `srt`/`vtt` from real timestamps |
 | [Whisper ASR](../cookbook/whisper_asr.md) | `--model-path` only | Experimental transcription and speech-to-English translation; `srt` and `vtt` subtitles with model-derived timestamps |
 
 ## Launch the Server
@@ -83,11 +83,10 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
 
 `response_format` accepts `json` (the default), `verbose_json`, and `text`.
 `verbose_json` adds duration-based usage when the pipeline can probe the audio
-duration, plus per-segment detail where the model adapter emits segments:
-MOSS-Transcribe-Diarize parses its speaker markup into OpenAI-style `segments`,
-and Qwen3-ASR reports one segment per transcribed chunk. Models whose adapter
-derives real segment timestamps also accept `srt` and `vtt`; the others return
-HTTP 400 before inference.
+duration, plus per-segment detail where the model adapter emits segments. The
+segment granularity is model-specific, and each cookbook shows the shape its
+adapter returns. Models whose adapter derives real segment timestamps also
+accept `srt` and `vtt`; the others return HTTP 400 before inference.
 
 ### Stream Transcription
 
@@ -112,7 +111,6 @@ data: {"type":"transcript.text.delta","delta":"..."}
 data: {"type":"transcript.text.done","text":"..."}
 
 data: [DONE]
-
 ```
 
 Deltas are batched by the pipeline; Qwen3-ASR and Ming-3.0-ASR default to a
@@ -124,48 +122,19 @@ response formats only; subtitle formats return HTTP 400 when combined with
 ### Live PCM Transcription
 
 A realtime WebSocket session accepts audio as it arrives instead of a finished
-multipart upload. Mount it with `--enable-realtime` at server start:
+multipart upload. Start the server with `--enable-realtime`, then connect to
+whichever endpoint shape the pipeline implements:
 
-```bash
-sgl-omni serve \
-  --model-path "${MODEL_PATH}" \
-  --model-name Qwen/Qwen3-ASR-1.7B \
-  --enable-realtime \
-  --port 8000
-```
-
-Qwen3-ASR exposes `/v1/realtime?intent=transcription`. Configure the session,
-append base64-encoded mono 16 kHz PCM16 packets with
-`input_audio_buffer.append`, and finalize a segment with
-`input_audio_buffer.commit` or the configured server VAD. `transcription.done`
-asks for `transcription.completed`; `input_audio_buffer.clear` discards the
-current segment and keeps the session open.
-
-```json
-{
-  "type": "session.update",
-  "session": {
-    "language": "English",
-    "turn_detection": {
-      "type": "server_vad",
-      "threshold": 0.5,
-      "prefix_padding_ms": 300,
-      "silence_duration_ms": 500
-    }
-  }
-}
-```
-
-Partial results are full replacements rather than append-only deltas, and an
-event with `is_final=true` is immutable. Append events are not idempotent: after
-a transport failure, reconnect and restart the transcription instead of
-replaying packets on the old session. The Qwen3-ASR cookbook documents the
-partial rollback, segment boundaries, and language reporting in full.
-
-Nemotron 3.5 ASR uses the native path instead of `intent=transcription`: connect
-to `/v1/realtime?model=nvidia/nemotron-3.5-asr-streaming-0.6b`, send mono 16 kHz
-PCM16, and read text output. That path has no VAD, manual commit, language
-field, or `max_new_tokens`.
+- **`/v1/realtime?intent=transcription`** — Qwen3-ASR and Hy-SimulMT serve this
+  shared path. Configure the session with `session.update`, append base64-encoded
+  mono 16 kHz PCM16 packets, finalize a segment with `input_audio_buffer.commit`
+  or server VAD, and read `transcription.segment` events until
+  `transcription.completed`. Session options, partial-update semantics, and
+  rollback behavior are documented in the
+  [Qwen3-ASR cookbook](../cookbook/qwen3_asr.md#live-pcm-transcription).
+- **`/v1/realtime?model=...`** — Nemotron 3.5 ASR uses this native path. Send
+  mono 16 kHz PCM16 and read text output; it has no VAD, manual commit, language
+  field, or `max_new_tokens`.
 
 ## Use Python
 
@@ -228,47 +197,10 @@ with open("tests/data/query_to_cars.wav", "rb") as audio_file:
 
 ### Live Audio over WebSocket
 
-```python
-import asyncio
-import base64
-import json
-
-import websockets
-
-
-async def main():
-    async with websockets.connect(
-        "ws://localhost:8000/v1/realtime?intent=transcription"
-    ) as ws:
-        await ws.send(json.dumps({
-            "type": "session.update",
-            "session": {"language": "English"},
-        }))
-        print(await ws.recv())
-
-        with open("tests/data/query_to_cars.wav", "rb") as f:
-            pcm16 = f.read()
-        for start in range(0, len(pcm16), 3200):
-            await ws.send(json.dumps({
-                "type": "input_audio_buffer.append",
-                "audio": base64.b64encode(pcm16[start:start + 3200]).decode(),
-            }))
-
-        await ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
-        await ws.send(json.dumps({"type": "transcription.done"}))
-
-        while True:
-            event = json.loads(await ws.recv())
-            print(event)
-            if event["type"] == "transcription.completed":
-                break
-
-
-asyncio.run(main())
-```
-
-The example assumes the upload is already mono 16 kHz PCM16; decode other
-formats first, because the session does not resample packets.
+A complete WebSocket client that appends PCM packets, commits a segment, and
+reads the completed transcript is in the
+[Qwen3-ASR cookbook](../cookbook/qwen3_asr.md#live-pcm-transcription).
+The session takes PCM16 packets as they arrive, so decode other formats first.
 
 ## Request Parameters
 
@@ -276,30 +208,38 @@ formats first, because the session does not resample packets.
 |---|---|---|---|
 | `file` | file | required | Audio file uploaded as multipart form data. One file per request |
 | `model` | string | served model | Model identifier |
-| `language` | string | none | Optional language hint. The accepted set is model-specific; omit it for automatic detection. An unsupported hint returns HTTP 400 |
-| `prompt` | string | none | Model-specific context: vocabulary biasing for Qwen3-ASR, topic or hotword context for some other models. See the model's cookbook for its exact effect |
+| `language` | string | none | Optional language field. Its meaning and accepted values differ per pipeline; see Language Hints below |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text`. `srt` and `vtt` are accepted only by adapters with real segment timestamps |
-| `temperature` | float | `0` | Sampling temperature; `0` uses greedy decoding. A negative value is rejected |
-| `repetition_penalty` | float | `1.0` | Penalty in `(0, 2]` on tokens already generated. Values above `1` discourage repeats and can stop a runaway loop on noisy or silent audio, but they also lower accuracy on clean audio, so keep `1.0` unless loops occur. Model support varies: Qwen3-ASR's DFlash draft rejects values other than `1.0` |
-| `max_new_tokens` | integer | stage limit | Per-request generation-token cap |
+| `temperature` | float | `0` | Sampling temperature; `0` uses greedy decoding. A negative value is rejected, and some pipelines accept greedy decoding only |
 | `stream` | boolean | `false` | Return SSE transcript deltas. Supports `json` and `text` only |
+
+Fields beyond this set belong to individual pipelines instead of the shared
+schema: `prompt` means vocabulary or hotword biasing on Qwen3-ASR, Fun-ASR-Nano
+and MOSS-Transcribe-Diarize, previous-text conditioning on Whisper, and an
+instruction override on Nemotron Transcribe, while Nemotron 3.5 ASR rejects it.
+`repetition_penalty` and `max_new_tokens` exist only on some pipelines — for
+example Qwen3-ASR, Fun-ASR-Nano and MOSS-Transcribe-Diarize — with different
+defaults and bounds. Each cookbook lists the fields its pipeline accepts, their
+defaults, and their limits.
 
 ### Language Hints
 
-When `language` is omitted, a model that supports detection identifies the
-spoken language before transcribing. Set an explicit hint when the language is
+When `language` is omitted, a pipeline that supports detection identifies the
+spoken language before transcribing. Set an explicit value when the language is
 known, or when automatic detection is unreliable for short or ambiguous audio.
-The hint is a request field rather than a prompt prefix, so the accepted codes
-and canonical names differ per model: Qwen3-ASR takes 30 codes, Ming-3.0-ASR
-takes only `en` and `zh`, and Nemotron 3.5 ASR has no language field at all.
-Unsupported values fail the request rather than falling back to English.
+The field is model-specific in both its values and its effect: Qwen3-ASR takes
+30 codes and their canonical names, Ming-3.0-ASR takes only `en` and `zh`,
+Fun-ASR-Nano uses it to select the output language, ARK-ASR records it without
+changing its fixed prompt, Nemotron 3.5 ASR takes `auto` or a checkpoint locale,
+and Nemotron Transcribe exposes no language field at all. Unsupported values
+fail the request rather than falling back to English.
 
 ## Long Audio
 
 Pipelines that can transcribe an isolated clip accept long uploads by splitting
 them, running each chunk as its own engine request, and joining the transcripts
-in order. The scheduling policy is the same four `audio_chunking` flags on
-every such pipeline:
+in order. Qwen3-ASR and Whisper ASR share this splitting path, and with it the
+same four `audio_chunking` flags:
 
 | Name | Meaning |
 |---|---|
@@ -308,15 +248,16 @@ every such pipeline:
 | `--audio_chunking.max_total_audio_s` | Upper limit on one upload; above it the request fails with HTTP 400. It bounds a single decoded waveform, not the total across uploads |
 | `--audio_chunking.max_concurrent_long_audio_requests` | How many long uploads the server admits at once. Past the cap a new long upload gets HTTP 503 instead of queueing; short uploads are never gated |
 
-Defaults and native limits are model-specific, and each cookbook lists the
-values it ships with. Qwen3-ASR defaults to 30 s clips, eight concurrent chunks,
-a one-hour upload cap, and four admitted long uploads. Whisper's 30 s clip is
-the hard edge of its mel window and can only be lowered. Nemotron Transcribe
-keeps a one-hour upload as a single decoder request instead of chunking.
+Defaults and native clip limits are model-specific, and each cookbook lists the
+values it ships with: Qwen3-ASR chunks toward its 1,200 s native clip, while
+Whisper's 30 s clip is the hard edge of its mel window and can only be lowered.
+Pipelines that do not use this path describe their own handling in their
+cookbooks; Nemotron Transcribe, for example, keeps a one-hour upload as a single
+decoder request.
 
-The long-audio share is an aggregate guard. Each admitted upload holds its
-decoded waveform (float32 at 16 kHz), so decoded waveforms held at once are at
-most
+For the shared splitting path, the long-audio share is an aggregate guard.
+Each admitted upload holds its decoded waveform (float32 at 16 kHz), so decoded
+waveforms held at once are at most
 `max_concurrent_long_audio_requests × max_total_audio_s × 16000 × 4` bytes, and
 engine slots long audio can occupy together are at most
 `max_concurrent_long_audio_requests × max_concurrent_chunks`. The stock
@@ -360,10 +301,11 @@ setup are in the [ASR benchmark runbook](../developer_reference/asr_bench.md).
 - The HTTP endpoint accepts one uploaded file per request. Live audio uses the
   realtime WebSocket and requires `--enable-realtime`.
 - Audio is resampled to mono 16 kHz before transcription.
-- Streaming runs as one engine request and cannot chunk. It is bounded by the
-  model's native clip limit.
-- An upload above `max_total_audio_s` returns HTTP 400; a long upload past the
-  admitted count returns HTTP 503. Short requests are never gated.
+- Streaming runs as one engine request and cannot chunk where chunking
+  applies. It is bounded by the model's native clip limit.
+- On the shared splitting path, an upload above `max_total_audio_s` returns
+  HTTP 400, and a long upload past the admitted count returns HTTP 503. Short
+  requests are never gated.
 - `/v1/audio/translations` is limited to models with translation capability;
   the other ASR models return HTTP 400.
 - Model-specific caps still apply, such as Qwen3-ASR's 60-second whole-upload

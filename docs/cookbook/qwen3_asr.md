@@ -286,13 +286,65 @@ restart the transcription rather than retrying packets on the old session.
 Reconnecting resets uncommitted audio, partial hypotheses, VAD state, and Qwen
 rollback state.
 
+A minimal client appends 100 ms packets, commits the segment, and waits for the
+completed transcript:
+
+```python
+import asyncio
+import base64
+import json
+
+import websockets
+
+
+async def main():
+    async with websockets.connect(
+        "ws://localhost:8000/v1/realtime?intent=transcription"
+    ) as ws:
+        await ws.send(json.dumps({
+            "type": "session.update",
+            "session": {"language": "English"},
+        }))
+        print(await ws.recv())
+
+        with open("tests/data/query_to_cars.wav", "rb") as f:
+            pcm16 = f.read()
+        for start in range(0, len(pcm16), 3200):
+            await ws.send(json.dumps({
+                "type": "input_audio_buffer.append",
+                "audio": base64.b64encode(pcm16[start:start + 3200]).decode(),
+            }))
+
+        await ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
+        await ws.send(json.dumps({"type": "transcription.done"}))
+
+        while True:
+            event = json.loads(await ws.recv())
+            if event["type"] == "transcription.completed":
+                print(event["text"])
+                break
+
+
+asyncio.run(main())
+```
+
+The example assumes the upload is already mono 16 kHz PCM16; the session takes
+packets as they arrive and does not resample them.
+
 ## Prompt and Vocabulary Biasing
 
 The endpoint accepts the shared ASR request fields (`file`, `model`,
-`language`, `response_format`, `temperature`, `repetition_penalty`,
-`max_new_tokens`, `stream`) described in
-[ASR Model Usage](../basic_usage/asr.md#request-parameters). The `prompt` field
-is Qwen3-ASR-specific:
+`language`, `response_format`, `temperature`, `stream`) described in
+[ASR Model Usage](../basic_usage/asr.md#request-parameters). Three fields are
+specific to this checkpoint:
+
+- `prompt` — vocabulary biasing, described below.
+- `repetition_penalty` — default `1.0`, valid range `(0, 2]`. Values above `1`
+  discourage repeats and can stop a runaway loop on noisy or silent audio, but
+  they also lower accuracy on clean audio, so keep `1.0` unless loops occur. The
+  DFlash draft does not apply it: a value other than `1.0` returns HTTP 400.
+- `max_new_tokens` — per-request generation cap; the default is the stage
+  limit.
 
 Biasing raises the model's preference for the supplied terms. It does not
 force them: a term the audio does not contain will not be inserted, and an
