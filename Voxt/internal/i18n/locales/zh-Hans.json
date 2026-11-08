@@ -1324,5 +1324,7 @@
   "Found %d suggestion": "找到 %d 条建议",
   "Found %d suggestions": "找到 %d 条建议",
   "Stopped, found %d suggestion": "已停止，找到 %d 条建议",
-  "Stopped, found %d suggestions": "已停止，找到 %d 条建议"
+  "Stopped, found %d suggestions": "已停止，找到 %d 条建议",
+  "Learn from my corrections": "从我的改正中学习",
+  "After Voxt inserts a Transcribe result into another app, it reads the text around that spot for up to %d seconds. If you correct a word there, it suggests adding your spelling to the dictionary. What it reads is not saved or sent, and password fields are never read.": "把转录结果插入别的 App 后，Voxt 会在 %d 秒内读取插入处附近的文字。你改了其中某个词，它会建议把改后的写法加入词典。读到的文字不保存，也不发送。不读密码框。"
 }

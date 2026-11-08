@@ -245,6 +245,12 @@ func (a *app) dictSwitches(c *ui.Context) {
 			v := *gl
 			a.updateSettings(func(s *settings.Settings) { s.Dictionary.Glossary = v })
 		}
+		learnOn := &a.prefs.Dictionary.Learn
+		if ui.Checkbox(c.Key("dict-learn"), learnOn, i18n.T("Learn from my corrections")).Disabled(off).
+			Tooltip(i18n.T("After Voxt inserts a Transcribe result into another app, it reads the text around that spot for up to %d seconds. If you correct a word there, it suggests adding your spelling to the dictionary. What it reads is not saved or sent, and password fields are never read.", learn.WatchSeconds)).Changed() {
+			v := *learnOn
+			a.updateSettings(func(s *settings.Settings) { s.Dictionary.Learn = v })
+		}
 	})
 }
 

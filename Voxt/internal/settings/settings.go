@@ -329,6 +329,10 @@ type Dictionary struct {
 	// what) that the speech model gets before the hints, with the
 	// dictionary on or off; a service that takes no prompt ignores it.
 	SpeechContext string `json:"speechContext,omitempty"`
+	// Learn watches the field a Transcribe result was pasted into for
+	// 30 s and proposes a term when the user corrects a word of it
+	// (internal/learn). Off by default.
+	Learn bool `json:"learn,omitempty"`
 }
 
 // Setup: the first-run guide.

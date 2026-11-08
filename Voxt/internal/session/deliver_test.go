@@ -78,7 +78,7 @@ func TestDeliverWhereTyping(t *testing.T) {
 				}
 				return
 			}
-			if len(pasted) != 1 || !end.Inserted || end.Card || end.InsertedInto != tc.into || e.AppName != "Slack" || e.AppBundle != slack.BundleID || e.Delivery != "insert" {
+			if len(pasted) != 1 || !end.Inserted || end.Card || end.Landing == nil || end.Landing.App != tc.into || e.AppName != "Slack" || e.AppBundle != slack.BundleID || e.Delivery != "insert" {
 				t.Errorf("inserted: pasted %q, end %+v, entry %s %s %s", pasted, end, e.AppName, e.AppBundle, e.Delivery)
 			}
 			moved := tc.into.PID != slack.PID
