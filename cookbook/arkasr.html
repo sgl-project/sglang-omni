@@ -773,7 +773,7 @@ differ from <code class="docutils literal notranslate"><span class="pre">done</s
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">temperature</span></code></p></td>
 <td><p>float</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">0</span></code> (greedy)</p></td>
-<td><p>Sampling temperature. When unset or <code class="docutils literal notranslate"><span class="pre">0</span></code>, SGLang’s sampling normalization selects greedy decoding (<code class="docutils literal notranslate"><span class="pre">top_k=1</span></code>); no non-zero temperature is substituted.</p></td>
+<td><p>Sampling temperature. When unset or <code class="docutils literal notranslate"><span class="pre">0</span></code>, SGLang’s sampling normalization selects greedy decoding (<code class="docutils literal notranslate"><span class="pre">top_k=1</span></code>); no non-zero temperature is substituted. A negative value returns HTTP 422.</p></td>
 </tr>
 </tbody>
 </table>

@@ -330,7 +330,7 @@ rollback state.
 | `language` | string | none | Optional language hint as a supported code or canonical name (case-insensitive); omit it for automatic detection |
 | `prompt` | string | none | Vocabulary biasing: terms likely to appear in the audio, such as names and jargon. See the note below the table |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
-| `temperature` | float | `0` | Sampling temperature; `0` uses greedy decoding |
+| `temperature` | float | `0` | Sampling temperature; `0` uses greedy decoding. A negative value returns HTTP 422 |
 | `max_new_tokens` | integer | server stage limit | Per-request generation-token limit |
 | `stream` | boolean | `false` | Return SSE transcript deltas; supports `json` or `text` response format |
 
