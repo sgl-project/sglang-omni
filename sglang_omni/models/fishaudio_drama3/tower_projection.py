@@ -6,7 +6,6 @@ from __future__ import annotations
 import torch
 
 from sglang_omni.models.fishaudio_drama3.tower_tiles import (
-    FUSED_BLOCK_M,
     GEMV_BLOCK_K,
     GEMV_WARPS,
     MIX_BLOCK_N,
@@ -14,6 +13,7 @@ from sglang_omni.models.fishaudio_drama3.tower_tiles import (
     SplitScratch,
     TowerLayerShape,
     TowerLayerWeights,
+    fused_block_m,
 )
 
 try:
@@ -258,7 +258,7 @@ def mix_eh_proj(
         DIM=shape.dim,
         HAS_SHARED_INPUT=shared_input is not None,
         HALF_SPLIT=shape.mix_half_split,
-        BLOCK_M=FUSED_BLOCK_M,
+        BLOCK_M=fused_block_m(row_count),
         BLOCK_N=MIX_BLOCK_N,
         BLOCK_K=GEMV_BLOCK_K,
         num_warps=GEMV_WARPS,
