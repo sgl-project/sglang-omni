@@ -22,6 +22,7 @@ from sglang.srt.layers.moe.topk import StandardTopKOutput
 from sglang.srt.layers.moe.utils import MoeRunnerBackend
 from sglang.srt.layers.quantization.fp8 import Fp8Config
 from sglang.srt.layers.quantization.unquant import UnquantizedFusedMoEMethod
+from sglang.srt.layers.rotary_embedding import get_rope
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
     PrefillCudaGraphRunner,
@@ -29,6 +30,10 @@ from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
 from sglang.srt.models.qwen3_moe import Qwen3MoeDecoderLayer, Qwen3MoeSparseMoeBlock
 from sglang.srt.models.qwen3_vl_moe import Qwen3MoeLLMModel
 from sglang.srt.runtime_context import get_context
+from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
+    Qwen3OmniMoeTalkerRotaryEmbedding,
+    apply_rotary_pos_emb,
+)
 
 from sglang_omni.models.qwen3_omni.components import (
     sglang_thinker as sglang_thinker_module,
@@ -162,6 +167,86 @@ def test_talker_config_rebuilt_from_serialized_hf_config_keeps_mrope_and_theta()
     assert rebuilt.text_config.rope_scaling["mrope_section"] == [1, 1, 2]
     assert rebuilt.text_config.rope_scaling["rope_type"] == "default"
     assert rebuilt.text_config.rope_theta == 123456.0
+
+
+@pytest.mark.parametrize("native_interleaved", [None, False])
+def test_serialized_talker_rotates_image_positions_in_checkpoint_axis_order(
+    native_interleaved: bool | None,
+) -> None:
+    """A serialized checkpoint flag was ignored, rotating image lanes on the wrong axes."""
+    checkpoint_config = transformers.Qwen3OmniMoeTalkerConfig(
+        text_config={
+            "hidden_size": 128,
+            "intermediate_size": 256,
+            "num_hidden_layers": 1,
+            "num_attention_heads": 1,
+            "num_key_value_heads": 1,
+            "head_dim": 128,
+            "max_position_embeddings": 32,
+            "rope_parameters": {
+                "rope_type": "default",
+                "mrope_section": [24, 20, 20],
+                "interleaved": True,
+                "rope_theta": 1000000.0,
+            },
+        }
+    )
+    serialized = checkpoint_config.to_dict()
+    if native_interleaved is not None:
+        serialized["text_config"]["rope_parameters"][
+            "mrope_interleaved"
+        ] = native_interleaved
+    else:
+        pass
+    rebuilt = Qwen3OmniMoeTalkerConfig(**serialized).text_config
+    rotary = get_rope(
+        rebuilt.head_dim,
+        rotary_dim=rebuilt.head_dim,
+        max_position=rebuilt.max_position_embeddings,
+        base=rebuilt.rope_theta,
+        rope_scaling=rebuilt.rope_scaling,
+        dtype=torch.bfloat16,
+    )
+    positions = torch.tensor([[4, 4, 4, 4], [4, 4, 5, 5], [4, 5, 4, 5]])
+    queries = (
+        torch.linspace(-1, 1, positions.shape[1] * rebuilt.head_dim)
+        .reshape(positions.shape[1], rebuilt.head_dim)
+        .to(torch.bfloat16)
+    )
+    keys = queries.flip(-1)
+    if native_interleaved is None:
+        checkpoint_rotary = Qwen3OmniMoeTalkerRotaryEmbedding(
+            checkpoint_config.text_config
+        )
+        cosine, sine = checkpoint_rotary(queries, positions[:, None])
+        expected_queries, expected_keys = apply_rotary_pos_emb(
+            queries[None, None], keys[None, None], cosine, sine
+        )
+        expected_queries = expected_queries[0, 0]
+        expected_keys = expected_keys[0, 0]
+    else:
+        native_rotary = get_rope(
+            rebuilt.head_dim,
+            rotary_dim=rebuilt.head_dim,
+            max_position=rebuilt.max_position_embeddings,
+            base=rebuilt.rope_theta,
+            rope_scaling={
+                "rope_type": "default",
+                "mrope_section": [24, 20, 20],
+                "mrope_interleaved": native_interleaved,
+            },
+            dtype=torch.bfloat16,
+        )
+        expected_queries, expected_keys = native_rotary.forward_native(
+            positions, queries.clone(), keys.clone()
+        )
+
+    actual_queries, actual_keys = rotary.forward_native(
+        positions, queries.clone(), keys.clone()
+    )
+
+    assert torch.equal(actual_queries, expected_queries)
+    assert torch.equal(actual_keys, expected_keys)
 
 
 def test_outer_thinker_forward_accepts_sidecar_request_identity():
