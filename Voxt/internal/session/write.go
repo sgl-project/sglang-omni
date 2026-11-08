@@ -203,15 +203,6 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 	if in.Answer {
 		req.Format, req.Schema = llm.FormatJSON, answerSchema
 	}
-	if in.Task == compose.Translate {
-		// For a model that builds its own prompt and takes no clean-up
-		// rules (Hy-MT2): speech without its fillers (docs/eval.md).
-		text := in.Text
-		if !in.Selected {
-			text = compose.StripFillers(text)
-		}
-		req.Translate = &llm.TranslateHint{Text: text, Target: in.TargetLanguage}
-	}
 	resp, err := r.llmChat(cfg.llmDeadlines(req, utf8.RuneCountInString(in.Text+in.Instruction), cfg.WriteTimeout))
 	if err != nil {
 		return compose.Answer{}, out.Profile(), false, err

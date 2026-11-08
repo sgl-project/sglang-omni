@@ -56,7 +56,9 @@ type featureUI struct {
 	promptSeen  string
 	promptDirty bool
 	promptSeq   int
-	preview     bool
+	// rules and preview: the Your rules section and its full prompt, open.
+	rules   bool
+	preview bool
 	// block says why the Try area's Start did not start.
 	block *sessionNotice
 }

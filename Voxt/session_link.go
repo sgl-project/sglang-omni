@@ -293,7 +293,6 @@ func (a *app) sessionEnded(s session.Snapshot) {
 			a.showNotice(n)
 		}
 	}
-	a.memoryNoticeAfter(s) // memory_notice.go
 	if s.State != session.Cancelled {
 		a.historyChanged()
 	}

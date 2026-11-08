@@ -321,6 +321,10 @@ type Dictionary struct {
 	// adds them to the LLM prompt.
 	ASRHints bool `json:"asrHints"`
 	Glossary bool `json:"glossary"`
+	// SpeechContext is free text about the speech (who speaks, about
+	// what) that the speech model gets before the hints, with the
+	// dictionary on or off; a service that takes no prompt ignores it.
+	SpeechContext string `json:"speechContext,omitempty"`
 }
 
 // Setup: the first-run guide.

@@ -337,30 +337,6 @@ func TestWrite(t *testing.T) {
 	}
 }
 
-// TestTranslateHint: a translation model that takes no rules gets speech
-// without its fillers, and a selection as it is.
-func TestTranslateHint(t *testing.T) {
-	for _, c := range []struct {
-		name string
-		sel  *fakeSelector
-		want string
-	}{{"speech", &fakeSelector{}, "那个报告周四之前发"}, {"selection", &fakeSelector{text: "嗯，好的"}, "嗯，好的"}} {
-		model := &fakeLLM{text: "Thursday."}
-		h := newHarness(t, &fakeFile{text: "呃，那个报告周四之前发"}, model, func(cfg *Config, _ *settings.Settings) { cfg.Select = c.sel })
-		id, err := h.m.Start(StartRequest{Kind: store.KindTranslate, Target: slack})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if c.sel.text == "" {
-			h.speak(id, 5)
-		}
-		h.rec.wait(t)
-		if reqs := model.requests(); len(reqs) == 0 || reqs[0].Translate == nil || reqs[0].Translate.Text != c.want {
-			t.Errorf("%s: hint %+v, want %q", c.name, reqs, c.want)
-		}
-	}
-}
-
 // TestWriteCancel cancels Translate while it reads the selection and
 // while the answer streams: nothing is pasted or kept.
 func TestWriteCancel(t *testing.T) {

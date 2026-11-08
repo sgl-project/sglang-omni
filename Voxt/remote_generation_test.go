@@ -81,6 +81,36 @@ func TestGenerationNumbers(t *testing.T) {
 	}
 }
 
+// TestGenerationFieldAloneKeepsItsRoom: a number field alone on its row
+// (OpenAI's Max output tokens, Ollama's Keep the model loaded for) is as
+// high as its label and input, so the next row starts below its input.
+// It was 0 high: the next row's label sat on its label and covered its
+// input.
+func TestGenerationFieldAloneKeepsItsRoom(t *testing.T) {
+	useKeys(t, &memKeys{m: map[string]string{}})
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 2400) // the whole dialog in view: a clipped label's box is cut
+	a.navigate(remotePath)
+	frames(tt)
+	for _, c := range []struct{ service, field, next string }{
+		{"openai", "Max output tokens (optional)", "Temperature"},
+		{"ollama", "Keep the model loaded for", "Advanced"},
+	} {
+		a.openProviderDialog(local.LLM, c.service)
+		frames(tt)
+		field, okField := tt.Find(c.field)
+		next, okNext := tt.Find(c.next)
+		if !okField || !okNext {
+			t.Fatalf("%s: %q found %v, %q found %v", c.service, c.field, okField, c.next, okNext)
+		}
+		if next.Y < field.Y+2*field.H { // its label, then an input taller than the label
+			t.Errorf("%s: %q at y %.0f covers the input of %q (its label at y %.0f, %.0f high)", c.service, c.next, next.Y, c.field, field.Y, field.H)
+		}
+		a.provDlg = providerDialog{}
+		frames(tt)
+	}
+}
+
 // TestGenerationDialogUntouched: StepFun's Think has no Default (off
 // only); its dialog opens with off chosen, and untouched it does not count
 // as unsaved, so Escape and a click beside it close it.

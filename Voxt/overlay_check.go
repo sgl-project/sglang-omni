@@ -97,7 +97,6 @@ func ovCheckSteps(lang string) []ovCheckStep {
 			text, more, action := sessionProblemText(&session.Problem{Code: session.ProblemASR, Err: &asr.Error{Kind: asr.KindAuth}})
 			a.notice = &sessionNotice{text: text, more: more, action: action}
 		}, true},
-		{"notice-memory", func(a *app) { n := memoryNotice(); a.notice = &n }, true}, // memory_notice.go
 		{"gone", func(a *app) { a.notice = nil }, false},
 	}, cardCheckSteps(lang)...)
 }
