@@ -381,7 +381,7 @@ func (a *app) openURL(raw string) {
 		path = to
 	}
 	switch sec := section(path); {
-	case path == networkPath: // the Local models page's Network dialog (models_network.go)
+	case path == networkPath: // the Speech models page's Network dialog (models_network.go)
 		a.navigate(modelsPath)
 		a.openNetwork()
 	case slices.ContainsFunc(pages, func(p navPage) bool { return p.path == sec }): // every sidebar page

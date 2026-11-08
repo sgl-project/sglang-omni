@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,7 +41,7 @@ func Main() {
 			os.Exit(2)
 		}
 	}
-	record(o, Record{Event: "launch", Args: args})
+	record(o, Record{Event: "launch", Args: args, Binary: filepath.Base(os.Args[0])})
 	emit := func(v map[string]any) {
 		b, _ := json.Marshal(v)
 		fmt.Fprintf(os.Stdout, "%s\n", b)

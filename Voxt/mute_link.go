@@ -238,6 +238,9 @@ func (a *app) clearMuteNote(id string) {
 // the text).
 func (a *app) pillSession() session.Snapshot {
 	s := a.sess
+	if a.prefs.Overlay.HideLiveText {
+		s.Partial, s.Draft, s.Selection = "", "", "" // "Show live text" off: no words
+	}
 	if a.muteNote.text != "" && a.muteNote.id == s.ID && s.State == session.Recording {
 		s.Partial = a.muteNote.text
 	}

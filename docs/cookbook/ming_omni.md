@@ -12,7 +12,7 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 hf download inclusionAI/Ming-flash-omni-2.0
 ```
 
-For Intel GPUs, follow the [Ming-Omni XPU recipe](../get_started/installation_xpu.md#ming-omni-omni-chat-and-speech-one-or-two-xpus).
+For Intel GPUs, follow the [Ming-Omni XPU recipe](../other_platforms/installation_xpu.md#ming-omni-omni-chat-and-speech-one-or-two-xpus).
 
 The speech path expects the checkpoint to include the `talker/` assets, including `talker/data/voice_name.json` and `talker/vae/`. The default voice in the current Ming speech pipeline is `DB30`. `campplus.onnx` and `talker_tn` are optional runtime helpers: missing `campplus.onnx` disables speaker embedding extraction, and missing `talker_tn` falls back to identity text normalization.
 

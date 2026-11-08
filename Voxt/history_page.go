@@ -277,7 +277,8 @@ func (a *app) historyRow(c *ui.Context, e store.Entry) {
 	h := &a.hist
 	title, failed := uitext.EntryTitle(e)
 	row := ui.ButtonBase(c.Key("hist-row-"+e.ID)).Padding(px(t, sp2), px(t, sp2)).Margin(0, px(t, sp4)).Radius(px(t, radiusControl)).
-		Label(title).Gap(px(t, sp2)).AlignItems(ui.Start)
+		Label(title).Gap(px(t, sp2)).AlignItems(ui.Start).
+		Role(ui.RoleGroup) // a group, not a button: assistive technology reaches its Retry chip too
 	switch {
 	case h.sel == e.ID:
 		row.Background(k.Pressed)

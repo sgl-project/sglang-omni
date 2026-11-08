@@ -40,7 +40,8 @@ struct SpeechContext {
 };
 
 // A speech request a model parsed: the fields every server reads, and the
-// synthesis that answers it.
+// synthesis that answers it. Synthesis may throw std::invalid_argument for a
+// request error, answered with 400 before the first streamed audio.
 struct SpeechJob {
   std::optional<std::string> model;
   std::string response_format;

@@ -155,12 +155,12 @@ func (a *app) obTitle(c *ui.Context) {
 	switch a.ob.step {
 	case obWelcome:
 		title = i18n.T("Welcome to Voxt")
-		sub = i18n.T("Speak in any app and get text where your cursor is: transcribe, translate and rewrite with models that run on this Mac. A few short steps; you can skip any of them.")
+		sub = i18n.T("Speak in any app and get text where your cursor is: transcribe, translate and rewrite. A few short steps; you can skip any of them.")
 	case obPermissions:
 		title = i18n.T("Permissions")
 	case obModels:
-		title = i18n.T("Local models")
-		sub = i18n.T("Voxt runs its models on this Mac. These two are the best start; the Local models page has the others.")
+		title = i18n.T("Models")
+		sub = i18n.T("Voxt recognises speech with a model on this Mac (this one is the best start; the Speech models page has the others), and cleans up, translates and rewrites with a language model you set up.")
 	case obTranscribe:
 		title = i18n.T("Try Transcribe")
 		sub = i18n.T("Press the shortcut (or Start), read the sentence below or say anything, then press it again to stop. The result shows here.")
