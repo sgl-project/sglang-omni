@@ -322,6 +322,7 @@ class OmniSchedulerArguments(TypedDict, Generic[RequestDataT], total=False):
     prefill_coalesce_after_builds_during_decode: bool
     request_build_max_workers: int
     request_build_max_pending: int | None
+    early_request_builds: bool
     shutdown_callback: Callable[[], None] | None
     continuation_aware_admission: bool
 
@@ -355,6 +356,7 @@ class OmniScheduler(Generic[RequestDataT]):
     scheduler_thread_id: int | None = None
     previous_pending_decode: PendingDecode | None = None
     async_decode_resolve_before_prefill: bool = False
+    early_request_builds: bool = False
     draft_worker: BaseSpecWorker | None = None
     async_prefill: bool = False
     request_build_admission_wait_s: float = _REQUEST_BUILD_ADMISSION_WAIT_S
@@ -403,6 +405,7 @@ class OmniScheduler(Generic[RequestDataT]):
         prefill_coalesce_after_builds_during_decode: bool = False,
         request_build_max_workers: int = 1,
         request_build_max_pending: int | None = None,
+        early_request_builds: bool = False,
         shutdown_callback: Callable[[], None] | None = None,
         continuation_aware_admission: bool = True,
     ) -> None:
@@ -486,6 +489,19 @@ class OmniScheduler(Generic[RequestDataT]):
         self.gpu_id = tp_worker.gpu_id
         self.tp_rank = tp_worker.tp_rank
         self.tp_size = get_parallel().tp_size
+        # note (wilsonzheng0327): a build started as its request arrives skips the wait for the loop's next pass, a whole round under speculative decoding.
+        self.early_request_builds = (
+            early_request_builds
+            and self.request_build_executor is not None
+            and self.tp_size == 1
+        )
+        self.early_request_build_futures: dict[
+            str, Future[RequestDataT | DeferredAdmission[RequestDataT]]
+        ] = {}
+        self.early_request_build_declined_ids: set[str] = set()
+        self.early_request_build_stage: str | None = None
+        self.early_request_build_stage_known = False
+        self.reserved_request_build_ids: set[str] = set()
         self.pp_rank = 0
         self.pp_size = get_parallel().pp_size
         self.attn_cp_size = get_parallel().attn_cp_size
@@ -1265,6 +1281,67 @@ class OmniScheduler(Generic[RequestDataT]):
             pass
         return tuple(timeout_aborts)
 
+    def enqueue(self, msg: IncomingMessage) -> None:
+        """Queue a stage message; with early request builds, start a new request's build first."""
+        if self.early_request_builds and msg.type == "new_request":
+            self.start_early_request_build(msg.data)
+        else:
+            pass
+        self.inbox.put(msg)
+
+    def start_early_request_build(self, payload: StagePayload) -> None:
+        """Submit a request's build from the stage thread, ahead of the loop's next pass.
+
+        The loop later takes the running build instead of submitting its own. A request
+        that cannot start early is left to the loop, and so is every request after it
+        until the loop has taken them, so builds still start in arrival order.
+        """
+        if self.session_bridge is not None:
+            return
+        else:
+            pass
+        request_id = payload.request_id
+        with self.request_admission_lock:
+            if (
+                request_id in self.aborted_request_ids
+                or request_id in self.pending_request_builds
+                or request_id in self.pending_request_admissions
+                or request_id in self.early_request_build_futures
+            ):
+                return
+            # note (wilsonzheng0327): builds the loop has selected but not yet submitted go first, and a paused engine may be swapping weights, so both leave the request to the loop.
+            elif (
+                not self.early_request_build_stage_known
+                or self.early_request_build_declined_ids
+                or self.backlogged_request_build_payloads
+                or self.reserved_request_build_ids
+                or self._engine_paused  # noqa: leading-underscore  # production name
+                or request_id in self.pending_stream_ingress
+                or len(self.pending_request_builds)
+                + len(self.early_request_build_futures)
+                >= self.request_build_max_pending
+                or self.waiting_queue_is_full()
+            ):
+                self.early_request_build_declined_ids.add(request_id)
+                return
+            else:
+                pass
+            request_build_executor = self.request_build_executor
+            if request_build_executor is None:
+                return
+            else:
+                pass
+            try:
+                early_future = request_build_executor.submit(
+                    self.run_request_builder,
+                    payload,
+                    self.early_request_build_stage,
+                )
+            except RuntimeError:
+                # note (wilsonzheng0327): the build pool shut down after the check above; the stopping loop drops the request.
+                return
+            self.early_request_build_futures[request_id] = early_future
+
     def recv_requests(self) -> list[StagePayload]:
         """Drain inbox on rank 0 and broadcast scheduler inputs to TP followers."""
         if self.is_entry_rank:
@@ -1443,6 +1520,12 @@ class OmniScheduler(Generic[RequestDataT]):
 
     def process_input_requests(self, recv_reqs: list[StagePayload]) -> None:
         """Convert incoming payloads to SGLang Reqs and enqueue."""
+        if self.early_request_builds and not self.early_request_build_stage_known:
+            self.early_request_build_stage = _get_active_stage()
+            self.early_request_build_stage_known = True
+        else:
+            pass
+        received_request_ids = [payload.request_id for payload in recv_reqs]
         ordinary_payloads: list[StagePayload] = []
         submitted_build = False
         for payload in recv_reqs:
@@ -1532,8 +1615,17 @@ class OmniScheduler(Generic[RequestDataT]):
                         continue
                     else:
                         pass
-                    future = request_build_executor.submit(
-                        self.run_request_builder, payload, active_stage
+                    early_future = (
+                        self.early_request_build_futures.pop(req_id, None)
+                        if self.early_request_builds
+                        else None
+                    )
+                    future = (
+                        request_build_executor.submit(
+                            self.run_request_builder, payload, active_stage
+                        )
+                        if early_future is None
+                        else early_future
                     )
                     submitted_build = True
                     self.pending_request_builds[req_id] = (
@@ -1556,6 +1648,11 @@ class OmniScheduler(Generic[RequestDataT]):
                 self.abort(req_id)
                 continue
             self.admit_or_defer_built_request(payload, pending_stream_done, req_data)
+        if self.early_request_builds:
+            with self.request_admission_lock:
+                self.reserved_request_build_ids.clear()
+        else:
+            pass
         if (
             submitted_build
             and not self.async_prefill
@@ -1574,6 +1671,13 @@ class OmniScheduler(Generic[RequestDataT]):
             pass
         self.drain_request_build_results()
         self.drain_request_admission_results()
+        if self.early_request_builds:
+            with self.request_admission_lock:
+                self.early_request_build_declined_ids.difference_update(
+                    received_request_ids
+                )
+        else:
+            pass
 
     def log_request_builder_failure(self, request_id: str, error: Exception) -> None:
         if is_bad_request_error(error):
@@ -1702,9 +1806,17 @@ class OmniScheduler(Generic[RequestDataT]):
                 pass
 
             backlog_ids = {payload.request_id for payload in backlog}
+            # note (wilsonzheng0327): a build started on arrival holds its slot before the loop takes its request, and that request takes no second slot.
+            early_build_ids = (
+                set(self.early_request_build_futures)
+                if self.early_request_builds
+                else set()
+            )
             capacity = max(
                 0,
-                self.request_build_max_pending - len(pending_builds),
+                self.request_build_max_pending
+                - len(pending_builds)
+                - len(early_build_ids),
             )
             selected: list[StagePayload] = []
             selected_ids: set[str] = set()
@@ -1743,7 +1855,12 @@ class OmniScheduler(Generic[RequestDataT]):
                     continue
                 else:
                     pass
-                if capacity > 0:
+                if req_id in early_build_ids:
+                    selected.append(payload)
+                    selected_ids.add(req_id)
+                    used += 1
+                    continue
+                elif capacity > 0:
                     selected.append(payload)
                     selected_ids.add(req_id)
                     capacity -= 1
@@ -1762,6 +1879,11 @@ class OmniScheduler(Generic[RequestDataT]):
                 backlog.append(payload)
                 backlog_ids.add(req_id)
                 used += 1
+            if self.early_request_builds:
+                # note (wilsonzheng0327): these builds have left the backlog and inbox but are not submitted yet, so until process_input_requests submits them an arrival is left to the loop and can neither take their slots nor start first.
+                self.reserved_request_build_ids.update(selected_ids - early_build_ids)
+            else:
+                pass
             return selected, rejected
 
     def drain_request_build_results(self) -> None:
@@ -3746,6 +3868,15 @@ class OmniScheduler(Generic[RequestDataT]):
                 pending[2].cancel()
             else:
                 pass
+            if self.early_request_builds:
+                early_future = self.early_request_build_futures.pop(request_id, None)
+                if early_future is not None:
+                    early_future.cancel()
+                else:
+                    pass
+                self.early_request_build_declined_ids.discard(request_id)
+            else:
+                pass
             self.pending_request_admissions.pop(request_id, None)
             if self.backlogged_request_build_payloads:
                 retained = [
@@ -4246,6 +4377,11 @@ class OmniScheduler(Generic[RequestDataT]):
                     for payload in self.backlogged_request_build_payloads
                     if payload.request_id not in self.aborted_request_ids
                 )
+            else:
+                pass
+            # note (wilsonzheng0327): an early build may finish while its message still waits in the inbox, so a weight update must see it as active.
+            if self.early_request_builds and self.early_request_build_futures:
+                request_ids.update(self.early_request_build_futures.keys())
             else:
                 pass
             for req in self.waiting_queue:
