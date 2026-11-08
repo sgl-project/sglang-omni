@@ -39,7 +39,10 @@ from sglang_omni.models.fishaudio_drama3.engine_builder import Drama3EngineBuild
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.request_builders import Drama3RequestData
 from sglang_omni.models.fishaudio_drama3.speech_request import Drama3SpeechPreprocessor
-from sglang_omni.models.fishaudio_drama3.stream_windows import stream_window_lengths
+from sglang_omni.models.fishaudio_drama3.stream_windows import (
+    stream_window_lengths,
+    utterance_graph_lengths,
+)
 from sglang_omni.models.fishaudio_drama3.vocoder import (
     Drama3VocoderScheduler,
     WindowGraphDecoder,
@@ -61,6 +64,8 @@ CODEC_FILE_NAME = "codec.pth"
 REFERENCE_ENCODE_WARMUP_SECONDS = 1.0
 MEMORY_PROBE_ROW_COUNT = 2
 MEMORY_PROBE_FRAME_COUNT = 128
+# Spacing of the non-streaming graph lengths: a request pads at most 7 frames.
+UTTERANCE_GRAPH_FRAME_STEP = 8
 # A hub codec names a full commit, so preprocessing and the vocoder load one file.
 HUB_CODEC_PATTERN = re.compile(
     r"(?P<repo_id>[^@\s]+/[^@\s]+)@(?P<revision>[0-9a-f]{40})"
@@ -252,7 +257,8 @@ def measure_max_padded_frames_per_decode(
             f"leaves room for {max_padded_frames_per_decode} padded frames per "
             f"decode, fewer than one request of max_new_tokens={max_new_tokens} "
             f"frames; raise --vocoder.gpu_memory_fraction or lower "
-            f"--tts_engine.factory.max_new_tokens"
+            f"--tts_engine.factory.max_new_tokens or "
+            f"--vocoder.factory.non_streaming_cuda_graph_max_frames"
         )
     else:
         pass
@@ -278,6 +284,7 @@ def create_vocoder_executor(
     max_batch_size: int,
     max_batch_wait_ms: int,
     window_cuda_graphs: bool,
+    non_streaming_cuda_graph_max_frames: int,
     decode_dtype: Literal["float32", "float16"],
     max_new_tokens: int,
     total_gpu_memory_fraction: float | None = None,
@@ -300,11 +307,17 @@ def create_vocoder_executor(
             num_codebooks=num_codebooks,
             frame_length=int(codec.frame_length),
             device=torch_device,
-            window_lengths=stream_window_lengths(
-                stream_stride=stream_stride,
-                stream_followup_stride_ramp=stream_followup_stride_ramp,
-                stream_followup_stride=stream_followup_stride,
-                stream_overlap_tokens=stream_overlap_tokens,
+            window_lengths=(
+                *stream_window_lengths(
+                    stream_stride=stream_stride,
+                    stream_followup_stride_ramp=stream_followup_stride_ramp,
+                    stream_followup_stride=stream_followup_stride,
+                    stream_overlap_tokens=stream_overlap_tokens,
+                ),
+                *utterance_graph_lengths(
+                    min(non_streaming_cuda_graph_max_frames, max_new_tokens),
+                    frame_step=UTTERANCE_GRAPH_FRAME_STEP,
+                ),
             ),
         )
     else:

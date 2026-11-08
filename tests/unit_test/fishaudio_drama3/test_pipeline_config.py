@@ -22,7 +22,7 @@ VOCODER_WINDOWS = {
     "stream_followup_stride": 64,
     "stream_overlap_tokens": 32,
     "stream_crossfade_samples": 0,
-    "max_batch_size": 8,
+    "max_batch_size": 1,
     "max_batch_wait_ms": 2,
 }
 
@@ -86,6 +86,7 @@ def test_each_factory_gets_the_defaults_written_once() -> None:
         "codec_path": DEFAULT_CODEC_PATH,
         **VOCODER_WINDOWS,
         "window_cuda_graphs": True,
+        "non_streaming_cuda_graph_max_frames": 512,
         "decode_dtype": "float16",
         "max_new_tokens": 2048,
     }
