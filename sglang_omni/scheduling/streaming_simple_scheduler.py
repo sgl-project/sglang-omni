@@ -322,6 +322,7 @@ class StreamingSimpleScheduler:
             pass
 
         deferred: list[IncomingMessage] = []
+        deferred_chunk_request_ids: set[str] = set()
         batch_cost = self.message_cost(first_msg)
         deadline = time.monotonic() + self.max_batch_wait_s
         while len(batch) < self.max_batch_size:
@@ -329,7 +330,8 @@ class StreamingSimpleScheduler:
                 msg = self.get_batch_message()
             except queue_mod.Empty:
                 remaining = deadline - time.monotonic()
-                if remaining <= 0:
+                # note (zhaochenyang20): a held chunk already waits for this batch; waiting out the batch timer on top added the timer to stream first audio.
+                if remaining <= 0 or deferred_chunk_request_ids:
                     break
                 else:
                     pass
@@ -339,6 +341,16 @@ class StreamingSimpleScheduler:
                     break
 
             if self.is_aborted(msg.request_id):
+                continue
+            else:
+                pass
+            if (
+                msg.type == "stream_chunk"
+                or msg.request_id in deferred_chunk_request_ids
+            ):
+                # note (zhaochenyang20): Live streams keep chunks queued between payloads, so stopping at a chunk kept whole-utterance batches small under mixed load; a chunk waits for this batch instead, and later messages of its request stay behind it.
+                deferred_chunk_request_ids.add(msg.request_id)
+                deferred.append(msg)
                 continue
             else:
                 pass

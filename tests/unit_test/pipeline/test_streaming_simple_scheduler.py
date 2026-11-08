@@ -228,20 +228,47 @@ def test_streaming_simple_scheduler_abort_clears_all_stream_state() -> None:
     assert "req" in scheduler.aborted_request_ids
 
 
-def test_streaming_simple_scheduler_keeps_queued_control_message_out_of_batch() -> None:
+def test_non_streaming_batch_collects_past_stream_chunks_in_arrival_order() -> None:
+    """A queued stream chunk ended the batch at that chunk; it now waits behind the batch, and a later payload of its request stays behind it."""
     scheduler = StreamingSchedulerUnderTest(max_batch_size=3)
     first = IncomingMessage("a", "new_request", make_payload("a"))
-    chunk = StreamItem(chunk_id=0, data="x", from_stage="source")
-    scheduler.inbox.put(IncomingMessage("stream", "stream_chunk", chunk))
-    scheduler.inbox.put(IncomingMessage("b", "new_request", make_payload("b")))
+    stream_chunk = make_chunk("stream", "x")
+    pending = IncomingMessage("b", "new_request", make_payload("b"))
+    own_chunk = make_chunk("c", "y")
+    own_payload = IncomingMessage("c", "new_request", make_payload("c"))
+    newer = IncomingMessage("d", "new_request", make_payload("d"))
+    later_chunk = make_chunk("stream", "z")
+    scheduler.pending_messages.extend([stream_chunk, pending])
+    for msg in (own_chunk, own_payload, newer, later_chunk):
+        scheduler.inbox.put(msg)
 
     batch = scheduler.collect_new_request_batch(first)
 
-    assert [msg.request_id for msg in batch] == ["a"]
-    next_msg = scheduler.next_message()
-    assert next_msg.request_id == "stream"
-    assert next_msg.type == "stream_chunk"
-    assert scheduler.next_message().request_id == "b"
+    assert batch == [first, pending, newer]
+    assert list(scheduler.pending_messages) == [stream_chunk, own_chunk, own_payload]
+    assert scheduler.inbox.get_nowait() is later_chunk
+
+
+class NoWaitInbox(queue.Queue):
+    def get(self, block: bool = True, timeout: float | None = None) -> IncomingMessage:
+        assert not timeout, "collection waited on the batch timer"
+        return super().get(block, timeout)
+
+
+def test_non_streaming_batch_holding_a_chunk_does_not_wait_for_more_requests() -> None:
+    """A held stream chunk also waited out max_batch_wait_ms once the queue ran dry, which added the timer to stream first audio."""
+    scheduler = StreamingSchedulerUnderTest(max_batch_size=4, max_batch_wait_ms=60000)
+    scheduler.inbox = NoWaitInbox()
+    first = IncomingMessage("a", "new_request", make_payload("a"))
+    stream_chunk = make_chunk("stream", "x")
+    queued = IncomingMessage("b", "new_request", make_payload("b"))
+    scheduler.inbox.put(stream_chunk)
+    scheduler.inbox.put(queued)
+
+    batch = scheduler.collect_new_request_batch(first)
+
+    assert batch == [first, queued]
+    assert list(scheduler.pending_messages) == [stream_chunk]
 
 
 def make_chunk(request_id: str, value: str) -> IncomingMessage:
