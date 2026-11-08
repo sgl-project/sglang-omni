@@ -119,7 +119,7 @@ func TestDeliverIntoOwnWindow(t *testing.T) {
 			h.speak(id, 3)
 			end := h.rec.wait(t)
 			pasted := h.text.pastes()
-			if tc.insert && (len(pasted) != 1 || pasted[0] != "Hello." || !end.Inserted || end.Card || end.InsertedInto.PID != 77) {
+			if tc.insert && (len(pasted) != 1 || pasted[0] != "Hello." || !end.Inserted || end.Card || end.Landing == nil || end.Landing.App.PID != 77) {
 				t.Errorf("not typed into its own field: pasted %q, end %+v", pasted, end)
 			}
 			if !tc.insert && (len(pasted) != 0 || end.Inserted || !end.Card || end.Delivery != deliver.ReasonNotEditable) {

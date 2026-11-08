@@ -428,7 +428,7 @@ func TestShortcutInOwnField(t *testing.T) {
 	readyModels(a)
 	drain := queuePosts(a)
 	click(t, tt, "Your rules")
-	click(t, tt, "Your rules for Transcribe")
+	click(t, tt, "System prompt for Transcribe")
 	if got := a.tryPlace(store.KindTranscribe, *selfFront()); got != placeNone {
 		t.Fatalf("rules field focused: %v, want no try", got)
 	}
@@ -441,8 +441,8 @@ func TestShortcutInOwnField(t *testing.T) {
 	a.cancelSession()
 	drain()
 	frames(tt)
-	click(t, tt, "Show the full prompt")
-	if !tt.Focused("Show the full prompt") {
+	click(t, tt, "Example user message")
+	if !tt.Focused("Example user message") {
 		t.Fatal("the button did not take the focus")
 	}
 	if got := a.tryPlace(store.KindTranscribe, *selfFront()); got != placeFeature {
