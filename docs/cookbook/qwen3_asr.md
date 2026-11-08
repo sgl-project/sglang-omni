@@ -2,7 +2,7 @@
 
 [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-1.7B) is an audio transcription model served through the OpenAI-compatible `/v1/audio/transcriptions` endpoint. It accepts one uploaded audio file per request and returns text.
 
-Qwen3-ASR does not support `/v1/audio/translations`; that endpoint returns HTTP 400. Use `/v1/audio/transcriptions`.
+Qwen3-ASR does not serve `/v1/audio/translations`; that route returns HTTP 400. The endpoint semantics, response formats, SSE lifecycle, and request parameters that Qwen3-ASR shares with the other ASR models are documented in [ASR Model Usage](../basic_usage/asr.md); this page keeps the behavior specific to this checkpoint.
 
 ## Prerequisites
 
@@ -194,62 +194,24 @@ The draft's weights and KV cache come out of the stage's memory fraction. On an 
 
 ## Transcribe Audio
 
-```bash
-curl -X POST http://localhost:8000/v1/audio/transcriptions \
-  -F model=Qwen/Qwen3-ASR-1.7B \
-  -F file=@tests/data/query_to_cars.wav \
-  -F response_format=json
-```
-
-```python
-import requests
-
-with open("tests/data/query_to_cars.wav", "rb") as f:
-    resp = requests.post(
-        "http://localhost:8000/v1/audio/transcriptions",
-        data={
-            "model": "Qwen/Qwen3-ASR-1.7B",
-            "response_format": "json",
-        },
-        files={"file": ("query_to_cars.wav", f, "audio/wav")},
-        timeout=300,
-    )
-
-resp.raise_for_status()
-print(resp.json()["text"])
-```
+Send one uploaded file to `POST /v1/audio/transcriptions`. The request shape and
+the `response_format` semantics shared with the other ASR models are documented
+in [ASR Model Usage](../basic_usage/asr.md#use-curl). Qwen3-ASR adds one detail:
+`verbose_json` reports one segment per transcribed chunk with that chunk's real
+start and end timestamps, not word-level timestamps.
 
 ## Stream Transcription
 
-Set `stream=true` to receive incremental transcript deltas over SSE. Use
-`curl -N` to disable client-side response buffering:
-
-```bash
-curl -N -X POST http://localhost:8000/v1/audio/transcriptions \
-  -F model=Qwen/Qwen3-ASR-1.7B \
-  -F file=@tests/data/query_to_cars.wav \
-  -F language=en \
-  -F response_format=json \
-  -F stream=true
-```
-
-The stream contains zero or more delta events, followed by the complete final
-transcript and the SSE sentinel:
-
-```text
-data: {"type":"transcript.text.delta","delta":"..."}
-
-data: {"type":"transcript.text.done","text":"..."}
-
-data: [DONE]
-```
-
-Qwen3-ASR batches deltas for up to 50 ms by default. EOS and other terminal
-conditions flush any buffered text before the final transcript event.
+Set `stream=true` to receive incremental transcript text over SSE. The event
+lifecycle, batching behavior, and the response formats that streaming accepts
+are shared and documented in
+[ASR Model Usage](../basic_usage/asr.md#stream-transcription). Qwen3-ASR batches
+deltas for up to 50 ms by default, and EOS or another terminal condition flushes
+any buffered text before the final transcript event.
 
 ### Live PCM transcription
 
-The SSE mode above starts decoding after a complete multipart upload. For live
+SSE streaming starts decoding after a complete multipart upload. For live
 audio ingestion, mount the realtime WebSocket endpoint:
 
 ```bash
@@ -324,19 +286,13 @@ restart the transcription rather than retrying packets on the old session.
 Reconnecting resets uncommitted audio, partial hypotheses, VAD state, and Qwen
 rollback state.
 
-## Request Parameters
+## Prompt and Vocabulary Biasing
 
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `file` | file | required | Audio file uploaded as multipart form data |
-| `model` | string | server default | Model identifier |
-| `language` | string | none | Optional language hint as a supported code or canonical name (case-insensitive); omit it for automatic detection |
-| `prompt` | string | none | Vocabulary biasing: terms likely to appear in the audio, such as names and jargon. See the note below the table |
-| `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
-| `temperature` | float | `0` | Sampling temperature; `0` uses greedy decoding. A negative value returns HTTP 422  |
-| `repetition_penalty` | float | `1.0` | Penalty in `(0, 2]` on tokens already generated. Values above `1` discourage repeats and can stop a runaway loop on noisy or silent audio, but they also lower accuracy on clean audio, so keep `1.0` unless loops occur |
-| `max_new_tokens` | integer | server stage limit | Per-request generation-token limit |
-| `stream` | boolean | `false` | Return SSE transcript deltas; supports `json` or `text` response format |
+The endpoint accepts the shared ASR request fields (`file`, `model`,
+`language`, `response_format`, `temperature`, `repetition_penalty`,
+`max_new_tokens`, `stream`) described in
+[ASR Model Usage](../basic_usage/asr.md#request-parameters). The `prompt` field
+is Qwen3-ASR-specific:
 
 Biasing raises the model's preference for the supplied terms. It does not
 force them: a term the audio does not contain will not be inserted, and an
@@ -348,7 +304,7 @@ the text is prefilled with every request.
 `verbose_json` uses the model adapter's verbose response schema and includes
 duration-based usage (rounded-up audio seconds) when duration probing succeeds.
 
-### Language Hints
+## Language Hints
 
 When `language` is omitted, Qwen3-ASR detects the spoken language before
 transcribing. Set an explicit hint when the language is known or automatic
@@ -376,6 +332,10 @@ The current Qwen3-ASR model accepts at most 1,200 seconds of audio in one
 request, so we transcribe longer uploads in chunks: we split the audio, run
 each chunk as its own engine request, and join the transcripts back in
 order. The behavior follows two kinds of values.
+
+The shared `audio_chunking` flags, the aggregate guard, and the streaming
+limit are described in [ASR Model Usage](../basic_usage/asr.md#long-audio);
+the defaults and limits below are Qwen3-ASR's.
 
 The scheduling policy is yours to tune, with dotted flags or the matching
 YAML keys:
@@ -435,12 +395,10 @@ Behavior notes:
 
 ## Benchmarking
 
-Use `benchmarks/eval/benchmark_asr_seedtts.py` to sweep ASR concurrency on
-SeedTTS reference audio through `/v1/audio/transcriptions`. It defaults to
-`--model-path Qwen/Qwen3-ASR-1.7B`; the shared request and metric logic lives in
-`benchmarks.tasks.asr` and also supports Fun-ASR through `--model-path`.
-The report includes RTF (processing time divided by audio duration) and RTFx
-(successful input-audio seconds divided by wall-clock seconds).
+The benchmark entry point, its metric definitions, and the flags shared by all
+ASR checkpoints are documented in
+[ASR Model Usage](../basic_usage/asr.md#benchmarking). The command below pins
+the Qwen3-ASR model and dataset revisions used for the numbers in this page.
 
 ```bash
 sgl-omni serve \
@@ -459,17 +417,9 @@ python -m benchmarks.eval.benchmark_asr_seedtts \
   --repeats 3 --warmup
 ```
 
-The result JSON includes the applied dataset revision, declared model revision,
-an effective evaluation-input content hash, normalization, repository and
-dependency fingerprints, complete sample counts, and latency/RTF/throughput.
-When local NVML and `psutil` sampling are available, it also includes CPU use,
-power, and peak/steady GPU memory. Pass each server GPU PID reported by NVML via
-`--gpu-process-pid`; without explicit PIDs, process-specific metrics remain
-unavailable rather than including unrelated workloads on the same GPU. In a
-Docker container, use the host PID namespace (`--pid=host`) to collect process
-CPU metrics. Unavailable metrics and monitor errors remain explicit. Optional
-server settings and an exact launch command can be declared with the benchmark's
-provenance flags.
+Result fields, GPU sampling, and the provenance flags are documented in
+[ASR Model Usage](../basic_usage/asr.md#benchmarking) and the
+[ASR benchmark runbook](../developer_reference/asr_bench.md).
 
 The ASR CI gate runs the selected ASR CI model preset on this same benchmark
 entry point (`tests/test_model/test_asr_ci_seedtts.py`). Qwen3-ASR remains
@@ -529,10 +479,13 @@ sgl-omni serve --model-path Qwen/Qwen3-ASR-1.7B \
 
 ## Known Limitations
 
-- The HTTP endpoint accepts one uploaded file per request. Live PCM uses
-  `/v1/realtime?intent=transcription` and requires `--enable-realtime`.
-- Non-streaming uploads up to `max_total_audio_s` (default one hour) are
-  transcribed in full via chunking; see Long Audio above. Streaming requests
-  are limited to `max_native_clip_s` (1,200s) on CUDA; Torch MPS caps both
-  native and whole-upload requests at 60 seconds.
-- Audio is resampled to 16 kHz before transcription.
+The limits shared with the other ASR models are listed in
+[ASR Model Usage](../basic_usage/asr.md#known-limitations). Qwen3-ASR adds:
+
+- The Torch MPS path caps both native and whole-upload requests at 60 seconds,
+  rejects longer audio, and provides no token logprobs or sampling controls
+  beyond `repetition_penalty`.
+- Streaming requests cannot chunk and run as one engine request, bounded by
+  `max_native_clip_s` (1,200 s) on CUDA and 60 seconds on Torch MPS. Use
+  `stream=false` for longer uploads.
+- DFlash rejects `repetition_penalty` values other than `1.0` with HTTP 400.
