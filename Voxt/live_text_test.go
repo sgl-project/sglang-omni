@@ -31,7 +31,7 @@ func TestLiveTextSwitch(t *testing.T) {
 	if text, _ := pillLine(a.pillSession()); text != "" {
 		t.Errorf("off: %q", text)
 	}
-	a.muteNote.text, a.muteNote.id = "The sound could not be muted", "s1"
+	a.pillNote.text, a.pillNote.id = "The sound could not be muted", "s1"
 	if text, _ := pillLine(a.pillSession()); text != "The sound could not be muted" {
 		t.Errorf("off, the note: %q", text)
 	}

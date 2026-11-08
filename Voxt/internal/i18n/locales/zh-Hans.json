@@ -998,6 +998,7 @@
   "This feature is not available.": "这个功能不可用。",
   "This frees %s. You can download it again later.": "将释放 %s。之后可以重新下载。",
   "This output device cannot be muted. Recording continues.": "这个输出设备不能静音，录音照常继续",
+  "Switched the microphone to %s. Recording continues.": "已切换到 %s，录音照常继续",
   "This rule is in the group already.": "这条规则已经在分组里了。",
   "This shortcut works once Voxt may use Accessibility; Start works now.": "允许辅助功能后才能用这个快捷键；“开始”按钮现在就能用。",
   "This term is in the dictionary already.": "词典里已经有这个词条了。",

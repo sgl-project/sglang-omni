@@ -14,6 +14,14 @@
 {"to":"app","msg":{"id":"c3","result":{"stopped":true}}}
 {"to":"helper","msg":{"id":"c4","method":"capture.stop","params":{"job":"01JB0C1000000000000000000A"}}}
 {"to":"app","msg":{"id":"c4","result":{"stopped":false}}}
+{"to":"helper","msg":{"id":"01JB0C7000000000000000000A","method":"capture.start","params":{"devices":["USBMic:input","AirPodsPro:input"],"frameMs":100,"levelHz":20,"maxSeconds":300}}}
+{"to":"app","msg":{"method":"capture.started","params":{"job":"01JB0C7000000000000000000A","device":"USBMic:input","deviceName":"USB Microphone","fellBack":false,"deviceSampleRate":48000,"deviceChannels":1,"sampleRate":16000,"startMs":131.0}}}
+{"to":"app","msg":{"method":"capture.pcm","params":{"job":"01JB0C7000000000000000000A","seq":0,"offset":0,"data":"AQAHAAEABwABAAcAAQAHAA=="}}}
+{"to":"app","msg":{"method":"capture.restarted","params":{"job":"01JB0C7000000000000000000A","reason":"deviceLost","attempt":1,"device":"AirPodsPro:input","deviceName":"AirPods Pro"}}}
+{"to":"app","msg":{"method":"capture.pcm","params":{"job":"01JB0C7000000000000000000A","seq":1,"offset":8,"data":"AgAOAAIADgACAA4AAgAOAA=="}}}
+{"to":"helper","msg":{"id":"c7","method":"capture.stop","params":{"job":"01JB0C7000000000000000000A"}}}
+{"to":"app","msg":{"id":"01JB0C7000000000000000000A","result":{"device":"AirPodsPro:input","reason":"stopped","frames":2,"samples":16,"seconds":0.001,"restarts":1,"peak":-0.1,"firstFrameMs":298.0,"cpuSeconds":0.02}}}
+{"to":"app","msg":{"id":"c7","result":{"stopped":true}}}
 {"to":"helper","msg":{"id":"01JB0C2000000000000000000A","method":"capture.start","params":{"sampleRate":24000,"maxSeconds":0.1}}}
 {"to":"app","msg":{"method":"capture.started","params":{"job":"01JB0C2000000000000000000A","device":"BuiltInMicrophoneDevice","deviceName":"MacBook Air Microphone","fellBack":false,"deviceSampleRate":48000,"deviceChannels":1,"sampleRate":24000,"startMs":104}}}
 {"to":"app","msg":{"method":"capture.pcm","params":{"job":"01JB0C2000000000000000000A","seq":0,"offset":0,"data":"AwAVAAMAFQADABUAAwAVAA=="}}}
