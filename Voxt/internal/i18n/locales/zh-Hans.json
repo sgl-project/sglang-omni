@@ -1296,5 +1296,6 @@
   "Read": "查看全文",
   "Added to the dictionary: %s": "已加入词典：%s",
   "Already in the dictionary: %s": "词典里已经有：%s",
-  "Could not add it to the dictionary.": "无法加入词典。"
+  "Could not add it to the dictionary.": "无法加入词典。",
+  "Version %s": "版本 %s"
 }

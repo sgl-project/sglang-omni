@@ -63,7 +63,8 @@ const (
 )
 
 // TestAnnouncements: as Voxt 1.x read its announcements. The newest is a
-// card in the sidebar, whose Read shows it whole; dismissed, it does not
+// card in the sidebar, whose Read shows it whole, with its date and the
+// version it is about; dismissed, it does not
 // come back, neither at the next check nor after a restart, and the older
 // one is never shown. The requests carry nothing of the user's: the
 // manifest's address, then the list's with the revision only, and no
@@ -79,7 +80,7 @@ func TestAnnouncements(t *testing.T) {
 		t.Fatalf("no card for the newest, or one for the older: %q", tt.Texts())
 	}
 	click(t, tt, "Read")
-	if !a.announceShownOpen || !has(tt, "Done") {
+	if !a.announceShownOpen || !has(tt, "Done") || !hasSuffix(tt, " · Version 2.0.3") {
 		t.Fatalf("Read: %q", tt.Texts())
 	}
 	click(t, tt, "Done")

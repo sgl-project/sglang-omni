@@ -89,7 +89,7 @@ func (a *app) checkAnnouncements() {
 		if len(list) > 0 && !slices.Contains(seen.IDs, list[0].ID) {
 			n := list[0]
 			notes.Post(core.Notification{ID: announcePrefix + n.ID, Severity: core.SeverityInfo, Title: n.Title,
-				Body: strings.TrimSpace(n.Content), Link: linkAnnouncement, Time: n.PublishedAt})
+				Body: strings.TrimSpace(n.Content), Link: linkAnnouncement, Time: n.PublishedAt, Version: strings.TrimSpace(n.Version)})
 		}
 		next := announceSeen{Revision: revision, IDs: []string{}}
 		for _, n := range list {
@@ -102,13 +102,18 @@ func (a *app) checkAnnouncements() {
 	})
 }
 
-// announcementDialog shows an announcement whole: its card's Read.
+// announcementDialog shows an announcement whole, under its date and the
+// version it is about, as Voxt 1.x's dialog: its card's Read.
 func (a *app) announcementDialog(c *ui.Context) {
 	if !a.announceShownOpen {
 		return
 	}
 	n := a.announceShown
-	dialogFrame(c, "announcement", &a.announceShownOpen, n.Title, i18n.DateTime(n.Time), 520, func() {
+	sub := i18n.DateTime(n.Time)
+	if n.Version != "" {
+		sub += " · " + i18n.T("Version %s", n.Version)
+	}
+	dialogFrame(c, "announcement", &a.announceShownOpen, n.Title, sub, 520, func() {
 		ui.Text(c, n.Body).Selectable().Grow(1)
 	}, func() {
 		ui.Spacer(c)
