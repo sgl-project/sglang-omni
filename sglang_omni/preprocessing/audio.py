@@ -201,14 +201,18 @@ def parse_wav_bytes(
         if bits_per_sample != 8:
             raise ValueError(f"Unsupported G.711 WAV bit depth: {bits_per_sample}")
         else:
-            audio, _ = soundfile.read(
-                io.BytesIO(data_bytes),
-                format="RAW",
-                subtype="ULAW" if fmt_tag == 7 else "ALAW",
-                samplerate=sample_rate,
-                channels=1,
-                dtype="float32",
-            )
+            try:
+                audio, _ = soundfile.read(
+                    io.BytesIO(data_bytes),
+                    format="RAW",
+                    subtype="ULAW" if fmt_tag == 7 else "ALAW",
+                    samplerate=sample_rate,
+                    channels=1,
+                    dtype="float32",
+                )
+            except (soundfile.SoundFileError, OverflowError) as exc:
+                # note (Haoling Pu): libsndfile rejects a sample rate of 0 and its binding overflows at 2**31; every caller falls back on ValueError.
+                raise ValueError(f"Unreadable G.711 WAV: {source}") from exc
     else:
         raise ValueError(f"Unsupported WAV format tag: {fmt_tag}")
 
