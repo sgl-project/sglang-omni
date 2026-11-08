@@ -187,6 +187,10 @@ func normalize(s Settings) Settings {
 		f.Cancel = normalizeHotkey(f.Cancel)
 		f.Cancel.Trigger = TriggerTap // a cancel is always a single press
 	}
+	if f.Note.Keys != "" {
+		f.Note = normalizeHotkey(f.Note)
+		f.Note.Trigger = TriggerTap
+	}
 	for _, f := range []*Feature{&f.Transcribe.Feature, &f.Translate.Feature, &f.Rewrite.Feature} {
 		f.ASR, f.LLM = strings.TrimSpace(f.ASR), strings.TrimSpace(f.LLM)
 	}

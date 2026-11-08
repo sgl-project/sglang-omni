@@ -467,6 +467,39 @@ public struct FieldState: Codable, Sendable, Equatable {
     }
 }
 
+/// A range (UTF-16) of the focused element's text in app pid (TextRead).
+public struct ReadParams: Codable, Sendable {
+    public var pid: Int
+    public var range: TextRange
+}
+
+public struct ReadResult: Codable, Sendable, Equatable {
+    public var text: String?
+    /// What text covers, after clamping and widening.
+    public var range: TextRange
+    /// The whole value's UTF-16 units.
+    public var length: Int
+    /// The focused element's identity (CFHash).
+    public var element: Int
+    public var error: String?
+
+    public init(text: String = "", range: TextRange = TextRange(location: 0, length: 0), length: Int = 0, element: Int = 0, error: String? = nil) {
+        self.text = text.isEmpty ? nil : text
+        self.range = range
+        self.length = length
+        self.element = element
+        self.error = error
+    }
+}
+
+/// Why a textio.read read nothing.
+public enum ReadError {
+    public static let notFront = "not front"
+    public static let noFocus = "no focus"
+    public static let secure = "secure"
+    public static let unreadable = "unreadable"
+}
+
 // MARK: browser.url
 
 public struct BrowserURLParams: Codable, Sendable {
@@ -683,6 +716,7 @@ public enum WireTypes {
         case Method.hotkeyConfigure: HotkeyConfigureParams.self
         case Method.textSelection: SelectionParams.self
         case Method.textPaste: PasteParams.self
+        case Method.textRead: ReadParams.self
         case Method.browserURL: BrowserURLParams.self
         case Method.appList: AppListParams.self
         case Method.appConfigure: AppConfigureParams.self
@@ -724,6 +758,7 @@ public enum WireTypes {
         case Method.textFocus: FocusResult.self
         case Method.textSelection: SelectionResult.self
         case Method.textPaste: PasteResult.self
+        case Method.textRead: ReadResult.self
         case Method.browserURL: BrowserURLResult.self
         case Method.appList: AppListResult.self
         case Method.appIcons: AppIconsResult.self
