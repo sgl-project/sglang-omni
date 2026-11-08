@@ -21,7 +21,6 @@ import (
 //	modelsState       models_page.go  the Speech models page, the local models (internal/local)
 //	memoryState       models_memory.go  the loaded models' memory (the Speech models page)
 //	omniState         models_omni.go  the speech models' runtime (internal/omni)
-//	llmState          llm_link.go     the language models' runtime (internal/llmrt)
 //	remoteState       remote_link.go  the remote language models, the Language models page
 //	sessionState      session_link.go  sessions, shortcuts, the answer card
 //	overlayState      overlay.go      the recording overlay
@@ -36,6 +35,7 @@ import (
 //	soundsState       settings_sounds.go  the sounds' presets and previews
 //	muteState         mute_link.go    the system's output, muted while recording
 //	updateState       updates.go      the updater, an update installed while running
+//	notesState        notes_page.go   the Notes page
 //
 // Add fields to your area's struct, not here.
 type app struct {
@@ -57,10 +57,8 @@ type app struct {
 	modelsState
 	memoryState
 	omniState
-	llmState
 	remoteState
 	sessionState
-	shortMemoryState
 	overlayState
 	transcribeState
 	historyState
@@ -74,6 +72,7 @@ type app struct {
 	soundsState
 	muteState
 	updateState
+	notesState
 }
 
 func newApp(lib *library, h *helperHost) *app {
@@ -126,7 +125,6 @@ func (a *app) quit() {
 	a.closeTray()
 	a.closeMute() // mute_link.go: the output back before the helper goes
 	a.stopHelper()
-	a.stopLLM() // llm_link.go
 	if a.models != nil {
 		a.models.Close() // a download stops; what came is kept
 	}

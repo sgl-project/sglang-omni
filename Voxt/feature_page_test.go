@@ -47,7 +47,7 @@ func TestTranscribePageRenders(t *testing.T) {
 		"Paste the last result", "⌃⌥V",
 		"Models", "No speech model is installed: install one to transcribe.", "Open Speech models",
 		"Clean-up", "Clean up with a language model", "Basic clean-up", "Structure",
-		"Your rules", "{{USER_MAIN_LANGUAGE}}", "{{APP_NAME}}", "Show the full prompt",
+		"Your rules", "Not set",
 		"Try it", "Start",
 	} {
 		if !has(tt, s) {
@@ -70,6 +70,7 @@ func TestTranscribePageRenders(t *testing.T) {
 func TestTranscribeHotkeysEdit(t *testing.T) {
 	a, tt := trTester(t)
 	saved := func() []settings.Hotkey { return a.lib.settings.Get().Features.Transcribe.Hotkeys }
+	a.updateSettings(func(s *settings.Settings) { s.Features.Note = settings.Hotkey{} }) // its Right ⌘ (TestTranslatePage)
 
 	// Add one: the first preset no feature uses (Right ⌥, Right ⌥ ⇧, ⌃ Right ⌥ are taken).
 	click(t, tt, "Add a shortcut")
@@ -132,20 +133,34 @@ func TestTranscribeHotkeysEdit(t *testing.T) {
 	}
 }
 
-// TestTranscribeMouseButton: Custom… says that mouse buttons work too; a
-// typed one is saved, shows by its name in the try card, and goes to the
-// helper as its button number.
+// TestTranscribeMouseButton: Custom… says that mouse buttons work too, also
+// when it refuses Mouse1 (the left button); a typed side button is saved,
+// shows by its name in the try card, and goes to the helper as its button
+// number.
 func TestTranscribeMouseButton(t *testing.T) {
+	const hint = "Mouse buttons work too: Mouse3 is the middle button, Mouse4 and up the side buttons, with modifiers or without (Option+Mouse4)."
 	a, tt := trTester(t)
 	if err := tt.ClickControl("Keys of shortcut 1"); err != nil {
 		t.Fatal(err)
 	}
 	click(t, tt, "Custom…")
-	if !has(tt, "Mouse buttons work too: Mouse3 is the middle button, Mouse4 and up the side buttons, with modifiers or without (Option+Mouse4).") {
+	if !has(tt, hint) {
 		t.Errorf("no mouse hint in %q", tt.Texts())
 	}
 	click(t, tt, "Custom keys of shortcut 1")
 	for range len(settings.DefaultTranscribe) {
+		tt.Key(0, ui.KeyBackspace)
+	}
+	tt.Type("mouse1")
+	tt.Key(0, ui.KeyEnter)
+	frames(tt)
+	if hs := a.lib.settings.Get().Features.Transcribe.Hotkeys; hs[0].Keys != settings.DefaultTranscribe {
+		t.Fatalf("Mouse1 saved %+v", hs)
+	}
+	if !has(tt, "A key is unknown. Write the modifiers first, then one key: Fn, RightCommand, Control+Option+Space, Fn+F5.") || !has(tt, hint) {
+		t.Errorf("Mouse1: no unknown-key warning or no mouse hint in %q", tt.Texts())
+	}
+	for range len("mouse1") {
 		tt.Key(0, ui.KeyBackspace)
 	}
 	tt.Type("mouse4")
@@ -247,8 +262,46 @@ func TestTranscribeServicesAndSwitches(t *testing.T) {
 	}
 }
 
+// TestTranslateFallbackModel: Translate's Models section picks a
+// fallback model, None by default, among the language models set up; a
+// fallback no longer set up reads None.
+func TestTranslateFallbackModel(t *testing.T) {
+	a, tt := trTester(t)
+	readyModels(a)
+	a.local.(*fakeLocal).MoreLLM = []local.Model{{Kind: local.LLM, ID: models.LLMFast, Name: "Qwen3.5 2B (4bit)"}}
+	a.navigate("/translate")
+	frames(tt)
+	if !has(tt, "Fallback model") || !has(tt, "None") || !slices.Contains(tt.AccessLabels(), "Fallback language model for Translate") {
+		t.Fatalf("no fallback row: %q", tt.AccessLabels())
+	}
+	click(t, tt, "Fallback language model for Translate")
+	click(t, tt, "Qwen3.5 2B (4bit)")
+	if id := a.lib.settings.Get().Features.Translate.Fallback; id != models.LLMFast {
+		t.Errorf("fallback %q", id)
+	}
+	click(t, tt, "Fallback language model for Translate")
+	click(t, tt, "None")
+	if id := a.lib.settings.Get().Features.Translate.Fallback; id != "" {
+		t.Errorf("fallback %q", id)
+	}
+	a.updateSettings(func(s *settings.Settings) { s.Features.Translate.Fallback = "gone" })
+	frames(tt)
+	if !has(tt, "None") {
+		t.Errorf("a fallback not set up: %q", tt.Texts())
+	}
+}
+
+// TestTranscribeRules: Your rules start folded, saying how long they are
+// (long rules pushed the rest of the page down); open, the field saves
+// what is typed, the preview fills its variables, Reset clears it, a
+// change elsewhere shows, and long rules scroll in a field at most 320
+// high.
 func TestTranscribeRules(t *testing.T) {
 	a, tt := trTester(t)
+	if has(tt, "{{USER_MAIN_LANGUAGE}}") || has(tt, "Show the full prompt") {
+		t.Fatal("Your rules are open at first")
+	}
+	click(t, tt, "Your rules")
 	click(t, tt, "Your rules for Transcribe")
 	tt.Type("Write {{USER_MAIN_LANGUAGE}} numbers as digits.")
 	frames(tt)
@@ -271,8 +324,15 @@ func TestTranscribeRules(t *testing.T) {
 	// A change elsewhere shows.
 	a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.Prompt = "Be brief." })
 	frames(tt)
-	if a.fui(hotkey.Transcribe).prompt != "Be brief." {
+	if a.fui(hotkey.Transcribe).prompt != "Be brief." || !has(tt, "9 characters") {
 		t.Errorf("not set from the settings: %q", a.fui(hotkey.Transcribe).prompt)
+	}
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Transcribe.Prompt = strings.Repeat("Keep every product name as it is written.\n", 400)
+	})
+	frames(tt)
+	if r, ok := tt.Find("Your rules for Transcribe"); !ok || r.H > 330 {
+		t.Errorf("the rules' field: found %v, %.0f high", ok, r.H)
 	}
 }
 
@@ -410,7 +470,7 @@ func TestTranscribeFullPage(t *testing.T) {
 			if feature == hotkey.Transcribe {
 				a.fui(feature).rows[1].custom = true
 			}
-			a.fui(feature).preview = true
+			a.fui(feature).rules, a.fui(feature).preview = true, true
 			s := trySnapshot(a, session.Done)
 			s.Kind = featureKind(feature)
 			switch feature {

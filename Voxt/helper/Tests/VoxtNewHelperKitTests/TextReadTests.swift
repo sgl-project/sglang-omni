@@ -67,6 +67,15 @@ final class TextReadTests: XCTestCase {
         XCTAssertNil(TextRead.read(TextRange(location: 0, length: 9), length: 0, byRange: { _ in nil }, value: { nil }))
     }
 
+    func testEmptyRangeReadsTheValue() {
+        // AXStringForRange answers "": the read comes from the value, with its range.
+        let value = String(repeating: "a", count: 100) + "0123456789" + "tail"
+        let length = (value as NSString).length
+        let got = TextRead.read(TextRange(location: 100, length: 10), length: length,
+                                byRange: { _ in "" }, value: { value })
+        XCTAssertEqual(got, ReadResult(text: "0123456789", range: TextRange(location: 100, length: 10), length: length))
+    }
+
     func testRefuses() {
         XCTAssertTrue(TextRead.refuses(subrole: "AXSecureTextField", secureInputOwner: nil, target: 9286), "a password field")
         XCTAssertTrue(TextRead.refuses(subrole: nil, secureInputOwner: 9286, target: 9286), "secure input of the target")

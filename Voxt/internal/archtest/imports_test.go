@@ -23,7 +23,7 @@ const (
 
 // leaves import no internal package: the bottom layer.
 var leaves = []string{"core", "settings", "i18n", "lang", "permission", "macx", "vad",
-	"appbundle", "helper/proto", "llmrt/wire", "trayicon", "store", "icons", "models", "secrets"}
+	"appbundle", "helper/proto", "trayicon", "store", "icons", "models", "secrets"}
 
 // uiPackages may import MyGo's UI. The rest of internal/ is front-end
 // free: the domain, and the pure logic taken out of the app, testable

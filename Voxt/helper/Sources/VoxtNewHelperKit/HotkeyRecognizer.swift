@@ -432,7 +432,7 @@ public struct HotkeyRecognizer: Sendable {
         // A modifier-only cancel chord fires while active, before the
         // features' taps; like every modifier-only chord it is never
         // swallowed.
-        if config.active, let c = config.cancel, c.key == nil, c.matches(chord: chord) {
+        if config.active, let c = config.cancel, c.press == nil, c.matches(chord: chord) {
             pendingTap = nil
             doubleArm = nil
             out.append(HotkeyEvent(binding: c.id, phase: .trigger, behavior: .tap, heldMs: held, t: t))

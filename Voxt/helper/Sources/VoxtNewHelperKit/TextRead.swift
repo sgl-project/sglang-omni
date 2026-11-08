@@ -38,7 +38,9 @@ public enum TextRead {
         let start = min(max(0, r.location), length)
         let end = min(max(start, r.location + r.length), length, start + maxRead)
         let from = max(0, start - margin)
-        guard let fetched = fetch(TextRange(location: from, length: min(length, end + margin) - from)) else { return nil }
+        // An app may answer "" or a short string here: that is no read, so the value is tried.
+        guard let fetched = fetch(TextRange(location: from, length: min(length, end + margin) - from)),
+              (fetched as NSString).length >= start - from else { return nil }
         let s = fetched as NSString
         let a = min(start - from, s.length)
         var w = NSRange(location: a, length: min(end - from, s.length) - a)

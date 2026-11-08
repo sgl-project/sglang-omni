@@ -159,7 +159,7 @@ func newHotkey(f settings.Features) settings.Hotkey {
 	for _, p := range keyPresets {
 		pc, _ := hotkey.Parse(p)
 		used := false
-		for _, feat := range append(slices.Clone(hotkey.Features), hotkey.PasteLast) {
+		for _, feat := range append(slices.Clone(hotkey.Features), hotkey.PasteLast, hotkey.Note) {
 			for _, h := range hotkey.HotkeysOf(f, feat) {
 				if hc, err := hotkey.Parse(h.Keys); err == nil && hc.Overlaps(pc) {
 					used = true
@@ -343,10 +343,12 @@ func (a *app) customKeys(c *ui.Context, r *keyRow, label string, save func(keys 
 		warnLine(c, uitext.ParseErrorText(err))
 	case r.edited:
 		caption(c, i18n.T("Press Return to use %s.", uitext.HotkeyText(r.text)))
+		return
 	default:
 		caption(c, i18n.T("Modifiers first, then one key: Fn, RightCommand, Control+Option+Space, Fn+F5."))
-		caption(c, i18n.T("Mouse buttons work too: Mouse3 is the middle button, Mouse4 and up the side buttons, with modifiers or without (Option+Mouse4)."))
 	}
+	// Also under an error: Mouse1 is refused, mouse buttons are not.
+	caption(c, i18n.T("Mouse buttons work too: Mouse3 is the middle button, Mouse4 and up the side buttons, with modifiers or without (Option+Mouse4)."))
 }
 
 // problemLines are a binding's problems, in the warning colour.
