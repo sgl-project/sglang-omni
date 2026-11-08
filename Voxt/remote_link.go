@@ -44,8 +44,10 @@ type service struct {
 	models          []string
 	keyOptional     bool
 	appID           bool // Doubao: an App ID may come with the key
-	stream          bool // speech recognised while the user speaks
 	keyURL          string
+	// speech is a speech service's facts (which models stream); zero for
+	// a language model.
+	speech providers.Speech
 }
 
 // services are kind's remote services, in the page's order.
@@ -54,7 +56,7 @@ func services(kind local.Kind) []service {
 	if kind == local.ASR {
 		for _, p := range providers.SpeechPresets() {
 			out = append(out, service{kind: kind, id: p.ID, name: uitext.SpeechName(p.ID), endpoint: p.Endpoint, model: p.Model, models: p.Models,
-				appID: p.AppID, stream: p.Stream, keyOptional: p.KeyOptional, keyURL: p.KeyURL})
+				appID: p.AppID, keyOptional: p.KeyOptional, keyURL: p.KeyURL, speech: p})
 		}
 		return out
 	}

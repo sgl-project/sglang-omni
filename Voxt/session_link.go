@@ -58,6 +58,9 @@ type sessionState struct {
 	// with MyGo while the event tap is missing.
 	hotkeysSent string
 	carbon      []string
+	// keysListening: a shortcut field takes pressed keys (key_recorder.go),
+	// and the shortcuts are off meanwhile; keysHeard is this frame's.
+	keysListening, keysHeard bool
 	// lastLoaded: the last result was read from the history at start.
 	lastLoaded bool
 	// followUp is the answer card's session a running Rewrite follows up

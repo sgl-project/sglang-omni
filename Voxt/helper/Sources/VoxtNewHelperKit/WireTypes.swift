@@ -713,6 +713,7 @@ public enum WireTypes {
         case Method.permissionsRequest: PermissionsRequestParams.self
         case Method.captureStart: CaptureParams.self
         case Method.captureStop: CaptureStopParams.self
+        case Method.captureSystem: SystemParams.self
         case Method.hotkeyConfigure: HotkeyConfigureParams.self
         case Method.textSelection: SelectionParams.self
         case Method.textPaste: PasteParams.self
@@ -751,7 +752,7 @@ public enum WireTypes {
         case Method.jobCancel: CancelResult.self
         case Method.permissionsStatus, Method.permissionsRequest: PermissionsResult.self
         case Method.captureDevices: DevicesResult.self
-        case Method.captureStart: CaptureResult.self
+        case Method.captureStart, Method.captureSystem: CaptureResult.self
         case Method.captureStop: CaptureStopResult.self
         case Method.hotkeyConfigure, Method.hotkeyStatus: HotkeyStatus.self
         case Method.appFrontmost: App.self

@@ -39,8 +39,8 @@ const legacySetupsJSON = `[
 // Doubao at its 2.0 address with its App ID and token, Aliyun at its
 // Singapore address with a model this app has, StepFun at its own SSE
 // address with a model this app lacks, a local Whisper server, Doubao's
-// file recognition (https://, which this app's streaming client cannot
-// use) as a second Doubao, and a service never set up.
+// flash file recognition as a second Doubao (one setup per service: the
+// first comes over), and a service never set up.
 const legacySpeechJSON = `[
  {"providerID": "doubaoASR", "model": "volc.bigasr.sauc.duration", "endpoint": "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
   "storedCredentialPresence": {"apiKey": false, "appID": true, "accessToken": true}, "doubaoDictionaryMode": "requestScoped"},
@@ -191,14 +191,15 @@ func TestParseLegacySpeech(t *testing.T) {
 	}
 	speech := func(id string) providers.Speech { sp, _ := providers.LookupSpeech(id); return sp }
 	for _, c := range []struct {
-		service, id, endpoint, want string
-		check                       bool
+		service, id, model, endpoint, want string
+		check                              bool
 	}{
-		{"openAIWhisper", "openai", "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions", "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions", false},
-		{"doubaoASR", "doubao", "https://doubao-proxy.example.com/asr", "https://doubao-proxy.example.com/asr", true},
-		{"stepFunASR", providers.StepFunASR, "https://step.example.com/v1/audio/asr/sse", "https://step.example.com/v1/audio/transcriptions", true},
+		{"openAIWhisper", "openai", "", "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions", "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions", false},
+		{"doubaoASR", "doubao", "", "https://doubao-proxy.example.com/asr", "https://doubao-proxy.example.com/asr", true},
+		{"doubaoASR", "doubao", "volc.bigasr.auc_turbo", "https://doubao-proxy.example.com/flash", "https://doubao-proxy.example.com/flash", false},
+		{"stepFunASR", providers.StepFunASR, "", "https://step.example.com/v1/audio/asr/sse", "https://step.example.com/v1/audio/transcriptions", true},
 	} {
-		if got, check := legacySpeechEndpoint(c.service, speech(c.id), c.endpoint); got != c.want || check != c.check {
+		if got, check := legacySpeechEndpoint(c.service, speech(c.id), c.model, c.endpoint); got != c.want || check != c.check {
 			t.Errorf("%s at %s: %q, check %v; want %q, %v", c.service, c.endpoint, got, check, c.want, c.check)
 		}
 	}
