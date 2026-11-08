@@ -51,6 +51,12 @@ func (a *app) connectEvents() {
 			a.markTried() // home_try.go: Home stops offering its Try area
 		}
 	})
+	a.onSessionEnd = append(a.onSessionEnd, a.learnFromSession) // learn_link.go
+	a.onSession = append(a.onSession, func(was, s session.Snapshot) {
+		if s.State.Live() && !was.State.Live() {
+			a.learner.Finish() // learn_link.go: a new session ends the watch of the last insert
+		}
+	})
 	a.onHistory = append(a.onHistory,
 		a.homeChanged,    // home_page.go: today's numbers, the recent results
 		a.loadTrayRecent, // tray.go: the menu bar's recent results

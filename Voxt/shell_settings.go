@@ -120,6 +120,9 @@ func (a *app) updateSettings(fn func(*settings.Settings)) {
 func (a *app) settingsChanged(old, new settings.Settings) {
 	a.prefs = new
 	a.familySettingsChanged(old, new) // family.go: the shared settings, the manifest
+	if (old.Dictionary.Learn && !new.Dictionary.Learn) || (old.Dictionary.Enabled && !new.Dictionary.Enabled) {
+		a.learner.Stop() // learn_link.go: nothing read from now on, nothing proposed
+	}
 	if old.General.Language != new.General.Language {
 		a.applyLocale()
 	}

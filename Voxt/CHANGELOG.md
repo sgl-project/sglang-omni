@@ -16,6 +16,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Proxy user name and password** (Speech models → Network… → Custom), as in Voxt 1.x: a custom proxy (HTTP, HTTPS or SOCKS5) takes a user name and a password, sent only when both are set, with model downloads and the requests to remote services. The password is kept in the Keychain only, and only Voxt uses them: the other apps that share the model library do not get them.
 - **Announcements**, as in Voxt 1.x: when Voxt starts and each time you switch to it (at most every 10 minutes), it reads Voxt's announcements. A new one shows as a card above Settings in the sidebar: Read shows it whole, and once you dismiss it, it does not come back. The request sends nothing about you (no version, language or identifier), and Settings → Privacy says so.
 - **Add selected words to the dictionary**, as in Voxt 1.x: select a few words in any app (at most five, or ten Chinese, Japanese or Korean characters in a row) and press the transcribe shortcut. Voxt adds them to the dictionary instead of recording, and the overlay says "Added to the dictionary" or "Already in the dictionary". With a longer selection or nothing selected the shortcut records as usual, and with the dictionary off it always records.
+- **Dictionary suggestions**: terms Voxt suggests appear above the list on the Dictionary page, with what it heard instead and where the suggestion came from, and the sidebar shows how many wait. Add puts the term in the dictionary without aliases, Edit… lets you change it first, and Ignore hides it for 90 days.
+- **How the dictionary works** (Dictionary): a folded guide on the page says where a term applies: speech hints, the language model's glossary, and aliases replaced in the recognised text.
+- **Scan history for suggestions** (Dictionary → Scan history…), as in Voxt 1.x's one-click import: Voxt sends the Transcribe results it has not read yet, 12 at a time, to the language model Transcribe uses and suggests the names and terms it finds. The dialog says how many results go to which model before anything is sent; you add each term yourself, and nothing of your dictionary is sent.
+- **Learn from my corrections** (Dictionary): off by default. After Voxt inserts a Transcribe result into another app, it reads the text around that spot for up to 30 seconds; when you correct a word there, it suggests your spelling on the Dictionary page. Local rules only, nothing is sent, what it reads is not saved or logged, and password fields are never read.
 
 ### Changed
 
@@ -35,6 +39,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **代理的用户名和密码**（语音模型 → 网络… → 自定义），和 Voxt 1.x 一样：自定义代理（HTTP、HTTPS 或 SOCKS5）可以填用户名和密码，两个都填了才使用，模型下载和远程服务的请求都会带上。密码只保存在钥匙串里；它们只给 Voxt 用，共用模型库的其他 app 不会用到。
 - **公告**，和 Voxt 1.x 一样：Voxt 启动时和每次切回 Voxt 时（最多 10 分钟一次）读取 Voxt 的公告。新公告显示为侧边栏“设置”上方的一张卡片：点“查看全文”看完整内容，关掉以后不会再出现。读取公告不会发送任何关于你的信息（没有版本号、语言或标识），设置 → 隐私里也写明了。
 - **把选中的词加进词典**，和 Voxt 1.x 一样：在任意 app 里选中几个词（最多五个词，或连续最多十个中日韩字），按转录快捷键，Voxt 把它加进词典，不开始录音，浮窗显示“已加入词典”或“词典里已经有”。选中的文字更长或者没有选中文字时照常录音；词典关着时总是录音。
+- **词典建议**：Voxt 建议的词显示在词典页的列表上方，写明听成了什么、来自哪里，侧栏显示待处理的条数。“添加”只把词条加入词典，不加别名；“编辑…”可以先改再加入；“忽略”后 90 天内不再出现。
+- **词典的用法**（词典页）：页面上有一段可以展开的说明，讲清词条在哪里生效：语音识别提示、语言模型术语表，以及别名在识别文字里的替换。
+- **扫描历史，找词条建议**（词典 → 扫描历史…），对应 Voxt 1.x 的一键导入：Voxt 把还没读过的转录结果每 12 条发给转录用的语言模型，把找到的人名和术语放进建议。开始之前对话框写明要把多少条发给哪个模型；词条要你自己点“添加”，词典内容不会发出去。
+- **从我的改正中学习**（词典页）：默认关。把转录结果插入别的 App 后，Voxt 会在 30 秒内读取插入处附近的文字；你改了其中某个词，它在词典页建议你改后的写法。只用本地规则，不发送任何文字；读到的文字不保存、不写日志，也不读密码框。
 
 #### 变更
 
