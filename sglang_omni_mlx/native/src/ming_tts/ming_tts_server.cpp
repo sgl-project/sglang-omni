@@ -35,7 +35,6 @@ namespace {
 namespace mx = mlx::core;
 using speech_service::Json;
 
-constexpr int kCfmSteps = 10;
 constexpr int kInitialChunkPatches = 2;
 constexpr int kSteadyChunkPatches = 4;
 
@@ -116,22 +115,14 @@ private:
     } else {
     }
     stop_if_cancelled();
-    const ming_tts::MingAcoustic &acoustic = generator_.acoustic();
     ming_tts::GenerationState state =
         generator_.Start(synthesis.prompt, request.max_patches, reference);
-    const mx::array timesteps = ming_tts::CfmTimesteps(kCfmSteps);
     ming_tts::AudioDecoderState audio_state;
     std::vector<mx::array> pending;
     int chunk_patches = kInitialChunkPatches;
     while (!state.finished) {
       stop_if_cancelled();
-      const mx::array noise =
-          mx::random::normal({1, acoustic.latent_dim(), acoustic.patch_size()});
-      const mx::array sde_random =
-          mx::random::normal({timesteps.shape(0) - 2, 1, acoustic.patch_size(),
-                              acoustic.latent_dim()});
-      pending.push_back(generator_.Step(state, noise, timesteps, sde_random,
-                                        request.cfg, request.sigma,
+      pending.push_back(generator_.Step(state, request.cfg, request.sigma,
                                         request.temperature));
       if (synthesis.stream &&
           (static_cast<int>(pending.size()) >= chunk_patches ||

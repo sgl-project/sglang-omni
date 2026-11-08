@@ -105,7 +105,7 @@ print(json.dumps({
 PY
 ```
 
-For 4-bit inference, download the MLX community checkpoint and use its local directory as `--model-path`. Quantization is read from the checkpoint; there is no native online-quantization flag. The checkpoint also quantizes acoustic and AudioVAE linear layers. One request runs at a time and `--max-queued-requests` more (2 by default) may wait; the rest get HTTP 503. A request not done `--request-timeout-s` seconds (600 by default) after it arrives is cancelled, with HTTP 504 or an early end to its stream. Serving does not require Python or SGLang workers.
+For 4-bit inference, download the MLX community checkpoint and use its local directory as `--model-path`. Quantization is read from the checkpoint; there is no native online-quantization flag. The checkpoint also quantizes acoustic and AudioVAE linear layers. One request runs at a time and `--max-queued-requests` more (2 by default) may wait; the rest get HTTP 503. A request not done `--request-timeout-s` seconds (600 by default) after it arrives is cancelled, with HTTP 504 or an early end to its stream. Streaming decodes two patches first and four at a time after that, like CUDA, but holds back only each chunk's last latent frame for the next chunk rather than the whole chunk, so audio starts after the first two patches. Serving does not require Python or SGLang workers.
 
 ## Synthesizing Speech
 

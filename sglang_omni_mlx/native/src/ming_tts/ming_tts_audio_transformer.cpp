@@ -23,14 +23,8 @@ AudioTransformer::AudioTransformer(const omni_common::Checkpoint &checkpoint,
                     : config.at("num_key_value_heads").get<int>()),
       epsilon_(config.value("rms_norm_eps", 1e-6f)),
       rope_theta_(config.value("rope_theta", 1000000.0f)) {
-  const int intermediate_size = config.at("intermediate_size");
-  if (std::min({hidden_size_, layers_, heads_, kv_heads_, intermediate_size}) <=
-          0 ||
-      hidden_size_ % heads_ || (hidden_size_ / heads_) % 2 ||
-      heads_ % kv_heads_ ||
-      config.value("hidden_act", std::string("silu")) != "silu") {
-    throw std::invalid_argument(
-        "unsupported AudioVAE Qwen2 dimensions or activation");
+  if (config.value("hidden_act", std::string("silu")) != "silu") {
+    throw std::invalid_argument("AudioVAE native supports SiLU only");
   } else {
   }
   const auto rope = config.value(
@@ -44,24 +38,12 @@ AudioTransformer::AudioTransformer(const omni_common::Checkpoint &checkpoint,
     }
   } else {
   }
-  if (!(epsilon_ > 0) || !(rope_theta_ > 0)) {
-    throw std::invalid_argument(
-        "AudioVAE epsilon and RoPE base must be positive");
-  } else {
-  }
   const int window =
       config.value("use_sliding_window", false) &&
               !config.value("sliding_window", nlohmann::json(4096)).is_null()
           ? config.value("sliding_window", 4096)
           : 0;
   const auto layer_types = config.value("layer_types", nlohmann::json());
-  if (!layer_types.is_null() &&
-      layer_types.size() != static_cast<size_t>(layers_)) {
-    throw std::invalid_argument(
-        "AudioVAE layer_types must match the layer count");
-  } else {
-  }
-  RequireShape(checkpoint_, prefix_ + ".norm.weight", {hidden_size_});
   for (int layer = 0; layer < layers_; ++layer) {
     const std::string kind =
         layer_types.is_null()
@@ -75,30 +57,6 @@ AudioTransformer::AudioTransformer(const omni_common::Checkpoint &checkpoint,
       windows_.push_back(window);
     } else {
       throw std::invalid_argument("unsupported AudioVAE attention window");
-    }
-    const std::string prefix = prefix_ + ".layers." + std::to_string(layer);
-    for (const auto *norm : {"input_layernorm", "post_attention_layernorm"}) {
-      RequireShape(checkpoint_, prefix + "." + norm + ".weight",
-                   {hidden_size_});
-    }
-    for (const auto *projection : {"q_proj", "k_proj", "v_proj", "o_proj"}) {
-      const std::string name = projection;
-      const int output_size = name == "q_proj" || name == "o_proj"
-                                  ? hidden_size_
-                                  : kv_heads_ * (hidden_size_ / heads_);
-      RequireShape(checkpoint_, prefix + ".self_attn." + name + ".weight",
-                   {output_size, hidden_size_});
-      if (name != "o_proj") {
-        RequireShape(checkpoint_, prefix + ".self_attn." + name + ".bias",
-                     {output_size});
-      } else {
-      }
-    }
-    for (const auto *projection : {"gate_proj", "up_proj", "down_proj"}) {
-      const bool down = std::string(projection) == "down_proj";
-      RequireShape(checkpoint_, prefix + ".mlp." + projection + ".weight",
-                   {down ? hidden_size_ : intermediate_size,
-                    down ? intermediate_size : hidden_size_});
     }
   }
 }

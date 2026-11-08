@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
-#include <array>
 #include <filesystem>
 #include <vector>
 
@@ -13,8 +12,6 @@ namespace ming_tts {
 omni_common::WeightMap
 LoadComponentWeights(const std::filesystem::path &directory,
                      const std::vector<std::string> &prefixes);
-void RequireShape(const omni_common::Checkpoint &checkpoint,
-                  const std::string &name, const mlx::core::Shape &shape);
 mlx::core::Dtype WeightDtype(const omni_common::Checkpoint &checkpoint,
                              const std::string &prefix);
 
@@ -38,7 +35,6 @@ struct BackboneConfig {
   bool norm_topk_prob;
   bool use_qkv_bias;
   bool use_bias;
-  std::array<int, 3> mrope_section;
 
   static BackboneConfig FromJson(const nlohmann::json &config);
 };
@@ -49,7 +45,6 @@ public:
 
   mlx::core::array EmbedTokens(const mlx::core::array &input_ids) const;
   mlx::core::array Forward(const mlx::core::array &embeddings,
-                           const mlx::core::array &positions,
                            std::vector<qwen3_asr::KVCache> &caches) const;
   std::vector<qwen3_asr::KVCache> NewCaches() const;
   const BackboneConfig &config() const { return config_; }
@@ -57,8 +52,6 @@ public:
 private:
   MingBackbone(const nlohmann::json &config,
                const std::filesystem::path &model_directory);
-  mlx::core::array Rotary(const mlx::core::array &x,
-                          const mlx::core::array &positions) const;
   mlx::core::array Mlp(const mlx::core::array &x,
                        const std::string &prefix) const;
   mlx::core::array Moe(const mlx::core::array &x,
@@ -66,7 +59,6 @@ private:
 
   BackboneConfig config_;
   omni_common::Checkpoint checkpoint_;
-  mlx::core::array inverse_frequencies_;
 };
 
 } // namespace ming_tts

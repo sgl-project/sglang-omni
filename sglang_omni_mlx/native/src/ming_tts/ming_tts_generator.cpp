@@ -132,50 +132,44 @@ GenerationState MingGenerator::Start(
   } else {
   }
   auto caches = backbone_.NewCaches();
-  const mx::array positions =
-      mx::broadcast_to(mx::arange(token_count), {3, 1, token_count});
-  const mx::array prefill = backbone_.Forward(embeddings, positions, caches);
+  const mx::array prefill = backbone_.Forward(embeddings, caches);
   const mx::array hidden =
       mx::slice(prefill, {0, prefill.shape(1) - 1, 0}, prefill.shape());
-  mx::eval(hidden, history);
   return {std::move(caches), hidden, history, std::nullopt, max_steps};
 }
 
-mx::array MingGenerator::Step(GenerationState &state, const mx::array &noise,
-                              const mx::array &timesteps,
-                              const mx::array &sde_random, float cfg,
-                              float sigma, float temperature) const {
+mx::array MingGenerator::Step(GenerationState &state, float cfg, float sigma,
+                              float temperature) const {
   assert(!state.finished);
-  if (state.feedback) {
-    const mx::array positions =
-        mx::full({3, 1, 1}, mx::array(state.caches.front().offset()));
-    state.hidden = backbone_.Forward(mx::expand_dims(*state.feedback, 1),
-                                     positions, state.caches);
+  // Note (XXXXRT666): the backbone reads the last patch here rather than as
+  // it is sampled, so the patch that ends the speech is not read, and each
+  // patch waits on the GPU once.
+  if (state.latents.has_value()) {
+    state.hidden = backbone_.Forward(
+        mx::astype(acoustic_.Aggregate(*state.latents), state.hidden.dtype()),
+        state.caches);
+    const mx::array appended =
+        mx::concatenate({state.history, *state.latents}, 1);
+    state.history = mx::slice(
+        appended, {0, appended.shape(1) - acoustic_.history_frames(), 0},
+        appended.shape());
   } else {
   }
   const auto tail =
-      acoustic_.Step(state.hidden, state.history, noise, timesteps, sde_random,
-                     cfg, sigma, temperature);
-  mx::eval(tail.latents, tail.feedback, tail.stop_probability);
-  const float probability =
-      mx::astype(tail.stop_probability, mx::float32).item<float>();
-  const bool stop = probability > kStopProbabilityThreshold &&
-                    state.steps + 1 >= kMinimumGeneratedPatches;
+      acoustic_.Step(state.hidden, state.history, cfg, sigma, temperature);
+  mx::eval(tail.latents, tail.stop_probability);
+  const bool stop =
+      tail.stop_probability.item<float>() > kStopProbabilityThreshold &&
+      state.steps + 1 >= kMinimumGeneratedPatches;
   const bool length = state.steps + 1 >= state.max_steps;
   ++state.steps;
   state.stopped = stop;
   state.finished = stop || length;
   if (state.finished) {
     state.caches.clear();
-    state.feedback.reset();
+    state.latents.reset();
   } else {
-    const mx::array appended =
-        mx::concatenate({state.history, tail.latents}, 1);
-    state.history = mx::slice(
-        appended, {0, appended.shape(1) - acoustic_.history_frames(), 0},
-        appended.shape());
-    state.feedback = mx::astype(tail.feedback, state.hidden.dtype());
-    mx::eval(state.history, *state.feedback);
+    state.latents = tail.latents;
   }
   return mx::squeeze(tail.latents, 0);
 }

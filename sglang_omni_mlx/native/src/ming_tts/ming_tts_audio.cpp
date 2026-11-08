@@ -29,12 +29,6 @@ MingAudioDecoder::MingAudioDecoder(const nlohmann::json &config,
       checkpoint_(
           [&] {
             if (sample_rate_ != kAudioSampleRate ||
-                std::min(hop_length_, latent_dim_) <= 0 ||
-                config.at("audio_tokenizer_config")
-                        .at("enc_kwargs")
-                        .at("latent_dim")
-                        .get<int>() != latent_dim_ ||
-                (patch_size_ != -1 && patch_size_ < 1) ||
                 !config.at("audio_tokenizer_config")
                      .value("semantic_module_kwargs", nlohmann::json())
                      .is_null()) {
@@ -48,16 +42,6 @@ MingAudioDecoder::MingAudioDecoder(const nlohmann::json &config,
       transformer_(
           checkpoint_, "audio.decoder.decoder",
           config.at("audio_tokenizer_config").at("dec_kwargs").at("backbone")) {
-  RequireShape(checkpoint_, "audio.decoder.fc1.weight",
-               {transformer_.hidden_size(), latent_dim_});
-  RequireShape(checkpoint_, "audio.decoder.fc1.bias",
-               {transformer_.hidden_size()});
-  RequireShape(checkpoint_, "audio.decoder.head.out.weight",
-               {hop_length_ * 4 + 2, transformer_.hidden_size()});
-  RequireShape(checkpoint_, "audio.decoder.head.out.bias",
-               {hop_length_ * 4 + 2});
-  RequireShape(checkpoint_, "audio.decoder.head.istft.window",
-               {hop_length_ * 4});
 }
 
 mx::array MingAudioDecoder::Interpolate(const mx::array &hidden) const {
@@ -174,44 +158,33 @@ mx::array MingAudioDecoder::DecodeChunk(const mx::array &latents,
   mx::array hidden = checkpoint_.Linear(
       mx::astype(latents, WeightDtype(checkpoint_, "audio.decoder.fc1")),
       "audio.decoder.fc1");
-  if (patch_size_ == -1) {
-  } else if (!state.pending) {
-    if (!last_chunk) {
-      state.pending = hidden;
+  if (patch_size_ != -1) {
+    // Note (XXXXRT666): upsampling a frame reads only its neighbours, so a
+    // chunk holds back just its last frame until the next one comes.
+    const mx::array frames =
+        state.pending ? mx::concatenate({*state.pending, hidden}, 1) : hidden;
+    const int ready = frames.shape(1) - (last_chunk ? 0 : 1);
+    if (ready == 0) {
+      state.pending = frames;
       mx::eval(*state.pending);
       return mx::zeros({latents.shape(0), 0}, mx::float32);
     } else {
-      hidden = Interpolate(hidden);
     }
-  } else {
-    std::vector<mx::array> parts{
-        *state.pending,
-        mx::slice(hidden, {0, 0, 0}, {hidden.shape(0), 1, hidden.shape(2)})};
-    int start = 0;
-    if (state.left) {
-      parts.insert(parts.begin(), *state.left);
-      start = patch_size_;
-    } else {
-    }
-    mx::array previous = Interpolate(mx::concatenate(parts, 1));
-    previous = mx::slice(previous, {0, start, 0},
-                         {hidden.shape(0),
-                          start + state.pending->shape(1) * patch_size_,
-                          hidden.shape(2)});
-    const mx::array left =
-        mx::slice(*state.pending, {0, state.pending->shape(1) - 1, 0},
-                  state.pending->shape());
+    const int start = state.left ? patch_size_ : 0;
+    const mx::array upsampled = Interpolate(
+        state.left ? mx::concatenate({*state.left, frames}, 1) : frames);
+    hidden = mx::slice(
+        upsampled, {0, start, 0},
+        {upsampled.shape(0), start + ready * patch_size_, upsampled.shape(2)});
     if (last_chunk) {
-      const mx::array tail = Interpolate(mx::concatenate({left, hidden}, 1));
-      hidden = mx::concatenate(
-          {previous, mx::slice(tail, {0, patch_size_, 0}, tail.shape())}, 1);
       state.pending.reset();
       state.left.reset();
     } else {
-      state.pending = hidden;
-      state.left = left;
-      hidden = previous;
+      state.left = mx::slice(frames, {0, ready - 1, 0},
+                             {frames.shape(0), ready, frames.shape(2)});
+      state.pending = mx::slice(frames, {0, ready, 0}, frames.shape());
     }
+  } else {
   }
   const mx::array waveform = Synthesize(
       transformer_.Forward(hidden, state.caches), state, true, last_chunk);
@@ -254,8 +227,6 @@ MingAudioEncoder::MingAudioEncoder(const nlohmann::json &config,
           [&] {
             const auto &audio = config.at("audio_tokenizer_config");
             if (audio.at("sample_rate") != kAudioSampleRate ||
-                std::min({hop_length_, input_dim_, latent_dim_}) <= 0 ||
-                (patch_size_ != -1 && patch_size_ < 1) ||
                 !audio.value("semantic_module_kwargs", nlohmann::json())
                      .is_null()) {
               throw std::invalid_argument(
@@ -268,13 +239,6 @@ MingAudioEncoder::MingAudioEncoder(const nlohmann::json &config,
       transformer_(
           checkpoint_, "audio.encoder.encoder",
           config.at("audio_tokenizer_config").at("enc_kwargs").at("backbone")) {
-  const int hidden = transformer_.hidden_size();
-  RequireShape(checkpoint_, "audio.encoder.fc1.weight", {hidden, input_dim_});
-  RequireShape(checkpoint_, "audio.encoder.fc2.weight", {hidden, hidden});
-  RequireShape(checkpoint_, "audio.encoder.fc2.bias", {hidden});
-  RequireShape(checkpoint_, "audio.encoder.fc3.weight",
-               {2 * latent_dim_, hidden});
-  RequireShape(checkpoint_, "audio.encoder.fc3.bias", {2 * latent_dim_});
   if (patch_size_ != -1) {
     auto backbone =
         config.at("audio_tokenizer_config").at("enc_kwargs").at("backbone");
@@ -286,7 +250,6 @@ MingAudioEncoder::MingAudioEncoder(const nlohmann::json &config,
     } else {
     }
     aggregator_.emplace(checkpoint_, "audio.encoder.aggregator", backbone);
-    RequireShape(checkpoint_, "audio.encoder.cls_embed", {1, 1, hidden});
   } else {
   }
 }

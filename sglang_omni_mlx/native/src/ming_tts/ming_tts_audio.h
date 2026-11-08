@@ -32,6 +32,7 @@ private:
 
 struct AudioDecoderState {
   std::vector<AudioCache> caches;
+  // The latent frames not decoded yet, and the decoded one before them.
   std::optional<mlx::core::array> pending, left, audio_overlap,
       envelope_overlap;
 };

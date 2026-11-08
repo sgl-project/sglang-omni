@@ -29,7 +29,8 @@ private:
 struct GenerationState {
   std::vector<qwen3_asr::KVCache> caches;
   mlx::core::array hidden, history;
-  std::optional<mlx::core::array> feedback;
+  // The last patch, until the next step reads it.
+  std::optional<mlx::core::array> latents;
   int max_steps;
   int steps = 0;
   // Whether the stop head ended it, rather than max_steps.
@@ -45,11 +46,9 @@ public:
   GenerationState
   Start(const Prompt &prompt, int max_steps,
         const std::optional<ReferenceConditioning> &reference) const;
-  mlx::core::array Step(GenerationState &state, const mlx::core::array &noise,
-                        const mlx::core::array &timesteps,
-                        const mlx::core::array &sde_random, float cfg,
-                        float sigma, float temperature) const;
-  const MingAcoustic &acoustic() const { return acoustic_; }
+  // The next patch's latents [patch, latent].
+  mlx::core::array Step(GenerationState &state, float cfg, float sigma,
+                        float temperature) const;
 
 private:
   MingBackbone backbone_;
