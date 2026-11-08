@@ -215,7 +215,7 @@ std::string ReadAllowedFile(const std::string &path,
   }
   std::string bytes;
   char opened_path[PATH_MAX] = "";
-  struct stat status{};
+  struct stat status {};
   const bool is_allowed =
       fcntl(file_descriptor, F_GETPATH, opened_path) == 0 &&
       IsInside(std::filesystem::path(opened_path), allowed_directory);
