@@ -88,7 +88,6 @@ class WindowBatchDecoder(Protocol):
     ) -> list[torch.Tensor]:
         """[1, 1, samples] audio per [num_codebooks, frames] window of one length;
         the first discard_frames frames' audio may be left unset."""
-        ...
 
 
 # (batch size, frames, discarded frames) of a captured window graph.
