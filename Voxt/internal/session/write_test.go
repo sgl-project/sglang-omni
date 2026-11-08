@@ -179,9 +179,9 @@ func TestWrite(t *testing.T) {
 			},
 		},
 		{
-			// Over the selection, the card switch off (TestShowCard).
+			// Into the card, which replaces the selection when asked (Voxt's).
 			name: "rewrite the selection", kind: store.KindRewrite, sel: &fakeSelector{text: "hey team, ship friday?", delay: 30 * time.Millisecond}, llm: &fakeLLM{text: "Team: we ship on Friday."},
-			speak: true, states: "recording recognizing composing delivering done", state: Done, result: "Team: we ship on Friday.", pasted: true,
+			speak: true, states: "recording recognizing composing done", state: Done, result: "Team: we ship on Friday.", card: deliver.ReasonCard,
 			check: func(t *testing.T, h *harness, end Snapshot, model *fakeLLM, sel *fakeSelector) {
 				req := model.requests()[0]
 				if req.Skill != llm.SkillRewrite || req.Format != llm.FormatText ||
@@ -196,9 +196,10 @@ func TestWrite(t *testing.T) {
 			},
 		},
 		{
-			// The title shows while it streams; only the content is typed.
+			// A short answer into an app that takes text: the card all the
+			// same (Voxt's; 10-15 it was typed, with no way to follow up).
 			name: "write from scratch: a JSON answer", kind: store.KindRewrite, sel: &fakeSelector{}, llm: &fakeLLM{text: `{"title": "Friday", "content": "We ship on Friday."}`, chunk: 5, pause: 15 * time.Millisecond},
-			speak: true, states: "recording recognizing composing delivering done", state: Done, result: "We ship on Friday.", pasted: true,
+			speak: true, states: "recording recognizing composing done", state: Done, result: "We ship on Friday.", card: deliver.ReasonCard,
 			check: func(t *testing.T, h *harness, end Snapshot, model *fakeLLM, sel *fakeSelector) {
 				req := model.requests()[0]
 				if req.Format != llm.FormatJSON || req.Schema == nil || !strings.Contains(req.Messages[0].Content, "JSON object") {
@@ -212,7 +213,6 @@ func TestWrite(t *testing.T) {
 		},
 		{
 			name: "streams into the card", kind: store.KindRewrite, sel: &fakeSelector{}, llm: &fakeLLM{text: `{"title":"Long","content":"` + strings.Repeat("word ", 20) + `"}`, chunk: 8, pause: 5 * time.Millisecond},
-			set:   func(s *settings.Settings) { s.Features.ShowCard = true },
 			speak: true, states: "recording recognizing composing done", state: Done, result: strings.TrimSpace(strings.Repeat("word ", 20)), card: deliver.ReasonCard,
 			check: func(t *testing.T, h *harness, end Snapshot, model *fakeLLM, sel *fakeSelector) {
 				h.rec.waitFor(t, "the card while it streams", func(s Snapshot) bool { return s.State == Composing && s.Card && s.Draft != "" })
@@ -220,7 +220,7 @@ func TestWrite(t *testing.T) {
 		},
 		{
 			name: "not JSON: taken as text", kind: store.KindRewrite, sel: &fakeSelector{}, llm: &fakeLLM{text: "We ship on Friday."},
-			speak: true, states: "recording recognizing composing delivering done", state: Done, result: "We ship on Friday.", pasted: true,
+			speak: true, states: "recording recognizing composing done", state: Done, result: "We ship on Friday.", card: deliver.ReasonCard,
 		},
 		{
 			name: "an empty answer", kind: store.KindRewrite, sel: &fakeSelector{}, llm: &fakeLLM{text: `{"title":"x","content":""}`},

@@ -10,9 +10,9 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
-// TestShowCard: one switch sends every feature's result to the answer
-// card; off, each one is inserted, Rewrite's too (over the selection).
-// A follow-up stays in the card, where its conversation is.
+// TestShowCard: the card switch sends transcribe and translate to the
+// card or inserts; Rewrite always waits in the card. A follow-up stays
+// in the card, where its conversation is.
 func TestShowCard(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -26,8 +26,8 @@ func TestShowCard(t *testing.T) {
 		{name: "transcribe", kind: store.KindTranscribe, answer: "Hello, VoxtNew.", want: "Hello, VoxtNew."},
 		{name: "translate speech", kind: store.KindTranslate, answer: "你好", want: "你好"},
 		{name: "translate the selection", kind: store.KindTranslate, sel: "Good morning", answer: "早上好", want: "早上好"},
-		{name: "rewrite the selection", kind: store.KindRewrite, sel: "ship friday?", answer: "We ship on Friday.", want: "We ship on Friday."},
-		{name: "write from scratch", kind: store.KindRewrite, answer: `{"title":"Friday","content":"We ship on Friday."}`, want: "We ship on Friday."},
+		{name: "rewrite the selection", kind: store.KindRewrite, sel: "ship friday?", answer: "We ship on Friday.", want: "We ship on Friday.", alwaysIn: true},
+		{name: "write from scratch", kind: store.KindRewrite, answer: `{"title":"Friday","content":"We ship on Friday."}`, want: "We ship on Friday.", alwaysIn: true},
 		{name: "a follow-up", kind: store.KindRewrite, answer: "Team: Friday.", want: "Team: Friday.", alwaysIn: true,
 			previous: []compose.Turn{{Instruction: "write it", Answer: compose.Answer{Content: "We ship on Friday."}}}},
 	} {

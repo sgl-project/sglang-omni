@@ -64,13 +64,13 @@ func (a *app) translateSettings(c *ui.Context) {
 		})
 }
 
-// cardSetting is the answer card's switch, the same one on every
-// feature's page (p is the page's prefix).
+// cardSetting is the answer card's switch on Transcribe and Translate
+// (p is the page's prefix); Rewrite always shows answers in the card.
 func (a *app) cardSetting(c *ui.Context, p string) {
 	sectionTitle(c, i18n.T("Answer card"))
 	f := &a.prefs.Features
 	settingRow(c, p+"-card", i18n.T("Show the result in a card"),
-		i18n.T("Shows every result, transcribed, translated or rewritten, in the answer card, to read, copy or insert, instead of typing it (or replacing the selection). It is one switch for the three: the same on each page. Text that cannot go in, as with no text field in front, shows in the card anyway."), func() {
+		i18n.T("Shows transcribed and translated results in the answer card, to read, copy or insert, instead of typing them (or replacing the selection). Transcribe and Translate share this switch. Text that cannot go in, as with no text field in front, shows in the card anyway."), func() {
 			if ui.Switch(c.Key(p+"-card-switch"), &f.ShowCard).Label(i18n.T("Show the result in a card")).Changed() {
 				on := f.ShowCard
 				a.updateSettings(func(s *settings.Settings) { s.Features.ShowCard = on })

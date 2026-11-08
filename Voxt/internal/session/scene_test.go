@@ -293,8 +293,8 @@ func TestSceneWrite(t *testing.T) {
 				h.speak(id, 3)
 			}
 			end := h.rec.wait(t)
-			// Inserted, Rewrite's answers too, with the card switch off.
-			if end.State != Done || !end.Inserted || end.Card {
+			// Rewrite answers wait in the card (Voxt's); the rest is inserted.
+			if end.State != Done || end.Inserted == (tc.kind == store.KindRewrite) || end.Card != (tc.kind == store.KindRewrite) {
 				t.Fatalf("end %+v", end)
 			}
 			sys := h.llmRequest(t)
@@ -304,7 +304,12 @@ func TestSceneWrite(t *testing.T) {
 			h.text.mu.Lock()
 			presses := h.text.presses
 			h.text.mu.Unlock()
-			if len(presses) != 1 || (presses[0] != nil) != tc.press {
+			switch {
+			case tc.kind == store.KindRewrite:
+				if len(presses) != 0 { // nothing pasted: the card inserts when asked
+					t.Errorf("presses %+v", presses)
+				}
+			case len(presses) != 1 || (presses[0] != nil) != tc.press:
 				t.Errorf("presses %+v", presses)
 			}
 		})

@@ -214,12 +214,11 @@ func TestSessionBlocker(t *testing.T) {
 	}
 }
 
-// TestCardSwitchShared: the answer card has one switch, the same on the
-// Translate, Rewrite and Transcribe pages: each click there flips the
-// one setting, and no page has a second card switch.
+// TestCardSwitchShared: Transcribe and Translate share one answer-card
+// switch; Rewrite always shows answers in the card and has no switch.
 func TestCardSwitchShared(t *testing.T) {
 	a, tt := pageTester(t, "/translate")
-	for i, page := range []string{"/translate", "/rewrite", "/transcribe"} {
+	for i, page := range []string{"/translate", "/transcribe"} {
 		a.navigate(page)
 		frames(tt)
 		n := 0
@@ -234,6 +233,13 @@ func TestCardSwitchShared(t *testing.T) {
 		clickSwitch(t, tt, "Show the result in a card")
 		if on := a.lib.settings.Get().Features.ShowCard; on != (i%2 == 0) {
 			t.Errorf("%s: the card switch is %v after a click", page, on)
+		}
+	}
+	a.navigate("/rewrite")
+	frames(tt)
+	for _, s := range tt.AccessLabels() {
+		if s == "Show the result in a card" {
+			t.Fatalf("/rewrite: card switch should not appear on Rewrite")
 		}
 	}
 }

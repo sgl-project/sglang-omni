@@ -855,7 +855,7 @@
   "Show the sidebar": "显示侧边栏",
   "Shown in the answer card": "显示在答案卡片中",
   "Shown in the answer card, and not inserted": "显示在答案卡片中，没有插入",
-  "Shows every result, transcribed, translated or rewritten, in the answer card, to read, copy or insert, instead of typing it (or replacing the selection). It is one switch for the three: the same on each page. Text that cannot go in, as with no text field in front, shows in the card anyway.": "转录、翻译、转写的结果都显示在答案卡片里，可以阅读、复制或插入，不直接输入（也不替换选中的文字）。三个功能共用这一个开关，每页上的都是同一个。文字放不进去时（比如前台没有输入框），照样显示在卡片里。",
+  "Shows transcribed and translated results in the answer card, to read, copy or insert, instead of typing them (or replacing the selection). Transcribe and Translate share this switch. Text that cannot go in, as with no text field in front, shows in the card anyway.": "转录和翻译的结果显示在答案卡片里，可以阅读、复制或插入，不直接输入（也不替换选中的文字）。转录和翻译共用这一个开关。文字放不进去时（比如前台没有输入框），照样显示在卡片里。",
   "Sidebar": "侧边栏",
   "Skip silence": "跳过静音",
   "Skip this step": "跳过这一步",
