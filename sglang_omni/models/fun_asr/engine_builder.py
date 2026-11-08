@@ -191,13 +191,23 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
             # note (wilsonzheng0327): async decode under a draft means speculative
             # overlap, which this runner has not opted into.
             self.enable_async_decode = False
-            with open(
-                os.path.join(self.draft_checkpoint.name, "config.json")
-            ) as config_file:
-                block_size = json.load(config_file)["dflash_config"]["block_size"]
+            dflash_block_size = overrides.get("speculative_dflash_block_size")
+            num_draft_tokens = overrides.get("speculative_num_draft_tokens")
+            # note (wilsonzheng0327): SGLang verifies speculative_dflash_block_size tokens per step, else speculative_num_draft_tokens, else the draft's block size.
+            if dflash_block_size is not None:
+                draft_width = int(dflash_block_size)
+            elif num_draft_tokens is not None:
+                draft_width = int(num_draft_tokens)
+            else:
+                with open(
+                    os.path.join(self.draft_checkpoint.name, "config.json")
+                ) as config_file:
+                    draft_width = int(
+                        json.load(config_file)["dflash_config"]["block_size"]
+                    )
             # note (wilsonzheng0327): the context fits a 30 s clip and the full budget
-            # exactly, and a draft request must stay two blocks below the context.
-            self.speculative_reserve_tokens = 2 * block_size
+            # exactly, and a draft request must stay two verify widths below the context.
+            self.speculative_reserve_tokens = 2 * draft_width
             self.engine_context_padding = self.speculative_reserve_tokens + 1
             self.context_length += self.engine_context_padding
 

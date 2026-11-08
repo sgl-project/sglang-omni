@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.mem_cache import allocation_sizing
 
 import sglang_omni.models.fun_asr.engine_builder as fun_asr_builder
 import sglang_omni.models.fun_asr.sglang_model as fun_asr_model
@@ -445,6 +446,58 @@ def test_the_context_reserve_must_match_the_scheduler(
     monkeypatch.setattr(fun_asr_builder, "get_alloc_reserve_per_decode", lambda: 24)
     with pytest.raises(RuntimeError, match="16-token speculative reserve"):
         builder.validate_after_model_setup(object(), object())
+
+
+@pytest.mark.parametrize(
+    ("width_overrides", "draft_width"),
+    [
+        ({}, 8),
+        ({"speculative_num_draft_tokens": 4}, 4),
+        ({"speculative_dflash_block_size": 4}, 4),
+        ({"speculative_dflash_block_size": 4, "speculative_num_draft_tokens": 4}, 4),
+    ],
+)
+def test_the_context_reserve_follows_the_served_draft_width(
+    monkeypatch,
+    tmp_path: Path,
+    width_overrides: dict[str, int],
+    draft_width: int,
+) -> None:
+    """A width below the block-8 draft's refused to start the server: the context was
+    padded for 8 tokens while SGLang reserves for the width it serves."""
+    monkeypatch.setattr(fun_asr_builder.current_platform, "is_cuda", lambda: True)
+    write_speculators_config(tmp_path)
+    builder = capture_builder(monkeypatch)
+    builder.context_length = 286
+    builder.adjust_overrides(
+        {
+            "speculative_algorithm": "DFLASH",
+            "speculative_draft_model_path": str(tmp_path),
+            **width_overrides,
+        }
+    )
+    builder.draft_checkpoint.cleanup()
+    # note (wilsonzheng0327): the speculative settings SGLang resolves for this width, read by its real reserve function.
+    spec = SimpleNamespace(
+        speculative_algorithm="DFLASH",
+        speculative_num_steps=1,
+        speculative_eagle_topk=1,
+        speculative_num_draft_tokens=draft_width,
+    )
+    monkeypatch.setattr(allocation_sizing, "get_spec", lambda: spec)
+    monkeypatch.setattr(
+        allocation_sizing, "max_speculative_num_draft_tokens", lambda: draft_width
+    )
+    monkeypatch.setattr(
+        allocation_sizing, "get_schedule", lambda: SimpleNamespace(page_size=1)
+    )
+    monkeypatch.setattr(
+        allocation_sizing, "get_parallel", lambda: SimpleNamespace(attn_dcp_size=1)
+    )
+
+    builder.validate_after_model_setup(object(), object())
+
+    assert builder.context_length == 286 + 2 * draft_width + 1
 
 
 def test_without_a_draft_the_context_and_async_decode_are_unchanged(
