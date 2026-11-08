@@ -31,6 +31,7 @@ type overlayForm struct {
 	position                int // 0 bottom, 1 top
 	opacity, radius, margin float64
 	showTime                bool
+	liveText                bool
 	// saveAt is when the last change waits to be saved (zero: saved).
 	saveAt time.Time
 }
@@ -58,6 +59,7 @@ func (a *app) loadOverlayForm() {
 		f.position = 1
 	}
 	f.opacity, f.radius, f.margin, f.showTime = o.Opacity, o.Radius, o.Margin, o.ShowTime
+	f.liveText = !o.HideLiveText
 }
 
 // overlayEdited applies the controls: at once to the overlay and the
@@ -70,6 +72,8 @@ func (a *app) overlayEdited() {
 		Radius:   math.Round(f.radius),
 		Margin:   math.Round(f.margin),
 		ShowTime: f.showTime,
+
+		HideLiveText: !f.liveText,
 	}
 	a.prefs.Overlay = o
 	a.overlayRestyle() // overlay.go
@@ -119,6 +123,11 @@ func (a *app) overlaySettings(c *ui.Context) {
 	})
 	settingRow(c, "ov-time", i18n.T("Show the recording time"), i18n.T("Off, the overlay shows only the feature's icon and the waveform."), func() {
 		if ui.Switch(c.Key("ov-time-switch"), &f.showTime).Label(i18n.T("Show the recording time")).Changed() {
+			a.overlayEdited()
+		}
+	})
+	settingRow(c, "ov-live", i18n.T("Show live text"), i18n.T("The words as Voxt hears them while you speak, and the answer as the model writes it."), func() {
+		if ui.Switch(c.Key("ov-live-switch"), &f.liveText).Label(i18n.T("Show live text")).Changed() {
 			a.overlayEdited()
 		}
 	})

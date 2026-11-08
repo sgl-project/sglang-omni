@@ -2,7 +2,7 @@
 # Turns mygo.json, in place, into the configuration of a release build:
 # the updates of release/mygo.release.json when it has them (the public key
 # that installed apps check updates against, and the feed; a version with a
-# "-" goes to its beta/ directory, MyGo's updates.prereleases; 1.0.0 has
+# "-" goes to its beta/ directory, MyGo's updates.prereleases; 2.0.0 has
 # none, so it never updates itself), and for a
 # Developer ID build the signing identity, the notary profile and the
 # update key's file. scripts/release.sh runs it, and the update tests with an

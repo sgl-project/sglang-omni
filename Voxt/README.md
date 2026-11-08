@@ -2,7 +2,7 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
-Voice input for macOS on **local models only**: press a shortcut in any app, speak, and the text appears where your cursor is.
+Voice input for macOS: press a shortcut in any app, speak, and the text appears where your cursor is. Speech is recognised **on your Mac**; the language model that cleans up, translates and rewrites is one you choose: a service's API, or one you run on this Mac with Ollama.
 
 - **转录 Transcribe**: what you say, typed where your cursor is, with live text while you speak and an optional clean-up by a language model (fillers and false starts out, punctuation in).
 - **翻译 Translate**: the selected text, or what you say, into another language.
@@ -16,51 +16,48 @@ With a history, the overlay, shortcuts, the menu bar, a setup guide, settings an
 
 **Updates**: this version does not update itself; a new version is installed by hand.
 
-> **Status: 1.0.0**. Every feature above works on the local models; see [CHANGELOG.md](CHANGELOG.md).
+> **Status: 2.0.0**. Every feature above works on the local models; see [CHANGELOG.md](CHANGELOG.md).
 
 ## What runs on your Mac
 
-Everything that hears or reads your words:
+Everything that hears your words:
 
 - **Speech recognition** and **voice detection** run on sglang-omni's native MLX servers ([`sglang_omni_mlx/native`](../sglang_omni_mlx/native), C++, no Python), one process per model, started when needed, stopped after 10 minutes unused (Local models → Advanced changes it).
-- **Language models** run in `voxtnew-llm`, a Swift process of Voxt's own (MLX, and llama.cpp for one model), stopped after 5 minutes unused (or as Local models → Advanced says).
 - A small Swift helper does what needs Apple's frameworks: the microphone, global shortcuts, Accessibility, pasting.
 
 Voxt offers a few models, tuned for it, and downloads them from Hugging Face (or a mirror) when you ask, each file checked against a pinned SHA-256:
 
 | Model | What it is good at | Download |
 |---|---|---|
-| Accurate speech recognition (recommended) | the most accurate; accents, dialects, names, several languages in one sentence; live text | 2.5 GB |
-| Fast speech recognition | quicker and lighter, for clear speech in a quiet place | 713 MB |
-| Balanced language model (recommended) | clean-up, translation and rewriting: the best balance of quality and speed | 3.3 GB |
-| Fast language model | answers sooner, uses less memory; short clean-ups and simple rewrites | 1.7 GB |
-| Translation model | made for translation, quick and natural; only Translate uses it | 1.1 GB |
+| Qwen3-ASR 1.7B (8bit) (recommended) | the most accurate; accents, dialects, names, several languages in one sentence; live text | 2.5 GB |
+| Qwen3-ASR 0.6B (4bit) | quicker and lighter, for clear speech in a quiet place | 713 MB |
 
-Voice detection (1.2 MB) comes with the first speech model. The speech models know 30 languages and 22 Chinese dialects; the general language models are best in Chinese and English.
+Voice detection (Silero VAD v6, 1.2 MB) comes with the first speech model. The speech models know 30 languages and 22 Chinese dialects.
 
-**Needs** a Mac with Apple silicon and macOS 15 or later. The app is about 280 MB; the recommended pair is a 5.8 GB download (all five models: 9.4 GB). While both recommended models are loaded they take about 7 GB of memory, so 16 GB of memory is comfortable; on an 8 GB Mac choose the fast models.
+**Language models** are the services you set up on the Language models page, over their OpenAI-compatible API: OpenAI, Anthropic, Google Gemini, DeepSeek, Qwen (Alibaba Cloud), Kimi, GLM, Doubao (Volcengine), MiniMax, StepFun, Xiaomi MiMo, xAI, OpenRouter, any other compatible server, or one on this Mac (Ollama, LM Studio, oMLX: free, and the text stays here). Without one, Transcribe types the text as recognised; Translate and Rewrite need one.
+
+**Needs** a Mac with Apple silicon and macOS 15 or later. The app is about 280 MB; the recommended speech model is a 2.5 GB download. On an 8 GB Mac choose Qwen3-ASR 0.6B (4bit).
 
 ## Privacy
 
-Audio and text never leave the Mac: recognition, clean-up, translation and rewriting all run on it. Voxt has no server of its own, no account and no analytics. It goes online for one thing only: downloading the models you choose (from Hugging Face, through the system's proxy, or hf-mirror.com when Hugging Face cannot be reached). The history, its optional recordings, the dictionary and the settings stay in `~/Library/Application Support/VoxtNew/`.
+Speech is recognised on the Mac, unless you set up a remote speech service for a feature on the Speech models page (OpenAI, Doubao, Aliyun and others): that feature's recordings then go to that service. The text to clean up, translate or rewrite goes to the language model you set up, and only there: with Ollama, LM Studio or oMLX it stays on this Mac. API keys stay in the macOS Keychain. Voxt has no server of its own, no account and no analytics. Otherwise it goes online only to download the models you choose (from Hugging Face, through the system's proxy, or hf-mirror.com when Hugging Face cannot be reached). The history, its optional recordings, the dictionary and the settings stay in `~/Library/Application Support/VoxtNew/`.
 
 ## Build from source
 
-Needs Go 1.27.1 (`GOTOOLCHAIN=auto` fetches it) and, to build the app, an Apple silicon Mac with macOS 15 or later, Xcode (the helper and `voxtnew-llm`), and [uv](https://docs.astral.sh/uv/) or Python 3 for the Omni runtime's build tools (`scripts/build-omni.sh` builds `sglang_omni_mlx/native` with its pinned MLX; CMake fetches its C++ dependencies from GitHub, through the shell's `https_proxy` if needed). Run from `Voxt/`:
+Needs Go 1.27.1 (`GOTOOLCHAIN=auto` fetches it) and, to build the app, an Apple silicon Mac with macOS 15 or later, Xcode (the helper), and [uv](https://docs.astral.sh/uv/) or Python 3 for the Omni runtime's build tools (`scripts/build-omni.sh` builds `sglang_omni_mlx/native` with its pinned MLX; CMake fetches its C++ dependencies from GitHub, through the shell's `https_proxy` if needed). Run from `Voxt/`:
 
 ```sh
 scripts/build-helper.sh              # the Swift helper, into resources/darwin-arm64/helper/
 scripts/build-omni.sh                # the Omni runtime (speech models), into resources/darwin-arm64/omni/
-scripts/build-llm.sh                 # voxtnew-llm (language models), into resources/darwin-arm64/llm/
 go tool mygo dev                     # run with hot reload
 go tool mygo build                   # build/darwin-arm64/Voxt.app and its disk image
 ```
 
-The helper and `voxtnew-llm` must be built before `go tool mygo build` or `mygo dev`: `mygo.json` gives both their entitlements and fails without them. Without the Omni runtime the app runs but cannot recognise speech (or point `VOXTNEW_OMNI_RUNTIME` at one built with `scripts/build-omni.sh --out DIR`; likewise `VOXTNEW_LLM` for `scripts/build-llm.sh --out DIR`).
+The helper must be built before `go tool mygo build` or `mygo dev`: `mygo.json` gives it its entitlements and fails without it. Without the Omni runtime the app runs but cannot recognise speech (or point `VOXTNEW_OMNI_RUNTIME` at one built with `scripts/build-omni.sh --out DIR`).
 
-**The release build** is one command, on the Mac: `scripts/release.sh` builds the three, packages and signs the app, and checks the result (`--runtimes DIR` takes prebuilt runtimes; with the Developer ID of the team 779M533DL5, `--notarize` notarises it (1.0.0 has no update feed, so nothing to `--publish`); over ssh it runs through `scripts/mac-gui.sh`). See [docs/release.md](docs/release.md).
+**The release build** is one command, on the Mac: `scripts/release.sh` builds the three, packages and signs the app, and checks the result (`--runtimes DIR` takes prebuilt runtimes; with a Developer ID identity, `--notarize` notarises it (2.0.0 has no update feed, so nothing to `--publish`); over ssh it runs through `scripts/mac-gui.sh`). A release is that build on GitHub: a `voxt-vX.Y.Z` tag runs the Voxt Release workflow, which signs it with the Developer ID of the team RY2TQTYSKQ, notarises it and puts its disk image on a draft GitHub release. See [docs/release.md](docs/release.md).
 
-From Linux, `scripts/mac.sh <command>` mirrors the project to a Mac (`MAC_HOST`, default `mac-air`; `MAC_DIR`, default `code/VoxtNew`) and runs the command there: `scripts/mac.sh 'scripts/build-helper.sh && scripts/build-llm.sh && go tool mygo build'`.
+From Linux, `scripts/mac.sh <command>` mirrors the project to a Mac (`MAC_HOST`, default `mac-air`; `MAC_DIR`, default `code/VoxtNew`) and runs the command there: `scripts/mac.sh 'scripts/build-helper.sh && go tool mygo build'`.
 
 <details>
 <summary>Signing during development (keeping the permissions across rebuilds)</summary>
@@ -73,7 +70,7 @@ macOS keeps the Microphone and Accessibility grants for a signature. An ad hoc s
   open --env VOXTNEW_HELPER=$HOME/voxtnew-dev/voxtnew-helper build/darwin-arm64/Voxt.app
   ```
 - **Start over:** `tccutil reset Microphone dev.hehehai.voxtnew` (likewise `Accessibility`), then open the app and grant again. If a stale Accessibility entry stays on but does nothing, remove it with − in System Settings and grant again.
-- **Sign with a fixed identity:** an Apple Development certificate keeps the grants across rebuilds: `go tool mygo build -sign "Apple Development: …"` (or `macos.signingIdentity` in a local mygo.json; `VOXTNEW_SIGN_IDENTITY` for `scripts/build-helper.sh` and `scripts/build-llm.sh`). Over ssh, `codesign` fails with `errSecInternalComponent` until the key may be used without the GUI: once, in Terminal on the Mac, `security set-key-partition-list -S apple-tool:,apple: -s ~/Library/Keychains/login.keychain-db`.
+- **Sign with a fixed identity:** an Apple Development certificate keeps the grants across rebuilds: `go tool mygo build -sign "Apple Development: …"` (or `macos.signingIdentity` in a local mygo.json; `VOXTNEW_SIGN_IDENTITY` for `scripts/build-helper.sh`). Over ssh, `codesign` fails with `errSecInternalComponent` until the key may be used without the GUI: once, in Terminal on the Mac, `security set-key-partition-list -S apple-tool:,apple: -s ~/Library/Keychains/login.keychain-db`.
 
 Switching between your own builds and a release build (Developer ID) needs the same reset once ([docs/release.md](docs/release.md) §4). Downloaded models stay.
 
@@ -81,14 +78,13 @@ Switching between your own builds and a release build (Developer ID) needs the s
 
 ## Development
 
-Voxt is a Go app on [MyGo](https://github.com/egoist/mygo) (native macOS UI from Go, no cgo). Go decides; the helper and the model runtimes do what they are told, over JSON lines on stdin and stdout (the helper, `voxtnew-llm`) or loopback HTTP (the Omni servers). Everything but the Swift code is plain Go and is tested on Linux, with fakes of the helper and the runtimes. Run from `Voxt/`:
+Voxt is a Go app on [MyGo](https://github.com/egoist/mygo) (native macOS UI from Go, no cgo). Go decides; the helper and the model runtimes do what they are told, over JSON lines on stdin and stdout (the helper) or loopback HTTP (the Omni servers). Everything but the Swift code is plain Go and is tested on Linux, with fakes of the helper and the runtimes. Run from `Voxt/`:
 
 ```sh
 CGO_ENABLED=0 go test ./...          # everything; runs on Linux
 go tool mygo vet .                   # go vet and MyGo's UI-lifetime checks
 VOXTNEW_SNAPSHOTS=/tmp/shots go test -run TestSnapshots .   # every page as PNG, light/dark, en/zh-Hans
 cd helper && swift test              # the Swift helper (on a Mac), against the same protocol fixtures
-scripts/build-llm.sh --test          # voxtnew-llm's Swift tests (on a Mac)
 scripts/mac.sh scripts/mac-e2e.sh    # headless Mac tests: the real helper, fake models
 scripts/mac.sh scripts/mac-regress.sh   # the real models on a Mac: runtimes, eval, the packaged app
 ```
@@ -98,15 +94,15 @@ The store's tests use MyGo's SQLite plugin, which downloads its library once (ch
 - [docs/architecture.md](docs/architecture.md): packages, threading, the session, the runtimes, data on disk, tests.
 - [docs/plan.md](docs/plan.md): what the app is and its milestones.
 - [docs/behavior.md](docs/behavior.md): what the app does differently from the Swift Voxt ([hehehai/voxt](https://github.com/hehehai/voxt)), and why.
-- [docs/llm-models.md](docs/llm-models.md): the language models, their settings and measurements.
+- [docs/llm-models.md](docs/llm-models.md): the retired local language models, their settings and measurements (history).
 - [docs/eval.md](docs/eval.md): the models' quality on an eval set, and the decisions it led to.
-- [docs/helper-protocol.md](docs/helper-protocol.md), [docs/llm-protocol.md](docs/llm-protocol.md): the helper's and `voxtnew-llm`'s protocols.
+- [docs/helper-protocol.md](docs/helper-protocol.md): the helper's protocol.
 - [docs/manual-test.md](docs/manual-test.md): the checks by hand on a Mac (in Chinese), and the automated Mac tests.
 - [docs/release.md](docs/release.md): building, signing, notarising and publishing a release; updates (in Chinese).
 - [AGENTS.md](AGENTS.md): the rules for changes (strings, threading, the protocols).
 - [CHANGELOG.md](CHANGELOG.md): changes by version. [CONTRIBUTING.md](CONTRIBUTING.md): how to send a change.
 
-Voxt takes the place of the Swift Voxt that this repository held before 1.0.0: installing it replaces that app's Voxt.app in Applications, and the two keep their data apart. Some names inside stay VoxtNew (its Swift packages, processes, bundle id and data folders). It started as a copy of [Auralink](https://github.com/hehehai/Auralink), the same author's app on remote models, which rewrote [Voxt](https://github.com/hehehai/voxt) on Go and MyGo with [AudioSmith](https://github.com/hehehai/AudioSmith)'s interface; its local model runtimes and their request policies follow Voxt's.
+Voxt takes the place of the Swift Voxt (1.x) that this repository held before 2.0.0: installing it replaces that app's Voxt.app in Applications, and the two keep their data apart; Voxt can import the old app's dictionary, history and downloaded speech models ([docs/voxt-migration.md](docs/voxt-migration.md)). Some names inside stay VoxtNew (its Swift packages, processes, bundle id and data folders). It started as a copy of [Auralink](https://github.com/hehehai/Auralink), the same author's app on remote models, which rewrote [Voxt](https://github.com/hehehai/voxt) on Go and MyGo with [AudioSmith](https://github.com/hehehai/AudioSmith)'s interface; its local model runtimes and their request policies follow Voxt's.
 
 ## Licence
 

@@ -239,7 +239,7 @@ func TestUpdateMenus(t *testing.T) {
 	a.checkForUpdates() // nothing to do, no panic
 }
 
-// TestNoUpdateFeed: a build without an update feed (1.0.0) has no
+// TestNoUpdateFeed: a build without an update feed (2.0.0) has no
 // updater. About says that it does not update, and there is no Check for
 // Updates… there or in the command palette (the menus: TestUpdateMenus).
 func TestNoUpdateFeed(t *testing.T) {

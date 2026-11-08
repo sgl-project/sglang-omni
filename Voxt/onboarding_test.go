@@ -34,7 +34,7 @@ func obSnap(a *app, id string, kind store.Kind, st session.State) session.Snapsh
 
 func TestOnboardingSteps(t *testing.T) {
 	a, tt := obTester(t)
-	for _, s := range []string{"Welcome to Voxt", "Your audio and text stay on this Mac", "History stays on this Mac", "Get started"} {
+	for _, s := range []string{"Welcome to Voxt", "Your audio stays on this Mac", "History stays on this Mac", "Get started"} {
 		if !has(tt, s) {
 			t.Errorf("welcome: no %q in %q", s, tt.Texts())
 		}
@@ -44,7 +44,7 @@ func TestOnboardingSteps(t *testing.T) {
 		t.Fatalf("permissions: step %d %q", a.ob.step, tt.Texts())
 	}
 	click(t, tt, "Continue")
-	if a.ob.step != obModels || !has(tt, "Local models") || !has(tt, "Download both (5.8 GB)") {
+	if a.ob.step != obModels || !has(tt, "Models") || !has(tt, "Download (2.5 GB)") || !has(tt, "Set up a language model") {
 		t.Fatalf("models: step %d %q", a.ob.step, tt.Texts())
 	}
 	click(t, tt, "Continue")

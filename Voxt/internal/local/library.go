@@ -54,11 +54,11 @@ func NewLibrary(m *models.Manager, open Openers, name func(id string) string) *L
 }
 
 // Installed lists kind's installed models in the catalogue's order, the
-// recommended first. Memory only.
+// recommended first; never a retired one. Memory only.
 func (l *Library) Installed(kind Kind) []Model {
 	var out []Model
 	for _, m := range models.Catalog() {
-		if string(m.Kind) == string(kind) && l.models.Installed(m.ID) {
+		if string(m.Kind) == string(kind) && !m.Retired && l.models.Installed(m.ID) {
 			out = append(out, Model{Kind: kind, ID: m.ID, Name: l.name(m.ID), Features: m.Features})
 		}
 	}

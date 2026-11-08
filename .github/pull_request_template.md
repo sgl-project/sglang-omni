@@ -30,7 +30,7 @@
 
 ## CI
 
-Lint, Test Layout, Docs Check, Rust Router and the NPU image build run on GitHub-hosted runners for every PR, and `lint` must pass before merging. The rest of CI runs on self-hosted runners, starts only after lint passes, and requires a maintainer to add CI labels. Once labeled, every subsequent push re-triggers CI as long as the labels remain. Draft PRs are skipped even if labeled.
+Lint, Test Layout, Docs Check and Rust Router run on GitHub-hosted runners for every PR, the NPU image build for PRs that change its Dockerfile, installer, pyproject files or workflows, and `lint` must pass before merging. The rest of CI runs on self-hosted runners, starts only after lint passes, and requires a maintainer to add CI labels. Once labeled, every subsequent push re-triggers CI as long as the labels remain. Draft PRs are skipped even if labeled.
 
 - `run-lint-only` runs lint only. The self-hosted gates succeed and run no tests. Use `/tag-and-rerun-ci lint` to add it. It does not turn off a stage label that is also present.
 - A stage label runs one stage, and there is no label that runs every stage: `run-asr-ci`, `run-tts-ci`, `run-mps-ci`, `run-omni-ci`, `run-native-duplex`, `run-turn-based-duplex` and `run-cascaded-duplex` on H100, `run-intel-cpu-ci` (Intel Xeon), `run-intel-xpu-ci` (Intel GPU) and `run-mac-ci` (Apple Silicon). The hardware stages still skip a PR that touches none of their paths.

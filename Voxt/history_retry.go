@@ -68,7 +68,7 @@ func (a *app) retryEntry(e store.Entry) {
 		return
 	}
 	if _, ok := a.featureModel(local.LLM, string(e.Kind)); !ok && e.Kind != store.KindTranscribe {
-		a.toast(i18n.T("No language model is installed."))
+		a.toast(i18n.T("No language model is set up."))
 		return
 	}
 	a.hist.retry = entryRetry{id: e.ID, stage: session.Recognizing}

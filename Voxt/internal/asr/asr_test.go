@@ -4,12 +4,96 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/asr/asrtest"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 )
+
+func TestCheckEndpoint(t *testing.T) {
+	ok := map[string][]string{
+		"wss://openspeech.bytedance.com/api/v3/sauc/bigmodel": {"wss"},
+		"WSS://dashscope.aliyuncs.com/api-ws/v1/inference":    {"wss"},
+		"ws://127.0.0.1:9000/x":                               {"wss"},
+		"ws://[::1]:9000/x":                                   {"wss"},
+		"http://localhost:8080/v1":                            {"https"},
+		"https://api.openai.com/v1?x=1":                       {"https"},
+	}
+	for raw, schemes := range ok {
+		if _, err := asr.CheckEndpoint("p", raw, schemes...); err != nil {
+			t.Errorf("%s: %v", raw, err)
+		}
+	}
+	bad := map[string][]string{
+		"":                                    {"wss"},
+		"ws://example.com/x":                  {"wss"},
+		"https://example.com/x":               {"wss"},
+		"http://192.168.1.2/v1":               {"https"},
+		"https://user:pass@api.openai.com/v1": {"https"},
+		"/v1/audio":                           {"https"},
+		"localhost:8080":                      {"https"},
+	}
+	for raw, schemes := range bad {
+		_, err := asr.CheckEndpoint("p", raw, schemes...)
+		if asr.KindOf(err) != asr.KindConfig || !errors.Is(err, core.ErrInvalid) {
+			t.Errorf("%q: %v", raw, err)
+		}
+		if strings.Contains(err.Error(), "pass@") {
+			t.Errorf("leaks the password: %v", err)
+		}
+	}
+	if got := asr.SanitizeEndpoint("wss://u:p@h.test/x?key=secret#f"); got != "wss://h.test/x" {
+		t.Errorf("sanitized %q", got)
+	}
+}
+
+func TestDialRefusedAndClosed(t *testing.T) {
+	u := asrtest.RefuseServer(t, 401, `{"error":{"code":"InvalidApiKey","message":"Invalid API-key provided."}}`)
+	_, _, err := asr.Dial(context.Background(), "p", u, asr.WSOptions{})
+	var e *asr.Error
+	if !errors.As(err, &e) || e.Kind != asr.KindAuth || e.Code != "InvalidApiKey" || e.Status != 401 {
+		t.Fatalf("refused: %#v", err)
+	}
+
+	u = asrtest.WSServer(t, "/ws", func(c *asrtest.Conn) {
+		c.Read()
+		c.Close(websocket.StatusPolicyViolation, "quota exceeded for this model")
+	})
+	conn, _, err := asr.Dial(context.Background(), "p", u, asr.WSOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	conn.Write(ctx, websocket.MessageText, []byte("hi"))
+	_, _, err = conn.Read(ctx)
+	if k := asr.WSError(ctx, "p", err).Kind; k != asr.KindQuota {
+		t.Errorf("policy close: %s (%v)", k, err)
+	}
+}
+
+// TestWSClient: a WebSocket's handshake goes through the proxy of the
+// app's client, over HTTP/1.1.
+func TestWSClient(t *testing.T) {
+	proxy, _ := url.Parse("http://proxy.test:3128")
+	base := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxy)}}
+	tr := asr.WSClient(base).Transport.(*http.Transport)
+	req, _ := http.NewRequest("GET", "https://openspeech.bytedance.com/", nil)
+	if got, _ := tr.Proxy(req); got == nil || got.Host != "proxy.test:3128" {
+		t.Errorf("proxy %v", got)
+	}
+	if tr.TLSNextProto == nil || tr.ForceAttemptHTTP2 {
+		t.Error("HTTP/2 is not off")
+	}
+	if tr := asr.WSClient(nil).Transport.(*http.Transport); tr.Proxy != nil {
+		t.Error("a nil client has a proxy")
+	}
+}
 
 func TestWAVAndFrames(t *testing.T) {
 	pcm := make([]byte, 3200*3+100)

@@ -1,9 +1,10 @@
 // Package permission reads and asks for the macOS privacy permissions
 // VoxtNew's own process holds: the Microphone (the helper records under
-// the app's identity) and Accessibility (pasting into other apps, reading
-// the selection, the helper's event tap). On darwin it calls AVFoundation
-// and HIServices through purego (no cgo); elsewhere Native knows nothing,
-// so the app's tests run on Linux with Fake.
+// the app's identity), Accessibility (pasting into other apps, reading
+// the selection, the helper's event tap) and Speech Recognition (System
+// dictation, which the helper runs). On darwin it calls AVFoundation,
+// HIServices and Speech through purego (no cgo); elsewhere Native knows
+// nothing, so the app's tests run on Linux with Fake.
 //
 // There is no Automation permission: browser addresses (app
 // enhancement's URL rules) are read through Accessibility.
@@ -41,14 +42,21 @@ type System interface {
 	// PromptAccessibility shows the system's prompt, which adds VoxtNew
 	// to Privacy & Security → Accessibility.
 	PromptAccessibility()
+	// SpeechRecognition is the Speech Recognition permission's state:
+	// macOS's own speech recognition (System dictation).
+	SpeechRecognition() State
+	// RequestSpeechRecognition shows the system's prompt (once) and calls
+	// done with the outcome, on a goroutine of its own.
+	RequestSpeechRecognition(done func(granted bool))
 }
 
 // Fake is a System for tests: it reports what its fields say.
 type Fake struct {
 	mu       sync.Mutex
 	Mic      State
+	Speech   State
 	Trusted  bool
-	Grant    bool // what RequestMicrophone answers
+	Grant    bool // what RequestMicrophone and RequestSpeechRecognition answer
 	Prompted int  // PromptAccessibility calls
 }
 
@@ -61,6 +69,19 @@ func (f *Fake) RequestMicrophone(done func(bool)) {
 		f.Mic = Granted
 	} else {
 		f.Mic = Denied
+	}
+	f.mu.Unlock()
+	done(g)
+}
+
+func (f *Fake) SpeechRecognition() State { f.mu.Lock(); defer f.mu.Unlock(); return f.Speech }
+
+func (f *Fake) RequestSpeechRecognition(done func(bool)) {
+	f.mu.Lock()
+	g := f.Grant
+	f.Speech = Denied
+	if g {
+		f.Speech = Granted
 	}
 	f.mu.Unlock()
 	done(g)

@@ -28,7 +28,7 @@ func TestTranslatePage(t *testing.T) {
 	a, tt := pageTester(t, "/translate")
 	for _, s := range []string{
 		"Translate", "Shortcuts", "Right ⌥ ⇧", "Models", "No speech model is installed: only selected text can be translated.",
-		"No language model is installed: install one to translate.", "Translation", "Translate into", "Automatic: Simplified Chinese",
+		"No language model is set up: set one up to translate.", "Translation", "Translate into", "Automatic: Simplified Chinese",
 		"Basic clean-up", "Show the result in a card", "Your rules", "Try it",
 	} {
 		if !has(tt, s) {
@@ -61,6 +61,7 @@ func TestTranslatePage(t *testing.T) {
 	if hs := a.lib.settings.Get().Features.Translate.Hotkeys; len(hs) != 2 || hs[1].Keys != "RightCommand" {
 		t.Errorf("shortcuts %+v", hs)
 	}
+	click(t, tt, "Your rules")
 	click(t, tt, "Your rules for Translate")
 	tt.Type("Use British spelling.")
 	click(t, tt, "Show the full prompt")
@@ -73,7 +74,7 @@ func TestTranslatePage(t *testing.T) {
 	// Ready services: no notices.
 	readyModels(a)
 	frames(tt)
-	if has(tt, "No language model is installed: install one to translate.") {
+	if has(tt, "No language model is set up: set one up to translate.") {
 		t.Error("notice with a ready model")
 	}
 }
@@ -81,7 +82,7 @@ func TestTranslatePage(t *testing.T) {
 func TestRewritePage(t *testing.T) {
 	a, tt := pageTester(t, "/rewrite")
 	for _, s := range []string{
-		"Rewrite", "⌃ Right ⌥", "No speech model is installed: install one to rewrite.", "No language model is installed: install one to rewrite.",
+		"Rewrite", "⌃ Right ⌥", "No speech model is installed: install one to rewrite.", "No language model is set up: set one up to rewrite.",
 		"Rewriting", "Clean up the instruction",
 		"While the answer card shows an answer, the shortcut records a follow-up that changes it (\"shorter\", \"in English\").",
 	} {
@@ -96,6 +97,7 @@ func TestRewritePage(t *testing.T) {
 	if has(tt, "Long answers in the card") {
 		t.Error("the card's length setting is back: every answer goes to the card")
 	}
+	click(t, tt, "Your rules")
 	click(t, tt, "Show the full prompt")
 	if !has(tt, "With a selection, as below; with nothing selected the model writes from the instruction and answers with a title and the text.") {
 		t.Errorf("preview %q", firstTexts(tt))
@@ -135,7 +137,7 @@ func TestOverlayWriting(t *testing.T) {
 	}
 	// Another language: nothing is set up, so the card says why.
 	a.retryAnswer("ja")
-	if !a.answer.open || a.answer.msg != "No language model is installed." || a.sess.ID != "t1" {
+	if !a.answer.open || a.answer.msg != "No language model is set up." || a.sess.ID != "t1" {
 		t.Errorf("retry blocked %+v", a.answer)
 	}
 	a.closeAnswer()

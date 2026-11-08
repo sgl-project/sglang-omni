@@ -97,7 +97,7 @@ func main() {
 	a.muteJournal = outputJournal(home, cacheDir) // mute_link.go
 	a.connectShell(logDir)                        // shell.go
 	a.connectHelper()                             // helperlink.go
-	// A build without an update feed (1.0.0, every development build)
+	// A build without an update feed (2.0.0, every development build)
 	// has no updater: no Check for Updates…, and About says so.
 	if mygo.Updater.HasFeed() {
 		a.upd = pluginUpdates{}
@@ -111,6 +111,7 @@ func main() {
 		a.applyBeta()         // updates.go: betas or not, before the first check
 		a.startHelper()       // helperlink.go
 		a.openTray()          // tray.go: the menu bar icon, close to the menu bar
+		a.applyDock()         // tray.go: in the Dock or not
 		a.connectWindowLife() // tray.go
 		a.watchBundle()       // updates.go: an update installed while it runs
 		a.expireRecordings()  // history_retry.go: recordings kept for a retry, past their time
@@ -127,7 +128,7 @@ func main() {
 
 // nameApp names the app Voxt (the update window, the single-instance
 // lock) and keeps its data, logs and cache in the VoxtNew folders that
-// MyGo named after the app before 1.0.0, where testers' libraries are.
+// MyGo named after the app before 2.0.0, where testers' libraries are.
 func nameApp() error {
 	mygo.App.SetName("VoxtNew")
 	for _, p := range []mygo.PathName{mygo.PathUserData, mygo.PathLogs, mygo.PathCache} {

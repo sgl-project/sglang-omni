@@ -102,7 +102,7 @@ func (r *run) listen() (string, bool) {
 		}
 		ch := make(chan openResult, 1)
 		go func() {
-			s, err := st.Open(r.ctx, asr.StreamRequest{SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints()})
+			s, err := st.Open(r.ctx, asr.StreamRequest{SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext()})
 			ch <- openResult{s, err}
 		}()
 		return ch
@@ -302,7 +302,7 @@ func (r *run) listen() (string, bool) {
 		}
 		sent := asr.Duration(upload, asr.SampleRate)
 		r.m.update(r, func(s *Snapshot) { s.Timings.Sent = sent })
-		res, err = ft.Transcribe(actx, asr.FileRequest{Audio: upload, Format: "pcm", SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints()})
+		res, err = ft.Transcribe(actx, asr.FileRequest{Audio: upload, Format: "pcm", SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext()})
 		if err != nil && actx.Err() != nil {
 			err = r.ctxErr(actx)
 		}
