@@ -1,6 +1,6 @@
 # CI Workflows and Labels
 
-SGLang-Omni CI has two parts. A few fast checks run on GitHub-hosted runners for every pull request. Everything else runs on self-hosted runners: H100 machines for the GPU stages, an Intel Xeon host, an Intel GPU host and an Apple Silicon Mac.
+SGLang-Omni CI has two parts. A few fast checks run on GitHub-hosted runners for every pull request. Everything else runs on self-hosted runners (H100 machines for the GPU stages, an Intel Xeon host and an Intel GPU host), except Voxt Mac CI, which runs on GitHub's macOS runners but also needs its label.
 
 **A pull request runs none of the self-hosted CI until a maintainer adds CI labels.** Once labeled, every later push re-runs CI for as long as the labels stay. Draft pull requests are blocked from self-hosted CI even when they are labeled.
 
