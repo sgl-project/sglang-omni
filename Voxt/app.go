@@ -73,6 +73,7 @@ type app struct {
 	muteState
 	updateState
 	notesState
+	announcementsState
 }
 
 func newApp(lib *library, h *helperHost) *app {

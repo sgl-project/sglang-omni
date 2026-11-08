@@ -656,8 +656,8 @@
   "Other languages": "其他语言",
   "Other microphones": "其他麦克风",
   "Other model…": "其他模型…",
-  "Otherwise Voxt goes online only to check for updates and to download models.": "除此之外，Voxt 只在检查更新和下载模型时联网。",
-  "Otherwise Voxt goes online only to download models.": "除此之外，Voxt 只在下载模型时联网。",
+  "Otherwise Voxt goes online only to check for updates, to download models and to read Voxt's announcements, which sends nothing about you.": "除此之外，Voxt 只在检查更新、下载模型和读取 Voxt 的公告时联网；读取公告不会发送任何关于你的信息。",
+  "Otherwise Voxt goes online only to download models and to read Voxt's announcements, which sends nothing about you.": "除此之外，Voxt 只在下载模型和读取 Voxt 的公告时联网；读取公告不会发送任何关于你的信息。",
   "Over 100 languages, best in Chinese and English": "100 多种语言，中文和英文最好",
   "Over 140 languages": "140 多种语言",
   "Over 200 languages, best in Chinese and English": "200 多种语言，中文和英文最好",
@@ -1292,5 +1292,6 @@
   "Password (optional)": "密码（可选）",
   "Sent to the proxy only when both are set. The password is kept in the Keychain. Only Voxt uses them.": "两项都填了才发给代理。密码保存在钥匙串里。只有 Voxt 使用它们。",
   "The password cannot have quotes, backslashes or line breaks.": "密码里不能有引号、反斜杠或换行。",
-  "Could not save the proxy's password in the Keychain.": "无法把代理密码保存到钥匙串。"
+  "Could not save the proxy's password in the Keychain.": "无法把代理密码保存到钥匙串。",
+  "Read": "查看全文"
 }
