@@ -586,6 +586,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#recommended-single-h200-tp1">Recommended Single-H200 TP1</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#apple-silicon-native-mlx">Apple Silicon: native MLX</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known Limitations</a></li>
 </ul>
             </nav>
@@ -1043,6 +1044,69 @@ flags used for generation:</p>
 <p><code class="docutils literal notranslate"><span class="pre">N/A</span></code> means that a request returned one PCM payload, so it had no inter-payload seam to score. Every scored slice has zero P95 and P99 measured playback underrun.</p>
 </section>
 </section>
+<section id="apple-silicon-native-mlx">
+<h2>Apple Silicon: native MLX<a class="headerlink" href="#apple-silicon-native-mlx" title="Link to this heading">#</a></h2>
+<p>The standalone <code class="docutils literal notranslate"><span class="pre">ming_tts_server</span></code> serves <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> on an Apple Silicon Mac. Inference runs in C++ with the native runtime’s MLX 0.32.3 toolchain, without Python, PyTorch or CUDA. It reads the official BF16 checkpoint and the pinned 4-bit conversion <code class="docutils literal notranslate"><span class="pre">mlx-community/Ming-omni-tts-16.8B-A3B-4bit</span></code>, which also quantizes the acoustic and AudioVAE linear layers; quantization is read from the checkpoint.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>sglang_omni_mlx/native/ci/provision_models.py<span class="w"> </span><span class="s2">"</span><span class="nv">$MING_TTS_DATA</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model<span class="w"> </span>mlx-community/Ming-omni-tts-16.8B-A3B-4bit
+sglang_omni_mlx/native/scripts/build_runtime.sh<span class="w"> </span><span class="s2">"</span><span class="nv">$MING_TTS_RUNTIME</span><span class="s2">"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$MING_TTS_BUILD</span><span class="s2">"</span>
+<span class="s2">"</span><span class="nv">$MING_TTS_RUNTIME</span><span class="s2">/bin/ming_tts_server"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span><span class="s2">"</span><span class="nv">$MING_TTS_DATA</span><span class="s2">/models/mlx-community_Ming-omni-tts-16.8B-A3B-4bit"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-name<span class="w"> </span>ming-omni-tts<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>Set <code class="docutils literal notranslate"><span class="pre">MING_TTS_DATA</span></code>, <code class="docutils literal notranslate"><span class="pre">MING_TTS_RUNTIME</span></code> and <code class="docutils literal notranslate"><span class="pre">MING_TTS_BUILD</span></code> to separate local directories. Model provisioning uses the existing CI Python requirements and verifies the revision and hashes in <code class="docutils literal notranslate"><span class="pre">ci/model_pins.json</span></code>. For BF16, pass the directory that <code class="docutils literal notranslate"><span class="pre">hf</span> <span class="pre">download</span> <span class="pre">inclusionAI/Ming-omni-tts-16.8B-A3B</span></code> fills as <code class="docutils literal notranslate"><span class="pre">--model-path</span></code>. For Voxt’s supervisor protocol, launch with <code class="docutils literal notranslate"><span class="pre">--supervised</span> <span class="pre">--model-kind</span> <span class="pre">ming_tts</span> <span class="pre">--model-directory</span> <span class="pre">DIR</span></code>: the server picks a free port and a model name unless <code class="docutils literal notranslate"><span class="pre">--port</span></code> and <code class="docutils literal notranslate"><span class="pre">--model-name</span></code> set them, reports both in a JSON <code class="docutils literal notranslate"><span class="pre">ready</span></code> event on stdout, and stops on <code class="docutils literal notranslate"><span class="pre">{&quot;command&quot;:&quot;shutdown&quot;}</span></code> or when stdin closes.</p>
+<p>The requests under <a class="reference internal" href="#synthesizing-speech"><span class="std std-ref">Synthesizing Speech</span></a> work unchanged except voice cloning. The server cannot read a client’s files, so the reference clip goes inline as a base64 WAV data URL in <code class="docutils literal notranslate"><span class="pre">ref_audio</span></code>, with its transcript in <code class="docutils literal notranslate"><span class="pre">ref_text</span></code>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">MING_REFERENCE_WAV</span><span class="o">=</span>/path/to/reference-mono.wav
+<span class="nb">export</span><span class="w"> </span><span class="nv">MING_REFERENCE_TEXT</span><span class="o">=</span><span class="s1">'The exact words spoken in the reference clip.'</span>
+python<span class="w"> </span>-<span class="w"> </span><span class="s">&lt;&lt;'PY' | curl --fail-with-body http://127.0.0.1:8000/v1/audio/speech \</span>
+<span class="s">  -H 'Content-Type: application/json' --data-binary @- --output cloned.wav</span>
+<span class="s">import base64</span>
+<span class="s">import json</span>
+<span class="s">import os</span>
+<span class="s">from pathlib import Path</span>
+
+<span class="s">print(json.dumps({</span>
+<span class="s">    "model": "ming-omni-tts",</span>
+<span class="s">    "input": "Hello, this is a test of reference-conditioned speech.",</span>
+<span class="s">    "ref_text": os.environ["MING_REFERENCE_TEXT"],</span>
+<span class="s">    "ref_audio": "data:audio/wav;base64," + base64.b64encode(</span>
+<span class="s">        Path(os.environ["MING_REFERENCE_WAV"]).read_bytes()</span>
+<span class="s">    ).decode(),</span>
+<span class="s">    "response_format": "wav",</span>
+<span class="s">}))</span>
+<span class="s">PY</span>
+</pre></div>
+</div>
+<p>Otherwise the server reads requests by the CUDA rules under <a class="reference internal" href="#known-limitations"><span class="std std-ref">Known Limitations</span></a>. Where the two differ:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p></p></th>
+<th class="head"><p>CUDA server</p></th>
+<th class="head"><p>Native MLX server</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Reference audio</p></td>
+<td><p>One local file in <code class="docutils literal notranslate"><span class="pre">references</span></code>, or <code class="docutils literal notranslate"><span class="pre">ref_audio</span></code> with <code class="docutils literal notranslate"><span class="pre">ref_text</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ref_audio</span></code> with <code class="docutils literal notranslate"><span class="pre">ref_text</span></code> only, as a base64 data URL with an audio media type, such as <code class="docutils literal notranslate"><span class="pre">data:audio/wav;base64,...</span></code>, read by the CUDA server’s data URL rules; <code class="docutils literal notranslate"><span class="pre">references</span></code> is refused. The WAV is mono 8/16/24/32-bit PCM or 32/64-bit float at any common rate, 0.1 to 30 seconds long, resampled from its own rate to 44.1 kHz for AudioVAE and 16 kHz for CampPlus as on CUDA</p></td>
+</tr>
+<tr class="row-odd"><td><p>CampPlus</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">campplus.onnx</span></code> through ONNX Runtime</p></td>
+<td><p>The same <code class="docutils literal notranslate"><span class="pre">campplus.onnx</span></code> weights, or the <code class="docutils literal notranslate"><span class="pre">campplus.safetensors</span></code> copy that the 4-bit checkpoint carries, run in C++ MLX. They load at startup; without either file, reference requests get 400</p></td>
+</tr>
+<tr class="row-even"><td><p>Requests</p></td>
+<td><p>Batched</p></td>
+<td><p>One at a time; <code class="docutils literal notranslate"><span class="pre">--max-queued-requests</span></code> more may wait (2 by default), the rest get 503. A request not done <code class="docutils literal notranslate"><span class="pre">--request-timeout-s</span></code> seconds after it arrives (600 by default) gets 504 or an early end to its stream, and a disconnected client’s request is cancelled. Bodies over 32 MiB get 413</p></td>
+</tr>
+<tr class="row-odd"><td><p>Streaming</p></td>
+<td><p>Two initial patches, then four-patch groups; each group’s audio waits for the next group</p></td>
+<td><p>The same groups, but each holds back only its last latent frame, so audio starts after the first two patches</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
 <section id="known-limitations">
 <h2>Known Limitations<a class="headerlink" href="#known-limitations" title="Link to this heading">#</a></h2>
 <ul class="simple">
@@ -1122,6 +1186,7 @@ checkpoint; the dense 0.5B checkpoint is not supported.</p></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#recommended-single-h200-tp1">Recommended Single-H200 TP1</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#apple-silicon-native-mlx">Apple Silicon: native MLX</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known Limitations</a></li>
 </ul>
   </nav></div>
