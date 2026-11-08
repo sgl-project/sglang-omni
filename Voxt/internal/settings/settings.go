@@ -252,6 +252,7 @@ type Features struct {
 	// session whose text goes to the Notes page instead of where the
 	// cursor is. Only a tap; empty keys: off.
 	Note Hotkey `json:"note"`
+	Meeting Meeting `json:"meeting,omitzero"`
 }
 
 // Feature is what every feature has: its shortcuts, the models it uses
