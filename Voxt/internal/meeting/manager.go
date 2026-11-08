@@ -18,18 +18,20 @@ import (
 type Manager struct {
 	cfg Config
 
-	mu       sync.Mutex
-	id       string
-	seq      int64
-	mode     Mode
-	state    State
-	snap     Snapshot
-	timeline *Timeline
-	archive  *Archive
-	cancel   context.CancelFunc
-	tracks   map[Source]*track
-	jobGen   int
-	subs     []func(Snapshot)
+	mu         sync.Mutex
+	id         string
+	seq        int64
+	mode       Mode
+	state      State
+	snap       Snapshot
+	timeline   *Timeline
+	archive    *Archive
+	cancel     context.CancelFunc
+	runCtx     context.Context
+	tracks     map[Source]*track
+	trackFails map[Source]int
+	jobGen     int
+	subs       []func(Snapshot)
 }
 
 // NewManager returns a meeting manager from cfg.
@@ -50,7 +52,7 @@ func NewManager(cfg Config) *Manager {
 			return settings.Privacy{KeepHistory: true}
 		}
 	}
-	return &Manager{cfg: cfg, tracks: map[Source]*track{}}
+	return &Manager{cfg: cfg, tracks: map[Source]*track{}, trackFails: map[Source]int{}}
 }
 
 // Start opens a meeting and begins capture on every track mode needs.
@@ -104,7 +106,10 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (string, error) {
 	m.archive = newArchive(audioDir)
 	runCtx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
+	m.runCtx = runCtx
+	m.trackFails = map[Source]int{}
 	m.mu.Unlock()
+	go m.watchDisk(runCtx)
 
 	sources := req.Mode.Sources()
 	if err := m.startTracks(runCtx, sources); err != nil {
@@ -170,10 +175,9 @@ func (m *Manager) Resume(ctx context.Context, id string) error {
 	m.state = StateRecording
 	m.snap.State = StateRecording
 	sources := m.mode.Sources()
-	runCtx := context.Background()
-	if m.cancel != nil {
-		runCtx, m.cancel = context.WithCancel(runCtx)
-	}
+	runCtx, cancel := context.WithCancel(context.Background())
+	m.cancel = cancel
+	m.runCtx = runCtx
 	m.mu.Unlock()
 	if err := m.startTracks(runCtx, sources); err != nil {
 		return err
@@ -206,10 +210,9 @@ func (m *Manager) SetMode(ctx context.Context, id string, mode Mode) error {
 		return nil
 	}
 	sources := mode.Sources()
-	runCtx := context.Background()
-	if m.cancel != nil {
-		runCtx, m.cancel = context.WithCancel(runCtx)
-	}
+	runCtx, cancel := context.WithCancel(context.Background())
+	m.cancel = cancel
+	m.runCtx = runCtx
 	m.mu.Unlock()
 	// Start any newly required sources; already-running overlap keeps timeline.
 	need := sourcesToAdd(old, sources)
@@ -394,6 +397,8 @@ func (m *Manager) resetIdle() {
 	m.timeline = nil
 	m.archive = nil
 	m.tracks = map[Source]*track{}
+	m.trackFails = map[Source]int{}
+	m.runCtx = nil
 }
 
 func (m *Manager) resetAfterDone() {

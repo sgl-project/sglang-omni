@@ -10,9 +10,10 @@ import (
 )
 
 type track struct {
-	src   Source
-	job   string
-	audio session.Audio
+	src      Source
+	job      string
+	audio    session.Audio
+	stopping bool
 }
 
 func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio) *StartError {
@@ -65,6 +66,13 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 			default:
 			}
 		}
+		m.mu.Lock()
+		tr := m.tracks[src]
+		intentional := tr != nil && tr.stopping
+		m.mu.Unlock()
+		if !intentional {
+			m.handleTrackLost(ctx, src)
+		}
 	}()
 	select {
 	case err := <-started:
@@ -84,5 +92,6 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 }
 
 func (t *track) stop() {
+	t.stopping = true
 	_ = t.audio.Stop(context.Background(), t.job)
 }
