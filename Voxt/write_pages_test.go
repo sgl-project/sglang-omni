@@ -62,9 +62,11 @@ func TestTranslatePage(t *testing.T) {
 		t.Errorf("shortcuts %+v", hs)
 	}
 	click(t, tt, "Your rules")
-	click(t, tt, "Your rules for Translate")
-	tt.Type("Use British spelling.")
-	click(t, tt, "Show the full prompt")
+	click(t, tt, "System prompt for Translate")
+	a.fui(hotkey.Translate).prompt = "Use British spelling."
+	a.fui(hotkey.Translate).promptDirty = true
+	a.savePrompt(hotkey.Translate)
+	click(t, tt, "Example user message")
 	if p := a.lib.settings.Get().Features.Translate.Prompt; p != "Use British spelling." || a.lib.settings.Get().Features.Transcribe.Prompt != "" {
 		t.Errorf("rules %q", p)
 	}
@@ -98,7 +100,7 @@ func TestRewritePage(t *testing.T) {
 		t.Error("the card's length setting is back: every answer goes to the card")
 	}
 	click(t, tt, "Your rules")
-	click(t, tt, "Show the full prompt")
+	click(t, tt, "Example user message")
 	if !has(tt, "With a selection, as below; with nothing selected the model writes from the instruction and answers with a title and the text.") {
 		t.Errorf("preview %q", firstTexts(tt))
 	}
