@@ -1,4 +1,4 @@
-# Qwen3-ASR
+﻿# Qwen3-ASR
 
 [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-1.7B) is an audio transcription model served through the OpenAI-compatible `/v1/audio/transcriptions` endpoint. It accepts one uploaded audio file per request and returns text.
 
@@ -261,7 +261,8 @@ sgl-omni serve \
 ```
 
 Connect to `/v1/realtime?intent=transcription`, configure the session, and
-append base64-encoded mono 16 kHz PCM16 packets. `input_audio_buffer.commit`
+append base64-encoded mono audio in the session's `input_audio_format`
+(16 kHz PCM16 by default, or 8 kHz G.711). `input_audio_buffer.commit`
 finalizes the active segment manually; server VAD also finalizes after the
 configured silence interval. Send `transcription.done` after the final packet
 to receive `transcription.completed`. `input_audio_buffer.clear` discards the
@@ -273,6 +274,7 @@ WebSocket session open for new audio.
   "type": "session.update",
   "session": {
     "language": "English",
+    "input_audio_format": "pcm16",
     "decode_interval_ms": 1000,
     "turn_detection": {
       "type": "server_vad",
@@ -284,7 +286,12 @@ WebSocket session open for new audio.
 }
 ```
 
-`decode_interval_ms` is how much new audio arrives between partial decodes. It defaults to 2000 ms, must be at least 200 ms, and `null` restores the default. Like `language` and `turn_detection`, it can change only while no uncommitted audio is buffered; with server VAD that means before the first audio packet.
+`input_audio_format` is `pcm16` (the default, 16 kHz mono) or one of the
+8 kHz telephony codecs `g711_ulaw` and `g711_alaw`. G.711 packets are decoded
+and upsampled to 16 kHz before VAD and ASR, so timestamps and the rest of the
+session protocol stay in 16 kHz samples.
+
+`decode_interval_ms` is how much new audio arrives between partial decodes. It defaults to 2000 ms, must be at least 200 ms, and `null` restores the default. Like `language`, `input_audio_format` and `turn_detection`, it can change only while no uncommitted audio is buffered; with server VAD that means before the first audio packet.
 
 Each periodic decode is an ordinary stateless Qwen3-ASR request over all audio
 in the active segment. After the first two refreshes, the server rolls five
@@ -536,3 +543,4 @@ sgl-omni serve --model-path Qwen/Qwen3-ASR-1.7B \
   are limited to `max_native_clip_s` (1,200s) on CUDA; Torch MPS caps both
   native and whole-upload requests at 60 seconds.
 - Audio is resampled to 16 kHz before transcription.
+

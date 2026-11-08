@@ -170,6 +170,7 @@ async def make_session(
     *,
     outputs: list[str] | None = None,
     max_segment_s: float | None = 60.0,
+    audio_format: str = "pcm16",
 ) -> tuple[RealtimeTranscriptionSession, RecordingWebSocket, FakeClient]:
     use_fake_speech_model(monkeypatch)
     websocket = RecordingWebSocket()
@@ -189,10 +190,53 @@ async def make_session(
     await session.dispatch(
         {
             "type": "session.update",
-            "session": {"turn_detection": None},
+            "session": {
+                "turn_detection": None,
+                "input_audio_format": audio_format,
+            },
         }
     )
     return session, websocket, client
+
+
+@pytest.mark.parametrize("audio_format", ["g711_ulaw", "g711_alaw"])
+@pytest.mark.asyncio
+async def test_g711_input_is_decoded_to_16khz_pcm(
+    monkeypatch: pytest.MonkeyPatch, audio_format: str
+) -> None:
+    session, websocket, _client = await make_session(
+        monkeypatch, audio_format=audio_format
+    )
+
+    await session.dispatch(audio_event(b"\x00" * 800))
+
+    assert session.session_object().input_audio_format == audio_format
+    assert session.audio_buffer.num_samples == 1600
+    updated = next(
+        event for event in websocket.events if event["type"] == "session.updated"
+    )
+    assert updated["session"]["input_audio_format"] == audio_format
+    await session.teardown()
+
+
+@pytest.mark.asyncio
+async def test_g711_format_change_is_rejected_while_audio_is_buffered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, websocket, _client = await make_session(monkeypatch)
+    await session.dispatch(audio_event(make_pcm(0.05)))
+
+    await session.dispatch(
+        {
+            "type": "session.update",
+            "session": {"input_audio_format": "g711_ulaw"},
+        }
+    )
+
+    assert websocket.events[-1]["type"] == "error"
+    assert websocket.events[-1]["error"]["code"] == "session_active"
+    assert session.session_object().input_audio_format == "pcm16"
+    await session.teardown()
 
 
 @pytest.mark.asyncio
