@@ -65,6 +65,9 @@ type shellState struct {
 	// ("/general"), which navigate drives from "/settings/…" paths.
 	settingsOpen bool
 	setRouter    *ui.Router
+	// mainUI is the main window's services, kept by its build: read
+	// between frames (textFocused).
+	mainUI ui.Services
 
 	bus      *core.Bus
 	settings settings.Service
@@ -234,6 +237,7 @@ func startHidden(atLogin bool, g settings.General) bool {
 }
 
 func (a *app) view(c *ui.Context) {
+	a.mainUI = c.Services()
 	a.applyTheme(c)
 	t := c.Theme()
 	if a.win == nil || a.prefs.Appearance.ReduceMotion {

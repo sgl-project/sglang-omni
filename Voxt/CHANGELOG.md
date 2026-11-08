@@ -42,6 +42,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Fixed
 
 - **⌘W closes the window.** With "Keep running when the window closes" on (the default), Voxt stays in the menu bar and its shortcuts keep working, as the red × does; only ⌘Q quits. The Window menu had no Close Window item before.
+- **Dictation types into Voxt's own window again**, as in Voxt 1.x: with the cursor in a field of Voxt (a feature's Your rules, say), the shortcut records as in any other app, with the overlay, and the text goes into that field. Before, the shortcut on Home or a feature's page started a try on the page (no overlay; the result showed in its Try it area), and on other pages the result went to the answer card.
 
 ### 中文
 
@@ -83,6 +84,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 
 - **⌘W 关闭窗口。** 开着“关闭窗口后继续运行”（默认开）时，Voxt 留在菜单栏里，快捷键照常可用，和红色 × 一样；只有 ⌘Q 退出。之前窗口菜单里没有“关闭窗口”。
+- **在 Voxt 自己的窗口里听写，文字又能输进去了**，和 Voxt 1.x 一样：光标在 Voxt 的输入框里（比如功能页的“你的规则”）时，按快捷键和在别的 app 里一样录音、显示浮窗，文字输入到这个框里。以前在首页和功能页上按快捷键会在页面里开始一次试一试（没有浮窗，结果显示在“试一试”区域），在其他页面上结果进了答案卡片。
 
 ## [2.0.1] - 2026-11-07
 

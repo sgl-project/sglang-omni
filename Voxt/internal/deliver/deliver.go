@@ -11,9 +11,11 @@
 // still matters in three ways: an element there is given the benefit of
 // the doubt (the user pressed the shortcut in it), a selection is
 // replaced only there, and its auto key is pressed only there. When
-// VoxtNew itself came to the front (a click on its window), the start
-// app is activated again first (macx.Activate): nothing is ever typed
-// into VoxtNew, nor into a password field.
+// VoxtNew itself came to the front after the start (a click on its
+// window), the start app is activated again first (macx.Activate):
+// nothing goes into VoxtNew's window unless the session started there,
+// and then only into an element it calls editable (a feature's rules
+// being edited, as Voxt 1.x). Nothing goes into a password field.
 //
 // The paste is checked (Request.VerifyMS): the helper reads the focused
 // element before ⌘V and after it. When it reads the same up to the end of
@@ -298,11 +300,13 @@ func check(ctx context.Context, io TextIO, r Request) Result {
 	inTarget := r.Target.PID != 0 && focus.PID == r.Target.PID
 	var why Reason
 	switch {
-	case self, r.Replace && !inTarget:
+	case self && !inTarget, r.Replace && !inTarget:
 		why = ReasonNotFront
 	case Secure(focus):
 		why = ReasonSecure
-	case r.Replace:
+	case r.Replace, self:
+		// A selection to replace, or VoxtNew's own window (the session
+		// started there): only an element Accessibility calls editable.
 		if !focus.Editable {
 			why = ReasonNotEditable
 		}
