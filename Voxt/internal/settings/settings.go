@@ -41,8 +41,9 @@ type Settings struct {
 	Updates        Updates        `json:"updates,omitzero"`
 	Network        Network        `json:"network,omitzero"`
 	Family         Family         `json:"family,omitzero"`
-	Models         Models         `json:"models,omitzero"`  // models.go
-	History        History        `json:"history,omitzero"` // history.go
+	Models         Models         `json:"models,omitzero"`    // models.go
+	History        History        `json:"history,omitzero"`   // history.go
+	Providers      Providers      `json:"providers,omitzero"` // providers.go
 }
 
 // General: languages and how the app stays around.
@@ -64,6 +65,13 @@ type General struct {
 	// there when its window closes, so the shortcuts keep working.
 	MenuBar     bool `json:"menuBar"`
 	CloseToTray bool `json:"closeToTray"`
+	// HideDock leaves VoxtNew out of the Dock (Voxt 1.x's "Show in Dock"
+	// off); the menu bar icon is then on, so that VoxtNew can be reached.
+	HideDock bool `json:"hideDock,omitempty"`
+	// CopyResult leaves each finished result on the clipboard: a paste
+	// does not restore what was there, and a result the answer card shows
+	// is copied too (Voxt 1.x's "Also copy result to clipboard").
+	CopyResult bool `json:"copyResult,omitempty"`
 }
 
 // Appearance: theme, scale and the sidebar.
@@ -197,6 +205,10 @@ type Overlay struct {
 	// ShowTime shows the recording's time in the pill (off: Voxt's pill,
 	// an icon and the waveform).
 	ShowTime bool `json:"showTime,omitempty"`
+	// HideLiveText leaves the words out of the pill: what was heard while
+	// recording, and the answer as the model writes it (Voxt 1.x's
+	// "Show Realtime Text" off).
+	HideLiveText bool `json:"hideLiveText,omitempty"`
 }
 
 // DefaultOpacity and DefaultRadius are the overlay face's: translucent
@@ -238,10 +250,11 @@ type Features struct {
 	Cancel Hotkey `json:"cancel"`
 }
 
-// Feature is what every feature has: its shortcuts, the local models it
-// uses (internal/local's Model.ID; "" = the first one installed, the
-// recommended one) and the user's addition to its task prompt, which the
-// composer merges with the built-in rules.
+// Feature is what every feature has: its shortcuts, the models it uses
+// (internal/local's Model.ID: a local model's, or LLM a remote one's,
+// Provider.ID; "" = the first one installed, the recommended one) and the
+// user's addition to its task prompt, which the composer merges with the
+// built-in rules.
 type Feature struct {
 	Hotkeys []Hotkey `json:"hotkeys,omitempty"`
 	ASR     string   `json:"asr,omitempty"`
@@ -305,6 +318,10 @@ type Dictionary struct {
 	// adds them to the LLM prompt.
 	ASRHints bool `json:"asrHints"`
 	Glossary bool `json:"glossary"`
+	// SpeechContext is free text about the speech (who speaks, about
+	// what) that the speech model gets before the hints, with the
+	// dictionary on or off; a service that takes no prompt ignores it.
+	SpeechContext string `json:"speechContext,omitempty"`
 }
 
 // Setup: the first-run guide.

@@ -4372,6 +4372,24 @@ def test_transcription_endpoint_maps_unsupported_language_error_to_400() -> None
     assert "Use a supported language code" in response.json()["detail"]
 
 
+def test_transcription_endpoint_rejects_negative_temperature() -> None:
+    """POST /v1/audio/transcriptions with temperature=-1 returned HTTP 200 with garbage text instead of 422."""
+    transcription_client = SuccessfulTranscriptionClient()
+    client = TestClient(
+        create_app(transcription_client, model_name="Qwen/Qwen3-ASR-1.7B")
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "Qwen/Qwen3-ASR-1.7B", "temperature": "-1"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["body", "temperature"]
+    assert transcription_client.requests == []
+
+
 def test_transcription_endpoint_passes_explicit_max_new_tokens() -> None:
     transcription_client = SuccessfulTranscriptionClient()
     client = TestClient(

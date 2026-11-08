@@ -21,7 +21,7 @@ dots.tts is a continuous-latent model, not a codec model. The backbone emits no 
 | [`dots-studio/dots.tts-soar`](https://huggingface.co/dots-studio/dots.tts-soar) | Flow matching. Single request at a time (`max_running_requests=1`) with CFG, `num_steps=10`. `examples/configs/dots_tts_soar.yaml` |
 | [`dots-studio/dots.tts-base`](https://huggingface.co/dots-studio/dots.tts-base) | Flow matching, same as SOAR. Serve it with `examples/configs/dots_tts_soar.yaml` and `--model-path dots-studio/dots.tts-base` |
 
-For Intel GPUs, follow the [dots.tts XPU recipe](../get_started/installation_xpu.md#dotstts-text-to-speech-single-xpu).
+For Intel GPUs, follow the [dots.tts XPU recipe](../other_platforms/installation_xpu.md#dotstts-text-to-speech-single-xpu).
 
 ## Prerequisites
 

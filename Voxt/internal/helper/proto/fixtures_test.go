@@ -166,6 +166,14 @@ func TestFixtures(t *testing.T) {
 						if v.Reason != OutputReasonSleep {
 							t.Fatalf("%s: released %+v", where, v)
 						}
+					case *SpeechStartedParams:
+						job = v.Job
+						if v.Locale == "" {
+							t.Fatalf("%s: speech started %+v", where, v)
+						}
+						started[job] = true
+					case *SpeechPartialParams:
+						job = v.Job
 					case *LogParams:
 						job = v.Job
 						if !slices.Contains([]string{"debug", "info", "warning", "error"}, v.Level) {
@@ -173,11 +181,12 @@ func TestFixtures(t *testing.T) {
 						}
 					}
 					if job != "" {
-						if pending[job] != MethodCaptureStart {
-							t.Fatalf("%s: notification for %s, which is not a running capture", where, job)
+						family, _, _ := strings.Cut(pending[job], ".")
+						if !IsJob(pending[job]) || m.Method != MethodLog && !strings.HasPrefix(m.Method, family+".") {
+							t.Fatalf("%s: %s for %s, which is not a running job of its kind", where, m.Method, job)
 						}
-						if m.Method != MethodCaptureStarted && m.Method != MethodLog && !started[job] {
-							t.Fatalf("%s: %s before capture.started", where, m.Method)
+						if m.Method != MethodCaptureStarted && m.Method != MethodSpeechStarted && m.Method != MethodLog && !started[job] {
+							t.Fatalf("%s: %s before its job started", where, m.Method)
 						}
 					}
 				case l.To == "app" && k == KindResponse:
@@ -378,7 +387,7 @@ func TestErrors(t *testing.T) {
 			t.Errorf("notification %s", m)
 		}
 	}
-	if !IsJob(MethodCaptureStart) || IsJob(MethodBrowserURL) {
+	if !IsJob(MethodCaptureStart) || !IsJob(MethodSpeechRecognize) || IsJob(MethodSpeechAudio) || IsJob(MethodBrowserURL) {
 		t.Error("IsJob")
 	}
 }
