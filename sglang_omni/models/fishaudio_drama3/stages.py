@@ -40,12 +40,16 @@ from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.request_builders import Drama3RequestData
 from sglang_omni.models.fishaudio_drama3.speech_request import Drama3SpeechPreprocessor
 from sglang_omni.models.fishaudio_drama3.stream_windows import (
+    flush_window_shapes,
+    stream_window_discards,
     stream_window_lengths,
     utterance_graph_lengths,
 )
 from sglang_omni.models.fishaudio_drama3.vocoder import (
     Drama3VocoderScheduler,
     WindowGraphDecoder,
+    crossfade_frames,
+    discarded_frames,
 )
 from sglang_omni.models.fishaudio_s2_pro.stages import (
     FishReferenceEncodeHook,
@@ -304,27 +308,56 @@ def create_vocoder_executor(
     else:
         decode = codec.from_indices
     window_batch_decoder: WindowGraphDecoder | None = None
+    suffix_decoder: WindowGraphDecoder | None = None
     if window_cuda_graphs:
+        window_schedule = {
+            "stream_stride": stream_stride,
+            "stream_followup_stride_ramp": stream_followup_stride_ramp,
+            "stream_followup_stride": stream_followup_stride,
+            "stream_overlap_tokens": stream_overlap_tokens,
+        }
+        # Only the channels-last decoder decodes a window from a frame on.
+        skips_discarded_frames = isinstance(decode, ChannelsLastDecoder)
+        kept_frames = crossfade_frames(
+            stream_crossfade_samples, int(codec.frame_length)
+        )
         window_graph_decoder = WindowGraphDecoder(
             decode,
             num_codebooks=num_codebooks,
             frame_length=int(codec.frame_length),
             device=torch_device,
-            window_lengths=stream_window_lengths(
-                stream_stride=stream_stride,
-                stream_followup_stride_ramp=stream_followup_stride_ramp,
-                stream_followup_stride=stream_followup_stride,
-                stream_overlap_tokens=stream_overlap_tokens,
-            ),
+            window_lengths=stream_window_lengths(**window_schedule),
             utterance_lengths=utterance_graph_lengths(
                 min(non_streaming_cuda_graph_max_frames, max_new_tokens),
                 frame_step=UTTERANCE_GRAPH_FRAME_STEP,
             ),
             max_batch_size=stream_window_batch_size,
+            window_discards=(
+                {
+                    length: discarded_frames(overlap, kept_frames)
+                    for length, overlap in stream_window_discards(
+                        **window_schedule
+                    ).items()
+                }
+                if skips_discarded_frames
+                else None
+            ),
+            flush_shapes=(
+                {
+                    (frames, discarded_frames(overlap, kept_frames))
+                    for frames, overlap in flush_window_shapes(**window_schedule)
+                }
+                if skips_discarded_frames
+                else ()
+            ),
         )
         decode_window: WindowDecoder = window_graph_decoder
         if stream_window_batch_size > 1:
             window_batch_decoder = window_graph_decoder
+        else:
+            pass
+        if skips_discarded_frames:
+            suffix_decoder = window_graph_decoder
         else:
             pass
     else:
@@ -358,4 +391,5 @@ def create_vocoder_executor(
         decode_window=decode_window,
         max_padded_frames_per_decode=max_padded_frames_per_decode,
         window_batch_decoder=window_batch_decoder,
+        suffix_decoder=suffix_decoder,
     )

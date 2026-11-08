@@ -29,6 +29,71 @@ def stream_window_lengths(
         window_index += 1
 
 
+def stream_window_discards(
+    *,
+    stream_stride: int,
+    stream_followup_stride_ramp: tuple[int, ...],
+    stream_followup_stride: int,
+    stream_overlap_tokens: int,
+) -> dict[int, int]:
+    """Per stream window length, the overlap frames at its start whose audio the
+    stream discards: the window decodes them for context only."""
+    strides = (stream_stride, *stream_followup_stride_ramp)
+    discards: dict[int, int] = {}
+    emitted_frames = 0
+    window_index = 0
+    while True:
+        stride = (
+            strides[window_index]
+            if window_index < len(strides)
+            else stream_followup_stride
+        )
+        window_start = max(0, emitted_frames - stream_overlap_tokens)
+        discards[emitted_frames + stride - window_start] = emitted_frames - window_start
+        if window_index >= len(strides) and emitted_frames >= stream_overlap_tokens:
+            return discards
+        else:
+            pass
+        emitted_frames += stride
+        window_index += 1
+
+
+def flush_window_shapes(
+    *,
+    stream_stride: int,
+    stream_followup_stride_ramp: tuple[int, ...],
+    stream_followup_stride: int,
+    stream_overlap_tokens: int,
+) -> set[tuple[int, int]]:
+    """(frames, overlap frames) of the final window a stream flushes after each
+    complete window: the overlap plus the frames left before the next window would
+    complete."""
+    strides = (stream_stride, *stream_followup_stride_ramp)
+    keys: set[tuple[int, int]] = set()
+    emitted_frames = 0
+    window_index = 0
+    while True:
+        stride = (
+            strides[window_index]
+            if window_index < len(strides)
+            else stream_followup_stride
+        )
+        emitted_frames += stride
+        window_index += 1
+        discard = min(emitted_frames, stream_overlap_tokens)
+        next_stride = (
+            strides[window_index]
+            if window_index < len(strides)
+            else stream_followup_stride
+        )
+        for remaining in range(1, next_stride + 1):
+            keys.add((discard + remaining, discard))
+        if window_index >= len(strides) and emitted_frames >= stream_overlap_tokens:
+            return keys
+        else:
+            pass
+
+
 def utterance_graph_lengths(max_frames: int, *, frame_step: int) -> tuple[int, ...]:
     """Graph lengths for whole-utterance decodes: every frame_step frames below max_frames,
     then max_frames itself; none when max_frames is 0."""
