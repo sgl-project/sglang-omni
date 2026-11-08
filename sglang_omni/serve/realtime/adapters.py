@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from collections.abc import Iterable
 from dataclasses import replace
 from typing import Protocol
@@ -88,6 +89,11 @@ class CoordinatorAdapter(InteractionAdapter):
         self.unit_completion: asyncio.Future[int] | None = None
         self.unit_output_events: list[OutputEvent] = []
         self.unit_output_bytes = 0
+        # Note (Junnan Li): Outputs that arrive for a queued unit wait until it becomes
+        # the active one.
+        self.queued_units: deque[tuple[Unit, asyncio.Future[int]]] = deque()
+        self.queued_output_events: dict[int, list[OutputEvent]] = {}
+        self.queued_output_bytes: dict[int, int] = {}
         self.output_sink: OutputSink | None = None
         self.reader_error: Exception | None = None
         self.is_closing = False
@@ -122,11 +128,54 @@ class CoordinatorAdapter(InteractionAdapter):
         self.unit_output_events.clear()
         self.unit_output_bytes = 0
 
+    def activate_next_unit(self) -> None:
+        self.reset_unit_outputs()
+        if self.queued_units:
+            self.active_unit, self.unit_completion = self.queued_units.popleft()
+            self.queued_output_bytes.pop(self.active_unit.index, None)
+            for event in self.queued_output_events.pop(self.active_unit.index, []):
+                self.buffer_unit_output(event)
+        else:
+            self.active_unit, self.unit_completion = None, None
+
+    def check_output_budget(self, chunks: int, output_bytes: int) -> None:
+        if (
+            chunks > self.limits.max_output_chunks
+            or output_bytes > self.limits.max_output_bytes
+        ):
+            raise OutputBudgetError("native unit output budget exhausted")
+        else:
+            pass
+
+    def buffer_unit_output(self, event: OutputEvent) -> None:
+        event_size_bytes = len(repr(event).encode())
+        self.check_output_budget(
+            len(self.unit_output_events) + 1, self.unit_output_bytes + event_size_bytes
+        )
+        self.unit_output_events.append(event)
+        self.unit_output_bytes += event_size_bytes
+
+    def queue_unit_output(self, index: int, event: OutputEvent) -> None:
+        events = self.queued_output_events.setdefault(index, [])
+        output_bytes = self.queued_output_bytes.get(index, 0) + len(
+            repr(event).encode()
+        )
+        self.check_output_budget(len(events) + 1, output_bytes)
+        events.append(event)
+        self.queued_output_bytes[index] = output_bytes
+
     async def read_session_outputs(self) -> None:
         assert self.session_identity is not None and self.output_sink is not None
         try:
             async for output in self.client.session_outputs(self.session_identity):
-                if (
+                if any(output.input_seq == unit.index for unit, _ in self.queued_units):
+                    if output.kind != "input_done":
+                        for event in self.output_converter(output):
+                            self.queue_unit_output(output.input_seq, event)
+                    else:
+                        pass
+                    continue
+                elif (
                     self.active_unit is None
                     or output.input_seq != self.active_unit.index
                 ):
@@ -141,7 +190,6 @@ class CoordinatorAdapter(InteractionAdapter):
                         pass
                     for event in self.unit_output_events:
                         await self.output_sink(event, self.active_unit)
-                    self.reset_unit_outputs()
                     if (
                         self.unit_completion is not None
                         and not self.unit_completion.done()
@@ -149,22 +197,10 @@ class CoordinatorAdapter(InteractionAdapter):
                         self.unit_completion.set_result(self.active_unit.real_samples)
                     else:
                         pass
+                    self.activate_next_unit()
                 else:
                     for event in self.output_converter(output):
-                        event_size_bytes = len(repr(event).encode())
-                        if (
-                            len(self.unit_output_events)
-                            >= self.limits.max_output_chunks
-                            or self.unit_output_bytes + event_size_bytes
-                            > self.limits.max_output_bytes
-                        ):
-                            raise OutputBudgetError(
-                                "native unit output budget exhausted"
-                            )
-                        else:
-                            pass
-                        self.unit_output_events.append(event)
-                        self.unit_output_bytes += event_size_bytes
+                        self.buffer_unit_output(event)
             if not self.is_closing:
                 raise RuntimeError("session output stream closed")
             else:
@@ -179,6 +215,11 @@ class CoordinatorAdapter(InteractionAdapter):
             else:
                 pass
             self.reader_error = exc
+            for _, completion in self.queued_units:
+                if not completion.done():
+                    completion.set_exception(exc)
+                else:
+                    pass
             if self.unit_completion is not None and not self.unit_completion.done():
                 self.unit_completion.set_exception(exc)
             else:
@@ -192,8 +233,11 @@ class CoordinatorAdapter(InteractionAdapter):
             raise self.reader_error
         else:
             pass
-        self.active_unit = unit
-        self.unit_completion = asyncio.get_running_loop().create_future()
+        completion: asyncio.Future[int] = asyncio.get_running_loop().create_future()
+        if self.active_unit is None:
+            self.active_unit, self.unit_completion = unit, completion
+        else:
+            self.queued_units.append((unit, completion))
         timed_chunk = TimedChunk(
             "audio",
             samples_to_ms(unit.start_sample, self.input_sample_rate_hz),
@@ -223,11 +267,18 @@ class CoordinatorAdapter(InteractionAdapter):
                 ),
                 **tick_kwargs,
             )
-            return await self.unit_completion
+            return await completion
         finally:
-            self.active_unit = None
-            self.unit_completion = None
-            self.reset_unit_outputs()
+            if self.active_unit is unit:
+                self.activate_next_unit()
+            elif any(queued is unit for queued, _ in self.queued_units):
+                self.queued_units = deque(
+                    entry for entry in self.queued_units if entry[0] is not unit
+                )
+                self.queued_output_events.pop(unit.index, None)
+                self.queued_output_bytes.pop(unit.index, None)
+            else:
+                pass
 
     async def close(self) -> None:
         self.is_closing = True

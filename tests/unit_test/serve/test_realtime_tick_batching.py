@@ -81,9 +81,15 @@ async def open_runtime(
     adapter: RecordingAdapter,
     tick_clock: TickClock | None,
     capabilities: Capabilities = PADDED_CAPABILITIES,
+    max_units_in_flight: int = 1,
 ) -> AsyncIterator[SessionRuntime]:
     runtime = SessionRuntime(
-        MODEL_NAME, capabilities, lambda: adapter, RuntimeLimits(), tick_clock
+        MODEL_NAME,
+        capabilities,
+        lambda: adapter,
+        RuntimeLimits(),
+        tick_clock,
+        max_units_in_flight=max_units_in_flight,
     )
     runtime.start()
     try:
@@ -509,3 +515,55 @@ async def test_following_arrivals_a_release_waits_a_period_after_the_previous(
         assert len(second_adapter.units) == 1
         await fake_clock.advance(0.5 * MS)
         assert len(second_adapter.units) == 2
+
+
+class CompletionRecordingAdapter(HoldingAdapter):
+    def __init__(self, held_index: int) -> None:
+        super().__init__(held_index)
+        self.finished: list[int] = []
+
+    async def process(self, unit: Unit) -> int:
+        samples = await super().process(unit)
+        self.finished.append(unit.index)
+        return samples
+
+
+@pytest.mark.asyncio
+async def test_with_two_units_in_flight_a_held_unit_does_not_hold_the_next(
+    fake_clock: FakeClock,
+) -> None:
+    adapter = CompletionRecordingAdapter(held_index=1)
+    clock = TickClock(NATIVE_UNIT_MS, growth_margin=GROWTH_MARGIN)
+    async with open_runtime(adapter, clock, max_units_in_flight=2) as runtime:
+        for sequence in range(4):
+            await append(fake_clock, runtime, 1, sequence)
+            await fake_clock.advance(PERIOD_S)
+        # Note (Junnan Li): Unit 2 left on its own tick while unit 1 was held;
+        # unit 3 waits, as two units are in flight.
+        assert [unit.index for unit in adapter.units] == [0, 1, 2]
+        assert [len(unit.pcm) for unit in adapter.units[1:]] == [UNIT_BYTES] * 2
+        assert runtime.consumed_samples == UNIT_BYTES // 2
+        adapter.release.set()
+        await fake_clock.advance(0)
+        await fake_clock.advance(PERIOD_S)
+        assert [unit.index for unit in adapter.units] == [0, 1, 2, 3]
+        assert runtime.consumed_samples == 4 * UNIT_BYTES // 2
+
+
+@pytest.mark.asyncio
+async def test_with_one_unit_in_flight_a_held_unit_holds_the_next(
+    fake_clock: FakeClock,
+) -> None:
+    adapter = CompletionRecordingAdapter(held_index=1)
+    async with open_runtime(
+        adapter, TickClock(NATIVE_UNIT_MS, growth_margin=GROWTH_MARGIN)
+    ) as runtime:
+        for sequence in range(3):
+            await append(fake_clock, runtime, 1, sequence)
+            await fake_clock.advance(PERIOD_S)
+        assert [unit.index for unit in adapter.units] == [0, 1]
+        adapter.release.set()
+        await fake_clock.advance(0)
+        await fake_clock.advance(PERIOD_S)
+        assert [unit.index for unit in adapter.units] == [0, 1, 2]
+        assert runtime.consumed_samples == 3 * UNIT_BYTES // 2

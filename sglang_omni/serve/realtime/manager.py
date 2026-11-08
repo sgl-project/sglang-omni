@@ -40,6 +40,7 @@ class RealtimeDeployment:
     tick_follow_arrivals: bool = False
     tick_arrivals_quiet_s: float = 0.0
     tick_growth_margin: float = 0.0
+    max_units_in_flight: int = 1
 
     def __post_init__(self) -> None:
         if type(self.max_connections) is not int or self.max_connections < 1:
@@ -134,6 +135,7 @@ class RealtimeSessionManager:
                 self.deployment.adapter_factory,
                 self.deployment.limits,
                 tick_clock=self.tick_clock,
+                max_units_in_flight=self.deployment.max_units_in_flight,
             )
             session = SharedRealtimeSession(websocket, runtime)
             if self.tick_clock is not None:

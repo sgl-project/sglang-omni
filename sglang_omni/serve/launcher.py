@@ -783,6 +783,7 @@ async def run_server(
                         tick_arrivals_quiet_s=pipeline_config.realtime_tick_arrivals_quiet_ms
                         / MS_PER_SECOND,
                         tick_growth_margin=pipeline_config.realtime_tick_growth_margin,
+                        max_units_in_flight=pipeline_config.realtime_units_in_flight,
                     )
                 else:
                     pass
