@@ -211,13 +211,21 @@ type finishOpts struct {
 	replace bool
 }
 
-// finish delivers result (unless it is a try or empty), keeps the
-// history entry and ends the session.
+// finish delivers result (unless it is a try or empty; a note's is
+// saved), keeps the history entry and ends the session.
 func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 	cfg := r.m.cfg
 	var dres deliver.Result
+	noted := false
 	switch {
 	case result == "" || r.req.Try:
+	case r.req.Note:
+		if err := r.saveNote(result); err != nil {
+			r.logf("error", "note not saved, the card shows it: %v", err)
+			problem = &Problem{Code: ProblemInternal, Err: err, Degraded: true}
+			break
+		}
+		noted = true
 	case o.card != "":
 		dres.Reason = o.card
 		r.m.update(r, func(s *Snapshot) { s.Result, s.Card = result, true })
@@ -255,12 +263,12 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 	total := r.now().Sub(snap.StartedAt)
 	r.m.end(r, st, func(s *Snapshot) {
 		s.Result, s.Problem = result, problem
-		s.Recording = r.keepsRecording()
+		s.Recording = r.keepsRecording(store.StatusDone)
 		s.Inserted = dres.Inserted
 		if dres.Inserted {
 			s.InsertedInto = dres.To
 		}
-		s.Card = result != "" && !r.req.Try && !dres.Inserted
+		s.Card = result != "" && !r.req.Try && !dres.Inserted && !noted
 		s.Delivery = dres.Reason
 		s.Timings.Deliver, s.Timings.Total = dres.Elapsed, total
 	}, func(s Snapshot) { r.keep(s, store.StatusDone) })
@@ -287,7 +295,7 @@ func (r *run) endFailed(p *Problem, stream asr.Stream, more ...func(*Snapshot)) 
 		s.Problem = p
 		s.Timings.Total = total
 		s.Timings.Audio = audio
-		s.Recording = audio >= r.m.cfg.MinRecording && r.keepsRecording()
+		s.Recording = audio >= r.m.cfg.MinRecording && r.keepsRecording(store.StatusFailed)
 		for _, fn := range more {
 			fn(s)
 		}
@@ -309,7 +317,7 @@ func (r *run) endCancelled(stream asr.Stream) {
 	r.m.end(r, Cancelled, func(s *Snapshot) {
 		s.Timings.Total = total
 		s.Timings.Audio = audio
-		s.Recording = audio >= r.m.cfg.MinRecording && r.keepsRecording()
+		s.Recording = audio >= r.m.cfg.MinRecording && r.keepsRecording(store.StatusCancelled)
 	}, func(s Snapshot) {
 		if audio >= r.m.cfg.MinRecording {
 			r.keep(s, store.StatusCancelled)
@@ -336,11 +344,21 @@ func (r *run) timeoutProblem(ctx context.Context) *Problem {
 	return &Problem{Code: ProblemASR, Err: r.ctxErr(ctx)}
 }
 
+// saveNote saves a note session's result (Config.Notes).
+func (r *run) saveNote(text string) error {
+	if r.m.cfg.Notes == nil {
+		return errors.New("no notes store")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return r.m.cfg.Notes.Put(ctx, store.Note{ID: r.id, Text: text, CreatedAt: r.m.Current().StartedAt})
+}
+
 // keep writes the history entry of an ended session (and its recording),
-// when the settings keep history. Not for tries.
+// when inHistory says so.
 func (r *run) keep(s Snapshot, status store.Status) {
 	cfg := r.m.cfg
-	if r.req.Try || cfg.History == nil || !r.settings.Privacy.KeepHistory {
+	if !r.inHistory(status) {
 		return
 	}
 	e := store.Entry{
@@ -400,13 +418,23 @@ func (r *run) keep(s Snapshot, status store.Status) {
 	}
 }
 
+// inHistory reports whether the session's history entry is written: not
+// for a try, nor for a note saved from its recognition (the Notes page
+// keeps it). A note whose recognition failed, or that was cancelled, keeps
+// its entry and recording, as a dictation does.
+func (r *run) inHistory(status store.Status) bool {
+	if r.req.Try || r.m.cfg.History == nil || !r.settings.Privacy.KeepHistory {
+		return false
+	}
+	return !(r.req.Note && status == store.StatusDone && !r.recognitionFailed)
+}
+
 // keepsRecording reports whether the session's history entry keeps the
 // recording: the settings keep recordings, recognition failed, or the
 // user cancelled (for a while: Config.AudioRetention), so Retry can
-// recover it. Not for tries.
-func (r *run) keepsRecording() bool {
-	cfg := r.m.cfg
-	if r.req.Try || r.req.Text != nil || cfg.History == nil || !r.settings.Privacy.KeepHistory || len(r.pcm.bytes()) == 0 {
+// recover it.
+func (r *run) keepsRecording(status store.Status) bool {
+	if !r.inHistory(status) || r.req.Text != nil || len(r.pcm.bytes()) == 0 {
 		return false
 	}
 	return r.settings.Privacy.KeepAudio || r.recognitionFailed || r.cancelled.Load()

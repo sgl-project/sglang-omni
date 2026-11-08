@@ -272,6 +272,49 @@ func TestDefaultShortcutsAreTheFamilys(t *testing.T) {
 	}
 }
 
+// TestNoteShortcut: a document saved before the note shortcut existed
+// gets Voxt 1.x's right Command, tapped; one the user turned off stays
+// off, and a hand-written trigger is read as the tap it always is.
+func TestNoteShortcut(t *testing.T) {
+	s, err := Migrate([]byte(`{"version":4,"features":{"transcribe":{"hotkeys":[{"keys":"RightOption","trigger":"tap"}]}}}`))
+	if err != nil || s.Features.Note != (Hotkey{Keys: "RightCommand", Trigger: TriggerTap}) {
+		t.Fatalf("older document: %+v %v", s.Features.Note, err)
+	}
+	s.Features.Note = Hotkey{}
+	data, _ := json.Marshal(s)
+	if m, err := Migrate(data); err != nil || m.Features.Note.Keys != "" {
+		t.Errorf("off lost: %+v %v", m.Features.Note, err)
+	}
+	m, err := Migrate([]byte(`{"version":4,"features":{"note":{"keys":" F5 ","trigger":"long"}}}`))
+	if err != nil || m.Features.Note != (Hotkey{Keys: "F5", Trigger: TriggerTap}) {
+		t.Errorf("hand-written: %+v %v", m.Features.Note, err)
+	}
+}
+
+// TestNoteShortcutYieldsToTaken: a document from before the note shortcut
+// whose shortcut already taps right Command keeps the note off, rather than
+// the note's keys going silently to that shortcut.
+func TestNoteShortcutYieldsToTaken(t *testing.T) {
+	tapNote := Hotkey{Keys: DefaultNote, Trigger: TriggerTap}
+	for _, tc := range []struct {
+		name string
+		doc  string
+		want Hotkey
+	}{
+		{"transcribe taps it", `{"version":4,"features":{"transcribe":{"hotkeys":[{"keys":"RightCommand","trigger":"tap"}]}}}`, Hotkey{}},
+		{"rewrite taps it, no trigger", `{"version":4,"features":{"rewrite":{"hotkeys":[{"keys":"RightCommand"}]}}}`, Hotkey{}},
+		{"transcribe double taps it", `{"version":4,"features":{"transcribe":{"hotkeys":[{"keys":"RightCommand","trigger":"double"}]}}}`, tapNote},
+		{"the note has its own keys", `{"version":4,"features":{"transcribe":{"hotkeys":[{"keys":"RightCommand","trigger":"tap"}]},"note":{"keys":"RightCommand","trigger":"tap"}}}`, tapNote},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := Migrate([]byte(tc.doc))
+			if err != nil || s.Features.Note != tc.want {
+				t.Errorf("note %+v, want %+v (%v)", s.Features.Note, tc.want, err)
+			}
+		})
+	}
+}
+
 // TestMigrateShortcuts: version 4 moves the old defaults (Auralink's)
 // to the family's, one by one, and keeps every shortcut the user chose.
 func TestMigrateShortcuts(t *testing.T) {

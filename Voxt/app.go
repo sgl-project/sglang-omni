@@ -35,6 +35,7 @@ import (
 //	soundsState       settings_sounds.go  the sounds' presets and previews
 //	muteState         mute_link.go    the system's output, muted while recording
 //	updateState       updates.go      the updater, an update installed while running
+//	notesState        notes_page.go   the Notes page
 //
 // Add fields to your area's struct, not here.
 type app struct {
@@ -71,6 +72,7 @@ type app struct {
 	soundsState
 	muteState
 	updateState
+	notesState
 }
 
 func newApp(lib *library, h *helperHost) *app {

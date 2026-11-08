@@ -155,6 +155,9 @@ type Snapshot struct {
 	State State
 	// Try: started from a page's Try area, the result stays there.
 	Try bool
+	// Note: started by the note shortcut (StartRequest.Note); the result
+	// went to Config.Notes, or to the card when saving it failed.
+	Note bool
 	// HoldBinding is the binding whose long press started the session
 	// (its release stops it); "" for none.
 	HoldBinding string
@@ -304,6 +307,9 @@ type Config struct {
 	// dictionary's enabled terms (nil: none).
 	History  store.History
 	Glossary func(ctx context.Context) ([]store.Term, error)
+	// Notes keeps the results of note sessions (nil: they show in the
+	// card, with a problem).
+	Notes store.Notes
 	// Settings returns the current settings (memory only); Locale the UI
 	// language, for a main language left to follow it.
 	Settings func() settings.Settings
@@ -390,6 +396,10 @@ type StartRequest struct {
 	// Try: from a page's Try area; nothing is inserted and nothing kept
 	// (and no selection is read).
 	Try bool
+	// Note: a Transcribe session whose result is saved as a note
+	// (Config.Notes), not inserted; like a try, it keeps no history entry
+	// (Voxt 1.x's note sessions).
+	Note bool
 	// At is when the shortcut fired (zero: now).
 	At time.Time
 	// Text starts Translate or Rewrite with its input, without recording

@@ -6,6 +6,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
+- **Notes** (the new Notes page), as in Voxt 1.x: tap right ⌘ in any app, speak, and tap it again. Voxt saves what you said as a note instead of typing it. The Notes page lists your notes, newest first, with their time, and you can delete them. The shortcut changes on that page (off, or other keys); if another shortcut already uses right ⌘, the note shortcut starts off: pick keys on the Notes page. Notes stay out of History, and clearing History keeps them; a note whose recognition failed, or that you cancelled, stays in History with its recording, so you can retry it.
 - **Shortcut presets** (Settings → Shortcuts → Preset), as in Voxt 1.x: Right ⌥ (the default) or fn (Auralink's keys: fn, fn ⇧, fn ⌃, ⌃⌘V) sets Transcribe, Translate, Rewrite and Paste the last result at once. A shortcut you changed yourself stays as it is. With fn, the page says that Auralink and macOS's Globe key react to fn too.
 - **Mouse buttons as shortcuts**, as in Voxt 1.x: in a shortcut's Custom… field type Mouse3 (the middle button), Mouse4 or Mouse5 (the side buttons most mice have) up to Mouse32, alone or with modifiers (Option+Mouse4). Tap, double tap and long press work as with keys, and the button's clicks no longer reach the app in front. Like fn and single modifiers, mouse buttons need Accessibility.
 - **Fallback model for Translate** (Translate → Models): when the language model fails, Voxt translates once more with the model you choose here. History names the model that gave the translation.
@@ -17,6 +18,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 新增
 
+- **笔记**（新的“笔记”页），和 Voxt 1.x 一样：在任意 app 里单按右 ⌘，说完再按一次，说的内容会存成一条笔记，不会输入到光标处。笔记页按时间从新到旧列出笔记和时间，可以删除。快捷键在笔记页里改（可以关掉，也可以换成别的键）；右 ⌘ 已经被别的快捷键占用时，笔记键一开始是关的，去笔记页选一个。笔记不进历史，清空历史也不会删掉笔记；识别失败或取消的笔记会留在历史里，带着录音，可以重试。
 - **快捷键预设**（设置 → 快捷键 → 预设），和 Voxt 1.x 一样：选“右 ⌥”（默认）或“fn”（和 Auralink 相同：fn、fn ⇧、fn ⌃、⌃⌘V），一次设好转录、翻译、转写和粘贴最近结果的快捷键。你自己改过的快捷键保持不变。选 fn 时，页面会提示 Auralink 和 macOS 的地球键也会响应 fn。
 - **鼠标按钮当快捷键**，同 Voxt 1.x：在快捷键的“自定义…”里输入 Mouse3（中键）、Mouse4 或 Mouse5（多数鼠标的两个侧键），最多到 Mouse32，可以单独用，也可以加修饰键（Option+Mouse4）。单按、双击、长按和键盘快捷键一样；这个按钮按下时不再传给前台 App。和 fn、单个修饰键一样，鼠标快捷键需要辅助功能权限。
 - **翻译的备用模型**（翻译 → 模型）：语言模型出错时，Voxt 用这里选的模型再翻译一次。历史记录里写的是实际给出译文的模型。

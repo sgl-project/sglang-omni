@@ -143,6 +143,7 @@ func (a *app) openSessions() {
 		Glossary: func(ctx context.Context) ([]store.Term, error) {
 			return lib.store.Dictionary().List(ctx, "")
 		},
+		Notes:    lib.store.Notes(),
 		Settings: st.Get,
 		Locale:   i18n.Locale,
 		Scene:    a.sceneConfig(), // appenhance.go
@@ -282,8 +283,17 @@ func (a *app) sessionEnded(s session.Snapshot) {
 	if s.ID != "" && a.followUp != "" && !s.Card {
 		a.followUp = "" // a follow-up that ended without an answer: the card keeps the last one
 	}
+	if s.Note && s.State == session.Done && s.Result != "" {
+		a.loadNotes() // notes_page.go: the page shows it
+	}
 	if p := s.Problem; p != nil && s.State != session.Cancelled && !(s.Card && s.State == session.Failed) {
 		text, more, action := sessionProblemText(p)
+		switch {
+		case s.Note && s.Card:
+			text = i18n.T("The note could not be saved: the card shows it.")
+		case s.Note && p.Code == session.ProblemLLM && p.Degraded:
+			text = degradedLLMText(p, true) // the recognised text went to Notes
+		}
 		if text != "" {
 			// Nothing heard is not a failure: a warning.
 			n := sessionNotice{text: text, more: more, action: action, warn: p.Degraded || p.Code == session.ProblemNoSpeech}
@@ -292,6 +302,8 @@ func (a *app) sessionEnded(s session.Snapshot) {
 			}
 			a.showNotice(n)
 		}
+	} else if s.Note && s.State == session.Done && s.Result != "" {
+		a.showNotice(sessionNotice{text: i18n.T("Saved to Notes")})
 	}
 	if s.State != session.Cancelled {
 		a.historyChanged()

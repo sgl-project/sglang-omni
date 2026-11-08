@@ -99,10 +99,10 @@ func TestOverlaps(t *testing.T) {
 func TestBuildDefaults(t *testing.T) {
 	f := settings.Defaults().Features
 	p := Build(f, []string{Transcribe})
-	if len(p.Bindings) != 2 {
+	if len(p.Bindings) != 3 {
 		t.Fatalf("bindings %+v", p.Bindings)
 	}
-	ropt, paste := p.Bindings[0], p.Bindings[1]
+	ropt, paste, note := p.Bindings[0], p.Bindings[1], p.Bindings[2]
 	if paste.ID != PasteLast || paste.Key == nil || *paste.Key != 9 || paste.Behavior != proto.BehaviorTap || len(paste.Modifiers) != 2 ||
 		paste.Modifiers[proto.ModControl] != proto.SideAny || paste.Modifiers[proto.ModOption] != proto.SideAny {
 		t.Errorf("paste-last %+v", paste)
@@ -111,16 +111,22 @@ func TestBuildDefaults(t *testing.T) {
 	if ropt.ID != "transcribe/0" || ropt.Key != nil || ropt.Modifiers[proto.ModOption] != proto.SideRight || len(ropt.Modifiers) != 1 {
 		t.Errorf("right option %+v", ropt)
 	}
+	// The note shortcut, Voxt 1.x's right Command tapped alone, whatever
+	// features are on.
+	if note.ID != Note || note.Key != nil || note.Behavior != proto.BehaviorTap || note.Modifiers[proto.ModCommand] != proto.SideRight || len(note.Modifiers) != 1 {
+		t.Errorf("note %+v", note)
+	}
 	if len(p.Carbon) != 1 || p.Carbon[0] != (Carbon{ID: PasteLast, Accelerator: "Control+Option+V"}) {
 		t.Errorf("carbon %+v", p.Carbon)
 	}
 	// No fn in the defaults: fn and 🌐 are left alone (Auralink's).
 	cfg := p.Configure(true)
-	if cfg.SwallowFn || !cfg.Active || len(cfg.Bindings) != 2 || cfg.DoubleTapMS != 0 {
+	if cfg.SwallowFn || !cfg.Active || len(cfg.Bindings) != 3 || cfg.DoubleTapMS != 0 {
 		t.Errorf("configure %+v", cfg)
 	}
 	all := Build(f, Features)
-	if len(all.Bindings) != 4 || all.Bindings[1].ID != "translate/0" || all.Bindings[2].ID != "rewrite/0" || all.Bindings[3].ID != PasteLast {
+	if len(all.Bindings) != 5 || all.Bindings[1].ID != "translate/0" || all.Bindings[2].ID != "rewrite/0" || all.Bindings[3].ID != PasteLast ||
+		all.Bindings[4].ID != Note {
 		t.Errorf("all %+v", all.Bindings)
 	}
 	if got := Build(settings.Features{}, Features).Configure(false); got.Bindings == nil || len(got.Bindings) != 0 || got.SwallowFn {
@@ -189,7 +195,8 @@ func TestBuildCancel(t *testing.T) {
 	}{
 		{"default escape", settings.DefaultCancel, 53, map[string]string{}},
 		{"custom key", "Control+.", 47, map[string]string{proto.ModControl: proto.SideAny}},
-		{"modifier only", "RightCommand", -1, map[string]string{proto.ModCommand: proto.SideRight}},
+		{"modifier only", "RightShift", -1, map[string]string{proto.ModShift: proto.SideRight}},
+		{"clashes with the note", settings.DefaultNote, -2, nil},
 		{"off", "", -2, nil},
 		{"does not parse", "Hyper", -2, nil},
 		{"clashes with transcribe", settings.DefaultTranscribe, -2, nil},
@@ -260,7 +267,7 @@ func TestParseID(t *testing.T) {
 		i  int
 		ok bool
 	}{
-		"transcribe/0": {"transcribe", 0, true}, "rewrite/12": {"rewrite", 12, true}, "paste-last": {PasteLast, 0, true},
+		"transcribe/0": {"transcribe", 0, true}, "rewrite/12": {"rewrite", 12, true}, "paste-last": {PasteLast, 0, true}, "note": {Note, 0, true},
 		"escape": {}, "meeting/0": {}, "transcribe/x": {}, "transcribe/-1": {},
 	} {
 		f, i, ok := ParseID(id)
@@ -284,6 +291,7 @@ func TestCheck(t *testing.T) {
 			hk("Control+Command+V", ""),
 		}}},
 		PasteLast: hk("Command+Control+V", ""),
+		Note:      hk("Fn", settings.TriggerDouble), // always a tap: Transcribe's fn tap has it
 		Cancel:    hk("Fn", ""),
 	}
 	got := map[string]Problem{}
@@ -298,6 +306,7 @@ func TestCheck(t *testing.T) {
 		"translate/0 conflict":   func(p Problem) bool { return p.Other == Transcribe && p.OtherIndex == 0 },
 		"translate/1 duplicate":  func(p Problem) bool { return p.Other == Translate && p.OtherIndex == 0 },
 		"paste-last/0 conflict":  func(p Problem) bool { return p.Other == Rewrite },
+		"note/0 conflict":        func(p Problem) bool { return p.Other == Transcribe && p.OtherIndex == 0 },
 		"cancel/0 conflict":      func(p Problem) bool { return p.Other == Transcribe && p.OtherIndex == 0 },
 	} {
 		p, ok := got[key]
@@ -362,6 +371,8 @@ func TestRoute(t *testing.T) {
 		{"cancel shortcut idle", ev(proto.HotkeyCancel, proto.PhaseTrigger), Idle, "", Decision{}},
 		{"paste last", ev(PasteLast, proto.PhaseTrigger), Idle, "", Decision{Action: Paste}},
 		{"paste last while recording", ev(PasteLast, proto.PhaseTrigger), Recording, "", Decision{}},
+		{"note starts", ev(Note, proto.PhaseTrigger), Idle, "", Decision{Action: Start, Feature: Note}},
+		{"note stops", ev(Note, proto.PhaseTrigger), Recording, "", Decision{Action: Stop}},
 		{"unknown binding", ev("try/x", proto.PhaseTrigger), Idle, "", Decision{}},
 	} {
 		if got := Route(tc.e, tc.phase, tc.hold); got != tc.want {

@@ -159,7 +159,7 @@ func newHotkey(f settings.Features) settings.Hotkey {
 	for _, p := range keyPresets {
 		pc, _ := hotkey.Parse(p)
 		used := false
-		for _, feat := range append(slices.Clone(hotkey.Features), hotkey.PasteLast) {
+		for _, feat := range append(slices.Clone(hotkey.Features), hotkey.PasteLast, hotkey.Note) {
 			for _, h := range hotkey.HotkeysOf(f, feat) {
 				if hc, err := hotkey.Parse(h.Keys); err == nil && hc.Overlaps(pc) {
 					used = true

@@ -2,7 +2,7 @@ package main
 
 // Settings → Shortcuts (/settings/shortcuts): every global shortcut
 // in one table (Transcribe's, Translate's and Rewrite's, Paste the
-// last result, and Cancel transcription), with their trigger and what
+// last result, Cancel transcription and Notes'), with their trigger and what
 // hotkey.Check finds wrong:
 // clashes, keys macOS uses, keys that need Accessibility while the event
 // tap is missing, keys another ActNow app uses too. A row opens its
@@ -28,6 +28,8 @@ func featurePath(feature string) string {
 		return "/translate"
 	case hotkey.Rewrite:
 		return "/rewrite"
+	case hotkey.Note:
+		return "/notes"
 	}
 	return "/transcribe" // Transcribe, Paste the last result, Cancel transcription
 }
@@ -59,7 +61,7 @@ func (a *app) shortcutsSettings(c *ui.Context) {
 			head(i18n.T("Shortcut")).Width(keysW).Shrink(0)
 			ui.Box(c).Width(px(t, shortcutMarksW+14+sp2)).Shrink(0) // the marks and the chevron
 		})
-		for _, feat := range append(append([]string{}, hotkey.Features...), hotkey.PasteLast, hotkey.CancelID) {
+		for _, feat := range append(append([]string{}, hotkey.Features...), hotkey.PasteLast, hotkey.CancelID, hotkey.Note) {
 			hs := hotkey.HotkeysOf(f, feat)
 			problems := uitext.HotkeyProblems(f, feat) // feature_keys_text.go
 			if len(hs) == 0 {
@@ -104,6 +106,9 @@ func (a *app) shortcutRow(c *ui.Context, feature string, i int, h *settings.Hotk
 				if feature == hotkey.CancelID {
 					ic = icons.CloseCircle
 				}
+				if feature == hotkey.Note {
+					ic = notesIcon
+				}
 				ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Grow(1).Basis(0).MinWidth(0).Children(func() {
 					if i == 0 {
 						ui.Icon(c, ic.Linear).Size(px(t, 16), px(t, 16)).TextColor(k.Text2).Shrink(0)
@@ -117,7 +122,7 @@ func (a *app) shortcutRow(c *ui.Context, feature string, i int, h *settings.Hotk
 					}
 					kbd(c, keys).MinWidth(0).Ellipsis("…") // shell_commands.go
 					trig := uitext.TriggerText(h.Trigger)
-					if feature == hotkey.PasteLast || feature == hotkey.CancelID {
+					if feature == hotkey.PasteLast || feature == hotkey.CancelID || feature == hotkey.Note {
 						trig = uitext.TriggerText(settings.TriggerTap) // always a tap
 					}
 					ui.Text(c, trig).FontSize(px(t, fsMicro)).TextColor(k.Text2).SingleLine().Ellipsis("…").MinWidth(0)

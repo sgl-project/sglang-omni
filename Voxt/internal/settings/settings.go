@@ -248,6 +248,10 @@ type Features struct {
 	// through the helper's event tap: it never takes the keys while
 	// nothing records.
 	Cancel Hotkey `json:"cancel"`
+	// Note records a note (Voxt 1.x's noteHotkeyBindings): a Transcribe
+	// session whose text goes to the Notes page instead of where the
+	// cursor is. Only a tap; empty keys: off.
+	Note Hotkey `json:"note"`
 }
 
 // Feature is what every feature has: its shortcuts, the models it uses
@@ -370,6 +374,9 @@ const (
 	// DefaultCancel is the cancel shortcut's default, in one place: it
 	// only acts while a session records or the answer card shows.
 	DefaultCancel = "Escape"
+	// DefaultNote is the note shortcut's default, Voxt 1.x's: right
+	// Command tapped alone, which no ActNow app has.
+	DefaultNote = "RightCommand"
 )
 
 // Defaults returns the settings of a fresh install.
@@ -387,6 +394,7 @@ func Defaults() Settings {
 			Rewrite:    Rewrite{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultRewrite, Trigger: TriggerTap}}}, Cleanup: true},
 			PasteLast:  Hotkey{Keys: DefaultPasteLast, Trigger: TriggerTap},
 			Cancel:     Hotkey{Keys: DefaultCancel, Trigger: TriggerTap},
+			Note:       Hotkey{Keys: DefaultNote, Trigger: TriggerTap},
 		},
 		AppEnhancement: AppEnhancement{Enabled: true},
 		Dictionary:     Dictionary{Enabled: true, ASRHints: true, Glossary: true},
@@ -416,6 +424,7 @@ func Migrate(data []byte) (Settings, error) {
 	if s.Version < 4 {
 		migrateShortcuts(&s.Features)
 	}
+	migrateNoteKeys(data, &s.Features)
 	migrateSoundPreset(&s.Audio)
 	s.Version = Version
 	return normalize(s), nil
@@ -491,6 +500,37 @@ func migrateShortcuts(f *Features) {
 // oldDefault reports whether h is keys tapped, as version 3 wrote it.
 func oldDefault(h Hotkey, keys string) bool {
 	return h.Keys == keys && (h.Trigger == "" || h.Trigger == TriggerTap)
+}
+
+// migrateNoteKeys gives a document from before the note shortcut the
+// default, unless another shortcut already taps those keys: the note then
+// stays off, and the Notes page asks for a shortcut. Such a document has
+// no note key; one that has it is the user's.
+func migrateNoteKeys(data []byte, f *Features) {
+	var doc struct {
+		Features struct {
+			Note json.RawMessage `json:"note"`
+		} `json:"features"`
+	}
+	if json.Unmarshal(data, &doc) != nil || doc.Features.Note != nil {
+		return
+	}
+	if tapsKeys(*f, DefaultNote) {
+		f.Note = Hotkey{}
+	}
+}
+
+// tapsKeys reports whether a shortcut in f taps keys by itself, as
+// hotkey.Check counts a clash.
+func tapsKeys(f Features, keys string) bool {
+	all := append([]Hotkey{f.PasteLast, f.Cancel}, f.Transcribe.Hotkeys...)
+	all = append(append(all, f.Translate.Hotkeys...), f.Rewrite.Hotkeys...)
+	for _, h := range all {
+		if strings.TrimSpace(h.Keys) == keys && (h.Trigger == "" || h.Trigger == TriggerTap) {
+			return true
+		}
+	}
+	return false
 }
 
 // Changed is published after an update is saved. Topic "settings.changed".
