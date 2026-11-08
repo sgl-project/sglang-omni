@@ -5,7 +5,7 @@
 requires = ["setuptools>=77.0.0"]
 build-backend = "setuptools.build_meta"
 
-# Intel CPU variant of pyproject.toml (see docs/get_started/installation_cpu.md).
+# Intel CPU variant of pyproject.toml (see docs/other_platforms/installation_cpu.md).
 # Torch family pinned to +cpu; CUDA-only wheels dropped; deps scoped to the
 # CPU-supported models. sglang is verified against v0.5.23 but cannot be
 # pinned here -- every published wheel pulls CUDA torch.

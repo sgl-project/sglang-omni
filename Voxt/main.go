@@ -111,6 +111,7 @@ func main() {
 		a.applyBeta()         // updates.go: betas or not, before the first check
 		a.startHelper()       // helperlink.go
 		a.openTray()          // tray.go: the menu bar icon, close to the menu bar
+		a.applyDock()         // tray.go: in the Dock or not
 		a.connectWindowLife() // tray.go
 		a.watchBundle()       // updates.go: an update installed while it runs
 		a.expireRecordings()  // history_retry.go: recordings kept for a retry, past their time

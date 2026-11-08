@@ -43,11 +43,13 @@ func TestLibrary(t *testing.T) {
 	if l := s.Installed(ASR); len(l) != 1 || l[0].ID != models.ASRFast || l[0].Name != "name of asr.fast" {
 		t.Errorf("asr %+v", l)
 	}
-	llms := s.Installed(LLM)
-	if len(llms) != 2 || llms[0].ID != models.LLMFast || llms[1].ID != models.LLMTranslate {
+	// The local language models are retired (Voxt's are remote): on disk,
+	// they are neither offered nor opened.
+	if llms := s.Installed(LLM); len(llms) != 0 {
 		t.Fatalf("llm %+v", llms)
 	}
-	if got := ForFeature(llms, "rewrite"); len(got) != 1 || got[0].ID != models.LLMFast {
+	llms := []Model{{ID: "all"}, {ID: "translator", Features: []string{"translate"}}}
+	if got := ForFeature(llms, "rewrite"); len(got) != 1 || got[0].ID != "all" {
 		t.Errorf("rewrite %+v", got)
 	}
 	if got := ForFeature(llms, "translate"); len(got) != 2 {
@@ -59,8 +61,8 @@ func TestLibrary(t *testing.T) {
 	if !errors.Is(err, ErrNoRuntime) || errors.Is(err, ErrNotInstalled) {
 		t.Errorf("asr without runtime: %v", err)
 	}
-	if _, _, err := s.LLM(context.Background(), models.LLMBalanced); !errors.Is(err, ErrNoRuntime) {
-		t.Errorf("llm without runtime: %v", err)
+	if _, _, err := s.LLM(context.Background(), models.LLMFast); !errors.Is(err, ErrNotInstalled) {
+		t.Errorf("a retired llm: %v", err)
 	}
 
 	// With openers: the installed folder.
@@ -79,12 +81,12 @@ func TestLibrary(t *testing.T) {
 	if err != nil || p == nil || mod.ID != models.ASRFast || mod.Name != models.ASRFast {
 		t.Errorf("asr %v %+v %v", p, mod, err)
 	}
-	if _, _, err := lib.LLM(context.Background(), models.LLMTranslate); err == nil || err.Error() != "boom" {
+	if _, _, err := lib.LLM(context.Background(), models.LLMTranslate); !errors.Is(err, ErrNotInstalled) {
 		t.Errorf("llm %v", err)
 	}
 	// The runtimes load the snapshot: $HUB/models--<owner>--<name>/snapshots/<commit>.
-	want := []string{models.ASRFast + " " + snapshot(hub, models.ASRFast), models.LLMTranslate + " " + snapshot(hub, models.LLMTranslate)}
-	if len(opened) != 2 || opened[0] != want[0] || opened[1] != want[1] {
+	want := []string{models.ASRFast + " " + snapshot(hub, models.ASRFast)}
+	if len(opened) != 1 || opened[0] != want[0] {
 		t.Errorf("opened %q, want %q", opened, want)
 	}
 	if !strings.Contains(want[0], "/models--mlx-community--Qwen3-ASR-0.6B-4bit/snapshots/313d850181767edf09f00a9c289becca70e58cd0") {
@@ -94,7 +96,7 @@ func TestLibrary(t *testing.T) {
 		t.Error("Dir")
 	}
 	// Opening claimed them for VoxtNew (another app's would stay with it).
-	for _, id := range []string{models.ASRFast, models.VADSilero, models.LLMTranslate} {
+	for _, id := range []string{models.ASRFast, models.VADSilero} {
 		if !m.Status(id).Mine {
 			t.Errorf("%s not claimed", id)
 		}

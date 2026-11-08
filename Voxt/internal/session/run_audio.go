@@ -27,6 +27,12 @@ func (r *run) hints() []string {
 	return dict.Hints(r.terms)
 }
 
+// speechContext is the user's text about the speech for the speech model
+// (Dictionary.SpeechContext), with the dictionary on or off.
+func (r *run) speechContext() string {
+	return strings.TrimSpace(r.settings.Dictionary.SpeechContext)
+}
+
 // speechLang is the language hint of the speech model: the user's main
 // language (General.MainLanguage, else the UI's), but an English UI is no
 // hint. English is the UI of every system language but Simplified

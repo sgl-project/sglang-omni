@@ -3,19 +3,19 @@
 // file's size and SHA-256), which of them are installed, their downloads
 // (resumable, verified, cancellable) and deletions.
 //
-// The models live in the ActNow family's model library ($HUB, by
-// default ~/Library/Application Support/ActNow/models/hub; family spec
-// §7), in the Hugging Face cache's layout, shared with the other ActNow
-// apps: actnowkit's hfhub downloads them holding the family's locks and
+// The models live in the model library ($HUB, by default
+// ~/Library/Application Support/SGLang Omni/models, HubIn; the family's
+// models.root when VoxtNew follows it, family spec §7), in the Hugging
+// Face cache's layout, shared with the other ActNow apps that use it: actnowkit's hfhub downloads them holding the family's locks and
 // claims them for VoxtNew, and actnowkit's models decides what a deletion
 // may remove (only what no other app claims, unless the user deletes for
 // all apps).
 // The runtimes load a model from its snapshot folder
 // ($HUB/models--<owner>--<name>/snapshots/<commit>, Manager.Dir).
 //
-// The catalogue's ids are stable: settings keep them. What a model is
-// called and what it is good at is the UI's (internal/uitext); repos,
-// revisions and quantisations stay here.
+// The catalogue's ids are stable: settings keep them. A model's name (its
+// family, size and quantisation) is here with its repo and revision; what
+// it is good at is the UI's (internal/uitext).
 //
 // Imports: nothing internal (actnowkit's hfhub and models).
 package models
@@ -34,8 +34,8 @@ type Runtime string
 
 const (
 	Omni Runtime = "omni" // sglang_omni_mlx/native's servers
-	MLX  Runtime = "mlx"  // voxtnew-llm, mlx-swift-lm
-	GGUF Runtime = "gguf" // voxtnew-llm, llama.cpp
+	MLX  Runtime = "mlx"  // the retired language models' (mlx-swift-lm, no longer in Voxt)
+	GGUF Runtime = "gguf" // the retired translation model's (llama.cpp, no longer in Voxt)
 )
 
 // The catalogue's ids.
@@ -66,7 +66,11 @@ type File struct {
 
 // Model is one model of the catalogue.
 type Model struct {
-	ID      string
+	ID string
+	// Name is what the UI calls it, as Voxt 1.x listed its models: the
+	// family, its size and quantisation ("Qwen3-ASR 1.7B (8bit)"), so that
+	// users can tell which model it is. Not translated.
+	Name    string
 	Kind    Kind
 	Runtime Runtime
 	// Repo and Revision are the Hugging Face repo and the commit pinned,
@@ -99,6 +103,11 @@ type Model struct {
 	// does not download: it is on offer only when it is on disk, and is
 	// VoxtNew's once the user chose to use it (a claim).
 	Borrowed bool
+	// Retired: a model Voxt no longer offers (the local language models:
+	// Voxt's are remote since 2.1). It is never downloaded or opened; the
+	// Local models page shows it only while Voxt has it on this Mac, to
+	// delete it.
+	Retired bool
 }
 
 // Size is the size of the model's files.
@@ -138,7 +147,7 @@ func Lookup(id string) (Model, bool) {
 // The borrowed models are Dicta's and AudioSmith's, whole snapshots.
 var catalog = []Model{
 	{
-		ID: ASRAccurate, Kind: ASR, Runtime: Omni, Default: true, Needs: []string{VADSilero},
+		ID: ASRAccurate, Name: "Qwen3-ASR 1.7B (8bit)", Kind: ASR, Runtime: Omni, Default: true, Needs: []string{VADSilero},
 		Family: "qwen3-asr", Quant: "8bit", Alternatives: []string{ASRFast},
 		Repo: "mlx-community/Qwen3-ASR-1.7B-8bit", Revision: "a8379a2e2f9e313c9292cdf1af4055ab56d50d55",
 		Files: []File{
@@ -154,7 +163,7 @@ var catalog = []Model{
 		},
 	},
 	{
-		ID: ASRFast, Kind: ASR, Runtime: Omni, Needs: []string{VADSilero},
+		ID: ASRFast, Name: "Qwen3-ASR 0.6B (4bit)", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero},
 		Family: "qwen3-asr", Quant: "4bit",
 		Repo: "mlx-community/Qwen3-ASR-0.6B-4bit", Revision: "313d850181767edf09f00a9c289becca70e58cd0",
 		Files: []File{
@@ -170,7 +179,7 @@ var catalog = []Model{
 		},
 	},
 	{
-		ID: VADSilero, Kind: VAD, Runtime: Omni, Default: true, Family: "silero-vad",
+		ID: VADSilero, Name: "Silero VAD v6", Kind: VAD, Runtime: Omni, Default: true, Family: "silero-vad",
 		Repo: "mlx-community/silero-vad-v6", Revision: "2ebf4a5e10726a2e78ddd4d70eedfb6f1c33eb06",
 		Files: []File{
 			{"config.json", 463, "9fe1befb9692a0d4135adadc33f8075ef6d350bd2391b88d750f2c233f97fa0b", false},
@@ -178,7 +187,7 @@ var catalog = []Model{
 		},
 	},
 	{
-		ID: LLMBalanced, Kind: LLM, Runtime: MLX, Default: true,
+		ID: LLMBalanced, Name: "Qwen3.5 4B OptiQ (4bit)", Kind: LLM, Retired: true, Runtime: MLX, Default: true,
 		Family: "qwen3.5", Quant: "4bit", Alternatives: []string{LLMQwen3, LLMGemma4},
 		Repo: "mlx-community/Qwen3.5-4B-OptiQ-4bit", Revision: "6cb5bdfd0bf15f484881fb9f1ab6d7c840fddde9",
 		Files: []File{
@@ -194,7 +203,7 @@ var catalog = []Model{
 		},
 	},
 	{
-		ID: LLMFast, Kind: LLM, Runtime: MLX,
+		ID: LLMFast, Name: "Qwen3.5 2B (4bit)", Kind: LLM, Retired: true, Runtime: MLX,
 		Family: "qwen3.5", Quant: "4bit", Alternatives: []string{LLMQwen3, LLMGemma4},
 		Repo: "mlx-community/Qwen3.5-2B-4bit", Revision: "674aaa7240b91e8012fcad5d791b7dfe5ba90207",
 		Files: []File{
@@ -211,7 +220,7 @@ var catalog = []Model{
 		},
 	},
 	{
-		ID: LLMTranslate, Kind: LLM, Runtime: GGUF, Features: []string{"translate"},
+		ID: LLMTranslate, Name: "Hy-MT2 1.8B (Q4_K_M)", Kind: LLM, Retired: true, Runtime: GGUF, Features: []string{"translate"},
 		Family: "hy-mt2", Quant: "Q4_K_M",
 		Repo: "tencent/Hy-MT2-1.8B-GGUF", Revision: "a0c709d9fac510f2c807aa3af52872340dc37a4a",
 		Files: []File{
@@ -219,12 +228,12 @@ var catalog = []Model{
 		},
 	},
 	{
-		ID: LLMQwen3, Kind: LLM, Runtime: MLX, Borrowed: true,
+		ID: LLMQwen3, Name: "Qwen3 4B Instruct 2507 (4bit)", Kind: LLM, Retired: true, Runtime: MLX, Borrowed: true,
 		Family: "qwen3", Quant: "4bit", Bytes: 2278969697,
 		Repo: "mlx-community/Qwen3-4B-Instruct-2507-4bit", Revision: "50d427756c6b1b2fe0c0a10f67fbda1fc8e82c1b",
 	},
 	{
-		ID: LLMGemma4, Kind: LLM, Runtime: MLX, Borrowed: true,
+		ID: LLMGemma4, Name: "Gemma 4 E4B (4bit)", Kind: LLM, Retired: true, Runtime: MLX, Borrowed: true,
 		Family: "gemma4", Quant: "4bit", Bytes: 5179239349,
 		Repo: "mlx-community/gemma-4-e4b-it-4bit", Revision: "475b9088d29754a3379866cf5aeb6b41acd313c2",
 	},

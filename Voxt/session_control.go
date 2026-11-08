@@ -43,7 +43,7 @@ func (a *app) sessionBlocker(kind store.Kind) *sessionNotice {
 	}
 	if kind != store.KindTranscribe {
 		if _, ok := a.featureModel(local.LLM, string(kind)); !ok {
-			return &sessionNotice{text: i18n.T("No language model is installed."), action: actionModels}
+			return &sessionNotice{text: i18n.T("No language model is set up."), action: actionLanguage}
 		}
 	}
 	return nil

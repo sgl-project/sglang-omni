@@ -2,7 +2,7 @@
 # Install sglang-omni for CPU: swap in pyproject_cpu.toml and install against
 # the PyTorch CPU wheel index. The default pyproject may pull accelerator-only
 # wheels, so this script preserves a CPU torch stack. See
-# docs/get_started/installation_cpu.md.
+# docs/other_platforms/installation_cpu.md.
 #
 # Usage:
 #   scripts/cpu/install_cpu.sh                    # lean core, editable
@@ -71,7 +71,7 @@ except Exception as e:
     print(f"  torch:       not importable ({e})")
 PY
 
-# --no-build-isolation is REQUIRED (see docs/get_started/installation_cpu.md):
+# --no-build-isolation is REQUIRED (see docs/other_platforms/installation_cpu.md):
 # with build isolation, pip spins up an isolated build env whose fallback
 # setuptools emits a legacy in-tree egg-info instead of a PEP 660 editable .pth
 # — the package then isn't importable outside the repo and no sgl-omni console

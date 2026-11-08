@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -58,7 +59,15 @@ func spawn(cfg Config, spec Spec, dir string, cacheLimit bool) (*process, <-chan
 	}
 	args := []string{"--supervised", "--host", "127.0.0.1", "--port", "0",
 		"--model-directory", dir, "--startup-timeout-s", ftoa(cfg.StartTimeout.Seconds())}
-	cmd := exec.Command(cfg.Binary, append(args, spec.launchArgs(cacheLimit)...)...)
+	bin := cfg.Binary
+	if spec.Binary != "" {
+		// A runtime without the copy (built before it, or sglang's own
+		// build) runs the model on qwen3_asr_server.
+		if b := filepath.Join(filepath.Dir(cfg.Binary), spec.Binary); exists(b) {
+			bin = b
+		}
+	}
+	cmd := exec.Command(bin, append(args, spec.launchArgs(cacheLimit)...)...)
 	cmd.Env = append(serverEnv(os.Environ()), cfg.Env...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -253,4 +262,10 @@ func (t *tail) String() string {
 		return "(no output)"
 	}
 	return strings.Join(t.lines, " | ")
+}
+
+// exists reports whether path is a file that can be found.
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }

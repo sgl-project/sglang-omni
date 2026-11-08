@@ -200,8 +200,8 @@ int Run(int argc, char **argv) {
         throw UsageError(error.what());
       }
     } else {
-      std::vector<float> samples = omni_common::DecodeWav(
-          ReadFile(path), fishaudio_drama3::kCodecSampleRate);
+      std::vector<float> samples =
+          omni_common::DecodeWav(ReadFile(path), fish_dac::kSampleRate);
       if (!std::all_of(samples.begin(), samples.end(),
                        [](float sample) { return std::isfinite(sample); })) {
         throw UsageError(path + " must hold finite samples");
@@ -262,12 +262,12 @@ int Run(int argc, char **argv) {
       });
   const double seconds = SecondsSince(started);
   const double audio_seconds =
-      static_cast<double>(samples.size()) / fishaudio_drama3::kCodecSampleRate;
+      static_cast<double>(samples.size()) / fish_dac::kSampleRate;
 
   if (!output_path.empty()) {
     WriteFile(output_path,
               omni_common::WavBytes(omni_common::Pcm16Bytes(samples),
-                                    fishaudio_drama3::kCodecSampleRate));
+                                    fish_dac::kSampleRate));
   } else {
   }
   if (!codes_output_path.empty()) {

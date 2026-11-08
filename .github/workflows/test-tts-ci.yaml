@@ -204,12 +204,11 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: tts-stage-latency-results
+          name: tts-stage-latency-results-attempt-${{ github.run_attempt }}
           path: >-
             ${{ env.OMNI_CI_HOME }}/tts-stage-results/latency/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}/**/speed_results.json
           if-no-files-found: ${{ job.status == 'success' && 'error' || 'warn' }}
           retention-days: 30
-          overwrite: true
 
       - name: Post-stage cleanup
         if: always()
@@ -326,7 +325,7 @@ jobs:
             */benchmark_validation.json
             */router_validation.json
             */cleanup_validation.json
-          artifact-upload-name: tts-stage-serving-results
+          artifact-upload-name: tts-stage-serving-results-attempt-${{ github.run_attempt }}
           artifact-upload-path: >-
             ${{ env.OMNI_CI_HOME }}/tts-stage-results/serving/run-attempt-${{ github.run_attempt }}
           artifact-if-no-files-found: error
