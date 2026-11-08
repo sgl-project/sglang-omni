@@ -667,6 +667,29 @@ reference audio, reference text, and `x_vector_only_mode`:
 }
 ```
 
+## Benchmarking
+
+To benchmark a Base checkpoint, first prepare the SeedTTS dataset and start the
+matching server. For example, run the English split against 0.6B Base:
+
+```bash
+python -m benchmarks.dataset.prepare --dataset seedtts
+
+python -m benchmarks.eval.benchmark_tts_seedtts \
+  --meta zhaochenyang20/seed-tts-eval-arrow \
+  --model Qwen/Qwen3-TTS-12Hz-0.6B-Base \
+  --port 8000 \
+  --output-dir results/qwen3_tts_0_6b_en \
+  --lang en \
+  --max-concurrency 16
+```
+
+For the Chinese split, set `--lang zh` and use a separate output directory. For
+1.7B Base, launch that checkpoint and change `--model` to
+`Qwen/Qwen3-TTS-12Hz-1.7B-Base`. See the
+[TTS benchmark reference](../developer_reference/tts_bench.md) for methodology
+and additional workloads.
+
 ## Benchmark Results
 
 ### 0.6B Base
