@@ -19,9 +19,9 @@ import Foundation
 //   second time on the default input; after that the job ends (an error
 //   when no audio came at all).
 // - A configuration change (default device switched, AirPods connected)
-//   rebuilds the engine; the chosen device going away ends the recording
-//   (deviceLost), unless it was the default input, which follows the new
-//   default.
+//   rebuilds the engine. An input going away moves the recording to the
+//   next of devices still connected, else the default input (deviceLost;
+//   the default input follows the new default); none left ends it.
 // - Tests only: VOXTNEW_HELPER_CAPTURE_FILE names an audio file that
 //   stands in for the microphone (CaptureFileConfig): the same conversion,
 //   framing, notifications and endings, at a microphone's pace, without
@@ -418,34 +418,38 @@ private final class CaptureRun: @unchecked Sendable {
         }
     }
 
-    /// Rebuilds the engine (on the queue).
+    /// Rebuilds the engine (on the queue), on the inputs of restartOrder in
+    /// turn. A chosen input that went away makes it deviceLost; when no
+    /// other input starts, that recording ends with what it has.
     private func restart(reason: String, toDefault: Bool = false) {
         let (attempt, preferred, wasDefault) = lock.withLock { () -> (Int, String?, Bool) in
             restarts += 1
             return (restarts, usingDefault ? nil : deviceUID, usingDefault)
         }
         stopEngine()
-        let uid = toDefault ? nil : preferred
-        let start = { (uid: String?) in try self.system ? self.startSystem() : self.startEngine(uid: uid) }
-        do {
-            try start(uid)
-        } catch {
+        let gone = !system && preferred.map { findDevice(uid: $0).map(isAlive) != true } ?? false
+        var failure: Error?
+        for uid in system ? [nil] : restartOrder(devices: params.devices ?? [], current: preferred, gone: gone, toDefault: toDefault) {
             do {
-                try start(nil)
+                try system ? startSystem() : startEngine(uid: uid)
+                failure = nil
+                break
             } catch {
-                endAsync(noAudio: "restart failed: \(errorMessage(error))")
-                return
+                failure = error
             }
         }
-        if !wasDefault && lock.withLock({ usingDefault }) {
-            lock.withLock {
-                if !startedSent {
-                    fellBack = true
-                    fallbackReason = "\(preferred ?? "the input") gave no audio"
-                }
-            }
+        if let failure {
+            return gone ? endAsync(reason: CaptureReason.deviceLost) : endAsync(noAudio: "restart failed: \(errorMessage(failure))")
         }
-        out.notify(Method.captureRestarted, RestartedParams(job: job, reason: reason, attempt: attempt, device: lock.withLock { deviceUID }))
+        let (uid, id) = lock.withLock { () -> (String, AudioObjectID) in
+            if !wasDefault && !startedSent && (usingDefault || deviceUID != preferred) {
+                fellBack = true
+                fallbackReason = "\(preferred ?? "the input") " + (gone ? "went away" : "gave no audio")
+            }
+            return (deviceUID, deviceID)
+        }
+        out.notify(Method.captureRestarted, RestartedParams(job: job, reason: gone ? CaptureReason.deviceLost : reason, attempt: attempt,
+                                                            device: uid, deviceName: system ? nil : deviceName(id)))
     }
 
     private func startWatchers() {
@@ -457,14 +461,10 @@ private final class CaptureRun: @unchecked Sendable {
         t.schedule(deadline: .now() + 0.25, repeating: 0.25)
         t.setEventHandler { [weak self] in
             guard let self else { return }
-            let (id, dflt, done) = self.lock.withLock { (self.deviceID, self.usingDefault, self.ended) }
+            let (id, done) = self.lock.withLock { (self.deviceID, self.ended) }
             // The tap's own listener follows the default output.
             if done || id == 0 || self.system || isAlive(id) { return }
-            if dflt {
-                self.restart(reason: CaptureReason.deviceLost)
-            } else {
-                self.endAsync(reason: CaptureReason.deviceLost)
-            }
+            self.restart(reason: CaptureReason.deviceLost)
         }
         t.resume()
         watcher = t

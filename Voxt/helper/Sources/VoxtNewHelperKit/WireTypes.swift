@@ -186,12 +186,15 @@ public struct RestartedParams: Codable, Sendable {
     public var reason: String
     public var attempt: Int
     public var device: String
+    /// The device's name; nil for capture.system, which never names the output.
+    public var deviceName: String?
 
-    public init(job: String, reason: String, attempt: Int, device: String) {
+    public init(job: String, reason: String, attempt: Int, device: String, deviceName: String? = nil) {
         self.job = job
         self.reason = reason
         self.attempt = attempt
         self.device = device
+        self.deviceName = deviceName
     }
 }
 

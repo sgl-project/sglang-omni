@@ -173,9 +173,11 @@ type Snapshot struct {
 	// or the speech model, still starting. The pill says so.
 	Waiting Wait
 	// Device is the input that records, FellBack whether it was not the
-	// first choice.
+	// first choice. Switched counts the times the input went away and
+	// another took over (Device names it); the pill says so.
 	Device   string
 	FellBack bool
+	Switched int
 	// Partial is a streaming speech model's text so far; Raw the final
 	// recognised text (Rewrite's spoken instruction); Result what is
 	// delivered.
