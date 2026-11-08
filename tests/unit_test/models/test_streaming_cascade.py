@@ -86,7 +86,7 @@ from sglang_omni.proto.streams import (
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.session import SessionScheduler
 from sglang_omni.utils.imports import import_string
-from tests.unit_test.fixtures.cascade_backends import CHAT_MODEL
+from tests.unit_test.fixtures.cascade_backends import CHAT_MODEL, SPEECH_SAMPLES
 from tests.unit_test.fixtures.cascade_fakes import QUIET, build, drain
 from tests.unit_test.fixtures.session_outputs import control_chunk
 from tests.unit_test.fixtures.session_pipeline import (
@@ -2604,7 +2604,9 @@ async def synthesized(
     def answer(request: httpx.Request) -> httpx.Response:
         bodies.append(json.loads(request.content))
         return httpx.Response(
-            200, content=b"\x00\x00" * 24000, headers={"X-Sample-Rate": "24000"}
+            200,
+            content=SPEECH_SAMPLES.tobytes() * 8000,
+            headers={"X-Sample-Rate": "24000"},
         )
 
     tts = build({"kind": "openai_speech", **HTTP_SERVICE, **spec})
