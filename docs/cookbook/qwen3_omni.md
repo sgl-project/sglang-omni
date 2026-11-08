@@ -107,14 +107,6 @@ Standard sampling parameters apply to the thinker. When `modalities` includes `"
 Non-streaming requests return HTTP 400 for invalid media, 503 when the queue is full, and 500 for other failures.
 After streaming starts, errors use `data: {"error": {"message": "...", "type": "...", "code": ...}}` events; HTTP status remains 200. Invalid media uses `invalid_request_error`/400, a full queue `server_error`/503, and other failures `server_error`/500. The stream ends with `data: [DONE]`, so clients must check for errors, even after partial output.
 
-### Known Limitations
-
-- **Multiple videos must use the same sampled frame rate.** The processor uses one rate for video timestamps; different rates return an invalid-input error.
-
-- **`content` must be `""` when the query is entirely in `audios`, `videos`, or `images`.** Otherwise, any text in `content` is processed too.
-- **Colocated topology does not support `--thinker.tp_size 2`.** Startup raises a `ValueError`; use disaggregated topology for TP=2.
-- **Context limits apply to prompt and output.** The preprocessor rejects requests when prompt tokens meet or exceed `max_seq_len`, or when prompt tokens plus `max_new_tokens` meet or exceed it. Without both `--preprocessing.factory.max_seq_len` and `--thinker.factory.max_seq_len`, the limit is the thinker's checkpoint context (65,536 tokens for Instruct); setting both lower caps it. The talker uses its checkpoint limit unless `--talker_ar.factory.max_seq_len` sets it. A long spoken prompt may leave too little room for `talker_max_new_tokens`, so audio can end before the text.
-
 ## Qwen3-Omni persistent session stages
 
 The session profile serves Qwen3-Omni as a turn-based realtime voice assistant on `/v1/realtime`: a VAD node ends each user turn and the model answers it with the conversation so far. Launching on H100 or H200, settings, the protocol and benchmarking are in [Full-Duplex Guide](../developer_reference/full_duplex_guide.md#turn-based-qwen3-omni).
@@ -155,3 +147,11 @@ sgl-omni serve \
 - **Speech output.** Drafts do not support speech generation; use `--text-only`.
 
 Compare modes with matching workloads and prefix-cache conditions; measure TTFT, throughput, and accuracy for your workload.
+
+### Known Limitations
+
+- **Multiple videos must use the same sampled frame rate.** The processor uses one rate for video timestamps.different rates return an invalid-input error.
+
+- **`content` must be `""` when the query is entirely in `audios`, `videos`, or `images`.** Otherwise, any text in `content` is processed too.
+- **Colocated topology does not support `--thinker.tp_size 2`.** Startup raises a `ValueError`; use disaggregated topology for TP=2.
+- **Context limits apply to prompt and output.** The preprocessor rejects requests when prompt tokens meet or exceed `max_seq_len`, or when prompt tokens plus `max_new_tokens` meet or exceed it. Without both `--preprocessing.factory.max_seq_len` and `--thinker.factory.max_seq_len`, the limit is the thinker's checkpoint context (65,536 tokens for Instruct); setting both lower caps it. The talker uses its checkpoint limit unless `--talker_ar.factory.max_seq_len` sets it. A long spoken prompt may leave too little room for `talker_max_new_tokens`, so audio can end before the text.
