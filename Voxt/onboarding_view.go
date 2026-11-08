@@ -158,18 +158,19 @@ func (a *app) obTitle(c *ui.Context) {
 		sub = i18n.T("Speak in any app and get text where your cursor is: transcribe, translate and rewrite. A few short steps; you can skip any of them.")
 	case obPermissions:
 		title = i18n.T("Permissions")
+		sub = i18n.T("Voxt needs the microphone to hear you, and Accessibility to type the result where your cursor is. Allow them here, or later in Settings → Permissions.")
 	case obModels:
 		title = i18n.T("Models")
 		sub = i18n.T("Voxt recognises speech with a model on this Mac (this one is the best start; the Speech models page has the others), and cleans up, translates and rewrites with a language model you set up.")
 	case obTranscribe:
 		title = i18n.T("Try Transcribe")
-		sub = i18n.T("Press the shortcut (or Start), read the sentence below or say anything, then press it again to stop. The result shows here.")
+		sub = i18n.T("Transcribe writes down what you say, as you said it, with punctuation and fillers tidied by the language model you set up. Press the shortcut (or Start), read the sentence below or say anything, then press it again to stop. The result shows here.")
 	case obTranslate:
 		title = i18n.T("Try Translate")
-		sub = i18n.T("Translate selected text, or what you say. Translate the sample below, or press the shortcut (or Start) and say a sentence.")
+		sub = i18n.T("Translate turns the selected text, or what you say, into the language you choose. Translate the sample below, or press the shortcut (or Start) and say a sentence.")
 	case obRewrite:
 		title = i18n.T("Try Rewrite")
-		sub = i18n.T("With nothing selected, say what to write; with text selected, say how to change it. Press the shortcut (or Start) and ask for something short.")
+		sub = i18n.T("Rewrite is not dictation: unlike Transcribe, it does not write down your words. You tell Voxt what to write, or select text and say how to change it, and the language model writes the result. Press the shortcut (or Start) and ask for something short.")
 	default:
 		title = i18n.T("More to explore")
 		sub = i18n.T("Voxt is ready. Two more things make it yours.")

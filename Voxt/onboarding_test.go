@@ -279,3 +279,19 @@ func TestOnboardingStepsOneLine(t *testing.T) {
 		}
 	}
 }
+
+// Each step of the guide first says what the feature is.
+func TestOnboardingStepsExplainTheFeature(t *testing.T) {
+	a, tt := obTester(t)
+	for step, want := range map[int]string{
+		obPermissions: "Voxt needs the microphone to hear you",
+		obTranscribe:  "Transcribe writes down what you say",
+		obTranslate:   "Translate turns the selected text",
+		obRewrite:     "Rewrite is not dictation",
+	} {
+		a.obGo(step)
+		if !has(tt, want) {
+			t.Errorf("step %d: no %q in %q", step, want, tt.Texts())
+		}
+	}
+}
