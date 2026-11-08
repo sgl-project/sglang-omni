@@ -23,6 +23,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
@@ -56,6 +57,8 @@ type dictView struct {
 	err     string
 	total   int // terms in the dictionary (the last read without a search)
 	listUI  ui.ListState
+	// guideOpen: the usage guide is unfolded.
+	guideOpen bool
 	// The term dialog.
 	editOpen bool
 	edit     termEdit
@@ -180,6 +183,7 @@ func (a *app) dictionaryPage(c *ui.Context) {
 			}
 			a.dictSwitches(c)
 		})
+		a.dictGuide(c)
 		if !a.prefs.Dictionary.Enabled {
 			notice(c, "dict-off", noticeInfo, i18n.T("The dictionary is off: its terms go nowhere."), "", nil, nil)
 		}
@@ -225,6 +229,17 @@ func (a *app) dictSwitches(c *ui.Context) {
 			v := *gl
 			a.updateSettings(func(s *settings.Settings) { s.Dictionary.Glossary = v })
 		}
+	})
+}
+
+// dictGuide says where a term applies, folded under the switches
+// (docs/behavior.md 5.16, 7.9, 7.9a).
+func (a *app) dictGuide(c *ui.Context) {
+	collapsible(c.Key("dict-guide"), i18n.T("How the dictionary works"), &a.dv.guideOpen, nil, func() {
+		caption(c, i18n.T("A term takes effect the next time you use Voxt, as long as it and the dictionary are on, in three places:"))
+		caption(c, i18n.T("Speech recognition: with Speech hints on, the term goes to the speech model as a word to expect, if that model takes hints. Aliases are not sent."))
+		caption(c, i18n.T("Language model: with Glossary for the language model on, the model writes the term as spelled here when it cleans up, translates or rewrites. With up to %d enabled terms, it gets them all; with more, only the terms found in the text, by spelling or alias. It stops at %d terms, or earlier if the list gets too long.", compose.GlossaryAllUpTo, compose.MaxGlossaryTerms))
+		caption(c, i18n.T("Aliases: the wrong spellings recognition writes. Voxt replaces them with the term in the recognised text, before the language model and also without one."))
 	})
 }
 

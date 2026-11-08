@@ -1307,5 +1307,10 @@
   "Add %s to the dictionary": "把 %s 加入词典",
   "Edit %s first, then add it": "先编辑 %s 再加入",
   "Ignore %s": "忽略 %s",
-  "Could not ignore the suggestion: %v": "无法忽略这条建议：%v"
+  "Could not ignore the suggestion: %v": "无法忽略这条建议：%v",
+  "A term takes effect the next time you use Voxt, as long as it and the dictionary are on, in three places:": "下次使用 Voxt 时词条就会生效（词条和词典都要打开），作用在三个地方：",
+  "Aliases: the wrong spellings recognition writes. Voxt replaces them with the term in the recognised text, before the language model and also without one.": "别名：语音识别写错的样子。Voxt 在识别出的文字里把别名换成词条，这一步在语言模型之前，没有语言模型也有效。",
+  "How the dictionary works": "词典的用法",
+  "Language model: with Glossary for the language model on, the model writes the term as spelled here when it cleans up, translates or rewrites. With up to %d enabled terms, it gets them all; with more, only the terms found in the text, by spelling or alias. It stops at %d terms, or earlier if the list gets too long.": "语言模型：打开“语言模型术语表”时，模型在整理、翻译和转写时按这里的写法输出词条。启用的词条不超过 %d 个时全部发给模型；更多时只发送文本里出现的词条（按拼写或别名匹配）。最多发送 %d 个，列表太长时会更少。",
+  "Speech recognition: with Speech hints on, the term goes to the speech model as a word to expect, if that model takes hints. Aliases are not sent.": "语音识别：打开“语音识别提示”时，词条作为要优先识别的词交给语音识别模型（模型支持提示时）。别名不发送。"
 }
