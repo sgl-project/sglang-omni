@@ -277,15 +277,38 @@ func TestPermissionsSettings(t *testing.T) {
 		t.Errorf("asked from the app: %d", f.Prompted)
 	}
 	// Speech Recognition is asked through the helper too, and its answer shows.
-	a.askPermission(proto.PermissionSpeechRecognition)
+	a.askPermission(proto.PermissionSpeechRecognition, nil)
 	if a.perms.speech != permission.Granted {
 		t.Errorf("speech recognition after asking: %+v", a.perms)
 	}
 	// Without the helper, Accessibility is asked from the app.
 	fs.set(helper.Status{State: helper.Failed, Reason: helper.FailCrashed})
-	a.askPermission(proto.PermissionAccessibility)
+	a.askPermission(proto.PermissionAccessibility, nil)
 	if f := a.permSys.(*permission.Fake); f.Prompted != 1 {
 		t.Errorf("accessibility prompts: %d", f.Prompted)
+	}
+}
+
+// TestPermissionsAskRequired: the section groups the permissions Voxt
+// needs (the microphone, Accessibility) apart from the optional one
+// (Speech Recognition), and one button asks for each needed one not
+// allowed yet, in turn: the microphone's prompt, then Accessibility's
+// once it was answered; the rows show the answers, and the button goes
+// once nothing is left to ask.
+func TestPermissionsAskRequired(t *testing.T) {
+	a, fs, tt := newTestApp(t)
+	a.navigate("/settings/permissions")
+	frames(tt)
+	if !hasExact(tt, "Required") || !hasExact(tt, "Optional") {
+		t.Fatalf("no groups: %q", tt.Texts())
+	}
+	click(t, tt, "Ask for the required permissions")
+	if !slices.Equal(fs.asked, []string{proto.PermissionMicrophone, proto.PermissionAccessibility}) || a.perms.mic != permission.Granted || !has(tt, "Allowed") {
+		t.Fatalf("asked %v, permissions %+v", fs.asked, a.perms)
+	}
+	a.perms.access = true // allowed in System Settings
+	if has(tt, "Ask for the required permissions") {
+		t.Error("the button stays with nothing to ask")
 	}
 }
 
@@ -316,20 +339,20 @@ func TestPermissionsMoved(t *testing.T) {
 }
 
 // TestPrivacyGoesOnline: Settings → Privacy says what Voxt goes online
-// for: downloading models, and checking for updates only in a build
-// with an update feed (2.0.0 has none).
+// for: downloading models, Voxt's announcements, and checking for updates
+// only in a build with an update feed (2.0.0 has none).
 func TestPrivacyGoesOnline(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate("/settings/privacy")
 	frames(tt)
-	if !has(tt, "Otherwise Voxt goes online only to check for updates and to download models.") {
+	if !has(tt, "Otherwise Voxt goes online only to check for updates, to download models and to read Voxt's announcements, which sends nothing about you.") {
 		t.Errorf("with an update feed: %q", firstTexts(tt))
 	}
 	a.upd = nil
 	a.navigate("/home")
 	a.navigate("/settings/privacy")
 	frames(tt)
-	if !has(tt, "Otherwise Voxt goes online only to download models.") || has(tt, "check for updates") {
+	if !has(tt, "Otherwise Voxt goes online only to download models and to read Voxt's announcements, which sends nothing about you.") || has(tt, "check for updates") {
 		t.Errorf("without an update feed: %q", firstTexts(tt))
 	}
 }

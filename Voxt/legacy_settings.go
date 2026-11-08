@@ -24,7 +24,6 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 // legacyPreference is the previous Voxt's preference key as text, from
@@ -439,17 +438,16 @@ func (l legacySettings) apply(s *settings.Settings) (llmAdded, speechAdded []set
 
 // toCheck names the setups added (apply's llmAdded, speechAdded) whose
 // address or model the user should check, for the result.
-func (l legacySettings) toCheck(llmAdded, speechAdded []settings.Provider) []string {
-	var names []string
+func (l legacySettings) toCheck(llmAdded, speechAdded []settings.Provider) (llmCheck, speechCheck []settings.Provider) {
 	for _, p := range llmAdded {
 		if slices.Contains(l.checkLLM, p.ID) {
-			names = append(names, uitext.PresetName(p.ID))
+			llmCheck = append(llmCheck, p)
 		}
 	}
 	for _, p := range speechAdded {
 		if slices.Contains(l.checkSpeech, p.ID) {
-			names = append(names, uitext.SpeechName(p.ID))
+			speechCheck = append(speechCheck, p)
 		}
 	}
-	return names
+	return llmCheck, speechCheck
 }
