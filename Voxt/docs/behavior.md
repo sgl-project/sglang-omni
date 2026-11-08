@@ -175,6 +175,7 @@ Auralink 的这一节对照的是远程 ASR / LLM 服务（豆包、阿里百炼
 | 6.14 | 历史记录原文、选中文本、口述指令、目标语言 | 同样（`SourceText`、`PromptText`、`TargetLang`），转写的口述指令只记在“指令”里；列表第二行显示“→ 目标语言”，详情里翻译有“目标语言”一行 | — | ✅ |
 | 6.15 | 翻译和转写的设置页各不相同 | 三个功能页共用一套结构（`feature_page.go`）：快捷键、服务、各自的设置（翻译：目标语言、基础清理、在卡片中显示结果；转写：清理口述指令、较长回答放进卡片）、你的规则（可编辑完整 system prompt + 示例用户消息预览 + 恢复默认；`feature_prompts.go`）、试一试。**设置对话框**（`shell_settings.go`）顶栏有搜索框，**⌘F** 聚焦搜索，按标题/说明和英文关键词过滤行（不搜整段 prompt） | 一套代码，三页一致；找设置项不用翻页 | ✅ FB3 |
 | 6.16 | 翻译的备用模型：有 `translationFallbackModelProvider` 这个键（默认 customLLM），但 `syncTranslationFallbackProvider` 一直把它改成和翻译模型相同，`TranslationProviderResolver` 只把它传下去，翻译失败时并不换模型重试；设置里没有地方选 | 翻译页“模型”一节多一行“备用模型”（`Translate.Fallback`，默认“无”，可选设置好的语言模型；少于两个时不能选）。翻译的语言模型请求失败（出错、超时；取消不算）时，用备用模型再请求一次，之后这次会话的请求（包括 §6.4 的严格重试）都发给它；语言模型打不开（例如钥匙串里没有 key）时直接用备用模型。选的和语言模型是同一个，或者备用模型已经不在了，就等于没有。浮窗快照和历史记录写的是实际给出译文的模型（`Snapshot.LLM`、`Entry.LLMProvider` / `LLMModel`），历史里的“重试”也一样。转录和转写没有备用模型 | 卡片 A1：1.x 留着这个键，但从没生效；远程服务比本机模型更容易临时出错（限流、断网），翻译需要一条退路。只多试一次，两个都失败就按 §6.12 失败。回归：`internal/session` 的 `TestTranslateFallback`、`TestRetry/translate_falls_back`，包 main 的 `TestResolverFallback`、`TestTranslateFallbackModel` | ✅ #3622 |
+| 6.17 | 转写有选区时输出层默认写成“只输出替换选区的新文本”，口述“解释、摘要、回复”类指令也容易被迫写成改写体 | 内置分层：任务层区分“改写选区”与“解释、摘要、回复、回答关于选区的问题”；输出层分别要求“替换文本”或“答案正文”。结果仍一律进答案卡片（§6.9）；卡片插入时，替换选区仅在改写类回答且仍在原 App 可编辑焦点时（§6.6）。转写页“你的规则”多一栏**最终输出规则**（`Rewrite.OutputPrompt`），只在内置分层（未用整段自定义 system prompt）时替换 `output-rewrite` 模板 | 反馈 #3644（AkazaAkane）：选中 PR 口述“解释这段改动”要长回答，不应假装是改写后的选区 | ✅ FB37 |
 
 ## 7. 应用增强与词典（M5）
 

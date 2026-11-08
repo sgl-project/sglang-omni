@@ -56,6 +56,11 @@ type featureUI struct {
 	promptSeen  string
 	promptDirty bool
 	promptSeq   int
+	// output* are Rewrite's final output rules (layered composer only).
+	output      string
+	outputSeen  string
+	outputDirty bool
+	outputSeq   int
 	// rules and preview: the Your rules section and its full prompt, open.
 	rules   bool
 	preview bool

@@ -6,6 +6,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
+- **Rewrite: explain the selection** (Rewrite with selected text): spoken instructions such as "explain this passage" produce an answer in the card (read, copy, or insert at the cursor) instead of only rewriting the selection. Built-in prompts distinguish rewrite from explain, summarize, and reply. **Final output rules** (Rewrite → Your rules, layered prompts): edit the output layer without replacing the whole system prompt; ignored when the system prompt is fully custom.
 - **Editable full system prompts** (Transcribe, Translate, Rewrite → Your rules): edit the whole system prompt in one field (default shows the built-in text). What you save is what Voxt sends. Reset restores the built-in prompt. A preview shows the example user message used for cleanup and formatting when you use the built-in layers. **Settings search**: ⌘F in Settings focuses the search box and filters by title, description, and English keywords.
 - **Notes** (the new Notes page), as in Voxt 1.x: tap right ⌘ in any app, speak, and tap it again. Voxt saves what you said as a note instead of typing it. The Notes page lists your notes, newest first, with their time, and you can delete them. The shortcut changes on that page (off, or other keys); if another shortcut already uses right ⌘, the note shortcut starts off: pick keys on the Notes page. Notes stay out of History, and clearing History keeps them; a note whose recognition failed, or that you cancelled, stays in History with its recording, so you can retry it.
 - **Shortcut presets** (Settings → Shortcuts → Preset), as in Voxt 1.x: Right ⌥ (the default) or fn (Auralink's keys: fn, fn ⇧, fn ⌃, ⌃⌘V) sets Transcribe, Translate, Rewrite and Paste the last result at once. A shortcut you changed yourself stays as it is. With fn, the page says that Auralink and macOS's Globe key react to fn too.
@@ -19,6 +20,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 新增
 
+- **转写：解释选中文字**（有选中时的转写）：口述「解释这段话」等指令时，答案出现在卡片里，可复制、插入到光标处，而不只是改写选区。**最终输出规则**（转写 → 你的规则，内置分层时）：单独编辑输出层，不必改掉整段 system prompt；已用自定义整段 system prompt 时不生效。
 - **可编辑完整 system prompt**（转录、翻译、转写 → 你的规则）：在一个文本框里编辑整段 system prompt（默认显示内置文字）；保存后按所写原样发送；恢复默认回到内置；内置分层模式下另有示例用户消息预览（清理与格式）。**设置搜索**：在设置里按 ⌘F 聚焦搜索框，按标题、说明和英文关键词过滤。
 - **笔记**（新的“笔记”页），和 Voxt 1.x 一样：在任意 app 里单按右 ⌘，说完再按一次，说的内容会存成一条笔记，不会输入到光标处。笔记页按时间从新到旧列出笔记和时间，可以删除。快捷键在笔记页里改（可以关掉，也可以换成别的键）；右 ⌘ 已经被别的快捷键占用时，笔记键一开始是关的，去笔记页选一个。笔记不进历史，清空历史也不会删掉笔记；识别失败或取消的笔记会留在历史里，带着录音，可以重试。
 - **快捷键预设**（设置 → 快捷键 → 预设），和 Voxt 1.x 一样：选“右 ⌥”（默认）或“fn”（和 Auralink 相同：fn、fn ⇧、fn ⌃、⌃⌘V），一次设好转录、翻译、转写和粘贴最近结果的快捷键。你自己改过的快捷键保持不变。选 fn 时，页面会提示 Auralink 和 macOS 的地球键也会响应 fn。

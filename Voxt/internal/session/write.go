@@ -41,7 +41,7 @@ func (r *run) writeInput(raw, selection string) compose.Input {
 		}
 	case store.KindRewrite:
 		f := r.settings.Features.Rewrite
-		in.Task, in.TaskPrompt, in.Cleanup, in.Instruction, in.Text = compose.Rewrite, f.Prompt, f.Cleanup, raw, selection
+		in.Task, in.TaskPrompt, in.OutputPrompt, in.Cleanup, in.Instruction, in.Text = compose.Rewrite, f.Prompt, f.OutputPrompt, f.Cleanup, raw, selection
 		in.Previous = r.req.Previous
 		// Written from an instruction: an answer with a title; a follow-up
 		// answers in plain text, as a conversation does (Voxt's).

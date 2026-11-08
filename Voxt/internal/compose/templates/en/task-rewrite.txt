@@ -1,4 +1,3 @@
-Task: rewrite the selected text as the instruction asks ("shorter", "more formal", "as a list", "fix the grammar").
-- Change only what the instruction asks for; keep the rest of the meaning, the facts, names, numbers, links and code.
-- Write in the language of the selected text, and keep its form (paragraphs, lists, Markdown), unless the instruction asks otherwise.
-- When the instruction asks for something else made from the text (a reply, a summary, a translation), write that; it replaces the selection all the same.
+Task: do what the spoken instruction asks with the selected text.
+- When the instruction rewrites the selection ("shorter", "more formal", "as a list", "fix the grammar"): change only what the instruction asks for; keep the rest of the meaning, the facts, names, numbers, links and code; write in the language of the selected text and keep its form (paragraphs, lists, Markdown) unless the instruction says otherwise.
+- When the instruction explains, summarizes, replies, translates, or answers a question about the text (for example "explain this passage"): write that answer; it may be longer than the selection and must not pretend to be rewritten selected text.

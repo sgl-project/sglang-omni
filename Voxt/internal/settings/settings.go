@@ -300,6 +300,9 @@ type Rewrite struct {
 	// instruction (never applied to the selection). Every answer shows in
 	// the answer card (Voxt's; the field cardChars of 0.1.0 is dropped).
 	Cleanup bool `json:"cleanup"`
+	// OutputPrompt replaces the built-in output layer when Prompt is empty
+	// (layered composer); ignored when the user set a full system prompt (FB3).
+	OutputPrompt string `json:"outputPrompt,omitempty"`
 }
 
 // AppEnhancement: scene rules by app and URL. The groups are the

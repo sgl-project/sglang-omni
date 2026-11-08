@@ -107,6 +107,11 @@ func promptOf(s settings.Settings, feature string) string {
 	return featureOf(s, feature).Prompt
 }
 
+// outputOf is Rewrite's saved final-output rules.
+func outputOf(s settings.Settings) string {
+	return s.Features.Rewrite.OutputPrompt
+}
+
 // promptBuiltin is the built-in system prompt before user overrides.
 func (a *app) promptBuiltin(feature string) string {
 	u := a.fui(feature)
@@ -163,6 +168,44 @@ func (a *app) savePrompt(feature string) {
 	})
 }
 
+func (a *app) outputBuiltinRewrite() string {
+	set := compose.TemplateSet(session.MainLanguage(a.prefs, i18n.Locale()))
+	in := compose.Input{
+		Task: compose.Rewrite, MainLanguage: session.MainLanguage(a.prefs, i18n.Locale()),
+		OtherLanguages: a.prefs.General.OtherLanguages, Instruction: "x", Text: "y",
+	}
+	return compose.BuiltinLayer(set, "output-rewrite", in)
+}
+
+func (a *app) outputSync() {
+	u := a.fui(hotkey.Rewrite)
+	saved := outputOf(a.prefs)
+	builtin := a.outputBuiltinRewrite()
+	if !u.outputDirty {
+		u.outputSeen = saved
+		if saved == "" {
+			u.output = builtin
+		} else {
+			u.output = saved
+		}
+	}
+}
+
+func (a *app) saveOutput() {
+	u := a.fui(hotkey.Rewrite)
+	u.outputDirty = false
+	v := u.output
+	builtin := a.outputBuiltinRewrite()
+	if strings.TrimSpace(v) == "" || strings.TrimSpace(v) == strings.TrimSpace(builtin) {
+		v = ""
+	}
+	u.outputSeen = v
+	if v == outputOf(a.prefs) {
+		return
+	}
+	a.updateSettings(func(s *settings.Settings) { s.Features.Rewrite.OutputPrompt = v })
+}
+
 // promptSaveDelay is how long the rules wait after the last key before
 // they are saved (they are saved at once when the field loses focus).
 const promptSaveDelay = 800 * time.Millisecond
@@ -173,6 +216,9 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 	p := uitext.FeaturePrefix(feature)
 	u := a.fui(feature)
 	a.promptSync(feature)
+	if feature == hotkey.Rewrite {
+		a.outputSync()
+	}
 	// Folded by default: long rules would push the rest of the page down.
 	// Its title tells how long the rules are.
 	summary := i18n.T("Not set")
@@ -241,6 +287,34 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 				})
 			}
 		})
+		if feature == hotkey.Rewrite {
+			ui.Column(c.Key(p + "-output")).Gap(px(t, sp2)).Children(func() {
+				caption(c, i18n.T("Layered prompts only: replaces the built-in final output rules. Ignored when the system prompt above is fully custom."))
+				in := ui.TextArea(c.Key(p+"-output-prompt"), &u.output).Label(i18n.T("Final output rules for Rewrite")).Placeholder(i18n.T("For example: keep explanations under three short paragraphs; use bullet lists for summaries.")).MinHeight(px(t, 64))
+				if in.Changed() {
+					u.outputDirty = true
+					u.outputSeq++
+					if seq := u.outputSeq; a.win != nil {
+						time.AfterFunc(promptSaveDelay, func() {
+							a.post(func() {
+								if u.outputDirty && u.outputSeq == seq {
+									a.saveOutput()
+								}
+							})
+						})
+					}
+				} else if u.outputDirty && !in.Focused() {
+					a.saveOutput()
+				}
+				ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
+					empty := outputOf(a.prefs) == "" && strings.TrimSpace(u.output) == strings.TrimSpace(a.outputBuiltinRewrite())
+					if ghostIconButton(c.Key(p+"-output-reset"), icons.Refresh, i18n.T("Reset to default output rules")).Label(i18n.T("Reset to default output rules")).Disabled(empty).Clicked() {
+						u.output = a.outputBuiltinRewrite()
+						a.saveOutput()
+					}
+				})
+			})
+		}
 		collapsible(c.Key(p+"-preview"), i18n.T("Example user message"), &u.preview, nil, func() {
 			a.previewBody(c, feature)
 		})
@@ -266,8 +340,19 @@ func (a *app) composedPreview(feature string) (compose.Output, error) {
 		in.Task, in.Cleanup, in.Text = compose.Translate, f.Cleanup, trySample()
 		in.TargetLanguage = session.TranslateTarget(a.prefs, i18n.Locale(), "")
 	case hotkey.Rewrite:
-		in.Task, in.Cleanup = compose.Rewrite, a.prefs.Features.Rewrite.Cleanup
+		f := a.prefs.Features.Rewrite
+		rw := a.fui(hotkey.Rewrite)
+		in.Task, in.Cleanup, in.OutputPrompt = compose.Rewrite, f.Cleanup, f.OutputPrompt
 		in.Instruction, in.Text = rewriteSample()
+		if strings.TrimSpace(in.TaskPrompt) == "" && rw.outputDirty {
+			out := strings.TrimSpace(rw.output)
+			builtin := strings.TrimSpace(a.outputBuiltinRewrite())
+			if out != "" && out != builtin {
+				in.OutputPrompt = rw.output
+			} else {
+				in.OutputPrompt = ""
+			}
+		}
 	default:
 		f := a.prefs.Features.Transcribe
 		in.Task, in.Cleanup, in.Structure, in.Text = compose.Transcribe, f.Cleanup, f.Structure, trySample()

@@ -1,1 +1,3 @@
-Output: only the new text that replaces the selection, without quotes, labels, explanations or tags.
+Output: no quotes, labels, or <instruction>/<selected_text> tags.
+- When rewriting the selection: output only the new text that would replace the selection.
+- When explaining, summarizing, replying, or answering a question: output only the answer body for the user.

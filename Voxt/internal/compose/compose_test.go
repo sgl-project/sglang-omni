@@ -306,6 +306,46 @@ func goldenText(out Output) string {
 	return b.String()
 }
 
+func TestRewriteExplainAndOutputPrompt(t *testing.T) {
+	for _, tc := range []struct {
+		lang  string
+		must  string
+		input Input
+	}{
+		{
+			lang: "zh",
+			must: "解释",
+			input: Input{
+				Task: Rewrite, MainLanguage: "zh", Instruction: "解释这段话", Text: "选中文字",
+			},
+		},
+		{
+			lang: "en",
+			must: "explain",
+			input: Input{
+				Task: Rewrite, MainLanguage: "en", Instruction: "explain this passage", Text: "selected",
+			},
+		},
+	} {
+		out, err := Build(tc.input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(strings.ToLower(out.System), strings.ToLower(tc.must)) {
+			t.Fatalf("%s: system missing %q:\n%s", tc.lang, tc.must, out.System)
+		}
+	}
+	custom := "Only output bullet points."
+	in := Input{Task: Rewrite, MainLanguage: "en", Instruction: "summarize", Text: "x", OutputPrompt: custom}
+	out, err := Build(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.System, custom) {
+		t.Fatalf("custom output prompt missing:\n%s", out.System)
+	}
+}
+
 func TestBuildErrors(t *testing.T) {
 	for _, in := range []Input{
 		{Task: "summarize", Text: "x"},
