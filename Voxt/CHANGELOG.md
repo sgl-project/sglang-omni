@@ -7,6 +7,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Added
 
 - **Fallback model for Translate** (Translate → Models): when the language model fails, Voxt translates once more with the model you choose here. History names the model that gave the translation.
+- **Hide a speech model** (Speech models): a model's card has Hide, which leaves the model out of the features' speech model menus; the card moves to Hidden models at the foot of the page, where Show puts it back. A model a feature uses cannot be hidden.
 - **The update from Voxt 1.x is tested on a clean Mac**: a GitHub Actions workflow (Voxt Upgrade Test) installs Voxt 1.x, lets it update itself to the new Voxt from the beta channel, then checks the installed app (its bundle ID, Developer ID signature and notarization) and that it imports Voxt 1.x's dictionary without asking you to choose a folder.
 - **Voxt 1.x on Apple silicon updates to Voxt 2 by itself**: each release also has the app as `Voxt-X.Y.Z-macOS.zip`, which Voxt 1.x's in-app update installs on a Mac with Apple silicon (first for those who turned on Beta Updates, then for everyone there) and the Homebrew cask (`brew install --cask hehehai/tap/voxt`, Apple silicon only) installs. Voxt 1.x on an Intel Mac is not offered Voxt 2, which does not run there, and stays on Voxt 1.x. After the update, allow the microphone and accessibility again: macOS sees Voxt 2 as another app.
 
@@ -15,6 +16,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 新增
 
 - **翻译的备用模型**（翻译 → 模型）：语言模型出错时，Voxt 用这里选的模型再翻译一次。历史记录里写的是实际给出译文的模型。
+- **隐藏语音模型**（语音模型）：模型卡片上有“隐藏”，隐藏后功能页的语音识别菜单里不再列出它；卡片移到页面底部的“已隐藏的模型”，点“显示”放回去。功能正在用的模型不能隐藏。
 - **在一台全新的 Mac 上测试从 Voxt 1.x 更新**：GitHub Actions 工作流（Voxt Upgrade Test）装好 Voxt 1.x，让它从 beta 通道自己更新到新的 Voxt，再检查装好的 app（bundle ID、Developer ID 签名和公证），以及它不用你选文件夹就能导入 Voxt 1.x 的词典。
 - **Apple 芯片上的 Voxt 1.x 自己更新到 Voxt 2**：每个版本还附带 app 的 `Voxt-X.Y.Z-macOS.zip`，在 Apple 芯片的 Mac 上，Voxt 1.x 的应用内更新安装它（先给打开了“Beta 更新”的用户，再给其他人），Homebrew 的 cask（`brew install --cask hehehai/tap/voxt`，只支持 Apple 芯片）也装它。Intel Mac 上的 Voxt 1.x 不会收到 Voxt 2（Voxt 2 不能在 Intel 上运行），继续用 Voxt 1.x。更新后要重新允许麦克风和辅助功能：macOS 把 Voxt 2 当成另一个 app。
 
