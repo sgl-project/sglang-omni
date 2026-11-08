@@ -34,6 +34,9 @@ import (
 // dictionaryState is the Dictionary page's view state.
 type dictionaryState struct {
 	dv dictView
+	// selPress is the transcribe shortcut whose selection is being read
+	// (dictionary_selection.go).
+	selPress *selectionPress
 }
 
 type dictView struct {
