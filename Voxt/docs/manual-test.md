@@ -862,6 +862,32 @@ Developer ID 签名、公证、发布和更新的测试见 [release.md](release.
 
 ---
 
+## 11. 从 Voxt 1.x 在应用内更新到 2.x（发 stable 之前，约 15 分钟）
+
+前提：Voxt Appcast 已经把这个版本放进 beta 通道（[release.md](release.md)，“Voxt 1.x 的应用内更新和 Homebrew”）。用一台装着 Voxt 1.x（1.16.3）的 Mac，或者新建一个 macOS 用户，装上 Release `voxt-v1.16.3` 的 dmg。下面的 X.Y.Z 是要测的版本。
+
+**11.1 1.x 找到更新**
+- **做**：在 1.x 的 设置 → 关于 里打开“Beta 更新”（Beta Updates），点“检查更新”。
+- **应看到**：Sparkle 的窗口提示有新版本 X.Y.Z，说明是这个 Release 的说明。
+- **不对时看**：在 `Voxt/` 里跑 `curl -s https://voxt.actnow.dev/updates/beta/appcast.xml | scripts/release-appcast.sh items`，第一行是不是“X.Y.Z 的构建号 arm64”（2.0.2 是 200000299）。
+
+**11.2 安装**
+- **做**：点“安装并重新启动”。
+- **应看到**：没有报错，重新打开的是 2.x 的 Voxt。终端里：`defaults read /Applications/Voxt.app/Contents/Info.plist CFBundleIdentifier` 是 `dev.hehehai.voxtnew`，`CFBundleShortVersionString` 是 X.Y.Z；`codesign -dv /Applications/Voxt.app 2>&1 | grep TeamIdentifier` 是 RY2TQTYSKQ；`spctl -a -vv /Applications/Voxt.app` 里有 `source=Notarized Developer ID`。
+- **不对时看**：截下 Sparkle 的错误，存一份日志：`log show --last 15m --predicate 'subsystem == "org.sparkle-project.Sparkle"' > sparkle.log`。“downgrade”说的是 `CFBundleVersion`，“EdDSA”说的是 `SUPublicEDKey` 或签名（release.md 同一节）。
+
+**11.3 第一次打开 2.x**
+- **做**：看设置引导，导入 1.x 的数据；然后转录一次。
+- **应看到**：引导第一页有“从上一个 Voxt 导入”的卡片，导入后词典和历史都在（§1）。macOS 重新请求麦克风；粘贴前要在 系统设置 → 隐私与安全性 → 辅助功能 里重新允许 Voxt。允许后录音、粘贴都正常。
+
+**11.4 Intel Mac 上的 1.x 看不到 2.x**（有 Intel Mac 时做）
+- **做**：在 Intel Mac 的 1.x 里打开“Beta 更新”，点“检查更新”。
+- **应看到**：提示已经是最新版本，不提示 X.Y.Z（appcast 这一项有 `sparkle:hardwareRequirements` arm64）。
+
+结果写进“结果怎么报”：11.1–11.4 每步 ✓ / ✗（没有 Intel Mac 时 11.4 写“没测”），✗ 附上截图和 sparkle.log。
+
+---
+
 ## 结果怎么报
 
 **第 5.3 步的浏览器表**（读到网址打 ✓，没读到写 via 或错误信息）：
