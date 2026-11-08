@@ -1,16 +1,19 @@
 name: Voxt Release
 
-# Builds Voxt (Voxt/: Go on MyGo, with the Swift helper, the Omni runtime and
-# voxtnew-llm inside) with scripts/release.sh for a voxt-vX.Y.Z tag, which
+# Builds Voxt (Voxt/: Go on MyGo, with the Swift helper and the Omni runtime
+# inside) with scripts/release.sh for a voxt-vX.Y.Z tag, which
 # sets the version (newer than every voxt-v tag): signed with the Developer
 # ID of the voxt-release environment, notarized, checked by
 # scripts/release-verify.sh, and uploaded with its SHA-256 to a draft release
 # whose notes are the version's section of Voxt/CHANGELOG.md. Apple silicon
 # only. The nightly from main (voxt-nightly.yaml, version
-# X.Y.Z-nightly.YYYYMMDD) is signed and notarized the same way and keeps its
-# disk image as an artifact. Any other run (a pull request that changes the
-# release, or by hand) builds the same app ad hoc, unsigned, and keeps its
-# disk image as an artifact.
+# X.Y.Z-nightly.YYYYMMDD) and the beta of each Voxt change merged into main
+# (voxt-beta.yaml, version X.Y.Z-beta.YYYYMMDD.N) are signed and notarized
+# the same way and keep their disk image as an artifact. A beta takes the
+# Omni runtime from the cache when one was built from the same sources.
+# Any other run (a pull request that
+# changes the release, or by hand) builds the same app ad hoc, unsigned, and
+# keeps its disk image as an artifact.
 
 on:
   push:
@@ -27,6 +30,10 @@ on:
         description: Set the version to X.Y.Z-nightly.YYYYMMDD, and from main sign and notarize it
         type: boolean
         default: false
+      beta:
+        description: Set the version to X.Y.Z-beta.YYYYMMDD.N (N the caller's run number), take the Omni runtime from the cache, and from main sign and notarize it
+        type: boolean
+        default: false
 
 # The calling workflow's name keeps a nightly and a release run of one pull request from cancelling each other.
 concurrency:
@@ -41,14 +48,17 @@ jobs:
     name: Voxt release package
     runs-on: macos-26
     timeout-minutes: 150
-    # The environment lets in only main and voxt-v tags: a release, or a nightly from main.
-    environment: ${{ (startsWith(github.ref, 'refs/tags/voxt-v') || (inputs.nightly == true && github.ref == 'refs/heads/main')) && 'voxt-release' || '' }}
+    # The environment lets in only main and voxt-v tags: a release, or a nightly or a beta from main.
+    environment: ${{ (startsWith(github.ref, 'refs/tags/voxt-v') || ((inputs.nightly == true || inputs.beta == true) && github.ref == 'refs/heads/main')) && 'voxt-release' || '' }}
     permissions:
       contents: write
     env:
       IS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/voxt-v') }}
       IS_NIGHTLY: ${{ inputs.nightly == true }}
-      IS_SIGNED: ${{ startsWith(github.ref, 'refs/tags/voxt-v') || (inputs.nightly == true && github.ref == 'refs/heads/main') }}
+      IS_BETA: ${{ inputs.beta == true }}
+      IS_SIGNED: ${{ startsWith(github.ref, 'refs/tags/voxt-v') || ((inputs.nightly == true || inputs.beta == true) && github.ref == 'refs/heads/main') }}
+      # A beta's Omni runtime (RUNTIMES/omni), built or from the cache, for scripts/release.sh --runtimes.
+      RUNTIMES: ${{ github.workspace }}/Voxt/build/runtimes
       # The team of the voxt-release environment's Developer ID, as for the Swift Voxt 1.x.
       TEAM_ID: RY2TQTYSKQ
       GIT_TERMINAL_PROMPT: "0"
@@ -86,16 +96,17 @@ jobs:
             fi
           elif [[ "$IS_NIGHTLY" == "true" ]]; then
             version="$(jq -r .version mygo.json)-nightly.$(date -u +%Y%m%d)"
+          elif [[ "$IS_BETA" == "true" ]]; then
+            # The run number tells apart the betas of one day.
+            version="$(jq -r .version mygo.json)-beta.$(date -u +%Y%m%d).$GITHUB_RUN_NUMBER"
           else
             version="$(jq -r .version mygo.json)"
           fi
-          # A tag or a nightly sets the version of the app, the helper and voxtnew-llm, which scripts/release.sh checks agree.
-          if [[ "$IS_RELEASE" == "true" || "$IS_NIGHTLY" == "true" ]]; then
+          # A tag, a nightly or a beta sets the version of the app and the helper, which scripts/release.sh checks agree.
+          if [[ "$IS_RELEASE" == "true" || "$IS_NIGHTLY" == "true" || "$IS_BETA" == "true" ]]; then
             jq --arg v "$version" '.version = $v' mygo.json > mygo.json.tmp
             mv mygo.json.tmp mygo.json
-            for plist in helper/Support/Info.plist llm/Support/Info.plist; do
-              /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$plist"
-            done
+            /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" helper/Support/Info.plist
           else
             :
           fi
@@ -108,19 +119,6 @@ jobs:
           cache-dependency-path: Voxt/go.sum
 
       - uses: astral-sh/setup-uv@v6
-
-      # Since Xcode 26 the Metal compiler is a separate component, which
-      # mlx-swift needs to build its kernels (voxtnew-llm).
-      - name: Install the Metal toolchain
-        run: |
-          set -euo pipefail
-          xcodebuild -version
-          if xcrun metal --version > /dev/null 2>&1; then
-            :
-          else
-            xcodebuild -downloadComponent MetalToolchain
-          fi
-          xcrun metal --version
 
       - name: Import the signing identity
         if: env.IS_SIGNED == 'true'
@@ -156,6 +154,28 @@ jobs:
           xcrun notarytool store-credentials voxt-notary --key "$RUNNER_TEMP/notary.p8" \
             --key-id "$APPLE_NOTARIZATION_KEY_ID" --issuer "$APPLE_NOTARIZATION_ISSUER" --keychain "$keychain"
 
+      # The Omni runtime's cache key names the Xcode it was built with: a new
+      # one on the runner builds it again.
+      - name: Key the Omni runtime's cache
+        id: runtimes
+        if: env.IS_BETA == 'true'
+        run: echo "xcode=$(xcodebuild -version | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      # The staged Omni runtime does not depend on the app's version or
+      # identity (build-omni.sh signs it ad hoc; mygo build signs the app's
+      # copy), so a cached one for the same sources is the same.
+      - name: Restore the Omni runtime
+        id: omni-cache
+        if: env.IS_BETA == 'true'
+        uses: actions/cache@v4
+        with:
+          path: Voxt/build/runtimes/omni
+          key: voxt-omni-${{ steps.runtimes.outputs.xcode }}-${{ hashFiles('sglang_omni_mlx/native/**', 'Voxt/scripts/build-omni.sh') }}
+
+      - name: Build the Omni runtime
+        if: env.IS_BETA == 'true' && steps.omni-cache.outputs.cache-hit != 'true'
+        run: scripts/build-omni.sh --out "$RUNTIMES/omni" --clean
+
       - name: Build, sign, notarize and check
         env:
           # Reads hehehai/actnow-sounds, the sound library of official builds;
@@ -175,6 +195,11 @@ jobs:
           if [[ "$IS_SIGNED" == "true" ]]; then
             args+=(--notarize voxt-notary --keychain "$RELEASE_KEYCHAIN")
             export EXPECT_TEAM="$TEAM_ID"
+          else
+            :
+          fi
+          if [[ "$IS_BETA" == "true" ]]; then
+            args+=(--runtimes "$RUNTIMES")
           else
             :
           fi
