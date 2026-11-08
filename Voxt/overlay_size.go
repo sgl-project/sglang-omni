@@ -12,6 +12,8 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
@@ -33,7 +35,8 @@ func (a *app) overlaySize(mode overlayMode) (w, h int, exact bool) {
 		if name := uitext.SceneShort(a.sess); name != "" {
 			scene, exact = a.ovTextWidth(sceneText(name))
 		}
-		row := layout.RowWidth(mode == ovRecording && a.prefs.Overlay.ShowTime, scene)
+		row, rowExact := recordingPillRow(a.sess, mode == ovRecording, mode == ovRecording && a.prefs.Overlay.ShowTime, scene, a.ovTextWidth)
+		exact = exact && rowExact
 		text, _ := pillLine(a.pillSession())
 		if text == "" {
 			return row + 2*layout.PillPadX, layout.PillH, exact
@@ -71,6 +74,31 @@ func liveTextKey(text string) ovSized {
 }
 
 func sceneText(name string) ovSized { return ovSized{name, layout.SceneSize, 0, 0} }
+
+func kindTitleText(k store.Kind) ovSized { return ovSized{uitext.KindTitle(k), 12, 500, 0} }
+
+func recordingPillRow(s session.Snapshot, label, showTime bool, scene float32, measure func(ovSized) (float32, bool)) (int, bool) {
+	modeLabel := float32(0)
+	exact := true
+	if label && s.Waiting == session.WaitNone {
+		w, ok := measure(kindTitleText(s.Kind))
+		modeLabel = w + float32(layout.Gap)
+		exact = ok
+	}
+	return layout.RowWidth(showTime, scene) + int(math.Ceil(float64(modeLabel))), exact
+}
+
+// recordingPillFaceW is the face width of a recording pill without live text.
+func recordingPillFaceW(s session.Snapshot, showTime bool) int {
+	scene := float32(0)
+	if name := uitext.SceneShort(s); name != "" {
+		scene = float32(textWidth(name, float64(layout.SceneSize)))
+	}
+	row, _ := recordingPillRow(s, true, showTime, scene, func(k ovSized) (float32, bool) {
+		return float32(textWidth(k.text, float64(k.size))), true
+	})
+	return row + 2*layout.PillPadX
+}
 
 func noticeText(text string) ovSized { return ovSized{text, layout.NoticeSize, 0, 0} }
 
@@ -127,6 +155,9 @@ func (a *app) overlayTexts() []ovSized {
 	case ovRecording, ovWorking:
 		if name := uitext.SceneShort(a.sess); name != "" {
 			out = append(out, sceneText(name))
+		}
+		if a.ov.mode == ovRecording && a.sess.Waiting == session.WaitNone {
+			out = append(out, kindTitleText(a.sess.Kind))
 		}
 		if text, _ := pillLine(a.pillSession()); text != "" {
 			out = append(out, liveTextKey(text))

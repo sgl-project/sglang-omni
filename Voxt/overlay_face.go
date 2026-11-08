@@ -118,6 +118,11 @@ func overlayPill(c *ui.Context, s session.Snapshot, mode overlayMode, look pillL
 					ui.Icon(c, overlayKindIcon(s.Kind).Bold).Size(layout.IconSize, layout.IconSize).TextColor(ovIcon).Shrink(0).Label(uitext.KindTitle(s.Kind))
 				})
 			}
+			if mode == ovRecording && s.Waiting == session.WaitNone {
+				title := uitext.KindTitle(s.Kind)
+				ui.Text(c, title).FontSize(12).FontWeight(500).TextColor(ovText).SingleLine().Shrink(0).
+					Label(i18n.T("Recording mode: %s", title))
+			}
 			if mode == ovRecording {
 				waveform(c, s.Levels, !s.HeardAt.IsZero(), look)
 				if look.time {

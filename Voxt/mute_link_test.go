@@ -201,7 +201,7 @@ func TestRecordingCannotMute(t *testing.T) {
 		t.Fatalf("pill %q, mode %s, height %d", got, r.ov.mode, r.ov.h)
 	}
 	r.ft.advance(muteNoteTime)
-	if r.pillSession().Partial != "" || r.ov.h != layout.PillH || r.ov.w != layout.PillW {
+	if r.pillSession().Partial != "" || r.ov.h != layout.PillH || r.ov.w != recordingPillFaceW(r.pillSession(), false) {
 		t.Fatalf("the note stays: %q %dx%d", r.pillSession().Partial, r.ov.w, r.ov.h)
 	}
 	r.feed("s1", session.Recognizing)

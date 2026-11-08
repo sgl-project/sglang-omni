@@ -414,3 +414,35 @@ func TestSessionSystemDictation(t *testing.T) {
 		}
 	})
 }
+
+// TestSessionStopHotkeyKeepsStartMode: starting with one feature's shortcut
+// and stopping with another's runs the first feature only.
+func TestSessionStopHotkeyKeepsStartMode(t *testing.T) {
+	chat := &fakeChat{text: "早上好，团队。"}
+	set, keys, _ := fileSetup(t, "hello aura link", chat)
+	ev := script(t,
+		hotkeyLine(0, "translate/0", proto.PhaseTrigger),
+		hotkeyLine(400, "transcribe/0", proto.PhaseTrigger),
+	)
+	a := newSessionApp(t, ev, func(s *settings.Settings) {
+		set(s)
+		s.Features.Translate.Target = "zh-Hans"
+	}, keys)
+	var kind store.Kind
+	a.pump("the end", func() bool {
+		if a.sess.State.Live() {
+			kind = a.sess.Kind
+		}
+		return a.sess.State.Ended()
+	})
+	if kind != store.KindTranslate {
+		t.Fatalf("recording kind %q", kind)
+	}
+	end := a.sess
+	if end.Kind != store.KindTranslate || end.State != session.Done || end.Result != "早上好，团队。" {
+		t.Fatalf("end %+v", end)
+	}
+	if es := a.history(); len(es) != 1 || es[0].Kind != store.KindTranslate {
+		t.Errorf("history %+v", es)
+	}
+}
