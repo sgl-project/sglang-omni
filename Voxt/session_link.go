@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -181,15 +182,30 @@ func resolver(lm local.Services) session.Resolver {
 		}
 		// A model that serves the feature (the translation model only
 		// translates).
-		m, ok := local.Choose(local.ForFeature(lm.Installed(local.LLM), string(kind)), f.LLM)
+		ready := local.ForFeature(lm.Installed(local.LLM), string(kind))
+		m, ok := local.Choose(ready, f.LLM)
 		if !ok {
 			return svc, nil
 		}
-		c, ml, err := lm.LLM(ctx, m.ID)
-		if err != nil {
-			return svc, nil // no language model: the text goes on as recognised
+		// When it does not open, there is no language model: the text goes
+		// on as recognised.
+		if c, ml, err := lm.LLM(ctx, m.ID); err == nil {
+			svc.LLM, svc.LLMInfo = modelClient{c: c}, sessionModel(ml)
 		}
-		svc.LLM, svc.LLMInfo = modelClient{c: c}, sessionModel(ml)
+		// Translate's fallback model, or its model when that one did not open.
+		fb := s.Features.Translate.Fallback
+		if kind != store.KindTranslate || fb == "" || fb == m.ID || !slices.ContainsFunc(ready, func(x local.Model) bool { return x.ID == fb }) {
+			return svc, nil
+		}
+		c, ml, err := lm.LLM(ctx, fb)
+		if err != nil {
+			return svc, nil
+		}
+		if svc.LLM == nil {
+			svc.LLM, svc.LLMInfo = modelClient{c: c}, sessionModel(ml)
+		} else {
+			svc.Fallback, svc.FallbackInfo = modelClient{c: c}, sessionModel(ml)
+		}
 		return svc, nil
 	}
 }

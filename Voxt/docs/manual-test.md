@@ -303,7 +303,21 @@
 - **应看到**：说到 1 分钟以后，日志里每隔约半分钟出现一行 `piece N of the recording, … of audio …`；停止后几秒内文字就插入（不是等几十秒），日志有 `Final of …: N pieces while it recorded (…), the rest (…) in …`。说话时浮窗的实时文字偶尔停几秒是正常的（分段和预览共用模型）。1 分钟以内的口述没有 `piece` 行，和以前一样。
 - **兜底**：`kill -STOP` 识别服务（`pgrep -f qwen3_asr_server`，挑带 `Qwen3-ASR` 的那个）后马上停止录音，15 s 后 `kill -CONT` 它（或者让它被杀掉）。应看到：仍然插入了文字（实时预览里的），浮窗黄色警告“完整识别失败，用了实时识别的文字。”，点它打开历史里这条记录并开始重试；历史里这条是完成、带错误、有录音。
 
-**2.16 笔记（约 3 分钟）**
+**2.16 鼠标按钮当快捷键（约 3 分钟，要一个带侧键的鼠标）**
+- **做**：
+  1. 转录页 → 快捷键 → 加一个快捷键，下拉菜单选“自定义…”，输入 `Mouse4`，按 Return。在 TextEdit 里按一下鼠标的第一个侧键（多数鼠标上是“后退”键），说一句，再按一下。
+  2. 在 Safari 里打开一个网页，再点开里面的一个链接（这时能后退），按一下侧键，再按 Esc 取消。
+  3. 把触发方式改成“长按”：在 TextEdit 里按住侧键说话，松开。
+  4. 把按键改成 `Option+Mouse3`（⌥ 加鼠标中键，单按）：在 Safari 里只按一下中键；再到 TextEdit 里按住右 ⌥ 按中键，松开右 ⌥，说一句，再按一次右 ⌥ 加中键。最后删掉这个快捷键。
+- **应看到**：
+  - 输入框下面有一行说明“也可以用鼠标按钮：Mouse3 是中键……”；保存后显示“鼠标按钮 4”，旁边有辅助功能的标记。
+  - 第 1 步按侧键开始录音，再按停止，文字插入 TextEdit。
+  - 第 2 步 Voxt 开始录音，Safari 没有后退（侧键被 Voxt 拿走了）。
+  - 第 3 步按下就开始录音，松开就停止。
+  - 第 4 步只按中键时不录音，中键照常交给 Safari（在网页里中键点链接会在新标签页打开）；右 ⌥ 加中键开始和停止录音，松开右 ⌥ 时不会再按“单按右 ⌥”触发一次转录。
+- **不对时看**：`helper.log` 里有没有 hotkey 事件；设置 → 权限里的辅助功能是否打开（没有时鼠标快捷键不工作）。
+
+**2.17 笔记（约 3 分钟）**
 - **做**：
   1. 在 TextEdit 里点一下。单按右 ⌘，说一句“明天上午给 Ana 打电话”，再单按右 ⌘。
   2. 打开 Voxt 的笔记页（侧栏“功能”组里，转写下面）。
@@ -354,6 +368,18 @@
   1. 不选文字，按右 ⌥ ⇧，说一句中文，再按右 ⌥ ⇧。
   2. 在翻译页打开“在卡片中显示结果”，再做一次。然后把这个开关关回去。
 - **应看到**：第一次英文译文插入光标处；第二次结果进卡片。
+
+**3.6a 备用模型**
+- **做**：
+  1. 语言模型页设置两个服务，例如 DeepSeek 和本机的 Ollama。
+  2. 翻译页 → 模型：“语言模型”选 DeepSeek，“备用模型”选 Ollama。
+  3. 把 DeepSeek 的地址改成一个连不上的地址（例如 `http://127.0.0.1:9`），保存。
+  4. 选中一段英文，按右 ⌥ ⇧。
+  5. 把 DeepSeek 的地址改回来，“备用模型”改回“无”。
+- **应看到**：
+  - “备用模型”的下拉里有“无”和设置好的语言模型，默认是“无”；只设置了一个服务时不能选。
+  - 第 4 步：译文照常替换选中的文字（比平时慢一点：先等 DeepSeek 失败）；历史详情的“语言模型”一项是 Ollama。
+- **不对时看**：日志面板里 `asking the fallback` 那一行。
 
 **3.7 〔可选〕读选区慢的 App**
 - **做**：在微信里不选文字，按右 ⌥ ⇧，按下以后马上开始说话。
@@ -478,6 +504,33 @@
   2. 改一个备注，再加一行，保存后导入。
 - **应看到**：打开的 CSV 里中文不乱码；导入后提示“已导入：新增 1 个，更新 1 个。”，同名的词条合并了别名。
 - 做完把两个勾选都打开。
+
+**6.4 辅助进程读输入框（`textio.read`，约 10 分钟）**
+
+只测辅助进程读文字的能力：app 里还没有地方用它，以后的“从我的改正中学习”会用。从终端直接启动包里的辅助进程，给它发请求。这时系统按终端检查辅助功能权限：终端不在 系统设置 → 隐私与安全性 → 辅助功能 里、或者没打开，回答就是 `permission_denied`，这一节跳过并记下来，不要为它去点授权弹窗。
+- **准备**：在终端里定义这个函数（`APP` 换成你的 Voxt.app）：
+
+  ```sh
+  APP=~/code/VoxtNew/build/darwin-arm64/Voxt.app
+  readfield() { # 等 ${1:-5} 秒，然后读两次前台 App 焦点输入框的前 4000 个字符
+    { echo '{"id":"1","method":"helper.hello","params":{"protocol":1,"app":"manual"}}'; sleep "${1:-5}"
+      pid=$(lsappinfo info -only pid "$(lsappinfo front)" | tr -dc 0-9)
+      for i in 2 3; do echo '{"id":"'$i'","method":"textio.read","params":{"pid":'$pid',"range":{"location":0,"length":4000}}}'; sleep 1; done
+    } | "$APP/Contents/Resources/helper/voxtnew-helper" 2>/dev/null | grep '"id":"[23]"'
+  }
+  ```
+- **做**：每个 App 里先放一段有中文、英文和 emoji 的文字（比如“会议纪要 Claude Code 👍”）。在终端里运行 `readfield`，5 秒内切到那个 App 并点进输入框，等终端出两行回答：
+  1. TextEdit 的文稿。
+  2. 备忘录里的一条备忘录。
+  3. Chrome 里网页的多行输入框（textarea，比如 GitHub 的评论框）。
+  4. Slack 的消息框、VS Code 的编辑器，各做两次。先退出 Voxt，重新打开 Slack（VS Code），运行 `sleep 5; readfield 0`，5 秒内切过去并点进输入框：辅助进程启动时它已经在前台，不会给它设 `AXManualAccessibility`。然后再运行一次 `readfield`：切过去时辅助进程会给它设上。
+  5. Safari 或 Chrome 里一个登录页的密码框。
+  6. 终端：菜单 终端 → 安全键盘输入 打开，运行 `readfield`，不要切走（读的是终端自己）。做完把安全键盘输入关掉。
+- **应看到**：
+  - 1–3：`text` 是输入框里的文字（超过 4000 个字符时是前 4000 个），emoji 完整；`range` 是 `{"location":0,"length":N}`，N 和 `text` 一样长；`length` 是全文的长度。同一个输入框连读两次，`element` 应该是同一个数。
+  - 4：两次各记一笔：读到了文字，还是 `"error":"unreadable"`。
+  - 5、6：`"error":"secure"`，没有 `text`。
+- **不对时看**：`"error":"not front"`：5 秒内没切过去，或者焦点在别的进程的面板里；`"error":"no focus"`：没点进输入框。两次的 `element` 不一样时，记下是哪个 App：以后学习改正时会把它当成换了一个输入框。
 
 ---
 
@@ -727,6 +780,20 @@
   - 第 3 步：启动后弹一次“fn 同时是 Auralink 的“转录”快捷键，按下时两个 app 都会响应。”；“打开 Auralink 设置”打开 Auralink 的快捷键设置，“更改快捷键”跳到转录页，“忽略”只关掉提示。设置引导开着时提示等引导关掉再弹。
   - 第 4 步：不再弹提示，设置页的警告还在。Auralink 那边（它先有 fn）只在它的设置页警告，不弹提示。
 
+**9.5c 快捷键预设（约 4 分钟）**
+- **做**：
+  1. 打开 设置 → 快捷键，看表上方的“预设”。
+  2. 在转写页把快捷键改成右 ⌘，回到 设置 → 快捷键，把预设选成“fn（和 Auralink 相同）”。
+  3. 在任意 app 里单按 fn 说一句话，再单按 fn；按 fn ⇧ 试翻译。
+  4. 把预设选回“右 ⌥（默认）”，再单按右 ⌥ 试转录。
+  5. 在转录、翻译页也改掉快捷键，把粘贴最近结果改成别的键，再选一次预设。
+- **应看到**：
+  - 第 1 步：预设是“右 ⌥（默认）”，下面没有警告。
+  - 第 2 步：转录、翻译、粘贴最近结果变成 fn、fn ⇧、⌃⌘V，转写仍是右 ⌘；预设下面出现两行警告：Auralink 也用 fn；macOS 的地球键也可能响应 fn。
+  - 第 3 步：fn 开始和结束转录，fn ⇧ 开始翻译。如果 macOS 同时切换了输入法或弹出表情面板，按警告里说的到 系统设置 → 键盘 把地球键设为“不执行任何操作”再试，并记下来。
+  - 第 4 步：三个快捷键回到右 ⌥、右 ⌥ ⇧、⌃⌥V，转写仍是右 ⌘，警告消失；右 ⌥ 能转录。
+  - 第 5 步：预设显示“自定义”；选预设时提示“每个快捷键都是你自己改过的，预设不会改动它们。”，快捷键不变。
+
 **9.6 设置 → 通用**
 - **做**：
   1. 在“其他语言”里添加英语，再把主要语言改成英语；转录一句中文。然后改回来。
@@ -873,6 +940,32 @@ MAC_DIR=code/VoxtNew-rel scripts/mac.sh 'export PATH=/opt/homebrew/bin:$PATH; sc
 ```
 
 Developer ID 签名、公证、发布和更新的测试见 [release.md](release.md)。用发布版（hardened runtime）至少再做一遍 10.4 的人工补测清单，确认两个运行时在签好的 app 里能加载模型（release.md §8）。
+
+---
+
+## 11. 从 Voxt 1.x 在应用内更新到 2.x（发 stable 之前，约 15 分钟）
+
+前提：Voxt Appcast 已经把这个版本放进 beta 通道（[release.md](release.md)，“Voxt 1.x 的应用内更新和 Homebrew”）。用一台装着 Voxt 1.x（1.16.3）的 Mac，或者新建一个 macOS 用户，装上 Release `voxt-v1.16.3` 的 dmg。下面的 X.Y.Z 是要测的版本。
+
+**11.1 1.x 找到更新**
+- **做**：在 1.x 的 设置 → 关于 里打开“Beta 更新”（Beta Updates），点“检查更新”。
+- **应看到**：Sparkle 的窗口提示有新版本 X.Y.Z，说明是这个 Release 的说明。
+- **不对时看**：在 `Voxt/` 里跑 `curl -s https://voxt.actnow.dev/updates/beta/appcast.xml | scripts/release-appcast.sh items`，第一行是不是“X.Y.Z 的构建号 arm64”（2.0.2 是 200000299）。
+
+**11.2 安装**
+- **做**：点“安装并重新启动”。
+- **应看到**：没有报错，重新打开的是 2.x 的 Voxt。终端里：`defaults read /Applications/Voxt.app/Contents/Info.plist CFBundleIdentifier` 是 `dev.hehehai.voxtnew`，`CFBundleShortVersionString` 是 X.Y.Z；`codesign -dv /Applications/Voxt.app 2>&1 | grep TeamIdentifier` 是 RY2TQTYSKQ；`spctl -a -vv /Applications/Voxt.app` 里有 `source=Notarized Developer ID`。
+- **不对时看**：截下 Sparkle 的错误，存一份日志：`log show --last 15m --predicate 'subsystem == "org.sparkle-project.Sparkle"' > sparkle.log`。“downgrade”说的是 `CFBundleVersion`，“EdDSA”说的是 `SUPublicEDKey` 或签名（release.md 同一节）。
+
+**11.3 第一次打开 2.x**
+- **做**：看设置引导，导入 1.x 的数据；然后转录一次。
+- **应看到**：引导第一页有“从上一个 Voxt 导入”的卡片，导入后词典和历史都在（§1）。macOS 重新请求麦克风；粘贴前要在 系统设置 → 隐私与安全性 → 辅助功能 里重新允许 Voxt。允许后录音、粘贴都正常。
+
+**11.4 Intel Mac 上的 1.x 看不到 2.x**（有 Intel Mac 时做）
+- **做**：在 Intel Mac 的 1.x 里打开“Beta 更新”，点“检查更新”。
+- **应看到**：提示已经是最新版本，不提示 X.Y.Z（appcast 这一项有 `sparkle:hardwareRequirements` arm64）。
+
+结果写进“结果怎么报”：11.1–11.4 每步 ✓ / ✗（没有 Intel Mac 时 11.4 写“没测”），✗ 附上截图和 sparkle.log。
 
 ---
 

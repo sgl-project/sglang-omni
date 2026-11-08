@@ -19,6 +19,7 @@
 // time as capture.pcm frames and capture.level; hotkey.configure installs
 // a pretend tap and can play a script of notifications (events=, press=);
 // textio.* read a scripted selection and log what they paste (paste-log=);
+// textio.read reads a scripted field (read=) and logs its calls (read-log=);
 // browser.url answers from Browsers, app.list from Apps and Installed,
 // app.icons with Icon for those and Browsers;
 // app.configure keeps its list (no-tree=); output.* mute pretend speakers
@@ -60,6 +61,10 @@ package helpertest
 //	paste-check=C    textio.paste with verifyMs: its check is C (unchanged, unknown; default inserted)
 //	secure-input=APP textio.paste: APP has secure event input on
 //	paste-log=PATH   append each textio.paste's params to PATH (JSON lines)
+//	read=PATH        textio.read reads a field whose states are PATH's JSON lines (Field),
+//	                 one a call, the last one staying; without it an empty field
+//	read-log=PATH    append each textio.read's params to PATH (JSON lines)
+//	garble=TEXT      textio.read answers a line cut short that holds TEXT, then exits 3
 //	delay=METHOD:MS  answer METHOD MS ms late (slow calls)
 //	no-url[=BUNDLE]  browser.url reads no URL (of BUNDLE, or of every browser)
 //	no-tree=BUNDLE   browser.url reads BUNDLE's URL only once app.configure listed
@@ -197,6 +202,7 @@ type fake struct {
 	speech     map[string]*speechJob // speech.recognize jobs (fake_speech.go)
 	outSim     *OutputHelper         // output.* (output.go)
 	moved      *proto.App            // the app in front since a script's app.activated
+	reads      int                   // textio.read calls so far (read=)
 }
 
 // Run serves the protocol on stdin and stdout with opts (see the top of
@@ -406,7 +412,7 @@ func (f *fake) serve(m proto.Message) {
 		f.result(m.ID, f.hotkeyStatus())
 	case proto.MethodAppFrontmost:
 		f.result(m.ID, f.front())
-	case proto.MethodTextFocus, proto.MethodTextSelection, proto.MethodTextPaste:
+	case proto.MethodTextFocus, proto.MethodTextSelection, proto.MethodTextPaste, proto.MethodTextRead:
 		f.textio(m)
 	case proto.MethodBrowserURL:
 		var p proto.BrowserURLParams

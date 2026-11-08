@@ -338,6 +338,18 @@ func TestMigrateShortcuts(t *testing.T) {
 		f.Rewrite.Hotkeys[0].Keys != "RightCommand" || f.PasteLast != (Hotkey{"Control+Command+V", TriggerDouble}) {
 		t.Fatalf("chosen: %+v %v", f, err)
 	}
+	// Keys a later preset may use (Voxt 1.x's Command combo) are still the
+	// user's choice in version 3.
+	command := `{"version":3,"features":{
+		"transcribe":{"hotkeys":[{"keys":"RightCommand","trigger":"tap"}]},
+		"translate":{"hotkeys":[{"keys":"RightCommand+Shift","trigger":"tap"}]},
+		"rewrite":{"hotkeys":[{"keys":"RightCommand+Option","trigger":"tap"}]}}}`
+	s, err = Migrate([]byte(command))
+	f = s.Features
+	if err != nil || f.Transcribe.Hotkeys[0].Keys != "RightCommand" || f.Translate.Hotkeys[0].Keys != "RightCommand+Shift" ||
+		f.Rewrite.Hotkeys[0].Keys != "RightCommand+Option" || f.PasteLast.Keys != DefaultPasteLast {
+		t.Fatalf("version 3 right Command: %+v %v", f, err)
+	}
 	// Version 4 documents are the user's, even with fn.
 	s, err = Migrate([]byte(strings.Replace(old, `"version":3`, `"version":4`, 1)))
 	if err != nil || s.Features.Transcribe.Hotkeys[0].Keys != "Fn" || s.Features.PasteLast.Keys != "Control+Command+V" {
@@ -348,6 +360,62 @@ func TestMigrateShortcuts(t *testing.T) {
 	if err != nil || s.Features.Transcribe.Hotkeys[0].Keys != DefaultTranscribe || s.Features.Rewrite.Hotkeys[0].Keys != "F6" ||
 		s.Features.Translate.Hotkeys[0].Keys != DefaultTranslate || s.Features.PasteLast.Keys != DefaultPasteLast {
 		t.Fatalf("partly old: %+v %v", s.Features, err)
+	}
+}
+
+// TestShortcutPresets: a preset gives its keys to each shortcut still on
+// a preset's keys and keeps the ones the user changed, added or removed;
+// the preset shown is the one those shortcuts follow.
+func TestShortcutPresets(t *testing.T) {
+	tap := func(k string) []Hotkey { return []Hotkey{{Keys: k, Trigger: TriggerTap}} }
+	f := Defaults().Features
+	if got := PresetOf(f); got != PresetOption {
+		t.Fatalf("defaults: preset %q", got)
+	}
+	if !ApplyPreset(&f, PresetFn) {
+		t.Fatal("fn changed nothing")
+	}
+	want := Defaults().Features
+	want.Transcribe.Hotkeys, want.Translate.Hotkeys, want.Rewrite.Hotkeys = tap("Fn"), tap("Fn+Shift"), tap("Fn+Control")
+	want.PasteLast = Hotkey{Keys: "Control+Command+V", Trigger: TriggerTap}
+	if !reflect.DeepEqual(f, want) || PresetOf(f) != PresetFn {
+		t.Fatalf("fn: %+v, preset %q", f, PresetOf(f))
+	}
+	if !ApplyPreset(&f, PresetOption) || !reflect.DeepEqual(f, Defaults().Features) {
+		t.Fatalf("back to right Option: %+v", f)
+	}
+
+	// Other keys, another trigger, a second shortcut: the user's.
+	f.Transcribe.Hotkeys = tap("RightCommand")
+	f.Translate.Hotkeys = append(tap(DefaultTranslate), Hotkey{Keys: "F5"})
+	f.Rewrite.Hotkeys = []Hotkey{{Keys: DefaultRewrite, Trigger: TriggerLong}}
+	user := f
+	if !ApplyPreset(&f, PresetFn) || f.PasteLast != (Hotkey{Keys: "Control+Command+V", Trigger: TriggerTap}) {
+		t.Fatalf("paste last: %+v", f.PasteLast)
+	}
+	f.PasteLast = user.PasteLast
+	if !reflect.DeepEqual(f, user) {
+		t.Fatalf("the user's shortcuts changed:\n%+v\n%+v", f, user)
+	}
+	// Every shortcut the user's: no preset, and choosing one changes none.
+	f.PasteLast = Hotkey{Keys: "F6"}
+	f.Rewrite.Hotkeys = nil
+	user = f
+	if PresetOf(f) != "" || ApplyPreset(&f, PresetFn) || !reflect.DeepEqual(f, user) {
+		t.Fatalf("all the user's: %+v, preset %q", f, PresetOf(f))
+	}
+
+	// Two presets mixed: none shows; choosing one gives it every such shortcut.
+	f = Defaults().Features
+	f.Transcribe.Hotkeys = []Hotkey{{Keys: "Fn"}} // an older document's tap
+	if got := PresetOf(f); got != "" {
+		t.Fatalf("mixed: preset %q", got)
+	}
+	if !ApplyPreset(&f, PresetOption) || !reflect.DeepEqual(f, Defaults().Features) {
+		t.Fatalf("mixed to right Option: %+v", f)
+	}
+	if ApplyPreset(&f, "command") || !reflect.DeepEqual(f, Defaults().Features) {
+		t.Fatalf("unknown preset: %+v", f)
 	}
 }
 

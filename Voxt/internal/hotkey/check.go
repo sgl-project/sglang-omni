@@ -132,8 +132,8 @@ func Check(f settings.Features) []Problem {
 			if !clash {
 				if sys := SystemShortcut(c); sys != "" {
 					out = append(out, Problem{Feature: feat, Index: i, Code: ProblemSystem, System: sys})
-				} else if !c.ModifierOnly() && len(c.Mods) == 0 && !isFKey(c.Key) && feat != CancelID {
-					// F-keys alone are fine; any other key alone is not.
+				} else if !c.ModifierOnly() && len(c.Mods) == 0 && !isFKey(c.Key) && !c.Mouse() && feat != CancelID {
+					// F-keys and mouse buttons alone are fine; any other key alone is not.
 					// Cancel may be a bare key: it is only taken while a
 					// session records or the answer card shows.
 					out = append(out, Problem{Feature: feat, Index: i, Code: ProblemBareKey})

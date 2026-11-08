@@ -16,6 +16,8 @@ func TestHotkeyText(t *testing.T) {
 		"Control+Command+V":    "⌃⌘V",
 		"Control+Option+Space": "⌃⌥ Space",
 		"Fn+F5":                "fn F5",
+		"Mouse3":               "Middle mouse button",
+		"Option+Mouse4":        "⌥ Mouse button 4",
 		"bogus":                "bogus",
 	} {
 		if got := HotkeyText(keys); got != want {
