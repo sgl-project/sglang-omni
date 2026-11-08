@@ -29,6 +29,12 @@ name: Omni CI
 on:
   pull_request:
     types: [opened, labeled, synchronize, reopened, ready_for_review]
+    # A pull request that changes only the MLX path is tested by Mac CI and Voxt CI.
+    paths-ignore:
+      - "sglang_omni_mlx/**"
+      - "Voxt/**"
+      - ".github/workflows/mac-ci.yaml"
+      - ".github/workflows/voxt*.yaml"
   workflow_dispatch:
     inputs:
       ci_labels:

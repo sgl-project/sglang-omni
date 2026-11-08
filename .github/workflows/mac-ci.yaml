@@ -7,13 +7,17 @@ name: Mac CI
 # Voxt's Swift helper. No
 # checkpoint is downloaded. Model outputs are checked by hand per model PR with
 # the tools in sglang_omni_mlx/native/ci. Voxt Nightly runs it before its build.
+# A pull request runs only the job whose side it changes, Markdown aside, and
+# both when it changes .github/.
 
 on:
   pull_request:
     types: [opened, labeled, synchronize, reopened, ready_for_review]
     paths:
       - "sglang_omni_mlx/**"
+      - "!sglang_omni_mlx/**/*.md"
       - "Voxt/helper/**"
+      - "!Voxt/helper/**/*.md"
       - ".github/workflows/mac-ci.yaml"
   workflow_dispatch:
   workflow_call:
@@ -38,6 +42,8 @@ jobs:
     outputs:
       # Only a pull request goes through the label gate: a run by hand or from the nightly's schedule always tests.
       run_mac: ${{ github.event_name != 'pull_request' && 'true' || steps.plan.outputs.run_mac }}
+      run_native_runtime: ${{ github.event_name != 'pull_request' && 'true' || steps.pr.outputs.has_native_runtime_changes }}
+      run_voxt_helper: ${{ github.event_name != 'pull_request' && 'true' || steps.pr.outputs.has_voxt_helper_changes }}
     steps:
       - name: Fetch latest PR gate state
         if: ${{ github.event_name == 'pull_request' }}
@@ -55,6 +61,21 @@ jobs:
             core.setOutput("labels", JSON.stringify(labels));
             core.setOutput("draft", pr.data.draft ? "true" : "false");
             core.setOutput("is_selected", labels.includes("run-mac-ci"));
+
+            const changedFiles = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              per_page: 100,
+            });
+            const changedPaths = changedFiles.flatMap((file) =>
+              file.previous_filename ? [file.filename, file.previous_filename] : [file.filename]
+            );
+            const hasCiChanges = changedPaths.some((path) => path.startsWith(".github/"));
+            const hasChangesUnder = (directory) =>
+              hasCiChanges || changedPaths.some((path) => path.startsWith(directory) && !path.endsWith(".md"));
+            core.setOutput("has_native_runtime_changes", hasChangesUnder("sglang_omni_mlx/"));
+            core.setOutput("has_voxt_helper_changes", hasChangesUnder("Voxt/helper/"));
 
       - name: Block draft PR
         if: ${{ steps.pr.outputs.is_selected == 'true' && fromJson(steps.pr.outputs.draft) }}
@@ -86,7 +107,7 @@ jobs:
   native-runtime:
     name: native runtime (build + protocol)
     needs: [preflight]
-    if: needs.preflight.outputs.run_mac == 'true'
+    if: needs.preflight.outputs.run_mac == 'true' && needs.preflight.outputs.run_native_runtime == 'true'
     runs-on: macos-26
     timeout-minutes: 30
     steps:
@@ -136,7 +157,7 @@ jobs:
   voxtnew-swift:
     name: Voxt helper tests
     needs: [preflight]
-    if: needs.preflight.outputs.run_mac == 'true'
+    if: needs.preflight.outputs.run_mac == 'true' && needs.preflight.outputs.run_voxt_helper == 'true'
     runs-on: macos-26
     timeout-minutes: 45
     steps:
