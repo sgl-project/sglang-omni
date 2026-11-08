@@ -229,6 +229,7 @@ Auralink 的这一节对照的是远程 ASR / LLM 服务（豆包、阿里百炼
 | 9.17 | “在 Dock 中显示”（`showInDock`） | 设置 → 通用 →“在程序坞中显示”（`General.HideDock`，`SetActivationPolicy`）；关掉 Dock 时自动打开菜单栏图标，关掉菜单栏图标时自动显示 Dock | 两个都关掉，就再也打不开 Voxt 的窗口 | ✅ #3593 |
 | 9.18 | “同时复制结果到剪贴板”（`autoCopyWhenNoFocusedInput`，默认关）：每次的结果都留在剪贴板，答案卡片里的结果也复制 | 设置 → 通用 → 结果 →“同时把结果复制到剪贴板”（`General.CopyResult`）：粘贴后不恢复原来的剪贴板（`deliver.Request.KeepClipboard`），答案卡片里的结果也复制 | 同 Voxt | ✅ #3593 |
 | 9.19 | “显示实时文字”（`realtimeTextDisplayEnabled`，默认开）：录音时显示正在识别的文字 | 设置 → 浮窗样式 →“显示实时文字”（`Overlay.HideLiveText`）：关掉后胶囊里不出现文字，录音时听到的和模型正在写的回答都不显示，答案卡片里追问时也一样；“声音没能静音”这类提示照常显示 | 有意不同：VoxtNew 的胶囊在整理时显示模型写出的回答（5.28），只关一半会让人以为开关没起作用 | ✅ #3593 |
+| 9.20 | ⌘W 没有绑定：主菜单没有关闭窗口的项；红色 ×（`windowShouldClose`）总是隐藏窗口（`orderOut`），app 留在菜单栏里，不看设置 | 窗口菜单的“关闭窗口”（⌘W）和红色 × 一样：开着“关闭窗口后继续运行”（且菜单栏图标显示）就隐藏窗口，app 留在后台，只有 ⌘Q 退出；关掉这个设置时关闭并退出（同 2.0.0 的红色 ×）。再点 Dock 图标或菜单栏打开窗口（`tray.go`：`windowClosing`、`closeWindow`、`reopenWindow`；菜单在 `shell_commands.go`） | 用户反馈（#3644，FB12）：Cmd+W 关不掉窗口，预期和普通 Mac app 一样。2.0.0 的 Window 菜单没有关闭项，⌘W 什么也不做。跟随设置、默认开是卡片的推荐。待确认：关闭项放在 Window 菜单（Voxt 没有 File 菜单） | ✅ 待 PR |
 
 ## 10. 待补（按里程碑）
 
