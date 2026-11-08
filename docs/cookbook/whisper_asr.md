@@ -20,7 +20,7 @@ sgl-omni serve \
   --port 8000
 ```
 
-For Intel XPU installation and launch, see the [Whisper XPU recipe](../get_started/installation_xpu.md#whisper-asr-speech-to-text-single-xpu).
+For Intel XPU installation and launch, see the [Whisper XPU recipe](../other_platforms/installation_xpu.md#whisper-asr-speech-to-text-single-xpu).
 
 ## Encoder CUDA Graph
 
@@ -125,7 +125,7 @@ sgl-omni serve \
   --port 8000
 ```
 
-Speculative decoding is greedy: a request with a nonzero temperature or with segment timestamps is refused with 400. It runs synchronously, so async decode is off. The first startup compiles the verify graphs for every decode batch size, about 14 minutes on an H200 against 9 without a draft; with a warm compile cache both start in about 6 minutes.
+Speculative decoding is greedy: a request with a positive temperature or with segment timestamps is refused with 400. It runs synchronously, so async decode is off. The first startup compiles the verify graphs for every decode batch size, about 14 minutes on an H200 against 9 without a draft; with a warm compile cache both start in about 6 minutes.
 
 On one H200 with the default 64 running requests, 1,000 English clips of 1 to 16 s (pipecat-ai/stt-benchmark-data), one warmup and one measured pass per concurrency, against the same server without a draft. Fresh audio misses the encoder cache on every request; repeated audio is the warmup's clips again, so every request reuses its cached encoder output:
 
@@ -207,7 +207,7 @@ for response formats and other ASR models.
 | `language` | string | unset | Optional source-language hint; on translations this is a SGLang-Omni extension |
 | `prompt` | string | unset | Optional text used as Whisper prev-context conditioning |
 | `response_format` | string | `json` | `json`, `verbose_json`, raw `text`, `srt`, or `vtt` |
-| `temperature` | float | `0.0` | Sampling temperature; defaults to greedy decoding |
+| `temperature` | float | `0.0` | Sampling temperature; defaults to greedy decoding. A negative value returns HTTP 422 |
 
 The serving route selects the internal `task` from the endpoint (`transcribe`
 or `translate`); it is not a public form field. The route uses the ASR stage

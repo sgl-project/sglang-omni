@@ -1,7 +1,7 @@
 {
   "name": "Voxt",
   "identifier": "dev.hehehai.voxtnew",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "copyright": "Copyright © 2026 the SGLang-Omni Team. Licensed under the Apache License 2.0.",
   "out": "build",
   "urlSchemes": [
@@ -21,8 +21,7 @@
     },
     "entitlements": "helper/Support/app.entitlements",
     "helperEntitlements": {
-      "helper/voxtnew-helper": "helper/Support/helper.entitlements",
-      "llm/voxtnew-llm": "llm/Support/llm.entitlements"
+      "helper/voxtnew-helper": "helper/Support/helper.entitlements"
     }
   }
 }

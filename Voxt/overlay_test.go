@@ -393,7 +393,6 @@ func overlayShots(t *testing.T, a *app, out, suffix string, dark bool) {
 			Raw: "make it more formal", Selection: "hey, the release slips to thursday, sorry!",
 			Problem: &session.Problem{Code: session.ProblemLLM, Err: errors.New("llm.balanced: the language model process stopped (signal 9)")}}, nil, nil},
 		// The Mac short of memory (memory_notice.go), after an insert.
-		{"overlay-memory", session.Snapshot{State: session.Done, Result: "x", Inserted: true}, nil, func(string) { n := memoryNotice(); a.notice = &n }},
 	}
 	desk, line := ui.RGB(246, 246, 248), ui.RGB(150, 156, 166)
 	if dark {

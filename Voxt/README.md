@@ -44,21 +44,20 @@ Speech is recognised on the Mac, unless you set up a remote speech service for a
 
 ## Build from source
 
-Needs Go 1.27.1 (`GOTOOLCHAIN=auto` fetches it) and, to build the app, an Apple silicon Mac with macOS 15 or later, Xcode (the helper and `voxtnew-llm`), and [uv](https://docs.astral.sh/uv/) or Python 3 for the Omni runtime's build tools (`scripts/build-omni.sh` builds `sglang_omni_mlx/native` with its pinned MLX; CMake fetches its C++ dependencies from GitHub, through the shell's `https_proxy` if needed). Run from `Voxt/`:
+Needs Go 1.27.1 (`GOTOOLCHAIN=auto` fetches it) and, to build the app, an Apple silicon Mac with macOS 15 or later, Xcode (the helper), and [uv](https://docs.astral.sh/uv/) or Python 3 for the Omni runtime's build tools (`scripts/build-omni.sh` builds `sglang_omni_mlx/native` with its pinned MLX; CMake fetches its C++ dependencies from GitHub, through the shell's `https_proxy` if needed). Run from `Voxt/`:
 
 ```sh
 scripts/build-helper.sh              # the Swift helper, into resources/darwin-arm64/helper/
 scripts/build-omni.sh                # the Omni runtime (speech models), into resources/darwin-arm64/omni/
-scripts/build-llm.sh                 # voxtnew-llm (language models), into resources/darwin-arm64/llm/
 go tool mygo dev                     # run with hot reload
 go tool mygo build                   # build/darwin-arm64/Voxt.app and its disk image
 ```
 
-The helper and `voxtnew-llm` must be built before `go tool mygo build` or `mygo dev`: `mygo.json` gives both their entitlements and fails without them. Without the Omni runtime the app runs but cannot recognise speech (or point `VOXTNEW_OMNI_RUNTIME` at one built with `scripts/build-omni.sh --out DIR`; likewise `VOXTNEW_LLM` for `scripts/build-llm.sh --out DIR`).
+The helper must be built before `go tool mygo build` or `mygo dev`: `mygo.json` gives it its entitlements and fails without it. Without the Omni runtime the app runs but cannot recognise speech (or point `VOXTNEW_OMNI_RUNTIME` at one built with `scripts/build-omni.sh --out DIR`).
 
 **The release build** is one command, on the Mac: `scripts/release.sh` builds the three, packages and signs the app, and checks the result (`--runtimes DIR` takes prebuilt runtimes; with a Developer ID identity, `--notarize` notarises it (2.0.0 has no update feed, so nothing to `--publish`); over ssh it runs through `scripts/mac-gui.sh`). A release is that build on GitHub: a `voxt-vX.Y.Z` tag runs the Voxt Release workflow, which signs it with the Developer ID of the team RY2TQTYSKQ, notarises it and puts its disk image on a draft GitHub release. See [docs/release.md](docs/release.md).
 
-From Linux, `scripts/mac.sh <command>` mirrors the project to a Mac (`MAC_HOST`, default `mac-air`; `MAC_DIR`, default `code/VoxtNew`) and runs the command there: `scripts/mac.sh 'scripts/build-helper.sh && scripts/build-llm.sh && go tool mygo build'`.
+From Linux, `scripts/mac.sh <command>` mirrors the project to a Mac (`MAC_HOST`, default `mac-air`; `MAC_DIR`, default `code/VoxtNew`) and runs the command there: `scripts/mac.sh 'scripts/build-helper.sh && go tool mygo build'`.
 
 <details>
 <summary>Signing during development (keeping the permissions across rebuilds)</summary>
@@ -71,7 +70,7 @@ macOS keeps the Microphone and Accessibility grants for a signature. An ad hoc s
   open --env VOXTNEW_HELPER=$HOME/voxtnew-dev/voxtnew-helper build/darwin-arm64/Voxt.app
   ```
 - **Start over:** `tccutil reset Microphone dev.hehehai.voxtnew` (likewise `Accessibility`), then open the app and grant again. If a stale Accessibility entry stays on but does nothing, remove it with − in System Settings and grant again.
-- **Sign with a fixed identity:** an Apple Development certificate keeps the grants across rebuilds: `go tool mygo build -sign "Apple Development: …"` (or `macos.signingIdentity` in a local mygo.json; `VOXTNEW_SIGN_IDENTITY` for `scripts/build-helper.sh` and `scripts/build-llm.sh`). Over ssh, `codesign` fails with `errSecInternalComponent` until the key may be used without the GUI: once, in Terminal on the Mac, `security set-key-partition-list -S apple-tool:,apple: -s ~/Library/Keychains/login.keychain-db`.
+- **Sign with a fixed identity:** an Apple Development certificate keeps the grants across rebuilds: `go tool mygo build -sign "Apple Development: …"` (or `macos.signingIdentity` in a local mygo.json; `VOXTNEW_SIGN_IDENTITY` for `scripts/build-helper.sh`). Over ssh, `codesign` fails with `errSecInternalComponent` until the key may be used without the GUI: once, in Terminal on the Mac, `security set-key-partition-list -S apple-tool:,apple: -s ~/Library/Keychains/login.keychain-db`.
 
 Switching between your own builds and a release build (Developer ID) needs the same reset once ([docs/release.md](docs/release.md) §4). Downloaded models stay.
 
@@ -79,14 +78,13 @@ Switching between your own builds and a release build (Developer ID) needs the s
 
 ## Development
 
-Voxt is a Go app on [MyGo](https://github.com/egoist/mygo) (native macOS UI from Go, no cgo). Go decides; the helper and the model runtimes do what they are told, over JSON lines on stdin and stdout (the helper, `voxtnew-llm`) or loopback HTTP (the Omni servers). Everything but the Swift code is plain Go and is tested on Linux, with fakes of the helper and the runtimes. Run from `Voxt/`:
+Voxt is a Go app on [MyGo](https://github.com/egoist/mygo) (native macOS UI from Go, no cgo). Go decides; the helper and the model runtimes do what they are told, over JSON lines on stdin and stdout (the helper) or loopback HTTP (the Omni servers). Everything but the Swift code is plain Go and is tested on Linux, with fakes of the helper and the runtimes. Run from `Voxt/`:
 
 ```sh
 CGO_ENABLED=0 go test ./...          # everything; runs on Linux
 go tool mygo vet .                   # go vet and MyGo's UI-lifetime checks
 VOXTNEW_SNAPSHOTS=/tmp/shots go test -run TestSnapshots .   # every page as PNG, light/dark, en/zh-Hans
 cd helper && swift test              # the Swift helper (on a Mac), against the same protocol fixtures
-scripts/build-llm.sh --test          # voxtnew-llm's Swift tests (on a Mac)
 scripts/mac.sh scripts/mac-e2e.sh    # headless Mac tests: the real helper, fake models
 scripts/mac.sh scripts/mac-regress.sh   # the real models on a Mac: runtimes, eval, the packaged app
 ```
@@ -96,9 +94,9 @@ The store's tests use MyGo's SQLite plugin, which downloads its library once (ch
 - [docs/architecture.md](docs/architecture.md): packages, threading, the session, the runtimes, data on disk, tests.
 - [docs/plan.md](docs/plan.md): what the app is and its milestones.
 - [docs/behavior.md](docs/behavior.md): what the app does differently from the Swift Voxt ([hehehai/voxt](https://github.com/hehehai/voxt)), and why.
-- [docs/llm-models.md](docs/llm-models.md): the language models, their settings and measurements.
+- [docs/llm-models.md](docs/llm-models.md): the retired local language models, their settings and measurements (history).
 - [docs/eval.md](docs/eval.md): the models' quality on an eval set, and the decisions it led to.
-- [docs/helper-protocol.md](docs/helper-protocol.md), [docs/llm-protocol.md](docs/llm-protocol.md): the helper's and `voxtnew-llm`'s protocols.
+- [docs/helper-protocol.md](docs/helper-protocol.md): the helper's protocol.
 - [docs/manual-test.md](docs/manual-test.md): the checks by hand on a Mac (in Chinese), and the automated Mac tests.
 - [docs/release.md](docs/release.md): building, signing, notarising and publishing a release; updates (in Chinese).
 - [AGENTS.md](AGENTS.md): the rules for changes (strings, threading, the protocols).

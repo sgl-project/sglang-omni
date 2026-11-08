@@ -50,6 +50,7 @@ session_nodes:
     inputs:
       - "dialog:qwen.unit"
       - {kind: control, source: input, event: configure}
+      - {kind: control, source: dialog, event: configure}
       - {kind: control, source: dialog, event: interrupt, preempt: true}
       - {kind: control, source: dialog, event: qwen.truncate}
   dialog:
