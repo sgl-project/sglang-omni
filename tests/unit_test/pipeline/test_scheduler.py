@@ -2510,6 +2510,7 @@ def plain_fallback_scheduler() -> tuple[OmniScheduler[SGLangARRequestData], Req,
     scheduler = object.__new__(OmniScheduler)
     scheduler.enable_plain_fallback = True
     scheduler.decode_path = "spec"
+    scheduler.speculative_steps_since_plain = 1
     scheduler.draft_algorithm = SpeculativeAlgorithm.DFLASH
     scheduler.speculative_future_map = Mock()
     scheduler.plain_future_map = Mock()
@@ -2554,6 +2555,33 @@ def plain_fallback_scheduler() -> tuple[OmniScheduler[SGLangARRequestData], Req,
     return scheduler, request, plain_request
 
 
+@pytest.mark.parametrize("speculative_rows", [1, 20])
+def test_plain_fallback_weights_sparse_traffic_without_starvation(
+    speculative_rows: int,
+) -> None:
+    """A lone plain row must not take half the turns from a large spec batch."""
+    scheduler, request, plain_request = plain_fallback_scheduler()
+    scheduler.running_batch.reqs = [request] + [
+        Req(
+            rid=f"spec-{index}",
+            origin_input_text="",
+            origin_input_ids=[1],
+            sampling_params=SamplingParams(max_new_tokens=8),
+        )
+        for index in range(speculative_rows - 1)
+    ]
+    selected_paths = []
+    for _ in range(10):
+        scheduler.select_next_decode_path()
+        selected_paths.append(scheduler.decode_path)
+    assert "plain" in selected_paths
+    assert "spec" in selected_paths
+    assert selected_paths.count("plain") == (5 if speculative_rows == 1 else 2)
+    scheduler.waiting_queue.remove(plain_request)
+    scheduler.select_next_decode_path()
+    assert scheduler.decode_path == "spec"
+
+
 def test_plain_fallback_rotates_paths_and_cancels_parked_requests() -> None:
     """A sparse plain request must run while a speculative request stays live."""
     scheduler, request, _ = plain_fallback_scheduler()
@@ -2577,6 +2605,7 @@ def test_plain_fallback_does_not_idle_on_a_blocked_path(
     """An inadmissible queued path must not idle a different running path."""
     scheduler, request, waiting_request = plain_fallback_scheduler()
     if ready_path == "plain":
+        scheduler.speculative_steps_since_plain = 0
         scheduler.decode_path = "plain"
         request.omni_data.decode_path = "plain"
         waiting_request.omni_data.decode_path = "spec"

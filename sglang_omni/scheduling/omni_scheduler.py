@@ -350,6 +350,7 @@ class OmniScheduler(Generic[RequestDataT]):
     async_prefill: bool = False
     request_build_admission_wait_s: float = _REQUEST_BUILD_ADMISSION_WAIT_S
     enable_plain_fallback: bool = False
+    speculative_steps_since_plain: int = 0
     decode_batch_states: dict[Literal["plain", "spec"], DecodeBatchState] | None = None
 
     def __init__(
@@ -2233,10 +2234,10 @@ class OmniScheduler(Generic[RequestDataT]):
 
     def get_next_batch_to_run(self) -> ScheduleBatch | None:
         """Keep batch ownership in Omni while borrowing native batch selection."""
-        for _ in range(2 if self.enable_plain_fallback else 1):
+        for attempt in range(2 if self.enable_plain_fallback else 1):
             if self.enable_plain_fallback:
                 with self.request_admission_lock:
-                    self.select_next_decode_path()
+                    self.select_next_decode_path(force_other_path=attempt == 1)
             else:
                 pass
             running_batch = self.running_batch
@@ -2348,8 +2349,8 @@ class OmniScheduler(Generic[RequestDataT]):
             running_batch=ScheduleBatch(reqs=[], batch_is_full=False)
         )
 
-    def select_next_decode_path(self) -> None:
-        """Alternate ready paths."""
+    def select_next_decode_path(self, *, force_other_path: bool = False) -> None:
+        """Weight speculative turns by live rows, with at most four before plain."""
         decode_batch_states = self.decode_batch_states
         assert decode_batch_states is not None
         decode_batch_states[self.decode_path] = DecodeBatchState(
@@ -2358,25 +2359,45 @@ class OmniScheduler(Generic[RequestDataT]):
             chunked_request=self.chunked_req,
             pending_chunked_abort_request=self._pending_chunked_abort_req,  # noqa: leading-underscore  # upstream scheduler contract
         )
-        next_decode_path: Literal["plain", "spec"] = (
-            "plain" if self.decode_path == "spec" else "spec"
-        )
-        next_batch_state = decode_batch_states[next_decode_path]
-        if (
-            next_batch_state.running_batch.reqs
-            or (
-                next_batch_state.last_batch is not None
-                and next_batch_state.last_batch.reqs
-            )
-            or next_batch_state.chunked_request is not None
-            or any(
-                request.omni_data.decode_path == next_decode_path
-                for request in self.waiting_queue
-            )
-        ):
-            self.decode_path = next_decode_path
+        path_requests: dict[str, set[int]] = {"plain": set(), "spec": set()}
+        for path, state in decode_batch_states.items():
+            for batch in (state.running_batch, state.last_batch):
+                if batch is not None:
+                    path_requests[path].update(
+                        id(request) for request in batch.reqs if not request.finished()
+                    )
+                else:
+                    pass
+            if state.chunked_request is not None:
+                path_requests[path].add(id(state.chunked_request))
+            else:
+                pass
+        for request in self.waiting_queue:
+            if not request.finished():
+                path_requests[request.omni_data.decode_path].add(id(request))
+            else:
+                pass
+        plain_rows = len(path_requests["plain"])
+        speculative_rows = len(path_requests["spec"])
+        if force_other_path:
+            self.decode_path = "plain" if self.decode_path == "spec" else "spec"
+            self.speculative_steps_since_plain = 0
+        elif plain_rows and speculative_rows:
+            speculative_turns = min(4, max(1, speculative_rows // plain_rows))
+            if self.speculative_steps_since_plain >= speculative_turns:
+                self.decode_path = "plain"
+                self.speculative_steps_since_plain = 0
+            else:
+                self.decode_path = "spec"
+                self.speculative_steps_since_plain += 1
+        elif plain_rows:
+            self.decode_path = "plain"
+            self.speculative_steps_since_plain = 0
+        elif speculative_rows:
+            self.decode_path = "spec"
+            self.speculative_steps_since_plain = 0
         else:
-            pass
+            self.speculative_steps_since_plain = 0
         selected_batch_state = decode_batch_states[self.decode_path]
         self.running_batch = selected_batch_state.running_batch
         self.last_batch = selected_batch_state.last_batch
