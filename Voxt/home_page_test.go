@@ -418,6 +418,38 @@ func TestHomeTryByShortcut(t *testing.T) {
 	}
 }
 
+// TestShortcutInOwnField (FB10): the shortcut pressed while a field of
+// the window has the focus (a feature's rules being edited) starts a
+// session, with the overlay, that types into the field as in another
+// app; it is not a try on the page. With a button focused, a try as
+// before.
+func TestShortcutInOwnField(t *testing.T) {
+	a, tt := pageTester(t, "/transcribe")
+	readyModels(a)
+	drain := queuePosts(a)
+	click(t, tt, "Your rules")
+	click(t, tt, "Your rules for Transcribe")
+	if got := a.tryPlace(store.KindTranscribe, *selfFront()); got != placeNone {
+		t.Fatalf("rules field focused: %v, want no try", got)
+	}
+	a.hotkeyFired(proto.HotkeyEventParams{Binding: "transcribe/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: selfFront()})
+	drain()
+	frames(tt)
+	if a.sess.ID == "" || a.sess.Try || !a.ov.shown {
+		t.Fatalf("not a session with the overlay: %+v, overlay %v", a.sess, a.ov.shown)
+	}
+	a.cancelSession()
+	drain()
+	frames(tt)
+	click(t, tt, "Show the full prompt")
+	if !tt.Focused("Show the full prompt") {
+		t.Fatal("the button did not take the focus")
+	}
+	if got := a.tryPlace(store.KindTranscribe, *selfFront()); got != placeFeature {
+		t.Errorf("button focused: %v, want the page's try", got)
+	}
+}
+
 // homeShots saves Home with everything ready, the history seeded, and a
 // try that is done (TestSnapshots), at the top and scrolled to its end.
 func homeShots(a *app, tt *ui.Tester, save func(string)) {

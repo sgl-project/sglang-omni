@@ -36,6 +36,7 @@ func (f *fakeIO) Paste(_ context.Context, p proto.PasteParams) (proto.PasteResul
 var (
 	slack    = proto.App{PID: 812, BundleID: "com.tinyspeck.slackmacgap", Name: "Slack"}
 	textEdit = proto.App{PID: 530, BundleID: "com.apple.TextEdit", Name: "TextEdit"}
+	voxt     = proto.App{PID: 77, BundleID: "dev.hehehai.voxtnew", Name: "Voxt"}
 )
 
 func TestInsert(t *testing.T) {
@@ -81,6 +82,17 @@ func TestInsert(t *testing.T) {
 			io: fakeIO{focus: []proto.FocusResult{{PID: 77, Role: "AXTextField", Editable: true}}}, reason: ReasonNotFront},
 		{name: "VoxtNew in front, no start app", req: Request{Text: "hi", Self: 77, Activate: func(int) bool { return true }},
 			io: fakeIO{focus: []proto.FocusResult{{PID: 77, Role: "AXTextField", Editable: true}}}, reason: ReasonNotFront},
+		// FB10: the shortcut pressed in VoxtNew's own window, a feature's rules being edited.
+		{name: "started in VoxtNew: into its own text field", req: Request{Text: "hi", Target: voxt, Self: 77, Activate: func(int) bool { return true }},
+			io: fakeIO{focus: []proto.FocusResult{{PID: 77, App: &voxt, Role: "AXTextArea", Editable: true}}, paste: posted}, inserted: true, pastes: 1, to: 77},
+		{name: "started in VoxtNew, a selection in its own field", req: Request{Text: "hi", Target: voxt, Self: 77, Replace: true},
+			io: fakeIO{focus: []proto.FocusResult{{PID: 77, App: &voxt, Role: "AXTextArea", Editable: true}}, paste: posted}, inserted: true, pastes: 1, to: 77},
+		{name: "started in VoxtNew, its focus on a button", req: Request{Text: "hi", Target: voxt, Self: 77},
+			io: fakeIO{focus: []proto.FocusResult{{PID: 77, App: &voxt, Role: "AXButton"}}}, reason: ReasonNotEditable},
+		{name: "started in VoxtNew, no benefit of the doubt there", req: Request{Text: "hi", Target: voxt, Self: 77, AnyEditable: true},
+			io: fakeIO{focus: []proto.FocusResult{{PID: 77, App: &voxt, Role: "AXGroup"}}}, reason: ReasonNotEditable},
+		{name: "started in VoxtNew, a password field there", req: Request{Text: "hi", Target: voxt, Self: 77},
+			io: fakeIO{focus: []proto.FocusResult{{PID: 77, App: &voxt, Role: "AXTextField", Subrole: "AXSecureTextField", Editable: true}}}, reason: ReasonSecure},
 	} {
 		io := tc.io
 		res := Insert(context.Background(), &io, tc.req)

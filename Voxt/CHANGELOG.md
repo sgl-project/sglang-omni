@@ -14,6 +14,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **The update from Voxt 1.x is tested on a clean Mac**: a GitHub Actions workflow (Voxt Upgrade Test) installs Voxt 1.x, lets it update itself to the new Voxt from the beta channel, then checks the installed app (its bundle ID, Developer ID signature and notarization) and that it imports Voxt 1.x's dictionary without asking you to choose a folder.
 - **Voxt 1.x on Apple silicon updates to Voxt 2 by itself**: each release also has the app as `Voxt-X.Y.Z-macOS.zip`, which Voxt 1.x's in-app update installs on a Mac with Apple silicon (first for those who turned on Beta Updates, then for everyone there) and the Homebrew cask (`brew install --cask hehehai/tap/voxt`, Apple silicon only) installs. Voxt 1.x on an Intel Mac is not offered Voxt 2, which does not run there, and stays on Voxt 1.x. After the update, allow the microphone and accessibility again: macOS sees Voxt 2 as another app.
 
+### Fixed
+
+- **Dictation types into Voxt's own window again**, as in Voxt 1.x: with the cursor in a field of Voxt (a feature's Your rules, say), the shortcut records as in any other app, with the overlay, and the text goes into that field. Before, the shortcut on Home or a feature's page started a try on the page (no overlay; the result showed in its Try it area), and on other pages the result went to the answer card.
+
 ### 中文
 
 #### 新增
@@ -25,6 +29,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **隐藏语音模型**（语音模型）：模型卡片上有“隐藏”，隐藏后功能页的语音识别菜单里不再列出它；卡片移到页面底部的“已隐藏的模型”，点“显示”放回去。功能正在用的模型不能隐藏。
 - **在一台全新的 Mac 上测试从 Voxt 1.x 更新**：GitHub Actions 工作流（Voxt Upgrade Test）装好 Voxt 1.x，让它从 beta 通道自己更新到新的 Voxt，再检查装好的 app（bundle ID、Developer ID 签名和公证），以及它不用你选文件夹就能导入 Voxt 1.x 的词典。
 - **Apple 芯片上的 Voxt 1.x 自己更新到 Voxt 2**：每个版本还附带 app 的 `Voxt-X.Y.Z-macOS.zip`，在 Apple 芯片的 Mac 上，Voxt 1.x 的应用内更新安装它（先给打开了“Beta 更新”的用户，再给其他人），Homebrew 的 cask（`brew install --cask hehehai/tap/voxt`，只支持 Apple 芯片）也装它。Intel Mac 上的 Voxt 1.x 不会收到 Voxt 2（Voxt 2 不能在 Intel 上运行），继续用 Voxt 1.x。更新后要重新允许麦克风和辅助功能：macOS 把 Voxt 2 当成另一个 app。
+
+#### 修复
+
+- **在 Voxt 自己的窗口里听写，文字又能输进去了**，和 Voxt 1.x 一样：光标在 Voxt 的输入框里（比如功能页的“你的规则”）时，按快捷键和在别的 app 里一样录音、显示浮窗，文字输入到这个框里。以前在首页和功能页上按快捷键会在页面里开始一次试一试（没有浮窗，结果显示在“试一试”区域），在其他页面上结果进了答案卡片。
 
 ## [2.0.1] - 2026-11-07
 
