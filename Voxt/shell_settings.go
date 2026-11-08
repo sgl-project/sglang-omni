@@ -58,7 +58,7 @@ type settingsForm struct {
 	clearHistoryAsk bool // Privacy's Clear the history… dialog
 	// loginIs is whether macOS opens VoxtNew at login, as last read or
 	// set: the setting changes it only when they differ.
-	loginIs bool
+	loginIs     bool
 	search      string
 	searchFocus bool
 }
