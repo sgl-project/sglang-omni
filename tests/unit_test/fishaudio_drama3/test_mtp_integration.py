@@ -23,6 +23,7 @@ from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.layers.attention.hybrid_linear_attn_backend import (
     HybridLinearAttnBackend,
 )
+from sglang.srt.layers.attention.linear.gdn_backend import GDNAttnBackend
 from sglang.srt.layers.attention.triton_backend import TritonAttnBackend
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.managers.schedule_batch import FINISH_MATCHED_TOKEN
@@ -1102,7 +1103,9 @@ def first_frame_graph_setup(
         first_frame_cuda_graph_max_requests=first_frame_cuda_graph_max_requests,
     )
     sglang_runner = Mock(spec=SGLModelRunner)
-    sglang_runner.attn_backend = Mock(spec=HybridLinearAttnBackend)
+    attention_backend = Mock(spec=HybridLinearAttnBackend)
+    attention_backend.linear_attn_backend = Mock(spec=GDNAttnBackend)
+    sglang_runner.attn_backend = attention_backend
     sglang_runner.decode_cuda_graph_runner = (
         None
         if decode_graph_max_batch_size is None
