@@ -242,7 +242,7 @@ func TestTranscribeServicesAndSwitches(t *testing.T) {
 		t.Errorf("LLM %q", id)
 	}
 	click(t, tt, "Language model for Transcribe")
-	click(t, tt, "Automatic: "+fakeLLMModel.Name)
+	click(t, tt, "Automatic (now: "+fakeLLMModel.Name+")")
 	if id := a.lib.settings.Get().Features.Transcribe.LLM; id != "" {
 		t.Errorf("LLM %q", id)
 	}
@@ -262,7 +262,32 @@ func TestTranscribeServicesAndSwitches(t *testing.T) {
 	}
 }
 
-// TestTranslateFallbackModel: Translate's Models section picks a
+// TestAutomaticNamesTheModelInUse: the bug was a model menu reading
+// "Automatic: X" above "X", two entries nobody could tell apart. The
+// Automatic entry says it uses X now, X is listed once, and the
+// Translate page's target language reads the same way.
+func TestAutomaticNamesTheModelInUse(t *testing.T) {
+	a, tt := trTester(t)
+	readyModels(a)
+	a.local.(*fakeLocal).MoreLLM = []local.Model{{Kind: local.LLM, ID: models.LLMFast, Name: "Qwen3.5 2B (4bit)"}}
+	check := func(path, menu, name string) {
+		t.Helper()
+		a.navigate(path)
+		click(t, tt, menu)
+		texts := tt.Texts()
+		auto := "Automatic (now: " + name + ")"
+		if !slices.Contains(texts, auto) || slices.Contains(texts, "Automatic: "+name) || strings.Count("\x00"+strings.Join(texts, "\x00")+"\x00", "\x00"+name+"\x00") != 1 {
+			t.Errorf("%s: want %q and %q once: %q", menu, auto, name, texts)
+		}
+		tt.Key(0, ui.KeyEscape)
+		frames(tt)
+	}
+	check("/transcribe", "Speech model for Transcribe", fakeASRModel.Name)
+	check("/transcribe", "Language model for Transcribe", fakeLLMModel.Name)
+	check("/translate", "Target language", "Simplified Chinese")
+}
+
+// TestTranslateFallbackModel:Translate's Models section picks a
 // fallback model, None by default, among the language models set up; a
 // fallback no longer set up reads None.
 func TestTranslateFallbackModel(t *testing.T) {

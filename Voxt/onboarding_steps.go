@@ -49,8 +49,8 @@ func (a *app) obLegacyCard(c *ui.Context) {
 		ui.Column(c).Gap(px(t, sp2)).Children(func() {
 			ui.Text(c, i18n.T("The previous Voxt is on this Mac")).FontWeight(600)
 			caption(c, i18n.T("Click Import from the previous Voxt to bring its dictionary, history and settings over. The previous Voxt keeps all its data."))
-			if a.ob.legacyMsg != "" {
-				caption(c, a.ob.legacyMsg)
+			if a.ob.legacyDone || a.ob.legacy.failed != "" {
+				a.legacyReportView(c, a.ob.legacy) // legacy_report.go
 			}
 			button, label := primaryButton, i18n.T("Import from the previous Voxt")
 			if a.ob.legacyDone {
@@ -142,7 +142,7 @@ func (a *app) obMoreStep(c *ui.Context) {
 					caption(c, about)
 					ui.Row(c).Children(func() {
 						if ui.Button(c.Key(key+"-open"), button).Clicked() {
-							a.closeOnboarding()
+							a.finishOnboarding() // the last step: the guide is done
 							a.navigate(path)
 						}
 					})

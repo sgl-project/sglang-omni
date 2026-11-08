@@ -37,7 +37,7 @@ func TestRealSystemProxy(t *testing.T) {
 	}
 	var mu sync.Mutex
 	used := map[string]int{} // requests by the proxy they went through
-	appProxy := models.ProxyFor("", systemProxy)
+	appProxy := models.ProxyFor("", nil, systemProxy)
 	proxy := func(request *http.Request) (*url.URL, error) {
 		proxyURL, err := appProxy(request)
 		mu.Lock()

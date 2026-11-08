@@ -297,7 +297,10 @@ func (a *app) overlayNotice(c *ui.Context) {
 		// keeps its sides even. The border takes layout.Border of the padding.
 		ui.Row(c).Fill().Padding(0, layout.PillPadX-layout.Border).Gap(layout.Gap).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 			ic, col := icons.DangerCircle, tok(t).Danger
-			if n.warn {
+			switch {
+			case n.ok:
+				ic, col = icons.CheckCircle, tok(t).Success
+			case n.warn:
 				ic, col = icons.DangerTriangle, tok(t).Warning
 			}
 			ui.Box(c).Size(layout.IconSlot, layout.RowH).Shrink(0).Center().Children(func() {
