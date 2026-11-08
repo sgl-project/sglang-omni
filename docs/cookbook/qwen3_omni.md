@@ -148,7 +148,7 @@ sgl-omni serve \
 
 Compare modes with matching workloads and prefix-cache conditions; measure TTFT, throughput, and accuracy for your workload.
 
-### Known Limitations
+## Known Limitations
 
 - **Multiple videos must use the same sampled frame rate.** The processor uses one rate for video timestamps.different rates return an invalid-input error.
 
