@@ -666,6 +666,18 @@ class DllmScheduler:
             r for r in self.waiting_queue if r.rid not in staging_rids
         ]
 
+        # note (qiujiawei): pinned prefixes cannot be evicted, so give them up before this round's blocks run out of pages.
+        page_size = get_schedule().page_size
+        block_charge = (
+            (self.dllm_config.block_size + page_size - 1) // page_size * page_size
+        )
+        while self.retained_contexts and (
+            self.token_to_kv_pool_allocator.available_size()
+            + self.tree_cache.evictable_size()
+            < len(runnable_rows) * block_charge
+        ):
+            self.release_context(next(iter(self.retained_contexts)))
+
         new_batch = ScheduleBatch.init_new(
             reqs=runnable_rows,
             req_to_token_pool=self.req_to_token_pool,

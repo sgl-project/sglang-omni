@@ -722,6 +722,15 @@ def build_phase_request(payload: StagePayload) -> SGLangDLLMRequestData:
         params,
         dllm_config=payload.data["dllm_config"],
     )
+    companion_ids = payload.data.get("uncond_ids")
+    if companion_ids is not None:
+        request._uncond_input_ids = (
+            companion_ids  # noqa: leading-underscore  # DLLM protocol
+        )
+        request._uncond_pad_len = 0  # noqa: leading-underscore  # DLLM protocol
+        request._uncond_pad_start = 0  # noqa: leading-underscore  # DLLM protocol
+    else:
+        pass
     data = SGLangDLLMRequestData(output_ids=request.output_ids, req=request)
     data.stage_payload = payload
     return data
@@ -781,22 +790,24 @@ def run_phase(
     *,
     continues: bool = True,
     request_id: str = "story",
+    uncond_ids: list[int] | None = None,
 ) -> list[tuple[int, int]]:
     """Run one thinker phase through the real cache and return its block spans."""
+    phase = {
+        "input_ids": input_ids,
+        "max_new_tokens": max_new_tokens,
+        "continues": continues,
+        "dllm_config": scheduler.dllm_config,
+    }
+    if uncond_ids is not None:
+        phase["uncond_ids"] = uncond_ids
+    else:
+        pass
     scheduler.inbox.put(
         IncomingMessage(
             request_id=request_id,
             type="new_request",
-            data=StagePayload(
-                request_id,
-                None,
-                {
-                    "input_ids": input_ids,
-                    "max_new_tokens": max_new_tokens,
-                    "continues": continues,
-                    "dllm_config": scheduler.dllm_config,
-                },
-            ),
+            data=StagePayload(request_id, None, phase),
         )
     )
     spans = []
@@ -879,4 +890,23 @@ def test_admission_short_of_memory_gives_up_a_pinned_prefix(
     first_spans = run_phase(scheduler, other_ids, 12, request_id="other")
 
     assert first_spans[0] == (0, 4)
+    assert "story" not in scheduler.retained_contexts
+
+
+def test_cfg_group_that_outgrows_the_free_pages_gives_up_a_pinned_prefix(
+    radix_scheduler: DllmScheduler,
+) -> None:
+    """A pinned prefix could not be evicted, so a CFG group that decoded into the last free pages crashed the thinker."""
+    scheduler = radix_scheduler
+    run_phase(scheduler, PROMPT_IDS, 6)
+
+    run_phase(
+        scheduler,
+        list(range(100, 120)),
+        8,
+        continues=False,
+        request_id="other",
+        uncond_ids=list(range(200, 220)),
+    )
+
     assert "story" not in scheduler.retained_contexts
