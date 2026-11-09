@@ -603,16 +603,21 @@ def test_llama_cpp_stage_keeps_a_cpu_resolution_off_the_gpu(
             captured.update(kwargs)
             raise RuntimeError("stop after capture")
 
-    def unexpected_system_info_probe() -> bytes:
+    def unexpected_backend_probe(name: bytes) -> None:
         raise AssertionError("an explicit CPU resolution must not probe llama.cpp GPUs")
 
     monkeypatch.setattr(
         stages,
         "llama_cpp",
+        types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=FakeLlama),
+    )
+    monkeypatch.setattr(
+        stages,
+        "llama_cpp_ggml",
         types.SimpleNamespace(
-            LLAMA_SPLIT_MODE_NONE=0,
-            Llama=FakeLlama,
-            llama_print_system_info=unexpected_system_info_probe,
+            libggml=types.SimpleNamespace(
+                ggml_backend_reg_by_name=unexpected_backend_probe
+            )
         ),
     )
     monkeypatch.setattr(stages, "resolve_gguf", lambda *args: "/model.gguf")
@@ -639,13 +644,22 @@ def test_llama_cpp_stage_falls_back_to_cpu_without_musa_backend(
         captured.update(kwargs)
         raise StopAfterCapture
 
+    backend_queries: list[bytes] = []
+
+    def backend_registry(name: bytes) -> None:
+        backend_queries.append(name)
+        return None
+
     monkeypatch.setattr(
         stages,
         "llama_cpp",
+        types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=fake_llama),
+    )
+    monkeypatch.setattr(
+        stages,
+        "llama_cpp_ggml",
         types.SimpleNamespace(
-            LLAMA_SPLIT_MODE_NONE=0,
-            Llama=fake_llama,
-            llama_print_system_info=lambda: b"CUDA : compute 8.0",
+            libggml=types.SimpleNamespace(ggml_backend_reg_by_name=backend_registry)
         ),
     )
     monkeypatch.setattr(stages, "resolve_gguf", lambda *args: "/model.gguf")
@@ -660,8 +674,8 @@ def test_llama_cpp_stage_falls_back_to_cpu_without_musa_backend(
 
     assert captured["n_gpu_layers"] == 0
     assert captured["main_gpu"] == 0
+    assert backend_queries == [b"MUSA"]
     assert "llama.cpp MUSA backend not detected" in caplog.text
-    assert "CUDA : compute 8.0" in caplog.text
 
 
 def test_llama_cpp_stage_uses_musa_backend_when_available(
@@ -679,10 +693,13 @@ def test_llama_cpp_stage_uses_musa_backend_when_available(
     monkeypatch.setattr(
         stages,
         "llama_cpp",
+        types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=fake_llama),
+    )
+    monkeypatch.setattr(
+        stages,
+        "llama_cpp_ggml",
         types.SimpleNamespace(
-            LLAMA_SPLIT_MODE_NONE=0,
-            Llama=fake_llama,
-            llama_print_system_info=lambda: b"MUSA : MTTS5000",
+            libggml=types.SimpleNamespace(ggml_backend_reg_by_name=lambda name: 1)
         ),
     )
     monkeypatch.setattr(stages, "resolve_gguf", lambda *args: "/model.gguf")

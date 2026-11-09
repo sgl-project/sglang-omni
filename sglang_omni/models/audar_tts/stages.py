@@ -253,6 +253,12 @@ def resolve_gguf(model_path: str, filename: str, revision: str) -> str:
     return hf_hub_download(repo_id=model_path, filename=filename, revision=revision)
 
 
+def has_llama_cpp_backend(name: str) -> bool:
+    libggml = llama_cpp_ggml.libggml
+    libggml.ggml_backend_reg_by_name.restype = ctypes.c_void_p
+    return libggml.ggml_backend_reg_by_name(name.encode()) is not None
+
+
 def create_tts_engine_executor(
     model_path: str,
     *,
@@ -270,10 +276,7 @@ def create_tts_engine_executor(
             f"device={concrete_device}"
         )
     elif concrete_device.type == "xpu":
-        libggml = llama_cpp_ggml.libggml
-
-        libggml.ggml_backend_reg_by_name.restype = ctypes.c_void_p
-        if libggml.ggml_backend_reg_by_name(b"SYCL") is None:
+        if not has_llama_cpp_backend("SYCL"):
             raise RuntimeError(
                 "Audar-TTS on xpu needs llama-cpp-python built with GGML_SYCL=ON"
             )
@@ -283,15 +286,9 @@ def create_tts_engine_executor(
         pass
     use_cpu_backend = concrete_device.type == "cpu"
     if current_platform.is_musa() and not use_cpu_backend:
-        llama_system_info = llama_cpp.llama_print_system_info().decode(
-            "utf-8", errors="replace"
-        )
-        use_cpu_backend = "musa" not in llama_system_info.casefold()
+        use_cpu_backend = not has_llama_cpp_backend("MUSA")
         if use_cpu_backend:
-            logger.warning(
-                "llama.cpp MUSA backend not detected; falling back to CPU. "
-                f"system_info={llama_system_info!r}"
-            )
+            logger.warning("llama.cpp MUSA backend not detected; falling back to CPU.")
         else:
             pass
     else:
