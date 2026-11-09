@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Build TTS prompts and carry each request's reference audio to the codec."""
+"""Build spoken-response prompts and carry reference audio to the codec."""
 
 from __future__ import annotations
 
@@ -31,7 +31,6 @@ from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 
 TTS_SYSTEM_PROMPT = "You are a helpful voice assistant. Answer the user's questions with spoken responses."
-TTS_INPUT_PREFIX = "Repeat the following text verbatim, without adding anything: "
 
 
 class RequestValidationError(ValueError):
@@ -182,7 +181,7 @@ def preprocess_request(
         TTS_SYSTEM_PROMPT,
         "<|im_end|>\n",
         "<|im_start|>user\n",
-        TTS_INPUT_PREFIX + text,
+        text,
         "<|im_end|>\n",
         "<|im_start|>assistant\n<|object_ref_start|>",
     )

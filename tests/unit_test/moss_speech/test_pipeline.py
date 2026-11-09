@@ -128,11 +128,12 @@ class SpeechClient(Client):
         yield Client.default_result_builder(request_id, result.data)
 
 
-def test_tts_template_and_native_budget_survive_wire_roundtrip() -> None:
+def test_native_prompt_preserves_user_question_and_budget() -> None:
+    """Questions must reach the model without an injected repetition instruction."""
     payload = StagePayload(
         "request",
         OmniRequest(
-            inputs="Hello.",
+            inputs="What is the capital of France?",
             params={"seed": 19, "max_new_tokens": 32},
             metadata={"tts_params": {"ref_audio": "reference.wav"}},
         ),
@@ -142,7 +143,7 @@ def test_tts_template_and_native_budget_survive_wire_roundtrip() -> None:
     state = MossSpeechState.from_dict(prepared.data)
     assert bytes(state.text_token_ids).decode() == (
         "<|im_start|>system\nYou are a helpful voice assistant. Answer the user's questions with spoken responses.<|im_end|>\n"
-        "<|im_start|>user\nRepeat the following text verbatim, without adding anything: Hello.<|im_end|>\n"
+        "<|im_start|>user\nWhat is the capital of France?<|im_end|>\n"
         "<|im_start|>assistant\n<|object_ref_start|>"
     )
     native = build_sglang_moss_request(prepared)
