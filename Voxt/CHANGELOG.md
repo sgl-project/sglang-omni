@@ -53,6 +53,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Changed
 
+- **Rewrite says why it has no card switch**: Rewrite → Answer card explains that its answer always shows in the card, where Continue adds a spoken follow-up and the answer can be edited, copied or inserted. Transcribe and Translate keep their shared Show the result in a card switch (#3736).
 - **Automatic says which model it uses**: in a feature's speech model and language model menus, and Translate's target language, the Automatic entry reads "Automatic (now: Qwen3-ASR 1.7B (8bit))", so it no longer looks like a second copy of the model listed below it.
 - **The setup guide picks up where you left it**: reopened, it shows the step you left (until you finish it), and Set up a language model or Choose models… leaves a "Back to the setup guide" bar on that page.
 - **Ask for the required permissions in one go**: the permissions are grouped as Required (microphone, Accessibility) and Optional (Speech Recognition), and "Ask for the required permissions" shows macOS's prompts one after another.
