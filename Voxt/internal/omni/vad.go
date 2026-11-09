@@ -43,6 +43,11 @@ func NewVAD(rt *Runtime, modelDir string) (*VAD, error) {
 // Warm starts the server in the background.
 func (v *VAD) Warm() { v.rt.Warm(v.spec, v.dir, "") }
 
+// Hold keeps Silero loaded until release (meeting capture).
+func (v *VAD) Hold(ctx context.Context) (func(), error) {
+	return v.rt.Hold(ctx, HoldTarget{Spec: v.spec, Dir: v.dir})
+}
+
 // Speech finds the speech in a recording (/v1/vad/speech_timestamps, with
 // the tuned threshold, minimum speech and silence, and padding).
 func (v *VAD) Speech(ctx context.Context, pcm []byte, rate int) ([]vad.Segment, error) {

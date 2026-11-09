@@ -168,7 +168,7 @@ func parseLegacyExport(data []byte) (terms []store.Term, skipped int, err error)
 }
 
 // legacyKinds maps the previous Voxt's history kinds to this app's; its
-// "transcript" entries (meetings and file transcription) have no place here.
+// "transcript" entries go to meetings (legacy_import_meetings.go), not history.
 var legacyKinds = map[string]store.Kind{"normal": store.KindTranscribe, "translation": store.KindTranslate, "rewrite": store.KindRewrite}
 
 // readLegacyHistory reads the previous Voxt's history: the text of each
@@ -194,7 +194,13 @@ func readLegacyHistory(ctx context.Context, path string) (entries []store.Entry,
 		id, _ := v[0].(string)
 		text, _ := v[1].(string)
 		kind, ok := legacyKinds[fmt.Sprint(v[3])]
-		if !ok || strings.TrimSpace(text) == "" {
+		if !ok {
+			if fmt.Sprint(v[3]) != "transcript" {
+				skipped++
+			}
+			continue
+		}
+		if strings.TrimSpace(text) == "" {
 			skipped++
 			continue
 		}
@@ -324,7 +330,22 @@ func (a *app) importLegacyFrom(picked string) {
 				return r
 			}
 			if histSkipped > 0 {
-				r.skipped = append(r.skipped, i18n.N(histSkipped, "%d history entry: a meeting or empty", "%d history entries: meetings or empty", histSkipped))
+				r.skipped = append(r.skipped, i18n.N(histSkipped, "%d history entry: empty", "%d history entries: empty", histSkipped))
+			}
+			voxtDir := filepath.Dir(path)
+			meetStats, err := mergeLegacyMeetings(ctx, a.lib.store.Meetings(), a.lib.store.Dir(), voxtDir, path)
+			if err != nil {
+				log.Printf("legacy import: meetings: %v", err)
+			} else {
+				if meetStats.imported > 0 {
+					r.imported = append(r.imported, i18n.N(meetStats.imported, "Meetings: %d session", "Meetings: %d sessions", meetStats.imported))
+				}
+				if meetStats.fileSkipped > 0 {
+					r.skipped = append(r.skipped, i18n.N(meetStats.fileSkipped, "%d file transcript: left in the previous Voxt", "%d file transcripts: left in the previous Voxt", meetStats.fileSkipped))
+				}
+				if meetStats.incomplete > 0 {
+					r.skipped = append(r.skipped, i18n.N(meetStats.incomplete, "%d meeting transcript: not enough detail", "%d meeting transcripts: not enough detail", meetStats.incomplete))
+				}
 			}
 			n := 0
 			for _, e := range entries {
@@ -338,7 +359,6 @@ func (a *app) importLegacyFrom(picked string) {
 			if n > 0 {
 				r.imported = append(r.imported, i18n.N(n, "History: %d entry", "History: %d entries", n))
 			}
-			voxtDir := filepath.Dir(path)
 			if !legacyPreferencesReadable(voxtDir) {
 				r.skipped = append(r.skipped, i18n.T("Settings (language models, speech services, prompts): the previous Voxt's preferences could not be read"))
 			}
@@ -368,7 +388,10 @@ func (a *app) importLegacyFrom(picked string) {
 			}
 			var llmServices, speechServices []settings.Provider
 			prompts := 0
-			if err := prefs.Update(ctx, func(s *settings.Settings) { llmServices, speechServices, prompts = l.apply(s) }); err != nil {
+			if err := prefs.Update(ctx, func(s *settings.Settings) {
+				llmServices, speechServices, prompts = l.apply(s, voxtDir)
+				legacyApplyGeneral(voxtDir, s)
+			}); err != nil {
 				log.Printf("legacy import: settings: %v", err)
 				llmServices, speechServices, prompts = nil, nil, 0 // not saved: nothing came over
 			} else if features != "" {

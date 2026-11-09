@@ -32,7 +32,11 @@ type Openers struct {
 	// ASRFirst is the speech model Automatic prefers on this Mac, the
 	// first of Installed when it is installed; nil: the catalogue's order.
 	ASRFirst func() string
+	// Hold keeps meeting speech models loaded until release; nil: no-op.
+	Hold func() (release func())
 }
+
+var _ Holder = (*Library)(nil)
 
 // ErrNoRuntime: the model is installed, but this build has no runtime
 // to run it.
@@ -91,6 +95,14 @@ func (l *Library) Delete(ctx context.Context, id string, scope fammodels.Scope) 
 // Dir is the folder of an installed model ("" when it is not), for the
 // openers' wiring (the speech runtime's VAD: models.VADSilero).
 func (l *Library) Dir(id string) string { return l.models.Dir(id) }
+
+// Hold keeps local speech models loaded for a meeting; no-op when Openers.Hold is nil.
+func (l *Library) Hold() (release func()) {
+	if l.open.Hold == nil {
+		return func() {}
+	}
+	return l.open.Hold()
+}
 
 func (l *Library) ASR(ctx context.Context, id string) (asr.Provider, Model, error) {
 	m, ok := Choose(l.Installed(ASR), id)

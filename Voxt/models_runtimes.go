@@ -38,6 +38,7 @@ func (a *app) localOpeners() local.Openers {
 		ASR:      a.openOmniASR, // models_omni.go
 		Unload:   a.unloadOmni,  // models_omni.go
 		ASRFirst: func() string { return recommendedSpeech(a.ob.memoryGB) },
+		Hold:     a.omniMeetingHold,
 	}
 }
 

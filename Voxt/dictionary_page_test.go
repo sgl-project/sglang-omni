@@ -198,7 +198,7 @@ func TestDictionaryImportExport(t *testing.T) {
 	t.Cleanup(func() { chooseExportFile = savedOut })
 	for _, format := range []string{"csv", "txt"} {
 		out := filepath.Join(dir, "out."+format)
-		chooseExportFile = func(a *app, name string, then func(string)) {
+		chooseExportFile = func(a *app, _, name string, then func(string)) {
 			if name != "voxtnew-dictionary."+format {
 				t.Errorf("name %q", name)
 			}

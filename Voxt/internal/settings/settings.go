@@ -34,8 +34,8 @@ type Settings struct {
 	Privacy        Privacy        `json:"privacy"`
 	Audio          Audio          `json:"audio"`
 	Overlay        Overlay        `json:"overlay"`
-	Features       Features       `json:"features"`       // features.go
-	AppEnhancement AppEnhancement `json:"appEnhancement"` // features.go
+	Features       Features       `json:"features"`
+	AppEnhancement AppEnhancement `json:"appEnhancement"`
 	Dictionary     Dictionary     `json:"dictionary"`
 	Setup          Setup          `json:"setup"`
 	Updates        Updates        `json:"updates,omitzero"`

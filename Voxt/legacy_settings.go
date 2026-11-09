@@ -532,7 +532,7 @@ func parseLegacySettings(llmSetups, speechSetups, features, tuning string) legac
 // Clean-up that was off stays off while Transcribe has no language model
 // chosen here. It returns the language model and speech setups it added
 // and the prompts it filled.
-func (l legacySettings) apply(s *settings.Settings) (llmAdded, speechAdded []settings.Provider, prompts int) {
+func (l legacySettings) apply(s *settings.Settings, voxtDir string) (llmAdded, speechAdded []settings.Provider, prompts int) {
 	add := func(list *[]settings.Provider, from []settings.Provider) (added []settings.Provider) {
 		for _, p := range from {
 			if !slices.ContainsFunc(*list, func(q settings.Provider) bool { return q.ID == p.ID }) {
@@ -561,6 +561,11 @@ func (l legacySettings) apply(s *settings.Settings) (llmAdded, speechAdded []set
 	if s.Dictionary.SpeechContext == "" && l.speechContext != "" {
 		s.Dictionary.SpeechContext = l.speechContext
 		prompts++
+	}
+	if len(s.Features.Meeting.Hotkeys) == 0 {
+		if hks := parseLegacyMeetingHotkeys(voxtDir); len(hks) > 0 {
+			s.Features.Meeting.Hotkeys = hks
+		}
 	}
 	return llmAdded, speechAdded, prompts
 }

@@ -32,7 +32,7 @@ func TestLegacyCleanupOffApply(t *testing.T) {
 		l := parseLegacySettings(openAISetup, "", c.features, "")
 		s := settings.Defaults()
 		s.Features.Transcribe.LLM = c.chosen
-		l.apply(&s)
+		l.apply(&s, "")
 		if s.Features.Transcribe.Enhance != c.enhance {
 			t.Errorf("%s: Enhance %v, want %v", c.name, s.Features.Transcribe.Enhance, c.enhance)
 		}
