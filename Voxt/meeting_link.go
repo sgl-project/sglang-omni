@@ -46,6 +46,8 @@ func (a *app) openMeetings() {
 		Now:       time.Now,
 		FreeSpace: func(path string) (int64, error) { return diskFree(path), nil },
 		ModelHold: modelHold,
+		ASR:       func(ctx context.Context, src meeting.Source) (meeting.TrackASR, error) { return a.meetingTrackASR(ctx, src) },
+		VAD:       a.meetingVAD(),
 	})
 	a.meetMgr.Subscribe(func(s meeting.Snapshot) {
 		a.post(func() { a.meetingChanged(s) })
@@ -141,6 +143,23 @@ func (a *app) meetingSave() {
 		if err := a.meetMgr.Save(context.Background(), id); err != nil {
 			a.post(func() {
 				a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: "save: " + err.Error()})
+			})
+			return
+		}
+		a.post(a.loadMeetings)
+	})
+}
+
+func (a *app) meetingReprocess(id string) {
+	if a.meetMgr == nil || id == "" {
+		return
+	}
+	a.async(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+		defer cancel()
+		if err := a.meetMgr.Reprocess(ctx, id); err != nil {
+			a.post(func() {
+				a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: "reprocess: " + err.Error()})
 			})
 			return
 		}

@@ -85,7 +85,19 @@ func TestMeetingsCRUDAndFTS(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, segs, _ = m.Meeting(ctx, "m-alpha")
-	if len(segs) != 2 || segs[0].Text != "replacement mic" || segs[1].Source != store.SegmentSystem {
+	if len(segs) != 2 {
+		t.Fatalf("replace mic only: %+v", segs)
+	}
+	var micText, sysText string
+	for _, s := range segs {
+		switch s.Source {
+		case store.SegmentMic:
+			micText = s.Text
+		case store.SegmentSystem:
+			sysText = s.Text
+		}
+	}
+	if micText != "replacement mic" || sysText != "Hello team" {
 		t.Fatalf("replace mic only: %+v", segs)
 	}
 	if err := m.DeleteMeeting(ctx, "m-alpha"); err != nil {

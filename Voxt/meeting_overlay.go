@@ -28,7 +28,7 @@ func (a *app) syncMeetingOverlay() {
 	if !a.overlayNative() || !a.meetingEnabled() {
 		return
 	}
-	show := a.meetingActive()
+	show := a.meetingActive() || a.meetSnap.State == meeting.StateFinishing
 	if !show {
 		if a.meetOvWin != nil && a.meetOvShown {
 			a.meetOvWin.Hide()
@@ -67,6 +67,13 @@ func (a *app) meetingOverlayView(c *ui.Context) {
 		ui.Text(c, formatMeetingElapsed(s.Elapsed))
 		ui.Text(c, fmt.Sprintf("mic %.0f · sys %.0f", s.Level[meeting.SourceMic], s.Level[meeting.SourceSystem])).TextColor(tok(t).Text2)
 		ui.Box(c).Grow(1)
+		if s.State == meeting.StateFinishing {
+			ui.Text(c, i18n.T("Finalizing transcript…")).TextColor(tok(t).Text2)
+			if s.Progress > 0 {
+				ui.Text(c, fmt.Sprintf("%.0f%%", s.Progress*100)).TextColor(tok(t).Text2)
+			}
+			return
+		}
 		if s.State == meeting.StateAsking {
 			if primaryButton(c.Key("mt-save"), i18n.T("Save")).Clicked() {
 				a.meetingSave()

@@ -99,6 +99,16 @@ func (a *app) meetingsPage(c *ui.Context) {
 							}
 							ui.Text(c, line).TextColor(tok(t).Text2)
 						})
+						switch mt.Status {
+						case store.MeetingInterrupted, store.MeetingFinishing:
+							if primaryButton(c.Key("mt-continue-"+mt.ID), i18n.T("Continue final pass")).Clicked() {
+								a.meetingReprocess(mt.ID)
+							}
+						case store.MeetingDone:
+							if ghostButton(c.Key("mt-reprocess-"+mt.ID), i18n.T("Reprocess transcript")).Clicked() {
+								a.meetingReprocess(mt.ID)
+							}
+						}
 						if mt.Audio != "" {
 							if ghostButton(c.Key("mt-show-"+mt.ID), i18n.T("Show in Finder")).Clicked() {
 								dir := filepath.Join(a.dataDir(), "meetings", mt.Audio)

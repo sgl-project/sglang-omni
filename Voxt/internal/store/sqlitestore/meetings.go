@@ -129,12 +129,19 @@ func (r *meetingsRepo) ReplaceSegments(ctx context.Context, seq int64, src store
 		}
 	}
 	stmts := []sqlite.Statement{{SQL: `DELETE FROM meeting_segments WHERE meeting_seq = ? AND source = ?`, Args: []any{seq, string(src)}}}
-	for i, s := range segs {
+	rows, err := r.db.Query(ctx, `SELECT COALESCE(MAX(idx), -1) FROM meeting_segments WHERE meeting_seq = ?`, seq)
+	if err != nil {
+		return wrap("meeting segments replace", err)
+	}
+	next := int(asInt(rows.Values[0][0])) + 1
+	for _, s := range segs {
+		idx := next
+		next++
 		stmts = append(stmts, sqlite.Statement{SQL: `INSERT INTO meeting_segments (meeting_seq, idx, source, speaker, start_ms, end_ms, text, translation, final)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			Args: []any{seq, i, string(s.Source), s.Speaker, s.StartMS, s.EndMS, s.Text, s.Translation, bool01(s.Final)}})
+			Args: []any{seq, idx, string(s.Source), s.Speaker, s.StartMS, s.EndMS, s.Text, s.Translation, bool01(s.Final)}})
 	}
-	_, err := r.db.Transaction(ctx, stmts)
+	_, err = r.db.Transaction(ctx, stmts)
 	return wrap("meeting segments replace", err)
 }
 

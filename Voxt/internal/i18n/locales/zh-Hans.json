@@ -1441,5 +1441,8 @@
   "No meetings yet.": "还没有会议记录。",
   "End": "结束",
   "Discard": "丢弃",
-  "Loading…": "加载中…"
+  "Loading…": "加载中…",
+  "Continue final pass": "继续整理",
+  "Reprocess transcript": "重新整理",
+  "Finalizing transcript…": "正在整理转写…"
 }

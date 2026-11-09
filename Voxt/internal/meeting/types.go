@@ -9,6 +9,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/vad"
 )
 
 // Mode is how the user wants this meeting captured.
@@ -48,7 +49,8 @@ const (
 type Stage string
 
 const (
-	StageSaving Stage = "saving"
+	StageSaving       Stage = "saving"
+	StageTranscribing Stage = "transcribing"
 )
 
 // Utterance is one PCM chunk for file-mode meeting ASR (C1-2).
@@ -108,6 +110,8 @@ type Config struct {
 	ModelHold local.Holder
 	// ASR resolves live recognition per track; nil keeps WAV-only capture (tests).
 	ASR func(ctx context.Context, src Source) (TrackASR, error)
+	// VAD finds speech regions for the final pass; nil uses energy analysis.
+	VAD vad.Model
 }
 
 // ErrBusy means a meeting is already live.
