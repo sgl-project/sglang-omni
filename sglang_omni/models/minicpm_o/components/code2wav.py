@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib
 import io
 import logging
 import os
@@ -17,6 +18,7 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 
+from sglang_omni.models.minicpm_o.components.flow_npu_graph import install_flow_npu_graph
 from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
     SpeakerPrompt,
     Token2Wav,
@@ -61,6 +63,13 @@ class MiniCPMOCode2Wav(nn.Module):
     ) -> None:
         super().__init__()
         resolved_device = torch.device(device)
+        internal_format_option = os.environ.get("SPEECH_NPU_DISABLE_INTERNAL_FORMAT")
+        if resolved_device.type == "npu" and internal_format_option is not None:
+            if internal_format_option not in {"0", "1"}:
+                raise ValueError("SPEECH_NPU_DISABLE_INTERNAL_FORMAT must be 0 or 1")
+            torch.npu.config.allow_internal_format = internal_format_option == "0"
+            state = "disabled" if internal_format_option == "1" else "enabled"
+            logger.warning(f"SPEECH_NPU_INTERNAL_FORMAT {state} for this process before model loading")
         if resolved_device.type not in {"cuda", "xpu", "npu"}:
             raise ValueError(
                 f"Token2wav requires a CUDA, XPU, or NPU device, got {device}"
@@ -111,6 +120,11 @@ class MiniCPMOCode2Wav(nn.Module):
                 dtype=torch_dtype,
                 n_timesteps=n_timesteps,
             )
+        if resolved_device.type == "npu":
+            npu_extension = importlib.import_module("torch_npu")
+            actual_format = npu_extension._C._npu_getOption("ALLOW_INTERNAL_FORMAT").decode()
+            logger.warning(f"SPEECH_NPU_INTERNAL_FORMAT_ACTUAL after_model_load={actual_format}")
+        install_flow_npu_graph(self.token2wav)
         self.token2wav.flow.decoder.estimator.enable_variable_length = (
             enable_flow_variable_length
         )
