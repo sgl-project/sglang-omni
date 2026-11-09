@@ -180,8 +180,52 @@ func TestRewriteWritingFollows(t *testing.T) {
 	}
 }
 
+// TestLiveLinesFromStart: with Lines the face is the wide one from the
+// moment the recording starts, before any text and while it waits for
+// the microphone, so the first word does not make it jump from the small
+// pill (the user, 11-09); it does not let the pointer through, and where
+// it is dragged it stays as its text grows, as the card does. With One
+// line the pill stays small and lets the pointer through.
+func TestLiveLinesFromStart(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.sess = session.Snapshot{ID: "s1", State: session.Recording, Waiting: session.WaitMic}
+	a.overlaySync()
+	start := a.ov.frame
+	if a.ov.w != layout.LinesW || a.ov.h != layout.LiveH || a.ov.passThrough {
+		t.Fatalf("waiting for the microphone: %d×%d, pass %v", a.ov.w, a.ov.h, a.ov.passThrough)
+	}
+	frames(hudTester(a.overlayView, start.Width, start.Height)) // the hint draws in the wide face
+	a.sess.Waiting = session.WaitNone
+	a.overlaySync()
+	frames(hudTester(a.overlayView, start.Width, start.Height)) // and the empty line
+	a.sess.Partial = "Meet at three"
+	a.overlaySync()
+	if a.ov.frame != start {
+		t.Errorf("the first words moved the face: %+v, was %+v", a.ov.frame, start)
+	}
+	a.ov.dragged.x, a.ov.dragged.y = -200, -100
+	a.sess.Partial = strings.Repeat("and then the meeting moves to Thursday ", 12)
+	a.overlaySync()
+	anchored := layout.Frame(a.ov.area, a.prefs.Overlay, a.ov.w, a.ov.h)
+	if f := a.ov.frame; f.X != anchored.X-200 || f.Y != anchored.Y-100 || f.Height <= start.Height {
+		t.Errorf("dragged, then grown: %+v; anchored %+v", f, anchored)
+	}
+	a.sess = session.Snapshot{ID: "s2", State: session.Recognizing}
+	a.overlaySync()
+	if a.ov.mode != ovWorking || a.ov.w != layout.LinesW || a.ov.h != layout.LiveH {
+		t.Errorf("working, no text: %s %d×%d", a.ov.mode, a.ov.w, a.ov.h)
+	}
+
+	a.prefs.Overlay.LiveLines = false
+	a.sess = session.Snapshot{ID: "s3", State: session.Recording}
+	a.overlaySync()
+	if a.ov.w >= layout.LinesW || a.ov.h != layout.PillH || !a.ov.passThrough {
+		t.Errorf("one line: %d×%d, pass %v", a.ov.w, a.ov.h, a.ov.passThrough)
+	}
+}
+
 // TestLiveLinesScroll: live text in lines longer than the face takes the
-// wheel: the overlay stops letting the pointer through, the wheel scrolls
+// wheel: the overlay does not let the pointer through, the wheel scrolls
 // up to what came before and new words leave it there; back at the end,
 // it follows the newest words again. The lines before the last ten were
 // out of reach (#3644).
@@ -189,12 +233,7 @@ func TestLiveLinesScroll(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.prefs.Overlay.LiveLines = true
 	words := strings.Repeat("and then the meeting moves to Thursday ", 40)
-	a.sess = session.Snapshot{ID: "s1", State: session.Recording, Partial: "short"}
-	a.overlaySync()
-	if !a.ov.passThrough {
-		t.Fatal("a short text keeps the pointer from passing through")
-	}
-	a.sess.Partial = words
+	a.sess = session.Snapshot{ID: "s1", State: session.Recording, Partial: words}
 	a.overlaySync()
 	if a.ov.passThrough {
 		t.Fatal("the overflowing text lets the pointer through: the wheel cannot reach it")
@@ -225,30 +264,5 @@ func TestLiveLinesScroll(t *testing.T) {
 	frames(tt)
 	if !l.follow || l.st.Y != l.st.MaxY {
 		t.Errorf("back at the end: %+v", *l)
-	}
-}
-
-// TestLiveLinesOverflowMeasured: the live text guessed to fit ten lines
-// lets the pointer through; when its measured height says it does not,
-// the window takes the pointer again, so that the wheel scrolls it rather
-// than the app under the overlay.
-func TestLiveLinesOverflowMeasured(t *testing.T) {
-	a, _, _ := newTestApp(t)
-	a.measureHook = nil // the guesses until the view measured, then the measures
-	a.prefs.Overlay.LiveLines = true
-	text := strings.Repeat("meet at three ", 20)
-	a.sess = session.Snapshot{ID: "s1", State: session.Recording, Partial: text}
-	a.overlaySync()
-	if !a.ov.passThrough {
-		t.Fatal("a text guessed to fit keeps the pointer from passing through")
-	}
-	line, _ := pillLine(a.pillSession())
-	if a.ov.textW == nil {
-		a.ov.textW = map[ovSized]ovMeasured{}
-	}
-	a.ov.textW[liveLinesKey(line)] = ovMeasured{w: layout.LinesTextW, h: (layout.LinesMax + 2) * layout.LineH}
-	a.overlayRestyle()
-	if a.ov.passThrough {
-		t.Error("the text measured past ten lines still lets the pointer through")
 	}
 }

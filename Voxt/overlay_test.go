@@ -58,6 +58,7 @@ func TestOverlayModes(t *testing.T) {
 		t.Fatalf("starts %s", a.ov.mode)
 	}
 	now := time.Now()
+	a.prefs.Overlay.LiveLines = false // the small pill (Lines: TestLiveLinesFromStart)
 	snap(a, session.Snapshot{State: session.Recording, StartedAt: now})
 	wantW := a.ov.w
 	if a.ov.mode != ovRecording || a.ov.w < layout.PillW || a.ov.h != layout.PillH {
@@ -334,6 +335,8 @@ func overlayShots(t *testing.T, a *app, out, suffix string, dark bool) {
 			Partial: "那个我们明天，不对，后天下午三点开会，讨论一下 VoxtNew 的发布计划，然后把引导页和历史页先做完"}, nil, nil},
 		// Live text layout → Lines (FB5): wide from the first word, wrapped,
 		// then the newest ten lines.
+		{"overlay-lines-start", session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-1 * time.Second), Levels: wave()},
+			func() { a.prefs.Overlay.LiveLines = true }, nil}, // wide before any text
 		{"overlay-live-lines", session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-47 * time.Second), Levels: wave(),
 			Partial: "So the plan for the release is to finish the onboarding first, then the history page, and after that we look at the translation card"},
 			func() { a.prefs.Overlay.LiveLines = true }, nil},
@@ -519,6 +522,7 @@ func TestOverlaySceneLabel(t *testing.T) {
 		}
 	}
 	a, _, _ := newTestApp(t)
+	a.prefs.Overlay.LiveLines = false // the small pill (Lines: TestLiveLinesFromStart)
 	snap(a, session.Snapshot{ID: "s1", State: session.Recording, Target: proto.App{Name: "Slack"}, Scene: sceneMatch("Team chat", appctx.SourceApp, "")})
 	if want := recordingPillFaceW(a.sess, false); a.ov.w != want || a.ov.h != layout.PillH {
 		t.Errorf("size %dx%d, want %dx%d", a.ov.w, a.ov.h, want, layout.PillH)
