@@ -369,17 +369,27 @@ def _ensure_port_available(host: str, port: int) -> None:
 
 
 def get_wav_duration(wav_bytes: bytes) -> float:
-    """Return PCM playback length in seconds for raw WAV bytes."""
-    if len(wav_bytes) <= WAV_HEADER_SIZE:
+    """Return PCM playback length in seconds for WAV bytes, or 0.0 for other formats."""
+    if len(wav_bytes) < 12 or wav_bytes[:4] != b"RIFF" or wav_bytes[8:12] != b"WAVE":
         return 0.0
-    sample_rate = struct.unpack_from("<I", wav_bytes, 24)[0]
-    num_channels = struct.unpack_from("<H", wav_bytes, 22)[0]
-    bits_per_sample = struct.unpack_from("<H", wav_bytes, 34)[0]
-    if sample_rate == 0 or num_channels == 0 or bits_per_sample == 0:
-        return 0.0
-    bytes_per_sample = num_channels * bits_per_sample // 8
-    pcm_size = len(wav_bytes) - WAV_HEADER_SIZE
-    return pcm_size / (sample_rate * bytes_per_sample)
+    sample_rate = num_channels = bits_per_sample = 0
+    pos = 12
+    while pos + 8 <= len(wav_bytes):
+        chunk_id = wav_bytes[pos : pos + 4]
+        chunk_size = struct.unpack_from("<I", wav_bytes, pos + 4)[0]
+        body = pos + 8
+        if chunk_id == b"fmt " and chunk_size >= 16 and body + 16 <= len(wav_bytes):
+            num_channels, sample_rate = struct.unpack_from("<HI", wav_bytes, body + 2)
+            bits_per_sample = struct.unpack_from("<H", wav_bytes, body + 14)[0]
+        elif chunk_id == b"data":
+            bytes_per_sample = num_channels * bits_per_sample // 8
+            if sample_rate == 0 or bytes_per_sample == 0:
+                return 0.0
+            # note (WenJing95): a streamed WAV may carry a placeholder data size, so count only the bytes received.
+            pcm_size = min(chunk_size, len(wav_bytes) - body)
+            return pcm_size / (sample_rate * bytes_per_sample)
+        pos = body + chunk_size + chunk_size % 2
+    return 0.0
 
 
 def parse_sse_event(line: str) -> dict | None:
