@@ -103,6 +103,8 @@ func ModelErrorText(err error) (msg, more string) {
 			return i18n.T("The language model did not answer in time."), more
 		case llm.CodeNetwork, llm.CodeServer, llm.CodeOverloaded, llm.CodeRateLimited:
 			return i18n.T("The language model stopped or did not answer. Try again in a moment."), more
+		case llm.CodeResponsesOnly:
+			return i18n.T("This model needs the Responses API. For OpenAI and custom services, choose it under API format in Advanced."), more
 		case llm.CodeContextLength:
 			return i18n.T("The text is too long for the language model."), more
 		case llm.CodeCancelled:

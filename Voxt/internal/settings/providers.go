@@ -33,6 +33,9 @@ type Provider struct {
 	RecognitionPrompt string `json:"recognitionPrompt,omitempty"`
 	// Generation is a language model's request settings (unset: Voxt's).
 	Generation Generation `json:"generation,omitzero"`
+	// APIFormat is how a language model is called (OpenAI and custom
+	// services only): "" chat completions, "responses" the Responses API.
+	APIFormat string `json:"apiFormat,omitempty"`
 }
 
 // Generation is a language model setup's request settings, the fields of

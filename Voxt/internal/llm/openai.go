@@ -12,7 +12,8 @@ import (
 
 // OpenAI is a remote language model over the OpenAI-compatible chat
 // completions API (POST {base}/chat/completions), Auralink's transport:
-// the services of presets.json and any server the user names.
+// the services of presets.json and any server the user names. Preset.API
+// switches it to OpenAI's Responses API (responses.go).
 type OpenAI struct {
 	preset Preset
 	key    string
@@ -110,6 +111,9 @@ func (o *OpenAI) body(req Request, model string, stream, streamUsage, extra bool
 		}
 	}
 	applyGeneration(b, o.preset, model, stream)
+	if o.responsesAPI() {
+		return responsesBody(b, o.preset.Generation.ExtraBody)
+	}
 	return b
 }
 
@@ -150,7 +154,7 @@ func (o *OpenAI) chat(ctx context.Context, req Request) (Response, error) {
 	start := time.Now()
 	stream := req.OnDelta != nil
 	streamUsage, extra, sampling := true, len(o.preset.ExtraBody) > 0, true
-	url := o.preset.BaseURL + "/chat/completions"
+	url := o.preset.BaseURL + o.path()
 	build := func() map[string]any {
 		b := o.body(req, model, stream, streamUsage, extra)
 		if !sampling { // after applyGeneration: its values and Extra Body win over the request's
@@ -242,6 +246,9 @@ type oaResponse struct {
 }
 
 func (o *OpenAI) readOne(ctx context.Context, body io.Reader, timeout time.Duration) (Response, error) {
+	if o.responsesAPI() {
+		return o.readResponse(ctx, body, timeout)
+	}
 	raw, err := io.ReadAll(io.LimitReader(body, maxBody))
 	if err != nil {
 		return Response{}, ctxErr(ctx, o.preset.ID, err, timeout)
@@ -274,6 +281,9 @@ func (o *OpenAI) readOne(ctx context.Context, body io.Reader, timeout time.Durat
 }
 
 func (o *OpenAI) readStream(ctx context.Context, body io.Reader, onDelta func(string), timeout time.Duration) (Response, error) {
+	if o.responsesAPI() {
+		return o.readResponseStream(ctx, body, onDelta, timeout)
+	}
 	var out Response
 	var text strings.Builder
 	var perr error

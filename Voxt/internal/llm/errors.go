@@ -36,6 +36,7 @@ const (
 	CodeUnknown       = "llm.unknown_provider" // provider
 	CodeUnsupported   = "llm.unsupported"      // provider, feature
 	CodeConfig        = "llm.config"           // provider, field: bad settings
+	CodeResponsesOnly = "llm.responses_only"   // provider, model: the model refuses chat completions
 )
 
 // Error is every error this package returns.

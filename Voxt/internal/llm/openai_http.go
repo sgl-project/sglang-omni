@@ -50,7 +50,13 @@ func (o *OpenAI) send(ctx context.Context, url string, body any, model string, t
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-	return nil, HTTPError(o.preset.ID, model, resp.StatusCode, errorDetail(o.hide(raw)), parseRetryAfter(resp.Header))
+	detail := errorDetail(o.hide(raw))
+	if o.needsResponses(resp.StatusCode, detail) {
+		e := newErr(CodeResponsesOnly, "provider", o.preset.ID, "model", model)
+		e.Status = resp.StatusCode
+		return nil, e
+	}
+	return nil, HTTPError(o.preset.ID, model, resp.StatusCode, detail, parseRetryAfter(resp.Header))
 }
 
 // hide blanks the key out of a server's words before they are clipped

@@ -144,6 +144,7 @@ type legacyLLMSetup struct {
 	ProviderID, Model, Endpoint   string
 	StoredCredentialPresence      struct{ APIKey, AccessToken bool }
 	OpenAITextVerbosity           string
+	OpenAIAPIFormat               string
 	OllamaKeepAlive               string
 	OllamaJSONSchema              string
 	OmlxJSONSchema                string
@@ -213,7 +214,11 @@ func (s legacyLLMSetup) provider() (p settings.Provider, check, ok bool) {
 		// Extra Body went into a Responses request here; those models only exist there.
 		check = check || gen.ExtraBodyJSON != "" || legacyModelIs(model, "gpt-5.2-pro") || legacyModelIs(model, "gpt-5-pro")
 	}
-	return settings.Provider{ID: id, Endpoint: endpoint, Model: model, Generation: gen}, check, true
+	p = settings.Provider{ID: id, Endpoint: endpoint, Model: model, Generation: gen}
+	if id == "openai" && legacyResponsesAPI(s.OpenAIAPIFormat, s.Endpoint) {
+		p.APIFormat = llm.APIResponses
+	}
+	return p, check, true
 }
 
 // legacySpeechServices are this app's speech services for the previous

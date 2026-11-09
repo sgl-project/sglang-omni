@@ -1428,5 +1428,8 @@
   "Address not allowed": "地址不可用",
   "Settings (language models, speech services, prompts): the previous Voxt's preferences could not be read": "设置（语言模型、语音识别服务、提示词）：读不了旧版 Voxt 的偏好设置",
   "Codex (used by %s): not available here, so choose another language model for them": "Codex（%s 用过）：这里没有这项服务，需要给它们另选语言模型",
-  "Codex setup: not available here": "Codex 的设置：这里没有这项服务"
+  "Codex setup: not available here": "Codex 的设置：这里没有这项服务",
+  "API format": "API 格式",
+  "Chat Completions works with nearly every service. Responses is OpenAI's newer API; a custom service must offer POST /responses to use it. Stop sequences and Logprobs are not sent with Responses.": "Chat Completions 几乎所有服务都支持。Responses 是 OpenAI 较新的 API，自定义服务要提供 POST /responses 才能用。选 Responses 时，停止序列和 Logprobs 不会发送。",
+  "This model needs the Responses API. For OpenAI and custom services, choose it under API format in Advanced.": "这个模型只能用 Responses API。OpenAI 和自定义服务可以在“高级”的“API 格式”里切换。"
 }

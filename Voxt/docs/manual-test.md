@@ -843,6 +843,23 @@
   - 第 5 步：用户名和密码还在。
 - **不对时看**：日志里 `network:` 开头的行（不会带密码）。
 
+**8.7 OpenAI 的 Responses API（约 8 分钟，要一个 OpenAI API Key）**
+- **做**：〔用临时 HOME，别露出 Key〕
+  1. 语言模型页 → OpenAI，填 Key，保存。再打开，展开“高级”，看“API 格式”。
+  2. 把“API 格式”改成 Responses，看“高级”里的字段，点“测试连接”，保存。
+  3. 用这个服务做一次转录清理、一次翻译、一次转写（含 JSON 答案卡）。
+  4. 把“最大输出 Tokens”填 20，转写一段长文字；再填回空。
+  5. 改回 Chat Completions，重复第 2、3 步。
+  6. 模型选一个只支持 Responses 的（如 `o1-pro`，账号要有权限），格式用 Chat Completions，测试连接；再切到 Responses 测试。
+- **应看到**：
+  - 第 1 步：默认是 Chat Completions。
+  - 第 2 步：选 Responses 后，“停止序列”和 Logprobs 不见了；测试连接成功（发出的 `max_output_tokens` 是 16，不是 8）。
+  - 第 3 步：都能出结果，流式的文字逐步出现。
+  - 第 4 步：结果被截断但照常插入，不报错。
+  - 第 5 步：和第 3 步一样。
+  - 第 6 步：Chat Completions 下提示“这个模型只能用 Responses API……”，Responses 下成功。
+- **不对时看**：日志里 `connection test of remote language model` 开头的行；`llm.bad_request` 的 detail 是服务返回的原话。
+
 ---
 
 ## 9. 首页、历史、设置（约 12 分钟）

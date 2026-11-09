@@ -5,6 +5,7 @@ package main
 // speaks chat completions to OpenAI.
 
 import (
+	"net/url"
 	"slices"
 	"strings"
 
@@ -58,4 +59,18 @@ func legacyOpenAIGeneration(g settings.Generation, model string) settings.Genera
 		out.Verbosity = g.Verbosity
 	}
 	return out
+}
+
+// legacyResponsesAPI says whether the previous Voxt called this OpenAI
+// setup over the Responses API. Its "automatic", also what an unset or
+// unknown format meant, was Responses at OpenAI's own address.
+func legacyResponsesAPI(format, endpoint string) bool {
+	switch format {
+	case "responses":
+		return true
+	case "chatCompletions":
+		return false
+	}
+	u, err := url.Parse(strings.TrimSpace(endpoint))
+	return err == nil && (u.Host == "" || strings.EqualFold(u.Hostname(), "api.openai.com"))
 }

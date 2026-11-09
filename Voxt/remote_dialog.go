@@ -49,6 +49,7 @@ func (a *app) openProviderDialog(kind local.Kind, id string) {
 	sv := lookupService(kind, id)
 	p, exists := a.setupOf(kind, id)
 	d := providerDialog{open: true, kind: kind, id: id, exists: exists, endpoint: p.Endpoint, appID: p.AppID, recognitionPrompt: p.RecognitionPrompt, gen: genFormOf(p.Generation)}
+	d.gen.api = apiFormatTitle(p.APIFormat)
 	d.model = setupModel(kind, p)
 	if d.model == "" || !slices.Contains(sv.models, d.model) {
 		d.model, d.customModel = otherModel(), d.model
@@ -80,6 +81,7 @@ func (d *providerDialog) setup() settings.Provider {
 	switch d.kind {
 	case local.LLM:
 		p.Generation, _ = d.gen.settings()
+		p.APIFormat = valueOf(d.gen.api, apiFormats, apiFormatTitle)
 	case local.ASR:
 		p.RecognitionPrompt = strings.TrimSpace(d.recognitionPrompt)
 	}

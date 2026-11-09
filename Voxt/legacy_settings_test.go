@@ -304,3 +304,30 @@ func TestImportLegacySettings(t *testing.T) {
 		t.Errorf("to do %v (%q)", todo, r.text())
 	}
 }
+
+// TestLegacyAPIFormat: an OpenAI setup comes over on the API the previous
+// Voxt used for it; its automatic, also what a setup saved before the
+// option meant, is Responses at OpenAI's own address only.
+func TestLegacyAPIFormat(t *testing.T) {
+	const own, other = "https://api.openai.com/v1", "https://inference.example.com/v1"
+	for _, c := range []struct {
+		provider, format, endpoint, want string
+	}{
+		{"openAI", "responses", other, llm.APIResponses},
+		{"openAI", "chatCompletions", own, ""},
+		{"openAI", "automatic", own, llm.APIResponses},
+		{"openAI", "automatic", "", llm.APIResponses},
+		{"openAI", "automatic", other, ""},
+		{"openAI", "", own, llm.APIResponses},
+		{"deepseek", "responses", "", ""},
+	} {
+		raw, _ := json.Marshal(map[string]any{"providerID": c.provider, "model": "m", "endpoint": c.endpoint, "openAIAPIFormat": c.format})
+		var s legacyLLMSetup
+		if err := json.Unmarshal(raw, &s); err != nil {
+			t.Fatal(err)
+		}
+		if p, _, ok := s.provider(); !ok || p.APIFormat != c.want {
+			t.Errorf("%+v: %q (ok %v)", c, p.APIFormat, ok)
+		}
+	}
+}

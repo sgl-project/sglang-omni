@@ -29,6 +29,8 @@ type GenCaps struct {
 	// A service's own options: OpenAI's verbosity, Ollama's keep alive,
 	// oMLX's usage in stream events.
 	Verbosity, KeepAlive, IncludeUsage bool
+	// APIFormat: Chat Completions or the Responses API.
+	APIFormat bool
 }
 
 // The effort levels of Voxt 1.x's menus.
@@ -44,7 +46,7 @@ func Capabilities(id, model string) GenCaps {
 	var toggle, effort, budget bool
 	switch id {
 	case "openai", llm.Custom:
-		effort, c.Logprobs, c.ResponseFormat, c.Verbosity = true, true, true, true
+		effort, c.Logprobs, c.ResponseFormat, c.Verbosity, c.APIFormat = true, true, true, true, true
 		c.Efforts = effortsOpenAI
 		if id == llm.Custom {
 			c.Efforts = effortsCustom
