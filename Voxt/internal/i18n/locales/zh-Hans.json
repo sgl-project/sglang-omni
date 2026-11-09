@@ -1425,5 +1425,8 @@
   "Pop when recording starts and Tink when it stops, as Voxt 1.x played them.": "开始录音时 Pop，停止时 Tink，和 Voxt 1.x 一样。",
   "The shortcut's keys, lit on a Mac keyboard": "快捷键的键在 Mac 键盘上的位置（亮起的键）",
   "Change the address of %s: Voxt only connects over https, or http to this Mac, with no user name or password in the address.": "要改 %s 的地址：Voxt 只用 https 连接，或用 http 连接这台 Mac，地址里也不能带用户名和密码。",
-  "Address not allowed": "地址不可用"
+  "Address not allowed": "地址不可用",
+  "Settings (language models, speech services, prompts): the previous Voxt's preferences could not be read": "设置（语言模型、语音识别服务、提示词）：读不了旧版 Voxt 的偏好设置",
+  "Codex (used by %s): not available here, so choose another language model for them": "Codex（%s 用过）：这里没有这项服务，需要给它们另选语言模型",
+  "Codex setup: not available here": "Codex 的设置：这里没有这项服务"
 }

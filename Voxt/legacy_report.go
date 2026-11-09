@@ -51,6 +51,24 @@ func (r legacyReport) text() string {
 	return strings.Join(parts, ". ")
 }
 
+// codexLeftOut is the result's line for the previous Voxt's Codex: "" when
+// it had none.
+func (l legacySettings) codexLeftOut() string {
+	var used []string
+	for i, name := range []string{i18n.T("Transcribe"), i18n.T("Translate"), i18n.T("Rewrite")} {
+		if l.codexFeatures[i] {
+			used = append(used, name)
+		}
+	}
+	switch {
+	case len(used) > 0:
+		return i18n.T("Codex (used by %s): not available here, so choose another language model for them", strings.Join(used, i18n.T(", ")))
+	case l.codexSetup:
+		return i18n.T("Codex setup: not available here")
+	}
+	return ""
+}
+
 // legacyReportView shows a report: a group per kind of result, under its
 // heading; a to-do's Complete setup opens the setup's dialog on its page
 // (leaving the guide with its way back, when it shows the report).

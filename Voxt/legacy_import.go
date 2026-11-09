@@ -21,6 +21,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/sqlite"
@@ -229,6 +230,11 @@ const linkImportLegacy = "action:import-legacy"
 // posted: once, so a dismissed card stays away.
 const legacyOffered = "legacy-import-offered"
 
+// legacyEnhanceSettled is the document that says an import has read the
+// previous Voxt's Transcribe clean-up switch: only the first applies it, so
+// importing again cannot undo what the user turned on since.
+const legacyEnhanceSettled = "legacy-enhance-settled"
+
 // offerLegacy posts, once, a card offering the previous Voxt's data to who
 // will not see the setup guide's: who set up a version without the import
 // (2.0.0) and then installed this one.
@@ -333,8 +339,18 @@ func (a *app) importLegacyFrom(picked string) {
 				r.imported = append(r.imported, i18n.N(n, "History: %d entry", "History: %d entries", n))
 			}
 			voxtDir := filepath.Dir(path)
+			if !legacyPreferencesReadable(voxtDir) {
+				r.skipped = append(r.skipped, i18n.T("Settings (language models, speech services, prompts): the previous Voxt's preferences could not be read"))
+			}
+			features := legacyPreference(voxtDir, "featureSettings")
 			l := parseLegacySettings(legacyPreference(voxtDir, "remoteLLMProviderConfigurations"), legacyPreference(voxtDir, "remoteASRProviderConfigurations"),
-				legacyPreference(voxtDir, "featureSettings"), legacyPreference(voxtDir, "mlxLocalASRTuningSettings"))
+				features, legacyPreference(voxtDir, "mlxLocalASRTuningSettings"))
+			if _, settled, err := docs.Get(ctx, legacyEnhanceSettled); err == nil && settled {
+				l.enhanceOff = false
+			}
+			if line := l.codexLeftOut(); line != "" {
+				r.skipped = append(r.skipped, line)
+			}
 			// The models first: a feature keeps its local speech model when it came over.
 			if ids, bytes := reuseLegacyModels(ctx, mods, voxtDir); len(ids) > 0 {
 				n := 0 // the tokenizers are not counted
@@ -355,6 +371,10 @@ func (a *app) importLegacyFrom(picked string) {
 			if err := prefs.Update(ctx, func(s *settings.Settings) { llmServices, speechServices, prompts = l.apply(s) }); err != nil {
 				log.Printf("legacy import: settings: %v", err)
 				llmServices, speechServices, prompts = nil, nil, 0 // not saved: nothing came over
+			} else if features != "" {
+				if err := docs.Put(ctx, legacyEnhanceSettled, []byte("true")); err != nil {
+					log.Printf("legacy import: %v", err)
+				}
 			}
 			if n := len(llmServices); n > 0 {
 				r.imported = append(r.imported, i18n.N(n, "%d language model service", "%d language model services", n))
@@ -415,4 +435,36 @@ func (a *app) importLegacyFrom(picked string) {
 			a.loadDict()
 		})
 	})
+}
+
+// legacyInputVars are the previous Voxt's variables for the input, which is
+// never in the rules here.
+var legacyInputVars = strings.NewReplacer("{{RAW_TRANSCRIPTION}}", "", "{{SOURCE_TEXT}}", "", "{{DICTATED_PROMPT}}", "")
+
+// legacyWithoutInput is p without those variables. Only the lines that held
+// one are tidied: their spacing closes up, and a line left with only its
+// label ("Text:") goes.
+func legacyWithoutInput(p string) string {
+	var kept []string
+	for _, line := range strings.Split(p, "\n") {
+		if out := legacyInputVars.Replace(line); out != line {
+			line = strings.Join(strings.Fields(out), " ")
+			if line == "" || legacyLoneLabel(line) {
+				continue
+			}
+		}
+		kept = append(kept, line)
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
+}
+
+// legacyLoneLabel reports whether line, its variable gone, is only a label
+// ("Text:", "原文："): one short word. Any other line ending in a colon has
+// an instruction in it ("Apply this request:", "把下面的话翻译成英文：").
+func legacyLoneLabel(line string) bool {
+	label, ok := strings.CutSuffix(line, ":")
+	if !ok {
+		label, ok = strings.CutSuffix(line, "：")
+	}
+	return ok && !strings.Contains(label, " ") && utf8.RuneCountInString(label) <= 6
 }

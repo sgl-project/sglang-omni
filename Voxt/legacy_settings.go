@@ -15,7 +15,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"net/url"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -34,12 +37,26 @@ var legacyPlutil = "/usr/bin/plutil"
 // its preferences beside voxtDir (its Application Support/Voxt): "" without
 // plutil, the file or the key.
 func legacyPreference(voxtDir, key string) string {
-	prefs := filepath.Join(voxtDir, "..", "..", "Preferences", legacyBundleID+".plist")
-	out, err := exec.Command(legacyPlutil, "-extract", key, "raw", "-o", "-", prefs).Output()
+	out, err := exec.Command(legacyPlutil, "-extract", key, "raw", "-o", "-", legacyPreferences(voxtDir)).Output()
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func legacyPreferences(voxtDir string) string {
+	return filepath.Join(voxtDir, "..", "..", "Preferences", legacyBundleID+".plist")
+}
+
+// legacyPreferencesReadable is false when the previous Voxt's preferences
+// are there and plutil cannot read them, which legacyPreference alone
+// cannot tell from a key the user never set.
+func legacyPreferencesReadable(voxtDir string) bool {
+	prefs := legacyPreferences(voxtDir)
+	if _, err := os.Stat(prefs); errors.Is(err, fs.ErrNotExist) {
+		return true
+	}
+	return exec.Command(legacyPlutil, "-lint", "-s", prefs).Run() == nil
 }
 
 // legacyLLMServices are this app's presets for the previous Voxt's
@@ -147,13 +164,18 @@ type legacyLLMSetup struct {
 	} `json:"generationSettings"`
 }
 
+// made reports whether the setup was ever made: a model, an address or a key.
+func (s legacyLLMSetup) made() bool {
+	c := s.StoredCredentialPresence
+	return strings.TrimSpace(s.Model) != "" || strings.TrimSpace(s.Endpoint) != "" || c.APIKey || c.AccessToken
+}
+
 // provider is s as a setup here, and whether the user should check its
 // address (legacyEndpoint); ok is false for a service without a preset
-// here and for a setup never made (no model, address or key).
+// here and for a setup never made.
 func (s legacyLLMSetup) provider() (p settings.Provider, check, ok bool) {
 	id, ok := legacyLLMServices[s.ProviderID]
-	keyed := s.StoredCredentialPresence.APIKey || s.StoredCredentialPresence.AccessToken
-	if !ok || strings.TrimSpace(s.Model) == "" && strings.TrimSpace(s.Endpoint) == "" && !keyed {
+	if !ok || !s.made() {
 		return settings.Provider{}, false, false
 	}
 	g := s.Generation
@@ -312,15 +334,15 @@ var legacyBuiltInPrompts = map[string][]string{
 }
 
 // legacyOwnPrompt is a prompt the previous Voxt saved, as rules here: ""
-// for none and for one of its built-in ones of kind. Its transcript
-// variable goes: the input is never in the rules here.
+// for none and for one of its built-in ones of kind, and without its input
+// variables.
 func legacyOwnPrompt(kind, prompt string) string {
 	p := strings.TrimSpace(prompt)
 	sum := sha256.Sum256([]byte(p))
 	if p == "" || slices.Contains(legacyBuiltInPrompts[kind], hex.EncodeToString(sum[:])) {
 		return ""
 	}
-	return strings.TrimSpace(strings.ReplaceAll(p, "{{RAW_TRANSCRIPTION}}", ""))
+	return legacyWithoutInput(p)
 }
 
 // legacyContextMarkers are phrases that together mark an older built-in
@@ -402,6 +424,13 @@ type legacySettings struct {
 	// app's preset needs one (by id). refusedLLM are those of checkLLM at
 	// an address this app never connects to (llm.ProviderConfig.Resolve).
 	keyedLLM, refusedLLM []string
+	// enhanceOff: Transcribe's clean-up was off there (llmEnabled).
+	enhanceOff bool
+	// codexSetup: a Codex setup was made there; codexFeatures are the
+	// features (Transcribe, Translate, Rewrite) that used it. Neither has
+	// a place here: the result says so.
+	codexSetup    bool
+	codexFeatures [3]bool
 }
 
 // parseLegacySettings reads the previous Voxt's settings from its
@@ -417,6 +446,7 @@ func parseLegacySettings(llmSetups, speechSetups, features, tuning string) legac
 	var savedLLM []legacyLLMSetup
 	json.Unmarshal([]byte(llmSetups), &savedLLM) // not JSON: no setups
 	for _, s := range savedLLM {
+		l.codexSetup = l.codexSetup || s.ProviderID == "codex" && s.made()
 		if p, check, ok := s.provider(); ok && !has(l.llm, p.ID) {
 			l.llm = append(l.llm, p)
 			if s.StoredCredentialPresence.APIKey {
@@ -442,11 +472,17 @@ func parseLegacySettings(llmSetups, speechSetups, features, tuning string) legac
 		}
 	}
 	var f struct {
-		Transcription struct{ ASRSelectionID, LLMSelectionID, Prompt string }
-		Translation   struct{ ASRSelectionID, ModelSelectionID, Prompt string }
-		Rewrite       struct{ ASRSelectionID, LLMSelectionID, Prompt string }
+		Transcription struct {
+			ASRSelectionID, LLMSelectionID, Prompt string
+			LLMEnabled                             *bool
+		}
+		Translation struct{ ASRSelectionID, ModelSelectionID, Prompt string }
+		Rewrite     struct{ ASRSelectionID, LLMSelectionID, Prompt string }
 	}
 	json.Unmarshal([]byte(features), &f)
+	l.enhanceOff = f.Transcription.LLMEnabled != nil && !*f.Transcription.LLMEnabled
+	const codex = "remote-llm:codex"
+	l.codexFeatures = [3]bool{!l.enhanceOff && f.Transcription.LLMSelectionID == codex, f.Translation.ModelSelectionID == codex, f.Rewrite.LLMSelectionID == codex}
 	// used is the setup here of a feature's remote selection ("remote-llm:openAI").
 	used := func(selection, prefix string, services map[string]string, list []settings.Provider) string {
 		service, remote := strings.CutPrefix(selection, prefix)
@@ -485,8 +521,9 @@ func parseLegacySettings(llmSetups, speechSetups, features, tuning string) legac
 
 // apply puts l into s where s has nothing of its own: a service set up
 // here, a feature's chosen models and rules, and the speech context stay.
-// It returns the language model and speech setups it added and the
-// prompts it filled.
+// Clean-up that was off stays off while Transcribe has no language model
+// chosen here. It returns the language model and speech setups it added
+// and the prompts it filled.
 func (l legacySettings) apply(s *settings.Settings) (llmAdded, speechAdded []settings.Provider, prompts int) {
 	add := func(list *[]settings.Provider, from []settings.Provider) (added []settings.Provider) {
 		for _, p := range from {
@@ -498,6 +535,9 @@ func (l legacySettings) apply(s *settings.Settings) (llmAdded, speechAdded []set
 		return added
 	}
 	llmAdded, speechAdded = add(&s.Providers.LLM, l.llm), add(&s.Providers.ASR, l.speech)
+	if l.enhanceOff && s.Features.Transcribe.LLM == "" {
+		s.Features.Transcribe.Enhance = false
+	}
 	for i, f := range []*settings.Feature{&s.Features.Transcribe.Feature, &s.Features.Translate.Feature, &s.Features.Rewrite.Feature} {
 		if f.LLM == "" {
 			f.LLM = l.featureLLM[i]
