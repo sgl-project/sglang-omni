@@ -254,7 +254,7 @@ func TestLegacySettingsApply(t *testing.T) {
 	s.Providers.LLM = []settings.Provider{{ID: "openai", Model: "mine"}}
 	s.Providers.ASR = []settings.Provider{{ID: "aliyun", Model: "fun-asr-realtime"}}
 	s.Features.Transcribe.Prompt = "My rules."
-	llmAdded, speechAdded, prompts := l.apply(&s)
+	llmAdded, speechAdded, prompts := l.apply(&s, "")
 	ids := func(ps []settings.Provider) string {
 		var out []string
 		for _, p := range ps {
