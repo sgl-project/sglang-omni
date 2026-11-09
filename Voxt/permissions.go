@@ -28,6 +28,7 @@ const (
 	privacyMicrophone    = "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
 	privacyAccessibility = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
 	privacySpeech        = "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition"
+	privacyAudioCapture  = "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture"
 )
 
 // permissionsState is what the section last read.
@@ -192,6 +193,11 @@ func (a *app) permissionsSettings(c *ui.Context) {
 		}
 	})
 	sectionTitle(c, i18n.T("Optional"))
+	settingRow(c, "perm-system-audio", i18n.T("System audio recording (for meetings)"), i18n.T("Lets Voxt record sound from other apps during a meeting. macOS asks the first time a meeting records system audio."), func() {
+		if ghostIconButton(c.Key("perm-system-audio-open"), icons.SquareArrowRightUp, i18n.T("Open System Settings")).Label(i18n.T("Open System Settings")).Clicked() {
+			a.openPrivacy(c, privacyAudioCapture)
+		}
+	})
 	speechText, speechOK := uitext.PermissionText(a.perms.speech)
 	settingRow(c, "perm-speech", i18n.T("Speech Recognition"), i18n.T("Only System dictation needs it: macOS's own speech recognition, which recognises your voice on this Mac."), func() {
 		badge(speechText, speechOK)

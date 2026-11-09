@@ -40,6 +40,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Per-service recognition prompts** (Speech models → a remote service's dialog): optional text after the global speech context, with `{{USER_MAIN_LANGUAGE}}`, `{{USER_OTHER_LANGUAGES}}` and `{{DICTIONARY_TERMS}}` filled at recognition time. Services that take no prompt ignore it.
 - **Voxt 1.x's other local speech models** (Speech models): Qwen3-ASR 1.7B (6bit), Whisper Large v3 Turbo, Whisper Large v3, Whisper Small, Parakeet TDT 0.6B v3, SenseVoice Small, Cohere Transcribe 03-2026, Nemotron 3.5 ASR 0.6B and MOSS-Transcribe-Diarize, each on its own native server. Nemotron and MOSS show the text as you speak; the others show it about once a second while you speak, and Voxt recognises the whole recording again when you stop. Only Qwen3-ASR takes your dictionary (the cards say "No dictionary"). The import brings the models Voxt 1.x downloaded without a download (a Whisper model with its tokenizer), and a feature that used one of them in Voxt 1.x uses it again; who imported with Voxt 2.0.x gets those downloads at the next start.
 - **Meeting records in the database** (nothing in the app calls this yet): migration 007 adds `meetings` and `meeting_segments`, full-text search on segment text and translations, and `Store.Meetings()` for create, update, append/replace segments, list, delete, unfinished, and temporary-audio expiry queries.
+- **Meeting permissions** (meeting UI still dev-only until C1-2): Settings → Permissions lists **System audio recording (for meetings)**; the app and helper usage strings describe capturing other apps’ audio for meetings, and the microphone prompt mentions meetings.
 
 ### Changed
 
@@ -112,6 +113,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **每家远程服务的识别提示词**（语音模型页 → 某远程服务的设置对话框）：可选文字，接在全局「识别上下文」后面；识别时填入 `{{USER_MAIN_LANGUAGE}}`、`{{USER_OTHER_LANGUAGES}}` 和 `{{DICTIONARY_TERMS}}`。不收提示词的语音服务会忽略它。
 - **Voxt 1.x 的其他本地语音识别模型**（语音模型页）：Qwen3-ASR 1.7B (6bit)、Whisper Large v3 Turbo、Whisper Large v3、Whisper Small、Parakeet TDT 0.6B v3、SenseVoice Small、Cohere Transcribe 03-2026、Nemotron 3.5 ASR 0.6B 和 MOSS-Transcribe-Diarize，每个用自己的原生服务运行。Nemotron 和 MOSS 边说边出文字；其他模型在你说话时大约每秒更新一次文字，停止后再识别一遍整段录音。只有 Qwen3-ASR 使用你的词典（卡片上标着“不用词典”）。导入时，Voxt 1.x 下载过的模型直接带过来，不用重新下载（Whisper 连同它的分词器），在 Voxt 1.x 里用着这些模型的功能会继续用它；用 Voxt 2.0.x 导入过的，下次启动时这些下载也会带过来。
 - **会议记录表**（应用里还没有接线）：SQLite 迁移 007 增加 `meetings` 与 `meeting_segments` 表、句子和译文的全文检索，以及 `Store.Meetings()`（创建、更新、追加或按轨道替换句子、列表、删除、未完成与录音到期筛选）。
+- **会议权限说明**（会议界面仍在开发版，C1-2 前不对普通用户开放）：设置 → 权限 出现 **系统录音（会议用）**；应用与辅助进程的授权文案说明会议中录制其他 app 的声音，麦克风说明也提到会议。
 
 #### 变更
 
