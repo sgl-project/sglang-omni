@@ -36,6 +36,7 @@ func (f *fakeIO) Paste(_ context.Context, p proto.PasteParams) (proto.PasteResul
 var (
 	slack    = proto.App{PID: 812, BundleID: "com.tinyspeck.slackmacgap", Name: "Slack"}
 	textEdit = proto.App{PID: 530, BundleID: "com.apple.TextEdit", Name: "TextEdit"}
+	voxt     = proto.App{PID: 77, BundleID: "dev.hehehai.voxtnew", Name: "Voxt"}
 )
 
 func TestInsert(t *testing.T) {
@@ -81,6 +82,17 @@ func TestInsert(t *testing.T) {
 			io: fakeIO{focus: []proto.FocusResult{{PID: 77, Role: "AXTextField", Editable: true}}}, reason: ReasonNotFront},
 		{name: "VoxtNew in front, no start app", req: Request{Text: "hi", Self: 77, Activate: func(int) bool { return true }},
 			io: fakeIO{focus: []proto.FocusResult{{PID: 77, Role: "AXTextField", Editable: true}}}, reason: ReasonNotFront},
+		// FB10: the shortcut pressed in VoxtNew's own window, a feature's rules being edited.
+		{name: "started in VoxtNew: into its own text field", req: Request{Text: "hi", Target: voxt, Self: 77, Activate: func(int) bool { return true }},
+			io: fakeIO{focus: []proto.FocusResult{{PID: 77, App: &voxt, Role: "AXTextArea", Editable: true}}, paste: posted}, inserted: true, pastes: 1, to: 77},
+		{name: "started in VoxtNew, a selection in its own field", req: Request{Text: "hi", Target: voxt, Self: 77, Replace: true},
+			io: fakeIO{focus: []proto.FocusResult{{PID: 77, App: &voxt, Role: "AXTextArea", Editable: true}}, paste: posted}, inserted: true, pastes: 1, to: 77},
+		{name: "started in VoxtNew, its focus on a button", req: Request{Text: "hi", Target: voxt, Self: 77},
+			io: fakeIO{focus: []proto.FocusResult{{PID: 77, App: &voxt, Role: "AXButton"}}}, reason: ReasonNotEditable},
+		{name: "started in VoxtNew, no benefit of the doubt there", req: Request{Text: "hi", Target: voxt, Self: 77, AnyEditable: true},
+			io: fakeIO{focus: []proto.FocusResult{{PID: 77, App: &voxt, Role: "AXGroup"}}}, reason: ReasonNotEditable},
+		{name: "started in VoxtNew, a password field there", req: Request{Text: "hi", Target: voxt, Self: 77},
+			io: fakeIO{focus: []proto.FocusResult{{PID: 77, App: &voxt, Role: "AXTextField", Subrole: "AXSecureTextField", Editable: true}}}, reason: ReasonSecure},
 	} {
 		io := tc.io
 		res := Insert(context.Background(), &io, tc.req)
@@ -114,6 +126,57 @@ func TestInsertElsewhere(t *testing.T) {
 	res = Insert(context.Background(), io, Request{Text: "x", Target: slack})
 	if res.Front.PID != 530 || res.To.PID != 0 {
 		t.Errorf("not inserted %+v", res)
+	}
+}
+
+// TestLanding: where an inserted result went, what the watch for the
+// user's corrections needs: the position only when the check saw the
+// text go in, and the auto key only when it was really posted.
+func TestLanding(t *testing.T) {
+	textArea := proto.FocusResult{PID: 812, Role: "AXTextArea", Editable: true}
+	field := &proto.PasteField{Role: "AXTextArea", Before: &proto.FieldState{Length: 40, Selection: &proto.TextRange{Location: 17, Length: 3}}}
+	press := []proto.KeyPress{{Key: 36}}
+	for _, tc := range []struct {
+		name      string
+		paste     proto.PasteResult
+		press     []proto.KeyPress
+		focus     *proto.FocusResult
+		noLanding bool
+		at        int
+		role      string
+		pressed   bool
+	}{
+		{name: "inserted, with the selection before ⌘V", paste: proto.PasteResult{Posted: true, Check: proto.CheckInserted, Field: field}, at: 17, role: "AXTextArea"},
+		{name: "check unknown: position unknown", paste: proto.PasteResult{Posted: true, Check: proto.CheckUnknown, Field: field}, at: -1, role: "AXTextArea"},
+		{name: "no check: position unknown", paste: proto.PasteResult{Posted: true}, at: -1},
+		{name: "check unknown, no field read", paste: proto.PasteResult{Posted: true, Check: proto.CheckUnknown, Field: &proto.PasteField{Role: "AXWebArea"}}, at: -1, role: "AXWebArea"},
+		{name: "inserted, no selection read before", paste: proto.PasteResult{Posted: true, Check: proto.CheckInserted, Field: &proto.PasteField{Role: "AXTextArea", Before: &proto.FieldState{Length: 40}}}, at: -1, role: "AXTextArea"},
+		{name: "inserted, the field state not read", paste: proto.PasteResult{Posted: true, Check: proto.CheckInserted, Field: &proto.PasteField{Role: "AXTextArea"}}, at: -1, role: "AXTextArea"},
+		{name: "auto key posted", paste: proto.PasteResult{Posted: true, Check: proto.CheckInserted, Field: field}, press: press, at: 17, role: "AXTextArea", pressed: true},
+		{name: "auto key skipped by the helper", paste: proto.PasteResult{Posted: true, Check: proto.CheckInserted, Field: field, PressSkipped: true}, press: press, at: 17, role: "AXTextArea"},
+		{name: "no keys asked", paste: proto.PasteResult{Posted: true, Check: proto.CheckInserted, Field: field}, at: 17, role: "AXTextArea"},
+		{name: "text went to another app: its keys not pressed", paste: proto.PasteResult{Posted: true, Check: proto.CheckInserted, Field: field}, press: press,
+			focus: &proto.FocusResult{PID: 530, App: &textEdit, Role: "AXTextArea", Editable: true}, at: 17, role: "AXTextArea"},
+		{name: "not inserted: no landing", paste: proto.PasteResult{Posted: true, Check: proto.CheckUnchanged, Field: field, PressSkipped: true}, press: press, noLanding: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			focus := textArea
+			if tc.focus != nil {
+				focus = *tc.focus
+			}
+			io := &fakeIO{focus: []proto.FocusResult{focus}, paste: tc.paste}
+			res := Insert(context.Background(), io, Request{Text: "x", Target: slack, Press: tc.press, VerifyMS: DefaultVerifyMS})
+			got, ok := res.Landing()
+			if ok == tc.noLanding {
+				t.Fatalf("landing %v (inserted %v)", ok, res.Inserted)
+			}
+			if tc.noLanding {
+				return
+			}
+			if got.At != tc.at || got.Role != tc.role || got.Pressed != tc.pressed || got.App != res.To {
+				t.Errorf("landing %+v, want at %d role %q pressed %v app %+v", got, tc.at, tc.role, tc.pressed, res.To)
+			}
+		})
 	}
 }
 

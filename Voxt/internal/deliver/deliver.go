@@ -11,9 +11,11 @@
 // still matters in three ways: an element there is given the benefit of
 // the doubt (the user pressed the shortcut in it), a selection is
 // replaced only there, and its auto key is pressed only there. When
-// VoxtNew itself came to the front (a click on its window), the start
-// app is activated again first (macx.Activate): nothing is ever typed
-// into VoxtNew, nor into a password field.
+// VoxtNew itself came to the front after the start (a click on its
+// window), the start app is activated again first (macx.Activate):
+// nothing goes into VoxtNew's window unless the session started there,
+// and then only into an element it calls editable (a feature's rules
+// being edited, as Voxt 1.x). Nothing goes into a password field.
 //
 // The paste is checked (Request.VerifyMS): the helper reads the focused
 // element before ⌘V and after it. When it reads the same up to the end of
@@ -68,8 +70,9 @@ const (
 	ReasonNoAccess Reason = "noAccess"
 	// ReasonFailed: the helper failed (Result.Err).
 	ReasonFailed Reason = "failed"
-	// ReasonCard: the result goes to the answer card by choice (Translate's
-	// "Show the result in a card"), or always (Rewrite, Voxt's); ReasonLong
+	// ReasonCard: the result goes to the answer card by choice ("Show the
+	// result in a card", every feature's), or always (a Rewrite follow-up,
+	// an answer cut at the length limit); ReasonLong
 	// was 0.1.0's: an answer longer than the card's limit. The session sets
 	// these, not Insert.
 	ReasonCard Reason = "card"
@@ -136,8 +139,39 @@ type Result struct {
 	Focus     proto.FocusResult
 	Paste     proto.PasteResult
 	Activated bool // the target was activated again first
-	Err       error
-	Elapsed   time.Duration
+	// Pressed: the keys after the paste (Request.Press) were posted: some
+	// were asked, the text did not move to another app, and the helper did
+	// not skip them (PasteResult.PressSkipped).
+	Pressed bool
+	Err     error
+	Elapsed time.Duration
+}
+
+// Landing is where an inserted result went: the app, where it starts in
+// the focused element and whether keys were posted after it (the auto key).
+type Landing struct {
+	App proto.App
+	// At is the UTF-16 location of the selection the paste's check read
+	// before ⌘V, only when the check saw the text go in (CheckInserted);
+	// -1 otherwise: unknown, or the focus moved to another element.
+	At      int
+	Role    string
+	Pressed bool
+}
+
+// Landing reports where the result went, when it was inserted.
+func (r Result) Landing() (Landing, bool) {
+	if !r.Inserted {
+		return Landing{}, false
+	}
+	l := Landing{App: r.To, At: -1, Pressed: r.Pressed}
+	if f := r.Paste.Field; f != nil {
+		l.Role = f.Role
+		if r.Paste.Check == proto.CheckInserted && f.Before != nil && f.Before.Selection != nil {
+			l.At = f.Before.Selection.Location
+		}
+	}
+	return l, true
 }
 
 // Moved reports whether the text went (or would go) into another app
@@ -240,6 +274,7 @@ func insert(ctx context.Context, io TextIO, r Request) Result {
 		return res
 	}
 	res.Inserted = true
+	res.Pressed = len(press) > 0 && !p.PressSkipped
 	return res
 }
 
@@ -271,11 +306,13 @@ func check(ctx context.Context, io TextIO, r Request) Result {
 	inTarget := r.Target.PID != 0 && focus.PID == r.Target.PID
 	var why Reason
 	switch {
-	case self, r.Replace && !inTarget:
+	case self && !inTarget, r.Replace && !inTarget:
 		why = ReasonNotFront
 	case Secure(focus):
 		why = ReasonSecure
-	case r.Replace:
+	case r.Replace, self:
+		// A selection to replace, or VoxtNew's own window (the session
+		// started there): only an element Accessibility calls editable.
 		if !focus.Editable {
 			why = ReasonNotEditable
 		}

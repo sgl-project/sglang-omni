@@ -46,6 +46,23 @@ func (f *fake) hotkeys(m proto.Message) {
 	}
 }
 
+func (f *fake) hotkeyRecord(m proto.Message) {
+	if !f.isTrusted() {
+		f.failData(m.ID, proto.CodePermissionDenied, map[string]string{"permission": proto.PermissionAccessibility},
+			"Accessibility is required to record shortcuts")
+		return
+	}
+	if k := f.opts["record-keys"]; k != "" {
+		f.result(m.ID, proto.HotkeyRecordResult{Keys: k})
+		return
+	}
+	if f.has("record-timeout") {
+		f.fail(m.ID, proto.CodeTimeout, "Recording timed out")
+		return
+	}
+	f.result(m.ID, proto.HotkeyRecordResult{Keys: "RightOption+Space"})
+}
+
 // trust grants Accessibility (trust-after): a configured tap installs and
 // says so.
 func (f *fake) trust() {

@@ -64,7 +64,7 @@ func langMenuHeight() int {
 // Close, then the capsule), above the card or under the capsule.
 func langMenuFrame(card mygo.Rectangle, top bool) mygo.Rectangle {
 	faceX, faceY := card.X+layout.Pad, card.Y+layout.Pad
-	capRight := faceX + layout.AnswerW - layout.CardPadX - 3*layout.CardBtn - 3*layout.CardHeadGap
+	capRight := faceX + card.Width - 2*layout.Pad - layout.CardPadX - 3*layout.CardBtn - 3*layout.CardHeadGap
 	h := langMenuHeight()
 	x := capRight - ovLangW
 	y := faceY - ovLangGap - h // above the card's top edge, over the capsule

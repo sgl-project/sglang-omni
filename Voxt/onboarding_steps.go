@@ -49,8 +49,8 @@ func (a *app) obLegacyCard(c *ui.Context) {
 		ui.Column(c).Gap(px(t, sp2)).Children(func() {
 			ui.Text(c, i18n.T("The previous Voxt is on this Mac")).FontWeight(600)
 			caption(c, i18n.T("Click Import from the previous Voxt to bring its dictionary, history and settings over. The previous Voxt keeps all its data."))
-			if a.ob.legacyMsg != "" {
-				caption(c, a.ob.legacyMsg)
+			if a.ob.legacyDone || a.ob.legacy.failed != "" {
+				a.legacyReportView(c, a.ob.legacy) // legacy_report.go
 			}
 			button, label := primaryButton, i18n.T("Import from the previous Voxt")
 			if a.ob.legacyDone {
@@ -86,6 +86,9 @@ func (a *app) obTryStep(c *ui.Context) {
 			warnLine(c, i18n.T("This shortcut works once Voxt may use Accessibility; Start works now."))
 		}
 	})
+	if hs := hotkey.HotkeysOf(a.prefs.Features, feature); len(hs) > 0 {
+		a.obKeyboard(c, hs[0].Keys) // onboarding_keys.go
+	}
 	problemLines(c, a.conflictLines(feature, 0)) // another ActNow app's keys too
 	if a.ob.passed[step] {
 		notice(c, "ob-passed", noticeOK, i18n.T("It works. Continue, or try again."), "", nil, nil)
@@ -108,6 +111,7 @@ func (a *app) obTryStep(c *ui.Context) {
 	if a.ob.hint != "" {
 		warnLine(c, a.ob.hint)
 	}
+	a.obTryPrereqs(c, kind, "ob-"+uitext.FeaturePrefix(feature))
 	id := a.ob.tries[step]
 	a.tryCard(c, tryOpts{
 		prefix: "ob-" + uitext.FeaturePrefix(feature), feature: feature, mine: id != "" && a.sess.ID == id,
@@ -142,7 +146,7 @@ func (a *app) obMoreStep(c *ui.Context) {
 					caption(c, about)
 					ui.Row(c).Children(func() {
 						if ui.Button(c.Key(key+"-open"), button).Clicked() {
-							a.closeOnboarding()
+							a.finishOnboarding() // the last step: the guide is done
 							a.navigate(path)
 						}
 					})

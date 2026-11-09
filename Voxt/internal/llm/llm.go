@@ -80,13 +80,9 @@ type Request struct {
 	FirstTokenTimeout time.Duration
 	StallTimeout      time.Duration
 
-	// Skill tags the call for usage accounting and its default
-	// temperature (DefaultTemperature).
+	// Skill tags the call for usage accounting.
 	Skill Skill
 }
-
-// F64 returns a pointer to v, for Request.Temperature and TopP.
-func F64(v float64) *float64 { return &v }
 
 // Usage is the token count of a call. Estimated is true when the
 // backend reported none and the counts come from EstimateTokens.

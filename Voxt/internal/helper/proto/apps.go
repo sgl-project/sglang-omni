@@ -35,6 +35,7 @@ const (
 	PermissionMicrophone        = "microphone"
 	PermissionAccessibility     = "accessibility"
 	PermissionSpeechRecognition = "speechRecognition"
+	PermissionSystemAudio       = "systemAudio" // capture.system's permission_denied only: macOS asks for it itself
 )
 
 // ---- app.* ----

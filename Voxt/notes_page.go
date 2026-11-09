@@ -196,7 +196,7 @@ func (a *app) noteKeysRow(c *ui.Context) {
 			}
 		})
 		if r.custom {
-			a.customKeys(c, r, i18n.T("Custom keys to record a note"), a.setNoteKeys)
+			a.keysField(c, r, i18n.T("Custom keys to record a note"), a.setNoteKeys)
 		}
 		if cur == "" {
 			caption(c, i18n.T("Set a shortcut to record notes."))

@@ -247,13 +247,15 @@ func (a *app) familySettingsChanged(old, new settings.Settings) {
 // networkFor is how model downloads reach the Hub under prefs (spec
 // §9.1): the family's endpoints and proxy while VoxtNew follows them
 // ($HF_ENDPOINT first, as huggingface_hub), the proxy "automatic" through
-// the Mac's system proxy (models.SystemProxy).
+// the Mac's system proxy (models.SystemProxy), a custom one with Voxt's
+// user name and password for it (models_proxy_auth.go).
 func (a *app) networkFor(prefs settings.Settings) models.Network {
 	var n models.Network
 	if os.Getenv("HF_ENDPOINT") == "" {
 		n.Endpoints = familyEndpoints(a.fam.Effective(prefs, actnow.KeyHFEndpoints))
 	}
-	n.Client = models.NewHTTPClient(models.ProxyFor(a.fam.Effective(prefs, actnow.KeyProxy), systemProxy))
+	proxy := a.fam.Effective(prefs, actnow.KeyProxy)
+	n.Client = models.NewHTTPClient(models.ProxyFor(proxy, a.proxyUser(prefs, proxy), systemProxy))
 	return n
 }
 
