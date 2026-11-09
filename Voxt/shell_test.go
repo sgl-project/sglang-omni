@@ -31,6 +31,13 @@ func TestSidebarAndShortcuts(t *testing.T) {
 	frames(tt)
 	a.clearNotices()
 	for _, p := range pages {
+		// The last rows can sit under the Settings footer: scroll the list
+		// to them, as a person would.
+		if r, ok := tt.Find(pageTitle(p.path)); ok && r.H < 10 {
+			home, _ := tt.Find(pageTitle("/home"))
+			tt.Scroll(home.X+home.W/2, float32(windowHeight)/2, 0, 200)
+			frames(tt)
+		}
 		click(t, tt, pageTitle(p.path))
 		if a.router.Path() != p.path {
 			t.Fatalf("clicking %s went to %s", p.title, a.router.Path())
@@ -69,6 +76,24 @@ func TestSidebarAndShortcuts(t *testing.T) {
 	click(t, tt, "Show the sidebar")
 	if a.prefs.Appearance.Rail {
 		t.Error("rail still on")
+	}
+}
+
+// TestPaletteFitsTheWindow: in the smallest window at the largest
+// interface size the ⌘K palette keeps a margin to the window's edges, as
+// in a larger one, instead of touching them with its corners cut off.
+func TestPaletteFitsTheWindow(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowMinWidth, windowMinHeight)
+	a.updateSettings(func(s *settings.Settings) { s.Appearance.Scale = 1.25 })
+	a.paletteOpen = true
+	frames(tt)
+	r, ok := tt.Find(i18n.T("Search commands"))
+	if !ok {
+		t.Fatal("no palette")
+	}
+	if red, _, _, _ := tt.Image().At(3, int(r.Y+r.H/2)).RGBA(); red>>8 > 240 {
+		t.Errorf("the palette reaches the window's left edge (red %d at x=3 beside its search field)", red>>8)
 	}
 }
 
@@ -185,7 +210,7 @@ func TestProblemCards(t *testing.T) {
 	if has(tt, "Helper ready") || has(tt, "No provider set up") {
 		t.Errorf("a status bar: %q", firstTexts(tt))
 	}
-	if !hasExact(tt, "No models") || !has(tt, "Install a speech model, then set up a language model, to start.") {
+	if !hasExact(tt, "No models") || !has(tt, "To start, install a speech model, then set up a language model.") {
 		t.Fatalf("no models card: %q", firstTexts(tt))
 	}
 	click(t, tt, "Open Speech models")
@@ -354,6 +379,16 @@ func TestPrivacyGoesOnline(t *testing.T) {
 	frames(tt)
 	if !has(tt, "Otherwise Voxt goes online only to download models and to read Voxt's announcements, which sends nothing about you.") || has(tt, "check for updates") {
 		t.Errorf("without an update feed: %q", firstTexts(tt))
+	}
+}
+
+// TestPermissionsMeetingSystemAudio: Optional row for meeting system audio.
+func TestPermissionsMeetingSystemAudio(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/permissions")
+	frames(tt)
+	if !has(tt, "System audio recording (for meetings)") {
+		t.Errorf("permissions: %q", firstTexts(tt))
 	}
 }
 

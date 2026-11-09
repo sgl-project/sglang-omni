@@ -109,7 +109,7 @@ func (a *app) historyDetail(c *ui.Context, e store.Entry) {
 		details = append(details,
 			[2]string{i18n.T("Delivery"), uitext.DeliveryLabel(e)},
 			[2]string{i18n.T("Speech recognition"), a.entryModel(local.ASR, e.ASRProvider, e.ASRModel)},
-			[2]string{i18n.T("Sound optimization"), uitext.SoundText(e)},
+			[2]string{i18n.T("Sound optimisation"), uitext.SoundText(e)},
 			[2]string{i18n.T("Language model"), a.entryModel(local.LLM, e.LLMProvider, e.LLMModel)},
 			[2]string{i18n.T("App rule"), uitext.RuleText(e)})
 		sections := []struct {

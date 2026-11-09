@@ -56,6 +56,8 @@ type settingsForm struct {
 	sidebar      int         // automatic, names and icons, icons only (settings_appearance.go)
 	ovStyle      overlayForm // settings_overlay.go
 
+	historyAccess, historySelection bool // history_access.go
+
 	clearHistoryAsk bool // Privacy's Clear the history… dialog
 	// loginIs is whether macOS opens VoxtNew at login, as last read or
 	// set: the setting changes it only when they differ.
@@ -172,6 +174,7 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 		a.syncRemote()
 	}
 	a.historySettingsChanged(old, new) // history_settings_ops.go
+	a.syncHistoryAccess()              // history_access.go
 	// The problems' cards: the language of their text may have changed
 	// (shell_notices.go).
 	a.checkModels()
@@ -227,6 +230,7 @@ func (a *app) loadSettingsForm() {
 	f.menuBar, f.closeToTray, f.openAtLogin = s.General.MenuBar, s.General.CloseToTray, s.General.LaunchAtLogin
 	f.dock, f.copyResult = !s.General.HideDock, s.General.CopyResult
 	f.keepHistory, f.keepAudio, f.logText = s.Privacy.KeepHistory, s.Privacy.KeepAudio, s.Privacy.LogText
+	f.historyAccess, f.historySelection = s.Privacy.HistoryAccess, s.Privacy.HistorySelection
 	f.sounds = s.Audio.Sounds
 	f.skipSilence = !s.Audio.VAD.Off
 	f.liveResult = s.Audio.LiveResult

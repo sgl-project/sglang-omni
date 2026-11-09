@@ -4,6 +4,7 @@ package main
 // the preview of the whole prompt (feature_page.go).
 
 import (
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -66,36 +67,66 @@ func (a *app) translateSettings(c *ui.Context) {
 }
 
 // cardSetting is feature's Answer card section (p is the page's prefix):
-// the switch on Transcribe and Translate, one for both (Rewrite always
-// shows answers in the card), and the card's size, each feature its own.
+// the feature's own card switch and card size. Rewrite's card does more
+// (follow-ups): its page says so, and what turning the switch off gives
+// up.
 func (a *app) cardSetting(c *ui.Context, p, feature string) {
 	sectionTitle(c, i18n.T("Answer card"))
 	f := &a.prefs.Features
-	if feature != hotkey.Rewrite {
-		settingRow(c, p+"-card", i18n.T("Show the result in a card"),
-			i18n.T("Shows transcribed and translated results in the answer card, to read, copy or insert, instead of typing them (or replacing the selection). Transcribe and Translate share this switch. Text that cannot go in, as with no text field in front, shows in the card anyway."), func() {
-				if ui.Switch(c.Key(p+"-card-switch"), &f.ShowCard).Label(i18n.T("Show the result in a card")).Changed() {
-					on := f.ShowCard
-					a.updateSettings(func(s *settings.Settings) { s.Features.ShowCard = on })
-				}
-			})
+	var on *bool
+	var help string
+	switch feature {
+	case hotkey.Translate:
+		on = &f.Translate.ShowCard
+		help = i18n.T("Shows translations in the answer card, to read, copy or insert, instead of typing them (or replacing the selection). Text that cannot go in, as with no text field in front, shows in the card anyway.")
+	case hotkey.Rewrite:
+		on = &f.Rewrite.ShowCard
+		if note := i18n.T("In Rewrite's card you can keep going: click Continue or press the Rewrite shortcut again and say \"shorter\" or \"in English\". The card changes the answer and keeps the whole conversation."); settingsTextMatches(settingsSearchQuery, note) {
+			caption(c, note)
+		}
+		help = i18n.T("Shows Rewrite's answers in the answer card, to read, copy, insert or follow up. Off, the answer replaces the selection or is typed where your cursor is, and there are no follow-ups. Text that cannot go in, as with no text field in front, shows in the card anyway.")
+	default:
+		on = &f.Transcribe.ShowCard
+		help = i18n.T("Shows the text in the answer card, to read, copy or insert, instead of typing it. Text that cannot go in, as with no text field in front, shows in the card anyway.")
 	}
-	size := f.CardSize(feature)
-	settingRow(c, p+"-card-size", i18n.T("Card size"), i18n.T("A larger card shows more of a long answer before it scrolls. Each feature keeps its own size."), func() {
-		if ui.Segmented(c.Key(p+"-card-size-seg"), &size, i18n.T("Small"), i18n.T("Medium"), i18n.T("Large")).Label(i18n.T("Card size")).Changed() {
-			step := size
+	settingRow(c, p+"-card", i18n.T("Show the result in a card"), help, func() {
+		if ui.Switch(c.Key(p+"-card-switch"), on).Label(i18n.T("Show the result in a card")).Changed() {
+			v := *on
 			a.updateSettings(func(s *settings.Settings) {
-				if step == 0 {
-					delete(s.Features.CardSizes, feature)
-					return
+				switch feature {
+				case hotkey.Translate:
+					s.Features.Translate.ShowCard = v
+				case hotkey.Rewrite:
+					s.Features.Rewrite.ShowCard = v
+				default:
+					s.Features.Transcribe.ShowCard = v
 				}
-				if s.Features.CardSizes == nil {
-					s.Features.CardSizes = map[string]int{}
-				}
-				s.Features.CardSizes[feature] = step
 			})
 		}
 	})
+	size := f.CardSize(feature)
+	settingRow(c, p+"-card-size", i18n.T("Card size"), i18n.T("A larger card shows more of a long answer before it scrolls. Each feature keeps its own size."), func() {
+		if ui.Segmented(c.Key(p+"-card-size-seg"), &size, i18n.T("Small"), i18n.T("Medium"), i18n.T("Large")).Label(i18n.T("Card size")).Changed() {
+			a.setCardSize(feature, size)
+		}
+	})
+}
+
+// setCardSize saves feature's answer card size (settings.Features.CardSizes;
+// the small one is the default, kept as no entry) and shows it on a card
+// that shows.
+func (a *app) setCardSize(feature string, step int) {
+	a.updateSettings(func(s *settings.Settings) {
+		if step == 0 {
+			delete(s.Features.CardSizes, feature)
+			return
+		}
+		if s.Features.CardSizes == nil {
+			s.Features.CardSizes = map[string]int{}
+		}
+		s.Features.CardSizes[feature] = step
+	})
+	a.overlayRestyle()
 }
 
 // rewriteSettings are Rewrite's own: the instruction's clean-up.
@@ -193,11 +224,9 @@ func (a *app) savePrompt(feature string) {
 // they are saved (they are saved at once when the field loses focus).
 const promptSaveDelay = 800 * time.Millisecond
 
-// The rules field's height in lines: it grows with its text between them.
-const (
-	promptMinLines = 4
-	promptMaxLines = 36
-)
+// promptMinLines is the rules field's height when it is empty or short; it
+// grows with its text from there.
+const promptMinLines = 4
 
 // findFolded returns where query is in text, ignoring case, as rune
 // offsets [start, end), the text fields' unit; none for a blank query.
@@ -228,9 +257,6 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 	a.promptSync(feature)
 	if !a.settingsOpen && c.Shortcut(ui.Cmd, ui.KeyF) {
 		u.rules, u.findFocus = true, true
-	}
-	if !u.rules {
-		u.promptTop = false // it opens at the start again
 	}
 	// Folded by default: long rules would push the rest of the page down.
 	// Its title tells how long the rules are.
@@ -281,10 +307,10 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 				caption(c, i18n.N(len(matches), "%d match", "%d matches", len(matches))).SingleLine().Shrink(0)
 			}
 		})
-		// As high as the rules, up to promptMaxLines: a long prompt reads
-		// down the page instead of in a small box; past that the field
-		// scrolls, so that Find can bring a match into view.
-		in := ui.TextArea(c.Key(p+"-prompt"), &u.prompt).Label(label).Placeholder(placeholder).Lines(promptMinLines, promptMaxLines)
+		// As high as the rules, however long: a long prompt reads down the
+		// page, which scrolls to the caret and to what Find selects (MyGo
+		// patch 0012), instead of in a box that scrolls inside the page.
+		in := ui.TextArea(c.Key(p+"-prompt"), &u.prompt).Label(label).Placeholder(placeholder).Lines(promptMinLines, math.MaxInt32)
 		if len(matches) > 0 {
 			ranges := make([]ui.TextRange, len(matches))
 			for i, m := range matches {
@@ -294,10 +320,6 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 				}
 			}
 			in.TextRanges(ranges...)
-		}
-		if !u.promptTop {
-			u.promptTop = true
-			in.SetTextSelection(0, 0)
 		}
 		if u.findSelect && u.found > 0 && u.found <= len(matches) {
 			u.findSelect = false
@@ -401,7 +423,7 @@ func (a *app) previewBody(c *ui.Context, feature string) {
 	}
 	caption(c, i18n.T("Your dictionary's terms and App enhancement's scene are added to the system prompt when they apply."))
 	ui.Column(c.Key(p + "-preview-user")).Gap(px(t, 4)).Children(func() {
-		ui.Text(c, i18n.T("User message (an example)")).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(k.Text2)
+		ui.Text(c, i18n.T("Example user message")).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(k.Text2)
 		fillCard(c).Padding(px(t, sp3)).Children(func() {
 			ui.Text(c, out.User).FontSize(px(t, fsCaption)).Font("monospace").Selectable()
 		})

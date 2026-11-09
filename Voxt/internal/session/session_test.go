@@ -69,7 +69,7 @@ func newHarness(t *testing.T, prov asr.Provider, model LLM, cfgFn func(*Config, 
 			h.logs = append(h.logs, level+" "+msg)
 			h.mu.Unlock()
 		},
-		LLMFirstToken: time.Second, LLMStall: 500 * time.Millisecond, LLMPerChar: time.Millisecond, LLMTimeout: 2 * time.Second,
+		LLMBase: time.Second, LLMStall: 500 * time.Millisecond, LLMPerChar: time.Millisecond, LLMTimeout: 2 * time.Second,
 		ASRTimeout: 2 * time.Second, StopGrace: 200 * time.Millisecond,
 	}
 	if cfgFn != nil {
@@ -186,7 +186,7 @@ func TestPipeline(t *testing.T) {
 				s.Features.Transcribe.Prompt = "Be brief."
 				s.Dictionary.SpeechContext = " Leo works on LLM serving. "
 				s.Audio.LiveResult = true
-				c.LLMFirstToken, c.LLMTimeout = 50*time.Millisecond, 100*time.Millisecond
+				c.LLMBase, c.LLMTimeout = 50*time.Millisecond, 100*time.Millisecond
 			})
 			if !tc.writable {
 				h.text.focus = proto.FocusResult{PID: 812, Role: "AXButton"}

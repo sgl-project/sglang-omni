@@ -154,6 +154,10 @@ func (a *app) loadStorage() {
 			_, rec, _ = recordings.Usage(ctx, hist)
 		}
 		r.cats = append(r.cats, storageCat{id: "audio", title: i18n.T("Recordings kept with the history"), bytes: rec, dir: audio})
+		meetDir := filepath.Join(data, "meetings")
+		if meet, err := datadir.TreeSize(ctx, meetDir, nil); err == nil && meet > 0 {
+			r.cats = append(r.cats, storageCat{id: "meetings", title: i18n.T("Meeting recordings"), bytes: meet, dir: meetDir})
+		}
 		var db int64
 		if ents, err := os.ReadDir(data); err == nil {
 			for _, e := range ents {

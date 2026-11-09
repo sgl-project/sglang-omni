@@ -32,6 +32,9 @@ func (a *app) remotePage(c *ui.Context) {
 			a.obBackBar(c, remotePath) // onboarding.go: left from the setup guide
 			caption(c, i18n.T("Transcribe's clean-up, Translate and Rewrite use the language model you set up here, over its OpenAI-compatible API. Voxt sends it the recognised or selected text, never your audio; keys stay in this Mac's Keychain."))
 			a.providerCards(c, local.LLM)
+			if ui.Button(c.Key("remote-debug"), i18n.T("Try prompts on a model…")).AlignSelf(ui.Start).Clicked() {
+				a.navigate(llmDebugPath)
+			}
 		})
 	})
 	a.providerDialogView(c) // remote_dialog.go
@@ -104,9 +107,14 @@ func (a *app) providerState(c *ui.Context, kind local.Kind, p settings.Provider,
 	}
 	switch a.setupMissing(kind, p) {
 	case providers.MissingKey:
+		if lookupService(kind, p.ID).signIn {
+			return k.Warning, i18n.T("Sign-in needed")
+		}
 		return k.Warning, i18n.T("API key needed")
 	case providers.MissingEndpoint:
 		return k.Warning, i18n.T("No address")
+	case providers.MissingAddress:
+		return k.Warning, i18n.T("Address not allowed")
 	case providers.MissingModel:
 		return k.Warning, i18n.T("No model")
 	}

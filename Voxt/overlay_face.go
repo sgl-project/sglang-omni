@@ -54,8 +54,9 @@ func (a *app) overlayView(c *ui.Context) {
 		case ovNotice:
 			a.overlayNotice(c)
 		default:
-			// The pointer goes through it (passThrough): nothing to drag.
-			faceStyle(ui.Column(c.Key("ov-face")), o, a.ov.mode, a.ov.h).Children(func() {
+			// In lines it moves where it is dragged, as the card; the small
+			// pill lets the pointer through (syncPassThrough).
+			faceStyle(ui.Column(c.Key("ov-face")), o, a.ov.mode, a.ov.h).DragWindow().Children(func() {
 				overlayPill(c, a.pillSession(), a.ov.mode, look) // mute_link.go: the output's note
 			})
 		}
@@ -110,8 +111,11 @@ func overlayPill(c *ui.Context, s session.Snapshot, mode overlayMode, look pillL
 	text, hint := pillLine(s)
 	// The face's border takes layout.Border of its padding (MyGo's border box).
 	col := ui.Column(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Padding(layout.PillPadY-layout.Border, layout.PillPadX-layout.Border)
-	if text != "" {
+	if text != "" || look.lines {
 		col.Padding(layout.LivePadY-layout.Border, layout.LivePadX-layout.Border).Gap(layout.LiveGap)
+	}
+	if look.lines {
+		col.Justify(ui.Start) // the row stays put as the lines under it grow
 	}
 	col.Children(func() {
 		ui.Row(c).Height(layout.RowH).Shrink(0).Gap(layout.Gap).AlignItems(ui.Center).Children(func() {
@@ -135,7 +139,7 @@ func overlayPill(c *ui.Context, s session.Snapshot, mode overlayMode, look pillL
 					})
 				}
 			} else {
-				overlayLoader(c, uitext.WorkingText(s), look)
+				overlayLoader(c, uitext.WorkingText(s), look, layout.WaveSlotW)
 			}
 			if name := uitext.SceneShort(s); name != "" {
 				ui.Text(c, name).FontSize(layout.SceneSize).TextColor(ovText2).SingleLine().Ellipsis("…").MaxWidth(layout.SceneMaxW).MinWidth(0).Shrink(1).
@@ -153,6 +157,8 @@ func overlayPill(c *ui.Context, s session.Snapshot, mode overlayMode, look pillL
 			liveLines(c.Key("ov-lines"), look.scroll, s.ID, text)
 		case text != "":
 			liveLine(c.Key("ov-live-"+s.ID), text, float32(max(look.w, layout.PillW)-2*layout.LivePadX), look.motion)
+		case look.lines:
+			ui.Box(c).Height(layout.LineH).Shrink(0) // the first line's room, before any text
 		}
 	})
 }
@@ -223,17 +229,6 @@ func liveLines(c *ui.Context, l *linesScroll, id, text string) {
 	ui.Scroll(c).Width(layout.LinesTextW).MaxHeight(layout.LinesMax * layout.LineH).Shrink(0).TrackScroll(&l.st).Label(text).Children(func() {
 		ui.Text(c, text).FontSize(layout.LiveSize).FontWeight(layout.LiveWeight).TextColor(ovText).Shrink(0)
 	})
-}
-
-// liveLinesOverflow says whether the live text in lines is longer than
-// the face shows (more than layout.LinesMax lines), so that it scrolls.
-func (a *app) liveLinesOverflow() bool {
-	text, hint := pillLine(a.pillSession())
-	if !a.prefs.Overlay.LiveLines || hint || text == "" || (a.ov.mode != ovRecording && a.ov.mode != ovWorking) {
-		return false
-	}
-	h, _ := a.ovTextHeight(liveLinesKey(text))
-	return h > layout.LinesMax*layout.LineH
 }
 
 // liveLine is the live text on one line, width DIPs wide: centred while

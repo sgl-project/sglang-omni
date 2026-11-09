@@ -14,9 +14,25 @@ macOS 语音输入：在任意 App 里按下快捷键说话，文字出现在光
 
 **快捷键**（在各功能页里可以改）：单按**右 Option** 转录，右 Option 加 Shift 翻译，Control 加右 Option 转写；Control-Option-V 粘贴上一条结果。这套按键把 fn 留给 Auralink，两个 app 可以同时使用。
 
-**更新**：这个版本不会自动更新，新版本需要自己安装。
+## 下载和安装
 
-> **状态：2.0.0**。上面的功能都已在本地模型上可用，见 [CHANGELOG.md](CHANGELOG.md)。
+从 [Voxt 的 Release 页面](https://github.com/sgl-project/sglang-omni/releases?q=voxt-v&expanded=true)下载最新的 `Voxt-X.Y.Z-arm64.dmg`，打开后把 Voxt 拖进“应用程序”。需要 Apple 芯片、macOS 15 及以上的 Mac。
+
+- **第一次用 Voxt**：打开后按设置引导走：授权麦克风和辅助功能，下载推荐的语音识别模型，再配置一个语言模型用于整理、翻译和转写。
+- **从 Voxt 1.x 升级**：先退出 Voxt 1.x，再用新的 Voxt 替换它。设置引导里的 **Import from the previous Voxt** 会导入词典、历史、设置和已下载的语音识别模型。之后要重新授权麦克风和辅助功能：macOS 把 Voxt 当成一个新的 app。Voxt 1.x 的“检查更新”不会安装 Voxt 2。
+
+分步说明：[Install Voxt](https://sgl-project.github.io/sglang-omni/get_started/voxt.html)。导入的细节：[docs/voxt-migration.md](docs/voxt-migration.md)。
+
+**更新**：Voxt 不会自动更新，每个新版本都从磁盘映像安装。各版本的改动见 [CHANGELOG.md](CHANGELOG.md)。
+
+## Voxt 2 的主要变化
+
+Voxt 2 取代了 Swift 版的 Voxt 1.x：
+
+- 语音识别跑在 SGLang-Omni 的原生 MLX 服务上，说话时实时显示文字；**转录加速**用推测解码让 Qwen3-ASR 更快。
+- 语言模型由你选择：服务商的 API，或者在这台 Mac 上用 Ollama、LM Studio、oMLX 运行。Voxt 2 不再自带语言模型。
+- 转写在答案卡片里可以连续追问；词典会从历史和你的修改里建议新词。
+- 一键导入 Voxt 1.x 的数据；app 在这个仓库里开源。
 
 ## 在你的 Mac 上运行什么
 
@@ -38,7 +54,7 @@ Voxt 1.x 的其他本地模型也都在：Qwen3-ASR 1.7B (6bit)、Whisper Large 
 
 **语言模型**是你在“语言模型”页设置的服务，通过它们的 OpenAI 兼容 API 调用：OpenAI、Anthropic、Google Gemini、DeepSeek、通义千问（阿里云百炼）、Kimi、智谱 GLM、豆包（火山方舟）、MiniMax、阶跃星辰、小米 MiMo、xAI、OpenRouter，其他兼容的服务，或者本机的服务（Ollama、LM Studio、oMLX：免费，文字不离开这台 Mac）。没有语言模型时，转录直接输入识别出的原文；翻译和转写需要它。
 
-**需要** Apple 芯片、macOS 15 及以上的 Mac。app 约 280 MB；推荐的语音识别模型需下载 2.5 GB。8 GB 内存的 Mac 请选 Qwen3-ASR 0.6B (4bit)。
+**需要** Apple 芯片、macOS 15 及以上的 Mac。app 约 280 MB；推荐的语音识别模型需下载 2.5 GB。
 
 ## 隐私
 
@@ -99,6 +115,7 @@ scripts/mac.sh scripts/mac-regress.sh   # Mac 上的真实模型：运行时、�
 - [docs/llm-models.md](docs/llm-models.md)：已退役的本地语言模型、它们的参数和实测（历史记录）。
 - [docs/eval.md](docs/eval.md)：模型在评测集上的质量，以及由此做的决定。
 - [docs/helper-protocol.md](docs/helper-protocol.md)：辅助进程的协议。
+- [docs/history-access.md](docs/history-access.md)：让这台 Mac 上的脚本和 agent 读取听写历史（默认关闭）。
 - [docs/manual-test.md](docs/manual-test.md)：在 Mac 上手动验证的清单，以及自动的真机测试。
 - [docs/release.md](docs/release.md)：构建、签名、公证和发布，以及更新。
 - [AGENTS.md](AGENTS.md)：改动规则（文字、线程、协议）。

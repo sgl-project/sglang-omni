@@ -97,9 +97,9 @@ var (
 			a.post(func() { then(files[0]) })
 		}()
 	}
-	chooseExportFile = func(a *app, name string, then func(string)) {
+	chooseExportFile = func(a *app, title, name string, then func(string)) {
 		go func() {
-			dst, err := mygo.Dialog.Save(mygo.SaveDialogOptions{Parent: a.win, Title: i18n.T("Export terms"), DefaultPath: name,
+			dst, err := mygo.Dialog.Save(mygo.SaveDialogOptions{Parent: a.win, Title: title, DefaultPath: name,
 				Filters: []mygo.FileFilter{{Name: strings.ToUpper(filepath.Ext(name)[1:]), Extensions: []string{filepath.Ext(name)[1:]}}}})
 			if err != nil || dst == "" {
 				return
@@ -169,7 +169,7 @@ func (a *app) dictionaryPage(c *ui.Context) {
 			if m.Item(i18n.T("Import…")).Chosen() {
 				a.importTerms()
 			}
-			if legacyLibrary() != "" && m.Item(i18n.T("Import from the previous Voxt…")).Chosen() {
+			if legacyLibrary() != "" && m.Item(i18n.T("Import from Voxt 1.x…")).Chosen() {
 				a.importLegacy()
 			}
 			if m.Item(i18n.T("Export as CSV…")).Chosen() {
@@ -523,7 +523,7 @@ func mergeImported(ctx context.Context, repo store.Dictionary, terms []store.Ter
 // exportTerms writes every term to a file the user picks.
 func (a *app) exportTerms(format string) {
 	name := "voxtnew-dictionary." + format
-	chooseExportFile(a, name, func(dst string) { a.exportFile(dst, format) })
+	chooseExportFile(a, i18n.T("Export terms"), name, func(dst string) { a.exportFile(dst, format) })
 }
 
 func (a *app) exportFile(dst, format string) {

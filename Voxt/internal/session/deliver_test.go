@@ -53,7 +53,7 @@ func TestDeliverWhereTyping(t *testing.T) {
 					IsBrowser: func(string) bool { return false },
 					URL:       (&fakeURL{}).read,
 				}
-				c.LLMFirstToken, c.LLMTimeout = time.Second, time.Second
+				c.LLMBase, c.LLMTimeout = time.Second, time.Second
 			})
 			h.text.focus = tc.focus
 			id, err := h.m.Start(StartRequest{Kind: tc.kind, Target: slack})

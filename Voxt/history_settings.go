@@ -53,6 +53,9 @@ type histSettingsState struct {
 	cancel      context.CancelFunc
 	// The clean-up runs; it runs again when it ends.
 	pruning, pruneAgain bool
+	// Export text (history_export.go): its choices, and a write running.
+	textScope, textFormat string
+	textBusy              bool
 }
 
 // keepDaysLabels and keepCountLabels are the choices' labels, in
@@ -183,6 +186,7 @@ func (a *app) histRecordingsSection(c *ui.Context) {
 			chooseFolder(a, i18n.T("Export the recordings to…"), i18n.T("Export here"), func(dir string) { a.exportRecordings(dir, only) })
 		}
 	})
+	a.histExportTextRow(c) // history_export.go
 	if busy {
 		a.histWorkRow(c)
 	}

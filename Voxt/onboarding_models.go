@@ -1,9 +1,9 @@
 package main
 
-// The setup guide's models step (onboarding.go): the recommended pack (the
-// accurate speech model with its voice detection) and one button that
-// downloads what is missing, then the language model: the one set up, or
-// a way to the Language models page (they are remote). The models another
+// The setup guide's models step (onboarding.go): the recommended pack (a
+// speech model for this Mac's memory with its voice detection), which the
+// footer's primary button downloads, then the language model: the one set
+// up, or a way to the Language models page (they are remote). The models another
 // ActNow app already put on this Mac come first (family spec §7.10.1): a
 // card offers to use them ("Use them" claims them for VoxtNew, nothing
 // downloads), and while the recommended speech model is missing and one
@@ -29,11 +29,42 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
-// obPack is the recommended pack: what the guide downloads.
-var obPack = []string{obSpeech, models.VADSilero}
+// obSpeech is the pack's speech model, the same on every Mac: 1.7B (8bit)
+// runs well with 8 GB of memory too.
+func (a *app) obSpeech() string { return models.ASRAccurate }
 
-// obSpeech is the pack's speech model.
-const obSpeech = models.ASRAccurate
+// obPack is the recommended pack: what the guide downloads.
+func (a *app) obPack() []string { return []string{a.obSpeech(), models.VADSilero} }
+
+// downloadPercent is how much of a download has come, in percent.
+func downloadPercent(st models.Status) int {
+	if st.Total <= 0 {
+		return 0
+	}
+	return int(100 * float64(st.Done) / float64(st.Total))
+}
+
+// obDownloadLeft is what the recommended speech model still has to
+// download, for the buttons that start it.
+func (a *app) obDownloadLeft() string {
+	id := a.obSpeech()
+	m, _ := models.Lookup(id)
+	return uitext.HumanBytes(m.Size() - a.modelStatus[id].Done)
+}
+
+// obNeedsDownload says that the models step has nothing but the download
+// to offer, so its primary button is Download and continue: no speech
+// model in use, the recommended one neither on this Mac nor downloading,
+// and no alternative to choose instead.
+func (a *app) obNeedsDownload() bool {
+	if a.ob.step != obModels || len(a.obReady(local.ASR)) > 0 {
+		return false
+	}
+	id := a.obSpeech()
+	st := a.modelStatus[id]
+	_, alt := a.obAlternative()
+	return !alt && !st.Downloading && !st.OnDisk
+}
 
 // obSurvey looks for the pack's models and their alternatives in the
 // family's library, off the main thread (when the models step shows).
@@ -42,7 +73,7 @@ func (a *app) obSurvey() {
 		return
 	}
 	var ids []string
-	for _, id := range obPack {
+	for _, id := range a.obPack() {
 		ids = append(ids, id)
 		if m, ok := models.Lookup(id); ok {
 			ids = append(ids, m.Alternatives...)
@@ -73,7 +104,7 @@ func (a *app) obFound(id string) (models.Found, bool) {
 // without downloading: the reuse card's.
 func (a *app) obReuse() []models.Found {
 	var out []models.Found
-	for _, id := range obPack {
+	for _, id := range a.obPack() {
 		if f, ok := a.obFound(id); ok {
 			out = append(out, f)
 		}
@@ -89,7 +120,7 @@ func (a *app) obReuseShown() bool { return a.ob.step == obModels && len(a.obReus
 // recommended speech model, which is not: "" when there is none, or the
 // recommended one is on disk or downloading.
 func (a *app) obAlternative() (models.Found, bool) {
-	id := obSpeech
+	id := a.obSpeech()
 	if _, ok := a.obFound(id); ok || a.modelStatus[id].Installed || a.modelStatus[id].Downloading {
 		return models.Found{}, false
 	}
@@ -116,8 +147,10 @@ func (a *app) obReady(kind local.Kind) []local.Model {
 	return out
 }
 
-// obModelsStep is the step: the reuse card, a row by kind, and Download
-// for what is missing.
+// obModelsStep is the step: the reuse card, a row by kind, and the way to
+// the other models. The download itself is the footer's (obNeedsDownload);
+// under the reuse card, whose Use them is the primary button, it stays
+// here.
 func (a *app) obModelsStep(c *ui.Context) {
 	t := c.Theme()
 	reuse := a.obReuse()
@@ -127,23 +160,28 @@ func (a *app) obModelsStep(c *ui.Context) {
 	if list := a.obReady(local.ASR); len(list) > 0 {
 		a.obModelRow(c, list[0].ID, list[0].Name, true, false)
 	} else {
-		m, _ := models.Lookup(obSpeech)
-		st := a.modelStatus[obSpeech]
-		_, onDisk := a.obFound(obSpeech)
+		id := a.obSpeech()
+		st := a.modelStatus[id]
+		_, onDisk := a.obFound(id)
 		_, alt := a.obAlternative()
-		a.obModelRow(c, obSpeech, uitext.ModelName(obSpeech), false, len(reuse) > 0)
-		if !st.Downloading && !onDisk && !alt {
-			label := i18n.T("Download (%s)", uitext.HumanBytes(m.Size()-st.Done))
+		a.obModelRow(c, id, uitext.ModelName(id), false, len(reuse) > 0)
+		if len(reuse) > 0 && !st.Downloading && !onDisk && !alt {
+			label := i18n.T("Download (%s)", a.obDownloadLeft())
 			ui.Row(c).Margin(px(t, sp2), 0, 0, 0).Children(func() {
 				if secondaryIconButton(c.Key("ob-download"), icons.DownloadMinimalistic, label).Clicked() {
-					a.downloadModel(obSpeech)
+					a.downloadModel(id)
 				}
 			})
 		}
 		if st.Downloading {
-			caption(c, i18n.T("The model downloads in the background: continue, and it is ready when the bar fills."))
+			caption(c, i18n.T("The model downloads in the background. You can continue; it is ready when the bar fills."))
 		}
 	}
+	ui.Row(c).Margin(px(t, sp1), 0, 0, 0).Children(func() {
+		if ghostButton(c.Key("ob-choose-other"), i18n.T("Choose another model…")).Clicked() {
+			a.obLeave(modelsPath)
+		}
+	})
 	a.obLanguageRow(c)
 }
 

@@ -120,3 +120,58 @@ func TestKeyRecorderCancelOnBlur(t *testing.T) {
 		t.Error("hotkey.cancelRecord was not sent")
 	}
 }
+
+// TestKeyRecorderTapPaused: while the field records, the shortcuts are
+// off and the helper, as the Swift one does with no bindings, removes its
+// tap. That is not a missing Accessibility: the page keeps the tap as
+// installed, so no "Without Accessibility" notice comes up beside the
+// field (11-09: it did, and its Open Permissions went with it as soon as
+// the field lost the focus); once the field lets go, the tap is back.
+func TestKeyRecorderTapPaused(t *testing.T) {
+	var fake *fakeSupervisor
+	a, tt := trHelperTester(t, func(fs *fakeSupervisor) {
+		fake = fs
+		fs.handlers[proto.MethodHotkeyConfigure] = func(raw json.RawMessage) (any, error) {
+			var p proto.HotkeyConfigureParams
+			json.Unmarshal(raw, &p)
+			return proto.HotkeyStatus{Installed: len(p.Bindings) > 0 || p.Cancel != nil, Accessibility: true}, nil
+		}
+		fs.handlers[proto.MethodHotkeyRecord] = func(json.RawMessage) (any, error) {
+			return nil, proto.Errorf(proto.CodeTimeout, "Recording timed out")
+		}
+		fs.handlers[proto.MethodHotkeyCancelRecord] = func(json.RawMessage) (any, error) { return proto.Empty{}, nil }
+	})
+	notice := "Without Accessibility only plain shortcuts work (⌃⌥⇧⌘ with a key); fn, a single modifier, double taps and long presses need it."
+	lastBindings := func() int {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		for i := len(fake.calls) - 1; i >= 0; i-- {
+			if fake.calls[i].Method == proto.MethodHotkeyConfigure {
+				var p proto.HotkeyConfigureParams
+				json.Unmarshal(fake.calls[i].Params, &p)
+				return len(p.Bindings)
+			}
+		}
+		return -1
+	}
+	if err := tt.ClickControl("Keys of shortcut 1"); err != nil {
+		t.Fatal(err)
+	}
+	click(t, tt, "Custom…")
+	for i := 0; i < 20; i++ {
+		frames(tt)
+	}
+	if !a.keysListening || lastBindings() != 0 {
+		t.Fatalf("the field records: listening %v, last hotkey.configure with %d bindings", a.keysListening, lastBindings())
+	}
+	if !a.hotkeys.Installed || has(tt, notice) {
+		t.Errorf("while the field records: installed %v, notice %v", a.hotkeys.Installed, has(tt, notice))
+	}
+	click(t, tt, "Add a shortcut") // the field lets go
+	for i := 0; i < 20; i++ {
+		frames(tt)
+	}
+	if a.keysListening || lastBindings() == 0 || !a.hotkeys.Installed || has(tt, notice) {
+		t.Errorf("after the field: listening %v, %d bindings, installed %v, notice %v", a.keysListening, lastBindings(), a.hotkeys.Installed, has(tt, notice))
+	}
+}

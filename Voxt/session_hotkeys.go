@@ -119,7 +119,8 @@ func (a *app) hotkeyPlan() hotkey.Plan {
 // fallback in step with the event tap.
 func (a *app) syncHotkeys() {
 	plan := a.hotkeyPlan()
-	if a.keysListening {
+	paused := a.keysListening
+	if paused {
 		plan = hotkey.Plan{} // the keys go to the field that records them
 	}
 	a.syncCarbon(plan)
@@ -140,6 +141,15 @@ func (a *app) syncHotkeys() {
 			return
 		}
 		was := a.hotkeys.Installed
+		if paused {
+			// With no bindings the helper removes its tap: off on purpose
+			// while a shortcut field records keys, not for want of
+			// Accessibility. Read as missing, it put up the "Without
+			// Accessibility" notice beside the field (whose Open Permissions
+			// went with the notice once the field lost the focus) and
+			// registered the Carbon fallback, which took the keys.
+			st.Installed = was
+		}
 		a.hotkeys = st
 		if st.Installed != was {
 			a.syncCarbon(a.hotkeyPlan())

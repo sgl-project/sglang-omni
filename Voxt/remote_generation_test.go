@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
@@ -20,16 +21,16 @@ func TestRemoteGenerationSettings(t *testing.T) {
 	frames(tt)
 	a.openProviderDialog(local.LLM, llm.Custom) // its card is below the fold
 	frames(tt)
-	for _, s := range []string{"Generation settings", "Think", "Max output tokens (optional)", "Verbosity", "Advanced"} {
+	for _, s := range []string{"Generation settings", "Thinking", "Max output tokens (optional)", "Verbosity", "Advanced"} {
 		if !has(tt, s) {
 			t.Errorf("no %q in the dialog", s)
 		}
 	}
-	if has(tt, "Temperature") || has(tt, "Top P") || has(tt, "Extra Body JSON") || has(tt, "Expert") {
+	if has(tt, "Temperature") || has(tt, "Top P") || has(tt, "Request parameters") || has(tt, "Expert") {
 		t.Errorf("sampling or JSON fields outside the folded Advanced, or an Expert section: %q", tt.Texts())
 	}
 	click(t, tt, "Advanced")
-	if !has(tt, "Temperature") || !has(tt, "Top P") || !has(tt, "Extra Body JSON") {
+	if !has(tt, "Temperature") || !has(tt, "Top P") || !has(tt, "Request parameters") {
 		t.Errorf("Advanced open: %q", tt.Texts())
 	}
 	d := &a.provDlg
@@ -47,7 +48,7 @@ func TestRemoteGenerationSettings(t *testing.T) {
 	d.gen.temperature, d.gen.extraBody = "0", "[1]"
 	click(t, tt, "Save")
 	frames(tt)
-	if d.err != "Extra Body JSON is not a JSON object." {
+	if d.err != "The request parameters are not a JSON object." {
 		t.Fatalf("bad JSON: %q", d.err)
 	}
 	d.gen.extraBody = `{"user": "me"}`
@@ -132,5 +133,61 @@ func TestGenerationDialogUntouched(t *testing.T) {
 	frames(tt)
 	if a.provDlg.unsaved() {
 		t.Errorf("an untouched dialog counts as unsaved: Think %q", a.provDlg.gen.think)
+	}
+}
+
+// TestRemoteAPIFormat: OpenAI and custom services choose the API format in
+// Advanced, Chat Completions unless changed; Responses hides the fields it
+// has no use for, is saved, and comes back in the dialog.
+func TestRemoteAPIFormat(t *testing.T) {
+	useKeys(t, &memKeys{m: map[string]string{}})
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 2400)
+	a.navigate(remotePath)
+	frames(tt)
+	for service, want := range map[string]bool{"openai": true, llm.Custom: true, "deepseek": false} {
+		a.openProviderDialog(local.LLM, service)
+		frames(tt)
+		if has(tt, "API format") {
+			t.Errorf("%s: API format outside the folded Advanced", service)
+		}
+		click(t, tt, "Advanced")
+		if has(tt, "API format") != want {
+			t.Errorf("%s: API format shown: %v", service, !want)
+		}
+		if a.provDlg.unsaved() {
+			t.Errorf("%s: an untouched dialog counts as unsaved", service)
+		}
+		a.provDlg.open = false
+		frames(tt)
+	}
+
+	a.openProviderDialog(local.LLM, llm.Custom)
+	frames(tt)
+	click(t, tt, "Advanced")
+	d := &a.provDlg
+	if d.gen.api != "Chat Completions" || d.setup().APIFormat != "" {
+		t.Fatalf("a new setup: %q, %q", d.gen.api, d.setup().APIFormat)
+	}
+	// Exact matches: the API format's help names these fields.
+	if !slices.Contains(tt.Texts(), "Stop sequences") || !slices.Contains(tt.Texts(), "Logprobs") {
+		t.Errorf("Chat Completions lost its fields: %q", tt.Texts())
+	}
+	d.endpoint, d.customModel = "https://example.com/v1", "m"
+	d.gen.api = "Responses"
+	frames(tt)
+	if slices.Contains(tt.Texts(), "Stop sequences") || slices.Contains(tt.Texts(), "Logprobs") {
+		t.Errorf("Responses shows fields it does not send: %q", tt.Texts())
+	}
+	click(t, tt, "Save")
+	frames(tt)
+	setups := a.lib.settings.Get().Providers.LLM
+	if len(setups) != 1 || setups[0].APIFormat != llm.APIResponses {
+		t.Fatalf("setups %+v (error %q)", setups, d.err)
+	}
+	a.openProviderDialog(local.LLM, llm.Custom)
+	frames(tt)
+	if a.provDlg.gen.api != "Responses" || a.provDlg.unsaved() {
+		t.Errorf("reopened: %q, unsaved %v", a.provDlg.gen.api, a.provDlg.unsaved())
 	}
 }

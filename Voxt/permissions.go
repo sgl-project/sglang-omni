@@ -28,6 +28,7 @@ const (
 	privacyMicrophone    = "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
 	privacyAccessibility = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
 	privacySpeech        = "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition"
+	privacyAudioCapture  = "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture"
 )
 
 // permissionsState is what the section last read.
@@ -152,7 +153,7 @@ func (a *app) permissionsSettings(c *ui.Context) {
 			statusMark(c, icons.DangerTriangle, t.Warning, text)
 		}
 	}
-	caption(c, i18n.T("macOS asks you before Voxt may record or work with other apps. Each row says what needs it; you can change them any time in System Settings."))
+	caption(c, i18n.T("macOS asks before Voxt can record or work with other apps. Each row says what needs the permission; you can change them any time in System Settings."))
 	if a.perms.mic == permission.NotDetermined || !a.perms.access {
 		ui.Row(c).Children(func() {
 			if ui.Button(c.Key("perm-ask-required"), i18n.T("Ask for the required permissions")).Tooltip(i18n.T("macOS asks for each in turn: the microphone, then Accessibility.")).Clicked() {
@@ -163,7 +164,7 @@ func (a *app) permissionsSettings(c *ui.Context) {
 	sectionTitle(c, i18n.T("Required"))
 
 	micText, micOK := uitext.PermissionText(a.perms.mic)
-	settingRow(c, "perm-mic", i18n.T("Microphone"), i18n.T("Transcribe, translate and rewrite by voice record while you hold or tap their shortcut."), func() {
+	settingRow(c, "perm-mic", i18n.T("Microphone"), i18n.T("Transcribe, Translate and Rewrite record while you hold or tap their shortcut."), func() {
 		badge(micText, micOK)
 		if a.perms.mic == permission.NotDetermined {
 			if ghostButton(c.Key("perm-mic-ask"), i18n.T("Ask")).Clicked() {
@@ -192,6 +193,11 @@ func (a *app) permissionsSettings(c *ui.Context) {
 		}
 	})
 	sectionTitle(c, i18n.T("Optional"))
+	settingRow(c, "perm-system-audio", i18n.T("System audio recording (for meetings)"), i18n.T("Lets Voxt record sound from other apps during a meeting. macOS asks the first time a meeting records system audio."), func() {
+		if ghostIconButton(c.Key("perm-system-audio-open"), icons.SquareArrowRightUp, i18n.T("Open System Settings")).Label(i18n.T("Open System Settings")).Clicked() {
+			a.openPrivacy(c, privacyAudioCapture)
+		}
+	})
 	speechText, speechOK := uitext.PermissionText(a.perms.speech)
 	settingRow(c, "perm-speech", i18n.T("Speech Recognition"), i18n.T("Only System dictation needs it: macOS's own speech recognition, which recognises your voice on this Mac."), func() {
 		badge(speechText, speechOK)

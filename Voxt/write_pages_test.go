@@ -39,7 +39,7 @@ func TestTranslatePage(t *testing.T) {
 		t.Error("paste-last belongs to Transcribe")
 	}
 	clickSwitch(t, tt, "Show the result in a card")
-	if !a.lib.settings.Get().Features.ShowCard {
+	if !a.lib.settings.Get().Features.Translate.ShowCard {
 		t.Error("show card not saved")
 	}
 	clickSwitch(t, tt, "Basic clean-up")
@@ -97,7 +97,7 @@ func TestRewritePage(t *testing.T) {
 		t.Error("clean-up not saved")
 	}
 	if has(tt, "Long answers in the card") {
-		t.Error("the card's length setting is back: every answer goes to the card")
+		t.Error("0.1.0's card length setting is back")
 	}
 	click(t, tt, "Your rules")
 	click(t, tt, "Example user message")
@@ -105,7 +105,7 @@ func TestRewritePage(t *testing.T) {
 		t.Errorf("preview %q", firstTexts(tt))
 	}
 	// A try that is blocked says why, here.
-	click(t, tt, "Start a try")
+	click(t, tt, "Start a test")
 	if a.sess.State.Live() || !has(tt, "No speech model is installed.") {
 		t.Errorf("try %+v", a.sess)
 	}
@@ -150,7 +150,7 @@ func TestOverlayWriting(t *testing.T) {
 	if a.ov.mode != ovAnswer || a.answer.problem == nil || a.notice != nil || a.answer.input.Raw != "shorter" {
 		t.Fatalf("failure %s %+v %+v", a.ov.mode, a.answer, a.notice)
 	}
-	tt := cardTester(a)
+	tt := cardTester(t, a)
 	frames(tt)
 	for _, s := range []string{"AI Answer", "Try again", "shorter", "a long text"} {
 		if !has(tt, s) {
@@ -215,11 +215,22 @@ func TestSessionBlocker(t *testing.T) {
 	}
 }
 
-// TestCardSwitchShared: Transcribe and Translate share one answer-card
-// switch; Rewrite always shows answers in the card and has no switch.
-func TestCardSwitchShared(t *testing.T) {
+// TestCardSwitchPerFeature: Transcribe, Translate and Rewrite each have
+// their own answer-card switch (11-09: one switch for the three turned
+// Transcribe's card back on from Rewrite's page); Rewrite's is on by
+// default and its page says what its card does more.
+func TestCardSwitchPerFeature(t *testing.T) {
 	a, tt := pageTester(t, "/translate")
-	for i, page := range []string{"/translate", "/transcribe"} {
+	rewriteCard := "In Rewrite's card you can keep going: click Continue or press the Rewrite shortcut again and say \"shorter\" or \"in English\". The card changes the answer and keeps the whole conversation."
+	cards := func() [3]bool {
+		f := a.lib.settings.Get().Features
+		return [3]bool{f.Transcribe.ShowCard, f.Translate.ShowCard, f.Rewrite.ShowCard}
+	}
+	if got := cards(); got != [3]bool{false, false, true} {
+		t.Fatalf("defaults %v, want Rewrite's card only", got)
+	}
+	want := cards()
+	for i, page := range []string{"/transcribe", "/translate", "/rewrite"} {
 		a.navigate(page)
 		frames(tt)
 		n := 0
@@ -232,15 +243,17 @@ func TestCardSwitchShared(t *testing.T) {
 			t.Fatalf("%s: %d elements named for the card switch", page, n)
 		}
 		clickSwitch(t, tt, "Show the result in a card")
-		if on := a.lib.settings.Get().Features.ShowCard; on != (i%2 == 0) {
-			t.Errorf("%s: the card switch is %v after a click", page, on)
+		want[i] = !want[i]
+		if got := cards(); got != want {
+			t.Errorf("%s: cards %v after a click, want %v", page, got, want)
+		}
+		if shown := has(tt, rewriteCard); shown != (page == "/rewrite") {
+			t.Errorf("%s: the note on Rewrite's card shows: %v", page, shown)
 		}
 	}
-	a.navigate("/rewrite")
+	a.navigate("/transcribe") // still its own value
 	frames(tt)
-	for _, s := range tt.AccessLabels() {
-		if s == "Show the result in a card" {
-			t.Fatalf("/rewrite: card switch should not appear on Rewrite")
-		}
+	if got := cards(); got != want {
+		t.Errorf("back on /transcribe: cards %v, want %v", got, want)
 	}
 }

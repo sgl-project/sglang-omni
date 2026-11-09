@@ -47,10 +47,18 @@ func reopenModels(a *app) {
 
 func TestModelsPage(t *testing.T) {
 	a, _, tt := newTestApp(t)
-	tt.SetSize(windowWidth, 1600) // every card on screen
+	tt.SetSize(windowWidth, 4800) // the retired models are below the speech model cards
 	a.navigate(modelsPath)
+	frames(tt)
+	texts := tt.Texts()
+	for _, family := range []string{"Qwen3-ASR", "Whisper"} {
+		i := slices.Index(texts, family)
+		if i < 0 || i+1 == len(texts) || texts[i+1] != "3 models" {
+			t.Errorf("expected a card with three %s models: %q", family, texts)
+		}
+	}
 	for _, s := range []string{"Qwen3-ASR 1.7B (8bit)", "Qwen3-ASR 0.6B (4bit)", "Default", "2.5 GB download",
-		"Local", "Accurate", "Fast", "Realtime", "Supports main language",
+		"Local", "Accurate", "Fast", "Realtime", "Supports your main language",
 		"30 languages and 22 Chinese dialects, including Chinese, English, Cantonese, Japanese and Korean"} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, tt.Texts())
@@ -64,7 +72,7 @@ func TestModelsPage(t *testing.T) {
 	// features' choices. A language model Voxt 2.0 downloaded is retired:
 	// listed, to be deleted, and offered to no feature.
 	seedModels(t, a, models.ASRFast, models.VADSilero, models.LLMTranslate)
-	if !has(tt, "Installed") || !has(tt, "712.8 MB on disk") || !has(tt, "· Used by Transcribe · Translate · Rewrite") ||
+	if !has(tt, "3 models · 1 installed") || !has(tt, "Installed") || !has(tt, "712.8 MB on disk") || !has(tt, "· Used by Transcribe · Translate · Rewrite") ||
 		!has(tt, "Language models no longer used") || !has(tt, "Hy-MT2 1.8B (Q4_K_M)") ||
 		!has(tt, "Faster transcription") || !has(tt, "262.5 MB download") {
 		t.Errorf("installed: %q", tt.Texts())
@@ -440,6 +448,7 @@ func modelShots(t *testing.T, a *app, tt *ui.Tester, save func(string)) {
 	fastName := uitext.ModelName(models.ASRFast)
 	a.navigate("/home")
 	a.navigate(modelsPath)
+	scrollToText(tt, fastName) // on screen: a click off it does nothing (the smallest window)
 	click(t, tt, i18n.T("Hide %s", fastName))
 	scrollToText(tt, i18n.T("Hidden models"))
 	click(t, tt, i18n.T("Hidden models"))

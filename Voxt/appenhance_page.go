@@ -146,7 +146,7 @@ func (a *app) appEnhancementPage(c *ui.Context) {
 		ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 			p.list.view(c, "ae-groups", i18n.T("Groups"), inline, shown, true, px(t, aeListW), func() { a.aeGroupList(c) })
 			ui.Scroll(c.Key("ae-main")).Grow(1).MinWidth(0).Children(func() {
-				ui.Column(c).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp3)).MaxWidth(px(t, 760)).Children(func() {
+				ui.Column(c).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp3)).Children(func() {
 					a.aePreviewCard(c)
 					if !a.prefs.AppEnhancement.Enabled {
 						notice(c, "ae-off", noticeInfo, i18n.T("App enhancement is off: every app gets only the features' own rules."), "", nil, nil)
@@ -181,7 +181,7 @@ func (a *app) openBrowsers() {
 
 // aeEmpty is the page without groups.
 func (a *app) aeEmpty(c *ui.Context) {
-	emptyState(c, appEnhancementIcon, i18n.T("Rules for the app or website in front"),
+	emptyState(c, appEnhancementIcon, i18n.T("Rules for the frontmost app or website"),
 		i18n.T("Group apps and website addresses, and give each group a scene prompt (a chat app, your mail, code review). It is added on top of the features' own rules when you dictate there."), func() {
 			if ghostIconButton(c.Key("ae-empty-new"), icons.Add, i18n.T("New group")).Clicked() {
 				a.addGroup()
@@ -244,7 +244,7 @@ func (a *app) aeGroupList(c *ui.Context) {
 					ui.Text(c, groupSummary(g)).FontSize(px(t, fsCaption)).TextColor(k.Text3).SingleLine().Ellipsis("…").MinWidth(0)
 				})
 				if match.GroupID() == g.ID {
-					iconMark(c, icons.Target, k.Accent, i18n.T("Matches the app in front"))
+					iconMark(c, icons.Target, k.Accent, i18n.T("Matches the frontmost app"))
 				}
 			})
 		}

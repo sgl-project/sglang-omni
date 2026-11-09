@@ -78,8 +78,8 @@ func TestOnboardingLanguageModelGuide(t *testing.T) {
 func TestOnboardingSpeechDownloadGuide(t *testing.T) {
 	a, tt := obTester(t)
 	a.obGo(obModels)
-	m, _ := models.Lookup(obSpeech)
-	a.modelStatus[obSpeech] = models.Status{Downloading: true, Done: m.Size() / 3, Total: m.Size()}
+	m, _ := models.Lookup(a.obSpeech())
+	a.modelStatus[a.obSpeech()] = models.Status{Downloading: true, Done: m.Size() / 3, Total: m.Size()}
 	a.obGo(obTranscribe)
 	frames(tt)
 	if !has(tt, "still downloading (33%)") {
@@ -99,10 +99,10 @@ func TestOnboardingSteps(t *testing.T) {
 		t.Fatalf("permissions: step %d %q", a.ob.step, tt.Texts())
 	}
 	click(t, tt, "Continue")
-	if a.ob.step != obModels || !has(tt, "Models") || !has(tt, "Download (2.5 GB)") || !has(tt, "Set up a language model") {
+	if a.ob.step != obModels || !has(tt, "Models") || !has(tt, "Download and continue (2.5 GB)") || !has(tt, "Set up a language model") {
 		t.Fatalf("models: step %d %q", a.ob.step, tt.Texts())
 	}
-	click(t, tt, "Continue")
+	click(t, tt, "Skip this step")
 	if a.ob.step != obTranscribe || !has(tt, "Try Transcribe") || !has(tt, "Skip this step") {
 		t.Fatalf("transcribe: step %d %q", a.ob.step, tt.Texts())
 	}
@@ -195,7 +195,7 @@ func TestOnboardingTryPasses(t *testing.T) {
 	// Another feature's shortcut does not start anything here.
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: "translate/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: selfFront()})
 	frames(tt)
-	if a.sess.Kind == store.KindTranslate || !hasPrefix(tt, "That was the Translate shortcut: this step tries Transcribe (Right ⌥)") {
+	if a.sess.Kind == store.KindTranslate || !hasPrefix(tt, "That was the Translate shortcut. This step tests Transcribe (Right ⌥)") {
 		t.Errorf("translate's shortcut: %+v %q", a.sess, tt.Texts())
 	}
 
@@ -276,7 +276,8 @@ func onboardingShots(a *app, tt *ui.Tester, save func(string)) {
 	}
 	// Last, as they change the models' statuses (the page behind scrolls).
 	a.ob.step = obModels
-	obFamilyShots(a, save) // family_ui_test.go
+	obFamilyShots(a, save)  // family_ui_test.go
+	obDefaultShots(a, save) // nothing on this Mac: the easy default
 	a.ob.open = false
 }
 
@@ -361,7 +362,7 @@ func TestOnboardingComesBack(t *testing.T) {
 	click(t, tt, "Get started")
 	click(t, tt, "Continue")
 	click(t, tt, "Set up a language model")
-	if a.ob.open || a.shownPath() != remotePath || !has(tt, "The setup guide waits at its Models step.") {
+	if a.ob.open || a.shownPath() != remotePath || !has(tt, "The setup guide is paused at the Models step.") {
 		t.Fatalf("left: open %v, %s, %q", a.ob.open, a.shownPath(), tt.Texts())
 	}
 	click(t, tt, "Back to the setup guide")

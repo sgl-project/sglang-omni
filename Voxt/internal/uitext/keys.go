@@ -206,6 +206,8 @@ func FeaturePrefix(feature string) string {
 		return "tl"
 	case hotkey.Rewrite:
 		return "rw"
+	case hotkey.Meeting:
+		return "mt"
 	}
 	return "tr"
 }
@@ -220,9 +222,11 @@ func FeatureTitle(feature string) string {
 	case hotkey.PasteLast:
 		return i18n.T("Paste the last result")
 	case hotkey.CancelID:
-		return i18n.T("Cancel transcription")
+		return i18n.T("Cancel recording")
 	case hotkey.Note:
 		return i18n.T("Notes")
+	case hotkey.Meeting:
+		return i18n.T("Meetings")
 	}
 	return i18n.T("Transcribe")
 }
