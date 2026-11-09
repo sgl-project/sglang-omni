@@ -23,20 +23,9 @@ from sglang_omni.platforms.device_graph import ReplayableGraph
 
 logger = logging.getLogger(__name__)
 
-# A new shape's first runs compile and specialize its kernels, so each shape runs
-# twice before its capture records the final ones.
+# note (Wenyao Gao): a new shape's first runs compile and specialize its kernels, so
+# each shape runs twice before its capture records the final ones.
 GRAPH_WARMUP_RUNS = 2
-
-
-def cast_autocast_weights(module: torch.nn.Module, dtype: torch.dtype) -> None:
-    """The conv and linear weights, which autocast with cache_enabled=False casts on
-    every call, cast once to the same values."""
-    for layer in module.modules():
-        if isinstance(layer, (torch.nn.Conv1d, torch.nn.Linear)):
-            for parameter in layer.parameters(recurse=False):
-                parameter.data = parameter.data.to(dtype)
-        else:
-            pass
 
 
 def vector_quantized(
@@ -45,8 +34,8 @@ def vector_quantized(
     """The codes and output of VectorQuantize.forward, without its training losses."""
     projected = vector_quantizer.in_proj(residual)
     nearest, codes = vector_quantizer.decode_latents(projected)
-    # The forward's straight-through sum rounds differently from nearest, and the next
-    # codebook quantizes what is left after it.
+    # note (Wenyao Gao): the forward's straight-through sum rounds differently from
+    # nearest, and the next codebook quantizes what is left after it.
     return codes, vector_quantizer.out_proj(projected + (nearest - projected))
 
 
@@ -73,7 +62,7 @@ def reference_codes_of(
 
 class Drama3ReferenceEncodeHook(FishReferenceEncodeHook):
     """The Fish reference encode whose lock holds no host sync on an accelerator, and
-    whose references up to graph_max_seconds replay a device graph."""
+    whose references up to reference_encode_graph_max_seconds replay a device graph."""
 
     def __init__(
         self,
@@ -83,7 +72,7 @@ class Drama3ReferenceEncodeHook(FishReferenceEncodeHook):
         device: str,
         autocast_dtype: torch.dtype | None,
         max_reference_audio_seconds: float,
-        graph_max_seconds: float,
+        reference_encode_graph_max_seconds: float,
     ) -> None:
         super().__init__(
             codec=codec,
@@ -93,19 +82,19 @@ class Drama3ReferenceEncodeHook(FishReferenceEncodeHook):
             max_reference_audio_seconds=max_reference_audio_seconds,
         )
         self.frame_length = int(codec.frame_length)
-        # Built on the first encode: CPU hooks and test stand-in codecs never get one.
+        # note (Wenyao Gao): built on the first encode, so a CPU hook never builds one.
         self.codec_encoder: CodecEncoder | None = None
         self.graphs: dict[int, ReplayableGraph] = {}
         self.graph_audio: dict[int, torch.Tensor] = {}
         self.graph_codes: dict[int, torch.Tensor] = {}
-        if self.device.type == "cpu" or graph_max_seconds == 0:
+        if self.device.type == "cpu" or reference_encode_graph_max_seconds == 0:
             self.graph_frame_counts: tuple[int, ...] = ()
         else:
-            # The encoder is causal, so zeros padded after a reference's last frame
-            # feed none of its frames; one graph per second of audio serves all lengths.
+            # note (Wenyao Gao): the encoder is causal, so zeros padded after a
+            # reference change none of its codes.
             frames_per_second = math.ceil(codec.sample_rate / self.frame_length)
             max_frame_count = math.ceil(
-                min(graph_max_seconds, max_reference_audio_seconds)
+                min(reference_encode_graph_max_seconds, max_reference_audio_seconds)
                 * codec.sample_rate
                 / self.frame_length
             )
@@ -153,7 +142,8 @@ class Drama3ReferenceEncodeHook(FishReferenceEncodeHook):
                 self.graphs[frame_count] = graph
         current_stream.wait_stream(capture_stream)
         device_module.synchronize(self.device)
-        # The warm runs' blocks belong to the capture stream, where nothing reuses them.
+        # note (Wenyao Gao): the warm runs' blocks belong to the capture stream, where
+        # nothing reuses them.
         device_module.empty_cache()
         logger.info(
             f"Drama 3 reference encode: {len(self.graphs)} graphs up to "
@@ -173,7 +163,12 @@ class Drama3ReferenceEncodeHook(FishReferenceEncodeHook):
                 quantizer.semantic_quantizer,
                 quantizer.quantizer,
             ):
-                cast_autocast_weights(module, self.autocast_dtype)
+                for layer in module.modules():
+                    if isinstance(layer, (torch.nn.Conv1d, torch.nn.Linear)):
+                        for parameter in layer.parameters(recurse=False):
+                            parameter.data = parameter.data.to(self.autocast_dtype)
+                    else:
+                        pass
         else:
             pass
         self.codec_encoder = CodecEncoder(self.codec.encoder, self.autocast_dtype)
@@ -201,16 +196,9 @@ class Drama3ReferenceEncodeHook(FishReferenceEncodeHook):
             return super().encode_reference_waveform(audio, sr)
         else:
             pass
-        return self.encode_waveform(self.reference_waveform(audio, sr))
-
-    def reference_waveform(self, audio: torch.Tensor, sr: int) -> torch.Tensor:
-        """The [1, samples] CPU waveform the codec encodes: mono, at the codec's rate,
-        within the length limit, and clamped to [-1, 1] under autocast. Mirrors
-        FishReferenceEncodeHook.encode_reference_waveform up to the codec call."""
-        if (
-            self.max_reference_audio_seconds is not None
-            and audio.shape[-1] > self.max_reference_audio_seconds * sr
-        ):
+        # note (Wenyao Gao): the same preparation as
+        # FishReferenceEncodeHook.encode_reference_waveform up to its codec call.
+        if audio.shape[-1] > self.max_reference_audio_seconds * sr:
             raise ValueError(
                 f"reference audio lasts {audio.shape[-1] / sr:.1f} s, longer than "
                 f"the {self.max_reference_audio_seconds:g} s limit; shorten it or "
@@ -223,16 +211,16 @@ class Drama3ReferenceEncodeHook(FishReferenceEncodeHook):
         else:
             pass
         audio = torchaudio.functional.resample(audio, sr, self.codec.sample_rate)
-        audios = audio.squeeze(0).unsqueeze(0)
         if self.autocast_dtype is not None:
-            audios = audios.clamp(-1.0, 1.0)
+            audio = audio.clamp(-1.0, 1.0)
         else:
             pass
-        return audios
+        return self.encode_waveform(audio)
 
-    def encode_waveform(self, audios: torch.Tensor) -> torch.Tensor:
-        """[codebooks, frames] CPU codes of a reference_waveform result."""
-        sample_count = int(audios.shape[-1])
+    def encode_waveform(self, waveform: torch.Tensor) -> torch.Tensor:
+        """[codebooks, frames] CPU codes of a [1, samples] CPU waveform at the codec's
+        sample rate."""
+        sample_count = int(waveform.shape[-1])
         if sample_count == 0:
             raise ValueError("reference audio is empty")
         else:
@@ -248,11 +236,12 @@ class Drama3ReferenceEncodeHook(FishReferenceEncodeHook):
             dtype=torch.float32,
             pin_memory=True,
         )
-        host_audio[0, :, :sample_count] = audios
+        host_audio[0, :, :sample_count] = waveform
         device_module = torch.get_device_module(self.device)
-        encoded = device_module.Event()
-        # A host sync under the lock would queue every other request's encode behind
-        # this one's device work, so the event is waited on after the lock.
+        encoded_event = device_module.Event()
+        # note (Wenyao Gao): a host sync under the lock would queue every other
+        # request's encode behind this one's device work, so the event is waited on
+        # after the lock.
         with self.encode_lock:
             if is_graphed:
                 self.graph_audio[padded_frame_count].copy_(
@@ -270,6 +259,6 @@ class Drama3ReferenceEncodeHook(FishReferenceEncodeHook):
                 pin_memory=True,
             )
             host_codes.copy_(device_codes[0, :, :frame_count], non_blocking=True)
-            encoded.record(device_module.current_stream(self.device))
-        encoded.synchronize()
+            encoded_event.record(device_module.current_stream(self.device))
+        encoded_event.synchronize()
         return host_codes
