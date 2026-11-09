@@ -494,7 +494,7 @@ At c=1 streaming delivers first audio ~2.2× sooner at a ~38% throughput cost. T
 
 ### SeedTTS English Speech Results
 
-Results for the full 1,088-sample English SeedTTS split on 3× H200 (Thinker TP=2 and a dedicated Talker GPU), at concurrency 4 with voice `DB30`, temperature 0.7, seed 42, and `max_new_tokens=256`. AudioVAE uses FlashAttention-2. WER is corpus WER from Qwen3-ASR-1.7B. Each mode was measured once after four warmup requests.
+Results for the full 1,088-sample English SeedTTS split on 3× H200 (Thinker TP=2 and a dedicated Talker GPU), at concurrency 4 with voice `DB30`, temperature 0.7, seed 42, and `max_new_tokens=256`. These numbers were measured with the AudioVAE on FlashAttention-2. SGLang-Omni now always runs the AudioVAE on SDPA, which matched FlashAttention-2's accuracy against an fp32 reference and decoded about 20% faster on H100, with unchanged end-to-end talker latency. WER is corpus WER from Qwen3-ASR-1.7B. Each mode was measured once after four warmup requests.
 
 | Mode | Throughput (req/s) | Mean latency (s) | First audio (s) | Audio throughput (audio-s/s) | EN WER |
 | --- | ---: | ---: | ---: | ---: | ---: |
