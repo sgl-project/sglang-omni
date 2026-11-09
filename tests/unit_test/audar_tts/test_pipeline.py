@@ -510,10 +510,25 @@ def test_reference_hook_preserves_key_and_tensor_contract(
         model_id="codec",
         model_revision="revision",
         encoder_id="neucodec",
-        encoder_config_hash=stages.hash_bytes(b"sample_rate:16000"),
+        encoder_config_hash=stages.hash_bytes(
+            b"sample_rate:16000;w2v:facebook/w2v-bert-2.0"
+        ),
         artifact_kind="audar_reference_codes",
         input_key=stages.reference_key(item),
     )
+
+    local_hook = stages.AudarReferenceEncodeHook(
+        codec=FakeCodec(),
+        device="cpu",
+        codec_model="codec",
+        codec_revision="revision",
+        codec_w2v_model_path="/models/w2v-a",
+    )
+    local_key = local_hook.cache_key(item)
+    assert local_key.encoder_config_hash == stages.hash_bytes(
+        b"sample_rate:16000;w2v:/models/w2v-a"
+    )
+    assert local_key.encoder_config_hash != key.encoder_config_hash
 
     stored = hook.store_artifact(torch.tensor([7, 8, 9], dtype=torch.long))
     first = hook.load_artifact(stored)
@@ -627,8 +642,9 @@ def test_load_codec_constructs_a_local_directory_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
     codec_dir = tmp_path / "neucodec"
-    w2v_dir = tmp_path / "facebook_w2v_bert_2_0"
+    w2v_dir = tmp_path / "w2v-bert-2.0"
     codec_dir.mkdir()
     w2v_dir.mkdir()
     weights_path = codec_dir / "pytorch_model.bin"
@@ -643,7 +659,10 @@ def test_load_codec_constructs_a_local_directory_snapshot(
     class RecordingCodec:
         def __init__(self, sample_rate: int, hop_length: int) -> None:
             constructed.append((sample_rate, hop_length))
-            model_module.Wav2Vec2BertModel.from_pretrained("facebook/w2v-bert-2.0")
+            model_module.Wav2Vec2BertModel.from_pretrained(
+                "facebook/w2v-bert-2.0",
+                output_hidden_states=True,
+            )
             model_module.AutoFeatureExtractor.from_pretrained("facebook/w2v-bert-2.0")
 
         def load_state_dict(self, state_dict: dict[str, object], strict: bool) -> None:
@@ -670,10 +689,10 @@ def test_load_codec_constructs_a_local_directory_snapshot(
     stages.load_codec.cache_clear()
     try:
         codec = stages.load_codec(
-            str(codec_dir),
+            "~/neucodec",
             "ignored",
             "cpu",
-            codec_w2v_model_path=str(w2v_dir),
+            codec_w2v_model_path="~/w2v-bert-2.0",
         )
         assert isinstance(codec, RecordingCodec)
         assert constructed == [(24000, 480)]
@@ -698,15 +717,56 @@ def test_load_codec_constructs_a_local_directory_snapshot(
         stages.load_codec.cache_clear()
         with pytest.raises(RuntimeError, match="constructor failed"):
             stages.load_codec(
-                str(codec_dir),
+                "~/neucodec",
                 "ignored",
                 "cpu",
-                codec_w2v_model_path=str(w2v_dir),
+                codec_w2v_model_path="~/w2v-bert-2.0",
             )
         assert model_module.AutoFeatureExtractor is feature_extractor
         assert model_module.Wav2Vec2BertModel is w2v_model
     finally:
         stages.load_codec.cache_clear()
+
+
+def test_load_codec_serializes_remote_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class TrackingLock:
+        def __enter__(self) -> None:
+            events.append("enter")
+
+        def __exit__(self, *args: object) -> None:
+            events.append("exit")
+
+    class RemoteCodecInstance:
+        def eval(self) -> "RemoteCodecInstance":
+            events.append("eval")
+            return self
+
+        def to(self, device: str) -> "RemoteCodecInstance":
+            events.append("to")
+            return self
+
+    class RemoteCodec:
+        @classmethod
+        def from_pretrained(cls, model: str, revision: str) -> RemoteCodecInstance:
+            events.append("construct")
+            return RemoteCodecInstance()
+
+    fake_package = types.ModuleType("neucodec")
+    fake_package.NeuCodec = RemoteCodec
+    monkeypatch.setitem(sys.modules, "neucodec", fake_package)
+    monkeypatch.setattr(stages, "_local_codec_construction_lock", TrackingLock())
+    stages.load_codec.cache_clear()
+    try:
+        codec = stages.load_codec("remote/codec", "main", "cpu")
+    finally:
+        stages.load_codec.cache_clear()
+
+    assert isinstance(codec, RemoteCodecInstance)
+    assert events == ["enter", "construct", "exit", "eval", "to"]
 
 
 @pytest.mark.parametrize(
