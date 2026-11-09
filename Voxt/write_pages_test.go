@@ -105,7 +105,7 @@ func TestRewritePage(t *testing.T) {
 		t.Errorf("preview %q", firstTexts(tt))
 	}
 	// A try that is blocked says why, here.
-	click(t, tt, "Start a try")
+	click(t, tt, "Start a test")
 	if a.sess.State.Live() || !has(tt, "No speech model is installed.") {
 		t.Errorf("try %+v", a.sess)
 	}
@@ -150,7 +150,7 @@ func TestOverlayWriting(t *testing.T) {
 	if a.ov.mode != ovAnswer || a.answer.problem == nil || a.notice != nil || a.answer.input.Raw != "shorter" {
 		t.Fatalf("failure %s %+v %+v", a.ov.mode, a.answer, a.notice)
 	}
-	tt := cardTester(a)
+	tt := cardTester(t, a)
 	frames(tt)
 	for _, s := range []string{"AI Answer", "Try again", "shorter", "a long text"} {
 		if !has(tt, s) {

@@ -59,7 +59,7 @@ func (a *app) readinessList() []readiness {
 			fix: func() { a.askPermission(proto.PermissionMicrophone, nil) }})
 	default:
 		out = append(out, readiness{key: "home-mic", title: i18n.T("Microphone"), kind: noticeError,
-			text: i18n.T("Voxt may not use the microphone: allow it in System Settings."), action: i18n.T("Open Permissions"), fix: openPerms})
+			text: i18n.T("Voxt does not have microphone access. Allow it in System Settings."), action: i18n.T("Open Permissions"), fix: openPerms})
 	}
 	// Accessibility.
 	switch {
@@ -68,7 +68,7 @@ func (a *app) readinessList() []readiness {
 		out = append(out, readiness{key: "home-access", title: i18n.T("Accessibility"), ok: true, text: i18n.T("Allowed")})
 	default:
 		out = append(out, readiness{key: "home-access", title: i18n.T("Accessibility"), kind: noticeWarn,
-			text: i18n.T("Without Accessibility results are copied for you to paste, and shortcuts such as Right ⌥ do not work."), action: i18n.T("Open Permissions"), fix: openPerms})
+			text: i18n.T("Without Accessibility access, results are copied for you to paste, and shortcuts such as Right ⌥ do not work."), action: i18n.T("Open Permissions"), fix: openPerms})
 	}
 	// The shortcut.
 	out = append(out, a.shortcutReadiness())

@@ -31,6 +31,15 @@ func pageHeader(c *ui.Context, title string, trailing func()) {
 // the column stays this wide in the middle of the page.
 const pageMaxW = 880
 
+// A feature page splits into two columns from twoColumnW of page width
+// (two of the default window's column, about 550, and their gap), and
+// reads at most pageMaxW2 wide (#3644 FB16: one column left most of a
+// wide window blank and the page several screens long).
+const (
+	twoColumnW = 1180
+	pageMaxW2  = 1280
+)
+
 // columnPageHeader is pageHeader over a pageColumn: in a window wider
 // than the column, its title and trailing line up with the column's
 // content instead of the window's edges (#3644: in full screen the title

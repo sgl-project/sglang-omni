@@ -83,11 +83,22 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 Voice cloning:
 
-See the [non-streaming Fish Speech voice cloning request](../basic_usage/tts.md#fish-speech-voice-cloning).
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "fishaudio/s2-pro",
+    "voice": "default",
+    "input": "Get the trust fund to the bank early.",
+    "references": [{
+      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
+      "text": "We asked over twenty different people, and they all said it was his."
+    }]
+  }' \
+  --output output.wav
+```
 
-Streaming:
-
-See the [streaming Fish Speech voice cloning request](../basic_usage/tts.md#fish-speech-voice-cloning).
+Streaming: add `"stream": true` to a speech request. Shared raw WAV, PCM, and SSE clients are in [TTS Model Usage](../basic_usage/tts.md#streaming).
 
 ## Request Parameters
 

@@ -112,7 +112,7 @@ func TestParseLegacySettings(t *testing.T) {
 	}
 	ol := by["ollama"]
 	if g := ol.Generation; ol.Endpoint != "http://192.168.1.20:11434/v1" || g.KeepAlive != "10m" || g.Thinking != llm.ThinkOff ||
-		g.ResponseFormat != llm.ResponseJSONSchema || g.JSONSchema != `{"type": "object"}` || g.OptionsJSON != `{"num_ctx": 8192}` {
+		g.ResponseFormat != llm.ResponseJSONSchema || g.JSONSchema != `{"type": "object"}` || !strings.Contains(g.ExtraBodyJSON, `"num_ctx": 8192`) {
 		t.Errorf("ollama %+v", ol)
 	}
 	for _, id := range []string{"deepseek", "omlx"} {

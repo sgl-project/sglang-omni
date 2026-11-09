@@ -278,8 +278,8 @@ func TestOverlayCheckSteps(t *testing.T) {
 				if a.ov.w != layout.AnswerW || a.ov.h >= layout.CardChrome+3*layout.CardTextSize*2 {
 					t.Errorf("%s/%s: %d×%d", lang, st.name, a.ov.w, a.ov.h)
 				}
-			case "card-long":
-				if a.ov.h != layout.CardChrome+layout.CardBodyMax {
+			case "card-long": // note (luojiaxuan): grown past a short screen's card, within the work area
+				if a.ov.h <= layout.CardChrome+layout.CardBodyMax || a.ov.h > layout.CardChrome+a.cardBodyMax(a.cardNow()) {
 					t.Errorf("%s/%s: %d×%d", lang, st.name, a.ov.w, a.ov.h)
 				}
 			}

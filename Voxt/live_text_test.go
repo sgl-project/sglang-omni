@@ -120,9 +120,9 @@ func TestLiveLines(t *testing.T) {
 }
 
 // TestRewriteWritesIntoCard: Rewrite's first answer goes to the answer
-// card as the model writes it, the card at its full height from the
-// first words (it does not grow line by line), the pill until then and
-// with Show live text off. The pill showed a loader until the whole answer
+// card as the model writes it, the card as high as the words so far (it
+// grows with them, #3644 FB41), the pill until then and with Show live
+// text off. The pill showed a loader until the whole answer
 // was in (#3644).
 func TestRewriteWritesIntoCard(t *testing.T) {
 	a, _, _ := newTestApp(t)
@@ -137,12 +137,31 @@ func TestRewriteWritesIntoCard(t *testing.T) {
 		t.Fatalf("writing: mode %v", m)
 	}
 	w, h, _ := a.cardSize()
-	if v := a.cardNow(); v.text != "Short." || !v.busy || w != layout.CardSizes[0].W || h != layout.CardChrome+layout.CardSizes[0].BodyMax {
+	if v := a.cardNow(); v.text != "Short." || !v.busy || w != layout.CardSizes[0].W || h <= layout.CardChrome || h >= layout.CardChrome+layout.CardBodyMax {
 		t.Errorf("the writing card: %q busy %v, %d×%d", v.text, v.busy, w, h)
 	}
 	a.prefs.Overlay.HideLiveText = true
 	if m := a.overlayModeNow(); m != ovWorking {
 		t.Errorf("Show live text off: mode %v", m)
+	}
+}
+
+// TestRewriteWritingFollows: as the model writes a long first answer into
+// the card, the card's text follows the newest words; it stayed at the
+// top, and the answer streamed out of sight below its last line.
+func TestRewriteWritingFollows(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	shortScreen(t, a)
+	long := strings.Repeat("The meeting moves to Thursday at three. ", 30)
+	s := session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: session.Composing, Partial: "make it longer", Selection: "x", Draft: long[:200]}
+	snap(a, s)
+	tt := hudTester(a.overlayView, a.ov.w+2*layout.Pad, a.ov.h+2*layout.Pad)
+	frames(tt)
+	s.Draft = long
+	snap(a, s)
+	frames(tt)
+	if st := a.ov.cardScroll; st.MaxY <= 0 || st.Y < st.MaxY-2 {
+		t.Errorf("the writing card shows %v of %v: not the newest words", st.Y, st.MaxY)
 	}
 }
 
@@ -191,5 +210,30 @@ func TestLiveLinesScroll(t *testing.T) {
 	frames(tt)
 	if !l.follow || l.st.Y != l.st.MaxY {
 		t.Errorf("back at the end: %+v", *l)
+	}
+}
+
+// TestLiveLinesOverflowMeasured: the live text guessed to fit ten lines
+// lets the pointer through; when its measured height says it does not,
+// the window takes the pointer again, so that the wheel scrolls it rather
+// than the app under the overlay.
+func TestLiveLinesOverflowMeasured(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.measureHook = nil // the guesses until the view measured, then the measures
+	a.prefs.Overlay.LiveLines = true
+	text := strings.Repeat("meet at three ", 20)
+	a.sess = session.Snapshot{ID: "s1", State: session.Recording, Partial: text}
+	a.overlaySync()
+	if !a.ov.passThrough {
+		t.Fatal("a text guessed to fit keeps the pointer from passing through")
+	}
+	line, _ := pillLine(a.pillSession())
+	if a.ov.textW == nil {
+		a.ov.textW = map[ovSized]ovMeasured{}
+	}
+	a.ov.textW[liveLinesKey(line)] = ovMeasured{w: layout.LinesTextW, h: (layout.LinesMax + 2) * layout.LineH}
+	a.overlayRestyle()
+	if a.ov.passThrough {
+		t.Error("the text measured past ten lines still lets the pointer through")
 	}
 }

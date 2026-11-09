@@ -77,7 +77,7 @@ func (a *app) endRedo(s session.Snapshot) {
 		a.answer.msg, a.answer.copied = "", false
 	case s.State == session.Cancelled:
 	default:
-		why := i18n.T("the language model answered nothing")
+		why := i18n.T("the language model returned an empty answer")
 		if s.Problem != nil && s.Problem.Code != session.ProblemEmpty && s.Problem.Code != session.ProblemNoSpeech {
 			why, _, _ = sessionProblemText(s.Problem)
 		}

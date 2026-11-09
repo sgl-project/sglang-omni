@@ -346,7 +346,7 @@ func TestChatGPTRetiredModel(t *testing.T) {
 	a.openProviderDialog(local.LLM, providers.ChatGPT)
 	frames(tt)
 	d := &a.provDlg
-	if d.model != otherModel() || d.customModel != "gpt-5.5" || !has(tt, "Model id") {
+	if d.model != otherModel() || d.customModel != "gpt-5.5" || !has(tt, "Model ID") {
 		t.Fatalf("model %q custom %q: %q", d.model, d.customModel, tt.Texts())
 	}
 	if got := d.setup().Model; got != "gpt-5.5" || d.unsaved() {

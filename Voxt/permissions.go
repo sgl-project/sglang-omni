@@ -152,7 +152,7 @@ func (a *app) permissionsSettings(c *ui.Context) {
 			statusMark(c, icons.DangerTriangle, t.Warning, text)
 		}
 	}
-	caption(c, i18n.T("macOS asks you before Voxt may record or work with other apps. Each row says what needs it; you can change them any time in System Settings."))
+	caption(c, i18n.T("macOS asks before Voxt can record or work with other apps. Each row says what needs the permission; you can change them any time in System Settings."))
 	if a.perms.mic == permission.NotDetermined || !a.perms.access {
 		ui.Row(c).Children(func() {
 			if ui.Button(c.Key("perm-ask-required"), i18n.T("Ask for the required permissions")).Tooltip(i18n.T("macOS asks for each in turn: the microphone, then Accessibility.")).Clicked() {
@@ -163,7 +163,7 @@ func (a *app) permissionsSettings(c *ui.Context) {
 	sectionTitle(c, i18n.T("Required"))
 
 	micText, micOK := uitext.PermissionText(a.perms.mic)
-	settingRow(c, "perm-mic", i18n.T("Microphone"), i18n.T("Transcribe, translate and rewrite by voice record while you hold or tap their shortcut."), func() {
+	settingRow(c, "perm-mic", i18n.T("Microphone"), i18n.T("Transcribe, Translate and Rewrite record while you hold or tap their shortcut."), func() {
 		badge(micText, micOK)
 		if a.perms.mic == permission.NotDetermined {
 			if ghostButton(c.Key("perm-mic-ask"), i18n.T("Ask")).Clicked() {

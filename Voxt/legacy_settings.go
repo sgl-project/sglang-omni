@@ -184,7 +184,10 @@ func (s legacyLLMSetup) provider() (p settings.Provider, check, ok bool) {
 		MaxOutputTokens: g.MaxOutputTokens, Temperature: g.Temperature, TopP: g.TopP, TopK: g.TopK, MinP: g.MinP, Seed: g.Seed,
 		Stop: g.Stop, PresencePenalty: g.PresencePenalty, FrequencyPenalty: g.FrequencyPenalty, RepetitionPenalty: g.RepetitionPenalty,
 		Logprobs: g.Logprobs, TopLogprobs: g.TopLogprobs, KeepAlive: strings.TrimSpace(s.OllamaKeepAlive),
-		OptionsJSON: strings.TrimSpace(g.ExtraOptionsJSON), ExtraBodyJSON: strings.TrimSpace(g.ExtraBodyJSON),
+		ExtraBodyJSON: strings.TrimSpace(g.ExtraBodyJSON),
+	}
+	if id != "openai" { // the previous Voxt never sent its options to OpenAI
+		gen.ExtraBodyJSON = settings.WithOptions(gen.ExtraBodyJSON, g.ExtraOptionsJSON)
 	}
 	switch g.ResponseFormat {
 	case llm.ResponseJSON:

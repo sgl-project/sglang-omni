@@ -169,7 +169,7 @@ func (a *app) dictionaryPage(c *ui.Context) {
 			if m.Item(i18n.T("Import…")).Chosen() {
 				a.importTerms()
 			}
-			if legacyLibrary() != "" && m.Item(i18n.T("Import from the previous Voxt…")).Chosen() {
+			if legacyLibrary() != "" && m.Item(i18n.T("Import from Voxt 1.x…")).Chosen() {
 				a.importLegacy()
 			}
 			if m.Item(i18n.T("Export as CSV…")).Chosen() {

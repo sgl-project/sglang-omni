@@ -141,7 +141,7 @@ func TestAnswerCardButtons(t *testing.T) {
 		snap(a, session.Snapshot{ID: id, State: session.Done, Result: "Answer " + id, Card: true, Delivery: deliver.ReasonNotEditable})
 	}
 	card("c1")
-	tt := cardTester(a)
+	tt := cardTester(t, a)
 	frames(tt)
 	if !tt.HasText("Answer c1") || tt.HasText("No text field is focused: click where it should go, then insert, or copy it.") {
 		t.Errorf("card texts %q", firstTexts(tt))
@@ -225,7 +225,7 @@ func TestSessionProblemTexts(t *testing.T) {
 		action string
 	}{
 		{session.Problem{Code: session.ProblemNoASR}, "No speech model is installed.", actionModels},
-		{session.Problem{Code: session.ProblemMicrophone, Err: errors.New("x")}, "Voxt may not use the microphone.", actionPermissions},
+		{session.Problem{Code: session.ProblemMicrophone, Err: errors.New("x")}, "Voxt does not have microphone access.", actionPermissions},
 		{session.Problem{Code: session.ProblemHelper}, "The helper stopped: try again in a moment.", actionHelper},
 		{session.Problem{Code: session.ProblemNoSpeech}, "Nothing was heard.", actionNone},
 		{session.Problem{Code: session.ProblemTooShort}, "", actionNone},
@@ -525,6 +525,32 @@ func TestOverlaySceneLabel(t *testing.T) {
 	}
 	if uitext.SceneShort(a.sess) != "Team chat" {
 		t.Errorf("short %q", uitext.SceneShort(a.sess))
+	}
+}
+
+// TestOverlayHidesWhileInserting: once the result is ready and goes into
+// the app, the preview of the speech it came from leaves at once instead
+// of staying over the inserted text until the paste is checked (up to the
+// deliver timeout); a result that could not go in comes back in the card.
+func TestOverlayHidesWhileInserting(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	ft := new(fakeTimers).install(a)
+	snap(a, session.Snapshot{ID: "s1", State: session.Recording, Partial: "meet at three"})
+	snap(a, session.Snapshot{ID: "s1", State: session.Composing, Partial: "meet at three"})
+	if a.ov.mode != ovWorking || !a.ov.shown {
+		t.Fatalf("composing: %s, shown %v", a.ov.mode, a.ov.shown)
+	}
+	snap(a, session.Snapshot{ID: "s1", State: session.Delivering, Partial: "meet at three", Result: "Meet at three."})
+	if a.ov.shown {
+		t.Fatalf("delivering: still shown (%s)", a.ov.mode)
+	}
+	ft.advance(ovGone)
+	if a.ov.visible {
+		t.Fatal("delivering: still on screen")
+	}
+	snap(a, session.Snapshot{ID: "s1", State: session.Done, Result: "Meet at three.", Card: true})
+	if a.ov.mode != ovAnswer || !a.ov.shown {
+		t.Errorf("not inserted: %s, shown %v; want the card", a.ov.mode, a.ov.shown)
 	}
 }
 

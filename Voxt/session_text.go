@@ -26,9 +26,9 @@ func sessionProblemText(p *session.Problem) (text, more, action string) {
 	case session.ProblemSpeechWait:
 		return p.Err.Error(), "", actionModels
 	case session.ProblemMicrophone:
-		return i18n.T("Voxt may not use the microphone."), errText(p.Err), actionPermissions
+		return i18n.T("Voxt does not have microphone access."), errText(p.Err), actionPermissions
 	case session.ProblemDevice:
-		return i18n.T("No microphone gave any sound."), errText(p.Err), actionNone
+		return i18n.T("No sound came from any microphone."), errText(p.Err), actionNone
 	case session.ProblemHelper:
 		return i18n.T("The helper stopped: try again in a moment."), errText(p.Err), actionHelper
 	case session.ProblemASR:
@@ -46,7 +46,7 @@ func sessionProblemText(p *session.Problem) (text, more, action string) {
 	case session.ProblemNoLLM:
 		return i18n.T("No language model is set up."), "", actionLanguage
 	case session.ProblemEmpty:
-		return i18n.T("The language model answered nothing."), "", actionNone
+		return i18n.T("The language model returned an empty answer."), "", actionNone
 	case session.ProblemTruncated:
 		return i18n.T("The model hit its length limit: the answer may be incomplete."), "", actionNone
 	case session.ProblemLLM:

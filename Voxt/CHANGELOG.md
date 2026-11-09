@@ -65,7 +65,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **The live text stays while the language model works**: after you stop, the overlay keeps the words it showed while you spoke (Rewrite's instruction too) until the result is typed or shows in the card; it no longer drops to a bare loader. The model's draft still does not replay there.
 - **Rewrite's answer writes into the card**: once the model starts answering, the overlay turns into the answer card at its full height and the answer appears in it as it is written, instead of a loader until the whole answer is in. Close stops it. With Show live text off, the card comes when the answer is done, as before.
 - **Scroll back through live text in lines**: when the live text is longer than the overlay's ten lines, the overlay takes the wheel: scroll up to read what you said before, and new words leave it there; scroll back to the end and it follows the newest words again.
-- **Extra Body JSON is in Advanced**: the language model dialog has no Expert section any more; Extra Body JSON (and Ollama's Options JSON) are at the end of the folded Advanced section, with the other request settings.
+- **One Request parameters object in Advanced**: the language model dialog has no Expert section any more; at the end of the folded Advanced section, one JSON object takes every custom request parameter, in place of Extra Body JSON and Ollama's separate Options JSON. It is applied to the request last as a JSON merge patch (RFC 7386): its keys win, an object merges into the one Voxt sends (Ollama's model options go in `"options"`), and `null` leaves a field out. A saved or imported Options JSON moves into it as `"options"`.
 - **History, Dictionary, Notes and App enhancement in a wide window**: in full screen or a wide window these pages keep their lists and panes up to 1120 points wide in the middle, with the title and buttons lined up with them; Logs still uses the whole width.
 
 ### Fixed
@@ -80,6 +80,18 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Browser text boxes (GitHub and similar)** stop showing "The text did not land where you were typing" when ⌘V actually worked: Chromium-style web editors often report the same Accessibility value after a paste, so the check treats an unchanged web area or contenteditable reading as unverified instead of failed (#3644 FB36).
 - **Language model setups imported from Voxt 1.x work, or the result says why not**: a custom address with no path gets the path Voxt 1.x added, OpenAI setups keep only what Voxt 1.x sent, Anthropic's output limit stays above a thinking budget, and the import's result asks again for a key saved for Ollama, oMLX or LM Studio and names the address rule for a plain http address on another host.
 - **The import from Voxt 1.x keeps clean-up off and says what it leaves out**: Transcribe's clean-up stays off if it was off in Voxt 1.x, so dictations do not start going to a language model after you paste a key; the result names Codex and the features that used it, and says when Voxt 1.x's preferences could not be read. `{{SOURCE_TEXT}}` and `{{DICTATED_PROMPT}}` no longer reach the model literally.
+- **The preview leaves when the result goes in**: the live text no longer stays over the app for a moment while the result is pasted and checked; a result that cannot go in still comes back in the card.
+- **The command palette in a small window** keeps its margin and rounded corners at the largest interface size, and **App enhancement in a wide window** fills the page under its header instead of stopping 760 points wide.
+- **The wheel scrolls a long preview as soon as it passes ten lines**: when the measured text turned out longer than the first guess, the overlay kept letting the pointer through, and the wheel scrolled the app underneath instead.
+- **Follow-ups on a long selection no longer time out**: a follow-up in the answer card sends the earlier selection and answers again, but its wait for the model's first words counted only what you just said; it now counts all of it.
+- **Rewrite's card follows the answer as it is written**: a long answer used to stream on below the card's last line, out of sight; the card now shows the newest words, unless you scroll up to read.
+- **Resize the answer card from the card**: a small button in the card's bottom-right corner steps it through Small, Medium and Large (and back), the same size the feature's page sets. On a short screen a Medium or Large card keeps its text to the room the screen has, instead of reaching past its edge.
+- **Your rules is one long field, no scroll bar of its own**: the rules field grows with the whole prompt, so a long prompt reads down the page under one scroll bar; the page follows the cursor as you type or move it, and Find scrolls the page to the match.
+- **Transcribe, Translate and Rewrite in a wide window read in two columns**: shortcuts and models on the left, the feature's own settings, answer card, rules and Try it on the right, so the page fills a wide window instead of a long column in the middle of blank space.
+- **A copy pass over the English text**: about 45 strings that read as translated now read as plain English: a "test" instead of a "try" in the setup guide, "Voxt does not have microphone access" instead of "Voxt may not use the microphone", "frontmost app" instead of "the app in front", "Group prompt" instead of "Scene prompt", "Cancel recording" instead of "Cancel transcription" (it cancels Translate and Rewrite too), "Import from Voxt 1.x" instead of "the previous Voxt", "Model ID", "Thinking". The three American spellings left in a British-spelled app (Recognizing, Optimize, optimization) follow the rest. In Chinese only 场景提示词 and 取消转录 change, to 分组提示词 and 取消录音.
+- **Language model debug page** (command palette, or the bottom of the Language models page), as Voxt 1.x's LLM debug window: choose a language model you set up and a request (Transcribe, Translate, Rewrite or an App enhancement group), edit its prompt there without saving, type the text, and Run shows the answer, its time and every message sent. Use this prompt saves the edit as the feature's rules or the group's prompt.
+- **The answer card grows with a long answer, and can be dragged**: its height follows the text up to the screen (it scrolls only then), also while Rewrite writes; the card sizes set its width. Drag the card by its background or header to move it out of the way: it keeps that place as it grows, stays on the screen, and the next card shows at the overlay's place again.
+- **A slow first token no longer fails Translate and Rewrite**: the language model's first token has no deadline of its own (it was 15 s). A model that reasons before it answers, or Ollama loading a model, sent nothing for a while and Translate and Rewrite failed with "The language model did not answer in time." (Transcribe quietly kept the recognised text). The request's whole deadline, and the 5 s limit between tokens once the answer streams, stay.
 
 ### 中文
 
@@ -144,7 +156,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **语言模型处理时实时文字留在浮窗里**：停止录音后，浮窗保留说话时显示的文字（转写的指令也是），直到结果输入进去或出现在卡片里，不再只剩一个加载动画。模型写的草稿仍然不在浮窗里回放。
 - **转写的回答直接写进卡片**：模型一开始回答，浮窗就变成满高的答案卡片，回答边写边出现在里面，不再一直转圈等整段写完。点关闭会停止。关掉“显示实时文字”时，和以前一样写完才出卡片。
 - **多行实时文字可以往回翻**：实时文字超过浮窗的十行时，浮窗接收滚轮，可以往上翻看前面说的话，新的字不会把它拉回去；滚回底部就重新跟着最新的字。
-- **额外请求体 JSON 放进了“高级”**：语言模型对话框不再有“专家”一节，额外请求体 JSON（以及 Ollama 的 Options JSON）放在默认折叠的“高级”最后，和其他请求设置在一起。
+- **自定义请求参数合成一个 JSON 对象**：语言模型对话框不再有“专家”一节。默认折叠的“高级”最后有一个“请求参数”框，所有自定义请求参数都写在这一个 JSON 对象里，取代原来的额外请求体 JSON 和 Ollama 单独的 Options JSON。它按 JSON merge patch（RFC 7386）最后合并进请求：同名的键以这里为准；值是对象时，与 Voxt 发送的同名对象逐层合并（Ollama 的模型选项写在 `"options"` 里）；值写 `null` 则不发送这个字段。已保存的和从 1.x 导入的 Options JSON 会自动放进 `"options"`。
 - **宽窗口里历史、词典、笔记和应用增强也居中**：全屏或窗口很宽时，这几页的列表和面板最宽 1120 点、放在中间，标题和按钮跟着对齐；日志页仍然占满宽度。
 
 #### 修复
@@ -159,6 +171,18 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **浏览器输入框（GitHub 等）**：⌘V 已经粘进输入框时，不再误报“文字没有出现在输入位置”。Chromium 类网页编辑器常在粘贴后仍让无障碍读到相同长度；网页区域或 contenteditable 里若对比结果不变，按“无法校验”处理，仍算插入（#3644 FB36）。
 - **从 Voxt 1.x 导入的语言模型设置要么能用，要么在结果里说明原因**：没有路径的自定义地址补上 Voxt 1.x 加过的路径，OpenAI 只保留 Voxt 1.x 实际发送的内容，Anthropic 的输出上限保持在思考预算之上，存过 Key 的 Ollama、oMLX、LM Studio 会被要求重新填写，另一台机器上的 http 地址会写明地址规则。
 - **从 Voxt 1.x 导入时保持清理关闭，并说明没有导入什么**：Voxt 1.x 里关着转录的清理时导入后仍然关着，填好 Key 后转录的文字不会开始发给语言模型；结果里写明 Codex 和用过它的功能，读不了 Voxt 1.x 的偏好设置时也会说明。`{{SOURCE_TEXT}}` 和 `{{DICTATED_PROMPT}}` 不再原样发给模型。
+- **插入时预览立即收起**：结果一开始粘贴进 App，浮窗就淡出，不会再盖在刚插入的文字上停留片刻；插入不了的结果照常显示在答案卡片里。
+- **命令面板适应小窗口**：窗口较小、界面缩放调到最大时，命令面板两侧仍留有边距，圆角完整。**应用增强页在宽窗口里用满宽度**，不再限制在 760 点宽。
+- **预览超过十行后可以用滚轮翻看**：以前文字实际排版后比预估的长时，浮窗仍让鼠标穿透，滚轮滚动的是下面的 App；现在量出实际高度后，浮窗会接管滚轮。
+- **长选区上的追问不再超时**：在答案卡片里追问时，之前的选区和回答会和这次说的话一起重新发给模型。以前等待模型返回第一个字的时限只按这次说的话的长度计算，现在把重发的内容也算进去。
+- **转写的卡片随回答自动滚动**：以前长回答会写到卡片可见区域以下，看不到；现在卡片会跟着显示最新生成的内容，你向上滚动阅读时不会被拉回去。
+- **在卡片上直接调整大小**：卡片右下角新增一个小按钮，依次切换小、中、大三档（大之后回到小），和功能页上的“卡片大小”是同一个设置。屏幕较矮时，中、大两档的正文高度会缩小到屏幕放得下为止，卡片不再超出屏幕。
+- **“你的规则”不再套一层滚动条**：规则框的高度随提示词的长度增长，长提示词跟着整个页面滚动，页面上只有一个滚动条。打字或移动光标时，页面会跟着光标滚动；查找时，页面会滚到匹配的位置。
+- **宽窗口里转录、翻译、转写页分成两栏**：左栏是快捷键和模型，右栏是该功能的设置、答案卡片、规则和“试一试”。窗口很宽时，页面不再是两边大片空白、中间一长条单栏。
+- **英文文案过了一遍**：约 45 条有翻译腔的英文改成了地道的说法，例如设置引导里的 “try” 改成 “test”，“Voxt may not use the microphone” 改成 “Voxt does not have microphone access”，“the app in front” 改成 “frontmost app”，“Scene prompt” 改成 “Group prompt”，“Cancel transcription” 改成 “Cancel recording”（它也取消翻译和转写），“the previous Voxt” 改成 “Voxt 1.x”。英文统一用英式拼写，原来剩下的三处美式拼写也已改掉。中文文案只改了两处，与英文保持一致：“场景提示词”改为“分组提示词”，“取消转录”改为“取消录音”。
+- **新增语言模型调试页**（从命令面板或语言模型页底部进入），对应 1.x 的语言模型调试窗口：选一个已设置的语言模型和一种请求（转录、翻译、转写，或某个应用增强分组），可以在页面里临时修改提示词，改动不会保存；输入文字后点“运行”，页面显示回答、用时和发出的全部消息。点“使用这个提示词”，改动才会存为该功能的规则或分组提示词。
+- **答案卡片随长回答变大，并且可以拖动**：卡片的高度跟着内容增长，直到屏幕放不下才在卡片里滚动，转写边写边长也一样；卡片大小只决定宽度。按住卡片的空白处或标题栏，可以把卡片拖开：卡片变长时保持在拖到的位置，不会超出屏幕；关掉后，下一张卡片回到浮窗设置的位置。
+- **模型出第一个字慢，翻译和转写不再报错**：语言模型的第一个字不再单独限时（原来是 15 秒）。推理模型要先思考、Ollama 第一次要加载模型，都会有一段时间不出字，翻译和转写就会报“语言模型没有及时响应”（转录则悄悄退回识别原文）。整个请求的总时限，以及回答开始流出后两个字之间最多 5 秒的限制，都保持不变。
 
 ## [2.0.1] - 2026-11-07
 

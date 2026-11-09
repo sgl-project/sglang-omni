@@ -150,7 +150,7 @@ func TestLegacyOpenAIGeneration(t *testing.T) {
 	p, l := oneLLM(t, fmt.Sprintf(`{"providerID":"openAI","model":"gpt-5","openAITextVerbosity":"low","ollamaKeepAlive":"5m","generationSettings":{%s,"thinking":{"mode":"effort","effort":"low"},"extraOptionsJSON":"{\"a\":1}"}}`, all))
 	g := p.Generation
 	if g.Temperature != nil || g.TopP != nil || g.TopK != nil || g.MinP != nil || g.Seed != nil || len(g.Stop) != 0 || g.PresencePenalty != nil ||
-		g.FrequencyPenalty != nil || g.RepetitionPenalty != nil || g.Logprobs || g.TopLogprobs != nil || g.KeepAlive != "" || g.OptionsJSON != "" {
+		g.FrequencyPenalty != nil || g.RepetitionPenalty != nil || g.Logprobs || g.TopLogprobs != nil || g.KeepAlive != "" || strings.Contains(g.ExtraBodyJSON, `"options"`) {
 		t.Errorf("OpenAI kept what the previous Voxt never sent: %+v", g)
 	}
 	if g.MaxOutputTokens == nil || *g.MaxOutputTokens != 300 || g.ResponseFormat != "json" || g.Thinking != llm.ThinkEffort || g.ThinkingEffort != "low" || g.Verbosity != "low" {

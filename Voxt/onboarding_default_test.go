@@ -214,7 +214,7 @@ func TestGuideOnlyVADOnThisMac(t *testing.T) {
 func TestGuideChooseOther(t *testing.T) {
 	a, tt, _, _ := guideAt(t, 8)
 	click(t, tt, "Choose another model…")
-	if a.ob.open || a.shownPath() != modelsPath || !has(tt, "The setup guide waits at its Models step.") || !has(tt, "Back to the setup guide") {
+	if a.ob.open || a.shownPath() != modelsPath || !has(tt, "The setup guide is paused at the Models step.") || !has(tt, "Back to the setup guide") {
 		t.Fatalf("open %v, %s, %q", a.ob.open, a.shownPath(), tt.Texts())
 	}
 	// A model in use: the way to the others stays.

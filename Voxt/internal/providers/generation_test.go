@@ -22,7 +22,7 @@ func TestCapabilities(t *testing.T) {
 		{"custom", "", []string{"", "effort"}, effortsCustom, func(c GenCaps) bool { return c.Verbosity && slices.Contains(c.Efforts, "max") }},
 		{"anthropic", "", []string{"", "budget"}, nil, func(c GenCaps) bool { return c.TopK && !c.ResponseFormat }},
 		{"ollama", "", []string{"", "off", "on", "effort"}, []string{"low", "medium", "high"}, func(c GenCaps) bool {
-			return c.KeepAlive && c.Options && c.JSONSchema && c.MinP && c.Seed && c.Penalties
+			return c.KeepAlive && c.JSONSchema && c.MinP && c.Seed && c.Penalties
 		}},
 		{"omlx", "", nil, nil, func(c GenCaps) bool { return c.IncludeUsage && c.JSONSchema && c.TopK }},
 		{"lmstudio", "", nil, nil, func(c GenCaps) bool { return !c.IncludeUsage && !c.JSONSchema && c.TopK }},
@@ -47,20 +47,20 @@ func ptr[T any](v T) *T { return &v }
 // on save; unset settings stay out of settings.json.
 func TestGenerationSettings(t *testing.T) {
 	g := settings.Generation{MaxOutputTokens: ptr(131072), Temperature: ptr(0.0), TopP: ptr(0.9),
-		Thinking: llm.ThinkEffort, ThinkingEffort: "none", ExtraBodyJSON: `{"user":"me"}`, OptionsJSON: " "}
+		Thinking: llm.ThinkEffort, ThinkingEffort: "none", ExtraBodyJSON: `{"user":"me"}`}
 	p, err := Config(settings.Provider{ID: llm.Custom, Endpoint: "https://example.com/v1", Model: "m", Generation: g}).Resolve()
 	if err != nil {
 		t.Fatal(err)
 	}
 	pg := p.Generation
 	if *pg.MaxOutputTokens != 131072 || *pg.Temperature != 0 || *pg.TopP != 0.9 || pg.Thinking.Mode != llm.ThinkEffort ||
-		pg.Thinking.Effort != "none" || pg.ExtraBody["user"] != "me" || pg.Options != nil {
+		pg.Thinking.Effort != "none" || pg.ExtraBody["user"] != "me" {
 		t.Errorf("generation %+v", pg)
 	}
 	if err := CheckGeneration(g); err != nil {
 		t.Error(err)
 	}
-	for _, bad := range []settings.Generation{{ExtraBodyJSON: "[1]"}, {OptionsJSON: "{"}, {JSONSchema: "null"}} {
+	for _, bad := range []settings.Generation{{ExtraBodyJSON: "[1]"}, {JSONSchema: "null"}} {
 		if CheckGeneration(bad) == nil {
 			t.Errorf("accepted %+v", bad)
 		}

@@ -363,6 +363,7 @@ func Migrate(data []byte) (Settings, error) {
 	migrateNoteKeys(data, &s.Features)
 	migrateShowCard(data, &s.Features)
 	migrateSoundPreset(&s.Audio)
+	migrateOptionsJSON(data, &s.Providers)
 	s.Version = Version
 	return normalize(s), nil
 }

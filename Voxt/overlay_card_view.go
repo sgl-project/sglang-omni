@@ -12,6 +12,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -25,12 +26,15 @@ func (a *app) overlayCard(c *ui.Context) {
 	}
 	bodyH := float32(max(a.ov.h-layout.CardChrome-msgH, 0))
 	// The border takes layout.Border of the padding (MyGo's border box).
-	ui.Column(c).Fill().Padding(layout.CardPadTop-layout.Border, layout.CardPadX-layout.Border, layout.CardPadY-layout.Border).Children(func() {
+	// The card moves where its background is dragged (overlayDragged): a
+	// long answer may cover what the user reads.
+	ui.Column(c).Fill().Padding(layout.CardPadTop-layout.Border, layout.CardPadX-layout.Border, layout.CardPadY-layout.Border).DragWindow().Children(func() {
 		ui.Row(c).Height(layout.CardHeadH).Shrink(0).Gap(layout.CardHeadGap).AlignItems(ui.Center).Children(func() {
 			a.cardHeader(c, v)
 		})
 		ui.Box(c).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
 		a.cardBody(c, v, bodyH)
+		a.cardSizeButton(c, v)
 		if v.msg != "" {
 			ui.Row(c).Height(layout.CardMsgH).Shrink(0).Margin(layout.CardMsgGap, 0, 0, 0).Gap(6).AlignItems(ui.Center).Label(v.msg).Children(func() {
 				ic, col := icons.InfoCircle, ovText2
@@ -42,6 +46,29 @@ func (a *app) overlayCard(c *ui.Context) {
 			})
 		}
 	})
+}
+
+// cardSizeButton steps the card through its sizes (#3644 FB41): small,
+// medium, large and back, as the feature's page does. It sits in the
+// corner under the text, where the header has no room left at 440.
+func (a *app) cardSizeButton(c *ui.Context, v cardView) {
+	step := a.prefs.Features.CardSize(string(v.kind))
+	label, icon, next := i18n.T("Make the card larger"), icons.MaximizeSquareMinimalistic, step+1
+	if next == settings.CardSizeSteps {
+		label, icon, next = i18n.T("Make the card smaller"), icons.MinimizeSquareMinimalistic, 0
+	}
+	b := ui.ButtonBase(c.Key("ov-card-size")).Absolute().Right(layout.CardSizeBtnInset).Bottom(layout.CardSizeBtnInset).
+		Size(layout.CardSizeBtn, layout.CardSizeBtn).Center().Label(label).Tooltip(label)
+	alpha := float32(0.42)
+	if b.Hovered() {
+		alpha = 0.92
+	}
+	if b.Children(func() {
+		ui.Icon(c, icon.Linear).Size(layout.CardSizeBtnIcon, layout.CardSizeBtnIcon).TextColor(ui.RGBA(255, 255, 255, alpha))
+	}).Clicked() {
+		a.closeLangMenu()
+		a.setCardSize(string(v.kind), next)
+	}
 }
 
 // cardHeader is the card's header: what it is, then what it offers.
@@ -234,20 +261,22 @@ func cardWave(c *ui.Context, v cardView, motion bool, phase float64) {
 }
 
 // cardBody is the card's text, bodyH high: it scrolls past that. A
-// conversation follows its newest turn while it shows the end.
+// conversation follows its newest turn, and a first answer its newest
+// words as the model writes them, while they show the end.
 func (a *app) cardBody(c *ui.Context, v cardView, bodyH float32) {
 	st := &a.ov.cardScroll
 	key := a.answer.id + "/" + a.sess.ID
 	if v.conversation {
 		key = a.answer.id + "/conversation"
 	}
+	follow := v.conversation || v.writing
 	if key != a.ov.cardScrollKey {
 		a.ov.cardScrollKey = key
 		st.X, st.Y = 0, 0
-		if v.conversation {
+		if follow {
 			st.Y = math.MaxFloat32
 		}
-	} else if v.conversation && st.Y >= st.MaxY-2 {
+	} else if follow && st.Y >= st.MaxY-2 {
 		st.Y = math.MaxFloat32
 	}
 	ui.Scroll(c.Key("ov-card-body")).Height(bodyH).Shrink(0).Margin(layout.CardRuleGap, 0, 0, 0).TrackScroll(st).Children(func() {
