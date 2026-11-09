@@ -1262,3 +1262,19 @@ Developer ID 签名、公证、发布和更新的测试见 [release.md](release.
 **应看到**：macOS 弹出 **系统音频录制** 或等价提示，英文/中文说明里含 “meeting” /「会议」；不应出现 **屏幕录制** 用途说明（`NSScreenCaptureUsageDescription` 不存在）。
 
 **不对时看**：`Voxt/mygo.json` 与 `Voxt/helper/Support/Info.plist` 里的 `NSAudioCaptureUsageDescription`、`NSMicrophoneUsageDescription`；helper 日志里 `capture.system` 的 `permission_denied`。
+
+---
+
+## C1-1b 会议页与浮窗（开发版，真机 + 假 HOME）
+
+**环境**：`mygo dev` 或 `Voxt Dev` 包；假 HOME 见仓库惯例（不要碰本机真实 `Application Support/Voxt`）。
+
+**做**：侧栏打开 **会议**。点 **开始会议**，对着麦克风说话，并播放一段系统声音（例如浏览器视频）。
+
+**应看到**：底部浮窗出现，计时递增，mic/sys 电平有变化；听写快捷键（右 ⌥ 等）不能开始转录；按 **Esc**（取消快捷键）结束会议而不是开答案卡。会议结束后列表里有一条记录；数据目录 `meetings/<id>/` 下有 `mic.wav` 与 `system.wav`（字幕/仅录音模式按设置可能只有一路）。
+
+**做**：设置里关闭「保存历史」，再录一场并点 **结束**。
+
+**应看到**：浮窗出现 **保存** / **丢弃**；选丢弃后列表无该场，文件夹被删。
+
+**不对时看**：helper 日志里 `capture.start` / `capture.system`；权限见上一节。

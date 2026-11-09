@@ -1420,4 +1420,12 @@
   "The shortcut's keys, lit on a Mac keyboard": "快捷键的键在 Mac 键盘上的位置（亮起的键）"
 "System audio recording (for meetings)": "系统录音（会议用）",
   "Lets Voxt record sound from other apps during a meeting. macOS asks the first time a meeting records system audio.": "让 Voxt 在会议中录制其他 app 播放的声音。第一次在会议里录系统声音时，macOS 会弹出授权。"
+"System audio recording (for meetings)": "系统录音（会议用）",
+  "Lets Voxt record sound from other apps during a meeting. macOS asks the first time a meeting records system audio.": "让 Voxt 在会议中录制其他 app 播放的声音。第一次在会议里录系统声音时，macOS 会弹出授权。",
+  "Meetings": "会议",
+  "Start meeting": "开始会议",
+  "No meetings yet.": "还没有会议记录。",
+  "End": "结束",
+  "Discard": "丢弃",
+  "Loading…": "加载中…"
 }

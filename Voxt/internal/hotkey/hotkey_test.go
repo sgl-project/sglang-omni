@@ -268,7 +268,8 @@ func TestParseID(t *testing.T) {
 		ok bool
 	}{
 		"transcribe/0": {"transcribe", 0, true}, "rewrite/12": {"rewrite", 12, true}, "paste-last": {PasteLast, 0, true}, "note": {Note, 0, true},
-		"escape": {}, "meeting/0": {}, "transcribe/x": {}, "transcribe/-1": {},
+		"meeting/0": {Meeting, 0, true},
+		"escape":    {}, "transcribe/x": {}, "transcribe/-1": {},
 	} {
 		f, i, ok := ParseID(id)
 		if f != want.f || i != want.i || ok != want.ok {

@@ -44,6 +44,8 @@ func (a *app) pageShown(path string) {
 		a.dictShown() // dictionary_page.go
 	case "/notes":
 		a.loadNotes() // notes_page.go
+	case "/meetings":
+		a.loadMeetings() // meetings_page.go
 	case modelsPath:
 		a.modelsShown() // models_memory.go
 	}
@@ -81,6 +83,9 @@ func (a *app) page(c *ui.Context, p navPage) {
 		return
 	case "/dictionary":
 		a.dictionaryPage(c) // dictionary_page.go
+		return
+	case "/meetings":
+		a.meetingsPage(c) // meetings_page.go
 		return
 	case "/notes":
 		a.notesPage(c) // notes_page.go
