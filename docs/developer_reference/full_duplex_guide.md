@@ -26,7 +26,7 @@ Then add what the strategy needs:
 | Turn-based: Qwen3-Omni | None | `hf download Qwen/Qwen3-Omni-30B-A3B-Instruct` |
 | Cascaded | `uv pip install websockets httpx`, the dependencies of [Qwen3-ASR](../cookbook/qwen3_asr.md) and [Qwen3-TTS](../cookbook/qwen3_tts.md), and a separate venv for the {ref}`forced-alignment worker <the-forced-alignment-worker>` | The profile's models; see [Streaming Cascade](#streaming-cascade) |
 
-The benchmark installs everything it needs for the strategy it measures with `python -m benchmarks.duplex.fdb setup`; see [Setup](#setup).
+The benchmark installs its own models, datasets and scoring venv with `python -m benchmarks.duplex.fdb setup`; see [Setup](#setup). Its serving venv gets only the `minicpm-o` extra, so the Cascaded row above is still required before benchmarking the cascade.
 
 ## Launch
 
@@ -208,7 +208,7 @@ sgl-omni serve --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct --enable-realtime -
 
 Its `session.update` takes `modalities: ["text", "audio"]`, `input_audio_format` and `output_audio_format` `pcm16`, and `turn_detection` at the top of the session: `server_vad` (the default) ends a turn after `silence_duration_ms` of silence, and `semantic_vad` with `eagerness` `low`, `medium` (default) or `high` adds Smart Turn v3.2. For `semantic_vad`, set `SGLANG_OMNI_SMART_TURN_MODEL_PATH` to a local `smart-turn-v3.2-gpu.onnx` (the server never downloads it and checks its SHA-256); without it, semantic requests fall back to `server_vad`. Text arrives in `response.text.delta` and 24 kHz PCM16 audio in `response.audio.delta`, followed by `response.audio.done` and `response.done`. Audio output is opt-in, and a `--text-only` server rejects it.
 
-With audio output, speech that the detector hears during a reply cancels it with reason `turn_detected`; `turn_detection.interrupt_response: false` turns that off, and `response.cancel` cancels with `client_cancelled`. The client must stop its playback on `input_audio_buffer.speech_started` and drop every later `response.audio.delta` of that response; if playback had begun, it sends `conversation.item.truncate` with the played `audio_end_ms`, and the server removes the whole assistant item from the history. The browser example is `playground/qwen-omni/realtime`, and the benchmark records this protocol with the profile `qwen3-omni-half-duplex` (see {ref}`Turn-based recordings <turn-based-recordings>`).
+With audio output, speech that the detector hears during a reply cancels it with reason `turn_detected`; `turn_detection.interrupt_response: false` turns that off, and `response.cancel` cancels with `client_cancelled`. The client must stop its playback on `input_audio_buffer.speech_started` and drop every later `response.audio.delta` of that response; if playback had begun, it sends `conversation.item.truncate` with the assistant `item_id` from `response.audio.delta`, `content_index: 0` and the played `audio_end_ms`, and the server removes the whole assistant item from the history. Both fields are required, and `content_index` must be 0 although the audio delta carries 1. The browser example is `playground/qwen-omni/realtime`; [its README](https://github.com/sgl-project/sglang-omni/blob/main/playground/qwen-omni/realtime/README.md) gives the rest of the client contract, such as checking `turn_detection` in the capabilities before asking for `semantic_vad` and dropping a response that an interruption already ended. The benchmark records this protocol with the profile `qwen3-omni-half-duplex` (see {ref}`Turn-based recordings <turn-based-recordings>`).
 
 ### Streaming Cascade
 
@@ -256,7 +256,7 @@ sgl-omni serve --config examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-
 
 The server starts the profile's `services` in order and waits for each, reuses a service already answering on its port, and starts the cascade once every service and the worker answer; stopping the server stops the services it started. The cascade listens on 8765 because the profile's language model takes 8000. The server is ready when the capabilities on port 8765 contain `"interaction":"turn_based"`.
 
-To run without the worker, switch the aligner on the command line: `--session_nodes.aligner.method asr --session_nodes.aligner.alignment_url ""` for a Qwen3-ASR profile, `--session_nodes.aligner.method sentence --session_nodes.aligner.alignment_url ""` for a Nemotron profile. Any other profile field is overridden the same way, such as `--session_nodes.llm.base_url http://127.0.0.1:9000/v1` to use a language model you already run; [Streaming Cascade Reference](#streaming-cascade-reference) lists every setting, the cascade protocol and the settings that cannot be combined.
+To run without the worker, switch the aligner on the command line: `--session_nodes.aligner.method asr --session_nodes.aligner.alignment_url ""` for a Qwen3-ASR profile, `--session_nodes.aligner.method sentence --session_nodes.aligner.alignment_url ""` for a Nemotron profile. Any other profile field is overridden the same way. To use a language model you already run, remove the `chat` entry from the profile's `services` and set both `--session_nodes.llm.base_url` (such as `http://127.0.0.1:9000/v1`) and `--session_nodes.llm.model`; with only `base_url`, the server still starts the profile's chat service and the node still asks for the profile's model. {ref}`Services you run elsewhere <services-you-run-elsewhere>` has the details; [Streaming Cascade Reference](#streaming-cascade-reference) lists every setting, the cascade protocol and the settings that cannot be combined.
 
 ## Connect a Client
 
@@ -385,13 +385,14 @@ The 3 s comes from MiniCPM-o replies. Middle crops of replies of 6 s or more sco
 
 The metrics move for their own defects. On 24 MiniCPM-o replies, removing the middle 40% of the audio raises the omission rate from 4.4% to 43.4%; adding 10 clicks per second drops UTMOS from 4.26 to 2.08; shifting up 4 semitones drops voice similarity from 72.5 to 52.5. The omission rate moves at most 0.6 points under the clicks and the pitch shift, and voice similarity at most 0.5 under the cut and the clicks. UTMOS also drops 0.22 for the cut, which leaves a splice, and to 1.41 for the pitch shift, whose phase vocoder adds artifacts.
 
-These are reported only, with no pass mark yet. `listening/scores.json` keeps each reply's duration, transcript, Parakeet text and scores.
+`RESULTS.md` gives them no pass mark; [Duplex CI](#duplex-ci) gates the UTMOS and voice similarity means. `listening/scores.json` keeps each reply's duration, transcript, Parakeet text and scores.
 
 ### Setup
 
-You need one GPU with at least 80 GB (H100 or H200) for MiniCPM-o and two for Qwen3-Omni or the cascade, and `git`, `uv` and the FFmpeg shared libraries (version 4 to 8) on the host. Run every command in this page from the repository root, with the sglang-omni virtualenv active (`which python` should print its interpreter).
+You need one GPU with at least 80 GB (H100 or H200) for MiniCPM-o and two for Qwen3-Omni or the cascade, and `git`, `uv` and the FFmpeg shared libraries (version 4 to 8) on the host. Run every command in this page from the repository root, with the sglang-omni virtualenv active (`which python` should print its interpreter). `ENGINE` picks the strategy and defaults to `minicpmo` (see {ref}`Choosing the system under test <choosing-the-system-under-test>`); for Qwen3-Omni or the cascade, export it first, so that setup, the preflight and the runs below all use it:
 
 ```bash
+export ENGINE=minicpmo   # or qwen3-omni, cascade; these two also need CUDA_VISIBLE_DEVICES with two GPUs
 python -m benchmarks.duplex.fdb setup
 ```
 
@@ -428,7 +429,7 @@ A judge starts only when the step has a request for it: the v1.5 pairs and the v
 
 **Choosing the system under test**
 
-`ENGINE` picks the strategy. `setup` downloads that engine's models, and `generate` launches its server with the same command as [Launch](#launch):
+`ENGINE` picks the strategy. `setup` downloads that engine's models, and `generate` launches its server with the same command as [Launch](#launch). The recorder asks every `qwen3-omni` and `cascade` session for `server_vad` with `silence_duration_ms` 500, so their results and CI baselines end a turn after 500 ms of silence, while the launched profiles default to 800 ms (the base-clone demo uses Smart Turn instead):
 
 | `ENGINE` | System | Server | GPUs for the server |
 | --- | --- | --- | --- |
@@ -629,15 +630,16 @@ python -m benchmarks.duplex.fdb aggregate --run-name "$RUN"
 
 The ports, the judge config and the compile caches follow the GPU index: the model port is `8097 + 10×GPU`, the judge port `30000 + 10×GPU`, the judge config is in `$FDB_WORK/judge/port-<judge port>/` and the caches in `$FDB_WORK/cache/gpu-<index>/`. The first line `generate` prints confirms them, for example `Job GPU 1: model port 8107, judge port 30010 (nccl 30011), ...`. The `unset` line matters when a shell profile sets `GPU` or a port. Never point two terminals at the same run name.
 
-`ENGINE=qwen3-omni` and `ENGINE=cascade` run one server on two GPUs, so each job needs its own pair in `CUDA_VISIBLE_DEVICES`, and `generate` refuses `--gpus` with more than one GPU; raise `--num-shards` for parallel sessions instead. Only the model and judge ports follow the GPU: the cascade's services (8002, 8003, 8005) and the forced-alignment worker (8010) keep fixed ports, so run one cascade job per host.
+`ENGINE=qwen3-omni` and `ENGINE=cascade` run one server on two GPUs, so each job needs its own pair in `CUDA_VISIBLE_DEVICES`, and `generate` refuses `--gpus` with more than one GPU; raise `--num-shards` for parallel sessions instead. `qwen3-omni` takes any pair. The bundled cascade profile pins its services with `env: {CUDA_VISIBLE_DEVICES: ...}`, the language model on GPU 0 and the speech models on GPU 1, and a service's `env` overrides the job's, so a cascade job runs on GPUs 0 and 1 whatever pair it is given unless that `env` is edited; only the forced-alignment worker, ASR and the judge follow the pair. Only the model and judge ports follow the GPU: the cascade's services (8002, 8003, 8005) and the forced-alignment worker (8010) keep fixed ports, so run one cascade job per host.
 
 ### Serving metrics
 
 Serving metrics answer how well a server keeps up when several sessions share it. They are computed only from what the client records, which means any server that speaks the same realtime session protocol or the legacy turn-based protocol can be put in the same table.
 
-Start the server with `max_sessions` at least the largest level, then sweep. The command below targets `python -m benchmarks.duplex.fdb serve-model` on GPU 0, which serves MiniCPM-o with `max_sessions` 8 on port 8097; for a server started as in [Launch](#launch), point `--url` at port 8000:
+Start the server with `max_sessions` at least the largest level, then sweep. The command below targets `python -m benchmarks.duplex.fdb serve-model` on GPU 0, which serves MiniCPM-o with `max_sessions` 8 on port 8097; for a server started as in [Launch](#launch), point `--url` at port 8000 (8765 for the cascade). A turn-based server records with `--profile turn-based` and a `--turn-detection` object instead of the native profile, as in {ref}`Turn-based recordings <turn-based-recordings>`:
 
 ```bash
+eval "$(python -m benchmarks.duplex.fdb env)"
 python -m benchmarks.eval.benchmark_duplex_serving sweep \
   --dataset v1.5 --concurrency 1,2,4,8 --output "$FDB_WORK/serving/minicpmo" -- \
   --url ws://127.0.0.1:8097/v1/realtime --profile minicpmo-native-pr2377 \
@@ -742,7 +744,7 @@ python benchmarks/realtime_turn_latency.py --url ws://127.0.0.1:8765/v1/realtime
 
 ### Scoring CLI reference
 
-The runbook wraps three CLIs, which also score a recording by hand: `benchmarks.eval.benchmark_duplex_v15` records v1.5 sessions, `benchmarks.eval.benchmark_duplex_reference` scores them with the official v1.5 ASR, timing and behavior code, and `benchmarks.eval.benchmark_duplex_v10` records and scores v1.0 sessions. Run `eval "$(python -m benchmarks.duplex.fdb env)"` first to set the variables the commands below use. Recording and export run in the sglang-omni venv (`python`); ASR, timing, judging and evaluation need the packages `setup` installs in the scoring venv, so those commands run with `"$SCORING_PYTHON"`. `record` needs the model server and `custom-judge` the judge server; `python -m benchmarks.duplex.fdb serve-model` and `serve-judge` start them in the foreground until Ctrl-C.
+The runbook wraps three CLIs, which also score a recording by hand: `benchmarks.eval.benchmark_duplex_v15` records v1.5 sessions, `benchmarks.eval.benchmark_duplex_reference` scores them with the official v1.5 ASR, timing and behavior code, and `benchmarks.eval.benchmark_duplex_v10` records and scores v1.0 sessions. Run `eval "$(python -m benchmarks.duplex.fdb env)"` first to set the variables the commands below use. Recording and export run in the sglang-omni venv (`python`); ASR, timing, judging and evaluation need the packages `setup` installs in the scoring venv, so those commands run with `"$SCORING_PYTHON"`. `record` needs the model server and `custom-judge` the judge server; `python -m benchmarks.duplex.fdb serve-model` and `serve-judge` start them in the foreground until Ctrl-C. `env` sets `MODEL_REVISION` only for `minicpmo`, so the commands pass `--model-revision` only when it is set. With `ENGINE=cascade`, `serve-model` starts only the cascade server, so start the forced-alignment worker first: `PYTHONPATH=. "$FDB_WORK/aligner-venv/bin/python" examples/streaming_cascade/alignment_worker.py --model Qwen/Qwen3-ForcedAligner-0.6B --device cuda:0 --language English --port 8010`.
 
 (dependencies-and-source)=
 
@@ -765,7 +767,7 @@ OUT=results/fdb-manual
 python -m benchmarks.eval.benchmark_duplex_v15 record \
     --profile minicpmo-native-pr2377 \
     --dataset-root "$FDB_DATASET" --dataset-revision "$(cat "$FDB_WORK/dataset/v1.5.revision")" \
-    --url "$REALTIME_URL" --model "$MODEL_ID" --model-revision "$MODEL_REVISION" \
+    --url "$REALTIME_URL" --model "$MODEL_ID" ${MODEL_REVISION:+--model-revision "$MODEL_REVISION"} \
     --server-revision "$(git rev-parse HEAD)" --timeout "$SESSION_TIMEOUT_S" \
     --output "$OUT/recording"
 
@@ -787,7 +789,7 @@ python -m benchmarks.eval.benchmark_duplex_v15 record \
     --profile qwen3-omni-half-duplex \
     --turn-detection '{"type": "server_vad", "silence_duration_ms": 500}' \
     --dataset-root "$FDB_DATASET" --dataset-revision "$(cat "$FDB_WORK/dataset/v1.5.revision")" \
-    --url "$REALTIME_URL" --model "$MODEL_ID" --model-revision "$MODEL_REVISION" \
+    --url "$REALTIME_URL" --model "$MODEL_ID" ${MODEL_REVISION:+--model-revision "$MODEL_REVISION"} \
     --server-revision "$(git rev-parse HEAD)" --timeout "$SESSION_TIMEOUT_S" \
     --output "$OUT/recording"
 
@@ -808,7 +810,7 @@ python -m benchmarks.eval.benchmark_duplex_v15 record \
     --profile turn-based \
     --turn-detection '{"type": "server_vad", "silence_duration_ms": 500}' \
     --dataset-root "$FDB_DATASET" --dataset-revision "$(cat "$FDB_WORK/dataset/v1.5.revision")" \
-    --url "$REALTIME_URL" --model "$MODEL_ID" --model-revision "$MODEL_REVISION" \
+    --url "$REALTIME_URL" --model "$MODEL_ID" ${MODEL_REVISION:+--model-revision "$MODEL_REVISION"} \
     --server-revision "$(git rev-parse HEAD)" --timeout "$SESSION_TIMEOUT_S" \
     --output "$OUT/recording"
 
@@ -890,7 +892,7 @@ OUT=results/fdb10
 python -m benchmarks.eval.benchmark_duplex_v10 record \
     --profile minicpmo-native-pr2377 \
     --dataset-root "$FDB10_DATASET" --dataset-revision "$(cat "$FDB_WORK/dataset/v1.0.revision")" \
-    --url "$REALTIME_URL" --model "$MODEL_ID" --model-revision "$MODEL_REVISION" \
+    --url "$REALTIME_URL" --model "$MODEL_ID" ${MODEL_REVISION:+--model-revision "$MODEL_REVISION"} \
     --server-revision "$(git rev-parse HEAD)" --timeout "$V10_SESSION_TIMEOUT_S" \
     --output "$OUT/recording"
 python -m benchmarks.eval.benchmark_duplex_v10 reference-export \
@@ -947,7 +949,7 @@ The `run-native-duplex`, `run-turn-based-duplex` and `run-cascaded-duplex` label
 CUDA_VISIBLE_DEVICES=0,1 OMNI_CI_HOME=$HOME/omni-ci FDB_CI_STRATEGY=turn-based pytest tests/test_model/test_fdb_ci.py -v -s -x
 ```
 
-The presets, sample counts and baselines are in `tests/test_model/fdb_ci_config.py`.
+The job gates the four v1.5 behavior rates, the two v1.5 latency means, the three v1.0 rates and the UTMOS and voice similarity means; the omission rate and the semantic judge's two rates are reported only. It records MiniCPM-o with `--gpus 0,1 --num-shards 16`, so that job needs GPUs 0 and 1 visible, Qwen3-Omni with `--num-shards 4` and the cascade with `--num-shards 16`, and pins the judge to revision `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`, where a fresh `setup` resolves the judge's current Hub revision and reuses it afterwards. The sample counts and the gates are in `tests/utils/fdb_ci.py`, the presets and baselines in `tests/test_model/fdb_ci_config.py`.
 
 (unified-v10-metrics)=
 
@@ -1501,7 +1503,7 @@ Declared as `vad: {stages: [vad], inputs: [input]}`; reports `speech.started` an
 | --- | --- | --- | --- |
 | `threshold` | number 0 to 1 | `0.5` | Speech probability above which a frame is speech. |
 | `prefix_padding_ms` | integer ≥ 0 | `300` | Audio before the first speech frame that belongs to the utterance. |
-| `silence_duration_ms` | integer ≥ 0 | `500` | Silence that ends an utterance. |
+| `silence_duration_ms` | integer ≥ 0 | `800` | Silence that ends an utterance. |
 | `background_margin_db` | number ≥ 0 or `null` | `6` | A voice this many dB quieter than the last utterance starts no speech, so it neither opens a turn nor interrupts the reply. `null` hears every voice. A session's `turn_detection` does not change it. |
 | `max_open_sessions` | integer ≥ 1 | `16` | Sessions the detector holds at once. |
 | `max_concurrency` | integer ≥ 1 | `4` | Sessions it processes at once. |
