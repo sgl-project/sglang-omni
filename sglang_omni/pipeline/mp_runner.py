@@ -606,7 +606,7 @@ class NcclPortAllocator:
 
     def allocate(self) -> int:
         """Return an available port and advance past it."""
-        port = claim_tcp_port(self.next, NCCL_PORT_SPAN)
+        port = claim_tcp_port(self.next, NCCL_PORT_SPAN, allow_kernel_port=True)
         self.next = port + 1
         return port
 
