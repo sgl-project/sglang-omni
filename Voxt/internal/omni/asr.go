@@ -14,10 +14,11 @@ import (
 // and an asr.Streamer. It is cheap: the model's server starts on first
 // use (or Warm) and is shared by every ASR of the same model.
 type ASR struct {
-	rt   *Runtime
-	spec Spec
-	dir  string
-	vad  *VAD // the voice activity model beside it, nil for none
+	rt    *Runtime
+	spec  Spec
+	dir   string
+	draft string // the speculative draft's folder, "" none (WithDraft)
+	vad   *VAD   // the voice activity model beside it, nil for none
 }
 
 var (
@@ -44,6 +45,17 @@ func checkDir(dir string) error {
 		return &asr.Error{Kind: asr.KindConfig, Provider: Provider, Detail: "the model's folder is missing: " + dir, Err: err}
 	}
 	return nil
+}
+
+// WithDraft is a copy of a whose server verifies the speculative draft
+// installed in dir (the DFlash draft the catalogue pairs with the model:
+// --draft-model-path), decoding several tokens a step; "" none. The
+// same model with another draft is another server,
+// so the switch restarts the model (Runtime.acquire).
+func (a *ASR) WithDraft(dir string) *ASR {
+	c := *a
+	c.draft = dir
+	return &c
 }
 
 // WithVAD is a copy of a that comes with v, Silero (nil: none), for the
@@ -95,7 +107,7 @@ func (a *ASR) Spec() Spec { return a.spec.clone() }
 
 // Warm starts the model's server in the background (a session starting:
 // the model loads while the user speaks).
-func (a *ASR) Warm() { a.rt.Warm(a.spec, a.dir) }
+func (a *ASR) Warm() { a.rt.Warm(a.spec, a.dir, a.draft) }
 
 // Caps: it streams (a live preview, then the Final) and transcribes
 // files; a model with a context takes hints (the context bias) and a
@@ -111,7 +123,7 @@ func (a *ASR) Transcribe(ctx context.Context, req asr.FileRequest) (asr.Result, 
 	if err != nil {
 		return asr.Result{}, err
 	}
-	l, err := a.rt.acquire(ctx, a.spec, a.dir)
+	l, err := a.rt.acquire(ctx, a.spec, a.dir, a.draft)
 	if err != nil {
 		return asr.Result{}, err
 	}
@@ -182,7 +194,7 @@ func (a *ASR) Open(ctx context.Context, req asr.StreamRequest) (asr.Stream, erro
 	if req.SampleRate != 0 && req.SampleRate != sampleRate {
 		return nil, &asr.Error{Kind: asr.KindAudio, Provider: Provider, Detail: fmt.Sprintf("audio must be 16 kHz, not %d Hz", req.SampleRate)}
 	}
-	l, err := a.rt.acquire(ctx, a.spec, a.dir)
+	l, err := a.rt.acquire(ctx, a.spec, a.dir, a.draft)
 	if err != nil {
 		return nil, err
 	}

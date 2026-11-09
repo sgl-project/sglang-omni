@@ -57,6 +57,25 @@ func TestCatalog(t *testing.T) {
 				t.Errorf("%s's alternative %s is a %s", m.ID, n, o.Kind)
 			}
 		}
+		if m.Draft != "" {
+			if d, ok := Lookup(m.Draft); !ok || d.Kind != Draft || d.Runtime != m.Runtime || m.Kind != ASR {
+				t.Errorf("%s's draft %s: %+v", m.ID, m.Draft, d)
+			}
+		}
+		if m.Kind == Draft && (m.Default || len(m.Needs) > 0 || len(m.Alternatives) > 0 || m.Draft != "" || m.Borrowed) {
+			t.Errorf("%s: a draft is never the default and names no other model", m.ID)
+		}
+	}
+	owners := map[string]int{} // a draft belongs to one speech model
+	for _, m := range Catalog() {
+		if m.Draft != "" {
+			owners[m.Draft]++
+		}
+	}
+	for _, m := range Catalog() {
+		if m.Kind == Draft && owners[m.ID] != 1 {
+			t.Errorf("%s is the draft of %d speech models", m.ID, owners[m.ID])
+		}
 	}
 	for _, k := range []Kind{ASR, LLM, VAD} {
 		if defaults[k] != 1 {
@@ -64,7 +83,8 @@ func TestCatalog(t *testing.T) {
 		}
 	}
 	for _, id := range []string{ASRAccurate, ASRFast, VADSilero, LLMBalanced, LLMFast, LLMTranslate, LLMQwen3, LLMGemma4,
-		ASRQwen6bit, ASRWhisperTurbo, ASRWhisperLarge, ASRWhisperSmall, ASRParakeet, ASRSenseVoice, ASRCohere, ASRNemotron, ASRMoss, AuxWhisperLarge, AuxWhisperSmall} {
+		ASRQwen6bit, ASRWhisperTurbo, ASRWhisperLarge, ASRWhisperSmall, ASRParakeet, ASRSenseVoice, ASRCohere, ASRNemotron, ASRMoss, AuxWhisperLarge, AuxWhisperSmall,
+		ASRAccurateDraft, ASRFastDraft} {
 		if !seen[id] {
 			t.Errorf("%s missing", id)
 		}
@@ -85,7 +105,10 @@ func TestCatalog(t *testing.T) {
 // Whisper tokenizers may be missing from the table (no other ActNow app
 // installs them); nothing reads it at run time.
 func TestFamilyPins(t *testing.T) {
-	unpinned := []string{ASRQwen6bit, ASRWhisperLarge, ASRWhisperSmall, ASRParakeet, ASRSenseVoice, ASRCohere, ASRNemotron, ASRMoss, AuxWhisperLarge, AuxWhisperSmall}
+	// The drafts are proposed to the family pins table too; until an
+	// actnowkit release lists them, TestOmniPins alone checks their pins.
+	unpinned := []string{ASRQwen6bit, ASRWhisperLarge, ASRWhisperSmall, ASRParakeet, ASRSenseVoice, ASRCohere, ASRNemotron, ASRMoss, AuxWhisperLarge, AuxWhisperSmall,
+		ASRAccurateDraft, ASRFastDraft}
 	mine := map[string]fammodels.Pin{}
 	for _, p := range fammodels.PinsOfApp("voxtnew") {
 		mine[p.Repo] = p

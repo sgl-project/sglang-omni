@@ -56,16 +56,17 @@ func TestModelsPage(t *testing.T) {
 			t.Errorf("no %q in %q", s, tt.Texts())
 		}
 	}
-	if has(tt, "Silero VAD v6") || has(tt, "Installed") || has(tt, "Qwen3.5 4B OptiQ (4bit)") || has(tt, "Language models no longer used") {
-		t.Error("the VAD or a language model is listed, or a model is installed")
+	if has(tt, "Silero VAD v6") || has(tt, "Installed") || has(tt, "Qwen3.5 4B OptiQ (4bit)") || has(tt, "Language models no longer used") || has(tt, "Faster transcription") {
+		t.Error("the VAD, a language model or a draft is listed, or a model is installed")
 	}
 
-	// Installed models: the page, the features' choices. A language model
-	// Voxt 2.0 downloaded is retired: listed, to be deleted, and offered
-	// to no feature.
+	// Installed models: the page (a speech model's draft with it), the
+	// features' choices. A language model Voxt 2.0 downloaded is retired:
+	// listed, to be deleted, and offered to no feature.
 	seedModels(t, a, models.ASRFast, models.VADSilero, models.LLMTranslate)
 	if !has(tt, "Installed") || !has(tt, "712.8 MB on disk") || !has(tt, "· Used by Transcribe · Translate · Rewrite") ||
-		!has(tt, "Language models no longer used") || !has(tt, "Hy-MT2 1.8B (Q4_K_M)") {
+		!has(tt, "Language models no longer used") || !has(tt, "Hy-MT2 1.8B (Q4_K_M)") ||
+		!has(tt, "Faster transcription") || !has(tt, "262.5 MB download") {
 		t.Errorf("installed: %q", tt.Texts())
 	}
 	if m, ok := a.featureModel(local.ASR, hotkey.Transcribe); !ok || m.ID != models.ASRFast || m.Name != "Qwen3-ASR 0.6B (4bit)" {
@@ -94,6 +95,31 @@ func TestModelsPage(t *testing.T) {
 	}
 	if len(a.installed(local.ASR)) != 0 || a.notes == nil {
 		t.Error("installed list")
+	}
+}
+
+// TestModelsPageDraftAlone: a draft on disk without its speech model
+// (the model deleted first) keeps its row, so it can be deleted too; so
+// does a draft still downloading.
+func TestModelsPageDraftAlone(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 1600)
+	seedModels(t, a, models.ASRFastDraft)
+	a.navigate(modelsPath)
+	if !has(tt, "Faster transcription") || !has(tt, "262.5 MB on disk") || has(tt, "712.8 MB on disk") {
+		t.Fatalf("the draft alone: %q", tt.Texts())
+	}
+	click(t, tt, "Delete Qwen3-ASR 0.6B DFlash draft…")
+	click(t, tt, "Delete Qwen3-ASR 0.6B DFlash draft")
+	if has(tt, "Faster transcription") || a.models.Installed(models.ASRFastDraft) {
+		t.Errorf("after the delete: %q", tt.Texts())
+	}
+	draft, _ := models.Lookup(models.ASRFastDraft)
+	a.modelStatus[models.ASRFastDraft] = models.Status{Downloading: true, Done: draft.Size() / 4, Total: draft.Size()}
+	a.navigate("/home")
+	a.navigate(modelsPath)
+	if !has(tt, "Faster transcription") || !has(tt, "Cancel") {
+		t.Errorf("downloading: %q", tt.Texts())
 	}
 }
 
@@ -336,8 +362,8 @@ func fakeFileSize(p string) int64 {
 
 // modelShots saves the Speech models page with a model of each state
 // (TestSnapshots): installed (one shared with another ActNow app),
-// downloading (waiting for a file another app downloads), stopped,
-// failed, another app's model VoxtNew can use; the family's states
+// downloading (waiting for a file another app downloads), a draft
+// downloading, stopped, failed, another app's model VoxtNew can use; the family's states
 // (downloading elsewhere, deleted elsewhere); the delete dialog of a
 // shared model, the Network dialog; and Settings → Storage with the
 // model folder and Erase everything keeping a shared model.
@@ -359,6 +385,8 @@ func modelShots(t *testing.T, a *app, tt *ui.Tester, save func(string)) {
 	a.modelStatus[models.ASRFast] = models.Status{Done: fast.Size() / 3, Total: fast.Size()}
 	a.modelStatus[models.LLMBalanced] = models.Status{Downloading: true, Done: balanced.Size() * 2 / 5, Total: balanced.Size(), WaitingFor: dictaID}
 	a.modelStatus[models.LLMFast] = models.Status{Total: 1, Err: fmt.Errorf("needs 1.7 GB: %w", hfhub.ErrDiskSpace)}
+	draft, _ := models.Lookup(models.ASRAccurateDraft) // its bar under the row's text
+	a.modelStatus[models.ASRAccurateDraft] = models.Status{Downloading: true, Done: draft.Size() / 2, Total: draft.Size()}
 	a.navigate(modelsPath)
 	// Two of them loaded (models_memory.go), as a session leaves them.
 	a.modelMem = map[string]int64{models.ASRAccurate: 2_469_606_195, models.LLMTranslate: 1_234_173_952}
