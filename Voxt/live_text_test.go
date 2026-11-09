@@ -119,14 +119,15 @@ func TestLiveLines(t *testing.T) {
 	}
 }
 
-// TestRewriteWritesIntoCard: Rewrite's first answer goes to the answer
-// card as the model writes it, the card as high as the words so far (it
-// grows with them, #3644 FB41), the pill until then and with Show live
-// text off. The pill showed a loader until the whole answer
-// was in (#3644).
+// TestRewriteWritesIntoCard: Rewrite's first answer, when it will end in
+// the card, goes to the answer card as the model writes it, the card as
+// high as the words so far (it grows with them, #3644 FB41), the pill
+// until then, with Show live text off, and when the answer goes in at
+// once (the card switch off). The pill showed a loader until the whole
+// answer was in (#3644).
 func TestRewriteWritesIntoCard(t *testing.T) {
 	a, _, _ := newTestApp(t)
-	s := session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: session.Composing, Partial: "make it shorter", Selection: "A long paragraph."}
+	s := session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: session.Composing, Card: true, Partial: "make it shorter", Selection: "A long paragraph."}
 	a.sess = s
 	if m := a.overlayModeNow(); m != ovWorking {
 		t.Fatalf("before the first words: mode %v", m)
@@ -144,6 +145,12 @@ func TestRewriteWritesIntoCard(t *testing.T) {
 	if m := a.overlayModeNow(); m != ovWorking {
 		t.Errorf("Show live text off: mode %v", m)
 	}
+	a.prefs.Overlay.HideLiveText = false
+	s.Card = false
+	a.sess = s
+	if m := a.overlayModeNow(); m != ovWorking {
+		t.Errorf("going in at once: mode %v", m)
+	}
 }
 
 // TestRewriteWritingFollows: as the model writes a long first answer into
@@ -153,7 +160,7 @@ func TestRewriteWritingFollows(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	shortScreen(t, a)
 	long := strings.Repeat("The meeting moves to Thursday at three. ", 30)
-	s := session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: session.Composing, Partial: "make it longer", Selection: "x", Draft: long[:200]}
+	s := session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: session.Composing, Card: true, Partial: "make it longer", Selection: "x", Draft: long[:200]}
 	snap(a, s)
 	tt := hudTester(a.overlayView, a.ov.w+2*layout.Pad, a.ov.h+2*layout.Pad)
 	frames(tt)

@@ -96,8 +96,9 @@ type Translate struct {
 type Rewrite struct {
 	Feature
 	// Cleanup reads past fillers and self-corrections in the spoken
-	// instruction (never applied to the selection). Every answer shows in
-	// the answer card (Voxt's; the field cardChars of 0.1.0 is dropped).
+	// instruction (never applied to the selection). Whether an answer
+	// waits in the answer card is Features.ShowCard, as for the other
+	// features (the field cardChars of 0.1.0 is dropped).
 	Cleanup bool `json:"cleanup"`
 }
 

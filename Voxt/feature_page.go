@@ -4,10 +4,10 @@ package main
 // (/translate) and Rewrite (/rewrite) share one structure: the feature's
 // shortcuts (and, on Transcribe, the shared "paste the last result"), the
 // models it uses, its own settings (Transcribe's clean-up layers;
-// Translate's target language, clean-up and card; Rewrite's instruction
-// clean-up and when an answer goes to the card), the user's rules with a
-// preview of the whole prompt, and a Try area that runs a session whose
-// result stays on the page.
+// Translate's target language and clean-up; Rewrite's instruction
+// clean-up), the answer card (one switch for the three, a size each), the
+// user's rules with a preview of the whole prompt, and a Try area that
+// runs a session whose result stays on the page.
 //
 // Every change goes through a.updateSettings, which also sends the
 // shortcuts to the helper again. A page keeps only what its controls

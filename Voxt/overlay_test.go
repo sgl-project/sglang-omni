@@ -356,7 +356,7 @@ func overlayShots(t *testing.T, a *app, out, suffix string, dark bool) {
 		{"overlay-translate-recording", session.Snapshot{Kind: store.KindTranslate, State: session.Recording, StartedAt: now, HeardAt: now.Add(-5 * time.Second), Levels: wave(), TargetLanguage: "en"}, nil, nil},
 		{"overlay-translate-selection", session.Snapshot{Kind: store.KindTranslate, State: session.Composing, Selection: "A goroutine is a lightweight thread.", TargetLanguage: "zh-Hans",
 			Draft: "goroutine 是一种轻量级"}, nil, nil},
-		{"overlay-rewrite-writing", session.Snapshot{Kind: store.KindRewrite, State: session.Composing, Raw: "write a short note saying I will be late",
+		{"overlay-rewrite-writing", session.Snapshot{Kind: store.KindRewrite, State: session.Composing, Card: true, Raw: "write a short note saying I will be late",
 			Draft: "Sorry, I'm running about ten minutes late"}, nil, nil},
 		{"overlay-translate-card-streaming", session.Snapshot{Kind: store.KindTranslate, State: session.Composing, Card: true, Delivery: deliver.ReasonNotEditable,
 			Selection: "A goroutine is a lightweight thread managed by the Go runtime.", TargetLanguage: "zh-Hans", Draft: "goroutine 是由 Go 运行时管理的"}, nil, nil},

@@ -97,7 +97,7 @@ func TestRewritePage(t *testing.T) {
 		t.Error("clean-up not saved")
 	}
 	if has(tt, "Long answers in the card") {
-		t.Error("the card's length setting is back: every answer goes to the card")
+		t.Error("0.1.0's card length setting is back")
 	}
 	click(t, tt, "Your rules")
 	click(t, tt, "Example user message")
@@ -215,11 +215,12 @@ func TestSessionBlocker(t *testing.T) {
 	}
 }
 
-// TestCardSwitchShared: Transcribe and Translate share one answer-card
-// switch; Rewrite always shows answers in the card and has no switch.
+// TestCardSwitchShared: Transcribe, Translate and Rewrite share one
+// answer-card switch; Rewrite's page says what its card does more.
 func TestCardSwitchShared(t *testing.T) {
 	a, tt := pageTester(t, "/translate")
-	for i, page := range []string{"/translate", "/transcribe"} {
+	rewriteCard := "Rewrite's card does more than Transcribe's and Translate's: Continue, or the Rewrite shortcut, asks a follow-up that changes the answer (\"shorter\", \"in English\"), and the card keeps the conversation."
+	for i, page := range []string{"/translate", "/transcribe", "/rewrite"} {
 		a.navigate(page)
 		frames(tt)
 		n := 0
@@ -235,12 +236,8 @@ func TestCardSwitchShared(t *testing.T) {
 		if on := a.lib.settings.Get().Features.ShowCard; on != (i%2 == 0) {
 			t.Errorf("%s: the card switch is %v after a click", page, on)
 		}
-	}
-	a.navigate("/rewrite")
-	frames(tt)
-	for _, s := range tt.AccessLabels() {
-		if s == "Show the result in a card" {
-			t.Fatalf("/rewrite: card switch should not appear on Rewrite")
+		if shown := has(tt, rewriteCard); shown != (page == "/rewrite") {
+			t.Errorf("%s: the note on Rewrite's card shows: %v", page, shown)
 		}
 	}
 }

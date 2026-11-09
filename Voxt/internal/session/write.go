@@ -64,17 +64,12 @@ func (r *run) write(raw, selection string) {
 		return
 	}
 	in := r.writeInput(raw, selection)
-	var o finishOpts
-	switch kind {
-	case store.KindTranslate:
-		o.replace = selection != ""
-		if r.settings.Features.ShowCard {
-			o.card = deliver.ReasonCard
-		}
-	case store.KindRewrite:
-		// Every answer goes to the answer card, which inserts it (or
-		// replaces the selection) when asked, and takes follow-ups (Voxt's:
-		// a Rewrite result always shows in the card).
+	// The card switch, one for the three features: on, the answer waits
+	// in the answer card, which inserts it (or replaces the selection) when
+	// asked and, for Rewrite, takes follow-ups; off, it goes in at once.
+	// A follow-up stays in the card, where its conversation is.
+	o := finishOpts{replace: selection != ""}
+	if r.settings.Features.ShowCard {
 		o.card = deliver.ReasonCard
 	}
 	if r.req.Card {
