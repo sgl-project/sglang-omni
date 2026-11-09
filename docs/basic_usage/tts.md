@@ -31,6 +31,7 @@ model you are serving.
 | [Ming-3.0-TTS](../cookbook/ming3_tts.md) | CUDA; CPU decodes a complete waveform | Optional reference; the Tiny and 0.5B checkpoints handle `ref_text` differently |
 | [Ming-3.0 audio](../cookbook/ming3_audio.md) | See cookbook | Speech uses one reference clip and its transcript |
 | [ZONOS2](../cookbook/zonos2.md) | Yes | Reference cloning and model-specific chunk configuration |
+| [Zonos3](../cookbook/zonos3.md) | Yes | Optional reference clip; no transcript needed |
 | [AuK](../cookbook/auk.md) | No | Serial, non-streaming engine; `stage_params.auk_engine.gen_seconds` is required for speech |
 
 Ming-Omni-TTS sets its first and steady chunk cadence through the
