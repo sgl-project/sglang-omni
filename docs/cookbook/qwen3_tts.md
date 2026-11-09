@@ -2,16 +2,6 @@
 
 Generate 24 kHz speech in 10 languages through the OpenAI-compatible `/v1/audio/speech` endpoint. Choose a built-in speaker, clone a reference voice, or describe a voice in words.
 
-## Choose a model
-
-| Goal | Checkpoint family | What to provide |
-|---|---|---|
-| Generate speech with a built-in speaker | [CustomVoice](#customvoice-checkpoints) | Text and a speaker name |
-| Clone a voice | [Base](#voice-cloning) | Text and reference audio; include its transcript for better cloning |
-| Describe a new voice | [VoiceDesign](#voicedesign-checkpoint) | Text and a voice description |
-
-Start with CustomVoice below if you do not have a reference clip. Each family needs its own checkpoint; changing request fields does not switch the loaded model. For Ascend NPU, Intel XPU, or the native Apple Silicon runtime, see [platform deployment](qwen3_tts/platforms.md).
-
 <span id="server-configuration"></span>
 
 ## Quick start
@@ -63,6 +53,16 @@ curl --fail-with-body http://localhost:8000/v1/audio/speech \
 ```
 
 Open `output.wav` in an audio player. The response is WAV audio by default. For Python or the OpenAI SDK, use the [TTS client examples](../basic_usage/tts.md#python); pass Qwen-specific fields such as `language` and `references` through the SDK's `extra_body`.
+
+## Choose a model
+
+| Goal | Checkpoint family | What to provide |
+|---|---|---|
+| Generate speech with a built-in speaker | [CustomVoice](#customvoice-checkpoints) | Text and a speaker name |
+| Clone a voice | [Base](#voice-cloning) | Text and reference audio; include its transcript for better cloning |
+| Describe a new voice | [VoiceDesign](#voicedesign-checkpoint) | Text and a voice description |
+
+Use CustomVoice, as in the quick start above, if you do not have a reference clip. Each family needs its own checkpoint; changing request fields does not switch the loaded model. For Ascend NPU, Intel XPU, or the native Apple Silicon runtime, see [platform deployment](qwen3_tts/platforms.md).
 
 <span id="synthesizing-speech"></span>
 <span id="text-only-requests"></span>
