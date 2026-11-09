@@ -7,6 +7,8 @@
 #include <stdexcept>
 #include <vector>
 
+#include "common/multi_row_matmul.h"
+
 namespace omni_common {
 
 namespace mx = mlx::core;
@@ -186,9 +188,16 @@ mx::array Checkpoint::Linear(const mx::array &x,
             ? std::optional<mx::array>(Weight(prefix + ".biases"))
             : std::nullopt;
     const QuantizationConfig &quantization = Quantization(prefix);
-    mx::array y = mx::quantized_matmul(
-        x, Weight(prefix + ".weight"), Weight(prefix + ".scales"), biases, true,
-        quantization.group_size, quantization.bits, quantization.mode);
+    const mx::array weight = Weight(prefix + ".weight");
+    const mx::array scales = Weight(prefix + ".scales");
+    const std::optional<mx::array> multi_row =
+        MultiRowQuantizedLinear(x, weight, scales, biases, quantization);
+    mx::array y =
+        multi_row.has_value()
+            ? *multi_row
+            : mx::quantized_matmul(x, weight, scales, biases, true,
+                                   quantization.group_size, quantization.bits,
+                                   quantization.mode);
     if (Has(prefix + ".bias")) {
       return mx::add(y, Weight(prefix + ".bias"));
     } else {

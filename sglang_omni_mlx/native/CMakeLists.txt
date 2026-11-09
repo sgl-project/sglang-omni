@@ -52,6 +52,7 @@ add_library(common STATIC
   src/common/campplus.cpp
   src/common/form.cpp
   src/common/layers.cpp
+  src/common/multi_row_matmul.cpp
   src/common/npz.cpp
   src/common/reference_audio.cpp
   src/common/text.cpp
@@ -372,6 +373,11 @@ install(FILES licenses/music3-MIT.txt licenses/fishaudio_drama3-MIT.txt
 add_executable(fishaudio_drama3_codec_test EXCLUDE_FROM_ALL
   ci/fishaudio_drama3_codec_test.cpp)
 target_link_libraries(fishaudio_drama3_codec_test PRIVATE fish_dac)
+
+# Checks the multi-row quantized matmul against MLX; built on request.
+add_executable(multi_row_matmul_test EXCLUDE_FROM_ALL
+  ci/multi_row_matmul_test.cpp)
+target_link_libraries(multi_row_matmul_test PRIVATE common)
 
 # Note (Jiaxin Deng): Fish S2-Pro: fish_s2_pro_server, with the CUDA server's
 # /v1/audio/speech API and reference-audio voice cloning, and its parity tool.
