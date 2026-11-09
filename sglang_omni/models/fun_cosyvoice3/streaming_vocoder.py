@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import queue
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -156,6 +157,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
             self.vocoder = vocoder
             self.clock: Callable[[], float] = time.monotonic
             self.launched_step: LaunchedStep | None = None
+            self.yield_horizon_seconds: float | None = None
         super().__init__(
             self.vocode_payload,
             batch_compute_fn=self.vocode_payloads,
@@ -594,7 +596,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
     def run_non_streaming_batch(
         self, batch: list[IncomingMessage], loop: asyncio.AbstractEventLoop
     ) -> None:
-        """The step in flight is completed before a whole-utterance batch, and the batch is followed by one ready step when a stream waits for its first audio or would run dry before another such batch and a step finish."""
+        """The step in flight is completed before a whole-utterance batch. After it, queued stream chunks are ingested and one ready step runs, led by the streams that wait for their first audio or would run dry before another such batch and a step finish."""
         # note (zhaochenyang20): a launched step's audio is read only at the next ready step, which queued non-streaming requests can hold off for a whole batch.
         with self.state_lock:
             launched = self.launched_step
@@ -604,6 +606,27 @@ class FunCosyVoice3StreamingVocoderScheduler(
             self.cleanup_aborted_request(request_id)
         batch_start_seconds = self.clock()
         super().run_non_streaming_batch(batch, loop)
+        # note (zhaochenyang20): batch collection stops at a queued chunk, so chunks behind the batch are ingested here, decoding nothing, for the check to see the streams they make ready; other messages keep their order.
+        queued = list(self.pending_messages)
+        self.pending_messages.clear()
+        while True:
+            try:
+                queued.append(self.inbox.get_nowait())
+            except queue.Empty:
+                break
+        self.pending_messages.extend(
+            message for message in queued if message.type != "stream_chunk"
+        )
+        chunks = [
+            message
+            for message in queued
+            if message.type == "stream_chunk"
+            and not self.is_aborted(message.request_id)
+        ]
+        if chunks:
+            self.handle_stream_chunk_batch(chunks)
+        else:
+            pass
         with self.state_lock:
             now_seconds = self.clock()
             # note (zhaochenyang20): The serving loop drains its inbox before a ready step, and queued non-streaming requests kept it full: at 48 non-streaming plus 16 streaming SeedTTS EN clients on one H100, streams stalled up to 8.7 s mid-playback and first audio p99 reached 12 s. The next batch is taken to be as long as this one. A stream with more audio buffered still waits for an empty inbox.
@@ -620,7 +643,11 @@ class FunCosyVoice3StreamingVocoderScheduler(
                 for request_id, state in self.stream_state_items()
             )
         if is_stream_waiting:
-            self.run_ready_step()
+            self.yield_horizon_seconds = horizon_seconds
+            try:
+                self.run_ready_step()
+            finally:
+                self.yield_horizon_seconds = None
         else:
             pass
 
@@ -655,8 +682,33 @@ class FunCosyVoice3StreamingVocoderScheduler(
                         state,
                     )
                 )
-        ranked = [(request_id, state) for _, _, request_id, state in sorted(started)]
-        ranked += [(request_id, state) for _, request_id, state in sorted(unstarted)]
+        ranked_started = [
+            (slack_seconds, request_id, state)
+            for slack_seconds, _, request_id, state in sorted(started)
+        ]
+        ranked_unstarted = [
+            (request_id, state) for _, request_id, state in sorted(unstarted)
+        ]
+        horizon_seconds = self.yield_horizon_seconds
+        if horizon_seconds is None:
+            ranked = [
+                (request_id, state) for _, request_id, state in ranked_started
+            ] + ranked_unstarted
+        else:
+            # note (zhaochenyang20): a step yielded by a non-streaming batch is led by the streams that called for it, so a buffered stream cannot take it.
+            ranked = (
+                [
+                    (request_id, state)
+                    for slack_seconds, request_id, state in ranked_started
+                    if slack_seconds < horizon_seconds
+                ]
+                + ranked_unstarted
+                + [
+                    (request_id, state)
+                    for slack_seconds, request_id, state in ranked_started
+                    if slack_seconds >= horizon_seconds
+                ]
+            )
         if not ranked:
             return []
         else:
