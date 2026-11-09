@@ -4,7 +4,8 @@ package main
 // (remote_dialog.go), field for field as Voxt 1.x had them: Generation
 // settings, the service's own options, then the folding Advanced and
 // Expert sections, each field only where the service takes it
-// (providers.Capabilities).
+// (providers.Capabilities). Unlike 1.x, every sampling field (temperature,
+// top P, top K, min P, the penalties) is in Advanced, folded by default.
 
 import (
 	"math"
@@ -275,14 +276,6 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 	if caps.MaxOutputTokens {
 		num("gen-max", i18n.T("Max output tokens (optional)"), i18n.T("e.g. 4096"), &f.maxTokens)
 	}
-	pair(func() {
-		if caps.Temperature {
-			half("gen-temp", i18n.T("Temperature"), "0.2", &f.temperature)
-		}
-		if caps.TopP {
-			half("gen-topp", "Top P", "0.9", &f.topP)
-		}
-	})
 	if caps.Verbosity {
 		fieldInfo(c, i18n.T("Verbosity"), "", func() {
 			ui.Select(c.Key("gen-verbosity"), &f.verbosity, titles(verbosities, verbosityTitle)).Label(i18n.T("Verbosity")).Width(px(t, 180))
@@ -295,7 +288,39 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 		ui.Switch(c.Key("gen-usage"), &f.usage).Label(i18n.T("Usage in stream events"))
 	}
 
+	// The sampling fields: empty sends nothing, and the service uses its
+	// own default for the model.
+	serviceDefault := i18n.T("Service default")
 	collapsible(c, i18n.T("Advanced"), &f.advanced, nil, func() {
+		pair(func() {
+			if caps.Temperature {
+				half("gen-temp", i18n.T("Temperature"), serviceDefault, &f.temperature)
+			}
+			if caps.TopP {
+				half("gen-topp", "Top P", serviceDefault, &f.topP)
+			}
+		})
+		pair(func() {
+			if caps.TopK {
+				half("gen-topk", "Top K", serviceDefault, &f.topK)
+			}
+			if caps.MinP {
+				half("gen-minp", "Min P", serviceDefault, &f.minP)
+			}
+		})
+		switch {
+		case caps.FrequencyOnly:
+			num("gen-frequency", i18n.T("Frequency penalty"), serviceDefault, &f.frequency)
+		case caps.Penalties:
+			pair(func() {
+				half("gen-presence", i18n.T("Presence penalty"), serviceDefault, &f.presence)
+				half("gen-frequency", i18n.T("Frequency penalty"), serviceDefault, &f.frequency)
+			})
+			num("gen-repetition", i18n.T("Repetition penalty"), serviceDefault, &f.repetition)
+		}
+		if caps.Seed {
+			num("gen-seed", i18n.T("Seed"), "42", &f.seed)
+		}
 		if caps.ResponseFormat {
 			formats := responseFormats[:2]
 			if caps.JSONSchema {
@@ -307,27 +332,6 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 			if caps.JSONSchema && valueOf(f.format, formats, formatTitle) == llm.ResponseJSONSchema {
 				ui.TextArea(c.Key("gen-schema"), &f.schema).Label("JSON Schema").Placeholder(`{"type": "object", …}`).MinHeight(px(t, 96))
 			}
-		}
-		pair(func() {
-			if caps.TopK {
-				half("gen-topk", "Top K", "40", &f.topK)
-			}
-			if caps.MinP {
-				half("gen-minp", "Min P", "0.05", &f.minP)
-			}
-		})
-		if caps.Seed {
-			num("gen-seed", i18n.T("Seed"), "42", &f.seed)
-		}
-		switch {
-		case caps.FrequencyOnly:
-			num("gen-frequency", i18n.T("Frequency penalty"), "0", &f.frequency)
-		case caps.Penalties:
-			pair(func() {
-				half("gen-presence", i18n.T("Presence penalty"), "0", &f.presence)
-				half("gen-frequency", i18n.T("Frequency penalty"), "0", &f.frequency)
-			})
-			num("gen-repetition", i18n.T("Repetition penalty"), "1.1", &f.repetition)
 		}
 		if caps.Logprobs {
 			ui.Switch(c.Key("gen-logprobs"), &f.logprobs).Label("Logprobs")

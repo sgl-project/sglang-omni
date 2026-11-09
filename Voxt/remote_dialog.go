@@ -90,9 +90,11 @@ func (a *app) providerDialogView(c *ui.Context) {
 	t := c.Theme()
 	sv := lookupService(d.kind, d.id)
 	name := sv.name
+	model := providers.SpeechModel(d.setup())
+	streams := d.kind == local.ASR && sv.speech.Streams(model)
 	sub := i18n.T("Remote language model · OpenAI-compatible API")
 	switch {
-	case d.kind == local.ASR && sv.stream:
+	case streams:
 		sub = i18n.T("Remote speech recognition · realtime, while you speak")
 	case d.kind == local.ASR:
 		sub = i18n.T("Remote speech recognition · the recording, once you stop")
@@ -138,7 +140,7 @@ func (a *app) providerDialogView(c *ui.Context) {
 		})
 		epInfo := i18n.T("The API root, ending in /v1; leave it empty for the service's own. Only https://, or http:// to this Mac.")
 		switch {
-		case d.kind == local.ASR && sv.stream:
+		case streams:
 			epInfo = i18n.T("Leave it empty for the service's own. Only wss://, or ws:// to this Mac.")
 		case d.kind == local.ASR:
 			epInfo = i18n.T("Leave it empty for the service's own. Only https://, or http:// to this Mac.")
@@ -147,6 +149,9 @@ func (a *app) providerDialogView(c *ui.Context) {
 		}
 		fieldInfo(c, i18n.T("Address"), epInfo, func() {
 			ph := sv.endpoint
+			if d.kind == local.ASR {
+				ph = sv.speech.EndpointOf(model)
+			}
 			if ph == "" {
 				ph = "https://…/v1"
 			}

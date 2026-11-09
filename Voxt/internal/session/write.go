@@ -68,7 +68,7 @@ func (r *run) write(raw, selection string) {
 	switch kind {
 	case store.KindTranslate:
 		o.replace = selection != ""
-		if r.settings.Features.Translate.ShowCard {
+		if r.settings.Features.ShowCard {
 			o.card = deliver.ReasonCard
 		}
 	case store.KindRewrite:
@@ -78,6 +78,9 @@ func (r *run) write(raw, selection string) {
 		o.card = deliver.ReasonCard
 	}
 	if r.req.Card {
+		o.card = deliver.ReasonCard
+	}
+	if len(r.req.Previous) > 0 {
 		o.card = deliver.ReasonCard
 	}
 	r.m.update(r, func(s *Snapshot) { s.State, s.Selection, s.Card = Composing, selection, o.card != "" && !r.req.Try })

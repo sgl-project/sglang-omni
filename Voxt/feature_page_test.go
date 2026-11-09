@@ -93,6 +93,7 @@ func TestTranscribeHotkeysEdit(t *testing.T) {
 	if !a.fui(hotkey.Transcribe).rows[1].custom || a.fui(hotkey.Transcribe).rows[1].text != "RightShift" {
 		t.Fatalf("custom row %+v", a.fui(hotkey.Transcribe).rows[1])
 	}
+	click(t, tt, "Type the keys instead")
 	click(t, tt, "Custom keys of shortcut 2")
 	for range len("RightShift") {
 		tt.Key(0, ui.KeyBackspace)
@@ -144,6 +145,7 @@ func TestTranscribeMouseButton(t *testing.T) {
 		t.Fatal(err)
 	}
 	click(t, tt, "Custom…")
+	click(t, tt, "Type the keys instead")
 	if !has(tt, hint) {
 		t.Errorf("no mouse hint in %q", tt.Texts())
 	}
@@ -242,7 +244,7 @@ func TestTranscribeServicesAndSwitches(t *testing.T) {
 		t.Errorf("LLM %q", id)
 	}
 	click(t, tt, "Language model for Transcribe")
-	click(t, tt, "Automatic: "+fakeLLMModel.Name)
+	click(t, tt, "Automatic (now: "+fakeLLMModel.Name+")")
 	if id := a.lib.settings.Get().Features.Transcribe.LLM; id != "" {
 		t.Errorf("LLM %q", id)
 	}
@@ -259,6 +261,62 @@ func TestTranscribeServicesAndSwitches(t *testing.T) {
 	clickSwitch(t, tt, "Basic clean-up")
 	if !a.lib.settings.Get().Features.Transcribe.Cleanup {
 		t.Error("clean-up changed while disabled")
+	}
+}
+
+// TestAutomaticNamesTheModelInUse: the bug was a model menu reading
+// "Automatic: X" above "X", two entries nobody could tell apart. The
+// Automatic entry says it uses X now, X is listed once, and the
+// Translate page's target language reads the same way.
+func TestAutomaticNamesTheModelInUse(t *testing.T) {
+	a, tt := trTester(t)
+	readyModels(a)
+	a.local.(*fakeLocal).MoreLLM = []local.Model{{Kind: local.LLM, ID: models.LLMFast, Name: "Qwen3.5 2B (4bit)"}}
+	check := func(path, menu, name string) {
+		t.Helper()
+		a.navigate(path)
+		click(t, tt, menu)
+		texts := tt.Texts()
+		auto := "Automatic (now: " + name + ")"
+		if !slices.Contains(texts, auto) || slices.Contains(texts, "Automatic: "+name) || strings.Count("\x00"+strings.Join(texts, "\x00")+"\x00", "\x00"+name+"\x00") != 1 {
+			t.Errorf("%s: want %q and %q once: %q", menu, auto, name, texts)
+		}
+		tt.Key(0, ui.KeyEscape)
+		frames(tt)
+	}
+	check("/transcribe", "Speech model for Transcribe", fakeASRModel.Name)
+	check("/transcribe", "Language model for Transcribe", fakeLLMModel.Name)
+	check("/translate", "Target language", "Simplified Chinese")
+}
+
+// TestTranscribeEndWord: the word that ends a recording is Off, one of
+// Voxt 1.x's words or a typed one; the row shows only while Transcribe's
+// speech model streams.
+func TestTranscribeEndWord(t *testing.T) {
+	a, tt := trTester(t)
+	readyModels(a)
+	click(t, tt, "Word that ends the recording")
+	click(t, tt, "完毕")
+	if w := a.lib.settings.Get().Features.EndWord; w != "完毕" {
+		t.Fatalf("end word %q", w)
+	}
+	click(t, tt, "Word that ends the recording")
+	click(t, tt, "Custom…")
+	click(t, tt, "Your word that ends the recording")
+	tt.Type(" that's  all ")
+	tt.Key(0, ui.KeyEnter)
+	frames(tt)
+	if w := a.lib.settings.Get().Features.EndWord; w != "that's all" {
+		t.Fatalf("typed end word %q", w)
+	}
+	click(t, tt, "Word that ends the recording")
+	click(t, tt, "Off")
+	if w := a.lib.settings.Get().Features.EndWord; w != "" {
+		t.Fatalf("end word not off: %q", w)
+	}
+	a.local.(*fakeLocal).NoStream = true
+	if slices.Contains(tt.AccessLabels(), "Word that ends the recording") {
+		t.Error("the end word shows with a speech model that does not stream")
 	}
 }
 
@@ -543,5 +601,16 @@ func TestSectionTitleAdd(t *testing.T) {
 			tt.SetSize(size[0], 1600) // the Apps section, below the prompt
 			check("Apps", "Add apps…", i18n.T("Remove %s", "Slack"))
 		}
+	}
+}
+
+// Your rules start folded, so open the section to see its two-stage
+// caption: the rules act after recognition, the speech hints before it.
+func TestRulesExplainTwoStages(t *testing.T) {
+	_, tt := trTester(t)
+	click(t, tt, "Your rules")
+	frames(tt)
+	if !strings.Contains(strings.Join(tt.Texts(), "\n"), "Rules act after recognition, on the text the speech model produced.") {
+		t.Errorf("no two-stage caption in %q", tt.Texts())
 	}
 }

@@ -324,11 +324,7 @@ func Build(in Input) (Output, error) {
 	case in.Task == Rewrite && in.Answer:
 		add("answer", render("output-answer", nil))
 	case in.Task == Rewrite:
-		outLayer := render("output-rewrite", nil)
-		if s := strings.TrimSpace(in.OutputPrompt); s != "" {
-			outLayer = strings.TrimSpace(Render(s, vars, flags))
-		}
-		add("output", outLayer)
+		add("output", rewriteOutputLayer(in, vars, flags, render))
 	default:
 		add("output", render("output-"+string(in.Task), nil))
 	}
@@ -424,25 +420,6 @@ func wrap(tag, text string) string {
 
 // UserMessage wraps the input for the user message.
 func UserMessage(text string) string { return wrap("input", text) }
-
-// BuiltinLayer renders one built-in template fragment (for example
-// output-rewrite) with the same flags as Build.
-func BuiltinLayer(set, name string, in Input) string {
-	vars := Variables(in, set)
-	selected := in.Task == Rewrite && strings.TrimSpace(in.Text) != "" || in.Task == Translate && in.Selected
-	on := func(b bool) string {
-		if b {
-			return "1"
-		}
-		return ""
-	}
-	flags := map[string]string{
-		"FOR_TRANSCRIBE": on(in.Task == Transcribe),
-		"FOR_TRANSLATE":  on(in.Task == Translate),
-		"SELECTED":       on(selected),
-	}
-	return strings.TrimSpace(Render(template(set, name), vars, flags))
-}
 
 // Variables are the public variables of in, in template set set's
 // language.

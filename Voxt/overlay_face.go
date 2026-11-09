@@ -118,6 +118,11 @@ func overlayPill(c *ui.Context, s session.Snapshot, mode overlayMode, look pillL
 					ui.Icon(c, overlayKindIcon(s.Kind).Bold).Size(layout.IconSize, layout.IconSize).TextColor(ovIcon).Shrink(0).Label(uitext.KindTitle(s.Kind))
 				})
 			}
+			if mode == ovRecording && s.Waiting == session.WaitNone {
+				title := uitext.KindTitle(s.Kind)
+				ui.Text(c, title).FontSize(12).FontWeight(500).TextColor(ovText).SingleLine().Shrink(0).
+					Label(i18n.T("Recording mode: %s", title))
+			}
 			if mode == ovRecording {
 				waveform(c, s.Levels, !s.HeardAt.IsZero(), look)
 				if look.time {
@@ -244,20 +249,18 @@ func fadeSpans(text string, off float32, measure func(string) float32) (string, 
 	return string(r[lo:]), from, spans
 }
 
-// liveText is the text the pill shows under it, the same in every flow
-// (10-15, third round): the answer as the model writes it; until then
-// what it works on: what the speech model heard so far (a file
-// service's whole text, while it is cleaned up), else the selection it
-// translates.
+// liveText is the text the pill shows under it. The preview carries only
+// live ASR partials (and, for selection translate, the selection), not
+// the offline Final nor language-model drafts (FB6).
 func liveText(s session.Snapshot) string {
-	working := s.State == session.Composing || s.State == session.Delivering
-	if d := strings.TrimSpace(s.Draft); d != "" && working {
-		return d
-	}
-	if p := strings.TrimSpace(s.Partial); p != "" || !working {
+	if p := strings.TrimSpace(s.Partial); p != "" &&
+		(s.State == session.Recording || s.State == session.Recognizing) {
 		return p
 	}
-	return strings.TrimSpace(s.Selection)
+	if (s.State == session.Composing || s.State == session.Delivering) && strings.TrimSpace(s.Selection) != "" {
+		return strings.TrimSpace(s.Selection)
+	}
+	return ""
 }
 
 // overlayKindIcon is a feature's icon in the overlay: Voxt's mode icons
@@ -297,7 +300,10 @@ func (a *app) overlayNotice(c *ui.Context) {
 		// keeps its sides even. The border takes layout.Border of the padding.
 		ui.Row(c).Fill().Padding(0, layout.PillPadX-layout.Border).Gap(layout.Gap).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 			ic, col := icons.DangerCircle, tok(t).Danger
-			if n.warn {
+			switch {
+			case n.ok:
+				ic, col = icons.CheckCircle, tok(t).Success
+			case n.warn:
 				ic, col = icons.DangerTriangle, tok(t).Warning
 			}
 			ui.Box(c).Size(layout.IconSlot, layout.RowH).Shrink(0).Center().Children(func() {

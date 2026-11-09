@@ -31,7 +31,7 @@ func TestLiveTextSwitch(t *testing.T) {
 	if text, _ := pillLine(a.pillSession()); text != "" {
 		t.Errorf("off: %q", text)
 	}
-	a.muteNote.text, a.muteNote.id = "The sound could not be muted", "s1"
+	a.pillNote.text, a.pillNote.id = "The sound could not be muted", "s1"
 	if text, _ := pillLine(a.pillSession()); text != "The sound could not be muted" {
 		t.Errorf("off, the note: %q", text)
 	}
@@ -40,6 +40,25 @@ func TestLiveTextSwitch(t *testing.T) {
 // TestLiveTextCard: with Show live text off, a follow-up in the answer
 // card shows neither the words being said nor the answer being written,
 // as the pill does not.
+// TestLiveTextNoLLMDraft: after stop, the pill keeps live ASR text and
+// does not replay the language model draft (FB6).
+func TestLiveTextNoLLMDraft(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	stream := "meet at three tomorrow"
+	a.sess = session.Snapshot{State: session.Recording, Partial: stream}
+	if text, _ := pillLine(a.pillSession()); text != stream {
+		t.Fatalf("recording: %q", text)
+	}
+	a.sess = session.Snapshot{State: session.Composing, Partial: stream, Draft: "Meet at three."}
+	if text, _ := pillLine(a.pillSession()); text != "" {
+		t.Fatalf("composing: %q", text)
+	}
+	a.sess = session.Snapshot{State: session.Recognizing, Partial: stream}
+	if text, _ := pillLine(a.pillSession()); text != stream {
+		t.Fatalf("recognizing: %q", text)
+	}
+}
+
 func TestLiveTextCard(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.updateSettings(func(s *settings.Settings) { s.Overlay.HideLiveText = true })

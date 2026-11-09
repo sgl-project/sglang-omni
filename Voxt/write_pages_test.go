@@ -28,7 +28,7 @@ func TestTranslatePage(t *testing.T) {
 	a, tt := pageTester(t, "/translate")
 	for _, s := range []string{
 		"Translate", "Shortcuts", "Right ⌥ ⇧", "Models", "No speech model is installed: only selected text can be translated.",
-		"No language model is set up: set one up to translate.", "Translation", "Translate into", "Automatic: Simplified Chinese",
+		"No language model is set up: set one up to translate.", "Translation", "Translate into", "Automatic (now: Simplified Chinese)",
 		"Basic clean-up", "Show the result in a card", "Your rules", "Try it",
 	} {
 		if !has(tt, s) {
@@ -39,7 +39,7 @@ func TestTranslatePage(t *testing.T) {
 		t.Error("paste-last belongs to Transcribe")
 	}
 	clickSwitch(t, tt, "Show the result in a card")
-	if !a.lib.settings.Get().Features.Translate.ShowCard {
+	if !a.lib.settings.Get().Features.ShowCard {
 		t.Error("show card not saved")
 	}
 	clickSwitch(t, tt, "Basic clean-up")
@@ -52,7 +52,7 @@ func TestTranslatePage(t *testing.T) {
 		t.Errorf("target %q", got)
 	}
 	click(t, tt, "Target language")
-	click(t, tt, "Automatic: Simplified Chinese")
+	click(t, tt, "Automatic (now: Simplified Chinese)")
 	if got := a.lib.settings.Get().Features.Translate.Target; got != "" {
 		t.Errorf("target %q", got)
 	}
@@ -121,14 +121,13 @@ func TestOverlayWriting(t *testing.T) {
 		t.Errorf("reading %s", a.ov.mode)
 	}
 	snap(a, session.Snapshot{ID: "t1", Kind: store.KindTranslate, State: session.Composing, Selection: "Hi", Draft: "你"})
-	if a.ov.mode != ovWorking || a.ov.h != layout.LiveH {
-		t.Errorf("draft %s %d", a.ov.mode, a.ov.w)
+	if a.ov.mode != ovWorking || a.ov.h != layout.LiveH || liveLineText(a.sess) != "Hi" {
+		t.Errorf("selection %s %d text %q", a.ov.mode, a.ov.w, liveLineText(a.sess))
 	}
 	snap(a, session.Snapshot{ID: "t1", Kind: store.KindTranslate, State: session.Composing, Selection: "Hi", Draft: "你好", Card: true, TargetLanguage: "zh-Hans"})
-	// Bound for the card, it is written in the pill all the same: the card
-	// comes with the result.
-	if a.ov.mode != ovWorking || a.answer.open || liveLineText(a.sess) != "你好" {
-		t.Errorf("the draft of a card's answer: %s %+v", a.ov.mode, a.answer)
+	// The card streams the draft; the pill keeps the selection, not the draft.
+	if a.ov.mode != ovWorking || a.answer.open || liveLineText(a.sess) != "Hi" {
+		t.Errorf("the draft of a card's answer: %s %+v text %q", a.ov.mode, a.answer, liveLineText(a.sess))
 	}
 	snap(a, session.Snapshot{ID: "t1", Kind: store.KindTranslate, State: session.Done, Selection: "Hi", Result: "你好", Card: true, Delivery: deliver.ReasonNotEditable, TargetLanguage: "zh-Hans"})
 	if !a.answer.open || a.answer.input.Selection != "Hi" || a.answer.lang != "zh-Hans" {
@@ -212,6 +211,36 @@ func TestSessionBlocker(t *testing.T) {
 	for _, k := range []store.Kind{store.KindTranscribe, store.KindTranslate, store.KindRewrite} {
 		if n := a.sessionBlocker(k); n != nil {
 			t.Errorf("%s: %+v", k, n)
+		}
+	}
+}
+
+// TestCardSwitchShared: Transcribe and Translate share one answer-card
+// switch; Rewrite always shows answers in the card and has no switch.
+func TestCardSwitchShared(t *testing.T) {
+	a, tt := pageTester(t, "/translate")
+	for i, page := range []string{"/translate", "/transcribe"} {
+		a.navigate(page)
+		frames(tt)
+		n := 0
+		for _, s := range tt.AccessLabels() {
+			if s == "Show the result in a card" {
+				n++
+			}
+		}
+		if n != 2 { // one row: its title and its switch
+			t.Fatalf("%s: %d elements named for the card switch", page, n)
+		}
+		clickSwitch(t, tt, "Show the result in a card")
+		if on := a.lib.settings.Get().Features.ShowCard; on != (i%2 == 0) {
+			t.Errorf("%s: the card switch is %v after a click", page, on)
+		}
+	}
+	a.navigate("/rewrite")
+	frames(tt)
+	for _, s := range tt.AccessLabels() {
+		if s == "Show the result in a card" {
+			t.Fatalf("/rewrite: card switch should not appear on Rewrite")
 		}
 	}
 }

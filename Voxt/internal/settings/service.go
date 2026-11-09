@@ -126,6 +126,7 @@ func clone(s Settings) Settings {
 	f.Transcribe.Hotkeys = slices.Clone(f.Transcribe.Hotkeys)
 	f.Translate.Hotkeys = slices.Clone(f.Translate.Hotkeys)
 	f.Rewrite.Hotkeys = slices.Clone(f.Rewrite.Hotkeys)
+	f.Hidden = slices.Clone(f.Hidden)
 	s.AppEnhancement.Browsers = slices.Clone(s.AppEnhancement.Browsers)
 	s.Family.Follow = maps.Clone(s.Family.Follow)
 	s.Family.Conflicts = slices.Clone(s.Family.Conflicts)

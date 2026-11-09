@@ -50,6 +50,7 @@ type settingsForm struct {
 	logText      bool
 	sounds       bool
 	skipSilence  bool        // !Audio.VAD.Off
+	liveResult   bool        // Audio.LiveResult
 	cleanSound   bool        // !Audio.Clean.Off
 	muteOutput   bool        // Audio.MuteOn()
 	sidebar      int         // automatic, names and icons, icons only (settings_appearance.go)
@@ -122,6 +123,9 @@ func (a *app) updateSettings(fn func(*settings.Settings)) {
 func (a *app) settingsChanged(old, new settings.Settings) {
 	a.prefs = new
 	a.familySettingsChanged(old, new) // family.go: the shared settings, the manifest
+	if (old.Dictionary.Learn && !new.Dictionary.Learn) || (old.Dictionary.Enabled && !new.Dictionary.Enabled) {
+		a.learner.Stop() // learn_link.go: nothing read from now on, nothing proposed
+	}
 	if old.General.Language != new.General.Language {
 		a.applyLocale()
 	}
@@ -140,6 +144,9 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 	if !reflect.DeepEqual(old.Features, new.Features) {
 		a.syncHotkeys()   // session_hotkeys.go
 		a.buildTrayMenu() // the shortcuts it shows
+	}
+	if !slices.Equal(old.Audio.Devices, new.Audio.Devices) {
+		a.buildTrayMenu() // the microphone it checks
 	}
 	if old.General.LaunchAtLogin != new.General.LaunchAtLogin && new.General.LaunchAtLogin != a.loginIs && a.hasMenu {
 		on := new.General.LaunchAtLogin
@@ -161,7 +168,8 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 		a.applyKeepLoaded(new.Models) // models_keep.go
 	}
 	if !reflect.DeepEqual(old.Providers, new.Providers) || old.Network != new.Network {
-		a.syncRemote() // remote_link.go
+		a.readUnreadKeys() // remote_link.go: a setup that came over
+		a.syncRemote()
 	}
 	a.historySettingsChanged(old, new) // history_settings_ops.go
 	// The problems' cards: the language of their text may have changed
@@ -221,6 +229,7 @@ func (a *app) loadSettingsForm() {
 	f.keepHistory, f.keepAudio, f.logText = s.Privacy.KeepHistory, s.Privacy.KeepAudio, s.Privacy.LogText
 	f.sounds = s.Audio.Sounds
 	f.skipSilence = !s.Audio.VAD.Off
+	f.liveResult = s.Audio.LiveResult
 	f.cleanSound = !s.Audio.Clean.Off
 	f.muteOutput = s.Audio.MuteOn()
 	f.sidebar = sidebarChoice(s.Appearance)
