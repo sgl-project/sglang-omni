@@ -157,3 +157,31 @@ func TestMeetingGroupAndDuration(t *testing.T) {
 		}
 	}
 }
+
+// Without a language model the summary says so once and links its page.
+func TestMeetingDetailOpensLanguageModels(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	if _, err := a.lib.store.Meetings().CreateMeeting(context.Background(), store.Meeting{
+		ID: "m-llm", CreatedAt: time.Date(2026, 11, 8, 10, 0, 0, 0, time.UTC),
+		Status: store.MeetingDone, Mode: store.MeetingModeMeeting,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tt.SetSize(windowWidth, 900)
+	a.navigate("/meetings")
+	a.openMeetingDetail("m-llm")
+	frames(tt)
+	if _, ok := tt.Find("Untitled meeting"); !ok {
+		t.Fatalf("no title (%q)", firstTexts(tt))
+	}
+	if _, ok := tt.Find("Ask about this meeting"); ok {
+		t.Fatal("Ask shows without a language model")
+	}
+	if err := tt.ClickControl("Open Language models"); err != nil {
+		t.Fatalf("%v (%q)", err, firstTexts(tt))
+	}
+	frames(tt)
+	if a.shownPath() != remotePath {
+		t.Fatalf("went to %s", a.shownPath())
+	}
+}

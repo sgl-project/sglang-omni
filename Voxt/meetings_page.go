@@ -84,12 +84,22 @@ func (a *app) loadMeetings() {
 	})
 }
 
-// meetingTitle is a meeting's title, else when it started.
+// meetingTitle is a meeting's title, else when it started (for file
+// names).
 func meetingTitle(mt store.Meeting) string {
 	if mt.Title != "" {
 		return mt.Title
 	}
 	return mt.CreatedAt.Format("2006-01-02 15:04")
+}
+
+// meetingDisplayTitle is a meeting's title as the list and its details
+// show it.
+func meetingDisplayTitle(mt store.Meeting) string {
+	if mt.Title != "" {
+		return mt.Title
+	}
+	return i18n.T("Untitled meeting")
 }
 
 // meetingStatusLabel is the row's mark for a meeting that is not done, ""
@@ -315,10 +325,7 @@ func (a *app) meetingRow(c *ui.Context, mt store.Meeting) {
 	t := c.Theme()
 	k := tok(t)
 	n := &a.mv
-	title := mt.Title
-	if title == "" { // the day heads the group, the time ends the row
-		title = i18n.T("Untitled meeting")
-	}
+	title := meetingDisplayTitle(mt) // the day heads the group, the time ends the row
 	sel := n.detail != nil && n.detail.id == mt.ID
 	row := ui.ButtonBase(c.Key("mt-row-"+mt.ID)).Padding(px(t, sp3), px(t, sp3)).Margin(0, px(t, sp4)).Radius(px(t, radiusControl)).
 		Label(title).Gap(px(t, sp2)).AlignItems(ui.Start)
@@ -371,18 +378,27 @@ func (a *app) meetingsPager(c *ui.Context) {
 	})
 }
 
-// meetingDetailHeader is the detail panel's title row (title, then
-// Reprocess, Show in Finder, Delete and Close), its facts, and Continue
-// for a meeting whose final pass did not finish.
+// meetingDetailHeader is the detail panel's title row (title, then More
+// with Reprocess and Show in Finder, Delete and Close), its facts, and
+// Continue for a meeting whose final pass did not finish.
 func (a *app) meetingDetailHeader(c *ui.Context, mt store.Meeting, close func()) {
 	t := c.Theme()
+	ui.Column(c).Gap(px(t, sp1)).Children(func() { a.meetingDetailTitle(c, mt, close) })
+}
+
+func (a *app) meetingDetailTitle(c *ui.Context, mt store.Meeting, close func()) {
+	t := c.Theme()
 	ui.Row(c).Gap(px(t, sp1)).AlignItems(ui.Center).Children(func() {
-		sectionHeading(c, meetingTitle(mt)).Grow(1).MinWidth(0).SingleLine().Ellipsis("…")
-		if mt.Status == store.MeetingDone && iconButton(c.Key("mt-reprocess"), icons.Refresh, i18n.T("Reprocess transcript")).Clicked() {
-			a.meetingReprocess(mt.ID)
-		}
-		if mt.Audio != "" && iconButton(c.Key("mt-show"), icons.FolderOpen, i18n.T("Show in Finder")).Clicked() {
-			revealInFinder(filepath.Join(a.dataDir(), "meetings", mt.Audio))
+		sectionHeading(c, meetingDisplayTitle(mt)).Grow(1).MinWidth(0).SingleLine().Ellipsis("…")
+		if mt.Status == store.MeetingDone || mt.Audio != "" {
+			moreMenu(c.Key("mt-more"), "", func(m *ui.Menu) {
+				if mt.Status == store.MeetingDone && m.Item(i18n.T("Reprocess transcript")).Chosen() {
+					a.meetingReprocess(mt.ID)
+				}
+				if mt.Audio != "" && m.Item(i18n.T("Show in Finder")).Chosen() {
+					revealInFinder(filepath.Join(a.dataDir(), "meetings", mt.Audio))
+				}
+			})
 		}
 		active := a.meetingActive() && mt.Status == store.MeetingRecording
 		if iconButton(c.Key("mt-del"), icons.TrashBinMinimalistic, i18n.T("Delete the meeting…")).Disabled(active).Clicked() {
@@ -394,7 +410,7 @@ func (a *app) meetingDetailHeader(c *ui.Context, mt store.Meeting, close func())
 	})
 	caption(c, meetingMeta(mt))
 	if mt.Status == store.MeetingInterrupted || mt.Status == store.MeetingFinishing {
-		ui.Row(c).Children(func() {
+		ui.Row(c).Margin(px(t, sp2), 0, 0, 0).Children(func() {
 			if primaryButton(c.Key("mt-continue"), i18n.T("Continue final pass")).Clicked() {
 				a.meetingReprocess(mt.ID)
 			}

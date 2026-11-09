@@ -233,7 +233,7 @@ func (a *app) meetingTranscriptList(c *ui.Context, d *meetingDetail) {
 				FontFeatures("tnum").Width(px(t, 40)).Shrink(0)
 			ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, 2)).Children(func() {
 				who := ui.Text(c, label).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(k.Text2)
-				if row.Source == store.SegmentMic {
+				if row.Speaker == "me" {
 					who.TextColor(k.AccentInk)
 				}
 				ui.Text(c, row.Text)

@@ -71,7 +71,7 @@ func (a *app) meetingDetailSection(c *ui.Context, close func()) {
 	if d == nil {
 		return
 	}
-	ui.Column(c).Padding(px(t, sp4)).Gap(px(t, sp3)).Children(func() { a.meetingDetailBody(c, d, close) })
+	ui.Column(c).Padding(px(t, sp4)).Gap(px(t, sp5)).Children(func() { a.meetingDetailBody(c, d, close) })
 }
 
 func (a *app) meetingDetailBody(c *ui.Context, d *meetingDetail, close func()) {
@@ -97,7 +97,7 @@ func (a *app) meetingDetailBody(c *ui.Context, d *meetingDetail, close func()) {
 
 	// Each section: a title row with its actions, then its card.
 	section := func(key, heading string, actions, body func()) {
-		ui.Column(c.Key(key)).Gap(px(t, sp1)).Margin(px(t, sp3), 0, 0, 0).Children(func() {
+		ui.Column(c.Key(key)).Gap(px(t, sp1)).Children(func() {
 			ui.Row(c).Gap(px(t, sp1)).AlignItems(ui.Center).MinHeight(px(t, 28)).Children(func() {
 				sectionTitleText(c, heading).Grow(1).MinWidth(0)
 				if actions != nil {
@@ -130,7 +130,12 @@ func (a *app) meetingDetailBody(c *ui.Context, d *meetingDetail, close func()) {
 			case canLLM:
 				ui.Text(c, i18n.T("No summary yet.")).TextColor(k.Text3)
 			default:
-				ui.Text(c, i18n.T("Set up a language model on the Language models page to get a summary and ask questions.")).TextColor(k.Text3)
+				ui.Text(c, i18n.T("Set up a language model to get a summary and ask questions.")).TextColor(k.Text3)
+				ui.Row(c).Children(func() {
+					if ui.Button(c.Key("mt-open-llm"), i18n.T("Open Language models")).Clicked() {
+						a.navigate(remotePath)
+					}
+				})
 			}
 		})
 	})
