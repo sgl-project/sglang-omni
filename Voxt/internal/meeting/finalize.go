@@ -224,12 +224,11 @@ func readTrackPCM(path string) ([]byte, int, error) {
 
 func markFinalizeFailed(ctx context.Context, cfg Config, mt store.Meeting) error {
 	mode := fromStoreMode(mt.Mode)
-	keep := cfg.Privacy().KeepAudio || mode.KeepsAudio()
 	now := time.Now()
 	if cfg.Now != nil {
 		now = cfg.Now()
 	}
-	if keep {
+	if !cfg.Privacy().KeepAudio && !mode.KeepsAudio() {
 		mt.AudioUntil = now.Add(7 * 24 * time.Hour)
 	}
 	mt.Status = store.MeetingInterrupted

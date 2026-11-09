@@ -136,7 +136,7 @@ func TestFinalizeFailureKeepsLiveAndRetry(t *testing.T) {
 	writeWAV(t, meetDir, "mic.wav", long)
 	mt, _ := db.Meetings().CreateMeeting(ctx, store.Meeting{
 		ID: "m2", CreatedAt: time.Now(), Status: store.MeetingInterrupted,
-		Mode: store.MeetingModeRecording, Audio: "m2",
+		Mode: store.MeetingModeMeeting, Audio: "m2",
 	})
 	_ = db.Meetings().AppendSegments(ctx, mt.Seq, []store.MeetingSegment{
 		{Source: store.SegmentMic, Text: "live", StartMS: 0, EndMS: 1000},
@@ -147,7 +147,7 @@ func TestFinalizeFailureKeepsLiveAndRetry(t *testing.T) {
 		Store:    db.Meetings(),
 		Dir:      filepath.Join(root, "meetings"),
 		Settings: func() settings.Meeting { return settings.Meeting{} },
-		Privacy:  func() settings.Privacy { return settings.Privacy{KeepAudio: true} },
+		Privacy:  func() settings.Privacy { return settings.Privacy{} },
 		ASR: func(ctx context.Context, src meeting.Source) (meeting.TrackASR, error) {
 			return meeting.TrackASR{Caps: micASR.Caps(), File: micASR}, nil
 		},
@@ -160,7 +160,7 @@ func TestFinalizeFailureKeepsLiveAndRetry(t *testing.T) {
 		t.Fatalf("status %s", updated.Status)
 	}
 	if updated.AudioUntil.IsZero() {
-		t.Fatal("expected audio_until on failure with KeepAudio")
+		t.Fatal("expected audio_until on failure when KeepAudio is off")
 	}
 	for _, s := range segs {
 		if s.Text == "live" && !s.Final {
@@ -220,6 +220,41 @@ func TestReprocessInterruptedMeeting(t *testing.T) {
 	updated, _, err := db.Meetings().Meeting(ctx, "m3")
 	if err != nil || updated.Status != store.MeetingDone {
 		t.Fatalf("status %s err %v", updated.Status, err)
+	}
+}
+
+func TestFinalizeRecordingModeKeepsAudio(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	db, err := sqlitestore.Open(ctx, filepath.Join(root, "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	meetDir := filepath.Join(root, "meetings", "m4rec")
+	if err := os.MkdirAll(meetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeWAV(t, meetDir, "mic.wav", tonePCM(rateSamples(time.Second)))
+	mt, _ := db.Meetings().CreateMeeting(ctx, store.Meeting{
+		ID: "m4rec", CreatedAt: time.Now(), Status: store.MeetingDone,
+		Mode: store.MeetingModeRecording, Audio: "m4rec",
+	})
+	micASR := &seqFileASR{texts: []string{"ok"}}
+	cfg := meeting.Config{
+		Store:    db.Meetings(),
+		Dir:      filepath.Join(root, "meetings"),
+		Settings: func() settings.Meeting { return settings.Meeting{} },
+		Privacy:  func() settings.Privacy { return settings.Privacy{KeepHistory: true}},
+		ASR: func(context.Context, meeting.Source) (meeting.TrackASR, error) {
+			return meeting.TrackASR{Caps: micASR.Caps(), File: micASR}, nil
+		},
+	}
+	if err := meeting.FinalizePass(ctx, cfg, mt, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(meetDir); err != nil {
+		t.Fatal("recording mode should keep audio folder")
 	}
 }
 
