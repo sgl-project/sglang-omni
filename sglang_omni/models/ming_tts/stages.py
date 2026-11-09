@@ -148,6 +148,7 @@ def create_sglang_tts_engine_executor(
     tp_rank: int = 0,
     tp_size: int = 1,
     nccl_port: int | None = None,
+    routed_expert_cache_slots: int | None = None,
 ) -> OmniScheduler[MingTTSSGLangRequestData]:
     from sglang_omni.models.ming_tts.engine_builder import MingTtsEngineBuilder
 
@@ -167,6 +168,7 @@ def create_sglang_tts_engine_executor(
         tp_rank=tp_rank,
         tp_size=tp_size,
         nccl_port=nccl_port,
+        routed_expert_cache_slots=routed_expert_cache_slots,
     ).build(
         model_path,
         device=device,

@@ -59,6 +59,22 @@ Cross-request non-streaming AudioVAE batching is not implemented yet. The only s
 
 `stream_slots` is the maximum number of streaming requests that the AudioVAE decoder can keep active at the same time. Each active stream uses one slot to preserve its decoding progress between audio chunks. If all slots are occupied, additional streams wait until a slot is released. The provided configuration uses `stream_slots: 8` to match its concurrency-8 workload. Increasing it supports more simultaneous streams but uses more GPU memory and fixed-graph work; reducing it lowers those costs but also lowers streaming concurrency. It does not change non-streaming batching.
 
+## Routed Expert Offload
+
+`tts_engine.factory.routed_expert_cache_slots: S` keeps every bf16 routed expert in pinned host memory and `S` of each layer's 64 experts on the GPU. Decode refills the slots by least recent use inside the decode CUDA graph; a prefill gathers its routed experts into one scratch layer and leaves the slots alone. It is off by default and needs `tp_size: 1` and the Triton MoE runner.
+
+`S` must cover one decode step: the larger of `max_running_requests` and the largest decode CUDA graph batch, times top-k 6. The default `max_running_requests: 8` needs `S` of at least 48; `S: 32` needs at most 5 rows, for example `max_running_requests: 5` with `cuda_graph_bs: [1, 2, 3, 4, 5]`.
+
+On one H200 with Seed-TTS EN streaming (100 prompts at concurrency 1, 200 at concurrency 8, median of three and two runs), the cache trades latency and throughput for memory:
+
+| `S` | GPU memory freed | Decode hit rate | TTFC median c1 / c8 | Throughput c1 / c8 (req/s) | WER c1 / c8 |
+| --- | --- | --- | --- | --- | --- |
+| off | 0 | 1 | 0.169 / 0.309 s | 3.74 / 12.7 | 0.57% / 0.96% |
+| 48 | 6.1 GiB | 0.996 / 0.990 | 0.262 / 0.545 s | 2.72 / 7.36 | 0.44% / 0.84% |
+| 32 | 13.3 GiB | 0.985 / n/a | 0.400 s / n/a | 1.97 / n/a | 0.57% / n/a |
+
+Each request decodes about 13 patches, so the prefill gather, not decode misses, sets most of the cost. Use the cache only when the experts would otherwise not fit.
+
 ## Synthesizing Speech
 
 ### Text Only

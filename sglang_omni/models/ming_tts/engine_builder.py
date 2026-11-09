@@ -7,10 +7,12 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+import torch
 from transformers import PretrainedConfig
 
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.ming_omni.tp_utils import validate_attention_tp_config
+from sglang_omni.models.ming_tts.routed_experts import attach_routed_expert_cache
 from sglang_omni.models.ming_tts.tokenizer import MingTTSTokenizerBundle
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.bootstrap import InfrastructureOptions
@@ -65,6 +67,7 @@ class MingTtsEngineBuilder(TtsEngineBuilder["MingTTSSGLangRequestData"]):
         tp_rank: int = 0,
         tp_size: int = 1,
         nccl_port: int | None = None,
+        routed_expert_cache_slots: int | None = None,
     ) -> None:
         from sglang_omni.models.ming_tts.hf_config import MING_TTS_MODEL_ARCH_OVERRIDE
 
@@ -85,6 +88,11 @@ class MingTtsEngineBuilder(TtsEngineBuilder["MingTTSSGLangRequestData"]):
             pass
         if tp_size > 1 and nccl_port is None:
             raise ValueError("Ming-Omni-TTS tts_engine TP requires nccl_port")
+        elif tp_size > 1 and routed_expert_cache_slots is not None:
+            raise ValueError(
+                "Ming-Omni-TTS tts_engine.factory.routed_expert_cache_slots needs "
+                "tp_size=1"
+            )
         else:
             pass
 
@@ -94,6 +102,7 @@ class MingTtsEngineBuilder(TtsEngineBuilder["MingTTSSGLangRequestData"]):
         self.tp_rank = tp_rank
         self.tp_size = tp_size
         self.nccl_port = nccl_port
+        self.routed_expert_cache_slots = routed_expert_cache_slots
         self.config: PretrainedConfig | None = None
         self.tokenizer: MingTTSTokenizerBundle | None = None
         self.model_runner: MingTTSModelRunner | None = None
@@ -204,6 +213,38 @@ class MingTtsEngineBuilder(TtsEngineBuilder["MingTTSSGLangRequestData"]):
             "nccl_port": self.nccl_port,
             "total_gpu_memory_fraction": self.total_gpu_memory_fraction,
         }
+
+    def before_memory_pool(
+        self,
+        *,
+        model_worker: ModelWorker,
+        checkpoint_dir: str,
+        device: str,
+        gpu_id: int,
+        server_args: ServerArgs,
+    ) -> None:
+        """Move the routed experts to pinned host memory before the KV pool reads
+        free memory; the checkpoint and GPU arguments are the interface contract."""
+        slot_count = self.routed_expert_cache_slots
+        if slot_count is None:
+            logger.info("Ming-TTS routed expert cache: off, every expert on the GPU")
+            return
+        else:
+            pass
+        model = model_worker.model_runner.model
+        # Padded decode graph rows route to experts too, so the largest captured
+        # batch bounds a step as well as the request pool does.
+        max_decode_rows = max(
+            [int(server_args.max_running_requests)]
+            + list(get_decode_cuda_graph_bs(server_args) or [])
+        )
+        model.routed_expert_cache = attach_routed_expert_cache(
+            model,
+            slot_count=slot_count,
+            max_decode_rows=max_decode_rows,
+            top_k=int(self.config.llm_config.num_experts_per_tok),
+            device=torch.device(device),
+        )
 
     def setup_model(
         self,

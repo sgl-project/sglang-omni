@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 import torch
@@ -25,6 +26,11 @@ from sglang_omni.models.ming_tts.sglang_model import (
 )
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.types import SchedulerOutput, SchedulerRequest
+
+# Decode steps between two routed expert cache reports.
+EXPERT_CACHE_REPORT_STEPS = 200
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -97,6 +103,7 @@ class MingTTSModelRunner(ModelRunner):
         self.tp_rank = int(tp_worker.tp_rank)
         self.tp_size = int(get_parallel().tp_size)
         self.request_states: dict[str, MingTTSRequestState] = {}
+        self.decode_steps = 0
 
     def reset_request(self, request_id: str) -> None:
         self.request_states.pop(request_id, None)
@@ -337,6 +344,26 @@ class MingTTSModelRunner(ModelRunner):
         requests: list[SchedulerRequest],
     ) -> None:
         self.collect_ming_tts_step(result, forward_batch, schedule_batch, requests)
+        self.report_expert_cache()
+
+    def report_expert_cache(self) -> None:
+        """Log the routed expert cache totals every EXPERT_CACHE_REPORT_STEPS steps."""
+        routed_expert_cache = self.model.routed_expert_cache
+        self.decode_steps += 1
+        if (
+            routed_expert_cache is None
+            or self.decode_steps % EXPERT_CACHE_REPORT_STEPS != 0
+        ):
+            pass
+        else:
+            statistics = routed_expert_cache.read_statistics()
+            logger.info(
+                f"Ming-TTS routed expert cache after {self.decode_steps} decode steps: "
+                f"decode hit rate {statistics.decode_hit_rate:.4f} "
+                f"({statistics.decode_misses} misses of {statistics.lookups}), "
+                f"{statistics.decode_misses * statistics.bytes_per_expert / 2**30:.2f} "
+                f"GiB copied in decode, {statistics.prefill_misses} prefill host reads"
+            )
 
     def finalize_skip_rids(self, scheduler_output: SchedulerOutput | None) -> set[str]:
         batch = getattr(scheduler_output, "batch_data", None)

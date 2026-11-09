@@ -213,6 +213,15 @@ class MingTTSPreprocessingStageConfig(StageConfig):
     )
 
 
+class MingTTSEngineFactoryArgs(FactoryArgs):
+    # Experts per MoE layer kept on the GPU, the rest in pinned host memory (bf16).
+    routed_expert_cache_slots: int | None = Field(default=None, ge=1, strict=True)
+
+
+class MingTTSEngineStageConfig(EngineStageConfig):
+    factory: MingTTSEngineFactoryArgs = Field(default_factory=MingTTSEngineFactoryArgs)
+
+
 class MingTTSAudioDecodeFactoryArgs(FactoryArgs):
     streaming_cuda_graph: bool | None = Field(default=None, strict=True)
     initial_chunk_patches: int | None = Field(default=None, gt=0, strict=True)
@@ -259,7 +268,7 @@ class MingTTSPipelineConfig(PipelineConfig):
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         PREPROCESSING_STAGE: MingTTSPreprocessingStageConfig,
-        TTS_ENGINE_STAGE: EngineStageConfig,
+        TTS_ENGINE_STAGE: MingTTSEngineStageConfig,
         AUDIO_DECODE_STAGE: MingTTSAudioDecodeStageConfig,
     }
 
@@ -282,11 +291,11 @@ class MingTTSPipelineConfig(PipelineConfig):
             gpu=0,
             next=TTS_ENGINE_STAGE,
         ),
-        EngineStageConfig(
+        MingTTSEngineStageConfig(
             name=TTS_ENGINE_STAGE,
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
-            factory=FactoryArgs(dtype="bfloat16"),
+            factory=MingTTSEngineFactoryArgs(dtype="bfloat16"),
             gpu=0,
             next=AUDIO_DECODE_STAGE,
             stream_to=[AUDIO_DECODE_STAGE],

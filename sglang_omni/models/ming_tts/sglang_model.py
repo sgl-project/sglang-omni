@@ -16,6 +16,10 @@ from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.runtime_context import get_exec, get_model, get_parallel, get_schedule
 from torch import nn
 
+from sglang_omni.models.fishaudio_drama3.expert_cache import (
+    CacheMode,
+    RoutedExpertCache,
+)
 from sglang_omni.models.ming_omni.talker.talker_module.packed_qkv import (
     PACKED_QKV_SHARD_IDS,
     PackedQKVLinear,
@@ -881,6 +885,8 @@ class MingTTSSGLangModel(nn.Module):
         self.spk_head = nn.Linear(192, self.hidden_size, bias=True)
         self.tail_graphs = None
         self.cfm_timesteps: torch.Tensor | None = None
+        # The engine builder offloads the routed experts when the stage asks.
+        self.routed_expert_cache: RoutedExpertCache | None = None
 
     def get_input_embeddings(self) -> nn.Module:
         return self.model.get_input_embeddings()
@@ -1027,6 +1033,12 @@ class MingTTSSGLangModel(nn.Module):
         forward_mode = forward_batch.forward_mode
         is_decode = bool(forward_mode.is_decode())
         is_extend = bool(forward_mode.is_extend())
+        if self.routed_expert_cache is None:
+            pass
+        elif is_decode:
+            self.routed_expert_cache.mode = CacheMode.DECODE
+        else:
+            self.routed_expert_cache.mode = CacheMode.PREFILL
         if input_embeds is None and is_decode:
             input_embeds = self.decode_input_embedding(input_ids)
             input_ids = None
