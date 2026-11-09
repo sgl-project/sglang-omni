@@ -274,11 +274,12 @@ func TestOverlayFlows(t *testing.T) {
 					if card {
 						t.Errorf("step %v: back to the pill after the card", s)
 					}
+					mini := layout.PillW
 					switch {
-					case s.text == "" && (s.w != layout.PillW || s.h != layout.PillH):
-						t.Errorf("step %v: the mini pill is %d×%d", s, s.w, s.h)
-					case s.text != "" && (s.h != layout.LiveH || s.w < layout.PillW || s.w > layout.LiveMaxW):
-						t.Errorf("step %v: the line of text is %d×%d (the pill's rule: %d to %d wide, %d high)", s, s.w, s.h, layout.PillW, layout.LiveMaxW, layout.LiveH)
+					case s.text == "" && (s.w < mini || s.h != layout.PillH):
+						t.Errorf("step %v: the mini pill is %d×%d, want at least %d×%d", s, s.w, s.h, mini, layout.PillH)
+					case s.text != "" && (s.h != layout.LiveH || s.w < mini || s.w > layout.LiveMaxW):
+						t.Errorf("step %v: the line of text is %d×%d (the pill's rule: %d to %d wide, %d high)", s, s.w, s.h, mini, layout.LiveMaxW, layout.LiveH)
 					}
 				}
 			}

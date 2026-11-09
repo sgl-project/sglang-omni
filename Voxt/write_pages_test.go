@@ -30,7 +30,7 @@ func TestTranslatePage(t *testing.T) {
 	a, tt := pageTester(t, "/translate")
 	for _, s := range []string{
 		"Translate", "Shortcuts", "Right ⌥ ⇧", "Models", "No speech model is installed: only selected text can be translated.",
-		"No language model is set up: set one up to translate.", "Translation", "Translate into", "Automatic: Simplified Chinese",
+		"No language model is set up: set one up to translate.", "Translation", "Translate into", "Automatic (now: Simplified Chinese)",
 		"Basic clean-up", "Show the result in a card", "Your rules", "Try it",
 	} {
 		if !has(tt, s) {
@@ -54,7 +54,7 @@ func TestTranslatePage(t *testing.T) {
 		t.Errorf("target %q", got)
 	}
 	click(t, tt, "Target language")
-	click(t, tt, "Automatic: Simplified Chinese")
+	click(t, tt, "Automatic (now: Simplified Chinese)")
 	if got := a.lib.settings.Get().Features.Translate.Target; got != "" {
 		t.Errorf("target %q", got)
 	}
@@ -64,9 +64,11 @@ func TestTranslatePage(t *testing.T) {
 		t.Errorf("shortcuts %+v", hs)
 	}
 	click(t, tt, "Your rules")
-	click(t, tt, "Your rules for Translate")
-	tt.Type("Use British spelling.")
-	click(t, tt, "Show the full prompt")
+	click(t, tt, "System prompt for Translate")
+	a.fui(hotkey.Translate).prompt = "Use British spelling."
+	a.fui(hotkey.Translate).promptDirty = true
+	a.savePrompt(hotkey.Translate)
+	click(t, tt, "Example user message")
 	if p := a.lib.settings.Get().Features.Translate.Prompt; p != "Use British spelling." || a.lib.settings.Get().Features.Transcribe.Prompt != "" {
 		t.Errorf("rules %q", p)
 	}
@@ -100,7 +102,7 @@ func TestRewritePage(t *testing.T) {
 		t.Error("the card's length setting is back: every answer goes to the card")
 	}
 	click(t, tt, "Your rules")
-	click(t, tt, "Show the full prompt")
+	click(t, tt, "Example user message")
 	if !has(tt, "With a selection, as below; with nothing selected the model writes from the instruction and answers with a title and the text.") {
 		t.Errorf("preview %q", firstTexts(tt))
 	}
@@ -121,14 +123,13 @@ func TestOverlayWriting(t *testing.T) {
 		t.Errorf("reading %s", a.ov.mode)
 	}
 	snap(a, session.Snapshot{ID: "t1", Kind: store.KindTranslate, State: session.Composing, Selection: "Hi", Draft: "你"})
-	if a.ov.mode != ovWorking || a.ov.h != layout.LiveH {
-		t.Errorf("draft %s %d", a.ov.mode, a.ov.w)
+	if a.ov.mode != ovWorking || a.ov.h != layout.LiveH || liveLineText(a.sess) != "Hi" {
+		t.Errorf("selection %s %d text %q", a.ov.mode, a.ov.w, liveLineText(a.sess))
 	}
 	snap(a, session.Snapshot{ID: "t1", Kind: store.KindTranslate, State: session.Composing, Selection: "Hi", Draft: "你好", Card: true, TargetLanguage: "zh-Hans"})
-	// Bound for the card, it is written in the pill all the same: the card
-	// comes with the result.
-	if a.ov.mode != ovWorking || a.answer.open || liveLineText(a.sess) != "你好" {
-		t.Errorf("the draft of a card's answer: %s %+v", a.ov.mode, a.answer)
+	// The card streams the draft; the pill keeps the selection, not the draft.
+	if a.ov.mode != ovWorking || a.answer.open || liveLineText(a.sess) != "Hi" {
+		t.Errorf("the draft of a card's answer: %s %+v text %q", a.ov.mode, a.answer, liveLineText(a.sess))
 	}
 	snap(a, session.Snapshot{ID: "t1", Kind: store.KindTranslate, State: session.Done, Selection: "Hi", Result: "你好", Card: true, Delivery: deliver.ReasonNotEditable, TargetLanguage: "zh-Hans"})
 	if !a.answer.open || a.answer.input.Selection != "Hi" || a.answer.lang != "zh-Hans" {

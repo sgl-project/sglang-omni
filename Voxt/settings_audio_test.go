@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/egoist/mygo/ui"
 	"github.com/hehehai/actnowkit/sounds"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
@@ -13,6 +14,36 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
+
+// TestInfoTipClick: a click on an ⓘ shows its tip, with no wait for the
+// pointer to rest on it, and Escape puts it away. Before, it showed only
+// on hover and a click did nothing.
+func TestInfoTipClick(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/audio")
+	const tip = "Voxt records from the first microphone of the list that is connected. When none of them is, or the list is empty, it records from the system's default input."
+	shown := func() int { // the ⓘ's own label counts once
+		frames(tt)
+		n := 0
+		for _, s := range tt.Texts() {
+			if s == tip {
+				n++
+			}
+		}
+		return n
+	}
+	closed := shown()
+	if err := tt.ClickControl(tip); err != nil {
+		t.Fatal(err)
+	}
+	if shown() != closed+1 {
+		t.Fatalf("a click did not show the tip: %q", firstTexts(tt))
+	}
+	tt.Key(0, ui.KeyEscape)
+	if shown() != closed {
+		t.Error("Escape left the tip open")
+	}
+}
 
 func TestAudioSettingsDevices(t *testing.T) {
 	a, fs, tt := newTestApp(t)

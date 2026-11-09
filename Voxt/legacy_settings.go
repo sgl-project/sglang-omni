@@ -24,7 +24,6 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 // legacyPreference is the previous Voxt's preference key as text, from
@@ -195,13 +194,13 @@ var legacyDefaultSpeechEndpoints = map[string][]string{
 }
 
 // legacySpeechEndpoint is the address of a setup of the previous Voxt's
-// speech service (its service id; sp here) as one here, and whether the
-// user should check it. The service's own default is its own here ("");
+// speech service (its service id; sp here) for model as one here, and
+// whether the user should check it. The service's own default is its own here ("");
 // any other address is kept, never replaced by the service's, which would
 // send the audio elsewhere: to check when this app's client cannot use it
 // (a streaming service's https://, a file service's wss://). StepFun's
 // was its SSE API; here its transcriptions on the same host, to check.
-func legacySpeechEndpoint(service string, sp providers.Speech, endpoint string) (address string, check bool) {
+func legacySpeechEndpoint(service string, sp providers.Speech, model, endpoint string) (address string, check bool) {
 	e := strings.TrimRight(strings.TrimSpace(endpoint), "/")
 	if e == "" || slices.Contains(legacyDefaultSpeechEndpoints[service], e) {
 		return "", false
@@ -214,7 +213,7 @@ func legacySpeechEndpoint(service string, sp providers.Speech, endpoint string) 
 	}
 	u, err := url.Parse(e)
 	schemes := []string{"https", "http"}
-	if sp.Stream {
+	if sp.Streams(model) {
 		schemes = []string{"wss", "ws"}
 	}
 	return e, check || err != nil || u.Host == "" || !slices.Contains(schemes, strings.ToLower(u.Scheme))
@@ -242,7 +241,7 @@ func (s legacySpeechSetup) provider() (p settings.Provider, check, ok bool) {
 	if !ok || model == "" && strings.TrimSpace(s.Endpoint) == "" && !c.APIKey && !c.AppID && !c.AccessToken {
 		return settings.Provider{}, false, false
 	}
-	endpoint, check := legacySpeechEndpoint(s.ProviderID, sp, s.Endpoint)
+	endpoint, check := legacySpeechEndpoint(s.ProviderID, sp, model, s.Endpoint)
 	if sp.ID != "openai" && model != "" && !slices.Contains(sp.Models, model) {
 		model, check = "", true
 	}
@@ -439,17 +438,16 @@ func (l legacySettings) apply(s *settings.Settings) (llmAdded, speechAdded []set
 
 // toCheck names the setups added (apply's llmAdded, speechAdded) whose
 // address or model the user should check, for the result.
-func (l legacySettings) toCheck(llmAdded, speechAdded []settings.Provider) []string {
-	var names []string
+func (l legacySettings) toCheck(llmAdded, speechAdded []settings.Provider) (llmCheck, speechCheck []settings.Provider) {
 	for _, p := range llmAdded {
 		if slices.Contains(l.checkLLM, p.ID) {
-			names = append(names, uitext.PresetName(p.ID))
+			llmCheck = append(llmCheck, p)
 		}
 	}
 	for _, p := range speechAdded {
 		if slices.Contains(l.checkSpeech, p.ID) {
-			names = append(names, uitext.SpeechName(p.ID))
+			speechCheck = append(speechCheck, p)
 		}
 	}
-	return names
+	return llmCheck, speechCheck
 }

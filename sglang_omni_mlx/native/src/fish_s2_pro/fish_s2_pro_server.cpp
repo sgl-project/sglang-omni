@@ -151,13 +151,7 @@ double NumberOr(const Json &body, const char *name, double fallback) {
 std::string ReferencePayload(const std::string &audio,
                              const std::string &field) {
   if (audio.rfind("data:", 0) == 0) {
-    const size_t comma = audio.find(',');
-    if (comma == std::string::npos ||
-        audio.substr(0, comma).find(";base64") == std::string::npos) {
-      throw std::invalid_argument(field + " must be a base64 data: URL");
-    } else {
-      return audio.substr(comma + 1);
-    }
+    return omni_common::AudioDataUrlPayload(audio, field);
   } else if (audio.rfind("http://", 0) == 0 ||
              audio.rfind("https://", 0) == 0 ||
              audio.rfind("file://", 0) == 0 || audio.rfind("/", 0) == 0 ||

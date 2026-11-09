@@ -260,6 +260,9 @@ func (a *app) homeToday(c *ui.Context) {
 		fillCard(c.Key("home-kinds")).Gap(px(t, 2)).Grow(1).Basis(px(t, 140)).MinWidth(px(t, 120)).Padding(px(t, sp3), px(t, sp4)).Children(func() {
 			ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Center).Height(px(t, fsTitle*1.3)).Children(func() {
 				for _, kd := range store.Kinds {
+					if a.prefs.Features.IsHidden(string(kd)) {
+						continue
+					}
 					ui.Row(c.Key("kind-" + string(kd))).Gap(px(t, 4)).AlignItems(ui.Center).Label(uitext.KindTitle(kd) + " " + itoa(st.byKind[kd])).Tooltip(uitext.KindTitle(kd)).Children(func() {
 						ui.Icon(c, kindIcon(kd).Linear).Size(px(t, 16), px(t, 16)).TextColor(k.Text2)
 						ui.Text(c, itoa(st.byKind[kd])).FontSize(px(t, fsSection)).FontWeight(600).SingleLine()
