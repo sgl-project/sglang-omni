@@ -67,6 +67,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Scrolling past Your rules keeps scrolling the page**: a scroll that starts on the page goes on when the rules field comes under the pointer; only a scroll that starts over the field scrolls the field, as elsewhere on macOS. A long prompt also opens at its start, not its end.
 - **Rewrite takes long selections**: Rewrite reads the selection while you speak and now gives it up to 6 seconds (and a copy 1.5 seconds) instead of 1.5, so a long selection in a web editor is no longer missed, with the answer then written from your instruction alone.
 
+### Fixed
+
+- **Browser text boxes (GitHub and similar)** stop showing "The text did not land where you were typing" when ⌘V actually worked: Chromium-style web editors often report the same Accessibility value after a paste, so the check treats an unchanged web area or contenteditable reading as unverified instead of failed (#3644 FB36).
+
 ### 中文
 
 **录音是怎么开始的。** 按下快捷键的那一刻麦克风就开始录，Voxt 不等语音模型。语音模型和人声检测在你说话的同时后台加载：Voxt 打开后的第一次听写要加载，空闲十分钟卸载后的第一次也要。麦克风开始之后你说的每一句都录下来，模型就绪前先存在内存里，就绪后一并送过去：实时文字会晚一点出现，结果一句不少，上限是一次录音的十分钟。浮窗写着“正在启动麦克风…”时，麦克风还没出声音，那时说的话录不下来；只有图标在呼吸、波形跟着你的声音动时，是模型还在加载，录音没问题。
@@ -131,6 +135,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **在 Voxt 自己的窗口里听写，文字又能输进去了**，和 Voxt 1.x 一样：光标在 Voxt 的输入框里（比如功能页的“你的规则”）时，按快捷键和在别的 app 里一样录音、显示浮窗，文字输入到这个框里。以前在首页和功能页上按快捷键会在页面里开始一次试一试（没有浮窗，结果显示在“试一试”区域），在其他页面上结果进了答案卡片。
 - **滚过“你的规则”时页面接着滚**：在页面上开始的滚动，规则框移到指针下面时页面照样往下滚；只有在规则框里开始的滚动才滚规则框，和 macOS 别处一样。长提示词展开时也从开头显示，不再停在结尾。
 - **转写能处理长选段**：转写边录音边读选中的文字，读取时限从 1.5 秒放宽到 6 秒（复制兜底 1.5 秒），网页编辑器里的长选段不会再读不到、只按指令写。
+
+#### 修复
+
+- **浏览器输入框（GitHub 等）**：⌘V 已经粘进输入框时，不再误报“文字没有出现在输入位置”。Chromium 类网页编辑器常在粘贴后仍让无障碍读到相同长度；网页区域或 contenteditable 里若对比结果不变，按“无法校验”处理，仍算插入（#3644 FB36）。
 
 ## [2.0.1] - 2026-11-07
 
