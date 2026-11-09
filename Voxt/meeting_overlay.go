@@ -245,11 +245,12 @@ func (a *app) meetingOverlayExpanded(c *ui.Context, s meeting.Snapshot) {
 				ui.Text(c, i18n.T("Listening…")).FontSize(13).TextColor(ovText2)
 			}
 			for _, seg := range s.Segments {
-				meetingOverlayLine(c, meetingSpeaker(seg.Speaker, seg.Source), seg.Text, false)
+				me := seg.Speaker == "me" || seg.Speaker == "" && seg.Source == meeting.SourceMic
+				meetingOverlayLine(c, meetingSpeaker(seg.Speaker, seg.Source), seg.Text, me, false)
 			}
 			for _, src := range []meeting.Source{meeting.SourceMic, meeting.SourceSystem} {
 				if live := s.Live[src]; live != "" {
-					meetingOverlayLine(c, meetingSpeaker("", src), live, true)
+					meetingOverlayLine(c, meetingSpeaker("", src), live, src == meeting.SourceMic, true)
 				}
 			}
 		})
@@ -276,10 +277,14 @@ func meetingChip(c *ui.Context, label, tip string, on bool) bool {
 }
 
 // meetingOverlayLine is one line of the live transcript; live is the
-// sentence still being heard.
-func meetingOverlayLine(c *ui.Context, who, text string, live bool) {
+// sentence still being heard; me brightens the speaker, as the details do.
+func meetingOverlayLine(c *ui.Context, who, text string, me, live bool) {
 	ui.Column(c).Gap(2).Shrink(0).Children(func() {
-		ui.Text(c, who).FontSize(11).FontWeight(600).TextColor(ovText2)
+		whoColor := ovText2
+		if me {
+			whoColor = ovText
+		}
+		ui.Text(c, who).FontSize(11).FontWeight(600).TextColor(whoColor)
 		line := ui.Text(c, text).FontSize(13).TextColor(ovText)
 		if live {
 			line.Italic().TextColor(ovLiveColor)
