@@ -408,7 +408,7 @@ func (a *app) meetingDetailTitle(c *ui.Context, mt store.Meeting, close func()) 
 	caption(c, meetingMeta(mt))
 	if mt.Status == store.MeetingInterrupted || mt.Status == store.MeetingFinishing {
 		ui.Row(c).Margin(px(t, sp2), 0, 0, 0).Children(func() {
-			if primaryButton(c.Key("mt-continue"), i18n.T("Continue final pass")).Clicked() {
+			if ui.Button(c.Key("mt-continue"), i18n.T("Continue final pass")).Clicked() {
 				a.meetingReprocess(mt.ID)
 			}
 		})
