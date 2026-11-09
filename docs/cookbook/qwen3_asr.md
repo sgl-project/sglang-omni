@@ -26,10 +26,12 @@ See [Qwen3-ASR graph execution on Ascend NPU](../other_platforms/installation_np
 After following the [Ascend NPU installation guide](../other_platforms/installation_npu.md), start the server with the shared example.
 
 ```bash
-sgl-omni serve --config examples/configs/qwen3_asr_npu.yaml --port 8000
+sgl-omni serve --config examples/configs/qwen3_asr_ascend910.yaml --port 8000
 ```
 
 The example defaults to Qwen3-ASR-1.7B. To use 0.6B, add `--model-path Qwen/Qwen3-ASR-0.6B`. For a local checkpoint, pass its path with `--model-path` and the model identifier used in transcription requests with `--model-name`.
+
+On Ascend910_9362 with SGLang 0.5.23 and CANN 9.1.0, targeted transcription checks found truncated outputs with LM graphs enabled for both model sizes. This example uses eager LM decode and prefill while retaining the default encoder graphs.
 
 <a id="apple-silicon-torch-mps"></a>
 
