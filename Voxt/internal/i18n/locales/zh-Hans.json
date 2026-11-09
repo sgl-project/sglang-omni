@@ -1372,5 +1372,9 @@
   "End with a word": "说结束词停止",
   "Say this word last and pause: the recording stops as if you pressed the shortcut, and the word is left out of the text. Only speech models that show the text as you speak hear it.": "最后说出这个词并停顿一下，录音就像按了快捷键一样停止，这个词不会写进文字。只有边说边出文字的语音模型能听到它。",
   "Word that ends the recording": "结束录音的词",
-  "Your word that ends the recording": "自定义结束录音的词"
+  "Your word that ends the recording": "自定义结束录音的词",
+  "Find in the prompt": "在提示词里查找",
+  "%d of %d": "第 %d 处，共 %d 处",
+  "%d match": "%d 处",
+  "%d matches": "%d 处"
 }
