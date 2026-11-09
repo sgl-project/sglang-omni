@@ -591,11 +591,15 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#precomputed-speaker-embedding">Precomputed Speaker Embedding</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#language-hint">Language Hint</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming">Streaming</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#codec-decoding-defaults">Codec decoding defaults</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#first-audio-chunk-ramp">First-audio chunk ramp</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#generation-parameters">Generation Parameters</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#model-variants">Model Variants</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#customvoice-checkpoints">CustomVoice Checkpoints</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#voicedesign-checkpoint">VoiceDesign Checkpoint</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmarking">Benchmarking</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmark-results">Benchmark Results</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#b-base">0.6B Base</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#b-customvoice">1.7B CustomVoice</a></li>
@@ -617,13 +621,7 @@
                   
   <section class="tex2jax_ignore mathjax_ignore" id="qwen3-tts">
 <h1>Qwen3-TTS<a class="headerlink" href="#qwen3-tts" title="Link to this heading">#</a></h1>
-<p><a class="reference external" href="https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base">Qwen3-TTS-12Hz-Base</a> is a discrete
-multi-codebook text-to-speech model from the Qwen team. It performs fast voice cloning from a
-short reference clip, supports 10 languages, and streams 24 kHz speech with low latency. The
-<code class="docutils literal notranslate"><span class="pre">12Hz</span></code> in the name refers to the codec <strong>frame rate</strong> (12 acoustic frames per second), not the
-playback sample rate. SGLang-Omni serves two checkpoints — <code class="docutils literal notranslate"><span class="pre">0.6B</span></code> and <code class="docutils literal notranslate"><span class="pre">1.7B</span></code> — through the same
-<code class="docutils literal notranslate"><span class="pre">preprocessing</span> <span class="pre">→</span> <span class="pre">tts_engine</span> <span class="pre">→</span> <span class="pre">vocoder</span></code> pipeline and the OpenAI-compatible <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code>
-endpoint.</p>
+<p>Qwen3-TTS is a multi-codebook text-to-speech model family that streams 24 kHz speech in 10 languages. The <code class="docutils literal notranslate"><span class="pre">12Hz</span></code> checkpoint name refers to the codec frame rate. SGLang-Omni serves Base for voice cloning, <a class="reference internal" href="#customvoice-checkpoints"><span class="std std-ref">CustomVoice</span></a> for built-in speakers, and <a class="reference internal" href="#voicedesign-checkpoint"><span class="std std-ref">VoiceDesign</span></a> for voices described in natural language through the OpenAI-compatible <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> endpoint.</p>
 <section id="prerequisites">
 <h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
 <p>Install <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> by following <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a>.</p>
@@ -945,6 +943,8 @@ weights.</p>
 </section>
 <section id="synthesizing-speech">
 <h2>Synthesizing Speech<a class="headerlink" href="#synthesizing-speech" title="Link to this heading">#</a></h2>
+<p>Send the JSON payload for your checkpoint to <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/v1/audio/speech</span></code> using the curl, Python, or <a class="reference internal" href="../basic_usage/tts.html#openai-python-sdk"><span class="std std-ref">OpenAI SDK examples</span></a> in <a class="reference internal" href="../basic_usage/tts.html"><span class="std std-doc">TTS Model Usage</span></a>.</p>
+<p>With the OpenAI SDK, pass Qwen-specific fields such as <code class="docutils literal notranslate"><span class="pre">references</span></code>, <code class="docutils literal notranslate"><span class="pre">language</span></code>, and <code class="docutils literal notranslate"><span class="pre">task_type</span></code> in <code class="docutils literal notranslate"><span class="pre">extra_body</span></code>. Use <code class="docutils literal notranslate"><span class="pre">voice=&quot;default&quot;</span></code> when the payload omits <code class="docutils literal notranslate"><span class="pre">voice</span></code> and the client requires it.</p>
 <section id="text-only-requests">
 <h3>Text-only Requests<a class="headerlink" href="#text-only-requests" title="Link to this heading">#</a></h3>
 <p>Qwen3-TTS Base checkpoints require a reference clip. Text-only requests are supported by CustomVoice and VoiceDesign checkpoints; see <a class="reference internal" href="../basic_usage/tts.html"><span class="std std-doc">TTS Model Usage</span></a> for those launch commands.</p>
@@ -1122,33 +1122,8 @@ Portuguese, Spanish, and Italian.</p>
 </section>
 <section id="streaming">
 <h3>Streaming<a class="headerlink" href="#streaming" title="Link to this heading">#</a></h3>
-<p>Set <code class="docutils literal notranslate"><span class="pre">&quot;stream&quot;:</span> <span class="pre">true</span></code> to receive raw audio chunks in real time. <code class="docutils literal notranslate"><span class="pre">stream_format</span></code> defaults to <code class="docutils literal notranslate"><span class="pre">&quot;audio&quot;</span></code>, and <code class="docutils literal notranslate"><span class="pre">response_format</span></code> defaults to <code class="docutils literal notranslate"><span class="pre">&quot;wav&quot;</span></code>. Set <code class="docutils literal notranslate"><span class="pre">response_format=&quot;pcm&quot;</span></code> for raw PCM bytes:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-N<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
-<span class="s1">    "model": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",</span>
-<span class="s1">    "voice": "default",</span>
-<span class="s1">    "input": "Get the trust fund to the bank early.",</span>
-<span class="s1">    "references": [{</span>
-<span class="s1">      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",</span>
-<span class="s1">      "text": "We asked over twenty different people, and they all said it was his."</span>
-<span class="s1">    }],</span>
-<span class="s1">    "stream": true,</span>
-<span class="s1">    "response_format": "pcm"</span>
-<span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--output<span class="w"> </span>output.pcm
-</pre></div>
-</div>
-<p>Streaming returns <code class="docutils literal notranslate"><span class="pre">audio/pcm</span></code> 16-bit mono PCM bytes with sample-rate metadata in
-the response headers. See the <a class="reference internal" href="higgs_tts.html#streaming"><span class="std std-ref">Higgs TTS cookbook</span></a>
-for a full Python raw PCM consumer.</p>
-<p>Omit <code class="docutils literal notranslate"><span class="pre">response_format</span></code> or set it to <code class="docutils literal notranslate"><span class="pre">&quot;wav&quot;</span></code> for raw WAV streaming with one header followed by PCM chunks. Set <code class="docutils literal notranslate"><span class="pre">stream_format=&quot;sse&quot;</span></code> for SSE events, which can omit <code class="docutils literal notranslate"><span class="pre">stream=true</span></code>. Every HTTP mode defaults to WAV; an explicit <code class="docutils literal notranslate"><span class="pre">response_format</span></code> overrides that default.</p>
-<p>All three task types (Base/reference-cloning, CustomVoice and VoiceDesign) use
-true incremental codec and vocoder streaming, for both this HTTP endpoint and
-<code class="docutils literal notranslate"><span class="pre">/v1/audio/speech/stream</span></code> WebSocket sessions with <code class="docutils literal notranslate"><span class="pre">stream_audio=true</span></code>. Pass
-<code class="docutils literal notranslate"><span class="pre">&quot;stream_codec_output&quot;:</span> <span class="pre">false</span></code> on a request, or launch with
-<code class="docutils literal notranslate"><span class="pre">--preprocessing.factory.stream_codec_output</span> <span class="pre">false</span></code>, to restore whole-utterance
-decoding.</p>
+<p>Use the WAV/PCM and Python streaming examples in <a class="reference internal" href="../basic_usage/tts.html"><span class="std std-doc">TTS Model Usage</span></a>, or use its <a class="reference internal" href="../basic_usage/tts.html#sse-event-framing"><span class="std std-ref">SSE</span></a> or <a class="reference internal" href="../basic_usage/tts.html#websocket-speech-streaming"><span class="std std-ref">WebSocket</span></a> clients. Include the reference, speaker, or instructions required by your checkpoint.</p>
+<p>All three modes support audio streaming over HTTP and WebSocket. By default, the talker passes codec frames to the vocoder as it generates them. Set <code class="docutils literal notranslate"><span class="pre">&quot;stream_codec_output&quot;:</span> <span class="pre">false</span></code> in the request or launch with <code class="docutils literal notranslate"><span class="pre">--preprocessing.factory.stream_codec_output</span> <span class="pre">false</span></code> to decode the whole utterance at once.</p>
 <p>Streamed CustomVoice output on validated voice/language pairs (currently
 Ryan/English with default sampling) withholds the model’s silent bootstrap
 codec frame, removing about 80 ms of leading silence from the first chunk. The
@@ -1157,13 +1132,10 @@ runtime silence check emits the audio unmodified whenever the first frame is
 not actually silent. Opt out per request with
 <code class="docutils literal notranslate"><span class="pre">&quot;suppress_bootstrap_silence&quot;:</span> <span class="pre">false</span></code> or per deployment with
 <code class="docutils literal notranslate"><span class="pre">--vocoder.factory.suppress_bootstrap_silence</span> <span class="pre">false</span></code>.</p>
-<p>When <code class="docutils literal notranslate"><span class="pre">initial_codec_chunk_frames</span></code> is omitted, Qwen3-TTS ramps its first chunks
-<code class="docutils literal notranslate"><span class="pre">1</span> <span class="pre">-&gt;</span> <span class="pre">2</span> <span class="pre">-&gt;</span> <span class="pre">4</span></code> codec frames before the steady stride, so first audio leaves after a
-single AR step while the playback cushion is rebuilt within four chunks. Pass an
-explicit value to trade continuity against time-to-first-audio.
-Utterances that finish in fewer than the first chunk’s generated codec frames never reach the
-first chunk, so their audio arrives complete in a single final flush.</p>
-<p><strong>Codec decoding defaults</strong></p>
+<p>By default the <a class="reference internal" href="#first-audio-chunk-ramp"><span class="std std-ref">first-audio chunk ramp</span></a> starts decoding after one generated codec frame. When an utterance ends before the first chunk fills, its audio arrives in a single final flush.</p>
+</section>
+<section id="codec-decoding-defaults">
+<h3>Codec decoding defaults<a class="headerlink" href="#codec-decoding-defaults" title="Link to this heading">#</a></h3>
 <p>Streaming decodes run on the stateful incremental codec by default: each
 follow-up chunk decodes only its fresh frames against per-stream state held in
 a preallocated arena, and the follow-up workers collect for 4 ms. On NVIDIA, AMD
@@ -1201,7 +1173,9 @@ rows fill the first graph-sized group. Left-context decodes keep queue order.
 The follow-up workers also commit each in-flight cohort as soon as its decode
 has finished, checked at the top of the worker loop and before each launch,
 instead of at the next drain.</p>
-<p><strong>First-audio chunk ramp</strong></p>
+</section>
+<section id="first-audio-chunk-ramp">
+<h3>First-audio chunk ramp<a class="headerlink" href="#first-audio-chunk-ramp" title="Link to this heading">#</a></h3>
 <p>For latency-sensitive deployments the whole early chunk schedule can be
 configured server-side with <code class="docutils literal notranslate"><span class="pre">stream_chunk_ramp</span></code> on the vocoder stage: entry
 <code class="docutils literal notranslate"><span class="pre">i</span></code> sizes streaming decode chunk <code class="docutils literal notranslate"><span class="pre">i</span> <span class="pre">+</span> <span class="pre">1</span></code> in codec frames, and past the ramp
@@ -1386,6 +1360,42 @@ quality) at a larger memory and latency cost; the 0.6B model is lighter and fast
 </pre></div>
 </div>
 </section>
+<section id="voicedesign-checkpoint">
+<h2>VoiceDesign Checkpoint<a class="headerlink" href="#voicedesign-checkpoint" title="Link to this heading">#</a></h2>
+<p>VoiceDesign creates a voice from a natural-language description. Start the 1.7B VoiceDesign checkpoint with its matching configuration.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--config<span class="w"> </span>examples/configs/qwen3_tts_1_7b_voicedesign.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>Set <code class="docutils literal notranslate"><span class="pre">task_type</span></code> to <code class="docutils literal notranslate"><span class="pre">VoiceDesign</span></code> and provide non-empty <code class="docutils literal notranslate"><span class="pre">instructions</span></code>. Omit <code class="docutils literal notranslate"><span class="pre">voice</span></code>, <code class="docutils literal notranslate"><span class="pre">ref_audio</span></code>, <code class="docutils literal notranslate"><span class="pre">ref_text</span></code>, <code class="docutils literal notranslate"><span class="pre">references</span></code>, and <code class="docutils literal notranslate"><span class="pre">x_vector_only_mode</span></code>.</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">"model"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"input"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Hello from Qwen VoiceDesign."</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"task_type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"VoiceDesign"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"instructions"</span><span class="p">:</span><span class="w"> </span><span class="s2">"A warm, natural young adult voice."</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+<section id="benchmarking">
+<h2>Benchmarking<a class="headerlink" href="#benchmarking" title="Link to this heading">#</a></h2>
+<p>Prepare the SeedTTS dataset, then run the English split against 0.6B Base. The benchmark launches the configured TTS server on port 8000 and starts the ASR server after generation.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>benchmarks.dataset.prepare<span class="w"> </span>--dataset<span class="w"> </span>seedtts
+
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.eval.benchmark_tts_seedtts<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--meta<span class="w"> </span>zhaochenyang20/seed-tts-eval-arrow<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model<span class="w"> </span>Qwen/Qwen3-TTS-12Hz-0.6B-Base<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--server-config<span class="w"> </span>examples/configs/qwen3_tts_0_6b.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output-dir<span class="w"> </span>results/qwen3_tts_0_6b_en<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--lang<span class="w"> </span>en<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--max-concurrency<span class="w"> </span><span class="m">16</span>
+</pre></div>
+</div>
+<p>For the Chinese split, set <code class="docutils literal notranslate"><span class="pre">--lang</span> <span class="pre">zh</span></code> and use a separate output directory. For 1.7B Base, set <code class="docutils literal notranslate"><span class="pre">--model</span> <span class="pre">Qwen/Qwen3-TTS-12Hz-1.7B-Base</span></code> and <code class="docutils literal notranslate"><span class="pre">--server-config</span> <span class="pre">examples/configs/qwen3_tts_1_7b.yaml</span></code>. See the <a class="reference internal" href="../developer_reference/tts_bench.html"><span class="std std-doc">TTS benchmark reference</span></a> for methodology and additional workloads.</p>
+</section>
 <section id="benchmark-results">
 <h2>Benchmark Results<a class="headerlink" href="#benchmark-results" title="Link to this heading">#</a></h2>
 <section id="b-base">
@@ -1504,7 +1514,7 @@ latency for quality.</p>
 </table>
 </div>
 <p>Corpus WER (EN) / CER (ZH) is total edit distance divided by total reference words / characters and includes every sample. The filtered row excludes samples whose own WER/CER exceeds 50% and recomputes the corpus rate. UTMOS is the mean predicted audio-quality score, not a listening-test score. These independently sampled runs are not a paired comparison of streaming and non-streaming quality; the Base result also uses different conditioning and a different ASR evaluator.</p>
-<p>TTFA measures arrival of the first PCM payload, not the first audible speech; its mean payload duration was 80 ms in both languages. All 3,108 streaming requests were continuity-scored: 98.99% EN and 93.76% ZH had no playback underrun longer than 50 ms. Maximum underrun was 396.1 ms EN and 2072.0 ms ZH. The default ramp therefore does not guarantee uninterrupted playback at concurrency 16; see First-audio chunk ramp for the buffering tradeoff.</p>
+<p>TTFA measures arrival of the first PCM payload, not the first audible speech; its mean payload duration was 80 ms in both languages. All 3,108 streaming requests were continuity-scored: 98.99% EN and 93.76% ZH had no playback underrun longer than 50 ms. Maximum underrun was 396.1 ms EN and 2072.0 ms ZH. The default ramp therefore does not guarantee uninterrupted playback at concurrency 16; see <a class="reference internal" href="#first-audio-chunk-ramp"><span class="std std-ref">First-audio chunk ramp</span></a> for the buffering tradeoff.</p>
 </section>
 <section id="runaway-regression">
 <h3>Runaway Regression<a class="headerlink" href="#runaway-regression" title="Link to this heading">#</a></h3>
@@ -1643,11 +1653,15 @@ CustomVoice and VoiceDesign loop far less often (2 runaways in about 121,000 Chi
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#precomputed-speaker-embedding">Precomputed Speaker Embedding</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#language-hint">Language Hint</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming">Streaming</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#codec-decoding-defaults">Codec decoding defaults</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#first-audio-chunk-ramp">First-audio chunk ramp</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#generation-parameters">Generation Parameters</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#model-variants">Model Variants</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#customvoice-checkpoints">CustomVoice Checkpoints</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#voicedesign-checkpoint">VoiceDesign Checkpoint</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmarking">Benchmarking</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmark-results">Benchmark Results</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#b-base">0.6B Base</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#b-customvoice">1.7B CustomVoice</a></li>
