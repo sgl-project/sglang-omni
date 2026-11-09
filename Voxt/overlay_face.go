@@ -135,7 +135,7 @@ func overlayPill(c *ui.Context, s session.Snapshot, mode overlayMode, look pillL
 					})
 				}
 			} else {
-				overlayLoader(c, uitext.WorkingText(s), look)
+				overlayLoader(c, uitext.WorkingText(s), look, layout.WaveSlotW)
 			}
 			if name := uitext.SceneShort(s); name != "" {
 				ui.Text(c, name).FontSize(layout.SceneSize).TextColor(ovText2).SingleLine().Ellipsis("…").MaxWidth(layout.SceneMaxW).MinWidth(0).Shrink(1).

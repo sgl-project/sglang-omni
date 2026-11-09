@@ -332,8 +332,8 @@ func meetingOverlayFinishing(c *ui.Context, s meeting.Snapshot, look pillLook) {
 	case meeting.StageSummary:
 		msg = i18n.T("Summarizing…")
 	}
-	ui.Row(c).Height(meetingOvBarH).Shrink(0).Gap(4).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-		overlayLoader(c, msg, look)
+	ui.Row(c).Height(meetingOvBarH).Shrink(0).Gap(8).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+		overlayLoader(c, msg, look, 0)
 		ui.Text(c, msg).FontSize(13).TextColor(ovText).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
 	})
 }
