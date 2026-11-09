@@ -4,6 +4,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-11-09
+
 **How a recording starts.** Pressing the shortcut starts the microphone at once; Voxt does not wait for the speech model. The speech model and the voice detector load in the background while you speak, on the first dictation after Voxt opens and again after ten idle minutes unload them. Everything you say after the microphone has started is recorded and kept in memory until the model is ready, then sent to it: the live text appears later, but the result has all of it, up to the ten-minute limit of one recording. If the overlay says "Starting the microphone…", the microphone has not produced sound yet and words said then are not recorded; while only the icon pulses and the bars follow your voice, the model is still loading and the recording is fine.
 
 ### Added
