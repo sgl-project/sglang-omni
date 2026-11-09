@@ -19,6 +19,10 @@ MODEL_PATH="$(
 )"
 ```
 
+On Apple Silicon the path in [Apple Silicon](#apple-silicon) serves
+`Qwen/Qwen3-ASR-0.6B` instead; download that repository the same way when you
+run there. The 1.7B checkpoint above is the CUDA path's.
+
 ### Ascend NPU graph execution
 
 See [Qwen3-ASR graph execution on Ascend NPU](../other_platforms/installation_npu.md#qwen3-asr-graph-execution) for queue settings and runtime restrictions.
@@ -28,17 +32,16 @@ See [Qwen3-ASR graph execution on Ascend NPU](../other_platforms/installation_np
 ### Apple Silicon
 
 Qwen3-ASR runs on Apple Silicon through a Torch/MPS compatibility path. Install
-with the [Apple Silicon installer](../other_platforms/installation_apple_silicon.md)
-and follow its environment-activation and `DYLD_LIBRARY_PATH` steps; TorchCodec
-needs Homebrew's keg-only FFmpeg libraries on the path before the server starts.
+the environment, export `DYLD_LIBRARY_PATH` and check that Metal and FFmpeg load
+as the [Apple Silicon installer](../other_platforms/installation_apple_silicon.md)
+describes, then start the server from the same shell: the export has to be in
+effect at every start, not only while installing.
 
-Pass an official PyTorch checkpoint such as `Qwen/Qwen3-ASR-0.6B`. The path uses
-one device (`tp_size=1`), greedy decoding, and the eager `torch_native`/`sdpa`
-profile:
+The example serves `Qwen/Qwen3-ASR-0.6B`; substitute the checkpoint you
+downloaded. The path uses one device (`tp_size=1`), greedy decoding, and the
+eager `torch_native`/`sdpa` profile:
 
 ```bash
-export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
-
 sgl-omni serve \
   --model-path Qwen/Qwen3-ASR-0.6B \
   --model-name Qwen/Qwen3-ASR-0.6B \
