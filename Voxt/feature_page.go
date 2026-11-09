@@ -59,8 +59,18 @@ type featureUI struct {
 	// rules and preview: the Your rules section and its full prompt, open.
 	rules   bool
 	preview bool
+	// find is the text to find in the rules (⌘F); found the match that
+	// Return selected last, from 1 (0: none yet); findFocus and
+	// findSelect ask, for the next build, for the find field's focus and
+	// for the rules field to select match found.
+	find       string
+	found      int
+	findFocus  bool
+	findSelect bool
 	// block says why the Try area's Start did not start.
 	block *sessionNotice
+	// endWord is the end word's select and typed word (Transcribe).
+	endWord keyRow
 }
 
 // fui is feature's page state.
@@ -126,6 +136,7 @@ func (a *app) featurePage(c *ui.Context, feature string) {
 			default:
 				a.trEnhance(c)
 			}
+			a.cardSetting(c, p, feature)
 			a.featureRules(c, feature)
 			a.featureTry(c, feature)
 		})

@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "common/audio.h"
+#include "common/reference_audio.h"
 #include "common/text.h"
 #include "fishaudio_drama3/fishaudio_drama3_model.h"
 #include "fishaudio_drama3/fishaudio_drama3_prompt.h"
@@ -79,20 +80,10 @@ constexpr std::array<const char *, 3> kReferencePathFields = {
 // Mono 44.1 kHz samples of base64 WAV bytes, a data URL's included.
 std::vector<float> DecodeReferenceAudio(const std::string &encoded,
                                         const std::string &location) {
-  std::string base64 = encoded;
-  if (base64.starts_with(kDataUrlPrefix)) {
-    const size_t comma = base64.find(',');
-    if (comma == std::string::npos ||
-        base64.substr(0, comma).find(";base64") == std::string::npos) {
-      throw std::invalid_argument(location +
-                                  " data URL must include base64 media data");
-    } else {
-    }
-    base64 = base64.substr(comma + 1);
-  } else {
-  }
-  const std::optional<std::vector<uint8_t>> bytes =
-      omni_common::DecodeBase64(base64);
+  const std::optional<std::vector<uint8_t>> bytes = omni_common::DecodeBase64(
+      encoded.starts_with(kDataUrlPrefix)
+          ? omni_common::AudioDataUrlPayload(encoded, location)
+          : encoded);
   if (!bytes.has_value()) {
     throw std::invalid_argument(location + " must be valid base64");
   } else {

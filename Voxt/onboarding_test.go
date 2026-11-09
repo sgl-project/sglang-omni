@@ -2,10 +2,12 @@ package main
 
 import (
 	"math"
+	"slices"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -30,6 +32,59 @@ func obSnap(a *app, id string, kind store.Kind, st session.State) session.Snapsh
 	s := trySnapshot(a, st)
 	s.ID, s.Kind = id, kind
 	return s
+}
+
+// readyASROnly installs a speech model without a language model.
+func readyASROnly(a *app) {
+	a.local = &fakeLocal{ASRP: &fakeTranscriptions{}}
+	a.checkModels()
+}
+
+func TestOnboardingLanguageModelGuide(t *testing.T) {
+	a, tt := obTester(t)
+	readyASROnly(a)
+	a.obGo(obTranslate)
+	frames(tt)
+	for _, s := range []string{
+		"No language model is set up: set one up to translate.",
+		"Set up a language model",
+		"Set one up on the Language models page",
+		"Skip this step",
+	} {
+		if !has(tt, s) {
+			t.Errorf("translate without LLM: no %q in %q", s, tt.Texts())
+		}
+	}
+	if n := a.obTry(""); n == nil || n.action != actionLanguage {
+		t.Fatalf("Start should still need a language model: %+v", n)
+	}
+	readyModels(a)
+	frames(tt)
+	if has(tt, "set one up on the Language models page") {
+		t.Errorf("guide still shown with LLM: %q", tt.Texts())
+	}
+	if n := a.obTry(""); n != nil {
+		t.Fatalf("Start blocked with LLM: %+v", n)
+	}
+	a2, tt2 := obTester(t)
+	readyASROnly(a2)
+	a2.obGo(obRewrite)
+	frames(tt2)
+	if !has(tt2, "No language model is set up: set one up to rewrite.") {
+		t.Errorf("rewrite without LLM: %q", tt2.Texts())
+	}
+}
+
+func TestOnboardingSpeechDownloadGuide(t *testing.T) {
+	a, tt := obTester(t)
+	a.obGo(obModels)
+	m, _ := models.Lookup(obSpeech)
+	a.modelStatus[obSpeech] = models.Status{Downloading: true, Done: m.Size() / 3, Total: m.Size()}
+	a.obGo(obTranscribe)
+	frames(tt)
+	if !has(tt, "still downloading (33%)") {
+		t.Errorf("download guide: %q", tt.Texts())
+	}
 }
 
 func TestOnboardingSteps(t *testing.T) {
@@ -280,6 +335,22 @@ func TestOnboardingStepsOneLine(t *testing.T) {
 	}
 }
 
+// Each step of the guide first says what the feature is.
+func TestOnboardingStepsExplainTheFeature(t *testing.T) {
+	a, tt := obTester(t)
+	for step, want := range map[int]string{
+		obPermissions: "Voxt needs the microphone to hear you",
+		obTranscribe:  "Transcribe writes down what you say",
+		obTranslate:   "Translate turns the selected text",
+		obRewrite:     "Rewrite is not dictation",
+	} {
+		a.obGo(step)
+		if !has(tt, want) {
+			t.Errorf("step %d: no %q in %q", step, want, tt.Texts())
+		}
+	}
+}
+
 // TestOnboardingComesBack: the bug was a guide left from its models step
 // for the Language models page, which then opened again at Welcome. That
 // page offers the way back to the models step; a guide closed before its
@@ -310,5 +381,41 @@ func TestOnboardingComesBack(t *testing.T) {
 	a.openOnboarding()
 	if a.ob.step != obWelcome {
 		t.Errorf("after finishing: step %d", a.ob.step)
+	}
+}
+
+// TestKeyboardLit: the setup guide's keyboard lights the keys of the
+// shortcut: a modifier on its side, on both sides when either does, fn,
+// the space bar (#3644: "Right ⌥" did not say which physical key).
+func TestKeyboardLit(t *testing.T) {
+	for _, c := range []struct {
+		keys string
+		want []string
+	}{
+		{"RightOption", []string{"option-right"}},
+		{"Option+Space", []string{"option-left", "option-right", "space"}},
+		{"Fn+Shift", []string{"fn", "shift-left", "shift-right"}},
+		{"LeftCommand+C", []string{"command-left"}},
+	} {
+		chord, err := hotkey.Parse(c.keys)
+		if err != nil {
+			t.Fatalf("%s: %v", c.keys, err)
+		}
+		lit := keyboardLit(chord)
+		var got []string
+		for id := range lit {
+			got = append(got, id)
+		}
+		slices.Sort(got)
+		if !slices.Equal(got, c.want) {
+			t.Errorf("%s: lit %v, want %v", c.keys, got, c.want)
+		}
+		for _, id := range c.want {
+			if !slices.ContainsFunc(keyboardRows, func(row []keyboardKey) bool {
+				return slices.ContainsFunc(row, func(k keyboardKey) bool { return k.id == id })
+			}) {
+				t.Errorf("%s: no key %q in the drawing", c.keys, id)
+			}
+		}
 	}
 }

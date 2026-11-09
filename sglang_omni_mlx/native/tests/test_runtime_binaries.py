@@ -25,6 +25,7 @@ SERVED_KINDS = {
     "fish_s2_pro_server": ("fish_s2_pro",),
     "music3_server": ("minimax_music3",),
     "ming3_audio_server": ("ming3_audio",),
+    "ming_tts_server": ("ming_tts",),
 }
 SYSTEM_LIBRARY_PREFIXES = ("/usr/lib/", "/System/Library/")
 

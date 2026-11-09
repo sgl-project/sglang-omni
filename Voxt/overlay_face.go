@@ -42,7 +42,7 @@ func (a *app) overlayView(c *ui.Context) {
 	case a.ov.mode == ovRecording && a.prefs.Overlay.ShowTime:
 		c.After(250 * time.Millisecond) // the time
 	}
-	look := pillLook{time: a.prefs.Overlay.ShowTime, motion: motion, phase: a.overlayPhase(), w: a.ov.w}
+	look := pillLook{time: a.prefs.Overlay.ShowTime, lines: a.prefs.Overlay.LiveLines, motion: motion, phase: a.overlayPhase(), w: a.ov.w}
 	ui.Column(c).Fill().Padding(layout.Pad).Children(func() {
 		o := a.prefs.Overlay
 		switch a.ov.mode {
@@ -88,10 +88,11 @@ func faceStyle(e ui.Element, o settings.Overlay, mode overlayMode, h int) ui.Ele
 		Border(1, ui.RGBA(255, 255, 255, 0.12)).Shadow(0, layout.ShadowY, layout.ShadowBlur, 0, ui.RGBA(0, 0, 0, layout.ShadowA))
 }
 
-// pillLook is how the pill draws: with the time, moving, at phase
-// seconds, w DIPs wide.
+// pillLook is how the pill draws: with the time, its live text in lines
+// (Overlay.LiveLines), moving, at phase seconds, w DIPs wide.
 type pillLook struct {
 	time   bool
+	lines  bool
 	motion bool
 	phase  float64
 	w      int
@@ -118,6 +119,11 @@ func overlayPill(c *ui.Context, s session.Snapshot, mode overlayMode, look pillL
 					ui.Icon(c, overlayKindIcon(s.Kind).Bold).Size(layout.IconSize, layout.IconSize).TextColor(ovIcon).Shrink(0).Label(uitext.KindTitle(s.Kind))
 				})
 			}
+			if mode == ovRecording && s.Waiting == session.WaitNone {
+				title := uitext.KindTitle(s.Kind)
+				ui.Text(c, title).FontSize(12).FontWeight(500).TextColor(ovText).SingleLine().Shrink(0).
+					Label(i18n.T("Recording mode: %s", title))
+			}
 			if mode == ovRecording {
 				waveform(c, s.Levels, !s.HeardAt.IsZero(), look)
 				if look.time {
@@ -140,6 +146,8 @@ func overlayPill(c *ui.Context, s session.Snapshot, mode overlayMode, look pillL
 				AlignItems(ui.Center).Justify(ui.Center).Clip().Children(func() {
 				ui.Text(c, text).FontSize(layout.LiveSize).FontWeight(layout.LiveWeight).TextColor(ovText2).SingleLine().Shrink(0)
 			})
+		case text != "" && look.lines:
+			liveLines(c.Key("ov-lines-"+s.ID), text)
 		case text != "":
 			liveLine(c.Key("ov-live-"+s.ID), text, float32(max(look.w, layout.PillW)-2*layout.LivePadX), look.motion)
 		}
@@ -182,6 +190,16 @@ func startingIcon(c *ui.Context, s session.Snapshot, look pillLook) {
 // line breaks one space each.
 func liveLineText(s session.Snapshot) string {
 	return strings.Join(strings.Fields(liveText(s)), " ")
+}
+
+// liveLines is the live text wrapped at layout.LinesTextW, as a text box
+// types it (Overlay.LiveLines): as high as its lines up to layout.LinesMax
+// of them; past that the newest lines show, at the bottom, and the face's
+// top clips the ones before.
+func liveLines(c *ui.Context, text string) {
+	ui.Column(c).Width(layout.LinesTextW).MaxHeight(layout.LinesMax * layout.LineH).Shrink(0).Justify(ui.End).Clip().Label(text).Children(func() {
+		ui.Text(c, text).FontSize(layout.LiveSize).FontWeight(layout.LiveWeight).TextColor(ovText).Shrink(0)
+	})
 }
 
 // liveLine is the live text on one line, width DIPs wide: centred while
@@ -244,20 +262,18 @@ func fadeSpans(text string, off float32, measure func(string) float32) (string, 
 	return string(r[lo:]), from, spans
 }
 
-// liveText is the text the pill shows under it, the same in every flow
-// (10-15, third round): the answer as the model writes it; until then
-// what it works on: what the speech model heard so far (a file
-// service's whole text, while it is cleaned up), else the selection it
-// translates.
+// liveText is the text the pill shows under it. The preview carries only
+// live ASR partials (and, for selection translate, the selection), not
+// the offline Final nor language-model drafts (FB6).
 func liveText(s session.Snapshot) string {
-	working := s.State == session.Composing || s.State == session.Delivering
-	if d := strings.TrimSpace(s.Draft); d != "" && working {
-		return d
-	}
-	if p := strings.TrimSpace(s.Partial); p != "" || !working {
+	if p := strings.TrimSpace(s.Partial); p != "" &&
+		(s.State == session.Recording || s.State == session.Recognizing) {
 		return p
 	}
-	return strings.TrimSpace(s.Selection)
+	if (s.State == session.Composing || s.State == session.Delivering) && strings.TrimSpace(s.Selection) != "" {
+		return strings.TrimSpace(s.Selection)
+	}
+	return ""
 }
 
 // overlayKindIcon is a feature's icon in the overlay: Voxt's mode icons

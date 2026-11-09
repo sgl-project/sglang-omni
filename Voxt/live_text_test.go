@@ -2,8 +2,10 @@ package main
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
@@ -31,7 +33,7 @@ func TestLiveTextSwitch(t *testing.T) {
 	if text, _ := pillLine(a.pillSession()); text != "" {
 		t.Errorf("off: %q", text)
 	}
-	a.muteNote.text, a.muteNote.id = "The sound could not be muted", "s1"
+	a.pillNote.text, a.pillNote.id = "The sound could not be muted", "s1"
 	if text, _ := pillLine(a.pillSession()); text != "The sound could not be muted" {
 		t.Errorf("off, the note: %q", text)
 	}
@@ -40,6 +42,25 @@ func TestLiveTextSwitch(t *testing.T) {
 // TestLiveTextCard: with Show live text off, a follow-up in the answer
 // card shows neither the words being said nor the answer being written,
 // as the pill does not.
+// TestLiveTextNoLLMDraft: after stop, the pill keeps live ASR text and
+// does not replay the language model draft (FB6).
+func TestLiveTextNoLLMDraft(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	stream := "meet at three tomorrow"
+	a.sess = session.Snapshot{State: session.Recording, Partial: stream}
+	if text, _ := pillLine(a.pillSession()); text != stream {
+		t.Fatalf("recording: %q", text)
+	}
+	a.sess = session.Snapshot{State: session.Composing, Partial: stream, Draft: "Meet at three."}
+	if text, _ := pillLine(a.pillSession()); text != "" {
+		t.Fatalf("composing: %q", text)
+	}
+	a.sess = session.Snapshot{State: session.Recognizing, Partial: stream}
+	if text, _ := pillLine(a.pillSession()); text != stream {
+		t.Fatalf("recognizing: %q", text)
+	}
+}
+
 func TestLiveTextCard(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.updateSettings(func(s *settings.Settings) { s.Overlay.HideLiveText = true })
@@ -58,5 +79,38 @@ func TestLiveTextCard(t *testing.T) {
 				t.Errorf("%d %s: %q", i, st.name, w)
 			}
 		}
+	}
+}
+
+// TestLiveLines: Overlay style → Live text layout → Lines shows the live
+// text wide from the first word, wrapped, the face growing with its lines
+// up to layout.LinesMax and no higher. With one line (the default) the
+// face grew sideways and the start of what was said scrolled away
+// (#3644 FB5).
+func TestLiveLines(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/overlay")
+	frames(tt)
+	a.sess = session.Snapshot{ID: "s1", State: session.Recording, Partial: "Meet at three"}
+	if w, h, _ := a.overlaySize(ovRecording); w >= layout.LinesW || h != layout.LiveH {
+		t.Fatalf("one line: %d×%d", w, h)
+	}
+	if err := tt.ClickControl("Lines"); err != nil {
+		t.Fatal(err)
+	}
+	frames(tt)
+	if !a.settings.Get().Overlay.LiveLines {
+		t.Fatal("not saved")
+	}
+	_, one, _ := a.overlaySize(ovRecording)
+	if w, _, _ := a.overlaySize(ovRecording); w != layout.LinesW {
+		t.Errorf("lines: %d wide", w)
+	}
+	a.sess.Partial = strings.Repeat("and then the meeting moves to Thursday ", 12)
+	_, some, _ := a.overlaySize(ovRecording)
+	a.sess.Partial = strings.Repeat("and then the meeting moves to Thursday ", 200)
+	_, most, _ := a.overlaySize(ovRecording)
+	if !(one < some && some < most) || most != layout.LinesHeight(layout.LinesMax*layout.LineH) {
+		t.Errorf("heights: one line %d, a few %d, many %d (most %d)", one, some, most, layout.LinesHeight(layout.LinesMax*layout.LineH))
 	}
 }

@@ -86,6 +86,9 @@ func (a *app) obTryStep(c *ui.Context) {
 			warnLine(c, i18n.T("This shortcut works once Voxt may use Accessibility; Start works now."))
 		}
 	})
+	if hs := hotkey.HotkeysOf(a.prefs.Features, feature); len(hs) > 0 {
+		a.obKeyboard(c, hs[0].Keys) // onboarding_keys.go
+	}
 	problemLines(c, a.conflictLines(feature, 0)) // another ActNow app's keys too
 	if a.ob.passed[step] {
 		notice(c, "ob-passed", noticeOK, i18n.T("It works. Continue, or try again."), "", nil, nil)
@@ -108,6 +111,7 @@ func (a *app) obTryStep(c *ui.Context) {
 	if a.ob.hint != "" {
 		warnLine(c, a.ob.hint)
 	}
+	a.obTryPrereqs(c, kind, "ob-"+uitext.FeaturePrefix(feature))
 	id := a.ob.tries[step]
 	a.tryCard(c, tryOpts{
 		prefix: "ob-" + uitext.FeaturePrefix(feature), feature: feature, mine: id != "" && a.sess.ID == id,

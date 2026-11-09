@@ -217,7 +217,8 @@ func (a *app) overlayCheck(dir string) {
 			// The backdrop: under the largest face (the answer card) and
 			// the language menu over it, 20 below the face's bottom edge
 			// (or above its top).
-			wide := layout.Frame(area, a.prefs.Overlay, max(layout.NoticeW2, layout.AnswerW), layout.CardMaxH+langMenuHeight()+ovLangGap)
+			largest := layout.CardSizes[len(layout.CardSizes)-1]
+			wide := layout.Frame(area, a.prefs.Overlay, max(layout.NoticeW2, largest.W), largest.MaxH()+langMenuHeight()+ovLangGap)
 			bw, bh := wide.Width+60, wide.Height+40
 			region = mygo.Rectangle{X: wide.X - 30, Y: wide.Y + wide.Height - layout.Pad + 20 - bh, Width: bw, Height: bh}
 			opts := floatingWindowOptions("VoxtNew overlay check", bw, bh, ui.View(func(c *ui.Context) { ovCheckBackdrop(c, bd.dark) }))
