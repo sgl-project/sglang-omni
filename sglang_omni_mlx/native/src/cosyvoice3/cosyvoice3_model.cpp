@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "cosyvoice3/cosyvoice3_model.h"
 
+#include <CommonCrypto/CommonDigest.h>
+
 #include <algorithm>
 #include <array>
 #include <limits>
@@ -10,6 +12,7 @@
 #include <utility>
 
 #include "common/reference_audio.h"
+#include "cosyvoice3/cosyvoice3_speech_tokenizer.h"
 
 namespace cosyvoice3 {
 
@@ -18,6 +21,8 @@ namespace mx = mlx::core;
 namespace {
 
 const std::string kSpeakerWeightPrefix = "campplus.";
+// The references EncodeReference keeps, as Drama 3 keeps its voices.
+constexpr size_t kReferenceCacheSize = 4;
 
 constexpr int kHiddenSize = 896;
 constexpr int kIntermediateSize = 4864;
@@ -475,23 +480,21 @@ mx::array TokenIds(const std::vector<int> &token_ids, int vocabulary_size) {
                    mx::int32);
 }
 
-// The S3 speech tokenizer v3 checkpoint the model directory holds in
-// speech_tokenizer/.
-omni_common::Checkpoint
-LoadSpeechTokenizer(const std::filesystem::path &directory) {
+// Throws unless directory holds the S3 speech tokenizer v3's config and
+// weights.
+void CheckSpeechTokenizer(const std::filesystem::path &directory) {
   const nlohmann::json config =
       omni_common::ReadJson(directory / "config.json");
   if (config.value("model_type", std::string()) != "s3_tokenizer_v3" ||
       config.value("n_audio_layer", 0) != 12 ||
       config.value("n_audio_state", 0) != 1280 ||
       config.value("n_mels", 0) != 128 ||
-      config.value("n_codebook_size", 0) != kSpeechTokenSize) {
+      config.value("n_codebook_size", 0) != kSpeechTokenSize ||
+      !std::filesystem::is_regular_file(directory / "model.safetensors")) {
     throw std::invalid_argument(
         "speech_tokenizer/ must hold the S3 speech tokenizer v3");
   } else {
   }
-  return omni_common::Checkpoint(omni_common::LoadSafetensors(directory),
-                                 nlohmann::json::object());
 }
 
 // The checkpoint's campplus.* weights, as CamPlusEncoder names them.
@@ -563,9 +566,9 @@ CosyVoice3Model::CosyVoice3Model(const std::filesystem::path &model_directory)
       tokenizer_(std::make_unique<omni_common::Tokenizer>(model_directory)),
       flow_(checkpoint_), hift_(checkpoint_),
       speaker_encoder_(SpeakerWeights(checkpoint_)),
-      speech_tokenizer_checkpoint_(
-          LoadSpeechTokenizer(model_directory / "speech_tokenizer")),
-      speech_tokenizer_(speech_tokenizer_checkpoint_) {}
+      speech_tokenizer_directory_(model_directory / "speech_tokenizer") {
+  CheckSpeechTokenizer(speech_tokenizer_directory_);
+}
 
 std::vector<int> CosyVoice3Model::Encode(const std::string &text) const {
   // Note (Jiaxin Deng): as Hugging Face splits added tokens out first,
@@ -622,10 +625,41 @@ CosyVoice3Model::EncodeText(const SpeechText &text) const {
 }
 
 Reference CosyVoice3Model::EncodeReference(const ReferenceAudio &audio) const {
-  const mx::array tokens = speech_tokenizer_.Encode(audio.samples_16k);
-  mx::eval(tokens);
-  const int32_t *token_values = tokens.data<int32_t>();
-  std::vector<int> speech_tokens(token_values, token_values + tokens.size());
+  CC_SHA256_CTX digest;
+  CC_SHA256_Init(&digest);
+  for (const std::vector<float> *samples :
+       {&audio.samples_16k, &audio.samples_24k}) {
+    const uint64_t sample_count = samples->size();
+    CC_SHA256_Update(&digest, &sample_count, sizeof(sample_count));
+    CC_SHA256_Update(&digest, samples->data(),
+                     static_cast<CC_LONG>(sample_count * sizeof(float)));
+  }
+  std::string reference_key(CC_SHA256_DIGEST_LENGTH, '\0');
+  CC_SHA256_Final(reinterpret_cast<unsigned char *>(reference_key.data()),
+                  &digest);
+  const std::lock_guard<std::mutex> lock(references_mutex_);
+  for (auto cached = references_.begin(); cached != references_.end();
+       ++cached) {
+    if (cached->first == reference_key) {
+      references_.splice(references_.begin(), references_, cached);
+      return references_.front().second;
+    } else {
+    }
+  }
+  std::vector<int> speech_tokens;
+  {
+    const omni_common::Checkpoint speech_tokenizer_checkpoint(
+        omni_common::LoadSafetensors(speech_tokenizer_directory_),
+        nlohmann::json::object());
+    const mx::array tokens =
+        SpeechTokenizer(speech_tokenizer_checkpoint).Encode(audio.samples_16k);
+    mx::eval(tokens);
+    const int32_t *token_values = tokens.data<int32_t>();
+    speech_tokens.assign(token_values, token_values + tokens.size());
+  }
+  // Note (Minyi Tang): the freed tokenizer weights would otherwise stay in
+  // MLX's buffer cache.
+  mx::clear_cache();
   const mx::array mel = PromptMel(audio.samples_24k);
   // Note (Jiaxin Deng): the flow takes two mel frames per prompt token, so
   // the longer of the two is trimmed, as on CUDA.
@@ -643,6 +677,10 @@ Reference CosyVoice3Model::EncodeReference(const ReferenceAudio &audio) const {
                 {1, kMelFramesPerToken * flow_token_count, kMelBinCount}),
       speaker_encoder_.Embed(audio.samples_16k)};
   mx::eval({reference.prompt_mel, reference.speaker_embedding});
+  references_.emplace_front(reference_key, reference);
+  while (references_.size() > kReferenceCacheSize) {
+    references_.pop_back();
+  }
   return reference;
 }
 

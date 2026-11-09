@@ -8,9 +8,12 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <list>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "common/campplus.h"
@@ -18,7 +21,6 @@
 #include "common/text.h"
 #include "common/tokenizer.h"
 #include "cosyvoice3/cosyvoice3_audio.h"
-#include "cosyvoice3/cosyvoice3_speech_tokenizer.h"
 #include "cosyvoice3/cosyvoice3_vocoder.h"
 #include "mlx/mlx.h"
 #include "qwen3_asr/qwen3_asr_transcriber.h"
@@ -89,8 +91,9 @@ public:
   std::pair<std::vector<int>, std::vector<int>>
   EncodeText(const SpeechText &text) const;
 
-  // Encodes a reference recording; throws std::invalid_argument for audio
-  // too short to give a speech token.
+  // Encodes a reference recording, or returns it from the latest few
+  // encoded; throws std::invalid_argument for audio too short to give a
+  // speech token.
   Reference EncodeReference(const ReferenceAudio &audio) const;
 
   // Samples speech tokens after the text ids and the prompt speech tokens;
@@ -139,8 +142,13 @@ private:
   Flow flow_;
   Hift hift_;
   omni_common::CamPlusEncoder speaker_encoder_;
-  omni_common::Checkpoint speech_tokenizer_checkpoint_;
-  SpeechTokenizer speech_tokenizer_;
+  // Note (Minyi Tang): the speech tokenizer's 1 GB of weights are loaded for
+  // each reference not cached and freed after it, so a server that clones no
+  // new voice does not hold them.
+  std::filesystem::path speech_tokenizer_directory_;
+  // The latest references by their samples' SHA-256, most recent first.
+  mutable std::mutex references_mutex_;
+  mutable std::list<std::pair<std::string, Reference>> references_;
 };
 
 // The reference recording in WAV bytes at both encoders' rates; throws
