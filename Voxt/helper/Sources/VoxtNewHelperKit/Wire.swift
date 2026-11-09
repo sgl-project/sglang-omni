@@ -34,6 +34,7 @@ public enum Method {
     public static let textFocus = "textio.focus"
     public static let textSelection = "textio.selection"
     public static let textPaste = "textio.paste"
+    public static let textRead = "textio.read"
     public static let appList = "app.list"
     public static let appConfigure = "app.configure"
     public static let appIcons = "app.icons"
@@ -42,6 +43,8 @@ public enum Method {
     public static let outputMute = "output.mute"
     public static let outputRelease = "output.release"
     public static let outputRecover = "output.recover"
+    public static let speechRecognize = "speech.recognize"
+    public static let speechAudio = "speech.audio"
     // Notifications, helper → app.
     public static let captureStarted = "capture.started"
     public static let captureLevel = "capture.level"
@@ -52,22 +55,24 @@ public enum Method {
     public static let appActivated = "app.activated"
     public static let outputChanged = "output.changed"
     public static let outputReleased = "output.released"
+    public static let speechStarted = "speech.started"
+    public static let speechPartial = "speech.partial"
     public static let log = "log"
 
     /// Every request, in the order hello lists them.
     public static let requests = [
         hello, shutdown, jobCancel, permissionsStatus, permissionsRequest,
         captureDevices, captureStart, captureStop, hotkeyConfigure, hotkeyStatus,
-        appFrontmost, appList, appConfigure, appIcons, textFocus, textSelection, textPaste,
-        browserURL, outputWatch, outputMute, outputRelease, outputRecover,
+        appFrontmost, appList, appConfigure, appIcons, textFocus, textSelection, textPaste, textRead,
+        browserURL, outputWatch, outputMute, outputRelease, outputRecover, speechRecognize, speechAudio,
     ]
     public static let notifications = [
         captureStarted, captureLevel, capturePCM, captureRestarted, hotkeyEvent, hotkeyState, appActivated,
-        outputChanged, outputReleased, log,
+        outputChanged, outputReleased, speechStarted, speechPartial, log,
     ]
 
     /// Long-running, cancellable requests (job.cancel; notifications name them in "job").
-    public static func isJob(_ method: String) -> Bool { method == captureStart }
+    public static func isJob(_ method: String) -> Bool { method == captureStart || method == speechRecognize }
 }
 
 public enum Code {

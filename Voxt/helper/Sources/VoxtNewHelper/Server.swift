@@ -97,7 +97,8 @@ func onMainSync(_ body: @MainActor @Sendable () -> Void) {
 
 /// The session: answers requests from stdin. Control requests each run in
 /// a task of their own, so an app slow to answer Accessibility does not
-/// hold up capture.stop; capture.start is a job that answers when it ends.
+/// hold up capture.stop; capture.start and speech.recognize are jobs that
+/// answer when they end.
 final class Server: @unchecked Sendable {
     let out: Writer
     let front: FrontApps
@@ -105,6 +106,7 @@ final class Server: @unchecked Sendable {
     let hotkeys: HotkeyTap
     let textio: TextIO
     let output: Output
+    let speech: SpeechJobs
     private let lock = NSLock()
     private var ready = false
     private var debug = false
@@ -119,6 +121,7 @@ final class Server: @unchecked Sendable {
         hotkeys = HotkeyTap(out: out, front: front)
         textio = TextIO(front: front)
         output = Output(out: out)
+        speech = SpeechJobs(out: out)
     }
 
     /// Reads requests on a thread of its own until stdin closes, then
@@ -153,7 +156,7 @@ final class Server: @unchecked Sendable {
     /// Before any exit: a paste's clipboard restore still to come (at most
     /// 500 ms), the output's mutes, the recordings.
     func exiting(_ why: String) {
-        beforeExit(textio.restores, cancelCaptures: capture.cancelAll, undoOutput: { output.undo(why) })
+        beforeExit(textio.restores, cancelCaptures: { capture.cancelAll(); speech.cancelAll() }, undoOutput: { output.undo(why) })
     }
 
     func handle(id: String, method: String, _ msg: Incoming, clock: RequestClock) {
@@ -181,6 +184,24 @@ final class Server: @unchecked Sendable {
                 }
             }
             return
+        case Method.speechRecognize:
+            Task {
+                do {
+                    try await speech.start(job: id, try msg.decodeParams(SpeechParams.self))
+                } catch {
+                    out.fail(id, rpcError(error))
+                }
+            }
+            return
+        case Method.speechAudio:
+            // Here, on the reader thread: the audio stays in order.
+            do {
+                try speech.audio(try msg.decodeParams(SpeechAudioParams.self))
+                out.result(id, Empty())
+            } catch {
+                out.fail(id, rpcError(error))
+            }
+            return
         default:
             break
         }
@@ -206,7 +227,7 @@ final class Server: @unchecked Sendable {
         switch method {
         case Method.jobCancel:
             let p = try msg.decodeParams(CancelParams.self)
-            return CancelResult(cancelled: capture.cancel(job: p.job))
+            return CancelResult(cancelled: capture.cancel(job: p.job) || speech.cancel(job: p.job))
         case Method.permissionsStatus:
             return Permissions.status()
         case Method.permissionsRequest:
@@ -229,6 +250,8 @@ final class Server: @unchecked Sendable {
             return try await textio.selection(try msg.decodeParams(SelectionParams.self))
         case Method.textPaste:
             return try await textio.paste(try msg.decodeParams(PasteParams.self))
+        case Method.textRead:
+            return try await textio.read(try msg.decodeParams(ReadParams.self))
         case Method.appList:
             return await AppList.list(installed: try msg.decodeParams(AppListParams.self).installed ?? false)
         case Method.appIcons:

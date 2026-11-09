@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
@@ -150,67 +151,76 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 	p := uitext.FeaturePrefix(feature)
 	u := a.fui(feature)
 	a.promptSync(feature)
-	sectionTitle(c, i18n.T("Your rules"))
-	var label, placeholder string
-	switch feature {
-	case hotkey.Translate:
-		caption(c, i18n.T("These rules are merged with the built-in translation rules; where they disagree, yours win."))
-		label = i18n.T("Your rules for Translate")
-		placeholder = i18n.T("For example: use British spelling; keep product names in English; write dates as 15 October 2026.")
-	case hotkey.Rewrite:
-		caption(c, i18n.T("These rules are merged with the built-in writing rules; where they disagree, yours win."))
-		label = i18n.T("Your rules for Rewrite")
-		placeholder = i18n.T("For example: write plainly, without emoji; sign mails with my first name.")
-	default:
-		caption(c, i18n.T("These rules are merged with the built-in clean-up rules; where they disagree, yours win."))
-		label = i18n.T("Your rules for Transcribe")
-		placeholder = i18n.T("For example: write numbers as digits; keep English product names as they are; end every sentence with a full stop.")
+	// Folded by default: long rules would push the rest of the page down.
+	// Its title tells how long the rules are.
+	summary := i18n.T("Not set")
+	if n := utf8.RuneCountInString(strings.TrimSpace(u.prompt)); n > 0 {
+		summary = i18n.N(n, "%d character", "%d characters", n)
 	}
-	in := ui.TextArea(c.Key(p+"-prompt"), &u.prompt).Label(label).Placeholder(placeholder).MinHeight(px(t, 88))
-	if in.Changed() {
-		u.promptDirty = true
-		u.promptSeq++
-		if seq := u.promptSeq; a.win != nil {
-			time.AfterFunc(promptSaveDelay, func() {
-				a.post(func() {
-					if u.promptDirty && u.promptSeq == seq {
-						a.savePrompt(feature)
+	collapsible(c.Key(p+"-rules"), i18n.T("Your rules"), &u.rules, func() {
+		caption(c, summary).SingleLine().Shrink(0)
+	}, func() {
+		var label, placeholder string
+		switch feature {
+		case hotkey.Translate:
+			caption(c, i18n.T("These rules are merged with the built-in translation rules; where they disagree, yours win."))
+			label = i18n.T("Your rules for Translate")
+			placeholder = i18n.T("For example: use British spelling; keep product names in English; write dates as 15 October 2026.")
+		case hotkey.Rewrite:
+			caption(c, i18n.T("These rules are merged with the built-in writing rules; where they disagree, yours win."))
+			label = i18n.T("Your rules for Rewrite")
+			placeholder = i18n.T("For example: write plainly, without emoji; sign mails with my first name.")
+		default:
+			caption(c, i18n.T("These rules are merged with the built-in clean-up rules; where they disagree, yours win."))
+			label = i18n.T("Your rules for Transcribe")
+			placeholder = i18n.T("For example: write numbers as digits; keep English product names as they are; end every sentence with a full stop.")
+		}
+		in := ui.TextArea(c.Key(p+"-prompt"), &u.prompt).Label(label).Placeholder(placeholder).MinHeight(px(t, 88)).MaxHeight(px(t, 320))
+		if in.Changed() {
+			u.promptDirty = true
+			u.promptSeq++
+			if seq := u.promptSeq; a.win != nil {
+				time.AfterFunc(promptSaveDelay, func() {
+					a.post(func() {
+						if u.promptDirty && u.promptSeq == seq {
+							a.savePrompt(feature)
+						}
+					})
+				})
+			}
+		} else if u.promptDirty && !in.Focused() {
+			a.savePrompt(feature) // it lost the focus
+		}
+		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
+			caption(c, i18n.T("Variables (click one to copy it):")).Grow(1).MinWidth(0)
+			empty := u.prompt == "" && promptOf(a.prefs, feature) == ""
+			if ghostIconButton(c.Key(p+"-prompt-reset"), icons.Refresh, i18n.T("Reset to default")).Label(i18n.T("Reset your rules")).Disabled(empty).Clicked() {
+				u.prompt = ""
+				a.savePrompt(feature)
+			}
+		})
+		ui.Column(c.Key(p + "-vars")).Gap(px(t, 4)).Children(func() {
+			for _, name := range compose.VariableNames {
+				token := "{{" + name + "}}"
+				ui.Row(c.Key("var-" + name)).Wrap().GapX(px(t, sp2)).GapY(px(t, 2)).AlignItems(ui.Center).Children(func() {
+					b := ui.ButtonBase(c.Key("copy")).Padding(px(t, 2), px(t, 6)).Radius(px(t, 4)).Background(k.Hover).Label(token).Tooltip(i18n.T("Copy")).Shrink(0)
+					if b.Hovered() {
+						b.Background(k.Pressed)
 					}
+					b.Children(func() {
+						ui.Text(c, token).FontSize(px(t, fsCaption)).Font("monospace").SingleLine()
+					})
+					if b.Clicked() {
+						c.Services().WriteClipboard(token)
+						a.toast(i18n.T("Copied"))
+					}
+					caption(c, variableInfo(name)).Grow(1).Basis(px(t, 200)).MinWidth(0)
 				})
-			})
-		}
-	} else if u.promptDirty && !in.Focused() {
-		a.savePrompt(feature) // it lost the focus
-	}
-	ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
-		caption(c, i18n.T("Variables (click one to copy it):")).Grow(1).MinWidth(0)
-		empty := u.prompt == "" && promptOf(a.prefs, feature) == ""
-		if ghostIconButton(c.Key(p+"-prompt-reset"), icons.Refresh, i18n.T("Reset to default")).Label(i18n.T("Reset your rules")).Disabled(empty).Clicked() {
-			u.prompt = ""
-			a.savePrompt(feature)
-		}
-	})
-	ui.Column(c.Key(p + "-vars")).Gap(px(t, 4)).Children(func() {
-		for _, name := range compose.VariableNames {
-			token := "{{" + name + "}}"
-			ui.Row(c.Key("var-" + name)).Wrap().GapX(px(t, sp2)).GapY(px(t, 2)).AlignItems(ui.Center).Children(func() {
-				b := ui.ButtonBase(c.Key("copy")).Padding(px(t, 2), px(t, 6)).Radius(px(t, 4)).Background(k.Hover).Label(token).Tooltip(i18n.T("Copy")).Shrink(0)
-				if b.Hovered() {
-					b.Background(k.Pressed)
-				}
-				b.Children(func() {
-					ui.Text(c, token).FontSize(px(t, fsCaption)).Font("monospace").SingleLine()
-				})
-				if b.Clicked() {
-					c.Services().WriteClipboard(token)
-					a.toast(i18n.T("Copied"))
-				}
-				caption(c, variableInfo(name)).Grow(1).Basis(px(t, 200)).MinWidth(0)
-			})
-		}
-	})
-	collapsible(c.Key(p+"-preview"), i18n.T("Show the full prompt"), &u.preview, nil, func() {
-		a.previewBody(c, feature)
+			}
+		})
+		collapsible(c.Key(p+"-preview"), i18n.T("Show the full prompt"), &u.preview, nil, func() {
+			a.previewBody(c, feature)
+		})
 	})
 }
 

@@ -6,6 +6,88 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
+- **Notes** (the new Notes page), as in Voxt 1.x: tap right ⌘ in any app, speak, and tap it again. Voxt saves what you said as a note instead of typing it. The Notes page lists your notes, newest first, with their time, and you can delete them. The shortcut changes on that page (off, or other keys); if another shortcut already uses right ⌘, the note shortcut starts off: pick keys on the Notes page. Notes stay out of History, and clearing History keeps them; a note whose recognition failed, or that you cancelled, stays in History with its recording, so you can retry it.
+- **Shortcut presets** (Settings → Shortcuts → Preset), as in Voxt 1.x: Right ⌥ (the default) or fn (Auralink's keys: fn, fn ⇧, fn ⌃, ⌃⌘V) sets Transcribe, Translate, Rewrite and Paste the last result at once. A shortcut you changed yourself stays as it is. With fn, the page says that Auralink and macOS's Globe key react to fn too.
+- **Mouse buttons as shortcuts**, as in Voxt 1.x: in a shortcut's Custom… field type Mouse3 (the middle button), Mouse4 or Mouse5 (the side buttons most mice have) up to Mouse32, alone or with modifiers (Option+Mouse4). Tap, double tap and long press work as with keys, and the button's clicks no longer reach the app in front. Like fn and single modifiers, mouse buttons need Accessibility.
+- **Fallback model for Translate** (Translate → Models): when the language model fails, Voxt translates once more with the model you choose here. History names the model that gave the translation.
+- **Hide a speech model** (Speech models): a model's card has Hide, which leaves the model out of the features' speech model menus; the card moves to Hidden models at the foot of the page, where Show puts it back. A model a feature uses cannot be hidden.
+- **The update from Voxt 1.x is tested on a clean Mac**: a GitHub Actions workflow (Voxt Upgrade Test) installs Voxt 1.x, lets it update itself to the new Voxt from the beta channel, then checks the installed app (its bundle ID, Developer ID signature and notarization) and that it imports Voxt 1.x's dictionary without asking you to choose a folder.
+- **Voxt 1.x on Apple silicon updates to Voxt 2 by itself**: each release also has the app as `Voxt-X.Y.Z-macOS.zip`, which Voxt 1.x's in-app update installs on a Mac with Apple silicon (first for those who turned on Beta Updates, then for everyone there) and the Homebrew cask (`brew install --cask hehehai/tap/voxt`, Apple silicon only) installs. Voxt 1.x on an Intel Mac is not offered Voxt 2, which does not run there, and stays on Voxt 1.x. After the update, allow the microphone and accessibility again: macOS sees Voxt 2 as another app.
+
+### 中文
+
+#### 新增
+
+- **笔记**（新的“笔记”页），和 Voxt 1.x 一样：在任意 app 里单按右 ⌘，说完再按一次，说的内容会存成一条笔记，不会输入到光标处。笔记页按时间从新到旧列出笔记和时间，可以删除。快捷键在笔记页里改（可以关掉，也可以换成别的键）；右 ⌘ 已经被别的快捷键占用时，笔记键一开始是关的，去笔记页选一个。笔记不进历史，清空历史也不会删掉笔记；识别失败或取消的笔记会留在历史里，带着录音，可以重试。
+- **快捷键预设**（设置 → 快捷键 → 预设），和 Voxt 1.x 一样：选“右 ⌥”（默认）或“fn”（和 Auralink 相同：fn、fn ⇧、fn ⌃、⌃⌘V），一次设好转录、翻译、转写和粘贴最近结果的快捷键。你自己改过的快捷键保持不变。选 fn 时，页面会提示 Auralink 和 macOS 的地球键也会响应 fn。
+- **鼠标按钮当快捷键**，同 Voxt 1.x：在快捷键的“自定义…”里输入 Mouse3（中键）、Mouse4 或 Mouse5（多数鼠标的两个侧键），最多到 Mouse32，可以单独用，也可以加修饰键（Option+Mouse4）。单按、双击、长按和键盘快捷键一样；这个按钮按下时不再传给前台 App。和 fn、单个修饰键一样，鼠标快捷键需要辅助功能权限。
+- **翻译的备用模型**（翻译 → 模型）：语言模型出错时，Voxt 用这里选的模型再翻译一次。历史记录里写的是实际给出译文的模型。
+- **隐藏语音模型**（语音模型）：模型卡片上有“隐藏”，隐藏后功能页的语音识别菜单里不再列出它；卡片移到页面底部的“已隐藏的模型”，点“显示”放回去。功能正在用的模型不能隐藏。
+- **在一台全新的 Mac 上测试从 Voxt 1.x 更新**：GitHub Actions 工作流（Voxt Upgrade Test）装好 Voxt 1.x，让它从 beta 通道自己更新到新的 Voxt，再检查装好的 app（bundle ID、Developer ID 签名和公证），以及它不用你选文件夹就能导入 Voxt 1.x 的词典。
+- **Apple 芯片上的 Voxt 1.x 自己更新到 Voxt 2**：每个版本还附带 app 的 `Voxt-X.Y.Z-macOS.zip`，在 Apple 芯片的 Mac 上，Voxt 1.x 的应用内更新安装它（先给打开了“Beta 更新”的用户，再给其他人），Homebrew 的 cask（`brew install --cask hehehai/tap/voxt`，只支持 Apple 芯片）也装它。Intel Mac 上的 Voxt 1.x 不会收到 Voxt 2（Voxt 2 不能在 Intel 上运行），继续用 Voxt 1.x。更新后要重新允许麦克风和辅助功能：macOS 把 Voxt 2 当成另一个 app。
+
+## [2.0.1] - 2026-11-07
+
+### Added
+
+- **Remote language models** (the new Language models page): Transcribe's clean-up, Translate and Rewrite use a language model of a service you set up, over its OpenAI-compatible API: OpenAI, Anthropic, Google Gemini, DeepSeek, Qwen (Alibaba Cloud), Kimi, GLM, Doubao (Volcengine), MiniMax, StepFun, Xiaomi MiMo, xAI, OpenRouter, any other compatible server (Custom), or one on this Mac (Ollama, LM Studio, oMLX), so that the text stays here. Each service takes an API key, an address and a model, with Test connection; the key is kept in the macOS Keychain only, never in Voxt's settings or logs. Every feature's language model menu lists the services set up; Automatic uses the first one, and each card says which features use it. The page groups the servers that run on this Mac (free) apart from the online services. Only the recognised or selected text is sent, never audio.
+- **Import from the Swift Voxt 1.x.** When Voxt 1.x's data is on the Mac, the setup guide starts with a card that brings over its dictionary (replacement terms become "heard as" aliases, disabled terms stay disabled), its dictation, translation and rewrite history, and the speech models it downloaded that Voxt uses, so they are not downloaded again (its language models are not: Voxt no longer runs language models on this Mac). Voxt 1.x's data is only read. If you set up 2.0.0, which had no import, a card in the sidebar offers it once; it is also in the dictionary's ••• menu ([docs/voxt-migration.md](docs/voxt-migration.md)).
+- Import terms takes the dictionary file Voxt 1.x exports (Dictionary → More → Export): its terms, with their replacement terms as aliases.
+- **System dictation** is back as a speech model (Speech models → On this Mac): macOS's own speech recognition, on this Mac, with nothing to download, and the text shown as you speak. It hears your main language (Settings → General; without one, the Mac's dictation language), and your dictionary's terms help it. Choose it on a feature's page; Automatic still uses a speech model you downloaded. The first time, macOS asks for Speech Recognition (Settings → Permissions has it too); a language this Mac cannot recognise on device fails with a notice that says so.
+- **Remote speech recognition** (the Speech models page's Remote services): OpenAI Transcribe, Doubao (Volcengine), Zhipu GLM-ASR, Aliyun Bailian ASR, StepFun, Xiaomi MiMo and Google Gemini, as in Voxt 1.x. Doubao, Aliyun Bailian and Gemini show the text while you speak (tagged Realtime); the others get the recording once you stop. Set one up with its key (Doubao also takes its App ID), address and model, and test the connection before saving; keys stay in the Mac's Keychain, never in Voxt's settings or logs. OpenAI Transcribe, StepFun and Zhipu pointed at a server on this Mac (a local Whisper server) need no key. A service that is set up is offered after the speech models of this Mac in every feature's speech model menu, and used when you choose it there, or when this Mac has no speech model (system dictation counts as one). Doubao, Gemini and Aliyun Bailian's Fun-ASR and Qwen-Audio models get your dictionary's terms as hot words; OpenAI Transcribe, StepFun and Zhipu get them in their prompt; Xiaomi MiMo takes none.
+- **Choose the model folder** (Settings → Storage → Model folder → Change…): keep the models in another folder or on another disk. Voxt brings the models there first (hard links on the same disk, so no space is used; copies on another disk), including the other ActNow apps' models, wherever each app kept them, so that none is downloaded again; then those apps use the new folder too, and Voxt restarts. The old folders stay as they were: delete them in Finder once no app uses them.
+- **Generation settings for remote language models**, field for field as Voxt 1.x had them for each service: Think (default, off, on, effort, budget), max output tokens, temperature, top P, the service's own options (OpenAI's verbosity, Ollama's keep alive, oMLX's usage in stream events), and the folding Advanced (response format, top K, min P, seed, penalties, logprobs, stop sequences) and Expert (Extra Body JSON) sections. A service shows only the fields it takes.
+- **Show in the Dock** (Settings → General): off, Voxt is in the menu bar only, and its menu bar icon stays on.
+- **Also copy the result to the clipboard** (Settings → General): each result stays on the clipboard, also after it was pasted, and a result the answer card shows is copied too.
+- **Show live text** (Settings → Overlay style): off, the overlay shows no words while you speak or while the model writes.
+
+### Changed
+
+- In Activity Monitor the voice detector (Silero VAD) runs as `silero_vad_server`, apart from the speech model's `qwen3_asr_server`, so that a recording no longer looks like two copies of the speech model.
+- **Models are named by what they are**: the Speech models page, the feature pages' model menus, the setup guide and History name a model by its family, size and quantisation (Qwen3-ASR 1.7B (8bit), Qwen3-ASR 0.6B (4bit)), as Voxt 1.x did, instead of "Accurate speech recognition"; its card has short labels (Local, Accurate or Fast, Realtime, whether it knows your main language), says which features use it, and has no rating.
+- **Language models are remote only.** Voxt no longer downloads or runs language models on this Mac: set one up on the Language models page (Ollama runs one here, for free). Those Voxt 2.0.0 downloaded are listed on the Speech models page under "Language models no longer used", to delete. Settings → Privacy, the setup guide and Home say where the text goes.
+- **The Local models page is now Speech models**: the speech models of this Mac, then the remote speech services, each tagged Local or Remote; language models are on the Language models page.
+- **Models are kept in ~/Library/Application Support/SGLang Omni/models**, named after SGLang Omni, whose runtime serves them, instead of the ActNow model library (~/Library/Application Support/ActNow/models). The models Voxt 2.0.0 downloaded are brought over at the first start without downloading them again (hard links: no space is used), and so are the other ActNow apps' (AudioSmith, Dicta): the family's model folder becomes SGLang Omni/models, so every app keeps its models there. The old folder stays as it was. A folder chosen in Settings → Storage applies to every ActNow app, and their models are brought there.
+
+### Fixed
+
+- Import terms no longer adds each line of a JSON file as a term: Voxt 1.x's export is read as a dictionary, and any other JSON file is refused.
+- Clicking beside the dialog of a remote service, a dictionary term or the network settings, or pressing Escape, no longer closes it while it holds what you typed: a key you had just pasted was lost when the click that brought Voxt's window back landed beside the dialog. Cancel and × still close it.
+- VoiceOver now reaches the Retry button of a history entry and the Test button of a remote service's card, and reads the name of Storage's Time Machine switch.
+
+### 中文
+
+#### 新增
+
+- **远程语言模型**（新的“语言模型”页）：转录的整理、翻译和转写使用你设置的服务的语言模型，通过它的 OpenAI 兼容 API 调用：OpenAI、Anthropic、Google Gemini、DeepSeek、通义千问（阿里云百炼）、Kimi、智谱 GLM、豆包（火山方舟）、MiniMax、阶跃星辰、小米 MiMo、xAI、OpenRouter、其他兼容的服务（自定义），或者本机的服务（Ollama、LM Studio、oMLX），让文字留在这台 Mac 上。每个服务填 API Key、地址和模型，可以测试连接；Key 只保存在 macOS 钥匙串里，不会写进 Voxt 的设置或日志。各功能的语言模型菜单列出设置好的服务，“自动”用第一个，卡片上写明使用位置。页面把本机运行的服务（免费）和在线服务分开列出。只发送识别出的文字或选中的文字，不发送音频。
+- **从 Swift 版 Voxt 1.x 导入。** 这台 Mac 上有 Voxt 1.x 的数据时，设置引导第一页有一张卡片，把它的词典（替换词变成"可能被听成"，停用的词还是停用）、听写、翻译和改写的历史，以及它下载过、Voxt 也在用的语音模型带过来，不用再下载（它的语言模型不带：Voxt 不再在本机运行语言模型）。Voxt 1.x 的数据只读不改。装过 2.0.0（那一版没有导入）的，侧栏会出一次卡片；词典的 ••• 菜单里也有（[docs/voxt-migration.md](docs/voxt-migration.md)）。
+- "导入词条"认 Voxt 1.x 导出的词典文件（词典 → 更多 → 导出）：词条，以及作为别名的替换词。
+- **系统听写**回来了，作为语音识别模型（语音模型 → 本机）：macOS 自带的语音识别，在这台 Mac 上运行，无需下载，说话时实时显示文字。它识别你的主要语言（设置 → 通用；没有设置时用这台 Mac 的听写语言），词典里的词条也会帮它识别。在功能页里选择它；“自动”仍然优先用你下载的语音识别模型。第一次使用时 macOS 会请求“语音识别”权限（设置 → 权限里也有）；这台 Mac 不能在本机识别的语言会提示失败原因。
+- **远程语音识别**（语音模型页的“远程服务”）：OpenAI Transcribe、豆包（火山引擎）、智谱 GLM-ASR、阿里云百炼 ASR、阶跃星辰、小米 MiMo 和 Google Gemini，与 Voxt 1.x 相同。豆包、阿里云百炼和 Gemini 边说边出文字（标为“实时”），其他服务在你说完后识别整段录音。填写密钥（豆包还可以填 App ID）、地址和模型即可设置，保存前可以测试连接；密钥只保存在 Mac 的钥匙串里，不会写进 Voxt 的设置或日志。OpenAI Transcribe、阶跃星辰和智谱指向本机的服务（本地 Whisper 服务）时不需要密钥。设置好的服务排在这台 Mac 上的语音模型之后，出现在每个功能的语音识别模型菜单里；在那里选中它，或者这台 Mac 上没有语音模型（系统听写也算一个）时使用。豆包、Gemini 以及阿里云百炼的 Fun-ASR 和 Qwen-Audio 模型把词典里的词当作热词，OpenAI Transcribe、阶跃星辰和智谱把它们放进提示词，小米 MiMo 不使用词典。
+- **自己选模型文件夹**（设置 → 存储 → 模型文件夹 → 更改…）：把模型放到别的文件夹或别的磁盘。Voxt 先把模型放过去（同一磁盘上建硬链接，不占新空间；其他磁盘上复制），也包括其他 ActNow app 的模型，不管它们原来放在哪里，谁都不用重新下载；之后这些 app 也改用新文件夹，Voxt 随即重启。原来的文件夹保持不变：没有 app 再用它们之后，可以在访达里删掉。
+- **远程语言模型的生成设置**，和 1.x 一样按服务提供：思考（默认、关闭、开启、推理强度、预算）、最大输出 Token 数、温度、Top P、服务专属的选项（OpenAI 的详略程度、Ollama 的模型保留时长、oMLX 的流式用量），以及可以展开的“高级”（返回格式、Top K、Min P、随机种子、惩罚项、Logprobs、停止序列）和“专家”（额外请求体 JSON）。每个服务只显示它支持的字段。
+- **在程序坞中显示**（设置 → 通用）。关掉后 Voxt 只在菜单栏里，菜单栏图标会一直开着。
+- **同时把结果复制到剪贴板**（设置 → 通用）。每次的结果都留在剪贴板里，粘贴过的也一样；只出现在答案卡片里的结果也会复制。
+- **显示实时文字**（设置 → 浮窗样式）。关掉后，你说话时和模型写回答时，浮窗里都不显示文字。
+
+#### 变更
+
+- 活动监视器里，声音检测（Silero VAD）的进程叫 `silero_vad_server`，和语音识别模型的 `qwen3_asr_server` 分开，录音时不再像是开了两个语音识别进程。
+- **模型写清楚是哪一个**：语音模型页、各功能页的模型菜单、设置引导和历史都按系列、尺寸和量化称呼模型（Qwen3-ASR 1.7B (8bit)、Qwen3-ASR 0.6B (4bit)），和 Voxt 1.x 一样，不再写“精准语音识别”；卡片上有简短的标签（本地、准确或快速、实时、是否支持主语言）和使用位置，没有评分。
+- **语言模型只用远程服务。** Voxt 不再在这台 Mac 上下载和运行语言模型：请在“语言模型”页设置一个（用 Ollama 可以在本机免费运行）。Voxt 2.0.0 下载过的语言模型列在语音模型页的“不再使用的语言模型”里，可以删除。设置 → 隐私、设置引导和首页都写明了文字会发到哪里。
+- **本地模型页改名为语音模型**：先列这台 Mac 上的语音模型，再列远程语音识别服务，各自标为“本地”或“远程”；语言模型在语言模型页。
+- **模型放在 ~/Library/Application Support/SGLang Omni/models**，以运行这些模型的 SGLang Omni 命名，不再放在 ActNow 模型库（~/Library/Application Support/ActNow/models）。Voxt 2.0.0 下载的模型在第一次启动时搬过来，不用重新下载（硬链接，不占新空间）；其他 ActNow app（AudioSmith、Dicta）的模型也一起搬过来：家族的模型文件夹改成 SGLang Omni/models，所有 app 都把模型放在这里。原来的文件夹保持不变。在“设置 → 存储”里选的文件夹对所有 ActNow app 生效，它们的模型也会一起搬过去。
+
+#### 修复
+
+- "导入词条"不再把 JSON 文件的每一行当成一个词：Voxt 1.x 的导出文件按词典读，别的 JSON 文件会被拒绝。
+- 远程服务、词条和网络设置的对话框里填了内容时，点对话框旁边或按 Esc 不会再把它关掉。以前刚粘贴进去的 key，可能因为点回 Voxt 窗口时点在了对话框旁边而丢失。“取消”和 × 照常关闭。
+- 读屏（VoiceOver）现在能点到历史记录里的“重试”和远程服务卡片上的“测试”，也能读出 设置 → 存储 里 Time Machine 开关的名字。
+
+## [2.0.0] - 2026-11-06
+
+### Added
+
 - Voxt 2.0.0, rebuilt from scratch: voice input for macOS on local models only. Press a shortcut in any app, speak, and the text appears where your cursor is. Audio and text never leave your Mac.
 - Local speech recognition: two models, accurate (recommended) and fast, with the text shown live as you speak, and a voice detector that sends only speech to them.
 - Local language models: a balanced one (recommended), a fast one and a translation model, for clean-up, translation and rewriting.

@@ -7,7 +7,7 @@ Qwen3-ASR does not support `/v1/audio/translations`; that endpoint returns HTTP 
 ## Prerequisites
 
 Install `sglang-omni` by following the [CUDA installation](../get_started/installation.md)
-or [Apple Silicon installation](../get_started/installation_apple_silicon.md),
+or [Apple Silicon installation](../other_platforms/installation_apple_silicon.md),
 then download the model:
 
 ```bash
@@ -21,7 +21,7 @@ MODEL_PATH="$(
 
 ### Ascend NPU graph execution
 
-See [Qwen3-ASR graph execution on Ascend NPU](../get_started/installation_npu.md#qwen3-asr-graph-execution) for queue settings and runtime restrictions.
+See [Qwen3-ASR graph execution on Ascend NPU](../other_platforms/installation_npu.md#qwen3-asr-graph-execution) for queue settings and runtime restrictions.
 
 <a id="apple-silicon-torch-mps"></a>
 
@@ -94,7 +94,8 @@ sgl-omni serve \
 Radix caching, chunked prefill, and CUDA graphs are not used by this path. The
 HTTP and SSE transcription interfaces below are the same as on CUDA;
 `stream=true` provides pseudo-streaming transcript deltas as tokens are decoded.
-The Apple path does not provide sampling penalties or token logprobs yet.
+The Apple path applies `repetition_penalty` but does not provide other sampling
+penalties or token logprobs yet.
 
 The initial Torch MPS profile is bounded to a 2,048-token KV budget, uses
 `audio_chunking.max_audio_clip_s` for non-streaming chunks (30 seconds by
@@ -170,11 +171,13 @@ sgl-omni serve \
   --port 8000
 ```
 
-DFlash serves any `temperature`. Above 0, verification accepts each drafted token with the target model's probability for it and otherwise samples from the target's remaining probabilities. ASR transcripts are confident, so sampling barely lowers acceptance: on one H100 with SeedTTS English and Chinese clips at 16 concurrent requests, each verification step committed 5.66 tokens at `temperature` 0, 5.66 at 0.7 and 5.62 at 1.0. On the same server at the default cap of 64 running requests, the speedup at 0.7 and 1.0 stayed close to its greedy speedup at every load tested, from 1 to 64 concurrent requests. DFlash retains CUDA graphs. Realtime sessions are not validated.
+DFlash serves any `temperature`. Above 0, verification accepts each drafted token with the target model's probability for it and otherwise samples from the target's remaining probabilities. ASR transcripts are confident, so sampling barely lowers acceptance: on one H100 with SeedTTS English and Chinese clips at 16 concurrent requests, each verification step committed 5.66 tokens at `temperature` 0, 5.66 at 0.7 and 5.62 at 1.0. On the same server at the default cap of 64 running requests, the speedup at 0.7 and 1.0 stayed close to its greedy speedup at every load tested, from 1 to 64 concurrent requests. DFlash retains CUDA graphs.
 
-Scheduling is synchronous by default. Add `--asr.factory.enable_async_decode true` to overlap it with host work. On one H100 with greedy decoding and the prefix cache off, overlap raised throughput over synchronous scheduling by 12–26% on 60-second recordings and by 1–15% on SeedTTS English clips, from 1 to 64 concurrent requests, with the same WER. On those clips it also removed the draft's loss under load: at 64 concurrent requests the synchronous draft ran at 0.94x the server without a draft, and the overlapped draft at 1.08x. Overlap runs one extra verify round per request, so the logged acceptance length drops (5.9 to 4.6 tokens on short clips), and streamed first text arrives about 2 ms later for one short clip at a time.
+DFlash does not apply `repetition_penalty`: a request that sets it to anything other than `1.0` returns HTTP 400. To use the penalty, serve without the draft (`--asr.engine.disable_speculative_decoding true`, shown below).
 
-The command above caps the server at 8 running requests. A load sweep at the default cap with the prefix cache off ([#3454](https://github.com/sgl-project/sglang-omni/pull/3454)), on one H200 over SeedTTS English clips, found that the draft gives no speedup at 32 concurrent requests and is about 10% slower at 64. To serve such a load, turn the draft off; `disable_speculative_decoding` drops every `speculative_*` key from the stage:
+The draft overlaps scheduling with host work by default; add `--asr.factory.enable_async_decode false` to schedule synchronously. On one H100 with greedy decoding and the prefix cache off, overlap ran at 1.12–1.26x synchronous scheduling on 60-second recordings, 1.01–1.15x on SeedTTS English clips and 0.99–1.15x on SeedTTS Chinese clips, from 1 to 64 concurrent requests, with the same WER and CER. On short clips it also removed the draft's loss under load: at 64 concurrent requests the synchronous draft ran at 0.94x the server without a draft on English clips and 0.91x on Chinese, and the overlapped draft at 1.08x and 1.04x. Overlap runs one extra verify round per request, so the logged acceptance length drops (5.9 to 4.6 tokens on English clips), and streamed first text arrives about 2 ms later for one short clip at a time.
+
+The command above caps the server at 8 running requests. A load sweep at the default cap with the prefix cache off ([#3454](https://github.com/sgl-project/sglang-omni/pull/3454)), on one H200 over SeedTTS English clips, found that the synchronous draft gives no speedup at 32 concurrent requests and is about 10% slower at 64. To serve such a load, turn the draft off; `disable_speculative_decoding` drops every `speculative_*` key from the stage:
 
 ```bash
 sgl-omni serve \
@@ -184,6 +187,10 @@ sgl-omni serve \
 ```
 
 Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens_details` (`spec_accept_length`, `spec_accept_rate`, the draft counts and the per-verify histogram) on `json` and `verbose_json` responses and on the streamed `transcript.text.done` event. Audio long enough to be transcribed in chunks returns none. `spec_accept_rate` and `spec_num_proposed_drafts` are left out when no drafts were proposed or the draft width is adaptive.
+
+Realtime transcription sessions (`--enable-realtime`) use the draft too. On one H100 at the default memory fraction and cap of 64 running requests, SeedTTS English and Chinese clips and 60-second LongLibriHeavy recordings streamed at wall-clock pace, 1 to 16 sessions at a time, with server VAD or manual commit. No session hit an error or a protocol violation, WER stayed within 0.03 percentage points of the server without the draft, and the median time to a segment's first partial was 11 to 28% lower with the synchronous draft, least at a 1000 ms decode interval, and to its final transcript 17 to 27% lower. Overlap, now the default, gave the same transcripts and median latencies as the synchronous draft on SeedTTS English sessions with server VAD, 1 and 16 at a time, with no errors or protocol violations.
+
+The draft's weights and KV cache come out of the stage's memory fraction. On an 80 GB H100 at `--mem-fraction-static 0.08`, as in the streaming cascade profiles, the KV cache holds 11,501 tokens with the draft and 20,705 without. At that fraction, 640 SeedTTS Chinese sessions, 16 at a time, ran with no errors.
 
 ## Transcribe Audio
 
@@ -326,7 +333,8 @@ rollback state.
 | `language` | string | none | Optional language hint as a supported code or canonical name (case-insensitive); omit it for automatic detection |
 | `prompt` | string | none | Vocabulary biasing: terms likely to appear in the audio, such as names and jargon. See the note below the table |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
-| `temperature` | float | `0` | Sampling temperature; `0` uses greedy decoding |
+| `temperature` | float | `0` | Sampling temperature; `0` uses greedy decoding. A negative value returns HTTP 422  |
+| `repetition_penalty` | float | `1.0` | Penalty in `(0, 2]` on tokens already generated. Values above `1` discourage repeats and can stop a runaway loop on noisy or silent audio, but they also lower accuracy on clean audio, so keep `1.0` unless loops occur |
 | `max_new_tokens` | integer | server stage limit | Per-request generation-token limit |
 | `stream` | boolean | `false` | Return SSE transcript deltas; supports `json` or `text` response format |
 

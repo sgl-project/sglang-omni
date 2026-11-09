@@ -3,6 +3,7 @@ package models
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -193,5 +194,17 @@ func TestEntry(t *testing.T) {
 	}
 	if got, want := SnapshotDir("/h", acc, ""), "/h/models--mlx-community--Qwen3-ASR-1.7B-8bit/snapshots/"+acc.Revision; got != want {
 		t.Errorf("snapshot %s, want %s", got, want)
+	}
+}
+
+// TestSameVolume: two folders of one volume are; /dev (devfs) and a
+// folder that does not exist are not.
+func TestSameVolume(t *testing.T) {
+	a, b := t.TempDir(), t.TempDir()
+	if !SameVolume(a, b) {
+		t.Error("two temporary folders are not on one volume")
+	}
+	if SameVolume(a, "/dev") || SameVolume(a, filepath.Join(b, "missing")) {
+		t.Error("/dev, or a missing folder, counted as on the same volume")
 	}
 }

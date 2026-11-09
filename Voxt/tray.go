@@ -200,3 +200,19 @@ func (a *app) connectWindowLife() {
 		a.post(a.familyActivated) // family.go: the family's files again (notifications are hints)
 	})
 }
+
+// setDockShown shows VoxtNew in the Dock or leaves it out (an accessory
+// app); tests replace it. A test app has no Dock.
+var setDockShown = func(a *app, shown bool) {
+	if !a.hasMenu {
+		return
+	}
+	p := mygo.ActivationPolicyAccessory
+	if shown {
+		p = mygo.ActivationPolicyRegular
+	}
+	mygo.App.SetActivationPolicy(p)
+}
+
+// applyDock puts VoxtNew in the Dock or not, as the settings say.
+func (a *app) applyDock() { setDockShown(a, !a.prefs.General.HideDock) }

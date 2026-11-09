@@ -1,0 +1,48 @@
+name: Voxt Beta
+
+# Builds a beta of main each time it takes a change to Voxt (Voxt/, or the
+# native runtime the app ships, sglang_omni_mlx/native/; not its Markdown):
+# the release workflow with beta: true, signed with the Developer ID of the
+# voxt-release environment and notarized, version X.Y.Z-beta.YYYYMMDD.N (N
+# this workflow's run number), its disk image an artifact of the run. Unlike
+# a release or the nightly, it takes the Omni runtime from the cache when
+# one was built from the same sources (voxt-release.yaml). The merged change
+# passed Voxt CI as a pull request, so the beta does not test it again. A
+# newer merge cancels a beta still building. A pull request that changes
+# this file runs it too, ad hoc and unsigned. Run by hand from any branch,
+# it is signed the same way as from main, which needs the voxt-release
+# environment to let that branch in.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Voxt/**"
+      - "!Voxt/**/*.md"
+      - "sglang_omni_mlx/native/**"
+      - "!sglang_omni_mlx/native/**/*.md"
+      - ".github/workflows/voxt-beta.yaml"
+      - ".github/workflows/voxt-release.yaml"
+  pull_request:
+    paths:
+      - ".github/workflows/voxt-beta.yaml"
+  workflow_dispatch:
+
+concurrency:
+  group: voxt-beta-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  beta:
+    if: github.event_name != 'push' || github.repository == 'sgl-project/sglang-omni'
+    uses: ./.github/workflows/voxt-release.yaml
+    # A called job cannot ask for more than its caller grants. Only a tag's draft release uses this.
+    permissions:
+      contents: write
+    # A called workflow gets the voxt-release environment's secrets only when its caller passes them.
+    secrets: inherit
+    with:
+      beta: true

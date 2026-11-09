@@ -19,10 +19,12 @@
 // time as capture.pcm frames and capture.level; hotkey.configure installs
 // a pretend tap and can play a script of notifications (events=, press=);
 // textio.* read a scripted selection and log what they paste (paste-log=);
+// textio.read reads a scripted field (read=) and logs its calls (read-log=);
 // browser.url answers from Browsers, app.list from Apps and Installed,
 // app.icons with Icon for those and Browsers;
 // app.configure keeps its list (no-tree=); output.* mute pretend speakers
-// and AirPods (output.go).
+// and AirPods (output.go); speech.* hear a scripted text (speech=,
+// fake_speech.go).
 // (From AudioSmith's engine/enginetest, with the helper's methods.)
 package helpertest
 
@@ -59,6 +61,10 @@ package helpertest
 //	paste-check=C    textio.paste with verifyMs: its check is C (unchanged, unknown; default inserted)
 //	secure-input=APP textio.paste: APP has secure event input on
 //	paste-log=PATH   append each textio.paste's params to PATH (JSON lines)
+//	read=PATH        textio.read reads a field whose states are PATH's JSON lines (Field),
+//	                 one a call, the last one staying; without it an empty field
+//	read-log=PATH    append each textio.read's params to PATH (JSON lines)
+//	garble=TEXT      textio.read answers a line cut short that holds TEXT, then exits 3
 //	delay=METHOD:MS  answer METHOD MS ms late (slow calls)
 //	no-url[=BUNDLE]  browser.url reads no URL (of BUNDLE, or of every browser)
 //	no-tree=BUNDLE   browser.url reads BUNDLE's URL only once app.configure listed
@@ -72,6 +78,11 @@ package helpertest
 //	out-unmute=MS    MS ms after a mute, the user unmutes the device
 //	crash-mute       exit 3 right after a mute (its claim stays in the journal)
 //	no-output        an older helper: no output.* in hello, method_not_found
+//	speech[=TEXT]    hello lists speech.*, and speech.recognize hears TEXT (default
+//	                 "hello from system dictation"), a word more for each speech.audio
+//	                 with audio (speech.partial), in SpeechLangs only; without it
+//	                 speech.* are method_not_found, as in an older helper
+//	speech-perm=STATE  Speech Recognition, as mic=
 //
 // A capture.start whose first device is "crash" exits 3 after its first
 // frame; one whose first device is "gone" fails with device_unavailable;
@@ -114,8 +125,11 @@ func Main() {
 	os.Exit(0)
 }
 
-// Methods is what the fake implements (hello.methods): every request.
-func Methods() []string { return slices.Clone(proto.Requests) }
+// Methods is what the fake lists in hello.methods: every request but
+// speech.*, which it lists only with the speech option: the app offers
+// System dictation as a speech model wherever the helper has them, and
+// most tests have their own speech model.
+func Methods() []string { return slices.DeleteFunc(slices.Clone(proto.Requests), isSpeech) }
 
 // oldMethods are an older helper's (no-output): without output.*.
 func oldMethods() []string {
@@ -170,22 +184,25 @@ type fake struct {
 	wmu   sync.Mutex
 	start time.Time
 
-	mu        sync.Mutex
-	hello     bool
-	mic       string
-	trusted   bool
-	bindings  int
-	installed bool
-	scripted  bool // the events= script and press= ran
-	hkActive  bool
-	hkCancel  bool                     // hotkey.configure's cancel is set (the tap installs for it alone too)
-	manual    []string                 // app.configure's manualAccessibility
-	running   map[string]bool          // capture jobs
-	cancel    map[string]bool          // asked to stop by job.cancel
-	stop      map[string]chan struct{} // closed by capture.stop
-	finished  map[string]chan struct{}
-	outSim    *OutputHelper // output.* (output.go)
-	moved     *proto.App    // the app in front since a script's app.activated
+	mu         sync.Mutex
+	hello      bool
+	mic        string
+	speechPerm string
+	trusted    bool
+	bindings   int
+	installed  bool
+	scripted   bool // the events= script and press= ran
+	hkActive   bool
+	hkCancel   bool                     // hotkey.configure's cancel is set (the tap installs for it alone too)
+	manual     []string                 // app.configure's manualAccessibility
+	running    map[string]bool          // capture jobs
+	cancel     map[string]bool          // asked to stop by job.cancel
+	stop       map[string]chan struct{} // closed by capture.stop
+	finished   map[string]chan struct{}
+	speech     map[string]*speechJob // speech.recognize jobs (fake_speech.go)
+	outSim     *OutputHelper         // output.* (output.go)
+	moved      *proto.App            // the app in front since a script's app.activated
+	reads      int                   // textio.read calls so far (read=)
 }
 
 // Run serves the protocol on stdin and stdout with opts (see the top of
@@ -201,11 +218,14 @@ func Run(optString string) {
 			opts[k] = v
 		}
 	}
-	f := &fake{opts: opts, out: bufio.NewWriter(os.Stdout), start: time.Now(), mic: proto.PermGranted, trusted: true,
+	f := &fake{opts: opts, out: bufio.NewWriter(os.Stdout), start: time.Now(), mic: proto.PermGranted, speechPerm: proto.PermGranted, trusted: true,
 		running: map[string]bool{}, cancel: map[string]bool{},
-		stop: map[string]chan struct{}{}, finished: map[string]chan struct{}{}}
+		stop: map[string]chan struct{}{}, finished: map[string]chan struct{}{}, speech: map[string]*speechJob{}}
 	if v, ok := opts["mic"]; ok {
 		f.mic = v
+	}
+	if v, ok := opts["speech-perm"]; ok {
+		f.speechPerm = v
 	}
 	if f.has("deny-mic") {
 		f.mic = proto.PermDenied
@@ -337,6 +357,10 @@ func (f *fake) serve(m proto.Message) {
 	case proto.MethodJobCancel:
 		var p proto.CancelParams
 		m.DecodeParams(&p)
+		if f.cancelSpeech(p.Job) {
+			f.result(m.ID, proto.CancelResult{Cancelled: true})
+			return
+		}
 		f.mu.Lock()
 		running := f.running[p.Job]
 		if running && !f.has("hang-cancel") {
@@ -365,6 +389,12 @@ func (f *fake) serve(m proto.Message) {
 			}
 			f.mu.Unlock()
 		case proto.PermissionAccessibility:
+		case proto.PermissionSpeechRecognition:
+			f.mu.Lock()
+			if f.speechPerm == proto.PermNotDetermined {
+				f.speechPerm = proto.PermGranted
+			}
+			f.mu.Unlock()
 		default:
 			f.fail(m.ID, proto.CodeBadRequest, "Unknown permission %s", p.Permission)
 			return
@@ -382,7 +412,7 @@ func (f *fake) serve(m proto.Message) {
 		f.result(m.ID, f.hotkeyStatus())
 	case proto.MethodAppFrontmost:
 		f.result(m.ID, f.front())
-	case proto.MethodTextFocus, proto.MethodTextSelection, proto.MethodTextPaste:
+	case proto.MethodTextFocus, proto.MethodTextSelection, proto.MethodTextPaste, proto.MethodTextRead:
 		f.textio(m)
 	case proto.MethodBrowserURL:
 		var p proto.BrowserURLParams
@@ -445,6 +475,15 @@ func (f *fake) serve(m proto.Message) {
 			res.Icons = append(res.Icons, icon)
 		}
 		f.result(m.ID, res)
+	case proto.MethodSpeechRecognize, proto.MethodSpeechAudio:
+		switch {
+		case !f.has("speech"):
+			f.fail(m.ID, proto.CodeMethodNotFound, "Unknown method %s", m.Method)
+		case m.Method == proto.MethodSpeechRecognize:
+			f.speechRecognize(m)
+		default:
+			f.speechAudio(m)
+		}
 	case proto.MethodOutputWatch, proto.MethodOutputMute, proto.MethodOutputRelease, proto.MethodOutputRecover:
 		if f.has("no-output") {
 			f.fail(m.ID, proto.CodeMethodNotFound, "Unknown method %s", m.Method)
@@ -459,7 +498,7 @@ func (f *fake) serve(m proto.Message) {
 func (f *fake) permissions() proto.PermissionsResult {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return proto.PermissionsResult{Microphone: f.mic, Accessibility: f.trusted}
+	return proto.PermissionsResult{Microphone: f.mic, Accessibility: f.trusted, SpeechRecognition: f.speechPerm}
 }
 
 func (f *fake) handleHello(m proto.Message) {
@@ -476,6 +515,9 @@ func (f *fake) handleHello(m proto.Message) {
 		Device: proto.Device{Name: "Fake Mac", OS: "test"}}
 	if f.has("no-output") {
 		res.Methods = oldMethods()
+	}
+	if f.has("speech") {
+		res.Methods = append(res.Methods, proto.MethodSpeechRecognize, proto.MethodSpeechAudio)
 	}
 	if f.has("mismatch") {
 		res.Protocol = 9

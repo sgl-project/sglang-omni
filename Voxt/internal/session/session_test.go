@@ -31,6 +31,7 @@ type harness struct {
 	mu         sync.Mutex
 	asr        asr.Provider
 	llm        LLM
+	fallback   LLM // Translate's fallback model (nil: none)
 	resolveErr error
 	logs       []string
 	// vadModel is the voice activity model the services have (nil: none).
@@ -53,6 +54,9 @@ func newHarness(t *testing.T, prov asr.Provider, model LLM, cfgFn func(*Config, 
 			svc := Services{ASR: h.asr, ASRInfo: Model{ID: "doubao", Name: "Doubao", Model: "seed"}, VAD: h.vadModel}
 			if h.llm != nil {
 				svc.LLM, svc.LLMInfo = h.llm, Model{ID: "deepseek", Name: "DeepSeek", Model: "deepseek-chat"}
+			}
+			if h.fallback != nil {
+				svc.Fallback, svc.FallbackInfo = h.fallback, Model{ID: "ollama", Name: "Ollama", Model: "qwen3"}
 			}
 			return svc, nil
 		},
@@ -118,7 +122,8 @@ func statesString(ss []State) string {
 
 // TestPipeline runs whole sessions: both kinds of speech model, the
 // language model on, off, failing and timing out, and a target that takes
-// no text.
+// no text. Both kinds of speech model get the speech context as their
+// prompt (it was never sent).
 func TestPipeline(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -153,6 +158,7 @@ func TestPipeline(t *testing.T) {
 			h := newHarness(t, prov, model, func(c *Config, s *settings.Settings) {
 				s.Features.Transcribe.Enhance = tc.enhance
 				s.Features.Transcribe.Prompt = "Be brief."
+				s.Dictionary.SpeechContext = " Leo works on LLM serving. "
 				c.LLMFirstToken, c.LLMTimeout = 50*time.Millisecond, 100*time.Millisecond
 			})
 			if !tc.writable {
@@ -194,11 +200,11 @@ func TestPipeline(t *testing.T) {
 				if len(st.streams) != 1 || st.streams[0].bytes != h.audio.recorded()*len(frame) {
 					t.Errorf("streamed %d bytes of %d frames", st.streams[0].bytes, h.audio.recorded())
 				}
-				if strings.Join(st.hints, ",") != "VoxtNew" {
-					t.Errorf("hints %q", st.hints)
+				if strings.Join(st.hints, ",") != "VoxtNew" || st.prompt != "Leo works on LLM serving." {
+					t.Errorf("hints %q, prompt %q", st.hints, st.prompt)
 				}
-			} else if f := prov.(*fakeFile); f.calls != 1 || f.bytes != h.audio.recorded()*len(frame) {
-				t.Errorf("uploaded %d calls, %d bytes", f.calls, f.bytes)
+			} else if f := prov.(*fakeFile); f.calls != 1 || f.bytes != h.audio.recorded()*len(frame) || f.prompt != "Leo works on LLM serving." {
+				t.Errorf("uploaded %d calls, %d bytes, prompt %q", f.calls, f.bytes, f.prompt)
 			}
 			if tc.llm != nil && tc.enhance {
 				reqs := tc.llm.requests()

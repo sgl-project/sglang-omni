@@ -45,6 +45,8 @@ type featureUI struct {
 	// last set from.
 	asr, llm string
 	svcSeen  string
+	// fallback is Translate's fallback model select.
+	fallback string
 	// lang is Translate's target select.
 	lang string
 	// prompt is the rules as typed; promptSeen the saved value it was
@@ -54,7 +56,9 @@ type featureUI struct {
 	promptSeen  string
 	promptDirty bool
 	promptSeq   int
-	preview     bool
+	// rules and preview: the Your rules section and its full prompt, open.
+	rules   bool
+	preview bool
 	// block says why the Try area's Start did not start.
 	block *sessionNotice
 }

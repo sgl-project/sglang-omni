@@ -41,6 +41,8 @@ type settingsForm struct {
 	scale        int
 	reduceMotion bool
 	menuBar      bool
+	dock         bool
+	copyResult   bool
 	closeToTray  bool
 	openAtLogin  bool
 	keepHistory  bool
@@ -124,6 +126,9 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 	if old.General.MenuBar != new.General.MenuBar {
 		a.applyTray() // tray.go
 	}
+	if old.General.HideDock != new.General.HideDock {
+		a.applyDock() // tray.go
+	}
 	if old.Updates.BetaOn(a.version) != new.Updates.BetaOn(a.version) {
 		a.applyBeta() // updates.go
 	}
@@ -150,8 +155,11 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 	if old.Overlay != new.Overlay {
 		a.overlayRestyle() // overlay.go
 	}
-	if old.Models != new.Models {
+	if old.Models.KeepLoaded != new.Models.KeepLoaded {
 		a.applyKeepLoaded(new.Models) // models_keep.go
+	}
+	if !reflect.DeepEqual(old.Providers, new.Providers) || old.Network != new.Network {
+		a.syncRemote() // remote_link.go
 	}
 	a.historySettingsChanged(old, new) // history_settings_ops.go
 	// The problems' cards: the language of their text may have changed
@@ -207,6 +215,7 @@ func (a *app) loadSettingsForm() {
 	f.scale = max(0, slices.Index(settings.Scales, s.Appearance.Scale))
 	f.reduceMotion = s.Appearance.ReduceMotion
 	f.menuBar, f.closeToTray, f.openAtLogin = s.General.MenuBar, s.General.CloseToTray, s.General.LaunchAtLogin
+	f.dock, f.copyResult = !s.General.HideDock, s.General.CopyResult
 	f.keepHistory, f.keepAudio, f.logText = s.Privacy.KeepHistory, s.Privacy.KeepAudio, s.Privacy.LogText
 	f.sounds = s.Audio.Sounds
 	f.skipSilence = !s.Audio.VAD.Off

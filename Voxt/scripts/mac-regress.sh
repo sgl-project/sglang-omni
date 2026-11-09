@@ -1,29 +1,27 @@
 #!/usr/bin/env bash
 # The regression on a Mac with the real models (docs/manual-test.md,
 # docs/eval.md): the helper's Swift tests, the speech models with the real
-# helper (TestMacE2EOmni), the language models (TestLLM*), the eval in
-# quick mode (TestEval*: the speech and language models' scores against
-# floors, app enhancement and the dictionary end to end), then the app
-# built with the runtimes inside, started (--smoke: its own data, no
-# window), asked for an answer by each runtime and quit, with nothing it
-# started left running. A summary table at the end; the exit status is
+# helper (TestMacE2EOmni), the eval in quick mode (TestEval*: the speech
+# models' scores against floors), then the app built with the Omni
+# runtime inside, started (--smoke: its own data, no window), asked for an
+# answer by the speech model and quit, with nothing it started left
+# running. A summary table at the end; the exit status is
 # the number of failed steps.
 #
 #   MAC_DIR=code/VoxtNew-m3 scripts/mac.sh scripts/mac-regress.sh [--full] [--keep]
 #
-# It reads the persistent models and runtimes, never downloads or builds
-# them (their READMEs say how to refresh them):
+# It reads the persistent models and the Omni runtime, never downloads or
+# builds them (their READMEs say how to refresh them):
 #   the ActNow family's model library ($ACTNOW_FAMILY_DIR/models/hub, by
 #     default ~/Library/Application Support/ActNow/models/hub): the six
-#     catalogue models' snapshots at their pinned commits (internal/models'
+#     speech models' snapshots at their pinned commits (internal/models'
 #     TestRealSnapshots lists them)
 #   ~/voxtnew-runtime/omni/     VOXTNEW_RUNTIME_DIR: scripts/build-omni.sh --out
-#   ~/voxtnew-runtime/llm/      scripts/build-llm.sh --out
 # --full runs the whole eval (about 20 minutes more) and writes its tables
 # to build/regress/eval; --keep keeps the app (build/darwin-arm64). No
 # microphone, speaker, window, key or clipboard: the helper plays files.
-# Another voxtnew-llm or qwen3_asr_server running (another thread's work)
-# skews the times: the script says so.
+# Another qwen3_asr_server or silero_vad_server running (another thread's
+# work) skews the times: the script says so.
 set -uo pipefail
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -51,20 +49,19 @@ missing=0
 VOXTNEW_SNAPSHOTS_OUT="$OUT/snapshots.txt" go test -count=1 -run TestRealSnapshots ./internal/models >/dev/null || exit 2
 # snap ID: model ID's snapshot folder ("" when it is not installed).
 snap() { sed -n "s|^$1=||p" "$OUT/snapshots.txt"; }
-for id in asr.accurate asr.fast vad.silero llm.balanced llm.fast llm.translate; do
+for id in asr.accurate asr.fast vad.silero; do
   [[ -n "$(snap "$id")" ]] || { echo "missing model $id in the model library (download it in VoxtNew, or internal/models' TestRealMoveToHub)" >&2; missing=1; }
 done
 [[ -x "$R/omni/bin/qwen3_asr_server" ]] || { echo "missing $R/omni (see $R/README.md)" >&2; missing=1; }
-[[ -x "$R/llm/voxtnew-llm" ]] || { echo "missing $R/llm (see $R/README.md)" >&2; missing=1; }
 ((missing)) && exit 2
 
-# The runtimes run from APFS clones of their own (no copy on disk): other
+# The runtime runs from an APFS clone of its own (no copy on disk): other
 # threads run ~/voxtnew-runtime's at the same time, and the leftovers this
 # script looks for (and kills) must be its own.
 mkdir -p "$OUT/runtime"
-cp -Rc "$R/omni" "$OUT/runtime/omni" && cp -Rc "$R/llm" "$OUT/runtime/llm" || exit 2
+cp -Rc "$R/omni" "$OUT/runtime/omni" || exit 2
 ours="$OUT|$ROOT/build/darwin-arm64"
-others="$(pgrep -fl 'voxtnew-llm|qwen3_asr_server' | grep -vE "$ours" || true)"
+others="$(pgrep -fl 'qwen3_asr_server|silero_vad_server' | grep -vE "$ours" || true)"
 if [[ -n "$others" ]]; then
   echo "note: other model processes are running; the times are skewed:"
   echo "$others" | cut -c1-160
@@ -76,7 +73,7 @@ if (( ${free:-0} < ${VOXTNEW_MIN_FREE:-30} )); then
   exit 3
 fi
 
-export VOXTNEW_HELPER="$OUT/helper/voxtnew-helper" VOXTNEW_OMNI_RUNTIME="$OUT/runtime/omni" VOXTNEW_LLM="$OUT/runtime/llm/voxtnew-llm"
+export VOXTNEW_HELPER="$OUT/helper/voxtnew-helper" VOXTNEW_OMNI_RUNTIME="$OUT/runtime/omni"
 export GOFLAGS=-p=4
 
 names=() results=() times=() notes=()
@@ -92,7 +89,7 @@ step() {
   local note
   note="$(grep -E "$grep" "$OUT/$name.log" | tail -1 | sed 's/^[[:space:]]*//' | cut -c1-90)"
   local left
-  left="$(pgrep -fl 'qwen3_asr_server|voxtnew-llm|voxtnew-helper' | grep -E "$ours" || true)"
+  left="$(pgrep -fl 'qwen3_asr_server|silero_vad_server|voxtnew-helper' | grep -E "$ours" || true)"
   if [[ -n "$left" ]]; then
     status=1
     note="left running: $(echo "$left" | awk '{print $1}' | tr '\n' ' ')"
@@ -109,14 +106,11 @@ step() {
 }
 
 omni_models="asr.accurate=$(snap asr.accurate);asr.fast=$(snap asr.fast);vad.silero=$(snap vad.silero)"
-dev_llm="llm.balanced=$(snap llm.balanced),llm.fast=$(snap llm.fast),llm.translate=$(snap llm.translate)"
 
 step helper-build 'built|helper' scripts/build-helper.sh --out "$OUT/helper"
 step helper-swift-test 'Executed .* tests' bash -c 'cd helper && swift test -j 2'
 step omni-e2e 'MEASURE asr.accurate live|^(ok|FAIL)' env VOXTNEW_MAC_E2E=1 VOXTNEW_OMNI_MODELS="$omni_models" \
   go test -count=1 -run TestMacE2EOmni -v .
-step llm-real '^(ok|FAIL)' env VOXTNEW_LLM_REAL=1 VOXTNEW_DEV_LLM="$dev_llm" \
-  go test -count=1 -timeout 30m -run 'TestLLM' -v .
 if ((FULL)); then
   step eval-full '^(ok|FAIL)' env VOXTNEW_EVAL=1 VOXTNEW_EVAL_OUT="$OUT/eval" go test -count=1 -timeout 2h -run 'TestEval' -v .
 else
@@ -124,12 +118,12 @@ else
     go test -count=1 -timeout 1h -run 'TestEval' -v .
 fi
 
-# The app, with the runtimes inside (APFS clones: no copy on disk).
+# The app, with the runtime inside (APFS clones: no copy on disk).
 app_build() {
   local res="$ROOT/resources/darwin-arm64"
   rm -rf "$res/omni" "$res/llm" "$res/helper" &&
     mkdir -p "$res" &&
-    cp -Rc "$R/omni" "$res/omni" && cp -Rc "$R/llm" "$res/llm" && cp -Rc "$OUT/helper" "$res/helper" &&
+    cp -Rc "$R/omni" "$res/omni" && cp -Rc "$OUT/helper" "$res/helper" &&
     go tool mygo build &&
     codesign --verify --deep --strict build/darwin-arm64/Voxt.app &&
     du -sh build/darwin-arm64/Voxt.app | sed 's/^/built /'
@@ -144,8 +138,8 @@ smoke() {
   local hub
   hub="$(dirname "$(dirname "$(dirname "$(snap asr.fast)")")")"
   mkdir -p "$dir/ActNow/models" && cp -Rc "$hub" "$dir/ActNow/models/hub" || { echo "smoke: FAIL cloning the model library $hub"; return 1; }
-  env -u VOXTNEW_HELPER -u VOXTNEW_OMNI_RUNTIME -u VOXTNEW_LLM \
-    ACTNOW_FAMILY_DIR="$dir/ActNow" VOXTNEW_SMOKE_MODELS=asr.fast,llm.fast \
+  env -u VOXTNEW_HELPER -u VOXTNEW_OMNI_RUNTIME \
+    ACTNOW_FAMILY_DIR="$dir/ActNow" VOXTNEW_SMOKE_MODELS=asr.fast \
     "$ROOT/build/darwin-arm64/Voxt.app/Contents/MacOS/Voxt" --smoke "$dir" &
   local pid=$! t=0 rt="$dir/ActNow/runtime" most=0
   # The family's runtime file (spec §11.1) while it runs: the models it
@@ -168,7 +162,7 @@ smoke() {
   wait $pid || return 1
   sleep 1
   local left
-  left="$(pgrep -fl 'qwen3_asr_server|voxtnew-llm|voxtnew-helper' | grep -F "$ROOT/build/darwin-arm64/Voxt.app" || true)"
+  left="$(pgrep -fl 'qwen3_asr_server|silero_vad_server|voxtnew-helper' | grep -F "$ROOT/build/darwin-arm64/Voxt.app" || true)"
   if [[ -n "$left" ]]; then
     echo "smoke: FAIL left running after quit: $left"
     return 1
@@ -187,7 +181,7 @@ smoke() {
 step app-build '^built' app_build
 step app-smoke '^smoke: (FAIL|speech|nothing)' smoke
 
-rm -rf "$ROOT/resources/darwin-arm64/omni" "$ROOT/resources/darwin-arm64/llm" "$ROOT/resources/darwin-arm64/helper"
+rm -rf "$ROOT/resources/darwin-arm64/omni" "$ROOT/resources/darwin-arm64/helper"
 ((KEEP)) || rm -rf "$ROOT/build/darwin-arm64"
 
 echo

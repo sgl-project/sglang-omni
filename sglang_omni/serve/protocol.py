@@ -597,7 +597,7 @@ class SpeechBatchResult(BaseModel):
 
 
 class SpeechStreamOutcome(BaseModel):
-    """Terminal state of a finished raw PCM speech stream."""
+    """Terminal state of a finished speech audio stream."""
 
     request_id: str
     finish_reason: str

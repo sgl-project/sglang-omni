@@ -64,16 +64,20 @@ public struct LogParams: Codable, Sendable {
 public enum PermissionName {
     public static let microphone = "microphone"
     public static let accessibility = "accessibility"
+    public static let speechRecognition = "speechRecognition"
 }
 
 public struct PermissionsResult: Codable, Sendable {
     /// granted, denied, notDetermined, restricted.
     public var microphone: String
     public var accessibility: Bool
+    /// As microphone; nil from a helper without it (Go's omitempty).
+    public var speechRecognition: String?
 
-    public init(microphone: String, accessibility: Bool) {
+    public init(microphone: String, accessibility: Bool, speechRecognition: String) {
         self.microphone = microphone
         self.accessibility = accessibility
+        self.speechRecognition = speechRecognition
     }
 }
 
@@ -463,6 +467,39 @@ public struct FieldState: Codable, Sendable, Equatable {
     }
 }
 
+/// A range (UTF-16) of the focused element's text in app pid (TextRead).
+public struct ReadParams: Codable, Sendable {
+    public var pid: Int
+    public var range: TextRange
+}
+
+public struct ReadResult: Codable, Sendable, Equatable {
+    public var text: String?
+    /// What text covers, after clamping and widening.
+    public var range: TextRange
+    /// The whole value's UTF-16 units.
+    public var length: Int
+    /// The focused element's identity (CFHash).
+    public var element: Int
+    public var error: String?
+
+    public init(text: String = "", range: TextRange = TextRange(location: 0, length: 0), length: Int = 0, element: Int = 0, error: String? = nil) {
+        self.text = text.isEmpty ? nil : text
+        self.range = range
+        self.length = length
+        self.element = element
+        self.error = error
+    }
+}
+
+/// Why a textio.read read nothing.
+public enum ReadError {
+    public static let notFront = "not front"
+    public static let noFocus = "no focus"
+    public static let secure = "secure"
+    public static let unreadable = "unreadable"
+}
+
 // MARK: browser.url
 
 public struct BrowserURLParams: Codable, Sendable {
@@ -679,6 +716,7 @@ public enum WireTypes {
         case Method.hotkeyConfigure: HotkeyConfigureParams.self
         case Method.textSelection: SelectionParams.self
         case Method.textPaste: PasteParams.self
+        case Method.textRead: ReadParams.self
         case Method.browserURL: BrowserURLParams.self
         case Method.appList: AppListParams.self
         case Method.appConfigure: AppConfigureParams.self
@@ -687,6 +725,10 @@ public enum WireTypes {
         case Method.outputMute: OutputMuteParams.self
         case Method.outputRelease: OutputReleaseParams.self
         case Method.outputRecover: OutputRecoverParams.self
+        case Method.speechRecognize: SpeechParams.self
+        case Method.speechAudio: SpeechAudioParams.self
+        case Method.speechStarted: SpeechStartedParams.self
+        case Method.speechPartial: SpeechPartialParams.self
         case Method.outputChanged: OutputState.self
         case Method.outputReleased: OutputReleasedParams.self
         case Method.captureStarted: CaptureStartedParams.self
@@ -705,7 +747,7 @@ public enum WireTypes {
     public static func result(_ method: String) -> (Codable & Sendable).Type? {
         switch method {
         case Method.hello: HelloResult.self
-        case Method.shutdown, Method.appConfigure: Empty.self
+        case Method.shutdown, Method.appConfigure, Method.speechAudio: Empty.self
         case Method.jobCancel: CancelResult.self
         case Method.permissionsStatus, Method.permissionsRequest: PermissionsResult.self
         case Method.captureDevices: DevicesResult.self
@@ -716,6 +758,7 @@ public enum WireTypes {
         case Method.textFocus: FocusResult.self
         case Method.textSelection: SelectionResult.self
         case Method.textPaste: PasteResult.self
+        case Method.textRead: ReadResult.self
         case Method.browserURL: BrowserURLResult.self
         case Method.appList: AppListResult.self
         case Method.appIcons: AppIconsResult.self
@@ -723,6 +766,7 @@ public enum WireTypes {
         case Method.outputMute: OutputMuteResult.self
         case Method.outputRelease: OutputReleaseResult.self
         case Method.outputRecover: OutputRecoverResult.self
+        case Method.speechRecognize: SpeechResult.self
         default: nil
         }
     }

@@ -41,33 +41,27 @@ On mac-air, from the persistent models and runtimes:
 
 | path | what | refresh |
 |---|---|---|
-| `~/Library/Application Support/ActNow/models/hub` (`$HUB`) | the six catalogue models' snapshots at their pinned commits, about 9 GB, in the ActNow family's model library (shared with the user's AudioSmith and Dicta; claimed as `dev.hehehai.voxtnew`); the tests find them through the catalogue (`models.Installed`) | download in VoxtNew, or `internal/models` `TestRealMoveToHub` from per-model folders; never delete them by hand |
-| `~/voxtnew-runtime/{omni,llm}/` | `scripts/build-omni.sh --out` and `scripts/build-llm.sh --out` from `voxtnew/dev` | its `README.md` |
+| `~/Library/Application Support/SGLang Omni/models` (`$HUB`, `models.Hub()`) | the six catalogue models' snapshots at their pinned commits, about 9 GB, hard-linked from the ActNow family's model library `~/Library/Application Support/ActNow/models/hub` (shared with the user's AudioSmith and Dicta) when VoxtNew 2.0.1 or later first starts; claimed as `dev.hehehai.voxtnew`; the tests find them through the catalogue (`models.Installed`) | download in VoxtNew, or `internal/models` `TestRealMoveToHub` from per-model folders; never delete them by hand |
+| `~/voxtnew-runtime/omni/` | `scripts/build-omni.sh --out` from `voxtnew/dev` | its `README.md` |
 
 ```sh
-# the whole eval, about 37 minutes; tables in build/eval (asr.md, llm.md, glossary.md, long.md, rewrite.md)
+# the whole eval; tables in build/eval (asr.md, long-asr.md, long-asr-texts.md, dict-asr.md)
 MAC_DIR=code/VoxtNew-xyz scripts/mac.sh 'VOXTNEW_EVAL=1 VOXTNEW_OMNI_RUNTIME=$HOME/voxtnew-runtime/omni \
-  VOXTNEW_LLM=$HOME/voxtnew-runtime/llm/voxtnew-llm VOXTNEW_EVAL_OUT=build/eval go test -count=1 -timeout 2h -run TestEval -v .'
+  VOXTNEW_EVAL_OUT=build/eval go test -count=1 -timeout 2h -run TestEval -v .'
 # quick: a clip of each kind, checked against floors (part of scripts/mac-regress.sh)
 … VOXTNEW_EVAL_QUICK=1 …
 # some clips only
 … VOXTNEW_EVAL_ONLY=dict-1,dict-5 …
-# other language models: a list, or all = every catalogue language model in $HUB (the borrowed
-# llm.qwen3, llm.gemma4 when another ActNow app installed them); default VoxtNew's own three
-… VOXTNEW_EVAL_LLM=all …   … VOXTNEW_EVAL_LLM=llm.qwen3,llm.gemma4 …
 ```
 
 The tests are:
 - `TestEvalASR`: `eval_asr_test.go`;
-- `TestEvalLLM` and `TestEvalGlossary`: `eval_llm_test.go` and `eval_glossary_test.go`;
-- `TestEvalLong` (the long clips: Transcribe whole and in pieces, the prompt cache's hits, long spoken Translate; the full eval only): `eval_long_test.go`;
-- `TestEvalRewrite` (Rewrite on 8 cases, F1): `eval_rewrite_test.go`;
-- `TestEvalAppEnhancement` and `TestEvalDictionary`: `eval_e2e_test.go`;
-- `TestEvalDictASR` and `TestEvalDictLLM` (the dictionary's echo and worth, #24; `VOXTNEW_EVAL_ASR` picks the speech models): `eval_dictasr_test.go`, `eval_dictllm_test.go`, with the dictionaries in `eval_dict_test.go`.
+- `TestEvalLongASR` (the long clips on the speech model): `eval_longasr_test.go`;
+- `TestEvalDictASR` (the dictionary's echo and worth on the speech models, #24; `VOXTNEW_EVAL_ASR` picks them): `eval_dictasr_test.go`, with the dictionaries in `eval_dict_test.go`.
 
-The language-model tests also write the process's memory after each model's chats (`llm.md`: load time, footprint and its peak, MLX's peak).
+The language-model evals (`TestEvalLLM`, `TestEvalGlossary`, `TestEvalLong`, `TestEvalRewrite`, `TestEvalDictLLM`, and the whole sessions of `TestEvalAppEnhancement` and `TestEvalDictionary`) ran Voxt's own local language models in `voxtnew-llm`; they went with it. Their sections below are kept as the record of what was measured.
 
-They log a `CONTENTION` line when another `voxtnew-llm` or `qwen3_asr_server` was running before they started, since that skews the times. The numbers below come from runs without one at their start. mac-air is shared, though: other apps' engines (AudioSmith, Dicta) and another thread's runs were seen during the day, with swap in use. Read the times as upper bounds, and compare them only with runs on the same machine. `scripts/mac-regress.sh` (manual-test.md §10.6) runs the quick eval with the other Mac tests.
+They log a `CONTENTION` line when another `qwen3_asr_server` was running before they started, since that skews the times. The numbers below come from runs without one at their start. mac-air is shared, though: other apps' engines (AudioSmith, Dicta) and another thread's runs were seen during the day, with swap in use. Read the times as upper bounds, and compare them only with runs on the same machine. `scripts/mac-regress.sh` (manual-test.md §10.6) runs the quick eval with the other Mac tests.
 
 ## Speech recognition
 
@@ -125,6 +119,8 @@ Terms written exactly, of the 10 in the `dict` clips:
 - **Idle unload.** The 10-minute idle unload stays. A cold start costs 0.7–1.2 s, and it overlaps the user's speech, because the opener warms the model when the session starts.
 
 ## Clean-up with the small language models
+
+*History: the language-model measurements in this section ran the retired local models in `voxtnew-llm`, with tests that were removed with it; its two speech-model subsections (long recordings on the speech model, the speech server's memory) still hold.*
 
 Transcribe's clean-up of each clip's words, as said, with the user's main language from the clip and the eval dictionary as the glossary. Before M3, compose sent the clean-up rules alone; M3 adds an example turn (`compose.Example`). The example is a short dictation and its clean answer, sent as an earlier user and assistant message, one per template set:
 
@@ -477,6 +473,8 @@ So the user's rest was most likely a stretch with no speech but a filler. VoxtNe
 
 ### The language models and the glossary (`TestEvalDictLLM`)
 
+*History: measured on the retired local language models in `voxtnew-llm`, with tests that were removed with it.*
+
 Every short clip's words, as said, go through Transcribe's clean-up (29 answers per model and dictionary) and the Chinese ones through spoken Translate into English (21). The glossary is each of the three dictionaries; past 30 terms, only the terms the text mentions are sent (behavior.md 5.16). The models are VoxtNew's three and the two borrowed ones (`llm.qwen3`, `llm.gemma4`). The translation model `llm.translate` takes no glossary.
 
 | model | answers with a term put in (transcribe, translate; 3 dictionaries) | terms kept (transcribe; translate) | median first token: small, medium (30), large (130) |
@@ -515,6 +513,8 @@ The runs were on mac-air with `TestEvalDictLLM` and `TestEvalGlossary`, before (
 
 
 ## App enhancement and the dictionary, whole sessions on the real models
+
+*History: measured on the retired local language models in `voxtnew-llm`, with tests that were removed with it.*
 
 These are `eval_e2e_test.go`.
 

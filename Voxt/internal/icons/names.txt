@@ -9,7 +9,7 @@ microphone-3            # Transcribe
 global                  # Translate
 pen-new-round           # Rewrite
 target                  # App enhancement
-cpu                     # Local models
+cloud                   # Remote models
 notebook-bookmark       # Dictionary
 shield-keyhole          # Permissions
 clipboard-list          # Logs
@@ -55,8 +55,8 @@ add
 
 # Settings → Audio (settings_sounds.go).
 
-# Local models (models_page.go).
-soundwave                # speech models
+# Speech models (models_page.go).
+soundwave                # Speech models, speech models
 chat-round-line          # language models
 download-minimalistic    # download a model
 
@@ -86,3 +86,9 @@ turntable-music-note-line-duotone   # play a sound (a duotone variant: both Line
 volume-cross             # volume: muted
 volume-small             # volume: low
 volume-loud              # volume: high
+
+# The Remote models page (remote_page.go).
+key-minimalistic-square # a saved API key
+
+# Notes (notes_page.go).
+notes                    # the Notes page

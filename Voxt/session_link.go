@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -102,6 +103,7 @@ type answerCard struct {
 const (
 	actionNone        = ""
 	actionModels      = "models"
+	actionLanguage    = "language" // the Language models page (remote_page.go)
 	actionPermissions = "permissions"
 	actionHelper      = "helper"
 	actionRetry       = "retry" // the session's entry, in History (history_retry.go)
@@ -141,6 +143,7 @@ func (a *app) openSessions() {
 		Glossary: func(ctx context.Context) ([]store.Term, error) {
 			return lib.store.Dictionary().List(ctx, "")
 		},
+		Notes:    lib.store.Notes(),
 		Settings: st.Get,
 		Locale:   i18n.Locale,
 		Scene:    a.sceneConfig(), // appenhance.go
@@ -179,15 +182,30 @@ func resolver(lm local.Services) session.Resolver {
 		}
 		// A model that serves the feature (the translation model only
 		// translates).
-		m, ok := local.Choose(local.ForFeature(lm.Installed(local.LLM), string(kind)), f.LLM)
+		ready := local.ForFeature(lm.Installed(local.LLM), string(kind))
+		m, ok := local.Choose(ready, f.LLM)
 		if !ok {
 			return svc, nil
 		}
-		c, ml, err := lm.LLM(ctx, m.ID)
-		if err != nil {
-			return svc, nil // no language model: the text goes on as recognised
+		// When it does not open, there is no language model: the text goes
+		// on as recognised.
+		if c, ml, err := lm.LLM(ctx, m.ID); err == nil {
+			svc.LLM, svc.LLMInfo = modelClient{c: c}, sessionModel(ml)
 		}
-		svc.LLM, svc.LLMInfo = modelClient{c: c}, sessionModel(ml)
+		// Translate's fallback model, or its model when that one did not open.
+		fb := s.Features.Translate.Fallback
+		if kind != store.KindTranslate || fb == "" || fb == m.ID || !slices.ContainsFunc(ready, func(x local.Model) bool { return x.ID == fb }) {
+			return svc, nil
+		}
+		c, ml, err := lm.LLM(ctx, fb)
+		if err != nil {
+			return svc, nil
+		}
+		if svc.LLM == nil {
+			svc.LLM, svc.LLMInfo = modelClient{c: c}, sessionModel(ml)
+		} else {
+			svc.Fallback, svc.FallbackInfo = modelClient{c: c}, sessionModel(ml)
+		}
 		return svc, nil
 	}
 }
@@ -252,6 +270,9 @@ func (a *app) sessionEnded(s session.Snapshot) {
 		a.historyChanged() // a try keeps nothing, but the pages may show it
 		return
 	}
+	if a.prefs.General.CopyResult && s.Card && s.Result != "" && s.State != session.Failed {
+		a.copyRecent(s.Result) // tray.go: the clipboard keeps each result
+	}
 	switch {
 	case a.answer.open && a.answer.redo != "" && a.answer.redo == s.ID:
 		a.endRedo(s)
@@ -262,8 +283,17 @@ func (a *app) sessionEnded(s session.Snapshot) {
 	if s.ID != "" && a.followUp != "" && !s.Card {
 		a.followUp = "" // a follow-up that ended without an answer: the card keeps the last one
 	}
+	if s.Note && s.State == session.Done && s.Result != "" {
+		a.loadNotes() // notes_page.go: the page shows it
+	}
 	if p := s.Problem; p != nil && s.State != session.Cancelled && !(s.Card && s.State == session.Failed) {
 		text, more, action := sessionProblemText(p)
+		switch {
+		case s.Note && s.Card:
+			text = i18n.T("The note could not be saved: the card shows it.")
+		case s.Note && p.Code == session.ProblemLLM && p.Degraded:
+			text = degradedLLMText(p, true) // the recognised text went to Notes
+		}
 		if text != "" {
 			// Nothing heard is not a failure: a warning.
 			n := sessionNotice{text: text, more: more, action: action, warn: p.Degraded || p.Code == session.ProblemNoSpeech}
@@ -272,8 +302,9 @@ func (a *app) sessionEnded(s session.Snapshot) {
 			}
 			a.showNotice(n)
 		}
+	} else if s.Note && s.State == session.Done && s.Result != "" {
+		a.showNotice(sessionNotice{text: i18n.T("Saved to Notes")})
 	}
-	a.memoryNoticeAfter(s) // memory_notice.go
 	if s.State != session.Cancelled {
 		a.historyChanged()
 	}
@@ -316,6 +347,9 @@ func (a *app) noticeAction(action string) {
 	case actionModels:
 		a.showMainWindow()
 		a.navigate(modelsPath)
+	case actionLanguage:
+		a.showMainWindow()
+		a.navigate(remotePath)
 	case actionPermissions:
 		a.showMainWindow()
 		a.navigate("/settings/permissions")

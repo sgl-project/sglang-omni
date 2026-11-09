@@ -16,10 +16,13 @@ import time
 import uuid
 import wave
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 from websockets.sync.client import connect
+
+from sglang_omni_mlx.native.ci.long_audio_client import stream_recording
 
 RUNTIME_BIN = os.environ.get("NATIVE_RUNTIME_BIN")
 DATA_ROOT = os.environ.get("CI_DATA_ROOT")
@@ -306,6 +309,7 @@ def test_repetition_penalty_ends_a_token_loop(server: Server) -> None:
 
 
 def test_a_disconnected_stream_stops_its_decode(server: Server) -> None:
+    transcript_before = server.post_form({}, clip("0006_en_short"))
     boundary = uuid.uuid4().hex
     body = (
         (
@@ -341,6 +345,99 @@ def test_a_disconnected_stream_stops_its_decode(server: Server) -> None:
             time.monotonic() - closed_at < 1.5
         ), "the decode kept running after its client left"
         time.sleep(0.05)
+    assert server.post_form({}, clip("0006_en_short")) == transcript_before
+
+
+def open_stream(server: Server, wav: bytes) -> http.client.HTTPResponse:
+    """Starts a streamed request with a large token budget; closing the response cancels it."""
+    boundary = uuid.uuid4().hex
+    body = (
+        (
+            f'--{boundary}\r\nContent-Disposition: form-data; name="stream"\r\n\r\ntrue\r\n'
+            f'--{boundary}\r\nContent-Disposition: form-data; name="max_new_tokens"\r\n\r\n4096\r\n'
+            f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="a.wav"\r\n\r\n'
+        ).encode()
+        + wav
+        + f"\r\n--{boundary}--\r\n".encode()
+    )
+    connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=60)
+    connection.request(
+        "POST",
+        "/v1/audio/transcriptions",
+        body,
+        {"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    response = connection.getresponse()
+    assert response.status == 200
+    return response
+
+
+def request_states(server: Server) -> dict:
+    return json.loads(server.request("GET", "/health")[1])["request_states"]
+
+
+def wait_for(condition, timeout_seconds: float, message: str) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while not condition():
+        assert time.monotonic() < deadline, message
+        time.sleep(0.05)
+
+
+def test_concurrent_requests_decode_together_and_match_serial_output() -> None:
+    """Queued requests batch under --max-batch; each finishes on its own and a cancelled one leaves the rest intact."""
+    clip_ids = ["0006_en_short", "0007_en_short", "0008_en_short"]
+    server = Server(flags=("--max-batch", "4"))
+    try:
+        # Note: a request alone in the queue runs serially.
+        serial = {clip_id: server.post_form({}, clip(clip_id)) for clip_id in clip_ids}
+        assert all(status == 200 for status, _ in serial.values())
+        # The first request occupies the worker so the next four queue behind
+        # it and are taken as one batch once it is cancelled.
+        blocker = open_stream(server, long_wav(300))
+        wait_for(
+            lambda: request_states(server) == {"running": 1},
+            10,
+            "the blocking request never started",
+        )
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            short = {
+                clip_id: pool.submit(server.post_form, {}, clip(clip_id))
+                for clip_id in clip_ids
+            }
+            canceled = pool.submit(open_stream, server, long_wav(300))
+            wait_for(
+                lambda: request_states(server).get("queued") == 4,
+                10,
+                "the requests did not queue behind the blocker",
+            )
+            blocker.close()
+            # The short requests answer while the long one is still decoding.
+            results = {clip_id: future.result(60) for clip_id, future in short.items()}
+            assert request_states(server) == {"running": 1}
+            assert results == serial
+            # Cancelling the long row ends only that row.
+            canceled.result(10).close()
+            wait_for(
+                lambda: request_states(server) == {},
+                3,
+                "the cancelled row kept decoding",
+            )
+        assert server.post_form({}, clip(clip_ids[0])) == serial[clip_ids[0]]
+    finally:
+        server.stop()
+
+
+def test_realtime_accepts_silent_audio_without_a_preview(
+    server: Server, tmp_path: Path
+) -> None:
+    """A session with no preview events must stay open while audio is sent."""
+    recording = tmp_path / "silence.wav"
+    recording.write_bytes(wav_bytes(b"\x00\x00" * 64000))
+    result = stream_recording(
+        server.port, recording, "en", 1, 1, tmp_path / "events.jsonl"
+    )
+    assert result.text == ""
+    assert result.final_segment_count == 1
 
 
 def test_realtime_manual_session(server: Server) -> None:

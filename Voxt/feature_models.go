@@ -25,21 +25,24 @@ func (a *app) featureModels(c *ui.Context, feature string) {
 	enhance := feature != hotkey.Transcribe || a.prefs.Features.Transcribe.Enhance
 	readyA := a.installed(local.ASR)
 	readyL := local.ForFeature(a.installed(local.LLM), feature)
-	optsA, autoA := modelOptions(readyA)
-	optsL, autoL := modelOptions(readyL)
-	seen := strings.Join([]string{f.ASR, f.LLM, strings.Join(optsA, "\x00"), strings.Join(optsL, "\x00")}, "\x01")
+	shownA := slices.DeleteFunc(slices.Clone(readyA), func(m local.Model) bool { return a.modelHidden(m.ID) }) // models_cards.go
+	optsA, autoA := modelOptions(readyA, shownA)
+	optsL, autoL := modelOptions(readyL, readyL)
+	fb := a.prefs.Features.Translate.Fallback
+	optsF := append([]string{i18n.T("None")}, optsL[1:]...)
+	seen := strings.Join([]string{f.ASR, f.LLM, fb, strings.Join(optsA, "\x00"), strings.Join(optsL, "\x00")}, "\x01")
 	if u.svcSeen != seen {
 		u.svcSeen = seen
-		u.asr, u.llm = modelLabel(readyA, f.ASR, autoA), modelLabel(readyL, f.LLM, autoL)
+		u.asr, u.llm, u.fallback = modelLabel(readyA, f.ASR, autoA), modelLabel(readyL, f.LLM, autoL), modelLabel(readyL, fb, optsF[0])
 	}
-	sectionTitleTip(c, i18n.T("Models"), i18n.T("Automatic uses the recommended model among those installed on the Local models page."))
-	opened := false // one "Open Local models" per page
+	sectionTitleTip(c, i18n.T("Models"), i18n.T("Automatic uses the recommended speech model on this Mac (the Speech models page), and the first language model set up on the Language models page. A remote speech service is used when you choose it here, or when no speech model on this Mac is installed."))
+	opened := false // one "Open Speech models" per page
 	openModels := func() {
 		if opened {
 			return
 		}
 		opened = true
-		if ui.Button(c.Key(p+"-open-models"), i18n.T("Open Local models")).Clicked() {
+		if ui.Button(c.Key(p+"-open-models"), i18n.T("Open Speech models")).Clicked() {
 			a.navigate(modelsPath)
 		}
 	}
@@ -53,12 +56,17 @@ func (a *app) featureModels(c *ui.Context, feature string) {
 			notice(c, p+"-no-asr", noticeWarn, i18n.T("No speech model is installed: install one to transcribe."), "", openModels, nil)
 		}
 	}
+	setUpLLM := func() {
+		if ui.Button(c.Key(p+"-open-llm"), i18n.T("Set up a language model")).Clicked() {
+			a.navigate(remotePath)
+		}
+	}
 	if len(readyL) == 0 {
 		switch feature {
 		case hotkey.Translate:
-			notice(c, p+"-no-llm", noticeWarn, i18n.T("No language model is installed: install one to translate."), "", openModels, nil)
+			notice(c, p+"-no-llm", noticeWarn, i18n.T("No language model is set up: set one up to translate."), "", setUpLLM, nil)
 		case hotkey.Rewrite:
-			notice(c, p+"-no-llm", noticeWarn, i18n.T("No language model is installed: install one to rewrite."), "", openModels, nil)
+			notice(c, p+"-no-llm", noticeWarn, i18n.T("No language model is set up: set one up to rewrite."), "", setUpLLM, nil)
 		}
 	}
 	var asrDesc, asrLabel, llmDesc, llmLabel string
@@ -76,7 +84,7 @@ func (a *app) featureModels(c *ui.Context, feature string) {
 	settingRow(c, p+"-asr", i18n.T("Speech recognition"), asrDesc, func() {
 		sel := ui.Select(c.Key(p+"-asr-sel"), &u.asr, optsA).Label(asrLabel).Width(px(t, 260)).Shrink(1).MinWidth(px(t, 160)).Disabled(len(readyA) == 0)
 		if sel.Changed() {
-			id := modelID(optsA, readyA, u.asr)
+			id := modelID(optsA, shownA, u.asr)
 			a.updateSettings(func(s *settings.Settings) { setFeatureModel(s, local.ASR, feature, id) })
 		}
 	})
@@ -88,20 +96,30 @@ func (a *app) featureModels(c *ui.Context, feature string) {
 			a.updateSettings(func(s *settings.Settings) { setFeatureModel(s, local.LLM, feature, id) })
 		}
 	})
+	if feature == hotkey.Translate {
+		settingRow(c, p+"-fallback", i18n.T("Fallback model"), i18n.T("When the language model fails, translates once more with this model. The history names the model that answered."), func() {
+			sel := ui.Select(c.Key(p+"-fallback-sel"), &u.fallback, optsF).Label(i18n.T("Fallback language model for Translate")).Width(px(t, 260)).Shrink(1).MinWidth(px(t, 160)).
+				Disabled(len(readyL) < 2)
+			if sel.Changed() {
+				id := modelID(optsF, readyL, u.fallback)
+				a.updateSettings(func(s *settings.Settings) { s.Features.Translate.Fallback = id })
+			}
+		})
+	}
 	if feature == hotkey.Transcribe && len(readyL) == 0 && enhance {
-		notice(c, "tr-no-llm", noticeInfo, i18n.T("No language model is installed: the text is typed as recognised, without clean-up."), "", openModels, nil)
+		notice(c, "tr-no-llm", noticeInfo, i18n.T("No language model is set up: the text is typed as recognised, without clean-up."), "", setUpLLM, nil)
 	}
 }
 
-// modelOptions are a model select's labels: "Automatic: X", then the
-// installed models.
-func modelOptions(ready []local.Model) (opts []string, auto string) {
+// modelOptions are a model select's labels: "Automatic: X", X the first
+// of the installed models (ready), then the models the menu shows.
+func modelOptions(ready, shown []local.Model) (opts []string, auto string) {
 	auto = i18n.T("Automatic")
 	if len(ready) > 0 {
 		auto = i18n.T("Automatic: %s", ready[0].Name)
 	}
 	opts = []string{auto}
-	for _, m := range ready {
+	for _, m := range shown {
 		opts = append(opts, m.Name)
 	}
 	return opts, auto

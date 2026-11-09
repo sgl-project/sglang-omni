@@ -337,30 +337,6 @@ func TestWrite(t *testing.T) {
 	}
 }
 
-// TestTranslateHint: a translation model that takes no rules gets speech
-// without its fillers, and a selection as it is.
-func TestTranslateHint(t *testing.T) {
-	for _, c := range []struct {
-		name string
-		sel  *fakeSelector
-		want string
-	}{{"speech", &fakeSelector{}, "那个报告周四之前发"}, {"selection", &fakeSelector{text: "嗯，好的"}, "嗯，好的"}} {
-		model := &fakeLLM{text: "Thursday."}
-		h := newHarness(t, &fakeFile{text: "呃，那个报告周四之前发"}, model, func(cfg *Config, _ *settings.Settings) { cfg.Select = c.sel })
-		id, err := h.m.Start(StartRequest{Kind: store.KindTranslate, Target: slack})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if c.sel.text == "" {
-			h.speak(id, 5)
-		}
-		h.rec.wait(t)
-		if reqs := model.requests(); len(reqs) == 0 || reqs[0].Translate == nil || reqs[0].Translate.Text != c.want {
-			t.Errorf("%s: hint %+v, want %q", c.name, reqs, c.want)
-		}
-	}
-}
-
 // TestWriteCancel cancels Translate while it reads the selection and
 // while the answer streams: nothing is pasted or kept.
 func TestWriteCancel(t *testing.T) {
@@ -396,6 +372,44 @@ func TestWriteCancel(t *testing.T) {
 			t.Errorf("end %+v %v", end, end.Problem)
 		}
 	})
+}
+
+// TestTranslateFallback: when the language model fails, Translate asks
+// its fallback model once, which then answers the rest of the session
+// (the strict retry too); the snapshot and the entry name the model that
+// answered last.
+func TestTranslateFallback(t *testing.T) {
+	boom := errors.New("503 overloaded")
+	for _, tc := range []struct {
+		name             string
+		main, fallback   *fakeLLM
+		state            State
+		result, model    string
+		mainN, fallbackN int
+	}{
+		{"the model answers", &fakeLLM{text: "早上好"}, &fakeLLM{text: "早安"}, Done, "早上好", "deepseek", 1, 0},
+		{"the model fails", &fakeLLM{err: boom}, &fakeLLM{text: "早安"}, Done, "早安", "ollama", 1, 1},
+		{"the fallback is asked again strictly", &fakeLLM{err: boom}, &fakeLLM{texts: []string{"Good morning.", "早安"}}, Done, "早安", "ollama", 1, 2},
+		{"both fail", &fakeLLM{err: boom}, &fakeLLM{err: boom}, Failed, "", "ollama", 1, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, &fakeFile{text: "x"}, tc.main, func(c *Config, _ *settings.Settings) { c.Select = &fakeSelector{text: "Good morning"} })
+			h.fallback = tc.fallback
+			if _, err := h.m.Start(StartRequest{Kind: store.KindTranslate, Target: slack}); err != nil {
+				t.Fatal(err)
+			}
+			end := h.rec.wait(t)
+			if end.State != tc.state || end.Result != tc.result || end.LLM.ID != tc.model {
+				t.Errorf("end %s %q by %q, want %s %q by %q (problem %+v)", end.State, end.Result, end.LLM.ID, tc.state, tc.result, tc.model, end.Problem)
+			}
+			if n, m := len(tc.main.requests()), len(tc.fallback.requests()); n != tc.mainN || m != tc.fallbackN {
+				t.Errorf("%d requests to the model, %d to the fallback; want %d, %d", n, m, tc.mainN, tc.fallbackN)
+			}
+			if es := h.hist.all(); len(es) != 1 || es[0].LLMProvider != tc.model || es[0].LLMModel != end.LLM.Model {
+				t.Errorf("entries %+v", es)
+			}
+		})
+	}
 }
 
 func TestTranslateTarget(t *testing.T) {

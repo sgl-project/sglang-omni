@@ -219,6 +219,15 @@ func TestRetry(t *testing.T) {
 			t.Fatalf("entry %+v, %v", out, err)
 		}
 	})
+	t.Run("translate falls back", func(t *testing.T) {
+		h, e := retryHarness(t, &fakeFile{text: "good morning"}, &fakeLLM{err: errors.New("boom")}, false)
+		h.fallback = &fakeLLM{text: "早上好"}
+		e.Kind, e.TargetLang = store.KindTranslate, "zh-Hans"
+		out, err := h.m.Retry(context.Background(), RetryRequest{Entry: e})
+		if err != nil || out.Status != store.StatusDone || out.Result != "早上好" || out.LLMProvider != "ollama" || out.LLMModel != "qwen3" {
+			t.Fatalf("entry %+v, %v", out, err)
+		}
+	})
 	t.Run("no recording", func(t *testing.T) {
 		h, e := retryHarness(t, &fakeFile{text: "x"}, nil, false)
 		e.Audio = ""

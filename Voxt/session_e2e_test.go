@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
@@ -377,4 +378,39 @@ func chatMessages(req map[string]any) [][2]string {
 		out = append(out, [2]string{role, content})
 	}
 	return out
+}
+
+// TestSessionSystemDictation: with no speech model downloaded, Transcribe
+// hears through System dictation (the helper's speech.*) in the user's
+// main language: its partial shows while recording and its text is
+// pasted. A main language macOS has no on-device model for fails the
+// session with words that say so.
+func TestSessionSystemDictation(t *testing.T) {
+	keys := func(t *testing.T) string {
+		return script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(600, "transcribe/0", proto.PhaseTrigger))
+	}
+	t.Run("heard", func(t *testing.T) {
+		a := newSessionApp(t, helpertest.Opt("speech", "你好 Voxt")+","+keys(t), func(s *settings.Settings) {
+			s.Features.Transcribe.Enhance = false
+			s.General.MainLanguage = "zh"
+		}, nil)
+		partial := false
+		a.pump("the end", func() bool {
+			partial = partial || a.sess.State == session.Recording && a.sess.Partial != ""
+			return a.sess.State.Ended()
+		})
+		if end := a.sess; end.State != session.Done || end.Result != "你好 Voxt" || !end.Inserted || !partial {
+			t.Fatalf("end %+v, a partial while recording: %v", end, partial)
+		}
+		if es := a.history(); len(es) != 1 || es[0].ASRProvider != dictation.ModelID {
+			t.Errorf("history %+v", es)
+		}
+	})
+	t.Run("no on-device model", func(t *testing.T) {
+		a := newSessionApp(t, "speech,"+keys(t), func(s *settings.Settings) { s.General.MainLanguage = "fr" }, nil)
+		a.pump("the end", func() bool { return a.sess.State.Ended() })
+		if a.sess.State != session.Failed || a.notice == nil || !strings.Contains(a.notice.text, "cannot recognise your main language") {
+			t.Fatalf("end %+v, notice %+v", a.sess, a.notice)
+		}
+	})
 }

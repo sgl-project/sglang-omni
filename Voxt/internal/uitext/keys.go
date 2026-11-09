@@ -88,6 +88,11 @@ func keyGlyph(k string) string {
 		return "↖"
 	case "End":
 		return "↘"
+	case "Mouse3":
+		return i18n.T("Middle mouse button")
+	}
+	if n, ok := strings.CutPrefix(k, "Mouse"); ok {
+		return i18n.T("Mouse button %s", n)
 	}
 	return k
 }
@@ -212,6 +217,8 @@ func FeatureTitle(feature string) string {
 		return i18n.T("Paste the last result")
 	case hotkey.CancelID:
 		return i18n.T("Cancel transcription")
+	case hotkey.Note:
+		return i18n.T("Notes")
 	}
 	return i18n.T("Transcribe")
 }

@@ -123,6 +123,8 @@ type Record struct {
 	// Audio is the Final request's PCM16 (base64), with Opts.RecordAudio.
 	Audio string `json:"audio,omitempty"`
 	PID   int    `json:"pid"`
+	// Binary is the launch's server, its file name.
+	Binary string `json:"binary,omitempty"`
 }
 
 var logMu sync.Mutex

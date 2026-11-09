@@ -1,9 +1,10 @@
 package uitext
 
-// The words of the model catalogue (internal/models): what a model is
-// called, what it is good at and which languages it knows, in plain words
-// (no family, size or quantisation: the plan's model policy), and why a
-// download failed.
+// The words of the model catalogue (internal/models) and of System
+// dictation (internal/dictation): what a model is called (its family,
+// size and quantisation, as Voxt 1.x listed them: the catalogue's Name),
+// what it is good at and which languages it knows, and why a download
+// failed.
 
 import (
 	"errors"
@@ -11,32 +12,36 @@ import (
 
 	"github.com/hehehai/actnowkit/hfhub"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 )
 
-// ModelName is what the UI calls model id (its id when it is not in the
-// catalogue).
+// ModelName is what the UI calls model id: "Qwen3-ASR 1.7B (8bit)" (its
+// id when it is not in the catalogue).
 func ModelName(id string) string {
-	switch id {
-	case models.ASRAccurate:
-		return i18n.T("Accurate speech recognition")
-	case models.ASRFast:
-		return i18n.T("Fast speech recognition")
-	case models.VADSilero:
-		return i18n.T("Voice detection")
-	case models.LLMBalanced:
-		return i18n.T("Balanced language model")
-	case models.LLMFast:
-		return i18n.T("Fast language model")
-	case models.LLMTranslate:
-		return i18n.T("Translation model")
-	case models.LLMQwen3:
-		return i18n.T("All-round language model")
-	case models.LLMGemma4:
-		return i18n.T("Large language model")
+	if id == dictation.ModelID {
+		return i18n.T("System dictation")
+	}
+	if m, ok := models.Lookup(id); ok {
+		return m.Name
 	}
 	return id
+}
+
+// ModelTags are model id's short labels on its card, as Voxt 1.x showed
+// them: where it runs, what it is best at, whether it shows the text
+// while you speak. No ratings: they had no basis.
+func ModelTags(id string) []string {
+	switch id {
+	case models.ASRAccurate:
+		return []string{i18n.T("Local"), i18n.T("Accurate"), i18n.T("Realtime")}
+	case models.ASRFast:
+		return []string{i18n.T("Local"), i18n.T("Fast"), i18n.T("Realtime")}
+	case dictation.ModelID:
+		return []string{i18n.T("Local"), i18n.T("Built-in"), i18n.T("Realtime")}
+	}
+	return []string{i18n.T("Local")}
 }
 
 // ModelAbout says what model id is good at.
@@ -58,6 +63,8 @@ func ModelAbout(id string) string {
 		return i18n.T("Cleans up, translates and rewrites well.")
 	case models.LLMGemma4:
 		return i18n.T("Writes well in many languages, but is slower and needs more memory.")
+	case dictation.ModelID:
+		return i18n.T("macOS's own speech recognition, on this Mac: nothing to download, and quick. Less accurate than Qwen3-ASR, with fewer languages; it hears your main language.")
 	}
 	return ""
 }
@@ -75,6 +82,8 @@ func ModelLanguages(id string) string {
 		return i18n.T("Over 140 languages")
 	case models.LLMTranslate:
 		return i18n.T("Translates between 33 languages, including Chinese, English, Japanese, Korean and Cantonese")
+	case dictation.ModelID:
+		return i18n.T("The languages of macOS dictation that this Mac recognises on device (System Settings → Keyboard → Dictation)")
 	}
 	return ""
 }

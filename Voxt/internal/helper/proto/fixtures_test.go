@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf16"
 )
 
 // fixturesDir holds the golden transcripts shared with the Swift helper.
@@ -166,6 +167,14 @@ func TestFixtures(t *testing.T) {
 						if v.Reason != OutputReasonSleep {
 							t.Fatalf("%s: released %+v", where, v)
 						}
+					case *SpeechStartedParams:
+						job = v.Job
+						if v.Locale == "" {
+							t.Fatalf("%s: speech started %+v", where, v)
+						}
+						started[job] = true
+					case *SpeechPartialParams:
+						job = v.Job
 					case *LogParams:
 						job = v.Job
 						if !slices.Contains([]string{"debug", "info", "warning", "error"}, v.Level) {
@@ -173,11 +182,12 @@ func TestFixtures(t *testing.T) {
 						}
 					}
 					if job != "" {
-						if pending[job] != MethodCaptureStart {
-							t.Fatalf("%s: notification for %s, which is not a running capture", where, job)
+						family, _, _ := strings.Cut(pending[job], ".")
+						if !IsJob(pending[job]) || m.Method != MethodLog && !strings.HasPrefix(m.Method, family+".") {
+							t.Fatalf("%s: %s for %s, which is not a running job of its kind", where, m.Method, job)
 						}
-						if m.Method != MethodCaptureStarted && m.Method != MethodLog && !started[job] {
-							t.Fatalf("%s: %s before capture.started", where, m.Method)
+						if m.Method != MethodCaptureStarted && m.Method != MethodSpeechStarted && m.Method != MethodLog && !started[job] {
+							t.Fatalf("%s: %s before its job started", where, m.Method)
 						}
 					}
 				case l.To == "app" && k == KindResponse:
@@ -212,6 +222,10 @@ func TestFixtures(t *testing.T) {
 						if !validOutput(o.State) || o.State.Device == nil || (o.Took && !o.State.IsMuted()) {
 							t.Fatalf("%s: mute %+v", where, o)
 						}
+					case *ReadResult:
+						if !validRead(*o) {
+							t.Fatalf("%s: read %+v", where, o)
+						}
 					}
 					if c, ok := r.(*CaptureResult); ok {
 						if c.Frames != nextSeq[m.ID] || c.Samples != nextOffset[m.ID] || !slices.Contains([]string{CaptureStopped, CaptureMaxSeconds, CaptureDeviceLost, CaptureNoCallback}, c.Reason) {
@@ -229,13 +243,16 @@ func TestFixtures(t *testing.T) {
 	}
 }
 
-// validBinding: known families and sides, a behaviour, and a modifier for
-// a chord.
+// validBinding: known families and sides, a behaviour, a key or a mouse
+// button (2 and up) but not both, and a modifier for a chord.
 func validBinding(b HotkeyBinding) bool {
 	if b.ID == "" || !slices.Contains([]string{BehaviorTap, BehaviorDoubleTap, BehaviorLongPress}, b.Behavior) {
 		return false
 	}
-	if b.Key == nil && len(b.Modifiers) == 0 {
+	if b.Button != nil && (b.Key != nil || *b.Button < 2) {
+		return false
+	}
+	if b.Key == nil && b.Button == nil && len(b.Modifiers) == 0 {
 		return false
 	}
 	for fam, side := range b.Modifiers {
@@ -254,6 +271,15 @@ func validOutput(s OutputState) bool {
 		return s.Muted == nil && !s.Settable
 	}
 	return s.Device.UID != "" && (!s.Settable || s.Muted != nil)
+}
+
+// validRead: a known error with nothing read, or text that fills its
+// range (UTF-16) inside the value.
+func validRead(r ReadResult) bool {
+	if r.Error != "" {
+		return slices.Contains([]string{ReadNotFront, ReadNoFocus, ReadSecure, ReadUnreadable}, r.Error) && r.Text == "" && r.Range == (TextRange{})
+	}
+	return r.Range.Location >= 0 && r.Range.Location+r.Range.Length <= r.Length && len(utf16.Encode([]rune(r.Text))) == r.Range.Length
 }
 
 // validEvent: a phase that fits the behaviour.
@@ -378,7 +404,7 @@ func TestErrors(t *testing.T) {
 			t.Errorf("notification %s", m)
 		}
 	}
-	if !IsJob(MethodCaptureStart) || IsJob(MethodBrowserURL) {
+	if !IsJob(MethodCaptureStart) || !IsJob(MethodSpeechRecognize) || IsJob(MethodSpeechAudio) || IsJob(MethodBrowserURL) {
 		t.Error("IsJob")
 	}
 }

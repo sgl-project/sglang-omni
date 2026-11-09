@@ -84,7 +84,7 @@ func (s State) Ended() bool { return s == Done || s == Cancelled || s == Failed 
 
 // Problem codes.
 const (
-	// ProblemNoASR: no speech model is ready (Local models).
+	// ProblemNoASR: no speech model is ready (Speech models).
 	ProblemNoASR = "noASR"
 	// ProblemMicrophone: macOS refused the microphone.
 	ProblemMicrophone = "microphone"
@@ -106,7 +106,7 @@ const (
 	// is cancelled quietly).
 	ProblemTooShort = "tooShort"
 	// ProblemNoLLM: Translate and Rewrite need a language model, and none
-	// is ready (Local models).
+	// is ready (Speech models).
 	ProblemNoLLM = "noLLM"
 	// ProblemEmpty: the language model answered nothing (Translate,
 	// Rewrite).
@@ -155,6 +155,9 @@ type Snapshot struct {
 	State State
 	// Try: started from a page's Try area, the result stays there.
 	Try bool
+	// Note: started by the note shortcut (StartRequest.Note); the result
+	// went to Config.Notes, or to the card when saving it failed.
+	Note bool
 	// HoldBinding is the binding whose long press started the session
 	// (its release stops it); "" for none.
 	HoldBinding string
@@ -265,6 +268,10 @@ type Services struct {
 	// LLM is nil when the feature has no language model ready.
 	LLM     LLM
 	LLMInfo Model
+	// Fallback is Translate's fallback model, asked once when LLM fails;
+	// nil: none.
+	Fallback     LLM
+	FallbackInfo Model
 	// VAD is the voice activity model (Silero) that finds the speech in
 	// the recording; nil: the energy detector of internal/vad does, as it
 	// does when the model fails (vad_model.go).
@@ -300,6 +307,9 @@ type Config struct {
 	// dictionary's enabled terms (nil: none).
 	History  store.History
 	Glossary func(ctx context.Context) ([]store.Term, error)
+	// Notes keeps the results of note sessions (nil: they show in the
+	// card, with a problem).
+	Notes store.Notes
 	// Settings returns the current settings (memory only); Locale the UI
 	// language, for a main language left to follow it.
 	Settings func() settings.Settings
@@ -386,6 +396,10 @@ type StartRequest struct {
 	// Try: from a page's Try area; nothing is inserted and nothing kept
 	// (and no selection is read).
 	Try bool
+	// Note: a Transcribe session whose result is saved as a note
+	// (Config.Notes), not inserted; like a try, it keeps no history entry
+	// (Voxt 1.x's note sessions).
+	Note bool
 	// At is when the shortcut fired (zero: now).
 	At time.Time
 	// Text starts Translate or Rewrite with its input, without recording

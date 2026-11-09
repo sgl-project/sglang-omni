@@ -41,8 +41,9 @@ type Settings struct {
 	Updates        Updates        `json:"updates,omitzero"`
 	Network        Network        `json:"network,omitzero"`
 	Family         Family         `json:"family,omitzero"`
-	Models         Models         `json:"models,omitzero"`  // models.go
-	History        History        `json:"history,omitzero"` // history.go
+	Models         Models         `json:"models,omitzero"`    // models.go
+	History        History        `json:"history,omitzero"`   // history.go
+	Providers      Providers      `json:"providers,omitzero"` // providers.go
 }
 
 // General: languages and how the app stays around.
@@ -64,6 +65,13 @@ type General struct {
 	// there when its window closes, so the shortcuts keep working.
 	MenuBar     bool `json:"menuBar"`
 	CloseToTray bool `json:"closeToTray"`
+	// HideDock leaves VoxtNew out of the Dock (Voxt 1.x's "Show in Dock"
+	// off); the menu bar icon is then on, so that VoxtNew can be reached.
+	HideDock bool `json:"hideDock,omitempty"`
+	// CopyResult leaves each finished result on the clipboard: a paste
+	// does not restore what was there, and a result the answer card shows
+	// is copied too (Voxt 1.x's "Also copy result to clipboard").
+	CopyResult bool `json:"copyResult,omitempty"`
 }
 
 // Appearance: theme, scale and the sidebar.
@@ -197,6 +205,10 @@ type Overlay struct {
 	// ShowTime shows the recording's time in the pill (off: Voxt's pill,
 	// an icon and the waveform).
 	ShowTime bool `json:"showTime,omitempty"`
+	// HideLiveText leaves the words out of the pill: what was heard while
+	// recording, and the answer as the model writes it (Voxt 1.x's
+	// "Show Realtime Text" off).
+	HideLiveText bool `json:"hideLiveText,omitempty"`
 }
 
 // DefaultOpacity and DefaultRadius are the overlay face's: translucent
@@ -236,12 +248,17 @@ type Features struct {
 	// through the helper's event tap: it never takes the keys while
 	// nothing records.
 	Cancel Hotkey `json:"cancel"`
+	// Note records a note (Voxt 1.x's noteHotkeyBindings): a Transcribe
+	// session whose text goes to the Notes page instead of where the
+	// cursor is. Only a tap; empty keys: off.
+	Note Hotkey `json:"note"`
 }
 
-// Feature is what every feature has: its shortcuts, the local models it
-// uses (internal/local's Model.ID; "" = the first one installed, the
-// recommended one) and the user's addition to its task prompt, which the
-// composer merges with the built-in rules.
+// Feature is what every feature has: its shortcuts, the models it uses
+// (internal/local's Model.ID: a local model's, or LLM a remote one's,
+// Provider.ID; "" = the first one installed, the recommended one) and the
+// user's addition to its task prompt, which the composer merges with the
+// built-in rules.
 type Feature struct {
 	Hotkeys []Hotkey `json:"hotkeys,omitempty"`
 	ASR     string   `json:"asr,omitempty"`
@@ -270,6 +287,9 @@ type Translate struct {
 	// ShowCard shows the result in a card instead of inserting it (speech
 	// and selections alike).
 	ShowCard bool `json:"showCard,omitempty"`
+	// Fallback is the language model asked once more when LLM fails or
+	// does not open; "" = none.
+	Fallback string `json:"fallback,omitempty"`
 }
 
 // Rewrite: a spoken instruction rewrites the selection, or writes new
@@ -305,6 +325,10 @@ type Dictionary struct {
 	// adds them to the LLM prompt.
 	ASRHints bool `json:"asrHints"`
 	Glossary bool `json:"glossary"`
+	// SpeechContext is free text about the speech (who speaks, about
+	// what) that the speech model gets before the hints, with the
+	// dictionary on or off; a service that takes no prompt ignores it.
+	SpeechContext string `json:"speechContext,omitempty"`
 }
 
 // Setup: the first-run guide.
@@ -350,6 +374,9 @@ const (
 	// DefaultCancel is the cancel shortcut's default, in one place: it
 	// only acts while a session records or the answer card shows.
 	DefaultCancel = "Escape"
+	// DefaultNote is the note shortcut's default, Voxt 1.x's: right
+	// Command tapped alone, which no ActNow app has.
+	DefaultNote = "RightCommand"
 )
 
 // Defaults returns the settings of a fresh install.
@@ -367,6 +394,7 @@ func Defaults() Settings {
 			Rewrite:    Rewrite{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultRewrite, Trigger: TriggerTap}}}, Cleanup: true},
 			PasteLast:  Hotkey{Keys: DefaultPasteLast, Trigger: TriggerTap},
 			Cancel:     Hotkey{Keys: DefaultCancel, Trigger: TriggerTap},
+			Note:       Hotkey{Keys: DefaultNote, Trigger: TriggerTap},
 		},
 		AppEnhancement: AppEnhancement{Enabled: true},
 		Dictionary:     Dictionary{Enabled: true, ASRHints: true, Glossary: true},
@@ -396,6 +424,7 @@ func Migrate(data []byte) (Settings, error) {
 	if s.Version < 4 {
 		migrateShortcuts(&s.Features)
 	}
+	migrateNoteKeys(data, &s.Features)
 	migrateSoundPreset(&s.Audio)
 	s.Version = Version
 	return normalize(s), nil
@@ -448,7 +477,8 @@ func migrateSoundPreset(a *Audio) {
 // migrateShortcuts moves version 3's default shortcuts, Auralink's (fn,
 // fn+Shift, fn+Control, Control+Command+V), to the family's (version 4):
 // each one that is still exactly its default; a shortcut the user
-// changed, added or removed stays.
+// changed, added or removed stays. It is history, kept apart from
+// ApplyPreset: a preset added later must not take a version 3 user's keys.
 func migrateShortcuts(f *Features) {
 	old := func(hs []Hotkey, keys string) bool {
 		return len(hs) == 1 && oldDefault(hs[0], keys)
@@ -470,6 +500,37 @@ func migrateShortcuts(f *Features) {
 // oldDefault reports whether h is keys tapped, as version 3 wrote it.
 func oldDefault(h Hotkey, keys string) bool {
 	return h.Keys == keys && (h.Trigger == "" || h.Trigger == TriggerTap)
+}
+
+// migrateNoteKeys gives a document from before the note shortcut the
+// default, unless another shortcut already taps those keys: the note then
+// stays off, and the Notes page asks for a shortcut. Such a document has
+// no note key; one that has it is the user's.
+func migrateNoteKeys(data []byte, f *Features) {
+	var doc struct {
+		Features struct {
+			Note json.RawMessage `json:"note"`
+		} `json:"features"`
+	}
+	if json.Unmarshal(data, &doc) != nil || doc.Features.Note != nil {
+		return
+	}
+	if tapsKeys(*f, DefaultNote) {
+		f.Note = Hotkey{}
+	}
+}
+
+// tapsKeys reports whether a shortcut in f taps keys by itself, as
+// hotkey.Check counts a clash.
+func tapsKeys(f Features, keys string) bool {
+	all := append([]Hotkey{f.PasteLast, f.Cancel}, f.Transcribe.Hotkeys...)
+	all = append(append(all, f.Translate.Hotkeys...), f.Rewrite.Hotkeys...)
+	for _, h := range all {
+		if strings.TrimSpace(h.Keys) == keys && (h.Trigger == "" || h.Trigger == TriggerTap) {
+			return true
+		}
+	}
+	return false
 }
 
 // Changed is published after an update is saved. Topic "settings.changed".

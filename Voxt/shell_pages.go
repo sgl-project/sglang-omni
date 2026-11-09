@@ -31,10 +31,12 @@ var navGroups = []navGroup{
 		{"/transcribe", "Transcribe", transcribeIcon},
 		{"/translate", "Translate", translateIcon},
 		{"/rewrite", "Rewrite", rewriteIcon},
+		{"/notes", "Notes", notesIcon},
 		{"/app-enhancement", "App enhancement", appEnhancementIcon},
 	}},
 	{"Resources", []navPage{
-		{modelsPath, "Local models", modelsIcon},
+		{modelsPath, "Speech models", modelsIcon},
+		{remotePath, "Language models", remoteIcon},
 		{"/dictionary", "Dictionary", dictionaryIcon},
 	}},
 	{"System", []navPage{
@@ -96,10 +98,14 @@ func pageTitle(path string) string {
 		return i18n.T("Translate")
 	case "/rewrite":
 		return i18n.T("Rewrite")
+	case "/notes":
+		return i18n.T("Notes")
 	case "/app-enhancement":
 		return i18n.T("App enhancement")
 	case modelsPath:
-		return i18n.T("Local models")
+		return i18n.T("Speech models")
+	case remotePath:
+		return i18n.T("Language models")
 	case "/dictionary":
 		return i18n.T("Dictionary")
 	case "/logs":
@@ -124,8 +130,10 @@ var (
 	translateIcon      = icons.Global
 	rewriteIcon        = icons.PenNewRound
 	appEnhancementIcon = icons.Target
-	modelsIcon         = icons.Cpu
+	modelsIcon         = icons.Soundwave
+	remoteIcon         = icons.Cloud
 	dictionaryIcon     = icons.NotebookBookmark
+	notesIcon          = icons.Notes
 	permissionsIcon    = icons.ShieldKeyhole
 	logsIcon           = icons.ClipboardList
 	searchIcon         = icons.Magnifer
