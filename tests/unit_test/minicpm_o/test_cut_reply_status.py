@@ -253,7 +253,9 @@ def test_a_reply_the_model_ends_speaks_the_text_the_talker_still_owes(
     assert run_talker(units) == expected
 
 
-def voice(text: str, *, end_of_turn: bool, is_speech_cut: bool) -> OutputChunk:
+def voice(
+    text: str, *, end_of_turn: bool, is_speech_cut: bool, is_input_end: bool = False
+) -> OutputChunk:
     return OutputChunk(
         IDENTITY,
         0,
@@ -270,6 +272,7 @@ def voice(text: str, *, end_of_turn: bool, is_speech_cut: bool) -> OutputChunk:
             is_speech_cut=is_speech_cut,
         ),
         None,
+        eos=is_input_end,
         turn=1,
     )
 
@@ -296,3 +299,32 @@ def test_the_reply_status_follows_the_last_units_speech(
     events = converter(voice(" there.", end_of_turn=True, is_speech_cut=is_speech_cut))
     (finished,) = [event for event in events if isinstance(event, ResponseFinished)]
     assert (finished.status, finished.reason, finished.text) == (status, reason, text)
+
+
+@pytest.mark.parametrize(
+    ("is_input_end", "tail_cap_reached", "reason"),
+    [
+        (True, False, "input_end"),
+        (True, True, "max_output_tokens"),
+        (False, False, "max_output_tokens"),
+    ],
+)
+def test_a_cut_reply_reports_why_it_stopped(
+    is_input_end: bool, tail_cap_reached: bool, reason: str
+) -> None:
+    """An input boundary cut, a natural-tail cap, and a token budget cut are distinct on response.done."""
+    converter = OutputConverter()
+    converter(voice(" Hello", end_of_turn=False, is_speech_cut=False))
+    converter.tail_cap_reached = tail_cap_reached
+
+    events = converter(
+        voice(
+            " there.",
+            end_of_turn=True,
+            is_speech_cut=True,
+            is_input_end=is_input_end,
+        )
+    )
+
+    (finished,) = [event for event in events if isinstance(event, ResponseFinished)]
+    assert (finished.status, finished.reason) == ("incomplete", reason)

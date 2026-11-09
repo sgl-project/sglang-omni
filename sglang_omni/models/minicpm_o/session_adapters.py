@@ -16,6 +16,7 @@ from sglang_omni.models.minicpm_o.components.code2wav import OUTPUT_SAMPLE_RATE
 from sglang_omni.models.minicpm_o.components.streaming_perception import (
     SAMPLE_RATE,
     UNIT_MS,
+    UNIT_SAMPLES,
     PerceptionStepPlan,
 )
 from sglang_omni.models.minicpm_o.native_config import (
@@ -64,7 +65,7 @@ from sglang_omni.serve.realtime.output import (
     TextDelta,
     TextFinished,
 )
-from sglang_omni.serve.realtime.types import Capabilities, samples_to_ms
+from sglang_omni.serve.realtime.types import Capabilities, Unit, samples_to_ms
 
 # note (ruoyu): A client's truncate follows its stop within a unit or two; this many listen units after a reply's last spoken unit, a cut would re-feed more audio than any stop needs, so the reply is no longer cut.
 TRUNCATE_WINDOW_UNITS = 10
@@ -461,6 +462,7 @@ class Reply:
     is_cancelled: bool = False
     delivered_units: list[DeliveredUnit] = field(default_factory=list)
     keep_through_unit: int | None = None
+    completed_input_unit_index: int | None = None
 
     @property
     def last_delivered_unit(self) -> int:
@@ -483,6 +485,7 @@ class OutputConverter:
     def __init__(self) -> None:
         self.reply: Reply | None = None
         self.serial: int = 0
+        self.tail_cap_reached = False
 
     def cancel(self) -> KeptReply | None:
         """Mark the open reply cancelled and keep it through the last unit the client received; None when no reply is open or it is already cancelled."""
@@ -515,7 +518,13 @@ class OutputConverter:
                 reply.keep_through_unit = keep_through_unit
                 return KeptReply(turn=reply.turn, keep_through_unit=keep_through_unit)
 
-    def finish(self, is_speech_cut: bool) -> list[OutputEvent]:
+    def finish(
+        self,
+        is_speech_cut: bool,
+        *,
+        input_unit_index: int,
+        is_input_end: bool = False,
+    ) -> list[OutputEvent]:
         """End the open response: cancelled when the client stopped it, incomplete when the talker's budget cut its speech."""
         reply = self.reply
         if reply is None or not reply.is_open:
@@ -524,9 +533,12 @@ class OutputConverter:
             if reply.is_cancelled:
                 status: ResponseStatus = "cancelled"
                 reason = "interrupted"
-            elif is_speech_cut:
+            elif self.tail_cap_reached:
                 status = "incomplete"
                 reason = "max_output_tokens"
+            elif is_speech_cut:
+                status = "incomplete"
+                reason = "input_end" if is_input_end else "max_output_tokens"
             else:
                 status = "completed"
                 reason = "stop"
@@ -548,6 +560,7 @@ class OutputConverter:
                 )
             )
             reply.is_open = False
+            reply.completed_input_unit_index = input_unit_index
             return events
 
     def __call__(self, output: OutputChunk) -> list[OutputEvent]:
@@ -605,7 +618,13 @@ class OutputConverter:
         else:
             pass
         if value["end_of_turn"] or output.eos:
-            events.extend(self.finish(value["is_speech_cut"]))
+            events.extend(
+                self.finish(
+                    value["is_speech_cut"],
+                    input_unit_index=output.input_seq,
+                    is_input_end=output.eos,
+                )
+            )
         else:
             pass
         return events
@@ -615,6 +634,64 @@ class RealtimeAdapter(CoordinatorAdapter):
     """The coordinator adapter with the client stop and the client truncate of a native duplex reply."""
 
     output_converter: OutputConverter
+
+    async def finish_tail(self, last_unit: Unit, max_tail_units: int) -> None:
+        """Feed bounded silence so the reply can end without more client audio."""
+        assert self.input_sample_rate_hz is not None
+        next_unit_index = last_unit.index + (1 if last_unit.real_samples else 0)
+        last_real_input_unit_index = (
+            last_unit.index if last_unit.real_samples else last_unit.index - 1
+        )
+        start_sample = (
+            last_unit.start_sample + len(last_unit.pcm) // PCM16_BYTES_PER_SAMPLE
+        )
+        reply = self.output_converter.reply
+        for _ in range(max_tail_units):
+            if reply is not None and (
+                (
+                    reply.is_open
+                    and reply.is_cancelled
+                    and reply.last_delivered_unit >= last_real_input_unit_index
+                )
+                or (
+                    not reply.is_open
+                    and reply.completed_input_unit_index is not None
+                    and reply.completed_input_unit_index >= last_real_input_unit_index
+                )
+            ):
+                break
+            else:
+                pass
+            await super().process(
+                Unit(
+                    index=next_unit_index,
+                    start_sample=start_sample,
+                    pcm=b"\0" * (UNIT_SAMPLES * PCM16_BYTES_PER_SAMPLE),
+                    real_samples=UNIT_SAMPLES,
+                    output_modalities=last_unit.output_modalities,
+                )
+            )
+            next_unit_index += 1
+            start_sample += UNIT_SAMPLES
+            reply = self.output_converter.reply
+        self.output_converter.tail_cap_reached = (
+            reply is None
+            or reply.completed_input_unit_index is None
+            or reply.completed_input_unit_index < last_real_input_unit_index
+        )
+        try:
+            await super().process(
+                Unit(
+                    index=next_unit_index,
+                    start_sample=start_sample,
+                    pcm=b"",
+                    real_samples=0,
+                    eos=True,
+                    output_modalities=last_unit.output_modalities,
+                )
+            )
+        finally:
+            self.output_converter.tail_cap_reached = False
 
     async def cancel(self) -> None:
         """Interrupt the open reply's turn: the turn's later audio is dropped, and the thinker forgets the units the client did not receive, then listens until the user speaks again."""
@@ -710,6 +787,7 @@ def build_realtime_deployment(
             ),
             default_max_slice_nums=config.vision.max_slice_nums,
             tail_policy="pad",
+            supports_natural_finish=True,
             supports_reference_audio=True,
             supports_truncate=True,
             supports_cancel=True,
