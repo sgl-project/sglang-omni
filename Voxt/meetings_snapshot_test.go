@@ -10,6 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo/plugins/glass"
+	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -74,6 +78,84 @@ func snapshotsMeetings(t *testing.T, out string) {
 			a.mv.delID, a.mv.detail = "", nil
 			a.mv.setOpen = true
 			save("meetings-settings")
+		}
+	}
+}
+
+// TestOverlayShotsMeeting renders the meeting overlay's states alone,
+// English over a light desktop and Chinese over a dark one.
+func TestOverlayShotsMeeting(t *testing.T) {
+	runSnapshots(t, "VOXTNEW_OVERLAY_SHOTS", snapshotsMeetingOverlay)
+}
+
+func snapshotsMeetingOverlay(t *testing.T, out string) {
+	now := time.Now()
+	segs := []meeting.Segment{
+		{Source: meeting.SourceSystem, Speaker: "s1", Text: "Mail and Voice Memos group by day and show two lines per row.", Final: true},
+		{Source: meeting.SourceMic, Speaker: "me", Text: "Yes. I'll ship the list first and the detail panel after.", Final: true},
+	}
+	level := map[meeting.Source]float64{meeting.SourceMic: -18, meeting.SourceSystem: -30}
+	live := map[meeting.Source]string{meeting.SourceSystem: "Sounds good, let's review again"}
+	rec := meeting.Snapshot{ID: "ov", Mode: meeting.ModeMeeting, State: meeting.StateRecording, Started: now.Add(-754 * time.Second), Elapsed: 754 * time.Second,
+		Level: level, Live: live, Segments: segs}
+	for _, run := range []struct {
+		lang string
+		dark bool
+	}{{"en", false}, {"zh-Hans", true}} {
+		a, _, _ := newTestApp(t)
+		if run.lang != "en" {
+			a.updateSettings(func(s *settings.Settings) { s.General.Language = run.lang })
+		}
+		suffix := "light"
+		desk, line := ui.RGB(246, 246, 248), ui.RGB(150, 156, 166)
+		if run.dark {
+			suffix = "dark-" + run.lang
+			desk, line = ui.RGB(30, 31, 36), ui.RGB(120, 128, 140)
+		}
+		paused, problem, asking, finishing := rec, rec, rec, rec
+		paused.State = meeting.StatePaused
+		problem.Problem = &meeting.Problem{Key: meeting.ProblemKeyDiskLow}
+		asking.State = meeting.StateAsking
+		finishing.State, finishing.Stage, finishing.Progress = meeting.StateFinishing, meeting.StageTranscribing, 0.4
+		for _, st := range []struct {
+			name      string
+			s         meeting.Snapshot
+			collapsed bool
+		}{
+			{"meeting-overlay-starting", meeting.Snapshot{ID: "ov", Mode: meeting.ModeMeeting, State: meeting.StateStarting, Started: now,
+				Level: map[meeting.Source]float64{meeting.SourceMic: -120, meeting.SourceSystem: -120}}, false},
+			{"meeting-overlay-recording", rec, false},
+			{"meeting-overlay-paused", paused, false},
+			{"meeting-overlay-problem", problem, false},
+			{"meeting-overlay-pill", rec, true},
+			{"meeting-overlay-pill-problem", problem, true},
+			{"meeting-overlay-asking", asking, false},
+			{"meeting-overlay-finishing", finishing, false},
+		} {
+			a.meetSnap, a.meetOvCollapsed = st.s, st.collapsed
+			model := overlayModel(st.s, st.collapsed)
+			mode, faceH := meetingOverlayFace(model)
+			radius := faceRadius(a.prefs.Overlay, mode, faceH)
+			w, h := model.Layout.Width, model.Layout.Height
+			tt := hudTester(func(c *ui.Context) {
+				ui.Column(c).Absolute().Fill().Background(desk).Padding(10, 14).Gap(8).Children(func() {
+					for j := range 12 {
+						ui.Box(c.Key(itoa(j))).Height(6).Width(float32(w) * (0.45 + 0.4*float32((j*37)%10)/10)).Radius(3).Background(line)
+					}
+				})
+				ui.Box(c).Absolute().Left(layout.Pad).Top(layout.Pad).Right(layout.Pad).Bottom(layout.Pad).Radius(radius).Material(glass.Blur{Radius: 8})
+				ui.Box(c).Absolute().Fill().Children(func() { a.meetingOverlayView(c) })
+			}, w, h)
+			tt.SetScale(2)
+			frames(tt)
+			f, err := os.Create(filepath.Join(out, st.name+"-"+suffix+".png"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := png.Encode(f, tt.Image()); err != nil {
+				t.Fatal(err)
+			}
+			f.Close()
 		}
 	}
 }
