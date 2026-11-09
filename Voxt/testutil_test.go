@@ -56,10 +56,18 @@ func runIsolated(m *testing.M) int {
 	}
 	defer os.RemoveAll(tmp)
 	realHub = models.Hub()
+	realCache, _ := os.UserCacheDir()
 	// LegacyHubs always considers ~/.cache/huggingface/hub; point HOME away so
 	// unit tests do not import catalogue models from the developer machine.
 	os.Setenv("HOME", tmp)
 	os.Setenv("XDG_CACHE_HOME", filepath.Join(tmp, "cache"))
+	// mygo's sqlite plugin finds its dylib only under UserCacheDir; keep the
+	// real one so each run does not download it from GitHub again.
+	if cache, err := os.UserCacheDir(); err == nil && realCache != "" && cache != realCache {
+		if os.MkdirAll(cache, 0o755) == nil {
+			os.Symlink(filepath.Join(realCache, "mygo"), filepath.Join(cache, "mygo"))
+		}
+	}
 	os.Setenv(family.EnvDir, filepath.Join(tmp, "ActNow"))
 	os.Setenv("HF_HUB_CACHE", filepath.Join(tmp, "hub"))
 	os.Unsetenv("HF_HOME")
