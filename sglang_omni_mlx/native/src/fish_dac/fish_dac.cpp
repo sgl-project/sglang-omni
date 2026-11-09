@@ -29,7 +29,10 @@ constexpr int kLatentFrameSamples = kFrameSamples / 4;
 // Note (Jiaxin Deng): the encoder's convolutions reach about 14 latent frames
 // back and the decoder's about 19, so each runs in windows with this context:
 // a whole long utterance's convolution unfoldings would need tens of GB.
-constexpr int kConvolutionWindowFrames = 256;
+constexpr int kEncodeWindowFrames = 256;
+// Note (Minyi Tang): decoding windows half as long hold about 1.2 GB less of
+// the decoder's activations, at the same speed and with the same samples.
+constexpr int kDecodeWindowFrames = 128;
 constexpr int kConvolutionContextFrames = 32;
 constexpr const char *kEncoderTransformer = "encoder.block.4.block.5";
 constexpr const char *kPreModule = "quantizer.pre_module";
@@ -442,10 +445,9 @@ mx::array AudioCodec::EncodeLoaded(const std::vector<float> &samples) const {
 
   const int latent_frames = padded_length / kLatentFrameSamples;
   std::vector<mx::array> windows;
-  for (int start = 0; start < latent_frames;
-       start += kConvolutionWindowFrames) {
+  for (int start = 0; start < latent_frames; start += kEncodeWindowFrames) {
     const int context = std::min(start, kConvolutionContextFrames);
-    const int stop = std::min(start + kConvolutionWindowFrames, latent_frames);
+    const int stop = std::min(start + kEncodeWindowFrames, latent_frames);
     mx::array y =
         CausalConvolve(SliceTime(audio, (start - context) * kLatentFrameSamples,
                                  stop * kLatentFrameSamples),
@@ -603,10 +605,9 @@ mx::array AudioCodec::Decode(const mx::array &codes) const {
 
   const int latent_frames = x.shape(2);
   std::vector<mx::array> windows;
-  for (int start = 0; start < latent_frames;
-       start += kConvolutionWindowFrames) {
+  for (int start = 0; start < latent_frames; start += kDecodeWindowFrames) {
     const int context = std::min(start, kConvolutionContextFrames);
-    const int stop = std::min(start + kConvolutionWindowFrames, latent_frames);
+    const int stop = std::min(start + kDecodeWindowFrames, latent_frames);
     mx::array y = CausalConvolve(SliceTime(x, start - context, stop),
                                  "decoder.model.0", 7, 1, 1, 1);
     for (int block = 0; block < 4; ++block) {
