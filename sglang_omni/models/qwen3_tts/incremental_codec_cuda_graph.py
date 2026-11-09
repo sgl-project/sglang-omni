@@ -83,6 +83,9 @@ class IncrementalCodecGraphPool:
     stream_priority: int
     handle: DeviceGraphPool | None = None
     capture_stream: torch.Stream | None = None
+    # note (ratish): a graph's reset frees its capture stream's cuBLAS workspace, which every
+    # graph captured there reads, so these runners only stop and tear down together.
+    runners: list[Qwen3TTSIncrementalCodecCudaGraphRunner] = field(default_factory=list)
 
 
 class CaptureFailure(RuntimeError):
@@ -113,14 +116,15 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
     COLD and WARM use separate instances because the initial and follow-up
     workers run on different device streams; each mutable buffer set must be
     replayed serially by only one worker. WINDOW is a second instance on the
-    initial worker's stream holding the widths a wider decode is split into,
-    so a failed capture there leaves the COLD shapes in place. TAIL, also on
-    the initial worker's stream, decodes reference-prefixed first chunks of
-    different widths padded to one captured width (decode_tail). Runners that
-    replay on one stream share their graph_pool.
+    initial worker's stream holding the widths a wider decode is split into.
+    TAIL, also on the initial worker's stream, decodes reference-prefixed first
+    chunks of different widths padded to one captured width (decode_tail).
+    Runners that replay on one stream share their graph_pool.
     """
 
-    WARMUP_ITERATIONS = 3
+    # note (ratish): one eager decode pays the shape's one-time setup; more capture the same
+    # graph, bit for bit, at the same replay time.
+    WARMUP_ITERATIONS = 1
 
     def __init__(
         self,
@@ -203,6 +207,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         self.replay_failures = 0
         self.misses: Counter[str] = Counter()
         self.graphs_lock = threading.Lock()
+        self.graph_pool.runners.append(self)
 
     def capture(self) -> None:
         """Capture every configured hot shape before serving readiness."""
@@ -259,9 +264,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
                 temporary, pool=pool, capture_stream=capture_stream, reason=reason
             )
             logger.warning(
-                "Qwen3-TTS incremental Codec graph capture disabled the %s runner: %s",
-                self.mode,
-                reason,
+                f"Qwen3-TTS incremental Codec graph capture on the {self.mode} runner disabled every runner on its stream: {reason}",
                 exc_info=True,
             )
             return
@@ -456,21 +459,14 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         capture_stream: torch.Stream | None,
         reason: str,
     ) -> None:
-        with self.graphs_lock:
-            self.graphs.clear()
-        self.enabled = False
-        self.disable_reason = reason
-        if not self.synchronize_device("capture rollback"):
+        if self.tear_down_pool(temporary, reason=reason, context="capture rollback"):
+            self.retained_capture_resources.clear()
+        else:
             self.retained_capture_resources.append(
                 CaptureResourceSet(
                     pool=pool, stream=capture_stream, keepalives=[temporary]
                 )
             )
-            return
-        else:
-            pass
-        self.tear_down_graphs(temporary, context="capture rollback")
-        self.retained_capture_resources.clear()
 
     def synchronize_device(self, context: str) -> bool:
         """Prove every queued replay or capture finished; False keeps their memory alive."""
@@ -486,7 +482,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
             return False
         return True
 
-    def tear_down_graphs(
+    def reset_graphs(
         self,
         graphs: dict[IncrementalCodecGraphKey, CapturedIncrementalCodecGraph],
         *,
@@ -495,6 +491,31 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         for key, captured in graphs.items():
             self.reset_graph(captured.graph, context=f"{context} for {key}")
         graphs.clear()
+
+    def tear_down_pool(
+        self,
+        temporary: dict[IncrementalCodecGraphKey, CapturedIncrementalCodecGraph],
+        *,
+        reason: str,
+        context: str,
+    ) -> bool:
+        """Stop every runner on this pool, then free their graphs and temporary.
+
+        Returns False when the device cannot prove them idle, which keeps their memory.
+        """
+        for runner in self.graph_pool.runners:
+            # note (ratish): a runner not captured yet stays off this pool's stream.
+            runner.capture_complete = True
+            runner.enabled = False
+            runner.disable_reason = reason
+        if not self.synchronize_device(context):
+            return False
+        else:
+            pass
+        self.reset_graphs(temporary, context=context)
+        for runner in self.graph_pool.runners:
+            with runner.graphs_lock:
+                self.reset_graphs(runner.graphs, context=context)
         gc.collect()
         try:
             with device_guard(self.device):
@@ -505,6 +526,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
                 context,
                 cleanup_exc,
             )
+        return True
 
     def available_batch_sizes(self, fresh_frames: int) -> tuple[int, ...]:
         """Return published batch buckets for one fresh-frame count."""
@@ -651,8 +673,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
             reason = f"runtime_replay_failed: {type(exc).__name__}: {exc}"
             self.disable_runtime(reason)
             logger.exception(
-                "Qwen3-TTS incremental Codec graph replay disabled the %s runner",
-                self.mode,
+                f"Qwen3-TTS incremental Codec graph replay on the {self.mode} runner disabled every runner on its stream"
             )
             raise
         self.replays += 1
@@ -685,16 +706,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
             pass
 
     def disable_runtime(self, reason: str) -> None:
-        self.enabled = False
-        self.disable_reason = reason
-        if not self.synchronize_device("runtime disable"):
-            return
-        else:
-            pass
-        with self.graphs_lock:
-            graphs = dict(self.graphs)
-            self.graphs.clear()
-        self.tear_down_graphs(graphs, context="runtime disable")
+        self.tear_down_pool({}, reason=reason, context="runtime disable")
 
     def stats(self) -> IncrementalCodecGraphStats:
         with self.graphs_lock:

@@ -6,7 +6,7 @@
 
 Install SGLang-Omni by following [Installation](../get_started/installation.md).
 
-Startup uses one GPU. Preprocessing runs on the CPU. The audio encoder and the language model share that GPU.
+Startup uses one GPU. Preprocessing runs on the CPU. The audio encoder and the language model share that GPU. The pipeline is preprocessing, then thinker.
 
 ```bash
 sgl-omni serve --model-path inclusionAI/Ming-3.0-asr-tiny
@@ -111,7 +111,7 @@ An upload longer than 30 seconds is split into 30-second clips, and the clip tra
 
 ## Stream transcription
 
-Set `stream=true` to receive the transcript as server-sent events. Use `curl -N` so curl does not buffer the response. This recording returns the finished transcript and then the `[DONE]` sentinel.
+Set `stream=true` to receive incremental transcript text as server-sent events. Use `curl -N` so curl does not buffer the response. Append the text from each `transcript.text.delta` event. The final `transcript.text.done` event repeats the complete transcript, followed by the `[DONE]` sentinel.
 
 ```bash
 curl -N -X POST http://127.0.0.1:8000/v1/audio/transcriptions \
@@ -121,3 +121,15 @@ curl -N -X POST http://127.0.0.1:8000/v1/audio/transcriptions \
   -F response_format=json \
   -F stream=true
 ```
+
+An illustrative response is:
+
+```text
+data: {"type":"transcript.text.delta","delta":"..."}
+
+data: {"type":"transcript.text.done","text":"...","usage":{"type":"duration","seconds":5}}
+
+data: [DONE]
+```
+
+The first stable text is emitted immediately; later updates use a 50 ms interval (`--thinker.factory.stream_emit_interval_seconds`). Completion flushes pending text, the language header is removed, and concatenated deltas equal the done event's `text`. When `max_new_tokens` is reached, `transcript.text.done` includes `"finish_reason":"length"` and the partial transcript.
