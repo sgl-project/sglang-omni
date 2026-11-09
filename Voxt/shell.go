@@ -225,9 +225,10 @@ func (a *app) openWindow() {
 		Hidden:         startHidden(mygo.App.WasOpenedAtLogin(), a.prefs.General),
 	})
 	a.life = a.win
-	a.maybeOnboard()    // onboarding.go: the setup guide, on the first start
-	a.offerLegacy()     // legacy_import.go: the previous Voxt's data, for who set up without the guide's card
-	a.syncOpenAtLogin() // shell_settings.go
+	a.maybeOnboard()        // onboarding.go: the setup guide, on the first start
+	a.offerLegacy()         // legacy_import.go: the previous Voxt's data, for who set up without the guide's card
+	a.legacyModelsAtStart() // legacy_models.go: the previous Voxt's speech models this version added
+	a.syncOpenAtLogin()     // shell_settings.go
 }
 
 // startHidden says whether the window waits hidden at start: opened at

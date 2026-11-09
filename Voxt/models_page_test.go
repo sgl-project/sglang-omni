@@ -124,7 +124,7 @@ func TestModelsPageSystemDictation(t *testing.T) {
 // has no Hide, and one in use since it was hidden is listed again.
 func TestHideModel(t *testing.T) {
 	a, fs, tt := newTestApp(t)
-	tt.SetSize(windowWidth, 2400)
+	tt.SetSize(windowWidth, 4800) // the hidden models under every card
 	seedModels(t, a, models.ASRFast, models.VADSilero)
 	a.dictation.SetHelper(fs) // System dictation after the speech model: not in use
 	fast, systemDictation, accurate := uitext.ModelName(models.ASRFast), uitext.ModelName(dictation.ModelID), uitext.ModelName(models.ASRAccurate)

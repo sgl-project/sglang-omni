@@ -15,6 +15,7 @@ package main
 import (
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/updater"
@@ -95,6 +96,7 @@ func main() {
 	a := newApp(lib, h)                           // app.go
 	a.dataHome = home                             // settings_storage.go
 	a.openIcons(cacheDir)                         // appicons.go
+	a.omniCache = filepath.Join(cacheDir, "omni") // models_omni.go: Whisper's folders
 	a.muteJournal = outputJournal(home, cacheDir) // mute_link.go
 	a.connectShell(logDir)                        // shell.go
 	a.connectHelper()                             // helperlink.go
