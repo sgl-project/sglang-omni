@@ -24,27 +24,14 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
-func TestRecommendedSpeech(t *testing.T) {
-	for gb, want := range map[int]string{
-		8: models.ASRFast, 15: models.ASRFast,
-		16: models.ASRAccurate, 18: models.ASRAccurate, 24: models.ASRAccurate, 64: models.ASRAccurate,
-		0: models.ASRAccurate, // the memory could not be read
-	} {
-		if got := recommendedSpeech(gb); got != want {
-			t.Errorf("%d GB: %s, want %s", gb, got, want)
-		}
-	}
-}
-
-// guideAt is the guide at its models step on a Mac with gb GB, against a
-// Hub that counts what it is asked and has nothing.
-func guideAt(t *testing.T, gb int) (*app, *ui.Tester, *atomic.Int64, func()) {
+// guideAt is the guide at its models step, against a Hub that counts
+// what it is asked and has nothing.
+func guideAt(t *testing.T) (*app, *ui.Tester, *atomic.Int64, func()) {
 	t.Helper()
 	asked := countingHub(t)
 	a, tt := obTester(t)
 	drain := queuePosts(a)
 	reopenModels(a)
-	a.ob.memoryGB = gb
 	a.obGo(obModels)
 	drain()
 	frames(tt)
@@ -64,31 +51,24 @@ func downloadAsked(t *testing.T, a *app, drain func(), id string) {
 	}
 }
 
+// TestGuideDownloadAndContinue: the guide recommends Qwen3-ASR 1.7B
+// (8bit) on every Mac, 8 GB ones included, and downloads only it.
 func TestGuideDownloadAndContinue(t *testing.T) {
-	for _, tc := range []struct {
-		gb          int
-		id, other   string
-		label, name string
-	}{
-		{8, models.ASRFast, models.ASRAccurate, "Download and continue (712.8 MB)", "Qwen3-ASR 0.6B (4bit)"},
-		{24, models.ASRAccurate, models.ASRFast, "Download and continue (2.5 GB)", "Qwen3-ASR 1.7B (8bit)"},
-		{0, models.ASRAccurate, models.ASRFast, "Download and continue (2.5 GB)", "Qwen3-ASR 1.7B (8bit)"},
-	} {
-		a, tt, asked, drain := guideAt(t, tc.gb)
-		if !has(tt, tc.name) || !has(tt, tc.label) || !has(tt, "Skip this step") {
-			t.Fatalf("%d GB: %q", tc.gb, tt.Texts())
-		}
-		if asked.Load() != 0 {
-			t.Fatalf("%d GB: %d requests before the click", tc.gb, asked.Load())
-		}
-		click(t, tt, findPrefix(t, tt, tc.label))
-		if a.ob.step != obTranscribe {
-			t.Fatalf("%d GB: step %d", tc.gb, a.ob.step)
-		}
-		downloadAsked(t, a, drain, tc.id)
-		if s := a.models.Status(tc.other); s.Err != nil || s.Downloading {
-			t.Errorf("%d GB: %s downloaded too: %+v", tc.gb, tc.other, s)
-		}
+	label := "Download and continue (2.5 GB)"
+	a, tt, asked, drain := guideAt(t)
+	if !has(tt, "Qwen3-ASR 1.7B (8bit)") || !has(tt, label) || !has(tt, "Skip this step") || hasPrefix(tt, "Chosen for this Mac") {
+		t.Fatalf("%q", tt.Texts())
+	}
+	if asked.Load() != 0 {
+		t.Fatalf("%d requests before the click", asked.Load())
+	}
+	click(t, tt, findPrefix(t, tt, label))
+	if a.ob.step != obTranscribe {
+		t.Fatalf("step %d", a.ob.step)
+	}
+	downloadAsked(t, a, drain, models.ASRAccurate)
+	if s := a.models.Status(models.ASRFast); s.Err != nil || s.Downloading {
+		t.Errorf("%s downloaded too: %+v", models.ASRFast, s)
 	}
 }
 
@@ -105,7 +85,7 @@ func findPrefix(t *testing.T, tt *ui.Tester, s string) string {
 }
 
 func TestGuideSkipDownloadsNothing(t *testing.T) {
-	a, tt, asked, drain := guideAt(t, 8)
+	a, tt, asked, drain := guideAt(t)
 	click(t, tt, "Skip this step")
 	drain()
 	if a.ob.step != obTranscribe || asked.Load() != 0 {
@@ -114,8 +94,8 @@ func TestGuideSkipDownloadsNothing(t *testing.T) {
 	a.obGo(obModels)
 	a.closeOnboarding()
 	drain()
-	if asked.Load() != 0 || a.models.Status(models.ASRFast).Downloading {
-		t.Fatalf("closing the guide asked %d: %+v", asked.Load(), a.models.Status(models.ASRFast))
+	if asked.Load() != 0 || a.models.Status(models.ASRAccurate).Downloading {
+		t.Fatalf("closing the guide asked %d: %+v", asked.Load(), a.models.Status(models.ASRAccurate))
 	}
 }
 
@@ -123,7 +103,7 @@ func TestGuideSkipDownloadsNothing(t *testing.T) {
 // reported yet is on disk, so the step offers no download of it, and
 // Home sends the user to the page that can claim it.
 func TestGuideOnDiskNoDownload(t *testing.T) {
-	a, tt, _, _ := guideAt(t, 24)
+	a, tt, _, _ := guideAt(t)
 	a.modelStatus[models.ASRAccurate] = models.Status{OnDisk: true, Users: []string{"AudioSmith"}}
 	frames(tt)
 	if hasPrefix(tt, "Download and continue") {
@@ -138,32 +118,11 @@ func TestGuideOnDiskNoDownload(t *testing.T) {
 // no reuse card, is a choice the step's line offers: the footer does not
 // take it for the download.
 func TestGuideAlternativeNoDownloadButton(t *testing.T) {
-	a, tt, _, _ := guideAt(t, 24)
+	a, tt, _, _ := guideAt(t)
 	a.ob.found = []models.Found{{ID: models.ASRFast, By: []string{"AudioSmith"}}}
 	frames(tt)
 	if !has(tt, "Download Qwen3-ASR 1.7B (8bit)") || !hasExact(tt, "Continue") || hasPrefix(tt, "Download and continue") {
 		t.Fatalf("%q", tt.Texts())
-	}
-}
-
-// TestGuideSmallModelReuse: the 8 GB recommendation is what the guide
-// looks for on this Mac too.
-func TestGuideSmallModelReuse(t *testing.T) {
-	asked := countingHub(t)
-	a, tt := obTester(t)
-	reopenModels(a)
-	a.ob.memoryGB = 8
-	smith := addPeer(t, a, "dev.hehehai.audiosmith", nil)
-	seedModels(t, a, models.ASRFast, models.VADSilero)
-	peerClaims(t, smith, models.ASRFast, models.VADSilero)
-	a.familyFound(a.fam.Discover())
-	a.models.Refresh()
-	a.obGo(obModels)
-	if !has(tt, "Qwen3-ASR 0.6B (4bit) · Silero VAD v6") || !has(tt, "Use them") || hasPrefix(tt, "Download and continue") {
-		t.Fatalf("%q", tt.Texts())
-	}
-	if asked.Load() != 0 {
-		t.Errorf("%d requests", asked.Load())
 	}
 }
 
@@ -212,7 +171,7 @@ func TestGuideOnlyVADOnThisMac(t *testing.T) {
 }
 
 func TestGuideChooseOther(t *testing.T) {
-	a, tt, _, _ := guideAt(t, 8)
+	a, tt, _, _ := guideAt(t)
 	click(t, tt, "Choose another model…")
 	if a.ob.open || a.shownPath() != modelsPath || !has(tt, "The setup guide is paused at the Models step.") || !has(tt, "Back to the setup guide") {
 		t.Fatalf("open %v, %s, %q", a.ob.open, a.shownPath(), tt.Texts())
@@ -222,18 +181,6 @@ func TestGuideChooseOther(t *testing.T) {
 	click(t, tt, "Back to the setup guide")
 	if !has(tt, "Ready: Qwen3-ASR 1.7B (8bit)") || !has(tt, "Choose another model…") || !hasExact(tt, "Continue") || hasPrefix(tt, "Download and continue") {
 		t.Fatalf("with a model: %q", tt.Texts())
-	}
-}
-
-func TestGuide8GBNote(t *testing.T) {
-	note := "Chosen for this Mac's 8 GB of memory."
-	_, tt, _, _ := guideAt(t, 8)
-	if !has(tt, note) {
-		t.Errorf("8 GB: %q", tt.Texts())
-	}
-	_, tt, _, _ = guideAt(t, 24)
-	if has(tt, note) {
-		t.Errorf("24 GB: %q", tt.Texts())
 	}
 }
 
@@ -362,7 +309,6 @@ func TestHomeSpeechRow(t *testing.T) {
 	a, tt := homeTester(t)
 	drain := queuePosts(a)
 	reopenModels(a)
-	a.ob.memoryGB = 8
 	if r := homeSpeech(a); r.ok || !strings.HasPrefix(r.action, "Download (") {
 		t.Fatalf("no model: %+v", r)
 	}
@@ -370,7 +316,7 @@ func TestHomeSpeechRow(t *testing.T) {
 	if a.shownPath() == modelsPath {
 		t.Error("the line left Home instead of downloading")
 	}
-	downloadAsked(t, a, drain, models.ASRFast)
+	downloadAsked(t, a, drain, models.ASRAccurate)
 	if asked.Load() == 0 {
 		t.Error("nothing was asked of the Hub")
 	}
@@ -406,50 +352,33 @@ func containsKey(list []readiness, key string) bool {
 	return false
 }
 
-// obDefaultShots saves the models step with nothing on this Mac, as an
-// 8 GB and a 24 GB one see it.
+// obDefaultShots saves the models step with nothing on this Mac.
 func obDefaultShots(a *app, save func(string)) {
 	loc, status, found := a.local, a.modelStatus, a.ob.found
 	a.local, a.modelStatus, a.ob.found = &fakeLocal{}, map[string]models.Status{}, nil
-	for gb, name := range map[int]string{8: "onboarding-3-models-default-8gb", 24: "onboarding-3-models-default-24gb"} {
-		a.ob.memoryGB = gb
-		save(name)
-	}
-	a.ob.memoryGB = 0
+	save("onboarding-3-models-default")
 	a.local, a.modelStatus, a.ob.found = loc, status, found
 }
 
-// TestAutomaticSpeechFollowsMemory: with both Qwen3-ASR models installed,
-// Automatic is the small one under 16 GB and the accurate one otherwise;
-// a feature's explicit choice stays.
-func TestAutomaticSpeechFollowsMemory(t *testing.T) {
+// TestAutomaticSpeech: with both Qwen3-ASR models installed, Automatic
+// is the accurate one; a feature's explicit choice stays.
+func TestAutomaticSpeech(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	tt.SetSize(windowWidth, 4800)
-	a.ob.memoryGB = 8
 	seedModels(t, a, models.ASRAccurate, models.ASRFast, models.VADSilero)
-	automatic := func(wantID string) {
-		t.Helper()
-		if m, ok := a.featureModel(local.ASR, hotkey.Transcribe); !ok || m.ID != wantID {
-			t.Errorf("Transcribe uses %+v, want %s", m, wantID)
-		}
-		a.navigate("/transcribe")
-		click(t, tt, "Speech model for Transcribe")
-		if want := "Automatic (now: " + uitext.ModelName(wantID) + ")"; !has(tt, want) {
-			t.Errorf("no %q: %q", want, tt.Texts())
-		}
-		tt.Key(0, ui.KeyEscape)
-		frames(tt)
+	if m, ok := a.featureModel(local.ASR, hotkey.Transcribe); !ok || m.ID != models.ASRAccurate {
+		t.Errorf("Transcribe uses %+v, want %s", m, models.ASRAccurate)
 	}
-	automatic(models.ASRFast)
+	a.navigate("/transcribe")
+	click(t, tt, "Speech model for Transcribe")
+	if want := "Automatic (now: " + uitext.ModelName(models.ASRAccurate) + ")"; !has(tt, want) {
+		t.Errorf("no %q: %q", want, tt.Texts())
+	}
+	tt.Key(0, ui.KeyEscape)
+	frames(tt)
 
-	a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.ASR = models.ASRAccurate })
-	if m, _ := a.featureModel(local.ASR, hotkey.Transcribe); m.ID != models.ASRAccurate {
+	a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.ASR = models.ASRFast })
+	if m, _ := a.featureModel(local.ASR, hotkey.Transcribe); m.ID != models.ASRFast {
 		t.Errorf("the explicit choice became %s", m.ID)
-	}
-	a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.ASR = "" })
-
-	for _, gb := range []int{16, 0} { // 0: the memory could not be read
-		a.ob.memoryGB = gb
-		automatic(models.ASRAccurate)
 	}
 }

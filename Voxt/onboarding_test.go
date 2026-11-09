@@ -277,7 +277,7 @@ func onboardingShots(a *app, tt *ui.Tester, save func(string)) {
 	// Last, as they change the models' statuses (the page behind scrolls).
 	a.ob.step = obModels
 	obFamilyShots(a, save)  // family_ui_test.go
-	obDefaultShots(a, save) // nothing on this Mac: the easy default at 8 and 24 GB
+	obDefaultShots(a, save) // nothing on this Mac: the easy default
 	a.ob.open = false
 }
 

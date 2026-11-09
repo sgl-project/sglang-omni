@@ -29,18 +29,9 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
-// recommendedSpeech is the speech model recommended for a Mac with gb GB
-// of memory (0: not known): the small one under 16 GB, where the accurate
-// one would take too much of it.
-func recommendedSpeech(gb int) string {
-	if gb > 0 && gb < 16 {
-		return models.ASRFast
-	}
-	return models.ASRAccurate
-}
-
-// obSpeech is the pack's speech model.
-func (a *app) obSpeech() string { return recommendedSpeech(a.ob.memoryGB) }
+// obSpeech is the pack's speech model, the same on every Mac: 1.7B (8bit)
+// runs well with 8 GB of memory too.
+func (a *app) obSpeech() string { return models.ASRAccurate }
 
 // obPack is the recommended pack: what the guide downloads.
 func (a *app) obPack() []string { return []string{a.obSpeech(), models.VADSilero} }
@@ -174,9 +165,6 @@ func (a *app) obModelsStep(c *ui.Context) {
 		_, onDisk := a.obFound(id)
 		_, alt := a.obAlternative()
 		a.obModelRow(c, id, uitext.ModelName(id), false, len(reuse) > 0)
-		if id == models.ASRFast {
-			caption(c, i18n.T("Chosen for this Mac's %d GB of memory. The Speech models page has more accurate models that use more memory.", a.ob.memoryGB))
-		}
 		if len(reuse) > 0 && !st.Downloading && !onDisk && !alt {
 			label := i18n.T("Download (%s)", a.obDownloadLeft())
 			ui.Row(c).Margin(px(t, sp2), 0, 0, 0).Children(func() {
