@@ -21,6 +21,7 @@ from sglang_omni.model_runner.prefill_inputs import (
     attach_omni_prefill_inputs,
 )
 from sglang_omni.model_runner.sglang_execution import attn_forward_context
+from sglang_omni.models.fun_cosyvoice3.mps_lock import MpsSerializedStep
 from sglang_omni.models.fun_cosyvoice3.request_builders import (
     CosyVoice3SGLangRequestData,
     accept_cosyvoice3_stream_token,
@@ -38,7 +39,12 @@ from sglang_omni.platforms import current_platform
 from sglang_omni.sampling.seed import SAMPLING_SEED_MASK
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
-from sglang_omni.scheduling.types import ARRequestData, SchedulerRequest
+from sglang_omni.scheduling.types import (
+    ARRequestData,
+    ModelRunnerOutput,
+    SchedulerOutput,
+    SchedulerRequest,
+)
 
 COSYVOICE3_RAS_WINDOW_SIZE = 10
 # note (Yucheng Hu): the redraw reusing the first draw's seeded noise would be
@@ -72,6 +78,14 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         self.outbox: Queue[OutgoingMessage] | None = None
         self.vocoder_target = "vocoder"
         self.cosyvoice3_recent_tokens: dict[str, list[int]] = {}
+
+    def execute(self, scheduler_output: SchedulerOutput) -> ModelRunnerOutput:
+        """Run one LLM step; on MPS, serialize it against the vocoder thread."""
+        if self.device.type == "mps":
+            with MpsSerializedStep():
+                return super().execute(scheduler_output)
+        else:
+            return super().execute(scheduler_output)
 
     def set_stream_outbox(self, outbox: Queue[OutgoingMessage]) -> None:
         self.outbox = outbox

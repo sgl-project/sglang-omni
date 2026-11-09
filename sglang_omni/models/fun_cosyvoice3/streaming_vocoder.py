@@ -11,6 +11,7 @@ the next step (or the stream-done flush) is when they become audio.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 from collections.abc import Callable
@@ -20,6 +21,7 @@ from typing import Literal, Mapping
 import torch
 from sglang.srt.utils.common import is_pin_memory_available
 
+from sglang_omni.models.fun_cosyvoice3.mps_lock import MpsSerializedStep
 from sglang_omni.models.fun_cosyvoice3.packed_dit import PackedDiT
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
 from sglang_omni.models.fun_cosyvoice3.prefix_cache import BLOCK_FRAMES, PrefixCacheRow
@@ -160,6 +162,10 @@ class FunCosyVoice3StreamingVocoderScheduler(
             max_batch_wait_ms=max_batch_wait_ms,
             request_cost_fn=request_cost_fn,
             max_batch_cost=max_batch_cost,
+        )
+        device = next(self.vocoder.flow.parameters()).device
+        self.mps_step_context: contextlib.AbstractContextManager[None] = (
+            MpsSerializedStep() if device.type == "mps" else contextlib.nullcontext()
         )
 
     def pump_one_step(self) -> list[str] | None:
@@ -700,34 +706,35 @@ class FunCosyVoice3StreamingVocoderScheduler(
     def complete_step(self, launched: LaunchedStep) -> list[str]:
         """Read a launched step's audio and send it: a hop's chunk, or a final's last
         chunk and then its result. Streams cleared since the launch get nothing."""
-        try:
-            deltas = launched.samples.wait()
-            for (request_id, state), delta in zip(
-                launched.participants, deltas, strict=True
-            ):
-                is_cleared = self.stream_states.get(request_id) is not state
-                if is_cleared or self.is_aborted(request_id):
-                    continue
-                elif launched.plan == "leftover":
-                    state.leftover = delta
-                    self.complete_stream_request(
-                        request_id, self.finish_stream(request_id)
-                    )
-                elif delta.numel() > 0:
-                    self.mark_stream_emitted(request_id)
-                    self.outbox.put(self.stream_chunk_message(request_id, delta))
-                else:
-                    pass
-        except Exception as exc:
-            return self.on_step_failure(
-                [
-                    (request_id, state)
-                    for request_id, state in launched.participants
-                    if self.stream_states.get(request_id) is state
-                ],
-                exc,
-            )
-        return []
+        with self.mps_step_context:
+            try:
+                deltas = launched.samples.wait()
+                for (request_id, state), delta in zip(
+                    launched.participants, deltas, strict=True
+                ):
+                    is_cleared = self.stream_states.get(request_id) is not state
+                    if is_cleared or self.is_aborted(request_id):
+                        continue
+                    elif launched.plan == "leftover":
+                        state.leftover = delta
+                        self.complete_stream_request(
+                            request_id, self.finish_stream(request_id)
+                        )
+                    elif delta.numel() > 0:
+                        self.mark_stream_emitted(request_id)
+                        self.outbox.put(self.stream_chunk_message(request_id, delta))
+                    else:
+                        pass
+            except Exception as exc:
+                return self.on_step_failure(
+                    [
+                        (request_id, state)
+                        for request_id, state in launched.participants
+                        if self.stream_states.get(request_id) is state
+                    ],
+                    exc,
+                )
+            return []
 
     def hop_batch_with_prefix(
         self,

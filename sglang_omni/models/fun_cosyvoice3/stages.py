@@ -58,6 +58,7 @@ from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import (
 )
 from sglang_omni.models.fun_cosyvoice3.hift_channels_last import ChannelsLastHiftDecode
 from sglang_omni.models.fun_cosyvoice3.hift_cuda_graph import HiftDecodeCudaGraphRunner
+from sglang_omni.models.fun_cosyvoice3.mps_lock import MpsSerializedStep
 from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     CONV_CONTEXT_FRAMES,
     DIT_INDUCTOR_OPTIONS,
@@ -1902,6 +1903,11 @@ class CosyVoice3Vocoder(BatchVocoderBase[FunCosyVoice3State, torch.Tensor]):
             self.copy_done_events: list[torch.cuda.Event] = [
                 torch.cuda.Event() for _ in range(2)
             ]
+        elif device.type == "mps":
+            # MPS steps share a lock because AR and vocoder run on separate threads.
+            self.stream_context = MpsSerializedStep()
+            self.has_hift_kernels = False
+            self.copy_done_events = []
         else:
             self.stream_context = contextlib.nullcontext()
             self.has_hift_kernels = False
