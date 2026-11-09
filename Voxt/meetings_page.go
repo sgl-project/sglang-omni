@@ -8,24 +8,35 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
+const meetingsPageSize = 20
+
 type meetingsView struct {
-	list    []store.Meeting
-	read    bool
-	loading bool
-	err     string
-	seq     int
-	listUI  ui.ListState
+	list     []store.Meeting
+	read     bool
+	loading  bool
+	err      string
+	seq      int
+	query    string
+	page     int
+	hasMore  bool
+	listUI   ui.ListState
 }
 
 type meetingsState struct {
 	mv meetingsView
+}
+
+func (n *meetingsView) wants() string {
+	return strings.TrimSpace(n.query) + "\x00" + string(rune('0'+n.page))
 }
 
 func (a *app) loadMeetings() {
@@ -33,20 +44,30 @@ func (a *app) loadMeetings() {
 	n.seq++
 	n.loading = true
 	seq := n.seq
+	want := n.wants()
+	q := store.MeetingQuery{
+		Search: strings.TrimSpace(n.query),
+		Limit:  meetingsPageSize + 1,
+		Offset: n.page * meetingsPageSize,
+	}
 	repo := a.lib.store.Meetings()
 	a.async(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		list, err := repo.ListMeetings(ctx, store.MeetingQuery{})
+		list, err := repo.ListMeetings(ctx, q)
 		a.post(func() {
 			n := &a.mv
-			if seq != n.seq {
+			if seq != n.seq || want != n.wants() {
 				return
 			}
 			n.loading, n.read = false, true
 			if err != nil {
 				n.err = err.Error()
 				return
+			}
+			n.hasMore = len(list) > meetingsPageSize
+			if n.hasMore {
+				list = list[:meetingsPageSize]
 			}
 			n.list, n.err = list, ""
 		})
@@ -70,6 +91,11 @@ func (a *app) meetingsPage(c *ui.Context) {
 	})
 	ui.Scroll(c.Key("meetings-scroll")).Grow(1).MinHeight(0).Children(func() {
 		ui.Column(c).Padding(px(t, sp1), px(t, sp6), px(t, sp2)).Gap(px(t, sp2)).Children(func() {
+			if searchField(c, "meetings-search", &n.query, i18n.T("Search"), px(t, 360)).
+				Label(i18n.T("Search meetings")).Changed() {
+				n.page = 0
+				a.loadMeetings()
+			}
 			if n.err != "" {
 				ui.Text(c, n.err)
 				return
@@ -79,7 +105,23 @@ func (a *app) meetingsPage(c *ui.Context) {
 				return
 			}
 			if len(n.list) == 0 {
-				ui.Text(c, i18n.T("No meetings yet.")).TextColor(tok(t).Text2)
+				q := strings.TrimSpace(n.query)
+				if q == "" {
+					emptyState(c, meetingIcon, i18n.T("No meetings yet."),
+						i18n.T("Start a meeting to record your microphone and, when supported, audio from other apps."),
+						func() {})
+				} else {
+					emptyState(c, icons.Magnifer, i18n.T("Nothing matches “%s”", q),
+						i18n.T("Try another search, or clear the field to see every meeting."),
+						func() {
+							if ghostButton(c.Key("meetings-clear"), i18n.T("Clear the search")).Clicked() {
+								n.query = ""
+								n.page = 0
+								a.loadMeetings()
+							}
+						})
+				}
+				a.meetingSettings(c)
 				return
 			}
 			list := n.list
@@ -116,6 +158,17 @@ func (a *app) meetingsPage(c *ui.Context) {
 							})
 						}
 					})
+				}
+			})
+			ui.Row(c).Gap(px(t, sp2)).Justify(ui.End).Children(func() {
+				if ghostButton(c.Key("mt-page-prev"), i18n.T("Previous page")).Disabled(n.page == 0).Clicked() {
+					n.page--
+					a.loadMeetings()
+				}
+				ui.Text(c, i18n.T("Page %d", n.page+1)).TextColor(tok(t).Text2)
+				if ghostButton(c.Key("mt-page-next"), i18n.T("Next page")).Disabled(!n.hasMore).Clicked() {
+					n.page++
+					a.loadMeetings()
 				}
 			})
 			ui.Box(c).Height(px(t, sp3))
