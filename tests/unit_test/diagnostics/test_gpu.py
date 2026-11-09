@@ -54,6 +54,17 @@ class FakeTorch:
         self.cuda = FakeCuda()
 
 
+class FakeMusa(FakeCuda):
+    def __init__(self) -> None:
+        super().__init__()
+        for properties in self.properties:
+            properties.total_memory = 2
+        self.memory_info = [(1, 2), (1, 2)]
+
+    def mem_get_info(self, index: int = 0) -> tuple[int, int]:
+        return self.memory_info[index]
+
+
 class FakePlatform:
     """Stand in for the resolved platform so a report describes one arm."""
 
@@ -62,6 +73,9 @@ class FakePlatform:
 
     def is_xpu(self) -> bool:
         return self.device_type == "xpu"
+
+    def is_musa(self) -> bool:
+        return self.device_type == "musa"
 
     def is_npu(self) -> bool:
         return self.device_type == "npu"
@@ -147,6 +161,79 @@ def test_collect_gpu_diagnostics_preserves_reordered_visible_mapping(
     rendered = gpu_diagnostics.render_gpu_diagnostics(report)
     assert "logical 0 -> physical 1" in rendered
     assert fake_nvml.shutdown_called is True
+
+
+def test_collect_musa_uses_native_torch_device_module(monkeypatch) -> None:
+    fake_torch = FakeTorch()
+    fake_torch.cuda.is_available = lambda: False
+    fake_torch.musa = FakeMusa()
+    fake_pymtml = FakeNVML()
+    fake_torch.musa.properties.reverse()
+    fake_torch.get_device_module = lambda device_type: fake_torch.musa
+    monkeypatch.setattr(
+        gpu_diagnostics, "cuda_runtime_version", lambda: "should-not-run"
+    )
+    monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
+    monkeypatch.setattr(
+        gpu_diagnostics,
+        "try_import_pynvml",
+        lambda: (_ for _ in ()).throw(AssertionError("MUSA must not import pynvml")),
+    )
+    pin_platform(monkeypatch, "musa")
+
+    report = gpu_diagnostics.collect_gpu_diagnostics(
+        env={"MUSA_VISIBLE_DEVICES": "1,0", "CUDA_VISIBLE_DEVICES": "0"},
+        torch_module=fake_torch,
+        pymtml_module=fake_pymtml,
+    )
+
+    assert report["environment"]["visible_devices"] == "1,0"
+    assert report["environment"]["visible_devices_variable"] == "MUSA_VISIBLE_DEVICES"
+    assert report["environment"]["cuda_available"] is False
+    assert report["environment"]["driver_version"] == "610.43.02"
+    assert "musa_available" not in report["environment"]
+    assert [gpu["physical_index"] for gpu in report["gpus"]] == [1, 0]
+    assert report["gpus"][0]["name"] == "GPU-B"
+    assert report["gpus"][0]["pci_bus_id"] == "00000000:02:00.0"
+    assert report["gpus"][0]["compute_capability"] == "12.0"
+    assert report["gpus"][0]["total_memory_bytes"] == 2
+    assert report["gpus"][0]["free_memory_bytes"] == 1
+    assert fake_pymtml.shutdown_called is True
+
+
+def test_collect_musa_keeps_torch_path_without_pymtml(monkeypatch) -> None:
+    fake_torch = FakeTorch()
+    fake_torch.cuda.is_available = lambda: False
+    fake_torch.musa = FakeMusa()
+    fake_torch.get_device_module = lambda device_type: fake_torch.musa
+    real_import_module = gpu_diagnostics.importlib.import_module
+
+    def import_without_pymtml(name: str):
+        if name == "pymtml":
+            raise ModuleNotFoundError(name)
+        return real_import_module(name)
+
+    monkeypatch.setattr(
+        gpu_diagnostics.importlib, "import_module", import_without_pymtml
+    )
+    monkeypatch.setattr(gpu_diagnostics, "cuda_runtime_version", lambda: None)
+    monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
+    pin_platform(monkeypatch, "musa")
+
+    report = gpu_diagnostics.collect_gpu_diagnostics(
+        env={"MUSA_VISIBLE_DEVICES": "0"}, torch_module=fake_torch
+    )
+
+    assert report["warnings"] == []
+    assert report["environment"]["driver_version"] is None
+    assert report["gpus"][0]["name"] == "GPU-A"
+    assert report["gpus"][0]["total_memory_bytes"] == 2
+    assert report["gpus"][0]["free_memory_bytes"] == 1
+    assert report["gpus"][0]["pci_bus_id"] is None
+
+
+def test_musa_uses_generic_visibility() -> None:
+    assert gpu_diagnostics.VISIBLE_DEVICES_VARIABLES["musa"] == "MUSA_VISIBLE_DEVICES"
 
 
 def test_nvml_inventory_failure_is_isolated_per_physical_device(

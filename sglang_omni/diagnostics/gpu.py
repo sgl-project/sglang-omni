@@ -86,6 +86,7 @@ class GpuDiagnosticsReport(TypedDict):
 
 
 VISIBLE_DEVICES_VARIABLES = {
+    "musa": "MUSA_VISIBLE_DEVICES",
     "xpu": "ZE_AFFINITY_MASK",
     "npu": "ASCEND_RT_VISIBLE_DEVICES",
 }
@@ -491,6 +492,7 @@ def collect_gpu_diagnostics(
     env: Mapping[str, str] | None = None,
     torch_module: ModuleType | None = None,
     pynvml_module: ModuleType | None = None,
+    pymtml_module: ModuleType | None = None,
 ) -> GpuDiagnosticsReport:
     """Collect diagnostics without loading model configuration or weights."""
 
@@ -512,6 +514,61 @@ def collect_gpu_diagnostics(
             "driver_version": driver_version,
             "cuda_driver_api_version": None,
         }
+    elif current_platform.is_musa():
+        warnings: list[str] = []
+        devices, _ = accelerator_logical_devices(
+            torch, device_type, visible_devices, warnings
+        )
+        system: NvmlSystemInfo = {
+            "driver_version": None,
+            "cuda_driver_api_version": None,
+        }
+        pymtml = pymtml_module
+        if pymtml is None:
+            try:
+                pymtml = importlib.import_module("pymtml")
+            except Exception:
+                pymtml = None
+        else:
+            pass
+        if pymtml is not None:
+            try:
+                inventory, management, management_warnings = nvml_inventory(pymtml)
+                # MUSA: pymtml has no CUDA driver API query; keep that optional
+                # gap out of the shared warning stream.
+                if not hasattr(pymtml, "nvmlSystemGetCudaDriverVersion_v2"):
+                    management_warnings = [
+                        warning
+                        for warning in management_warnings
+                        if not warning.startswith("NVML CUDA driver query failed:")
+                    ]
+                else:
+                    pass
+                warnings.extend(management_warnings)
+                if management["driver_version"] is not None:
+                    system["driver_version"] = management["driver_version"]
+                else:
+                    pass
+                by_index = {device["physical_index"]: device for device in inventory}
+                by_uuid = {
+                    uuid: device
+                    for device in inventory
+                    if (uuid := normalize_uuid(device.get("uuid"))) is not None
+                }
+                for device in devices:
+                    physical = by_uuid.get(normalize_uuid(device.get("uuid")), {})
+                    if not physical and isinstance(device["visible_device"], int):
+                        physical = by_index.get(device["visible_device"], {})
+                    else:
+                        pass
+                    if physical.get("pci_bus_id") is not None:
+                        device["pci_bus_id"] = physical["pci_bus_id"]
+                    else:
+                        pass
+            finally:
+                shutdown_nvml(pymtml)
+        else:
+            pass
     else:
         pynvml = pynvml_module if pynvml_module is not None else try_import_pynvml()
         inventory, system, warnings = nvml_inventory(pynvml)
