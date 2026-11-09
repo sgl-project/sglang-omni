@@ -187,7 +187,8 @@ func (a *app) obTitle(c *ui.Context) {
 // step). A try step's Continue waits for its try to pass; Skip moves on
 // without it. Nothing moves while the step's try runs. Continue is a
 // secondary button while the models step's reuse card shows its Use
-// them.
+// them, and Download and continue (beside Skip) while the models step has
+// only the download to offer.
 func (a *app) obFooter(c *ui.Context) {
 	t := c.Theme()
 	busy := a.obBusy()
@@ -223,7 +224,15 @@ func (a *app) obFooter(c *ui.Context) {
 			if ui.Button(c.Key("ob-next"), i18n.T("Continue")).Clicked() {
 				a.obGo(a.ob.step + 1)
 			}
-		case a.ob.step == obModels && a.modelStatus[obSpeech].Downloading:
+		case a.obNeedsDownload():
+			if ghostButton(c.Key("ob-skip"), i18n.T("Skip this step")).Disabled(busy).Clicked() {
+				a.obGo(a.ob.step + 1)
+			}
+			if primaryButton(c.Key("ob-next"), i18n.T("Download and continue (%s)", a.obDownloadLeft())).Disabled(busy).Clicked() {
+				a.downloadModel(a.obSpeech())
+				a.obGo(a.ob.step + 1)
+			}
+		case a.ob.step == obModels && a.modelStatus[a.obSpeech()].Downloading:
 			tip := i18n.T("The speech model is still downloading: later steps work when it is ready, or you can skip them.")
 			if primaryButton(c.Key("ob-next"), i18n.T("Continue")).Tooltip(tip).Disabled(busy).Clicked() {
 				a.obGo(a.ob.step + 1)

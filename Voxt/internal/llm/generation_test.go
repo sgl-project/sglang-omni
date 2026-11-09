@@ -112,3 +112,33 @@ func TestGenerationThinking(t *testing.T) {
 		}
 	}
 }
+
+// TestAnthropicBudgetRaisesMaxTokens: Voxt 1.x kept max_tokens above the
+// budget; below it the request would be refused.
+func TestAnthropicBudgetRaisesMaxTokens(t *testing.T) {
+	budget := Thinking{Mode: ThinkBudget, Budget: 8192}
+	for _, c := range []struct {
+		name string
+		g    Generation
+		req  Request
+		want any
+	}{
+		{"below", Generation{MaxOutputTokens: ptr(4096), Thinking: budget}, Request{}, 8193.0},
+		{"equal", Generation{MaxOutputTokens: ptr(8192), Thinking: budget}, Request{}, 8193.0},
+		{"above", Generation{MaxOutputTokens: ptr(16384), Thinking: budget}, Request{}, 16384.0},
+		{"request's own limit", Generation{Thinking: budget}, Request{MaxTokens: 512}, 8193.0},
+		{"none sent", Generation{Thinking: budget}, Request{}, nil},
+		{"another mode", Generation{MaxOutputTokens: ptr(4096), Thinking: Thinking{Mode: ThinkOff}}, Request{}, 4096.0},
+		{"no budget", Generation{MaxOutputTokens: ptr(4096), Thinking: Thinking{Mode: ThinkBudget}}, Request{}, 4096.0},
+	} {
+		c.req.Messages = msgs("hi")
+		if got := bodyFor(t, "anthropic", "m", c.g, c.req)["max_tokens"]; got != c.want {
+			t.Errorf("%s: max_tokens %v, want %v", c.name, got, c.want)
+		}
+	}
+	// Another service with a budget is left alone.
+	g := Generation{MaxOutputTokens: ptr(4096), Thinking: budget}
+	if got := bodyFor(t, "zhipu", "m", g, Request{Messages: msgs("hi")})["max_tokens"]; got != 4096.0 {
+		t.Errorf("zhipu max_tokens %v", got)
+	}
+}

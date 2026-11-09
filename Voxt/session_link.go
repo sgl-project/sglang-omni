@@ -30,6 +30,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -109,7 +110,9 @@ const (
 	actionLanguage    = "language" // the Language models page (remote_page.go)
 	actionPermissions = "permissions"
 	actionHelper      = "helper"
-	actionRetry       = "retry" // the session's entry, in History (history_retry.go)
+	actionRetry       = "retry"  // the session's entry, in History (history_retry.go)
+	actionSignIn      = "signin" // the ChatGPT (Codex) dialog (remote_chatgpt.go)
+	actionUsage       = "usage"  // the ChatGPT usage page, in the browser
 )
 
 // sessionNotice is a one-line message in the overlay, where
@@ -339,6 +342,11 @@ func (a *app) noticeAction(action string) {
 		a.navigate("/settings/permissions")
 	case actionHelper:
 		a.restartHelper()
+	case actionSignIn:
+		a.showMainWindow()
+		a.completeSetup(local.LLM, providers.ChatGPT)
+	case actionUsage:
+		go openBrowser(chatgptUsageURL)
 	}
 }
 

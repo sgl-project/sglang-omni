@@ -18,7 +18,8 @@ type Features struct {
 	// Note records a note (Voxt 1.x's noteHotkeyBindings): a Transcribe
 	// session whose text goes to the Notes page instead of where the
 	// cursor is. Only a tap; empty keys: off.
-	Note Hotkey `json:"note"`
+	Note    Hotkey  `json:"note"`
+	Meeting Meeting `json:"meeting,omitzero"`
 	// EndWord ends a recording when it is the last thing said (Voxt 1.x's
 	// voiceEndCommandText), and is left out of the text; "" is off. Only
 	// a speech model that streams hears it (internal/session).

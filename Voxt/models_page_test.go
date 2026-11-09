@@ -448,6 +448,7 @@ func modelShots(t *testing.T, a *app, tt *ui.Tester, save func(string)) {
 	fastName := uitext.ModelName(models.ASRFast)
 	a.navigate("/home")
 	a.navigate(modelsPath)
+	scrollToText(tt, fastName) // on screen: a click off it does nothing (the smallest window)
 	click(t, tt, i18n.T("Hide %s", fastName))
 	scrollToText(tt, i18n.T("Hidden models"))
 	click(t, tt, i18n.T("Hidden models"))
