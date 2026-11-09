@@ -179,7 +179,7 @@ func (a *app) meetingPlaybackBar(c *ui.Context, d *meetingDetail) {
 	if pb.playing {
 		label = i18n.T("Pause")
 	}
-	if primaryButton(c.Key("mt-playback"), label).Clicked() {
+	if ghostButton(c.Key("mt-playback"), label).Clicked() {
 		a.toggleMeetingPlayback(d)
 	}
 	ui.Text(c, meeting.FormatPlaybackTime(pb.pos)).
@@ -192,21 +192,27 @@ func (a *app) meetingTranscriptList(c *ui.Context, d *meetingDetail) {
 	}
 	t := c.Theme()
 	names := speakerNameMap(d.meeting.Speakers)
-	sectionTitle(c, i18n.T("Transcript"))
 	segs := d.segments
 	pb := &d.playback
-	ui.List(c.Key("mt-transcript"), &a.mv.detailList, len(segs)).Grow(1).MinHeight(0).Gap(px(t, 2)).Children(func() {
+	// shortcut: every segment is laid out each frame inside the panel's scroll, move to a ui.List of its own if long meetings get slow.
+	ui.Column(c.Key("mt-transcript")).Gap(px(t, 2)).Children(func() {
 		for _, row := range segs {
 			row := row
 			active := row.Idx == pb.highlight
 			rowKey := c.Key("mt-seg-" + itoa(row.Idx))
-			segRow := ui.Row(rowKey).Padding(px(t, sp2), 0).Gap(px(t, sp2)).AlignItems(ui.Start)
+			segRow := ui.Row(rowKey).Padding(px(t, sp1), 0).Gap(px(t, sp2)).AlignItems(ui.Center)
 			if active {
 				segRow.Background(t.Accent.Alpha(0.18)).Radius(px(t, radiusCard))
 			}
 			segRow.Children(func() {
 				start := time.Duration(row.StartMS) * time.Millisecond
 				label := meeting.SpeakerLabel(row.Speaker, names)
+				switch label { // SpeakerLabel's English defaults, which exports keep
+				case "Me":
+					label = i18n.T("Me")
+				case "Them":
+					label = i18n.T("Other")
+				}
 				line := meeting.FormatPlaybackTime(start) + " " + label
 				if ghostButton(c.Key("mt-seg-go-"+itoa(row.Idx)), line).Clicked() {
 					a.seekMeetingPlayback(d, start)

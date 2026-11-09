@@ -60,3 +60,48 @@ func TestMeetingDetailExportsFiles(t *testing.T) {
 		t.Errorf("markdown lacks the title: %q", md)
 	}
 }
+
+func TestMeetingRowOpensDetailAndDeleteConfirms(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	repo := a.lib.store.Meetings()
+	ctx := context.Background()
+	if _, err := repo.CreateMeeting(ctx, store.Meeting{
+		ID: "m-del", CreatedAt: time.Date(2026, 11, 8, 10, 0, 0, 0, time.UTC),
+		Status: store.MeetingDone, Mode: store.MeetingModeMeeting, Title: "Weekly sync",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tt.SetSize(windowWidth, 900)
+	a.navigate("/meetings")
+	frames(tt)
+	if err := tt.Click("Weekly sync"); err != nil {
+		t.Fatalf("%v (%q)", err, firstTexts(tt))
+	}
+	frames(tt)
+	if a.mv.detail == nil || a.mv.detail.id != "m-del" {
+		t.Fatal("clicking the row did not open its detail")
+	}
+	for _, step := range []string{"Delete", "Cancel"} {
+		if err := tt.ClickControl(step); err != nil {
+			t.Fatalf("%s: %v (%q)", step, err, firstTexts(tt))
+		}
+		frames(tt)
+	}
+	if _, _, err := repo.Meeting(ctx, "m-del"); err != nil || a.mv.detail == nil {
+		t.Fatalf("cancel deleted the meeting or closed its detail: %v", err)
+	}
+	if err := tt.ClickControl("Delete"); err != nil {
+		t.Fatal(err)
+	}
+	frames(tt)
+	if _, ok := tt.Find("Delete this meeting?"); !ok {
+		t.Fatal("Delete did not ask first")
+	}
+	if err := tt.ClickControl("Delete meeting"); err != nil {
+		t.Fatalf("%v (%q)", err, firstTexts(tt))
+	}
+	frames(tt)
+	if _, _, err := repo.Meeting(ctx, "m-del"); err == nil {
+		t.Fatal("confirming did not delete the meeting")
+	}
+}

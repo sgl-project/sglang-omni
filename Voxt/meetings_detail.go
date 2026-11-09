@@ -40,6 +40,7 @@ func (a *app) openMeetingDetail(id string) {
 	a.stopMeetingPlayback()
 	n := &a.mv
 	n.detail = &meetingDetail{id: id, loading: true}
+	n.detail.playback.highlight = -1
 	repo := a.lib.store.Meetings()
 	a.async(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -61,24 +62,41 @@ func (a *app) openMeetingDetail(id string) {
 	})
 }
 
-func (a *app) meetingDetailSection(c *ui.Context) {
+// meetingDetailSection is the details panel's content; close hides it.
+func (a *app) meetingDetailSection(c *ui.Context, close func()) {
 	t := c.Theme()
 	d := a.mv.detail
 	if d == nil {
 		return
 	}
-	sectionTitle(c, i18n.T("Meeting detail"))
-	if d.loading {
-		ui.Text(c, i18n.T("Loading…"))
+	ui.Column(c).Padding(px(t, sp4)).Gap(px(t, sp3)).Children(func() { a.meetingDetailBody(c, d, close) })
+}
+
+func (a *app) meetingDetailBody(c *ui.Context, d *meetingDetail, close func()) {
+	t := c.Theme()
+	if d.loading || d.err != "" {
+		panelHeader(c, i18n.T("Meeting detail"), close)
+		if d.loading {
+			caption(c, i18n.T("Loading…"))
+		} else {
+			notice(c, "mt-detail-err", noticeError, i18n.T("Could not read the meeting."), d.err, nil, nil)
+		}
 		return
 	}
-	if d.err != "" {
-		ui.Text(c, d.err)
-		return
-	}
+	panelHeader(c, meetingTitle(d.meeting), close)
+	caption(c, meetingMeta(d.meeting))
+	a.meetingActions(c, d.meeting)
 	sum, hasSum := meeting.ParseStoredSummary(d.meeting.Summary)
 	names := speakerNameMap(d.meeting.Speakers)
-	if hasSum {
+	canLLM := len(a.installed(local.LLM)) > 0
+	ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
+		sectionHeading(c, i18n.T("Summary")).Grow(1)
+		if ghostButton(c.Key("mt-regen"), i18n.T("Regenerate summary")).Disabled(!canLLM).Clicked() {
+			a.regenerateMeetingSummary(d.id)
+		}
+	})
+	switch {
+	case hasSum:
 		if sum.Title != "" {
 			ui.Text(c, sum.Title).FontWeight(600)
 		}
@@ -88,39 +106,36 @@ func (a *app) meetingDetailSection(c *ui.Context) {
 		for _, todo := range sum.Todos {
 			ui.Text(c, "• "+todo)
 		}
-	} else {
-		ui.Text(c, i18n.T("No summary yet.")).TextColor(tok(t).Text2)
-	}
-	canLLM := len(a.installed(local.LLM)) > 0
-	if primaryButton(c.Key("mt-regen"), i18n.T("Regenerate summary")).Disabled(!canLLM).Clicked() {
-		a.regenerateMeetingSummary(d.id)
-	}
-	if !canLLM {
-		ui.Text(c, i18n.T("Set up a language model on the Language models page to generate summaries.")).
-			FontSize(px(t, fsCaption)).TextColor(t.TextMuted)
+	case canLLM:
+		caption(c, i18n.T("No summary yet."))
+	default:
+		caption(c, i18n.T("Set up a language model on the Language models page to generate summaries."))
 	}
 	exportSegs := storeSegmentsToExport(d.segments)
-	title := d.meeting.Title
-	if title == "" {
-		title = d.meeting.CreatedAt.Format("2006-01-02 15:04")
-	}
+	title := meetingTitle(d.meeting)
 	file := strings.NewReplacer("/", "-", ":", "-").Replace(title)
-	ui.Row(c).Gap(px(t, sp2)).Children(func() {
-		if ghostButton(c.Key("mt-copy"), i18n.T("Copy transcript")).Clicked() {
-			_ = mygo.Clipboard.Write(transfer.TextData(meeting.ExportTxt(exportSegs, names)))
-			a.toast(i18n.T("Copied"))
-		}
-		if ghostButton(c.Key("mt-export-txt"), i18n.T("Export .txt…")).Clicked() {
-			a.saveMeetingExport(file+".txt", meeting.ExportTxt(exportSegs, names))
-		}
-		if ghostButton(c.Key("mt-export-md"), i18n.T("Export Markdown…")).Clicked() {
-			a.saveMeetingExport(file+".md", meeting.ExportMarkdown(title, exportSegs, names))
-		}
+	ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
+		sectionHeading(c, i18n.T("Transcript")).Grow(1)
+		a.meetingPlaybackBar(c, d)
 	})
-	a.meetingPlaybackBar(c, d)
-	a.meetingTranscriptList(c, d)
-	ui.Box(c).Height(px(t, sp2))
-	sectionTitle(c, i18n.T("Ask about this meeting"))
+	if len(d.segments) > 0 {
+		ui.Row(c).Gap(px(t, sp2)).Wrap().Children(func() {
+			if ghostButton(c.Key("mt-copy"), i18n.T("Copy transcript")).Clicked() {
+				_ = mygo.Clipboard.Write(transfer.TextData(meeting.ExportTxt(exportSegs, names)))
+				a.toast(i18n.T("Copied"))
+			}
+			if ghostButton(c.Key("mt-export-txt"), i18n.T("Export .txt…")).Clicked() {
+				a.saveMeetingExport(file+".txt", meeting.ExportTxt(exportSegs, names))
+			}
+			if ghostButton(c.Key("mt-export-md"), i18n.T("Export Markdown…")).Clicked() {
+				a.saveMeetingExport(file+".md", meeting.ExportMarkdown(title, exportSegs, names))
+			}
+		})
+		a.meetingTranscriptList(c, d)
+	} else {
+		caption(c, i18n.T("No transcript yet."))
+	}
+	sectionHeading(c, i18n.T("Ask about this meeting"))
 	for i, msg := range d.chat {
 		line := msg.Content
 		if msg.Role == "user" {
@@ -129,7 +144,7 @@ func (a *app) meetingDetailSection(c *ui.Context) {
 		ui.Text(c.Key(fmt.Sprintf("mt-chat-%d", i)), line).TextColor(tok(t).Text2)
 	}
 	if d.busy {
-		ui.Text(c, i18n.T("Answering…")).TextColor(t.TextMuted)
+		caption(c, i18n.T("Answering…"))
 	}
 	ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
 		ui.TextInput(c.Key("mt-followup"), &d.question).Placeholder(i18n.T("Follow-up question")).Grow(1).MinWidth(0)
@@ -139,8 +154,7 @@ func (a *app) meetingDetailSection(c *ui.Context) {
 		}
 	})
 	if !canLLM {
-		ui.Text(c, i18n.T("Set up a language model on the Language models page to ask follow-up questions.")).
-			FontSize(px(t, fsCaption)).TextColor(t.TextMuted)
+		caption(c, i18n.T("Set up a language model on the Language models page to ask follow-up questions."))
 	}
 }
 

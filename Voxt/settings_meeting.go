@@ -44,7 +44,6 @@ func (a *app) meetingSettings(c *ui.Context) {
 	t := c.Theme()
 	a.meetingSettingsSync()
 	u := a.meetingUI
-	sectionTitle(c, i18n.T("Meeting settings"))
 	modeLabels := []string{
 		i18n.T("Full meeting (microphone and system audio)"),
 		i18n.T("Subtitles (system audio only)"),
