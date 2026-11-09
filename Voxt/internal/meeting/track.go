@@ -10,10 +10,11 @@ import (
 )
 
 type track struct {
-	src      Source
-	job      string
-	audio    session.Audio
-	stopping bool
+	src        Source
+	job        string
+	audio      session.Audio
+	stopping   bool
+	transcribe *trackTranscriber
 }
 
 func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio) *StartError {
@@ -30,6 +31,23 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 	m.tracks[src] = &track{src: src, job: job, audio: audio}
 	m.mu.Unlock()
 
+	tx, err := m.newTrackTranscriber(ctx, src, job)
+	if err != nil {
+		guidance := "meeting.mic.unavailable"
+		if src == SourceSystem {
+			guidance = "meeting.system.unavailable"
+		}
+		m.mu.Lock()
+		delete(m.tracks, src)
+		m.mu.Unlock()
+		return &StartError{Source: src, Err: err, Guidance: guidance}
+	}
+	if tx != nil {
+		m.mu.Lock()
+		m.tracks[src].transcribe = tx
+		m.mu.Unlock()
+	}
+
 	started := make(chan error, 1)
 	go func() {
 		_, err := audio.Record(ctx, job, proto.CaptureParams{}, func(ev session.AudioEvent) {
@@ -44,6 +62,17 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 					return
 				}
 				_ = m.archive.Write(src, ev.PCM.Data)
+				m.mu.Lock()
+				tx := m.tracks[src]
+				var tr *trackTranscriber
+				if tx != nil {
+					tr = tx.transcribe
+				}
+				runCtx := m.runCtx
+				m.mu.Unlock()
+				if tr != nil && runCtx != nil {
+					_ = tr.onPCM(runCtx, ev.PCM.Data)
+				}
 			}
 			if ev.Level != nil {
 				if !m.timeline.acceptJob(src, ev.Level.Job) {
@@ -93,5 +122,9 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 
 func (t *track) stop() {
 	t.stopping = true
+	if t.transcribe != nil {
+		_ = t.transcribe.finish(context.Background())
+		t.transcribe = nil
+	}
 	_ = t.audio.Stop(context.Background(), t.job)
 }

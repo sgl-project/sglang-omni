@@ -155,6 +155,108 @@ func (f *fakeModelHold) Hold() (release func()) {
 	return func() { f.holds-- }
 }
 
+type meetTestStreamer struct {
+	text string
+}
+
+func (m *meetTestStreamer) Caps() asr.Caps { return asr.Caps{Stream: true} }
+
+func (m *meetTestStreamer) Open(context.Context, asr.StreamRequest) (asr.Stream, error) {
+	return &meetTestStream{text: m.text, events: make(chan asr.Event, 4)}, nil
+}
+
+type meetTestStream struct {
+	text   string
+	events chan asr.Event
+}
+
+func (s *meetTestStream) Send([]byte) error {
+	select {
+	case s.events <- asr.Event{Kind: asr.EventPartial, Text: s.text}:
+	default:
+	}
+	return nil
+}
+
+func (s *meetTestStream) Finish() error {
+	s.events <- asr.Event{Kind: asr.EventFinal, Text: s.text, Result: asr.Result{Text: s.text}}
+	close(s.events)
+	return nil
+}
+
+func (s *meetTestStream) Close() {}
+
+func (s *meetTestStream) Events() <-chan asr.Event { return s.events }
+
+func liveTestPCM(t *testing.T) []byte {
+	t.Helper()
+	rate := 16000
+	speechMs := 1500
+	silenceMs := 900
+	speech := make([]byte, speechMs*rate/1000*2)
+	for i := range speechMs * rate / 1000 {
+		if i%80 < 40 {
+			speech[i*2], speech[i*2+1] = 0x60, 0
+		}
+	}
+	silence := make([]byte, silenceMs*rate/1000*2)
+	return append(speech, silence...)
+}
+
+func TestManagerLiveSegmentStore(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	s, err := sqlitestore.Open(ctx, filepath.Join(dir, "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	streamer := &meetTestStreamer{text: "hello live"}
+	cfg := meeting.Config{
+		Mic:     newFakeAudio(liveTestPCM(t)),
+		Store:   s.Meetings(),
+		Dir:     filepath.Join(dir, "meetings"),
+		Privacy: func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
+		FreeSpace: func(string) (int64, error) {
+			return meeting.DiskMinStartBytes() + 1, nil
+		},
+		ASR: func(context.Context, meeting.Source) (meeting.TrackASR, error) {
+			return meeting.TrackASR{Caps: streamer.Caps(), Streamer: streamer}, nil
+		},
+	}
+	m := meeting.NewManager(cfg)
+	id, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(30 * time.Millisecond)
+	if err := m.Finish(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	mt, segs, err := s.Meetings().Meeting(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mt.ID != id {
+		t.Fatalf("meeting id %q", mt.ID)
+	}
+	if len(segs) == 0 {
+		t.Fatal("expected committed segments in store")
+	}
+	found := false
+	for _, g := range segs {
+		if g.Text == "hello live" {
+			found = true
+			if g.Speaker != "me" {
+				t.Fatalf("speaker %q", g.Speaker)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("segments: %#v", segs)
+	}
+}
+
 func TestManagerModelHold(t *testing.T) {
 	hold := &fakeModelHold{}
 	m, ctx, _, _ := testManagerHold(t, hold)
