@@ -89,7 +89,7 @@ def make_scheduler(
     scheduler.uncond_to_cond = {}
     scheduler.uncond_rids = set()
     scheduler.orphaned_uncond_rids = set()
-    scheduler.result_adapter = lambda value: value
+    scheduler.result_adapter = lambda request_data: StagePayload("req", None, {})
     scheduler.outbox = SimpleNamespace(put=lambda value: None)
     return scheduler
 
@@ -306,6 +306,8 @@ def test_block_that_cannot_be_followed_inside_the_context_finishes_by_length(
     context_len: int, finish_reason: str | None
 ) -> None:
     scheduler = make_scheduler(fdfo=False, context_len=context_len)
+    outbox = []
+    scheduler.outbox = SimpleNamespace(put=outbox.append)
     req = ReqDouble()
     req_data = SimpleNamespace(output_ids=None, finish_reason=None)
     scheduler.rid_to_req_data = {req.rid: req_data}
@@ -320,6 +322,9 @@ def test_block_that_cannot_be_followed_inside_the_context_finishes_by_length(
 
     assert req.finished() is (finish_reason is not None)
     assert req_data.finish_reason == finish_reason
+    assert [message.type for message in outbox] == (
+        ["result"] if finish_reason is not None else []
+    )
 
 
 def test_sync_dllm_result_commits_generated_suffix() -> None:
@@ -524,22 +529,6 @@ def test_companion_in_another_block_column_is_rejected(
         scheduler.create_uncond_companion(
             conditional, [1] * 129, 0, 0, "-uncond", mark_img=False
         )
-
-
-def test_abort_releases_a_cfg_row_that_never_ran(
-    chunked_scheduler: DllmScheduler, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    scheduler = chunked_scheduler
-    conditional, _ = use_unequal_cfg_rows(scheduler, monkeypatch, [8, 72])
-
-    with get_context().override_server_args(page_size=1, max_prefill_tokens=64):
-        batch = scheduler.schedule_next_batch()
-        assert conditional not in batch.reqs and conditional.lock is not None
-        scheduler.aborted_request_ids = {"cond"}
-        scheduler.drain_and_purge()
-
-    assert scheduler.staging_queue == []
-    assert conditional.lock is None
 
 
 def test_dllm_staging_admission_uses_dllm_config(
@@ -910,3 +899,40 @@ def test_cfg_group_that_outgrows_the_free_pages_gives_up_a_pinned_prefix(
     )
 
     assert "story" not in scheduler.retained_contexts
+
+
+def test_abort_releases_a_cfg_row_that_never_ran(
+    radix_scheduler: DllmScheduler,
+) -> None:
+    """An aborted conditional row that still waited for its companion kept the prefix its admission matched locked."""
+    scheduler = radix_scheduler
+    run_phase(scheduler, PROMPT_IDS, 6)
+    scheduler.inbox.put(
+        IncomingMessage(
+            request_id="story",
+            type="new_request",
+            data=StagePayload(
+                "story",
+                None,
+                {
+                    "input_ids": CONTINUED_IDS,
+                    "max_new_tokens": 2,
+                    "continues": False,
+                    "dllm_config": scheduler.dllm_config,
+                    # A longer companion encodes alone while the conditional row waits.
+                    "uncond_ids": list(range(200, 226)),
+                },
+            ),
+        )
+    )
+    scheduler.drain_and_purge()
+    batch = scheduler.schedule_next_batch()
+    conditional = scheduler.rid_to_req_data["story"].req
+    assert conditional not in batch.reqs and conditional.lock is not None
+
+    scheduler.abort("story")
+    scheduler.drain_and_purge()
+    evict_everything(scheduler)
+
+    assert scheduler.tree_cache.protected_size() == 0
+    assert scheduler.token_to_kv_pool_allocator.available_size() == PHASE_POOL_TOKENS
