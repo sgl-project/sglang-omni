@@ -357,6 +357,16 @@ func TestPrivacyGoesOnline(t *testing.T) {
 	}
 }
 
+// TestPermissionsMeetingSystemAudio: Optional row for meeting system audio.
+func TestPermissionsMeetingSystemAudio(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/permissions")
+	frames(tt)
+	if !has(tt, "System audio recording (for meetings)") {
+		t.Errorf("permissions: %q", firstTexts(tt))
+	}
+}
+
 // TestPrivacyNamesSpeechServices: a remote speech service gets the
 // recordings, so Settings → Privacy and the microphone prompts (the app's
 // and the helper's) say so instead of "the audio never leaves the Mac".

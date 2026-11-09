@@ -21,6 +21,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Scan history for suggestions** (Dictionary → Scan history…), as in Voxt 1.x's one-click import: Voxt sends the Transcribe results it has not read yet, 12 at a time, to the language model Transcribe uses and suggests the names and terms it finds. The dialog says how many results go to which model before anything is sent; you add each term yourself, and nothing of your dictionary is sent.
 - **Learn from my corrections** (Dictionary): off by default. After Voxt inserts a Transcribe result into another app, it reads the text around that spot for up to 30 seconds; when you correct a word there, it suggests your spelling on the Dictionary page. Local rules only, nothing is sent, what it reads is not saved or logged, and password fields are never read.
 - **Meeting records in the database** (nothing in the app calls this yet): migration 007 adds `meetings` and `meeting_segments`, full-text search on segment text and translations, and `Store.Meetings()` for create, update, append/replace segments, list, delete, unfinished, and temporary-audio expiry queries.
+- **Meeting permissions** (meeting UI still dev-only until C1-2): Settings → Permissions lists **System audio recording (for meetings)**; the app and helper usage strings describe capturing other apps’ audio for meetings, and the microphone prompt mentions meetings.
 
 ### Changed
 
@@ -49,6 +50,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **扫描历史，找词条建议**（词典 → 扫描历史…），对应 Voxt 1.x 的一键导入：Voxt 把还没读过的转录结果每 12 条发给转录用的语言模型，把找到的人名和术语放进建议。开始之前对话框写明要把多少条发给哪个模型；词条要你自己点“添加”，词典内容不会发出去。
 - **从我的改正中学习**（词典页）：默认关。把转录结果插入别的 App 后，Voxt 会在 30 秒内读取插入处附近的文字；你改了其中某个词，它在词典页建议你改后的写法。只用本地规则，不发送任何文字；读到的文字不保存、不写日志，也不读密码框。
 - **会议记录表**（应用里还没有接线）：SQLite 迁移 007 增加 `meetings` 与 `meeting_segments` 表、句子和译文的全文检索，以及 `Store.Meetings()`（创建、更新、追加或按轨道替换句子、列表、删除、未完成与录音到期筛选）。
+- **会议权限说明**（会议界面仍在开发版，C1-2 前不对普通用户开放）：设置 → 权限 出现 **系统录音（会议用）**；应用与辅助进程的授权文案说明会议中录制其他 app 的声音，麦克风说明也提到会议。
 
 #### 变更
 
