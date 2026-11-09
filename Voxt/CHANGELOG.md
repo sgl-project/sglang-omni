@@ -15,7 +15,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Meetings** (development builds): start from the Meetings page or the Voxt menu; pick mic-only, system-only, or both; pause, end, or cancel with confirmation; save or discard when history is off; hide the overlay from screen sharing. Dictation shortcuts stay idle while a meeting runs, and Cancel ends it. Storage lists meeting recordings; Erase everything removes them. Shipping entry points wait for C1-10.
 - **Privacy → Clear the history** keeps meetings: it deletes only transcription, translation and rewrite history; meeting rows and `meetings/` folders need Settings → Storage → Erase everything.
 - **Notes** (the new Notes page), as in Voxt 1.x: tap right ⌘ in any app, speak, and tap it again. Voxt saves what you said as a note instead of typing it. The Notes page lists your notes, newest first, with their time, and you can delete them. The shortcut changes on that page (off, or other keys); if another shortcut already uses right ⌘, the note shortcut starts off: pick keys on the Notes page. Notes stay out of History, and clearing History keeps them; a note whose recognition failed, or that you cancelled, stays in History with its recording, so you can retry it.
-- **Shortcut presets** (Settings → Shortcuts → Preset), as in Voxt 1.x: Right ⌥ (the default) or fn (Auralink's keys: fn, fn ⇧, fn ⌃, ⌃⌘V) sets Transcribe, Translate, Rewrite and Paste the last result at once. A shortcut you changed yourself stays as it is. With fn, the page says that Auralink and macOS's Globe key react to fn too.
+- **Shortcut presets** (Settings → Shortcuts → Preset; also in the setup guide), as in Voxt 1.x: Right ⌥ (the default), fn (Auralink's keys), ⌘ combination (right ⌘, right ⌘⇧, right ⌘⌥, ⌃⌘V), or Middle mouse + fn⇧ (middle click to transcribe, double middle click to rewrite; fn⇧ to translate) set Transcribe, Translate, Rewrite and Paste the last result at once. A shortcut you changed yourself stays as it is. With fn, the page says that Auralink and macOS's Globe key react to fn too.
 - **Mouse buttons as shortcuts**, as in Voxt 1.x: in a shortcut's Custom… field type Mouse3 (the middle button), Mouse4 or Mouse5 (the side buttons most mice have) up to Mouse32, alone or with modifiers (Option+Mouse4). Tap, double tap and long press work as with keys, and the button's clicks no longer reach the app in front. Like fn and single modifiers, mouse buttons need Accessibility.
 - **Fallback model for Translate** (Translate → Models): when the language model fails, Voxt translates once more with the model you choose here. History names the model that gave the translation.
 - **Press the keys to set a shortcut**, as in Voxt 1.x: Custom… on the Transcribe, Translate, Rewrite and Notes pages (and for pasting the last result and cancelling) now takes the keys you press, such as ⌥Space, and saves them at once; your shortcuts pause while it listens. With Accessibility, the helper's **hotkey.record** also captures fn, a left or right modifier and mouse buttons (modifier-only chords too); without it the in-app field still records plain keys and you can Type the keys instead. Shortcuts show Esc, Space, Return, Delete and Tab by name instead of ⎋ ↩ ⌫ ⇥, and Esc is in the Cancel transcription list.
@@ -41,6 +41,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Live text in lines** (Settings → Overlay style → Live text layout → Lines): the overlay starts wide and wraps the words as a text box does, growing up to ten lines, then shows the newest ones, so the start of what you said stays in view. One line, which scrolls sideways, stays the default.
 - **Answer card sizes** (Transcribe, Translate, Rewrite → Answer card → Card size): Small (as before), Medium or Large, each feature its own, so a long Rewrite answer can have a large card while translations keep a small one. Show the result in a card stays one switch for Transcribe and Translate.
 - **Voxt 1.x's sounds in one click** (Settings → Audio → Play sounds → Use Voxt 1.x's sounds): Pop when recording starts and Tink when it stops, the pair Voxt 1.x played by default. Every other sound is still in the pickers.
+- **Per-service recognition prompts** (Speech models → a remote service's dialog): optional text after the global speech context, with `{{USER_MAIN_LANGUAGE}}`, `{{USER_OTHER_LANGUAGES}}` and `{{DICTIONARY_TERMS}}` filled at recognition time. Services that take no prompt ignore it.
 
 ### Changed
 
@@ -71,6 +72,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Scrolling past Your rules keeps scrolling the page**: a scroll that starts on the page goes on when the rules field comes under the pointer; only a scroll that starts over the field scrolls the field, as elsewhere on macOS. A long prompt also opens at its start, not its end.
 - **Rewrite takes long selections**: Rewrite reads the selection while you speak and now gives it up to 6 seconds (and a copy 1.5 seconds) instead of 1.5, so a long selection in a web editor is no longer missed, with the answer then written from your instruction alone.
 
+### Fixed
+
+- **Browser text boxes (GitHub and similar)** stop showing "The text did not land where you were typing" when ⌘V actually worked: Chromium-style web editors often report the same Accessibility value after a paste, so the check treats an unchanged web area or contenteditable reading as unverified instead of failed (#3644 FB36).
+
 ### 中文
 
 **录音是怎么开始的。** 按下快捷键的那一刻麦克风就开始录，Voxt 不等语音模型。语音模型和人声检测在你说话的同时后台加载：Voxt 打开后的第一次听写要加载，空闲十分钟卸载后的第一次也要。麦克风开始之后你说的每一句都录下来，模型就绪前先存在内存里，就绪后一并送过去：实时文字会晚一点出现，结果一句不少，上限是一次录音的十分钟。浮窗写着“正在启动麦克风…”时，麦克风还没出声音，那时说的话录不下来；只有图标在呼吸、波形跟着你的声音动时，是模型还在加载，录音没问题。
@@ -82,7 +87,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **设置引导：翻译和转写试用步就地配置语言模型**（FB22）：没配语言模型时，这一步会说明缺什么，并提供「设置语言模型」按钮（引导不关闭）。语音模型下载时，模型步和试用步会显示进度；下载中也可以点继续。
 - **录音时浮窗胶囊在图标旁显示当前模式**（转录、翻译或转写）。开始录音的快捷键决定模式；录音中按别的功能的快捷键只会停止，和 Voxt 1.x 的 common stop 一样（`hotkey.Route`）。
 - **笔记**（新的“笔记”页），和 Voxt 1.x 一样：在任意 app 里单按右 ⌘，说完再按一次，说的内容会存成一条笔记，不会输入到光标处。笔记页按时间从新到旧列出笔记和时间，可以删除。快捷键在笔记页里改（可以关掉，也可以换成别的键）；右 ⌘ 已经被别的快捷键占用时，笔记键一开始是关的，去笔记页选一个。笔记不进历史，清空历史也不会删掉笔记；识别失败或取消的笔记会留在历史里，带着录音，可以重试。
-- **快捷键预设**（设置 → 快捷键 → 预设），和 Voxt 1.x 一样：选“右 ⌥”（默认）或“fn”（和 Auralink 相同：fn、fn ⇧、fn ⌃、⌃⌘V），一次设好转录、翻译、转写和粘贴最近结果的快捷键。你自己改过的快捷键保持不变。选 fn 时，页面会提示 Auralink 和 macOS 的地球键也会响应 fn。
+- **快捷键预设**（设置 → 快捷键 → 预设；设置引导里也可选），和 Voxt 1.x 一样：选“右 ⌥”（默认）、“fn”（和 Auralink 相同）、“⌘ 组合”（右 ⌘ 一套）或“鼠标中键 + fn⇧”（中键单击转录、双击转写，fn⇧ 翻译），一次设好转录、翻译、转写和粘贴最近结果的快捷键。你自己改过的快捷键保持不变。选 fn 时，页面会提示 Auralink 和 macOS 的地球键也会响应 fn。
 - **鼠标按钮当快捷键**，同 Voxt 1.x：在快捷键的“自定义…”里输入 Mouse3（中键）、Mouse4 或 Mouse5（多数鼠标的两个侧键），最多到 Mouse32，可以单独用，也可以加修饰键（Option+Mouse4）。单按、双击、长按和键盘快捷键一样；这个按钮按下时不再传给前台 App。和 fn、单个修饰键一样，鼠标快捷键需要辅助功能权限。
 - **翻译的备用模型**（翻译 → 模型）：语言模型出错时，Voxt 用这里选的模型再翻译一次。历史记录里写的是实际给出译文的模型。
 - **按键录入快捷键**，同 Voxt 1.x：转录、翻译、转写、笔记页（以及粘贴最近结果、取消转录）的“自定义…”改成直接按下组合键，比如 ⌥空格，按下就保存；录制时你的快捷键暂停。开了辅助功能时，辅助进程的 **hotkey.record** 还能录 fn、分左右的修饰键和鼠标按钮（只按修饰键也行）；没有辅助功能时应用内录制框仍可用，也可以点“改为手动输入”。快捷键里的 Esc、空格、回车、删除、Tab 写成文字，不再是 ⎋ ↩ ⌫ ⇥；取消转录的下拉菜单里有 Esc。
@@ -108,6 +113,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **实时文字可以多行显示**（设置 → 浮窗样式 →“实时文字的样式”→“多行”）：浮窗一开始就是宽框，像输入框一样满行换行，最多长到十行，之后显示最新的几行，开头说的话不会被滚出去。默认仍是单行、横向滚动。
 - **答案卡片的大小**（转录、翻译、转写 → 答案卡片 → 卡片大小）：小（和以前一样）、中、大，每个功能各自记住，比如转写的长回答用大卡片，翻译仍用小卡片。“在卡片中显示结果”仍是转录和翻译共用的一个开关。
 - **一键换回 Voxt 1.x 的提示音**（设置 → 音频 → 播放提示音 →“使用 Voxt 1.x 的提示音”）：开始录音时 Pop、停止时 Tink，是 Voxt 1.x 默认的一对。其他提示音照样在选择器里。
+- **每家远程服务的识别提示词**（语音模型页 → 某远程服务的设置对话框）：可选文字，接在全局「识别上下文」后面；识别时填入 `{{USER_MAIN_LANGUAGE}}`、`{{USER_OTHER_LANGUAGES}}` 和 `{{DICTIONARY_TERMS}}`。不收提示词的语音服务会忽略它。
 
 #### 变更
 
@@ -137,6 +143,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **在 Voxt 自己的窗口里听写，文字又能输进去了**，和 Voxt 1.x 一样：光标在 Voxt 的输入框里（比如功能页的“你的规则”）时，按快捷键和在别的 app 里一样录音、显示浮窗，文字输入到这个框里。以前在首页和功能页上按快捷键会在页面里开始一次试一试（没有浮窗，结果显示在“试一试”区域），在其他页面上结果进了答案卡片。
 - **滚过“你的规则”时页面接着滚**：在页面上开始的滚动，规则框移到指针下面时页面照样往下滚；只有在规则框里开始的滚动才滚规则框，和 macOS 别处一样。长提示词展开时也从开头显示，不再停在结尾。
 - **转写能处理长选段**：转写边录音边读选中的文字，读取时限从 1.5 秒放宽到 6 秒（复制兜底 1.5 秒），网页编辑器里的长选段不会再读不到、只按指令写。
+
+#### 修复
+
+- **浏览器输入框（GitHub 等）**：⌘V 已经粘进输入框时，不再误报“文字没有出现在输入位置”。Chromium 类网页编辑器常在粘贴后仍让无障碍读到相同长度；网页区域或 contenteditable 里若对比结果不变，按“无法校验”处理，仍算插入（#3644 FB36）。
 
 ## [2.0.1] - 2026-11-07
 

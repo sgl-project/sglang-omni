@@ -10,6 +10,7 @@ appctx hotkey
 appctx settings
 appicons helper/proto
 asr core
+asr lang
 asr/aliyun asr
 asr/doubao asr
 asr/gemini asr

@@ -261,6 +261,11 @@ func insert(ctx context.Context, io TextIO, r Request) Result {
 		return res
 	}
 	if p.Check == proto.CheckUnchanged {
+		if p.Field != nil && p.Field.Role == "AXWebArea" && p.SecureInput == nil {
+			// A web page container often does not update AXValue after ⌘V; trust the paste.
+			res.Inserted = true
+			return res
+		}
 		res.Reason = ReasonUnconfirmed
 		if p.SecureInput != nil {
 			res.Reason = ReasonSecureInput
