@@ -99,6 +99,7 @@ scripts/mac.sh scripts/mac-regress.sh   # Mac 上的真实模型：运行时、�
 - [docs/llm-models.md](docs/llm-models.md)：已退役的本地语言模型、它们的参数和实测（历史记录）。
 - [docs/eval.md](docs/eval.md)：模型在评测集上的质量，以及由此做的决定。
 - [docs/helper-protocol.md](docs/helper-protocol.md)：辅助进程的协议。
+- [docs/history-access.md](docs/history-access.md)：让这台 Mac 上的脚本和 agent 读取听写历史（默认关闭）。
 - [docs/manual-test.md](docs/manual-test.md)：在 Mac 上手动验证的清单，以及自动的真机测试。
 - [docs/release.md](docs/release.md)：构建、签名、公证和发布，以及更新。
 - [AGENTS.md](AGENTS.md)：改动规则（文字、线程、协议）。

@@ -78,8 +78,8 @@ func TestOnboardingLanguageModelGuide(t *testing.T) {
 func TestOnboardingSpeechDownloadGuide(t *testing.T) {
 	a, tt := obTester(t)
 	a.obGo(obModels)
-	m, _ := models.Lookup(obSpeech)
-	a.modelStatus[obSpeech] = models.Status{Downloading: true, Done: m.Size() / 3, Total: m.Size()}
+	m, _ := models.Lookup(a.obSpeech())
+	a.modelStatus[a.obSpeech()] = models.Status{Downloading: true, Done: m.Size() / 3, Total: m.Size()}
 	a.obGo(obTranscribe)
 	frames(tt)
 	if !has(tt, "still downloading (33%)") {
@@ -99,10 +99,10 @@ func TestOnboardingSteps(t *testing.T) {
 		t.Fatalf("permissions: step %d %q", a.ob.step, tt.Texts())
 	}
 	click(t, tt, "Continue")
-	if a.ob.step != obModels || !has(tt, "Models") || !has(tt, "Download (2.5 GB)") || !has(tt, "Set up a language model") {
+	if a.ob.step != obModels || !has(tt, "Models") || !has(tt, "Download and continue (2.5 GB)") || !has(tt, "Set up a language model") {
 		t.Fatalf("models: step %d %q", a.ob.step, tt.Texts())
 	}
-	click(t, tt, "Continue")
+	click(t, tt, "Skip this step")
 	if a.ob.step != obTranscribe || !has(tt, "Try Transcribe") || !has(tt, "Skip this step") {
 		t.Fatalf("transcribe: step %d %q", a.ob.step, tt.Texts())
 	}
@@ -276,7 +276,8 @@ func onboardingShots(a *app, tt *ui.Tester, save func(string)) {
 	}
 	// Last, as they change the models' statuses (the page behind scrolls).
 	a.ob.step = obModels
-	obFamilyShots(a, save) // family_ui_test.go
+	obFamilyShots(a, save)  // family_ui_test.go
+	obDefaultShots(a, save) // nothing on this Mac: the easy default at 8 and 24 GB
 	a.ob.open = false
 }
 

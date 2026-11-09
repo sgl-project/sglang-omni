@@ -104,8 +104,10 @@ func TestParseLegacySettings(t *testing.T) {
 		t.Fatalf("setups %s", got)
 	}
 	o := by["openai"]
+	// OpenAI got only what the previous Voxt sent it: no temperature, and
+	// no effort for a model it did not take one for.
 	if g := o.Generation; o.Endpoint != "https://inference.example.com/v1" || o.Model != "kimi-k3" || *g.MaxOutputTokens != 131072 ||
-		g.Temperature == nil || *g.Temperature != 0 || g.Thinking != llm.ThinkEffort || g.ThinkingEffort != "none" || g.Verbosity != "" {
+		g.Temperature != nil || g.Thinking != "" || g.ThinkingEffort != "" || g.Verbosity != "" {
 		t.Errorf("openai %+v", o)
 	}
 	ol := by["ollama"]
@@ -118,8 +120,8 @@ func TestParseLegacySettings(t *testing.T) {
 			t.Errorf("%s at %q, want the preset's address", id, by[id].Endpoint)
 		}
 	}
-	if g := by["gemini"].Endpoint; g != "https://example.com/v1beta/openai" || strings.Join(l.checkLLM, ",") != "gemini" {
-		t.Errorf("a custom Gemini address %q, to check %v", g, l.checkLLM)
+	if g := by["gemini"].Endpoint; g != "https://example.com/v1beta/openai" || strings.Join(l.checkLLM, ",") != "ollama,gemini" {
+		t.Errorf("a custom Gemini address %q, to check %v (the Ollama on another Mac is plain http)", g, l.checkLLM)
 	}
 	if u := by["omlx"].Generation.IncludeUsage; u == nil || *u {
 		t.Errorf("oMLX usage %v, want off as the previous Voxt had it", u)
@@ -248,8 +250,9 @@ func TestLegacySettingsApply(t *testing.T) {
 // The import reads those settings from the previous Voxt's binary
 // preferences beside its database (plutil), and says what came over.
 func TestImportLegacySettings(t *testing.T) {
-	if _, err := os.Stat("/usr/bin/plutil"); err != nil {
-		t.Skip("no plutil: the previous Voxt's preferences are read on macOS only")
+	if _, err := os.Stat(legacyPlutil); err != nil {
+		fakeLegacyPlutil(t, map[string]string{"remoteLLMProviderConfigurations": legacySetupsJSON, "remoteASRProviderConfigurations": legacySpeechJSON,
+			"featureSettings": legacyFeaturesJSON(t, ""), "mlxLocalASRTuningSettings": legacyTuningJSON})
 	}
 	lib := copyFixture(t, "real")
 	var plist bytes.Buffer
@@ -286,8 +289,8 @@ func TestImportLegacySettings(t *testing.T) {
 		}
 	}
 	// The services' keys stay behind: those that need one are to
-	// complete (not Ollama, oMLX or the Whisper server on this Mac); so
-	// are the setups to check.
+	// complete (not oMLX or the Whisper server on this Mac); so are the
+	// setups to check (the Ollama on another Mac's address never connects).
 	var todo []string
 	for _, d := range r.todo {
 		todo = append(todo, string(d.kind)+"/"+d.id)
@@ -297,7 +300,34 @@ func TestImportLegacySettings(t *testing.T) {
 			t.Errorf("to do %v lacks %s", todo, want)
 		}
 	}
-	if slices.Contains(todo, "llm/ollama") || slices.Contains(todo, "llm/omlx") || !strings.Contains(r.text(), "Check ") {
+	if !slices.Contains(todo, "llm/ollama") || slices.Contains(todo, "llm/omlx") || !strings.Contains(r.text(), "Check ") || !strings.Contains(r.text(), "Change the address of Ollama") {
 		t.Errorf("to do %v (%q)", todo, r.text())
+	}
+}
+
+// TestLegacyAPIFormat: an OpenAI setup comes over on the API the previous
+// Voxt used for it; its automatic, also what a setup saved before the
+// option meant, is Responses at OpenAI's own address only.
+func TestLegacyAPIFormat(t *testing.T) {
+	const own, other = "https://api.openai.com/v1", "https://inference.example.com/v1"
+	for _, c := range []struct {
+		provider, format, endpoint, want string
+	}{
+		{"openAI", "responses", other, llm.APIResponses},
+		{"openAI", "chatCompletions", own, ""},
+		{"openAI", "automatic", own, llm.APIResponses},
+		{"openAI", "automatic", "", llm.APIResponses},
+		{"openAI", "automatic", other, ""},
+		{"openAI", "", own, llm.APIResponses},
+		{"deepseek", "responses", "", ""},
+	} {
+		raw, _ := json.Marshal(map[string]any{"providerID": c.provider, "model": "m", "endpoint": c.endpoint, "openAIAPIFormat": c.format})
+		var s legacyLLMSetup
+		if err := json.Unmarshal(raw, &s); err != nil {
+			t.Fatal(err)
+		}
+		if p, _, ok := s.provider(); !ok || p.APIFormat != c.want {
+			t.Errorf("%+v: %q (ok %v)", c, p.APIFormat, ok)
+		}
 	}
 }

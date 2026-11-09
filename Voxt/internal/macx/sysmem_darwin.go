@@ -37,6 +37,8 @@ func readSystemMemory() (SystemMemory, error) {
 	return m, nil
 }
 
+func totalMemory() int64 { return sysctlInt64("hw.memsize") }
+
 // sysctlInt64 is a 64-bit counter, 0 when there is none.
 func sysctlInt64(name string) int64 {
 	raw, err := syscall.Sysctl(name)

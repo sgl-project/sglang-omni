@@ -86,6 +86,9 @@ func (s State) Ended() bool { return s == Done || s == Cancelled || s == Failed 
 const (
 	// ProblemNoASR: no speech model is ready (Speech models).
 	ProblemNoASR = "noASR"
+	// ProblemSpeechWait: the speech model is still downloading
+	// (StartRequest.SpeechWait, which Err says).
+	ProblemSpeechWait = "speechWait"
 	// ProblemMicrophone: macOS refused the microphone.
 	ProblemMicrophone = "microphone"
 	// ProblemDevice: no input gave audio.
@@ -433,6 +436,10 @@ type StartRequest struct {
 	// Previous are a Rewrite conversation's earlier turns: the session is
 	// a follow-up to the answer card.
 	Previous []compose.Turn
+	// SpeechWait, when set, ends the session with these words instead of
+	// recording: the speech model it should use is still downloading.
+	// Translating a selection needs none and goes on.
+	SpeechWait string
 }
 
 // TextInput is a session's input given at Start.

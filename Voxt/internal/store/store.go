@@ -138,6 +138,16 @@ type HistoryQuery struct {
 	Offset int
 	// WithAudio selects only the entries with a recording kept.
 	WithAudio bool
+	// After (inclusive) and Before (exclusive) bound CreatedAt; zero means
+	// no bound. With AfterID, After is the last row of a page: the list
+	// resumes strictly past (After, AfterID) in Oldest's order.
+	After   time.Time
+	AfterID string
+	Before  time.Time
+	// Oldest lists oldest first instead of newest first.
+	Oldest bool
+	// Finished selects only entries that ended well and have a result.
+	Finished bool
 }
 
 // Retention is what the history keeps (its automatic clean-up): the
@@ -158,6 +168,8 @@ type History interface {
 	Put(ctx context.Context, e Entry) error
 	Get(ctx context.Context, id string) (Entry, error)
 	List(ctx context.Context, q HistoryQuery) ([]Entry, error)
+	// Count is how many entries q selects (its Limit and Offset ignored).
+	Count(ctx context.Context, q HistoryQuery) (int, error)
 	// Delete removes the entry and its audio file.
 	Delete(ctx context.Context, id string) error
 	// DeleteAll removes every entry of kind ("" = all) and their audio,

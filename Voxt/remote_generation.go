@@ -35,6 +35,9 @@ type genForm struct {
 	usage                           bool // oMLX: usage in stream events (on by default)
 	extraBody                       string
 	advanced                        bool // the folding section, open
+	// api is the API format's title (it is saved in settings.Provider, not
+	// in Generation).
+	api string
 }
 
 // The menus' choices: values and their titles.
@@ -85,7 +88,15 @@ func formatTitle(v string) string {
 var (
 	responseFormats = []string{"", llm.ResponseJSON, llm.ResponseJSONSchema}
 	verbosities     = []string{"", "low", "medium", "high"}
+	apiFormats      = []string{"", llm.APIResponses}
 )
+
+func apiFormatTitle(v string) string {
+	if v == llm.APIResponses {
+		return "Responses"
+	}
+	return "Chat Completions"
+}
 
 func verbosityTitle(v string) string {
 	if v == "" {
@@ -293,6 +304,12 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 	// own default for the model.
 	serviceDefault := i18n.T("Service default")
 	collapsible(c, i18n.T("Advanced"), &f.advanced, nil, func() {
+		if caps.APIFormat {
+			fieldInfo(c, i18n.T("API format"), i18n.T("Chat Completions works with nearly every service. Responses is OpenAI's newer API; a custom service must offer POST /responses to use it. Stop sequences and Logprobs are not sent with Responses."), func() {
+				ui.Select(c.Key("gen-api"), &f.api, titles(apiFormats, apiFormatTitle)).Label(i18n.T("API format")).Width(px(t, 240))
+			})
+		}
+		responses := valueOf(f.api, apiFormats, apiFormatTitle) == llm.APIResponses
 		pair(func() {
 			if caps.Temperature {
 				half("gen-temp", i18n.T("Temperature"), serviceDefault, &f.temperature)
@@ -334,13 +351,15 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 				ui.TextArea(c.Key("gen-schema"), &f.schema).Label("JSON Schema").Placeholder(`{"type": "object", …}`).MinHeight(px(t, 96))
 			}
 		}
-		if caps.Logprobs {
-			ui.Switch(c.Key("gen-logprobs"), &f.logprobs).Label("Logprobs")
+		if caps.Logprobs && !responses {
+			fieldInfo(c, "Logprobs", "", func() {
+				ui.Switch(c.Key("gen-logprobs"), &f.logprobs).Label("Logprobs")
+			})
 			if f.logprobs {
 				num("gen-toplogprobs", i18n.T("Top logprobs (optional)"), "5", &f.topLogprobs)
 			}
 		}
-		if caps.Stop {
+		if caps.Stop && !responses {
 			fieldInfo(c, i18n.T("Stop sequences"), "", func() {
 				ui.TextArea(c.Key("gen-stop"), &f.stop).Label(i18n.T("Stop sequences")).Placeholder(i18n.T("One stop sequence per line")).MinHeight(px(t, 56))
 			})
