@@ -26,6 +26,7 @@ type providerDialog struct {
 	exists             bool // the service was set up before
 	key, endpoint      string
 	model, customModel string // model: the select's label
+	recognitionPrompt  string
 	err, errMore       string // a save or check error
 	saving, removeKey  bool
 	test               providerTest
@@ -47,7 +48,7 @@ func otherModel() string { return i18n.T("Other model…") }
 func (a *app) openProviderDialog(kind local.Kind, id string) {
 	sv := lookupService(kind, id)
 	p, exists := a.setupOf(kind, id)
-	d := providerDialog{open: true, kind: kind, id: id, exists: exists, endpoint: p.Endpoint, appID: p.AppID, gen: genFormOf(p.Generation)}
+	d := providerDialog{open: true, kind: kind, id: id, exists: exists, endpoint: p.Endpoint, appID: p.AppID, recognitionPrompt: p.RecognitionPrompt, gen: genFormOf(p.Generation)}
 	d.model = setupModel(kind, p)
 	if d.model == "" || !slices.Contains(sv.models, d.model) {
 		d.model, d.customModel = otherModel(), d.model
@@ -76,8 +77,11 @@ func (d *providerDialog) setup() settings.Provider {
 	if model != lookupService(d.kind, d.id).model {
 		p.Model = model
 	}
-	if d.kind == local.LLM {
+	switch d.kind {
+	case local.LLM:
 		p.Generation, _ = d.gen.settings()
+	case local.ASR:
+		p.RecognitionPrompt = strings.TrimSpace(d.recognitionPrompt)
 	}
 	return p
 }
@@ -164,6 +168,12 @@ func (a *app) providerDialogView(c *ui.Context) {
 				ui.TextInput(c.Key("remote-model-custom"), &d.customModel).Placeholder(i18n.T("Model id")).Label(i18n.T("Model id"))
 			}
 		})
+		if d.kind == local.ASR {
+			fieldInfo(c, i18n.T("Recognition prompt"), i18n.T("Optional. Goes after the global speech context on the Speech models page. Use {{USER_MAIN_LANGUAGE}}, {{USER_OTHER_LANGUAGES}} and {{DICTIONARY_TERMS}} for your languages and dictionary. Services that take no prompt ignore it."), func() {
+				ui.TextArea(c.Key("remote-asr-prompt"), &d.recognitionPrompt).Label(i18n.T("Recognition prompt")).
+					Placeholder(i18n.T("For example: Technical talk; prefer product names from the dictionary.")).MinHeight(px(t, 72))
+			})
+		}
 		if d.kind == local.LLM {
 			a.generationFields(c, d) // remote_generation.go
 		}
