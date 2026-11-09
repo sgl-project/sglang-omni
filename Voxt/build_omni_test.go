@@ -2,15 +2,19 @@ package main
 
 // scripts/build-omni.sh stages silero_vad_server, a copy of
 // qwen3_asr_server, so that Activity Monitor tells Silero VAD from the
-// speech model (internal/omni Spec.Binary). Runs on Linux too: the
-// runtime's build, uname, uv and codesign are fakes.
+// speech model, and the server of every other speech model (internal/omni
+// Spec.Binary). Runs on Linux too: the runtime's build, uname, uv and
+// codesign are fakes.
 
 import (
 	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/sgl-project/sglang-omni/Voxt/internal/omni"
 )
 
 func TestBuildOmniStagesSileroCopy(t *testing.T) {
@@ -29,16 +33,20 @@ func TestBuildOmniStagesSileroCopy(t *testing.T) {
 		}
 	}
 	write(filepath.Join(root, "scripts/build-omni.sh"), string(script))
-	// The native build makes the server, which refuses an unknown kind as
-	// the real one does, and MLX beside it.
+	// The native build makes the servers, of which qwen3_asr_server
+	// refuses an unknown kind as the real one does, and MLX beside them.
+	var others []string
+	for _, s := range omni.Models() {
+		if s.Binary != "" && s.Binary != "silero_vad_server" {
+			others = append(others, s.Binary)
+		}
+	}
 	native := filepath.Join(root, "native")
 	write(filepath.Join(native, "scripts/build_runtime.sh"), `#!/bin/bash
 mkdir -p "$1/bin"
 printf '#!/bin/sh\necho "--model-kind must be one of qwen3_asr, silero_vad" >&2\nexit 2\n' > "$1/bin/qwen3_asr_server"
 chmod +x "$1/bin/qwen3_asr_server"
-for s in whisper_server moss_transcribe_diarize_server parakeet_server sensevoice_server; do
-  cp "$1/bin/qwen3_asr_server" "$1/bin/$s"
-done
+for s in `+strings.Join(others, " ")+`; do echo "$s" > "$1/bin/$s"; done
 echo lib > "$1/bin/libmlx.dylib"
 echo metal > "$1/bin/mlx.metallib"
 `)
@@ -63,5 +71,13 @@ echo metal > "$1/bin/mlx.metallib"
 	}
 	if fi, err := os.Stat(silero); err != nil || fi.Mode()&0o111 == 0 {
 		t.Fatalf("silero_vad_server is not executable: %v", fi.Mode())
+	}
+	if len(others) < 6 {
+		t.Fatalf("the specs name %v", others)
+	}
+	for _, s := range others {
+		if fi, err := os.Stat(filepath.Join(out, "bin", s)); err != nil || fi.Mode()&0o111 == 0 {
+			t.Errorf("%s is not staged: %v", s, err)
+		}
 	}
 }

@@ -27,6 +27,7 @@ const (
 	ASR Kind = "asr" // speech recognition
 	LLM Kind = "llm" // a language model
 	VAD Kind = "vad" // voice activity detection: a helper model, not chosen by the user
+	Aux Kind = "aux" // files another model loads beside its own (Whisper's tokenizer), never shown
 )
 
 // Runtime is what runs a model.
@@ -40,16 +41,23 @@ const (
 
 // The catalogue's ids.
 const (
-	ASRAccurate     = "asr.accurate"
-	ASRAccurate6bit = "asr.accurate-6bit"
-	ASRFast         = "asr.fast"
+	ASRAccurate = "asr.accurate"
+	ASRFast     = "asr.fast"
+	VADSilero   = "vad.silero"
+	// Voxt 1.x's other local speech models.
+	ASRQwen6bit     = "asr.qwen3-6bit"
 	ASRWhisperTurbo = "asr.whisper-turbo"
 	ASRWhisperLarge = "asr.whisper-large"
 	ASRWhisperSmall = "asr.whisper-small"
-	ASRMoss         = "asr.moss"
 	ASRParakeet     = "asr.parakeet"
 	ASRSenseVoice   = "asr.sensevoice"
-	VADSilero       = "vad.silero"
+	ASRCohere       = "asr.cohere"
+	ASRNemotron     = "asr.nemotron"
+	ASRMoss         = "asr.moss"
+	// The Whisper tokenizers, from OpenAI's repos (the MLX conversions
+	// have none).
+	AuxWhisperLarge = "aux.whisper-large-v3"
+	AuxWhisperSmall = "aux.whisper-small"
 	LLMBalanced     = "llm.balanced"
 	LLMFast         = "llm.fast"
 	LLMTranslate    = "llm.translate"
@@ -69,14 +77,6 @@ type File struct {
 	// SHA-256 (the others' by their git blob id, which the download
 	// checks instead).
 	LFS bool `json:"lfs,omitempty"`
-}
-
-// Aux is another repo a model needs (the family pins table's aux:
-// Whisper's tokenizer, in openai/whisper-*), downloaded, claimed and
-// deleted with it.
-type Aux struct {
-	Repo, Revision string
-	Files          []File
 }
 
 // Model is one model of the catalogue.
@@ -100,9 +100,6 @@ type Model struct {
 	Files []File
 	// Bytes is the size when Files is nil.
 	Bytes int64
-	// Aux are the other repos it needs; the runtime finds their files
-	// beside the model's.
-	Aux []Aux
 	// Family and Quant are the family's model series ("qwen3-asr") and
 	// quantisation ("8bit"), written into the claims.
 	Family, Quant string
@@ -111,7 +108,9 @@ type Model struct {
 	// Features are the only features it serves ("translate"), nil for
 	// every one.
 	Features []string
-	// Needs are models installed with it (a speech model: the VAD).
+	// Needs are models installed with it (a speech model: the VAD; a
+	// Whisper model: its tokenizer, an Aux whose files its server reads
+	// from the model's own folder).
 	Needs []string
 	// Alternatives are models that may stand in for it while it is not
 	// installed (the same kind, lighter or another app's), offered to the
@@ -128,21 +127,13 @@ type Model struct {
 	Retired bool
 }
 
-// Size is the size of the model's files, its auxiliary repos' included.
+// Size is the size of the model's files.
 func (m Model) Size() int64 {
-	n := m.Bytes
-	if len(m.Files) > 0 {
-		n = filesSize(m.Files)
+	if len(m.Files) == 0 {
+		return m.Bytes
 	}
-	for _, a := range m.Aux {
-		n += filesSize(a.Files)
-	}
-	return n
-}
-
-func filesSize(files []File) int64 {
 	var n int64
-	for _, f := range files {
+	for _, f := range m.Files {
 		n += f.Size
 	}
 	return n
@@ -165,23 +156,15 @@ func Lookup(id string) (Model, bool) {
 	return Model{}, false
 }
 
-// The pins are the family pins table's (TestFamilyPins); the omni
-// models' are also sglang_omni_mlx/native/ci/models.json's or
-// model_pins.json's (TestOmniPins), Whisper's tokenizer files the latter's
-// "tokenizer".
+// The pins are the family pins table's where it has the repo
+// (TestFamilyPins); the omni models' are also sglang_omni_mlx/native/ci's
+// models.json or model_pins.json, the Whisper tokenizers that file's
+// (TestOmniPins). The speech models after the first two are Voxt 1.x's
+// other local models, with the files their native servers read.
 // The language models' files are those Voxt's loaders take (weights,
 // configs, tokenizer, chat template): Qwen3.5-4B-OptiQ without its
 // optiq/ vision tower and MTP head, Hy-MT2's one GGUF file of the repo.
 // The borrowed models are Dicta's and AudioSmith's, whole snapshots.
-// whisperLargeTokenizer is the tokenizer of Whisper large-v3 and its
-// turbo.
-var whisperLargeTokenizer = Aux{Repo: "openai/whisper-large-v3", Revision: "06f233fe06e710322aca913c1bc4249a0d71fce1", Files: []File{
-	{"generation_config.json", 3903, "fbdfa70135de9b1d31553393f14e80aaeb1936ea36576b2ba864055943c09d23", false},
-	{"merges.txt", 493869, "2df2990a395e35e8dfbc7511e08c12d56018d8d04691e0133e5d63b21e154dc6", false},
-	{"tokenizer_config.json", 282843, "844b642c73a91359722f47b35705f7174686df33d252695d8572cf9ac03a6389", false},
-	{"vocab.json", 1036558, "e2aa043ef015641d363d8288e7c241c85e36a5c761fb303598e0710233344387", false},
-}}
-
 var catalog = []Model{
 	{
 		ID: ASRAccurate, Name: "Qwen3-ASR 1.7B (8bit)", Kind: ASR, Runtime: Omni, Default: true, Needs: []string{VADSilero},
@@ -194,22 +177,6 @@ var catalog = []Model{
 			{"merges.txt", 1671853, "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5", false},
 			{"model.safetensors", 2463307541, "bf304b009cc7eca79283056f787b44c952d24ac22cec787b39732bba3c23c13c", true},
 			{"model.safetensors.index.json", 78968, "0a5d0ec11188602242ff81a9969883d0fdeb98cd5d85cd1413089d897c201af5", false},
-			{"preprocessor_config.json", 330, "45e120a4eda2c20c5d7f2ea9354e63536bf35e27aa573fb7cdf78017b378770d", false},
-			{"tokenizer_config.json", 12487, "4942d005604266809309cabc9f4e9cb89ce855d59b14681fdc0e1cc62ea26c4c", false},
-			{"vocab.json", 2776833, "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910", false},
-		},
-	},
-	{
-		ID: ASRAccurate6bit, Name: "Qwen3-ASR 1.7B (6bit)", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero},
-		Family: "qwen3-asr", Quant: "6bit",
-		Repo: "mlx-community/Qwen3-ASR-1.7B-6bit", Revision: "edd077a475c4da058e25b6e6ec1199115ca1be2b",
-		Files: []File{
-			{"chat_template.json", 1161, "75a8cfca24f00de72d796fbfed6858fc9614ef3dabd8696684cc3bc03a9c58ff", false},
-			{"config.json", 7188, "243c07b95f6ade8db20e73b3aa2b0ba101f8bcce75b82557f7d8e957838bcf25", false},
-			{"generation_config.json", 142, "1da527824d81e07118facff437e03f2e24a23311e3bdeb2368973fe77e5f275c", false},
-			{"merges.txt", 1671853, "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5", false},
-			{"model.safetensors", 2033194557, "cacb094fef227ec2a5908d0136b3ad3384d95e0e2a8a915984ce577e4b12b2ba", true},
-			{"model.safetensors.index.json", 78968, "703625934380698dbe06a62aa0e50167ec30fb4d9a383da171af6dd07c56e82d", false},
 			{"preprocessor_config.json", 330, "45e120a4eda2c20c5d7f2ea9354e63536bf35e27aa573fb7cdf78017b378770d", false},
 			{"tokenizer_config.json", 12487, "4942d005604266809309cabc9f4e9cb89ce855d59b14681fdc0e1cc62ea26c4c", false},
 			{"vocab.json", 2776833, "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910", false},
@@ -232,52 +199,46 @@ var catalog = []Model{
 		},
 	},
 	{
-		ID: ASRWhisperTurbo, Name: "Whisper large-v3 turbo", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero},
+		ID: ASRQwen6bit, Name: "Qwen3-ASR 1.7B (6bit)", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero},
+		Family: "qwen3-asr", Quant: "6bit",
+		Repo: "mlx-community/Qwen3-ASR-1.7B-6bit", Revision: "edd077a475c4da058e25b6e6ec1199115ca1be2b",
+		Files: []File{
+			{"chat_template.json", 1161, "75a8cfca24f00de72d796fbfed6858fc9614ef3dabd8696684cc3bc03a9c58ff", false},
+			{"config.json", 7188, "243c07b95f6ade8db20e73b3aa2b0ba101f8bcce75b82557f7d8e957838bcf25", false},
+			{"generation_config.json", 142, "1da527824d81e07118facff437e03f2e24a23311e3bdeb2368973fe77e5f275c", false},
+			{"merges.txt", 1671853, "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5", false},
+			{"model.safetensors", 2033194557, "cacb094fef227ec2a5908d0136b3ad3384d95e0e2a8a915984ce577e4b12b2ba", true},
+			{"model.safetensors.index.json", 78968, "703625934380698dbe06a62aa0e50167ec30fb4d9a383da171af6dd07c56e82d", false},
+			{"preprocessor_config.json", 330, "45e120a4eda2c20c5d7f2ea9354e63536bf35e27aa573fb7cdf78017b378770d", false},
+			{"tokenizer_config.json", 12487, "4942d005604266809309cabc9f4e9cb89ce855d59b14681fdc0e1cc62ea26c4c", false},
+			{"vocab.json", 2776833, "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910", false},
+		},
+	},
+	{
+		ID: ASRWhisperTurbo, Name: "Whisper Large v3 Turbo", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero, AuxWhisperLarge},
 		Family: "whisper", Quant: "fp16",
 		Repo: "mlx-community/whisper-large-v3-turbo", Revision: "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
 		Files: []File{
 			{"config.json", 268, "b34fc29e4e11e0a25e812775dd67f4dd16fc2c8eb43d28ae25ff7d660ecb6379", false},
 			{"weights.safetensors", 1613977612, "951ed3fc1203e6a62467abb2144a96ce7eafca8fa77e3704fdb8635ff3e7f8a6", true},
 		},
-		Aux: []Aux{whisperLargeTokenizer},
 	},
 	{
-		ID: ASRWhisperLarge, Name: "Whisper large-v3", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero},
+		ID: ASRWhisperLarge, Name: "Whisper Large v3", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero, AuxWhisperLarge},
 		Family: "whisper", Quant: "fp16",
 		Repo: "mlx-community/whisper-large-v3-mlx", Revision: "49e6aa286ad60c14352c404340ded53710378a11",
 		Files: []File{
 			{"config.json", 269, "34982ce6ae286095000f82ae9583b3431639e8b092bf60c961f203745e6500e3", false},
 			{"weights.npz", 3083520416, "05ff791ce3630fae47e7c51004e9666204d786246ec07cac6110af768099b40d", true},
 		},
-		Aux: []Aux{whisperLargeTokenizer},
 	},
 	{
-		ID: ASRWhisperSmall, Name: "Whisper small", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero},
+		ID: ASRWhisperSmall, Name: "Whisper Small", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero, AuxWhisperSmall},
 		Family: "whisper", Quant: "fp16",
 		Repo: "mlx-community/whisper-small-mlx", Revision: "45f3915923c7a79a5a5b5a7d909d39aeb0e5630e",
 		Files: []File{
 			{"config.json", 266, "e8f58e638208af66d5d5d67801259dc7a12d199e971967a9f9d33a8e3635668e", false},
 			{"weights.npz", 481307592, "55b6674c9b339702d486e2b1573839a66f8ec8f821ed2886993ef717a86b09f5", true},
-		},
-		Aux: []Aux{{Repo: "openai/whisper-small", Revision: "973afd24965f72e36ca33b3055d56a652f456b4d", Files: []File{
-			{"generation_config.json", 3868, "71565b8ef50d0bf7a1193ed4bbed195b94e70c18894d81bba2f1233dcec3ab53", false},
-			{"merges.txt", 493869, "2df2990a395e35e8dfbc7511e08c12d56018d8d04691e0133e5d63b21e154dc6", false},
-			{"tokenizer_config.json", 282683, "2a4c4281cf9f51ac6ccc406fdc711a087afe6530f671fa7b80953edc498275ce", false},
-			{"vocab.json", 835550, "8f680bba319e01a653d2e8a5dbc17a9157179e0576e6ce74ce0c06356c6e24f9", false},
-		}}},
-	},
-	{
-		ID: ASRMoss, Name: "MOSS-Transcribe-Diarize", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero},
-		Family: "moss-transcribe-diarize", Quant: "bf16",
-		Repo: "OpenMOSS-Team/MOSS-Transcribe-Diarize", Revision: "704aa4a9c304e8520be88901e0d1960158ef5b15",
-		Files: []File{
-			{"config.json", 2335, "2b2b7a6e61334152bdd7ecf8a4da3073b4940a097e193d1d2b22093e77535234", false},
-			{"merges.txt", 1671853, "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5", false},
-			{"model-00000-of-00001.safetensors", 1817113576, "9a0ceb4ab7330357db3ff583dba8d83625d5b733b00e1d55d6970e11b07026c4", true},
-			{"processor_config.json", 292, "a978c2dd54a65b576c3dae4b654fe9bcbac1184c6db2df0afb2c90fcdc872ae7", false},
-			{"tokenizer.json", 11423222, "bcf03774334462d6e34b5005cb11120a62275f146ee2953e68731ecdbce84fbb", true},
-			{"tokenizer_config.json", 503, "61d04c96104177240688396655ae3f7cf38ce2ea036db867a1d2b6883e27c3d5", false},
-			{"vocab.json", 2776833, "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910", false},
 		},
 	},
 	{
@@ -298,6 +259,60 @@ var catalog = []Model{
 			{"chn_jpn_yue_eng_ko_spectok.bpe.model", 377341, "aa87f86064c3730d799ddf7af3c04659151102cba548bce325cf06ba4da4e6a8", true},
 			{"config.json", 517, "32b996111892031dfe4b73751864d93c769391aa213427ea65daf2ecdef7caa5", false},
 			{"model.safetensors", 936100124, "7abe356045684ae374ea60e6b8dbc967222d7d1e35cc222be870c94630b1c38a", true},
+		},
+	},
+	{
+		ID: ASRCohere, Name: "Cohere Transcribe 03-2026 (fp16)", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero},
+		Family: "cohere-transcribe", Quant: "fp16",
+		Repo: "beshkenadze/cohere-transcribe-03-2026-mlx-fp16", Revision: "06bbe0d853a93cbbf7c1f40cffccd4c5481459ef",
+		Files: []File{
+			{"config.json", 3998, "5de7e586cec6d8f51225c8d5fe17a56a3043dda9af8c42f9cb01dd545905eb18", false},
+			{"model.safetensors", 4131827448, "1ec6ba9ee27da02b21b3ffdb5183b77020351d3331d05a74ad8d58a09394a2b8", true},
+			{"tokenizer.model", 492827, "6d21e6a83b2d0d3e1241a7817e4bef8eb63bcb7cfe4a2675af9a35ff3bbf0e14", true},
+			{"tokenizer_config.json", 48141, "0dfeb3eeba07bccaa1b4bf78f3135ad3059acf8d18f681675832b285ac0035b0", false},
+		},
+	},
+	{
+		ID: ASRNemotron, Name: "Nemotron 3.5 ASR 0.6B (8bit)", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero},
+		Family: "nemotron-asr", Quant: "8bit",
+		Repo: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit", Revision: "7279359e4481b5e9e185a318bd618e429c6d86cd",
+		Files: []File{
+			{"config.json", 159605, "f30c7bc469fc01fd5483172b4d7c75075030ddb60f347589c44e216b0a5ea9b6", false},
+			{"model.safetensors", 755598923, "a64a4da048e7d28dde4cd4ff61ce59308a63314bb5563e73e06c24aae50ea941", true},
+		},
+	},
+	{
+		ID: ASRMoss, Name: "MOSS-Transcribe-Diarize", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero},
+		Family: "moss-transcribe-diarize", Quant: "bf16",
+		Repo: "OpenMOSS-Team/MOSS-Transcribe-Diarize", Revision: "704aa4a9c304e8520be88901e0d1960158ef5b15",
+		Files: []File{
+			{"config.json", 2335, "2b2b7a6e61334152bdd7ecf8a4da3073b4940a097e193d1d2b22093e77535234", false},
+			{"merges.txt", 1671853, "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5", false},
+			{"model-00000-of-00001.safetensors", 1817113576, "9a0ceb4ab7330357db3ff583dba8d83625d5b733b00e1d55d6970e11b07026c4", true},
+			{"processor_config.json", 292, "a978c2dd54a65b576c3dae4b654fe9bcbac1184c6db2df0afb2c90fcdc872ae7", false},
+			{"tokenizer.json", 11423222, "bcf03774334462d6e34b5005cb11120a62275f146ee2953e68731ecdbce84fbb", true},
+			{"tokenizer_config.json", 503, "61d04c96104177240688396655ae3f7cf38ce2ea036db867a1d2b6883e27c3d5", false},
+			{"vocab.json", 2776833, "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910", false},
+		},
+	},
+	{
+		ID: AuxWhisperLarge, Name: "Whisper Large v3 tokenizer", Kind: Aux, Runtime: Omni, Family: "whisper",
+		Repo: "openai/whisper-large-v3", Revision: "06f233fe06e710322aca913c1bc4249a0d71fce1",
+		Files: []File{
+			{"generation_config.json", 3903, "fbdfa70135de9b1d31553393f14e80aaeb1936ea36576b2ba864055943c09d23", false},
+			{"merges.txt", 493869, "2df2990a395e35e8dfbc7511e08c12d56018d8d04691e0133e5d63b21e154dc6", false},
+			{"tokenizer_config.json", 282843, "844b642c73a91359722f47b35705f7174686df33d252695d8572cf9ac03a6389", false},
+			{"vocab.json", 1036558, "e2aa043ef015641d363d8288e7c241c85e36a5c761fb303598e0710233344387", false},
+		},
+	},
+	{
+		ID: AuxWhisperSmall, Name: "Whisper Small tokenizer", Kind: Aux, Runtime: Omni, Family: "whisper",
+		Repo: "openai/whisper-small", Revision: "973afd24965f72e36ca33b3055d56a652f456b4d",
+		Files: []File{
+			{"generation_config.json", 3868, "71565b8ef50d0bf7a1193ed4bbed195b94e70c18894d81bba2f1233dcec3ab53", false},
+			{"merges.txt", 493869, "2df2990a395e35e8dfbc7511e08c12d56018d8d04691e0133e5d63b21e154dc6", false},
+			{"tokenizer_config.json", 282683, "2a4c4281cf9f51ac6ccc406fdc711a087afe6530f671fa7b80953edc498275ce", false},
+			{"vocab.json", 835550, "8f680bba319e01a653d2e8a5dbc17a9157179e0576e6ce74ce0c06356c6e24f9", false},
 		},
 	},
 	{

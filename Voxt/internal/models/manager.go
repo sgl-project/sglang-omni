@@ -173,20 +173,6 @@ func (m *Manager) Dir(id string) string {
 	return SnapshotDir(m.store.Hub, mod, s.Revision)
 }
 
-// AuxDirs are the snapshot folders of model id's auxiliary repos (its
-// files' companions for the runtime), nil when it is not installed.
-func (m *Manager) AuxDirs(id string) []string {
-	mod, ok := m.Lookup(id)
-	if !ok || !m.Installed(id) {
-		return nil
-	}
-	var out []string
-	for _, a := range mod.Aux {
-		out = append(out, fammodels.SnapshotDir(m.store.Hub, fammodels.Ref{Repo: a.Repo, Revision: a.Revision}))
-	}
-	return out
-}
-
 // Status is model id's state (memory only).
 func (m *Manager) Status(id string) Status {
 	m.mu.Lock()

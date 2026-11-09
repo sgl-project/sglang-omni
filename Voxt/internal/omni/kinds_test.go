@@ -13,144 +13,151 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni/omnitest"
 )
 
-// serverLinks makes the runtime's bin/ a folder of links to the test
-// binary under every server's name, so that each model's server is the
-// fake playing that server.
-func serverLinks(t *testing.T) func(*Config) {
+// TestKinds: Voxt 1.x's other speech models run on servers of their own
+// with only the common launch flags (their servers refuse Qwen3-ASR's),
+// take no context, and spell the language hint their server's way.
+func TestKinds(t *testing.T) {
+	for _, s := range ASRModels() {
+		qwen := s.Kind == kindQwen3ASR
+		if qwen != (s.Binary == "") || qwen != (s.ASR.ContextTerms > 0) || qwen != (s.ASR.TokensPerSecond > 0) {
+			t.Errorf("%s: kind %s, binary %q, context %d, %v tokens a second", s.ID, s.Kind, s.Binary, s.ASR.ContextTerms, s.ASR.TokensPerSecond)
+		}
+		if args := strings.Join(s.launchArgs(true), " "); !qwen && args != "--model-kind "+s.Kind {
+			t.Errorf("%s: launch args %q", s.ID, args)
+		}
+		if realtime := s.Kind == kindQwen3ASR || s.Kind == kindNemotron || s.Kind == kindMoss; realtime != s.ASR.Realtime {
+			t.Errorf("%s: realtime %v", s.ID, s.ASR.Realtime)
+		}
+	}
+	for _, c := range []struct{ id, code, want string }{
+		{ASRNemotron, "zh-Hans", "zh-CN"}, {ASRNemotron, "en-US", "en"}, {ASRNemotron, "ja", "ja-JP"},
+		{ASRWhisperTurbo, "zh-Hans", "zh"}, {ASRSenseVoice, "yue", "yue"}, {ASRSenseVoice, "fr", ""},
+		{ASRParakeet, "de-DE", "de"}, {ASRParakeet, "zh", ""}, {ASRCohere, "ko", "ko"},
+	} {
+		if got := again(c.id).languageHint(c.code); got != c.want {
+			t.Errorf("%s: hint for %q = %q, want %q", c.id, c.code, got, c.want)
+		}
+	}
+	if b := again(ASRWhisperTurbo).ASR.contextBias([]string{"Voxt"}, "names"); b.context != "" || len(b.terms) != 0 {
+		t.Errorf("whisper bias %+v", b)
+	}
+	moss := again(ASRMoss)
+	if b := moss.ASR.contextBias([]string{"Voxt"}, "names"); b.context != moss.ASR.Instruction || len(b.terms) != 0 || !strings.Contains(b.context, "plain text") {
+		t.Errorf("moss bias %+v", b)
+	}
+	if w := again(ASRWhisperTurbo).ASR; w.tokenBudget(time.Hour) != 1024 || w.tokenBudget(time.Second) != 1024 {
+		t.Error("whisper's budget is 1024 a request")
+	}
+	if p := again(ASRParakeet).ASR; p.tokenBudget(time.Minute) != 0 {
+		t.Error("parakeet sends no budget")
+	}
+}
+
+// withServers puts the runtime's binary and the named servers, all the
+// test binary (the fake), in a folder of their own.
+func withServers(t *testing.T, names ...string) func(*Config) {
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	bin := t.TempDir()
-	for _, name := range []string{"qwen3_asr_server", "whisper_server", "moss_transcribe_diarize_server", "parakeet_server", "sensevoice_server"} {
-		if err := os.Symlink(exe, filepath.Join(bin, name)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return func(c *Config) { c.Binary = filepath.Join(bin, "qwen3_asr_server") }
-}
-
-// mossRaw is MOSS's output with its timestamps, speaker labels and an
-// acoustic event.
-const mossRaw = "[0.00][S01]你好。[sniff] [1.20]\n[1.30][S02]Hello there.[2.50]"
-
-// TestKinds: each speech model runs on its own server, launched with only
-// the flags that server knows, and its Final carries Voxt's fields for
-// it; Whisper's server finds the tokenizer beside the weights; MOSS's text
-// loses its tags; only Qwen3-ASR and MOSS stream.
-func TestKinds(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir()) // the joined folder of Whisper's (joinDirs)
-	f := newFake(t, omnitest.Opts{Text: mossRaw}, serverLinks(t))
-	tokenizer := t.TempDir()
-	for _, p := range []string{filepath.Join(tokenizer, "vocab.json"), filepath.Join(f.model(ASRWhisperTurbo), "weights.safetensors")} {
-		if err := os.WriteFile(p, []byte("{}"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	cases := []struct {
-		id, binary string
-		aux        []string
-		live       bool
-		fields     map[string]string // "": not sent
-		text       string
-	}{
-		{ASRAccurate, "qwen3_asr_server", nil, true, map[string]string{"language": "zh", "prompt": "Voxt\nMLX", "audio_layout": "voxt_swift", "chunk_duration": ""}, mossRaw},
-		{ASRWhisperTurbo, "whisper_server", []string{tokenizer}, false, map[string]string{"language": "zh", "max_new_tokens": "256", "prompt": "", "audio_layout": ""}, mossRaw},
-		{ASRMoss, "moss_transcribe_diarize_server", nil, true, map[string]string{"language": "", "prompt": mossPlainPrompt + " Hotwords: Voxt, MLX", "max_new_tokens": "256"}, "你好。Hello there."},
-		{ASRParakeet, "parakeet_server", nil, false, map[string]string{"language": "", "prompt": "", "chunk_duration": "1200"}, mossRaw},
-		{ASRSenseVoice, "sensevoice_server", nil, false, map[string]string{"language": "zh", "prompt": "", "use_itn": "false", "vad_model_directory": ""}, mossRaw},
-	}
-	for i, c := range cases {
-		a, err := NewASR(f.rt, c.id, f.model(c.id), c.aux...)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if a.Caps().Stream != c.live {
-			t.Errorf("%s: streams %v", c.id, a.Caps().Stream)
-		}
-		if !c.live {
-			if _, err := a.Open(context.Background(), asr.StreamRequest{}); asr.KindOf(err) != asr.KindConfig {
-				t.Errorf("%s: Open without a live preview: %v", c.id, err)
+	return func(c *Config) {
+		bin := t.TempDir()
+		for _, name := range append([]string{"qwen3_asr_server"}, names...) {
+			if err := os.Symlink(exe, filepath.Join(bin, name)); err != nil {
+				t.Fatal(err)
 			}
 		}
-		res, err := a.Transcribe(context.Background(), asr.FileRequest{Audio: tone(time.Second, 0.3), Format: "pcm", Lang: "zh", Hints: []string{"Voxt", "MLX"}})
-		if err != nil {
-			t.Fatalf("%s: %v", c.id, err)
-		}
-		if res.Text != c.text {
-			t.Errorf("%s: text %q, want %q", c.id, res.Text, c.text)
-		}
-		launch := f.records("launch")
-		if got := launch[len(launch)-1]; got.Binary != c.binary || slices.Contains(got.Args, "--first-decode-ms") != (c.binary == "qwen3_asr_server") {
-			t.Errorf("%s: launched %s %v", c.id, got.Binary, got.Args)
-		} else if c.aux != nil && !(slices.Contains(got.Files, "vocab.json") && slices.Contains(got.Files, "weights.safetensors")) {
-			t.Errorf("%s: the server's folder has %v", c.id, got.Files)
-		}
-		finals := f.records("final")
-		if len(finals) != i+1 {
-			t.Fatalf("%s: %d Finals", c.id, len(finals))
-		}
-		for k, v := range c.fields {
-			if got := finals[i].Fields[k]; got != v {
-				t.Errorf("%s: %s %q, want %q", c.id, k, got, v)
-			}
-		}
+		c.Binary = filepath.Join(bin, "qwen3_asr_server")
 	}
 }
 
-// TestSenseVoiceLong: a SenseVoice recording over 30 s is cut at speech by
-// the server, with the speech model's Silero VAD and Voxt's settings.
-func TestSenseVoiceLong(t *testing.T) {
-	f := newFake(t, omnitest.Opts{}, serverLinks(t))
-	v, err := NewVAD(f.rt, f.model(VADSilero))
+// TestBatchPreview: a model without a realtime API (Whisper) shows the
+// text of Final requests over the audio while it records, never opens a
+// socket, and its Final carries the per-request budget and no context.
+func TestBatchPreview(t *testing.T) {
+	f := newFake(t, omnitest.Opts{Text: "text {n}"}, withServers(t, "whisper_server"))
+	a := f.asr(t, ASRWhisperTurbo)
+	if c := a.Caps(); c.Hints || c.Prompt || !c.Stream {
+		t.Errorf("caps %+v", c)
+	}
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: 16000, Lang: "zh-Hans", Hints: []string{"Voxt"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := f.asr(t, ASRSenseVoice).WithVAD(v)
-	if _, err := a.Transcribe(context.Background(), asr.FileRequest{Audio: tone(31*time.Second, 0.3), Format: "pcm"}); err != nil {
+	sendAll(t, st, tone(2500*time.Millisecond, 0.3))
+	var first asr.Event
+	select {
+	case first = <-st.Events():
+	case <-time.After(10 * time.Second):
+		t.Fatal("no preview before Finish")
+	}
+	if first.Kind != asr.EventPartial || !strings.HasPrefix(first.Text, "text ") {
+		t.Errorf("preview %+v", first)
+	}
+	if err := st.Finish(); err != nil {
 		t.Fatal(err)
 	}
-	fields := f.records("final")[0].Fields
-	if fields["vad_model_directory"] != f.model(VADSilero) || fields["vad_max_chunk_seconds"] != "24" || fields["vad_chunk_overlap_seconds"] != "0.35" {
-		t.Errorf("fields %v", fields)
+	evs := drain(t, st)
+	if len(evs) == 0 || evs[len(evs)-1].Kind != asr.EventFinal || !strings.HasPrefix(evs[len(evs)-1].Text, "text ") {
+		t.Fatalf("events %+v", evs)
+	}
+	if l := f.records("launch"); len(l) != 1 || l[0].Binary != "whisper_server" || strings.Contains(strings.Join(l[0].Args, " "), "--decode-interval-ms") {
+		t.Errorf("launched %+v", l)
+	}
+	finals := f.records("final")
+	if len(finals) < 2 {
+		t.Fatalf("finals %+v: a preview and the Final", finals)
+	}
+	for _, r := range finals {
+		if r.Fields["prompt"] != "" || r.Fields["max_new_tokens"] != "1024" || r.Fields["language"] != "zh" {
+			t.Errorf("request %+v", r.Fields)
+		}
+	}
+	if !slices.ContainsFunc(finals, func(r omnitest.Record) bool { return r.Samples == 40000 }) {
+		t.Errorf("no request had the whole recording: %+v", finals)
+	}
+	f.rt.Close()
+	if l := f.records("live"); len(l) != 0 {
+		t.Errorf("a socket was opened: %+v", l)
 	}
 }
 
-// TestMossLive: MOSS's live session gets its instruction and hot words,
-// and its partial text comes without the tags.
+// TestMossLive: MOSS's live session and Final carry its plain-text
+// instruction, not the dictionary.
 func TestMossLive(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		live bool
-		want string
-	}{
-		{name: "Final", want: "你好。Hello there."},
-		{name: "LiveResult", live: true, want: "live final"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newFake(t, omnitest.Opts{Text: mossRaw, Partial: "[0.00][S01]"}, serverLinks(t))
-			st, err := f.asr(t, ASRMoss).Open(context.Background(), asr.StreamRequest{SampleRate: 16000, Lang: "zh", Hints: []string{"Voxt"}, LiveResult: tc.live})
-			if err != nil {
-				t.Fatal(err)
-			}
-			sendAll(t, st, tone(1500*time.Millisecond, 0.3))
-			var first asr.Event
-			select {
-			case first = <-st.Events():
-			case <-time.After(10 * time.Second):
-				t.Fatal("no partial before Finish")
-			}
-			if err := st.Finish(); err != nil {
-				t.Fatal(err)
-			}
-			evs := append([]asr.Event{first}, drain(t, st)...)
-			if first.Kind != asr.EventPartial || !strings.HasPrefix(first.Text, "partial ") || evs[len(evs)-1].Result.Text != tc.want {
-				t.Errorf("events %+v", evs)
-			}
-			eventually(t, "the live record", func() bool { return len(f.records("live")) == 1 })
-			if live := f.records("live")[0].Fields; live["prompt"] != mossPlainPrompt+" Hotwords: Voxt" || live["language"] != "" {
-				t.Errorf("session %v", live)
-			}
-		})
+	f := newFake(t, omnitest.Opts{}, withServers(t, "moss_transcribe_diarize_server"))
+	a := f.asr(t, ASRMoss)
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: 16000, Lang: "en", Hints: []string{"Voxt"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sendAll(t, st, tone(1500*time.Millisecond, 0.3))
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	if evs := drain(t, st); len(evs) == 0 || evs[len(evs)-1].Kind != asr.EventFinal {
+		t.Fatalf("events %+v", evs)
+	}
+	want := again(ASRMoss).ASR.Instruction
+	if finals := f.records("final"); len(finals) != 1 || finals[0].Fields["prompt"] != want {
+		t.Errorf("finals %+v", finals)
+	}
+	f.rt.Close()
+	if l := f.records("live"); len(l) != 1 || l[0].Fields["prompt"] != want || l[0].Fields["language"] != "en" {
+		t.Errorf("live %+v", l)
+	}
+}
+
+// TestMissingServer: a runtime built without a model's server says so
+// instead of running the model on qwen3_asr_server.
+func TestMissingServer(t *testing.T) {
+	f := newFake(t, omnitest.Opts{}, withServers(t))
+	a := f.asr(t, ASRParakeet)
+	_, err := a.Transcribe(context.Background(), asr.FileRequest{Audio: tone(time.Second, 0.3), Format: "pcm", SampleRate: 16000})
+	if err == nil || !strings.Contains(err.Error(), "parakeet_server") {
+		t.Errorf("err %v", err)
+	}
+	if l := f.records("launch"); len(l) != 0 {
+		t.Errorf("launched %+v", l)
 	}
 }

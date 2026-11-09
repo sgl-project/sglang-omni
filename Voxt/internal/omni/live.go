@@ -34,8 +34,8 @@ type live struct {
 	req    asr.StreamRequest
 	ctx    context.Context // Open's: it bounds the whole stream
 	cancel context.CancelFunc
-	conn   *websocket.Conn
-	out    chan []byte // messages for the socket's writer
+	conn   *websocket.Conn // nil: a model without a realtime API (the batch preview)
+	out    chan []byte     // messages for the socket's writer
 
 	// language and bias are the Final's: the model's language hint ("":
 	// it detects) and the context bias.
@@ -43,11 +43,12 @@ type live struct {
 	bias     bias
 
 	mu        sync.Mutex
-	audio     []byte  // everything sent, for the Final
-	queued    int     // bytes of audio in out
-	previewed int     // bytes of audio written to the socket
-	preview   bool    // the socket still takes audio
-	pc        *pieces // a long recording's pieces (pieces.go), nil when the model has none
+	audio     []byte        // everything sent, for the Final
+	queued    int           // bytes of audio in out
+	previewed int           // bytes of audio written to the socket (the batch preview: in its last text)
+	preview   bool          // the socket still takes audio
+	tick      chan struct{} // new audio for the batch preview (cap 1), nil with a socket
+	pc        *pieces       // a long recording's pieces (pieces.go), nil when the model has none
 	finished  bool
 	ended     bool // the last event was sent (or Close): events is closed
 	events    chan asr.Event
@@ -59,55 +60,67 @@ type live struct {
 	readDone  chan struct{}
 }
 
-// openLive connects the realtime socket and starts the session; it
-// returns once the server accepted it.
+// openLive starts the session: it connects the realtime socket and
+// returns once the server accepted it, or, for a model without one, starts
+// the batch preview (preview.go).
 func openLive(ctx context.Context, a *ASR, l *lease, req asr.StreamRequest) (*live, error) {
-	ep := l.endpoint()
-	u := url.URL{Scheme: "ws", Host: ep.host + ":" + strconv.Itoa(ep.port), Path: "/v1/realtime",
-		RawQuery: url.Values{"intent": {"transcription"}, "model": {ep.model}}.Encode()}
-	dctx, dcancel := context.WithTimeout(ctx, asr.ConnectTimeout)
-	defer dcancel()
-	conn, _, err := websocket.Dial(dctx, u.String(), &websocket.DialOptions{HTTPClient: loopback})
-	if err != nil {
-		return nil, asr.NetError(dctx, Provider, err)
-	}
-	conn.SetReadLimit(1 << 20)
-	session := map[string]any{"input_audio_format": "pcm16", "turn_detection": nil}
 	hint := a.spec.languageHint(req.Lang)
-	a.rt.logf("info", "%s: live session with language hint %q", a.spec.ID, hint)
-	if hint != "" {
-		session["language"] = hint
-	}
-	b := a.spec.ASR.contextBias(req.Hints, req.Prompt)
-	if a.spec.Kind == kindMoss {
-		session["prompt"] = mossPrompt(b.terms)
-	}
-	if err := writeJSON(dctx, conn, map[string]any{"type": "session.update", "session": session}); err != nil {
-		conn.CloseNow()
-		return nil, asr.NetError(dctx, Provider, err)
-	}
-	for {
-		ev, err := readEvent(dctx, conn)
+	var conn *websocket.Conn
+	if a.spec.ASR.Realtime {
+		ep := l.endpoint()
+		u := url.URL{Scheme: "ws", Host: ep.host + ":" + strconv.Itoa(ep.port), Path: "/v1/realtime",
+			RawQuery: url.Values{"intent": {"transcription"}, "model": {ep.model}}.Encode()}
+		dctx, dcancel := context.WithTimeout(ctx, asr.ConnectTimeout)
+		defer dcancel()
+		c, _, err := websocket.Dial(dctx, u.String(), &websocket.DialOptions{HTTPClient: loopback})
 		if err != nil {
+			return nil, asr.NetError(dctx, Provider, err)
+		}
+		conn = c
+		conn.SetReadLimit(1 << 20)
+		session := map[string]any{"input_audio_format": "pcm16", "turn_detection": nil}
+		a.rt.logf("info", "%s: live session with language hint %q", a.spec.ID, hint)
+		if hint != "" {
+			session["language"] = hint
+		}
+		if p := a.spec.ASR.Instruction; p != "" {
+			session["prompt"] = p
+		}
+		if err := writeJSON(dctx, conn, map[string]any{"type": "session.update", "session": session}); err != nil {
 			conn.CloseNow()
 			return nil, asr.NetError(dctx, Provider, err)
 		}
-		if ev.Type == "transcription_session.updated" {
-			break
+		for {
+			ev, err := readEvent(dctx, conn)
+			if err != nil {
+				conn.CloseNow()
+				return nil, asr.NetError(dctx, Provider, err)
+			}
+			if ev.Type == "transcription_session.updated" {
+				break
+			}
+			if ev.Type == "error" {
+				conn.CloseNow()
+				return nil, &asr.Error{Kind: asr.KindProtocol, Provider: Provider, Code: ev.code(), Detail: "the live session was refused"}
+			}
 		}
-		if ev.Type == "error" {
-			conn.CloseNow()
-			return nil, &asr.Error{Kind: asr.KindProtocol, Provider: Provider, Code: ev.code(), Detail: "the live session was refused"}
-		}
+	} else {
+		a.rt.logf("info", "%s: live session with language hint %q, previewed by Final requests", a.spec.ID, hint)
 	}
 	sctx, cancel := context.WithCancel(ctx)
 	s := &live{a: a, l: l, req: req, ctx: sctx, cancel: cancel, conn: conn,
-		language: hint, bias: b,
-		out: make(chan []byte, 1024), preview: true, events: make(chan asr.Event, eventBuffer),
+		language: hint, bias: a.spec.ASR.contextBias(req.Hints, req.Prompt),
+		out: make(chan []byte, 1024), preview: conn != nil, events: make(chan asr.Event, eventBuffer),
 		completed: make(chan string, 1), readDone: make(chan struct{})}
-	go s.write()
-	go s.read()
-	if a.spec.ASR.PiecesAfter > 0 && !req.LiveResult { // the live text is the result: no Final to shorten
+	if conn != nil {
+		go s.write()
+		go s.read()
+	} else {
+		s.tick = make(chan struct{}, 1)
+		go s.previewBatch()
+	}
+	// With LiveResult the socket's text is the result: no Final to shorten.
+	if a.spec.ASR.PiecesAfter > 0 && !(req.LiveResult && conn != nil) {
 		s.pc = &pieces{wake: make(chan struct{}, 1), exited: make(chan struct{})}
 		go s.recognisePieces(s.language, s.bias)
 	}
@@ -120,7 +133,9 @@ func openLive(ctx context.Context, a *ASR, l *lease, req asr.StreamRequest) (*li
 			// Open's context ended the stream before Finish.
 			s.end(asr.Event{Kind: asr.EventError, Err: asr.NetError(ctx, Provider, ctx.Err())})
 		}
-		conn.CloseNow()
+		if conn != nil {
+			conn.CloseNow()
+		}
 	}()
 	return s, nil
 }
@@ -175,9 +190,13 @@ func (s *live) Send(pcm []byte) error {
 		return &asr.Error{Kind: asr.KindProtocol, Provider: Provider, Detail: "the stream has ended"}
 	}
 	s.audio = append(s.audio, pcm...)
+	var pieceWake chan struct{} // nil channels are never ready: skipped
 	if s.pc != nil {
+		pieceWake = s.pc.wake
+	}
+	for _, wake := range []chan struct{}{s.tick, pieceWake} {
 		select {
-		case s.pc.wake <- struct{}{}:
+		case wake <- struct{}{}:
 		default:
 		}
 	}
@@ -255,9 +274,6 @@ func (s *live) read() {
 			s.mu.Unlock()
 			return
 		}
-		if s.a.spec.Kind == kindMoss {
-			ev.Text = mossText(ev.Text)
-		}
 		switch ev.Type {
 		case "transcription.completed":
 			s.completed <- ev.Text
@@ -306,7 +322,9 @@ func (s *live) Finish() error {
 // finalPass recognises pcm, the whole recording, once more (what the
 // pieces left of it) and ends the stream with the result.
 func (s *live) finalPass(pcm []byte) {
-	s.conn.CloseNow()
+	if s.conn != nil {
+		s.conn.CloseNow()
+	}
 	start := time.Now()
 	language := s.language
 	var texts []string

@@ -5,12 +5,17 @@ package main
 // $VOXTNEW_OMNI_RUNTIME. localOpeners (models_runtimes.go) opens the
 // speech models with openOmniASR and unloads a model about to be deleted
 // with unloadOmni; quitting stops every server (closeOmni). The servers
-// write to the app's log (source "models").
+// write to the app's log (source "models"). A Whisper model's server
+// reads its tokenizer (an Aux of the catalogue, another repo) from the
+// model's folder: it loads a folder of links to both (omniFolder) in the
+// app's cache.
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -34,6 +39,9 @@ type omniState struct {
 	omniVAD *omni.VAD
 	omniDir string // the VAD's folder
 	omniEnd bool   // closed: quitting
+	// omniCache holds the folders of links omniFolder makes ("": the
+	// system's temporary folder, in tests).
+	omniCache string
 }
 
 // omniLocate finds the runtime (a test seam).
@@ -89,11 +97,11 @@ func (a *app) openOmniASR(_ context.Context, id, dir string) (asr.Provider, erro
 	key := id + "\x00" + dir
 	p := a.omniASR[key]
 	if p == nil || (p.VAD() != nil) != (v != nil) {
-		var aux []string // Whisper's tokenizer
-		if a.models != nil {
-			aux = a.models.AuxDirs(id)
+		served, err := a.omniFolder(id, dir)
+		if err != nil {
+			return nil, err
 		}
-		base, err := omni.NewASR(rt, id, dir, aux...)
+		base, err := omni.NewASR(rt, id, served)
 		if err != nil {
 			return nil, err
 		}
@@ -108,6 +116,60 @@ func (a *app) openOmniASR(_ context.Context, id, dir string) (asr.Provider, erro
 		v.Warm()
 	}
 	return p, nil
+}
+
+// omniFolder is the folder model id's server loads: dir, its snapshot, or,
+// when the model needs an Aux (Whisper's tokenizer), a folder of links to
+// the files of both snapshots, made again only when its links changed (a
+// server may be loading from it; a.omniMu held).
+func (a *app) omniFolder(id, dir string) (string, error) {
+	dirs := []string{dir}
+	mod, _ := models.Lookup(id)
+	for _, need := range mod.Needs {
+		if n, _ := models.Lookup(need); n.Kind == models.Aux {
+			d := a.models.Dir(need)
+			if d == "" {
+				return "", fmt.Errorf("%w: %s, which %s needs", local.ErrNotInstalled, n.Name, mod.Name)
+			}
+			dirs = append(dirs, d)
+		}
+	}
+	if len(dirs) == 1 {
+		return dir, nil
+	}
+	links := map[string]string{} // name: target
+	for _, d := range dirs {
+		files, err := os.ReadDir(d)
+		if err != nil {
+			return "", err
+		}
+		for _, f := range files {
+			links[f.Name()] = filepath.Join(d, f.Name())
+		}
+	}
+	out := filepath.Join(cmp.Or(a.omniCache, filepath.Join(os.TempDir(), "voxtnew-omni")), id)
+	have, _ := os.ReadDir(out)
+	same := len(have) == len(links)
+	for _, f := range have {
+		if target, err := os.Readlink(filepath.Join(out, f.Name())); err != nil || target != links[f.Name()] {
+			same = false
+		}
+	}
+	if same {
+		return out, nil
+	}
+	if err := os.RemoveAll(out); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		return "", err
+	}
+	for name, target := range links {
+		if err := os.Symlink(target, filepath.Join(out, name)); err != nil {
+			return "", err
+		}
+	}
+	return out, nil
 }
 
 // omniSilero is the VAD when it is installed, else nil (a.omniMu held).

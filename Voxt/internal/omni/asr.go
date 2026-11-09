@@ -10,10 +10,9 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/vad"
 )
 
-// ASR is a curated speech model on the runtime: an asr.FileTranscriber,
-// and an asr.Streamer when its server has the realtime API (Caps). It is
-// cheap: the model's server starts on first use (or Warm) and is shared
-// by every ASR of the same model.
+// ASR is a curated speech model on the runtime: an asr.FileTranscriber
+// and an asr.Streamer. It is cheap: the model's server starts on first
+// use (or Warm) and is shared by every ASR of the same model.
 type ASR struct {
 	rt   *Runtime
 	spec Spec
@@ -26,27 +25,16 @@ var (
 	_ asr.Streamer        = (*ASR)(nil)
 )
 
-// NewASR is speech model modelID (ASRAccurate, ASRFast…), installed in
-// modelDir (its config.json, weights and tokenizer), on rt; auxDirs are
-// the folders of the other repos it needs (Whisper's tokenizer), whose
-// files its server finds beside the model's. It checks the id and that
-// the folders exist; nothing starts yet.
-func NewASR(rt *Runtime, modelID, modelDir string, auxDirs ...string) (*ASR, error) {
+// NewASR is speech model modelID (ASRAccurate, ASRFast, …), installed in
+// modelDir (its config.json, weights and tokenizer), on rt. It checks the
+// id and that the directory exists; nothing starts yet.
+func NewASR(rt *Runtime, modelID, modelDir string) (*ASR, error) {
 	spec, ok := Lookup(modelID)
 	if !ok || spec.ASR == nil {
 		return nil, &asr.Error{Kind: asr.KindConfig, Provider: Provider, Detail: fmt.Sprintf("%q is not a speech model", modelID)}
 	}
-	dirs := append([]string{modelDir}, auxDirs...)
-	for _, d := range dirs {
-		if err := checkDir(d); err != nil {
-			return nil, err
-		}
-	}
-	if len(auxDirs) > 0 {
-		var err error
-		if modelDir, err = joinDirs(dirs); err != nil {
-			return nil, &asr.Error{Kind: asr.KindConfig, Provider: Provider, Detail: "linking the model's folders", Err: err}
-		}
+	if err := checkDir(modelDir); err != nil {
+		return nil, err
 	}
 	return &ASR{rt: rt, spec: spec, dir: modelDir}, nil
 }
@@ -109,12 +97,12 @@ func (a *ASR) Spec() Spec { return a.spec.clone() }
 // the model loads while the user speaks).
 func (a *ASR) Warm() { a.rt.Warm(a.spec, a.dir) }
 
-// Caps: it transcribes files, and streams (a live preview, then the
-// Final) when its server has the realtime API; Qwen3-ASR takes hints (the
-// context bias) and a prompt, MOSS hints (hot words).
+// Caps: it streams (a live preview, then the Final) and transcribes
+// files; a model with a context takes hints (the context bias) and a
+// prompt.
 func (a *ASR) Caps() asr.Caps {
-	qwen := a.spec.Kind == kindQwen3ASR
-	return asr.Caps{Stream: a.spec.Live, File: true, Prompt: qwen, Hints: qwen || a.spec.Kind == kindMoss}
+	context := a.spec.ASR.ContextTerms > 0
+	return asr.Caps{Stream: true, File: true, Prompt: context, Hints: context}
 }
 
 // Transcribe is a Final over a whole recording.
@@ -163,14 +151,12 @@ func filePCM(req asr.FileRequest) ([]byte, error) {
 // rest. The chunks' texts are joined as the live pieces are (joinParts).
 // It returns the text and the language.
 func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, b bias) (string, string, error) {
-	if a.spec.Kind != kindQwen3ASR {
-		return a.finalWhole(ctx, l, pcm, language, b)
-	}
 	t := a.spec.ASR
 	budget := t.tokenBudget(asr.Duration(pcm, sampleRate))
+	shared := t.TokensPerSecond > 0 // else each request has the whole budget
 	var parts []string
 	for _, c := range t.splitChunks(pcm) {
-		if budget <= 0 {
+		if shared && budget <= 0 {
 			break
 		}
 		req := finalRequest{pcm: c.pcm, language: language, context: b.context, maxTokens: budget, layout: t.AudioLayout}
@@ -179,7 +165,9 @@ func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, 
 			return "", "", err
 		}
 		r.text = a.trimEcho(ctx, l, req, r.text, r.length, b.terms)
-		budget -= r.tokens
+		if shared {
+			budget -= r.tokens
+		}
 		if language == "" {
 			language = r.language
 		}
@@ -189,12 +177,8 @@ func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, 
 }
 
 // Open starts a live session: partial text while audio comes in, then
-// at Finish the Final over everything sent. Only for a model whose server
-// has the realtime API (Caps().Stream).
+// at Finish the Final over everything sent.
 func (a *ASR) Open(ctx context.Context, req asr.StreamRequest) (asr.Stream, error) {
-	if !a.spec.Live {
-		return nil, &asr.Error{Kind: asr.KindConfig, Provider: Provider, Detail: a.spec.ID + " has no live preview"}
-	}
 	if req.SampleRate != 0 && req.SampleRate != sampleRate {
 		return nil, &asr.Error{Kind: asr.KindAudio, Provider: Provider, Detail: fmt.Sprintf("audio must be 16 kHz, not %d Hz", req.SampleRate)}
 	}

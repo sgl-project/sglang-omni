@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,33 +24,6 @@ import (
 
 // speechRMS is the level over which the fake hears speech (-34 dBFS).
 const speechRMS = 0.02
-
-// kinds are the single-kind servers' kinds, by their file names.
-var kinds = map[string]string{
-	"whisper_server": "whisper", "moss_transcribe_diarize_server": "moss_transcribe_diarize",
-	"parakeet_server": "parakeet", "sensevoice_server": "sensevoice",
-}
-
-// commonFlags are the flags every server knows.
-var commonFlags = []string{"--supervised", "--host", "--port", "--model-directory", "--model-path", "--model-name", "--model-kind", "--startup-timeout-s"}
-
-// refusal is what a single-kind server says of args before it serves
-// ("" none), as the real ones refuse another kind or a flag they lack.
-func refusal(binary string, args []string) string {
-	kind, ok := kinds[binary]
-	if !ok {
-		return ""
-	}
-	if k := arg(args, "--model-kind"); k != "" && k != kind {
-		return "only --model-kind " + kind + " is served"
-	}
-	for _, a := range args {
-		if strings.HasPrefix(a, "--") && !slices.Contains(commonFlags, a) {
-			return "unknown argument " + a
-		}
-	}
-	return ""
-}
 
 // Main runs the fake server and exits.
 func Main() {
@@ -69,18 +41,7 @@ func Main() {
 			os.Exit(2)
 		}
 	}
-	binary := filepath.Base(os.Args[0])
-	if why := refusal(binary, args); why != "" {
-		fmt.Fprintln(os.Stderr, why)
-		os.Exit(2)
-	}
-	var files []string
-	if entries, err := os.ReadDir(arg(args, "--model-directory")); err == nil {
-		for _, e := range entries {
-			files = append(files, e.Name())
-		}
-	}
-	record(o, Record{Event: "launch", Args: args, Binary: binary, Files: files})
+	record(o, Record{Event: "launch", Args: args, Binary: filepath.Base(os.Args[0])})
 	emit := func(v map[string]any) {
 		b, _ := json.Marshal(v)
 		fmt.Fprintf(os.Stdout, "%s\n", b)
@@ -119,8 +80,6 @@ func Main() {
 		mux.HandleFunc("/v1/vad/stream", func(w http.ResponseWriter, r *http.Request) { vadStream(o, w, r) })
 	} else {
 		mux.HandleFunc("/v1/audio/transcriptions", func(w http.ResponseWriter, r *http.Request) { final(o, w, r) })
-	}
-	if kind == "qwen3_asr" || kind == "moss_transcribe_diarize" {
 		mux.HandleFunc("/v1/realtime", func(w http.ResponseWriter, r *http.Request) {
 			mu.Lock()
 			sessions.Add(1)
@@ -258,13 +217,13 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 			samples += len(pcm) / 2
 			if samples >= next {
 				next = samples + 16000
-				send(map[string]any{"type": "transcription.segment", "segment_id": 0, "text": fmt.Sprintf("%spartial %d", o.Partial, samples/1600), "is_final": false})
+				send(map[string]any{"type": "transcription.segment", "segment_id": 0, "text": fmt.Sprintf("partial %d", samples/1600), "is_final": false})
 			}
 		case "input_audio_buffer.commit":
 			send(map[string]any{"type": "transcription.segment", "segment_id": 0, "text": "live final", "is_final": true})
 		case "transcription.done":
 			if !o.LiveDrop {
-				send(map[string]any{"type": "transcription.completed", "text": o.Partial + "live final"})
+				send(map[string]any{"type": "transcription.completed", "text": "live final"})
 			}
 			return
 		}

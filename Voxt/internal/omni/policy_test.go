@@ -12,7 +12,7 @@ import (
 
 func TestModels(t *testing.T) {
 	asrs := ASRModels()
-	if len(asrs) != 9 || asrs[0].ID != ASRAccurate || asrs[2].ID != ASRFast {
+	if len(asrs) != 11 || asrs[0].ID != ASRAccurate || asrs[1].ID != ASRFast {
 		t.Fatalf("speech models %+v", asrs)
 	}
 	for _, s := range Models() {

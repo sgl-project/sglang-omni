@@ -8,10 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"mime/multipart"
 	"net/http"
-	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -35,7 +33,7 @@ type finalRequest struct {
 	context   string
 	maxTokens int
 	layout    string
-	fields    map[string]string // the model's own (kinds.go)
+	preview   bool // the batch preview's: not logged (one a second)
 }
 
 // finalResult is a request's answer.
@@ -70,9 +68,6 @@ func (r finalRequest) body(model string) (*bytes.Buffer, string) {
 	if r.layout != "" {
 		field("audio_layout", r.layout)
 	}
-	for _, k := range slices.Sorted(maps.Keys(r.fields)) {
-		field(k, r.fields[k])
-	}
 	fw, _ := w.CreateFormFile("file", "audio.wav")
 	_, _ = fw.Write(asr.WAV(r.pcm, sampleRate))
 	_ = w.Close()
@@ -86,7 +81,9 @@ func transcribe(ctx context.Context, l *lease, r finalRequest, stall time.Durati
 	body, ctype := r.body(l.endpoint().model)
 	// The hint goes to the log, never the recognised text: a wrong hint
 	// translated Chinese dictation (#3398) and nothing showed it.
-	l.s.rt.logf("info", "%s: Final request with language hint %q", l.s.spec.ID, r.language)
+	if !r.preview {
+		l.s.rt.logf("info", "%s: Final request with language hint %q", l.s.spec.ID, r.language)
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.endpoint().base()+"/v1/audio/transcriptions", body)

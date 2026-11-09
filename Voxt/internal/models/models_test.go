@@ -44,8 +44,11 @@ func TestCatalog(t *testing.T) {
 				t.Errorf("%s: %s (the vision tower and MTP head are not used)", m.ID, f.Path)
 			}
 		}
-		if !m.Borrowed && !weights {
+		if !m.Borrowed && m.Kind != Aux && !weights {
 			t.Errorf("%s: no weights file in LFS", m.ID)
+		}
+		if m.Kind == Aux && (m.Default || len(m.Needs) > 0 || m.Runtime != Omni) {
+			t.Errorf("%s: an aux is the files of an omni model, needing nothing", m.ID)
 		}
 		for _, n := range append(slices.Clone(m.Needs), m.Alternatives...) {
 			if o, ok := Lookup(n); !ok || n == m.ID {
@@ -60,8 +63,8 @@ func TestCatalog(t *testing.T) {
 			t.Errorf("%d defaults of %s", defaults[k], k)
 		}
 	}
-	for _, id := range []string{ASRAccurate, ASRAccurate6bit, ASRFast, ASRWhisperTurbo, ASRWhisperLarge, ASRWhisperSmall, ASRMoss, ASRParakeet, ASRSenseVoice,
-		VADSilero, LLMBalanced, LLMFast, LLMTranslate, LLMQwen3, LLMGemma4} {
+	for _, id := range []string{ASRAccurate, ASRFast, VADSilero, LLMBalanced, LLMFast, LLMTranslate, LLMQwen3, LLMGemma4,
+		ASRQwen6bit, ASRWhisperTurbo, ASRWhisperLarge, ASRWhisperSmall, ASRParakeet, ASRSenseVoice, ASRCohere, ASRNemotron, ASRMoss, AuxWhisperLarge, AuxWhisperSmall} {
 		if !seen[id] {
 			t.Errorf("%s missing", id)
 		}
@@ -75,11 +78,14 @@ func TestCatalog(t *testing.T) {
 }
 
 // TestFamilyPins: VoxtNew's models are the family pins table's rows of
-// voxtnew (same commit, family and quantisation, the files it lists, its
-// aux repos); the borrowed ones are rows of the apps that install them,
-// and the language models' alternatives are the family's Qwen3 and Gemma 4
-// E4B.
+// voxtnew (same commit, family and quantisation, the files it lists, the
+// aux repos its tokenizer comes from); the borrowed ones are rows of the
+// apps that install them, and the language models' alternatives are the
+// family's Qwen3 and Gemma 4 E4B. Voxt 1.x's other speech models and the
+// Whisper tokenizers may be missing from the table (no other ActNow app
+// installs them); nothing reads it at run time.
 func TestFamilyPins(t *testing.T) {
+	unpinned := []string{ASRQwen6bit, ASRWhisperLarge, ASRWhisperSmall, ASRParakeet, ASRSenseVoice, ASRCohere, ASRNemotron, ASRMoss, AuxWhisperLarge, AuxWhisperSmall}
 	mine := map[string]fammodels.Pin{}
 	for _, p := range fammodels.PinsOfApp("voxtnew") {
 		mine[p.Repo] = p
@@ -87,21 +93,16 @@ func TestFamilyPins(t *testing.T) {
 	for _, m := range Catalog() {
 		p, ok := fammodels.PinOf(m.Repo)
 		if !ok {
-			t.Errorf("%s: %s is not in the family pins table", m.ID, m.Repo)
+			if !slices.Contains(unpinned, m.ID) {
+				t.Errorf("%s: %s is not in the family pins table", m.ID, m.Repo)
+			}
 			continue
 		}
 		if p.Revision != m.Revision || p.Family != m.Family || p.Quant != m.Quant || p.Role != m.Kind.Role() {
 			t.Errorf("%s: pinned %s %s %s %s, the family %s %s %s %s", m.ID, m.Revision, m.Family, m.Quant, m.Kind.Role(), p.Revision, p.Family, p.Quant, p.Role)
 		}
-		if _, listed := mine[m.Repo]; listed == m.Borrowed {
+		if _, listed := mine[m.Repo]; listed == m.Borrowed && m.Kind != Aux {
 			t.Errorf("%s: borrowed %v, the pins table lists voxtnew %v", m.ID, m.Borrowed, listed)
-		}
-		var aux []fammodels.Ref
-		for _, a := range m.Aux {
-			aux = append(aux, fammodels.Ref{Repo: a.Repo, Revision: a.Revision})
-		}
-		if !slices.Equal(aux, p.Aux) {
-			t.Errorf("%s: aux %v, the pin %v", m.ID, aux, p.Aux)
 		}
 		if m.Borrowed && p.Bytes != m.Bytes {
 			t.Errorf("%s: %d bytes, the pin %d", m.ID, m.Bytes, p.Bytes)
@@ -114,6 +115,15 @@ func TestFamilyPins(t *testing.T) {
 			if !slices.Equal(paths, p.Files) {
 				t.Errorf("%s: files %v, the pin %v", m.ID, paths, p.Files)
 			}
+		}
+		var aux []fammodels.Ref
+		for _, n := range m.Needs {
+			if o, _ := Lookup(n); o.Kind == Aux {
+				aux = append(aux, fammodels.Ref{Repo: o.Repo, Revision: o.Revision})
+			}
+		}
+		if len(p.Aux) > 0 && !slices.Equal(aux, p.Aux) {
+			t.Errorf("%s: aux %v, the pin %v", m.ID, aux, p.Aux)
 		}
 		delete(mine, m.Repo)
 	}
@@ -134,58 +144,64 @@ func TestFamilyPins(t *testing.T) {
 	}
 }
 
-// TestOmniPins: the omni models are pinned as the native runtime's CI
-// pins them (models.json, model_pins.json), Whisper's tokenizer as its
-// "tokenizer".
-func TestOmniPins(t *testing.T) {
-	type pin struct {
+// omniPin is a repo's row in the native runtime's CI pins.
+type omniPin struct {
+	Revision  string            `json:"revision"`
+	Files     map[string]string `json:"files"`
+	Tokenizer *struct {
+		Repo     string            `json:"repo"`
 		Revision string            `json:"revision"`
 		Files    map[string]string `json:"files"`
-	}
-	pins := map[string]struct {
-		pin
-		Tokenizer *struct {
-			Repo string `json:"repo"`
-			pin
-		} `json:"tokenizer"`
-	}{}
-	for _, f := range []string{"models.json", "model_pins.json"} {
-		b, err := os.ReadFile("../../../sglang_omni_mlx/native/ci/" + f)
+	} `json:"tokenizer"`
+}
+
+// TestOmniPins: the omni models are pinned as the native runtime's CI
+// pins them (models.json, model_pins.json), with every file it checks;
+// a Whisper model's tokenizer is its pin's tokenizer.
+func TestOmniPins(t *testing.T) {
+	pins := map[string]omniPin{}
+	for _, name := range []string{"models.json", "model_pins.json"} {
+		b, err := os.ReadFile("../../../sglang_omni_mlx/native/ci/" + name)
 		if err != nil {
 			t.Skip("sglang_omni_mlx/native/ci not there:", err)
 		}
 		if err := json.Unmarshal(b, &pins); err != nil {
-			t.Fatal(err)
+			t.Fatal(name, err)
+		}
+	}
+	same := func(id, where string, files []File, rev, wantRev string, want map[string]string) {
+		if rev != wantRev || len(files) != len(want) {
+			t.Errorf("%s: %s pins %s with %d files, the catalogue %s with %d", id, where, wantRev, len(want), rev, len(files))
+			return
+		}
+		for _, f := range files {
+			if want[f.Path] != f.SHA256 {
+				t.Errorf("%s: %s is %s in %s", id, f.Path, want[f.Path], where)
+			}
 		}
 	}
 	for _, m := range Catalog() {
-		if m.Runtime != Omni {
+		if m.Runtime != Omni || m.Kind == Aux {
 			continue
 		}
 		p, ok := pins[m.Repo]
-		if !ok || p.Revision != m.Revision || len(p.Files) != len(m.Files) {
-			t.Errorf("%s: pinned %+v", m.ID, p)
+		if !ok {
+			t.Errorf("%s: %s is not pinned by the native CI", m.ID, m.Repo)
 			continue
 		}
-		for _, f := range m.Files {
-			if p.Files[f.Path] != f.SHA256 {
-				t.Errorf("%s: %s is %s in the pins", m.ID, f.Path, p.Files[f.Path])
+		same(m.ID, "the native CI", m.Files, m.Revision, p.Revision, p.Files)
+		var aux []Model
+		for _, n := range m.Needs {
+			if o, _ := Lookup(n); o.Kind == Aux {
+				aux = append(aux, o)
 			}
 		}
-		if (p.Tokenizer != nil) != (len(m.Aux) == 1) {
-			t.Errorf("%s: aux %+v, the tokenizer %+v", m.ID, m.Aux, p.Tokenizer)
-			continue
-		}
-		for _, a := range m.Aux {
-			tp := p.Tokenizer
-			if a.Repo != tp.Repo || a.Revision != tp.Revision || len(a.Files) != len(tp.Files) {
-				t.Errorf("%s: aux %s@%s, the tokenizer %+v", m.ID, a.Repo, a.Revision, tp)
-			}
-			for _, f := range a.Files {
-				if tp.Files[f.Path] != f.SHA256 {
-					t.Errorf("%s: %s:%s is %s in the pins", m.ID, a.Repo, f.Path, tp.Files[f.Path])
-				}
-			}
+		switch {
+		case p.Tokenizer == nil && len(aux) == 0:
+		case p.Tokenizer == nil || len(aux) != 1 || aux[0].Repo != p.Tokenizer.Repo:
+			t.Errorf("%s: tokenizer %v, the native CI's %+v", m.ID, aux, p.Tokenizer)
+		default:
+			same(aux[0].ID, "the native CI's tokenizer", aux[0].Files, aux[0].Revision, p.Tokenizer.Revision, p.Tokenizer.Files)
 		}
 	}
 }
