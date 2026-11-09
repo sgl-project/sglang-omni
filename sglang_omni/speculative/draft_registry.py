@@ -13,12 +13,13 @@ class PinnedDraft:
 
     A cookbook command, an example config or a model's defaults that serve this
     draft give the keys from engine_overrides. They can leave out the revision,
-    which EngineArgs.overrides fills from this entry.
+    which EngineArgs.overrides fills from this entry for a separate draft.
+    For bundled MTP, the recipe pins the target revision instead.
     """
 
     model_path: str
     stage: str
-    algorithm: Literal["DFLASH", "DSPARK", "EAGLE3", "STANDALONE"]
+    algorithm: Literal["DFLASH", "DSPARK", "EAGLE3", "STANDALONE", "NEXTN"]
     draft_model_path: str
     draft_model_revision: str
     engine_settings: dict[str, int] = field(default_factory=dict)
@@ -27,12 +28,19 @@ class PinnedDraft:
     is_default_on: bool = False
 
     def engine_overrides(self) -> dict[str, str | int]:
-        return {
-            "speculative_algorithm": self.algorithm,
-            "speculative_draft_model_path": self.draft_model_path,
-            "speculative_draft_model_revision": self.draft_model_revision,
-            **self.engine_settings,
-        }
+        if self.draft_model_path == self.model_path:
+            return {
+                "speculative_algorithm": self.algorithm,
+                "revision": self.draft_model_revision,
+                **self.engine_settings,
+            }
+        else:
+            return {
+                "speculative_algorithm": self.algorithm,
+                "speculative_draft_model_path": self.draft_model_path,
+                "speculative_draft_model_revision": self.draft_model_revision,
+                **self.engine_settings,
+            }
 
 
 DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
@@ -59,6 +67,14 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         algorithm="DFLASH",
         draft_model_path="wilsonzheng0327/Fun-ASR-Nano-dflash",
         draft_model_revision="b3cb091f554c88274378d549d7e7d3c5a13052e6",
+        license="apache-2.0",
+    ),
+    PinnedDraft(
+        model_path="AutoArk-AI/ARK-ASR-3B",
+        stage="asr",
+        algorithm="DFLASH",
+        draft_model_path="wilsonzheng0327/ARK-ASR-3B-dflash",
+        draft_model_revision="b0789bb314fab990e0f2377054c4b1947d204273",
         license="apache-2.0",
     ),
     PinnedDraft(
@@ -107,5 +123,13 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         draft_model_path="Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm",
         draft_model_revision="c4c310aca2c768343165261cb22c21b90c1f79e0",
         license=None,
+    ),
+    PinnedDraft(
+        model_path="inclusionAI/Ming-3.0-audio-flash",
+        stage="thinker",
+        algorithm="NEXTN",
+        draft_model_path="inclusionAI/Ming-3.0-audio-flash",
+        draft_model_revision="db94e0de19f6d05adc0413c255a28eb480cd1fae",
+        license="mit",
     ),
 )

@@ -91,7 +91,7 @@ func TestOpenAIChat(t *testing.T) {
 	resp, err := c.Chat(context.Background(), Request{
 		Model:       "gpt-x",
 		Messages:    []Message{{Role: System, Content: "sys"}, {Role: User, Content: "hello"}},
-		Temperature: F64(0.2), MaxTokens: 50, Stop: []string{"\n\n"},
+		Temperature: ptr(0.2), MaxTokens: 50, Stop: []string{"\n\n"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -153,7 +153,7 @@ func TestOpenAIRelaxed(t *testing.T) {
 		sse(`data: {"choices":[{"delta":{"content":"好的"},"finish_reason":"stop"}]}`+"\n\n", "data: [DONE]\n\n"),
 	)
 	c := &Client{Backend: NewOpenAI(presetAt(t, "deepseek", f.srv.URL), "sk-ds", f.srv.Client())}
-	resp, err := c.Chat(context.Background(), Request{Messages: []Message{{Role: User, Content: "hi"}}, Temperature: F64(0.3), OnDelta: func(string) {}})
+	resp, err := c.Chat(context.Background(), Request{Messages: []Message{{Role: User, Content: "hi"}}, Temperature: ptr(0.3), OnDelta: func(string) {}})
 	if err != nil || resp.Text != "好的" || !resp.Usage.Estimated {
 		t.Fatalf("%v %+v", err, resp)
 	}

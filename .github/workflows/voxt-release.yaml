@@ -9,12 +9,13 @@ name: Voxt Release
 # release whose notes are the version's section of Voxt/CHANGELOG.md. Apple
 # silicon only. The nightly from main (voxt-nightly.yaml, version
 # X.Y.Z-nightly.YYYYMMDD) and the beta of each Voxt change merged into main
-# (voxt-beta.yaml, version X.Y.Z-beta.YYYYMMDD.N) are signed and notarized
-# the same way and keep their disk image and its SHA-256 as an artifact,
-# without the ZIP, which only a release's update uses. A beta takes the
-# Omni runtime from the cache when one was built from the same sources.
-# Any other run (a pull request that changes the release, or by hand) builds
-# the same app ad hoc, unsigned, and keeps its disk image the same way.
+# (voxt-beta.yaml, version X.Y.Z-beta.YYYYMMDD.N), or either run by hand
+# from any branch, are signed and notarized the same way and keep their
+# disk image and its SHA-256 as an artifact, without the ZIP, which only a
+# release's update uses. A beta takes the Omni runtime from the cache when
+# one was built from the same sources. Any other run (a pull request that
+# changes the release, or this workflow by hand) builds the same app ad
+# hoc, unsigned, and keeps its disk image the same way.
 
 on:
   push:
@@ -28,11 +29,11 @@ on:
   workflow_call:
     inputs:
       nightly:
-        description: Set the version to X.Y.Z-nightly.YYYYMMDD, and from main sign and notarize it
+        description: Set the version to X.Y.Z-nightly.YYYYMMDD, and from main or run by hand sign and notarize it
         type: boolean
         default: false
       beta:
-        description: Set the version to X.Y.Z-beta.YYYYMMDD.N (N the caller's run number), take the Omni runtime from the cache, and from main sign and notarize it
+        description: Set the version to X.Y.Z-beta.YYYYMMDD.N (N the caller's run number), take the Omni runtime from the cache, and from main or run by hand sign and notarize it
         type: boolean
         default: false
 
@@ -49,15 +50,15 @@ jobs:
     name: Voxt release package
     runs-on: macos-26
     timeout-minutes: 150
-    # The environment lets in only main and voxt-v tags: a release, or a nightly or a beta from main.
-    environment: ${{ (startsWith(github.ref, 'refs/tags/voxt-v') || ((inputs.nightly == true || inputs.beta == true) && github.ref == 'refs/heads/main')) && 'voxt-release' || '' }}
+    # A release, or a nightly or a beta from main or run by hand. A run by hand from a branch the environment does not let in fails here.
+    environment: ${{ (startsWith(github.ref, 'refs/tags/voxt-v') || ((inputs.nightly == true || inputs.beta == true) && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'))) && 'voxt-release' || '' }}
     permissions:
       contents: write
     env:
       IS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/voxt-v') }}
       IS_NIGHTLY: ${{ inputs.nightly == true }}
       IS_BETA: ${{ inputs.beta == true }}
-      IS_SIGNED: ${{ startsWith(github.ref, 'refs/tags/voxt-v') || ((inputs.nightly == true || inputs.beta == true) && github.ref == 'refs/heads/main') }}
+      IS_SIGNED: ${{ startsWith(github.ref, 'refs/tags/voxt-v') || ((inputs.nightly == true || inputs.beta == true) && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')) }}
       # A beta's Omni runtime (RUNTIMES/omni), built or from the cache, for scripts/release.sh --runtimes.
       RUNTIMES: ${{ github.workspace }}/Voxt/build/runtimes
       # The team of the voxt-release environment's Developer ID, as for the Swift Voxt 1.x.

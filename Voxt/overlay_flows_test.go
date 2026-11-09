@@ -267,18 +267,22 @@ func TestOverlayFlows(t *testing.T) {
 					if s.w != layout.AnswerW {
 						t.Errorf("step %v: the card is %d wide, not %d", s, s.w, layout.AnswerW)
 					}
-					if fl.name != "follow-up" && s.state.Live() {
+					// Rewrite's answer writes into the card (#3644); every
+					// other result comes in the card when it is done.
+					writing := strings.HasPrefix(fl.name, "rewrite") && s.state == session.Composing
+					if fl.name != "follow-up" && s.state.Live() && !writing {
 						t.Errorf("step %v: a card before the result", s)
 					}
 				case ovRecording, ovWorking:
 					if card {
 						t.Errorf("step %v: back to the pill after the card", s)
 					}
+					mini := layout.PillW
 					switch {
-					case s.text == "" && (s.w != layout.PillW || s.h != layout.PillH):
-						t.Errorf("step %v: the mini pill is %d×%d", s, s.w, s.h)
-					case s.text != "" && (s.h != layout.LiveH || s.w < layout.PillW || s.w > layout.LiveMaxW):
-						t.Errorf("step %v: the line of text is %d×%d (the pill's rule: %d to %d wide, %d high)", s, s.w, s.h, layout.PillW, layout.LiveMaxW, layout.LiveH)
+					case s.text == "" && (s.w < mini || s.h != layout.PillH):
+						t.Errorf("step %v: the mini pill is %d×%d, want at least %d×%d", s, s.w, s.h, mini, layout.PillH)
+					case s.text != "" && (s.h != layout.LiveH || s.w < mini || s.w > layout.LiveMaxW):
+						t.Errorf("step %v: the line of text is %d×%d (the pill's rule: %d to %d wide, %d high)", s, s.w, s.h, mini, layout.LiveMaxW, layout.LiveH)
 					}
 				}
 			}

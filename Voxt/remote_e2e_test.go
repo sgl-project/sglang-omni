@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -176,5 +177,37 @@ func TestRemotePage(t *testing.T) {
 	frames(tt)
 	if len(keys.m) != 0 || len(a.lib.settings.Get().Providers.LLM) != 0 || len(a.installed(local.LLM)) != 0 {
 		t.Fatalf("after Remove: keys %v, setups %+v", keys.m, a.lib.settings.Get().Providers.LLM)
+	}
+}
+
+// TestSetupMissingItsKey: the bug was a setup brought over from Voxt 1.x
+// without its key, listed on the Language models page while the sidebar
+// said only "No language model". Its card says the key is needed and has
+// Complete setup; the sidebar's card names the service, and its Complete
+// setup opens that service's dialog on the page.
+func TestSetupMissingItsKey(t *testing.T) {
+	useKeys(t, &memKeys{m: map[string]string{}})
+	a, _, tt := newTestApp(t)
+	a.updateSettings(func(s *settings.Settings) { s.Providers.LLM = []settings.Provider{{ID: "deepseek"}} })
+	a.local = &fakeLocal{ASRP: &fakeTranscriptions{}} // the speech models came over: only the language model is missing
+	a.checkModels()
+	a.navigate("/home")
+	if !has(tt, "DeepSeek needs its API key: paste it again to use it.") || !has(tt, "Complete setup") {
+		t.Fatalf("sidebar: %q", tt.Texts())
+	}
+	click(t, tt, "Complete setup")
+	if a.shownPath() != remotePath || !a.provDlg.open || a.provDlg.id != "deepseek" {
+		t.Fatalf("Complete setup: %s, dialog %+v", a.shownPath(), a.provDlg.open)
+	}
+	a.provDlg = providerDialog{}
+	if !has(tt, "API key needed") || !slices.Contains(tt.AccessLabels(), "Complete setup of DeepSeek") {
+		t.Fatalf("card: %q", tt.Texts())
+	}
+	if err := tt.ClickControl("Complete setup of DeepSeek"); err != nil {
+		t.Fatal(err)
+	}
+	frames(tt)
+	if !a.provDlg.open || a.provDlg.id != "deepseek" {
+		t.Errorf("the card's Complete setup: %+v", a.provDlg.open)
 	}
 }

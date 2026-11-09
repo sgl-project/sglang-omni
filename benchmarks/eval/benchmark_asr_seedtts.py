@@ -711,6 +711,16 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Percentage of clips sent with repetition_penalty=1.2 to exercise plain fallback.",
     )
+    parser.add_argument(
+        "--unique-audio",
+        action="store_true",
+        help=(
+            "Send each reference clip once, as its first row; --max-samples then "
+            "counts clips. SeedTTS lists a prompt clip once per target text, back "
+            "to back (EN 1088 rows, 666 clips; ZH 2020 rows, 1010 clips), so "
+            "without this flag concurrency 2 sends both copies together."
+        ),
+    )
     add_common_args(parser, default_output="asr_seedtts_results.json")
     args = parser.parse_args()
     if not 0 <= args.fallback_percentage <= 100:
@@ -811,6 +821,7 @@ def main() -> None:
         max_samples=max_samples,
         split=args.lang,
         revision=dataset_revision,
+        unique_audio=args.unique_audio,
     )
     if not samples:
         raise RuntimeError(f"No SeedTTS samples loaded from {args.meta!r}")
@@ -854,6 +865,7 @@ def main() -> None:
             "declared_model_revision": model_revision,
             "dataset_revision": dataset_revision,
             "num_samples": len(samples),
+            "unique_audio": args.unique_audio,
             "concurrencies": concurrencies,
             "repeats": args.repeats,
             "warmup": args.warmup,

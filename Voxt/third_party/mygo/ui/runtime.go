@@ -216,7 +216,11 @@ type engine struct {
 	pointerIn          bool
 	hover              []uint64
 	// chain is a buffer for the elements under the pointer.
-	chain       []uint64
+	chain []uint64
+	// scrollLatch is the container the scroll gesture under way moves (0:
+	// none yet), scrollAt when the gesture's last event came (scroll).
+	scrollLatch uint64
+	scrollAt    time.Time
 	pressed     *state
 	pressButton int
 	// pressClicks is the press's count of clicks, which its release

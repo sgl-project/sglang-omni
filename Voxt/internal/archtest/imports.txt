@@ -10,6 +10,7 @@ appctx hotkey
 appctx settings
 appicons helper/proto
 asr core
+asr lang
 asr/aliyun asr
 asr/doubao asr
 asr/gemini asr
@@ -95,3 +96,11 @@ providers local
 providers settings
 recordings datadir
 recordings store
+learn core
+learn deliver
+learn dict
+learn helper/proto
+learn store
+learn compose
+learn llm
+learn local

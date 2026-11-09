@@ -33,13 +33,14 @@ import (
 
 func (a *app) modelsPage(c *ui.Context) {
 	t := c.Theme()
-	pageHeader(c, i18n.T("Speech models"), func() {
+	columnPageHeader(c, i18n.T("Speech models"), func() {
 		if ghostButton(c.Key("models-network"), i18n.T("Network…")).Tooltip(i18n.T("How model downloads reach Hugging Face")).Clicked() {
 			a.openNetwork()
 		}
 	})
 	ui.Scroll(c.Key("models-scroll")).Grow(1).MinHeight(0).Children(func() {
-		ui.Column(c).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp3)).MaxWidth(px(t, 880)).Children(func() {
+		pageColumn(c).Gap(px(t, sp3)).Children(func() {
+			a.obBackBar(c, modelsPath) // onboarding.go: left from the setup guide
 			caption(c, i18n.T("A speech model turns what you say into text: every feature needs one to work by voice. Those on this Mac keep your audio here; a remote service gets your recording only when you choose it. Language models are on the Language models page."))
 			sectionTitle(c, i18n.T("On this Mac"))
 			caption(c, i18n.T("Free, and your audio stays here: download a model once, then it runs on this Mac."))
@@ -213,7 +214,8 @@ func (a *app) dictationCard(c *ui.Context) {
 }
 
 // modelCard is one model: what it is good at, its languages, its size
-// and state, and what can be done with it.
+// and state, and what can be done with it; a speech model's card carries
+// its draft once the model is installed (draftRow).
 func (a *app) modelCard(c *ui.Context, m models.Model) {
 	t := c.Theme()
 	k := tok(t)
@@ -281,22 +283,63 @@ func (a *app) modelCard(c *ui.Context, m models.Model) {
 				a.modelActions(c, m, st)
 			})
 		})
-		if st.Downloading {
-			frac := 0.0
-			if st.Total > 0 {
-				frac = float64(st.Done) / float64(st.Total)
-			}
-			ui.Progress(c, frac).Label(i18n.T("Downloading %s", uitext.ModelName(m.ID)))
-		}
-		if st.Err != nil && !st.Downloading {
-			msg, more := uitext.DownloadErrorText(st.Err)
-			notice(c, "model-err", noticeError, msg, more, func() {
-				if ui.Button(c.Key("retry"), i18n.T("Try again")).Clicked() {
-					a.downloadModel(m.ID)
-				}
-			}, nil)
+		a.modelProgress(c, "model-err", m, st)
+		// The draft's row stays while the draft is on disk or coming, its
+		// model deleted first: it can still be cancelled or deleted.
+		ds := a.modelStatus[m.Draft]
+		if m.Draft != "" && (st.Installed || ds.Installed || ds.OnDisk || ds.Downloading || ds.Done > 0) {
+			a.draftRow(c, m.Draft)
 		}
 	})
+}
+
+// modelProgress is a model's download bar while it downloads, and the
+// notice of a failed download (key names the notice).
+func (a *app) modelProgress(c *ui.Context, key string, m models.Model, st models.Status) {
+	if st.Downloading {
+		frac := 0.0
+		if st.Total > 0 {
+			frac = float64(st.Done) / float64(st.Total)
+		}
+		ui.Progress(c, frac).Label(i18n.T("Downloading %s", uitext.ModelName(m.ID)))
+	}
+	if st.Err != nil && !st.Downloading {
+		msg, more := uitext.DownloadErrorText(st.Err)
+		notice(c, key, noticeError, msg, more, func() {
+			if ui.Button(c.Key("retry"), i18n.T("Try again")).Clicked() {
+				a.downloadModel(m.ID)
+			}
+		}, nil)
+	}
+}
+
+// draftRow is a speech model's speculative draft (models.Model.Draft) on
+// its card: a small model that proposes several tokens a step for the
+// speech model to check, so that it decodes faster.
+// Installed, the model's server takes it at its next start
+// (models_omni.go); deleting it stops that server first.
+func (a *app) draftRow(c *ui.Context, id string) {
+	t := c.Theme()
+	k := tok(t)
+	d, _ := models.Lookup(id)
+	st := a.modelStatus[id]
+	ui.Row(c.Key("draft")).Gap(px(t, sp3)).AlignItems(ui.Start).Margin(px(t, sp2), 0, 0, px(t, 32)).Children(func() {
+		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp1)).Children(func() {
+			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
+				ui.Text(c, i18n.T("Faster transcription")).FontWeight(600)
+				infoTip(c.Key("how"), i18n.T("Speculative decoding: a small draft model proposes several words at a time and the speech model checks them."))
+				if st.Installed {
+					statusMark(c, icons.CheckCircle, k.Success, i18n.T("Installed"))
+				}
+			})
+			caption(c, i18n.T("Download to speed up transcription with this model. You can remove the add-on and keep using the model."))
+			caption(c.Key("size"), modelSizeText(d, st))
+		})
+		ui.Row(c.Key("actions")).Gap(px(t, sp2)).Shrink(0).Children(func() { a.modelActions(c, d, st) })
+	})
+	if st.Downloading || st.Err != nil { // under the row's text, not the card's icon
+		ui.Column(c.Key("draft-progress")).Margin(0, 0, 0, px(t, 32)).Children(func() { a.modelProgress(c, "draft-err", d, st) })
+	}
 }
 
 // modelSizeText is a model's size, or how much of it came.

@@ -14,7 +14,15 @@ func TestHotkeyText(t *testing.T) {
 		"RightCommand":         "Right ⌘",
 		"RightOption":          "Right ⌥",
 		"Control+Command+V":    "⌃⌘V",
-		"Control+Option+Space": "⌃⌥ Space",
+		"Control+Option+Space": "⌃⌥Space",
+		"Option+Space":         "⌥Space",
+		"Escape":               "Esc",
+		"Return":               "Return",
+		"Control+Delete":       "⌃Delete",
+		"Option+Tab":           "⌥Tab",
+		"Fn+Space":             "fn Space",
+		"Control+RightOption":  "⌃ Right ⌥",
+		"Option+Shift":         "⌥⇧",
 		"Fn+F5":                "fn F5",
 		"Mouse3":               "Middle mouse button",
 		"Option+Mouse4":        "⌥ Mouse button 4",
@@ -47,7 +55,7 @@ func TestParseErrorText(t *testing.T) {
 func TestHotkeyGlyphs(t *testing.T) {
 	for keys, want := range map[string]string{
 		"Fn": "fn", "Fn+Shift": "fn ⇧", "Fn+Control": "fn ⌃", "Control+Command+V": "⌃⌘V",
-		"RightCommand": "Right ⌘", "RightOption+Shift": "Right ⌥ ⇧", "Option+Space": "⌥ Space", "": "—", "Command+Shift+k": "⇧⌘K",
+		"RightCommand": "Right ⌘", "RightOption+Shift": "Right ⌥ ⇧", "Option+Space": "⌥Space", "": "—", "Command+Shift+k": "⇧⌘K",
 	} {
 		if got := HotkeyGlyphs(keys); got != want {
 			t.Errorf("%q → %q, want %q", keys, got, want)

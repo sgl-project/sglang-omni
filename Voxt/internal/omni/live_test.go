@@ -98,6 +98,37 @@ func TestLive(t *testing.T) {
 	st.Close()
 }
 
+// TestLiveResult: with LiveResult the live socket's whole text is the
+// result and no Final runs: the second pass over the whole recording made
+// every dictation wait (#3644 FB7). When the socket ends without the text,
+// the Final runs on the whole recording, as without LiveResult.
+func TestLiveResult(t *testing.T) {
+	for _, drop := range []bool{false, true} {
+		f := newFake(t, omnitest.Opts{Text: "最终文本", LiveDrop: drop}, nil)
+		a := f.asr(t, ASRFast)
+		st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: 16000, Lang: "zh", LiveResult: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sendAll(t, st, tone(2500*time.Millisecond, 0.3))
+		if err := st.Finish(); err != nil {
+			t.Fatal(err)
+		}
+		evs := drain(t, st)
+		want, finals := "live final", 0
+		if drop {
+			want, finals = "最终文本", 1
+		}
+		if last := evs[len(evs)-1]; last.Kind != asr.EventFinal || last.Text != want || last.Result.Duration != 2500*time.Millisecond {
+			t.Errorf("dropped %v: last event %+v", drop, last)
+		}
+		if got := f.records("final"); len(got) != finals || finals == 1 && got[0].Samples != 40000 {
+			t.Errorf("dropped %v: Finals %+v", drop, got)
+		}
+		st.Close()
+	}
+}
+
 // TestLiveLargeFirstSend: when the model is slow to load, the audio
 // recorded meanwhile goes in the stream's first Send, a second or more of
 // it. The preview must take it and send partials. The fake server
