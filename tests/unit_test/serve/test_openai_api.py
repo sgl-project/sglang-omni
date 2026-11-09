@@ -22,7 +22,7 @@ from sglang_omni.admission import QueueFullError
 from sglang_omni.client import Client, ClientError, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
 from sglang_omni.client.client import StreamedStopTrimmer, extract_inputs
-from sglang_omni.client.types import GenerateRequest, UsageInfo
+from sglang_omni.client.types import CodecEOSMissingError, GenerateRequest, UsageInfo
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
 from sglang_omni.scheduling.types import SpecTokensDetailsDict
@@ -50,7 +50,10 @@ from sglang_omni.serve.transcriptions import (
     _transcription_stream,
     build_transcription_generate_request,
 )
-from tests.unit_test.fixtures.pipeline_fakes import RecordingCoordinatorControlPlane
+from tests.unit_test.fixtures.pipeline_fakes import (
+    CodecEOSFailureClient,
+    RecordingCoordinatorControlPlane,
+)
 
 MODEL_FAMILIES = {"qwen3-omni": "code2wav"}
 
@@ -1003,6 +1006,20 @@ def test_speech_endpoint_returns_binary_audio() -> None:
     assert speech_client.speech_requests[0].model == "tts"
     assert isinstance(speech_client.speech_requests[0].metadata["tts_params"], dict)
     assert speech_client.speech_requests[0].metadata["tts_params"]["voice"] == "default"
+
+
+def test_qwen3_tts_speech_codec_eos_failure_returns_http_error() -> None:
+    """Missing codec EOS must fail the HTTP request instead of returning incomplete audio."""
+    speech_client = CodecEOSFailureClient()
+    client = TestClient(create_app(speech_client, model_name="served-tts"))
+
+    response = client.post("/v1/audio/speech", json={"input": "hello"})
+
+    assert response.status_code == 500
+    assert response.json()["error"]["type"] == "server_error"
+    assert response.json()["error"]["code"] == CodecEOSMissingError.CODE
+    assert response.json()["error"]["message"] == CodecEOSMissingError.MESSAGE
+    assert len(speech_client.speech_requests) == 1
 
 
 def test_create_app_passes_model_specific_speech_input_limit() -> None:
@@ -5139,3 +5156,72 @@ def test_speech_empty_generation_error_allows_next_request(stream: bool) -> None
     response = client.post("/v1/audio/speech", json=body)
     assert response.status_code == 200
     assert response.content
+
+
+def test_qwen3_tts_length_before_audio_returns_http_error() -> None:
+    """EOS exhaustion before headers must remain an HTTP error."""
+    speech_client = CodecEOSFailureClient()
+    client = TestClient(create_app(speech_client, model_name="qwen3-tts"))
+    response = client.post(
+        "/v1/audio/speech",
+        json={"input": "hello", "stream": True, "response_format": "pcm"},
+    )
+    assert response.status_code == 500
+    assert response.headers["content-type"] == "application/json"
+    assert response.json()["error"]["code"] == CodecEOSMissingError.CODE
+    assert "incomplete" in response.json()["error"]["message"]
+    assert len(speech_client.aborted) == 1
+    assert speech_client.closed is True
+
+
+def test_raw_audio_length_after_audio_raises_and_retains_queryable_outcome() -> None:
+    """An interrupted EOS-limited stream must still expose its known terminal reason."""
+
+    async def drive() -> None:
+        speech_client = CodecEOSFailureClient(partial_audio=True)
+        app = create_app(speech_client, model_name="qwen3-tts")
+        response = await speech_audio_response(
+            request=ConnectedRequest(),
+            client=speech_client,
+            gen_req=GenerateRequest(model="qwen3-tts", prompt="hello", stream=True),
+            request_id="req-1",
+            speed=1.0,
+            speech_stream_outcomes=app.state.speech_stream_outcomes,
+            enable_speech_sse_named_events=False,
+            return_spec_tokens_details=False,
+        )
+        body = response.body_iterator
+        assert await anext(body) == encode_pcm([0.0, 0.1, -0.1, 0.0], 24000)
+        with pytest.raises(CodecEOSMissingError, match="incomplete"):
+            await anext(body)
+        assert speech_client.aborted == []
+        assert speech_client.closed is True
+        outcome = TestClient(app).get("/v1/audio/speech/req-1")
+        assert outcome.status_code == 200
+        assert outcome.json()["finish_reason"] == "length"
+
+    asyncio.run(drive())
+
+
+def test_qwen3_tts_sse_codec_eos_failure_emits_error_without_success_done() -> None:
+    """EOS failures after audio must reach the SSE stream and discard partial audio."""
+    speech_client = CodecEOSFailureClient(partial_audio=True)
+    client = TestClient(create_app(speech_client, model_name="qwen3-tts"))
+    response = client.post(
+        "/v1/audio/speech",
+        json={"input": "hello", "stream_format": "sse", "response_format": "pcm"},
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    events = parse_speech_sse_events(response.text, False)
+    assert [event["type"] for event in events] == ["speech.audio.delta", "error"]
+    assert events[-1]["error"] == {
+        "message": CodecEOSMissingError.MESSAGE,
+        "type": "server_error",
+        "param": None,
+        "code": CodecEOSMissingError.CODE,
+        "partial_audio": True,
+        "action": "discard",
+    }
+    assert speech_client.aborted == []
+    assert speech_client.closed is True

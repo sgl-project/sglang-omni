@@ -49,6 +49,7 @@ from sglang_omni.scheduling.streaming_vocoder import (
     resolve_initial_codec_chunk_frames,
     vocoder_decode_stream_priority,
 )
+from sglang_omni.scheduling.types import CODEC_EOS_MISSING_ERROR_CODE
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.cuda_staging import GrowablePinnedBuffer, PinnedTransferSlot
 from sglang_omni.utils.device import has_device_streams, supports_device_streams
@@ -3594,6 +3595,10 @@ class Qwen3TTSStreamingVocoderScheduler(
             data["finish_reason"] = final_state.finish_reason
         else:
             pass
+        if final_state.finish_reason == "length":
+            data["error_code"] = CODEC_EOS_MISSING_ERROR_CODE
+        else:
+            pass
         return data
 
     async def vocode_payload(self, payload: StagePayload) -> StagePayload:
@@ -3732,6 +3737,10 @@ class Qwen3TTSStreamingVocoderScheduler(
             pass
         if state.finish_reason is not None:
             data["finish_reason"] = state.finish_reason
+        else:
+            pass
+        if state.finish_reason == "length":
+            data["error_code"] = CODEC_EOS_MISSING_ERROR_CODE
         else:
             pass
         payload.data = data

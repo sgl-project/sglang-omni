@@ -10,7 +10,13 @@ import pytest
 
 from sglang_omni.client import Client
 from sglang_omni.client.client import extract_inputs
-from sglang_omni.client.types import GenerateChunk, GenerateRequest, UsageInfo
+from sglang_omni.client.types import (
+    CodecEOSMissingError,
+    GenerateChunk,
+    GenerateRequest,
+    UsageInfo,
+)
+from sglang_omni.proto.messages import CompleteMessage, StreamMessage
 
 
 class SubmitStubCoordinator:
@@ -25,15 +31,19 @@ class SubmitStubCoordinator:
 
 
 class StreamStubCoordinator:
-    """Streaming coordinator stub: yields the given StreamMessages in order."""
+    """Streaming coordinator stub: yields the given pipeline messages in order."""
 
     def __init__(self, messages: list[Any]) -> None:
         self.messages = messages
+        self.closed: bool = False
 
     async def stream(self, request_id: str, omni_request: Any):
         del request_id, omni_request
-        for message in self.messages:
-            yield message
+        try:
+            for message in self.messages:
+                yield message
+        finally:
+            self.closed = True
 
 
 @pytest.mark.parametrize("nested_usage", [False, True])
@@ -103,6 +113,59 @@ def test_speech_preserves_reason_provenance_through_typed_and_serialized_results
             )
         )
         assert result.finish_reason == (finish_reason or "unknown")
+
+
+@pytest.mark.parametrize("serialized", [False, True])
+@pytest.mark.parametrize("stream", [False, True])
+def test_qwen3_tts_codec_eos_failure_raises_in_python_clients(
+    serialized: bool,
+    stream: bool,
+) -> None:
+    """Missing codec EOS must raise before incomplete terminal audio reaches the caller."""
+    terminal_chunk = GenerateChunk(
+        request_id="speech-1",
+        modality="audio",
+        audio_data=[0.2, 0.3],
+        sample_rate=24000,
+        finish_reason="stop",
+        model_finish_reason="length",
+        error_code=CodecEOSMissingError.CODE,
+    )
+    terminal_payload = terminal_chunk.to_dict() if serialized else terminal_chunk
+
+    async def drive() -> None:
+        request = GenerateRequest(model="served-alias", prompt="hello", stream=stream)
+        if not stream:
+            client = Client(SubmitStubCoordinator(terminal_payload))
+            with pytest.raises(
+                CodecEOSMissingError, match="without emitting codec EOS"
+            ):
+                await client.speech(
+                    request, request_id="speech-1", response_format="pcm"
+                )
+        else:
+            partial_message = StreamMessage(
+                request_id="speech-1",
+                from_stage="vocoder",
+                chunk={"audio_data": [0.0, 0.1], "modality": "audio"},
+            )
+            terminal_message = CompleteMessage(
+                request_id="speech-1",
+                from_stage="vocoder",
+                success=True,
+                result=terminal_payload,
+            )
+            coordinator = StreamStubCoordinator([partial_message, terminal_message])
+            client = Client(coordinator)
+            generated = client.generate(request, request_id="speech-1")
+            assert (await anext(generated)).audio_data == [0.0, 0.1]
+            with pytest.raises(
+                CodecEOSMissingError, match="without emitting codec EOS"
+            ):
+                await anext(generated)
+            assert coordinator.closed is True
+
+    asyncio.run(drive())
 
 
 def test_completion_surfaces_omni_rollout() -> None:

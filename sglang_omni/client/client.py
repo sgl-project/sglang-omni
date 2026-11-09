@@ -25,6 +25,7 @@ from sglang_omni.client.types import (
     AbortLevel,
     AbortResult,
     ClientError,
+    CodecEOSMissingError,
     CompletionAudio,
     CompletionResult,
     CompletionStreamChunk,
@@ -190,13 +191,15 @@ class Client:
                     if isinstance(msg, StreamMessage):
                         yield self.stream_builder(req_id, msg)
                     else:
-                        yield self.result_builder(req_id, msg.result)
+                        yield raise_on_codec_eos_missing(
+                            self.result_builder(req_id, msg.result)
+                        )
             return
         else:
             pass
 
         result = await self.coordinator.submit(req_id, omni_request)
-        yield self.result_builder(req_id, result)
+        yield raise_on_codec_eos_missing(self.result_builder(req_id, result))
 
     # ------------------------------------------------------------------
     # High-level: non-streaming completion
@@ -833,6 +836,10 @@ class Client:
             else:
                 pass
             chunk.spec_tokens_details = result.get("spec_tokens_details")
+            if result.get("error_code") == CodecEOSMissingError.CODE:
+                chunk.error_code = CodecEOSMissingError.CODE
+            else:
+                pass
             finish_reason = result.get("finish_reason")
             if finish_reason is not None:
                 chunk.finish_reason = finish_reason
@@ -1065,6 +1072,13 @@ def extract_inputs(request: GenerateRequest) -> object:
     else:
         pass
     return messages
+
+
+def raise_on_codec_eos_missing(chunk: GenerateChunk) -> GenerateChunk:
+    if chunk.error_code == CodecEOSMissingError.CODE:
+        raise CodecEOSMissingError()
+    else:
+        return chunk
 
 
 def umm_segment_chunk(chunk: GenerateChunk, data: dict[str, object]) -> GenerateChunk:

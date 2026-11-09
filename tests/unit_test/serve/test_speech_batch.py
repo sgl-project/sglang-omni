@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from sglang_omni.client import ClientError
-from sglang_omni.client.types import SpeechResult
+from sglang_omni.client.types import CodecEOSMissingError, SpeechResult
 from sglang_omni.config import CustomVoiceConfig
 from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import create_speech_batch_with_disconnect_watch
@@ -24,8 +24,9 @@ CONTEXT_LENGTH_ERROR = (
 
 
 class RecordingBatchSpeechClient:
-    def __init__(self) -> None:
+    def __init__(self, *, raise_codec_error: bool = False) -> None:
         self.requests: list[Any] = []
+        self.raise_codec_error = raise_codec_error
 
     def health(self) -> dict[str, Any]:
         return {"running": True}
@@ -41,6 +42,10 @@ class RecordingBatchSpeechClient:
     ) -> SpeechResult:
         del request_id, speed, allow_format_fallback
         self.requests.append(request)
+        if self.raise_codec_error and request.prompt == "third":
+            raise CodecEOSMissingError()
+        else:
+            pass
         return SpeechResult(
             audio_bytes=f"audio:{request.prompt}".encode(),
             mime_type=f"audio/{response_format}",
@@ -702,3 +707,27 @@ def test_batch_speech_reuses_shared_default_reference_loads() -> None:
         assert client_impl.requests[1].sampling.temperature == 0.7
 
     asyncio.run(run())
+
+
+def test_qwen3_tts_batch_isolates_codec_eos_failure() -> None:
+    """A client codec EOS exception must fail only its batch item and omit incomplete audio."""
+    client = TestClient(
+        create_app(
+            RecordingBatchSpeechClient(raise_codec_error=True),
+            model_name="qwen3-tts",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/speech/batch",
+        json={"items": [{"input": "first"}, {"input": "third"}]},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["succeeded"], body["failed"]) == (1, 1)
+    assert body["results"][0]["status"] == "success"
+    assert body["results"][1]["status"] == "error"
+    assert "audio_data" not in body["results"][1]
+    assert "incomplete" in body["results"][1]["error"]["message"]
+    assert body["results"][1]["error"]["code"] == CodecEOSMissingError.CODE

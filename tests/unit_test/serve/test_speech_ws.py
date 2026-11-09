@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
@@ -12,7 +13,7 @@ from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from sglang_omni.client import GenerateChunk
 from sglang_omni.client.client import Client
-from sglang_omni.client.types import SpeechResult
+from sglang_omni.client.types import CodecEOSMissingError, GenerateRequest, SpeechResult
 from sglang_omni.config import CustomVoiceConfig
 from sglang_omni.serve import create_app
 from sglang_omni.serve import speech_ws as speech_ws_module
@@ -27,6 +28,7 @@ from sglang_omni.serve.speech_ws import (
     MAX_TEXT_MESSAGE_BYTES,
     SpeechWebSocketSession,
 )
+from tests.unit_test.fixtures.pipeline_fakes import CodecEOSFailureClient
 
 CONTEXT_LENGTH_ERROR = (
     "Requested token count exceeds the model's maximum context length"
@@ -42,7 +44,9 @@ class StreamingSpeechClient:
     def health(self) -> dict[str, Any]:
         return {"running": True}
 
-    async def generate(self, request: Any, request_id: str | None = None):
+    async def generate(
+        self, request: GenerateRequest, request_id: str | None = None
+    ) -> AsyncIterator[GenerateChunk]:
         self.generated_prompts.append(request.prompt)
         yield GenerateChunk(
             request_id=request_id or "speech-ws",
@@ -336,6 +340,53 @@ def test_speech_websocket_streams_sentences_as_binary_frames() -> None:
         assert session_done["total_sentences"] == 2
 
     assert client_impl.generated_prompts == ["Hello.", "Second"]
+
+
+def test_qwen3_tts_websocket_reports_codec_eos_failure_after_partial_audio() -> None:
+    """A codec EOS exception after audio must reach the WebSocket error and done messages."""
+    client = TestClient(
+        create_app(
+            CodecEOSFailureClient(partial_audio=True),
+            model_name="qwen3-tts",
+        )
+    )
+
+    with client.websocket_connect("/v1/audio/speech/stream") as websocket:
+        websocket.send_json(session_config(response_format="pcm", stream_audio=True))
+        assert websocket.receive_json()["type"] == "session.configured"
+        websocket.send_json({"type": "input.text", "text": "Hello."})
+        assert websocket.receive_json()["type"] == "audio.start"
+        assert websocket.receive_bytes()
+        error = websocket.receive_json()
+        done = websocket.receive_json()
+
+    assert error["type"] == "error"
+    assert "incomplete" in error["message"]
+    assert error["code"] == CodecEOSMissingError.CODE
+    assert done["type"] == "audio.done"
+    assert done["error"] is True
+
+
+def test_qwen3_tts_websocket_buffered_codec_eos_failure_prevents_audio() -> None:
+    """A buffered codec EOS exception must fail the sentence before any audio is sent."""
+    client = TestClient(
+        create_app(
+            CodecEOSFailureClient(),
+            model_name="qwen3-tts",
+        )
+    )
+    with client.websocket_connect("/v1/audio/speech/stream") as websocket:
+        websocket.send_json(session_config(response_format="wav", stream_audio=False))
+        assert websocket.receive_json()["type"] == "session.configured"
+        websocket.send_json({"type": "input.text", "text": "Hello."})
+        error = websocket.receive_json()
+        done = websocket.receive_json()
+
+    assert error["type"] == "error"
+    assert "incomplete" in error["message"]
+    assert error["code"] == CodecEOSMissingError.CODE
+    assert done["type"] == "audio.done"
+    assert done["error"] is True
 
 
 def test_speech_websocket_commit_flushes_segments_without_closing() -> None:
