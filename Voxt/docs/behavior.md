@@ -285,3 +285,4 @@ Auralink 的这一节对照的是远程 ASR / LLM 服务（豆包、阿里百炼
 | 录音设备 | 1.2 s 看门狗，指定设备失败时回到默认设备 | 保留，放在 helper 的 `capture.start` 里，`capture.started` 写明是否回退（`fellBack`），见 §4 | 蓝牙耳机常常没有声音 | ✅ helper 和会话（设备顺序来自 `Audio.Devices`） |
 | 剪贴板恢复 | 用 changeCount 判断剪贴板是不是自己写的 | 保留（helper 的 `textio.paste`，§4.5） | 避免覆盖用户在这期间复制的内容 | ✅ |
 | 会议存储（C1） | 1.x 会议表 + 句子 FTS | `meetings` / `meeting_segments`（迁移 **007**；006 已被笔记占用）、`Store.Meetings()`；尚无 UI 或调用方（C1-1b-store） | 设计 design-C1 §4.10 | ✅ C1-1b-store |
+| 会议录音骨架（C1-1b） | 1.x 会议列表 + 浮窗 + 设置 | 开发版：会议页、开始会议、采集模式、浮窗暂停/结束/取消（确认）、保存历史关时询问；`Features.Meeting` 快捷键；菜单「开始会议」；存储页统计 `meetings/`；清除全部含会议 | 入口等 C1-10；无实时字幕（C1-2） | ✅ C1-1b |
