@@ -64,6 +64,12 @@ const (
 	LiveMaxW   = LiveTextW + 2*LivePadX
 	LiveH      = RowH + LiveGap + LineH + 2*LivePadY
 	FadeW      = 16 // the line's left edge fades out over this, scrolled
+	// With Overlay.LiveLines: the text wraps at LinesTextW from the first
+	// word, so the face is LinesW wide, and grows by its lines up to
+	// LinesMax of them (LineH each); past that the newest show.
+	LinesTextW = 480
+	LinesW     = LinesTextW + 2*LivePadX
+	LinesMax   = 10
 	// After the waveform in the row, Gap before each, when they show:
 	// the time, and the matched group's name (SceneSize, at most
 	// SceneMaxW wide).
@@ -124,6 +130,14 @@ func RowWidth(showTime bool, scene float32) int {
 func LiveWidth(row int, text float32) int {
 	line := int(math.Ceil(float64(min(text, LiveTextW))))
 	return max(row, line) + 2*LivePadX
+}
+
+// LinesHeight is the face's height with live text wrapped in lines
+// (Overlay.LiveLines) text DIPs high: the row, LiveGap, the lines up to
+// LinesMax of them, and the padding.
+func LinesHeight(text float32) int {
+	lines := min(int(math.Ceil(float64(text))), LinesMax*LineH)
+	return RowH + LiveGap + max(lines, LineH) + 2*LivePadY
 }
 
 // NoticeWidth fits a notice's line, text DIPs wide: the pill's padding,

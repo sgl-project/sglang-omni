@@ -214,6 +214,10 @@ type Overlay struct {
 	// recording, and the answer as the model writes it (Voxt 1.x's
 	// "Show Realtime Text" off).
 	HideLiveText bool `json:"hideLiveText,omitempty"`
+	// LiveLines shows the live text in lines that wrap, in a wide face
+	// from the first word, growing up to ten lines, then the newest ones
+	// (#3644 FB5); off, one line that scrolls sideways.
+	LiveLines bool `json:"liveLines,omitempty"`
 }
 
 // DefaultOpacity and DefaultRadius are the overlay face's: translucent
