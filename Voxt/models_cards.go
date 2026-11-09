@@ -152,9 +152,9 @@ func (a *app) modelTags(m models.Model) []string {
 	tags := uitext.ModelTags(m.ID)
 	if spec, ok := omni.Lookup(m.ID); ok && len(spec.Languages) > 0 {
 		if slices.Contains(spec.Languages, lang.Canonical(session.MainLanguage(a.prefs, i18n.Locale()))) {
-			tags = append(tags, i18n.T("Supports main language"))
+			tags = append(tags, i18n.T("Supports your main language"))
 		} else {
-			tags = append(tags, i18n.T("Lacks main language"))
+			tags = append(tags, i18n.T("Does not support your main language"))
 		}
 	}
 	return tags

@@ -80,6 +80,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Resize the answer card from the card**: a small button in the card's bottom-right corner steps it through Small, Medium and Large (and back), the same size the feature's page sets. On a short screen a Medium or Large card keeps its text to the room the screen has, instead of reaching past its edge.
 - **Your rules is one long field, no scroll bar of its own**: the rules field grows with the whole prompt, so a long prompt reads down the page under one scroll bar; the page follows the cursor as you type or move it, and Find scrolls the page to the match.
 - **Transcribe, Translate and Rewrite in a wide window read in two columns**: shortcuts and models on the left, the feature's own settings, answer card, rules and Try it on the right, so the page fills a wide window instead of a long column in the middle of blank space.
+- **A copy pass over the English text**: about 45 strings that read as translated now read as plain English: a "test" instead of a "try" in the setup guide, "Voxt does not have microphone access" instead of "Voxt may not use the microphone", "frontmost app" instead of "the app in front", "Group prompt" instead of "Scene prompt", "Cancel recording" instead of "Cancel transcription" (it cancels Translate and Rewrite too), "Import from Voxt 1.x" instead of "the previous Voxt", "Model ID", "Thinking". The three American spellings left in a British-spelled app (Recognizing, Optimize, optimization) follow the rest. The Chinese text keeps its wording.
 
 ### 中文
 
@@ -159,6 +160,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **在卡片上直接调大小**：卡片右下角的小按钮依次切换小、中、大（再回到小），和功能页上设的是同一个大小。屏幕较矮时，中、大卡片的文字高度收到屏幕放得下为止，卡片不再伸出屏幕。
 - **“你的规则”不再有自己的滚动条**：规则框随整段提示词长高，长提示词顺着页面往下读，只有页面一个滚动条；打字或移动光标时页面跟着光标走，查找时页面滚到匹配处。
 - **宽窗口里转录、翻译、转写页分两栏**：左边是快捷键和模型，右边是功能自己的设置、答案卡片、规则和试一试，页面铺满宽窗口，不再是空白中间一条长长的单栏。
+- **英文文案过了一遍**：约 45 条读起来像翻译腔的英文改成了地道的说法，例如设置引导里的 “try” 改成 “test”，“Voxt may not use the microphone” 改成 “Voxt does not have microphone access”，“the app in front” 改成 “frontmost app”，“Scene prompt” 改成 “Group prompt”，“Cancel transcription” 改成 “Cancel recording”（它也取消翻译和转写），“the previous Voxt” 改成 “Voxt 1.x”。英文整体用英式拼写，剩下的三处美式拼写也改了过来。中文文案只把“场景提示词”改成“分组提示词”，和英文一致。
 
 ## [2.0.1] - 2026-11-07
 

@@ -400,7 +400,7 @@ func (a *app) previewBody(c *ui.Context, feature string) {
 	}
 	caption(c, i18n.T("Your dictionary's terms and App enhancement's scene are added to the system prompt when they apply."))
 	ui.Column(c.Key(p + "-preview-user")).Gap(px(t, 4)).Children(func() {
-		ui.Text(c, i18n.T("User message (an example)")).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(k.Text2)
+		ui.Text(c, i18n.T("Example user message")).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(k.Text2)
 		fillCard(c).Padding(px(t, sp3)).Children(func() {
 			ui.Text(c, out.User).FontSize(px(t, fsCaption)).Font("monospace").Selectable()
 		})

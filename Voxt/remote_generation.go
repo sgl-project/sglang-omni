@@ -252,9 +252,9 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 	f.fit(caps) // the model changed: a mode it lacks
 	if len(caps.ThinkModes) > 0 {
 		modes := titles(caps.ThinkModes, thinkTitle)
-		fieldInfo(c, i18n.T("Think"), "", func() {
+		fieldInfo(c, i18n.T("Thinking"), "", func() {
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
-				ui.Select(c.Key("gen-think"), &f.think, modes).Label(i18n.T("Think")).Width(px(t, 240))
+				ui.Select(c.Key("gen-think"), &f.think, modes).Label(i18n.T("Thinking")).Width(px(t, 240))
 				switch valueOf(f.think, caps.ThinkModes, thinkTitle) {
 				case llm.ThinkEffort:
 					if len(caps.Efforts) == 0 {
@@ -286,7 +286,7 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 		num("gen-keepalive", i18n.T("Keep the model loaded for"), i18n.T("e.g. 5m"), &f.keepAlive)
 	}
 	if caps.IncludeUsage {
-		ui.Switch(c.Key("gen-usage"), &f.usage).Label(i18n.T("Usage in stream events"))
+		ui.Switch(c.Key("gen-usage"), &f.usage).Label(i18n.T("Include usage in streamed responses"))
 	}
 
 	// The sampling fields: empty sends nothing, and the service uses its

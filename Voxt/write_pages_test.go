@@ -105,7 +105,7 @@ func TestRewritePage(t *testing.T) {
 		t.Errorf("preview %q", firstTexts(tt))
 	}
 	// A try that is blocked says why, here.
-	click(t, tt, "Start a try")
+	click(t, tt, "Start a test")
 	if a.sess.State.Live() || !has(tt, "No speech model is installed.") {
 		t.Errorf("try %+v", a.sess)
 	}

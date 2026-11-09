@@ -203,7 +203,7 @@ func TestProblemCards(t *testing.T) {
 	if has(tt, "Helper ready") || has(tt, "No provider set up") {
 		t.Errorf("a status bar: %q", firstTexts(tt))
 	}
-	if !hasExact(tt, "No models") || !has(tt, "Install a speech model, then set up a language model, to start.") {
+	if !hasExact(tt, "No models") || !has(tt, "To start, install a speech model, then set up a language model.") {
 		t.Fatalf("no models card: %q", firstTexts(tt))
 	}
 	click(t, tt, "Open Speech models")

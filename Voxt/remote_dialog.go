@@ -165,7 +165,7 @@ func (a *app) providerDialogView(c *ui.Context) {
 			opts := append(slices.Clone(sv.models), otherModel())
 			ui.Select(c.Key("remote-model"), &d.model, opts).Label(i18n.T("Model")).Width(px(t, 320))
 			if d.model == otherModel() {
-				ui.TextInput(c.Key("remote-model-custom"), &d.customModel).Placeholder(i18n.T("Model id")).Label(i18n.T("Model id"))
+				ui.TextInput(c.Key("remote-model-custom"), &d.customModel).Placeholder(i18n.T("Model ID")).Label(i18n.T("Model ID"))
 			}
 		})
 		if d.kind == local.ASR {
@@ -207,7 +207,7 @@ func (a *app) providerDialogView(c *ui.Context) {
 // nothing), as an error's text and detail.
 func (d *providerDialog) check(p settings.Provider) (msg, more string) {
 	if strings.TrimSpace(d.model) == "" || d.model == otherModel() && strings.TrimSpace(d.customModel) == "" {
-		return i18n.T("Choose a model, or type its id."), ""
+		return i18n.T("Choose a model, or type its ID."), ""
 	}
 	if err := checkSetup(d.kind, p); err != nil {
 		return uitext.ModelErrorText(err)

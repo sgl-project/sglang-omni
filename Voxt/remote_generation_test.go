@@ -20,7 +20,7 @@ func TestRemoteGenerationSettings(t *testing.T) {
 	frames(tt)
 	a.openProviderDialog(local.LLM, llm.Custom) // its card is below the fold
 	frames(tt)
-	for _, s := range []string{"Generation settings", "Think", "Max output tokens (optional)", "Verbosity", "Advanced"} {
+	for _, s := range []string{"Generation settings", "Thinking", "Max output tokens (optional)", "Verbosity", "Advanced"} {
 		if !has(tt, s) {
 			t.Errorf("no %q in the dialog", s)
 		}

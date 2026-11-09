@@ -269,7 +269,7 @@ func (a *app) keyRowView(c *ui.Context, feature string, i int, h settings.Hotkey
 				if !a.hotkeys.Installed {
 					col = k.Warning
 				}
-				iconMark(c, icons.Accessibility, col, i18n.T("Works only while Voxt may use Accessibility."))
+				iconMark(c, icons.Accessibility, col, i18n.T("Works only with Accessibility access."))
 			}
 			if iconButton(c.Key("remove"), icons.TrashBinMinimalistic, i18n.T("Remove shortcut %d", n)).Clicked() {
 				a.setHotkeys(feature, true, func(hs []settings.Hotkey) []settings.Hotkey {
@@ -418,7 +418,7 @@ func (a *app) setPasteLast(keys string) {
 	u.seen = a.featureKeysKey(hotkey.Transcribe)
 }
 
-// trCancelRow is "Cancel transcription": its keys only (always a tap).
+// trCancelRow is "Cancel recording": its keys only (always a tap).
 // The helper judges them only while a session records or the answer
 // card shows; the rest of the time they reach the app in front.
 func (a *app) trCancelRow(c *ui.Context) {
@@ -427,7 +427,7 @@ func (a *app) trCancelRow(c *ui.Context) {
 	cur := a.prefs.Features.Cancel.Keys
 	problems := uitext.HotkeyProblems(a.prefs.Features, hotkey.CancelID)[0]
 	ui.Column(c.Key("tr-cancel")).Gap(px(t, 6)).Children(func() {
-		settingRow(c, "tr-cancel-row", i18n.T("Cancel transcription"), i18n.T("Cancels the recording or the answer card, and only while they show. The recording stays in History, ready to retry."), func() {
+		settingRow(c, "tr-cancel-row", i18n.T("Cancel recording"), i18n.T("Cancels the recording or the answer card, and only while they show. The recording stays in History, ready to retry."), func() {
 			opts, byLabel := keyOptions(cur, true, settings.DefaultCancel)
 			if !slices.Contains(opts, r.sel) {
 				r.sel = chordLabel(cur)
@@ -435,7 +435,7 @@ func (a *app) trCancelRow(c *ui.Context) {
 			if r.custom {
 				r.sel = i18n.T("Custom…")
 			}
-			if ui.Select(c.Key("tr-cancel-sel"), &r.sel, opts).Label(i18n.T("Keys to cancel transcription")).Width(px(t, 180)).Changed() {
+			if ui.Select(c.Key("tr-cancel-sel"), &r.sel, opts).Label(i18n.T("Keys to cancel recording")).Width(px(t, 180)).Changed() {
 				if r.sel == i18n.T("Custom…") {
 					r.custom, r.text = true, cur
 					return
@@ -449,7 +449,7 @@ func (a *app) trCancelRow(c *ui.Context) {
 			}
 		})
 		if r.custom {
-			a.keysField(c, r, i18n.T("Custom keys to cancel transcription"), a.setCancelKeys)
+			a.keysField(c, r, i18n.T("Custom keys to cancel recording"), a.setCancelKeys)
 		}
 		problemLines(c, problems)
 		a.usedByView(c, recordedKeys(*r, cur))

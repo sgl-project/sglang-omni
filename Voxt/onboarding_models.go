@@ -141,7 +141,7 @@ func (a *app) obModelsStep(c *ui.Context) {
 			})
 		}
 		if st.Downloading {
-			caption(c, i18n.T("The model downloads in the background: continue, and it is ready when the bar fills."))
+			caption(c, i18n.T("The model downloads in the background. You can continue; it is ready when the bar fills."))
 		}
 	}
 	a.obLanguageRow(c)

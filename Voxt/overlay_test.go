@@ -225,7 +225,7 @@ func TestSessionProblemTexts(t *testing.T) {
 		action string
 	}{
 		{session.Problem{Code: session.ProblemNoASR}, "No speech model is installed.", actionModels},
-		{session.Problem{Code: session.ProblemMicrophone, Err: errors.New("x")}, "Voxt may not use the microphone.", actionPermissions},
+		{session.Problem{Code: session.ProblemMicrophone, Err: errors.New("x")}, "Voxt does not have microphone access.", actionPermissions},
 		{session.Problem{Code: session.ProblemHelper}, "The helper stopped: try again in a moment.", actionHelper},
 		{session.Problem{Code: session.ProblemNoSpeech}, "Nothing was heard.", actionNone},
 		{session.Problem{Code: session.ProblemTooShort}, "", actionNone},

@@ -132,7 +132,7 @@ func (r *run) write(raw, selection string) {
 			r.finish(Done, &Problem{Code: ProblemNoSpeech}, "", finishOpts{})
 			return
 		}
-		r.endWriteFailed(&Problem{Code: ProblemEmpty, Err: errors.New("the language model answered nothing")}, true)
+		r.endWriteFailed(&Problem{Code: ProblemEmpty, Err: errors.New("the language model returned an empty answer")}, true)
 		return
 	}
 	r.m.update(r, func(s *Snapshot) { s.Title, s.Draft = res.Title, res.Content })

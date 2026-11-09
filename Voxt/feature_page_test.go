@@ -60,7 +60,7 @@ func TestTranscribePageRenders(t *testing.T) {
 	if !has(tt, "Open Permissions") {
 		t.Error("no Accessibility notice")
 	}
-	if _, ok := tt.Find("Works only while Voxt may use Accessibility."); !ok {
+	if _, ok := tt.Find("Works only with Accessibility access."); !ok {
 		t.Error("Right ⌥ is not marked as needing Accessibility")
 	}
 	click(t, tt, "Open Permissions")
@@ -437,7 +437,7 @@ func trySnapshot(a *app, st session.State) session.Snapshot {
 func TestTranscribeTry(t *testing.T) {
 	a, tt := trTester(t)
 	// Nothing set up: Start says what is missing, on the page.
-	click(t, tt, "Start a try")
+	click(t, tt, "Start a test")
 	if a.sess.State.Live() || !has(tt, "No speech model is installed.") {
 		t.Fatalf("blocked try: %+v %q", a.sess, tt.Texts())
 	}
