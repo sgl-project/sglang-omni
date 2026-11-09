@@ -9,18 +9,20 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 )
 
-// llmPrefillPerChar is the first token's extra time per character of the
-// input: a long selection's prompt takes seconds to read under memory
-// pressure (about 100 tokens a second on mac-air, docs/eval.md).
+// llmPrefillPerChar is a request's extra time per character of the input
+// before its answer starts: a long selection's prompt takes seconds to
+// read.
 const llmPrefillPerChar = 5 * time.Millisecond
 
 // llmDeadlines is a request over an input of chars characters, its
-// deadlines set (Config.LLMFirstToken…; behavior.md 5.5); its whole time
-// is at least floor.
+// deadlines set (behavior.md 5.5): once the answer streams, no gap of
+// LLMStall between its pieces; in all LLMBase plus llmPrefillPerChar and
+// LLMPerChar per character, at least floor. The first piece has no
+// deadline of its own: a model that reasons before it answers, or loads
+// on its first request, sends nothing for a while and is not stuck.
 func (cfg *Config) llmDeadlines(req llm.Request, chars int, floor time.Duration) llm.Request {
-	req.FirstTokenTimeout = cfg.LLMFirstToken + time.Duration(chars)*llmPrefillPerChar
 	req.StallTimeout = cfg.LLMStall
-	req.Timeout = max(floor, req.FirstTokenTimeout+time.Duration(chars)*cfg.LLMPerChar)
+	req.Timeout = max(floor, cfg.LLMBase+time.Duration(chars)*(llmPrefillPerChar+cfg.LLMPerChar))
 	return req
 }
 
@@ -34,8 +36,6 @@ func (r *run) llmChat(req llm.Request) (llm.Response, error) {
 	}
 	var e *llm.Error
 	switch {
-	case errors.As(err, &e) && e.Params["wait"] == llm.WaitFirstToken:
-		err = fmt.Errorf("no first token within %v: %w", req.FirstTokenTimeout.Round(time.Second/10), err)
 	case errors.As(err, &e) && e.Params["wait"] == llm.WaitStall:
 		err = fmt.Errorf("no new token for %v after %s pieces: %w", req.StallTimeout, e.Params["deltas"], err)
 	case ctx.Err() == context.DeadlineExceeded:

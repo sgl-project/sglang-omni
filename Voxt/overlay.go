@@ -91,6 +91,11 @@ type overlayState struct {
 		// area is the work area of the display it shows on, chosen when
 		// it appears (the display under the pointer); a resize stays there.
 		area mygo.Rectangle
+		// dragged is how far the user moved the window from its anchored
+		// place by dragging the face (the card's background, a notice;
+		// overlayDragged): the face keeps it as it grows, until the
+		// overlay hides.
+		dragged struct{ x, y int }
 		// style is the material's shape last given to the window.
 		style mygo.VibrancyStyle
 		// passThrough: the window lets the pointer through (recording and
@@ -198,6 +203,7 @@ func (a *app) overlaySync() {
 		// it again.
 		a.ov.mode, a.ov.shown = mode, false
 		a.ov.live.id, a.ov.live.w = "", 0
+		a.ov.dragged.x, a.ov.dragged.y = 0, 0
 		if was {
 			a.overlayFadeOut()
 		}
@@ -208,7 +214,7 @@ func (a *app) overlaySync() {
 		a.ov.area = a.overlayArea()
 	}
 	w, h := a.overlayFace(mode)
-	frame := layout.Frame(a.ov.area, a.prefs.Overlay, w, h)
+	frame := a.overlayFrame(w, h)
 	moved := frame != a.ov.frame
 	a.ov.mode, a.ov.w, a.ov.h, a.ov.frame = mode, w, h, frame
 	a.ov.shown = true
@@ -226,6 +232,7 @@ func (a *app) overlaySync() {
 		opts := floatingWindowOptions("Voxt", frame.Width, frame.Height, hudContent(a.overlayView))
 		opts.Vibrancy = mygo.VibrancyHUD
 		a.ov.win = mygo.NewWindow(opts)
+		a.ov.win.OnMove(func() { a.post(a.overlayDragged) })
 		a.ov.passThrough = false
 	}
 	a.syncPassThrough()
@@ -247,6 +254,30 @@ func (a *app) overlaySync() {
 	if !was {
 		showFloating(a.ov.win, frame.X, frame.Y)
 	}
+}
+
+// overlayFrame is the window's frame for a face of w × h: its anchored
+// place (layout.Frame), moved as far as the user dragged it, the face
+// kept in the work area.
+func (a *app) overlayFrame(w, h int) mygo.Rectangle {
+	f, wa := layout.Frame(a.ov.area, a.prefs.Overlay, w, h), a.ov.area
+	f.X = min(max(f.X+a.ov.dragged.x, wa.X-layout.Pad), wa.X+wa.Width-f.Width+layout.Pad)
+	f.Y = min(max(f.Y+a.ov.dragged.y, wa.Y-layout.Pad), wa.Y+wa.Height-f.Height+layout.Pad)
+	return f
+}
+
+// overlayDragged keeps where the user dragged the window to, as its
+// offset from the anchored place. The window's own moves
+// (SetContentBounds) are to a.ov.frame and change nothing.
+func (a *app) overlayDragged() {
+	b := a.ov.win.ContentBounds()
+	if !a.ov.shown || b.X == a.ov.frame.X && b.Y == a.ov.frame.Y {
+		return
+	}
+	f := layout.Frame(a.ov.area, a.prefs.Overlay, a.ov.w, a.ov.h)
+	a.ov.dragged.x, a.ov.dragged.y = b.X-f.X, b.Y-f.Y
+	a.ov.frame.X, a.ov.frame.Y = b.X, b.Y
+	a.syncLangMenu() // overlay_lang.go: the language menu stays by the card
 }
 
 // syncPassThrough lets the pointer through the window while nothing in it
@@ -348,7 +379,7 @@ func (a *app) overlayRestyle() {
 		return
 	}
 	w, h := a.overlayFace(a.ov.mode)
-	frame := layout.Frame(a.ov.area, a.prefs.Overlay, w, h)
+	frame := a.overlayFrame(w, h)
 	moved := frame != a.ov.frame
 	a.ov.w, a.ov.h, a.ov.frame = w, h, frame
 	a.syncLangMenu()
