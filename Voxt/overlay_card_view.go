@@ -234,20 +234,22 @@ func cardWave(c *ui.Context, v cardView, motion bool, phase float64) {
 }
 
 // cardBody is the card's text, bodyH high: it scrolls past that. A
-// conversation follows its newest turn while it shows the end.
+// conversation follows its newest turn, and a first answer its newest
+// words as the model writes them, while they show the end.
 func (a *app) cardBody(c *ui.Context, v cardView, bodyH float32) {
 	st := &a.ov.cardScroll
 	key := a.answer.id + "/" + a.sess.ID
 	if v.conversation {
 		key = a.answer.id + "/conversation"
 	}
+	follow := v.conversation || v.writing
 	if key != a.ov.cardScrollKey {
 		a.ov.cardScrollKey = key
 		st.X, st.Y = 0, 0
-		if v.conversation {
+		if follow {
 			st.Y = math.MaxFloat32
 		}
-	} else if v.conversation && st.Y >= st.MaxY-2 {
+	} else if follow && st.Y >= st.MaxY-2 {
 		st.Y = math.MaxFloat32
 	}
 	ui.Scroll(c.Key("ov-card-body")).Height(bodyH).Shrink(0).Margin(layout.CardRuleGap, 0, 0, 0).TrackScroll(st).Children(func() {

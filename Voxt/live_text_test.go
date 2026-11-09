@@ -146,6 +146,24 @@ func TestRewriteWritesIntoCard(t *testing.T) {
 	}
 }
 
+// TestRewriteWritingFollows: as the model writes a long first answer into
+// the card, the card's text follows the newest words; it stayed at the
+// top, and the answer streamed out of sight below its last line.
+func TestRewriteWritingFollows(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	long := strings.Repeat("The meeting moves to Thursday at three. ", 30)
+	s := session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: session.Composing, Partial: "make it longer", Selection: "x", Draft: long[:200]}
+	snap(a, s)
+	tt := hudTester(a.overlayView, a.ov.w+2*layout.Pad, a.ov.h+2*layout.Pad)
+	frames(tt)
+	s.Draft = long
+	snap(a, s)
+	frames(tt)
+	if st := a.ov.cardScroll; st.MaxY <= 0 || st.Y < st.MaxY-2 {
+		t.Errorf("the writing card shows %v of %v: not the newest words", st.Y, st.MaxY)
+	}
+}
+
 // TestLiveLinesScroll: live text in lines longer than the face takes the
 // wheel: the overlay stops letting the pointer through, the wheel scrolls
 // up to what came before and new words leave it there; back at the end,
