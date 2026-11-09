@@ -20,20 +20,22 @@ import (
 const meetingsPageSize = 20
 
 type meetingsView struct {
-	list     []store.Meeting
-	read     bool
-	loading  bool
-	err      string
-	seq      int
-	query    string
-	page     int
-	hasMore  bool
-	listUI   ui.ListState
-	detail   *meetingDetail
+	list       []store.Meeting
+	read       bool
+	loading    bool
+	err        string
+	seq        int
+	query      string
+	page       int
+	hasMore    bool
+	listUI     ui.ListState
+	detail     *meetingDetail
+	detailList ui.ListState
 }
 
 type meetingsState struct {
-	mv meetingsView
+	mv       meetingsView
+	mtPlayer meetingPlayer
 }
 
 func (n *meetingsView) wants() string {

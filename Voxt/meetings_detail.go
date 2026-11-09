@@ -28,12 +28,14 @@ type meetingDetail struct {
 	loading  bool
 	busy     bool
 	err      string
+	playback meetingDetailPlayback
 }
 
 func (a *app) openMeetingDetail(id string) {
 	if id == "" {
 		return
 	}
+	a.stopMeetingPlayback()
 	n := &a.mv
 	n.detail = &meetingDetail{id: id, loading: true}
 	repo := a.lib.store.Meetings()
@@ -108,6 +110,8 @@ func (a *app) meetingDetailSection(c *ui.Context) {
 		_ = mygo.Clipboard.Write(transfer.TextData(meeting.ExportMarkdown(title, exportSegs, names)))
 		a.toast(i18n.T("Copied"))
 	}
+	a.meetingPlaybackBar(c, d)
+	a.meetingTranscriptList(c, d)
 	ui.Box(c).Height(px(t, sp2))
 	sectionTitle(c, i18n.T("Ask about this meeting"))
 	for i, msg := range d.chat {
