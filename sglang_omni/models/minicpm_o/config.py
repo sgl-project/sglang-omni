@@ -201,6 +201,9 @@ class MiniCPMOPipelineConfig(PipelineConfig):
     """Text-output pipeline with image and audio encoder fan-in."""
 
     architecture: ClassVar[str] = "MiniCPMO"
+    # Realtime-Venus checkpoints are MiniCPM-o 4.5 fine-tunes under their own architecture name.
+    architecture_aliases: ClassVar[tuple[str, ...]] = ("RealtimeVenusOmni",)
+
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         THINKER_STAGE: EngineStageConfig,
     }

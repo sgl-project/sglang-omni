@@ -79,6 +79,25 @@ Those pixel options do not bound the initial native-resolution allocation.
 
 MiniCPM-o 4.5 also serves live full-duplex voice and video calls on `/v1/realtime`. Launching, settings, the browser demo and the protocol are in [Full Duplex Interactive Model](../developer_reference/full_duplex_guide.md#native-full-duplex-minicpm-o).
 
+## Realtime-Venus
+
+[Realtime-Venus](https://huggingface.co/inclusionAI/Realtime-Venus) is a pair of MiniCPM-o 4.5 fine-tunes from inclusionAI: Realtime-Venus-Omni for audio-visual full-duplex calls and Realtime-Venus-Audio for audio-only chat and calls. Both keep the MiniCPM-o weight layout and serve with the commands on this page.
+
+The two checkpoints are subdirectories of one repository, and each config.json points at the repository's config.yaml, so download them with the repository's script, which keeps config.yaml beside the model directories:
+
+```bash
+hf download inclusionAI/Realtime-Venus download_models.py --local-dir .
+python download_models.py --model omni --local-dir Realtime-Venus
+```
+
+Pass the model directory, not the repository id, and serve a full-duplex call with the session variant:
+
+```bash
+python -m sglang_omni.cli serve --model-path Realtime-Venus/Realtime-Venus-Omni --variant session --enable-realtime --port 8000
+```
+
+`--model audio` downloads Realtime-Venus-Audio instead; it serves chat, speech and full-duplex calls with the MiniCPM-o 4.5 commands.
+
 ## Text to speech
 
 `/v1/audio/speech` reads the given text aloud. MiniCPM-o prefills the text in one Thinker pass and conditions the Talker on each of its tokens, instead of generating the same words one token at a time. Set `language` to `Chinese` for Chinese text, and pass a base64 audio data URI as `ref_audio` to clone a voice.
