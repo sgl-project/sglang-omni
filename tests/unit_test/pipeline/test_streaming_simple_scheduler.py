@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import queue
+from typing import Literal
 
 import pytest
 
@@ -172,6 +173,67 @@ def test_non_streaming_batch_stops_at_pending_active_stream_done() -> None:
     assert scheduler.collect_new_request_batch(first) == [first]
     assert list(scheduler.pending_messages) == [done, pending]
     assert scheduler.inbox.get_nowait() is newer
+
+
+@pytest.mark.parametrize("is_live", [True, False])
+def test_non_streaming_batch_holds_a_streams_end_behind_its_chunk(
+    is_live: bool,
+) -> None:
+    """A stream's done and streaming payload queued behind its held chunk stay behind it, and the batch keeps collecting."""
+    scheduler = StreamingSchedulerUnderTest(max_batch_size=3)
+    if is_live:
+        scheduler.handle_streaming_new_request(
+            "stream", make_payload("stream", stream=True)
+        )
+    else:
+        pass
+    first = IncomingMessage("a", "new_request", make_payload("a"))
+    stream_messages = [
+        make_chunk("stream", "x"),
+        IncomingMessage("stream", "stream_done"),
+    ]
+    if is_live:
+        pass
+    else:
+        stream_messages.append(
+            IncomingMessage(
+                "stream", "new_request", make_payload("stream", stream=True)
+            )
+        )
+    queued = IncomingMessage("b", "new_request", make_payload("b"))
+    for msg in (*stream_messages, queued):
+        scheduler.inbox.put(msg)
+
+    batch = scheduler.collect_new_request_batch(first)
+
+    assert batch == [first, queued]
+    assert list(scheduler.pending_messages) == stream_messages
+
+
+@pytest.mark.parametrize("stop_type", ["stream_done", "new_request"])
+def test_non_streaming_batch_holding_a_chunk_still_stops_at_another_streams_end(
+    stop_type: Literal["stream_done", "new_request"],
+) -> None:
+    """While a chunk is held, another stream's done or streaming payload still ends the batch."""
+    scheduler = StreamingSchedulerUnderTest(max_batch_size=3)
+    scheduler.handle_streaming_new_request("other", make_payload("other", stream=True))
+    first = IncomingMessage("a", "new_request", make_payload("a"))
+    stream_chunk = make_chunk("stream", "x")
+    if stop_type == "stream_done":
+        stop = IncomingMessage("other", "stream_done")
+    else:
+        stop = IncomingMessage(
+            "later", "new_request", make_payload("later", stream=True)
+        )
+    queued = IncomingMessage("b", "new_request", make_payload("b"))
+    for msg in (stream_chunk, stop, queued):
+        scheduler.inbox.put(msg)
+
+    batch = scheduler.collect_new_request_batch(first)
+
+    assert batch == [first]
+    assert list(scheduler.pending_messages) == [stream_chunk, stop]
+    assert scheduler.inbox.get_nowait() is queued
 
 
 def test_streaming_simple_scheduler_keeps_streaming_request_out_of_batch() -> None:
