@@ -39,6 +39,10 @@ _BAD_REQUEST_MARKERS = (
     "max_new_tokens must be",
     "Fun-ASR Apple currently requires temperature=0",
     "supports only greedy decoding",
+    "Audar-TTS temperature must be non-negative",
+    "Audar-TTS top_p must be in (0, 1]",
+    "Audar-TTS repetition_penalty must be positive",
+    "Audar-TTS reference audio must be 5-15 seconds",
     "exceeds the maximum allowed length",
     "sequence exceeds max_length",
     "multimodal_train_inputs",
@@ -79,6 +83,7 @@ _BAD_REQUEST_PATTERNS = (
     re.compile(r"^Request .+ already exists$", re.DOTALL),
     re.compile(r"^stop_regex is \d+ bytes, over the \d+-byte limit"),
     re.compile(r"^Media URL returned HTTP 404: "),
+    re.compile(r"^S2-Pro top_k must be -1 or between 1 and \d+; got -?\d+$"),
     re.compile(
         r"^Qwen3-TTS (?:Base|CustomVoice|VoiceDesign) "
         r"(?:checkpoint does not support|does not accept) "
