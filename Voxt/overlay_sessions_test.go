@@ -210,6 +210,8 @@ func TestOverlayTwoSessionsEndToEnd(t *testing.T) {
 	)
 	a := newSessionApp(t, ev, set, keys)
 	ft := new(fakeTimers).install(a.app)
+	// One line: the small pill, whose sizes these are (Lines: TestLiveLinesFromStart).
+	a.updateSettings(func(s *settings.Settings) { s.Overlay.LiveLines = false })
 	o := a.prefs.Overlay
 	var first string
 	a.pump("the first recording", func() bool { return a.sess.State == session.Recording })
@@ -266,10 +268,9 @@ func TestOverlayCheckSteps(t *testing.T) {
 				anchored(t, lang+"/"+st.name, a.prefs.Overlay, a.ov.frame)
 			}
 			switch st.name {
-			case "pill", "pill-again":
-				want := pillFrame(a.prefs.Overlay, recordingPillFaceW(a.sess, false))
-				if a.ov.frame != want {
-					t.Errorf("%s/%s: %+v, want %+v", lang, st.name, a.ov.frame, want)
+			case "pill", "pill-again": // Lines, the default: wide before any text
+				if a.ov.w != layout.LinesW || a.ov.h != layout.LiveH {
+					t.Errorf("%s/%s: %d×%d", lang, st.name, a.ov.w, a.ov.h)
 				}
 			case "live-long": // Lines, the default: wide, a second line
 				if a.ov.w != layout.LinesW || a.ov.h <= layout.LiveH {

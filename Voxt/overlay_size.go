@@ -37,12 +37,17 @@ func (a *app) overlaySize(mode overlayMode) (w, h int, exact bool) {
 		row, rowExact := recordingPillRow(a.sess, mode == ovRecording, mode == ovRecording && a.prefs.Overlay.ShowTime, scene, a.ovTextWidth)
 		exact = exact && rowExact
 		text, hint := pillLine(a.pillSession())
+		if a.prefs.Overlay.LiveLines {
+			// Wide from the start, before any text: the face does not jump
+			// from the small pill at the first word (the user, 11-09).
+			if text == "" || hint {
+				return layout.LinesW, layout.LinesHeight(0), true
+			}
+			th, known := a.ovTextHeight(liveLinesKey(text))
+			return layout.LinesW, layout.LinesHeight(th), known
+		}
 		if text == "" {
 			return row + 2*layout.PillPadX, layout.PillH, exact
-		}
-		if a.prefs.Overlay.LiveLines && !hint {
-			th, known := a.ovTextHeight(liveLinesKey(text))
-			return layout.LinesW, layout.LinesHeight(th), exact && known
 		}
 		tw, known := a.ovTextWidth(liveTextKey(text))
 		w := layout.LiveWidth(row, tw)

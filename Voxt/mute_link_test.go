@@ -194,6 +194,7 @@ func TestRecordingMuteWithoutSounds(t *testing.T) {
 // (not for a try, whose page shows no pill).
 func TestRecordingCannotMute(t *testing.T) {
 	r := newMuteRig(t)
+	r.prefs.Overlay.LiveLines = false // the small pill, whose sizes these are (Lines: TestLiveLinesFromStart)
 	r.fs.out.Sys.SetDefault(helpertest.Display)
 	r.feed("s1", session.Recording)
 	want := "This output device cannot be muted. Recording continues."
