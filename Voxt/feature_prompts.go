@@ -75,7 +75,9 @@ func (a *app) cardSetting(c *ui.Context, p, feature string) {
 	f := &a.prefs.Features
 	help := i18n.T("Shows results in the answer card, to read, copy or insert, instead of typing them (or replacing the selection). Transcribe, Translate and Rewrite share this switch. Text that cannot go in, as with no text field in front, shows in the card anyway.")
 	if feature == hotkey.Rewrite {
-		caption(c, i18n.T("Rewrite's card does more than Transcribe's and Translate's: Continue, or the Rewrite shortcut, asks a follow-up that changes the answer (\"shorter\", \"in English\"), and the card keeps the conversation."))
+		if note := i18n.T("Rewrite's card does more than Transcribe's and Translate's: Continue, or the Rewrite shortcut, asks a follow-up that changes the answer (\"shorter\", \"in English\"), and the card keeps the conversation."); settingsTextMatches(settingsSearchQuery, note) {
+			caption(c, note)
+		}
 		help = i18n.T("Shows Rewrite's answers in the answer card, to read, copy, insert or follow up. Off, the answer replaces the selection or is typed where your cursor is, and there are no follow-ups. Transcribe, Translate and Rewrite share this switch. Text that cannot go in, as with no text field in front, shows in the card anyway.")
 	}
 	settingRow(c, p+"-card", i18n.T("Show the result in a card"), help, func() {
