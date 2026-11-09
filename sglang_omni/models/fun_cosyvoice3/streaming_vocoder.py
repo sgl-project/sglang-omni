@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import queue
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -606,27 +605,8 @@ class FunCosyVoice3StreamingVocoderScheduler(
             self.cleanup_aborted_request(request_id)
         batch_start_seconds = self.clock()
         super().run_non_streaming_batch(batch, loop)
-        # note (zhaochenyang20): batch collection stops at a queued chunk, so chunks behind the batch are ingested here, decoding nothing, for the check to see the streams they make ready; other messages keep their order.
-        queued = list(self.pending_messages)
-        self.pending_messages.clear()
-        while True:
-            try:
-                queued.append(self.inbox.get_nowait())
-            except queue.Empty:
-                break
-        self.pending_messages.extend(
-            message for message in queued if message.type != "stream_chunk"
-        )
-        chunks = [
-            message
-            for message in queued
-            if message.type == "stream_chunk"
-            and not self.is_aborted(message.request_id)
-        ]
-        if chunks:
-            self.handle_stream_chunk_batch(chunks)
-        else:
-            pass
+        # note (zhaochenyang20): batch collection stops at a queued chunk, so the chunks behind the batch are ingested before the check.
+        self.ingest_queued_stream_chunks()
         with self.state_lock:
             now_seconds = self.clock()
             # note (zhaochenyang20): The serving loop drains its inbox before a ready step, and queued non-streaming requests kept it full: at 48 non-streaming plus 16 streaming SeedTTS EN clients on one H100, streams stalled up to 8.7 s mid-playback and first audio p99 reached 12 s. The next batch is taken to be as long as this one. A stream with more audio buffered still waits for an empty inbox.
