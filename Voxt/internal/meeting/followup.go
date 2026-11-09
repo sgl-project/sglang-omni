@@ -13,7 +13,7 @@ import (
 
 const (
 	// FollowUpWindowMax is the transcript context size for meeting follow-up (Voxt 1.x).
-	FollowUpWindowMax = 6000
+	FollowUpWindowMax  = 6000
 	followUpMaxWindows = 3
 )
 

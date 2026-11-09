@@ -16,11 +16,11 @@ import (
 )
 
 type meetingOverlayState struct {
-	meetOvWin      *mygo.Window
-	meetOvShown    bool
-	meetOvFrame    mygo.Rectangle
+	meetOvWin       *mygo.Window
+	meetOvShown     bool
+	meetOvFrame     mygo.Rectangle
 	meetOvCollapsed bool
-	meetOvModeUI   string
+	meetOvModeUI    string
 	meetOvTranslate bool
 }
 

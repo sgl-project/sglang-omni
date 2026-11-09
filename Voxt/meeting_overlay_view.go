@@ -22,11 +22,11 @@ type meetingOverlayLayout struct {
 
 // meetingOverlayModel is the pure view model for the meeting overlay.
 type meetingOverlayModel struct {
-	Layout       meetingOverlayLayout
-	ProblemKey   string
-	ShowBar      bool
-	ShowExpanded bool
-	ShowAsking   bool
+	Layout        meetingOverlayLayout
+	ProblemKey    string
+	ShowBar       bool
+	ShowExpanded  bool
+	ShowAsking    bool
 	ShowFinishing bool
 }
 
@@ -45,8 +45,8 @@ func overlayModel(s meeting.Snapshot, collapsed bool) meetingOverlayModel {
 		Layout: meetingOverlayLayout{Width: w, Height: h, Collapsed: collapsed},
 		ShowBar: s.State == meeting.StateRecording || s.State == meeting.StatePaused ||
 			s.State == meeting.StateStarting || s.State == meeting.StateFinishing,
-		ShowExpanded: !collapsed && s.State.Active(),
-		ShowAsking:   s.State == meeting.StateAsking,
+		ShowExpanded:  !collapsed && s.State.Active(),
+		ShowAsking:    s.State == meeting.StateAsking,
 		ShowFinishing: s.State == meeting.StateFinishing,
 	}
 	if s.Problem != nil {

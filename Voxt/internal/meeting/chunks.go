@@ -14,13 +14,13 @@ type Chunk struct {
 
 // ChunkParams tunes PlanChunks (design C1 §4.7).
 type ChunkParams struct {
-	Rate          int
-	MaxDur        time.Duration
-	MinDur        time.Duration
-	PauseMin      time.Duration
-	Pad           time.Duration
-	HardOverlap   time.Duration
-	CapMaxDur     time.Duration // remote ASR cap; 0 uses MaxDur only
+	Rate        int
+	MaxDur      time.Duration
+	MinDur      time.Duration
+	PauseMin    time.Duration
+	Pad         time.Duration
+	HardOverlap time.Duration
+	CapMaxDur   time.Duration // remote ASR cap; 0 uses MaxDur only
 }
 
 // DefaultChunkParams matches the approved design defaults.

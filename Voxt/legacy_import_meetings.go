@@ -53,21 +53,21 @@ type legacySummaryChatMessage struct {
 }
 
 type legacyMeetingEntry struct {
-	TranscriptSegments             []legacyTranscriptSegment    `json:"transcriptSegments"`
-	MeetingCaptureMode             string                       `json:"meetingCaptureMode"`
-	DisplayTitle                   string                       `json:"displayTitle"`
-	TranscriptSummary              *legacyTranscriptSummary     `json:"transcriptSummary"`
-	TranscriptSummaryChatMessages  []legacySummaryChatMessage   `json:"transcriptSummaryChatMessages"`
-	TranscriptionChatMessages      []legacySummaryChatMessage   `json:"transcriptionChatMessages"`
-	TranscriptAudioRelativePath    string                       `json:"transcriptAudioRelativePath"`
-	AudioRelativePath              string                       `json:"audioRelativePath"`
-	TranscriptionModel             string                       `json:"transcriptionModel"`
-	EnhancementModel               string                       `json:"enhancementModel"`
-	AudioDurationSeconds           *float64                     `json:"audioDurationSeconds"`
+	TranscriptSegments            []legacyTranscriptSegment  `json:"transcriptSegments"`
+	MeetingCaptureMode            string                     `json:"meetingCaptureMode"`
+	DisplayTitle                  string                     `json:"displayTitle"`
+	TranscriptSummary             *legacyTranscriptSummary   `json:"transcriptSummary"`
+	TranscriptSummaryChatMessages []legacySummaryChatMessage `json:"transcriptSummaryChatMessages"`
+	TranscriptionChatMessages     []legacySummaryChatMessage `json:"transcriptionChatMessages"`
+	TranscriptAudioRelativePath   string                     `json:"transcriptAudioRelativePath"`
+	AudioRelativePath             string                     `json:"audioRelativePath"`
+	TranscriptionModel            string                     `json:"transcriptionModel"`
+	EnhancementModel              string                     `json:"enhancementModel"`
+	AudioDurationSeconds          *float64                   `json:"audioDurationSeconds"`
 }
 
 type legacyMeetingRow struct {
-	id, text, displayTitle, entryJSON                         string
+	id, text, displayTitle, entryJSON                          string
 	audioRel, transcriptAudioRel, transcriptionModel, llmModel string
 	createdAt, audioDuration                                   float64
 }

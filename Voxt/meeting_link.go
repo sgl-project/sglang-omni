@@ -48,8 +48,10 @@ func (a *app) openMeetings() {
 		Now:       time.Now,
 		FreeSpace: func(path string) (int64, error) { return diskFree(path), nil },
 		ModelHold: modelHold,
-		ASR:       func(ctx context.Context, src meeting.Source) (meeting.TrackASR, error) { return a.meetingTrackASR(ctx, src) },
-		VAD:       a.meetingVAD(),
+		ASR: func(ctx context.Context, src meeting.Source) (meeting.TrackASR, error) {
+			return a.meetingTrackASR(ctx, src)
+		},
+		VAD: a.meetingVAD(),
 		LLM: func(ctx context.Context, id string) (meeting.SummaryChat, error) {
 			chat, _, err := a.local.LLM(ctx, id)
 			return chat, err

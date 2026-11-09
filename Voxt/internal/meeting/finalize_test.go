@@ -79,8 +79,8 @@ func TestFinalizeReplacesMicSegments(t *testing.T) {
 	micASR := &seqFileASR{texts: []string{"final mic"}}
 	sysASR := &seqFileASR{texts: []string{"final sys"}}
 	cfg := meeting.Config{
-		Store: db.Meetings(),
-		Dir:   filepath.Join(root, "meetings"),
+		Store:    db.Meetings(),
+		Dir:      filepath.Join(root, "meetings"),
 		Settings: func() settings.Meeting { return settings.Meeting{} },
 		Privacy:  func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
 		ASR: func(ctx context.Context, src meeting.Source) (meeting.TrackASR, error) {
@@ -198,10 +198,10 @@ func TestReprocessInterruptedMeeting(t *testing.T) {
 	micASR := &seqFileASR{texts: []string{"final"}}
 	sysASR := &seqFileASR{texts: []string{"sys final"}}
 	cfg := meeting.Config{
-		Store: db.Meetings(),
-		Dir:   filepath.Join(root, "meetings"),
+		Store:    db.Meetings(),
+		Dir:      filepath.Join(root, "meetings"),
 		Settings: func() settings.Meeting { return settings.Meeting{} },
-		Privacy:  func() settings.Privacy { return settings.Privacy{KeepHistory: true}},
+		Privacy:  func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
 		ASR: func(ctx context.Context, src meeting.Source) (meeting.TrackASR, error) {
 			switch src {
 			case meeting.SourceMic:
@@ -245,7 +245,7 @@ func TestFinalizeRecordingModeKeepsAudio(t *testing.T) {
 		Store:    db.Meetings(),
 		Dir:      filepath.Join(root, "meetings"),
 		Settings: func() settings.Meeting { return settings.Meeting{} },
-		Privacy:  func() settings.Privacy { return settings.Privacy{KeepHistory: true}},
+		Privacy:  func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
 		ASR: func(context.Context, meeting.Source) (meeting.TrackASR, error) {
 			return meeting.TrackASR{Caps: micASR.Caps(), File: micASR}, nil
 		},
@@ -280,7 +280,7 @@ func TestFinalizeDeletesAudioWithoutKeep(t *testing.T) {
 		Store:    db.Meetings(),
 		Dir:      filepath.Join(root, "meetings"),
 		Settings: func() settings.Meeting { return settings.Meeting{} },
-		Privacy:  func() settings.Privacy { return settings.Privacy{KeepHistory: true}},
+		Privacy:  func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
 		ASR: func(context.Context, meeting.Source) (meeting.TrackASR, error) {
 			return meeting.TrackASR{Caps: micASR.Caps(), File: micASR}, nil
 		},

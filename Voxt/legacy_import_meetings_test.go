@@ -42,10 +42,10 @@ func TestMergeLegacyMeetingsLiveSession(t *testing.T) {
 	dbPath := legacyDatabase(lib)
 	end := 1.25
 	entry := legacyMeetingEntry{
-		MeetingCaptureMode: "meeting",
-		DisplayTitle:       "Sprint review",
-		TranscriptionModel: "mlx-community/Qwen3-ASR-0.6B",
-		EnhancementModel:   "openai",
+		MeetingCaptureMode:   "meeting",
+		DisplayTitle:         "Sprint review",
+		TranscriptionModel:   "mlx-community/Qwen3-ASR-0.6B",
+		EnhancementModel:     "openai",
 		AudioDurationSeconds: ptrF(120.0),
 		TranscriptSegments: []legacyTranscriptSegment{
 			{

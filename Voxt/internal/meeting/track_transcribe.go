@@ -39,9 +39,9 @@ type trackTranscriber struct {
 	pcmBytes int64
 	timeBase time.Duration
 
-	utterCh chan Utterance
-	stop    chan struct{}
-	wg      sync.WaitGroup
+	utterCh  chan Utterance
+	stop     chan struct{}
+	wg       sync.WaitGroup
 	queueDur time.Duration
 }
 
