@@ -37,6 +37,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Live text in lines** (Settings → Overlay style → Live text layout → Lines): the overlay starts wide and wraps the words as a text box does, growing up to ten lines, then shows the newest ones, so the start of what you said stays in view. One line, which scrolls sideways, stays the default.
 - **Answer card sizes** (Transcribe, Translate, Rewrite → Answer card → Card size): Small (as before), Medium or Large, each feature its own, so a long Rewrite answer can have a large card while translations keep a small one. Show the result in a card stays one switch for Transcribe and Translate.
 - **Voxt 1.x's sounds in one click** (Settings → Audio → Play sounds → Use Voxt 1.x's sounds): Pop when recording starts and Tink when it stops, the pair Voxt 1.x played by default. Every other sound is still in the pickers.
+- **Per-service recognition prompts** (Speech models → a remote service's dialog): optional text after the global speech context, with `{{USER_MAIN_LANGUAGE}}`, `{{USER_OTHER_LANGUAGES}}` and `{{DICTIONARY_TERMS}}` filled at recognition time. Services that take no prompt ignore it.
 
 ### Changed
 
@@ -106,6 +107,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **实时文字可以多行显示**（设置 → 浮窗样式 →“实时文字的样式”→“多行”）：浮窗一开始就是宽框，像输入框一样满行换行，最多长到十行，之后显示最新的几行，开头说的话不会被滚出去。默认仍是单行、横向滚动。
 - **答案卡片的大小**（转录、翻译、转写 → 答案卡片 → 卡片大小）：小（和以前一样）、中、大，每个功能各自记住，比如转写的长回答用大卡片，翻译仍用小卡片。“在卡片中显示结果”仍是转录和翻译共用的一个开关。
 - **一键换回 Voxt 1.x 的提示音**（设置 → 音频 → 播放提示音 →“使用 Voxt 1.x 的提示音”）：开始录音时 Pop、停止时 Tink，是 Voxt 1.x 默认的一对。其他提示音照样在选择器里。
+- **每家远程服务的识别提示词**（语音模型页 → 某远程服务的设置对话框）：可选文字，接在全局「识别上下文」后面；识别时填入 `{{USER_MAIN_LANGUAGE}}`、`{{USER_OTHER_LANGUAGES}}` 和 `{{DICTIONARY_TERMS}}`。不收提示词的语音服务会忽略它。
 
 #### 变更
 

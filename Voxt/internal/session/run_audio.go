@@ -28,10 +28,27 @@ func (r *run) hints() []string {
 	return dict.Hints(r.terms)
 }
 
-// speechContext is the user's text about the speech for the speech model
-// (Dictionary.SpeechContext), with the dictionary on or off.
+// speechContext is the free-text prompt for the speech model: the global
+// speech context on the Speech models page, then the active remote
+// service's recognition prompt template when the session uses one.
 func (r *run) speechContext() string {
-	return strings.TrimSpace(r.settings.Dictionary.SpeechContext)
+	global := strings.TrimSpace(r.settings.Dictionary.SpeechContext)
+	tpl := r.remoteRecognitionPrompt()
+	main := MainLanguage(r.settings, r.m.cfg.Locale())
+	return asr.BuildSpeechPrompt(global, tpl, main, r.settings.General.OtherLanguages, r.hints())
+}
+
+func (r *run) remoteRecognitionPrompt() string {
+	id := strings.TrimSpace(r.svc.ASRInfo.ID)
+	if id == "" {
+		return ""
+	}
+	for _, p := range r.settings.Providers.ASR {
+		if p.ID == id {
+			return p.RecognitionPrompt
+		}
+	}
+	return ""
 }
 
 // speechLang is the language hint of the speech model: the user's main
