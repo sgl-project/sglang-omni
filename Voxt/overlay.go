@@ -160,7 +160,7 @@ func (a *app) overlayModeNow() overlayMode {
 	switch {
 	case card && a.answer.inserting:
 		return ovHidden // Insert pastes: the card comes back if it could not (Voxt's)
-	case card:
+	case card, live && a.writingAnswer():
 		return ovAnswer
 	case live && s.State == session.Recording:
 		return ovRecording

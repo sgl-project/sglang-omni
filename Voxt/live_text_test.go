@@ -8,6 +8,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // TestLiveTextSwitch: Settings → Overlay style → Show live text off (Voxt
@@ -114,5 +115,32 @@ func TestLiveLines(t *testing.T) {
 	_, most, _ := a.overlaySize(ovRecording)
 	if !(one < some && some < most) || most != layout.LinesHeight(layout.LinesMax*layout.LineH) {
 		t.Errorf("heights: one line %d, a few %d, many %d (most %d)", one, some, most, layout.LinesHeight(layout.LinesMax*layout.LineH))
+	}
+}
+
+// TestRewriteWritesIntoCard: Rewrite's first answer goes to the answer
+// card as the model writes it, the card at its full height from the
+// first words (it does not grow line by line), the pill until then and
+// with Show live text off. The pill showed a loader until the whole answer
+// was in (#3644).
+func TestRewriteWritesIntoCard(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	s := session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: session.Composing, Partial: "make it shorter", Selection: "A long paragraph."}
+	a.sess = s
+	if m := a.overlayModeNow(); m != ovWorking {
+		t.Fatalf("before the first words: mode %v", m)
+	}
+	s.Draft, s.Title = "Short.", "Shorter"
+	a.sess = s
+	if m := a.overlayModeNow(); m != ovAnswer {
+		t.Fatalf("writing: mode %v", m)
+	}
+	w, h, _ := a.cardSize()
+	if v := a.cardNow(); v.text != "Short." || !v.busy || w != layout.CardSizes[0].W || h != layout.CardChrome+layout.CardSizes[0].BodyMax {
+		t.Errorf("the writing card: %q busy %v, %d×%d", v.text, v.busy, w, h)
+	}
+	a.prefs.Overlay.HideLiveText = true
+	if m := a.overlayModeNow(); m != ovWorking {
+		t.Errorf("Show live text off: mode %v", m)
 	}
 }
