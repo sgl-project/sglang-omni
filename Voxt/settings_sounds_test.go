@@ -29,7 +29,9 @@ func newSoundsRig(t *testing.T) *soundsRig {
 		r.plays = append(r.plays, s.Name)
 		return func() { r.plays = append(r.plays, "-"+s.Name) }
 	}
-	tt.SetSize(windowWidth, 1400) // the whole section, without scrolling
+	// Tall window: Recognition “Refine after you stop” sits above Sounds; default
+	// height hides Start/Stop sound rows.
+	tt.SetSize(windowWidth, 1800)
 	a.navigate("/settings/audio")
 	frames(tt)
 	return r
@@ -142,6 +144,11 @@ func TestSoundsChoose(t *testing.T) {
 	if r.cueTarget(startCue).Kind != sounds.KindNone || r.cueTarget(stopCue).Name != "wrap" {
 		t.Fatalf("none: %+v %+v", r.cueTarget(startCue), r.cueTarget(stopCue))
 	}
+	if rc, ok := r.tt.Find("Try the stop sound"); ok {
+		const pageH = 1800
+		r.tt.Scroll(float32(windowWidth)*0.6, float32(pageH)*0.5, 0, rc.Y-float32(pageH)*0.2)
+		frames(r.tt)
+	}
 	click(t, r.tt, "Try the stop sound")
 	if p := r.takePlays(); !slices.Equal(p, []string{"-Submarine", "wrap"}) { // the last preview stops
 		t.Fatalf("Try: %q", p)
@@ -161,6 +168,11 @@ func TestSoundsVolume(t *testing.T) {
 	r.updateSettings(func(s *settings.Settings) { s.Audio.SoundVolume = 40 })
 	if v := r.cueTarget(startCue).Volume; v != 0.4 {
 		t.Fatalf("volume %v", v)
+	}
+	if rc, ok := r.tt.Find("Stop sound"); ok {
+		const pageH = 1800
+		r.tt.Scroll(float32(windowWidth)*0.6, float32(pageH)*0.5, 0, rc.Y-float32(pageH)*0.2)
+		frames(r.tt)
 	}
 	click(t, r.tt, "Stop sound")
 	click(t, r.tt, "Volume")

@@ -10,3 +10,4 @@
 # path                                  lines  # why it is long; the batch that splits it
 #
 # (none: refactor R1–R3 split every file that was over the limit)
+internal/settings/settings.go  612  # FB7 Audio.StreamingOnly; split settings by topic in a later refactor
