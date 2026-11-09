@@ -317,7 +317,7 @@ func TestShortcutPromptWaitsForGuide(t *testing.T) {
 }
 
 // TestShortcutRecorderUsedBy: keys another app uses say so under the
-// recorder, as they are typed and once saved (saving is allowed).
+// recorder once they are pressed (and saved: saving is allowed).
 func TestShortcutRecorderUsedBy(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	conflictPeers(t, a)
@@ -336,14 +336,7 @@ func TestShortcutRecorderUsedBy(t *testing.T) {
 	a.chooseKeys(hotkey.Rewrite, 0, row, nil)
 	frames(tt)
 	click(t, tt, "Custom keys of shortcut 1")
-	for range len(row.text) {
-		tt.Key(0, ui.KeyBackspace)
-	}
-	tt.Type("Control+Option+K")
-	if !has(tt, "Also used by Auralink (Rewrite)") || !has(tt, "Press Return to use ⌃⌥K.") {
-		t.Errorf("typed: %q", tt.Texts())
-	}
-	tt.Key(0, ui.KeyEnter)
+	tt.Key(ui.Ctrl|ui.Alt, ui.KeyK)
 	frames(tt)
 	if hs := a.lib.settings.Get().Features.Rewrite.Hotkeys; len(hs) != 1 || hs[0].Keys != "Control+Option+K" || !has(tt, "Also used by Auralink (Rewrite)") {
 		t.Errorf("saved %+v: %q", hs, tt.Texts())

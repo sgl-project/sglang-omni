@@ -8,9 +8,11 @@ package main
 import (
 	"math"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -205,5 +207,59 @@ func TestSettingsDialogSize(t *testing.T) {
 		if math.Abs(float64(dw-c.dw)) > 0.5 || math.Abs(float64(dh-c.dh)) > 0.5 {
 			t.Errorf("%v×%v: %v×%v, want %v×%v", c.w, c.h, dw, dh, c.dw, c.dh)
 		}
+	}
+}
+
+// TestHideFeatures: unchecking Translate in Settings → General takes its
+// page out of the sidebar and ⌘K and its shortcuts out of the event tap;
+// a hidden App enhancement's scene rules are off; checking them brings
+// everything back. Voxt 1.x could hide unused features; Voxt 2
+// always showed them (#3644).
+func TestHideFeatures(t *testing.T) {
+	if settings.HideTranslate != hotkey.Translate || settings.HideRewrite != hotkey.Rewrite {
+		t.Fatal("Features.Hidden's ids are not internal/hotkey's")
+	}
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 2400)
+	state := func() (sidebar, palette, keys, scenes bool) {
+		a.navigate("/home")
+		frames(tt)
+		sidebar = hasExact(tt, "Translate")
+		defer func() {
+			a.navigate("/settings/general")
+			frames(tt)
+			if r, ok := tt.Find("Shown features"); ok { // the section's foot, in view
+				tt.Scroll(windowWidth/2, 1200, 0, r.Y-600)
+				frames(tt)
+			}
+		}()
+		for _, cmd := range a.paletteItems() {
+			palette = palette || cmd.id == "go/translate"
+		}
+		for _, b := range a.hotkeyPlan().Bindings {
+			keys = keys || strings.HasPrefix(b.ID, hotkey.Translate+"/")
+		}
+		_, scenes = a.sceneConfig().Rules()
+		return
+	}
+	if sidebar, palette, keys, scenes := state(); !sidebar || !palette || !keys || !scenes {
+		t.Fatalf("shown: sidebar %v, palette %v, shortcuts %v, scenes %v", sidebar, palette, keys, scenes)
+	}
+	if err := tt.ClickControl("Show Translate"); err != nil {
+		t.Fatal(err)
+	}
+	a.updateSettings(func(s *settings.Settings) { s.Features.Hidden = append(s.Features.Hidden, settings.HideAppEnhancement) })
+	if h := a.settings.Get().Features.Hidden; !slices.Equal(h, []string{settings.HideTranslate, settings.HideAppEnhancement}) {
+		t.Fatalf("hidden %v", h)
+	}
+	if sidebar, palette, keys, scenes := state(); sidebar || palette || keys || scenes {
+		t.Fatalf("hidden: sidebar %v, palette %v, shortcuts %v, scenes %v", sidebar, palette, keys, scenes)
+	}
+	if err := tt.ClickControl("Show Translate"); err != nil {
+		t.Fatal(err)
+	}
+	a.updateSettings(func(s *settings.Settings) { s.Features.Hidden = nil })
+	if sidebar, palette, keys, scenes := state(); !sidebar || !palette || !keys || !scenes || len(a.settings.Get().Features.Hidden) != 0 {
+		t.Fatalf("shown again: sidebar %v, palette %v, shortcuts %v, scenes %v", sidebar, palette, keys, scenes)
 	}
 }

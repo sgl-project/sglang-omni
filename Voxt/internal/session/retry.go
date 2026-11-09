@@ -160,7 +160,7 @@ func (r *run) retry(e store.Entry, pcm []byte, stage func(State)) (store.Entry, 
 	if err != nil {
 		return e, err
 	}
-	raw := strings.TrimSpace(res.Text)
+	raw, _ := withoutEndWord(strings.TrimSpace(res.Text), r.endWord())
 	r.logf("info", "retry: recognised %s in %v", r.logText(raw), time.Duration(e.ASRMS)*time.Millisecond)
 	if raw == "" {
 		return e, errors.New("nothing was recognised in the recording")

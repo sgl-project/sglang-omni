@@ -62,6 +62,9 @@ func (a *app) shortcutsSettings(c *ui.Context) {
 			ui.Box(c).Width(px(t, shortcutMarksW+14+sp2)).Shrink(0) // the marks and the chevron
 		})
 		for _, feat := range append(append([]string{}, hotkey.Features...), hotkey.PasteLast, hotkey.CancelID, hotkey.Note) {
+			if f.IsHidden(feat) {
+				continue
+			}
 			hs := hotkey.HotkeysOf(f, feat)
 			problems := uitext.HotkeyProblems(f, feat) // feature_keys_text.go
 			if len(hs) == 0 {

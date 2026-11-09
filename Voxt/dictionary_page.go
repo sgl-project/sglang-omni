@@ -235,7 +235,7 @@ func (a *app) dictSwitches(c *ui.Context) {
 	ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Center).Wrap().Children(func() {
 		hints := &a.prefs.Dictionary.ASRHints
 		if ui.Checkbox(c.Key("dict-hints"), hints, i18n.T("Speech hints")).Disabled(off).
-			Tooltip(i18n.T("Sent to the speech model as words to expect. It keeps a limited number: the terms changed last go first.")).Changed() {
+			Tooltip(i18n.T("Sent to the speech model as words to expect. It keeps a limited number: the terms changed last go first. It cannot change punctuation or format: that is for your rules on each feature's page.")).Changed() {
 			v := *hints
 			a.updateSettings(func(s *settings.Settings) { s.Dictionary.ASRHints = v })
 		}
