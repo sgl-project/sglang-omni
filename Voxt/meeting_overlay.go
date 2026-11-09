@@ -10,7 +10,10 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -20,8 +23,6 @@ type meetingOverlayState struct {
 	meetOvShown     bool
 	meetOvFrame     mygo.Rectangle
 	meetOvCollapsed bool
-	meetOvModeUI    string
-	meetOvTranslate bool
 }
 
 // meetingContentProtectionHook is set in tests to observe SetContentProtection.
@@ -64,6 +65,9 @@ func (a *app) syncMeetingOverlay() {
 	frame := mygo.Rectangle{X: x, Y: y, Width: w, Height: h}
 	a.meetOvFrame = frame
 	a.meetOvWin.SetContentBounds(frame)
+	mode, faceH := meetingOverlayFace(model)
+	a.meetOvWin.SetVibrancyStyle(mygo.VibrancyStyle{Top: layout.Pad, Right: layout.Pad, Bottom: layout.Pad, Left: layout.Pad,
+		Radius: float64(faceRadius(a.prefs.Overlay, mode, faceH)), Dark: true})
 	a.meetOvWin.Invalidate()
 	a.applyMeetingOverlayProtection()
 	if !a.meetOvShown {
@@ -83,174 +87,202 @@ func (a *app) applyMeetingOverlayProtection() {
 }
 
 func (a *app) meetingOverlayView(c *ui.Context) {
-	t := c.Theme()
+	c.SetTheme(overlayTheme())
+	// Only the face shows in this transparent window (overlayView's).
+	defer c.Root().Background(ui.Transparent)
 	s := a.meetSnap
 	model := overlayModel(s, a.meetingOverlayCollapsed())
-	if model.ShowAsking {
-		a.meetingOverlayAsking(c, s)
-		return
+	motion := a.overlayMotion()
+	if !motion {
+		c.DisableAnimations()
+	} else if model.ShowFinishing {
+		c.After(layout.Tick)
 	}
-	ui.Column(c).Gap(px(t, 6)).Children(func() {
-		a.meetingOverlayBar(c, s, model)
-		if model.ShowExpanded {
-			a.meetingOverlayExpanded(c, s, model)
-		}
+	mode, faceH := meetingOverlayFace(model)
+	ui.Column(c).Fill().Padding(layout.Pad).Children(func() {
+		faceStyle(ui.Column(c.Key("mt-face")), a.prefs.Overlay, mode, faceH).Padding(0, 14-layout.Border).Children(func() {
+			switch {
+			case model.ShowAsking:
+				a.meetingOverlayAsking(c)
+			case model.ShowFinishing:
+				meetingOverlayFinishing(c, s, pillLook{motion: motion, phase: a.overlayPhase()})
+			default:
+				a.meetingOverlayBar(c, s, model)
+				meetingOverlayProblem(c, model.ProblemKey, !model.ShowExpanded)
+				if model.ShowExpanded {
+					a.meetingOverlayExpanded(c, s)
+				}
+			}
+		})
 	})
 	a.meetingAbandonDialog(c)
 }
 
+// meetingOverlayFace is the face's look and height for model: a capsule
+// unless it shows the expanded card.
+func meetingOverlayFace(model meetingOverlayModel) (overlayMode, int) {
+	mode := ovRecording
+	if model.ShowExpanded {
+		mode = ovAnswer
+	}
+	return mode, model.Layout.Height - 2*layout.Pad
+}
+
+// Colours of the meeting face beyond overlay_face.go's.
+var (
+	mtRecDot = ui.RGB(255, 69, 58)
+	mtWarn   = ui.RGB(255, 196, 92)
+)
+
 func (a *app) meetingOverlayBar(c *ui.Context, s meeting.Snapshot, model meetingOverlayModel) {
-	t := c.Theme()
-	ui.Row(c).Padding(px(t, 10), px(t, 8)).AlignItems(ui.Center).Gap(px(t, 8)).Children(func() {
-		ui.Text(c, formatMeetingElapsed(s.Elapsed))
-		ui.Text(c, fmt.Sprintf("mic %.0f · sys %.0f", s.Level[meeting.SourceMic], s.Level[meeting.SourceSystem])).TextColor(tok(t).Text2)
-		if msg := meetingOverlayProblemText(model.ProblemKey); msg != "" {
-			ui.Text(c, msg).FontSize(px(t, fsCaption)).TextColor(tok(t).Danger).Grow(1)
+	live := s.State == meeting.StateRecording || s.State == meeting.StatePaused
+	ui.Row(c).Height(meetingOvBarH).Shrink(0).Gap(10).AlignItems(ui.Center).Children(func() {
+		dot, status := mtRecDot, i18n.T("Meeting in progress")
+		if s.State == meeting.StatePaused {
+			dot, status = ovText2, i18n.T("Meeting paused")
+		}
+		ui.Box(c).Size(8, 8).Radius(4).Background(dot).Shrink(0).Label(status)
+		ui.Text(c, formatMeetingElapsed(s.Elapsed)).FontSize(13).Font("monospace").TextColor(ovText).SingleLine().Shrink(0)
+		if s.State == meeting.StatePaused {
+			ui.Text(c, i18n.T("Meeting paused")).FontSize(12).TextColor(ovText2).SingleLine().Shrink(0)
 		} else {
-			ui.Box(c).Grow(1)
-		}
-		if model.ShowBar {
-			collapse := i18n.T("Expand")
-			if !model.Layout.Collapsed {
-				collapse = i18n.T("Collapse")
+			if s.Mode != meeting.ModeSubtitles {
+				meetingLevel(c, icons.MicrophoneLarge, i18n.T("Microphone"), s.Level[meeting.SourceMic])
 			}
-			if ghostButton(c.Key("mt-ov-collapse"), collapse).Clicked() {
-				next := !model.Layout.Collapsed
-				a.meetOvCollapsed = next
-				a.updateSettings(func(st *settings.Settings) { st.Features.Meeting.Collapsed = next })
-				a.syncMeetingOverlay()
+			if s.Mode != meeting.ModeRecording {
+				meetingLevel(c, icons.VolumeLoud, i18n.T("System audio"), s.Level[meeting.SourceSystem])
 			}
 		}
-		if s.State == meeting.StateFinishing && s.Stage == meeting.StageTranscribing {
-			ui.Text(c, i18n.T("Finalizing transcript…")).TextColor(tok(t).Text2)
-			if s.Progress > 0 {
-				ui.Text(c, fmt.Sprintf("%.0f%%", s.Progress*100)).TextColor(tok(t).Text2)
-			}
-			return
-		}
-		if s.State == meeting.StateRecording || s.State == meeting.StatePaused {
-			pause := i18n.T("Pause")
+		ui.Box(c).Grow(1)
+		if live {
+			label, icon := i18n.T("Pause meeting"), icons.Pause
 			if s.State == meeting.StatePaused {
-				pause = i18n.T("Resume")
+				label, icon = i18n.T("Resume meeting"), icons.Play
 			}
-			if ghostButton(c.Key("mt-pause"), pause).Clicked() {
+			if cardIconButton(c.Key("mt-pause"), label, label, icon, true) {
 				a.meetingPauseResume()
 			}
-			if s.State == meeting.StatePaused {
-				if ghostButton(c.Key("mt-xlate"), i18n.T("Copy transcript")).Clicked() {
-					a.copyLiveMeetingExport()
-				}
-			}
-			toggle := i18n.T("Translation off")
-			if s.Translate != "" {
-				toggle = i18n.T("Translation on")
-			}
-			if ghostButton(c.Key("mt-translate"), toggle).Clicked() {
-				a.toggleMeetingTranslation(s.ID)
-			}
-			if ghostButton(c.Key("mt-end"), i18n.T("End")).Clicked() {
+			if cardIconButton(c.Key("mt-end"), i18n.T("End meeting"), i18n.T("End meeting"), icons.Stop, true) {
 				a.meetingFinish()
 			}
-			if ghostButton(c.Key("mt-abandon"), i18n.T("Cancel meeting")).Clicked() {
-				a.meetingAbandon = true
-			}
+		}
+		label, icon := i18n.T("Collapse"), icons.MinimizeSquareMinimalistic
+		if model.Layout.Collapsed {
+			label, icon = i18n.T("Expand"), icons.MaximizeSquareMinimalistic
+		}
+		if cardIconButton(c.Key("mt-ov-collapse"), label, label, icon, true) {
+			next := !model.Layout.Collapsed
+			a.meetOvCollapsed = next
+			a.updateSettings(func(st *settings.Settings) { st.Features.Meeting.Collapsed = next })
+			a.syncMeetingOverlay()
 		}
 	})
 }
 
-func (a *app) meetingOverlayExpanded(c *ui.Context, s meeting.Snapshot, model meetingOverlayModel) {
-	t := c.Theme()
-	ui.Column(c).Padding(px(t, 10), px(t, 8)).Gap(px(t, 8)).MaxHeight(px(t, float32(model.Layout.Height-meetingOvCollapsedH))).Children(func() {
-		if model.ShowFinishing {
-			msg := i18n.T("Finishing the meeting…")
-			if s.Stage == meeting.StageTranscribing {
-				msg = i18n.T("Finalizing transcript…")
-				if s.Progress > 0 {
-					msg += fmt.Sprintf(" %.0f%%", s.Progress*100)
+// meetingLevel is one track's input level: its icon and four bars that
+// light up with it.
+func meetingLevel(c *ui.Context, icon icons.Icon, label string, rms float64) {
+	v := session.Level(rms)
+	ui.Row(c).Gap(3).AlignItems(ui.Center).Shrink(0).Label(label).Children(func() {
+		ui.Icon(c, icon.Linear).Size(13, 13).TextColor(ovText2).Shrink(0)
+		for i := range 4 {
+			alpha := float32(0.22)
+			if v > float64(i)/4 {
+				alpha = 0.92
+			}
+			ui.Box(c).Size(3, 5+float32(i)*2.5).Radius(1.5).Background(ui.RGBA(255, 255, 255, alpha)).Shrink(0)
+		}
+	})
+}
+
+// meetingOverlayProblem is the meeting's warning under the bar: two lines
+// at most in the capsule.
+func meetingOverlayProblem(c *ui.Context, key string, short bool) {
+	msg := meetingOverlayProblemText(key)
+	if msg == "" {
+		return
+	}
+	ui.Row(c.Key("mt-problem")).Gap(6).AlignItems(ui.Start).Shrink(0).Padding(0, 0, 10, 0).Children(func() {
+		ui.Icon(c, icons.DangerTriangle.Linear).Size(14, 14).TextColor(mtWarn).Shrink(0)
+		text := ui.Text(c, msg).FontSize(12).TextColor(mtWarn).Grow(1).Shrink(1).MinWidth(0)
+		if short {
+			text.MaxLines(2).Ellipsis("…").Tooltip(msg)
+		}
+	})
+}
+
+func (a *app) meetingOverlayExpanded(c *ui.Context, s meeting.Snapshot) {
+	if s.State == meeting.StateRecording || s.State == meeting.StatePaused {
+		ui.Row(c).Gap(6).AlignItems(ui.Center).Shrink(0).Padding(0, 0, 10, 0).Children(func() {
+			modes := []meeting.Mode{meeting.ModeMeeting, meeting.ModeSubtitles, meeting.ModeRecording}
+			for i, label := range []string{i18n.T("Meeting"), i18n.T("Subtitles"), i18n.T("Recording")} {
+				if meetingChip(c.Key("mt-mode-"+string(modes[i])), label, meetingModeHint(modes[i]), s.Mode == modes[i]) && s.Mode != modes[i] {
+					a.meetingSetMode(modes[i])
 				}
 			}
-			ui.Text(c, msg).TextColor(tok(t).Text2)
-			return
-		}
-		a.meetingOverlayModeRow(c, s)
-		a.meetingOverlayTranslateRow(c, s)
-		ui.Scroll(c.Key("mt-live")).Grow(1).MinHeight(px(t, 120)).Children(func() {
-			ui.Column(c).Gap(px(t, 6)).Children(func() {
-				for _, seg := range s.Segments {
-					line := meetingSegmentLine(seg)
-					color := tok(t).Text
-					if seg.Source == meeting.SourceSystem {
-						color = tok(t).Text2
-					}
-					ui.Text(c, line).TextColor(color)
+			ui.Box(c).Grow(1)
+			translate := i18n.T("Live translation")
+			if s.Translate != "" {
+				translate = i18n.T("Translating to %s", uitext.TargetLanguageLabel(s.Translate))
+			}
+			if meetingChip(c.Key("mt-translate"), translate, "", s.Translate != "") {
+				a.toggleMeetingTranslation(s.ID)
+			}
+			if s.State == meeting.StatePaused && cardIconButton(c.Key("mt-copy"), i18n.T("Copy transcript"), i18n.T("Copy transcript"), icons.Copy, true) {
+				a.copyLiveMeetingExport()
+				a.toast(i18n.T("Copied"))
+			}
+			if cardIconButton(c.Key("mt-abandon"), i18n.T("Cancel meeting"), i18n.T("Cancel meeting"), icons.TrashBinMinimalistic, true) {
+				a.meetingAbandon = true
+			}
+		})
+	}
+	ui.Scroll(c.Key("mt-live")).Grow(1).MinHeight(0).Padding(0, 0, 12, 0).Children(func() {
+		ui.Column(c).Gap(8).Children(func() {
+			if len(s.Segments) == 0 && s.Live[meeting.SourceMic] == "" && s.Live[meeting.SourceSystem] == "" {
+				ui.Text(c, i18n.T("Listening…")).FontSize(13).TextColor(ovText2)
+			}
+			for _, seg := range s.Segments {
+				meetingOverlayLine(c, meetingSpeaker(seg.Speaker, seg.Source), seg.Text, false)
+			}
+			for _, src := range []meeting.Source{meeting.SourceMic, meeting.SourceSystem} {
+				if live := s.Live[src]; live != "" {
+					meetingOverlayLine(c, meetingSpeaker("", src), live, true)
 				}
-				for src, live := range s.Live {
-					if live == "" {
-						continue
-					}
-					ui.Text(c, meetingLiveLine(src, live)).Italic().TextColor(tok(t).Text2)
-				}
-			})
+			}
 		})
 	})
 }
 
-func (a *app) meetingOverlayModeRow(c *ui.Context, s meeting.Snapshot) {
-	if s.State != meeting.StateRecording && s.State != meeting.StatePaused {
-		return
+// meetingChip is a capsule that shows whether it is on; it reports a click.
+func meetingChip(c *ui.Context, label, tip string, on bool) bool {
+	b := ui.ButtonBase(c).Height(layout.CardBtn).Padding(0, 10-layout.Border).Radius(layout.CardBtn / 2).Center().Shrink(0).Label(label)
+	if tip != "" {
+		b.Tooltip(tip)
 	}
-	t := c.Theme()
-	labels := []string{
-		i18n.T("Meeting"),
-		i18n.T("Subtitles"),
-		i18n.T("Recording"),
+	bg, line, text := ui.RGBA(255, 255, 255, 0.06), ui.RGBA(255, 255, 255, 0.08), ovText2
+	switch {
+	case on:
+		bg, line, text = ui.RGBA(255, 255, 255, 0.2), ui.RGBA(255, 255, 255, 0.24), ovText
+	case b.Hovered():
+		bg, line = ui.RGBA(255, 255, 255, 0.14), ui.RGBA(255, 255, 255, 0.18)
 	}
-	modes := []meeting.Mode{meeting.ModeMeeting, meeting.ModeSubtitles, meeting.ModeRecording}
-	sel := labels[0]
-	for i, m := range modes {
-		if s.Mode == m {
-			sel = labels[i]
-			break
-		}
-	}
-	a.meetOvModeUI = sel
-	if modePick := ui.Select(c.Key("mt-ov-mode"), &a.meetOvModeUI, labels).Label(i18n.T("Mode")); modePick.Changed() {
-		for i, l := range labels {
-			if l == a.meetOvModeUI {
-				a.meetingSetMode(modes[i])
-				break
-			}
-		}
-	}
-	ui.Text(c, meetingModeHint(s.Mode)).FontSize(px(t, fsCaption)).TextColor(t.TextMuted)
+	b.Background(bg).Border(1, line)
+	return b.Children(func() {
+		ui.Text(c, label).FontSize(11).FontWeight(600).TextColor(text).SingleLine()
+	}).Clicked()
 }
 
-func (a *app) meetingOverlayTranslateRow(c *ui.Context, s meeting.Snapshot) {
-	if s.State != meeting.StateRecording && s.State != meeting.StatePaused {
-		return
-	}
-	t := c.Theme()
-	on := s.Translate != ""
-	a.meetOvTranslate = on
-	if ui.Switch(c.Key("mt-ov-translate"), &a.meetOvTranslate).Label(i18n.T("Live translation")).Changed() {
-		if a.meetOvTranslate {
-			target := a.prefs.Features.Meeting.TranslateTarget
-			if target == "" {
-				target = "en"
-			}
-			a.meetingSetTranslate(target)
-		} else {
-			a.meetingSetTranslate("")
+// meetingOverlayLine is one line of the live transcript; live is the
+// sentence still being heard.
+func meetingOverlayLine(c *ui.Context, who, text string, live bool) {
+	ui.Column(c).Gap(2).Shrink(0).Children(func() {
+		ui.Text(c, who).FontSize(11).FontWeight(600).TextColor(ovText2)
+		line := ui.Text(c, text).FontSize(13).TextColor(ovText)
+		if live {
+			line.Italic().TextColor(ovLiveColor)
 		}
-	}
-	if on {
-		target := s.Translate
-		if target == "" {
-			target = "en"
-		}
-		ui.Text(c, i18n.T("Translating to %s", uitext.TargetLanguageLabel(target))).
-			FontSize(px(t, fsCaption)).TextColor(t.TextMuted)
-	}
+	})
 }
 
 func meetingModeHint(m meeting.Mode) string {
@@ -264,37 +296,47 @@ func meetingModeHint(m meeting.Mode) string {
 	}
 }
 
-func meetingSegmentLine(seg meeting.Segment) string {
-	who := seg.Speaker
-	if who == "" {
-		if seg.Source == meeting.SourceMic {
-			who = i18n.T("Me")
-		} else {
-			who = i18n.T("Other")
+// meetingSpeaker is who said a line: the speaker's name, else Me for the
+// microphone and Other for the system audio.
+func meetingSpeaker(name string, src meeting.Source) string {
+	switch {
+	case name != "":
+		return name
+	case src == meeting.SourceMic:
+		return i18n.T("Me")
+	default:
+		return i18n.T("Other")
+	}
+}
+
+func (a *app) meetingOverlayAsking(c *ui.Context) {
+	ui.Row(c).Height(meetingOvBarH).Shrink(0).Gap(8).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, i18n.T("Save this meeting?")).FontSize(13).FontWeight(500).TextColor(ovText).SingleLine().Grow(1).MinWidth(0)
+		if cardCapsule(c.Key("mt-save"), i18n.T("Save"), "") {
+			a.meetingSave()
 		}
-	}
-	return fmt.Sprintf("%s: %s", who, seg.Text)
+		if cardCapsule(c.Key("mt-discard"), i18n.T("Discard"), "") {
+			a.meetingDiscard()
+		}
+	})
 }
 
-func meetingLiveLine(src meeting.Source, text string) string {
-	if src == meeting.SourceMic {
-		return fmt.Sprintf("%s: %s", i18n.T("Me"), text)
+// meetingOverlayFinishing is the capsule while the meeting is saved,
+// transcribed again and summarised.
+func meetingOverlayFinishing(c *ui.Context, s meeting.Snapshot, look pillLook) {
+	msg := i18n.T("Finishing the meeting…")
+	switch s.Stage {
+	case meeting.StageTranscribing:
+		msg = i18n.T("Finalizing transcript…")
+		if s.Progress > 0 {
+			msg += fmt.Sprintf(" %.0f%%", s.Progress*100)
+		}
+	case meeting.StageSummary:
+		msg = i18n.T("Summarizing…")
 	}
-	return fmt.Sprintf("%s: %s", i18n.T("Other"), text)
-}
-
-func (a *app) meetingOverlayAsking(c *ui.Context, s meeting.Snapshot) {
-	t := c.Theme()
-	ui.Column(c).Padding(px(t, 12)).Gap(px(t, 8)).Children(func() {
-		ui.Text(c, i18n.T("Save this meeting?")).Bold()
-		ui.Row(c).Gap(px(t, sp2)).Children(func() {
-			if primaryButton(c.Key("mt-save"), i18n.T("Save")).Clicked() {
-				a.meetingSave()
-			}
-			if ghostButton(c.Key("mt-discard"), i18n.T("Discard")).Clicked() {
-				a.meetingDiscard()
-			}
-		})
+	ui.Row(c).Height(meetingOvBarH).Shrink(0).Gap(4).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+		overlayLoader(c, msg, look)
+		ui.Text(c, msg).FontSize(13).TextColor(ovText).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
 	})
 }
 

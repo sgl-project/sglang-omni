@@ -1,6 +1,35 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
+)
+
+// The capsule's controls fit in its window, with a long warning too.
+func TestMeetingOverlayControlsFit(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	for _, problem := range []string{"", meeting.ProblemKeySystemSilent} {
+		s := meeting.Snapshot{ID: "m1", State: meeting.StateRecording, Mode: meeting.ModeMeeting}
+		if problem != "" {
+			s.Problem = &meeting.Problem{Key: problem}
+		}
+		a.meetSnap, a.meetOvCollapsed = s, true
+		m := overlayModel(s, true)
+		tt := ui.NewTester(a.meetingOverlayView, m.Layout.Width, m.Layout.Height)
+		frames(tt)
+		for _, label := range []string{"Pause meeting", "End meeting", "Expand", meetingOverlayProblemText(problem)} {
+			if label == "" {
+				continue
+			}
+			r, ok := tt.Find(label)
+			if !ok || r.W < 10 || r.H < 10 || r.X < 0 || r.Y < 0 || r.X+r.W > float32(m.Layout.Width) || r.Y+r.H > float32(m.Layout.Height) {
+				t.Errorf("problem %q: %q at %+v (found %v) outside %dx%d", problem, label, r, ok, m.Layout.Width, m.Layout.Height)
+			}
+		}
+	}
+}
 
 func TestMeetingOverlayContentProtection(t *testing.T) {
 	a, _, _ := newTestApp(t)

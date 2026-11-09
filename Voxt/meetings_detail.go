@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -98,18 +100,23 @@ func (a *app) meetingDetailSection(c *ui.Context) {
 			FontSize(px(t, fsCaption)).TextColor(t.TextMuted)
 	}
 	exportSegs := storeSegmentsToExport(d.segments)
-	if ghostButton(c.Key("mt-export-txt"), i18n.T("Copy transcript (.txt)")).Clicked() {
-		_ = mygo.Clipboard.Write(transfer.TextData(meeting.ExportTxt(exportSegs, names)))
-		a.toast(i18n.T("Copied"))
+	title := d.meeting.Title
+	if title == "" {
+		title = d.meeting.CreatedAt.Format("2006-01-02 15:04")
 	}
-	if ghostButton(c.Key("mt-export-md"), i18n.T("Copy transcript (Markdown)")).Clicked() {
-		title := d.meeting.Title
-		if title == "" {
-			title = d.meeting.CreatedAt.Format("2006-01-02 15:04")
+	file := strings.NewReplacer("/", "-", ":", "-").Replace(title)
+	ui.Row(c).Gap(px(t, sp2)).Children(func() {
+		if ghostButton(c.Key("mt-copy"), i18n.T("Copy transcript")).Clicked() {
+			_ = mygo.Clipboard.Write(transfer.TextData(meeting.ExportTxt(exportSegs, names)))
+			a.toast(i18n.T("Copied"))
 		}
-		_ = mygo.Clipboard.Write(transfer.TextData(meeting.ExportMarkdown(title, exportSegs, names)))
-		a.toast(i18n.T("Copied"))
-	}
+		if ghostButton(c.Key("mt-export-txt"), i18n.T("Export .txt…")).Clicked() {
+			a.saveMeetingExport(file+".txt", meeting.ExportTxt(exportSegs, names))
+		}
+		if ghostButton(c.Key("mt-export-md"), i18n.T("Export Markdown…")).Clicked() {
+			a.saveMeetingExport(file+".md", meeting.ExportMarkdown(title, exportSegs, names))
+		}
+	})
 	a.meetingPlaybackBar(c, d)
 	a.meetingTranscriptList(c, d)
 	ui.Box(c).Height(px(t, sp2))
@@ -182,6 +189,22 @@ func (a *app) regenerateMeetingSummary(id string) {
 		a.post(func() {
 			a.openMeetingDetail(id)
 			a.loadMeetings()
+		})
+	})
+}
+
+// saveMeetingExport writes text to a file the user picks, name by default.
+func (a *app) saveMeetingExport(name, text string) {
+	chooseExportFile(a, i18n.T("Export transcript"), name, func(dst string) {
+		a.async(func() {
+			err := os.WriteFile(dst, []byte(text), 0o644)
+			a.post(func() {
+				if err != nil {
+					a.toast(i18n.T("Could not export: %v", err))
+					return
+				}
+				a.toast(i18n.T("Exported to %s", filepath.Base(dst)))
+			})
 		})
 	})
 }

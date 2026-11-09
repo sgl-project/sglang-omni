@@ -5,13 +5,18 @@ import (
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 )
 
+// The meeting window's sizes in DIPs: the face's plus layout.Pad on each
+// side for its shadow.
 const (
-	meetingOvCollapsedW = 340
-	meetingOvCollapsedH = 48
-	meetingOvExpandedW  = 560
-	meetingOvExpandedH  = 360
+	meetingOvBarH       = 44
+	meetingOvProblemH   = 42 // two lines of the warning and its margin
+	meetingOvCollapsedW = 360 + 2*layout.Pad
+	meetingOvCollapsedH = meetingOvBarH + 2*layout.Pad
+	meetingOvExpandedW  = 520 + 2*layout.Pad
+	meetingOvExpandedH  = 340 + 2*layout.Pad
 )
 
 // meetingOverlayLayout is the meeting floating window's size.
@@ -39,18 +44,24 @@ func meetingOverlaySize(collapsed bool) (w, h int) {
 }
 
 // meetingOverlayModel builds the overlay model from the meeting snapshot.
+// Asking and finishing always show the capsule.
 func overlayModel(s meeting.Snapshot, collapsed bool) meetingOverlayModel {
-	w, h := meetingOverlaySize(collapsed)
+	asking, finishing := s.State == meeting.StateAsking, s.State == meeting.StateFinishing
+	pill := collapsed || asking || finishing
+	w, h := meetingOverlaySize(pill)
 	m := meetingOverlayModel{
 		Layout: meetingOverlayLayout{Width: w, Height: h, Collapsed: collapsed},
 		ShowBar: s.State == meeting.StateRecording || s.State == meeting.StatePaused ||
-			s.State == meeting.StateStarting || s.State == meeting.StateFinishing,
-		ShowExpanded:  !collapsed && s.State.Active(),
-		ShowAsking:    s.State == meeting.StateAsking,
-		ShowFinishing: s.State == meeting.StateFinishing,
+			s.State == meeting.StateStarting || finishing,
+		ShowExpanded:  !pill && s.State.Active(),
+		ShowAsking:    asking,
+		ShowFinishing: finishing,
 	}
 	if s.Problem != nil {
 		m.ProblemKey = s.Problem.Key
+		if pill && !asking && !finishing && meetingOverlayProblemText(m.ProblemKey) != "" {
+			m.Layout.Height += meetingOvProblemH
+		}
 	}
 	return m
 }
