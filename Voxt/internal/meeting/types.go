@@ -1,6 +1,7 @@
 package meeting
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -105,6 +106,8 @@ type Config struct {
 	FreeSpace   func(dir string) (int64, error)
 	// ModelHold keeps local speech models loaded for the meeting (C1-2).
 	ModelHold local.Holder
+	// ASR resolves live recognition per track; nil keeps WAV-only capture (tests).
+	ASR func(ctx context.Context, src Source) (TrackASR, error)
 }
 
 // ErrBusy means a meeting is already live.

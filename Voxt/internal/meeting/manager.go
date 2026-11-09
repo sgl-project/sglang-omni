@@ -420,9 +420,19 @@ func (m *Manager) stopAllTracks() {
 }
 
 func (m *Manager) stopAllTracksLocked() {
+	if len(m.tracks) == 0 {
+		return
+	}
+	pending := make([]*track, 0, len(m.tracks))
 	for _, tr := range m.tracks {
+		pending = append(pending, tr)
+	}
+	// Live teardown updates the snapshot and must not run under Manager.mu (Finish holds it).
+	m.mu.Unlock()
+	for _, tr := range pending {
 		tr.stop()
 	}
+	m.mu.Lock()
 }
 
 func sourcesToAdd(old, new []Source) []Source {

@@ -42,6 +42,7 @@ meeting local
 meeting session
 meeting settings
 meeting store
+meeting vad
 logs core
 notify core
 omni asr
