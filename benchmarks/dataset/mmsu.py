@@ -11,6 +11,9 @@ from pathlib import Path
 
 from datasets import Audio, load_dataset
 
+DEFAULT_MMSU_DATASET_REPOSITORY = "ddwang2000/MMSU"
+MMSU_DATASET_SPLIT = "train"
+
 
 @dataclass
 class MmsuSample:
@@ -65,9 +68,9 @@ def load_mmsu_samples(
     load our pre-built subset for CI.
     """
 
-    ds = load_dataset(repo_id or "ddwang2000/MMSU")
+    ds = load_dataset(repo_id or DEFAULT_MMSU_DATASET_REPOSITORY)
     assert list(ds.keys()) == [
-        "train"
+        MMSU_DATASET_SPLIT
     ], f"Expected only 'train' split, got {list(ds.keys())}"
     ds = ds.cast_column("audio", Audio(decode=False))
     task_set = {t.strip() for t in (task_names or []) if t.strip()} or None
@@ -75,7 +78,7 @@ def load_mmsu_samples(
     cache_dir = Path(tempfile.mkdtemp(prefix="mmsu_audio_"))
 
     samples: list[MmsuSample] = []
-    for row in ds["train"]:
+    for row in ds[MMSU_DATASET_SPLIT]:
         if task_set and row["task_name"] not in task_set:
             continue
         if cat_set and row["category"] not in cat_set:
