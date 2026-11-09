@@ -49,6 +49,7 @@ from sglang_omni.models.fishaudio_drama3.first_frame_graphs import (
     Drama3FirstFrameGraphs,
 )
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
+from sglang_omni.models.fishaudio_drama3.model_inputs import next_frame_labels
 from sglang_omni.models.fishaudio_drama3.model_runner import (
     Drama3DecodeStatePool,
     Drama3ModelRunner,
@@ -76,7 +77,6 @@ from sglang_omni.models.fishaudio_drama3.sglang_model import (
     Drama3StepInputs,
     Drama3TowerPrefill,
     StepExchange,
-    next_frame_labels,
 )
 from sglang_omni.models.fishaudio_drama3.tower_kernels import (
     FUSED_KERNELS,
@@ -1328,7 +1328,7 @@ class SuppliedBatchRunner(Drama3ModelRunner):
             sglang_request = request_data_of(request).req
             assert sglang_request is not None
             request_slot = sglang_request.kv.req_pool_idx
-            # An unseated request carries a slot no pool row has.
+            # note (Wenyao Gao): an unseated request carries a slot no pool row has.
             request_slots.append(-1 if request_slot is None else request_slot)
             if is_prefill:
                 assert sglang_request.extend_end is not None
@@ -2075,6 +2075,19 @@ def test_next_frame_labels_pair_rows_within_each_request() -> None:
     assert torch.equal(frames, original)
 
 
+def prefill_staging_runner(device: torch.device) -> Drama3ModelRunner:
+    runner = Drama3ModelRunner.__new__(Drama3ModelRunner)
+    runner.device = device
+    runner.model = SimpleNamespace(
+        config=SimpleNamespace(eos_token_id=EOS_TOKEN_ID), step_exchange=StepExchange()
+    )
+    runner.decode_buffers = Drama3DecodeBuffers.allocate(
+        row_count=4, frame_width=FRAME_WIDTH, device=device
+    )
+    runner.prefill_inputs = None
+    return runner
+
+
 def test_prefill_staging_pairs_each_row_with_its_requests_next_frame() -> None:
     """before_prefill hands the model every request's history and, per row, the
     next frame of the same request with the eos placeholder on each last row,
@@ -2085,15 +2098,7 @@ def test_prefill_staging_pairs_each_row_with_its_requests_next_frame() -> None:
         data = built_request(rows, request_id)
         admitted_for_prefill(data, 0, len(rows))
         requests.append(SchedulerRequest(request_id=request_id, data=data))
-    runner = Drama3ModelRunner.__new__(Drama3ModelRunner)
-    runner.device = torch.device("cpu")
-    runner.model = SimpleNamespace(
-        config=SimpleNamespace(eos_token_id=EOS_TOKEN_ID), step_exchange=StepExchange()
-    )
-    runner.decode_buffers = Drama3DecodeBuffers.allocate(
-        row_count=4, frame_width=FRAME_WIDTH, device=torch.device("cpu")
-    )
-    runner.prefill_inputs = None
+    runner = prefill_staging_runner(torch.device("cpu"))
 
     runner.before_prefill(None, SimpleNamespace(), requests)
 
@@ -2106,13 +2111,15 @@ def test_prefill_staging_pairs_each_row_with_its_requests_next_frame() -> None:
     assert staged.ras_windows.tolist() == [ras_window(rows_a), ras_window(rows_b)]
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="stages onto a CUDA device")
+@pytest.mark.accelerator
 def test_prefill_staging_keeps_each_steps_copies_apart_without_a_sync() -> None:
     """Two prefills staged back to back, with the stream still busy and no host
     sync between them, each reach the device with their own frames, labels and
-    knobs: every copy's pinned source is a fresh block the caching host allocator
-    holds until the copy's event completes, so the second staging cannot
-    overwrite the first one's bytes in flight."""
+    knobs."""
+    if not torch.cuda.is_available():
+        pytest.skip("stages onto a CUDA device")
+    else:
+        pass
     rows_a = frame_rows_of([3], seed=7)[0]
     rows_b = frame_rows_of([3], seed=8)[0]
     assert rows_a != rows_b
@@ -2121,16 +2128,7 @@ def test_prefill_staging_keeps_each_steps_copies_apart_without_a_sync() -> None:
         request = prompted_request(rows, request_id, knob_index)
         admitted_for_prefill(request_data_of(request), 0, len(rows))
         requests[request_id] = request
-    device = torch.device("cuda")
-    runner = Drama3ModelRunner.__new__(Drama3ModelRunner)
-    runner.device = device
-    runner.model = SimpleNamespace(
-        config=SimpleNamespace(eos_token_id=EOS_TOKEN_ID), step_exchange=StepExchange()
-    )
-    runner.decode_buffers = Drama3DecodeBuffers.allocate(
-        row_count=4, frame_width=FRAME_WIDTH, device=device
-    )
-    runner.prefill_inputs = None
+    runner = prefill_staging_runner(torch.device("cuda"))
     exchange = runner.model.step_exchange
 
     torch.cuda._sleep(
