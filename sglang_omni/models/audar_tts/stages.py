@@ -10,9 +10,18 @@ import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import torch
+from huggingface_hub import hf_hub_download
+
+try:
+    import llama_cpp
+    from llama_cpp import _ggml as llama_cpp_ggml
+    from neucodec import NeuCodec
+except ImportError as exc:
+    raise RuntimeError(
+        "Audar-TTS requires the 'audar-tts' optional dependencies"
+    ) from exc
 
 from sglang_omni.models.audar_tts.payload_types import AudarTTSState
 from sglang_omni.models.audar_tts.protocol import (
@@ -34,12 +43,8 @@ from sglang_omni.scheduling.reference_encoder import (
     TensorReferenceEncodeHook,
 )
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.utils import device as device_utils
 from sglang_omni.utils.audio_payload import audio_waveform_payload
-
-if TYPE_CHECKING:
-    from neucodec import NeuCodec
-else:
-    pass
 
 DEFAULT_GGUF_FILENAME = "Audar-TTS-V1-Turbo-Q4_K_M.gguf"
 DEFAULT_CODEC_MODEL = "neuphonic/neucodec"
@@ -59,13 +64,7 @@ class ReferenceInput:
 
 
 @lru_cache(maxsize=None)
-def load_codec(model: str, revision: str, device: str) -> "NeuCodec":
-    try:
-        from neucodec import NeuCodec
-    except ImportError as exc:
-        raise RuntimeError(
-            "Audar-TTS requires the 'audar-tts' optional dependencies"
-        ) from exc
+def load_codec(model: str, revision: str, device: str) -> NeuCodec:
     return NeuCodec.from_pretrained(model, revision=revision).eval().to(device)
 
 
@@ -137,7 +136,7 @@ def load_reference_waveform(item: ReferenceInput) -> torch.Tensor:
 
 
 def encode_reference(
-    codec: "NeuCodec", device: str, item: ReferenceInput
+    codec: NeuCodec, device: str, item: ReferenceInput
 ) -> torch.Tensor:
     waveform = load_reference_waveform(item).to(device)
     with torch.inference_mode():
@@ -160,7 +159,7 @@ class AudarReferenceEncodeHook(TensorReferenceEncodeHook[ReferenceInput]):
     def __init__(
         self,
         *,
-        codec: "NeuCodec",
+        codec: NeuCodec,
         device: str,
         codec_model: str,
         codec_revision: str,
@@ -205,9 +204,7 @@ def create_reference_encoder_executor(
     cache_max_bytes: int = 64 * 1024 * 1024,
     max_concurrency: int = 8,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
-    from sglang_omni.utils.device import resolve_concrete_device
-
-    device = str(resolve_concrete_device(device, gpu_id))
+    device = str(device_utils.resolve_concrete_device(device, gpu_id))
     codec = load_codec(codec_model, codec_revision, device)
     reference_service = ReferenceEncodeService(
         AudarReferenceEncodeHook(
@@ -253,8 +250,6 @@ def resolve_gguf(model_path: str, filename: str, revision: str) -> str:
         return str(candidate)
     else:
         pass
-    from huggingface_hub import hf_hub_download
-
     return hf_hub_download(repo_id=model_path, filename=filename, revision=revision)
 
 
@@ -268,24 +263,14 @@ def create_tts_engine_executor(
     n_ctx: int = 4096,
     n_gpu_layers: int = -1,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
-    try:
-        import llama_cpp
-        from llama_cpp import LLAMA_SPLIT_MODE_NONE, Llama
-    except ImportError as exc:
-        raise RuntimeError(
-            "Audar-TTS requires the 'audar-tts' optional dependencies"
-        ) from exc
-
-    from sglang_omni.utils.device import resolve_concrete_device
-
-    concrete_device = resolve_concrete_device(device, gpu_id)
+    concrete_device = device_utils.resolve_concrete_device(device, gpu_id)
     if concrete_device.type not in ("cpu", "cuda", "xpu", "musa"):
         raise ValueError(
             "Audar-TTS llama.cpp engine runs on cuda, xpu, musa or cpu only; resolved "
             f"device={concrete_device}"
         )
     elif concrete_device.type == "xpu":
-        from llama_cpp._ggml import libggml
+        libggml = llama_cpp_ggml.libggml
 
         libggml.ggml_backend_reg_by_name.restype = ctypes.c_void_p
         if libggml.ggml_backend_reg_by_name(b"SYCL") is None:
@@ -319,11 +304,11 @@ def create_tts_engine_executor(
     else:
         pass
     model_file = resolve_gguf(model_path, gguf_filename, model_revision)
-    llm = Llama(
+    llm = llama_cpp.Llama(
         model_path=model_file,
         n_ctx=n_ctx,
         n_gpu_layers=n_gpu_layers,
-        split_mode=LLAMA_SPLIT_MODE_NONE,
+        split_mode=llama_cpp.LLAMA_SPLIT_MODE_NONE,
         main_gpu=main_gpu,
         verbose=False,
     )
@@ -409,9 +394,7 @@ def create_vocoder_executor(
     codec_model: str = DEFAULT_CODEC_MODEL,
     codec_revision: str = "main",
 ) -> SimpleScheduler[StagePayload, StagePayload]:
-    from sglang_omni.utils.device import resolve_concrete_device
-
-    device = str(resolve_concrete_device(device, gpu_id))
+    device = str(device_utils.resolve_concrete_device(device, gpu_id))
     codec = load_codec(codec_model, codec_revision, device)
     lock = codec_lock(codec_model, codec_revision, device)
 

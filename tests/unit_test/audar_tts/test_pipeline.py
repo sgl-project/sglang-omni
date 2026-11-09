@@ -6,7 +6,6 @@ import asyncio
 import base64
 import concurrent.futures
 import io
-import sys
 import threading
 import time
 import types
@@ -33,6 +32,7 @@ from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
 from sglang_omni.pipeline.mp_runner import build_stage_groups
 from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import DataReadyMessage, OmniRequest, StagePayload
 from sglang_omni.relay.shm import ShmRelay
 from sglang_omni.serve.speech_errors import SpeechAPIError
@@ -574,9 +574,7 @@ def test_codec_model_and_lock_are_shared_between_stages(
             loads += 1
             return codec
 
-    monkeypatch.setitem(
-        sys.modules, "neucodec", types.SimpleNamespace(NeuCodec=FakeNeuCodec)
-    )
+    monkeypatch.setattr(stages, "NeuCodec", FakeNeuCodec)
     stages.load_codec.cache_clear()
     stages.codec_lock.cache_clear()
     try:
@@ -605,13 +603,11 @@ def test_llama_cpp_stage_keeps_a_cpu_resolution_off_the_gpu(
             captured.update(kwargs)
             raise RuntimeError("stop after capture")
 
-    from sglang_omni.platforms import current_platform
-
     def unexpected_system_info_probe() -> bytes:
         raise AssertionError("an explicit CPU resolution must not probe llama.cpp GPUs")
 
-    monkeypatch.setitem(
-        sys.modules,
+    monkeypatch.setattr(
+        stages,
         "llama_cpp",
         types.SimpleNamespace(
             LLAMA_SPLIT_MODE_NONE=0,
@@ -643,8 +639,8 @@ def test_llama_cpp_stage_falls_back_to_cpu_without_musa_backend(
         captured.update(kwargs)
         raise StopAfterCapture
 
-    monkeypatch.setitem(
-        sys.modules,
+    monkeypatch.setattr(
+        stages,
         "llama_cpp",
         types.SimpleNamespace(
             LLAMA_SPLIT_MODE_NONE=0,
@@ -680,8 +676,8 @@ def test_llama_cpp_stage_uses_musa_backend_when_available(
         captured.update(kwargs)
         raise StopAfterCapture
 
-    monkeypatch.setitem(
-        sys.modules,
+    monkeypatch.setattr(
+        stages,
         "llama_cpp",
         types.SimpleNamespace(
             LLAMA_SPLIT_MODE_NONE=0,
@@ -707,10 +703,8 @@ def test_llama_cpp_stage_rejects_a_device_it_cannot_serve(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """llama.cpp must not silently map an unsupported device to another backend."""
-    from sglang_omni.platforms import current_platform
-
-    monkeypatch.setitem(
-        sys.modules,
+    monkeypatch.setattr(
+        stages,
         "llama_cpp",
         types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=object),
     )
@@ -722,16 +716,14 @@ def test_llama_cpp_stage_rejects_a_device_it_cannot_serve(
 def test_llama_cpp_stage_refuses_xpu_without_a_sycl_build(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from sglang_omni.platforms import current_platform
-
-    monkeypatch.setitem(
-        sys.modules,
+    monkeypatch.setattr(
+        stages,
         "llama_cpp",
         types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=object),
     )
-    monkeypatch.setitem(
-        sys.modules,
-        "llama_cpp._ggml",
+    monkeypatch.setattr(
+        stages,
+        "llama_cpp_ggml",
         types.SimpleNamespace(
             libggml=types.SimpleNamespace(ggml_backend_reg_by_name=lambda name: None)
         ),
@@ -758,16 +750,14 @@ def test_llama_cpp_stage_offloads_to_the_xpu_and_warms_it(
         def eval(self, tokens: list[int]) -> None:
             self.calls.append(tokens)
 
-    from sglang_omni.platforms import current_platform
-
-    monkeypatch.setitem(
-        sys.modules,
+    monkeypatch.setattr(
+        stages,
         "llama_cpp",
         types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=FakeLlama),
     )
-    monkeypatch.setitem(
-        sys.modules,
-        "llama_cpp._ggml",
+    monkeypatch.setattr(
+        stages,
+        "llama_cpp_ggml",
         types.SimpleNamespace(
             libggml=types.SimpleNamespace(ggml_backend_reg_by_name=lambda name: 1)
         ),
@@ -817,8 +807,8 @@ def test_llama_cpp_stage_matches_official_generation_loop(
         def reset(self) -> None:
             self.reset_calls += 1
 
-    monkeypatch.setitem(
-        sys.modules,
+    monkeypatch.setattr(
+        stages,
         "llama_cpp",
         types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=FakeLlama),
     )
