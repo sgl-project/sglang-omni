@@ -23,6 +23,13 @@ struct LoadedDraft {
 namespace {
 
 constexpr int kQuantizationGroupSize = 64;
+// note (Xinhao Tan): all 38 requests measured under 2 tokens a round on an
+// M4 Pro were slower with the draft, and so was the one on an M5 (0.88x). The
+// mean is checked only every 32 rounds: a 17 min recording whose decode the
+// draft made 1.3x faster committed 1.6 tokens a round over its first 8 rounds
+// and 2.5 over 32.
+constexpr int kBreakEvenCheckRounds = 32;
+constexpr float kBreakEvenTokensPerRound = 2.0f;
 
 std::string ShapeText(const mx::Shape &shape) {
   std::string text = "[";
@@ -267,7 +274,8 @@ int DFlashDraft::Decode(const Qwen3Decoder &target, const mx::array &embeddings,
   bool finished = commit(anchor_id);
   int committed_token_count = 1;
   int round_count = 0;
-  while (!finished) {
+  bool below_break_even = false;
+  while (!finished && !below_break_even) {
     if (cancel.load()) {
       throw TranscriptionCancelled();
     } else {
@@ -319,6 +327,28 @@ int DFlashDraft::Decode(const Qwen3Decoder &target, const mx::array &embeddings,
       cache.Trim(verify_count - 1 - accepted_count);
     }
     AppendContext(aux_hidden_states, accepted_count + 1, draft_caches);
+    below_break_even =
+        round_count % kBreakEvenCheckRounds == 0 &&
+        committed_token_count - 1 < kBreakEvenTokensPerRound * round_count;
+  }
+  // note (Xinhao Tan): plain decoding keeps going to the end, because the
+  // draft's context would need the hidden states of every token it skipped.
+  if (!finished) {
+    mx::array next_token = mx::argmax(target.LastLogits(target.Forward(
+        target.EmbedTokens(mx::array(&anchor_id, {1, 1}, mx::int32)), caches)));
+    mx::async_eval({next_token});
+    while (!finished) {
+      if (cancel.load()) {
+        throw TranscriptionCancelled();
+      } else {
+      }
+      const mx::array token = next_token;
+      next_token = mx::argmax(target.LastLogits(target.Forward(
+          target.EmbedTokens(mx::reshape(token, {1, 1})), caches)));
+      mx::async_eval({next_token});
+      finished = commit(static_cast<int>(token.item<uint32_t>()));
+    }
+  } else {
   }
   return round_count;
 }
