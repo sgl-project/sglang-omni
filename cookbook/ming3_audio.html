@@ -573,6 +573,7 @@
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installation-and-startup">Installation and Startup</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mtp-decoding">MTP decoding</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#transcription">Transcription</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-synthesis">Speech synthesis</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#audio-chat">Audio chat</a></li>
@@ -595,11 +596,36 @@
 <h2>Installation and Startup<a class="headerlink" href="#installation-and-startup" title="Link to this heading">#</a></h2>
 <p>Install SGLang-Omni by following <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a>.</p>
 <p>The checkpoint contains the thinker shards and a complete <code class="docutils literal notranslate"><span class="pre">talker/</span></code> directory. Serving needs two GPUs. <code class="docutils literal notranslate"><span class="pre">--thinker.tp_size</span> <span class="pre">2</span></code> places the thinker on both visible devices. The audio encoder uses GPU 0, and speech synthesis uses GPU 1.</p>
+<p>Download the checkpoint once into a local directory. Run the commands below from the same working directory so every stage uses the same weights, tokenizer and audio configuration.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>hf<span class="w"> </span>download<span class="w"> </span>inclusionAI/Ming-3.0-audio-flash<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--revision<span class="w"> </span>db94e0de19f6d05adc0413c255a28eb480cd1fae<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--local-dir<span class="w"> </span>inclusionAI/Ming-3.0-audio-flash
+</pre></div>
+</div>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">CUDA_VISIBLE_DEVICES</span><span class="o">=</span><span class="m">0</span>,1<span class="w"> </span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>inclusionAI/Ming-3.0-audio-flash<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--thinker.tp_size<span class="w"> </span><span class="m">2</span>
 </pre></div>
 </div>
+</section>
+<section id="mtp-decoding">
+<h2>MTP decoding<a class="headerlink" href="#mtp-decoding" title="Link to this heading">#</a></h2>
+<p>Multi-token prediction (MTP) can accelerate transcription and audio-chat text generation using the prediction layer included in the checkpoint. MTP is off by default. Enable it with:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">CUDA_VISIBLE_DEVICES</span><span class="o">=</span><span class="m">0</span>,1<span class="w"> </span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>inclusionAI/Ming-3.0-audio-flash<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.tp_size<span class="w"> </span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.revision<span class="w"> </span>db94e0de19f6d05adc0413c255a28eb480cd1fae<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.speculative_algorithm<span class="w"> </span>NEXTN
+</pre></div>
+</div>
+<p>MTP uses additional GPU memory. Speedup depends on the workload and output length. Standalone speech synthesis is unaffected.</p>
+<p>Usage notes:</p>
+<ul class="simple">
+<li><p>To disable MTP in a config that enables it, add <code class="docutils literal notranslate"><span class="pre">--thinker.engine.disable_speculative_decoding</span> <span class="pre">true</span></code>.</p></li>
+<li><p>MTP uses synchronous decoding (<code class="docutils literal notranslate"><span class="pre">--thinker.factory.enable_async_decode</span> <span class="pre">false</span></code>, the default).</p></li>
+<li><p>Keep <code class="docutils literal notranslate"><span class="pre">speculative_eagle_topk=1</span></code> and <code class="docutils literal notranslate"><span class="pre">repetition_penalty=1</span></code>. Prefix caching and chunked prefill are unavailable for this model.</p></li>
+</ul>
+<p>For MTP acceptance statistics, set <code class="docutils literal notranslate"><span class="pre">return_spec_tokens_details=true</span></code> on chat or transcription requests and read <code class="docutils literal notranslate"><span class="pre">sglext.spec_tokens_details</span></code> in the JSON response.</p>
 </section>
 <section id="transcription">
 <h2>Transcription<a class="headerlink" href="#transcription" title="Link to this heading">#</a></h2>
@@ -774,6 +800,7 @@ sglang_omni_mlx/native/scripts/build_runtime.sh<span class="w"> </span><span cla
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installation-and-startup">Installation and Startup</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mtp-decoding">MTP decoding</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#transcription">Transcription</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-synthesis">Speech synthesis</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#audio-chat">Audio chat</a></li>
