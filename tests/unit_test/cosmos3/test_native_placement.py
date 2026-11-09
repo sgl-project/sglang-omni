@@ -1,15 +1,28 @@
 # SPDX-License-Identifier: Apache-2.0
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from sglang_omni.config import StageConfig
+from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.placement import build_stage_placement_plan
+from sglang_omni.config.runtime import (
+    apply_typed_stage_kwargs,
+    resolve_factory_signature_args,
+)
 from sglang_omni.models.cosmos3.config import Cosmos3PipelineConfig, Variants
 from sglang_omni.native_generation.stage import native_server_kwargs
 from sglang_omni.pipeline import runtime_config
 from sglang_omni.pipeline.mp_runner import build_stage_groups
 from sglang_omni.pipeline.replicas import validate_device_assignment
+from sglang_omni.scheduling.native_chat_scheduler import native_chat_server_kwargs
+from sglang_omni.utils.imports import import_string
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+ONE_GPU_CONFIG = REPO_ROOT / "examples" / "configs" / "cosmos3_nano_umm_1gpu_h100.yaml"
+COOKBOOK = REPO_ROOT / "docs" / "cookbook" / "cosmos3_nano.md"
 
 
 def config(devices=(1, 3)):
@@ -65,6 +78,80 @@ def test_native_gpu_budget_includes_child_devices():
 def test_native_gpu_range_is_validated_before_spawn():
     with pytest.raises(ValueError, match="GPU id 3 out of range"):
         validate_device_assignment(config().stages, device_count=2)
+
+
+def test_one_gpu_interleaved_config_fixes_what_startup_order_would_change(
+    monkeypatch,
+):
+    """Both native stages size themselves from the GPU memory free when they
+    load, so the shipped one-GPU config must place both on one GPU, cap the
+    Reasoner KV pool, keep its explicit SRT fraction over the placement
+    share, and pin generation residency."""
+    monkeypatch.setattr(runtime_config, "visible_device_count", lambda: 1)
+    cfg = ConfigManager.from_file(str(ONE_GPU_CONFIG)).config
+    prep = runtime_config.prepare_pipeline_runtime(cfg)
+    try:
+        groups = build_stage_groups(
+            cfg,
+            stages_cfg=prep.stages_cfg,
+            endpoints=prep.endpoints,
+            placement_plan=prep.placement_plan,
+            process_plan=prep.process_plan,
+        )
+        native_args = {}
+        for group in groups:
+            for process_spec in group.process_specs:
+                for spec in process_spec.stage_specs:
+                    factory = import_string(spec.factory)
+                    native_args[spec.stage_name] = resolve_factory_signature_args(
+                        factory,
+                        apply_typed_stage_kwargs(
+                            factory,
+                            spec.factory_kwargs,
+                            spec.typed_kwargs,
+                            stage_name=spec.stage_name,
+                        ),
+                        defaults=spec.factory_arg_defaults,
+                        require_gpu_id=spec.require_factory_gpu_id,
+                        stage_name=spec.stage_name,
+                    )
+    finally:
+        prep.runtime_dir.close()
+    reasoner = native_args["reasoner"]
+    reasoner_kwargs = native_chat_server_kwargs(
+        reasoner["model_path"],
+        reasoner["gpu_id"],
+        reasoner["server_args_overrides"],
+        reasoner.get("runtime_gpu_ids"),
+        reasoner["total_gpu_memory_fraction"],
+    )
+    generation = native_args["generation"]
+    generation_kwargs = native_server_kwargs(
+        generation["model_path"],
+        generation["gpu_id"],
+        generation["server_args_overrides"],
+        generation.get("runtime_gpu_ids"),
+    )
+    assert reasoner_kwargs["base_gpu_id"] == generation_kwargs["base_gpu_id"] == 0
+    assert reasoner_kwargs["max_total_tokens"] > 0
+    assert (
+        reasoner_kwargs["mem_fraction_static"]
+        == cfg.stage_named("reasoner").engine.mem_fraction_static
+    )
+    for flag in (
+        "dit_cpu_offload",
+        "text_encoder_cpu_offload",
+        "image_encoder_cpu_offload",
+        "vae_cpu_offload",
+        "dit_layerwise_offload",
+    ):
+        assert generation_kwargs[flag] is False
+
+
+def test_cookbook_shows_the_shipped_one_gpu_config():
+    one_gpu_section = COOKBOOK.read_text().split("### One 80 GB GPU", 1)[1]
+    cookbook_yaml = one_gpu_section.split("```yaml\n", 1)[1].split("```", 1)[0]
+    assert yaml.safe_load(cookbook_yaml) == yaml.safe_load(ONE_GPU_CONFIG.read_text())
 
 
 def test_native_parallel_options_use_the_declared_gpu_group():

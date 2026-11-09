@@ -10,7 +10,7 @@ Native Cosmos3 guardrails run when the `cosmos-guardrail` package is installed. 
 
 ## Interleaved understanding and generation
 
-Save this as `cosmos3.yaml`. The default placement uses visible GPU 0 for generation, visible GPU 1 for the Reasoner and CPU for orchestration, so it needs two visible GPUs. Set `stages.reasoner.gpu` and `stages.generation.gpu`, or pass `--reasoner.gpu` and `--generation.gpu`, to choose other devices.
+Save this as `cosmos3.yaml`. The default placement uses visible GPU 0 for generation, visible GPU 1 for the Reasoner and CPU for orchestration, so it needs two visible GPUs. Set `stages.reasoner.gpu` and `stages.generation.gpu`, or pass `--reasoner.gpu` and `--generation.gpu`, to choose other devices. [One 80 GB GPU](#one-80-gb-gpu) serves both stages on one GPU.
 
 ```yaml
 config_cls: Cosmos3UMMPipelineConfig
@@ -43,6 +43,43 @@ Every accepted output is a segment with `type` `segment`, `execution_id`, a cont
 Decisions sample greedily. A sampling field the client sets, at the top level, in `stage_sampling.reasoner` or in `stage_params.reasoner`, applies to every decision. An SDK request sets a top level field by giving it a value other than its default, as on the native chat stage. Length and stop settings never apply to decisions, since the decision format bounds their length. Chat media and generation `image_path` and `video_path` options follow `--allowed-local-media-path` and `--allowed-media-domain` and are refused with 400 before any model work when the policy refuses them. Each Reasoner turn sends the whole conversation again, with the client's chat media and every image and video generated so far, so the Reasoner reads them again on every turn. Generated media travel inline from the orchestrator to the Reasoner stage: with eight videos at the 8 MiB inline limit, the ninth Reasoner turn carries about 89.5 MB and one request relays about 402.7 MB to the Reasoner in total. Client chat media are fetched again on every turn.
 
 The orchestrator bounds each request under `stages.orchestrator.factory`: `max_dispatches` (17, eight generations and the Reasoner turns around them), `max_outputs` (17), `max_active` (32 requests at once, which also caps admission, so excess requests get 503), `max_retained_bytes` (128 MiB) and `timeout_s` (3600). A request may retain up to `max_retained_bytes` of host memory in the orchestrator process, so 32 active requests hold at most 4 GiB. `max_active` bounds that memory and Reasoner concurrency. Generation capacity follows the measured generation time instead: the generation stage serves one request at a time, the oldest request first, and the orchestrator plans for every active request the generations it may still run so that each ends before its deadline at the longest generation and Reasoner turn times measured in the last `timeout_s`, a queued generation at the longest time of its modality. A new request plans as many of its eight generations as end before its deadline behind the generations planned for the active requests, and is refused with 503 when they leave it fewer than an idle server would. When a longer time is measured, including the first one after startup, the orchestrator plans again in the generation stage's order. A request left without a planned generation is offered only a final answer, and a generation it already chose returns to the Reasoner as a receipt saying no time is left. A request that cannot finish even its queued generation and a final answer, with that generation at the shortest time measured for its modality, fails at once with 503 and a message saying why and that it can be retried later, and its generation is cancelled, instead of failing when `timeout_s` passes. A queued generation that fits only at that shortest time keeps its place, since the longest time of its modality may come from a longer generation of another request. A request whose plan was lowered gets a generation back when the requests after it keep theirs. Before the first generation after startup nothing is measured, so requests are admitted and the plan at the first measurement settles them, unless that first generation alone outlasts `timeout_s`. The largest output 17 dispatches can produce, eight videos at the 8 MiB inline limit and their turns with answers up to 8192 characters and prompts up to 4096, takes about 87 MiB, and the rest bounds the client's chat history. An answer longer than 8192 characters or a prompt longer than 4096 exceeds these server limits and fails the request with a server error. A request whose history leaves too little room is refused with 400 before any turn. Configuration loading refuses a `max_retained_bytes` or `max_outputs` that cannot hold the largest output of `max_dispatches`. A request that outlives `timeout_s` fails with an error naming it. A non-streaming request returns the status as its HTTP status. A streaming request has already received HTTP 200, so its error carries the status as `code`. Use a fresh request ID for every request, and close unfinished SDK iterators so the request is aborted.
+
+### One 80 GB GPU
+
+`examples/configs/cosmos3_nano_umm_1gpu_h100.yaml` places the Reasoner on the generation GPU:
+
+```yaml
+config_cls: Cosmos3UMMPipelineConfig
+name: cosmos3-nano-umm-1gpu-h100
+model_path: nvidia/Cosmos3-Nano
+stages:
+  reasoner:
+    gpu: 0
+    gpu_memory_fraction: 0.35
+    start_after: [generation]
+    engine:
+      mem_fraction_static: 0.72
+      max_total_tokens: 32768
+  generation:
+    gpu: 0
+    gpu_memory_fraction: 0.6
+    factory:
+      server_args_overrides:
+        dit_cpu_offload: false
+        text_encoder_cpu_offload: false
+        image_encoder_cpu_offload: false
+        vae_cpu_offload: false
+        dit_layerwise_offload: false
+```
+
+```bash
+sgl-omni serve --config examples/configs/cosmos3_nano_umm_1gpu_h100.yaml --model-path /path/to/Cosmos3-Nano \
+  --host 127.0.0.1 --port 8000 --model-name cosmos3
+```
+
+Both native stages size themselves from the GPU memory free when they load, so the configuration fixes everything that would otherwise depend on which stage loads first. `start_after` starts the Reasoner only after generation is ready. `max_total_tokens` caps the Reasoner KV pool at 32768 tokens, 4.5 GB, in either order. The explicit offload flags keep every generation component on the GPU, where native SGLang would otherwise move the VAE and encoders to layerwise CPU offload when it sees less memory free. `mem_fraction_static` 0.72 leaves the Reasoner room for its weights and KV pool next to the loaded generation stage. Startup logs that it overrides the placement share `gpu_memory_fraction`, as expected: on a shared GPU the native fraction also counts the memory that generation already holds.
+
+On one H100 80 GB with guardrails off, either load order peaks at 64.9 GiB. Guardrails add about 2 GB. The longest Reasoner turn, after eight 832×480 videos of 33 frames, is about 9,600 tokens, so the cap holds three such turns at once and further turns wait in the Reasoner queue. Video requests take as long as on two GPUs: 8.6 s one at a time and a p50 of 20.1 s with four at once. Requests that generate an image share one GPU's compute between the Reasoner and generation, so four at once reach 0.83 requests per second instead of 1.09 on two GPUs, at a p50 of 4.4 s instead of 3.2 s. GPUs with less memory are untested.
 
 ## Direct generation
 
