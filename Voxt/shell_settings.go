@@ -50,6 +50,7 @@ type settingsForm struct {
 	logText      bool
 	sounds       bool
 	skipSilence  bool        // !Audio.VAD.Off
+	liveResult   bool        // Audio.LiveResult
 	cleanSound   bool        // !Audio.Clean.Off
 	muteOutput   bool        // Audio.MuteOn()
 	sidebar      int         // automatic, names and icons, icons only (settings_appearance.go)
@@ -228,6 +229,7 @@ func (a *app) loadSettingsForm() {
 	f.keepHistory, f.keepAudio, f.logText = s.Privacy.KeepHistory, s.Privacy.KeepAudio, s.Privacy.LogText
 	f.sounds = s.Audio.Sounds
 	f.skipSilence = !s.Audio.VAD.Off
+	f.liveResult = s.Audio.LiveResult
 	f.cleanSound = !s.Audio.Clean.Off
 	f.muteOutput = s.Audio.MuteOn()
 	f.sidebar = sidebarChoice(s.Appearance)

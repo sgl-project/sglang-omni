@@ -1378,5 +1378,7 @@
   "%d match": "%d 处",
   "%d matches": "%d 处",
   "Uncheck a feature you do not use: it leaves the sidebar, Home and ⌘K, and its shortcuts and scene rules stop. Its settings stay for when you check it again.": "不用的功能取消勾选：它不再出现在侧边栏、首页和 ⌘K 里，快捷键和场景规则也停用。它的设置会保留，重新勾选就回来。",
-  "Shown features": "显示的功能"
+  "Shown features": "显示的功能",
+  "Recognise the whole recording again": "再识别一次整段录音",
+  "On: after you stop, a local speech model that shows the text as you speak recognises the whole recording once more, which is more accurate than the live text and takes a moment. Off: the live text is the result as soon as its last words are done.": "开：停止录音后，边说边出字的本地语音模型会把整段录音再识别一次，比实时文字更准，要多等一会儿。关：最后几个字识别完，实时文字就是结果。"
 }

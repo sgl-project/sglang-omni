@@ -45,6 +45,29 @@ func TestInfoTipClick(t *testing.T) {
 	}
 }
 
+// TestRecogniseAgainSwitch: Settings → Audio's "Recognise the whole
+// recording again" is on by default; off, the live text is the result
+// (Audio.LiveResult, #3644 FB7).
+func TestRecogniseAgainSwitch(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 2400)
+	a.navigate("/settings/audio")
+	frames(tt)
+	if r, ok := tt.Find("Recognise the whole recording again"); ok {
+		tt.Scroll(windowWidth/2, 1200, 0, r.Y-600)
+		frames(tt)
+	}
+	for _, want := range []bool{true, false} {
+		if err := tt.ClickControl("Recognise the whole recording again"); err != nil {
+			t.Fatal(err)
+		}
+		frames(tt)
+		if got := a.settings.Get().Audio.LiveResult; got != want {
+			t.Fatalf("after a click: live result %v, want %v", got, want)
+		}
+	}
+}
+
 func TestAudioSettingsDevices(t *testing.T) {
 	a, fs, tt := newTestApp(t)
 	a.navigate("/settings/audio")

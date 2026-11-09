@@ -134,6 +134,11 @@ type Audio struct {
 	// Clean is the light sound processing of the speech model's copy
 	// of a recording (10-16).
 	Clean Clean `json:"clean,omitzero"`
+	// LiveResult makes a local speech model's live text the result: after
+	// Stop it finishes the last few seconds instead of recognising the
+	// whole recording once more (the Final), so the text comes sooner and
+	// is a little less accurate (#3644 FB7). Off: the Final runs.
+	LiveResult bool `json:"liveResult,omitempty"`
 }
 
 // MuteOn reports whether recordings mute the system's output: the user's

@@ -33,6 +33,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **End with a word** (Transcribe → Shortcuts), back from Voxt 1.x: choose over, end, 完毕, 好了 or a word of your own, say it last and pause, and the recording stops as if you pressed the shortcut. The word is left out of the text. It works with speech models that show the text as you speak (the local Qwen3-ASR models, System dictation, Doubao, Aliyun Bailian, Gemini), in Transcribe, Translate and Rewrite.
 - **Doubao's flash file recognition** (Speech models → Doubao → Model: `volc.bigasr.auc_turbo`), which Voxt 1.x could run but did not list: with the same App ID and token, Doubao gets the whole recording once you stop and answers in one go, instead of streaming. Your account needs the resource opened in the Volcengine console. Recordings over 100 MB (about 52 minutes) are not sent.
 - **Hide the features you do not use** (Settings → General → Features → Shown features), as in Voxt 1.x: uncheck Translate, Rewrite or App enhancement and it leaves the sidebar, ⌘K and Home's counts, and its shortcuts and scene rules stop. Its settings stay; check it again to bring it back.
+- **Use the live text as the result** (Settings → Audio → Recognition → Recognise the whole recording again, on by default): off, a local speech model that shows the text as you speak (Qwen3-ASR) does not recognise the whole recording once more after you stop; it finishes its last words and the live text is the result, sooner and a little less accurate. If the live session broke off, Voxt still recognises the whole recording.
 
 ### Changed
 
@@ -83,6 +84,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **说结束词停止**（转录 → 快捷键），Voxt 1.x 有过的功能：选 over、end、完毕、好了，或者自己填一个词，最后说出它并停顿一下，录音就像按了快捷键一样停止，这个词不会写进文字。边说边出文字的语音模型（本地 Qwen3-ASR、系统听写、豆包、阿里云百炼、Gemini）才能用，转录、翻译、转写都管用。
 - **豆包极速版文件识别**（语音模型 → 豆包 → 模型：`volc.bigasr.auc_turbo`），Voxt 1.x 能用但菜单里没有：用同一组 App ID 和 Access Token，停止录音后把整段录音交给豆包，一次返回结果，不走流式。账号要在火山引擎控制台开通这个资源。超过 100 MB（约 52 分钟）的录音不发送。
 - **隐藏不用的功能**（设置 → 通用 → 功能 →“显示的功能”），和 Voxt 1.x 一样：取消勾选翻译、转写或应用增强，它就不出现在侧边栏、⌘K 和首页的统计里，快捷键和场景规则也停用。它的设置会保留，重新勾选就回来。
+- **直接用实时文字当结果**（设置 → 音频 → 识别 →“再识别一次整段录音”，默认开）：关掉后，边说边出字的本地语音模型（Qwen3-ASR）停止后不再把整段录音识别一遍，识别完最后几个字，实时文字就是结果，出得更快，准确率略低。实时会话中途断了时，Voxt 仍会识别整段录音。
 
 #### 变更
 
