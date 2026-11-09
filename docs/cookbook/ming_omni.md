@@ -70,7 +70,7 @@ The **Hardware** toggle sets `--mem-fraction-static`:
 | H100 | 80 GB | `0.80` | Baseline; weights plus a smaller KV pool fit at 0.80. |
 | H200 | 141 GB | `0.90` | The MoE weights occupy roughly the same absolute space but a larger share is free, so a higher fraction is needed for the static budget to cover weights and still leave room for the KV pool; `0.80` can OOM at TP=2 because the reserved pool lands too small. |
 
-Other large-memory parts (e.g. H20-3e 144 GB) behave like H200 — start at `0.9`. If your machine cannot fit the thinker without CPU offload, remove `--cpu-offload-gb 0` and let the launcher use its default offload setting (improves fit, reduces throughput).
+Other large-memory parts (e.g. H20-3e 144 GB) behave like H200 — start at `0.9`. The generated commands do not offload thinker weights to CPU. If your machine cannot fit the thinker, add `--thinker.engine.cpu_offload_gb <GB>` (improves fit, reduces throughput).
 
 For a smaller smoke run that uses OmniServe's default placement:
 
