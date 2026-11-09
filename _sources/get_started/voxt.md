@@ -14,7 +14,7 @@ Voxt 2 is a new app that replaces the Swift Voxt 1.x. The biggest changes:
 - **You choose the language model**: clean-up, Translate and Rewrite use a service you set up (OpenAI, Anthropic, Gemini, DeepSeek, Qwen, Kimi, GLM, Doubao and others), or one on your Mac with Ollama, LM Studio or oMLX. Voxt 2 no longer runs language models itself.
 - **Rewrite keeps a conversation** in the answer card: say a follow-up ("shorter", "now in English"), then copy or insert the answer.
 - **The dictionary learns**: Voxt suggests names and terms from your history and from the corrections you make after it types.
-- **One-click import from Voxt 1.x**: dictionary, history, settings and downloaded speech models come over.
+- **One-click import from Voxt 1.x**: the dictionary, history, downloaded speech models, and your language model and speech service setups come over.
 - **Open source** in this repository, under the Apache License 2.0.
 
 Voxt 2 does not update itself: install each new version from its disk image. The full list of changes is in the [changelog](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/CHANGELOG.md).
@@ -36,7 +36,7 @@ Voxt 2 does not update itself: install each new version from its disk image. The
    - **Replace** replaces the app. Voxt 1.x's data stays, so reinstalling Voxt 1.x brings it back.
    - **Keep Both** keeps Voxt 1.x next to Voxt 2. Their default shortcuts do not overlap.
 3. Open Voxt. The setup guide starts with **Import from the previous Voxt**. Click it. If an open panel appears, click **Import** without changing the folder.
-4. The import brings over the dictionary, the history, the settings that Voxt 2 has, and the speech models Voxt 1.x downloaded (no new download). It does not bring over API keys or Voxt 1.x's local language models.
+4. The import brings over the dictionary, the history, your language model and speech service setups, and the speech models Voxt 1.x downloaded (no new download). It does not bring over API keys, shortcuts, other settings, or Voxt 1.x's local language models.
 5. **Grant the microphone and Accessibility again.** macOS treats Voxt 2 as a different app, so the permissions of Voxt 1.x do not carry over.
 6. Set up a language model on the **Language models** page.
 
