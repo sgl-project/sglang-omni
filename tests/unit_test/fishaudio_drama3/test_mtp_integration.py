@@ -2249,13 +2249,17 @@ def test_model_rejects_a_tower_that_cannot_share_the_backbone_pool() -> None:
 
 
 @pytest.mark.parametrize(
-    "pipeline_parallel_size,tensor_parallel_size", [(2, 1), (1, 2)]
+    ("pipeline_parallel_size", "tensor_parallel_size", "error"),
+    [(2, 1, "one pipeline rank"), (1, 3, "key/value heads")],
 )
-def test_model_rejects_more_than_one_tensor_or_pipeline_rank(
+def test_model_rejects_pipeline_ranks_and_uneven_key_value_head_splits(
     monkeypatch: pytest.MonkeyPatch,
     pipeline_parallel_size: int,
     tensor_parallel_size: int,
+    error: str,
 ) -> None:
+    """The tower's two key/value heads live in the backbone's pool, so the ranks
+    must split them evenly or share them evenly."""
     config_dict = fish_config_dict()
     decoder_config = config_dict["audio_decoder_config"]
     assert isinstance(decoder_config, dict)
@@ -2267,7 +2271,7 @@ def test_model_rejects_more_than_one_tensor_or_pipeline_rank(
             pp_size=pipeline_parallel_size, tp_size=tensor_parallel_size
         ),
     )
-    with pytest.raises(NotImplementedError, match="one tensor and pipeline rank"):
+    with pytest.raises(NotImplementedError, match=error):
         Drama3ForCausalLM(FishOmniConfig(**config_dict))
 
 
@@ -2378,6 +2382,7 @@ def test_engine_also_runs_without_cuda_graphs(tmp_path: Path) -> None:
         ({"page_size": 16}, "page_size"),
         ({"kv_cache_dtype": "fp8_e4m3"}, "model dtype"),
         ({"enable_torch_compile": True}, "torch.compile"),
+        ({"tp_size": 2}, "--tts_engine.tp_size"),
     ],
     ids=[
         "radix",
@@ -2391,6 +2396,7 @@ def test_engine_also_runs_without_cuda_graphs(tmp_path: Path) -> None:
         "paged",
         "fp8-kv",
         "torch-compile",
+        "tensor-parallel-override",
     ],
 )
 def test_engine_rejects_settings_outside_the_supported_runtime(
