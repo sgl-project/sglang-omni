@@ -120,7 +120,7 @@ The Qwen3-ASR drafts are pinned in `ci/models.json`; the MOSS-TD draft is pinned
 - Mac CI checks neither outputs nor speed. Report total time, realtime
   factor, peak memory and load time against the reference, with the device
   stated.
-- For a TTS server, `ci/tts_spawn_bench.py` measures cold and warm spawn to first audio and the idle footprint, the numbers Voxt's idle-unload default depends on. Run it on AC power: a request in flight while the Mac sleeps passes its server deadline.
+- For a TTS server, `ci/tts_spawn_bench.py` measures cold and warm spawn to first audio and the idle footprint, the relaunch and resident costs that Voxt's idle timeout (`Voxt/internal/omni`) is set from. Run it on AC power: a request in flight while the Mac sleeps passes its server deadline.
 
 **CI and style**
 
