@@ -22,7 +22,7 @@ from sglang_omni.admission import QueueFullError
 from sglang_omni.client import Client, ClientError, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
 from sglang_omni.client.client import StreamedStopTrimmer, extract_inputs
-from sglang_omni.client.types import CodecEOSMissingError, GenerateRequest, UsageInfo
+from sglang_omni.client.types import GenerateRequest, UsageInfo
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
 from sglang_omni.scheduling.types import SpecTokensDetailsDict
@@ -1017,8 +1017,8 @@ def test_qwen3_tts_speech_codec_eos_failure_returns_http_error() -> None:
 
     assert response.status_code == 500
     assert response.json()["error"]["type"] == "server_error"
-    assert response.json()["error"]["code"] == CodecEOSMissingError.CODE
-    assert response.json()["error"]["message"] == CodecEOSMissingError.MESSAGE
+    assert response.json()["error"]["code"] is None
+    assert response.json()["error"]["message"] == CodecEOSFailureClient.MESSAGE
     assert len(speech_client.speech_requests) == 1
 
 
@@ -5168,14 +5168,14 @@ def test_qwen3_tts_length_before_audio_returns_http_error() -> None:
     )
     assert response.status_code == 500
     assert response.headers["content-type"] == "application/json"
-    assert response.json()["error"]["code"] == CodecEOSMissingError.CODE
+    assert response.json()["error"]["code"] is None
     assert "incomplete" in response.json()["error"]["message"]
     assert len(speech_client.aborted) == 1
     assert speech_client.closed is True
 
 
-def test_raw_audio_length_after_audio_raises_and_retains_queryable_outcome() -> None:
-    """An interrupted EOS-limited stream must still expose its known terminal reason."""
+def test_raw_audio_codec_eos_failure_interrupts_stream() -> None:
+    """A pipeline failure after partial audio must interrupt the raw audio transfer."""
 
     async def drive() -> None:
         speech_client = CodecEOSFailureClient(partial_audio=True)
@@ -5192,36 +5192,44 @@ def test_raw_audio_length_after_audio_raises_and_retains_queryable_outcome() -> 
         )
         body = response.body_iterator
         assert await anext(body) == encode_pcm([0.0, 0.1, -0.1, 0.0], 24000)
-        with pytest.raises(CodecEOSMissingError, match="incomplete"):
+        with pytest.raises(RuntimeError, match="incomplete"):
             await anext(body)
-        assert speech_client.aborted == []
+        assert speech_client.aborted == ["req-1"]
         assert speech_client.closed is True
-        outcome = TestClient(app).get("/v1/audio/speech/req-1")
-        assert outcome.status_code == 200
-        assert outcome.json()["finish_reason"] == "length"
+        assert app.state.speech_stream_outcomes.get("req-1") is None
 
     asyncio.run(drive())
 
 
-def test_qwen3_tts_sse_codec_eos_failure_emits_error_without_success_done() -> None:
+@pytest.mark.parametrize("enable_speech_sse_named_events", [False, True])
+def test_qwen3_tts_sse_codec_eos_failure_emits_error_without_success_done(
+    enable_speech_sse_named_events: bool,
+) -> None:
     """EOS failures after audio must reach the SSE stream and discard partial audio."""
     speech_client = CodecEOSFailureClient(partial_audio=True)
-    client = TestClient(create_app(speech_client, model_name="qwen3-tts"))
+    client = TestClient(
+        create_app(
+            speech_client,
+            model_name="qwen3-tts",
+            enable_speech_sse_named_events=enable_speech_sse_named_events,
+        )
+    )
     response = client.post(
         "/v1/audio/speech",
         json={"input": "hello", "stream_format": "sse", "response_format": "pcm"},
     )
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
-    events = parse_speech_sse_events(response.text, False)
-    assert [event["type"] for event in events] == ["speech.audio.delta", "error"]
+    events = parse_speech_sse_events(response.text, enable_speech_sse_named_events)
+    error_type = "speech.audio.error" if enable_speech_sse_named_events else "error"
+    assert [event["type"] for event in events] == ["speech.audio.delta", error_type]
     assert events[-1]["error"] == {
-        "message": CodecEOSMissingError.MESSAGE,
+        "message": CodecEOSFailureClient.MESSAGE,
         "type": "server_error",
         "param": None,
-        "code": CodecEOSMissingError.CODE,
+        "code": 500,
         "partial_audio": True,
         "action": "discard",
     }
-    assert speech_client.aborted == []
+    assert len(speech_client.aborted) == 1
     assert speech_client.closed is True

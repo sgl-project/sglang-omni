@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from fastapi.responses import JSONResponse
 
 from sglang_omni.admission import QueueFullError
-from sglang_omni.client.types import CodecEOSMissingError
 from sglang_omni.serve.openai_errors import generation_error_status_code
 
 
@@ -128,15 +127,6 @@ def speech_generation_error(exc: BaseException) -> SpeechAPIError:
     """Map pipeline failures to the shared speech API error contract."""
     if isinstance(exc, SpeechAPIError):
         return exc
-    else:
-        pass
-    if isinstance(exc, CodecEOSMissingError):
-        return SpeechAPIError(
-            message=str(exc),
-            status_code=500,
-            error_type="server_error",
-            code=exc.CODE,
-        )
     else:
         pass
     status_code = generation_error_status_code(exc)

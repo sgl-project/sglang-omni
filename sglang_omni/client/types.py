@@ -6,13 +6,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import ClassVar, Literal, TypedDict
+from typing import Literal, TypedDict
 
-from sglang_omni.scheduling.types import (
-    CODEC_EOS_MISSING_ERROR_CODE,
-    GenerationErrorCode,
-    SpecTokensDetailsDict,
-)
+from sglang_omni.scheduling.types import SpecTokensDetailsDict
 
 
 class TokenUsageDict(TypedDict):
@@ -204,7 +200,6 @@ class GenerateChunk:
     finish_reason: str | None = None
     # note (Yucheng Hu): None preserves typed producers; empty marks a synthetic terminal reason.
     model_finish_reason: str | None = None
-    error_code: GenerationErrorCode | None = None
     usage: UsageInfo | None = None
     weight_version: str | None = None
     spec_tokens_details: SpecTokensDetailsDict | None = None
@@ -236,7 +231,6 @@ class GenerateChunk:
             "omni_rollout": self.omni_rollout,
             "finish_reason": self.finish_reason,
             "model_finish_reason": self.reported_finish_reason,
-            "error_code": self.error_code,
             "usage": self.usage.to_dict() if self.usage else None,
             "weight_version": self.weight_version,
             "stage_id": self.stage_id,
@@ -421,16 +415,3 @@ class SpeechResult:
 
 class ClientError(Exception):
     """Error raised by the Client layer."""
-
-
-class CodecEOSMissingError(ClientError):
-    """Qwen3-TTS exhausted its generation budget without a codec EOS."""
-
-    CODE: ClassVar[GenerationErrorCode] = CODEC_EOS_MISSING_ERROR_CODE
-    MESSAGE: ClassVar[str] = (
-        "Qwen3-TTS reached max_new_tokens without emitting codec EOS; "
-        "the generated audio is incomplete."
-    )
-
-    def __init__(self) -> None:
-        super().__init__(self.MESSAGE)

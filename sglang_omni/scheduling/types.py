@@ -9,7 +9,6 @@ from enum import Enum, auto
 from typing import (
     TYPE_CHECKING,
     Generic,
-    Literal,
     NotRequired,
     Protocol,
     SupportsIndex,
@@ -102,10 +101,6 @@ class SpecTokensDetailsDict(TypedDict):
     spec_num_proposed_drafts: NotRequired[int]
     spec_verify_ct: int
     spec_correct_drafts_histogram: list[int]
-
-
-GenerationErrorCode = Literal["qwen3_tts_codec_eos_missing"]
-CODEC_EOS_MISSING_ERROR_CODE: GenerationErrorCode = "qwen3_tts_codec_eos_missing"
 
 
 @dataclass

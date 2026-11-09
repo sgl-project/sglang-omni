@@ -12,11 +12,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from sglang_omni.client import ClientError
-from sglang_omni.client.types import CodecEOSMissingError, SpeechResult
+from sglang_omni.client.types import SpeechResult
 from sglang_omni.config import CustomVoiceConfig
 from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import create_speech_batch_with_disconnect_watch
 from sglang_omni.serve.speech_service import SpeechRequestValidator
+from tests.unit_test.fixtures.pipeline_fakes import CodecEOSFailureClient
 
 CONTEXT_LENGTH_ERROR = (
     "Requested token count exceeds the model's maximum context length"
@@ -43,7 +44,7 @@ class RecordingBatchSpeechClient:
         del request_id, speed, allow_format_fallback
         self.requests.append(request)
         if self.raise_codec_error and request.prompt == "third":
-            raise CodecEOSMissingError()
+            raise RuntimeError(CodecEOSFailureClient.MESSAGE)
         else:
             pass
         return SpeechResult(
@@ -730,4 +731,4 @@ def test_qwen3_tts_batch_isolates_codec_eos_failure() -> None:
     assert body["results"][1]["status"] == "error"
     assert "audio_data" not in body["results"][1]
     assert "incomplete" in body["results"][1]["error"]["message"]
-    assert body["results"][1]["error"]["code"] == CodecEOSMissingError.CODE
+    assert body["results"][1]["error"]["code"] is None

@@ -63,7 +63,6 @@ from sglang_omni.client import (
 )
 from sglang_omni.client.types import (
     UNKNOWN_FINISH_REASON,
-    CodecEOSMissingError,
     UMMCompletionResult,
     UMMCompletionStreamChunk,
     UMMGenerateChunk,
@@ -2298,21 +2297,17 @@ async def speech_audio_response(
                     pass
                 yield audio_bytes
             active_request = False
-        except CodecEOSMissingError:
-            stream_outcome.finish_reason = "length"
-            active_request = False
-            raise
+            if stream_format == "audio":
+                speech_stream_outcomes.record(
+                    request_id,
+                    stream_outcome.finish_reason,
+                    stream_outcome.usage,
+                    stream_outcome.sglext,
+                )
+            else:
+                pass
         finally:
             with anyio.CancelScope(shield=True):
-                if stream_format == "audio" and not active_request:
-                    speech_stream_outcomes.record(
-                        request_id,
-                        stream_outcome.finish_reason,
-                        stream_outcome.usage,
-                        stream_outcome.sglext,
-                    )
-                else:
-                    pass
                 if active_request:
                     await abort_and_close_speech_stream(
                         client, request_id, chunk_stream

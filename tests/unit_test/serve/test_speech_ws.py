@@ -13,7 +13,7 @@ from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from sglang_omni.client import GenerateChunk
 from sglang_omni.client.client import Client
-from sglang_omni.client.types import CodecEOSMissingError, GenerateRequest, SpeechResult
+from sglang_omni.client.types import GenerateRequest, SpeechResult
 from sglang_omni.config import CustomVoiceConfig
 from sglang_omni.serve import create_app
 from sglang_omni.serve import speech_ws as speech_ws_module
@@ -362,7 +362,7 @@ def test_qwen3_tts_websocket_reports_codec_eos_failure_after_partial_audio() -> 
 
     assert error["type"] == "error"
     assert "incomplete" in error["message"]
-    assert error["code"] == CodecEOSMissingError.CODE
+    assert "code" not in error
     assert done["type"] == "audio.done"
     assert done["error"] is True
 
@@ -384,7 +384,7 @@ def test_qwen3_tts_websocket_buffered_codec_eos_failure_prevents_audio() -> None
 
     assert error["type"] == "error"
     assert "incomplete" in error["message"]
-    assert error["code"] == CodecEOSMissingError.CODE
+    assert "code" not in error
     assert done["type"] == "audio.done"
     assert done["error"] is True
 

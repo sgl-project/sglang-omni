@@ -44,8 +44,6 @@ from sglang.srt.model_executor.forward_context import ForwardContext, forward_co
 from sglang.srt.runtime_context import get_context, override_platform
 from sglang.srt.server_args import ServerArgs
 
-from sglang_omni.client.client import Client
-from sglang_omni.client.types import CodecEOSMissingError
 from sglang_omni.comm import stage_io
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import resolve_stage_factory_kwargs
@@ -7929,8 +7927,8 @@ def test_qwen3_tts_another_process_reads_complete_final_codes() -> None:
     assert reader.exitcode == 0
 
 
-def test_qwen3_tts_result_adapter_preserves_length_finish_reason() -> None:
-    """A length-capped generation must be distinguishable from natural EOS."""
+def test_qwen3_tts_result_adapter_rejects_length_finish_reason() -> None:
+    """Budget exhaustion without codec EOS must fail instead of returning incomplete audio."""
     payload = make_payload(inputs="target")
     data = Qwen3TTSSGLangRequestData(
         req=SimpleNamespace(output_ids=[]),
@@ -7939,9 +7937,8 @@ def test_qwen3_tts_result_adapter_preserves_length_finish_reason() -> None:
         finish_reason="length",
     )
 
-    result = apply_sglang_qwen3_tts_result(payload, data)
-
-    assert result.data["finish_reason"] == "length"
+    with pytest.raises(RuntimeError, match="without emitting codec EOS"):
+        apply_sglang_qwen3_tts_result(payload, data)
 
 
 def test_qwen3_tts_result_adapter_normalizes_scheduler_stop_reason() -> None:
@@ -7963,7 +7960,7 @@ def test_qwen3_tts_result_adapter_normalizes_scheduler_stop_reason() -> None:
 
 
 def test_qwen3_tts_result_adapter_infers_length_at_generation_budget() -> None:
-    """Without a scheduler reason, reaching the budget is still a length stop."""
+    """Budget exhaustion must still fail when the scheduler omits its finish reason."""
     payload = make_payload(inputs="target")
     data = Qwen3TTSSGLangRequestData(
         req=SimpleNamespace(output_ids=[]),
@@ -7972,9 +7969,8 @@ def test_qwen3_tts_result_adapter_infers_length_at_generation_budget() -> None:
         max_new_tokens=2,
     )
 
-    result = apply_sglang_qwen3_tts_result(payload, data)
-
-    assert result.data["finish_reason"] == "length"
+    with pytest.raises(RuntimeError, match="without emitting codec EOS"):
+        apply_sglang_qwen3_tts_result(payload, data)
 
 
 def test_qwen3_tts_state_round_trips_finish_reason() -> None:
@@ -7985,20 +7981,15 @@ def test_qwen3_tts_state_round_trips_finish_reason() -> None:
     assert state.to_dict()["finish_reason"] == "length"
 
 
-@pytest.mark.parametrize("finish_reason", ["length", "stop"])
-def test_qwen3_tts_vocoder_result_keeps_the_talker_finish_reason(
-    finish_reason: Literal["length", "stop"],
-) -> None:
-    """Codec EOS at the token budget must stay successful while exhausted speech carries an error."""
+def test_qwen3_tts_vocoder_result_keeps_the_talker_finish_reason() -> None:
+    """Normal codec EOS at the token budget must still return audio successfully."""
     payload = make_payload(inputs="target")
     talker_result = apply_sglang_qwen3_tts_result(
         payload,
         Qwen3TTSSGLangRequestData(
             req=SimpleNamespace(
                 output_ids=[],
-                finished_reason=SimpleNamespace(
-                    to_json=lambda: {"type": finish_reason}
-                ),
+                finished_reason=SimpleNamespace(to_json=lambda: {"type": "stop"}),
             ),
             output_codes=[torch.tensor([1, 2]), torch.tensor([3, 4])],
             stage_payload=payload,
@@ -8011,30 +8002,18 @@ def test_qwen3_tts_vocoder_result_keeps_the_talker_finish_reason(
 
     (vocoder_result,) = asyncio.run(scheduler.vocode_payloads([talker_result]))
 
-    assert vocoder_result.data["finish_reason"] == finish_reason
-    client_chunk = Client.default_result_builder(
-        payload.request_id, vocoder_result.data
-    )
-    if finish_reason == "length":
-        assert client_chunk.error_code == CodecEOSMissingError.CODE
-    else:
-        assert client_chunk.error_code is None
+    assert vocoder_result.data["finish_reason"] == "stop"
 
 
-@pytest.mark.parametrize("finish_reason", ["length", "stop"])
-def test_qwen3_tts_streaming_vocoder_result_keeps_the_talker_finish_reason(
-    finish_reason: Literal["length", "stop"],
-) -> None:
-    """Streaming preserves normal EOS at the budget and marks only exhausted speech as failed."""
+def test_qwen3_tts_streaming_vocoder_result_keeps_the_talker_finish_reason() -> None:
+    """Normal codec EOS at the token budget must still complete the audio stream."""
     payload = make_payload(inputs="target", params={"stream": True})
     talker_result = apply_sglang_qwen3_tts_result(
         payload,
         Qwen3TTSSGLangRequestData(
             req=SimpleNamespace(
                 output_ids=[],
-                finished_reason=SimpleNamespace(
-                    to_json=lambda: {"type": finish_reason}
-                ),
+                finished_reason=SimpleNamespace(to_json=lambda: {"type": "stop"}),
             ),
             output_codes=[torch.tensor([1, 2]), torch.tensor([3, 4])],
             stage_payload=payload,
@@ -8057,14 +8036,7 @@ def test_qwen3_tts_streaming_vocoder_result_keeps_the_talker_finish_reason(
     assert scheduler.outbox.get_nowait().type == "stream"
     terminal_message = scheduler.outbox.get_nowait()
     assert terminal_message.type == "result"
-    assert terminal_message.data.data["finish_reason"] == finish_reason
-    client_chunk = Client.default_result_builder(
-        payload.request_id, terminal_message.data.data
-    )
-    if finish_reason == "length":
-        assert client_chunk.error_code == CodecEOSMissingError.CODE
-    else:
-        assert client_chunk.error_code is None
+    assert terminal_message.data.data["finish_reason"] == "stop"
 
 
 def test_qwen3_tts_request_data_keeps_decode_tensors_on_prepared_device(
