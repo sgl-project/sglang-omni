@@ -624,6 +624,7 @@ def test_llama_cpp_stage_keeps_a_cpu_resolution_off_the_gpu(
 
 def test_llama_cpp_stage_falls_back_to_cpu_without_musa_backend(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     captured: dict[str, object] = {}
 
@@ -654,6 +655,8 @@ def test_llama_cpp_stage_falls_back_to_cpu_without_musa_backend(
 
     assert captured["n_gpu_layers"] == 0
     assert captured["main_gpu"] == 0
+    assert "llama.cpp MUSA backend not detected" in caplog.text
+    assert "CUDA : compute 8.0" in caplog.text
 
 
 def test_llama_cpp_stage_uses_musa_backend_when_available(

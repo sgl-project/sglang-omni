@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ctypes
+import logging
 import threading
 import time
 from dataclasses import dataclass
@@ -46,6 +47,7 @@ OUTPUT_SAMPLE_RATE = 24000
 MIN_REFERENCE_SECONDS = 5.0
 MAX_REFERENCE_SECONDS = 15.0
 XPU_WARMUP_PROMPT_TOKENS = 256  # measured on Arc Pro B60
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -295,20 +297,17 @@ def create_tts_engine_executor(
         pass
     use_cpu_backend = concrete_device.type == "cpu"
     if concrete_device.type == "musa":
-        get_system_info = getattr(llama_cpp, "llama_print_system_info", None)
-        system_info = b""
-        if get_system_info is not None:
-            try:
-                system_info = get_system_info() or b""
-            except (OSError, RuntimeError):
-                pass
+        llama_system_info = llama_cpp.llama_print_system_info().decode(
+            "utf-8", errors="replace"
+        )
+        use_cpu_backend = "musa" not in llama_system_info.casefold()
+        if use_cpu_backend:
+            logger.warning(
+                "llama.cpp MUSA backend not detected; falling back to CPU. "
+                f"system_info={llama_system_info!r}"
+            )
         else:
             pass
-        if isinstance(system_info, bytes):
-            system_info = system_info.decode("utf-8", errors="replace")
-        else:
-            pass
-        use_cpu_backend = "musa" not in system_info.casefold()
     else:
         pass
     main_gpu = 0 if use_cpu_backend else concrete_device.index
