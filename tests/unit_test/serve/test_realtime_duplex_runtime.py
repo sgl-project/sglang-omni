@@ -1308,6 +1308,95 @@ async def test_asynchronous_output_restarts_idle_timeout(fake_clock: FakeClock) 
 
 
 @pytest.mark.asyncio
+async def test_native_response_reports_model_turn_request_ttft_and_ttfp(
+    fake_clock: FakeClock,
+) -> None:
+    adapter = GatedAdapter([])
+    async with open_runtime(
+        adapter,
+        capabilities=Capabilities(
+            output_modalities=("text", "audio"), max_granted_modalities=2
+        ),
+    ) as runtime:
+        await runtime.append(bytes(UNIT_BYTES), 0, None, "client_append_0")
+        await asyncio.wait_for(adapter.has_started.wait(), TEST_WAIT_TIMEOUT_SECONDS)
+
+        assert adapter.output_sink is not None
+        await fake_clock.advance(0.2)
+        await adapter.output_sink(ResponseStarted("response_0"))
+        await adapter.output_sink(TextDelta("response_0", "item_0", ""))
+        await adapter.output_sink(TextDelta("response_0", "item_0", "hello"))
+        await fake_clock.advance(0.3)
+        await adapter.output_sink(AudioDelta("response_0", "item_0", b""))
+        await adapter.output_sink(AudioDelta("response_0", "item_0", b"\1\2"))
+        await adapter.output_sink(
+            ResponseFinished("response_0", "item_0", "hello", True, "completed", "stop")
+        )
+
+        async with sending_session(runtime, set()) as (transport, _):
+            await fake_clock.advance(0)
+            response_events = [
+                event
+                for event in transport.sent_events
+                if event["type"].startswith("response.")
+            ]
+
+        text_metrics = response_events[2]["response_request_metrics"]
+        assert text_metrics["ttft_ms"] == pytest.approx(200.0)
+        assert "ttfp_ms" not in text_metrics
+        audio_metrics = response_events[4]["response_request_metrics"]
+        assert audio_metrics["ttft_ms"] == pytest.approx(200.0)
+        assert audio_metrics["ttfp_ms"] == pytest.approx(500.0)
+        assert audio_metrics["source"] == "server_monotonic_request_start"
+        assert audio_metrics["measurement_origin"] == {
+            "ttft": (
+                "model-turn request start to first non-empty text output; pending "
+                "requests keep the latest start before response creation"
+            ),
+            "ttfp": (
+                "model-turn request start to first non-empty audio output; pending "
+                "requests keep the latest start before response creation"
+            ),
+        }
+        assert response_events[-1]["response_request_metrics"] == audio_metrics
+
+        adapter.release.set()
+
+
+def test_response_timing_uses_latest_pending_start_and_locks_on_creation() -> None:
+    buffer = OutputBuffer(RuntimeLimits())
+    buffer.mark_model_turn_request_started(1.0)
+    buffer.mark_model_turn_request_started(2.0)
+    buffer.emit(ResponseStarted("response_0"), None, ("text", "audio"), 2.0)
+    buffer.emit(
+        TextDelta("response_0", "item_0", "hello"),
+        None,
+        ("text", "audio"),
+        2.25,
+    )
+
+    buffer.mark_model_turn_request_started(3.0)
+    buffer.emit(
+        AudioDelta("response_0", "item_0", b"\1\2"),
+        None,
+        ("text", "audio"),
+        3.5,
+    )
+
+    assert buffer.dequeue() is not None
+    text_envelope = buffer.dequeue()
+    audio_envelope = buffer.dequeue()
+    assert text_envelope is not None
+    assert audio_envelope is not None
+    text_metrics = text_envelope.response_request_metrics
+    audio_metrics = audio_envelope.response_request_metrics
+    assert text_metrics is not None
+    assert audio_metrics is not None
+    assert text_metrics["ttft_ms"] == pytest.approx(250.0)
+    assert audio_metrics["ttfp_ms"] == pytest.approx(1500.0)
+
+
+@pytest.mark.asyncio
 async def test_queued_audio_delivery_restarts_idle_timeout(
     fake_clock: FakeClock,
 ) -> None:
