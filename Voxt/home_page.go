@@ -144,13 +144,13 @@ func (a *app) homePage(c *ui.Context) {
 	if a.sess.Try && a.sess.State == session.Recording {
 		c.After(250 * time.Millisecond) // the Try area's clock
 	}
-	pageHeader(c, i18n.T("Home"), func() {
+	columnPageHeader(c, i18n.T("Home"), func() {
 		if ghostIconButton(c.Key("home-guide"), icons.Compass, i18n.T("Setup guide")).Label(i18n.T("Open the setup guide")).Clicked() {
 			a.openOnboarding()
 		}
 	})
 	ui.Scroll(c.Key("home-scroll")).Grow(1).MinHeight(0).Children(func() {
-		ui.Column(c).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp3)).MaxWidth(px(t, 880)).Children(func() {
+		pageColumn(c).Gap(px(t, sp3)).Children(func() {
 			a.homeSlogan(c)
 			a.homeReadiness(c)
 			mine := a.sess.Try && a.sess.ID != "" && !a.obOwns(a.sess.ID)

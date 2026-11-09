@@ -115,12 +115,12 @@ func (a *app) rewritePage(c *ui.Context) { a.featurePage(c, hotkey.Rewrite) }
 func (a *app) featurePage(c *ui.Context, feature string) {
 	t := c.Theme()
 	p := uitext.FeaturePrefix(feature)
-	pageHeader(c, uitext.FeatureTitle(feature), nil)
+	columnPageHeader(c, uitext.FeatureTitle(feature), nil)
 	if a.sess.Try && a.sess.State == session.Recording {
 		c.After(250 * time.Millisecond) // the Try area's clock
 	}
 	ui.Scroll(c.Key(p + "-scroll")).Grow(1).MinHeight(0).Children(func() {
-		ui.Column(c).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp3)).MaxWidth(px(t, 880)).Children(func() {
+		pageColumn(c).Gap(px(t, sp3)).Children(func() {
 			switch feature {
 			case hotkey.Translate:
 				caption(c, i18n.T("Select text and press the shortcut to translate it in place; with nothing selected, speak, and the translation is typed where your cursor is."))
