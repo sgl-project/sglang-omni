@@ -12,11 +12,10 @@ Install SGLang-Omni using the [installation guide](../get_started/installation.m
 
 | Model | Input | Output | Notes |
 |---|---|---|---|
-| [Qwen3-Omni](qwen3_omni.md) | Text, image, audio, video | Text, or text and speech | Text-only mode or the full speech pipeline; realtime sessions |
+| [Qwen3-Omni](../cookbook/qwen3_omni.md) | Text, image, audio, video | Text, or text and speech | Text-only mode or the full speech pipeline; realtime sessions |
 | [Ming-Omni](../cookbook/ming_omni.md) | Text, image, audio, video | Text, or text and speech | 44.1 kHz speech; thinker and talker stages |
 | [Ming-3.0-audio](../cookbook/ming3_audio.md) | Audio, with optional text | Text, or text and speech | Transcription, audio question answering, and speech synthesis |
 | [MiniCPM-o](../cookbook/minicpm_o.md) | Text, image, audio, video | Text, or text and speech | Chat here; live full-duplex calls use `/v1/realtime` |
-
 
 ## General Usage
 
@@ -239,22 +238,34 @@ with requests.post(
     for line in response.iter_lines(decode_unicode=True):
         if not line or not line.startswith("data: "):
             continue
-        data = line.removeprefix("data: ")
-        if data == "[DONE]":
+        else:
+            pass
+        payload = line.removeprefix("data: ")
+        if payload == "[DONE]":
             break
-        event = json.loads(data)
+        else:
+            pass
+        event = json.loads(payload)
         if "error" in event:
             raise RuntimeError(event["error"]["message"])
+        else:
+            pass
         if not event.get("choices"):
             continue
+        else:
+            pass
         delta = event["choices"][0].get("delta", {})
         if delta.get("content"):
             print(delta["content"], end="", flush=True)
+        else:
+            pass
         audio = delta.get("audio") or {}
         if audio.get("data"):
             path = Path(f"chunk_{len(chunks):03d}.wav")
             path.write_bytes(base64.b64decode(audio["data"]))
             chunks.append(path)
+        else:
+            pass
 ```
 
 ## Realtime Interaction
@@ -263,21 +274,13 @@ Realtime interaction is separate from both a completed chat request and an SSE r
 
 ### WebSocket / Realtime API
 
-Connect to `/v1/realtime`, send a session configuration event, and then send
-input events as they become available:
+Start the model with its realtime deployment configuration and connect to `/v1/realtime`. Session configuration, audio formats, event IDs, and packet metadata depend on the deployment; choose its documented protocol before sending audio.
 
-```json
-{
-  "type": "session.update",
-  "session": {
-    "modalities": ["text", "audio"],
-    "input_audio_format": "pcm16",
-    "output_audio_format": "pcm16"
-  }
-}
-```
+- [Qwen3-Omni standard speech pipeline](../cookbook/qwen3_omni.md#realtime-speech-with-server-side-turn-detection): turn-based conversation events and server-side turn detection.
+- [Qwen3-Omni persistent session profile](../cookbook/qwen3_omni.md#qwen3-omni-persistent-session-stages): the shared session protocol with persistent KV state.
+- [MiniCPM-o](../cookbook/minicpm_o.md): model-specific full-duplex setup and the shared session protocol.
 
-Audio is commonly sent as base64 PCM16 in `input_audio_buffer.append`. A client can end a turn with `input_audio_buffer.commit`, or let server-side VAD commit it automatically. A realtime session is not created by setting `stream: true`.
+Where supported, audio arrives as base64 PCM16 in `input_audio_buffer.append`; client commits or server-side turn detection delimit turns. Native full-duplex deployments have their own turn controls. Setting `stream: true` on a chat request creates an SSE response, not a realtime session.
 
 Models that take camera input during a session, such as MiniCPM-o and the Qwen3-Omni session profile, receive frames in `sglang.input_image.append` events. Each event carries a base64 JPEG or PNG in `image` and the frame's position on the audio timeline in `sglang.t_ms`.
 
@@ -293,10 +296,7 @@ Turn-based sessions may use client commits, `server_vad`, or semantic VAD when t
 
 ## Server Readiness
 
-Before it reports ready, the server sends itself a chat request with a small image, one second of audio, and a short instruction — text and audio output in
-speech mode, text output in text-only mode, at most 8 new tokens from each stage that generates tokens — once per replica of its most replicated process, one after
-another, so that every replica serves one. `/health` returns 503 with status `starting` until these requests have passed through every stage, so the one-time kernel builds of that request path happen before the first user request. Inputs of other shapes, such as video or a large concurrent batch, can still build a kernel
-variant on first use. A failed warmup stops the server.`SGLANG_OMNI_WARMUP_TIMEOUT` (seconds, default 600) bounds each request, and `--skip-server-warmup` reports ready without them.
+Startup warmup depends on the pipeline and realtime deployment. A configured warmup must finish before `/health` reports ready; a pipeline without request warmup can become ready without exercising its chat path. See [Qwen3-Omni Server Readiness](../cookbook/qwen3_omni.md#server-readiness) for its synthetic multimodal requests, timeout, and skip option. Readiness does not guarantee that every input shape has been warmed up.
 
 ## Request Parameters
 
@@ -343,4 +343,3 @@ Limiting `video_max_frames` or the pixel budget keeps video latency predictable.
 - `"modalities": ["text", "audio"]` on a text-only server returns no audio and raises no error.
 - Speculative decoding drafts restrict sampling. Requests that use penalties, `min_p`, or logprobs may be rejected; the model page lists the exact rules.
 - Model-specific caps still apply, such as video frame-rate rules, context limits, and which outputs a pipeline can stream.
-
