@@ -116,7 +116,7 @@ def decode_audio_bytes(
 def parse_wav_bytes(
     data: bytes, source: str = "bytes"
 ) -> tuple[npt.NDArray[np.float32], int]:
-    """Parse PCM/IEEE-float WAV from bytes without external deps."""
+    """Parse PCM, IEEE-float, and G.711 WAV from bytes without torchaudio or PyAV."""
     if len(data) < 12:
         raise ValueError(f"Invalid WAV header: {source}")
     else:
@@ -196,6 +196,23 @@ def parse_wav_bytes(
             audio = ((audio_u8.astype(np.float32) - 128.0) / 128.0).astype(np.float32)
         else:
             raise ValueError(f"Unsupported PCM WAV bit depth: {bits_per_sample}")
+    elif fmt_tag in (6, 7):  # G.711 A-law / mu-law
+        # note (Haoling Pu): decoded here so a G.711 WAV does not depend on the torchcodec build.
+        if bits_per_sample != 8:
+            raise ValueError(f"Unsupported G.711 WAV bit depth: {bits_per_sample}")
+        else:
+            try:
+                audio, _ = soundfile.read(
+                    io.BytesIO(data_bytes),
+                    format="RAW",
+                    subtype="ULAW" if fmt_tag == 7 else "ALAW",
+                    samplerate=sample_rate,
+                    channels=1,
+                    dtype="float32",
+                )
+            except (soundfile.SoundFileError, OverflowError) as exc:
+                # note (Haoling Pu): libsndfile rejects a sample rate of 0 and its binding overflows at 2**31; every caller falls back on ValueError.
+                raise ValueError(f"Unreadable G.711 WAV: {source}") from exc
     else:
         raise ValueError(f"Unsupported WAV format tag: {fmt_tag}")
 

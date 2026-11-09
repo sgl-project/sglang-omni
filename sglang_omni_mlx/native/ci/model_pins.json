@@ -201,5 +201,35 @@
         "model.safetensors": "ee05a65d4472f089d55b5dfcd9e19f42e3245f4f19d612b90c04cb051a80105e"
       }
     }
+  },
+  "wilsonzheng0327/MOSS-Transcribe-Diarize-dflash": {
+    "revision": "2e3f00b0932112e4f92a4ef67a4cd60ee855056c",
+    "files": {
+      "config.json": "c240f41c98040d6eec7ca8f0f6bd548d3d9df302cbe10f5a91e2e833d1463250",
+      "model.safetensors": "b7ee3fde257d5f0c95a0f8805f62934e202e4d6b7d993f04dd53e4d512045a10"
+    }
+  },
+  "inclusionAI/Ming-3.0-audio-tiny": {
+    "revision": "3c9578f641b6745abf2d1239dc8419726f37c0e2",
+    "files": {
+      "config.json": "8f4f45090b7d74eebad38d0dd2767b46df178b82efb4bcdfc02f8b871f500f13",
+      "generation_config.json": "1da133d04c4f99a72e09b1565d0bb4fc0a2edc5c373a46b7076a3494edc7eb43",
+      "tokenizer.json": "2207eca933084436c15bb85ee648e28b2957934bc1da9506e10ea6c243bad869",
+      "tokenizer_config.json": "29c99ad0d76b663b5acd6cffcade4c1bc7897b2b44a64c8224b1222143002e7a",
+      "special_tokens_map.json": "2ac79f0a2ab99a3e6ffb7709b77246f5595584f8dcd006694cb940a6fec8cb8d",
+      "model.safetensors.index.json": "f61c0cc9a162c23afafaf9f2107a2b5a5a838bcf6e69daa61c4178ca327b0adc",
+      "model-00001-of-00002.safetensors": "53b7663c7c52aa36e487977d6e9bb2f5666b7aaa543bd5d5dd4e96ec88cfd957",
+      "model-00002-of-00002.safetensors": "08d9e7bd9d885a0d6608953c6bbe40dbfb67f673a0cce9382414b55a9380053a"
+    }
+  },
+  "mlx-community/fish-audio-s2-pro-8bit": {
+    "revision": "c8d4481b3f7cbfe64d855c8b7cda7739502fc3ff",
+    "files": {
+      "config.json": "363895eff17c1f15a18e9bbc8ffddf3d5546219378cc37d96862892d4f93aace",
+      "tokenizer.json": "f24e08099d45a8adf3f52f5f0b03276e433bb9d689bb15fcbcc48ce58744588b",
+      "tokenizer_config.json": "b8d149343ae425b0da67e6708686aceb51be7815d9792f265fc12ff04d5e9856",
+      "model.safetensors": "bf31b4e5fb713a565750e120ebadd54de245eb1214e46d14fc5108f1e79171a1",
+      "codec.safetensors": "c2096e27a1bb69a05151ccb502649a88744712270d9b029a68a3c9305f2b1edf"
+    }
   }
 }
