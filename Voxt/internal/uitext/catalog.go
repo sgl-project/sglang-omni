@@ -70,7 +70,7 @@ func ModelAbout(id string) string {
 	case models.ASRAccurate:
 		return i18n.T("The most accurate. Good with accents, dialects, names and several languages in one sentence, and shows the text as you speak.")
 	case models.ASRFast:
-		return i18n.T("Quicker and lighter on memory, for clear speech in a quiet place. A good choice for a Mac with 8 GB of memory.")
+		return i18n.T("Quicker and lighter on memory, for clear speech in a quiet place.")
 	case models.ASRQwen6bit:
 		return i18n.T("Qwen3-ASR 1.7B in less memory than the 8-bit model, and nearly as accurate. Shows the text as you speak.")
 	case models.ASRWhisperTurbo:
