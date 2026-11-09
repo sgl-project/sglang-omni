@@ -30,6 +30,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -214,11 +215,11 @@ func (a *app) overlayCheck(dir string) {
 		var region mygo.Rectangle
 		onMain(func() {
 			area := a.overlayArea()
-			// The backdrop: under the largest face (the answer card) and
-			// the language menu over it, 20 below the face's bottom edge
+			// The backdrop: under the largest face (the widest answer
+			// card, grown to the work area) and the language menu over it, 20 below the face's bottom edge
 			// (or above its top).
 			largest := layout.CardSizes[len(layout.CardSizes)-1]
-			wide := layout.Frame(area, a.prefs.Overlay, max(layout.NoticeW2, largest.W), largest.MaxH()+langMenuHeight()+ovLangGap)
+			wide := layout.Frame(area, a.prefs.Overlay, max(layout.NoticeW2, largest.W), area.Height-int(math.Round(a.prefs.Overlay.Margin))+langMenuHeight()+ovLangGap)
 			bw, bh := wide.Width+60, wide.Height+40
 			region = mygo.Rectangle{X: wide.X - 30, Y: wide.Y + wide.Height - layout.Pad + 20 - bh, Width: bw, Height: bh}
 			opts := floatingWindowOptions("VoxtNew overlay check", bw, bh, ui.View(func(c *ui.Context) { ovCheckBackdrop(c, bd.dark) }))

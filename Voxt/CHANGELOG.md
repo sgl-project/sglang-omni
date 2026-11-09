@@ -82,6 +82,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Transcribe, Translate and Rewrite in a wide window read in two columns**: shortcuts and models on the left, the feature's own settings, answer card, rules and Try it on the right, so the page fills a wide window instead of a long column in the middle of blank space.
 - **A copy pass over the English text**: about 45 strings that read as translated now read as plain English: a "test" instead of a "try" in the setup guide, "Voxt does not have microphone access" instead of "Voxt may not use the microphone", "frontmost app" instead of "the app in front", "Group prompt" instead of "Scene prompt", "Cancel recording" instead of "Cancel transcription" (it cancels Translate and Rewrite too), "Import from Voxt 1.x" instead of "the previous Voxt", "Model ID", "Thinking". The three American spellings left in a British-spelled app (Recognizing, Optimize, optimization) follow the rest. In Chinese only 场景提示词 and 取消转录 change, to 分组提示词 and 取消录音.
 - **Language model debug page** (command palette, or the bottom of the Language models page), as Voxt 1.x's LLM debug window: choose a language model you set up and a request (Transcribe, Translate, Rewrite or an App enhancement group), edit its prompt there without saving, type the text, and Run shows the answer, its time and every message sent. Use this prompt saves the edit as the feature's rules or the group's prompt.
+- **The answer card grows with a long answer, and can be dragged**: its height follows the text up to the screen (it scrolls only then), also while Rewrite writes; the card sizes set its width. Drag the card by its background or header to move it out of the way: it keeps that place as it grows, stays on the screen, and the next card shows at the overlay's place again.
+- **A slow first token no longer fails Translate and Rewrite**: the language model's first token has no deadline of its own (it was 15 s). A model that reasons before it answers, or Ollama loading a model, sent nothing for a while and Translate and Rewrite failed with "The language model did not answer in time." (Transcribe quietly kept the recognised text). The request's whole deadline, and the 5 s limit between tokens once the answer streams, stay.
 
 ### 中文
 
@@ -163,6 +165,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **宽窗口里转录、翻译、转写页分成两栏**：左栏是快捷键和模型，右栏是该功能的设置、答案卡片、规则和“试一试”。窗口很宽时，页面不再是两边大片空白、中间一长条单栏。
 - **英文文案过了一遍**：约 45 条有翻译腔的英文改成了地道的说法，例如设置引导里的 “try” 改成 “test”，“Voxt may not use the microphone” 改成 “Voxt does not have microphone access”，“the app in front” 改成 “frontmost app”，“Scene prompt” 改成 “Group prompt”，“Cancel transcription” 改成 “Cancel recording”（它也取消翻译和转写），“the previous Voxt” 改成 “Voxt 1.x”。英文统一用英式拼写，原来剩下的三处美式拼写也已改掉。中文文案只改了两处，与英文保持一致：“场景提示词”改为“分组提示词”，“取消转录”改为“取消录音”。
 - **新增语言模型调试页**（从命令面板或语言模型页底部进入），对应 1.x 的语言模型调试窗口：选一个已设置的语言模型和一种请求（转录、翻译、转写，或某个应用增强分组），可以在页面里临时修改提示词，改动不会保存；输入文字后点“运行”，页面显示回答、用时和发出的全部消息。点“使用这个提示词”，改动才会存为该功能的规则或分组提示词。
+- **答案卡片随长回答变大，并且可以拖动**：卡片的高度跟着内容增长，直到屏幕放不下才在卡片里滚动，转写边写边长也一样；卡片大小只决定宽度。按住卡片的空白处或标题栏，可以把卡片拖开：卡片变长时保持在拖到的位置，不会超出屏幕；关掉后，下一张卡片回到浮窗设置的位置。
+- **模型出第一个字慢，翻译和转写不再报错**：语言模型的第一个字不再单独限时（原来是 15 秒）。推理模型要先思考、Ollama 第一次要加载模型，都会有一段时间不出字，翻译和转写就会报“语言模型没有及时响应”（转录则悄悄退回识别原文）。整个请求的总时限，以及回答开始流出后两个字之间最多 5 秒的限制，都保持不变。
 
 ## [2.0.1] - 2026-11-07
 

@@ -393,7 +393,7 @@ func TestWriteCancel(t *testing.T) {
 		sel := &fakeSelector{text: "x"}
 		h := newHarness(t, &fakeFile{text: "x"}, &fakeLLM{hang: true}, func(c *Config, _ *settings.Settings) {
 			c.Select = sel
-			c.LLMFirstToken, c.WriteTimeout = 50*time.Millisecond, 50*time.Millisecond
+			c.LLMBase, c.WriteTimeout = 50*time.Millisecond, 50*time.Millisecond
 		})
 		h.m.Start(StartRequest{Kind: store.KindTranslate, Target: slack})
 		end := h.rec.wait(t)

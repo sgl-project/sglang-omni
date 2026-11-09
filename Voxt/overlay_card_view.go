@@ -26,7 +26,9 @@ func (a *app) overlayCard(c *ui.Context) {
 	}
 	bodyH := float32(max(a.ov.h-layout.CardChrome-msgH, 0))
 	// The border takes layout.Border of the padding (MyGo's border box).
-	ui.Column(c).Fill().Padding(layout.CardPadTop-layout.Border, layout.CardPadX-layout.Border, layout.CardPadY-layout.Border).Children(func() {
+	// The card moves where its background is dragged (overlayDragged): a
+	// long answer may cover what the user reads.
+	ui.Column(c).Fill().Padding(layout.CardPadTop-layout.Border, layout.CardPadX-layout.Border, layout.CardPadY-layout.Border).DragWindow().Children(func() {
 		ui.Row(c).Height(layout.CardHeadH).Shrink(0).Gap(layout.CardHeadGap).AlignItems(ui.Center).Children(func() {
 			a.cardHeader(c, v)
 		})
