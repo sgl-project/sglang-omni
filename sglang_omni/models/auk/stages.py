@@ -273,7 +273,7 @@ def create_conditioning_executor(
     *,
     device: str | None = None,
     gpu_id: int | None = None,
-    dtype: str = "bfloat16",
+    dtype: str = "float32",
     text_encoder_path: str = C.DEFAULT_TEXT_ENCODER,
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 10,
