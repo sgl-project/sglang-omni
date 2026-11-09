@@ -48,7 +48,8 @@ const (
 type Stage string
 
 const (
-	StageSaving Stage = "saving"
+	StageSaving  Stage = "saving"
+	StageSummary Stage = "summary"
 )
 
 // Utterance is one PCM chunk for file-mode meeting ASR (C1-2).
@@ -66,6 +67,7 @@ type Segment struct {
 	Text        string
 	Translation string
 	Final       bool
+	StoreIdx    int // sqlite meeting_segments.idx (-1 before persist)
 }
 
 // Problem is a user-visible warning during a meeting.
@@ -108,6 +110,10 @@ type Config struct {
 	ModelHold local.Holder
 	// ASR resolves live recognition per track; nil keeps WAV-only capture (tests).
 	ASR func(ctx context.Context, src Source) (TrackASR, error)
+	// LLM opens the language model for summary and live translation.
+	LLM func(ctx context.Context, id string) (SummaryChat, error)
+	// MainLanguage names the user's primary language for summary prompts.
+	MainLanguage func() string
 }
 
 // ErrBusy means a meeting is already live.

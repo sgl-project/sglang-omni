@@ -3,6 +3,7 @@ package meeting
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -216,7 +217,12 @@ func (m *Manager) commitSegment(seg Segment) {
 	if len(m.snap.Segments) > maxSnapshotSegments {
 		m.snap.Segments = m.snap.Segments[len(m.snap.Segments)-maxSnapshotSegments:]
 	}
+	idx := m.segIdx
+	m.segIdx++
+	seg.StoreIdx = idx
 	seq := m.seq
+	target := m.snap.Translate
+	tr := m.translator
 	s := m.snap
 	m.mu.Unlock()
 	m.notify(s)
@@ -224,6 +230,7 @@ func (m *Manager) commitSegment(seg Segment) {
 	go func() {
 		ctx := context.Background()
 		row := store.MeetingSegment{
+			Idx:     idx,
 			Source:  toSegmentSource(seg.Source),
 			Speaker: seg.Speaker,
 			StartMS: seg.Start.Milliseconds(),
@@ -232,6 +239,9 @@ func (m *Manager) commitSegment(seg Segment) {
 			Final:   seg.Final,
 		}
 		_ = m.cfg.Store.AppendSegments(ctx, seq, []store.MeetingSegment{row})
+		if tr != nil && strings.TrimSpace(target) != "" {
+			tr.Enqueue([]Segment{seg})
+		}
 	}()
 }
 
