@@ -29,6 +29,8 @@
 
 ## News
 
+- [2026/11] 🔁 OpenRSI × SGLang-Omni: recursive self-improvement (RSI) scaled to production AI infrastructure, with 14 merged PRs across 8 speech and omni models and +7.6% to +326.5% throughput on H100. \[[Blog](https://index.openrsi.foundation/blog/2026/openrsi-sglang-omni/)\]
+- [2026/11] 🎙️ [Voxt 2.0](https://voxt.actnow.dev/) redefines open-source voice interaction on Mac: voice input, any-to-any translation, and a local AI assistant, with a 92% shorter wait after long dictation than 1.x. \[[Download](https://sgl-project.github.io/sglang-omni/get_started/voxt.html)\] \[[Changelog](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/CHANGELOG.md)\]
 - [2026/10] 🗺️ A unified runtime for interactive intelligence: native full-duplex models, turn-based multimodal models, and cascaded systems, coordinated through composable graphs and persistent sessions. \[[Blog](https://www.sglang.io/blog/omni-interactive-runtime)\]
 - [2026/10] 🚀 SGLang-Omni **v0.2.0** is on [PyPI](https://pypi.org/project/sglang-omni/). Install with `uv pip install --prerelease=allow "sglang-omni==0.2.0"`. \[[Installation](https://sgl-project.github.io/sglang-omni/get_started/installation.html)\]
 - [2026/10] 🐟 Day-0 support for [Fish Audio Drama 3](https://huggingface.co/fishaudio/drama-3): multi-speaker text-to-speech with voice cloning and natural-language control, streamed on `/v1/audio/speech`. \[[Blog](https://www.sglang.io/blog/spg-topology)\] \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html)\] \[[Technical Report](https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf)\]
