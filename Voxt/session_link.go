@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -28,7 +29,6 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -57,6 +57,10 @@ type sessionState struct {
 	// with MyGo while the event tap is missing.
 	hotkeysSent string
 	carbon      []string
+	// keysListening: a shortcut field takes pressed keys (key_recorder.go),
+	// and the shortcuts are off meanwhile; keysHeard is this frame's.
+	keysListening, keysHeard bool
+	recorderActive           bool // helper hotkey.record is in flight (key_recorder_helper.go)
 	// lastLoaded: the last result was read from the history at start.
 	lastLoaded bool
 	// followUp is the answer card's session a running Rewrite follows up
@@ -116,6 +120,7 @@ type sessionNotice struct {
 	action     string
 	entry      string // actionRetry's history entry
 	warn       bool   // a warning (the session went on), not an error
+	ok         bool   // done as asked (a term added), not a problem
 	seq        int    // which notice: its timer hides only itself
 	// then runs when its time is up (not when a click or the next
 	// session hides it): the notice that follows it.
@@ -142,6 +147,7 @@ func (a *app) openSessions() {
 		Glossary: func(ctx context.Context) ([]store.Term, error) {
 			return lib.store.Dictionary().List(ctx, "")
 		},
+		Notes:    lib.store.Notes(),
 		Settings: st.Get,
 		Locale:   i18n.Locale,
 		Scene:    a.sceneConfig(), // appenhance.go
@@ -180,15 +186,30 @@ func resolver(lm local.Services) session.Resolver {
 		}
 		// A model that serves the feature (the translation model only
 		// translates).
-		m, ok := local.Choose(local.ForFeature(lm.Installed(local.LLM), string(kind)), f.LLM)
+		ready := local.ForFeature(lm.Installed(local.LLM), string(kind))
+		m, ok := local.Choose(ready, f.LLM)
 		if !ok {
 			return svc, nil
 		}
-		c, ml, err := lm.LLM(ctx, m.ID)
-		if err != nil {
-			return svc, nil // no language model: the text goes on as recognised
+		// When it does not open, there is no language model: the text goes
+		// on as recognised.
+		if c, ml, err := lm.LLM(ctx, m.ID); err == nil {
+			svc.LLM, svc.LLMInfo = c, sessionModel(ml)
 		}
-		svc.LLM, svc.LLMInfo = modelClient{c: c}, sessionModel(ml)
+		// Translate's fallback model, or its model when that one did not open.
+		fb := s.Features.Translate.Fallback
+		if kind != store.KindTranslate || fb == "" || fb == m.ID || !slices.ContainsFunc(ready, func(x local.Model) bool { return x.ID == fb }) {
+			return svc, nil
+		}
+		c, ml, err := lm.LLM(ctx, fb)
+		if err != nil {
+			return svc, nil
+		}
+		if svc.LLM == nil {
+			svc.LLM, svc.LLMInfo = c, sessionModel(ml)
+		} else {
+			svc.Fallback, svc.FallbackInfo = c, sessionModel(ml)
+		}
 		return svc, nil
 	}
 }
@@ -196,26 +217,6 @@ func resolver(lm local.Services) session.Resolver {
 // sessionModel is how a session (and its history entry) names a model.
 func sessionModel(m local.Model) session.Model {
 	return session.Model{ID: m.ID, Name: m.Name, Model: m.ID}
-}
-
-// modelClient sends a session's chat to its model at the skill's
-// temperature.
-type modelClient struct{ c local.Chat }
-
-func (m modelClient) Chat(ctx context.Context, req llm.Request) (llm.Response, error) {
-	if req.Temperature == nil {
-		req.Temperature = llm.F64(llm.DefaultTemperature(req.Skill))
-	}
-	return m.c.Chat(ctx, req)
-}
-
-// Prefill warms the model's prompt cache up (llm.Prefiller), when it has
-// one.
-func (m modelClient) Prefill(ctx context.Context, req llm.Request) error {
-	if p, ok := m.c.(llm.Prefiller); ok {
-		return p.Prefill(ctx, req)
-	}
-	return nil
 }
 
 // sessionChanged takes a session's snapshot (the newest wins) and
@@ -266,8 +267,17 @@ func (a *app) sessionEnded(s session.Snapshot) {
 	if s.ID != "" && a.followUp != "" && !s.Card {
 		a.followUp = "" // a follow-up that ended without an answer: the card keeps the last one
 	}
+	if s.Note && s.State == session.Done && s.Result != "" {
+		a.loadNotes() // notes_page.go: the page shows it
+	}
 	if p := s.Problem; p != nil && s.State != session.Cancelled && !(s.Card && s.State == session.Failed) {
 		text, more, action := sessionProblemText(p)
+		switch {
+		case s.Note && s.Card:
+			text = i18n.T("The note could not be saved: the card shows it.")
+		case s.Note && p.Code == session.ProblemLLM && p.Degraded:
+			text = degradedLLMText(p, true) // the recognised text went to Notes
+		}
 		if text != "" {
 			// Nothing heard is not a failure: a warning.
 			n := sessionNotice{text: text, more: more, action: action, warn: p.Degraded || p.Code == session.ProblemNoSpeech}
@@ -276,6 +286,8 @@ func (a *app) sessionEnded(s session.Snapshot) {
 			}
 			a.showNotice(n)
 		}
+	} else if s.Note && s.State == session.Done && s.Result != "" {
+		a.showNotice(sessionNotice{text: i18n.T("Saved to Notes")})
 	}
 	if s.State != session.Cancelled {
 		a.historyChanged()

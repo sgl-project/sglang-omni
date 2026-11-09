@@ -25,7 +25,7 @@ var (
 	_ asr.Streamer        = (*ASR)(nil)
 )
 
-// NewASR is speech model modelID (ASRAccurate, ASRFast), installed in
+// NewASR is speech model modelID (ASRAccurate, ASRFast, …), installed in
 // modelDir (its config.json, weights and tokenizer), on rt. It checks the
 // id and that the directory exists; nothing starts yet.
 func NewASR(rt *Runtime, modelID, modelDir string) (*ASR, error) {
@@ -98,9 +98,11 @@ func (a *ASR) Spec() Spec { return a.spec.clone() }
 func (a *ASR) Warm() { a.rt.Warm(a.spec, a.dir) }
 
 // Caps: it streams (a live preview, then the Final) and transcribes
-// files; it takes hints (the context bias) and a prompt.
+// files; a model with a context takes hints (the context bias) and a
+// prompt.
 func (a *ASR) Caps() asr.Caps {
-	return asr.Caps{Stream: true, File: true, Prompt: true, Hints: true}
+	context := a.spec.ASR.ContextTerms > 0
+	return asr.Caps{Stream: true, File: true, Prompt: context, Hints: context}
 }
 
 // Transcribe is a Final over a whole recording.
@@ -151,9 +153,10 @@ func filePCM(req asr.FileRequest) ([]byte, error) {
 func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, b bias) (string, string, error) {
 	t := a.spec.ASR
 	budget := t.tokenBudget(asr.Duration(pcm, sampleRate))
+	shared := t.TokensPerSecond > 0 // else each request has the whole budget
 	var parts []string
 	for _, c := range t.splitChunks(pcm) {
-		if budget <= 0 {
+		if shared && budget <= 0 {
 			break
 		}
 		req := finalRequest{pcm: c.pcm, language: language, context: b.context, maxTokens: budget, layout: t.AudioLayout}
@@ -162,7 +165,9 @@ func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, 
 			return "", "", err
 		}
 		r.text = a.trimEcho(ctx, l, req, r.text, r.length, b.terms)
-		budget -= r.tokens
+		if shared {
+			budget -= r.tokens
+		}
 		if language == "" {
 			language = r.language
 		}

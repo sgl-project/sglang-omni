@@ -129,6 +129,8 @@ Transcribe's clean-up of each clip's words, as said, with the user's main langua
 | zh-Hans | 呃，帮我把那个周报，嗯，发给小王，不对，是发给小李，今天下班前。 | 帮我把周报发给小李，今天下班前。 |
 | en | Um, can you send the, uh, the weekly report to Tom, sorry, I mean to Anna, before five? | Can you send the weekly report to Anna before 5? |
 
+Since 11-09 (#3644 FB27, rambling left in) each example also repeats a phrase, which the answer keeps once: "…before five? I need it before five, I really, I really need it before five." → "…before 5? I really need it before 5." and "…今天下班前。今天下班前一定要发，就是说，今天下班前一定要发出去。" → "…今天下班前。今天下班前一定要发出去。" The results below are the earlier example's; this one has not been through the eval.
+
 ### Transcribe, 20 short clips
 
 | model | prompt | no fault | fillers left | corrections missed | copied the example | error vs expected | first token (median) | total (median) |

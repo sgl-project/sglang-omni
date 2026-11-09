@@ -4,6 +4,8 @@ package main
 // badges, the ⌘1–⌘6 shortcuts and the paths that moved.
 
 import (
+	"strings"
+
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 )
@@ -31,6 +33,7 @@ var navGroups = []navGroup{
 		{"/transcribe", "Transcribe", transcribeIcon},
 		{"/translate", "Translate", translateIcon},
 		{"/rewrite", "Rewrite", rewriteIcon},
+		{"/notes", "Notes", notesIcon},
 		{"/app-enhancement", "App enhancement", appEnhancementIcon},
 	}},
 	{"Resources", []navPage{
@@ -45,6 +48,12 @@ var navGroups = []navGroup{
 
 // shortcutPages are the pages ⌘1…⌘6 open, in that order.
 var shortcutPages = []string{"/home", "/history", "/transcribe", "/translate", "/rewrite", "/app-enhancement"}
+
+// pageHidden reports whether path is the page of a feature the user hid
+// (settings.Features.Hidden, whose ids are the pages' paths).
+func (a *app) pageHidden(path string) bool {
+	return a.prefs.Features.IsHidden(strings.TrimPrefix(path, "/"))
+}
 
 // pages are every page of the sidebar, in its order.
 var pages = func() []navPage {
@@ -81,6 +90,9 @@ func groupTitle(id string) string {
 // navBadge is what a page's sidebar item shows after its title: a count
 // or a state, "" for nothing. Areas answer for their pages.
 func (a *app) navBadge(path string) string {
+	if path == "/dictionary" && len(a.suggestions) > 0 {
+		return itoa(len(a.suggestions))
+	}
 	return ""
 }
 
@@ -97,6 +109,8 @@ func pageTitle(path string) string {
 		return i18n.T("Translate")
 	case "/rewrite":
 		return i18n.T("Rewrite")
+	case "/notes":
+		return i18n.T("Notes")
 	case "/app-enhancement":
 		return i18n.T("App enhancement")
 	case modelsPath:
@@ -130,6 +144,7 @@ var (
 	modelsIcon         = icons.Soundwave
 	remoteIcon         = icons.Cloud
 	dictionaryIcon     = icons.NotebookBookmark
+	notesIcon          = icons.Notes
 	permissionsIcon    = icons.ShieldKeyhole
 	logsIcon           = icons.ClipboardList
 	searchIcon         = icons.Magnifer

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"github.com/hehehai/actnowkit/conformance"
 	fammodels "github.com/hehehai/actnowkit/models"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/models/modelstest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni/omnitest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/resident"
@@ -170,4 +172,73 @@ func eventually(t *testing.T, what string, cond func() bool) {
 		}
 	}
 	t.Fatalf("timed out: %s", what)
+}
+
+// TestOmniSpecsAreTheCatalogue: every omni model of the catalogue (but the
+// tokenizers, files of another) has a spec of the same repo and commit, and
+// every spec a catalogue entry.
+func TestOmniSpecsAreTheCatalogue(t *testing.T) {
+	n := 0
+	for _, m := range models.Catalog() {
+		if m.Runtime != models.Omni || m.Kind == models.Aux {
+			continue
+		}
+		n++
+		s, ok := omni.Lookup(m.ID)
+		if !ok || s.Repo != m.Repo || s.Revision != m.Revision || (s.ASR != nil) != (m.Kind == models.ASR) {
+			t.Errorf("%s: spec %+v, catalogue %s@%s", m.ID, s, m.Repo, m.Revision)
+		}
+	}
+	if len(omni.Models()) != n {
+		t.Errorf("%d specs, %d omni models in the catalogue", len(omni.Models()), n)
+	}
+}
+
+// TestOmniFolderLinksTheTokenizer: a Whisper model's server gets a folder
+// with its own files and its tokenizer's; a model without one, its own.
+func TestOmniFolderLinksTheTokenizer(t *testing.T) {
+	m, hub := openTestModels(t, models.ASRWhisperSmall, models.AuxWhisperSmall, models.ASRFast)
+	a := &app{models: m}
+	a.omniCache = t.TempDir()
+	own := m.Dir(models.ASRFast)
+	if got, err := a.omniFolder(models.ASRFast, own); err != nil || got != own {
+		t.Errorf("qwen: %q, %v", got, err)
+	}
+	dir, err := a.omniFolder(models.ASRWhisperSmall, m.Dir(models.ASRWhisperSmall))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"config.json", "weights.npz", "vocab.json", "tokenizer_config.json"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+			t.Errorf("%s: %v", f, err)
+		}
+	}
+	if !strings.HasPrefix(dir, a.omniCache) || strings.HasPrefix(dir, hub) {
+		t.Errorf("folder %s", dir)
+	}
+	// Opened again, the links stay as they are: a server may be loading.
+	before, _ := os.Lstat(filepath.Join(dir, "vocab.json"))
+	if again, err := a.omniFolder(models.ASRWhisperSmall, m.Dir(models.ASRWhisperSmall)); err != nil || again != dir {
+		t.Fatalf("again: %q, %v", again, err)
+	}
+	if after, err := os.Lstat(filepath.Join(dir, "vocab.json")); err != nil || !os.SameFile(before, after) {
+		t.Errorf("the links were made again: %v", err)
+	}
+	b, _ := openTestModels(t, models.ASRWhisperSmall)
+	if _, err := (&app{models: b}).omniFolder(models.ASRWhisperSmall, b.Dir(models.ASRWhisperSmall)); !errors.Is(err, local.ErrNotInstalled) {
+		t.Errorf("without the tokenizer: %v", err)
+	}
+}
+
+// openTestModels is a Manager over a temporary model library with the
+// models ids installed (sparse files), and its $HUB.
+func openTestModels(t *testing.T, ids ...string) (*models.Manager, string) {
+	t.Helper()
+	fx := conformance.New(t)
+	if err := modelstest.Seed(fx.Hub, ids...); err != nil {
+		t.Fatal(err)
+	}
+	m := models.Open(models.Options{Store: fx.Peer("dev.hehehai.voxtnew")})
+	t.Cleanup(m.Close)
+	return m, fx.Hub
 }

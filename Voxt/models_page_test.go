@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/hehehai/actnowkit/hfhub"
 	fammodels "github.com/hehehai/actnowkit/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/actnow"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
@@ -73,7 +75,7 @@ func TestModelsPage(t *testing.T) {
 		t.Errorf("translate uses a retired model: %+v", m)
 	}
 	a.navigate("/translate")
-	if !has(tt, "No language model is set up: set one up to translate.") || has(tt, "Automatic: Hy-MT2 1.8B (Q4_K_M)") {
+	if !has(tt, "No language model is set up: set one up to translate.") || has(tt, "Automatic (now: Hy-MT2 1.8B (Q4_K_M))") {
 		t.Errorf("translate: %q", tt.Texts())
 	}
 
@@ -113,6 +115,71 @@ func TestModelsPageSystemDictation(t *testing.T) {
 	a.dictation.SetHelper(fs) // seedModels made the services anew
 	if m, _ := a.featureModel(local.ASR, hotkey.Transcribe); m.ID != models.ASRFast || used() != 1 || !has(tt, "System dictation") {
 		t.Errorf("after a download: transcribe uses %s, %d cards used, %q", m.ID, used(), tt.Texts())
+	}
+}
+
+// TestHideModel: a speech model's card hides it, as Voxt 1.x's model
+// list did: the features' menus leave it out, its card goes into the
+// folded Hidden models section, whose Show puts it back. A model in use
+// has no Hide, and one in use since it was hidden is listed again.
+func TestHideModel(t *testing.T) {
+	a, fs, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 4800) // the hidden models under every card
+	seedModels(t, a, models.ASRFast, models.VADSilero)
+	a.dictation.SetHelper(fs) // System dictation after the speech model: not in use
+	fast, systemDictation, accurate := uitext.ModelName(models.ASRFast), uitext.ModelName(dictation.ModelID), uitext.ModelName(models.ASRAccurate)
+	menu := func(path, label string) []string {
+		t.Helper()
+		a.navigate(path)
+		click(t, tt, label)
+		texts := tt.Texts()
+		tt.Key(0, ui.KeyEscape)
+		frames(tt)
+		return texts
+	}
+	labels := func() []string { a.navigate(modelsPath); frames(tt); return tt.AccessLabels() }
+	if l := labels(); slices.Contains(l, "Hide "+fast) || !slices.Contains(l, "Hide "+systemDictation) || !slices.Contains(l, "Hide "+accurate) {
+		t.Fatalf("Hide on the model in use, or not on the others: %q", l)
+	}
+	if !slices.Contains(menu("/transcribe", "Speech model for Transcribe"), systemDictation) {
+		t.Fatalf("System dictation is not offered: %q", tt.Texts())
+	}
+
+	a.navigate(modelsPath)
+	click(t, tt, "Hide "+systemDictation)
+	click(t, tt, "Hide "+accurate)
+	if has(tt, systemDictation) || has(tt, accurate) || !has(tt, "Hidden models") {
+		t.Fatalf("hidden cards still listed, or no Hidden models: %q", tt.Texts())
+	}
+	for _, f := range []struct{ path, label string }{{"/transcribe", "Speech model for Transcribe"}, {"/translate", "Speech model for Translate"}} {
+		if texts := menu(f.path, f.label); slices.Contains(texts, systemDictation) || !slices.Contains(texts, "Automatic (now: "+fast+")") {
+			t.Errorf("%s offers a hidden model: %q", f.path, texts)
+		}
+	}
+
+	// A hidden model chosen for a feature (Voxt 1.x's settings, or the
+	// only one left) is in use: listed, offered, and neither hidden nor
+	// shown until the feature leaves it.
+	a.updateSettings(func(s *settings.Settings) { s.Features.Translate.ASR = dictation.ModelID })
+	if l := labels(); !has(tt, systemDictation) || slices.Contains(l, "Hide "+systemDictation) || slices.Contains(l, "Show "+systemDictation) {
+		t.Errorf("the hidden model in use: %q", l)
+	}
+	if !slices.Contains(menu("/transcribe", "Speech model for Transcribe"), systemDictation) {
+		t.Errorf("the model in use is not offered: %q", tt.Texts())
+	}
+	a.updateSettings(func(s *settings.Settings) { s.Features.Translate.ASR = "" })
+
+	// Show, in the folded section; the section goes with the last one.
+	a.navigate(modelsPath)
+	click(t, tt, "Hidden models")
+	click(t, tt, "Show "+systemDictation)
+	if !slices.Contains(menu("/transcribe", "Speech model for Transcribe"), systemDictation) {
+		t.Errorf("shown again but not offered: %q", tt.Texts())
+	}
+	a.navigate(modelsPath)
+	click(t, tt, "Show "+accurate)
+	if !has(tt, systemDictation) || !has(tt, accurate) || has(tt, "Hidden models") {
+		t.Errorf("after Show: %q", tt.Texts())
 	}
 }
 
@@ -341,6 +408,16 @@ func modelShots(t *testing.T, a *app, tt *ui.Tester, save func(string)) {
 	scrollToText(tt, i18n.T("Advanced"))
 	save("models-advanced-open")
 	a.modelAdvanced = false
+	// A hidden model, in its section opened (models_cards.go).
+	fastName := uitext.ModelName(models.ASRFast)
+	a.navigate("/home")
+	a.navigate(modelsPath)
+	click(t, tt, i18n.T("Hide %s", fastName))
+	scrollToText(tt, i18n.T("Hidden models"))
+	click(t, tt, i18n.T("Hidden models"))
+	scrollToText(tt, i18n.T("Hidden models"))
+	save("models-hidden")
+	click(t, tt, i18n.T("Show %s", fastName))
 	// The page as it was: the setup guide's shots show it behind them.
 	a.navigate("/home")
 	a.navigate(modelsPath)

@@ -61,10 +61,14 @@ func spawn(cfg Config, spec Spec, dir string, cacheLimit bool) (*process, <-chan
 		"--model-directory", dir, "--startup-timeout-s", ftoa(cfg.StartTimeout.Seconds())}
 	bin := cfg.Binary
 	if spec.Binary != "" {
-		// A runtime without the copy (built before it, or sglang's own
-		// build) runs the model on qwen3_asr_server.
-		if b := filepath.Join(filepath.Dir(cfg.Binary), spec.Binary); exists(b) {
+		// A runtime without Silero's copy (built before it, or sglang's
+		// own build) runs it on qwen3_asr_server; the other kinds need
+		// their own server.
+		switch b := filepath.Join(filepath.Dir(cfg.Binary), spec.Binary); {
+		case exists(b):
 			bin = b
+		case !servedByQwen(spec.Kind):
+			return nil, nil, fmt.Errorf("the speech runtime has no %s (it was built without this model's server)", spec.Binary)
 		}
 	}
 	cmd := exec.Command(bin, append(args, spec.launchArgs(cacheLimit)...)...)

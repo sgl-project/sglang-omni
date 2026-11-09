@@ -18,7 +18,7 @@ import (
 // ---- Text of shortcuts and their problems ----
 
 // HotkeyText shows keys as macOS writes them: "fn ⇧", "Right ⌘",
-// "⌃⌥ Space", "⌃⌘V". Keys that do not parse show as written.
+// "⌃⌥Space", "⌃⌘V". Keys that do not parse show as written.
 func HotkeyText(keys string) string {
 	c, err := hotkey.Parse(keys)
 	if err != nil {
@@ -46,10 +46,13 @@ func HotkeyText(keys string) string {
 	if c.Key != "" {
 		parts = append(parts, keyGlyph(c.Key))
 	}
-	// Glyphs run together (⌃⌥⇧⌘V); words keep a space around them.
+	// Glyphs run together, and a key's name follows them (⌃⌥⇧⌘V,
+	// ⌥Space, as macOS writes them); other words keep a space around them
+	// (fn F5, Right ⌘, ⌥ Mouse button 4).
 	var b strings.Builder
 	for i, p := range parts {
-		if i > 0 && (len([]rune(p)) > 1 || len([]rune(parts[i-1])) > 1) {
+		key := i == len(parts)-1 && c.Key != "" && !c.Mouse()
+		if i > 0 && (len([]rune(p)) > 1 && !key || len([]rune(parts[i-1])) > 1) {
 			b.WriteString(" ")
 		}
 		b.WriteString(p)
@@ -57,19 +60,20 @@ func HotkeyText(keys string) string {
 	return b.String()
 }
 
-// keyGlyph is a key as macOS shows it.
+// keyGlyph is a key as macOS shows it; the keys whose glyphs few people
+// know (⎋ ↩ ⌫ ⇥) by their names, as Voxt 1.x does.
 func keyGlyph(k string) string {
 	switch k {
 	case "Space":
 		return i18n.T("Space")
 	case "Return":
-		return "↩"
+		return i18n.T("Return")
 	case "Tab":
-		return "⇥"
+		return i18n.T("Tab")
 	case "Escape":
-		return "⎋"
+		return i18n.T("Esc")
 	case "Delete":
-		return "⌫"
+		return i18n.T("Delete")
 	case "ForwardDelete":
 		return "⌦"
 	case "Left":
@@ -88,6 +92,11 @@ func keyGlyph(k string) string {
 		return "↖"
 	case "End":
 		return "↘"
+	case "Mouse3":
+		return i18n.T("Middle mouse button")
+	}
+	if n, ok := strings.CutPrefix(k, "Mouse"); ok {
+		return i18n.T("Mouse button %s", n)
 	}
 	return k
 }
@@ -212,6 +221,8 @@ func FeatureTitle(feature string) string {
 		return i18n.T("Paste the last result")
 	case hotkey.CancelID:
 		return i18n.T("Cancel transcription")
+	case hotkey.Note:
+		return i18n.T("Notes")
 	}
 	return i18n.T("Transcribe")
 }

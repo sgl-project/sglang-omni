@@ -6,10 +6,12 @@ import (
 	"encoding/xml"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
@@ -38,8 +40,8 @@ const legacySetupsJSON = `[
 // Doubao at its 2.0 address with its App ID and token, Aliyun at its
 // Singapore address with a model this app has, StepFun at its own SSE
 // address with a model this app lacks, a local Whisper server, Doubao's
-// file recognition (https://, which this app's streaming client cannot
-// use) as a second Doubao, and a service never set up.
+// flash file recognition as a second Doubao (one setup per service: the
+// first comes over), and a service never set up.
 const legacySpeechJSON = `[
  {"providerID": "doubaoASR", "model": "volc.bigasr.sauc.duration", "endpoint": "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
   "storedCredentialPresence": {"apiKey": false, "appID": true, "accessToken": true}, "doubaoDictionaryMode": "requestScoped"},
@@ -122,8 +124,8 @@ func TestParseLegacySettings(t *testing.T) {
 	if u := by["omlx"].Generation.IncludeUsage; u == nil || *u {
 		t.Errorf("oMLX usage %v, want off as the previous Voxt had it", u)
 	}
-	if l.featureLLM != [3]string{"openai", "", ""} || l.featureSpeech != [3]string{"doubao", "", ""} {
-		t.Errorf("features' setups %q, speech %q", l.featureLLM, l.featureSpeech)
+	if l.featureLLM != [3]string{"openai", "", ""} || l.featureSpeech != [3]string{"doubao", "", ""} || l.featureLocal != [3]string{"", models.ASRFast, ""} {
+		t.Errorf("features' setups %q, speech %q, local speech %q", l.featureLLM, l.featureSpeech, l.featureLocal)
 	}
 	if l.prompts != [3]string{"Keep my English terms.", "", ""} {
 		t.Errorf("prompts %q", l.prompts)
@@ -190,14 +192,15 @@ func TestParseLegacySpeech(t *testing.T) {
 	}
 	speech := func(id string) providers.Speech { sp, _ := providers.LookupSpeech(id); return sp }
 	for _, c := range []struct {
-		service, id, endpoint, want string
-		check                       bool
+		service, id, model, endpoint, want string
+		check                              bool
 	}{
-		{"openAIWhisper", "openai", "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions", "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions", false},
-		{"doubaoASR", "doubao", "https://doubao-proxy.example.com/asr", "https://doubao-proxy.example.com/asr", true},
-		{"stepFunASR", providers.StepFunASR, "https://step.example.com/v1/audio/asr/sse", "https://step.example.com/v1/audio/transcriptions", true},
+		{"openAIWhisper", "openai", "", "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions", "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions", false},
+		{"doubaoASR", "doubao", "", "https://doubao-proxy.example.com/asr", "https://doubao-proxy.example.com/asr", true},
+		{"doubaoASR", "doubao", "volc.bigasr.auc_turbo", "https://doubao-proxy.example.com/flash", "https://doubao-proxy.example.com/flash", false},
+		{"stepFunASR", providers.StepFunASR, "", "https://step.example.com/v1/audio/asr/sse", "https://step.example.com/v1/audio/transcriptions", true},
 	} {
-		if got, check := legacySpeechEndpoint(c.service, speech(c.id), c.endpoint); got != c.want || check != c.check {
+		if got, check := legacySpeechEndpoint(c.service, speech(c.id), c.model, c.endpoint); got != c.want || check != c.check {
 			t.Errorf("%s at %s: %q, check %v; want %q, %v", c.service, c.endpoint, got, check, c.want, c.check)
 		}
 	}
@@ -237,6 +240,9 @@ func TestLegacySettingsApply(t *testing.T) {
 	if s.Features.Transcribe.Prompt != "My rules." || s.Features.Transcribe.LLM != "openai" || prompts != 1 || s.Dictionary.SpeechContext != "Leo works on LLM serving." {
 		t.Errorf("prompts %d, transcribe %+v, speech context %q", prompts, s.Features.Transcribe.Feature, s.Dictionary.SpeechContext)
 	}
+	if s.Features.Translate.ASR != models.ASRFast { // Voxt 1.x's local Qwen3-ASR 0.6B
+		t.Errorf("translate %+v", s.Features.Translate.Feature)
+	}
 }
 
 // The import reads those settings from the previous Voxt's binary
@@ -271,11 +277,27 @@ func TestImportLegacySettings(t *testing.T) {
 	s := a.lib.settings.Get()
 	if len(s.Providers.LLM) != 5 || s.Providers.LLM[0].Endpoint != "https://inference.example.com/v1" || len(s.Providers.ASR) != 4 || s.Features.Transcribe.ASR != "doubao" ||
 		s.Features.Transcribe.Prompt != "Keep my English terms." || s.Dictionary.SpeechContext != "Leo works on LLM serving." {
-		t.Fatalf("settings: setups %+v, transcribe %+v, speech context %q (message %q)", s.Providers.LLM, s.Features.Transcribe.Feature, s.Dictionary.SpeechContext, a.ob.legacyMsg)
+		t.Fatalf("settings: setups %+v, transcribe %+v, speech context %q (report %q)", s.Providers.LLM, s.Features.Transcribe.Feature, s.Dictionary.SpeechContext, a.ob.legacy.text())
 	}
-	for _, want := range []string{"5 language model services came over", "4 speech services came over", "on their pages", "2 prompts came over"} {
-		if !strings.Contains(a.ob.legacyMsg, want) {
-			t.Errorf("message %q lacks %q", a.ob.legacyMsg, want)
+	r := a.ob.legacy
+	for _, want := range []string{"5 language model services", "4 speech services", "2 prompts"} {
+		if !slices.Contains(r.imported, want) {
+			t.Errorf("imported %q lacks %q", r.imported, want)
 		}
+	}
+	// The services' keys stay behind: those that need one are to
+	// complete (not Ollama, oMLX or the Whisper server on this Mac); so
+	// are the setups to check.
+	var todo []string
+	for _, d := range r.todo {
+		todo = append(todo, string(d.kind)+"/"+d.id)
+	}
+	for _, want := range []string{"llm/openai", "llm/deepseek", "llm/gemini", "asr/doubao", "asr/stepfun"} {
+		if !slices.Contains(todo, want) {
+			t.Errorf("to do %v lacks %s", todo, want)
+		}
+	}
+	if slices.Contains(todo, "llm/ollama") || slices.Contains(todo, "llm/omlx") || !strings.Contains(r.text(), "Check ") {
+		t.Errorf("to do %v (%q)", todo, r.text())
 	}
 }

@@ -6,11 +6,14 @@ package main
 // deleted it for all apps; and the models of other family apps VoxtNew
 // can run (models.Model.Borrowed), shown once they are on this Mac.
 // System dictation has a card of its own: built into macOS, with nothing
-// to download or delete.
+// to download or delete. A speech model's card hides it from the
+// features' menus (Voxt 1.x's Hide): the card then waits, folded, in
+// Hidden models at the foot of the page, to be shown again.
 
 import (
 	"fmt"
 	"slices"
+	"strconv"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/hehehai/actnowkit/hfhub"
@@ -24,29 +27,34 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 func (a *app) modelsPage(c *ui.Context) {
 	t := c.Theme()
-	pageHeader(c, i18n.T("Speech models"), func() {
+	columnPageHeader(c, i18n.T("Speech models"), func() {
 		if ghostButton(c.Key("models-network"), i18n.T("Network…")).Tooltip(i18n.T("How model downloads reach Hugging Face")).Clicked() {
 			a.openNetwork()
 		}
 	})
 	ui.Scroll(c.Key("models-scroll")).Grow(1).MinHeight(0).Children(func() {
-		ui.Column(c).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp3)).MaxWidth(px(t, 880)).Children(func() {
+		pageColumn(c).Gap(px(t, sp3)).Children(func() {
+			a.obBackBar(c, modelsPath) // onboarding.go: left from the setup guide
 			caption(c, i18n.T("A speech model turns what you say into text: every feature needs one to work by voice. Those on this Mac keep your audio here; a remote service gets your recording only when you choose it. Language models are on the Language models page."))
 			sectionTitle(c, i18n.T("On this Mac"))
 			caption(c, i18n.T("Free, and your audio stays here: download a model once, then it runs on this Mac."))
 			a.modelCards(c, models.ASR)
-			a.dictationCard(c)
+			if !a.modelHidden(dictation.ModelID) {
+				a.dictationCard(c)
+			}
 			a.providerCards(c, local.ASR) // remote_page.go
 			a.speechContextSection(c)     // models_context.go
 			if a.anyModelShown(models.LLM) {
 				sectionTitleTip(c, i18n.T("Language models no longer used"), i18n.T("Voxt 2.0 ran these on this Mac; Voxt now uses the language models of the Language models page. Delete them to free the space: another app that uses one keeps it."))
 				a.modelCards(c, models.LLM)
 			}
+			a.hiddenModelCards(c)
 			a.modelsAdvanced(c) // models_keep.go
 		})
 	})
@@ -55,12 +63,72 @@ func (a *app) modelsPage(c *ui.Context) {
 	a.providerDialogView(c) // remote_dialog.go
 }
 
-// modelCards are kind's models of the catalogue that the page shows.
+// modelCards are kind's models of the catalogue that the page shows,
+// but the hidden ones.
 func (a *app) modelCards(c *ui.Context, kind models.Kind) {
 	for _, m := range models.Catalog() {
-		if m.Kind == kind && a.modelShown(m) {
+		if m.Kind == kind && a.modelShown(m) && !a.modelHidden(m.ID) {
 			a.modelCard(c, m)
 		}
+	}
+}
+
+// modelHidden says whether the user hid speech model id from the
+// features' menus: a model in use never is.
+func (a *app) modelHidden(id string) bool {
+	return slices.Contains(a.prefs.Models.Hidden, id) && a.usedBy(local.ASR, id) == ""
+}
+
+// hiddenModels are the hidden models the page would list, in its order.
+func (a *app) hiddenModels() []string {
+	var ids []string
+	for _, m := range models.Catalog() {
+		if m.Kind == models.ASR && a.modelShown(m) && a.modelHidden(m.ID) {
+			ids = append(ids, m.ID)
+		}
+	}
+	if a.dictationListed() && a.modelHidden(dictation.ModelID) {
+		ids = append(ids, dictation.ModelID)
+	}
+	return ids
+}
+
+// hiddenModelCards is the Hidden models section, folded until opened:
+// the hidden models' cards, each with Show.
+func (a *app) hiddenModelCards(c *ui.Context) {
+	ids := a.hiddenModels()
+	if len(ids) == 0 {
+		return
+	}
+	collapsible(c.Key("models-hidden"), i18n.T("Hidden models"), &a.modelHiddenOpen, func() { caption(c, strconv.Itoa(len(ids))) }, func() {
+		caption(c, i18n.T("The features' menus leave these models out. Show puts one back."))
+		for _, id := range ids {
+			if id == dictation.ModelID {
+				a.dictationCard(c)
+			} else if m, ok := models.Lookup(id); ok {
+				a.modelCard(c, m)
+			}
+		}
+	})
+}
+
+// hideButton is a speech model's Hide, or Show once hidden; none while
+// the model is in use.
+func (a *app) hideButton(c *ui.Context, id string) {
+	if a.usedBy(local.ASR, id) != "" {
+		return
+	}
+	name := uitext.ModelName(id)
+	if slices.Contains(a.prefs.Models.Hidden, id) {
+		if ghostButton(c.Key("show"), i18n.T("Show")).Label(i18n.T("Show %s", name)).Tooltip(i18n.T("Offer it in the features' menus again")).Clicked() {
+			a.updateSettings(func(s *settings.Settings) {
+				s.Models.Hidden = slices.DeleteFunc(slices.Clone(s.Models.Hidden), func(h string) bool { return h == id })
+			})
+		}
+		return
+	}
+	if ghostButton(c.Key("hide"), i18n.T("Hide")).Label(i18n.T("Hide %s", name)).Tooltip(i18n.T("Leave it out of the features' menus")).Clicked() {
+		a.updateSettings(func(s *settings.Settings) { s.Models.Hidden = append(slices.Clone(s.Models.Hidden), id) })
 	}
 }
 
@@ -102,9 +170,15 @@ func (a *app) anyModelShown(kind models.Kind) bool {
 	return false
 }
 
+// dictationListed says whether the page lists System dictation: while
+// the helper can recognise.
+func (a *app) dictationListed() bool {
+	return slices.ContainsFunc(a.installed(local.ASR), func(m local.Model) bool { return m.ID == dictation.ModelID })
+}
+
 // dictationCard is System dictation, while the helper can recognise.
 func (a *app) dictationCard(c *ui.Context) {
-	if !slices.ContainsFunc(a.installed(local.ASR), func(m local.Model) bool { return m.ID == dictation.ModelID }) {
+	if !a.dictationListed() {
 		return
 	}
 	t := c.Theme()
@@ -134,6 +208,7 @@ func (a *app) dictationCard(c *ui.Context) {
 					}
 				})
 			})
+			ui.Row(c.Key("actions")).Gap(px(t, sp2)).Shrink(0).Children(func() { a.hideButton(c, dictation.ModelID) })
 		})
 	})
 }
@@ -200,7 +275,12 @@ func (a *app) modelCard(c *ui.Context, m models.Model) {
 					})
 				}
 			})
-			ui.Row(c.Key("actions")).Gap(px(t, sp2)).Shrink(0).Children(func() { a.modelActions(c, m, st) })
+			ui.Row(c.Key("actions")).Gap(px(t, sp2)).Shrink(0).Children(func() {
+				if m.Kind == models.ASR {
+					a.hideButton(c, m.ID)
+				}
+				a.modelActions(c, m, st)
+			})
 		})
 		if st.Downloading {
 			frac := 0.0
