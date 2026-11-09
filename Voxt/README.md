@@ -10,7 +10,7 @@ Voice input for macOS: press a shortcut in any app, speak, and the text appears 
 - **应用增强 App enhancement**: groups of apps and websites with their own scene prompt and a key pressed after inserting (a casual tone in chats, Return to send).
 - **词典 Dictionary**: names and jargon the speech model expects and the language model writes as you spell them.
 
-With a history, the overlay, shortcuts, the menu bar, a setup guide, settings and updates.
+With a history, the overlay, shortcuts, the menu bar, a setup guide and settings.
 
 **Shortcuts** (change them on each feature's page): tap the **right Option** key to transcribe, right Option with Shift to translate, Control with right Option to rewrite; Control-Option-V pastes the last result. These keys leave fn to Auralink, so the two run side by side.
 
@@ -19,7 +19,7 @@ With a history, the overlay, shortcuts, the menu bar, a setup guide, settings an
 Download the newest `Voxt-X.Y.Z-arm64.dmg` from [the Voxt releases](https://github.com/sgl-project/sglang-omni/releases?q=voxt-v&expanded=true), open it and drag Voxt to Applications. Voxt needs a Mac with Apple silicon and macOS 15 or later.
 
 - **New to Voxt**: open it and follow the setup guide: grant the microphone and Accessibility, download the recommended speech model, and set up a language model for clean-up, Translate and Rewrite.
-- **Coming from Voxt 1.x**: quit Voxt 1.x first, then replace it with Voxt. In the setup guide, **Import from the previous Voxt** brings over the dictionary, history, settings and downloaded speech models. Grant the microphone and Accessibility again: macOS treats Voxt as a new app. Voxt 1.x's Check for Updates does not install Voxt 2.
+- **Coming from Voxt 1.x**: quit Voxt 1.x first, then replace it with Voxt. In the setup guide, **Import from the previous Voxt** brings over the dictionary, history, downloaded speech models, and your language model and speech service setups. Shortcuts and other settings are not imported. Grant the microphone and Accessibility again: macOS treats Voxt as a new app. Voxt 1.x's Check for Updates does not install Voxt 2.
 
 Step by step: [Install Voxt](https://sgl-project.github.io/sglang-omni/get_started/voxt.html). The import in detail: [docs/voxt-migration.md](docs/voxt-migration.md).
 
@@ -38,7 +38,7 @@ Voxt 2 replaces the Swift Voxt 1.x:
 
 Everything that hears your words:
 
-- **Speech recognition** and **voice detection** run on sglang-omni's native MLX servers ([`sglang_omni_mlx/native`](../sglang_omni_mlx/native), C++, no Python), one process per model, started when needed, stopped after 10 minutes unused (Local models → Advanced changes it).
+- **Speech recognition** and **voice detection** run on sglang-omni's native MLX servers ([`sglang_omni_mlx/native`](../sglang_omni_mlx/native), C++, no Python), one process per model, started when needed, stopped after 10 minutes unused (Speech models → Advanced changes it).
 - A small Swift helper does what needs Apple's frameworks: the microphone, global shortcuts, Accessibility, pasting.
 
 Voxt offers a few models, tuned for it, and downloads them from Hugging Face (or a mirror) when you ask, each file checked against a pinned SHA-256:
@@ -73,7 +73,7 @@ go tool mygo build                   # build/darwin-arm64/Voxt.app and its disk 
 
 The helper must be built before `go tool mygo build` or `mygo dev`: `mygo.json` gives it its entitlements and fails without it. Without the Omni runtime the app runs but cannot recognise speech (or point `VOXTNEW_OMNI_RUNTIME` at one built with `scripts/build-omni.sh --out DIR`).
 
-**The release build** is one command, on the Mac: `scripts/release.sh` builds the three, packages and signs the app, and checks the result (`--runtimes DIR` takes prebuilt runtimes; with a Developer ID identity, `--notarize` notarises it (2.0.0 has no update feed, so nothing to `--publish`); over ssh it runs through `scripts/mac-gui.sh`). A release is that build on GitHub: a `voxt-vX.Y.Z` tag runs the Voxt Release workflow, which signs it with the Developer ID of the team RY2TQTYSKQ, notarises it and puts its disk image on a draft GitHub release. See [docs/release.md](docs/release.md).
+**The release build** is one command, on the Mac: `scripts/release.sh` builds the helper and the Omni runtime, packages and signs the app, and checks the result (`--runtimes DIR` takes prebuilt runtimes; with a Developer ID identity, `--notarize` notarises it (Voxt 2 has no update feed, so nothing to `--publish`); over ssh it runs through `scripts/mac-gui.sh`). A release is that build on GitHub: a `voxt-vX.Y.Z` tag runs the Voxt Release workflow, which signs it with the Developer ID of the team RY2TQTYSKQ, notarises it and puts its disk image on a draft GitHub release. See [docs/release.md](docs/release.md).
 
 From Linux, `scripts/mac.sh <command>` mirrors the project to a Mac (`MAC_HOST`, default `mac-air`; `MAC_DIR`, default `code/VoxtNew`) and runs the command there: `scripts/mac.sh 'scripts/build-helper.sh && go tool mygo build'`.
 
@@ -121,7 +121,7 @@ The store's tests use MyGo's SQLite plugin, which downloads its library once (ch
 - [AGENTS.md](AGENTS.md): the rules for changes (strings, threading, the protocols).
 - [CHANGELOG.md](CHANGELOG.md): changes by version. [CONTRIBUTING.md](CONTRIBUTING.md): how to send a change.
 
-Voxt takes the place of the Swift Voxt (1.x) that this repository held before 2.0.0: installing it replaces that app's Voxt.app in Applications, and the two keep their data apart; Voxt can import the old app's dictionary, history and downloaded speech models ([docs/voxt-migration.md](docs/voxt-migration.md)). Some names inside stay VoxtNew (its Swift packages, processes, bundle id and data folders). It started as a copy of [Auralink](https://github.com/hehehai/Auralink), the same author's app on remote models, which rewrote [Voxt](https://github.com/hehehai/voxt) on Go and MyGo with [AudioSmith](https://github.com/hehehai/AudioSmith)'s interface; its local model runtimes and their request policies follow Voxt's.
+Voxt takes the place of the Swift Voxt (1.x) that this repository held before 2.0.0: installing it replaces that app's Voxt.app in Applications, and the two keep their data apart; Voxt can import the old app's dictionary, history, downloaded speech models, and language model and speech service setups ([docs/voxt-migration.md](docs/voxt-migration.md)). Some names inside stay VoxtNew (its Swift packages, processes, bundle id and data folders). It started as a copy of [Auralink](https://github.com/hehehai/Auralink), the same author's app on remote models, which rewrote [Voxt](https://github.com/hehehai/voxt) on Go and MyGo with [AudioSmith](https://github.com/hehehai/AudioSmith)'s interface; its local model runtimes and their request policies follow Voxt's.
 
 ## Licence
 
