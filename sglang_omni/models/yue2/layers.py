@@ -10,6 +10,11 @@ from pydantic import BaseModel, Field
 from torch import nn
 from torch.nn import functional as F
 
+if torch.version.cuda is not None:
+    import sgl_kernel
+else:
+    sgl_kernel = None
+
 
 class Yue2ModelConfig(BaseModel):
     latent_type: Literal["vae"] = "vae"
@@ -56,12 +61,36 @@ class RMSNorm(nn.Module):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(channels))
         self.epsilon = epsilon
+        self.fused_kernels = False
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        if self.fused_kernels:
+            return sgl_kernel.rmsnorm(
+                hidden_states.reshape(-1, hidden_states.shape[-1]),
+                self.weight,
+                self.epsilon,
+            ).view_as(hidden_states)
+        else:
+            pass
         scale = torch.rsqrt(
             hidden_states.float().square().mean(-1, keepdim=True) + self.epsilon
         )
         return hidden_states * scale.to(hidden_states.dtype) * self.weight
+
+    def add(
+        self, hidden_states: torch.Tensor, residual: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.fused_kernels:
+            sgl_kernel.fused_add_rmsnorm(
+                hidden_states.view(-1, hidden_states.shape[-1]),
+                residual.view(-1, residual.shape[-1]),
+                self.weight,
+                self.epsilon,
+            )
+            return hidden_states, residual
+        else:
+            residual = residual + hidden_states
+            return self(residual), residual
 
 
 class RotaryEmbedding(nn.Module):
@@ -98,6 +127,8 @@ class Attention(nn.Module):
         self.num_heads = config.num_attention_heads
         self.num_kv_heads = config.num_key_value_heads
         self.head_dim = config.head_dim
+        self.rope_theta = config.rope_theta
+        self.fused_kernels = False
         self.q_proj = nn.Linear(
             config.hidden_size, self.num_heads * self.head_dim, bias=False
         )
@@ -129,7 +160,11 @@ class Attention(nn.Module):
             projection.weight = nn.Parameter(weight, requires_grad=False)
 
     def project_qkv(
-        self, hidden_states: torch.Tensor, cosine: torch.Tensor, sine: torch.Tensor
+        self,
+        hidden_states: torch.Tensor,
+        cosine: torch.Tensor,
+        sine: torch.Tensor,
+        positions: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         batch_size, token_count = hidden_states.shape[:2]
         if self.fused_qkv is None:
@@ -139,7 +174,28 @@ class Attention(nn.Module):
                 self.v_proj(hidden_states),
             )
         else:
-            query, key, value = F.linear(hidden_states, self.fused_qkv).split(
+            projected = F.linear(hidden_states, self.fused_qkv)
+            if self.fused_kernels:
+                sgl_kernel.fused_qk_norm_rope(
+                    projected.flatten(0, 1),
+                    self.num_heads,
+                    self.num_kv_heads,
+                    self.num_kv_heads,
+                    self.head_dim,
+                    self.q_norm.epsilon,
+                    self.q_norm.weight,
+                    self.k_norm.weight,
+                    self.rope_theta,
+                    True,
+                    positions.expand(batch_size, token_count).reshape(-1),
+                    1.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                )
+            else:
+                pass
+            query, key, value = projected.split(
                 [
                     self.num_heads * self.head_dim,
                     self.num_kv_heads * self.head_dim,
@@ -150,11 +206,12 @@ class Attention(nn.Module):
         query = query.view(batch_size, token_count, self.num_heads, self.head_dim)
         key = key.view(batch_size, token_count, self.num_kv_heads, self.head_dim)
         value = value.view(batch_size, token_count, self.num_kv_heads, self.head_dim)
-        return (
-            apply_rotary(self.q_norm(query), cosine, sine).transpose(1, 2),
-            apply_rotary(self.k_norm(key), cosine, sine).transpose(1, 2),
-            value.transpose(1, 2),
-        )
+        if self.fused_kernels:
+            pass
+        else:
+            query = apply_rotary(self.q_norm(query), cosine, sine)
+            key = apply_rotary(self.k_norm(key), cosine, sine)
+        return query.transpose(1, 2), key.transpose(1, 2), value.transpose(1, 2)
 
     def attend(
         self,
@@ -177,6 +234,7 @@ class Attention(nn.Module):
 class MLP(nn.Module):
     def __init__(self, config: Yue2ModelConfig) -> None:
         super().__init__()
+        self.fused_kernels = False
         self.gate_proj = nn.Linear(
             config.hidden_size, config.intermediate_size, bias=False
         )
@@ -195,7 +253,12 @@ class MLP(nn.Module):
         self.up_proj.weight = nn.Parameter(up, requires_grad=False)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        if self.fused_gate_up is None:
+        if self.fused_kernels:
+            assert self.fused_gate_up is not None
+            return self.down_proj(
+                sgl_kernel.silu_and_mul(F.linear(hidden_states, self.fused_gate_up))
+            )
+        elif self.fused_gate_up is None:
             gate, up = self.gate_proj(hidden_states), self.up_proj(hidden_states)
         else:
             gate, up = F.linear(hidden_states, self.fused_gate_up).chunk(2, dim=-1)

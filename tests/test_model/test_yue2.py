@@ -24,7 +24,7 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module", params=[False, True])
+@pytest.fixture(scope="module", params=[False, True, "fused"])
 def runtime(request: pytest.FixtureRequest) -> Yue2Runtime:
     return Yue2Runtime.from_pretrained(
         os.environ.get("YUE2_MODEL_PATH", "m-a-p/YuE2-3B"),
@@ -32,10 +32,11 @@ def runtime(request: pytest.FixtureRequest) -> Yue2Runtime:
         torch.device("cuda:0"),
         vae_core_frames=1024,
         vae_halo_frames=16,
-        ar_cuda_graph=request.param,
-        nar_cuda_graph=request.param,
-        sampling_cuda_graph=request.param,
-        fuse_projections=request.param,
+        ar_cuda_graph=bool(request.param),
+        nar_cuda_graph=bool(request.param),
+        sampling_cuda_graph=bool(request.param),
+        fuse_projections=bool(request.param),
+        fused_kernels=request.param == "fused",
     )
 
 

@@ -47,8 +47,10 @@ class AcousticChunk:
             self.prefix_length,
             self.prefix_length + self.frame_count + 2,
             device=self.device,
+            dtype=torch.int32,
         )[None]
         self.cosine, self.sine = model.model.rotary_emb(positions)
+        self.positions = positions
         local_positions = torch.arange(self.frame_count + 2, device=self.device).clamp(
             max=model.config.max_latent_frames - 1
         )
@@ -74,22 +76,31 @@ class AcousticChunk:
             hidden_states
             + model.time_embedder(timestep.expand(self.frame_count + 2))[None]
         )
-        hidden_states = hidden_states + self.position_embedding
-        for layer, (combined_key, combined_value) in zip(
-            model.model.layers, self.cache
+        residual = hidden_states + self.position_embedding
+        hidden_states = model.model.layers[0].nar_input_layernorm(residual)
+        for layer_index, (layer, (combined_key, combined_value)) in enumerate(
+            zip(model.model.layers, self.cache)
         ):
             query, key, value = layer.nar_self_attn.project_qkv(
-                layer.nar_input_layernorm(hidden_states), self.cosine, self.sine
+                hidden_states, self.cosine, self.sine, self.positions
             )
             combined_key[:, :, self.prefix_length :].copy_(key)
             combined_value[:, :, self.prefix_length :].copy_(value)
-            hidden_states = hidden_states + layer.nar_self_attn.attend(
+            attended = layer.nar_self_attn.attend(
                 query, combined_key, combined_value, causal=False
             )
-            hidden_states = hidden_states + layer.nar_mlp(
-                layer.nar_pre_mlp_layernorm(hidden_states)
+            hidden_states, residual = layer.nar_pre_mlp_layernorm.add(
+                attended, residual
             )
-        return model.llm2vae(model.model.norm(hidden_states))[0, 1:-1]
+            next_norm = (
+                model.model.layers[layer_index + 1].nar_input_layernorm
+                if layer_index + 1 < len(model.model.layers)
+                else model.model.norm
+            )
+            hidden_states, residual = next_norm.add(
+                layer.nar_mlp(hidden_states), residual
+            )
+        return model.llm2vae(hidden_states)[0, 1:-1]
 
     def solve(
         self, steps: int, cancelled: CancellationCheck, *, cuda_graph: bool = False

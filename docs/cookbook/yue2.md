@@ -79,7 +79,9 @@ sgl-omni serve --model-path m-a-p/YuE2-3B \
 
 AR decode graphs reserve one full-context KV buffer per guidance branch and reuse it across requests. NAR graphs capture the velocity evaluation for each acoustic chunk. Sampling graphs preserve the vocabulary mask, top-k ties, repetition window and request-local random generator. Projection fusion combines QKV and gate/up projections without changing checkpoint names.
 
-AR graph attention uses the packed FlashAttention path, matching the model's reference graph implementation. AR graph attention and projection fusion can change BF16 rounding, so a fixed seed can produce different songs. NAR graph replay and projection fusion are checked against their eager counterparts; full song-quality evaluation is still required before changing the defaults.
+Set `--synthesis.factory.fused_kernels true` to use `sgl_kernel` for RMS normalization, residual addition with normalization, Q/K normalization with RoPE, and SiLU activation with gating in both AR and NAR. This also enables projection fusion and works with eager execution or CUDA graphs.
+
+AR graph attention uses the packed FlashAttention path, matching the model's reference graph implementation. Graph attention, projection fusion and fused kernels can change BF16 rounding and sampled songs. Fused kernels also change acoustic latents; full song-quality evaluation is still required before changing the defaults.
 
 ### Optional AR batching
 
@@ -88,6 +90,14 @@ With AR and sampling graphs enabled, set `--synthesis.factory.max_batch_size 4` 
 Requests retain independent seeds, sampling parameters, token budgets and cancellation state. Invalid requests fail individually. External ABC and `cot=off` with `cfg_scale=1` can join a batch; requests with guidance other than 1 use the single-request path. Acoustic synthesis and VAE decoding remain sequential. Batch results are returned after all active requests finish, so throughput gains can increase a short request's latency when it shares a batch with a long song.
 
 Batch shapes can change BF16 rounding and sampled tokens even with the same seed. Compare both song quality and request latency under the intended concurrency before enabling batching in production.
+
+## Limitations
+
+The official YuE2 implementation offers additional [optional execution modes](https://github.com/multimodal-art-projection/YuE/blob/1116bea76032bee5668e5f097294d082fa0b84f0/docs/hardware.md) that are not currently supported by this Omni integration:
+
+- Experimental AR FP8 quantization.
+- Low-VRAM weight offloading.
+- AR decoding with torch.compile.
 
 ## Validation
 

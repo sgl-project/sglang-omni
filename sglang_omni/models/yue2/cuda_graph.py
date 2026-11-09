@@ -81,13 +81,17 @@ class DecodeGraph:
 
     def forward(self) -> torch.Tensor:
         model = self.model
-        cosine, sine = model.model.rotary_emb(self.positions[:, None])
-        hidden_states = model.model.embed_tokens(self.tokens)
+        rotary_positions = self.positions[:, None].to(torch.int32)
+        cosine, sine = model.model.rotary_emb(rotary_positions)
+        residual = model.model.embed_tokens(self.tokens)
+        hidden_states = model.model.layers[0].input_layernorm(residual)
         write_indices = self.row_offsets + self.positions
         used_lengths = (self.positions + 1).to(torch.int32)
-        for layer, (keys, values) in zip(model.model.layers, self.cache):
+        for layer_index, (layer, (keys, values)) in enumerate(
+            zip(model.model.layers, self.cache)
+        ):
             query, key, value = layer.self_attn.project_qkv(
-                layer.input_layernorm(hidden_states), cosine, sine
+                hidden_states, cosine, sine, rotary_positions
             )
             keys.index_copy_(0, write_indices, key[:, :, 0])
             values.index_copy_(0, write_indices, value[:, :, 0])
@@ -106,13 +110,17 @@ class DecodeGraph:
             )[
                 0
             ]
-            hidden_states = hidden_states + layer.self_attn.o_proj(
-                attended.flatten(1)[:, None]
+            attended = layer.self_attn.o_proj(attended.flatten(1)[:, None])
+            hidden_states, residual = layer.post_attention_layernorm.add(
+                attended, residual
             )
-            hidden_states = hidden_states + layer.mlp(
-                layer.post_attention_layernorm(hidden_states)
+            next_norm = (
+                model.model.layers[layer_index + 1].input_layernorm
+                if layer_index + 1 < len(model.model.layers)
+                else model.model.norm
             )
-        logits = model.lm_head(model.model.norm(hidden_states))[:, 0]
+            hidden_states, residual = next_norm.add(layer.mlp(hidden_states), residual)
+        logits = model.lm_head(hidden_states)[:, 0]
         self.positions.add_(self.active)
         return logits
 

@@ -74,13 +74,16 @@ class Yue2Runtime:
         nar_cuda_graph: bool = False,
         sampling_cuda_graph: bool = False,
         fuse_projections: bool = False,
+        fused_kernels: bool = False,
     ) -> None:
         self.model = model
         self.decode_graphs: list[DecodeGraph] | None = [] if ar_cuda_graph else None
         self.batch_graphs: OrderedDict[tuple[int, int], DecodeGraph] = OrderedDict()
         self.nar_cuda_graph = nar_cuda_graph
         self.sampling_cuda_graph = sampling_cuda_graph
-        if fuse_projections:
+        if fused_kernels:
+            model.enable_fused_kernels()
+        elif fuse_projections:
             for layer in model.model.layers:
                 layer.self_attn.fuse_projections()
                 layer.nar_self_attn.fuse_projections()
@@ -112,6 +115,7 @@ class Yue2Runtime:
         nar_cuda_graph: bool = False,
         sampling_cuda_graph: bool = False,
         fuse_projections: bool = False,
+        fused_kernels: bool = False,
     ) -> "Yue2Runtime":
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
@@ -145,6 +149,7 @@ class Yue2Runtime:
             nar_cuda_graph=nar_cuda_graph,
             sampling_cuda_graph=sampling_cuda_graph,
             fuse_projections=fuse_projections,
+            fused_kernels=fused_kernels,
         )
 
     @torch.inference_mode()

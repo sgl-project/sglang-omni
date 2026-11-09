@@ -22,7 +22,14 @@ from sglang_omni.models.yue2.generation import (
     generate_tokens,
     sampling_scores,
 )
-from sglang_omni.models.yue2.layers import TokenCache, Yue2ModelConfig
+from sglang_omni.models.yue2.layers import (
+    MLP,
+    Attention,
+    RMSNorm,
+    RotaryEmbedding,
+    TokenCache,
+    Yue2ModelConfig,
+)
 from sglang_omni.models.yue2.model import Yue2Model
 from sglang_omni.models.yue2.request import (
     ABC_END,
@@ -516,3 +523,68 @@ def test_sampling_graph_preserves_masks_ties_and_history(
         token = CODEC_OFFSET + step % 2
         history.append(token)
         previous = torch.tensor([[token]], device="cuda")
+
+
+def test_fused_kernels_reject_cpu_weights(model: Yue2Model) -> None:
+    with pytest.raises(ValueError, match="CUDA BF16"):
+        model.enable_fused_kernels()
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("request_count,token_count", [(1, 1), (3, 1), (1, 258)])
+@torch.inference_mode()
+def test_fused_layers_preserve_normalization_rotation_and_residual(
+    request_count: int, token_count: int
+) -> None:
+    torch.manual_seed(42)
+    config = Yue2ModelConfig(intermediate_size=512)
+    attention = Attention(config).cuda().bfloat16()
+    normalization = RMSNorm(config.hidden_size, config.rms_norm_eps).cuda().bfloat16()
+    mlp = MLP(config).cuda().bfloat16()
+    attention.q_norm.weight.normal_(1.0, 0.2)
+    attention.k_norm.weight.normal_(0.8, 0.3)
+    normalization.weight.normal_(1.0, 0.2)
+    hidden_states = torch.randn(
+        request_count,
+        token_count,
+        config.hidden_size,
+        device="cuda",
+        dtype=torch.bfloat16,
+    )
+    residual = torch.randn_like(hidden_states)
+    positions = (
+        torch.arange(
+            request_count * token_count, device="cuda", dtype=torch.int32
+        ).view(request_count, token_count)
+        + 1848
+    )
+    cosine, sine = RotaryEmbedding(config.head_dim, config.rope_theta)(positions)
+    attention.fuse_projections()
+    mlp.fuse_projections()
+    expected_qkv = attention.project_qkv(hidden_states, cosine, sine, positions)
+    expected_normalized, expected_residual = normalization.add(
+        hidden_states.clone(), residual.clone()
+    )
+    expected_mlp = mlp(hidden_states)
+    expected_norm = normalization(hidden_states)
+    attention.fused_kernels = normalization.fused_kernels = mlp.fused_kernels = True
+    actual_qkv = attention.project_qkv(hidden_states, cosine, sine, positions)
+    actual_normalized, actual_residual = normalization.add(
+        hidden_states.clone(), residual.clone()
+    )
+    torch.testing.assert_close(actual_residual, expected_residual, rtol=0, atol=0)
+    torch.testing.assert_close(actual_qkv[2], expected_qkv[2], rtol=0, atol=0)
+    # note (ruiling): Fused kernels keep intermediates in FP32; seeded BF16 probes measured relative RMS differences below 0.005.
+    for actual, expected in zip(
+        (
+            *actual_qkv[:2],
+            actual_normalized,
+            mlp(hidden_states),
+            normalization(hidden_states),
+        ),
+        (*expected_qkv[:2], expected_normalized, expected_mlp, expected_norm),
+    ):
+        difference = (actual.float() - expected.float()).square().mean().sqrt()
+        assert torch.isfinite(actual).all()
+        assert difference / expected.float().square().mean().sqrt() < 0.01

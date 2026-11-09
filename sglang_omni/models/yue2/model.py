@@ -5,6 +5,8 @@ import torch
 from torch import nn
 
 from sglang_omni.models.yue2.layers import (
+    MLP,
+    Attention,
     AudioPositionEmbedding,
     DecoderLayer,
     RMSNorm,
@@ -39,24 +41,49 @@ class Yue2Model(nn.Module):
             config.max_latent_frames, config.hidden_size
         )
 
+    def enable_fused_kernels(self) -> None:
+        weight = self.model.embed_tokens.weight
+        if weight.device.type != "cuda" or weight.dtype != torch.bfloat16:
+            raise ValueError("YuE2 fused kernels require CUDA BF16 weights")
+        else:
+            for module in self.modules():
+                if isinstance(module, (Attention, MLP)):
+                    module.fuse_projections()
+                    module.fused_kernels = True
+                elif isinstance(module, RMSNorm):
+                    module.fused_kernels = True
+                else:
+                    pass
+
     def forward(self, tokens: torch.Tensor, cache: TokenCache) -> torch.Tensor:
         token_count = tokens.shape[1]
         assert cache.length == 0 or token_count == 1
         positions = torch.arange(
-            cache.length, cache.length + token_count, device=tokens.device
+            cache.length,
+            cache.length + token_count,
+            device=tokens.device,
+            dtype=torch.int32,
         )[None]
         cosine, sine = self.model.rotary_emb(positions)
-        hidden_states = self.model.embed_tokens(tokens)
+        residual = self.model.embed_tokens(tokens)
+        hidden_states = self.model.layers[0].input_layernorm(residual)
         for layer_index, layer in enumerate(self.model.layers):
             query, key, value = layer.self_attn.project_qkv(
-                layer.input_layernorm(hidden_states), cosine, sine
+                hidden_states, cosine, sine, positions
             )
             key, value = cache.append(layer_index, key, value)
-            hidden_states = hidden_states + layer.self_attn.attend(
-                query, key, value, causal=token_count > 1
+            attended = layer.self_attn.attend(query, key, value, causal=token_count > 1)
+            hidden_states, residual = layer.post_attention_layernorm.add(
+                attended, residual
             )
-            hidden_states = hidden_states + layer.mlp(
-                layer.post_attention_layernorm(hidden_states)
-            )
+            hidden_states = layer.mlp(hidden_states)
+            if layer_index + 1 < len(self.model.layers):
+                hidden_states, residual = self.model.layers[
+                    layer_index + 1
+                ].input_layernorm.add(hidden_states, residual)
+            else:
+                hidden_states, residual = self.model.norm.add(
+                    hidden_states[:, -1:], residual[:, -1:]
+                )
         cache.length += token_count
-        return self.lm_head(self.model.norm(hidden_states[:, -1:]))[:, -1]
+        return self.lm_head(hidden_states[:, -1:])[:, -1]

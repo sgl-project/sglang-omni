@@ -91,6 +91,7 @@ def create_synthesis_executor(
     nar_cuda_graph: bool,
     sampling_cuda_graph: bool,
     fuse_projections: bool,
+    fused_kernels: bool,
     max_batch_size: int,
     max_batch_wait_ms: int,
     batch_graph_cache_size: int,
@@ -114,6 +115,7 @@ def create_synthesis_executor(
         nar_cuda_graph=nar_cuda_graph,
         sampling_cuda_graph=sampling_cuda_graph,
         fuse_projections=fuse_projections,
+        fused_kernels=fused_kernels,
     )
     return Yue2Scheduler(
         runtime,

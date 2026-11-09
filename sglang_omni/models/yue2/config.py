@@ -13,6 +13,7 @@ class Yue2FactoryArgs(FactoryArgs):
     nar_cuda_graph: bool = False
     sampling_cuda_graph: bool = False
     fuse_projections: bool = False
+    fused_kernels: bool = False
     max_batch_size: int = Field(default=1, gt=0)
     max_batch_wait_ms: int = Field(default=25, ge=0)
     batch_graph_cache_size: int = Field(default=2, gt=0)
