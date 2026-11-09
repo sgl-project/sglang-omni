@@ -45,9 +45,9 @@ func reopenModels(a *app) {
 	a.openModels()
 }
 
-// modelsPageHeight is a window that shows every card of the Local models
-// page.
-const modelsPageHeight = 2600
+// modelsPageHeight leaves room for actions below the local and online
+// speech model cards, including the Advanced popover.
+const modelsPageHeight = 4000
 
 func TestModelsPage(t *testing.T) {
 	a, _, tt := newTestApp(t)
@@ -141,7 +141,7 @@ func TestModelsPageSystemDictation(t *testing.T) {
 // has no Hide, and one in use since it was hidden is listed again.
 func TestHideModel(t *testing.T) {
 	a, fs, tt := newTestApp(t)
-	tt.SetSize(windowWidth, 2400)
+	tt.SetSize(windowWidth, modelsPageHeight)
 	seedModels(t, a, models.ASRFast, models.VADSilero)
 	a.dictation.SetHelper(fs) // System dictation after the speech model: not in use
 	fast, systemDictation, accurate := uitext.ModelName(models.ASRFast), uitext.ModelName(dictation.ModelID), uitext.ModelName(models.ASRAccurate)
