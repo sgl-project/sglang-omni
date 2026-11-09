@@ -226,6 +226,7 @@ func newTestAppIn(t *testing.T, dir string) (*app, *fakeSupervisor, *ui.Tester) 
 	t.Cleanup(lib.close)
 	fs := newFakeSupervisor(lib.bus)
 	a := newApp(lib, &helperHost{sup: fs})
+	a.ob.memoryGB = 0 // not this machine's: the tests that care set it
 	a.permSys = &permission.Fake{Mic: permission.Granted, Grant: true}
 	useTestSounds(t, a)                  // sounds_fixture_test.go
 	a.playSound = func(sounds.Target) {} // tests that listen replace it

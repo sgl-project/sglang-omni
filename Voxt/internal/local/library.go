@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 
 	fammodels "github.com/hehehai/actnowkit/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
@@ -28,6 +29,9 @@ type Openers struct {
 	// Unload stops what a runtime has loaded of model id, before its
 	// files are deleted (Library.Delete); nil: nothing to stop.
 	Unload func(id string)
+	// ASRFirst is the speech model Automatic prefers on this Mac, the
+	// first of Installed when it is installed; nil: the catalogue's order.
+	ASRFirst func() string
 }
 
 // ErrNoRuntime: the model is installed, but this build has no runtime
@@ -54,12 +58,21 @@ func NewLibrary(m *models.Manager, open Openers, name func(id string) string) *L
 }
 
 // Installed lists kind's installed models in the catalogue's order, the
-// recommended first; never a retired one. Memory only.
+// recommended first (Openers.ASRFirst before it); never a retired one.
+// Memory only.
 func (l *Library) Installed(kind Kind) []Model {
 	var out []Model
 	for _, m := range models.Catalog() {
 		if string(m.Kind) == string(kind) && !m.Retired && l.models.Installed(m.ID) {
 			out = append(out, Model{Kind: kind, ID: m.ID, Name: l.name(m.ID), Features: m.Features, Stream: kind == ASR && m.Runtime == models.Omni})
+		}
+	}
+	if kind == ASR && l.open.ASRFirst != nil {
+		first := l.open.ASRFirst()
+		if i := slices.IndexFunc(out, func(m Model) bool { return m.ID == first }); i > 0 {
+			m := out[i]
+			copy(out[1:i+1], out[:i])
+			out[0] = m
 		}
 	}
 	return out

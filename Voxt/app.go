@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/egoist/mygo"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/macx"
 )
 
 // app is VoxtNew's UI state: the view state of every page, and handles
@@ -82,6 +83,7 @@ func newApp(lib *library, h *helperHost) *app {
 	a := &app{lib: lib, shellState: newShellState()}
 	a.connectEvents() // events.go: who hears of sessions and the history
 	a.helperLink.host = h
+	a.ob.memoryGB = sysInfo{Memory: macx.TotalMemory()}.MemoryGB() // the guide's recommended speech model
 	a.openShell(lib)
 	a.openPermissions()
 	a.openFamily()          // family.go: before the models, whose library is the family's

@@ -23,6 +23,8 @@ func sessionProblemText(p *session.Problem) (text, more, action string) {
 	switch p.Code {
 	case session.ProblemNoASR:
 		return i18n.T("No speech model is installed."), "", actionModels
+	case session.ProblemSpeechWait:
+		return p.Err.Error(), "", actionModels
 	case session.ProblemMicrophone:
 		return i18n.T("Voxt may not use the microphone."), errText(p.Err), actionPermissions
 	case session.ProblemDevice:

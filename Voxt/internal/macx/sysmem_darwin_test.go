@@ -9,6 +9,17 @@ import (
 	"testing"
 )
 
+// TestTotalMemory: hw.memsize, as sysctl(8) prints it.
+func TestTotalMemory(t *testing.T) {
+	out, err := exec.Command("sysctl", "-n", "hw.memsize").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := TotalMemory(); fmt.Sprint(got) != strings.TrimSpace(string(out)) {
+		t.Errorf("TotalMemory %d, sysctl says %q", got, out)
+	}
+}
+
 // TestReadSystemMemory: the sysctls read as sysctl(8) prints them.
 func TestReadSystemMemory(t *testing.T) {
 	m, err := ReadSystemMemory()
