@@ -10,7 +10,10 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <list>
+#include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "common/layers.h"
@@ -64,6 +67,9 @@ public:
   explicit FishS2ProModel(const std::filesystem::path &model_directory);
 
   const fish_dac::AudioCodec &codec() const { return codec_; }
+  // The codes [codebooks, frames] of reference samples at fish_dac's rate, or
+  // those of the latest few encoded.
+  mlx::core::array EncodeReference(const std::vector<float> &samples) const;
   int codebook_count() const { return codebook_count_; }
   // Codes per codebook the prompt's audio positions take.
   int codebook_size() const { return codebook_size_; }
@@ -133,6 +139,10 @@ private:
   int semantic_begin_id_;
   int semantic_end_id_;
   int im_end_id_;
+  // The latest references' codes by their samples' SHA-256, most recent
+  // first.
+  mutable std::mutex references_mutex_;
+  mutable std::list<std::pair<std::string, mlx::core::array>> references_;
 };
 
 } // namespace fish_s2_pro

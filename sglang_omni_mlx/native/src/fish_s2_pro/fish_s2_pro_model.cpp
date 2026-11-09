@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "fish_s2_pro/fish_s2_pro_model.h"
 
+#include <CommonCrypto/CommonDigest.h>
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -25,6 +27,8 @@ constexpr size_t kRepeatWindow = 4;
 constexpr float kRepeatTemperature = 1.0f;
 constexpr float kRepeatTopP = 0.9f;
 constexpr float kMinTemperature = 1e-5f;
+// The references EncodeReference keeps, as Drama 3 keeps its voices.
+constexpr size_t kReferenceCacheSize = 4;
 
 // SGLang's MurmurHash3 x86_32 of a 64-bit seed, a step and a column.
 uint32_t MurmurHash(uint64_t seed, uint32_t step, uint32_t column) {
@@ -120,6 +124,32 @@ FishS2ProModel::FishS2ProModel(const std::filesystem::path &model_directory,
   // Note (Jiaxin Deng): the codec's raw weight-norm tensors, freed once
   // folded, would otherwise stay in MLX's buffer cache for the process's life.
   mx::clear_cache();
+}
+
+mx::array
+FishS2ProModel::EncodeReference(const std::vector<float> &samples) const {
+  CC_SHA256_CTX digest;
+  CC_SHA256_Init(&digest);
+  CC_SHA256_Update(&digest, samples.data(),
+                   static_cast<CC_LONG>(samples.size() * sizeof(float)));
+  std::string reference_key(CC_SHA256_DIGEST_LENGTH, '\0');
+  CC_SHA256_Final(reinterpret_cast<unsigned char *>(reference_key.data()),
+                  &digest);
+  const std::lock_guard<std::mutex> lock(references_mutex_);
+  for (auto cached = references_.begin(); cached != references_.end();
+       ++cached) {
+    if (cached->first == reference_key) {
+      references_.splice(references_.begin(), references_, cached);
+      return references_.front().second;
+    } else {
+    }
+  }
+  const mx::array codes = codec_.Encode(samples);
+  references_.emplace_front(reference_key, codes);
+  while (references_.size() > kReferenceCacheSize) {
+    references_.pop_back();
+  }
+  return codes;
 }
 
 SpeechPrompt FishS2ProModel::BuildPrompt(

@@ -29,6 +29,8 @@ struct ConvolutionWeights {
 
 class AudioCodec {
 public:
+  // Loads the decoding weights; Encode loads the encoding ones for each call
+  // and frees them after it.
   explicit AudioCodec(const std::filesystem::path &model_directory);
 
   // Codes [codebooks, frames] int32 of mono samples at kSampleRate.
@@ -39,7 +41,8 @@ public:
 private:
   friend class CodecStream;
 
-  explicit AudioCodec(omni_common::WeightMap weights);
+  AudioCodec(std::filesystem::path model_directory,
+             omni_common::WeightMap weights);
 
   static constexpr int kDecoderStrides[] = {8, 8, 4, 2};
   static constexpr int kResidualDilations[] = {1, 3, 9};
@@ -49,9 +52,10 @@ private:
   static constexpr const char *kPostModule = "quantizer.post_module";
 
   static std::string Index(const std::string &prefix, int index);
-  // The checkpoint's weights, each convolution's as one MLX kernel.
+  // The checkpoint's weights Encode reads (for_encoding) or decoding reads,
+  // each convolution's as one MLX kernel.
   static omni_common::WeightMap
-  LoadWeights(const std::filesystem::path &model_directory);
+  LoadWeights(const std::filesystem::path &model_directory, bool for_encoding);
   static mlx::core::array Snake(const mlx::core::array &x,
                                 const mlx::core::array &alpha);
   static mlx::core::array TransformerNorm(const mlx::core::array &x,
@@ -101,7 +105,10 @@ private:
                               const std::string &prefix) const;
   // The summed quantizer outputs [1, dim, frames] of codes [codebooks, frames].
   mlx::core::array QuantizedFeatures(const mlx::core::array &codes) const;
+  // Encode on a codec that holds the encoding weights.
+  mlx::core::array EncodeLoaded(const std::vector<float> &samples) const;
 
+  std::filesystem::path model_directory_;
   omni_common::Checkpoint checkpoint_;
   // Each convolution's weights by prefix, sharing checkpoint_'s arrays.
   std::unordered_map<std::string, ConvolutionWeights> convolutions_;
