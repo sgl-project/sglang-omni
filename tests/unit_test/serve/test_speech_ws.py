@@ -385,6 +385,52 @@ def test_speech_websocket_commit_flushes_segments_without_closing() -> None:
     assert client_impl.generated_prompts == ["First segment.", "Second segment"]
 
 
+@pytest.mark.parametrize(
+    ("split_granularity", "text", "sentences"),
+    [
+        (
+            "sentence",
+            "The price is 3.5 dollars. Next",
+            ["The price is 3.5 dollars.", "Next"],
+        ),
+        (
+            "clause",
+            "It costs 1,000 dollars, next",
+            ["It costs 1,000 dollars,", "next"],
+        ),
+    ],
+)
+def test_speech_websocket_does_not_split_inside_a_number(
+    split_granularity: str, text: str, sentences: list[str]
+) -> None:
+    """The speech WebSocket split 3.5 and 1,000 into two sentences at the punctuation inside the number."""
+    client_impl = StreamingSpeechClient()
+    client = TestClient(create_app(client_impl, model_name="tts"))
+
+    with client.websocket_connect("/v1/audio/speech/stream") as websocket:
+        websocket.send_json(
+            session_config(
+                response_format="pcm",
+                stream_audio=True,
+                split_granularity=split_granularity,
+            )
+        )
+        assert websocket.receive_json()["type"] == "session.configured"
+
+        websocket.send_json({"type": "input.text", "text": text})
+        assert websocket.receive_json()["sentence_text"] == sentences[0]
+        assert websocket.receive_bytes()
+        assert websocket.receive_json()["type"] == "audio.done"
+
+        websocket.send_json({"type": "input.done"})
+        assert websocket.receive_json()["sentence_text"] == sentences[1]
+        assert websocket.receive_bytes()
+        assert websocket.receive_json()["type"] == "audio.done"
+        assert websocket.receive_json()["type"] == "session.done"
+
+    assert client_impl.generated_prompts == sentences
+
+
 @pytest.mark.asyncio
 async def test_custom_voice_websocket_uses_shared_config() -> None:
     config = CustomVoiceConfig(speakers=("speaker",), task_type="CustomVoice")
