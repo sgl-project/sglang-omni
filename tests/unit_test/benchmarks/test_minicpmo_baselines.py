@@ -199,6 +199,24 @@ def test_score_stop_scores_the_counting_reply_against_a_stop_at_seven_seconds(
                 reply_end_after_window_start_s=0.0,
             ),
         ),
+        (
+            0.54,
+            [reply({6: "One, two,", 7: " three,", 8: " four."})],
+            StopScore(
+                status="kept",
+                counted_to_thirty=False,
+                reply_end_after_window_start_s=0.0,
+            ),
+        ),
+        (
+            0.54,
+            [reply({3: COUNT_TO_TWENTY, 6: ", twenty-one,", 7: " twenty-two."})],
+            StopScore(
+                status="past twenty",
+                counted_to_thirty=False,
+                reply_end_after_window_start_s=-1.0,
+            ),
+        ),
     ],
 )
 @pytest.mark.parametrize("stop_offset_s", [0.0, 0.25, 0.5, 0.75])
@@ -208,7 +226,7 @@ def test_score_stop_gives_every_offset_in_a_unit_the_same_score(
     replies: list[Reply],
     expected_score: StopScore,
 ) -> None:
-    """Timing the window from the end of the stop's onset unit closed it while a long stop was still being spoken, and the text of the stop's unit, said after the stop at every offset, counted toward the count at the stop and started a reply before it only when the onset was past the unit's start."""
+    """Timing the window from the end of the stop's onset unit closed it while a long stop was still being spoken, and the text of the stop's unit, said after the stop at every offset, counted toward the count at the stop and started a reply before it only when the onset was past the unit's start. The unit before the stop's, whose input ends by the onset, belongs before the stop at every offset."""
     stop_start_s = 7.0 + stop_offset_s
     assert (
         score_stop(
