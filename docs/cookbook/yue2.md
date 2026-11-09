@@ -67,7 +67,7 @@ Voice selection, reference-audio conditioning, speed changes and streaming outpu
 
 ## Optional acceleration
 
-AR decoding always uses SGLang's CUDA graphs and continuous batching; SGLang engine options such as `--yue2_ar.engine.enable_torch_compile true` apply to the AR stage. Requests with classifier-free guidance decode as a pair of rows (conditioned and unconditioned) that stay together in each batch. Each request keeps its own seed, sampling parameters, token budgets and cancellation state.
+AR decoding always uses SGLang's CUDA graphs and continuous batching. Requests with classifier-free guidance decode as a pair of rows (conditioned and unconditioned) that stay together in each batch. Each request keeps its own seed, sampling parameters, token budgets and cancellation state.
 
 The acoustic stage defaults to eager execution. On NVIDIA CUDA devices, enable its optimizations with:
 
