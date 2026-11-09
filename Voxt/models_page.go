@@ -70,6 +70,8 @@ type modelsState struct {
 	modelAdvanced bool
 	modelKeepSel  string
 	modelKeepFor  string
+	// modelHiddenOpen: the Hidden models section is open (models_cards.go).
+	modelHiddenOpen bool
 	// speechContext is the Speech context field (models_context.go).
 	speechContext speechContextState
 }

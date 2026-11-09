@@ -250,6 +250,8 @@ final class Server: @unchecked Sendable {
             return try await textio.selection(try msg.decodeParams(SelectionParams.self))
         case Method.textPaste:
             return try await textio.paste(try msg.decodeParams(PasteParams.self))
+        case Method.textRead:
+            return try await textio.read(try msg.decodeParams(ReadParams.self))
         case Method.appList:
             return await AppList.list(installed: try msg.decodeParams(AppListParams.self).installed ?? false)
         case Method.appIcons:

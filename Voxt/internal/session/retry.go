@@ -189,13 +189,13 @@ func (r *run) retry(e store.Entry, pcm []byte, stage func(State)) (store.Entry, 
 		}
 	} else {
 		var ans compose.Answer
-		ans, _, _, llmErr = r.ask(r.writeInput(text, e.SourceText)) // nothing is pasted: a cut-off answer only updates the entry
+		ans, _, _, llmErr = r.askOrFallback(r.writeInput(text, e.SourceText)) // nothing is pasted: a cut-off answer only updates the entry
 		e.Result = strings.TrimSpace(ans.Content)
 		if llmErr == nil && e.Result == "" {
 			llmErr = errors.New("the language model answered nothing")
 		}
 	}
 	e.LLMMS = r.now().Sub(llmStart).Milliseconds()
-	e.LLMProvider, e.LLMModel = svc.LLMInfo.ID, svc.LLMInfo.Model
+	e.LLMProvider, e.LLMModel = r.svc.LLMInfo.ID, r.svc.LLMInfo.Model // the fallback's, when it answered
 	return e, llmErr
 }

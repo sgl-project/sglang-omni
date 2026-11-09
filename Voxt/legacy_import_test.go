@@ -318,3 +318,42 @@ func TestLegacyModelRoots(t *testing.T) {
 		t.Errorf("with a chosen folder: roots %v, want it second", got)
 	}
 }
+
+// The upgrade test's import check (VOXTNEW_SMOKE_LEGACY=1,
+// .github/workflows/voxt-upgrade-test.yaml): --smoke reads the previous
+// Voxt's container without the open panel, imports it into its own data
+// folder and prints what that folder then holds; an empty container fails.
+func TestSmokeLegacy(t *testing.T) {
+	t.Setenv("VOXTNEW_SMOKE_LEGACY", "1")
+	for _, c := range []struct{ fixture, want string }{
+		{"real", "smoke: legacy import: 3 terms, 0 history entries"},
+		{"hist", "smoke: legacy import: 1 terms, 3 history entries"},
+		{"", "is not readable without asking"},
+	} {
+		home := t.TempDir()
+		container := filepath.Join(home, "Library", "Containers", legacyBundleID, "Data")
+		if err := os.MkdirAll(container, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		lib := t.TempDir()
+		if c.fixture != "" {
+			lib = copyFixture(t, c.fixture)
+		}
+		if err := os.Symlink(lib, filepath.Join(container, "Library")); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("VOXTNEW_LEGACY_HOME", home)
+		out, err := os.CreateTemp(t.TempDir(), "stdout")
+		if err != nil {
+			t.Fatal(err)
+		}
+		stdout := os.Stdout
+		os.Stdout = out
+		code := runSmoke(t.TempDir())
+		os.Stdout = stdout
+		printed, _ := os.ReadFile(out.Name())
+		if !strings.Contains(string(printed), c.want) || (code == 0) != (c.fixture != "") {
+			t.Errorf("%q: exit %d, printed:\n%s\nwant a line %q", c.fixture, code, printed, c.want)
+		}
+	}
+}

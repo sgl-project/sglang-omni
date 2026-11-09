@@ -49,6 +49,7 @@ FetchContent_MakeAvailable(nlohmann_json pcre2 civetweb)
 
 add_library(common STATIC
   src/common/audio.cpp
+  src/common/campplus.cpp
   src/common/form.cpp
   src/common/layers.cpp
   src/common/npz.cpp
@@ -62,6 +63,10 @@ target_compile_options(common PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 # Note (Jiaxin Deng): npz keeps the no-fused-multiply-add rounding it was built
 # with as part of whisper_asr, and reference_audio as part of cosyvoice3.
 set_source_files_properties(src/common/npz.cpp src/common/reference_audio.cpp
+  PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
+# Note (XXXXRT666): campplus keeps the rounding it was built with as part of
+# cosyvoice3.
+set_source_files_properties(src/common/campplus.cpp
   PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 
 add_library(qwen3_asr STATIC
@@ -229,6 +234,25 @@ set_target_properties(sensevoice_server sensevoice_transcribe PROPERTIES
   INSTALL_RPATH "@loader_path")
 install(TARGETS sensevoice_server sensevoice_transcribe RUNTIME DESTINATION bin)
 
+# Ming-Omni-TTS 16.8B-A3B: ming_tts_server, with the CUDA server's
+# /v1/audio/speech API.
+add_library(ming_tts STATIC src/ming_tts/ming_tts_model.cpp src/ming_tts/ming_tts_acoustic.cpp
+  src/ming_tts/ming_tts_audio.cpp src/ming_tts/ming_tts_generator.cpp
+  src/ming_tts/ming_tts_reference.cpp)
+target_link_libraries(ming_tts PUBLIC qwen3_asr)
+target_compile_options(ming_tts PRIVATE -Wall -Wextra)
+# Its request parsing, which stub_server shares.
+add_library(ming_tts_request STATIC src/ming_tts/ming_tts_request.cpp)
+target_link_libraries(ming_tts_request PUBLIC speech_service)
+target_compile_options(ming_tts_request PRIVATE -Wall -Wextra)
+add_executable(ming_tts_server src/ming_tts/ming_tts_server.cpp)
+target_link_libraries(ming_tts_server PRIVATE ming_tts ming_tts_request)
+target_compile_options(ming_tts_server PRIVATE -Wall -Wextra)
+set_target_properties(ming_tts_server PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS ming_tts_server RUNTIME DESTINATION bin)
+
 # Note (Minyi Tang): Voxtral 4B TTS: voxtral_tts_server, with the CUDA server's
 # /v1/audio/speech API, and its parity tool; the text decoder reuses Qwen3's.
 add_library(voxtral_tts STATIC src/voxtral_tts/voxtral_tts_tokenizer.cpp
@@ -278,7 +302,7 @@ install(TARGETS qwen3_tts_server qwen3_tts_synthesize RUNTIME DESTINATION bin)
 # server's /v1/audio/speech API, and its parity tool; the Qwen2 decoder reuses
 # Qwen3's, and the WAV and PCM writers are shared in common/audio.
 add_library(cosyvoice3 STATIC src/cosyvoice3/cosyvoice3_vocoder.cpp
-  src/cosyvoice3/cosyvoice3_audio.cpp src/cosyvoice3/cosyvoice3_speaker.cpp
+  src/cosyvoice3/cosyvoice3_audio.cpp
   src/cosyvoice3/cosyvoice3_speech_tokenizer.cpp
   src/cosyvoice3/cosyvoice3_model.cpp)
 target_link_libraries(cosyvoice3 PUBLIC qwen3_asr)
@@ -368,7 +392,8 @@ install(TARGETS fish_s2_pro_server fish_s2_pro_synthesize RUNTIME DESTINATION bi
 # The protocol tests' stand-in server (tests/stub_server.cpp); built only on
 # request and never installed.
 add_executable(stub_server EXCLUDE_FROM_ALL tests/stub_server.cpp)
-target_link_libraries(stub_server PRIVATE speech_service ming3_audio_service)
+target_link_libraries(stub_server PRIVATE speech_service ming3_audio_service
+  ming_tts_request)
 target_compile_options(stub_server PRIVATE -Wall -Wextra)
 set_target_properties(stub_server PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")

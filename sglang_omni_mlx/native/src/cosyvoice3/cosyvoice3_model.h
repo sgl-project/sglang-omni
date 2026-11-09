@@ -13,11 +13,11 @@
 #include <string>
 #include <vector>
 
+#include "common/campplus.h"
 #include "common/layers.h"
 #include "common/text.h"
 #include "common/tokenizer.h"
 #include "cosyvoice3/cosyvoice3_audio.h"
-#include "cosyvoice3/cosyvoice3_speaker.h"
 #include "cosyvoice3/cosyvoice3_speech_tokenizer.h"
 #include "cosyvoice3/cosyvoice3_vocoder.h"
 #include "mlx/mlx.h"
@@ -138,7 +138,7 @@ private:
   std::unique_ptr<omni_common::Tokenizer> tokenizer_;
   Flow flow_;
   Hift hift_;
-  SpeakerEncoder speaker_encoder_;
+  omni_common::CamPlusEncoder speaker_encoder_;
   omni_common::Checkpoint speech_tokenizer_checkpoint_;
   SpeechTokenizer speech_tokenizer_;
 };
