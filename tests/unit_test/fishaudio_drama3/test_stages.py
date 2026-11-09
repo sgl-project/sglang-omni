@@ -218,12 +218,12 @@ class EncodeRecordingCodec:
     def fold_weight_norm(self) -> None:
         pass
 
-    def encode_padded(self, audios: torch.Tensor) -> torch.Tensor:
-        self.encoded_shapes.append(tuple(audios.shape))
+    def encode_padded(self, audio: torch.Tensor) -> torch.Tensor:
+        self.encoded_shapes.append(tuple(audio.shape))
         return torch.zeros(
-            (1, 10, audios.shape[-1] // self.frame_length),
+            (1, 10, audio.shape[-1] // self.frame_length),
             dtype=torch.long,
-            device=audios.device,
+            device=audio.device,
         )
 
 
@@ -283,21 +283,26 @@ def test_the_reference_codes_are_the_codec_encode_codes() -> None:
 
 
 @pytest.mark.accelerator
-def test_graphed_reference_encodes_return_the_eager_codes() -> None:
+@pytest.mark.parametrize(
+    "autocast_dtype", [torch.bfloat16, None], ids=["bfloat16", "float32"]
+)
+def test_graphed_reference_encodes_return_the_eager_codes(
+    autocast_dtype: torch.dtype | None,
+) -> None:
     """A reference zero-padded into a one-second graph, one that fills the graph, and
     one a sample past it encode to the codes of the eager path."""
     codec = tiny_codec().cuda()
     codec.fold_weight_norm()
     hooks = {
-        graph_max_seconds: Drama3ReferenceEncodeHook(
+        reference_encode_graph_max_seconds: Drama3ReferenceEncodeHook(
             codec=codec,
             checkpoint_id="tiny-codec",
             device="cuda",
-            autocast_dtype=None,
+            autocast_dtype=autocast_dtype,
             max_reference_audio_seconds=60.0,
-            graph_max_seconds=graph_max_seconds,
+            reference_encode_graph_max_seconds=reference_encode_graph_max_seconds,
         )
-        for graph_max_seconds in (0.0, 1.0)
+        for reference_encode_graph_max_seconds in (0.0, 1.0)
     }
     (graph_frame_count,) = hooks[1.0].graph_frame_counts
     torch.manual_seed(2)
@@ -321,11 +326,8 @@ def test_graphed_reference_encodes_return_the_eager_codes() -> None:
 def test_the_prepared_codec_encodes_bitwise_like_the_module(
     autocast_dtype: torch.dtype | None,
 ) -> None:
-    if not torch.cuda.is_available():
-        pytest.skip("needs a CUDA device")
-    else:
-        pass
-    # tiny_codec seeds its weights, so the two copies hold the same values.
+    # note (Wenyao Gao): tiny_codec seeds its weights, so the two copies hold the same
+    # values.
     module_codec = tiny_codec().cuda()
     module_codec.fold_weight_norm()
     hook_codec = tiny_codec().cuda()
@@ -340,7 +342,7 @@ def test_the_prepared_codec_encodes_bitwise_like_the_module(
         device="cuda",
         autocast_dtype=autocast_dtype,
         max_reference_audio_seconds=60.0,
-        graph_max_seconds=0.0,
+        reference_encode_graph_max_seconds=0.0,
     )
 
     with (
@@ -352,8 +354,8 @@ def test_the_prepared_codec_encodes_bitwise_like_the_module(
             cache_enabled=False,
         ),
     ):
-        # The served graphs replay the scripted snake's specialized kernels, which
-        # TorchScript installs after a shape's first runs.
+        # note (Wenyao Gao): the served graphs replay the scripted snake's specialized
+        # kernels, which TorchScript installs after a shape's first runs.
         for _ in range(GRAPH_WARMUP_RUNS):
             expected_latent = module_codec.encoder(audio)
         expected_codes = reference_codes_of(module_codec.quantizer, expected_latent)
