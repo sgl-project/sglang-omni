@@ -108,6 +108,7 @@ func (a *app) obTryStep(c *ui.Context) {
 	if a.ob.hint != "" {
 		warnLine(c, a.ob.hint)
 	}
+	a.obTryPrereqs(c, kind, "ob-"+uitext.FeaturePrefix(feature))
 	id := a.ob.tries[step]
 	a.tryCard(c, tryOpts{
 		prefix: "ob-" + uitext.FeaturePrefix(feature), feature: feature, mine: id != "" && a.sess.ID == id,

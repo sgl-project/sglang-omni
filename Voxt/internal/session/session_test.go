@@ -120,6 +120,32 @@ func statesString(ss []State) string {
 	return strings.Join(b, " ")
 }
 
+// TestPreviewPartialStaysStreaming: the offline Final does not replace
+// the streaming partial the overlay preview froze on (FB6).
+func TestPreviewPartialStaysStreaming(t *testing.T) {
+	h := newHarness(t, &fakeStreamer{final: "hello aura link"}, &fakeLLM{text: "Hello."}, func(c *Config, s *settings.Settings) {
+		s.Features.Transcribe.Enhance = true
+	})
+	id := h.start()
+	h.speak(id, 5)
+	h.rec.waitFor(t, "composing", func(s Snapshot) bool { return s.State == Composing && s.Raw == "hello aura link" })
+	for _, s := range h.rec.all() {
+		if s.State != Recognizing && s.State != Composing {
+			continue
+		}
+		if s.Partial == "hello aura link" {
+			t.Fatalf("%s: preview partial must not show the Final %q", s.State, s.Partial)
+		}
+		if s.Partial != "" && s.Partial != "partial" {
+			t.Fatalf("%s: partial %q", s.State, s.Partial)
+		}
+	}
+	end := h.rec.wait(t)
+	if end.Result != "Hello." || end.Raw != "hello aura link" {
+		t.Fatalf("end %+v", end)
+	}
+}
+
 // TestPipeline runs whole sessions: both kinds of speech model, the
 // language model on, off, failing and timing out, and a target that takes
 // no text. Both kinds of speech model get the speech context as their
@@ -218,7 +244,7 @@ func TestPipeline(t *testing.T) {
 					strings.Contains(sys, "hello") || user != "<input>\nhello VoxtNew\n</input>" || reqs[0].Skill != llm.SkillTranscribeEnhance {
 					t.Errorf("request %+v", reqs[0])
 				}
-				if end.Profile != "transcribe:cleanup+custom+glossary" {
+				if end.Profile != "custom:glossary" {
 					t.Errorf("profile %q", end.Profile)
 				}
 			}

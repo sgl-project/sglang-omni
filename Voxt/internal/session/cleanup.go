@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 )
@@ -22,7 +23,6 @@ func (r *run) spoken(raw string) string {
 	text := dict.Replace(raw, r.terms)
 	if text != raw {
 		r.logf("info", "the dictionary's aliases replaced: %s", r.logText(text))
-		r.m.update(r, func(s *Snapshot) { s.Partial = text })
 	}
 	return text
 }
@@ -56,7 +56,11 @@ func (r *run) transcribe(text string) {
 			r.logf("info", "composed %s in %v", r.logText(result), llmTime.Round(time.Millisecond))
 		}
 	}
-	r.finish(Done, problem, result, finishOpts{})
+	var o finishOpts
+	if r.settings.Features.ShowCard {
+		o.card = deliver.ReasonCard
+	}
+	r.finish(Done, problem, result, o)
 }
 
 // cleanUp runs the language model over text, a request per part, each

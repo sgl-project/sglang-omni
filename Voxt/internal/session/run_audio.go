@@ -9,6 +9,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dsp"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/vad"
 )
 
@@ -72,7 +73,11 @@ func (r *run) onAudio(ev AudioEvent) {
 			}
 		})
 	case ev.Restarted != nil:
-		r.logf("warning", "the input restarted (%s, attempt %d)", ev.Restarted.Reason, ev.Restarted.Attempt)
+		rs := ev.Restarted
+		r.logf("warning", "the input restarted (%s, attempt %d)", rs.Reason, rs.Attempt)
+		if rs.Reason == proto.CaptureDeviceLost && rs.DeviceName != "" {
+			r.m.update(r, func(s *Snapshot) { s.Device, s.Switched = rs.DeviceName, s.Switched+1 })
+		}
 	}
 }
 
@@ -172,6 +177,7 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 				case asr.EventPartial:
 					text := ev.Text
 					r.m.update(r, func(s *Snapshot) { s.Partial = text })
+					r.hearPartial(text)
 				case asr.EventFinal:
 					res := ev.Result
 					res.Text = ev.Text

@@ -253,6 +253,13 @@ type Features struct {
 	// cursor is. Only a tap; empty keys: off.
 	Note Hotkey `json:"note"`
 	Meeting Meeting `json:"meeting,omitzero"`
+	// EndWord ends a recording when it is the last thing said (Voxt 1.x's
+	// voiceEndCommandText), and is left out of the text; "" is off. Only
+	// a speech model that streams hears it (internal/session).
+	EndWord string `json:"endWord,omitempty"`
+	// ShowCard shows every feature's result in the answer card instead of
+	// inserting it (or replacing the selection): one switch for all.
+	ShowCard bool `json:"showCard,omitempty"`
 }
 
 // Feature is what every feature has: its shortcuts, the models it uses
@@ -285,9 +292,6 @@ type Translate struct {
 	// "zh-Hant"); "" = English, or Chinese when the main language is
 	// English (session.TranslateTarget).
 	Target string `json:"target,omitempty"`
-	// ShowCard shows the result in a card instead of inserting it (speech
-	// and selections alike).
-	ShowCard bool `json:"showCard,omitempty"`
 	// Fallback is the language model asked once more when LLM fails or
 	// does not open; "" = none.
 	Fallback string `json:"fallback,omitempty"`
@@ -430,6 +434,7 @@ func Migrate(data []byte) (Settings, error) {
 		migrateShortcuts(&s.Features)
 	}
 	migrateNoteKeys(data, &s.Features)
+	migrateShowCard(data, &s.Features)
 	migrateSoundPreset(&s.Audio)
 	s.Version = Version
 	return normalize(s), nil

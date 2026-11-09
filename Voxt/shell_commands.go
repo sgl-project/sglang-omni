@@ -336,7 +336,7 @@ func (a *app) buildMenu() {
 			&mygo.MenuItem{Role: mygo.RoleHideOthers, Label: i18n.T("Hide Others")},
 			&mygo.MenuItem{Role: mygo.RoleUnhide, Label: i18n.T("Show All")},
 			mygo.Separator(),
-			&mygo.MenuItem{Role: mygo.RoleQuit, Label: i18n.T("Quit Voxt")},
+			&mygo.MenuItem{Role: mygo.RoleQuit, Label: i18n.T("Quit Voxt"), Accelerator: "CmdOrCtrl+Q"},
 		)},
 		{Label: i18n.T("Edit"), Submenu: []*mygo.MenuItem{
 			{Role: mygo.RoleUndo, Label: i18n.T("Undo")},
@@ -358,6 +358,8 @@ func (a *app) buildMenu() {
 			&mygo.MenuItem{Label: i18n.T("Settings"), Click: act(func() { a.navigate("/settings") })},
 		)},
 		{Label: i18n.T("Window"), Submenu: []*mygo.MenuItem{
+			{Label: i18n.T("Close Window"), Accelerator: "CmdOrCtrl+W", Click: act(a.closeWindow)}, // as the red ×: tray.go
+			mygo.Separator(),
 			{Role: mygo.RoleMinimize, Label: i18n.T("Minimize")},
 			{Role: mygo.RoleZoom, Label: i18n.T("Zoom")},
 			mygo.Separator(),

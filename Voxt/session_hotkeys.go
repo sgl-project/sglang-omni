@@ -133,6 +133,9 @@ func (a *app) hotkeyPlan() hotkey.Plan {
 // fallback in step with the event tap.
 func (a *app) syncHotkeys() {
 	plan := a.hotkeyPlan()
+	if a.keysListening {
+		plan = hotkey.Plan{} // the keys go to the field that records them
+	}
 	a.syncCarbon(plan)
 	if !a.helperReady() {
 		a.hotkeysSent = ""

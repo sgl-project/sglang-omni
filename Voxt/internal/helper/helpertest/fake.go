@@ -50,6 +50,7 @@ package helpertest
 //	                 PCM16 at the requested rate, then silence
 //	system=PATH      capture.system plays this recording, as pcm= (without it a tone)
 //	no-system        an older helper: no capture.system in hello, method_not_found
+//	lost-all         when the "lost" input goes, every other input goes too
 //	events=PATH      once the tap is installed, play a script: JSON lines
 //	                 {"afterMs":N,"method":"hotkey.event","params":{…}}, any notification;
 //	                 an app.activated line also brings its app to the front (the user moved on)
@@ -89,7 +90,10 @@ package helpertest
 //
 // A capture.start whose first device is "crash" exits 3 after its first
 // frame; one whose first device is "gone" fails with device_unavailable;
-// "lost" ends the recording with deviceLost after its third frame.
+// "lost" (LostInput) goes away after its third frame: the recording moves to
+// the next listed device the fake knows, else the default input
+// (capture.restarted, deviceLost), and goes on; with lost-all every input
+// goes with it and the recording ends with deviceLost.
 
 import (
 	"bufio"
@@ -146,6 +150,10 @@ func Devices() []proto.CaptureDevice {
 		{ID: "AirPodsPro:input", Name: "AirPods Pro", Channels: 1, SampleRate: 24000, Transport: "bluetooth"},
 	}
 }
+
+// LostInput is the "lost" device: a USB microphone that is unplugged
+// during the recording.
+var LostInput = proto.CaptureDevice{ID: "lost", Name: "USB Microphone", Channels: 1, SampleRate: 48000, Transport: "usb"}
 
 // Apps are the apps the fake knows, by bundle id (front=).
 var Apps = map[string]proto.App{
@@ -417,6 +425,10 @@ func (f *fake) serve(m proto.Message) {
 		f.hotkeys(m)
 	case proto.MethodHotkeyStatus:
 		f.result(m.ID, f.hotkeyStatus())
+	case proto.MethodHotkeyRecord:
+		f.hotkeyRecord(m)
+	case proto.MethodHotkeyCancelRecord:
+		f.result(m.ID, proto.Empty{})
 	case proto.MethodAppFrontmost:
 		f.result(m.ID, f.front())
 	case proto.MethodTextFocus, proto.MethodTextSelection, proto.MethodTextPaste, proto.MethodTextRead:

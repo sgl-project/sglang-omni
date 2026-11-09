@@ -116,7 +116,7 @@ func (a *app) helperChanged(st helper.Status) {
 		a.syncTrees()        // appenhance.go
 		a.iconsHelperReady() // appicons.go: the icons that failed, again
 		a.loadLast()
-		a.audioShown() // settings_audio.go: the microphones, if their section shows
+		a.loadDevices() // settings_audio.go: the microphones, for Settings → Audio and the menu bar
 		// The app in front until the first app.activated: the target of a
 		// session started from the menu bar.
 		helperCall(a, proto.MethodAppFrontmost, nil, 5*time.Second, func(front proto.App, err error) {

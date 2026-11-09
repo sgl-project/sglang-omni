@@ -26,8 +26,10 @@ const (
 	MethodCaptureStop    = "capture.stop"    // request: ends a capture.start or capture.system, which answers first
 	MethodCaptureSystem  = "capture.system"  // request, job: records the sound the Mac plays (other apps') until capture.stop
 
-	MethodHotkeyConfigure = "hotkey.configure" // request: the bindings the event tap watches (replaces all)
-	MethodHotkeyStatus    = "hotkey.status"    // request: the tap's state and counters
+	MethodHotkeyConfigure    = "hotkey.configure"    // request: the bindings the event tap watches (replaces all)
+	MethodHotkeyStatus       = "hotkey.status"       // request: the tap's state and counters
+	MethodHotkeyRecord       = "hotkey.record"       // request: one chord through a short-lived event tap
+	MethodHotkeyCancelRecord = "hotkey.cancelRecord" // request: cancel hotkey.record
 
 	MethodAppFrontmost = "app.frontmost" // request: the app in front
 
@@ -133,6 +135,10 @@ func ParamsFor(method string) any {
 		return new(SystemParams)
 	case MethodHotkeyConfigure:
 		return new(HotkeyConfigureParams)
+	case MethodHotkeyRecord:
+		return new(HotkeyRecordParams)
+	case MethodHotkeyCancelRecord:
+		return new(Empty)
 	case MethodTextSelection:
 		return new(SelectionParams)
 	case MethodTextPaste:
@@ -206,6 +212,10 @@ func ResultFor(method string) any {
 		return new(CaptureStopResult)
 	case MethodHotkeyConfigure, MethodHotkeyStatus:
 		return new(HotkeyStatus)
+	case MethodHotkeyRecord:
+		return new(HotkeyRecordResult)
+	case MethodHotkeyCancelRecord:
+		return new(Empty)
 	case MethodAppFrontmost:
 		return new(App)
 	case MethodTextFocus:
@@ -243,7 +253,7 @@ var (
 		MethodHello, MethodShutdown, MethodJobCancel,
 		MethodPermissionsStatus, MethodPermissionsRequest,
 		MethodCaptureDevices, MethodCaptureStart, MethodCaptureStop, MethodCaptureSystem,
-		MethodHotkeyConfigure, MethodHotkeyStatus,
+		MethodHotkeyConfigure, MethodHotkeyStatus, MethodHotkeyRecord, MethodHotkeyCancelRecord,
 		MethodAppFrontmost, MethodAppList, MethodAppConfigure, MethodAppIcons,
 		MethodTextFocus, MethodTextSelection, MethodTextPaste, MethodTextRead,
 		MethodBrowserURL,

@@ -186,12 +186,15 @@ public struct RestartedParams: Codable, Sendable {
     public var reason: String
     public var attempt: Int
     public var device: String
+    /// The device's name; nil for capture.system, which never names the output.
+    public var deviceName: String?
 
-    public init(job: String, reason: String, attempt: Int, device: String) {
+    public init(job: String, reason: String, attempt: Int, device: String, deviceName: String? = nil) {
         self.job = job
         self.reason = reason
         self.attempt = attempt
         self.device = device
+        self.deviceName = deviceName
     }
 }
 
@@ -287,6 +290,16 @@ public struct HotkeyStatus: Codable, Sendable {
         self.maxCallbackMicros = maxCallbackMicros
         self.error = error
     }
+}
+
+public struct HotkeyRecordParams: Codable, Sendable {
+    public var timeoutSeconds: Double?
+    public init(timeoutSeconds: Double? = nil) { self.timeoutSeconds = timeoutSeconds }
+}
+
+public struct HotkeyRecordResult: Codable, Sendable {
+    public var keys: String
+    public init(keys: String) { self.keys = keys }
 }
 
 public struct HotkeyEventParams: Codable, Sendable {
@@ -715,6 +728,8 @@ public enum WireTypes {
         case Method.captureStop: CaptureStopParams.self
         case Method.captureSystem: SystemParams.self
         case Method.hotkeyConfigure: HotkeyConfigureParams.self
+        case Method.hotkeyRecord: HotkeyRecordParams.self
+        case Method.hotkeyCancelRecord: Empty.self
         case Method.textSelection: SelectionParams.self
         case Method.textPaste: PasteParams.self
         case Method.textRead: ReadParams.self
@@ -755,6 +770,8 @@ public enum WireTypes {
         case Method.captureStart, Method.captureSystem: CaptureResult.self
         case Method.captureStop: CaptureStopResult.self
         case Method.hotkeyConfigure, Method.hotkeyStatus: HotkeyStatus.self
+        case Method.hotkeyRecord: HotkeyRecordResult.self
+        case Method.hotkeyCancelRecord: Empty.self
         case Method.appFrontmost: App.self
         case Method.textFocus: FocusResult.self
         case Method.textSelection: SelectionResult.self
