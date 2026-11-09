@@ -195,7 +195,7 @@ func TestOnboardingTryPasses(t *testing.T) {
 	// Another feature's shortcut does not start anything here.
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: "translate/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: selfFront()})
 	frames(tt)
-	if a.sess.Kind == store.KindTranslate || !hasPrefix(tt, "That was the Translate shortcut: this step tries Transcribe (Right ⌥)") {
+	if a.sess.Kind == store.KindTranslate || !hasPrefix(tt, "That was the Translate shortcut. This step tests Transcribe (Right ⌥)") {
 		t.Errorf("translate's shortcut: %+v %q", a.sess, tt.Texts())
 	}
 
@@ -361,7 +361,7 @@ func TestOnboardingComesBack(t *testing.T) {
 	click(t, tt, "Get started")
 	click(t, tt, "Continue")
 	click(t, tt, "Set up a language model")
-	if a.ob.open || a.shownPath() != remotePath || !has(tt, "The setup guide waits at its Models step.") {
+	if a.ob.open || a.shownPath() != remotePath || !has(tt, "The setup guide is paused at the Models step.") {
 		t.Fatalf("left: open %v, %s, %q", a.ob.open, a.shownPath(), tt.Texts())
 	}
 	click(t, tt, "Back to the setup guide")

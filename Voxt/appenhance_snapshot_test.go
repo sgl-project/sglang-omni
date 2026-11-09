@@ -71,7 +71,7 @@ func snapshotsAppEnhance(t *testing.T, out string) {
 			a.aePage.sel = "g-chat"
 			a.navigate("/app-enhancement")
 			save("ae-page")
-			scrollTo("Scene prompt")
+			scrollTo("Group prompt")
 			save("ae-scene")
 			scrollTo("Apps")
 			save("ae-apps")

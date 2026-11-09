@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -58,7 +60,7 @@ func TestTranscribePageRenders(t *testing.T) {
 	if !has(tt, "Open Permissions") {
 		t.Error("no Accessibility notice")
 	}
-	if _, ok := tt.Find("Works only while Voxt may use Accessibility."); !ok {
+	if _, ok := tt.Find("Works only with Accessibility access."); !ok {
 		t.Error("Right ⌥ is not marked as needing Accessibility")
 	}
 	click(t, tt, "Open Permissions")
@@ -435,7 +437,7 @@ func trySnapshot(a *app, st session.State) session.Snapshot {
 func TestTranscribeTry(t *testing.T) {
 	a, tt := trTester(t)
 	// Nothing set up: Start says what is missing, on the page.
-	click(t, tt, "Start a try")
+	click(t, tt, "Start a test")
 	if a.sess.State.Live() || !has(tt, "No speech model is installed.") {
 		t.Fatalf("blocked try: %+v %q", a.sess, tt.Texts())
 	}
@@ -612,5 +614,34 @@ func TestRulesExplainTwoStages(t *testing.T) {
 	frames(tt)
 	if !strings.Contains(strings.Join(tt.Texts(), "\n"), "Rules act after recognition, on the text the speech model produced.") {
 		t.Errorf("no two-stage caption in %q", tt.Texts())
+	}
+}
+
+// TestFeaturePageColumns: in a wide window a feature page reads in two
+// columns, the answer card's section beside the shortcuts; in the default
+// window it stays one column (#3644 FB16: a long column in a mostly blank
+// window).
+func TestFeaturePageColumns(t *testing.T) {
+	for _, c := range []struct {
+		w, h int
+		two  bool
+	}{{1600, 1000, true}, {windowWidth, 2400, false}} {
+		a, _, tt := newTestApp(t)
+		tt.SetSize(c.w, c.h)
+		a.navigate("/transcribe")
+		frames(tt)
+		keys, ok1 := tt.Find(i18n.T("Shortcuts"))
+		card, ok2 := tt.Find(i18n.T("Answer card"))
+		if !ok1 || !ok2 {
+			t.Fatalf("%d wide: Shortcuts %v, Answer card %v", c.w, ok1, ok2)
+		}
+		if two := card.X > keys.X+300; two != c.two {
+			t.Errorf("%d wide: Shortcuts at x %.0f, Answer card at x %.0f", c.w, keys.X, card.X)
+		}
+		if dir := os.Getenv("VOXTNEW_SHOTS"); dir != "" {
+			var b bytes.Buffer
+			png.Encode(&b, tt.Image())
+			os.WriteFile(filepath.Join(dir, fmt.Sprintf("transcribe-%d.png", c.w)), b.Bytes(), 0o644)
+		}
 	}
 }

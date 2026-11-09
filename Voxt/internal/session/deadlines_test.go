@@ -192,3 +192,29 @@ func TestWriteDeadlines(t *testing.T) {
 		})
 	}
 }
+
+// TestFollowUpDeadlines: a follow-up's request resends the conversation's
+// earlier selections and answers, which the model reads before its first
+// token, so its deadlines count them too (they counted only the new
+// instruction, and a follow-up on a long selection timed out waiting for
+// the first token).
+func TestFollowUpDeadlines(t *testing.T) {
+	long := strings.Repeat("a long selection ", 1250)
+	model := &pacedLLM{scripts: []script{{text: "Shorter."}}}
+	h := newHarness(t, &fakeFile{text: "make it shorter"}, &llm.Client{Backend: model}, nil)
+	id, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Target: slack,
+		Previous: []compose.Turn{{Instruction: "summarise this", Selection: long, Answer: compose.Answer{Content: "A summary."}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.speak(id, 5)
+	if end := h.rec.wait(t); end.State != Done {
+		t.Fatalf("end %s %+v", end.State, end.Problem)
+	}
+	model.mu.Lock()
+	defer model.mu.Unlock()
+	want := h.m.cfg.LLMFirstToken + time.Duration(len(long))*llmPrefillPerChar
+	if len(model.reqs) != 1 || model.reqs[0].FirstTokenTimeout < want {
+		t.Fatalf("first token deadline %v, want at least %v", model.reqs[0].FirstTokenTimeout, want)
+	}
+}

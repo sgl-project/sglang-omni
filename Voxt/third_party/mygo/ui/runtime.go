@@ -284,9 +284,12 @@ type engine struct {
 	// revealIDs are the elements to scroll into view once the frame is
 	// laid out.
 	revealIDs []uint64
-	wakeMu    sync.Mutex
-	wakeAt    time.Time
-	cursor    Cursor
+	// revealParts are parts of elements to scroll into view once the
+	// frame is laid out: a text area's caret.
+	revealParts []revealPart
+	wakeMu      sync.Mutex
+	wakeAt      time.Time
+	cursor      Cursor
 	// ime is the text input state the host has, and base the rune of the
 	// focused editor its text starts at.
 	ime struct {

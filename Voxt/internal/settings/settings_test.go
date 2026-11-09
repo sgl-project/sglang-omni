@@ -527,3 +527,22 @@ func TestMigrateShowCard(t *testing.T) {
 		}
 	}
 }
+
+// TestMigrateOptionsJSON: a setup's Options JSON becomes the request
+// parameters' "options"; the parameters' own "options" wins.
+func TestMigrateOptionsJSON(t *testing.T) {
+	doc := `{"version":4,"providers":{"llm":[
+		{"id":"ollama","generation":{"optionsJSON":"{\"num_ctx\": 8192}","extraBodyJSON":"{\"user\": \"me\"}"}},
+		{"id":"omlx","generation":{"optionsJSON":"{\"num_ctx\": 1}","extraBodyJSON":"{\"options\": {}}"}}]}}`
+	s, err := Migrate([]byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if json.Unmarshal([]byte(s.Providers.LLM[0].Generation.ExtraBodyJSON), &got) != nil || got["user"] != "me" || got["options"].(map[string]any)["num_ctx"] != 8192.0 {
+		t.Errorf("folded %q", s.Providers.LLM[0].Generation.ExtraBodyJSON)
+	}
+	if s.Providers.LLM[1].Generation.ExtraBodyJSON != `{"options": {}}` {
+		t.Errorf("kept %q", s.Providers.LLM[1].Generation.ExtraBodyJSON)
+	}
+}

@@ -189,8 +189,13 @@ const (
 	CardTextWeight = 500
 	CardBtn        = 24
 	CardBtnIcon    = 15
-	CardLangMaxW   = 128 // the language's name in its capsule, at most (Voxt 92: "Simplified Chinese" did not fit)
-	CardWaveW      = 96  // a conversation's waveform
+	// The size button sits in the card's corner, in the padding under
+	// the text (CardPadY), CardSizeBtnInset from the edges.
+	CardSizeBtn      = 16
+	CardSizeBtnIcon  = 12
+	CardSizeBtnInset = 1
+	CardLangMaxW     = 128 // the language's name in its capsule, at most (Voxt 92: "Simplified Chinese" did not fit)
+	CardWaveW        = 96  // a conversation's waveform
 
 	// A conversation's bubbles.
 	BubbleW         = 340

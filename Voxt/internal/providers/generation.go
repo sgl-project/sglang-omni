@@ -25,7 +25,7 @@ type GenCaps struct {
 	Penalties, FrequencyOnly bool
 	// ResponseFormat: plain text or JSON; JSONSchema adds a schema.
 	ResponseFormat, JSONSchema bool
-	ExtraBody, Options         bool // Expert: Extra Body JSON, Ollama's Options JSON
+	ExtraBody                  bool // Advanced: Request parameters
 	// A service's own options: OpenAI's verbosity, Ollama's keep alive,
 	// oMLX's usage in stream events.
 	Verbosity, KeepAlive, IncludeUsage bool
@@ -55,7 +55,7 @@ func Capabilities(id, model string) GenCaps {
 		budget, c.TopK, c.ResponseFormat = true, true, true
 	case "ollama":
 		toggle, effort, c.TopK, c.MinP, c.Seed, c.Penalties, c.Logprobs, c.ResponseFormat, c.JSONSchema = true, true, true, true, true, true, true, true, true
-		c.Options, c.KeepAlive = true, true
+		c.KeepAlive = true
 		c.Efforts = []string{"low", "medium", "high"}
 	case "omlx", "lmstudio":
 		c.TopK, c.MinP, c.Seed, c.Penalties, c.Logprobs, c.ResponseFormat = true, true, true, true, true, true
@@ -108,7 +108,6 @@ func Generation(g settings.Generation) llm.Generation {
 		Thinking: llm.Thinking{Mode: g.Thinking, Effort: g.ThinkingEffort, Budget: g.ThinkingBudget},
 	}
 	out.JSONSchema, _ = jsonObject(g.JSONSchema)
-	out.Options, _ = jsonObject(g.OptionsJSON)
 	out.ExtraBody, _ = jsonObject(g.ExtraBodyJSON)
 	return out
 }
@@ -116,8 +115,7 @@ func Generation(g settings.Generation) llm.Generation {
 // Errors of CheckGeneration: the field that is not a JSON object.
 var (
 	ErrJSONSchema = errors.New("the JSON schema is not a JSON object")
-	ErrOptions    = errors.New("Options JSON is not a JSON object")
-	ErrExtraBody  = errors.New("Extra Body JSON is not a JSON object")
+	ErrExtraBody  = errors.New("the request parameters are not a JSON object")
 )
 
 // CheckGeneration checks g's JSON fields, before a setup is saved.
@@ -125,7 +123,7 @@ func CheckGeneration(g settings.Generation) error {
 	for _, f := range []struct {
 		s   string
 		err error
-	}{{g.JSONSchema, ErrJSONSchema}, {g.OptionsJSON, ErrOptions}, {g.ExtraBodyJSON, ErrExtraBody}} {
+	}{{g.JSONSchema, ErrJSONSchema}, {g.ExtraBodyJSON, ErrExtraBody}} {
 		if _, err := jsonObject(f.s); err != nil {
 			return f.err
 		}
