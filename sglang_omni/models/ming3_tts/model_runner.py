@@ -46,6 +46,7 @@ class Ming3TTSRequestData(SGLangARRequestData):
     latents and feedback_embeddings hold committed steps. latent_history,
     next_feedback and launched_latents follow the newest launched step, which a
     lookahead decode launches from before the previous step commits.
+    last_stream_latent caches the most recently committed row on the CPU.
     """
 
     speaker_embedding: torch.Tensor
@@ -55,6 +56,7 @@ class Ming3TTSRequestData(SGLangARRequestData):
     latent_history: torch.Tensor
     feedback_embeddings: list[torch.Tensor] = field(default_factory=list)
     latents: list[torch.Tensor] = field(default_factory=list)
+    last_stream_latent: torch.Tensor | None = None
     next_feedback: torch.Tensor | None = None
     launched_latents: int = 0
     emitted_latent_steps: int = 0
@@ -73,6 +75,11 @@ def build_stream_output(
         return []
     else:
         pass
+    pending_latents = request.latents[request.emitted_latent_steps :]
+    if pending_latents and request.last_stream_latent is not None:
+        pending_latents[-1] = request.last_stream_latent
+    else:
+        pass
     messages = [
         OutgoingMessage(
             request_id=request_id,
@@ -81,20 +88,22 @@ def build_stream_output(
             data=latent.detach().to(device="cpu", dtype=torch.float32).clone(),
             metadata={"modality": "audio_latents", "stream": True},
         )
-        for latent in request.latents[request.emitted_latent_steps :]
+        for latent in pending_latents
     ]
     request.emitted_latent_steps = len(request.latents)
+    request.last_stream_latent = None
     return messages
 
 
 @dataclass(kw_only=True)
 class LaunchedAcousticStep:
-    """One launched step's rows; host_token_ids is the lookahead's pinned copy."""
+    """One launched step's rows and host copies covered by its completion event."""
 
     latents: torch.Tensor
     feedback_embeddings: torch.Tensor
     is_middle_chunk: list[bool]
     host_token_ids: torch.Tensor | None
+    host_latents: torch.Tensor | None = None
     before_launch: list[LaunchState] = field(default_factory=list)
 
 
@@ -117,12 +126,16 @@ class Ming3TTSModelRunner(ModelRunner):
         acoustic_graph_max_batch_size: int | None,
         *,
         enable_fused_flow_head: bool = False,
+        enable_streaming_output: bool = False,
     ) -> None:
         super().__init__(tp_worker, output_processor)
         self.model.enable_fused_flow_head = enable_fused_flow_head
         self.stop_policy: StopPolicy = stop_policy
         self.step_input_host_bufs: list[torch.Tensor] = []
         self.step_input_host_slot: int = 0
+        self.latent_host_buffers: list[torch.Tensor] = []
+        self.latent_host_slot: int = 0
+        self.enable_streaming_output: bool = enable_streaming_output
         if acoustic_graph_max_batch_size is not None:
             self.model.capture_acoustic_graphs(acoustic_graph_max_batch_size)
         else:
@@ -254,6 +267,26 @@ class Ming3TTSModelRunner(ModelRunner):
         )
         host_token_ids[: len(requests)].copy_(result.next_token_ids, non_blocking=True)
         launched.host_token_ids = host_token_ids
+        if (
+            launched.latents.is_cuda
+            and self.enable_streaming_output
+            and any(
+                request.data.stage_payload.request.params.get("stream", False)
+                for request in requests
+            )
+        ):
+            host_latents = self.pinned_pingpong(
+                "latent_host_buffers",
+                "latent_host_slot",
+                launched.latents.shape,
+                torch.float32,
+                realloc_on_grow=True,
+            )[: len(requests)]
+            # note (guozhihao): the enclosing completion event covers this copy before lookahead work is queued.
+            host_latents.copy_(launched.latents, non_blocking=True)
+            launched.host_latents = host_latents
+        else:
+            pass
         return launched
 
     def post_decode_resolve(
@@ -416,3 +449,11 @@ class Ming3TTSModelRunner(ModelRunner):
             request_state: Ming3TTSRequestData = requests[row].data
             request_state.latents.append(launched.latents[row])
             request_state.feedback_embeddings.append(launched.feedback_embeddings[row])
+            if (
+                launched.host_latents is not None
+                and request_state.stage_payload.request.params.get("stream", False)
+            ):
+                # note (guozhihao): the next launch can reuse pinned storage before the outgoing message is consumed.
+                request_state.last_stream_latent = launched.host_latents[row].clone()
+            else:
+                request_state.last_stream_latent = None

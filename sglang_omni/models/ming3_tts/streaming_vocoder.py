@@ -47,6 +47,8 @@ class Ming3StreamingVocoder(AudioVAEStreamingVocoder):
             compute=compute,
             source_hint="Ming-3.0-TTS",
         )
+        # note (guozhihao): Each Ming3 message carries one latent; budget a chunk's messages per slot without waiting for new arrivals.
+        self.stream_chunk_batch_max = stream_capacity * stream_chunk_steps
 
     def ingest_stream_item(
         self, request_id: str, item: StreamItem
