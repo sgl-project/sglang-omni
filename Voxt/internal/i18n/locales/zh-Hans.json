@@ -826,6 +826,7 @@
   "Self-check": "自检",
   "Sends the recognised text to the language model with the rules below, and types its answer. Off, the text is typed as recognised. If the model fails or is slow, the recognised text is typed.": "把识别出的文字连同下面的规则发给语言模型，输入它整理后的结果。关闭时按识别结果输入。模型出错或太慢时，也会直接输入识别结果。",
   "Sent to the speech model as words to expect. It keeps a limited number: the terms changed last go first. It cannot change punctuation or format: that is for your rules on each feature's page.": "发给语音模型作为预期会出现的词。数量有限：最近改过的词条优先。它改不了标点和格式，那是各功能页“你的规则”的事。",
+  "Service default": "服务默认",
   "Services": "服务",
   "Set a shortcut to record notes.": "去设置一个快捷键，用来记笔记。",
   "Set up": "已设置",

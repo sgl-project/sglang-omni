@@ -168,6 +168,7 @@ func fileSetup(t *testing.T, asrText string, chat *fakeChat) (func(*settings.Set
 
 // TestSessionEndToEnd: fn, speak, fn: the cleaned-up text is pasted into
 // the app that was in front, kept in the history, and ⌃⌘V pastes it again.
+// The clean-up asks with no temperature: the service's default.
 func TestSessionEndToEnd(t *testing.T) {
 	chat := &fakeChat{text: "Hello, VoxtNew."}
 	set, keys, tr := fileSetup(t, "hello aura link", chat)
@@ -222,7 +223,7 @@ func TestSessionEndToEnd(t *testing.T) {
 	sys, _ := msgs[0].(map[string]any)["content"].(string)
 	user, _ := msgs[len(msgs)-1].(map[string]any)["content"].(string) // after the clean-up's example turn
 	if len(msgs) != 4 || !strings.Contains(sys, "Keep it short.") || strings.Contains(sys, "hello aura link") || user != "<input>\nhello aura link\n</input>" ||
-		reqs[0]["temperature"] != 0.1 {
+		reqs[0]["temperature"] != nil {
 		t.Errorf("chat %v", reqs[0])
 	}
 }

@@ -8,20 +8,29 @@ import (
 )
 
 // TestRemoteGenerationSettings: a language model's dialog has Voxt 1.x's
-// generation settings for its service; saved, they are in the setup and
-// in the dialog again; a field that is not a number, or JSON that is not
-// an object, is refused with what is wrong.
+// generation settings for its service, the sampling ones only in the
+// folded Advanced; saved, they are in the setup and in the dialog again; a
+// field that is not a number, or JSON that is not an object, is refused
+// with what is wrong.
 func TestRemoteGenerationSettings(t *testing.T) {
 	useKeys(t, &memKeys{m: map[string]string{}})
 	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 2400) // the whole dialog in view, Advanced open too
 	a.navigate(remotePath)
 	frames(tt)
 	a.openProviderDialog(local.LLM, llm.Custom) // its card is below the fold
 	frames(tt)
-	for _, s := range []string{"Generation settings", "Think", "Max output tokens (optional)", "Temperature", "Top P", "Verbosity", "Advanced", "Expert"} {
+	for _, s := range []string{"Generation settings", "Think", "Max output tokens (optional)", "Verbosity", "Advanced", "Expert"} {
 		if !has(tt, s) {
 			t.Errorf("no %q in the dialog", s)
 		}
+	}
+	if has(tt, "Temperature") || has(tt, "Top P") {
+		t.Errorf("sampling fields outside the folded Advanced: %q", tt.Texts())
+	}
+	click(t, tt, "Advanced")
+	if !has(tt, "Temperature") || !has(tt, "Top P") {
+		t.Errorf("Advanced open: %q", tt.Texts())
 	}
 	d := &a.provDlg
 	d.endpoint, d.customModel = "https://example.com/v1", "m"
@@ -93,7 +102,7 @@ func TestGenerationFieldAloneKeepsItsRoom(t *testing.T) {
 	a.navigate(remotePath)
 	frames(tt)
 	for _, c := range []struct{ service, field, next string }{
-		{"openai", "Max output tokens (optional)", "Temperature"},
+		{"openai", "Max output tokens (optional)", "Verbosity"},
 		{"ollama", "Keep the model loaded for", "Advanced"},
 	} {
 		a.openProviderDialog(local.LLM, c.service)
