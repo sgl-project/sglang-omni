@@ -42,8 +42,8 @@ func (a *app) meetingSettingsSync() {
 
 func (a *app) meetingSettings(c *ui.Context) {
 	t := c.Theme()
-	u := a.meetingUI
 	a.meetingSettingsSync()
+	u := a.meetingUI
 	sectionTitle(c, i18n.T("Meeting settings"))
 	modeLabels := []string{
 		i18n.T("Full meeting (microphone and system audio)"),
@@ -73,7 +73,7 @@ func (a *app) meetingSettings(c *ui.Context) {
 			if ui.Switch(c.Key("mt-hide-sw"), &u.hide).Label(i18n.T("Hide the meeting overlay")).Changed() {
 				on := u.hide
 				a.updateSettings(func(s *settings.Settings) { s.Features.Meeting.HideFromSharing = on })
-				a.syncMeetingOverlayProtection()
+				a.applyMeetingOverlayProtection()
 			}
 		})
 	a.featureShortcuts(c, hotkey.Meeting)

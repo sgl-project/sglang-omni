@@ -62,7 +62,7 @@ func (m *Manager) degradeOrInterrupt(ctx context.Context, src Source) {
 
 	if mode == ModeMeeting && otherUp {
 		m.mu.Lock()
-		m.snap.Problem = &Problem{Key: "meeting.track.degraded." + string(src)}
+		problem := &Problem{Key: "meeting.track.degraded." + string(src)}
 		if src == SourceSystem {
 			m.mode = ModeRecording
 		} else {
@@ -70,9 +70,8 @@ func (m *Manager) degradeOrInterrupt(ctx context.Context, src Source) {
 		}
 		m.snap.Mode = m.mode
 		delete(m.tracks, src)
-		s := m.snap
 		m.mu.Unlock()
-		m.notify(s)
+		m.refreshProblem(problem)
 		return
 	}
 	_ = m.interrupt(ctx, "")

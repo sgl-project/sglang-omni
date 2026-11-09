@@ -37,6 +37,7 @@ func (a *app) openMeetings() {
 	if h, ok := a.local.(local.Holder); ok {
 		modelHold = h
 	}
+	hasSystem := a.host.sup != nil && a.host.sup.Status().Has(proto.MethodCaptureSystem)
 	a.meetMgr = meeting.NewManager(meeting.Config{
 		Mic:       session.HelperAudio{H: a.host.sup},
 		System:    session.HelperAudio{H: a.host.sup, Method: proto.MethodCaptureSystem},
@@ -56,6 +57,7 @@ func (a *app) openMeetings() {
 		MainLanguage: func() string {
 			return uitext.LangLabel(a.prefs.General.MainLanguage)
 		},
+		SystemCaptureOK: func() bool { return hasSystem },
 	})
 	a.meetMgr.Subscribe(func(s meeting.Snapshot) {
 		a.post(func() { a.meetingChanged(s) })
@@ -76,6 +78,9 @@ func (a *app) meetingChanged(s meeting.Snapshot) {
 	a.meetSnap = s
 	a.syncMeetingOverlay()
 	a.syncHotkeys()
+	if a.tray != nil {
+		a.buildTrayMenu()
+	}
 }
 
 func meetingModeFrom(s settings.Meeting) meeting.Mode {
@@ -172,6 +177,34 @@ func (a *app) meetingReprocess(id string) {
 			return
 		}
 		a.post(a.loadMeetings)
+	})
+}
+
+func (a *app) meetingSetMode(mode meeting.Mode) {
+	if a.meetMgr == nil || a.meetSnap.ID == "" {
+		return
+	}
+	id, mode := a.meetSnap.ID, mode
+	a.async(func() {
+		if err := a.meetMgr.SetMode(context.Background(), id, mode); err != nil {
+			a.post(func() {
+				a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: err.Error()})
+			})
+		}
+	})
+}
+
+func (a *app) meetingSetTranslate(target string) {
+	if a.meetMgr == nil || a.meetSnap.ID == "" {
+		return
+	}
+	id := a.meetSnap.ID
+	a.async(func() {
+		if err := a.meetMgr.SetTranslate(id, target); err != nil {
+			a.post(func() {
+				a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: err.Error()})
+			})
+		}
 	})
 }
 
