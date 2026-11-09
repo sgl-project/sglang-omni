@@ -664,9 +664,21 @@ references on CPU instead, clear both the GPU placement and its budget:</p>
 </pre></div>
 </div>
 <p>Voice cloning:</p>
-<p>See the <a class="reference internal" href="../basic_usage/tts.html#fish-speech-voice-cloning"><span class="std std-ref">non-streaming Fish Speech voice cloning request</span></a>.</p>
-<p>Streaming:</p>
-<p>See the <a class="reference internal" href="../basic_usage/tts.html#fish-speech-voice-cloning"><span class="std std-ref">streaming Fish Speech voice cloning request</span></a>.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
+<span class="s1">    "model": "fishaudio/s2-pro",</span>
+<span class="s1">    "voice": "default",</span>
+<span class="s1">    "input": "Get the trust fund to the bank early.",</span>
+<span class="s1">    "references": [{</span>
+<span class="s1">      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",</span>
+<span class="s1">      "text": "We asked over twenty different people, and they all said it was his."</span>
+<span class="s1">    }]</span>
+<span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output<span class="w"> </span>output.wav
+</pre></div>
+</div>
+<p>Streaming: add <code class="docutils literal notranslate"><span class="pre">&quot;stream&quot;:</span> <span class="pre">true</span></code> to a speech request. Shared raw WAV, PCM, and SSE clients are in <a class="reference internal" href="../basic_usage/tts.html#streaming"><span class="std std-ref">TTS Model Usage</span></a>.</p>
 </section>
 <section id="request-parameters">
 <h2>Request Parameters<a class="headerlink" href="#request-parameters" title="Link to this heading">#</a></h2>
