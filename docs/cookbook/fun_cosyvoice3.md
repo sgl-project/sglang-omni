@@ -390,7 +390,7 @@ The vocoder takes a growing share of each request as concurrency rises, so the e
 
 ### Separate Vocoder on H100
 
-The experimental [H100 configuration](../../examples/configs/fun_cosyvoice3_dspark_h100.yaml) puts the vocoder in a separate process on the same GPU. Start NVIDIA MPS and set both CPU thread variables in the launch environment. The configuration assigns 15% of GPU memory to the TTS engine and 75% to the vocoder, with a 32 GiB Flow prefix cache cap. It uses one draft proposal per step. The measurements below cover earlier two-proposal runs on H100 80GB and the current one-proposal configuration on H100 NVL 94GB.
+The experimental [H100 configuration](../../examples/configs/fun_cosyvoice3_dspark_h100.yaml) puts the vocoder in a separate process on the same GPU. Start NVIDIA MPS and set both CPU thread variables in the launch environment. The configuration assigns 15% of GPU memory to the TTS engine and 75% to the vocoder, with a 32 GiB Flow prefix cache cap. It uses one draft proposal per step.
 
 ```bash
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
@@ -407,61 +407,7 @@ echo quit | nvidia-cuda-mps-control
 
 Use a dedicated GPU for this MPS instance. Setting only the stage's environment defaults does not replace an existing `MKL_NUM_THREADS` value. The server log should report `torch_num_threads=1` for the vocoder warmup.
 
-The preset enables `vocoder.factory.should_complete_first_chunk_immediately`: a step containing first audio completes before the next step is launched, while subsequent steps keep launch/read overlap. The regular pipeline leaves this option off. Completing first audio immediately was slower in the colocated process, so the option is limited to this opt-in configuration. The TTS engine also needs four communication credits: the first chunk and its three reference tensors must all be written before a separate vocoder can receive the notification.
-
-On one Modal H100 80GB with 8 CPU cores and 32 GiB host RAM, all 2,020 SeedTTS ZH samples at c16, default sampling and two repeats per server gave:
-
-| Configuration | Mean first chunk | p95 first chunk | Throughput |
-|---|---|---|---|
-| No draft, initial control | 280.25 ms | 356.55 ms | 16.724 req/s |
-| No draft, middle control | 286.25 ms | 361.10 ms | 16.386 req/s |
-| No draft, final control | 280.10 ms | 354.05 ms | 16.814 req/s |
-| DSpark, 7 proposals | 288.80 ms | 375.60 ms | 20.179 req/s |
-| DSpark, 2 proposals, screening | 283.75 ms | 366.50 ms | 18.681 req/s |
-| DSpark, 2 proposals, independent confirmation | 282.05 ms | 361.75 ms | 18.714 req/s |
-
-Every row uses a separate vocoder process, MPS, immediate first audio, FA3, disabled AR radix caching and four ONNX intra-op threads. Each value averages two per-repeat summaries; p95 is not pooled. The middle control, 2-proposal screening, independent confirmation and final control used fresh servers in A–B–B–A order, with two full dataset passes on each server. The independent confirmation followed selection of the shorter block. Against the final no-draft control, confirmation changes mean first chunk by +0.70%, p95 first chunk by +2.17% and throughput by +11.30%. Both first-chunk metrics remain within 5% against each of the three no-draft controls.
-
-These measurements used 2 proposals per step to trade some of the 7-proposal throughput gain for lower first-chunk tails. The current H100 preset uses 1 proposal, as validated below; the general default remains 7. The first audio payload stays at 40,320 bytes, sampling parameters are unchanged, and the measured runs had no failed requests or playback underruns. A 128-sample subset, repeated twice at c1, c8 and c16, also met the measured throughput, p95 latency and first-output gates. This subset fits the reference cache, so later passes exercise repeated prompts.
-
-Qwen3-ASR-1.7B evaluated all 8,080 generated samples from both confirmation repeats and both final no-draft repeats. The benchmark's Chinese corpus error rate (the character-normalized `wer_corpus` field) averaged 0.662% without draft and 0.662% with 2-proposal DSpark. The no-draft and draft sides skipped 0 and 0 samples, respectively, with 0 and 0 samples above 50% error. This evaluates transcription accuracy.
-
-The two-proposal preset was also measured on one Runpod H100 NVL with a Xeon Platinum 8452Y host and an effective CPU quota of 15.3 cores. Each pass used 144 warmup requests followed by all 2,020 SeedTTS ZH requests at c16. The order was a fresh no-draft server, two passes on one fresh draft server, and a fresh no-draft server. The experiment snapshot included the verifier changes from [#3470](https://github.com/sgl-project/sglang-omni/pull/3470) at `1c5c03f0ffbd739106e6eb67a6a0e1137e1370a1`. The Flow prefix cache was autosized; both sides used the same FA3, MPS, radix-cache and thread settings described above.
-
-| Runpod H100 NVL, c16 | Mean first chunk | p95 first chunk | p95 total latency | Throughput |
-|---|---|---|---|---|
-| No draft | 472.93 ms | 627.91 ms | 1904.34 ms | 11.175 req/s |
-| DSpark, 2 proposals | 495.77 ms | 676.01 ms | 1956.63 ms | 11.075 req/s |
-| Change | +4.83% | +7.66% | +2.75% | -0.89% |
-
-The NVL table pools all 4,040 requests per side for means and quantiles, and divides total requests by total measured time for throughput. All 8,080 requests succeeded, with zero playback underruns and 40,320-byte first-audio payloads. ASR evaluation of these NVL MPS outputs is pending. This two-proposal configuration exceeded P1.6's 5% first-chunk p95 limit.
-
-A separate NVL experiment used a colocated vocoder, 7 proposals, a fixed 32 GiB Flow prefix cache, the same verifier patch, and an experimental 250 ms first-chunk scheduling priority. Four fresh-server passes at c16 gave first-chunk p95 +5.14%, total-latency p95 +4.68%, and throughput +4.59%. Full-corpus sweeps gave first-chunk p95 +6.11% at c4 and +8.88% at c8. For 32 prompts repeated 16 times, two passes per side at c16 gave throughput -7.36% and total-latency p95 +10.99%. This candidate remains in the experiment snapshot. ASR evaluated all 8,080 outputs from its four c16 full-corpus passes: mean per-sample Chinese CER was 0.64674% without draft and 0.62458% with draft, with zero skipped samples or samples above 50% error.
-
-### One-Proposal H100 Validation
-
-The current H100 preset was validated on one Runpod H100 NVL 94GB with an AMD EPYC 9374F host. Both sides used a separate vocoder process on the same GPU, MPS, immediate first audio, FA3, disabled AR radix caching, four ONNX intra-op threads, a 32 GiB Flow prefix cache cap and vocoder batch size 16. The runtime used commit `901b496db73bfa61f4348d026ae736ea7ead073e`, PyTorch 2.14.1+cu130 and driver 595.91.07. The target model revision was `29e01c4e8d000f4bcd70751be16fa94bf3d85a18`, the draft revision was `0b1b28dbb751bac3b74eea5dcc11e0570c91563b`, and the SeedTTS dataset revision was `27f4c1adee83b5b29b7c4b375f6b976324bda308`.
-
-Screening compared 1, 2 and 3 proposals. Independent validation then used four fresh servers in A–B–B–A order, where A disables drafting and B uses 1 proposal. Each server ran all 2,020 SeedTTS ZH samples at c16, c1, c2, c4 and c8, followed by 32 prompts repeated eight times at c1, c2, c4, c8 and c16. Each point had 16 warmup requests and used default sampling. The table pools per-request observations from both servers on each side: 4,040 requests per full-corpus point and 512 per repeated-prompt point. Throughput divides total requests by total measured time, reconstructed from the benchmark's rounded per-pass throughput.
-
-| Workload | Concurrency | First-chunk p95 change | Total-latency p95 change | Throughput change |
-|---|---|---|---|---|
-| Full corpus | 1 | 0.00% | -7.80% | +10.20% |
-| Full corpus | 2 | +0.75% | -7.31% | +8.17% |
-| Full corpus | 4 | +0.29% | -7.06% | +7.92% |
-| Full corpus | 8 | -0.25% | -5.53% | +6.29% |
-| Full corpus | 16 | +4.66% | -2.44% | +2.61% |
-| Repeated prompts | 1 | -0.06% | -8.77% | +10.84% |
-| Repeated prompts | 2 | -1.28% | -10.05% | +10.80% |
-| Repeated prompts | 4 | -2.65% | -6.72% | +9.47% |
-| Repeated prompts | 8 | -3.13% | -8.45% | +7.36% |
-| Repeated prompts | 16 | -1.96% | -3.09% | +3.51% |
-
-All ten pooled points meet the roadmap's performance gates: throughput at least 97% of control, and first-chunk and total-latency p95 at most 105% of control. Full-corpus c16 first-chunk p95 was 464.20 ms without draft and 485.82 ms with draft; mean first-chunk latency increased 3.24%. At c1, throughput increased from 2.246 to 2.475 requests/s, exceeding the 0.71% no-draft repeat spread and 0.24% draft repeat spread. All 45,520 validation requests succeeded with zero playback underruns and 40,320-byte first-audio payloads.
-
-The c16 pooled first-chunk result has 0.34 percentage points of margin to the 5% limit. Individual full-corpus p95 values were 470.14 ms (A1), 485.51 ms (B1), 486.91 ms (B2) and 463.41 ms (A2); B2 versus A2 gives +5.07%. Repeated-prompt c16 also varied between servers: B1 versus A1 gives +6.75%, while the pooled result is -1.96%. Two additional 512-request repeated-prompt passes per side at c16, after the reference cache was warm, gave first-chunk p95 -2.78%, total-latency p95 -0.21% and throughput +3.11%. These supplementary passes are reported separately from the main validation.
-
-Qwen3-ASR-1.7B evaluated all 8,080 full-corpus c16 outputs. Pooled Chinese corpus CER was 0.6625% without draft and 0.6637% with draft: 560 versus 561 errors over 84,532 reference characters per side. There were zero skipped samples and zero samples above 50% error. This completes the Chinese transcription check for this configuration; full model CI and default-on rollout remain separate roadmap work.
+The preset enables `vocoder.factory.should_complete_first_chunk_immediately`: a step containing first audio completes before the next step is launched, while subsequent steps keep launch/read overlap. The regular pipeline leaves this option off.
 
 ### Profiling First Audio
 
