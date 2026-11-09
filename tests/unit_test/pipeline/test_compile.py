@@ -27,6 +27,14 @@ from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, fake_factory_
 from tests.unit_test.pipeline.helpers import stage
 
 
+@pytest.fixture
+def two_visible_devices(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Plan synthetic two-device stages without requiring two physical GPUs."""
+    monkeypatch.setattr(
+        "sglang_omni.pipeline.runtime_config.visible_device_count", lambda: 2
+    )
+
+
 @pytest.mark.parametrize(("process_count", "threads"), [(1, 72), (8, 18)])
 def test_cpu_thread_plan_caps_threads_at_the_bound_cpus(
     monkeypatch: pytest.MonkeyPatch, process_count: int, threads: int
@@ -310,6 +318,7 @@ def test_runner_specs_wire_routes_overrides_aggregation_and_streams(tmp_path) ->
 def test_runner_specs_defer_factory_signature_import_to_child(
     tmp_path,
     monkeypatch,
+    two_visible_devices: None,
 ) -> None:
     import sglang_omni.config.runtime as runtime_config
 
@@ -531,7 +540,9 @@ def test_runner_specs_wire_direct_cuda_ipc_payload_disable_flag() -> None:
     assert specs["thinker"].disable_direct_cuda_ipc_payload is False
 
 
-def test_runner_specs_do_not_wire_same_process_targets_to_tp_stages() -> None:
+def test_runner_specs_do_not_wire_same_process_targets_to_tp_stages(
+    two_visible_devices: None,
+) -> None:
     config = PipelineConfig(
         model_path="model",
         stages=[
@@ -666,3 +677,37 @@ def test_stage_processes_inherit_the_launcher_root_log_level(tmp_path) -> None:
 
     levels = {spec.log_level for group in groups for spec in group.process_specs}
     assert levels == {logging.DEBUG}
+
+
+@pytest.mark.parametrize("interval_seconds", [None, 0.001, 0.005])
+def test_thread_switch_interval_reaches_colocated_and_tp_processes(
+    tmp_path: Path, interval_seconds: float | None, two_visible_devices: None
+) -> None:
+    """Spawned TP ranks and colocated workers receive the same scheduling policy."""
+    config = PipelineConfig(
+        model_path="model",
+        endpoints=EndpointsConfig(base_path=str(tmp_path)),
+        python_thread_switch_interval_seconds=interval_seconds,
+        stages=[
+            stage("preprocess", next="thinker"),
+            stage("thinker", gpu=[0, 1], tp_size=2, terminal=True),
+        ],
+    )
+    prep = prepare_pipeline_runtime(config)
+    try:
+        groups = build_stage_groups(
+            config,
+            ctx=FakeMpContext(),
+            stages_cfg=prep.stages_cfg,
+            endpoints=prep.endpoints,
+            placement_plan=prep.placement_plan,
+            process_plan=prep.process_plan,
+        )
+        process_specs = [spec for group in groups for spec in group.process_specs]
+        assert len(process_specs) == 3
+        assert all(
+            spec.python_thread_switch_interval_seconds == interval_seconds
+            for spec in process_specs
+        )
+    finally:
+        prep.runtime_dir.close()

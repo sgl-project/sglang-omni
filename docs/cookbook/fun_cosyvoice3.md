@@ -390,7 +390,7 @@ The vocoder takes a growing share of each request as concurrency rises, so the e
 
 ### Separate Vocoder on H100
 
-The experimental [H100 configuration](../../examples/configs/fun_cosyvoice3_dspark_h100.yaml) puts the vocoder in a separate process on the same GPU. Start NVIDIA MPS and set both CPU thread variables in the launch environment. The configuration assigns 15% of GPU memory to the TTS engine and 75% to the vocoder, with a 32 GiB Flow prefix cache cap. It uses one draft proposal per step.
+The experimental [H100 configuration](../../examples/configs/fun_cosyvoice3_dspark_h100.yaml) puts the vocoder in a separate process on the same GPU. Start NVIDIA MPS and set both CPU thread variables in the launch environment. The configuration assigns 15% of GPU memory to the TTS engine and 75% to the vocoder, with a 32 GiB Flow prefix cache cap. It uses seven draft proposals per step and a vocoder batch size of eight.
 
 ```bash
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
@@ -407,7 +407,9 @@ echo quit | nvidia-cuda-mps-control
 
 Use a dedicated GPU for this MPS instance. Setting only the stage's environment defaults does not replace an existing `MKL_NUM_THREADS` value. The server log should report `torch_num_threads=1` for the vocoder warmup.
 
-The preset enables `vocoder.factory.should_complete_first_chunk_immediately`: a step containing first audio completes before the next step is launched, while subsequent steps keep launch/read overlap. The regular pipeline leaves this option off.
+The preset enables `vocoder.factory.should_complete_first_chunk_immediately`: a step containing first audio completes before the next step is launched, while batches containing only subsequent chunks keep launch/read overlap. The regular pipeline leaves this option off.
+
+Set the top-level `python_thread_switch_interval_seconds` in the YAML to tune Python thread scheduling in the API and stage worker processes, for example `0.001` for 1 ms. Leaving it unset preserves the interpreter setting. Each process logs the effective interval at startup. Compare draft and no-draft runs with the same interval.
 
 ### Profiling First Audio
 
@@ -424,7 +426,7 @@ curl -X POST http://localhost:8000/stop_request_profile \
 python -m sglang_omni.profiler /tmp/cosyvoice-events --format table
 ```
 
-The events record host boundaries without adding CUDA synchronization. Submission intervals include host work and CUDA waits; the interval from HiFT submission to audio readiness includes deferred completion and may overlap the next hop. Use a GPU timeline to separate device execution from host scheduling. Check the report's event-storage completeness before interpreting the intervals; increase `event_buffer_capacity` and recollect when events were dropped.
+Launch events include `batch_size` and `first_audio_count`; group events by their shared timestamp to count steps containing first audio and mixed batches. The events record host boundaries without adding CUDA synchronization. Submission intervals include host work and CUDA waits; the interval from HiFT submission to audio readiness includes deferred completion and may overlap the next hop. Use a GPU timeline to separate device execution from host scheduling. Check the report's event-storage completeness before interpreting the intervals; increase `event_buffer_capacity` and recollect when events were dropped.
 
 ### Zero-shot Voice Cloning
 

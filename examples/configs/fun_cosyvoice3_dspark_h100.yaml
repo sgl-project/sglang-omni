@@ -12,13 +12,13 @@ stages:
     engine:
       attention_backend: fa3
       disable_radix_cache: true
+      speculative_algorithm: DSPARK
       speculative_draft_model_path: yuekai/cosyvoice3_llm_dspark
       speculative_draft_model_revision: 0b1b28dbb751bac3b74eea5dcc11e0570c91563b
-      # note (yaourt): one proposal met the pooled c1-c16 latency gates on H100 NVL.
-      speculative_dspark_block_size: 1
   vocoder:
     process: vocoder
     factory:
+      max_batch_size: 8
       should_complete_first_chunk_immediately: true
       flow_prefix_cache_gb: 32
     gpu_memory_fraction: 0.75

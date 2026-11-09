@@ -856,6 +856,17 @@ def materialized_draft(monkeypatch: pytest.MonkeyPatch) -> str:
             {"speculative_draft_model_path": "d", "speculative_dspark_block_size": 8},
             "must be between",
         ),
+        (
+            {
+                "speculative_draft_model_path": "d",
+                "speculative_dspark_block_size": True,
+            },
+            "must be between",
+        ),
+        (
+            {"speculative_draft_model_path": "d", "speculative_dspark_block_size": "3"},
+            "must be between",
+        ),
     ],
 )
 def test_engine_builder_refuses_what_the_dspark_draft_cannot_serve(
@@ -865,7 +876,7 @@ def test_engine_builder_refuses_what_the_dspark_draft_cannot_serve(
         dspark_overrides(**server_args_overrides)
 
 
-@pytest.mark.parametrize("draft_tokens_per_step", [None, 3])
+@pytest.mark.parametrize("draft_tokens_per_step", [None, 1, 3, 7])
 def test_dspark_draft_reserves_its_verify_windows_in_the_kv_pool_cap(
     materialized_draft: str,
     draft_tokens_per_step: int | None,

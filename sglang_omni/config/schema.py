@@ -816,6 +816,10 @@ class PipelineConfig(BaseModel):
         default=DEFAULT_IDLE_TIMEOUT_S, gt=0, allow_inf_nan=False
     )
     "Seconds without input or output before a shared realtime session closes."
+    python_thread_switch_interval_seconds: float | None = Field(
+        default=None, gt=0, allow_inf_nan=False, strict=True
+    )
+    "Python thread switch interval for the API and stage worker processes; None preserves the interpreter setting."
     services: list[ServiceConfig] = Field(default_factory=list)
     "The services started in this order before the pipeline, each waited for until its /v1/models answers."
 
