@@ -14,8 +14,8 @@ from dataclasses import replace
 
 from sglang_omni.admission import (
     ContextExhaustedError,
-    KVCapacityExhaustedError,
     QueueFullError,
+    SessionCapacityExhaustedError,
 )
 from sglang_omni.profiler.duplex_events import (
     SessionUnitReadyObservation,
@@ -705,8 +705,8 @@ class SessionRuntime:
         except Exception as exc:
             if ContextExhaustedError.matches(exc):
                 code = ContextExhaustedError.CODE
-            elif KVCapacityExhaustedError.matches(exc):
-                code = KVCapacityExhaustedError.CODE
+            elif SessionCapacityExhaustedError.matches(exc):
+                code = SessionCapacityExhaustedError.CODE
             else:
                 code = failure_code(exc)
             logger.error(

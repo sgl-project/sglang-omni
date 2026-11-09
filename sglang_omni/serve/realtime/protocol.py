@@ -15,7 +15,7 @@ from starlette.status import (
 )
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from sglang_omni.admission import ContextExhaustedError, KVCapacityExhaustedError
+from sglang_omni.admission import ContextExhaustedError, SessionCapacityExhaustedError
 from sglang_omni.serve.realtime.constants import (
     CLOSE_REASON_CLIENT_CLOSED,
     CLOSE_REASON_CONTEXT_LIMIT,
@@ -55,7 +55,7 @@ POLICY_CLOSE_REASONS = frozenset(
         CLOSE_REASON_CONTEXT_LIMIT,
         CLOSE_REASON_OUTPUT_BUDGET_EXHAUSTED,
         ContextExhaustedError.CODE,
-        KVCapacityExhaustedError.CODE,
+        SessionCapacityExhaustedError.CODE,
     }
 )
 

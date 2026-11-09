@@ -56,10 +56,13 @@ class ContextExhaustedError(ValueError):
         return isinstance(exc, cls) or str(exc).startswith(f"{cls.CODE}:")
 
 
-class KVCapacityExhaustedError(ValueError):
-    """A session unit the shared KV pool has no room for: the server is overloaded, the session is not at fault."""
+class SessionCapacityExhaustedError(ValueError):
+    """A session unit the server has no room for: the server is overloaded, the session is not at fault.
 
-    CODE = "kv_capacity_exhausted"
+    Raised for both session capacity refusals, KV tokens and request-to-token slots; the message names which.
+    """
+
+    CODE = "session_capacity_exhausted"
 
     @classmethod
     def matches(cls, exc: BaseException) -> bool:
