@@ -8,6 +8,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
+- **Faster transcription** for each speech model, on its card in Speech models: download a small draft model (726 MB for Qwen3-ASR 1.7B, 262 MB for 0.6B) and the model transcribes faster, by speculative decoding (the draft proposes several words at a time and the speech model checks them). Remove the add-on and the model works as before.
 - **The preview pill keeps only live speech recognition text** while you record and while recognition finishes. The offline Final and the language model no longer replay in the pill; results still insert or show in the answer card.
 - **Editable full system prompts** (Transcribe, Translate, Rewrite → Your rules): edit the whole system prompt in one field (default shows the built-in text). What you save is what Voxt sends. Reset restores the built-in prompt. A preview shows the example user message used for cleanup and formatting when you use the built-in layers. **Settings search**: ⌘F in Settings focuses the search box and filters by title, description, and English keywords.
 - **Setup guide: language model on Translate and Rewrite try steps** (FB22): when no language model is set up, the step explains what is missing and offers **Set up a language model** (the guide stays open). Speech model downloads show progress on the models and try steps; you can continue while a model downloads.
@@ -38,7 +39,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Answer card sizes** (Transcribe, Translate, Rewrite → Answer card → Card size): Small (as before), Medium or Large, each feature its own, so a long Rewrite answer can have a large card while translations keep a small one. Show the result in a card stays one switch for Transcribe and Translate.
 - **Voxt 1.x's sounds in one click** (Settings → Audio → Play sounds → Use Voxt 1.x's sounds): Pop when recording starts and Tink when it stops, the pair Voxt 1.x played by default. Every other sound is still in the pickers.
 - **Per-service recognition prompts** (Speech models → a remote service's dialog): optional text after the global speech context, with `{{USER_MAIN_LANGUAGE}}`, `{{USER_OTHER_LANGUAGES}}` and `{{DICTIONARY_TERMS}}` filled at recognition time. Services that take no prompt ignore it.
-- **Voxt 1.x's other local speech models** (Speech models): Qwen3-ASR 1.7B (6bit), Whisper Large v3 Turbo, Whisper Large v3, Whisper Small, Parakeet TDT 0.6B v3, SenseVoice Small, Cohere Transcribe 03-2026, Nemotron 3.5 ASR 0.6B and MOSS-Transcribe-Diarize, each on its own native server. Nemotron and MOSS show the text as you speak; the others show it about once a second while you speak, and Voxt recognises the whole recording again when you stop. Only Qwen3-ASR takes your dictionary (the cards say "No dictionary"). The import brings the models Voxt 1.x downloaded without a download (a Whisper model with its tokenizer), and a feature that used one of them in Voxt 1.x uses it again; who imported with Voxt 2.0.x gets those downloads at the next start.
+- **Voxt 1.x's other local speech models** (Speech models): Qwen3-ASR 1.7B (6bit), Whisper Large v3 Turbo, Whisper Large v3, Whisper Small, Parakeet TDT 0.6B v3, SenseVoice Small, Cohere Transcribe 03-2026, Nemotron 3.5 ASR 0.6B and MOSS-Transcribe-Diarize, each on its own native server. Nemotron and MOSS show the text as you speak; the others show it about once a second while you speak, and Voxt recognises the whole recording again when you stop. Only Qwen3-ASR takes your dictionary (the cards say "No dictionary"). Qwen3-ASR and Whisper each have a family card with their models. The import brings the models Voxt 1.x downloaded without a download (a Whisper model with its tokenizer), and a feature that used one of them in Voxt 1.x uses it again; who imported with Voxt 2.0.x gets those downloads at the next start.
 
 ### Changed
 
@@ -79,6 +80,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 新增
 
+- 每个语音识别模型的**转录加速**，在语音模型页它的卡片上：下载一个小的草稿模型（1.7B 模型 726 MB，0.6B 模型 262 MB），这个模型的转录就更快，靠的是推测解码（草稿每步先提出几个词，再由语音识别模型校验）。随时可以删除这个附加组件，模型照常可用。
 - **浮窗预览只显示实时语音识别文字**：录音和识别收尾时保留流式内容；整段 Final 和语言模型整理/翻译不在胶囊里回放，结果照常插入或在答案卡片里出现。
 - **可编辑完整 system prompt**（转录、翻译、转写 → 你的规则）：在一个文本框里编辑整段 system prompt（默认显示内置文字）；保存后按所写原样发送；恢复默认回到内置；内置分层模式下另有示例用户消息预览（清理与格式）。**设置搜索**：在设置里按 ⌘F 聚焦搜索框，按标题、说明和英文关键词过滤。
 - **设置引导：翻译和转写试用步就地配置语言模型**（FB22）：没配语言模型时，这一步会说明缺什么，并提供「设置语言模型」按钮（引导不关闭）。语音模型下载时，模型步和试用步会显示进度；下载中也可以点继续。
@@ -109,7 +111,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **答案卡片的大小**（转录、翻译、转写 → 答案卡片 → 卡片大小）：小（和以前一样）、中、大，每个功能各自记住，比如转写的长回答用大卡片，翻译仍用小卡片。“在卡片中显示结果”仍是转录和翻译共用的一个开关。
 - **一键换回 Voxt 1.x 的提示音**（设置 → 音频 → 播放提示音 →“使用 Voxt 1.x 的提示音”）：开始录音时 Pop、停止时 Tink，是 Voxt 1.x 默认的一对。其他提示音照样在选择器里。
 - **每家远程服务的识别提示词**（语音模型页 → 某远程服务的设置对话框）：可选文字，接在全局「识别上下文」后面；识别时填入 `{{USER_MAIN_LANGUAGE}}`、`{{USER_OTHER_LANGUAGES}}` 和 `{{DICTIONARY_TERMS}}`。不收提示词的语音服务会忽略它。
-- **Voxt 1.x 的其他本地语音识别模型**（语音模型页）：Qwen3-ASR 1.7B (6bit)、Whisper Large v3 Turbo、Whisper Large v3、Whisper Small、Parakeet TDT 0.6B v3、SenseVoice Small、Cohere Transcribe 03-2026、Nemotron 3.5 ASR 0.6B 和 MOSS-Transcribe-Diarize，每个用自己的原生服务运行。Nemotron 和 MOSS 边说边出文字；其他模型在你说话时大约每秒更新一次文字，停止后再识别一遍整段录音。只有 Qwen3-ASR 使用你的词典（卡片上标着“不用词典”）。导入时，Voxt 1.x 下载过的模型直接带过来，不用重新下载（Whisper 连同它的分词器），在 Voxt 1.x 里用着这些模型的功能会继续用它；用 Voxt 2.0.x 导入过的，下次启动时这些下载也会带过来。
+- **Voxt 1.x 的其他本地语音识别模型**（语音模型页）：Qwen3-ASR 1.7B (6bit)、Whisper Large v3 Turbo、Whisper Large v3、Whisper Small、Parakeet TDT 0.6B v3、SenseVoice Small、Cohere Transcribe 03-2026、Nemotron 3.5 ASR 0.6B 和 MOSS-Transcribe-Diarize，每个用自己的原生服务运行。Nemotron 和 MOSS 边说边出文字；其他模型在你说话时大约每秒更新一次文字，停止后再识别一遍整段录音。只有 Qwen3-ASR 使用你的词典（卡片上标着“不用词典”）。Qwen3-ASR 和 Whisper 各用一张卡片列出同系列的模型。导入时，Voxt 1.x 下载过的模型直接带过来，不用重新下载（Whisper 连同它的分词器），在 Voxt 1.x 里用着这些模型的功能会继续用它；用 Voxt 2.0.x 导入过的，下次启动时这些下载也会带过来。
 
 #### 变更
 

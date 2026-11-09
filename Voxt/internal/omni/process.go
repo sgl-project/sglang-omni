@@ -50,10 +50,11 @@ type readyEvent struct {
 	Reason string `json:"reason"`
 }
 
-// spawn starts the server for spec's model in dir; the channel gets its
-// first event (or closes when stdout ends without one).
+// spawn starts the server for spec's model in dir, verifying the
+// speculative draft in draft ("" none); the channel gets its first event
+// (or closes when stdout ends without one).
 // cacheLimit: pass spec's --cache-limit-mb (the binary knows it).
-func spawn(cfg Config, spec Spec, dir string, cacheLimit bool) (*process, <-chan readyEvent, error) {
+func spawn(cfg Config, spec Spec, dir, draft string, cacheLimit bool) (*process, <-chan readyEvent, error) {
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 		return nil, nil, fmt.Errorf("no model directory %s", dir)
 	}
@@ -71,7 +72,11 @@ func spawn(cfg Config, spec Spec, dir string, cacheLimit bool) (*process, <-chan
 			return nil, nil, fmt.Errorf("the speech runtime has no %s (it was built without this model's server)", spec.Binary)
 		}
 	}
-	cmd := exec.Command(bin, append(args, spec.launchArgs(cacheLimit)...)...)
+	args = append(args, spec.launchArgs(cacheLimit)...)
+	if draft != "" {
+		args = append(args, "--draft-model-path", draft)
+	}
+	cmd := exec.Command(bin, args...)
 	cmd.Env = append(serverEnv(os.Environ()), cfg.Env...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

@@ -52,6 +52,8 @@ MAC_DIR=code/VoxtNew-xyz scripts/mac.sh 'VOXTNEW_EVAL=1 VOXTNEW_OMNI_RUNTIME=$HO
 … VOXTNEW_EVAL_QUICK=1 …
 # some clips only
 … VOXTNEW_EVAL_ONLY=dict-1,dict-5 …
+# a speech model's draft (asr.accurate.draft, asr.fast.draft) in $HUB is used, as the app does; the log says so.
+# A library without the drafts (symlinks to the other models' folders) in ACTNOW_FAMILY_DIR compares.
 ```
 
 The tests are:
