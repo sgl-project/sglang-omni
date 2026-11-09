@@ -108,19 +108,14 @@ func (a *app) translatePage(c *ui.Context) { a.featurePage(c, hotkey.Translate) 
 // rewritePage builds the Rewrite page.
 func (a *app) rewritePage(c *ui.Context) { a.featurePage(c, hotkey.Rewrite) }
 
-// featurePage builds a feature's page: one column, or two in a wide
-// window (twoColumnW): how the feature starts and its models on the left,
-// what it does with the text, its card, its rules and its Try area on the
-// right.
+// featurePage builds a feature's page, one column at any window width
+// (11-09: the user did not want it split in two in a wide window, #3644
+// FB16): how the feature starts and its models, then what it does with
+// the text, its card, its rules and its Try area.
 func (a *app) featurePage(c *ui.Context, feature string) {
 	t := c.Theme()
 	p := uitext.FeaturePrefix(feature)
-	two := a.pageWidth(c) >= px(t, twoColumnW)
-	if two {
-		centeredPageHeader(c, pageMaxW2, uitext.FeatureTitle(feature), nil)
-	} else {
-		columnPageHeader(c, uitext.FeatureTitle(feature), nil)
-	}
+	columnPageHeader(c, uitext.FeatureTitle(feature), nil)
 	if a.sess.Try && a.sess.State == session.Recording {
 		c.After(250 * time.Millisecond) // the Try area's clock
 	}
@@ -150,13 +145,6 @@ func (a *app) featurePage(c *ui.Context, feature string) {
 		a.featureTry(c, feature)
 	}
 	ui.Scroll(c.Key(p + "-scroll")).Grow(1).MinHeight(0).Children(func() {
-		if !two {
-			pageColumn(c).Gap(px(t, sp3)).Children(func() { left(); right() })
-			return
-		}
-		ui.Row(c).FillWidth().MaxWidth(px(t, pageMaxW2)).AlignSelf(ui.Center).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp6)).AlignItems(ui.Start).Children(func() {
-			ui.Column(c).Grow(1).Basis(0).MinWidth(0).Gap(px(t, sp3)).Children(left)
-			ui.Column(c).Grow(1).Basis(0).MinWidth(0).Gap(px(t, sp3)).Children(right)
-		})
+		pageColumn(c).Gap(px(t, sp3)).Children(func() { left(); right() })
 	})
 }
