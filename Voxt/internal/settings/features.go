@@ -31,6 +31,10 @@ type Features struct {
 	// HideTranslate, HideRewrite, HideAppEnhancement. A hidden feature's
 	// shortcuts and scene rules are off; its settings stay.
 	Hidden []string `json:"hidden,omitempty"`
+	// CardSizes are the answer card's sizes by feature (store.Kind:
+	// "transcribe", "translate", "rewrite"): 0 small (the default), 1
+	// medium, 2 large (layout.CardSizes); each feature its own (#3644 FB41).
+	CardSizes map[string]int `json:"cardSizes,omitempty"`
 }
 
 // The features Features.Hidden can hold: Translate's and Rewrite's are
@@ -43,6 +47,13 @@ const (
 
 // IsHidden reports whether feature id is hidden (Features.Hidden).
 func (f Features) IsHidden(id string) bool { return slices.Contains(f.Hidden, id) }
+
+// CardSizeSteps is how many sizes the answer card has.
+const CardSizeSteps = 3
+
+// CardSize is the answer card's size for feature kind, 0 to
+// CardSizeSteps-1 (Features.CardSizes).
+func (f Features) CardSize(kind string) int { return min(max(f.CardSizes[kind], 0), CardSizeSteps-1) }
 
 // Feature is what every feature has: its shortcuts, the models it uses
 // (internal/local's Model.ID: a local model's, or LLM a remote one's,

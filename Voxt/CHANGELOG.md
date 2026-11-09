@@ -35,6 +35,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Hide the features you do not use** (Settings → General → Features → Shown features), as in Voxt 1.x: uncheck Translate, Rewrite or App enhancement and it leaves the sidebar, ⌘K and Home's counts, and its shortcuts and scene rules stop. Its settings stay; check it again to bring it back.
 - **Use the live text as the result** (Settings → Audio → Recognition → Recognise the whole recording again, on by default): off, a local speech model that shows the text as you speak (Qwen3-ASR) does not recognise the whole recording once more after you stop; it finishes its last words and the live text is the result, sooner and a little less accurate. If the live session broke off, Voxt still recognises the whole recording.
 - **Live text in lines** (Settings → Overlay style → Live text layout → Lines): the overlay starts wide and wraps the words as a text box does, growing up to ten lines, then shows the newest ones, so the start of what you said stays in view. One line, which scrolls sideways, stays the default.
+- **Answer card sizes** (Transcribe, Translate, Rewrite → Answer card → Card size): Small (as before), Medium or Large, each feature its own, so a long Rewrite answer can have a large card while translations keep a small one. Show the result in a card stays one switch for Transcribe and Translate.
 
 ### Changed
 
@@ -87,6 +88,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **隐藏不用的功能**（设置 → 通用 → 功能 →“显示的功能”），和 Voxt 1.x 一样：取消勾选翻译、转写或应用增强，它就不出现在侧边栏、⌘K 和首页的统计里，快捷键和场景规则也停用。它的设置会保留，重新勾选就回来。
 - **直接用实时文字当结果**（设置 → 音频 → 识别 →“再识别一次整段录音”，默认开）：关掉后，边说边出字的本地语音模型（Qwen3-ASR）停止后不再把整段录音识别一遍，识别完最后几个字，实时文字就是结果，出得更快，准确率略低。实时会话中途断了时，Voxt 仍会识别整段录音。
 - **实时文字可以多行显示**（设置 → 浮窗样式 →“实时文字的样式”→“多行”）：浮窗一开始就是宽框，像输入框一样满行换行，最多长到十行，之后显示最新的几行，开头说的话不会被滚出去。默认仍是单行、横向滚动。
+- **答案卡片的大小**（转录、翻译、转写 → 答案卡片 → 卡片大小）：小（和以前一样）、中、大，每个功能各自记住，比如转写的长回答用大卡片，翻译仍用小卡片。“在卡片中显示结果”仍是转录和翻译共用的一个开关。
 
 #### 变更
 

@@ -206,6 +206,25 @@ const (
 	ProblemGap  = 8
 )
 
+// CardSize is a size of the answer card: its width and the most its
+// text takes before it scrolls (settings.Features.CardSizes).
+type CardSize struct{ W, BodyMax int }
+
+// CardSizes are the card's sizes, by settings.Features.CardSize: small
+// (Voxt's 440, CardBodyMax), medium and large, for long answers (#3644
+// FB41: an explained PR was hard to read in the small one).
+var CardSizes = [...]CardSize{{AnswerW, CardBodyMax}, {600, 380}, {760, 560}}
+
+// BodyW is the text's width in a card of size s.
+func (s CardSize) BodyW() int { return s.W - 2*CardPadX - CardInset }
+
+// BubbleW is a conversation's bubble width in a card of size s: the small
+// card's room beside a bubble, kept.
+func (s CardSize) BubbleW() int { return s.W - (AnswerW - BubbleW) }
+
+// MaxH is the highest card of size s: the text at its most, and a line.
+func (s CardSize) MaxH() int { return CardChrome + s.BodyMax + CardMsgGap + CardMsgH }
+
 // Bars of the waveform (Voxt's): WaveW wide in all, centred in the
 // waveform's slot.
 const (

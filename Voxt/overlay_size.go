@@ -22,8 +22,7 @@ import (
 func (a *app) overlaySize(mode overlayMode) (w, h int, exact bool) {
 	switch mode {
 	case ovAnswer:
-		h, exact := a.cardHeight() // overlay_card.go
-		return layout.AnswerW, h, exact
+		return a.cardSize() // overlay_card.go
 	case ovNotice:
 		if a.notice == nil {
 			return layout.NoticeW, layout.PillH, true

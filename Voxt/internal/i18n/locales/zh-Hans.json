@@ -1384,5 +1384,9 @@
   "Live text layout": "实时文字的样式",
   "One line": "单行",
   "Lines": "多行",
-  "One line scrolls sideways as you speak. Lines start wide and wrap like a text box, growing up to ten lines, then show the newest.": "单行：边说边往左滚动。多行：一开始就是宽框，像输入框一样满行换行，最多长到十行，之后显示最新的几行。"
+  "One line scrolls sideways as you speak. Lines start wide and wrap like a text box, growing up to ten lines, then show the newest.": "单行：边说边往左滚动。多行：一开始就是宽框，像输入框一样满行换行，最多长到十行，之后显示最新的几行。",
+  "Card size": "卡片大小",
+  "Small": "小",
+  "Large": "大",
+  "A larger card shows more of a long answer before it scrolls. Each feature keeps its own size.": "卡片越大，长回答不用滚动就能看到越多。每个功能各自记住自己的大小。"
 }
