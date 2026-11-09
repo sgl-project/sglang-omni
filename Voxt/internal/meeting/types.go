@@ -104,6 +104,8 @@ type Config struct {
 	Privacy     func() settings.Privacy
 	Now         func() time.Time
 	FreeSpace   func(dir string) (int64, error)
+	// SystemCaptureOK is false when the helper lacks capture.system (C1-5).
+	SystemCaptureOK func() bool
 	// ModelHold keeps local speech models loaded for the meeting (C1-2).
 	ModelHold local.Holder
 	// ASR resolves live recognition per track; nil keeps WAV-only capture (tests).

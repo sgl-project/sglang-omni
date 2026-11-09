@@ -14,6 +14,9 @@ func (m *Manager) watchDisk(ctx context.Context) {
 			return
 		case <-tick.C:
 			free, err := m.cfg.FreeSpace(m.cfg.Dir)
+			if err == nil {
+				m.noteFreeSpace(free)
+			}
 			if err != nil || free >= diskMinRecordBytes {
 				continue
 			}

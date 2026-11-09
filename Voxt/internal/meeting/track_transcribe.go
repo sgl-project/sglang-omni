@@ -41,6 +41,7 @@ type trackTranscriber struct {
 	utterCh chan Utterance
 	stop    chan struct{}
 	wg      sync.WaitGroup
+	queueDur time.Duration
 }
 
 func (m *Manager) newTrackTranscriber(ctx context.Context, src Source, job string) (*trackTranscriber, error) {
@@ -106,6 +107,9 @@ func (tr *trackTranscriber) onPCM(ctx context.Context, pcm []byte) error {
 		return nil
 	}
 	for _, u := range tr.cutter.Push(pcm) {
+		dur := u.End - u.Start
+		tr.queueDur += dur
+		tr.mgr.noteBacklog(tr.queueDur)
 		select {
 		case tr.utterCh <- u:
 		case <-ctx.Done():
@@ -155,6 +159,11 @@ func (tr *trackTranscriber) fileWorker(ctx context.Context) {
 				}
 			}
 		case u := <-tr.utterCh:
+			tr.queueDur -= u.End - u.Start
+			if tr.queueDur < 0 {
+				tr.queueDur = 0
+			}
+			tr.mgr.noteBacklog(tr.queueDur)
 			tr.transcribeFile(ctx, u)
 		}
 	}
@@ -218,8 +227,13 @@ func (m *Manager) commitSegment(seg Segment) {
 	}
 	seq := m.seq
 	s := m.snap
+	mic := seg.Source == SourceMic
 	m.mu.Unlock()
-	m.notify(s)
+	if mic {
+		m.noteMicText()
+	} else {
+		m.notify(s)
+	}
 
 	go func() {
 		ctx := context.Background()

@@ -84,9 +84,8 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 				}
 				m.snap.Level[src] = ev.Level.RMS
 				m.snap.Elapsed = m.timeline.Elapsed()
-				s := m.snap
 				m.mu.Unlock()
-				m.notify(s)
+				m.noteLevel(src, ev.Level.RMS)
 			}
 		})
 		if err != nil {

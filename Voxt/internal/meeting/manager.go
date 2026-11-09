@@ -33,6 +33,7 @@ type Manager struct {
 	jobGen        int
 	subs          []func(Snapshot)
 	releaseModels func()
+	problems      problemState
 }
 
 // NewManager returns a meeting manager from cfg.
@@ -53,7 +54,12 @@ func NewManager(cfg Config) *Manager {
 			return settings.Privacy{KeepHistory: true}
 		}
 	}
-	return &Manager{cfg: cfg, tracks: map[Source]*track{}, trackFails: map[Source]int{}}
+	if cfg.SystemCaptureOK == nil {
+		cfg.SystemCaptureOK = func() bool { return cfg.System != nil }
+	}
+	m := &Manager{cfg: cfg, tracks: map[Source]*track{}, trackFails: map[Source]int{}}
+	m.problems = newProblemState(cfg.Now)
+	return m
 }
 
 // Start opens a meeting and begins capture on every track mode needs.
@@ -109,7 +115,10 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (string, error) {
 	m.cancel = cancel
 	m.runCtx = runCtx
 	m.trackFails = map[Source]int{}
+	m.problems.reset()
+	m.problems.noteHelperOld(!m.cfg.SystemCaptureOK())
 	m.mu.Unlock()
+	m.refreshProblem(nil)
 	go m.watchDisk(runCtx)
 
 	sources := req.Mode.Sources()
@@ -369,11 +378,14 @@ func (m *Manager) nextJob(src Source) string {
 // SetTranslate toggles live translation target language (C1-4 wires the UI).
 func (m *Manager) SetTranslate(id, target string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if err := m.requireID(id); err != nil {
+		m.mu.Unlock()
 		return err
 	}
 	m.snap.Translate = target
+	s := m.snap
+	m.mu.Unlock()
+	m.notify(s)
 	return nil
 }
 
@@ -395,6 +407,7 @@ func (m *Manager) resetIdle() {
 		m.releaseModels()
 		m.releaseModels = nil
 	}
+	m.problems.reset()
 	m.id = ""
 	m.seq = 0
 	m.state = StateIdle
@@ -433,6 +446,37 @@ func (m *Manager) stopAllTracksLocked() {
 		tr.stop()
 	}
 	m.mu.Lock()
+}
+
+func (m *Manager) noteLevel(src Source, level float64) {
+	m.problems.noteLevel(src, level)
+	m.refreshProblem(nil)
+}
+
+func (m *Manager) noteMicText() {
+	m.problems.noteMicText()
+	m.refreshProblem(nil)
+}
+
+func (m *Manager) noteBacklog(d time.Duration) {
+	m.problems.noteBacklog(d)
+	m.refreshProblem(nil)
+}
+
+func (m *Manager) noteFreeSpace(free int64) {
+	m.problems.noteFreeSpace(free)
+	m.refreshProblem(nil)
+}
+
+func (m *Manager) refreshProblem(track *Problem) {
+	m.mu.Lock()
+	if track != nil {
+		m.problems.setTrackProblem(track)
+	}
+	m.snap.Problem = m.problems.pick(m.mode, track)
+	s := m.snap
+	m.mu.Unlock()
+	m.notify(s)
 }
 
 func sourcesToAdd(old, new []Source) []Source {
