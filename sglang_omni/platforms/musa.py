@@ -20,18 +20,24 @@ else:
 
 logger = logging.getLogger(__name__)
 
-try:
-    import torchada  # noqa: F401
-except ImportError as exc:
-    logger.warning(
-        f"Failed to import torchada: {exc}. MUSA platform compatibility will not work."
-    )
-
 
 class MUSAOmniPlatform(CUDAOmniPlatform):
     _enum = PlatformEnum.MUSA
     device_name = "musa"
     device_type = "musa"
+
+    def __init__(self) -> None:
+        super().__init__()
+        # torchada maps torch.cuda onto MUSA. Import it only when this platform
+        # is actually used, so importing sglang_omni.platforms on other
+        # hardware does not warn about a package it never needs.
+        try:
+            import torchada  # noqa: F401
+        except ImportError as exc:
+            logger.warning(
+                f"Failed to import torchada: {exc}. "
+                "MUSA platform compatibility will not work."
+            )
 
     def get_stage_process_env(
         self,
