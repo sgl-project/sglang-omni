@@ -51,6 +51,7 @@ type Stage string
 const (
 	StageSaving       Stage = "saving"
 	StageTranscribing Stage = "transcribing"
+	StageSummary      Stage = "summary"
 )
 
 // Utterance is one PCM chunk for file-mode meeting ASR (C1-2).
@@ -68,6 +69,7 @@ type Segment struct {
 	Text        string
 	Translation string
 	Final       bool
+	StoreIdx    int // sqlite meeting_segments.idx (-1 before persist)
 }
 
 // Problem is a user-visible warning during a meeting.
@@ -112,6 +114,10 @@ type Config struct {
 	ASR func(ctx context.Context, src Source) (TrackASR, error)
 	// VAD finds speech regions for the final pass; nil uses energy analysis.
 	VAD vad.Model
+	// LLM opens the language model for summary and live translation.
+	LLM func(ctx context.Context, id string) (SummaryChat, error)
+	// MainLanguage names the user's primary language for summary prompts.
+	MainLanguage func() string
 }
 
 // ErrBusy means a meeting is already live.

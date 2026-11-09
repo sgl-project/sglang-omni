@@ -21,7 +21,7 @@ func meetingID(n string) store.Meeting {
 }
 
 func seg(src store.SegmentSource, text string) store.MeetingSegment {
-	return store.MeetingSegment{Source: src, Text: text, StartMS: 0, EndMS: 1200}
+	return store.MeetingSegment{Idx: -1, Source: src, Text: text, StartMS: 0, EndMS: 1200}
 }
 
 func TestMeetingsCRUDAndFTS(t *testing.T) {

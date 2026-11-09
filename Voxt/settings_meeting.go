@@ -4,9 +4,12 @@ package main
 // screen-sharing privacy for the overlay, shortcuts, and consent text.
 
 import (
+	"fmt"
+
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
@@ -74,8 +77,47 @@ func (a *app) meetingSettings(c *ui.Context) {
 			}
 		})
 	a.featureShortcuts(c, hotkey.Meeting)
+	a.meetingLLMSettings(c)
 	ui.Text(c, i18n.T("Get the other person's consent before you record them speaking.")).
 		FontSize(px(t, fsCaption)).TextColor(t.TextMuted)
+}
+
+func (a *app) meetingLLMSettings(c *ui.Context) {
+	t := c.Theme()
+	ready := a.installed(local.LLM)
+	label := i18n.T("Automatic")
+	if m, ok := local.Choose(ready, a.prefs.Features.Meeting.LLM); ok {
+		label = m.Name
+	}
+	settingRow(c, "mt-llm", i18n.T("Language model for meetings"),
+		i18n.T("Summaries, live translation, and follow-up questions send the full meeting text to this model."), func() {
+			opts := []string{i18n.T("Automatic")}
+			for _, m := range ready {
+				opts = append(opts, m.Name)
+			}
+			sel := label
+			if ui.Select(c.Key("mt-llm-sel"), &sel, opts).Label(i18n.T("Language model")).Changed() {
+				id := ""
+				if sel != i18n.T("Automatic") {
+					for _, m := range ready {
+						if m.Name == sel {
+							id = m.ID
+							break
+						}
+					}
+				}
+				a.updateSettings(func(s *settings.Settings) { s.Features.Meeting.LLM = id })
+			}
+			if len(ready) == 0 {
+				ui.Text(c, i18n.T("No language model is set up: summaries and translation stay off.")).
+					FontSize(px(t, fsCaption)).TextColor(t.TextMuted)
+				return
+			}
+			if m, ok := local.Choose(ready, a.prefs.Features.Meeting.LLM); ok && m.Name != "" {
+				ui.Text(c, fmt.Sprintf(i18n.T("Meeting text is sent to %s."), m.Name)).
+					FontSize(px(t, fsCaption)).TextColor(t.TextMuted)
+			}
+		})
 }
 
 func b2s(v bool) string {

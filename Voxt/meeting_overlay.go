@@ -91,6 +91,18 @@ func (a *app) meetingOverlayView(c *ui.Context) {
 			if ghostButton(c.Key("mt-pause"), pause).Clicked() {
 				a.meetingPauseResume()
 			}
+			if s.State == meeting.StatePaused {
+				if ghostButton(c.Key("mt-xlate"), i18n.T("Copy transcript")).Clicked() {
+					a.copyLiveMeetingExport()
+				}
+			}
+			toggle := i18n.T("Translation off")
+			if s.Translate != "" {
+				toggle = i18n.T("Translation on")
+			}
+			if ghostButton(c.Key("mt-translate"), toggle).Clicked() {
+				a.toggleMeetingTranslation(s.ID)
+			}
 			if ghostButton(c.Key("mt-end"), i18n.T("End")).Clicked() {
 				a.meetingFinish()
 			}

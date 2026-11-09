@@ -31,6 +31,8 @@ type Manager struct {
 	tracks        map[Source]*track
 	trackFails    map[Source]int
 	jobGen        int
+	segIdx        int
+	translator    *LiveTranslator
 	subs          []func(Snapshot)
 	releaseModels func()
 }
@@ -85,6 +87,8 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (string, error) {
 		Level: map[Source]float64{SourceMic: -120, SourceSystem: -120},
 		Live:  map[Source]string{},
 	}
+	m.segIdx = 0
+	m.initTranslator()
 	rec := m.snap
 	m.mu.Unlock()
 	m.notify(rec)
@@ -265,12 +269,19 @@ func (m *Manager) Finish(ctx context.Context, id string) error {
 	if m.cfg.Settings().NoFinalPass || m.cfg.ASR == nil {
 		m.state = StateDone
 		m.snap.State = StateDone
+		meetingID := m.id
+		auto := !m.cfg.Settings().NoAutoSummary
 		m.mu.Unlock()
 		if err := m.cfg.Store.UpdateMeeting(ctx, mt); err != nil {
 			return err
 		}
 		m.resetAfterDone()
 		m.notify(m.snap)
+		if auto {
+			go func() {
+				_ = m.GenerateMeetingSummary(context.Background(), meetingID)
+			}()
+		}
 		return nil
 	}
 	m.state = StateFinishing
@@ -305,9 +316,16 @@ func (m *Manager) Save(ctx context.Context, id string) error {
 	if err := m.cfg.Store.UpdateMeeting(ctx, mt); err != nil {
 		return err
 	}
+	meetingID := m.id
+	auto := !m.cfg.Settings().NoAutoSummary
 	m.state = StateDone
 	m.snap.State = StateDone
 	m.resetAfterDone()
+	if auto {
+		go func() {
+			_ = m.GenerateMeetingSummary(context.Background(), meetingID)
+		}()
+	}
 	return nil
 }
 
@@ -408,10 +426,17 @@ func (m *Manager) runFinalize(ctx context.Context, mt store.Meeting) {
 		m.notify(m.snap)
 		return
 	}
+	meetingID := mt.ID
+	auto := !m.cfg.Settings().NoAutoSummary
 	m.state = StateDone
 	m.snap.State = StateDone
 	m.resetAfterDone()
 	m.notify(m.snap)
+	if auto {
+		go func() {
+			_ = m.GenerateMeetingSummary(context.Background(), meetingID)
+		}()
+	}
 }
 
 func (m *Manager) finalizeProgress(id string) func(float64) {
@@ -454,6 +479,7 @@ func (m *Manager) SetTranslate(id, target string) error {
 		return err
 	}
 	m.snap.Translate = target
+	m.refreshTranslatorTarget()
 	return nil
 }
 
@@ -486,6 +512,8 @@ func (m *Manager) resetIdle() {
 	m.archive = nil
 	m.tracks = map[Source]*track{}
 	m.trackFails = map[Source]int{}
+	m.segIdx = 0
+	m.translator = nil
 	m.runCtx = nil
 }
 

@@ -103,14 +103,36 @@ func (r *meetingsRepo) AppendSegments(ctx context.Context, seq int64, segs []sto
 		if err := validSegment(s); err != nil {
 			return err
 		}
-		idx := next
-		next++
+		var idx int
+		if s.Idx < 0 {
+			idx = next
+			next++
+		} else {
+			idx = s.Idx
+			if idx+1 > next {
+				next = idx + 1
+			}
+		}
 		stmts = append(stmts, sqlite.Statement{SQL: `INSERT INTO meeting_segments (meeting_seq, idx, source, speaker, start_ms, end_ms, text, translation, final)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			Args: []any{seq, idx, string(s.Source), s.Speaker, s.StartMS, s.EndMS, s.Text, s.Translation, bool01(s.Final)}})
 	}
 	_, err = r.db.Transaction(ctx, stmts)
 	return wrap("meeting segments", err)
+}
+
+func (r *meetingsRepo) UpdateSegmentTranslation(ctx context.Context, seq int64, idx int, translation string) error {
+	if seq <= 0 || idx < 0 {
+		return fmt.Errorf("meeting segment: %w", core.ErrInvalid)
+	}
+	res, err := r.db.Execute(ctx, `UPDATE meeting_segments SET translation = ? WHERE meeting_seq = ? AND idx = ?`, translation, seq, idx)
+	if err != nil {
+		return wrap("meeting segment translation", err)
+	}
+	if res.Changes == 0 {
+		return fmt.Errorf("meeting segment idx %d: %w", idx, core.ErrNotFound)
+	}
+	return nil
 }
 
 func (r *meetingsRepo) ReplaceSegments(ctx context.Context, seq int64, src store.SegmentSource, segs []store.MeetingSegment) error {

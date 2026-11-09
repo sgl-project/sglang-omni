@@ -22,6 +22,7 @@ type meetingsView struct {
 	err     string
 	seq     int
 	listUI  ui.ListState
+	detail  *meetingDetail
 }
 
 type meetingsState struct {
@@ -91,6 +92,9 @@ func (a *app) meetingsPage(c *ui.Context) {
 						if mt.Title != "" {
 							title = mt.Title
 						}
+						if ghostButton(c.Key("mt-open-"+mt.ID), i18n.T("Open")).Clicked() {
+							a.openMeetingDetail(mt.ID)
+						}
 						ui.Column(c).Grow(1).Gap(px(t, 4)).Children(func() {
 							ui.Text(c, title).FontWeight(600)
 							line := string(mt.Status)
@@ -128,6 +132,7 @@ func (a *app) meetingsPage(c *ui.Context) {
 					})
 				}
 			})
+			a.meetingDetailSection(c)
 			ui.Box(c).Height(px(t, sp3))
 			a.meetingSettings(c)
 		})

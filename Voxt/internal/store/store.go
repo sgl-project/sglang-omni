@@ -286,7 +286,7 @@ type Meeting struct {
 // MeetingSegment is one sentence on a track.
 type MeetingSegment struct {
 	MeetingSeq  int64
-	Idx         int
+	Idx         int // meeting_segments.idx; <0 lets AppendSegments assign the next index
 	Source      SegmentSource
 	Speaker     string
 	StartMS     int64
@@ -308,6 +308,7 @@ type Meetings interface {
 	CreateMeeting(ctx context.Context, m Meeting) (Meeting, error)
 	UpdateMeeting(ctx context.Context, m Meeting) error
 	AppendSegments(ctx context.Context, seq int64, segs []MeetingSegment) error
+	UpdateSegmentTranslation(ctx context.Context, seq int64, idx int, translation string) error
 	ReplaceSegments(ctx context.Context, seq int64, src SegmentSource, segs []MeetingSegment) error
 	Meeting(ctx context.Context, id string) (Meeting, []MeetingSegment, error)
 	ListMeetings(ctx context.Context, q MeetingQuery) ([]Meeting, error)
