@@ -799,6 +799,7 @@
   "Return ↩": "Return ↩",
   "Rewrite": "转写",
   "Rewrites the selection, or writes what you ask for.": "改写选中的文字，或者按要求写出内容。",
+  "Rewrite always shows its answer in the card, as the card is where you work on it: Continue adds a spoken follow-up, and you can edit the answer, copy it or insert it.": "转写的回答总是显示在卡片里，因为要在卡片上接着处理：点“继续”可以口述追问，还可以编辑、复制或插入这个回答。",
   "Rewriting": "转写",
   "Rewriting the selection…": "正在改写选中的文字…",
   "Right %s": "右 %s",

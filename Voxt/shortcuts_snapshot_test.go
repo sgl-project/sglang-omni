@@ -59,6 +59,12 @@ func snapshotsShortcuts(t *testing.T, out string) {
 				a.navigate(p)
 				save("shortcuts-" + filepath.Base(p))
 			}
+			// Rewrite's Answer card section: no switch, the note why.
+			frames(tt)
+			if r, ok := tt.Find(i18n.T("Answer card")); ok {
+				tt.Scroll(float32(size[0])*0.6, float32(size[1])*0.5, 0, r.Y-float32(size[1])*0.3)
+			}
+			save("shortcuts-rewrite-card")
 			// No shortcut.
 			a.updateSettings(func(s *settings.Settings) { s.Features.Translate.Hotkeys = nil })
 			a.navigate("/translate")

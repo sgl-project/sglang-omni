@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -216,7 +217,8 @@ func TestSessionBlocker(t *testing.T) {
 }
 
 // TestCardSwitchShared: Transcribe and Translate share one answer-card
-// switch; Rewrite always shows answers in the card and has no switch.
+// switch; Rewrite always shows answers in the card, has no switch and says
+// why.
 func TestCardSwitchShared(t *testing.T) {
 	a, tt := pageTester(t, "/translate")
 	for i, page := range []string{"/translate", "/transcribe"} {
@@ -238,9 +240,14 @@ func TestCardSwitchShared(t *testing.T) {
 	}
 	a.navigate("/rewrite")
 	frames(tt)
+	note := false
 	for _, s := range tt.AccessLabels() {
 		if s == "Show the result in a card" {
 			t.Fatalf("/rewrite: card switch should not appear on Rewrite")
 		}
+		note = note || strings.HasPrefix(s, "Rewrite always shows its answer in the card")
+	}
+	if !note {
+		t.Errorf("/rewrite: the Answer card section does not say why there is no switch")
 	}
 }
