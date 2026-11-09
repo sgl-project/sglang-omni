@@ -250,6 +250,7 @@ def advance_text(
     state: LLaDA2UniPipelineState,
     tokenizer: PreTrainedTokenizerBase,
     *,
+    block_size: int,
     finish_reason: str | None,
 ) -> None:
     interleaved = state.stream_state["interleaved"]
@@ -332,8 +333,17 @@ def advance_text(
         tokenizer=tokenizer,
         config=config,
     )
-    longest_prefix = max(len(prefix) for prefix in [full_ids, *plan.branches.values()])
-    if longest_prefix + header.image_token_count + 1 > int(interleaved["max_seq_len"]):
+    # The conditional row also holds the EOI that closes the frame, and the image request pads each branch up to its block column.
+    longest_row = max(
+        [
+            len(full_ids) + 1,
+            *(
+                len(branch) + (len(full_ids) - len(branch)) % block_size
+                for branch in plan.branches.values()
+            ),
+        ]
+    )
+    if longest_row + header.image_token_count > int(interleaved["max_seq_len"]):
         raise ValueError("interleaved image frame would exceed thinker context")
     else:
         pass
@@ -452,6 +462,7 @@ def advance_interleaved_state(
     tokenizer: PreTrainedTokenizerBase,
     *,
     completed_phase: str,
+    block_size: int,
     finish_reason: str | None = None,
 ) -> None:
     """Advance one phase and commit only after every validation succeeds."""
@@ -472,6 +483,7 @@ def advance_interleaved_state(
         advance_text(
             working,
             tokenizer,
+            block_size=block_size,
             finish_reason=finish_reason,
         )
     elif completed_phase == "image":

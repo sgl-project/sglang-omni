@@ -10,6 +10,9 @@ from sglang_omni.models.llada2_uni.interleaved import advance_interleaved_state
 from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
 from sglang_omni.proto import OmniRequest, StagePayload
 
+# The block size the interleaved tests run the thinker with.
+BLOCK_SIZE = 4
+
 
 class Tokenizer:
     mask_token_id = 99
@@ -42,5 +45,8 @@ def preprocess(request: OmniRequest, interleaved: bool = True) -> StagePayload:
 def advance(state: LLaDA2UniPipelineState, ids: list[int]) -> None:
     state.thinker_out = {"output_ids": ids, "is_final": True}
     advance_interleaved_state(
-        state, Tokenizer(), completed_phase=state.stream_state["interleaved"]["phase"]
+        state,
+        Tokenizer(),
+        completed_phase=state.stream_state["interleaved"]["phase"],
+        block_size=BLOCK_SIZE,
     )

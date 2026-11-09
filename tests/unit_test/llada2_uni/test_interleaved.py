@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Interleaved transitions, frame CFG, EOI stopping, and the UMM adapter."""
 
+import copy
 from types import SimpleNamespace
 
 import pytest
@@ -12,7 +13,12 @@ from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
 from sglang_omni.models.llada2_uni.umm import LLaDA2UniUMMAdapter
 from sglang_omni.pipeline.umm import ContextRef, UMMContext, UMMOutput, UMMRequestError
 from sglang_omni.proto import OmniRequest
-from tests.unit_test.fixtures.llada2_fakes import Tokenizer, advance, preprocess
+from tests.unit_test.fixtures.llada2_fakes import (
+    BLOCK_SIZE,
+    Tokenizer,
+    advance,
+    preprocess,
+)
 
 CONFIG = {
     "mode": "interleaved",
@@ -46,7 +52,9 @@ def image_request(state):
         tokenizer=Tokenizer(),
         vocab_size=IMAGE_TOKEN_OFFSET + 16,
         dllm_config=SimpleNamespace(
-            block_size=4, mask_id=99, requires_separate_context_encoding=False
+            block_size=BLOCK_SIZE,
+            mask_id=99,
+            requires_separate_context_encoding=False,
         ),
         request_id="story",
     ).req
@@ -94,6 +102,28 @@ def test_image_phase_budget_counts_the_padding_of_the_longest_row():
     state.stream_state["interleaved"]["max_seq_len"] = longest_row + 5
     with pytest.raises(ValueError, match="exhausted its token budget"):
         image_request(state)
+
+
+def test_every_frame_the_text_phase_accepts_fits_its_image_request():
+    """A frame accepted near the context limit failed once its no-text row was padded to the conditional block column."""
+    state = LLaDA2UniPipelineState.from_dict(initial_payload().data)
+    advance(state, [71, 10, 22, 23, 12])
+    advance(state, [IMAGE_TOKEN_OFFSET + i for i in range(6)])
+    prompt_length = state.prompt["input_ids"].shape[1]
+
+    accepted = 0
+    for max_seq_len in range(prompt_length, prompt_length + 24):
+        frame = copy.deepcopy(state)
+        frame.stream_state["interleaved"]["max_seq_len"] = max_seq_len
+        try:
+            # The next frame follows with no text, so its no-text row is the longest.
+            advance(frame, [10, 22, 23, 12])
+        except ValueError as error:
+            assert "exceed thinker context" in str(error)
+            continue
+        image_request(frame)
+        accepted += 1
+    assert accepted
 
 
 @pytest.mark.parametrize("text_ids", [[72, 10, 22, 23, 12], [75, 2]])

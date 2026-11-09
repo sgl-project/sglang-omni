@@ -470,6 +470,7 @@ def make_dllm_thinker_scheduler_adapters(
                     state,
                     tokenizer,
                     completed_phase=state.stream_state["interleaved"]["phase"],
+                    block_size=dllm_config.block_size,
                     finish_reason=data.finish_reason,
                 )
             else:
