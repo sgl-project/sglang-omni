@@ -43,6 +43,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - The rules box and the Speech hints checkbox say which stage they act on: hints go to the speech model, rules shape the text after recognition.
 - The setup guide says what each feature is before you try it: Transcribe writes down your words, Translate puts them into another language, Rewrite writes what you ask for. The Permissions step says why Voxt needs the microphone and Accessibility.
 - **Language models sample with the service's defaults**, as in Voxt 1.x: Voxt no longer sends its own temperature (0.1 for clean-up, 0.2 for Translate, 0.5 for Rewrite), for every service. Temperature, Top P, Top K, Min P and the penalties are all in the service dialog's Advanced section, folded by default; an empty field reads "Service default" and sends nothing. Values you set before are kept and still sent. Reasoning models that accept only their default temperature no longer refuse the first request of each dictation.
+- **An ⓘ opens on a click**: clicking an ⓘ shows its tip and keeps it until you click elsewhere or press Esc; resting the pointer on it shows the tip as before.
 
 ### Fixed
 
@@ -90,6 +91,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - “你的规则”和“语音识别提示”各自写明作用阶段：提示给语音模型，规则在识别之后整理文字。
 - 设置引导每一步先说明这个功能是什么再让你试：转录照录你说的话，翻译把它译成另一种语言，转写按你的要求写出内容。权限一步写明为什么需要麦克风和辅助功能。
 - **语言模型的采样用服务自己的默认值**，和 Voxt 1.x 一样：所有服务上，Voxt 都不再自己发温度（之前清理 0.1、翻译 0.2、转写 0.5）。温度、Top P、Top K、Min P 和几种惩罚项都放进服务对话框里默认折叠的“高级”；留空的输入框写着“服务默认”，什么也不发。之前填过的值保留，照常发送。只接受默认温度的推理模型，不会再在每次听写的第一个请求就拒绝。
+- **点一下 ⓘ 就能看说明**：点 ⓘ 显示它的提示，直到点别处或按 Esc 才收起；鼠标停在上面照旧显示。
 
 #### 修复
 
