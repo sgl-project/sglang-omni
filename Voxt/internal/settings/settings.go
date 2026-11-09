@@ -99,6 +99,11 @@ type Privacy struct {
 	// LogText writes recognised and generated text to the log; off, the
 	// log has only lengths and timings.
 	LogText bool `json:"logText,omitempty"`
+	// HistoryAccess opens `Voxt history` to programs on this Mac
+	// (docs/history-access.md); HistorySelection adds the selected text to
+	// what they and Export text get.
+	HistoryAccess    bool `json:"historyAccess,omitempty"`
+	HistorySelection bool `json:"historySelection,omitempty"`
 }
 
 // Audio: the microphone and the sounds around a recording.

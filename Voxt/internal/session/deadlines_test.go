@@ -13,26 +13,27 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
-// TestLLMDeadlines: the default deadlines grow with the input.
+// TestLLMDeadlines: the default deadlines grow with the input; the first
+// token has none of its own.
 func TestLLMDeadlines(t *testing.T) {
 	cfg := New(Config{}).cfg
 	s := time.Second
 	for _, c := range []struct {
-		chars                    int
-		floor                    time.Duration
-		firstToken, stall, total time.Duration
+		chars        int
+		floor        time.Duration
+		stall, total time.Duration
 	}{
-		{0, cfg.LLMTimeout, 15 * s, 5 * s, 20 * s},
-		{40, cfg.LLMTimeout, 15200 * time.Millisecond, 5 * s, 20 * s},
-		{300, cfg.LLMTimeout, 16500 * time.Millisecond, 5 * s, 46500 * time.Millisecond},
-		{366, cfg.LLMTimeout, 16830 * time.Millisecond, 5 * s, 53430 * time.Millisecond},
-		{100, cfg.WriteTimeout, 15500 * time.Millisecond, 5 * s, 60 * s},
-		{3000, cfg.WriteTimeout, 30 * s, 5 * s, 330 * s},
+		{0, cfg.LLMTimeout, 5 * s, 20 * s},
+		{40, cfg.LLMTimeout, 5 * s, 20 * s},
+		{300, cfg.LLMTimeout, 5 * s, 46500 * time.Millisecond},
+		{366, cfg.LLMTimeout, 5 * s, 53430 * time.Millisecond},
+		{100, cfg.WriteTimeout, 5 * s, 60 * s},
+		{3000, cfg.WriteTimeout, 5 * s, 330 * s},
 	} {
 		req := cfg.llmDeadlines(llm.Request{}, c.chars, c.floor)
-		if req.FirstTokenTimeout != c.firstToken || req.StallTimeout != c.stall || req.Timeout != c.total {
-			t.Errorf("%d characters: first token %v, stall %v, total %v; want %v, %v, %v", c.chars,
-				req.FirstTokenTimeout, req.StallTimeout, req.Timeout, c.firstToken, c.stall, c.total)
+		if req.FirstTokenTimeout != 0 || req.StallTimeout != c.stall || req.Timeout != c.total {
+			t.Errorf("%d characters: first token %v, stall %v, total %v; want none, %v, %v", c.chars,
+				req.FirstTokenTimeout, req.StallTimeout, req.Timeout, c.stall, c.total)
 		}
 	}
 }
@@ -96,11 +97,11 @@ func (p *pacedLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, err
 }
 
 // TestCleanupDeadlines: Transcribe's clean-up over llm.Client with the
-// progress deadlines. A piece whose first token is late, or that stalls,
-// keeps its text as recognised (a cut-off answer would lose words), and
-// the next piece runs at once and is cleaned up; a slow but steady
-// answer passes, however much longer than the first-token and stall
-// deadlines it takes; a stream past the request's cap ends.
+// progress deadlines. A piece that never answers, or that stalls, keeps
+// its text as recognised (a cut-off answer would lose words), and the
+// next piece runs at once and is cleaned up; a slow but steady answer
+// passes, however much longer than the stall deadline it takes; a stream
+// past the request's cap ends.
 func TestCleanupDeadlines(t *testing.T) {
 	ms := time.Millisecond
 	pieces := compose.Pieces(longZH)
@@ -118,15 +119,15 @@ func TestCleanupDeadlines(t *testing.T) {
 		problem string // the logged warning ("" for none)
 		most    time.Duration
 	}{
-		{"the first token is late", longZH, &pacedLLM{scripts: []script{{text: "x", first: -1}, second}}, nil,
-			pieces[0].Text + "讨论预算。", "piece 1 of 2: no first token within", 4 * time.Second},
+		{"no answer", longZH, &pacedLLM{scripts: []script{{text: "x", first: -1}, second}}, nil,
+			pieces[0].Text + "讨论预算。", "piece 1 of 2: no answer within", 4 * time.Second},
 		{"a piece stalls", longZH, &pacedLLM{scripts: []script{{text: steady, pause: 10 * ms, stallAt: 3, stall: -1}, second}}, nil,
 			pieces[0].Text + "讨论预算。", "piece 1 of 2: no new token for 500ms after 3 pieces", 3 * time.Second},
 		{"slow but steady", longZH, &pacedLLM{scripts: []script{{text: steady, first: 800 * ms, pause: 150 * ms}, second}},
 			func(c *Config) { c.LLMPerChar = 20 * ms },
 			steady + "讨论预算。", "", 6 * time.Second},
 		{"past the cap", "hello aura link", &pacedLLM{scripts: []script{{text: steady, pause: 100 * ms}}},
-			func(c *Config) { c.LLMFirstToken, c.LLMTimeout = 200*ms, 600*ms }, "hello VoxtNew", "no answer within 600ms", 3 * time.Second},
+			func(c *Config) { c.LLMBase, c.LLMTimeout = 200*ms, 600*ms }, "hello VoxtNew", "no answer within 600ms", 3 * time.Second},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			h := newHarness(t, &fakeFile{text: c.text}, &llm.Client{Backend: c.llm}, func(cfg *Config, _ *settings.Settings) {
@@ -153,7 +154,7 @@ func TestCleanupDeadlines(t *testing.T) {
 			reqs := c.llm.reqs
 			c.llm.mu.Unlock()
 			for _, req := range reqs {
-				if req.FirstTokenTimeout == 0 || req.StallTimeout != 500*ms || req.Timeout < req.FirstTokenTimeout {
+				if req.FirstTokenTimeout != 0 || req.StallTimeout != 500*ms || req.Timeout < h.m.cfg.LLMTimeout {
 					t.Errorf("deadlines %v, %v, %v", req.FirstTokenTimeout, req.StallTimeout, req.Timeout)
 				}
 			}
@@ -162,8 +163,9 @@ func TestCleanupDeadlines(t *testing.T) {
 }
 
 // TestWriteDeadlines: Translate (and Rewrite, the same call) has the same
-// progress deadlines: a slow but steady answer passes, a late first
-// token fails the session with the reason.
+// progress deadlines: a slow but steady answer passes, and so does one
+// whose model thinks past LLMBase before its first token (a remote
+// reasoning model; 15 s failed such translations).
 func TestWriteDeadlines(t *testing.T) {
 	ms := time.Millisecond
 	steady := strings.Repeat("我们下周三开会。", 4)
@@ -173,7 +175,7 @@ func TestWriteDeadlines(t *testing.T) {
 		want string // the result, or the error's start
 	}{
 		{"slow but steady", &pacedLLM{scripts: []script{{text: steady, first: 300 * ms, pause: 120 * ms}}}, steady},
-		{"the first token is late", &pacedLLM{scripts: []script{{text: "x", first: -1}}}, "no first token within 1.1s"},
+		{"a long wait for the first token", &pacedLLM{scripts: []script{{text: steady, first: 1500 * ms, pause: 20 * ms}}}, steady},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			h := newHarness(t, &fakeFile{text: "x"}, &llm.Client{Backend: c.llm}, func(cfg *Config, _ *settings.Settings) {
@@ -194,10 +196,8 @@ func TestWriteDeadlines(t *testing.T) {
 }
 
 // TestFollowUpDeadlines: a follow-up's request resends the conversation's
-// earlier selections and answers, which the model reads before its first
-// token, so its deadlines count them too (they counted only the new
-// instruction, and a follow-up on a long selection timed out waiting for
-// the first token).
+// earlier selections and answers, which the model reads before it
+// answers, so its deadline counts them too.
 func TestFollowUpDeadlines(t *testing.T) {
 	long := strings.Repeat("a long selection ", 1250)
 	model := &pacedLLM{scripts: []script{{text: "Shorter."}}}
@@ -213,8 +213,8 @@ func TestFollowUpDeadlines(t *testing.T) {
 	}
 	model.mu.Lock()
 	defer model.mu.Unlock()
-	want := h.m.cfg.LLMFirstToken + time.Duration(len(long))*llmPrefillPerChar
-	if len(model.reqs) != 1 || model.reqs[0].FirstTokenTimeout < want {
-		t.Fatalf("first token deadline %v, want at least %v", model.reqs[0].FirstTokenTimeout, want)
+	want := h.m.cfg.LLMBase + time.Duration(len(long))*llmPrefillPerChar
+	if len(model.reqs) != 1 || model.reqs[0].Timeout < want {
+		t.Fatalf("deadline %v, want at least %v", model.reqs[0].Timeout, want)
 	}
 }

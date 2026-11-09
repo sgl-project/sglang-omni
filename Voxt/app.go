@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/egoist/mygo"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/macx"
 )
 
 // app is VoxtNew's UI state: the view state of every page, and handles
@@ -37,6 +38,7 @@ import (
 //	updateState       updates.go      the updater, an update installed while running
 //	notesState        notes_page.go   the Notes page
 //	learnState        learn_link.go   the watch that learns from the user's corrections
+//	historyAccessState history_access.go  other programs reading the history
 //	meetingState        meeting_link.go meetings (dev builds)
 //	meetingOverlayState meeting_overlay.go the meeting floating window
 //	meetingsState       meetings_page.go the Meetings page (dev builds)
@@ -80,6 +82,7 @@ type app struct {
 	notesState
 	announcementsState
 	learnState
+	historyAccessState
 	meetingState
 	meetingOverlayState
 	meetingsState
@@ -89,6 +92,7 @@ func newApp(lib *library, h *helperHost) *app {
 	a := &app{lib: lib, shellState: newShellState()}
 	a.connectEvents() // events.go: who hears of sessions and the history
 	a.helperLink.host = h
+	a.ob.memoryGB = sysInfo{Memory: macx.TotalMemory()}.MemoryGB() // the guide's recommended speech model
 	a.openShell(lib)
 	a.openPermissions()
 	a.openFamily()          // family.go: before the models, whose library is the family's
@@ -131,6 +135,7 @@ func (a *app) toast(msg string) {
 // quit releases what the app holds; it runs in App.OnQuit, before the
 // library closes.
 func (a *app) quit() {
+	a.closeHistoryAccess() // history_access.go: the socket goes first
 	if a.stopLearning != nil {
 		a.stopLearning() // learn_link.go: no read goes to a helper that stopped
 	}

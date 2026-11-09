@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/codexauth"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -42,6 +44,12 @@ func TestReady(t *testing.T) {
 	}
 	if m := Missing(settings.Provider{ID: llm.Custom, Model: "x"}, true); m != MissingEndpoint {
 		t.Errorf("custom without an address: %q", m)
+	}
+	if m := Missing(settings.Provider{ID: llm.Custom, Endpoint: "http://192.168.1.20/v1", Model: "x"}, true); m != MissingAddress {
+		t.Errorf("an address Resolve refuses: %q", m)
+	}
+	if m := Missing(settings.Provider{ID: llm.Custom, Endpoint: "http://127.0.0.1:9/v1", Model: "x"}, true); m != "" {
+		t.Errorf("an address Resolve accepts: %q", m)
 	}
 	// Removing a setup takes it off the features that used it.
 	s.Features.Translate.LLM, s.Features.Rewrite.LLM = "deepseek", "llm.fast"
@@ -117,5 +125,43 @@ func TestTestLog(t *testing.T) {
 	_, msg := TestLog(p, TestResult{Err: errors.New(`llm.bad_request detail="bad key sk-secret-123"`)}, "sk-secret-123")
 	if strings.Contains(msg, "sk-secret-123") || !strings.Contains(msg, "openai (model gpt-x)") || !strings.Contains(msg, "[key]") {
 		t.Fatalf("log %q", msg)
+	}
+}
+
+func TestChatGPTTokensMapping(t *testing.T) {
+	sess := codexauth.NewSession(codexauth.Config{Store: emptyStore{}})
+	_, err := ChatGPTTokens(sess)(context.Background(), "")
+	if llm.Code(err) != llm.CodeSignIn {
+		t.Fatalf("signed out: %v", err)
+	}
+}
+
+type emptyStore struct{}
+
+func (emptyStore) Get() (string, error) { return "", nil }
+func (emptyStore) Set(string) error     { return nil }
+
+func TestChatGPTSetup(t *testing.T) {
+	pr, ok := llm.LookupPreset(ChatGPT)
+	if !ok || !pr.SignIn || pr.API != llm.APIResponses || pr.KeyURL != "" || pr.BaseURL != "https://chatgpt.com/backend-api/codex" {
+		t.Fatalf("preset %+v %v", pr, ok)
+	}
+	if want := []string{"gpt-6.1-sol", "gpt-6-astra", "gpt-6.1-terra", "gpt-6-luna"}; pr.DefaultModel != want[0] || !slices.Equal(pr.Models, want) {
+		t.Errorf("models %q, default %q", pr.Models, pr.DefaultModel)
+	}
+	if c := Capabilities(ChatGPT, pr.DefaultModel); c.MaxOutputTokens || c.Temperature || c.TopP || c.Stop || c.ExtraBody || len(c.ThinkModes) != 0 {
+		t.Errorf("caps %+v", c)
+	}
+	p := settings.Provider{ID: ChatGPT}
+	if m := Missing(p, false); m != MissingKey {
+		t.Errorf("missing %q", m)
+	}
+	if m := Missing(p, true); m != "" {
+		t.Errorf("missing %q", m)
+	}
+	// The API format comes from the preset, whatever the settings hold.
+	r, err := Config(p).Resolve()
+	if err != nil || r.API != llm.APIResponses {
+		t.Errorf("resolved %+v %v", r, err)
 	}
 }

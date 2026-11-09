@@ -99,6 +99,7 @@ The store's tests use MyGo's SQLite plugin, which downloads its library once (ch
 - [docs/llm-models.md](docs/llm-models.md): the retired local language models, their settings and measurements (history).
 - [docs/eval.md](docs/eval.md): the models' quality on an eval set, and the decisions it led to.
 - [docs/helper-protocol.md](docs/helper-protocol.md): the helper's protocol.
+- [docs/history-access.md](docs/history-access.md): reading the dictation history from scripts and agents on this Mac (off by default).
 - [docs/manual-test.md](docs/manual-test.md): the checks by hand on a Mac (in Chinese), and the automated Mac tests.
 - [docs/release.md](docs/release.md): building, signing, notarising and publishing a release; updates (in Chinese).
 - [AGENTS.md](AGENTS.md): the rules for changes (strings, threading, the protocols).

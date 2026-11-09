@@ -150,7 +150,7 @@ func TestOverlayWriting(t *testing.T) {
 	if a.ov.mode != ovAnswer || a.answer.problem == nil || a.notice != nil || a.answer.input.Raw != "shorter" {
 		t.Fatalf("failure %s %+v %+v", a.ov.mode, a.answer, a.notice)
 	}
-	tt := cardTester(a)
+	tt := cardTester(t, a)
 	frames(tt)
 	for _, s := range []string{"AI Answer", "Try again", "shorter", "a long text"} {
 		if !has(tt, s) {

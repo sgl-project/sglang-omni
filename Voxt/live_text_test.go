@@ -120,9 +120,9 @@ func TestLiveLines(t *testing.T) {
 }
 
 // TestRewriteWritesIntoCard: Rewrite's first answer goes to the answer
-// card as the model writes it, the card at its full height from the
-// first words (it does not grow line by line), the pill until then and
-// with Show live text off. The pill showed a loader until the whole answer
+// card as the model writes it, the card as high as the words so far (it
+// grows with them, #3644 FB41), the pill until then and with Show live
+// text off. The pill showed a loader until the whole answer
 // was in (#3644).
 func TestRewriteWritesIntoCard(t *testing.T) {
 	a, _, _ := newTestApp(t)
@@ -137,7 +137,7 @@ func TestRewriteWritesIntoCard(t *testing.T) {
 		t.Fatalf("writing: mode %v", m)
 	}
 	w, h, _ := a.cardSize()
-	if v := a.cardNow(); v.text != "Short." || !v.busy || w != layout.CardSizes[0].W || h != layout.CardChrome+layout.CardSizes[0].BodyMax {
+	if v := a.cardNow(); v.text != "Short." || !v.busy || w != layout.CardSizes[0].W || h <= layout.CardChrome || h >= layout.CardChrome+layout.CardBodyMax {
 		t.Errorf("the writing card: %q busy %v, %d×%d", v.text, v.busy, w, h)
 	}
 	a.prefs.Overlay.HideLiveText = true
@@ -151,6 +151,7 @@ func TestRewriteWritesIntoCard(t *testing.T) {
 // top, and the answer streamed out of sight below its last line.
 func TestRewriteWritingFollows(t *testing.T) {
 	a, _, _ := newTestApp(t)
+	shortScreen(t, a)
 	long := strings.Repeat("The meeting moves to Thursday at three. ", 30)
 	s := session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: session.Composing, Partial: "make it longer", Selection: "x", Draft: long[:200]}
 	snap(a, s)

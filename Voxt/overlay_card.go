@@ -269,12 +269,9 @@ func (a *app) blockHeight(b cardBlock) (float32, bool) {
 }
 
 // cardBodyHeight is the height of v's text in the card: all of it up to
-// its size's BodyMax (then it scrolls), and whether it was measured.
+// cardBodyMax (then it scrolls), and whether it was measured.
 func (a *app) cardBodyHeight(v cardView) (int, bool) {
 	bodyMax := a.cardBodyMax(v)
-	if v.writing {
-		return bodyMax, true
-	}
 	var h float32
 	exact := true
 	for _, b := range cardBlocks(v) {
@@ -285,15 +282,16 @@ func (a *app) cardBodyHeight(v cardView) (int, bool) {
 	return min(int(math.Ceil(float64(h))), bodyMax), exact
 }
 
-// cardBodyMax is the most text v shows before it scrolls: its size's, or
-// less on a work area too short for it, so that the card stays on the
-// screen (never less than the small card's).
+// cardBodyMax is the most text v shows before it scrolls: as much as the
+// work area holds beside the overlay's margin, so that the card grows
+// with a long answer and stays on the screen (#3644 FB41); never less
+// than layout.CardBodyMax.
 func (a *app) cardBodyMax(v cardView) int {
 	room := a.ov.area.Height - int(math.Round(a.prefs.Overlay.Margin)) - layout.Pad - layout.CardChrome
 	if v.msg != "" {
 		room -= layout.CardMsgGap + layout.CardMsgH
 	}
-	return max(min(v.size.BodyMax, room), layout.CardSizes[0].BodyMax)
+	return max(room, layout.CardBodyMax)
 }
 
 // cardSize is the card's width (its size's) and height, and whether its

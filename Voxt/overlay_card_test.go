@@ -109,6 +109,7 @@ func TestAnswerCardStates(t *testing.T) {
 	for _, pos := range []string{"bottom", "top"} {
 		t.Run(pos, func(t *testing.T) {
 			a, _, _ := newTestApp(t)
+			shortScreen(t, a)
 			// Saved, so that a later save (Setup.Tried) keeps it.
 			a.updateSettings(func(s *settings.Settings) { s.Overlay.Position = pos })
 			for _, st := range cardSteps() {
@@ -161,6 +162,7 @@ func TestAnswerCardStates(t *testing.T) {
 // down to just above the bottom padding (no empty space, nothing cut).
 func TestAnswerCardInk(t *testing.T) {
 	a, _, _ := newTestApp(t)
+	shortScreen(t, a)
 	defer func() { a.measureHook = guessText }()
 	for _, st := range cardSteps() {
 		st.apply(a)
@@ -194,7 +196,7 @@ func TestAnswerCardInteraction(t *testing.T) {
 	ft := new(fakeTimers).install(a)
 	steps := cardSteps()
 	steps[0].apply(a) // the short answer
-	tt := cardTester(a)
+	tt := cardTester(t, a)
 	frames(tt)
 	for _, s := range []string{"Translation", "goroutine 是由 Go 运行时管理的轻量级线程。", "Simplified Chinese", "Insert", "Copy", "Close"} {
 		if !has(tt, s) {
@@ -309,6 +311,7 @@ func TestLanguageMenuPlace(t *testing.T) {
 	for _, pos := range []string{"bottom", "top"} {
 		t.Run(pos, func(t *testing.T) {
 			a, _, _ := newTestApp(t)
+			shortScreen(t, a)
 			// Saved, so that a later save (Setup.Tried) keeps it.
 			a.updateSettings(func(s *settings.Settings) { s.Overlay.Position = pos })
 			cardSteps()[0].apply(a) // a translation in the card
@@ -426,8 +429,8 @@ func TestCardHeaderFits(t *testing.T) {
 }
 
 // TestCardSizes: a feature's page sets its own answer card size; a larger
-// card is wider and shows more of a long answer before it scrolls, its
-// ink still from padding to padding. The other features keep theirs
+// card is wider, and any card grows with a long answer to the work
+// area's height, its ink still from padding to padding. The other features keep theirs
 // (#3644 FB41: a long explanation read badly in the small card).
 func TestCardSizes(t *testing.T) {
 	if hotkey.Transcribe != string(store.KindTranscribe) || hotkey.Translate != string(store.KindTranslate) || hotkey.Rewrite != string(store.KindRewrite) {
@@ -448,8 +451,9 @@ func TestCardSizes(t *testing.T) {
 		size layout.CardSize
 	}{{store.KindRewrite, layout.CardSizes[2]}, {store.KindTranslate, layout.CardSizes[0]}} {
 		a.answer = answerCard{open: true, kind: c.kind, text: long}
-		if w, h, _ := a.cardSize(); w != c.size.W || h != layout.CardChrome+c.size.BodyMax {
-			t.Errorf("%s: %d×%d, want %d×%d", c.kind, w, h, c.size.W, layout.CardChrome+c.size.BodyMax)
+		want := layout.CardChrome + a.cardBodyMax(a.cardNow())
+		if w, h, _ := a.cardSize(); w != c.size.W || h != want {
+			t.Errorf("%s: %d×%d, want %d×%d", c.kind, w, h, c.size.W, want)
 		}
 	}
 	defer func() { a.measureHook = guessText }()
@@ -505,5 +509,33 @@ func TestCardFitsTheScreen(t *testing.T) {
 	a.overlaySync()
 	if f := a.ov.frame; f.Y < ovTestArea.Y || f.Y+f.Height > ovTestArea.Y+ovTestArea.Height {
 		t.Errorf("the card's window %+v is not inside the work area %+v", f, ovTestArea)
+	}
+}
+
+// TestCardDragged: a card the user dragged (overlayDragged keeps the
+// offset) keeps its place as its answer grows, stays on the screen, and
+// the next card shows at the anchor again.
+func TestCardDragged(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
+	a.overlaySync()
+	anchored := a.ov.frame
+	a.ov.dragged.x, a.ov.dragged.y = -300, -200
+	a.answer.text = strings.Repeat("A longer answer, a few lines more. ", 12)
+	a.overlaySync()
+	if f := a.ov.frame; f.Height <= anchored.Height || f.X != anchored.X-300 || f.Y+f.Height != anchored.Y+anchored.Height-200 {
+		t.Errorf("dragged, then grown: %+v; anchored %+v", f, anchored)
+	}
+	a.ov.dragged.y = -5000
+	a.overlaySync()
+	if a.ov.frame.Y != a.ov.area.Y-layout.Pad {
+		t.Errorf("dragged past the top: %+v", a.ov.frame)
+	}
+	a.answer = answerCard{}
+	a.overlaySync()
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
+	a.overlaySync()
+	if a.ov.frame != anchored {
+		t.Errorf("the next card: %+v, want %+v", a.ov.frame, anchored)
 	}
 }

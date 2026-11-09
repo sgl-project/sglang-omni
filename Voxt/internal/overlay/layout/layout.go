@@ -172,7 +172,9 @@ const (
 	CardRuleTop = 12 // the header to the rule
 	CardRuleGap = 10 // the rule to the text
 	// Where the rule is.
-	CardRuleY   = CardPadTop + CardHeadH + CardRuleTop
+	CardRuleY = CardPadTop + CardHeadH + CardRuleTop
+	// CardBodyMax is the least text a card shows before it scrolls, on a
+	// work area too short to hold more (Voxt's).
 	CardBodyMax = 220
 	CardInset   = 10 // the text's right inset: the scroller's room
 	CardBodyW   = AnswerW - 2*CardPadX - CardInset
@@ -180,7 +182,8 @@ const (
 	CardChrome = CardPadTop + CardHeadH + CardRuleTop + 1 + CardRuleGap + CardPadY
 	CardMsgGap = 8
 	CardMsgH   = 16
-	// CardMaxH is the highest card: the text at its most, and a line.
+	// CardMaxH is the highest card on such a work area: CardBodyMax of
+	// text, and a line.
 	CardMaxH = CardChrome + CardBodyMax + CardMsgGap + CardMsgH
 
 	CardIcon       = 20
@@ -211,14 +214,14 @@ const (
 	ProblemGap  = 8
 )
 
-// CardSize is a size of the answer card: its width and the most its
-// text takes before it scrolls (settings.Features.CardSizes).
-type CardSize struct{ W, BodyMax int }
+// CardSize is a size of the answer card, its width
+// (settings.Features.CardSizes); its height follows its text.
+type CardSize struct{ W int }
 
 // CardSizes are the card's sizes, by settings.Features.CardSize: small
-// (Voxt's 440, CardBodyMax), medium and large, for long answers (#3644
-// FB41: an explained PR was hard to read in the small one).
-var CardSizes = [...]CardSize{{AnswerW, CardBodyMax}, {600, 380}, {760, 560}}
+// (Voxt's 440), medium and large, for long answers (#3644 FB41: an
+// explained PR was hard to read in the small one).
+var CardSizes = [...]CardSize{{AnswerW}, {600}, {760}}
 
 // BodyW is the text's width in a card of size s.
 func (s CardSize) BodyW() int { return s.W - 2*CardPadX - CardInset }
@@ -226,9 +229,6 @@ func (s CardSize) BodyW() int { return s.W - 2*CardPadX - CardInset }
 // BubbleW is a conversation's bubble width in a card of size s: the small
 // card's room beside a bubble, kept.
 func (s CardSize) BubbleW() int { return s.W - (AnswerW - BubbleW) }
-
-// MaxH is the highest card of size s: the text at its most, and a line.
-func (s CardSize) MaxH() int { return CardChrome + s.BodyMax + CardMsgGap + CardMsgH }
 
 // Bars of the waveform (Voxt's): WaveW wide in all, centred in the
 // waveform's slot.

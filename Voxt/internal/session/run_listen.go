@@ -83,6 +83,10 @@ func (r *run) readSelection() string {
 // listen records and recognises: the recognised text, or false when the
 // session ended (cancelled, failed, too short, nothing heard).
 func (r *run) listen() (string, bool) {
+	if r.req.SpeechWait != "" {
+		r.fail(&Problem{Code: ProblemSpeechWait, Err: errors.New(r.req.SpeechWait)})
+		return "", false
+	}
 	cfg := r.m.cfg
 	// The recording, at once: the user is speaking already.
 	capCtx, capCancel := context.WithCancel(r.ctx)
