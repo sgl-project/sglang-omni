@@ -217,10 +217,9 @@ func (a *app) overlaySync() {
 	if a.ov.epoch.IsZero() {
 		a.ov.epoch = time.Now()
 	}
-	pass := (mode == ovRecording || mode == ovWorking) && !a.liveLinesOverflow()
 	defer a.syncLangMenu() // overlay_lang.go: the language menu follows the card
 	if !a.overlayNative() {
-		a.ov.passThrough = pass
+		a.syncPassThrough()
 		return // tests: the state is enough
 	}
 	if a.ov.win == nil {
@@ -229,10 +228,7 @@ func (a *app) overlaySync() {
 		a.ov.win = mygo.NewWindow(opts)
 		a.ov.passThrough = false
 	}
-	if pass != a.ov.passThrough {
-		a.ov.passThrough = pass
-		a.ov.win.SetIgnoreMouseEvents(pass)
-	}
+	a.syncPassThrough()
 	if !was {
 		a.ov.win.SetOpacity(0)
 		a.ov.reveal = true
@@ -250,6 +246,21 @@ func (a *app) overlaySync() {
 	a.ov.win.Invalidate()
 	if !was {
 		showFloating(a.ov.win, frame.X, frame.Y)
+	}
+}
+
+// syncPassThrough lets the pointer through the window while nothing in it
+// takes a click (recording, working), but not while the live text in lines
+// overflows, so that the wheel scrolls it; the measured height of a text
+// can say so after it showed (overlayRestyle).
+func (a *app) syncPassThrough() {
+	pass := (a.ov.mode == ovRecording || a.ov.mode == ovWorking) && !a.liveLinesOverflow()
+	if pass == a.ov.passThrough {
+		return
+	}
+	a.ov.passThrough = pass
+	if a.ov.win != nil {
+		a.ov.win.SetIgnoreMouseEvents(pass)
 	}
 }
 
@@ -341,6 +352,7 @@ func (a *app) overlayRestyle() {
 	moved := frame != a.ov.frame
 	a.ov.w, a.ov.h, a.ov.frame = w, h, frame
 	a.syncLangMenu()
+	a.syncPassThrough()
 	if a.ov.win == nil {
 		return
 	}

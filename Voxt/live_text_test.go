@@ -193,3 +193,28 @@ func TestLiveLinesScroll(t *testing.T) {
 		t.Errorf("back at the end: %+v", *l)
 	}
 }
+
+// TestLiveLinesOverflowMeasured: the live text guessed to fit ten lines
+// lets the pointer through; when its measured height says it does not,
+// the window takes the pointer again, so that the wheel scrolls it rather
+// than the app under the overlay.
+func TestLiveLinesOverflowMeasured(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.measureHook = nil // the guesses until the view measured, then the measures
+	a.prefs.Overlay.LiveLines = true
+	text := strings.Repeat("meet at three ", 20)
+	a.sess = session.Snapshot{ID: "s1", State: session.Recording, Partial: text}
+	a.overlaySync()
+	if !a.ov.passThrough {
+		t.Fatal("a text guessed to fit keeps the pointer from passing through")
+	}
+	line, _ := pillLine(a.pillSession())
+	if a.ov.textW == nil {
+		a.ov.textW = map[ovSized]ovMeasured{}
+	}
+	a.ov.textW[liveLinesKey(line)] = ovMeasured{w: layout.LinesTextW, h: (layout.LinesMax + 2) * layout.LineH}
+	a.overlayRestyle()
+	if a.ov.passThrough {
+		t.Error("the text measured past ten lines still lets the pointer through")
+	}
+}

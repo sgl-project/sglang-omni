@@ -74,6 +74,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Browser text boxes (GitHub and similar)** stop showing "The text did not land where you were typing" when ⌘V actually worked: Chromium-style web editors often report the same Accessibility value after a paste, so the check treats an unchanged web area or contenteditable reading as unverified instead of failed (#3644 FB36).
 - **The preview leaves when the result goes in**: the live text no longer stays over the app for a moment while the result is pasted and checked; a result that cannot go in still comes back in the card.
 - **The command palette in a small window** keeps its margin and rounded corners at the largest interface size, and **App enhancement in a wide window** fills the page under its header instead of stopping 760 points wide.
+- **The wheel scrolls a long preview as soon as it passes ten lines**: when the measured text turned out longer than the first guess, the overlay kept letting the pointer through, and the wheel scrolled the app underneath instead.
 
 ### 中文
 
@@ -147,6 +148,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **浏览器输入框（GitHub 等）**：⌘V 已经粘进输入框时，不再误报“文字没有出现在输入位置”。Chromium 类网页编辑器常在粘贴后仍让无障碍读到相同长度；网页区域或 contenteditable 里若对比结果不变，按“无法校验”处理，仍算插入（#3644 FB36）。
 - **插入时预览立刻收起**：结果开始往 App 里粘贴时浮窗就淡出，不再在刚插入的文字上停一会儿；插不进去的照样回到卡片里。
 - **小窗口里的命令面板**在界面放到最大时也留着边距和圆角；**宽窗口里的应用增强**铺满表头下的整页，不再停在 760 点宽。
+- **预览一超过十行就能用滚轮翻**：实际量出的文字比最初估计的长时，浮窗还让指针穿过去，滚轮滚的是下面的 App。
 
 ## [2.0.1] - 2026-11-07
 
