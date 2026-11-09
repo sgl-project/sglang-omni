@@ -18,20 +18,21 @@ import (
 type Manager struct {
 	cfg Config
 
-	mu         sync.Mutex
-	id         string
-	seq        int64
-	mode       Mode
-	state      State
-	snap       Snapshot
-	timeline   *Timeline
-	archive    *Archive
-	cancel     context.CancelFunc
-	runCtx     context.Context
-	tracks     map[Source]*track
-	trackFails map[Source]int
-	jobGen     int
-	subs       []func(Snapshot)
+	mu            sync.Mutex
+	id            string
+	seq           int64
+	mode          Mode
+	state         State
+	snap          Snapshot
+	timeline      *Timeline
+	archive       *Archive
+	cancel        context.CancelFunc
+	runCtx        context.Context
+	tracks        map[Source]*track
+	trackFails    map[Source]int
+	jobGen        int
+	subs          []func(Snapshot)
+	releaseModels func()
 }
 
 // NewManager returns a meeting manager from cfg.
@@ -126,6 +127,9 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (string, error) {
 	m.state = StateRecording
 	m.snap.State = StateRecording
 	m.snap.Elapsed = m.timeline.Elapsed()
+	if m.cfg.ModelHold != nil {
+		m.releaseModels = m.cfg.ModelHold.Hold()
+	}
 	m.mu.Unlock()
 	m.notify(m.snap)
 	return id, nil
@@ -387,6 +391,10 @@ func (m *Manager) notify(s Snapshot) {
 }
 
 func (m *Manager) resetIdle() {
+	if m.releaseModels != nil {
+		m.releaseModels()
+		m.releaseModels = nil
+	}
 	m.id = ""
 	m.seq = 0
 	m.state = StateIdle

@@ -14,6 +14,29 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store/sqlitestore"
 )
 
+func testManagerHold(t *testing.T, modelHold interface{ Hold() (release func()) }) (*meeting.Manager, context.Context, *fakeClock, string) {
+	t.Helper()
+	ctx := context.Background()
+	dir := t.TempDir()
+	s, err := sqlitestore.Open(ctx, filepath.Join(dir, "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	clk := newFakeClock(time.Unix(1_700_000_000, 0))
+	cfg := meeting.Config{
+		Mic:       newFakeAudio(nil),
+		System:    newFakeAudio(nil),
+		Store:     s.Meetings(),
+		Dir:       filepath.Join(dir, "meetings"),
+		Now:       clk.Now,
+		Privacy:   func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
+		FreeSpace: func(string) (int64, error) { return meeting.DiskMinStartBytes() + 1, nil },
+		ModelHold: modelHold,
+	}
+	return meeting.NewManager(cfg), ctx, clk, dir
+}
+
 func testManager(t *testing.T, micPCM, sysPCM []byte, sysFail bool) (*meeting.Manager, context.Context, *fakeClock, string) {
 	t.Helper()
 	ctx := context.Background()
@@ -120,5 +143,29 @@ func TestPCMWrittenToWAV(t *testing.T) {
 	}
 	if string(got[44:44+len(pcm)]) != string(pcm) {
 		t.Fatal("pcm mismatch in wav")
+	}
+}
+
+type fakeModelHold struct {
+	holds int
+}
+
+func (f *fakeModelHold) Hold() (release func()) {
+	f.holds++
+	return func() { f.holds-- }
+}
+
+func TestManagerModelHold(t *testing.T) {
+	hold := &fakeModelHold{}
+	m, ctx, _, _ := testManagerHold(t, hold)
+	id, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
+	if err != nil || hold.holds != 1 {
+		t.Fatalf("Start: err=%v holds=%d", err, hold.holds)
+	}
+	if err := m.Finish(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if hold.holds != 0 {
+		t.Fatalf("after finish holds=%d", hold.holds)
 	}
 }

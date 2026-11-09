@@ -12,6 +12,7 @@ import (
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -31,6 +32,10 @@ func (a *app) openMeetings() {
 		return
 	}
 	dir := filepath.Join(a.dataDir(), "meetings")
+	var modelHold local.Holder
+	if h, ok := a.local.(local.Holder); ok {
+		modelHold = h
+	}
 	a.meetMgr = meeting.NewManager(meeting.Config{
 		Mic:       session.HelperAudio{H: a.host.sup},
 		System:    session.HelperAudio{H: a.host.sup, Method: proto.MethodCaptureSystem},
@@ -40,6 +45,7 @@ func (a *app) openMeetings() {
 		Privacy:   func() settings.Privacy { return a.prefs.Privacy },
 		Now:       time.Now,
 		FreeSpace: func(path string) (int64, error) { return diskFree(path), nil },
+		ModelHold: modelHold,
 	})
 	a.meetMgr.Subscribe(func(s meeting.Snapshot) {
 		a.post(func() { a.meetingChanged(s) })
