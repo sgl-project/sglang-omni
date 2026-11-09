@@ -141,7 +141,7 @@ func TestAnswerCardButtons(t *testing.T) {
 		snap(a, session.Snapshot{ID: id, State: session.Done, Result: "Answer " + id, Card: true, Delivery: deliver.ReasonNotEditable})
 	}
 	card("c1")
-	tt := cardTester(a)
+	tt := cardTester(t, a)
 	frames(tt)
 	if !tt.HasText("Answer c1") || tt.HasText("No text field is focused: click where it should go, then insert, or copy it.") {
 		t.Errorf("card texts %q", firstTexts(tt))
