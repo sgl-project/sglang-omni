@@ -326,12 +326,13 @@ func (a *app) draftRow(c *ui.Context, id string) {
 	ui.Row(c.Key("draft")).Gap(px(t, sp3)).AlignItems(ui.Start).Margin(px(t, sp2), 0, 0, px(t, 32)).Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp1)).Children(func() {
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
-				ui.Text(c, i18n.T("Speculative decoding")).FontWeight(600)
+				ui.Text(c, i18n.T("Faster transcription")).FontWeight(600)
+				infoTip(c.Key("how"), i18n.T("Speculative decoding: a small draft model proposes several words at a time and the speech model checks them."))
 				if st.Installed {
 					statusMark(c, icons.CheckCircle, k.Success, i18n.T("Installed"))
 				}
 			})
-			caption(c, i18n.T("A small draft model proposes several words at a time and the speech model checks them, so it decodes faster."))
+			caption(c, i18n.T("Download to speed up transcription with this model. You can remove the add-on and keep using the model."))
 			caption(c.Key("size"), modelSizeText(d, st))
 		})
 		ui.Row(c.Key("actions")).Gap(px(t, sp2)).Shrink(0).Children(func() { a.modelActions(c, d, st) })

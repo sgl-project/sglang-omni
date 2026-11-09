@@ -56,7 +56,7 @@ func TestModelsPage(t *testing.T) {
 			t.Errorf("no %q in %q", s, tt.Texts())
 		}
 	}
-	if has(tt, "Silero VAD v6") || has(tt, "Installed") || has(tt, "Qwen3.5 4B OptiQ (4bit)") || has(tt, "Language models no longer used") || has(tt, "Speculative decoding") {
+	if has(tt, "Silero VAD v6") || has(tt, "Installed") || has(tt, "Qwen3.5 4B OptiQ (4bit)") || has(tt, "Language models no longer used") || has(tt, "Faster transcription") {
 		t.Error("the VAD, a language model or a draft is listed, or a model is installed")
 	}
 
@@ -66,7 +66,7 @@ func TestModelsPage(t *testing.T) {
 	seedModels(t, a, models.ASRFast, models.VADSilero, models.LLMTranslate)
 	if !has(tt, "Installed") || !has(tt, "712.8 MB on disk") || !has(tt, "· Used by Transcribe · Translate · Rewrite") ||
 		!has(tt, "Language models no longer used") || !has(tt, "Hy-MT2 1.8B (Q4_K_M)") ||
-		!has(tt, "Speculative decoding") || !has(tt, "262.5 MB download") {
+		!has(tt, "Faster transcription") || !has(tt, "262.5 MB download") {
 		t.Errorf("installed: %q", tt.Texts())
 	}
 	if m, ok := a.featureModel(local.ASR, hotkey.Transcribe); !ok || m.ID != models.ASRFast || m.Name != "Qwen3-ASR 0.6B (4bit)" {
@@ -106,19 +106,19 @@ func TestModelsPageDraftAlone(t *testing.T) {
 	tt.SetSize(windowWidth, 1600)
 	seedModels(t, a, models.ASRFastDraft)
 	a.navigate(modelsPath)
-	if !has(tt, "Speculative decoding") || !has(tt, "262.5 MB on disk") || has(tt, "712.8 MB on disk") {
+	if !has(tt, "Faster transcription") || !has(tt, "262.5 MB on disk") || has(tt, "712.8 MB on disk") {
 		t.Fatalf("the draft alone: %q", tt.Texts())
 	}
 	click(t, tt, "Delete Qwen3-ASR 0.6B DFlash draft…")
 	click(t, tt, "Delete Qwen3-ASR 0.6B DFlash draft")
-	if has(tt, "Speculative decoding") || a.models.Installed(models.ASRFastDraft) {
+	if has(tt, "Faster transcription") || a.models.Installed(models.ASRFastDraft) {
 		t.Errorf("after the delete: %q", tt.Texts())
 	}
 	draft, _ := models.Lookup(models.ASRFastDraft)
 	a.modelStatus[models.ASRFastDraft] = models.Status{Downloading: true, Done: draft.Size() / 4, Total: draft.Size()}
 	a.navigate("/home")
 	a.navigate(modelsPath)
-	if !has(tt, "Speculative decoding") || !has(tt, "Cancel") {
+	if !has(tt, "Faster transcription") || !has(tt, "Cancel") {
 		t.Errorf("downloading: %q", tt.Texts())
 	}
 }
