@@ -119,27 +119,38 @@ func TestSenseVoiceLong(t *testing.T) {
 // TestMossLive: MOSS's live session gets its instruction and hot words,
 // and its partial text comes without the tags.
 func TestMossLive(t *testing.T) {
-	f := newFake(t, omnitest.Opts{Text: mossRaw, Partial: "[0.00][S01]"}, serverLinks(t))
-	st, err := f.asr(t, ASRMoss).Open(context.Background(), asr.StreamRequest{SampleRate: 16000, Lang: "zh", Hints: []string{"Voxt"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sendAll(t, st, tone(1500*time.Millisecond, 0.3))
-	var first asr.Event
-	select {
-	case first = <-st.Events():
-	case <-time.After(10 * time.Second):
-		t.Fatal("no partial before Finish")
-	}
-	if err := st.Finish(); err != nil {
-		t.Fatal(err)
-	}
-	evs := append([]asr.Event{first}, drain(t, st)...)
-	if first.Kind != asr.EventPartial || !strings.HasPrefix(first.Text, "partial ") || evs[len(evs)-1].Result.Text != "你好。Hello there." {
-		t.Errorf("events %+v", evs)
-	}
-	eventually(t, "the live record", func() bool { return len(f.records("live")) == 1 })
-	if live := f.records("live")[0].Fields; live["prompt"] != mossPlainPrompt+" Hotwords: Voxt" || live["language"] != "" {
-		t.Errorf("session %v", live)
+	for _, tc := range []struct {
+		name string
+		live bool
+		want string
+	}{
+		{name: "Final", want: "你好。Hello there."},
+		{name: "LiveResult", live: true, want: "live final"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFake(t, omnitest.Opts{Text: mossRaw, Partial: "[0.00][S01]"}, serverLinks(t))
+			st, err := f.asr(t, ASRMoss).Open(context.Background(), asr.StreamRequest{SampleRate: 16000, Lang: "zh", Hints: []string{"Voxt"}, LiveResult: tc.live})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sendAll(t, st, tone(1500*time.Millisecond, 0.3))
+			var first asr.Event
+			select {
+			case first = <-st.Events():
+			case <-time.After(10 * time.Second):
+				t.Fatal("no partial before Finish")
+			}
+			if err := st.Finish(); err != nil {
+				t.Fatal(err)
+			}
+			evs := append([]asr.Event{first}, drain(t, st)...)
+			if first.Kind != asr.EventPartial || !strings.HasPrefix(first.Text, "partial ") || evs[len(evs)-1].Result.Text != tc.want {
+				t.Errorf("events %+v", evs)
+			}
+			eventually(t, "the live record", func() bool { return len(f.records("live")) == 1 })
+			if live := f.records("live")[0].Fields; live["prompt"] != mossPlainPrompt+" Hotwords: Voxt" || live["language"] != "" {
+				t.Errorf("session %v", live)
+			}
+		})
 	}
 }

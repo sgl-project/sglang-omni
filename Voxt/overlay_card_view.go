@@ -62,8 +62,12 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 		ui.Text(c, v.title).FontSize(layout.CardTitleSize).FontWeight(600).TextColor(ui.RGB(255, 255, 255)).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
 		if v.busy {
 			// Voxt's spinner: an arc turning once in 0.9 s, 88 %.
+			busy := i18n.T("Translating…")
+			if v.writing {
+				busy = i18n.T("Writing…")
+			}
 			ui.Icon(c, icons.VoxtSpinner.Linear).Size(12, 12).TextColor(ui.RGBA(255, 255, 255, 0.88)).Shrink(0).
-				Rotate(float32(math.Mod(a.overlayPhase()*400, 360))).Label(i18n.T("Translating…"))
+				Rotate(float32(math.Mod(a.overlayPhase()*400, 360))).Label(busy)
 		}
 		ui.Box(c).Grow(1).MinWidth(0) // Voxt's Spacer(minLength: 12): the gap
 	}
@@ -277,8 +281,9 @@ func (a *app) cardBlockView(c *ui.Context, b cardBlock) {
 }
 
 // cardBubbleView is a conversation's turn (Voxt's
-// RewriteConversationBubble): 340 wide, the user's on the right; an
-// answer shows Copy under the pointer.
+// RewriteConversationBubble): 340 wide in the small card (its text's
+// wrap, and the padding), the user's on the right; an answer shows Copy
+// under the pointer.
 func (a *app) cardBubbleView(c *ui.Context, b cardBlock) {
 	justify := ui.Start
 	bg, line := ui.RGBA(255, 255, 255, 0.06), ui.RGBA(255, 255, 255, 0.08)
@@ -293,7 +298,7 @@ func (a *app) cardBubbleView(c *ui.Context, b cardBlock) {
 		}
 	}
 	ui.Row(c).Justify(justify).Margin(b.gap, 0, 0, 0).Children(func() {
-		col := ui.Column(c.Key("bubble")).Width(layout.BubbleW).Shrink(0).Padding(layout.BubblePadY-layout.Border, layout.BubblePadX-layout.Border).Gap(layout.BubbleTitleGap).
+		col := ui.Column(c.Key("bubble")).Width(b.text.wrap+2*layout.BubblePadX).Shrink(0).Padding(layout.BubblePadY-layout.Border, layout.BubblePadX-layout.Border).Gap(layout.BubbleTitleGap).
 			Radius(layout.BubbleRadius).Background(bg).Border(1, line)
 		if b.user {
 			col.AlignItems(ui.End)
@@ -301,7 +306,7 @@ func (a *app) cardBubbleView(c *ui.Context, b cardBlock) {
 		hover := !b.user && !b.live && col.Hovered()
 		col.Children(func() {
 			if b.title.text != "" {
-				ui.Text(c, b.title.text).FontSize(layout.BubbleTitleSize).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, titleA)).SingleLine().Ellipsis("…").MaxWidth(layout.BubbleW - 2*layout.BubblePadX)
+				ui.Text(c, b.title.text).FontSize(layout.BubbleTitleSize).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, titleA)).SingleLine().Ellipsis("…").MaxWidth(b.text.wrap)
 			}
 			t := ui.Text(c, b.text.text).FontSize(layout.BubbleTextSize).FontWeight(500).TextColor(ui.RGBA(255, 255, 255, textA))
 			if b.user {

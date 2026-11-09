@@ -289,8 +289,25 @@ func (a *app) soundsRow(c *ui.Context) {
 				}
 			})
 		}
+		// Voxt 1.x's default pair (its "soft" preset), which the import
+		// turned into the family's default.
+		start, stop := sounds.System(legacyStartSound), sounds.System(legacyStopSound)
+		if a.prefs.Audio.StartSound != start || a.prefs.Audio.StopSound != stop {
+			b := ghostButton(c.Key("audio-legacy-sounds"), i18n.T("Use Voxt 1.x's sounds")).Tooltip(i18n.T("Pop when recording starts and Tink when it stops, as Voxt 1.x played them."))
+			if b.Clicked() {
+				a.updateSettings(func(s *settings.Settings) { s.Audio.StartSound, s.Audio.StopSound = start, stop })
+				a.previewSound(recordStartEvent, start, "")
+			}
+		}
 	})
 }
+
+// legacyStartSound and legacyStopSound are the macOS system sounds of Voxt
+// 1.x's default cues ("soft": Pop, then Tink).
+const (
+	legacyStartSound = "Pop"
+	legacyStopSound  = "Tink"
+)
 
 // tryButton is Try sound: iconButton's face, its note in the accent while
 // the preview of key plays.

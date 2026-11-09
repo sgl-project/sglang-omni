@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/egoist/mygo/ui"
@@ -26,14 +27,14 @@ func trySample() string {
 
 // ---- Translate and Rewrite ----
 
-// translateSettings are Translate's own: the target language, the
-// clean-up of speech, the card.
+// translateSettings are Translate's own: the target language and the
+// clean-up of speech.
 func (a *app) translateSettings(c *ui.Context) {
 	t := c.Theme()
 	u := a.fui(hotkey.Translate)
 	f := &a.prefs.Features.Translate
 	sectionTitle(c, i18n.T("Translation"))
-	opts := []string{i18n.T("Automatic: %s", uitext.TargetLanguageLabel(session.TranslateTarget(settings.Settings{General: a.prefs.General}, i18n.Locale(), "")))}
+	opts := []string{i18n.T("Automatic (now: %s)", uitext.TargetLanguageLabel(session.TranslateTarget(settings.Settings{General: a.prefs.General}, i18n.Locale(), "")))}
 	for _, code := range compose.TargetLanguages {
 		opts = append(opts, uitext.TargetLanguageLabel(code))
 	}
@@ -62,17 +63,42 @@ func (a *app) translateSettings(c *ui.Context) {
 				a.updateSettings(func(s *settings.Settings) { s.Features.Translate.Cleanup = on })
 			}
 		})
-	settingRow(c, "tl-card", i18n.T("Show the result in a card"),
-		i18n.T("Shows the translation in the answer card, to read, copy or insert, instead of typing it (or replacing the selection). Selected text that cannot be edited, such as a web page, always goes to the card."), func() {
-			if ui.Switch(c.Key("tl-card-switch"), &f.ShowCard).Label(i18n.T("Show the result in a card")).Changed() {
-				on := f.ShowCard
-				a.updateSettings(func(s *settings.Settings) { s.Features.Translate.ShowCard = on })
-			}
-		})
 }
 
-// rewriteSettings are Rewrite's own: the instruction's clean-up. Every
-// answer shows in the answer card (Voxt's), nothing to choose there.
+// cardSetting is feature's Answer card section (p is the page's prefix):
+// the switch on Transcribe and Translate, one for both (Rewrite always
+// shows answers in the card), and the card's size, each feature its own.
+func (a *app) cardSetting(c *ui.Context, p, feature string) {
+	sectionTitle(c, i18n.T("Answer card"))
+	f := &a.prefs.Features
+	if feature != hotkey.Rewrite {
+		settingRow(c, p+"-card", i18n.T("Show the result in a card"),
+			i18n.T("Shows transcribed and translated results in the answer card, to read, copy or insert, instead of typing them (or replacing the selection). Transcribe and Translate share this switch. Text that cannot go in, as with no text field in front, shows in the card anyway."), func() {
+				if ui.Switch(c.Key(p+"-card-switch"), &f.ShowCard).Label(i18n.T("Show the result in a card")).Changed() {
+					on := f.ShowCard
+					a.updateSettings(func(s *settings.Settings) { s.Features.ShowCard = on })
+				}
+			})
+	}
+	size := f.CardSize(feature)
+	settingRow(c, p+"-card-size", i18n.T("Card size"), i18n.T("A larger card shows more of a long answer before it scrolls. Each feature keeps its own size."), func() {
+		if ui.Segmented(c.Key(p+"-card-size-seg"), &size, i18n.T("Small"), i18n.T("Medium"), i18n.T("Large")).Label(i18n.T("Card size")).Changed() {
+			step := size
+			a.updateSettings(func(s *settings.Settings) {
+				if step == 0 {
+					delete(s.Features.CardSizes, feature)
+					return
+				}
+				if s.Features.CardSizes == nil {
+					s.Features.CardSizes = map[string]int{}
+				}
+				s.Features.CardSizes[feature] = step
+			})
+		}
+	})
+}
+
+// rewriteSettings are Rewrite's own: the instruction's clean-up.
 func (a *app) rewriteSettings(c *ui.Context) {
 	f := &a.prefs.Features.Rewrite
 	sectionTitle(c, i18n.T("Rewriting"))
@@ -107,13 +133,34 @@ func promptOf(s settings.Settings, feature string) string {
 	return featureOf(s, feature).Prompt
 }
 
+// promptBuiltin is the built-in system prompt before user overrides.
+func (a *app) promptBuiltin(feature string) string {
+	u := a.fui(feature)
+	was := u.prompt
+	wasDirty := u.promptDirty
+	u.prompt = ""
+	u.promptDirty = false
+	out, err := a.composedPreview(feature)
+	u.prompt, u.promptDirty = was, wasDirty
+	if err != nil {
+		return ""
+	}
+	return out.System
+}
+
 // promptSync sets the rules from the settings when they changed
 // elsewhere and nothing typed waits to be saved.
 func (a *app) promptSync(feature string) {
 	u := a.fui(feature)
 	saved := promptOf(a.prefs, feature)
-	if !u.promptDirty && saved != u.promptSeen {
-		u.prompt, u.promptSeen = saved, saved
+	builtin := a.promptBuiltin(feature)
+	if !u.promptDirty {
+		u.promptSeen = saved
+		if saved == "" {
+			u.prompt = builtin
+		} else {
+			u.prompt = saved
+		}
 	}
 }
 
@@ -122,7 +169,8 @@ func (a *app) savePrompt(feature string) {
 	u := a.fui(feature)
 	u.promptDirty = false
 	v := u.prompt
-	if strings.TrimSpace(v) == "" {
+	builtin := a.promptBuiltin(feature)
+	if strings.TrimSpace(v) == "" || strings.TrimSpace(v) == strings.TrimSpace(builtin) {
 		v = ""
 	}
 	u.promptSeen = v
@@ -145,12 +193,45 @@ func (a *app) savePrompt(feature string) {
 // they are saved (they are saved at once when the field loses focus).
 const promptSaveDelay = 800 * time.Millisecond
 
+// The rules field's height in lines: it grows with its text between them.
+const (
+	promptMinLines = 4
+	promptMaxLines = 36
+)
+
+// findFolded returns where query is in text, ignoring case, as rune
+// offsets [start, end), the text fields' unit; none for a blank query.
+func findFolded(text, query string) [][2]int {
+	if strings.TrimSpace(query) == "" {
+		return nil
+	}
+	haystack, needle := []rune(text), []rune(query)
+	var out [][2]int
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		j := 0
+		for j < len(needle) && unicode.ToLower(haystack[i+j]) == unicode.ToLower(needle[j]) {
+			j++
+		}
+		if j == len(needle) {
+			out = append(out, [2]int{i, i + j})
+			i += j - 1
+		}
+	}
+	return out
+}
+
 func (a *app) featureRules(c *ui.Context, feature string) {
 	t := c.Theme()
 	k := tok(t)
 	p := uitext.FeaturePrefix(feature)
 	u := a.fui(feature)
 	a.promptSync(feature)
+	if !a.settingsOpen && c.Shortcut(ui.Cmd, ui.KeyF) {
+		u.rules, u.findFocus = true, true
+	}
+	if !u.rules {
+		u.promptTop = false // it opens at the start again
+	}
 	// Folded by default: long rules would push the rest of the page down.
 	// Its title tells how long the rules are.
 	summary := i18n.T("Not set")
@@ -163,19 +244,65 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 		var label, placeholder string
 		switch feature {
 		case hotkey.Translate:
-			caption(c, i18n.T("These rules are merged with the built-in translation rules; where they disagree, yours win."))
-			label = i18n.T("Your rules for Translate")
+			caption(c, i18n.T("This is sent to the model as the system prompt. Variables are filled in when you dictate or try a sample."))
+			label = i18n.T("System prompt for Translate")
 			placeholder = i18n.T("For example: use British spelling; keep product names in English; write dates as 15 October 2026.")
 		case hotkey.Rewrite:
-			caption(c, i18n.T("These rules are merged with the built-in writing rules; where they disagree, yours win."))
-			label = i18n.T("Your rules for Rewrite")
+			caption(c, i18n.T("This is sent to the model as the system prompt. Variables are filled in when you dictate or try a sample."))
+			label = i18n.T("System prompt for Rewrite")
 			placeholder = i18n.T("For example: write plainly, without emoji; sign mails with my first name.")
 		default:
-			caption(c, i18n.T("These rules are merged with the built-in clean-up rules; where they disagree, yours win."))
-			label = i18n.T("Your rules for Transcribe")
+			caption(c, i18n.T("This is sent to the model as the system prompt. Variables are filled in when you dictate or try a sample."))
+			label = i18n.T("System prompt for Transcribe")
 			placeholder = i18n.T("For example: write numbers as digits; keep English product names as they are; end every sentence with a full stop.")
 		}
-		in := ui.TextArea(c.Key(p+"-prompt"), &u.prompt).Label(label).Placeholder(placeholder).MinHeight(px(t, 88)).MaxHeight(px(t, 320))
+		caption(c, i18n.T("Rules act after recognition, on the text the speech model produced. Speech hints (Dictionary page) only tell the speech model which words to expect; punctuation, format and fillers are decided here."))
+		matches := findFolded(u.prompt, u.find)
+		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
+			find := searchField(c, p+"-find", &u.find, i18n.T("Find in the prompt"), px(t, 320))
+			if u.findFocus {
+				u.findFocus = false
+				find.Focus()
+			}
+			if find.Changed() {
+				u.found = 0
+			}
+			if find.Submitted() && len(matches) > 0 {
+				u.found = u.found%len(matches) + 1
+				u.findSelect = true
+			}
+			switch {
+			case strings.TrimSpace(u.find) == "":
+			case len(matches) == 0:
+				caption(c, i18n.T("Not found")).SingleLine().Shrink(0)
+			case u.found > 0:
+				caption(c, i18n.T("%d of %d", u.found, len(matches))).SingleLine().Shrink(0)
+			default:
+				caption(c, i18n.N(len(matches), "%d match", "%d matches", len(matches))).SingleLine().Shrink(0)
+			}
+		})
+		// As high as the rules, up to promptMaxLines: a long prompt reads
+		// down the page instead of in a small box; past that the field
+		// scrolls, so that Find can bring a match into view.
+		in := ui.TextArea(c.Key(p+"-prompt"), &u.prompt).Label(label).Placeholder(placeholder).Lines(promptMinLines, promptMaxLines)
+		if len(matches) > 0 {
+			ranges := make([]ui.TextRange, len(matches))
+			for i, m := range matches {
+				ranges[i] = ui.TextRange{Start: m[0], End: m[1], Color: k.Accent, Weight: 600}
+				if i == u.found-1 {
+					ranges[i].Weight = 800
+				}
+			}
+			in.TextRanges(ranges...)
+		}
+		if !u.promptTop {
+			u.promptTop = true
+			in.SetTextSelection(0, 0)
+		}
+		if u.findSelect && u.found > 0 && u.found <= len(matches) {
+			u.findSelect = false
+			in.SetTextSelection(matches[u.found-1][0], matches[u.found-1][1])
+		}
 		if in.Changed() {
 			u.promptDirty = true
 			u.promptSeq++
@@ -193,9 +320,10 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 		}
 		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
 			caption(c, i18n.T("Variables (click one to copy it):")).Grow(1).MinWidth(0)
-			empty := u.prompt == "" && promptOf(a.prefs, feature) == ""
-			if ghostIconButton(c.Key(p+"-prompt-reset"), icons.Refresh, i18n.T("Reset to default")).Label(i18n.T("Reset your rules")).Disabled(empty).Clicked() {
-				u.prompt = ""
+			builtin := a.promptBuiltin(feature)
+			empty := promptOf(a.prefs, feature) == "" && strings.TrimSpace(u.prompt) == strings.TrimSpace(builtin)
+			if ghostIconButton(c.Key(p+"-prompt-reset"), icons.Refresh, i18n.T("Reset to default")).Label(i18n.T("Reset to default prompt")).Disabled(empty).Clicked() {
+				u.prompt = builtin
 				a.savePrompt(feature)
 			}
 		})
@@ -218,7 +346,7 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 				})
 			}
 		})
-		collapsible(c.Key(p+"-preview"), i18n.T("Show the full prompt"), &u.preview, nil, func() {
+		collapsible(c.Key(p+"-preview"), i18n.T("Example user message"), &u.preview, nil, func() {
 			a.previewBody(c, feature)
 		})
 	})
@@ -271,15 +399,11 @@ func (a *app) previewBody(c *ui.Context, feature string) {
 		caption(c, err.Error())
 		return
 	}
-	caption(c, i18n.T("Your dictionary's terms and App enhancement's scene are added when they apply."))
-	block := func(key, title, text string) {
-		ui.Column(c.Key(key)).Gap(px(t, 4)).Children(func() {
-			ui.Text(c, title).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(k.Text2)
-			fillCard(c).Padding(px(t, sp3)).Children(func() {
-				ui.Text(c, text).FontSize(px(t, fsCaption)).Font("monospace").Selectable()
-			})
+	caption(c, i18n.T("Your dictionary's terms and App enhancement's scene are added to the system prompt when they apply."))
+	ui.Column(c.Key(p + "-preview-user")).Gap(px(t, 4)).Children(func() {
+		ui.Text(c, i18n.T("User message (an example)")).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(k.Text2)
+		fillCard(c).Padding(px(t, sp3)).Children(func() {
+			ui.Text(c, out.User).FontSize(px(t, fsCaption)).Font("monospace").Selectable()
 		})
-	}
-	block(p+"-preview-system", i18n.T("System prompt"), out.System)
-	block(p+"-preview-user", i18n.T("User message (an example)"), out.User)
+	})
 }

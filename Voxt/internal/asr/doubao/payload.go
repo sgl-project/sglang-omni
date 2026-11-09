@@ -1,6 +1,7 @@
 package doubao
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -26,8 +27,12 @@ const (
 	// audio packet).
 	modeDuplex
 	// modeNostream: /bigmodel_nostream, streaming input with results only
-	// every 15 s or at the end; it alone takes audio.language.
+	// every 15 s or at the end; it takes audio.language.
 	modeNostream
+	// modeFlash: the flash file recognition (flash.go), the whole
+	// recording in one request; it takes audio.language and the
+	// nostream endpoint's hot words.
+	modeFlash
 )
 
 // modeOf tells the endpoint's mode by its path; anything else (a relay, a
@@ -44,7 +49,8 @@ func modeOf(u *url.URL) mode {
 }
 
 // Hot word budgets: the duplex endpoints take "100 tokens" of hot words,
-// the nostream one 5000 words (the docs, corpus.context).
+// the nostream one and the flash recognition 5000 words (the docs,
+// corpus.context).
 const (
 	streamHintTokens = 100
 	nostreamHints    = 5000
@@ -71,6 +77,8 @@ type reqAudio struct {
 	Bits     int    `json:"bits"`
 	Channel  int    `json:"channel"`
 	Language string `json:"language,omitempty"`
+	// Data is the flash recognition's recording, base64.
+	Data string `json:"data,omitempty"`
 }
 
 type reqRequest struct {
@@ -108,6 +116,27 @@ type contextItem struct {
 // buildRequest is the full client request for req on an endpoint of mode
 // m, with prompt the request's prompt or the provider's.
 func buildRequest(m mode, req asr.StreamRequest, prompt string) ([]byte, error) {
+	r, err := newRequest(m, req.Lang, req.Hints, prompt)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(r)
+}
+
+// flashRequest is the flash recognition's request for req: its
+// recording, audio in format, and its language, hints and prompt.
+func flashRequest(req asr.FileRequest, format string, audio []byte) ([]byte, error) {
+	r, err := newRequest(modeFlash, req.Lang, req.Hints, strings.TrimSpace(req.Prompt))
+	if err != nil {
+		return nil, err
+	}
+	r.Audio.Format, r.Audio.Data = format, base64.StdEncoding.EncodeToString(audio)
+	return json.Marshal(r)
+}
+
+// newRequest is the request of mode m for the language hint langHint, the
+// hints and the prompt, without the audio.
+func newRequest(m mode, langHint string, hints []string, prompt string) (request, error) {
 	r := request{
 		User: reqUser{UID: "voxt"},
 		Audio: reqAudio{
@@ -124,14 +153,16 @@ func buildRequest(m mode, req asr.StreamRequest, prompt string) ([]byte, error) 
 	if m == modeAsync {
 		r.Request.EnableNonstream = true
 	}
-	lang, variant := language(req.Lang)
-	if m == modeNostream {
+	lang, variant := language(langHint)
+	if m == modeNostream || m == modeFlash {
 		r.Audio.Language = lang
 	}
-	r.Request.OutputZhVariant = variant
+	if m != modeFlash { // note (luojiaxuan): the flash recognition documents no output_zh_variant
+		r.Request.OutputZhVariant = variant
+	}
 
 	var cc corpusContext
-	for _, w := range hotwords(req.Hints, m) {
+	for _, w := range hotwords(hints, m) {
 		cc.Hotwords = append(cc.Hotwords, hotword{Word: w})
 	}
 	if p := strings.TrimSpace(prompt); p != "" {
@@ -141,11 +172,11 @@ func buildRequest(m mode, req asr.StreamRequest, prompt string) ([]byte, error) 
 	if len(cc.Hotwords) > 0 || len(cc.ContextData) > 0 {
 		ctx, err := json.Marshal(cc)
 		if err != nil {
-			return nil, err
+			return request{}, err
 		}
 		r.Request.Corpus = &reqCorpus{Context: string(ctx)}
 	}
-	return json.Marshal(r)
+	return r, nil
 }
 
 // hotwords cleans the hints (one line each, trimmed, no duplicates by
@@ -163,7 +194,7 @@ func hotwords(hints []string, m mode) []string {
 		if seen[k] {
 			continue
 		}
-		if m == modeNostream {
+		if m == modeNostream || m == modeFlash {
 			if len(out) == nostreamHints {
 				break
 			}

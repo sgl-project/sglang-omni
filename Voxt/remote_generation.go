@@ -2,9 +2,11 @@ package main
 
 // A remote language model's generation settings in its dialog
 // (remote_dialog.go), field for field as Voxt 1.x had them: Generation
-// settings, the service's own options, then the folding Advanced and
-// Expert sections, each field only where the service takes it
-// (providers.Capabilities).
+// settings, the service's own options, then the folding Advanced section,
+// each field only where the service takes it (providers.Capabilities).
+// Unlike 1.x, every sampling field (temperature, top P, top K, min P, the
+// penalties) is in Advanced, folded by default, and so are 1.x's Expert
+// JSON fields (the extra body, Ollama's options).
 
 import (
 	"math"
@@ -32,7 +34,7 @@ type genForm struct {
 	verbosity, keepAlive            string
 	usage                           bool // oMLX: usage in stream events (on by default)
 	options, extraBody              string
-	advanced, expert                bool // the folding sections, open
+	advanced                        bool // the folding section, open
 }
 
 // The menus' choices: values and their titles.
@@ -275,14 +277,6 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 	if caps.MaxOutputTokens {
 		num("gen-max", i18n.T("Max output tokens (optional)"), i18n.T("e.g. 4096"), &f.maxTokens)
 	}
-	pair(func() {
-		if caps.Temperature {
-			half("gen-temp", i18n.T("Temperature"), "0.2", &f.temperature)
-		}
-		if caps.TopP {
-			half("gen-topp", "Top P", "0.9", &f.topP)
-		}
-	})
 	if caps.Verbosity {
 		fieldInfo(c, i18n.T("Verbosity"), "", func() {
 			ui.Select(c.Key("gen-verbosity"), &f.verbosity, titles(verbosities, verbosityTitle)).Label(i18n.T("Verbosity")).Width(px(t, 180))
@@ -295,7 +289,39 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 		ui.Switch(c.Key("gen-usage"), &f.usage).Label(i18n.T("Usage in stream events"))
 	}
 
+	// The sampling fields: empty sends nothing, and the service uses its
+	// own default for the model.
+	serviceDefault := i18n.T("Service default")
 	collapsible(c, i18n.T("Advanced"), &f.advanced, nil, func() {
+		pair(func() {
+			if caps.Temperature {
+				half("gen-temp", i18n.T("Temperature"), serviceDefault, &f.temperature)
+			}
+			if caps.TopP {
+				half("gen-topp", "Top P", serviceDefault, &f.topP)
+			}
+		})
+		pair(func() {
+			if caps.TopK {
+				half("gen-topk", "Top K", serviceDefault, &f.topK)
+			}
+			if caps.MinP {
+				half("gen-minp", "Min P", serviceDefault, &f.minP)
+			}
+		})
+		switch {
+		case caps.FrequencyOnly:
+			num("gen-frequency", i18n.T("Frequency penalty"), serviceDefault, &f.frequency)
+		case caps.Penalties:
+			pair(func() {
+				half("gen-presence", i18n.T("Presence penalty"), serviceDefault, &f.presence)
+				half("gen-frequency", i18n.T("Frequency penalty"), serviceDefault, &f.frequency)
+			})
+			num("gen-repetition", i18n.T("Repetition penalty"), serviceDefault, &f.repetition)
+		}
+		if caps.Seed {
+			num("gen-seed", i18n.T("Seed"), "42", &f.seed)
+		}
 		if caps.ResponseFormat {
 			formats := responseFormats[:2]
 			if caps.JSONSchema {
@@ -308,27 +334,6 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 				ui.TextArea(c.Key("gen-schema"), &f.schema).Label("JSON Schema").Placeholder(`{"type": "object", …}`).MinHeight(px(t, 96))
 			}
 		}
-		pair(func() {
-			if caps.TopK {
-				half("gen-topk", "Top K", "40", &f.topK)
-			}
-			if caps.MinP {
-				half("gen-minp", "Min P", "0.05", &f.minP)
-			}
-		})
-		if caps.Seed {
-			num("gen-seed", i18n.T("Seed"), "42", &f.seed)
-		}
-		switch {
-		case caps.FrequencyOnly:
-			num("gen-frequency", i18n.T("Frequency penalty"), "0", &f.frequency)
-		case caps.Penalties:
-			pair(func() {
-				half("gen-presence", i18n.T("Presence penalty"), "0", &f.presence)
-				half("gen-frequency", i18n.T("Frequency penalty"), "0", &f.frequency)
-			})
-			num("gen-repetition", i18n.T("Repetition penalty"), "1.1", &f.repetition)
-		}
 		if caps.Logprobs {
 			ui.Switch(c.Key("gen-logprobs"), &f.logprobs).Label("Logprobs")
 			if f.logprobs {
@@ -340,19 +345,15 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 				ui.TextArea(c.Key("gen-stop"), &f.stop).Label(i18n.T("Stop sequences")).Placeholder(i18n.T("One stop sequence per line")).MinHeight(px(t, 56))
 			})
 		}
+		if caps.ExtraBody {
+			fieldInfo(c, i18n.T("Extra Body JSON"), i18n.T("Merged into the request body after Voxt's own fields, so its keys win."), func() {
+				ui.TextArea(c.Key("gen-extra"), &f.extraBody).Label(i18n.T("Extra Body JSON")).Placeholder(`{"key": "value"}`).MinHeight(px(t, 72))
+			})
+		}
+		if caps.Options {
+			fieldInfo(c, "Options JSON", i18n.T("Merged into Ollama's options, so its keys win."), func() {
+				ui.TextArea(c.Key("gen-options"), &f.options).Label("Options JSON").Placeholder(`{"num_ctx": 8192}`).MinHeight(px(t, 72))
+			})
+		}
 	})
-	if caps.ExtraBody || caps.Options {
-		collapsible(c, i18n.T("Expert"), &f.expert, nil, func() {
-			if caps.ExtraBody {
-				fieldInfo(c, i18n.T("Extra Body JSON"), i18n.T("Merged into the request body after Voxt's own fields, so its keys win."), func() {
-					ui.TextArea(c.Key("gen-extra"), &f.extraBody).Label(i18n.T("Extra Body JSON")).Placeholder(`{"key": "value"}`).MinHeight(px(t, 72))
-				})
-			}
-			if caps.Options {
-				fieldInfo(c, "Options JSON", i18n.T("Merged into Ollama's options, so its keys win."), func() {
-					ui.TextArea(c.Key("gen-options"), &f.options).Label("Options JSON").Placeholder(`{"num_ctx": 8192}`).MinHeight(px(t, 72))
-				})
-			}
-		})
-	}
 }

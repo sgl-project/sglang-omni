@@ -48,7 +48,7 @@ func (a *app) shortcutsSettings(c *ui.Context) {
 				}
 			}, nil)
 	}
-	a.shortcutPresetRow(c)
+	a.shortcutPresetPicker(c, "sc")
 	f := a.prefs.Features
 	keysW := px(t, 96)
 	card(c.Key("sc-table")).Gap(0).Padding(px(t, sp2)).Children(func() {
@@ -62,6 +62,9 @@ func (a *app) shortcutsSettings(c *ui.Context) {
 			ui.Box(c).Width(px(t, shortcutMarksW+14+sp2)).Shrink(0) // the marks and the chevron
 		})
 		for _, feat := range append(append([]string{}, hotkey.Features...), hotkey.PasteLast, hotkey.CancelID, hotkey.Note) {
+			if f.IsHidden(feat) {
+				continue
+			}
 			hs := hotkey.HotkeysOf(f, feat)
 			problems := uitext.HotkeyProblems(f, feat) // feature_keys_text.go
 			if len(hs) == 0 {
@@ -160,16 +163,39 @@ func presetTitle(p string) string {
 		return i18n.T("Right ⌥ (default)")
 	case settings.PresetFn:
 		return i18n.T("fn (Auralink's keys)")
+	case settings.PresetCommand:
+		return i18n.T("⌘ combination")
+	case settings.PresetMouseMiddle:
+		return i18n.T("Middle mouse + fn⇧")
 	}
 	return i18n.T("Custom")
 }
 
-// shortcutPresetRow is the preset: the one the shortcuts follow (Custom
-// when none), and under fn's what else reacts to fn.
-func (a *app) shortcutPresetRow(c *ui.Context) {
+// presetAbout is one line on who a preset suits (setup guide).
+func presetAbout(p string) string {
+	switch p {
+	case settings.PresetOption:
+		return i18n.T("Right ⌥: one handed, Voxt's default; good when fn is the Globe key or shared with Auralink.")
+	case settings.PresetFn:
+		return i18n.T("fn: matches Auralink and many 1.x setups; watch for Globe-key and input-source clashes.")
+	case settings.PresetCommand:
+		return i18n.T("⌘ combination: right ⌘ only, away from letter keys; for users who keep Option for input.")
+	case settings.PresetMouseMiddle:
+		return i18n.T("Middle mouse + fn⇧: click the wheel to transcribe, double-click to rewrite; needs Accessibility for mouse shortcuts.")
+	}
+	return ""
+}
+
+// shortcutPresetPicker is the preset dropdown and warnings (settings and
+// the setup guide). key prefixes control ids ("sc" or "ob").
+func (a *app) shortcutPresetPicker(c *ui.Context, key string) {
 	t := c.Theme()
 	cur := settings.PresetOf(a.prefs.Features)
-	settingRow(c, "sc-preset", i18n.T("Preset"), i18n.T("Sets Transcribe, Translate, Rewrite and Paste the last result at once. A shortcut you changed yourself stays as it is."), func() {
+	about := i18n.T("Sets Transcribe, Translate, Rewrite and Paste the last result at once. A shortcut you changed yourself stays as it is.")
+	if key == "ob" {
+		about = i18n.T("Pick the set of shortcuts you want. You can change them later in Settings → Shortcuts.")
+	}
+	settingRow(c, key+"-preset", i18n.T("Preset"), about, func() {
 		var opts []string
 		for _, p := range settings.Presets {
 			opts = append(opts, presetTitle(p))
@@ -178,7 +204,7 @@ func (a *app) shortcutPresetRow(c *ui.Context) {
 			opts = append(opts, presetTitle(cur))
 		}
 		sel := presetTitle(cur)
-		if ui.Select(c.Key("sc-preset-sel"), &sel, opts).Label(i18n.T("Shortcut preset")).Width(px(t, 220)).Changed() {
+		if ui.Select(c.Key(key+"-preset-sel"), &sel, opts).Label(i18n.T("Shortcut preset")).Width(px(t, 220)).Changed() {
 			for _, p := range settings.Presets {
 				if presetTitle(p) == sel {
 					a.applyShortcutPreset(p)
@@ -186,9 +212,22 @@ func (a *app) shortcutPresetRow(c *ui.Context) {
 			}
 		}
 	})
-	if cur == settings.PresetFn {
+	if line := presetAbout(cur); line != "" && key == "ob" {
+		caption(c, line)
+	}
+	a.shortcutPresetWarnings(c, cur)
+}
+
+// shortcutPresetWarnings are preset-specific cautions under the dropdown.
+func (a *app) shortcutPresetWarnings(c *ui.Context, cur string) {
+	switch cur {
+	case settings.PresetFn:
 		warnLine(c, i18n.T("Auralink uses fn too: while it runs, both apps react to these keys."))
 		warnLine(c, i18n.T("macOS may react to fn too (the Globe key). If it gets in the way, set it to Do Nothing in System Settings → Keyboard."))
+	case settings.PresetMouseMiddle:
+		if !a.hotkeys.Installed {
+			warnLine(c, i18n.T("Mouse-button shortcuts need Accessibility. Use Start in the guide, or grant it in Permissions."))
+		}
 	}
 }
 

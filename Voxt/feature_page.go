@@ -59,8 +59,21 @@ type featureUI struct {
 	// rules and preview: the Your rules section and its full prompt, open.
 	rules   bool
 	preview bool
+	// find is the text to find in the rules (⌘F); found the match that
+	// Return selected last, from 1 (0: none yet); findFocus and
+	// findSelect ask, for the next build, for the find field's focus and
+	// for the rules field to select match found.
+	find       string
+	found      int
+	findFocus  bool
+	findSelect bool
+	// promptTop: the rules field was put at its start since the section
+	// opened (a text area otherwise shows the end, where its caret is).
+	promptTop bool
 	// block says why the Try area's Start did not start.
 	block *sessionNotice
+	// endWord is the end word's select and typed word (Transcribe).
+	endWord keyRow
 }
 
 // fui is feature's page state.
@@ -102,12 +115,12 @@ func (a *app) rewritePage(c *ui.Context) { a.featurePage(c, hotkey.Rewrite) }
 func (a *app) featurePage(c *ui.Context, feature string) {
 	t := c.Theme()
 	p := uitext.FeaturePrefix(feature)
-	pageHeader(c, uitext.FeatureTitle(feature), nil)
+	columnPageHeader(c, uitext.FeatureTitle(feature), nil)
 	if a.sess.Try && a.sess.State == session.Recording {
 		c.After(250 * time.Millisecond) // the Try area's clock
 	}
 	ui.Scroll(c.Key(p + "-scroll")).Grow(1).MinHeight(0).Children(func() {
-		ui.Column(c).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp3)).MaxWidth(px(t, 880)).Children(func() {
+		pageColumn(c).Gap(px(t, sp3)).Children(func() {
 			switch feature {
 			case hotkey.Translate:
 				caption(c, i18n.T("Select text and press the shortcut to translate it in place; with nothing selected, speak, and the translation is typed where your cursor is."))
@@ -126,6 +139,7 @@ func (a *app) featurePage(c *ui.Context, feature string) {
 			default:
 				a.trEnhance(c)
 			}
+			a.cardSetting(c, p, feature)
 			a.featureRules(c, feature)
 			a.featureTry(c, feature)
 		})

@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"slices"
+	"strings"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
@@ -125,9 +126,17 @@ func (a *app) checkModels() {
 	case !asrOK:
 		code = "asr"
 		n = &core.Notification{Title: i18n.T("No speech model"), Body: i18n.T("Transcribe, Translate and Rewrite need one to hear you.")}
+		if p, missing, ok := a.pendingSetup(local.ASR); ok { // remote_link.go: a speech service set up but for its key
+			code, link = "asr/"+p.ID+"/"+missing, linkCompleteSetup+string(local.ASR)+"/"+p.ID
+			n.Body = setupNeedsText(local.ASR, p, missing)
+		}
 	case !llmOK:
 		code, link = "llm", remotePath
 		n = &core.Notification{Title: i18n.T("No language model"), Body: i18n.T("Translate and Rewrite need one; Transcribe types what it hears.")}
+		if p, missing, ok := a.pendingSetup(local.LLM); ok {
+			code, link = "llm/"+p.ID+"/"+missing, linkCompleteSetup+string(local.LLM)+"/"+p.ID
+			n.Body = setupNeedsText(local.LLM, p, missing)
+		}
 	}
 	if n != nil {
 		n.Severity, n.Link = core.SeverityWarning, link
@@ -171,6 +180,14 @@ func (a *app) cardAction(n core.Notification) {
 	case linkImportLegacy:
 		a.dismissNotice(n.ID)
 		a.importLegacy() // legacy_import.go
+		return
+	case linkAnnouncement:
+		a.announceShown, a.announceShownOpen = n, true // announcements.go
+		return
+	}
+	if setup, ok := strings.CutPrefix(n.Link, linkCompleteSetup); ok {
+		kind, id, _ := strings.Cut(setup, "/")
+		a.completeSetup(local.Kind(kind), id) // remote_link.go
 		return
 	}
 	a.openURL(n.Link)
@@ -304,6 +321,11 @@ func cardActionLabel(link string) string {
 		return i18n.T("Open Language models")
 	case linkImportLegacy:
 		return i18n.T("Import") // the card's title says from where
+	case linkAnnouncement:
+		return i18n.T("Read")
+	}
+	if strings.HasPrefix(link, linkCompleteSetup) {
+		return i18n.T("Complete setup")
 	}
 	return i18n.T("Open")
 }

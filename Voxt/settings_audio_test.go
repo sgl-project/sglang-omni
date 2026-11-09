@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/egoist/mygo/ui"
 	"github.com/hehehai/actnowkit/sounds"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
@@ -13,6 +14,59 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
+
+// TestInfoTipClick: a click on an ⓘ shows its tip, with no wait for the
+// pointer to rest on it, and Escape puts it away. Before, it showed only
+// on hover and a click did nothing.
+func TestInfoTipClick(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/audio")
+	const tip = "Voxt records from the first microphone of the list that is connected. When none of them is, or the list is empty, it records from the system's default input."
+	shown := func() int { // the ⓘ's own label counts once
+		frames(tt)
+		n := 0
+		for _, s := range tt.Texts() {
+			if s == tip {
+				n++
+			}
+		}
+		return n
+	}
+	closed := shown()
+	if err := tt.ClickControl(tip); err != nil {
+		t.Fatal(err)
+	}
+	if shown() != closed+1 {
+		t.Fatalf("a click did not show the tip: %q", firstTexts(tt))
+	}
+	tt.Key(0, ui.KeyEscape)
+	if shown() != closed {
+		t.Error("Escape left the tip open")
+	}
+}
+
+// TestRecogniseAgainSwitch: Settings → Audio's "Recognise the whole
+// recording again" is on by default; off, the live text is the result
+// (Audio.LiveResult, #3644 FB7).
+func TestRecogniseAgainSwitch(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 2400)
+	a.navigate("/settings/audio")
+	frames(tt)
+	if r, ok := tt.Find("Recognise the whole recording again"); ok {
+		tt.Scroll(windowWidth/2, 1200, 0, r.Y-600)
+		frames(tt)
+	}
+	for _, want := range []bool{true, false} {
+		if err := tt.ClickControl("Recognise the whole recording again"); err != nil {
+			t.Fatal(err)
+		}
+		frames(tt)
+		if got := a.settings.Get().Audio.LiveResult; got != want {
+			t.Fatalf("after a click: live result %v, want %v", got, want)
+		}
+	}
+}
 
 func TestAudioSettingsDevices(t *testing.T) {
 	a, fs, tt := newTestApp(t)

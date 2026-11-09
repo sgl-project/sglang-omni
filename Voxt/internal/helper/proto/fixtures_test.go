@@ -203,7 +203,7 @@ func TestFixtures(t *testing.T) {
 						if ParamsFor(method) == nil && m.Error.Code != CodeMethodNotFound {
 							t.Fatalf("%s: %s must answer method_not_found", where, method)
 						}
-						if m.Error.Code == CodeCancelled && !IsJob(method) {
+						if m.Error.Code == CodeCancelled && !IsJob(method) && method != MethodHotkeyRecord {
 							t.Fatalf("%s: cancelled error for control request %s", where, method)
 						}
 						break
@@ -404,7 +404,7 @@ func TestErrors(t *testing.T) {
 			t.Errorf("notification %s", m)
 		}
 	}
-	if !IsJob(MethodCaptureStart) || !IsJob(MethodSpeechRecognize) || IsJob(MethodSpeechAudio) || IsJob(MethodBrowserURL) {
+	if !IsJob(MethodCaptureStart) || !IsJob(MethodCaptureSystem) || !IsJob(MethodSpeechRecognize) || IsJob(MethodSpeechAudio) || IsJob(MethodBrowserURL) {
 		t.Error("IsJob")
 	}
 }
