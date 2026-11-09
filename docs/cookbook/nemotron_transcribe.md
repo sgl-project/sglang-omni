@@ -2,7 +2,7 @@
 
 [Nemotron Transcribe 30B-A4B](https://huggingface.co/nvidia/Nemotron-3.5-Transcribe-30B-A4B) serves whole-file transcription through `/v1/audio/transcriptions`. A native PyTorch frontend, speech transformer, and Sortformer speaker-fusion encoder produce audio embeddings for SGLang's NemotronH decoder. The serving path does not require NeMo.
 
-This integration accepts consolidated NeMo SpeechLM checkpoints with the `NeMoSpeechLMForConditionalGeneration` architecture, a NemotronH `llm_config`, and `perception` and `pe_encoder_config` sections. The checkpoint directory must contain its tokenizer files and model weights. The loader creates a small configuration shim and reads the original weights without copying them.
+This integration accepts consolidated NeMo SpeechLM checkpoints whose architecture is `NeMoSpeechLMForConditionalGeneration` or `Nemotron3_5TranscribeForConditionalGeneration` (the name the published Hugging Face checkpoint declares), with a NemotronH `llm_config` and `perception` and `pe_encoder_config` sections. The checkpoint directory must contain its tokenizer files and model weights. The loader creates a small configuration shim and reads the original weights without copying them.
 
 ## Serve a checkpoint
 

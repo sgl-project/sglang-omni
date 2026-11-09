@@ -18,6 +18,8 @@ from sglang_omni.config import (
 
 PACKAGE = "sglang_omni.models.nemotron_transcribe"
 ARCHITECTURE = "NeMoSpeechLMForConditionalGeneration"
+# The published Hugging Face checkpoint names the same consolidated layout this way.
+RELEASED_CHECKPOINT_ARCHITECTURE = "Nemotron3_5TranscribeForConditionalGeneration"
 MAX_AUDIO_SECONDS = 3600
 DECODER_CONTEXT_TOKENS = 73728
 DEFAULT_MAX_RUNNING_REQUESTS = 64
@@ -49,6 +51,9 @@ class NemotronTranscribePipelineConfig(PipelineConfig):
     """Whole-file transcription. Audio up to one hour is one decoder request."""
 
     architecture: ClassVar[str] = ARCHITECTURE
+    architecture_aliases: ClassVar[tuple[str, ...]] = (
+        RELEASED_CHECKPOINT_ARCHITECTURE,
+    )
     allow_audio_chunking: ClassVar[bool] = False
     max_native_clip_s: ClassVar[float] = float(MAX_AUDIO_SECONDS)
 
