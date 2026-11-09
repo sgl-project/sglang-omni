@@ -31,6 +31,13 @@ func TestSidebarAndShortcuts(t *testing.T) {
 	frames(tt)
 	a.clearNotices()
 	for _, p := range pages {
+		// The last rows can sit under the Settings footer: scroll the list
+		// to them, as a person would.
+		if r, ok := tt.Find(pageTitle(p.path)); ok && r.H < 10 {
+			home, _ := tt.Find(pageTitle("/home"))
+			tt.Scroll(home.X+home.W/2, float32(windowHeight)/2, 0, 200)
+			frames(tt)
+		}
 		click(t, tt, pageTitle(p.path))
 		if a.router.Path() != p.path {
 			t.Fatalf("clicking %s went to %s", p.title, a.router.Path())

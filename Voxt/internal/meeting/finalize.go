@@ -151,7 +151,6 @@ func transcribeChunks(ctx context.Context, src Source, ft asr.FileTranscriber, r
 }
 
 func segmentToStore(s Segment, src Source) store.MeetingSegment {
-	s.Source = src
 	sp := s.Speaker
 	if src == SourceMic && sp == "" {
 		sp = "me"

@@ -87,17 +87,27 @@ func (a *app) meetingsPage(c *ui.Context) {
 	if !n.read && !n.loading {
 		a.loadMeetings()
 	}
+	active := a.meetingActive()
 	pageHeader(c, i18n.T("Meetings"), func() {
-		if start := primaryButton(c.Key("mt-start"), i18n.T("Start meeting")).Disabled(a.meetingActive()); start.Clicked() {
+		if active {
+			if primaryButton(c.Key("mt-end"), i18n.T("End meeting")).Clicked() {
+				a.meetingFinish()
+			}
+		} else if primaryButton(c.Key("mt-start"), i18n.T("Start meeting")).Clicked() {
 			a.startMeeting()
 		}
 	})
 	ui.Scroll(c.Key("meetings-scroll")).Grow(1).MinHeight(0).Children(func() {
 		ui.Column(c).Padding(px(t, sp1), px(t, sp6), px(t, sp2)).Gap(px(t, sp2)).Children(func() {
-			if searchField(c, "meetings-search", &n.query, i18n.T("Search"), px(t, 360)).
-				Label(i18n.T("Search meetings")).Changed() {
-				n.page = 0
-				a.loadMeetings()
+			if active {
+				notice(c, "mt-active", noticeInfo, i18n.T("Meeting in progress"), "", nil, nil)
+			}
+			if len(n.list) > 0 || n.query != "" || n.page > 0 {
+				if searchField(c, "meetings-search", &n.query, i18n.T("Search"), px(t, 360)).
+					Label(i18n.T("Search meetings")).Changed() {
+					n.page = 0
+					a.loadMeetings()
+				}
 			}
 			if n.err != "" {
 				ui.Text(c, n.err)
@@ -112,7 +122,7 @@ func (a *app) meetingsPage(c *ui.Context) {
 				if q == "" {
 					emptyState(c, meetingIcon, i18n.T("No meetings yet."),
 						i18n.T("Start a meeting to record your microphone and, when supported, audio from other apps."),
-						func() {})
+						nil).Grow(0).Shrink(0)
 				} else {
 					emptyState(c, icons.Magnifer, i18n.T("Nothing matches “%s”", q),
 						i18n.T("Try another search, or clear the field to see every meeting."),
@@ -122,8 +132,9 @@ func (a *app) meetingsPage(c *ui.Context) {
 								n.page = 0
 								a.loadMeetings()
 							}
-						})
+						}).Grow(0).Shrink(0)
 				}
+				ui.Box(c).Height(px(t, sp3))
 				a.meetingSettings(c)
 				return
 			}

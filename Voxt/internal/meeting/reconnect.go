@@ -87,11 +87,11 @@ func otherSource(s Source) Source {
 // interrupt ends a meeting after capture loss or disk pressure; WAVs stay.
 func (m *Manager) interrupt(ctx context.Context, id string) error {
 	m.mu.Lock()
-	if id == "" {
-		id = m.id
-	} else if err := m.requireID(id); err != nil {
-		m.mu.Unlock()
-		return err
+	if id != "" {
+		if err := m.requireID(id); err != nil {
+			m.mu.Unlock()
+			return err
+		}
 	}
 	if !m.state.Active() {
 		m.mu.Unlock()

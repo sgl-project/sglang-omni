@@ -23,7 +23,7 @@ func TestMeetingsPageSearchPaginationEmpty(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	meetingDevHook = func() bool { return true }
 	t.Cleanup(func() { meetingDevHook = nil })
-	tt.SetSize(windowWidth, 1200)
+	tt.SetSize(windowWidth, 1400) // Linux's taller lines put the pager near 1200
 	a.navigate("/meetings")
 	frames(tt)
 	if !has(tt, "No meetings yet.") {

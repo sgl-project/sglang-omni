@@ -37,7 +37,6 @@ func (a *app) openMeetings() {
 	if h, ok := a.local.(local.Holder); ok {
 		modelHold = h
 	}
-	hasSystem := a.host.sup != nil && a.host.sup.Status().Has(proto.MethodCaptureSystem)
 	a.meetMgr = meeting.NewManager(meeting.Config{
 		Mic:       session.HelperAudio{H: a.host.sup},
 		System:    session.HelperAudio{H: a.host.sup, Method: proto.MethodCaptureSystem},
@@ -59,7 +58,7 @@ func (a *app) openMeetings() {
 		MainLanguage: func() string {
 			return uitext.LangLabel(a.prefs.General.MainLanguage)
 		},
-		SystemCaptureOK: func() bool { return hasSystem },
+		SystemCaptureOK: a.systemCaptureOK,
 	})
 	a.meetMgr.Subscribe(func(s meeting.Snapshot) {
 		a.post(func() { a.meetingChanged(s) })
@@ -70,6 +69,12 @@ func (a *app) openMeetings() {
 		defer cancel()
 		_, _ = a.meetMgr.Recover(ctx)
 	})
+}
+
+// systemCaptureOK is asked at each meeting start: openMeetings runs before
+// the helper's handshake, when its methods are not known yet.
+func (a *app) systemCaptureOK() bool {
+	return a.host != nil && a.host.sup != nil && a.host.sup.Status().Has(proto.MethodCaptureSystem)
 }
 
 func (a *app) meetingActive() bool {

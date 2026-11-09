@@ -385,6 +385,11 @@ func TestImportReportGroups(t *testing.T) {
 	if !has(tt, "History: 3 entries") || !hasExact(tt, "To do") || !has(tt, "DeepSeek needs its API key: paste it again to use it.") {
 		t.Fatalf("the guide's card: %q", tt.Texts())
 	}
+	// With Linux's taller lines the button sits at the card's bottom edge:
+	// scroll the card to it first.
+	todo, _ := tt.Find("To do")
+	tt.Scroll(todo.X+todo.W/2, todo.Y, 0, 200)
+	frames(tt)
 	if err := tt.ClickControl("Complete setup of DeepSeek"); err != nil {
 		t.Fatal(err)
 	}
