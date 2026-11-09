@@ -162,6 +162,7 @@ func TestAnswerCardStates(t *testing.T) {
 // down to just above the bottom padding (no empty space, nothing cut).
 func TestAnswerCardInk(t *testing.T) {
 	a, _, _ := newTestApp(t)
+	shortScreen(t, a)
 	defer func() { a.measureHook = guessText }()
 	for _, st := range cardSteps() {
 		st.apply(a)
@@ -195,7 +196,7 @@ func TestAnswerCardInteraction(t *testing.T) {
 	ft := new(fakeTimers).install(a)
 	steps := cardSteps()
 	steps[0].apply(a) // the short answer
-	tt := cardTester(a)
+	tt := cardTester(t, a)
 	frames(tt)
 	for _, s := range []string{"Translation", "goroutine 是由 Go 运行时管理的轻量级线程。", "Simplified Chinese", "Insert", "Copy", "Close"} {
 		if !has(tt, s) {

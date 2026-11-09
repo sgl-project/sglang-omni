@@ -379,8 +379,10 @@ func hudTester(view func(*ui.Context), w, h int) *ui.Tester {
 }
 
 // cardTester is a tester of the overlay's window as large as the
-// highest answer card.
-func cardTester(a *app) *ui.Tester {
+// highest answer card on a short screen (shortScreen), which it makes the
+// work area.
+func cardTester(t *testing.T, a *app) *ui.Tester {
+	shortScreen(t, a)
 	return hudTester(a.overlayView, layout.AnswerW+2*layout.Pad, layout.CardMaxH+2*layout.Pad)
 }
 
