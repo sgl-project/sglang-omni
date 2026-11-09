@@ -77,7 +77,7 @@ func TestAudioSettingsDevices(t *testing.T) {
 	if !has(tt, "No microphone chosen: Voxt records from the system's default input.") || !has(tt, "MacBook Air Microphone") {
 		t.Fatalf("empty list: %q", firstTexts(tt))
 	}
-	if !has(tt, "Skip silence") || !has(tt, "Optimize sound") {
+	if !has(tt, "Skip silence") || !has(tt, "Optimise sound") {
 		t.Errorf("no recognition switches: %q", firstTexts(tt))
 	}
 	click(t, tt, "Add AirPods Pro")

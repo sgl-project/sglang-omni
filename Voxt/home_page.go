@@ -212,7 +212,7 @@ func (a *app) homeSlogan(c *ui.Context) {
 		}
 	}
 	ui.Row(c.Key("home-slogan")).Wrap().GapX(px(t, 6)).GapY(px(t, sp1)).AlignItems(ui.Center).Children(func() {
-		text(i18n.T("Speak anywhere, it types at your cursor"), k.Text)
+		text(i18n.T("Speak anywhere and Voxt types at your cursor"), k.Text)
 		text("·", k.Text3)
 		if keys == "" {
 			l := ui.ButtonBase(c.Key("home-slogan-add")).Label(before)
@@ -294,7 +294,7 @@ func (a *app) homeRecentList(c *ui.Context) {
 	}
 	if len(hm.recent) == 0 {
 		if hm.read {
-			caption(c, i18n.T("Results show here once you use a shortcut."))
+			caption(c, i18n.T("Results appear here after you use a shortcut."))
 		}
 		return
 	}

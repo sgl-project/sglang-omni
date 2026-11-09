@@ -8,6 +8,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
+- **Faster transcription** for each speech model, on its card in Speech models: download a small draft model (726 MB for Qwen3-ASR 1.7B, 262 MB for 0.6B) and the model transcribes faster, by speculative decoding (the draft proposes several words at a time and the speech model checks them). Remove the add-on and the model works as before.
 - **The preview pill keeps only live speech recognition text** while you record and while recognition finishes. The offline Final and the language model no longer replay in the pill; results still insert or show in the answer card.
 - **Editable full system prompts** (Transcribe, Translate, Rewrite → Your rules): edit the whole system prompt in one field (default shows the built-in text). What you save is what Voxt sends. Reset restores the built-in prompt. A preview shows the example user message used for cleanup and formatting when you use the built-in layers. **Settings search**: ⌘F in Settings focuses the search box and filters by title, description, and English keywords.
 - **Setup guide: language model on Translate and Rewrite try steps** (FB22): when no language model is set up, the step explains what is missing and offers **Set up a language model** (the guide stays open). Speech model downloads show progress on the models and try steps; you can continue while a model downloads.
@@ -41,7 +42,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Answer card sizes** (Transcribe, Translate, Rewrite → Answer card → Card size): Small (as before), Medium or Large, each feature its own, so a long Rewrite answer can have a large card while translations keep a small one. Show the result in a card stays one switch for Transcribe and Translate.
 - **Voxt 1.x's sounds in one click** (Settings → Audio → Play sounds → Use Voxt 1.x's sounds): Pop when recording starts and Tink when it stops, the pair Voxt 1.x played by default. Every other sound is still in the pickers.
 - **Per-service recognition prompts** (Speech models → a remote service's dialog): optional text after the global speech context, with `{{USER_MAIN_LANGUAGE}}`, `{{USER_OTHER_LANGUAGES}}` and `{{DICTIONARY_TERMS}}` filled at recognition time. Services that take no prompt ignore it.
-- **Voxt 1.x's other local speech models** (Speech models): Qwen3-ASR 1.7B (6bit), Whisper Large v3 Turbo, Whisper Large v3, Whisper Small, Parakeet TDT 0.6B v3, SenseVoice Small, Cohere Transcribe 03-2026, Nemotron 3.5 ASR 0.6B and MOSS-Transcribe-Diarize, each on its own native server. Nemotron and MOSS show the text as you speak; the others show it about once a second while you speak, and Voxt recognises the whole recording again when you stop. Only Qwen3-ASR takes your dictionary (the cards say "No dictionary"). The import brings the models Voxt 1.x downloaded without a download (a Whisper model with its tokenizer), and a feature that used one of them in Voxt 1.x uses it again; who imported with Voxt 2.0.x gets those downloads at the next start.
+- **Voxt 1.x's other local speech models** (Speech models): Qwen3-ASR 1.7B (6bit), Whisper Large v3 Turbo, Whisper Large v3, Whisper Small, Parakeet TDT 0.6B v3, SenseVoice Small, Cohere Transcribe 03-2026, Nemotron 3.5 ASR 0.6B and MOSS-Transcribe-Diarize, each on its own native server. Nemotron and MOSS show the text as you speak; the others show it about once a second while you speak, and Voxt recognises the whole recording again when you stop. Only Qwen3-ASR takes your dictionary (the cards say "No dictionary"). Qwen3-ASR and Whisper each have a family card with their models. The import brings the models Voxt 1.x downloaded without a download (a Whisper model with its tokenizer), and a feature that used one of them in Voxt 1.x uses it again; who imported with Voxt 2.0.x gets those downloads at the next start.
 - **Meeting records in the database** (nothing in the app calls this yet): migration 007 adds `meetings` and `meeting_segments`, full-text search on segment text and translations, and `Store.Meetings()` for create, update, append/replace segments, list, delete, unfinished, and temporary-audio expiry queries.
 - **Meeting permissions** (meeting UI still dev-only until C1-2): Settings → Permissions lists **System audio recording (for meetings)**; the app and helper usage strings describe capturing other apps’ audio for meetings, and the microphone prompt mentions meetings.
 
@@ -64,7 +65,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **The live text stays while the language model works**: after you stop, the overlay keeps the words it showed while you spoke (Rewrite's instruction too) until the result is typed or shows in the card; it no longer drops to a bare loader. The model's draft still does not replay there.
 - **Rewrite's answer writes into the card**: once the model starts answering, the overlay turns into the answer card at its full height and the answer appears in it as it is written, instead of a loader until the whole answer is in. Close stops it. With Show live text off, the card comes when the answer is done, as before.
 - **Scroll back through live text in lines**: when the live text is longer than the overlay's ten lines, the overlay takes the wheel: scroll up to read what you said before, and new words leave it there; scroll back to the end and it follows the newest words again.
-- **Extra Body JSON is in Advanced**: the language model dialog has no Expert section any more; Extra Body JSON (and Ollama's Options JSON) are at the end of the folded Advanced section, with the other request settings.
+- **One Request parameters object in Advanced**: the language model dialog has no Expert section any more; at the end of the folded Advanced section, one JSON object takes every custom request parameter, in place of Extra Body JSON and Ollama's separate Options JSON. It is applied to the request last as a JSON merge patch (RFC 7386): its keys win, an object merges into the one Voxt sends (Ollama's model options go in `"options"`), and `null` leaves a field out. A saved or imported Options JSON moves into it as `"options"`.
 - **History, Dictionary, Notes and App enhancement in a wide window**: in full screen or a wide window these pages keep their lists and panes up to 1120 points wide in the middle, with the title and buttons lined up with them; Logs still uses the whole width.
 
 ### Fixed
@@ -77,6 +78,16 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Fixed
 
 - **Browser text boxes (GitHub and similar)** stop showing "The text did not land where you were typing" when ⌘V actually worked: Chromium-style web editors often report the same Accessibility value after a paste, so the check treats an unchanged web area or contenteditable reading as unverified instead of failed (#3644 FB36).
+- **The preview leaves when the result goes in**: the live text no longer stays over the app for a moment while the result is pasted and checked; a result that cannot go in still comes back in the card.
+- **The command palette in a small window** keeps its margin and rounded corners at the largest interface size, and **App enhancement in a wide window** fills the page under its header instead of stopping 760 points wide.
+- **The wheel scrolls a long preview as soon as it passes ten lines**: when the measured text turned out longer than the first guess, the overlay kept letting the pointer through, and the wheel scrolled the app underneath instead.
+- **Follow-ups on a long selection no longer time out**: a follow-up in the answer card sends the earlier selection and answers again, but its wait for the model's first words counted only what you just said; it now counts all of it.
+- **Rewrite's card follows the answer as it is written**: a long answer used to stream on below the card's last line, out of sight; the card now shows the newest words, unless you scroll up to read.
+- **Resize the answer card from the card**: a small button in the card's bottom-right corner steps it through Small, Medium and Large (and back), the same size the feature's page sets. On a short screen a Medium or Large card keeps its text to the room the screen has, instead of reaching past its edge.
+- **Your rules is one long field, no scroll bar of its own**: the rules field grows with the whole prompt, so a long prompt reads down the page under one scroll bar; the page follows the cursor as you type or move it, and Find scrolls the page to the match.
+- **Transcribe, Translate and Rewrite in a wide window read in two columns**: shortcuts and models on the left, the feature's own settings, answer card, rules and Try it on the right, so the page fills a wide window instead of a long column in the middle of blank space.
+- **A copy pass over the English text**: about 45 strings that read as translated now read as plain English: a "test" instead of a "try" in the setup guide, "Voxt does not have microphone access" instead of "Voxt may not use the microphone", "frontmost app" instead of "the app in front", "Group prompt" instead of "Scene prompt", "Cancel recording" instead of "Cancel transcription" (it cancels Translate and Rewrite too), "Import from Voxt 1.x" instead of "the previous Voxt", "Model ID", "Thinking". The three American spellings left in a British-spelled app (Recognizing, Optimize, optimization) follow the rest. In Chinese only 场景提示词 and 取消转录 change, to 分组提示词 and 取消录音.
+- **Language model debug page** (command palette, or the bottom of the Language models page), as Voxt 1.x's LLM debug window: choose a language model you set up and a request (Transcribe, Translate, Rewrite or an App enhancement group), edit its prompt there without saving, type the text, and Run shows the answer, its time and every message sent. Use this prompt saves the edit as the feature's rules or the group's prompt.
 
 ### 中文
 
@@ -84,6 +95,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 新增
 
+- 每个语音识别模型的**转录加速**，在语音模型页它的卡片上：下载一个小的草稿模型（1.7B 模型 726 MB，0.6B 模型 262 MB），这个模型的转录就更快，靠的是推测解码（草稿每步先提出几个词，再由语音识别模型校验）。随时可以删除这个附加组件，模型照常可用。
 - **浮窗预览只显示实时语音识别文字**：录音和识别收尾时保留流式内容；整段 Final 和语言模型整理/翻译不在胶囊里回放，结果照常插入或在答案卡片里出现。
 - **可编辑完整 system prompt**（转录、翻译、转写 → 你的规则）：在一个文本框里编辑整段 system prompt（默认显示内置文字）；保存后按所写原样发送；恢复默认回到内置；内置分层模式下另有示例用户消息预览（清理与格式）。**设置搜索**：在设置里按 ⌘F 聚焦搜索框，按标题、说明和英文关键词过滤。
 - **设置引导：翻译和转写试用步就地配置语言模型**（FB22）：没配语言模型时，这一步会说明缺什么，并提供「设置语言模型」按钮（引导不关闭）。语音模型下载时，模型步和试用步会显示进度；下载中也可以点继续。
@@ -115,7 +127,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **答案卡片的大小**（转录、翻译、转写 → 答案卡片 → 卡片大小）：小（和以前一样）、中、大，每个功能各自记住，比如转写的长回答用大卡片，翻译仍用小卡片。“在卡片中显示结果”仍是转录和翻译共用的一个开关。
 - **一键换回 Voxt 1.x 的提示音**（设置 → 音频 → 播放提示音 →“使用 Voxt 1.x 的提示音”）：开始录音时 Pop、停止时 Tink，是 Voxt 1.x 默认的一对。其他提示音照样在选择器里。
 - **每家远程服务的识别提示词**（语音模型页 → 某远程服务的设置对话框）：可选文字，接在全局「识别上下文」后面；识别时填入 `{{USER_MAIN_LANGUAGE}}`、`{{USER_OTHER_LANGUAGES}}` 和 `{{DICTIONARY_TERMS}}`。不收提示词的语音服务会忽略它。
-- **Voxt 1.x 的其他本地语音识别模型**（语音模型页）：Qwen3-ASR 1.7B (6bit)、Whisper Large v3 Turbo、Whisper Large v3、Whisper Small、Parakeet TDT 0.6B v3、SenseVoice Small、Cohere Transcribe 03-2026、Nemotron 3.5 ASR 0.6B 和 MOSS-Transcribe-Diarize，每个用自己的原生服务运行。Nemotron 和 MOSS 边说边出文字；其他模型在你说话时大约每秒更新一次文字，停止后再识别一遍整段录音。只有 Qwen3-ASR 使用你的词典（卡片上标着“不用词典”）。导入时，Voxt 1.x 下载过的模型直接带过来，不用重新下载（Whisper 连同它的分词器），在 Voxt 1.x 里用着这些模型的功能会继续用它；用 Voxt 2.0.x 导入过的，下次启动时这些下载也会带过来。
+- **Voxt 1.x 的其他本地语音识别模型**（语音模型页）：Qwen3-ASR 1.7B (6bit)、Whisper Large v3 Turbo、Whisper Large v3、Whisper Small、Parakeet TDT 0.6B v3、SenseVoice Small、Cohere Transcribe 03-2026、Nemotron 3.5 ASR 0.6B 和 MOSS-Transcribe-Diarize，每个用自己的原生服务运行。Nemotron 和 MOSS 边说边出文字；其他模型在你说话时大约每秒更新一次文字，停止后再识别一遍整段录音。只有 Qwen3-ASR 使用你的词典（卡片上标着“不用词典”）。Qwen3-ASR 和 Whisper 各用一张卡片列出同系列的模型。导入时，Voxt 1.x 下载过的模型直接带过来，不用重新下载（Whisper 连同它的分词器），在 Voxt 1.x 里用着这些模型的功能会继续用它；用 Voxt 2.0.x 导入过的，下次启动时这些下载也会带过来。
 - **会议记录表**（应用里还没有接线）：SQLite 迁移 007 增加 `meetings` 与 `meeting_segments` 表、句子和译文的全文检索，以及 `Store.Meetings()`（创建、更新、追加或按轨道替换句子、列表、删除、未完成与录音到期筛选）。
 - **会议权限说明**（会议界面仍在开发版，C1-2 前不对普通用户开放）：设置 → 权限 出现 **系统录音（会议用）**；应用与辅助进程的授权文案说明会议中录制其他 app 的声音，麦克风说明也提到会议。
 
@@ -138,7 +150,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **语言模型处理时实时文字留在浮窗里**：停止录音后，浮窗保留说话时显示的文字（转写的指令也是），直到结果输入进去或出现在卡片里，不再只剩一个加载动画。模型写的草稿仍然不在浮窗里回放。
 - **转写的回答直接写进卡片**：模型一开始回答，浮窗就变成满高的答案卡片，回答边写边出现在里面，不再一直转圈等整段写完。点关闭会停止。关掉“显示实时文字”时，和以前一样写完才出卡片。
 - **多行实时文字可以往回翻**：实时文字超过浮窗的十行时，浮窗接收滚轮，可以往上翻看前面说的话，新的字不会把它拉回去；滚回底部就重新跟着最新的字。
-- **额外请求体 JSON 放进了“高级”**：语言模型对话框不再有“专家”一节，额外请求体 JSON（以及 Ollama 的 Options JSON）放在默认折叠的“高级”最后，和其他请求设置在一起。
+- **自定义请求参数合成一个 JSON 对象**：语言模型对话框不再有“专家”一节。默认折叠的“高级”最后有一个“请求参数”框，所有自定义请求参数都写在这一个 JSON 对象里，取代原来的额外请求体 JSON 和 Ollama 单独的 Options JSON。它按 JSON merge patch（RFC 7386）最后合并进请求：同名的键以这里为准；值是对象时，与 Voxt 发送的同名对象逐层合并（Ollama 的模型选项写在 `"options"` 里）；值写 `null` 则不发送这个字段。已保存的和从 1.x 导入的 Options JSON 会自动放进 `"options"`。
 - **宽窗口里历史、词典、笔记和应用增强也居中**：全屏或窗口很宽时，这几页的列表和面板最宽 1120 点、放在中间，标题和按钮跟着对齐；日志页仍然占满宽度。
 
 #### 修复
@@ -151,6 +163,16 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 
 - **浏览器输入框（GitHub 等）**：⌘V 已经粘进输入框时，不再误报“文字没有出现在输入位置”。Chromium 类网页编辑器常在粘贴后仍让无障碍读到相同长度；网页区域或 contenteditable 里若对比结果不变，按“无法校验”处理，仍算插入（#3644 FB36）。
+- **插入时预览立即收起**：结果一开始粘贴进 App，浮窗就淡出，不会再盖在刚插入的文字上停留片刻；插入不了的结果照常显示在答案卡片里。
+- **命令面板适应小窗口**：窗口较小、界面缩放调到最大时，命令面板两侧仍留有边距，圆角完整。**应用增强页在宽窗口里用满宽度**，不再限制在 760 点宽。
+- **预览超过十行后可以用滚轮翻看**：以前文字实际排版后比预估的长时，浮窗仍让鼠标穿透，滚轮滚动的是下面的 App；现在量出实际高度后，浮窗会接管滚轮。
+- **长选区上的追问不再超时**：在答案卡片里追问时，之前的选区和回答会和这次说的话一起重新发给模型。以前等待模型返回第一个字的时限只按这次说的话的长度计算，现在把重发的内容也算进去。
+- **转写的卡片随回答自动滚动**：以前长回答会写到卡片可见区域以下，看不到；现在卡片会跟着显示最新生成的内容，你向上滚动阅读时不会被拉回去。
+- **在卡片上直接调整大小**：卡片右下角新增一个小按钮，依次切换小、中、大三档（大之后回到小），和功能页上的“卡片大小”是同一个设置。屏幕较矮时，中、大两档的正文高度会缩小到屏幕放得下为止，卡片不再超出屏幕。
+- **“你的规则”不再套一层滚动条**：规则框的高度随提示词的长度增长，长提示词跟着整个页面滚动，页面上只有一个滚动条。打字或移动光标时，页面会跟着光标滚动；查找时，页面会滚到匹配的位置。
+- **宽窗口里转录、翻译、转写页分成两栏**：左栏是快捷键和模型，右栏是该功能的设置、答案卡片、规则和“试一试”。窗口很宽时，页面不再是两边大片空白、中间一长条单栏。
+- **英文文案过了一遍**：约 45 条有翻译腔的英文改成了地道的说法，例如设置引导里的 “try” 改成 “test”，“Voxt may not use the microphone” 改成 “Voxt does not have microphone access”，“the app in front” 改成 “frontmost app”，“Scene prompt” 改成 “Group prompt”，“Cancel transcription” 改成 “Cancel recording”（它也取消翻译和转写），“the previous Voxt” 改成 “Voxt 1.x”。英文统一用英式拼写，原来剩下的三处美式拼写也已改掉。中文文案只改了两处，与英文保持一致：“场景提示词”改为“分组提示词”，“取消转录”改为“取消录音”。
+- **新增语言模型调试页**（从命令面板或语言模型页底部进入），对应 1.x 的语言模型调试窗口：选一个已设置的语言模型和一种请求（转录、翻译、转写，或某个应用增强分组），可以在页面里临时修改提示词，改动不会保存；输入文字后点“运行”，页面显示回答、用时和发出的全部消息。点“使用这个提示词”，改动才会存为该功能的规则或分组提示词。
 
 ## [2.0.1] - 2026-11-07
 

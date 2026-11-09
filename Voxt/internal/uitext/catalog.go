@@ -29,6 +29,17 @@ func ModelName(id string) string {
 	return id
 }
 
+// FamilyName gives the display name used on grouped model cards.
+func FamilyName(family string) string {
+	switch family {
+	case "qwen3-asr":
+		return "Qwen3-ASR"
+	case "whisper":
+		return "Whisper"
+	}
+	return family
+}
+
 // ModelTags are model id's short labels on its card, as Voxt 1.x showed
 // them: where it runs, what it is best at, whether it shows the text
 // while you speak, and whether it takes the dictionary (only Qwen3-ASR

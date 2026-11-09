@@ -53,9 +53,9 @@ func TestHomeReadiness(t *testing.T) {
 	for _, s := range []string{
 		"No speech model is installed: install one to transcribe, translate and rewrite by voice.",
 		"No language model is set up: Translate and Rewrite need one, and Transcribe types the text as recognised.",
-		"Without Accessibility results are copied for you to paste, and shortcuts such as Right ⌥ do not work.",
+		"Without Accessibility access, results are copied for you to paste, and shortcuts such as Right ⌥ do not work.",
 		"Right ⌥ (once Accessibility is allowed)",
-		"Try it", "Today", "Recent results", "Results show here once you use a shortcut.",
+		"Try it", "Today", "Recent results", "Results appear here after you use a shortcut.",
 	} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, tt.Texts())
@@ -123,7 +123,7 @@ func TestHomeReadinessLive(t *testing.T) {
 	}
 	// Accessibility taken away.
 	a.perms.access = false
-	if !has(tt, "1 step to go") || !has(tt, "Without Accessibility results are copied for you to paste, and shortcuts such as Right ⌥ do not work.") {
+	if !has(tt, "1 step to go") || !has(tt, "Without Accessibility access, results are copied for you to paste, and shortcuts such as Right ⌥ do not work.") {
 		t.Errorf("access revoked: %q", tt.Texts())
 	}
 	a.perms.access = true
@@ -255,7 +255,7 @@ func TestSloganHint(t *testing.T) {
 // cap, and without one, a link to add it.
 func TestHomeSlogan(t *testing.T) {
 	a, tt := homeTester(t)
-	for _, s := range []string{"Speak anywhere, it types at your cursor", "Press", "Right ⌥", "to start"} {
+	for _, s := range []string{"Speak anywhere and Voxt types at your cursor", "Press", "Right ⌥", "to start"} {
 		if !hasExact(tt, s) {
 			t.Errorf("no %q in %q", s, tt.Texts())
 		}
@@ -491,7 +491,7 @@ func TestWidePageCentered(t *testing.T) {
 	tt.SetSize(w, 1100)
 	a.navigate("/home")
 	frames(tt)
-	slogan, ok1 := tt.Find("Speak anywhere, it types at your cursor")
+	slogan, ok1 := tt.Find("Speak anywhere and Voxt types at your cursor")
 	guide, ok2 := tt.Find("Setup guide")
 	history, ok3 := tt.Find("Open History")
 	if !ok1 || !ok2 || !ok3 {

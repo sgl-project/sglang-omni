@@ -72,6 +72,24 @@ func TestSidebarAndShortcuts(t *testing.T) {
 	}
 }
 
+// TestPaletteFitsTheWindow: in the smallest window at the largest
+// interface size the ⌘K palette keeps a margin to the window's edges, as
+// in a larger one, instead of touching them with its corners cut off.
+func TestPaletteFitsTheWindow(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowMinWidth, windowMinHeight)
+	a.updateSettings(func(s *settings.Settings) { s.Appearance.Scale = 1.25 })
+	a.paletteOpen = true
+	frames(tt)
+	r, ok := tt.Find(i18n.T("Search commands"))
+	if !ok {
+		t.Fatal("no palette")
+	}
+	if red, _, _, _ := tt.Image().At(3, int(r.Y+r.H/2)).RGBA(); red>>8 > 240 {
+		t.Errorf("the palette reaches the window's left edge (red %d at x=3 beside its search field)", red>>8)
+	}
+}
+
 func TestPaletteAndDeepLinks(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	tt.Key(ui.Cmd, ui.KeyK)
@@ -185,7 +203,7 @@ func TestProblemCards(t *testing.T) {
 	if has(tt, "Helper ready") || has(tt, "No provider set up") {
 		t.Errorf("a status bar: %q", firstTexts(tt))
 	}
-	if !hasExact(tt, "No models") || !has(tt, "Install a speech model, then set up a language model, to start.") {
+	if !hasExact(tt, "No models") || !has(tt, "To start, install a speech model, then set up a language model.") {
 		t.Fatalf("no models card: %q", firstTexts(tt))
 	}
 	click(t, tt, "Open Speech models")

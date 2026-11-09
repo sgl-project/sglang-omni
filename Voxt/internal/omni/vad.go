@@ -41,7 +41,7 @@ func NewVAD(rt *Runtime, modelDir string) (*VAD, error) {
 }
 
 // Warm starts the server in the background.
-func (v *VAD) Warm() { v.rt.Warm(v.spec, v.dir) }
+func (v *VAD) Warm() { v.rt.Warm(v.spec, v.dir, "") }
 
 // Hold keeps Silero loaded until release (meeting capture).
 func (v *VAD) Hold(ctx context.Context) (func(), error) {
@@ -54,7 +54,7 @@ func (v *VAD) Speech(ctx context.Context, pcm []byte, rate int) ([]vad.Segment, 
 	if rate != 0 && rate != sampleRate {
 		return nil, fmt.Errorf("omni: the voice activity model takes 16 kHz, not %d Hz", rate)
 	}
-	l, err := v.rt.acquire(ctx, v.spec, v.dir)
+	l, err := v.rt.acquire(ctx, v.spec, v.dir, "")
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +111,7 @@ func (v *VAD) Open(ctx context.Context) (vad.ModelStream, error) {
 	// The start and the dial are bounded; ctx then bounds the stream.
 	dctx, cancel := context.WithTimeout(ctx, asr.ConnectTimeout)
 	defer cancel()
-	l, err := v.rt.acquire(dctx, v.spec, v.dir)
+	l, err := v.rt.acquire(dctx, v.spec, v.dir, "")
 	if err != nil {
 		return nil, err
 	}

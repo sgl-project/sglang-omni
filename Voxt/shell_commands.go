@@ -53,6 +53,7 @@ func (a *app) commands() []command {
 	if a.upd != nil {
 		add("check-updates", view, i18n.T("Check for Updates…"), "Check for Updates", "", true, a.checkForUpdates)
 	}
+	add("llm-debug", view, i18n.T("Language model debug"), "Language model debug prompts", "", true, func() { a.navigate(llmDebugPath) })
 	add("setup-guide", view, i18n.T("Open the setup guide"), "Open the setup guide onboarding", "", true, a.openOnboarding)
 
 	look := i18n.T("Appearance")
@@ -167,10 +168,11 @@ func kbd(c *ui.Context, keys string) ui.Element {
 func (a *app) palette(c *ui.Context) {
 	t := c.Theme()
 	k := tok(t)
-	_, h := c.Size()
+	w, h := c.Size()
 	ui.DialogBase(c, &a.paletteOpen, func(backdrop, panel ui.Element) {
 		backdrop.Background(ui.RGBA(0, 0, 0, 0.2)).Justify(ui.Start).Padding(min(px(t, 90), h*0.12), px(t, sp6), 0)
-		panel.Width(px(t, 560)).MaxWidth(px(t, 560)).Radius(px(t, radiusCard)).Background(k.Bg).Border(1, k.Line).Clip().
+		pw := min(px(t, 560), w-2*px(t, sp6))
+		panel.Width(pw).MaxWidth(pw).Radius(px(t, radiusCard)).Background(k.Bg).Border(1, k.Line).Clip().
 			Shadow(0, 16, 40, 0, ui.RGBA(0, 0, 0, 0.22)).Label(i18n.T("Command palette"))
 		items := a.paletteItems()
 		a.paletteSel = max(0, min(a.paletteSel, len(items)-1))

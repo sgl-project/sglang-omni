@@ -122,7 +122,7 @@ func (a *app) checkModels() {
 	switch {
 	case !asrOK && !llmOK:
 		code = "both"
-		n = &core.Notification{Title: i18n.T("No models"), Body: i18n.T("Install a speech model, then set up a language model, to start.")}
+		n = &core.Notification{Title: i18n.T("No models"), Body: i18n.T("To start, install a speech model, then set up a language model.")}
 	case !asrOK:
 		code = "asr"
 		n = &core.Notification{Title: i18n.T("No speech model"), Body: i18n.T("Transcribe, Translate and Rewrite need one to hear you.")}
@@ -164,7 +164,7 @@ func (a *app) checkHelper() {
 		return
 	}
 	a.setProblem(problemHelper, string(st.Reason), &core.Notification{Severity: core.SeverityError, Title: uitext.HelperFailText(st),
-		Body: i18n.T("Recording and the shortcuts wait for it."), Link: linkRestartHelper})
+		Body: i18n.T("Recording and shortcuts work again once it is running."), Link: linkRestartHelper})
 }
 
 // cardAction runs a card's action: restart the helper, or open its link.

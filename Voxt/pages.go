@@ -24,6 +24,11 @@ func (a *app) pages(c *ui.Context) {
 				return
 			}
 		}
+		if r.Match(llmDebugPath) {
+			r.Title(i18n.T("Language model debug"))
+			a.llmDebugPage(c) // llm_debug.go
+			return
+		}
 		r.Title(i18n.T("Not found"))
 		a.notFoundPage(c, r.Path())
 	}).Grow(1).MinHeight(0)

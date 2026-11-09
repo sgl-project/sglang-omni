@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
@@ -441,6 +442,7 @@ func TestCardSizes(t *testing.T) {
 		t.Fatalf("card sizes %v", got)
 	}
 	long := strings.Repeat("A goroutine is a lightweight thread managed by the Go runtime. ", 90)
+	a.ov.area = a.overlayArea() // as when the card shows: its size depends on the screen's room
 	for _, c := range []struct {
 		kind store.Kind
 		size layout.CardSize
@@ -461,5 +463,47 @@ func TestCardSizes(t *testing.T) {
 		var b bytes.Buffer
 		png.Encode(&b, img)
 		os.WriteFile(filepath.Join(dir, "card-large.png"), b.Bytes(), 0o644)
+	}
+}
+
+// TestCardResizeOnCard: the card steps through its sizes from the card
+// itself (#3644 FB41: a long answer needed a trip to the feature's page
+// for a larger card): Small, Medium, Large and back to Small, saved as the
+// feature's size, and the card takes each at once.
+func TestCardResizeOnCard(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: strings.Repeat("A goroutine is a lightweight thread managed by the Go runtime. ", 30)}
+	a.overlaySync()
+	tt := hudTester(a.overlayView, layout.CardSizes[2].W+2*layout.Pad, 900)
+	for i, c := range []struct {
+		label string
+		step  int
+	}{{"Make the card larger", 1}, {"Make the card larger", 2}, {"Make the card smaller", 0}} {
+		frames(tt)
+		if err := tt.ClickControl(c.label); err != nil {
+			t.Fatalf("step %d: %v (controls %q)", i, err, tt.AccessLabels())
+		}
+		frames(tt)
+		got := a.settings.Get().Features.CardSizes
+		_, kept := got[hotkey.Rewrite]
+		if got[hotkey.Rewrite] != c.step || kept != (c.step != 0) || a.ov.w != layout.CardSizes[c.step].W {
+			t.Errorf("step %d: sizes %v, the card %d wide", i, got, a.ov.w)
+		}
+	}
+}
+
+// TestCardFitsTheScreen: a large card with a long answer on a short
+// screen keeps its text to the room the work area leaves, instead of
+// reaching past the screen's other edge.
+func TestCardFitsTheScreen(t *testing.T) {
+	saved := ovTestArea
+	t.Cleanup(func() { ovTestArea = saved })
+	ovTestArea = mygo.Rectangle{X: 0, Y: 25, Width: 1280, Height: 600}
+	a, _, _ := newTestApp(t)
+	a.updateSettings(func(s *settings.Settings) { s.Features.CardSizes = map[string]int{hotkey.Rewrite: 2} })
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: strings.Repeat("A goroutine is a lightweight thread managed by the Go runtime. ", 90)}
+	a.overlaySync()
+	if f := a.ov.frame; f.Y < ovTestArea.Y || f.Y+f.Height > ovTestArea.Y+ovTestArea.Height {
+		t.Errorf("the card's window %+v is not inside the work area %+v", f, ovTestArea)
 	}
 }

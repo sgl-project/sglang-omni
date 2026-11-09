@@ -61,6 +61,7 @@ type app struct {
 	modelsState
 	memoryState
 	omniState
+	llmDbg llmDebugUI // llm_debug.go
 	remoteState
 	sessionState
 	overlayState

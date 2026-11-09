@@ -222,7 +222,7 @@ func FeatureTitle(feature string) string {
 	case hotkey.PasteLast:
 		return i18n.T("Paste the last result")
 	case hotkey.CancelID:
-		return i18n.T("Cancel transcription")
+		return i18n.T("Cancel recording")
 	case hotkey.Note:
 		return i18n.T("Notes")
 	case hotkey.Meeting:
