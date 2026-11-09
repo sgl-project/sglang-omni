@@ -122,7 +122,7 @@ def create_preprocessing_executor(
         device=resolved_device,
         autocast_dtype=torch.bfloat16 if reference_encode_dtype == "bfloat16" else None,
         max_reference_audio_seconds=max_reference_audio_seconds,
-        graph_max_seconds=reference_encode_graph_max_seconds,
+        reference_encode_graph_max_seconds=reference_encode_graph_max_seconds,
     )
     if not is_on_cpu:
         warmup_seconds = min(
