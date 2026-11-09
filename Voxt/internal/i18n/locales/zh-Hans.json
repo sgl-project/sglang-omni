@@ -1074,6 +1074,7 @@
   "Transcribe, translate and rewrite by voice record while you hold or tap their shortcut.": "转录、翻译和转写在你按住或按下快捷键时录音。",
   "Transcribe: the scene shapes the clean-up. Rewrite: it helps read your spoken instruction. Translate: off by default, since a scene's tone rarely belongs in a translation.": "转录：场景影响整理方式。转写：帮助理解你口述的指令。翻译：默认关闭，因为场景的语气很少适合译文。",
   "Transcription": "转录结果",
+  "Transcript": "文字稿",
   "Translate": "翻译",
   "Translate and Rewrite need one; Transcribe types what it hears.": "翻译和转写需要它；没有时，转录直接输入识别出的原文。",
   "Translate into": "翻译成",
