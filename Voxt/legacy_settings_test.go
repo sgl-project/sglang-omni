@@ -283,7 +283,7 @@ func TestLegacySettingsApply(t *testing.T) {
 func TestImportLegacySettings(t *testing.T) {
 	if _, err := os.Stat(legacyPlutil); err != nil {
 		fakeLegacyPlutil(t, map[string]string{"remoteLLMProviderConfigurations": legacySetupsJSON, "remoteASRProviderConfigurations": legacySpeechJSON,
-			"featureSettings": legacyFeaturesJSON(t, ""), "mlxLocalASRTuningSettings": legacyTuningJSON})
+			"featureSettings": legacyFeaturesJSON(t, ""), "mlxLocalASRTuningSettings": legacyTuningJSON, "showInDock": "false"})
 	}
 	lib := copyFixture(t, "real")
 	var plist bytes.Buffer
