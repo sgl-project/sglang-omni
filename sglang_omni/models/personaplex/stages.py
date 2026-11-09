@@ -179,20 +179,10 @@ def create_preprocessing_executor(
 
 
 def create_session_preprocessing_executor(
-    model_path: str,
     *,
     max_open_sessions: int,
-    voice_prompt_cache_bytes: int = VOICE_PROMPT_CACHE_MAX_BYTES,
 ) -> SessionScheduler:
-    model_dir = Path(resolve_model_path(model_path))
-    prepare_prompt = prompt_preparer(
-        model_dir,
-        load_text_tokenizer(model_dir),
-        voice_prompt_cache_bytes=voice_prompt_cache_bytes,
-    )
-    return SessionScheduler(
-        PreprocessingHooks(prepare_prompt), max_open_sessions=max_open_sessions
-    )
+    return SessionScheduler(PreprocessingHooks(), max_open_sessions=max_open_sessions)
 
 
 def load_codec(
@@ -235,14 +225,27 @@ def create_session_mimi_encode_executor(
     *,
     max_open_sessions: int,
     max_concurrency: int = 1,
+    voice_prompt_cache_bytes: int = VOICE_PROMPT_CACHE_MAX_BYTES,
+    voice_code_cache_bytes: int = VOICE_PROMPT_CACHE_MAX_BYTES,
     device: str | None = None,
     gpu_id: int | None = None,
 ) -> SessionScheduler:
     """Each session encodes on its own streaming state; max_concurrency sessions'
     units encode at once."""
     codec, device = load_codec(model_path, device=device, gpu_id=gpu_id, mode="encode")
+    model_dir = Path(resolve_model_path(model_path))
+    prepare_prompt = prompt_preparer(
+        model_dir,
+        load_text_tokenizer(model_dir),
+        voice_prompt_cache_bytes=voice_prompt_cache_bytes,
+    )
     return SessionScheduler(
-        MimiEncodeHooks(codec, device),
+        MimiEncodeHooks(
+            codec,
+            device,
+            prepare_prompt=prepare_prompt,
+            voice_code_cache_bytes=voice_code_cache_bytes,
+        ),
         max_open_sessions=max_open_sessions,
         max_concurrency=max_concurrency,
     )
