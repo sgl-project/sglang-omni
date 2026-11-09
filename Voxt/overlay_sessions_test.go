@@ -108,12 +108,12 @@ func TestOverlaySessionsStartSmall(t *testing.T) {
 			snap(a, session.Snapshot{ID: "A", State: session.Recording, StartedAt: now, HeardAt: now, Partial: long})
 			widest := layout.Frame(ovTestArea, o, layout.LiveMaxW, layout.LiveH)
 			check("A hears more", ovStep{ovRecording, widest, true, true, long})
-			// Recognising, then cleaning up: the text stays, the face does
-			// not shrink though the model's draft is shorter.
+			// Recognising keeps the text; cleaning up shows none (FB6), and
+			// the pill drops the mode name it has only while recording.
 			snap(a, session.Snapshot{ID: "A", State: session.Recognizing, Partial: long})
 			check("A recognises", ovStep{ovWorking, widest, true, true, long})
 			snap(a, session.Snapshot{ID: "A", State: session.Composing, Partial: long, Draft: "So"})
-			check("A cleans up", ovStep{ovWorking, widest, true, true, "So"})
+			check("A cleans up", ovStep{ovWorking, pillFrame(o, 0), true, true, ""})
 			// Inserted: it fades and leaves, keeping its frame meanwhile.
 			snap(a, session.Snapshot{ID: "A", State: session.Done, Result: "So.", Inserted: true, Partial: long})
 			ft.advance(ovGone)
@@ -194,9 +194,8 @@ func TestOverlayAnchorAndRestyle(t *testing.T) {
 }
 
 // TestOverlayTwoSessionsEndToEnd: the shortcut twice, through the real
-// session manager and the fake helper: the first session's text (the
-// file service's, while the model cleans it up) grows the overlay; the
-// second starts as the pill, with no text, at the same anchor.
+// session manager and the fake helper: the first session ends and leaves;
+// the second starts as the pill, with no text, at the same anchor.
 func TestOverlayTwoSessionsEndToEnd(t *testing.T) {
 	chat := &fakeChat{text: "Hello, VoxtNew."}
 	set, keys, _ := fileSetup(t, "hello aura link, the second line of a longer text", chat)
@@ -211,7 +210,6 @@ func TestOverlayTwoSessionsEndToEnd(t *testing.T) {
 	ft := new(fakeTimers).install(a.app)
 	o := a.prefs.Overlay
 	var first string
-	grew := false
 	a.pump("the first recording", func() bool { return a.sess.State == session.Recording })
 	first = a.sess.ID
 	pill := pillFrame(o, recordingPillFaceW(a.sess, false))
@@ -220,14 +218,10 @@ func TestOverlayTwoSessionsEndToEnd(t *testing.T) {
 	}
 	a.pump("the first's end", func() bool {
 		if a.sess.ID == first && a.ov.h == layout.LiveH {
-			grew = true
-			anchored(t, "first grown", o, a.ov.frame)
+			t.Error("the first session's final text grew the overlay; the preview should stay the pill")
 		}
 		return a.sess.ID == first && a.sess.State.Ended()
 	})
-	if !grew {
-		t.Error("the first never showed its text")
-	}
 	ft.advance(ovGone)
 	if a.ov.visible {
 		t.Fatal("the first stays on screen")

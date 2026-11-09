@@ -350,7 +350,7 @@ func (r *run) listen() (string, bool) {
 	}
 	raw, _ := withoutEndWord(strings.TrimSpace(res.Text), word)
 	r.logf("info", "recognised %s in %v", r.logText(raw), asrTime.Round(time.Millisecond))
-	r.m.update(r, func(s *Snapshot) { s.Raw, s.Partial, s.Timings.ASR = raw, raw, asrTime })
+	r.m.update(r, func(s *Snapshot) { s.Raw, s.Timings.ASR = raw, asrTime })
 	if raw == "" {
 		r.recognitionFailed = true
 		r.finish(Done, &Problem{Code: ProblemNoSpeech}, "", finishOpts{})
