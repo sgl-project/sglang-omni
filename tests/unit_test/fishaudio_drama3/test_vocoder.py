@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -41,7 +40,7 @@ from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import WindowDecoder
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.profiler import event_recorder
 from sglang_omni.proto.request import OmniRequest, StagePayload
-from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.types import RequestOutput
 from tests.unit_test.fishaudio_s2_pro.test_vocoder import tiny_codec
 from tests.unit_test.fixtures.torch_backend_flags import (  # noqa: F401  # fixture
@@ -175,11 +174,12 @@ def streamed(
     is_done_first: bool,
     codec: FrameNumberCodec | None = None,
     decode_window: WindowDecoder | None = None,
+    factory_args: Drama3VocoderFactoryArgs | None = None,
 ) -> tuple[FrameNumberCodec, list[OutgoingMessage]]:
     """Stream chunks of the given sizes, then hand over the final payload with all
     total_frame_count frames and signal the end of the stream."""
     codec = FrameNumberCodec() if codec is None else codec
-    vocoder = vocoder_with(codec, decode_window)
+    vocoder = vocoder_with(codec, decode_window, factory_args=factory_args)
     frames = numbered_frames(total_frame_count)
     start = 0
     for chunk_id, frame_count in enumerate(chunk_frame_counts):
@@ -1010,7 +1010,7 @@ FIRST_CHUNK_WINDOWS = [
 @pytest.mark.parametrize(
     (
         "total_frame_count",
-        "chunk_frame_ranges",
+        "chunk_frame_counts",
         "is_done_first",
         "crossfade_samples",
         "windows",
@@ -1018,7 +1018,7 @@ FIRST_CHUNK_WINDOWS = [
     [
         pytest.param(
             150,
-            [(0, 64), (64, 150)],
+            [64, 86],
             False,
             0,
             FIRST_CHUNK_WINDOWS + [(4, 1, 0, 64, 96), (5, -1, 1, 28, 60)],
@@ -1026,7 +1026,7 @@ FIRST_CHUNK_WINDOWS = [
         ),
         pytest.param(
             150,
-            [(0, 64), (64, 150)],
+            [64, 86],
             True,
             0,
             FIRST_CHUNK_WINDOWS + [(4, 1, 0, 64, 96), (5, -1, 1, 28, 60)],
@@ -1034,7 +1034,7 @@ FIRST_CHUNK_WINDOWS = [
         ),
         pytest.param(
             122,
-            [(0, 64), (64, 122)],
+            [64, 58],
             False,
             0,
             FIRST_CHUNK_WINDOWS + [(4, 1, 0, 64, 96)],
@@ -1042,7 +1042,7 @@ FIRST_CHUNK_WINDOWS = [
         ),
         pytest.param(
             150,
-            [(0, 64)],
+            [64],
             False,
             0,
             FIRST_CHUNK_WINDOWS + [(4, -1, 0, 64, 96), (5, -1, 1, 28, 60)],
@@ -1050,7 +1050,7 @@ FIRST_CHUNK_WINDOWS = [
         ),
         pytest.param(
             150,
-            [(0, 64), (64, 150)],
+            [64, 86],
             False,
             40,
             FIRST_CHUNK_WINDOWS + [(4, 1, 0, 64, 96), (5, -1, 1, 28, 60)],
@@ -1061,49 +1061,23 @@ FIRST_CHUNK_WINDOWS = [
 def test_every_decoded_window_records_its_decode(
     tmp_path: Path,
     total_frame_count: int,
-    chunk_frame_ranges: list[tuple[int, int]],
+    chunk_frame_counts: list[int],
     is_done_first: bool,
     crossfade_samples: int,
     windows: list[tuple[int, int, int, int, int]],
 ) -> None:
-    vocoder = vocoder_with(
-        FrameNumberCodec(),
-        factory_args=Drama3VocoderFactoryArgs(
-            stream_crossfade_samples=crossfade_samples
-        ),
-    )
-    frames = numbered_frames(total_frame_count)
-    chunk_messages = [
-        IncomingMessage(
-            request_id="request-a",
-            type="stream_chunk",
-            data=StreamItem(
-                chunk_id=chunk_id,
-                data=frames[start:end].T,
-                from_stage="tts_engine",
-            ),
-        )
-        for chunk_id, (start, end) in enumerate(chunk_frame_ranges)
-    ]
-    payload_message = IncomingMessage(
-        request_id="request-a",
-        type="new_request",
-        data=final_payload(frames, is_streaming=True),
-    )
-    done_message = IncomingMessage(request_id="request-a", type="stream_done")
-    end_messages = (
-        [done_message, payload_message]
-        if is_done_first
-        else [payload_message, done_message]
-    )
-    loop = asyncio.new_event_loop()
     path = event_recorder.get_recorder().start("drama3", str(tmp_path), "vocoder")
     try:
-        for message in chunk_messages + end_messages:
-            vocoder.handle_message(message, loop)
+        streamed(
+            total_frame_count,
+            chunk_frame_counts,
+            is_done_first=is_done_first,
+            factory_args=Drama3VocoderFactoryArgs(
+                stream_crossfade_samples=crossfade_samples
+            ),
+        )
     finally:
         event_recorder.get_recorder().stop(wait=True)
-        loop.close()
 
     events = [json.loads(line) for line in Path(path).read_text().splitlines()]
     assert [
