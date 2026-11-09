@@ -18,10 +18,8 @@ from sglang_omni.models.fishaudio_drama3.stream_windows import (
     stream_window_lengths,
     utterance_graph_lengths,
 )
-from sglang_omni.models.fishaudio_drama3.vocoder import (
-    Drama3VocoderScheduler,
-    WindowGraphDecoder,
-)
+from sglang_omni.models.fishaudio_drama3.vocoder import Drama3VocoderScheduler
+from sglang_omni.models.fishaudio_drama3.window_graphs import WindowGraphDecoder
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage

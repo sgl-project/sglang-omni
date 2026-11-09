@@ -114,3 +114,13 @@ def frames_in_complete_windows(
         window_end
         + (frame_count - window_end) // stream_followup_stride * stream_followup_stride
     )
+
+
+def crossfade_frames(stream_crossfade_samples: int, frame_length: int) -> int:
+    """Frames of the overlap a crossfade reads back into."""
+    return -(-stream_crossfade_samples // frame_length)
+
+
+def discarded_frames(overlap_frames: int, crossfade_frames: int) -> int:
+    """Leading frames of a window whose audio the stream never reads."""
+    return max(0, overlap_frames - crossfade_frames)

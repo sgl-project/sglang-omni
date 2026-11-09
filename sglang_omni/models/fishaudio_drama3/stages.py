@@ -40,17 +40,15 @@ from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.request_builders import Drama3RequestData
 from sglang_omni.models.fishaudio_drama3.speech_request import Drama3SpeechPreprocessor
 from sglang_omni.models.fishaudio_drama3.stream_windows import (
+    crossfade_frames,
+    discarded_frames,
     flush_window_shapes,
     stream_window_discards,
     stream_window_lengths,
     utterance_graph_lengths,
 )
-from sglang_omni.models.fishaudio_drama3.vocoder import (
-    Drama3VocoderScheduler,
-    WindowGraphDecoder,
-    crossfade_frames,
-    discarded_frames,
-)
+from sglang_omni.models.fishaudio_drama3.vocoder import Drama3VocoderScheduler
+from sglang_omni.models.fishaudio_drama3.window_graphs import WindowGraphDecoder
 from sglang_omni.models.fishaudio_s2_pro.stages import (
     FishReferenceEncodeHook,
     load_codec,

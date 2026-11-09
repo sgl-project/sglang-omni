@@ -33,8 +33,8 @@ from sglang_omni.models.fishaudio_drama3.stream_windows import (
     stream_window_lengths,
     utterance_graph_lengths,
 )
-from sglang_omni.models.fishaudio_drama3.vocoder import (
-    Drama3VocoderScheduler,
+from sglang_omni.models.fishaudio_drama3.vocoder import Drama3VocoderScheduler
+from sglang_omni.models.fishaudio_drama3.window_graphs import (
     SuffixDecoder,
     WindowBatchDecoder,
     WindowGraphDecoder,
