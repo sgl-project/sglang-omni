@@ -29,6 +29,7 @@ helper core
 helper helper/proto
 helper/helpertest helper/proto
 helper/helpertest/cmd/fakehelper helper/helpertest
+historyapi store
 hotkey helper/proto
 hotkey settings
 llm core

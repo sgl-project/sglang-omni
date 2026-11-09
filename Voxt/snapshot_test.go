@@ -92,6 +92,7 @@ func snapshotsMain(t *testing.T, out string) {
 		}
 		snapshotHistoryDetail(a, save)   // history_page_test.go
 		historySettingsShots(a, save)    // history_settings_test.go
+		historyAccessShots(a, tt, save)  // history_access_test.go
 		transcribeShots(a, tt, save)     // the Try area's states (feature_page_test.go)
 		appEnhanceShots(a, fs, tt, save) // appenhance_page_test.go
 		dictShots(t, a, save)            // dictionary_page_test.go

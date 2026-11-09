@@ -38,6 +38,7 @@ import (
 //	updateState       updates.go      the updater, an update installed while running
 //	notesState        notes_page.go   the Notes page
 //	learnState        learn_link.go   the watch that learns from the user's corrections
+//	historyAccessState history_access.go  other programs reading the history
 //
 // Add fields to your area's struct, not here.
 type app struct {
@@ -77,6 +78,7 @@ type app struct {
 	notesState
 	announcementsState
 	learnState
+	historyAccessState
 }
 
 func newApp(lib *library, h *helperHost) *app {
@@ -126,6 +128,7 @@ func (a *app) toast(msg string) {
 // quit releases what the app holds; it runs in App.OnQuit, before the
 // library closes.
 func (a *app) quit() {
+	a.closeHistoryAccess() // history_access.go: the socket goes first
 	if a.stopLearning != nil {
 		a.stopLearning() // learn_link.go: no read goes to a helper that stopped
 	}
