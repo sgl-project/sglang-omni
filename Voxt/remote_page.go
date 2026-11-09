@@ -26,9 +26,9 @@ import (
 
 func (a *app) remotePage(c *ui.Context) {
 	t := c.Theme()
-	pageHeader(c, i18n.T("Language models"), nil)
+	columnPageHeader(c, i18n.T("Language models"), nil)
 	ui.Scroll(c.Key("remote-scroll")).Grow(1).MinHeight(0).Children(func() {
-		ui.Column(c).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp4)).MaxWidth(px(t, 880)).Children(func() {
+		pageColumn(c).Gap(px(t, sp4)).Children(func() {
 			a.obBackBar(c, remotePath) // onboarding.go: left from the setup guide
 			caption(c, i18n.T("Transcribe's clean-up, Translate and Rewrite use the language model you set up here, over its OpenAI-compatible API. Voxt sends it the recognised or selected text, never your audio; keys stay in this Mac's Keychain."))
 			a.providerCards(c, local.LLM)
