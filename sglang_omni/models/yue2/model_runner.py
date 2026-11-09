@@ -28,24 +28,25 @@ class SamplingRow:
 
 
 def sampling_rows(requests: list[SchedulerRequest]) -> list[SamplingRow]:
+    # note (ruiling): SGLang reorders the batch when it retracts requests, so twins are matched by identity.
+    positions = {id(request.data): index for index, request in enumerate(requests)}
     rows: list[SamplingRow] = []
-    index = 0
-    while index < len(requests):
-        data: Yue2ARRequestData = requests[index].data
+    for index, request in enumerate(requests):
+        data: Yue2ARRequestData = request.data
         if data.is_cfg_uncond:
-            raise RuntimeError(
-                f"YuE2 CFG row {requests[index].request_id} is not preceded by its request"
-            )
+            pass
         elif data.cfg_uncond is None:
             rows.append(SamplingRow(index, None, data))
-            index += 1
-        elif index + 1 < len(requests) and requests[index + 1].data is data.cfg_uncond:
-            rows.append(SamplingRow(index, index + 1, data))
-            index += 2
+        elif id(data.cfg_uncond) in positions:
+            rows.append(SamplingRow(index, positions[id(data.cfg_uncond)], data))
         else:
             raise RuntimeError(
-                f"YuE2 request {requests[index].request_id} lost its adjacent CFG row"
+                f"YuE2 request {request.request_id} lost its CFG row in this batch"
             )
+    if len(rows) + sum(row.unconditional is not None for row in rows) != len(requests):
+        raise RuntimeError("YuE2 CFG row without its request in this batch")
+    else:
+        pass
     return rows
 
 

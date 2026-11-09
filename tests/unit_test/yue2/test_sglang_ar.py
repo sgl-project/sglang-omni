@@ -7,6 +7,7 @@ from unittest.mock import Mock
 import pytest
 import tiktoken
 import torch
+from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
 
 from sglang_omni.models.yue2.model_runner import Yue2ModelRunner, sampling_rows
 from sglang_omni.models.yue2.payload_types import Yue2State
@@ -18,13 +19,14 @@ from sglang_omni.models.yue2.request import (
     SamplingConfig,
     Yue2Tokenizer,
 )
-from sglang_omni.models.yue2.scheduler import Yue2Scheduler
+from sglang_omni.models.yue2.scheduler import Yue2PrefillAdder, Yue2Scheduler
 from sglang_omni.models.yue2.sglang_request_builder import (
     Yue2ARRequestData,
     Yue2RequestBuilder,
     public_request_id,
 )
 from sglang_omni.proto.request import OmniRequest, StagePayload
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.pipeline_state import load_state
 from sglang_omni.scheduling.types import SchedulerRequest
 from sglang_omni.serve.openai_errors import generation_error_status_code
@@ -109,7 +111,7 @@ def test_admission_never_splits_a_cfg_pair(builder: Yue2RequestBuilder) -> None:
     single = builder(payload("a", abc="X:1\nK:C\nCDEF"))
     guided = builder(payload("b", cot="off"))
     queue = [
-        SimpleNamespace(omni_data=data, origin_input_ids=data.prefix)
+        SimpleNamespace(omni_data=data, origin_input_ids=data.prefix, output_ids=[])
         for data in (single, guided, guided.cfg_uncond)
     ]
     running = SimpleNamespace(reqs=[])
@@ -124,6 +126,107 @@ def test_admission_never_splits_a_cfg_pair(builder: Yue2RequestBuilder) -> None:
     assert limit(2, 100000) == 1
     assert limit(3, 100000) == 3
     assert limit(3, len(single.prefix)) == 1
+
+
+def cfg_pair(builder: Yue2RequestBuilder, request_id: str) -> list:
+    guided = builder(payload(request_id, cot="off"))
+    for data in (guided, guided.cfg_uncond):
+        data.req.omni_data = data
+    return [guided.req, guided.cfg_uncond.req]
+
+
+@pytest.mark.parametrize(
+    "guided_result,twin_result,admitted_rows",
+    [
+        (AddReqResult.CONTINUE, AddReqResult.CONTINUE, 2),
+        (AddReqResult.NO_TOKEN, None, 0),
+        (AddReqResult.CONTINUE, AddReqResult.NO_TOKEN, 0),
+    ],
+)
+def test_prefill_adder_admits_both_cfg_rows_or_neither(
+    builder: Yue2RequestBuilder,
+    monkeypatch: pytest.MonkeyPatch,
+    guided_result: AddReqResult,
+    twin_result: AddReqResult | None,
+    admitted_rows: int,
+) -> None:
+    rows = cfg_pair(builder, "b")
+
+    def add_one_req(adder, req, has_chunked_req, truncation_align_size):
+        if req is rows[0] or twin_result is AddReqResult.CONTINUE:
+            adder.can_run_list.append(req)
+        else:
+            pass
+        return guided_result if req is rows[0] else twin_result
+
+    monkeypatch.setattr(PrefillAdder, "add_one_req", add_one_req)
+    adder = object.__new__(Yue2PrefillAdder)
+    adder.can_run_list = []
+    adder.tree_cache = Mock()
+    for req in rows:
+        if adder.add_one_req(req, False, None) != AddReqResult.CONTINUE:
+            break
+        else:
+            pass
+    assert [id(req) for req in adder.can_run_list] == [
+        id(req) for req in rows[:admitted_rows]
+    ]
+    assert adder.tree_cache.unlock.call_count == (0 if admitted_rows else 1)
+
+
+@pytest.mark.parametrize("retraction_order", [[0], [1], [0, 1], [1, 0]])
+def test_retracting_one_cfg_row_requeues_the_pair(
+    builder: Yue2RequestBuilder,
+    monkeypatch: pytest.MonkeyPatch,
+    retraction_order: list[int],
+) -> None:
+    single = builder(payload("a", abc="X:1\nK:C\nCDEF")).req
+    rows = cfg_pair(builder, "b")
+    retracted = [rows[index] for index in retraction_order]
+    batch = SimpleNamespace(
+        reqs=[single] + [row for row in rows if all(row is not r for r in retracted)],
+        release_req=Mock(),
+    )
+
+    def filter_batch(keep_indices: list[int]) -> None:
+        batch.reqs = [batch.reqs[index] for index in keep_indices]
+
+    batch.filter_batch = filter_batch
+    monkeypatch.setattr(
+        OmniScheduler,
+        "_add_request_to_queue",
+        lambda scheduler, req, is_retracted=False: scheduler.waiting_queue.append(req),
+    )
+    scheduler = object.__new__(Yue2Scheduler)
+    scheduler.waiting_queue = []
+    scheduler.decoding_batch = batch
+    for req in retracted:
+        scheduler._add_request_to_queue(  # noqa: leading-underscore  # upstream spelling
+            req, is_retracted=True
+        )
+    assert [id(req) for req in scheduler.waiting_queue] == [id(req) for req in rows]
+    assert [id(req) for req in batch.reqs] == [id(single)]
+    assert batch.release_req.call_count == 2 - len(retracted)
+
+
+def test_cfg_pair_above_the_prefill_budget_is_admitted_whole(
+    builder: Yue2RequestBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rows = cfg_pair(builder, "b")
+    pair_tokens = sum(len(req.origin_input_ids) for req in rows)
+    budgets = []
+    monkeypatch.setattr(
+        OmniScheduler,
+        "get_new_batch_prefill",
+        lambda scheduler, running_batch: budgets.append(scheduler.max_prefill_tokens),
+    )
+    scheduler = object.__new__(Yue2Scheduler)
+    scheduler.waiting_queue = list(rows)
+    scheduler.max_prefill_tokens = pair_tokens - 1
+    scheduler.get_num_allocatable_reqs = lambda running_count: 16
+    scheduler.get_new_batch_prefill(SimpleNamespace(reqs=[]))
+    assert budgets == [2 * pair_tokens - 1]
+    assert scheduler.max_prefill_tokens == pair_tokens - 1
 
 
 def test_finished_score_starts_the_audio_request(builder: Yue2RequestBuilder) -> None:
@@ -186,6 +289,19 @@ def test_runner_gives_twin_its_request_token_and_gates_the_end() -> None:
     assert guided.generated_tokens == single.generated_tokens == 1
     assert twin.generated_tokens == 0
     assert guided.recent_tokens[0].item() == CODEC_OFFSET + 1
+
+
+def test_runner_matches_cfg_rows_after_sglang_reorders_the_batch() -> None:
+    sampling = SamplingConfig()
+    twin = Yue2ARRequestData(sampling=sampling, is_cfg_uncond=True)
+    guided = Yue2ARRequestData(sampling=sampling, cfg_uncond=twin)
+    requests = [
+        runner_request("a-cfg", twin),
+        runner_request("b", Yue2ARRequestData(sampling=sampling)),
+        runner_request("a", guided),
+    ]
+    rows = sampling_rows(requests)
+    assert [(row.conditional, row.unconditional) for row in rows] == [(1, None), (2, 0)]
 
 
 def test_runner_rejects_a_twin_without_its_request() -> None:

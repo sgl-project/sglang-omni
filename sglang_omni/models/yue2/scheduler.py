@@ -10,6 +10,8 @@ from sglang.srt.managers.schedule_batch import (
     Req,
     ScheduleBatch,
 )
+from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
+from sglang.srt.managers.scheduler import Scheduler as UpstreamScheduler
 
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
@@ -43,8 +45,49 @@ def admission_width(queue: list[Req], index: int) -> int:
         return 1
 
 
+def prefill_token_count(req: Req) -> int:
+    """Tokens a prefill of req computes; a retracted request replays its output."""
+    return len(req.origin_input_ids) + len(req.output_ids)
+
+
+class Yue2PrefillAdder(PrefillAdder):
+    """Admit a CFG request together with its unconditional row, or neither."""
+
+    def add_one_req(
+        self, req: Req, has_chunked_req: bool, truncation_align_size: int | None
+    ) -> AddReqResult:
+        result = super().add_one_req(req, has_chunked_req, truncation_align_size)
+        data = request_data(req)
+        admitted = bool(self.can_run_list) and self.can_run_list[-1] is req
+        previous = (
+            request_data(self.can_run_list[-1])
+            if self.can_run_list and not admitted
+            else None
+        )
+        if data is None:
+            pass
+        elif (
+            data.cfg_uncond is not None and admitted and result != AddReqResult.CONTINUE
+        ):
+            # note (ruiling): admission stops before the twin, so the request waits with it.
+            self.withdraw_last()
+        elif (
+            data.is_cfg_uncond and previous is not None and previous.cfg_uncond is data
+        ):
+            self.withdraw_last()
+        else:
+            pass
+        return result
+
+    def withdraw_last(self) -> None:
+        req = self.can_run_list.pop()
+        self.tree_cache.unlock(req.lock)
+        req.lock = None
+
+
 class Yue2Scheduler(OmniScheduler[Yue2ARRequestData]):
     request_builder: Yue2RequestBuilder
+    decoding_batch: ScheduleBatch | None = None
 
     def enqueue_built_request(
         self,
@@ -88,18 +131,30 @@ class Yue2Scheduler(OmniScheduler[Yue2ARRequestData]):
         req.omni_data = unconditional
         self.waiting_queue.append(req)
 
+    def get_prefill_adder_class(self) -> type[PrefillAdder]:
+        return Yue2PrefillAdder
+
     def get_new_batch_prefill(self, running_batch: ScheduleBatch) -> NextBatchPlan:
         queue = self.waiting_queue
         limit = self.admission_limit(queue, running_batch)
-        if limit >= len(queue):
-            return super().get_new_batch_prefill(running_batch)
+        token_budget = self.max_prefill_tokens
+        if limit >= 2 and admission_width(queue, 0) == 2:
+            leading_pair_tokens = prefill_token_count(queue[0]) + prefill_token_count(
+                queue[1]
+            )
         else:
-            pass
+            leading_pair_tokens = 0
         deferred = queue[limit:]
         del queue[limit:]
+        if leading_pair_tokens > token_budget:
+            # note (ruiling): SGLang admits only one request above the prefill budget; a CFG pair needs both.
+            self.max_prefill_tokens = token_budget + leading_pair_tokens
+        else:
+            pass
         try:
             return super().get_new_batch_prefill(running_batch)
         finally:
+            self.max_prefill_tokens = token_budget
             self.waiting_queue.extend(deferred)
 
     def admission_limit(self, queue: list[Req], running_batch: ScheduleBatch) -> int:
@@ -110,7 +165,7 @@ class Yue2Scheduler(OmniScheduler[Yue2ARRequestData]):
         while index < len(queue):
             width = admission_width(queue, index)
             group_tokens = sum(
-                len(queue[row].origin_input_ids) for row in range(index, index + width)
+                prefill_token_count(queue[row]) for row in range(index, index + width)
             )
             if index + width > allocatable or (
                 index and tokens + group_tokens > budget
@@ -168,6 +223,81 @@ class Yue2Scheduler(OmniScheduler[Yue2ARRequestData]):
             self.abort(request_id)
             return
         self.enqueue_built_request(payload, False, semantic)
+
+    def update_running_batch(self, batch: ScheduleBatch) -> ScheduleBatch | None:
+        self.decoding_batch = batch
+        try:
+            return UpstreamScheduler.update_running_batch(self, batch)
+        finally:
+            self.decoding_batch = None
+
+    def _add_request_to_queue(  # noqa: leading-underscore  # upstream spelling
+        self, req: Req, is_retracted: bool = False
+    ) -> None:
+        data = request_data(req)
+        batch = self.decoding_batch
+        if (
+            is_retracted
+            and batch is not None
+            and data is not None
+            and (data.cfg_uncond is not None or data.is_cfg_uncond)
+        ):
+            self.requeue_cfg_pair(req, data, batch)
+        else:
+            super()._add_request_to_queue(req, is_retracted=is_retracted)
+
+    def requeue_cfg_pair(
+        self, req: Req, data: Yue2ARRequestData, batch: ScheduleBatch
+    ) -> None:
+        """Retract both rows of a CFG pair when SGLang retracts one, then queue them in order."""
+        if any(queued is req for queued in self.waiting_queue):
+            return
+        elif data.is_cfg_uncond:
+            guided = next(
+                (
+                    running
+                    for running in batch.reqs
+                    if (running_data := request_data(running)) is not None
+                    and running_data.cfg_uncond is data
+                ),
+                None,
+            )
+            # note (ruiling): a request that left the batch was retracted in this step and queues both rows, or was aborted.
+            pair = [] if guided is None else [guided, req]
+        else:
+            assert data.cfg_uncond is not None
+            twin = data.cfg_uncond.req
+            if twin.to_finish is not None or twin.finished():
+                # note (ruiling): SGLang aborts the last row when even it does not fit the KV cache.
+                self.emit_request_error(
+                    req.rid,
+                    RuntimeError("YuE2 request: the KV cache cannot hold its CFG rows"),
+                )
+                pair = []
+            else:
+                pair = [req, twin]
+        for row in pair:
+            index = next(
+                (
+                    position
+                    for position, running in enumerate(batch.reqs)
+                    if running is row
+                ),
+                None,
+            )
+            if index is None:
+                pass
+            else:
+                batch.release_req(index, len(batch.reqs) - 1)
+                batch.filter_batch(
+                    keep_indices=[
+                        position
+                        for position in range(len(batch.reqs))
+                        if position != index
+                    ]
+                )
+        for row in pair:
+            super()._add_request_to_queue(row, is_retracted=True)
 
     def emit_request_error(self, request_id: str, error: Exception) -> None:
         super().emit_request_error(public_request_id(request_id), error)
