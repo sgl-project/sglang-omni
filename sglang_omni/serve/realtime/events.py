@@ -224,6 +224,37 @@ class ConversationItemTruncate(ClientEvent):
     audio_end_ms: int = Field(ge=0)
 
 
+class ConversationItemContent(EventBase):
+    """One content part of a client-created conversation item."""
+
+    type: str = ""
+    text: str | None = None
+
+
+class ConversationItemMessage(EventBase):
+    """A text message the client wants to add to the session history."""
+
+    type: str = "message"
+    role: str = ""
+    content: list[ConversationItemContent] = Field(default_factory=list)
+
+
+class ConversationItemCreate(ClientEvent):
+    type: Literal["conversation.item.create"]
+    previous_item_id: str | None = None
+    item: ConversationItemMessage
+
+
+class ConversationItemRetrieve(ClientEvent):
+    type: Literal["conversation.item.retrieve"]
+    item_id: str = ""
+
+
+class ConversationItemDelete(ClientEvent):
+    type: Literal["conversation.item.delete"]
+    item_id: str = ""
+
+
 def make_event(event_type: str, **fields: object) -> dict[str, object]:
     """Construct a server event dict. event_id is filled in by the
     session loop so handlers don't have to."""
@@ -242,6 +273,9 @@ _CONVERSATION_CLIENT_EVENT_TYPES: dict[str, type[ClientEvent]] = {
     "input_audio_buffer.append": InputAudioBufferAppend,
     "input_audio_buffer.clear": InputAudioBufferClear,
     "response.cancel": ResponseCancel,
+    "conversation.item.create": ConversationItemCreate,
+    "conversation.item.retrieve": ConversationItemRetrieve,
+    "conversation.item.delete": ConversationItemDelete,
     "conversation.item.truncate": ConversationItemTruncate,
 }
 
