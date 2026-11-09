@@ -430,6 +430,7 @@ class StreamingVocoderBase(
                         operation,
                         TURN_DONE,
                         truncated=request_id in self.truncated_reply_units,
+                        extra_payload=self.turn_usage_payload(request_id),
                     )
                 )
             else:
@@ -750,10 +751,15 @@ class StreamingVocoderBase(
         event: str,
         *,
         truncated: bool = False,
+        extra_payload: Mapping[str, object] | None = None,
     ) -> OutgoingMessage:
         payload: dict[str, object] = {"type": event}
         if truncated:
             payload[REPLY_TRUNCATED] = True
+        else:
+            pass
+        if extra_payload is not None:
+            payload.update(extra_payload)
         else:
             pass
         chunk = TimedChunk(
@@ -875,6 +881,10 @@ class StreamingVocoderBase(
     ) -> Mapping[str, object]:
         """Terminal ``result`` payload data (metadata-only or full audio)."""
 
+    def turn_usage_payload(self, request_id: str) -> dict[str, object] | None:
+        """Per-turn token usage attached to the TURN_DONE control message; None keeps turn.done usage-free."""
+        del request_id
+        return None
     def fallback_full_decode(
         self, request_id: str, payload: StagePayload, state: StreamStateT
     ) -> torch.Tensor | None:
