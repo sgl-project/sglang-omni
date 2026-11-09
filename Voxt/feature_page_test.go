@@ -617,31 +617,29 @@ func TestRulesExplainTwoStages(t *testing.T) {
 	}
 }
 
-// TestFeaturePageColumns: in a wide window a feature page reads in two
-// columns, the answer card's section beside the shortcuts; in the default
-// window it stays one column (#3644 FB16: a long column in a mostly blank
-// window).
+// TestFeaturePageColumns: a feature page reads in one column at any
+// window width, the answer card's section under the shortcuts (11-09: the
+// user did not want the two columns a wide window had, #3644 FB16).
 func TestFeaturePageColumns(t *testing.T) {
-	for _, c := range []struct {
-		w, h int
-		two  bool
-	}{{1600, 1000, true}, {windowWidth, 2400, false}} {
+	for _, c := range []struct{ w, h int }{{1600, 2400}, {windowWidth, 2400}} {
 		a, _, tt := newTestApp(t)
 		tt.SetSize(c.w, c.h)
-		a.navigate("/transcribe")
-		frames(tt)
-		keys, ok1 := tt.Find(i18n.T("Shortcuts"))
-		card, ok2 := tt.Find(i18n.T("Answer card"))
-		if !ok1 || !ok2 {
-			t.Fatalf("%d wide: Shortcuts %v, Answer card %v", c.w, ok1, ok2)
-		}
-		if two := card.X > keys.X+300; two != c.two {
-			t.Errorf("%d wide: Shortcuts at x %.0f, Answer card at x %.0f", c.w, keys.X, card.X)
+		for _, page := range []string{"/transcribe", "/translate", "/rewrite"} {
+			a.navigate(page)
+			frames(tt)
+			keys, ok1 := tt.Find(i18n.T("Shortcuts"))
+			card, ok2 := tt.Find(i18n.T("Answer card"))
+			if !ok1 || !ok2 {
+				t.Fatalf("%s %d wide: Shortcuts %v, Answer card %v", page, c.w, ok1, ok2)
+			}
+			if card.X > keys.X+1 || card.Y <= keys.Y {
+				t.Errorf("%s %d wide: Shortcuts at %.0f,%.0f, Answer card at %.0f,%.0f: not one column", page, c.w, keys.X, keys.Y, card.X, card.Y)
+			}
 		}
 		if dir := os.Getenv("VOXTNEW_SHOTS"); dir != "" {
 			var b bytes.Buffer
 			png.Encode(&b, tt.Image())
-			os.WriteFile(filepath.Join(dir, fmt.Sprintf("transcribe-%d.png", c.w)), b.Bytes(), 0o644)
+			os.WriteFile(filepath.Join(dir, fmt.Sprintf("rewrite-%d.png", c.w)), b.Bytes(), 0o644)
 		}
 	}
 }

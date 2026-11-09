@@ -43,3 +43,33 @@ func TestLLMDebugRuns(t *testing.T) {
 		t.Errorf("saved %q", a.prefs.Features.Transcribe.Prompt)
 	}
 }
+
+// TestLLMDebugPromptGrows: the debug page's prompt field is as high as
+// its text, however long, under the page's one scroll bar, as Your rules
+// on a feature's page; it was 160 high with a scroll bar of its own
+// inside the scrolling page (11-09: a 25 000-character prompt). The page
+// says the prompt is the feature's Your rules.
+func TestLLMDebugPromptGrows(t *testing.T) {
+	srv, _ := mockOpenAI(t, "Hello there.")
+	useKeys(t, &memKeys{m: map[string]string{"llm." + llm.Custom: "sk-mock-123"}})
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 9000) // room for the whole field
+	a.updateSettings(func(s *settings.Settings) {
+		s.Providers.LLM = []settings.Provider{{ID: llm.Custom, Endpoint: srv.URL + "/v1", Model: "mock-model"}}
+	})
+	a.readUnreadKeys()
+	a.navigate(llmDebugPath)
+	frames(tt)
+	if !has(tt, "This is the feature's Your rules, the same prompt as on its page. Edits are only tried here until you use the prompt, which saves it there.") {
+		t.Errorf("no word on what the prompt is: %q", tt.Texts())
+	}
+	a.llmDbg.prompt = "x"
+	frames(tt)
+	short, ok := tt.Find("System prompt")
+	a.llmDbg.prompt = strings.Repeat("Keep product names in English.\n", 200)
+	frames(tt)
+	long, _ := tt.Find("System prompt")
+	if line := short.H / llmDebugPromptLines; !ok || long.H < 150*line {
+		t.Errorf("a 200-line prompt's field is %.0f high: %.0f lines", long.H, long.H/line)
+	}
+}

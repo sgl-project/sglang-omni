@@ -57,7 +57,7 @@ func (r *run) transcribe(text string) {
 		}
 	}
 	var o finishOpts
-	if r.settings.Features.ShowCard {
+	if r.settings.Features.Transcribe.ShowCard {
 		o.card = deliver.ReasonCard
 	}
 	r.finish(Done, problem, result, o)

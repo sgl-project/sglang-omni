@@ -39,7 +39,7 @@ func TestTranslatePage(t *testing.T) {
 		t.Error("paste-last belongs to Transcribe")
 	}
 	clickSwitch(t, tt, "Show the result in a card")
-	if !a.lib.settings.Get().Features.ShowCard {
+	if !a.lib.settings.Get().Features.Translate.ShowCard {
 		t.Error("show card not saved")
 	}
 	clickSwitch(t, tt, "Basic clean-up")
@@ -215,12 +215,22 @@ func TestSessionBlocker(t *testing.T) {
 	}
 }
 
-// TestCardSwitchShared: Transcribe, Translate and Rewrite share one
-// answer-card switch; Rewrite's page says what its card does more.
-func TestCardSwitchShared(t *testing.T) {
+// TestCardSwitchPerFeature: Transcribe, Translate and Rewrite each have
+// their own answer-card switch (11-09: one switch for the three turned
+// Transcribe's card back on from Rewrite's page); Rewrite's is on by
+// default and its page says what its card does more.
+func TestCardSwitchPerFeature(t *testing.T) {
 	a, tt := pageTester(t, "/translate")
 	rewriteCard := "Rewrite's card does more than Transcribe's and Translate's: Continue, or the Rewrite shortcut, asks a follow-up that changes the answer (\"shorter\", \"in English\"), and the card keeps the conversation."
-	for i, page := range []string{"/translate", "/transcribe", "/rewrite"} {
+	cards := func() [3]bool {
+		f := a.lib.settings.Get().Features
+		return [3]bool{f.Transcribe.ShowCard, f.Translate.ShowCard, f.Rewrite.ShowCard}
+	}
+	if got := cards(); got != [3]bool{false, false, true} {
+		t.Fatalf("defaults %v, want Rewrite's card only", got)
+	}
+	want := cards()
+	for i, page := range []string{"/transcribe", "/translate", "/rewrite"} {
 		a.navigate(page)
 		frames(tt)
 		n := 0
@@ -233,11 +243,17 @@ func TestCardSwitchShared(t *testing.T) {
 			t.Fatalf("%s: %d elements named for the card switch", page, n)
 		}
 		clickSwitch(t, tt, "Show the result in a card")
-		if on := a.lib.settings.Get().Features.ShowCard; on != (i%2 == 0) {
-			t.Errorf("%s: the card switch is %v after a click", page, on)
+		want[i] = !want[i]
+		if got := cards(); got != want {
+			t.Errorf("%s: cards %v after a click, want %v", page, got, want)
 		}
 		if shown := has(tt, rewriteCard); shown != (page == "/rewrite") {
 			t.Errorf("%s: the note on Rewrite's card shows: %v", page, shown)
 		}
+	}
+	a.navigate("/transcribe") // still its own value
+	frames(tt)
+	if got := cards(); got != want {
+		t.Errorf("back on /transcribe: cards %v, want %v", got, want)
 	}
 }

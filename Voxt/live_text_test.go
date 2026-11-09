@@ -86,13 +86,21 @@ func TestLiveTextCard(t *testing.T) {
 	}
 }
 
-// TestLiveLines: Overlay style → Live text layout → Lines shows the live
-// text wide from the first word, wrapped, the face growing with its lines
-// up to layout.LinesMax and no higher. With one line (the default) the
-// face grew sideways and the start of what was said scrolled away
-// (#3644 FB5).
+// TestLiveLines: Overlay style → Live text layout → Lines, the default
+// since 11-09, shows the live text wide from the first word, wrapped, the
+// face growing with its lines up to layout.LinesMax and no higher. With
+// One line the face grows sideways and the start of what was said
+// scrolls away (#3644 FB5; the user, 11-09: the pill should grow in
+// lines).
 func TestLiveLines(t *testing.T) {
 	a, _, tt := newTestApp(t)
+	if !a.prefs.Overlay.LiveLines || !settings.Defaults().Overlay.LiveLines {
+		t.Fatal("Lines is not the default")
+	}
+	a.updateSettings(func(s *settings.Settings) { s.Overlay.LiveLines = false }) // One line, chosen
+	if a.settings.Get().Overlay.LiveLines {
+		t.Fatal("One line not kept")
+	}
 	a.navigate("/settings/overlay")
 	frames(tt)
 	a.sess = session.Snapshot{ID: "s1", State: session.Recording, Partial: "Meet at three"}

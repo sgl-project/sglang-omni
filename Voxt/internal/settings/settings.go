@@ -221,8 +221,10 @@ type Overlay struct {
 	HideLiveText bool `json:"hideLiveText,omitempty"`
 	// LiveLines shows the live text in lines that wrap, in a wide face
 	// from the first word, growing up to ten lines, then the newest ones
-	// (#3644 FB5); off, one line that scrolls sideways.
-	LiveLines bool `json:"liveLines,omitempty"`
+	// (#3644 FB5); off, one line that scrolls sideways. On by default
+	// since 11-09 (the user: the pill should grow in lines, not sideways);
+	// no omitempty, so One line is kept.
+	LiveLines bool `json:"liveLines"`
 }
 
 // DefaultOpacity and DefaultRadius are the overlay face's: translucent
@@ -323,11 +325,11 @@ func Defaults() Settings {
 		Appearance: Appearance{Theme: "system", Scale: 1},
 		Privacy:    Privacy{KeepHistory: true},
 		Audio:      Audio{Sounds: true},
-		Overlay:    Overlay{Position: "bottom", Opacity: DefaultOpacity, Radius: DefaultRadius, Margin: 96},
+		Overlay:    Overlay{Position: "bottom", Opacity: DefaultOpacity, Radius: DefaultRadius, Margin: 96, LiveLines: true},
 		Features: Features{
 			Transcribe: Transcribe{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranscribe, Trigger: TriggerTap}}}, Enhance: true, Cleanup: true},
 			Translate:  Translate{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranslate, Trigger: TriggerTap}}}, Cleanup: true},
-			Rewrite:    Rewrite{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultRewrite, Trigger: TriggerTap}}}, Cleanup: true},
+			Rewrite:    Rewrite{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultRewrite, Trigger: TriggerTap}}}, Cleanup: true, ShowCard: true},
 			PasteLast:  Hotkey{Keys: DefaultPasteLast, Trigger: TriggerTap},
 			Cancel:     Hotkey{Keys: DefaultCancel, Trigger: TriggerTap},
 			Note:       Hotkey{Keys: DefaultNote, Trigger: TriggerTap},

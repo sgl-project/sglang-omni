@@ -2,19 +2,18 @@ package settings
 
 import "encoding/json"
 
-// migrateShowCard turns Translate's card switch, the only one before the
-// switch was every feature's (features.translate.showCard), into
-// Features.ShowCard: who showed translations in the card keeps the card.
-// A document saved since has no such key, so a choice made later stays.
+// migrateShowCard reads the answer card switch that was one for the three
+// features (features.showCard, 2.0.3 betas): on, it turns each feature's
+// own switch on, so who had the card keeps it everywhere. Off was not
+// written, so the features keep theirs (Rewrite's on by default).
+// Translate's own switch (features.translate.showCard) is read as it is.
 func migrateShowCard(data []byte, f *Features) {
 	var doc struct {
 		Features struct {
-			Translate struct {
-				ShowCard bool `json:"showCard"`
-			} `json:"translate"`
+			ShowCard bool `json:"showCard"`
 		} `json:"features"`
 	}
-	if json.Unmarshal(data, &doc) == nil && doc.Features.Translate.ShowCard {
-		f.ShowCard = true
+	if json.Unmarshal(data, &doc) == nil && doc.Features.ShowCard {
+		f.Transcribe.ShowCard, f.Translate.ShowCard, f.Rewrite.ShowCard = true, true, true
 	}
 }

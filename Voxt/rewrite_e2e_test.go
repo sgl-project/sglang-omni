@@ -27,7 +27,7 @@ func rewriteWith(t *testing.T, opts string, chat *fakeChat, said string, card bo
 	t.Helper()
 	set, keys, tr := fileSetup(t, said, chat)
 	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger))
-	a := newSessionApp(t, opts+ev, func(s *settings.Settings) { set(s); s.Features.ShowCard = card }, keys)
+	a := newSessionApp(t, opts+ev, func(s *settings.Settings) { set(s); s.Features.Rewrite.ShowCard = card }, keys)
 	a.pump("the end", func() bool { return a.sess.State.Ended() })
 	return a, tr
 }

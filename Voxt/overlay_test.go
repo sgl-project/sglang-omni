@@ -711,7 +711,9 @@ func TestOverlayInk(t *testing.T) {
 			}
 			a, _, _ := newTestApp(t)
 			a.measureHook = nil // the view measures
-			a.prefs.Overlay.ShowTime = c.time
+			// The one-line pill's rules (ink.Want's row and line); Lines
+			// is the default, its sizes are TestLiveLines'.
+			a.prefs.Overlay.ShowTime, a.prefs.Overlay.LiveLines = c.time, false
 			s := c.s
 			s.ID = "ink"
 			if s.State != session.Recording {
