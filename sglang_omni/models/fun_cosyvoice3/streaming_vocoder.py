@@ -605,7 +605,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
             self.cleanup_aborted_request(request_id)
         batch_start_seconds = self.clock()
         super().run_non_streaming_batch(batch, loop)
-        # note (zhaochenyang20): batch collection stops at a queued chunk, so the chunks behind the batch are ingested before the check.
+        # note (zhaochenyang20): chunks that queued up behind or during the batch are ingested so the check sees the streams they make ready.
         self.ingest_queued_stream_chunks()
         with self.state_lock:
             now_seconds = self.clock()
