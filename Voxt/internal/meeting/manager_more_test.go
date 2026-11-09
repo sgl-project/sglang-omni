@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -232,20 +233,21 @@ func TestDiskLowEndsMeeting(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
-	var free int64 = meeting.DiskMinStartBytes() + 1
+	var free atomic.Int64
+	free.Store(meeting.DiskMinStartBytes() + 1)
 	m := meeting.NewManager(meeting.Config{
 		Mic:   newFakeAudio(make([]byte, 32)),
 		Store: s.Meetings(),
 		Dir:   filepath.Join(dir, "meetings"),
 		FreeSpace: func(string) (int64, error) {
-			return free, nil
+			return free.Load(), nil
 		},
 	})
 	id, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
 	if err != nil {
 		t.Fatal(err)
 	}
-	free = meeting.DiskMinRecordBytes() - 1
+	free.Store(meeting.DiskMinRecordBytes() - 1)
 	deadline := time.Now().Add(6 * time.Second)
 	for m.Current().State.Active() && time.Now().Before(deadline) {
 		time.Sleep(100 * time.Millisecond)

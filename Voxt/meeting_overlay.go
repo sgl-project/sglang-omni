@@ -162,6 +162,8 @@ func (a *app) meetingOverlayBar(c *ui.Context, s meeting.Snapshot, model meeting
 			if cardIconButton(c.Key("mt-pause"), label, label, icon, true) {
 				a.meetingPauseResume()
 			}
+		}
+		if live || s.State == meeting.StateStarting { // a start that hangs can be ended
 			if cardIconButton(c.Key("mt-end"), i18n.T("End meeting"), i18n.T("End meeting"), icons.Stop, true) {
 				a.meetingFinish()
 			}

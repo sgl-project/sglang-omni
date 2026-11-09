@@ -31,6 +31,22 @@ func TestMeetingOverlayControlsFit(t *testing.T) {
 	}
 }
 
+// A start that hangs still offers End, and no Pause.
+func TestMeetingOverlayStartingCanEnd(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	s := meeting.Snapshot{ID: "m1", State: meeting.StateStarting, Mode: meeting.ModeMeeting}
+	a.meetSnap, a.meetOvCollapsed = s, true
+	m := overlayModel(s, true)
+	tt := ui.NewTester(a.meetingOverlayView, m.Layout.Width, m.Layout.Height)
+	frames(tt)
+	if _, ok := tt.Find("End meeting"); !ok {
+		t.Error("no End meeting while starting")
+	}
+	if _, ok := tt.Find("Pause meeting"); ok {
+		t.Error("Pause meeting while starting")
+	}
+}
+
 func TestMeetingOverlayContentProtection(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	var got []bool

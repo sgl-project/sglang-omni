@@ -11,6 +11,9 @@ var reconnectDelays = []time.Duration{time.Second, 2 * time.Second, 4 * time.Sec
 
 // handleTrackLost tries to reopen src after an unexpected capture end.
 func (m *Manager) handleTrackLost(ctx context.Context, src Source) {
+	if ctx.Err() != nil { // the run was cancelled: an end, not a loss
+		return
+	}
 	m.mu.Lock()
 	if !m.state.Active() || m.tracks[src] == nil {
 		m.mu.Unlock()
@@ -119,7 +122,9 @@ func (m *Manager) interrupt(ctx context.Context, id string) error {
 	if err := m.cfg.Store.UpdateMeeting(ctx, mt); err != nil {
 		return err
 	}
+	m.mu.Lock()
 	m.resetAfterDone()
+	m.mu.Unlock()
 	m.notify(s)
 	return nil
 }

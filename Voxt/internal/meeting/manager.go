@@ -95,28 +95,47 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (string, error) {
 	}
 	m.segIdx = 0
 	m.initTranslator()
+	// Made here so Finish can cancel a start that hangs.
+	runCtx, cancel := context.WithCancel(context.Background())
+	m.cancel = cancel
 	rec := m.snap
 	m.mu.Unlock()
 	m.notify(rec)
 
 	folder := id
 	audioDir := filepath.Join(m.cfg.Dir, folder)
-	if err := os.MkdirAll(audioDir, 0o755); err != nil {
+	created := false
+	fail := func(err error) (string, error) {
+		cancel()
+		if created {
+			_ = m.cfg.Store.DeleteMeeting(ctx, id)
+		}
+		_ = os.RemoveAll(audioDir)
+		m.mu.Lock()
+		m.resetIdle()
+		s := m.snap
+		m.mu.Unlock()
+		m.notify(s)
 		return "", err
+	}
+	if err := os.MkdirAll(audioDir, 0o755); err != nil {
+		return fail(err)
 	}
 	mt := store.Meeting{
 		ID: id, CreatedAt: started, Status: store.MeetingRecording,
 		Mode: toStoreMode(req.Mode), Audio: folder,
 	}
-	created, err := m.cfg.Store.CreateMeeting(ctx, mt)
+	row, err := m.cfg.Store.CreateMeeting(ctx, mt)
 	if err != nil {
-		return "", err
+		return fail(err)
+	}
+	created = true
+	if runCtx.Err() != nil {
+		return fail(runCtx.Err())
 	}
 	m.mu.Lock()
-	m.seq = created.Seq
+	m.seq = row.Seq
 	m.archive = newArchive(audioDir)
-	runCtx, cancel := context.WithCancel(context.Background())
-	m.cancel = cancel
 	m.runCtx = runCtx
 	m.trackFails = map[Source]int{}
 	m.problems.reset()
@@ -127,16 +146,14 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (string, error) {
 
 	sources := req.Mode.Sources()
 	if err := m.startTracks(runCtx, sources); err != nil {
-		cancel()
-		_ = m.cfg.Store.DeleteMeeting(ctx, id)
-		_ = os.RemoveAll(audioDir)
-		m.mu.Lock()
-		m.resetIdle()
-		m.mu.Unlock()
-		m.notify(m.snap)
-		return "", err
+		return fail(err)
 	}
 	m.mu.Lock()
+	if runCtx.Err() != nil { // Finish came while the tracks started
+		m.mu.Unlock()
+		m.stopAllTracks()
+		return fail(runCtx.Err())
+	}
 	m.state = StateRecording
 	m.snap.State = StateRecording
 	m.snap.Elapsed = m.timeline.Elapsed()
@@ -250,6 +267,13 @@ func (m *Manager) Finish(ctx context.Context, id string) error {
 		m.mu.Unlock()
 		return fmt.Errorf("meeting: not active")
 	}
+	if m.state == StateStarting {
+		// Start is still opening the tracks: it sees the cancel, then
+		// stops them and drops the meeting, as nothing was recorded.
+		m.cancel()
+		m.mu.Unlock()
+		return nil
+	}
 	keep := m.cfg.Privacy().KeepHistory
 	m.stopAllTracksLocked()
 	if m.archive != nil {
@@ -284,8 +308,11 @@ func (m *Manager) Finish(ctx context.Context, id string) error {
 		if err := m.cfg.Store.UpdateMeeting(ctx, mt); err != nil {
 			return err
 		}
+		m.mu.Lock()
 		m.resetAfterDone()
-		m.notify(m.snap)
+		s := m.snap
+		m.mu.Unlock()
+		m.notify(s)
 		if auto {
 			go func() {
 				_ = m.GenerateMeetingSummary(context.Background(), meetingID)
@@ -468,6 +495,7 @@ func (m *Manager) stopAllTracksLocked() {
 	}
 	pending := make([]*track, 0, len(m.tracks))
 	for _, tr := range m.tracks {
+		tr.stopping = true // read under mu when its Record returns
 		pending = append(pending, tr)
 	}
 	// Live teardown updates the snapshot and must not run under Manager.mu (Finish holds it).
@@ -479,22 +507,30 @@ func (m *Manager) stopAllTracksLocked() {
 }
 
 func (m *Manager) noteLevel(src Source, level float64) {
+	m.mu.Lock()
 	m.problems.noteLevel(src, level)
+	m.mu.Unlock()
 	m.refreshProblem(nil)
 }
 
 func (m *Manager) noteMicText() {
+	m.mu.Lock()
 	m.problems.noteMicText()
+	m.mu.Unlock()
 	m.refreshProblem(nil)
 }
 
 func (m *Manager) noteBacklog(d time.Duration) {
+	m.mu.Lock()
 	m.problems.noteBacklog(d)
+	m.mu.Unlock()
 	m.refreshProblem(nil)
 }
 
 func (m *Manager) noteFreeSpace(free int64) {
+	m.mu.Lock()
 	m.problems.noteFreeSpace(free)
+	m.mu.Unlock()
 	m.refreshProblem(nil)
 }
 
