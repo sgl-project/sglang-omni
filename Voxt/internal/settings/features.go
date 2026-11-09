@@ -1,5 +1,7 @@
 package settings
 
+import "slices"
+
 // Features: the three features and the shared paste-last and cancel
 // shortcuts.
 type Features struct {
@@ -24,7 +26,23 @@ type Features struct {
 	// ShowCard shows every feature's result in the answer card instead of
 	// inserting it (or replacing the selection): one switch for all.
 	ShowCard bool `json:"showCard,omitempty"`
+	// Hidden are the features left out of the sidebar, Home and the
+	// command palette (Settings → General, as Voxt 1.x's home could):
+	// HideTranslate, HideRewrite, HideAppEnhancement. A hidden feature's
+	// shortcuts and scene rules are off; its settings stay.
+	Hidden []string `json:"hidden,omitempty"`
 }
+
+// The features Features.Hidden can hold: Translate's and Rewrite's are
+// internal/hotkey's ids.
+const (
+	HideTranslate      = "translate"
+	HideRewrite        = "rewrite"
+	HideAppEnhancement = "app-enhancement"
+)
+
+// IsHidden reports whether feature id is hidden (Features.Hidden).
+func (f Features) IsHidden(id string) bool { return slices.Contains(f.Hidden, id) }
 
 // Feature is what every feature has: its shortcuts, the models it uses
 // (internal/local's Model.ID: a local model's, or LLM a remote one's,

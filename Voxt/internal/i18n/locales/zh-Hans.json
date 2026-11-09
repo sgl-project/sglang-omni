@@ -1376,5 +1376,7 @@
   "Find in the prompt": "在提示词里查找",
   "%d of %d": "第 %d 处，共 %d 处",
   "%d match": "%d 处",
-  "%d matches": "%d 处"
+  "%d matches": "%d 处",
+  "Uncheck a feature you do not use: it leaves the sidebar, Home and ⌘K, and its shortcuts and scene rules stop. Its settings stay for when you check it again.": "不用的功能取消勾选：它不再出现在侧边栏、首页和 ⌘K 里，快捷键和场景规则也停用。它的设置会保留，重新勾选就回来。",
+  "Shown features": "显示的功能"
 }

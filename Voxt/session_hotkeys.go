@@ -7,6 +7,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -108,7 +109,10 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 }
 
 // hotkeyPlan is what the settings' shortcuts become.
-func (a *app) hotkeyPlan() hotkey.Plan { return hotkey.Build(a.prefs.Features, liveFeatures) }
+func (a *app) hotkeyPlan() hotkey.Plan {
+	shown := slices.DeleteFunc(slices.Clone(liveFeatures), a.prefs.Features.IsHidden)
+	return hotkey.Build(a.prefs.Features, shown)
+}
 
 // syncHotkeys sends the shortcuts to the helper (and flips "active" while
 // a session runs or the answer card shows), and keeps the Carbon
