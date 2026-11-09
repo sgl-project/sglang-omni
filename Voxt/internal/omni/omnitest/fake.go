@@ -123,13 +123,11 @@ func opts() Opts {
 
 // Record is one line of the log.
 type Record struct {
-	Event string   `json:"event"` // launch, final, live, vad-timestamps, vad-stream, shutdown
-	Args  []string `json:"args,omitempty"`
-	// Binary is the launch's server (its file name), Files the names in
-	// its --model-directory.
-	Binary string            `json:"binary,omitempty"`
-	Files  []string          `json:"files,omitempty"`
+	Event  string            `json:"event"` // launch, final, live, vad-timestamps, vad-stream, shutdown
+	Args   []string          `json:"args,omitempty"`
 	Fields map[string]string `json:"fields,omitempty"`
+	// Files are the names in the launch's --model-directory.
+	Files []string `json:"files,omitempty"`
 	// Samples is the audio a request carried (a live session: all it got).
 	Samples int `json:"samples,omitempty"`
 	// Audio is the Final request's PCM16 (base64), with Opts.RecordAudio.

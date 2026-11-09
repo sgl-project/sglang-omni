@@ -24,9 +24,9 @@
 //
 // A Runtime knows where the binaries are (Locate: $VOXTNEW_OMNI_RUNTIME,
 // else Voxt.app/Contents/Resources/omni) and owns the servers. A
-// server starts on first use: the model's binary (qwen3_asr_server, for
-// Silero too; whisper_server, moss_transcribe_diarize_server,
-// parakeet_server, sensevoice_server beside it) --supervised on 127.0.0.1
+// server starts on first use: the model's binary (qwen3_asr_server,
+// silero_vad_server, whisper_server, moss_transcribe_diarize_server,
+// parakeet_server or sensevoice_server) --supervised on 127.0.0.1
 // port 0, which prints {"event":"ready","port":…} on stdout once its model
 // is loaded; a server that says nothing within StartTimeout is killed.
 // Uses hold a lease; a server with no lease for IdleTimeout stops (idle
