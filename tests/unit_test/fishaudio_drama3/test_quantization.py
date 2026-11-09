@@ -9,13 +9,13 @@ import pytest
 import torch
 from sglang.srt.layers.linear import LinearBase
 from sglang.srt.layers.moe.fused_moe_triton import FusedMoE
-from sglang.srt.layers.quantization.fp8 import Fp8MoEMethod
 from sglang.srt.layers.quantization.gptq.gptq import GPTQMarlinLinearMethod
 from sglang.srt.layers.quantization.unquant import UnquantizedLinearMethod
 
 from sglang_omni.models.fishaudio_drama3.quantization import (
     ExpertDenseInt4Config,
     ExpertFp8Config,
+    ExpertFp8MoEMethod,
     ExpertMarlinMoEMethod,
 )
 
@@ -86,7 +86,7 @@ def test_only_experts_get_block_fp8() -> None:
     )
     other_method = config.get_quant_method(torch.nn.Module(), "model.embed_tokens")
 
-    assert isinstance(expert_method, Fp8MoEMethod)
+    assert isinstance(expert_method, ExpertFp8MoEMethod)
     assert expert_method.block_quant is True
     assert expert_method.weight_block_size == [128, 128]
     assert expert_method.quant_config.activation_scheme == "dynamic"

@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""A bounded GPU cache of the int4 routed experts, the rest in pinned host memory.
+"""A bounded GPU cache of quantized routed experts, the rest in pinned host memory.
 
-Each MoE layer keeps S expert slots on the GPU, refilled by least recent use inside
-the decode CUDA graph, and Marlin reads them by slot id. A prefill gathers its
-routed experts into one shared full-width scratch layer and leaves the cache alone.
-"""
+Decode refills S slots per layer by least recent use inside its CUDA graph; prefill
+reads the cache into a shared scratch layer without changing it."""
 
 from __future__ import annotations
 
@@ -13,7 +11,6 @@ from enum import Enum
 from typing import NamedTuple
 
 import torch
-from sglang.srt.layers.moe.moe_runner.marlin import MarlinMoeQuantInfo
 from sglang.srt.layers.moe.token_dispatcher.standard import StandardDispatchOutput
 from sglang.srt.layers.moe.topk import StandardTopKOutput
 
@@ -25,8 +22,6 @@ from sglang_omni.models.fishaudio_drama3.expert_cache_kernels import (
     triton,
 )
 
-# The Marlin tensors one expert owns; its qzeros and g_idx are empty or unread.
-EXPERT_TENSOR_NAMES = ("w13_qweight", "w2_qweight", "w13_scales", "w2_scales")
 COPY_BLOCK_WORDS = 4096
 KERNEL_WARPS = 8
 # Rows of the statistics tensor; the policy kernel writes the first two.
@@ -36,11 +31,10 @@ STATISTIC_PREFILL_MISSES = 2
 STATISTIC_COUNT = 3
 
 __all__ = [
-    "EXPERT_TENSOR_NAMES",
     "CacheMode",
+    "CachedExperts",
     "ExpertCacheStatistics",
     "LayerExpertCache",
-    "MarlinInputs",
     "RoutedExpertCache",
     "pinned_host_copy",
 ]
@@ -68,9 +62,14 @@ class ExpertCacheStatistics:
             return 1.0 - self.decode_misses / self.lookups
 
 
-class MarlinInputs(NamedTuple):
+class CachedExperts(NamedTuple):
+    """What the MoE kernel runs over in place of the full layer: the dispatch with
+    expert ids in this weight space, the per-expert weights by tensor name, and an
+    empty int32 index with one row per expert for kernels that take one."""
+
     dispatch_output: StandardDispatchOutput
-    quant_info: MarlinMoeQuantInfo
+    weights: dict[str, torch.Tensor]
+    empty_rows: torch.Tensor
 
 
 def expert_words(tensor: torch.Tensor) -> torch.Tensor:
@@ -82,10 +81,9 @@ def expert_words(tensor: torch.Tensor) -> torch.Tensor:
 def pinned_host_copy(
     expert_weights: dict[str, torch.Tensor]
 ) -> dict[str, torch.Tensor]:
-    """The layer's expert tensors copied into pinned host memory."""
+    """The layer's expert tensors, one row per expert, copied into pinned host memory."""
     host_weights = {}
-    for name in EXPERT_TENSOR_NAMES:
-        weight = expert_weights[name]
+    for name, weight in expert_weights.items():
         host_weight = torch.empty(
             weight.shape, dtype=weight.dtype, device="cpu", pin_memory=True
         )
@@ -105,12 +103,12 @@ class LayerExpertCache:
         device: torch.device,
     ) -> None:
         self.shared_cache = shared_cache
-        self.expert_count = int(host_weights[EXPERT_TENSOR_NAMES[0]].shape[0])
+        self.expert_count = int(next(iter(host_weights.values())).shape[0])
         self.slot_count = slot_count
         self.host_weights = host_weights
         self.slot_weights = {
-            name: host_weights[name][:slot_count].to(device)
-            for name in EXPERT_TENSOR_NAMES
+            name: host_weight[:slot_count].to(device)
+            for name, host_weight in host_weights.items()
         }
         self.expert_to_slot = torch.full(
             (self.expert_count,), -1, dtype=torch.int32, device=device
@@ -130,23 +128,15 @@ class LayerExpertCache:
         self.victim_order = torch.zeros(
             triton.next_power_of_2(slot_count), dtype=torch.int64, device=device
         )
-        self.empty_g_idx = torch.empty(
-            (slot_count, 0), dtype=torch.int32, device=device
-        )
+        self.empty_rows = torch.empty((slot_count, 0), dtype=torch.int32, device=device)
 
-    def marlin_inputs(
-        self,
-        dispatch_output: StandardDispatchOutput,
-        *,
-        weight_bits: int,
-        is_k_full: bool,
-    ) -> MarlinInputs:
-        """The Marlin call over cached experts that stands in for the full layer's."""
+    def cached_experts(self, dispatch_output: StandardDispatchOutput) -> CachedExperts:
+        """Decode reads the slots by slot id; prefill reads the scratch layer."""
         topk_output = dispatch_output.topk_output
         assert type(topk_output) is StandardTopKOutput
         if self.shared_cache.mode == CacheMode.DECODE:
             weights = self.slot_weights
-            g_idx = self.empty_g_idx
+            empty_rows = self.empty_rows
             dispatch_output = StandardDispatchOutput(
                 hidden_states=dispatch_output.hidden_states,
                 hidden_states_scale=dispatch_output.hidden_states_scale,
@@ -159,21 +149,9 @@ class LayerExpertCache:
             )
         else:
             weights = self.gather_prefill(topk_output.topk_ids)
-            g_idx = self.shared_cache.empty_g_idx
-        return MarlinInputs(
-            dispatch_output=dispatch_output,
-            quant_info=MarlinMoeQuantInfo(
-                w13_qweight=weights["w13_qweight"],
-                w2_qweight=weights["w2_qweight"],
-                w13_scales=weights["w13_scales"],
-                w2_scales=weights["w2_scales"],
-                w13_g_idx=g_idx,
-                w2_g_idx=g_idx,
-                w13_g_idx_sort_indices=g_idx,
-                w2_g_idx_sort_indices=g_idx,
-                weight_bits=weight_bits,
-                is_k_full=is_k_full,
-            ),
+            empty_rows = self.shared_cache.empty_rows
+        return CachedExperts(
+            dispatch_output=dispatch_output, weights=weights, empty_rows=empty_rows
         )
 
     def decode_slot_ids(self, routed_experts: torch.Tensor) -> torch.Tensor:
@@ -205,8 +183,8 @@ class LayerExpertCache:
         )
         # A step misses at most as many experts as it routes to.
         max_miss_count = min(routed_count, self.slot_count)
-        for name in EXPERT_TENSOR_NAMES:
-            host_words = expert_words(self.host_weights[name])
+        for name, host_weight in self.host_weights.items():
+            host_words = expert_words(host_weight)
             words_per_expert = host_words.shape[1]
             copy_missing_kernel[
                 (max_miss_count, triton.cdiv(words_per_expert, COPY_BLOCK_WORDS))
@@ -232,8 +210,8 @@ class LayerExpertCache:
             is_needed & (self.expert_to_slot < 0)
         ).sum()
         scratch_weights = self.shared_cache.scratch_weights
-        for name in EXPERT_TENSOR_NAMES:
-            host_words = expert_words(self.host_weights[name])
+        for name, host_weight in self.host_weights.items():
+            host_words = expert_words(host_weight)
             words_per_expert = host_words.shape[1]
             gather_needed_kernel[
                 (self.expert_count, triton.cdiv(words_per_expert, COPY_BLOCK_WORDS))
@@ -265,11 +243,11 @@ class RoutedExpertCache:
         if not HAS_TRITON:
             raise RuntimeError("the routed expert cache needs Triton")
         elif not layer_host_weights:
-            raise ValueError("the model has no int4 routed expert layers to cache")
+            raise ValueError("the model has no quantized routed expert layers to cache")
         else:
             pass
         first_layer = layer_host_weights[0]
-        expert_count = int(first_layer[EXPERT_TENSOR_NAMES[0]].shape[0])
+        expert_count = int(next(iter(first_layer.values())).shape[0])
         if not 0 < slot_count <= expert_count:
             raise ValueError(
                 f"routed_expert_cache_slots={slot_count} must be in 1..{expert_count}"
@@ -281,15 +259,15 @@ class RoutedExpertCache:
         self.mode = CacheMode.PREFILL
         self.statistics = torch.zeros(STATISTIC_COUNT, dtype=torch.int64, device=device)
         self.scratch_weights = {
-            name: torch.empty_like(first_layer[name], device=device)
-            for name in EXPERT_TENSOR_NAMES
+            name: torch.empty_like(host_weight, device=device)
+            for name, host_weight in first_layer.items()
         }
-        self.empty_g_idx = torch.empty(
+        self.empty_rows = torch.empty(
             (expert_count, 0), dtype=torch.int32, device=device
         )
         self.bytes_per_expert = sum(
-            first_layer[name][0].numel() * first_layer[name].element_size()
-            for name in EXPERT_TENSOR_NAMES
+            host_weight[0].numel() * host_weight.element_size()
+            for host_weight in first_layer.values()
         )
         self.layers = [
             LayerExpertCache(host_weights, self, slot_count, device)

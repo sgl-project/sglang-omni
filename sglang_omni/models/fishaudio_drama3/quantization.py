@@ -13,6 +13,8 @@ from collections.abc import Mapping
 import torch
 from sglang.srt.layers.linear import LinearBase
 from sglang.srt.layers.moe.fused_moe_triton import FusedMoE
+from sglang.srt.layers.moe.moe_runner.marlin import MarlinMoeQuantInfo
+from sglang.srt.layers.moe.moe_runner.triton import TritonMoeQuantInfo
 from sglang.srt.layers.moe.token_dispatcher.base import CombineInput
 from sglang.srt.layers.moe.token_dispatcher.standard import StandardDispatchOutput
 from sglang.srt.layers.quantization.base_config import (
@@ -37,6 +39,16 @@ EXPERT_ACTIVATION_SCHEME = "dynamic"
 INT4_QUANTIZATION_METHOD = "drama3-int4"
 INT4_EXPERT_METHOD = "gptq"
 INT4_DENSE_METHOD = "gptq_marlin"
+# Per-expert tensors a routed expert cache moves, by checkpoint format; GPTQ
+# qzeros and g_idx are empty or unread for symmetric int4 without act order.
+INT4_CACHED_TENSOR_NAMES = ("w13_qweight", "w2_qweight", "w13_scales", "w2_scales")
+INT4_UNUSED_TENSOR_NAMES = ("w13_qzeros", "w2_qzeros")
+FP8_CACHED_TENSOR_NAMES = (
+    "w13_weight",
+    "w2_weight",
+    "w13_weight_scale_inv",
+    "w2_weight_scale_inv",
+)
 # The engine's fused linears, by their last two prefix parts, and the checkpoint
 # projections each one loads.
 INT4_DENSE_MODULE_PROJECTIONS: dict[str, tuple[str, ...]] = {
@@ -101,7 +113,7 @@ class ExpertFp8Config(QuantizationConfig):
         # The interface passes the layer prefix; the choice here depends on the
         # layer type alone.
         if isinstance(layer, FusedMoE):
-            return Fp8MoEMethod(self.expert_fp8_config)
+            return ExpertFp8MoEMethod(self.expert_fp8_config)
         elif isinstance(layer, LinearBase):
             return UnquantizedLinearMethod()
         else:
@@ -111,13 +123,59 @@ class ExpertFp8Config(QuantizationConfig):
         return []
 
 
-class ExpertMarlinMoEMethod(GPTQMarlinMoEMethod):
-    """GPTQ-Marlin routed experts with their scales in the activation dtype; once the
-    engine attaches a routed expert cache, Marlin runs over the cached experts."""
+class RoutedExpertCacheMethod:
+    """A routed expert method that runs over a routed expert cache once the engine
+    attaches one; the class names the per-expert tensors the cache moves and the
+    ones it empties."""
 
-    def __init__(self, quant_config: GPTQMarlinConfig) -> None:
-        super().__init__(quant_config)
-        self.routed_expert_cache: LayerExpertCache | None = None
+    CACHED_TENSOR_NAMES: tuple[str, ...] = ()
+    UNUSED_TENSOR_NAMES: tuple[str, ...] = ()
+    routed_expert_cache: LayerExpertCache | None = None
+
+    def runs_over_a_cache(self) -> bool:
+        """Whether the MoE runner this method picked can run over cached experts."""
+        return True
+
+
+class ExpertFp8MoEMethod(RoutedExpertCacheMethod, Fp8MoEMethod):
+    """Block-FP8 routed experts; over a routed expert cache they run the Triton
+    fused MoE, the runner the experts get on the GPUs the cache targets."""
+
+    CACHED_TENSOR_NAMES = FP8_CACHED_TENSOR_NAMES
+
+    def runs_over_a_cache(self) -> bool:
+        return self.runner is not None and self.runner.runner_backend.is_triton()
+
+    def apply(
+        self, layer: torch.nn.Module, dispatch_output: StandardDispatchOutput
+    ) -> CombineInput:
+        routed_expert_cache = self.routed_expert_cache
+        if routed_expert_cache is None:
+            return super().apply(layer, dispatch_output)
+        else:
+            assert self.runs_over_a_cache()
+            cached_experts = routed_expert_cache.cached_experts(dispatch_output)
+            return self.runner.run(
+                cached_experts.dispatch_output,
+                TritonMoeQuantInfo(
+                    w13_weight=cached_experts.weights["w13_weight"],
+                    w2_weight=cached_experts.weights["w2_weight"],
+                    use_fp8_w8a8=True,
+                    w13_scale=cached_experts.weights["w13_weight_scale_inv"],
+                    w2_scale=cached_experts.weights["w2_weight_scale_inv"],
+                    a13_scale=layer.w13_input_scale,
+                    a2_scale=layer.w2_input_scale,
+                    block_shape=self.weight_block_size,
+                ),
+            )
+
+
+class ExpertMarlinMoEMethod(RoutedExpertCacheMethod, GPTQMarlinMoEMethod):
+    """GPTQ-Marlin routed experts with their scales in the activation dtype; over a
+    routed expert cache Marlin runs over the cached experts."""
+
+    CACHED_TENSOR_NAMES = INT4_CACHED_TENSOR_NAMES
+    UNUSED_TENSOR_NAMES = INT4_UNUSED_TENSOR_NAMES
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         super().process_weights_after_loading(layer)
@@ -135,13 +193,21 @@ class ExpertMarlinMoEMethod(GPTQMarlinMoEMethod):
             return super().apply(layer, dispatch_output)
         else:
             marlin_kernel = layer.scheme.kernel
-            marlin_inputs = routed_expert_cache.marlin_inputs(
-                dispatch_output,
-                weight_bits=self.quant_config.weight_bits,
-                is_k_full=marlin_kernel.is_k_full,
-            )
+            cached_experts = routed_expert_cache.cached_experts(dispatch_output)
             return marlin_kernel.runner.run(
-                marlin_inputs.dispatch_output, marlin_inputs.quant_info
+                cached_experts.dispatch_output,
+                MarlinMoeQuantInfo(
+                    w13_qweight=cached_experts.weights["w13_qweight"],
+                    w2_qweight=cached_experts.weights["w2_qweight"],
+                    w13_scales=cached_experts.weights["w13_scales"],
+                    w2_scales=cached_experts.weights["w2_scales"],
+                    w13_g_idx=cached_experts.empty_rows,
+                    w2_g_idx=cached_experts.empty_rows,
+                    w13_g_idx_sort_indices=cached_experts.empty_rows,
+                    w2_g_idx_sort_indices=cached_experts.empty_rows,
+                    weight_bits=self.quant_config.weight_bits,
+                    is_k_full=marlin_kernel.is_k_full,
+                ),
             )
 
 

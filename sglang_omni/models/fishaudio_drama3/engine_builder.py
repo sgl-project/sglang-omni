@@ -42,7 +42,6 @@ from sglang_omni.models.fishaudio_drama3.config import (
     ReferenceSamplingFallback,
 )
 from sglang_omni.models.fishaudio_drama3.expert_cache import (
-    EXPERT_TENSOR_NAMES,
     RoutedExpertCache,
     pinned_host_copy,
 )
@@ -57,7 +56,7 @@ from sglang_omni.models.fishaudio_drama3.quantization import (
     QUANTIZATION_METHOD,
     ExpertDenseInt4Config,
     ExpertFp8Config,
-    ExpertMarlinMoEMethod,
+    RoutedExpertCacheMethod,
 )
 from sglang_omni.models.fishaudio_drama3.request_builders import (
     Drama3FrameStreamer,
@@ -266,7 +265,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             module
             for module in model.modules()
             if isinstance(module, FusedMoE)
-            and isinstance(module.quant_method, ExpertMarlinMoEMethod)
+            and isinstance(module.quant_method, RoutedExpertCacheMethod)
         ]
         text_config = model.config.text_config
         top_k = text_config.num_experts_per_tok
@@ -280,7 +279,14 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         elif not expert_layers:
             raise ValueError(
                 "tts_engine.factory.routed_expert_cache_slots needs an int4 "
-                f"({INT4_QUANTIZATION_METHOD}) checkpoint"
+                f"({INT4_QUANTIZATION_METHOD}) or FP8 ({QUANTIZATION_METHOD}) "
+                "checkpoint"
+            )
+        elif not all(layer.quant_method.runs_over_a_cache() for layer in expert_layers):
+            raise ValueError(
+                "tts_engine.factory.routed_expert_cache_slots needs the triton MoE "
+                f"runner for FP8 ({QUANTIZATION_METHOD}) experts; drop "
+                "tts_engine.engine.moe_runner_backend or set it to triton"
             )
         elif slot_count < smallest_slot_count:
             raise ValueError(
@@ -295,13 +301,19 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             # the slots next to the full layers.
             layer_host_weights = []
             for layer in expert_layers:
+                quant_method = layer.quant_method
                 layer_host_weights.append(
                     pinned_host_copy(
-                        {name: getattr(layer, name) for name in EXPERT_TENSOR_NAMES}
+                        {
+                            name: getattr(layer, name)
+                            for name in quant_method.CACHED_TENSOR_NAMES
+                        }
                     )
                 )
-                # Marlin reads no zero points for symmetric int4.
-                for name in (*EXPERT_TENSOR_NAMES, "w13_qzeros", "w2_qzeros"):
+                for name in (
+                    *quant_method.CACHED_TENSOR_NAMES,
+                    *quant_method.UNUSED_TENSOR_NAMES,
+                ):
                     setattr(
                         layer,
                         name,
@@ -316,7 +328,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             for layer, layer_cache in zip(
                 expert_layers, routed_expert_cache.layers, strict=True
             ):
-                for name in EXPERT_TENSOR_NAMES:
+                for name in layer.quant_method.CACHED_TENSOR_NAMES:
                     setattr(
                         layer,
                         name,

@@ -1,23 +1,33 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The routed expert cache: its LRU decode policy, the experts it holds, and Marlin over them."""
+"""The routed expert cache over int4 experts: its LRU decode policy, the experts it
+holds, and Marlin over them."""
 
 from __future__ import annotations
 
 import pytest
 import torch
 from sglang.srt.layers.moe.fused_moe_triton.fused_marlin_moe import fused_marlin_moe
-from sglang.srt.layers.moe.moe_runner.marlin import MarlinMoeQuantInfo
 from sglang.srt.layers.moe.token_dispatcher.standard import StandardDispatchOutput
-from sglang.srt.layers.moe.topk import StandardTopKOutput
 from sglang.srt.layers.quantization.marlin_utils import marlin_make_workspace
 
 from sglang_omni.models.fishaudio_drama3.expert_cache import (
-    EXPERT_TENSOR_NAMES,
+    CachedExperts,
     CacheMode,
     LayerExpertCache,
-    MarlinInputs,
     RoutedExpertCache,
-    pinned_host_copy,
+)
+from tests.unit_test.fishaudio_drama3.expert_cache_fixtures import (
+    EXPERT_COUNT,
+    HIDDEN_SIZE,
+    MOE_INTERMEDIATE_SIZE,
+    assert_scratch_holds_the_routed_experts,
+    assert_slots_hold_their_experts,
+    cpu_maps,
+    dispatch_of,
+    random_hidden_states,
+    reference_decode_policy,
+    routed_experts_of,
+    single_layer_cache,
 )
 
 pytestmark = [
@@ -25,11 +35,6 @@ pytestmark = [
     pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU"),
 ]
 
-# The fishaudio/drama-3-int4 MoE layer.
-EXPERT_COUNT = 256
-TOP_K = 8
-HIDDEN_SIZE = 2048
-MOE_INTERMEDIATE_SIZE = 512
 SCALE_GROUP_SIZE = 128
 INT4_WEIGHT_BITS = 4
 # note (zengjiahua): Marlin's cross-SM reduction order follows where experts sit
@@ -38,33 +43,6 @@ INT4_WEIGHT_BITS = 4
 # differs from its own rerun by as much.
 MARLIN_RELATIVE_TOLERANCE = 2**-6
 MARLIN_ABSOLUTE_TOLERANCE = 1e-4
-
-
-def reference_decode_policy(
-    routed_experts: torch.Tensor,
-    expert_to_slot: torch.Tensor,
-    slot_to_expert: torch.Tensor,
-    slot_last_used: torch.Tensor,
-    clock: int,
-) -> torch.Tensor:
-    """The policy the decode kernel runs, in place on CPU maps; the routed ids' slots."""
-    is_needed = torch.zeros(expert_to_slot.shape[0], dtype=torch.bool)
-    is_needed[routed_experts.reshape(-1).long()] = True
-    missing_experts = torch.nonzero(is_needed & (expert_to_slot < 0)).reshape(-1)
-    holds_needed = is_needed[slot_to_expert.long()]
-    candidate_slots = sorted(
-        torch.nonzero(~holds_needed).reshape(-1).tolist(),
-        key=lambda slot: (int(slot_last_used[slot]), slot),
-    )
-    assert missing_experts.numel() <= len(candidate_slots)
-    victim_slots = torch.tensor(
-        candidate_slots[: missing_experts.numel()], dtype=torch.long
-    )
-    expert_to_slot[slot_to_expert[victim_slots].long()] = -1
-    expert_to_slot[missing_experts] = victim_slots.to(torch.int32)
-    slot_to_expert[victim_slots] = missing_experts.to(torch.int32)
-    slot_last_used[expert_to_slot[is_needed].long()] = clock
-    return expert_to_slot[routed_experts.long()]
 
 
 def random_expert_weights(
@@ -96,70 +74,37 @@ def random_expert_weights(
     return expert_weights
 
 
-def dispatch_of(
-    hidden_states: torch.Tensor, routed_experts: torch.Tensor
-) -> StandardDispatchOutput:
-    router_weights = torch.softmax(
-        torch.linspace(0, 1, routed_experts.numel(), device="cuda").view(
-            routed_experts.shape
-        ),
-        dim=-1,
-    )
-    return StandardDispatchOutput(
-        hidden_states=hidden_states,
-        hidden_states_scale=None,
-        topk_output=StandardTopKOutput(
-            topk_weights=router_weights,
-            topk_ids=routed_experts,
-            router_logits=torch.zeros(
-                routed_experts.shape[0], EXPERT_COUNT, device="cuda"
-            ),
-        ),
-    )
-
-
-def run_marlin(marlin_inputs: MarlinInputs) -> torch.Tensor:
-    """What SGLang's Marlin MoE runner computes for these inputs."""
-    hidden_states = marlin_inputs.dispatch_output.hidden_states
-    topk_output = marlin_inputs.dispatch_output.topk_output
-    quant_info = marlin_inputs.quant_info
+def run_marlin(experts: CachedExperts) -> torch.Tensor:
+    """What SGLang's Marlin MoE runner computes over these experts."""
+    hidden_states = experts.dispatch_output.hidden_states
+    topk_output = experts.dispatch_output.topk_output
     return fused_marlin_moe(
         hidden_states=hidden_states,
-        w1=quant_info.w13_qweight,
-        w2=quant_info.w2_qweight,
-        w1_scale=quant_info.w13_scales,
-        w2_scale=quant_info.w2_scales,
+        w1=experts.weights["w13_qweight"],
+        w2=experts.weights["w2_qweight"],
+        w1_scale=experts.weights["w13_scales"],
+        w2_scale=experts.weights["w2_scales"],
         gating_output=topk_output.router_logits,
         topk_weights=topk_output.topk_weights,
         topk_ids=topk_output.topk_ids,
-        g_idx1=quant_info.w13_g_idx,
-        g_idx2=quant_info.w2_g_idx,
-        sort_indices1=quant_info.w13_g_idx_sort_indices,
-        sort_indices2=quant_info.w2_g_idx_sort_indices,
+        g_idx1=experts.empty_rows,
+        g_idx2=experts.empty_rows,
+        sort_indices1=experts.empty_rows,
+        sort_indices2=experts.empty_rows,
         workspace=marlin_make_workspace(hidden_states.device, max_blocks_per_sm=4),
-        num_bits=quant_info.weight_bits,
-        is_k_full=quant_info.is_k_full,
+        num_bits=INT4_WEIGHT_BITS,
+        is_k_full=True,
     )
 
 
 def full_resident_output(
     expert_weights: dict[str, torch.Tensor], dispatch_output: StandardDispatchOutput
 ) -> torch.Tensor:
-    empty_g_idx = torch.empty((EXPERT_COUNT, 0), dtype=torch.int32, device="cuda")
     return run_marlin(
-        MarlinInputs(
+        CachedExperts(
             dispatch_output=dispatch_output,
-            quant_info=MarlinMoeQuantInfo(
-                w13_qweight=expert_weights["w13_qweight"],
-                w2_qweight=expert_weights["w2_qweight"],
-                w13_scales=expert_weights["w13_scales"],
-                w2_scales=expert_weights["w2_scales"],
-                w13_g_idx=empty_g_idx,
-                w2_g_idx=empty_g_idx,
-                w13_g_idx_sort_indices=empty_g_idx,
-                w2_g_idx_sort_indices=empty_g_idx,
-                weight_bits=INT4_WEIGHT_BITS,
-            ),
+            weights=expert_weights,
+            empty_rows=torch.empty((EXPERT_COUNT, 0), dtype=torch.int32, device="cuda"),
         )
     )
 
@@ -167,55 +112,12 @@ def full_resident_output(
 def cached_output(
     layer_cache: LayerExpertCache, dispatch_output: StandardDispatchOutput
 ) -> torch.Tensor:
-    return run_marlin(
-        layer_cache.marlin_inputs(
-            dispatch_output, weight_bits=INT4_WEIGHT_BITS, is_k_full=True
-        )
-    )
-
-
-def routed_experts_of(
-    generator: torch.Generator, row_count: int, hot_expert_count: int
-) -> torch.Tensor:
-    """Distinct experts per row, mostly from a hot window that starts anywhere, so a
-    step both hits resident experts and misses."""
-    scores = torch.rand(row_count, EXPERT_COUNT, generator=generator)
-    window_start = int(torch.randint(0, EXPERT_COUNT, (1,), generator=generator))
-    scores[:, (window_start + torch.arange(hot_expert_count)) % EXPERT_COUNT] += 0.6
-    return scores.topk(TOP_K, dim=-1).indices.to(torch.int32).cuda()
-
-
-def random_hidden_states(generator: torch.Generator, row_count: int) -> torch.Tensor:
-    return (
-        (torch.randn(row_count, HIDDEN_SIZE, generator=generator) * 0.1)
-        .to(torch.bfloat16)
-        .cuda()
-    )
-
-
-def cpu_maps(layer_cache: LayerExpertCache) -> list[torch.Tensor]:
-    return [
-        layer_cache.expert_to_slot.cpu(),
-        layer_cache.slot_to_expert.cpu(),
-        layer_cache.slot_last_used.cpu(),
-    ]
-
-
-def assert_slots_hold_their_experts(
-    layer_cache: LayerExpertCache, expert_weights: dict[str, torch.Tensor]
-) -> None:
-    held_experts = layer_cache.slot_to_expert.long()
-    for name in EXPERT_TENSOR_NAMES:
-        assert torch.equal(
-            layer_cache.slot_weights[name], expert_weights[name][held_experts]
-        ), name
+    return run_marlin(layer_cache.cached_experts(dispatch_output))
 
 
 def test_decode_evicts_the_least_recently_used_unneeded_slot() -> None:
     expert_weights = random_expert_weights(torch.Generator().manual_seed(0), 8)
-    cache = RoutedExpertCache(
-        [pinned_host_copy(expert_weights)], 4, torch.device("cuda")
-    )
+    cache = single_layer_cache(expert_weights, 4)
     layer_cache = cache.layers[0]
     cache.mode = CacheMode.DECODE
     # Experts 0..3 start in slots 0..3, all last used at 0; each row is one step.
@@ -247,12 +149,7 @@ def cached_layer(
 ) -> tuple[torch.Generator, dict[str, torch.Tensor], RoutedExpertCache]:
     generator = torch.Generator().manual_seed(seed)
     expert_weights = random_expert_weights(generator, EXPERT_COUNT)
-    cache = RoutedExpertCache(
-        [pinned_host_copy(expert_weights)],
-        slot_count,
-        torch.device("cuda"),
-    )
-    return generator, expert_weights, cache
+    return generator, expert_weights, single_layer_cache(expert_weights, slot_count)
 
 
 @pytest.mark.parametrize(("slot_count", "row_count"), [(192, 1), (192, 8), (128, 16)])
@@ -303,11 +200,7 @@ def test_prefill_gathers_the_routed_experts_and_leaves_the_cache_alone(
             random_hidden_states(generator, row_count), routed_experts
         )
         output = cached_output(layer_cache, dispatch_output)
-        routed = torch.unique(routed_experts).long()
-        for name in EXPERT_TENSOR_NAMES:
-            assert torch.equal(
-                cache.scratch_weights[name][routed], expert_weights[name][routed]
-            ), (row_count, name)
+        assert_scratch_holds_the_routed_experts(cache, expert_weights, routed_experts)
         torch.testing.assert_close(
             output,
             full_resident_output(expert_weights, dispatch_output),
