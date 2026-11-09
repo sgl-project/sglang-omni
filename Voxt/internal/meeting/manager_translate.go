@@ -2,6 +2,7 @@ package meeting
 
 import (
 	"context"
+	"slices"
 	"strings"
 )
 
@@ -41,11 +42,13 @@ func (m *Manager) applyTranslation(segIdx int, text string) {
 	ctx := context.Background()
 	m.mu.Lock()
 	seq := m.seq
-	for i := range m.snap.Segments {
-		if m.snap.Segments[i].StoreIdx == segIdx {
-			m.snap.Segments[i].Translation = text
+	segs := slices.Clone(m.snap.Segments) // snapshots handed out keep theirs
+	for i := range segs {
+		if segs[i].StoreIdx == segIdx {
+			segs[i].Translation = text
 		}
 	}
+	m.snap.Segments = segs
 	s := m.snap
 	m.mu.Unlock()
 	m.notify(s)

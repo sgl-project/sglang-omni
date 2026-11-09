@@ -229,7 +229,12 @@ func TestManagerLiveSegmentStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(30 * time.Millisecond)
+	// The final segment comes when the stream finishes: wait until it is open.
+	for deadline := time.Now().Add(10 * time.Second); m.Current().Live[meeting.SourceMic] == ""; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("no live text from the microphone")
+		}
+	}
 	if err := m.Finish(ctx, id); err != nil {
 		t.Fatal(err)
 	}

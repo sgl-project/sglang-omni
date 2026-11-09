@@ -28,7 +28,7 @@ func (m *Manager) Reprocess(ctx context.Context, id string) error {
 		m.snap.Stage = StageTranscribing
 		m.snap.Progress = 0
 		m.mu.Unlock()
-		m.notify(m.snap)
+		m.notify(m.Current())
 	}
 	err = FinalizePass(ctx, m.cfg, mt, m.finalizeProgress(id))
 	if err != nil {
@@ -40,7 +40,7 @@ func (m *Manager) Reprocess(ctx context.Context, id string) error {
 		m.snap.State = StateDone
 		m.resetAfterDone()
 		m.mu.Unlock()
-		m.notify(m.snap)
+		m.notify(m.Current())
 	}
 	return nil
 }

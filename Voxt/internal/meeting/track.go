@@ -96,10 +96,13 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 					return
 				}
 				m.mu.Lock()
-				if m.snap.Level == nil {
-					m.snap.Level = map[Source]float64{}
+				level := map[Source]float64{src: ev.Level.RMS}
+				for k, v := range m.snap.Level {
+					if k != src {
+						level[k] = v
+					}
 				}
-				m.snap.Level[src] = ev.Level.RMS
+				m.snap.Level = level // a new map: snapshots handed out keep theirs
 				m.snap.Elapsed = m.timeline.Elapsed()
 				m.mu.Unlock()
 				m.noteLevel(src, ev.Level.RMS)

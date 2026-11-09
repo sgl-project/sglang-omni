@@ -32,6 +32,7 @@ type Manager struct {
 	trackFails    map[Source]int
 	jobGen        int
 	segIdx        int
+	segWrites     sync.WaitGroup // segments on their way to the store
 	translator    *LiveTranslator
 	subs          []func(Snapshot)
 	releaseModels func()
@@ -161,7 +162,7 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (string, error) {
 		m.releaseModels = m.cfg.ModelHold.Hold()
 	}
 	m.mu.Unlock()
-	m.notify(m.snap)
+	m.notify(m.Current())
 	return id, nil
 }
 
@@ -219,7 +220,7 @@ func (m *Manager) Resume(ctx context.Context, id string) error {
 	m.mu.Lock()
 	m.snap.Elapsed = m.timeline.Elapsed()
 	m.mu.Unlock()
-	m.notify(m.snap)
+	m.notify(m.Current())
 	return nil
 }
 
@@ -295,7 +296,7 @@ func (m *Manager) Finish(ctx context.Context, id string) error {
 		mt.Status = store.MeetingAsking
 		m.mu.Unlock()
 		_ = m.cfg.Store.UpdateMeeting(ctx, mt)
-		m.notify(m.snap)
+		m.notify(m.Current())
 		return nil
 	}
 	m.snap.Elapsed = elapsed
@@ -329,7 +330,7 @@ func (m *Manager) Finish(ctx context.Context, id string) error {
 	if err := m.cfg.Store.UpdateMeeting(ctx, mt); err != nil {
 		return err
 	}
-	m.notify(m.snap)
+	m.notify(m.Current())
 	go m.runFinalize(context.Background(), mt)
 	return nil
 }
@@ -503,6 +504,7 @@ func (m *Manager) stopAllTracksLocked() {
 	for _, tr := range pending {
 		tr.stop()
 	}
+	m.segWrites.Wait() // the last words are in the store before the meeting ends
 	m.mu.Lock()
 }
 

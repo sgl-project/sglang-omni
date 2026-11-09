@@ -198,14 +198,16 @@ func (tr *trackTranscriber) transcribeFile(ctx context.Context, u Utterance) {
 
 func (m *Manager) updateLive(src Source, text string) {
 	m.mu.Lock()
-	if m.snap.Live == nil {
-		m.snap.Live = map[Source]string{}
+	live := map[Source]string{} // a new map: snapshots handed out keep theirs
+	for k, v := range m.snap.Live {
+		if k != src {
+			live[k] = v
+		}
 	}
-	if text == "" {
-		delete(m.snap.Live, src)
-	} else {
-		m.snap.Live[src] = text
+	if text != "" {
+		live[src] = text
 	}
+	m.snap.Live = live
 	s := m.snap
 	m.mu.Unlock()
 	m.notify(s)
@@ -241,7 +243,9 @@ func (m *Manager) commitSegment(seg Segment) {
 		m.notify(s)
 	}
 
+	m.segWrites.Add(1)
 	go func() {
+		defer m.segWrites.Done()
 		ctx := context.Background()
 		row := store.MeetingSegment{
 			Idx:     idx,

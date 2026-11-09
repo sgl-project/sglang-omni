@@ -59,7 +59,7 @@ func (m *Manager) GenerateMeetingSummary(ctx context.Context, meetingID string) 
 			m.snap.State = StateDone
 			m.snap.Stage = ""
 			m.mu.Unlock()
-			m.notify(m.snap)
+			m.notify(m.Current())
 		}
 		return err
 	}
@@ -78,7 +78,7 @@ func (m *Manager) GenerateMeetingSummary(ctx context.Context, meetingID string) 
 		m.snap.State = StateDone
 		m.snap.Stage = ""
 		m.mu.Unlock()
-		m.notify(m.snap)
+		m.notify(m.Current())
 	}
 	return nil
 }
