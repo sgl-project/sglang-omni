@@ -206,7 +206,11 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 	if in.Answer {
 		req.Format, req.Schema = llm.FormatJSON, answerSchema
 	}
-	resp, err := r.llmChat(cfg.llmDeadlines(req, utf8.RuneCountInString(in.Text+in.Instruction), cfg.WriteTimeout))
+	chars := utf8.RuneCountInString(in.Text + in.Instruction)
+	for _, t := range in.Previous { // note (luojiaxuan): a follow-up sends the earlier turns again, read before the first token
+		chars += utf8.RuneCountInString(t.Instruction + t.Selection + t.Answer.Title + t.Answer.Content)
+	}
+	resp, err := r.llmChat(cfg.llmDeadlines(req, chars, cfg.WriteTimeout))
 	if err != nil {
 		return compose.Answer{}, out.Profile(), false, err
 	}

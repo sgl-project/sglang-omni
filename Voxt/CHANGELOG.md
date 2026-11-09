@@ -75,6 +75,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **The preview leaves when the result goes in**: the live text no longer stays over the app for a moment while the result is pasted and checked; a result that cannot go in still comes back in the card.
 - **The command palette in a small window** keeps its margin and rounded corners at the largest interface size, and **App enhancement in a wide window** fills the page under its header instead of stopping 760 points wide.
 - **The wheel scrolls a long preview as soon as it passes ten lines**: when the measured text turned out longer than the first guess, the overlay kept letting the pointer through, and the wheel scrolled the app underneath instead.
+- **Follow-ups on a long selection no longer time out**: a follow-up in the answer card sends the earlier selection and answers again, but its wait for the model's first words counted only what you just said; it now counts all of it.
 
 ### 中文
 
@@ -149,6 +150,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **插入时预览立刻收起**：结果开始往 App 里粘贴时浮窗就淡出，不再在刚插入的文字上停一会儿；插不进去的照样回到卡片里。
 - **小窗口里的命令面板**在界面放到最大时也留着边距和圆角；**宽窗口里的应用增强**铺满表头下的整页，不再停在 760 点宽。
 - **预览一超过十行就能用滚轮翻**：实际量出的文字比最初估计的长时，浮窗还让指针穿过去，滚轮滚的是下面的 App。
+- **长选区的追问不再超时**：在答案卡片里追问时，之前的选区和回答会一起再发给模型，但等第一个字的时限只按你刚说的话算；现在全部算进去。
 
 ## [2.0.1] - 2026-11-07
 
