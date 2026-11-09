@@ -1388,5 +1388,7 @@
   "Card size": "卡片大小",
   "Small": "小",
   "Large": "大",
-  "A larger card shows more of a long answer before it scrolls. Each feature keeps its own size.": "卡片越大，长回答不用滚动就能看到越多。每个功能各自记住自己的大小。"
+  "A larger card shows more of a long answer before it scrolls. Each feature keeps its own size.": "卡片越大，长回答不用滚动就能看到越多。每个功能各自记住自己的大小。",
+  "Use Voxt 1.x's sounds": "使用 Voxt 1.x 的提示音",
+  "Pop when recording starts and Tink when it stops, as Voxt 1.x played them.": "开始录音时 Pop，停止时 Tink，和 Voxt 1.x 一样。"
 }

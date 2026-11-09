@@ -291,3 +291,21 @@ func TestSoundsWhileRecording(t *testing.T) {
 		t.Fatalf("cues %v", got)
 	}
 }
+
+// TestLegacySounds: "Use Voxt 1.x's sounds" sets Pop and Tink, Voxt 1.x's
+// default cues, and plays the start one; with them chosen it goes away.
+// The family's default start sound felt strange to 1.x's users, and the
+// old one was hard to find among macOS's sounds (#3644 FB11).
+func TestLegacySounds(t *testing.T) {
+	r := newSoundsRig(t)
+	click(t, r.tt, "Use Voxt 1.x's sounds")
+	if s := r.settings.Get().Audio; s.StartSound != "system:Pop" || s.StopSound != "system:Tink" {
+		t.Fatalf("cues %q, %q", s.StartSound, s.StopSound)
+	}
+	if p := r.takePlays(); !slices.Contains(p, "Pop") {
+		t.Errorf("played %q", p)
+	}
+	if has(r.tt, "Use Voxt 1.x's sounds") {
+		t.Error("the button stays with Voxt 1.x's sounds chosen")
+	}
+}
