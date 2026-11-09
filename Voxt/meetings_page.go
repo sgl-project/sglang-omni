@@ -121,10 +121,7 @@ func meetingStatusLabel(s store.MeetingStatus) string {
 // meetingMeta is the row's second line: when (unless the title says
 // it), how long, what it captured.
 func meetingMeta(mt store.Meeting) string {
-	var parts []string
-	if mt.Title != "" {
-		parts = append(parts, mt.CreatedAt.Format("2006-01-02 15:04"))
-	}
+	parts := []string{mt.CreatedAt.Format("2006-01-02 15:04")}
 	if mt.DurationMS > 0 {
 		parts = append(parts, meetingDuration(mt.DurationMS))
 	}

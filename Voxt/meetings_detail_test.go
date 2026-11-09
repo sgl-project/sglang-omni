@@ -156,6 +156,10 @@ func TestMeetingGroupAndDuration(t *testing.T) {
 			t.Errorf("meetingDuration(%d) = %q, want %q", ms, got, want)
 		}
 	}
+	// An untitled meeting's header says "Untitled meeting", so the line under it keeps the date.
+	if got, want := meetingMeta(store.Meeting{CreatedAt: now, DurationMS: 6 * 60_000}), "2026-11-08 23:00 · 6 min · Microphone and system audio"; got != want {
+		t.Errorf("meetingMeta = %q, want %q", got, want)
+	}
 }
 
 // Without a language model the summary says so once and links its page.
