@@ -973,7 +973,12 @@ def test_only_decode_passes_take_the_fused_layers(forward_mode: ForwardMode) -> 
 
 
 def test_a_pass_takes_the_smallest_row_tile_that_covers_it() -> None:
-    assert [fused_block_m(rows) for rows in (1, 16, 17, 32)] == [16, 16, 32, 32]
+    assert [fused_block_m(row_count) for row_count in (1, 16, 17, 32)] == [
+        16,
+        16,
+        32,
+        32,
+    ]
 
 
 @accelerator

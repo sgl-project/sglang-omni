@@ -50,9 +50,10 @@ HEAD_DIM = 128
 CONV_WIDTH = 4
 SLOT_COUNT = 12
 SENTINEL = 7.0
-# (bucket, sequence lengths, state slots): a two-prompt batch under the bucket,
-# three prompts of which one ends mid-chunk, and a lone 32-token prompt whose
-# eager chunk_fwd_o tiles at 32 rows while the 64-token bucket tiles at 64.
+# note (Wenyao Gao): (bucket, sequence lengths, state slots): a two-prompt batch
+# under the bucket, three prompts of which one ends mid-chunk, and a lone 32-token
+# prompt whose eager chunk_fwd_o tiles at 32 rows while the 64-token bucket tiles
+# at 64.
 LAYOUTS = [
     (256, [97, 126], [3, 7]),
     (256, [60, 100, 63], [9, 1, 4]),
@@ -65,8 +66,18 @@ class Batch:
     mixed_qkv: torch.Tensor
     a: torch.Tensor
     b: torch.Tensor
-    lens: list[int]
+    sequence_lengths: list[int]
     slots: list[int]
+
+
+@dataclasses.dataclass(frozen=True)
+class CapturedBucket:
+    graph: torch.cuda.CUDAGraph
+    inputs: Batch
+    output: torch.Tensor
+    metadata: GDNPrefillGraphMetadata
+    conv_states: torch.Tensor
+    ssm_states: torch.Tensor
 
 
 def make_layer(device: torch.device) -> SimpleNamespace:
@@ -94,10 +105,10 @@ def make_layer(device: torch.device) -> SimpleNamespace:
 
 
 def make_batch(
-    seed: int, lens: list[int], slots: list[int], device: torch.device
+    seed: int, sequence_lengths: list[int], slots: list[int], device: torch.device
 ) -> Batch:
     generator = torch.Generator(device="cpu").manual_seed(seed)
-    token_count = sum(lens)
+    token_count = sum(sequence_lengths)
     qkv_dim = (2 * KEY_HEADS + VALUE_HEADS) * HEAD_DIM
     return Batch(
         mixed_qkv=torch.randn(token_count, qkv_dim, generator=generator).to(
@@ -109,7 +120,7 @@ def make_batch(
         b=torch.randn(token_count, VALUE_HEADS, generator=generator).to(
             device=device, dtype=torch.bfloat16
         ),
-        lens=lens,
+        sequence_lengths=sequence_lengths,
         slots=slots,
     )
 
@@ -144,8 +155,8 @@ def eager_extend(
 ) -> torch.Tensor:
     """GDNAttnBackend.forward_extend's chain for a batch of fresh prompts."""
     device = batch.mixed_qkv.device
-    cu_seqlens = torch.tensor(
-        [0, *torch.tensor(batch.lens).cumsum(0).tolist()],
+    cumulative_sequence_lengths = torch.tensor(
+        [0, *torch.tensor(batch.sequence_lengths).cumsum(0).tolist()],
         dtype=torch.int32,
         device=device,
     )
@@ -156,10 +167,12 @@ def eager_extend(
         layer.bias,
         activation=layer.activation,
         conv_states=conv_states,
-        has_initial_state=torch.zeros(len(batch.lens), dtype=torch.bool, device=device),
+        has_initial_state=torch.zeros(
+            len(batch.sequence_lengths), dtype=torch.bool, device=device
+        ),
         cache_indices=cache_indices,
-        query_start_loc=cu_seqlens,
-        seq_lens_cpu=batch.lens,
+        query_start_loc=cumulative_sequence_lengths,
+        seq_lens_cpu=batch.sequence_lengths,
     ).transpose(0, 1)[: batch.mixed_qkv.shape[0]]
     query, key, value = fused_qkv_split_gdn_prefill(
         convolved,
@@ -178,7 +191,7 @@ def eager_extend(
         g=g,
         beta=beta,
         initial_state=ssm_states,
-        cu_seqlens=cu_seqlens,
+        cu_seqlens=cumulative_sequence_lengths,
         head_first=False,
         use_qk_l2norm_in_kernel=True,
         initial_state_indices=cache_indices,
@@ -197,25 +210,17 @@ def test_each_layout_replayed_through_one_bucket_matches_the_eager_bits(
     rows and their state slots carry the eager bits, and no other slot changes."""
     device = torch.device("cuda")
     layer = make_layer(device)
-    graphs: dict[
-        int,
-        tuple[
-            torch.cuda.CUDAGraph,
-            Batch,
-            torch.Tensor,
-            GDNPrefillGraphMetadata,
-            torch.Tensor,
-            torch.Tensor,
-        ],
-    ] = {}
+    graphs: dict[int, CapturedBucket] = {}
     with torch.no_grad():
-        for seed, (bucket, lens, slots) in enumerate(LAYOUTS, start=100):
-            batch = make_batch(seed, lens, slots, device)
-            eager_conv, eager_ssm = fresh_pools(state_dtype, slots, device)
-            eager = eager_extend(layer, batch, eager_conv, eager_ssm)
+        for seed, (bucket, sequence_lengths, slots) in enumerate(LAYOUTS, start=100):
+            batch = make_batch(seed, sequence_lengths, slots, device)
+            eager_conv_states, eager_ssm_states = fresh_pools(
+                state_dtype, slots, device
+            )
+            eager = eager_extend(layer, batch, eager_conv_states, eager_ssm_states)
             if bucket not in graphs:
                 qkv_dim = batch.mixed_qkv.shape[1]
-                static = Batch(
+                graph_inputs = Batch(
                     mixed_qkv=torch.zeros(
                         bucket, qkv_dim, dtype=torch.bfloat16, device=device
                     ),
@@ -225,81 +230,90 @@ def test_each_layout_replayed_through_one_bucket_matches_the_eager_bits(
                     b=torch.zeros(
                         bucket, VALUE_HEADS, dtype=torch.bfloat16, device=device
                     ),
-                    lens=[],
+                    sequence_lengths=[],
                     slots=[],
                 )
-                meta = GDNPrefillGraphMetadata.allocate(
+                metadata = GDNPrefillGraphMetadata.allocate(
                     num_tokens=bucket,
-                    max_seqs_cap=8,
+                    max_sequences_cap=8,
                     cache_index_dtype=torch.int32,
                     device=device,
                 )
                 conv_states, ssm_states = fresh_pools(state_dtype, [], device)
-                # The capture batch fills the bucket with one prompt, as the runner's does.
-                meta.fill(
-                    extend_seq_lens=[bucket],
+                # note (Wenyao Gao): the capture batch fills the bucket with one
+                # prompt, as the runner's does.
+                metadata.fill(
+                    sequence_lengths=[bucket],
                     cache_indices=torch.tensor([0], dtype=torch.int32, device=device),
-                    extend_prefix_lens=torch.zeros(1, dtype=torch.int64, device=device),
+                    prefix_lengths=torch.zeros(1, dtype=torch.int64, device=device),
                 )
-                run = lambda: gdn_extend_in_graph(  # noqa: E731
-                    layer=layer,
-                    meta=meta,
-                    conv_states=conv_states,
-                    ssm_states=ssm_states,
-                    mixed_qkv=static.mixed_qkv,
-                    a=static.a,
-                    b=static.b,
-                )
-                run()
+
+                def run_extend() -> torch.Tensor:
+                    return gdn_extend_in_graph(
+                        layer=layer,
+                        metadata=metadata,
+                        conv_states=conv_states,
+                        ssm_states=ssm_states,
+                        mixed_qkv=graph_inputs.mixed_qkv,
+                        a=graph_inputs.a,
+                        b=graph_inputs.b,
+                    )
+
+                run_extend()
                 torch.cuda.synchronize()
                 graph = torch.cuda.CUDAGraph()
                 with torch.cuda.graph(graph):
-                    captured = run()
-                graphs[bucket] = (
-                    graph,
-                    static,
-                    captured,
-                    meta,
-                    conv_states,
-                    ssm_states,
+                    graph_output = run_extend()
+                graphs[bucket] = CapturedBucket(
+                    graph=graph,
+                    inputs=graph_inputs,
+                    output=graph_output,
+                    metadata=metadata,
+                    conv_states=conv_states,
+                    ssm_states=ssm_states,
                 )
-            graph, static, captured, meta, conv_states, ssm_states = graphs[bucket]
+            bucket_graph = graphs[bucket]
+            graph_inputs = bucket_graph.inputs
+            graph_output = bucket_graph.output
+            conv_states = bucket_graph.conv_states
+            ssm_states = bucket_graph.ssm_states
             token_count = batch.mixed_qkv.shape[0]
-            static.mixed_qkv.zero_()
-            static.mixed_qkv[:token_count].copy_(batch.mixed_qkv)
-            static.a[:token_count].copy_(batch.a)
-            static.b[:token_count].copy_(batch.b)
+            graph_inputs.mixed_qkv.zero_()
+            graph_inputs.mixed_qkv[:token_count].copy_(batch.mixed_qkv)
+            graph_inputs.a[:token_count].copy_(batch.a)
+            graph_inputs.b[:token_count].copy_(batch.b)
             conv_states.fill_(SENTINEL)
             ssm_states.fill_(SENTINEL)
             conv_states[slots] = 0
             ssm_states[slots] = 0
-            meta.fill(
-                extend_seq_lens=lens,
+            bucket_graph.metadata.fill(
+                sequence_lengths=sequence_lengths,
                 cache_indices=torch.tensor(slots, dtype=torch.int32, device=device),
-                extend_prefix_lens=torch.zeros(
-                    len(lens), dtype=torch.int64, device=device
+                prefix_lengths=torch.zeros(
+                    len(sequence_lengths), dtype=torch.int64, device=device
                 ),
             )
-            graph.replay()
+            bucket_graph.graph.replay()
             torch.cuda.synchronize()
             assert torch.equal(
-                bits(captured[:, :token_count]), bits(eager[:, :token_count])
-            ), f"bucket {bucket} layout {lens}: output rows differ from eager"
-            assert torch.all(captured[:, token_count:] == 0)
-            assert torch.equal(bits(conv_states[slots]), bits(eager_conv[slots]))
-            assert torch.equal(bits(ssm_states[slots]), bits(eager_ssm[slots]))
+                bits(graph_output[:, :token_count]), bits(eager[:, :token_count])
+            ), f"bucket {bucket} layout {sequence_lengths}: output rows differ from eager"
+            assert torch.all(graph_output[:, token_count:] == 0)
+            assert torch.equal(bits(conv_states[slots]), bits(eager_conv_states[slots]))
+            assert torch.equal(bits(ssm_states[slots]), bits(eager_ssm_states[slots]))
             untouched = torch.ones(SLOT_COUNT, dtype=torch.bool, device=device)
             untouched[slots] = False
             assert torch.all(conv_states[untouched] == SENTINEL)
             assert torch.all(ssm_states[untouched] == SENTINEL)
 
 
-# Prompt lengths the stock set lacks: 64 fills a bucket on its own, 96 and 100
-# cross the 64-token chunk boundary, 28 completes the 128 bucket after 100.
+# note (Wenyao Gao): prompt lengths the stock set lacks: 64 fills a bucket on its
+# own, 96 and 100 cross the 64-token chunk boundary, 28 completes the 128 bucket
+# after 100.
 EXACT_PROMPT_LENGTHS = {"q28": 28, "q64": 64, "q96": 96, "q100": 100}
-# Waves of one to five prompts whose token totals fill the 64, 128 and 192
-# buckets exactly (64; 100 + 28; 2 + 23 + 31 + 40 + 96) or land mid-bucket
-# (5 + 9 + 13 = 27 in the 32 bucket, 60 + 9 = 69 in the 128 bucket).
+# note (Wenyao Gao): waves of one to five prompts whose token totals fill the 64,
+# 128 and 192 buckets exactly (64; 100 + 28; 2 + 23 + 31 + 40 + 96) or land
+# mid-bucket (5 + 9 + 13 = 27 in the 32 bucket, 60 + 9 = 69 in the 128 bucket).
 EXACT_WAVES = [
     ["q64"],
     ["q100", "q28"],
@@ -371,16 +385,14 @@ def test_mixed_batches_through_the_captured_extend_keep_the_eager_bits(
     assert replayed == EXACT_BUCKETS
     problems = finite_problems(prefill_graph)
     assert not problems, "\n".join(problems)
-    # The decode-graph engine differs from the prefill-graph engine only in the
-    # prefill path, so every recorded value must agree.
+    # note (Wenyao Gao): the decode-graph engine differs from the prefill-graph
+    # engine only in the prefill path, so every recorded value must agree.
     problems = bit_problems(
         EnginePair(eager=runs["graph"], graph=prefill_graph, scenarios=[scenario])
     )
     assert not problems, "\n".join(problems)
-    # Against the eager engine, the staged RAS window is the one recorded value
-    # eager and graph engines already disagree on without prefill graphs (see
-    # test_graph_engine_matches_the_eager_engine_bit_for_bit on the eager/graph
-    # pair); states, caches, logits and frames must still match bit for bit.
+    # note (Wenyao Gao): eager and graph engines already record different staged
+    # RAS windows.
     problems = [
         problem
         for problem in bit_problems(

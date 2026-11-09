@@ -187,7 +187,6 @@ class GraphEngineFacts:
     enable_async_decode: bool
     async_decode_min_batch_size: int
     async_decode_resolve_before_prefill: bool
-    # Drama3EngineBuilder.gdn_prefill_graph_status(): "on, ..." or "off, <why>".
     gdn_prefill_graph_status: str
 
 
