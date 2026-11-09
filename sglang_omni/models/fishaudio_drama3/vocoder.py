@@ -33,13 +33,9 @@ from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 logger = logging.getLogger(__name__)
 
-# A batched window graph holds at most this many of the longest window's frames.
 BATCHED_WINDOW_FRAME_LIMIT_IN_LONGEST_WINDOWS = 2
-# A batch size decodes its windows together only when one replay saves this share of
-# the GPU time of decoding them one at a time.
 WINDOW_BATCH_MIN_SAVING = 0.05
 CALIBRATION_REPLAYS = 8
-# Queued stream chunks drained into one decode round; draining never waits.
 STREAM_CHUNK_DRAIN_LIMIT = 64
 
 
@@ -90,23 +86,33 @@ class WindowBatchDecoder(Protocol):
         the first discard_frames frames' audio may be left unset."""
 
 
-# (batch size, frames, discarded frames) of a captured window graph.
+class SuffixDecoder(Protocol):
+    def __call__(
+        self, indices: torch.Tensor, *, discard_frames: int = 0
+    ) -> torch.Tensor:
+        """[1, 1, samples] audio of a [1, num_codebooks, frames] window; the first
+        discard_frames frames' audio may be zero."""
+
+
+# note (Wenyao Gao): (batch size, frames, discarded frames) of a captured graph.
 GraphKey = tuple[int, int, int]
 
 
 def fastest_replay_milliseconds(
     graph: ReplayableGraph, device_module: ModuleType
 ) -> float:
-    start = device_module.Event(enable_timing=True)
-    end = device_module.Event(enable_timing=True)
-    fastest = math.inf
+    start_event = device_module.Event(enable_timing=True)
+    end_event = device_module.Event(enable_timing=True)
+    fastest_milliseconds = math.inf
     for _ in range(CALIBRATION_REPLAYS):
-        start.record()
+        start_event.record()
         graph.replay()
-        end.record()
-        end.synchronize()
-        fastest = min(fastest, start.elapsed_time(end))
-    return fastest
+        end_event.record()
+        end_event.synchronize()
+        fastest_milliseconds = min(
+            fastest_milliseconds, start_event.elapsed_time(end_event)
+        )
+    return fastest_milliseconds
 
 
 def crossfade_frames(stream_crossfade_samples: int, frame_length: int) -> int:
@@ -126,24 +132,25 @@ def window_graph_keys(
     window_discards: Mapping[int, int] | None = None,
     flush_keys: Iterable[tuple[int, int]] = (),
 ) -> list[GraphKey]:
-    """(batch_size, frames, discarded frames) of each graph to capture, largest
-    first: batch 1 for every stream window and utterance length decoded whole, and
-    for every stream window and (padded flush length, discard) at its discard,
-    where the decoder skips the conv stack over the discarded overlap; batches up
-    to max_batch_size for stream windows only, capped by the longest stream
-    window."""
+    """(batch size, frames, discarded frames) of each graph to capture, largest
+    first: batch 1 whole for every length and at each stream window's or flush
+    shape's discard, and batched at the discard of stream windows that fit the limit."""
     batched_frame_limit = BATCHED_WINDOW_FRAME_LIMIT_IN_LONGEST_WINDOWS * max(
         window_lengths
     )
-    discards = dict(window_discards or {})
-    keys = {
+    discards = window_discards or {}
+    graph_keys = {
         *((1, length, 0) for length in (*window_lengths, *utterance_lengths)),
         *(
             (1, length, discards[length])
             for length in window_lengths
             if discards.get(length)
         ),
-        *((1, length, discard) for length, discard in flush_keys if discard),
+        *(
+            (1, length, discard_frames)
+            for length, discard_frames in flush_keys
+            if discard_frames
+        ),
         *(
             (batch_size, window_length, discards.get(window_length, 0))
             for window_length in window_lengths
@@ -151,8 +158,12 @@ def window_graph_keys(
             if batch_size * window_length <= batched_frame_limit
         ),
     }
-    # Largest first, so the first capture sizes the shared pool.
-    return sorted(keys, key=lambda key: (key[0] * key[1], key[1], key[2]), reverse=True)
+    # note (Wenyao Gao): largest first, so the first capture sizes the shared pool.
+    return sorted(
+        graph_keys,
+        key=lambda graph_key: (graph_key[0] * graph_key[1], graph_key[1], graph_key[2]),
+        reverse=True,
+    )
 
 
 class WindowGraphDecoder:
@@ -181,11 +192,8 @@ class WindowGraphDecoder:
             pass
         self.decode = decode
         self.frame_length = frame_length
-        # Stream window lengths: the only lengths with batched graphs and calibration.
         self.window_lengths = tuple(sorted(set(window_lengths)))
-        # Lengths with a batch-1 graph: stream windows and whole-utterance decodes.
         self.single_lengths = tuple(sorted({*window_lengths, *utterance_lengths}))
-        # Per stream window length, the overlap frames whose audio is discarded.
         self.window_discards = dict(window_discards or {})
         graph_keys = window_graph_keys(
             self.window_lengths,
@@ -193,9 +201,9 @@ class WindowGraphDecoder:
             max_batch_size,
             self.window_discards,
             {
-                (self.padded_length(frames), discard)
-                for frames, discard in flush_shapes
-                if frames <= self.single_lengths[-1]
+                (self.padded_length(frame_count), discard_frames)
+                for frame_count, discard_frames in flush_shapes
+                if frame_count <= self.single_lengths[-1]
             },
         )
         self.static_indices: dict[GraphKey, torch.Tensor] = {}
@@ -207,32 +215,33 @@ class WindowGraphDecoder:
         capture_stream.wait_stream(current_stream)
         with torch.no_grad(), device_module.device(device):
             with device_module.stream(capture_stream):
-                for batch_size, window_length, discard in graph_keys:
+                for batch_size, window_length, discard_frames in graph_keys:
                     audio_dtype = self.decode_from(
                         torch.zeros(
                             (batch_size, num_codebooks, window_length),
                             dtype=torch.long,
                             device=device,
                         ),
-                        discard,
+                        discard_frames,
                     ).dtype
             capture_stream.synchronize()
             graph_pool = device_module.graph_pool_handle()
-            for key in graph_keys:
-                batch_size, window_length, discard = key
+            for graph_key in graph_keys:
+                batch_size, window_length, discard_frames = graph_key
                 static_indices = torch.zeros(
                     (batch_size, num_codebooks, window_length),
                     dtype=torch.long,
                     device=device,
                 )
-                if discard == 0:
+                if discard_frames == 0:
                     with graph_backend.capture(
                         pool=graph_pool, stream=capture_stream
                     ) as graph:
-                        self.static_audio[key] = decode(static_indices)
+                        self.static_audio[graph_key] = decode(static_indices)
                 else:
-                    # The discarded frames' audio stays zero; the replay fills the
-                    # rest, so the result reads like a whole-window decode.
+                    # note (Wenyao Gao): the discarded frames' audio stays zero and
+                    # the replay fills the rest, so the result reads like a
+                    # whole-window decode.
                     static_audio = torch.zeros(
                         (batch_size, 1, window_length * frame_length),
                         dtype=audio_dtype,
@@ -241,12 +250,12 @@ class WindowGraphDecoder:
                     with graph_backend.capture(
                         pool=graph_pool, stream=capture_stream
                     ) as graph:
-                        static_audio[..., discard * frame_length :].copy_(
-                            self.decode_from(static_indices, discard)
+                        static_audio[..., discard_frames * frame_length :].copy_(
+                            self.decode_from(static_indices, discard_frames)
                         )
-                    self.static_audio[key] = static_audio
-                self.static_indices[key] = static_indices
-                self.graphs[key] = graph
+                    self.static_audio[graph_key] = static_audio
+                self.static_indices[graph_key] = static_indices
+                self.graphs[graph_key] = graph
         current_stream.wait_stream(capture_stream)
         device_module.synchronize(device)
         self.batch_sizes = (
@@ -258,22 +267,22 @@ class WindowGraphDecoder:
         return self.single_lengths[bisect.bisect_left(self.single_lengths, frame_count)]
 
     def decode_from(self, indices: torch.Tensor, discard_frames: int) -> torch.Tensor:
-        """The window's audio, computed only from discard_frames on when the
-        decoder can skip the frames before."""
+        """The window's audio from discard_frames on; a decoder without
+        keep_from_frame only gets discard 0."""
         if discard_frames == 0:
             return self.decode(indices)
         else:
             return self.decode(indices, keep_from_frame=discard_frames)
 
     def graph_key(
-        self, batch_size: int, frames: int, discard_frames: int
+        self, batch_size: int, frame_count: int, discard_frames: int
     ) -> GraphKey | None:
         """The captured graph for the shape that skips the discarded frames' conv
         stack, else the one decoding every frame, else None."""
-        for discard in (discard_frames, 0):
-            key = (batch_size, frames, discard)
-            if key in self.graphs:
-                return key
+        for candidate_discard_frames in (discard_frames, 0):
+            candidate_graph_key = (batch_size, frame_count, candidate_discard_frames)
+            if candidate_graph_key in self.graphs:
+                return candidate_graph_key
             else:
                 pass
         return None
@@ -286,15 +295,23 @@ class WindowGraphDecoder:
         batch_sizes: dict[int, tuple[int, ...]] = {}
         ratios: list[str] = []
         for window_length in self.window_lengths:
-            discard = self.window_discards.get(window_length, 0)
-            single_key = self.graph_key(1, window_length, discard)
+            discard_frames = self.window_discards.get(window_length, 0)
+            single_key = self.graph_key(1, window_length, discard_frames)
             assert single_key is not None
             single_milliseconds = fastest_replay_milliseconds(
                 self.graphs[single_key], device_module
             )
-            enabled: list[int] = []
-            for (batch_size, length, key_discard), graph in self.graphs.items():
-                if length != window_length or batch_size == 1 or key_discard != discard:
+            enabled_batch_sizes: list[int] = []
+            for (
+                batch_size,
+                length,
+                graph_discard_frames,
+            ), graph in self.graphs.items():
+                if (
+                    length != window_length
+                    or batch_size == 1
+                    or graph_discard_frames != discard_frames
+                ):
                     continue
                 else:
                     pass
@@ -302,11 +319,13 @@ class WindowGraphDecoder:
                     batch_size * single_milliseconds
                 )
                 if ratio <= 1 - WINDOW_BATCH_MIN_SAVING:
-                    enabled.append(batch_size)
+                    enabled_batch_sizes.append(batch_size)
                 else:
                     pass
                 ratios.append(f"{batch_size}x{window_length}={ratio:.2f}")
-            batch_sizes[window_length] = tuple(sorted(enabled, reverse=True))
+            batch_sizes[window_length] = tuple(
+                sorted(enabled_batch_sizes, reverse=True)
+            )
         batched_lengths = {
             length: sizes for length, sizes in batch_sizes.items() if sizes
         }
@@ -325,13 +344,15 @@ class WindowGraphDecoder:
             return self.decode(indices)
         else:
             pass
-        key = self.graph_key(1, self.padded_length(frame_count), discard_frames)
-        assert key is not None
-        static_indices = self.static_indices[key]
+        graph_key = self.graph_key(1, self.padded_length(frame_count), discard_frames)
+        assert graph_key is not None
+        static_indices = self.static_indices[graph_key]
         static_indices[..., :frame_count].copy_(indices)
         static_indices[..., frame_count:].zero_()
-        self.graphs[key].replay()
-        return self.static_audio[key][..., : frame_count * self.frame_length].clone()
+        self.graphs[graph_key].replay()
+        return self.static_audio[graph_key][
+            ..., : frame_count * self.frame_length
+        ].clone()
 
     def decode_windows(
         self, codebook_codes: list[torch.Tensor], discard_frames: int = 0
@@ -339,32 +360,36 @@ class WindowGraphDecoder:
         """[1, 1, samples] audio per [num_codebooks, frames] window of one length;
         windows share a replay at the batch sizes calibration enabled."""
         frame_count = int(codebook_codes[0].shape[-1])
-        if any(int(codes.shape[-1]) != frame_count for codes in codebook_codes):
-            raise ValueError("decode_windows takes windows of one length")
-        else:
-            pass
         batch_sizes = self.batch_sizes.get(frame_count, ())
         audios: list[torch.Tensor] = []
         while len(audios) < len(codebook_codes):
-            remaining = codebook_codes[len(audios) :]
-            key = next(
+            remaining_codes = codebook_codes[len(audios) :]
+            graph_key = next(
                 (
-                    key
-                    for size in batch_sizes
-                    if size <= len(remaining)
-                    for key in [self.graph_key(size, frame_count, discard_frames)]
-                    if key is not None
+                    graph_key
+                    for candidate_batch_size in batch_sizes
+                    if candidate_batch_size <= len(remaining_codes)
+                    for graph_key in [
+                        self.graph_key(
+                            candidate_batch_size, frame_count, discard_frames
+                        )
+                    ]
+                    if graph_key is not None
                 ),
                 None,
             )
-            if key is None:
-                audios.append(self(remaining[0][None], discard_frames=discard_frames))
+            if graph_key is None:
+                audios.append(
+                    self(remaining_codes[0][None], discard_frames=discard_frames)
+                )
             else:
-                batch_size = key[0]
-                torch.stack(remaining[:batch_size], out=self.static_indices[key])
-                self.graphs[key].replay()
+                batch_size = graph_key[0]
+                torch.stack(
+                    remaining_codes[:batch_size], out=self.static_indices[graph_key]
+                )
+                self.graphs[graph_key].replay()
                 audios.extend(
-                    self.static_audio[key][..., : frame_count * self.frame_length]
+                    self.static_audio[graph_key][..., : frame_count * self.frame_length]
                     .clone()
                     .split(1)
                 )
@@ -378,7 +403,6 @@ class QueuedWindow:
     request_id: str
     frame_codes: torch.Tensor
     codebook_codes: torch.Tensor
-    # Leading overlap frames whose audio the stream discards.
     discard_frames: int
 
 
@@ -386,13 +410,8 @@ def decoded_window(audio: torch.Tensor, frame_count: int) -> WindowDecoder:
     """A window decoder that returns audio already decoded for the window."""
 
     def decode(indices: torch.Tensor) -> torch.Tensor:
-        if int(indices.shape[-1]) != frame_count:
-            raise RuntimeError(
-                f"a batched decode covered {frame_count} frames but the stream "
-                f"window holds {int(indices.shape[-1])}"
-            )
-        else:
-            return audio
+        assert int(indices.shape[-1]) == frame_count
+        return audio
 
     return decode
 
@@ -415,7 +434,7 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
         decode_window: WindowDecoder | None = None,
         max_padded_frames_per_decode: int | None = None,
         window_batch_decoder: WindowBatchDecoder | None = None,
-        suffix_decoder: WindowGraphDecoder | None = None,
+        suffix_decoder: SuffixDecoder | None = None,
     ) -> None:
         if not all(stride > 0 for stride in stream_followup_stride_ramp):
             raise ValueError(
@@ -440,15 +459,13 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
         self.max_padded_frames_per_decode = max_padded_frames_per_decode
         self.window_batch_decoder = window_batch_decoder
         self.suffix_decoder = suffix_decoder
-        # A crossfade reads back into the overlap, so those frames stay decoded.
         self.crossfade_frames = crossfade_frames(
             stream_crossfade_samples, int(codec.frame_length)
         )
         self.can_batch_stream_chunks = window_batch_decoder is not None
         self.stream_chunk_batch_max = STREAM_CHUNK_DRAIN_LIMIT
-        # The vocoder shares the engine's process, so its decodes run on their own
-        # stream, ahead of the engine's default-priority stream, instead of queueing
-        # behind each decode step on the process's default stream.
+        # note (Wenyao Gao): in the engine's process, decode ahead of the engine's
+        # default-priority stream instead of queueing behind each decode step.
         torch_device = torch.device(device)
         if torch_device.type == "cuda":
             self.decode_stream: torch.cuda.Stream | None = torch.cuda.Stream(
@@ -462,34 +479,36 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
         if self.decode_stream is None:
             super().start()
         else:
-            # Construction wrote the codec weights and the window graphs' static
-            # buffers on this thread's default stream; a new stream does not wait
-            # for it, so serving waits once for that work.
+            # note (Wenyao Gao): construction wrote the codec weights and the window
+            # graphs' static buffers on this thread's default stream; a new stream
+            # does not wait for it, so serving waits once for that work.
             self.decode_stream.wait_stream(
                 torch.cuda.current_stream(self.decode_stream.device)
             )
             with torch.cuda.stream(self.decode_stream):
                 super().start()
 
-    def discarded_frames(self, overlap_frames: int) -> int:
-        return discarded_frames(overlap_frames, self.crossfade_frames)
-
     def flush_decode_window(
-        self, request_id: str, stream_state: StreamVocoderState
+        self, stream_state: StreamVocoderState
     ) -> WindowDecoder | None:
         if self.suffix_decoder is None:
             return self.decode_window
         else:
-            window_start_token = max(
-                stream_state.code_start_token,
-                stream_state.last_vocode_tokens - self.stream_overlap_tokens,
-            )
-            return functools.partial(
-                self.suffix_decoder,
-                discard_frames=self.discarded_frames(
-                    stream_state.last_vocode_tokens - window_start_token
-                ),
-            )
+            _, discard_frames = self.window_start_and_discard(stream_state)
+            return functools.partial(self.suffix_decoder, discard_frames=discard_frames)
+
+    def window_start_and_discard(
+        self, stream_state: StreamVocoderState
+    ) -> tuple[int, int]:
+        """The token decode_stream_window starts the request's next window at, and the
+        window's leading frames whose audio the stream never reads."""
+        window_start_token = max(
+            stream_state.code_start_token,
+            stream_state.last_vocode_tokens - self.stream_overlap_tokens,
+        )
+        return window_start_token, discarded_frames(
+            stream_state.last_vocode_tokens - window_start_token, self.crossfade_frames
+        )
 
     def followup_stride(self, request_id: str) -> int:
         window_count = self.stream_window_counts.get(request_id, 0)
@@ -577,27 +596,26 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
             return self.stream_frames(request_id, frame_codes)
 
     def on_stream_chunk_batch(self, items: list[tuple[str, StreamItem]]) -> None:
-        """Stream every queued chunk in rounds: each round takes each request's next
-        complete window and decodes the windows of one length together, shortest
-        first, so a first window never waits behind longer ones. A request's own
-        windows keep their order; nothing waits for more chunks to arrive."""
+        """Stream queued chunks in rounds: each round decodes every request's next
+        complete window, windows of one shape together and shortest first, so a first
+        window never waits behind longer ones; nothing waits for more chunks."""
         failed: list[str] = []
         with self.state_lock:
             frame_chunks: dict[str, list[torch.Tensor]] = {}
-            for request_id, item in items:
+            for request_id, stream_item in items:
                 if self.is_aborted(request_id):
                     continue
-                elif not isinstance(item.data, torch.Tensor):
+                elif not isinstance(stream_item.data, torch.Tensor):
                     self.fail_stream(
                         request_id,
                         TypeError(
                             f"Drama 3 stream chunk for {request_id!r} must carry a "
-                            f"torch.Tensor, got {type(item.data).__name__}"
+                            f"torch.Tensor, got {type(stream_item.data).__name__}"
                         ),
                         failed,
                     )
                 else:
-                    frame_chunks.setdefault(request_id, []).append(item.data)
+                    frame_chunks.setdefault(request_id, []).append(stream_item.data)
             unread_frames: dict[str, torch.Tensor] = {}
             for request_id, chunks in frame_chunks.items():
                 try:
@@ -632,8 +650,8 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
                         ]
                     else:
                         pass
-                for shape in sorted(windows_by_length):
-                    self.decode_queued_windows(windows_by_length[shape], failed)
+                for window_shape in sorted(windows_by_length):
+                    self.decode_queued_windows(windows_by_length[window_shape], failed)
                 unread_frames = next_unread_frames
         for request_id in failed:
             self.cleanup_aborted_request(request_id)
@@ -643,10 +661,10 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
     ) -> QueuedWindow | None:
         """Ingest frames up to the end of the request's current window; the window
         to decode once they complete it, else None."""
-        state = self.stream_states.setdefault(request_id, StreamVocoderState())
+        stream_state = self.stream_states.setdefault(request_id, StreamVocoderState())
         window_frame_count = (
-            state.next_vocode_tokens or self.stream_stride
-        ) - state.total_tokens
+            stream_state.next_vocode_tokens or self.stream_stride
+        ) - stream_state.total_tokens
         if frame_codes.shape[1] == 0:
             return None
         elif frame_codes.shape[1] < window_frame_count:
@@ -661,20 +679,16 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
             window_frames = frame_codes[:, :window_frame_count].to(
                 device=self.device, dtype=torch.long, non_blocking=True
             )
-            # The window decode_stream_window decodes once these frames arrive.
-            window_start_token = max(
-                state.code_start_token,
-                state.last_vocode_tokens - self.stream_overlap_tokens,
+            window_start_token, discard_frames = self.window_start_and_discard(
+                stream_state
             )
             return QueuedWindow(
                 request_id=request_id,
                 frame_codes=window_frames,
-                codebook_codes=torch.cat([*state.codes, window_frames], dim=1)[
-                    1:, window_start_token - state.code_start_token :
+                codebook_codes=torch.cat([*stream_state.codes, window_frames], dim=1)[
+                    1:, window_start_token - stream_state.code_start_token :
                 ],
-                discard_frames=self.discarded_frames(
-                    state.last_vocode_tokens - window_start_token
-                ),
+                discard_frames=discard_frames,
             )
 
     def decode_queued_windows(

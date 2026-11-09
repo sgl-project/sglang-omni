@@ -127,7 +127,7 @@ class StreamingVocoderScheduler(StreamingSimpleScheduler, ABC):
             device=self.device,
             stream_overlap_tokens=self.stream_overlap_tokens,
             stream_crossfade_samples=self.stream_crossfade_samples,
-            decode_window=self.flush_decode_window(request_id, stream_state),
+            decode_window=self.flush_decode_window(stream_state),
         )
         messages: list[OutgoingMessage] = []
         if audio_chunk is not None:
@@ -182,7 +182,7 @@ class StreamingVocoderScheduler(StreamingSimpleScheduler, ABC):
         return messages
 
     def flush_decode_window(
-        self, request_id: str, stream_state: StreamVocoderState
+        self, stream_state: StreamVocoderState
     ) -> WindowDecoder | None:
         """The decoder for the request's final window; models may bind it to the
         window the state describes."""

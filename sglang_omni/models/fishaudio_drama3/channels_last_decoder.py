@@ -65,8 +65,8 @@ if triton is not None:
             other=0.0,
         ).to(tl.float32)
         if HAS_BIAS:
-            # The conv's bias, added with the rounding of the activation dtype so the
-            # sum equals a separate add of the bias.
+            # note (Wenyao Gao): rounded to the activation dtype, as a separate bias
+            # add rounds it.
             bias = tl.load(bias_ptr + channel, mask=channel_mask, other=0.0).to(
                 tl.float32
             )
@@ -109,12 +109,12 @@ if triton is not None:
         row_mask = row < rows
         channel_mask = channel < channels
         mask = row_mask[:, None] & channel_mask[None, :]
-        batch = row // rows_per_batch
-        within = row % rows_per_batch
+        batch_index = row // rows_per_batch
+        row_in_batch = row % rows_per_batch
         dtype = y_ptr.dtype.element_ty
         x = tl.load(
             x_ptr
-            + (batch * x_batch_stride + within * channels)[:, None]
+            + (batch_index * x_batch_stride + row_in_batch * channels)[:, None]
             + channel[None, :],
             mask=mask,
             other=0.0,
@@ -128,7 +128,7 @@ if triton is not None:
             pass
         residual = tl.load(
             residual_ptr
-            + (batch * residual_batch_stride + within * channels)[:, None]
+            + (batch_index * residual_batch_stride + row_in_batch * channels)[:, None]
             + channel[None, :],
             mask=mask,
             other=0.0,
@@ -150,26 +150,29 @@ else:
     pass
 
 
-def conv_stack_left_context(sequence: torch.nn.Sequential, need: int = 0) -> int:
+def conv_stack_left_context(
+    sequence: torch.nn.Sequential, context_positions: int = 0
+) -> int:
     """Input positions before the first wanted output that the causal conv stack
-    reads to produce need positions of context at its output: the convs' left
+    reads to produce context_positions positions at its output: the convs' left
     padding, scaled down through each transposed conv's stride."""
     for module in reversed(list(sequence)):
         if isinstance(module, CausalConvNet):
-            need += module.padding
+            context_positions += module.padding
         elif isinstance(module, CausalTransConvNet):
             stride = module.stride
-            need = -(-need // stride) - (-(module.kernel_size - 1) // stride)
+            context_positions = -(-context_positions // stride) - (
+                -(module.kernel_size - 1) // stride
+            )
         elif isinstance(module, (ResidualUnit, DecoderBlock)):
-            need = conv_stack_left_context(module.block, need)
+            context_positions = conv_stack_left_context(module.block, context_positions)
         else:
             pass
-    return need
+    return context_positions
 
 
 def is_single_channel_tail(module: CausalConvNet) -> bool:
-    """Whether snake_conv_tanh serves the conv: undilated, ungrouped, stride one,
-    biased, onto one channel."""
+    """Whether snake_conv_tanh can serve the conv."""
     conv = module.conv
     return (
         conv.out_channels == 1
@@ -188,9 +191,8 @@ def tail_weight(conv: torch.nn.Conv1d) -> torch.Tensor:
 
 class ChannelsLastDecoder:
     """The codec decoder over (B, L, C) half activations. Each conv runs without its
-    bias; the bias rides along as the pending bias of the activation and is added by
-    the next snake or residual kernel, which saves one pass over the activation per
-    conv."""
+    bias, and the next snake or residual kernel adds it as the pending bias, which
+    saves one pass over the activation per conv."""
 
     def __init__(self, codec: DAC, *, dtype: torch.dtype) -> None:
         if triton is None:
@@ -203,7 +205,6 @@ class ChannelsLastDecoder:
         self.codec = codec
         self.hops_per_frame = int(codec.frame_length) // int(codec.hop_length)
         self.samples_per_hop = int(codec.hop_length)
-        # Hop-rate positions the conv stack reads before the first kept frame.
         self.conv_margin_hops = conv_stack_left_context(codec.decoder.model)
         self.snake_alphas: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
         for module in codec.decoder.modules():
@@ -240,7 +241,8 @@ class ChannelsLastDecoder:
     ) -> torch.Tensor:
         """The audio of the frames from keep_from_frame on: the transformer sees
         every frame, the conv stack only the kept frames and its left context."""
-        # quantizer.decode(indices) with its transformer run by the fused forward.
+        # note (Wenyao Gao): quantizer.decode(indices) with its transformer run by
+        # the fused forward.
         quantizer = self.codec.quantizer
         indices[:, 0] = torch.clamp(
             indices[:, 0], max=quantizer.semantic_quantizer.codebook_size - 1
@@ -322,12 +324,12 @@ class ChannelsLastDecoder:
         hidden_states: torch.Tensor,
         bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """tanh(conv_module(snake_module(x + bias))) of a (B, L, C) half activation,
-        for the decoder's final conv onto one channel. cuDNN has only a slow engine
-        for a channels-last conv onto one channel, so the taps run as one GEMM over
-        the padded snake output and each frame sums its taps along a diagonal view."""
+        """tanh(conv_module(snake_module(x + bias))) of a (B, L, C) half activation, for
+        the final conv onto one channel: cuDNN has only a slow channels-last engine for
+        it, so the taps run as one GEMM and each frame sums its taps along a diagonal.
+        """
         conv = conv_module.conv
-        taps = conv.kernel_size[0]
+        tap_count = conv.kernel_size[0]
         batch_size, frame_count, channel_count = hidden_states.shape
         padded = self.snake(
             snake_module, hidden_states, conv_module.padding, 0, bias=bias
@@ -336,11 +338,12 @@ class ChannelsLastDecoder:
             padded.view(-1, channel_count),
             self.tail_weights[id(conv)],
             out_dtype=torch.float32,
-        ).view(batch_size, -1, taps + 1)
-        # Frame t's conv is tap_products[b, t + k, k] summed over the taps k.
+        ).view(batch_size, -1, tap_count + 1)
+        # note (Wenyao Gao): frame t's conv is tap_products[b, t + k, k] summed over
+        # the taps k.
         framed = tap_products.as_strided(
-            (batch_size, frame_count, taps),
-            (tap_products.stride(0), taps + 1, taps + 2),
+            (batch_size, frame_count, tap_count),
+            (tap_products.stride(0), tap_count + 1, tap_count + 2),
         )
         conv_output = framed.sum(-1, keepdim=True).to(hidden_states.dtype)
         return torch.tanh(conv_output + conv.bias)

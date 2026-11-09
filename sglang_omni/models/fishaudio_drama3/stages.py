@@ -68,7 +68,8 @@ CODEC_FILE_NAME = "codec.pth"
 REFERENCE_ENCODE_WARMUP_SECONDS = 1.0
 MEMORY_PROBE_ROW_COUNT = 2
 MEMORY_PROBE_FRAME_COUNT = 128
-# Spacing of the non-streaming graph lengths: a request pads at most 7 frames.
+# note (Wenyao Gao): spacing of the non-streaming graph lengths, so a request
+# pads at most 7 frames.
 UTTERANCE_GRAPH_FRAME_STEP = 8
 # A hub codec names a full commit, so preprocessing and the vocoder load one file.
 HUB_CODEC_PATTERN = re.compile(
@@ -307,8 +308,6 @@ def create_vocoder_executor(
         decode: WindowDecoder = ChannelsLastDecoder(codec, dtype=torch.float16)
     else:
         decode = codec.from_indices
-    window_batch_decoder: WindowGraphDecoder | None = None
-    suffix_decoder: WindowGraphDecoder | None = None
     if window_cuda_graphs:
         window_schedule = {
             "stream_stride": stream_stride,
@@ -316,7 +315,7 @@ def create_vocoder_executor(
             "stream_followup_stride": stream_followup_stride,
             "stream_overlap_tokens": stream_overlap_tokens,
         }
-        # Only the channels-last decoder decodes a window from a frame on.
+        # note (Wenyao Gao): only the channels-last decoder takes keep_from_frame.
         skips_discarded_frames = isinstance(decode, ChannelsLastDecoder)
         kept_frames = crossfade_frames(
             stream_crossfade_samples, int(codec.frame_length)
@@ -334,8 +333,8 @@ def create_vocoder_executor(
             max_batch_size=stream_window_batch_size,
             window_discards=(
                 {
-                    length: discarded_frames(overlap, kept_frames)
-                    for length, overlap in stream_window_discards(
+                    window_length: discarded_frames(overlap_frames, kept_frames)
+                    for window_length, overlap_frames in stream_window_discards(
                         **window_schedule
                     ).items()
                 }
@@ -344,24 +343,24 @@ def create_vocoder_executor(
             ),
             flush_shapes=(
                 {
-                    (frames, discarded_frames(overlap, kept_frames))
-                    for frames, overlap in flush_window_shapes(**window_schedule)
+                    (frame_count, discarded_frames(overlap_frames, kept_frames))
+                    for frame_count, overlap_frames in flush_window_shapes(
+                        **window_schedule
+                    )
                 }
                 if skips_discarded_frames
                 else ()
             ),
         )
         decode_window: WindowDecoder = window_graph_decoder
-        if stream_window_batch_size > 1:
-            window_batch_decoder = window_graph_decoder
-        else:
-            pass
-        if skips_discarded_frames:
-            suffix_decoder = window_graph_decoder
-        else:
-            pass
+        window_batch_decoder = (
+            window_graph_decoder if stream_window_batch_size > 1 else None
+        )
+        suffix_decoder = window_graph_decoder if skips_discarded_frames else None
     else:
         decode_window = decode
+        window_batch_decoder = None
+        suffix_decoder = None
     if torch_device.type == "cpu":
         max_padded_frames_per_decode = None
     else:
@@ -369,8 +368,9 @@ def create_vocoder_executor(
             decode,
             device=torch_device,
             num_codebooks=num_codebooks,
-            # memory_reserved counts every stage loaded into this process, so the
-            # share it is held against is the process's, not the vocoder's alone.
+            # note (Wenyao Gao): memory_reserved counts every stage loaded into this
+            # process, so the share it is held against is the process's, not the
+            # vocoder's alone.
             total_gpu_memory_fraction=(
                 process_total_gpu_memory_fraction
                 if process_total_gpu_memory_fraction is not None

@@ -35,6 +35,7 @@ from sglang_omni.models.fishaudio_drama3.stream_windows import (
 )
 from sglang_omni.models.fishaudio_drama3.vocoder import (
     Drama3VocoderScheduler,
+    SuffixDecoder,
     WindowBatchDecoder,
     WindowGraphDecoder,
     window_graph_keys,
@@ -114,7 +115,7 @@ def vocoder_with(
     factory_args: Drama3VocoderFactoryArgs | None = None,
     max_padded_frames_per_decode: int | None = None,
     window_batch_decoder: WindowBatchDecoder | None = None,
-    suffix_decoder: WindowGraphDecoder | None = None,
+    suffix_decoder: SuffixDecoder | None = None,
 ) -> Drama3VocoderScheduler:
     """The vocoder with the configured windows."""
     window_kwargs = (factory_args or Drama3VocoderFactoryArgs()).model_dump(
@@ -364,16 +365,16 @@ def test_the_stream_window_lengths_follow_the_window_config(
 
 
 @pytest.mark.parametrize(
-    ("max_frames", "lengths"),
+    ("max_frames", "graph_lengths"),
     [
         pytest.param(20, (8, 16, 20), id="ends-at-the-cap"),
         pytest.param(0, (), id="off"),
     ],
 )
 def test_utterance_graph_lengths_cover_every_frame_count_up_to_the_cap(
-    max_frames: int, lengths: tuple[int, ...]
+    max_frames: int, graph_lengths: tuple[int, ...]
 ) -> None:
-    assert utterance_graph_lengths(max_frames, frame_step=8) == lengths
+    assert utterance_graph_lengths(max_frames, frame_step=8) == graph_lengths
 
 
 def test_only_stream_windows_get_batched_graphs_capped_by_the_longest_window() -> None:
@@ -388,19 +389,22 @@ def test_only_stream_windows_get_batched_graphs_capped_by_the_longest_window() -
         factory_args.non_streaming_cuda_graph_max_frames, frame_step=8
     )
 
-    keys = window_graph_keys(
+    graph_keys = window_graph_keys(
         window_lengths,
         utterance_lengths,
         max_batch_size=factory_args.stream_window_batch_size,
     )
 
-    assert {length for batch_size, length, _ in keys if batch_size == 1} == {
+    assert {
+        graph_length for batch_size, graph_length, _ in graph_keys if batch_size == 1
+    } == {
         *window_lengths,
         *utterance_lengths,
     }
-    assert all(discard == 0 for _, _, discard in keys)
-    # Stream windows (4, 14, 26, 58, 96) batch up to 4, within 2 x 96 frames.
-    assert {key[:2] for key in keys if key[0] > 1} == {
+    assert all(discard_frames == 0 for _, _, discard_frames in graph_keys)
+    # note (Wenyao Gao): stream windows (4, 14, 26, 58, 96) batch up to 4, within
+    # 2 x 96 frames.
+    assert {graph_key[:2] for graph_key in graph_keys if graph_key[0] > 1} == {
         *((batch_size, 4) for batch_size in (2, 3, 4)),
         *((batch_size, 14) for batch_size in (2, 3, 4)),
         *((batch_size, 26) for batch_size in (2, 3, 4)),
@@ -411,7 +415,7 @@ def test_only_stream_windows_get_batched_graphs_capped_by_the_longest_window() -
 
 
 def test_windows_with_a_discard_get_their_own_graphs_beside_the_whole_ones() -> None:
-    keys = window_graph_keys(
+    graph_keys = window_graph_keys(
         (4, 14, 96),
         (8, 16),
         max_batch_size=2,
@@ -419,9 +423,9 @@ def test_windows_with_a_discard_get_their_own_graphs_beside_the_whole_ones() -> 
         flush_keys=[(8, 4), (16, 14), (16, 0)],
     )
 
-    assert keys[0] == (2, 96, 32)
-    assert set(keys) == {
-        *((1, length, 0) for length in (4, 8, 14, 16, 96)),
+    assert graph_keys[0] == (2, 96, 32)
+    assert set(graph_keys) == {
+        *((1, graph_length, 0) for graph_length in (4, 8, 14, 16, 96)),
         (1, 14, 4),
         (1, 96, 32),
         (1, 8, 4),
@@ -482,7 +486,7 @@ def test_the_stream_never_reads_the_frames_a_window_skips(
             stream_crossfade_samples=stream_crossfade_samples
         ),
         window_batch_decoder=decoder,
-        suffix_decoder=decoder,  # type: ignore[arg-type]
+        suffix_decoder=decoder,
     )
     frames = numbered_frames(214)
     for chunk_id in range(214):
@@ -555,41 +559,50 @@ def test_coalesced_chunks_vocode_each_request_like_one_chunk_at_a_time() -> None
     for index, (request_id, frame_count) in enumerate(frame_counts.items()):
         frames[request_id] = numbered_frames(frame_count)
         frames[request_id][:, 1] += 1000 * index
-    step_count = max(start_steps[r] + frame_counts[r] for r in frame_counts)
+    step_count = max(
+        start_steps[request_id] + frame_counts[request_id]
+        for request_id in frame_counts
+    )
     chunk_messages = [
         IncomingMessage(
             request_id=request_id,
             type="stream_chunk",
             data=StreamItem(
-                chunk_id=frame,
-                data=frames[request_id][frame : frame + 1].T,
+                chunk_id=frame_index,
+                data=frames[request_id][frame_index : frame_index + 1].T,
                 from_stage="tts_engine",
             ),
         )
         for step in range(step_count)
         for request_id in frame_counts
-        if 0 <= (frame := step - start_steps[request_id]) < frame_counts[request_id]
+        if 0
+        <= (frame_index := step - start_steps[request_id])
+        < frame_counts[request_id]
     ]
     batch_decoder = RecordingBatchDecoder(FrameNumberCodec())
-    coalescing = vocoder_with(FrameNumberCodec(), window_batch_decoder=batch_decoder)
-    one_at_a_time = vocoder_with(FrameNumberCodec())
+    coalescing_vocoder = vocoder_with(
+        FrameNumberCodec(), window_batch_decoder=batch_decoder
+    )
+    one_at_a_time_vocoder = vocoder_with(FrameNumberCodec())
 
-    # 16 engine steps queue up behind each drain.
-    for group_start in range(0, step_count, 16):
-        group_end = group_start + 16
+    # note (Wenyao Gao): 16 engine steps queue up behind each drain.
+    for group_start_step in range(0, step_count, 16):
+        group_end_step = group_start_step + 16
         for message in chunk_messages:
             if (
-                group_start
+                group_start_step
                 <= start_steps[message.request_id] + message.data.chunk_id
-                < group_end
+                < group_end_step
             ):
-                coalescing.inbox.put(message)
-                one_at_a_time.handle_stream_chunk(message.request_id, message.data)
+                coalescing_vocoder.inbox.put(message)
+                one_at_a_time_vocoder.handle_stream_chunk(
+                    message.request_id, message.data
+                )
             else:
                 pass
-        coalescing.handle_message(coalescing.get_batch_message(), None)
-        assert coalescing.inbox.empty()
-    for vocoder in (coalescing, one_at_a_time):
+        coalescing_vocoder.handle_message(coalescing_vocoder.get_batch_message(), None)
+        assert coalescing_vocoder.inbox.empty()
+    for vocoder in (coalescing_vocoder, one_at_a_time_vocoder):
         for request_id in frame_counts:
             vocoder.handle_streaming_new_request(
                 request_id,
@@ -604,19 +617,23 @@ def test_coalesced_chunks_vocode_each_request_like_one_chunk_at_a_time() -> None
                 ),
             )
             vocoder.handle_stream_done(request_id)
-    coalesced_messages = drained(coalescing)
-    one_at_a_time_messages = drained(one_at_a_time)
+    coalesced_messages = drained(coalescing_vocoder)
+    one_at_a_time_messages = drained(one_at_a_time_vocoder)
 
     assert max(batch_decoder.window_counts) > 1
     for index, request_id in enumerate(frame_counts):
-        coalesced = [m for m in coalesced_messages if m.request_id == request_id]
-        assert [(m.type, m.data) for m in coalesced] == [
-            (m.type, m.data)
-            for m in one_at_a_time_messages
-            if m.request_id == request_id
+        request_messages = [
+            message
+            for message in coalesced_messages
+            if message.request_id == request_id
+        ]
+        assert [(message.type, message.data) for message in request_messages] == [
+            (message.type, message.data)
+            for message in one_at_a_time_messages
+            if message.request_id == request_id
         ]
         np.testing.assert_array_equal(
-            streamed_audio(coalesced),
+            streamed_audio(request_messages),
             np.repeat(
                 np.arange(frame_counts[request_id], dtype=np.float32) + 1000 * index,
                 SAMPLES_PER_FRAME,
@@ -654,8 +671,9 @@ def test_window_graphs_decode_every_window_length_like_eager() -> None:
         window_discards={64: 32, 96: 32},
         flush_shapes=[(35, 32), (33, 32)],
     )
-    # The flush shapes pad to 64, whose graph the window discard already captures.
-    assert {key for key in decoder.graphs if key[2]} == {
+    # note (Wenyao Gao): the flush shapes pad to 64, whose graph the window discard
+    # already captures.
+    assert {graph_key for graph_key in decoder.graphs if graph_key[2]} == {
         (1, 64, 32),
         (1, 96, 32),
         (2, 64, 32),
@@ -671,33 +689,43 @@ def test_window_graphs_decode_every_window_length_like_eager() -> None:
     for decoded_audio, expected_audio in replay_results:
         assert torch.equal(decoded_audio, expected_audio)
     assert torch.equal(decoder(codes[:, :, :20]), causal_decode(codes[:, :, :20]))
-    # A discard replays the graph that skips those frames and leaves their audio zero;
-    # a shape without one falls back to the whole-window graph.
-    for frame_count, discard in ((64, 32), (96, 32), (35, 32), (33, 32), (20, 10)):
+    # note (Wenyao Gao): a discard replays the graph that skips those frames and
+    # leaves their audio zero; a shape without one falls back to the whole-window
+    # graph.
+    for frame_count, discard_frames in (
+        (64, 32),
+        (96, 32),
+        (35, 32),
+        (33, 32),
+        (20, 10),
+    ):
         window = codes[:1, :, :frame_count]
-        decoded_audio = decoder(window, discard_frames=discard)
-        skipped = discard * SAMPLES_PER_FRAME
+        decoded_audio = decoder(window, discard_frames=discard_frames)
+        skipped_samples = discard_frames * SAMPLES_PER_FRAME
         assert torch.equal(
-            decoded_audio[..., skipped:], causal_decode(window)[..., skipped:]
+            decoded_audio[..., skipped_samples:],
+            causal_decode(window)[..., skipped_samples:],
         )
         assert decoded_audio.shape == causal_decode(window).shape
-    # Replay the batched graphs whatever the startup timing enabled.
+    # note (Wenyao Gao): replay the batched graphs whatever the startup timing
+    # enabled.
     decoder.batch_sizes = {64: (3, 2), 96: (2,)}
-    for frame_count, window_count, discard in (
+    for frame_count, window_count, discard_frames in (
         (64, 3, 0),
         (64, 2, 32),
         (96, 3, 32),
         (32, 2, 0),
     ):
         windows = [codes[row, :, :frame_count] for row in range(window_count)]
-        skipped = discard * SAMPLES_PER_FRAME
+        skipped_samples = discard_frames * SAMPLES_PER_FRAME
         for window, decoded_audio in zip(
             windows,
-            decoder.decode_windows(windows, discard_frames=discard),
+            decoder.decode_windows(windows, discard_frames=discard_frames),
             strict=True,
         ):
             assert torch.equal(
-                decoded_audio[..., skipped:], causal_decode(window[None])[..., skipped:]
+                decoded_audio[..., skipped_samples:],
+                causal_decode(window[None])[..., skipped_samples:],
             )
 
 
@@ -778,7 +806,7 @@ def test_a_non_streaming_batch_decodes_once() -> None:
 
 def test_the_non_streaming_payload_encodes_to_the_same_pcm_as_the_float_list() -> None:
     """The client converts both forms with to_numpy before encode_pcm; float32 bytes
-    must give the same float32 array, hence the same PCM, as the former float list."""
+    must give the same float32 array, hence the same PCM, as a float list."""
     generator = torch.Generator().manual_seed(7)
     audio = torch.rand(3 * SAMPLES_PER_FRAME, generator=generator) * 2 - 1
     vocoder = vocoder_with(FrameNumberCodec())
@@ -903,7 +931,7 @@ def test_prepadded_causal_conv_keeps_original_length(
         actual = decoder.causal_conv(module, padded, original_frame_count=frame_count)
         fallback = decoder.causal_conv(module, activation)
     assert actual.shape == (2, frame_count, 4)
-    # The conv leaves its bias to the next kernel.
+    # note (Wenyao Gao): the conv leaves its bias to the next kernel.
     torch.testing.assert_close(actual + module.conv.bias, expected)
     assert torch.equal(actual, fallback)
 
@@ -1089,8 +1117,9 @@ def test_the_residual_add_folds_both_biases_bitwise_like_separate_adds(
     generator = torch.Generator(device="cuda").manual_seed(12)
     channel_count = 96
     decoder = ChannelsLastDecoder.__new__(ChannelsLastDecoder)
-    # The residual is shorter than the activation it adds to, as after a conv.
-    hidden = torch.randn(
+    # note (Wenyao Gao): the residual is shorter than the activation it adds to, as
+    # after a conv.
+    hidden_states = torch.randn(
         (3, 130, channel_count), generator=generator, device="cuda"
     ).to(dtype)
     residual = torch.randn(
@@ -1101,14 +1130,14 @@ def test_the_residual_add_folds_both_biases_bitwise_like_separate_adds(
             (torch.randn(channel_count, generator=generator, device="cuda") * 3).to(
                 dtype
             )
-            if wanted
+            if has_bias
             else None
         )
-        for wanted in (hidden_bias, residual_bias)
+        for has_bias in (hidden_bias, residual_bias)
     ]
 
-    fused = decoder.residual_add(hidden[:, :125], biases[0], residual, biases[1])
-    expected = hidden[:, :125]
+    fused = decoder.residual_add(hidden_states[:, :125], biases[0], residual, biases[1])
+    expected = hidden_states[:, :125]
     if biases[0] is not None:
         expected = expected + biases[0]
     else:
@@ -1133,23 +1162,24 @@ def test_graph_replays_of_the_decoder_keep_the_bits_of_convs_adding_their_own_bi
         codec.fold_weight_norm()
         decoders.append(ChannelsLastDecoder(codec, dtype=torch.float16))
     folding, reference = decoders
-    # The reference decodes as before the biases were folded: every conv adds its
-    # own bias inside its cuDNN call, no bias is left pending and the residual is
-    # a plain add.
+    # note (Wenyao Gao): in the reference every conv adds its own bias inside its
+    # cuDNN call, no bias is left pending and the residual is a plain add.
     reference.conv_biases = dict.fromkeys(reference.conv_biases)
     reference.residual_add = lambda hidden_states, _, residual, __: (
         hidden_states + residual
     )
 
     def with_own_bias(conv_function):
-        def conv(hidden_states, module, weight, bias, *rest):
+        def conv(hidden_states, module, weight, bias, *other_arguments):
             assert bias is None
-            return conv_function(hidden_states, module, weight, module.bias, *rest)
+            return conv_function(
+                hidden_states, module, weight, module.bias, *other_arguments
+            )
 
         return conv
 
-    # Batch-1 windows replay their CUDA graph, the 96-frame one twice; the batch of
-    # 3 decodes eagerly.
+    # note (Wenyao Gao): batch-1 windows replay their CUDA graph, the 96-frame one
+    # twice; the batch of 3 decodes eagerly.
     graphed = WindowGraphDecoder(
         folding,
         num_codebooks=NUM_CODEBOOKS,
@@ -1302,7 +1332,8 @@ def test_the_decoder_tail_fuses_snake_conv_and_tanh_like_the_modules(
     assert pending_bias is None
     assert fused.shape == expected.shape == (batch_size, frame_count, 1)
     assert fused.dtype == torch.float16
-    # One half ulp from the cuDNN path, within the fp16 modules' own rounding.
+    # note (Wenyao Gao): one half ulp from the cuDNN path, within the fp16 modules'
+    # own rounding.
     torch.testing.assert_close(fused.float(), separate.float(), rtol=0, atol=5e-4)
     torch.testing.assert_close(fused.float(), expected.float(), rtol=0, atol=4e-3)
 

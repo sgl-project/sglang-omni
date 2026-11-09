@@ -24,7 +24,8 @@ DEFAULT_MAX_PROMPT_ROWS = 8192
 DEFAULT_STREAM_STRIDE = 4
 DEFAULT_STREAM_FOLLOWUP_STRIDE_RAMP = (10, 12, 32)
 DEFAULT_STREAM_FOLLOWUP_STRIDE = 64
-# Same-length stream windows of up to this many requests share one vocoder decode.
+# note (Wenyao Gao): same-length stream windows of up to this many requests share
+# one vocoder decode.
 DEFAULT_STREAM_WINDOW_BATCH_SIZE = 4
 DEFAULT_FIRST_FRAME_CUDA_GRAPHS = True
 DEFAULT_FIRST_FRAME_CUDA_GRAPH_MAX_REQUESTS = 16
@@ -99,13 +100,15 @@ class Drama3VocoderFactoryArgs(FactoryArgs):
     stream_followup_stride: int = Field(default=DEFAULT_STREAM_FOLLOWUP_STRIDE, ge=1)
     stream_overlap_tokens: int = Field(default=32, ge=0)
     stream_crossfade_samples: int = Field(default=0, ge=0)
-    # One non-streaming request per decode: its CUDA graph replays at batch 1, and a
-    # batch would decode eagerly, padded to its longest request, after a batching wait.
+    # note (Wenyao Gao): one non-streaming request per decode, since its CUDA graph
+    # replays at batch 1 and a batch would decode eagerly, padded to its longest
+    # request, after a batching wait.
     max_batch_size: int = Field(default=1, ge=1)
     max_batch_wait_ms: int = Field(default=2, ge=0)
     window_cuda_graphs: bool = True
-    # With window_cuda_graphs, non-streaming requests of up to this many frames also
-    # replay a CUDA graph, padded to a multiple of 8 frames; 0 decodes them eagerly.
+    # note (Wenyao Gao): with window_cuda_graphs, non-streaming requests of up to this
+    # many frames also replay a CUDA graph, padded to a multiple of 8 frames; 0
+    # decodes them eagerly.
     non_streaming_cuda_graph_max_frames: int = Field(default=512, ge=0)
     stream_window_batch_size: int = Field(
         default=DEFAULT_STREAM_WINDOW_BATCH_SIZE, ge=1

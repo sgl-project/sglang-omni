@@ -262,12 +262,7 @@ With the vocoder on the engine's GPU, at 256 streams the vocoder is fully loaded
 
 ### Non-Streaming Requests
 
-The vocoder decodes a non-streaming request's audio in one piece after the engine finishes it, one request at a time,
-replaying a CUDA graph for requests of up to 512 frames (`--vocoder.factory.non_streaming_cuda_graph_max_frames`).
-With `--vocoder.factory.max_batch_size` above 1 it instead batches requests that finish together, decoding them
-eagerly. Either way a decode takes at most a frame limit it sets at startup from the room its process leaves in the
-process's memory share: the engine's and the vocoder's `gpu_memory_fraction` together (0.70 and 0.10 by default) while
-the vocoder runs in the engine's process, the vocoder's alone in its own process. It logs:
+The vocoder decodes a non-streaming request's audio in one piece after the engine finishes it, one request at a time, replaying a CUDA graph for requests of up to 512 frames (`--vocoder.factory.non_streaming_cuda_graph_max_frames`). With `--vocoder.factory.max_batch_size` above 1 it instead batches requests that finish together, decoding them eagerly. Either way a decode takes at most a frame limit it sets at startup from the room its process leaves in the process's memory share: the engine's and the vocoder's `gpu_memory_fraction` together (0.70 and 0.10 by default) while the vocoder runs in the engine's process, the vocoder's alone in its own process. It logs:
 
 ```text
 Drama 3 vocoder: a non-streaming decode takes up to <frames> padded frames of <bytes> bytes each; share <share> GiB, held <held> GiB

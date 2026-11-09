@@ -9,24 +9,16 @@ def stream_window_lengths(
     stream_followup_stride: int,
     stream_overlap_tokens: int,
 ) -> tuple[int, ...]:
-    strides = (stream_stride, *stream_followup_stride_ramp)
-    lengths: set[int] = set()
-    emitted_frames = 0
-    window_index = 0
-    while True:
-        stride = (
-            strides[window_index]
-            if window_index < len(strides)
-            else stream_followup_stride
+    return tuple(
+        sorted(
+            stream_window_discards(
+                stream_stride=stream_stride,
+                stream_followup_stride_ramp=stream_followup_stride_ramp,
+                stream_followup_stride=stream_followup_stride,
+                stream_overlap_tokens=stream_overlap_tokens,
+            )
         )
-        window_end = emitted_frames + stride
-        lengths.add(window_end - max(0, emitted_frames - stream_overlap_tokens))
-        if window_index >= len(strides) and emitted_frames >= stream_overlap_tokens:
-            return tuple(sorted(lengths))
-        else:
-            pass
-        emitted_frames = window_end
-        window_index += 1
+    )
 
 
 def stream_window_discards(
@@ -48,8 +40,10 @@ def stream_window_discards(
             if window_index < len(strides)
             else stream_followup_stride
         )
-        window_start = max(0, emitted_frames - stream_overlap_tokens)
-        discards[emitted_frames + stride - window_start] = emitted_frames - window_start
+        window_start_frame = max(0, emitted_frames - stream_overlap_tokens)
+        discards[emitted_frames + stride - window_start_frame] = (
+            emitted_frames - window_start_frame
+        )
         if window_index >= len(strides) and emitted_frames >= stream_overlap_tokens:
             return discards
         else:
@@ -69,7 +63,7 @@ def flush_window_shapes(
     complete window: the overlap plus the frames left before the next window would
     complete."""
     strides = (stream_stride, *stream_followup_stride_ramp)
-    keys: set[tuple[int, int]] = set()
+    window_shapes: set[tuple[int, int]] = set()
     emitted_frames = 0
     window_index = 0
     while True:
@@ -80,16 +74,16 @@ def flush_window_shapes(
         )
         emitted_frames += stride
         window_index += 1
-        discard = min(emitted_frames, stream_overlap_tokens)
+        overlap_frames = min(emitted_frames, stream_overlap_tokens)
         next_stride = (
             strides[window_index]
             if window_index < len(strides)
             else stream_followup_stride
         )
-        for remaining in range(1, next_stride + 1):
-            keys.add((discard + remaining, discard))
+        for remaining_frames in range(1, next_stride + 1):
+            window_shapes.add((overlap_frames + remaining_frames, overlap_frames))
         if window_index >= len(strides) and emitted_frames >= stream_overlap_tokens:
-            return keys
+            return window_shapes
         else:
             pass
 

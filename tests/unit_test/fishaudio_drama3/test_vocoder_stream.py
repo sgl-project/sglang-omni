@@ -1,10 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The Drama 3 vocoder serves on its own CUDA stream in the engine's process.
-
-Its codes arrive as CPU tensors and its audio leaves as CPU bytes, so the only GPU
-state it shares with another stream is its own: the codec weights and the window
-graphs' static buffers, which construction writes on the thread's default stream
-before serving starts on the decode stream."""
+"""The Drama 3 vocoder serves on its own CUDA stream in the engine's process."""
 
 from __future__ import annotations
 
@@ -41,7 +36,7 @@ WHOLE_UTTERANCE_FRAMES = 120
 # construction work still in flight when the serving thread starts.
 IN_FLIGHT_REPLAYS = 200
 HANDOFF_ATTEMPTS = 5
-# (request id, frames, streaming)
+# note (Wenyao Gao): (request name, frames, streaming) per request.
 REQUESTS = (
     ("stream-a", 150, True),
     ("stream-b", 97, True),
@@ -145,21 +140,25 @@ def request_messages(
     ]
 
 
-def messages_for(run: str) -> list[IncomingMessage]:
+def messages_for(run_name: str) -> list[IncomingMessage]:
     """The same requests under ids unique to one serving run."""
     return [
         message
-        for seed, (name, frame_count, is_streaming) in enumerate(REQUESTS, start=1)
+        for seed, (request_name, frame_count, is_streaming) in enumerate(
+            REQUESTS, start=1
+        )
         for message in request_messages(
-            f"{name}/{run}", random_frames(frame_count, seed), is_streaming=is_streaming
+            f"{request_name}/{run_name}",
+            random_frames(frame_count, seed),
+            is_streaming=is_streaming,
         )
     ]
 
 
-def served(vocoder: Drama3VocoderScheduler, run: str) -> Outputs:
+def served(vocoder: Drama3VocoderScheduler, run_name: str) -> Outputs:
     """Each request's output messages, as (type, data), from one serving thread."""
-    messages = messages_for(run)
-    outputs: Outputs = {name: [] for name, _, _ in REQUESTS}
+    messages = messages_for(run_name)
+    outputs: Outputs = {request_name: [] for request_name, _, _ in REQUESTS}
     thread = threading.Thread(target=vocoder.start, daemon=True)
     thread.start()
     try:
@@ -167,13 +166,17 @@ def served(vocoder: Drama3VocoderScheduler, run: str) -> Outputs:
             vocoder.inbox.put(message)
         unfinished = set(outputs)
         while unfinished:
-            out: OutgoingMessage = vocoder.outbox.get(timeout=30.0)
-            assert out.type != "error", out.data
-            name = out.request_id.rsplit("/", 1)[0]
-            data = out.data.data if isinstance(out.data, StagePayload) else out.data
-            outputs[name].append((out.type, data))
-            if out.type == "result":
-                unfinished.discard(name)
+            output_message: OutgoingMessage = vocoder.outbox.get(timeout=30.0)
+            assert output_message.type != "error", output_message.data
+            request_name = output_message.request_id.rsplit("/", 1)[0]
+            output_data = (
+                output_message.data.data
+                if isinstance(output_message.data, StagePayload)
+                else output_message.data
+            )
+            outputs[request_name].append((output_message.type, output_data))
+            if output_message.type == "result":
+                unfinished.discard(request_name)
             else:
                 pass
     finally:
@@ -185,9 +188,9 @@ def served(vocoder: Drama3VocoderScheduler, run: str) -> Outputs:
 def samples_of(outputs: list[tuple[str, object]]) -> np.ndarray:
     return np.concatenate(
         [
-            np.frombuffer(data["audio_waveform"], dtype=np.float32)
-            for _, data in outputs
-            if isinstance(data, dict) and "audio_waveform" in data
+            np.frombuffer(output_data["audio_waveform"], dtype=np.float32)
+            for _, output_data in outputs
+            if isinstance(output_data, dict) and "audio_waveform" in output_data
         ]
     )
 
@@ -197,25 +200,27 @@ class DefaultStreamLoad:
     allocating, computing and freeing its own tensors."""
 
     def __init__(self) -> None:
-        self.stop = threading.Event()
-        self.rounds = 0
+        self.stop_event = threading.Event()
+        self.round_count = 0
         self.thread = threading.Thread(target=self.run, daemon=True)
 
     def run(self) -> None:
         generator = torch.Generator(device="cuda").manual_seed(3)
-        while not self.stop.is_set():
-            size = 512 * (1 + self.rounds % 7)
-            left = torch.randn((size, size), device="cuda", generator=generator)
-            right = torch.randn((size, 1024), device="cuda", generator=generator)
+        while not self.stop_event.is_set():
+            matrix_size = 512 * (1 + self.round_count % 7)
+            left = torch.randn(
+                (matrix_size, matrix_size), device="cuda", generator=generator
+            )
+            right = torch.randn((matrix_size, 1024), device="cuda", generator=generator)
             (left @ right).sum().item()
-            self.rounds += 1
+            self.round_count += 1
 
     def __enter__(self) -> DefaultStreamLoad:
         self.thread.start()
         return self
 
     def __exit__(self, *_: object) -> None:
-        self.stop.set()
+        self.stop_event.set()
         self.thread.join(timeout=10.0)
 
 
@@ -240,10 +245,10 @@ def test_serving_on_the_decode_stream_under_default_stream_load_matches_the_defa
     on_default_stream = served(vocoder, "default")
 
     vocoder.decode_stream = decode_stream
-    with DefaultStreamLoad() as load:
+    with DefaultStreamLoad() as default_stream_load:
         on_decode_stream = served(vocoder, "decode")
 
-    assert load.rounds > 0
+    assert default_stream_load.round_count > 0
     assert on_decode_stream == on_default_stream
     assert samples_of(on_decode_stream["stream-a"]).size == 150 * int(
         vocoder.codec.frame_length
