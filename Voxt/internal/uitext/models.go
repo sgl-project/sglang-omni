@@ -61,7 +61,7 @@ func ModelErrorText(err error) (msg, more string) {
 		return i18n.T("This version of Voxt cannot run the model yet."), more
 	}
 	if errors.Is(err, dictation.ErrNotAllowed) {
-		return i18n.T("Voxt may not use Speech Recognition: allow it in Settings → Permissions."), more
+		return i18n.T("Voxt does not have Speech Recognition access. Allow it in Settings → Permissions."), more
 	}
 	if errors.Is(err, dictation.ErrNoLanguage) {
 		return i18n.T("macOS cannot recognise your main language on this Mac: add it in System Settings → Keyboard → Dictation, or choose another speech model."), more

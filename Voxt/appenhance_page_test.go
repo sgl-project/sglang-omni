@@ -86,7 +86,7 @@ func storedRules(t *testing.T, a *app) appctx.Rules {
 
 func TestAppEnhancementEmpty(t *testing.T) {
 	a, _, tt := aeTester(t)
-	for _, s := range []string{"App enhancement", "New group", "Rules for the app or website in front", "Switch to another app to see which group it falls in."} {
+	for _, s := range []string{"App enhancement", "New group", "Rules for the frontmost app or website", "Switch to another app to see which group it falls in."} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, firstTexts(tt))
 		}
@@ -111,7 +111,7 @@ func TestAppEnhancementEdit(t *testing.T) {
 	a.setRules(sampleRules())
 	a.aePage.sel = "g-code"
 	frames(tt)
-	for _, s := range []string{"Team chat", "Code review", "Work browser", "2 apps", "2 websites", "Scene prompt", "github.com", "gitlab.com/acme/*", "Applies to"} {
+	for _, s := range []string{"Team chat", "Code review", "Work browser", "2 apps", "2 websites", "Group prompt", "github.com", "gitlab.com/acme/*", "Applies to"} {
 		if !has(tt, s) {
 			t.Errorf("no %q", s)
 		}
@@ -120,7 +120,7 @@ func TestAppEnhancementEdit(t *testing.T) {
 	click(t, tt, "Group name")
 	tt.Type(" 2")
 	frames(tt)
-	click(t, tt, "Scene prompt of the group")
+	click(t, tt, "Prompt for this group")
 	tt.Key(ui.Ctrl, ui.KeyEnd) // the prompt wraps: the click may land inside it
 	tt.Type(" Thanks.")
 	frames(tt)
@@ -198,13 +198,13 @@ func TestAppEnhancementPreview(t *testing.T) {
 	// Chrome in front: its address matches Code review by its rule.
 	a.helperNotified(appActivated(chromeApp))
 	frames(tt)
-	if !has(tt, "In front: Google Chrome") || !has(tt, "github.com/hehehai/voxtnew/pulls") || !has(tt, "Matches Code review, by the website rule github.com") {
+	if !has(tt, "Frontmost: Google Chrome") || !has(tt, "github.com/hehehai/voxtnew/pulls") || !has(tt, "Matches Code review, by the website rule github.com") {
 		t.Errorf("preview %q", firstTexts(tt))
 	}
 	// VoxtNew comes to the front: the preview keeps Chrome.
 	a.helperNotified(appActivated(proto.App{PID: 77, BundleID: selfBundleID, Name: "VoxtNew"}))
 	frames(tt)
-	if !has(tt, "In front: Google Chrome") {
+	if !has(tt, "Frontmost: Google Chrome") {
 		t.Errorf("preview after VoxtNew %q", firstTexts(tt))
 	}
 	// Slack: its group.
@@ -392,5 +392,24 @@ func TestAppEnhancementHeader(t *testing.T) {
 				t.Errorf("%v %s: Browsers did not open", size, lang)
 			}
 		}
+	}
+}
+
+// TestAppEnhancementWide: in a wide window the group's settings fill the
+// page, under the header's buttons, instead of stopping at a fixed width
+// with a blank band on the right.
+func TestAppEnhancementWide(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(1700, 1100)
+	a.setRules(sampleRules())
+	a.navigate("/app-enhancement")
+	frames(tt)
+	br, ok1 := tt.Find(i18n.T("Browsers"))
+	prompt, ok2 := tt.Find(i18n.T("Prompt for this group"))
+	if !ok1 || !ok2 {
+		t.Fatalf("Browsers %v, scene prompt %v", ok1, ok2)
+	}
+	if d := (br.X + br.W) - (prompt.X + prompt.W); d < -2 || d > 2 {
+		t.Errorf("the scene prompt ends at %.0f, the header's Browsers at %.0f", prompt.X+prompt.W, br.X+br.W)
 	}
 }

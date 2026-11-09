@@ -98,10 +98,13 @@ func measureOverlayInk(img image.Image, scale float64, padY float64, row, text b
 	var k Ink
 	k.faceW, k.faceH = float64(x1+1-x0)/scale, float64(y1+1-y0)/scale
 	inset := int(math.Ceil(2 * scale)) // past the hairline
+	// The answer card's size button sits in its bottom-right corner, in the
+	// padding under the text: its ink is not where the content ends.
+	corner := int(math.Ceil(float64(layout.CardSizeBtnInset+layout.CardSizeBtn) * scale))
 	il, ib := math.MaxInt, -1
 	for y := y0 + inset; y <= y1-inset; y++ {
 		for x := x0 + inset; x <= x1-inset; x++ {
-			if bright(x, y) {
+			if bright(x, y) && (x <= x1-corner || y <= y1-corner) {
 				il, ib = min(il, x), max(ib, y)
 			}
 		}

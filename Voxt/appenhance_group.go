@@ -47,7 +47,7 @@ func (a *app) aeDetail(c *ui.Context, g appctx.Group) {
 				a.updateGroup(g.ID, func(g *appctx.Group) { g.Name = name })
 			}
 			on := g.Enabled // derived: committed in OnChange, while it holds the new value
-			ui.Switch(c.Key("ae-enabled"), &on).Label(i18n.T("Group on")).Tooltip(i18n.T("Group on")).OnChange(func() {
+			ui.Switch(c.Key("ae-enabled"), &on).Label(i18n.T("Group enabled")).Tooltip(i18n.T("Group enabled")).OnChange(func() {
 				v := on
 				a.updateGroup(g.ID, func(g *appctx.Group) { g.Enabled = v })
 			})
@@ -92,8 +92,8 @@ func (a *app) aeScene(c *ui.Context, g appctx.Group) {
 	t := c.Theme()
 	k := tok(t)
 	p := &a.aePage
-	sectionTitleTip(c, i18n.T("Scene prompt"), i18n.T("Added on top of the features' basic clean-up and your rules, never instead of them: say what is special here (tone, format, names)."))
-	in := ui.TextArea(c.Key("ae-prompt"), &p.prompt).Label(i18n.T("Scene prompt of the group")).
+	sectionTitleTip(c, i18n.T("Group prompt"), i18n.T("Added on top of the features' basic clean-up and your rules, never instead of them: say what is special here (tone, format, names)."))
+	in := ui.TextArea(c.Key("ae-prompt"), &p.prompt).Label(i18n.T("Prompt for this group")).
 		Placeholder(i18n.T("For example: this is a team chat; keep it short and casual, no greetings or sign-offs.")).MinHeight(px(t, 88))
 	if in.Changed() {
 		v := p.prompt

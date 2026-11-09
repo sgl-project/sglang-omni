@@ -199,7 +199,7 @@ func (a *app) obFooter(c *ui.Context) {
 		}
 		ui.Spacer(c)
 		if busy {
-			caption(c, i18n.T("Finish or cancel the try first.")).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
+			caption(c, i18n.T("Finish or cancel the test first.")).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
 		}
 		switch {
 		case a.ob.step == obMore:
@@ -218,7 +218,7 @@ func (a *app) obFooter(c *ui.Context) {
 			if ghostButton(c.Key("ob-skip"), i18n.T("Skip this step")).Disabled(busy).Clicked() {
 				a.obGo(a.ob.step + 1)
 			}
-			primaryButton(c.Key("ob-next"), i18n.T("Continue")).Disabled(true).Tooltip(i18n.T("A try that gives a result unlocks Continue"))
+			primaryButton(c.Key("ob-next"), i18n.T("Continue")).Disabled(true).Tooltip(i18n.T("Continue is available once a test gives a result"))
 		case a.obReuseShown(): // the reuse card's Use them is the step's primary button
 			if ui.Button(c.Key("ob-next"), i18n.T("Continue")).Clicked() {
 				a.obGo(a.ob.step + 1)

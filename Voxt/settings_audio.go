@@ -271,8 +271,8 @@ func (a *app) audioSettings(c *ui.Context) {
 			a.updateSettings(func(s *settings.Settings) { s.Audio.VAD.Off = off })
 		}
 	})
-	settingRow(c, "audio-clean", i18n.T("Optimize sound"), i18n.T("Filters out low hum (air conditioning, fans, mains) and evens out the volume before the speech model gets the recording: a quiet voice is raised, a very loud one lowered a little, and nothing clips. The history keeps the original recording."), func() {
-		if ui.Switch(c.Key("audio-clean-switch"), &a.settingsForm.cleanSound).Label(i18n.T("Optimize sound")).Changed() {
+	settingRow(c, "audio-clean", i18n.T("Optimise sound"), i18n.T("Filters out low hum (air conditioning, fans, mains) and evens out the volume before the speech model gets the recording: a quiet voice is raised, a very loud one lowered a little, and nothing clips. The history keeps the original recording."), func() {
+		if ui.Switch(c.Key("audio-clean-switch"), &a.settingsForm.cleanSound).Label(i18n.T("Optimise sound")).Changed() {
 			off := !a.settingsForm.cleanSound
 			a.updateSettings(func(s *settings.Settings) { s.Audio.Clean.Off = off })
 		}

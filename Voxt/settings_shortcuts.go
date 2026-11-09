@@ -136,7 +136,7 @@ func (a *app) shortcutRow(c *ui.Context, feature string, i int, h *settings.Hotk
 						if !a.hotkeys.Installed {
 							col = k.Warning
 						}
-						iconMark(c, icons.Accessibility, col, i18n.T("Works only while Voxt may use Accessibility."))
+						iconMark(c, icons.Accessibility, col, i18n.T("Works only with Accessibility access."))
 					}
 					if len(problems) > 0 {
 						iconMark(c, icons.DangerTriangle, k.Warning, strings.Join(problems, "\n"))

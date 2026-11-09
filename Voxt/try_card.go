@@ -114,7 +114,7 @@ func (a *app) tryCard(c *ui.Context, o tryOpts) {
 				label = i18n.T("Try again")
 			}
 			busy := s.State.Live()
-			if recordButton(c.Key(p+"-try-start"), label).Label(i18n.T("Start a try")).Disabled(busy).Clicked() {
+			if recordButton(c.Key(p+"-try-start"), label).Label(i18n.T("Start a test")).Disabled(busy).Clicked() {
 				*o.block = o.start()
 			}
 			if busy {
