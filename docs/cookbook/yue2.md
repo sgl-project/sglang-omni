@@ -81,7 +81,7 @@ AR decode graphs reserve one full-context KV buffer per guidance branch and reus
 
 Set `--synthesis.factory.fused_kernels true` to use `sgl_kernel` for RMS normalization, residual addition with normalization, Q/K normalization with RoPE, and SiLU activation with gating in both AR and NAR. This also enables projection fusion and works with eager execution or CUDA graphs.
 
-AR graph attention uses the packed FlashAttention path, matching the model's reference graph implementation. Graph attention, projection fusion and fused kernels can change BF16 rounding and sampled songs. Fused kernels also change acoustic latents; full song-quality evaluation is still required before changing the defaults.
+AR graph attention uses the packed FlashAttention path, matching the model's reference graph implementation. Graph attention, projection fusion and fused kernels can change BF16 rounding and sampled songs. Fused kernels also change acoustic latents. On a paired WildSongBench run against the official implementation, CUDA graphs with fused kernels matched official song quality and were about 1.6x faster than CUDA graphs alone, so this is the recommended CUDA configuration; eager remains the default.
 
 ### Optional AR batching
 
@@ -89,7 +89,7 @@ With AR and sampling graphs enabled, set `--synthesis.factory.max_batch_size 4` 
 
 Requests retain independent seeds, sampling parameters, token budgets and cancellation state. Invalid requests fail individually. External ABC and `cot=off` with `cfg_scale=1` can join a batch; requests with guidance other than 1 use the single-request path. Acoustic synthesis and VAE decoding remain sequential. Batch results are returned after all active requests finish, so throughput gains can increase a short request's latency when it shares a batch with a long song.
 
-Batch shapes can change BF16 rounding and sampled tokens even with the same seed. Compare both song quality and request latency under the intended concurrency before enabling batching in production.
+Batch shapes can change BF16 rounding and sampled tokens even with the same seed. With fused kernels, batching four concurrent requests matched official song quality on the same WildSongBench run and raised throughput about 1.8x; single-request latency is roughly unchanged. Check request latency under the intended concurrency before enabling it in production.
 
 ## Limitations
 
