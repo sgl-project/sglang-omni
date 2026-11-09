@@ -15,6 +15,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -115,7 +116,7 @@ func meetingMeta(mt store.Meeting) string {
 		parts = append(parts, mt.CreatedAt.Format("2006-01-02 15:04"))
 	}
 	if mt.DurationMS > 0 {
-		parts = append(parts, (time.Duration(mt.DurationMS) * time.Millisecond).Round(time.Second).String())
+		parts = append(parts, meetingDuration(mt.DurationMS))
 	}
 	switch mt.Mode {
 	case store.MeetingModeSubtitles:
@@ -126,6 +127,73 @@ func meetingMeta(mt store.Meeting) string {
 		parts = append(parts, i18n.T("Microphone and system audio"))
 	}
 	return strings.Join(parts, " · ")
+}
+
+// meetingDuration is a meeting's length as a list shows it: minutes,
+// with hours past an hour.
+func meetingDuration(ms int64) string {
+	m := int((time.Duration(ms)*time.Millisecond + 30*time.Second) / time.Minute)
+	switch {
+	case m < 1:
+		return i18n.T("Under a minute")
+	case m < 60:
+		return i18n.T("%d min", m)
+	default:
+		return i18n.T("%d h %d min", m/60, m%60)
+	}
+}
+
+// meetingGroup is the heading a meeting is listed under, by its day.
+func meetingGroup(at, now time.Time) string {
+	y, m, d := now.Date()
+	today := time.Date(y, m, d, 0, 0, 0, 0, now.Location())
+	switch {
+	case !at.Before(today):
+		return i18n.T("Today")
+	case !at.Before(today.AddDate(0, 0, -1)):
+		return i18n.T("Yesterday")
+	case !at.Before(today.AddDate(0, 0, -7)):
+		return i18n.T("Previous 7 days")
+	default:
+		return at.Format("2006-01")
+	}
+}
+
+// meetingSnippet is a row's second line: its summary's opening, else
+// what it captured.
+func meetingSnippet(mt store.Meeting) string {
+	if s, ok := meeting.ParseStoredSummary(mt.Summary); ok {
+		if line, _, _ := strings.Cut(strings.TrimSpace(s.Body), "\n"); line != "" {
+			return strings.TrimLeft(line, "-*# ")
+		}
+	}
+	switch mt.Mode {
+	case store.MeetingModeSubtitles:
+		return i18n.T("System audio only")
+	case store.MeetingModeRecording:
+		return i18n.T("Microphone only")
+	default:
+		return i18n.T("Microphone and system audio")
+	}
+}
+
+// meetingItem is a row of the list: a day's heading, or a meeting.
+type meetingItem struct {
+	head string
+	mt   *store.Meeting
+}
+
+func meetingItems(list []store.Meeting, now time.Time) []meetingItem {
+	var out []meetingItem
+	last := ""
+	for i := range list {
+		if g := meetingGroup(list[i].CreatedAt, now); g != last {
+			out = append(out, meetingItem{head: g})
+			last = g
+		}
+		out = append(out, meetingItem{mt: &list[i]})
+	}
+	return out
 }
 
 func (a *app) meetingsPage(c *ui.Context) {
@@ -140,6 +208,13 @@ func (a *app) meetingsPage(c *ui.Context) {
 	}
 	active := a.meetingActive()
 	widePageHeader(c, i18n.T("Meetings"), func() {
+		if len(n.list) > 0 || n.query != "" || n.page > 0 {
+			if searchField(c, "meetings-search", &n.query, i18n.T("Search"), px(t, 240)).
+				Label(i18n.T("Search meetings")).Changed() {
+				n.page = 0
+				a.loadMeetings()
+			}
+		}
 		if iconButton(c.Key("mt-settings"), icons.Tuning2, i18n.T("Meeting settings")).Shrink(0).Clicked() {
 			n.setOpen = true
 		}
@@ -154,18 +229,6 @@ func (a *app) meetingsPage(c *ui.Context) {
 	pageBody(c).Children(func() {
 		pad := func(fn func()) {
 			ui.Column(c).Padding(0, px(t, sp6), px(t, sp3)).Shrink(0).Children(fn)
-		}
-		if len(n.list) > 0 || n.query != "" || n.page > 0 {
-			ui.Row(c).Padding(px(t, sp1), px(t, sp6), px(t, sp3)).AlignItems(ui.Center).Shrink(0).Children(func() {
-				if searchField(c, "meetings-search", &n.query, i18n.T("Search"), px(t, 360)).
-					Label(i18n.T("Search meetings")).Changed() {
-					n.page = 0
-					a.loadMeetings()
-				}
-			})
-		}
-		if active {
-			pad(func() { notice(c, "mt-active", noticeInfo, i18n.T("Meeting in progress"), "", nil, nil) })
 		}
 		if n.err != "" {
 			pad(func() {
@@ -187,9 +250,20 @@ func (a *app) meetingsPage(c *ui.Context) {
 				case len(list) == 0:
 					a.meetingsEmpty(c)
 				default:
-					ui.List(c.Key("meetings-list"), &n.listUI, len(list)).Grow(1).MinHeight(0).Gap(px(t, 2)).Padding(0, 0, px(t, sp2)).
-						ItemKey(func(i int) any { return list[i].ID }).Rows(func(r ui.ListRow) {
-						a.meetingRow(c, list[r.Index])
+					items := meetingItems(list, time.Now())
+					ui.List(c.Key("meetings-list"), &n.listUI, len(items)).Grow(1).MinHeight(0).Gap(px(t, 2)).Padding(0, 0, px(t, sp2)).
+						ItemKey(func(i int) any {
+							if it := items[i]; it.mt != nil {
+								return it.mt.ID
+							}
+							return "head/" + items[i].head
+						}).Rows(func(r ui.ListRow) {
+						if it := items[r.Index]; it.mt != nil {
+							a.meetingRow(c, *it.mt)
+						} else {
+							ui.Text(c, it.head).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(tok(t).Text3).
+								Padding(px(t, sp4), px(t, sp6), px(t, sp1))
+						}
 					})
 					if n.page > 0 || n.hasMore {
 						a.meetingsPager(c)
@@ -241,9 +315,12 @@ func (a *app) meetingRow(c *ui.Context, mt store.Meeting) {
 	t := c.Theme()
 	k := tok(t)
 	n := &a.mv
-	title := meetingTitle(mt)
+	title := mt.Title
+	if title == "" { // the day heads the group, the time ends the row
+		title = i18n.T("Untitled meeting")
+	}
 	sel := n.detail != nil && n.detail.id == mt.ID
-	row := ui.ButtonBase(c.Key("mt-row-"+mt.ID)).Padding(px(t, sp2), px(t, sp2)).Margin(0, px(t, sp4)).Radius(px(t, radiusControl)).
+	row := ui.ButtonBase(c.Key("mt-row-"+mt.ID)).Padding(px(t, sp3), px(t, sp3)).Margin(0, px(t, sp4)).Radius(px(t, radiusControl)).
 		Label(title).Gap(px(t, sp2)).AlignItems(ui.Start)
 	switch {
 	case sel:
@@ -260,14 +337,20 @@ func (a *app) meetingRow(c *ui.Context, mt store.Meeting) {
 		}
 	}
 	row.Children(func() {
-		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, 3)).Children(func() {
+		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp1)).Children(func() {
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, title).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
+				ui.Text(c, title).FontSize(px(t, fsBody+1)).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
 				if s := meetingStatusLabel(mt.Status); s != "" {
 					tagChip(c, s)
 				}
+				ui.Text(c, mt.CreatedAt.Format("15:04")).FontSize(px(t, fsCaption)).TextColor(k.Text3).SingleLine().Shrink(0)
 			})
-			ui.Text(c, meetingMeta(mt)).FontSize(px(t, fsCaption)).TextColor(k.Text3).SingleLine().Ellipsis("…").MinWidth(0)
+			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, meetingSnippet(mt)).FontSize(px(t, fsCaption)).TextColor(k.Text2).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
+				if mt.DurationMS > 0 {
+					ui.Text(c, meetingDuration(mt.DurationMS)).FontSize(px(t, fsCaption)).TextColor(k.Text3).SingleLine().Shrink(0)
+				}
+			})
 		})
 	})
 }

@@ -31,6 +31,7 @@ type meetingDetail struct {
 	busy     bool
 	err      string
 	playback meetingDetailPlayback
+	segList  ui.ListState
 }
 
 func (a *app) openMeetingDetail(id string) {

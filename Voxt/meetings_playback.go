@@ -186,6 +186,11 @@ func (a *app) meetingPlaybackBar(c *ui.Context, d *meetingDetail) {
 		FontSize(px(t, fsCaption)).TextColor(tok(t).Text2)
 }
 
+const (
+	meetingTranscriptInline = 40  // segments laid out in the panel itself
+	meetingTranscriptH      = 480 // the list's height past them
+)
+
 func (a *app) meetingTranscriptList(c *ui.Context, d *meetingDetail) {
 	if len(d.segments) == 0 {
 		return
@@ -194,36 +199,49 @@ func (a *app) meetingTranscriptList(c *ui.Context, d *meetingDetail) {
 	names := speakerNameMap(d.meeting.Speakers)
 	segs := d.segments
 	pb := &d.playback
-	// shortcut: every segment is laid out each frame inside the panel's scroll, move to a ui.List of its own if long meetings get slow.
-	ui.Column(c.Key("mt-transcript")).Gap(px(t, 2)).Children(func() {
-		for _, row := range segs {
-			row := row
-			active := row.Idx == pb.highlight
-			rowKey := c.Key("mt-seg-" + itoa(row.Idx))
-			segRow := ui.Row(rowKey).Padding(px(t, sp1), 0).Gap(px(t, sp2)).AlignItems(ui.Center)
-			if active {
-				segRow.Background(t.Accent.Alpha(0.18)).Radius(px(t, radiusCard))
+	seg := func(row store.MeetingSegment) {
+		active := row.Idx == pb.highlight
+		segRow := ui.Row(c.Key("mt-seg-"+itoa(row.Idx))).Padding(px(t, sp1), 0).Gap(px(t, sp2)).AlignItems(ui.Center)
+		if active {
+			segRow.Background(t.Accent.Alpha(0.18)).Radius(px(t, radiusCard))
+		}
+		segRow.Children(func() {
+			start := time.Duration(row.StartMS) * time.Millisecond
+			label := meeting.SpeakerLabel(row.Speaker, names)
+			switch label { // SpeakerLabel's English defaults, which exports keep
+			case "Me":
+				label = i18n.T("Me")
+			case "Them":
+				label = i18n.T("Other")
+			case "Speaker " + row.Speaker[1:]: // s1…s4, unnamed
+				label = i18n.T("Speaker %s", row.Speaker[1:])
 			}
-			segRow.Children(func() {
-				start := time.Duration(row.StartMS) * time.Millisecond
-				label := meeting.SpeakerLabel(row.Speaker, names)
-				switch label { // SpeakerLabel's English defaults, which exports keep
-				case "Me":
-					label = i18n.T("Me")
-				case "Them":
-					label = i18n.T("Other")
-				}
-				line := meeting.FormatPlaybackTime(start) + " " + label
+			line := meeting.FormatPlaybackTime(start) + " " + label
+			ui.Box(c).MinWidth(px(t, 96)).Shrink(0).Children(func() { // the text lines up row to row
 				if ghostButton(c.Key("mt-seg-go-"+itoa(row.Idx)), line).Clicked() {
 					a.seekMeetingPlayback(d, start)
 				}
-				ui.Column(c).Grow(1).Gap(px(t, 4)).Children(func() {
-					ui.Text(c, row.Text)
-					if tr := row.Translation; tr != "" {
-						ui.Text(c, tr).TextColor(tok(t).Text2).FontSize(px(t, fsCaption))
-					}
-				})
 			})
-		}
+			ui.Column(c).Grow(1).Gap(px(t, 4)).Children(func() {
+				ui.Text(c, row.Text)
+				if tr := row.Translation; tr != "" {
+					ui.Text(c, tr).TextColor(tok(t).Text2).FontSize(px(t, fsCaption))
+				}
+			})
+		})
+	}
+	// A long meeting lays out thousands of rows: past a screenful, only
+	// those in view, in a list of its own inside the panel's scroll.
+	if len(segs) <= meetingTranscriptInline {
+		ui.Column(c.Key("mt-transcript")).Gap(px(t, 2)).Children(func() {
+			for _, row := range segs {
+				seg(row)
+			}
+		})
+		return
+	}
+	ui.List(c.Key("mt-transcript"), &d.segList, len(segs)).Height(px(t, meetingTranscriptH)).Shrink(0).Gap(px(t, 2)).
+		ItemKey(func(i int) any { return segs[i].Idx }).Rows(func(r ui.ListRow) {
+		seg(segs[r.Index])
 	})
 }
