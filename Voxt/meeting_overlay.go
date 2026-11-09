@@ -298,17 +298,13 @@ func meetingModeHint(m meeting.Mode) string {
 	}
 }
 
-// meetingSpeaker is who said a line: the speaker's name, else Me for the
-// microphone and Other for the system audio.
+// meetingSpeaker is who said a line, as the meeting's details say it;
+// a line without a speaker is Me from the microphone, else Other.
 func meetingSpeaker(name string, src meeting.Source) string {
-	switch {
-	case name != "":
-		return name
-	case src == meeting.SourceMic:
+	if name == "" && src == meeting.SourceMic {
 		return i18n.T("Me")
-	default:
-		return i18n.T("Other")
 	}
+	return meetingSpeakerText(name, nil)
 }
 
 func (a *app) meetingOverlayAsking(c *ui.Context) {

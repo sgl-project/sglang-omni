@@ -205,15 +205,7 @@ func (a *app) meetingTranscriptList(c *ui.Context, d *meetingDetail) {
 	k := tok(t)
 	seg := func(row store.MeetingSegment) {
 		start := time.Duration(row.StartMS) * time.Millisecond
-		label := meeting.SpeakerLabel(row.Speaker, names)
-		switch label { // SpeakerLabel's English defaults, which exports keep
-		case "Me":
-			label = i18n.T("Me")
-		case "Them":
-			label = i18n.T("Other")
-		case "Speaker " + row.Speaker[1:]: // s1…s4, unnamed
-			label = i18n.T("Speaker %s", row.Speaker[1:])
-		}
+		label := meetingSpeakerText(row.Speaker, names)
 		// The whole line seeks the audio to its start.
 		b := ui.ButtonBase(c.Key("mt-seg-" + itoa(row.Idx))).Padding(px(t, sp2)).Gap(px(t, sp3)).AlignItems(ui.Start).Radius(px(t, radiusControl)).
 			Label(meeting.FormatPlaybackTime(start) + " " + label)
@@ -257,4 +249,19 @@ func (a *app) meetingTranscriptList(c *ui.Context, d *meetingDetail) {
 		ItemKey(func(i int) any { return segs[i].Idx }).Rows(func(r ui.ListRow) {
 		seg(segs[r.Index])
 	})
+}
+
+// meetingSpeakerText is meeting.SpeakerLabel in the app's language; its
+// English defaults stay in exports.
+func meetingSpeakerText(speaker string, names map[string]string) string {
+	label := meeting.SpeakerLabel(speaker, names)
+	switch label {
+	case "Me":
+		return i18n.T("Me")
+	case "Them":
+		return i18n.T("Other")
+	case "Speaker " + speaker[1:]: // s1…s4, unnamed ("" is Them above)
+		return i18n.T("Speaker %s", speaker[1:])
+	}
+	return label
 }
