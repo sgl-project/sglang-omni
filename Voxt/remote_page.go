@@ -32,7 +32,7 @@ func (a *app) remotePage(c *ui.Context) {
 			a.obBackBar(c, remotePath) // onboarding.go: left from the setup guide
 			caption(c, i18n.T("Transcribe's clean-up, Translate and Rewrite use the language model you set up here, over its OpenAI-compatible API. Voxt sends it the recognised or selected text, never your audio; keys stay in this Mac's Keychain."))
 			a.providerCards(c, local.LLM)
-			if ghostButton(c.Key("remote-debug"), i18n.T("Try prompts on a model…")).Clicked() {
+			if ui.Button(c.Key("remote-debug"), i18n.T("Try prompts on a model…")).AlignSelf(ui.Start).Clicked() {
 				a.navigate(llmDebugPath)
 			}
 		})

@@ -173,7 +173,7 @@ func (a *app) llmDebugPage(c *ui.Context) {
 			setups := providers.Ready(a.prefs, func(id string) bool { return a.hasKey(local.LLM, id) })
 			if len(setups) == 0 {
 				caption(c, i18n.T("Set up a language model first."))
-				if ui.Button(c.Key("llmdbg-setup"), i18n.T("Open Language models")).Clicked() {
+				if ui.Button(c.Key("llmdbg-setup"), i18n.T("Open Language models")).AlignSelf(ui.Start).Clicked() {
 					a.navigate(remotePath)
 				}
 				return
