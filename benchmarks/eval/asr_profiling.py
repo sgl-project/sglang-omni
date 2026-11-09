@@ -234,7 +234,7 @@ class UtilizationSampler:
             previous = current
             try:
                 sample["load_avg_1m"] = os.getloadavg()[0]
-            except OSError:
+            except (AttributeError, OSError):
                 # note (luojiaxuan): load average is optional telemetry and
                 # unavailable on some platforms (e.g. Windows); skip silently.
                 pass
