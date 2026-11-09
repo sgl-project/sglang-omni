@@ -61,6 +61,9 @@ def default_stages(dense: bool = False) -> list[StageConfig]:
                         384,
                         448,
                         512,
+                        768,
+                        1024,
+                        1536,
                     ]
                     if dense
                     else []
