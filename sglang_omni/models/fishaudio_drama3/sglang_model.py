@@ -150,6 +150,17 @@ class Drama3ForCausalLM(nn.Module):
                 f"divide them or be a multiple of them; got "
                 f"tp_size={get_parallel().tp_size}"
             )
+        elif (
+            get_parallel().attn_tp_size != get_parallel().tp_size
+            or get_parallel().attn_dcp_size != 1
+        ):
+            raise NotImplementedError(
+                f"Drama 3 splits the tower's attention across all "
+                f"{get_parallel().tp_size} tensor-parallel ranks, so the backbone's "
+                f"attention cannot use data, context or decode-context parallelism; "
+                f"got attn_tp_size={get_parallel().attn_tp_size} and "
+                f"attn_dcp_size={get_parallel().attn_dcp_size}"
+            )
         else:
             pass
         self.config = config

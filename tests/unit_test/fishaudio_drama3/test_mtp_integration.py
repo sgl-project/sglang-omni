@@ -2249,17 +2249,30 @@ def test_model_rejects_a_tower_that_cannot_share_the_backbone_pool() -> None:
 
 
 @pytest.mark.parametrize(
-    ("pipeline_parallel_size", "tensor_parallel_size", "error"),
-    [(2, 1, "one pipeline rank"), (1, 3, "key/value heads")],
+    (
+        "pipeline_parallel_size",
+        "tensor_parallel_size",
+        "attention_tensor_parallel_size",
+        "decode_context_parallel_size",
+        "error",
+    ),
+    [
+        (2, 1, 1, 1, "one pipeline rank"),
+        (1, 3, 3, 1, "key/value heads"),
+        (1, 2, 1, 1, "attn_tp_size=1 and attn_dcp_size=1"),
+        (1, 2, 2, 2, "attn_tp_size=2 and attn_dcp_size=2"),
+    ],
 )
-def test_model_rejects_pipeline_ranks_and_uneven_key_value_head_splits(
+def test_model_rejects_parallel_layouts_the_tower_cannot_follow(
     monkeypatch: pytest.MonkeyPatch,
     pipeline_parallel_size: int,
     tensor_parallel_size: int,
+    attention_tensor_parallel_size: int,
+    decode_context_parallel_size: int,
     error: str,
 ) -> None:
     """The tower's two key/value heads live in the backbone's pool, so the ranks
-    must split them evenly or share them evenly."""
+    must split them as the backbone's attention does, evenly or shared evenly."""
     config_dict = fish_config_dict()
     decoder_config = config_dict["audio_decoder_config"]
     assert isinstance(decoder_config, dict)
@@ -2268,7 +2281,10 @@ def test_model_rejects_pipeline_ranks_and_uneven_key_value_head_splits(
         sglang_model,
         "get_parallel",
         lambda: SimpleNamespace(
-            pp_size=pipeline_parallel_size, tp_size=tensor_parallel_size
+            pp_size=pipeline_parallel_size,
+            tp_size=tensor_parallel_size,
+            attn_tp_size=attention_tensor_parallel_size,
+            attn_dcp_size=decode_context_parallel_size,
         ),
     )
     with pytest.raises(NotImplementedError, match=error):
