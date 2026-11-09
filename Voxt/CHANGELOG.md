@@ -80,7 +80,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Resize the answer card from the card**: a small button in the card's bottom-right corner steps it through Small, Medium and Large (and back), the same size the feature's page sets. On a short screen a Medium or Large card keeps its text to the room the screen has, instead of reaching past its edge.
 - **Your rules is one long field, no scroll bar of its own**: the rules field grows with the whole prompt, so a long prompt reads down the page under one scroll bar; the page follows the cursor as you type or move it, and Find scrolls the page to the match.
 - **Transcribe, Translate and Rewrite in a wide window read in two columns**: shortcuts and models on the left, the feature's own settings, answer card, rules and Try it on the right, so the page fills a wide window instead of a long column in the middle of blank space.
-- **A copy pass over the English text**: about 45 strings that read as translated now read as plain English: a "test" instead of a "try" in the setup guide, "Voxt does not have microphone access" instead of "Voxt may not use the microphone", "frontmost app" instead of "the app in front", "Group prompt" instead of "Scene prompt", "Cancel recording" instead of "Cancel transcription" (it cancels Translate and Rewrite too), "Import from Voxt 1.x" instead of "the previous Voxt", "Model ID", "Thinking". The three American spellings left in a British-spelled app (Recognizing, Optimize, optimization) follow the rest. The Chinese text keeps its wording.
+- **A copy pass over the English text**: about 45 strings that read as translated now read as plain English: a "test" instead of a "try" in the setup guide, "Voxt does not have microphone access" instead of "Voxt may not use the microphone", "frontmost app" instead of "the app in front", "Group prompt" instead of "Scene prompt", "Cancel recording" instead of "Cancel transcription" (it cancels Translate and Rewrite too), "Import from Voxt 1.x" instead of "the previous Voxt", "Model ID", "Thinking". The three American spellings left in a British-spelled app (Recognizing, Optimize, optimization) follow the rest. In Chinese only 场景提示词 and 取消转录 change, to 分组提示词 and 取消录音.
 - **Language model debug page** (command palette, or the bottom of the Language models page), as Voxt 1.x's LLM debug window: choose a language model you set up and a request (Transcribe, Translate, Rewrite or an App enhancement group), edit its prompt there without saving, type the text, and Run shows the answer, its time and every message sent. Use this prompt saves the edit as the feature's rules or the group's prompt.
 
 ### 中文
@@ -140,7 +140,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **语言模型处理时实时文字留在浮窗里**：停止录音后，浮窗保留说话时显示的文字（转写的指令也是），直到结果输入进去或出现在卡片里，不再只剩一个加载动画。模型写的草稿仍然不在浮窗里回放。
 - **转写的回答直接写进卡片**：模型一开始回答，浮窗就变成满高的答案卡片，回答边写边出现在里面，不再一直转圈等整段写完。点关闭会停止。关掉“显示实时文字”时，和以前一样写完才出卡片。
 - **多行实时文字可以往回翻**：实时文字超过浮窗的十行时，浮窗接收滚轮，可以往上翻看前面说的话，新的字不会把它拉回去；滚回底部就重新跟着最新的字。
-- **“高级”里只有一个“请求参数”对象**：语言模型对话框不再有“专家”一节；默认折叠的“高级”最后是一个 JSON 对象，所有自定义请求参数都写在这里，取代原来的额外请求体 JSON 和 Ollama 单独的 Options JSON。它按 JSON merge patch（RFC 7386）最后合并进请求：同名的键以这里为准，对象会并进 Voxt 发的同名对象（Ollama 的模型选项写在 `"options"` 里），写 `null` 就不发这个字段。已保存或从 1.x 导入的 Options JSON 会移进来，成为其中的 `"options"`。
+- **自定义请求参数合成一个 JSON 对象**：语言模型对话框不再有“专家”一节。默认折叠的“高级”最后有一个“请求参数”框，所有自定义请求参数都写在这一个 JSON 对象里，取代原来的额外请求体 JSON 和 Ollama 单独的 Options JSON。它按 JSON merge patch（RFC 7386）最后合并进请求：同名的键以这里为准；值是对象时，与 Voxt 发送的同名对象逐层合并（Ollama 的模型选项写在 `"options"` 里）；值写 `null` 则不发送这个字段。已保存的和从 1.x 导入的 Options JSON 会自动放进 `"options"`。
 - **宽窗口里历史、词典、笔记和应用增强也居中**：全屏或窗口很宽时，这几页的列表和面板最宽 1120 点、放在中间，标题和按钮跟着对齐；日志页仍然占满宽度。
 
 #### 修复
@@ -153,16 +153,16 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 
 - **浏览器输入框（GitHub 等）**：⌘V 已经粘进输入框时，不再误报“文字没有出现在输入位置”。Chromium 类网页编辑器常在粘贴后仍让无障碍读到相同长度；网页区域或 contenteditable 里若对比结果不变，按“无法校验”处理，仍算插入（#3644 FB36）。
-- **插入时预览立刻收起**：结果开始往 App 里粘贴时浮窗就淡出，不再在刚插入的文字上停一会儿；插不进去的照样回到卡片里。
-- **小窗口里的命令面板**在界面放到最大时也留着边距和圆角；**宽窗口里的应用增强**铺满表头下的整页，不再停在 760 点宽。
-- **预览一超过十行就能用滚轮翻**：实际量出的文字比最初估计的长时，浮窗还让指针穿过去，滚轮滚的是下面的 App。
-- **长选区的追问不再超时**：在答案卡片里追问时，之前的选区和回答会一起再发给模型，但等第一个字的时限只按你刚说的话算；现在全部算进去。
-- **转写的卡片跟着回答往下走**：长回答以前会一直写到卡片最后一行下面，看不到；现在卡片显示最新写出的字，你往上滚着读时不打断。
-- **在卡片上直接调大小**：卡片右下角的小按钮依次切换小、中、大（再回到小），和功能页上设的是同一个大小。屏幕较矮时，中、大卡片的文字高度收到屏幕放得下为止，卡片不再伸出屏幕。
-- **“你的规则”不再有自己的滚动条**：规则框随整段提示词长高，长提示词顺着页面往下读，只有页面一个滚动条；打字或移动光标时页面跟着光标走，查找时页面滚到匹配处。
-- **宽窗口里转录、翻译、转写页分两栏**：左边是快捷键和模型，右边是功能自己的设置、答案卡片、规则和试一试，页面铺满宽窗口，不再是空白中间一条长长的单栏。
-- **英文文案过了一遍**：约 45 条读起来像翻译腔的英文改成了地道的说法，例如设置引导里的 “try” 改成 “test”，“Voxt may not use the microphone” 改成 “Voxt does not have microphone access”，“the app in front” 改成 “frontmost app”，“Scene prompt” 改成 “Group prompt”，“Cancel transcription” 改成 “Cancel recording”（它也取消翻译和转写），“the previous Voxt” 改成 “Voxt 1.x”。英文整体用英式拼写，剩下的三处美式拼写也改了过来。中文文案只把“场景提示词”改成“分组提示词”，和英文一致。
-- **语言模型调试页**（命令面板，或语言模型页底部），对应 1.x 的语言模型调试窗口：选一个已设置的语言模型和一个请求（转录、翻译、转写或某个应用增强分组），在页内改提示词、不保存，输入文字后点“运行”，显示回答、用时和发出的全部消息。“使用这个提示词”把改动存成该功能的规则或分组提示词。
+- **插入时预览立即收起**：结果一开始粘贴进 App，浮窗就淡出，不会再盖在刚插入的文字上停留片刻；插入不了的结果照常显示在答案卡片里。
+- **命令面板适应小窗口**：窗口较小、界面缩放调到最大时，命令面板两侧仍留有边距，圆角完整。**应用增强页在宽窗口里用满宽度**，不再限制在 760 点宽。
+- **预览超过十行后可以用滚轮翻看**：以前文字实际排版后比预估的长时，浮窗仍让鼠标穿透，滚轮滚动的是下面的 App；现在量出实际高度后，浮窗会接管滚轮。
+- **长选区上的追问不再超时**：在答案卡片里追问时，之前的选区和回答会和这次说的话一起重新发给模型。以前等待模型返回第一个字的时限只按这次说的话的长度计算，现在把重发的内容也算进去。
+- **转写的卡片随回答自动滚动**：以前长回答会写到卡片可见区域以下，看不到；现在卡片会跟着显示最新生成的内容，你向上滚动阅读时不会被拉回去。
+- **在卡片上直接调整大小**：卡片右下角新增一个小按钮，依次切换小、中、大三档（大之后回到小），和功能页上的“卡片大小”是同一个设置。屏幕较矮时，中、大两档的正文高度会缩小到屏幕放得下为止，卡片不再超出屏幕。
+- **“你的规则”不再套一层滚动条**：规则框的高度随提示词的长度增长，长提示词跟着整个页面滚动，页面上只有一个滚动条。打字或移动光标时，页面会跟着光标滚动；查找时，页面会滚到匹配的位置。
+- **宽窗口里转录、翻译、转写页分成两栏**：左栏是快捷键和模型，右栏是该功能的设置、答案卡片、规则和“试一试”。窗口很宽时，页面不再是两边大片空白、中间一长条单栏。
+- **英文文案过了一遍**：约 45 条有翻译腔的英文改成了地道的说法，例如设置引导里的 “try” 改成 “test”，“Voxt may not use the microphone” 改成 “Voxt does not have microphone access”，“the app in front” 改成 “frontmost app”，“Scene prompt” 改成 “Group prompt”，“Cancel transcription” 改成 “Cancel recording”（它也取消翻译和转写），“the previous Voxt” 改成 “Voxt 1.x”。英文统一用英式拼写，原来剩下的三处美式拼写也已改掉。中文文案只改了两处，与英文保持一致：“场景提示词”改为“分组提示词”，“取消转录”改为“取消录音”。
+- **新增语言模型调试页**（从命令面板或语言模型页底部进入），对应 1.x 的语言模型调试窗口：选一个已设置的语言模型和一种请求（转录、翻译、转写，或某个应用增强分组），可以在页面里临时修改提示词，改动不会保存；输入文字后点“运行”，页面显示回答、用时和发出的全部消息。点“使用这个提示词”，改动才会存为该功能的规则或分组提示词。
 
 ## [2.0.1] - 2026-11-07
 
