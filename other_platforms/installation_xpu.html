@@ -286,7 +286,8 @@
 </ul>
 </details></li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="../cookbook/companies/zyphra.html">Zyphra</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l2"><a class="reference internal" href="../cookbook/zonos2.html">ZONOS2</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/zonos2.html">Zonos2</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/zonos3.html">Zonos3</a></li>
 </ul>
 </details></li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="../cookbook/companies/autoark_ai.html">AutoArk AI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
@@ -592,7 +593,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#auk-speech-generation-and-editing-single-xpu">AuK (speech generation and editing, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#fun-cosyvoice3-text-to-speech-single-xpu">Fun-CosyVoice3 (text-to-speech, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#dots-tts-text-to-speech-single-xpu">dots.tts (text-to-speech, single XPU)</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#zonos2-moe-tts-single-xpu">ZONOS2 (MoE TTS, single XPU)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#zonos2-moe-tts-single-xpu">Zonos2 (MoE TTS, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#personaplex-speech-to-speech-single-xpu">PersonaPlex (speech-to-speech, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#nemotron-voicechat-speech-to-speech-two-xpus">Nemotron VoiceChat (speech-to-speech, two XPUs)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#audar-tts-v1-turbo-arabic-tts-with-voice-cloning-single-xpu">Audar-TTS-V1 Turbo (Arabic TTS with voice cloning, single XPU)</a></li>
@@ -663,7 +664,7 @@ environment so it can read the project’s license metadata.</p>
 </div>
 <p>Pick extras with <code class="docutils literal notranslate"><span class="pre">--extras</span></code> (comma-separated). <code class="docutils literal notranslate"><span class="pre">[eval]</span></code> adds SeedTTS/WER tools
 and tests; <code class="docutils literal notranslate"><span class="pre">[all]</span></code> is an alias. See <a class="reference internal" href="#fun-cosyvoice3-text-to-speech-single-xpu"><span class="std std-ref">Fun-CosyVoice3</span></a>,
-<a class="reference internal" href="#zonos2-moe-tts-single-xpu"><span class="std std-ref">ZONOS2</span></a>, and <a class="reference internal" href="#audar-tts-v1-turbo-arabic-tts-with-voice-cloning-single-xpu"><span class="std std-ref">Audar-TTS</span></a>
+<a class="reference internal" href="#zonos2-moe-tts-single-xpu"><span class="std std-ref">Zonos2</span></a>, and <a class="reference internal" href="#audar-tts-v1-turbo-arabic-tts-with-voice-cloning-single-xpu"><span class="std std-ref">Audar-TTS</span></a>
 for their optional dependencies.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>scripts/xpu/install_xpu.sh<span class="w"> </span>--extras<span class="w"> </span><span class="nb">eval</span><span class="w">           </span><span class="c1"># core + SeedTTS/WER eval + tests</span>
 scripts/xpu/install_xpu.sh<span class="w"> </span>--extras<span class="w"> </span>all<span class="w">            </span><span class="c1"># alias for eval</span>
@@ -1038,8 +1039,8 @@ solver parameters.</p>
 <p><strong>Expected result:</strong> Play <code class="docutils literal notranslate"><span class="pre">output.wav</span></code> to hear the generated 48 kHz mono audio.</p>
 </section>
 <section id="zonos2-moe-tts-single-xpu">
-<h3>ZONOS2 (MoE TTS, single XPU)<a class="headerlink" href="#zonos2-moe-tts-single-xpu" title="Link to this heading">#</a></h3>
-<p>ZONOS2 needs the Descript DAC codec. <code class="docutils literal notranslate"><span class="pre">--no-deps</span></code> is required:
+<h3>Zonos2 (MoE TTS, single XPU)<a class="headerlink" href="#zonos2-moe-tts-single-xpu" title="Link to this heading">#</a></h3>
+<p>Zonos2 needs the Descript DAC codec. <code class="docutils literal notranslate"><span class="pre">--no-deps</span></code> is required:
 <code class="docutils literal notranslate"><span class="pre">descript-audiotools==0.7.2</span></code> pins <code class="docutils literal notranslate"><span class="pre">protobuf&lt;3.20</span></code>, which would downgrade this
 environment’s <code class="docutils literal notranslate"><span class="pre">protobuf</span></code> to 3.19.6. The other packages on the line are the codec’s
 own dependencies.</p>
@@ -1065,7 +1066,7 @@ is all that is needed:</p>
 <span class="w">  </span>-o<span class="w"> </span>out.wav
 </pre></div>
 </div>
-<p>On XPU, ZONOS2 keeps its MoE experts in bf16 and leaves <code class="docutils literal notranslate"><span class="pre">torch.compile</span></code> off; decode
+<p>On XPU, Zonos2 keeps its MoE experts in bf16 and leaves <code class="docutils literal notranslate"><span class="pre">torch.compile</span></code> off; decode
 graphs stay on by default. All three are applied automatically.</p>
 <p><strong>Expected result:</strong> Play <code class="docutils literal notranslate"><span class="pre">out.wav</span></code> to hear the input in the reference voice.</p>
 </section>
@@ -1297,10 +1298,10 @@ in a graph.</p>
 — those CUDA-only transfer backends are omitted; tensors move through the <code class="docutils literal notranslate"><span class="pre">shm</span></code> relay instead.</p>
 </div></blockquote>
 <blockquote>
-<div><p>Support status: <strong>Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, ZONOS2,
+<div><p>Support status: <strong>Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, Zonos2,
 Audar-TTS, Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni, Ming-Omni-TTS, Nemotron VoiceChat, PersonaPlex, AuK/AuK-Flash and dots.tts all serve end-to-end on Intel XPU</strong>
 (Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, Audar-TTS, MiniCPM-o, PersonaPlex, AuK/AuK-Flash and dots.tts single-card;
-ZONOS2 single-card with decode graphs; MiniMax Music 3, Ming-Omni-TTS and Nemotron VoiceChat need two cards;
+Zonos2 single-card with decode graphs; MiniMax Music 3, Ming-Omni-TTS and Nemotron VoiceChat need two cards;
 Ming-Omni chat single-card and speech two-card, with the thinker offloaded to host memory;
 Qwen3-Omni thinker across 8 cards with tensor parallelism).</p>
 </div></blockquote>
@@ -1373,7 +1374,7 @@ Qwen3-Omni thinker across 8 cards with tensor parallelism).</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#auk-speech-generation-and-editing-single-xpu">AuK (speech generation and editing, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#fun-cosyvoice3-text-to-speech-single-xpu">Fun-CosyVoice3 (text-to-speech, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#dots-tts-text-to-speech-single-xpu">dots.tts (text-to-speech, single XPU)</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#zonos2-moe-tts-single-xpu">ZONOS2 (MoE TTS, single XPU)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#zonos2-moe-tts-single-xpu">Zonos2 (MoE TTS, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#personaplex-speech-to-speech-single-xpu">PersonaPlex (speech-to-speech, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#nemotron-voicechat-speech-to-speech-two-xpus">Nemotron VoiceChat (speech-to-speech, two XPUs)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#audar-tts-v1-turbo-arabic-tts-with-voice-cloning-single-xpu">Audar-TTS-V1 Turbo (Arabic TTS with voice cloning, single XPU)</a></li>

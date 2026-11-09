@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>ZONOS2 &#8212; SGLang</title>
+    <title>Zonos2 &#8212; SGLang</title>
   
   
   
@@ -57,7 +57,7 @@
     <link rel="icon" href="../_static/logo.ico"/>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="AutoArk AI" href="companies/autoark_ai.html" />
+    <link rel="next" title="Zonos3" href="zonos3.html" />
     <link rel="prev" title="Zyphra" href="companies/zyphra.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -286,7 +286,8 @@
 </ul>
 </details></li>
 <li class="toctree-l1 current active has-children"><a class="reference internal" href="companies/zyphra.html">Zyphra</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
-<li class="toctree-l2 current active"><a class="current reference internal" href="#">ZONOS2</a></li>
+<li class="toctree-l2 current active"><a class="current reference internal" href="#">Zonos2</a></li>
+<li class="toctree-l2"><a class="reference internal" href="zonos3.html">Zonos3</a></li>
 </ul>
 </details></li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="companies/autoark_ai.html">AutoArk AI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
@@ -564,7 +565,7 @@
               
 
 <div id="jb-print-docs-body" class="onlyprint">
-    <h1>ZONOS2</h1>
+    <h1>Zonos2</h1>
     <!-- Table of contents -->
     <div id="print-main-content">
         <div id="jb-print-toc">
@@ -602,8 +603,8 @@
                 <article class="bd-article">
                   
   <section class="tex2jax_ignore mathjax_ignore" id="zonos2">
-<h1>ZONOS2<a class="headerlink" href="#zonos2" title="Link to this heading">#</a></h1>
-<p><a class="reference external" href="https://huggingface.co/Zyphra">ZONOS2</a> is a mixture-of-experts (MoE)
+<h1>Zonos2<a class="headerlink" href="#zonos2" title="Link to this heading">#</a></h1>
+<p><a class="reference external" href="https://huggingface.co/Zyphra">Zonos2</a> is a mixture-of-experts (MoE)
 text-to-speech model from Zyphra. A MoE autoregressive decoder predicts
 <strong>9 DAC audio codebooks</strong> scheduled in a <strong>delay pattern</strong>; the codes are then
 decoded back to <strong>44.1 kHz</strong> speech by a DAC vocoder. It clones a voice from a
@@ -613,7 +614,7 @@ SGLang-Omni it runs as a <code class="docutils literal notranslate"><span class=
 <section id="prerequisites">
 <h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
 <p>Install <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> by following <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a>.</p>
-<p>ZONOS2 uses the Descript DAC codec, which is not included in the base
+<p>Zonos2 uses the Descript DAC codec, which is not included in the base
 <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> package. From the SGLang-Omni repository root, install its
 model-specific dependencies:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span><span class="se">\</span>
@@ -632,7 +633,7 @@ server’s <code class="docutils literal notranslate"><span class="pre">PATH</sp
 <section id="server-configuration">
 <h2>Server Configuration<a class="headerlink" href="#server-configuration" title="Link to this heading">#</a></h2>
 <p>The pipeline is <code class="docutils literal notranslate"><span class="pre">preprocessing</span> <span class="pre">→</span> <span class="pre">speaker_encode</span> <span class="pre">→</span> <span class="pre">tts_engine</span> <span class="pre">→</span> <span class="pre">vocoder</span></code>.</p>
-<p>ZONOS2 ships a <code class="docutils literal notranslate"><span class="pre">params.json</span></code> whose <code class="docutils literal notranslate"><span class="pre">model_type</span></code> (<code class="docutils literal notranslate"><span class="pre">zonos2</span></code>) auto-selects the
+<p>Zonos2 ships a <code class="docutils literal notranslate"><span class="pre">params.json</span></code> whose <code class="docutils literal notranslate"><span class="pre">model_type</span></code> (<code class="docutils literal notranslate"><span class="pre">zonos2</span></code>) auto-selects the
 <code class="docutils literal notranslate"><span class="pre">Zonos2ForCausalLM</span></code> architecture, so <code class="docutils literal notranslate"><span class="pre">serve</span></code> needs only <code class="docutils literal notranslate"><span class="pre">--model-path</span></code> — no
 <code class="docutils literal notranslate"><span class="pre">--config</span></code> (mirrors Higgs).</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
@@ -645,9 +646,9 @@ server’s <code class="docutils literal notranslate"><span class="pre">PATH</sp
 <h2>Synthesizing Speech<a class="headerlink" href="#synthesizing-speech" title="Link to this heading">#</a></h2>
 <section id="voice-cloning">
 <h3>Voice Cloning<a class="headerlink" href="#voice-cloning" title="Link to this heading">#</a></h3>
-<p>ZONOS2 clones a voice from a reference clip. The <code class="docutils literal notranslate"><span class="pre">references</span></code> field accepts <code class="docutils literal notranslate"><span class="pre">audio_path</span></code>
+<p>Zonos2 clones a voice from a reference clip. The <code class="docutils literal notranslate"><span class="pre">references</span></code> field accepts <code class="docutils literal notranslate"><span class="pre">audio_path</span></code>
 (a local path, HTTP URL, or base64 data URI) and <code class="docutils literal notranslate"><span class="pre">text</span></code> (the transcript of that clip).
-The shared speech API accepts the transcript, but ZONOS2 currently conditions only on
+The shared speech API accepts the transcript, but Zonos2 currently conditions only on
 the reference audio.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
@@ -662,7 +663,7 @@ the reference audio.</p>
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">ref_audio</span></code> and <code class="docutils literal notranslate"><span class="pre">ref_text</span></code> are accepted as shorthand for <code class="docutils literal notranslate"><span class="pre">references[0].audio_path</span></code> and
-<code class="docutils literal notranslate"><span class="pre">references[0].text</span></code>. <code class="docutils literal notranslate"><span class="pre">ref_text</span></code> is currently unused by ZONOS2.</p>
+<code class="docutils literal notranslate"><span class="pre">references[0].text</span></code>. <code class="docutils literal notranslate"><span class="pre">ref_text</span></code> is currently unused by Zonos2.</p>
 <p><strong>Python</strong></p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">requests</span>
 
@@ -690,7 +691,7 @@ URL, or a base64 <strong>data URI</strong> (<code class="docutils literal notran
 </section>
 <section id="streaming">
 <h3>Streaming<a class="headerlink" href="#streaming" title="Link to this heading">#</a></h3>
-<p>Set <code class="docutils literal notranslate"><span class="pre">&quot;stream&quot;:</span> <span class="pre">true</span></code> and <code class="docutils literal notranslate"><span class="pre">&quot;response_format&quot;:</span> <span class="pre">&quot;pcm&quot;</span></code> to receive raw signed 16-bit little-endian PCM bytes. <code class="docutils literal notranslate"><span class="pre">stream_format</span></code> defaults to <code class="docutils literal notranslate"><span class="pre">&quot;audio&quot;</span></code>, and <code class="docutils literal notranslate"><span class="pre">response_format</span></code> defaults to <code class="docutils literal notranslate"><span class="pre">&quot;wav&quot;</span></code>. With PCM selected, ZONOS2 returns mono 44.1 kHz audio with <code class="docutils literal notranslate"><span class="pre">Content-Type:</span> <span class="pre">audio/pcm</span></code> and the <code class="docutils literal notranslate"><span class="pre">X-Sample-Rate</span></code>, <code class="docutils literal notranslate"><span class="pre">X-Channels</span></code>, and <code class="docutils literal notranslate"><span class="pre">X-Bit-Depth</span></code> headers.</p>
+<p>Set <code class="docutils literal notranslate"><span class="pre">&quot;stream&quot;:</span> <span class="pre">true</span></code> and <code class="docutils literal notranslate"><span class="pre">&quot;response_format&quot;:</span> <span class="pre">&quot;pcm&quot;</span></code> to receive raw signed 16-bit little-endian PCM bytes. <code class="docutils literal notranslate"><span class="pre">stream_format</span></code> defaults to <code class="docutils literal notranslate"><span class="pre">&quot;audio&quot;</span></code>, and <code class="docutils literal notranslate"><span class="pre">response_format</span></code> defaults to <code class="docutils literal notranslate"><span class="pre">&quot;wav&quot;</span></code>. With PCM selected, Zonos2 returns mono 44.1 kHz audio with <code class="docutils literal notranslate"><span class="pre">Content-Type:</span> <span class="pre">audio/pcm</span></code> and the <code class="docutils literal notranslate"><span class="pre">X-Sample-Rate</span></code>, <code class="docutils literal notranslate"><span class="pre">X-Channels</span></code>, and <code class="docutils literal notranslate"><span class="pre">X-Bit-Depth</span></code> headers.</p>
 <p>Omit <code class="docutils literal notranslate"><span class="pre">response_format</span></code> or set it to <code class="docutils literal notranslate"><span class="pre">&quot;wav&quot;</span></code> for raw WAV streaming with one header followed by PCM chunks. Set <code class="docutils literal notranslate"><span class="pre">stream_format=&quot;sse&quot;</span></code> for SSE events, which can omit <code class="docutils literal notranslate"><span class="pre">stream=true</span></code>. Every HTTP mode defaults to WAV; an explicit <code class="docutils literal notranslate"><span class="pre">response_format</span></code> overrides that default.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-sS<span class="w"> </span>-D<span class="w"> </span>output.headers<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
@@ -792,7 +793,7 @@ from the resulting text.</p>
 </section>
 <section id="benchmarking">
 <h2>Benchmarking<a class="headerlink" href="#benchmarking" title="Link to this heading">#</a></h2>
-<p>ZONOS2 clones from each prompt (<code class="docutils literal notranslate"><span class="pre">--ref-format</span> <span class="pre">references</span></code>). Run the seed-tts-eval voice-clone
+<p>Zonos2 clones from each prompt (<code class="docutils literal notranslate"><span class="pre">--ref-format</span> <span class="pre">references</span></code>). Run the seed-tts-eval voice-clone
 benchmark against a running server:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>benchmarks.eval.benchmark_tts_seedtts<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--meta<span class="w"> </span>zhaochenyang20/seed-tts-eval-arrow<span class="w"> </span><span class="se">\</span>
@@ -872,7 +873,7 @@ Non-streaming RTF ~0.62–0.64, streaming ~0.65–0.72; coalescing is audio-neut
 <h2>Known Limitations<a class="headerlink" href="#known-limitations" title="Link to this heading">#</a></h2>
 <ul class="simple">
 <li><p><strong>Reference transcripts are not used.</strong> The shared API accepts <code class="docutils literal notranslate"><span class="pre">text</span></code> / <code class="docutils literal notranslate"><span class="pre">ref_text</span></code>, but
-ZONOS2 currently conditions only on reference audio.</p></li>
+Zonos2 currently conditions only on reference audio.</p></li>
 <li><p><strong>Language controls text normalization only.</strong> It does not add a separate model-side
 language condition.</p></li>
 <li><p><strong>Per-request seeds are unsupported.</strong> Requests with <code class="docutils literal notranslate"><span class="pre">seed</span></code> are rejected until sampling
@@ -904,11 +905,11 @@ has an isolated request RNG.</p></li>
       </div>
     </a>
     <a class="right-next"
-       href="companies/autoark_ai.html"
+       href="zonos3.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">AutoArk AI</p>
+        <p class="prev-next-title">Zonos3</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
