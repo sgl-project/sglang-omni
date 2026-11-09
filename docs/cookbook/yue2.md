@@ -74,7 +74,8 @@ sgl-omni serve --model-path m-a-p/YuE2-3B \
   --synthesis.factory.ar_cuda_graph true \
   --synthesis.factory.nar_cuda_graph true \
   --synthesis.factory.sampling_cuda_graph true \
-  --synthesis.factory.fuse_projections true
+  --synthesis.factory.fuse_projections true \
+  --synthesis.factory.fused_kernels true
 ```
 
 AR decode graphs reserve one full-context KV buffer per guidance branch and reuse it across requests. NAR graphs capture the velocity evaluation for each acoustic chunk. Sampling graphs preserve the vocabulary mask, top-k ties, repetition window and request-local random generator. Projection fusion combines QKV and gate/up projections without changing checkpoint names.
