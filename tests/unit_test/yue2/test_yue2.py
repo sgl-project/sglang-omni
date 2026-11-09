@@ -133,6 +133,15 @@ def test_invalid_options_rejected(options: dict[str, object]) -> None:
         build_request(payload(**options))
 
 
+def test_style_is_required_and_kept_verbatim() -> None:
+    message = payload()
+    message.request.metadata["tts_params"]["instructions"] = ""
+    assert build_request(message).style == ""
+    del message.request.metadata["tts_params"]["instructions"]
+    with pytest.raises(ValueError, match="instructions"):
+        build_request(message)
+
+
 @pytest.mark.parametrize("token_budget", [0, -1, True, 1.5])
 def test_invalid_token_budget_rejected(token_budget: object) -> None:
     message = payload()

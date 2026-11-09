@@ -128,6 +128,8 @@ def build_request(payload: StagePayload) -> Yue2Request:
         raise ValueError("YuE2 requires speed=1.0")
     elif request.params.get("stream", False):
         raise ValueError("YuE2 requires stream=false")
+    elif speech.get("instructions") is None:
+        raise ValueError("YuE2 requires instructions (the musical style)")
     elif any(
         request.params.get(name)
         for name in (
@@ -164,7 +166,7 @@ def build_request(payload: StagePayload) -> Yue2Request:
         pass
     values = {
         "lyrics": request.inputs,
-        "style": speech.get("instructions") or "instrumental",
+        "style": speech["instructions"],
         "options": options,
         "semantic_sampling": SamplingConfig.model_validate(sampling_values),
     }

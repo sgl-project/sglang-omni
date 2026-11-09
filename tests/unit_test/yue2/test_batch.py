@@ -46,7 +46,7 @@ def test_scheduler_preserves_batch_identity_and_invalid_requests() -> None:
             data={},
             request=OmniRequest(
                 inputs="Sing",
-                metadata={"tts_params": {"seed": index}},
+                metadata={"tts_params": {"instructions": "pop", "seed": index}},
                 params={"stage_params": {"synthesis": {"cot": cot}}},
             ),
         )

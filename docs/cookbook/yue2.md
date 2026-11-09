@@ -32,7 +32,7 @@ curl http://localhost:8000/v1/audio/speech \
   --output song.wav
 ```
 
-`input` is plain lyrics and `instructions` is the musical style. `seed` controls each generation phase independently. `max_new_tokens` limits semantic audio tokens, excluding the ABC planning phase; it is a token budget, not a requested audio duration. The semantic sampling fields `temperature`, `top_p`, `top_k` and `repetition_penalty` are supported.
+`input` is plain lyrics and `instructions` is the required musical style; an empty string leaves the style tag empty. `seed` controls each generation phase independently. `max_new_tokens` limits semantic audio tokens, excluding the ABC planning phase; it is a token budget, not a requested audio duration. The semantic sampling fields `temperature`, `top_p`, `top_k` and `repetition_penalty` are supported.
 
 The response's `X-Finish-Reason` is `length` if either planning or semantic generation reaches its token budget; it is `stop` when both phases finish normally. Increasing the semantic budget cannot repair a truncated ABC plan: adjust `abc_max_tokens` for that phase. Requests that exceed the model context fail instead of silently shortening their budgets.
 
