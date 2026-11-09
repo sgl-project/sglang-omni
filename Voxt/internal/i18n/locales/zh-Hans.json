@@ -1423,5 +1423,7 @@
   "A larger card shows more of a long answer before it scrolls. Each feature keeps its own size.": "卡片越大，长回答不用滚动就能看到越多。每个功能各自记住自己的大小。",
   "Use Voxt 1.x's sounds": "使用 Voxt 1.x 的提示音",
   "Pop when recording starts and Tink when it stops, as Voxt 1.x played them.": "开始录音时 Pop，停止时 Tink，和 Voxt 1.x 一样。",
-  "The shortcut's keys, lit on a Mac keyboard": "快捷键的键在 Mac 键盘上的位置（亮起的键）"
+  "The shortcut's keys, lit on a Mac keyboard": "快捷键的键在 Mac 键盘上的位置（亮起的键）",
+  "Change the address of %s: Voxt only connects over https, or http to this Mac, with no user name or password in the address.": "要改 %s 的地址：Voxt 只用 https 连接，或用 http 连接这台 Mac，地址里也不能带用户名和密码。",
+  "Address not allowed": "地址不可用"
 }

@@ -107,6 +107,8 @@ func (a *app) providerState(c *ui.Context, kind local.Kind, p settings.Provider,
 		return k.Warning, i18n.T("API key needed")
 	case providers.MissingEndpoint:
 		return k.Warning, i18n.T("No address")
+	case providers.MissingAddress:
+		return k.Warning, i18n.T("Address not allowed")
 	case providers.MissingModel:
 		return k.Warning, i18n.T("No model")
 	}

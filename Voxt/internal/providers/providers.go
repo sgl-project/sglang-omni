@@ -89,6 +89,7 @@ const (
 	MissingKey      = "key"
 	MissingEndpoint = "endpoint"
 	MissingModel    = "model"
+	MissingAddress  = "address" // saved, but Resolve refuses it
 )
 
 // Missing says what a setup lacks before it can be used: "" when it is
@@ -102,6 +103,9 @@ func Missing(p settings.Provider, hasKey bool) string {
 		return MissingModel
 	case !hasKey && !pr.KeyOptional:
 		return MissingKey
+	}
+	if _, err := Config(p).Resolve(); err != nil {
+		return MissingAddress
 	}
 	return ""
 }

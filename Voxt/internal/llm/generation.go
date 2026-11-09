@@ -210,6 +210,9 @@ func applyThinking(b map[string]any, id, model string, t Thinking) {
 			b["thinking"] = disabled
 		case ThinkBudget:
 			b["thinking"] = enabled(t.Budget)
+			if n, ok := b["max_tokens"].(int); ok && n <= t.Budget { // Voxt 1.x kept it above the budget
+				b["max_tokens"] = t.Budget + 1
+			}
 		}
 	case "gemini":
 		switch t.Mode {

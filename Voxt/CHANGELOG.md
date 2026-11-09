@@ -73,6 +73,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Fixed
 
 - **Browser text boxes (GitHub and similar)** stop showing "The text did not land where you were typing" when ⌘V actually worked: Chromium-style web editors often report the same Accessibility value after a paste, so the check treats an unchanged web area or contenteditable reading as unverified instead of failed (#3644 FB36).
+- **Language model setups imported from Voxt 1.x work, or the result says why not**: a custom address with no path gets the path Voxt 1.x added, OpenAI setups keep only what Voxt 1.x sent, Anthropic's output limit stays above a thinking budget, and the import's result asks again for a key saved for Ollama, oMLX or LM Studio and names the address rule for a plain http address on another host.
 
 ### 中文
 
@@ -145,6 +146,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 
 - **浏览器输入框（GitHub 等）**：⌘V 已经粘进输入框时，不再误报“文字没有出现在输入位置”。Chromium 类网页编辑器常在粘贴后仍让无障碍读到相同长度；网页区域或 contenteditable 里若对比结果不变，按“无法校验”处理，仍算插入（#3644 FB36）。
+- **从 Voxt 1.x 导入的语言模型设置要么能用，要么在结果里说明原因**：没有路径的自定义地址补上 Voxt 1.x 加过的路径，OpenAI 只保留 Voxt 1.x 实际发送的内容，Anthropic 的输出上限保持在思考预算之上，存过 Key 的 Ollama、oMLX、LM Studio 会被要求重新填写，另一台机器上的 http 地址会写明地址规则。
 
 ## [2.0.1] - 2026-11-07
 

@@ -291,6 +291,8 @@ func setupNeedsText(kind local.Kind, p settings.Provider, missing string) string
 		return i18n.T("%s needs its API key: paste it again to use it.", name)
 	case providers.MissingEndpoint:
 		return i18n.T("%s needs its address.", name)
+	case providers.MissingAddress:
+		return i18n.T("Change the address of %s: Voxt only connects over https, or http to this Mac, with no user name or password in the address.", name)
 	}
 	return i18n.T("%s needs a model.", name)
 }

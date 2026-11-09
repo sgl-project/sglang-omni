@@ -27,12 +27,15 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
+// legacyPlutil is the binary plist's reader; a test's fake replaces it.
+var legacyPlutil = "/usr/bin/plutil"
+
 // legacyPreference is the previous Voxt's preference key as text, from
 // its preferences beside voxtDir (its Application Support/Voxt): "" without
-// plutil (the binary plist's reader), the file or the key.
+// plutil, the file or the key.
 func legacyPreference(voxtDir, key string) string {
 	prefs := filepath.Join(voxtDir, "..", "..", "Preferences", legacyBundleID+".plist")
-	out, err := exec.Command("/usr/bin/plutil", "-extract", key, "raw", "-o", "-", prefs).Output()
+	out, err := exec.Command(legacyPlutil, "-extract", key, "raw", "-o", "-", prefs).Output()
 	if err != nil {
 		return ""
 	}
@@ -63,20 +66,34 @@ var legacyDefaultEndpoints = map[string]string{
 	"stepFun": "https://api.stepfun.com/v1/chat/completions", "xiaomiMiMo": "https://api.xiaomimimo.com/v1/chat/completions",
 }
 
+// legacyAPIRoots are the paths the previous Voxt added to an address with
+// none, by preset: "/v1" for those not named. Gemini's is its OpenAI-compatible
+// path, not the native one it used.
+var legacyAPIRoots = map[string]string{"volcengine": "/api/v3", "dashscope": "/compatible-mode/v1", "gemini": "/v1beta/openai"}
+
 // legacyEndpoint is the address of a setup of the previous Voxt's language
 // model service (its service id) as an API root here, and whether the user
 // should check it. The service's own default is the preset's (""); any
 // other address keeps its host, never replaced by the preset's, which
 // would send the requests elsewhere. It loses the request path it ended
-// in; Ollama's native API becomes its OpenAI-compatible /v1. The previous
-// Voxt spoke Anthropic's, Gemini's and MiniMax's own APIs, which this app
-// does not: their other addresses are kept (Gemini's native /v1beta/models
-// becomes /v1beta/openai on the same host), to check.
+// in; Ollama's native API becomes its OpenAI-compatible /v1. An address
+// with no path gets the service's API root, as the previous Voxt added it,
+// to check. A query string has no place here, where the path follows the
+// address: it goes, to check. The previous Voxt spoke Anthropic's, Gemini's
+// and MiniMax's own APIs, which this app does not: their other addresses
+// are kept (Gemini's native /v1beta/models becomes /v1beta/openai on the
+// same host), to check.
 func legacyEndpoint(service, endpoint string) (root string, check bool) {
 	id := legacyLLMServices[service]
-	e := strings.TrimRight(strings.TrimSpace(endpoint), "/")
+	address, query, _ := strings.Cut(strings.TrimSpace(endpoint), "?")
+	e := strings.TrimRight(address, "/")
 	if e == "" || e == legacyDefaultEndpoints[service] {
-		return "", false
+		return "", query != ""
+	}
+	u, err := url.Parse(e)
+	bare := err == nil && u.Host != "" && u.Path == "" && id != "ollama" // Ollama's gets its /v1 below
+	if bare {
+		e += cmp.Or(legacyAPIRoots[id], "/v1")
 	}
 	paths := []string{"/chat/completions", "/responses", "/models", "/messages", "/text/chatcompletion_v2"}
 	switch id {
@@ -98,9 +115,9 @@ func legacyEndpoint(service, endpoint string) (root string, check bool) {
 		e += "/v1"
 	}
 	if p, ok := llm.LookupPreset(id); ok && strings.TrimRight(p.BaseURL, "/") == e {
-		return "", false
+		return "", query != ""
 	}
-	return e, id == "anthropic" || id == "gemini" || id == "minimax"
+	return e, bare || query != "" || id == "anthropic" || id == "gemini" || id == "minimax"
 }
 
 // legacyLLMSetup is a language model setup as the previous Voxt saved it
@@ -168,7 +185,13 @@ func (s legacyLLMSetup) provider() (p settings.Provider, check, ok bool) {
 		gen.IncludeUsage = &usage
 	}
 	endpoint, check := legacyEndpoint(s.ProviderID, s.Endpoint)
-	return settings.Provider{ID: id, Endpoint: endpoint, Model: strings.TrimSpace(s.Model), Generation: gen}, check, true
+	model := strings.TrimSpace(s.Model)
+	if s.ProviderID == "openAI" {
+		gen = legacyOpenAIGeneration(gen, model)
+		// Extra Body went into a Responses request here; those models only exist there.
+		check = check || gen.ExtraBodyJSON != "" || legacyModelIs(model, "gpt-5.2-pro") || legacyModelIs(model, "gpt-5-pro")
+	}
+	return settings.Provider{ID: id, Endpoint: endpoint, Model: model, Generation: gen}, check, true
 }
 
 // legacySpeechServices are this app's speech services for the previous
@@ -375,6 +398,10 @@ type legacySettings struct {
 	// checkLLM and checkSpeech are the setups whose address or model may
 	// not work here as it did (by id): the result says so.
 	checkLLM, checkSpeech []string
+	// keyedLLM are the setups that had a key there, whether or not this
+	// app's preset needs one (by id). refusedLLM are those of checkLLM at
+	// an address this app never connects to (llm.ProviderConfig.Resolve).
+	keyedLLM, refusedLLM []string
 }
 
 // parseLegacySettings reads the previous Voxt's settings from its
@@ -392,6 +419,13 @@ func parseLegacySettings(llmSetups, speechSetups, features, tuning string) legac
 	for _, s := range savedLLM {
 		if p, check, ok := s.provider(); ok && !has(l.llm, p.ID) {
 			l.llm = append(l.llm, p)
+			if s.StoredCredentialPresence.APIKey {
+				l.keyedLLM = append(l.keyedLLM, p.ID)
+			}
+			if _, err := providers.Config(p).Resolve(); err != nil {
+				l.refusedLLM = append(l.refusedLLM, p.ID)
+				check = true
+			}
 			if check {
 				l.checkLLM = append(l.checkLLM, p.ID)
 			}

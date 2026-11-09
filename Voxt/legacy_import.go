@@ -18,6 +18,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -272,7 +273,15 @@ func (a *app) importLegacy() {
 
 func (a *app) importLegacyFrom(picked string) {
 	a.dv.importing = true
-	repo, hist, mods, docs, prefs := a.lib.store.Dictionary(), a.lib.store.History(), a.models, a.lib.store.Documents(), a.settings
+	repo, hist, mods, docs, prefs, kr := a.lib.store.Dictionary(), a.lib.store.History(), a.models, a.lib.store.Documents(), a.settings, a.keys
+	// savedKey reads the Keychain itself: a key the app has not read yet would look missing.
+	savedKey := func(kind local.Kind, id string) bool {
+		if kr == nil {
+			return false
+		}
+		key, err := kr.Get(providers.Account(kind, id))
+		return err == nil && key != ""
+	}
 	a.async(func() {
 		done := false // the dictionary came over: the card offers the import again, quietly
 		report := func() legacyReport {
@@ -357,20 +366,32 @@ func (a *app) importLegacyFrom(picked string) {
 				r.imported = append(r.imported, i18n.N(prompts, "%d prompt", "%d prompts", prompts))
 			}
 			// The keys stay in the previous Voxt's Keychain: each service
-			// that needs one is to complete.
+			// that needs one, or had one there, is to complete.
 			for _, p := range llmServices {
-				if missing := providers.Missing(p, false); missing != "" {
+				hasKey := savedKey(local.LLM, p.ID)
+				missing := providers.Missing(p, hasKey)
+				if missing == providers.MissingAddress { // its own to-do follows
+					missing = ""
+				}
+				if missing == "" && !hasKey && slices.Contains(l.keyedLLM, p.ID) {
+					missing = providers.MissingKey
+				}
+				if missing != "" {
 					r.todo = append(r.todo, legacyTodo{text: setupNeedsText(local.LLM, p, missing), kind: local.LLM, id: p.ID})
 				}
 			}
 			for _, p := range speechServices {
-				if !providers.SpeechKeyOptional(p) {
+				if !providers.SpeechKeyOptional(p) && !savedKey(local.ASR, p.ID) {
 					r.todo = append(r.todo, legacyTodo{text: setupNeedsText(local.ASR, p, providers.MissingKey), kind: local.ASR, id: p.ID})
 				}
 			}
 			llmCheck, speechCheck := l.toCheck(llmServices, speechServices)
 			for _, p := range llmCheck {
-				r.todo = append(r.todo, legacyTodo{text: i18n.T("Check %s: its address or model may not work as it did in the previous Voxt.", uitext.PresetName(p.ID)), kind: local.LLM, id: p.ID})
+				text := i18n.T("Check %s: its address or model may not work as it did in the previous Voxt.", uitext.PresetName(p.ID))
+				if slices.Contains(l.refusedLLM, p.ID) {
+					text = setupNeedsText(local.LLM, p, providers.MissingAddress)
+				}
+				r.todo = append(r.todo, legacyTodo{text: text, kind: local.LLM, id: p.ID})
 			}
 			for _, p := range speechCheck {
 				r.todo = append(r.todo, legacyTodo{text: i18n.T("Check %s: its address or model may not work as it did in the previous Voxt.", uitext.SpeechName(p.ID)), kind: local.ASR, id: p.ID})

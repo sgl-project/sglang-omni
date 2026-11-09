@@ -149,9 +149,18 @@ func (o *OpenAI) chat(ctx context.Context, req Request) (Response, error) {
 	}
 	start := time.Now()
 	stream := req.OnDelta != nil
-	streamUsage, extra := true, len(o.preset.ExtraBody) > 0
+	streamUsage, extra, sampling := true, len(o.preset.ExtraBody) > 0, true
 	url := o.preset.BaseURL + "/chat/completions"
-	resp, err := o.send(ctx, url, o.body(req, model, stream, streamUsage, extra), model, req.Timeout)
+	build := func() map[string]any {
+		b := o.body(req, model, stream, streamUsage, extra)
+		if !sampling { // after applyGeneration: its values and Extra Body win over the request's
+			delete(b, "temperature")
+			delete(b, "top_p")
+		}
+		return b
+	}
+	sent := build()
+	resp, err := o.send(ctx, url, sent, model, req.Timeout)
 	// Relax parameters a server rejects, once each: stream_options (older
 	// compatible servers; usage then gets estimated), temperature / top_p
 	// (reasoning models that only allow the default) and the preset's
@@ -166,14 +175,15 @@ relax:
 		switch {
 		case stream && streamUsage && strings.Contains(detail, "stream_options"):
 			streamUsage = false
-		case (req.Temperature != nil || req.TopP != nil) && (strings.Contains(detail, "temperature") || strings.Contains(detail, "top_p")):
-			req.Temperature, req.TopP = nil, nil
+		case (sent["temperature"] != nil || sent["top_p"] != nil) && (strings.Contains(detail, "temperature") || strings.Contains(detail, "top_p")):
+			sampling = false
 		case extra && o.mentionsExtra(detail):
 			extra = false
 		default:
 			break relax
 		}
-		resp, err = o.send(ctx, url, o.body(req, model, stream, streamUsage, extra), model, req.Timeout)
+		sent = build()
+		resp, err = o.send(ctx, url, sent, model, req.Timeout)
 	}
 	if err != nil {
 		return Response{}, err
