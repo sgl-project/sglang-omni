@@ -53,11 +53,7 @@ func sessionProblemText(p *session.Problem) (text, more, action string) {
 			return i18n.T("The language model failed: %s", msg), more, actionLanguage
 		}
 		_, more := uitext.ModelErrorText(p.Err)
-		var le *llm.Error
-		if errors.Is(p.Err, context.DeadlineExceeded) || errors.As(p.Err, &le) && le.Code == llm.CodeTimeout {
-			return i18n.T("Inserted as recognised: the language model did not answer in time."), more, actionNone
-		}
-		return i18n.T("Inserted as recognised: the language model failed."), more, actionNone
+		return degradedLLMText(p, false), more, actionNone
 	case session.ProblemNoSpeech:
 		return i18n.T("Nothing was heard."), "", actionNone
 	case session.ProblemUnsupported:
@@ -76,6 +72,22 @@ func errText(err error) string {
 }
 
 // noticeActionLabel is a notice's button.
+// degradedLLMText says the recognised text went on past a failed language
+// model: inserted, or with note, saved to Notes.
+func degradedLLMText(p *session.Problem, note bool) string {
+	var le *llm.Error
+	timeout := errors.Is(p.Err, context.DeadlineExceeded) || errors.As(p.Err, &le) && le.Code == llm.CodeTimeout
+	switch {
+	case note && timeout:
+		return i18n.T("Saved to Notes as recognised: the language model did not answer in time.")
+	case note:
+		return i18n.T("Saved to Notes as recognised: the language model failed.")
+	case timeout:
+		return i18n.T("Inserted as recognised: the language model did not answer in time.")
+	}
+	return i18n.T("Inserted as recognised: the language model failed.")
+}
+
 func noticeActionLabel(action string) string {
 	switch action {
 	case actionModels:

@@ -32,6 +32,7 @@ type overlayForm struct {
 	opacity, radius, margin float64
 	showTime                bool
 	liveText                bool
+	liveLayout              int // 0 one line, 1 lines (Overlay.LiveLines)
 	// saveAt is when the last change waits to be saved (zero: saved).
 	saveAt time.Time
 }
@@ -60,6 +61,10 @@ func (a *app) loadOverlayForm() {
 	}
 	f.opacity, f.radius, f.margin, f.showTime = o.Opacity, o.Radius, o.Margin, o.ShowTime
 	f.liveText = !o.HideLiveText
+	f.liveLayout = 0
+	if o.LiveLines {
+		f.liveLayout = 1
+	}
 }
 
 // overlayEdited applies the controls: at once to the overlay and the
@@ -74,6 +79,7 @@ func (a *app) overlayEdited() {
 		ShowTime: f.showTime,
 
 		HideLiveText: !f.liveText,
+		LiveLines:    f.liveLayout == 1,
 	}
 	a.prefs.Overlay = o
 	a.overlayRestyle() // overlay.go
@@ -128,6 +134,11 @@ func (a *app) overlaySettings(c *ui.Context) {
 	})
 	settingRow(c, "ov-live", i18n.T("Show live text"), i18n.T("The words as Voxt hears them while you speak, and the answer as the model writes it."), func() {
 		if ui.Switch(c.Key("ov-live-switch"), &f.liveText).Label(i18n.T("Show live text")).Changed() {
+			a.overlayEdited()
+		}
+	})
+	settingRow(c, "ov-lines", i18n.T("Live text layout"), i18n.T("One line scrolls sideways as you speak. Lines start wide and wrap like a text box, growing up to ten lines, then show the newest."), func() {
+		if ui.Segmented(c.Key("ov-lines-seg"), &f.liveLayout, i18n.T("One line"), i18n.T("Lines")).Label(i18n.T("Live text layout")).Disabled(!f.liveText).Changed() {
 			a.overlayEdited()
 		}
 	})

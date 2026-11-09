@@ -59,8 +59,10 @@ func New(cfg Config) *Manager {
 	def(&cfg.LLMTimeout, DefaultLLMTimeout)
 	def(&cfg.WriteTimeout, DefaultWriteTimeout)
 	def(&cfg.ReadTimeout, DefaultReadTimeout)
+	def(&cfg.RewriteReadTimeout, DefaultRewriteReadTimeout)
 	def(&cfg.DeliverTime, DefaultDeliverTimeout)
 	def(&cfg.StopGrace, DefaultStopGrace)
+	def(&cfg.EndWordPause, DefaultEndWordPause)
 	def(&cfg.WaitNote, DefaultWaitNote)
 	return &Manager{cfg: cfg, snap: Snapshot{State: Idle}}
 }
@@ -122,7 +124,7 @@ func (m *Manager) Start(req StartRequest) (string, error) {
 	m.cur = r
 	m.rev++
 	m.snap = Snapshot{
-		Rev: m.rev, ID: r.id, Kind: req.Kind, State: r.firstState(), Try: req.Try, HoldBinding: req.HoldBinding,
+		Rev: m.rev, ID: r.id, Kind: req.Kind, State: r.firstState(), Try: req.Try, Note: req.Note, HoldBinding: req.HoldBinding,
 		Target: req.Target, StartedAt: at,
 	}
 	if req.Kind == store.KindTranslate {
@@ -199,7 +201,7 @@ func (m *Manager) end(r *run, st State, fn func(*Snapshot), kept func(Snapshot))
 	}
 	m.snap.State = st
 	r.ended = true
-	if st == Done && m.snap.Result != "" && !m.snap.Try {
+	if st == Done && m.snap.Result != "" && !m.snap.Try && !m.snap.Note {
 		m.last = m.snap.Result
 	}
 	m.rev++

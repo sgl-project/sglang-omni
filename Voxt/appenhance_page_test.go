@@ -239,22 +239,22 @@ func TestAppEnhancementApps(t *testing.T) {
 	a.aePage.sel = "g-code"
 	frames(tt)
 	click(t, tt, "Add apps…")
-	for _, s := range []string{"Add apps to Code review", "Slack", "Notes", "Running"} {
+	for _, s := range []string{"Add apps to Code review", "Slack", "Mail", "Running"} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, firstTexts(tt))
 		}
 	}
-	click(t, tt, "Notes")
+	click(t, tt, "Mail") // not Notes: the sidebar has a page of that name
 	click(t, tt, "Bundle ID")
 	tt.Type("com.example.editor")
 	click(t, tt, "Add the bundle ID")
 	click(t, tt, "Done")
 	g, _ := storedRules(t, a).Group("g-code")
-	if !g.HasApp("com.apple.Notes") || !g.HasApp("com.example.editor") {
+	if !g.HasApp("com.apple.mail") || !g.HasApp("com.example.editor") {
 		t.Errorf("apps %+v", g.Apps)
 	}
-	click(t, tt, "Remove Notes")
-	if g, _ := storedRules(t, a).Group("g-code"); g.HasApp("com.apple.Notes") {
+	click(t, tt, "Remove Mail")
+	if g, _ := storedRules(t, a).Group("g-code"); g.HasApp("com.apple.mail") {
 		t.Error("not removed")
 	}
 }

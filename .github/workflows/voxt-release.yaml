@@ -4,16 +4,18 @@ name: Voxt Release
 # inside) with scripts/release.sh for a voxt-vX.Y.Z tag, which
 # sets the version (newer than every voxt-v tag): signed with the Developer
 # ID of the voxt-release environment, notarized, checked by
-# scripts/release-verify.sh, and uploaded with its SHA-256 to a draft release
-# whose notes are the version's section of Voxt/CHANGELOG.md. Apple silicon
-# only. The nightly from main (voxt-nightly.yaml, version
+# scripts/release-verify.sh, and uploaded with the app's ZIP (for Voxt 1.x's
+# in-app update and Homebrew, voxt-appcast.yaml) and their SHA-256 to a draft
+# release whose notes are the version's section of Voxt/CHANGELOG.md. Apple
+# silicon only. The nightly from main (voxt-nightly.yaml, version
 # X.Y.Z-nightly.YYYYMMDD) and the beta of each Voxt change merged into main
-# (voxt-beta.yaml, version X.Y.Z-beta.YYYYMMDD.N) are signed and notarized
-# the same way and keep their disk image as an artifact. A beta takes the
-# Omni runtime from the cache when one was built from the same sources.
-# Any other run (a pull request that
-# changes the release, or by hand) builds the same app ad hoc, unsigned, and
-# keeps its disk image as an artifact.
+# (voxt-beta.yaml, version X.Y.Z-beta.YYYYMMDD.N), or either run by hand
+# from any branch, are signed and notarized the same way and keep their
+# disk image and its SHA-256 as an artifact, without the ZIP, which only a
+# release's update uses. A beta takes the Omni runtime from the cache when
+# one was built from the same sources. Any other run (a pull request that
+# changes the release, or this workflow by hand) builds the same app ad
+# hoc, unsigned, and keeps its disk image the same way.
 
 on:
   push:
@@ -27,11 +29,11 @@ on:
   workflow_call:
     inputs:
       nightly:
-        description: Set the version to X.Y.Z-nightly.YYYYMMDD, and from main sign and notarize it
+        description: Set the version to X.Y.Z-nightly.YYYYMMDD, and from main or run by hand sign and notarize it
         type: boolean
         default: false
       beta:
-        description: Set the version to X.Y.Z-beta.YYYYMMDD.N (N the caller's run number), take the Omni runtime from the cache, and from main sign and notarize it
+        description: Set the version to X.Y.Z-beta.YYYYMMDD.N (N the caller's run number), take the Omni runtime from the cache, and from main or run by hand sign and notarize it
         type: boolean
         default: false
 
@@ -48,15 +50,15 @@ jobs:
     name: Voxt release package
     runs-on: macos-26
     timeout-minutes: 150
-    # The environment lets in only main and voxt-v tags: a release, or a nightly or a beta from main.
-    environment: ${{ (startsWith(github.ref, 'refs/tags/voxt-v') || ((inputs.nightly == true || inputs.beta == true) && github.ref == 'refs/heads/main')) && 'voxt-release' || '' }}
+    # A release, or a nightly or a beta from main or run by hand. A run by hand from a branch the environment does not let in fails here.
+    environment: ${{ (startsWith(github.ref, 'refs/tags/voxt-v') || ((inputs.nightly == true || inputs.beta == true) && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'))) && 'voxt-release' || '' }}
     permissions:
       contents: write
     env:
       IS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/voxt-v') }}
       IS_NIGHTLY: ${{ inputs.nightly == true }}
       IS_BETA: ${{ inputs.beta == true }}
-      IS_SIGNED: ${{ startsWith(github.ref, 'refs/tags/voxt-v') || ((inputs.nightly == true || inputs.beta == true) && github.ref == 'refs/heads/main') }}
+      IS_SIGNED: ${{ startsWith(github.ref, 'refs/tags/voxt-v') || ((inputs.nightly == true || inputs.beta == true) && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')) }}
       # A beta's Omni runtime (RUNTIMES/omni), built or from the cache, for scripts/release.sh --runtimes.
       RUNTIMES: ${{ github.workspace }}/Voxt/build/runtimes
       # The team of the voxt-release environment's Developer ID, as for the Swift Voxt 1.x.
@@ -215,7 +217,7 @@ jobs:
           fi
           rm -f "$RUNNER_TEMP/notary.p8"
 
-      - name: Collect the disk image
+      - name: Collect the disk image, and a release's ZIP
         run: |
           set -euo pipefail
           dmg="$(compgen -G 'build/darwin-arm64/*.dmg' | head -1 || true)"
@@ -225,12 +227,28 @@ jobs:
           else
             :
           fi
+          # What Voxt 1.x's Sparkle checks before it installs the ZIP's app (scripts/release.sh writes it).
+          want="$(scripts/release-appcast.sh info-plist "$VERSION" | jq -c .)"
+          got="$(plutil -convert json -o - build/darwin-arm64/Voxt.app/Contents/Info.plist | jq -c '{CFBundleVersion, SUPublicEDKey}')"
+          if [[ "$got" != "$want" ]]; then
+            echo "::error::Voxt.app's Info.plist has $got, Voxt 1.x's update needs $want"
+            exit 1
+          else
+            :
+          fi
           out="$RUNNER_TEMP/artifacts"
-          name="Voxt-$VERSION-arm64.dmg"
+          read -r zip_name name <<< "$(scripts/release-appcast.sh assets "$VERSION")"
           mkdir -p "$out"
           cp "$dmg" "$out/$name"
-          # The SHA-256 file names the artifact, not a local path, so shasum -c works after a download.
+          # The SHA-256 files name the artifacts, not local paths, so shasum -c works after a download.
           (cd "$out" && shasum -a 256 "$name" > "$name.sha256")
+          if [[ "$IS_RELEASE" == "true" ]]; then
+            # Voxt 1.x's in-app update and the Homebrew cask install the app from the release's ZIP (voxt-appcast.yaml), as Voxt 1.x's release made it.
+            ditto -c -k --sequesterRsrc --keepParent build/darwin-arm64/Voxt.app "$out/$zip_name"
+            (cd "$out" && shasum -a 256 "$zip_name" > "$zip_name.sha256")
+          else
+            :
+          fi
           echo "ARTIFACTS_DIR=$out" >> "$GITHUB_ENV"
           ls -l "$out"
 

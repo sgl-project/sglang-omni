@@ -24,7 +24,7 @@ func TestCopyResult(t *testing.T) {
 		ev := script(t, hotkeyLine(0, "translate/0", proto.PhaseTrigger))
 		a := newSessionApp(t, helpertest.Opt("selection", "Good morning.")+","+ev, func(s *settings.Settings) {
 			s.General.CopyResult = c.copy
-			s.Features.Translate.Target, s.Features.Translate.LLM, s.Features.Translate.ShowCard = "zh-Hans", llm.Custom, c.card
+			s.Features.Translate.Target, s.Features.Translate.LLM, s.Features.ShowCard = "zh-Hans", llm.Custom, c.card
 			s.Providers.LLM = []settings.Provider{{ID: llm.Custom, Endpoint: srv.URL + "/v1", Model: "mock-model"}}
 		}, local.NotInstalled{})
 		var copied []string

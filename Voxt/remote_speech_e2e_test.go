@@ -7,7 +7,9 @@ package main
 // setup and its key.
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -21,6 +23,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr/asrtest"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/asr/doubao"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
@@ -91,6 +94,73 @@ func TestRemoteSpeechUpload(t *testing.T) {
 	// does not give up after the downloads' 30 s wait for the headers.
 	if rt, ok := a.remoteHTTP.Load().Transport.(*http.Transport); !ok || rt.ResponseHeaderTimeout != 0 {
 		t.Errorf("the remote services' client bounds the wait for an answer")
+	}
+}
+
+// TestRemoteSpeechDoubaoFlash: Transcribe on Doubao with its flash file
+// recognition as the model: once the recording stops it goes in one POST,
+// as a WAV, with the setup's App ID and token and the flash resource, and
+// the text of the answer is pasted.
+func TestRemoteSpeechDoubaoFlash(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Audio struct {
+				Data string `json:"data"`
+			} `json:"audio"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		wav, _ := base64.StdEncoding.DecodeString(body.Audio.Data)
+		pcm, rate, _, err := asr.ReadWAV(wav)
+		mu.Lock()
+		got = append(got, fmt.Sprintf("%s %s %s %s wav16k=%v", r.URL.Path, r.Header.Get("X-Api-App-Key"), r.Header.Get("X-Api-Access-Key"),
+			r.Header.Get("X-Api-Resource-Id"), err == nil && rate == asr.SampleRate && len(pcm) > 0))
+		mu.Unlock()
+		w.Header().Set("X-Api-Status-Code", "20000000")
+		io.WriteString(w, `{"audio_info":{"duration":800},"result":{"text":"豆包极速版。"}}`)
+	}))
+	defer srv.Close()
+	useKeys(t, &memKeys{m: map[string]string{"asr.doubao": "token-0123456789"}})
+	set, lm, tr := fileSetup(t, "the local model's text", nil)
+	ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(400, "transcribe/0", proto.PhaseTrigger))
+	a := newSessionApp(t, ev, func(s *settings.Settings) {
+		set(s)
+		s.Features.Transcribe.Enhance = false
+		s.Features.Transcribe.ASR = "doubao"
+		s.Providers.ASR = []settings.Provider{{ID: "doubao", AppID: "app-42", Model: doubao.ModelFlash, Endpoint: srv.URL + "/api/v3/auc/bigmodel/recognize/flash"}}
+	}, lm)
+	a.pump("the end", func() bool { return a.sess.State.Ended() })
+	if end := a.sess; end.State != session.Done || end.Result != "豆包极速版。" || end.ASR.ID != "doubao" {
+		t.Fatalf("end %+v", end)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if want := "/api/v3/auc/bigmodel/recognize/flash app-42 token-0123456789 volc.bigasr.auc_turbo wav16k=true"; len(got) != 1 || got[0] != want {
+		t.Fatalf("requests %q", got)
+	}
+	if tr.calls != 0 {
+		t.Errorf("the local model transcribed too")
+	}
+}
+
+// TestRemoteSpeechFlashDialog: Doubao's dialog says the recording goes
+// once it stops while the flash recognition is its model, and realtime
+// for its streaming models.
+func TestRemoteSpeechFlashDialog(t *testing.T) {
+	useKeys(t, &memKeys{m: map[string]string{"asr.doubao": "token-0123456789"}})
+	a, _, tt := newTestApp(t)
+	a.updateSettings(func(s *settings.Settings) {
+		providers.PutSpeech(s, settings.Provider{ID: "doubao", AppID: "app-42", Model: doubao.ModelFlash})
+	})
+	a.navigate(modelsPath)
+	a.openProviderDialog(local.ASR, "doubao")
+	if !has(tt, "Remote speech recognition · the recording, once you stop") || has(tt, "Remote speech recognition · realtime, while you speak") {
+		t.Fatalf("the flash recognition's dialog: %q", firstTexts(tt))
+	}
+	a.provDlg.model = doubao.ModelV2
+	if !has(tt, "Remote speech recognition · realtime, while you speak") {
+		t.Errorf("the streaming model's dialog: %q", firstTexts(tt))
 	}
 }
 

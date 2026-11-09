@@ -272,6 +272,49 @@ func TestDefaultShortcutsAreTheFamilys(t *testing.T) {
 	}
 }
 
+// TestNoteShortcut: a document saved before the note shortcut existed
+// gets Voxt 1.x's right Command, tapped; one the user turned off stays
+// off, and a hand-written trigger is read as the tap it always is.
+func TestNoteShortcut(t *testing.T) {
+	s, err := Migrate([]byte(`{"version":4,"features":{"transcribe":{"hotkeys":[{"keys":"RightOption","trigger":"tap"}]}}}`))
+	if err != nil || s.Features.Note != (Hotkey{Keys: "RightCommand", Trigger: TriggerTap}) {
+		t.Fatalf("older document: %+v %v", s.Features.Note, err)
+	}
+	s.Features.Note = Hotkey{}
+	data, _ := json.Marshal(s)
+	if m, err := Migrate(data); err != nil || m.Features.Note.Keys != "" {
+		t.Errorf("off lost: %+v %v", m.Features.Note, err)
+	}
+	m, err := Migrate([]byte(`{"version":4,"features":{"note":{"keys":" F5 ","trigger":"long"}}}`))
+	if err != nil || m.Features.Note != (Hotkey{Keys: "F5", Trigger: TriggerTap}) {
+		t.Errorf("hand-written: %+v %v", m.Features.Note, err)
+	}
+}
+
+// TestNoteShortcutYieldsToTaken: a document from before the note shortcut
+// whose shortcut already taps right Command keeps the note off, rather than
+// the note's keys going silently to that shortcut.
+func TestNoteShortcutYieldsToTaken(t *testing.T) {
+	tapNote := Hotkey{Keys: DefaultNote, Trigger: TriggerTap}
+	for _, tc := range []struct {
+		name string
+		doc  string
+		want Hotkey
+	}{
+		{"transcribe taps it", `{"version":4,"features":{"transcribe":{"hotkeys":[{"keys":"RightCommand","trigger":"tap"}]}}}`, Hotkey{}},
+		{"rewrite taps it, no trigger", `{"version":4,"features":{"rewrite":{"hotkeys":[{"keys":"RightCommand"}]}}}`, Hotkey{}},
+		{"transcribe double taps it", `{"version":4,"features":{"transcribe":{"hotkeys":[{"keys":"RightCommand","trigger":"double"}]}}}`, tapNote},
+		{"the note has its own keys", `{"version":4,"features":{"transcribe":{"hotkeys":[{"keys":"RightCommand","trigger":"tap"}]},"note":{"keys":"RightCommand","trigger":"tap"}}}`, tapNote},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := Migrate([]byte(tc.doc))
+			if err != nil || s.Features.Note != tc.want {
+				t.Errorf("note %+v, want %+v (%v)", s.Features.Note, tc.want, err)
+			}
+		})
+	}
+}
+
 // TestMigrateShortcuts: version 4 moves the old defaults (Auralink's)
 // to the family's, one by one, and keeps every shortcut the user chose.
 func TestMigrateShortcuts(t *testing.T) {
@@ -295,6 +338,18 @@ func TestMigrateShortcuts(t *testing.T) {
 		f.Rewrite.Hotkeys[0].Keys != "RightCommand" || f.PasteLast != (Hotkey{"Control+Command+V", TriggerDouble}) {
 		t.Fatalf("chosen: %+v %v", f, err)
 	}
+	// Keys a later preset may use (Voxt 1.x's Command combo) are still the
+	// user's choice in version 3.
+	command := `{"version":3,"features":{
+		"transcribe":{"hotkeys":[{"keys":"RightCommand","trigger":"tap"}]},
+		"translate":{"hotkeys":[{"keys":"RightCommand+Shift","trigger":"tap"}]},
+		"rewrite":{"hotkeys":[{"keys":"RightCommand+Option","trigger":"tap"}]}}}`
+	s, err = Migrate([]byte(command))
+	f = s.Features
+	if err != nil || f.Transcribe.Hotkeys[0].Keys != "RightCommand" || f.Translate.Hotkeys[0].Keys != "RightCommand+Shift" ||
+		f.Rewrite.Hotkeys[0].Keys != "RightCommand+Option" || f.PasteLast.Keys != DefaultPasteLast {
+		t.Fatalf("version 3 right Command: %+v %v", f, err)
+	}
 	// Version 4 documents are the user's, even with fn.
 	s, err = Migrate([]byte(strings.Replace(old, `"version":3`, `"version":4`, 1)))
 	if err != nil || s.Features.Transcribe.Hotkeys[0].Keys != "Fn" || s.Features.PasteLast.Keys != "Control+Command+V" {
@@ -305,6 +360,84 @@ func TestMigrateShortcuts(t *testing.T) {
 	if err != nil || s.Features.Transcribe.Hotkeys[0].Keys != DefaultTranscribe || s.Features.Rewrite.Hotkeys[0].Keys != "F6" ||
 		s.Features.Translate.Hotkeys[0].Keys != DefaultTranslate || s.Features.PasteLast.Keys != DefaultPasteLast {
 		t.Fatalf("partly old: %+v %v", s.Features, err)
+	}
+}
+
+// TestShortcutPresets: a preset gives its keys to each shortcut still on
+// a preset's keys and keeps the ones the user changed, added or removed;
+// the preset shown is the one those shortcuts follow.
+func TestShortcutPresets(t *testing.T) {
+	tap := func(k string) []Hotkey { return []Hotkey{{Keys: k, Trigger: TriggerTap}} }
+	f := Defaults().Features
+	if got := PresetOf(f); got != PresetOption {
+		t.Fatalf("defaults: preset %q", got)
+	}
+	if !ApplyPreset(&f, PresetFn) {
+		t.Fatal("fn changed nothing")
+	}
+	want := Defaults().Features
+	want.Transcribe.Hotkeys, want.Translate.Hotkeys, want.Rewrite.Hotkeys = tap("Fn"), tap("Fn+Shift"), tap("Fn+Control")
+	want.PasteLast = Hotkey{Keys: "Control+Command+V", Trigger: TriggerTap}
+	if !reflect.DeepEqual(f, want) || PresetOf(f) != PresetFn {
+		t.Fatalf("fn: %+v, preset %q", f, PresetOf(f))
+	}
+	if !ApplyPreset(&f, PresetOption) || !reflect.DeepEqual(f, Defaults().Features) {
+		t.Fatalf("back to right Option: %+v", f)
+	}
+
+	// Other keys, another trigger, a second shortcut: the user's.
+	f.Transcribe.Hotkeys = tap("RightCommand")
+	f.Translate.Hotkeys = append(tap(DefaultTranslate), Hotkey{Keys: "F5"})
+	f.Rewrite.Hotkeys = []Hotkey{{Keys: DefaultRewrite, Trigger: TriggerLong}}
+	user := f
+	if !ApplyPreset(&f, PresetFn) || f.PasteLast != (Hotkey{Keys: "Control+Command+V", Trigger: TriggerTap}) {
+		t.Fatalf("paste last: %+v", f.PasteLast)
+	}
+	f.PasteLast = user.PasteLast
+	if !reflect.DeepEqual(f, user) {
+		t.Fatalf("the user's shortcuts changed:\n%+v\n%+v", f, user)
+	}
+	// Every shortcut the user's: no preset, and choosing one changes none.
+	f.PasteLast = Hotkey{Keys: "F6"}
+	f.Rewrite.Hotkeys = nil
+	user = f
+	if PresetOf(f) != "" || ApplyPreset(&f, PresetFn) || !reflect.DeepEqual(f, user) {
+		t.Fatalf("all the user's: %+v, preset %q", f, PresetOf(f))
+	}
+
+	// Two presets mixed: none shows; choosing one gives it every such shortcut.
+	f = Defaults().Features
+	f.Transcribe.Hotkeys = []Hotkey{{Keys: "Fn"}} // an older document's tap
+	if got := PresetOf(f); got != "" {
+		t.Fatalf("mixed: preset %q", got)
+	}
+	if !ApplyPreset(&f, PresetOption) || !reflect.DeepEqual(f, Defaults().Features) {
+		t.Fatalf("mixed to right Option: %+v", f)
+	}
+	if ApplyPreset(&f, "unknown") || !reflect.DeepEqual(f, Defaults().Features) {
+		t.Fatalf("unknown preset: %+v", f)
+	}
+	f = Defaults().Features
+	if !ApplyPreset(&f, PresetCommand) {
+		t.Fatal("command changed nothing")
+	}
+	wantCmd := Defaults().Features
+	wantCmd.Transcribe.Hotkeys, wantCmd.Translate.Hotkeys, wantCmd.Rewrite.Hotkeys = tap("RightCommand"), tap("RightCommand+Shift"), tap("RightCommand+Option")
+	wantCmd.PasteLast = Hotkey{Keys: "Control+Command+V", Trigger: TriggerTap}
+	if !reflect.DeepEqual(f, wantCmd) || PresetOf(f) != PresetCommand {
+		t.Fatalf("command: %+v preset %q", f, PresetOf(f))
+	}
+	f = Defaults().Features
+	if !ApplyPreset(&f, PresetMouseMiddle) {
+		t.Fatal("mouse middle changed nothing")
+	}
+	wantMouse := Defaults().Features
+	wantMouse.Transcribe.Hotkeys = tap("Mouse3")
+	wantMouse.Translate.Hotkeys = tap("Fn+Shift")
+	wantMouse.Rewrite.Hotkeys = []Hotkey{{Keys: "Mouse3", Trigger: TriggerDouble}}
+	wantMouse.PasteLast = Hotkey{Keys: "Control+Command+V", Trigger: TriggerTap}
+	if !reflect.DeepEqual(f, wantMouse) || PresetOf(f) != PresetMouseMiddle {
+		t.Fatalf("mouse middle: %+v preset %q", f, PresetOf(f))
 	}
 }
 
@@ -363,6 +496,34 @@ func TestMuteOutput(t *testing.T) {
 		*c.Audio.MuteOutput = !on
 		if m.Audio.MuteOn() != on {
 			t.Fatal("clone shares the choice")
+		}
+	}
+}
+
+// TestMigrateShowCard: Translate's card switch, the only one before,
+// becomes every feature's; a document saved since keeps its choice.
+func TestMigrateShowCard(t *testing.T) {
+	for _, tc := range []struct {
+		doc  string
+		want bool
+	}{
+		{`{"version":4,"features":{"translate":{"showCard":true}}}`, true},
+		{`{"version":4,"features":{"translate":{"cleanup":true}}}`, false},
+		{`{"version":4,"features":{"showCard":true,"translate":{}}}`, true},
+		{`{"version":4,"features":{"translate":{}}}`, false},
+	} {
+		s, err := Migrate([]byte(tc.doc))
+		if err != nil || s.Features.ShowCard != tc.want {
+			t.Errorf("%s: ShowCard %v, want %v (%v)", tc.doc, s.Features.ShowCard, tc.want, err)
+		}
+		out, _ := json.Marshal(s)
+		var doc struct {
+			Features struct {
+				Translate map[string]any `json:"translate"`
+			} `json:"features"`
+		}
+		if json.Unmarshal(out, &doc) != nil || doc.Features.Translate["showCard"] != nil {
+			t.Errorf("%s: Translate still has a card switch: %s", tc.doc, out)
 		}
 	}
 }

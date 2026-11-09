@@ -114,6 +114,19 @@ def test_checkpoint_the_draft_cannot_reproduce_is_refused(
         materialize_draft_checkpoint(str(tmp_path), None)
 
 
+def test_checkpoint_without_anchor_sampling_setting(tmp_path: Path) -> None:
+    """Early DFlash checkpoints omit this field and never sample the anchor row."""
+    write_speculators_checkpoint(tmp_path)
+    config_path = tmp_path / "config.json"
+    config = json.loads(config_path.read_text())
+    config.pop("sample_from_anchor")
+    config_path.write_text(json.dumps(config))
+
+    with materialize_draft_checkpoint(str(tmp_path), None) as draft_directory:
+        flattened = json.loads((Path(draft_directory) / "config.json").read_text())
+        assert flattened["dflash_config"]["sample_from_anchor"] is False
+
+
 def make_draft_model() -> ReducedVocabularyDFlashDraftModel:
     draft_model = ReducedVocabularyDFlashDraftModel.__new__(
         ReducedVocabularyDFlashDraftModel

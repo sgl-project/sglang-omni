@@ -60,7 +60,7 @@ func TestManifest(t *testing.T) {
 		}
 	}
 	want := []sc{{"transcribe", "RightOption", "tap"}, {"transcribe.2", "Option+Space", "hold"}, {"translate", "RightOption+Shift", "tap"},
-		{"rewrite", "Control+RightOption", "double"}, {"pasteLast", "Control+Option+V", "press"}}
+		{"rewrite", "Control+RightOption", "double"}, {"pasteLast", "Control+Option+V", "press"}, {"note", "RightCommand", "tap"}}
 	if !slices.Equal(have, want) {
 		t.Errorf("shortcuts %v, want %v", have, want)
 	}

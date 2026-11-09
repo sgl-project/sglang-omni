@@ -20,17 +20,22 @@ import (
 
 // keyRow is a shortcut's controls.
 type keyRow struct {
-	sel    string // the select's label
-	custom bool   // "Custom…" chosen: the keys are typed
-	text   string // the typed keys
-	trig   int    // 0 tap, 1 double tap, 2 long press
-	edited bool   // the typed keys are not saved yet
+	sel          string // the select's label
+	custom       bool   // "Custom…" chosen: the keys are pressed (key_recorder.go)
+	typing       bool   // … or typed, when asked
+	text         string // the pressed or typed keys
+	trig         int    // 0 tap, 1 double tap, 2 long press
+	edited       bool   // the typed keys are not saved yet
+	unknown      bool   // the last key pressed has no name in the grammar
+	recFocused   bool   // the record box had focus last frame
+	recordDenied bool   // helper returned permission_denied for hotkey.record
 }
 
 // keyPresets are the shortcuts the selects offer, in the grammar of
 // internal/hotkey: the defaults first (the ActNow family's, right
 // Option), then fn's (Auralink's defaults, for those without it). No
-// more than ten: a longer list scrolls in the popup. Right Control is
+// more than ten: a longer list scrolls in the popup, and Custom… (where
+// mouse buttons are typed: Mouse4) goes out of sight. Right Control is
 // left out: Mac laptops' keyboards have none.
 var keyPresets = []string{
 	"RightOption", "RightOption+Shift", "Control+RightOption",
@@ -107,15 +112,16 @@ func presetOf(keys string) string {
 }
 
 // keyOptions are a select's options for a binding whose keys are cur:
-// the presets, cur when it is none of them, then "Custom…" (and "Off"
-// first with off). byLabel maps each label to its keys.
-func keyOptions(cur string, off bool) (opts []string, byLabel map[string]string) {
+// the row's own presets (first), the presets, cur when it is none of
+// them, then "Custom…" (and "Off" first with off). byLabel maps each
+// label to its keys.
+func keyOptions(cur string, off bool, first ...string) (opts []string, byLabel map[string]string) {
 	byLabel = map[string]string{}
 	if off {
 		opts = append(opts, i18n.T("Off"))
 		byLabel[i18n.T("Off")] = ""
 	}
-	for _, p := range keyPresets {
+	for _, p := range slices.Concat(first, keyPresets) {
 		l := uitext.HotkeyText(p)
 		opts = append(opts, l)
 		byLabel[l] = p
@@ -158,7 +164,7 @@ func newHotkey(f settings.Features) settings.Hotkey {
 	for _, p := range keyPresets {
 		pc, _ := hotkey.Parse(p)
 		used := false
-		for _, feat := range append(slices.Clone(hotkey.Features), hotkey.PasteLast) {
+		for _, feat := range append(slices.Clone(hotkey.Features), hotkey.PasteLast, hotkey.Note) {
 			for _, h := range hotkey.HotkeysOf(f, feat) {
 				if hc, err := hotkey.Parse(h.Keys); err == nil && hc.Overlaps(pc) {
 					used = true
@@ -214,6 +220,7 @@ func (a *app) featureShortcuts(c *ui.Context, feature string) {
 	case hotkey.Transcribe:
 		a.trPasteRow(c)
 		a.trCancelRow(c)
+		a.trEndWordRow(c) // feature_endword.go
 	case hotkey.Rewrite:
 		caption(c, i18n.T("While the answer card shows an answer, the shortcut records a follow-up that changes it (\"shorter\", \"in English\")."))
 	}
@@ -274,7 +281,7 @@ func (a *app) keyRowView(c *ui.Context, feature string, i int, h settings.Hotkey
 			}
 		})
 		if r.custom {
-			a.customKeys(c, r, i18n.T("Custom keys of shortcut %d", n), func(keys string) {
+			a.keysField(c, r, i18n.T("Custom keys of shortcut %d", n), func(keys string) {
 				a.setHotkeys(feature, false, func(hs []settings.Hotkey) []settings.Hotkey {
 					if i < len(hs) {
 						hs[i].Keys = keys
@@ -342,9 +349,12 @@ func (a *app) customKeys(c *ui.Context, r *keyRow, label string, save func(keys 
 		warnLine(c, uitext.ParseErrorText(err))
 	case r.edited:
 		caption(c, i18n.T("Press Return to use %s.", uitext.HotkeyText(r.text)))
+		return
 	default:
 		caption(c, i18n.T("Modifiers first, then one key: Fn, RightCommand, Control+Option+Space, Fn+F5."))
 	}
+	// Also under an error: Mouse1 is refused, mouse buttons are not.
+	caption(c, i18n.T("Mouse buttons work too: Mouse3 is the middle button, Mouse4 and up the side buttons, with modifiers or without (Option+Mouse4)."))
 }
 
 // problemLines are a binding's problems, in the warning colour.
@@ -393,7 +403,7 @@ func (a *app) trPasteRow(c *ui.Context) {
 			}
 		})
 		if r.custom {
-			a.customKeys(c, r, i18n.T("Custom keys to paste the last result"), a.setPasteLast)
+			a.keysField(c, r, i18n.T("Custom keys to paste the last result"), a.setPasteLast)
 		}
 		problemLines(c, problems)
 		a.usedByView(c, recordedKeys(*r, cur))
@@ -418,7 +428,7 @@ func (a *app) trCancelRow(c *ui.Context) {
 	problems := uitext.HotkeyProblems(a.prefs.Features, hotkey.CancelID)[0]
 	ui.Column(c.Key("tr-cancel")).Gap(px(t, 6)).Children(func() {
 		settingRow(c, "tr-cancel-row", i18n.T("Cancel transcription"), i18n.T("Cancels the recording or the answer card, and only while they show. The recording stays in History, ready to retry."), func() {
-			opts, byLabel := keyOptions(cur, true)
+			opts, byLabel := keyOptions(cur, true, settings.DefaultCancel)
 			if !slices.Contains(opts, r.sel) {
 				r.sel = chordLabel(cur)
 			}
@@ -439,7 +449,7 @@ func (a *app) trCancelRow(c *ui.Context) {
 			}
 		})
 		if r.custom {
-			a.customKeys(c, r, i18n.T("Custom keys to cancel transcription"), a.setCancelKeys)
+			a.keysField(c, r, i18n.T("Custom keys to cancel transcription"), a.setCancelKeys)
 		}
 		problemLines(c, problems)
 		a.usedByView(c, recordedKeys(*r, cur))
