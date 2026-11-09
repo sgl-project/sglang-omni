@@ -1496,7 +1496,6 @@
   "Language model for meetings": "会议用语言模型",
   "Summaries, live translation, and follow-up questions send the full meeting text to this model.": "摘要、实时翻译和后续提问会把会议全文发送给该模型。",
   "No language model is set up: summaries and translation stay off.": "未配置语言模型：摘要和翻译不可用。",
-  "Meeting text is sent to %s.": "会议文字会发送给 %s。",
   "Me": "我",
   "Meeting": "会议",
   "Subtitles": "字幕",

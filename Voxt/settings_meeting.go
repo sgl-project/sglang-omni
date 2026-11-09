@@ -4,8 +4,6 @@ package main
 // screen-sharing privacy for the overlay, shortcuts, and consent text.
 
 import (
-	"fmt"
-
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
@@ -57,16 +55,18 @@ func (a *app) meetingSettings(c *ui.Context) {
 			break
 		}
 	}
-	if sel := ui.Select(c.Key("mt-mode"), &modeSel, modeLabels).Label(i18n.T("Capture mode")); sel.Changed() {
-		for i, l := range modeLabels {
-			if l == modeSel {
-				u.mode = modeValues[i]
-				mode := u.mode
-				a.updateSettings(func(s *settings.Settings) { s.Features.Meeting.Mode = mode })
-				break
+	settingRow(c, "mt-mode-row", i18n.T("Capture mode"), "", func() {
+		if sel := ui.Select(c.Key("mt-mode"), &modeSel, modeLabels).Label(i18n.T("Capture mode")); sel.Changed() {
+			for i, l := range modeLabels {
+				if l == modeSel {
+					u.mode = modeValues[i]
+					mode := u.mode
+					a.updateSettings(func(s *settings.Settings) { s.Features.Meeting.Mode = mode })
+					break
+				}
 			}
 		}
-	}
+	})
 	settingRow(c, "mt-hide-share", i18n.T("Hide from screen sharing"),
 		i18n.T("When on, the meeting overlay is hidden from screenshots and screen sharing."), func() {
 			if ui.Switch(c.Key("mt-hide-sw"), &u.hide).Label(i18n.T("Hide the meeting overlay")).Changed() {
@@ -109,11 +109,6 @@ func (a *app) meetingLLMSettings(c *ui.Context) {
 			}
 			if len(ready) == 0 {
 				ui.Text(c, i18n.T("No language model is set up: summaries and translation stay off.")).
-					FontSize(px(t, fsCaption)).TextColor(t.TextMuted)
-				return
-			}
-			if m, ok := local.Choose(ready, a.prefs.Features.Meeting.LLM); ok && m.Name != "" {
-				ui.Text(c, fmt.Sprintf(i18n.T("Meeting text is sent to %s."), m.Name)).
 					FontSize(px(t, fsCaption)).TextColor(t.TextMuted)
 			}
 		})
