@@ -77,6 +77,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **The wheel scrolls a long preview as soon as it passes ten lines**: when the measured text turned out longer than the first guess, the overlay kept letting the pointer through, and the wheel scrolled the app underneath instead.
 - **Follow-ups on a long selection no longer time out**: a follow-up in the answer card sends the earlier selection and answers again, but its wait for the model's first words counted only what you just said; it now counts all of it.
 - **Rewrite's card follows the answer as it is written**: a long answer used to stream on below the card's last line, out of sight; the card now shows the newest words, unless you scroll up to read.
+- **Resize the answer card from the card**: a small button in the card's bottom-right corner steps it through Small, Medium and Large (and back), the same size the feature's page sets. On a short screen a Medium or Large card keeps its text to the room the screen has, instead of reaching past its edge.
 
 ### 中文
 
@@ -153,6 +154,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **预览一超过十行就能用滚轮翻**：实际量出的文字比最初估计的长时，浮窗还让指针穿过去，滚轮滚的是下面的 App。
 - **长选区的追问不再超时**：在答案卡片里追问时，之前的选区和回答会一起再发给模型，但等第一个字的时限只按你刚说的话算；现在全部算进去。
 - **转写的卡片跟着回答往下走**：长回答以前会一直写到卡片最后一行下面，看不到；现在卡片显示最新写出的字，你往上滚着读时不打断。
+- **在卡片上直接调大小**：卡片右下角的小按钮依次切换小、中、大（再回到小），和功能页上设的是同一个大小。屏幕较矮时，中、大卡片的文字高度收到屏幕放得下为止，卡片不再伸出屏幕。
 
 ## [2.0.1] - 2026-11-07
 

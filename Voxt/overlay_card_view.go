@@ -12,6 +12,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -31,6 +32,7 @@ func (a *app) overlayCard(c *ui.Context) {
 		})
 		ui.Box(c).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
 		a.cardBody(c, v, bodyH)
+		a.cardSizeButton(c, v)
 		if v.msg != "" {
 			ui.Row(c).Height(layout.CardMsgH).Shrink(0).Margin(layout.CardMsgGap, 0, 0, 0).Gap(6).AlignItems(ui.Center).Label(v.msg).Children(func() {
 				ic, col := icons.InfoCircle, ovText2
@@ -42,6 +44,29 @@ func (a *app) overlayCard(c *ui.Context) {
 			})
 		}
 	})
+}
+
+// cardSizeButton steps the card through its sizes (#3644 FB41): small,
+// medium, large and back, as the feature's page does. It sits in the
+// corner under the text, where the header has no room left at 440.
+func (a *app) cardSizeButton(c *ui.Context, v cardView) {
+	step := a.prefs.Features.CardSize(string(v.kind))
+	label, icon, next := i18n.T("Make the card larger"), icons.MaximizeSquareMinimalistic, step+1
+	if next == settings.CardSizeSteps {
+		label, icon, next = i18n.T("Make the card smaller"), icons.MinimizeSquareMinimalistic, 0
+	}
+	b := ui.ButtonBase(c.Key("ov-card-size")).Absolute().Right(layout.CardSizeBtnInset).Bottom(layout.CardSizeBtnInset).
+		Size(layout.CardSizeBtn, layout.CardSizeBtn).Center().Label(label).Tooltip(label)
+	alpha := float32(0.42)
+	if b.Hovered() {
+		alpha = 0.92
+	}
+	if b.Children(func() {
+		ui.Icon(c, icon.Linear).Size(layout.CardSizeBtnIcon, layout.CardSizeBtnIcon).TextColor(ui.RGBA(255, 255, 255, alpha))
+	}).Clicked() {
+		a.closeLangMenu()
+		a.setCardSize(string(v.kind), next)
+	}
 }
 
 // cardHeader is the card's header: what it is, then what it offers.

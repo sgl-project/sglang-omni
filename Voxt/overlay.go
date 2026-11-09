@@ -204,10 +204,10 @@ func (a *app) overlaySync() {
 		a.syncLangMenu()
 		return
 	}
-	w, h := a.overlayFace(mode)
 	if !was {
 		a.ov.area = a.overlayArea()
 	}
+	w, h := a.overlayFace(mode)
 	frame := layout.Frame(a.ov.area, a.prefs.Overlay, w, h)
 	moved := frame != a.ov.frame
 	a.ov.mode, a.ov.w, a.ov.h, a.ov.frame = mode, w, h, frame

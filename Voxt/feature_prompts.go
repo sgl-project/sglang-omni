@@ -83,19 +83,26 @@ func (a *app) cardSetting(c *ui.Context, p, feature string) {
 	size := f.CardSize(feature)
 	settingRow(c, p+"-card-size", i18n.T("Card size"), i18n.T("A larger card shows more of a long answer before it scrolls. Each feature keeps its own size."), func() {
 		if ui.Segmented(c.Key(p+"-card-size-seg"), &size, i18n.T("Small"), i18n.T("Medium"), i18n.T("Large")).Label(i18n.T("Card size")).Changed() {
-			step := size
-			a.updateSettings(func(s *settings.Settings) {
-				if step == 0 {
-					delete(s.Features.CardSizes, feature)
-					return
-				}
-				if s.Features.CardSizes == nil {
-					s.Features.CardSizes = map[string]int{}
-				}
-				s.Features.CardSizes[feature] = step
-			})
+			a.setCardSize(feature, size)
 		}
 	})
+}
+
+// setCardSize saves feature's answer card size (settings.Features.CardSizes;
+// the small one is the default, kept as no entry) and shows it on a card
+// that shows.
+func (a *app) setCardSize(feature string, step int) {
+	a.updateSettings(func(s *settings.Settings) {
+		if step == 0 {
+			delete(s.Features.CardSizes, feature)
+			return
+		}
+		if s.Features.CardSizes == nil {
+			s.Features.CardSizes = map[string]int{}
+		}
+		s.Features.CardSizes[feature] = step
+	})
+	a.overlayRestyle()
 }
 
 // rewriteSettings are Rewrite's own: the instruction's clean-up.
