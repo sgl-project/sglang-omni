@@ -60,6 +60,12 @@ The Qwen3-ASR drafts are pinned in `ci/models.json`; the MOSS-TD draft is pinned
 
 `moss_transcribe_diarize_server` and `moss_transcribe` take the same two flags; the CLI's `verify_rounds` sums over audio chunks.
 
+Qwen3-ASR uses adaptive backoff by default: after warmup and two four-round windows, a five-token plain probe measures cost per committed token. If both windows are over 5% slower, the request continues with plain decoding and the existing target KV cache. Otherwise speculation resumes. A winning plain measurement expires after 64 post-warmup draft rounds; an observed slowdown can trigger an earlier recheck.
+
+The probe and fallback batch single-row affine projections to avoid MLX 0.32.3's scalar/batched rounding discontinuity on M5. Only matrix rows are padded: each step still advances the target KV cache by one real token. Standalone plain decoding is unchanged.
+
+`--draft-policy fixed` preserves always-draft behavior; the exact golden checker uses it because adaptive switching can change low-precision near-ties. MOSS-TD retains fixed drafting.
+
 ## Rule 2: Contribution requirements
 
 **Placement and reuse**

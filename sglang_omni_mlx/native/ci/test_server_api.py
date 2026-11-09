@@ -22,7 +22,8 @@ from pathlib import Path
 import pytest
 from websockets.sync.client import connect
 
-from sglang_omni_mlx.native.ci.long_audio_client import stream_recording
+from sglang_omni_mlx.native.ci.long_audio_client import score, stream_recording
+from sglang_omni_mlx.native.ci.long_audio_corpus import build_recording, load_clips
 
 RUNTIME_BIN = os.environ.get("NATIVE_RUNTIME_BIN")
 DATA_ROOT = os.environ.get("CI_DATA_ROOT")
@@ -232,6 +233,66 @@ def test_a_draft_for_another_target_fails_at_load() -> None:
     assert failed.ready["event"] == "failed"
     assert "hidden size 2048" in failed.ready["reason"]
     assert failed.process.wait(timeout=10) == 1
+
+
+def test_backoff_preserves_long_recording_quality(tmp_path: Path) -> None:
+    recording_path = tmp_path / "recording.wav"
+    recording = build_recording(
+        load_clips(Path(DATA_ROOT) / "corpus" / "v1", "zh"),
+        900,
+        0,
+        recording_path,
+    )
+    outputs = {}
+    for policy in ("fixed", "adaptive"):
+        result = subprocess.run(
+            [
+                str(Path(RUNTIME_BIN) / "qwen3_asr_transcribe"),
+                "--model-path",
+                str(model_directory()),
+                "--draft-model-path",
+                str(model_directory(DRAFT_REPO)),
+                "--draft-policy",
+                policy,
+                "--layout",
+                "voxt_swift",
+                "--language",
+                "Chinese",
+                "--max-new-tokens",
+                "4096",
+                "--cache-limit-bytes",
+                str(2 << 30),
+                "--stop-at-end-of-text",
+                "--stop-on-token-loop",
+                str(recording_path),
+            ],  # fmt: skip
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=600,
+        )
+        outputs[policy] = json.loads(result.stdout)
+        assert outputs[policy]["finish_reason"] == "stop"
+        assert ("DFlash backoff after " in result.stderr) == (
+            policy == "adaptive"
+        ), result.stderr
+    fixed = outputs["fixed"]
+    adaptive = outputs["adaptive"]
+    assert 0 < adaptive["verify_rounds"] < fixed["verify_rounds"]
+    fixed_error = score(recording.reference, fixed["text"], "zh").error_rate
+    adaptive_error = score(recording.reference, adaptive["text"], "zh").error_rate
+    golden = json.loads(
+        (
+            Path(__file__).parent / "golden" / "qwen3-asr-0.6b-4bit-dflash.json"
+        ).read_text()
+    )
+    # note (ZaneZhang-67): a faster token-loop stop is not a quality-preserving backoff.
+    assert (adaptive_error - fixed_error) * 100 <= golden["tolerance"]["metric_pp"], (
+        fixed_error,
+        adaptive_error,
+        fixed["generated_token_count"],
+        adaptive["generated_token_count"],
+    )
 
 
 def test_plain_request_returns_json_text(server: Server) -> None:

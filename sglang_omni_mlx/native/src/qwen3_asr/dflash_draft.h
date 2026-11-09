@@ -7,6 +7,7 @@
 #include <atomic>
 #include <filesystem>
 #include <functional>
+#include <string>
 #include <vector>
 
 #include "common/layers.h"
@@ -14,6 +15,10 @@
 #include "qwen3_asr/qwen3_decoder.h"
 
 namespace qwen3_asr {
+
+enum class DraftPolicy { kAdaptive, kFixed };
+
+DraftPolicy ParseDraftPolicy(const std::string &value);
 
 struct LoadedDraft;
 
@@ -30,11 +35,13 @@ public:
   // commits the accepted tokens plus one more. Tokens go to commit until it
   // reports the output complete; returns the rounds. A positive
   // prefill_step_tokens bounds prompt chunks, leaving the last token for the
-  // first logits; zero prefills the prompt in one pass.
+  // first logits; zero prefills the prompt in one pass. Adaptive backoff is
+  // opt-in here so other targets retain their existing fixed-draft behavior.
   int Decode(const Qwen3Decoder &target, const mlx::core::array &embeddings,
              int max_new_tokens, int prefill_step_tokens,
              const std::function<bool(int)> &commit,
-             const std::atomic<bool> &cancel) const;
+             const std::atomic<bool> &cancel,
+             DraftPolicy policy = DraftPolicy::kFixed) const;
 
 private:
   DFlashDraft(LoadedDraft draft, int quantization_bits);
