@@ -1431,15 +1431,26 @@
   "A larger card shows more of a long answer before it scrolls. Each feature keeps its own size.": "卡片越大，长回答不用滚动就能看到越多。每个功能各自记住自己的大小。",
   "Use Voxt 1.x's sounds": "使用 Voxt 1.x 的提示音",
   "Pop when recording starts and Tink when it stops, as Voxt 1.x played them.": "开始录音时 Pop，停止时 Tink，和 Voxt 1.x 一样。",
-  "The shortcut's keys, lit on a Mac keyboard": "快捷键的键在 Mac 键盘上的位置（亮起的键）"
-"System audio recording (for meetings)": "系统录音（会议用）",
-  "Lets Voxt record sound from other apps during a meeting. macOS asks the first time a meeting records system audio.": "让 Voxt 在会议中录制其他 app 播放的声音。第一次在会议里录系统声音时，macOS 会弹出授权。"
-"System audio recording (for meetings)": "系统录音（会议用）",
+  "The shortcut's keys, lit on a Mac keyboard": "快捷键的键在 Mac 键盘上的位置（亮起的键）",
+  "System audio recording (for meetings)": "系统录音（会议用）",
   "Lets Voxt record sound from other apps during a meeting. macOS asks the first time a meeting records system audio.": "让 Voxt 在会议中录制其他 app 播放的声音。第一次在会议里录系统声音时，macOS 会弹出授权。",
   "Meetings": "会议",
   "Start meeting": "开始会议",
   "No meetings yet.": "还没有会议记录。",
   "End": "结束",
   "Discard": "丢弃",
-  "Loading…": "加载中…"
+  "Loading…": "加载中…",
+  "Meeting detail": "会议详情",
+  "No summary yet.": "还没有摘要。",
+  "Regenerate summary": "重新生成摘要",
+  "Set up a language model on the Language models page to generate summaries.": "在「语言模型」页面配置语言模型后即可生成摘要。",
+  "Copy transcript (.txt)": "复制转写（.txt）",
+  "Copy transcript (Markdown)": "复制转写（Markdown）",
+  "Copy transcript": "复制转写",
+  "Translation off": "关闭翻译",
+  "Translation on": "开启翻译",
+  "Language model for meetings": "会议用语言模型",
+  "Summaries, live translation, and follow-up questions send the full meeting text to this model.": "摘要、实时翻译和后续提问会把会议全文发送给该模型。",
+  "No language model is set up: summaries and translation stay off.": "未配置语言模型：摘要和翻译不可用。",
+  "Meeting text is sent to %s.": "会议文字会发送给 %s。"
 }

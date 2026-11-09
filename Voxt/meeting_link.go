@@ -16,6 +16,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 const meetingLogSource = "meeting"
@@ -46,6 +47,13 @@ func (a *app) openMeetings() {
 		Now:       time.Now,
 		FreeSpace: func(path string) (int64, error) { return diskFree(path), nil },
 		ModelHold: modelHold,
+		LLM: func(ctx context.Context, id string) (meeting.SummaryChat, error) {
+			chat, _, err := a.local.LLM(ctx, id)
+			return chat, err
+		},
+		MainLanguage: func() string {
+			return uitext.LangLabel(a.prefs.General.MainLanguage)
+		},
 	})
 	a.meetMgr.Subscribe(func(s meeting.Snapshot) {
 		a.post(func() { a.meetingChanged(s) })
