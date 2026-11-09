@@ -49,6 +49,12 @@ const (
 	StageSaving Stage = "saving"
 )
 
+// Utterance is one PCM chunk for file-mode meeting ASR (C1-2).
+type Utterance struct {
+	Start, End time.Duration
+	PCM        []byte
+}
+
 // Segment is one sentence on the timeline (filled in C1-2).
 type Segment struct {
 	ID          string
