@@ -15,7 +15,7 @@ from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 class MiniCPMOConfig(PretrainedConfig):
     model_type = "minicpmo"
 
-    # note (justkyriecai): AutoConfig reads config.json itself and hands the directory to from_dict as name_or_path; a direct from_pretrained goes through get_config_dict instead, so both hooks expand a Realtime-Venus stub.
+    # note(justkyriecai): AutoConfig reads config.json itself and hands the directory to from_dict as name_or_path; a direct from_pretrained goes through get_config_dict instead, so both hooks expand a Realtime-Venus stub.
     @classmethod
     def get_config_dict(
         cls, pretrained_model_name_or_path: str | os.PathLike, **kwargs: object
