@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
@@ -123,8 +124,8 @@ func TestParseLegacySettings(t *testing.T) {
 	if u := by["omlx"].Generation.IncludeUsage; u == nil || *u {
 		t.Errorf("oMLX usage %v, want off as the previous Voxt had it", u)
 	}
-	if l.featureLLM != [3]string{"openai", "", ""} || l.featureSpeech != [3]string{"doubao", "", ""} {
-		t.Errorf("features' setups %q, speech %q", l.featureLLM, l.featureSpeech)
+	if l.featureLLM != [3]string{"openai", "", ""} || l.featureSpeech != [3]string{"doubao", "", ""} || l.featureLocal != [3]string{"", models.ASRFast, ""} {
+		t.Errorf("features' setups %q, speech %q, local speech %q", l.featureLLM, l.featureSpeech, l.featureLocal)
 	}
 	if l.prompts != [3]string{"Keep my English terms.", "", ""} {
 		t.Errorf("prompts %q", l.prompts)
@@ -238,6 +239,9 @@ func TestLegacySettingsApply(t *testing.T) {
 	}
 	if s.Features.Transcribe.Prompt != "My rules." || s.Features.Transcribe.LLM != "openai" || prompts != 1 || s.Dictionary.SpeechContext != "Leo works on LLM serving." {
 		t.Errorf("prompts %d, transcribe %+v, speech context %q", prompts, s.Features.Transcribe.Feature, s.Dictionary.SpeechContext)
+	}
+	if s.Features.Translate.ASR != models.ASRFast { // Voxt 1.x's local Qwen3-ASR 0.6B
+		t.Errorf("translate %+v", s.Features.Translate.Feature)
 	}
 }
 

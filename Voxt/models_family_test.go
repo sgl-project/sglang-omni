@@ -222,7 +222,7 @@ func TestModelDeleteShared(t *testing.T) {
 
 func TestModelDeleteCancelShared(t *testing.T) {
 	a, _, tt := newTestApp(t)
-	tt.SetSize(windowWidth, 1600)
+	tt.SetSize(windowWidth, 4800) // the retired models under every speech model's card
 	seedModels(t, a, models.LLMTranslate)
 	useModels(t, a, models.LLMTranslate)
 	claimFor(t, a, dictaID, models.LLMTranslate)

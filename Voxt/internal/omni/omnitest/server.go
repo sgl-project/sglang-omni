@@ -188,9 +188,9 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 		b, _ := json.Marshal(v)
 		_ = c.Write(ctx, websocket.MessageText, b)
 	}
-	samples, next, language := 0, 1600, ""
+	samples, next, language, prompt := 0, 1600, "", ""
 	defer func() {
-		record(o, Record{Event: "live", Samples: samples, Fields: map[string]string{"language": language}})
+		record(o, Record{Event: "live", Samples: samples, Fields: map[string]string{"language": language, "prompt": prompt}})
 	}()
 	for {
 		_, b, err := c.Read(ctx)
@@ -206,6 +206,7 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 		switch ev.Type {
 		case "session.update":
 			language, _ = ev.Session["language"].(string)
+			prompt, _ = ev.Session["prompt"].(string)
 			send(map[string]any{"type": "transcription_session.updated"})
 		case "input_audio_buffer.append":
 			pcm, err := base64.StdEncoding.DecodeString(ev.Audio)

@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
@@ -322,14 +323,55 @@ func legacyOwnContext(context string) string {
 	return strings.TrimSpace(strings.ReplaceAll(c, "{{DICTIONARY_TERMS}}", ""))
 }
 
+// legacyLocalSpeech is the catalogue's speech model for the previous Voxt's
+// choice of a local one: "mlx:<repo>" (a repo it had retired as its
+// legacyModelRepoMap mapped it: Parakeet's others to v3, Whisper Tiny and
+// Base to Small, Qwen3-ASR 1.7B's others to 6-bit, the rest to its default,
+// Qwen3-ASR 0.6B), "whisper:<id>" (its WhisperKit models, as it mapped
+// them) or "sherpa:…" (gone, its default); "" for another choice.
+func legacyLocalSpeech(selection string) string {
+	if id, ok := strings.CutPrefix(selection, "whisper:"); ok {
+		switch strings.TrimPrefix(strings.TrimPrefix(id, "openai_whisper-"), "openai/whisper-") {
+		case "tiny", "base", "small":
+			return models.ASRWhisperSmall
+		case "medium":
+			return models.ASRWhisperTurbo
+		}
+		return models.ASRWhisperLarge
+	}
+	if strings.HasPrefix(selection, "sherpa:") {
+		return models.ASRFast
+	}
+	repo, ok := strings.CutPrefix(selection, "mlx:")
+	if !ok {
+		return ""
+	}
+	for _, m := range models.Catalog() {
+		if m.Kind == models.ASR && m.Repo == repo {
+			return m.ID
+		}
+	}
+	switch r := strings.ToLower(repo); {
+	case strings.Contains(r, "parakeet"):
+		return models.ASRParakeet
+	case strings.Contains(r, "whisper-tiny"), strings.Contains(r, "whisper-base"):
+		return models.ASRWhisperSmall
+	case strings.Contains(r, "qwen3-asr-1.7b"):
+		return models.ASRQwen6bit
+	}
+	return models.ASRFast
+}
+
 // legacySettings are the previous Voxt's settings the import brings.
 type legacySettings struct {
 	llm, speech []settings.Provider
 	// featureLLM, featureSpeech and prompts are by feature: Transcribe,
 	// Translate, Rewrite. featureLLM and featureSpeech are the setups the
-	// feature used ("": a local model or none), prompts its own prompt.
-	featureLLM, featureSpeech, prompts [3]string
-	speechContext                      string
+	// feature used ("": a local model or none), featureLocal the local
+	// speech model it used (legacyLocalSpeech; the import keeps it only
+	// when the model is installed), prompts its own prompt.
+	featureLLM, featureSpeech, featureLocal, prompts [3]string
+	speechContext                                    string
 	// checkLLM and checkSpeech are the setups whose address or model may
 	// not work here as it did (by id): the result says so.
 	checkLLM, checkSpeech []string
@@ -389,6 +431,11 @@ func parseLegacySettings(llmSetups, speechSetups, features, tuning string) legac
 		used(f.Translation.ASRSelectionID, "remote-asr:", legacySpeechServices, l.speech),
 		used(f.Rewrite.ASRSelectionID, "remote-asr:", legacySpeechServices, l.speech),
 	}
+	l.featureLocal = [3]string{
+		legacyLocalSpeech(f.Transcription.ASRSelectionID),
+		legacyLocalSpeech(f.Translation.ASRSelectionID),
+		legacyLocalSpeech(f.Rewrite.ASRSelectionID),
+	}
 	l.prompts = [3]string{
 		legacyOwnPrompt("transcription", f.Transcription.Prompt),
 		legacyOwnPrompt("translation", f.Translation.Prompt),
@@ -422,7 +469,7 @@ func (l legacySettings) apply(s *settings.Settings) (llmAdded, speechAdded []set
 			f.LLM = l.featureLLM[i]
 		}
 		if f.ASR == "" {
-			f.ASR = l.featureSpeech[i]
+			f.ASR = cmp.Or(l.featureSpeech[i], l.featureLocal[i])
 		}
 		if f.Prompt == "" && l.prompts[i] != "" {
 			f.Prompt = l.prompts[i]
