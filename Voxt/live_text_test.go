@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -142,5 +143,53 @@ func TestRewriteWritesIntoCard(t *testing.T) {
 	a.prefs.Overlay.HideLiveText = true
 	if m := a.overlayModeNow(); m != ovWorking {
 		t.Errorf("Show live text off: mode %v", m)
+	}
+}
+
+// TestLiveLinesScroll: live text in lines longer than the face takes the
+// wheel: the overlay stops letting the pointer through, the wheel scrolls
+// up to what came before and new words leave it there; back at the end,
+// it follows the newest words again. The lines before the last ten were
+// out of reach (#3644).
+func TestLiveLinesScroll(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.prefs.Overlay.LiveLines = true
+	words := strings.Repeat("and then the meeting moves to Thursday ", 40)
+	a.sess = session.Snapshot{ID: "s1", State: session.Recording, Partial: "short"}
+	a.overlaySync()
+	if !a.ov.passThrough {
+		t.Fatal("a short text keeps the pointer from passing through")
+	}
+	a.sess.Partial = words
+	a.overlaySync()
+	if a.ov.passThrough {
+		t.Fatal("the overflowing text lets the pointer through: the wheel cannot reach it")
+	}
+	tt := hudTester(a.overlayView, a.ov.w+2*layout.Pad, a.ov.h+2*layout.Pad)
+	frames(tt)
+	l := &a.ov.lines
+	if !l.follow || l.st.MaxY <= 0 || l.st.Y != l.st.MaxY {
+		t.Fatalf("at the start: %+v", *l)
+	}
+	x, y := float32(a.ov.w/2+layout.Pad), float32(a.ov.h+layout.Pad-layout.LivePadY-20)
+	tt.Move(x, y)
+	tt.Scroll(x, y, 0, -60)
+	frames(tt)
+	up := l.st.Y
+	if l.follow || up >= l.st.MaxY {
+		t.Fatalf("after the wheel up: %+v", *l)
+	}
+	a.sess.Partial = words + "and more words"
+	frames(tt)
+	if l.st.Y != up || l.follow {
+		t.Errorf("new words moved the text read: %v → %v", up, l.st.Y)
+	}
+	tt.Advance(time.Second)
+	tt.Scroll(x, y, 0, 10000)
+	frames(tt)
+	a.sess.Partial = words + "and more words, and the end"
+	frames(tt)
+	if !l.follow || l.st.Y != l.st.MaxY {
+		t.Errorf("back at the end: %+v", *l)
 	}
 }
