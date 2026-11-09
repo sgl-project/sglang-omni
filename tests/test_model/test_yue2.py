@@ -1,22 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Real-checkpoint generation and cancellation checks for one CUDA device."""
+"""Real-checkpoint acoustic and HTTP serving checks for one CUDA device."""
 
+import concurrent.futures
+import io
 import os
+import signal
+import socket
+import subprocess
+import sys
+import time
+from collections.abc import Iterator
 
+import httpx
+import numpy as np
 import pytest
+import soundfile as sf
 import torch
 
 from sglang_omni.models.yue2.acoustic import synthesize_latents
-from sglang_omni.models.yue2.cuda_graph import DecodeGraph
-from sglang_omni.models.yue2.generation import SamplingGraph
-from sglang_omni.models.yue2.request import (
-    SamplingConfig,
-    Yue2Options,
-    Yue2Request,
-    build_request,
-)
-from sglang_omni.models.yue2.runtime import SongResult, Yue2Runtime
-from sglang_omni.proto.request import OmniRequest, StagePayload
+from sglang_omni.models.yue2.request import CODEC_OFFSET
+from sglang_omni.models.yue2.runtime import Yue2Runtime
 
 pytestmark = [
     pytest.mark.accelerator,
@@ -27,82 +30,24 @@ pytestmark = [
     ),
 ]
 
+VAE_PATH = os.environ.get("YUE2_VAE_PATH", "m-a-p/YuE2-Vae")
+LYRICS = "[Verse]\nMorning light is shining through"
+STYLE = "Gentle acoustic pop, warm female vocals"
+TOKEN_BUDGET = 16
+
 
 @pytest.fixture(scope="module", params=[False, True, "fused"])
 def runtime(request: pytest.FixtureRequest) -> Yue2Runtime:
     return Yue2Runtime.from_pretrained(
         os.environ["YUE2_MODEL_PATH"],
-        os.environ.get("YUE2_VAE_PATH", "m-a-p/YuE2-Vae"),
+        VAE_PATH,
         torch.device("cuda:0"),
         vae_core_frames=1024,
         vae_halo_frames=16,
-        ar_cuda_graph=bool(request.param),
         nar_cuda_graph=bool(request.param),
-        sampling_cuda_graph=bool(request.param),
         fuse_projections=bool(request.param),
         fused_kernels=request.param == "fused",
     )
-
-
-@pytest.mark.parametrize(
-    "cot,abc,cfg_scale",
-    [
-        ("full", None, 1.0),
-        ("melody", None, 1.5),
-        ("off", None, None),
-        ("melody", "X:1\nT:Morning\nM:4/4\nL:1/4\nK:C\nC D E F |", 1.5),
-    ],
-)
-def test_real_checkpoint_generation(
-    runtime: Yue2Runtime,
-    cot: str,
-    abc: str | None,
-    cfg_scale: float | None,
-) -> None:
-    message = StagePayload(
-        request_id="song",
-        data={},
-        request=OmniRequest(
-            inputs="[Verse]\nMorning light is shining through",
-            metadata={
-                "tts_params": {
-                    "instructions": "Gentle acoustic pop, warm female vocals",
-                    "seed": 42,
-                }
-            },
-            params={
-                "max_new_tokens": 16,
-                "stage_params": {
-                    "synthesis": {
-                        "cot": cot,
-                        "abc": abc,
-                        "cfg_scale": cfg_scale,
-                        "abc_max_tokens": 8,
-                        "ode_steps": 2,
-                    }
-                },
-            },
-        ),
-    )
-    request = build_request(message)
-    song = runtime.generate(request, lambda: False)
-    assert song.audio.shape[0] == 2 and song.audio.shape[1] > 0
-    assert song.audio.dtype == torch.float32 and torch.isfinite(song.audio).all()
-    assert song.sample_rate == 48000
-    assert len(song.codec_tokens) == 16 and song.finish_reason == "length"
-    cancellation_checks = 0
-
-    def cancelled_after_prefill() -> bool:
-        nonlocal cancellation_checks
-        cancellation_checks += 1
-        return cancellation_checks >= 3
-
-    with pytest.raises(InterruptedError):
-        runtime.generate(request, cancelled_after_prefill)
-    recovered = runtime.generate(request, lambda: False)
-    assert recovered.abc_tokens == song.abc_tokens
-    assert recovered.codec_tokens == song.codec_tokens
-    torch.testing.assert_close(recovered.audio, song.audio, rtol=0, atol=0)
 
 
 def test_acoustic_graph_preserves_solver_and_abort_recovery(
@@ -127,78 +72,105 @@ def test_acoustic_graph_preserves_solver_and_abort_recovery(
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
-@torch.inference_mode()
-def test_decode_graph_survives_temporary_graphs(runtime: Yue2Runtime) -> None:
-    """Destroying sampling graphs must not invalidate a persistent decode graph."""
-    runner = DecodeGraph(runtime.model)
-    prefix = [1, 2, 3]
-    logits = runner.prefill([prefix])
-    token = torch.tensor([[7]], device=logits.device)
-    expected = runner.step(token, [True]).clone()
-    sampling = SamplingConfig(min_tokens=1, max_tokens=2)
-    # note (ruiling): Forty captures wrap PyTorch's 32-stream pool and reproduce workspace invalidation.
-    for _ in range(40):
-        sampler = SamplingGraph(logits, sampling, "semantic", False)
-        sampler.step(logits, 0, None)
-        del sampler
-    torch.cuda.empty_cache()
-    runner.prefill([prefix])
-    torch.testing.assert_close(runner.step(token, [True]), expected, rtol=0, atol=0)
+def test_acoustic_render_returns_stereo_audio(runtime: Yue2Runtime) -> None:
+    tokens = [CODEC_OFFSET + token for token in range(TOKEN_BUDGET)]
+    audio = runtime.render([1, 2, 3], tokens, 42, 2, lambda: False)
+    assert audio.shape == (2, TOKEN_BUDGET * 1920 - 64)
+    assert audio.dtype == torch.float32 and torch.isfinite(audio).all()
 
 
-def test_real_batch_isolates_settings_cancellation_and_context_errors(
-    runtime: Yue2Runtime,
-) -> None:
-    requests = [
-        Yue2Request(
-            lyrics="[Verse]\nMorning light is shining through",
-            style="Gentle acoustic pop, warm female vocals",
-            seed=42 + index,
-            options=Yue2Options(
-                cot=cot,
-                abc=abc,
-                cfg_scale=guidance,
-                abc_max_tokens=4 + index,
-                ode_steps=2 + index,
-            ),
-            semantic_sampling=SamplingConfig(
-                min_tokens=8 + index,
-                max_tokens=8 + index,
-                temperature=0.7 + index / 10,
-            ),
-        )
-        for index, (cot, abc, guidance) in enumerate(
-            [
-                ("full", None, 1.0),
-                ("melody", "X:1\nK:C\nC D E F |", 1.0),
-                ("off", None, 1.0),
-                ("full", None, 1.0),
-                ("full", None, 1.0),
-                ("melody", None, 1.5),
-            ]
-        )
-    ]
-    requests[4].semantic_sampling.max_tokens = (
-        runtime.model.config.max_position_embeddings
+def free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+@pytest.fixture(scope="module")
+def server() -> Iterator[str]:
+    port = free_port()
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "sglang_omni.cli",
+            "serve",
+            "--model-path",
+            os.environ["YUE2_MODEL_PATH"],
+            "--yue2_acoustic.factory.vae_path",
+            VAE_PATH,
+            "--port",
+            str(port),
+        ],
+        start_new_session=True,
     )
-    callbacks = [lambda: False for _ in requests]
-    callbacks[3] = lambda: True
-    original = runtime.generate_batch(requests, callbacks, 2)
-    assert isinstance(original[3], InterruptedError)
-    assert isinstance(original[4], ValueError)
-    for index in (0, 1, 2, 5):
-        song = original[index]
-        assert isinstance(song, SongResult)
-        assert len(song.codec_tokens) == 8 + index
-        assert song.audio.shape == (2, (8 + index) * 1920 - 64)
-        assert torch.isfinite(song.audio).all() and song.sample_rate == 48000
-        assert song.semantic_truncated and song.finish_reason == "length"
-    assert original[0].abc_truncated and not original[1].abc_truncated
-    assert not original[2].abc_tokens
-    repeated = runtime.generate_batch(requests, callbacks, 2)
-    for index in (0, 1, 2, 5):
-        assert original[index].abc_tokens == repeated[index].abc_tokens
-        assert original[index].codec_tokens == repeated[index].codec_tokens
-        torch.testing.assert_close(
-            original[index].audio, repeated[index].audio, rtol=0, atol=0
-        )
+    base = f"http://127.0.0.1:{port}"
+    try:
+        deadline = time.monotonic() + 900
+        while time.monotonic() < deadline:
+            assert process.poll() is None, "YuE2 server exited during startup"
+            try:
+                if httpx.get(f"{base}/health", timeout=3).status_code == 200:
+                    break
+                else:
+                    pass
+            except httpx.HTTPError:
+                pass
+            time.sleep(2)
+        else:
+            raise TimeoutError("YuE2 server did not become ready")
+        yield base
+    finally:
+        os.killpg(process.pid, signal.SIGTERM)
+        process.wait(timeout=120)
+
+
+def speech_request(
+    seed: int, *, token_budget: int = TOKEN_BUDGET, **options: object
+) -> dict[str, object]:
+    return {
+        "model": os.environ["YUE2_MODEL_PATH"],
+        "input": LYRICS,
+        "instructions": STYLE,
+        "seed": seed,
+        "response_format": "wav",
+        "max_new_tokens": token_budget,
+        "stage_params": {"synthesis": {"abc_max_tokens": 8, "ode_steps": 2, **options}},
+    }
+
+
+def synthesize(base: str, body: dict[str, object]) -> httpx.Response:
+    return httpx.post(f"{base}/v1/audio/speech", json=body, timeout=600)
+
+
+def test_concurrent_modes_return_truncated_stereo_songs(server: str) -> None:
+    bodies = [
+        speech_request(42, cot="full"),
+        speech_request(43, cot="melody", cfg_scale=1.5),
+        speech_request(44, cot="off"),
+        speech_request(
+            45, cot="melody", abc="X:1\nT:Morning\nM:4/4\nL:1/4\nK:C\nC D E F |"
+        ),
+    ]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(bodies)) as pool:
+        responses = list(pool.map(lambda body: synthesize(server, body), bodies))
+    for response in responses:
+        assert response.status_code == 200, response.text
+        audio, rate = sf.read(io.BytesIO(response.content), always_2d=True)
+        assert rate == 48000 and audio.shape == (TOKEN_BUDGET * 1920 - 64, 2)
+        assert np.isfinite(audio).all()
+        assert response.headers["X-Finish-Reason"] == "length"
+
+
+def test_seed_reproduces_and_invalid_requests_fail_cleanly(server: str) -> None:
+    body = speech_request(42, cot="melody", cfg_scale=1.5)
+    first = synthesize(server, body)
+    second = synthesize(server, body)
+    assert first.status_code == second.status_code == 200
+    assert first.content == second.content
+    missing_style = dict(body)
+    missing_style.pop("instructions")
+    assert synthesize(server, missing_style).status_code == 400
+    assert synthesize(server, speech_request(42, token_budget=25000)).status_code == 400
+    with pytest.raises(httpx.TimeoutException):
+        httpx.post(f"{server}/v1/audio/speech", json=body, timeout=0.2)
+    assert synthesize(server, body).content == first.content

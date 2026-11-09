@@ -778,6 +778,7 @@ class SGLModelRunner(ModelRunner):
             "HYV3SpeechForCausalLM": "sglang_omni.models.hy_simulmt.sglang_model:HYV3SpeechForCausalLM",
             "NemotronTranscribeForConditionalGeneration": "sglang_omni.models.nemotron_transcribe.sglang_model:NemotronTranscribeForConditionalGeneration",
             "DotsTTSForConditionalGeneration": "sglang_omni.models.dots_tts.sglang_model:DotsTTSSGLangModel",
+            "YuE2ForCausalLM": "sglang_omni.models.yue2.sglang_model:Yue2ARForCausalLM",
             "FunCosyVoice3SGLangModel": "sglang_omni.models.fun_cosyvoice3.sglang_model:FunCosyVoice3SGLangModel",
             "FunCosyVoice3DSparkDraftModel": "sglang_omni.models.fun_cosyvoice3.dspark_draft:FunCosyVoice3DSparkDraftModel",
             "NemotronVoiceChatForCausalLM": "sglang_omni.models.nemotron_voicechat.thinker:NemotronVoiceChatForCausalLM",

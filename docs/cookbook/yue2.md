@@ -12,9 +12,9 @@ CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
   --port 8000
 ```
 
-The worker loads the BF16 transformer and FP32 decoder once. By default it processes queued requests sequentially. Each request owns its sampling generators, lengths and sampling history; optional AR batching is described below.
+The pipeline has two stages on the same GPU. The AR stage runs the BF16 transformer on the SGLang engine with continuous batching, paged KV cache and CUDA graphs; it generates the ABC score and then the semantic tokens. The acoustic stage loads the BF16 transformer and FP32 decoder to run flow matching and VAE decoding. `--yue2_ar.factory.max_concurrency` sets how many requests decode together (default 16).
 
-Both the transformer and decoder accept local checkpoint directories or Hugging Face model identifiers. The default decoder is `m-a-p/YuE2-Vae`. Select the benchmark decoder with `--synthesis.factory.vae_path m-a-p/YuE2-Vae-legacy`. Checkpoint identifiers can pin a revision with `repository@revision`.
+Both the transformer and decoder accept local checkpoint directories or Hugging Face model identifiers. The default decoder is `m-a-p/YuE2-Vae`. Select the benchmark decoder with `--yue2_acoustic.factory.vae_path m-a-p/YuE2-Vae-legacy`. Checkpoint identifiers can pin a revision with `repository@revision`.
 
 ## Generate a song
 
@@ -32,7 +32,7 @@ curl http://localhost:8000/v1/audio/speech \
   --output song.wav
 ```
 
-`input` is plain lyrics and `instructions` is the required musical style; an empty string leaves the style tag empty. `seed` controls each generation phase independently. `max_new_tokens` limits semantic audio tokens, excluding the ABC planning phase; it is a token budget, not a requested audio duration. The semantic sampling fields `temperature`, `top_p`, `top_k` and `repetition_penalty` are supported.
+`input` is plain lyrics and `instructions` is the required musical style; an empty string leaves the style tag empty. `seed` controls each generation phase independently and does not depend on which other requests share a batch. `max_new_tokens` limits semantic audio tokens, excluding the ABC planning phase; it is a token budget, not a requested audio duration. The semantic sampling fields `temperature`, `top_p`, `top_k` and `repetition_penalty` are supported.
 
 The response's `X-Finish-Reason` is `length` if either planning or semantic generation reaches its token budget; it is `stop` when both phases finish normally. Increasing the semantic budget cannot repair a truncated ABC plan: adjust `abc_max_tokens` for that phase. Requests that exceed the model context fail instead of silently shortening their budgets.
 
@@ -67,30 +67,17 @@ Voice selection, reference-audio conditioning, speed changes and streaming outpu
 
 ## Optional acceleration
 
-The default path uses eager execution. On NVIDIA CUDA devices, enable the separately selectable optimizations with:
+AR decoding always uses SGLang's CUDA graphs and continuous batching. Requests with classifier-free guidance decode as a pair of rows (conditioned and unconditioned) that stay together in each batch. Each request keeps its own seed, sampling parameters, token budgets and cancellation state.
+
+The acoustic stage defaults to eager execution. On NVIDIA CUDA devices, enable its optimizations with:
 
 ```bash
 sgl-omni serve --model-path m-a-p/YuE2-3B \
-  --synthesis.factory.ar_cuda_graph true \
-  --synthesis.factory.nar_cuda_graph true \
-  --synthesis.factory.sampling_cuda_graph true \
-  --synthesis.factory.fuse_projections true \
-  --synthesis.factory.fused_kernels true
+  --yue2_acoustic.factory.nar_cuda_graph true \
+  --yue2_acoustic.factory.fused_kernels true
 ```
 
-AR decode graphs reserve one full-context KV buffer per guidance branch and reuse it across requests. NAR graphs capture the velocity evaluation for each acoustic chunk. Sampling graphs preserve the vocabulary mask, top-k ties, repetition window and request-local random generator. Projection fusion combines QKV and gate/up projections without changing checkpoint names.
-
-Set `--synthesis.factory.fused_kernels true` to use `sgl_kernel` for RMS normalization, residual addition with normalization, Q/K normalization with RoPE, and SiLU activation with gating in both AR and NAR. This also enables projection fusion and works with eager execution or CUDA graphs.
-
-AR graph attention uses the packed FlashAttention path, matching the model's reference graph implementation. Graph attention, projection fusion and fused kernels can change BF16 rounding and sampled songs. Fused kernels also change acoustic latents. On a paired WildSongBench run against the official implementation, CUDA graphs with fused kernels matched official song quality and were about 1.6x faster than CUDA graphs alone, so this is the recommended CUDA configuration; eager remains the default.
-
-### Optional AR batching
-
-With AR and sampling graphs enabled, set `--synthesis.factory.max_batch_size 4` to batch concurrent score planning and semantic generation. `max_batch_wait_ms` controls the collection window (default 25 ms). `batch_graph_cache_size` bounds the number of cached batch shapes (default 2); each shape reserves KV capacity for its request count and token budgets.
-
-Requests retain independent seeds, sampling parameters, token budgets and cancellation state. Invalid requests fail individually. External ABC and `cot=off` with `cfg_scale=1` can join a batch; requests with guidance other than 1 use the single-request path. Acoustic synthesis and VAE decoding remain sequential. Batch results are returned after all active requests finish, so throughput gains can increase a short request's latency when it shares a batch with a long song.
-
-Batch shapes can change BF16 rounding and sampled tokens even with the same seed. With fused kernels, batching four concurrent requests matched official song quality on the same WildSongBench run and raised throughput about 1.8x; single-request latency is roughly unchanged. Check request latency under the intended concurrency before enabling it in production.
+NAR graphs capture the velocity evaluation for each acoustic chunk. `fused_kernels` uses `sgl_kernel` for RMS normalization, residual addition with normalization, Q/K normalization with RoPE, and SiLU activation with gating, and also fuses the QKV and gate/up projections (`fuse_projections` enables only the projection fusion). Fused kernels change BF16 rounding and acoustic latents.
 
 ## Limitations
 
@@ -116,6 +103,6 @@ Run the real-checkpoint smoke tests on one CUDA GPU with:
 pytest tests/test_model/test_yue2.py -q
 ```
 
-These short tests cover the score modes, external ABC, CFG, cancellation and seeded recovery. They do not measure song quality. Set `YUE2_MODEL_PATH` and `YUE2_VAE_PATH` to use local or revision-pinned checkpoints.
+These short tests start a server and cover the score modes, external ABC, CFG, concurrent requests, invalid requests, client disconnection and seeded reproducibility, plus the acoustic graph path. They do not measure song quality. Set `YUE2_MODEL_PATH` and `YUE2_VAE_PATH` to use local or revision-pinned checkpoints.
 
 Quality comparisons must use the same transformer revision, VAE revision, prompts, seeds and generation settings. The official [WildSongBench protocol](https://huggingface.co/datasets/m-a-p/WildSongBench) uses `YuE2-Vae-legacy`; scores from the standard decoder are not directly comparable to that baseline. Keep truncated outputs in evaluation and report them separately.
