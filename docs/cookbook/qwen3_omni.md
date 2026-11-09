@@ -3,23 +3,6 @@
 [Qwen3-Omni](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct) accepts text, images, audio, and video, and can return text alone or with audio.
 Use the generator for a hardware-specific launch command, then check the tables for supported configurations.
 
-## Prerequisites
-
-```bash
-docker pull hongccc/sglang-omni:dev
-docker run -it --shm-size 32g --gpus all hongccc/sglang-omni:dev /bin/zsh
-```
-
-```bash
-pip install --upgrade pip
-pip install uv
-
-uv venv .venv -p 3.12 && source .venv/bin/activate
-uv pip install --prerelease=allow "sglang-omni==0.2.0"
-```
-
-See [Installation](../get_started/installation.md) for Docker digests and source installs.
-
 ## Server Configuration
 
 Use the selector below to generate the exact launch command for your configuration.
