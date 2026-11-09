@@ -323,9 +323,9 @@ Single-NPU BF16 results on Ascend910_9362 with SGLang 0.5.22, CANN 9.1.0 and tor
 
 | Device | WER (all samples) | Latency mean / p95 (s) | Throughput (qps) |
 | --- | --- | --- | --- |
-| Ascend910_9362 | 205/11943 = 1.7165% | 7.584 / 9.799 | 1.054 |
+| Ascend910_9362 | 203/11943 = 1.6997% | 7.502 / 9.761 | 1.065 |
 
-WER includes all three samples above 50% WER; their cause is unresolved. The historical H200 results use different hardware, software revision and recorded seed conditions, so they are not a matched comparison.
+The corpus WER includes all four samples above 50% WER. The historical H200 result uses a different software revision and seed conditions, so the figures describe separate runs.
 
 ## Known Limitations
 
