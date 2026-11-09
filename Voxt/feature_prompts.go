@@ -67,23 +67,41 @@ func (a *app) translateSettings(c *ui.Context) {
 }
 
 // cardSetting is feature's Answer card section (p is the page's prefix):
-// the switch, one for the three features, and the card's size, each
-// feature its own. Rewrite's card does more (follow-ups): its page says
-// so, and what turning the switch off gives up.
+// the feature's own card switch and card size. Rewrite's card does more
+// (follow-ups): its page says so, and what turning the switch off gives
+// up.
 func (a *app) cardSetting(c *ui.Context, p, feature string) {
 	sectionTitle(c, i18n.T("Answer card"))
 	f := &a.prefs.Features
-	help := i18n.T("Shows results in the answer card, to read, copy or insert, instead of typing them (or replacing the selection). Transcribe, Translate and Rewrite share this switch. Text that cannot go in, as with no text field in front, shows in the card anyway.")
-	if feature == hotkey.Rewrite {
+	var on *bool
+	var help string
+	switch feature {
+	case hotkey.Translate:
+		on = &f.Translate.ShowCard
+		help = i18n.T("Shows translations in the answer card, to read, copy or insert, instead of typing them (or replacing the selection). Text that cannot go in, as with no text field in front, shows in the card anyway.")
+	case hotkey.Rewrite:
+		on = &f.Rewrite.ShowCard
 		if note := i18n.T("Rewrite's card does more than Transcribe's and Translate's: Continue, or the Rewrite shortcut, asks a follow-up that changes the answer (\"shorter\", \"in English\"), and the card keeps the conversation."); settingsTextMatches(settingsSearchQuery, note) {
 			caption(c, note)
 		}
-		help = i18n.T("Shows Rewrite's answers in the answer card, to read, copy, insert or follow up. Off, the answer replaces the selection or is typed where your cursor is, and there are no follow-ups. Transcribe, Translate and Rewrite share this switch. Text that cannot go in, as with no text field in front, shows in the card anyway.")
+		help = i18n.T("Shows Rewrite's answers in the answer card, to read, copy, insert or follow up. Off, the answer replaces the selection or is typed where your cursor is, and there are no follow-ups. Text that cannot go in, as with no text field in front, shows in the card anyway.")
+	default:
+		on = &f.Transcribe.ShowCard
+		help = i18n.T("Shows the text in the answer card, to read, copy or insert, instead of typing it. Text that cannot go in, as with no text field in front, shows in the card anyway.")
 	}
 	settingRow(c, p+"-card", i18n.T("Show the result in a card"), help, func() {
-		if ui.Switch(c.Key(p+"-card-switch"), &f.ShowCard).Label(i18n.T("Show the result in a card")).Changed() {
-			on := f.ShowCard
-			a.updateSettings(func(s *settings.Settings) { s.Features.ShowCard = on })
+		if ui.Switch(c.Key(p+"-card-switch"), on).Label(i18n.T("Show the result in a card")).Changed() {
+			v := *on
+			a.updateSettings(func(s *settings.Settings) {
+				switch feature {
+				case hotkey.Translate:
+					s.Features.Translate.ShowCard = v
+				case hotkey.Rewrite:
+					s.Features.Rewrite.ShowCard = v
+				default:
+					s.Features.Transcribe.ShowCard = v
+				}
+			})
 		}
 	})
 	size := f.CardSize(feature)

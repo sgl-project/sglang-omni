@@ -190,19 +190,19 @@ func overlayFlows() []ovFlowCase {
 			return one(t, "readonly,"+helpertest.Opt("selection", "发布推迟到周四，先把引导页和历史页做完，再做翻译卡片")+",", "translate", draft(long, 150*time.Millisecond), nil)
 		}},
 		{"rewrite", func(t *testing.T) *ovFlow {
-			return two(t, "", "rewrite", "write that the release moves to thursday", draft(`{"title":"Release","content":"`+long+`"}`, 150*time.Millisecond), showCard)
+			return two(t, "", "rewrite", "write that the release moves to thursday", draft(`{"title":"Release","content":"`+long+`"}`, 150*time.Millisecond), nil)
 		}},
 		{"rewrite-selection", func(t *testing.T) *ovFlow {
-			return two(t, helpertest.Opt("selection", "release thursday onboarding first")+",", "rewrite", "make it a full sentence", draft(long, 150*time.Millisecond), showCard)
+			return two(t, helpertest.Opt("selection", "release thursday onboarding first")+",", "rewrite", "make it a full sentence", draft(long, 150*time.Millisecond), nil)
 		}},
 		{"rewrite-no-card", func(t *testing.T) *ovFlow {
-			return two(t, helpertest.Opt("selection", "release thursday onboarding first")+",", "rewrite", "make it a full sentence", draft(long, 150*time.Millisecond), nil)
+			return two(t, helpertest.Opt("selection", "release thursday onboarding first")+",", "rewrite", "make it a full sentence", draft(long, 150*time.Millisecond), rewriteNoCard)
 		}},
 		{"follow-up", func(t *testing.T) *ovFlow {
 			chat := &fakeChat{texts: []string{`{"title":"Release","content":"` + long + `"}`, "Thursday: onboarding, history, then the card."}, delay: 150 * time.Millisecond}
 			s, keys, tr := fileSetup(t, "write that the release moves to thursday", chat)
 			ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger))
-			a := newSessionApp(t, ev, func(st *settings.Settings) { s(st); flowSettings(st); showCard(st) }, keys)
+			a := newSessionApp(t, ev, func(st *settings.Settings) { s(st); flowSettings(st) }, keys)
 			a.pump("the answer", func() bool { return a.sess.State.Ended() })
 			f := &ovFlow{a: a}
 			f.sample()
@@ -221,9 +221,9 @@ func overlayFlows() []ovFlowCase {
 	}
 }
 
-// showCard turns the answer card switch on: Rewrite's flows through its
-// card.
-func showCard(st *settings.Settings) { st.Features.ShowCard = true }
+// rewriteNoCard turns Rewrite's answer card switch off (on by default):
+// its answer goes in at once.
+func rewriteNoCard(st *settings.Settings) { st.Features.Rewrite.ShowCard = false }
 
 // flowSettings: the pictures in Chinese.
 func flowSettings(st *settings.Settings) {

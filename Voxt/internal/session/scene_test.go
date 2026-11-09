@@ -283,6 +283,7 @@ func TestSceneWrite(t *testing.T) {
 			h := newHarness(t, &fakeFile{text: "hello"}, model, func(c *Config, s *settings.Settings) {
 				c.Select = &fakeSelector{text: tc.sel}
 				c.Scene = &SceneConfig{Rules: func() (appctx.Rules, bool) { return rules, true }}
+				s.Features.Rewrite.ShowCard = false // inserted, as the others: the key after it
 			})
 			id, err := h.m.Start(StartRequest{Kind: tc.kind, Target: slack})
 			if err != nil {

@@ -500,30 +500,35 @@ func TestMuteOutput(t *testing.T) {
 	}
 }
 
-// TestMigrateShowCard: Translate's card switch, the only one before,
-// becomes every feature's; a document saved since keeps its choice.
+// TestMigrateShowCard: each feature has its own card switch. The one
+// switch of the 2.0.3 betas (features.showCard), on, turns all three on;
+// Translate's own (2.0.1's) is read as it is; Rewrite's is on unless the
+// document says off.
 func TestMigrateShowCard(t *testing.T) {
+	type cards struct{ transcribe, translate, rewrite bool }
 	for _, tc := range []struct {
 		doc  string
-		want bool
+		want cards
 	}{
-		{`{"version":4,"features":{"translate":{"showCard":true}}}`, true},
-		{`{"version":4,"features":{"translate":{"cleanup":true}}}`, false},
-		{`{"version":4,"features":{"showCard":true,"translate":{}}}`, true},
-		{`{"version":4,"features":{"translate":{}}}`, false},
+		{`{"version":4,"features":{"translate":{"showCard":true}}}`, cards{false, true, true}},
+		{`{"version":4,"features":{"translate":{"cleanup":true}}}`, cards{false, false, true}},
+		{`{"version":4,"features":{"showCard":true,"translate":{}}}`, cards{true, true, true}},
+		{`{"version":4,"features":{"rewrite":{"showCard":false}}}`, cards{false, false, false}},
+		{`{"version":4,"features":{"transcribe":{"showCard":true},"rewrite":{"showCard":false}}}`, cards{true, false, false}},
 	} {
 		s, err := Migrate([]byte(tc.doc))
-		if err != nil || s.Features.ShowCard != tc.want {
-			t.Errorf("%s: ShowCard %v, want %v (%v)", tc.doc, s.Features.ShowCard, tc.want, err)
+		f := s.Features
+		if got := (cards{f.Transcribe.ShowCard, f.Translate.ShowCard, f.Rewrite.ShowCard}); err != nil || got != tc.want {
+			t.Errorf("%s: cards %+v, want %+v (%v)", tc.doc, got, tc.want, err)
 		}
+		if f.ShowsCard("transcribe") != f.Transcribe.ShowCard || f.ShowsCard("translate") != f.Translate.ShowCard || f.ShowsCard("rewrite") != f.Rewrite.ShowCard {
+			t.Errorf("%s: ShowsCard disagrees with the fields", tc.doc)
+		}
+		// Saved and read again, Rewrite's off stays off.
 		out, _ := json.Marshal(s)
-		var doc struct {
-			Features struct {
-				Translate map[string]any `json:"translate"`
-			} `json:"features"`
-		}
-		if json.Unmarshal(out, &doc) != nil || doc.Features.Translate["showCard"] != nil {
-			t.Errorf("%s: Translate still has a card switch: %s", tc.doc, out)
+		again, err := Migrate(out)
+		if g := again.Features; err != nil || (cards{g.Transcribe.ShowCard, g.Translate.ShowCard, g.Rewrite.ShowCard}) != tc.want {
+			t.Errorf("%s: saved as %s, read back %+v", tc.doc, out, g)
 		}
 	}
 }

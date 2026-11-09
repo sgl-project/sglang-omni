@@ -64,12 +64,12 @@ func (r *run) write(raw, selection string) {
 		return
 	}
 	in := r.writeInput(raw, selection)
-	// The card switch, one for the three features: on, the answer waits
-	// in the answer card, which inserts it (or replaces the selection) when
-	// asked and, for Rewrite, takes follow-ups; off, it goes in at once.
-	// A follow-up stays in the card, where its conversation is.
+	// The feature's card switch: on, the answer waits in the answer card,
+	// which inserts it (or replaces the selection) when asked and, for
+	// Rewrite, takes follow-ups; off, it goes in at once. A follow-up stays
+	// in the card, where its conversation is.
 	o := finishOpts{replace: selection != ""}
-	if r.settings.Features.ShowCard {
+	if r.settings.Features.ShowsCard(string(kind)) {
 		o.card = deliver.ReasonCard
 	}
 	if r.req.Card {

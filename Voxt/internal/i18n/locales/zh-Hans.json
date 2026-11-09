@@ -882,7 +882,6 @@
   "Show the sidebar": "显示侧边栏",
   "Shown in the answer card": "显示在答案卡片中",
   "Shown in the answer card, and not inserted": "显示在答案卡片中，没有插入",
-  "Shows results in the answer card, to read, copy or insert, instead of typing them (or replacing the selection). Transcribe, Translate and Rewrite share this switch. Text that cannot go in, as with no text field in front, shows in the card anyway.": "结果显示在答案卡片里，可以阅读、复制或插入，不直接输入（也不替换选中的文字）。转录、翻译和转写共用这一个开关。文字放不进去时（比如前台没有输入框），照样显示在卡片里。",
   "Sidebar": "侧边栏",
   "Skip silence": "跳过静音",
   "Skip this step": "跳过这一步",
@@ -1611,5 +1610,7 @@
   "Summarizing…": "正在生成摘要…",
   "System audio": "系统声音",
   "Rewrite's card does more than Transcribe's and Translate's: Continue, or the Rewrite shortcut, asks a follow-up that changes the answer (\"shorter\", \"in English\"), and the card keeps the conversation.": "转写的卡片比转录、翻译的多一项：点“继续”或再按转写快捷键可以继续追问，修改这个回答（“再短一点”“改成英文”），卡片里保留整段对话。",
-  "Shows Rewrite's answers in the answer card, to read, copy, insert or follow up. Off, the answer replaces the selection or is typed where your cursor is, and there are no follow-ups. Transcribe, Translate and Rewrite share this switch. Text that cannot go in, as with no text field in front, shows in the card anyway.": "转写的回答显示在答案卡片里，可以阅读、复制、插入或继续追问。关掉后，回答直接替换选中的文字，或输入到光标所在的位置，不能追问。转录、翻译和转写共用这一个开关。文字放不进去时（比如前台没有输入框），照样显示在卡片里。"
+  "Shows the text in the answer card, to read, copy or insert, instead of typing it. Text that cannot go in, as with no text field in front, shows in the card anyway.": "转录的文字显示在答案卡片里，可以阅读、复制或插入，不直接输入。文字放不进去时（比如前台没有输入框），照样显示在卡片里。",
+  "Shows translations in the answer card, to read, copy or insert, instead of typing them (or replacing the selection). Text that cannot go in, as with no text field in front, shows in the card anyway.": "译文显示在答案卡片里，可以阅读、复制或插入，不直接输入（也不替换选中的文字）。文字放不进去时（比如前台没有输入框），照样显示在卡片里。",
+  "Shows Rewrite's answers in the answer card, to read, copy, insert or follow up. Off, the answer replaces the selection or is typed where your cursor is, and there are no follow-ups. Text that cannot go in, as with no text field in front, shows in the card anyway.": "转写的回答显示在答案卡片里，可以阅读、复制、插入或继续追问。关掉后，回答直接替换选中的文字，或输入到光标所在的位置，不能追问。文字放不进去时（比如前台没有输入框），照样显示在卡片里。"
 }
