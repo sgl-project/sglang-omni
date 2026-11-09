@@ -28,6 +28,10 @@ const (
 	LLM Kind = "llm" // a language model
 	VAD Kind = "vad" // voice activity detection: a helper model, not chosen by the user
 	Aux Kind = "aux" // files another model loads beside its own (Whisper's tokenizer), never shown
+	// A speech model's speculative draft (Model.Draft): a helper model
+	// the user adds from the speech model's card, never a speech model
+	// of its own.
+	Draft Kind = "draft"
 )
 
 // Runtime is what runs a model.
@@ -65,6 +69,9 @@ const (
 	// app installed them (Borrowed).
 	LLMQwen3  = "llm.qwen3"
 	LLMGemma4 = "llm.gemma4"
+	// The speech models' DFlash drafts (Draft), one each.
+	ASRAccurateDraft = "asr.accurate.draft"
+	ASRFastDraft     = "asr.fast.draft"
 )
 
 // File is one file of a model, at its path in the repo (and in the
@@ -112,6 +119,12 @@ type Model struct {
 	// Whisper model: its tokenizer, an Aux whose files its server reads
 	// from the model's own folder).
 	Needs []string
+	// Draft is the speech model's speculative draft (a Draft model): a
+	// small model that proposes several tokens a step for it to check, so
+	// that it decodes faster. The user adds it from the
+	// speech model's card; the runtime passes it while it is installed.
+	// "" for none.
+	Draft string
 	// Alternatives are models that may stand in for it while it is not
 	// installed (the same kind, lighter or another app's), offered to the
 	// user, never chosen silently (family spec §7.2, §7.10.1).
@@ -167,7 +180,7 @@ func Lookup(id string) (Model, bool) {
 // The borrowed models are Dicta's and AudioSmith's, whole snapshots.
 var catalog = []Model{
 	{
-		ID: ASRAccurate, Name: "Qwen3-ASR 1.7B (8bit)", Kind: ASR, Runtime: Omni, Default: true, Needs: []string{VADSilero},
+		ID: ASRAccurate, Name: "Qwen3-ASR 1.7B (8bit)", Kind: ASR, Runtime: Omni, Default: true, Needs: []string{VADSilero}, Draft: ASRAccurateDraft,
 		Family: "qwen3-asr", Quant: "8bit", Alternatives: []string{ASRFast},
 		Repo: "mlx-community/Qwen3-ASR-1.7B-8bit", Revision: "a8379a2e2f9e313c9292cdf1af4055ab56d50d55",
 		Files: []File{
@@ -183,7 +196,7 @@ var catalog = []Model{
 		},
 	},
 	{
-		ID: ASRFast, Name: "Qwen3-ASR 0.6B (4bit)", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero},
+		ID: ASRFast, Name: "Qwen3-ASR 0.6B (4bit)", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero}, Draft: ASRFastDraft,
 		Family: "qwen3-asr", Quant: "4bit",
 		Repo: "mlx-community/Qwen3-ASR-0.6B-4bit", Revision: "313d850181767edf09f00a9c289becca70e58cd0",
 		Files: []File{
@@ -321,6 +334,22 @@ var catalog = []Model{
 		Files: []File{
 			{"config.json", 463, "9fe1befb9692a0d4135adadc33f8075ef6d350bd2391b88d750f2c233f97fa0b", false},
 			{"model.safetensors", 1237860, "65b6c5f0293cbc44d109e58bef78b474d9c65dedbee814cf0b90ef5f0d9150ff", true},
+		},
+	},
+	{
+		ID: ASRAccurateDraft, Name: "Qwen3-ASR 1.7B DFlash draft", Kind: Draft, Runtime: Omni, Family: "qwen3-asr-dflash", Quant: "bf16",
+		Repo: "wilsonzheng0327/Qwen3-ASR-1.7B-dflash", Revision: "23a0db8ae3f0724ccb7227c969a57651ddade2e0",
+		Files: []File{
+			{"config.json", 1858, "890b34fd509f74fa8aeceaaea921d5d9a7110f177b75185aa54d4edb9f6af4e1", false},
+			{"model.safetensors", 725684336, "00c32b078e3613073c0437e69519eb7811cbf97fcbd0066d05d62be7273670b8", true},
+		},
+	},
+	{
+		ID: ASRFastDraft, Name: "Qwen3-ASR 0.6B DFlash draft", Kind: Draft, Runtime: Omni, Family: "qwen3-asr-dflash", Quant: "bf16",
+		Repo: "wilsonzheng0327/Qwen3-ASR-0.6B-dflash", Revision: "75da55f3170c28ce70379b96921c1cf9a331d008",
+		Files: []File{
+			{"config.json", 1858, "de349d2f8494363a3a3641ca6554a3841e001f769de089974a5349c9580931da", false},
+			{"model.safetensors", 262451248, "bbfc427b9e57cb3663d23ab796d05ca82070bbdfe4c42dc9a5813430a0ace219", true},
 		},
 	},
 	{

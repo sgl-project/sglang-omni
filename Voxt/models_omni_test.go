@@ -163,6 +163,32 @@ func TestOmniOpener(t *testing.T) {
 	}
 }
 
+// TestOmniDraft: an installed draft goes with its speech model (the
+// provider changes with it), and deleting the draft unloads the model.
+func TestOmniDraft(t *testing.T) {
+	fakeOmni(t, omnitest.Opts{})
+	a := newSessionApp(t, "", func(*settings.Settings) {}, realLocal{installed: []string{models.ASRFast, models.ASRFastDraft}})
+	draft := a.models.Dir(models.ASRFastDraft)
+	if draft == "" || a.omniDraft(models.ASRFast) != draft {
+		t.Fatalf("draft %q, omniDraft %q", draft, a.omniDraft(models.ASRFast))
+	}
+	if a.omniDraft(models.ASRAccurate) != "" || a.omniDraft(models.ASRFastDraft) != "" || a.omniDraft(models.VADSilero) != "" {
+		t.Error("a draft for a model without one installed")
+	}
+	dir := a.models.Dir(models.ASRFast)
+	p1, err := a.openOmniASR(context.Background(), models.ASRFast, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p2, _ := a.openOmniASR(context.Background(), models.ASRFast, dir); p2 != p1 {
+		t.Error("a second open made another provider")
+	}
+	a.unloadOmni(models.ASRFastDraft)
+	if len(a.omniASR) != 0 {
+		t.Errorf("%d providers after the draft's unload", len(a.omniASR))
+	}
+}
+
 // eventually waits for cond, at most 10 s.
 func eventually(t *testing.T, what string, cond func() bool) {
 	t.Helper()
@@ -180,7 +206,7 @@ func eventually(t *testing.T, what string, cond func() bool) {
 func TestOmniSpecsAreTheCatalogue(t *testing.T) {
 	n := 0
 	for _, m := range models.Catalog() {
-		if m.Runtime != models.Omni || m.Kind == models.Aux {
+		if m.Runtime != models.Omni || m.Kind == models.Aux || m.Kind == models.Draft { // a draft rides on its model's server
 			continue
 		}
 		n++
