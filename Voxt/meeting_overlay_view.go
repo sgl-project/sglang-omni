@@ -50,32 +50,28 @@ func overlayModel(s meeting.Snapshot, collapsed bool) meetingOverlayModel {
 		ShowFinishing: s.State == meeting.StateFinishing,
 	}
 	if s.Problem != nil {
-		m.ProblemKey = meetingProblemMessageKey(s.Problem.Key)
+		m.ProblemKey = s.Problem.Key
 	}
 	return m
-}
-
-func meetingProblemMessageKey(key string) string {
-	switch key {
-	case meeting.ProblemKeySystemSilent:
-		return "If others are speaking but you see no text from them, open System Settings → Privacy & Security → Screen & System Audio Recording and allow Voxt."
-	case meeting.ProblemKeyLiveBacklog:
-		return "Live captions are falling behind; the final transcript will catch up after you end the meeting."
-	case meeting.ProblemKeyDiskLow:
-		return "Disk space is running low. End the meeting soon or free space on this Mac."
-	case meeting.ProblemKeyHelperOld:
-		return "This meeting needs a newer Voxt helper with system audio capture. Update Voxt or record microphone only."
-	default:
-		if strings.HasPrefix(key, "meeting.track.degraded.") {
-			return "One audio track stopped. Voxt switched to a simpler capture mode."
-		}
-		return ""
-	}
 }
 
 func meetingOverlayProblemText(key string) string {
 	if key == "" {
 		return ""
 	}
-	return i18n.T(key)
+	switch key {
+	case meeting.ProblemKeySystemSilent:
+		return i18n.T("If others are speaking but you see no text from them, open System Settings → Privacy & Security → Screen & System Audio Recording and allow Voxt.")
+	case meeting.ProblemKeyLiveBacklog:
+		return i18n.T("Live captions are falling behind; the final transcript will catch up after you end the meeting.")
+	case meeting.ProblemKeyDiskLow:
+		return i18n.T("Disk space is running low. End the meeting soon or free space on this Mac.")
+	case meeting.ProblemKeyHelperOld:
+		return i18n.T("This meeting needs a newer Voxt helper with system audio capture. Update Voxt or record microphone only.")
+	default:
+		if strings.HasPrefix(key, "meeting.track.degraded.") {
+			return i18n.T("One audio track stopped. Voxt switched to a simpler capture mode.")
+		}
+		return ""
+	}
 }

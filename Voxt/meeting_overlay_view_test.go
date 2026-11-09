@@ -39,7 +39,7 @@ func TestMeetingProblemMessageKeys(t *testing.T) {
 		{meeting.ProblemKeyHelperOld, "This meeting needs a newer Voxt helper with system audio capture. Update Voxt or record microphone only."},
 		{"meeting.track.degraded.system", "One audio track stopped. Voxt switched to a simpler capture mode."},
 	} {
-		if got := meetingProblemMessageKey(tc.key); got != tc.want {
+		if got := meetingOverlayProblemText(tc.key); got != tc.want {
 			t.Errorf("key %q: got %q want %q", tc.key, got, tc.want)
 		}
 	}

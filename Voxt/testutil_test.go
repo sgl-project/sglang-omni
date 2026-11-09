@@ -56,6 +56,10 @@ func runIsolated(m *testing.M) int {
 	}
 	defer os.RemoveAll(tmp)
 	realHub = models.Hub()
+	// LegacyHubs always considers ~/.cache/huggingface/hub; point HOME away so
+	// unit tests do not import catalogue models from the developer machine.
+	os.Setenv("HOME", tmp)
+	os.Setenv("XDG_CACHE_HOME", filepath.Join(tmp, "cache"))
 	os.Setenv(family.EnvDir, filepath.Join(tmp, "ActNow"))
 	os.Setenv("HF_HUB_CACHE", filepath.Join(tmp, "hub"))
 	os.Unsetenv("HF_HOME")
