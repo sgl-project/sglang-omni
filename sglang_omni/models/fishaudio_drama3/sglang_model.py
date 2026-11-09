@@ -43,7 +43,6 @@ from sglang_omni.models.fishaudio_drama3.model_inputs import (
     Drama3DecodeStatePool,
     Drama3StepInputs,
     StepExchange,
-    next_frame_labels,
 )
 from sglang_omni.models.fishaudio_drama3.tower_prefill import (
     Drama3TowerPrefill,
@@ -65,7 +64,6 @@ __all__ = [
     "Drama3DecodeStatePool",
     "Drama3StepInputs",
     "StepExchange",
-    "next_frame_labels",
     "PagedTowerAttention",
     "Drama3TowerPrefill",
 ]
@@ -200,8 +198,8 @@ class Drama3ForCausalLM(nn.Module):
         elif decode_buffers is None or decode_state is None:
             raise RuntimeError("the engine allocated no Drama 3 decode buffers")
         else:
-            # A CUDA graph replays this branch with the batch padded to its size;
-            # SGLang points every padded row at request slot 0.
+            # note (Wenyao Gao): a CUDA graph replays this branch with the batch
+            # padded to its size; SGLang points every padded row at request slot 0.
             row_count = input_ids.shape[0]
             request_slots = forward_batch.req_pool_indices.to(torch.int64)
             self.stage_decode_rows(request_slots)
@@ -226,7 +224,6 @@ class Drama3ForCausalLM(nn.Module):
             return logits_output
 
     def stage_decode_rows(self, request_slots: torch.Tensor) -> None:
-        """Gather each request slot's decode inputs into the decode buffers."""
         decode_buffers = self.decode_buffers
         decode_state = self.decode_state
         assert decode_buffers is not None and decode_state is not None

@@ -26,9 +26,6 @@ DEFAULT_STREAM_FOLLOWUP_STRIDE_RAMP = (10, 12, 32)
 DEFAULT_STREAM_FOLLOWUP_STRIDE = 64
 DEFAULT_FIRST_FRAME_CUDA_GRAPHS = True
 DEFAULT_FIRST_FRAME_CUDA_GRAPH_MAX_REQUESTS = 16
-# The breakable prefill CUDA graph captures the linear-attention (GDN) extend of
-# up to max_running_requests prompts per bucket instead of breaking at every
-# linear layer and launching its kernels from Python.
 DEFAULT_GDN_PREFILL_CUDA_GRAPHS = True
 DEFAULT_TRITON_SAMPLING = True
 # Under reference sampling, what replaces a main-token first draw that repeats one of

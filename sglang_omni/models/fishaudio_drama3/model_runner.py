@@ -215,9 +215,8 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
             raise
 
     def pinned(self, host: torch.Tensor) -> torch.Tensor:
-        """A host tensor whose copies to the device need no host sync: a pinned
-        block from the caching host allocator stays reserved until the copy lands,
-        so the scheduler keeps launching while another process holds the GPU."""
+        """Pinned, so a non_blocking copy needs no host sync; the caching host
+        allocator keeps the block reserved until the copy lands."""
         if self.device.type == "cuda":
             return host.pin_memory()
         else:
@@ -348,10 +347,8 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
         schedule_batch: ScheduleBatch,
         requests: list[SchedulerRequest],
     ) -> None:
-        """Collect the next frames; the batch arguments are the interface contract.
-
-        The clone keeps next_token_ids valid past the next forward.
-        """
+        """Collect the next frames; the batch arguments are the interface contract."""
+        # note (Wenyao Gao): the clone keeps next_token_ids valid past the next forward.
         frames = self.decode_buffers.sampled_frames[: len(requests)].clone()
         self.collect_frames(result, requests, frames)
 

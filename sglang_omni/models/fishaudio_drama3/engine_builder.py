@@ -160,7 +160,9 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         install_tuned_moe_configs()
         install_gdn_prefill_graph(
             FISH_OMNI_ARCHITECTURE,
-            max_seqs=self.max_running_requests if self.gdn_prefill_cuda_graphs else 0,
+            max_sequences=(
+                self.max_running_requests if self.gdn_prefill_cuda_graphs else 0
+            ),
         )
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
