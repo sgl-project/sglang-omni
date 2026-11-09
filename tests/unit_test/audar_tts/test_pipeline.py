@@ -607,13 +607,21 @@ def test_llama_cpp_stage_keeps_a_cpu_resolution_off_the_gpu(
 
     from sglang_omni.platforms import current_platform
 
+    def unexpected_system_info_probe() -> bytes:
+        raise AssertionError("an explicit CPU resolution must not probe llama.cpp GPUs")
+
     monkeypatch.setitem(
         sys.modules,
         "llama_cpp",
-        types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=FakeLlama),
+        types.SimpleNamespace(
+            LLAMA_SPLIT_MODE_NONE=0,
+            Llama=FakeLlama,
+            llama_print_system_info=unexpected_system_info_probe,
+        ),
     )
     monkeypatch.setattr(stages, "resolve_gguf", lambda *args: "/model.gguf")
     monkeypatch.setattr(current_platform, "device_type", "cpu", raising=False)
+    monkeypatch.setattr(current_platform, "is_musa", lambda: True, raising=False)
 
     with pytest.raises(RuntimeError, match="stop after capture"):
         stages.create_tts_engine_executor("unused", device="cpu")
@@ -645,6 +653,7 @@ def test_llama_cpp_stage_falls_back_to_cpu_without_musa_backend(
         ),
     )
     monkeypatch.setattr(stages, "resolve_gguf", lambda *args: "/model.gguf")
+    monkeypatch.setattr(stages.current_platform, "is_musa", lambda: True)
     monkeypatch.setattr(
         "sglang_omni.utils.device.resolve_concrete_device",
         lambda device, gpu_id: types.SimpleNamespace(type="musa", index=gpu_id),
@@ -681,6 +690,7 @@ def test_llama_cpp_stage_uses_musa_backend_when_available(
         ),
     )
     monkeypatch.setattr(stages, "resolve_gguf", lambda *args: "/model.gguf")
+    monkeypatch.setattr(stages.current_platform, "is_musa", lambda: True)
     monkeypatch.setattr(
         "sglang_omni.utils.device.resolve_concrete_device",
         lambda device, gpu_id: types.SimpleNamespace(type="musa", index=gpu_id),

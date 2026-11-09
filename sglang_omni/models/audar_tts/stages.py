@@ -21,6 +21,7 @@ from sglang_omni.models.audar_tts.protocol import (
     parse_speech_codes,
 )
 from sglang_omni.models.audar_tts.request_builders import build_audar_state
+from sglang_omni.platforms import current_platform
 from sglang_omni.preprocessing.audio import AudioMediaIO
 from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
 from sglang_omni.proto import StagePayload
@@ -296,7 +297,7 @@ def create_tts_engine_executor(
     else:
         pass
     use_cpu_backend = concrete_device.type == "cpu"
-    if concrete_device.type == "musa":
+    if current_platform.is_musa() and not use_cpu_backend:
         llama_system_info = llama_cpp.llama_print_system_info().decode(
             "utf-8", errors="replace"
         )
