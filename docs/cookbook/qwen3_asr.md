@@ -112,6 +112,13 @@ shared one-step-lookahead path to overlap host-side result processing with the
 next GPU decode forward even for a single request. Use
 `--asr.factory.enable_async_decode false` to disable it, or tune the crossover
 with `--asr.factory.async_decode_min_batch_size`.
+
+Whole-prompt async prefill extends the same lookahead loop to prefill, so the next device forward can launch before the host collects the prefill result. It is separate from async decode and uses stream-ordered device forwards. CUDA enables it by default when async decode is enabled. NPU remains experimental and opt-in: pass `--asr.factory.enable_async_prefill true` while keeping `--asr.factory.enable_async_decode true`. Pass `--asr.factory.enable_async_prefill false` to disable prefill lookahead independently for comparison.
+
+An omitted or `null` setting uses the platform default (CUDA on, NPU off), with prefill lookahead disabled when async decode is off. Explicitly enabling async prefill with async decode disabled raises `ValueError` before engine infrastructure is allocated. Explicit booleans select prefill lookahead only on CUDA and NPU; DFlash and Torch MPS remain excluded. Startup logs report the resolved async policy, which does not by itself prove a batch used the async path. Chunked, mixed, logprob and other ineligible batches retain the shared synchronous fallback. An attached `session_bridge` also excludes prefill lookahead; this restriction does not exclude ordinary HTTP SSE transcription as a whole.
+
+Reported NPU validation covers bounded eager/graph correctness and launch/resolve ordering; the tested workloads have not shown a stable performance gain. This is not a general throughput or quality-equivalence guarantee. The server validation handoff is `scripts/npu/ASYNC_PREFILL_VALIDATION.md` in the repository.
+
 The request builders also use the shared LM prefill-admission gate: prefill
 starts when 16 built requests are ready or after the oldest ready request waits
 40 ms. Once request-build work drains, a ready prefill is released immediately
