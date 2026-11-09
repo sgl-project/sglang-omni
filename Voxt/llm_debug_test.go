@@ -73,3 +73,24 @@ func TestLLMDebugPromptGrows(t *testing.T) {
 		t.Errorf("a 200-line prompt's field is %.0f high: %.0f lines", long.H, long.H/line)
 	}
 }
+
+// TestLLMDebugButtonsFit: the way to the debug page, at the foot of
+// Language models, and the debug page's Open Language models are buttons
+// on the left, under the page's caption; they filled the column, their
+// labels centred, and did not look clickable (#3644).
+func TestLLMDebugButtonsFit(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 2400)
+	for _, c := range []struct{ path, caption, label string }{
+		{remotePath, "Transcribe's clean-up, Translate and Rewrite use the language model you set up here, over its OpenAI-compatible API. Voxt sends it the recognised or selected text, never your audio; keys stay in this Mac's Keychain.", "Try prompts on a model…"},
+		{llmDebugPath, "Send a feature's request for your own text to a language model, with its prompt edited here. Nothing is saved until you use the prompt.", "Open Language models"},
+	} {
+		a.navigate(c.path)
+		frames(tt)
+		cap, ok1 := tt.Find(c.caption)
+		r, ok2 := tt.Find(c.label)
+		if !ok1 || !ok2 || r.X-cap.X > 32 || r.W > cap.W/2 {
+			t.Errorf("%s: %q at %+v, the caption at %+v", c.path, c.label, r, cap)
+		}
+	}
+}

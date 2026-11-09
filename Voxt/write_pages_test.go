@@ -221,7 +221,7 @@ func TestSessionBlocker(t *testing.T) {
 // default and its page says what its card does more.
 func TestCardSwitchPerFeature(t *testing.T) {
 	a, tt := pageTester(t, "/translate")
-	rewriteCard := "Rewrite's card does more than Transcribe's and Translate's: Continue, or the Rewrite shortcut, asks a follow-up that changes the answer (\"shorter\", \"in English\"), and the card keeps the conversation."
+	rewriteCard := "In Rewrite's card you can keep going: click Continue or press the Rewrite shortcut again and say \"shorter\" or \"in English\". The card changes the answer and keeps the whole conversation."
 	cards := func() [3]bool {
 		f := a.lib.settings.Get().Features
 		return [3]bool{f.Transcribe.ShowCard, f.Translate.ShowCard, f.Rewrite.ShowCard}

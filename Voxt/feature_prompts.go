@@ -81,7 +81,7 @@ func (a *app) cardSetting(c *ui.Context, p, feature string) {
 		help = i18n.T("Shows translations in the answer card, to read, copy or insert, instead of typing them (or replacing the selection). Text that cannot go in, as with no text field in front, shows in the card anyway.")
 	case hotkey.Rewrite:
 		on = &f.Rewrite.ShowCard
-		if note := i18n.T("Rewrite's card does more than Transcribe's and Translate's: Continue, or the Rewrite shortcut, asks a follow-up that changes the answer (\"shorter\", \"in English\"), and the card keeps the conversation."); settingsTextMatches(settingsSearchQuery, note) {
+		if note := i18n.T("In Rewrite's card you can keep going: click Continue or press the Rewrite shortcut again and say \"shorter\" or \"in English\". The card changes the answer and keeps the whole conversation."); settingsTextMatches(settingsSearchQuery, note) {
 			caption(c, note)
 		}
 		help = i18n.T("Shows Rewrite's answers in the answer card, to read, copy, insert or follow up. Off, the answer replaces the selection or is typed where your cursor is, and there are no follow-ups. Text that cannot go in, as with no text field in front, shows in the card anyway.")
