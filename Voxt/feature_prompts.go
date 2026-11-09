@@ -229,6 +229,9 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 	if !a.settingsOpen && c.Shortcut(ui.Cmd, ui.KeyF) {
 		u.rules, u.findFocus = true, true
 	}
+	if !u.rules {
+		u.promptTop = false // it opens at the start again
+	}
 	// Folded by default: long rules would push the rest of the page down.
 	// Its title tells how long the rules are.
 	summary := i18n.T("Not set")
@@ -291,6 +294,10 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 				}
 			}
 			in.TextRanges(ranges...)
+		}
+		if !u.promptTop {
+			u.promptTop = true
+			in.SetTextSelection(0, 0)
 		}
 		if u.findSelect && u.found > 0 && u.found <= len(matches) {
 			u.findSelect = false
