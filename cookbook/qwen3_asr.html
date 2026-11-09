@@ -307,6 +307,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/native_chat_stage.html">Native Chat Stage</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/audio_translations.html">Audio Translations</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/tts.html">TTS Model Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/asr.html">ASR Model Usage</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/process_topology.html">Process Topology, Replicas, and GPU Sharing</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/tts_process_topology.html">TTS Process Topology</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/process_topology_migration.html">Process Topology Migration</a></li>
@@ -587,10 +588,8 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#live-pcm-transcription">Live PCM transcription</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#request-parameters">Request Parameters</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#language-hints">Language Hints</a></li>
-</ul>
-</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prompt-and-vocabulary-biasing">Prompt and Vocabulary Biasing</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#language-hints">Language Hints</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#long-audio">Long Audio</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmarking">Benchmarking</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#concurrency-tuning">Concurrency tuning</a></li>
@@ -609,7 +608,7 @@
   <section class="tex2jax_ignore mathjax_ignore" id="qwen3-asr">
 <h1>Qwen3-ASR<a class="headerlink" href="#qwen3-asr" title="Link to this heading">#</a></h1>
 <p><a class="reference external" href="https://huggingface.co/Qwen/Qwen3-ASR-1.7B">Qwen3-ASR</a> is an audio transcription model served through the OpenAI-compatible <code class="docutils literal notranslate"><span class="pre">/v1/audio/transcriptions</span></code> endpoint. It accepts one uploaded audio file per request and returns text.</p>
-<p>Qwen3-ASR does not support <code class="docutils literal notranslate"><span class="pre">/v1/audio/translations</span></code>; that endpoint returns HTTP 400. Use <code class="docutils literal notranslate"><span class="pre">/v1/audio/transcriptions</span></code>.</p>
+<p>Qwen3-ASR does not serve <code class="docutils literal notranslate"><span class="pre">/v1/audio/translations</span></code>; that route returns HTTP 400. The endpoint semantics, response formats, SSE lifecycle, and request parameters that Qwen3-ASR shares with the other ASR models are documented in <a class="reference internal" href="../basic_usage/asr.html"><span class="std std-doc">ASR Model Usage</span></a>; this page keeps the behavior specific to this checkpoint.</p>
 <section id="prerequisites">
 <h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
 <p>Install <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> by following the <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">CUDA installation</span></a>
@@ -630,51 +629,13 @@ then download the model:</p>
 </section>
 <section id="apple-silicon">
 <h3>Apple Silicon<a class="headerlink" href="#apple-silicon" title="Link to this heading">#</a></h3>
-<p>The Apple Silicon path requires macOS 14 or newer, Python 3.12, Homebrew, and
-PyTorch with the MPS backend. Audio decoding also requires Homebrew’s versioned FFmpeg 7 formula:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>brew<span class="w"> </span>install<span class="w"> </span>ffmpeg@7
-<span class="nb">export</span><span class="w"> </span><span class="nv">DYLD_LIBRARY_PATH</span><span class="o">=</span><span class="s2">"</span><span class="k">$(</span>brew<span class="w"> </span>--prefix<span class="w"> </span>ffmpeg@7<span class="k">)</span><span class="s2">/lib</span><span class="si">${</span><span class="nv">DYLD_LIBRARY_PATH</span><span class="p">:+:</span><span class="nv">$DYLD_LIBRARY_PATH</span><span class="si">}</span><span class="s2">"</span>
-</pre></div>
-</div>
-<p>Do not replace <code class="docutils literal notranslate"><span class="pre">ffmpeg&#64;7</span></code> with the unversioned <code class="docutils literal notranslate"><span class="pre">ffmpeg</span></code> formula. The latter
-currently installs FFmpeg 9, while Apple installs <code class="docutils literal notranslate"><span class="pre">torchcodec==0.15.0</span></code>, which
-supports FFmpeg 4 through 8. Because <code class="docutils literal notranslate"><span class="pre">ffmpeg&#64;7</span></code> is keg-only, its library
-directory must also be present in <code class="docutils literal notranslate"><span class="pre">DYLD_LIBRARY_PATH</span></code> whenever the server starts.</p>
-<p>macOS may remove <code class="docutils literal notranslate"><span class="pre">DYLD_*</span></code> variables when a SIP-protected system executable
-launches the server. Set <code class="docutils literal notranslate"><span class="pre">DYLD_LIBRARY_PATH</span></code> on the final <code class="docutils literal notranslate"><span class="pre">sgl-omni</span></code> process;
-for example, place <code class="docutils literal notranslate"><span class="pre">/usr/bin/env</span> <span class="pre">DYLD_LIBRARY_PATH=...</span></code> after wrappers such as
-<code class="docutils literal notranslate"><span class="pre">/usr/bin/time</span></code>. Test a compressed input such as M4A or MP3, since WAV decoding
-can succeed without loading FFmpeg.</p>
-<p>Create one virtual environment for both repositories, then install the pinned
-SGLang tag from source with its <code class="docutils literal notranslate"><span class="pre">all_mps</span></code> dependencies before installing
-SGLang-Omni:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>--branch<span class="w"> </span>v0.5.23<span class="w"> </span>https://github.com/sgl-project/sglang.git
-git<span class="w"> </span>clone<span class="w"> </span>https://github.com/sgl-project/sglang-omni.git
-
-uv<span class="w"> </span>venv<span class="w"> </span>-p<span class="w"> </span><span class="m">3</span>.12<span class="w"> </span>sglang-omni/.venv-apple
-<span class="nb">source</span><span class="w"> </span>sglang-omni/.venv-apple/bin/activate
-
-<span class="nb">cd</span><span class="w"> </span>sglang
-cp<span class="w"> </span>python/pyproject_other.toml<span class="w"> </span>python/pyproject.toml
-uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span><span class="s2">"python[all_mps]"</span>
-
-<span class="nb">cd</span><span class="w"> </span>../sglang-omni
-uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span>.
-</pre></div>
-</div>
-<p>Before downloading a model, verify both Metal and FFmpeg loading:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-<span class="w"> </span><span class="s">&lt;&lt;'PY'</span>
-<span class="s">import torch</span>
-<span class="s">from torchcodec.decoders import AudioDecoder</span>
-
-<span class="s">assert torch.backends.mps.is_available()</span>
-<span class="s">print("PyTorch MPS and TorchCodec FFmpeg loading are available")</span>
-<span class="s">PY</span>
-</pre></div>
-</div>
-<p>Pass an official PyTorch Qwen3-ASR checkpoint. The Torch MPS path currently
-uses one device (<code class="docutils literal notranslate"><span class="pre">tp_size=1</span></code>), greedy decoding, and the eager
-<code class="docutils literal notranslate"><span class="pre">torch_native</span></code>/<code class="docutils literal notranslate"><span class="pre">sdpa</span></code> profile:</p>
+<p>Qwen3-ASR runs on Apple Silicon through a Torch/MPS compatibility path. Install
+with the <a class="reference internal" href="../other_platforms/installation_apple_silicon.html"><span class="std std-doc">Apple Silicon installer</span></a>
+and follow its environment-activation and <code class="docutils literal notranslate"><span class="pre">DYLD_LIBRARY_PATH</span></code> steps; TorchCodec
+needs Homebrew’s keg-only FFmpeg libraries on the path before the server starts.</p>
+<p>Pass an official PyTorch checkpoint such as <code class="docutils literal notranslate"><span class="pre">Qwen/Qwen3-ASR-0.6B</span></code>. The path uses
+one device (<code class="docutils literal notranslate"><span class="pre">tp_size=1</span></code>), greedy decoding, and the eager <code class="docutils literal notranslate"><span class="pre">torch_native</span></code>/<code class="docutils literal notranslate"><span class="pre">sdpa</span></code>
+profile:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">DYLD_LIBRARY_PATH</span><span class="o">=</span><span class="s2">"</span><span class="k">$(</span>brew<span class="w"> </span>--prefix<span class="w"> </span>ffmpeg@7<span class="k">)</span><span class="s2">/lib</span><span class="si">${</span><span class="nv">DYLD_LIBRARY_PATH</span><span class="p">:+:</span><span class="nv">$DYLD_LIBRARY_PATH</span><span class="si">}</span><span class="s2">"</span>
 
 sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
@@ -780,56 +741,23 @@ for results measured on an earlier release.</p>
 </section>
 <section id="transcribe-audio">
 <h2>Transcribe Audio<a class="headerlink" href="#transcribe-audio" title="Link to this heading">#</a></h2>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/transcriptions<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-F<span class="w"> </span><span class="nv">model</span><span class="o">=</span>Qwen/Qwen3-ASR-1.7B<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-F<span class="w"> </span><span class="nv">file</span><span class="o">=</span>@tests/data/query_to_cars.wav<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-F<span class="w"> </span><span class="nv">response_format</span><span class="o">=</span>json
-</pre></div>
-</div>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">requests</span>
-
-<span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="s2">"tests/data/query_to_cars.wav"</span><span class="p">,</span> <span class="s2">"rb"</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
-    <span class="n">resp</span> <span class="o">=</span> <span class="n">requests</span><span class="o">.</span><span class="n">post</span><span class="p">(</span>
-        <span class="s2">"http://localhost:8000/v1/audio/transcriptions"</span><span class="p">,</span>
-        <span class="n">data</span><span class="o">=</span><span class="p">{</span>
-            <span class="s2">"model"</span><span class="p">:</span> <span class="s2">"Qwen/Qwen3-ASR-1.7B"</span><span class="p">,</span>
-            <span class="s2">"response_format"</span><span class="p">:</span> <span class="s2">"json"</span><span class="p">,</span>
-        <span class="p">},</span>
-        <span class="n">files</span><span class="o">=</span><span class="p">{</span><span class="s2">"file"</span><span class="p">:</span> <span class="p">(</span><span class="s2">"query_to_cars.wav"</span><span class="p">,</span> <span class="n">f</span><span class="p">,</span> <span class="s2">"audio/wav"</span><span class="p">)},</span>
-        <span class="n">timeout</span><span class="o">=</span><span class="mi">300</span><span class="p">,</span>
-    <span class="p">)</span>
-
-<span class="n">resp</span><span class="o">.</span><span class="n">raise_for_status</span><span class="p">()</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">resp</span><span class="o">.</span><span class="n">json</span><span class="p">()[</span><span class="s2">"text"</span><span class="p">])</span>
-</pre></div>
-</div>
+<p>Send one uploaded file to <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/v1/audio/transcriptions</span></code>. The request shape and
+the <code class="docutils literal notranslate"><span class="pre">response_format</span></code> semantics shared with the other ASR models are documented
+in <a class="reference internal" href="../basic_usage/asr.html#use-curl"><span class="std std-ref">ASR Model Usage</span></a>. Qwen3-ASR adds one detail:
+<code class="docutils literal notranslate"><span class="pre">verbose_json</span></code> reports one segment per transcribed chunk with that chunk’s real
+start and end timestamps, not word-level timestamps.</p>
 </section>
 <section id="stream-transcription">
 <h2>Stream Transcription<a class="headerlink" href="#stream-transcription" title="Link to this heading">#</a></h2>
-<p>Set <code class="docutils literal notranslate"><span class="pre">stream=true</span></code> to receive incremental transcript deltas over SSE. Use
-<code class="docutils literal notranslate"><span class="pre">curl</span> <span class="pre">-N</span></code> to disable client-side response buffering:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-N<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/transcriptions<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-F<span class="w"> </span><span class="nv">model</span><span class="o">=</span>Qwen/Qwen3-ASR-1.7B<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-F<span class="w"> </span><span class="nv">file</span><span class="o">=</span>@tests/data/query_to_cars.wav<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-F<span class="w"> </span><span class="nv">language</span><span class="o">=</span>en<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-F<span class="w"> </span><span class="nv">response_format</span><span class="o">=</span>json<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-F<span class="w"> </span><span class="nv">stream</span><span class="o">=</span><span class="nb">true</span>
-</pre></div>
-</div>
-<p>The stream contains zero or more delta events, followed by the complete final
-transcript and the SSE sentinel:</p>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>data: {"type":"transcript.text.delta","delta":"..."}
-
-data: {"type":"transcript.text.done","text":"..."}
-
-data: [DONE]
-</pre></div>
-</div>
-<p>Qwen3-ASR batches deltas for up to 50 ms by default. EOS and other terminal
-conditions flush any buffered text before the final transcript event.</p>
+<p>Set <code class="docutils literal notranslate"><span class="pre">stream=true</span></code> to receive incremental transcript text over SSE. The event
+lifecycle, batching behavior, and the response formats that streaming accepts
+are shared and documented in
+<a class="reference internal" href="../basic_usage/asr.html#stream-transcription"><span class="std std-ref">ASR Model Usage</span></a>. Qwen3-ASR batches
+deltas for up to 50 ms by default, and EOS or another terminal condition flushes
+any buffered text before the final transcript event.</p>
 <section id="live-pcm-transcription">
 <h3>Live PCM transcription<a class="headerlink" href="#live-pcm-transcription" title="Link to this heading">#</a></h3>
-<p>The SSE mode above starts decoding after a complete multipart upload. For live
+<p>SSE streaming starts decoding after a complete multipart upload. For live
 audio ingestion, mount the realtime WebSocket endpoint:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">MODEL_PATH</span><span class="si">}</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
@@ -893,67 +821,65 @@ text from all final segments.</p>
 restart the transcription rather than retrying packets on the old session.
 Reconnecting resets uncommitted audio, partial hypotheses, VAD state, and Qwen
 rollback state.</p>
-</section>
-</section>
-<section id="request-parameters">
-<h2>Request Parameters<a class="headerlink" href="#request-parameters" title="Link to this heading">#</a></h2>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Parameter</p></th>
-<th class="head"><p>Type</p></th>
-<th class="head"><p>Default</p></th>
-<th class="head"><p>Description</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">file</span></code></p></td>
-<td><p>file</p></td>
-<td><p>required</p></td>
-<td><p>Audio file uploaded as multipart form data</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">model</span></code></p></td>
-<td><p>string</p></td>
-<td><p>server default</p></td>
-<td><p>Model identifier</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">language</span></code></p></td>
-<td><p>string</p></td>
-<td><p>none</p></td>
-<td><p>Optional language hint as a supported code or canonical name (case-insensitive); omit it for automatic detection</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">prompt</span></code></p></td>
-<td><p>string</p></td>
-<td><p>none</p></td>
-<td><p>Vocabulary biasing: terms likely to appear in the audio, such as names and jargon. See the note below the table</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">response_format</span></code></p></td>
-<td><p>string</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">json</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">json</span></code>, <code class="docutils literal notranslate"><span class="pre">verbose_json</span></code>, or <code class="docutils literal notranslate"><span class="pre">text</span></code></p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">temperature</span></code></p></td>
-<td><p>float</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
-<td><p>Sampling temperature; <code class="docutils literal notranslate"><span class="pre">0</span></code> uses greedy decoding. A negative value returns HTTP 422</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code></p></td>
-<td><p>float</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">1.0</span></code></p></td>
-<td><p>Penalty in <code class="docutils literal notranslate"><span class="pre">(0,</span> <span class="pre">2]</span></code> on tokens already generated. Values above <code class="docutils literal notranslate"><span class="pre">1</span></code> discourage repeats and can stop a runaway loop on noisy or silent audio, but they also lower accuracy on clean audio, so keep <code class="docutils literal notranslate"><span class="pre">1.0</span></code> unless loops occur</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code></p></td>
-<td><p>integer</p></td>
-<td><p>server stage limit</p></td>
-<td><p>Per-request generation-token limit</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stream</span></code></p></td>
-<td><p>boolean</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
-<td><p>Return SSE transcript deltas; supports <code class="docutils literal notranslate"><span class="pre">json</span></code> or <code class="docutils literal notranslate"><span class="pre">text</span></code> response format</p></td>
-</tr>
-</tbody>
-</table>
+<p>A minimal client appends 100 ms packets, commits the segment, and waits for the
+completed transcript:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">base64</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">websockets</span>
+
+
+<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
+    <span class="k">async</span> <span class="k">with</span> <span class="n">websockets</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span>
+        <span class="s2">"ws://localhost:8000/v1/realtime?intent=transcription"</span>
+    <span class="p">)</span> <span class="k">as</span> <span class="n">ws</span><span class="p">:</span>
+        <span class="k">await</span> <span class="n">ws</span><span class="o">.</span><span class="n">send</span><span class="p">(</span><span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">({</span>
+            <span class="s2">"type"</span><span class="p">:</span> <span class="s2">"session.update"</span><span class="p">,</span>
+            <span class="s2">"session"</span><span class="p">:</span> <span class="p">{</span><span class="s2">"language"</span><span class="p">:</span> <span class="s2">"English"</span><span class="p">},</span>
+        <span class="p">}))</span>
+        <span class="nb">print</span><span class="p">(</span><span class="k">await</span> <span class="n">ws</span><span class="o">.</span><span class="n">recv</span><span class="p">())</span>
+
+        <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="s2">"tests/data/query_to_cars.wav"</span><span class="p">,</span> <span class="s2">"rb"</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
+            <span class="n">pcm16</span> <span class="o">=</span> <span class="n">f</span><span class="o">.</span><span class="n">read</span><span class="p">()</span>
+        <span class="k">for</span> <span class="n">start</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">pcm16</span><span class="p">),</span> <span class="mi">3200</span><span class="p">):</span>
+            <span class="k">await</span> <span class="n">ws</span><span class="o">.</span><span class="n">send</span><span class="p">(</span><span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">({</span>
+                <span class="s2">"type"</span><span class="p">:</span> <span class="s2">"input_audio_buffer.append"</span><span class="p">,</span>
+                <span class="s2">"audio"</span><span class="p">:</span> <span class="n">base64</span><span class="o">.</span><span class="n">b64encode</span><span class="p">(</span><span class="n">pcm16</span><span class="p">[</span><span class="n">start</span><span class="p">:</span><span class="n">start</span> <span class="o">+</span> <span class="mi">3200</span><span class="p">])</span><span class="o">.</span><span class="n">decode</span><span class="p">(),</span>
+            <span class="p">}))</span>
+
+        <span class="k">await</span> <span class="n">ws</span><span class="o">.</span><span class="n">send</span><span class="p">(</span><span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">({</span><span class="s2">"type"</span><span class="p">:</span> <span class="s2">"input_audio_buffer.commit"</span><span class="p">}))</span>
+        <span class="k">await</span> <span class="n">ws</span><span class="o">.</span><span class="n">send</span><span class="p">(</span><span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">({</span><span class="s2">"type"</span><span class="p">:</span> <span class="s2">"transcription.done"</span><span class="p">}))</span>
+
+        <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+            <span class="n">event</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="k">await</span> <span class="n">ws</span><span class="o">.</span><span class="n">recv</span><span class="p">())</span>
+            <span class="k">if</span> <span class="n">event</span><span class="p">[</span><span class="s2">"type"</span><span class="p">]</span> <span class="o">==</span> <span class="s2">"transcription.completed"</span><span class="p">:</span>
+                <span class="nb">print</span><span class="p">(</span><span class="n">event</span><span class="p">[</span><span class="s2">"text"</span><span class="p">])</span>
+                <span class="k">break</span>
+
+
+<span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">main</span><span class="p">())</span>
+</pre></div>
 </div>
+<p>The example assumes the upload is already mono 16 kHz PCM16; the session takes
+packets as they arrive and does not resample them.</p>
+</section>
+</section>
+<section id="prompt-and-vocabulary-biasing">
+<h2>Prompt and Vocabulary Biasing<a class="headerlink" href="#prompt-and-vocabulary-biasing" title="Link to this heading">#</a></h2>
+<p>The endpoint accepts the shared ASR request fields (<code class="docutils literal notranslate"><span class="pre">file</span></code>, <code class="docutils literal notranslate"><span class="pre">model</span></code>,
+<code class="docutils literal notranslate"><span class="pre">language</span></code>, <code class="docutils literal notranslate"><span class="pre">response_format</span></code>, <code class="docutils literal notranslate"><span class="pre">temperature</span></code>, <code class="docutils literal notranslate"><span class="pre">stream</span></code>) described in
+<a class="reference internal" href="../basic_usage/asr.html#request-parameters"><span class="std std-ref">ASR Model Usage</span></a>. Three fields are
+specific to this checkpoint:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">prompt</span></code> — vocabulary biasing, described below.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code> — default <code class="docutils literal notranslate"><span class="pre">1.0</span></code>, valid range <code class="docutils literal notranslate"><span class="pre">(0,</span> <span class="pre">2]</span></code>. Values above <code class="docutils literal notranslate"><span class="pre">1</span></code>
+discourage repeats and can stop a runaway loop on noisy or silent audio, but
+they also lower accuracy on clean audio, so keep <code class="docutils literal notranslate"><span class="pre">1.0</span></code> unless loops occur. The
+DFlash draft does not apply it: a value other than <code class="docutils literal notranslate"><span class="pre">1.0</span></code> returns HTTP 400.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code> — per-request generation cap; the default is the stage
+limit.</p></li>
+</ul>
 <p>Biasing raises the model’s preference for the supplied terms. It does not
 force them: a term the audio does not contain will not be inserted, and an
 irrelevant list biases the model toward words that were never spoken, which
@@ -962,8 +888,9 @@ stopped improving past roughly 20 terms, while latency kept growing because
 the text is prefilled with every request.</p>
 <p><code class="docutils literal notranslate"><span class="pre">verbose_json</span></code> uses the model adapter’s verbose response schema and includes
 duration-based usage (rounded-up audio seconds) when duration probing succeeds.</p>
+</section>
 <section id="language-hints">
-<h3>Language Hints<a class="headerlink" href="#language-hints" title="Link to this heading">#</a></h3>
+<h2>Language Hints<a class="headerlink" href="#language-hints" title="Link to this heading">#</a></h2>
 <p>When <code class="docutils literal notranslate"><span class="pre">language</span></code> is omitted, Qwen3-ASR detects the spoken language before
 transcribing. Set an explicit hint when the language is known or automatic
 detection is unreliable for short or ambiguous audio.</p>
@@ -994,13 +921,15 @@ silently falling back to English.</p>
 <p>The model also has ASR coverage for 22 Chinese dialects, but those dialect names
 are not supported as forced <code class="docutils literal notranslate"><span class="pre">language</span></code> hints; use <code class="docutils literal notranslate"><span class="pre">Chinese</span></code>/<code class="docutils literal notranslate"><span class="pre">zh</span></code> for them.</p>
 </section>
-</section>
 <section id="long-audio">
 <h2>Long Audio<a class="headerlink" href="#long-audio" title="Link to this heading">#</a></h2>
 <p>The current Qwen3-ASR model accepts at most 1,200 seconds of audio in one
 request, so we transcribe longer uploads in chunks: we split the audio, run
 each chunk as its own engine request, and join the transcripts back in
 order. The behavior follows two kinds of values.</p>
+<p>The shared <code class="docutils literal notranslate"><span class="pre">audio_chunking</span></code> flags, the aggregate guard, and the streaming
+limit are described in <a class="reference internal" href="../basic_usage/asr.html#long-audio"><span class="std std-ref">ASR Model Usage</span></a>;
+the defaults and limits below are Qwen3-ASR’s.</p>
 <p>The scheduling policy is yours to tune, with dotted flags or the matching
 YAML keys:</p>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -1093,12 +1022,10 @@ for longer uploads.</p></li>
 </section>
 <section id="benchmarking">
 <h2>Benchmarking<a class="headerlink" href="#benchmarking" title="Link to this heading">#</a></h2>
-<p>Use <code class="docutils literal notranslate"><span class="pre">benchmarks/eval/benchmark_asr_seedtts.py</span></code> to sweep ASR concurrency on
-SeedTTS reference audio through <code class="docutils literal notranslate"><span class="pre">/v1/audio/transcriptions</span></code>. It defaults to
-<code class="docutils literal notranslate"><span class="pre">--model-path</span> <span class="pre">Qwen/Qwen3-ASR-1.7B</span></code>; the shared request and metric logic lives in
-<code class="docutils literal notranslate"><span class="pre">benchmarks.tasks.asr</span></code> and also supports Fun-ASR through <code class="docutils literal notranslate"><span class="pre">--model-path</span></code>.
-The report includes RTF (processing time divided by audio duration) and RTFx
-(successful input-audio seconds divided by wall-clock seconds).</p>
+<p>The benchmark entry point, its metric definitions, and the flags shared by all
+ASR checkpoints are documented in
+<a class="reference internal" href="../basic_usage/asr.html#benchmarking"><span class="std std-ref">ASR Model Usage</span></a>. The command below pins
+the Qwen3-ASR model and dataset revisions used for the numbers in this page.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">MODEL_PATH</span><span class="si">}</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-name<span class="w"> </span>Qwen/Qwen3-ASR-1.7B<span class="w"> </span><span class="se">\</span>
@@ -1115,17 +1042,9 @@ python<span class="w"> </span>-m<span class="w"> </span>benchmarks.eval.benchmar
 <span class="w">  </span>--repeats<span class="w"> </span><span class="m">3</span><span class="w"> </span>--warmup
 </pre></div>
 </div>
-<p>The result JSON includes the applied dataset revision, declared model revision,
-an effective evaluation-input content hash, normalization, repository and
-dependency fingerprints, complete sample counts, and latency/RTF/throughput.
-When local NVML and <code class="docutils literal notranslate"><span class="pre">psutil</span></code> sampling are available, it also includes CPU use,
-power, and peak/steady GPU memory. Pass each server GPU PID reported by NVML via
-<code class="docutils literal notranslate"><span class="pre">--gpu-process-pid</span></code>; without explicit PIDs, process-specific metrics remain
-unavailable rather than including unrelated workloads on the same GPU. In a
-Docker container, use the host PID namespace (<code class="docutils literal notranslate"><span class="pre">--pid=host</span></code>) to collect process
-CPU metrics. Unavailable metrics and monitor errors remain explicit. Optional
-server settings and an exact launch command can be declared with the benchmark’s
-provenance flags.</p>
+<p>Result fields, GPU sampling, and the provenance flags are documented in
+<a class="reference internal" href="../basic_usage/asr.html#benchmarking"><span class="std std-ref">ASR Model Usage</span></a> and the
+<a class="reference internal" href="../developer_reference/asr_bench.html"><span class="std std-doc">ASR benchmark runbook</span></a>.</p>
 <p>The ASR CI gate runs the selected ASR CI model preset on this same benchmark
 entry point (<code class="docutils literal notranslate"><span class="pre">tests/test_model/test_asr_ci_seedtts.py</span></code>). Qwen3-ASR remains
 the transcriber for the TTS and talker WER stages.</p>
@@ -1242,14 +1161,16 @@ On memory-constrained GPUs, use the memory-conservative override:</p></li>
 </section>
 <section id="known-limitations">
 <h2>Known Limitations<a class="headerlink" href="#known-limitations" title="Link to this heading">#</a></h2>
+<p>The limits shared with the other ASR models are listed in
+<a class="reference internal" href="../basic_usage/asr.html#known-limitations"><span class="std std-ref">ASR Model Usage</span></a>. Qwen3-ASR adds:</p>
 <ul class="simple">
-<li><p>The HTTP endpoint accepts one uploaded file per request. Live PCM uses
-<code class="docutils literal notranslate"><span class="pre">/v1/realtime?intent=transcription</span></code> and requires <code class="docutils literal notranslate"><span class="pre">--enable-realtime</span></code>.</p></li>
-<li><p>Non-streaming uploads up to <code class="docutils literal notranslate"><span class="pre">max_total_audio_s</span></code> (default one hour) are
-transcribed in full via chunking; see Long Audio above. Streaming requests
-are limited to <code class="docutils literal notranslate"><span class="pre">max_native_clip_s</span></code> (1,200s) on CUDA; Torch MPS caps both
-native and whole-upload requests at 60 seconds.</p></li>
-<li><p>Audio is resampled to 16 kHz before transcription.</p></li>
+<li><p>The Torch MPS path caps both native and whole-upload requests at 60 seconds,
+rejects longer audio, and provides no token logprobs or sampling controls
+beyond <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code>.</p></li>
+<li><p>Streaming requests cannot chunk and run as one engine request, bounded by
+<code class="docutils literal notranslate"><span class="pre">max_native_clip_s</span></code> (1,200 s) on CUDA and 60 seconds on Torch MPS. Use
+<code class="docutils literal notranslate"><span class="pre">stream=false</span></code> for longer uploads.</p></li>
+<li><p>DFlash rejects <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code> values other than <code class="docutils literal notranslate"><span class="pre">1.0</span></code> with HTTP 400.</p></li>
 </ul>
 </section>
 </section>
@@ -1316,10 +1237,8 @@ native and whole-upload requests at 60 seconds.</p></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#live-pcm-transcription">Live PCM transcription</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#request-parameters">Request Parameters</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#language-hints">Language Hints</a></li>
-</ul>
-</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prompt-and-vocabulary-biasing">Prompt and Vocabulary Biasing</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#language-hints">Language Hints</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#long-audio">Long Audio</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmarking">Benchmarking</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#concurrency-tuning">Concurrency tuning</a></li>
