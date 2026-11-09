@@ -4,6 +4,7 @@ package main
 // the preview of the whole prompt (feature_page.go).
 
 import (
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -200,11 +201,9 @@ func (a *app) savePrompt(feature string) {
 // they are saved (they are saved at once when the field loses focus).
 const promptSaveDelay = 800 * time.Millisecond
 
-// The rules field's height in lines: it grows with its text between them.
-const (
-	promptMinLines = 4
-	promptMaxLines = 36
-)
+// promptMinLines is the rules field's height when it is empty or short; it
+// grows with its text from there.
+const promptMinLines = 4
 
 // findFolded returns where query is in text, ignoring case, as rune
 // offsets [start, end), the text fields' unit; none for a blank query.
@@ -235,9 +234,6 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 	a.promptSync(feature)
 	if !a.settingsOpen && c.Shortcut(ui.Cmd, ui.KeyF) {
 		u.rules, u.findFocus = true, true
-	}
-	if !u.rules {
-		u.promptTop = false // it opens at the start again
 	}
 	// Folded by default: long rules would push the rest of the page down.
 	// Its title tells how long the rules are.
@@ -288,10 +284,10 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 				caption(c, i18n.N(len(matches), "%d match", "%d matches", len(matches))).SingleLine().Shrink(0)
 			}
 		})
-		// As high as the rules, up to promptMaxLines: a long prompt reads
-		// down the page instead of in a small box; past that the field
-		// scrolls, so that Find can bring a match into view.
-		in := ui.TextArea(c.Key(p+"-prompt"), &u.prompt).Label(label).Placeholder(placeholder).Lines(promptMinLines, promptMaxLines)
+		// As high as the rules, however long: a long prompt reads down the
+		// page, which scrolls to the caret and to what Find selects (MyGo
+		// patch 0012), instead of in a box that scrolls inside the page.
+		in := ui.TextArea(c.Key(p+"-prompt"), &u.prompt).Label(label).Placeholder(placeholder).Lines(promptMinLines, math.MaxInt32)
 		if len(matches) > 0 {
 			ranges := make([]ui.TextRange, len(matches))
 			for i, m := range matches {
@@ -301,10 +297,6 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 				}
 			}
 			in.TextRanges(ranges...)
-		}
-		if !u.promptTop {
-			u.promptTop = true
-			in.SetTextSelection(0, 0)
 		}
 		if u.findSelect && u.found > 0 && u.found <= len(matches) {
 			u.findSelect = false

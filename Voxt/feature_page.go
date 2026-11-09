@@ -67,9 +67,6 @@ type featureUI struct {
 	found      int
 	findFocus  bool
 	findSelect bool
-	// promptTop: the rules field was put at its start since the section
-	// opened (a text area otherwise shows the end, where its caret is).
-	promptTop bool
 	// block says why the Try area's Start did not start.
 	block *sessionNotice
 	// endWord is the end word's select and typed word (Transcribe).
