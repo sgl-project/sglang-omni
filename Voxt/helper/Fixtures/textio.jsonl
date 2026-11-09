@@ -27,7 +27,7 @@
 {"to":"helper","msg":{"id":"c33","method":"textio.paste","params":{"text":"Hi","verifyMs":1000}}}
 {"to":"app","msg":{"id":"c33","result":{"posted":true,"restored":true,"clipboardTaken":false,"ms":503.1,"check":"unknown","field":{"role":"AXWebArea"}}}}
 {"to":"helper","msg":{"id":"c34","method":"textio.paste","params":{"text":"Hi","targetPid":9286,"verifyMs":1000}}}
-{"to":"app","msg":{"id":"c34","result":{"posted":true,"restored":false,"clipboardTaken":false,"ms":1002.4,"check":"unchanged","checkMs":1000.2,"field":{"role":"AXWebArea","before":{"length":0,"marker":true},"after":{"length":0,"marker":true}},"kept":true}}}
+{"to":"app","msg":{"id":"c34","result":{"posted":true,"restored":true,"clipboardTaken":false,"ms":1002.4,"check":"unknown","field":{"role":"AXWebArea","before":{"length":0,"marker":true},"after":{"length":0,"marker":true}}}}}
 {"to":"helper","msg":{"id":"c35","method":"textio.read","params":{"pid":9286,"range":{"location":1,"length":620}}}}
 {"to":"app","msg":{"id":"c35","result":{"text":"👍 Claude Code 已经改好了","range":{"location":0,"length":20},"length":20,"element":140551043}}}
 {"to":"helper","msg":{"id":"c36","method":"textio.read","params":{"pid":901,"range":{"location":0,"length":40}}}}

@@ -33,13 +33,14 @@ import (
 
 func (a *app) modelsPage(c *ui.Context) {
 	t := c.Theme()
-	pageHeader(c, i18n.T("Speech models"), func() {
+	columnPageHeader(c, i18n.T("Speech models"), func() {
 		if ghostButton(c.Key("models-network"), i18n.T("Network…")).Tooltip(i18n.T("How model downloads reach Hugging Face")).Clicked() {
 			a.openNetwork()
 		}
 	})
 	ui.Scroll(c.Key("models-scroll")).Grow(1).MinHeight(0).Children(func() {
-		ui.Column(c).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp3)).MaxWidth(px(t, 880)).Children(func() {
+		pageColumn(c).Gap(px(t, sp3)).Children(func() {
+			a.obBackBar(c, modelsPath) // onboarding.go: left from the setup guide
 			caption(c, i18n.T("A speech model turns what you say into text: every feature needs one to work by voice. Those on this Mac keep your audio here; a remote service gets your recording only when you choose it. Language models are on the Language models page."))
 			sectionTitle(c, i18n.T("On this Mac"))
 			caption(c, i18n.T("Free, and your audio stays here: download a model once, then it runs on this Mac."))

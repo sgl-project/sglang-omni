@@ -153,7 +153,7 @@ func (a *app) historyPage(c *ui.Context) {
 	if !h.loading && (h.listFor == "" || h.stale) {
 		a.loadHistory()
 	}
-	pageHeader(c, i18n.T("History"), func() {
+	widePageHeader(c, i18n.T("History"), func() {
 		if n := len(h.list); n > 0 {
 			label := i18n.N(n, "%d entry", "%d entries", n)
 			if n >= historyLimit {
@@ -162,64 +162,66 @@ func (a *app) historyPage(c *ui.Context) {
 			caption(c, label).SingleLine()
 		}
 	})
-	ui.Row(c).Padding(px(t, sp1), px(t, sp6), px(t, sp3)).Gap(px(t, sp2)).AlignItems(ui.Center).Shrink(0).Children(func() {
-		tabs := []string{i18n.T("Transcribe"), i18n.T("Translate"), i18n.T("Rewrite")}
-		if ui.Segmented(c.Key("hist-tab"), &h.tab, tabs...).Label(i18n.T("Feature")).Shrink(0).Changed() {
-			h.sel = ""
-			a.loadHistory()
-		}
-		if searchField(c, "hist-search", &h.query, i18n.T("Search"), px(t, 360)).Label(i18n.T("Search the history")).Changed() {
-			a.loadHistory()
-		}
-		a.historySettingsButton(c) // history_settings.go
-	})
-	a.historyFolderNotice(c)
-	if !a.prefs.Privacy.KeepHistory {
-		ui.Column(c).Padding(0, px(t, sp6), px(t, sp3)).Shrink(0).Children(func() {
-			notice(c, "hist-off", noticeInfo, i18n.T("History is off: new results are not kept."), "", func() {
-				if ghostButton(c.Key("hist-privacy"), i18n.T("Privacy settings")).Clicked() {
-					a.navigate("/settings/privacy")
-				}
-			}, nil)
+	pageBody(c).Children(func() {
+		ui.Row(c).Padding(px(t, sp1), px(t, sp6), px(t, sp3)).Gap(px(t, sp2)).AlignItems(ui.Center).Shrink(0).Children(func() {
+			tabs := []string{i18n.T("Transcribe"), i18n.T("Translate"), i18n.T("Rewrite")}
+			if ui.Segmented(c.Key("hist-tab"), &h.tab, tabs...).Label(i18n.T("Feature")).Shrink(0).Changed() {
+				h.sel = ""
+				a.loadHistory()
+			}
+			if searchField(c, "hist-search", &h.query, i18n.T("Search"), px(t, 360)).Label(i18n.T("Search the history")).Changed() {
+				a.loadHistory()
+			}
+			a.historySettingsButton(c) // history_settings.go
 		})
-	}
-	if h.err != "" {
-		ui.Column(c).Padding(0, px(t, sp6), px(t, sp3)).Shrink(0).Children(func() {
-			notice(c, "hist-err", noticeError, i18n.T("Could not read the history."), h.err, func() {
-				if ghostButton(c.Key("hist-retry"), i18n.T("Try again")).Clicked() {
-					a.loadHistory()
+		a.historyFolderNotice(c)
+		if !a.prefs.Privacy.KeepHistory {
+			ui.Column(c).Padding(0, px(t, sp6), px(t, sp3)).Shrink(0).Children(func() {
+				notice(c, "hist-off", noticeInfo, i18n.T("History is off: new results are not kept."), "", func() {
+					if ghostButton(c.Key("hist-privacy"), i18n.T("Privacy settings")).Clicked() {
+						a.navigate("/settings/privacy")
+					}
+				}, nil)
+			})
+		}
+		if h.err != "" {
+			ui.Column(c).Padding(0, px(t, sp6), px(t, sp3)).Shrink(0).Children(func() {
+				notice(c, "hist-err", noticeError, i18n.T("Could not read the history."), h.err, func() {
+					if ghostButton(c.Key("hist-retry"), i18n.T("Try again")).Clicked() {
+						a.loadHistory()
+					}
+				}, nil)
+			})
+		}
+		list, sel := h.list, h.selected()
+		w := px(t, historyPanelW)
+		inline := a.pageWidth(c)-w >= px(t, historyListMinW)
+		ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
+			ui.Column(c).Grow(1).MinWidth(0).Children(func() {
+				switch {
+				case h.listFor == "":
+					// The first read is on its way: no empty state yet.
+				case len(list) == 0:
+					a.historyEmpty(c)
+				default:
+					c.After(time.Minute) // the times are relative
+					ui.List(c.Key("hist-list"), &h.listUI, len(list)).Grow(1).MinHeight(0).Gap(px(t, 2)).Padding(0, 0, px(t, sp4)).
+						ItemKey(func(i int) any { return list[i].ID }).Rows(func(r ui.ListRow) {
+						a.historyRow(c, list[r.Index])
+					})
 				}
-			}, nil)
-		})
-	}
-	list, sel := h.list, h.selected()
-	w := px(t, historyPanelW)
-	inline := a.pageWidth(c)-w >= px(t, historyListMinW)
-	ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
-		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
-			switch {
-			case h.listFor == "":
-				// The first read is on its way: no empty state yet.
-			case len(list) == 0:
-				a.historyEmpty(c)
-			default:
-				c.After(time.Minute) // the times are relative
-				ui.List(c.Key("hist-list"), &h.listUI, len(list)).Grow(1).MinHeight(0).Gap(px(t, 2)).Padding(0, 0, px(t, sp4)).
-					ItemKey(func(i int) any { return list[i].ID }).Rows(func(r ui.ListRow) {
-					a.historyRow(c, list[r.Index])
+			})
+			if sel != nil {
+				closePanel := func() {
+					if !h.delAsk { // a click in the Delete dialog is outside the drawer
+						h.sel = ""
+					}
+				}
+				sidePanel(c, "hist-detail", w, inline, i18n.T("Entry details"), closePanel, func() {
+					a.historyDetail(c, *sel)
 				})
 			}
 		})
-		if sel != nil {
-			closePanel := func() {
-				if !h.delAsk { // a click in the Delete dialog is outside the drawer
-					h.sel = ""
-				}
-			}
-			sidePanel(c, "hist-detail", w, inline, i18n.T("Entry details"), closePanel, func() {
-				a.historyDetail(c, *sel)
-			})
-		}
 	})
 	a.historyDeleteDialog(c)
 	a.historySettingsDialog(c)

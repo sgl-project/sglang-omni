@@ -59,8 +59,10 @@ func New(cfg Config) *Manager {
 	def(&cfg.LLMTimeout, DefaultLLMTimeout)
 	def(&cfg.WriteTimeout, DefaultWriteTimeout)
 	def(&cfg.ReadTimeout, DefaultReadTimeout)
+	def(&cfg.RewriteReadTimeout, DefaultRewriteReadTimeout)
 	def(&cfg.DeliverTime, DefaultDeliverTimeout)
 	def(&cfg.StopGrace, DefaultStopGrace)
+	def(&cfg.EndWordPause, DefaultEndWordPause)
 	def(&cfg.WaitNote, DefaultWaitNote)
 	return &Manager{cfg: cfg, snap: Snapshot{State: Idle}}
 }

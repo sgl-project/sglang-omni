@@ -414,8 +414,30 @@ func TestShortcutPresets(t *testing.T) {
 	if !ApplyPreset(&f, PresetOption) || !reflect.DeepEqual(f, Defaults().Features) {
 		t.Fatalf("mixed to right Option: %+v", f)
 	}
-	if ApplyPreset(&f, "command") || !reflect.DeepEqual(f, Defaults().Features) {
+	if ApplyPreset(&f, "unknown") || !reflect.DeepEqual(f, Defaults().Features) {
 		t.Fatalf("unknown preset: %+v", f)
+	}
+	f = Defaults().Features
+	if !ApplyPreset(&f, PresetCommand) {
+		t.Fatal("command changed nothing")
+	}
+	wantCmd := Defaults().Features
+	wantCmd.Transcribe.Hotkeys, wantCmd.Translate.Hotkeys, wantCmd.Rewrite.Hotkeys = tap("RightCommand"), tap("RightCommand+Shift"), tap("RightCommand+Option")
+	wantCmd.PasteLast = Hotkey{Keys: "Control+Command+V", Trigger: TriggerTap}
+	if !reflect.DeepEqual(f, wantCmd) || PresetOf(f) != PresetCommand {
+		t.Fatalf("command: %+v preset %q", f, PresetOf(f))
+	}
+	f = Defaults().Features
+	if !ApplyPreset(&f, PresetMouseMiddle) {
+		t.Fatal("mouse middle changed nothing")
+	}
+	wantMouse := Defaults().Features
+	wantMouse.Transcribe.Hotkeys = tap("Mouse3")
+	wantMouse.Translate.Hotkeys = tap("Fn+Shift")
+	wantMouse.Rewrite.Hotkeys = []Hotkey{{Keys: "Mouse3", Trigger: TriggerDouble}}
+	wantMouse.PasteLast = Hotkey{Keys: "Control+Command+V", Trigger: TriggerTap}
+	if !reflect.DeepEqual(f, wantMouse) || PresetOf(f) != PresetMouseMiddle {
+		t.Fatalf("mouse middle: %+v preset %q", f, PresetOf(f))
 	}
 }
 
@@ -474,6 +496,34 @@ func TestMuteOutput(t *testing.T) {
 		*c.Audio.MuteOutput = !on
 		if m.Audio.MuteOn() != on {
 			t.Fatal("clone shares the choice")
+		}
+	}
+}
+
+// TestMigrateShowCard: Translate's card switch, the only one before,
+// becomes every feature's; a document saved since keeps its choice.
+func TestMigrateShowCard(t *testing.T) {
+	for _, tc := range []struct {
+		doc  string
+		want bool
+	}{
+		{`{"version":4,"features":{"translate":{"showCard":true}}}`, true},
+		{`{"version":4,"features":{"translate":{"cleanup":true}}}`, false},
+		{`{"version":4,"features":{"showCard":true,"translate":{}}}`, true},
+		{`{"version":4,"features":{"translate":{}}}`, false},
+	} {
+		s, err := Migrate([]byte(tc.doc))
+		if err != nil || s.Features.ShowCard != tc.want {
+			t.Errorf("%s: ShowCard %v, want %v (%v)", tc.doc, s.Features.ShowCard, tc.want, err)
+		}
+		out, _ := json.Marshal(s)
+		var doc struct {
+			Features struct {
+				Translate map[string]any `json:"translate"`
+			} `json:"features"`
+		}
+		if json.Unmarshal(out, &doc) != nil || doc.Features.Translate["showCard"] != nil {
+			t.Errorf("%s: Translate still has a card switch: %s", tc.doc, out)
 		}
 	}
 }

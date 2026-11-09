@@ -144,13 +144,13 @@ func (a *app) homePage(c *ui.Context) {
 	if a.sess.Try && a.sess.State == session.Recording {
 		c.After(250 * time.Millisecond) // the Try area's clock
 	}
-	pageHeader(c, i18n.T("Home"), func() {
+	columnPageHeader(c, i18n.T("Home"), func() {
 		if ghostIconButton(c.Key("home-guide"), icons.Compass, i18n.T("Setup guide")).Label(i18n.T("Open the setup guide")).Clicked() {
 			a.openOnboarding()
 		}
 	})
 	ui.Scroll(c.Key("home-scroll")).Grow(1).MinHeight(0).Children(func() {
-		ui.Column(c).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp3)).MaxWidth(px(t, 880)).Children(func() {
+		pageColumn(c).Gap(px(t, sp3)).Children(func() {
 			a.homeSlogan(c)
 			a.homeReadiness(c)
 			mine := a.sess.Try && a.sess.ID != "" && !a.obOwns(a.sess.ID)
@@ -260,6 +260,9 @@ func (a *app) homeToday(c *ui.Context) {
 		fillCard(c.Key("home-kinds")).Gap(px(t, 2)).Grow(1).Basis(px(t, 140)).MinWidth(px(t, 120)).Padding(px(t, sp3), px(t, sp4)).Children(func() {
 			ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Center).Height(px(t, fsTitle*1.3)).Children(func() {
 				for _, kd := range store.Kinds {
+					if a.prefs.Features.IsHidden(string(kd)) {
+						continue
+					}
 					ui.Row(c.Key("kind-" + string(kd))).Gap(px(t, 4)).AlignItems(ui.Center).Label(uitext.KindTitle(kd) + " " + itoa(st.byKind[kd])).Tooltip(uitext.KindTitle(kd)).Children(func() {
 						ui.Icon(c, kindIcon(kd).Linear).Size(px(t, 16), px(t, 16)).TextColor(k.Text2)
 						ui.Text(c, itoa(st.byKind[kd])).FontSize(px(t, fsSection)).FontWeight(600).SingleLine()

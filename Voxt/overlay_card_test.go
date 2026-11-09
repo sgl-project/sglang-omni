@@ -13,6 +13,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/ink"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
@@ -420,5 +421,45 @@ func TestCardHeaderFits(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestCardSizes: a feature's page sets its own answer card size; a larger
+// card is wider and shows more of a long answer before it scrolls, its
+// ink still from padding to padding. The other features keep theirs
+// (#3644 FB41: a long explanation read badly in the small card).
+func TestCardSizes(t *testing.T) {
+	if hotkey.Transcribe != string(store.KindTranscribe) || hotkey.Translate != string(store.KindTranslate) || hotkey.Rewrite != string(store.KindRewrite) {
+		t.Fatal("Features.CardSizes's keys: the pages' feature ids are not store.Kind's")
+	}
+	a, tt := pageTester(t, "/rewrite")
+	if err := tt.ClickControl("Large"); err != nil {
+		t.Fatal(err)
+	}
+	frames(tt)
+	if got := a.settings.Get().Features.CardSizes; got[hotkey.Rewrite] != 2 || len(got) != 1 {
+		t.Fatalf("card sizes %v", got)
+	}
+	long := strings.Repeat("A goroutine is a lightweight thread managed by the Go runtime. ", 90)
+	for _, c := range []struct {
+		kind store.Kind
+		size layout.CardSize
+	}{{store.KindRewrite, layout.CardSizes[2]}, {store.KindTranslate, layout.CardSizes[0]}} {
+		a.answer = answerCard{open: true, kind: c.kind, text: long}
+		if w, h, _ := a.cardSize(); w != c.size.W || h != layout.CardChrome+c.size.BodyMax {
+			t.Errorf("%s: %d×%d, want %d×%d", c.kind, w, h, c.size.W, layout.CardChrome+c.size.BodyMax)
+		}
+	}
+	defer func() { a.measureHook = guessText }()
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: long}
+	a.overlaySync()
+	img := renderOverlay(t, a)
+	if _, bad := ink.Check(img, 2, cardInkWant(ink.Want{W: a.ov.w, H: a.ov.h}, a.cardNow())); len(bad) > 0 || a.ov.w != layout.CardSizes[2].W {
+		t.Errorf("the large card, %d wide: %v", a.ov.w, bad)
+	}
+	if dir := os.Getenv("VOXTNEW_INK"); dir != "" {
+		var b bytes.Buffer
+		png.Encode(&b, img)
+		os.WriteFile(filepath.Join(dir, "card-large.png"), b.Bytes(), 0o644)
 	}
 }

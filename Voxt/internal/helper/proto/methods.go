@@ -23,10 +23,13 @@ const (
 
 	MethodCaptureDevices = "capture.devices" // request: the audio inputs
 	MethodCaptureStart   = "capture.start"   // request, job: records until capture.stop
-	MethodCaptureStop    = "capture.stop"    // request: ends a capture.start, which answers first
+	MethodCaptureStop    = "capture.stop"    // request: ends a capture.start or capture.system, which answers first
+	MethodCaptureSystem  = "capture.system"  // request, job: records the sound the Mac plays (other apps') until capture.stop
 
-	MethodHotkeyConfigure = "hotkey.configure" // request: the bindings the event tap watches (replaces all)
-	MethodHotkeyStatus    = "hotkey.status"    // request: the tap's state and counters
+	MethodHotkeyConfigure    = "hotkey.configure"    // request: the bindings the event tap watches (replaces all)
+	MethodHotkeyStatus       = "hotkey.status"       // request: the tap's state and counters
+	MethodHotkeyRecord       = "hotkey.record"       // request: one chord through a short-lived event tap
+	MethodHotkeyCancelRecord = "hotkey.cancelRecord" // request: cancel hotkey.record
 
 	MethodAppFrontmost = "app.frontmost" // request: the app in front
 
@@ -50,9 +53,9 @@ const (
 	MethodSpeechAudio     = "speech.audio"     // request: audio for a speech.recognize job (end: the last)
 
 	// Notifications, helper → app.
-	MethodCaptureStarted   = "capture.started"   // a capture.start job records: which device, how long it took
-	MethodCaptureLevel     = "capture.level"     // input meter of a capture.start job, ~20 Hz
-	MethodCapturePCM       = "capture.pcm"       // audio of a capture.start job, a frame every ~100 ms
+	MethodCaptureStarted   = "capture.started"   // a capture.start or capture.system job records: which device, how long it took
+	MethodCaptureLevel     = "capture.level"     // input meter of a capture job, ~20 Hz
+	MethodCapturePCM       = "capture.pcm"       // audio of a capture job, a frame every ~100 ms
 	MethodCaptureRestarted = "capture.restarted" // the job's audio engine was rebuilt (watchdog, device change)
 	MethodHotkeyEvent      = "hotkey.event"      // a binding fired (or the cancel shortcut while active)
 	MethodHotkeyState      = "hotkey.state"      // the event tap was installed or lost (e.g. Accessibility granted)
@@ -128,8 +131,14 @@ func ParamsFor(method string) any {
 		return new(CaptureParams)
 	case MethodCaptureStop:
 		return new(CaptureStopParams)
+	case MethodCaptureSystem:
+		return new(SystemParams)
 	case MethodHotkeyConfigure:
 		return new(HotkeyConfigureParams)
+	case MethodHotkeyRecord:
+		return new(HotkeyRecordParams)
+	case MethodHotkeyCancelRecord:
+		return new(Empty)
 	case MethodTextSelection:
 		return new(SelectionParams)
 	case MethodTextPaste:
@@ -197,12 +206,16 @@ func ResultFor(method string) any {
 		return new(PermissionsResult)
 	case MethodCaptureDevices:
 		return new(DevicesResult)
-	case MethodCaptureStart:
+	case MethodCaptureStart, MethodCaptureSystem:
 		return new(CaptureResult)
 	case MethodCaptureStop:
 		return new(CaptureStopResult)
 	case MethodHotkeyConfigure, MethodHotkeyStatus:
 		return new(HotkeyStatus)
+	case MethodHotkeyRecord:
+		return new(HotkeyRecordResult)
+	case MethodHotkeyCancelRecord:
+		return new(Empty)
 	case MethodAppFrontmost:
 		return new(App)
 	case MethodTextFocus:
@@ -239,8 +252,8 @@ var (
 	Requests = []string{
 		MethodHello, MethodShutdown, MethodJobCancel,
 		MethodPermissionsStatus, MethodPermissionsRequest,
-		MethodCaptureDevices, MethodCaptureStart, MethodCaptureStop,
-		MethodHotkeyConfigure, MethodHotkeyStatus,
+		MethodCaptureDevices, MethodCaptureStart, MethodCaptureStop, MethodCaptureSystem,
+		MethodHotkeyConfigure, MethodHotkeyStatus, MethodHotkeyRecord, MethodHotkeyCancelRecord,
 		MethodAppFrontmost, MethodAppList, MethodAppConfigure, MethodAppIcons,
 		MethodTextFocus, MethodTextSelection, MethodTextPaste, MethodTextRead,
 		MethodBrowserURL,
@@ -256,5 +269,5 @@ var (
 
 // IsJob reports whether method is a long-running, cancellable job.
 func IsJob(method string) bool {
-	return method == MethodCaptureStart || method == MethodSpeechRecognize
+	return method == MethodCaptureStart || method == MethodCaptureSystem || method == MethodSpeechRecognize
 }

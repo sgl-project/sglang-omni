@@ -29,9 +29,13 @@ func newSoundsRig(t *testing.T) *soundsRig {
 		r.plays = append(r.plays, s.Name)
 		return func() { r.plays = append(r.plays, "-"+s.Name) }
 	}
-	tt.SetSize(windowWidth, 1400) // the whole section, without scrolling
+	tt.SetSize(windowWidth, 1400)
 	a.navigate("/settings/audio")
 	frames(tt)
+	if title, ok := tt.Find("Sounds"); ok { // the section at the top of the dialog (600 high), all of it in view
+		tt.Scroll(windowWidth/2, 700, 0, title.Y-450)
+		frames(tt)
+	}
 	return r
 }
 
@@ -70,6 +74,7 @@ func TestSoundsRow(t *testing.T) {
 		rc, _ := r.tt.Find("Play sounds")
 		t.Fatalf("the cues show while the sounds are off: on %v, title at %+v", r.prefs.Audio.Sounds, rc)
 	}
+	_, y = r.center(t, "Play sounds") // a shorter section may scroll the dialog back
 	r.tt.ClickAt(sw, y)
 	frames(r.tt)
 	if !r.prefs.Audio.Sounds || !has(r.tt, "Tally") {
@@ -284,5 +289,23 @@ func TestSoundsWhileRecording(t *testing.T) {
 	r.feed("s1", session.Recognizing)
 	if got := r.takeCues(); !slices.Equal(got, []string{"tally:audible", "wrap:audible"}) {
 		t.Fatalf("cues %v", got)
+	}
+}
+
+// TestLegacySounds: "Use Voxt 1.x's sounds" sets Pop and Tink, Voxt 1.x's
+// default cues, and plays the start one; with them chosen it goes away.
+// The family's default start sound felt strange to 1.x's users, and the
+// old one was hard to find among macOS's sounds (#3644 FB11).
+func TestLegacySounds(t *testing.T) {
+	r := newSoundsRig(t)
+	click(t, r.tt, "Use Voxt 1.x's sounds")
+	if s := r.settings.Get().Audio; s.StartSound != "system:Pop" || s.StopSound != "system:Tink" {
+		t.Fatalf("cues %q, %q", s.StartSound, s.StopSound)
+	}
+	if p := r.takePlays(); !slices.Contains(p, "Pop") {
+		t.Errorf("played %q", p)
+	}
+	if has(r.tt, "Use Voxt 1.x's sounds") {
+		t.Error("the button stays with Voxt 1.x's sounds chosen")
 	}
 }
