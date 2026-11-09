@@ -46,7 +46,7 @@ func TestSessionSwitchedApp(t *testing.T) {
 				return
 			}
 			p := a.pasted()
-			if !end.Inserted || end.InsertedInto.Name != tc.into || len(p) != 1 || p[0].TargetPID != 530 || p[0].Text != "你好" {
+			if !end.Inserted || end.Landing == nil || end.Landing.App.Name != tc.into || len(p) != 1 || p[0].TargetPID != 530 || p[0].Text != "你好" {
 				t.Errorf("end %+v, pasted %+v", end, p)
 			}
 			a.pump("the history", func() bool { return len(a.history()) == 1 })

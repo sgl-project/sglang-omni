@@ -59,7 +59,9 @@ type settingsForm struct {
 	clearHistoryAsk bool // Privacy's Clear the history… dialog
 	// loginIs is whether macOS opens VoxtNew at login, as last read or
 	// set: the setting changes it only when they differ.
-	loginIs bool
+	loginIs     bool
+	search      string
+	searchFocus bool
 }
 
 // settingsSection is a section of the settings dialog.
@@ -121,6 +123,9 @@ func (a *app) updateSettings(fn func(*settings.Settings)) {
 func (a *app) settingsChanged(old, new settings.Settings) {
 	a.prefs = new
 	a.familySettingsChanged(old, new) // family.go: the shared settings, the manifest
+	if (old.Dictionary.Learn && !new.Dictionary.Learn) || (old.Dictionary.Enabled && !new.Dictionary.Enabled) {
+		a.learner.Stop() // learn_link.go: nothing read from now on, nothing proposed
+	}
 	if old.General.Language != new.General.Language {
 		a.applyLocale()
 	}
@@ -139,6 +144,9 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 	if !reflect.DeepEqual(old.Features, new.Features) {
 		a.syncHotkeys()   // session_hotkeys.go
 		a.buildTrayMenu() // the shortcuts it shows
+	}
+	if !slices.Equal(old.Audio.Devices, new.Audio.Devices) {
+		a.buildTrayMenu() // the microphone it checks
 	}
 	if old.General.LaunchAtLogin != new.General.LaunchAtLogin && new.General.LaunchAtLogin != a.loginIs && a.hasMenu {
 		on := new.General.LaunchAtLogin
@@ -160,7 +168,8 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 		a.applyKeepLoaded(new.Models) // models_keep.go
 	}
 	if !reflect.DeepEqual(old.Providers, new.Providers) || old.Network != new.Network {
-		a.syncRemote() // remote_link.go
+		a.readUnreadKeys() // remote_link.go: a setup that came over
+		a.syncRemote()
 	}
 	a.historySettingsChanged(old, new) // history_settings_ops.go
 	// The problems' cards: the language of their text may have changed
@@ -279,6 +288,9 @@ func (a *app) settingsDialog(c *ui.Context) {
 	if !a.settingsOpen {
 		return
 	}
+	if c.Shortcut(ui.Cmd, ui.KeyF) {
+		a.settingsForm.searchFocus = true
+	}
 	t := c.Theme()
 	k := tok(t)
 	w, h := c.Size()
@@ -331,20 +343,37 @@ func (a *app) settingsDialog(c *ui.Context) {
 			ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 				a.setRouter.View(c, func(r *ui.Route) {
 					title := ""
+					var sectionEn string
 					for _, s := range settingsSections() {
 						if r.Match("/" + s.id) {
 							title = s.title
+							sectionEn = s.en
 						}
 					}
+					f := &a.settingsForm
 					ui.Row(c).Height(px(t, 52)).Shrink(0).AlignItems(ui.Center).Padding(0, px(t, sp3), 0, px(t, sp6)).Gap(px(t, sp2)).Children(func() {
 						ui.Text(c, title).FontSize(px(t, fsSection)).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
+						sf := searchField(c, "settings-search", &f.search, i18n.T("Find in settings"), px(t, 240))
+						if f.searchFocus {
+							f.searchFocus = false
+							sf.Focus()
+						}
 						if iconButton(c.Key("settings-close"), icons.Close, i18n.T("Close")).Clicked() {
 							a.settingsOpen = false
 						}
 					})
+					query := f.search
+					if query != "" && !settingsTextMatches(query, title, sectionEn) {
+						ui.Column(c).Padding(px(t, sp6)).Children(func() {
+							caption(c, i18n.T("Nothing in this section matches your search."))
+						})
+						return
+					}
 					ui.Scroll(c).Grow(1).MinHeight(0).Children(func() {
 						ui.Column(c).Padding(px(t, sp1), px(t, sp6), px(t, sp6)).Gap(px(t, sp4)).MaxWidth(px(t, settingsContentMaxW)).Children(func() {
+							settingsSearchQuery = query
 							a.settingsSection(c, r)
+							settingsSearchQuery = ""
 						})
 					})
 				}).Grow(1).MinHeight(0)

@@ -30,7 +30,9 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
@@ -410,10 +412,10 @@ func (a *app) importLegacyFrom(picked string) {
 	repo, hist, mods, docs, prefs := a.lib.store.Dictionary(), a.lib.store.History(), a.models, a.lib.store.Documents(), a.settings
 	a.async(func() {
 		done := false // the dictionary came over: the card offers the import again, quietly
-		msg := func() string {
+		report := func() legacyReport {
 			path := legacyDatabase(picked)
 			if path == "" {
-				return i18n.T("No previous Voxt dictionary in this folder. Choose the folder the import window opens on.")
+				return legacyReport{failed: i18n.T("No previous Voxt dictionary in this folder. Choose the folder the import window opens on.")}
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute) // hashing the models' large files
 			defer cancel()
@@ -421,26 +423,30 @@ func (a *app) importLegacyFrom(picked string) {
 			if err != nil {
 				log.Printf("legacy import: %s: %v", path, err)
 				if strings.Contains(err.Error(), "no such table") {
-					return i18n.T("This folder is not the previous Voxt's. Nothing was imported.")
+					return legacyReport{failed: i18n.T("This folder is not the previous Voxt's. Nothing was imported.")}
 				}
-				return i18n.T("The previous Voxt's dictionary could not be read; it may be damaged. Nothing was imported.")
+				return legacyReport{failed: i18n.T("The previous Voxt's dictionary could not be read; it may be damaged. Nothing was imported.")}
 			}
 			added, updated, err := mergeImported(ctx, repo, terms)
 			if err != nil {
-				return i18n.T("Could not import: %v", err)
+				return legacyReport{failed: i18n.T("Could not import: %v", err)}
 			}
 			done = true
 			if err := docs.Put(ctx, legacyOffered, []byte("true")); err != nil { // imported: offerLegacy's card is not wanted any more
 				log.Printf("legacy import: %v", err)
 			}
-			msg := i18n.T("From the previous Voxt: %d new, %d updated.", added, updated)
+			var r legacyReport
+			r.imported = append(r.imported, i18n.T("Dictionary: %d new, %d updated", added, updated))
 			if skipped > 0 {
-				msg = i18n.T("From the previous Voxt: %d new, %d updated; %d left out (too long or empty).", added, updated, skipped)
+				r.skipped = append(r.skipped, i18n.N(skipped, "%d dictionary term: too long or empty", "%d dictionary terms: too long or empty", skipped))
 			}
-			entries, _, err := readLegacyHistory(ctx, path)
+			entries, histSkipped, err := readLegacyHistory(ctx, path)
 			if err != nil {
 				log.Printf("legacy import: history: %v", err)
-				return msg
+				return r
+			}
+			if histSkipped > 0 {
+				r.skipped = append(r.skipped, i18n.N(histSkipped, "%d history entry: a meeting or empty", "%d history entries: meetings or empty", histSkipped))
 			}
 			n := 0
 			for _, e := range entries {
@@ -452,7 +458,7 @@ func (a *app) importLegacyFrom(picked string) {
 				}
 			}
 			if n > 0 {
-				msg += " " + i18n.T("History: %d entries added.", n)
+				r.imported = append(r.imported, i18n.N(n, "History: %d entry", "History: %d entries", n))
 			}
 			voxtDir := filepath.Dir(path)
 			l := parseLegacySettings(legacyPreference(voxtDir, "remoteLLMProviderConfigurations"), legacyPreference(voxtDir, "remoteASRProviderConfigurations"),
@@ -464,33 +470,52 @@ func (a *app) importLegacyFrom(picked string) {
 				llmServices, speechServices, prompts = nil, nil, 0 // not saved: nothing came over
 			}
 			if n := len(llmServices); n > 0 {
-				msg += " " + i18n.N(n, "%d language model service came over: paste its key again on the Language models page.",
-					"%d language model services came over: paste their keys again on the Language models page.", n)
+				r.imported = append(r.imported, i18n.N(n, "%d language model service", "%d language model services", n))
 			}
 			if n := len(speechServices); n > 0 {
-				msg += " " + i18n.N(n, "%d speech service came over: paste its key again on the Speech models page.",
-					"%d speech services came over: paste their keys again on the Speech models page.", n)
-			}
-			if names := l.toCheck(llmServices, speechServices); len(names) > 0 {
-				msg += " " + i18n.N(len(names), "Check %s on its page: its address or model may not work as it did in the previous Voxt.",
-					"Check %s on their pages: their addresses or models may not work as they did in the previous Voxt.", strings.Join(names, ", "))
+				r.imported = append(r.imported, i18n.N(n, "%d speech service", "%d speech services", n))
 			}
 			if prompts > 0 {
-				msg += " " + i18n.N(prompts, "%d prompt came over.", "%d prompts came over.", prompts)
+				r.imported = append(r.imported, i18n.N(prompts, "%d prompt", "%d prompts", prompts))
 			}
 			if ids, bytes := reuseLegacyModels(ctx, mods, voxtDir); len(ids) > 0 {
-				msg += " " + i18n.N(len(ids), "%d model (%s) came over too: no download needed.", "%d models (%s) came over too: no download needed.", len(ids), uitext.HumanBytes(bytes))
+				r.imported = append(r.imported, i18n.N(len(ids), "%d speech model (%s): no download needed", "%d speech models (%s): no download needed", len(ids), uitext.HumanBytes(bytes)))
 			}
-			return msg
+			// The keys stay in the previous Voxt's Keychain: each service
+			// that needs one is to complete.
+			for _, p := range llmServices {
+				if missing := providers.Missing(p, false); missing != "" {
+					r.todo = append(r.todo, legacyTodo{text: setupNeedsText(local.LLM, p, missing), kind: local.LLM, id: p.ID})
+				}
+			}
+			for _, p := range speechServices {
+				if !providers.SpeechKeyOptional(p) {
+					r.todo = append(r.todo, legacyTodo{text: setupNeedsText(local.ASR, p, providers.MissingKey), kind: local.ASR, id: p.ID})
+				}
+			}
+			llmCheck, speechCheck := l.toCheck(llmServices, speechServices)
+			for _, p := range llmCheck {
+				r.todo = append(r.todo, legacyTodo{text: i18n.T("Check %s: its address or model may not work as it did in the previous Voxt.", uitext.PresetName(p.ID)), kind: local.LLM, id: p.ID})
+			}
+			for _, p := range speechCheck {
+				r.todo = append(r.todo, legacyTodo{text: i18n.T("Check %s: its address or model may not work as it did in the previous Voxt.", uitext.SpeechName(p.ID)), kind: local.ASR, id: p.ID})
+			}
+			return r
 		}()
 		a.post(func() {
 			a.dv.importing = false
 			a.modelsChanged()
-			a.ob.legacyMsg, a.ob.legacyDone = msg, done
+			a.ob.legacy, a.ob.legacyDone = report, done
 			if done {
 				a.dismissNotice(legacyOffered) // the sidebar card, if it shows
 			}
-			a.toast(msg)
+			switch {
+			case report.failed != "":
+				a.toast(report.failed)
+			case !a.ob.open: // the guide's card shows it
+				a.ob.legacyOpen = true // legacy_report.go
+			}
+			log.Printf("legacy import: %s", report.text())
 			a.loadDict()
 		})
 	})

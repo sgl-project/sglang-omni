@@ -493,3 +493,31 @@ func TestMuteOutput(t *testing.T) {
 		}
 	}
 }
+
+// TestMigrateShowCard: Translate's card switch, the only one before,
+// becomes every feature's; a document saved since keeps its choice.
+func TestMigrateShowCard(t *testing.T) {
+	for _, tc := range []struct {
+		doc  string
+		want bool
+	}{
+		{`{"version":4,"features":{"translate":{"showCard":true}}}`, true},
+		{`{"version":4,"features":{"translate":{"cleanup":true}}}`, false},
+		{`{"version":4,"features":{"showCard":true,"translate":{}}}`, true},
+		{`{"version":4,"features":{"translate":{}}}`, false},
+	} {
+		s, err := Migrate([]byte(tc.doc))
+		if err != nil || s.Features.ShowCard != tc.want {
+			t.Errorf("%s: ShowCard %v, want %v (%v)", tc.doc, s.Features.ShowCard, tc.want, err)
+		}
+		out, _ := json.Marshal(s)
+		var doc struct {
+			Features struct {
+				Translate map[string]any `json:"translate"`
+			} `json:"features"`
+		}
+		if json.Unmarshal(out, &doc) != nil || doc.Features.Translate["showCard"] != nil {
+			t.Errorf("%s: Translate still has a card switch: %s", tc.doc, out)
+		}
+	}
+}

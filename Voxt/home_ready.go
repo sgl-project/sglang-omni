@@ -62,7 +62,7 @@ func (a *app) readinessList() []readiness {
 	case a.perms.mic == permission.NotDetermined:
 		out = append(out, readiness{key: "home-mic", title: i18n.T("Microphone"), kind: noticeInfo,
 			text: i18n.T("macOS asks for the microphone the first time you record."), action: i18n.T("Ask now"),
-			fix: func() { a.askPermission(proto.PermissionMicrophone) }})
+			fix: func() { a.askPermission(proto.PermissionMicrophone, nil) }})
 	default:
 		out = append(out, readiness{key: "home-mic", title: i18n.T("Microphone"), kind: noticeError,
 			text: i18n.T("Voxt may not use the microphone: allow it in System Settings."), action: i18n.T("Open Permissions"), fix: openPerms})

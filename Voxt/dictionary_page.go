@@ -10,7 +10,8 @@ package main
 //
 // The page keeps the terms of its search in memory, read in the
 // background when it shows and after each change; sessions read the
-// store themselves, so a change applies to the next one.
+// store themselves, so a change applies to the next one. Suggested terms:
+// dictionary_suggest.go; the history scan: dictionary_scan.go.
 
 import (
 	"context"
@@ -22,10 +23,12 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/learn"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
@@ -33,7 +36,11 @@ import (
 
 // dictionaryState is the Dictionary page's view state.
 type dictionaryState struct {
-	dv dictView
+	dv              dictView
+	book            *learn.Book
+	suggestions     []learn.Suggestion // the sidebar's count and the page's section
+	suggestionReads int                // numbers the reads: only the last one lands
+	scanner         *learn.Scanner
 	// selPress is the transcribe shortcut whose selection is being read
 	// (dictionary_selection.go).
 	selPress *selectionPress
@@ -51,12 +58,18 @@ type dictView struct {
 	err     string
 	total   int // terms in the dictionary (the last read without a search)
 	listUI  ui.ListState
+	// guideOpen: the usage guide is unfolded.
+	guideOpen bool
 	// The term dialog.
 	editOpen bool
 	edit     termEdit
 	editWas  termEdit // the form as opened: a stray click or Escape keeps a changed one open
 	// importing: an import runs.
 	importing bool
+	// allSuggestions: the section shows every suggestion, not the first five.
+	allSuggestions bool
+	// scan is the history scan's dialog (dictionary_scan.go).
+	scan scanState
 }
 
 // termEdit is the term dialog's fields: a new term when id is "".
@@ -69,6 +82,7 @@ type termEdit struct {
 	saving          bool
 	createdAt       time.Time
 	original, title string
+	suggestion      string // the key of the suggestion the dialog accepts, if any
 }
 
 // Test seams: the file dialogs of Import and Export.
@@ -133,6 +147,7 @@ func (a *app) dictionaryPage(c *ui.Context) {
 	if !d.read && !d.loading {
 		a.loadDict()
 	}
+	scanModel, canScan := a.scanModel()
 	pageHeader(c, i18n.T("Dictionary"), func() {
 		if d.total > 0 {
 			caption(c, i18n.N(d.total, "%d term", "%d terms", d.total)).SingleLine()
@@ -146,6 +161,9 @@ func (a *app) dictionaryPage(c *ui.Context) {
 		if ui.Switch(c.Key("dict-on"), on).Label(i18n.T("Use the dictionary")).Tooltip(i18n.T("Use the dictionary")).Changed() {
 			v := *on
 			a.updateSettings(func(s *settings.Settings) { s.Dictionary.Enabled = v })
+		}
+		if ui.Button(c.Key("dict-scan"), i18n.T("Scan history…")).Disabled(!canScan).Clicked() {
+			a.openScan(scanModel)
 		}
 		moreMenu(c.Key("dict-more"), "", func(m *ui.Menu) {
 			if m.Item(i18n.T("Import…")).Chosen() {
@@ -172,6 +190,15 @@ func (a *app) dictionaryPage(c *ui.Context) {
 			}
 			a.dictSwitches(c)
 		})
+		if !canScan {
+			ui.Row(c).Gap(px(t, sp1)).AlignItems(ui.Center).Children(func() {
+				caption(c, i18n.T("Choose a language model for Transcribe first")).SingleLine().MinWidth(0).Shrink(1)
+				if ghostButton(c.Key("dict-scan-model"), i18n.T("Open Transcribe")).Clicked() {
+					a.navigate("/transcribe")
+				}
+			})
+		}
+		a.dictGuide(c)
 		if !a.prefs.Dictionary.Enabled {
 			notice(c, "dict-off", noticeInfo, i18n.T("The dictionary is off: its terms go nowhere."), "", nil, nil)
 		}
@@ -183,6 +210,7 @@ func (a *app) dictionaryPage(c *ui.Context) {
 			}, nil)
 		}
 	})
+	a.suggestionsSection(c)
 	list := d.list
 	ui.Column(c).Grow(1).MinHeight(0).Children(func() {
 		switch {
@@ -197,6 +225,7 @@ func (a *app) dictionaryPage(c *ui.Context) {
 		}
 	})
 	a.termDialog(c)
+	a.scanDialog(c)
 }
 
 // dictSwitches say where the terms go.
@@ -206,7 +235,7 @@ func (a *app) dictSwitches(c *ui.Context) {
 	ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Center).Wrap().Children(func() {
 		hints := &a.prefs.Dictionary.ASRHints
 		if ui.Checkbox(c.Key("dict-hints"), hints, i18n.T("Speech hints")).Disabled(off).
-			Tooltip(i18n.T("Sent to the speech model as words to expect. It keeps a limited number: the terms changed last go first.")).Changed() {
+			Tooltip(i18n.T("Sent to the speech model as words to expect. It keeps a limited number: the terms changed last go first. It cannot change punctuation or format: that is for your rules on each feature's page.")).Changed() {
 			v := *hints
 			a.updateSettings(func(s *settings.Settings) { s.Dictionary.ASRHints = v })
 		}
@@ -216,6 +245,23 @@ func (a *app) dictSwitches(c *ui.Context) {
 			v := *gl
 			a.updateSettings(func(s *settings.Settings) { s.Dictionary.Glossary = v })
 		}
+		learnOn := &a.prefs.Dictionary.Learn
+		if ui.Checkbox(c.Key("dict-learn"), learnOn, i18n.T("Learn from my corrections")).Disabled(off).
+			Tooltip(i18n.T("After Voxt inserts a Transcribe result into another app, it reads the text around that spot for up to %d seconds. If you correct a word there, it suggests adding your spelling to the dictionary. What it reads is not saved or sent, and password fields are never read.", learn.WatchSeconds)).Changed() {
+			v := *learnOn
+			a.updateSettings(func(s *settings.Settings) { s.Dictionary.Learn = v })
+		}
+	})
+}
+
+// dictGuide says where a term applies, folded under the switches
+// (docs/behavior.md 5.16, 7.9, 7.9a).
+func (a *app) dictGuide(c *ui.Context) {
+	collapsible(c.Key("dict-guide"), i18n.T("How the dictionary works"), &a.dv.guideOpen, nil, func() {
+		caption(c, i18n.T("A term takes effect the next time you use Voxt, as long as it and the dictionary are on, in three places:"))
+		caption(c, i18n.T("Speech recognition: with Speech hints on, the term goes to the speech model as a word to expect, if that model takes hints. Aliases are not sent."))
+		caption(c, i18n.T("Language model: with Glossary for the language model on, the model writes the term as spelled here when it cleans up, translates or rewrites. With up to %d enabled terms, it gets them all; with more, only the terms found in the text, by spelling or alias. It stops at %d terms, or earlier if the list gets too long.", compose.GlossaryAllUpTo, compose.MaxGlossaryTerms))
+		caption(c, i18n.T("Aliases: the wrong spellings recognition writes. Voxt replaces them with the term in the recognised text, before the language model and also without one."))
 	})
 }
 
@@ -348,6 +394,10 @@ func (a *app) submitTerm() {
 		return
 	}
 	e.saving = true
+	if e.suggestion != "" {
+		a.acceptSuggestion(e.suggestion, term, true)
+		return
+	}
 	a.saveTerm(term, true)
 }
 

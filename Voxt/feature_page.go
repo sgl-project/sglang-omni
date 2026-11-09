@@ -61,6 +61,8 @@ type featureUI struct {
 	preview bool
 	// block says why the Try area's Start did not start.
 	block *sessionNotice
+	// endWord is the end word's select and typed word (Transcribe).
+	endWord keyRow
 }
 
 // fui is feature's page state.
@@ -121,10 +123,12 @@ func (a *app) featurePage(c *ui.Context, feature string) {
 			switch feature {
 			case hotkey.Translate:
 				a.translateSettings(c)
+				a.cardSetting(c, p)
 			case hotkey.Rewrite:
 				a.rewriteSettings(c)
 			default:
 				a.trEnhance(c)
+				a.cardSetting(c, p)
 			}
 			a.featureRules(c, feature)
 			a.featureTry(c, feature)

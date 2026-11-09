@@ -98,7 +98,7 @@ func TestHomeReadiness(t *testing.T) {
 	a.updateSettings(func(s *settings.Settings) {
 		s.Features.Transcribe.Hotkeys = []settings.Hotkey{{Keys: "Command+Space", Trigger: settings.TriggerTap}}
 	})
-	if !has(tt, "1 step to go") || !has(tt, "Transcribe's shortcut ⌘ Space: macOS uses these keys for Spotlight.") {
+	if !has(tt, "1 step to go") || !has(tt, "Transcribe's shortcut ⌘Space: macOS uses these keys for Spotlight.") {
 		t.Errorf("no clash: %q", tt.Texts())
 	}
 	// What is ready shows again, quieter, under what is missing.
@@ -235,7 +235,7 @@ func TestSloganHint(t *testing.T) {
 		{&settings.Hotkey{Keys: "Fn", Trigger: settings.TriggerTap}, "Press [fn] to start", "按 [fn] 开始"},
 		{&settings.Hotkey{Keys: "Fn"}, "Press [fn] to start", "按 [fn] 开始"},
 		{&settings.Hotkey{Keys: "RightCommand", Trigger: settings.TriggerDouble}, "Double-press [Right ⌘] to start", "双击 [右 ⌘] 开始"},
-		{&settings.Hotkey{Keys: "Option+Space", Trigger: settings.TriggerLong}, "Hold [⌥ Space] and speak", "按住 [⌥ 空格] 说话"},
+		{&settings.Hotkey{Keys: "Option+Space", Trigger: settings.TriggerLong}, "Hold [⌥Space] and speak", "按住 [⌥空格] 说话"},
 		{nil, "Add a shortcut to start[]", "先设置一个快捷键[]"},
 	} {
 		i18n.SetLocale("en")
@@ -262,7 +262,7 @@ func TestHomeSlogan(t *testing.T) {
 	a.updateSettings(func(s *settings.Settings) {
 		s.Features.Transcribe.Hotkeys = []settings.Hotkey{{Keys: "Option+Space", Trigger: settings.TriggerLong}, {Keys: "Fn"}}
 	})
-	if !hasExact(tt, "Hold") || !hasExact(tt, "⌥ Space") || !hasExact(tt, "and speak") {
+	if !hasExact(tt, "Hold") || !hasExact(tt, "⌥Space") || !hasExact(tt, "and speak") {
 		t.Errorf("long: %q", tt.Texts())
 	}
 	a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.Hotkeys = nil })
@@ -415,6 +415,38 @@ func TestHomeTryByShortcut(t *testing.T) {
 	a.sessionChanged(s)
 	if !has(tt, "The meeting moves to Thursday at four.") {
 		t.Errorf("result: %q", tt.Texts())
+	}
+}
+
+// TestShortcutInOwnField (FB10): the shortcut pressed while a field of
+// the window has the focus (a feature's rules being edited) starts a
+// session, with the overlay, that types into the field as in another
+// app; it is not a try on the page. With a button focused, a try as
+// before.
+func TestShortcutInOwnField(t *testing.T) {
+	a, tt := pageTester(t, "/transcribe")
+	readyModels(a)
+	drain := queuePosts(a)
+	click(t, tt, "Your rules")
+	click(t, tt, "System prompt for Transcribe")
+	if got := a.tryPlace(store.KindTranscribe, *selfFront()); got != placeNone {
+		t.Fatalf("rules field focused: %v, want no try", got)
+	}
+	a.hotkeyFired(proto.HotkeyEventParams{Binding: "transcribe/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: selfFront()})
+	drain()
+	frames(tt)
+	if a.sess.ID == "" || a.sess.Try || !a.ov.shown {
+		t.Fatalf("not a session with the overlay: %+v, overlay %v", a.sess, a.ov.shown)
+	}
+	a.cancelSession()
+	drain()
+	frames(tt)
+	click(t, tt, "Example user message")
+	if !tt.Focused("Example user message") {
+		t.Fatal("the button did not take the focus")
+	}
+	if got := a.tryPlace(store.KindTranscribe, *selfFront()); got != placeFeature {
+		t.Errorf("button focused: %v, want the page's try", got)
 	}
 }
 
