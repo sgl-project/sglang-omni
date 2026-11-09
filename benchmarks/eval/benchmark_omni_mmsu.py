@@ -24,10 +24,12 @@ Usage:
     python benchmarks/eval/benchmark_omni_mmsu.py \
         --model qwen3-omni --port 8000 --max-samples 50
 
-    # Text + audio
+    # Text + audio, with WER from an ASR server on port 8001
+    python -m sglang_omni.cli serve \
+        --model-path Qwen/Qwen3-ASR-1.7B --port 8001
     python benchmarks/eval/benchmark_omni_mmsu.py \
         --model qwen3-omni --port 8000 --max-samples 50 \
-        --modalities text+audio
+        --modalities text+audio --asr-router-port 8001
 
     # Filter by task names or categories
     python benchmarks/eval/benchmark_omni_mmsu.py \
@@ -113,6 +115,8 @@ from benchmarks.metrics.performance import compute_speed_metrics
 from benchmarks.metrics.wer import print_wer_summary
 from benchmarks.tasks.asr import (
     DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+    SKIPPED_TEXT_AUDIO_WER_WARNING,
+    add_asr_router_port_argument,
     compute_text_audio_consistency,
 )
 from benchmarks.tasks.audio_understanding import (
@@ -121,6 +125,8 @@ from benchmarks.tasks.audio_understanding import (
     save_mmsu_results,
 )
 from sglang_omni.utils.logging import configure_dependency_loggers
+
+logger = logging.getLogger(__name__)
 
 
 async def run(
@@ -189,13 +195,17 @@ async def run(
     }
     wer_results = None
     if audio_mode and compute_wer:
-        wer_results = compute_text_audio_consistency(
-            request_results,
-            args.lang,
-            args.asr_device,
-            asr_concurrency=asr_concurrency,
-        )
-        output["wer"] = wer_results
+        if args.asr_router_port is None:
+            logger.warning(SKIPPED_TEXT_AUDIO_WER_WARNING)
+        else:
+            wer_results = compute_text_audio_consistency(
+                request_results,
+                args.lang,
+                args.asr_device,
+                asr_router_port=args.asr_router_port,
+                asr_concurrency=asr_concurrency,
+            )
+            output["wer"] = wer_results
 
     if args.output_dir:
         save_mmsu_results(
@@ -273,6 +283,7 @@ def main() -> None:
     p.add_argument(
         "--asr-device", type=str, default="cuda:0", help="Device for ASR model"
     )
+    add_asr_router_port_argument(p)
     p.add_argument(
         "--asr-concurrency",
         type=int,

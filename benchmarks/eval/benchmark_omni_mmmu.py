@@ -13,8 +13,10 @@ Usage:
     python benchmarks/eval/benchmark_omni_mmmu.py \
         --model qwen3-omni --port 8000 --max-samples 50 --max-concurrency 16
 
+    # Text + audio, with WER from an ASR server on port 8001
     python benchmarks/eval/benchmark_omni_mmmu.py \
-        --model qwen3-omni --port 8000 --max-samples 5 --enable-audio --max-tokens 50
+        --model qwen3-omni --port 8000 --max-samples 5 --enable-audio --max-tokens 50 \
+        --asr-router-port 8001
 
 
 H200 Full-Set Reference Results
@@ -90,6 +92,8 @@ from benchmarks.metrics.performance import compute_speed_metrics, print_speed_su
 from benchmarks.metrics.wer import print_wer_summary
 from benchmarks.tasks.asr import (
     DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+    SKIPPED_TEXT_AUDIO_WER_WARNING,
+    add_asr_router_port_argument,
     compute_text_audio_consistency,
 )
 from benchmarks.tasks.visual_understand import (
@@ -119,6 +123,7 @@ class MMMUEvalConfig:
     disable_tqdm: bool = False
     enable_audio: bool = False
     asr_device: str = "cuda:0"
+    asr_router_port: int | None = None
     asr_concurrency: int = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
     lang: str = "en"
     repo_id: str | None = None
@@ -206,12 +211,16 @@ async def run_mmmu_eval(
     }
 
     if config.enable_audio and compute_wer:
-        results["wer"] = compute_text_audio_consistency(
-            request_results,
-            config.lang,
-            config.asr_device,
-            asr_concurrency=config.asr_concurrency,
-        )
+        if config.asr_router_port is None:
+            logger.warning(SKIPPED_TEXT_AUDIO_WER_WARNING)
+        else:
+            results["wer"] = compute_text_audio_consistency(
+                request_results,
+                config.lang,
+                config.asr_device,
+                asr_router_port=config.asr_router_port,
+                asr_concurrency=config.asr_concurrency,
+            )
 
     if config.output_dir:
         save_json_results(results, config.output_dir, "mmmu_results.json")
@@ -237,6 +246,7 @@ def _config_from_args(args: argparse.Namespace) -> MMMUEvalConfig:
         disable_tqdm=args.disable_tqdm,
         enable_audio=args.enable_audio,
         asr_device=args.asr_device,
+        asr_router_port=args.asr_router_port,
         asr_concurrency=args.asr_concurrency,
         lang=args.lang,
         repo_id=args.repo_id,
@@ -322,6 +332,7 @@ def main() -> None:
         default="cuda:0",
         help="Device for ASR model (default: cuda:0).",
     )
+    add_asr_router_port_argument(parser)
     parser.add_argument(
         "--asr-concurrency",
         type=int,
