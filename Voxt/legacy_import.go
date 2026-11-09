@@ -343,7 +343,10 @@ func (a *app) importLegacyFrom(picked string) {
 			}
 			var llmServices, speechServices []settings.Provider
 			prompts := 0
-			if err := prefs.Update(ctx, func(s *settings.Settings) { llmServices, speechServices, prompts = l.apply(s) }); err != nil {
+			if err := prefs.Update(ctx, func(s *settings.Settings) {
+				llmServices, speechServices, prompts = l.apply(s)
+				legacyApplyGeneral(voxtDir, s)
+			}); err != nil {
 				log.Printf("legacy import: settings: %v", err)
 				llmServices, speechServices, prompts = nil, nil, 0 // not saved: nothing came over
 			}

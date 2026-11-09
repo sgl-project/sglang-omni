@@ -148,6 +148,37 @@ func TestParseLegacySettings(t *testing.T) {
 // StepFun's address went to OpenAI, with the StepFun key the user pastes.
 // An address of a service's own API this app does not speak stays, to
 // check, instead of becoming the preset's.
+func TestLegacyApplyGeneral(t *testing.T) {
+	if _, err := os.Stat("/usr/bin/plutil"); err != nil {
+		t.Skip("no plutil: the previous Voxt's preferences are read on macOS only")
+	}
+	lib := t.TempDir()
+	prefs := filepath.Join(lib, "Preferences", legacyBundleID+".plist")
+	if err := os.MkdirAll(filepath.Dir(prefs), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(prefs, []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>showInDock</key><false/></dict></plist>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	voxtDir := filepath.Join(lib, "Application Support", "Voxt")
+	if err := os.MkdirAll(voxtDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := settings.Defaults()
+	if !legacyApplyGeneral(voxtDir, &s) || !s.General.HideDock || !s.General.MenuBar {
+		t.Fatalf("hide dock: %+v", s.General)
+	}
+	if err := os.WriteFile(prefs, []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>showInDock</key><true/></dict></plist>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s = settings.Defaults()
+	if !legacyApplyGeneral(voxtDir, &s) || s.General.HideDock {
+		t.Fatalf("show dock: %+v", s.General)
+	}
+}
+
 func TestLegacyEndpoint(t *testing.T) {
 	for _, c := range []struct {
 		service, endpoint, want string
@@ -259,6 +290,7 @@ func TestImportLegacySettings(t *testing.T) {
 		{"remoteASRProviderConfigurations", legacySpeechJSON},
 		{"featureSettings", legacyFeaturesJSON(t, "")},
 		{"mlxLocalASRTuningSettings", legacyTuningJSON},
+		{"showInDock", "false"},
 	} {
 		plist.WriteString("<key>" + kv[0] + "</key><string>")
 		xml.EscapeText(&plist, []byte(kv[1]))
@@ -276,8 +308,9 @@ func TestImportLegacySettings(t *testing.T) {
 	a.importLegacyFrom(lib)
 	s := a.lib.settings.Get()
 	if len(s.Providers.LLM) != 5 || s.Providers.LLM[0].Endpoint != "https://inference.example.com/v1" || len(s.Providers.ASR) != 4 || s.Features.Transcribe.ASR != "doubao" ||
-		s.Features.Transcribe.Prompt != "Keep my English terms." || s.Dictionary.SpeechContext != "Leo works on LLM serving." {
-		t.Fatalf("settings: setups %+v, transcribe %+v, speech context %q (report %q)", s.Providers.LLM, s.Features.Transcribe.Feature, s.Dictionary.SpeechContext, a.ob.legacy.text())
+		s.Features.Transcribe.Prompt != "Keep my English terms." || s.Dictionary.SpeechContext != "Leo works on LLM serving." ||
+		!s.General.HideDock || !s.General.MenuBar {
+		t.Fatalf("settings: setups %+v, transcribe %+v, speech context %q general %+v (report %q)", s.Providers.LLM, s.Features.Transcribe.Feature, s.Dictionary.SpeechContext, s.General, a.ob.legacy.text())
 	}
 	r := a.ob.legacy
 	for _, want := range []string{"5 language model services", "4 speech services", "2 prompts"} {
