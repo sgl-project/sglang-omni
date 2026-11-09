@@ -13,6 +13,21 @@ const APIResponses = "responses"
 // accepts (its reference: "minimum: 16"); Probe asks for 8.
 const minOutputTokens = 16
 
+// bareInstructions stands in when a request has no system message: the
+// ChatGPT backend requires instructions (Voxt 1.x's words).
+const bareInstructions = "Process the input and return only the final answer."
+
+// bareBody is b as a signed-in service takes it: only what Voxt 1.x sent
+// to the ChatGPT backend, with no output limit, sampling or thinking.
+func bareBody(b map[string]any) map[string]any {
+	out := map[string]any{"model": b["model"], "input": b["input"], "store": false, "stream": true}
+	out["instructions"] = b["instructions"]
+	if out["instructions"] == nil {
+		out["instructions"] = bareInstructions
+	}
+	return out
+}
+
 func (o *OpenAI) responsesAPI() bool { return o.preset.API == APIResponses }
 
 func (o *OpenAI) path() string {

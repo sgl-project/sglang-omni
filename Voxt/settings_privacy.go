@@ -26,6 +26,7 @@ func (a *app) privacySettings(c *ui.Context) {
 		for _, s := range []string{
 			i18n.T("Your recordings are recognised on this Mac, unless a feature uses a speech service you set up (the Speech models page): its recordings then go to that service. Voxt has no server of its own."),
 			i18n.T("The text to clean up, translate or rewrite goes to the language model you set up (the Language models page): it stays on this Mac with a server here, such as Ollama, and goes to the service otherwise."),
+			i18n.T("With ChatGPT (Codex), that text goes to OpenAI under your ChatGPT account, counts against your plan's usage, and is covered by OpenAI's terms for that account."),
 			online,
 			i18n.T("The address of the browser tab in front is read only to pick your app enhancement rules: the language model never sees it, only the app's name."),
 			i18n.T("Voxt collects no usage data, crash reports or identifiers."),

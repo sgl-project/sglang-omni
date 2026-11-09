@@ -91,6 +91,12 @@ func ModelErrorText(err error) (msg, more string) {
 	var le *llm.Error
 	if errors.As(err, &le) {
 		switch le.Code {
+		case llm.CodeSignIn:
+			return i18n.T("Your ChatGPT sign-in has ended: sign in again on the Language models page."), more
+		case llm.CodeUsageLimit:
+			return i18n.T("Your ChatGPT plan's usage is used up for now."), more
+		case llm.CodeNotEligible:
+			return i18n.T("ChatGPT refused this account: its plan, workspace or region cannot use Codex."), more
 		case llm.CodeNoKey:
 			return i18n.T("No API key is saved for the remote model: add one on the Language models page."), more
 		case llm.CodeAuth:

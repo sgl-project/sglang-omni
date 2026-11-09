@@ -432,8 +432,8 @@ type legacySettings struct {
 	// enhanceOff: Transcribe's clean-up was off there (llmEnabled).
 	enhanceOff bool
 	// codexSetup: a Codex setup was made there; codexFeatures are the
-	// features (Transcribe, Translate, Rewrite) that used it. Neither has
-	// a place here: the result says so.
+	// features (Transcribe, Translate, Rewrite) that used it. A sign-in
+	// does not carry over: the result says so.
 	codexSetup    bool
 	codexFeatures [3]bool
 }

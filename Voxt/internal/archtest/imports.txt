@@ -91,6 +91,7 @@ providers asr/doubao
 providers asr/gemini
 providers asr/mimo
 providers asr/openai
+providers codexauth
 providers core
 providers llm
 providers local

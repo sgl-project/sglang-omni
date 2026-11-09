@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -27,46 +28,102 @@ func (o *OpenAI) send(ctx context.Context, url string, body any, model string, t
 		e.Err = err
 		return nil, e
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(b))
-	if err != nil {
-		e := newErr(CodeConfig, "provider", o.preset.ID, "field", "baseURL")
-		e.Err = err
-		return nil, e
+	stale := ""
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(b))
+		if err != nil {
+			e := newErr(CodeConfig, "provider", o.preset.ID, "field", "baseURL")
+			e.Err = err
+			return nil, e
+		}
+		req.Header.Set("User-Agent", UserAgent)
+		for k, v := range o.preset.Headers {
+			req.Header.Set(k, v)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		token := o.key
+		if o.tokens != nil {
+			cred, err := o.tokens(ctx, stale)
+			if err != nil {
+				return nil, ctxErr(ctx, o.preset.ID, err, timeout)
+			}
+			token = cred.Token
+			o.remember(token)
+			if cred.AccountID != "" {
+				req.Header.Set("ChatGPT-Account-ID", cred.AccountID)
+			}
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := o.client.Do(req)
+		if err != nil {
+			return nil, ctxErr(ctx, o.preset.ID, err, timeout)
+		}
+		if resp.StatusCode/100 == 2 {
+			return resp, nil
+		}
+		// A signed-in token the server refuses may just be stale: one fresh
+		// one, one more try.
+		if resp.StatusCode == http.StatusUnauthorized && o.tokens != nil && attempt == 0 {
+			resp.Body.Close()
+			stale = token
+			continue
+		}
+		return nil, o.failed(resp, model)
 	}
-	req.Header.Set("User-Agent", UserAgent)
-	for k, v := range o.preset.Headers {
-		req.Header.Set(k, v)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if o.key != "" {
-		req.Header.Set("Authorization", "Bearer "+o.key)
-	}
-	resp, err := o.client.Do(req)
-	if err != nil {
-		return nil, ctxErr(ctx, o.preset.ID, err, timeout)
-	}
-	if resp.StatusCode/100 == 2 {
-		return resp, nil
-	}
+}
+
+// failed is the error of a response that is not 2xx.
+func (o *OpenAI) failed(resp *http.Response, model string) error {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	detail := errorDetail(o.hide(raw))
 	if o.needsResponses(resp.StatusCode, detail) {
 		e := newErr(CodeResponsesOnly, "provider", o.preset.ID, "model", model)
 		e.Status = resp.StatusCode
-		return nil, e
+		return e
 	}
-	return nil, HTTPError(o.preset.ID, model, resp.StatusCode, detail, parseRetryAfter(resp.Header))
+	if o.preset.SignIn {
+		if e := planError(o.preset.ID, resp.StatusCode, detail); e != nil {
+			e.Status, e.RetryAfter = resp.StatusCode, parseRetryAfter(resp.Header)
+			return e
+		}
+	}
+	return HTTPError(o.preset.ID, model, resp.StatusCode, detail, parseRetryAfter(resp.Header))
 }
 
 // hide blanks the key out of a server's words before they are clipped
 // into an error's detail: once clipped, a key's first half no longer
 // matches the key that scrub looks for.
 func (o *OpenAI) hide(raw []byte) []byte {
-	if len(o.key) < 4 {
-		return raw
+	for _, secret := range o.secrets() {
+		raw = bytes.ReplaceAll(raw, []byte(secret), []byte("[key]"))
 	}
-	return bytes.ReplaceAll(raw, []byte(o.key), []byte("[key]"))
+	return raw
+}
+
+// secrets are the key and the tokens used so far, for blanking out of
+// what a server said. Very short ones would blank out ordinary words.
+func (o *OpenAI) secrets() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	out := o.seen[:len(o.seen):len(o.seen)]
+	if len(o.key) >= 4 {
+		out = append(out, o.key)
+	}
+	return out
+}
+
+func (o *OpenAI) remember(token string) {
+	if len(token) < 4 {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !slices.Contains(o.seen, token) {
+		o.seen = append(o.seen, token)
+	}
 }
 
 // errorDetail pulls the message out of the usual error bodies:

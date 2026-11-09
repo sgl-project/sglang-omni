@@ -42,6 +42,9 @@ var (
 // Capabilities are the request settings language model service id takes,
 // for model (StepFun's effort depends on it).
 func Capabilities(id, model string) GenCaps {
+	if id == ChatGPT {
+		return GenCaps{} // the ChatGPT backend takes none of them (Voxt 1.x's)
+	}
 	c := GenCaps{MaxOutputTokens: true, Temperature: true, TopP: true, Stop: true, ExtraBody: true}
 	var toggle, effort, budget bool
 	switch id {

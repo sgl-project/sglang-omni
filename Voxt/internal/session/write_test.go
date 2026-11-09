@@ -403,6 +403,26 @@ func TestWriteCancel(t *testing.T) {
 	})
 }
 
+// TestUsedUpPlanIsNotFallenBackFrom: a signed-in plan out of usage ends
+// the session; the fallback, another service, is not asked behind the
+// user's back.
+func TestUsedUpPlanIsNotFallenBackFrom(t *testing.T) {
+	spent := &llm.Error{Code: llm.CodeUsageLimit}
+	main, fallback := &fakeLLM{err: spent}, &fakeLLM{text: "早安"}
+	h := newHarness(t, &fakeFile{text: "x"}, main, func(c *Config, _ *settings.Settings) { c.Select = &fakeSelector{text: "Good morning"} })
+	h.fallback = fallback
+	if _, err := h.m.Start(StartRequest{Kind: store.KindTranslate, Target: slack}); err != nil {
+		t.Fatal(err)
+	}
+	end := h.rec.wait(t)
+	if end.State != Failed || end.Problem.Code != ProblemLLM || llm.Code(end.Problem.Err) != llm.CodeUsageLimit {
+		t.Errorf("end %+v", end)
+	}
+	if n := len(fallback.requests()); n != 0 {
+		t.Errorf("%d requests to the fallback", n)
+	}
+}
+
 // TestTranslateFallback: when the language model fails, Translate asks
 // its fallback model once, which then answers the rest of the session
 // (the strict retry too); the snapshot and the entry name the model that

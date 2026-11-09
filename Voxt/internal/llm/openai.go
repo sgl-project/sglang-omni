@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -18,6 +19,10 @@ type OpenAI struct {
 	preset Preset
 	key    string
 	client *http.Client
+	tokens TokenSource
+
+	mu   sync.Mutex
+	seen []string // the tokens used so far, to blank them out of errors
 }
 
 // NewOpenAI returns a backend for p (a resolved preset) with its API key
@@ -112,7 +117,10 @@ func (o *OpenAI) body(req Request, model string, stream, streamUsage, extra bool
 	}
 	applyGeneration(b, o.preset, model, stream)
 	if o.responsesAPI() {
-		return responsesBody(b, o.preset.Generation.ExtraBody)
+		b = responsesBody(b, o.preset.Generation.ExtraBody)
+	}
+	if o.preset.SignIn {
+		return bareBody(b)
 	}
 	return b
 }
@@ -128,11 +136,14 @@ func (o *OpenAI) Chat(ctx context.Context, req Request) (Response, error) {
 // error message, and session errors are kept in the history.
 func (o *OpenAI) scrub(err error) error {
 	var e *Error
-	if len(o.key) < 4 || !errors.As(err, &e) {
+	if !errors.As(err, &e) {
 		return err
 	}
 	for k, v := range e.Params {
-		e.Params[k] = strings.ReplaceAll(v, o.key, "[key]")
+		for _, secret := range o.secrets() {
+			v = strings.ReplaceAll(v, secret, "[key]")
+		}
+		e.Params[k] = v
 	}
 	return err
 }
@@ -145,7 +156,10 @@ func (o *OpenAI) chat(ctx context.Context, req Request) (Response, error) {
 	if model == "" {
 		return Response{}, newErr(CodeConfig, "provider", o.preset.ID, "field", "model")
 	}
-	if o.key == "" && !o.preset.KeyOptional {
+	switch {
+	case o.preset.SignIn && o.tokens == nil:
+		return Response{}, newErr(CodeSignIn, "provider", o.preset.ID)
+	case !o.preset.SignIn && o.key == "" && !o.preset.KeyOptional:
 		return Response{}, newErr(CodeNoKey, "provider", o.preset.ID)
 	}
 	if ctx.Err() != nil {
@@ -153,6 +167,9 @@ func (o *OpenAI) chat(ctx context.Context, req Request) (Response, error) {
 	}
 	start := time.Now()
 	stream := req.OnDelta != nil
+	if o.preset.SignIn && !stream { // that service only streams
+		stream, req.OnDelta = true, func(string) {}
+	}
 	streamUsage, extra, sampling := true, len(o.preset.ExtraBody) > 0, true
 	url := o.preset.BaseURL + o.path()
 	build := func() map[string]any {

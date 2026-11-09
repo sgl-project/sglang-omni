@@ -13,3 +13,15 @@ func TestResponsesOnlyText(t *testing.T) {
 		t.Errorf("%q, %q", msg, more)
 	}
 }
+
+func TestPlanErrorTexts(t *testing.T) {
+	for code, want := range map[string]string{
+		llm.CodeSignIn:      "sign in again",
+		llm.CodeUsageLimit:  "used up",
+		llm.CodeNotEligible: "cannot use Codex",
+	} {
+		if msg, _ := ModelErrorText(&llm.Error{Code: code}); !strings.Contains(msg, want) {
+			t.Errorf("%s: %q", code, msg)
+		}
+	}
+}

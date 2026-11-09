@@ -88,9 +88,9 @@ func TestLegacyCodexLeftOut(t *testing.T) {
 		want                   []string
 		absent                 []string
 	}{
-		{"setup only", codexSetup, "", []string{"Codex setup"}, []string{"used by"}},
+		{"setup only", codexSetup, "", []string{"Codex setup: not imported; sign in to ChatGPT (Codex) on the Language models page"}, []string{"used by", "not available"}},
 		{"all features", codexSetup, `{"transcription":{"llmEnabled":true,"llmSelectionID":"remote-llm:codex"},"translation":{"modelSelectionID":"remote-llm:codex"},"rewrite":{"llmSelectionID":"remote-llm:codex"}}`,
-			[]string{"used by Transcribe, Translate, Rewrite"}, []string{"Codex setup"}},
+			[]string{"Codex (used by Transcribe, Translate, Rewrite): not imported; sign in to ChatGPT (Codex) or choose another language model"}, []string{"Codex setup", "not available"}},
 		{"Transcribe had clean-up off", codexSetup, `{"transcription":{"llmEnabled":false,"llmSelectionID":"remote-llm:codex"},"rewrite":{"llmSelectionID":"remote-llm:codex"}}`,
 			[]string{"used by Rewrite"}, []string{"Transcribe"}},
 		{"no Codex", openAISetup, "", nil, []string{"Codex"}},
@@ -109,6 +109,13 @@ func TestLegacyCodexLeftOut(t *testing.T) {
 				t.Errorf("%s: left out %q has %q", c.name, left, w)
 			}
 		}
+	}
+	doc, err := os.ReadFile("docs/voxt-migration.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(doc), "has no Codex") || !strings.Contains(string(doc), "ChatGPT (Codex)") {
+		t.Error("docs/voxt-migration.md still says Voxt 2 has no Codex, or does not name ChatGPT (Codex)")
 	}
 }
 

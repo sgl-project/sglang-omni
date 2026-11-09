@@ -153,7 +153,9 @@ func (r *run) write(raw, selection string) {
 // requests, the snapshot and the history entry use it.
 func (r *run) askOrFallback(in compose.Input) (compose.Answer, string, bool, error) {
 	res, profile, truncated, err := r.ask(in)
-	if err == nil || r.svc.Fallback == nil || r.ctx.Err() != nil {
+	// A used-up plan is the user's to manage: moving to another paid
+	// service without asking would spend it unseen.
+	if err == nil || r.svc.Fallback == nil || r.ctx.Err() != nil || llm.Code(err) == llm.CodeUsageLimit {
 		return res, profile, truncated, err
 	}
 	r.logf("warning", "language model %s (model %s) failed: %v: asking the fallback %s (model %s)", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, err, r.svc.FallbackInfo.ID, r.svc.FallbackInfo.Model)

@@ -52,10 +52,10 @@ func sessionProblemText(p *session.Problem) (text, more, action string) {
 	case session.ProblemLLM:
 		if !p.Degraded {
 			msg, more := uitext.ModelErrorText(p.Err)
-			return i18n.T("The language model failed: %s", msg), more, actionLanguage
+			return i18n.T("The language model failed: %s", msg), more, llmAction(p.Err, actionLanguage)
 		}
 		_, more := uitext.ModelErrorText(p.Err)
-		return degradedLLMText(p, false), more, actionNone
+		return degradedLLMText(p, false), more, llmAction(p.Err, actionNone)
 	case session.ProblemNoSpeech:
 		return i18n.T("Nothing was heard."), "", actionNone
 	case session.ProblemUnsupported:
@@ -79,7 +79,12 @@ func errText(err error) string {
 func degradedLLMText(p *session.Problem, note bool) string {
 	var le *llm.Error
 	timeout := errors.Is(p.Err, context.DeadlineExceeded) || errors.As(p.Err, &le) && le.Code == llm.CodeTimeout
+	usage := llm.Code(p.Err) == llm.CodeUsageLimit
 	switch {
+	case note && usage:
+		return i18n.T("Saved to Notes as recognised: your ChatGPT plan's usage is used up.")
+	case usage:
+		return i18n.T("Inserted as recognised: your ChatGPT plan's usage is used up.")
 	case note && timeout:
 		return i18n.T("Saved to Notes as recognised: the language model did not answer in time.")
 	case note:
@@ -90,8 +95,24 @@ func degradedLLMText(p *session.Problem, note bool) string {
 	return i18n.T("Inserted as recognised: the language model failed.")
 }
 
+// llmAction is the notice's button for a language model's failure: the
+// way out of a signed-in plan's own, else other.
+func llmAction(err error, other string) string {
+	switch llm.Code(err) {
+	case llm.CodeSignIn:
+		return actionSignIn
+	case llm.CodeUsageLimit:
+		return actionUsage
+	}
+	return other
+}
+
 func noticeActionLabel(action string) string {
 	switch action {
+	case actionSignIn:
+		return i18n.T("Sign in")
+	case actionUsage:
+		return i18n.T("Manage usage")
 	case actionModels:
 		return i18n.T("Open Speech models")
 	case actionLanguage:

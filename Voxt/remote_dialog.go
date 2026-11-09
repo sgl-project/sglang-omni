@@ -91,6 +91,7 @@ func (d *providerDialog) setup() settings.Provider {
 func (a *app) providerDialogView(c *ui.Context) {
 	d := &a.provDlg
 	if !d.open {
+		a.cancelChatGPTLogin() // closed while waiting for the browser
 		return
 	}
 	t := c.Theme()
@@ -100,6 +101,8 @@ func (a *app) providerDialogView(c *ui.Context) {
 	streams := d.kind == local.ASR && sv.speech.Streams(model)
 	sub := i18n.T("Remote language model · OpenAI-compatible API")
 	switch {
+	case sv.signIn:
+		sub = i18n.T("Remote language model · your ChatGPT plan")
 	case streams:
 		sub = i18n.T("Remote speech recognition · realtime, while you speak")
 	case d.kind == local.ASR:
@@ -124,26 +127,31 @@ func (a *app) providerDialogView(c *ui.Context) {
 				ui.TextInput(c.Key("remote-appid"), &d.appID).Placeholder(i18n.T("Optional")).Label(i18n.T("App ID"))
 			})
 		}
+		if sv.signIn {
+			a.chatgptFields(c, d) // remote_chatgpt.go
+		}
 		mask := a.keyMasks[providers.Account(d.kind, d.id)]
 		keyInfo := i18n.T("Saved in this Mac's Keychain, never in Voxt's settings or logs.")
 		if sv.keyOptional {
 			keyInfo = i18n.T("Optional for a server on this Mac. Saved in this Mac's Keychain, never in Voxt's settings or logs.")
 		}
-		fieldInfo(c, i18n.T("API key"), keyInfo, func() {
-			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-				ph := i18n.T("Paste the key")
-				if mask != "" && !d.removeKey {
-					ph = i18n.T("Saved: %s · paste a new one to replace it", mask)
-				}
-				ui.TextInput(c.Key("remote-key"), &d.key).Password().Placeholder(ph).Label(i18n.T("API key")).Grow(1).MinWidth(0)
-				if mask != "" && !d.removeKey && ghostButton(c.Key("remote-key-remove"), i18n.T("Remove")).Label(i18n.T("Remove the saved key")).Clicked() {
-					d.removeKey, d.key = true, ""
+		if !sv.signIn {
+			fieldInfo(c, i18n.T("API key"), keyInfo, func() {
+				ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
+					ph := i18n.T("Paste the key")
+					if mask != "" && !d.removeKey {
+						ph = i18n.T("Saved: %s · paste a new one to replace it", mask)
+					}
+					ui.TextInput(c.Key("remote-key"), &d.key).Password().Placeholder(ph).Label(i18n.T("API key")).Grow(1).MinWidth(0)
+					if mask != "" && !d.removeKey && ghostButton(c.Key("remote-key-remove"), i18n.T("Remove")).Label(i18n.T("Remove the saved key")).Clicked() {
+						d.removeKey, d.key = true, ""
+					}
+				})
+				if d.removeKey {
+					caption(c, i18n.T("The saved key is removed when you save."))
 				}
 			})
-			if d.removeKey {
-				caption(c, i18n.T("The saved key is removed when you save."))
-			}
-		})
+		}
 		epInfo := i18n.T("The API root, ending in /v1; leave it empty for the service's own. Only https://, or http:// to this Mac.")
 		switch {
 		case streams:
@@ -153,16 +161,18 @@ func (a *app) providerDialogView(c *ui.Context) {
 		case sv.endpoint == "":
 			epInfo = i18n.T("The API root of any OpenAI-compatible server, ending in /v1. Only https://, or http:// to this Mac.")
 		}
-		fieldInfo(c, i18n.T("Address"), epInfo, func() {
-			ph := sv.endpoint
-			if d.kind == local.ASR {
-				ph = sv.speech.EndpointOf(model)
-			}
-			if ph == "" {
-				ph = "https://…/v1"
-			}
-			ui.TextInput(c.Key("remote-endpoint"), &d.endpoint).Placeholder(ph).Label(i18n.T("Address"))
-		})
+		if !sv.signIn {
+			fieldInfo(c, i18n.T("Address"), epInfo, func() {
+				ph := sv.endpoint
+				if d.kind == local.ASR {
+					ph = sv.speech.EndpointOf(model)
+				}
+				if ph == "" {
+					ph = "https://…/v1"
+				}
+				ui.TextInput(c.Key("remote-endpoint"), &d.endpoint).Placeholder(ph).Label(i18n.T("Address"))
+			})
+		}
 		fieldInfo(c, i18n.T("Model"), "", func() {
 			opts := append(slices.Clone(sv.models), otherModel())
 			ui.Select(c.Key("remote-model"), &d.model, opts).Label(i18n.T("Model")).Width(px(t, 320))
@@ -176,14 +186,14 @@ func (a *app) providerDialogView(c *ui.Context) {
 					Placeholder(i18n.T("For example: Technical talk; prefer product names from the dictionary.")).MinHeight(px(t, 72))
 			})
 		}
-		if d.kind == local.LLM {
+		if d.kind == local.LLM && !sv.signIn {
 			a.generationFields(c, d) // remote_generation.go
 		}
 		if d.err != "" {
 			notice(c, "remote-dlg-err", noticeError, d.err, d.errMore, nil, func() { d.err, d.errMore = "", "" })
 		}
 	}, func() {
-		if ui.Button(c.Key("remote-dlg-test"), i18n.T("Test connection")).Disabled(d.test.running || d.saving).Shrink(0).Clicked() {
+		if ui.Button(c.Key("remote-dlg-test"), i18n.T("Test connection")).Disabled(d.test.running || d.saving || sv.signIn && !a.hasKey(d.kind, d.id)).Shrink(0).Clicked() {
 			a.testDialog()
 		}
 		// The test's state, beside its button; a long reason is cut, its
@@ -317,7 +327,12 @@ func (a *app) removeProvider() {
 	name, acct := lookupService(kind, id).name, providers.Account(kind, id)
 	d.saving = true
 	a.async(func() {
-		err := kr.Set(acct, "", "")
+		var err error
+		if id == providers.ChatGPT {
+			err = a.chatgpt.SignOut()
+		} else {
+			err = kr.Set(acct, "", "")
+		}
 		a.post(func() {
 			a.provDlg.saving = false
 			if err != nil {

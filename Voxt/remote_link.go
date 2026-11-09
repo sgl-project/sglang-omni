@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/codexauth"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
@@ -44,6 +45,7 @@ type service struct {
 	models          []string
 	keyOptional     bool
 	appID           bool // Doubao: an App ID may come with the key
+	signIn          bool // signed in to, not a key (remote_chatgpt.go)
 	keyURL          string
 	// speech is a speech service's facts (which models stream); zero for
 	// a language model.
@@ -62,7 +64,7 @@ func services(kind local.Kind) []service {
 	}
 	for _, p := range llm.Presets() {
 		out = append(out, service{kind: kind, id: p.ID, name: uitext.PresetName(p.ID), endpoint: p.BaseURL, model: p.DefaultModel,
-			models: p.Models, keyOptional: p.KeyOptional, keyURL: p.KeyURL})
+			models: p.Models, keyOptional: p.KeyOptional, keyURL: p.KeyURL, signIn: p.SignIn})
 	}
 	return out
 }
@@ -144,12 +146,14 @@ type remoteState struct {
 	// proxyPassword is a custom proxy's password, as read or saved
 	// (models_proxy_auth.go); networkFor reads it off the main thread too.
 	proxyPassword atomic.Pointer[proxySecret]
-	// keyMasks are the saved keys' masks by account, "" for none; an
-	// account not in it was not read yet.
+	// keyMasks are the saved keys' masks by account (the signed-in email
+	// for ChatGPT), "" for none; an account not in it was not read yet.
 	keyMasks map[string]string
 	// provTests are the last connection tests, by account.
 	provTests map[string]providerTest
 	provDlg   providerDialog
+	chatgpt   *codexauth.Session // remote_chatgpt.go
+	chatLogin chatgptLogin
 }
 
 // providerTest is a connection test running or done.
@@ -168,13 +172,17 @@ func (a *app) withRemote(base local.Services) local.Services {
 	a.remote = providers.NewServices(base, setupName, a.openRemote, a.openSpeech)
 	a.readUnreadKeys()
 	a.syncRemote()
-	a.loadProxyPassword() // models_proxy_auth.go
+	a.chatgpt = a.newChatGPTSession() // remote_chatgpt.go
+	a.loadProxyPassword()             // models_proxy_auth.go
 	return a.remote
 }
 
 // openRemote opens a language model setup for a session (off the main
 // thread): its key from the Keychain, then its client.
 func (a *app) openRemote(_ context.Context, p settings.Provider) (local.Chat, error) {
+	if p.ID == providers.ChatGPT {
+		return providers.OpenSignedIn(p, providers.ChatGPTTokens(a.chatgpt), a.remoteHTTP.Load())
+	}
 	key, err := a.keys.Get(providers.Account(local.LLM, p.ID))
 	if err != nil {
 		return nil, err
@@ -253,7 +261,7 @@ func (a *app) loadKeyMasks(accounts []string) {
 			if err != nil {
 				v = ""
 			}
-			masks[acct] = maskKey(v)
+			masks[acct] = maskFor(acct, v)
 		}
 		a.post(func() {
 			for k, v := range masks {
@@ -288,6 +296,9 @@ func setupNeedsText(kind local.Kind, p settings.Provider, missing string) string
 	name := lookupService(kind, p.ID).name
 	switch missing {
 	case providers.MissingKey:
+		if lookupService(kind, p.ID).signIn {
+			return i18n.T("%s needs you to sign in again.", name)
+		}
 		return i18n.T("%s needs its API key: paste it again to use it.", name)
 	case providers.MissingEndpoint:
 		return i18n.T("%s needs its address.", name)
@@ -335,12 +346,20 @@ func (a *app) testProvider(kind local.Kind, p settings.Provider, key func() (str
 		a.provDlg.test = providerTest{running: true}
 	}
 	client, logs := a.remoteHTTP.Load(), a.logs
+	signedIn := kind == local.LLM && p.ID == providers.ChatGPT
+	var tokens llm.TokenSource
+	if signedIn {
+		tokens = providers.ChatGPTTokens(a.chatgpt)
+		key = func() (string, error) { return "", nil } // the sign-in is the session's
+	}
 	a.async(func() {
 		k, err := key()
 		res := providers.TestResult{Err: err, At: time.Now()}
 		var level, msg string
 		switch {
 		case err != nil:
+		case signedIn:
+			res = runChatGPTTest(context.Background(), p, tokens, client)
 		case kind == local.ASR:
 			res = runSpeechTest(context.Background(), p, k, client)
 		default:
@@ -369,4 +388,5 @@ func (a *app) testProvider(kind local.Kind, p settings.Provider, key func() (str
 var (
 	runProviderTest = providers.Test
 	runSpeechTest   = providers.TestSpeech
+	runChatGPTTest  = providers.TestSignedIn
 )

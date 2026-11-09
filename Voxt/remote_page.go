@@ -104,6 +104,9 @@ func (a *app) providerState(c *ui.Context, kind local.Kind, p settings.Provider,
 	}
 	switch a.setupMissing(kind, p) {
 	case providers.MissingKey:
+		if lookupService(kind, p.ID).signIn {
+			return k.Warning, i18n.T("Sign-in needed")
+		}
 		return k.Warning, i18n.T("API key needed")
 	case providers.MissingEndpoint:
 		return k.Warning, i18n.T("No address")

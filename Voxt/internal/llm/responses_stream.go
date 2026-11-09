@@ -42,6 +42,7 @@ type rsResponse struct {
 type rsEvent struct {
 	Type     string     `json:"type"`
 	Delta    string     `json:"delta"`
+	Text     string     `json:"text"`
 	Response rsResponse `json:"response"`
 	rsError
 }
@@ -96,6 +97,11 @@ func (o *OpenAI) failure(model string, e rsError) *Error {
 	if e.Code != "" {
 		detail = e.Code + ": " + e.Message
 	}
+	if o.preset.SignIn {
+		if pe := planError(o.preset.ID, status, detail); pe != nil {
+			return pe.with("detail", clip(string(o.hide([]byte(detail))), 300))
+		}
+	}
 	return HTTPError(o.preset.ID, model, status, string(o.hide([]byte(detail))), 0)
 }
 
@@ -141,6 +147,12 @@ func (o *OpenAI) readResponseStream(ctx context.Context, body io.Reader, onDelta
 			if ev.Delta != "" {
 				text.WriteString(ev.Delta)
 				onDelta(ev.Delta)
+			}
+		case "response.output_text.done":
+			// The whole text, without deltas before it on some streams.
+			if text.Len() == 0 && ev.Text != "" {
+				text.WriteString(ev.Text)
+				onDelta(ev.Text)
 			}
 		case "response.completed", "response.incomplete":
 			out, done = ev.Response.result(), true

@@ -30,6 +30,9 @@ type Preset struct {
 	BaseURL string `json:"baseURL"` // the API root ("…/v1"); "" for custom: the user supplies it
 	// KeyOptional: it works without a key (a server on this Mac).
 	KeyOptional bool `json:"keyOptional,omitempty"`
+	// SignIn: reached with the user's sign-in (OpenAI.WithTokens) rather
+	// than a key, by streamed requests with only the fields bareBody keeps.
+	SignIn bool `json:"signIn,omitempty"`
 	// Models are the suggested models, for the model menu (any id may be
 	// typed).
 	Models       []string          `json:"models,omitempty"`
@@ -50,8 +53,9 @@ type Preset struct {
 	// Generation is the user's request settings (ProviderConfig), not
 	// the preset's.
 	Generation Generation `json:"-"`
-	// API is the user's API format: "" chat completions, APIResponses.
-	API string `json:"-"`
+	// API is the API format: "" chat completions, APIResponses; the
+	// user's ProviderConfig.API replaces it.
+	API string `json:"api,omitempty"`
 }
 
 // Custom is the preset of a server the user names (any OpenAI-compatible
@@ -111,7 +115,10 @@ func (cfg ProviderConfig) Resolve() (Preset, error) {
 	if m := strings.TrimSpace(cfg.Model); m != "" {
 		p.DefaultModel = m
 	}
-	p.Generation, p.API = cfg.Generation, cfg.API
+	p.Generation = cfg.Generation
+	if cfg.API != "" {
+		p.API = cfg.API
+	}
 	p.BaseURL = strings.TrimSuffix(strings.TrimSuffix(strings.TrimRight(p.BaseURL, "/"), "/chat/completions"), "/responses")
 	if p.BaseURL == "" {
 		return Preset{}, newErr(CodeConfig, "provider", p.ID, "field", "baseURL")
