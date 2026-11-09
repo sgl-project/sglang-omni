@@ -371,31 +371,35 @@ func (a *app) meetingsPager(c *ui.Context) {
 	})
 }
 
-// meetingActions are the details panel's actions on the meeting: finish
-// or redo its final pass, show its audio, delete it.
-func (a *app) meetingActions(c *ui.Context, mt store.Meeting) {
+// meetingDetailHeader is the detail panel's title row (title, then
+// Reprocess, Show in Finder, Delete and Close), its facts, and Continue
+// for a meeting whose final pass did not finish.
+func (a *app) meetingDetailHeader(c *ui.Context, mt store.Meeting, close func()) {
 	t := c.Theme()
-	ui.Row(c).Gap(px(t, sp2)).Wrap().Children(func() {
-		switch mt.Status {
-		case store.MeetingInterrupted, store.MeetingFinishing:
+	ui.Row(c).Gap(px(t, sp1)).AlignItems(ui.Center).Children(func() {
+		sectionHeading(c, meetingTitle(mt)).Grow(1).MinWidth(0).SingleLine().Ellipsis("…")
+		if mt.Status == store.MeetingDone && iconButton(c.Key("mt-reprocess"), icons.Refresh, i18n.T("Reprocess transcript")).Clicked() {
+			a.meetingReprocess(mt.ID)
+		}
+		if mt.Audio != "" && iconButton(c.Key("mt-show"), icons.FolderOpen, i18n.T("Show in Finder")).Clicked() {
+			revealInFinder(filepath.Join(a.dataDir(), "meetings", mt.Audio))
+		}
+		active := a.meetingActive() && mt.Status == store.MeetingRecording
+		if iconButton(c.Key("mt-del"), icons.TrashBinMinimalistic, i18n.T("Delete the meeting…")).Disabled(active).Clicked() {
+			a.mv.delID = mt.ID
+		}
+		if iconButton(c.Key("panel-close"), icons.Close, i18n.T("Close")).Clicked() {
+			close()
+		}
+	})
+	caption(c, meetingMeta(mt))
+	if mt.Status == store.MeetingInterrupted || mt.Status == store.MeetingFinishing {
+		ui.Row(c).Children(func() {
 			if primaryButton(c.Key("mt-continue"), i18n.T("Continue final pass")).Clicked() {
 				a.meetingReprocess(mt.ID)
 			}
-		case store.MeetingDone:
-			if ghostButton(c.Key("mt-reprocess"), i18n.T("Reprocess transcript")).Clicked() {
-				a.meetingReprocess(mt.ID)
-			}
-		}
-		if mt.Audio != "" {
-			if ghostButton(c.Key("mt-show"), i18n.T("Show in Finder")).Clicked() {
-				revealInFinder(filepath.Join(a.dataDir(), "meetings", mt.Audio))
-			}
-		}
-		active := a.meetingActive() && mt.Status == store.MeetingRecording
-		if ghostButton(c.Key("mt-del"), i18n.T("Delete")).Disabled(active).Clicked() {
-			a.mv.delID = mt.ID
-		}
-	})
+		})
+	}
 }
 
 func (a *app) meetingDeleteDialog(c *ui.Context) {

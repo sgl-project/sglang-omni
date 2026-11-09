@@ -13,6 +13,7 @@ import (
 	"github.com/egoist/mygo/audio"
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -175,15 +176,17 @@ func (a *app) meetingPlaybackBar(c *ui.Context, d *meetingDetail) {
 	}
 	t := c.Theme()
 	pb := &d.playback
-	label := i18n.T("Play")
-	if pb.playing {
-		label = i18n.T("Pause")
+	if pb.pos > 0 || pb.playing {
+		ui.Text(c, meeting.FormatPlaybackTime(pb.pos)).
+			FontSize(px(t, fsCaption)).TextColor(tok(t).Text3).FontFeatures("tnum")
 	}
-	if ghostButton(c.Key("mt-playback"), label).Clicked() {
+	ic, label := icons.Play, i18n.T("Play")
+	if pb.playing {
+		ic, label = icons.Pause, i18n.T("Pause")
+	}
+	if iconButton(c.Key("mt-playback"), ic, label).Clicked() {
 		a.toggleMeetingPlayback(d)
 	}
-	ui.Text(c, meeting.FormatPlaybackTime(pb.pos)).
-		FontSize(px(t, fsCaption)).TextColor(tok(t).Text2)
 }
 
 const (
@@ -199,33 +202,43 @@ func (a *app) meetingTranscriptList(c *ui.Context, d *meetingDetail) {
 	names := speakerNameMap(d.meeting.Speakers)
 	segs := d.segments
 	pb := &d.playback
+	k := tok(t)
 	seg := func(row store.MeetingSegment) {
-		active := row.Idx == pb.highlight
-		segRow := ui.Row(c.Key("mt-seg-"+itoa(row.Idx))).Padding(px(t, sp1), 0).Gap(px(t, sp2)).AlignItems(ui.Center)
-		if active {
-			segRow.Background(t.Accent.Alpha(0.18)).Radius(px(t, radiusCard))
+		start := time.Duration(row.StartMS) * time.Millisecond
+		label := meeting.SpeakerLabel(row.Speaker, names)
+		switch label { // SpeakerLabel's English defaults, which exports keep
+		case "Me":
+			label = i18n.T("Me")
+		case "Them":
+			label = i18n.T("Other")
+		case "Speaker " + row.Speaker[1:]: // s1…s4, unnamed
+			label = i18n.T("Speaker %s", row.Speaker[1:])
 		}
-		segRow.Children(func() {
-			start := time.Duration(row.StartMS) * time.Millisecond
-			label := meeting.SpeakerLabel(row.Speaker, names)
-			switch label { // SpeakerLabel's English defaults, which exports keep
-			case "Me":
-				label = i18n.T("Me")
-			case "Them":
-				label = i18n.T("Other")
-			case "Speaker " + row.Speaker[1:]: // s1…s4, unnamed
-				label = i18n.T("Speaker %s", row.Speaker[1:])
-			}
-			line := meeting.FormatPlaybackTime(start) + " " + label
-			ui.Box(c).MinWidth(px(t, 96)).Shrink(0).Children(func() { // the text lines up row to row
-				if ghostButton(c.Key("mt-seg-go-"+itoa(row.Idx)), line).Clicked() {
-					a.seekMeetingPlayback(d, start)
+		// The whole line seeks the audio to its start.
+		b := ui.ButtonBase(c.Key("mt-seg-" + itoa(row.Idx))).Padding(px(t, sp2)).Gap(px(t, sp3)).AlignItems(ui.Start).Radius(px(t, radiusControl)).
+			Label(meeting.FormatPlaybackTime(start) + " " + label)
+		switch {
+		case row.Idx == pb.highlight:
+			b.Background(k.AccentSoft)
+		case b.Pressed():
+			b.Background(k.Pressed)
+		case b.Hovered():
+			b.Background(k.Hover)
+		}
+		if b.Clicked() {
+			a.seekMeetingPlayback(d, start)
+		}
+		b.Children(func() {
+			ui.Text(c, meeting.FormatPlaybackTime(start)).FontSize(px(t, fsCaption)).TextColor(k.Text3).
+				FontFeatures("tnum").Width(px(t, 40)).Shrink(0)
+			ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, 2)).Children(func() {
+				who := ui.Text(c, label).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(k.Text2)
+				if row.Source == store.SegmentMic {
+					who.TextColor(k.AccentInk)
 				}
-			})
-			ui.Column(c).Grow(1).Gap(px(t, 4)).Children(func() {
 				ui.Text(c, row.Text)
 				if tr := row.Translation; tr != "" {
-					ui.Text(c, tr).TextColor(tok(t).Text2).FontSize(px(t, fsCaption))
+					ui.Text(c, tr).TextColor(k.Text2).FontSize(px(t, fsCaption))
 				}
 			})
 		})
@@ -233,14 +246,14 @@ func (a *app) meetingTranscriptList(c *ui.Context, d *meetingDetail) {
 	// A long meeting lays out thousands of rows: past a screenful, only
 	// those in view, in a list of its own inside the panel's scroll.
 	if len(segs) <= meetingTranscriptInline {
-		ui.Column(c.Key("mt-transcript")).Gap(px(t, 2)).Children(func() {
+		ui.Column(c.Key("mt-transcript")).Children(func() {
 			for _, row := range segs {
 				seg(row)
 			}
 		})
 		return
 	}
-	ui.List(c.Key("mt-transcript"), &d.segList, len(segs)).Height(px(t, meetingTranscriptH)).Shrink(0).Gap(px(t, 2)).
+	ui.List(c.Key("mt-transcript"), &d.segList, len(segs)).Height(px(t, meetingTranscriptH)).Shrink(0).
 		ItemKey(func(i int) any { return segs[i].Idx }).Rows(func(r ui.ListRow) {
 		seg(segs[r.Index])
 	})

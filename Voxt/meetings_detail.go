@@ -16,6 +16,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -75,6 +76,7 @@ func (a *app) meetingDetailSection(c *ui.Context, close func()) {
 
 func (a *app) meetingDetailBody(c *ui.Context, d *meetingDetail, close func()) {
 	t := c.Theme()
+	k := tok(t)
 	if d.loading || d.err != "" {
 		panelHeader(c, i18n.T("Meeting detail"), close)
 		if d.loading {
@@ -84,79 +86,102 @@ func (a *app) meetingDetailBody(c *ui.Context, d *meetingDetail, close func()) {
 		}
 		return
 	}
-	panelHeader(c, meetingTitle(d.meeting), close)
-	caption(c, meetingMeta(d.meeting))
-	a.meetingActions(c, d.meeting)
-	sum, hasSum := meeting.ParseStoredSummary(d.meeting.Summary)
-	names := speakerNameMap(d.meeting.Speakers)
+	mt := d.meeting
+	a.meetingDetailHeader(c, mt, close)
+	sum, hasSum := meeting.ParseStoredSummary(mt.Summary)
+	names := speakerNameMap(mt.Speakers)
 	canLLM := len(a.installed(local.LLM)) > 0
-	ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-		sectionHeading(c, i18n.T("Summary")).Grow(1)
-		if ghostButton(c.Key("mt-regen"), i18n.T("Regenerate summary")).Disabled(!canLLM).Clicked() {
+	exportSegs := storeSegmentsToExport(d.segments)
+	title := meetingTitle(mt)
+	file := strings.NewReplacer("/", "-", ":", "-").Replace(title)
+
+	// Each section: a title row with its actions, then its card.
+	section := func(key, heading string, actions, body func()) {
+		ui.Column(c.Key(key)).Gap(px(t, sp1)).Margin(px(t, sp3), 0, 0, 0).Children(func() {
+			ui.Row(c).Gap(px(t, sp1)).AlignItems(ui.Center).MinHeight(px(t, 28)).Children(func() {
+				sectionTitleText(c, heading).Grow(1).MinWidth(0)
+				if actions != nil {
+					actions()
+				}
+			})
+			body()
+		})
+	}
+	section("mt-sum", i18n.T("Summary"), func() {
+		if canLLM && iconButton(c.Key("mt-regen"), icons.Refresh, i18n.T("Regenerate summary")).Clicked() {
 			a.regenerateMeetingSummary(d.id)
 		}
-	})
-	switch {
-	case hasSum:
-		if sum.Title != "" {
-			ui.Text(c, sum.Title).FontWeight(600)
-		}
-		if sum.Body != "" {
-			ui.Text(c, sum.Body).TextColor(tok(t).Text2)
-		}
-		for _, todo := range sum.Todos {
-			ui.Text(c, "• "+todo)
-		}
-	case canLLM:
-		caption(c, i18n.T("No summary yet."))
-	default:
-		caption(c, i18n.T("Set up a language model on the Language models page to generate summaries."))
-	}
-	exportSegs := storeSegmentsToExport(d.segments)
-	title := meetingTitle(d.meeting)
-	file := strings.NewReplacer("/", "-", ":", "-").Replace(title)
-	ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-		sectionHeading(c, i18n.T("Transcript")).Grow(1)
-		a.meetingPlaybackBar(c, d)
-	})
-	if len(d.segments) > 0 {
-		ui.Row(c).Gap(px(t, sp2)).Wrap().Children(func() {
-			if ghostButton(c.Key("mt-copy"), i18n.T("Copy transcript")).Clicked() {
-				_ = mygo.Clipboard.Write(transfer.TextData(meeting.ExportTxt(exportSegs, names)))
-				a.toast(i18n.T("Copied"))
+	}, func() {
+		fillCard(c).Padding(px(t, sp3)).Gap(px(t, sp2)).Children(func() {
+			switch {
+			case hasSum:
+				if sum.Title != "" {
+					ui.Text(c, sum.Title).FontWeight(600).Selectable()
+				}
+				if sum.Body != "" {
+					ui.Text(c, sum.Body).TextColor(k.Text2).Selectable()
+				}
+				for i, todo := range sum.Todos {
+					ui.Row(c.Key(fmt.Sprintf("mt-todo-%d", i))).Gap(px(t, sp2)).Children(func() {
+						ui.Text(c, "•").TextColor(k.Text3)
+						ui.Text(c, todo).Grow(1).MinWidth(0).Selectable()
+					})
+				}
+			case canLLM:
+				ui.Text(c, i18n.T("No summary yet.")).TextColor(k.Text3)
+			default:
+				ui.Text(c, i18n.T("Set up a language model on the Language models page to get a summary and ask questions.")).TextColor(k.Text3)
 			}
-			if ghostButton(c.Key("mt-export-txt"), i18n.T("Export .txt…")).Clicked() {
+		})
+	})
+	section("mt-tr", i18n.T("Transcript"), func() {
+		a.meetingPlaybackBar(c, d)
+		if len(d.segments) == 0 {
+			return
+		}
+		if iconButton(c.Key("mt-copy"), icons.Copy, i18n.T("Copy transcript")).Clicked() {
+			_ = mygo.Clipboard.Write(transfer.TextData(meeting.ExportTxt(exportSegs, names)))
+			a.toast(i18n.T("Copied"))
+		}
+		iconButton(c.Key("mt-export"), icons.Export, i18n.T("Export transcript")).Menu(func(m *ui.Menu) {
+			if m.Item(i18n.T("Export .txt…")).Chosen() {
 				a.saveMeetingExport(file+".txt", meeting.ExportTxt(exportSegs, names))
 			}
-			if ghostButton(c.Key("mt-export-md"), i18n.T("Export Markdown…")).Clicked() {
+			if m.Item(i18n.T("Export Markdown…")).Chosen() {
 				a.saveMeetingExport(file+".md", meeting.ExportMarkdown(title, exportSegs, names))
 			}
 		})
-		a.meetingTranscriptList(c, d)
-	} else {
-		caption(c, i18n.T("No transcript yet."))
-	}
-	sectionHeading(c, i18n.T("Ask about this meeting"))
-	for i, msg := range d.chat {
-		line := msg.Content
-		if msg.Role == "user" {
-			line = i18n.T("You") + ": " + line
-		}
-		ui.Text(c.Key(fmt.Sprintf("mt-chat-%d", i)), line).TextColor(tok(t).Text2)
-	}
-	if d.busy {
-		caption(c, i18n.T("Answering…"))
-	}
-	ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-		ui.TextInput(c.Key("mt-followup"), &d.question).Placeholder(i18n.T("Follow-up question")).Grow(1).MinWidth(0)
-		q := strings.TrimSpace(d.question)
-		if primaryButton(c.Key("mt-ask"), i18n.T("Send question")).Disabled(!canLLM || d.busy || q == "").Clicked() {
-			a.askMeetingFollowUp(d.id, q)
-		}
+	}, func() {
+		fillCard(c).Padding(px(t, sp1)).Gap(0).Children(func() {
+			if len(d.segments) == 0 {
+				ui.Text(c, i18n.T("No transcript yet.")).TextColor(k.Text3).Padding(px(t, sp2))
+				return
+			}
+			a.meetingTranscriptList(c, d)
+		})
 	})
 	if !canLLM {
-		caption(c, i18n.T("Set up a language model on the Language models page to ask follow-up questions."))
+		return
 	}
+	section("mt-ask", i18n.T("Ask about this meeting"), nil, func() {
+		for i, msg := range d.chat {
+			if msg.Role == "user" {
+				ui.Text(c.Key(fmt.Sprintf("mt-chat-%d", i)), msg.Content).FontWeight(600)
+			} else {
+				ui.Text(c.Key(fmt.Sprintf("mt-chat-%d", i)), msg.Content).TextColor(k.Text2).Selectable()
+			}
+		}
+		if d.busy {
+			caption(c, i18n.T("Answering…"))
+		}
+		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
+			ui.TextInput(c.Key("mt-followup"), &d.question).Placeholder(i18n.T("Follow-up question")).Grow(1).MinWidth(0)
+			q := strings.TrimSpace(d.question)
+			if ui.Button(c.Key("mt-ask"), i18n.T("Send question")).Disabled(d.busy || q == "").Clicked() {
+				a.askMeetingFollowUp(d.id, q)
+			}
+		})
+	})
 }
 
 func (a *app) askMeetingFollowUp(id, question string) {
