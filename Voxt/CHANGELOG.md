@@ -54,11 +54,13 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Rewrite answers questions about the selection**: select text and say "explain this" or "what does this mean", and the built-in prompt has the model answer in the card, in the language you spoke, instead of rewriting the text. Your own full prompt (Rewrite → Your rules) is sent as you wrote it.
 - **Clean-up drops rambling repeats out of the box**: the clean-up's example now also repeats a phrase and keeps it once, so the same words or point said again right away ("I need it before five, I really need it before five") come out once, with fillers and self-corrections as before.
 - **The setup guide shows where the shortcut's keys are**: under the shortcut on the Transcribe, Translate and Rewrite steps, the two bottom rows of a Mac keyboard light up the keys to press, so Right ⌥ is the Option key right of the space bar.
+- **Pages sit in the middle of a wide window**: in full screen or a wide window, Home, Transcribe, Translate, Rewrite, Speech models and Language models keep their column of content in the middle of the page, with the title and the page's buttons lined up with it, instead of hugging the left with the buttons at the far edge.
 
 ### Fixed
 
 - **⌘W closes the window.** With "Keep running when the window closes" on (the default), Voxt stays in the menu bar and its shortcuts keep working, as the red × does; only ⌘Q quits. The Window menu had no Close Window item before.
 - **Dictation types into Voxt's own window again**, as in Voxt 1.x: with the cursor in a field of Voxt (a feature's Your rules, say), the shortcut records as in any other app, with the overlay, and the text goes into that field. Before, the shortcut on Home or a feature's page started a try on the page (no overlay; the result showed in its Try it area), and on other pages the result went to the answer card.
+- **Scrolling past Your rules keeps scrolling the page**: a scroll that starts on the page goes on when the rules field comes under the pointer; only a scroll that starts over the field scrolls the field, as elsewhere on macOS. A long prompt also opens at its start, not its end.
 
 ### 中文
 
@@ -112,11 +114,13 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **转写能回答关于选中文字的问题**：选中文字后说“解释一下这段”“这是什么意思”，内置提示词会让模型用你说话的语言在卡片里回答，而不是改写原文。你自己写的完整提示词（转写 → 你的规则）照原样发送。
 - **清理默认去掉车轱辘话**：清理的示例里加了一句重复的话、只保留一次，所以紧接着又说一遍的同样词句或同一个意思（“今天下班前一定要发，就是说今天下班前一定要发出去”）只留一次；语气词和改口照旧去掉。
 - **设置引导画出快捷键在键盘上的位置**：转录、翻译、转写这几步的快捷键下面，画着 Mac 键盘最下面两排，要按的键亮起，比如“右 ⌥”就是空格键右边的 Option 键。
+- **宽窗口里页面居中**：全屏或窗口很宽时，首页、转录、翻译、转写、语音模型和语言模型的内容栏放在页面中间，标题和页面按钮跟内容对齐，不再贴着左边、按钮却在最右边。
 
 #### 修复
 
 - **⌘W 关闭窗口。** 开着“关闭窗口后继续运行”（默认开）时，Voxt 留在菜单栏里，快捷键照常可用，和红色 × 一样；只有 ⌘Q 退出。之前窗口菜单里没有“关闭窗口”。
 - **在 Voxt 自己的窗口里听写，文字又能输进去了**，和 Voxt 1.x 一样：光标在 Voxt 的输入框里（比如功能页的“你的规则”）时，按快捷键和在别的 app 里一样录音、显示浮窗，文字输入到这个框里。以前在首页和功能页上按快捷键会在页面里开始一次试一试（没有浮窗，结果显示在“试一试”区域），在其他页面上结果进了答案卡片。
+- **滚过“你的规则”时页面接着滚**：在页面上开始的滚动，规则框移到指针下面时页面照样往下滚；只有在规则框里开始的滚动才滚规则框，和 macOS 别处一样。长提示词展开时也从开头显示，不再停在结尾。
 
 ## [2.0.1] - 2026-11-07
 

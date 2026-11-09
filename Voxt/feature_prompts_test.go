@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
@@ -66,6 +67,49 @@ func TestRulesFieldGrows(t *testing.T) {
 	long, _ := tt.Find(label)
 	if long.H < 4*short.H {
 		t.Errorf("a long prompt's field is %.0f high, a one-letter one's %.0f", long.H, short.H)
+	}
+}
+
+// TestRulesFieldLetsThePageScroll: a scroll that starts on the page goes
+// on scrolling the page when the rules field comes under the pointer, as
+// on macOS; the field scrolls a long prompt only for a scroll that starts
+// over it. The field took the page's scroll over as soon as it reached
+// the pointer (MyGo patch 0011).
+func TestRulesFieldLetsThePageScroll(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/transcribe")
+	frames(tt)
+	const label = "System prompt for Transcribe"
+	u := a.fui(hotkey.Transcribe)
+	u.prompt, u.promptDirty = strings.Repeat("Keep product names in English and write numbers as digits.\n", 200), true
+	x, y := float32(windowWidth/2), float32(windowHeight/2)
+	tt.Move(x, y)
+	if title, ok := tt.Find("Your rules"); ok { // the section at the top, so that it opens in view
+		tt.Scroll(x, y, 0, title.Y-60)
+		frames(tt)
+		tt.Advance(time.Second)
+	}
+	click(t, tt, "Your rules")
+	field, ok := tt.Find(label)
+	if !ok {
+		t.Fatalf("no rules field: %q", firstTexts(tt))
+	}
+	tt.Scroll(x, y, 0, field.Y-y-20) // the page: the field's top just under the pointer
+	frames(tt)
+	before, _ := tt.Find(label)
+	for range 4 { // the same gesture, the field under the pointer now
+		tt.Scroll(x, y, 0, 60)
+	}
+	frames(tt)
+	after, _ := tt.Find(label)
+	if before.Y-after.Y < 200 {
+		t.Fatalf("the page stopped when the field came under the pointer: the field from %.0f to %.0f", before.Y, after.Y)
+	}
+	tt.Advance(time.Second)
+	tt.Scroll(x, y, 0, 60) // a new gesture over the field: the field's
+	frames(tt)
+	if again, _ := tt.Find(label); again.Y != after.Y {
+		t.Errorf("a scroll that starts over the field moved the page: the field from %.0f to %.0f", after.Y, again.Y)
 	}
 }
 
