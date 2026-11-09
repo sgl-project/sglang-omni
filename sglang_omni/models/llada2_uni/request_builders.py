@@ -302,8 +302,12 @@ def build_dllm_thinker_request(
                 raise ValueError("CFG branches must share a block column")
             else:
                 pass
-            if not 0 <= pad_len <= len(branch_ids):
-                raise ValueError(f"Invalid CFG {branch} left-pad length: {pad_len}")
+            pad_start = cfg_settings.get(f"{branch}_pad_start", 0)
+            if not 0 <= pad_start <= pad_start + pad_len <= len(branch_ids):
+                raise ValueError(
+                    f"CFG {branch} padding is outside its prompt: "
+                    f"start={pad_start}, length={pad_len}"
+                )
             else:
                 pass
             if branch == "uncond":
@@ -313,9 +317,9 @@ def build_dllm_thinker_request(
                 req._uncond_pad_len = (
                     pad_len  # noqa: leading-underscore  # DLLM protocol
                 )
-                req._uncond_pad_start = cfg_settings.get(
-                    "uncond_pad_start", 0
-                )  # noqa: leading-underscore  # DLLM protocol
+                req._uncond_pad_start = (
+                    pad_start  # noqa: leading-underscore  # DLLM protocol
+                )
             else:
                 req._uncond_img_input_ids = list(
                     branch_ids
@@ -323,9 +327,9 @@ def build_dllm_thinker_request(
                 req._uncond_img_pad_len = (
                     pad_len  # noqa: leading-underscore  # DLLM protocol
                 )
-                req._uncond_img_pad_start = cfg_settings.get(
-                    "uncond_img_pad_start", 0
-                )  # noqa: leading-underscore  # DLLM protocol
+                req._uncond_img_pad_start = (
+                    pad_start  # noqa: leading-underscore  # DLLM protocol
+                )
         if cfg_settings.get("uncond_img_input_ids") is not None:
             req._cfg_image_scale = cfg_settings[
                 "cfg_image_scale"

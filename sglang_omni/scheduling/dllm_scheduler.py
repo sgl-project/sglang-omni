@@ -294,7 +294,6 @@ class DllmScheduler:
 
         for rid in aborted:
             self.release_context(rid)
-            self.contexts_to_retain.discard(rid)
             self.rid_to_req_data.pop(rid, None)
             for uncond_rid in self.cond_to_unconds.pop(rid, []):
                 self.uncond_to_cond.pop(uncond_rid, None)

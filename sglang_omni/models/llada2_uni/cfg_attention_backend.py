@@ -21,7 +21,7 @@ CFG_ATTENTION_BACKEND = "llada2_uni_cfg_flashinfer"
 
 
 class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
-    """Stock FlashInfer plus opt-in image-edit CFG left-pad masking."""
+    """Stock FlashInfer plus masking of the padding in CFG companion rows."""
 
     def __init__(
         self, model_runner: ModelRunner, *, init_new_workspace: bool = False
@@ -148,11 +148,29 @@ class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
         paged_kernel_lens = prefix_lens - cached_pad_lens
         paged_lens = paged_kernel_lens.tolist()
         # A left pad is skipped by start offset, any other needs explicit KV indices.
-        custom_kv_indices = (
-            self.pack_kv_indices_around_padding(forward_batch, cached_pad_spans)
-            if any(start > 0 and end > start for start, end in cached_pad_spans)
-            else None
-        )
+        if any(start > 0 and end > start for start, end in cached_pad_spans):
+            kv_indptr = torch.zeros(
+                prefix_lens.numel() + 1, dtype=torch.int32, device=prefix_lens.device
+            )
+            kv_indptr[1:] = torch.cumsum(prefix_lens, dim=0)
+            kv_indices = torch.empty(
+                int(kv_indptr[-1]), dtype=torch.int32, device=prefix_lens.device
+            )
+            self.kv_index_translator.pack_read_stream(
+                forward_batch.kv_loc_plan,
+                req_pool_indices=forward_batch.req_pool_indices,
+                seq_lens=prefix_lens,
+                indptr=kv_indptr,
+                out=kv_indices,
+            )
+            keep = torch.ones_like(kv_indices, dtype=torch.bool)
+            for row_start, (pad_start, pad_end) in zip(
+                kv_indptr[:-1].tolist(), cached_pad_spans, strict=True
+            ):
+                keep[row_start + pad_start : row_start + pad_end] = False
+            custom_kv_indices = kv_indices[keep]
+        else:
+            custom_kv_indices = None
         local_pad_active = any(end > start for start, end in local_pad_spans)
         cfg_prefill_wrapper = self.cfg_prefill_wrapper_ragged
         prefill_indices_updater = self.indices_updater_prefill
@@ -241,33 +259,6 @@ class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
             use_ragged=True,
             extend_no_prefix=False,
         )
-
-    def pack_kv_indices_around_padding(
-        self,
-        forward_batch: ForwardBatch,
-        cached_pad_spans: tuple[tuple[int, int], ...],
-    ) -> torch.Tensor:
-        prefix_lens = forward_batch.extend_prefix_lens
-        kv_indptr = torch.zeros(
-            prefix_lens.numel() + 1, dtype=torch.int32, device=prefix_lens.device
-        )
-        kv_indptr[1:] = torch.cumsum(prefix_lens, dim=0)
-        kv_indices = torch.empty(
-            int(kv_indptr[-1]), dtype=torch.int32, device=prefix_lens.device
-        )
-        self.kv_index_translator.pack_read_stream(
-            forward_batch.kv_loc_plan,
-            req_pool_indices=forward_batch.req_pool_indices,
-            seq_lens=prefix_lens,
-            indptr=kv_indptr,
-            out=kv_indices,
-        )
-        keep = torch.ones_like(kv_indices, dtype=torch.bool)
-        for row_start, (pad_start, pad_end) in zip(
-            kv_indptr[:-1].tolist(), cached_pad_spans, strict=True
-        ):
-            keep[row_start + pad_start : row_start + pad_end] = False
-        return kv_indices[keep]
 
     def forward_extend(
         self,

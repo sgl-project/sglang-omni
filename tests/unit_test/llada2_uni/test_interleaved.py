@@ -10,9 +10,11 @@ from sglang_omni.models.llada2_uni.components.preprocessor import IMAGE_TOKEN_OF
 from sglang_omni.models.llada2_uni.config import LLaDA2UniInterleavedPipelineConfig
 from sglang_omni.models.llada2_uni.merge import extract_image_vq_tokens
 from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
+from sglang_omni.models.llada2_uni.request_builders import build_dllm_thinker_request
 from sglang_omni.models.llada2_uni.umm import LLaDA2UniUMMAdapter
 from sglang_omni.pipeline.umm import ContextRef, UMMContext, UMMOutput, UMMRequestError
 from sglang_omni.proto import OmniRequest
+from sglang_omni.scheduling.sglang_backend.request_data import DllmRequest
 from tests.unit_test.fixtures.llada2_fakes import (
     BLOCK_SIZE,
     Tokenizer,
@@ -40,12 +42,7 @@ def initial_payload():
     )
 
 
-def image_request(state):
-    pytest.importorskip("sglang")
-    from sglang_omni.models.llada2_uni.request_builders import (
-        build_dllm_thinker_request,
-    )
-
+def image_request(state: LLaDA2UniPipelineState) -> DllmRequest:
     return build_dllm_thinker_request(
         state,
         params={"stop": ["stop"], "stop_token_ids": [666]},
