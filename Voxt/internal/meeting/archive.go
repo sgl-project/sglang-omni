@@ -2,6 +2,7 @@ package meeting
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -41,8 +42,7 @@ func (a *Archive) Write(src Source, pcm []byte) error {
 		}
 		w = &wavWriter{f: f}
 		if err := w.writeHeader(); err != nil {
-			f.Close()
-			return err
+			return errors.Join(err, f.Close())
 		}
 		a.w[src] = w
 	}
@@ -115,13 +115,12 @@ func FixWAVHeader(path string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		return err
+		return errors.Join(err, f.Close())
 	}
 	if info.Size() < 44 {
-		return fmt.Errorf("meeting: wav %s too short", path)
+		return errors.Join(fmt.Errorf("meeting: wav %s too short", path), f.Close())
 	}
-	return (&wavWriter{f: f}).finalize()
+	return errors.Join((&wavWriter{f: f}).finalize(), f.Close())
 }
