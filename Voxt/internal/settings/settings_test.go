@@ -551,3 +551,26 @@ func TestMigrateOptionsJSON(t *testing.T) {
 		t.Errorf("kept %q", s.Providers.LLM[1].Generation.ExtraBodyJSON)
 	}
 }
+
+// TestLiveLinesDefault: Lines is the default live text layout (11-09),
+// for a document saved before too (it had no key unless Lines was
+// chosen); One line, chosen, is written and read back.
+func TestLiveLinesDefault(t *testing.T) {
+	for _, tc := range []struct {
+		doc  string
+		want bool
+	}{
+		{`{"version":4}`, true},
+		{`{"version":4,"overlay":{"liveLines":true}}`, true},
+		{`{"version":4,"overlay":{"liveLines":false}}`, false},
+	} {
+		s, err := Migrate([]byte(tc.doc))
+		if err != nil || s.Overlay.LiveLines != tc.want {
+			t.Errorf("%s: LiveLines %v, want %v (%v)", tc.doc, s.Overlay.LiveLines, tc.want, err)
+		}
+		out, _ := json.Marshal(s)
+		if again, err := Migrate(out); err != nil || again.Overlay.LiveLines != tc.want {
+			t.Errorf("%s: saved as %s, read back %v", tc.doc, out, again.Overlay.LiveLines)
+		}
+	}
+}

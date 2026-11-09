@@ -79,8 +79,9 @@ func TestOverlaySessionsStartSmall(t *testing.T) {
 		t.Run(pos, func(t *testing.T) {
 			a, _, _ := newTestApp(t)
 			ft := new(fakeTimers).install(a)
-			// Saved, so that a later save (Setup.Tried) keeps it.
-			a.updateSettings(func(s *settings.Settings) { s.Overlay.Position = pos })
+			// Saved, so that a later save (Setup.Tried) keeps it; the
+			// one-line pill, whose sizes these are (Lines: TestLiveLines).
+			a.updateSettings(func(s *settings.Settings) { s.Overlay.Position, s.Overlay.LiveLines = pos, false })
 			o := a.prefs.Overlay
 			check := func(what string, want ovStep) {
 				t.Helper()
@@ -270,8 +271,8 @@ func TestOverlayCheckSteps(t *testing.T) {
 				if a.ov.frame != want {
 					t.Errorf("%s/%s: %+v, want %+v", lang, st.name, a.ov.frame, want)
 				}
-			case "live-long":
-				if a.ov.w != layout.LiveMaxW || a.ov.h != layout.LiveH {
+			case "live-long": // Lines, the default: wide, a second line
+				if a.ov.w != layout.LinesW || a.ov.h <= layout.LiveH {
 					t.Errorf("%s/%s: %d×%d", lang, st.name, a.ov.w, a.ov.h)
 				}
 			case "card-short", "card-rewrite":

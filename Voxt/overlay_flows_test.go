@@ -225,8 +225,10 @@ func overlayFlows() []ovFlowCase {
 // its answer goes in at once.
 func rewriteNoCard(st *settings.Settings) { st.Features.Rewrite.ShowCard = false }
 
-// flowSettings: the pictures in Chinese.
+// flowSettings: the one-line pill (its rules are what TestOverlayFlows
+// checks; Lines, the default, is TestLiveLines'), the pictures in Chinese.
 func flowSettings(st *settings.Settings) {
+	st.Overlay.LiveLines = false
 	if os.Getenv("VOXTNEW_FLOW_SHOTS") != "" {
 		st.General.Language = "zh-Hans"
 	}
