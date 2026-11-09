@@ -221,7 +221,9 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 		case "input_audio_buffer.commit":
 			send(map[string]any{"type": "transcription.segment", "segment_id": 0, "text": "live final", "is_final": true})
 		case "transcription.done":
-			send(map[string]any{"type": "transcription.completed", "text": "live final"})
+			if !o.LiveDrop {
+				send(map[string]any{"type": "transcription.completed", "text": "live final"})
+			}
 			return
 		}
 	}

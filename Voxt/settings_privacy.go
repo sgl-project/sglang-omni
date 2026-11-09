@@ -57,7 +57,7 @@ func (a *app) privacySettings(c *ui.Context) {
 			a.showHistorySettings()
 		}
 	})
-	settingRow(c, "priv-clear", i18n.T("Clear the history"), i18n.T("Deletes every entry and its recording. Your dictionary and settings stay."), func() {
+	settingRow(c, "priv-clear", i18n.T("Clear the history"), i18n.T("Deletes every transcription, translation and rewrite entry and its recording. Meetings and their recordings stay; use Erase everything in Storage to remove those too."), func() {
 		if ui.Button(c.Key("priv-clear"), i18n.T("Clear…")).Clicked() {
 			a.clearHistoryAsk = true
 		}
@@ -78,7 +78,7 @@ func (a *app) clearHistoryDialog(c *ui.Context) {
 	t := c.Theme()
 	ui.Modal(c.Key("priv-clear-ask"), &a.clearHistoryAsk, func() {
 		ui.Text(c, i18n.T("Clear the history?")).Bold()
-		ui.Text(c, i18n.T("Every transcription, translation and rewrite, and their recordings, are deleted. This cannot be undone.")).Width(px(t, 380))
+		ui.Text(c, i18n.T("Every transcription, translation and rewrite, and their recordings, are deleted. Meetings and their recordings are not. This cannot be undone.")).Width(px(t, 380))
 		ui.Row(c).Gap(px(t, sp2)).Justify(ui.End).Children(func() {
 			if ui.Button(c.Key("priv-clear-cancel"), i18n.T("Cancel")).AutoFocus().Clicked() {
 				a.clearHistoryAsk = false

@@ -108,12 +108,13 @@ func TestOverlaySessionsStartSmall(t *testing.T) {
 			snap(a, session.Snapshot{ID: "A", State: session.Recording, StartedAt: now, HeardAt: now, Partial: long})
 			widest := layout.Frame(ovTestArea, o, layout.LiveMaxW, layout.LiveH)
 			check("A hears more", ovStep{ovRecording, widest, true, true, long})
-			// Recognising keeps the text; cleaning up shows none (FB6), and
-			// the pill drops the mode name it has only while recording.
+			// Recognising and cleaning up keep the live text, not the
+			// model's draft (FB6, #3644), and the pill drops the mode name
+			// it has only while recording.
 			snap(a, session.Snapshot{ID: "A", State: session.Recognizing, Partial: long})
 			check("A recognises", ovStep{ovWorking, widest, true, true, long})
 			snap(a, session.Snapshot{ID: "A", State: session.Composing, Partial: long, Draft: "So"})
-			check("A cleans up", ovStep{ovWorking, pillFrame(o, 0), true, true, ""})
+			check("A cleans up", ovStep{ovWorking, widest, true, true, long})
 			// Inserted: it fades and leaves, keeping its frame meanwhile.
 			snap(a, session.Snapshot{ID: "A", State: session.Done, Result: "So.", Inserted: true, Partial: long})
 			ft.advance(ovGone)

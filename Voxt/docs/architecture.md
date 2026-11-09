@@ -29,6 +29,8 @@ github.com/sgl-project/sglang-omni/Voxt
 │   │                     recording's sounds (afplay, Voxt's presets and how long each is
 │   │                     heard); the system's web proxies (CFNetwork);
 │   │                     a process's memory (proc_pid_rusage)
+│   ├── meeting/          meeting recorder: Manager, state machine, timeline, dual-track WAV    (C1-1b;
+│   │                     archives under <data>/meetings/; live transcription in C1-2)
 │   ├── asr/              the shape of speech recognition: FileTranscriber, Streamer/Stream, error
 │   │                     kinds, WAV/PCM helpers, the remote endpoint policy and WebSocket dial
 │   │                     (the local models are internal/local's); its subpackages are the
@@ -281,10 +283,11 @@ While a session is live (or the answer card shows) the bindings go to the helper
 | What | Where |
 |---|---|
 | Remote services' API keys | the login Keychain: generic passwords of service `VoxtNew`, account `llm.<id>` (language models) or `asr.<id>` (speech services) (`internal/secrets`); the settings keep the setups (`providers`: id, address, model), never a key. Any process of the user can read them without a prompt (they trust `/usr/bin/security`; `internal/secrets` says why) |
-| Database: history (+ `history_fts`; `rule_source` since migration 2), dictionary terms, documents (`settings:app`, `appctx:rules`, `notifications`) | `~/Library/Application Support/VoxtNew/voxtnew.db` (WAL; `voxtnew.db.bak-<v>` before each migration) |
+| Database: history (+ `history_fts`; `rule_source` since migration 2), dictionary terms, meetings (+ `meeting_segments`, FTS; migration 7), documents (`settings:app`, `appctx:rules`, `notifications`) | `~/Library/Application Support/VoxtNew/voxtnew.db` (WAL; `voxtnew.db.bak-<v>` before each migration) |
 | Local models | the model library `$HUB` (family spec §7.1, v1.0.9: the family's `models.root` when VoxtNew follows it (Settings → Storage → Change… sets it, after `models.Manager.MoveTo` brought the models there; with none set, the start sets it to `SGLang Omni/models` after `models.Manager.Gather` brought the other apps' models there, so that every app keeps its models in one place), else VoxtNew's own folder `SGLang Omni/models` beside the family directory (`models.HubIn`), i.e. `~/Library/Application Support/SGLang Omni/models`; the family's default library `$ACTNOW_FAMILY_DIR/models/hub`, VoxtNew's up to 2.0.0, and the Hugging Face caches `$HF_HUB_CACHE`, `$HF_HOME/hub` and `~/.cache/huggingface/hub` are only where models are imported from, at the start), the Hugging Face layout `models--<owner>--<name>/{blobs,snapshots/<commit>,refs}`, shared with the other ActNow apps when it is the family's `models.root`; the runtimes load `snapshots/<commit>` (`models.Manager.Dir`); locks in `$HUB/.locks/models--…/` |
 | The ActNow family | `~/Library/Application Support/ActNow/` (`$ACTNOW_FAMILY_DIR`): `family.json`, `apps/dev.hehehai.voxtnew.json` (the manifest: version, path, capabilities, shortcuts, links, `models.root`), `models/claims/dev.hehehai.voxtnew.json` (the models VoxtNew uses), `models/removed.json` (deleted for all apps), `runtime/dev.hehehai.voxtnew.json` (while it runs: loaded models, the paste flag), `settings.json` (shared settings; VoxtNew's follow flags are in its own `settings:app`, `family`) |
 | Recordings kept with history entries | `…/VoxtNew/audio/<id>.wav` (only with Settings → Privacy → Keep the recordings) |
+| Meeting recordings (mic and system WAV per meeting) | `…/VoxtNew/meetings/<id>/mic.wav`, `system.wav` (Settings → Privacy → Clear the history does not remove them; Settings → Storage → Erase everything does) |
 | Data folder location | `…/VoxtNew/location.json` when the user moved it (Settings → Storage); `move.json`, `reset.json` while a move or an erase waits for the next start |
 | The output's mutes (crash recovery) | `~/Library/Caches/VoxtNew/output-mute/<helper pid>.json`: the devices a helper muted, written before each mute, removed when it gives them back; the next helper undoes a dead one's (`output.recover`). Empty while nothing records |
 | Apps' icons (App enhancement's lists) | `~/Library/Caches/VoxtNew/icons/<bundle id>-64.png`, drawn by the helper (`app.icons`), redrawn after a week (`internal/appicons`) |

@@ -20,11 +20,11 @@ Output: only the translation, without quotes, labels, notes, the source text or 
 
 ---- user ----
 <input>
-Um, can you send the, uh, the weekly report to Tom, sorry, I mean to Anna, before five?
+Um, can you send the, uh, the weekly report to Tom, sorry, I mean to Anna, before five? I need it before five, I really, I really need it before five.
 </input>
 
 ---- assistant ----
-你能在 5 点前把周报发给 Anna 吗？
+你能在 5 点前把周报发给 Anna 吗？我 5 点前真的要用。
 
 ---- user ----
 <glossary>

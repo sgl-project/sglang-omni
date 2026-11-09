@@ -36,7 +36,9 @@ func (a *app) commands() []command {
 		cmds = append(cmds, command{id: id, group: group, title: title, en: en, keys: keys, run: run, enabled: enabled})
 	}
 	for _, p := range pages { // every sidebar page (shell_pages.go navGroups)
-		add("go"+p.path, nav, pageTitle(p.path), p.title, pageKeys(p.path), true, func() { a.navigate(p.path) })
+		if !a.pageHidden(p.path) {
+			add("go"+p.path, nav, pageTitle(p.path), p.title, pageKeys(p.path), true, func() { a.navigate(p.path) })
+		}
 	}
 	add("go/settings", nav, i18n.T("Settings"), "Settings", "⌘,", true, func() { a.navigate("/settings") })
 	for _, s := range settingsSections() {
@@ -120,7 +122,7 @@ func (a *app) shortcuts(c *ui.Context) {
 		a.navigate("/settings")
 	}
 	for i, path := range shortcutPages {
-		if c.Shortcut(ui.Cmd, ui.Key1+ui.Key(i)) {
+		if c.Shortcut(ui.Cmd, ui.Key1+ui.Key(i)) && !a.pageHidden(path) {
 			a.navigate(path)
 		}
 	}

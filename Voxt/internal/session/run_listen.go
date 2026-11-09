@@ -57,9 +57,13 @@ func (r *run) lacks() *Problem {
 // not be read (the session goes on without one).
 func (r *run) readSelection() string {
 	cfg := r.m.cfg
-	ctx, cancel := context.WithTimeout(r.ctx, cfg.ReadTimeout)
+	timeout, params := cfg.ReadTimeout, proto.SelectionParams{AllowCopy: AllowCopy(r.req.Target.BundleID)}
+	if r.req.Kind == store.KindRewrite {
+		timeout, params.CopyTimeoutMS = cfg.RewriteReadTimeout, rewriteCopyMS
+	}
+	ctx, cancel := context.WithTimeout(r.ctx, timeout)
 	defer cancel()
-	res, err := cfg.Select.Selection(ctx, proto.SelectionParams{AllowCopy: AllowCopy(r.req.Target.BundleID)})
+	res, err := cfg.Select.Selection(ctx, params)
 	if err != nil {
 		if r.ctx.Err() == nil {
 			r.logf("warning", "reading the selection: %v", err)
@@ -112,7 +116,7 @@ func (r *run) listen() (string, bool) {
 		}
 		ch := make(chan openResult, 1)
 		go func() {
-			s, err := st.Open(r.ctx, asr.StreamRequest{SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext()})
+			s, err := st.Open(r.ctx, asr.StreamRequest{SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext(), LiveResult: r.settings.Audio.LiveResult})
 			ch <- openResult{s, err}
 		}()
 		return ch

@@ -277,6 +277,14 @@ func (a *app) audioSettings(c *ui.Context) {
 			a.updateSettings(func(s *settings.Settings) { s.Audio.Clean.Off = off })
 		}
 	})
+	settingRow(c, "audio-final", i18n.T("Recognise the whole recording again"), i18n.T("On: after you stop, a local speech model that shows the text as you speak recognises the whole recording once more, which is more accurate than the live text and takes a moment. Off: the live text is the result as soon as its last words are done."), func() {
+		again := !a.settingsForm.liveResult
+		if ui.Switch(c.Key("audio-final-switch"), &again).Label(i18n.T("Recognise the whole recording again")).Changed() {
+			live := !again
+			a.settingsForm.liveResult = live
+			a.updateSettings(func(s *settings.Settings) { s.Audio.LiveResult = live })
+		}
+	})
 
 	sectionTitle(c, i18n.T("Sounds"))
 	a.soundsRow(c) // settings_sounds.go

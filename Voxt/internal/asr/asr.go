@@ -91,6 +91,10 @@ type StreamRequest struct {
 	Lang       string // a language hint, "" detects
 	Hints      []string
 	Prompt     string
+	// LiveResult asks for the live text as the result, without a second
+	// pass over the whole recording at Finish, where the model makes one
+	// (settings.Audio.LiveResult); the others ignore it.
+	LiveResult bool
 }
 
 // Streamer opens recognition streams.

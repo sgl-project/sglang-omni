@@ -2,10 +2,12 @@ package main
 
 import (
 	"math"
+	"slices"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -379,5 +381,41 @@ func TestOnboardingComesBack(t *testing.T) {
 	a.openOnboarding()
 	if a.ob.step != obWelcome {
 		t.Errorf("after finishing: step %d", a.ob.step)
+	}
+}
+
+// TestKeyboardLit: the setup guide's keyboard lights the keys of the
+// shortcut: a modifier on its side, on both sides when either does, fn,
+// the space bar (#3644: "Right ⌥" did not say which physical key).
+func TestKeyboardLit(t *testing.T) {
+	for _, c := range []struct {
+		keys string
+		want []string
+	}{
+		{"RightOption", []string{"option-right"}},
+		{"Option+Space", []string{"option-left", "option-right", "space"}},
+		{"Fn+Shift", []string{"fn", "shift-left", "shift-right"}},
+		{"LeftCommand+C", []string{"command-left"}},
+	} {
+		chord, err := hotkey.Parse(c.keys)
+		if err != nil {
+			t.Fatalf("%s: %v", c.keys, err)
+		}
+		lit := keyboardLit(chord)
+		var got []string
+		for id := range lit {
+			got = append(got, id)
+		}
+		slices.Sort(got)
+		if !slices.Equal(got, c.want) {
+			t.Errorf("%s: lit %v, want %v", c.keys, got, c.want)
+		}
+		for _, id := range c.want {
+			if !slices.ContainsFunc(keyboardRows, func(row []keyboardKey) bool {
+				return slices.ContainsFunc(row, func(k keyboardKey) bool { return k.id == id })
+			}) {
+				t.Errorf("%s: no key %q in the drawing", c.keys, id)
+			}
+		}
 	}
 }

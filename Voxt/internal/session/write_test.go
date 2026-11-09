@@ -339,6 +339,33 @@ func TestWrite(t *testing.T) {
 	}
 }
 
+// TestRewriteReadsASlowSelection: Rewrite reads the selection while the
+// user speaks, for up to RewriteReadTimeout, with a longer ⌘C wait: a
+// long selection that takes longer than Translate's ReadTimeout to read is
+// rewritten. Rewrite gave up at ReadTimeout and wrote from the
+// instruction alone, ignoring a long selection (#3644).
+func TestRewriteReadsASlowSelection(t *testing.T) {
+	sel := &fakeSelector{text: "a long paragraph to shorten", delay: 200 * time.Millisecond}
+	model := &fakeLLM{text: "Short."}
+	h := newHarness(t, &fakeFile{text: " hello aura link "}, model, func(c *Config, s *settings.Settings) {
+		c.Select = sel
+		c.ReadTimeout, c.RewriteReadTimeout = 50*time.Millisecond, 5*time.Second
+	})
+	id, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Target: slack})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.speak(id, 5)
+	end := h.rec.wait(t)
+	reqs := model.requests()
+	if end.State != Done || len(reqs) != 1 || !strings.Contains(reqs[0].Messages[len(reqs[0].Messages)-1].Content, "<selected_text>\na long paragraph to shorten") {
+		t.Fatalf("end %s %q, requests %+v", end.State, end.Result, reqs)
+	}
+	if p := sel.params(); len(p) != 1 || p[0].CopyTimeoutMS != rewriteCopyMS {
+		t.Errorf("selection params %+v", p)
+	}
+}
+
 // TestWriteCancel cancels Translate while it reads the selection and
 // while the answer streams: nothing is pasted or kept.
 func TestWriteCancel(t *testing.T) {

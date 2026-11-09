@@ -224,6 +224,8 @@ type fakeStreamer struct {
 	streams []*fakeStream
 	hints   []string
 	prompt  string // the last stream's prompt
+	// liveResult is the last stream's StreamRequest.LiveResult.
+	liveResult bool
 }
 
 func (f *fakeStreamer) Caps() asr.Caps { return asr.Caps{Stream: true, Hints: true} }
@@ -249,7 +251,7 @@ func (f *fakeStreamer) Open(ctx context.Context, req asr.StreamRequest) (asr.Str
 	s := &fakeStream{f: f, ctx: ctx, events: make(chan asr.Event, 1024)}
 	f.mu.Lock()
 	f.streams = append(f.streams, s)
-	f.hints, f.prompt = req.Hints, req.Prompt
+	f.hints, f.prompt, f.liveResult = req.Hints, req.Prompt, req.LiveResult
 	f.mu.Unlock()
 	return s, nil
 }

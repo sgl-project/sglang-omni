@@ -4,6 +4,8 @@ package main
 // badges, the ⌘1–⌘6 shortcuts and the paths that moved.
 
 import (
+	"strings"
+
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 )
@@ -47,6 +49,12 @@ var navGroups = []navGroup{
 
 // shortcutPages are the pages ⌘1…⌘6 open, in that order.
 var shortcutPages = []string{"/home", "/history", "/transcribe", "/translate", "/rewrite", "/app-enhancement"}
+
+// pageHidden reports whether path is the page of a feature the user hid
+// (settings.Features.Hidden, whose ids are the pages' paths).
+func (a *app) pageHidden(path string) bool {
+	return a.prefs.Features.IsHidden(strings.TrimPrefix(path, "/"))
+}
 
 // pages are every page of the sidebar, in its order.
 var pages = func() []navPage {

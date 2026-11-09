@@ -121,11 +121,11 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 
 // hotkeyPlan is what the settings' shortcuts become.
 func (a *app) hotkeyPlan() hotkey.Plan {
-	enabled := slices.Clone(liveFeatures)
+	shown := slices.DeleteFunc(slices.Clone(liveFeatures), a.prefs.Features.IsHidden)
 	if a.meetingEnabled() {
-		enabled = append(enabled, hotkey.Meeting)
+		shown = append(shown, hotkey.Meeting)
 	}
-	return hotkey.Build(a.prefs.Features, enabled)
+	return hotkey.Build(a.prefs.Features, shown)
 }
 
 // syncHotkeys sends the shortcuts to the helper (and flips "active" while
