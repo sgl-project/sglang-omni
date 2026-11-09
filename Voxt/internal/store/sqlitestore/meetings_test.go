@@ -201,6 +201,30 @@ func TestMeetingsMigrateFromV6(t *testing.T) {
 	}
 }
 
+func TestMeetingsChatPersistAndDelete(t *testing.T) {
+	s := openTest(t, t.TempDir())
+	m := s.Meetings()
+	ctx := context.Background()
+	mt, err := m.CreateMeeting(ctx, meetingID("m-chat"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mt.Chat = `[{"role":"user","content":"Q1"},{"role":"assistant","content":"A1"}]`
+	if err := m.UpdateMeeting(ctx, mt); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := m.Meeting(ctx, "m-chat")
+	if err != nil || got.Chat == "" || !strings.Contains(got.Chat, "Q1") {
+		t.Fatalf("%+v %v", got.Chat, err)
+	}
+	if err := m.DeleteMeeting(ctx, "m-chat"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.Meeting(ctx, "m-chat"); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("delete: %v", err)
+	}
+}
+
 func TestMeetingsReplaceFailsMidTransaction(t *testing.T) {
 	s := openTest(t, t.TempDir())
 	m := s.Meetings()

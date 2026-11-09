@@ -5,6 +5,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -21,7 +23,10 @@ type meetingDetail struct {
 	id       string
 	meeting  store.Meeting
 	segments []store.MeetingSegment
+	chat     []meeting.ChatMessage
+	question string
 	loading  bool
+	busy     bool
 	err      string
 }
 
@@ -47,6 +52,7 @@ func (a *app) openMeetingDetail(id string) {
 			}
 			n.detail.meeting = mt
 			n.detail.segments = segs
+			n.detail.chat, _ = meeting.ParseChatMessages(mt.Chat)
 		})
 	})
 }
@@ -102,6 +108,59 @@ func (a *app) meetingDetailSection(c *ui.Context) {
 		_ = mygo.Clipboard.Write(transfer.TextData(meeting.ExportMarkdown(title, exportSegs, names)))
 		a.toast(i18n.T("Copied"))
 	}
+	ui.Box(c).Height(px(t, sp2))
+	sectionTitle(c, i18n.T("Ask about this meeting"))
+	for i, msg := range d.chat {
+		line := msg.Content
+		if msg.Role == "user" {
+			line = i18n.T("You") + ": " + line
+		}
+		ui.Text(c.Key(fmt.Sprintf("mt-chat-%d", i)), line).TextColor(tok(t).Text2)
+	}
+	if d.busy {
+		ui.Text(c, i18n.T("Answering…")).TextColor(t.TextMuted)
+	}
+	ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
+		ui.TextInput(c.Key("mt-followup"), &d.question).Placeholder(i18n.T("Follow-up question")).Grow(1).MinWidth(0)
+		q := strings.TrimSpace(d.question)
+		if primaryButton(c.Key("mt-ask"), i18n.T("Send question")).Disabled(!canLLM || d.busy || q == "").Clicked() {
+			a.askMeetingFollowUp(d.id, q)
+		}
+	})
+	if !canLLM {
+		ui.Text(c, i18n.T("Set up a language model on the Language models page to ask follow-up questions.")).
+			FontSize(px(t, fsCaption)).TextColor(t.TextMuted)
+	}
+}
+
+func (a *app) askMeetingFollowUp(id, question string) {
+	if a.meetMgr == nil || id == "" || question == "" {
+		return
+	}
+	n := &a.mv
+	if n.detail == nil || n.detail.id != id {
+		return
+	}
+	n.detail.busy = true
+	a.async(func() {
+		ctx := context.Background()
+		if err := a.meetMgr.AnswerMeetingFollowUp(ctx, id, question); err != nil {
+			a.post(func() {
+				if n.detail != nil && n.detail.id == id {
+					n.detail.busy = false
+				}
+				a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: "follow-up: " + err.Error()})
+			})
+			return
+		}
+		a.post(func() {
+			if n.detail != nil && n.detail.id == id {
+				n.detail.question = ""
+				n.detail.busy = false
+			}
+			a.openMeetingDetail(id)
+		})
+	})
 }
 
 func (a *app) regenerateMeetingSummary(id string) {
