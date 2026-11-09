@@ -8,11 +8,11 @@ Follow the [MOSS-Speech codec installation instructions](../get_started/installa
 
 ```yaml
 config_cls: MossSpeechPipelineConfig
-model_path: /path/to/MOSS-Speech
+model_path: checkpoints/MOSS-Speech
 stages:
   audio_vocoder:
     factory:
-      codec_path: /path/to/MOSS-Speech-Codec
+      codec_path: checkpoints/MOSS-Speech-Codec
 ```
 
 ```bash
@@ -31,7 +31,7 @@ curl http://localhost:8000/v1/audio/speech \
   -d '{
     "model": "moss-speech",
     "input": "What is the capital of France?",
-    "ref_audio": "/path/to/reference.wav",
+    "ref_audio": "voices/reference.wav",
     "response_format": "wav",
     "stream": false,
     "max_new_tokens": 512,
@@ -43,6 +43,10 @@ curl http://localhost:8000/v1/audio/speech \
 The fixed system prompt asks the model to answer the user's questions with spoken responses. The user text is passed through unchanged. Generated content depends on that text and the model's sampling parameters, so question-answering quality must be evaluated against the expected answer rather than against the question's transcript. Use an explicit instruction in `input` when requesting a particular response style or a reading task.
 
 Each request requires one reference audio source through `ref_audio` or a single `references` entry. It conditions the output voice; it is not interpreted as a spoken user question. The response is a complete WAV or PCM payload, and this interface does not return token usage or a generation finish reason.
+
+Reference audio accepts a server-local path, a `file://` URI, an HTTP(S) URL, or a base64 audio DataURI. Relative paths resolve from the server's working directory. Audio is downmixed to mono and must be finite, long enough for codec conditioning, and at most 30 seconds. The original sample rate is preserved until each conditioning path resamples it.
+
+Voice conditioning follows the official HF codec's `torchaudio.transforms.Resample` calls: the token encoder resamples the original audio directly to 16 kHz on the encoder device, while mel conditioning resamples the original audio to 24 kHz on CPU and speaker conditioning resamples that 24 kHz waveform to 16 kHz on CPU. Reusing the speaker waveform for token extraction would introduce an extra resampling stage. Strict numerical comparisons also require matching Torch/CUDA and ONNX Runtime versions; aligning this frontend alone does not establish complete HF equivalence.
 
 ## Current interface coverage
 

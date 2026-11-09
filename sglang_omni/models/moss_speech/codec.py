@@ -8,7 +8,9 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Protocol, TypedDict
+from urllib.parse import unquote, urlparse
 
+import httpx
 import numpy as np
 import onnxruntime
 import torch
@@ -23,10 +25,38 @@ from sglang_omni.models.moss_speech.request_builders import (
     RequestValidationError,
 )
 from sglang_omni.proto.request import StagePayload
-from sglang_omni.utils.audio import load_audio
+from sglang_omni.utils.audio import (
+    audio_request_timeout,
+    decode_audio_data_uri,
+    load_with_torchaudio,
+)
 
 SAMPLE_RATE_HZ = 24000
 MAX_REFERENCE_SECONDS = 30
+
+
+def load_reference_audio(reference_audio: str) -> tuple[torch.Tensor, int]:
+    """Decode a mono reference without changing its original sample rate."""
+    decoded = decode_audio_data_uri(reference_audio)
+    source: str | bytes
+    if decoded is not None:
+        source = decoded
+    elif reference_audio.startswith(("http://", "https://")):
+        response = httpx.get(
+            reference_audio, timeout=audio_request_timeout(), follow_redirects=True
+        )
+        response.raise_for_status()
+        source = response.content
+    elif reference_audio.startswith("file://"):
+        source = unquote(urlparse(reference_audio).path)
+    else:
+        source = reference_audio
+    waveform, sample_rate = load_with_torchaudio(source, source_name="reference audio")
+    if waveform.shape[0] > 1:
+        waveform = waveform.mean(dim=0, keepdim=True)
+    else:
+        pass
+    return waveform.to(torch.float32), sample_rate
 
 
 class VoiceConditioning(TypedDict):
@@ -133,34 +163,37 @@ class MossSpeechCodec:
     @torch.inference_mode()
     def encode_reference(self, reference_audio: str) -> VoiceConditioning:
         assert self.encoder is not None and self.decoder is not None
-        samples = load_audio(
-            reference_audio,
-            source_name="reference audio",
-            target_sample_rate=SAMPLE_RATE_HZ,
+        reference_waveform, reference_sample_rate = load_reference_audio(
+            reference_audio
         )
+        waveform = torchaudio.transforms.Resample(
+            reference_sample_rate, SAMPLE_RATE_HZ
+        )(reference_waveform)
         minimum_reference_samples = (
             self.feature_frames_per_token
             * self.feature_extractor.hop_length
             * SAMPLE_RATE_HZ
             // self.feature_extractor.sampling_rate
         )
-        if len(samples) < minimum_reference_samples:
+        if waveform.shape[-1] < minimum_reference_samples:
             raise RequestValidationError(
                 "Reference audio is too short for codec conditioning"
             )
         elif (
-            len(samples) > MAX_REFERENCE_SECONDS * SAMPLE_RATE_HZ
-            or not np.isfinite(samples).all()
+            waveform.shape[-1] > MAX_REFERENCE_SECONDS * SAMPLE_RATE_HZ
+            or not torch.isfinite(waveform).all()
         ):
             raise RequestValidationError(
                 f"Reference audio must contain finite audio of at most {MAX_REFERENCE_SECONDS} seconds"
             )
         else:
             pass
-        waveform = torch.from_numpy(samples).unsqueeze(0)
-        waveform_16khz = torchaudio.functional.resample(waveform, SAMPLE_RATE_HZ, 16000)
+        # note (BraveBeter): Token features use the original rate on the encoder device.
+        token_waveform_16khz = torchaudio.transforms.Resample(
+            reference_sample_rate, 16000
+        ).to(self.device)(reference_waveform.to(self.device))
         audio_features = self.feature_extractor(
-            [waveform_16khz[0].numpy()],
+            [token_waveform_16khz[0].cpu().numpy()],
             sampling_rate=16000,
             return_attention_mask=True,
             return_tensors="pt",
@@ -192,6 +225,7 @@ class MossSpeechCodec:
             )
         else:
             pass
+        waveform_16khz = torchaudio.transforms.Resample(SAMPLE_RATE_HZ, 16000)(waveform)
         speaker_mel = kaldi.fbank(
             waveform_16khz, num_mel_bins=80, dither=0, sample_frequency=16000
         )
