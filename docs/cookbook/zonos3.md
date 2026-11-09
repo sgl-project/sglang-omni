@@ -1,113 +1,111 @@
 # Zonos3
 
-[Zonos3-Mini](https://huggingface.co/Zyphra-staging/Zonos3-Mini-Staging-Release) is a text-to-speech model from Zyphra. An 11-layer hybrid backbone (Gated DeltaNet, global attention and a latent MoE) generates **10 codec codebooks** at 15 frames per second in a **delay pattern**, and the codec decodes them to **44.1 kHz** speech. It clones a voice from a reference clip. In SGLang-Omni it runs as a `preprocessing → tts_engine → vocoder` pipeline behind the OpenAI-compatible `/v1/audio/speech` endpoint.
+[Zonos3-Mini](https://huggingface.co/Zyphra-staging/Zonos3-Mini-Staging-Release) is Zyphra's text-to-speech model. Generate **44.1 kHz** speech with a default voice or clone a voice from reference audio through the OpenAI-compatible `/v1/audio/speech` API.
 
-## Installation
+## Quick start
 
-Install `sglang-omni` by following the [Installation](../get_started/installation.md) guide. No additional model-specific dependencies are required.
+<a id="installation"></a>
 
-## Launch the Server
+### Installation requirements
 
-\```bash
-sgl-omni serve --model-path Zyphra/ZONOS3-Mini
-\```
+Follow the [CUDA installation guide](../get_started/installation.md), using a checkout that includes Zonos3 support. No additional model-specific dependencies are required. Your Hugging Face account must have access to `Zyphra-staging/Zonos3-Mini-Staging-Release`; authenticate the server environment before launching.
 
-Every generation opens the audio stream with three codec-silence frames (0.2 s), which the output does not contain; `--preprocessing.factory.silence_prefill_frames 0` disables it server-wide, and `"prepend_silence": false` disables it per request.
+<a id="launch-the-server"></a>
 
-## Synthesizing Speech
-
-Pass a reference clip in `references[0].audio_path` (or `ref_audio`) as a local path, HTTP URL, or base64 data URI. Zonos3 conditions on the audio only, so a transcript is not needed; a clip must be at least 0.5 s long, and one longer than 60 s keeps its first 60 s. Omit the reference to use the default voice.
+### Start the server and check readiness
 
 ```bash
-curl -X POST http://localhost:8000/v1/audio/speech \
+sgl-omni serve \
+  --model-path Zyphra-staging/Zonos3-Mini-Staging-Release \
+  --port 8000
+```
+
+In another terminal, check readiness after the weights load:
+
+```bash
+curl -fS http://localhost:8000/health
+```
+
+Continue when this returns HTTP 200 with `"status": "healthy"`. During startup it may return HTTP 503 or refuse the connection; check the server logs and retry once initialization finishes.
+
+<a id="synthesizing-speech"></a>
+
+### Generate output.wav with the default voice
+
+No reference audio is required. Send text to the running server:
+
+```bash
+curl -fS -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "input": "SGLang-Omni is a great project!",
-    "references": [{
-      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"
-    }]
+    "input": "SGLang-Omni is a great project!"
   }' \
   --output output.wav
 ```
 
-**Python**
+The response is a complete WAV file containing 44.1 kHz mono speech. Open `output.wav` in an audio player.
 
-```python
-import requests
+## Voice cloning
 
-resp = requests.post(
-    "http://localhost:8000/v1/audio/speech",
-    json={
-        "input": "Get the trust fund to the bank early.",
-        "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-        "seed": 7,
-    },
-)
-resp.raise_for_status()
-with open("output.wav", "wb") as f:
-    f.write(resp.content)
+Add `references` to the same request to use a reference voice. **No transcript is needed.** Zonos3 accepts at most one reference clip, at least **0.5 seconds** long. By default, clips longer than **60 seconds** are truncated to their first 60 seconds.
+
+```json
+{
+  "input": "SGLang-Omni is a great project!",
+  "references": [{
+    "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"
+  }]
+}
 ```
 
-**Streaming**
+For reference formats and the `ref_audio` shorthand, see [Voice Cloning](../basic_usage/tts.md#voice-cloning); for server-visible local paths and remote URL access, see [media access rules](../basic_usage/tts.md#start-a-tts-server).
 
-With `"stream": true` and `"response_format": "pcm"` the response is `audio/pcm` (16-bit mono, 44.1 kHz) and its chunks arrive while the model is still generating. By default the first chunk targets 12 frames (0.8 s) and later chunks 16 frames; a short utterance may flush fewer. On Hopper GPUs (FlashAttention-3), streams with an available decoder slot retain the codec's key/value windows and convolution histories; streams without a slot decode growing prefixes. Streaming PCM is not guaranteed to be bit-exact with non-streaming WAV.
+## Streaming
 
-```bash
-curl -N -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "input": "Get the trust fund to the bank early.",
-    "stream": true,
-    "response_format": "pcm"
-  }' \
-  --output output.pcm
-```
+Add `"stream": true` and `"response_format": "pcm"` to either request above to receive audio while generation is still running.
 
-```python
-import requests
+Use the shared [streaming examples](../basic_usage/tts.md#raw-wav-and-pcm) or [Python streaming client](../basic_usage/tts.md#python-streaming-client) with the request fields above. Zonos3 outputs **44.1 kHz, signed 16-bit little-endian mono PCM**. The Python client reads the sample rate from the response headers and supports this format.
 
-with requests.post(
-    "http://localhost:8000/v1/audio/speech",
-    json={"input": "Get the trust fund to the bank early.", "stream": True, "response_format": "pcm"},
-    stream=True,
-) as resp:
-    resp.raise_for_status()
-    with open("output.pcm", "wb") as output:
-        for pcm16_chunk in resp.iter_content(chunk_size=None):
-            output.write(pcm16_chunk)
-```
+Streaming PCM can differ from non-streaming WAV even with the same seed. The default first chunk targets 0.8 s of audio; this is playback duration, not the wait for the first chunk.
 
-`output.pcm` is raw signed 16-bit little-endian mono audio at 44.1 kHz, not a WAV file.
+<a id="generation-parameters"></a>
 
-## Generation Parameters
+## Common options
 
-| Parameter | Default | Notes |
+Add these fields to the JSON request as needed:
+
+| Parameter | Default | Usage |
 |---|---|---|
-| `max_new_tokens` | `2048` | Maximum generated delay-pattern rows; with 10 codebooks, `N` rows yield at most `N - 9` complete audio frames (15 per second) |
-| `temperature` | `0.75` | Applied to every codebook; `0` decodes greedily |
-| `top_k` | `80` | |
-| `top_p` | `0.69` | Applied after top-k |
-| `repetition_penalty` | `2.4` | Over the last 96 generated rows on the first 6 codebooks; `1.0` disables it |
-| `seed` | unset | Per-request sampling seed; a request without one draws a random seed |
-| `prepend_silence` | server default (`true`) | Codec-silence prefill of the audio stream |
-| `condition_buckets` | all unknown | `{"loudness": 0-9, "fmax": 0-9, "speaking_rate": 0-29}`; a table's bucket count means unknown |
-| `condition_values` | unset | Raw loudness (LUFS), fmax (Hz) and speaking rate (UTF-8 bytes per second) mapped through the checkpoint's bucket edges |
+| `max_new_tokens` | `2048` | Positive generation budget in **delay-pattern rows**, not text tokens or seconds. |
+| `temperature` | `0.75` | Nonnegative; `0` selects greedy decoding. |
+| `top_k` | `80` | Top-k sampling; integer from `1` to `4098`. |
+| `top_p` | `0.69` | Applied after top-k; must be in `(0, 1]`. |
+| `seed` | unset | Integer sampling seed; omitted requests draw a random seed. |
+| `repetition_penalty` | `2.4` | Must be at least `1.0`; `1.0` disables the penalty. |
 
-The decoder's output is scaled by the codec registry's declared 3 dB headroom before PCM16 conversion.
+Text, reference audio, and the generation budget must fit the server's default 8192-row context window. The generation budget is an upper limit, not a requested audio duration. Shared fields are documented in [Request Parameters](../basic_usage/tts.md#request-parameters).
 
-## Benchmark Results
+## Next steps
 
-SeedTTS EN voice cloning (1088 samples), 1x H100, concurrency 16, the default `sgl-omni serve` launch above, no request seed, scored with Qwen3-ASR-1.7B. SIM is the WavLM-large speaker similarity between each output and its reference, in percentage points. Each value is the mean of 30 passes (six passes per warm server on five GPUs). Corpus WER is dominated by about 20 whole-sentence failures that the model samples in each pass, so a single pass moves by about 0.6 points; WER below 50 is the stable figure.
+Use the shared [Python requests](../basic_usage/tts.md#python), [OpenAI Python SDK](../basic_usage/tts.md#openai-python-sdk), and [Python streaming client](../basic_usage/tts.md#python-streaming-client) examples with the checkpoint ID above. Remove the Qwen-specific `language` field; omit `voice` in HTTP requests or use `voice="default"` in the SDK.
 
-| Mode | WER (corpus) | WER below 50 | Samples above 50% WER | SIM | RTF mean | Throughput (qps) | First audio (s) |
+## Benchmark results
+
+SeedTTS EN voice cloning (1088 samples), one H100 per server, concurrency 16, default server and sampling settings, no request seed, scored with Qwen3-ASR-1.7B. Values are means of 30 passes: six per warm server on five GPUs. SIM is WavLM-large speaker similarity to the reference, in percentage points.
+
+| Mode | WER (corpus) | WER, samples ≤50% | Samples above 50% WER | SIM | RTF mean | Throughput (qps) | First audio (s) |
 |---|---|---|---|---|---|---|---|
 | Non-streaming | 3.03% | 1.26% | 21.1 | 50.8 | 0.060 | 55.67 | - |
 | Streaming | 3.13% | 1.25% | 22.2 | 50.8 | 0.070 | 48.03 | 0.14 |
 
-Throughput by concurrency on the same H100 (one pass per level; concurrency 16 repeats the table above):
+Corpus WER includes all scored samples. The filtered WER excludes individual samples above 50% WER and is diagnostic only; `21.1` and `22.2` are mean counts across passes. First audio measures the wait for the first audio payload, not its playback duration. See the [TTS benchmark guide](../developer_reference/tts_bench.md) for RTF, throughput, and other metric definitions.
+
+Throughput by concurrency on the same H100 setup: one pass per level, except concurrency 16, which repeats the 30-pass means above.
 
 | Concurrency | 1 | 4 | 16 | 32 | 64 |
 |---|---|---|---|---|---|
 | Non-streaming (qps) | 9.05 | 25.61 | 55.67 | 70.32 | 74.35 |
 | Streaming (qps) | 8.54 | 23.22 | 48.03 | 57.97 | 61.66 |
 | Streaming first audio (s) | 0.057 | 0.078 | 0.140 | 0.221 | 0.264 |
+
+These original measurements did not record an immutable checkpoint revision and have not been rerun for the staging checkpoint linked above.
