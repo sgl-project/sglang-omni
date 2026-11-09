@@ -36,6 +36,16 @@ def guidance_request_id(request_id: str) -> str:
     return f"{request_id}{GUIDANCE_SUFFIX}"
 
 
+def public_request_id(request_id: str) -> str:
+    """The client-visible id behind an internal score or guidance request id."""
+    for suffix in (SCORE_SUFFIX, GUIDANCE_SUFFIX):
+        if request_id.endswith(suffix):
+            return request_id.removesuffix(suffix)
+        else:
+            pass
+    return request_id
+
+
 @dataclass
 class Yue2ARRequestData(SGLangARRequestData):
     request: Yue2Request | None = None
@@ -147,7 +157,7 @@ class Yue2RequestBuilder:
     def sglang_fields(
         self, request_id: str, prefix: list[int], sampling: SamplingConfig, end: int
     ) -> dict[str, Req | list[int] | torch.Tensor | int]:
-        if len(prefix) + sampling.max_tokens > self.context_tokens:
+        if len(prefix) + sampling.max_tokens >= self.context_tokens:
             raise ValueError(
                 "YuE2 request: prefix and token budget exceed the model context"
             )

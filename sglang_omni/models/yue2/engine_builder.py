@@ -58,7 +58,7 @@ class Yue2EngineBuilder(TtsEngineBuilder[Yue2ARRequestData]):
             "disable_overlap_schedule": True,
             "disable_radix_cache": True,
             "enable_torch_compile": False,
-            "enable_deterministic_inference": True,
+            "enable_deterministic_inference": False,
             "max_running_requests": self.max_running_requests,
             "chunked_prefill_size": 0,
             "mem_fraction_static": 0.5,
@@ -79,11 +79,9 @@ class Yue2EngineBuilder(TtsEngineBuilder[Yue2ARRequestData]):
         else:
             pass
         self.max_running_requests = requested
-        # note (ruiling): every request may carry a CFG twin, so batches hold up to two rows each.
-        rows = 2 * requested
-        overrides["max_running_requests"] = rows
-        overrides["cuda_graph_max_bs"] = rows
-        overrides["cuda_graph_bs"] = build_default_cuda_graph_bs(rows)
+        overrides["max_running_requests"] = requested
+        overrides["cuda_graph_max_bs"] = requested
+        overrides["cuda_graph_bs"] = build_default_cuda_graph_bs(requested)
         overrides["disable_radix_cache"] = True
         overrides["chunked_prefill_size"] = 0
 

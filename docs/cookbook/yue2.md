@@ -12,7 +12,7 @@ CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
   --port 8000
 ```
 
-The pipeline has two stages on the same GPU. The AR stage runs the BF16 transformer on the SGLang engine with continuous batching, paged KV cache and CUDA graphs; it generates the ABC score and then the semantic tokens. The acoustic stage loads the BF16 transformer and FP32 decoder to run flow matching and VAE decoding. `--yue2_ar.factory.max_concurrency` sets how many requests decode together (default 16).
+The pipeline has two stages on the same GPU. The AR stage runs the BF16 transformer on the SGLang engine with continuous batching, paged KV cache and CUDA graphs; it generates the ABC score and then the semantic tokens. The acoustic stage loads the BF16 transformer and FP32 decoder to run flow matching and VAE decoding. `--yue2_ar.factory.max_concurrency` sets how many rows decode together (default 16); a request with classifier-free guidance uses two rows.
 
 Both the transformer and decoder accept local checkpoint directories or Hugging Face model identifiers. The default decoder is `m-a-p/YuE2-Vae`. Select the benchmark decoder with `--yue2_acoustic.factory.vae_path m-a-p/YuE2-Vae-legacy`. Checkpoint identifiers can pin a revision with `repository@revision`.
 
@@ -32,7 +32,7 @@ curl http://localhost:8000/v1/audio/speech \
   --output song.wav
 ```
 
-`input` is plain lyrics and `instructions` is the required musical style; an empty string leaves the style tag empty. `seed` controls each generation phase independently and does not depend on which other requests share a batch. `max_new_tokens` limits semantic audio tokens, excluding the ABC planning phase; it is a token budget, not a requested audio duration. The semantic sampling fields `temperature`, `top_p`, `top_k` and `repetition_penalty` are supported.
+`input` is plain lyrics and `instructions` is the required musical style; an empty string leaves the style tag empty. `seed` controls each generation phase independently. `max_new_tokens` limits semantic audio tokens, excluding the ABC planning phase; it is a token budget, not a requested audio duration. The semantic sampling fields `temperature`, `top_p`, `top_k` and `repetition_penalty` are supported.
 
 The response's `X-Finish-Reason` is `length` if either planning or semantic generation reaches its token budget; it is `stop` when both phases finish normally. Increasing the semantic budget cannot repair a truncated ABC plan: adjust `abc_max_tokens` for that phase. Requests that exceed the model context fail instead of silently shortening their budgets.
 
@@ -67,7 +67,7 @@ Voice selection, reference-audio conditioning, speed changes and streaming outpu
 
 ## Optional acceleration
 
-AR decoding always uses SGLang's CUDA graphs and continuous batching. Requests with classifier-free guidance decode as a pair of rows (conditioned and unconditioned) that stay together in each batch. Each request keeps its own seed, sampling parameters, token budgets and cancellation state.
+AR decoding always uses SGLang's CUDA graphs and continuous batching; SGLang engine options such as `--yue2_ar.engine.enable_torch_compile true` apply to the AR stage. Requests with classifier-free guidance decode as a pair of rows (conditioned and unconditioned) that stay together in each batch. Each request keeps its own seed, sampling parameters, token budgets and cancellation state.
 
 The acoustic stage defaults to eager execution. On NVIDIA CUDA devices, enable its optimizations with:
 

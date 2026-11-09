@@ -13,7 +13,7 @@ from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.scheduling.types import SchedulerRequest
 
-from .generation import filter_scores
+from .generation import masked_scores
 from .request import SamplingConfig
 from .sglang_request_builder import Yue2ARRequestData
 
@@ -47,6 +47,18 @@ def sampling_rows(requests: list[SchedulerRequest]) -> list[SamplingRow]:
                 f"YuE2 request {requests[index].request_id} lost its adjacent CFG row"
             )
     return rows
+
+
+def to_device(values: torch.Tensor, device: torch.device) -> torch.Tensor:
+    """Copy a small host tensor without blocking the stream on CUDA."""
+    if device.type == "cuda":
+        return values.pin_memory().to(device, non_blocking=True)
+    else:
+        return values.to(device)
+
+
+def device_index(values: list[int], device: torch.device) -> torch.Tensor:
+    return to_device(torch.tensor(values, dtype=torch.long), device)
 
 
 def sampling_group_key(data: Yue2ARRequestData) -> tuple[str, str, bool]:
@@ -101,54 +113,70 @@ class Yue2ModelRunner(ModelRunner[Yue2ARRequestData]):
             for position, row in enumerate(rows)
             if row.unconditional is not None
         ]
-        combined = logits[[row.conditional for row in rows]]
         if guided:
-            conditional = combined[guided]
-            unconditional = logits[
-                [rows[position].unconditional for position in guided]
-            ]
-            scales = torch.tensor(
-                [rows[position].data.cfg_scale for position in guided],
-                dtype=logits.dtype,
-                device=device,
+            conditional_rows = device_index([row.conditional for row in rows], device)
+            guided_rows = device_index(guided, device)
+            twin_rows = device_index(
+                [rows[position].unconditional for position in guided], device
+            )
+            scales = to_device(
+                torch.tensor(
+                    [rows[position].data.cfg_scale for position in guided],
+                    dtype=logits.dtype,
+                ),
+                device,
             )[:, None]
-            combined[guided] = unconditional + scales * (conditional - unconditional)
+            combined = logits.index_select(0, conditional_rows)
+            conditional = combined.index_select(0, guided_rows)
+            unconditional = logits.index_select(0, twin_rows)
+            combined.index_copy_(
+                0, guided_rows, unconditional + scales * (conditional - unconditional)
+            )
         else:
-            pass
+            combined = logits
 
         groups: defaultdict[tuple[str, str, bool], list[int]] = defaultdict(list)
         for position, row in enumerate(rows):
             groups[sampling_group_key(row.data)].append(position)
-        sampled = torch.empty(len(rows), dtype=torch.long, device=device)
-        for (phase, _, legacy_off), positions in groups.items():
-            members = [rows[position].data for position in positions]
-            group_logits = combined[positions]
-            if legacy_off:
-                group_logits = group_logits.to(torch.bfloat16)
-            else:
-                pass
-            sampled[positions] = self.sample_group(
-                group_logits, members, phase, members[0].sampling, legacy_off
-            )
-
-        next_token_ids = torch.empty(len(requests), dtype=torch.long, device=device)
-        next_token_ids[[row.conditional for row in rows]] = sampled
-        if guided:
-            next_token_ids[[rows[position].unconditional for position in guided]] = (
-                sampled[guided]
+        if len(groups) == 1:
+            (phase, _, legacy_off), _ = next(iter(groups.items()))
+            sampled = self.sample_group(
+                combined, [row.data for row in rows], phase, legacy_off
             )
         else:
-            pass
-        result.next_token_ids = next_token_ids
+            sampled = torch.empty(len(rows), dtype=torch.long, device=device)
+            for (phase, _, legacy_off), positions in groups.items():
+                group_rows = device_index(positions, device)
+                sampled.index_copy_(
+                    0,
+                    group_rows,
+                    self.sample_group(
+                        combined.index_select(0, group_rows),
+                        [rows[position].data for position in positions],
+                        phase,
+                        legacy_off,
+                    ),
+                )
+
+        if guided:
+            next_token_ids = torch.empty(len(requests), dtype=torch.long, device=device)
+            next_token_ids.index_copy_(0, conditional_rows, sampled)
+            next_token_ids.index_copy_(
+                0, twin_rows, sampled.index_select(0, guided_rows)
+            )
+            result.next_token_ids = next_token_ids
+        else:
+            result.next_token_ids = sampled
 
     @staticmethod
     def sample_group(
         logits: torch.Tensor,
         members: list[Yue2ARRequestData],
         phase: str,
-        sampling: SamplingConfig,
         legacy_off: bool,
     ) -> torch.Tensor:
+        """Mask, penalize and sample rows that share one sampling configuration."""
+        sampling: SamplingConfig = members[0].sampling
         device = logits.device
         window = sampling.penalty_window
         for data in members:
@@ -158,42 +186,43 @@ class Yue2ModelRunner(ModelRunner[Yue2ARRequestData]):
                 )
             else:
                 pass
+        # note (ruiling): one copy per step; building each row tensor on the device would sync the stream per tensor.
+        row_values = to_device(
+            torch.tensor(
+                [
+                    [
+                        data.sampling_seed,
+                        data.generated_tokens,
+                        data.generated_tokens % window,
+                        int(data.generated_tokens >= sampling.min_tokens),
+                    ]
+                    for data in members
+                ],
+                dtype=torch.long,
+            ),
+            device,
+        )
+        seeds, positions, slots, allow_end = row_values.unbind(-1)
         recent = torch.stack([data.recent_tokens for data in members])
-        frequencies = torch.zeros_like(
-            logits, dtype=logits.dtype if legacy_off else torch.float32
-        )
-        if sampling.repetition_penalty != 1.0:
-            frequencies.scatter_add_(
-                -1, recent.clamp_min(0), (recent >= 0).to(frequencies.dtype)
-            )
-        else:
-            pass
-        allow_end = torch.tensor(
-            [data.generated_tokens >= sampling.min_tokens for data in members],
-            device=device,
-        )
-        scores = filter_scores(
-            logits, sampling, frequencies, allow_end, phase, legacy_off
+        scores = masked_scores(
+            logits, sampling, recent, allow_end.bool(), phase, legacy_off
         )
         if sampling.temperature == 0:
             tokens = scores.argmax(-1)
         else:
-            tokens = multinomial_with_seed(
-                scores,
-                torch.tensor(
-                    [data.sampling_seed for data in members],
-                    dtype=torch.int64,
-                    device=device,
-                ),
-                torch.tensor(
-                    [data.generated_tokens for data in members],
-                    dtype=torch.int64,
-                    device=device,
-                ),
-            ).view(-1)
-        slots = torch.tensor(
-            [data.generated_tokens % window for data in members], device=device
-        )
+            # note (ruiling): top-p over the top-k candidates equals top-p over the top-k-masked
+            # vocabulary, and dividing by the temperature does not change which tokens are top-k.
+            values, candidates = scores.topk(min(sampling.top_k, scores.shape[-1]))
+            values = values / sampling.temperature
+            if sampling.top_p < 1:
+                probabilities = values.softmax(-1)
+                removed = probabilities.cumsum(-1) - probabilities > sampling.top_p
+                removed[..., : 3 if legacy_off else 1] = False
+                values = values.masked_fill(removed, -torch.inf)
+            else:
+                pass
+            choice = multinomial_with_seed(values, seeds, positions).view(-1, 1)
+            tokens = candidates.gather(-1, choice).view(-1)
         recent[torch.arange(len(members), device=device), slots] = tokens
         for index, data in enumerate(members):
             data.recent_tokens = recent[index]

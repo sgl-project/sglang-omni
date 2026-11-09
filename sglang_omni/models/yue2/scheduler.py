@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """OmniScheduler that chains the YuE2 score and audio phases and pairs CFG rows."""
 
+import threading
 from collections.abc import Iterable
 
 from sglang.srt.managers.schedule_batch import (
@@ -11,15 +12,15 @@ from sglang.srt.managers.schedule_batch import (
 )
 
 from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
 from .request import ABC_END
 from .sglang_request_builder import (
-    GUIDANCE_SUFFIX,
-    SCORE_SUFFIX,
     Yue2ARRequestData,
     Yue2RequestBuilder,
     guidance_request_id,
+    public_request_id,
     score_request_id,
 )
 
@@ -168,14 +169,24 @@ class Yue2Scheduler(OmniScheduler[Yue2ARRequestData]):
             return
         self.enqueue_built_request(payload, False, semantic)
 
+    def emit_request_error(self, request_id: str, error: Exception) -> None:
+        super().emit_request_error(public_request_id(request_id), error)
+
     def abort(self, request_id: str, *, defer_running_cleanup: bool = True) -> None:
-        super().abort(request_id, defer_running_cleanup=defer_running_cleanup)
-        if request_id.endswith((SCORE_SUFFIX, GUIDANCE_SUFFIX)):
+        public_id = public_request_id(request_id)
+        if (
+            self.scheduler_thread_id is not None
+            and self.scheduler_thread_id != threading.get_ident()
+        ):
+            # note (ruiling): between two steps all rows of a song stop together; aborting them
+            # one by one from another thread can leave a CFG row without its request.
+            self.inbox.put(IncomingMessage(request_id=public_id, type="abort"))
             return
         else:
             pass
         for internal_id in (
-            score_request_id(request_id),
-            guidance_request_id(request_id),
+            public_id,
+            score_request_id(public_id),
+            guidance_request_id(public_id),
         ):
             super().abort(internal_id, defer_running_cleanup=defer_running_cleanup)

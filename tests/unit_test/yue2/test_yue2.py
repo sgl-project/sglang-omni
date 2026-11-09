@@ -14,7 +14,7 @@ from sglang_omni.config import EngineStageConfig
 from sglang_omni.config.runtime import resolve_factory_signature_args
 from sglang_omni.models.yue2.acoustic import synthesize_latents
 from sglang_omni.models.yue2.config import Yue2PipelineConfig
-from sglang_omni.models.yue2.generation import filter_scores
+from sglang_omni.models.yue2.generation import masked_scores
 from sglang_omni.models.yue2.layers import (
     MLP,
     Attention,
@@ -28,7 +28,9 @@ from sglang_omni.models.yue2.payload_types import Yue2State
 from sglang_omni.models.yue2.request import (
     ABC_END,
     CODEC_OFFSET,
+    CODEC_SIZE,
     MUSIC_END,
+    TEXT_END,
     SamplingConfig,
     Yue2Tokenizer,
     build_request,
@@ -181,10 +183,10 @@ def test_sampling_masks_phase_vocabulary_and_gates_end_per_row(
     sampling = SamplingConfig(temperature=0.0, min_tokens=1, max_tokens=2)
     logits = torch.zeros(2, 184704)
     logits[:, end_token] = torch.inf
-    scores = filter_scores(
+    scores = masked_scores(
         logits,
         sampling,
-        torch.zeros_like(logits),
+        torch.full((2, sampling.penalty_window), -1),
         torch.tensor([False, True]),
         phase,
         False,
@@ -194,6 +196,60 @@ def test_sampling_masks_phase_vocabulary_and_gates_end_per_row(
         assert torch.isneginf(scores[0, :CODEC_OFFSET]).all()
     else:
         assert torch.isneginf(scores[:, CODEC_OFFSET:]).all()
+
+
+def full_vocabulary_scores(
+    logits: torch.Tensor,
+    sampling: SamplingConfig,
+    recent_tokens: torch.Tensor,
+    allow_end: torch.Tensor,
+    phase: str,
+    legacy_off: bool,
+) -> torch.Tensor:
+    """The validated formulation: frequencies over the whole vocabulary."""
+    scores = logits.to(torch.bfloat16 if legacy_off else torch.float32)
+    end_token = ABC_END if phase == "abc" else MUSIC_END
+    allowed = torch.full_like(scores, -torch.inf)
+    if phase == "abc":
+        allowed[:, :TEXT_END] = 0
+    else:
+        allowed[:, CODEC_OFFSET : CODEC_OFFSET + CODEC_SIZE] = 0
+    allowed[:, end_token] = 0
+    scores = scores + allowed
+    scores[:, end_token] = torch.where(allow_end, scores[:, end_token], -torch.inf)
+    frequencies = torch.zeros_like(scores)
+    frequencies.scatter_add_(
+        -1,
+        recent_tokens.clamp_min(0),
+        (recent_tokens >= 0).to(frequencies.dtype),
+    )
+    penalty = sampling.repetition_penalty**frequencies
+    return torch.where(scores < 0, scores * penalty, scores / penalty)
+
+
+@pytest.mark.parametrize("legacy_off", [False, True])
+@pytest.mark.parametrize("phase,first", [("abc", 10), ("semantic", CODEC_OFFSET)])
+def test_window_penalty_matches_full_vocabulary_penalty(
+    phase: str, first: int, legacy_off: bool
+) -> None:
+    sampling = SamplingConfig(repetition_penalty=1.2, penalty_window=6)
+    with torch.random.fork_rng():
+        torch.manual_seed(0)
+        logits = torch.randn(3, 184704) * 4
+    recent = torch.tensor(
+        [
+            [first, first + 1, first, -1, -1, -1],
+            [first + 2] * 6,
+            [-1] * 6,
+        ]
+    )
+    allow_end = torch.tensor([True, False, True])
+    torch.testing.assert_close(
+        masked_scores(logits, sampling, recent, allow_end, phase, legacy_off),
+        full_vocabulary_scores(logits, sampling, recent, allow_end, phase, legacy_off),
+        rtol=0,
+        atol=0,
+    )
 
 
 def test_acoustic_context_overflow_fails_before_prefill(

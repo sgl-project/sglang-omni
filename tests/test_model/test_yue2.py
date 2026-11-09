@@ -172,5 +172,9 @@ def test_seed_reproduces_and_invalid_requests_fail_cleanly(server: str) -> None:
     assert synthesize(server, missing_style).status_code == 400
     assert synthesize(server, speech_request(42, token_budget=25000)).status_code == 400
     with pytest.raises(httpx.TimeoutException):
-        httpx.post(f"{server}/v1/audio/speech", json=body, timeout=0.2)
+        httpx.post(
+            f"{server}/v1/audio/speech",
+            json=speech_request(42, token_budget=2000),
+            timeout=0.2,
+        )
     assert synthesize(server, body).content == first.content

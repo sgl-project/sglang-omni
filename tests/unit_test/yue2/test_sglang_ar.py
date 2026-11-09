@@ -2,6 +2,7 @@
 """YuE2 SGLang AR stage: request phases, CFG pairing and row sampling."""
 
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import tiktoken
@@ -21,6 +22,7 @@ from sglang_omni.models.yue2.scheduler import Yue2Scheduler
 from sglang_omni.models.yue2.sglang_request_builder import (
     Yue2ARRequestData,
     Yue2RequestBuilder,
+    public_request_id,
 )
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.pipeline_state import load_state
@@ -122,6 +124,30 @@ def test_admission_never_splits_a_cfg_pair(builder: Yue2RequestBuilder) -> None:
     assert limit(2, 100000) == 1
     assert limit(3, 100000) == 3
     assert limit(3, len(single.prefix)) == 1
+
+
+def test_finished_score_starts_the_audio_request(builder: Yue2RequestBuilder) -> None:
+    score = builder(payload())
+    scheduler = object.__new__(Yue2Scheduler)
+    scheduler.request_builder = builder
+    scheduler.aborted_request_ids = set()
+    scheduler.enqueue_built_request = Mock()
+    scheduler.start_audio_phase(SimpleNamespace(output_ids=[11, 12, ABC_END]), score)
+    message, _, audio = scheduler.enqueue_built_request.call_args.args
+    assert message is score.stage_payload and audio.req.rid == "song"
+    assert audio.prefix == builder.tokenizer.prefix(score.request, [11, 12])
+    assert not audio.abc_truncated
+    scheduler.start_audio_phase(SimpleNamespace(output_ids=[11, 12]), score)
+    assert scheduler.enqueue_built_request.call_args.args[2].abc_truncated
+    scheduler.enqueue_built_request.reset_mock()
+    scheduler.aborted_request_ids = {"song"}
+    scheduler.start_audio_phase(SimpleNamespace(output_ids=[11, ABC_END]), score)
+    scheduler.enqueue_built_request.assert_not_called()
+
+
+def test_internal_request_ids_map_to_the_client_request() -> None:
+    assert public_request_id("song-abc") == public_request_id("song-cfg") == "song"
+    assert public_request_id("song") == "song"
 
 
 def runner_request(request_id: str, data: Yue2ARRequestData) -> SchedulerRequest:
