@@ -146,7 +146,7 @@ func (a *app) appEnhancementPage(c *ui.Context) {
 		ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 			p.list.view(c, "ae-groups", i18n.T("Groups"), inline, shown, true, px(t, aeListW), func() { a.aeGroupList(c) })
 			ui.Scroll(c.Key("ae-main")).Grow(1).MinWidth(0).Children(func() {
-				ui.Column(c).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp3)).MaxWidth(px(t, 760)).Children(func() {
+				ui.Column(c).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp3)).Children(func() {
 					a.aePreviewCard(c)
 					if !a.prefs.AppEnhancement.Enabled {
 						notice(c, "ae-off", noticeInfo, i18n.T("App enhancement is off: every app gets only the features' own rules."), "", nil, nil)

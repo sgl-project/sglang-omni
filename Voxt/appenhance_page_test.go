@@ -394,3 +394,22 @@ func TestAppEnhancementHeader(t *testing.T) {
 		}
 	}
 }
+
+// TestAppEnhancementWide: in a wide window the group's settings fill the
+// page, under the header's buttons, instead of stopping at a fixed width
+// with a blank band on the right.
+func TestAppEnhancementWide(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(1700, 1100)
+	a.setRules(sampleRules())
+	a.navigate("/app-enhancement")
+	frames(tt)
+	br, ok1 := tt.Find(i18n.T("Browsers"))
+	prompt, ok2 := tt.Find(i18n.T("Scene prompt of the group"))
+	if !ok1 || !ok2 {
+		t.Fatalf("Browsers %v, scene prompt %v", ok1, ok2)
+	}
+	if d := (br.X + br.W) - (prompt.X + prompt.W); d < -2 || d > 2 {
+		t.Errorf("the scene prompt ends at %.0f, the header's Browsers at %.0f", prompt.X+prompt.W, br.X+br.W)
+	}
+}
