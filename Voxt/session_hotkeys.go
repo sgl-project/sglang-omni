@@ -7,6 +7,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -34,6 +35,13 @@ func (a *app) hotkeyPhase() hotkey.Phase {
 // hotkeyFired acts on a shortcut (the helper's hotkey.event, or a Carbon
 // shortcut).
 func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
+	if e.Binding == proto.HotkeyCancel && a.meetingActive() {
+		a.meetingFinish()
+		return
+	}
+	if a.meetingActive() {
+		return
+	}
 	target := a.front
 	if e.Front != nil {
 		target = *e.Front
@@ -61,6 +69,10 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 	d := hotkey.Route(e, a.hotkeyPhase(), a.sess.HoldBinding)
 	switch d.Action {
 	case hotkey.Start:
+		if d.Feature == hotkey.Meeting {
+			a.startMeeting()
+			return
+		}
 		hold := ""
 		if d.Hold {
 			hold = e.Binding
@@ -108,7 +120,13 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 }
 
 // hotkeyPlan is what the settings' shortcuts become.
-func (a *app) hotkeyPlan() hotkey.Plan { return hotkey.Build(a.prefs.Features, liveFeatures) }
+func (a *app) hotkeyPlan() hotkey.Plan {
+	enabled := slices.Clone(liveFeatures)
+	if a.meetingEnabled() {
+		enabled = append(enabled, hotkey.Meeting)
+	}
+	return hotkey.Build(a.prefs.Features, enabled)
+}
 
 // syncHotkeys sends the shortcuts to the helper (and flips "active" while
 // a session runs or the answer card shows), and keeps the Carbon

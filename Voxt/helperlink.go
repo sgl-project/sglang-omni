@@ -67,6 +67,7 @@ func (a *app) connectHelper() {
 	}
 	a.hstatus = h.sup.Status()
 	a.openSessions() // session_link.go
+	a.openMeetings() // meeting_link.go
 	a.openMute()     // mute_link.go
 	a.openLearner()  // learn_link.go
 }

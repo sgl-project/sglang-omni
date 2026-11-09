@@ -1346,5 +1346,11 @@
   "%d speech models (%s): no download needed": "%d 个语音模型（%s），不用再下载",
   "Check %s: its address or model may not work as it did in the previous Voxt.": "检查 %s：它的地址或模型可能和在旧版 Voxt 里不一样。",
   "System audio recording (for meetings)": "系统录音（会议用）",
-  "Lets Voxt record sound from other apps during a meeting. macOS asks the first time a meeting records system audio.": "让 Voxt 在会议中录制其他 app 播放的声音。第一次在会议里录系统声音时，macOS 会弹出授权。"
+  "Lets Voxt record sound from other apps during a meeting. macOS asks the first time a meeting records system audio.": "让 Voxt 在会议中录制其他 app 播放的声音。第一次在会议里录系统声音时，macOS 会弹出授权。",
+  "Meetings": "会议",
+  "Start meeting": "开始会议",
+  "No meetings yet.": "还没有会议记录。",
+  "End": "结束",
+  "Discard": "丢弃",
+  "Loading…": "加载中…"
 }
