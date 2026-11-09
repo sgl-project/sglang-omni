@@ -36,7 +36,9 @@ def test_ming_talker_add_request_propagates_generation_errors(
         module = importlib.import_module(module_name)
         from sglang_omni.proto import OmniRequest, StagePayload
 
-        executor = module.MingTalkerExecutor(model_path="/fake/model/path")
+        executor = module.MingTalkerExecutor(
+            model_path="/fake/model/path", voice_presets={}
+        )
         payload = StagePayload(
             request_id="req-1",
             request=OmniRequest(inputs="hello"),
@@ -81,7 +83,9 @@ def test_ming_talker_generation_failures_are_not_empty_successes(monkeypatch) ->
     try:
         module = importlib.import_module(module_name)
 
-        executor = module.MingTalkerExecutor(model_path="/fake/model/path")
+        executor = module.MingTalkerExecutor(
+            model_path="/fake/model/path", voice_presets={}
+        )
         executor.talker = object()
         with pytest.raises(RuntimeError, match="no supported generation method"):
             executor.generate_speech("hello")
@@ -123,7 +127,9 @@ def test_ming_talker_skips_text_only_requests(monkeypatch) -> None:
         module = importlib.import_module(module_name)
         from sglang_omni.proto import OmniRequest, StagePayload
 
-        executor = module.MingTalkerExecutor(model_path="/fake/model/path")
+        executor = module.MingTalkerExecutor(
+            model_path="/fake/model/path", voice_presets={}
+        )
         payload = StagePayload(
             request_id="req-text",
             request=OmniRequest(
@@ -278,7 +284,9 @@ def test_ming_talker_audio_result_includes_modality_and_text_usage(monkeypatch) 
             def numpy(self):
                 return np.array([0.1, -0.1], dtype=np.float32)
 
-        executor = module.MingTalkerExecutor(model_path="/fake/model/path")
+        executor = module.MingTalkerExecutor(
+            model_path="/fake/model/path", voice_presets={}
+        )
         payload = StagePayload(
             request_id="req-audio",
             request=OmniRequest(inputs=[]),
