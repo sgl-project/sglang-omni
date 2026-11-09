@@ -27,6 +27,67 @@ func pageHeader(c *ui.Context, title string, trailing func()) {
 	})
 }
 
+// pageMaxW is the widest a page of one column (pageColumn) reads: wider,
+// the column stays this wide in the middle of the page.
+const pageMaxW = 880
+
+// A feature page splits into two columns from twoColumnW of page width
+// (two of the default window's column, about 550, and their gap), and
+// reads at most pageMaxW2 wide (#3644 FB16: one column left most of a
+// wide window blank and the page several screens long).
+const (
+	twoColumnW = 1180
+	pageMaxW2  = 1280
+)
+
+// columnPageHeader is pageHeader over a pageColumn: in a window wider
+// than the column, its title and trailing line up with the column's
+// content instead of the window's edges (#3644: in full screen the title
+// sat far left of the content and the actions far right of it). The wide
+// pages do the same at widePageMaxW (widePageHeader, pageBody).
+func columnPageHeader(c *ui.Context, title string, trailing func()) {
+	centeredPageHeader(c, pageMaxW, title, trailing)
+}
+
+// widePageMaxW is the widest a page of lists and panes (History,
+// Dictionary, Notes, App enhancement) reads: wider, it stays this wide in
+// the middle of the page (pageBody), its header lined up with it.
+const widePageMaxW = 1120
+
+// widePageHeader is pageHeader over a pageBody.
+func widePageHeader(c *ui.Context, title string, trailing func()) {
+	centeredPageHeader(c, widePageMaxW, title, trailing)
+}
+
+// pageBody is a wide page under its header: the page's width up to
+// widePageMaxW, in the middle of a wider page. Give it children.
+func pageBody(c *ui.Context) ui.Element {
+	t := c.Theme()
+	return ui.Column(c).FillWidth().MaxWidth(px(t, widePageMaxW)).AlignSelf(ui.Center).Grow(1).MinHeight(0)
+}
+
+// centeredPageHeader is a page's header whose title and trailing line up
+// with content at most maxW DIPs wide in the middle of the page.
+func centeredPageHeader(c *ui.Context, maxW float32, title string, trailing func()) {
+	t := c.Theme()
+	ui.Row(c).Height(titleBarHeight).Shrink(0).AlignItems(ui.Stretch).Justify(ui.Center).Padding(0, 0, 0, headerInset).DragWindow().Children(func() {
+		ui.Row(c).Grow(1).MaxWidth(px(t, maxW)).AlignItems(ui.Center).Padding(0, px(t, sp6)).Gap(px(t, sp2)).Children(func() {
+			ui.Text(c, title).FontSize(px(t, fsTitle)).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
+			if trailing != nil {
+				trailing()
+			}
+		})
+	})
+}
+
+// pageColumn is a page's one column of content, in its scroll view: the
+// page's width up to pageMaxW, in the middle of a wider page, with the
+// page's side padding. Give it a gap and children.
+func pageColumn(c *ui.Context) ui.Element {
+	t := c.Theme()
+	return ui.Column(c).FillWidth().MaxWidth(px(t, pageMaxW)).AlignSelf(ui.Center).Padding(0, px(t, sp6), px(t, sp6))
+}
+
 // card is a flat card: the page's background inside a hairline border,
 // radius 12. Give it children.
 func card(c *ui.Context) ui.Element {

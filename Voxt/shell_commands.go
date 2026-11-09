@@ -36,7 +36,9 @@ func (a *app) commands() []command {
 		cmds = append(cmds, command{id: id, group: group, title: title, en: en, keys: keys, run: run, enabled: enabled})
 	}
 	for _, p := range pages { // every sidebar page (shell_pages.go navGroups)
-		add("go"+p.path, nav, pageTitle(p.path), p.title, pageKeys(p.path), true, func() { a.navigate(p.path) })
+		if !a.pageHidden(p.path) {
+			add("go"+p.path, nav, pageTitle(p.path), p.title, pageKeys(p.path), true, func() { a.navigate(p.path) })
+		}
 	}
 	add("go/settings", nav, i18n.T("Settings"), "Settings", "⌘,", true, func() { a.navigate("/settings") })
 	for _, s := range settingsSections() {
@@ -51,6 +53,7 @@ func (a *app) commands() []command {
 	if a.upd != nil {
 		add("check-updates", view, i18n.T("Check for Updates…"), "Check for Updates", "", true, a.checkForUpdates)
 	}
+	add("llm-debug", view, i18n.T("Language model debug"), "Language model debug prompts", "", true, func() { a.navigate(llmDebugPath) })
 	add("setup-guide", view, i18n.T("Open the setup guide"), "Open the setup guide onboarding", "", true, a.openOnboarding)
 
 	look := i18n.T("Appearance")
@@ -120,7 +123,7 @@ func (a *app) shortcuts(c *ui.Context) {
 		a.navigate("/settings")
 	}
 	for i, path := range shortcutPages {
-		if c.Shortcut(ui.Cmd, ui.Key1+ui.Key(i)) {
+		if c.Shortcut(ui.Cmd, ui.Key1+ui.Key(i)) && !a.pageHidden(path) {
 			a.navigate(path)
 		}
 	}
@@ -165,10 +168,11 @@ func kbd(c *ui.Context, keys string) ui.Element {
 func (a *app) palette(c *ui.Context) {
 	t := c.Theme()
 	k := tok(t)
-	_, h := c.Size()
+	w, h := c.Size()
 	ui.DialogBase(c, &a.paletteOpen, func(backdrop, panel ui.Element) {
 		backdrop.Background(ui.RGBA(0, 0, 0, 0.2)).Justify(ui.Start).Padding(min(px(t, 90), h*0.12), px(t, sp6), 0)
-		panel.Width(px(t, 560)).MaxWidth(px(t, 560)).Radius(px(t, radiusCard)).Background(k.Bg).Border(1, k.Line).Clip().
+		pw := min(px(t, 560), w-2*px(t, sp6))
+		panel.Width(pw).MaxWidth(pw).Radius(px(t, radiusCard)).Background(k.Bg).Border(1, k.Line).Clip().
 			Shadow(0, 16, 40, 0, ui.RGBA(0, 0, 0, 0.22)).Label(i18n.T("Command palette"))
 		items := a.paletteItems()
 		a.paletteSel = max(0, min(a.paletteSel, len(items)-1))
@@ -329,7 +333,7 @@ func (a *app) buildMenu() {
 			&mygo.MenuItem{Role: mygo.RoleHideOthers, Label: i18n.T("Hide Others")},
 			&mygo.MenuItem{Role: mygo.RoleUnhide, Label: i18n.T("Show All")},
 			mygo.Separator(),
-			&mygo.MenuItem{Role: mygo.RoleQuit, Label: i18n.T("Quit Voxt")},
+			&mygo.MenuItem{Role: mygo.RoleQuit, Label: i18n.T("Quit Voxt"), Accelerator: "CmdOrCtrl+Q"},
 		)},
 		{Label: i18n.T("Edit"), Submenu: []*mygo.MenuItem{
 			{Role: mygo.RoleUndo, Label: i18n.T("Undo")},
@@ -351,6 +355,8 @@ func (a *app) buildMenu() {
 			&mygo.MenuItem{Label: i18n.T("Settings"), Click: act(func() { a.navigate("/settings") })},
 		)},
 		{Label: i18n.T("Window"), Submenu: []*mygo.MenuItem{
+			{Label: i18n.T("Close Window"), Accelerator: "CmdOrCtrl+W", Click: act(a.closeWindow)}, // as the red ×: tray.go
+			mygo.Separator(),
 			{Role: mygo.RoleMinimize, Label: i18n.T("Minimize")},
 			{Role: mygo.RoleZoom, Label: i18n.T("Zoom")},
 			mygo.Separator(),

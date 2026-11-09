@@ -9,6 +9,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dsp"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/vad"
 )
 
@@ -27,10 +28,27 @@ func (r *run) hints() []string {
 	return dict.Hints(r.terms)
 }
 
-// speechContext is the user's text about the speech for the speech model
-// (Dictionary.SpeechContext), with the dictionary on or off.
+// speechContext is the free-text prompt for the speech model: the global
+// speech context on the Speech models page, then the active remote
+// service's recognition prompt template when the session uses one.
 func (r *run) speechContext() string {
-	return strings.TrimSpace(r.settings.Dictionary.SpeechContext)
+	global := strings.TrimSpace(r.settings.Dictionary.SpeechContext)
+	tpl := r.remoteRecognitionPrompt()
+	main := MainLanguage(r.settings, r.m.cfg.Locale())
+	return asr.BuildSpeechPrompt(global, tpl, main, r.settings.General.OtherLanguages, r.hints())
+}
+
+func (r *run) remoteRecognitionPrompt() string {
+	id := strings.TrimSpace(r.svc.ASRInfo.ID)
+	if id == "" {
+		return ""
+	}
+	for _, p := range r.settings.Providers.ASR {
+		if p.ID == id {
+			return p.RecognitionPrompt
+		}
+	}
+	return ""
 }
 
 // speechLang is the language hint of the speech model: the user's main
@@ -72,7 +90,11 @@ func (r *run) onAudio(ev AudioEvent) {
 			}
 		})
 	case ev.Restarted != nil:
-		r.logf("warning", "the input restarted (%s, attempt %d)", ev.Restarted.Reason, ev.Restarted.Attempt)
+		rs := ev.Restarted
+		r.logf("warning", "the input restarted (%s, attempt %d)", rs.Reason, rs.Attempt)
+		if rs.Reason == proto.CaptureDeviceLost && rs.DeviceName != "" {
+			r.m.update(r, func(s *Snapshot) { s.Device, s.Switched = rs.DeviceName, s.Switched+1 })
+		}
 	}
 }
 
@@ -172,6 +194,7 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 				case asr.EventPartial:
 					text := ev.Text
 					r.m.update(r, func(s *Snapshot) { s.Partial = text })
+					r.hearPartial(text)
 				case asr.EventFinal:
 					res := ev.Result
 					res.Text = ev.Text

@@ -26,11 +26,15 @@ import (
 
 func (a *app) remotePage(c *ui.Context) {
 	t := c.Theme()
-	pageHeader(c, i18n.T("Language models"), nil)
+	columnPageHeader(c, i18n.T("Language models"), nil)
 	ui.Scroll(c.Key("remote-scroll")).Grow(1).MinHeight(0).Children(func() {
-		ui.Column(c).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp4)).MaxWidth(px(t, 880)).Children(func() {
+		pageColumn(c).Gap(px(t, sp4)).Children(func() {
+			a.obBackBar(c, remotePath) // onboarding.go: left from the setup guide
 			caption(c, i18n.T("Transcribe's clean-up, Translate and Rewrite use the language model you set up here, over its OpenAI-compatible API. Voxt sends it the recognised or selected text, never your audio; keys stay in this Mac's Keychain."))
 			a.providerCards(c, local.LLM)
+			if ghostButton(c.Key("remote-debug"), i18n.T("Try prompts on a model…")).Clicked() {
+				a.navigate(llmDebugPath)
+			}
 		})
 	})
 	a.providerDialogView(c) // remote_dialog.go
@@ -103,7 +107,7 @@ func (a *app) providerState(c *ui.Context, kind local.Kind, p settings.Provider,
 	}
 	switch a.setupMissing(kind, p) {
 	case providers.MissingKey:
-		return k.Warning, i18n.T("No key saved")
+		return k.Warning, i18n.T("API key needed")
 	case providers.MissingEndpoint:
 		return k.Warning, i18n.T("No address")
 	case providers.MissingModel:
@@ -147,7 +151,7 @@ func (a *app) providerCard(c *ui.Context, sv service, w float32) {
 			switch {
 			case mask == "" && !read:
 				keyText = "…"
-			case mask == "" && missing == providers.MissingKey:
+			case missing != "":
 				keyText, keyCol = state, k.Warning
 			case mask == "":
 				keyText, keyCol = i18n.T("No key"), k.Text3
@@ -163,9 +167,10 @@ func (a *app) providerCard(c *ui.Context, sv service, w float32) {
 					kr := a.keys
 					a.testProvider(kind, p, func() (string, error) { return kr.Get(acct) })
 				}
-			case providers.MissingKey:
 			default:
-				ui.Text(c, state).FontSize(px(t, fsCaption)).TextColor(k.Text3).SingleLine().Shrink(0)
+				if ghostButton(c.Key("remote-complete-"+acct), i18n.T("Complete setup")).Label(i18n.T("Complete setup of %s", sv.name)).Clicked() {
+					a.openProviderDialog(kind, sv.id)
+				}
 			}
 		})
 	}
@@ -188,7 +193,7 @@ func (a *app) providerCard(c *ui.Context, sv service, w float32) {
 				}
 				ui.Row(c.Key("tags")).Gap(px(t, 6)).AlignItems(ui.Center).Wrap().Children(func() {
 					tagChip(c, whereText(sv, p))
-					if sv.stream {
+					if sv.speech.Streams(setupModel(kind, p)) {
 						tagChip(c, i18n.T("Realtime"))
 					}
 				})

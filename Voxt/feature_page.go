@@ -59,8 +59,18 @@ type featureUI struct {
 	// rules and preview: the Your rules section and its full prompt, open.
 	rules   bool
 	preview bool
+	// find is the text to find in the rules (⌘F); found the match that
+	// Return selected last, from 1 (0: none yet); findFocus and
+	// findSelect ask, for the next build, for the find field's focus and
+	// for the rules field to select match found.
+	find       string
+	found      int
+	findFocus  bool
+	findSelect bool
 	// block says why the Try area's Start did not start.
 	block *sessionNotice
+	// endWord is the end word's select and typed word (Transcribe).
+	endWord keyRow
 }
 
 // fui is feature's page state.
@@ -98,36 +108,55 @@ func (a *app) translatePage(c *ui.Context) { a.featurePage(c, hotkey.Translate) 
 // rewritePage builds the Rewrite page.
 func (a *app) rewritePage(c *ui.Context) { a.featurePage(c, hotkey.Rewrite) }
 
-// featurePage builds a feature's page.
+// featurePage builds a feature's page: one column, or two in a wide
+// window (twoColumnW): how the feature starts and its models on the left,
+// what it does with the text, its card, its rules and its Try area on the
+// right.
 func (a *app) featurePage(c *ui.Context, feature string) {
 	t := c.Theme()
 	p := uitext.FeaturePrefix(feature)
-	pageHeader(c, uitext.FeatureTitle(feature), nil)
+	two := a.pageWidth(c) >= px(t, twoColumnW)
+	if two {
+		centeredPageHeader(c, pageMaxW2, uitext.FeatureTitle(feature), nil)
+	} else {
+		columnPageHeader(c, uitext.FeatureTitle(feature), nil)
+	}
 	if a.sess.Try && a.sess.State == session.Recording {
 		c.After(250 * time.Millisecond) // the Try area's clock
 	}
+	left := func() {
+		switch feature {
+		case hotkey.Translate:
+			caption(c, i18n.T("Select text and press the shortcut to translate it in place; with nothing selected, speak, and the translation is typed where your cursor is."))
+		case hotkey.Rewrite:
+			caption(c, i18n.T("Select text and say how to change it (\"shorter\", \"more formal\"); with nothing selected, say what to write. The answer goes where your cursor is."))
+		default:
+			caption(c, i18n.T("Press a shortcut anywhere, speak, and the text is typed where your cursor is."))
+		}
+		a.featureShortcuts(c, feature)
+		a.featureModels(c, feature)
+	}
+	right := func() {
+		switch feature {
+		case hotkey.Translate:
+			a.translateSettings(c)
+		case hotkey.Rewrite:
+			a.rewriteSettings(c)
+		default:
+			a.trEnhance(c)
+		}
+		a.cardSetting(c, p, feature)
+		a.featureRules(c, feature)
+		a.featureTry(c, feature)
+	}
 	ui.Scroll(c.Key(p + "-scroll")).Grow(1).MinHeight(0).Children(func() {
-		ui.Column(c).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp3)).MaxWidth(px(t, 880)).Children(func() {
-			switch feature {
-			case hotkey.Translate:
-				caption(c, i18n.T("Select text and press the shortcut to translate it in place; with nothing selected, speak, and the translation is typed where your cursor is."))
-			case hotkey.Rewrite:
-				caption(c, i18n.T("Select text and say how to change it (\"shorter\", \"more formal\"); with nothing selected, say what to write. The answer goes where your cursor is."))
-			default:
-				caption(c, i18n.T("Press a shortcut anywhere, speak, and the text is typed where your cursor is."))
-			}
-			a.featureShortcuts(c, feature)
-			a.featureModels(c, feature)
-			switch feature {
-			case hotkey.Translate:
-				a.translateSettings(c)
-			case hotkey.Rewrite:
-				a.rewriteSettings(c)
-			default:
-				a.trEnhance(c)
-			}
-			a.featureRules(c, feature)
-			a.featureTry(c, feature)
+		if !two {
+			pageColumn(c).Gap(px(t, sp3)).Children(func() { left(); right() })
+			return
+		}
+		ui.Row(c).FillWidth().MaxWidth(px(t, pageMaxW2)).AlignSelf(ui.Center).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp6)).AlignItems(ui.Start).Children(func() {
+			ui.Column(c).Grow(1).Basis(0).MinWidth(0).Gap(px(t, sp3)).Children(left)
+			ui.Column(c).Grow(1).Basis(0).MinWidth(0).Gap(px(t, sp3)).Children(right)
 		})
 	})
 }

@@ -118,7 +118,7 @@ func (a *app) appEnhancementPage(c *ui.Context) {
 	t := c.Theme()
 	p := &a.aePage
 	inline, shown := p.list.layout(a, c, px(t, aeListW), px(t, aeMainMinW))
-	pageHeader(c, i18n.T("App enhancement"), func() {
+	widePageHeader(c, i18n.T("App enhancement"), func() {
 		if !inline {
 			p.list.toggle(c.Key("ae-list-toggle"), icons.SidebarMinimalistic, shown, i18n.T("Show the groups"), i18n.T("Hide the groups"))
 		}
@@ -142,23 +142,25 @@ func (a *app) appEnhancementPage(c *ui.Context) {
 			a.openBrowsers()
 		}
 	})
-	ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
-		p.list.view(c, "ae-groups", i18n.T("Groups"), inline, shown, true, px(t, aeListW), func() { a.aeGroupList(c) })
-		ui.Scroll(c.Key("ae-main")).Grow(1).MinWidth(0).Children(func() {
-			ui.Column(c).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp3)).MaxWidth(px(t, 760)).Children(func() {
-				a.aePreviewCard(c)
-				if !a.prefs.AppEnhancement.Enabled {
-					notice(c, "ae-off", noticeInfo, i18n.T("App enhancement is off: every app gets only the features' own rules."), "", nil, nil)
-				}
-				if a.aeErr != "" {
-					notice(c, "ae-err", noticeError, i18n.T("Could not read the groups."), a.aeErr, nil, nil)
-				}
-				g, i := a.aeGroup()
-				if i < 0 {
-					a.aeEmpty(c)
-					return
-				}
-				a.aeDetail(c, g)
+	pageBody(c).Children(func() {
+		ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
+			p.list.view(c, "ae-groups", i18n.T("Groups"), inline, shown, true, px(t, aeListW), func() { a.aeGroupList(c) })
+			ui.Scroll(c.Key("ae-main")).Grow(1).MinWidth(0).Children(func() {
+				ui.Column(c).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp3)).Children(func() {
+					a.aePreviewCard(c)
+					if !a.prefs.AppEnhancement.Enabled {
+						notice(c, "ae-off", noticeInfo, i18n.T("App enhancement is off: every app gets only the features' own rules."), "", nil, nil)
+					}
+					if a.aeErr != "" {
+						notice(c, "ae-err", noticeError, i18n.T("Could not read the groups."), a.aeErr, nil, nil)
+					}
+					g, i := a.aeGroup()
+					if i < 0 {
+						a.aeEmpty(c)
+						return
+					}
+					a.aeDetail(c, g)
+				})
 			})
 		})
 	})
@@ -179,7 +181,7 @@ func (a *app) openBrowsers() {
 
 // aeEmpty is the page without groups.
 func (a *app) aeEmpty(c *ui.Context) {
-	emptyState(c, appEnhancementIcon, i18n.T("Rules for the app or website in front"),
+	emptyState(c, appEnhancementIcon, i18n.T("Rules for the frontmost app or website"),
 		i18n.T("Group apps and website addresses, and give each group a scene prompt (a chat app, your mail, code review). It is added on top of the features' own rules when you dictate there."), func() {
 			if ghostIconButton(c.Key("ae-empty-new"), icons.Add, i18n.T("New group")).Clicked() {
 				a.addGroup()
@@ -242,7 +244,7 @@ func (a *app) aeGroupList(c *ui.Context) {
 					ui.Text(c, groupSummary(g)).FontSize(px(t, fsCaption)).TextColor(k.Text3).SingleLine().Ellipsis("…").MinWidth(0)
 				})
 				if match.GroupID() == g.ID {
-					iconMark(c, icons.Target, k.Accent, i18n.T("Matches the app in front"))
+					iconMark(c, icons.Target, k.Accent, i18n.T("Matches the frontmost app"))
 				}
 			})
 		}

@@ -16,15 +16,16 @@ package main
 //	           scrolled to its newest words, the start fading out at the
 //	           left edge (Voxt's)
 //	working    the same pill with a five-dot loader in the waveform's
-//	           place: recognising, cleaning up, translating, writing,
-//	           inserting
+//	           place: recognising, cleaning up, translating, writing
 //	notice     an error (or a warning) in the waveform's place: an icon and
 //	           one line, for 5 s; a click opens where to fix it
 //	answer     the answer card (overlay_card.go, Voxt's): 440 wide, as
 //	           high as its text up to Voxt's 220 for it; the result that
 //	           was not inserted, its actions in the header
 //
-// Nothing shows after an insert: the pill fades out (100 ms). Every
+// Nothing shows while the result is inserted, nor after: the pill fades
+// out (100 ms) as the result goes in, and a result that could not go in
+// comes back in the answer card. Every
 // action is a shortcut: the feature's shortcut stops, the cancel shortcut cancels,
 // releasing a long press stops.
 //
@@ -93,8 +94,11 @@ type overlayState struct {
 		// style is the material's shape last given to the window.
 		style mygo.VibrancyStyle
 		// passThrough: the window lets the pointer through (recording and
-		// working: nothing in it takes a click).
+		// working: nothing in it takes a click), but not while the live
+		// text in lines overflows (liveLinesOverflow): the wheel scrolls it.
 		passThrough bool
+		// lines is the scroll of the live text in lines (liveLines).
+		lines linesScroll
 		// reveal: the window was just shown transparent; the next build of
 		// its view (the new face's) makes it opaque, so that no frame of
 		// the last face shows.
@@ -150,9 +154,9 @@ func (a *app) later(d time.Duration, fn func()) {
 // stays in the pill until it ends, its answer one line under the row as
 // the model writes it (Voxt's: the card comes with the result; 10-15:
 // the answer streaming into a card of its own width was one more way to
-// show text, and the card grew line by line); a session that ended shows
-// nothing of its own: not the insert, which the text in place says. A session that ended
-// shows nothing of its own: not the insert, which the text in place says.
+// show text, and the card grew line by line). From the moment its result
+// is inserted a session shows nothing of its own: the text in place says
+// it, and the preview of the speech it came from would only cover it.
 func (a *app) overlayModeNow() overlayMode {
 	s := a.sess
 	live := s.State.Live() && !s.Try
@@ -160,8 +164,10 @@ func (a *app) overlayModeNow() overlayMode {
 	switch {
 	case card && a.answer.inserting:
 		return ovHidden // Insert pastes: the card comes back if it could not (Voxt's)
-	case card:
+	case card, live && a.writingAnswer():
 		return ovAnswer
+	case live && s.State == session.Delivering:
+		return ovHidden
 	case live && s.State == session.Recording:
 		return ovRecording
 	case live:
@@ -198,10 +204,10 @@ func (a *app) overlaySync() {
 		a.syncLangMenu()
 		return
 	}
-	w, h := a.overlayFace(mode)
 	if !was {
 		a.ov.area = a.overlayArea()
 	}
+	w, h := a.overlayFace(mode)
 	frame := layout.Frame(a.ov.area, a.prefs.Overlay, w, h)
 	moved := frame != a.ov.frame
 	a.ov.mode, a.ov.w, a.ov.h, a.ov.frame = mode, w, h, frame
@@ -211,10 +217,9 @@ func (a *app) overlaySync() {
 	if a.ov.epoch.IsZero() {
 		a.ov.epoch = time.Now()
 	}
-	pass := mode == ovRecording || mode == ovWorking
 	defer a.syncLangMenu() // overlay_lang.go: the language menu follows the card
 	if !a.overlayNative() {
-		a.ov.passThrough = pass
+		a.syncPassThrough()
 		return // tests: the state is enough
 	}
 	if a.ov.win == nil {
@@ -223,10 +228,7 @@ func (a *app) overlaySync() {
 		a.ov.win = mygo.NewWindow(opts)
 		a.ov.passThrough = false
 	}
-	if pass != a.ov.passThrough {
-		a.ov.passThrough = pass
-		a.ov.win.SetIgnoreMouseEvents(pass)
-	}
+	a.syncPassThrough()
 	if !was {
 		a.ov.win.SetOpacity(0)
 		a.ov.reveal = true
@@ -244,6 +246,21 @@ func (a *app) overlaySync() {
 	a.ov.win.Invalidate()
 	if !was {
 		showFloating(a.ov.win, frame.X, frame.Y)
+	}
+}
+
+// syncPassThrough lets the pointer through the window while nothing in it
+// takes a click (recording, working), but not while the live text in lines
+// overflows, so that the wheel scrolls it; the measured height of a text
+// can say so after it showed (overlayRestyle).
+func (a *app) syncPassThrough() {
+	pass := (a.ov.mode == ovRecording || a.ov.mode == ovWorking) && !a.liveLinesOverflow()
+	if pass == a.ov.passThrough {
+		return
+	}
+	a.ov.passThrough = pass
+	if a.ov.win != nil {
+		a.ov.win.SetIgnoreMouseEvents(pass)
 	}
 }
 
@@ -335,6 +352,7 @@ func (a *app) overlayRestyle() {
 	moved := frame != a.ov.frame
 	a.ov.w, a.ov.h, a.ov.frame = w, h, frame
 	a.syncLangMenu()
+	a.syncPassThrough()
 	if a.ov.win == nil {
 		return
 	}

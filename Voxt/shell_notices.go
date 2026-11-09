@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"slices"
+	"strings"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
@@ -121,13 +122,21 @@ func (a *app) checkModels() {
 	switch {
 	case !asrOK && !llmOK:
 		code = "both"
-		n = &core.Notification{Title: i18n.T("No models"), Body: i18n.T("Install a speech model, then set up a language model, to start.")}
+		n = &core.Notification{Title: i18n.T("No models"), Body: i18n.T("To start, install a speech model, then set up a language model.")}
 	case !asrOK:
 		code = "asr"
 		n = &core.Notification{Title: i18n.T("No speech model"), Body: i18n.T("Transcribe, Translate and Rewrite need one to hear you.")}
+		if p, missing, ok := a.pendingSetup(local.ASR); ok { // remote_link.go: a speech service set up but for its key
+			code, link = "asr/"+p.ID+"/"+missing, linkCompleteSetup+string(local.ASR)+"/"+p.ID
+			n.Body = setupNeedsText(local.ASR, p, missing)
+		}
 	case !llmOK:
 		code, link = "llm", remotePath
 		n = &core.Notification{Title: i18n.T("No language model"), Body: i18n.T("Translate and Rewrite need one; Transcribe types what it hears.")}
+		if p, missing, ok := a.pendingSetup(local.LLM); ok {
+			code, link = "llm/"+p.ID+"/"+missing, linkCompleteSetup+string(local.LLM)+"/"+p.ID
+			n.Body = setupNeedsText(local.LLM, p, missing)
+		}
 	}
 	if n != nil {
 		n.Severity, n.Link = core.SeverityWarning, link
@@ -155,7 +164,7 @@ func (a *app) checkHelper() {
 		return
 	}
 	a.setProblem(problemHelper, string(st.Reason), &core.Notification{Severity: core.SeverityError, Title: uitext.HelperFailText(st),
-		Body: i18n.T("Recording and the shortcuts wait for it."), Link: linkRestartHelper})
+		Body: i18n.T("Recording and shortcuts work again once it is running."), Link: linkRestartHelper})
 }
 
 // cardAction runs a card's action: restart the helper, or open its link.
@@ -171,6 +180,14 @@ func (a *app) cardAction(n core.Notification) {
 	case linkImportLegacy:
 		a.dismissNotice(n.ID)
 		a.importLegacy() // legacy_import.go
+		return
+	case linkAnnouncement:
+		a.announceShown, a.announceShownOpen = n, true // announcements.go
+		return
+	}
+	if setup, ok := strings.CutPrefix(n.Link, linkCompleteSetup); ok {
+		kind, id, _ := strings.Cut(setup, "/")
+		a.completeSetup(local.Kind(kind), id) // remote_link.go
 		return
 	}
 	a.openURL(n.Link)
@@ -304,6 +321,11 @@ func cardActionLabel(link string) string {
 		return i18n.T("Open Language models")
 	case linkImportLegacy:
 		return i18n.T("Import") // the card's title says from where
+	case linkAnnouncement:
+		return i18n.T("Read")
+	}
+	if strings.HasPrefix(link, linkCompleteSetup) {
+		return i18n.T("Complete setup")
 	}
 	return i18n.T("Open")
 }

@@ -63,6 +63,9 @@ type run struct {
 	// retry's entry.
 	dsp    string
 	gainDB float64
+	// heard takes the stream's live texts to the recording loop while it
+	// listens for the end word (endword.go); nil otherwise.
+	heard chan string
 }
 
 type capResult struct {
@@ -265,8 +268,8 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 		s.Result, s.Problem = result, problem
 		s.Recording = r.keepsRecording(store.StatusDone)
 		s.Inserted = dres.Inserted
-		if dres.Inserted {
-			s.InsertedInto = dres.To
+		if l, ok := dres.Landing(); ok {
+			s.Landing = &l
 		}
 		s.Card = result != "" && !r.req.Try && !dres.Inserted && !noted
 		s.Delivery = dres.Reason
@@ -387,7 +390,7 @@ func (r *run) keep(s Snapshot, status store.Status) {
 	switch {
 	case s.Inserted:
 		e.Delivery = "insert"
-		if to := s.InsertedInto; to.PID != 0 && to.PID != s.Target.PID {
+		if to := s.Landing.App; to.PID != 0 && to.PID != s.Target.PID {
 			e.InsertedBundle, e.InsertedName = to.BundleID, to.Name // where it went; the app and the rule stay the start app's
 		}
 	case s.Card:

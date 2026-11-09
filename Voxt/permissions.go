@@ -84,22 +84,50 @@ func (a *app) recheckPermissions() {
 }
 
 // askPermission shows macOS's prompt for a permission
-// (proto.Permission*), through the helper, else from here.
-func (a *app) askPermission(which string) {
+// (proto.Permission*), through the helper, else from here; then (nil:
+// nothing) runs once it was answered.
+func (a *app) askPermission(which string, then func()) {
+	answered := func() {
+		if then != nil {
+			then()
+		}
+	}
 	if a.hstatus.Has(proto.MethodPermissionsRequest) {
-		helperCall(a, proto.MethodPermissionsRequest, proto.PermissionsRequestParams{Permission: which}, 5*time.Minute, a.helperPerms)
+		helperCall(a, proto.MethodPermissionsRequest, proto.PermissionsRequestParams{Permission: which}, 5*time.Minute, func(r proto.PermissionsResult, err error) {
+			a.helperPerms(r, err)
+			answered()
+		})
 		return
 	}
 	sys := a.permSys
+	recheck := func(bool) { a.post(func() { a.recheckPermissions(); answered() }) }
 	switch which {
 	case proto.PermissionAccessibility:
 		sys.PromptAccessibility()
 		a.recheckPermissions()
+		answered()
 	case proto.PermissionSpeechRecognition:
-		a.async(func() { sys.RequestSpeechRecognition(func(bool) { a.post(a.recheckPermissions) }) })
+		a.async(func() { sys.RequestSpeechRecognition(recheck) })
 	default:
-		a.async(func() { sys.RequestMicrophone(func(bool) { a.post(a.recheckPermissions) }) })
+		a.async(func() { sys.RequestMicrophone(recheck) })
 	}
+}
+
+// askRequired asks for the permissions Voxt needs and lacks, in turn:
+// the microphone's prompt, then, once it was answered, Accessibility's
+// (which adds Voxt to its list in System Settings). One denied before
+// shows no prompt: its row's Open System Settings is the way.
+func (a *app) askRequired() {
+	ask := func() {
+		if !a.perms.access {
+			a.askPermission(proto.PermissionAccessibility, nil)
+		}
+	}
+	if a.perms.mic == permission.NotDetermined {
+		a.askPermission(proto.PermissionMicrophone, ask)
+		return
+	}
+	ask()
 }
 
 // openPrivacy opens a pane of System Settings.
@@ -124,14 +152,22 @@ func (a *app) permissionsSettings(c *ui.Context) {
 			statusMark(c, icons.DangerTriangle, t.Warning, text)
 		}
 	}
-	caption(c, i18n.T("macOS asks you before Voxt may record or work with other apps. Each row says what needs it; you can change them any time in System Settings."))
+	caption(c, i18n.T("macOS asks before Voxt can record or work with other apps. Each row says what needs the permission; you can change them any time in System Settings."))
+	if a.perms.mic == permission.NotDetermined || !a.perms.access {
+		ui.Row(c).Children(func() {
+			if ui.Button(c.Key("perm-ask-required"), i18n.T("Ask for the required permissions")).Tooltip(i18n.T("macOS asks for each in turn: the microphone, then Accessibility.")).Clicked() {
+				a.askRequired()
+			}
+		})
+	}
+	sectionTitle(c, i18n.T("Required"))
 
 	micText, micOK := uitext.PermissionText(a.perms.mic)
-	settingRow(c, "perm-mic", i18n.T("Microphone"), i18n.T("Transcribe, translate and rewrite by voice record while you hold or tap their shortcut."), func() {
+	settingRow(c, "perm-mic", i18n.T("Microphone"), i18n.T("Transcribe, Translate and Rewrite record while you hold or tap their shortcut."), func() {
 		badge(micText, micOK)
 		if a.perms.mic == permission.NotDetermined {
 			if ghostButton(c.Key("perm-mic-ask"), i18n.T("Ask")).Clicked() {
-				a.askPermission(proto.PermissionMicrophone)
+				a.askPermission(proto.PermissionMicrophone, nil)
 			}
 		}
 		if !micOK {
@@ -148,19 +184,20 @@ func (a *app) permissionsSettings(c *ui.Context) {
 		badge(accText, accOK)
 		if !accOK {
 			if ghostButton(c.Key("perm-access-ask"), i18n.T("Ask")).Tooltip(i18n.T("Adds Voxt to the list in System Settings")).Clicked() {
-				a.askPermission(proto.PermissionAccessibility)
+				a.askPermission(proto.PermissionAccessibility, nil)
 			}
 			if ghostIconButton(c.Key("perm-access-open"), icons.SquareArrowRightUp, i18n.T("Open System Settings")).Label(i18n.T("Open System Settings")).Clicked() {
 				a.openPrivacy(c, privacyAccessibility)
 			}
 		}
 	})
+	sectionTitle(c, i18n.T("Optional"))
 	speechText, speechOK := uitext.PermissionText(a.perms.speech)
 	settingRow(c, "perm-speech", i18n.T("Speech Recognition"), i18n.T("Only System dictation needs it: macOS's own speech recognition, which recognises your voice on this Mac."), func() {
 		badge(speechText, speechOK)
 		if a.perms.speech == permission.NotDetermined {
 			if ghostButton(c.Key("perm-speech-ask"), i18n.T("Ask")).Clicked() {
-				a.askPermission(proto.PermissionSpeechRecognition)
+				a.askPermission(proto.PermissionSpeechRecognition, nil)
 			}
 		}
 		if !speechOK {

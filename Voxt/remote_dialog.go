@@ -26,6 +26,7 @@ type providerDialog struct {
 	exists             bool // the service was set up before
 	key, endpoint      string
 	model, customModel string // model: the select's label
+	recognitionPrompt  string
 	err, errMore       string // a save or check error
 	saving, removeKey  bool
 	test               providerTest
@@ -47,7 +48,7 @@ func otherModel() string { return i18n.T("Other model…") }
 func (a *app) openProviderDialog(kind local.Kind, id string) {
 	sv := lookupService(kind, id)
 	p, exists := a.setupOf(kind, id)
-	d := providerDialog{open: true, kind: kind, id: id, exists: exists, endpoint: p.Endpoint, appID: p.AppID, gen: genFormOf(p.Generation)}
+	d := providerDialog{open: true, kind: kind, id: id, exists: exists, endpoint: p.Endpoint, appID: p.AppID, recognitionPrompt: p.RecognitionPrompt, gen: genFormOf(p.Generation)}
 	d.model = setupModel(kind, p)
 	if d.model == "" || !slices.Contains(sv.models, d.model) {
 		d.model, d.customModel = otherModel(), d.model
@@ -76,8 +77,11 @@ func (d *providerDialog) setup() settings.Provider {
 	if model != lookupService(d.kind, d.id).model {
 		p.Model = model
 	}
-	if d.kind == local.LLM {
+	switch d.kind {
+	case local.LLM:
 		p.Generation, _ = d.gen.settings()
+	case local.ASR:
+		p.RecognitionPrompt = strings.TrimSpace(d.recognitionPrompt)
 	}
 	return p
 }
@@ -90,9 +94,11 @@ func (a *app) providerDialogView(c *ui.Context) {
 	t := c.Theme()
 	sv := lookupService(d.kind, d.id)
 	name := sv.name
+	model := providers.SpeechModel(d.setup())
+	streams := d.kind == local.ASR && sv.speech.Streams(model)
 	sub := i18n.T("Remote language model · OpenAI-compatible API")
 	switch {
-	case d.kind == local.ASR && sv.stream:
+	case streams:
 		sub = i18n.T("Remote speech recognition · realtime, while you speak")
 	case d.kind == local.ASR:
 		sub = i18n.T("Remote speech recognition · the recording, once you stop")
@@ -138,7 +144,7 @@ func (a *app) providerDialogView(c *ui.Context) {
 		})
 		epInfo := i18n.T("The API root, ending in /v1; leave it empty for the service's own. Only https://, or http:// to this Mac.")
 		switch {
-		case d.kind == local.ASR && sv.stream:
+		case streams:
 			epInfo = i18n.T("Leave it empty for the service's own. Only wss://, or ws:// to this Mac.")
 		case d.kind == local.ASR:
 			epInfo = i18n.T("Leave it empty for the service's own. Only https://, or http:// to this Mac.")
@@ -147,6 +153,9 @@ func (a *app) providerDialogView(c *ui.Context) {
 		}
 		fieldInfo(c, i18n.T("Address"), epInfo, func() {
 			ph := sv.endpoint
+			if d.kind == local.ASR {
+				ph = sv.speech.EndpointOf(model)
+			}
 			if ph == "" {
 				ph = "https://…/v1"
 			}
@@ -156,9 +165,15 @@ func (a *app) providerDialogView(c *ui.Context) {
 			opts := append(slices.Clone(sv.models), otherModel())
 			ui.Select(c.Key("remote-model"), &d.model, opts).Label(i18n.T("Model")).Width(px(t, 320))
 			if d.model == otherModel() {
-				ui.TextInput(c.Key("remote-model-custom"), &d.customModel).Placeholder(i18n.T("Model id")).Label(i18n.T("Model id"))
+				ui.TextInput(c.Key("remote-model-custom"), &d.customModel).Placeholder(i18n.T("Model ID")).Label(i18n.T("Model ID"))
 			}
 		})
+		if d.kind == local.ASR {
+			fieldInfo(c, i18n.T("Recognition prompt"), i18n.T("Optional. Goes after the global speech context on the Speech models page. Use {{USER_MAIN_LANGUAGE}}, {{USER_OTHER_LANGUAGES}} and {{DICTIONARY_TERMS}} for your languages and dictionary. Services that take no prompt ignore it."), func() {
+				ui.TextArea(c.Key("remote-asr-prompt"), &d.recognitionPrompt).Label(i18n.T("Recognition prompt")).
+					Placeholder(i18n.T("For example: Technical talk; prefer product names from the dictionary.")).MinHeight(px(t, 72))
+			})
+		}
 		if d.kind == local.LLM {
 			a.generationFields(c, d) // remote_generation.go
 		}
@@ -192,7 +207,7 @@ func (a *app) providerDialogView(c *ui.Context) {
 // nothing), as an error's text and detail.
 func (d *providerDialog) check(p settings.Provider) (msg, more string) {
 	if strings.TrimSpace(d.model) == "" || d.model == otherModel() && strings.TrimSpace(d.customModel) == "" {
-		return i18n.T("Choose a model, or type its id."), ""
+		return i18n.T("Choose a model, or type its ID."), ""
 	}
 	if err := checkSetup(d.kind, p); err != nil {
 		return uitext.ModelErrorText(err)
@@ -204,10 +219,8 @@ func (d *providerDialog) check(p settings.Provider) (msg, more string) {
 		switch providers.CheckGeneration(p.Generation) {
 		case providers.ErrJSONSchema:
 			return i18n.T("The JSON schema is not a JSON object."), ""
-		case providers.ErrOptions:
-			return i18n.T("Options JSON is not a JSON object."), ""
 		case providers.ErrExtraBody:
-			return i18n.T("Extra Body JSON is not a JSON object."), ""
+			return i18n.T("The request parameters are not a JSON object."), ""
 		}
 	}
 	return "", ""

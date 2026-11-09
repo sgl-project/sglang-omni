@@ -141,7 +141,7 @@ func (a *app) obModelsStep(c *ui.Context) {
 			})
 		}
 		if st.Downloading {
-			caption(c, i18n.T("The model downloads in the background: continue, and it is ready when the bar fills."))
+			caption(c, i18n.T("The model downloads in the background. You can continue; it is ready when the bar fills."))
 		}
 	}
 	a.obLanguageRow(c)
@@ -167,8 +167,7 @@ func (a *app) obLanguageRow(c *ui.Context) {
 		caption(c, i18n.T("Cleans up, translates and rewrites the text. Run one on this Mac with Ollama, LM Studio or oMLX, or use a service's API key."))
 		ui.Row(c).Children(func() {
 			if ui.Button(c.Key("ob-llm-setup"), i18n.T("Set up a language model")).Clicked() {
-				a.closeOnboarding()
-				a.navigate(remotePath)
+				a.obLeave(remotePath) // onboarding.go: the page offers the way back
 			}
 		})
 	})
@@ -209,8 +208,7 @@ func (a *app) obReuseCard(c *ui.Context, found []models.Found) {
 						a.obUse(ids...)
 					}
 					if ghostButton(c.Key("ob-reuse-choose"), i18n.T("Choose models…")).Clicked() {
-						a.closeOnboarding()
-						a.navigate(modelsPath)
+						a.obLeave(modelsPath)
 					}
 				})
 			})

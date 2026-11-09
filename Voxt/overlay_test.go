@@ -59,12 +59,13 @@ func TestOverlayModes(t *testing.T) {
 	}
 	now := time.Now()
 	snap(a, session.Snapshot{State: session.Recording, StartedAt: now})
-	if a.ov.mode != ovRecording || a.ov.w != layout.PillW || a.ov.h != layout.PillH {
+	wantW := a.ov.w
+	if a.ov.mode != ovRecording || a.ov.w < layout.PillW || a.ov.h != layout.PillH {
 		t.Errorf("recording %s %d×%d", a.ov.mode, a.ov.w, a.ov.h)
 	}
 	snap(a, session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now, Partial: "hello"})
-	if a.ov.w != layout.RowW+2*layout.LivePadX || a.ov.h != layout.LiveH {
-		t.Errorf("live text %d×%d", a.ov.w, a.ov.h)
+	if a.ov.h != layout.LiveH || a.ov.w < wantW {
+		t.Errorf("live text %d×%d, row at least %d wide", a.ov.w, a.ov.h, wantW)
 	}
 	snap(a, session.Snapshot{State: session.Composing, Partial: "hello"})
 	if a.ov.mode != ovWorking {
@@ -224,7 +225,7 @@ func TestSessionProblemTexts(t *testing.T) {
 		action string
 	}{
 		{session.Problem{Code: session.ProblemNoASR}, "No speech model is installed.", actionModels},
-		{session.Problem{Code: session.ProblemMicrophone, Err: errors.New("x")}, "Voxt may not use the microphone.", actionPermissions},
+		{session.Problem{Code: session.ProblemMicrophone, Err: errors.New("x")}, "Voxt does not have microphone access.", actionPermissions},
 		{session.Problem{Code: session.ProblemHelper}, "The helper stopped: try again in a moment.", actionHelper},
 		{session.Problem{Code: session.ProblemNoSpeech}, "Nothing was heard.", actionNone},
 		{session.Problem{Code: session.ProblemTooShort}, "", actionNone},
@@ -331,6 +332,14 @@ func overlayShots(t *testing.T, a *app, out, suffix string, dark bool) {
 			Partial: "So the plan for the release is to finish the onboarding first, then the history page, and after that we look at the translation card"}, nil, nil},
 		{"overlay-live-text-zh", session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-20 * time.Second), Levels: wave(),
 			Partial: "那个我们明天，不对，后天下午三点开会，讨论一下 VoxtNew 的发布计划，然后把引导页和历史页先做完"}, nil, nil},
+		// Live text layout → Lines (FB5): wide from the first word, wrapped,
+		// then the newest ten lines.
+		{"overlay-live-lines", session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-47 * time.Second), Levels: wave(),
+			Partial: "So the plan for the release is to finish the onboarding first, then the history page, and after that we look at the translation card"},
+			func() { a.prefs.Overlay.LiveLines = true }, nil},
+		{"overlay-live-lines-long-zh", session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-90 * time.Second), Levels: wave(),
+			Partial: strings.Repeat("那个我们明天，不对，后天下午三点开会，讨论一下 VoxtNew 的发布计划，然后把引导页和历史页先做完。", 8)},
+			func() { a.prefs.Overlay.LiveLines = true }, nil},
 		{"overlay-recording-scene", session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-5 * time.Second), Levels: wave(),
 			Target: proto.App{Name: "Slack"}, Scene: sceneMatch("Team chat", appctx.SourceApp, "")}, nil, nil},
 		{"overlay-working-scene", session.Snapshot{State: session.Composing, Target: proto.App{Name: "Google Chrome"},
@@ -408,7 +417,7 @@ func overlayShots(t *testing.T, a *app, out, suffix string, dark bool) {
 			turns()
 			a.followUp = "first"
 		}
-		a.prefs.Overlay.ShowTime = false
+		a.prefs.Overlay.ShowTime, a.prefs.Overlay.LiveLines = false, false
 		if st.setup != nil {
 			st.setup()
 		}
@@ -473,6 +482,26 @@ func sceneMatch(name string, src appctx.Source, host string) *appctx.Match {
 	return &appctx.Match{Source: src, Group: &appctx.Group{ID: "g", Name: name}, Host: host, Pattern: host}
 }
 
+// TestOverlayRecordingModeLabel: while recording, the pill names the mode
+// the start shortcut picked (wider than the icon-only capsule).
+func TestOverlayRecordingModeLabel(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	now := time.Now()
+	snap(a, session.Snapshot{State: session.Recording, Kind: store.KindTranslate, StartedAt: now})
+	if a.ov.w <= layout.PillW {
+		t.Errorf("translate label should widen pill: %d", a.ov.w)
+	}
+	snap(a, session.Snapshot{State: session.Recording, Kind: store.KindTranslate, StartedAt: now, HeardAt: now, Partial: "hi"})
+	wLive := a.ov.w
+	snap(a, session.Snapshot{State: session.Recording, Kind: store.KindRewrite, StartedAt: now})
+	if a.ov.w <= layout.PillW {
+		t.Errorf("rewrite label should widen pill: %d", a.ov.w)
+	}
+	if wLive < a.ov.w {
+		t.Errorf("live text width %d < label-only %d", wLive, a.ov.w)
+	}
+}
+
 func TestOverlaySceneLabel(t *testing.T) {
 	for _, tc := range []struct {
 		s    session.Snapshot
@@ -491,11 +520,37 @@ func TestOverlaySceneLabel(t *testing.T) {
 	}
 	a, _, _ := newTestApp(t)
 	snap(a, session.Snapshot{ID: "s1", State: session.Recording, Target: proto.App{Name: "Slack"}, Scene: sceneMatch("Team chat", appctx.SourceApp, "")})
-	if want := layout.PillW + layout.Gap + int(math.Ceil(float64(guessWidth(sceneText("Team chat"))))); a.ov.w != want || a.ov.h != layout.PillH {
-		t.Errorf("size %dx%d", a.ov.w, a.ov.h)
+	if want := recordingPillFaceW(a.sess, false); a.ov.w != want || a.ov.h != layout.PillH {
+		t.Errorf("size %dx%d, want %dx%d", a.ov.w, a.ov.h, want, layout.PillH)
 	}
 	if uitext.SceneShort(a.sess) != "Team chat" {
 		t.Errorf("short %q", uitext.SceneShort(a.sess))
+	}
+}
+
+// TestOverlayHidesWhileInserting: once the result is ready and goes into
+// the app, the preview of the speech it came from leaves at once instead
+// of staying over the inserted text until the paste is checked (up to the
+// deliver timeout); a result that could not go in comes back in the card.
+func TestOverlayHidesWhileInserting(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	ft := new(fakeTimers).install(a)
+	snap(a, session.Snapshot{ID: "s1", State: session.Recording, Partial: "meet at three"})
+	snap(a, session.Snapshot{ID: "s1", State: session.Composing, Partial: "meet at three"})
+	if a.ov.mode != ovWorking || !a.ov.shown {
+		t.Fatalf("composing: %s, shown %v", a.ov.mode, a.ov.shown)
+	}
+	snap(a, session.Snapshot{ID: "s1", State: session.Delivering, Partial: "meet at three", Result: "Meet at three."})
+	if a.ov.shown {
+		t.Fatalf("delivering: still shown (%s)", a.ov.mode)
+	}
+	ft.advance(ovGone)
+	if a.ov.visible {
+		t.Fatal("delivering: still on screen")
+	}
+	snap(a, session.Snapshot{ID: "s1", State: session.Done, Result: "Meet at three.", Card: true})
+	if a.ov.mode != ovAnswer || !a.ov.shown {
+		t.Errorf("not inserted: %s, shown %v; want the card", a.ov.mode, a.ov.shown)
 	}
 }
 
@@ -632,16 +687,16 @@ func TestOverlayInk(t *testing.T) {
 		want  ink.Want
 		width int // the face's, when known
 	}{
-		{"pill", rec(store.KindTranscribe, ""), false, ink.Want{W: 148, H: 48, Row: true, Even: true}, 148},
+		{"pill", rec(store.KindTranscribe, ""), false, ink.Want{H: 48, Row: true}, 0},
 		// Before the first audio the bars are dim: not ink.
-		{"pill-quiet", session.Snapshot{State: session.Recording, StartedAt: now}, false, ink.Want{W: 148, H: 48}, 148},
-		{"pill-translate", rec(store.KindTranslate, ""), false, ink.Want{W: 148, H: 48, Row: true, Even: true}, 148},
-		{"pill-rewrite", rec(store.KindRewrite, ""), false, ink.Want{W: 148, H: 48, Row: true, Even: true}, 148},
-		{"pill-time", rec(store.KindTranscribe, ""), true, ink.Want{W: 188, H: 48, Row: true}, 188},
-		{"live-short", rec(store.KindTranscribe, short), false, ink.Want{H: 76, Row: true, Even: true, Text: true}, 0},
-		{"live-short-zh", rec(store.KindTranscribe, shortZh), false, ink.Want{W: 160, H: 76, Row: true, Even: true, Text: true}, 160},
-		{"live-long", rec(store.KindTranscribe, long), false, ink.Want{W: 300, H: 76, Row: true, Even: true, Text: true, Scrolled: true}, 300},
-		{"live-long-zh", rec(store.KindTranscribe, longZh), false, ink.Want{W: 300, H: 76, Row: true, Even: true, Text: true, Scrolled: true}, 300},
+		{"pill-quiet", session.Snapshot{State: session.Recording, StartedAt: now}, false, ink.Want{H: 48, Row: true}, 0},
+		{"pill-translate", rec(store.KindTranslate, ""), false, ink.Want{H: 48, Row: true}, 0},
+		{"pill-rewrite", rec(store.KindRewrite, ""), false, ink.Want{H: 48, Row: true}, 0},
+		{"pill-time", rec(store.KindTranscribe, ""), true, ink.Want{H: 48, Row: true}, 0},
+		{"live-short", rec(store.KindTranscribe, short), false, ink.Want{H: 76, Row: true, Text: true}, 0},
+		{"live-short-zh", rec(store.KindTranscribe, shortZh), false, ink.Want{H: 76, Row: true, Text: true}, 0},
+		{"live-long", rec(store.KindTranscribe, long), false, ink.Want{W: 300, H: 76, Row: true, Text: true, Scrolled: true}, 300},
+		{"live-long-zh", rec(store.KindTranscribe, longZh), false, ink.Want{W: 300, H: 76, Row: true, Text: true, Scrolled: true}, 300},
 		{"working", session.Snapshot{State: session.Recognizing}, false, ink.Want{W: 148, H: 48, Row: true}, 148},
 		// A notice's icon is coloured, not ink (as in the Mac's check,
 		// overlayInkWant): its row's first stroke would be the text, whose
@@ -679,13 +734,6 @@ func TestOverlayInk(t *testing.T) {
 				var b bytes.Buffer
 				png.Encode(&b, img)
 				os.WriteFile(filepath.Join(dir, c.name+".png"), b.Bytes(), 0o644)
-			}
-			if c.name == "live-short" {
-				// The text's measured width and the padding: no guess.
-				tw := a.ov.textW[liveTextKey(short)].w
-				if tw <= layout.RowW || a.ov.w != int(math.Ceil(float64(tw)))+2*layout.LivePadX {
-					t.Errorf("the face is %d wide for a text %v wide", a.ov.w, tw)
-				}
 			}
 		})
 	}

@@ -27,7 +27,7 @@ func DeliveryText(res deliver.Result, target proto.App) string {
 	case deliver.ReasonNoAccess:
 		return i18n.T("Allow Accessibility to insert results where you type.")
 	case deliver.ReasonNotFront, deliver.ReasonNoTarget:
-		return i18n.T("%s is not in front any more.", name)
+		return i18n.T("%s is no longer the frontmost app.", name)
 	case deliver.ReasonNotEditable:
 		return i18n.T("No text field is focused: click where the text should go, then insert.")
 	case deliver.ReasonSecure:
@@ -92,7 +92,7 @@ func WorkingText(s session.Snapshot) string {
 	case session.Delivering:
 		return i18n.T("Inserting…")
 	}
-	return i18n.T("Recognizing…")
+	return i18n.T("Recognising…")
 }
 
 // WaitText says what a session waits for (session.Snapshot.Waiting): the

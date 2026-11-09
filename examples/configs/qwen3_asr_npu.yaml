@@ -4,6 +4,5 @@ model_path: Qwen/Qwen3-ASR-1.7B
 stages:
   asr:
     engine:
-      disable_cuda_graph: true
       enable_torch_compile: false
       disable_radix_cache: true

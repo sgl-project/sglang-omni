@@ -5,6 +5,7 @@ package main
 // features' icons.
 
 import (
+	"math"
 	"strings"
 	"time"
 
@@ -42,7 +43,7 @@ func (a *app) overlayView(c *ui.Context) {
 	case a.ov.mode == ovRecording && a.prefs.Overlay.ShowTime:
 		c.After(250 * time.Millisecond) // the time
 	}
-	look := pillLook{time: a.prefs.Overlay.ShowTime, motion: motion, phase: a.overlayPhase(), w: a.ov.w}
+	look := pillLook{time: a.prefs.Overlay.ShowTime, lines: a.prefs.Overlay.LiveLines, scroll: &a.ov.lines, motion: motion, phase: a.overlayPhase(), w: a.ov.w}
 	ui.Column(c).Fill().Padding(layout.Pad).Children(func() {
 		o := a.prefs.Overlay
 		switch a.ov.mode {
@@ -88,10 +89,13 @@ func faceStyle(e ui.Element, o settings.Overlay, mode overlayMode, h int) ui.Ele
 		Border(1, ui.RGBA(255, 255, 255, 0.12)).Shadow(0, layout.ShadowY, layout.ShadowBlur, 0, ui.RGBA(0, 0, 0, layout.ShadowA))
 }
 
-// pillLook is how the pill draws: with the time, moving, at phase
-// seconds, w DIPs wide.
+// pillLook is how the pill draws: with the time, its live text in lines
+// (Overlay.LiveLines) and their scroll (nil: a preview's, following the
+// end), moving, at phase seconds, w DIPs wide.
 type pillLook struct {
 	time   bool
+	lines  bool
+	scroll *linesScroll
 	motion bool
 	phase  float64
 	w      int
@@ -118,6 +122,11 @@ func overlayPill(c *ui.Context, s session.Snapshot, mode overlayMode, look pillL
 					ui.Icon(c, overlayKindIcon(s.Kind).Bold).Size(layout.IconSize, layout.IconSize).TextColor(ovIcon).Shrink(0).Label(uitext.KindTitle(s.Kind))
 				})
 			}
+			if mode == ovRecording && s.Waiting == session.WaitNone {
+				title := uitext.KindTitle(s.Kind)
+				ui.Text(c, title).FontSize(12).FontWeight(500).TextColor(ovText).SingleLine().Shrink(0).
+					Label(i18n.T("Recording mode: %s", title))
+			}
 			if mode == ovRecording {
 				waveform(c, s.Levels, !s.HeardAt.IsZero(), look)
 				if look.time {
@@ -140,6 +149,8 @@ func overlayPill(c *ui.Context, s session.Snapshot, mode overlayMode, look pillL
 				AlignItems(ui.Center).Justify(ui.Center).Clip().Children(func() {
 				ui.Text(c, text).FontSize(layout.LiveSize).FontWeight(layout.LiveWeight).TextColor(ovText2).SingleLine().Shrink(0)
 			})
+		case text != "" && look.lines:
+			liveLines(c.Key("ov-lines"), look.scroll, s.ID, text)
 		case text != "":
 			liveLine(c.Key("ov-live-"+s.ID), text, float32(max(look.w, layout.PillW)-2*layout.LivePadX), look.motion)
 		}
@@ -182,6 +193,47 @@ func startingIcon(c *ui.Context, s session.Snapshot, look pillLook) {
 // line breaks one space each.
 func liveLineText(s session.Snapshot) string {
 	return strings.Join(strings.Fields(liveText(s)), " ")
+}
+
+// linesScroll is the scroll of session id's live text in lines: following
+// its newest words unless the wheel took it up.
+type linesScroll struct {
+	id     string
+	st     ui.ScrollState
+	follow bool
+}
+
+// liveLines is session id's live text wrapped at layout.LinesTextW, as a
+// text box types it (Overlay.LiveLines): as high as its lines up to
+// layout.LinesMax of them, then it scrolls (l, nil for none kept),
+// following the newest words unless the wheel took it up to read what
+// came before, until it is back at the end (#3644: the lines before the
+// last ten were out of reach).
+func liveLines(c *ui.Context, l *linesScroll, id, text string) {
+	if l == nil {
+		l = &linesScroll{}
+	}
+	if l.id != id {
+		l.id, l.st, l.follow = id, ui.ScrollState{}, true
+	}
+	l.follow = l.st.Y >= l.st.MaxY-1 // as the last frame laid it out: the wheel moved Y since
+	if l.follow {
+		l.st.Y = math.MaxFloat32 // the end, wherever the new words put it
+	}
+	ui.Scroll(c).Width(layout.LinesTextW).MaxHeight(layout.LinesMax * layout.LineH).Shrink(0).TrackScroll(&l.st).Label(text).Children(func() {
+		ui.Text(c, text).FontSize(layout.LiveSize).FontWeight(layout.LiveWeight).TextColor(ovText).Shrink(0)
+	})
+}
+
+// liveLinesOverflow says whether the live text in lines is longer than
+// the face shows (more than layout.LinesMax lines), so that it scrolls.
+func (a *app) liveLinesOverflow() bool {
+	text, hint := pillLine(a.pillSession())
+	if !a.prefs.Overlay.LiveLines || hint || text == "" || (a.ov.mode != ovRecording && a.ov.mode != ovWorking) {
+		return false
+	}
+	h, _ := a.ovTextHeight(liveLinesKey(text))
+	return h > layout.LinesMax*layout.LineH
 }
 
 // liveLine is the live text on one line, width DIPs wide: centred while
@@ -244,20 +296,21 @@ func fadeSpans(text string, off float32, measure func(string) float32) (string, 
 	return string(r[lo:]), from, spans
 }
 
-// liveText is the text the pill shows under it, the same in every flow
-// (10-15, third round): the answer as the model writes it; until then
-// what it works on: what the speech model heard so far (a file
-// service's whole text, while it is cleaned up), else the selection it
-// translates.
+// liveText is the text the pill shows under it. The preview carries only
+// live ASR partials, not the offline Final nor language-model drafts
+// (FB6). While the language model works, the live text stays as it last
+// was (Rewrite's spoken instruction too): the pill went blank then
+// (#3644); without one, the selection worked on (selected text to
+// translate).
 func liveText(s session.Snapshot) string {
-	working := s.State == session.Composing || s.State == session.Delivering
-	if d := strings.TrimSpace(s.Draft); d != "" && working {
-		return d
+	partial := strings.TrimSpace(s.Partial)
+	switch s.State {
+	case session.Recording, session.Recognizing:
+		return partial
+	case session.Composing, session.Delivering:
+		return cmpOr(partial, strings.TrimSpace(s.Selection))
 	}
-	if p := strings.TrimSpace(s.Partial); p != "" || !working {
-		return p
-	}
-	return strings.TrimSpace(s.Selection)
+	return ""
 }
 
 // overlayKindIcon is a feature's icon in the overlay: Voxt's mode icons
@@ -297,7 +350,10 @@ func (a *app) overlayNotice(c *ui.Context) {
 		// keeps its sides even. The border takes layout.Border of the padding.
 		ui.Row(c).Fill().Padding(0, layout.PillPadX-layout.Border).Gap(layout.Gap).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 			ic, col := icons.DangerCircle, tok(t).Danger
-			if n.warn {
+			switch {
+			case n.ok:
+				ic, col = icons.CheckCircle, tok(t).Success
+			case n.warn:
 				ic, col = icons.DangerTriangle, tok(t).Warning
 			}
 			ui.Box(c).Size(layout.IconSlot, layout.RowH).Shrink(0).Center().Children(func() {

@@ -98,6 +98,8 @@ type fakeSupervisor struct {
 	status   helper.Status
 	calls    []proto.Message
 	handlers map[string]func(json.RawMessage) (any, error)
+	// asked are the permissions permissions.request asked for, in turn.
+	asked []string
 	// out answers output.*: pretend speakers (the default) and AirPods,
 	// with the Swift helper's rules (helpertest.OutputHelper).
 	out *helpertest.OutputHelper
@@ -135,6 +137,9 @@ func newFakeSupervisor(bus *core.Bus) *fakeSupervisor {
 	f.handlers[proto.MethodPermissionsRequest] = func(raw json.RawMessage) (any, error) {
 		var p proto.PermissionsRequestParams
 		json.Unmarshal(raw, &p)
+		f.mu.Lock()
+		f.asked = append(f.asked, p.Permission)
+		f.mu.Unlock()
 		switch p.Permission {
 		case proto.PermissionMicrophone:
 			perms.Microphone = proto.PermGranted
