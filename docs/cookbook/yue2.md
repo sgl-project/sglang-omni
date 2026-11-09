@@ -94,6 +94,8 @@ Batch shapes can change BF16 rounding and sampled tokens even with the same seed
 
 ## Limitations
 
+The YuE2 and YuE2-Vae weights are CC BY-NC 4.0; commercial use is not permitted.
+
 The official YuE2 implementation offers additional [optional execution modes](https://github.com/multimodal-art-projection/YuE/blob/1116bea76032bee5668e5f097294d082fa0b84f0/docs/hardware.md) that are not currently supported by this Omni integration:
 
 - Experimental AR FP8 quantization.

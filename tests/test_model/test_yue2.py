@@ -21,13 +21,17 @@ from sglang_omni.proto.request import OmniRequest, StagePayload
 pytestmark = [
     pytest.mark.accelerator,
     pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required"),
+    pytest.mark.skipif(
+        not os.environ.get("YUE2_MODEL_PATH"),
+        reason="Set YUE2_MODEL_PATH to run real-checkpoint tests",
+    ),
 ]
 
 
 @pytest.fixture(scope="module", params=[False, True, "fused"])
 def runtime(request: pytest.FixtureRequest) -> Yue2Runtime:
     return Yue2Runtime.from_pretrained(
-        os.environ.get("YUE2_MODEL_PATH", "m-a-p/YuE2-3B"),
+        os.environ["YUE2_MODEL_PATH"],
         os.environ.get("YUE2_VAE_PATH", "m-a-p/YuE2-Vae"),
         torch.device("cuda:0"),
         vae_core_frames=1024,
