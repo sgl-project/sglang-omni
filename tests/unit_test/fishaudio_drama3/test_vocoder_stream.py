@@ -30,10 +30,9 @@ CODEBOOK_SIZE = 16
 PROMPT_ROW_COUNT = 37
 UTTERANCE_GRAPH_MAX_FRAMES = 128
 WHOLE_UTTERANCE_FRAMES = 120
-# Replays queued on the default stream ahead of serving, standing in for
-# construction work still in flight when the serving thread starts.
-IN_FLIGHT_REPLAYS = 200
-HANDOFF_ATTEMPTS = 5
+# note (Wenyao Gao): two seconds or more of an H100's clock, far longer than serving
+# takes to start its first decode.
+IN_FLIGHT_SLEEP_CYCLES = 4_000_000_000
 # note (Wenyao Gao): (request name, frames, streaming) per request.
 REQUESTS = (
     ("stream-a", 150, True),
@@ -260,22 +259,23 @@ def test_serving_on_the_decode_stream_under_default_stream_load_matches_the_defa
 def test_serving_starts_after_the_default_streams_in_flight_work(
     vocoder: Drama3VocoderScheduler,
 ) -> None:
-    """Construction writes the window graphs' static buffers and their shared pool
-    on the default stream. Serving starts on the decode stream after that work, so
-    replays still queued on the default stream do not change what serving returns."""
+    """Construction writes the codec weights on the default stream and serving runs on
+    the decode stream; serving must start after that work, or its first decodes read
+    weights not yet written."""
     expected = served(vocoder, "expected")
-    decoder = vocoder.window_batch_decoder
-    assert isinstance(decoder, WindowGraphDecoder)
-    other_codes = torch.randint(
-        0, CODEBOOK_SIZE, (1, NUM_CODEBOOKS, WHOLE_UTTERANCE_FRAMES), device="cuda"
-    )
+    parameters = list(vocoder.codec.parameters())
+    written = [parameter.detach().clone() for parameter in parameters]
+    with torch.no_grad():
+        for parameter in parameters:
+            parameter.zero_()
+    torch.cuda.synchronize()
+    assert served(vocoder, "zeroed") != expected, "serving reads the codec weights"
 
-    mismatches = 0
-    for attempt in range(HANDOFF_ATTEMPTS):
-        with torch.no_grad():
-            for _ in range(IN_FLIGHT_REPLAYS):
-                decoder(other_codes)
-        mismatches += served(vocoder, f"attempt-{attempt}") != expected
+    torch.cuda._sleep(IN_FLIGHT_SLEEP_CYCLES)  # noqa: leading-underscore  # torch API
+    with torch.no_grad():
+        for parameter, written_parameter in zip(parameters, written, strict=True):
+            parameter.copy_(written_parameter)
+    in_flight = served(vocoder, "in-flight")
     torch.cuda.synchronize()
 
-    assert mismatches == 0
+    assert in_flight == expected
