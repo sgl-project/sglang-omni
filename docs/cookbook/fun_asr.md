@@ -120,6 +120,7 @@ sgl-omni serve --config examples/configs/fun_asr_nano_dflash.yaml --port 8000
 - **Latency.** Streaming time to first text is 5% higher at concurrency 1 (13.7 against 13.0 ms median), lower at 4, and about 20% higher at 16. At 64 the median is 70% higher and p95 about the same.
 - **Compilation.** Torch compile is turned off under the draft: on SGLang 0.5.23 the compiled path makes the draft half as fast as no draft at concurrency 1. Without a draft it stays on, since it speeds up concurrency 1 by about 17%. A server with the draft therefore starts in about 30 s, against about 3 minutes without it.
 - **Cost.** The draft's KV takes about 15% of the pool, and async decode is off.
+- **Acceptance.** Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens_details` (`spec_accept_length`, `spec_accept_rate`, the draft counts and the per-verify histogram) on `json` and `verbose_json` responses and on the streamed `transcript.text.done` event. Audio long enough to be transcribed in chunks returns none.
 
 The 70-layer audio encoder takes a large share of each request, so the gain is well below the draft's accept length of about 5.3 tokens per verify. Speedup over the same config without the draft, on one H200 with SGLang 0.5.23, two fresh servers per side in A B B A order, and 600 SeedTTS clips per language with the prefix cache off:
 
