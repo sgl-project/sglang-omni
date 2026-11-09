@@ -12,13 +12,11 @@ import multiprocessing
 import os
 import queue
 import threading
-from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any, Callable, ClassVar
+from typing import Any, Callable
 
 import torch
 
-from sglang_omni.client.types import GenerateChunk, GenerateRequest, SpeechResult
 from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
@@ -613,55 +611,3 @@ def block_on_inbox(monkeypatch: Any) -> None:
 
     monkeypatch.setattr(SimpleScheduler, "next_message", next_message)
     monkeypatch.setattr(SimpleScheduler, "stop", stop_and_wake)
-
-
-class CodecEOSFailureClient:
-    """Speech client that exposes codec EOS failure before or after partial audio."""
-
-    MESSAGE: ClassVar[str] = (
-        "Qwen3-TTS reached max_new_tokens without emitting codec EOS; "
-        "the generated audio is incomplete."
-    )
-
-    def __init__(self, *, partial_audio: bool = False) -> None:
-        self.partial_audio: bool = partial_audio
-        self.generate_requests: list[GenerateRequest] = []
-        self.speech_requests: list[GenerateRequest] = []
-        self.aborted: list[str] = []
-        self.closed: bool = False
-
-    def health(self) -> dict[str, bool]:
-        return {"running": True}
-
-    async def generate(
-        self, request: GenerateRequest, request_id: str | None = None
-    ) -> AsyncIterator[GenerateChunk]:
-        self.generate_requests.append(request)
-        try:
-            if self.partial_audio:
-                yield GenerateChunk(
-                    request_id=request_id or "speech-1",
-                    modality="audio",
-                    audio_data=[0.0, 0.1, -0.1, 0.0],
-                    sample_rate=24000,
-                )
-            else:
-                pass
-            raise RuntimeError(self.MESSAGE)
-        finally:
-            self.closed = True
-
-    async def speech(
-        self,
-        request: GenerateRequest,
-        *,
-        request_id: str,
-        response_format: str = "wav",
-        speed: float = 1.0,
-        allow_format_fallback: bool = True,
-    ) -> SpeechResult:
-        self.speech_requests.append(request)
-        raise RuntimeError(self.MESSAGE)
-
-    async def abort(self, request_id: str) -> None:
-        self.aborted.append(request_id)

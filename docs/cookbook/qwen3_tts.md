@@ -398,11 +398,7 @@ with open("output.wav", "wb") as f:
     f.write(resp.content)
 ```
 
-Non-streaming responses include `X-Finish-Reason: stop` after codec EOS or
-`X-Finish-Reason: length` when generation reaches `max_new_tokens`. A `length`
-response still contains decodable audio, but the utterance may be incomplete.
-Models that do not report how generation ended send `X-Finish-Reason: unknown`.
-Batch responses expose the same value as each item's `finish_reason`.
+Non-streaming responses include `X-Finish-Reason: stop` after codec EOS. Models that do not report how generation ended send `X-Finish-Reason: unknown`. Batch responses expose the same value as each item's `finish_reason`. If Qwen3-TTS reaches `max_new_tokens` without emitting codec EOS, the request fails with a `server_error` instead of returning incomplete audio; a stream that has already sent audio is interrupted, and clients should discard the partial audio.
 
 **Leading silence in x-vector mode**
 
