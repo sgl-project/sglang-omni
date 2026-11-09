@@ -50,6 +50,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **An ⓘ opens on a click**: clicking an ⓘ shows its tip and keeps it until you click elsewhere or press Esc; resting the pointer on it shows the tip as before.
 - **The rules field grows with your prompt, and ⌘F finds in it** (Transcribe, Translate, Rewrite → Your rules): the field is as high as its text, up to about 36 lines, before it scrolls. ⌘F on a feature page opens Your rules with Find in the prompt: it counts the matches, ignoring case, shows them in the accent colour, and Return goes to the next one.
 - **Rewrite answers questions about the selection**: select text and say "explain this" or "what does this mean", and the built-in prompt has the model answer in the card, in the language you spoke, instead of rewriting the text. Your own full prompt (Rewrite → Your rules) is sent as you wrote it.
+- **Clean-up drops rambling repeats out of the box**: the clean-up's example now also repeats a phrase and keeps it once, so the same words or point said again right away ("I need it before five, I really need it before five") come out once, with fillers and self-corrections as before.
 
 ### Fixed
 
@@ -104,6 +105,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **点一下 ⓘ 就能看说明**：点 ⓘ 显示它的提示，直到点别处或按 Esc 才收起；鼠标停在上面照旧显示。
 - **规则框跟着提示词变高，⌘F 可以在里面查找**（转录、翻译、转写 → 你的规则）：输入框随内容增高，大约 36 行以后才在框内滚动。在功能页按 ⌘F 会展开“你的规则”并聚焦“在提示词里查找”：显示有几处（不分大小写），匹配处用强调色标出，按回车跳到下一处。
 - **转写能回答关于选中文字的问题**：选中文字后说“解释一下这段”“这是什么意思”，内置提示词会让模型用你说话的语言在卡片里回答，而不是改写原文。你自己写的完整提示词（转写 → 你的规则）照原样发送。
+- **清理默认去掉车轱辘话**：清理的示例里加了一句重复的话、只保留一次，所以紧接着又说一遍的同样词句或同一个意思（“今天下班前一定要发，就是说今天下班前一定要发出去”）只留一次；语气词和改口照旧去掉。
 
 #### 修复
 
