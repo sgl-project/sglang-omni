@@ -318,6 +318,13 @@ func (a *app) buildMenu() {
 	}
 	// Check for Updates… goes after About (updates.go).
 	appItems := append([]*mygo.MenuItem{{Role: mygo.RoleAbout, Label: i18n.T("About Voxt")}}, a.updateMenuItems(act)...)
+	if a.meetingEnabled() {
+		appItems = append(appItems, &mygo.MenuItem{Label: i18n.T("Start meeting"), Click: act(func() {
+			if !a.meetingActive() {
+				a.startMeeting()
+			}
+		})})
+	}
 	mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
 		{Label: "Voxt", Submenu: append(appItems,
 			mygo.Separator(),

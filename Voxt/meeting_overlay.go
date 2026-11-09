@@ -50,6 +50,14 @@ func (a *app) syncMeetingOverlay() {
 		showFloating(a.meetOvWin, x, y)
 		a.meetOvShown = true
 	}
+	a.syncMeetingOverlayProtection()
+}
+
+func (a *app) syncMeetingOverlayProtection() {
+	if a.meetOvWin == nil {
+		return
+	}
+	a.meetOvWin.SetContentProtection(a.prefs.Features.Meeting.HideFromSharing)
 }
 
 func (a *app) meetingOverlayView(c *ui.Context) {
@@ -79,7 +87,28 @@ func (a *app) meetingOverlayView(c *ui.Context) {
 			if ghostButton(c.Key("mt-end"), i18n.T("End")).Clicked() {
 				a.meetingFinish()
 			}
+			if ghostButton(c.Key("mt-abandon"), i18n.T("Cancel meeting")).Clicked() {
+				a.meetingAbandon = true
+			}
 		}
+	})
+	a.meetingAbandonDialog(c)
+}
+
+func (a *app) meetingAbandonDialog(c *ui.Context) {
+	t := c.Theme()
+	ui.Modal(c.Key("mt-abandon-ask"), &a.meetingAbandon, func() {
+		ui.Text(c, i18n.T("Cancel this meeting?")).Bold()
+		ui.Text(c, i18n.T("The recording and any unsaved text are deleted. This cannot be undone.")).Width(px(t, 380))
+		ui.Row(c).Gap(px(t, sp2)).Justify(ui.End).Children(func() {
+			if ui.Button(c.Key("mt-abandon-no"), i18n.T("Keep recording")).AutoFocus().Clicked() {
+				a.meetingAbandon = false
+			}
+			if recordButton(c.Key("mt-abandon-yes"), i18n.T("Cancel meeting")).Clicked() {
+				a.meetingAbandon = false
+				a.meetingDiscard()
+			}
+		})
 	})
 }
 

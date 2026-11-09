@@ -20,8 +20,10 @@ import (
 const meetingLogSource = "meeting"
 
 type meetingState struct {
-	meetMgr  *meeting.Manager
-	meetSnap meeting.Snapshot
+	meetMgr        *meeting.Manager
+	meetSnap       meeting.Snapshot
+	meetingUI      *meetingSettingsUI // settings_meeting.go
+	meetingAbandon bool               // abandon while recording
 }
 
 func (a *app) openMeetings() {
