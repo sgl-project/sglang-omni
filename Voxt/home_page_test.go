@@ -481,7 +481,8 @@ func sameDay(a, b time.Time) bool {
 
 // TestWidePageCentered: in a window much wider than a page's column (full
 // screen), the column sits in the middle of the page and the header's
-// title and action line up with it. The column hugged the left with the
+// title and action line up with it; a page of lists keeps a wider body in
+// the middle in the same way. The column hugged the left with the
 // header's action at the window's far edge, a wide empty band between
 // (#3644, full screen).
 func TestWidePageCentered(t *testing.T) {
@@ -503,5 +504,18 @@ func TestWidePageCentered(t *testing.T) {
 	}
 	if math.Abs(float64(guide.X+guide.W-(history.X+history.W))) > 1 {
 		t.Errorf("Setup guide ends at %.0f, the column's Open History at %.0f", guide.X+guide.W, history.X+history.W)
+	}
+	// A page of lists keeps a wider body in the middle, its header lined
+	// up with it too.
+	a.navigate("/dictionary")
+	frames(tt)
+	search, ok1 := tt.Find("Search the dictionary")
+	add, ok2 := tt.Find("Add term")
+	if !ok1 || !ok2 {
+		t.Fatalf("Dictionary: found search %v, Add term %v", ok1, ok2)
+	}
+	left, right = search.X-sidebarWidth, w-(add.X+add.W)
+	if math.Abs(float64(left-right)) > 30 || left < 150 {
+		t.Errorf("Dictionary: %.0f from the sidebar to the search, %.0f from Add term to the window's edge", left, right)
 	}
 }

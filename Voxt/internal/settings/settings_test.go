@@ -414,8 +414,30 @@ func TestShortcutPresets(t *testing.T) {
 	if !ApplyPreset(&f, PresetOption) || !reflect.DeepEqual(f, Defaults().Features) {
 		t.Fatalf("mixed to right Option: %+v", f)
 	}
-	if ApplyPreset(&f, "command") || !reflect.DeepEqual(f, Defaults().Features) {
+	if ApplyPreset(&f, "unknown") || !reflect.DeepEqual(f, Defaults().Features) {
 		t.Fatalf("unknown preset: %+v", f)
+	}
+	f = Defaults().Features
+	if !ApplyPreset(&f, PresetCommand) {
+		t.Fatal("command changed nothing")
+	}
+	wantCmd := Defaults().Features
+	wantCmd.Transcribe.Hotkeys, wantCmd.Translate.Hotkeys, wantCmd.Rewrite.Hotkeys = tap("RightCommand"), tap("RightCommand+Shift"), tap("RightCommand+Option")
+	wantCmd.PasteLast = Hotkey{Keys: "Control+Command+V", Trigger: TriggerTap}
+	if !reflect.DeepEqual(f, wantCmd) || PresetOf(f) != PresetCommand {
+		t.Fatalf("command: %+v preset %q", f, PresetOf(f))
+	}
+	f = Defaults().Features
+	if !ApplyPreset(&f, PresetMouseMiddle) {
+		t.Fatal("mouse middle changed nothing")
+	}
+	wantMouse := Defaults().Features
+	wantMouse.Transcribe.Hotkeys = tap("Mouse3")
+	wantMouse.Translate.Hotkeys = tap("Fn+Shift")
+	wantMouse.Rewrite.Hotkeys = []Hotkey{{Keys: "Mouse3", Trigger: TriggerDouble}}
+	wantMouse.PasteLast = Hotkey{Keys: "Control+Command+V", Trigger: TriggerTap}
+	if !reflect.DeepEqual(f, wantMouse) || PresetOf(f) != PresetMouseMiddle {
+		t.Fatalf("mouse middle: %+v preset %q", f, PresetOf(f))
 	}
 }
 

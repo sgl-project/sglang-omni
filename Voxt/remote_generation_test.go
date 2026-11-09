@@ -8,8 +8,8 @@ import (
 )
 
 // TestRemoteGenerationSettings: a language model's dialog has Voxt 1.x's
-// generation settings for its service, the sampling ones only in the
-// folded Advanced; saved, they are in the setup and in the dialog again; a
+// generation settings for its service, the sampling ones and the extra
+// body JSON only in the folded Advanced (no Expert section); saved, they are in the setup and in the dialog again; a
 // field that is not a number, or JSON that is not an object, is refused
 // with what is wrong.
 func TestRemoteGenerationSettings(t *testing.T) {
@@ -20,16 +20,16 @@ func TestRemoteGenerationSettings(t *testing.T) {
 	frames(tt)
 	a.openProviderDialog(local.LLM, llm.Custom) // its card is below the fold
 	frames(tt)
-	for _, s := range []string{"Generation settings", "Think", "Max output tokens (optional)", "Verbosity", "Advanced", "Expert"} {
+	for _, s := range []string{"Generation settings", "Think", "Max output tokens (optional)", "Verbosity", "Advanced"} {
 		if !has(tt, s) {
 			t.Errorf("no %q in the dialog", s)
 		}
 	}
-	if has(tt, "Temperature") || has(tt, "Top P") {
-		t.Errorf("sampling fields outside the folded Advanced: %q", tt.Texts())
+	if has(tt, "Temperature") || has(tt, "Top P") || has(tt, "Extra Body JSON") || has(tt, "Expert") {
+		t.Errorf("sampling or JSON fields outside the folded Advanced, or an Expert section: %q", tt.Texts())
 	}
 	click(t, tt, "Advanced")
-	if !has(tt, "Temperature") || !has(tt, "Top P") {
+	if !has(tt, "Temperature") || !has(tt, "Top P") || !has(tt, "Extra Body JSON") {
 		t.Errorf("Advanced open: %q", tt.Texts())
 	}
 	d := &a.provDlg
