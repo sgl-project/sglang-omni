@@ -578,7 +578,10 @@
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#dflash-speculative-decoding">DFlash speculative decoding</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#dflash-speculative-decoding">DFlash speculative decoding</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#per-request-plain-fallback">Per-request plain fallback</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#transcribe-audio">Transcribe Audio</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stream-transcription">Stream Transcription</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#live-pcm-transcription">Live PCM transcription</a></li>
@@ -763,6 +766,17 @@ for results measured on an earlier release.</p>
 <p>Send the form field <code class="docutils literal notranslate"><span class="pre">return_spec_tokens_details=true</span></code> to get <code class="docutils literal notranslate"><span class="pre">sglext.spec_tokens_details</span></code> (<code class="docutils literal notranslate"><span class="pre">spec_accept_length</span></code>, <code class="docutils literal notranslate"><span class="pre">spec_accept_rate</span></code>, the draft counts and the per-verify histogram) on <code class="docutils literal notranslate"><span class="pre">json</span></code> and <code class="docutils literal notranslate"><span class="pre">verbose_json</span></code> responses and on the streamed <code class="docutils literal notranslate"><span class="pre">transcript.text.done</span></code> event. Audio long enough to be transcribed in chunks returns none. <code class="docutils literal notranslate"><span class="pre">spec_accept_rate</span></code> and <code class="docutils literal notranslate"><span class="pre">spec_num_proposed_drafts</span></code> are left out when no drafts were proposed or the draft width is adaptive.</p>
 <p>Realtime transcription sessions (<code class="docutils literal notranslate"><span class="pre">--enable-realtime</span></code>) use the draft too. On one H100 at the default memory fraction and cap of 64 running requests, SeedTTS English and Chinese clips and 60-second LongLibriHeavy recordings streamed at wall-clock pace, 1 to 16 sessions at a time, with server VAD or manual commit. No session hit an error or a protocol violation, WER stayed within 0.03 percentage points of the server without the draft, and the median time to a segment’s first partial was 11 to 28% lower with the synchronous draft, least at a 1000 ms decode interval, and to its final transcript 17 to 27% lower. Overlap, now the default, gave the same transcripts and median latencies as the synchronous draft on SeedTTS English sessions with server VAD, 1 and 16 at a time, with no errors or protocol violations.</p>
 <p>The draft’s weights and KV cache come out of the stage’s memory fraction. On an 80 GB H100 at <code class="docutils literal notranslate"><span class="pre">--mem-fraction-static</span> <span class="pre">0.08</span></code>, as in the streaming cascade profiles, the KV cache holds 11,501 tokens with the draft and 20,705 without. At that fraction, 640 SeedTTS Chinese sessions, 16 at a time, ran with no errors.</p>
+<section id="per-request-plain-fallback">
+<h3>Per-request plain fallback<a class="headerlink" href="#per-request-plain-fallback" title="Link to this heading">#</a></h3>
+<p>Set <code class="docutils literal notranslate"><span class="pre">asr.factory.enable_plain_fallback</span></code> to route requests that DFlash cannot serve through ordinary decoding. For example, <code class="docutils literal notranslate"><span class="pre">repetition_penalty=1.2</span></code> uses ordinary decoding, and supported sampling temperatures can still use DFlash. Requests that fit the target context but leave too little room for draft KV also use ordinary decoding.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--config<span class="w"> </span>examples/configs/qwen3_asr_1_7b_plain_fallback.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>This option requires synchronous DFlash on one CUDA GPU, with prefill CUDA graphs, mixed chunks, and DP attention disabled. Decode CUDA graphs and radix caching can stay enabled. Both paths share the target model and KV pool, and each path caches its prefixes separately.</p>
+<p>When both paths have work, the scheduler gives speculative batches one to two turns per plain turn, according to their live request counts. This reduces the cost of sparse fallback traffic on speculative requests, but increases latency for plain requests. The two-turn cap prevents plain requests from starving; it does not bound wall-clock waiting time because forward durations vary. Fallback requires synchronous decoding, while Qwen3-ASR DFlash on its own overlaps draft execution by default, so even 0% fallback can cost throughput relative to the default DFlash server. Benchmark both request cohorts before enabling this option.</p>
+</section>
 </section>
 <section id="transcribe-audio">
 <h2>Transcribe Audio<a class="headerlink" href="#transcribe-audio" title="Link to this heading">#</a></h2>
@@ -1293,7 +1307,10 @@ native and whole-upload requests at 60 seconds.</p></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#dflash-speculative-decoding">DFlash speculative decoding</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#dflash-speculative-decoding">DFlash speculative decoding</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#per-request-plain-fallback">Per-request plain fallback</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#transcribe-audio">Transcribe Audio</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stream-transcription">Stream Transcription</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#live-pcm-transcription">Live PCM transcription</a></li>

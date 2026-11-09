@@ -584,6 +584,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#sending-requests">Sending Requests</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#request-parameters">Request Parameters</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#speculative-decoding">Speculative Decoding</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#per-request-plain-fallback">Per-request plain fallback</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmarking">Benchmarking</a></li>
@@ -1003,6 +1004,17 @@ ready without it.</p>
 </div>
 <p>Neither mode is slower than the server without a draft at any load measured, and CER and DER do not change.</p>
 </section>
+<section id="per-request-plain-fallback">
+<h3>Per-request plain fallback<a class="headerlink" href="#per-request-plain-fallback" title="Link to this heading">#</a></h3>
+<p>Set <code class="docutils literal notranslate"><span class="pre">asr.factory.enable_plain_fallback</span></code> to route requests with unsupported sampling options, such as <code class="docutils literal notranslate"><span class="pre">repetition_penalty=1.2</span></code>, through ordinary decoding. Requests that fit the target context but leave too little room for draft KV also use ordinary decoding.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--config<span class="w"> </span>examples/configs/moss_td_plain_fallback.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>The <a class="reference internal" href="qwen3_asr.html#per-request-plain-fallback"><span class="std std-ref">Qwen3-ASR fallback restrictions</span></a> also apply to MOSS-TD.</p>
+<p>When both paths have work, the scheduler gives speculative batches one to two turns per plain turn, according to their live request counts. This reduces the cost of sparse fallback traffic on speculative requests, but increases latency for plain requests. The two-turn cap prevents plain requests from starving; it does not bound wall-clock waiting time because forward durations vary. Fallback requires synchronous decoding, while Qwen3-ASR DFlash on its own overlaps draft execution by default, so even 0% fallback can cost throughput relative to the default DFlash server. Benchmark both request cohorts before enabling this option.</p>
+</section>
 </section>
 <section id="benchmarking">
 <h2>Benchmarking<a class="headerlink" href="#benchmarking" title="Link to this heading">#</a></h2>
@@ -1227,6 +1239,7 @@ pass every worker serve URL with a comma-separated <code class="docutils literal
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#sending-requests">Sending Requests</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#request-parameters">Request Parameters</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#speculative-decoding">Speculative Decoding</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#per-request-plain-fallback">Per-request plain fallback</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmarking">Benchmarking</a></li>
