@@ -81,6 +81,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Your rules is one long field, no scroll bar of its own**: the rules field grows with the whole prompt, so a long prompt reads down the page under one scroll bar; the page follows the cursor as you type or move it, and Find scrolls the page to the match.
 - **Transcribe, Translate and Rewrite in a wide window read in two columns**: shortcuts and models on the left, the feature's own settings, answer card, rules and Try it on the right, so the page fills a wide window instead of a long column in the middle of blank space.
 - **A copy pass over the English text**: about 45 strings that read as translated now read as plain English: a "test" instead of a "try" in the setup guide, "Voxt does not have microphone access" instead of "Voxt may not use the microphone", "frontmost app" instead of "the app in front", "Group prompt" instead of "Scene prompt", "Cancel recording" instead of "Cancel transcription" (it cancels Translate and Rewrite too), "Import from Voxt 1.x" instead of "the previous Voxt", "Model ID", "Thinking". The three American spellings left in a British-spelled app (Recognizing, Optimize, optimization) follow the rest. The Chinese text keeps its wording.
+- **Language model debug page** (command palette, or the bottom of the Language models page), as Voxt 1.x's LLM debug window: choose a language model you set up and a request (Transcribe, Translate, Rewrite or an App enhancement group), edit its prompt there without saving, type the text, and Run shows the answer, its time and every message sent. Use this prompt saves the edit as the feature's rules or the group's prompt.
 
 ### 中文
 
@@ -161,6 +162,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **“你的规则”不再有自己的滚动条**：规则框随整段提示词长高，长提示词顺着页面往下读，只有页面一个滚动条；打字或移动光标时页面跟着光标走，查找时页面滚到匹配处。
 - **宽窗口里转录、翻译、转写页分两栏**：左边是快捷键和模型，右边是功能自己的设置、答案卡片、规则和试一试，页面铺满宽窗口，不再是空白中间一条长长的单栏。
 - **英文文案过了一遍**：约 45 条读起来像翻译腔的英文改成了地道的说法，例如设置引导里的 “try” 改成 “test”，“Voxt may not use the microphone” 改成 “Voxt does not have microphone access”，“the app in front” 改成 “frontmost app”，“Scene prompt” 改成 “Group prompt”，“Cancel transcription” 改成 “Cancel recording”（它也取消翻译和转写），“the previous Voxt” 改成 “Voxt 1.x”。英文整体用英式拼写，剩下的三处美式拼写也改了过来。中文文案只把“场景提示词”改成“分组提示词”，和英文一致。
+- **语言模型调试页**（命令面板，或语言模型页底部），对应 1.x 的语言模型调试窗口：选一个已设置的语言模型和一个请求（转录、翻译、转写或某个应用增强分组），在页内改提示词、不保存，输入文字后点“运行”，显示回答、用时和发出的全部消息。“使用这个提示词”把改动存成该功能的规则或分组提示词。
 
 ## [2.0.1] - 2026-11-07
 

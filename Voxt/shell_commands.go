@@ -53,6 +53,7 @@ func (a *app) commands() []command {
 	if a.upd != nil {
 		add("check-updates", view, i18n.T("Check for Updates…"), "Check for Updates", "", true, a.checkForUpdates)
 	}
+	add("llm-debug", view, i18n.T("Language model debug"), "Language model debug prompts", "", true, func() { a.navigate(llmDebugPath) })
 	add("setup-guide", view, i18n.T("Open the setup guide"), "Open the setup guide onboarding", "", true, a.openOnboarding)
 
 	look := i18n.T("Appearance")
