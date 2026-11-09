@@ -49,6 +49,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Language models sample with the service's defaults**, as in Voxt 1.x: Voxt no longer sends its own temperature (0.1 for clean-up, 0.2 for Translate, 0.5 for Rewrite), for every service. Temperature, Top P, Top K, Min P and the penalties are all in the service dialog's Advanced section, folded by default; an empty field reads "Service default" and sends nothing. Values you set before are kept and still sent. Reasoning models that accept only their default temperature no longer refuse the first request of each dictation.
 - **An ⓘ opens on a click**: clicking an ⓘ shows its tip and keeps it until you click elsewhere or press Esc; resting the pointer on it shows the tip as before.
 - **The rules field grows with your prompt, and ⌘F finds in it** (Transcribe, Translate, Rewrite → Your rules): the field is as high as its text, up to about 36 lines, before it scrolls. ⌘F on a feature page opens Your rules with Find in the prompt: it counts the matches, ignoring case, shows them in the accent colour, and Return goes to the next one.
+- **Rewrite answers questions about the selection**: select text and say "explain this" or "what does this mean", and the built-in prompt has the model answer in the card, in the language you spoke, instead of rewriting the text. Your own full prompt (Rewrite → Your rules) is sent as you wrote it.
 
 ### Fixed
 
@@ -102,6 +103,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **语言模型的采样用服务自己的默认值**，和 Voxt 1.x 一样：所有服务上，Voxt 都不再自己发温度（之前清理 0.1、翻译 0.2、转写 0.5）。温度、Top P、Top K、Min P 和几种惩罚项都放进服务对话框里默认折叠的“高级”；留空的输入框写着“服务默认”，什么也不发。之前填过的值保留，照常发送。只接受默认温度的推理模型，不会再在每次听写的第一个请求就拒绝。
 - **点一下 ⓘ 就能看说明**：点 ⓘ 显示它的提示，直到点别处或按 Esc 才收起；鼠标停在上面照旧显示。
 - **规则框跟着提示词变高，⌘F 可以在里面查找**（转录、翻译、转写 → 你的规则）：输入框随内容增高，大约 36 行以后才在框内滚动。在功能页按 ⌘F 会展开“你的规则”并聚焦“在提示词里查找”：显示有几处（不分大小写），匹配处用强调色标出，按回车跳到下一处。
+- **转写能回答关于选中文字的问题**：选中文字后说“解释一下这段”“这是什么意思”，内置提示词会让模型用你说话的语言在卡片里回答，而不是改写原文。你自己写的完整提示词（转写 → 你的规则）照原样发送。
 
 #### 修复
 
