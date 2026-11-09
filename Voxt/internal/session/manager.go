@@ -59,6 +59,7 @@ func New(cfg Config) *Manager {
 	def(&cfg.LLMTimeout, DefaultLLMTimeout)
 	def(&cfg.WriteTimeout, DefaultWriteTimeout)
 	def(&cfg.ReadTimeout, DefaultReadTimeout)
+	def(&cfg.RewriteReadTimeout, DefaultRewriteReadTimeout)
 	def(&cfg.DeliverTime, DefaultDeliverTimeout)
 	def(&cfg.StopGrace, DefaultStopGrace)
 	def(&cfg.EndWordPause, DefaultEndWordPause)

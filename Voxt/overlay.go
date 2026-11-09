@@ -93,8 +93,11 @@ type overlayState struct {
 		// style is the material's shape last given to the window.
 		style mygo.VibrancyStyle
 		// passThrough: the window lets the pointer through (recording and
-		// working: nothing in it takes a click).
+		// working: nothing in it takes a click), but not while the live
+		// text in lines overflows (liveLinesOverflow): the wheel scrolls it.
 		passThrough bool
+		// lines is the scroll of the live text in lines (liveLines).
+		lines linesScroll
 		// reveal: the window was just shown transparent; the next build of
 		// its view (the new face's) makes it opaque, so that no frame of
 		// the last face shows.
@@ -160,7 +163,7 @@ func (a *app) overlayModeNow() overlayMode {
 	switch {
 	case card && a.answer.inserting:
 		return ovHidden // Insert pastes: the card comes back if it could not (Voxt's)
-	case card:
+	case card, live && a.writingAnswer():
 		return ovAnswer
 	case live && s.State == session.Recording:
 		return ovRecording
@@ -211,7 +214,7 @@ func (a *app) overlaySync() {
 	if a.ov.epoch.IsZero() {
 		a.ov.epoch = time.Now()
 	}
-	pass := mode == ovRecording || mode == ovWorking
+	pass := (mode == ovRecording || mode == ovWorking) && !a.liveLinesOverflow()
 	defer a.syncLangMenu() // overlay_lang.go: the language menu follows the card
 	if !a.overlayNative() {
 		a.ov.passThrough = pass

@@ -54,12 +54,22 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Clean-up drops rambling repeats out of the box**: the clean-up's example now also repeats a phrase and keeps it once, so the same words or point said again right away ("I need it before five, I really need it before five") come out once, with fillers and self-corrections as before.
 - **The setup guide shows where the shortcut's keys are**: under the shortcut on the Transcribe, Translate and Rewrite steps, the two bottom rows of a Mac keyboard light up the keys to press, so Right ⌥ is the Option key right of the space bar.
 - **Pages sit in the middle of a wide window**: in full screen or a wide window, Home, Transcribe, Translate, Rewrite, Speech models and Language models keep their column of content in the middle of the page, with the title and the page's buttons lined up with it, instead of hugging the left with the buttons at the far edge.
+- **The live text stays while the language model works**: after you stop, the overlay keeps the words it showed while you spoke (Rewrite's instruction too) until the result is typed or shows in the card; it no longer drops to a bare loader. The model's draft still does not replay there.
+- **Rewrite's answer writes into the card**: once the model starts answering, the overlay turns into the answer card at its full height and the answer appears in it as it is written, instead of a loader until the whole answer is in. Close stops it. With Show live text off, the card comes when the answer is done, as before.
+- **Scroll back through live text in lines**: when the live text is longer than the overlay's ten lines, the overlay takes the wheel: scroll up to read what you said before, and new words leave it there; scroll back to the end and it follows the newest words again.
+- **Extra Body JSON is in Advanced**: the language model dialog has no Expert section any more; Extra Body JSON (and Ollama's Options JSON) are at the end of the folded Advanced section, with the other request settings.
+- **History, Dictionary, Notes and App enhancement in a wide window**: in full screen or a wide window these pages keep their lists and panes up to 1120 points wide in the middle, with the title and buttons lined up with them; Logs still uses the whole width.
 
 ### Fixed
 
 - **⌘W closes the window.** With "Keep running when the window closes" on (the default), Voxt stays in the menu bar and its shortcuts keep working, as the red × does; only ⌘Q quits. The Window menu had no Close Window item before.
 - **Dictation types into Voxt's own window again**, as in Voxt 1.x: with the cursor in a field of Voxt (a feature's Your rules, say), the shortcut records as in any other app, with the overlay, and the text goes into that field. Before, the shortcut on Home or a feature's page started a try on the page (no overlay; the result showed in its Try it area), and on other pages the result went to the answer card.
 - **Scrolling past Your rules keeps scrolling the page**: a scroll that starts on the page goes on when the rules field comes under the pointer; only a scroll that starts over the field scrolls the field, as elsewhere on macOS. A long prompt also opens at its start, not its end.
+- **Rewrite takes long selections**: Rewrite reads the selection while you speak and now gives it up to 6 seconds (and a copy 1.5 seconds) instead of 1.5, so a long selection in a web editor is no longer missed, with the answer then written from your instruction alone.
+
+### Fixed
+
+- **Browser text boxes (GitHub and similar)** stop showing "The text did not land where you were typing" when ⌘V actually worked: Chromium-style web editors often report the same Accessibility value after a paste, so the check treats an unchanged web area or contenteditable reading as unverified instead of failed (#3644 FB36).
 
 ### 中文
 
@@ -113,12 +123,22 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **清理默认去掉车轱辘话**：清理的示例里加了一句重复的话、只保留一次，所以紧接着又说一遍的同样词句或同一个意思（“今天下班前一定要发，就是说今天下班前一定要发出去”）只留一次；语气词和改口照旧去掉。
 - **设置引导画出快捷键在键盘上的位置**：转录、翻译、转写这几步的快捷键下面，画着 Mac 键盘最下面两排，要按的键亮起，比如“右 ⌥”就是空格键右边的 Option 键。
 - **宽窗口里页面居中**：全屏或窗口很宽时，首页、转录、翻译、转写、语音模型和语言模型的内容栏放在页面中间，标题和页面按钮跟内容对齐，不再贴着左边、按钮却在最右边。
+- **语言模型处理时实时文字留在浮窗里**：停止录音后，浮窗保留说话时显示的文字（转写的指令也是），直到结果输入进去或出现在卡片里，不再只剩一个加载动画。模型写的草稿仍然不在浮窗里回放。
+- **转写的回答直接写进卡片**：模型一开始回答，浮窗就变成满高的答案卡片，回答边写边出现在里面，不再一直转圈等整段写完。点关闭会停止。关掉“显示实时文字”时，和以前一样写完才出卡片。
+- **多行实时文字可以往回翻**：实时文字超过浮窗的十行时，浮窗接收滚轮，可以往上翻看前面说的话，新的字不会把它拉回去；滚回底部就重新跟着最新的字。
+- **额外请求体 JSON 放进了“高级”**：语言模型对话框不再有“专家”一节，额外请求体 JSON（以及 Ollama 的 Options JSON）放在默认折叠的“高级”最后，和其他请求设置在一起。
+- **宽窗口里历史、词典、笔记和应用增强也居中**：全屏或窗口很宽时，这几页的列表和面板最宽 1120 点、放在中间，标题和按钮跟着对齐；日志页仍然占满宽度。
 
 #### 修复
 
 - **⌘W 关闭窗口。** 开着“关闭窗口后继续运行”（默认开）时，Voxt 留在菜单栏里，快捷键照常可用，和红色 × 一样；只有 ⌘Q 退出。之前窗口菜单里没有“关闭窗口”。
 - **在 Voxt 自己的窗口里听写，文字又能输进去了**，和 Voxt 1.x 一样：光标在 Voxt 的输入框里（比如功能页的“你的规则”）时，按快捷键和在别的 app 里一样录音、显示浮窗，文字输入到这个框里。以前在首页和功能页上按快捷键会在页面里开始一次试一试（没有浮窗，结果显示在“试一试”区域），在其他页面上结果进了答案卡片。
 - **滚过“你的规则”时页面接着滚**：在页面上开始的滚动，规则框移到指针下面时页面照样往下滚；只有在规则框里开始的滚动才滚规则框，和 macOS 别处一样。长提示词展开时也从开头显示，不再停在结尾。
+- **转写能处理长选段**：转写边录音边读选中的文字，读取时限从 1.5 秒放宽到 6 秒（复制兜底 1.5 秒），网页编辑器里的长选段不会再读不到、只按指令写。
+
+#### 修复
+
+- **浏览器输入框（GitHub 等）**：⌘V 已经粘进输入框时，不再误报“文字没有出现在输入位置”。Chromium 类网页编辑器常在粘贴后仍让无障碍读到相同长度；网页区域或 contenteditable 里若对比结果不变，按“无法校验”处理，仍算插入（#3644 FB36）。
 
 ## [2.0.1] - 2026-11-07
 

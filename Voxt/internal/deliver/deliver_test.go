@@ -231,6 +231,9 @@ func TestInsertChecked(t *testing.T) {
 			reason: ReasonUnconfirmed, diag: "check unchanged after 1000 ms (AXTextArea: value 12 → value 12), the clipboard keeps the text, auto key skipped"},
 		{name: "unchanged, secure input on", paste: proto.PasteResult{Posted: true, Check: proto.CheckUnchanged, CheckMS: 1000, Field: field, Kept: true, SecureInput: terminal},
 			reason: ReasonSecureInput, diag: "secure input on (Terminal, pid 1702)"},
+		{name: "unchanged web area", paste: proto.PasteResult{Posted: true, Restored: true, Check: proto.CheckUnchanged, CheckMS: 1000,
+			Field: &proto.PasteField{Role: "AXWebArea", Before: &proto.FieldState{Length: 0, Marker: true}, After: &proto.FieldState{Length: 0, Marker: true}}},
+			inserted: true, diag: "check unchanged after 1000 ms (AXWebArea: value 0, marker → value 0, marker), clipboard restored"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			io := &fakeIO{focus: []proto.FocusResult{area}, paste: tc.paste}

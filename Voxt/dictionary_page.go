@@ -148,7 +148,7 @@ func (a *app) dictionaryPage(c *ui.Context) {
 		a.loadDict()
 	}
 	scanModel, canScan := a.scanModel()
-	pageHeader(c, i18n.T("Dictionary"), func() {
+	widePageHeader(c, i18n.T("Dictionary"), func() {
 		if d.total > 0 {
 			caption(c, i18n.N(d.total, "%d term", "%d terms", d.total)).SingleLine()
 		}
@@ -183,46 +183,48 @@ func (a *app) dictionaryPage(c *ui.Context) {
 			a.openTerm(store.Term{Enabled: true})
 		}
 	})
-	ui.Column(c).Padding(px(t, sp1), px(t, sp6), px(t, sp2)).Gap(px(t, sp2)).Shrink(0).Children(func() {
-		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
-			if searchField(c, "dict-search", &d.query, i18n.T("Search terms"), px(t, 320)).Label(i18n.T("Search the dictionary")).Changed() {
-				a.loadDict()
-			}
-			a.dictSwitches(c)
-		})
-		if !canScan {
-			ui.Row(c).Gap(px(t, sp1)).AlignItems(ui.Center).Children(func() {
-				caption(c, i18n.T("Choose a language model for Transcribe first")).SingleLine().MinWidth(0).Shrink(1)
-				if ghostButton(c.Key("dict-scan-model"), i18n.T("Open Transcribe")).Clicked() {
-					a.navigate("/transcribe")
-				}
-			})
-		}
-		a.dictGuide(c)
-		if !a.prefs.Dictionary.Enabled {
-			notice(c, "dict-off", noticeInfo, i18n.T("The dictionary is off: its terms go nowhere."), "", nil, nil)
-		}
-		if d.err != "" {
-			notice(c, "dict-err", noticeError, i18n.T("Could not read the dictionary."), d.err, func() {
-				if ghostButton(c.Key("dict-retry"), i18n.T("Try again")).Clicked() {
+	pageBody(c).Children(func() {
+		ui.Column(c).Padding(px(t, sp1), px(t, sp6), px(t, sp2)).Gap(px(t, sp2)).Shrink(0).Children(func() {
+			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
+				if searchField(c, "dict-search", &d.query, i18n.T("Search terms"), px(t, 320)).Label(i18n.T("Search the dictionary")).Changed() {
 					a.loadDict()
 				}
-			}, nil)
-		}
-	})
-	a.suggestionsSection(c)
-	list := d.list
-	ui.Column(c).Grow(1).MinHeight(0).Children(func() {
-		switch {
-		case !d.read:
-		case len(list) == 0:
-			a.dictEmpty(c)
-		default:
-			ui.List(c.Key("dict-list"), &d.listUI, len(list)).Grow(1).MinHeight(0).Gap(px(t, 2)).Padding(0, 0, px(t, sp4)).
-				ItemKey(func(i int) any { return list[i].ID }).Rows(func(r ui.ListRow) {
-				a.termRow(c, list[r.Index])
+				a.dictSwitches(c)
 			})
-		}
+			if !canScan {
+				ui.Row(c).Gap(px(t, sp1)).AlignItems(ui.Center).Children(func() {
+					caption(c, i18n.T("Choose a language model for Transcribe first")).SingleLine().MinWidth(0).Shrink(1)
+					if ghostButton(c.Key("dict-scan-model"), i18n.T("Open Transcribe")).Clicked() {
+						a.navigate("/transcribe")
+					}
+				})
+			}
+			a.dictGuide(c)
+			if !a.prefs.Dictionary.Enabled {
+				notice(c, "dict-off", noticeInfo, i18n.T("The dictionary is off: its terms go nowhere."), "", nil, nil)
+			}
+			if d.err != "" {
+				notice(c, "dict-err", noticeError, i18n.T("Could not read the dictionary."), d.err, func() {
+					if ghostButton(c.Key("dict-retry"), i18n.T("Try again")).Clicked() {
+						a.loadDict()
+					}
+				}, nil)
+			}
+		})
+		a.suggestionsSection(c)
+		list := d.list
+		ui.Column(c).Grow(1).MinHeight(0).Children(func() {
+			switch {
+			case !d.read:
+			case len(list) == 0:
+				a.dictEmpty(c)
+			default:
+				ui.List(c.Key("dict-list"), &d.listUI, len(list)).Grow(1).MinHeight(0).Gap(px(t, 2)).Padding(0, 0, px(t, sp4)).
+					ItemKey(func(i int) any { return list[i].ID }).Rows(func(r ui.ListRow) {
+					a.termRow(c, list[r.Index])
+				})
+			}
+		})
 	})
 	a.termDialog(c)
 	a.scanDialog(c)
