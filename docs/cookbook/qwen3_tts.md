@@ -213,13 +213,3 @@ Rare repetition loops can continue until the generation limit. Base applies a te
 - [Platform deployment](qwen3_tts/platforms.md): Ascend NPU and native Apple Silicon, with links to other installation guides.
 
 - [Benchmarks](qwen3_tts/benchmarks.md): reproduce evaluations and inspect results with their hardware and sampling conditions.
-
-```{toctree}
-:hidden:
-:maxdepth: 1
-
-qwen3_tts/tuning
-qwen3_tts/reference
-qwen3_tts/platforms
-qwen3_tts/benchmarks
-```

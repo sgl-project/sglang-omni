@@ -1,3 +1,7 @@
+---
+orphan: true
+---
+
 # Qwen3-TTS Platform Deployment
 
 [Back to the Qwen3-TTS quick start](../qwen3_tts.md).
