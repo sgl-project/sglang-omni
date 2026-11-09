@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""A bounded GPU cache of the int4 routed experts, the rest in pinned host memory.
+"""A bounded GPU cache of routed experts, the rest in pinned host memory.
 
 Each MoE layer keeps S expert slots on the GPU, refilled by least recent use inside
-the decode CUDA graph, and Marlin reads them by slot id. A prefill gathers its
-routed experts into one shared full-width scratch layer and leaves the cache alone.
+the decode CUDA graph, and the expert kernel reads them by slot id. A prefill gathers
+its routed experts into one shared full-width scratch layer and leaves the cache
+alone. The cache moves whichever per-expert tensors a layer hands it, so int4 Marlin
+and bf16 Triton experts share it.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from sglang_omni.models.fishaudio_drama3.expert_cache_kernels import (
     triton,
 )
 
-# The Marlin tensors one expert owns; its qzeros and g_idx are empty or unread.
+# The int4 Marlin tensors one expert owns; its qzeros and g_idx are empty or unread.
 EXPERT_TENSOR_NAMES = ("w13_qweight", "w2_qweight", "w13_scales", "w2_scales")
 COPY_BLOCK_WORDS = 4096
 KERNEL_WARPS = 8
@@ -38,6 +40,7 @@ STATISTIC_COUNT = 3
 __all__ = [
     "EXPERT_TENSOR_NAMES",
     "CacheMode",
+    "CachedExperts",
     "ExpertCacheStatistics",
     "LayerExpertCache",
     "MarlinInputs",
@@ -68,6 +71,13 @@ class ExpertCacheStatistics:
             return 1.0 - self.decode_misses / self.lookups
 
 
+class CachedExperts(NamedTuple):
+    """The expert tensors the kernel reads and the routing it reads them with."""
+
+    topk_output: StandardTopKOutput
+    weights: dict[str, torch.Tensor]
+
+
 class MarlinInputs(NamedTuple):
     dispatch_output: StandardDispatchOutput
     quant_info: MarlinMoeQuantInfo
@@ -84,8 +94,7 @@ def pinned_host_copy(
 ) -> dict[str, torch.Tensor]:
     """The layer's expert tensors copied into pinned host memory."""
     host_weights = {}
-    for name in EXPERT_TENSOR_NAMES:
-        weight = expert_weights[name]
+    for name, weight in expert_weights.items():
         host_weight = torch.empty(
             weight.shape, dtype=weight.dtype, device="cpu", pin_memory=True
         )
@@ -105,12 +114,13 @@ class LayerExpertCache:
         device: torch.device,
     ) -> None:
         self.shared_cache = shared_cache
-        self.expert_count = int(host_weights[EXPERT_TENSOR_NAMES[0]].shape[0])
+        self.tensor_names = tuple(host_weights)
+        self.expert_count = int(host_weights[self.tensor_names[0]].shape[0])
         self.slot_count = slot_count
         self.host_weights = host_weights
         self.slot_weights = {
             name: host_weights[name][:slot_count].to(device)
-            for name in EXPERT_TENSOR_NAMES
+            for name in self.tensor_names
         }
         self.expert_to_slot = torch.full(
             (self.expert_count,), -1, dtype=torch.int32, device=device
@@ -142,26 +152,19 @@ class LayerExpertCache:
         is_k_full: bool,
     ) -> MarlinInputs:
         """The Marlin call over cached experts that stands in for the full layer's."""
-        topk_output = dispatch_output.topk_output
-        assert type(topk_output) is StandardTopKOutput
         if self.shared_cache.mode == CacheMode.DECODE:
-            weights = self.slot_weights
             g_idx = self.empty_g_idx
-            dispatch_output = StandardDispatchOutput(
+        else:
+            g_idx = self.shared_cache.empty_g_idx
+        cached_experts = self.cached_experts(dispatch_output.topk_output)
+        weights = cached_experts.weights
+        return MarlinInputs(
+            dispatch_output=StandardDispatchOutput(
                 hidden_states=dispatch_output.hidden_states,
                 hidden_states_scale=dispatch_output.hidden_states_scale,
-                topk_output=StandardTopKOutput(
-                    topk_weights=topk_output.topk_weights,
-                    topk_ids=self.decode_slot_ids(topk_output.topk_ids),
-                    router_logits=topk_output.router_logits,
-                ),
+                topk_output=cached_experts.topk_output,
                 hidden_states_pre_quant=dispatch_output.hidden_states_pre_quant,
-            )
-        else:
-            weights = self.gather_prefill(topk_output.topk_ids)
-            g_idx = self.shared_cache.empty_g_idx
-        return MarlinInputs(
-            dispatch_output=dispatch_output,
+            ),
             quant_info=MarlinMoeQuantInfo(
                 w13_qweight=weights["w13_qweight"],
                 w2_qweight=weights["w2_qweight"],
@@ -175,6 +178,25 @@ class LayerExpertCache:
                 is_k_full=is_k_full,
             ),
         )
+
+    def cached_experts(self, topk_output: StandardTopKOutput) -> CachedExperts:
+        """Decode reads the slots by slot id; a prefill reads the scratch layer by
+        expert id."""
+        assert type(topk_output) is StandardTopKOutput
+        if self.shared_cache.mode == CacheMode.DECODE:
+            return CachedExperts(
+                topk_output=StandardTopKOutput(
+                    topk_weights=topk_output.topk_weights,
+                    topk_ids=self.decode_slot_ids(topk_output.topk_ids),
+                    router_logits=topk_output.router_logits,
+                ),
+                weights=self.slot_weights,
+            )
+        else:
+            return CachedExperts(
+                topk_output=topk_output,
+                weights=self.gather_prefill(topk_output.topk_ids),
+            )
 
     def decode_slot_ids(self, routed_experts: torch.Tensor) -> torch.Tensor:
         """Bring every routed expert into a slot; the routed ids in slot space."""
@@ -205,7 +227,7 @@ class LayerExpertCache:
         )
         # A step misses at most as many experts as it routes to.
         max_miss_count = min(routed_count, self.slot_count)
-        for name in EXPERT_TENSOR_NAMES:
+        for name in self.tensor_names:
             host_words = expert_words(self.host_weights[name])
             words_per_expert = host_words.shape[1]
             copy_missing_kernel[
@@ -232,7 +254,7 @@ class LayerExpertCache:
             is_needed & (self.expert_to_slot < 0)
         ).sum()
         scratch_weights = self.shared_cache.scratch_weights
-        for name in EXPERT_TENSOR_NAMES:
+        for name in self.tensor_names:
             host_words = expert_words(self.host_weights[name])
             words_per_expert = host_words.shape[1]
             gather_needed_kernel[
@@ -265,11 +287,11 @@ class RoutedExpertCache:
         if not HAS_TRITON:
             raise RuntimeError("the routed expert cache needs Triton")
         elif not layer_host_weights:
-            raise ValueError("the model has no int4 routed expert layers to cache")
+            raise ValueError("the model has no routed expert layers to cache")
         else:
             pass
         first_layer = layer_host_weights[0]
-        expert_count = int(first_layer[EXPERT_TENSOR_NAMES[0]].shape[0])
+        expert_count = int(next(iter(first_layer.values())).shape[0])
         if not 0 < slot_count <= expert_count:
             raise ValueError(
                 f"routed_expert_cache_slots={slot_count} must be in 1..{expert_count}"
@@ -281,15 +303,14 @@ class RoutedExpertCache:
         self.mode = CacheMode.PREFILL
         self.statistics = torch.zeros(STATISTIC_COUNT, dtype=torch.int64, device=device)
         self.scratch_weights = {
-            name: torch.empty_like(first_layer[name], device=device)
-            for name in EXPERT_TENSOR_NAMES
+            name: torch.empty_like(weight, device=device)
+            for name, weight in first_layer.items()
         }
         self.empty_g_idx = torch.empty(
             (expert_count, 0), dtype=torch.int32, device=device
         )
         self.bytes_per_expert = sum(
-            first_layer[name][0].numel() * first_layer[name].element_size()
-            for name in EXPERT_TENSOR_NAMES
+            weight[0].numel() * weight.element_size() for weight in first_layer.values()
         )
         self.layers = [
             LayerExpertCache(host_weights, self, slot_count, device)
