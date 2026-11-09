@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tuned fused-MoE Triton configs for the Drama 3 experts on H100.
 
-sglang ships no config for this expert shape (E=256, N=512, fp8_w8a8, 128x128
-blocks), so its kernel uses one BLOCK_SIZE_M=64 tile at every token count. At
-Drama 3 decode and prefill batch sizes each expert sees far fewer tokens than
-that, so most of the tile is padding. The configs choose kernel tiling only.
+sglang has no config for this expert shape, so its kernel runs one 64-row tile
+that is mostly padding at Drama 3 token counts. The configs choose tiling only.
 """
 
 from __future__ import annotations
@@ -18,11 +16,12 @@ logger = logging.getLogger(__name__)
 
 DEVICE_NAME = "NVIDIA H100 80GB HBM3"
 TRITON_VERSION = "3.8.0"
-# (E, N, dtype, block_n, block_k) as sglang's get_moe_configs receives them.
+# note (Wenyao Gao): (E, N, dtype, block_n, block_k) as sglang's get_moe_configs
+# receives them.
 EXPERT_SHAPE = (256, 512, "fp8_w8a8", 128, 128)
 
-# sglang's get_default_config for this shape, which does not depend on M; token
-# counts that were not tuned keep it.
+# note (Wenyao Gao): sglang's get_default_config for this shape, which does not
+# depend on M; token counts that were not tuned keep it.
 DEFAULT_CONFIG = {
     "BLOCK_SIZE_M": 64,
     "BLOCK_SIZE_N": 128,
@@ -33,10 +32,10 @@ DEFAULT_CONFIG = {
 }
 DEFAULT_TOKEN_COUNTS = (24, 32, 48, 64, 96, 128, 256, 512, 1024, 1536, 2048, 4096)
 
-# Tuned with sglang's benchmark/kernels/fused_moe_triton/tuning_fused_moe_triton.py
-# on one H100 80GB HBM3 under Triton 3.8.0. Keys are token counts M.
-# Decode runs one token per running request (up to 64 at concurrency 64); a prefill runs every
-# prompt token of its batch (about 200 at concurrency 16, 500 to 1,000 at concurrency 64).
+# note (Wenyao Gao): tuned with sglang's fused_moe_triton tuning script on one H100
+# 80GB HBM3 under Triton 3.8.0; keys are token counts M. Decode runs one token per
+# running request (up to 64 at concurrency 64); a prefill runs every prompt token of
+# its batch (about 200 at concurrency 16, 500 to 1,000 at concurrency 64).
 # BLOCK_SIZE_K stays 128 at every count, as in the default tile.
 
 
@@ -67,7 +66,7 @@ TUNED_CONFIGS: dict[int, dict[str, int]] = {
 }
 
 CONFIGS = {
-    **{m: DEFAULT_CONFIG for m in DEFAULT_TOKEN_COUNTS},
+    **{token_count: DEFAULT_CONFIG for token_count in DEFAULT_TOKEN_COUNTS},
     **TUNED_CONFIGS,
 }
 
@@ -105,22 +104,16 @@ def get_moe_configs(
 
 
 def install_tuned_moe_configs() -> None:
-    """Serve CONFIGS for the Drama 3 expert shape from sglang's config lookup.
-
-    Other shapes, other devices and other Triton versions keep sglang's lookup.
-    """
+    """Serve CONFIGS for the Drama 3 expert shape from sglang's config lookup; other
+    shapes, devices and Triton versions keep sglang's lookup."""
     device_name = fused_moe_triton_config.get_device_name()
-    if fused_moe_triton_config.get_moe_configs is get_moe_configs:
-        return
-    elif device_name != DEVICE_NAME or triton.__version__ != TRITON_VERSION:
+    if device_name != DEVICE_NAME or triton.__version__ != TRITON_VERSION:
         logger.info(
             f"Drama 3 fused MoE: no tuned configs for {device_name} "
             f"under Triton {triton.__version__}"
         )
-        return
     else:
-        pass
-    fused_moe_triton_config.get_moe_configs = get_moe_configs
-    logger.info(
-        f"Drama 3 fused MoE: tuned configs for token counts {sorted(TUNED_CONFIGS)}"
-    )
+        fused_moe_triton_config.get_moe_configs = get_moe_configs
+        logger.info(
+            f"Drama 3 fused MoE: tuned configs for token counts {sorted(TUNED_CONFIGS)}"
+        )

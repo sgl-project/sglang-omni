@@ -55,10 +55,9 @@ def extend_frame_history(request_data: Drama3RequestData) -> torch.Tensor:
     tensor the request builder kept, then any frames sampled before a retraction."""
     frame_rows = extend_frame_rows(request_data)
     prompt_frames = request_data.prompt_frames
+    assert prompt_frames is not None
     sampled_rows = frame_rows[request_data.prompt_row_count :]
-    if prompt_frames is None:
-        return torch.tensor(frame_rows, dtype=torch.int64)
-    elif not sampled_rows:
+    if not sampled_rows:
         return prompt_frames
     else:
         return torch.cat((prompt_frames, torch.tensor(sampled_rows, dtype=torch.int64)))

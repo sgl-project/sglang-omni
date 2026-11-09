@@ -17,9 +17,8 @@ from sglang_omni.models.fishaudio_drama3.sampling import (
 class Drama3StepInputs:
     """What one prefill forward needs besides the batch, staged by the model runner.
 
-    frames holds the input frame of every forward row and next_frames each row's
-    next frame, the tower prefill's label; the other tensors hold one entry per
-    request, in batch order.
+    frames holds every forward row's input frame and next_frames its next frame, the
+    tower prefill's label; the other tensors hold one entry per request, in order.
     """
 
     request_ids: list[str]
@@ -68,12 +67,9 @@ class Drama3SamplingRows:
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Drama3DecodeBuffers(Drama3SamplingRows):
-    """Decode inputs and sampled frames at fixed addresses, one row per batch slot.
-
-    A decode forward gathers its rows here from the state pool, so a padded graph
-    row holds the pool's dummy row 0. A prefill stages its requests' epsilon_cutoff
-    rows here too, where the first-frame step reads them.
-    """
+    """Decode inputs and sampled frames at fixed addresses, one row per batch slot; a
+    padded graph row gathers the pool's dummy row 0. A prefill stages its requests'
+    epsilon_cutoff rows here too, where the first-frame step reads them."""
 
     sampled_frames: torch.Tensor
 
@@ -88,10 +84,7 @@ class Drama3DecodeBuffers(Drama3SamplingRows):
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Drama3DecodeStatePool(Drama3SamplingRows):
     """Each request slot's newest frame, RAS window and sampling knobs, indexed by
-    req_pool_indices; row 0 is the dummy row every padded graph row points at.
-
-    A decode forward gathers and publishes its rows inside the decode CUDA graph.
-    """
+    req_pool_indices; row 0 is the dummy row every padded graph row points at."""
 
     @classmethod
     def allocate(
@@ -100,7 +93,6 @@ class Drama3DecodeStatePool(Drama3SamplingRows):
         return cls(**cls.greedy_rows(request_slot_count + 1, frame_width, device))
 
     def gather(self, request_slots: torch.Tensor, buffers: Drama3DecodeBuffers) -> None:
-        """Copy the slots' rows into the first rows of the decode buffers, in order."""
         row_count = request_slots.shape[0]
         for pooled, staged in (
             (self.frames, buffers.frames),
@@ -113,10 +105,8 @@ class Drama3DecodeStatePool(Drama3SamplingRows):
             torch.index_select(pooled, 0, request_slots, out=staged[:row_count])
 
     def publish(self, request_slots: torch.Tensor, frames: torch.Tensor) -> None:
-        """Make frames the slots' newest frames and slide their RAS windows.
-
-        The windows slide from the pool, not from the staged copy a forward read.
-        """
+        """Store frames as the slots' newest frames and slide their RAS windows from
+        the pool, not from the staged copy a forward read."""
         ras_windows = self.ras_windows.index_select(0, request_slots)
         self.frames.index_copy_(0, request_slots, frames)
         self.ras_windows.index_copy_(
