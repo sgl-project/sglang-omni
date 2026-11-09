@@ -359,7 +359,13 @@ type Config struct {
 	LLMTimeout    time.Duration // DefaultLLMTimeout
 	WriteTimeout  time.Duration // DefaultWriteTimeout
 	ReadTimeout   time.Duration // reading the selection; DefaultReadTimeout
-	DeliverTime   time.Duration // DefaultDeliverTimeout
+	// RewriteReadTimeout is Rewrite's: it reads the selection while the
+	// user speaks, so a long one (a page of a web editor read through
+	// Accessibility's text markers) may take longer without delaying
+	// anything (DefaultRewriteReadTimeout). Translate reads it before it
+	// knows whether to record.
+	RewriteReadTimeout time.Duration
+	DeliverTime        time.Duration // DefaultDeliverTimeout
 	// WaitNote is how long a recording waits for the microphone or the
 	// speech model before Snapshot.Waiting says so (DefaultWaitNote).
 	WaitNote time.Duration
@@ -386,10 +392,15 @@ const (
 	DefaultLLMTimeout     = 20 * time.Second
 	DefaultWriteTimeout   = 60 * time.Second
 	DefaultReadTimeout    = 1500 * time.Millisecond
-	DefaultDeliverTimeout = 5 * time.Second
-	DefaultStopGrace      = 3 * time.Second
-	DefaultWaitNote       = 400 * time.Millisecond
-	DefaultEndWordPause   = time.Second // Voxt 1.x's silence after the end word
+	// DefaultRewriteReadTimeout and rewriteCopyMS: a long selection's
+	// read, and its ⌘C landing on the clipboard (the helper's default
+	// 300 ms), in Rewrite (#3644: long selections failed).
+	DefaultRewriteReadTimeout = 6 * time.Second
+	rewriteCopyMS             = 1500
+	DefaultDeliverTimeout     = 5 * time.Second
+	DefaultStopGrace          = 3 * time.Second
+	DefaultWaitNote           = 400 * time.Millisecond
+	DefaultEndWordPause       = time.Second // Voxt 1.x's silence after the end word
 )
 
 // StartRequest starts a session.
