@@ -59,7 +59,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **The live text stays while the language model works**: after you stop, the overlay keeps the words it showed while you spoke (Rewrite's instruction too) until the result is typed or shows in the card; it no longer drops to a bare loader. The model's draft still does not replay there.
 - **Rewrite's answer writes into the card**: once the model starts answering, the overlay turns into the answer card at its full height and the answer appears in it as it is written, instead of a loader until the whole answer is in. Close stops it. With Show live text off, the card comes when the answer is done, as before.
 - **Scroll back through live text in lines**: when the live text is longer than the overlay's ten lines, the overlay takes the wheel: scroll up to read what you said before, and new words leave it there; scroll back to the end and it follows the newest words again.
-- **Extra Body JSON is in Advanced**: the language model dialog has no Expert section any more; Extra Body JSON (and Ollama's Options JSON) are at the end of the folded Advanced section, with the other request settings.
+- **One Request parameters object in Advanced**: the language model dialog has no Expert section any more; at the end of the folded Advanced section, one JSON object takes every custom request parameter, in place of Extra Body JSON and Ollama's separate Options JSON. It is applied to the request last as a JSON merge patch (RFC 7386): its keys win, an object merges into the one Voxt sends (Ollama's model options go in `"options"`), and `null` leaves a field out. A saved or imported Options JSON moves into it as `"options"`.
 - **History, Dictionary, Notes and App enhancement in a wide window**: in full screen or a wide window these pages keep their lists and panes up to 1120 points wide in the middle, with the title and buttons lined up with them; Logs still uses the whole width.
 
 ### Fixed
@@ -138,7 +138,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **语言模型处理时实时文字留在浮窗里**：停止录音后，浮窗保留说话时显示的文字（转写的指令也是），直到结果输入进去或出现在卡片里，不再只剩一个加载动画。模型写的草稿仍然不在浮窗里回放。
 - **转写的回答直接写进卡片**：模型一开始回答，浮窗就变成满高的答案卡片，回答边写边出现在里面，不再一直转圈等整段写完。点关闭会停止。关掉“显示实时文字”时，和以前一样写完才出卡片。
 - **多行实时文字可以往回翻**：实时文字超过浮窗的十行时，浮窗接收滚轮，可以往上翻看前面说的话，新的字不会把它拉回去；滚回底部就重新跟着最新的字。
-- **额外请求体 JSON 放进了“高级”**：语言模型对话框不再有“专家”一节，额外请求体 JSON（以及 Ollama 的 Options JSON）放在默认折叠的“高级”最后，和其他请求设置在一起。
+- **“高级”里只有一个“请求参数”对象**：语言模型对话框不再有“专家”一节；默认折叠的“高级”最后是一个 JSON 对象，所有自定义请求参数都写在这里，取代原来的额外请求体 JSON 和 Ollama 单独的 Options JSON。它按 JSON merge patch（RFC 7386）最后合并进请求：同名的键以这里为准，对象会并进 Voxt 发的同名对象（Ollama 的模型选项写在 `"options"` 里），写 `null` 就不发这个字段。已保存或从 1.x 导入的 Options JSON 会移进来，成为其中的 `"options"`。
 - **宽窗口里历史、词典、笔记和应用增强也居中**：全屏或窗口很宽时，这几页的列表和面板最宽 1120 点、放在中间，标题和按钮跟着对齐；日志页仍然占满宽度。
 
 #### 修复

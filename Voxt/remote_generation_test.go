@@ -25,11 +25,11 @@ func TestRemoteGenerationSettings(t *testing.T) {
 			t.Errorf("no %q in the dialog", s)
 		}
 	}
-	if has(tt, "Temperature") || has(tt, "Top P") || has(tt, "Extra Body JSON") || has(tt, "Expert") {
+	if has(tt, "Temperature") || has(tt, "Top P") || has(tt, "Request parameters") || has(tt, "Expert") {
 		t.Errorf("sampling or JSON fields outside the folded Advanced, or an Expert section: %q", tt.Texts())
 	}
 	click(t, tt, "Advanced")
-	if !has(tt, "Temperature") || !has(tt, "Top P") || !has(tt, "Extra Body JSON") {
+	if !has(tt, "Temperature") || !has(tt, "Top P") || !has(tt, "Request parameters") {
 		t.Errorf("Advanced open: %q", tt.Texts())
 	}
 	d := &a.provDlg
@@ -47,7 +47,7 @@ func TestRemoteGenerationSettings(t *testing.T) {
 	d.gen.temperature, d.gen.extraBody = "0", "[1]"
 	click(t, tt, "Save")
 	frames(tt)
-	if d.err != "Extra Body JSON is not a JSON object." {
+	if d.err != "The request parameters are not a JSON object." {
 		t.Fatalf("bad JSON: %q", d.err)
 	}
 	d.gen.extraBody = `{"user": "me"}`

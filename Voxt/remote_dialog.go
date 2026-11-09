@@ -219,10 +219,8 @@ func (d *providerDialog) check(p settings.Provider) (msg, more string) {
 		switch providers.CheckGeneration(p.Generation) {
 		case providers.ErrJSONSchema:
 			return i18n.T("The JSON schema is not a JSON object."), ""
-		case providers.ErrOptions:
-			return i18n.T("Options JSON is not a JSON object."), ""
 		case providers.ErrExtraBody:
-			return i18n.T("Extra Body JSON is not a JSON object."), ""
+			return i18n.T("The request parameters are not a JSON object."), ""
 		}
 	}
 	return "", ""

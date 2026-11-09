@@ -1227,8 +1227,6 @@
   "Budget tokens": "预算 Token 数",
   "Budget": "预算",
   "Effort": "推理强度",
-  "Extra Body JSON is not a JSON object.": "额外请求体 JSON 必须是一个 JSON 对象。",
-  "Extra Body JSON": "额外请求体 JSON",
   "Extra high": "超高",
   "Frequency penalty": "频率惩罚",
   "Generation settings": "生成设置",
@@ -1238,11 +1236,8 @@
   "Max output tokens (optional)": "最大输出 Token 数（可选）",
   "Max": "最高",
   "Medium": "中",
-  "Merged into Ollama's options, so its keys win.": "合并进 Ollama 的 options，同名的键以这里为准。",
-  "Merged into the request body after Voxt's own fields, so its keys win.": "合并进请求体，放在 Voxt 自己的字段之后，同名的键以这里为准。",
   "Minimal": "极低",
   "One stop sequence per line": "每行一个停止序列",
-  "Options JSON is not a JSON object.": "Options JSON 必须是一个 JSON 对象。",
   "Plain text": "纯文本",
   "Presence penalty": "存在惩罚",
   "Repetition penalty": "重复惩罚",
@@ -1419,5 +1414,8 @@
   "Pop when recording starts and Tink when it stops, as Voxt 1.x played them.": "开始录音时 Pop，停止时 Tink，和 Voxt 1.x 一样。",
   "The shortcut's keys, lit on a Mac keyboard": "快捷键的键在 Mac 键盘上的位置（亮起的键）",
   "Make the card larger": "放大卡片",
-  "Make the card smaller": "缩小卡片"
+  "Make the card smaller": "缩小卡片",
+  "Request parameters": "请求参数",
+  "The request parameters are not a JSON object.": "请求参数必须是一个 JSON 对象。",
+  "A JSON object merged into the request after Voxt's own fields: its keys win, an object merges into the one Voxt sends, and null leaves a field out.": "一个 JSON 对象，合并进请求，放在 Voxt 自己的字段之后：同名的键以这里为准，对象会并进 Voxt 发的同名对象，写 null 就不发这个字段。"
 }

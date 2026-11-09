@@ -68,7 +68,7 @@ func TestGenerationFields(t *testing.T) {
 	if b = bodyFor(t, "omlx", "m", Generation{IncludeUsage: ptr(false)}, Request{Messages: msgs("hi")}); b["stream_options"] != nil {
 		t.Errorf("omlx usage: %v", b["stream_options"])
 	}
-	if b = bodyFor(t, "ollama", "m", Generation{KeepAlive: "5m", Options: map[string]any{"num_ctx": 8192}}, Request{Messages: msgs("hi")}); b["keep_alive"] != "5m" || js(b["options"]) != `{"num_ctx":8192}` {
+	if b = bodyFor(t, "ollama", "m", Generation{KeepAlive: "5m", ExtraBody: map[string]any{"options": map[string]any{"num_ctx": 8192}, "keep_alive": nil}}, Request{Messages: msgs("hi")}); b["keep_alive"] != nil || js(b["options"]) != `{"num_ctx":8192}` {
 		t.Errorf("ollama: %s", js(b))
 	}
 }

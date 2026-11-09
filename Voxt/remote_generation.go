@@ -33,7 +33,7 @@ type genForm struct {
 	format, schema, stop            string // stop: one per line
 	verbosity, keepAlive            string
 	usage                           bool // oMLX: usage in stream events (on by default)
-	options, extraBody              string
+	extraBody                       string
 	advanced                        bool // the folding section, open
 }
 
@@ -122,7 +122,7 @@ func genFormOf(g settings.Generation) genForm {
 		logprobs: g.Logprobs, topLogprobs: numText(g.TopLogprobs),
 		format: formatTitle(g.ResponseFormat), schema: g.JSONSchema, stop: strings.Join(g.Stop, "\n"),
 		verbosity: verbosityTitle(g.Verbosity), keepAlive: g.KeepAlive, usage: g.IncludeUsage == nil || *g.IncludeUsage,
-		options: g.OptionsJSON, extraBody: g.ExtraBodyJSON,
+		extraBody: g.ExtraBodyJSON,
 	}
 	if g.ThinkingBudget > 0 {
 		f.budget = strconv.Itoa(g.ThinkingBudget)
@@ -211,7 +211,7 @@ func (f *genForm) settings() (g settings.Generation, bad string) {
 		off := false
 		g.IncludeUsage = &off
 	}
-	g.OptionsJSON, g.ExtraBodyJSON = strings.TrimSpace(f.options), strings.TrimSpace(f.extraBody)
+	g.ExtraBodyJSON = strings.TrimSpace(f.extraBody)
 	return g, bad
 }
 
@@ -346,13 +346,12 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 			})
 		}
 		if caps.ExtraBody {
-			fieldInfo(c, i18n.T("Extra Body JSON"), i18n.T("Merged into the request body after Voxt's own fields, so its keys win."), func() {
-				ui.TextArea(c.Key("gen-extra"), &f.extraBody).Label(i18n.T("Extra Body JSON")).Placeholder(`{"key": "value"}`).MinHeight(px(t, 72))
-			})
-		}
-		if caps.Options {
-			fieldInfo(c, "Options JSON", i18n.T("Merged into Ollama's options, so its keys win."), func() {
-				ui.TextArea(c.Key("gen-options"), &f.options).Label("Options JSON").Placeholder(`{"num_ctx": 8192}`).MinHeight(px(t, 72))
+			example := `{"user": "me"}`
+			if caps.KeepAlive { // note (luojiaxuan): Ollama, whose model options go in "options"
+				example = `{"options": {"num_ctx": 8192}}`
+			}
+			fieldInfo(c, i18n.T("Request parameters"), i18n.T("A JSON object merged into the request after Voxt's own fields: its keys win, an object merges into the one Voxt sends, and null leaves a field out."), func() {
+				ui.TextArea(c.Key("gen-extra"), &f.extraBody).Label(i18n.T("Request parameters")).Placeholder(example).MinHeight(px(t, 72))
 			})
 		}
 	})
