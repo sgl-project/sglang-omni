@@ -213,7 +213,7 @@ class EngineArgs(BaseModel):
         SGLang's own defaults stay in charge; free-form keys are always
         included because writing one is itself the intent. With
         disable_speculative_decoding set, the speculative_* keys are left out
-        whichever source wrote them. A draft pinned in the draft registry gets
+        whichever source wrote them. A separate draft pinned in the draft registry gets
         its pinned revision when this block has no speculative_draft_model_revision
         key, so a revision the block sets, None included, still wins.
         """
@@ -233,6 +233,7 @@ class EngineArgs(BaseModel):
                 draft.draft_model_revision
                 for draft in DRAFT_REGISTRY
                 if draft.draft_model_path == draft_model_path
+                and draft.draft_model_path != draft.model_path
             ),
             None,
         )

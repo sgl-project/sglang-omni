@@ -42,15 +42,18 @@ func (a *app) ovNow() ovStep {
 }
 
 // pillFrame is the window's frame for the pill at its anchor.
-func pillFrame(o settings.Overlay) mygo.Rectangle {
-	return layout.Frame(ovTestArea, o, layout.PillW, layout.PillH)
+func pillFrame(o settings.Overlay, faceW int) mygo.Rectangle {
+	if faceW <= 0 {
+		faceW = layout.PillW
+	}
+	return layout.Frame(ovTestArea, o, faceW, layout.PillH)
 }
 
 // anchored checks that frame f sits at o's anchor: centred, its anchor
 // edge where the pill's is.
 func anchored(t *testing.T, what string, o settings.Overlay, f mygo.Rectangle) {
 	t.Helper()
-	p := pillFrame(o)
+	p := pillFrame(o, 0)
 	cx, pcx := f.X*2+f.Width, p.X*2+p.Width
 	if d := cx - pcx; d < -1 || d > 1 {
 		t.Errorf("%s: centre %d, the pill's %d (%+v)", what, cx/2, pcx/2, f)
@@ -79,7 +82,6 @@ func TestOverlaySessionsStartSmall(t *testing.T) {
 			// Saved, so that a later save (Setup.Tried) keeps it.
 			a.updateSettings(func(s *settings.Settings) { s.Overlay.Position = pos })
 			o := a.prefs.Overlay
-			pill := pillFrame(o)
 			check := func(what string, want ovStep) {
 				t.Helper()
 				got := a.ovNow()
@@ -93,24 +95,26 @@ func TestOverlaySessionsStartSmall(t *testing.T) {
 			now := time.Now()
 			// A: the shortcut shows the pill.
 			snap(a, session.Snapshot{ID: "A", State: session.Recording, StartedAt: now})
+			pill := pillFrame(o, recordingPillFaceW(a.sess, false))
 			check("A starts", ovStep{ovRecording, pill, true, true, ""})
-			if pill.Width != layout.PillW+2*layout.Pad || pill.Height != layout.PillH+2*layout.Pad {
+			if pill.Width != recordingPillFaceW(a.sess, false)+2*layout.Pad || pill.Height != layout.PillH+2*layout.Pad {
 				t.Fatalf("the pill's frame %+v", pill)
 			}
 			// A streaming service's partial: one line under the row.
 			snap(a, session.Snapshot{ID: "A", State: session.Recording, StartedAt: now, HeardAt: now, Partial: "hello"})
-			grown := layout.Frame(ovTestArea, o, layout.RowW+2*layout.LivePadX, layout.LiveH) // "hello" is narrower than the row
+			grown := layout.Frame(ovTestArea, o, a.ov.w, layout.LiveH)
 			check("A hears", ovStep{ovRecording, grown, true, true, "hello"})
 			long := "So the plan for the release is to finish the onboarding first, then the history page"
 			snap(a, session.Snapshot{ID: "A", State: session.Recording, StartedAt: now, HeardAt: now, Partial: long})
 			widest := layout.Frame(ovTestArea, o, layout.LiveMaxW, layout.LiveH)
 			check("A hears more", ovStep{ovRecording, widest, true, true, long})
-			// Recognising, then cleaning up: the text stays, the face does
-			// not shrink though the model's draft is shorter.
+			// Recognising and cleaning up keep the live text, not the
+			// model's draft (FB6, #3644), and the pill drops the mode name
+			// it has only while recording.
 			snap(a, session.Snapshot{ID: "A", State: session.Recognizing, Partial: long})
 			check("A recognises", ovStep{ovWorking, widest, true, true, long})
 			snap(a, session.Snapshot{ID: "A", State: session.Composing, Partial: long, Draft: "So"})
-			check("A cleans up", ovStep{ovWorking, widest, true, true, "So"})
+			check("A cleans up", ovStep{ovWorking, widest, true, true, long})
 			// Inserted: it fades and leaves, keeping its frame meanwhile.
 			snap(a, session.Snapshot{ID: "A", State: session.Done, Result: "So.", Inserted: true, Partial: long})
 			ft.advance(ovGone)
@@ -119,9 +123,10 @@ func TestOverlaySessionsStartSmall(t *testing.T) {
 			}
 			// B: the pill again, no text.
 			snap(a, session.Snapshot{ID: "B", State: session.Recording, StartedAt: now})
+			pill = pillFrame(o, recordingPillFaceW(a.sess, false))
 			check("B starts", ovStep{ovRecording, pill, true, true, ""})
-			if a.ov.w != layout.PillW || a.ov.h != layout.PillH {
-				t.Errorf("B's face %d×%d", a.ov.w, a.ov.h)
+			if want := recordingPillFaceW(a.sess, false); a.ov.w != want || a.ov.h != layout.PillH {
+				t.Errorf("B's face %d×%d, want %d×%d", a.ov.w, a.ov.h, want, layout.PillH)
 			}
 			snap(a, session.Snapshot{ID: "B", State: session.Recording, StartedAt: now, HeardAt: now, Partial: "hi"})
 			check("B hears", ovStep{ovRecording, grown, true, true, "hi"})
@@ -133,12 +138,14 @@ func TestOverlaySessionsStartSmall(t *testing.T) {
 			}
 			// C fails: a notice in the pill's place, which takes a click.
 			snap(a, session.Snapshot{ID: "C", State: session.Recording, StartedAt: now})
+			pill = pillFrame(o, recordingPillFaceW(a.sess, false))
 			check("C starts", ovStep{ovRecording, pill, true, true, ""})
 			snap(a, session.Snapshot{ID: "C", State: session.Failed, Problem: &session.Problem{Code: session.ProblemASR, Err: &asr.Error{Kind: asr.KindAuth}}})
 			nf := layout.Frame(ovTestArea, o, layout.NoticeWidth(guessWidth(noticeText(a.notice.text)), true), layout.PillH)
 			check("C's notice", ovStep{ovNotice, nf, true, false, ""})
 			// D starts while the notice shows: the pill, the notice gone.
 			snap(a, session.Snapshot{ID: "D", State: session.Recording, StartedAt: now})
+			pill = pillFrame(o, recordingPillFaceW(a.sess, false))
 			check("D starts over the notice", ovStep{ovRecording, pill, true, true, ""})
 			if a.notice != nil {
 				t.Error("C's notice stays")
@@ -148,8 +155,10 @@ func TestOverlaySessionsStartSmall(t *testing.T) {
 			snap(a, session.Snapshot{ID: "D", State: session.Done, Result: "x", Inserted: true, Partial: long})
 			ft.advance(20 * time.Millisecond)
 			snap(a, session.Snapshot{ID: "E", State: session.Recording, StartedAt: now})
+			pill = pillFrame(o, recordingPillFaceW(a.sess, false))
 			check("E starts mid-fade", ovStep{ovRecording, pill, true, true, ""})
 			ft.advance(time.Second)
+			pill = pillFrame(o, recordingPillFaceW(a.sess, false))
 			check("E after D's fade", ovStep{ovRecording, pill, true, true, ""})
 			// E's first word, at once: grown about the same anchor.
 			snap(a, session.Snapshot{ID: "E", State: session.Recording, StartedAt: now, HeardAt: now, Partial: "ok"})
@@ -186,9 +195,8 @@ func TestOverlayAnchorAndRestyle(t *testing.T) {
 }
 
 // TestOverlayTwoSessionsEndToEnd: the shortcut twice, through the real
-// session manager and the fake helper: the first session's text (the
-// file service's, while the model cleans it up) grows the overlay; the
-// second starts as the pill, with no text, at the same anchor.
+// session manager and the fake helper: the first session ends and leaves;
+// the second starts as the pill, with no text, at the same anchor.
 func TestOverlayTwoSessionsEndToEnd(t *testing.T) {
 	chat := &fakeChat{text: "Hello, VoxtNew."}
 	set, keys, _ := fileSetup(t, "hello aura link, the second line of a longer text", chat)
@@ -202,31 +210,28 @@ func TestOverlayTwoSessionsEndToEnd(t *testing.T) {
 	a := newSessionApp(t, ev, set, keys)
 	ft := new(fakeTimers).install(a.app)
 	o := a.prefs.Overlay
-	pill := pillFrame(o)
 	var first string
-	grew := false
 	a.pump("the first recording", func() bool { return a.sess.State == session.Recording })
 	first = a.sess.ID
+	pill := pillFrame(o, recordingPillFaceW(a.sess, false))
 	if s := a.ovNow(); s.frame != pill || s.text != "" || !s.visible {
 		t.Fatalf("first starts: %+v", s)
 	}
 	a.pump("the first's end", func() bool {
 		if a.sess.ID == first && a.ov.h == layout.LiveH {
-			grew = true
-			anchored(t, "first grown", o, a.ov.frame)
+			t.Error("the first session's final text grew the overlay; the preview should stay the pill")
 		}
 		return a.sess.ID == first && a.sess.State.Ended()
 	})
-	if !grew {
-		t.Error("the first never showed its text")
-	}
 	ft.advance(ovGone)
 	if a.ov.visible {
 		t.Fatal("the first stays on screen")
 	}
 	a.pump("the second recording", func() bool { return a.sess.ID != first && a.sess.State == session.Recording })
-	if s := a.ovNow(); s.frame != pill || s.text != "" || !s.visible || a.ov.w != layout.PillW || a.ov.h != layout.PillH {
-		t.Fatalf("second starts: %+v, face %d×%d", s, a.ov.w, a.ov.h)
+	faceW := recordingPillFaceW(a.sess, false)
+	pill = pillFrame(o, faceW)
+	if s := a.ovNow(); s.frame != pill || s.text != "" || !s.visible || a.ov.w != faceW || a.ov.h != layout.PillH {
+		t.Fatalf("second starts: %+v, face %d×%d, want %d×%d", s, a.ov.w, a.ov.h, faceW, layout.PillH)
 	}
 	a.pump("the second's end", func() bool { return a.sess.ID != first && a.sess.State.Ended() })
 }
@@ -261,8 +266,9 @@ func TestOverlayCheckSteps(t *testing.T) {
 			}
 			switch st.name {
 			case "pill", "pill-again":
-				if a.ov.frame != pillFrame(a.prefs.Overlay) {
-					t.Errorf("%s/%s: %+v", lang, st.name, a.ov.frame)
+				want := pillFrame(a.prefs.Overlay, recordingPillFaceW(a.sess, false))
+				if a.ov.frame != want {
+					t.Errorf("%s/%s: %+v, want %+v", lang, st.name, a.ov.frame, want)
 				}
 			case "live-long":
 				if a.ov.w != layout.LiveMaxW || a.ov.h != layout.LiveH {

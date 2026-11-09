@@ -15,6 +15,7 @@ package main
 import (
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/updater"
@@ -23,6 +24,7 @@ import (
 	// MyGo's own strings (a text field's menu, a dialog's buttons) in
 	// Chinese, when the app shows it (showLanguage).
 	_ "github.com/egoist/mygo/locales/zh-Hans"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/announce"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/datadir"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 )
@@ -94,6 +96,7 @@ func main() {
 	a := newApp(lib, h)                           // app.go
 	a.dataHome = home                             // settings_storage.go
 	a.openIcons(cacheDir)                         // appicons.go
+	a.omniCache = filepath.Join(cacheDir, "omni") // models_omni.go: Whisper's folders
 	a.muteJournal = outputJournal(home, cacheDir) // mute_link.go
 	a.connectShell(logDir)                        // shell.go
 	a.connectHelper()                             // helperlink.go
@@ -115,6 +118,8 @@ func main() {
 		a.connectWindowLife() // tray.go
 		a.watchBundle()       // updates.go: an update installed while it runs
 		a.expireRecordings()  // history_retry.go: recordings kept for a retry, past their time
+		a.announceURL = announce.URL
+		a.checkAnnouncements() // announcements.go
 		mygo.App.OnSecondInstance(func([]string, string) { a.post(a.showMainWindow) })
 	})
 	mygo.App.OnQuit(func() {

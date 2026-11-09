@@ -75,6 +75,12 @@ type Opts struct {
 	// Older is a server from before --cache-limit-mb: it refuses the flag
 	// as an unknown argument (a newer one only refuses a value below -1).
 	Older bool
+	// LiveDrop: the realtime socket closes at transcription.done without
+	// its answer, as a server that crashed.
+	LiveDrop bool
+	// NoDraft is a server from before --draft-model-path: it refuses the
+	// flag as an unknown argument.
+	NoDraft bool
 }
 
 // Env is the environment that makes a test binary a fake with o.
@@ -87,8 +93,10 @@ func Env(o Opts) []string {
 	v.Set("load", o.Load.String())
 	v.Set("failfrom", strconv.Itoa(o.FailFrom))
 	v.Set("older", strconv.FormatBool(o.Older))
+	v.Set("nodraft", strconv.FormatBool(o.NoDraft))
 	v.Set("echo", strconv.FormatBool(o.Echo))
 	v.Set("audio", strconv.FormatBool(o.RecordAudio))
+	v.Set("livedrop", strconv.FormatBool(o.LiveDrop))
 	return []string{EnvFake + "=" + v.Encode()}
 }
 
@@ -102,8 +110,10 @@ func opts() Opts {
 	o.Load, _ = time.ParseDuration(v.Get("load"))
 	o.FailFrom, _ = strconv.Atoi(v.Get("failfrom"))
 	o.Older, _ = strconv.ParseBool(v.Get("older"))
+	o.NoDraft, _ = strconv.ParseBool(v.Get("nodraft"))
 	o.Echo, _ = strconv.ParseBool(v.Get("echo"))
 	o.RecordAudio, _ = strconv.ParseBool(v.Get("audio"))
+	o.LiveDrop, _ = strconv.ParseBool(v.Get("livedrop"))
 	if o.Text == "" {
 		o.Text = "fake transcript"
 	}

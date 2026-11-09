@@ -32,7 +32,9 @@ Voxt offers a few models, tuned for it, and downloads them from Hugging Face (or
 | Qwen3-ASR 1.7B (8bit) (recommended) | the most accurate; accents, dialects, names, several languages in one sentence; live text | 2.5 GB |
 | Qwen3-ASR 0.6B (4bit) | quicker and lighter, for clear speech in a quiet place | 713 MB |
 
-Voice detection (Silero VAD v6, 1.2 MB) comes with the first speech model. The speech models know 30 languages and 22 Chinese dialects.
+Voxt 1.x's other local models are there too: Qwen3-ASR 1.7B (6bit), Whisper Large v3 Turbo, Whisper Large v3 and Whisper Small (about 100 languages), Parakeet TDT 0.6B v3 (25 European languages), SenseVoice Small (Chinese, Cantonese, English, Japanese, Korean), Cohere Transcribe 03-2026 (14 languages), Nemotron 3.5 ASR 0.6B (28 languages, live text) and MOSS-Transcribe-Diarize (Chinese and English, live text). Only Qwen3-ASR takes your dictionary. Models Voxt 1.x downloaded come over without a download (docs/voxt-migration.md).
+
+Voice detection (Silero VAD v6, 1.2 MB) comes with the first speech model. The Qwen3-ASR models know 30 languages and 22 Chinese dialects. The Qwen3-ASR 1.7B (8bit) and 0.6B (4bit) cards also offer **Faster transcription**: a draft model (726 MB and 262 MB) for speculative decoding, which proposes several words at a time for the speech model to check.
 
 **Language models** are the services you set up on the Language models page, over their OpenAI-compatible API: OpenAI, Anthropic, Google Gemini, DeepSeek, Qwen (Alibaba Cloud), Kimi, GLM, Doubao (Volcengine), MiniMax, StepFun, Xiaomi MiMo, xAI, OpenRouter, any other compatible server, or one on this Mac (Ollama, LM Studio, oMLX: free, and the text stays here). Without one, Transcribe types the text as recognised; Translate and Rewrite need one.
 

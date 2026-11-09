@@ -85,6 +85,23 @@ func (a *app) generalSettings(c *ui.Context) {
 		}
 	})
 
+	sectionTitle(c, i18n.T("Features"))
+	settingRow(c, "features", i18n.T("Shown features"), i18n.T("Uncheck a feature you do not use: it leaves the sidebar, Home and ⌘K, and its shortcuts and scene rules stop. Its settings stay for when you check it again."), func() {
+		ui.Row(c).Gap(px(t, sp3)).Wrap().AlignItems(ui.Center).Children(func() {
+			for _, id := range []string{settings.HideTranslate, settings.HideRewrite, settings.HideAppEnhancement} {
+				shown := !a.prefs.Features.IsHidden(id)
+				if ui.Checkbox(c.Key("feature-"+id), &shown, pageTitle("/"+id)).Label(i18n.T("Show %s", pageTitle("/"+id))).Changed() {
+					a.updateSettings(func(s *settings.Settings) {
+						s.Features.Hidden = slices.DeleteFunc(s.Features.Hidden, func(x string) bool { return x == id })
+						if !shown {
+							s.Features.Hidden = append(s.Features.Hidden, id)
+						}
+					})
+				}
+			}
+		})
+	})
+
 	sectionTitle(c, i18n.T("Getting started"))
 	a.onboardingRow(c) // onboarding.go
 }

@@ -173,9 +173,11 @@ type Snapshot struct {
 	// or the speech model, still starting. The pill says so.
 	Waiting Wait
 	// Device is the input that records, FellBack whether it was not the
-	// first choice.
+	// first choice. Switched counts the times the input went away and
+	// another took over (Device names it); the pill says so.
 	Device   string
 	FellBack bool
+	Switched int
 	// Partial is a streaming speech model's text so far; Raw the final
 	// recognised text (Rewrite's spoken instruction); Result what is
 	// delivered.
@@ -198,10 +200,10 @@ type Snapshot struct {
 	Inserted bool
 	Card     bool
 	Delivery deliver.Reason
-	// InsertedInto is the app the result was pasted into: Target, or the
-	// app the user went to and focused a text field in. Target stays the
-	// app the scene was chosen for (the history's app).
-	InsertedInto proto.App
+	// Landing says where the result was pasted (nil: not inserted): the
+	// app, Target or the app the user went to and focused a text field
+	// in. Target stays the app the scene was chosen for (the history's app).
+	Landing *deliver.Landing
 	// Scene is the app enhancement group the session falls in (scene.go);
 	// nil until it is decided.
 	Scene *appctx.Match
@@ -357,7 +359,13 @@ type Config struct {
 	LLMTimeout    time.Duration // DefaultLLMTimeout
 	WriteTimeout  time.Duration // DefaultWriteTimeout
 	ReadTimeout   time.Duration // reading the selection; DefaultReadTimeout
-	DeliverTime   time.Duration // DefaultDeliverTimeout
+	// RewriteReadTimeout is Rewrite's: it reads the selection while the
+	// user speaks, so a long one (a page of a web editor read through
+	// Accessibility's text markers) may take longer without delaying
+	// anything (DefaultRewriteReadTimeout). Translate reads it before it
+	// knows whether to record.
+	RewriteReadTimeout time.Duration
+	DeliverTime        time.Duration // DefaultDeliverTimeout
 	// WaitNote is how long a recording waits for the microphone or the
 	// speech model before Snapshot.Waiting says so (DefaultWaitNote).
 	WaitNote time.Duration
@@ -365,6 +373,10 @@ type Config struct {
 	// discarding the capture job (a capture.stop that raced its start);
 	// DefaultStopGrace.
 	StopGrace time.Duration
+	// EndWordPause is how long the live text must end with the end word
+	// (settings.Features.EndWord) before the recording stops;
+	// DefaultEndWordPause.
+	EndWordPause time.Duration
 }
 
 // Defaults of Config's limits.
@@ -380,9 +392,15 @@ const (
 	DefaultLLMTimeout     = 20 * time.Second
 	DefaultWriteTimeout   = 60 * time.Second
 	DefaultReadTimeout    = 1500 * time.Millisecond
-	DefaultDeliverTimeout = 5 * time.Second
-	DefaultStopGrace      = 3 * time.Second
-	DefaultWaitNote       = 400 * time.Millisecond
+	// DefaultRewriteReadTimeout and rewriteCopyMS: a long selection's
+	// read, and its ⌘C landing on the clipboard (the helper's default
+	// 300 ms), in Rewrite (#3644: long selections failed).
+	DefaultRewriteReadTimeout = 6 * time.Second
+	rewriteCopyMS             = 1500
+	DefaultDeliverTimeout     = 5 * time.Second
+	DefaultStopGrace          = 3 * time.Second
+	DefaultWaitNote           = 400 * time.Millisecond
+	DefaultEndWordPause       = time.Second // Voxt 1.x's silence after the end word
 )
 
 // StartRequest starts a session.
