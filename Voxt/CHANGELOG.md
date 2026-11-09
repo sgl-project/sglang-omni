@@ -54,6 +54,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Clean-up drops rambling repeats out of the box**: the clean-up's example now also repeats a phrase and keeps it once, so the same words or point said again right away ("I need it before five, I really need it before five") come out once, with fillers and self-corrections as before.
 - **The setup guide shows where the shortcut's keys are**: under the shortcut on the Transcribe, Translate and Rewrite steps, the two bottom rows of a Mac keyboard light up the keys to press, so Right ⌥ is the Option key right of the space bar.
 - **Pages sit in the middle of a wide window**: in full screen or a wide window, Home, Transcribe, Translate, Rewrite, Speech models and Language models keep their column of content in the middle of the page, with the title and the page's buttons lined up with it, instead of hugging the left with the buttons at the far edge.
+- **The live text stays while the language model works**: after you stop, the overlay keeps the words it showed while you spoke (Rewrite's instruction too) until the result is typed or shows in the card; it no longer drops to a bare loader. The model's draft still does not replay there.
 
 ### Fixed
 
@@ -113,6 +114,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **清理默认去掉车轱辘话**：清理的示例里加了一句重复的话、只保留一次，所以紧接着又说一遍的同样词句或同一个意思（“今天下班前一定要发，就是说今天下班前一定要发出去”）只留一次；语气词和改口照旧去掉。
 - **设置引导画出快捷键在键盘上的位置**：转录、翻译、转写这几步的快捷键下面，画着 Mac 键盘最下面两排，要按的键亮起，比如“右 ⌥”就是空格键右边的 Option 键。
 - **宽窗口里页面居中**：全屏或窗口很宽时，首页、转录、翻译、转写、语音模型和语言模型的内容栏放在页面中间，标题和页面按钮跟内容对齐，不再贴着左边、按钮却在最右边。
+- **语言模型处理时实时文字留在浮窗里**：停止录音后，浮窗保留说话时显示的文字（转写的指令也是），直到结果输入进去或出现在卡片里，不再只剩一个加载动画。模型写的草稿仍然不在浮窗里回放。
 
 #### 修复
 

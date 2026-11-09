@@ -263,15 +263,18 @@ func fadeSpans(text string, off float32, measure func(string) float32) (string, 
 }
 
 // liveText is the text the pill shows under it. The preview carries only
-// live ASR partials (and, for selection translate, the selection), not
-// the offline Final nor language-model drafts (FB6).
+// live ASR partials, not the offline Final nor language-model drafts
+// (FB6). While the language model works, the live text stays as it last
+// was (Rewrite's spoken instruction too): the pill went blank then
+// (#3644); without one, the selection worked on (selected text to
+// translate).
 func liveText(s session.Snapshot) string {
-	if p := strings.TrimSpace(s.Partial); p != "" &&
-		(s.State == session.Recording || s.State == session.Recognizing) {
-		return p
-	}
-	if (s.State == session.Composing || s.State == session.Delivering) && strings.TrimSpace(s.Selection) != "" {
-		return strings.TrimSpace(s.Selection)
+	partial := strings.TrimSpace(s.Partial)
+	switch s.State {
+	case session.Recording, session.Recognizing:
+		return partial
+	case session.Composing, session.Delivering:
+		return cmpOr(partial, strings.TrimSpace(s.Selection))
 	}
 	return ""
 }

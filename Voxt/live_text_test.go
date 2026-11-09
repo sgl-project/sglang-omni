@@ -42,8 +42,10 @@ func TestLiveTextSwitch(t *testing.T) {
 // TestLiveTextCard: with Show live text off, a follow-up in the answer
 // card shows neither the words being said nor the answer being written,
 // as the pill does not.
-// TestLiveTextNoLLMDraft: after stop, the pill keeps live ASR text and
-// does not replay the language model draft (FB6).
+// TestLiveTextNoLLMDraft: after stop, the pill keeps the live ASR text,
+// while the speech model finishes and while the language model works, and
+// never replays the language model's draft (FB6). It went blank while the
+// language model worked (#3644).
 func TestLiveTextNoLLMDraft(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	stream := "meet at three tomorrow"
@@ -52,7 +54,7 @@ func TestLiveTextNoLLMDraft(t *testing.T) {
 		t.Fatalf("recording: %q", text)
 	}
 	a.sess = session.Snapshot{State: session.Composing, Partial: stream, Draft: "Meet at three."}
-	if text, _ := pillLine(a.pillSession()); text != "" {
+	if text, _ := pillLine(a.pillSession()); text != stream {
 		t.Fatalf("composing: %q", text)
 	}
 	a.sess = session.Snapshot{State: session.Recognizing, Partial: stream}
