@@ -29,9 +29,13 @@ func newSoundsRig(t *testing.T) *soundsRig {
 		r.plays = append(r.plays, s.Name)
 		return func() { r.plays = append(r.plays, "-"+s.Name) }
 	}
-	tt.SetSize(windowWidth, 1400) // the whole section, without scrolling
+	tt.SetSize(windowWidth, 1400)
 	a.navigate("/settings/audio")
 	frames(tt)
+	if title, ok := tt.Find("Sounds"); ok { // the section at the top of the dialog (600 high), all of it in view
+		tt.Scroll(windowWidth/2, 700, 0, title.Y-450)
+		frames(tt)
+	}
 	return r
 }
 
@@ -70,6 +74,7 @@ func TestSoundsRow(t *testing.T) {
 		rc, _ := r.tt.Find("Play sounds")
 		t.Fatalf("the cues show while the sounds are off: on %v, title at %+v", r.prefs.Audio.Sounds, rc)
 	}
+	_, y = r.center(t, "Play sounds") // a shorter section may scroll the dialog back
 	r.tt.ClickAt(sw, y)
 	frames(r.tt)
 	if !r.prefs.Audio.Sounds || !has(r.tt, "Tally") {
