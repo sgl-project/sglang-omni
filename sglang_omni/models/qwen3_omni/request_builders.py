@@ -27,6 +27,7 @@ from sglang_omni.models.qwen3_omni.payload_types import (
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.native_chat_scheduler import set_sampling_fields
 from sglang_omni.scheduling.pending_text_queue import (
     PendingTextTensorQueue,
     coerce_pending_text_queue,
@@ -745,6 +746,7 @@ def build_sglang_thinker_request(
     request_id: str | None = None,
     thinker_config: Qwen3OmniMoeThinkerConfig | None = None,
     capture_prompt_hidden_states: bool,
+    stage_name: str = THINKER_STAGE,
 ) -> "SGLangARRequestData":
     """Build SGLangARRequestData from pipeline state.
 
@@ -755,6 +757,9 @@ def build_sglang_thinker_request(
     from sglang.srt.sampling.sampling_params import SamplingParams
 
     # SGLangARRequestData already imported at module level
+
+    stage_sampling = (params.get("stage_sampling") or {}).get(stage_name) or {}
+    params = {**params, **set_sampling_fields(stage_sampling)}
 
     prompt = state.prompt
     input_ids = prompt["input_ids"]
@@ -1221,6 +1226,7 @@ def make_thinker_scheduler_adapters(
             request_id=payload.request_id,
             thinker_config=thinker_config,
             capture_prompt_hidden_states=capture_prompt_hidden_states,
+            stage_name=stage_name,
         )
         req_data.stage_payload = payload
         multimodal_inputs = req_data.req.multimodal_inputs
