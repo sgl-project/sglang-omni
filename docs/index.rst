@@ -151,6 +151,7 @@ Community & Resources
    Welcome to SGLang-Omni <self>
    Quickstart <get_started/quickstart>
    Installation <get_started/installation>
+   Install Voxt (Mac app) <get_started/voxt>
    get_started/examples
    get_started/troubleshooting.md
 
@@ -197,6 +198,7 @@ Community & Resources
    basic_usage/native_chat_stage.md
    basic_usage/audio_translations.md
    basic_usage/tts.md
+   basic_usage/asr.md
    basic_usage/process_topology.md
    basic_usage/tts_process_topology.md
    basic_usage/process_topology_migration.md

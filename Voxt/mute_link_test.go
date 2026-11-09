@@ -194,25 +194,26 @@ func TestRecordingMuteWithoutSounds(t *testing.T) {
 // (not for a try, whose page shows no pill).
 func TestRecordingCannotMute(t *testing.T) {
 	r := newMuteRig(t)
+	r.prefs.Overlay.LiveLines = false // the small pill, whose sizes these are (Lines: TestLiveLinesFromStart)
 	r.fs.out.Sys.SetDefault(helpertest.Display)
 	r.feed("s1", session.Recording)
 	want := "This output device cannot be muted. Recording continues."
 	if got := r.pillSession().Partial; got != want || r.ov.mode != ovRecording || r.ov.h != layout.LiveH {
 		t.Fatalf("pill %q, mode %s, height %d", got, r.ov.mode, r.ov.h)
 	}
-	r.ft.advance(muteNoteTime)
-	if r.pillSession().Partial != "" || r.ov.h != layout.PillH || r.ov.w != layout.PillW {
+	r.ft.advance(pillNoteTime)
+	if r.pillSession().Partial != "" || r.ov.h != layout.PillH || r.ov.w != recordingPillFaceW(r.pillSession(), false) {
 		t.Fatalf("the note stays: %q %dx%d", r.pillSession().Partial, r.ov.w, r.ov.h)
 	}
 	r.feed("s1", session.Recognizing)
 	// Stopped while it shows: gone with the recording.
 	r.feed("s2", session.Recording)
 	r.feed("s2", session.Recognizing)
-	if r.muteNote.text != "" || r.pillSession().Partial != "" {
-		t.Fatalf("the note outlived the recording: %q", r.muteNote.text)
+	if r.pillNote.text != "" || r.pillSession().Partial != "" {
+		t.Fatalf("the note outlived the recording: %q", r.pillNote.text)
 	}
 	r.feed("s3", session.Recording, true)
-	if r.muteNote.text != "" {
+	if r.pillNote.text != "" {
 		t.Error("a try's note")
 	}
 	if w := r.fs.out.Sys.WriteLog(); len(w) != 0 {

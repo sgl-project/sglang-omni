@@ -376,7 +376,7 @@ Relevant model CI ownership:
   Omni CI (`omni-ci.yaml`) runs PR Test (`test.yaml` unit tests) after one
   shared setup. When PR Test finishes, ASR CI, TTS CI and Omni model CI start
   together and their stages run in parallel; MPS CI runs after them. Any CI
-  stage label runs PR Test; each other suite runs only when its stage is
+  stage label except `run-mac-ci` runs PR Test; each other suite runs only when its stage is
   selected (see the CI section of the pull request template). A failed or
   skipped suite does not skip any other; only a failed setup blocks them.
   Full WER sweep: `.github/scripts/run_all_wer_ci_aligned.sh` (milestones on

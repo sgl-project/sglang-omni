@@ -279,7 +279,7 @@ func (a *app) eraseDialog(c *ui.Context) {
 	erase := a.resetAsk == "everything"
 	ui.Modal(c.Key("st-ask-erase"), &erase, func() {
 		ui.Text(c, i18n.T("Erase everything?")).Bold()
-		ui.Text(c, i18n.T("This deletes your history and its recordings, your dictionary, your app enhancement rules, the local models no other app uses, every setting and the logs. It cannot be undone. Voxt restarts as on its first day, and the models download again.")).Width(px(t, 420))
+		ui.Text(c, i18n.T("This deletes your history and its recordings, your meetings and their recordings, your dictionary, your app enhancement rules, the local models no other app uses, every setting and the logs. It cannot be undone. Voxt restarts as on its first day, and the models download again.")).Width(px(t, 420))
 		if kept := keptModelsText(a.eraseKept, a.eraseKeptBytes); kept != "" { // models_delete.go
 			ui.Text(c, kept).Width(px(t, 420))
 		}

@@ -86,6 +86,9 @@ func (s State) Ended() bool { return s == Done || s == Cancelled || s == Failed 
 const (
 	// ProblemNoASR: no speech model is ready (Speech models).
 	ProblemNoASR = "noASR"
+	// ProblemSpeechWait: the speech model is still downloading
+	// (StartRequest.SpeechWait, which Err says).
+	ProblemSpeechWait = "speechWait"
 	// ProblemMicrophone: macOS refused the microphone.
 	ProblemMicrophone = "microphone"
 	// ProblemDevice: no input gave audio.
@@ -173,9 +176,11 @@ type Snapshot struct {
 	// or the speech model, still starting. The pill says so.
 	Waiting Wait
 	// Device is the input that records, FellBack whether it was not the
-	// first choice.
+	// first choice. Switched counts the times the input went away and
+	// another took over (Device names it); the pill says so.
 	Device   string
 	FellBack bool
+	Switched int
 	// Partial is a streaming speech model's text so far; Raw the final
 	// recognised text (Rewrite's spoken instruction); Result what is
 	// delivered.
@@ -198,10 +203,10 @@ type Snapshot struct {
 	Inserted bool
 	Card     bool
 	Delivery deliver.Reason
-	// InsertedInto is the app the result was pasted into: Target, or the
-	// app the user went to and focused a text field in. Target stays the
-	// app the scene was chosen for (the history's app).
-	InsertedInto proto.App
+	// Landing says where the result was pasted (nil: not inserted): the
+	// app, Target or the app the user went to and focused a text field
+	// in. Target stays the app the scene was chosen for (the history's app).
+	Landing *deliver.Landing
 	// Scene is the app enhancement group the session falls in (scene.go);
 	// nil until it is decided.
 	Scene *appctx.Match
@@ -345,19 +350,25 @@ type Config struct {
 	// recognition failed (or found no text) when the settings keep no
 	// recordings: for Retry (DefaultAudioRetention).
 	AudioRetention time.Duration
-	// A language model's request ends when it makes no progress
-	// (behavior.md 5.5, llmDeadlines): no first token within
-	// LLMFirstToken (plus llmPrefillPerChar per character of its input),
-	// no next one within LLMStall; and in all after LLMPerChar per
-	// character, at least LLMTimeout for a piece of Transcribe's clean-up
-	// and WriteTimeout for Translate's and Rewrite's answer.
-	LLMFirstToken time.Duration // DefaultLLMFirstToken
-	LLMStall      time.Duration // DefaultLLMStall
-	LLMPerChar    time.Duration // DefaultLLMPerChar
-	LLMTimeout    time.Duration // DefaultLLMTimeout
-	WriteTimeout  time.Duration // DefaultWriteTimeout
-	ReadTimeout   time.Duration // reading the selection; DefaultReadTimeout
-	DeliverTime   time.Duration // DefaultDeliverTimeout
+	// A language model's request ends when its answer, once it streams,
+	// stops for LLMStall, or after LLMBase plus LLMPerChar (and
+	// llmPrefillPerChar) per character of its input, at least
+	// LLMTimeout for a piece of Transcribe's clean-up and WriteTimeout
+	// for Translate's and Rewrite's answer (behavior.md 5.5,
+	// llmDeadlines).
+	LLMBase      time.Duration // DefaultLLMBase
+	LLMStall     time.Duration // DefaultLLMStall
+	LLMPerChar   time.Duration // DefaultLLMPerChar
+	LLMTimeout   time.Duration // DefaultLLMTimeout
+	WriteTimeout time.Duration // DefaultWriteTimeout
+	ReadTimeout  time.Duration // reading the selection; DefaultReadTimeout
+	// RewriteReadTimeout is Rewrite's: it reads the selection while the
+	// user speaks, so a long one (a page of a web editor read through
+	// Accessibility's text markers) may take longer without delaying
+	// anything (DefaultRewriteReadTimeout). Translate reads it before it
+	// knows whether to record.
+	RewriteReadTimeout time.Duration
+	DeliverTime        time.Duration // DefaultDeliverTimeout
 	// WaitNote is how long a recording waits for the microphone or the
 	// speech model before Snapshot.Waiting says so (DefaultWaitNote).
 	WaitNote time.Duration
@@ -365,6 +376,10 @@ type Config struct {
 	// discarding the capture job (a capture.stop that raced its start);
 	// DefaultStopGrace.
 	StopGrace time.Duration
+	// EndWordPause is how long the live text must end with the end word
+	// (settings.Features.EndWord) before the recording stops;
+	// DefaultEndWordPause.
+	EndWordPause time.Duration
 }
 
 // Defaults of Config's limits.
@@ -374,15 +389,21 @@ const (
 	DefaultASRTimeout     = 60 * time.Second
 	DefaultASRPerSecond   = time.Second
 	DefaultAudioRetention = 7 * 24 * time.Hour
-	DefaultLLMFirstToken  = 15 * time.Second
+	DefaultLLMBase        = 15 * time.Second
 	DefaultLLMStall       = 5 * time.Second
 	DefaultLLMPerChar     = 100 * time.Millisecond
 	DefaultLLMTimeout     = 20 * time.Second
 	DefaultWriteTimeout   = 60 * time.Second
 	DefaultReadTimeout    = 1500 * time.Millisecond
-	DefaultDeliverTimeout = 5 * time.Second
-	DefaultStopGrace      = 3 * time.Second
-	DefaultWaitNote       = 400 * time.Millisecond
+	// DefaultRewriteReadTimeout and rewriteCopyMS: a long selection's
+	// read, and its ⌘C landing on the clipboard (the helper's default
+	// 300 ms), in Rewrite (#3644: long selections failed).
+	DefaultRewriteReadTimeout = 6 * time.Second
+	rewriteCopyMS             = 1500
+	DefaultDeliverTimeout     = 5 * time.Second
+	DefaultStopGrace          = 3 * time.Second
+	DefaultWaitNote           = 400 * time.Millisecond
+	DefaultEndWordPause       = time.Second // Voxt 1.x's silence after the end word
 )
 
 // StartRequest starts a session.
@@ -415,6 +436,10 @@ type StartRequest struct {
 	// Previous are a Rewrite conversation's earlier turns: the session is
 	// a follow-up to the answer card.
 	Previous []compose.Turn
+	// SpeechWait, when set, ends the session with these words instead of
+	// recording: the speech model it should use is still downloading.
+	// Translating a selection needs none and goes on.
+	SpeechWait string
 }
 
 // TextInput is a session's input given at Start.

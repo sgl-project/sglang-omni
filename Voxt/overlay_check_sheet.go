@@ -35,7 +35,9 @@ func (a *app) overlayInkWant() ink.Want {
 	// its row still.
 	w.Row = a.ov.mode == ovRecording
 	w.Even = a.ov.mode == ovRecording && !a.prefs.Overlay.ShowTime && uitext.SceneShort(a.sess) == ""
-	if text := liveLineText(a.sess); text != "" {
+	if a.prefs.Overlay.LiveLines {
+		w.Lines = true // the wide face: its lines are TestLiveLines' and the snapshots'
+	} else if text := liveLineText(a.sess); text != "" {
 		tw, _ := a.ovTextWidth(liveTextKey(text))
 		w.Text, w.Scrolled = true, tw > layout.LiveTextW
 	}

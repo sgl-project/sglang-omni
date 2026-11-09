@@ -14,6 +14,9 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
@@ -90,8 +93,30 @@ func snapshotsMain(t *testing.T, out string) {
 			}
 			save("page-" + name)
 		}
+		// The Language models page's foot, with the way to the prompt debug
+		// page, and that page (llm_debug.go).
+		a.navigate("/language-models")
+		scrollToText(tt, i18n.T("Try prompts on a model…"))
+		save("page-language-models-debug")
+		a.navigate(llmDebugPath)
+		save("page-llm-debug")
+		// Set up: the prompt, long as the saved ones are, the page around it.
+		oldLLM := a.prefs.Providers.LLM
+		a.updateSettings(func(s *settings.Settings) {
+			s.Providers.LLM = []settings.Provider{{ID: llm.Custom, Endpoint: "http://127.0.0.1:1/v1", Model: "mock-model"}}
+		})
+		acct := providers.Account(local.LLM, llm.Custom)
+		if a.keyMasks == nil {
+			a.keyMasks = map[string]string{}
+		}
+		a.keyMasks[acct] = "sk-…123"
+		frames(tt)
+		save("page-llm-debug-ready")
+		delete(a.keyMasks, acct)
+		a.updateSettings(func(s *settings.Settings) { s.Providers.LLM = oldLLM })
 		snapshotHistoryDetail(a, save)   // history_page_test.go
 		historySettingsShots(a, save)    // history_settings_test.go
+		historyAccessShots(a, tt, save)  // history_access_test.go
 		transcribeShots(a, tt, save)     // the Try area's states (feature_page_test.go)
 		appEnhanceShots(a, fs, tt, save) // appenhance_page_test.go
 		dictShots(t, a, save)            // dictionary_page_test.go

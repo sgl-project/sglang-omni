@@ -35,7 +35,7 @@ func (a *app) aePreviewCard(c *ui.Context) {
 			if name == "" {
 				ui.Text(c, i18n.T("Switch to another app to see which group it falls in.")).TextColor(k.Text2).Grow(1).MinWidth(0)
 			} else {
-				ui.Text(c, i18n.T("In front: %s", name)).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
+				ui.Text(c, i18n.T("Frontmost: %s", name)).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
 				if browser {
 					tagChip(c, i18n.T("Browser"))
 				}

@@ -402,7 +402,9 @@ def test_a_full_length_request_fits_the_engine_context_under_a_draft(
     monkeypatch.setattr(omni_scheduler, "get_alloc_reserve_per_decode", lambda: 16)
     # The scheduler sets max_req_len to one token below the model context.
     scheduler = SimpleNamespace(
-        draft_worker=object(), max_req_len=builder.context_length - 1
+        draft_worker=object(),
+        enable_plain_fallback=False,
+        max_req_len=builder.context_length - 1,
     )
     full_length_request = SimpleNamespace(
         origin_input_ids=[0] * 86, sampling_params=SimpleNamespace(max_new_tokens=200)

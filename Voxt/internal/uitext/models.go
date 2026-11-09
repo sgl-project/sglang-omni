@@ -61,7 +61,7 @@ func ModelErrorText(err error) (msg, more string) {
 		return i18n.T("This version of Voxt cannot run the model yet."), more
 	}
 	if errors.Is(err, dictation.ErrNotAllowed) {
-		return i18n.T("Voxt may not use Speech Recognition: allow it in Settings → Permissions."), more
+		return i18n.T("Voxt does not have Speech Recognition access. Allow it in Settings → Permissions."), more
 	}
 	if errors.Is(err, dictation.ErrNoLanguage) {
 		return i18n.T("macOS cannot recognise your main language on this Mac: add it in System Settings → Keyboard → Dictation, or choose another speech model."), more
@@ -91,6 +91,12 @@ func ModelErrorText(err error) (msg, more string) {
 	var le *llm.Error
 	if errors.As(err, &le) {
 		switch le.Code {
+		case llm.CodeSignIn:
+			return i18n.T("Your ChatGPT sign-in has ended: sign in again on the Language models page."), more
+		case llm.CodeUsageLimit:
+			return i18n.T("Your ChatGPT plan's usage is used up for now."), more
+		case llm.CodeNotEligible:
+			return i18n.T("ChatGPT refused this account: its plan, workspace or region cannot use Codex."), more
 		case llm.CodeNoKey:
 			return i18n.T("No API key is saved for the remote model: add one on the Language models page."), more
 		case llm.CodeAuth:
@@ -103,6 +109,8 @@ func ModelErrorText(err error) (msg, more string) {
 			return i18n.T("The language model did not answer in time."), more
 		case llm.CodeNetwork, llm.CodeServer, llm.CodeOverloaded, llm.CodeRateLimited:
 			return i18n.T("The language model stopped or did not answer. Try again in a moment."), more
+		case llm.CodeResponsesOnly:
+			return i18n.T("This model needs the Responses API. For OpenAI and custom services, choose it under API format in Advanced."), more
 		case llm.CodeContextLength:
 			return i18n.T("The text is too long for the language model."), more
 		case llm.CodeCancelled:

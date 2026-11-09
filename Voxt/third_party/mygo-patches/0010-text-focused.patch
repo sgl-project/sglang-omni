@@ -1,0 +1,77 @@
+MyGo patch 0010 (VoxtNew): Services.TextFocused tells whether the
+keyboard focus is in a text field the user can type into.
+
+A global shortcut that types text (dictation) has to know whether its
+own app's window should take that text: the shortcut may be pressed while
+the user edits a field there. Element.Focused answers for one element the
+view holds; nothing answered for the window as a whole, and a focused
+button or switch takes the focus too, so FocusWithin cannot tell. The
+answer is the focused element's: an editor, enabled, not read-only, in a
+window that has the keyboard focus. It is on Services, which an app keeps
+between frames (the hotkey arrives between them), and runs on the UI
+thread as its clipboard methods do. TestTextFocused.
+
+diff --git a/ui/text_focus.go b/ui/text_focus.go
+new file mode 100644
+index 0000000..b603277
+--- /dev/null
++++ b/ui/text_focus.go
+@@ -0,0 +1,15 @@
++package ui
++
++// TextFocused reports whether the keyboard focus is in a text field the
++// user can type into (enabled, not read-only), in a window that has the
++// keyboard focus. An app whose global shortcut types text reads it to
++// tell whether that text should go into its own window. It reads the
++// committed window, between frames too; run it on the UI thread.
++func (s Services) TextFocused() bool {
++	rt := s.owner.Value()
++	if rt == nil || rt.closed || !rt.windowFocus() {
++		return false
++	}
++	st := rt.states[rt.focused]
++	return st != nil && st.editor != nil && !st.editor.readOnly && st.flags&flagEditable != 0 && st.flags&flagDisabled == 0
++}
+diff --git a/ui/text_focus_test.go b/ui/text_focus_test.go
+new file mode 100644
+index 0000000..fc13d22
+--- /dev/null
++++ b/ui/text_focus_test.go
+@@ -0,0 +1,37 @@
++package ui
++
++import "testing"
++
++func TestTextFocused(t *testing.T) {
++	var svc Services
++	name, notes, fixed, off := "", "", "fixed", ""
++	tt := NewTester(func(ctx *Context) {
++		svc = ctx.Services()
++		Column(ctx).Children(func() {
++			TextInput(ctx, &name).Label("Name")
++			TextArea(ctx, &notes).Label("Notes")
++			TextInput(ctx, &fixed).Label("Fixed").ReadOnly(true)
++			TextInput(ctx, &off).Label("Off").Disabled(true)
++			Button(ctx, "Save")
++		})
++	}, 300, 300)
++	if svc.TextFocused() {
++		t.Fatal("nothing has the focus yet")
++	}
++	for _, tc := range []struct {
++		label string
++		want  bool
++	}{{"Name", true}, {"Save", false}, {"Notes", true}, {"Fixed", false}, {"Off", false}} {
++		tt.Click(tc.label)
++		tt.Frame()
++		if got := svc.TextFocused(); got != tc.want {
++			t.Errorf("%s clicked: %v, want %v", tc.label, got, tc.want)
++		}
++	}
++	tt.Click("Name")
++	tt.Frame()
++	tt.SetFocused(false)
++	if svc.TextFocused() {
++		t.Error("the window lost the keyboard focus")
++	}
++}

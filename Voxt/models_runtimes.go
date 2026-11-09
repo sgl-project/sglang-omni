@@ -37,6 +37,7 @@ func (a *app) localOpeners() local.Openers {
 	return local.Openers{
 		ASR:    a.openOmniASR, // models_omni.go
 		Unload: a.unloadOmni,  // models_omni.go
+		Hold:   a.omniMeetingHold,
 	}
 }
 

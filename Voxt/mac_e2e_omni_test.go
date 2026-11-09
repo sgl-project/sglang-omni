@@ -3,7 +3,8 @@ package main
 // The real speech models on a Mac (VOXTNEW_MAC_E2E=1, the runtime in
 // VOXTNEW_OMNI_RUNTIME, the models' folders in VOXTNEW_OMNI_MODELS as
 // "id=folder;…" with the catalogue's ids, vad.silero among them for
-// Silero): for each speech model, a Final of the speech sample, cold (the
+// Silero and a draft's (asr.fast.draft=…) for speculative decoding): for
+// each speech model, a Final of the speech sample, cold (the
 // server starts and loads) and warm, then a live Transcribe session with
 // the real helper playing the sample from its file input (never the
 // microphone or the speaker), and Silero's speech in the sample. It logs
@@ -16,7 +17,10 @@ package main
 import (
 	"context"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -58,7 +62,7 @@ func TestMacE2EOmni(t *testing.T) {
 	for _, item := range strings.Split(os.Getenv("VOXTNEW_OMNI_MODELS"), ";") {
 		if id, dir, ok := strings.Cut(strings.TrimSpace(item), "="); ok {
 			folders[id] = dir
-			if id != models.VADSilero {
+			if m, _ := models.Lookup(id); m.Kind == models.ASR {
 				ids = append(ids, id)
 			}
 		}
@@ -71,7 +75,14 @@ func TestMacE2EOmni(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rt := omni.NewRuntime(omni.Config{Binary: server, Log: func(level, msg string) { t.Logf("%s %s", level, msg) }})
+	var logMu sync.Mutex
+	var logged []string // the runtime's log: a draft's fallback would show here
+	rt := omni.NewRuntime(omni.Config{Binary: server, Log: func(level, msg string) {
+		t.Logf("%s %s", level, msg)
+		logMu.Lock()
+		logged = append(logged, msg)
+		logMu.Unlock()
+	}})
 	defer rt.Close()
 	var v *omni.VAD
 	if dir := folders[models.VADSilero]; dir != "" {
@@ -108,7 +119,11 @@ func TestMacE2EOmni(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		a := base.WithVAD(v)
+		m, _ := models.Lookup(id)
+		if folders[m.Draft] != "" {
+			t.Logf("%s with its draft %s", id, folders[m.Draft])
+		}
+		a := base.WithDraft(folders[m.Draft]).WithVAD(v)
 		for _, round := range []string{"cold", "warm"} {
 			t0 := time.Now()
 			res, err := a.Transcribe(ctx, asr.FileRequest{Audio: pcm, Format: "pcm", Lang: "zh", Hints: hints})
@@ -120,7 +135,43 @@ func TestMacE2EOmni(t *testing.T) {
 				t.Errorf("%s: an empty Final", id)
 			}
 		}
+		macCheckDraft(t, rt, id, folders[m.Draft], &logMu, &logged)
 		macOmniSession(t, h, front, macOmniLocal{p: a, m: local.Model{Kind: local.ASR, ID: id, Name: id}}, v != nil)
+	}
+}
+
+// macCheckDraft: model id's server runs with draft on its command line
+// (none when draft is ""), and the runtime never started it again without
+// the draft: a server that refused the draft would decode plainly and
+// still pass the Finals above.
+func macCheckDraft(t *testing.T, rt *omni.Runtime, id, draft string, mu *sync.Mutex, logged *[]string) {
+	t.Helper()
+	pid := 0
+	for _, p := range rt.Processes() {
+		if p.ID == id {
+			pid = p.PID
+		}
+	}
+	if pid == 0 {
+		t.Fatalf("%s: no server process", id)
+	}
+	out, err := exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := string(out)
+	if draft != "" && !strings.Contains(cmd, "--draft-model-path "+draft) {
+		t.Errorf("%s runs without its draft: %s", id, cmd)
+	}
+	if draft == "" && strings.Contains(cmd, "--draft-model-path") {
+		t.Errorf("%s runs with a draft: %s", id, cmd)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, m := range *logged {
+		if strings.Contains(m, "starting without it") {
+			t.Errorf("%s fell back to plain decoding: %s", id, m)
+		}
 	}
 }
 

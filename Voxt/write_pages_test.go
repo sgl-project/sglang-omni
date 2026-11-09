@@ -28,7 +28,7 @@ func TestTranslatePage(t *testing.T) {
 	a, tt := pageTester(t, "/translate")
 	for _, s := range []string{
 		"Translate", "Shortcuts", "Right ⌥ ⇧", "Models", "No speech model is installed: only selected text can be translated.",
-		"No language model is set up: set one up to translate.", "Translation", "Translate into", "Automatic: Simplified Chinese",
+		"No language model is set up: set one up to translate.", "Translation", "Translate into", "Automatic (now: Simplified Chinese)",
 		"Basic clean-up", "Show the result in a card", "Your rules", "Try it",
 	} {
 		if !has(tt, s) {
@@ -52,7 +52,7 @@ func TestTranslatePage(t *testing.T) {
 		t.Errorf("target %q", got)
 	}
 	click(t, tt, "Target language")
-	click(t, tt, "Automatic: Simplified Chinese")
+	click(t, tt, "Automatic (now: Simplified Chinese)")
 	if got := a.lib.settings.Get().Features.Translate.Target; got != "" {
 		t.Errorf("target %q", got)
 	}
@@ -62,9 +62,11 @@ func TestTranslatePage(t *testing.T) {
 		t.Errorf("shortcuts %+v", hs)
 	}
 	click(t, tt, "Your rules")
-	click(t, tt, "Your rules for Translate")
-	tt.Type("Use British spelling.")
-	click(t, tt, "Show the full prompt")
+	click(t, tt, "System prompt for Translate")
+	a.fui(hotkey.Translate).prompt = "Use British spelling."
+	a.fui(hotkey.Translate).promptDirty = true
+	a.savePrompt(hotkey.Translate)
+	click(t, tt, "Example user message")
 	if p := a.lib.settings.Get().Features.Translate.Prompt; p != "Use British spelling." || a.lib.settings.Get().Features.Transcribe.Prompt != "" {
 		t.Errorf("rules %q", p)
 	}
@@ -95,15 +97,15 @@ func TestRewritePage(t *testing.T) {
 		t.Error("clean-up not saved")
 	}
 	if has(tt, "Long answers in the card") {
-		t.Error("the card's length setting is back: every answer goes to the card")
+		t.Error("0.1.0's card length setting is back")
 	}
 	click(t, tt, "Your rules")
-	click(t, tt, "Show the full prompt")
+	click(t, tt, "Example user message")
 	if !has(tt, "With a selection, as below; with nothing selected the model writes from the instruction and answers with a title and the text.") {
 		t.Errorf("preview %q", firstTexts(tt))
 	}
 	// A try that is blocked says why, here.
-	click(t, tt, "Start a try")
+	click(t, tt, "Start a test")
 	if a.sess.State.Live() || !has(tt, "No speech model is installed.") {
 		t.Errorf("try %+v", a.sess)
 	}
@@ -119,14 +121,13 @@ func TestOverlayWriting(t *testing.T) {
 		t.Errorf("reading %s", a.ov.mode)
 	}
 	snap(a, session.Snapshot{ID: "t1", Kind: store.KindTranslate, State: session.Composing, Selection: "Hi", Draft: "你"})
-	if a.ov.mode != ovWorking || a.ov.h != layout.LiveH {
-		t.Errorf("draft %s %d", a.ov.mode, a.ov.w)
+	if a.ov.mode != ovWorking || a.ov.h != layout.LiveH || liveLineText(a.sess) != "Hi" {
+		t.Errorf("selection %s %d text %q", a.ov.mode, a.ov.w, liveLineText(a.sess))
 	}
 	snap(a, session.Snapshot{ID: "t1", Kind: store.KindTranslate, State: session.Composing, Selection: "Hi", Draft: "你好", Card: true, TargetLanguage: "zh-Hans"})
-	// Bound for the card, it is written in the pill all the same: the card
-	// comes with the result.
-	if a.ov.mode != ovWorking || a.answer.open || liveLineText(a.sess) != "你好" {
-		t.Errorf("the draft of a card's answer: %s %+v", a.ov.mode, a.answer)
+	// The card streams the draft; the pill keeps the selection, not the draft.
+	if a.ov.mode != ovWorking || a.answer.open || liveLineText(a.sess) != "Hi" {
+		t.Errorf("the draft of a card's answer: %s %+v text %q", a.ov.mode, a.answer, liveLineText(a.sess))
 	}
 	snap(a, session.Snapshot{ID: "t1", Kind: store.KindTranslate, State: session.Done, Selection: "Hi", Result: "你好", Card: true, Delivery: deliver.ReasonNotEditable, TargetLanguage: "zh-Hans"})
 	if !a.answer.open || a.answer.input.Selection != "Hi" || a.answer.lang != "zh-Hans" {
@@ -149,7 +150,7 @@ func TestOverlayWriting(t *testing.T) {
 	if a.ov.mode != ovAnswer || a.answer.problem == nil || a.notice != nil || a.answer.input.Raw != "shorter" {
 		t.Fatalf("failure %s %+v %+v", a.ov.mode, a.answer, a.notice)
 	}
-	tt := cardTester(a)
+	tt := cardTester(t, a)
 	frames(tt)
 	for _, s := range []string{"AI Answer", "Try again", "shorter", "a long text"} {
 		if !has(tt, s) {
@@ -211,5 +212,48 @@ func TestSessionBlocker(t *testing.T) {
 		if n := a.sessionBlocker(k); n != nil {
 			t.Errorf("%s: %+v", k, n)
 		}
+	}
+}
+
+// TestCardSwitchPerFeature: Transcribe, Translate and Rewrite each have
+// their own answer-card switch (11-09: one switch for the three turned
+// Transcribe's card back on from Rewrite's page); Rewrite's is on by
+// default and its page says what its card does more.
+func TestCardSwitchPerFeature(t *testing.T) {
+	a, tt := pageTester(t, "/translate")
+	rewriteCard := "In Rewrite's card you can keep going: click Continue or press the Rewrite shortcut again and say \"shorter\" or \"in English\". The card changes the answer and keeps the whole conversation."
+	cards := func() [3]bool {
+		f := a.lib.settings.Get().Features
+		return [3]bool{f.Transcribe.ShowCard, f.Translate.ShowCard, f.Rewrite.ShowCard}
+	}
+	if got := cards(); got != [3]bool{false, false, true} {
+		t.Fatalf("defaults %v, want Rewrite's card only", got)
+	}
+	want := cards()
+	for i, page := range []string{"/transcribe", "/translate", "/rewrite"} {
+		a.navigate(page)
+		frames(tt)
+		n := 0
+		for _, s := range tt.AccessLabels() {
+			if s == "Show the result in a card" {
+				n++
+			}
+		}
+		if n != 2 { // one row: its title and its switch
+			t.Fatalf("%s: %d elements named for the card switch", page, n)
+		}
+		clickSwitch(t, tt, "Show the result in a card")
+		want[i] = !want[i]
+		if got := cards(); got != want {
+			t.Errorf("%s: cards %v after a click, want %v", page, got, want)
+		}
+		if shown := has(tt, rewriteCard); shown != (page == "/rewrite") {
+			t.Errorf("%s: the note on Rewrite's card shows: %v", page, shown)
+		}
+	}
+	a.navigate("/transcribe") // still its own value
+	frames(tt)
+	if got := cards(); got != want {
+		t.Errorf("back on /transcribe: cards %v, want %v", got, want)
 	}
 }

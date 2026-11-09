@@ -14,9 +14,25 @@ With a history, the overlay, shortcuts, the menu bar, a setup guide, settings an
 
 **Shortcuts** (change them on each feature's page): tap the **right Option** key to transcribe, right Option with Shift to translate, Control with right Option to rewrite; Control-Option-V pastes the last result. These keys leave fn to Auralink, so the two run side by side.
 
-**Updates**: this version does not update itself; a new version is installed by hand.
+## Download and install
 
-> **Status: 2.0.0**. Every feature above works on the local models; see [CHANGELOG.md](CHANGELOG.md).
+Download the newest `Voxt-X.Y.Z-arm64.dmg` from [the Voxt releases](https://github.com/sgl-project/sglang-omni/releases?q=voxt-v&expanded=true), open it and drag Voxt to Applications. Voxt needs a Mac with Apple silicon and macOS 15 or later.
+
+- **New to Voxt**: open it and follow the setup guide: grant the microphone and Accessibility, download the recommended speech model, and set up a language model for clean-up, Translate and Rewrite.
+- **Coming from Voxt 1.x**: quit Voxt 1.x first, then replace it with Voxt. In the setup guide, **Import from the previous Voxt** brings over the dictionary, history, settings and downloaded speech models. Grant the microphone and Accessibility again: macOS treats Voxt as a new app. Voxt 1.x's Check for Updates does not install Voxt 2.
+
+Step by step: [Install Voxt](https://sgl-project.github.io/sglang-omni/get_started/voxt.html). The import in detail: [docs/voxt-migration.md](docs/voxt-migration.md).
+
+**Updates**: Voxt does not update itself; install each new version from its disk image. Changes by version: [CHANGELOG.md](CHANGELOG.md).
+
+## What is new in Voxt 2
+
+Voxt 2 replaces the Swift Voxt 1.x:
+
+- Speech recognition runs on SGLang-Omni's native MLX servers, with live text; **Faster transcription** speeds up Qwen3-ASR by speculative decoding.
+- You choose the language model: a service's API, or Ollama, LM Studio or oMLX on this Mac. Voxt 2 no longer runs language models itself.
+- Rewrite keeps a conversation in the answer card; the dictionary suggests terms from your history and your corrections.
+- One-click import from Voxt 1.x, and the app is open source in this repository.
 
 ## What runs on your Mac
 
@@ -32,11 +48,13 @@ Voxt offers a few models, tuned for it, and downloads them from Hugging Face (or
 | Qwen3-ASR 1.7B (8bit) (recommended) | the most accurate; accents, dialects, names, several languages in one sentence; live text | 2.5 GB |
 | Qwen3-ASR 0.6B (4bit) | quicker and lighter, for clear speech in a quiet place | 713 MB |
 
-Voice detection (Silero VAD v6, 1.2 MB) comes with the first speech model. The speech models know 30 languages and 22 Chinese dialects.
+Voxt 1.x's other local models are there too: Qwen3-ASR 1.7B (6bit), Whisper Large v3 Turbo, Whisper Large v3 and Whisper Small (about 100 languages), Parakeet TDT 0.6B v3 (25 European languages), SenseVoice Small (Chinese, Cantonese, English, Japanese, Korean), Cohere Transcribe 03-2026 (14 languages), Nemotron 3.5 ASR 0.6B (28 languages, live text) and MOSS-Transcribe-Diarize (Chinese and English, live text). Only Qwen3-ASR takes your dictionary. Models Voxt 1.x downloaded come over without a download (docs/voxt-migration.md).
+
+Voice detection (Silero VAD v6, 1.2 MB) comes with the first speech model. The Qwen3-ASR models know 30 languages and 22 Chinese dialects. The Qwen3-ASR 1.7B (8bit) and 0.6B (4bit) cards also offer **Faster transcription**: a draft model (726 MB and 262 MB) for speculative decoding, which proposes several words at a time for the speech model to check.
 
 **Language models** are the services you set up on the Language models page, over their OpenAI-compatible API: OpenAI, Anthropic, Google Gemini, DeepSeek, Qwen (Alibaba Cloud), Kimi, GLM, Doubao (Volcengine), MiniMax, StepFun, Xiaomi MiMo, xAI, OpenRouter, any other compatible server, or one on this Mac (Ollama, LM Studio, oMLX: free, and the text stays here). Without one, Transcribe types the text as recognised; Translate and Rewrite need one.
 
-**Needs** a Mac with Apple silicon and macOS 15 or later. The app is about 280 MB; the recommended speech model is a 2.5 GB download. On an 8 GB Mac choose Qwen3-ASR 0.6B (4bit).
+**Needs** a Mac with Apple silicon and macOS 15 or later. The app is about 280 MB; the recommended speech model is a 2.5 GB download.
 
 ## Privacy
 
@@ -97,6 +115,7 @@ The store's tests use MyGo's SQLite plugin, which downloads its library once (ch
 - [docs/llm-models.md](docs/llm-models.md): the retired local language models, their settings and measurements (history).
 - [docs/eval.md](docs/eval.md): the models' quality on an eval set, and the decisions it led to.
 - [docs/helper-protocol.md](docs/helper-protocol.md): the helper's protocol.
+- [docs/history-access.md](docs/history-access.md): reading the dictation history from scripts and agents on this Mac (off by default).
 - [docs/manual-test.md](docs/manual-test.md): the checks by hand on a Mac (in Chinese), and the automated Mac tests.
 - [docs/release.md](docs/release.md): building, signing, notarising and publishing a release; updates (in Chinese).
 - [AGENTS.md](AGENTS.md): the rules for changes (strings, threading, the protocols).

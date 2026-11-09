@@ -2,13 +2,18 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/learn"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -97,6 +102,44 @@ func TestDictionaryAddEditDelete(t *testing.T) {
 	}
 }
 
+// TestDictionaryGuide: the guide says where a term applies, in both
+// languages, with the numbers the composer uses.
+func TestDictionaryGuide(t *testing.T) {
+	_, tt := dictTester(t)
+	title := "How the dictionary works"
+	if !has(tt, title) || !slices.Contains(tt.AccessLabels(), title) {
+		t.Fatalf("no guide: %q", firstTexts(tt))
+	}
+	if has(tt, "Aliases are not sent") {
+		t.Errorf("the guide starts open: %q", firstTexts(tt))
+	}
+	click(t, tt, title)
+	for _, want := range []string{
+		"takes effect the next time you use Voxt",
+		"as a word to expect, if that model takes hints. Aliases are not sent",
+		fmt.Sprintf("With up to %d enabled terms, it gets them all", compose.GlossaryAllUpTo),
+		fmt.Sprintf("It stops at %d terms", compose.MaxGlossaryTerms),
+		"before the language model and also without one",
+	} {
+		if !has(tt, want) {
+			t.Errorf("no %q in %q", want, firstTexts(tt))
+		}
+	}
+	i18n.SetLocale("zh-Hans")
+	for _, want := range []string{
+		"词典的用法",
+		"下次使用 Voxt 时",
+		"别名不发送",
+		fmt.Sprintf("词条不超过 %d 个时全部发给模型", compose.GlossaryAllUpTo),
+		fmt.Sprintf("最多发送 %d 个", compose.MaxGlossaryTerms),
+		"没有语言模型也有效",
+	} {
+		if !has(tt, want) {
+			t.Errorf("no %q in %q", want, firstTexts(tt))
+		}
+	}
+}
+
 func TestDictionarySearchAndSwitches(t *testing.T) {
 	a, tt := dictTester(t)
 	seedTerms(t, a)
@@ -155,7 +198,7 @@ func TestDictionaryImportExport(t *testing.T) {
 	t.Cleanup(func() { chooseExportFile = savedOut })
 	for _, format := range []string{"csv", "txt"} {
 		out := filepath.Join(dir, "out."+format)
-		chooseExportFile = func(a *app, name string, then func(string)) {
+		chooseExportFile = func(a *app, _, name string, then func(string)) {
 			if name != "voxtnew-dictionary."+format {
 				t.Errorf("name %q", name)
 			}
@@ -185,6 +228,17 @@ func dictShots(t *testing.T, a *app, save func(string)) {
 	a.navigate("/dictionary")
 	a.loadDict()
 	save("page-dictionary-terms")
+	a.suggestions = []learn.Suggestion{
+		{Term: "Claude Code", Heard: []string{"Cloud Code"}, Source: learn.FromEdit},
+		{Term: "Ghostty", Source: learn.FromHistory},
+	}
+	save("page-dictionary-suggestions")
+	a.suggestions = nil
+	a.dv.scan = scanState{open: true, model: fakeLLMModel, counted: true, count: 24}
+	save("dictionary-scan")
+	a.dv.scan = scanState{open: true, running: true, read: 12, total: 24, found: 3, model: fakeLLMModel}
+	save("dictionary-scan-running")
+	a.dv.scan = scanState{}
 	a.openTerm(a.dv.list[0])
 	save("dictionary-edit")
 	a.dv.editOpen = false
