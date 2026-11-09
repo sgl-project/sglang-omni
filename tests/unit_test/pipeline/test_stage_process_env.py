@@ -987,10 +987,13 @@ def test_stage_process_exits_when_its_parent_died_before_it_started(
     assert not (tmp_path / "built").exists()
 
 
+@pytest.mark.parametrize("interval_seconds", [None, 0.001, 0.005])
 def test_stage_process_waits_for_recorder_before_normal_exit(
     monkeypatch: pytest.MonkeyPatch,
+    interval_seconds: float | None,
 ) -> None:
     calls: list[str] = []
+    original_interval_seconds = sys.getswitchinterval()
 
     class ActiveRecorder:
         active: bool = True
@@ -1014,6 +1017,11 @@ def test_stage_process_waits_for_recorder_before_normal_exit(
         startup_error_channel: object | None = None,
     ) -> None:
         del process_spec, ready_event, log, startup_error_channel
+        assert sys.getswitchinterval() == pytest.approx(
+            interval_seconds
+            if interval_seconds is not None
+            else original_interval_seconds
+        )
         calls.append("stages_stopped")
 
     def exit_without_teardown(exit_code: int) -> None:
@@ -1037,9 +1045,13 @@ def test_stage_process_waits_for_recorder_before_normal_exit(
 
     process_spec = StageWorkerProcessSpec(
         process_name="worker",
+        python_thread_switch_interval_seconds=interval_seconds,
         stage_specs=[StageLaunchConfig(stage_name="worker")],
     )
-    stage_workers.stage_process_main(process_spec, None)
+    try:
+        stage_workers.stage_process_main(process_spec, None)
+    finally:
+        sys.setswitchinterval(original_interval_seconds)
 
     assert calls == ["stages_stopped", "deactivate", "wait", "exit"]
 

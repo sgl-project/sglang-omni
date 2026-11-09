@@ -666,3 +666,37 @@ def test_stage_processes_inherit_the_launcher_root_log_level(tmp_path) -> None:
 
     levels = {spec.log_level for group in groups for spec in group.process_specs}
     assert levels == {logging.DEBUG}
+
+
+@pytest.mark.parametrize("interval_seconds", [None, 0.001, 0.005])
+def test_thread_switch_interval_reaches_colocated_and_tp_processes(
+    tmp_path: Path, interval_seconds: float | None
+) -> None:
+    """Spawned TP ranks and colocated workers receive the same scheduling policy."""
+    config = PipelineConfig(
+        model_path="model",
+        endpoints=EndpointsConfig(base_path=str(tmp_path)),
+        python_thread_switch_interval_seconds=interval_seconds,
+        stages=[
+            stage("preprocess", next="thinker"),
+            stage("thinker", gpu=[0, 1], tp_size=2, terminal=True),
+        ],
+    )
+    prep = prepare_pipeline_runtime(config)
+    try:
+        groups = build_stage_groups(
+            config,
+            ctx=FakeMpContext(),
+            stages_cfg=prep.stages_cfg,
+            endpoints=prep.endpoints,
+            placement_plan=prep.placement_plan,
+            process_plan=prep.process_plan,
+        )
+        process_specs = [spec for group in groups for spec in group.process_specs]
+        assert len(process_specs) == 3
+        assert all(
+            spec.python_thread_switch_interval_seconds == interval_seconds
+            for spec in process_specs
+        )
+    finally:
+        prep.runtime_dir.close()

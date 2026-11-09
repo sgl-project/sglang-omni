@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 import torch
 
-from sglang_omni.models.fun_cosyvoice3 import stages
+from sglang_omni.models.fun_cosyvoice3 import stages, streaming_vocoder
 from sglang_omni.models.fun_cosyvoice3.model_runner import FunCosyVoice3ModelRunner
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
 from sglang_omni.models.fun_cosyvoice3.request_builders import (
@@ -467,7 +467,15 @@ def test_ar_to_vocoder_grows_hops_then_finalizes_remainder() -> None:
 
 
 @pytest.mark.parametrize("codes", [None, []])
-def test_streaming_vocoder_fallback_errors_on_empty_audio_codes(codes) -> None:
+def test_streaming_vocoder_fallback_errors_on_empty_audio_codes(
+    codes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(
+        streaming_vocoder,
+        "record_vocoder_batch_event",
+        lambda event_name, participants: events.append(event_name),
+    )
     _, scheduler = make_scheduler()
     scheduler.handle_streaming_new_request("req-empty", stream_payload(codes=codes))
     scheduler.handle_stream_done("req-empty")
@@ -477,6 +485,7 @@ def test_streaming_vocoder_fallback_errors_on_empty_audio_codes(codes) -> None:
     assert "no usable speech tokens" in str(messages[0].data)
     assert scheduler.is_aborted("req-empty")
     assert "req-empty" not in scheduler.stream_states
+    assert events == []
 
 
 def test_equal_first_hops_share_one_causal_flow_batch() -> None:
@@ -1072,3 +1081,57 @@ def test_immediate_first_audio_preserves_follow_up_overlap(
         assert scheduler.pump_one_step() is None
     assert stream_ids(drain(scheduler)) == ["req-b"]
     assert log == ["launch 1", "launch 2", "read 1", "read 2"]
+
+
+@pytest.mark.parametrize("complete_first_audio", [False, True])
+def test_first_audio_in_mixed_batch_controls_completion(
+    monkeypatch: pytest.MonkeyPatch, complete_first_audio: bool
+) -> None:
+    """One new stream makes the whole mixed batch complete when opted in."""
+    _, scheduler = make_scheduler(
+        max_batch_size=2,
+        should_complete_first_chunk_immediately=complete_first_audio,
+    )
+    scheduler.handle_streaming_new_request("existing", stream_payload("existing"))
+    scheduler.ingest_stream_item("existing", item(list(range(28))))
+    with scheduler.state_lock:
+        assert scheduler.pump_streams() == []
+    assert stream_ids(drain(scheduler)) == ["existing"]
+    scheduler.ingest_stream_item("existing", item(list(range(28, 78))))
+    scheduler.handle_streaming_new_request("new", stream_payload("new"))
+    scheduler.ingest_stream_item("new", item(list(range(28))))
+    events: list[dict[str, object]] = []
+
+    def capture_event(**event: object) -> None:
+        events.append(event)
+
+    monkeypatch.setattr(
+        streaming_vocoder,
+        "get_recorder",
+        lambda: SimpleNamespace(is_active=lambda: True),
+    )
+    monkeypatch.setattr(streaming_vocoder, "emit", capture_event)
+    log = pending_copies(scheduler, monkeypatch)
+    with scheduler.state_lock:
+        assert scheduler.pump_one_step() == []
+    launches = [
+        event for event in events if event["event_name"] == "vocoder_launch_start"
+    ]
+    assert len(launches) == 2
+    assert launches[0]["timestamp_ns"] == launches[1]["timestamp_ns"]
+    for event in launches:
+        metadata = event["metadata"]
+        assert isinstance(metadata, dict)
+        assert metadata["batch_size"] == 2
+        assert metadata["first_audio_count"] == 1
+    if complete_first_audio:
+        assert set(stream_ids(drain(scheduler))) == {"existing", "new"}
+        assert log == ["launch 1", "read 1"]
+        assert scheduler.launched_step is None
+    else:
+        assert drain(scheduler) == []
+        assert log == ["launch 1"]
+        with scheduler.state_lock:
+            assert scheduler.pump_one_step() == []
+        assert set(stream_ids(drain(scheduler))) == {"existing", "new"}
+        assert log == ["launch 1", "read 1"]

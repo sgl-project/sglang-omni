@@ -180,3 +180,18 @@ def test_engine_kv_cache_bytes_rejects_max_total_tokens() -> None:
 
     with pytest.raises(ValueError, match="cannot be set together"):
         EngineArgs(kv_cache_bytes="2GiB", max_total_tokens=4096)
+
+
+@pytest.mark.parametrize(
+    "interval_seconds", [0, -0.001, float("inf"), float("nan"), True, "0.001"]
+)
+def test_python_thread_switch_interval_rejects_invalid_settings(
+    interval_seconds: object,
+) -> None:
+    """Reject intervals that cannot be safely applied at process startup."""
+    with pytest.raises(ValueError, match="python_thread_switch_interval_seconds"):
+        PipelineConfig(
+            model_path="model",
+            stages=[make_stage()],
+            python_thread_switch_interval_seconds=interval_seconds,
+        )

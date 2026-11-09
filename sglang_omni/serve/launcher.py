@@ -81,6 +81,7 @@ from sglang_omni.utils.gpu_memory import (
     get_gpu_device_info,
 )
 from sglang_omni.utils.imports import import_string
+from sglang_omni.utils.process import configure_python_thread_switch_interval
 
 logger = logging.getLogger(__name__)
 
@@ -701,6 +702,9 @@ async def run_server(
 
     This is the async entry point.  For a blocking call use :func:`launch_server`.
     """
+    configure_python_thread_switch_interval(
+        pipeline_config.python_thread_switch_interval_seconds
+    )
     export_media_policy(allowed_local_media_path, allowed_media_domains)
     deployment_factory = type(pipeline_config).realtime_deployment_factory
     realtime_timeout_overrides_seconds = {

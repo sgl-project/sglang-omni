@@ -130,6 +130,10 @@ def record_vocoder_batch_event(
         return
     else:
         timestamp_nanoseconds = time.time_ns()
+        monotonic_seconds = time.monotonic()
+        first_audio_count = sum(
+            state.first_emit_at is None for _, state in participants
+        )
         for request_id, state in participants:
             emit(
                 request_id=request_id,
@@ -138,9 +142,10 @@ def record_vocoder_batch_event(
                 timestamp_ns=timestamp_nanoseconds,
                 metadata={
                     "batch_size": len(participants),
+                    "first_audio_count": first_audio_count,
                     "token_offset": state.token_offset,
                     "ready_since_seconds": state.ready_since,
-                    "monotonic_seconds": time.monotonic(),
+                    "monotonic_seconds": monotonic_seconds,
                 },
             )
 
@@ -223,7 +228,8 @@ class FunCosyVoice3StreamingVocoderScheduler(
             failed.extend(self.complete_step(previous))
         else:
             pass
-        # note (yaourt): a dedicated vocoder can send first audio without waiting for the next launch.
+        # note (ratish): samples already on the host need no wait, so such a step completes at launch.
+        # note (yaourt): a first-audio batch can also complete before the next launch.
         if launched is not None and (
             launched.samples.copy_done is None
             or (self.should_complete_first_chunk_immediately and has_first_audio)
@@ -666,7 +672,6 @@ class FunCosyVoice3StreamingVocoderScheduler(
         complete_step. A fallback decodes and completes here."""
         plan = participants[0][1].next_decode()
         assert plan != "wait"
-        record_vocoder_batch_event("vocoder_launch_start", participants)
         pin_memory = is_pin_memory_available(
             next(self.vocoder.flow.parameters()).device
         )
@@ -674,7 +679,9 @@ class FunCosyVoice3StreamingVocoderScheduler(
             request_id, _ = participants[0]
             self.complete_stream_request(request_id, self.finish_stream(request_id))
             return None
-        elif plan == "leftover":
+        else:
+            record_vocoder_batch_event("vocoder_launch_start", participants)
+        if plan == "leftover":
             items = [
                 FlowBatchInput(
                     token=torch.tensor(
