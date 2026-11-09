@@ -528,6 +528,32 @@ func TestOverlaySceneLabel(t *testing.T) {
 	}
 }
 
+// TestOverlayHidesWhileInserting: once the result is ready and goes into
+// the app, the preview of the speech it came from leaves at once instead
+// of staying over the inserted text until the paste is checked (up to the
+// deliver timeout); a result that could not go in comes back in the card.
+func TestOverlayHidesWhileInserting(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	ft := new(fakeTimers).install(a)
+	snap(a, session.Snapshot{ID: "s1", State: session.Recording, Partial: "meet at three"})
+	snap(a, session.Snapshot{ID: "s1", State: session.Composing, Partial: "meet at three"})
+	if a.ov.mode != ovWorking || !a.ov.shown {
+		t.Fatalf("composing: %s, shown %v", a.ov.mode, a.ov.shown)
+	}
+	snap(a, session.Snapshot{ID: "s1", State: session.Delivering, Partial: "meet at three", Result: "Meet at three."})
+	if a.ov.shown {
+		t.Fatalf("delivering: still shown (%s)", a.ov.mode)
+	}
+	ft.advance(ovGone)
+	if a.ov.visible {
+		t.Fatal("delivering: still on screen")
+	}
+	snap(a, session.Snapshot{ID: "s1", State: session.Done, Result: "Meet at three.", Card: true})
+	if a.ov.mode != ovAnswer || !a.ov.shown {
+		t.Errorf("not inserted: %s, shown %v; want the card", a.ov.mode, a.ov.shown)
+	}
+}
+
 // ovGone is how soon the overlay must be off the screen once nothing is
 // left to show (the fade's two steps, and room).
 const ovGone = 150 * time.Millisecond

@@ -16,15 +16,16 @@ package main
 //	           scrolled to its newest words, the start fading out at the
 //	           left edge (Voxt's)
 //	working    the same pill with a five-dot loader in the waveform's
-//	           place: recognising, cleaning up, translating, writing,
-//	           inserting
+//	           place: recognising, cleaning up, translating, writing
 //	notice     an error (or a warning) in the waveform's place: an icon and
 //	           one line, for 5 s; a click opens where to fix it
 //	answer     the answer card (overlay_card.go, Voxt's): 440 wide, as
 //	           high as its text up to Voxt's 220 for it; the result that
 //	           was not inserted, its actions in the header
 //
-// Nothing shows after an insert: the pill fades out (100 ms). Every
+// Nothing shows while the result is inserted, nor after: the pill fades
+// out (100 ms) as the result goes in, and a result that could not go in
+// comes back in the answer card. Every
 // action is a shortcut: the feature's shortcut stops, the cancel shortcut cancels,
 // releasing a long press stops.
 //
@@ -153,9 +154,9 @@ func (a *app) later(d time.Duration, fn func()) {
 // stays in the pill until it ends, its answer one line under the row as
 // the model writes it (Voxt's: the card comes with the result; 10-15:
 // the answer streaming into a card of its own width was one more way to
-// show text, and the card grew line by line); a session that ended shows
-// nothing of its own: not the insert, which the text in place says. A session that ended
-// shows nothing of its own: not the insert, which the text in place says.
+// show text, and the card grew line by line). From the moment its result
+// is inserted a session shows nothing of its own: the text in place says
+// it, and the preview of the speech it came from would only cover it.
 func (a *app) overlayModeNow() overlayMode {
 	s := a.sess
 	live := s.State.Live() && !s.Try
@@ -165,6 +166,8 @@ func (a *app) overlayModeNow() overlayMode {
 		return ovHidden // Insert pastes: the card comes back if it could not (Voxt's)
 	case card, live && a.writingAnswer():
 		return ovAnswer
+	case live && s.State == session.Delivering:
+		return ovHidden
 	case live && s.State == session.Recording:
 		return ovRecording
 	case live:
