@@ -38,7 +38,7 @@ Voxt 2 replaces the Swift Voxt 1.x:
 
 Everything that hears your words:
 
-- **Speech recognition** and **voice detection** run on sglang-omni's native MLX servers ([`sglang_omni_mlx/native`](../sglang_omni_mlx/native), C++, no Python), one process per model, started when needed, stopped after 10 minutes unused (Local models → Advanced changes it).
+- **Speech recognition** and **voice detection** run on sglang-omni's native MLX servers ([`sglang_omni_mlx/native`](../sglang_omni_mlx/native), C++, no Python), one process per model, started when needed, stopped after 10 minutes unused (Speech models → Advanced changes it).
 - A small Swift helper does what needs Apple's frameworks: the microphone, global shortcuts, Accessibility, pasting.
 
 Voxt offers a few models, tuned for it, and downloads them from Hugging Face (or a mirror) when you ask, each file checked against a pinned SHA-256:
@@ -73,7 +73,7 @@ go tool mygo build                   # build/darwin-arm64/Voxt.app and its disk 
 
 The helper must be built before `go tool mygo build` or `mygo dev`: `mygo.json` gives it its entitlements and fails without it. Without the Omni runtime the app runs but cannot recognise speech (or point `VOXTNEW_OMNI_RUNTIME` at one built with `scripts/build-omni.sh --out DIR`).
 
-**The release build** is one command, on the Mac: `scripts/release.sh` builds the three, packages and signs the app, and checks the result (`--runtimes DIR` takes prebuilt runtimes; with a Developer ID identity, `--notarize` notarises it (Voxt 2 has no update feed, so nothing to `--publish`); over ssh it runs through `scripts/mac-gui.sh`). A release is that build on GitHub: a `voxt-vX.Y.Z` tag runs the Voxt Release workflow, which signs it with the Developer ID of the team RY2TQTYSKQ, notarises it and puts its disk image on a draft GitHub release. See [docs/release.md](docs/release.md).
+**The release build** is one command, on the Mac: `scripts/release.sh` builds the helper and the Omni runtime, packages and signs the app, and checks the result (`--runtimes DIR` takes prebuilt runtimes; with a Developer ID identity, `--notarize` notarises it (Voxt 2 has no update feed, so nothing to `--publish`); over ssh it runs through `scripts/mac-gui.sh`). A release is that build on GitHub: a `voxt-vX.Y.Z` tag runs the Voxt Release workflow, which signs it with the Developer ID of the team RY2TQTYSKQ, notarises it and puts its disk image on a draft GitHub release. See [docs/release.md](docs/release.md).
 
 From Linux, `scripts/mac.sh <command>` mirrors the project to a Mac (`MAC_HOST`, default `mac-air`; `MAC_DIR`, default `code/VoxtNew`) and runs the command there: `scripts/mac.sh 'scripts/build-helper.sh && go tool mygo build'`.
 

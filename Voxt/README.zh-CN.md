@@ -38,7 +38,7 @@ Voxt 2 取代了 Swift 版的 Voxt 1.x：
 
 所有听到你说话的部分都在本机：
 
-- **语音识别**和**声音检测**跑在 sglang-omni 的原生 MLX 服务上（[`sglang_omni_mlx/native`](../sglang_omni_mlx/native)，C++，不用 Python），每个模型一个进程，用到时启动，10 分钟不用就停（本地模型页的“高级”里可以改）。
+- **语音识别**和**声音检测**跑在 sglang-omni 的原生 MLX 服务上（[`sglang_omni_mlx/native`](../sglang_omni_mlx/native)，C++，不用 Python），每个模型一个进程，用到时启动，10 分钟不用就停（语音模型页的“高级”里可以改）。
 - 一个小的 Swift 辅助进程负责要用苹果框架的事：麦克风、全局快捷键、辅助功能、粘贴。
 
 Voxt 只提供少数几个为它调好的模型，在你需要时从 Hugging Face（或镜像）下载，每个文件都按固定的 SHA-256 校验：
@@ -73,7 +73,7 @@ go tool mygo build                   # 生成 build/darwin-arm64/Voxt.app 和 dm
 
 `go tool mygo build` 和 `mygo dev` 之前必须先编好辅助进程：`mygo.json` 给它指定了 entitlement，缺了就会失败。没有 Omni 运行时 app 也能运行，但不能识别语音（也可以把 `VOXTNEW_OMNI_RUNTIME` 指向 `scripts/build-omni.sh --out DIR` 编出的运行时）。
 
-**发布版本**在 Mac 上用一条命令构建：`scripts/release.sh` 编译这三样，打包、签名 app 并检查结果（`--runtimes DIR` 直接用编好的运行时；有 Developer ID 时，`--notarize` 做公证（Voxt 2 没有更新通道，不用 `--publish`）；ssh 里经 `scripts/mac-gui.sh` 运行）。正式版就是在 GitHub 上跑这个构建：推一个 `voxt-vX.Y.Z` tag，Voxt Release 工作流用 RY2TQTYSKQ 团队的 Developer ID 签名、公证，把磁盘映像放进 GitHub 的草稿 Release。见 [docs/release.md](docs/release.md)。
+**发布版本**在 Mac 上用一条命令构建：`scripts/release.sh` 编译辅助进程和 Omni 运行时，打包、签名 app 并检查结果（`--runtimes DIR` 直接用编好的运行时；有 Developer ID 时，`--notarize` 做公证（Voxt 2 没有更新通道，不用 `--publish`）；ssh 里经 `scripts/mac-gui.sh` 运行）。正式版就是在 GitHub 上跑这个构建：推一个 `voxt-vX.Y.Z` tag，Voxt Release 工作流用 RY2TQTYSKQ 团队的 Developer ID 签名、公证，把磁盘映像放进 GitHub 的草稿 Release。见 [docs/release.md](docs/release.md)。
 
 在 Linux 上，`scripts/mac.sh <命令>` 会把项目同步到 Mac（`MAC_HOST` 默认 `mac-air`，`MAC_DIR` 默认 `code/VoxtNew`）并在那里执行，例如 `scripts/mac.sh 'scripts/build-helper.sh && go tool mygo build'`。
 
