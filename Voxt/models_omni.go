@@ -126,6 +126,63 @@ func (a *app) omniSilero(rt *omni.Runtime) *omni.VAD {
 	return a.omniVAD
 }
 
+// omniMeetingHold keeps the meeting's local omni ASR and Silero VAD loaded.
+func (a *app) omniMeetingHold() (release func()) {
+	a.omniMu.Lock()
+	defer a.omniMu.Unlock()
+	if a.omniEnd {
+		return func() {}
+	}
+	rt, err := a.omniRuntime()
+	if err != nil {
+		return func() {}
+	}
+	asrID := a.prefs.Features.Meeting.ASR
+	dir := ""
+	if asrID != "" {
+		m, ok := models.Lookup(asrID)
+		if !ok || m.Runtime != models.Omni {
+			return func() {}
+		}
+		dir = a.models.Dir(asrID)
+	} else {
+		asrID, dir = a.firstOmniASR()
+	}
+	if dir == "" {
+		return func() {}
+	}
+	spec, ok := omni.Lookup(asrID)
+	if !ok {
+		return func() {}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), omni.DefaultStartTimeout+time.Second)
+	defer cancel()
+	targets := []omni.HoldTarget{{Spec: spec, Dir: dir}}
+	if vadDir := a.models.Dir(models.VADSilero); vadDir != "" {
+		if vspec, ok := omni.Lookup(omni.VADSilero); ok {
+			targets = append(targets, omni.HoldTarget{Spec: vspec, Dir: vadDir})
+		}
+	}
+	rel, err := rt.Hold(ctx, targets...)
+	if err != nil {
+		a.omniLog("warning", "meeting hold: "+err.Error())
+		return func() {}
+	}
+	return rel
+}
+
+func (a *app) firstOmniASR() (id, dir string) {
+	if a.models == nil {
+		return "", ""
+	}
+	for _, m := range models.Catalog() {
+		if m.Kind == models.ASR && m.Runtime == models.Omni && a.models.Installed(m.ID) {
+			return m.ID, a.models.Dir(m.ID)
+		}
+	}
+	return "", ""
+}
+
 // unloadOmni stops model id's server before its files are deleted.
 func (a *app) unloadOmni(id string) {
 	a.omniMu.Lock()

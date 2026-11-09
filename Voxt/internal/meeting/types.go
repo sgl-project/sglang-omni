@@ -4,6 +4,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -102,6 +103,8 @@ type Config struct {
 	Privacy     func() settings.Privacy
 	Now         func() time.Time
 	FreeSpace   func(dir string) (int64, error)
+	// ModelHold keeps local speech models loaded for the meeting (C1-2).
+	ModelHold local.Holder
 }
 
 // ErrBusy means a meeting is already live.
