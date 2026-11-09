@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/egoist/mygo/ui"
@@ -64,18 +65,37 @@ func (a *app) translateSettings(c *ui.Context) {
 		})
 }
 
-// cardSetting is the answer card's switch on Transcribe and Translate
-// (p is the page's prefix); Rewrite always shows answers in the card.
-func (a *app) cardSetting(c *ui.Context, p string) {
+// cardSetting is feature's Answer card section (p is the page's prefix):
+// the switch on Transcribe and Translate, one for both (Rewrite always
+// shows answers in the card), and the card's size, each feature its own.
+func (a *app) cardSetting(c *ui.Context, p, feature string) {
 	sectionTitle(c, i18n.T("Answer card"))
 	f := &a.prefs.Features
-	settingRow(c, p+"-card", i18n.T("Show the result in a card"),
-		i18n.T("Shows transcribed and translated results in the answer card, to read, copy or insert, instead of typing them (or replacing the selection). Transcribe and Translate share this switch. Text that cannot go in, as with no text field in front, shows in the card anyway."), func() {
-			if ui.Switch(c.Key(p+"-card-switch"), &f.ShowCard).Label(i18n.T("Show the result in a card")).Changed() {
-				on := f.ShowCard
-				a.updateSettings(func(s *settings.Settings) { s.Features.ShowCard = on })
-			}
-		})
+	if feature != hotkey.Rewrite {
+		settingRow(c, p+"-card", i18n.T("Show the result in a card"),
+			i18n.T("Shows transcribed and translated results in the answer card, to read, copy or insert, instead of typing them (or replacing the selection). Transcribe and Translate share this switch. Text that cannot go in, as with no text field in front, shows in the card anyway."), func() {
+				if ui.Switch(c.Key(p+"-card-switch"), &f.ShowCard).Label(i18n.T("Show the result in a card")).Changed() {
+					on := f.ShowCard
+					a.updateSettings(func(s *settings.Settings) { s.Features.ShowCard = on })
+				}
+			})
+	}
+	size := f.CardSize(feature)
+	settingRow(c, p+"-card-size", i18n.T("Card size"), i18n.T("A larger card shows more of a long answer before it scrolls. Each feature keeps its own size."), func() {
+		if ui.Segmented(c.Key(p+"-card-size-seg"), &size, i18n.T("Small"), i18n.T("Medium"), i18n.T("Large")).Label(i18n.T("Card size")).Changed() {
+			step := size
+			a.updateSettings(func(s *settings.Settings) {
+				if step == 0 {
+					delete(s.Features.CardSizes, feature)
+					return
+				}
+				if s.Features.CardSizes == nil {
+					s.Features.CardSizes = map[string]int{}
+				}
+				s.Features.CardSizes[feature] = step
+			})
+		}
+	})
 }
 
 // rewriteSettings are Rewrite's own: the instruction's clean-up.
@@ -173,12 +193,42 @@ func (a *app) savePrompt(feature string) {
 // they are saved (they are saved at once when the field loses focus).
 const promptSaveDelay = 800 * time.Millisecond
 
+// The rules field's height in lines: it grows with its text between them.
+const (
+	promptMinLines = 4
+	promptMaxLines = 36
+)
+
+// findFolded returns where query is in text, ignoring case, as rune
+// offsets [start, end), the text fields' unit; none for a blank query.
+func findFolded(text, query string) [][2]int {
+	if strings.TrimSpace(query) == "" {
+		return nil
+	}
+	haystack, needle := []rune(text), []rune(query)
+	var out [][2]int
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		j := 0
+		for j < len(needle) && unicode.ToLower(haystack[i+j]) == unicode.ToLower(needle[j]) {
+			j++
+		}
+		if j == len(needle) {
+			out = append(out, [2]int{i, i + j})
+			i += j - 1
+		}
+	}
+	return out
+}
+
 func (a *app) featureRules(c *ui.Context, feature string) {
 	t := c.Theme()
 	k := tok(t)
 	p := uitext.FeaturePrefix(feature)
 	u := a.fui(feature)
 	a.promptSync(feature)
+	if !a.settingsOpen && c.Shortcut(ui.Cmd, ui.KeyF) {
+		u.rules, u.findFocus = true, true
+	}
 	// Folded by default: long rules would push the rest of the page down.
 	// Its title tells how long the rules are.
 	summary := i18n.T("Not set")
@@ -204,7 +254,48 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 			placeholder = i18n.T("For example: write numbers as digits; keep English product names as they are; end every sentence with a full stop.")
 		}
 		caption(c, i18n.T("Rules act after recognition, on the text the speech model produced. Speech hints (Dictionary page) only tell the speech model which words to expect; punctuation, format and fillers are decided here."))
-		in := ui.TextArea(c.Key(p+"-prompt"), &u.prompt).Label(label).Placeholder(placeholder).MinHeight(px(t, 88))
+		matches := findFolded(u.prompt, u.find)
+		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
+			find := searchField(c, p+"-find", &u.find, i18n.T("Find in the prompt"), px(t, 320))
+			if u.findFocus {
+				u.findFocus = false
+				find.Focus()
+			}
+			if find.Changed() {
+				u.found = 0
+			}
+			if find.Submitted() && len(matches) > 0 {
+				u.found = u.found%len(matches) + 1
+				u.findSelect = true
+			}
+			switch {
+			case strings.TrimSpace(u.find) == "":
+			case len(matches) == 0:
+				caption(c, i18n.T("Not found")).SingleLine().Shrink(0)
+			case u.found > 0:
+				caption(c, i18n.T("%d of %d", u.found, len(matches))).SingleLine().Shrink(0)
+			default:
+				caption(c, i18n.N(len(matches), "%d match", "%d matches", len(matches))).SingleLine().Shrink(0)
+			}
+		})
+		// As high as the rules, up to promptMaxLines: a long prompt reads
+		// down the page instead of in a small box; past that the field
+		// scrolls, so that Find can bring a match into view.
+		in := ui.TextArea(c.Key(p+"-prompt"), &u.prompt).Label(label).Placeholder(placeholder).Lines(promptMinLines, promptMaxLines)
+		if len(matches) > 0 {
+			ranges := make([]ui.TextRange, len(matches))
+			for i, m := range matches {
+				ranges[i] = ui.TextRange{Start: m[0], End: m[1], Color: k.Accent, Weight: 600}
+				if i == u.found-1 {
+					ranges[i].Weight = 800
+				}
+			}
+			in.TextRanges(ranges...)
+		}
+		if u.findSelect && u.found > 0 && u.found <= len(matches) {
+			u.findSelect = false
+			in.SetTextSelection(matches[u.found-1][0], matches[u.found-1][1])
+		}
 		if in.Changed() {
 			u.promptDirty = true
 			u.promptSeq++

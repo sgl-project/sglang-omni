@@ -112,7 +112,7 @@ func (r *run) listen() (string, bool) {
 		}
 		ch := make(chan openResult, 1)
 		go func() {
-			s, err := st.Open(r.ctx, asr.StreamRequest{SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext()})
+			s, err := st.Open(r.ctx, asr.StreamRequest{SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext(), LiveResult: r.settings.Audio.LiveResult})
 			ch <- openResult{s, err}
 		}()
 		return ch

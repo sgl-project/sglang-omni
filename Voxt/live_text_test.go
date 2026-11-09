@@ -2,8 +2,10 @@ package main
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
@@ -77,5 +79,38 @@ func TestLiveTextCard(t *testing.T) {
 				t.Errorf("%d %s: %q", i, st.name, w)
 			}
 		}
+	}
+}
+
+// TestLiveLines: Overlay style → Live text layout → Lines shows the live
+// text wide from the first word, wrapped, the face growing with its lines
+// up to layout.LinesMax and no higher. With one line (the default) the
+// face grew sideways and the start of what was said scrolled away
+// (#3644 FB5).
+func TestLiveLines(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/overlay")
+	frames(tt)
+	a.sess = session.Snapshot{ID: "s1", State: session.Recording, Partial: "Meet at three"}
+	if w, h, _ := a.overlaySize(ovRecording); w >= layout.LinesW || h != layout.LiveH {
+		t.Fatalf("one line: %d×%d", w, h)
+	}
+	if err := tt.ClickControl("Lines"); err != nil {
+		t.Fatal(err)
+	}
+	frames(tt)
+	if !a.settings.Get().Overlay.LiveLines {
+		t.Fatal("not saved")
+	}
+	_, one, _ := a.overlaySize(ovRecording)
+	if w, _, _ := a.overlaySize(ovRecording); w != layout.LinesW {
+		t.Errorf("lines: %d wide", w)
+	}
+	a.sess.Partial = strings.Repeat("and then the meeting moves to Thursday ", 12)
+	_, some, _ := a.overlaySize(ovRecording)
+	a.sess.Partial = strings.Repeat("and then the meeting moves to Thursday ", 200)
+	_, most, _ := a.overlaySize(ovRecording)
+	if !(one < some && some < most) || most != layout.LinesHeight(layout.LinesMax*layout.LineH) {
+		t.Errorf("heights: one line %d, a few %d, many %d (most %d)", one, some, most, layout.LinesHeight(layout.LinesMax*layout.LineH))
 	}
 }

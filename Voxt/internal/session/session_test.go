@@ -185,6 +185,7 @@ func TestPipeline(t *testing.T) {
 				s.Features.Transcribe.Enhance = tc.enhance
 				s.Features.Transcribe.Prompt = "Be brief."
 				s.Dictionary.SpeechContext = " Leo works on LLM serving. "
+				s.Audio.LiveResult = true
 				c.LLMFirstToken, c.LLMTimeout = 50*time.Millisecond, 100*time.Millisecond
 			})
 			if !tc.writable {
@@ -226,8 +227,8 @@ func TestPipeline(t *testing.T) {
 				if len(st.streams) != 1 || st.streams[0].bytes != h.audio.recorded()*len(frame) {
 					t.Errorf("streamed %d bytes of %d frames", st.streams[0].bytes, h.audio.recorded())
 				}
-				if strings.Join(st.hints, ",") != "VoxtNew" || st.prompt != "Leo works on LLM serving." {
-					t.Errorf("hints %q, prompt %q", st.hints, st.prompt)
+				if strings.Join(st.hints, ",") != "VoxtNew" || st.prompt != "Leo works on LLM serving." || !st.liveResult {
+					t.Errorf("hints %q, prompt %q, live result %v", st.hints, st.prompt, st.liveResult)
 				}
 			} else if f := prov.(*fakeFile); f.calls != 1 || f.bytes != h.audio.recorded()*len(frame) || f.prompt != "Leo works on LLM serving." {
 				t.Errorf("uploaded %d calls, %d bytes, prompt %q", f.calls, f.bytes, f.prompt)

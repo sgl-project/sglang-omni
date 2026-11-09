@@ -22,8 +22,7 @@ import (
 func (a *app) overlaySize(mode overlayMode) (w, h int, exact bool) {
 	switch mode {
 	case ovAnswer:
-		h, exact := a.cardHeight() // overlay_card.go
-		return layout.AnswerW, h, exact
+		return a.cardSize() // overlay_card.go
 	case ovNotice:
 		if a.notice == nil {
 			return layout.NoticeW, layout.PillH, true
@@ -37,9 +36,13 @@ func (a *app) overlaySize(mode overlayMode) (w, h int, exact bool) {
 		}
 		row, rowExact := recordingPillRow(a.sess, mode == ovRecording, mode == ovRecording && a.prefs.Overlay.ShowTime, scene, a.ovTextWidth)
 		exact = exact && rowExact
-		text, _ := pillLine(a.pillSession())
+		text, hint := pillLine(a.pillSession())
 		if text == "" {
 			return row + 2*layout.PillPadX, layout.PillH, exact
+		}
+		if a.prefs.Overlay.LiveLines && !hint {
+			th, known := a.ovTextHeight(liveLinesKey(text))
+			return layout.LinesW, layout.LinesHeight(th), exact && known
 		}
 		tw, known := a.ovTextWidth(liveTextKey(text))
 		w := layout.LiveWidth(row, tw)
@@ -71,6 +74,11 @@ type ovMeasured struct{ w, h float32 }
 
 func liveTextKey(text string) ovSized {
 	return ovSized{text, layout.LiveSize, layout.LiveWeight, 0}
+}
+
+// liveLinesKey is the live text wrapped in lines (Overlay.LiveLines).
+func liveLinesKey(text string) ovSized {
+	return ovSized{text, layout.LiveSize, layout.LiveWeight, layout.LinesTextW}
 }
 
 func sceneText(name string) ovSized { return ovSized{name, layout.SceneSize, 0, 0} }
@@ -159,7 +167,9 @@ func (a *app) overlayTexts() []ovSized {
 		if a.ov.mode == ovRecording && a.sess.Waiting == session.WaitNone {
 			out = append(out, kindTitleText(a.sess.Kind))
 		}
-		if text, _ := pillLine(a.pillSession()); text != "" {
+		if text, hint := pillLine(a.pillSession()); text != "" && a.prefs.Overlay.LiveLines && !hint {
+			out = append(out, liveLinesKey(text))
+		} else if text != "" {
 			out = append(out, liveTextKey(text))
 		}
 	case ovAnswer:

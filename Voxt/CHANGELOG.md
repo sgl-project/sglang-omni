@@ -33,6 +33,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Microphone in the menu bar**, back from Voxt 1.x: the menu bar icon's menu has a Microphone submenu that lists the connected inputs and checks the one recording uses. Choose one to move it to the top of Settings → Audio's list, so the next recording uses it. The list is read when Voxt starts, after each recording and when Settings → Audio opens.
 - **End with a word** (Transcribe → Shortcuts), back from Voxt 1.x: choose over, end, 完毕, 好了 or a word of your own, say it last and pause, and the recording stops as if you pressed the shortcut. The word is left out of the text. It works with speech models that show the text as you speak (the local Qwen3-ASR models, System dictation, Doubao, Aliyun Bailian, Gemini), in Transcribe, Translate and Rewrite.
 - **Doubao's flash file recognition** (Speech models → Doubao → Model: `volc.bigasr.auc_turbo`), which Voxt 1.x could run but did not list: with the same App ID and token, Doubao gets the whole recording once you stop and answers in one go, instead of streaming. Your account needs the resource opened in the Volcengine console. Recordings over 100 MB (about 52 minutes) are not sent.
+- **Hide the features you do not use** (Settings → General → Features → Shown features), as in Voxt 1.x: uncheck Translate, Rewrite or App enhancement and it leaves the sidebar, ⌘K and Home's counts, and its shortcuts and scene rules stop. Its settings stay; check it again to bring it back.
+- **Use the live text as the result** (Settings → Audio → Recognition → Recognise the whole recording again, on by default): off, a local speech model that shows the text as you speak (Qwen3-ASR) does not recognise the whole recording once more after you stop; it finishes its last words and the live text is the result, sooner and a little less accurate. If the live session broke off, Voxt still recognises the whole recording.
+- **Live text in lines** (Settings → Overlay style → Live text layout → Lines): the overlay starts wide and wraps the words as a text box does, growing up to ten lines, then shows the newest ones, so the start of what you said stays in view. One line, which scrolls sideways, stays the default.
+- **Answer card sizes** (Transcribe, Translate, Rewrite → Answer card → Card size): Small (as before), Medium or Large, each feature its own, so a long Rewrite answer can have a large card while translations keep a small one. Show the result in a card stays one switch for Transcribe and Translate.
 
 ### Changed
 
@@ -44,6 +48,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - The rules box and the Speech hints checkbox say which stage they act on: hints go to the speech model, rules shape the text after recognition.
 - The setup guide says what each feature is before you try it: Transcribe writes down your words, Translate puts them into another language, Rewrite writes what you ask for. The Permissions step says why Voxt needs the microphone and Accessibility.
 - **Language models sample with the service's defaults**, as in Voxt 1.x: Voxt no longer sends its own temperature (0.1 for clean-up, 0.2 for Translate, 0.5 for Rewrite), for every service. Temperature, Top P, Top K, Min P and the penalties are all in the service dialog's Advanced section, folded by default; an empty field reads "Service default" and sends nothing. Values you set before are kept and still sent. Reasoning models that accept only their default temperature no longer refuse the first request of each dictation.
+- **An ⓘ opens on a click**: clicking an ⓘ shows its tip and keeps it until you click elsewhere or press Esc; resting the pointer on it shows the tip as before.
+- **The rules field grows with your prompt, and ⌘F finds in it** (Transcribe, Translate, Rewrite → Your rules): the field is as high as its text, up to about 36 lines, before it scrolls. ⌘F on a feature page opens Your rules with Find in the prompt: it counts the matches, ignoring case, shows them in the accent colour, and Return goes to the next one.
 
 ### Fixed
 
@@ -81,6 +87,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **菜单栏选麦克风**，Voxt 1.x 有过的功能：菜单栏图标的菜单里有“麦克风”子菜单，列出已连接的输入设备，录音会用的那个打勾。点一个就把它移到 设置 → 音频 列表的第一位，下一次录音用它。设备列表在 Voxt 启动时、每次录音结束后和打开 设置 → 音频 时读取。
 - **说结束词停止**（转录 → 快捷键），Voxt 1.x 有过的功能：选 over、end、完毕、好了，或者自己填一个词，最后说出它并停顿一下，录音就像按了快捷键一样停止，这个词不会写进文字。边说边出文字的语音模型（本地 Qwen3-ASR、系统听写、豆包、阿里云百炼、Gemini）才能用，转录、翻译、转写都管用。
 - **豆包极速版文件识别**（语音模型 → 豆包 → 模型：`volc.bigasr.auc_turbo`），Voxt 1.x 能用但菜单里没有：用同一组 App ID 和 Access Token，停止录音后把整段录音交给豆包，一次返回结果，不走流式。账号要在火山引擎控制台开通这个资源。超过 100 MB（约 52 分钟）的录音不发送。
+- **隐藏不用的功能**（设置 → 通用 → 功能 →“显示的功能”），和 Voxt 1.x 一样：取消勾选翻译、转写或应用增强，它就不出现在侧边栏、⌘K 和首页的统计里，快捷键和场景规则也停用。它的设置会保留，重新勾选就回来。
+- **直接用实时文字当结果**（设置 → 音频 → 识别 →“再识别一次整段录音”，默认开）：关掉后，边说边出字的本地语音模型（Qwen3-ASR）停止后不再把整段录音识别一遍，识别完最后几个字，实时文字就是结果，出得更快，准确率略低。实时会话中途断了时，Voxt 仍会识别整段录音。
+- **实时文字可以多行显示**（设置 → 浮窗样式 →“实时文字的样式”→“多行”）：浮窗一开始就是宽框，像输入框一样满行换行，最多长到十行，之后显示最新的几行，开头说的话不会被滚出去。默认仍是单行、横向滚动。
+- **答案卡片的大小**（转录、翻译、转写 → 答案卡片 → 卡片大小）：小（和以前一样）、中、大，每个功能各自记住，比如转写的长回答用大卡片，翻译仍用小卡片。“在卡片中显示结果”仍是转录和翻译共用的一个开关。
 
 #### 变更
 
@@ -92,6 +102,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - “你的规则”和“语音识别提示”各自写明作用阶段：提示给语音模型，规则在识别之后整理文字。
 - 设置引导每一步先说明这个功能是什么再让你试：转录照录你说的话，翻译把它译成另一种语言，转写按你的要求写出内容。权限一步写明为什么需要麦克风和辅助功能。
 - **语言模型的采样用服务自己的默认值**，和 Voxt 1.x 一样：所有服务上，Voxt 都不再自己发温度（之前清理 0.1、翻译 0.2、转写 0.5）。温度、Top P、Top K、Min P 和几种惩罚项都放进服务对话框里默认折叠的“高级”；留空的输入框写着“服务默认”，什么也不发。之前填过的值保留，照常发送。只接受默认温度的推理模型，不会再在每次听写的第一个请求就拒绝。
+- **点一下 ⓘ 就能看说明**：点 ⓘ 显示它的提示，直到点别处或按 Esc 才收起；鼠标停在上面照旧显示。
+- **规则框跟着提示词变高，⌘F 可以在里面查找**（转录、翻译、转写 → 你的规则）：输入框随内容增高，大约 36 行以后才在框内滚动。在功能页按 ⌘F 会展开“你的规则”并聚焦“在提示词里查找”：显示有几处（不分大小写），匹配处用强调色标出，按回车跳到下一处。
 
 #### 修复
 
