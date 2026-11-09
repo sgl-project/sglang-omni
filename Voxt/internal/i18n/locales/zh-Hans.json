@@ -1211,7 +1211,6 @@
   "Budget tokens": "预算 Token 数",
   "Budget": "预算",
   "Effort": "推理强度",
-  "Expert": "专家",
   "Extra Body JSON is not a JSON object.": "额外请求体 JSON 必须是一个 JSON 对象。",
   "Extra Body JSON": "额外请求体 JSON",
   "Extra high": "超高",
