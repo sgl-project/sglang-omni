@@ -75,6 +75,10 @@ type cardView struct {
 	follow                                                      string // the Rewrite shortcut's glyphs
 	// size is the card's, its feature's (Features.CardSizes).
 	size layout.CardSize
+	// writing: Rewrite's first answer as the model writes it
+	// (writingAnswer), the card at its full height from the first words:
+	// it does not grow line by line (10-15).
+	writing bool
 }
 
 // cardBubble is one turn's side in a conversation.
@@ -91,6 +95,11 @@ func (a *app) cardNow() cardView {
 		s.Partial, s.Draft = "", "" // "Show live text" off: no words in a follow-up's bubbles either
 	}
 	if !a.answer.open {
+		if a.writingAnswer() {
+			s := a.pillSession()
+			return cardView{kind: s.Kind, title: uitext.CardTitle(s.Kind, s.Title), text: s.Draft, busy: true, writing: true,
+				target: s.Target.Name, size: layout.CardSizes[a.prefs.Features.CardSize(string(s.Kind))]}
+		}
 		return cardView{size: layout.CardSizes[0]} // no card: the pill shows the session
 	}
 	card := a.answer
@@ -157,6 +166,16 @@ func cmpOr(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// writingAnswer says whether Rewrite's first answer is being written, its
+// first words in: the pill hands over to the answer card, which the
+// answer streams into, instead of a loader until the whole answer is in
+// (#3644). Not with Show live text off, nor for a follow-up (its card is
+// open already) or a try (the page shows it).
+func (a *app) writingAnswer() bool {
+	s := a.pillSession()
+	return !a.answer.open && s.Kind == store.KindRewrite && s.State == session.Composing && !s.Try && strings.TrimSpace(s.Draft) != ""
 }
 
 // cardRecording says whether the card shows a follow-up recording (its
@@ -252,6 +271,9 @@ func (a *app) blockHeight(b cardBlock) (float32, bool) {
 // cardBodyHeight is the height of v's text in the card: all of it up to
 // its size's BodyMax (then it scrolls), and whether it was measured.
 func (a *app) cardBodyHeight(v cardView) (int, bool) {
+	if v.writing {
+		return v.size.BodyMax, true
+	}
 	var h float32
 	exact := true
 	for _, b := range cardBlocks(v) {

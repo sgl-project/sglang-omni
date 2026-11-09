@@ -267,7 +267,10 @@ func TestOverlayFlows(t *testing.T) {
 					if s.w != layout.AnswerW {
 						t.Errorf("step %v: the card is %d wide, not %d", s, s.w, layout.AnswerW)
 					}
-					if fl.name != "follow-up" && s.state.Live() {
+					// Rewrite's answer writes into the card (#3644); every
+					// other result comes in the card when it is done.
+					writing := strings.HasPrefix(fl.name, "rewrite") && s.state == session.Composing
+					if fl.name != "follow-up" && s.state.Live() && !writing {
 						t.Errorf("step %v: a card before the result", s)
 					}
 				case ovRecording, ovWorking:
