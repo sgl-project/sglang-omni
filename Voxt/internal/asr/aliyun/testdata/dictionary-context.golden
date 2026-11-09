@@ -1,0 +1,17 @@
+## client → service
+GET /api-ws/v1/inference
+Authorization: Bearer <key>
+→ text {"header":{"action":"run-task","streaming":"duplex","task_id":"<task-id>"},"payload":{"function":"recognition","input":{"context":[{"content":[{"text":"Voxt\n百炼\nKubernetes\nA note about Go.","type":"input_text"}],"role":"user"}]},"model":"fun-asr-realtime","parameters":{"format":"pcm","sample_rate":16000},"task":"asr","task_group":"audio"}}
+→ binary 3200 bytes ×10
+→ binary 2000 bytes
+→ text {"header":{"action":"finish-task","streaming":"duplex","task_id":"<task-id>"},"payload":{"input":{}}}
+
+## events
+partial: 你好
+partial: 你好，世界。
+partial: 你好，世界。我在用
+partial: 你好，世界。我在用 Voxt。
+partial: 你好，世界。我在用 Voxt。Hello
+partial: 你好，世界。我在用 Voxt。Hello world.
+final: 你好，世界。我在用 Voxt。Hello world.
+  model=fun-asr-realtime lang= duration=1.0625s

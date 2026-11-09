@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Measures a native TTS server's spawn-to-first-audio time and idle footprint.
 
-    python tts_spawn_bench.py --server BIN --model-path DIR --request BODY.json
+    python -m sglang_omni_mlx.native.ci.tts_spawn_bench --server BIN --model-path DIR --request BODY.json
 
 Each run starts the server, polls /health, sends the request, sends it again
 for a steady-state time, waits, reads the server's physical footprint and
@@ -28,9 +28,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
+from sglang_omni_mlx.native.ci.long_audio_memory import RUSAGE_INFO_V4, ProcessUsage
+
 HEALTH_POLL_SECONDS = 0.01
 READ_CHUNK_BYTES = 1 << 20
-RUSAGE_INFO_V4 = 4
 MS_INVALIDATE = 0x0002
 LIBC = ctypes.CDLL(None, use_errno=True)
 LIBC.mmap.restype = ctypes.c_void_p
@@ -46,29 +47,6 @@ LIBC.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
 LIBC.msync.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
 LIBC.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_char_p]
 LIBC.proc_pid_rusage.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
-
-
-class RusageInfoV4(ctypes.Structure):
-    """The rusage_info_v4 layout from sys/resource.h."""
-
-    _fields_ = [("ri_uuid", ctypes.c_uint8 * 16)] + [
-        (name, ctypes.c_uint64)
-        for name in (
-            "ri_user_time ri_system_time ri_pkg_idle_wkups ri_interrupt_wkups "
-            "ri_pageins ri_wired_size ri_resident_size ri_phys_footprint "
-            "ri_proc_start_abstime ri_proc_exit_abstime ri_child_user_time "
-            "ri_child_system_time ri_child_pkg_idle_wkups ri_child_interrupt_wkups "
-            "ri_child_pageins ri_child_elapsed_abstime ri_diskio_bytesread "
-            "ri_diskio_byteswritten ri_cpu_time_qos_default "
-            "ri_cpu_time_qos_maintenance ri_cpu_time_qos_background "
-            "ri_cpu_time_qos_utility ri_cpu_time_qos_legacy "
-            "ri_cpu_time_qos_user_initiated ri_cpu_time_qos_user_interactive "
-            "ri_billed_system_time ri_serviced_system_time ri_logical_writes "
-            "ri_lifetime_max_phys_footprint ri_instructions ri_cycles "
-            "ri_billed_energy ri_serviced_energy ri_interval_max_phys_footprint "
-            "ri_runnable_time"
-        ).split()
-    ]
 
 
 @dataclass(kw_only=True)
@@ -123,12 +101,12 @@ def page_cache_pages(path: Path, should_evict: bool) -> tuple[int, int]:
 
 def footprint_bytes(process_id: int) -> tuple[int, int]:
     """Returns (current, lifetime peak) physical footprint of a process."""
-    usage = RusageInfoV4()
+    usage = ProcessUsage()
     if LIBC.proc_pid_rusage(process_id, RUSAGE_INFO_V4, ctypes.byref(usage)) != 0:
         raise OSError(ctypes.get_errno(), f"proc_pid_rusage failed for {process_id}")
     else:
         pass
-    return usage.ri_phys_footprint, usage.ri_lifetime_max_phys_footprint
+    return usage.footprint_bytes, usage.peak_footprint_bytes
 
 
 def free_port() -> int:

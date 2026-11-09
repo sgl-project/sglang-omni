@@ -6,16 +6,28 @@ import subprocess
 import sys
 from collections.abc import Iterator
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.mem_cache.kv_cache_configurator import KVCacheConfigurator
+from sglang.srt.model_executor.model_runner_components.spec_aux_hidden_state import (
+    SpecAuxHiddenStateConfig,
+)
+from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
+    PrefillCudaGraphRunner,
+)
 from sglang.srt.runtime_context import get_context, get_schedule
 
 import sglang_omni.model_runner.sglang_model_runner as runner_mod
 import sglang_omni.models.qwen3_omni.bootstrap as qwen_bootstrap
 import sglang_omni.models.qwen3_omni.stages as qwen_stages
-from sglang_omni.models.qwen3_omni.config import TALKER_MAX_RUNNING_REQUESTS
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.runtime import resolve_stage_typed_kwargs
+from sglang_omni.models.qwen3_omni.config import (
+    TALKER_MAX_RUNNING_REQUESTS,
+    Qwen3OmniPipelineConfig,
+)
 from sglang_omni.platforms import current_platform
 
 
@@ -227,6 +239,45 @@ def patch_thinker_startup(
     return scheduler_calls
 
 
+@pytest.mark.parametrize("algorithm", [None, "DFLASH", "EAGLE3"])
+@pytest.mark.parametrize("requested_async", [None, False, True])
+def test_thinker_overlap_requires_explicit_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    algorithm: str | None,
+    requested_async: bool | None,
+) -> None:
+    """Ordinary decode defaults to async; speculative overlap requires explicit opt-in."""
+    patch_thinker_startup(
+        monkeypatch, expected_context_length=8192 if algorithm else None
+    )
+    monkeypatch.setattr(
+        qwen_stages.AutoConfig,
+        "from_pretrained",
+        lambda *args, **kwargs: SimpleNamespace(max_position_embeddings=8192),
+    )
+    create_scheduler = Mock(wraps=qwen_stages.create_thinker_scheduler)
+    monkeypatch.setattr(qwen_stages, "create_thinker_scheduler", create_scheduler)
+    config = Qwen3OmniPipelineConfig(model_path="dummy")
+    if requested_async is not None:
+        config = ConfigManager(config).merge_config(
+            [("thinker.factory.enable_async_decode", str(requested_async).lower())]
+        )
+    overrides = (
+        {"speculative_algorithm": algorithm, "speculative_draft_model_path": "draft"}
+        if algorithm
+        else {}
+    )
+    qwen_stages.create_sglang_thinker_executor_from_config(
+        "dummy",
+        total_gpu_memory_fraction=0.75,
+        server_args_overrides=overrides,
+        **resolve_stage_typed_kwargs(config.stage_named("thinker")),
+    )
+
+    expected_async = algorithm is None if requested_async is None else requested_async
+    assert create_scheduler.call_args.kwargs["enable_async_decode"] is expected_async
+
+
 def test_colocated_ar_budget_uses_stage_total_fraction(monkeypatch) -> None:
     configurator = make_configurator(total_gpu_memory_fraction=0.4)
     monkeypatch.setattr(
@@ -334,6 +385,8 @@ def make_hybrid_configurator(
     configurator.pp_size = 1
     configurator.attn_dp_size = 1
     configurator.spec_algorithm = SimpleNamespace(is_none=lambda: True)
+    configurator.spec_aux_config = SpecAuxHiddenStateConfig()
+    configurator.is_hybrid_swa = False
     configurator.model_config = SimpleNamespace(hf_config=SimpleNamespace())
     configurator.extra_mamba_cache_bytes_per_req = 0
     return configurator
@@ -809,6 +862,69 @@ def test_thinker_prefill_graph_defaults_to_breakable_on_cuda(
     overrides = thinker_overrides(monkeypatch, allows=True)
 
     assert overrides["cuda_graph_backend_prefill"] == expected
+    if is_cuda:
+        token_buckets = overrides["cuda_graph_bs_prefill"]
+        assert token_buckets[:2] == [1, 4]
+        assert token_buckets[-1] == overrides["cuda_graph_max_bs_prefill"] == 8192
+    else:
+        assert "cuda_graph_bs_prefill" not in overrides
+
+
+@pytest.mark.parametrize(
+    ("server_args_overrides", "max_num_tokens"),
+    [
+        ({"chunked_prefill_size": 1}, 1),
+        ({"chunked_prefill_size": 2}, 2),
+        ({"chunked_prefill_size": 512}, 512),
+        ({"chunked_prefill_size": 513}, 513),
+        ({"cuda_graph_max_bs_prefill": 256}, 256),
+        ({"cuda_graph_config": {"prefill": {"max_bs": 1024}}}, 1024),
+        ({"chunked_prefill_size": 512, "max_total_tokens": 100}, 100),
+    ],
+)
+def test_thinker_single_token_prefill_replays_with_operator_caps(
+    monkeypatch: pytest.MonkeyPatch,
+    server_args_overrides: dict[str, object],
+    max_num_tokens: int,
+) -> None:
+    """A cached one-token thinker prefill must replay without changing the operator's token cap."""
+    monkeypatch.setattr(current_platform, "is_cuda", lambda: True)
+    overrides = thinker_overrides(
+        monkeypatch, allows=True, server_args_overrides=server_args_overrides
+    )
+    token_buckets = overrides["cuda_graph_bs_prefill"]
+    assert (
+        PrefillCudaGraphRunner._pad_to_bucket(  # noqa: leading-underscore  # upstream spelling
+            1, token_buckets
+        )
+        == 1
+    )
+    assert token_buckets[-1] == overrides["cuda_graph_max_bs_prefill"] == max_num_tokens
+    assert all(left < right for left, right in zip(token_buckets, token_buckets[1:]))
+
+
+@pytest.mark.parametrize(
+    ("server_args_overrides", "expected_backend", "expected_token_buckets"),
+    [
+        ({"cuda_graph_bs_prefill": [4, 8]}, "breakable", [4, 8]),
+        ({"cuda_graph_config": {"prefill": {"bs": [4, 8]}}}, "breakable", [4, 8]),
+        ({"disable_prefill_cuda_graph": True}, "disabled", None),
+        ({"disable_cuda_graph": True}, "disabled", None),
+        ({"cuda_graph_config": {"prefill": {"backend": "disabled"}}}, "disabled", None),
+    ],
+)
+def test_thinker_single_token_bucket_respects_operator_graph_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+    server_args_overrides: dict[str, object],
+    expected_backend: str,
+    expected_token_buckets: list[int] | None,
+) -> None:
+    monkeypatch.setattr(current_platform, "is_cuda", lambda: True)
+    overrides = thinker_overrides(
+        monkeypatch, allows=True, server_args_overrides=server_args_overrides
+    )
+    assert overrides["cuda_graph_backend_prefill"] == expected_backend
+    assert overrides.get("cuda_graph_bs_prefill") == expected_token_buckets
 
 
 @pytest.mark.parametrize("speculative_algorithm", ["EAGLE3", "DFLASH"])
@@ -834,6 +950,15 @@ def test_a_speculative_thinker_keeps_the_prefill_graph_on_cuda(
     )
 
     assert overrides["cuda_graph_backend_prefill"] == "breakable"
+    token_buckets = overrides["cuda_graph_bs_prefill"]
+    assert token_buckets[:2] == [1, 4]
+    assert token_buckets[-1] == overrides["cuda_graph_max_bs_prefill"] == 8192
+    assert (
+        PrefillCudaGraphRunner._pad_to_bucket(  # noqa: leading-underscore  # upstream spelling
+            1, token_buckets
+        )
+        == 1
+    )
 
 
 def test_importing_the_stages_module_does_not_load_the_platform_layer() -> None:
