@@ -27,8 +27,9 @@ public struct SpeechTranscript: Sendable {
     }
 
     // shortcut: a new utterance that starts with the last one's first
-    // words reads as a revision and replaces it; upgrade to segment
-    // timestamps if that shows up.
+    // words reads as a revision (its start is lost), and a revision that
+    // drops the start ("嗯我想" to "我想") as a restart (doubled); upgrade
+    // to segment timestamps if either shows up.
     static func restarted(from old: String, to new: String) -> Bool {
         let a = Array(old.lowercased()), b = Array(new.lowercased())
         guard !a.isEmpty, !b.isEmpty, b.count < a.count else { return false }
