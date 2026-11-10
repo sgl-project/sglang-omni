@@ -3,7 +3,8 @@ package settings
 import "time"
 
 // Models: how the local models' runtimes keep what they loaded (the Local
-// models page's Advanced section).
+// models page's Advanced section), and the models hidden from the
+// features' menus.
 type Models struct {
 	// KeepLoaded is how long a loaded model stays in memory unused: one
 	// of KeepChoices. "" (Automatic), or a value VoxtNew does not know,
@@ -12,6 +13,10 @@ type Models struct {
 	// memory rules stay above it: another app's memory request and the
 	// memory budget still unload idle models (internal/actnow).
 	KeepLoaded string `json:"keepLoaded,omitempty"`
+	// Hidden are the speech models (their ids) the user hid on the Speech
+	// models page: the features' menus leave them out, unless one is in
+	// use (Voxt 1.x's hiddenModelVisibilityIDs).
+	Hidden []string `json:"hidden,omitempty"`
 }
 
 // The choices of Models.KeepLoaded.

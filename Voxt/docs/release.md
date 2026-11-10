@@ -42,10 +42,11 @@ scripts/mac-gui.sh scripts/release.sh（在 Mac 上，ssh 里经 mac-gui.sh 进�
 
 1. 说明写在 [CHANGELOG.md](../CHANGELOG.md) 最上面一节（格式见 §2.1 第 2 步）：发布时用这个版本的一节，没有就用 `## [Unreleased]`。要在 main 上留下版本号，就在发布前的提交里把 `## [Unreleased]` 改成 `## [X.Y.Z] - 日期`，mygo.json 和两个 Info.plist 也改成 X.Y.Z（§2.1 第 1 步）；不改也可以，发布的版本号由 tag 决定。
 2. 在 main 上推 tag：`git tag -a voxt-vX.Y.Z -m "Voxt X.Y.Z" && git push origin voxt-vX.Y.Z`。版本号只能往上走：要比所有 `voxt-v` tag 都新（包括 Swift 版 Voxt 1.x 的 `voxt-v1.16.x`），只能是 `X.Y.Z`，没有 beta。失败了可以删掉 tag，修好再推同一个。
-3. 工作流把 tag 的版本号写进 mygo.json 和两个 Info.plist，导入 `voxt-release` 环境的 Developer ID（[scripts/release-identity.sh](../scripts/release-identity.sh) 检查它是 RY2TQTYSKQ 的），用 App Store Connect API key 建 notarytool 配置，跑 `scripts/release.sh --notarize voxt-notary --keychain …`（`EXPECT_TEAM=RY2TQTYSKQ`，`release-verify.sh developer-id` 全部通过才继续），再把 `Voxt-X.Y.Z-arm64.dmg` 和它的 `.sha256` 传到草稿 Release “Voxt vX.Y.Z”。说明依次是要求、安装、CHANGELOG 里的那一节和构建来源。
+3. 工作流把 tag 的版本号写进 mygo.json 和两个 Info.plist，导入 `voxt-release` 环境的 Developer ID（[scripts/release-identity.sh](../scripts/release-identity.sh) 检查它是 RY2TQTYSKQ 的），用 App Store Connect API key 建 notarytool 配置，跑 `scripts/release.sh --notarize voxt-notary --keychain …`（`EXPECT_TEAM=RY2TQTYSKQ`，`release-verify.sh developer-id` 全部通过才继续），再把 `Voxt-X.Y.Z-arm64.dmg`、app 的 ZIP `Voxt-X.Y.Z-macOS.zip`（给 Voxt 1.x 的应用内更新和 Homebrew）和它们的 `.sha256` 传到草稿 Release “Voxt vX.Y.Z”。说明依次是要求、安装、CHANGELOG 里的那一节和构建来源。
 4. 在 Release 页面检查说明后发布（默认标成 Latest）。用户下载 dmg，把 Voxt 拖进“应用程序”，会替换 Swift 版 Voxt 1.x 的 Voxt.app。2.0.0 不会自动更新，新版本也这样装。
+5. 推给 Voxt 1.x 的用户和 Homebrew：发布后手动运行 Voxt Appcast 工作流，先放进 1.x 的 beta 通道，在真机上测通后再发到 stable，只给 Apple 芯片上的 1.x，见 [Voxt 1.x 的应用内更新和 Homebrew](#voxt-1x-的应用内更新和-homebrew)。
 
-`voxt-release` 环境是 Swift 版 Voxt 1.x 发版时建的，部署规则只放行 `main` 和 `voxt-v*` tag，没有审批。这个工作流（tag 发布，main 上的 nightly 和 beta）用到它的这些 secret：
+`voxt-release` 环境是 Swift 版 Voxt 1.x 发版时建的，部署规则放行 `main` 和 `voxt-v*` tag，没有审批。这个工作流（tag 发布，main 上或手动运行的 nightly 和 beta）用到它的这些 secret。从别的分支手动运行 nightly 或 beta 也签名，要先在仓库 Settings → Environments → voxt-release 的部署规则里放行那个分支，否则 job 一开始就失败：
 
 | Secret | 内容 |
 |---|---|
@@ -53,13 +54,13 @@ scripts/mac-gui.sh scripts/release.sh（在 Mac 上，ssh 里经 mac-gui.sh 进�
 | `APPLE_NOTARIZATION_KEY`、`APPLE_NOTARIZATION_KEY_ID`、`APPLE_NOTARIZATION_ISSUER` | 同一个 Team 的 App Store Connect API key（.p8 的内容）、key id 和 issuer id，用来公证 |
 | `ACTNOW_SOUNDS_TOKEN`（可选） | 能读 hehehai/actnow-sounds 的 token，官方构建的提示音库从那里来（[scripts/sync-sounds.sh](../scripts/sync-sounds.sh)）。没有它构建照常，提示音用 macOS 的系统声音，工作流给出 warning |
 
-其他不带 tag 的运行（改了这个工作流、`scripts/release*.sh` 或 `scripts/build-*.sh` 的 PR，或者手动运行）做同样的构建和 `release-verify.sh ad-hoc`，不签名、不公证，dmg 作为 artifact 保留 14 天：打开时要在 系统设置 → 隐私与安全性 里点“仍要打开”。
+其他不带 tag 的运行（改了这个工作流、`scripts/release*.sh` 或 `scripts/build-*.sh` 的 PR，或者手动运行这个工作流本身）做同样的构建和 `release-verify.sh ad-hoc`，不签名、不公证，dmg 作为 artifact 保留 14 天：打开时要在 系统设置 → 隐私与安全性 里点“仍要打开”。
 
 ## Nightly（GitHub Actions）
 
-[voxt-nightly.yaml](../../.github/workflows/voxt-nightly.yaml) 每天 12:34 UTC（北京时间 20:34）在 main 上先跑 Voxt CI（[voxtnew-ci.yaml](../../.github/workflows/voxtnew-ci.yaml)，Go 测试）和 Voxt Mac CI（[voxt-mac-ci.yaml](../../.github/workflows/voxt-mac-ci.yaml)，原生运行时和 Swift 测试），两个都通过才跑上面的工作流，版本号是 mygo.json 的版本加 `-nightly.YYYYMMDD`（UTC 日期）。它和 tag 发布一样进 `voxt-release` 环境，用 Developer ID 签名、公证，`release-verify.sh developer-id` 全部通过，只是不建 Release。改了 voxt-nightly.yaml 的 PR 也跑它，但 Voxt Mac CI 照旧要 `run-mac-ci` 标签，构建进不了环境，做的是 ad hoc 构建。GitHub 不保证定时任务准点开始，负载高时会晚一些；漏掉的一次可以在 Actions 页面从 main 手动运行。
+[voxt-nightly.yaml](../../.github/workflows/voxt-nightly.yaml) 每天 12:34 UTC（北京时间 20:34）在 main 上先跑 Voxt CI（[voxtnew-ci.yaml](../../.github/workflows/voxtnew-ci.yaml)，Go 测试）和 Mac CI（[mac-ci.yaml](../../.github/workflows/mac-ci.yaml)，原生运行时和 Swift 测试），两个都通过才跑上面的工作流，版本号是 mygo.json 的版本加 `-nightly.YYYYMMDD`（UTC 日期）。它和 tag 发布一样进 `voxt-release` 环境，用 Developer ID 签名、公证，`release-verify.sh developer-id` 全部通过，只是不建 Release。改了 voxt-nightly.yaml 的 PR 也跑它：挂 `run-mac-ci` 才跑 Mac 测试，挂 `run-lint-only` 跳过 Mac 测试，不挂 CI 标签则 Mac CI 报红、不构建；构建进不了环境，做的是 ad hoc 构建。从别的分支手动运行时和 main 上一样签名、公证（环境要放行那个分支，见上）。GitHub 不保证定时任务准点开始，负载高时会晚一些；漏掉的一次可以在 Actions 页面从 main 手动运行。
 
-dmg 和它的 `.sha256` 是运行的 artifact `Voxt-X.Y.Z-nightly.YYYYMMDD-arm64`，保留 14 天：
+dmg 和它的 `.sha256` 是运行的 artifact `Voxt-X.Y.Z-nightly.YYYYMMDD-arm64`，保留 14 天（app 的 ZIP 只有 tag 的 Release 才有）：
 
 ```bash
 gh run list --repo sgl-project/sglang-omni --workflow voxt-nightly.yaml --status success --limit 1
@@ -68,13 +69,55 @@ gh run download RUN_ID --repo sgl-project/sglang-omni
 
 它和正式版是同一个 app（同一个 bundle ID、同一个 Team），拖进“应用程序”会替换已装的版本，麦克风和辅助功能的授权保留（§4）。回到正式版时重新装正式版的 dmg。
 
+## 1.x → 2.x 升级测试（GitHub Actions）
+
+[Voxt Upgrade Test](../../.github/workflows/voxt-upgrade-test.yaml) 在 GitHub 的一台全新的 macOS runner 上，让 Swift 版 Voxt 1.x 用它自己的 Sparkle 从 beta 通道更新到 Voxt 2，再检查装好的 app 和导入。它不在开发用的 Mac 上跑：1.x 是沙盒 app，数据在 `~/Library/Containers/com.voxt.Voxt`，假 HOME 隔离不了，会碰到真实的 1.x 数据。每一步都在 [scripts/upgrade-test.sh](../scripts/upgrade-test.sh) 里。
+
+**什么时候跑**：版本发到 1.x 的 beta 通道以后（Voxt Appcast 工作流，channel 选 beta），发到 stable 之前。只能手动运行，Actions → Voxt Upgrade Test → Run workflow，或者：
+
+```sh
+gh workflow run voxt-upgrade-test.yaml --repo sgl-project/sglang-omni -f from_tag=voxt-v1.16.3 -f to_version=X.Y.Z
+```
+
+`from_tag` 是起点的 1.x Release（默认 `voxt-v1.16.3`），`to_version` 是 beta 通道上的 Voxt 2 版本。
+
+**它做什么**：
+
+1. 从 `from_tag` 的 Release 下载 1.x 的 dmg，用 `.sha256` 校验，拷进 `/Applications`，用 `spctl` 检查。
+2. 用 `open -g` 启动一次 1.x，让 macOS 建好它的沙盒容器，再退出；把 `testdata/legacy/real`（1.16.3 写的数据库，3 个词条，只在 WAL 里）放进容器。
+3. 先确认 beta 通道的 appcast 里有 `to_version`，没有就停下。在容器的偏好里把 `SUEnableAutomaticChecks`、`SUAutomaticallyUpdate`、`betaUpdatesEnabled` 设成 YES，`SULastCheckTime` 设成 2020 年，用 `open -g --env VOXT_UPDATE_CHANNEL=beta --env VOXT_ENABLE_BETA_UPDATES=1` 启动 1.x（1.x 只在两个变量都设了时才直接用 beta 通道，只设前一个等于没设，会退回 `betaUpdatesEnabled` 偏好），等 Sparkle 下载好（最多 20 分钟），再让 1.x 退出、安装（见下面的两种装法）。
+4. 检查 `/Applications/Voxt.app`：bundle id 是 `dev.hehehai.voxtnew`，版本是 `to_version`，`codesign -dv` 的 Team 是 RY2TQTYSKQ，`codesign --verify --deep --strict` 通过，`spctl` 认它是公证过的 Developer ID，`stapler validate` 通过。
+5. 用 `open` 启动装好的 app：`VOXTNEW_SMOKE_LEGACY=1`，`Voxt --smoke <dir>`。它不弹选择文件夹的窗口，直接读 1.x 的数据库（`legacyReadable`），像侧栏的导入卡片一样导入到 `<dir>` 自己的数据文件夹，打印那里的词条和历史条数，要是 `3 terms, 0 history entries`（`TestSmokeLegacy` 在 Linux 上对同一个数据库断言同一行）。这一步同时验证 #3593 还没验证的一项：Developer ID 构建不弹窗就能读 1.x 的数据。
+6. 不管成败，都把证据传成 artifact `voxt-upgrade-test`，保留 30 天。
+
+**看结果**：这次运行的 Summary 里有一张表，每项是 ✅、❌ 或 ℹ️，❌ 那一行写卡在哪一步。artifact 里有：
+
+| 文件 | 内容 |
+|---|---|
+| `results.md` | 同一张表 |
+| `sparkle.log` | 运行期间 Sparkle、它的安装进程、1.x 的系统日志，以及提到 Voxt 的 TCC 日志 |
+| `voxt-1x-logs/` | 1.x 自己的日志：`current.log` 里有 `Sparkle found update`、`Sparkle finished downloading update` 这些行 |
+| `shots/` | `screencapture` 的截图：启动后、下载完、点按钮时、装好后、结束时 |
+| `appcast-beta.xml` | 当时 beta 通道的 appcast |
+| `codesign.txt`、`spctl.txt`、`stapler.txt` | 第 4 步的原始输出 |
+| `smoke.txt` | 第 5 步打印的行 |
+
+**第一次跑之前不知道的两件事**。第 3 步依次试两种装法，表里写哪一种装上了、另一种卡在哪：
+
+- **装法 1**（开着自动更新的用户就是这样装的）：让 1.x 退出，Sparkle 在退出时安装。先用 AppleScript 让它退出，runner 上这可能要“自动化”授权；60 秒没退出就发 SIGTERM，但 Sparkle 可能不把 SIGTERM 当成退出，也就不安装。
+- **装法 2**（点界面的用户）：把 `SUAutomaticallyUpdate` 改成 NO，再启动 1.x，通过 System Events 在 Sparkle 的窗口里点 “Install Update” 和 “Install and Relaunch”。这要 runner 上的 `osascript` 有辅助功能权限：步骤先检查，没有就停下并写明。
+
+两种都不行时，看 ❌ 那一行和截图，再决定改工作流，还是在真机上补测（manual-test.md）。
+
+**只有之后的版本能查导入**：第 5 步用的是装好的 app 自己的 `--smoke`，2.0.1 和更早的版本没有 `VOXTNEW_SMOKE_LEGACY`，表里会写 “it predates VOXTNEW_SMOKE_LEGACY, so the import is not checked”。
+
 ## Beta（GitHub Actions）
 
-[voxt-beta.yaml](../../.github/workflows/voxt-beta.yaml) 在 main 每合入一次 Voxt 的改动就跑一次上面的工作流：改了 `Voxt/` 或 app 里带的原生运行时 `sglang_omni_mlx/native/`（只改 Markdown 的不算），或者改了 voxt-beta.yaml、voxt-release.yaml。版本号是 mygo.json 的版本加 `-beta.YYYYMMDD.N`（UTC 日期，N 是 voxt-beta.yaml 的运行序号，区分同一天的几次）。签名、公证和 `release-verify.sh developer-id` 都和 nightly 一样，dmg 和它的 `.sha256` 是运行的 artifact `Voxt-X.Y.Z-beta.YYYYMMDD.N-arm64`，保留 14 天。合入的改动在 PR 里已经跑过 Voxt CI，beta 不再跑测试；新的合入会取消还没构建完的上一个 beta。改了 voxt-beta.yaml 的 PR 也跑它，构建进不了环境，做的是 ad hoc 构建。
+[voxt-beta.yaml](../../.github/workflows/voxt-beta.yaml) 在 main 每合入一次 Voxt 的改动就跑一次上面的工作流：改了 `Voxt/` 或 app 里带的原生运行时 `sglang_omni_mlx/native/`（只改 Markdown 的不算），或者改了 voxt-beta.yaml、voxt-release.yaml。版本号是 mygo.json 的版本加 `-beta.YYYYMMDD.N`（UTC 日期，N 是 voxt-beta.yaml 的运行序号，区分同一天的几次）。签名、公证和 `release-verify.sh developer-id` 都和 nightly 一样，dmg 和它的 `.sha256` 是运行的 artifact `Voxt-X.Y.Z-beta.YYYYMMDD.N-arm64`，保留 14 天。合入的改动在 PR 里已经跑过 Voxt CI，beta 不再跑测试；新的合入会取消还没构建完的上一个 beta。改了 voxt-beta.yaml 的 PR 也跑它，构建进不了环境，做的是 ad hoc 构建。从别的分支手动运行（Actions → Voxt Beta → Run workflow，选那个分支）时和 main 上一样签名、公证，版本号用那个分支 mygo.json 的版本（环境要放行那个分支，见上）。
 
 和正式版、nightly 不同（它们每次从头编），beta 用 GitHub Actions 的缓存复用 Omni 运行时，再交给 `release.sh --runtimes`：缓存的是 `build-omni.sh --out` 编出来的成品，缓存键是 `sglang_omni_mlx/native/`、`build-omni.sh` 和 runner 上 Xcode 版本的哈希。成品和 app 的版本号、签名身份无关（它自己是 ad hoc 签名，mygo build 给 app 里的那份重新签名），源码没变就直接用，变了就从头编。
 
-main 的缓存只有 main 上的运行能写，PR 的运行只能读它、自己存的只在那个 PR 里用，所以签名构建用到的缓存都出自 main。要让 beta 从头编，在仓库 Actions 页面的 Caches 里删掉 `voxt-omni-` 开头的缓存。
+main 的缓存只有 main 上的运行能写，PR 的运行只能读它、自己存的只在那个 PR 里用，所以签名构建用到的缓存出自 main，或者（从别的分支手动运行时）出自那个分支自己的运行。要让 beta 从头编，在仓库 Actions 页面的 Caches 里删掉 `voxt-omni-` 开头的缓存。
 
 ```bash
 gh run list --repo sgl-project/sglang-omni --workflow voxt-beta.yaml --status success --limit 1
@@ -195,7 +238,7 @@ MAC_DIR=code/VoxtNew-rel scripts/mac.sh 'export VOXTNEW_SIGN_IDENTITY="$(scripts
    jq --arg v "$v" '.version = $v' mygo.json > mygo.json.tmp && mv mygo.json.tmp mygo.json
    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $v" helper/Support/Info.plist   # macOS
    ```
-   app 的 `CFBundleShortVersionString` 是完整版本号（更新比较用它）；`CFBundleVersion` 由 MyGo 写成数字部分（`2.0.1-beta.1` 写成 `2.0.1`，补丁 0007）。
+   app 的 `CFBundleShortVersionString` 是完整版本号（更新比较用它）；`CFBundleVersion` 由 MyGo 写成数字部分（`2.0.1-beta.1` 写成 `2.0.1`，补丁 0007），`release.sh` 的构建再改成 Voxt 1.x 的构建号（见 [Voxt 1.x 的应用内更新和 Homebrew](#voxt-1x-的应用内更新和-homebrew)）。
 2. **写 CHANGELOG.md**：把最上面的 `## [Unreleased]` 改成 `## [2.0.1] - 2026-11-20`（版本号和 mygo.json 完全一样），英文在前（`### Added`、`### Fixed`…），然后是 `### 中文`，下面用 `####` 小标题（`#### 新增`、`#### 修复`…）。更新窗口显示整节；官网用同一节：发布脚本从第一个含汉字的 `###` 标题（`### 中文`，这个标题本身去掉）分成 `notes`（英文）和 `notesZh`，后台还要求清单里的 notes（整节）包含英文部分。`--publish` 时没有这一节就失败。
 3. 提交、推到 main，等 CI（[voxtnew-ci.yaml](../../.github/workflows/voxtnew-ci.yaml)）通过，在 mac-air 上跑一遍回归（`scripts/mac-regress.sh`，[manual-test.md](manual-test.md) §10）。
 4. 从 Linux 同步到发布用的 checkout 并构建（§1.1 的 `mac-gui.sh`；更新私钥 `release.sh` 自己从 `~/.config/voxtnew-release/` 读，§1.3）：
@@ -378,14 +421,61 @@ MAC_DIR=code/VoxtNew-upd scripts/mac.sh scripts/mac-beta-e2e.sh     # 两个通�
 - **两个更新源，beta 取较新的**：官网的约定，和 Auralink 一样；打开 Beta 更新时 app 读 beta 清单，失败时退回正式版。beta 的地址不单独配置：`updates.url` 是正式版的，MyGo（补丁 0006 的 `prereleases`）按版本号把 beta 放进它的 `beta/`，所以 `release/mygo.release.json` 只有一个 url。
 - **按 SHA-1 选签名身份**：codesign 遇到两张同名证书会报 “ambiguous”，按哈希签不会。
 
+## Voxt 1.x 的应用内更新和 Homebrew
+
+Swift 版 Voxt 1.x 用 Sparkle 2.10 更新：读 `https://voxt.actnow.dev/updates/stable/appcast.xml`，1.x 的 设置 → 关于 里打开 **Beta 更新**（Beta Updates）时读 `…/beta/appcast.xml`。[Voxt Appcast](../../.github/workflows/voxt-appcast.yaml) 工作流把一个已发布的 Release 放进其中一个通道：用 Sparkle 私钥给 `Voxt-X.Y.Z-macOS.zip` 签名，把 ZIP 和 dmg 传到 Voxt 的更新服务，设成这个通道的最新一项，再等 appcast 里出现它的构建号。通道是 stable 时，它还把 `hehehai/homebrew-tap` 的 `Casks/voxt.rb` 指向这个 ZIP。beta 和 stable 都只能手动运行：更新服务输出 `sparkle:hardwareRequirements` 之前，Release 发布时它不自动运行（见下面“只给 Apple 芯片”）。它是 1.x 的同名工作流（#3043 合并时删掉了）移植过来的，构建号、条目、更新说明和 cask 由 [scripts/release-appcast.sh](../scripts/release-appcast.sh) 生成（测试：`go test -run TestReleaseAppcast .`）。
+
+Sparkle 要满足下面几条才装 2.x（Sparkle 2.10 的 `SUPlainInstaller.m`、`SUUpdateValidator.m`、`SUInstaller.m`）：
+
+- **appcast 里的 `sparkle:version` 比 1.x 的 `CFBundleVersion` 大**，Sparkle 才提示更新。1.x 的构建号是 主×10⁸ + 次×10⁵ + 补丁×100 + 99，1.16.3 是 101600399，2.0.1 是 200000199。
+- **新 app 的 `CFBundleVersion` 不比 1.x 的小**，否则 Sparkle 当成降级，拒绝安装。MyGo 默认把 2.0.1 的 `CFBundleVersion` 写成 `2.0.1`，按 Sparkle 的比较方法比 101600399 小，所以 `release.sh` 把每个发布构建的 `CFBundleVersion` 写成同一个构建号（预发布版本，比如 nightly，末两位是 00，排在正式版前面）。`CFBundleShortVersionString` 还是 `2.0.1`，2.x 的界面和更新比较都只看它。
+- **新 app 的 Info.plist 有 EdDSA 公钥**（`SUPublicEDKey`）：1.x 有公钥，新 app 没有的话 Sparkle 拒绝。`release.sh` 写进 1.x 的公钥 `iMt1voRd…`。2.x 自己不用 Sparkle，这个键只给 1.x 的 Sparkle 看。
+- **ZIP 里是 `Voxt.app`**：Sparkle 按文件名找要装的 app，和 1.x 同名。
+- **appcast 里这一项有 `<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>`**，Intel Mac 上的 Sparkle 才会跳过它（`SPUAppcastItemStateResolver.m`、`SUAppcastDriver.m`；Rosetta 下照常提示）。1.x 也支持 Intel，2.x 只有 arm64，没有这个元素的话，Intel 上的 1.x 会装上一个打不开的 2.x。
+- **ZIP 的 EdDSA 签名用 1.x 的公钥验证通过**。通过以后，Sparkle 只要求新 app 的代码签名有效，不要求它和 1.x 的代码签名一致。1.x 的 bundle id 是 `com.voxt.Voxt`，2.x 是 `dev.hehehai.voxtnew`，代码签名的要求对不上，所以从源码看，换 bundle id 不影响安装，只是还没在真机上测过。macOS 会把 2.x 当成另一个 app，麦克风和辅助功能要重新授权。
+
+工作流检查 ZIP 里的 app：版本号、`CFBundleVersion` 和 `SUPublicEDKey` 不对就停下，不上传。只有带 ZIP 的 Release 能发：2.0.1 和更早的 Release 没有 ZIP，第一个能发的是 2.0.2。
+
+它用 `voxt-release` 环境里 1.x 留下的这些 secret：
+
+| Secret | 内容 |
+|---|---|
+| `SPARKLE_PRIVATE_KEY` | Sparkle 的 EdDSA 私钥，和 1.x 的 `SUPublicEDKey` 配对，给 ZIP 签名 |
+| `VOXT_UPDATE_API_BASE`、`VOXT_RELEASE_API_KEY` | Voxt 更新服务的地址和发布用的 key |
+| `HOMEBREW_TAP_TOKEN` | 能推 `hehehai/homebrew-tap` 的 token，只在 stable 时用 |
+
+### 只给 Apple 芯片
+
+appcast 的 XML 由更新服务生成，这个仓库只往 `/api/pkg/update` 发条目。工作流在条目里发 `"hardwareRequirements": "arm64"`（`scripts/release-appcast.sh entry`）。设成最新一项（`replace-latest`）之前，它要确认更新服务留下了这个要求：`update` 的返回是 `"ok": true`，而且返回里它存下的条目（`data`）有 `"hardwareRequirements": "arm64"`（返回在别处原样回显请求不算），或者 beta / stable 的 appcast 里这个构建号的那一项有 `<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>`（`scripts/release-appcast.sh hardware-kept`）。都没有就停下，什么都不会推给 1.x 用户，日志写“the update service does not output hardwareRequirements yet…”。设成最新以后，它还要求这个通道 appcast 的第一项既是这个构建号，又有这个元素。
+
+现在的更新服务还不输出这个元素（两个 appcast 里只有 `sparkle:version` 和 `sparkle:shortVersionString`），所以两个通道都会在 `replace-latest` 之前停下。要在 voxt.actnow.dev 的服务端让 `/api/pkg/update` 接受 `hardwareRequirements`、在返回的 `data` 里带上它，并在生成 appcast 时输出 `<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>`（1.x 和 2.x 都要求 macOS 15，不用加 `sparkle:minimumSystemVersion`）。这一步在服务端做，这个仓库做不了。
+
+服务端支持以后，想让 Release 发布时自动发 beta，在 voxt-appcast.yaml 里改回 1.x 的做法：`on:` 里加回 `release: types: [published]`；`appcast` job 加 `if: github.event_name == 'workflow_dispatch' || (startsWith(github.event.release.tag_name, 'voxt-v') && !github.event.release.prerelease)`；`TAG` 改成 `${{ github.event.release.tag_name || inputs.tag }}`，`CHANNEL` 改成 `${{ inputs.channel || 'beta' }}`（发布事件没有 inputs，只发 beta）。拦截那一步不用动，服务端支持以后它自己就会通过。
+
+### 发一个版本给 1.x 用户
+
+1. **发到 beta**：Release 发布后（上面“从 tag 发布”的第 4 步），手动运行 Voxt Appcast：Actions → Voxt Appcast → Run workflow，或者
+   ```sh
+   gh workflow run voxt-appcast.yaml --repo sgl-project/sglang-omni -f tag=voxt-vX.Y.Z -f channel=beta
+   ```
+   成功时最后一步写“The beta appcast offers Voxt X.Y.Z (构建号) for arm64”。在 `Voxt/` 里跑 `curl -s https://voxt.actnow.dev/updates/beta/appcast.xml | scripts/release-appcast.sh items`，第一行应该是“构建号 arm64”。更新服务还不输出 `hardwareRequirements` 时，它在设成最新之前停下（上一节），要先在服务端加上。
+2. **在真机上测 1.x → 2.x**：按 [manual-test.md](manual-test.md) §11 在一台装着 1.x 的 Mac 上更新一次。
+3. **发到 stable**：测通以后先在群里告诉 1.x 的维护者，再用同一个工作流，channel 选 `stable`：
+   ```sh
+   gh workflow run voxt-appcast.yaml --repo sgl-project/sglang-omni -f tag=voxt-vX.Y.Z -f channel=stable
+   ```
+   它把 stable 的最新一项换成这个版本，Apple 芯片上的 1.x 用户都会收到，Intel 上的看不到，继续用 1.x；然后更新 Homebrew 的 cask（`brew install --cask hehehai/tap/voxt`）：URL 指向这个 ZIP，`depends_on arch: :arm64`（只给 Apple 芯片），不写 `auto_updates`（2.x 不会自己更新，这样 `brew upgrade` 会升级它）。
+
+某一步失败时，修好后对同一个 tag 和通道再跑一次。1.x 的工作流也是这样重发的。
+
 ## 实测记录
 
 mac-air（M4 / 24 GB，macOS 26.7），10-16，运行时用 `~/voxtnew-runtime`（`--runtimes`）：
 
 - **ad hoc**（`scripts/release.sh --runtimes ~/voxtnew-runtime`，约 3 分钟，大半是辅助进程的 `swift build`）：`VoxtNew.app` 280 MB，dmg 45 MB；`release-verify.sh ad-hoc` 全部通过：8 段代码（app、辅助进程、qwen3_asr_server、libmlx、libjaccl、voxtnew-llm、llama.framework、MyGo 的 libmygo-sqlite3）都签好，Omni 服务和 voxtnew-llm 能从 app 里启动。
 - **签名**（`scripts/mac-sign-e2e.sh`：临时自签的代码签名身份代替 Developer ID）：8 段代码都带 hardened runtime 和 Apple 的时间戳，`codesign --verify --deep --strict` 通过；Gatekeeper 拒绝（自签，预期）。Omni 服务和 voxtnew-llm 从 app 里**启动不了**：`libmlx.dylib … not valid for use in process: mapping process and mapped file (non-platform) have different Team IDs`。这是库验证在比较 Team ID，自签证书没有 Team；Developer ID 签的进程和库是同一个 Team，能加载：10-17 用当时的 Team RY2TQTYSKQ 确认了（下面）。
-- **启动**（10-17，合并后的 ad hoc 发布式构建）：`VoxtNew.app/Contents/MacOS/VoxtNew --smoke <dir>`（自己的数据目录，链接快速语音模型、VAD 和快速语言模型）：辅助进程就绪，asr.fast 0.8 s 回答，llm.fast 6.8 s（冷启动，机器上同时有其他线程的模型进程）回答“OK”，退出后没有留下 `qwen3_asr_server`、`voxtnew-llm`、`voxtnew-helper`。`open -g` 正常启动：窗口“VoxtNew”出现、辅助进程就绪；`quit` 后同样一个进程都不剩。
+- **启动**（10-17，合并后的 ad hoc 发布式构建）：`VoxtNew.app/Contents/MacOS/VoxtNew --smoke <dir>`（自己的数据目录，链接快速语音识别模型、VAD 和快速语言模型）：辅助进程就绪，asr.fast 0.8 s 回答，llm.fast 6.8 s（冷启动，机器上同时有其他线程的模型进程）回答“OK”，退出后没有留下 `qwen3_asr_server`、`voxtnew-llm`、`voxtnew-helper`。`open -g` 正常启动：窗口“VoxtNew”出现、辅助进程就绪；`quit` 后同样一个进程都不剩。
 - **Developer ID**（10-16）：在 ssh 里签不了（`errSecInternalComponent`，钥匙串锁着）；10-17 起经 `scripts/mac-gui.sh` 在图形会话里签（§1.1）。
 - **公证**：mac-air 上没有 notarytool 的配置（§1.2，10-17 再查过），没有提交过。
-- **RY2TQTYSKQ 签名**（10-17，用的是旧 Team，10-19 起改用 779M533DL5，还没用它签过；`scripts/mac-gui.sh scripts/release.sh --runtimes ~/voxtnew-runtime`，身份 `DE35317B…`，更新私钥从 `~/.config/voxtnew-release/` 读）：约 2 分钟；app 280 MB，dmg 45 MB，更新包 87 MB；`release-verify.sh signed` 全部通过：8 段代码都带 hardened runtime、Apple 的时间戳、`TeamIdentifier=RY2TQTYSKQ`，**Omni 服务和 voxtnew-llm 从 app 里启动了**（库验证按 Team 比对，同一 Team 能加载，M4 自签身份时的 “different Team IDs” 没有了）。`codesign -dvv` 显示 `Authority=Developer ID Application: Xiaofeng Cao (RY2TQTYSKQ)`、`TeamIdentifier=RY2TQTYSKQ`、`flags=0x10000(runtime)`。Gatekeeper 拒绝（Unnotarized Developer ID，预期）。`--smoke`（真实的快速语音模型、VAD、快速语言模型）：辅助进程就绪，asr.fast 0.72 s、llm.fast 1.9 s 回答 “OK”，退出后没有留下进程。清单 `url` 是 `https://actnow.dev/updates/voxtnew/beta/voxtnew-0.1.0-beta.1-darwin-arm64.tar.gz`；`actnow-publish.sh --dry-run` 通过（beta，3 个文件，notes 和 notesZh 分开），没有发送。增量那一步没有代理时超时（只是警告：还没有已发布的版本）。同一次在 ssh 里直接跑：一开始的试签报 `errSecInternalComponent`，立刻停下。
+- **RY2TQTYSKQ 签名**（10-17，用的是旧 Team，10-19 起改用 779M533DL5，还没用它签过；`scripts/mac-gui.sh scripts/release.sh --runtimes ~/voxtnew-runtime`，身份 `DE35317B…`，更新私钥从 `~/.config/voxtnew-release/` 读）：约 2 分钟；app 280 MB，dmg 45 MB，更新包 87 MB；`release-verify.sh signed` 全部通过：8 段代码都带 hardened runtime、Apple 的时间戳、`TeamIdentifier=RY2TQTYSKQ`，**Omni 服务和 voxtnew-llm 从 app 里启动了**（库验证按 Team 比对，同一 Team 能加载，M4 自签身份时的 “different Team IDs” 没有了）。`codesign -dvv` 显示 `Authority=Developer ID Application: Xiaofeng Cao (RY2TQTYSKQ)`、`TeamIdentifier=RY2TQTYSKQ`、`flags=0x10000(runtime)`。Gatekeeper 拒绝（Unnotarized Developer ID，预期）。`--smoke`（真实的快速语音识别模型、VAD、快速语言模型）：辅助进程就绪，asr.fast 0.72 s、llm.fast 1.9 s 回答 “OK”，退出后没有留下进程。清单 `url` 是 `https://actnow.dev/updates/voxtnew/beta/voxtnew-0.1.0-beta.1-darwin-arm64.tar.gz`；`actnow-publish.sh --dry-run` 通过（beta，3 个文件，notes 和 notesZh 分开），没有发送。增量那一步没有代理时超时（只是警告：还没有已发布的版本）。同一次在 ssh 里直接跑：一开始的试签报 `errSecInternalComponent`，立刻停下。
 - **与 Auralink 同时运行**（10-17，`scripts/mac-hotkey-coexist.sh`，Auralink 在跑、用 fn）：见 [manual-test.md](manual-test.md) §2.14。

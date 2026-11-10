@@ -2,7 +2,8 @@
 // The servers' shared protocol around stand-in models, for the protocol tests:
 // no checkpoint is read and no model runs.
 //
-//   stub_server --supervised --model-kind stub_asr|stub_speech|stub_chat
+//   stub_server --supervised
+//       --model-kind stub_asr|stub_speech|stub_ming_tts|stub_chat
 //       --model-directory DIR [--load-delay-ms N] [--max-queued-requests N]
 //       [--request-timeout-s S]
 //
@@ -13,6 +14,10 @@
 // read an outcome field: "fail" throws, "block" runs, past any chunks, until it
 // is cancelled or its deadline passes, and stub_asr's "segments" returns one
 // speaker segment.
+// stub_ming_tts reads a request as ming_tts_server does and answers its
+// reference's 16 kHz samples as silence, with the acoustic patch limit as its
+// completion tokens and the reference's 44.1 kHz sample count as its prompt
+// tokens.
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -28,6 +33,7 @@
 #include "common/http.h"
 #include "common/service.h"
 #include "ming3_audio/ming3_audio_service.h"
+#include "ming_tts/ming_tts_request.h"
 #include "qwen3_asr/asr_service.h"
 #include "qwen3_asr/realtime.h"
 #include "qwen3_asr/speech_service.h"
@@ -173,6 +179,33 @@ protected:
   int SampleRate() const override { return kSpeechSampleRate; }
 };
 
+class StubMingSpeechModel : public speech_service::SpeechServedModel {
+public:
+  using SpeechServedModel::SpeechServedModel;
+  void ReleaseIdleMemory() override {}
+
+protected:
+  speech_service::SpeechJob ParseSpeech(const Json &body) override {
+    speech_service::SpeechJob job = speech_service::ParseCommonFields(body);
+    job.model = speech_service::ParseModel(body);
+    const ming_tts::SpeechRequest request = ming_tts::ParseSpeechRequest(body);
+    job.synthesize = [request](const speech_service::SpeechContext &context) {
+      speech_service::SpeechResult result;
+      if (request.reference_audio.has_value()) {
+        context.send(std::vector<float>(
+            request.reference_audio->samples_16k.size(), 0.0f));
+        result.prompt_token_count = request.reference_audio->samples_44k.size();
+      } else {
+      }
+      result.completion_token_count = request.max_patches;
+      return result;
+    };
+    return job;
+  }
+
+  int SampleRate() const override { return ming_tts::kAudioSampleRate; }
+};
+
 class StubChatService : public omni_server::Service {
 public:
   StubChatService()
@@ -288,6 +321,15 @@ int main(int argc, char **argv) {
         kMaxRequestBodyBytes, max_queued_requests, request_timeout_seconds);
   });
   speech.flags["--load-delay-ms"] = set_load_delay;
+  asr_service::ServedKind ming_speech;
+  ming_speech.model_kind = "stub_ming_tts";
+  speech_service::AddSpeechFlags(
+      ming_speech, [](const std::filesystem::path &, int max_queued_requests,
+                      double request_timeout_seconds) {
+        return std::make_unique<StubMingSpeechModel>(
+            ming_tts::kMaxRequestBodyBytes, max_queued_requests,
+            request_timeout_seconds);
+      });
   const omni_server::ServedKind chat{
       "stub_chat",
       [](const std::filesystem::path &) {
@@ -297,5 +339,6 @@ int main(int argc, char **argv) {
       {}};
   return omni_server::Serve(argc, argv,
                             {asr_service::CreateServedKind(asr),
-                             asr_service::CreateServedKind(speech), chat});
+                             asr_service::CreateServedKind(speech),
+                             asr_service::CreateServedKind(ming_speech), chat});
 }

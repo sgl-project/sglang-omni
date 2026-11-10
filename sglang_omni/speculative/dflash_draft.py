@@ -46,7 +46,7 @@ def materialize_draft_checkpoint(
         source_config = json.load(config_file)
     if source_config.get("speculators_model_type") != "dflash":
         raise ValueError(f"{draft_model_path} is not a speculators DFlash checkpoint")
-    elif source_config["sample_from_anchor"]:
+    elif source_config.get("sample_from_anchor", False):
         raise ValueError(f"{draft_model_path} samples from the anchor token")
     elif source_config["sliding_window_non_causal"] and not allow_non_causal:
         raise ValueError(f"{draft_model_path} uses non-causal sliding windows")

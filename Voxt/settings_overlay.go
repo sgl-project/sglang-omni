@@ -32,6 +32,7 @@ type overlayForm struct {
 	opacity, radius, margin float64
 	showTime                bool
 	liveText                bool
+	liveLayout              int // 0 one line, 1 lines (Overlay.LiveLines)
 	// saveAt is when the last change waits to be saved (zero: saved).
 	saveAt time.Time
 }
@@ -60,6 +61,10 @@ func (a *app) loadOverlayForm() {
 	}
 	f.opacity, f.radius, f.margin, f.showTime = o.Opacity, o.Radius, o.Margin, o.ShowTime
 	f.liveText = !o.HideLiveText
+	f.liveLayout = 0
+	if o.LiveLines {
+		f.liveLayout = 1
+	}
 }
 
 // overlayEdited applies the controls: at once to the overlay and the
@@ -74,6 +79,7 @@ func (a *app) overlayEdited() {
 		ShowTime: f.showTime,
 
 		HideLiveText: !f.liveText,
+		LiveLines:    f.liveLayout == 1,
 	}
 	a.prefs.Overlay = o
 	a.overlayRestyle() // overlay.go
@@ -112,22 +118,27 @@ func (a *app) overlaySettings(c *ui.Context) {
 			a.overlayEdited()
 		}
 	})
-	settingRow(c, "ov-margin", i18n.T("Distance from the edge"), i18n.T("From the bottom or the top of the screen, above the Dock and below the menu bar."), func() {
+	settingRow(c, "ov-margin", i18n.T("Distance from the edge"), "", func() {
 		slider("ov-margin-slider", i18n.T("Distance from the edge"), &f.margin, 0, ovMaxMargin, 4, fmt.Sprintf("%.0f", f.margin))
 	})
-	settingRow(c, "ov-opacity", i18n.T("Opacity"), i18n.T("Of the dark face over the blurred desktop: lower lets more of what is behind show through."), func() {
+	settingRow(c, "ov-opacity", i18n.T("Opacity"), "", func() {
 		slider("ov-opacity-slider", i18n.T("Opacity"), &f.opacity, 0.5, 1, 0.05, fmt.Sprintf("%.0f%%", f.opacity*100))
 	})
-	settingRow(c, "ov-radius", i18n.T("Corner radius"), i18n.T("The answer card takes the same corners."), func() {
+	settingRow(c, "ov-radius", i18n.T("Corner radius"), "", func() {
 		slider("ov-radius-slider", i18n.T("Corner radius"), &f.radius, 0, ovMaxRadius, 1, fmt.Sprintf("%.0f", f.radius))
 	})
-	settingRow(c, "ov-time", i18n.T("Show the recording time"), i18n.T("Off, the overlay shows only the feature's icon and the waveform."), func() {
-		if ui.Switch(c.Key("ov-time-switch"), &f.showTime).Label(i18n.T("Show the recording time")).Changed() {
+	settingRow(c, "ov-time", i18n.T("Show recording time"), "", func() {
+		if ui.Switch(c.Key("ov-time-switch"), &f.showTime).Label(i18n.T("Show recording time")).Changed() {
 			a.overlayEdited()
 		}
 	})
-	settingRow(c, "ov-live", i18n.T("Show live text"), i18n.T("The words as Voxt hears them while you speak, and the answer as the model writes it."), func() {
+	settingRow(c, "ov-live", i18n.T("Show live text"), "", func() {
 		if ui.Switch(c.Key("ov-live-switch"), &f.liveText).Label(i18n.T("Show live text")).Changed() {
+			a.overlayEdited()
+		}
+	})
+	settingRow(c, "ov-lines", i18n.T("Live text layout"), "", func() {
+		if ui.Segmented(c.Key("ov-lines-seg"), &f.liveLayout, i18n.T("One line"), i18n.T("Lines")).Label(i18n.T("Live text layout")).Disabled(!f.liveText).Changed() {
 			a.overlayEdited()
 		}
 	})

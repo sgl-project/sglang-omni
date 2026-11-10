@@ -57,9 +57,13 @@ func (r *run) lacks() *Problem {
 // not be read (the session goes on without one).
 func (r *run) readSelection() string {
 	cfg := r.m.cfg
-	ctx, cancel := context.WithTimeout(r.ctx, cfg.ReadTimeout)
+	timeout, params := cfg.ReadTimeout, proto.SelectionParams{AllowCopy: AllowCopy(r.req.Target.BundleID)}
+	if r.req.Kind == store.KindRewrite {
+		timeout, params.CopyTimeoutMS = cfg.RewriteReadTimeout, rewriteCopyMS
+	}
+	ctx, cancel := context.WithTimeout(r.ctx, timeout)
 	defer cancel()
-	res, err := cfg.Select.Selection(ctx, proto.SelectionParams{AllowCopy: AllowCopy(r.req.Target.BundleID)})
+	res, err := cfg.Select.Selection(ctx, params)
 	if err != nil {
 		if r.ctx.Err() == nil {
 			r.logf("warning", "reading the selection: %v", err)
@@ -79,6 +83,10 @@ func (r *run) readSelection() string {
 // listen records and recognises: the recognised text, or false when the
 // session ended (cancelled, failed, too short, nothing heard).
 func (r *run) listen() (string, bool) {
+	if r.req.SpeechWait != "" {
+		r.fail(&Problem{Code: ProblemSpeechWait, Err: errors.New(r.req.SpeechWait)})
+		return "", false
+	}
 	cfg := r.m.cfg
 	// The recording, at once: the user is speaking already.
 	capCtx, capCancel := context.WithCancel(r.ctx)
@@ -94,15 +102,25 @@ func (r *run) listen() (string, bool) {
 	if r.resolved {
 		svcDone = nil
 	}
+	var (
+		word     string
+		heard    chan string
+		said     string
+		endPause <-chan time.Time
+	)
 	open := func() chan openResult {
 		st, ok := r.streamer()
 		if !ok {
 			r.setOpening(false)
 			return nil
 		}
+		if word = r.endWord(); word != "" {
+			heard = make(chan string, 1)
+			r.heard = heard
+		}
 		ch := make(chan openResult, 1)
 		go func() {
-			s, err := st.Open(r.ctx, asr.StreamRequest{SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext()})
+			s, err := st.Open(r.ctx, asr.StreamRequest{SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext(), LiveResult: r.settings.Audio.LiveResult})
 			ch <- openResult{s, err}
 		}()
 		return ch
@@ -172,8 +190,19 @@ func (r *run) listen() (string, bool) {
 				return "", false
 			}
 			early = &e // a final before the end: kept for the end
+		case text := <-heard:
+			if text != said {
+				said, endPause = text, nil
+				if _, ends := withoutEndWord(text, word); ends {
+					endPause = time.After(cfg.EndWordPause)
+				}
+			}
+		case <-endPause:
+			endPause = nil
+			r.logf("info", "the end word was said last: stopping the recording")
+			r.stopOnce.Do(func() { close(r.stop) })
 		case <-stopCh:
-			stopCh = nil
+			stopCh, heard, endPause = nil, nil, nil
 			at := r.now()
 			r.m.update(r, func(s *Snapshot) { s.State, s.StoppedAt = Recognizing, at })
 			go func() {
@@ -327,9 +356,9 @@ func (r *run) listen() (string, bool) {
 		r.logf("warning", "going on with the text the live session had: %v", err)
 		res = asr.Result{Text: salvaged}
 	}
-	raw := strings.TrimSpace(res.Text)
+	raw, _ := withoutEndWord(strings.TrimSpace(res.Text), word)
 	r.logf("info", "recognised %s in %v", r.logText(raw), asrTime.Round(time.Millisecond))
-	r.m.update(r, func(s *Snapshot) { s.Raw, s.Partial, s.Timings.ASR = raw, raw, asrTime })
+	r.m.update(r, func(s *Snapshot) { s.Raw, s.Timings.ASR = raw, asrTime })
 	if raw == "" {
 		r.recognitionFailed = true
 		r.finish(Done, &Problem{Code: ProblemNoSpeech}, "", finishOpts{})

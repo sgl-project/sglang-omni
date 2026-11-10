@@ -23,16 +23,20 @@ const (
 
 	MethodCaptureDevices = "capture.devices" // request: the audio inputs
 	MethodCaptureStart   = "capture.start"   // request, job: records until capture.stop
-	MethodCaptureStop    = "capture.stop"    // request: ends a capture.start, which answers first
+	MethodCaptureStop    = "capture.stop"    // request: ends a capture.start or capture.system, which answers first
+	MethodCaptureSystem  = "capture.system"  // request, job: records the sound the Mac plays (other apps') until capture.stop
 
-	MethodHotkeyConfigure = "hotkey.configure" // request: the bindings the event tap watches (replaces all)
-	MethodHotkeyStatus    = "hotkey.status"    // request: the tap's state and counters
+	MethodHotkeyConfigure    = "hotkey.configure"    // request: the bindings the event tap watches (replaces all)
+	MethodHotkeyStatus       = "hotkey.status"       // request: the tap's state and counters
+	MethodHotkeyRecord       = "hotkey.record"       // request: one chord through a short-lived event tap
+	MethodHotkeyCancelRecord = "hotkey.cancelRecord" // request: cancel hotkey.record
 
 	MethodAppFrontmost = "app.frontmost" // request: the app in front
 
 	MethodTextFocus     = "textio.focus"     // request: the focused element of the app in front (can it take text?)
 	MethodTextSelection = "textio.selection" // request: the selected text (Accessibility, else ⌘C when allowed)
 	MethodTextPaste     = "textio.paste"     // request: insert text through the clipboard and ⌘V, then restore it
+	MethodTextRead      = "textio.read"      // request: a range of the focused element's text in an app in front
 
 	MethodAppList      = "app.list"      // request: running (and installed) apps, to pick from
 	MethodAppConfigure = "app.configure" // request: which apps get AXManualAccessibility as they come to the front
@@ -49,9 +53,9 @@ const (
 	MethodSpeechAudio     = "speech.audio"     // request: audio for a speech.recognize job (end: the last)
 
 	// Notifications, helper → app.
-	MethodCaptureStarted   = "capture.started"   // a capture.start job records: which device, how long it took
-	MethodCaptureLevel     = "capture.level"     // input meter of a capture.start job, ~20 Hz
-	MethodCapturePCM       = "capture.pcm"       // audio of a capture.start job, a frame every ~100 ms
+	MethodCaptureStarted   = "capture.started"   // a capture.start or capture.system job records: which device, how long it took
+	MethodCaptureLevel     = "capture.level"     // input meter of a capture job, ~20 Hz
+	MethodCapturePCM       = "capture.pcm"       // audio of a capture job, a frame every ~100 ms
 	MethodCaptureRestarted = "capture.restarted" // the job's audio engine was rebuilt (watchdog, device change)
 	MethodHotkeyEvent      = "hotkey.event"      // a binding fired (or the cancel shortcut while active)
 	MethodHotkeyState      = "hotkey.state"      // the event tap was installed or lost (e.g. Accessibility granted)
@@ -127,12 +131,20 @@ func ParamsFor(method string) any {
 		return new(CaptureParams)
 	case MethodCaptureStop:
 		return new(CaptureStopParams)
+	case MethodCaptureSystem:
+		return new(SystemParams)
 	case MethodHotkeyConfigure:
 		return new(HotkeyConfigureParams)
+	case MethodHotkeyRecord:
+		return new(HotkeyRecordParams)
+	case MethodHotkeyCancelRecord:
+		return new(Empty)
 	case MethodTextSelection:
 		return new(SelectionParams)
 	case MethodTextPaste:
 		return new(PasteParams)
+	case MethodTextRead:
+		return new(ReadParams)
 	case MethodBrowserURL:
 		return new(BrowserURLParams)
 	case MethodAppList:
@@ -194,12 +206,16 @@ func ResultFor(method string) any {
 		return new(PermissionsResult)
 	case MethodCaptureDevices:
 		return new(DevicesResult)
-	case MethodCaptureStart:
+	case MethodCaptureStart, MethodCaptureSystem:
 		return new(CaptureResult)
 	case MethodCaptureStop:
 		return new(CaptureStopResult)
 	case MethodHotkeyConfigure, MethodHotkeyStatus:
 		return new(HotkeyStatus)
+	case MethodHotkeyRecord:
+		return new(HotkeyRecordResult)
+	case MethodHotkeyCancelRecord:
+		return new(Empty)
 	case MethodAppFrontmost:
 		return new(App)
 	case MethodTextFocus:
@@ -208,6 +224,8 @@ func ResultFor(method string) any {
 		return new(SelectionResult)
 	case MethodTextPaste:
 		return new(PasteResult)
+	case MethodTextRead:
+		return new(ReadResult)
 	case MethodBrowserURL:
 		return new(BrowserURLResult)
 	case MethodAppList:
@@ -234,10 +252,10 @@ var (
 	Requests = []string{
 		MethodHello, MethodShutdown, MethodJobCancel,
 		MethodPermissionsStatus, MethodPermissionsRequest,
-		MethodCaptureDevices, MethodCaptureStart, MethodCaptureStop,
-		MethodHotkeyConfigure, MethodHotkeyStatus,
+		MethodCaptureDevices, MethodCaptureStart, MethodCaptureStop, MethodCaptureSystem,
+		MethodHotkeyConfigure, MethodHotkeyStatus, MethodHotkeyRecord, MethodHotkeyCancelRecord,
 		MethodAppFrontmost, MethodAppList, MethodAppConfigure, MethodAppIcons,
-		MethodTextFocus, MethodTextSelection, MethodTextPaste,
+		MethodTextFocus, MethodTextSelection, MethodTextPaste, MethodTextRead,
 		MethodBrowserURL,
 		MethodOutputWatch, MethodOutputMute, MethodOutputRelease, MethodOutputRecover,
 		MethodSpeechRecognize, MethodSpeechAudio,
@@ -251,5 +269,5 @@ var (
 
 // IsJob reports whether method is a long-running, cancellable job.
 func IsJob(method string) bool {
-	return method == MethodCaptureStart || method == MethodSpeechRecognize
+	return method == MethodCaptureStart || method == MethodCaptureSystem || method == MethodSpeechRecognize
 }

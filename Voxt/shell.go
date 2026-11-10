@@ -65,6 +65,9 @@ type shellState struct {
 	// ("/general"), which navigate drives from "/settings/…" paths.
 	settingsOpen bool
 	setRouter    *ui.Router
+	// mainUI is the main window's services, kept by its build: read
+	// between frames (textFocused).
+	mainUI ui.Services
 
 	bus      *core.Bus
 	settings settings.Service
@@ -221,9 +224,11 @@ func (a *app) openWindow() {
 		Content:        ui.View(a.view),
 		Hidden:         startHidden(mygo.App.WasOpenedAtLogin(), a.prefs.General),
 	})
-	a.maybeOnboard()    // onboarding.go: the setup guide, on the first start
-	a.offerLegacy()     // legacy_import.go: the previous Voxt's data, for who set up without the guide's card
-	a.syncOpenAtLogin() // shell_settings.go
+	a.life = a.win
+	a.maybeOnboard()        // onboarding.go: the setup guide, on the first start
+	a.offerLegacy()         // legacy_import.go: the previous Voxt's data, for who set up without the guide's card
+	a.legacyModelsAtStart() // legacy_models.go: the previous Voxt's speech models this version added
+	a.syncOpenAtLogin()     // shell_settings.go
 }
 
 // startHidden says whether the window waits hidden at start: opened at
@@ -233,6 +238,7 @@ func startHidden(atLogin bool, g settings.General) bool {
 }
 
 func (a *app) view(c *ui.Context) {
+	a.mainUI = c.Services()
 	a.applyTheme(c)
 	t := c.Theme()
 	if a.win == nil || a.prefs.Appearance.ReduceMotion {
@@ -265,9 +271,17 @@ func (a *app) view(c *ui.Context) {
 	a.settingsDialog(c)       // shell_settings.go
 	a.onboarding(c)           // onboarding_view.go
 	a.shortcutPromptDialog(c) // settings_shortcuts_family.go
+	a.announcementDialog(c)   // announcements.go
+	a.legacyReportDialog(c)   // legacy_report.go
 	a.palette(c)
 	a.shortcutSheet(c)
 	a.toastsView(c) // last: over dialogs too
+	// A shortcut field took the focus or lost it.
+	if a.keysHeard != a.keysListening {
+		a.keysListening = a.keysHeard
+		a.syncHotkeys()
+	}
+	a.keysHeard = false
 }
 
 // toastsView gives the toasts their place and look: small ink toasts in
@@ -339,7 +353,7 @@ func showFatal(err error) {
 				Message: i18n.T("Voxt cannot open its library"),
 				Detail: i18n.T("Your history, dictionary and settings are kept in a database in %s. It could not be opened: %v", dataDir, err) +
 					"\n\n" + i18n.T("If a newer Voxt created it, use that version. Nothing was changed."),
-				Buttons: []string{i18n.T("Quit"), i18n.T("Show the folder")},
+				Buttons: []string{i18n.T("Quit"), i18n.T("Show folder")},
 			})
 			if res.Button == 1 {
 				mygo.Shell.OpenPath(dataDir)
