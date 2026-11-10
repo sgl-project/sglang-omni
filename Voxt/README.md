@@ -69,7 +69,7 @@ Every shortcut can be changed on its feature's page, and Settings → Shortcuts 
 
 ### New to Voxt
 
-1. **Download** the newest `Voxt-X.Y.Z-arm64.dmg` from [the Voxt releases][download], open it and drag **Voxt** to **Applications**. Or install it with Homebrew:
+1. **Download** `Voxt-2.0.3-arm64.dmg` from [the Voxt v2.0.3 release][download], open it and drag **Voxt** to **Applications**. Or install it with Homebrew:
 
    ```sh
    brew install --cask hehehai/tap/voxt
@@ -160,7 +160,7 @@ Apache License 2.0 ([LICENSE](LICENSE)), as the rest of this repository. Copyrig
 
 [![Back to top][back-to-top]](#readme-top)
 
-[download]: https://github.com/sgl-project/sglang-omni/releases?q=voxt-v&expanded=true
+[download]: https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v2.0.3
 [install-guide]: https://sgl-project.github.io/sglang-omni/get_started/voxt.html
 [issues]: https://github.com/sgl-project/sglang-omni/issues/new/choose
 [slack]: https://slack.sglang.io
