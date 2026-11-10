@@ -1,0 +1,28 @@
+config_cls: FunCosyVoice3PipelineConfig
+model_path: FunAudioLLM/Fun-CosyVoice3-0.5B-2512
+name: fun-cosyvoice3-0.5b-npu
+# Ascend NPU variant of the Fun-CosyVoice3 pipeline. Stage topology lives in
+# FunCosyVoice3PipelineConfig; this file only tunes placement, memory and the
+# engine backend.
+#
+# The AR engine keeps its decode graph on this platform. torch_npu's shared
+# host task queue lets a graph replay overlap the update that rebinds the
+# sequence lengths, which stalls a multi-row bucket after its first step, so
+# FunCosyVoice3PipelineConfig launches the stages with PER_STREAM_QUEUE=1.
+stages:
+  tts_engine:
+    gpu: 0
+    factory:
+      dtype: bfloat16
+    engine:
+      attention_backend: ascend
+      sampling_backend: pytorch
+      disable_overlap_schedule: true
+      disable_radix_cache: true
+      enable_torch_compile: false
+      max_prefill_tokens: 8192
+      max_running_requests: 16
+      max_queued_requests: 16
+      mem_fraction_static: 0.55
+  vocoder:
+    gpu: 0

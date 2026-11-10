@@ -349,6 +349,26 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
             )
         else:
             pass
+        if current_platform.is_npu() and server_args is not None:
+            cfg = resolved_view(server_args)
+            decode = cfg.cuda_graph_config.decode
+            # A shared Host task queue lets a multi-row decode replay overlap
+            # the graph update that rebinds KV lengths; the scheduler then
+            # waits on both until the request times out. Fail at startup
+            # instead of stalling after the first batch.
+            if (
+                decode.backend != CudaGraphBackend.DISABLED
+                and int(decode.max_bs or 0) > 1
+                and os.environ.get("PER_STREAM_QUEUE") != "1"
+            ):
+                raise ValueError(
+                    "Fun-CosyVoice3 needs PER_STREAM_QUEUE=1 before starting the "
+                    "server when NPU decode graphs run with cuda_graph_max_bs > 1; "
+                    "with a shared Host queue a graph update that rebinds KV lengths "
+                    "overlaps a replay and deadlocks the scheduler"
+                )
+        else:
+            pass
 
     def make_adapters(self, model: torch.nn.Module) -> tuple[
         Callable[[StagePayload], CosyVoice3SGLangRequestData],
