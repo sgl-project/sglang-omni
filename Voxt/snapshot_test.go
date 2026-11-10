@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"image/png"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -229,6 +230,39 @@ func snapshotsMain(t *testing.T, out string) {
 		a.bundleUpdated = false
 		a.setProblem(problemUpdate, "", nil)
 		fs.Start(context.Background())
+
+		// A release without an update feed (updates_github.go): About,
+		// the dialog's four states, the card of a background check.
+		fake := a.upd
+		srv := &ghServer{list: newerReleases}
+		a.upd = newReleaseUpdates(a.settings, srv.start(t), "2.0.3", a.checkReleasesNow)
+		a.updKnown = false
+		a.navigate("/settings/about")
+		scrollToText(tt, i18n.T("Updates"))
+		save("settings-about-releases")
+		a.settingsOpen = false
+		a.navigate("/home")
+		a.relOpen = true // checking: the answer has not come yet
+		save("release-checking")
+		a.checkForUpdates()
+		save("release-available")
+		srv.set(func(s *ghServer) { s.list = todayReleases })
+		a.checkForUpdates()
+		save("release-up-to-date")
+		srv.set(func(s *ghServer) {
+			s.status = http.StatusForbidden
+			s.header = http.Header{"X-Ratelimit-Remaining": {"0"}}
+		})
+		a.checkForUpdates()
+		save("release-failed")
+		a.relOpen = false
+		srv.set(func(s *ghServer) { s.status, s.list = 0, newerReleases })
+		a.clearNotices()
+		a.settings.Update(context.Background(), func(s *settings.Settings) { s.Updates.LastCheck, s.Updates.Dismissed = time.Time{}, "" })
+		a.autoCheckReleases()
+		save("sidebar-notices-release")
+		a.clearNotices()
+		a.upd, a.updKnown = fake, false
 
 		// The recording overlay, state by state (overlay_test.go).
 		overlayShots(t, a, out, suffix, run.dark)

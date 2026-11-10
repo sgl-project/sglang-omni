@@ -95,7 +95,7 @@ What the import brings, with screenshots: [From Voxt 1.x to Voxt 2](docs/voxt-mi
 
 - A Mac with **Apple silicon** and **macOS 15** or later. Voxt 2 does not run on an Intel Mac; there, keep using Voxt 1.x.
 - About 280 MB for the app, and 2.5 GB for the recommended speech model.
-- Voxt 2 does not update itself. Install a newer version the same way: from its disk image.
+- Voxt 2 tells you when a new version is out (Check for Updates…, and a daily check you can turn off in Settings → Diagnostics & About), but does not install it itself. Install a newer version the same way: from its disk image.
 
 ## Your models, your data
 

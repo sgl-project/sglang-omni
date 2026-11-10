@@ -278,15 +278,23 @@ type Setup struct {
 	Tried bool `json:"tried,omitempty"`
 }
 
-// Updates: what the updater offers (Settings → About → Updates). Its
-// other preferences (automatic checks and installs) are the updater
-// plugin's, in its own updater.json.
+// Updates: what the updater offers (Settings → About → Updates). With an
+// update feed, its other preferences (automatic checks and installs) are
+// the updater plugin's, in its own updater.json; without one, the check
+// of GitHub's releases (updates_github.go) keeps its own here.
 type Updates struct {
 	// Beta offers beta versions (the feed's beta channel) too. Nil until the
 	// user chooses: then on while the running version is a beta (BetaOn),
 	// so that a beta's users get the next one. No migration: older
 	// documents have none.
 	Beta *bool `json:"beta,omitempty"`
+	// NoAutoCheck turns off the daily check of GitHub's releases (on by
+	// default); LastCheck is when one last succeeded.
+	NoAutoCheck bool      `json:"noAutoCheck,omitempty"`
+	LastCheck   time.Time `json:"lastCheck,omitzero"`
+	// Dismissed is the version whose "is available" card the user
+	// dismissed: no card for it again, one for a newer version.
+	Dismissed string `json:"dismissed,omitempty"`
 }
 
 // BetaOn reports whether updates include betas for the app of version
