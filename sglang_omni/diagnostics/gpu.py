@@ -430,8 +430,38 @@ def accelerator_logical_devices(
     """
 
     device_module = torch.get_device_module(device_type)
+    driver_version: str | None = None
+    if device_type == "musa":
+        try:
+            mtml = importlib.import_module("pymtml")
+        except ModuleNotFoundError as exc:
+            if exc.name != "pymtml":
+                raise
+            else:
+                pass
+        else:
+            mtml_initialized = False
+            try:
+                mtml.mtmlLibraryInit()
+                mtml_initialized = True
+                system = mtml.mtmlLibraryInitSystem()
+                driver_version = decode_nvml_string(
+                    mtml.mtmlSystemGetDriverVersion(system)
+                )
+            except Exception as exc:
+                warnings.append(f"MUSA driver query failed: {exc}")
+            finally:
+                if mtml_initialized:
+                    try:
+                        mtml.mtmlLibraryShutDown()
+                    except Exception as exc:
+                        warnings.append(f"MUSA driver query cleanup failed: {exc}")
+                else:
+                    pass
+    else:
+        pass
     if not device_module.is_available():
-        return [], None
+        return [], driver_version
     else:
         pass
 
@@ -444,7 +474,6 @@ def accelerator_logical_devices(
         pass
 
     devices: list[LogicalGpuInfo] = []
-    driver_version: str | None = None
     for logical_index in range(int(device_module.device_count())):
         try:
             properties = device_module.get_device_properties(logical_index)

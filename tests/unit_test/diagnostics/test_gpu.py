@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 from types import ModuleType, SimpleNamespace
+from typing import Literal
 
 import pytest
 from typer.testing import CliRunner
@@ -544,6 +545,113 @@ class ForbiddenNVML(ModuleType):
 
     def nvmlInit(self) -> None:
         pytest.fail("MUSA diagnostics must not initialize NVML")
+
+
+@pytest.fixture(autouse=True)
+def optional_mtml_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(sys.modules, "pymtml", None)
+
+
+class FakeMtml(ModuleType):
+    def __init__(
+        self,
+        driver_version: str | bytes = b"3.3.1-server",
+        failure_stage: Literal["init", "query", "shutdown"] | None = None,
+    ) -> None:
+        super().__init__("pymtml")
+        self.driver_version = driver_version
+        self.failure_stage = failure_stage
+        self.shutdown_count = 0
+
+    def mtmlLibraryInit(self) -> None:
+        if self.failure_stage == "init":
+            raise RuntimeError("MTML init failed")
+        else:
+            pass
+
+    def mtmlLibraryInitSystem(self) -> str:
+        return "system"
+
+    def mtmlSystemGetDriverVersion(self, system: str) -> str | bytes:
+        assert system == "system"
+        if self.failure_stage == "query":
+            raise RuntimeError("MTML query failed")
+        else:
+            pass
+        return self.driver_version
+
+    def mtmlLibraryShutDown(self) -> None:
+        self.shutdown_count += 1
+        if self.failure_stage == "shutdown":
+            raise RuntimeError("MTML shutdown failed")
+        else:
+            pass
+
+
+@pytest.mark.parametrize("driver_version", [b"3.3.1-server", "3.3.1-server"])
+@pytest.mark.parametrize("available", [True, False])
+def test_musa_reports_mtml_driver_version(
+    monkeypatch: pytest.MonkeyPatch, driver_version: str | bytes, available: bool
+) -> None:
+    """MUSA reports the driver even when the runtime cannot enumerate devices."""
+    monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
+    pin_platform(monkeypatch, "musa")
+    mtml = FakeMtml(driver_version)
+    monkeypatch.setitem(sys.modules, "pymtml", mtml)
+
+    report = gpu_diagnostics.collect_gpu_diagnostics(
+        env={}, torch_module=FakeMusaTorch(FakeMusa([0, 1], is_available=available))
+    )
+
+    assert report["environment"]["driver_version"] == "3.3.1-server"
+    assert report["environment"]["logical_device_count"] == (2 if available else 0)
+    assert "Driver: 3.3.1-server" in gpu_diagnostics.render_gpu_diagnostics(report)
+    assert report["warnings"] == []
+    assert mtml.shutdown_count == 1
+
+
+@pytest.mark.parametrize("failure_stage", ["init", "query", "shutdown"])
+def test_musa_mtml_failure_preserves_devices(
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: Literal["init", "query", "shutdown"],
+) -> None:
+    """Optional driver queries must preserve device reports and release MTML."""
+    monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
+    pin_platform(monkeypatch, "musa")
+    mtml = FakeMtml(failure_stage=failure_stage)
+    monkeypatch.setitem(sys.modules, "pymtml", mtml)
+
+    report = gpu_diagnostics.collect_gpu_diagnostics(
+        env={}, torch_module=FakeMusaTorch(FakeMusa([0, 1]))
+    )
+
+    assert report["environment"]["logical_device_count"] == 2
+    assert [device["name"] for device in report["gpus"]] == ["MTT S5000"] * 2
+    assert any(
+        f"MTML {failure_stage} failed" in warning for warning in report["warnings"]
+    )
+    assert mtml.shutdown_count == (0 if failure_stage == "init" else 1)
+
+
+def test_musa_mtml_internal_dependency_failure_is_not_hidden(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A broken MTML installation must not look like an absent optional package."""
+    pin_platform(monkeypatch, "musa")
+    original_import = importlib.import_module
+
+    def broken_mtml_import(name: str, package: str | None = None) -> ModuleType:
+        if name == "pymtml":
+            raise ModuleNotFoundError("missing MTML dependency", name="mtml_dependency")
+        else:
+            return original_import(name, package)
+
+    monkeypatch.setattr(gpu_diagnostics.importlib, "import_module", broken_mtml_import)
+    with pytest.raises(ModuleNotFoundError) as error:
+        gpu_diagnostics.collect_gpu_diagnostics(
+            env={}, torch_module=FakeMusaTorch(FakeMusa([0, 1]))
+        )
+    assert error.value.name == "mtml_dependency"
 
 
 def test_musa_uses_native_visibility_and_device_module(monkeypatch) -> None:
