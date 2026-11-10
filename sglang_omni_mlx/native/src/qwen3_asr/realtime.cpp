@@ -2,6 +2,7 @@
 #include "qwen3_asr/realtime.h"
 
 #include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <random>
 
@@ -21,6 +22,11 @@ namespace {
 // shown text minus its last tokens, which may still change.
 constexpr int kPrefixAfterRefreshCount = 2;
 constexpr int kPrefixRollbackTokenCount = 5;
+// A decode with a prefix has tokens for the rolled-back ones and for the
+// audio after the transcript's decode, at the offline default's rate, plus
+// slack; speech uses half of that at most.
+constexpr double kPrefixedTokensPerNewSecond = 10.0;
+constexpr int kPrefixedTokenSlack = 8;
 constexpr float kSilentPeak = 1e-3f;
 constexpr float kPcm16FullScale = 32768.0f;
 
@@ -264,17 +270,30 @@ std::vector<float> RealtimeSession::SegmentSamples(const Segment &segment,
 }
 
 TranscriptionOptions RealtimeSession::DecodeOptions(Segment &segment,
-                                                    bool is_refresh) {
+                                                    bool is_refresh,
+                                                    long end_sample) {
   TranscriptionOptions options;
   options.language = segment.language;
+  // Note (XXXXRT666): on as for HTTP requests; the prefix would carry a loop
+  // into every later decode of the segment.
+  options.stop_on_token_loop = true;
   const bool use_prefix = segment.decode_count >= kPrefixAfterRefreshCount &&
                           !segment.transcript.empty() &&
-                          segment.language.has_value();
+                          segment.language.has_value() &&
+                          !segment.ran_out_of_tokens;
   if (use_prefix) {
     RetainedText retained = transcriber_.RetainedPrefix(
         segment.transcript, kPrefixRollbackTokenCount);
     options.prefix_token_ids = std::move(retained.prefix_ids);
     options.prefix_text = std::move(retained.prefix_text);
+    // Note (XXXXRT666): greedy decoding can repeat the prefix's last sentence
+    // and still stop; the budget makes that run out of tokens instead.
+    options.max_new_tokens =
+        static_cast<int>(retained.rest_ids.size()) +
+        static_cast<int>(std::ceil(
+            static_cast<double>(end_sample - segment.transcript_end_sample) /
+            omni_common::kSampleRate * kPrefixedTokensPerNewSecond)) +
+        kPrefixedTokenSlack;
     // Note (XXXXRT666): a refresh checks the rolled-back tokens as guesses;
     // the final decode decodes them as before.
     if (is_refresh) {
@@ -299,12 +318,20 @@ RealtimeSession::Decode(std::vector<float> samples,
 }
 
 void RealtimeSession::ApplyResult(Segment &segment,
-                                  const TranscriptionResult &result) {
+                                  const TranscriptionResult &result,
+                                  long end_sample) {
   if (result.language.has_value() && !result.language->empty()) {
     segment.language = result.language;
   } else {
   }
-  segment.transcript = result.text;
+  // Note (XXXXRT666): speech never fills the token budget, so a decode that
+  // does repeats itself, often a whole sentence the loop guard does not see.
+  segment.ran_out_of_tokens = result.finish_reason == FinishReason::kLength;
+  if (!segment.ran_out_of_tokens) {
+    segment.transcript = result.text;
+    segment.transcript_end_sample = end_sample;
+  } else {
+  }
 }
 
 void RealtimeSession::MaybeStartRefresh() {
@@ -312,6 +339,7 @@ void RealtimeSession::MaybeStartRefresh() {
   TranscriptionOptions options;
   std::shared_ptr<RefreshReuse> reuse;
   int segment_id = 0;
+  long end_sample = 0;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (refreshing_ || finalizing_ || !segment_.has_value() ||
@@ -320,7 +348,7 @@ void RealtimeSession::MaybeStartRefresh() {
     } else {
     }
     Segment &segment = *segment_;
-    const long end_sample = EndSample();
+    end_sample = EndSample();
     samples = SegmentSamples(segment, end_sample);
     const bool silent =
         omni_common::PeakIsSilent(samples.data(), samples.size(), kSilentPeak);
@@ -335,7 +363,7 @@ void RealtimeSession::MaybeStartRefresh() {
       return;
     } else {
     }
-    options = DecodeOptions(segment, true);
+    options = DecodeOptions(segment, true, end_sample);
     reuse = segment.reuse;
     segment_id = segment.segment_id;
     refreshing_ = true;
@@ -344,8 +372,8 @@ void RealtimeSession::MaybeStartRefresh() {
       std::static_pointer_cast<RealtimeSession>(shared_from_this());
   worker_.Submit(
       Decode(std::move(samples), std::move(options), std::move(reuse)), cancel_,
-      [weak_self, segment_id](std::optional<TranscriptionResult> result,
-                              std::exception_ptr error) {
+      [weak_self, segment_id, end_sample](
+          std::optional<TranscriptionResult> result, std::exception_ptr error) {
         const std::shared_ptr<RealtimeSession> self = weak_self.lock();
         if (!self) {
           return;
@@ -357,10 +385,11 @@ void RealtimeSession::MaybeStartRefresh() {
           self->refreshing_ = false;
           if (result.has_value() && self->segment_.has_value() &&
               self->segment_->segment_id == segment_id) {
-            self->ApplyResult(*self->segment_, *result);
-            if (result->text != self->segment_->last_text) {
-              self->segment_->last_text = result->text;
-              preview = result->text;
+            Segment &segment = *self->segment_;
+            self->ApplyResult(segment, *result, end_sample);
+            if (segment.transcript != segment.last_text) {
+              segment.last_text = segment.transcript;
+              preview = segment.transcript;
             } else {
             }
           } else {
@@ -415,12 +444,23 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
       TranscriptionOptions options;
       {
         std::lock_guard<std::mutex> lock(mutex_);
-        options = DecodeOptions(segment, false);
+        options = DecodeOptions(segment, false, cut_sample);
       }
       try {
-        const TranscriptionResult result = worker_.Transcribe(
-            Decode(std::move(samples), std::move(options), nullptr), cancel_);
-        ApplyResult(segment, result);
+        TranscriptionResult result =
+            worker_.Transcribe(Decode(samples, options, nullptr), cancel_);
+        // A final that ran out of tokens on the prefix decodes the segment
+        // again without it, as the next refresh would have.
+        if (result.finish_reason == FinishReason::kLength &&
+            !options.prefix_token_ids.empty()) {
+          options.prefix_token_ids.clear();
+          options.prefix_text.clear();
+          options.max_new_tokens.reset();
+          result = worker_.Transcribe(
+              Decode(std::move(samples), std::move(options), nullptr), cancel_);
+        } else {
+        }
+        ApplyResult(segment, result, cut_sample);
         text = result.text;
       } catch (...) {
         ReportDecodeFailure(std::current_exception());

@@ -91,6 +91,11 @@ private:
     int decode_count = 0;
     std::string transcript;
     std::string last_text;
+    // The last decode ran out of tokens, a loop the guard missed, likely on
+    // the prefix: its text was not kept, and the next decode has no prefix.
+    bool ran_out_of_tokens = false;
+    // Where the audio of the decode the transcript came from ended.
+    long transcript_end_sample = 0;
     // What the segment's refreshes reuse; none with the speculative draft.
     std::shared_ptr<RefreshReuse> reuse;
   };
@@ -103,13 +108,15 @@ private:
   long LockedEndSample();
   std::vector<float> SegmentSamples(const Segment &segment,
                                     long end_sample) const;
-  // Builds the request for a decode of segment, a refresh or its final
-  // decode, and counts it.
-  TranscriptionOptions DecodeOptions(Segment &segment, bool is_refresh);
+  // Builds the request for a decode of segment through end_sample, a refresh
+  // or its final decode, and counts it.
+  TranscriptionOptions DecodeOptions(Segment &segment, bool is_refresh,
+                                     long end_sample);
   // A refresh passes its segment's reuse; the final decode passes none.
   Transcription Decode(std::vector<float> samples, TranscriptionOptions options,
                        std::shared_ptr<RefreshReuse> reuse) const;
-  void ApplyResult(Segment &segment, const TranscriptionResult &result);
+  void ApplyResult(Segment &segment, const TranscriptionResult &result,
+                   long end_sample);
   void MaybeStartRefresh();
   void FinalizeThrough(long end_sample);
 
