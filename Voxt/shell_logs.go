@@ -70,7 +70,7 @@ func (a *app) logsView(c *ui.Context, panel bool) {
 				}
 			}
 		}
-		ui.TextInput(c.Key("logs-search"), &a.logsQuery).Placeholder(i18n.T("Filter")).Width(px(t, 200)).Shrink(1).MinWidth(px(t, 80)).Label(i18n.T("Filter the logs"))
+		ui.TextInput(c.Key("logs-search"), &a.logsQuery).Placeholder(i18n.T("Filter")).Width(px(t, 200)).Shrink(1).MinWidth(px(t, 80)).Label(i18n.T("Filter logs"))
 		ui.Spacer(c)
 		if n := picked.Count(); n > 0 {
 			// While lines are selected: how many, Copy and Deselect.

@@ -1,0 +1,14 @@
+config_cls: MossTranscribeDiarizePipelineConfig
+name: moss-td-plain-fallback
+model_path: OpenMOSS-Team/MOSS-Transcribe-Diarize
+
+stages:
+  asr:
+    factory:
+      enable_plain_fallback: true
+      enable_async_decode: false
+    engine:
+      speculative_algorithm: DFLASH
+      speculative_draft_model_path: wilsonzheng0327/MOSS-Transcribe-Diarize-dflash
+      speculative_draft_model_revision: 2e3f00b0932112e4f92a4ef67a4cd60ee855056c
+      cuda_graph_backend_prefill: disabled

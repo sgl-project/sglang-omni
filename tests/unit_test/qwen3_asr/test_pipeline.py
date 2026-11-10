@@ -119,6 +119,7 @@ def make_engine_builder(
         max_running_requests=64,
         max_new_tokens=128,
         enable_async_decode=enable_async_decode,
+        enable_plain_fallback=False,
         async_decode_min_batch_size=2,
         mem_fraction_static=None,
         mm_embedding_cache_size_bytes=0,
@@ -415,14 +416,30 @@ def test_qwen3_asr_torch_mps_profile_overrides_typed_torch_compile_default() -> 
     assert overrides["enable_torch_compile"] is False
 
 
-def test_qwen3_asr_torch_mps_keeps_requests_greedy_only(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("device", "has_draft", "greedy_only"),
+    [
+        ("mps", False, True),
+        ("npu", True, True),
+        ("npu", False, False),
+        ("cuda", True, False),
+        ("cuda", False, False),
+    ],
+)
+def test_qwen3_asr_adapter_sampling_policy(
+    monkeypatch, device, has_draft, greedy_only
+) -> None:
     builder = make_engine_builder()
-    builder.device = "mps"
+    builder.device = "mps" if device == "mps" else None
+    builder.draft_checkpoint = Mock() if has_draft else None
+    monkeypatch.setattr(
+        qwen3_asr_builder.current_platform, "is_npu", lambda: device == "npu"
+    )
     monkeypatch.setattr(
         request_builders, "make_qwen3_asr_scheduler_adapters", lambda **kwargs: kwargs
     )
 
-    assert builder.make_adapters(object())["greedy_only"] is True
+    assert builder.make_adapters(object())["greedy_only"] is greedy_only
 
 
 def test_qwen3_asr_config_uses_batched_stage_with_64_running_requests() -> None:

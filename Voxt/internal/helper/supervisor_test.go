@@ -168,29 +168,39 @@ func TestPermissions(t *testing.T) {
 // capture runs a capture.start job on a goroutine, collecting its
 // notifications.
 type captureRun struct {
-	mu      sync.Mutex
-	started *proto.CaptureStartedParams
-	levels  int
-	seqs    []int
-	pcm     []byte
-	done    chan struct{}
-	res     proto.CaptureResult
-	err     error
+	mu        sync.Mutex
+	started   *proto.CaptureStartedParams
+	restarted []proto.RestartedParams
+	levels    int
+	seqs      []int
+	pcm       []byte
+	done      chan struct{}
+	res       proto.CaptureResult
+	err       error
 }
 
 func (c *captureRun) frames() int { c.mu.Lock(); defer c.mu.Unlock(); return len(c.seqs) }
 
 func startCapture(ctx context.Context, h *harness, id string, p proto.CaptureParams) *captureRun {
+	return startRecording(ctx, h, proto.MethodCaptureStart, id, p)
+}
+
+// startRecording runs a capture.start or capture.system job.
+func startRecording(ctx context.Context, h *harness, method, id string, p any) *captureRun {
 	c := &captureRun{done: make(chan struct{})}
 	go func() {
 		defer close(c.done)
-		raw, err := h.sup.Call(ctx, id, proto.MethodCaptureStart, p, func(m proto.Message) {
+		raw, err := h.sup.Call(ctx, id, method, p, func(m proto.Message) {
 			c.mu.Lock()
 			defer c.mu.Unlock()
 			switch m.Method {
 			case proto.MethodCaptureStarted:
 				c.started = new(proto.CaptureStartedParams)
 				m.DecodeParams(c.started)
+			case proto.MethodCaptureRestarted:
+				var r proto.RestartedParams
+				m.DecodeParams(&r)
+				c.restarted = append(c.restarted, r)
 			case proto.MethodCaptureLevel:
 				c.levels++
 			case proto.MethodCapturePCM:
@@ -250,11 +260,29 @@ func TestCaptureStreamsPCM(t *testing.T) {
 	if stop, _ := request[proto.CaptureStopResult](t, h, proto.MethodCaptureStop, proto.CaptureStopParams{Job: "S1"}); stop.Stopped {
 		t.Error("stopped twice")
 	}
-	// The chosen input goes away: the recording ends with what it has.
-	c = startCapture(context.Background(), h, "S1b", proto.CaptureParams{Devices: []string{"lost"}})
+	// The chosen input goes away after three frames: the next listed one
+	// records on, and the result holds the audio from both.
+	c = startCapture(context.Background(), h, "S1b", proto.CaptureParams{Devices: []string{"lost", "AirPodsPro:input"}})
+	wait(t, "frames after the switch", func() bool { return c.frames() >= 6 })
+	if stop, err := request[proto.CaptureStopResult](t, h, proto.MethodCaptureStop, proto.CaptureStopParams{Job: "S1b"}); err != nil || !stop.Stopped {
+		t.Fatalf("stop after the switch %+v %v", stop, err)
+	}
 	<-c.done
-	if c.err != nil || c.res.Reason != proto.CaptureDeviceLost || c.res.Frames != 3 {
-		t.Errorf("lost: %+v %v", c.res, c.err)
+	want := []proto.RestartedParams{{Job: "S1b", Reason: proto.CaptureDeviceLost, Attempt: 1, Device: "AirPodsPro:input", DeviceName: "AirPods Pro"}}
+	if c.err != nil || c.res.Reason != proto.CaptureStopped || c.res.Device != "AirPodsPro:input" || c.res.Restarts != 1 ||
+		c.res.Frames < 6 || len(c.pcm) != c.res.Samples*2 || !slices.Equal(c.restarted, want) {
+		t.Errorf("lost, switched: %+v %+v %v", c.res, c.restarted, c.err)
+	}
+	if c.started == nil || c.started.Device != "lost" || c.started.FellBack {
+		t.Errorf("lost, started %+v", c.started)
+	}
+	// Every input gone with it: the recording ends with what it has.
+	l := start(t, "frame-ms=10,lost-all")
+	l.ready(t)
+	c = startCapture(context.Background(), l, "S1c", proto.CaptureParams{Devices: []string{"lost", "AirPodsPro:input"}})
+	<-c.done
+	if c.err != nil || c.res.Reason != proto.CaptureDeviceLost || c.res.Frames != 3 || len(c.restarted) != 0 {
+		t.Errorf("lost, all gone: %+v %v", c.res, c.err)
 	}
 }
 

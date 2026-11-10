@@ -206,7 +206,7 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
 | `model` | string | server default | Model identifier |
 | `language` | string | unset | Optional language hint |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
-| `temperature` | float | model default (`0.0`) | Sampling temperature |
+| `temperature` | float | model default (`0.0`) | Sampling temperature. A negative value returns HTTP 422 |
 | `max_new_tokens` | int | duration scaled | Max generated tokens. With the stock config, omitted requests use `max(512, 10 * audio seconds)`; empty audio uses a 128-token fallback. A fixed stage value disables duration scaling. Explicit values always win and are clamped to the remaining model context |
 | `prompt` | string | unset | Optional instruction override; omit to use the built-in transcribe+diarize prompt |
 
@@ -246,6 +246,20 @@ Gain over the same server without a draft, on one H200 with SGLang 0.5.23, the d
 | `googletime` | Overlapped | 3.73x | 4.68x | 4.57x | |
 
 Neither mode is slower than the server without a draft at any load measured, and CER and DER do not change.
+
+### Per-request plain fallback
+
+Set `asr.factory.enable_plain_fallback` to route requests with unsupported sampling options, such as `repetition_penalty=1.2`, through ordinary decoding. Requests that fit the target context but leave too little room for draft KV also use ordinary decoding.
+
+```bash
+sgl-omni serve \
+  --config examples/configs/moss_td_plain_fallback.yaml \
+  --port 8000
+```
+
+The [Qwen3-ASR fallback restrictions](qwen3_asr.md#per-request-plain-fallback) also apply to MOSS-TD.
+
+When both paths have work, the scheduler gives speculative batches one to two turns per plain turn, according to their live request counts. This reduces the cost of sparse fallback traffic on speculative requests, but increases latency for plain requests. The two-turn cap prevents plain requests from starving; it does not bound wall-clock waiting time because forward durations vary. Fallback requires synchronous decoding, while Qwen3-ASR DFlash on its own overlaps draft execution by default, so even 0% fallback can cost throughput relative to the default DFlash server. Benchmark both request cohorts before enabling this option.
 
 ## Benchmarking
 

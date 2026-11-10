@@ -802,6 +802,9 @@ def test_speech_websocket_passes_the_set_sampling_fields() -> None:
                 "response_format": "pcm",
                 "temperature": 0.7,
                 "top_k": 20,
+                "prepend_silence": False,
+                "condition_buckets": {"loudness": 3},
+                "condition_values": {"fmax": 6000.0},
             }
         )
         request = session.speech_request_from_config(sentence="Hello.", stream=True)
@@ -816,6 +819,11 @@ def test_speech_websocket_passes_the_set_sampling_fields() -> None:
         assert params["temperature"] == 0.7
         assert params["top_k"] == 20
         assert not {"top_p", "repetition_penalty", "seed"} & set(params)
+        # The session config once dropped the prompt fields.
+        tts_params = gen_req.metadata["tts_params"]
+        assert tts_params["prepend_silence"] is False
+        assert tts_params["condition_buckets"] == {"loudness": 3}
+        assert tts_params["condition_values"] == {"fmax": 6000.0}
 
     asyncio.run(run())
 

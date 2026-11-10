@@ -11,6 +11,7 @@ import torch
 from torch import nn
 
 from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.device_graph import ReplayableGraph
 from sglang_omni.speculative.dflash_draft import (
     DRAFT_ARCHITECTURE,
     DraftBlockSampler,
@@ -115,6 +116,19 @@ def test_checkpoint_the_draft_cannot_reproduce_is_refused(
         materialize_draft_checkpoint(str(tmp_path), None)
 
 
+def test_checkpoint_without_anchor_sampling_setting(tmp_path: Path) -> None:
+    """Early DFlash checkpoints omit this field and never sample the anchor row."""
+    write_speculators_checkpoint(tmp_path)
+    config_path = tmp_path / "config.json"
+    config = json.loads(config_path.read_text())
+    config.pop("sample_from_anchor")
+    config_path.write_text(json.dumps(config))
+
+    with materialize_draft_checkpoint(str(tmp_path), None) as draft_directory:
+        flattened = json.loads((Path(draft_directory) / "config.json").read_text())
+        assert flattened["dflash_config"]["sample_from_anchor"] is False
+
+
 def make_draft_model() -> ReducedVocabularyDFlashDraftModel:
     draft_model = ReducedVocabularyDFlashDraftModel.__new__(
         ReducedVocabularyDFlashDraftModel
@@ -207,7 +221,7 @@ def test_draft_sampler_graph_replay_updates_mapped_tokens_in_shared_storage() ->
         batch_size: torch.zeros(batch_size * 3, 2, device=device, dtype=torch.bfloat16)
         for batch_size in (1, 2)
     }
-    graphs = {}
+    graphs: dict[int, ReplayableGraph] = {}
     pool = backend.graph_pool_handle()
     stream = device_module.Stream(device=device)
     stream.wait_stream(device_module.current_stream(device))
