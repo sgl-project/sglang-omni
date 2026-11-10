@@ -50,8 +50,7 @@ def chat_rows(
     else:
         pass
     if turns[0].role != "system":
-        turns.insert(
-            0,
+        turns.append(
             ChatTurn(
                 role="system",
                 content=f"You are a helpful assistant. Respond with {'spoken' if output_modality == 'audio' else 'text'} outputs.",
