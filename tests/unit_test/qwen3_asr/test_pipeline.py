@@ -427,7 +427,10 @@ def test_qwen3_asr_torch_mps_profile_overrides_typed_torch_compile_default() -> 
     ],
 )
 def test_qwen3_asr_adapter_sampling_policy(
-    monkeypatch, device, has_draft, greedy_only
+    monkeypatch: pytest.MonkeyPatch,
+    device: str,
+    has_draft: bool,
+    greedy_only: bool,
 ) -> None:
     builder = make_engine_builder()
     builder.device = "mps" if device == "mps" else None
@@ -838,7 +841,7 @@ def test_qwen3_asr_dflash_build_overlaps_by_default_and_cleans_resources(
     assert recorded.infra_kwargs[-1]["enable_async_decode"] is True
     assert scheduler.enable_async_decode is True
     assert scheduler.async_prefill is False
-    assert recorded.adapter_kwargs["greedy_only"] is False
+    assert recorded.adapter_kwargs["greedy_only"] is (platform == "npu")
     assert recorded.build_kwargs["enable_mixed_chunk"] is False
     assert recorded.build_kwargs["disable_overlap_schedule"] is False
     assert not recorded.build_kwargs.get("disable_cuda_graph", False)
