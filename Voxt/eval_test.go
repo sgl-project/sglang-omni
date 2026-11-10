@@ -69,6 +69,17 @@ func (e *evalRun) dir(t *testing.T, id string) string {
 	return d
 }
 
+// draft is the speech model's draft's snapshot when the model library
+// has it (the app then decodes with it), else "".
+func (e *evalRun) draft(id string) string {
+	m, _ := models.Lookup(id)
+	if m.Draft == "" {
+		return ""
+	}
+	d, _ := models.Lookup(m.Draft)
+	return models.Installed(e.hub, d)
+}
+
 // clips are the clips to run: all of them and the long ones, or in quick
 // mode the first of each kind.
 func (e *evalRun) clips() []eval.Clip {

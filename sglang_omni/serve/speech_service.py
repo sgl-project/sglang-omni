@@ -91,6 +91,9 @@ class TTSParams(RequiredTTSParams, total=False):
     token_count: int
     duration_tokens: int
     seed: int
+    prepend_silence: bool
+    condition_buckets: dict[str, int | None]
+    condition_values: dict[str, float | None]
 
 
 SpeechReferenceDescriptor = dict[
@@ -1220,6 +1223,18 @@ def build_tts_params(
         pass
     if request.seed is not None:
         tts_params["seed"] = request.seed
+    else:
+        pass
+    if request.prepend_silence is not None:
+        tts_params["prepend_silence"] = request.prepend_silence
+    else:
+        pass
+    if request.condition_buckets is not None:
+        tts_params["condition_buckets"] = request.condition_buckets
+    else:
+        pass
+    if request.condition_values is not None:
+        tts_params["condition_values"] = request.condition_values
     else:
         pass
     return tts_params

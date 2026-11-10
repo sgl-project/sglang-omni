@@ -35,6 +35,12 @@ type area struct {
 	// reveal scrolls the caret into view at the next layout, after an
 	// edit, a move of the caret or a press.
 	reveal bool
+	// page shows the caret revealed in the containers around the area as
+	// well, where the area has nothing of its own to scroll (as high as
+	// its text): for a selection the app sets (SetTextSelection); a reveal
+	// while the area has the focus does it too, an edit the app makes to
+	// its text does not.
+	page bool
 	// first and last are the paragraphs the view shows; laid counts those
 	// with a layout.
 	first, last int
@@ -310,6 +316,8 @@ func (a *area) layout(e *node, cw, ch float32) {
 	// The text shows through the padding, inside the border.
 	above, below := e.pad[0], e.pad[2]
 	a.place(ed, ch, above, below)
+	page := a.reveal && (a.page || e.Focused())
+	a.page = false
 	if a.reveal {
 		a.reveal = false
 		_, y, h := a.caretAt(ed, ed.caret, ed.composeCaret)
@@ -337,6 +345,10 @@ func (a *area) layout(e *node, cw, ch float32) {
 	}
 	st.scrollTo(st.scrollX, a.scroll)
 	a.lastScroll = a.scroll
+	if page {
+		x, y, h := a.caretAt(ed, ed.caret, ed.composeCaret)
+		e.c.rt.revealPart(e.id, ed.originX+x, ed.originY+float32(y-a.scroll), 1, h)
+	}
 	e.contentW, e.contentH = float64(e.w), total+float64(e.padY())
 	if a.laid > maxLaid+a.last-a.first {
 		a.forget(b)

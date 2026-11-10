@@ -96,7 +96,7 @@ func TestRecordingMutesOutput(t *testing.T) {
 	if r.muted() {
 		t.Fatal("still muted after the recording")
 	}
-	if got := r.takeCues(); !slices.Equal(got, []string{"tally:audible", "wrap:audible"}) {
+	if got := r.takeCues(); !slices.Equal(got, []string{"pebble:audible", "nib:audible"}) {
 		t.Fatalf("cues %v: the start cue before the mute, the stop cue after it", got)
 	}
 	for _, end := range []session.State{session.Cancelled, session.Failed} {
@@ -170,7 +170,7 @@ func TestRecordingMuteWithoutSounds(t *testing.T) {
 	// A start cue that does not end mutes once its audible part played
 	// (startCueWait: Tally's 0.35 s, not its file's 0.45 s); one that ends
 	// after the recording stopped mutes nothing (its engage is late).
-	r.updateSettings(func(s *settings.Settings) { s.Audio.Sounds = true })
+	r.updateSettings(func(s *settings.Settings) { s.Audio.Sounds, s.Audio.StartSound = true, "tally" })
 	block := make(chan struct{})
 	defer close(block)
 	r.playSound = func(sounds.Target) { <-block }
@@ -194,25 +194,26 @@ func TestRecordingMuteWithoutSounds(t *testing.T) {
 // (not for a try, whose page shows no pill).
 func TestRecordingCannotMute(t *testing.T) {
 	r := newMuteRig(t)
+	r.prefs.Overlay.LiveLines = false // the small pill, whose sizes these are (Lines: TestLiveLinesFromStart)
 	r.fs.out.Sys.SetDefault(helpertest.Display)
 	r.feed("s1", session.Recording)
 	want := "This output device cannot be muted. Recording continues."
 	if got := r.pillSession().Partial; got != want || r.ov.mode != ovRecording || r.ov.h != layout.LiveH {
 		t.Fatalf("pill %q, mode %s, height %d", got, r.ov.mode, r.ov.h)
 	}
-	r.ft.advance(muteNoteTime)
-	if r.pillSession().Partial != "" || r.ov.h != layout.PillH || r.ov.w != layout.PillW {
+	r.ft.advance(pillNoteTime)
+	if r.pillSession().Partial != "" || r.ov.h != layout.PillH || r.ov.w != recordingPillFaceW(r.pillSession(), false) {
 		t.Fatalf("the note stays: %q %dx%d", r.pillSession().Partial, r.ov.w, r.ov.h)
 	}
 	r.feed("s1", session.Recognizing)
 	// Stopped while it shows: gone with the recording.
 	r.feed("s2", session.Recording)
 	r.feed("s2", session.Recognizing)
-	if r.muteNote.text != "" || r.pillSession().Partial != "" {
-		t.Fatalf("the note outlived the recording: %q", r.muteNote.text)
+	if r.pillNote.text != "" || r.pillSession().Partial != "" {
+		t.Fatalf("the note outlived the recording: %q", r.pillNote.text)
 	}
 	r.feed("s3", session.Recording, true)
-	if r.muteNote.text != "" {
+	if r.pillNote.text != "" {
 		t.Error("a try's note")
 	}
 	if w := r.fs.out.Sys.WriteLog(); len(w) != 0 {

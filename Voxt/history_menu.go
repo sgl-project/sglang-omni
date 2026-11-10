@@ -48,13 +48,13 @@ func (a *app) entryMenu(c *ui.Context, row ui.Element, e store.Entry, keys bool,
 		if cp.Chosen() {
 			a.copyEntry(c, text)
 		}
-		if raw != "" && m.Item(i18n.T("Copy the recognised text")).Chosen() {
+		if raw != "" && m.Item(i18n.T("Copy recognised text")).Chosen() {
 			a.copyEntry(c, raw)
 		}
 		if m.Item(i18n.T("Show details")).Chosen() {
 			details()
 		}
-		if e.Audio != "" && m.Item(i18n.T("Show the recording in Finder")).Chosen() {
+		if e.Audio != "" && m.Item(i18n.T("Show recording in Finder")).Chosen() {
 			revealInFinder(a.lib.store.History().AudioPath(e.Audio))
 		}
 		if e.Audio != "" && m.Item(retryLabel(e)).Disabled(a.hist.retry.id != "").Chosen() {

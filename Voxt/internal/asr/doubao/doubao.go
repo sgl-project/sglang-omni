@@ -1,7 +1,8 @@
 // Package doubao is Volcengine's Doubao bigmodel streaming speech
 // recognition (SAUC, docs/6561/1354869) as an asr.Streamer: a WebSocket
 // with a binary framing (codec.go), JSON parameters and results
-// (payload.go), and one stream per session (stream.go).
+// (payload.go), and one stream per session (stream.go). Its flash file
+// recognition (docs/6561/1631584) is an asr.FileTranscriber (flash.go).
 //
 // Credentials: the old console's App ID (X-Api-App-Key) and Access Token
 // (X-Api-Access-Key), or the new console's single API key (X-Api-Key,
@@ -49,10 +50,11 @@ const (
 	DefaultModel = ModelV2
 )
 
-// Models are the built-in choices, as in Voxt. The concurrent-billing
-// resources (volc.seedasr.sauc.concurrent, volc.bigasr.sauc.concurrent)
-// work as custom models.
-var Models = []string{ModelV2, ModelV1}
+// Models are the built-in choices, as in Voxt, and the flash file
+// recognition (ModelFlash), which Voxt 1.x ran but did not list. The
+// concurrent-billing resources (volc.seedasr.sauc.concurrent,
+// volc.bigasr.sauc.concurrent) work as custom models.
+var Models = []string{ModelV2, ModelV1, ModelFlash}
 
 // packet is the audio per packet: the docs advise 100–200 ms and call
 // 200 ms the best for the duplex streams.
@@ -86,11 +88,8 @@ func New(cfg asr.Config) (*Client, error) {
 		ackTimeout:   asr.ConnectTimeout,
 		finalTimeout: asr.FinalTimeout,
 	}
-	if c.token == "" {
-		if c.appID != "" {
-			return nil, asr.Errorf(ID, asr.KindConfig, "no Access Token")
-		}
-		return nil, asr.Errorf(ID, asr.KindConfig, "no API key")
+	if err := checkKey(c.appID, c.token); err != nil {
+		return nil, err
 	}
 	if c.model == "" {
 		c.model = DefaultModel
@@ -142,7 +141,7 @@ func (c *Client) connect(ctx context.Context, req asr.StreamRequest) (asr.Stream
 		return nil, asr.Errorf(ID, asr.KindConfig, "cannot build the request: %v", err)
 	}
 	id := newUUID()
-	h := c.authHeader()
+	h := authHeader(c.appID, c.token)
 	h.Set("X-Api-Resource-Id", c.model)
 	h.Set("X-Api-Request-Id", id)
 	h.Set("X-Api-Connect-Id", id)
@@ -163,17 +162,30 @@ func (c *Client) connect(ctx context.Context, req asr.StreamRequest) (asr.Stream
 	return s, nil
 }
 
-// authHeader is the handshake's credentials (docs/6561/1354869, 鉴权):
-// the old console's App ID and Access Token, or, without an App ID, the
-// new console's API key. Both also send the resource and request ids.
-func (c *Client) authHeader() http.Header {
+// checkKey says what a setup without its key lacks: the Access Token
+// with an App ID, the API key without one.
+func checkKey(appID, token string) error {
+	switch {
+	case token != "":
+		return nil
+	case appID != "":
+		return asr.Errorf(ID, asr.KindConfig, "no Access Token")
+	default:
+		return asr.Errorf(ID, asr.KindConfig, "no API key")
+	}
+}
+
+// authHeader is a request's credentials (docs/6561/1354869, 鉴权): the
+// old console's App ID and Access Token, or, without an App ID, the new
+// console's API key. Both also send the resource and request ids.
+func authHeader(appID, token string) http.Header {
 	h := http.Header{}
-	if c.appID == "" {
-		h.Set("X-Api-Key", c.token)
+	if appID == "" {
+		h.Set("X-Api-Key", token)
 		return h
 	}
-	h.Set("X-Api-App-Key", c.appID)
-	h.Set("X-Api-Access-Key", c.token)
+	h.Set("X-Api-App-Key", appID)
+	h.Set("X-Api-Access-Key", token)
 	return h
 }
 
