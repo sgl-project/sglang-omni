@@ -62,7 +62,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.2.0" />
-    <meta name="docbuild:last-update" content="Nov 09, 2026"/>
+    <meta name="docbuild:last-update" content="Nov 10, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -591,7 +591,7 @@
   <section class="tex2jax_ignore mathjax_ignore" id="install-voxt">
 <h1>Install Voxt<a class="headerlink" href="#install-voxt" title="Link to this heading">#</a></h1>
 <p><a class="reference external" href="https://github.com/sgl-project/sglang-omni/tree/main/Voxt">Voxt</a> is voice input for macOS built on SGLang-Omni: press a shortcut in any app, speak, and the text appears where your cursor is. Speech is recognised on your Mac by SGLang-Omni’s native MLX runtime.</p>
-<p><strong>Download:</strong> the newest <code class="docutils literal notranslate"><span class="pre">Voxt-X.Y.Z-arm64.dmg</span></code> from <a class="reference external" href="https://github.com/sgl-project/sglang-omni/releases?q=voxt-v&amp;expanded=true">the Voxt releases</a>.</p>
+<p><strong>Download:</strong> the newest <code class="docutils literal notranslate"><span class="pre">Voxt-X.Y.Z-arm64.dmg</span></code> from <a class="reference external" href="https://github.com/sgl-project/sglang-omni/releases?q=voxt-v&amp;expanded=true">the Voxt releases</a>. Or install it with Homebrew: <code class="docutils literal notranslate"><span class="pre">brew</span> <span class="pre">install</span> <span class="pre">--cask</span> <span class="pre">hehehai/tap/voxt</span></code>.</p>
 <p><strong>Needs:</strong> a Mac with Apple silicon and macOS 15 or later. The app is about 280 MB; the recommended speech model is a 2.5 GB download. Voxt 2 does not run on an Intel Mac; there, keep using Voxt 1.x.</p>
 <section id="what-is-new-in-voxt-2">
 <h2>What is new in Voxt 2<a class="headerlink" href="#what-is-new-in-voxt-2" title="Link to this heading">#</a></h2>
@@ -604,7 +604,7 @@
 <li><p><strong>One-click import from Voxt 1.x</strong>: the dictionary, history, downloaded speech models, and your language model and speech service setups come over.</p></li>
 <li><p><strong>Open source</strong> in this repository, under the Apache License 2.0.</p></li>
 </ul>
-<p>Voxt 2 does not update itself: install each new version from its disk image. The full list of changes is in the <a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/Voxt/CHANGELOG.md">changelog</a>.</p>
+<p>Voxt 2 does not update itself: install each new version from its disk image, or with <code class="docutils literal notranslate"><span class="pre">brew</span> <span class="pre">upgrade</span> <span class="pre">--cask</span> <span class="pre">voxt</span></code>. The full list of changes is in the <a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/Voxt/CHANGELOG.md">changelog</a>.</p>
 </section>
 <section id="new-users">
 <h2>New users<a class="headerlink" href="#new-users" title="Link to this heading">#</a></h2>
@@ -636,7 +636,7 @@
 <li><p><strong>Grant the microphone and Accessibility again.</strong> macOS treats Voxt 2 as a different app, so the permissions of Voxt 1.x do not carry over.</p></li>
 <li><p>Set up a language model on the <strong>Language models</strong> page.</p></li>
 </ol>
-<p>Voxt 1.x’s <strong>Check for Updates</strong> does not install Voxt 2. If you installed Voxt 1.x with Homebrew, install Voxt 2 from the disk image as well.</p>
+<p><strong>Other ways to upgrade:</strong> in Voxt 1.x, choose <strong>Check for Updates…</strong>: on a Mac with Apple silicon it offers Voxt 2 together with the upgrade guide. With Homebrew, <code class="docutils literal notranslate"><span class="pre">brew</span> <span class="pre">install</span> <span class="pre">--cask</span> <span class="pre">hehehai/tap/voxt</span></code> installs Voxt 2. Either way, continue from step 3.</p>
 <p><strong>Another Mac:</strong> in Voxt 1.x, export the dictionary (Dictionary → More → Export); in Voxt 2, import the file (Dictionary → ••• → Import…). Only the dictionary moves this way.</p>
 <p><strong>Going back:</strong> reinstall <a class="reference external" href="https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v1.16.3">Voxt 1.16.3</a>. Its data is where Voxt 1.x left it.</p>
 <p>More detail, with screenshots: <a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/Voxt/docs/voxt-migration.md">From Voxt 1.x to Voxt 2</a>.</p>
@@ -726,7 +726,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Nov 09, 2026.
+  Last updated on Nov 10, 2026.
   <br/>
 </p>
   </div>
