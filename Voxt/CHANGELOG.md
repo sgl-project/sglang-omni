@@ -16,6 +16,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Fixed
 
 - **Meeting live text no longer repeats a sentence after a pause** (development builds): when the model changed the last words of a sentence after Voxt had shown it, the next live line started the whole sentence again. Now it shows only the words after the part that stayed the same. The transcript made after the meeting was not affected.
+- **System dictation keeps what was said before a pause**: some macOS versions restart their speech recognition after a short pause, and the result held only the words after it, in History and in the app the text went to. Voxt now keeps each part and joins them.
 
 ### 中文
 
@@ -31,6 +32,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 
 - **会议实时文字停顿后不再重复整句**（开发版）：Voxt 已经显示一句话之后，模型又改了句尾几个字，下一行实时文字会把整句从头再出一遍。现在只显示没变的那部分之后的字。会议结束后生成的转录稿不受影响。
+- **系统听写不再丢掉停顿之前说的话**：有些 macOS 版本在短暂停顿后会重新开始识别，结果里只剩停顿之后的话，历史记录和输入的 app 里都一样。现在 Voxt 把每一段都留下，再接起来。
 
 ## [2.0.3] - 2026-11-10
 
