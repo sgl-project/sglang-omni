@@ -376,7 +376,7 @@ Relevant model CI ownership:
   Omni CI (`omni-ci.yaml`) runs PR Test (`test.yaml` unit tests) after one
   shared setup. When PR Test finishes, ASR CI, TTS CI and Omni model CI start
   together and their stages run in parallel; MPS CI runs after them. Any CI
-  stage label runs PR Test; each other suite runs only when its stage is
+  stage label except `run-mac-ci` runs PR Test; each other suite runs only when its stage is
   selected (see the CI section of the pull request template). A failed or
   skipped suite does not skip any other; only a failed setup blocks them.
   Full WER sweep: `.github/scripts/run_all_wer_ci_aligned.sh` (milestones on
@@ -1020,7 +1020,7 @@ that happened to contain an older version of the test.
 
 ### Streaming cascade
 
-`unit_test/models/test_streaming_cascade.py`, `unit_test/pipeline/test_streaming_cascade.py`, `unit_test/serve/test_session_bridge.py`, `unit_test/serve/test_session_wire.py`, `unit_test/serve/test_realtime_turn_based.py`, `unit_test/pipeline/test_session_graph.py` and `unit_test/scheduling/test_streaming_vocoder_session.py` cover the cascade and the turn-based realtime interaction on CPU with loopback services; `test_model/test_streaming_cascade_realtime.py` runs against live services as described in the [Full Duplex Interactive Model](../docs/developer_reference/full_duplex_guide.md#streaming-cascade).
+`unit_test/models/test_streaming_cascade.py`, `unit_test/pipeline/test_streaming_cascade.py`, `unit_test/serve/test_session_bridge.py`, `unit_test/serve/test_session_wire.py`, `unit_test/serve/test_realtime_turn_based.py`, `unit_test/pipeline/test_session_graph.py` and `unit_test/scheduling/test_streaming_vocoder_session.py` cover the cascade and the turn-based realtime interaction on CPU with loopback services; `test_model/test_streaming_cascade_realtime.py` runs against live services as described in the [Full-Duplex Guide](../docs/developer_reference/full_duplex_guide.md#streaming-cascade).
 
 ```bash
 python -m pytest tests/unit_test/models/test_streaming_cascade.py tests/unit_test/pipeline/test_streaming_cascade.py tests/unit_test/serve/test_session_bridge.py tests/unit_test/serve/test_session_wire.py tests/unit_test/serve/test_realtime_turn_based.py tests/unit_test/pipeline/test_session_graph.py -q

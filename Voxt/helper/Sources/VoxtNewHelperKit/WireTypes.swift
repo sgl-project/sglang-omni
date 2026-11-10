@@ -186,12 +186,15 @@ public struct RestartedParams: Codable, Sendable {
     public var reason: String
     public var attempt: Int
     public var device: String
+    /// The device's name; nil for capture.system, which never names the output.
+    public var deviceName: String?
 
-    public init(job: String, reason: String, attempt: Int, device: String) {
+    public init(job: String, reason: String, attempt: Int, device: String, deviceName: String? = nil) {
         self.job = job
         self.reason = reason
         self.attempt = attempt
         self.device = device
+        self.deviceName = deviceName
     }
 }
 
@@ -287,6 +290,16 @@ public struct HotkeyStatus: Codable, Sendable {
         self.maxCallbackMicros = maxCallbackMicros
         self.error = error
     }
+}
+
+public struct HotkeyRecordParams: Codable, Sendable {
+    public var timeoutSeconds: Double?
+    public init(timeoutSeconds: Double? = nil) { self.timeoutSeconds = timeoutSeconds }
+}
+
+public struct HotkeyRecordResult: Codable, Sendable {
+    public var keys: String
+    public init(keys: String) { self.keys = keys }
 }
 
 public struct HotkeyEventParams: Codable, Sendable {
@@ -465,6 +478,39 @@ public struct FieldState: Codable, Sendable, Equatable {
         self.selection = selection
         self.marker = marker
     }
+}
+
+/// A range (UTF-16) of the focused element's text in app pid (TextRead).
+public struct ReadParams: Codable, Sendable {
+    public var pid: Int
+    public var range: TextRange
+}
+
+public struct ReadResult: Codable, Sendable, Equatable {
+    public var text: String?
+    /// What text covers, after clamping and widening.
+    public var range: TextRange
+    /// The whole value's UTF-16 units.
+    public var length: Int
+    /// The focused element's identity (CFHash).
+    public var element: Int
+    public var error: String?
+
+    public init(text: String = "", range: TextRange = TextRange(location: 0, length: 0), length: Int = 0, element: Int = 0, error: String? = nil) {
+        self.text = text.isEmpty ? nil : text
+        self.range = range
+        self.length = length
+        self.element = element
+        self.error = error
+    }
+}
+
+/// Why a textio.read read nothing.
+public enum ReadError {
+    public static let notFront = "not front"
+    public static let noFocus = "no focus"
+    public static let secure = "secure"
+    public static let unreadable = "unreadable"
 }
 
 // MARK: browser.url
@@ -680,9 +726,13 @@ public enum WireTypes {
         case Method.permissionsRequest: PermissionsRequestParams.self
         case Method.captureStart: CaptureParams.self
         case Method.captureStop: CaptureStopParams.self
+        case Method.captureSystem: SystemParams.self
         case Method.hotkeyConfigure: HotkeyConfigureParams.self
+        case Method.hotkeyRecord: HotkeyRecordParams.self
+        case Method.hotkeyCancelRecord: Empty.self
         case Method.textSelection: SelectionParams.self
         case Method.textPaste: PasteParams.self
+        case Method.textRead: ReadParams.self
         case Method.browserURL: BrowserURLParams.self
         case Method.appList: AppListParams.self
         case Method.appConfigure: AppConfigureParams.self
@@ -717,13 +767,16 @@ public enum WireTypes {
         case Method.jobCancel: CancelResult.self
         case Method.permissionsStatus, Method.permissionsRequest: PermissionsResult.self
         case Method.captureDevices: DevicesResult.self
-        case Method.captureStart: CaptureResult.self
+        case Method.captureStart, Method.captureSystem: CaptureResult.self
         case Method.captureStop: CaptureStopResult.self
         case Method.hotkeyConfigure, Method.hotkeyStatus: HotkeyStatus.self
+        case Method.hotkeyRecord: HotkeyRecordResult.self
+        case Method.hotkeyCancelRecord: Empty.self
         case Method.appFrontmost: App.self
         case Method.textFocus: FocusResult.self
         case Method.textSelection: SelectionResult.self
         case Method.textPaste: PasteResult.self
+        case Method.textRead: ReadResult.self
         case Method.browserURL: BrowserURLResult.self
         case Method.appList: AppListResult.self
         case Method.appIcons: AppIconsResult.self

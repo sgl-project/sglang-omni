@@ -1,7 +1,7 @@
 {
   "name": "Voxt",
   "identifier": "dev.hehehai.voxtnew",
-  "version": "2.0.0",
+  "version": "2.0.3",
   "copyright": "Copyright © 2026 the SGLang-Omni Team. Licensed under the Apache License 2.0.",
   "out": "build",
   "urlSchemes": [
@@ -16,13 +16,13 @@
     "minimumSystemVersion": "15.0",
     "infoPlist": {
       "LSApplicationCategoryType": "public.app-category.productivity",
-      "NSMicrophoneUsageDescription": "Voxt records your voice while you use its shortcut and recognises it on this Mac, or with the speech service you set up. 录音只在你使用快捷键时进行，在这台 Mac 上识别，或交给你设置的语音服务识别。",
+      "NSMicrophoneUsageDescription": "Voxt records your voice while you use its shortcut or during a meeting you start, and recognises it on this Mac, or with the speech service you set up. 录音在你使用快捷键时，或在你开始的会议中进行，在这台 Mac 上识别，或交给你设置的语音服务识别。",
+      "NSAudioCaptureUsageDescription": "Voxt records the sound other apps play during a meeting you start, and recognises it on this Mac, or with the speech service you chose for meetings. 会议时 Voxt 录下其他 app 播放的声音，在这台 Mac 上识别，或交给你为会议选的语音服务。",
       "NSSpeechRecognitionUsageDescription": "System dictation recognises your voice with macOS's own speech recognition, on this Mac: the audio never leaves it. 系统听写用 macOS 自带的语音识别在这台 Mac 上识别你的声音：音频不会离开这台 Mac。"
     },
     "entitlements": "helper/Support/app.entitlements",
     "helperEntitlements": {
-      "helper/voxtnew-helper": "helper/Support/helper.entitlements",
-      "llm/voxtnew-llm": "llm/Support/llm.entitlements"
+      "helper/voxtnew-helper": "helper/Support/helper.entitlements"
     }
   }
 }

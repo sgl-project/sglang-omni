@@ -21,7 +21,6 @@ import (
 //	modelsState       models_page.go  the Speech models page, the local models (internal/local)
 //	memoryState       models_memory.go  the loaded models' memory (the Speech models page)
 //	omniState         models_omni.go  the speech models' runtime (internal/omni)
-//	llmState          llm_link.go     the language models' runtime (internal/llmrt)
 //	remoteState       remote_link.go  the remote language models, the Language models page
 //	sessionState      session_link.go  sessions, shortcuts, the answer card
 //	overlayState      overlay.go      the recording overlay
@@ -36,6 +35,12 @@ import (
 //	soundsState       settings_sounds.go  the sounds' presets and previews
 //	muteState         mute_link.go    the system's output, muted while recording
 //	updateState       updates.go      the updater, an update installed while running
+//	notesState        notes_page.go   the Notes page
+//	learnState        learn_link.go   the watch that learns from the user's corrections
+//	historyAccessState history_access.go  other programs reading the history
+//	meetingState        meeting_link.go meetings (dev builds)
+//	meetingOverlayState meeting_overlay.go the meeting floating window
+//	meetingsState       meetings_page.go the Meetings page (dev builds)
 //
 // Add fields to your area's struct, not here.
 type app struct {
@@ -57,10 +62,9 @@ type app struct {
 	modelsState
 	memoryState
 	omniState
-	llmState
+	llmDbg llmDebugUI // llm_debug.go
 	remoteState
 	sessionState
-	shortMemoryState
 	overlayState
 	transcribeState
 	historyState
@@ -74,6 +78,13 @@ type app struct {
 	soundsState
 	muteState
 	updateState
+	notesState
+	announcementsState
+	learnState
+	historyAccessState
+	meetingState
+	meetingOverlayState
+	meetingsState
 }
 
 func newApp(lib *library, h *helperHost) *app {
@@ -87,6 +98,7 @@ func newApp(lib *library, h *helperHost) *app {
 	a.openAppEnhancement()  // appenhance.go
 	a.openAudio()           // settings_audio.go
 	a.openHistorySettings() // history_settings_ops.go: the recordings folder, the clean-up
+	a.openDictionary()      // dictionary_suggest.go: the suggestions, for the sidebar's count
 	return a
 }
 
@@ -121,12 +133,16 @@ func (a *app) toast(msg string) {
 // quit releases what the app holds; it runs in App.OnQuit, before the
 // library closes.
 func (a *app) quit() {
+	a.closeHistoryAccess() // history_access.go: the socket goes first
+	if a.stopLearning != nil {
+		a.stopLearning() // learn_link.go: no read goes to a helper that stopped
+	}
 	a.closeSessions() // session_link.go
 	a.closeOverlay()  // overlay.go
+	a.destroyMeetingOverlay()
 	a.closeTray()
 	a.closeMute() // mute_link.go: the output back before the helper goes
 	a.stopHelper()
-	a.stopLLM() // llm_link.go
 	if a.models != nil {
 		a.models.Close() // a download stops; what came is kept
 	}

@@ -17,6 +17,9 @@ const sampleRate = 16000
 // tokenBudget is a Final's budget of new tokens for audio of d (Voxt's
 // postStopFinalMaxTokens).
 func (t *ASRTuning) tokenBudget(d time.Duration) int {
+	if t.TokensPerSecond == 0 {
+		return t.MaxTokens
+	}
 	n := int(math.Ceil(max(d.Seconds(), 0)*t.TokensPerSecond)) + t.ExtraTokens
 	return min(max(n, t.MinTokens), t.MaxTokens)
 }
@@ -33,6 +36,11 @@ func (s Spec) languageHint(code string) string {
 	if !ok {
 		return ""
 	}
+	if s.ASR != nil {
+		if k, ok := s.ASR.HintKeys[c]; ok {
+			return k
+		}
+	}
 	return c
 }
 
@@ -46,8 +54,11 @@ type bias struct {
 // dictionary's terms one per line in the order given (the most recently
 // changed first), at most t.ContextTerms terms and t.ContextChars
 // characters (Voxt's asrPromptTermsText; a first term over the limit is
-// kept alone).
+// kept alone). A model without a context gets its Instruction only.
 func (t *ASRTuning) contextBias(hints []string, prompt string) bias {
+	if t.ContextTerms == 0 {
+		return bias{context: t.Instruction}
+	}
 	var terms []string
 	seen := map[string]bool{}
 	chars := 0

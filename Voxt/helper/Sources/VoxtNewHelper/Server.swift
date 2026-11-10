@@ -104,6 +104,7 @@ final class Server: @unchecked Sendable {
     let front: FrontApps
     let capture: CaptureManager
     let hotkeys: HotkeyTap
+    let keyRecorder: HotkeyRecorder
     let textio: TextIO
     let output: Output
     let speech: SpeechJobs
@@ -119,6 +120,7 @@ final class Server: @unchecked Sendable {
         front = FrontApps(out: out)
         capture = CaptureManager(out: out)
         hotkeys = HotkeyTap(out: out, front: front)
+        keyRecorder = HotkeyRecorder()
         textio = TextIO(front: front)
         output = Output(out: out)
         speech = SpeechJobs(out: out)
@@ -184,6 +186,15 @@ final class Server: @unchecked Sendable {
                 }
             }
             return
+        case Method.captureSystem:
+            Task {
+                do {
+                    try await capture.start(job: id, try msg.decodeParams(SystemParams.self).capture, system: true, clock: clock)
+                } catch {
+                    out.fail(id, rpcError(error))
+                }
+            }
+            return
         case Method.speechRecognize:
             Task {
                 do {
@@ -242,6 +253,12 @@ final class Server: @unchecked Sendable {
             return hotkeys.configure(try msg.decodeParams(HotkeyConfigureParams.self))
         case Method.hotkeyStatus:
             return hotkeys.status()
+        case Method.hotkeyRecord:
+            let p = try msg.decodeParams(HotkeyRecordParams.self)
+            return try await keyRecorder.record(timeoutSeconds: p.timeoutSeconds ?? 15)
+        case Method.hotkeyCancelRecord:
+            keyRecorder.cancel()
+            return Empty()
         case Method.appFrontmost:
             return await front.current()
         case Method.textFocus:
@@ -250,6 +267,8 @@ final class Server: @unchecked Sendable {
             return try await textio.selection(try msg.decodeParams(SelectionParams.self))
         case Method.textPaste:
             return try await textio.paste(try msg.decodeParams(PasteParams.self))
+        case Method.textRead:
+            return try await textio.read(try msg.decodeParams(ReadParams.self))
         case Method.appList:
             return await AppList.list(installed: try msg.decodeParams(AppListParams.self).installed ?? false)
         case Method.appIcons:

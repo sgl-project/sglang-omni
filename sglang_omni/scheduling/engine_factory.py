@@ -80,6 +80,7 @@ class GenerationDefaults(GenerationBatchSizeCaps):
 
 
 class SchedulerExtras(TypedDict, Generic[RequestDataT], total=False):
+    enable_plain_fallback: bool
     stream_output_builder: StreamOutputBuilder[RequestDataT] | None
     enable_async_decode: bool
     async_decode_min_batch_size: int

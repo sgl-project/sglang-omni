@@ -6,11 +6,11 @@ The current stable release is [v0.2.0 on PyPI](https://pypi.org/project/sglang-o
 ## Other platforms
 
 Using a different device? Choose the installation guide for your hardware:
-[Apple Silicon](./installation_apple_silicon.md),
-[Ascend NPU](./installation_npu.md),
-[Intel XPU](./installation_xpu.md),
-[Intel CPU](./installation_cpu.md), and
-[Moore Threads MUSA](./installation_musa.md).
+[Apple Silicon](../other_platforms/installation_apple_silicon.md),
+[Ascend NPU](../other_platforms/installation_npu.md),
+[Intel XPU](../other_platforms/installation_xpu.md),
+[Intel CPU](../other_platforms/installation_cpu.md), and
+[Moore Threads MUSA](../other_platforms/installation_musa.md).
 
 ## Install SGLang-Omni
 
@@ -119,7 +119,7 @@ uv pip install --prerelease=allow -v -e .   # drop -e for a non-editable install
 
 ## Next steps
 
-[Start the Qwen3-ASR server, send a request, and check the transcript](apiserver_quickstart.md#install-and-start).
+[Start the Qwen3-ASR server, send a request, and check the transcript](quickstart.md#install-and-start).
 For model-specific configuration and other request formats, see the
 [Qwen3-ASR Cookbook](../cookbook/qwen3_asr.md).
 

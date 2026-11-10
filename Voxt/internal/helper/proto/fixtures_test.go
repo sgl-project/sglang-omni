@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf16"
 )
 
 // fixturesDir holds the golden transcripts shared with the Swift helper.
@@ -202,7 +203,7 @@ func TestFixtures(t *testing.T) {
 						if ParamsFor(method) == nil && m.Error.Code != CodeMethodNotFound {
 							t.Fatalf("%s: %s must answer method_not_found", where, method)
 						}
-						if m.Error.Code == CodeCancelled && !IsJob(method) {
+						if m.Error.Code == CodeCancelled && !IsJob(method) && method != MethodHotkeyRecord {
 							t.Fatalf("%s: cancelled error for control request %s", where, method)
 						}
 						break
@@ -221,6 +222,10 @@ func TestFixtures(t *testing.T) {
 						if !validOutput(o.State) || o.State.Device == nil || (o.Took && !o.State.IsMuted()) {
 							t.Fatalf("%s: mute %+v", where, o)
 						}
+					case *ReadResult:
+						if !validRead(*o) {
+							t.Fatalf("%s: read %+v", where, o)
+						}
 					}
 					if c, ok := r.(*CaptureResult); ok {
 						if c.Frames != nextSeq[m.ID] || c.Samples != nextOffset[m.ID] || !slices.Contains([]string{CaptureStopped, CaptureMaxSeconds, CaptureDeviceLost, CaptureNoCallback}, c.Reason) {
@@ -238,13 +243,16 @@ func TestFixtures(t *testing.T) {
 	}
 }
 
-// validBinding: known families and sides, a behaviour, and a modifier for
-// a chord.
+// validBinding: known families and sides, a behaviour, a key or a mouse
+// button (2 and up) but not both, and a modifier for a chord.
 func validBinding(b HotkeyBinding) bool {
 	if b.ID == "" || !slices.Contains([]string{BehaviorTap, BehaviorDoubleTap, BehaviorLongPress}, b.Behavior) {
 		return false
 	}
-	if b.Key == nil && len(b.Modifiers) == 0 {
+	if b.Button != nil && (b.Key != nil || *b.Button < 2) {
+		return false
+	}
+	if b.Key == nil && b.Button == nil && len(b.Modifiers) == 0 {
 		return false
 	}
 	for fam, side := range b.Modifiers {
@@ -263,6 +271,15 @@ func validOutput(s OutputState) bool {
 		return s.Muted == nil && !s.Settable
 	}
 	return s.Device.UID != "" && (!s.Settable || s.Muted != nil)
+}
+
+// validRead: a known error with nothing read, or text that fills its
+// range (UTF-16) inside the value.
+func validRead(r ReadResult) bool {
+	if r.Error != "" {
+		return slices.Contains([]string{ReadNotFront, ReadNoFocus, ReadSecure, ReadUnreadable}, r.Error) && r.Text == "" && r.Range == (TextRange{})
+	}
+	return r.Range.Location >= 0 && r.Range.Location+r.Range.Length <= r.Length && len(utf16.Encode([]rune(r.Text))) == r.Range.Length
 }
 
 // validEvent: a phase that fits the behaviour.
@@ -387,7 +404,7 @@ func TestErrors(t *testing.T) {
 			t.Errorf("notification %s", m)
 		}
 	}
-	if !IsJob(MethodCaptureStart) || !IsJob(MethodSpeechRecognize) || IsJob(MethodSpeechAudio) || IsJob(MethodBrowserURL) {
+	if !IsJob(MethodCaptureStart) || !IsJob(MethodCaptureSystem) || !IsJob(MethodSpeechRecognize) || IsJob(MethodSpeechAudio) || IsJob(MethodBrowserURL) {
 		t.Error("IsJob")
 	}
 }
