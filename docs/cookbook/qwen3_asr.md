@@ -31,7 +31,7 @@ sgl-omni serve --config examples/configs/qwen3_asr_ascend910.yaml --port 8000
 
 The example defaults to Qwen3-ASR-1.7B. To use 0.6B, add `--model-path Qwen/Qwen3-ASR-0.6B`. For a local checkpoint, pass its path with `--model-path` and the model identifier used in transcription requests with `--model-name`.
 
-On Ascend910_9362 with SGLang 0.5.23 and CANN 9.1.0, targeted transcription checks found truncated outputs with LM graphs enabled for both model sizes. This example uses eager LM decode and prefill while retaining the default encoder graphs.
+This example uses eager LM decode and prefill to avoid truncated outputs observed in [targeted transcription checks on Ascend910_9362](https://github.com/sgl-project/sglang-omni/pull/3199#discussion_r4510634009), while retaining the default encoder graphs.
 
 <a id="apple-silicon-torch-mps"></a>
 
