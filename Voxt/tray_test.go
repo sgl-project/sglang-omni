@@ -1,0 +1,199 @@
+package main
+
+import (
+	"bytes"
+	"fmt"
+	"image/png"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/trayicon"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
+)
+
+func TestTrayIcons(t *testing.T) {
+	if bytes.Equal(trayicon.Idle, trayicon.Recording) {
+		t.Fatal("the recording icon is the same")
+	}
+	for _, b := range [][]byte{trayicon.Idle, trayicon.Recording} {
+		img, err := png.Decode(bytes.NewReader(b))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// 18 pt at 2×: MyGo shows any tray icon 18 pt tall.
+		if r := img.Bounds(); r.Dx() != trayicon.Size || r.Dy() != trayicon.Size || trayicon.Size != 36 {
+			t.Errorf("size %v", r)
+		}
+		// A template image: black, only its alpha counts.
+		for y := 0; y < trayicon.Size; y++ {
+			for x := 0; x < trayicon.Size; x++ {
+				if r, g, b, a := img.At(x, y).RGBA(); a > 0 && r|g|b != 0 {
+					t.Fatalf("pixel %d,%d is not black", x, y)
+				}
+			}
+		}
+	}
+}
+
+func TestTrayMeetingStatus(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	meetingDevHook = func() bool { return true }
+	t.Cleanup(func() { meetingDevHook = nil })
+	a.openMeetings()
+	if a.trayShowsRecording() {
+		t.Fatal("idle icon at rest")
+	}
+	a.meetSnap.State = meeting.StateRecording
+	a.meetSnap.ID = "m1"
+	if !a.trayShowsRecording() {
+		t.Fatal("recording icon during meeting")
+	}
+	if tip := a.trayToolTip(); tip != "Meeting in progress" {
+		t.Fatalf("tooltip %q", tip)
+	}
+	labels := func() []string {
+		var out []string
+		for _, it := range a.trayItems() {
+			out = append(out, it.Label)
+		}
+		return out
+	}
+	if !slices.Contains(labels(), "End meeting") {
+		t.Fatalf("menu %q", labels())
+	}
+	a.meetSnap.State = meeting.StatePaused
+	if a.trayToolTip() != "Meeting paused" {
+		t.Fatal("paused tooltip")
+	}
+}
+
+func TestTrayRecent(t *testing.T) {
+	es := []store.Entry{
+		{Status: store.StatusDone, Result: "newest"},
+		{Status: store.StatusFailed, Result: "failed"},
+		{Status: store.StatusDone, Result: "  "},
+		{Status: store.StatusDone, Result: "second"},
+		{Status: store.StatusDone, Result: "third"},
+		{Status: store.StatusDone, Result: "fourth"},
+	}
+	if got := uitext.RecentResults(es, 3); !slices.Equal(got, []string{"newest", "second", "third"}) {
+		t.Fatalf("recent %q", got)
+	}
+	// One short line: as wide as the menu's other items, whatever the
+	// script; the whole result in the tooltip, and copied on a click.
+	for _, c := range []struct{ in, want string }{
+		{"two\nlines  here", "two lines here"},
+		{"短句。", "短句。"},
+		{strings.Repeat("一二三四五六七八九十", 5), "一二三四五六七八九十一二…"},
+		{"Please send the meeting notes to the whole team before Friday.", "Please send the meeting…"},
+		{"讨论一下 VoxtNew 的发布计划，然后把引导页做完", "讨论一下 VoxtNew 的发布计…"},
+		{"今天下午三点开会，讨论发布计划，然后把引导页做完", "今天下午三点开会，讨论发…"},
+		{"\n  Exactly twenty-six chars\t", "Exactly twenty-six chars"},
+		{"Supercalifragilisticexpialidocious words", "Supercalifragilisticexpia…"},
+	} {
+		got := uitext.TrayLabel(c.in)
+		if got != c.want {
+			t.Errorf("uitext.TrayLabel(%q) = %q, want %q", c.in, got, c.want)
+		}
+		if uitext.DisplayWidth(got) > uitext.TrayRecentWidth || strings.ContainsAny(got, "\n\t") {
+			t.Errorf("uitext.TrayLabel(%q) = %q: %d units", c.in, got, uitext.DisplayWidth(got))
+		}
+	}
+	if uitext.DisplayWidth("开始转录 fn") != 11 || uitext.DisplayWidth("e\u0301") != 1 {
+		t.Error("uitext.DisplayWidth")
+	}
+	huge := strings.Repeat("长", 1000)
+	if tip := trayTip(huge); len([]rune(tip)) != trayTipRunes+1 || trayTip(" short \n") != "short" {
+		t.Errorf("tip %d", len([]rune(tip)))
+	}
+	// The items: the recent results, a click copies one.
+	a, _, _ := newTestApp(t)
+	var copied []string
+	a.copyText = func(s string) error { copied = append(copied, s); return nil }
+	long := "Please send the meeting notes to the whole team before Friday.\nThanks!"
+	a.recent = []string{"hello there", long}
+	found, title := 0, false
+	for _, it := range a.trayItems() {
+		switch it.Label {
+		case "hello there", "Please send the meeting…":
+			found++
+			it.Click(it, nil)
+			if it.Label != "hello there" && it.ToolTip != long {
+				t.Errorf("tooltip %q", it.ToolTip)
+			}
+		case "Recent results":
+			title = it.Disabled
+		}
+	}
+	if found != 2 || !title || !slices.Equal(copied, []string{"hello there", long}) {
+		t.Errorf("recent items: found %d, title %v, copied %q", found, title, copied)
+	}
+}
+
+// TestTrayMicrophone: the menu bar's Microphone submenu lists the inputs
+// without Settings → Audio having opened and checks the one a recording
+// would use; choosing one puts it first in the list, and the next
+// recording uses it. A session's end lists the inputs again.
+func TestTrayMicrophone(t *testing.T) {
+	set, models, _ := fileSetup(t, "hello", &fakeChat{text: "Hello."})
+	a := newSessionApp(t, "", func(s *settings.Settings) {
+		set(s)
+		s.Audio.Devices = []string{"BuiltInMicrophoneDevice"}
+	}, models)
+	a.pump("the inputs", func() bool { return a.audio.read })
+	microphones := func() string {
+		for _, it := range a.trayItems() {
+			if it.Label != "Microphone" {
+				continue
+			}
+			var rows []string
+			for _, sub := range it.Submenu {
+				row := sub.Label
+				if sub.Checked {
+					row += " ✓"
+				}
+				if sub.Disabled {
+					row += " (disabled)"
+				}
+				rows = append(rows, row)
+			}
+			return fmt.Sprint(rows)
+		}
+		return "no Microphone submenu"
+	}
+	if got := microphones(); got != "[MacBook Air Microphone ✓ AirPods Pro]" {
+		t.Fatalf("submenu %s", got)
+	}
+	for _, it := range a.trayItems() {
+		for _, sub := range it.Submenu {
+			if sub.Label == "AirPods Pro" {
+				sub.Click(sub, nil)
+			}
+		}
+	}
+	a.pump("the choice saved", func() bool { return len(a.lib.settings.Get().Audio.Devices) == 2 })
+	if au := a.lib.settings.Get().Audio; !slices.Equal(au.Devices, []string{"AirPodsPro:input", "BuiltInMicrophoneDevice"}) || au.DeviceNames["AirPodsPro:input"] != "AirPods Pro" {
+		t.Fatalf("audio settings %+v", au)
+	}
+	if got := microphones(); got != "[MacBook Air Microphone AirPods Pro ✓]" {
+		t.Errorf("submenu after the choice %s", got)
+	}
+	// note (luojiaxuan): forget the list, so that only the session's end can fill it again.
+	a.audio.devices = nil
+	a.toggleTranscribe()
+	a.pump("the recording", func() bool { return a.sess.State == session.Recording && a.sess.Device != "" })
+	if a.sess.Device != "AirPods Pro" {
+		t.Errorf("recorded from %q", a.sess.Device)
+	}
+	a.toggleTranscribe()
+	a.pump("the end and the inputs", func() bool { return a.sess.State.Ended() && len(a.audio.devices) == 2 })
+	a.audio.devices = nil
+	if got := microphones(); got != "[No microphone available (disabled)]" {
+		t.Errorf("submenu without inputs %s", got)
+	}
+}

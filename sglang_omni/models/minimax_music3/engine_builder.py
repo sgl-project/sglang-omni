@@ -3,13 +3,10 @@
 
 from __future__ import annotations
 
-import json
-import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypedDict
 
-from torch import Tensor
 from typing_extensions import Unpack
 
 from sglang_omni.model_runner.base import ModelRunner
@@ -45,10 +42,6 @@ if TYPE_CHECKING:
 else:
     pass
 
-logger = logging.getLogger(__name__)
-
-_AUDIO_WEIGHT_PREFIXES = ("model.audio_decoder.", "model.audio_extra_embedding.")
-
 
 class MiniMaxMusic3SchedulerArguments(TypedDict):
     model_worker: ModelWorker
@@ -82,7 +75,6 @@ def rvq_graph_buckets(max_running_requests: int) -> list[int]:
 class MiniMaxMusic3EngineBuilder(TtsEngineBuilder["MiniMaxMusic3SGLangRequestData"]):
     model_name = "minimax_music3"
     context_length = 10240
-    model_arch_override = "Qwen3ForCausalLM"
 
     def __init__(
         self,
@@ -108,11 +100,7 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder["MiniMaxMusic3SGLangRequestDat
 
         paths = resolve_checkpoint(model_path)
         self.checkpoint_root = str(paths.root)
-        return str(paths.qwen_dir)
-
-    def pre_infra_setup(self, checkpoint_dir: str) -> None:
-        self.normalize_backbone_config(Path(checkpoint_dir) / "config.json")
-        self.filter_audio_weights()
+        return str(paths.language_model_dir)
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         return {
@@ -220,6 +208,7 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder["MiniMaxMusic3SGLangRequestDat
             paths.append(
                 Path(self.checkpoint_root) / "qwen_7B" / "qwen_7B" / "config.json"
             )
+            paths.append(Path(self.checkpoint_root) / "language_model" / "config.json")
             get_coordinator().register_ar(
                 model,
                 next(model.parameters()).device,
@@ -301,54 +290,6 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder["MiniMaxMusic3SGLangRequestDat
             "stream_output_builder": build_stream_output,
             "enable_async_decode": False,
         }
-
-    @staticmethod
-    def normalize_backbone_config(config_path: Path) -> None:
-        """Rewrite the backbone config so HuggingFace resolves a Qwen3 config."""
-        config = json.loads(config_path.read_text())
-        if config.get("model_type") == "qwen3":
-            return
-        else:
-            pass
-        backup_path = config_path.with_suffix(".json.bak")
-        if not backup_path.exists():
-            backup_path.write_text(config_path.read_text())
-        else:
-            pass
-        config["model_type"] = "qwen3"
-        config_path.unlink()
-        config_path.write_text(json.dumps(config, indent=2))
-        logger.info(
-            f"MiniMax Music 3: rewrote {config_path} model_type to qwen3 (backup at {backup_path})"
-        )
-
-    @staticmethod
-    def filter_audio_weights() -> None:
-        from sglang.srt.models.qwen3 import Qwen3ForCausalLM
-
-        if getattr(
-            Qwen3ForCausalLM.load_weights, "_minimax_filtered", False
-        ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-            return
-        else:
-            pass
-        load_weights = Qwen3ForCausalLM.load_weights
-
-        def filtered_load_weights(
-            self: Qwen3ForCausalLM, weights: Iterable[tuple[str, Tensor]]
-        ) -> None:
-            return load_weights(
-                self,
-                (
-                    (name, tensor)
-                    for name, tensor in weights
-                    if not name.startswith(_AUDIO_WEIGHT_PREFIXES)
-                ),
-            )
-
-        filtered_load_weights._minimax_filtered = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-        Qwen3ForCausalLM.load_weights = filtered_load_weights
-        logger.info("MiniMax Music 3: Qwen3 weight loader now skips audio-module keys")
 
 
 __all__ = ["MiniMaxMusic3EngineBuilder"]

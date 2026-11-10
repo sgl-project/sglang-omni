@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""MiniCPM-o thinker runners: offline length penalty and the duplex unit sampler."""
+"""MiniCPM-o thinker runners: offline length penalty, speculative steps and the duplex unit sampler."""
 
 from __future__ import annotations
 
@@ -13,19 +13,29 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 import torch
+from sglang.srt.environ import envs
+from sglang.srt.model_executor.forward_batch_info import ForwardMode
 
 from sglang_omni.audio.vad import StatelessVAD
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
+from sglang_omni.models.minicpm_o import bootstrap as bootstrap_module
+from sglang_omni.models.minicpm_o import stages as stages_module
+from sglang_omni.models.minicpm_o.components import sglang_thinker as thinker_module
 from sglang_omni.models.minicpm_o.components.streaming_perception import (
     SAMPLE_RATE,
     UNIT_SAMPLES,
 )
 from sglang_omni.models.minicpm_o.duplex_sampler import filter_top_k_top_p
-from sglang_omni.models.minicpm_o.native_config import MiniCPMODuplexSampling
+from sglang_omni.models.minicpm_o.native_config import (
+    DEFAULT_WINDOW_SETTINGS,
+    MiniCPMODuplexSampling,
+)
 from sglang_omni.models.minicpm_o.native_thinker_model_runner import (
     MiniCPMOThinkerModelRunner as DuplexThinkerModelRunner,
 )
+from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
+from sglang_omni.models.minicpm_o.request_builders import build_sglang_thinker_request
 from sglang_omni.models.minicpm_o.session_adapters import ThinkerAdapter
 from sglang_omni.models.minicpm_o.special_tokens import (
     REQUIRED_SPECIAL_TOKENS,
@@ -46,10 +56,12 @@ from sglang_omni.proto.streams import (
     SESSION_CONTROL,
     TRUNCATE,
 )
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionPreparation
 from sglang_omni.scheduling.sglang_backend.request_data import (
     EmbeddingSpan,
     SGLangARRequestData,
+    ThinkerRequest,
 )
 
 EOS_TOKEN_IDS = [1, 3]
@@ -212,6 +224,405 @@ def test_missing_length_penalty_leaves_logits_unchanged() -> None:
     torch.testing.assert_close(logits_output.next_token_logits, original)
 
 
+def verify_request(
+    length_penalty: float, suppress_tokens: list[int] | None
+) -> SimpleNamespace:
+    request = penalized_request(length_penalty)
+    request.data.suppress_tokens = suppress_tokens
+    request.data.req = SimpleNamespace()
+    return request
+
+
+def test_each_verify_row_takes_its_request_length_penalty_and_suppress_set() -> None:
+    rows_per_request = 3
+    suppressed_token_id = 2
+    original = torch.tensor([[0.5, 2.0, -1.0, -4.0]]).repeat(2 * rows_per_request, 1)
+    logits_output = SimpleNamespace(next_token_logits=original.clone())
+
+    bare_runner().apply_speculative_verify_logits(
+        logits_output,
+        [verify_request(2.0, None), verify_request(1.0, [suppressed_token_id])],
+        rows_per_request,
+    )
+
+    penalized = original[0].clone()
+    penalized[EOS_TOKEN_IDS] = torch.tensor([2.0 / 2.0, -4.0 * 2.0])
+    suppressed = original[0].clone()
+    suppressed[suppressed_token_id] = float("-inf")
+    torch.testing.assert_close(
+        logits_output.next_token_logits[:rows_per_request],
+        penalized.expand(rows_per_request, -1),
+    )
+    torch.testing.assert_close(
+        logits_output.next_token_logits[rows_per_request:],
+        suppressed.expand(rows_per_request, -1),
+    )
+
+
+def speculative_runner(
+    hidden_rows: torch.Tensor, prefill_hidden_rows: torch.Tensor | None
+) -> MiniCPMOThinkerModelRunner:
+    runner = bare_runner()
+    runner.hands_hidden_to_talker = True
+    runner.pending_hidden = {}
+    runner.speculative_hidden_queue = {}
+    runner.outer_model = SimpleNamespace(
+        speculative_hidden_rows=hidden_rows, prefill_hidden_rows=prefill_hidden_rows
+    )
+    return runner
+
+
+def committed_rows(runner: MiniCPMOThinkerModelRunner, request_id: str) -> torch.Tensor:
+    return torch.stack(runner.pending_hidden[request_id])
+
+
+def speculative_request(request_id: str, *, speaks: bool = True) -> SimpleNamespace:
+    return SimpleNamespace(
+        rid=request_id,
+        omni_data=SimpleNamespace(
+            stage_payload=SimpleNamespace(
+                data={},
+                request=SimpleNamespace(
+                    metadata=None if speaks else {"output_modalities": ["text"]}
+                ),
+            )
+        ),
+    )
+
+
+def test_committed_verify_tokens_take_the_leading_rows_of_their_request_block() -> None:
+    num_draft_tokens = 4
+    block_rows = torch.arange(3 * num_draft_tokens * 2, dtype=torch.float32).reshape(
+        -1, 2
+    )
+    hidden_rows = torch.zeros(16, 2)
+    hidden_rows[: len(block_rows)] = block_rows
+    runner = speculative_runner(hidden_rows, None)
+    batch = SimpleNamespace(reqs=[speculative_request(rid) for rid in "abc"])
+
+    runner.after_speculative_step(
+        batch, is_prefill=False, num_draft_tokens=num_draft_tokens
+    )
+    hidden_rows.zero_()
+    runner.on_speculative_tokens(SimpleNamespace(request_id="c"), [PLAIN_TOKEN_ID])
+    runner.on_speculative_tokens(
+        SimpleNamespace(request_id="b"),
+        [PLAIN_TOKEN_ID, OTHER_TOKEN_ID, THIRD_TOKEN_ID],
+    )
+
+    torch.testing.assert_close(committed_rows(runner, "c"), block_rows[8:9])
+    torch.testing.assert_close(committed_rows(runner, "b"), block_rows[4:7])
+    assert (
+        "a" not in runner.pending_hidden
+    ), "a request with no committed tokens gets no rows"
+
+
+def test_prefill_commits_the_last_prompt_row_of_each_request() -> None:
+    extend_lens = [2, 3]
+    prefill_hidden_rows = torch.arange(16 * 2, dtype=torch.float32).reshape(16, 2)
+    runner = speculative_runner(torch.zeros(16, 2), prefill_hidden_rows)
+    batch = SimpleNamespace(
+        reqs=[speculative_request(request_id) for request_id in ("a", "b")],
+        extend_lens=extend_lens,
+    )
+
+    runner.after_speculative_step(batch, is_prefill=True, num_draft_tokens=4)
+    runner.on_speculative_tokens(SimpleNamespace(request_id="b"), [PLAIN_TOKEN_ID])
+    runner.on_speculative_tokens(SimpleNamespace(request_id="a"), [OTHER_TOKEN_ID])
+
+    torch.testing.assert_close(committed_rows(runner, "a"), prefill_hidden_rows[1:2])
+    torch.testing.assert_close(committed_rows(runner, "b"), prefill_hidden_rows[4:5])
+
+
+def test_a_text_request_on_a_speech_server_keeps_no_hidden_rows() -> None:
+    runner = speculative_runner(torch.zeros(8, 2), torch.zeros(8, 2))
+    request = speculative_request("text-only", speaks=False)
+
+    runner.after_speculative_step(
+        SimpleNamespace(reqs=[request], extend_lens=[3]),
+        is_prefill=True,
+        num_draft_tokens=4,
+    )
+    runner.after_speculative_step(
+        SimpleNamespace(reqs=[request]), is_prefill=False, num_draft_tokens=4
+    )
+    runner.on_speculative_tokens(
+        SimpleNamespace(request_id=request.rid), [PLAIN_TOKEN_ID]
+    )
+
+    assert not runner.speculative_hidden_queue
+    assert not runner.pending_hidden
+
+
+@pytest.mark.parametrize("chunk_lengths", [(5,), (3, 2)])
+def test_speculative_known_text_keeps_prefill_rows_across_chunks(
+    chunk_lengths: tuple[int, ...],
+) -> None:
+    text_tokens = [PLAIN_TOKEN_ID, OTHER_TOKEN_ID, THIRD_TOKEN_ID]
+    expected_rows = torch.arange(10, dtype=torch.float32).reshape(5, 2)
+    prefill_buffer = torch.empty_like(expected_rows)
+    runner = speculative_runner(torch.empty_like(expected_rows), prefill_buffer)
+    request_data = SimpleNamespace(
+        stage_payload=SimpleNamespace(
+            data={"prompt": {"known_tts_output_ids": text_tokens}},
+            request=SimpleNamespace(metadata=None),
+        ),
+        extra_model_outputs={},
+    )
+    request = SimpleNamespace(rid="known-text", omni_data=request_data)
+    start = 0
+
+    for length in chunk_lengths:
+        prefill_buffer[:length].copy_(expected_rows[start : start + length])
+        runner.after_speculative_step(
+            SimpleNamespace(reqs=[request], extend_lens=[length]),
+            is_prefill=True,
+            num_draft_tokens=4,
+        )
+        prefill_buffer.fill_(-1)
+        start += length
+    runner.on_speculative_tokens(
+        SimpleNamespace(request_id=request.rid), [PLAIN_TOKEN_ID]
+    )
+    runner.on_request_finished(request.rid, request_data)
+
+    torch.testing.assert_close(
+        request_data.extra_model_outputs["hidden_states_seq"], expected_rows[1:4]
+    )
+    assert request.rid not in runner.pending_hidden
+    assert request.rid not in runner.speculative_hidden_queue
+
+
+def admitted_thinker_request(state: MiniCPMOPipelineState) -> ThinkerRequest:
+    """Build a thinker request and attach its data the way the scheduler admits one."""
+    request_data = build_sglang_thinker_request(
+        state, params={"max_new_tokens": 8}, tokenizer=None, vocab_size=VOCAB_SIZE
+    )
+    request = request_data.req
+    request.omni_data = request_data
+    OmniScheduler.normalize_req_token_arrays(request)
+    return request
+
+
+def prefill_input_embeds(
+    runner: MiniCPMOThinkerModelRunner, request: ThinkerRequest, token_ids: list[int]
+) -> torch.Tensor:
+    """The embeddings the runner composes for one extend of the request over token_ids."""
+    forward_batch = SimpleNamespace(
+        input_ids=torch.tensor(token_ids, dtype=torch.long),
+        extend_seq_lens_cpu=[len(token_ids)],
+        extend_prefix_lens_cpu=[0],
+    )
+    composed = runner.inject_multimodal_embeds(
+        forward_batch, SimpleNamespace(reqs=[request])
+    )
+    assert composed is not None, "the extend composed no multimodal rows"
+    return composed[0]
+
+
+def test_a_retracted_request_reprefills_its_prompt_with_its_audio_rows() -> None:
+    """A thinker request retracted after its prompt prefill re-prefilled its audio placeholders as token ids, which stopped the thinker on an out-of-range embedding index."""
+    runner = object.__new__(MiniCPMOThinkerModelRunner)
+    torch.manual_seed(0)
+    runner.embed_tokens = torch.nn.Embedding(VOCAB_SIZE, 4)
+    runner.image_token_id, runner.video_token_id, runner.audio_token_id = 90, 91, 92
+    audio_state = MiniCPMOPipelineState(
+        prompt={"input_ids": torch.tensor([10, 92, 92, 11])},
+        mm_inputs={"audio": {"bounds": torch.tensor([[1, 3]]), "cache_key": "clip-0"}},
+        thinker_inputs={"model_inputs": {"audio_embeds": torch.full((2, 4), 99.0)}},
+    )
+    fresh_request = admitted_thinker_request(audio_state)
+    fresh_prompt_embeds = prefill_input_embeds(
+        runner, fresh_request, list(fresh_request.origin_input_ids)
+    )
+    request = admitted_thinker_request(audio_state)
+
+    request.inflight_middle_chunks = 1
+    prefill_input_embeds(runner, request, list(request.origin_input_ids[:2]))
+    request.reset_for_retract()
+    request.init_next_round_input()
+    assert torch.equal(
+        prefill_input_embeds(runner, request, list(request.full_untruncated_fill_ids)),
+        fresh_prompt_embeds,
+    )
+
+    request.output_ids.extend([PLAIN_TOKEN_ID, OTHER_TOKEN_ID])
+    request.reset_for_retract()
+    request.init_next_round_input()
+    reprefill_embeds = prefill_input_embeds(
+        runner, request, list(request.full_untruncated_fill_ids)
+    )
+    assert torch.equal(
+        reprefill_embeds[: len(request.origin_input_ids)], fresh_prompt_embeds
+    )
+
+
+@pytest.mark.parametrize("mode", ["compact", "cap-accept"])
+def test_thinker_rejects_nonstatic_verify_before_model_loading(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    server_args = SimpleNamespace(
+        disable_cuda_graph=False, speculative_algorithm="DSPARK"
+    )
+    monkeypatch.setattr(
+        "sglang.srt.arg_groups.model_override_base.resolved_view", lambda value: value
+    )
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.bootstrap.create_sglang_infrastructure",
+        Mock(side_effect=AssertionError("unsupported verify reached model loading")),
+    )
+
+    with envs.SGLANG_RAGGED_VERIFY_MODE.override(mode):
+        with pytest.raises(ValueError, match="requires static verify"):
+            bootstrap_module.create_thinker_scheduler(server_args)
+
+
+@pytest.mark.parametrize(
+    ("capture_speech", "prefill_rows"), [(False, 8192), (True, 8192), (True, 8193)]
+)
+def test_speech_capture_copies_the_prefill_ceiling_and_text_capture_stays_empty(
+    monkeypatch: pytest.MonkeyPatch, capture_speech: bool, prefill_rows: int
+) -> None:
+    model = thinker_module.MiniCPMOThinkerForCausalLM.__new__(
+        thinker_module.MiniCPMOThinkerForCausalLM
+    )
+    torch.nn.Module.__init__(model)
+    model.config = SimpleNamespace(hidden_size=2)
+    model.language_model = SimpleNamespace(
+        lm_head=torch.nn.Linear(2, 2, bias=False), model=torch.nn.Identity()
+    )
+    model.capture_hidden_for_talker = capture_speech
+    model.prefill_hidden_rows = None
+    model.speculative_hidden_rows = None
+    monkeypatch.setattr(
+        thinker_module, "max_prefill_buffer_tokens", lambda: prefill_rows
+    )
+    hidden = torch.arange(prefill_rows * 2, dtype=torch.float32).reshape(-1, 2)
+
+    model.keep_hidden_rows_for_talker()
+    buffer = model.speculative_hidden_rows
+    model.keep_hidden_rows_for_talker()
+    assert model.speculative_hidden_rows is buffer, "buffers and hook are set once"
+    if capture_speech:
+        model.keep_speculative_hidden_rows(
+            model.language_model.model,
+            (),
+            {"forward_batch": SimpleNamespace(forward_mode=ForwardMode.EXTEND)},
+            hidden,
+        )
+        torch.testing.assert_close(model.prefill_hidden_rows[:prefill_rows], hidden)
+    else:
+        assert model.prefill_hidden_rows is None
+        assert model.speculative_hidden_rows is None
+
+
+@pytest.mark.parametrize(
+    ("speculative_overrides", "message"),
+    [
+        ({"speculative_draft_model_path": "draft"}, "needs a speculative_algorithm"),
+        ({"speculative_algorithm": "DSPARK"}, "needs speculative_draft_model_path"),
+        (
+            {"speculative_algorithm": "NGRAM", "speculative_draft_model_path": "draft"},
+            "supports EAGLE3, DFLASH and DSPARK",
+        ),
+        (
+            {
+                "speculative_algorithm": "DSPARK",
+                "speculative_draft_model_path": "draft",
+                "enable_mixed_chunk": True,
+            },
+            "needs enable_mixed_chunk off",
+        ),
+    ],
+)
+def test_the_thinker_stage_checks_the_algorithm_draft_and_mixed_chunk_together(
+    speculative_overrides: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        stages_module.create_sglang_thinker_executor_from_config(
+            "dummy", server_args_overrides=speculative_overrides
+        )
+
+
+def test_the_thinker_stage_keeps_max_seq_len_within_the_draft_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        stages_module,
+        "AutoConfig",
+        SimpleNamespace(
+            from_pretrained=lambda *args, **kwargs: SimpleNamespace(
+                max_position_embeddings=4096
+            )
+        ),
+    )
+
+    with pytest.raises(ValueError, match="exceeds the draft's"):
+        stages_module.create_sglang_thinker_executor_from_config(
+            "dummy",
+            max_seq_len=8192,
+            server_args_overrides={
+                "speculative_algorithm": "DSPARK",
+                "speculative_draft_model_path": "draft",
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    ("running_requests", "maximum_draft_tokens", "error", "message"),
+    [
+        (8192, 1, MemoryError, "capture reached"),
+        (8193, 1, ValueError, "capacity is 8192"),
+        (4097, 2, ValueError, "capacity is 8192"),
+    ],
+)
+def test_speech_verify_capacity_is_checked_before_graph_capture(
+    monkeypatch: pytest.MonkeyPatch,
+    running_requests: int,
+    maximum_draft_tokens: int,
+    error: type[Exception],
+    message: str,
+) -> None:
+    server_args = SimpleNamespace(
+        disable_cuda_graph=False,
+        speculative_algorithm="DSPARK",
+        speculative_eagle_topk=1,
+        cuda_graph_config=SimpleNamespace(decode=SimpleNamespace(max_bs=1, bs=[1])),
+    )
+    worker = SimpleNamespace(
+        model_runner=SimpleNamespace(
+            model=SimpleNamespace(capture_hidden_for_talker=False),
+            max_running_requests=running_requests,
+        ),
+        speculative_worker=SimpleNamespace(speculative_num_draft_tokens=1),
+    )
+
+    monkeypatch.setattr(
+        "sglang.srt.arg_groups.model_override_base.resolved_view", lambda value: value
+    )
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.generation_batch_policy.resolved_view",
+        lambda value: value,
+    )
+    monkeypatch.setattr(
+        bootstrap_module,
+        "max_speculative_num_draft_tokens",
+        lambda: maximum_draft_tokens,
+    )
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.bootstrap.create_sglang_infrastructure",
+        Mock(return_value=(worker, None, None, None, None)),
+    )
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.bootstrap.init_sglang_cuda_graphs",
+        Mock(side_effect=MemoryError("capture reached")),
+    )
+
+    with envs.SGLANG_RAGGED_VERIFY_MODE.override("static"):
+        with pytest.raises(error, match=message):
+            bootstrap_module.create_thinker_scheduler(server_args, speech_enabled=True)
+
+
 def duplex_tokenizer() -> Mock:
     tokenizer = Mock(unk_token_id=0, bad_token_ids=list(BAD_TOKEN_IDS))
     special_token_ids = range(
@@ -281,6 +692,17 @@ def sample(
     ).tolist()
 
 
+def make_thinker_adapter(tokenizer: Mock) -> ThinkerAdapter:
+    return ThinkerAdapter(
+        tokenizer,
+        VOCAB_SIZE,
+        window=DEFAULT_WINDOW_SETTINGS,
+        rotary_embedding=SimpleNamespace(
+            head_size=64, rotary_dim=64, is_neox_style=True, cos_sin_cache=None
+        ),
+    )
+
+
 @pytest.mark.parametrize(
     ("use_runner", "max_new_tokens", "generation_step", "closes"),
     [
@@ -301,7 +723,7 @@ def test_duplex_sample_masks_bad_tokens_and_closes_at_budget(
             SimpleNamespace(req=Mock(tokenizer=tokenizer))
         )
     else:
-        special_tokens = ThinkerAdapter(tokenizer, VOCAB_SIZE).special
+        special_tokens = make_thinker_adapter(tokenizer).special
         runner = duplex_runner(special_tokens)
     logits = unit_logits(
         {BAD_TOKEN_IDS[0]: 100.0, special_tokens.tts_pad: 99.0, PLAIN_TOKEN_ID: 0.0}
@@ -338,11 +760,15 @@ def test_forced_listen_applies_to_the_first_step_only() -> None:
     )
 
 
+# note (0xtoward): A unit's own ids as streaming perception plans them, <unit> first.
+UNIT_INPUT_IDS = [SPECIAL_TOKENS.unit, PLAIN_TOKEN_ID]
+
+
 def step_plan_payload(request: OmniRequest) -> StagePayload:
     return StagePayload(
         "unit",
         request,
-        {"token_ids": [PLAIN_TOKEN_ID], "input_embeds": None, "embedding_spans": []},
+        {"token_ids": UNIT_INPUT_IDS, "input_embeds": None, "embedding_spans": []},
     )
 
 
@@ -374,7 +800,7 @@ def spoken_output(token_id: int, ends_turn: bool) -> tuple[list[int], list[int]]
 def open_duplex_adapter() -> tuple[ThinkerAdapter, OmniRequest]:
     tokenizer = duplex_tokenizer()
     tokenizer.decode.return_value = ""
-    adapter = ThinkerAdapter(tokenizer, VOCAB_SIZE)
+    adapter = make_thinker_adapter(tokenizer)
     request = OmniRequest(
         None, params=MiniCPMODuplexSampling(force_listen_count=0).model_dump()
     )
@@ -402,8 +828,8 @@ def listen_after_a_stop(
 @pytest.mark.parametrize(
     ("is_turn_ended", "interrupted_input_ids"),
     [
-        (False, [PLAIN_TOKEN_ID, SPECIAL_TOKENS.turn_eos]),
-        (True, [PLAIN_TOKEN_ID]),
+        (False, [*UNIT_INPUT_IDS, SPECIAL_TOKENS.turn_eos]),
+        (True, UNIT_INPUT_IDS),
     ],
     ids=["mid_reply", "after_the_model_ended_its_turn"],
 )
@@ -434,7 +860,7 @@ def test_a_stop_holds_the_listen_through_silence_until_the_user_speaks(
     ]
     assert [unit_request.input_ids.tolist() for unit_request, _ in finished_units] == [
         interrupted_input_ids,
-        *[[SPECIAL_TOKENS.unit_end, PLAIN_TOKEN_ID]] * 3,
+        *[[SPECIAL_TOKENS.unit_end, *UNIT_INPUT_IDS]] * 3,
     ]
     assert [result.data for _, result in finished_units] == [
         dict(
@@ -607,7 +1033,7 @@ def test_units_after_the_model_ends_its_turn_report_the_users_voice(
                 SPECIAL_TOKENS.turn_eos,
                 SPECIAL_TOKENS.listen,
                 SPECIAL_TOKENS.unit_end,
-                PLAIN_TOKEN_ID,
+                *UNIT_INPUT_IDS,
             ],
         ),
         (
@@ -617,7 +1043,7 @@ def test_units_after_the_model_ends_its_turn_report_the_users_voice(
             0,
             SECOND_UNIT_PROMPT_LENGTH,
             [PLAIN_TOKEN_ID, SPECIAL_TOKENS.turn_eos],
-            [SPECIAL_TOKENS.listen, SPECIAL_TOKENS.unit_end, PLAIN_TOKEN_ID],
+            [SPECIAL_TOKENS.listen, SPECIAL_TOKENS.unit_end, *UNIT_INPUT_IDS],
         ),
         (
             False,
@@ -626,7 +1052,7 @@ def test_units_after_the_model_ends_its_turn_report_the_users_voice(
             1,
             None,
             [PLAIN_TOKEN_ID, OTHER_TOKEN_ID, SPECIAL_TOKENS.turn_eos],
-            [SPECIAL_TOKENS.unit_end, PLAIN_TOKEN_ID],
+            [SPECIAL_TOKENS.unit_end, *UNIT_INPUT_IDS],
         ),
         (
             False,
@@ -639,10 +1065,10 @@ def test_units_after_the_model_ends_its_turn_report_the_users_voice(
                 SPECIAL_TOKENS.turn_eos,
                 SPECIAL_TOKENS.listen,
                 SPECIAL_TOKENS.unit_end,
-                PLAIN_TOKEN_ID,
+                *UNIT_INPUT_IDS,
                 SPECIAL_TOKENS.listen,
                 SPECIAL_TOKENS.unit_end,
-                PLAIN_TOKEN_ID,
+                *UNIT_INPUT_IDS,
             ],
         ),
     ],
@@ -705,23 +1131,23 @@ def test_an_interrupt_drops_the_spoken_unit_the_client_did_not_receive(
     assert interrupted.input_ids.tolist() == interrupted_input_ids
     assert interrupted.is_listen_forced is True
     assert following_preparation == ARSessionPreparation()
-    assert following.input_ids.tolist() == [SPECIAL_TOKENS.unit_end, PLAIN_TOKEN_ID]
+    assert following.input_ids.tolist() == [SPECIAL_TOKENS.unit_end, *UNIT_INPUT_IDS]
 
 
 @pytest.mark.parametrize(
     ("payload", "is_listen_forced", "next_input_ids"),
     [
-        ({"type": INTERRUPT}, True, [SPECIAL_TOKENS.unit_end, PLAIN_TOKEN_ID]),
+        ({"type": INTERRUPT}, True, [SPECIAL_TOKENS.unit_end, *UNIT_INPUT_IDS]),
         (
             {"type": INTERRUPT, "keep_through_unit": "0"},
             True,
-            [SPECIAL_TOKENS.unit_end, PLAIN_TOKEN_ID],
+            [SPECIAL_TOKENS.unit_end, *UNIT_INPUT_IDS],
         ),
-        ({"type": TRUNCATE}, False, [SPECIAL_TOKENS.unit_end, PLAIN_TOKEN_ID]),
+        ({"type": TRUNCATE}, False, [SPECIAL_TOKENS.unit_end, *UNIT_INPUT_IDS]),
         (
             {"type": TRUNCATE, "keep_through_unit": "0"},
             False,
-            [SPECIAL_TOKENS.unit_end, PLAIN_TOKEN_ID],
+            [SPECIAL_TOKENS.unit_end, *UNIT_INPUT_IDS],
         ),
     ],
     ids=[
@@ -762,18 +1188,18 @@ def test_a_control_without_a_usable_unit_cuts_nothing(
 
 
 def perception_payload(request: OmniRequest, unit_index: int) -> StagePayload:
-    """The perception plan of unit unit_index: one audio placeholder whose embedding row is filled with the unit index."""
+    """The perception plan of unit unit_index: <unit> and one audio placeholder whose embedding row is filled with the unit index."""
     return StagePayload(
         "unit",
         request,
         {
-            "token_ids": [AUDIO_PLACEHOLDER_ID_BASE + unit_index],
+            "token_ids": [SPECIAL_TOKENS.unit, AUDIO_PLACEHOLDER_ID_BASE + unit_index],
             "input_embeds": torch.full((1, 2), float(unit_index)),
             "embedding_spans": [
                 {
                     "modality": "audio",
-                    "token_start": 0,
-                    "token_end": 1,
+                    "token_start": 1,
+                    "token_end": 2,
                     "embedding_start": 0,
                     "embedding_end": 1,
                 }
@@ -852,12 +1278,14 @@ def test_a_cut_at_an_earlier_unit_rewinds_there_and_re_feeds_the_later_units_as_
         SPECIAL_TOKENS.turn_eos,
         SPECIAL_TOKENS.listen,
         SPECIAL_TOKENS.unit_end,
+        SPECIAL_TOKENS.unit,
         82,
         SPECIAL_TOKENS.listen,
         SPECIAL_TOKENS.unit_end,
+        SPECIAL_TOKENS.unit,
         83,
     ]
-    assert spans_of(cut) == [(3, 4, 2.0), (6, 7, 3.0)]
+    assert spans_of(cut) == [(4, 5, 2.0), (8, 9, 3.0)]
     assert cut.is_listen_forced is True
     assert state.generated_history == [PLAIN_TOKEN_ID]
     assert state.is_turn_ended is True
@@ -899,6 +1327,7 @@ def test_cuts_only_move_the_kept_position_back_and_re_feed_every_unit_since_it()
     assert stop_preparation == ARSessionPreparation()
     assert forced_listen.input_ids.tolist() == [
         SPECIAL_TOKENS.unit_end,
+        SPECIAL_TOKENS.unit,
         83,
         SPECIAL_TOKENS.turn_eos,
     ]
@@ -909,16 +1338,22 @@ def test_cuts_only_move_the_kept_position_back_and_re_feed_every_unit_since_it()
         SPECIAL_TOKENS.turn_eos,
         SPECIAL_TOKENS.listen,
         SPECIAL_TOKENS.unit_end,
+        SPECIAL_TOKENS.unit,
         83,
         SPECIAL_TOKENS.listen,
         SPECIAL_TOKENS.unit_end,
+        SPECIAL_TOKENS.unit,
         84,
     ]
-    assert spans_of(first_cut) == [(3, 4, 3.0), (6, 7, 4.0)]
+    assert spans_of(first_cut) == [(4, 5, 3.0), (8, 9, 4.0)]
     assert first_cut_history == [PLAIN_TOKEN_ID, OTHER_TOKEN_ID]
     assert unchanged_preparation == ARSessionPreparation()
-    assert unchanged.input_ids.tolist() == [SPECIAL_TOKENS.unit_end, 85]
-    assert spans_of(unchanged) == [(1, 2, 5.0)]
+    assert unchanged.input_ids.tolist() == [
+        SPECIAL_TOKENS.unit_end,
+        SPECIAL_TOKENS.unit,
+        85,
+    ]
+    assert spans_of(unchanged) == [(2, 3, 5.0)]
     assert [
         unit_request.is_listen_forced
         for unit_request in (forced_listen, first_cut, unchanged, second_cut)
@@ -930,26 +1365,31 @@ def test_cuts_only_move_the_kept_position_back_and_re_feed_every_unit_since_it()
         SPECIAL_TOKENS.turn_eos,
         SPECIAL_TOKENS.listen,
         SPECIAL_TOKENS.unit_end,
+        SPECIAL_TOKENS.unit,
         82,
         SPECIAL_TOKENS.listen,
         SPECIAL_TOKENS.unit_end,
+        SPECIAL_TOKENS.unit,
         83,
         SPECIAL_TOKENS.listen,
         SPECIAL_TOKENS.unit_end,
+        SPECIAL_TOKENS.unit,
         84,
         SPECIAL_TOKENS.listen,
         SPECIAL_TOKENS.unit_end,
+        SPECIAL_TOKENS.unit,
         85,
         SPECIAL_TOKENS.listen,
         SPECIAL_TOKENS.unit_end,
+        SPECIAL_TOKENS.unit,
         86,
     ]
     assert spans_of(second_cut) == [
-        (3, 4, 2.0),
-        (6, 7, 3.0),
-        (9, 10, 4.0),
-        (12, 13, 5.0),
-        (15, 16, 6.0),
+        (4, 5, 2.0),
+        (8, 9, 3.0),
+        (12, 13, 4.0),
+        (16, 17, 5.0),
+        (20, 21, 6.0),
     ]
     assert state.generated_history == [PLAIN_TOKEN_ID]
 
@@ -995,15 +1435,21 @@ def test_a_truncate_cuts_an_ended_reply_and_not_an_open_one() -> None:
         SPECIAL_TOKENS.turn_eos,
         SPECIAL_TOKENS.listen,
         SPECIAL_TOKENS.unit_end,
+        SPECIAL_TOKENS.unit,
         82,
         SPECIAL_TOKENS.listen,
         SPECIAL_TOKENS.unit_end,
+        SPECIAL_TOKENS.unit,
         83,
     ]
     assert ended_cut.is_listen_forced is False
     assert ended_cut_history == [PLAIN_TOKEN_ID]
     assert open_preparation == ARSessionPreparation()
-    assert open_reply.input_ids.tolist() == [SPECIAL_TOKENS.unit_end, 85]
+    assert open_reply.input_ids.tolist() == [
+        SPECIAL_TOKENS.unit_end,
+        SPECIAL_TOKENS.unit,
+        85,
+    ]
     assert second_cut_preparation == ARSessionPreparation(
         kept_token_count=UNIT_PROMPT_LENGTHS[5]
     )
@@ -1011,6 +1457,7 @@ def test_a_truncate_cuts_an_ended_reply_and_not_an_open_one() -> None:
         SPECIAL_TOKENS.turn_eos,
         SPECIAL_TOKENS.listen,
         SPECIAL_TOKENS.unit_end,
+        SPECIAL_TOKENS.unit,
         86,
     ]
     assert second_cut_history == [PLAIN_TOKEN_ID, THIRD_TOKEN_ID]
@@ -1020,6 +1467,7 @@ def test_a_truncate_cuts_an_ended_reply_and_not_an_open_one() -> None:
     assert stopped.input_ids.tolist() == [
         SPECIAL_TOKENS.listen,
         SPECIAL_TOKENS.unit_end,
+        SPECIAL_TOKENS.unit,
         88,
     ]
     assert stopped.is_listen_forced is True
@@ -1053,15 +1501,17 @@ def test_a_stopped_reply_is_no_longer_cut_past_the_truncate_window() -> None:
             for unit_index in range(1, TRUNCATE_WINDOW_UNITS + 1)
             for token_id in (
                 SPECIAL_TOKENS.unit_end,
+                SPECIAL_TOKENS.unit,
                 AUDIO_PLACEHOLDER_ID_BASE + unit_index,
                 SPECIAL_TOKENS.listen,
             )
         ],
         SPECIAL_TOKENS.unit_end,
+        SPECIAL_TOKENS.unit,
         91,
     ]
     assert past_preparation == ARSessionPreparation()
-    assert past.input_ids.tolist() == [SPECIAL_TOKENS.unit_end, 92]
+    assert past.input_ids.tolist() == [SPECIAL_TOKENS.unit_end, SPECIAL_TOKENS.unit, 92]
 
 
 def test_chunk_eos_from_the_first_sample_skips_the_second_stage() -> None:

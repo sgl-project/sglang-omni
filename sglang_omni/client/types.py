@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal, TypedDict
 
+from sglang_omni.scheduling.types import SpecTokensDetailsDict
+
 
 class TokenUsageDict(TypedDict):
     prompt_tokens: int | None
@@ -17,6 +19,8 @@ class TokenUsageDict(TypedDict):
 
 class UsageInfoDict(TokenUsageDict, total=False):
     engine_time_s: float
+    speech_input_tokens: int
+    speech_output_tokens: int
 
 
 # note (Yucheng Hu): finish reason reported on speech surfaces when the model
@@ -63,6 +67,8 @@ class UsageInfo:
     completion_tokens: int | None = None
     total_tokens: int | None = None
     engine_time_s: float | None = None
+    speech_input_tokens: int | None = None
+    speech_output_tokens: int | None = None
 
     @classmethod
     def from_dict(cls, data: Mapping[str, object] | None) -> "UsageInfo | None":
@@ -75,6 +81,8 @@ class UsageInfo:
             completion_tokens=data.get("completion_tokens"),
             total_tokens=data.get("total_tokens"),
             engine_time_s=data.get("engine_time_s"),
+            speech_input_tokens=data.get("speech_input_tokens"),
+            speech_output_tokens=data.get("speech_output_tokens"),
         )
 
     def to_dict(self) -> UsageInfoDict:
@@ -85,6 +93,14 @@ class UsageInfo:
         }
         if self.engine_time_s is not None:
             d["engine_time_s"] = self.engine_time_s
+        else:
+            pass
+        if self.speech_input_tokens is not None:
+            d["speech_input_tokens"] = self.speech_input_tokens
+        else:
+            pass
+        if self.speech_output_tokens is not None:
+            d["speech_output_tokens"] = self.speech_output_tokens
         else:
             pass
         return d
@@ -186,6 +202,7 @@ class GenerateChunk:
     model_finish_reason: str | None = None
     usage: UsageInfo | None = None
     weight_version: str | None = None
+    spec_tokens_details: SpecTokensDetailsDict | None = None
     stage_id: int | None = None
     stage_name: str | None = None
     modality: str = "text"
@@ -345,6 +362,7 @@ class CompletionResult:
     output_token_logprobs: list[list[float | int]] | None = None
     omni_rollout: dict[str, object] | None = None
     weight_version: str | None = None
+    spec_tokens_details: SpecTokensDetailsDict | None = None
     language: str | None = None
     diarization: DiarizationResult | None = None
     image: str | None = None  # base64-encoded PNG
@@ -360,6 +378,7 @@ class CompletionStreamChunk:
     audio_b64: str | None = None  # already base64-encoded
     finish_reason: str | None = None
     usage: UsageInfo | None = None
+    spec_tokens_details: SpecTokensDetailsDict | None = None
     stage_name: str | None = None
 
 
@@ -390,6 +409,7 @@ class SpeechResult:
     format: str
     sample_rate: int | None = None
     usage: UsageInfo | None = None
+    spec_tokens_details: SpecTokensDetailsDict | None = None
     finish_reason: str = UNKNOWN_FINISH_REASON
 
 
