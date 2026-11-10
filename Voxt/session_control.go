@@ -25,10 +25,6 @@ func (a *app) helperReady() bool {
 	return a.hstatus.State == helper.Ready
 }
 
-// transcribeBlocker checks, without I/O, what a Transcribe session
-// needs (sessionBlocker).
-func (a *app) transcribeBlocker() *sessionNotice { return a.sessionBlocker(store.KindTranscribe) }
-
 // sessionBlocker checks, without I/O, what a session of kind needs: a
 // running helper, a speech model (Transcribe, Rewrite: Translate may
 // translate a selection without one) and a language model (Translate,

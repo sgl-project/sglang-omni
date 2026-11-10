@@ -47,14 +47,6 @@ func sendAll(t *testing.T, st asr.Stream, pcm []byte) {
 	}
 }
 
-// piecesDone is how many pieces a live stream recognised.
-func piecesDone(st asr.Stream) int {
-	s := st.(*live)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.pc.texts)
-}
-
 // lookedAtAll returns once a live stream's pieces loop has looked at all
 // the audio sent. The loop takes one wake at a time, at the start of a
 // round: the second wake goes in once it took the first (a round that

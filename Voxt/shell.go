@@ -187,11 +187,6 @@ func (a *app) navigate(path string) {
 	a.pageShown(path) // pages.go
 }
 
-// showPage goes to a page by name ("home", "history", "logs",
-// "settings"). Other areas navigate only through it (and read
-// currentPage).
-func (a *app) showPage(name string) { a.navigate("/" + name) }
-
 // currentPage is the name of the page shown: the first part of its path.
 func (a *app) currentPage() string { return section(a.router.Path())[1:] }
 

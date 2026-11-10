@@ -243,7 +243,7 @@ While a session is live (or the answer card shows) the bindings go to the helper
 | Seam | Defined in | Used by |
 |---|---|---|
 | `a.lib` (`*library`: store, bus, settings) | library.go | every area |
-| `a.navigate(path)`, `a.showPage(name)`, `a.currentPage()`, `a.shownPath()`; `movedPaths` (old paths, e.g. `/permissions` → `/settings/permissions`) | shell.go, shell_pages.go, shell_settings.go | palette, deep links, notifications, tests |
+| `a.navigate(path)`, `a.currentPage()`, `a.shownPath()`; `movedPaths` (old paths, e.g. `/permissions` → `/settings/permissions`) | shell.go, shell_pages.go, shell_settings.go | palette, deep links, notifications, tests |
 | `navGroups`, `shortcutPages` (⌘1–⌘6), `pageTitle`, `a.navBadge` | shell_pages.go | sidebar, rail, palette, Go menu |
 | `a.page(c, p)`, `a.pageShown(path)` | pages.go | the router: each page's view, and what it reads when it shows |
 | `a.updateSettings(fn)`, `a.prefs`, `settingsSections()`, `a.settingsShown(sub)`, `a.setMainLanguage(code)`, `a.syncOpenAtLogin()` | shell_settings.go (the dialog, `settingsState`), settings_general.go, settings_locale.go | every area that changes a setting; sections that read something when they open; the window's opening (shell.go) |
