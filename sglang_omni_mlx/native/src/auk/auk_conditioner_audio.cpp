@@ -84,7 +84,6 @@ mx::array Conditioner::EncodeAudio(const mx::array &features) const {
                                    hidden, prefix + ".final_layer_norm", 1e-5f),
                                prefix + ".fc1")),
                            prefix + ".fc2"));
-    mx::eval(hidden);
   }
   std::vector<mx::array> valid_chunks;
   for (int index = 0; index < batch; ++index) {

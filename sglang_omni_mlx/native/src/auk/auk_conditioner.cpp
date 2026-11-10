@@ -249,7 +249,6 @@ mx::array Conditioner::Encode(
     const mx::array full =
         omni_common::LogMel(padded, omni_common::FinalStftFrame::kDropped);
     features = mx::slice(full, {0, 0}, {omni_common::kMelBinCount, frames});
-    mx::eval(*features);
   } else {
   }
   const auto token_ids =
@@ -355,13 +354,10 @@ Conditioner::EncodeInputs(const std::vector<int> &token_ids,
   for (int layer = 0; layer < config_.text_layer_count; ++layer) {
     states.push_back(hidden);
     hidden = TextLayer(hidden, layer, mask);
-    mx::eval(hidden);
   }
   states.push_back(
       checkpoint_.RmsNorm(hidden, "model.norm", config_.rms_norm_epsilon));
-  const mx::array result = mx::squeeze(mx::stack(states, 1), 0);
-  mx::eval(result);
-  return result;
+  return mx::squeeze(mx::stack(states, 1), 0);
 }
 
 } // namespace auk

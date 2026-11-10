@@ -150,13 +150,13 @@ Model::Synthesize(const SynthesisRequest &request,
                            mx::float32, reference_key);
     reference_latents = vae.Encode(posterior, mx::squeeze(posterior_noise, 0));
     reference_length = std::min(reference_length, reference_latents->shape(0));
-    mx::eval(*reference_latents);
+    mx::async_eval(*reference_latents);
   } else {
   }
   check_cancelled();
   const auto conditioning = diffusion.FuseHiddenStates(
       conditioner.Encode(request.instruction, conditioner_audio));
-  mx::eval(conditioning);
+  mx::async_eval(conditioning);
   check_cancelled();
   const int output_frames =
       request.match_reference_duration
