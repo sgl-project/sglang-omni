@@ -132,7 +132,7 @@ func (a *app) checkModels() {
 		}
 	case !llmOK:
 		code, link = "llm", remotePath
-		n = &core.Notification{Title: i18n.T("No language model"), Body: i18n.T("Translate and Rewrite need one; Transcribe types what it hears.")}
+		n = &core.Notification{Title: i18n.T("No language model"), Body: i18n.T("Translate and Rewrite need one. Without it, Transcribe types the text as recognised.")}
 		if p, missing, ok := a.pendingSetup(local.LLM); ok {
 			code, link = "llm/"+p.ID+"/"+missing, linkCompleteSetup+string(local.LLM)+"/"+p.ID
 			n.Body = setupNeedsText(local.LLM, p, missing)
@@ -312,7 +312,7 @@ func (a *app) noticePopover(c *ui.Context) {
 func cardActionLabel(link string) string {
 	switch link {
 	case linkRestartHelper:
-		return i18n.T("Restart the helper")
+		return i18n.T("Restart helper")
 	case linkRelaunch:
 		return i18n.T("Restart Voxt")
 	case modelsPath:

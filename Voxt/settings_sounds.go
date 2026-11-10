@@ -293,7 +293,7 @@ func (a *app) soundsRow(c *ui.Context) {
 		// turned into the family's default.
 		start, stop := sounds.System(legacyStartSound), sounds.System(legacyStopSound)
 		if a.prefs.Audio.StartSound != start || a.prefs.Audio.StopSound != stop {
-			b := ghostButton(c.Key("audio-legacy-sounds"), i18n.T("Use Voxt 1.x's sounds")).Tooltip(i18n.T("Pop when recording starts and Tink when it stops, as Voxt 1.x played them."))
+			b := ghostButton(c.Key("audio-legacy-sounds"), i18n.T("Use Voxt 1.x's sounds")).Tooltip(i18n.T("Pop when recording starts and Tink when it stops, as in Voxt 1.x."))
 			if b.Clicked() {
 				a.updateSettings(func(s *settings.Settings) { s.Audio.StartSound, s.Audio.StopSound = start, stop })
 				a.previewSound(recordStartEvent, start, "")

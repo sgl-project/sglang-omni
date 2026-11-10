@@ -118,17 +118,17 @@ func (a *app) overlaySettings(c *ui.Context) {
 			a.overlayEdited()
 		}
 	})
-	settingRow(c, "ov-margin", i18n.T("Distance from the edge"), i18n.T("From the bottom or the top of the screen, above the Dock and below the menu bar."), func() {
+	settingRow(c, "ov-margin", i18n.T("Distance from the edge"), i18n.T("Measured from the Dock or the menu bar."), func() {
 		slider("ov-margin-slider", i18n.T("Distance from the edge"), &f.margin, 0, ovMaxMargin, 4, fmt.Sprintf("%.0f", f.margin))
 	})
-	settingRow(c, "ov-opacity", i18n.T("Opacity"), i18n.T("Of the dark face over the blurred desktop: lower lets more of what is behind show through."), func() {
+	settingRow(c, "ov-opacity", i18n.T("Opacity"), i18n.T("Lower values let more of what is behind show through."), func() {
 		slider("ov-opacity-slider", i18n.T("Opacity"), &f.opacity, 0.5, 1, 0.05, fmt.Sprintf("%.0f%%", f.opacity*100))
 	})
-	settingRow(c, "ov-radius", i18n.T("Corner radius"), i18n.T("The answer card takes the same corners."), func() {
+	settingRow(c, "ov-radius", i18n.T("Corner radius"), i18n.T("The answer card uses the same radius."), func() {
 		slider("ov-radius-slider", i18n.T("Corner radius"), &f.radius, 0, ovMaxRadius, 1, fmt.Sprintf("%.0f", f.radius))
 	})
-	settingRow(c, "ov-time", i18n.T("Show the recording time"), i18n.T("Off, the overlay shows only the feature's icon and the waveform."), func() {
-		if ui.Switch(c.Key("ov-time-switch"), &f.showTime).Label(i18n.T("Show the recording time")).Changed() {
+	settingRow(c, "ov-time", i18n.T("Show recording time"), i18n.T("When off, the overlay shows only the feature's icon and the waveform."), func() {
+		if ui.Switch(c.Key("ov-time-switch"), &f.showTime).Label(i18n.T("Show recording time")).Changed() {
 			a.overlayEdited()
 		}
 	})
@@ -137,7 +137,7 @@ func (a *app) overlaySettings(c *ui.Context) {
 			a.overlayEdited()
 		}
 	})
-	settingRow(c, "ov-lines", i18n.T("Live text layout"), i18n.T("One line scrolls sideways as you speak. Lines start wide and wrap like a text box, growing up to ten lines, then show the newest."), func() {
+	settingRow(c, "ov-lines", i18n.T("Live text layout"), i18n.T("With One line, the text scrolls sideways as you speak. With Lines, it wraps, showing up to the ten newest lines."), func() {
 		if ui.Segmented(c.Key("ov-lines-seg"), &f.liveLayout, i18n.T("One line"), i18n.T("Lines")).Label(i18n.T("Live text layout")).Disabled(!f.liveText).Changed() {
 			a.overlayEdited()
 		}

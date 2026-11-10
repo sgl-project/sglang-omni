@@ -63,15 +63,15 @@ func TestHistorySettingsDialog(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	seedAged(t, a, 1, 2)
 	openHistSettings(t, a, tt)
-	for _, s := range []string{"History settings", "Recordings", "Keep the recordings", "Saved recordings", "2 recordings · 22 B",
-		"Export recordings", "Auto-cleanup", "Clean up automatically", "Keep entries for", "3 months", "Keep at most", "No limit"} {
+	for _, s := range []string{"History settings", "Recordings", "Keep recordings", "Saved recordings", "2 recordings · 22 B",
+		"Export recordings", "Automatic clean-up", "Clean up automatically", "Keep entries for", "3 months", "Keep at most", "No limit"} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, firstTexts(tt))
 		}
 	}
 	click(t, tt, "Save each recording")
 	if !a.prefs.Privacy.KeepAudio || !a.settings.Get().Privacy.KeepAudio {
-		t.Error("Keep the recordings did not turn on")
+		t.Error("Keep recordings did not turn on")
 	}
 	click(t, tt, "Done")
 	if a.histSet.open {
@@ -130,7 +130,7 @@ func TestHistoryCleanupAsks(t *testing.T) {
 	if a.histSet.pruneAsk || a.settings.Get().History.KeepCount != 100 {
 		t.Errorf("100: asked %v, %+v", a.histSet.pruneAsk, a.settings.Get().History)
 	}
-	click(t, tt, "Clean up the history")
+	click(t, tt, "Clean up history")
 	if !a.settings.Get().History.CleanupOff || has(tt, "Keep entries for") || !has(tt, "Entries stay until you delete them.") {
 		t.Errorf("off: %+v %q", a.settings.Get().History, firstTexts(tt))
 	}
@@ -139,7 +139,7 @@ func TestHistoryCleanupAsks(t *testing.T) {
 	if len(entryIDs(t, a)) != 3 {
 		t.Fatalf("cleaned while off: %v", entryIDs(t, a))
 	}
-	click(t, tt, "Clean up the history")
+	click(t, tt, "Clean up history")
 	if !has(tt, "Delete 1 entry now?") {
 		t.Fatalf("on again: %q", firstTexts(tt))
 	}
@@ -207,8 +207,8 @@ func TestHistoryRecordingsFolder(t *testing.T) {
 	if !has(tt, "Moved 2 recordings to "+ext) && !slices.ContainsFunc(a.toasts, func(s string) bool { return s == "Moved 2 recordings to "+ext }) {
 		t.Errorf("toast %q", a.toasts)
 	}
-	if !has(tt, "Use the default") {
-		t.Fatalf("no Use the default: %q", firstTexts(tt))
+	if !has(tt, "Use default") {
+		t.Fatalf("no Use default: %q", firstTexts(tt))
 	}
 	// The drive goes away: the next start records into the default.
 	a.quit()
@@ -230,7 +230,7 @@ func TestHistoryRecordingsFolder(t *testing.T) {
 	if b.lib.store.History().AudioDir() != ext || b.histSet.audioMissing != "" {
 		t.Errorf("back: %s %q", b.lib.store.History().AudioDir(), b.histSet.audioMissing)
 	}
-	click(t, tt, "Use the default")
+	click(t, tt, "Use default")
 	if b.settings.Get().History.AudioDir != "" || b.lib.store.History().AudioDir() != def {
 		t.Errorf("default: %q %s", b.settings.Get().History.AudioDir, b.lib.store.History().AudioDir())
 	}
@@ -271,7 +271,7 @@ func TestHistoryExportAndDelete(t *testing.T) {
 	if !has(tt, "Delete every recording?") {
 		t.Fatalf("no question: %q", firstTexts(tt))
 	}
-	click(t, tt, "Delete the recordings")
+	click(t, tt, "Delete recordings")
 	if n, _ := os.ReadDir(a.lib.store.History().AudioDir()); len(n) != 0 {
 		t.Errorf("recordings left: %d", len(n))
 	}

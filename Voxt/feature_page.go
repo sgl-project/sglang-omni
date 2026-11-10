@@ -122,9 +122,9 @@ func (a *app) featurePage(c *ui.Context, feature string) {
 	left := func() {
 		switch feature {
 		case hotkey.Translate:
-			caption(c, i18n.T("Select text and press the shortcut to translate it in place; with nothing selected, speak, and the translation is typed where your cursor is."))
+			caption(c, i18n.T("Select text and press the shortcut to translate it in place. With nothing selected, speak, and the translation is typed where your cursor is."))
 		case hotkey.Rewrite:
-			caption(c, i18n.T("Select text and say how to change it (\"shorter\", \"more formal\"); with nothing selected, say what to write. The answer goes where your cursor is."))
+			caption(c, i18n.T("Select text and say how to change it (\"shorter\", \"more formal\"). With nothing selected, say what to write. The answer goes where your cursor is."))
 		default:
 			caption(c, i18n.T("Press a shortcut anywhere, speak, and the text is typed where your cursor is."))
 		}

@@ -41,7 +41,7 @@ func (a *app) trEndWordRow(c *ui.Context) {
 		r.sel, r.custom, r.text = custom, true, cur
 	}
 	ui.Column(c.Key("tr-endword")).Gap(px(t, 6)).Children(func() {
-		settingRow(c, "tr-endword-row", i18n.T("End with a word"), i18n.T("Say this word last and pause: the recording stops as if you pressed the shortcut, and the word is left out of the text. Only speech models that show the text as you speak hear it."), func() {
+		settingRow(c, "tr-endword-row", i18n.T("End with a word"), i18n.T("Say this word at the end and pause, and the recording stops as if you pressed the shortcut. The word is left out of the text. Works only with speech models that show the text as you speak."), func() {
 			opts := slices.Concat([]string{off}, endWordPresets, []string{custom})
 			if ui.Select(c.Key("tr-endword-sel"), &r.sel, opts).Label(i18n.T("Word that ends the recording")).Width(px(t, 180)).Changed() {
 				switch r.sel {

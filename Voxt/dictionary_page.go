@@ -90,7 +90,7 @@ var (
 	chooseImportFile = func(a *app, then func(string)) {
 		go func() {
 			files, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.win, Title: i18n.T("Import terms"),
-				Filters: []mygo.FileFilter{{Name: i18n.T("Dictionary (CSV, text or the previous Voxt's export)"), Extensions: []string{"csv", "txt", "json"}}}})
+				Filters: []mygo.FileFilter{{Name: i18n.T("Dictionary (CSV, text or Voxt 1.x export)"), Extensions: []string{"csv", "txt", "json"}}}})
 			if err != nil || len(files) == 0 {
 				return
 			}
@@ -186,7 +186,7 @@ func (a *app) dictionaryPage(c *ui.Context) {
 	pageBody(c).Children(func() {
 		ui.Column(c).Padding(px(t, sp1), px(t, sp6), px(t, sp2)).Gap(px(t, sp2)).Shrink(0).Children(func() {
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
-				if searchField(c, "dict-search", &d.query, i18n.T("Search terms"), px(t, 320)).Label(i18n.T("Search the dictionary")).Changed() {
+				if searchField(c, "dict-search", &d.query, i18n.T("Search terms"), px(t, 320)).Label(i18n.T("Search dictionary")).Changed() {
 					a.loadDict()
 				}
 				a.dictSwitches(c)
@@ -201,7 +201,7 @@ func (a *app) dictionaryPage(c *ui.Context) {
 			}
 			a.dictGuide(c)
 			if !a.prefs.Dictionary.Enabled {
-				notice(c, "dict-off", noticeInfo, i18n.T("The dictionary is off: its terms go nowhere."), "", nil, nil)
+				notice(c, "dict-off", noticeInfo, i18n.T("The dictionary is off, so its terms are not used."), "", nil, nil)
 			}
 			if d.err != "" {
 				notice(c, "dict-err", noticeError, i18n.T("Could not read the dictionary."), d.err, func() {
@@ -237,13 +237,13 @@ func (a *app) dictSwitches(c *ui.Context) {
 	ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Center).Wrap().Children(func() {
 		hints := &a.prefs.Dictionary.ASRHints
 		if ui.Checkbox(c.Key("dict-hints"), hints, i18n.T("Speech hints")).Disabled(off).
-			Tooltip(i18n.T("Sent to the speech model as words to expect. It keeps a limited number: the terms changed last go first. It cannot change punctuation or format: that is for your rules on each feature's page.")).Changed() {
+			Tooltip(i18n.T("Terms go to the speech model as words to expect. Only a limited number fit, most recently changed first. Hints cannot change punctuation or format. Your rules on each feature's page do that.")).Changed() {
 			v := *hints
 			a.updateSettings(func(s *settings.Settings) { s.Dictionary.ASRHints = v })
 		}
 		gl := &a.prefs.Dictionary.Glossary
 		if ui.Checkbox(c.Key("dict-glossary"), gl, i18n.T("Glossary for the language model")).Disabled(off).
-			Tooltip(i18n.T("Clean-up writes the terms as spelled here, also when recognition heard them a little differently. A dictionary of up to 30 terms goes in whole; a larger one only with the terms found in what you said.")).Changed() {
+			Tooltip(i18n.T("Clean-up writes the terms as spelled here, even when recognition heard them a little differently. With up to 30 terms, all are sent. With more, only the terms found in what you said are sent.")).Changed() {
 			v := *gl
 			a.updateSettings(func(s *settings.Settings) { s.Dictionary.Glossary = v })
 		}
@@ -260,10 +260,10 @@ func (a *app) dictSwitches(c *ui.Context) {
 // (docs/behavior.md 5.16, 7.9, 7.9a).
 func (a *app) dictGuide(c *ui.Context) {
 	collapsible(c.Key("dict-guide"), i18n.T("How the dictionary works"), &a.dv.guideOpen, nil, func() {
-		caption(c, i18n.T("A term takes effect the next time you use Voxt, as long as it and the dictionary are on, in three places:"))
+		caption(c, i18n.T("While the dictionary is on, each enabled term takes effect the next time you use Voxt, in three places:"))
 		caption(c, i18n.T("Speech recognition: with Speech hints on, the term goes to the speech model as a word to expect, if that model takes hints. Aliases are not sent."))
-		caption(c, i18n.T("Language model: with Glossary for the language model on, the model writes the term as spelled here when it cleans up, translates or rewrites. With up to %d enabled terms, it gets them all; with more, only the terms found in the text, by spelling or alias. It stops at %d terms, or earlier if the list gets too long.", compose.GlossaryAllUpTo, compose.MaxGlossaryTerms))
-		caption(c, i18n.T("Aliases: the wrong spellings recognition writes. Voxt replaces them with the term in the recognised text, before the language model and also without one."))
+		caption(c, i18n.T("Language model: with Glossary for the language model on, the model writes the term as spelled here when it cleans up, translates or rewrites. With up to %d enabled terms, it gets them all. With more, it gets only the terms found in the text, by spelling or alias, up to %d.", compose.GlossaryAllUpTo, compose.MaxGlossaryTerms))
+		caption(c, i18n.T("Aliases: misspellings that speech recognition tends to write. Voxt replaces them with the term in the recognised text, even without a language model."))
 	})
 }
 
@@ -272,7 +272,7 @@ func (a *app) dictEmpty(c *ui.Context) {
 	d := &a.dv
 	if q := strings.TrimSpace(d.listFor); q != "" {
 		emptyState(c, icons.Magnifer, i18n.T("No term matches “%s”", q), i18n.T("The search looks in terms, aliases and notes."), func() {
-			if ghostButton(c.Key("dict-clear-search"), i18n.T("Clear the search")).Clicked() {
+			if ghostButton(c.Key("dict-clear-search"), i18n.T("Clear search")).Clicked() {
 				d.query = ""
 				a.loadDict()
 			}
@@ -280,7 +280,7 @@ func (a *app) dictEmpty(c *ui.Context) {
 		return
 	}
 	emptyState(c, dictionaryIcon, i18n.T("Names and terms you use"),
-		i18n.T("Add the names, products and jargon you say: speech recognition expects them, and clean-up writes them as you spell them here."), func() {
+		i18n.T("Add the names, products and jargon you say. Speech recognition listens for them, and clean-up writes them as you spell them here."), func() {
 			if ghostIconButton(c.Key("dict-empty-add"), icons.Add, i18n.T("Add term")).Clicked() {
 				a.openTerm(store.Term{Enabled: true})
 			}
@@ -351,7 +351,7 @@ func (a *app) termDialog(c *ui.Context) {
 		title = i18n.T("Edit term")
 	}
 	if dialogFrame(c, "term-dlg", &d.editOpen, title, "", 460, func() {
-		fieldInfo(c, i18n.T("Term"), i18n.T("As it must be written: Voxt, Kubernetes, 豆包."), func() {
+		fieldInfo(c, i18n.T("Term"), i18n.T("Write it exactly as it should appear: Voxt, Kubernetes, 豆包."), func() {
 			in := ui.TextInput(c.Key("term-term"), &e.term).Label(i18n.T("Term as written")).Placeholder("Voxt").AutoFocus()
 			if in.Changed() {
 				e.err = ""
@@ -360,10 +360,10 @@ func (a *app) termDialog(c *ui.Context) {
 				a.submitTerm()
 			}
 		})
-		fieldInfo(c, i18n.T("Aliases"), i18n.T("What speech recognition writes instead, separated by commas: Vox T, 沃克斯特. Voxt puts the term in their place, also without a language model."), func() {
+		fieldInfo(c, i18n.T("Aliases"), i18n.T("What speech recognition writes instead, separated by commas: Vox T, 沃克斯特. Voxt replaces them with the term, even without a language model."), func() {
 			ui.TextInput(c.Key("term-aliases"), &e.aliases).Label(i18n.T("Aliases of the term")).Placeholder(i18n.T("Vox T, 沃克斯特"))
 		})
-		fieldInfo(c, i18n.T("Note"), i18n.T("For you only: it is sent nowhere."), func() {
+		fieldInfo(c, i18n.T("Note"), i18n.T("Only for you. It is never sent anywhere."), func() {
 			ui.TextArea(c.Key("term-note"), &e.note).Label(i18n.T("Note on the term")).MinHeight(px(t, 56))
 		})
 		ui.Checkbox(c.Key("term-enabled"), &e.enabled, i18n.T("Use this term"))
@@ -478,7 +478,7 @@ func (a *app) importFile(path string) {
 				terms, skipped, err = dict.Import(data, dict.FormatOf(path))
 			}
 			if err != nil {
-				return i18n.T("Could not import %s: it is not a CSV or text list of terms, or the previous Voxt's dictionary export.", filepath.Base(path))
+				return i18n.T("Could not import %s: it is not a CSV or text list of terms, or a Voxt 1.x dictionary export.", filepath.Base(path))
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()

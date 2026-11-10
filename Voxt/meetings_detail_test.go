@@ -83,7 +83,7 @@ func TestMeetingRowOpensDetailAndDeleteConfirms(t *testing.T) {
 	if a.mv.detail == nil || a.mv.detail.id != "m-del" {
 		t.Fatal("clicking the row did not open its detail")
 	}
-	for _, step := range []string{"Delete the meeting…", "Cancel"} {
+	for _, step := range []string{"Delete meeting…", "Cancel"} {
 		if err := tt.ClickControl(step); err != nil {
 			t.Fatalf("%s: %v (%q)", step, err, firstTexts(tt))
 		}
@@ -92,7 +92,7 @@ func TestMeetingRowOpensDetailAndDeleteConfirms(t *testing.T) {
 	if _, _, err := repo.Meeting(ctx, "m-del"); err != nil || a.mv.detail == nil {
 		t.Fatalf("cancel deleted the meeting or closed its detail: %v", err)
 	}
-	if err := tt.ClickControl("Delete the meeting…"); err != nil {
+	if err := tt.ClickControl("Delete meeting…"); err != nil {
 		t.Fatal(err)
 	}
 	frames(tt)

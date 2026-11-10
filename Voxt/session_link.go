@@ -277,7 +277,7 @@ func (a *app) sessionEnded(s session.Snapshot) {
 		text, more, action := sessionProblemText(p)
 		switch {
 		case s.Note && s.Card:
-			text = i18n.T("The note could not be saved: the card shows it.")
+			text = i18n.T("Could not save the note, so the card shows it.")
 		case s.Note && p.Code == session.ProblemLLM && p.Degraded:
 			text = degradedLLMText(p, true) // the recognised text went to Notes
 		}

@@ -35,7 +35,7 @@ func (a *app) featureModels(c *ui.Context, feature string) {
 		u.svcSeen = seen
 		u.asr, u.llm, u.fallback = modelLabel(readyA, f.ASR, autoA), modelLabel(readyL, f.LLM, autoL), modelLabel(readyL, fb, optsF[0])
 	}
-	sectionTitleTip(c, i18n.T("Models"), i18n.T("Automatic uses the recommended speech model on this Mac (the Speech models page), and the first language model set up on the Language models page. A remote speech service is used when you choose it here, or when no speech model on this Mac is installed."))
+	sectionTitleTip(c, i18n.T("Models"), i18n.T("Automatic uses the recommended speech model on this Mac (Speech models page) and the first language model set up on the Language models page. A remote speech service is used when you choose it here, or when no speech model is installed on this Mac."))
 	opened := false // one "Open Speech models" per page
 	openModels := func() {
 		if opened {
@@ -49,11 +49,11 @@ func (a *app) featureModels(c *ui.Context, feature string) {
 	if len(readyA) == 0 {
 		switch feature {
 		case hotkey.Translate:
-			notice(c, p+"-no-asr", noticeInfo, i18n.T("No speech model is installed: only selected text can be translated."), "", openModels, nil)
+			notice(c, p+"-no-asr", noticeInfo, i18n.T("No speech model is installed, so only selected text can be translated."), "", openModels, nil)
 		case hotkey.Rewrite:
-			notice(c, p+"-no-asr", noticeWarn, i18n.T("No speech model is installed: install one to rewrite."), "", openModels, nil)
+			notice(c, p+"-no-asr", noticeWarn, i18n.T("No speech model is installed. Install one to rewrite."), "", openModels, nil)
 		default:
-			notice(c, p+"-no-asr", noticeWarn, i18n.T("No speech model is installed: install one to transcribe."), "", openModels, nil)
+			notice(c, p+"-no-asr", noticeWarn, i18n.T("No speech model is installed. Install one to transcribe."), "", openModels, nil)
 		}
 	}
 	setUpLLM := func() {
@@ -64,9 +64,9 @@ func (a *app) featureModels(c *ui.Context, feature string) {
 	if len(readyL) == 0 {
 		switch feature {
 		case hotkey.Translate:
-			notice(c, p+"-no-llm", noticeWarn, i18n.T("No language model is set up: set one up to translate."), "", setUpLLM, nil)
+			notice(c, p+"-no-llm", noticeWarn, i18n.T("No language model is set up. Set one up to translate."), "", setUpLLM, nil)
 		case hotkey.Rewrite:
-			notice(c, p+"-no-llm", noticeWarn, i18n.T("No language model is set up: set one up to rewrite."), "", setUpLLM, nil)
+			notice(c, p+"-no-llm", noticeWarn, i18n.T("No language model is set up. Set one up to rewrite."), "", setUpLLM, nil)
 		}
 	}
 	var asrDesc, asrLabel, llmDesc, llmLabel string
@@ -97,7 +97,7 @@ func (a *app) featureModels(c *ui.Context, feature string) {
 		}
 	})
 	if feature == hotkey.Translate {
-		settingRow(c, p+"-fallback", i18n.T("Fallback model"), i18n.T("When the language model fails, translates once more with this model. The history names the model that answered."), func() {
+		settingRow(c, p+"-fallback", i18n.T("Fallback model"), i18n.T("If the language model fails, Voxt translates again with this model. History shows which model answered."), func() {
 			sel := ui.Select(c.Key(p+"-fallback-sel"), &u.fallback, optsF).Label(i18n.T("Fallback language model for Translate")).Width(px(t, 260)).Shrink(1).MinWidth(px(t, 160)).
 				Disabled(len(readyL) < 2)
 			if sel.Changed() {
@@ -107,7 +107,7 @@ func (a *app) featureModels(c *ui.Context, feature string) {
 		})
 	}
 	if feature == hotkey.Transcribe && len(readyL) == 0 && enhance {
-		notice(c, "tr-no-llm", noticeInfo, i18n.T("No language model is set up: the text is typed as recognised, without clean-up."), "", setUpLLM, nil)
+		notice(c, "tr-no-llm", noticeInfo, i18n.T("No language model is set up, so the text is typed as recognised, without clean-up."), "", setUpLLM, nil)
 	}
 }
 
@@ -149,21 +149,21 @@ func (a *app) trEnhance(c *ui.Context) {
 	sectionTitle(c, i18n.T("Clean-up"))
 	f := &a.prefs.Features.Transcribe
 	settingRow(c, "tr-enhance", i18n.T("Clean up with a language model"),
-		i18n.T("Sends the recognised text to the language model with the rules below, and types its answer. Off, the text is typed as recognised. If the model fails or is slow, the recognised text is typed."), func() {
+		i18n.T("Sends the recognised text and the rules below to the language model, and types its answer. When off, or if the model fails or is too slow, the text is typed as recognised."), func() {
 			if ui.Switch(c.Key("tr-enhance-switch"), &f.Enhance).Label(i18n.T("Clean up with a language model")).Changed() {
 				on := f.Enhance
 				a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.Enhance = on })
 			}
 		})
 	settingRow(c, "tr-cleanup", i18n.T("Basic clean-up"),
-		i18n.T("Removes fillers (um, uh, you know) and false starts, keeps what you said after correcting yourself, fixes punctuation, spacing and capitals, turns spoken punctuation (\"comma\", \"new line\") into marks, writes numbers and dates the usual way, and keeps names, terms and code as said."), func() {
+		i18n.T("Removes fillers (um, uh, you know) and false starts, and keeps what you said after correcting yourself. Fixes punctuation, spacing and capitals, turns spoken punctuation (\"comma\", \"new line\") into marks, and writes numbers and dates the usual way. Names, terms and code stay as said."), func() {
 			if ui.Switch(c.Key("tr-cleanup-switch"), &f.Cleanup).Label(i18n.T("Basic clean-up")).Disabled(!f.Enhance).Changed() {
 				on := f.Cleanup
 				a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.Cleanup = on })
 			}
 		})
 	settingRow(c, "tr-structure", i18n.T("Structure"),
-		i18n.T("Makes a list when you clearly say steps or several items, and splits a long text into paragraphs. Off, the text keeps the form you said it in."), func() {
+		i18n.T("Makes a list when you clearly say steps or several items, and splits a long text into paragraphs. When off, the text keeps the form you said it in."), func() {
 			if ui.Switch(c.Key("tr-structure-switch"), &f.Structure).Label(i18n.T("Structure")).Disabled(!f.Enhance).Changed() {
 				on := f.Structure
 				a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.Structure = on })

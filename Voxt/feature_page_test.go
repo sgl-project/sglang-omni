@@ -47,7 +47,7 @@ func TestTranscribePageRenders(t *testing.T) {
 	for _, s := range []string{
 		"Transcribe", "Shortcuts", "Right ⌥", "Tap", "Double tap", "Long press", "Add a shortcut",
 		"Paste the last result", "⌃⌥V",
-		"Models", "No speech model is installed: install one to transcribe.", "Open Speech models",
+		"Models", "No speech model is installed. Install one to transcribe.", "Open Speech models",
 		"Clean-up", "Clean up with a language model", "Basic clean-up", "Structure",
 		"Your rules", "characters",
 		"Try it", "Start",
@@ -141,7 +141,7 @@ func TestTranscribeHotkeysEdit(t *testing.T) {
 // shows by its name in the try card, and goes to the helper as its button
 // number.
 func TestTranscribeMouseButton(t *testing.T) {
-	const hint = "Mouse buttons work too: Mouse3 is the middle button, Mouse4 and up the side buttons, with modifiers or without (Option+Mouse4)."
+	const hint = "Mouse buttons work too: Mouse3 is the middle button, Mouse4 and up are the side buttons, with or without modifiers (Option+Mouse4)."
 	a, tt := trTester(t)
 	if err := tt.ClickControl("Keys of shortcut 1"); err != nil {
 		t.Fatal(err)
@@ -161,7 +161,7 @@ func TestTranscribeMouseButton(t *testing.T) {
 	if hs := a.lib.settings.Get().Features.Transcribe.Hotkeys; hs[0].Keys != settings.DefaultTranscribe {
 		t.Fatalf("Mouse1 saved %+v", hs)
 	}
-	if !has(tt, "A key is unknown. Write the modifiers first, then one key: Fn, RightCommand, Control+Option+Space, Fn+F5.") || !has(tt, hint) {
+	if !has(tt, "Unknown key. Type the modifiers first, then one key, as in Fn, RightCommand, Control+Option+Space or Fn+F5.") || !has(tt, hint) {
 		t.Errorf("Mouse1: no unknown-key warning or no mouse hint in %q", tt.Texts())
 	}
 	for range len("mouse1") {
@@ -208,7 +208,7 @@ func TestTranscribeHotkeyConflicts(t *testing.T) {
 		"Translate has the same keys and trigger: only one of them works.",
 		"The same keys as shortcut 1.",
 		"macOS uses these keys for Spotlight.",
-		"A key alone would be taken from every app: add ⌃, ⌥, ⇧, ⌘ or fn.",
+		"A single key would be taken from every app. Add ⌃, ⌥, ⇧, ⌘ or fn.",
 		"Paste the last result has the same keys and trigger: only one of them works.",
 		"Transcribe has the same keys and trigger: only one of them works.",
 	} {
@@ -237,7 +237,7 @@ func TestTranscribeServicesAndSwitches(t *testing.T) {
 	readyModels(a)
 	a.local.(*fakeLocal).MoreLLM = []local.Model{{Kind: local.LLM, ID: models.LLMFast, Name: "Qwen3.5 2B (4bit)"}}
 	frames(tt)
-	if has(tt, "No speech model is installed: install one to transcribe.") {
+	if has(tt, "No speech model is installed. Install one to transcribe.") {
 		t.Error("notice with a model installed")
 	}
 	click(t, tt, "Language model for Transcribe")
@@ -471,7 +471,7 @@ func TestTranscribeTry(t *testing.T) {
 			t.Errorf("done: no %q in %q", s, tt.Texts())
 		}
 	}
-	click(t, tt, "Copy the result")
+	click(t, tt, "Copy result")
 	if tt.Clipboard() != "The meeting moves to Thursday at four." {
 		t.Errorf("clipboard %q", tt.Clipboard())
 	}
@@ -612,7 +612,7 @@ func TestRulesExplainTwoStages(t *testing.T) {
 	_, tt := trTester(t)
 	click(t, tt, "Your rules")
 	frames(tt)
-	if !strings.Contains(strings.Join(tt.Texts(), "\n"), "Rules act after recognition, on the text the speech model produced.") {
+	if !strings.Contains(strings.Join(tt.Texts(), "\n"), "Rules apply to the text after recognition.") {
 		t.Errorf("no two-stage caption in %q", tt.Texts())
 	}
 }

@@ -153,7 +153,7 @@ func (a *app) permissionsSettings(c *ui.Context) {
 			statusMark(c, icons.DangerTriangle, t.Warning, text)
 		}
 	}
-	caption(c, i18n.T("macOS asks before Voxt can record or work with other apps. Each row says what needs the permission; you can change them any time in System Settings."))
+	caption(c, i18n.T("macOS asks before Voxt can record or work with other apps. Each row says what the permission is for, and you can change them any time in System Settings."))
 	if a.perms.mic == permission.NotDetermined || !a.perms.access {
 		ui.Row(c).Children(func() {
 			if ui.Button(c.Key("perm-ask-required"), i18n.T("Ask for the required permissions")).Tooltip(i18n.T("macOS asks for each in turn: the microphone, then Accessibility.")).Clicked() {
@@ -181,7 +181,7 @@ func (a *app) permissionsSettings(c *ui.Context) {
 	if accOK {
 		accText = i18n.T("Allowed")
 	}
-	settingRow(c, "perm-access", i18n.T("Accessibility"), i18n.T("Lets Voxt type results where your cursor is, read the selected text and the address of the browser tab in front, and use Right ⌥ and other single keys as shortcuts. Without it results are copied for you to paste."), func() {
+	settingRow(c, "perm-access", i18n.T("Accessibility"), i18n.T("Lets Voxt type results where your cursor is, read the selected text and the address of the current browser tab, and use Right ⌥ and other single keys as shortcuts. Without it, results are copied for you to paste."), func() {
 		badge(accText, accOK)
 		if !accOK {
 			if ghostButton(c.Key("perm-access-ask"), i18n.T("Ask")).Tooltip(i18n.T("Adds Voxt to the list in System Settings")).Clicked() {
@@ -199,7 +199,7 @@ func (a *app) permissionsSettings(c *ui.Context) {
 		}
 	})
 	speechText, speechOK := uitext.PermissionText(a.perms.speech)
-	settingRow(c, "perm-speech", i18n.T("Speech Recognition"), i18n.T("Only System dictation needs it: macOS's own speech recognition, which recognises your voice on this Mac."), func() {
+	settingRow(c, "perm-speech", i18n.T("Speech Recognition"), i18n.T("Needed only for System dictation, the speech recognition built into macOS. It runs on this Mac."), func() {
 		badge(speechText, speechOK)
 		if a.perms.speech == permission.NotDetermined {
 			if ghostButton(c.Key("perm-speech-ask"), i18n.T("Ask")).Clicked() {
@@ -216,6 +216,6 @@ func (a *app) permissionsSettings(c *ui.Context) {
 		if secondaryIconButton(c.Key("perm-recheck"), icons.Refresh, i18n.T("Check again")).Label(i18n.T("Check again")).Clicked() {
 			a.recheckPermissions()
 		}
-		infoTip(c.Key("perm-note"), i18n.T("After you change a permission, macOS may ask to quit and reopen Voxt. Updating an ad hoc signed build can make macOS forget Accessibility: turn it off and on again."))
+		infoTip(c.Key("perm-note"), i18n.T("After you change a permission, macOS may ask you to quit and reopen Voxt. Updating an ad hoc signed build can make macOS forget the Accessibility permission. If so, turn it off and on again."))
 	})
 }

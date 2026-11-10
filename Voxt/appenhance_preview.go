@@ -60,9 +60,9 @@ func (a *app) aePreviewCard(c *ui.Context) {
 					addr = pv.url
 				}
 			case !a.helperReady():
-				addr = i18n.T("The helper is not running: the address cannot be read.")
+				addr = i18n.T("The helper is not running, so the address cannot be read.")
 			default:
-				addr = i18n.T("No address: %s does not show it to Accessibility now. It is read again when you press a shortcut there; if it never shows, this browser can only match as an app.", app.Name)
+				addr = i18n.T("No address: %s does not show it to Accessibility right now. Voxt tries again when you press a shortcut there. If it never shows one, this browser matches only as an app.", app.Name)
 			}
 			truncText(c, addr).FontSize(px(t, fsCaption)).TextColor(k.Text2)
 		}
@@ -72,7 +72,7 @@ func (a *app) aePreviewCard(c *ui.Context) {
 				ui.Icon(c, icons.Target.Linear).Size(px(t, 14), px(t, 14)).TextColor(k.Accent).Shrink(0)
 				ui.Text(c, i18n.T("Matches %s, %s", m.GroupName(), uitext.SourceText(m.Source, m.Pattern))).FontSize(px(t, fsCaption)).Grow(1).MinWidth(0)
 			} else {
-				ui.Text(c, i18n.T("No group matches: only the features' own rules apply.")).FontSize(px(t, fsCaption)).TextColor(k.Text2).Grow(1).MinWidth(0)
+				ui.Text(c, i18n.T("No group matches, so only the features' own rules apply.")).FontSize(px(t, fsCaption)).TextColor(k.Text2).Grow(1).MinWidth(0)
 			}
 		})
 		g, i := a.aeGroup()

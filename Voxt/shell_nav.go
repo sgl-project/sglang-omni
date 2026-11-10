@@ -141,13 +141,13 @@ func (a *app) navRail(c *ui.Context) {
 		// under them, in a row of its own.
 		ui.Box(c).Height(titleBarHeight).Shrink(0).DragWindow()
 		ui.Row(c).Shrink(0).Justify(ui.Center).Children(func() {
-			if iconButton(c.Key("rail-off"), icons.SidebarMinimalistic, i18n.T("Show the sidebar")).Clicked() {
+			if iconButton(c.Key("rail-off"), icons.SidebarMinimalistic, i18n.T("Show sidebar")).Clicked() {
 				a.setRail(false)
 			}
 		})
 	} else {
 		ui.Row(c).Height(titleBarHeight).Shrink(0).DragWindow().AlignItems(ui.End).Justify(ui.Center).Padding(0, 0, px(t, sp1), 0).Children(func() {
-			if iconButton(c.Key("rail-off"), icons.SidebarMinimalistic, i18n.T("Show the sidebar")).Clicked() {
+			if iconButton(c.Key("rail-off"), icons.SidebarMinimalistic, i18n.T("Show sidebar")).Clicked() {
 				a.setRail(false)
 			}
 		})

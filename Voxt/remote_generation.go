@@ -305,7 +305,7 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 	serviceDefault := i18n.T("Service default")
 	collapsible(c, i18n.T("Advanced"), &f.advanced, nil, func() {
 		if caps.APIFormat {
-			fieldInfo(c, i18n.T("API format"), i18n.T("Chat Completions works with nearly every service. Responses is OpenAI's newer API; a custom service must offer POST /responses to use it. Stop sequences and Logprobs are not sent with Responses."), func() {
+			fieldInfo(c, i18n.T("API format"), i18n.T("Chat Completions works with nearly every service. Responses is OpenAI's newer API, and a custom service must offer POST /responses to use it. Stop sequences and Logprobs are not sent with Responses."), func() {
 				ui.Select(c.Key("gen-api"), &f.api, titles(apiFormats, apiFormatTitle)).Label(i18n.T("API format")).Width(px(t, 240))
 			})
 		}
@@ -369,7 +369,7 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 			if caps.KeepAlive { // note (luojiaxuan): Ollama, whose model options go in "options"
 				example = `{"options": {"num_ctx": 8192}}`
 			}
-			fieldInfo(c, i18n.T("Request parameters"), i18n.T("A JSON object merged into the request after Voxt's own fields: its keys win, an object merges into the one Voxt sends, and null leaves a field out."), func() {
+			fieldInfo(c, i18n.T("Request parameters"), i18n.T("A JSON object merged into the request. Its keys override Voxt's, nested objects are merged, and null leaves a field out."), func() {
 				ui.TextArea(c.Key("gen-extra"), &f.extraBody).Label(i18n.T("Request parameters")).Placeholder(example).MinHeight(px(t, 72))
 			})
 		}

@@ -84,7 +84,7 @@ func TestModelsPage(t *testing.T) {
 		t.Errorf("translate uses a retired model: %+v", m)
 	}
 	a.navigate("/translate")
-	if !has(tt, "No language model is set up: set one up to translate.") || has(tt, "Automatic (now: Hy-MT2 1.8B (Q4_K_M))") {
+	if !has(tt, "No language model is set up. Set one up to translate.") || has(tt, "Automatic (now: Hy-MT2 1.8B (Q4_K_M))") {
 		t.Errorf("translate: %q", tt.Texts())
 	}
 

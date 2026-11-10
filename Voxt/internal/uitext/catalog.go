@@ -68,31 +68,31 @@ func ModelTags(id string) []string {
 func ModelAbout(id string) string {
 	switch id {
 	case models.ASRAccurate:
-		return i18n.T("The most accurate. Good with accents, dialects, names and several languages in one sentence, and shows the text as you speak.")
+		return i18n.T("The most accurate. Good with accents, dialects, names and several languages in one sentence. Shows the text as you speak.")
 	case models.ASRFast:
 		return i18n.T("Quicker and lighter on memory, for clear speech in a quiet place.")
 	case models.ASRQwen6bit:
-		return i18n.T("Qwen3-ASR 1.7B in less memory than the 8-bit model, and nearly as accurate. Shows the text as you speak.")
+		return i18n.T("Qwen3-ASR 1.7B using less memory than the 8-bit model, and nearly as accurate. Shows the text as you speak.")
 	case models.ASRWhisperTurbo:
-		return i18n.T("OpenAI's Whisper, made quicker: good in many languages. The text shows a moment after you speak.")
+		return i18n.T("A quicker OpenAI Whisper, good in many languages. The text shows a moment after you speak.")
 	case models.ASRWhisperLarge:
-		return i18n.T("The largest Whisper: careful in many languages, but slower and heavy on memory.")
+		return i18n.T("The largest Whisper: accurate in many languages, but slower and heavy on memory.")
 	case models.ASRWhisperSmall:
 		return i18n.T("A small Whisper: light on memory, less accurate.")
 	case models.ASRParakeet:
-		return i18n.T("NVIDIA's Parakeet: very quick, for European languages. It does not know Chinese, Japanese or Korean.")
+		return i18n.T("NVIDIA's Parakeet: very quick, for European languages. It does not support Chinese, Japanese or Korean.")
 	case models.ASRSenseVoice:
 		return i18n.T("Very quick, for Chinese, Cantonese, English, Japanese and Korean.")
 	case models.ASRCohere:
-		return i18n.T("Cohere's model: accurate, with punctuation, but large. It hears your main language only (English when it does not know it).")
+		return i18n.T("Cohere's model: accurate, with punctuation, but large. It recognises only your main language, or English if yours is not supported.")
 	case models.ASRNemotron:
 		return i18n.T("NVIDIA's streaming model: shows the text as you speak, in many languages.")
 	case models.ASRMoss:
-		return i18n.T("Made for conversations between several people; shows the text as you speak.")
+		return i18n.T("Made for conversations between several people. Shows the text as you speak.")
 	case models.VADSilero:
 		return i18n.T("Tells speech from silence, so that only speech is recognised.")
 	case models.LLMBalanced:
-		return i18n.T("Cleans up dictation, translates and rewrites well: the best balance of quality and speed.")
+		return i18n.T("Cleans up dictation, translates and rewrites well, with the best balance of quality and speed.")
 	case models.LLMFast:
 		return i18n.T("Answers sooner and uses less memory, for short clean-ups and simple rewrites.")
 	case models.LLMTranslate:
@@ -102,7 +102,7 @@ func ModelAbout(id string) string {
 	case models.LLMGemma4:
 		return i18n.T("Writes well in many languages, but is slower and needs more memory.")
 	case dictation.ModelID:
-		return i18n.T("macOS's own speech recognition, on this Mac: nothing to download, and quick. Less accurate than Qwen3-ASR, with fewer languages; it hears your main language.")
+		return i18n.T("macOS's own speech recognition, on this Mac. Quick, with nothing to download, but less accurate than Qwen3-ASR and with fewer languages. It recognises only your main language.")
 	}
 	return ""
 }
@@ -148,7 +148,7 @@ func DownloadErrorText(err error) (msg, more string) {
 	var pe *fs.PathError
 	switch hfhub.Code(err) {
 	case hfhub.CodeDiskSpace:
-		return i18n.T("Not enough disk space: free some room, then try again."), more
+		return i18n.T("Not enough disk space. Free some space, then try again."), more
 	case hfhub.CodeChecksum:
 		return i18n.T("A downloaded file was damaged. Try again."), more
 	case hfhub.CodeNotFound, hfhub.CodeGated:

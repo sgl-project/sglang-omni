@@ -64,7 +64,7 @@ func ModelErrorText(err error) (msg, more string) {
 		return i18n.T("Voxt does not have Speech Recognition access. Allow it in Settings → Permissions."), more
 	}
 	if errors.Is(err, dictation.ErrNoLanguage) {
-		return i18n.T("macOS cannot recognise your main language on this Mac: add it in System Settings → Keyboard → Dictation, or choose another speech model."), more
+		return i18n.T("macOS cannot recognise your main language on this Mac. Add it in System Settings → Keyboard → Dictation, or choose another speech model."), more
 	}
 	var ae *asr.Error
 	if errors.As(err, &ae) {
@@ -72,7 +72,7 @@ func ModelErrorText(err error) (msg, more string) {
 		case remote && ae.Kind == asr.KindAuth:
 			return i18n.T("The remote service refused the API key."), more
 		case remote && ae.Kind == asr.KindQuota:
-			return i18n.T("The remote service refused the request: it is busy, the account is out of credit, or the model is not enabled for it."), more
+			return i18n.T("The remote service refused the request. It may be busy, the account may be out of credit, or the model is not enabled for it."), more
 		}
 		switch ae.Kind {
 		case asr.KindNetwork, asr.KindServer:
@@ -84,7 +84,7 @@ func ModelErrorText(err error) (msg, more string) {
 		case asr.KindCancelled:
 			return i18n.T("Cancelled."), more
 		case asr.KindConfig:
-			return i18n.T("The speech model is not set up correctly: check it on the Speech models page."), more
+			return i18n.T("The speech model is not set up correctly. Check it on the Speech models page."), more
 		}
 		return i18n.T("The speech model answered something Voxt does not understand."), more
 	}
@@ -92,19 +92,19 @@ func ModelErrorText(err error) (msg, more string) {
 	if errors.As(err, &le) {
 		switch le.Code {
 		case llm.CodeSignIn:
-			return i18n.T("Your ChatGPT sign-in has ended: sign in again on the Language models page."), more
+			return i18n.T("Your ChatGPT sign-in has expired. Sign in again on the Language models page."), more
 		case llm.CodeUsageLimit:
-			return i18n.T("Your ChatGPT plan's usage is used up for now."), more
+			return i18n.T("You have reached your ChatGPT plan's usage limit for now."), more
 		case llm.CodeNotEligible:
-			return i18n.T("ChatGPT refused this account: its plan, workspace or region cannot use Codex."), more
+			return i18n.T("ChatGPT refused this account. Its plan, workspace or region cannot use Codex."), more
 		case llm.CodeNoKey:
-			return i18n.T("No API key is saved for the remote model: add one on the Language models page."), more
+			return i18n.T("No API key is saved for the remote model. Add one on the Language models page."), more
 		case llm.CodeAuth:
 			return i18n.T("The remote service refused the API key."), more
 		case llm.CodeModelNotFound:
 			return i18n.T("The remote service does not have this model."), more
 		case llm.CodeConfig:
-			return i18n.T("The remote model's address is not allowed: use https://, or http:// to this Mac."), more
+			return i18n.T("The remote model's address is not allowed. Use https://, or http:// for an address on this Mac."), more
 		case llm.CodeTimeout:
 			return i18n.T("The language model did not answer in time."), more
 		case llm.CodeNetwork, llm.CodeServer, llm.CodeOverloaded, llm.CodeRateLimited:

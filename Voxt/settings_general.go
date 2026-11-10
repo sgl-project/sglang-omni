@@ -18,7 +18,7 @@ import (
 func (a *app) generalSettings(c *ui.Context) {
 	t := c.Theme()
 	sectionTitle(c, i18n.T("Languages"))
-	settingRow(c, "language", i18n.T("App language"), i18n.T("The language of Voxt's own text. Following the system uses English unless the system's language is supported."), func() {
+	settingRow(c, "language", i18n.T("App language"), i18n.T("The language of Voxt's interface. When following the system, Voxt uses English if it does not support the system's language."), func() {
 		opts := languageOptions()
 		if ui.Select(c.Key("language-select"), &a.settingsForm.language, opts).Label(i18n.T("App language")).Width(px(t, 220)).Changed() {
 			tag := ""
@@ -28,7 +28,7 @@ func (a *app) generalSettings(c *ui.Context) {
 			a.updateSettings(func(s *settings.Settings) { s.General.Language = tag })
 		}
 	})
-	settingRow(c, "main-language", i18n.T("Main language"), i18n.T("The language you mostly speak and write. Clean-up keeps your text in it; Translate writes in English, or in Chinese when this is English, unless the Translate page says otherwise."), func() {
+	settingRow(c, "main-language", i18n.T("Main language"), i18n.T("The language you mostly speak and write. Clean-up keeps your text in it. Translate writes in English, or in Chinese when this is English, unless you change it on the Translate page."), func() {
 		opts := mainLanguageOptions()
 		if ui.Select(c.Key("main-language-select"), &a.settingsForm.mainLanguage, opts).Label(i18n.T("Main language")).Width(px(t, 220)).Changed() {
 			code := ""
@@ -41,7 +41,7 @@ func (a *app) generalSettings(c *ui.Context) {
 	a.otherLanguagesRow(c)
 
 	sectionTitle(c, i18n.T("Results"))
-	settingRow(c, "copy-result", i18n.T("Also copy the result to the clipboard"), i18n.T("Each finished result stays on the clipboard, also when it was pasted, or waits in the answer card."), func() {
+	settingRow(c, "copy-result", i18n.T("Also copy the result to the clipboard"), i18n.T("Every result stays on the clipboard, whether it was pasted or is waiting in the answer card."), func() {
 		if ui.Switch(c.Key("copy-result-switch"), &a.settingsForm.copyResult).Label(i18n.T("Also copy the result to the clipboard")).Changed() {
 			on := a.settingsForm.copyResult
 			a.updateSettings(func(s *settings.Settings) { s.General.CopyResult = on })
@@ -60,7 +60,7 @@ func (a *app) generalSettings(c *ui.Context) {
 			})
 		}
 	})
-	settingRow(c, "dock", i18n.T("Show in the Dock"), i18n.T("Off, Voxt is in the menu bar only."), func() {
+	settingRow(c, "dock", i18n.T("Show in the Dock"), i18n.T("When off, Voxt is only in the menu bar."), func() {
 		if ui.Switch(c.Key("dock-switch"), &a.settingsForm.dock).Label(i18n.T("Show in the Dock")).Changed() {
 			on := a.settingsForm.dock
 			a.updateSettings(func(s *settings.Settings) {
@@ -86,7 +86,7 @@ func (a *app) generalSettings(c *ui.Context) {
 	})
 
 	sectionTitle(c, i18n.T("Features"))
-	settingRow(c, "features", i18n.T("Shown features"), i18n.T("Uncheck a feature you do not use: it leaves the sidebar, Home and ⌘K, and its shortcuts and scene rules stop. Its settings stay for when you check it again."), func() {
+	settingRow(c, "features", i18n.T("Shown features"), i18n.T("Uncheck a feature you do not use to remove it from the sidebar, Home and ⌘K and turn off its shortcuts and scene rules. Its settings are kept for when you check it again."), func() {
 		ui.Row(c).Gap(px(t, sp3)).Wrap().AlignItems(ui.Center).Children(func() {
 			for _, id := range []string{settings.HideTranslate, settings.HideRewrite, settings.HideAppEnhancement} {
 				shown := !a.prefs.Features.IsHidden(id)

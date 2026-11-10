@@ -61,7 +61,7 @@ func TestKeyRecorderNoAccessibility(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		frames(tt)
 	}
-	if !has(tt, "Recording a shortcut needs Accessibility permission.") || !has(tt, "Open Permissions") {
+	if !has(tt, "Recording a shortcut needs Accessibility access.") || !has(tt, "Open Permissions") {
 		t.Errorf("expected accessibility notice, got %q", tt.Texts())
 	}
 }
@@ -141,7 +141,7 @@ func TestKeyRecorderTapPaused(t *testing.T) {
 		}
 		fs.handlers[proto.MethodHotkeyCancelRecord] = func(json.RawMessage) (any, error) { return proto.Empty{}, nil }
 	})
-	notice := "Without Accessibility only plain shortcuts work (⌃⌥⇧⌘ with a key); fn, a single modifier, double taps and long presses need it."
+	notice := "Without Accessibility, only plain shortcuts work (⌃⌥⇧⌘ with a key). Shortcuts with fn or a single modifier, double taps and long presses need it."
 	lastBindings := func() int {
 		fake.mu.Lock()
 		defer fake.mu.Unlock()

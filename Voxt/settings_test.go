@@ -43,7 +43,7 @@ func TestOverlayStyleSettings(t *testing.T) {
 	if has(tt, "0:07") {
 		t.Error("the time shows by default")
 	}
-	if _, ok := tt.Find("Show the recording time"); !ok {
+	if _, ok := tt.Find("Show recording time"); !ok {
 		t.Error("no time switch")
 	}
 	a.settingsForm.ovStyle.showTime = true
@@ -94,7 +94,7 @@ func TestShortcutsSettings(t *testing.T) {
 func TestShortcutPreset(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate("/settings/shortcuts")
-	const auralink = "Auralink uses fn too: while it runs, both apps react to these keys."
+	const auralink = "Auralink uses fn too, so while it runs, both apps react to these keys."
 	const globe = "macOS may react to fn too (the Globe key). If it gets in the way, set it to Do Nothing in System Settings → Keyboard."
 	if !hasExact(tt, "Right ⌥ (default)") || has(tt, auralink) {
 		t.Fatalf("defaults: %q", firstTexts(tt))
@@ -137,7 +137,7 @@ func TestShortcutPreset(t *testing.T) {
 		t.Errorf("Custom shows %d times with the list open: %q", n, tt.Texts())
 	}
 	click(t, tt, "Right ⌥ (default)")
-	if !has(tt, "You changed every shortcut yourself: the preset keeps them.") || a.settings.Get().Features.PasteLast.Keys != "F6" {
+	if !has(tt, "You changed every shortcut yourself, so the preset leaves them as they are.") || a.settings.Get().Features.PasteLast.Keys != "F6" {
 		t.Errorf("nothing to change: %q, %+v", tt.Texts(), a.settings.Get().Features.PasteLast)
 	}
 }

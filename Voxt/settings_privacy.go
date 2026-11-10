@@ -18,19 +18,19 @@ import (
 func (a *app) privacySettings(c *ui.Context) {
 	t := c.Theme()
 	sectionTitle(c, i18n.T("What leaves this Mac"))
-	online := i18n.T("Otherwise Voxt goes online only to download models and to read Voxt's announcements, which sends nothing about you.")
+	online := i18n.T("Otherwise, Voxt goes online only to download models and read its announcements. Reading them sends nothing about you.")
 	if a.upd != nil { // a build with an update feed (updates.go)
-		online = i18n.T("Otherwise Voxt goes online only to check for updates, to download models and to read Voxt's announcements, which sends nothing about you.")
+		online = i18n.T("Otherwise, Voxt goes online only to check for updates, download models and read its announcements. Reading them sends nothing about you.")
 	}
 	ui.Column(c.Key("priv-list")).Gap(px(t, sp1)).Children(func() {
 		for _, s := range []string{
-			i18n.T("Your recordings are recognised on this Mac, unless a feature uses a speech service you set up (the Speech models page): its recordings then go to that service. Voxt has no server of its own."),
-			i18n.T("The text to clean up, translate or rewrite goes to the language model you set up (the Language models page): it stays on this Mac with a server here, such as Ollama, and goes to the service otherwise."),
+			i18n.T("Your recordings are recognised on this Mac. If a feature uses a speech service you set up on the Speech models page, its recordings go to that service. Voxt has no server of its own."),
+			i18n.T("Text to clean up, translate or rewrite goes to the language model you set up on the Language models page. With a local server such as Ollama, it stays on this Mac. Otherwise it goes to that service."),
 			i18n.T("With ChatGPT (Codex), that text goes to OpenAI under your ChatGPT account, counts against your plan's usage, and is covered by OpenAI's terms for that account."),
 			online,
-			i18n.T("The address of the browser tab in front is read only to pick your app enhancement rules: the language model never sees it, only the app's name."),
+			i18n.T("Voxt reads the address of the current browser tab only to pick your app enhancement rules. The language model never sees it, only the app's name."),
 			i18n.T("Voxt collects no usage data, crash reports or identifiers."),
-			i18n.T("If you let programs on this Mac read the history (below), they get that text, and from then on it is up to them where it goes."),
+			i18n.T("If you let programs on this Mac read the history (below), where that text goes next is up to them."),
 		} {
 			ui.Text(c, "• "+s).FontSize(px(t, fsCaption)).TextColor(t.TextMuted)
 		}
@@ -48,7 +48,7 @@ func (a *app) privacySettings(c *ui.Context) {
 			})
 		}
 	})
-	settingRow(c, "priv-audio", i18n.T("Keep the recordings"), i18n.T("Saves the audio with each history entry, to listen again or recognise it once more. When this is off, a recording whose recognition failed, or that you cancelled, is still kept for 7 days, so that you can retry it."), func() {
+	settingRow(c, "priv-audio", i18n.T("Keep recordings"), i18n.T("Saves the audio with each entry, so you can play it back or recognise it again. When this is off, failed or cancelled recordings are still kept for 7 days so you can retry them."), func() {
 		if ui.Switch(c.Key("priv-audio"), &a.settingsForm.keepAudio).Label(i18n.T("Save each recording")).Disabled(!a.prefs.Privacy.KeepHistory).Changed() {
 			on := a.settingsForm.keepAudio
 			a.updateSettings(func(s *settings.Settings) { s.Privacy.KeepAudio = on })
@@ -59,7 +59,7 @@ func (a *app) privacySettings(c *ui.Context) {
 			a.showHistorySettings()
 		}
 	})
-	settingRow(c, "priv-clear", i18n.T("Clear the history"), i18n.T("Deletes every entry and its recording. Your dictionary and settings stay."), func() {
+	settingRow(c, "priv-clear", i18n.T("Clear history"), i18n.T("Deletes every entry and its recording. Your dictionary and settings stay."), func() {
 		if ui.Button(c.Key("priv-clear"), i18n.T("Clear…")).Clicked() {
 			a.clearHistoryAsk = true
 		}
@@ -68,7 +68,7 @@ func (a *app) privacySettings(c *ui.Context) {
 	a.historyAccessSection(c) // history_access.go
 
 	sectionTitle(c, i18n.T("Logs"))
-	settingRow(c, "priv-log-text", i18n.T("Write text to the log"), i18n.T("Off, the log records only lengths and timings of what you said and got back, never the text. Turn it on to report a problem, then off again."), func() {
+	settingRow(c, "priv-log-text", i18n.T("Write text to the log"), i18n.T("When off, the log records only the lengths and timings of what you said and got back, never the text. Turn it on to report a problem, then turn it off again."), func() {
 		if ui.Switch(c.Key("priv-log-text"), &a.settingsForm.logText).Label(i18n.T("Log what was said")).Changed() {
 			on := a.settingsForm.logText
 			a.updateSettings(func(s *settings.Settings) { s.Privacy.LogText = on })
@@ -81,13 +81,13 @@ func (a *app) privacySettings(c *ui.Context) {
 func (a *app) clearHistoryDialog(c *ui.Context) {
 	t := c.Theme()
 	ui.Modal(c.Key("priv-clear-ask"), &a.clearHistoryAsk, func() {
-		ui.Text(c, i18n.T("Clear the history?")).Bold()
-		ui.Text(c, i18n.T("Every transcription, translation and rewrite, and their recordings, are deleted. This cannot be undone.")).Width(px(t, 380))
+		ui.Text(c, i18n.T("Clear history?")).Bold()
+		ui.Text(c, i18n.T("All transcriptions, translations and rewrites are deleted, with their recordings. This cannot be undone.")).Width(px(t, 380))
 		ui.Row(c).Gap(px(t, sp2)).Justify(ui.End).Children(func() {
 			if ui.Button(c.Key("priv-clear-cancel"), i18n.T("Cancel")).AutoFocus().Clicked() {
 				a.clearHistoryAsk = false
 			}
-			if recordButton(c.Key("priv-clear-ok"), i18n.T("Delete the history")).Clicked() {
+			if recordButton(c.Key("priv-clear-ok"), i18n.T("Delete history")).Clicked() {
 				a.clearHistoryAsk = false
 				a.clearHistory()
 			}

@@ -60,7 +60,7 @@ func TestDictionaryAddEditDelete(t *testing.T) {
 	}
 	click(t, tt, "Add term")
 	click(t, tt, "Save")
-	if !has(tt, "Type the term as it must be written.") {
+	if !has(tt, "Type the term as it should be written.") {
 		t.Errorf("empty term saved: %q", firstTexts(tt))
 	}
 	click(t, tt, "Term as written")
@@ -118,8 +118,8 @@ func TestDictionaryGuide(t *testing.T) {
 		"takes effect the next time you use Voxt",
 		"as a word to expect, if that model takes hints. Aliases are not sent",
 		fmt.Sprintf("With up to %d enabled terms, it gets them all", compose.GlossaryAllUpTo),
-		fmt.Sprintf("It stops at %d terms", compose.MaxGlossaryTerms),
-		"before the language model and also without one",
+		fmt.Sprintf("by spelling or alias, up to %d", compose.MaxGlossaryTerms),
+		"even without a language model",
 	} {
 		if !has(tt, want) {
 			t.Errorf("no %q in %q", want, firstTexts(tt))
@@ -131,7 +131,7 @@ func TestDictionaryGuide(t *testing.T) {
 		"下次使用 Voxt 时",
 		"别名不发送",
 		fmt.Sprintf("词条不超过 %d 个时全部发给模型", compose.GlossaryAllUpTo),
-		fmt.Sprintf("最多发送 %d 个", compose.MaxGlossaryTerms),
+		fmt.Sprintf("最多 %d 个", compose.MaxGlossaryTerms),
 		"没有语言模型也有效",
 	} {
 		if !has(tt, want) {
@@ -148,7 +148,7 @@ func TestDictionarySearchAndSwitches(t *testing.T) {
 	if !has(tt, "5 terms") || !has(tt, "豆包") {
 		t.Fatalf("list %q", firstTexts(tt))
 	}
-	click(t, tt, "Search the dictionary")
+	click(t, tt, "Search dictionary")
 	tt.Type("k8s")
 	frames(tt)
 	if len(a.dv.list) != 1 || a.dv.list[0].Term != "Kubernetes" {
@@ -165,7 +165,7 @@ func TestDictionarySearchAndSwitches(t *testing.T) {
 		t.Errorf("settings %+v", d)
 	}
 	click(t, tt, "Use the dictionary")
-	if a.lib.settings.Get().Dictionary.Enabled || !has(tt, "The dictionary is off: its terms go nowhere.") {
+	if a.lib.settings.Get().Dictionary.Enabled || !has(tt, "The dictionary is off, so its terms are not used.") {
 		t.Error("dictionary still on")
 	}
 }

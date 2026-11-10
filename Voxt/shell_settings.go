@@ -156,7 +156,7 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 			err := mygo.App.SetOpenAtLogin(on)
 			a.post(func() {
 				if err != nil {
-					a.toast(i18n.T("Could not change opening at login: %v", err))
+					a.toast(i18n.T("Could not change “Open at login”: %v", err))
 					return
 				}
 				a.loginIs = on

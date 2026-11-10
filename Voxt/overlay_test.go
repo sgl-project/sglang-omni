@@ -144,10 +144,10 @@ func TestAnswerCardButtons(t *testing.T) {
 	card("c1")
 	tt := cardTester(t, a)
 	frames(tt)
-	if !tt.HasText("Answer c1") || tt.HasText("No text field is focused: click where it should go, then insert, or copy it.") {
+	if !tt.HasText("Answer c1") || tt.HasText("No text field is focused. Click where the text should go and insert, or copy it.") {
 		t.Errorf("card texts %q", firstTexts(tt))
 	}
-	if a.answer.why != "No text field is focused: click where it should go, then insert, or copy it." {
+	if a.answer.why != "No text field is focused. Click where the text should go and insert, or copy it." {
 		t.Errorf("why %q", a.answer.why)
 	}
 	if err := tt.Click("Copy"); err != nil {
@@ -173,7 +173,7 @@ func TestAnswerCardButtons(t *testing.T) {
 	focus = proto.FocusResult{PID: 530, Error: "no focused element"} // another app came to the front, nothing focused
 	card("c3")
 	a.insertAnswer()
-	if !a.answer.open || a.answer.inserting || a.ov.mode != ovAnswer || a.answer.msg != "No text field is focused: click where the text should go, then insert." || len(pasted) != 1 {
+	if !a.answer.open || a.answer.inserting || a.ov.mode != ovAnswer || a.answer.msg != "No text field is focused. Click where the text should go, then insert." || len(pasted) != 1 {
 		t.Errorf("elsewhere: %s %+v", a.ov.mode, a.answer)
 	}
 	h := a.ov.h
@@ -182,7 +182,7 @@ func TestAnswerCardButtons(t *testing.T) {
 	}
 	focus = proto.FocusResult{PID: 530, Role: "AXTextField", Subrole: "AXSecureTextField", Editable: true}
 	a.insertAnswer()
-	if !a.answer.open || a.answer.msg != "A password field is focused: Voxt never types into one." || len(pasted) != 1 {
+	if !a.answer.open || a.answer.msg != "Voxt never types into password fields." || len(pasted) != 1 {
 		t.Errorf("a password field: %+v", a.answer)
 	}
 	textEdit := helpertest.Apps["com.apple.TextEdit"]
@@ -227,7 +227,7 @@ func TestSessionProblemTexts(t *testing.T) {
 	}{
 		{session.Problem{Code: session.ProblemNoASR}, "No speech model is installed.", actionModels},
 		{session.Problem{Code: session.ProblemMicrophone, Err: errors.New("x")}, "Voxt does not have microphone access.", actionPermissions},
-		{session.Problem{Code: session.ProblemHelper}, "The helper stopped: try again in a moment.", actionHelper},
+		{session.Problem{Code: session.ProblemHelper}, "The helper stopped. Try again in a moment.", actionHelper},
 		{session.Problem{Code: session.ProblemNoSpeech}, "Nothing was heard.", actionNone},
 		{session.Problem{Code: session.ProblemTooShort}, "", actionNone},
 		{session.Problem{Code: session.ProblemInternal, Err: errors.New("boom")}, "Something went wrong: boom", actionNone},

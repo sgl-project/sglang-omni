@@ -160,7 +160,7 @@ func (a *app) runSelfCheck() {
 		if perms.access {
 			add("accessibility", i18n.T("Accessibility"), "pass", i18n.T("Allowed"))
 		} else {
-			add("accessibility", i18n.T("Accessibility"), "warn", i18n.T("Not allowed: results are copied instead of typed."))
+			add("accessibility", i18n.T("Accessibility"), "warn", i18n.T("Not allowed, so results are copied instead of typed."))
 		}
 		a.post(func() { a.checks, a.selfChecking = out, false })
 	})
@@ -316,11 +316,11 @@ func (a *app) aboutSettings(c *ui.Context) {
 	a.updateSettingsSection(c) // updates.go
 
 	sectionTitle(c, i18n.T("Self-check"))
-	settingRow(c, "about-check", i18n.T("Check Voxt"), i18n.T("The library, the helper, the models, the data folder and the permissions."), func() {
+	settingRow(c, "about-check", i18n.T("Check Voxt"), i18n.T("Checks the library, helper, models, data folder and permissions."), func() {
 		if a.selfChecking {
 			ui.Spinner(c)
 		}
-		if ui.Button(c.Key("about-check"), i18n.T("Run the check")).Disabled(a.selfChecking).Clicked() {
+		if ui.Button(c.Key("about-check"), i18n.T("Run check")).Disabled(a.selfChecking).Clicked() {
 			a.runSelfCheck()
 		}
 	})
@@ -340,13 +340,13 @@ func (a *app) aboutSettings(c *ui.Context) {
 	}
 
 	sectionTitle(c, i18n.T("Report a problem"))
-	settingRow(c, "about-copy", i18n.T("Copy diagnostics"), i18n.T("Versions, the machine, the models, folders and the self-check: no text or audio."), func() {
+	settingRow(c, "about-copy", i18n.T("Copy diagnostics"), i18n.T("Versions, the Mac, models, folders and self-check results. No text or audio."), func() {
 		if ui.Button(c.Key("about-copy"), i18n.T("Copy")).Clicked() {
 			c.WriteClipboard(a.diagnosticsText())
 			a.toast(i18n.T("Diagnostics copied"))
 		}
 	})
-	settingRow(c, "about-bundle", i18n.T("Save a diagnostic bundle"), i18n.T("A ZIP of the diagnostics, the logs and the settings, to attach to a report."), func() {
+	settingRow(c, "about-bundle", i18n.T("Save a diagnostic bundle"), i18n.T("A ZIP of the diagnostics, logs and settings to attach to a report."), func() {
 		if ui.Button(c.Key("about-bundle"), i18n.T("Save…")).Clicked() {
 			a.saveBundle()
 		}

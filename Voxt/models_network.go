@@ -97,7 +97,7 @@ func (a *app) saveNetwork() bool {
 	case proxyCustom:
 		v, err := famsettings.Normalize(actnow.KeyProxy, f.proxyURL)
 		if err != nil || v == famsettings.ProxyAuto || v == famsettings.ProxyDirect {
-			f.proxyErr = i18n.T("Enter a proxy's address that starts with http://, https:// or socks5://, like http://127.0.0.1:7890.")
+			f.proxyErr = i18n.T("Enter a proxy address that starts with http://, https:// or socks5://, such as http://127.0.0.1:7890.")
 			return false
 		}
 		if strings.ContainsAny(f.proxyPassword, "\"\\\n\r") { // what the Keychain's security tool cannot take (internal/secrets)
@@ -154,7 +154,7 @@ func (a *app) networkDialog(c *ui.Context) {
 		segmentedFit(c.Key("net-proxy"), &f.proxyMode, i18n.T("Automatic"), i18n.T("No proxy"), i18n.T("Custom")).Label(i18n.T("Proxy"))
 		switch f.proxyMode {
 		case proxyAuto:
-			caption(c, i18n.T("The proxy in the Mac's network settings, or the one the environment names."))
+			caption(c, i18n.T("The proxy in this Mac's network settings, or one set by an environment variable."))
 		case proxyNone:
 			caption(c, i18n.T("Downloads connect to the server directly."))
 		default:
@@ -179,7 +179,7 @@ func (a *app) networkDialog(c *ui.Context) {
 		case f.source == 0:
 			caption(c, i18n.T("Hugging Face and its mirror hf-mirror.com, whichever answers first. Every file is checked, so either is safe."))
 		case f.source < len(networkSources):
-			caption(c, i18n.T("Only this server: when it cannot be reached, downloads fail."))
+			caption(c, i18n.T("Only this server. If it cannot be reached, downloads fail."))
 		default:
 			caption(c, i18n.T("Custom servers: %s", f.sourceURL))
 		}
@@ -221,7 +221,7 @@ func (a *app) networkFamilyLine(c *ui.Context, key, other string) {
 	}
 	ui.Row(c.Key("net-family-" + keySuffix(key))).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
 		if follows && a.fam.ReadOnly() {
-			caption(c, i18n.T("Another app updated the shared format. Update this app to change these settings."))
+			caption(c, i18n.T("Another app updated the shared format. Update Voxt to change these settings."))
 			return
 		}
 		if follows {

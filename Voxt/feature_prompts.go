@@ -58,7 +58,7 @@ func (a *app) translateSettings(c *ui.Context) {
 			}
 		})
 	settingRow(c, "tl-cleanup", i18n.T("Basic clean-up"),
-		i18n.T("Cleans up what you say before translating it: fillers, false starts and corrections go, spoken punctuation becomes marks. Selected text is translated as it is."), func() {
+		i18n.T("Cleans up what you say before translating it, removing fillers, false starts and corrections and turning spoken punctuation into marks. Selected text is translated as it is."), func() {
 			if ui.Switch(c.Key("tl-cleanup-switch"), &f.Cleanup).Label(i18n.T("Basic clean-up")).Changed() {
 				on := f.Cleanup
 				a.updateSettings(func(s *settings.Settings) { s.Features.Translate.Cleanup = on })
@@ -78,16 +78,16 @@ func (a *app) cardSetting(c *ui.Context, p, feature string) {
 	switch feature {
 	case hotkey.Translate:
 		on = &f.Translate.ShowCard
-		help = i18n.T("Shows translations in the answer card, to read, copy or insert, instead of typing them (or replacing the selection). Text that cannot go in, as with no text field in front, shows in the card anyway.")
+		help = i18n.T("Shows translations in the answer card, to read, copy or insert, instead of typing them or replacing the selection. Text that cannot be inserted, such as when no text field is in front, shows in the card anyway.")
 	case hotkey.Rewrite:
 		on = &f.Rewrite.ShowCard
 		if note := i18n.T("In Rewrite's card you can keep going: click Continue or press the Rewrite shortcut again and say \"shorter\" or \"in English\". The card changes the answer and keeps the whole conversation."); settingsTextMatches(settingsSearchQuery, note) {
 			caption(c, note)
 		}
-		help = i18n.T("Shows Rewrite's answers in the answer card, to read, copy, insert or follow up. Off, the answer replaces the selection or is typed where your cursor is, and there are no follow-ups. Text that cannot go in, as with no text field in front, shows in the card anyway.")
+		help = i18n.T("Shows Rewrite's answers in the answer card, to read, copy, insert or follow up. When off, the answer replaces the selection or is typed where your cursor is, with no follow-ups. Text that cannot be inserted, such as when no text field is in front, shows in the card anyway.")
 	default:
 		on = &f.Transcribe.ShowCard
-		help = i18n.T("Shows the text in the answer card, to read, copy or insert, instead of typing it. Text that cannot go in, as with no text field in front, shows in the card anyway.")
+		help = i18n.T("Shows the text in the answer card, to read, copy or insert, instead of typing it. Text that cannot be inserted, such as when no text field is in front, shows in the card anyway.")
 	}
 	settingRow(c, p+"-card", i18n.T("Show the result in a card"), help, func() {
 		if ui.Switch(c.Key(p+"-card-switch"), on).Label(i18n.T("Show the result in a card")).Changed() {
@@ -134,7 +134,7 @@ func (a *app) rewriteSettings(c *ui.Context) {
 	f := &a.prefs.Features.Rewrite
 	sectionTitle(c, i18n.T("Rewriting"))
 	settingRow(c, "rw-cleanup", i18n.T("Clean up the instruction"),
-		i18n.T("Reads past fillers, false starts and corrections in what you say (\"shorter, no, more formal\"). It never changes the selected text by itself."), func() {
+		i18n.T("Ignores fillers and false starts in your instruction, and goes with what you said last when you correct yourself (\"shorter, no, more formal\"). It does not touch the selected text."), func() {
 			if ui.Switch(c.Key("rw-cleanup-switch"), &f.Cleanup).Label(i18n.T("Clean up the instruction")).Changed() {
 				on := f.Cleanup
 				a.updateSettings(func(s *settings.Settings) { s.Features.Rewrite.Cleanup = on })
@@ -154,7 +154,7 @@ func variableInfo(name string) string {
 	case "TARGET_LANGUAGE":
 		return i18n.T("The language to translate into (Translate only).")
 	case "APP_NAME":
-		return i18n.T("The app in front (with App enhancement).")
+		return i18n.T("The frontmost app (with App enhancement).")
 	}
 	return ""
 }
@@ -282,7 +282,7 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 			label = i18n.T("System prompt for Transcribe")
 			placeholder = i18n.T("For example: write numbers as digits; keep English product names as they are; end every sentence with a full stop.")
 		}
-		caption(c, i18n.T("Rules act after recognition, on the text the speech model produced. Speech hints (Dictionary page) only tell the speech model which words to expect; punctuation, format and fillers are decided here."))
+		caption(c, i18n.T("Rules apply to the text after recognition. Speech hints (Dictionary page) only tell the speech model which words to expect. Punctuation, format and fillers are decided here."))
 		matches := findFolded(u.prompt, u.find)
 		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
 			find := searchField(c, p+"-find", &u.find, i18n.T("Find in the prompt"), px(t, 320))
@@ -409,12 +409,12 @@ func (a *app) previewBody(c *ui.Context, feature string) {
 	switch feature {
 	case hotkey.Transcribe:
 		if !a.prefs.Features.Transcribe.Enhance {
-			caption(c, i18n.T("Clean-up is off: nothing is sent to a language model."))
+			caption(c, i18n.T("Clean-up is off, so nothing is sent to a language model."))
 		}
 	case hotkey.Translate:
-		caption(c, i18n.T("Spoken text, as below; selected text is translated without the clean-up and keeps its form."))
+		caption(c, i18n.T("Below is the prompt for spoken text. Selected text is translated without the clean-up and keeps its form."))
 	case hotkey.Rewrite:
-		caption(c, i18n.T("With a selection, as below; with nothing selected the model writes from the instruction and answers with a title and the text."))
+		caption(c, i18n.T("Below is the prompt with a selection. With nothing selected, the model writes from your instruction and answers with a title and the text."))
 	}
 	out, err := a.composedPreview(feature)
 	if err != nil {

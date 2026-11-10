@@ -48,10 +48,10 @@ func (a *app) historyDetail(c *ui.Context, e store.Entry) {
 		// recording), Delete and Close.
 		ui.Row(c).Gap(px(t, sp1)).AlignItems(ui.Center).Children(func() {
 			sectionHeading(c, i18n.T("Entry details")).Grow(1)
-			if e.Audio != "" && iconButton(c.Key("hist-reveal"), icons.FolderOpen, i18n.T("Show the recording in Finder")).Clicked() {
+			if e.Audio != "" && iconButton(c.Key("hist-reveal"), icons.FolderOpen, i18n.T("Show recording in Finder")).Clicked() {
 				revealInFinder(a.lib.store.History().AudioPath(e.Audio))
 			}
-			if iconButton(c.Key("hist-delete"), icons.TrashBinMinimalistic, i18n.T("Delete the entry…")).Clicked() {
+			if iconButton(c.Key("hist-delete"), icons.TrashBinMinimalistic, i18n.T("Delete entry…")).Clicked() {
 				a.askDeleteEntry(e.ID)
 			}
 			if iconButton(c.Key("panel-close"), icons.Close, i18n.T("Close")).Clicked() {
@@ -61,7 +61,7 @@ func (a *app) historyDetail(c *ui.Context, e store.Entry) {
 		if e.Error != "" {
 			kind, text := noticeError, i18n.T("Failed: %s", uitext.FirstLine(e.Error))
 			if e.Status != store.StatusFailed {
-				kind, text = noticeWarn, i18n.T("Done with a problem: %s", uitext.FirstLine(e.Error))
+				kind, text = noticeWarn, i18n.T("Done, but with a problem: %s", uitext.FirstLine(e.Error))
 			}
 			notice(c, "hist-detail-err", kind, text, e.Error, nil, nil)
 		}
@@ -88,14 +88,14 @@ func (a *app) historyDetail(c *ui.Context, e store.Entry) {
 				})
 			})
 		}
-		textBlock("hist-result", i18n.T("Result"), i18n.T("Copy the result"), e.Result)
+		textBlock("hist-result", i18n.T("Result"), i18n.T("Copy result"), e.Result)
 		if e.PromptText != "" {
-			textBlock("hist-prompt", i18n.T("Instruction"), i18n.T("Copy the instruction"), e.PromptText)
+			textBlock("hist-prompt", i18n.T("Instruction"), i18n.T("Copy instruction"), e.PromptText)
 		}
 		if e.SourceText != "" {
-			textBlock("hist-source", i18n.T("Selected text"), i18n.T("Copy the selected text"), e.SourceText)
+			textBlock("hist-source", i18n.T("Selected text"), i18n.T("Copy selected text"), e.SourceText)
 		}
-		textBlock("hist-raw", i18n.T("Recognised text"), i18n.T("Copy the recognised text"), e.RawText)
+		textBlock("hist-raw", i18n.T("Recognised text"), i18n.T("Copy recognised text"), e.RawText)
 
 		// The facts: labels as wide as the longest, values in the rest.
 		app := e.AppName
@@ -148,7 +148,7 @@ func (a *app) historyDeleteDialog(c *ui.Context) {
 		return
 	}
 	dialogFrame(c, "hist-del", &h.delAsk, i18n.T("Delete this entry?"), "", 420, func() {
-		ui.Text(c, i18n.T("Its texts and its recording are deleted. This cannot be undone."))
+		ui.Text(c, i18n.T("Its text and recording will be deleted. This cannot be undone."))
 	}, func() {
 		ui.Spacer(c)
 		if ui.Button(c.Key("hist-del-cancel"), i18n.T("Cancel")).AutoFocus().Clicked() {

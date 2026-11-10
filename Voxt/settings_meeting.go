@@ -69,7 +69,7 @@ func (a *app) meetingSettings(c *ui.Context) {
 	})
 	settingRow(c, "mt-hide-share", i18n.T("Hide from screen sharing"),
 		i18n.T("When on, the meeting overlay is hidden from screenshots and screen sharing."), func() {
-			if ui.Switch(c.Key("mt-hide-sw"), &u.hide).Label(i18n.T("Hide the meeting overlay")).Changed() {
+			if ui.Switch(c.Key("mt-hide-sw"), &u.hide).Label(i18n.T("Hide meeting overlay")).Changed() {
 				on := u.hide
 				a.updateSettings(func(s *settings.Settings) { s.Features.Meeting.HideFromSharing = on })
 				a.applyMeetingOverlayProtection()
@@ -89,7 +89,7 @@ func (a *app) meetingLLMSettings(c *ui.Context) {
 		label = m.Name
 	}
 	settingRow(c, "mt-llm", i18n.T("Language model for meetings"),
-		i18n.T("Summaries, live translation, and follow-up questions send the full meeting text to this model."), func() {
+		i18n.T("Summaries, live translation and follow-up questions send the full meeting text to this model."), func() {
 			opts := []string{i18n.T("Automatic")}
 			for _, m := range ready {
 				opts = append(opts, m.Name)
@@ -108,7 +108,7 @@ func (a *app) meetingLLMSettings(c *ui.Context) {
 				a.updateSettings(func(s *settings.Settings) { s.Features.Meeting.LLM = id })
 			}
 			if len(ready) == 0 {
-				ui.Text(c, i18n.T("No language model is set up: summaries and translation stay off.")).
+				ui.Text(c, i18n.T("No language model is set up, so summaries and translation are off.")).
 					FontSize(px(t, fsCaption)).TextColor(t.TextMuted)
 			}
 		})

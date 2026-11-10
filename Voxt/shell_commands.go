@@ -49,12 +49,12 @@ func (a *app) commands() []command {
 	add("palette", view, i18n.T("Command palette"), "Command palette", "⌘K", true, a.openPalette)
 	add("logs-panel", view, i18n.T("Show or hide the logs panel"), "Show or hide the logs panel", "⇧⌘L", true, func() { a.logsPanel = !a.logsPanel })
 	add("shortcuts", view, i18n.T("Keyboard shortcuts"), "Keyboard shortcuts", "?", true, func() { a.sheetOpen = true })
-	add("helper-restart", view, i18n.T("Restart the helper"), "Restart the helper", "", true, a.restartHelper)
+	add("helper-restart", view, i18n.T("Restart helper"), "Restart helper", "", true, a.restartHelper)
 	if a.upd != nil {
 		add("check-updates", view, i18n.T("Check for Updates…"), "Check for Updates", "", true, a.checkForUpdates)
 	}
 	add("llm-debug", view, i18n.T("Language model debug"), "Language model debug prompts", "", true, func() { a.navigate(llmDebugPath) })
-	add("setup-guide", view, i18n.T("Open the setup guide"), "Open the setup guide onboarding", "", true, a.openOnboarding)
+	add("setup-guide", view, i18n.T("Open setup guide"), "Open setup guide onboarding", "", true, a.openOnboarding)
 
 	look := i18n.T("Appearance")
 	for _, th := range []struct{ id, title, en string }{

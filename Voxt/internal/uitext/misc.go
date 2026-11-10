@@ -22,11 +22,11 @@ func PatternErrorText(err error) string {
 	case appctx.ErrPatternEmpty:
 		return i18n.T("Type a website, as in github.com.")
 	case appctx.ErrPatternSpace:
-		return i18n.T("A website rule has no spaces.")
+		return i18n.T("A website rule cannot contain spaces.")
 	case appctx.ErrPatternScheme:
 		return i18n.T("Only web addresses (http and https).")
 	}
-	return i18n.T("Start with a site, as in github.com or *.notion.so; * stands for anything.")
+	return i18n.T("Start with a site, as in github.com or *.notion.so. * matches anything.")
 }
 
 // AutoKeyLabel is the select's label of keys.
@@ -45,9 +45,9 @@ func AutoKeyLabel(keys string) string {
 func TermErrorText(err error) string {
 	switch {
 	case errors.Is(err, dict.ErrEmpty):
-		return i18n.T("Type the term as it must be written.")
+		return i18n.T("Type the term as it should be written.")
 	case errors.Is(err, dict.ErrLong):
-		return i18n.T("A term has at most %d characters.", dict.MaxTermChars)
+		return i18n.T("A term can have at most %d characters.", dict.MaxTermChars)
 	case errors.Is(err, core.ErrExists):
 		return i18n.T("This term is in the dictionary already.")
 	}
@@ -76,7 +76,7 @@ func HelperFailText(st helper.Status) string {
 	case helper.FailProtocol:
 		return i18n.T("Helper out of date")
 	case helper.FailUpdated:
-		return i18n.T("Voxt was updated: restart it to finish.")
+		return i18n.T("Voxt was updated. Restart it to finish.")
 	}
 	if st.State == helper.Stopped {
 		return i18n.T("Helper stopped")

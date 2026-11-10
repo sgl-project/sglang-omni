@@ -27,8 +27,8 @@ func pageTester(t *testing.T, path string) (*app, *ui.Tester) {
 func TestTranslatePage(t *testing.T) {
 	a, tt := pageTester(t, "/translate")
 	for _, s := range []string{
-		"Translate", "Shortcuts", "Right ⌥ ⇧", "Models", "No speech model is installed: only selected text can be translated.",
-		"No language model is set up: set one up to translate.", "Translation", "Translate into", "Automatic (now: Simplified Chinese)",
+		"Translate", "Shortcuts", "Right ⌥ ⇧", "Models", "No speech model is installed, so only selected text can be translated.",
+		"No language model is set up. Set one up to translate.", "Translation", "Translate into", "Automatic (now: Simplified Chinese)",
 		"Basic clean-up", "Show the result in a card", "Your rules", "Try it",
 	} {
 		if !has(tt, s) {
@@ -70,13 +70,13 @@ func TestTranslatePage(t *testing.T) {
 	if p := a.lib.settings.Get().Features.Translate.Prompt; p != "Use British spelling." || a.lib.settings.Get().Features.Transcribe.Prompt != "" {
 		t.Errorf("rules %q", p)
 	}
-	if !has(tt, "Spoken text, as below; selected text is translated without the clean-up and keeps its form.") {
+	if !has(tt, "Below is the prompt for spoken text. Selected text is translated without the clean-up and keeps its form.") {
 		t.Errorf("preview %q", firstTexts(tt))
 	}
 	// Ready services: no notices.
 	readyModels(a)
 	frames(tt)
-	if has(tt, "No language model is set up: set one up to translate.") {
+	if has(tt, "No language model is set up. Set one up to translate.") {
 		t.Error("notice with a ready model")
 	}
 }
@@ -84,7 +84,7 @@ func TestTranslatePage(t *testing.T) {
 func TestRewritePage(t *testing.T) {
 	a, tt := pageTester(t, "/rewrite")
 	for _, s := range []string{
-		"Rewrite", "⌃ Right ⌥", "No speech model is installed: install one to rewrite.", "No language model is set up: set one up to rewrite.",
+		"Rewrite", "⌃ Right ⌥", "No speech model is installed. Install one to rewrite.", "No language model is set up. Set one up to rewrite.",
 		"Rewriting", "Clean up the instruction",
 		"While the answer card shows an answer, the shortcut records a follow-up that changes it (\"shorter\", \"in English\").",
 	} {
@@ -101,7 +101,7 @@ func TestRewritePage(t *testing.T) {
 	}
 	click(t, tt, "Your rules")
 	click(t, tt, "Example user message")
-	if !has(tt, "With a selection, as below; with nothing selected the model writes from the instruction and answers with a title and the text.") {
+	if !has(tt, "Below is the prompt with a selection. With nothing selected, the model writes from your instruction and answers with a title and the text.") {
 		t.Errorf("preview %q", firstTexts(tt))
 	}
 	// A try that is blocked says why, here.
@@ -152,7 +152,7 @@ func TestOverlayWriting(t *testing.T) {
 	}
 	tt := cardTester(t, a)
 	frames(tt)
-	for _, s := range []string{"AI Answer", "Try again", "shorter", "a long text"} {
+	for _, s := range []string{"AI answer", "Try again", "shorter", "a long text"} {
 		if !has(tt, s) {
 			t.Errorf("failure card: no %q in %q", s, firstTexts(tt))
 		}

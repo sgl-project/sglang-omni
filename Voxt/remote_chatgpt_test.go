@@ -312,7 +312,7 @@ func TestChatGPTRevokedSignIn(t *testing.T) {
 func TestChatGPTUsageNotice(t *testing.T) {
 	spent := &llm.Error{Code: llm.CodeUsageLimit}
 	msg, _, action := sessionProblemText(&session.Problem{Code: session.ProblemLLM, Err: spent, Degraded: true})
-	if !strings.Contains(msg, "Inserted as recognised") || !strings.Contains(msg, "used up") || action != actionUsage || noticeActionLabel(action) != "Manage usage" {
+	if !strings.Contains(msg, "the recognised text was inserted") || !strings.Contains(msg, "no usage left") || action != actionUsage || noticeActionLabel(action) != "Manage usage" {
 		t.Errorf("degraded %q %q", msg, action)
 	}
 	if txt := degradedLLMText(&session.Problem{Err: spent}, true); !strings.Contains(txt, "Notes") {

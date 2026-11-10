@@ -78,7 +78,7 @@ func (a *app) meetingDetailBody(c *ui.Context, d *meetingDetail, close func()) {
 	t := c.Theme()
 	k := tok(t)
 	if d.loading || d.err != "" {
-		panelHeader(c, i18n.T("Meeting detail"), close)
+		panelHeader(c, i18n.T("Meeting details"), close)
 		if d.loading {
 			caption(c, i18n.T("Loading…"))
 		} else {

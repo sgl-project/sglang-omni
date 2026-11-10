@@ -172,16 +172,16 @@ func (a *app) audioSettings(c *ui.Context) {
 
 	ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Margin(px(t, sp2), 0, 0, 0).Children(func() {
 		sectionTitleText(c, i18n.T("Microphones"))
-		infoTip(c.Key("audio-mics-info"), i18n.T("Voxt records from the first microphone of the list that is connected. When none of them is, or the list is empty, it records from the system's default input."))
+		infoTip(c.Key("audio-mics-info"), i18n.T("Voxt records from the first connected microphone in the list. If none is connected, or the list is empty, it uses the system's default input."))
 		ui.Spacer(c)
-		if iconButton(c.Key("audio-refresh"), icons.Refresh, i18n.T("Refresh the microphones")).Disabled(!a.helperReady() || a.audio.loading).Clicked() {
+		if iconButton(c.Key("audio-refresh"), icons.Refresh, i18n.T("Refresh microphones")).Disabled(!a.helperReady() || a.audio.loading).Clicked() {
 			a.loadDevices()
 		}
 	})
 	switch {
 	case !a.helperReady():
-		notice(c, "audio-no-helper", noticeWarn, i18n.T("The helper is not running: the microphones cannot be listed."), "", func() {
-			if ui.Button(c.Key("audio-restart"), i18n.T("Restart the helper")).Clicked() {
+		notice(c, "audio-no-helper", noticeWarn, i18n.T("The helper is not running, so microphones cannot be listed."), "", func() {
+			if ui.Button(c.Key("audio-restart"), i18n.T("Restart helper")).Clicked() {
 				a.restartHelper()
 			}
 		}, nil)
@@ -193,7 +193,7 @@ func (a *app) audioSettings(c *ui.Context) {
 	card(c.Key("audio-list")).Gap(px(t, sp1)).Padding(px(t, sp2)).Children(func() {
 		if len(list) == 0 {
 			ui.Row(c).Padding(px(t, sp1), px(t, sp2)).Children(func() {
-				caption(c, i18n.T("No microphone chosen: Voxt records from the system's default input."))
+				caption(c, i18n.T("No microphone chosen, so Voxt records from the system's default input."))
 			})
 		}
 		for i, id := range list {
@@ -210,7 +210,7 @@ func (a *app) audioSettings(c *ui.Context) {
 			case !present && a.audio.read:
 				notes = append(notes, i18n.T("Not connected"))
 			case id == inUse:
-				notes = append(notes, i18n.T("Records now"))
+				notes = append(notes, i18n.T("In use"))
 			}
 			if d.Default {
 				notes = append(notes, i18n.T("System default"))
@@ -249,7 +249,7 @@ func (a *app) audioSettings(c *ui.Context) {
 			for _, d := range others {
 				var notes []string
 				if d.ID == inUse {
-					notes = append(notes, i18n.T("Records now"))
+					notes = append(notes, i18n.T("In use"))
 				}
 				if d.Default {
 					notes = append(notes, i18n.T("System default"))
@@ -265,19 +265,19 @@ func (a *app) audioSettings(c *ui.Context) {
 	}
 
 	sectionTitle(c, i18n.T("Recognition"))
-	settingRow(c, "audio-silence", i18n.T("Skip silence"), i18n.T("Leaves out the silence before and after you speak and shortens long pauses before the speech model gets the recording, and sends nothing when no one spoke. The history keeps the whole recording."), func() {
+	settingRow(c, "audio-silence", i18n.T("Skip silence"), i18n.T("Trims the silence before and after you speak and shortens long pauses before recognition, and skips recognition when no one spoke. The history keeps the whole recording."), func() {
 		if ui.Switch(c.Key("audio-silence-switch"), &a.settingsForm.skipSilence).Label(i18n.T("Skip silence")).Changed() {
 			off := !a.settingsForm.skipSilence
 			a.updateSettings(func(s *settings.Settings) { s.Audio.VAD.Off = off })
 		}
 	})
-	settingRow(c, "audio-clean", i18n.T("Optimise sound"), i18n.T("Filters out low hum (air conditioning, fans, mains) and evens out the volume before the speech model gets the recording: a quiet voice is raised, a very loud one lowered a little, and nothing clips. The history keeps the original recording."), func() {
+	settingRow(c, "audio-clean", i18n.T("Optimise sound"), i18n.T("Filters out low hum (air conditioning, fans, mains) and evens out the volume before recognition. The history keeps the original recording."), func() {
 		if ui.Switch(c.Key("audio-clean-switch"), &a.settingsForm.cleanSound).Label(i18n.T("Optimise sound")).Changed() {
 			off := !a.settingsForm.cleanSound
 			a.updateSettings(func(s *settings.Settings) { s.Audio.Clean.Off = off })
 		}
 	})
-	settingRow(c, "audio-final", i18n.T("Recognise the whole recording again"), i18n.T("On: after you stop, a local speech model that shows the text as you speak recognises the whole recording once more, which is more accurate than the live text and takes a moment. Off: the live text is the result as soon as its last words are done."), func() {
+	settingRow(c, "audio-final", i18n.T("Recognise the whole recording again"), i18n.T("With a local speech model that shows text as you speak, the whole recording is recognised again after you stop. This is more accurate than the live text but takes a moment. When off, the live text is the result."), func() {
 		again := !a.settingsForm.liveResult
 		if ui.Switch(c.Key("audio-final-switch"), &again).Label(i18n.T("Recognise the whole recording again")).Changed() {
 			live := !again
@@ -288,7 +288,7 @@ func (a *app) audioSettings(c *ui.Context) {
 
 	sectionTitle(c, i18n.T("Sounds"))
 	a.soundsRow(c) // settings_sounds.go
-	settingRow(c, "audio-mute", i18n.T("Mute system audio while recording"), i18n.T("Mutes every sound of the current output device while you speak, so that videos, music or calls are not recorded: from just after the start sound until the recording stops, then they come back. A device you muted yourself stays muted. Some devices cannot be muted by software. No permission is needed: nothing of the system's sound is recorded."), func() {
+	settingRow(c, "audio-mute", i18n.T("Mute system audio while recording"), i18n.T("Mutes the current output device while you record, so videos, music or calls are not picked up. Sound comes back when the recording stops. A device you muted yourself stays muted, and some devices cannot be muted by software. No permission is needed, since Voxt records no system audio."), func() {
 		if ui.Switch(c.Key("audio-mute-switch"), &a.settingsForm.muteOutput).Label(i18n.T("Mute system audio while recording")).Changed() {
 			on := a.settingsForm.muteOutput
 			a.updateSettings(func(s *settings.Settings) { s.Audio.MuteOutput = &on })

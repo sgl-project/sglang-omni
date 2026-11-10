@@ -169,7 +169,7 @@ func (a *app) llmDebugPage(c *ui.Context) {
 	columnPageHeader(c, i18n.T("Language model debug"), nil)
 	ui.Scroll(c.Key("llmdbg-scroll")).Grow(1).MinHeight(0).Children(func() {
 		pageColumn(c).Gap(px(t, sp4)).Children(func() {
-			caption(c, i18n.T("Send a feature's request for your own text to a language model, with its prompt edited here. Nothing is saved until you use the prompt."))
+			caption(c, i18n.T("Send your own text to a language model as a feature would, and try edits to its prompt here. Nothing is saved until you click Use this prompt."))
 			setups := providers.Ready(a.prefs, func(id string) bool { return a.hasKey(local.LLM, id) })
 			if len(setups) == 0 {
 				caption(c, i18n.T("Set up a language model first."))
@@ -205,9 +205,9 @@ func (a *app) llmDebugPage(c *ui.Context) {
 			label := i18n.T("System prompt")
 			if p.group != "" {
 				label = i18n.T("Group prompt")
-				caption(c, i18n.T("This is the group's prompt from App enhancement. Edits are only tried here until you use the prompt, which saves it to the group."))
+				caption(c, i18n.T("This is the group's prompt from App enhancement. Edits apply only here until you click Use this prompt, which saves them to the group."))
 			} else {
-				caption(c, i18n.T("This is the feature's Your rules, the same prompt as on its page. Edits are only tried here until you use the prompt, which saves it there."))
+				caption(c, i18n.T("This is the feature's Your rules, the same prompt as on its page. Edits apply only here until you click Use this prompt, which saves them there."))
 			}
 			// As high as its text, however long, as Your rules on a
 			// feature's page: a long prompt (tens of thousands of

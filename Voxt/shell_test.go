@@ -73,7 +73,7 @@ func TestSidebarAndShortcuts(t *testing.T) {
 	if a.router.Path() != "/history" {
 		t.Errorf("rail: %s", a.router.Path())
 	}
-	click(t, tt, "Show the sidebar")
+	click(t, tt, "Show sidebar")
 	if a.prefs.Appearance.Rail {
 		t.Error("rail still on")
 	}
@@ -232,7 +232,7 @@ func TestProblemCards(t *testing.T) {
 	if !has(tt, "Helper missing") {
 		t.Fatalf("missing helper again: %q", firstTexts(tt))
 	}
-	click(t, tt, "Restart the helper")
+	click(t, tt, "Restart helper")
 	if a.helperStatus().State != helper.Ready || has(tt, "Helper missing") {
 		t.Errorf("after restart: %+v %q", a.helperStatus(), firstTexts(tt))
 	}
@@ -370,14 +370,14 @@ func TestPrivacyGoesOnline(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate("/settings/privacy")
 	frames(tt)
-	if !has(tt, "Otherwise Voxt goes online only to check for updates, to download models and to read Voxt's announcements, which sends nothing about you.") {
+	if !has(tt, "Otherwise, Voxt goes online only to check for updates, download models and read its announcements. Reading them sends nothing about you.") {
 		t.Errorf("with an update feed: %q", firstTexts(tt))
 	}
 	a.upd = nil
 	a.navigate("/home")
 	a.navigate("/settings/privacy")
 	frames(tt)
-	if !has(tt, "Otherwise Voxt goes online only to download models and to read Voxt's announcements, which sends nothing about you.") || has(tt, "check for updates") {
+	if !has(tt, "Otherwise, Voxt goes online only to download models and read its announcements. Reading them sends nothing about you.") || has(tt, "check for updates") {
 		t.Errorf("without an update feed: %q", firstTexts(tt))
 	}
 }
@@ -431,7 +431,7 @@ func TestPrivacyClearsHistory(t *testing.T) {
 	if !a.clearHistoryAsk {
 		t.Fatal("no confirmation")
 	}
-	click(t, tt, "Delete the history")
+	click(t, tt, "Delete history")
 	if list, _ := h.List(context.Background(), store.HistoryQuery{}); len(list) != 0 {
 		t.Errorf("%d entries left", len(list))
 	}

@@ -118,7 +118,7 @@ func TestUpdatesSettings(t *testing.T) {
 	}
 	// A change from the update window (its checkbox) shows.
 	f.change(func(p *updatePrefs) { p.AutoCheck = true; p.LastCheck = time.Time{} })
-	if !has(tt, "New versions come with their notes. Not checked yet.") || !a.updPrefs.AutoCheck {
+	if !has(tt, "Not checked yet.") || !a.updPrefs.AutoCheck {
 		t.Errorf("after a change: %+v %q", a.updPrefs, firstTexts(tt))
 	}
 	// A development build, or one in a folder it cannot write to.
@@ -152,7 +152,7 @@ func TestBetaUpdates(t *testing.T) {
 	}
 	click(t, tt, "Get beta versions")
 	frames(tt)
-	if !hasPrefix(tt, "Releases only. This beta stays until a release newer than it comes out") {
+	if !hasPrefix(tt, "Releases only. Voxt keeps this beta until a newer release comes out") {
 		t.Errorf("off in a beta: %q", firstTexts(tt))
 	}
 	if f.prereleases() || a.prefs.Updates.Beta == nil || *a.prefs.Updates.Beta {
@@ -178,7 +178,7 @@ func TestBetaUpdates(t *testing.T) {
 	}
 	c.navigate("/settings/about")
 	see(t, tt3, "Get beta versions")
-	if !hasPrefix(tt3, "Releases only. Turning it on offers betas too") {
+	if !hasPrefix(tt3, "Releases only. Turn it on to get betas too") {
 		t.Errorf("off in a release: %q", firstTexts(tt3))
 	}
 	click(t, tt3, "Get beta versions")
@@ -272,7 +272,7 @@ func TestAppUpdated(t *testing.T) {
 	if !has(tt, "Update installed") || !has(tt, "Restart Voxt to finish updating.") || has(tt, "Helper stopped unexpectedly") {
 		t.Fatalf("card: %q", firstTexts(tt))
 	}
-	if !has(tt, "Voxt was updated: restart it to finish.") {
+	if !has(tt, "Voxt was updated. Restart it to finish.") {
 		t.Errorf("home: %q", firstTexts(tt))
 	}
 	n := slices.IndexFunc(a.notices, func(n core.Notification) bool { return n.ID == problemUpdate })
