@@ -41,7 +41,7 @@
   - 发布式构建（ad hoc 签名，没有更新源，结束时检查签名、运行时能从 app 里启动）：`MAC_DIR=code/VoxtNew scripts/mac.sh 'export PATH=/opt/homebrew/bin:$PATH; scripts/release.sh --runtimes $HOME/voxtnew-runtime'`（见 [release.md](release.md) §2.2，约 3 分钟）。
   - 开发构建：`MAC_DIR=code/VoxtNew scripts/mac.sh 'scripts/build-helper.sh && scripts/build-omni.sh && go tool mygo build'`。mac-air 上不用重编运行时：`cp -Rc ~/voxtnew-runtime/omni resources/darwin-arm64/omni`，再 `scripts/build-helper.sh && go tool mygo build`。
 - 结果在 `~/code/VoxtNew/build/darwin-arm64/Voxt.app`（约 280 MB）。
-- 包是 ad hoc 签名：每次重打以后，macOS 都会忘掉授权（README 的“Signing during development”）。
+- 包是 ad hoc 签名：每次重打以后，macOS 都会忘掉授权（[development.zh-CN.md](development.zh-CN.md) 的“开发时的签名”）。
 
 **0.2 数据和模型**
 - 第 1 节要从“第一次打开”开始：先退出 Voxt，把旧数据挪开（`mv ~/Library/Application\ Support/VoxtNew ~/voxtnew-data-old`），测完可以挪回来。

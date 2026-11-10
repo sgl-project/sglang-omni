@@ -2,7 +2,7 @@ package sqlitestore
 
 // These tests need the plugin's native SQLite library. Outside a packaged
 // app it is found through MYGO_SQLITE_LIBRARY or downloaded once (SHA-256
-// checked) into os.UserCacheDir()/mygo/natives; see the README's Tests.
+// checked) into os.UserCacheDir()/mygo/natives; see docs/development.md.
 
 import (
 	"bytes"
