@@ -7,6 +7,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Fixed
 
 - **Meetings use your main language**: the live transcript and the transcript made after a meeting now give the speech model the same language hint as dictation (your main language in Settings → General, such as Simplified or Traditional Chinese). Before, meetings gave no hint and the model guessed the language. The speech model still picks the Chinese script itself: Voxt does not convert between Simplified and Traditional.
+- **Dictation goes into Raycast and other launcher panels**: a panel that takes the keyboard without bringing its app to the front (Raycast, Tinycast) got nothing and Voxt showed the answer card instead. The text is now pasted into the panel's field.
 
 ### Added
 
@@ -21,6 +22,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 
 - **会议也按主语言识别**：会议的实时字幕和会后整理的转录稿，现在和听写一样把主语言（设置 → 通用 → 主语言，比如简体中文或繁体中文）告诉语音识别模型。以前会议不告诉模型，由模型自己猜语言。简体还是繁体仍由模型决定，Voxt 不做简繁转换。
+- **听写的文字能输入到 Raycast 等启动器的面板里**：Raycast、Tinycast 这类面板接管键盘，但它们的 App 不到前台，以前文字进不去，Voxt 改为弹出结果卡片。现在文字会粘贴到面板的输入框里。
 
 #### 新增
 
