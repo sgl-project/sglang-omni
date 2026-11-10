@@ -9,6 +9,7 @@ import tiktoken
 import torch
 from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
 
+from sglang_omni.models.yue2.engine_builder import Yue2EngineBuilder
 from sglang_omni.models.yue2.model_runner import Yue2ModelRunner, sampling_rows
 from sglang_omni.models.yue2.payload_types import Yue2State
 from sglang_omni.models.yue2.request import (
@@ -380,3 +381,18 @@ def test_runner_rejects_a_twin_without_its_request() -> None:
         sampling_rows([runner_request("a-cfg", twin)])
     with pytest.raises(RuntimeError, match="CFG"):
         sampling_rows([runner_request("a", guided)])
+
+
+def test_kv_cache_is_sized_in_tokens_unless_overridden() -> None:
+    engine_builder = Yue2EngineBuilder(max_running_requests=16)
+    engine_builder.context_length = 24576
+    defaults: dict[str, object] = {}
+    engine_builder.adjust_overrides(defaults)
+    assert defaults["max_total_tokens"] == 65536
+    engine_builder.context_length = 40000
+    longer_context: dict[str, object] = {}
+    engine_builder.adjust_overrides(longer_context)
+    assert longer_context["max_total_tokens"] == 80000
+    user_choice: dict[str, object] = {"max_total_tokens": 200000}
+    engine_builder.adjust_overrides(user_choice)
+    assert user_choice["max_total_tokens"] == 200000

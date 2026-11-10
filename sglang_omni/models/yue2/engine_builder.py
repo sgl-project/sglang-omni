@@ -30,6 +30,8 @@ from .scheduler import Yue2Scheduler
 from .sglang_model import register_yue2_config
 from .sglang_request_builder import Yue2ARRequestData, Yue2RequestBuilder
 
+DEFAULT_KV_CACHE_TOKENS = 65536
+
 
 class Yue2EngineBuilder(TtsEngineBuilder[Yue2ARRequestData]):
     model_name = "yue2"
@@ -84,6 +86,13 @@ class Yue2EngineBuilder(TtsEngineBuilder[Yue2ARRequestData]):
         overrides["cuda_graph_bs"] = build_default_cuda_graph_bs(requested)
         overrides["disable_radix_cache"] = True
         overrides["chunked_prefill_size"] = 0
+        # note (ruiling): the memory fraction alone reserved about 33 GB of KV on an H100 that 4 concurrent songs fill to about 5 GB; a full-context CFG pair still fits.
+        if overrides.get("max_total_tokens") is None:
+            overrides["max_total_tokens"] = max(
+                DEFAULT_KV_CACHE_TOKENS, 2 * self.context_length
+            )
+        else:
+            pass
 
     def setup_model(
         self,
