@@ -11,7 +11,6 @@ from sglang.srt.managers.schedule_batch import (
     ScheduleBatch,
 )
 from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
-from sglang.srt.managers.scheduler import Scheduler as UpstreamScheduler
 
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
@@ -227,7 +226,7 @@ class Yue2Scheduler(OmniScheduler[Yue2ARRequestData]):
     def update_running_batch(self, batch: ScheduleBatch) -> ScheduleBatch | None:
         self.decoding_batch = batch
         try:
-            return UpstreamScheduler.update_running_batch(self, batch)
+            return super().update_running_batch(batch)
         finally:
             self.decoding_batch = None
 
