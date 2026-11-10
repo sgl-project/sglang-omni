@@ -53,6 +53,17 @@ class TextTokenizer:
         return bytes(token for token in tokens if token < 256).decode()
 
 
+def test_prefill_is_single_request_without_limiting_native_decode_batches() -> None:
+    """Large ragged prefill batches changed HF logits despite identical Q/K/V."""
+    builder = MossSpeechEngineBuilder()
+    builder.server_args_overrides = {"max_running_requests": 16}
+    defaults = builder.generation_defaults(dtype="bfloat16")
+    assert defaults["prefill_max_requests"] == 1
+    assert defaults["max_running_requests"] == defaults["cuda_graph_max_bs"] == 16
+    with pytest.raises(ValueError, match="prefill_max_requests"):
+        builder.adjust_overrides({"prefill_max_requests": 8})
+
+
 class ReferenceEncoder(torch.nn.Module):
     def forward(
         self,
