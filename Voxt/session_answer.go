@@ -77,7 +77,7 @@ func (a *app) endRedo(s session.Snapshot) {
 		a.answer.msg, a.answer.copied = "", false
 	case s.State == session.Cancelled:
 	default:
-		why := i18n.T("the language model answered nothing")
+		why := i18n.T("the language model returned an empty answer")
 		if s.Problem != nil && s.Problem.Code != session.ProblemEmpty && s.Problem.Code != session.ProblemNoSpeech {
 			why, _, _ = sessionProblemText(s.Problem)
 		}
@@ -164,7 +164,7 @@ func (a *app) canFollowUp() bool {
 // closeAnswer closes the answer card (and cancels a follow-up, or another
 // language, on its way).
 func (a *app) closeAnswer() {
-	if a.cardSessionLive() {
+	if a.cardSessionLive() || a.writingAnswer() {
 		a.cancelSession()
 	}
 	a.answer, a.followUp = answerCard{}, ""

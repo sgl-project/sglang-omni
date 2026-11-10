@@ -69,10 +69,15 @@ public:
       throw std::invalid_argument(
           "audio_layout must be reference or voxt_swift");
     }
-    return [this, samples = std::move(samples),
-            options = std::move(options)](const std::atomic<bool> &cancel) {
-      return transcriber_.Transcribe(samples, options, cancel);
-    };
+    if (transcriber_.CanBatch(options)) {
+      return qwen3_asr::BatchableTranscription{
+          &transcriber_, std::move(samples), std::move(options)};
+    } else {
+      return [this, samples = std::move(samples),
+              options = std::move(options)](const std::atomic<bool> &cancel) {
+        return transcriber_.Transcribe(samples, options, cancel);
+      };
+    }
   }
 
   void AddHandlers(mg_context *context,
@@ -150,6 +155,7 @@ int main(int argc, char **argv) {
   int first_decode_ms = 100;
   double max_segment_seconds = 30.0;
   long long cache_limit_mb = -1;
+  int max_batch = 1;
   std::filesystem::path draft_directory;
   int draft_quantization_bits = 0;
   asr_service::ServedKind qwen3_asr;
@@ -167,6 +173,8 @@ int main(int argc, char **argv) {
        }},
       {"--cache-limit-mb",
        [&](const std::string &value) { cache_limit_mb = std::stoll(value); }},
+      {"--max-batch",
+       [&](const std::string &value) { max_batch = std::stoi(value); }},
       {"--draft-model-path",
        [&](const std::string &value) { draft_directory = value; }},
       {"--draft-bits",
@@ -188,6 +196,8 @@ int main(int argc, char **argv) {
     } else if (cache_limit_mb < -1 || cache_limit_mb > (1LL << 30)) {
       throw std::invalid_argument(
           "--cache-limit-mb must be 0 to 1073741824, or -1 for MLX's limit");
+    } else if (max_batch < 1) {
+      throw std::invalid_argument("--max-batch must be at least 1");
     } else if (draft_quantization_bits != 0 && draft_quantization_bits != 4 &&
                draft_quantization_bits != 6 && draft_quantization_bits != 8) {
       throw std::invalid_argument("--draft-bits must be 4, 6 or 8");
@@ -196,6 +206,7 @@ int main(int argc, char **argv) {
     } else {
     }
   };
+  qwen3_asr.max_batch = [&]() { return max_batch; };
   qwen3_asr.load = [&](const std::filesystem::path &model_directory) {
     auto model = std::make_unique<Qwen3ASRModel>(
         model_directory,

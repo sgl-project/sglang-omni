@@ -449,7 +449,7 @@ async def test_scoring_skips_do_not_fail_a_successful_http_sweep(
 
     monkeypatch.setattr(speculative_workloads, "run_client", write_client_payload)
     [measurement] = measure_asr(
-        WORKLOADS["seedtts-en"],
+        WORKLOADS["seedtts-en-unique-clips"],
         LoadSettings(
             concurrencies=[1],
             repeats=3,
@@ -552,7 +552,7 @@ REQUIRED = [
     "--draft-config",
     "d.yaml",
     "--workload",
-    "seedtts-en",
+    "seedtts-en-unique-clips",
     "--output-dir",
     "out",
 ]
@@ -568,7 +568,7 @@ def test_arguments_after_the_separator_go_to_the_client(monkeypatch) -> None:
     assert args.asr_model_path is None and args.asr_concurrency is None
 
 
-@pytest.mark.parametrize("workload", ["seedtts-en", "movies800times"])
+@pytest.mark.parametrize("workload", ["seedtts-en-unique-clips", "movies800times"])
 @pytest.mark.parametrize(
     "option", [["--asr-model-path", "Qwen/Qwen3-ASR-1.7B"], ["--asr-concurrency=32"]]
 )

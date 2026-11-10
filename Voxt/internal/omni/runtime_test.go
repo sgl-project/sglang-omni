@@ -537,7 +537,7 @@ func TestSetIdleTimeoutInUse(t *testing.T) {
 	f := newFake(t, omnitest.Opts{}, func(c *Config) { c.IdleTimeout = -1 })
 	clock := new(fakeClock).install(f.rt)
 	a := f.asr(t, ASRFast)
-	l, err := f.rt.acquire(context.Background(), a.spec, a.dir) // a use in progress, as a Final holds it
+	l, err := f.rt.acquire(context.Background(), a.spec, a.dir, "") // a use in progress, as a Final holds it
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -629,7 +629,7 @@ func TestUnload(t *testing.T) {
 	f := newFake(t, omnitest.Opts{}, func(c *Config) { unloaded = unloads(c) })
 	ctx := context.Background()
 	a := f.asr(t, ASRFast)
-	l, err := f.rt.acquire(ctx, a.spec, a.dir) // the use in progress, as Transcribe holds it
+	l, err := f.rt.acquire(ctx, a.spec, a.dir, "") // the use in progress, as Transcribe holds it
 	if err != nil {
 		t.Fatal(err)
 	}
