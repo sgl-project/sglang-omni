@@ -91,7 +91,8 @@ def reject_thinker_talker_collision(
         f"Ming-Omni speech talker {talker_stage_name!r} GPU collides with "
         f"thinker TP range: talker gpus={sorted(talker_gpus)}, "
         f"thinker gpus={sorted(thinker_gpus)}, "
-        f"collisions={sorted(collisions)}"
+        f"collisions={sorted(collisions)}. Move the talker to another GPU, "
+        "or pass --allow_talker_on_thinker_gpus true to share them"
     )
 
 
@@ -346,6 +347,7 @@ class MingOmniSpeechPipelineConfig(MingOmniBasePipelineConfig):
         )
     )
     stages: list[StageConfig] = Field(default_factory=ming_speech_stages)
+    allow_talker_on_thinker_gpus: bool = False
 
     def model_post_init(self, __context: object = None) -> None:
         super().model_post_init(__context)
@@ -353,7 +355,10 @@ class MingOmniSpeechPipelineConfig(MingOmniBasePipelineConfig):
         self.validate_talker_gpu_not_in_thinker_tp_range()
 
     def validate_talker_gpu_not_in_thinker_tp_range(self) -> None:
-        reject_thinker_talker_collision(self.stages, TALKER_STAGE, self.processes)
+        if self.allow_talker_on_thinker_gpus:
+            pass
+        else:
+            reject_thinker_talker_collision(self.stages, TALKER_STAGE, self.processes)
 
 
 class MingOmniStreamingSpeechPipelineConfig(MingOmniBasePipelineConfig):
@@ -374,6 +379,7 @@ class MingOmniStreamingSpeechPipelineConfig(MingOmniBasePipelineConfig):
         )
     )
     stages: list[StageConfig] = Field(default_factory=ming_streaming_speech_stages)
+    allow_talker_on_thinker_gpus: bool = False
 
     def model_post_init(self, __context: object = None) -> None:
         super().model_post_init(__context)
@@ -381,9 +387,12 @@ class MingOmniStreamingSpeechPipelineConfig(MingOmniBasePipelineConfig):
         self.validate_talker_stream_gpu_not_in_thinker_tp_range()
 
     def validate_talker_stream_gpu_not_in_thinker_tp_range(self) -> None:
-        reject_thinker_talker_collision(
-            self.stages, TALKER_STREAM_STAGE, self.processes
-        )
+        if self.allow_talker_on_thinker_gpus:
+            pass
+        else:
+            reject_thinker_talker_collision(
+                self.stages, TALKER_STREAM_STAGE, self.processes
+            )
 
 
 EntryClass = MingOmniSpeechPipelineConfig
