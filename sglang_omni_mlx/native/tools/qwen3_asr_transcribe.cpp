@@ -187,6 +187,13 @@ int main(int argc, char **argv) {
         {"generated_token_count", result.generated_token_count},
         {"finish_reason", qwen3_asr::FinishReasonName(result.finish_reason)},
         {"verify_rounds", result.verify_round_count},
+        // The first token comes from the prompt pass, the rest from rounds.
+        {"tokens_per_round",
+         result.verify_round_count > 0
+             ? nlohmann::json(
+                   static_cast<double>(result.generated_token_count - 1) /
+                   result.verify_round_count)
+             : nlohmann::json()},
         {"seconds", std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - started)
                         .count()},
