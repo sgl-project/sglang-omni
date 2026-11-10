@@ -38,6 +38,7 @@ def create_talker_scheduler(
     tp_rank: int = 0,
     nccl_port: int | None = None,
     total_gpu_memory_fraction: float | None = None,
+    enable_async_decode: bool,
     session_mode: bool = False,
     operator_selected_prefill_backend: bool = False,
 ) -> OmniScheduler[SGLangARRequestData]:
@@ -107,6 +108,7 @@ def create_talker_scheduler(
         enable_prefill_input_embeds=prefill_graph_backend == CudaGraphBackend.BREAKABLE,
         supports_speculative_decoding=speculative,
         speculative_worker_class=speculative_worker_class,
+        enable_async_decode=enable_async_decode and not session_mode,
     )
 
     model = model_worker.model_runner.model
@@ -155,8 +157,7 @@ def create_talker_scheduler(
         result_adapter=result_adapter,
         session_adapter=TalkerAdapter(model) if session_mode else None,
         # note (0xtoward): the penalty and length floor read device state, never an unresolved token, so lookahead starts at one request.
-        # A draft worker verifies whole blocks in the synchronous loop.
-        enable_async_decode=not (session_mode or speculative),
+        enable_async_decode=enable_async_decode and not session_mode,
         async_decode_min_batch_size=1,
     )
 

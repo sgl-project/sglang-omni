@@ -4,9 +4,10 @@
 The talker shapes each step's logits before sampling (TalkerSlotState.apply): codec
 suppress mask, a repetition penalty over the last 16 output tokens applied once per
 occurrence, and the stop id masked until the minimum length; then temperature, top-k
-and top-p. The draft draws each proposal from its own logits shaped the same way, and
-the verify rebuilds the talker's distribution for every row of the block, whose
-history includes the drafts before it, before rejection sampling against the draft.
+and top-p. Draft proposals use the same mask, penalty, length floor and temperature,
+with a relative-probability filter instead of the target's top-k and top-p filters.
+Verification rebuilds the target distribution at each row using the preceding drafts
+as history, then corrects proposals against that distribution by rejection sampling.
 """
 
 from __future__ import annotations
@@ -26,7 +27,9 @@ class TalkerSamplingState:
 
     recent_tokens holds the last REP_PENALTY_WINDOW committed outputs in order, padded
     on the left with the vocabulary size (a bin no token falls in); generated counts
-    every committed output. Greedy rows take the argmax of the shaped logits.
+    every committed output. greedy marks proposal rows; is_all_greedy holds the target
+    sampler's batch-wide argmax flag at a fixed device address. max_top_k and
+    need_top_filtering carry the native sampler's CPU batch metadata.
     """
 
     recent_tokens: torch.Tensor
@@ -38,6 +41,9 @@ class TalkerSamplingState:
     top_ks: torch.Tensor
     top_ps: torch.Tensor
     greedy: torch.Tensor
+    is_all_greedy: torch.Tensor
+    max_top_k: int | None
+    need_top_filtering: bool
     eos_id: int
 
 
@@ -76,23 +82,39 @@ def nucleus(
     top_ks: torch.Tensor,
     top_ps: torch.Tensor,
     greedy: torch.Tensor,
+    max_top_k: int | None = None,
+    need_top_filtering: bool = True,
 ) -> torch.Tensor:
     """The distribution SGLang's sampler draws from: tempered softmax, top-k, top-p."""
-    tempered = torch.softmax(logits / temperatures.unsqueeze(1), dim=-1)
-    sorted_probabilities, sorted_ids = tempered.sort(dim=-1, descending=True)
-    ranks = torch.arange(logits.shape[1], device=logits.device).unsqueeze(0)
-    kept = (ranks < top_ks.unsqueeze(1)) & (
-        (sorted_probabilities.cumsum(dim=-1) - sorted_probabilities)
-        <= top_ps.unsqueeze(1)
+    # note (0xtoward): the plain sampler writes scaled logits and probabilities in the head dtype.
+    tempered = torch.softmax(
+        (logits / temperatures.unsqueeze(1)).to(logits.dtype), dim=-1
     )
-    kept_probabilities = torch.where(kept, sorted_probabilities, 0.0)
-    sampled = torch.zeros_like(tempered).scatter(
-        1, sorted_ids, kept_probabilities / kept_probabilities.sum(-1, keepdim=True)
-    )
-    argmax = torch.zeros_like(tempered).scatter(
+    if need_top_filtering:
+        if max_top_k is None:
+            sorted_probabilities, sorted_ids = tempered.sort(dim=-1, descending=True)
+        else:
+            sorted_probabilities, sorted_ids = torch.topk(
+                tempered, k=max_top_k, dim=-1, sorted=True
+            )
+        ranks = torch.arange(
+            sorted_probabilities.shape[1], device=logits.device
+        ).unsqueeze(0)
+        kept = (ranks < top_ks.unsqueeze(1)) & (
+            (sorted_probabilities.cumsum(dim=-1) - sorted_probabilities)
+            <= top_ps.unsqueeze(1)
+        )
+        kept_probabilities = torch.where(kept, sorted_probabilities, 0.0).float()
+        sampled = torch.zeros_like(logits, dtype=torch.float32).scatter(
+            1, sorted_ids, kept_probabilities / kept_probabilities.sum(-1, keepdim=True)
+        )
+    else:
+        probabilities = tempered.float()
+        sampled = probabilities / probabilities.sum(-1, keepdim=True)
+    argmax = torch.zeros_like(sampled).scatter(
         1, logits.argmax(dim=-1, keepdim=True), 1.0
     )
-    return torch.where(greedy.unsqueeze(1), argmax, sampled)
+    return torch.where(greedy.reshape(-1, 1), argmax, sampled)
 
 
 def sample_draft_block(
@@ -166,14 +188,16 @@ def target_probabilities(
         eos_masked=eos_masked.reshape(-1),
         eos_id=state.eos_id,
     )
-    # note (0xtoward): the plain talker rounds penalized logits back to the head's dtype.
-    shaped = shaped.to(target_logits.dtype).float()
+    # note (0xtoward): keep the head dtype through the plain sampler's temperature and probability rounding.
+    shaped = shaped.to(target_logits.dtype)
     return nucleus(
         shaped,
         temperatures=state.temperatures.repeat_interleave(rows),
         top_ks=state.top_ks.repeat_interleave(rows),
         top_ps=state.top_ps.repeat_interleave(rows),
-        greedy=state.greedy.repeat_interleave(rows),
+        greedy=state.is_all_greedy,
+        max_top_k=state.max_top_k,
+        need_top_filtering=state.need_top_filtering,
     ).view(batch, rows, vocab)
 
 

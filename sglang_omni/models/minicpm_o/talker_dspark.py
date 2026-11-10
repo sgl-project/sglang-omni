@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """DSpark speculative decoding for the MiniCPM-o talker, with verification that keeps its sampling exact.
 
-The draft is a DSpark checkpoint over the talker's codec ids that reads the talker's
-residual stream after a few of its layers. The talker samples with its own shaping
-(codec suppress mask, a repetition penalty over the last 16 outputs, and the stop id
-masked until the minimum length) before temperature, top-k and top-p, so the worker
-draws every proposal from the draft's logits shaped the same way and rejection-samples
-it against the talker's distribution for each verify row (talker_dspark_sampling.py).
+The draft predicts codec ids from the talker's residual stream. Proposals apply
+the codec suppress mask, the last-16-output repetition penalty, the minimum-length
+EOS mask and temperature, with a relative-probability filter. Verification preserves
+the target's top-k and top-p filters. Rejection sampling corrects proposals against
+the target distribution for each verify row (talker_dspark_sampling.py).
 """
 
 from __future__ import annotations
@@ -20,9 +19,6 @@ import torch
 from huggingface_hub import snapshot_download
 from safetensors import safe_open
 from safetensors.torch import save_file
-from sglang.kernels.ops.attention.dsv4.unified_kv_kernels.env_gate import (
-    is_unified_kv_triton,
-)
 from sglang.kernels.ops.speculative.dspark.dspark_accept import (
     FinalizeAcceptLens,
     finalize_accept_lens,
@@ -32,6 +28,7 @@ from sglang.kernels.ops.speculative.dspark.dspark_verify_window import (
     build_out_tokens,
 )
 from sglang.srt.environ import envs
+from sglang.srt.layers.attention.dsv4.unified_kv_gate import is_unified_kv_triton
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.managers.schedule_batch import ScheduleBatch
@@ -242,6 +239,9 @@ class StaticSamplingRows:
             top_ks=torch.full((capacity,), vocab, dtype=torch.long, device=device),
             top_ps=torch.ones(capacity, device=device),
             greedy=torch.zeros(capacity, dtype=torch.bool, device=device),
+            is_all_greedy=torch.zeros((), dtype=torch.bool, device=device),
+            max_top_k=None,
+            need_top_filtering=True,
             eos_id=eos_id,
         )
         self.loaded_count = 0
@@ -258,6 +258,9 @@ class StaticSamplingRows:
             top_ks=state.top_ks[:size],
             top_ps=state.top_ps[:size],
             greedy=state.greedy[:size],
+            is_all_greedy=state.is_all_greedy,
+            max_top_k=state.max_top_k,
+            need_top_filtering=state.need_top_filtering,
             eos_id=state.eos_id,
         )
 
@@ -280,10 +283,19 @@ class StaticSamplingRows:
             "greedy",
         ):
             getattr(self.state, name)[:count].copy_(getattr(state, name))
+        self.state.is_all_greedy.copy_(state.is_all_greedy)
+        self.state.max_top_k = state.max_top_k
+        self.state.need_top_filtering = state.need_top_filtering
         self.loaded_count = count
 
     def gather(
-        self, slots: TalkerSlotState, rows: torch.Tensor
+        self,
+        slots: TalkerSlotState,
+        rows: torch.Tensor,
+        *,
+        is_all_greedy: bool,
+        max_top_k: int | None,
+        need_top_filtering: bool,
     ) -> TalkerSamplingState | None:
         """Load the rows' state straight from the runner's slots in one launch; None past capacity."""
         count = int(rows.shape[0])
@@ -291,6 +303,9 @@ class StaticSamplingRows:
             self.loaded_count = 0
             return None
         else:
+            self.state.is_all_greedy.fill_(is_all_greedy)
+            self.state.max_top_k = max_top_k
+            self.state.need_top_filtering = need_top_filtering
             gather_slot_rows(slots, rows, self.state)
             self.loaded_count = count
             return self.rows(count)
@@ -462,7 +477,12 @@ class ExactAcceptGraphs:
         )
 
     def padded_size(self, count: int) -> int | None:
-        if count != self.sampling_rows.loaded_count:
+        # note (0xtoward): capture fixes the filtered full-sort branch; CPU mode changes need the fallback.
+        if (
+            count != self.sampling_rows.loaded_count
+            or self.sampling_rows.state.max_top_k is not None
+            or not self.sampling_rows.state.need_top_filtering
+        ):
             return None
         else:
             pass
@@ -644,6 +664,7 @@ class TalkerDraftProposer(DraftBlockProposer):
         device: str,
         target_model: MiniCPMOTalkerForCausalLM,
         sampling_info: SamplingBatchInfo,
+        anchor_prepared: bool = False,
     ) -> DraftProposal:
         state = self.sampling_state
         assert state is not None, "a draft step needs its sampling state"
@@ -663,6 +684,7 @@ class TalkerDraftProposer(DraftBlockProposer):
             ),
             draft_sampler=folded_draw,
             sampling_info=sampling_info,
+            anchor_prepared=anchor_prepared,
         )
         draft_block_ids = draft_forward.draft_block_ids
         is_folded = folded_draw is not None and draft_forward.can_run_graph
@@ -738,7 +760,12 @@ class MiniCPMOTalkerDSparkDraftModel(Qwen3DSparkModel):
 
 
 def build_sampling_state(
-    batch: ScheduleBatch, sampling_info: SamplingBatchInfo, eos_id: int
+    batch: ScheduleBatch,
+    sampling_info: SamplingBatchInfo,
+    eos_id: int,
+    *,
+    max_top_k: int | None,
+    need_top_filtering: bool,
 ) -> TalkerSamplingState:
     """Each running request's committed history and the talker's sampling parameters."""
     device = sampling_info.temperatures.device
@@ -781,11 +808,23 @@ def build_sampling_state(
         top_ks=top_ks,
         top_ps=top_ps,
         greedy=top_ks == 1,
+        is_all_greedy=torch.tensor(
+            sampling_info.is_all_greedy, dtype=torch.bool, device=device
+        ),
+        max_top_k=max_top_k,
+        need_top_filtering=need_top_filtering,
         eos_id=eos_id,
     )
 
 
-def state_from_slots(slots: TalkerSlotState, rows: torch.Tensor) -> TalkerSamplingState:
+def state_from_slots(
+    slots: TalkerSlotState,
+    rows: torch.Tensor,
+    *,
+    is_all_greedy: bool,
+    max_top_k: int | None,
+    need_top_filtering: bool,
+) -> TalkerSamplingState:
     """The step's sampling state gathered from the talker runner's per-slot state.
 
     The runner keeps each request's last outputs in a ring indexed by its output count;
@@ -808,6 +847,9 @@ def state_from_slots(slots: TalkerSlotState, rows: torch.Tensor) -> TalkerSampli
         top_ks=top_ks,
         top_ps=slots.top_ps[rows],
         greedy=top_ks == 1,
+        is_all_greedy=torch.tensor(is_all_greedy, dtype=torch.bool, device=rows.device),
+        max_top_k=max_top_k,
+        need_top_filtering=need_top_filtering,
         eos_id=slots.eos_id,
     )
 
@@ -940,7 +982,7 @@ class ExactVerifyExecutor(TargetVerifyExecutor):
 
 
 class MiniCPMOTalkerDSparkWorker(DSparkWorkerV2):
-    """DSpark worker that mirrors the talker's sampling in drafting and verification."""
+    """DSpark worker that verifies filtered proposals against the talker's sampling."""
 
     sampling_rows: StaticSamplingRows | None = None
     folded_draw: FoldedTalkerDraw | None = None
@@ -1094,6 +1136,9 @@ class MiniCPMOTalkerDSparkWorker(DSparkWorkerV2):
                 ),
                 top_ps=ones,
                 greedy=torch.zeros(batch_size, dtype=torch.bool, device=self.device),
+                is_all_greedy=torch.zeros((), dtype=torch.bool, device=self.device),
+                max_top_k=None,
+                need_top_filtering=True,
                 eos_id=self.eos_id,
             )
             base_logits = torch.zeros(
@@ -1151,7 +1196,8 @@ class MiniCPMOTalkerDSparkWorker(DSparkWorkerV2):
     ) -> None:
         """Compile the folded draw for one and several requests before the draft graphs capture it."""
         markov_head = self.draft_model.markov_head
-        for batch_size in (1, 2):
+        batch_sizes = (1,) if self.sampling_rows.capacity == 1 else (1, 2)
+        for batch_size in batch_sizes:
             base_logits = torch.zeros(
                 (batch_size, self.gamma, self.sampling_rows.state.suppress.shape[1]),
                 device=self.device,
@@ -1189,6 +1235,25 @@ class MiniCPMOTalkerDSparkWorker(DSparkWorkerV2):
                 or sampling_info.has_custom_logit_processor
                 or batch.return_logprob
             )
+            runner = self.target_worker.omni_runner
+            uses_sampling_graph = runner is not None and runner.samples_in_graph(
+                len(batch.reqs), sampling_info
+            )
+            # note (0xtoward): the plain sampling graph and seeded draw sort fully; the unseeded eager draw can use topk.
+            max_top_k = sampling_info.max_top_k
+            if (
+                sampling_info.is_all_greedy
+                or uses_sampling_graph
+                or sampling_info.sampling_seed is not None
+                or max_top_k is None
+                or max_top_k >= sampling_info.vocab_size
+            ):
+                max_top_k = None
+            else:
+                pass
+            need_top_filtering = (
+                sampling_info.need_top_k_sampling or sampling_info.need_top_p_sampling
+            )
             slots = self.runner_slot_state()
             rows = batch.req_pool_indices
             state = None
@@ -1197,16 +1262,34 @@ class MiniCPMOTalkerDSparkWorker(DSparkWorkerV2):
                 and self.sampling_rows is not None
                 and has_slot_kernels(rows.device)
             ):
-                state = self.sampling_rows.gather(slots, rows)
+                state = self.sampling_rows.gather(
+                    slots,
+                    rows,
+                    is_all_greedy=sampling_info.is_all_greedy,
+                    max_top_k=max_top_k,
+                    need_top_filtering=need_top_filtering,
+                )
             else:
                 pass
             if state is not None:
                 pass
             else:
                 state = (
-                    state_from_slots(slots, rows)
+                    state_from_slots(
+                        slots,
+                        rows,
+                        is_all_greedy=sampling_info.is_all_greedy,
+                        max_top_k=max_top_k,
+                        need_top_filtering=need_top_filtering,
+                    )
                     if slots is not None
-                    else build_sampling_state(batch, sampling_info, self.eos_id)
+                    else build_sampling_state(
+                        batch,
+                        sampling_info,
+                        self.eos_id,
+                        max_top_k=max_top_k,
+                        need_top_filtering=need_top_filtering,
+                    )
                 )
                 if self.sampling_rows is not None:
                     self.sampling_rows.load(state)

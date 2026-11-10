@@ -3,17 +3,23 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 from sglang.kernels.ops.speculative.dspark.dspark_accept import finalize_accept_lens
 from sglang.kernels.ops.speculative.dspark.dspark_verify_window import build_out_tokens
+from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+from sglang.srt.layers.sampler import Sampler
 from sglang.srt.models.dspark import VanillaMarkov
+from sglang.srt.runtime_context import get_context, get_parallel
 from torch import nn
 
 from sglang_omni.models.minicpm_o.talker_dspark import (
     DraftKvInjectionGraphs,
     ExactAcceptGraphs,
     FoldedTalkerDraw,
+    MiniCPMOTalkerDSparkWorker,
     StaticSamplingRows,
     accept_block,
     commit_to_slots,
@@ -39,31 +45,51 @@ from tests.unit_test.fixtures.accelerator import require_cuda
 
 VOCAB_SIZE = 12
 CODEC_EOS_ID = VOCAB_SIZE - 1
+SAMPLER_VOCAB_SIZE = 32
+ROUNDING_TIE_LOGIT = 1e-5
 
 
-def recent_tokens(outputs: list[int]) -> torch.Tensor:
+def recent_tokens(
+    outputs: list[int], vocabulary_size: int = VOCAB_SIZE
+) -> torch.Tensor:
     tail = outputs[-REP_PENALTY_WINDOW:]
     return torch.tensor(
-        [VOCAB_SIZE] * (REP_PENALTY_WINDOW - len(tail)) + tail, dtype=torch.long
+        [vocabulary_size] * (REP_PENALTY_WINDOW - len(tail)) + tail, dtype=torch.long
     )
 
 
-def make_state(histories: list[list[int]], **overrides: object) -> TalkerSamplingState:
+def make_state(
+    histories: list[list[int]],
+    *,
+    device: torch.device | None = None,
+    vocabulary_size: int = VOCAB_SIZE,
+    **overrides: object,
+) -> TalkerSamplingState:
     batch = len(histories)
     values: dict[str, object] = dict(
-        recent_tokens=torch.stack([recent_tokens(history) for history in histories]),
+        recent_tokens=torch.stack(
+            [recent_tokens(history, vocabulary_size) for history in histories]
+        ),
         generated=torch.tensor([len(history) for history in histories]),
         min_new_tokens=torch.full((batch,), 6),
         penalties=torch.full((batch,), 1.3),
-        suppress=torch.zeros(batch, VOCAB_SIZE, dtype=torch.bool),
+        suppress=torch.zeros(batch, vocabulary_size, dtype=torch.bool),
         temperatures=torch.full((batch,), 0.8),
         top_ks=torch.full((batch,), 6),
         top_ps=torch.full((batch,), 0.9),
         greedy=torch.zeros(batch, dtype=torch.bool),
-        eos_id=CODEC_EOS_ID,
+        max_top_k=None,
+        need_top_filtering=True,
+        eos_id=vocabulary_size - 1,
     )
     values.update(overrides)
-    return TalkerSamplingState(**values)
+    values["is_all_greedy"] = values["greedy"].all()
+    return TalkerSamplingState(
+        **{
+            name: value.to(device=device) if isinstance(value, torch.Tensor) else value
+            for name, value in values.items()
+        }
+    )
 
 
 def slot_state_shaping(
@@ -71,18 +97,138 @@ def slot_state_shaping(
 ) -> torch.Tensor:
     """The runner's own shaping: TalkerSlotState after appending each history token."""
     slots = TalkerSlotState.allocate(
-        len(histories), VOCAB_SIZE, CODEC_EOS_ID, torch.device("cpu")
+        len(histories), logits.shape[1], state.eos_id, logits.device
     )
-    rows = torch.arange(len(histories))
+    rows = torch.arange(len(histories), device=logits.device)
     slots.min_new_tokens[rows] = state.min_new_tokens
     slots.penalties[rows] = state.penalties
     slots.suppress[rows] = state.suppress
     for row, history in enumerate(histories):
         for token in history:
-            slots.append(torch.tensor([row]), torch.tensor([token]))
+            slots.append(
+                torch.tensor([row], device=logits.device),
+                torch.tensor([token], device=logits.device),
+            )
     shaped = logits.clone()
     slots.apply(shaped, rows)
     return shaped
+
+
+def sample_native_distribution(
+    logits: torch.Tensor,
+    histories: list[list[int]],
+    sampling_state: TalkerSamplingState,
+    *,
+    is_all_greedy: bool,
+) -> torch.Tensor:
+    count, vocabulary_size = logits.shape
+    native_output = LogitsProcessorOutput(
+        next_token_logits=slot_state_shaping(logits, histories, sampling_state),
+        hidden_states=None,
+    )
+    slots = TalkerSlotState.allocate(
+        count, vocabulary_size, sampling_state.eos_id, logits.device
+    )
+    slots.temperatures[:count] = sampling_state.temperatures[:, None]
+    slots.top_ks[:count] = sampling_state.top_ks
+    slots.top_ps[:count] = sampling_state.top_ps
+    rows = torch.arange(count, device=logits.device)
+    sampling_info = slots.sampling_info(rows)
+    sampling_info.is_all_greedy = is_all_greedy
+    sampling_info.is_any_greedy = is_all_greedy
+    sampling_info.sampling_seed = torch.zeros(
+        count, dtype=torch.long, device=logits.device
+    )
+    sampling_info.sampling_mask_batch_indices = rows
+    sampling_info.sampling_support_logprobs_capture_indices = rows
+
+    with (
+        get_context().override_server_args(
+            sampling_backend="pytorch", sampling_mask_max_tokens=vocabulary_size
+        ),
+        get_parallel().override(tp_group=SimpleNamespace(device_group=None)),
+    ):
+        sampler = Sampler()
+        sampler(
+            native_output,
+            sampling_info,
+            False,
+            [0] * count,
+            [[] for _ in histories],
+            torch.zeros(count, dtype=torch.long, device=logits.device),
+        )
+    captured = native_output.sampling_mask_output
+    assert captured is not None and captured.support_logprobs is not None
+    return torch.zeros_like(logits, dtype=torch.float32).scatter(
+        1, captured.token_ids.long(), captured.support_logprobs.exp()
+    )
+
+
+def sample_native_eager_distribution(
+    logits: torch.Tensor,
+    histories: list[list[int]],
+    sampling_state: TalkerSamplingState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> torch.Tensor:
+    count, vocabulary_size = logits.shape
+    native_output = LogitsProcessorOutput(
+        next_token_logits=slot_state_shaping(logits, histories, sampling_state),
+        hidden_states=None,
+    )
+    slots = TalkerSlotState.allocate(
+        count, vocabulary_size, sampling_state.eos_id, logits.device
+    )
+    slots.temperatures[:count] = sampling_state.temperatures[:, None]
+    slots.top_ks[:count] = sampling_state.top_ks.to(slots.top_ks.dtype)
+    slots.top_ps[:count] = sampling_state.top_ps
+    rows = torch.arange(count, device=logits.device)
+    sampling_info = slots.sampling_info(rows)
+    sampling_info.sampling_seed = None
+    sampling_info.max_top_k = sampling_state.max_top_k
+    sampling_info.need_top_k_sampling = sampling_state.need_top_filtering
+    sampling_info.need_top_p_sampling = sampling_state.need_top_filtering
+    sampling_info.is_any_greedy = sampling_state.need_top_filtering
+    original_topk = torch.topk
+    observed: list[tuple[torch.Tensor, torch.Tensor]] = []
+
+    def record_topk(
+        input: torch.Tensor,
+        k: int,
+        dim: int = -1,
+        largest: bool = True,
+        sorted: bool = True,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        result = original_topk(input, k, dim=dim, largest=largest, sorted=sorted)
+        observed.append(result)
+        return result
+
+    with (
+        get_context().override_server_args(sampling_backend="pytorch"),
+        get_parallel().override(tp_group=SimpleNamespace(device_group=None)),
+        monkeypatch.context() as patcher,
+    ):
+        patcher.setattr(torch, "topk", record_topk)
+        sampler = Sampler()
+        sampler(
+            native_output,
+            sampling_info,
+            False,
+            [0] * count,
+            [[] for _ in histories],
+            torch.zeros(count, dtype=torch.long, device=logits.device),
+        )
+    assert native_output.sampling_mask_output is None
+    if sampling_state.max_top_k is not None:
+        assert len(observed) == 1
+        weights, indices = observed[0]
+        weights = weights.float()
+        return torch.zeros_like(logits, dtype=torch.float32).scatter(
+            1, indices.long(), weights / weights.sum(-1, keepdim=True)
+        )
+    else:
+        assert not observed
+        weights = native_output.next_token_logits.float()
+        return weights / weights.sum(-1, keepdim=True)
 
 
 def test_shaping_matches_the_talker_slot_state() -> None:
@@ -134,6 +280,180 @@ def test_verify_rows_count_the_drafts_before_them(dtype: torch.dtype) -> None:
                 greedy=one.greedy,
             )
             torch.testing.assert_close(target[row, offset], expected[0])
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("is_all_greedy", [False, True], ids=["mixed", "all-greedy"])
+@pytest.mark.parametrize("is_compiled", [False, True], ids=["eager", "compiled"])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16])
+def test_target_distribution_matches_the_native_sampler(
+    dtype: torch.dtype, is_compiled: bool, is_all_greedy: bool
+) -> None:
+    """Verification preserves the head-dtype rounding of the plain sampler's distribution."""
+    require_cuda()
+    torch.manual_seed(21)
+    device = torch.device("cuda")
+    histories = [[], [3, 5, 3], [2, 4, 2, 7] * 5, [0] * 20]
+    state = make_state(
+        histories,
+        device=device,
+        vocabulary_size=SAMPLER_VOCAB_SIZE,
+        temperatures=torch.tensor([0.6, 0.8, 1.3, 0.8]),
+        top_ks=torch.tensor([2, 25, SAMPLER_VOCAB_SIZE, 1]),
+        top_ps=torch.tensor([0.6, 0.85, 1.0, 1.0]),
+        penalties=torch.tensor([1.0, 1.05, 1.3, 1.0]),
+        greedy=torch.tensor([False, False, False, True]),
+    )
+    state.suppress[0, 2] = True
+    state.suppress[1, 5] = True
+    if is_all_greedy:
+        state.greedy.fill_(True)
+        state.top_ks.fill_(1)
+        state.is_all_greedy.fill_(True)
+    else:
+        pass
+    logits = (torch.randn(4, SAMPLER_VOCAB_SIZE, device=device) * 3).to(dtype)
+    logits[3].zero_()
+    logits[3, SAMPLER_VOCAB_SIZE - 2] = ROUNDING_TIE_LOGIT
+    native_distribution = sample_native_distribution(
+        logits, histories, state, is_all_greedy=is_all_greedy
+    )
+    probabilities = (
+        torch.compile(
+            target_probabilities,
+            dynamic=True,
+            options={"emulate_precision_casts": True},
+        )
+        if is_compiled
+        else target_probabilities
+    )
+    actual = probabilities(
+        logits, torch.empty(4, 0, dtype=torch.long, device=device), state
+    )[:, 0]
+
+    assert torch.equal(actual > 0, native_distribution > 0)
+    torch.testing.assert_close(actual, native_distribution)
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("filtered", [True, False], ids=["eager-topk", "unfiltered"])
+@pytest.mark.parametrize("is_compiled", [False, True], ids=["eager", "compiled"])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16])
+def test_target_distribution_preserves_native_eager_sorting(
+    dtype: torch.dtype,
+    is_compiled: bool,
+    filtered: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    require_cuda()
+    device = torch.device("cuda")
+    count, vocabulary_size = 3, SAMPLER_VOCAB_SIZE
+    histories = [[] for _ in range(count)]
+    state = make_state(
+        histories,
+        device=device,
+        vocabulary_size=vocabulary_size,
+        top_ks=torch.tensor([25, 1, 7] if filtered else [vocabulary_size] * count),
+        top_ps=torch.ones(count),
+        min_new_tokens=torch.zeros(count, dtype=torch.long),
+        penalties=torch.ones(count),
+        greedy=torch.tensor([False, filtered, False]),
+        max_top_k=25 if filtered else None,
+        need_top_filtering=filtered,
+    )
+    logits = torch.zeros(count, vocabulary_size, dtype=dtype, device=device)
+    if not filtered:
+        logits[:, 4] = 0.125
+    else:
+        pass
+    native = sample_native_eager_distribution(logits, histories, state, monkeypatch)
+    probabilities = (
+        torch.compile(
+            target_probabilities,
+            dynamic=True,
+            options={"emulate_precision_casts": True},
+        )
+        if is_compiled
+        else target_probabilities
+    )
+
+    actual = probabilities(
+        logits, torch.empty(count, 0, dtype=torch.long, device=device), state
+    )[:, 0]
+
+    assert torch.equal(actual > 0, native > 0)
+    torch.testing.assert_close(actual, native)
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("mode", ["fullsort", "eager-topk", "unfiltered"])
+@pytest.mark.parametrize("is_compiled", [False, True], ids=["eager", "compiled"])
+def test_target_distribution_preserves_native_batches_at_each_verify_position(
+    mode: str, is_compiled: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    require_cuda()
+    device = torch.device("cuda")
+    count, gamma, vocabulary_size = 32, 7, 6562
+    histories = [[index % 11] * (index % 4) for index in range(count)]
+    filtered = mode != "unfiltered"
+    settings = dict(
+        vocabulary_size=vocabulary_size,
+        top_ks=torch.tensor(
+            [25, 1, 7, 25] * 8 if filtered else [vocabulary_size] * count
+        ),
+        top_ps=torch.full((count,), 0.85 if filtered else 1.0),
+        min_new_tokens=torch.zeros(count, dtype=torch.long),
+        penalties=torch.full((count,), 1.05),
+        greedy=torch.tensor(
+            [False, True, False, False] * 8 if filtered else [False] * count
+        ),
+        max_top_k=25 if mode == "eager-topk" else None,
+        need_top_filtering=filtered,
+    )
+    state = make_state(histories, device=device, **settings)
+    drafts = (torch.arange(count * gamma, device=device).view(count, gamma) % 17).long()
+    logits = torch.zeros(
+        count * (gamma + 1), vocabulary_size, dtype=torch.bfloat16, device=device
+    )
+    logits[:, 0] = 0.125
+    expected = []
+    for position in range(gamma + 1):
+        position_histories = [
+            history + drafts[row, :position].cpu().tolist()
+            for row, history in enumerate(histories)
+        ]
+        position_state = make_state(position_histories, device=device, **settings)
+        position_logits = logits.view(count, gamma + 1, vocabulary_size)[:, position]
+        if mode == "fullsort":
+            expected.append(
+                sample_native_distribution(
+                    position_logits,
+                    position_histories,
+                    position_state,
+                    is_all_greedy=False,
+                )
+            )
+        else:
+            expected.append(
+                sample_native_eager_distribution(
+                    position_logits, position_histories, position_state, monkeypatch
+                )
+            )
+    native = torch.stack(expected, dim=1)
+    probabilities = (
+        torch.compile(
+            target_probabilities,
+            dynamic=True,
+            options={"emulate_precision_casts": True},
+        )
+        if is_compiled
+        else target_probabilities
+    )
+
+    actual = probabilities(logits, drafts, state)
+
+    assert torch.equal(actual > 0, native > 0)
+    torch.testing.assert_close(actual, native)
 
 
 def run_speculative_step(
@@ -283,6 +603,45 @@ class TinyDraft(nn.Module):
         return (hidden @ self.lm_head.weight.T).float(), None
 
 
+@pytest.mark.parametrize("capacity", [1, 2])
+def test_folded_draw_warmup_stays_within_sampling_capacity(capacity: int) -> None:
+    """A one-slot deployment failed at startup by warming two rows against one sampling row."""
+    worker = object.__new__(MiniCPMOTalkerDSparkWorker)
+    worker.gamma = 3
+    worker.device = "cpu"
+    worker.draft_model = TinyDraft(hidden=8)
+    worker.sampling_rows = StaticSamplingRows(
+        capacity=capacity,
+        vocab=VOCAB_SIZE,
+        eos_id=CODEC_EOS_ID,
+        device=torch.device("cpu"),
+    )
+    warmed_batch_sizes = []
+
+    def draw(
+        base_logits: torch.Tensor,
+        previous_tokens: torch.Tensor,
+        markov_embedding: torch.Tensor,
+        markov_projection: torch.Tensor,
+        state: TalkerSamplingState,
+        exponential_noise: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        result = sample_draft_block(
+            base_logits,
+            previous_tokens,
+            markov_embedding,
+            markov_projection,
+            state,
+            exponential_noise,
+        )
+        warmed_batch_sizes.append(result[0].shape[0])
+        return result
+
+    worker.warm_up_folded_draw(draw)
+
+    assert warmed_batch_sizes == ([1] if capacity == 1 else [1, 2])
+
+
 def test_folded_draw_hook_draws_the_talker_shaped_block() -> None:
     torch.manual_seed(5)
     gamma, hidden = 3, 8
@@ -423,7 +782,7 @@ def test_accept_graphs_replay_the_greedy_verify_on_the_folded_block(
         **{
             name: (
                 value[:1].expand(larger_count, *value.shape[1:])
-                if isinstance(value, torch.Tensor)
+                if isinstance(value, torch.Tensor) and value.ndim > 0
                 else value
             )
             for name, value in vars(state).items()
@@ -442,6 +801,195 @@ def test_accept_graphs_replay_the_greedy_verify_on_the_folded_block(
 
     assert torch.equal(fallback_result[0], expected_result[0])
     assert torch.equal(fallback_result[1], expected_result[1])
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16])
+def test_accept_graphs_keep_the_native_batch_branch_when_slots_change(
+    dtype: torch.dtype,
+) -> None:
+    """A padded replay follows the real batch's greedy flag after both load and gather."""
+    require_cuda()
+    torch.manual_seed(7)
+    device = torch.device("cuda")
+    count, capacity, gamma = 3, 4, 1
+    distinct_token = SAMPLER_VOCAB_SIZE - 2
+    histories = [[] for _ in range(count)]
+    sampling_rows = StaticSamplingRows(
+        capacity=capacity,
+        vocab=SAMPLER_VOCAB_SIZE,
+        eos_id=SAMPLER_VOCAB_SIZE - 1,
+        device=device,
+    )
+    draft_buffer = torch.full(
+        (capacity * gamma,), distinct_token, dtype=torch.long, device=device
+    )
+    proposal_buffer = torch.full(
+        (capacity * gamma, SAMPLER_VOCAB_SIZE), float("-inf"), device=device
+    )
+    proposal_buffer[:, distinct_token] = 0
+    graphs = ExactAcceptGraphs(
+        batch_sizes=[capacity],
+        gamma=gamma,
+        rows=sampling_rows,
+        draft_tokens=draft_buffer,
+        shaped_draft_logits=proposal_buffer,
+        target_logits_dtype=dtype,
+        fallback=accept_block,
+        backend=current_platform.get_device_graph_backend(device),
+        device=device,
+    )
+    logits = torch.zeros(count, SAMPLER_VOCAB_SIZE, dtype=dtype, device=device)
+    logits[:, distinct_token] = ROUNDING_TIE_LOGIT
+    target_logits = logits.repeat_interleave(gamma + 1, dim=0)
+    slots = TalkerSlotState.allocate(
+        capacity, SAMPLER_VOCAB_SIZE, SAMPLER_VOCAB_SIZE - 1, device
+    )
+    slot_order = torch.tensor([2, 0, 3], device=device)
+
+    for is_all_greedy in (False, True, False):
+        state = make_state(
+            histories,
+            device=device,
+            vocabulary_size=SAMPLER_VOCAB_SIZE,
+            min_new_tokens=torch.zeros(count, dtype=torch.long),
+            penalties=torch.ones(count),
+            temperatures=torch.full((count,), 0.8),
+            top_ks=torch.tensor([1, 1, 1] if is_all_greedy else [25, 1, 25]),
+            top_ps=torch.tensor([1.0, 1.0, 1.0]),
+            greedy=torch.tensor(
+                [True, True, True] if is_all_greedy else [False, True, False]
+            ),
+        )
+        if is_all_greedy:
+            slots.temperatures[slot_order] = state.temperatures[:, None]
+            slots.top_ks[slot_order] = state.top_ks.to(slots.top_ks.dtype)
+            slots.top_ps[slot_order] = state.top_ps
+            sampling_rows.gather(
+                slots,
+                slot_order,
+                is_all_greedy=is_all_greedy,
+                max_top_k=None,
+                need_top_filtering=True,
+            )
+        else:
+            sampling_rows.load(state)
+        native_distribution = sample_native_distribution(
+            logits, histories, state, is_all_greedy=is_all_greedy
+        )
+        native_tokens = native_distribution.argmax(dim=-1)
+        result = graphs.accept_and_finalize(
+            target_logits,
+            proposal_buffer[:count].view(count, gamma, -1),
+            draft_buffer[:count].view(count, gamma),
+            torch.zeros(count, dtype=torch.long, device=device),
+        )
+
+        assert result is not None
+        assert torch.equal(result.bonus[1:2], native_tokens[1:2])
+        assert torch.equal(
+            result.correct_len[1:2], (native_tokens[1:2] == distinct_token).long()
+        )
+
+
+@pytest.mark.accelerator
+def test_accept_graphs_follow_loaded_native_sorting_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    require_cuda()
+    device = torch.device("cuda")
+    count, capacity, gamma, vocab = 3, 4, 1, SAMPLER_VOCAB_SIZE
+    histories = [[] for _ in range(count)]
+    distinct_token = vocab - 2
+    rows = StaticSamplingRows(
+        capacity=capacity, vocab=vocab, eos_id=vocab - 1, device=device
+    )
+    tokens = torch.full((capacity,), distinct_token, dtype=torch.long, device=device)
+    proposal = torch.full((capacity, vocab), float("-inf"), device=device)
+    proposal[:, distinct_token] = 0.0
+    graphs = ExactAcceptGraphs(
+        batch_sizes=[capacity],
+        gamma=gamma,
+        rows=rows,
+        draft_tokens=tokens,
+        shaped_draft_logits=proposal,
+        target_logits_dtype=torch.bfloat16,
+        fallback=accept_block,
+        backend=current_platform.get_device_graph_backend(device),
+        device=device,
+    )
+    slots = TalkerSlotState.allocate(capacity, vocab, vocab - 1, device)
+    slot_order = torch.tensor([2, 0, 3], device=device)
+
+    for index, mode in enumerate(["fullsort", "eager-topk", "unfiltered", "fullsort"]):
+        filtered = mode != "unfiltered"
+        state = make_state(
+            histories,
+            device=device,
+            vocabulary_size=vocab,
+            top_ks=torch.tensor([25, 1, 7] if filtered else [vocab] * count),
+            top_ps=torch.ones(count),
+            penalties=torch.ones(count),
+            min_new_tokens=torch.zeros(count, dtype=torch.long),
+            greedy=torch.tensor([False, filtered, False]),
+            max_top_k=25 if mode == "eager-topk" else None,
+            need_top_filtering=filtered,
+        )
+        if index % 2 == 0:
+            rows.load(state)
+        else:
+            slots.temperatures[slot_order] = state.temperatures[:, None]
+            slots.top_ks[slot_order] = state.top_ks.to(slots.top_ks.dtype)
+            slots.top_ps[slot_order] = state.top_ps
+            rows.gather(
+                slots,
+                slot_order,
+                is_all_greedy=False,
+                max_top_k=state.max_top_k,
+                need_top_filtering=state.need_top_filtering,
+            )
+        logits = torch.zeros(count, vocab, dtype=torch.bfloat16, device=device)
+        logits[:, distinct_token] = ROUNDING_TIE_LOGIT
+        if mode == "unfiltered":
+            logits[1].fill_(float("-inf"))
+            logits[1, distinct_token] = 0.0
+        else:
+            pass
+        if mode == "fullsort":
+            native = sample_native_distribution(
+                logits, histories, state, is_all_greedy=False
+            )
+        else:
+            native = sample_native_eager_distribution(
+                logits, histories, state, monkeypatch
+            )
+        target_logits = logits.repeat_interleave(gamma + 1, dim=0)
+
+        result = graphs.accept_and_finalize(
+            target_logits,
+            proposal[:count].view(count, gamma, -1),
+            tokens[:count].view(count, gamma),
+            torch.zeros(count, dtype=torch.long, device=device),
+        )
+        if mode == "fullsort":
+            assert result is not None
+            correct, bonus = result.correct_len, result.bonus
+        else:
+            assert (
+                result is None
+            ), "a captured fullsort graph ignored the current native sampling mode"
+            correct, bonus = graphs.accept(
+                target_logits,
+                proposal[:count].view(count, gamma, -1),
+                tokens[:count].view(count, gamma),
+                state,
+            )
+
+        assert rows.rows(count).max_top_k == state.max_top_k
+        assert rows.rows(count).need_top_filtering == state.need_top_filtering
+        expected = native[1].argmax()
+        assert torch.equal(bonus[1], expected)
+        assert torch.equal(correct[1], (expected == distinct_token).long())
 
 
 @pytest.mark.accelerator
@@ -499,7 +1047,9 @@ def test_slot_state_gives_the_ordered_window_and_takes_committed_blocks() -> Non
     slots.penalties[rows] = torch.tensor([1.3, 1.3, 1.3])
     slots.top_ks[rows] = torch.tensor([6, 6, 1], dtype=torch.int32)
 
-    state = state_from_slots(slots, rows)
+    state = state_from_slots(
+        slots, rows, is_all_greedy=False, max_top_k=None, need_top_filtering=True
+    )
     expected = make_state(histories)
     assert torch.equal(state.recent_tokens, expected.recent_tokens)
     assert torch.equal(state.generated, expected.generated)
@@ -513,7 +1063,9 @@ def test_slot_state_gives_the_ordered_window_and_takes_committed_blocks() -> Non
         history + committed[i, : counts[i]].tolist()
         for i, history in enumerate(histories)
     ]
-    state = state_from_slots(slots, rows)
+    state = state_from_slots(
+        slots, rows, is_all_greedy=False, max_top_k=None, need_top_filtering=True
+    )
     assert torch.equal(state.recent_tokens, make_state(after).recent_tokens)
     assert state.generated.tolist() == [len(history) for history in after]
 
@@ -552,8 +1104,12 @@ def test_the_slot_gather_kernel_loads_what_state_from_slots_returns(vocab: int) 
         capacity=8, vocab=vocab, eos_id=vocab - 1, device=device
     )
 
-    expected = state_from_slots(slots, rows)
-    loaded = static.gather(slots, rows)
+    expected = state_from_slots(
+        slots, rows, is_all_greedy=False, max_top_k=None, need_top_filtering=True
+    )
+    loaded = static.gather(
+        slots, rows, is_all_greedy=False, max_top_k=None, need_top_filtering=True
+    )
 
     assert static.loaded_count == len(rows), "the gather marks its rows as loaded"
     for name in (
@@ -566,6 +1122,7 @@ def test_the_slot_gather_kernel_loads_what_state_from_slots_returns(vocab: int) 
         "top_ks",
         "top_ps",
         "greedy",
+        "is_all_greedy",
     ):
         assert torch.equal(
             getattr(loaded, name), getattr(expected, name)

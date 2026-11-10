@@ -202,6 +202,10 @@ def prepare_talker_draft(
         )
     elif session_mode:
         raise ValueError("talker speculative decoding does not serve duplex sessions")
+    elif overrides.get("sampling_backend", "pytorch") != "pytorch":
+        raise ValueError(
+            "MiniCPM-o talker speculative decoding requires the pytorch sampling backend"
+        )
     else:
         pass
     # note (0xtoward): the draft modules import Triton kernels, which only a speculative
@@ -234,6 +238,7 @@ def create_sglang_talker_executor_from_config(
     server_args_overrides: Mapping[str, object] | None = None,
     total_gpu_memory_fraction: float | None = None,
     session_mode: bool = False,
+    enable_async_decode: bool = True,
 ) -> OmniScheduler[SGLangARRequestData]:
     """Returns OmniScheduler for the native sglang MiniCPM-o talker."""
     concrete_device = resolve_concrete_device(device, gpu_id)
@@ -305,6 +310,7 @@ def create_sglang_talker_executor_from_config(
         nccl_port=nccl_port,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         session_mode=session_mode,
+        enable_async_decode=enable_async_decode,
         operator_selected_prefill_backend=operator_selected_prefill_backend(
             server_args_overrides
         ),

@@ -268,6 +268,9 @@ class TalkerSampleGraphs:
 class MiniCPMOTalkerModelRunner(ModelRunner):
     """Prefill codec conditions and apply a frequency penalty over recent tokens."""
 
+    speculative_ignores_request_seed = True
+    supports_speculative_async_decode = True
+
     slot_state: TalkerSlotState | None = None
     sample_graphs: TalkerSampleGraphs | None = None
 

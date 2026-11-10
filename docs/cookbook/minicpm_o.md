@@ -123,4 +123,4 @@ sgl-omni serve --model-path openbmb/MiniCPM-o-4_5 --variant speech \
   --talker.engine.speculative_draft_model_path Qun1023/MiniCPM-o-4_5-talker-DSpark
 ```
 
-Rejection sampling preserves the target's codec mask, sliding repetition penalty, minimum output length, temperature, top-k and top-p. The block size comes from the draft checkpoint. Sampled verification does not support a request seed. This path supports non-streaming speech requests, not native full-duplex sessions.
+Talker DSpark requires the PyTorch sampling backend and static verification. The verifier preserves the Talker's codec mask, sliding repetition penalty, minimum output length, temperature, top-k and top-p. Drafts use a filtered proposal distribution, and rejection sampling corrects them against the target distribution. The block size comes from the draft checkpoint. Async decode is enabled by default; set `--talker.factory.enable_async_decode false` to run the Talker synchronously. Sampled verification does not support a request seed. This path supports non-streaming speech requests, not native full-duplex sessions.
