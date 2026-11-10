@@ -46,6 +46,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **The command palette no longer offers Meetings in a release build.** Meetings is only in development builds, and choosing it in the palette opened a "Not found" page.
 
+### Fixed
+
+- **A crash leaves something to send**: when Voxt crashes in its own code, what it was doing is now in `~/Library/Logs/VoxtNew/crash.log`, which the next start renames `crash.log.1` and names in the log. Before, such a crash left no report (macOS writes none for it), so there was nothing to send. Save a diagnostic bundle (Settings → About) takes both files.
+
 ### 中文
 
 #### 修复
@@ -89,6 +93,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 
 - **正式版的命令面板不再列出“会议”。** 会议只在开发版里有，在命令面板里选它会打开“未找到”页面。
+
+#### 修复
+
+- **崩溃后有东西可发**：Voxt 在自己的代码里崩溃时，出错时在做什么现在写进 `~/Library/Logs/VoxtNew/crash.log`，下次启动改名为 `crash.log.1`，并在日志里写明。以前这种崩溃不留任何报告（macOS 不为它写），没有东西可以发给我们。「保存诊断包」（设置 → 关于）会带上这两个文件。
 
 ## [2.0.3] - 2026-11-10
 
