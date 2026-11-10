@@ -5,6 +5,7 @@ from sglang_omni.models.nemotron_transcribe.speaker_attribution import (
     choose_tagged_transcript,
     decide_tagged_retry,
     diarization_segments,
+    map_tags_to_slots,
     parse_speaker_tags,
     speaker_tag_request,
     strip_speaker_tags,
@@ -40,6 +41,31 @@ def test_transcript_tags_override_the_activity_slot() -> None:
     assert attributed[1]["speaker"] == "spk:1"
     assert attributed[1]["speaker_slot"] == 1
     assert attributed[1]["speaker_confidence"] == 0.8
+
+
+def test_transcript_tags_are_matched_to_the_slots_that_speak_them() -> None:
+    words = [
+        {"word": "hello", "start": 0.0, "end": 0.2},
+        {"word": "there", "start": 0.2, "end": 0.4},
+    ]
+    # The decoder's <spk:0> is Sortformer's slot 1, and <spk:1> is slot 0.
+    activity = [[0.1, 0.9], [0.1, 0.9], [0.8, 0.2], [0.9, 0.1]]
+    attributed = attribute_speakers(
+        words,
+        "<spk:0> hello <spk:1> there",
+        "Speakers <spk:0> <spk:1>",
+        activity,
+        0.1,
+    )
+    assert [word["speaker"] for word in attributed] == ["spk:0", "spk:1"]
+    assert [word["speaker_slot"] for word in attributed] == [1, 0]
+    assert attributed[0]["speaker_confidence"] == 0.9
+
+
+def test_tags_beyond_the_slot_count_keep_their_label_without_a_slot() -> None:
+    spans = {0: [(0, 3)], 1: [(4, 4)], 2: [(5, 9)]}
+    activity = [[0.9, 0.1]] * 4 + [[0.5, 0.5]] + [[0.1, 0.9]] * 5
+    assert map_tags_to_slots(spans, activity) == {0: 0, 1: None, 2: 1}
 
 
 def test_untagged_words_take_the_louder_slot() -> None:
