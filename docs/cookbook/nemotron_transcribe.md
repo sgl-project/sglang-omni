@@ -26,14 +26,14 @@ On a fresh install, the first launch also builds FlashInfer kernels, which can t
 
 The [NVFP4 checkpoint](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-NVFP4) loads through SGLang's ModelOpt mixed-precision path: its Mamba projections are FP8, and its experts, shared experts and attention projections are NVFP4. Native NVFP4 kernels need a Blackwell GPU. On Hopper, add `--asr.engine.fp4_gemm_backend marlin`; Marlin runs the NVFP4 weights with BF16 activations, and the MoE layers select it automatically.
 
-The pipeline runs one ASR stage. It accepts uploads up to one hour, resamples to mono 16 kHz, and keeps each upload as one decoder request. Measured transcripts are the short clips in [Short-clip validation](#short-clip-validation): 4.352 s and 5.855 s. A one-hour recording can repeat sentences until the 16384-token response budget. The HTTP status stays 200. `json` and `verbose_json` then include `"finish_reason": "length"`. `text` sets `X-Finish-Reason: length`. A stream puts the same reason on `transcript.text.done`. The encoder processes the recording in checkpoint-defined windows with left and right context; the default checkpoint uses 40-second core windows.
+The pipeline runs one ASR stage. It accepts uploads up to one hour, resamples to mono 16 kHz, and keeps each upload as one decoder request. Measured transcripts are the short clips in [Short-clip validation](#short-clip-validation): 4.352 s and 5.855 s. Each response is budgeted at 6 tokens per second of audio plus 24, up to `--asr.factory.max_new_tokens`, so a transcript that falls into repeated sentences stops near the length of its audio. A `max_new_tokens` form field replaces that budget. When a transcript reaches its budget, the HTTP status stays 200. `json` and `verbose_json` then include `"finish_reason": "length"`. `text` sets `X-Finish-Reason: length`. A stream puts the same reason on `transcript.text.done`. The encoder processes the recording in checkpoint-defined windows with left and right context; the default checkpoint uses 40-second core windows.
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `--asr.engine.max_running_requests` | `64` | Maximum concurrent decoder requests |
 | `--asr.factory.encoder_max_batch_size` | `8` | Maximum waveforms per encoder invocation |
 | `--asr.factory.context_length` | `73728` | Decoder context budget in tokens |
-| `--asr.factory.max_new_tokens` | `16384` | Response token budget; `length` means the transcript stopped there |
+| `--asr.factory.max_new_tokens` | `21624` | Response token ceiling, enough for one hour at 6 tokens per second; `length` means the transcript stopped at its budget |
 | `--asr.factory.chunked_prefill_size` | `4096` | Decoder prefill chunk in tokens |
 | `--asr.factory.mm_embedding_cache_size_bytes` | `0` | Audio embedding cache capacity |
 | `--asr.factory.compile_perception` | `false` | Compile encoder transformer layers |

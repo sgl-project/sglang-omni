@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import ClassVar, Literal
 
 from pydantic import Field
@@ -20,6 +21,14 @@ PACKAGE = "sglang_omni.models.nemotron_transcribe"
 ARCHITECTURE = "Nemotron3_5TranscribeForConditionalGeneration"
 MAX_AUDIO_SECONDS = 3600
 DECODER_CONTEXT_TOKENS = 73728
+# A transcript gets this many tokens per second of audio, plus a floor for short clips.
+TRANSCRIPT_TOKENS_PER_SECOND = 6.0
+MINIMUM_TRANSCRIPT_TOKENS = 24
+# One hour's budget fits beside its 45,000 audio tokens in the decoder context.
+DEFAULT_MAX_NEW_TOKENS = (
+    math.ceil(MAX_AUDIO_SECONDS * TRANSCRIPT_TOKENS_PER_SECOND)
+    + MINIMUM_TRANSCRIPT_TOKENS
+)
 DEFAULT_MAX_RUNNING_REQUESTS = 64
 EncoderCompileMode = Literal["default", "max-autotune-no-cudagraphs"]
 
@@ -82,7 +91,7 @@ class NemotronTranscribePipelineConfig(PipelineConfig):
             factory_path=f"{PACKAGE}.stages.create_nemotron_transcribe_executor",
             factory=NemotronTranscribeFactoryArgs(
                 dtype="bfloat16",
-                max_new_tokens=16384,
+                max_new_tokens=DEFAULT_MAX_NEW_TOKENS,
                 context_length=DECODER_CONTEXT_TOKENS,
                 max_audio_seconds=float(MAX_AUDIO_SECONDS),
                 mm_embedding_cache_size_bytes=0,

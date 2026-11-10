@@ -10,6 +10,11 @@ import torch
 from transformers import BatchEncoding
 
 import sglang_omni.preprocessing.transcription as transcription
+from sglang_omni.models.nemotron_transcribe.config import (
+    DECODER_CONTEXT_TOKENS,
+    DEFAULT_MAX_NEW_TOKENS,
+    MAX_AUDIO_SECONDS,
+)
 from sglang_omni.models.nemotron_transcribe.hf_config import (
     AUDIO_TOKEN_ID,
     EOS_TOKEN_ID,
@@ -18,6 +23,7 @@ from sglang_omni.models.nemotron_transcribe.request_builders import (
     DEFAULT_PROMPT,
     make_scheduler_adapters,
     make_stream_output_builder,
+    transcript_token_budget,
 )
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.types import DeferredAdmission
@@ -129,6 +135,41 @@ def test_request_overrides_prompt_and_generation_budget() -> None:
         {"role": "system", "content": "Be concise."},
         {"role": "user", "content": "<|audio|>\nTranscribe exactly."},
     ]
+
+
+def test_response_budget_follows_the_audio_duration() -> None:
+    build_request, _ = make_scheduler_adapters(
+        tokenizer=FakeTokenizer(), max_new_tokens=1000
+    )
+    request = build_request(make_payload())
+    # One second of audio: 6 tokens plus the 24-token floor.
+    assert request.max_new_tokens == 30
+    assert request.req.sampling_params.max_new_tokens == 30
+
+
+def test_response_budget_stays_within_the_ceiling_and_the_context() -> None:
+    tokenizer = FakeTokenizer()
+    build_request, _ = make_scheduler_adapters(tokenizer=tokenizer, max_new_tokens=20)
+    request = build_request(make_payload())
+    assert request.max_new_tokens == 20
+
+    prompt_tokens = len(request.prompt_token_ids or [])
+    build_request, _ = make_scheduler_adapters(
+        tokenizer=tokenizer,
+        max_new_tokens=1000,
+        context_length=prompt_tokens + 5,
+    )
+    assert build_request(make_payload()).max_new_tokens == 5
+
+
+def test_default_ceiling_covers_one_hour_beside_its_audio_tokens() -> None:
+    budget = transcript_token_budget(
+        MAX_AUDIO_SECONDS,
+        ceiling=DEFAULT_MAX_NEW_TOKENS,
+        prompt_tokens=45_000 + 100,
+        context_length=DECODER_CONTEXT_TOKENS,
+    )
+    assert budget == DEFAULT_MAX_NEW_TOKENS
 
 
 @pytest.mark.parametrize("token_ids", [[101, 102], [AUDIO_TOKEN_ID, AUDIO_TOKEN_ID]])

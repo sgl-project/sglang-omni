@@ -266,6 +266,7 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         return make_scheduler_adapters(
             tokenizer=self.tokenizer,
             max_new_tokens=self.max_new_tokens,
+            context_length=self.context_length,
             audio_token_estimator=self.hf_config.audio_token_estimator,
             audio_token_id=self.hf_config.audio_token_id,
             eos_token_id=self.hf_config.eos_token_id,

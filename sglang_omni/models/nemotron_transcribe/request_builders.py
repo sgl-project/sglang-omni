@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -18,6 +19,10 @@ from sglang.srt.managers.schedule_batch import (
 from sglang.srt.sampling.sampling_params import SamplingParams
 from transformers import PreTrainedTokenizerBase
 
+from sglang_omni.models.nemotron_transcribe.config import (
+    MINIMUM_TRANSCRIPT_TOKENS,
+    TRANSCRIPT_TOKENS_PER_SECOND,
+)
 from sglang_omni.models.nemotron_transcribe.encoder_service import (
     NemotronTranscribePreLMEncoderService,
 )
@@ -98,6 +103,26 @@ def decode_tokens(tokenizer: PreTrainedTokenizerBase, ids: list[int]) -> str:
     )
 
 
+def transcript_token_budget(
+    duration_s: float,
+    *,
+    ceiling: int,
+    prompt_tokens: int,
+    context_length: int | None,
+) -> int:
+    """Response tokens for a transcript of this audio, within the ceiling and context."""
+    budget = min(
+        ceiling,
+        math.ceil(duration_s * TRANSCRIPT_TOKENS_PER_SECOND)
+        + MINIMUM_TRANSCRIPT_TOKENS,
+    )
+    if context_length is not None:
+        budget = min(budget, context_length - prompt_tokens)
+    else:
+        pass
+    return max(1, budget)
+
+
 def timestamp_transcription(
     data: NemotronTranscribeRequestData, text: str
 ) -> dict[str, object] | None:
@@ -159,6 +184,7 @@ def make_scheduler_adapters(
     *,
     tokenizer: PreTrainedTokenizerBase,
     max_new_tokens: int,
+    context_length: int | None = None,
     audio_token_estimator: dict[str, object] | None = None,
     audio_token_id: int = AUDIO_TOKEN_ID,
     eos_token_id: int = EOS_TOKEN_ID,
@@ -237,7 +263,15 @@ def make_scheduler_adapters(
         mm_inputs = MultimodalInputs(mm_items=[audio_item], num_image_tokens=n_audio)
         mm_inputs.audio_token_id = audio_token_id
 
-        request_max_new_tokens = int(params.get("max_new_tokens") or max_new_tokens)
+        if params.get("max_new_tokens"):
+            request_max_new_tokens = int(params["max_new_tokens"])
+        else:
+            request_max_new_tokens = transcript_token_budget(
+                prepared.duration_s,
+                ceiling=max_new_tokens,
+                prompt_tokens=len(input_ids),
+                context_length=context_length,
+            )
         temperature = float(params.get("temperature") or 0.0)
         seed = params.get("seed")
         sampling_kwargs: dict[str, object] = {}
