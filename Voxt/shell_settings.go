@@ -364,18 +364,21 @@ func (a *app) settingsDialog(c *ui.Context) {
 							a.settingsOpen = false
 						}
 					})
+					// The section's name matching shows it whole; else its rows that match.
 					query := f.search
-					if query != "" && !settingsTextMatches(query, title, sectionEn) {
-						ui.Column(c).Padding(px(t, sp6)).Children(func() {
-							caption(c, i18n.T("Nothing in this section matches your search."))
-						})
-						return
+					if settingsTextMatches(query, title, sectionEn) {
+						query = ""
 					}
 					ui.Scroll(c).Grow(1).MinHeight(0).Children(func() {
 						ui.Column(c).Padding(px(t, sp1), px(t, sp6), px(t, sp6)).Gap(px(t, sp4)).MaxWidth(px(t, settingsContentMaxW)).Children(func() {
-							settingsSearchQuery = query
-							a.settingsSection(c, r)
+							settingsSearchQuery, settingsSearchHits = query, 0
+							body := ui.Column(c).Gap(px(t, sp4))
+							body.Children(func() { a.settingsSection(c, r) })
 							settingsSearchQuery = ""
+							if query != "" && settingsSearchHits == 0 { // its other parts (lists, cards) do not match either
+								body.Invisible().Height(0)
+								caption(c, i18n.T("Nothing in this section matches your search."))
+							}
 						})
 					})
 				}).Grow(1).MinHeight(0)

@@ -137,6 +137,11 @@ func snapshotsMain(t *testing.T, out string) {
 				a.sys = &sysInfo{OS: "macOS 26.7", Chip: "Apple M2", Memory: 16 << 30, Cores: 8, Arch: "arm64"}
 			}
 			save("settings-" + s.id)
+			if s.id == "general" { // Find in settings, by a row's English name (#3788)
+				a.settingsForm.search = "Dock"
+				save("settings-general-search-dock")
+				a.settingsForm.search = ""
+			}
 			if s.id == "about" { // Updates, under the fold (updates.go)
 				scrollToText(tt, i18n.T("Updates"))
 				save("settings-about-updates")

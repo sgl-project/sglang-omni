@@ -228,6 +228,7 @@ func (a *app) openWindow() {
 	a.maybeOnboard()        // onboarding.go: the setup guide, on the first start
 	a.offerLegacy()         // legacy_import.go: the previous Voxt's data, for who set up without the guide's card
 	a.legacyModelsAtStart() // legacy_models.go: the previous Voxt's speech models this version added
+	a.legacyDockAtStart()   // legacy_settings_general.go: Voxt 1.x's Show in Dock, which 2.0.0 and 2.0.1 did not read
 	a.syncOpenAtLogin()     // shell_settings.go
 }
 
