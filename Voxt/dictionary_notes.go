@@ -4,8 +4,7 @@ package main
 // Markdown the user writes once, which Transcribe, Translate and Rewrite
 // send in the language model's system prompt, after the task's rules
 // (compose.Input.Dictionary); speech recognition never gets it. It is
-// saved as the Speech context is (models_context.go): promptSaveDelay
-// after the last key, or when the field loses the focus. Under it, How
+// saved as the Speech context is (autosave in models_context.go). Under it, How
 // it is used builds a request from the settings, as a session does, and
 // shows its parts and the messages sent.
 
@@ -13,7 +12,6 @@ import (
 	"math"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
@@ -67,21 +65,7 @@ func (a *app) notesView(c *ui.Context) {
 			}
 			// As high as its text, however long (llm_debug.go): one scroll bar, the page's.
 			in := ui.TextArea(c.Key("dict-notes"), &n.text).Label(i18n.T("Personal dictionary in Markdown")).Placeholder(notesPlaceholder()).Lines(8, math.MaxInt32)
-			if in.Changed() {
-				n.dirty = true
-				n.seq++
-				if seq := n.seq; a.win != nil {
-					time.AfterFunc(promptSaveDelay, func() {
-						a.post(func() {
-							if n.dirty && n.seq == seq {
-								a.saveNotes()
-							}
-						})
-					})
-				}
-			} else if n.dirty && !in.Focused() {
-				a.saveNotes() // it lost the focus
-			}
+			a.autosave(in, n, a.saveNotes)
 			a.notesExample(c)
 		})
 	})
