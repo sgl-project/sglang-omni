@@ -289,7 +289,7 @@ While a session is live (or the answer card shows) the bindings go to the helper
 | Data folder location | `…/VoxtNew/location.json` when the user moved it (Settings → Storage); `move.json`, `reset.json` while a move or an erase waits for the next start |
 | The output's mutes (crash recovery) | `~/Library/Caches/VoxtNew/output-mute/<helper pid>.json`: the devices a helper muted, written before each mute, removed when it gives them back; the next helper undoes a dead one's (`output.recover`). Empty while nothing records |
 | Apps' icons (App enhancement's lists) | `~/Library/Caches/VoxtNew/icons/<bundle id>-64.png`, drawn by the helper (`app.icons`), redrawn after a week (`internal/appicons`) |
-| Logs | `~/Library/Logs/VoxtNew/voxtnew.log` (app, rotated at 5 MB) and `helper.log` (the helper's stderr) |
+| Logs | `~/Library/Logs/VoxtNew/voxtnew.log` (app, rotated at 5 MB) `helper.log` (the helper's stderr) and `crash.log` (a Go crash's stack; the one before is `crash.log.1`) |
 | Helper | `VoxtNew.app/Contents/Resources/helper/voxtnew-helper` (or `$VOXTNEW_HELPER`) |
 | Omni runtime | `VoxtNew.app/Contents/Resources/omni/bin/`: `qwen3_asr_server`, `silero_vad_server` (its copy, for Silero VAD, so that Activity Monitor tells the two apart), `libmlx.dylib`, `libjaccl.dylib`, `mlx.metallib` (`scripts/build-omni.sh`; or `$VOXTNEW_OMNI_RUNTIME`) |
 

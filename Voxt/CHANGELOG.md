@@ -8,11 +8,19 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Voxt 1.x on Apple silicon updates to Voxt 2 by itself**: each release also has the app as `Voxt-X.Y.Z-macOS.zip`, which Voxt 1.x's in-app update installs on a Mac with Apple silicon (first for those who turned on Beta Updates, then for everyone there) and the Homebrew cask (`brew install --cask hehehai/tap/voxt`, Apple silicon only) installs. Voxt 1.x on an Intel Mac is not offered Voxt 2, which does not run there, and stays on Voxt 1.x. After the update, allow the microphone and accessibility again: macOS sees Voxt 2 as another app.
 
+### Fixed
+
+- **A crash leaves something to send**: when Voxt crashes in its own code, what it was doing is now in `~/Library/Logs/VoxtNew/crash.log`, which the next start renames `crash.log.1` and names in the log. Before, such a crash left no report (macOS writes none for it), so there was nothing to send. Save a diagnostic bundle (Settings → About) takes both files.
+
 ### 中文
 
 #### 新增
 
 - **Apple 芯片上的 Voxt 1.x 自己更新到 Voxt 2**：每个版本还附带 app 的 `Voxt-X.Y.Z-macOS.zip`，在 Apple 芯片的 Mac 上，Voxt 1.x 的应用内更新安装它（先给打开了“Beta 更新”的用户，再给其他人），Homebrew 的 cask（`brew install --cask hehehai/tap/voxt`，只支持 Apple 芯片）也装它。Intel Mac 上的 Voxt 1.x 不会收到 Voxt 2（Voxt 2 不能在 Intel 上运行），继续用 Voxt 1.x。更新后要重新允许麦克风和辅助功能：macOS 把 Voxt 2 当成另一个 app。
+
+#### 修复
+
+- **崩溃后有东西可发**：Voxt 在自己的代码里崩溃时，出错时在做什么现在写进 `~/Library/Logs/VoxtNew/crash.log`，下次启动改名为 `crash.log.1`，并在日志里写明。以前这种崩溃不留任何报告（macOS 不为它写），没有东西可以发给我们。「保存诊断包」（设置 → 关于）会带上这两个文件。
 
 ## [2.0.3] - 2026-11-10
 

@@ -18,6 +18,8 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -152,8 +154,31 @@ func (a *app) connectShell(logDir string) {
 		a.logs.Close()
 		a.logs = logs.New(logs.Options{Dir: logDir, Bus: a.bus})
 		log.SetOutput(io.MultiWriter(os.Stderr, a.logs.Writer("app")))
+		keepCrashes(logDir)
 	}
 	mygo.App.OnOpenURL(func(u string) { a.post(func() { a.openURL(u) }) })
+}
+
+// keepCrashes has the Go runtime write a crash (a panic, a fatal error)
+// to crash.log in logDir: macOS keeps no report of a Go crash, and an app
+// opened from the Finder has no stderr to read. The crash of the run
+// before moves to crash.log.1 and the log says so. The diagnostic bundle
+// takes both (writeBundle).
+func keepCrashes(logDir string) {
+	path := filepath.Join(logDir, "crash.log")
+	if fi, err := os.Stat(path); err == nil && fi.Size() > 0 {
+		os.Rename(path, path+".1")
+		log.Printf("warning: Voxt crashed last time; what it was is in %s", path+".1")
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		log.Printf("crash log: %v", err)
+		return
+	}
+	defer f.Close() // the runtime keeps its own copy
+	if err := debug.SetCrashOutput(f, debug.CrashOptions{}); err != nil {
+		log.Printf("crash log: %v", err)
+	}
 }
 
 // closeShell waits for the notifications to be saved and flushes the

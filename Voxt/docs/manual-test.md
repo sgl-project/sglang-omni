@@ -15,7 +15,7 @@
 | 名称 | 位置 |
 |---|---|
 | 日志面板 | Voxt 里按 ⇧⌘L（来源 `session`、`omni`、`helper`） |
-| 日志文件 | `~/Library/Logs/VoxtNew/voxtnew.log`（app，含 Omni 服务的启动、退出、卸载）、`helper.log`（辅助进程：热键、AX、粘贴、URL） |
+| 日志文件 | `~/Library/Logs/VoxtNew/voxtnew.log`（app，含 Omni 服务的启动、退出、卸载）、`helper.log`（辅助进程：热键、AX、粘贴、URL）、`crash.log`（Go 代码崩溃时的堆栈，上一次的是 `crash.log.1`） |
 | 模型文件 | 模型库 `$HUB`（默认 `~/Library/Application Support/SGLang Omni/models`；2.0.0 是 `~/Library/Application Support/ActNow/models/hub`）的 `models--<owner>--<name>/snapshots/<commit>/`；Voxt 的声明在 `~/Library/Application Support/ActNow/models/claims/dev.hehehai.voxtnew.json` |
 | 模型进程 | `pgrep -fl 'qwen3_asr_server\|voxtnew-helper'`：`qwen3_asr_server` 每个模型一个（命令行里的 `--model-directory …/models--<owner>--<name>/snapshots/<commit>` 说明是哪个：语音识别模型或 `vad.silero`） |
 | 历史详情 | 每次会话的识别原文、结果、交付方式、用的语音识别模型和语言模型、各阶段耗时、命中的规则 |
