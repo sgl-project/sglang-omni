@@ -96,6 +96,19 @@ class Yue2ModelRunner(ModelRunner[Yue2ARRequestData]):
         else:
             pass
 
+    def post_decode_launch(
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> torch.Tensor | None:
+        # note (ruiling): async decode launches the next step from these tokens before the host reads them.
+        if requests:
+            self.sample(result, requests)
+        else:
+            pass
+        return super().post_decode_launch(result, forward_batch, requests)
+
     def sample(
         self, result: GenerationBatchResult, requests: list[SchedulerRequest]
     ) -> None:

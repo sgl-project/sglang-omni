@@ -143,4 +143,5 @@ class Yue2EngineBuilder(TtsEngineBuilder[Yue2ARRequestData]):
         )
 
     def extra_scheduler_kwargs(self) -> SchedulerExtras[Yue2ARRequestData]:
-        return {"enable_async_decode": False}
+        # note (ruiling): the scheduler launches the next decode step before it reads this step's tokens.
+        return {"enable_async_decode": True}
