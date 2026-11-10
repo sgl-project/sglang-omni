@@ -1282,6 +1282,8 @@
   "Show in the Dock": "在程序坞中显示",
   "When off, Voxt is only in the menu bar.": "关闭时，Voxt 只在菜单栏里。",
   "Also copy the result to the clipboard": "同时把结果复制到剪贴板",
+  "Strict shortcuts": "快捷键严格模式",
+  "While recording, only the shortcut that started it stops it. Off: any feature's shortcut stops.": "录音时，只有开始录音的那个快捷键能停止它。关闭时，任何功能的快捷键都能停止录音。",
   "Results": "结果",
   "Show live text": "显示实时文字",
   "Preset": "预设",

@@ -593,3 +593,21 @@ func TestDictionaryNotesUpgrade(t *testing.T) {
 		}
 	}
 }
+
+// TestStrictShortcutsDefault: Strict shortcuts is off by default and for
+// a document saved before it existed (Voxt 1.x's common stop); on is
+// written and read back (#3823).
+func TestStrictShortcutsDefault(t *testing.T) {
+	if Defaults().Features.StrictShortcuts {
+		t.Error("on by default")
+	}
+	s, err := Migrate([]byte(`{"version":4,"features":{"transcribe":{"hotkeys":[{"keys":"RightOption","trigger":"tap"}]}}}`))
+	if err != nil || s.Features.StrictShortcuts {
+		t.Fatalf("old document: %v %v", s.Features.StrictShortcuts, err)
+	}
+	s.Features.StrictShortcuts = true
+	data, _ := json.Marshal(s)
+	if back, err := Migrate(data); err != nil || !back.Features.StrictShortcuts {
+		t.Errorf("round trip: %v %v", back.Features.StrictShortcuts, err)
+	}
+}

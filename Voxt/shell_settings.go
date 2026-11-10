@@ -35,25 +35,26 @@ type settingsState struct {
 type settingsForm struct {
 	systemLocale string // mygo.App.Locale(), read when the window opens
 
-	language     string // label
-	mainLanguage string // label
-	theme        int
-	scale        int
-	reduceMotion bool
-	menuBar      bool
-	dock         bool
-	copyResult   bool
-	closeToTray  bool
-	openAtLogin  bool
-	keepHistory  bool
-	keepAudio    bool
-	logText      bool
-	skipSilence  bool        // !Audio.VAD.Off
-	liveResult   bool        // Audio.LiveResult
-	cleanSound   bool        // !Audio.Clean.Off
-	muteOutput   bool        // Audio.MuteOn()
-	sidebar      int         // automatic, names and icons, icons only (settings_appearance.go)
-	ovStyle      overlayForm // settings_overlay.go
+	language        string // label
+	mainLanguage    string // label
+	theme           int
+	scale           int
+	reduceMotion    bool
+	menuBar         bool
+	dock            bool
+	copyResult      bool
+	strictShortcuts bool // Features.StrictShortcuts
+	closeToTray     bool
+	openAtLogin     bool
+	keepHistory     bool
+	keepAudio       bool
+	logText         bool
+	skipSilence     bool        // !Audio.VAD.Off
+	liveResult      bool        // Audio.LiveResult
+	cleanSound      bool        // !Audio.Clean.Off
+	muteOutput      bool        // Audio.MuteOn()
+	sidebar         int         // automatic, names and icons, icons only (settings_appearance.go)
+	ovStyle         overlayForm // settings_overlay.go
 
 	historyAccess, historySelection bool // history_access.go
 
@@ -74,7 +75,7 @@ func settingsSections() []settingsSection {
 		{"permissions", i18n.T("Permissions"), "Permissions microphone accessibility privacy"},
 		{"audio", i18n.T("Audio"), "Audio microphone input device sounds silence"},
 		{"overlay", i18n.T("Overlay style"), "Overlay style position opacity corners recording pill"},
-		{"shortcuts", i18n.T("Shortcuts"), "Shortcuts hotkeys keys fn"},
+		{"shortcuts", i18n.T("Shortcuts"), "Shortcuts hotkeys keys fn strict"},
 		{"appearance", i18n.T("Appearance"), "Appearance theme size sidebar"},
 		{"privacy", i18n.T("Privacy"), "Privacy history audio logs"},
 		{"storage", i18n.T("Storage"), "Storage disk data folder reset"},
@@ -231,6 +232,7 @@ func (a *app) loadSettingsForm() {
 	f.reduceMotion = s.Appearance.ReduceMotion
 	f.menuBar, f.closeToTray, f.openAtLogin = s.General.MenuBar, s.General.CloseToTray, s.General.LaunchAtLogin
 	f.dock, f.copyResult = !s.General.HideDock, s.General.CopyResult
+	f.strictShortcuts = s.Features.StrictShortcuts
 	f.keepHistory, f.keepAudio, f.logText = s.Privacy.KeepHistory, s.Privacy.KeepAudio, s.Privacy.LogText
 	f.historyAccess, f.historySelection = s.Privacy.HistoryAccess, s.Privacy.HistorySelection
 	f.skipSilence = !s.Audio.VAD.Off

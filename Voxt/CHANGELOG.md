@@ -53,6 +53,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Fixed
 
 - **A crash leaves something to send**: when Voxt crashes in its own code, what it was doing is now in `~/Library/Logs/VoxtNew/crash.log`, which the next start renames `crash.log.1` and names in the log. Before, such a crash left no report (macOS writes none for it), so there was nothing to send. Save a diagnostic bundle (Settings → About) takes both files.
+- **Strict shortcuts** in Settings → Shortcuts: while you record, only the shortcut that started the recording stops it. Another feature's shortcut does nothing. Off by default, so any feature's shortcut stops the recording, as in Voxt 1.x (#3823).
 
 ### 中文
 
@@ -105,6 +106,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 
 - **崩溃后有东西可发**：Voxt 在自己的代码里崩溃时，出错时在做什么现在写进 `~/Library/Logs/VoxtNew/crash.log`，下次启动改名为 `crash.log.1`，并在日志里写明。以前这种崩溃不留任何报告（macOS 不为它写），没有东西可以发给我们。「保存诊断包」（设置 → 关于）会带上这两个文件。
+- **快捷键严格模式**（设置 → 快捷键）：录音时只有开始录音的那个快捷键能停止它，按别的功能的快捷键不起作用。默认关闭，和 Voxt 1.x 一样，任何功能的快捷键都能停止录音（#3823）。
 
 ## [2.0.3] - 2026-11-10
 

@@ -174,6 +174,12 @@ func snapshotsMain(t *testing.T, out string) {
 				frames(tt)
 				save("settings-audio-sounds-macos")
 			}
+			if s.id == "shortcuts" { // Strict shortcuts, under the table: a taller window shows it
+				w, h := snapshotSize()
+				tt.SetSize(w, 780)
+				save("settings-shortcuts-strict")
+				tt.SetSize(w, h)
+			}
 			if s.id == "overlay" { // its preview, under the controls
 				w, h := snapshotSize()
 				tt.Scroll(float32(w)*0.7, float32(h)*0.6, 0, 600)
