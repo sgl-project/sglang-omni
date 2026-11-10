@@ -36,6 +36,11 @@ class TranscriptionAdapter(ABC):
         return False
 
     @property
+    def detects_spoken_language(self) -> bool:
+        """Whether one decoder step names the spoken language before translation."""
+        return True
+
+    @property
     def requires_ordered_chunk_decoding(self) -> bool:
         return False
 

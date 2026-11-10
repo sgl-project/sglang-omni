@@ -25,6 +25,10 @@ class NemotronTranscriptionAdapter(DefaultTranscriptionAdapter):
     def supports_word_timestamps(self) -> bool:
         return True
 
+    @property
+    def detects_spoken_language(self) -> bool:
+        return False
+
     def build_timestamped_response(
         self,
         text: str,

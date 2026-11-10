@@ -37,7 +37,10 @@ from sglang_omni.models.nemotron_transcribe.hf_config import (
     num_audio_frames,
     num_audio_tokens,
 )
-from sglang_omni.models.nemotron_transcribe.languages import language_name
+from sglang_omni.models.nemotron_transcribe.languages import (
+    language_name,
+    translation_instruction,
+)
 from sglang_omni.models.nemotron_transcribe.loop_guard import (
     NemotronTranscribeLoopGuard,
     loop_period,
@@ -277,7 +280,8 @@ def make_scheduler_adapters(
         else:
             n_audio = num_audio_tokens(waveform.numel(), audio_token_estimator)
         word_timestamps = bool(params.get("word_timestamps"))
-        if word_timestamps and str(params.get("task") or "transcribe") != "transcribe":
+        task = str(params.get("task") or "transcribe")
+        if word_timestamps and task != "transcribe":
             raise ValueError(
                 "Nemotron Transcribe supports word_timestamps only for transcriptions"
             )
@@ -292,7 +296,10 @@ def make_scheduler_adapters(
         else:
             pass
 
-        instruction = default_instruction(params.get("language"))
+        if task == "translate":
+            instruction = translation_instruction(params.get("language"))
+        else:
+            instruction = default_instruction(params.get("language"))
         if params.get("prompt"):
             instruction = str(params["prompt"])
         else:

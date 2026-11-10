@@ -72,6 +72,10 @@ class NemotronTranscribePipelineConfig(PipelineConfig):
         "asr": NemotronTranscribeStageConfig,
     }
 
+    def supports_audio_translation(self) -> bool:
+        """Nemotron Transcribe translates speech into English."""
+        return True
+
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
         return {"asr": "asr"}

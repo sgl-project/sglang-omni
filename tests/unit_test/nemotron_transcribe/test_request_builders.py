@@ -117,6 +117,27 @@ def test_audio_placeholders_and_offsets_match_encoded_duration() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("parameters", "instruction"),
+    [
+        ({"task": "translate"}, "Translate the audio into English."),
+        (
+            {"task": "translate", "language": "de-DE"},
+            "Translate the German audio into English.",
+        ),
+        ({"task": "translate", "prompt": "Translate into French."}, None),
+    ],
+)
+def test_translation_asks_for_english_and_names_a_known_source(
+    parameters: dict[str, object], instruction: str | None
+) -> None:
+    tokenizer = FakeTokenizer()
+    build_request, _ = make_scheduler_adapters(tokenizer=tokenizer, max_new_tokens=32)
+    build_request(make_payload(parameters))
+    expected = instruction or str(parameters["prompt"])
+    assert tokenizer.messages == [{"role": "user", "content": f"<|audio|>\n{expected}"}]
+
+
 def test_loop_guard_rides_on_each_request_when_enabled() -> None:
     build_request, _ = make_scheduler_adapters(
         tokenizer=FakeTokenizer(), max_new_tokens=32, loop_guard=True

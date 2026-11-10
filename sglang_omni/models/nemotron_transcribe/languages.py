@@ -63,4 +63,13 @@ def language_name(code: str | None) -> str | None:
         return LANGUAGE_NAMES.get(parts[0])
 
 
-__all__ = ["LANGUAGE_NAMES", "language_name"]
+def translation_instruction(source_language: str | None) -> str:
+    """The English translation instruction, naming the source language when known."""
+    name = language_name(source_language)
+    if name is None:
+        return "Translate the audio into English."
+    else:
+        return f"Translate the {name} audio into English."
+
+
+__all__ = ["LANGUAGE_NAMES", "language_name", "translation_instruction"]
