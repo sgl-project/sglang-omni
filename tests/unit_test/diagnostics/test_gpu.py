@@ -70,6 +70,9 @@ class FakePlatform:
     def is_musa(self) -> bool:
         return self.device_type == "musa"
 
+    def is_rocm(self) -> bool:
+        return False
+
 
 def pin_platform(monkeypatch, device_type: str) -> None:
     monkeypatch.setattr(gpu_diagnostics, "current_platform", FakePlatform(device_type))
@@ -142,6 +145,8 @@ def test_collect_gpu_diagnostics_preserves_reordered_visible_mapping(
     ]
     assert report["environment"]["cuda_visible_devices"] == "1,0"
     assert report["environment"]["pytorch_accelerator_build"] == "13.0"
+    assert report["environment"]["pytorch_accelerator_build_type"] == "cuda"
+    assert report["environment"]["pytorch_cuda_build"] == "13.0"
     assert report["schema_version"] == 3
     assert set(report) == {
         "schema_version",
@@ -153,6 +158,31 @@ def test_collect_gpu_diagnostics_preserves_reordered_visible_mapping(
     rendered = gpu_diagnostics.render_gpu_diagnostics(report)
     assert "logical 0 -> physical 1" in rendered
     assert fake_nvml.shutdown_called is True
+
+
+def test_rocm_build_uses_hip_version_and_label(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ROCm's CUDA-compatible device type previously hid its HIP build version."""
+    fake_torch = FakeTorch()
+    fake_torch.version = SimpleNamespace(cuda=None, hip="7.0")
+    pin_platform(monkeypatch, "cuda")
+    monkeypatch.setattr(gpu_diagnostics.current_platform, "is_rocm", lambda: True)
+    monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
+    monkeypatch.setattr(gpu_diagnostics, "cuda_runtime_version", lambda: None)
+
+    report = gpu_diagnostics.collect_gpu_diagnostics(
+        env={}, torch_module=fake_torch, pynvml_module=FakeNVML()
+    )
+
+    environment = report["environment"]
+    assert environment["device_type"] == "cuda"
+    assert environment["pytorch_accelerator_build_type"] == "hip"
+    assert environment["pytorch_accelerator_build"] == "7.0"
+    assert environment["pytorch_cuda_build"] is None
+    pin_platform(monkeypatch, "cpu")
+    assert "PyTorch/HIP build:" in gpu_diagnostics.render_gpu_diagnostics(report)
+    assert f"{fake_torch.__version__} / 7.0" in gpu_diagnostics.render_gpu_diagnostics(
+        report
+    )
 
 
 def test_nvml_inventory_failure_is_isolated_per_physical_device(
@@ -393,6 +423,7 @@ def test_a_non_cuda_accelerator_is_enumerated_through_its_device_module(
     assert environment["logical_device_count"] == 2
     assert environment["driver_version"] == "1.15.38646+6"
     assert environment["pytorch_accelerator_build"] == "2026.1"
+    assert environment["pytorch_accelerator_build_type"] == "xpu"
     assert [gpu["name"] for gpu in report["gpus"]] == [
         "Intel(R) Arc(TM) Pro B60 Graphics"
     ] * 2
@@ -676,6 +707,7 @@ def test_musa_uses_native_visibility_and_device_module(monkeypatch) -> None:
     assert environment["cuda_visible_devices"] == "7,8"
     assert environment["logical_device_count"] == 2
     assert environment["pytorch_accelerator_build"] == "5.2.0"
+    assert environment["pytorch_accelerator_build_type"] == "musa"
     assert environment["driver_version"] is None
     assert [gpu["physical_index"] for gpu in report["gpus"]] == [2, 0]
     assert [gpu["name"] for gpu in report["gpus"]] == ["MTT S5000"] * 2

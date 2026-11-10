@@ -72,6 +72,7 @@ class GpuEnvironmentInfo(NvmlSystemInfo):
     cuda_visible_devices: str | None
     cuda_runtime_version: str | None
     pytorch_version: str | None
+    pytorch_accelerator_build_type: str
     pytorch_accelerator_build: str | None
     pytorch_cuda_build: str | None
     cuda_available: bool
@@ -560,7 +561,10 @@ def collect_gpu_diagnostics(
             else:
                 pass
 
-    build_device_type = device_type if uses_accelerator_device_module else "cuda"
+    if current_platform.is_rocm():
+        build_device_type = "hip"
+    else:
+        build_device_type = device_type if uses_accelerator_device_module else "cuda"
     torch_version = getattr(torch, "version", None)
     backends = backend_inventory()
     warnings.extend(
@@ -578,6 +582,7 @@ def collect_gpu_diagnostics(
             **system,
             "cuda_runtime_version": cuda_runtime_version(),
             "pytorch_version": getattr(torch, "__version__", None),
+            "pytorch_accelerator_build_type": build_device_type,
             "pytorch_accelerator_build": getattr(
                 torch_version, build_device_type, None
             ),
@@ -596,9 +601,7 @@ def render_gpu_diagnostics(report: GpuDiagnosticsReport) -> str:
 
     environment = report["environment"]
     device_type = environment["device_type"]
-    build_device_type = (
-        device_type if device_type in VISIBLE_DEVICES_VARIABLES else "cuda"
-    )
+    build_device_type = environment["pytorch_accelerator_build_type"]
     visible = environment["visible_devices"]
     lines = [
         "SGLang-Omni GPU diagnostics (no model loaded)",
