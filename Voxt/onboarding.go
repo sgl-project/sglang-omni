@@ -77,9 +77,6 @@ type onboardingState struct {
 		legacyOpen bool
 		// legacyDone: that import brought the dictionary over.
 		legacyDone bool
-		// memoryGB is this Mac's memory in GB, 0 when it cannot be read:
-		// it picks the recommended speech model (recommendedSpeech).
-		memoryGB int
 		// awayTo is the page one of the guide's links left it for: that
 		// page offers the way back ("" none).
 		awayTo string
@@ -254,8 +251,8 @@ func (a *app) obGo(step int) {
 
 // onboardingRow is Settings → General's way back to the guide.
 func (a *app) onboardingRow(c *ui.Context) {
-	settingRow(c, "setup-guide", i18n.T("Setup guide"), i18n.T("Permissions, speech models and a test of each feature, as on first launch."), func() {
-		if ui.Button(c.Key("setup-guide-open"), i18n.T("Open the setup guide")).Clicked() {
+	settingRow(c, "setup-guide", i18n.T("Setup guide"), "", func() {
+		if ui.Button(c.Key("setup-guide-open"), i18n.T("Open setup guide")).Clicked() {
 			a.openOnboarding()
 		}
 	})

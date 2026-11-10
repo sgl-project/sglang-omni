@@ -4,10 +4,10 @@ package main
 // (/translate) and Rewrite (/rewrite) share one structure: the feature's
 // shortcuts (and, on Transcribe, the shared "paste the last result"), the
 // models it uses, its own settings (Transcribe's clean-up layers;
-// Translate's target language, clean-up and card; Rewrite's instruction
-// clean-up and when an answer goes to the card), the user's rules with a
-// preview of the whole prompt, and a Try area that runs a session whose
-// result stays on the page.
+// Translate's target language and clean-up; Rewrite's instruction
+// clean-up), the answer card (one switch for the three, a size each), the
+// user's rules with a preview of the whole prompt, and a Try area that
+// runs a session whose result stays on the page.
 //
 // Every change goes through a.updateSettings, which also sends the
 // shortcuts to the helper again. A page keeps only what its controls
@@ -108,28 +108,23 @@ func (a *app) translatePage(c *ui.Context) { a.featurePage(c, hotkey.Translate) 
 // rewritePage builds the Rewrite page.
 func (a *app) rewritePage(c *ui.Context) { a.featurePage(c, hotkey.Rewrite) }
 
-// featurePage builds a feature's page: one column, or two in a wide
-// window (twoColumnW): how the feature starts and its models on the left,
-// what it does with the text, its card, its rules and its Try area on the
-// right.
+// featurePage builds a feature's page, one column at any window width
+// (11-09: the user did not want it split in two in a wide window, #3644
+// FB16): how the feature starts and its models, then what it does with
+// the text, its card, its rules and its Try area.
 func (a *app) featurePage(c *ui.Context, feature string) {
 	t := c.Theme()
 	p := uitext.FeaturePrefix(feature)
-	two := a.pageWidth(c) >= px(t, twoColumnW)
-	if two {
-		centeredPageHeader(c, pageMaxW2, uitext.FeatureTitle(feature), nil)
-	} else {
-		columnPageHeader(c, uitext.FeatureTitle(feature), nil)
-	}
+	columnPageHeader(c, uitext.FeatureTitle(feature), nil)
 	if a.sess.Try && a.sess.State == session.Recording {
 		c.After(250 * time.Millisecond) // the Try area's clock
 	}
 	left := func() {
 		switch feature {
 		case hotkey.Translate:
-			caption(c, i18n.T("Select text and press the shortcut to translate it in place; with nothing selected, speak, and the translation is typed where your cursor is."))
+			caption(c, i18n.T("Translates the selected text in place, or what you say when nothing is selected."))
 		case hotkey.Rewrite:
-			caption(c, i18n.T("Select text and say how to change it (\"shorter\", \"more formal\"); with nothing selected, say what to write. The answer goes where your cursor is."))
+			caption(c, i18n.T("Changes the selected text as you say (\"shorter\", \"more formal\"), or writes what you ask for."))
 		default:
 			caption(c, i18n.T("Press a shortcut anywhere, speak, and the text is typed where your cursor is."))
 		}
@@ -150,13 +145,6 @@ func (a *app) featurePage(c *ui.Context, feature string) {
 		a.featureTry(c, feature)
 	}
 	ui.Scroll(c.Key(p + "-scroll")).Grow(1).MinHeight(0).Children(func() {
-		if !two {
-			pageColumn(c).Gap(px(t, sp3)).Children(func() { left(); right() })
-			return
-		}
-		ui.Row(c).FillWidth().MaxWidth(px(t, pageMaxW2)).AlignSelf(ui.Center).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp6)).AlignItems(ui.Start).Children(func() {
-			ui.Column(c).Grow(1).Basis(0).MinWidth(0).Gap(px(t, sp3)).Children(left)
-			ui.Column(c).Grow(1).Basis(0).MinWidth(0).Gap(px(t, sp3)).Children(right)
-		})
+		pageColumn(c).Gap(px(t, sp3)).Children(func() { left(); right() })
 	})
 }

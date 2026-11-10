@@ -27,9 +27,9 @@ func (a *app) obLanguageGuide(c *ui.Context, kind store.Kind, prefix string) {
 	var detail string
 	switch kind {
 	case store.KindTranslate:
-		detail = i18n.T("No language model is set up: set one up to translate.")
+		detail = i18n.T("No language model is set up. Set one up to translate.")
 	case store.KindRewrite:
-		detail = i18n.T("No language model is set up: set one up to rewrite.")
+		detail = i18n.T("No language model is set up. Set one up to rewrite.")
 	default:
 		detail = i18n.T("No language model is set up.")
 	}

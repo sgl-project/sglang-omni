@@ -130,8 +130,8 @@ func (a *app) scanDialog(c *ui.Context) {
 		case s.counted && s.count == 0:
 			ui.Text(c, i18n.T("No new Transcribe results to scan."))
 		case s.counted:
-			ui.Text(c, i18n.N(s.count, "Voxt will send %d Transcribe result to %s to find names, products and terms. Nothing goes in the dictionary until you confirm it.",
-				"Voxt will send %d Transcribe results to %s to find names, products and terms. Nothing goes in the dictionary until you confirm it.", s.count, s.model.Name))
+			ui.Text(c, i18n.N(s.count, "Voxt will send %d Transcribe result to %s to find names and terms. Nothing is added until you confirm.",
+				"Voxt will send %d Transcribe results to %s to find names and terms. Nothing is added until you confirm.", s.count, s.model.Name))
 		}
 	}, func() {
 		ui.Spacer(c)

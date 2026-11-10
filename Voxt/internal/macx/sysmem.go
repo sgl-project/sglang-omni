@@ -27,7 +27,3 @@ func (m SystemMemory) String() string {
 // ReadSystemMemory reads the Mac's memory state (sysctl, a few
 // microseconds).
 func ReadSystemMemory() (SystemMemory, error) { return readSystemMemory() }
-
-// TotalMemory is the Mac's memory in bytes, 0 when it cannot be read
-// (sysctl, no process started).
-func TotalMemory() int64 { return totalMemory() }

@@ -2,7 +2,6 @@ package main
 
 import (
 	"github.com/egoist/mygo"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/macx"
 )
 
 // app is VoxtNew's UI state: the view state of every page, and handles
@@ -39,6 +38,9 @@ import (
 //	notesState        notes_page.go   the Notes page
 //	learnState        learn_link.go   the watch that learns from the user's corrections
 //	historyAccessState history_access.go  other programs reading the history
+//	meetingState        meeting_link.go meetings (dev builds)
+//	meetingOverlayState meeting_overlay.go the meeting floating window
+//	meetingsState       meetings_page.go the Meetings page (dev builds)
 //
 // Add fields to your area's struct, not here.
 type app struct {
@@ -80,13 +82,15 @@ type app struct {
 	announcementsState
 	learnState
 	historyAccessState
+	meetingState
+	meetingOverlayState
+	meetingsState
 }
 
 func newApp(lib *library, h *helperHost) *app {
 	a := &app{lib: lib, shellState: newShellState()}
 	a.connectEvents() // events.go: who hears of sessions and the history
 	a.helperLink.host = h
-	a.ob.memoryGB = sysInfo{Memory: macx.TotalMemory()}.MemoryGB() // the guide's recommended speech model
 	a.openShell(lib)
 	a.openPermissions()
 	a.openFamily()          // family.go: before the models, whose library is the family's
@@ -135,6 +139,7 @@ func (a *app) quit() {
 	}
 	a.closeSessions() // session_link.go
 	a.closeOverlay()  // overlay.go
+	a.destroyMeetingOverlay()
 	a.closeTray()
 	a.closeMute() // mute_link.go: the output back before the helper goes
 	a.stopHelper()

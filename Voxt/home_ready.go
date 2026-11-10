@@ -43,7 +43,7 @@ func (a *app) readinessList() []readiness {
 	switch {
 	case !okL:
 		out = append(out, readiness{key: "home-llm", title: i18n.T("Language model"), kind: noticeWarn,
-			text: i18n.T("No language model is set up: Translate and Rewrite need one, and Transcribe types the text as recognised."), action: i18n.T("Open Language models"),
+			text: i18n.T("No language model is set up. Translate and Rewrite need one, and Transcribe types the text as recognised."), action: i18n.T("Open Language models"),
 			fix: func() { a.navigate(remotePath) }})
 	default:
 		out = append(out, readiness{key: "home-llm", title: i18n.T("Language model"), ok: true, text: ml.Name})
@@ -80,7 +80,7 @@ func (a *app) readinessList() []readiness {
 			text: uitext.HelperFailText(st), action: i18n.T("Restart Voxt"), fix: a.relaunch})
 	default:
 		out = append(out, readiness{key: "home-helper", title: i18n.T("Helper"), kind: noticeError,
-			text: uitext.HelperFailText(st), action: i18n.T("Restart the helper"), fix: a.restartHelper})
+			text: uitext.HelperFailText(st), action: i18n.T("Restart helper"), fix: a.restartHelper})
 	}
 	return out
 }
@@ -100,7 +100,7 @@ func (a *app) speechReadiness() readiness {
 	st := a.modelStatus[id]
 	openModels := func() { a.navigate(modelsPath) }
 	download := func() { a.downloadModel(id) }
-	r.kind, r.text = noticeWarn, i18n.T("No speech model is installed: install one to transcribe, translate and rewrite by voice.")
+	r.kind, r.text = noticeWarn, i18n.T("No speech model is installed. Install one to transcribe, translate and rewrite by voice.")
 	if ok {
 		r.kind, r.text = noticeInfo, i18n.T("Using System dictation for now.")
 	}
@@ -124,7 +124,7 @@ func (a *app) shortcutReadiness() readiness {
 	openTr := func() { a.navigate("/transcribe") }
 	hs := hotkey.HotkeysOf(a.prefs.Features, hotkey.Transcribe)
 	if len(hs) == 0 {
-		r.kind, r.text, r.action, r.fix = noticeWarn, i18n.T("Transcribe has no shortcut: add one, or start from the menu bar."), i18n.T("Open Transcribe"), openTr
+		r.kind, r.text, r.action, r.fix = noticeWarn, i18n.T("Transcribe has no shortcut. Add one, or start it from the menu bar."), i18n.T("Open Transcribe"), openTr
 		return r
 	}
 	// Its own problems only: a clash is reported on the later binding,

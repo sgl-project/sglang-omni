@@ -18,14 +18,12 @@ type Features struct {
 	// Note records a note (Voxt 1.x's noteHotkeyBindings): a Transcribe
 	// session whose text goes to the Notes page instead of where the
 	// cursor is. Only a tap; empty keys: off.
-	Note Hotkey `json:"note"`
+	Note    Hotkey  `json:"note"`
+	Meeting Meeting `json:"meeting,omitzero"`
 	// EndWord ends a recording when it is the last thing said (Voxt 1.x's
 	// voiceEndCommandText), and is left out of the text; "" is off. Only
 	// a speech model that streams hears it (internal/session).
 	EndWord string `json:"endWord,omitempty"`
-	// ShowCard shows every feature's result in the answer card instead of
-	// inserting it (or replacing the selection): one switch for all.
-	ShowCard bool `json:"showCard,omitempty"`
 	// Hidden are the features left out of the sidebar, Home and the
 	// command palette (Settings → General, as Voxt 1.x's home could):
 	// HideTranslate, HideRewrite, HideAppEnhancement. A hidden feature's
@@ -55,6 +53,21 @@ const CardSizeSteps = 3
 // CardSizeSteps-1 (Features.CardSizes).
 func (f Features) CardSize(kind string) int { return min(max(f.CardSizes[kind], 0), CardSizeSteps-1) }
 
+// ShowsCard reports whether feature kind ("transcribe", "translate",
+// "rewrite") shows its results in the answer card: each feature's own
+// switch.
+func (f Features) ShowsCard(kind string) bool {
+	switch kind {
+	case "transcribe":
+		return f.Transcribe.ShowCard
+	case "translate":
+		return f.Translate.ShowCard
+	case "rewrite":
+		return f.Rewrite.ShowCard
+	}
+	return false
+}
+
 // Feature is what every feature has: its shortcuts, the models it uses
 // (internal/local's Model.ID: a local model's, or LLM a remote one's,
 // Provider.ID; "" = the first one installed, the recommended one) and the
@@ -75,6 +88,8 @@ type Transcribe struct {
 	Enhance   bool `json:"enhance"`
 	Cleanup   bool `json:"cleanup"`
 	Structure bool `json:"structure,omitempty"`
+	// ShowCard shows the text in the answer card instead of typing it.
+	ShowCard bool `json:"showCard,omitempty"`
 }
 
 // Translate: speech or selected text → a translation.
@@ -88,6 +103,9 @@ type Translate struct {
 	// Fallback is the language model asked once more when LLM fails or
 	// does not open; "" = none.
 	Fallback string `json:"fallback,omitempty"`
+	// ShowCard shows the translation in the answer card instead of
+	// typing it (or replacing the selection).
+	ShowCard bool `json:"showCard,omitempty"`
 }
 
 // Rewrite: a spoken instruction rewrites the selection, or writes new
@@ -95,9 +113,13 @@ type Translate struct {
 type Rewrite struct {
 	Feature
 	// Cleanup reads past fillers and self-corrections in the spoken
-	// instruction (never applied to the selection). Every answer shows in
-	// the answer card (Voxt's; the field cardChars of 0.1.0 is dropped).
+	// instruction (never applied to the selection).
 	Cleanup bool `json:"cleanup"`
+	// ShowCard sends every answer to the answer card, which takes
+	// follow-ups, instead of replacing the selection or typing it: on by
+	// default, as in Voxt 1.x (no omitempty: off is kept). The field
+	// cardChars of 0.1.0 is dropped.
+	ShowCard bool `json:"showCard"`
 }
 
 // AppEnhancement: scene rules by app and URL. The groups are the

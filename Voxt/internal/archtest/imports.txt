@@ -36,6 +36,15 @@ llm core
 local asr
 local llm
 local vad
+meeting asr
+meeting core
+meeting helper/proto
+meeting llm
+meeting local
+meeting session
+meeting settings
+meeting store
+meeting vad
 logs core
 notify core
 omni asr

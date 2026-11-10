@@ -35,9 +35,9 @@ var newLocalServices = func(a *app) local.Services {
 // localOpeners are the runtimes this build has.
 func (a *app) localOpeners() local.Openers {
 	return local.Openers{
-		ASR:      a.openOmniASR, // models_omni.go
-		Unload:   a.unloadOmni,  // models_omni.go
-		ASRFirst: func() string { return recommendedSpeech(a.ob.memoryGB) },
+		ASR:    a.openOmniASR, // models_omni.go
+		Unload: a.unloadOmni,  // models_omni.go
+		Hold:   a.omniMeetingHold,
 	}
 }
 

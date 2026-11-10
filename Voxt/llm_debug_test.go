@@ -43,3 +43,51 @@ func TestLLMDebugRuns(t *testing.T) {
 		t.Errorf("saved %q", a.prefs.Features.Transcribe.Prompt)
 	}
 }
+
+// TestLLMDebugPromptGrows: the debug page's prompt field is as high as
+// its text, however long, under the page's one scroll bar, as Your rules
+// on a feature's page; it was 160 high with a scroll bar of its own
+// inside the scrolling page (11-09: a 25 000-character prompt). The page
+// says the prompt is the feature's Your rules.
+func TestLLMDebugPromptGrows(t *testing.T) {
+	srv, _ := mockOpenAI(t, "Hello there.")
+	useKeys(t, &memKeys{m: map[string]string{"llm." + llm.Custom: "sk-mock-123"}})
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 9000) // room for the whole field
+	a.updateSettings(func(s *settings.Settings) {
+		s.Providers.LLM = []settings.Provider{{ID: llm.Custom, Endpoint: srv.URL + "/v1", Model: "mock-model"}}
+	})
+	a.readUnreadKeys()
+	a.navigate(llmDebugPath)
+	frames(tt)
+	a.llmDbg.prompt = "x"
+	frames(tt)
+	short, ok := tt.Find("System prompt")
+	a.llmDbg.prompt = strings.Repeat("Keep product names in English.\n", 200)
+	frames(tt)
+	long, _ := tt.Find("System prompt")
+	if line := short.H / llmDebugPromptLines; !ok || long.H < 150*line {
+		t.Errorf("a 200-line prompt's field is %.0f high: %.0f lines", long.H, long.H/line)
+	}
+}
+
+// TestLLMDebugButtonsFit: the way to the debug page, at the foot of
+// Language models, and the debug page's Open Language models are buttons
+// on the left, under the page's caption; they filled the column, their
+// labels centred, and did not look clickable (#3644).
+func TestLLMDebugButtonsFit(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 2400)
+	for _, c := range []struct{ path, caption, label string }{
+		{remotePath, "Voxt sends the language model the recognised or selected text, never your audio.", "Try prompts on a model…"},
+		{llmDebugPath, "Try a prompt on your own text. Nothing is saved until you click Use this prompt.", "Open Language models"},
+	} {
+		a.navigate(c.path)
+		frames(tt)
+		cap, ok1 := tt.Find(c.caption)
+		r, ok2 := tt.Find(c.label)
+		if !ok1 || !ok2 || r.X-cap.X > 32 || r.W > cap.W/2 {
+			t.Errorf("%s: %q at %+v, the caption at %+v", c.path, c.label, r, cap)
+		}
+	}
+}

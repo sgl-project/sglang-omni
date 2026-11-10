@@ -52,7 +52,7 @@ PYTHON=$(which python) scripts/xpu/install_xpu.sh
 
 Pick extras with `--extras` (comma-separated). `[eval]` adds SeedTTS/WER tools
 and tests; `[all]` is an alias. See [Fun-CosyVoice3](#fun-cosyvoice3-text-to-speech-single-xpu),
-[ZONOS2](#zonos2-moe-tts-single-xpu), and [Audar-TTS](#audar-tts-v1-turbo-arabic-tts-with-voice-cloning-single-xpu)
+[Zonos2](#zonos2-moe-tts-single-xpu), and [Audar-TTS](#audar-tts-v1-turbo-arabic-tts-with-voice-cloning-single-xpu)
 for their optional dependencies.
 
 ```bash
@@ -496,9 +496,9 @@ solver parameters.
 
 **Expected result:** Play `output.wav` to hear the generated 48 kHz mono audio.
 
-### ZONOS2 (MoE TTS, single XPU)
+### Zonos2 (MoE TTS, single XPU)
 
-ZONOS2 needs the Descript DAC codec. `--no-deps` is required:
+Zonos2 needs the Descript DAC codec. `--no-deps` is required:
 `descript-audiotools==0.7.2` pins `protobuf<3.20`, which would downgrade this
 environment's `protobuf` to 3.19.6. The other packages on the line are the codec's
 own dependencies.
@@ -531,7 +531,7 @@ curl -s -X POST http://localhost:8000/v1/audio/speech \
   -o out.wav
 ```
 
-On XPU, ZONOS2 keeps its MoE experts in bf16 and leaves `torch.compile` off; decode
+On XPU, Zonos2 keeps its MoE experts in bf16 and leaves `torch.compile` off; decode
 graphs stay on by default. All three are applied automatically.
 
 **Expected result:** Play `out.wav` to hear the input in the reference voice.
@@ -801,9 +801,9 @@ Health check for any of the above: `curl http://localhost:8000/v1/models`.
 > **Expected on XPU:** `Failed to import mooncake` / `Failed to import nixl` warnings are harmless
 > — those CUDA-only transfer backends are omitted; tensors move through the `shm` relay instead.
 
-> Support status: **Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, ZONOS2,
+> Support status: **Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, Zonos2,
 > Audar-TTS, Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni, Ming-Omni-TTS, Nemotron VoiceChat, PersonaPlex, AuK/AuK-Flash and dots.tts all serve end-to-end on Intel XPU**
 > (Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, Audar-TTS, MiniCPM-o, PersonaPlex, AuK/AuK-Flash and dots.tts single-card;
-> ZONOS2 single-card with decode graphs; MiniMax Music 3, Ming-Omni-TTS and Nemotron VoiceChat need two cards;
+> Zonos2 single-card with decode graphs; MiniMax Music 3, Ming-Omni-TTS and Nemotron VoiceChat need two cards;
 > Ming-Omni chat single-card and speech two-card, with the thinker offloaded to host memory;
 > Qwen3-Omni thinker across 8 cards with tensor parallelism).
