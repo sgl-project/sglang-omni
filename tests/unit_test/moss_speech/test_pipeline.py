@@ -21,6 +21,7 @@ from typer.testing import CliRunner
 from sglang_omni.cli import app
 from sglang_omni.client.client import Client
 from sglang_omni.client.types import GenerateChunk, GenerateRequest
+from sglang_omni.models.moss_speech.chat import chat_rows
 from sglang_omni.models.moss_speech.codec import AudioEncoderOutput, MossSpeechCodec
 from sglang_omni.models.moss_speech.config import MossSpeechPipelineConfig
 from sglang_omni.models.moss_speech.engine_builder import MossSpeechEngineBuilder
@@ -451,6 +452,20 @@ def test_chat_preserves_both_token_channels_and_output_modality(
         assert codec.decode(result, tokenizer=TextTokenizer()).data["text"] == "four"
     else:
         assert MossSpeechState.from_dict(result.data).reference_audio == "voice.wav"
+
+
+@pytest.mark.parametrize("output_modality", ["text", "audio"])
+def test_missing_system_matches_checkpoint_segment_order(output_modality: str) -> None:
+    """The checkpoint appends its default system segment after supplied turns."""
+    rows = chat_rows(
+        [{"role": "user", "content": "Hello"}], TextTokenizer(), None, output_modality
+    )
+    text = bytes(row[0] for row in rows).decode()
+    expected = "<|im_start|>user\nHello<|im_end|>\n<|im_start|>system\nYou are a helpful assistant. Respond with "
+    expected += "spoken" if output_modality == "audio" else "text"
+    expected += " outputs.<|im_end|>\n<|im_start|>assistant\n"
+    expected += "<|object_ref_start|>" if output_modality == "audio" else ""
+    assert text == expected
 
 
 @pytest.mark.parametrize("speech_input", [False, True])
