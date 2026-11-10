@@ -115,13 +115,13 @@ class MossSpeechModelRunner(ModelRunner[MossSpeechSGLangRequestData]):
         else:
             pass
         # note (BraveBeter): Pack both channels into SG's native graph input buffer.
-        rows = torch.tensor(
-            [moss_request_data(request).output_rows[-1] for request in requests],
-            dtype=torch.long,
-            device=forward_batch.input_ids.device,
-        )
+        rows = [moss_request_data(request).output_rows[-1] for request in requests]
         forward_batch.input_ids.copy_(
-            rows[:, 0] * self.model.audio_vocab_size + rows[:, 1]
+            torch.tensor(
+                [text * self.model.audio_vocab_size + audio for text, audio in rows],
+                dtype=torch.long,
+                device=forward_batch.input_ids.device,
+            )
         )
 
     @staticmethod
