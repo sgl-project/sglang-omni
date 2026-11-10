@@ -2,7 +2,11 @@
 
 This page explains the API server at the level that is most useful for maintenance: where it sits in the system, which files matter, and how requests are mapped into the runtime.
 
-If you only want to launch the server and call it, start with [API Server Quickstart](../get_started/apiserver_quickstart.md).
+If you only want to launch the server and call it, start with [API Server Quickstart](../get_started/quickstart.md).
+
+## Launch commands
+
+Run `sgl-omni serve --help` for CLI options. If your SGLang installation supports serve backend plugins, you can also run `sglang serve MODEL_PATH --model-type omni` with the same options. To launch from a config that already sets `model_path`, use `--config path/to/config.yaml` in place of the model path.
 
 ## Role in the System
 
@@ -204,3 +208,10 @@ client provides them, including an explicit `0`, so model schedulers can consume
 them without changing Stage, Coordinator, or Relay. When the field is omitted,
 the speech route leaves it unset and each model applies its own streaming
 default.
+
+## Common errors
+
+- `400 Bad Request`: The server rejected the request parameters. Check the response detail.
+- `422 Unprocessable Entity`: A request field failed schema validation. Check the field named in the response.
+- `500 Internal Server Error`: Check the server logs for the runtime error.
+- `503 Service Unavailable`: The server could not accept the request. Check `/health` and the server logs before retrying.

@@ -1,0 +1,26 @@
+# profile: custom:scene+glossary
+# layers: custom scene glossary
+
+Write English with full-width punctuation. Keep {{UNKNOWN}} as is.
+
+Scene: the text goes into Slack. The user's rules for it:
+Casual chat in Slack: no trailing period.
+Use the scene to choose wording and form only; do not add facts that were not said.
+
+Glossary: write these terms exactly as below, also when the recognizer heard them differently.
+- Kubernetes
+- VoxtNew (heard as: aura link, 奥拉链接)
+- DeepSeek (heard as: deep seek)
+
+---- user ----
+<input>
+Um, can you send the, uh, the weekly report to Tom, sorry, I mean to Anna, before five? I need it before five, I really, I really need it before five.
+</input>
+
+---- assistant ----
+Can you send the weekly report to Anna before 5? I really need it before 5.
+
+---- user ----
+<input>
+um so the aura link release is like seventy percent done comma no wait eighty percent
+</input>
