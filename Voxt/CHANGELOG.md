@@ -27,6 +27,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Fixed
 
 - **A dictation survives a speech model that quit**: when the on-device speech model's process died during a recording (a crash, or macOS ending it under memory pressure), stopping gave only the live text heard until then, with a warning. Voxt now starts the model again and recognises the whole recording, about 0.2 s later on an M5 Max.
+- **The overlay preview keeps the pill on the chosen side** (Settings → Overlay style): at a large distance from the screen edge, Top centre drew the pill near the bottom of the preview and Bottom centre near the top. The pill now moves toward the middle as the distance grows and stays in its own half.
 
 ### 中文
 
@@ -53,6 +54,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 
 - **语音识别模型中途退出，口述也不丢**：录音时本地语音识别模型的进程退出了（崩溃，或内存紧张时被 macOS 结束），停止后以前只得到退出前的实时文字，并带一条警告。现在 Voxt 重新启动模型，识别整段录音，在 M5 Max 上多等约 0.2 秒。
+- **浮窗预览里的胶囊留在所选的一侧**（设置 → 浮窗样式）：与屏幕边缘的距离调大时，选“顶部居中”预览里的胶囊画在靠下的位置，选“底部居中”画在靠上的位置。现在距离越大，胶囊越靠近中间，但始终留在自己那一半。
 
 ## [2.0.3] - 2026-11-10
 
