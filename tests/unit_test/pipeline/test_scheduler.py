@@ -2526,7 +2526,7 @@ def test_plain_fallback_accepts_requests_without_room_for_draft_reserve(
     )
     monkeypatch.setattr(
         "sglang.srt.runtime_context.get_schedule",
-        lambda: SimpleNamespace(mem_fraction_static=0.76),
+        lambda: SimpleNamespace(mem_fraction_static=0.76, max_total_tokens=None),
     )
     request = Req(
         rid="capacity-boundary",
