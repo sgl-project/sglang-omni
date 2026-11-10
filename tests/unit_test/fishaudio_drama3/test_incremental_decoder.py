@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import numpy as np
 import pytest
 import torch
@@ -20,7 +22,7 @@ from sglang_omni.models.fishaudio_drama3.vocoder import (
     Drama3IncrementalVocoderScheduler,
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
-from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from tests.unit_test.fishaudio_drama3.test_vocoder import (
     NUM_CODEBOOKS,
     SAMPLES_PER_FRAME,
@@ -197,6 +199,59 @@ def test_frames_decode_on_a_step_not_on_arrival() -> None:
     scheduler.run_ready_step()
     assert window_decoder.decodes[0]["frames"] == [4]
     assert not scheduler.has_ready_work()
+
+
+def test_stream_frames_accepts_the_chunk_id_the_parent_scheduler_passes() -> None:
+    window_decoder = RecordingWindowDecoder()
+    scheduler = scheduler_with(window_decoder)
+
+    scheduler.stream_frames("a", numbered_frames(3).T, chunk_id=7)
+
+    assert scheduler.streams["a"].held_frame_count == 3
+    assert window_decoder.decodes == []
+
+
+def feed_chunks_without_draining(
+    scheduler: Drama3IncrementalVocoderScheduler, count: int
+) -> None:
+    loop = asyncio.new_event_loop()
+    try:
+        for chunk_id in range(count):
+            scheduler.handle_message(
+                IncomingMessage(
+                    request_id="a",
+                    type="stream_chunk",
+                    data=StreamItem(
+                        chunk_id=chunk_id,
+                        data=numbered_frames(4).T,
+                        from_stage="tts_engine",
+                    ),
+                ),
+                loop,
+            )
+    finally:
+        loop.close()
+
+
+def test_a_sustained_chunk_feed_still_decodes_ready_windows() -> None:
+    window_decoder = RecordingWindowDecoder()
+    scheduler = scheduler_with(window_decoder)
+
+    feed_chunks_without_draining(scheduler, 32)
+
+    assert len(window_decoder.decodes) >= 2
+
+
+def test_a_sustained_chunk_feed_starves_without_a_message_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    window_decoder = RecordingWindowDecoder()
+    scheduler = scheduler_with(window_decoder)
+    monkeypatch.setattr(scheduler, "DECODE_STEP_MESSAGE_BUDGET", 10**9)
+
+    feed_chunks_without_draining(scheduler, 32)
+
+    assert window_decoder.decodes == []
 
 
 def test_a_stream_end_before_its_payload_waits_for_the_payload() -> None:

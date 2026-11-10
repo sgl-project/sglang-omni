@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import bisect
 import collections
 import logging
@@ -27,7 +28,7 @@ from sglang_omni.scheduling.audio_stream import (
     build_stream_vocoder_chunk,
 )
 from sglang_omni.scheduling.audio_vocoder import StreamingVocoderScheduler
-from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
 
@@ -333,12 +334,8 @@ class IncrementalStream:
 
 
 class Drama3IncrementalVocoderScheduler(Drama3VocoderScheduler):
-    """Decode each stream's new frames only, grouping windows of equal length.
 
-    Chunks and stream ends only queue windows; once the inbox is empty one step decodes
-    the group holding the window of the stream with the least audio so far. Nothing
-    waits for a group to fill, so a lone stream decodes as soon as its window completes.
-    """
+    DECODE_STEP_MESSAGE_BUDGET = 8
 
     def __init__(
         self,
@@ -385,6 +382,20 @@ class Drama3IncrementalVocoderScheduler(Drama3VocoderScheduler):
         self.free_slots = list(range(stream_slot_count - 1, -1, -1))
         self.streams: dict[str, IncrementalStream] = {}
         self.stream_arrivals = 0
+        self.messages_since_decode_step = 0
+
+    def handle_message(
+        self, msg: IncomingMessage, loop: asyncio.AbstractEventLoop
+    ) -> None:
+        super().handle_message(msg, loop)
+        self.messages_since_decode_step += 1
+        if (
+            self.messages_since_decode_step >= self.DECODE_STEP_MESSAGE_BUDGET
+            and self.has_ready_work()
+        ):
+            self.run_ready_step()
+        else:
+            pass
 
     def stream_of(self, request_id: str) -> IncrementalStream:
         stream = self.streams.get(request_id)
@@ -408,8 +419,13 @@ class Drama3IncrementalVocoderScheduler(Drama3VocoderScheduler):
             return self.stream_followup_stride
 
     def stream_frames(
-        self, request_id: str, frame_codes: torch.Tensor
+        self,
+        request_id: str,
+        frame_codes: torch.Tensor,
+        *,
+        chunk_id: int = -1,
     ) -> list[OutgoingMessage]:
+        del chunk_id
         stream = self.stream_of(request_id)
         frame_count = int(frame_codes.shape[1])
         if frame_count == 0:
@@ -526,6 +542,7 @@ class Drama3IncrementalVocoderScheduler(Drama3VocoderScheduler):
         return group
 
     def run_ready_step(self) -> None:
+        self.messages_since_decode_step = 0
         failed: list[str] = []
         with self.state_lock:
             group = self.next_group()

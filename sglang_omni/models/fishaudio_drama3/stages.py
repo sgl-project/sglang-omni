@@ -61,6 +61,13 @@ from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleSched
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 from sglang_omni.utils.device import resolve_concrete_device
 
+try:
+    from sglang.kernels.ops.attention.flash_attention_v3 import (
+        _is_fa3_supported as fa3_supported_check,
+    )
+except ImportError:
+    fa3_supported_check = None
+
 logger = logging.getLogger(__name__)
 
 CODEC_FILE_NAME = "codec.pth"
@@ -71,6 +78,35 @@ MEMORY_PROBE_FRAME_COUNT = 128
 HUB_CODEC_PATTERN = re.compile(
     r"(?P<repo_id>[^@\s]+/[^@\s]+)@(?P<revision>[0-9a-f]{40})"
 )
+
+
+def fa3_available(device: torch.device) -> bool:
+    """FA3's paged KV attention is available only on SM 8.x/9.x (sglang 0.5.23)."""
+    if device.type != "cuda" or fa3_supported_check is None:
+        return False
+    else:
+        pass
+    if device.index is None:
+        return bool(fa3_supported_check())
+    else:
+        with torch.cuda.device(device):
+            return bool(fa3_supported_check())
+
+
+def incremental_decode_enabled(
+    *,
+    stream_decode: str,
+    decode_dtype: str,
+    device: torch.device,
+    fa3_supported: bool,
+) -> bool:
+    """Incremental decoding needs CUDA fp16 and FA3's paged KV attention."""
+    return (
+        stream_decode == "incremental"
+        and decode_dtype == "float16"
+        and device.type == "cuda"
+        and fa3_supported
+    )
 
 
 def resolve_codec_directory(codec_path: str) -> str:
@@ -303,11 +339,24 @@ def create_vocoder_executor(
         decode: WindowDecoder = ChannelsLastDecoder(codec, dtype=torch.float16)
     else:
         decode = codec.from_indices
-    is_incremental = (
-        stream_decode == "incremental"
-        and decode_dtype == "float16"
-        and torch_device.type == "cuda"
+    is_incremental = incremental_decode_enabled(
+        stream_decode=stream_decode,
+        decode_dtype=decode_dtype,
+        device=torch_device,
+        fa3_supported=fa3_available(torch_device),
     )
+    if (
+        stream_decode == "incremental"
+        and not is_incremental
+        and torch_device.type == "cuda"
+    ):
+        logger.warning(
+            "Drama 3 vocoder: incremental decoding needs FA3 (SM 8.x/9.x); "
+            "falling back to overlap decoding on %s",
+            torch_device,
+        )
+    else:
+        pass
     if is_incremental:
         window_decoder = build_incremental_window_decoder(
             decode,

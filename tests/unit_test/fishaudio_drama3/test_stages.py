@@ -484,3 +484,54 @@ def test_a_share_that_cannot_hold_one_longest_request_is_refused() -> None:
             total_gpu_memory_fraction=0.01,
             max_new_tokens=10**9,
         )
+
+
+@pytest.mark.parametrize(
+    ("stream_decode", "decode_dtype", "device", "fa3_supported", "expected"),
+    [
+        ("incremental", "float16", "cuda", True, True),
+        ("incremental", "float16", "cuda", False, False),
+        ("incremental", "float16", "cpu", True, False),
+        ("incremental", "float32", "cuda", True, False),
+        ("overlap", "float16", "cuda", True, False),
+    ],
+)
+def test_incremental_decode_requires_cuda_fp16_and_fa3(
+    stream_decode: str,
+    decode_dtype: str,
+    device: str,
+    fa3_supported: bool,
+    expected: bool,
+) -> None:
+    assert (
+        stages.incremental_decode_enabled(
+            stream_decode=stream_decode,
+            decode_dtype=decode_dtype,
+            device=torch.device(device),
+            fa3_supported=fa3_supported,
+        )
+        is expected
+    )
+
+
+def test_fa3_probe_is_disabled_without_sglang(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(stages, "fa3_supported_check", None)
+
+    assert stages.fa3_available(torch.device("cuda")) is False
+    assert stages.fa3_available(torch.device("cpu")) is False
+
+
+def test_fa3_probe_uses_the_sglang_capability_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probes: list[str] = []
+    monkeypatch.setattr(
+        stages,
+        "fa3_supported_check",
+        lambda: probes.append("probe") or False,
+    )
+
+    assert stages.fa3_available(torch.device("cuda")) is False
+    assert probes == ["probe"]
