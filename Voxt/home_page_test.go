@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"math"
 	"os"
 	"strings"
 	"testing"
@@ -50,10 +51,11 @@ func allowAll(a *app) {
 func TestHomeReadiness(t *testing.T) {
 	a, tt := homeTester(t)
 	for _, s := range []string{
-		"No speech model or language model is installed: install one of each to start.",
-		"Without Accessibility results are copied for you to paste, and shortcuts such as Right ⌥ do not work.",
+		"No speech model is installed. Install one to transcribe, translate and rewrite by voice.",
+		"No language model is set up. Translate and Rewrite need one, and Transcribe types the text as recognised.",
+		"Without Accessibility access, results are copied for you to paste, and shortcuts such as Right ⌥ do not work.",
 		"Right ⌥ (once Accessibility is allowed)",
-		"Try it", "Today", "Recent results", "Results show here once you use a shortcut.",
+		"Try it", "Today", "Recent results", "Results appear here after you use a shortcut.",
 	} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, tt.Texts())
@@ -62,16 +64,20 @@ func TestHomeReadiness(t *testing.T) {
 	if !hasSuffix(tt, " steps to go") {
 		t.Errorf("no steps to go: %q", tt.Texts())
 	}
-	// The whole line is the way to fix it.
-	click(t, tt, "Models: Open Local models")
-	if a.shownPath() != modelsPath {
+	// The whole line is the way to fix it: speech models are local,
+	// language models are set up on their page.
+	if _, ok := tt.Find("Speech recognition: Download (2.5 GB)"); !ok {
+		t.Fatalf("no download on the speech line: %q", tt.Texts())
+	}
+	click(t, tt, "Language model: Open Language models")
+	if a.shownPath() != remotePath {
 		t.Fatalf("went to %s", a.shownPath())
 	}
 	a.navigate("/home")
 
 	// A speech model only: the language model is missing.
 	a.local = &fakeLocal{ASRP: &fakeTranscriptions{}}
-	if !has(tt, "No language model is installed: Translate and Rewrite need one, and Transcribe types the text as recognised.") || !has(tt, fakeASRModel.Name) {
+	if !has(tt, "No language model is set up. Translate and Rewrite need one, and Transcribe types the text as recognised.") || !has(tt, fakeASRModel.Name) {
 		t.Errorf("no language model: %q", tt.Texts())
 	}
 
@@ -91,7 +97,7 @@ func TestHomeReadiness(t *testing.T) {
 	a.updateSettings(func(s *settings.Settings) {
 		s.Features.Transcribe.Hotkeys = []settings.Hotkey{{Keys: "Command+Space", Trigger: settings.TriggerTap}}
 	})
-	if !has(tt, "1 step to go") || !has(tt, "Transcribe's shortcut ⌘ Space: macOS uses these keys for Spotlight.") {
+	if !has(tt, "1 step to go") || !has(tt, "Transcribe's shortcut ⌘Space: macOS uses these keys for Spotlight.") {
 		t.Errorf("no clash: %q", tt.Texts())
 	}
 	// What is ready shows again, quieter, under what is missing.
@@ -115,7 +121,7 @@ func TestHomeReadinessLive(t *testing.T) {
 	}
 	// Accessibility taken away.
 	a.perms.access = false
-	if !has(tt, "1 step to go") || !has(tt, "Without Accessibility results are copied for you to paste, and shortcuts such as Right ⌥ do not work.") {
+	if !has(tt, "1 step to go") || !has(tt, "Without Accessibility access, results are copied for you to paste, and shortcuts such as Right ⌥ do not work.") {
 		t.Errorf("access revoked: %q", tt.Texts())
 	}
 	a.perms.access = true
@@ -124,7 +130,7 @@ func TestHomeReadinessLive(t *testing.T) {
 	}
 	// The language model removed.
 	a.local.(*fakeLocal).Chat = nil
-	if !has(tt, "1 step to go") || !has(tt, "No language model is installed: Translate and Rewrite need one, and Transcribe types the text as recognised.") {
+	if !has(tt, "1 step to go") || !has(tt, "No language model is set up. Translate and Rewrite need one, and Transcribe types the text as recognised.") {
 		t.Errorf("model deleted: %q", tt.Texts())
 	}
 	readyModels(a)
@@ -228,7 +234,7 @@ func TestSloganHint(t *testing.T) {
 		{&settings.Hotkey{Keys: "Fn", Trigger: settings.TriggerTap}, "Press [fn] to start", "按 [fn] 开始"},
 		{&settings.Hotkey{Keys: "Fn"}, "Press [fn] to start", "按 [fn] 开始"},
 		{&settings.Hotkey{Keys: "RightCommand", Trigger: settings.TriggerDouble}, "Double-press [Right ⌘] to start", "双击 [右 ⌘] 开始"},
-		{&settings.Hotkey{Keys: "Option+Space", Trigger: settings.TriggerLong}, "Hold [⌥ Space] and speak", "按住 [⌥ 空格] 说话"},
+		{&settings.Hotkey{Keys: "Option+Space", Trigger: settings.TriggerLong}, "Hold [⌥Space] and speak", "按住 [⌥空格] 说话"},
 		{nil, "Add a shortcut to start[]", "先设置一个快捷键[]"},
 	} {
 		i18n.SetLocale("en")
@@ -247,7 +253,7 @@ func TestSloganHint(t *testing.T) {
 // cap, and without one, a link to add it.
 func TestHomeSlogan(t *testing.T) {
 	a, tt := homeTester(t)
-	for _, s := range []string{"Speak anywhere, it types at your cursor", "Press", "Right ⌥", "to start"} {
+	for _, s := range []string{"Speak anywhere and Voxt types at your cursor", "Press", "Right ⌥", "to start"} {
 		if !hasExact(tt, s) {
 			t.Errorf("no %q in %q", s, tt.Texts())
 		}
@@ -255,7 +261,7 @@ func TestHomeSlogan(t *testing.T) {
 	a.updateSettings(func(s *settings.Settings) {
 		s.Features.Transcribe.Hotkeys = []settings.Hotkey{{Keys: "Option+Space", Trigger: settings.TriggerLong}, {Keys: "Fn"}}
 	})
-	if !hasExact(tt, "Hold") || !hasExact(tt, "⌥ Space") || !hasExact(tt, "and speak") {
+	if !hasExact(tt, "Hold") || !hasExact(tt, "⌥Space") || !hasExact(tt, "and speak") {
 		t.Errorf("long: %q", tt.Texts())
 	}
 	a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.Hotkeys = nil })
@@ -411,6 +417,38 @@ func TestHomeTryByShortcut(t *testing.T) {
 	}
 }
 
+// TestShortcutInOwnField (FB10): the shortcut pressed while a field of
+// the window has the focus (a feature's rules being edited) starts a
+// session, with the overlay, that types into the field as in another
+// app; it is not a try on the page. With a button focused, a try as
+// before.
+func TestShortcutInOwnField(t *testing.T) {
+	a, tt := pageTester(t, "/transcribe")
+	readyModels(a)
+	drain := queuePosts(a)
+	click(t, tt, "Your rules")
+	click(t, tt, "System prompt for Transcribe")
+	if got := a.tryPlace(store.KindTranscribe, *selfFront()); got != placeNone {
+		t.Fatalf("rules field focused: %v, want no try", got)
+	}
+	a.hotkeyFired(proto.HotkeyEventParams{Binding: "transcribe/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: selfFront()})
+	drain()
+	frames(tt)
+	if a.sess.ID == "" || a.sess.Try || !a.ov.shown {
+		t.Fatalf("not a session with the overlay: %+v, overlay %v", a.sess, a.ov.shown)
+	}
+	a.cancelSession()
+	drain()
+	frames(tt)
+	click(t, tt, "Example user message")
+	if !tt.Focused("Example user message") {
+		t.Fatal("the button did not take the focus")
+	}
+	if got := a.tryPlace(store.KindTranscribe, *selfFront()); got != placeFeature {
+		t.Errorf("button focused: %v, want the page's try", got)
+	}
+}
+
 // homeShots saves Home with everything ready, the history seeded, and a
 // try that is done (TestSnapshots), at the top and scrolled to its end.
 func homeShots(a *app, tt *ui.Tester, save func(string)) {
@@ -437,4 +475,45 @@ func sameDay(a, b time.Time) bool {
 	ay, am, ad := a.Date()
 	by, bm, bd := b.Date()
 	return ay == by && am == bm && ad == bd
+}
+
+// TestWidePageCentered: in a window much wider than a page's column (full
+// screen), the column sits in the middle of the page and the header's
+// title and action line up with it; a page of lists keeps a wider body in
+// the middle in the same way. The column hugged the left with the
+// header's action at the window's far edge, a wide empty band between
+// (#3644, full screen).
+func TestWidePageCentered(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	const w = 1700
+	tt.SetSize(w, 1100)
+	a.navigate("/home")
+	frames(tt)
+	slogan, ok1 := tt.Find("Speak anywhere and Voxt types at your cursor")
+	guide, ok2 := tt.Find("Setup guide")
+	history, ok3 := tt.Find("Open History")
+	if !ok1 || !ok2 || !ok3 {
+		t.Fatalf("found slogan %v, Setup guide %v, Open History %v", ok1, ok2, ok3)
+	}
+	left := slogan.X - sidebarWidth
+	right := w - (history.X + history.W)
+	if math.Abs(float64(left-right)) > 20 || left < 300 {
+		t.Errorf("the column: %.0f from the sidebar, %.0f from the window's edge", left, right)
+	}
+	if math.Abs(float64(guide.X+guide.W-(history.X+history.W))) > 1 {
+		t.Errorf("Setup guide ends at %.0f, the column's Open History at %.0f", guide.X+guide.W, history.X+history.W)
+	}
+	// A page of lists keeps a wider body in the middle, its header lined
+	// up with it too.
+	a.navigate("/dictionary")
+	frames(tt)
+	search, ok1 := tt.Find("Search dictionary")
+	add, ok2 := tt.Find("Add term")
+	if !ok1 || !ok2 {
+		t.Fatalf("Dictionary: found search %v, Add term %v", ok1, ok2)
+	}
+	left, right = search.X-sidebarWidth, w-(add.X+add.W)
+	if math.Abs(float64(left-right)) > 30 || left < 150 {
+		t.Errorf("Dictionary: %.0f from the sidebar to the search, %.0f from Add term to the window's edge", left, right)
+	}
 }

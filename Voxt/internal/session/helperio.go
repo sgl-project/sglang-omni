@@ -13,12 +13,21 @@ type Caller interface {
 }
 
 // HelperAudio is the microphone through the helper (capture.start as a
-// job named by the session's id, capture.stop).
-type HelperAudio struct{ H Caller }
+// job named by the caller's id: a session's, capture.stop), or the
+// system's sound (Method proto.MethodCaptureSystem, which takes no
+// devices).
+type HelperAudio struct {
+	H      Caller
+	Method string // "": capture.start
+}
 
 func (h HelperAudio) Record(ctx context.Context, id string, p proto.CaptureParams, fn func(AudioEvent)) (proto.CaptureResult, error) {
 	var out proto.CaptureResult
-	raw, err := h.H.Call(ctx, id, proto.MethodCaptureStart, p, func(m proto.Message) {
+	method, params := proto.MethodCaptureStart, any(p)
+	if h.Method == proto.MethodCaptureSystem {
+		method, params = h.Method, proto.SystemParams{SampleRate: p.SampleRate, FrameMS: p.FrameMS, LevelHz: p.LevelHz, MaxSeconds: p.MaxSeconds}
+	}
+	raw, err := h.H.Call(ctx, id, method, params, func(m proto.Message) {
 		var ev AudioEvent
 		switch m.Method {
 		case proto.MethodCapturePCM:
@@ -88,4 +97,10 @@ func (h HelperText) Selection(ctx context.Context, p proto.SelectionParams) (pro
 // Frontmost is the app in front.
 func (h HelperText) Frontmost(ctx context.Context) (proto.App, error) {
 	return call[proto.App](ctx, h.H, proto.MethodAppFrontmost, nil)
+}
+
+// Read reads a range of the focused field of an app in front
+// (textio.read; dictionary learning).
+func (h HelperText) Read(ctx context.Context, p proto.ReadParams) (proto.ReadResult, error) {
+	return call[proto.ReadResult](ctx, h.H, proto.MethodTextRead, p)
 }

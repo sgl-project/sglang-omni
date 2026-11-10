@@ -73,6 +73,12 @@ type cardView struct {
 	canInsert, canCopy, canFollowUp, canStop, canRetry, canLang bool
 	copied                                                      bool
 	follow                                                      string // the Rewrite shortcut's glyphs
+	// size is the card's, its feature's (Features.CardSizes).
+	size layout.CardSize
+	// writing: Rewrite's first answer as the model writes it
+	// (writingAnswer), the card at its full height from the first words:
+	// it does not grow line by line (10-15).
+	writing bool
 }
 
 // cardBubble is one turn's side in a conversation.
@@ -85,15 +91,24 @@ type cardBubble struct {
 // cardNow is the card as it shows now.
 func (a *app) cardNow() cardView {
 	s := a.sess
+	if a.prefs.Overlay.HideLiveText {
+		s.Partial, s.Draft = "", "" // "Show live text" off: no words in a follow-up's bubbles either
+	}
 	if !a.answer.open {
-		return cardView{} // no card: the pill shows the session
+		if a.writingAnswer() {
+			s := a.pillSession()
+			return cardView{kind: s.Kind, title: uitext.CardTitle(s.Kind, s.Title), text: s.Draft, busy: true, writing: true,
+				target: s.Target.Name, size: layout.CardSizes[a.prefs.Features.CardSize(string(s.Kind))]}
+		}
+		return cardView{size: layout.CardSizes[0]} // no card: the pill shows the session
 	}
 	card := a.answer
 	own := a.cardSessionLive()
 	redo := own && s.ID == card.redo
 	follow := own && !redo
 	v := cardView{kind: card.kind, text: card.text, failed: card.problem, msg: card.msg, why: card.why, lang: card.lang,
-		target: card.target.Name, copied: card.copied, busy: own, conversation: card.conversation || follow}
+		target: card.target.Name, copied: card.copied, busy: own, conversation: card.conversation || follow,
+		size: layout.CardSizes[a.prefs.Features.CardSize(string(card.kind))]}
 	v.title = uitext.CardTitle(card.kind, card.title)
 	if redo {
 		v.lang = card.redoLang
@@ -153,6 +168,17 @@ func cmpOr(a, b string) string {
 	return b
 }
 
+// writingAnswer says whether Rewrite's first answer is being written, its
+// first words in, and will end in the card: the pill hands over to the
+// answer card, which the answer streams into, instead of a loader until
+// the whole answer is in (#3644). Not with Show live text off, nor for a
+// follow-up (its card is open already), a try (the page shows it) or an
+// answer that goes in at once (the card switch off: the pill shows it).
+func (a *app) writingAnswer() bool {
+	s := a.pillSession()
+	return !a.answer.open && s.Kind == store.KindRewrite && s.State == session.Composing && s.Card && !s.Try && strings.TrimSpace(s.Draft) != ""
+}
+
 // cardRecording says whether the card shows a follow-up recording (its
 // waveform moves).
 func (a *app) cardRecording() bool {
@@ -178,10 +204,11 @@ type cardBlock struct {
 
 // cardBlocks are the pieces of v's text, in order.
 func cardBlocks(v cardView) []cardBlock {
+	bodyW := float32(v.size.BodyW())
 	switch {
 	case v.conversation:
 		var out []cardBlock
-		inner := float32(layout.BubbleW - 2*layout.BubblePadX)
+		inner := float32(v.size.BubbleW() - 2*layout.BubblePadX)
 		for i, b := range v.bubbles {
 			text := strings.TrimSpace(b.text)
 			if text == "" {
@@ -201,17 +228,17 @@ func cardBlocks(v cardView) []cardBlock {
 	case v.failed != nil:
 		text, more, _ := sessionProblemText(v.failed)
 		out := []cardBlock{{problem: true, color: ovCardText,
-			text: ovSized{text, layout.CardTextSize, layout.CardTextWeight, layout.CardBodyW - layout.ProblemIcon - layout.ProblemGap}}}
+			text: ovSized{text, layout.CardTextSize, layout.CardTextWeight, bodyW - layout.ProblemIcon - layout.ProblemGap}}}
 		if more != "" {
-			out = append(out, cardBlock{text: ovSized{more, 12, 0, layout.CardBodyW}, color: ovText2, gap: 4, selectable: true})
+			out = append(out, cardBlock{text: ovSized{more, 12, 0, bodyW}, color: ovText2, gap: 4, selectable: true})
 		}
 		for _, src := range v.source {
-			out = append(out, cardBlock{text: ovSized{strings.TrimSpace(src), 13, 0, layout.CardBodyW}, color: ovText2, gap: 10, selectable: true})
+			out = append(out, cardBlock{text: ovSized{strings.TrimSpace(src), 13, 0, bodyW}, color: ovText2, gap: 10, selectable: true})
 		}
 		return out
 	}
 	text := strings.TrimSpace(v.text)
-	return []cardBlock{{text: ovSized{text, layout.CardTextSize, layout.CardTextWeight, layout.CardBodyW}, color: ovCardText, selectable: text != ""}}
+	return []cardBlock{{text: ovSized{text, layout.CardTextSize, layout.CardTextWeight, bodyW}, color: ovCardText, selectable: text != ""}}
 }
 
 // cardTexts are the texts the card's height depends on.
@@ -243,8 +270,9 @@ func (a *app) blockHeight(b cardBlock) (float32, bool) {
 }
 
 // cardBodyHeight is the height of v's text in the card: all of it up to
-// layout.CardBodyMax (then it scrolls), and whether it was measured.
+// cardBodyMax (then it scrolls), and whether it was measured.
 func (a *app) cardBodyHeight(v cardView) (int, bool) {
+	bodyMax := a.cardBodyMax(v)
 	var h float32
 	exact := true
 	for _, b := range cardBlocks(v) {
@@ -252,19 +280,31 @@ func (a *app) cardBodyHeight(v cardView) (int, bool) {
 		h += b.gap + bh
 		exact = exact && ok
 	}
-	return min(int(math.Ceil(float64(h))), layout.CardBodyMax), exact
+	return min(int(math.Ceil(float64(h))), bodyMax), exact
 }
 
-// cardHeight is the card's height (its width is layout.AnswerW), and whether
-// its texts were measured.
-func (a *app) cardHeight() (int, bool) {
+// cardBodyMax is the most text v shows before it scrolls: as much as the
+// work area holds beside the overlay's margin, so that the card grows
+// with a long answer and stays on the screen (#3644 FB41); never less
+// than layout.CardBodyMax.
+func (a *app) cardBodyMax(v cardView) int {
+	room := a.ov.area.Height - int(math.Round(a.prefs.Overlay.Margin)) - layout.Pad - layout.CardChrome
+	if v.msg != "" {
+		room -= layout.CardMsgGap + layout.CardMsgH
+	}
+	return max(room, layout.CardBodyMax)
+}
+
+// cardSize is the card's width (its size's) and height, and whether its
+// texts were measured.
+func (a *app) cardSize() (w, h int, exact bool) {
 	v := a.cardNow()
 	body, exact := a.cardBodyHeight(v)
-	h := layout.CardChrome + body
+	h = layout.CardChrome + body
 	if v.msg != "" {
 		h += layout.CardMsgGap + layout.CardMsgH
 	}
-	return h, exact
+	return v.size.W, h, exact
 }
 
 // featureKeys are the glyphs of a feature's first shortcut ("" for none).

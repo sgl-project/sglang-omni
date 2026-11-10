@@ -34,6 +34,8 @@ from sglang_omni.models.minicpm_o.native_config import (
 from sglang_omni.models.minicpm_o.native_thinker_model_runner import (
     MiniCPMOThinkerModelRunner as DuplexThinkerModelRunner,
 )
+from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
+from sglang_omni.models.minicpm_o.request_builders import build_sglang_thinker_request
 from sglang_omni.models.minicpm_o.session_adapters import ThinkerAdapter
 from sglang_omni.models.minicpm_o.special_tokens import (
     REQUIRED_SPECIAL_TOKENS,
@@ -54,10 +56,12 @@ from sglang_omni.proto.streams import (
     SESSION_CONTROL,
     TRUNCATE,
 )
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionPreparation
 from sglang_omni.scheduling.sglang_backend.request_data import (
     EmbeddingSpan,
     SGLangARRequestData,
+    ThinkerRequest,
 )
 
 EOS_TOKEN_IDS = [1, 3]
@@ -387,6 +391,70 @@ def test_speculative_known_text_keeps_prefill_rows_across_chunks(
     )
     assert request.rid not in runner.pending_hidden
     assert request.rid not in runner.speculative_hidden_queue
+
+
+def admitted_thinker_request(state: MiniCPMOPipelineState) -> ThinkerRequest:
+    """Build a thinker request and attach its data the way the scheduler admits one."""
+    request_data = build_sglang_thinker_request(
+        state, params={"max_new_tokens": 8}, tokenizer=None, vocab_size=VOCAB_SIZE
+    )
+    request = request_data.req
+    request.omni_data = request_data
+    OmniScheduler.normalize_req_token_arrays(request)
+    return request
+
+
+def prefill_input_embeds(
+    runner: MiniCPMOThinkerModelRunner, request: ThinkerRequest, token_ids: list[int]
+) -> torch.Tensor:
+    """The embeddings the runner composes for one extend of the request over token_ids."""
+    forward_batch = SimpleNamespace(
+        input_ids=torch.tensor(token_ids, dtype=torch.long),
+        extend_seq_lens_cpu=[len(token_ids)],
+        extend_prefix_lens_cpu=[0],
+    )
+    composed = runner.inject_multimodal_embeds(
+        forward_batch, SimpleNamespace(reqs=[request])
+    )
+    assert composed is not None, "the extend composed no multimodal rows"
+    return composed[0]
+
+
+def test_a_retracted_request_reprefills_its_prompt_with_its_audio_rows() -> None:
+    """A thinker request retracted after its prompt prefill re-prefilled its audio placeholders as token ids, which stopped the thinker on an out-of-range embedding index."""
+    runner = object.__new__(MiniCPMOThinkerModelRunner)
+    torch.manual_seed(0)
+    runner.embed_tokens = torch.nn.Embedding(VOCAB_SIZE, 4)
+    runner.image_token_id, runner.video_token_id, runner.audio_token_id = 90, 91, 92
+    audio_state = MiniCPMOPipelineState(
+        prompt={"input_ids": torch.tensor([10, 92, 92, 11])},
+        mm_inputs={"audio": {"bounds": torch.tensor([[1, 3]]), "cache_key": "clip-0"}},
+        thinker_inputs={"model_inputs": {"audio_embeds": torch.full((2, 4), 99.0)}},
+    )
+    fresh_request = admitted_thinker_request(audio_state)
+    fresh_prompt_embeds = prefill_input_embeds(
+        runner, fresh_request, list(fresh_request.origin_input_ids)
+    )
+    request = admitted_thinker_request(audio_state)
+
+    request.inflight_middle_chunks = 1
+    prefill_input_embeds(runner, request, list(request.origin_input_ids[:2]))
+    request.reset_for_retract()
+    request.init_next_round_input()
+    assert torch.equal(
+        prefill_input_embeds(runner, request, list(request.full_untruncated_fill_ids)),
+        fresh_prompt_embeds,
+    )
+
+    request.output_ids.extend([PLAIN_TOKEN_ID, OTHER_TOKEN_ID])
+    request.reset_for_retract()
+    request.init_next_round_input()
+    reprefill_embeds = prefill_input_embeds(
+        runner, request, list(request.full_untruncated_fill_ids)
+    )
+    assert torch.equal(
+        reprefill_embeds[: len(request.origin_input_ids)], fresh_prompt_embeds
+    )
 
 
 @pytest.mark.parametrize("mode", ["compact", "cap-accept"])

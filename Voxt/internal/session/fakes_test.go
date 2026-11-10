@@ -215,11 +215,17 @@ type fakeStreamer struct {
 	openWait time.Duration // Open takes this long
 	openGate chan struct{} // Open waits for it to close (nil: no wait)
 	silent   bool          // no partials
-	salvage  string        // the text its streams salvage (asr.Salvager), "" for none
+	// partials are what its partials say, one per send, the last one
+	// repeated (nil: "partial").
+	partials []string
+	salvage  string // the text its streams salvage (asr.Salvager), "" for none
 
 	mu      sync.Mutex
 	streams []*fakeStream
 	hints   []string
+	prompt  string // the last stream's prompt
+	// liveResult is the last stream's StreamRequest.LiveResult.
+	liveResult bool
 }
 
 func (f *fakeStreamer) Caps() asr.Caps { return asr.Caps{Stream: true, Hints: true} }
@@ -245,7 +251,7 @@ func (f *fakeStreamer) Open(ctx context.Context, req asr.StreamRequest) (asr.Str
 	s := &fakeStream{f: f, ctx: ctx, events: make(chan asr.Event, 1024)}
 	f.mu.Lock()
 	f.streams = append(f.streams, s)
-	f.hints = req.Hints
+	f.hints, f.prompt, f.liveResult = req.Hints, req.Prompt, req.LiveResult
 	f.mu.Unlock()
 	return s, nil
 }
@@ -293,7 +299,11 @@ func (s *fakeStream) Send(pcm []byte) error {
 		return nil
 	}
 	if !s.f.silent {
-		s.emit(asr.Event{Kind: asr.EventPartial, Text: "partial"})
+		text := "partial"
+		if len(s.f.partials) > 0 {
+			text = s.f.partials[min(n, len(s.f.partials))-1]
+		}
+		s.emit(asr.Event{Kind: asr.EventPartial, Text: text})
 	}
 	return nil
 }
@@ -330,11 +340,12 @@ type fakeFile struct {
 	err  error
 	hang bool
 
-	mu    sync.Mutex
-	calls int
-	bytes int
-	audio []byte // the last request's audio
-	lang  string // the last request's language hint
+	mu     sync.Mutex
+	calls  int
+	bytes  int
+	audio  []byte // the last request's audio
+	lang   string // the last request's language hint
+	prompt string // the last request's prompt
 }
 
 func (f *fakeFile) Caps() asr.Caps { return asr.Caps{File: true, Prompt: true} }
@@ -344,7 +355,7 @@ func (f *fakeFile) Transcribe(ctx context.Context, req asr.FileRequest) (asr.Res
 	f.calls++
 	f.bytes = len(req.Audio)
 	f.audio = req.Audio
-	f.lang = req.Lang
+	f.lang, f.prompt = req.Lang, req.Prompt
 	f.mu.Unlock()
 	if f.hang {
 		<-ctx.Done()

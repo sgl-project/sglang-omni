@@ -20,7 +20,7 @@ sgl-omni serve \
   --port 8000
 ```
 
-For Intel XPU installation and launch, see the [Whisper XPU recipe](../get_started/installation_xpu.md#whisper-asr-speech-to-text-single-xpu).
+For Intel XPU installation and launch, see the [Whisper XPU recipe](../other_platforms/installation_xpu.md#whisper-asr-speech-to-text-single-xpu).
 
 ## Encoder CUDA Graph
 
@@ -125,7 +125,11 @@ sgl-omni serve \
   --port 8000
 ```
 
-Speculative decoding is greedy: a request with a nonzero temperature or with segment timestamps is refused with 400. It runs synchronously, so async decode is off. The first startup compiles the verify graphs for every decode batch size, about 14 minutes on an H200 against 9 without a draft; with a warm compile cache both start in about 6 minutes.
+A request with a positive `temperature` samples under the draft: each draft token is accepted with probability min(1, p/q), the target's probability over the draft's, and the first rejected one is redrawn from the remainder, so the transcript follows the same distribution as without the draft. On the 1,000 English clips below at temperature 0.7, WER was 4.21% to 4.35% across three runs with the draft and 4.28% to 4.44% without it, the draft accepted 6.2 tokens per round, and throughput rose 13% at concurrency 1 and 12% at 8. Segment timestamps (`srt`, `vtt`) apply Whisper's timestamp rules to every draft and verify token, and 299 of 300 `srt` files matched the server without the draft byte for byte. The draft was trained without timestamps and accepts about 4.7 tokens per round on them, so `srt` is 14% slower than without the draft at concurrency 1 and 4% faster at 8. It runs synchronously, so async decode is off. The first startup compiles the verify graphs for every decode batch size, about 14 minutes on an H200 against 9 without a draft; with a warm compile cache both start in about 6 minutes.
+
+Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens_details` (`spec_accept_length`, `spec_accept_rate`, the draft counts and the per-verify histogram) on `json` and `verbose_json` responses and on the streamed `transcript.text.done` event. Audio long enough to be transcribed in chunks returns none.
+
+Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens_details` (`spec_accept_length`, `spec_accept_rate`, the draft counts and the per-verify histogram) on `json` and `verbose_json` responses and on the streamed `transcript.text.done` event. Audio long enough to be transcribed in chunks returns none.
 
 On one H200 with the default 64 running requests, 1,000 English clips of 1 to 16 s (pipecat-ai/stt-benchmark-data), one warmup and one measured pass per concurrency, against the same server without a draft. Fresh audio misses the encoder cache on every request; repeated audio is the warmup's clips again, so every request reuses its cached encoder output:
 
@@ -207,7 +211,7 @@ for response formats and other ASR models.
 | `language` | string | unset | Optional source-language hint; on translations this is a SGLang-Omni extension |
 | `prompt` | string | unset | Optional text used as Whisper prev-context conditioning |
 | `response_format` | string | `json` | `json`, `verbose_json`, raw `text`, `srt`, or `vtt` |
-| `temperature` | float | `0.0` | Sampling temperature; defaults to greedy decoding |
+| `temperature` | float | `0.0` | Sampling temperature; defaults to greedy decoding. A negative value returns HTTP 422 |
 
 The serving route selects the internal `task` from the endpoint (`transcribe`
 or `translate`); it is not a public form field. The route uses the ASR stage

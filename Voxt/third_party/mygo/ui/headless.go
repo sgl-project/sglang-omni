@@ -436,6 +436,41 @@ func (t *Tester) SetFontSmoothing(on bool) {
 // Frame renders another frame, as when the view's state changed.
 func (t *Tester) Frame() { t.h.requested.Store(true); t.settle() }
 
+// AccessLabels turns assistive technology on, as VoiceOver reading the
+// window would, runs a frame and returns the labels of the elements it
+// sees, in tree order: a test checks that a control can be reached (one
+// inside a button cannot: a button is a leaf to assistive technology).
+func (t *Tester) AccessLabels() []string {
+	t.rt.accessibilityOn()
+	t.Frame()
+	var out []string
+	if t.h.access != nil {
+		for _, n := range t.h.access.Nodes {
+			if n.Label != "" {
+				out = append(out, n.Label)
+			}
+		}
+	}
+	return out
+}
+
+// ClickControl clicks the control assistive technology names label: an
+// element it can press, so a switch rather than the title beside it that
+// shares its label. It fails when there is none.
+func (t *Tester) ClickControl(label string) error {
+	t.rt.accessibilityOn()
+	t.Frame()
+	if t.h.access != nil {
+		for _, n := range t.h.access.Nodes {
+			if n.Label == label && n.Actions&platform.ActionPress != 0 {
+				t.ClickAt(float32(n.Bounds.X+n.Bounds.W/2), float32(n.Bounds.Y+n.Bounds.H/2))
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("ui: no control named %q", label)
+}
+
 // FramePending reports whether the view still asks for a frame, as one
 // that animates or never settles does after an input or Frame. The
 // frames of After and Painter.After wait for Advance to reach their

@@ -87,16 +87,15 @@ func TestTranslateSpeechCard(t *testing.T) {
 		s.Features.Translate.Cleanup = true
 		s.General.MainLanguage = "zh" // the target is English
 	}, keys)
-	// The draft shows in the pill while the model writes; the card comes
-	// with the result, not before.
-	streamed, early := false, false
+	// The draft stays out of the pill (FB6); the card comes with the result.
+	draftInPill, early := false, false
 	a.pump("the end", func() bool {
-		streamed = streamed || a.sess.State == session.Composing && a.ov.mode == ovWorking && liveLineText(a.sess) == strings.TrimSpace(a.sess.Draft) && a.sess.Draft != ""
+		draftInPill = draftInPill || a.sess.State == session.Composing && liveLineText(a.sess) == strings.TrimSpace(a.sess.Draft) && a.sess.Draft != ""
 		early = early || a.sess.State.Live() && a.ov.mode == ovAnswer
 		return a.sess.State.Ended()
 	})
-	if !streamed || early {
-		t.Errorf("the draft in the pill %v, a card before the end %v", streamed, early)
+	if draftInPill || early {
+		t.Errorf("the draft in the pill %v, a card before the end %v", draftInPill, early)
 	}
 	if a.sess.Result != "See you on Thursday." || a.sess.Raw != "周四见" || a.sess.Inserted || !a.answer.open || a.answer.lang != "en" || a.ov.mode != ovAnswer {
 		t.Fatalf("end %+v, card %+v", a.sess, a.answer)
@@ -104,7 +103,7 @@ func TestTranslateSpeechCard(t *testing.T) {
 	if len(a.pasted()) != 0 || tr.count() != 1 {
 		t.Errorf("pasted %+v, %d uploads", a.pasted(), tr.count())
 	}
-	if msgs := chatMessages(chat.requests()[0]); !strings.Contains(msgs[0][1], "基础清理") || len(msgs) != 4 || msgs[3][1] != "<input>\n周四见\n</input>" {
+	if msgs := chatMessages(chat.requests()[0]); len(msgs) != 4 || msgs[2][0] != "assistant" || msgs[3][1] != "<input>\n周四见\n</input>" {
 		t.Errorf("first request %q", msgs)
 	}
 	// Another language: into the card whatever the setting (Voxt's menu
