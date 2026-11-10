@@ -34,6 +34,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Show in the Dock** (Settings → General → Menu bar and login): Voxt 2.0.0 and 2.0.1 did not read Voxt 1.x's Show in Dock, so who set up Voxt 2 with Show in Dock off in Voxt 1.x stayed in the Dock. Unless Voxt 2.0.2 or later imported Voxt 1.x's data, or the switch is already off, Voxt reads it at the next start, once; turned back on, the Dock stays. Find in settings finds a setting by its name in any section (before, "Dock" or "clipboard" found nothing in General), and in Chinese by its English name too ("Dock" finds 在程序坞中显示). Turning the switch off keeps the Voxt window in front.
 
+### Changed
+
+- **A large dictionary no longer slows dictation down**: after you dictate, Voxt replaces the dictionary's aliases with their terms. It now checks only the aliases that start with the letter at each place. With 1,000 terms, a 4 KB transcript took 57 ms and now takes 2 ms; a 20 KB one took 280 ms and now takes 8 ms (Apple M5 Max). The result is the same.
+
 ### 中文
 
 #### 修复
@@ -65,6 +69,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 
 - **在程序坞中显示**（设置 → 通用 → 菜单栏与登录）：Voxt 2.0.0 和 2.0.1 不读 Voxt 1.x 的“在程序坞中显示”，在 Voxt 1.x 里关了它的用户装上 Voxt 2 后仍在程序坞里。没有用 Voxt 2.0.2 或更新的版本导入过 Voxt 1.x 的数据、开关也没关的，下次启动时补读一次；之后再打开，程序坞图标就留着。“在设置中查找”能按名称找到任何一部分里的设置（以前在“通用”里搜“Dock”或“clipboard”什么也找不到），中文界面下也能用英文名称找（搜“Dock”能找到“在程序坞中显示”）。关掉这个开关后，Voxt 窗口仍在最前面。
+
+#### 变更
+
+- **词典很大时听写不再变慢**：听写完成后，Voxt 会把词典里的别名换成对应的词条，现在每个位置只检查以该字开头的别名。词典有 1000 个词条时，4 KB 的转录稿从 57 毫秒降到 2 毫秒，20 KB 的从 280 毫秒降到 8 毫秒（Apple M5 Max）。替换结果不变。
 
 ## [2.0.3] - 2026-11-10
 
