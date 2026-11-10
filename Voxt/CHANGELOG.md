@@ -12,6 +12,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **The speech model loads before the first dictation**: Voxt now loads Transcribe's on-device speech model when it starts and when you choose another one, instead of at the first press of the shortcut. The first live text after a launch or a change of model no longer waits for the load (0.2 to 0.5 s on an M-series Mac with 36 GB, longer on a busy Mac or one with less memory). The model leaves memory after 10 idle minutes, as before.
 
+### Fixed
+
+- **A dictation survives a speech model that quit**: when the on-device speech model's process died during a recording (a crash, or macOS ending it under memory pressure), stopping gave only the live text heard until then, with a warning. Voxt now starts the model again and recognises the whole recording, about 0.2 s later on an M5 Max.
+
 ### 中文
 
 #### 新增
@@ -21,6 +25,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 变更
 
 - **语音识别模型在第一次听写前就加载好**：Voxt 启动时、换语音识别模型时就加载转录用的本地模型，不再等到第一次按快捷键。启动后和换模型后的第一次实时文字不用再等加载（36 GB 的 M 系列 Mac 上是 0.2 到 0.5 秒，机器忙或内存小时更久）。模型空闲 10 分钟后照旧从内存卸载。
+
+#### 修复
+
+- **语音识别模型中途退出，口述也不丢**：录音时本地语音识别模型的进程退出了（崩溃，或内存紧张时被 macOS 结束），停止后以前只得到退出前的实时文字，并带一条警告。现在 Voxt 重新启动模型，识别整段录音，在 M5 Max 上多等约 0.2 秒。
 
 ## [2.0.3] - 2026-11-10
 
