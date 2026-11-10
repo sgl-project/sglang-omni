@@ -28,7 +28,7 @@ from sglang_omni.models.nemotron_transcribe.encoder_service import (
     build_cache_namespace,
 )
 from sglang_omni.models.nemotron_transcribe.fp8_linear import (
-    count_fp8_linears,
+    Fp8Linear,
     dequantize_fp8_linears,
     fp8_gemm_supported,
 )
@@ -198,8 +198,9 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
             pass
 
     def select_fp8_perception(self, perception: nn.Module) -> None:
-        """Keep FP8 encoder GEMMs where enabled and supported, else fold them to BF16."""
-        fp8_linears = count_fp8_linears(perception)
+        fp8_linears = sum(
+            isinstance(child, Fp8Linear) for child in perception.modules()
+        )
         if not fp8_linears:
             return
         else:
@@ -207,17 +208,13 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         device = next(perception.parameters()).device
         if self.perception_fp8 and fp8_gemm_supported(device):
             logger.info(
-                "Nemotron Transcribe encoder runs %d linears with FP8 GEMMs",
-                fp8_linears,
+                f"Nemotron Transcribe encoder runs {fp8_linears} linears with FP8 GEMMs"
             )
         else:
             dequantize_fp8_linears(perception)
             logger.info(
-                "Nemotron Transcribe encoder dequantized %d FP8 linears "
-                "(perception_fp8=%s, device=%s)",
-                fp8_linears,
-                self.perception_fp8,
-                device,
+                f"Nemotron Transcribe encoder dequantized {fp8_linears} FP8 linears "
+                f"(perception_fp8={self.perception_fp8}, device={device})"
             )
 
     def setup_runtime_resources(

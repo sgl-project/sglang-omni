@@ -68,7 +68,6 @@ class Fp8Linear(nn.Module):
         return output.view(*hidden.shape[:-1], self.out_features)
 
     def to_linear(self) -> nn.Linear:
-        """Dense linear with the weight scale folded into the weight."""
         linear = nn.Linear(
             self.in_features,
             self.out_features,
@@ -88,10 +87,6 @@ class Fp8Linear(nn.Module):
 def attach_fp8_linears(
     module: nn.Module, weights: dict[str, torch.Tensor]
 ) -> dict[str, torch.Tensor]:
-    """Swap each linear the checkpoint stores in FP8 for an Fp8Linear.
-
-    Returns the weights with their scales shaped like the Fp8Linear buffers.
-    """
     quantized = sorted(
         name[: -len(".weight_scale")]
         for name in weights
@@ -125,7 +120,9 @@ def attach_fp8_linears(
     unscaled = [
         name
         for name, tensor in weights.items()
-        if is_float8(tensor) and name.rpartition(".")[0] not in attached
+        if tensor.is_floating_point()
+        and tensor.element_size() == 1
+        and name.rpartition(".")[0] not in attached
     ]
     if unscaled:
         raise ValueError(
@@ -137,7 +134,6 @@ def attach_fp8_linears(
 
 
 def dequantize_fp8_linears(module: nn.Module) -> int:
-    """Replace every Fp8Linear with a dense linear and return how many were replaced."""
     targets = [
         (name, child)
         for name, child in module.named_modules()
@@ -149,26 +145,16 @@ def dequantize_fp8_linears(module: nn.Module) -> int:
     return len(targets)
 
 
-def count_fp8_linears(module: nn.Module) -> int:
-    return sum(isinstance(child, Fp8Linear) for child in module.modules())
-
-
 def fp8_gemm_supported(device: torch.device) -> bool:
-    """CUDA GPUs from compute capability 8.9 run float8_e4m3fn GEMMs."""
     if device.type != "cuda" or torch.version.hip is not None:
         return False
     else:
         return torch.cuda.get_device_capability(device) >= FP8_GEMM_CAPABILITY
 
 
-def is_float8(tensor: torch.Tensor) -> bool:
-    return tensor.is_floating_point() and tensor.element_size() == 1
-
-
 __all__ = [
     "Fp8Linear",
     "attach_fp8_linears",
-    "count_fp8_linears",
     "dequantize_fp8_linears",
     "fp8_gemm_supported",
 ]

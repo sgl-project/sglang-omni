@@ -146,17 +146,16 @@ def test_fp8_perception_weight_without_scale_is_rejected() -> None:
 def test_fp8_linear_without_an_input_scale_is_rejected() -> None:
     perception = small_perception()
     checkpoint, names = fp8_checkpoint(perception)
-    del checkpoint[f"{names[0]}.input_scale"]
+    checkpoint.pop(f"{names[0]}.input_scale")
     with pytest.raises(ValueError, match="one input_scale"):
         load_perception_weights(perception, checkpoint, torch.bfloat16)
 
 
-@pytest.mark.skipif(
-    not torch.cuda.is_available() or not fp8_gemm_supported(torch.device("cuda")),
-    reason="FP8 GEMMs need a CUDA GPU with compute capability 8.9 or newer",
-)
+@pytest.mark.accelerator
 @torch.no_grad()
 def test_fp8_linear_matches_a_dequantized_reference() -> None:
+    if not torch.cuda.is_available() or not fp8_gemm_supported(torch.device("cuda")):
+        pytest.skip("FP8 GEMMs need a CUDA GPU with compute capability 8.9 or newer")
     torch.manual_seed(5)
     dense = nn.Linear(1280, 3840, device="cuda", dtype=torch.bfloat16)
     fp8 = Fp8Linear.replacing(dense)
