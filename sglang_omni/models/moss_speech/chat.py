@@ -42,7 +42,7 @@ def chat_rows(
     inputs: object,
     tokenizer: PreTrainedTokenizerBase,
     audio_encoder: AudioTokenEncoder | None,
-    output_modality: str,
+    output_modality: Literal["text", "audio"],
 ) -> list[list[int]]:
     turns = TypeAdapter(list[ChatTurn]).validate_python(inputs)
     if not turns or turns[-1].role != "user":

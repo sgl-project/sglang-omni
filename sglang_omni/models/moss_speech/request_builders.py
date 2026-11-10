@@ -88,7 +88,7 @@ class MossSpeechState(DeclarativeStateBase):
     text_token_ids: list[int] = wire(default_factory=list, codec="list")
     audio_token_ids: list[int] = wire(default_factory=list, codec="list")
     output_text_token_ids: list[int] = wire(default_factory=list, codec="list")
-    output_modality: str = wire("audio", codec="str")
+    output_modality: Literal["text", "audio"] = wire("audio", codec="str")
     prompt_token_count: int = wire(0, codec="int")
     completion_token_count: int = wire(0, codec="int")
     temperature: float = wire(0.0, codec="float")
