@@ -17,9 +17,13 @@ from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.session.session_controller import SessionController
 from sglang.srt.session.streaming_session import SessionSlot
 
+from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.scheduling import omni_scheduler
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
-from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionBridge
+from sglang_omni.scheduling.sglang_backend.ar_session import (
+    ARSessionBridge,
+    SessionUnit,
+)
 
 CONTEXT_LENGTH = 64
 RETAINED_TOKEN_COUNT = 8
@@ -177,6 +181,42 @@ def test_continuation_aware_admission_admits_every_unit_with_no_free_row() -> No
     assert scheduler.admit_prefill_batch() == [unit.rid for unit in units]
     assert {unit.rid: unit.kv.req_pool_idx for unit in units} == held_rows
     assert scheduler.free_rows() == 0
+
+
+@pytest.mark.parametrize("borrow_peer_record", [False, True])
+@pytest.mark.parametrize("peer_holds_kv", [False, True])
+def test_capacity_reserves_only_the_unallocated_part_of_each_append(
+    borrow_peer_record: bool, peer_holds_kv: bool
+) -> None:
+    """A queued continuation used to reserve its already retained history again."""
+    scheduler = AdmissionScheduler(request_rows=4)
+    for session_id, holds_row in (("current", True), ("peer", peer_holds_kv)):
+        scheduler.open_session(session_id, holds_row=holds_row)
+        request = scheduler.queue_request(session_id, session_id)
+        scheduler.session_bridge.units_by_request_id[session_id] = SessionUnit(
+            request_id=session_id,
+            session_identity=SessionIdentity(session_id),
+            stages=("lm",),
+            chunk=TimedChunk("text", 0, 0, 0, ""),
+            session_request=request,
+        )
+    if borrow_peer_record and peer_holds_kv:
+        scheduler.tree_cache.match_prefix(
+            MatchPrefixParams(
+                key=RadixKey(array("q", request.origin_input_ids[:-1])), req=request
+            )
+        )
+    else:
+        pass
+    # Each append needs four new positions; a peer without retained KV also needs its eight history positions.
+    remaining_positions = 8 if peer_holds_kv else 16
+    scheduler.token_to_kv_pool_allocator.available_size = lambda: remaining_positions
+    assert scheduler.session_bridge.check_session_capacity("current") is None
+    remaining_positions -= 1
+    assert (
+        scheduler.session_bridge.check_session_capacity("current")
+        == "session KV capacity exhausted"
+    )
 
 
 def test_without_continuation_aware_admission_no_free_row_admits_nothing() -> None:
