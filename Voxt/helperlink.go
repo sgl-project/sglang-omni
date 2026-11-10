@@ -116,7 +116,7 @@ func (a *app) helperChanged(st helper.Status) {
 		a.syncTrees()        // appenhance.go
 		a.iconsHelperReady() // appicons.go: the icons that failed, again
 		a.loadLast()
-		a.loadDevices() // settings_audio.go: the microphones, for Settings → Audio and the menu bar
+		a.loadDevices()      // settings_audio.go: the microphones, for Settings → Audio and the menu bar
 		if !a.speechWarmed { // once: a restarted helper loads no model again
 			a.speechWarmed = true
 			a.warmSpeech() // models_omni.go: the first session finds its model loaded
