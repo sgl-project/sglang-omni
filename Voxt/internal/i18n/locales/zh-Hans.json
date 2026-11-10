@@ -81,6 +81,7 @@
   "A downloaded file was damaged. Try again.": "下载的文件已损坏，请重试。",
   "A single key would be taken from every app. Add ⌃, ⌥, ⇧, ⌘ or fn.": "单独一个键会让所有 App 都用不了这个键，请加上 ⌃、⌥、⇧、⌘ 或 fn。",
   "Unknown key. Type the modifiers first, then one key, as in Fn, RightCommand, Control+Option+Space or Fn+F5.": "有无法识别的按键。先输入修饰键，再输入一个键，例如 Fn、RightCommand、Control+Option+Space 或 Fn+F5。",
+  "Uses speculative decoding. A small draft model proposes several words at a time, and the speech model checks them.": "使用推测解码：一个小的草稿模型每次先提出几个词，再由语音识别模型校验。",
   "Voxt never types into password fields. Copy the text, or click another field and insert.": "这是密码输入框，Voxt 不会往里面输入。可以复制，或者点一下别的输入框再点插入。",
   "Voxt never types into password fields.": "这是密码输入框，Voxt 不会往里面输入。",
   "A small Whisper: light on memory, less accurate.": "小号 Whisper，内存占用小，准确度低一些。",
