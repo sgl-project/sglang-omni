@@ -93,6 +93,8 @@ type answerCard struct {
 	// the card shows them as one (Voxt's conversation mode), from then on.
 	turns        []compose.Turn
 	conversation bool
+	// quotesOpen are the turns whose selection shows whole (#3816).
+	quotesOpen map[int]bool
 	// redo is the session translating the text into redoLang, another
 	// language chosen in the card, while it runs: the card keeps the text
 	// it shows, with a spinner, until the new one replaces it (Voxt's).

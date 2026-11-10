@@ -121,12 +121,13 @@ func (r *run) firstState() State {
 }
 
 // canSelect says whether the session reads the selection: Translate and
-// Rewrite with a selector, not a try, not a follow-up, in an app that is
-// not VoxtNew.
+// Rewrite with a selector (a Rewrite follow-up too: the user may have
+// selected more text since, #3816), not a try, in an app that is not
+// VoxtNew.
 func (r *run) canSelect() bool {
 	cfg := r.m.cfg
 	t := r.req.Target
-	return cfg.Select != nil && !r.req.Try && len(r.req.Previous) == 0 && t.PID != 0 && (cfg.Self == 0 || t.PID != cfg.Self) &&
+	return cfg.Select != nil && !r.req.Try && t.PID != 0 && (cfg.Self == 0 || t.PID != cfg.Self) &&
 		(r.req.Kind == store.KindTranslate || r.req.Kind == store.KindRewrite)
 }
 

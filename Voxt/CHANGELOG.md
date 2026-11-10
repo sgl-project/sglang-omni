@@ -6,11 +6,15 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
+- **Rewrite: Continue adds the text you select now**: select more text (say, the messages that came in since) before you press Continue or the Rewrite shortcut in the answer card, and the follow-up sends it to the language model with your new instruction, next to the text selected the first time. The card shows it under what you said, shortened until you click Show all. With nothing new selected, the follow-up works as before.
+
 - **Voxt 1.x on Apple silicon updates to Voxt 2 by itself**: each release also has the app as `Voxt-X.Y.Z-macOS.zip`, which Voxt 1.x's in-app update installs on a Mac with Apple silicon (first for those who turned on Beta Updates, then for everyone there) and the Homebrew cask (`brew install --cask hehehai/tap/voxt`, Apple silicon only) installs. Voxt 1.x on an Intel Mac is not offered Voxt 2, which does not run there, and stays on Voxt 1.x. After the update, allow the microphone and accessibility again: macOS sees Voxt 2 as another app.
 
 ### 中文
 
 #### 新增
+
+- **改写：“继续”会带上现在选中的文字**：在答案卡片里点“继续”或按改写快捷键之前，先选中更多文字（比如之后新来的消息），追问时这段文字会和新的指令一起发给语言模型，和第一次选中的文字都在对话里。卡片在你说的话下面显示这段文字，长的先截短，点“展开”看全文。没有新选中文字时，追问和以前一样。
 
 - **Apple 芯片上的 Voxt 1.x 自己更新到 Voxt 2**：每个版本还附带 app 的 `Voxt-X.Y.Z-macOS.zip`，在 Apple 芯片的 Mac 上，Voxt 1.x 的应用内更新安装它（先给打开了“Beta 更新”的用户，再给其他人），Homebrew 的 cask（`brew install --cask hehehai/tap/voxt`，只支持 Apple 芯片）也装它。Intel Mac 上的 Voxt 1.x 不会收到 Voxt 2（Voxt 2 不能在 Intel 上运行），继续用 Voxt 1.x。更新后要重新允许麦克风和辅助功能：macOS 把 Voxt 2 当成另一个 app。
 
