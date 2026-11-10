@@ -156,6 +156,9 @@ _AUK_BENCHMARK_PROFILE = _ModelBenchmarkProfile(
         "seed": 1234,
     },
     forward_sglang_engine=False,
+    # note (Xuchen Wei): AuK sets its length with gen_seconds, and the native
+    # server rejects max_new_tokens.
+    max_new_tokens=None,
 )
 _MODEL_BENCHMARK_PROFILES: dict[str, _ModelBenchmarkProfile] = {
     **{

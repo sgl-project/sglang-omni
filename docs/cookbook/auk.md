@@ -53,13 +53,13 @@ BF16 is the default matrix precision; `--dtype float32` selects FP32. Text resid
 For a local Torch MPS comparison, use the ordinary Omni server with each stage's `max_batch_size` set to 1 and DiT CUDA graphs, compilation, and fused Q/K normalization disabled. Run the two servers separately. The native benchmark client sends the same requests to either server:
 
 ```bash
-python sglang_omni_mlx/native/ci/benchmark_auk.py \
-  --cases cases.json --url http://127.0.0.1:8000 \
-  --backend native --variant AuK-Flash --server-pid "$SERVER_PID" \
-  --output results/native-flash
+python -m sglang_omni_mlx.native.ci.benchmark_auk \
+  --meta zhaochenyang20/seed-tts-eval-arrow --base-url http://127.0.0.1:8000 \
+  --model tencent/AuK-Flash --server-pid "$SERVER_PID" \
+  --output-dir results/native-flash
 ```
 
-`cases.json` is a list of objects with `id`, `language` (`en` or `zh`), `text`, `reference_file` (relative to the JSON file), `generation_seconds`, and `seed`. By default, each case is sent once at concurrency 1. Start a fresh server for each independent trial. Results include each WAV, HTTP latency, real-time factor, measured-window throughput, and macOS process-tree physical footprint. Startup and speech quality must be measured separately. The two backends use their own random generators, so equal seeds do not imply equal noise or waveforms.
+Run it from the repository root in the sglang-omni Python environment. It is the shared Seed-TTS generation pass with the AuK profile (concurrency 1, one warmup request, `seed=1234`); it inlines each reference WAV as a data URI before timing starts, and with `--server-pid` it also writes `memory.json`, the physical footprint of the server's whole process tree sampled every 250 ms. `--model` must name the checkpoint, since it selects that profile. Start a fresh server for each independent trial. The two backends use their own random generators, so equal seeds do not imply equal noise or waveforms.
 
 Native AuK model checks run locally, outside Mac CI. Use the shared [TTS evaluation tools](../developer_reference/tts_bench.md) for ASR scoring of generated audio.
 

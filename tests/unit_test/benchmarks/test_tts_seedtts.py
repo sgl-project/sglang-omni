@@ -184,6 +184,7 @@ def test_explicit_cli_overrides_model_profile_defaults(monkeypatch):
     [
         ("FunAudioLLM/Fun-CosyVoice3-0.5B-2512", None),
         ("Qwen/Qwen3-TTS-12Hz-1.7B-Base", None),
+        ("tencent/AuK-Flash", None),
     ],
 )
 def test_max_new_tokens_default_applies_without_cli(model, max_new_tokens):
