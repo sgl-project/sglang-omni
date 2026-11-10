@@ -98,6 +98,7 @@ func TestStrictShortcutsSetting(t *testing.T) {
 	if !has(tt, "Strict shortcuts") || !has(tt, about) || a.settings.Get().Features.StrictShortcuts {
 		t.Fatalf("section: %q", firstTexts(tt))
 	}
+	scrollToText(tt, "Strict shortcuts") // under the table
 	if err := tt.ClickControl("Strict shortcuts"); err != nil {
 		t.Fatal(err)
 	}

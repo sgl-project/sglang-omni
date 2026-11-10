@@ -49,12 +49,6 @@ func (a *app) shortcutsSettings(c *ui.Context) {
 			}, nil)
 	}
 	a.shortcutPresetPicker(c, "sc")
-	settingRow(c, "sc-strict", i18n.T("Strict shortcuts"), i18n.T("While recording, only the shortcut that started it stops it. Off: any feature's shortcut stops."), func() {
-		if ui.Switch(c.Key("sc-strict-switch"), &a.settingsForm.strictShortcuts).Label(i18n.T("Strict shortcuts")).Changed() {
-			on := a.settingsForm.strictShortcuts
-			a.updateSettings(func(s *settings.Settings) { s.Features.StrictShortcuts = on })
-		}
-	})
 	f := a.prefs.Features
 	keysW := px(t, 96)
 	card(c.Key("sc-table")).Gap(0).Padding(px(t, sp2)).Children(func() {
@@ -82,6 +76,12 @@ func (a *app) shortcutsSettings(c *ui.Context) {
 				lines := append(slices.Clone(problems[i]), a.conflictLines(feat, i)...)
 				a.shortcutRow(c, feat, i, &hs[i], lines, keysW)
 			}
+		}
+	})
+	settingRow(c, "sc-strict", i18n.T("Strict shortcuts"), i18n.T("While recording, only the shortcut that started it stops it. Off: any feature's shortcut stops."), func() {
+		if ui.Switch(c.Key("sc-strict-switch"), &a.settingsForm.strictShortcuts).Label(i18n.T("Strict shortcuts")).Changed() {
+			on := a.settingsForm.strictShortcuts
+			a.updateSettings(func(s *settings.Settings) { s.Features.StrictShortcuts = on })
 		}
 	})
 }
