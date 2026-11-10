@@ -12,7 +12,6 @@ from functools import lru_cache
 from pathlib import Path
 
 import torch
-from huggingface_hub import hf_hub_download
 
 try:
     import llama_cpp
@@ -43,7 +42,6 @@ from sglang_omni.scheduling.reference_encoder import (
     TensorReferenceEncodeHook,
 )
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
-from sglang_omni.utils import device as device_utils
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 DEFAULT_GGUF_FILENAME = "Audar-TTS-V1-Turbo-Q4_K_M.gguf"
@@ -204,7 +202,9 @@ def create_reference_encoder_executor(
     cache_max_bytes: int = 64 * 1024 * 1024,
     max_concurrency: int = 8,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
-    device = str(device_utils.resolve_concrete_device(device, gpu_id))
+    from sglang_omni.utils.device import resolve_concrete_device
+
+    device = str(resolve_concrete_device(device, gpu_id))
     codec = load_codec(codec_model, codec_revision, device)
     reference_service = ReferenceEncodeService(
         AudarReferenceEncodeHook(
@@ -236,6 +236,8 @@ def create_reference_encoder_executor(
 
 
 def resolve_gguf(model_path: str, filename: str, revision: str) -> str:
+    from huggingface_hub import hf_hub_download
+
     path = Path(model_path).expanduser()
     if path.is_file():
         return str(path)
@@ -269,7 +271,9 @@ def create_tts_engine_executor(
     n_ctx: int = 4096,
     n_gpu_layers: int = -1,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
-    concrete_device = device_utils.resolve_concrete_device(device, gpu_id)
+    from sglang_omni.utils.device import resolve_concrete_device
+
+    concrete_device = resolve_concrete_device(device, gpu_id)
     if concrete_device.type not in ("cpu", "cuda", "xpu", "musa"):
         raise ValueError(
             "Audar-TTS llama.cpp engine runs on cuda, xpu, musa or cpu only; resolved "
@@ -391,7 +395,9 @@ def create_vocoder_executor(
     codec_model: str = DEFAULT_CODEC_MODEL,
     codec_revision: str = "main",
 ) -> SimpleScheduler[StagePayload, StagePayload]:
-    device = str(device_utils.resolve_concrete_device(device, gpu_id))
+    from sglang_omni.utils.device import resolve_concrete_device
+
+    device = str(resolve_concrete_device(device, gpu_id))
     codec = load_codec(codec_model, codec_revision, device)
     lock = codec_lock(codec_model, codec_revision, device)
 
