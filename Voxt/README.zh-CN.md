@@ -100,7 +100,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 
 - **Apple 芯片**、**macOS 15** 及以上的 Mac。Voxt 2 不能在 Intel Mac 上运行，那里请继续用 Voxt 1.x。
 - app 约 280 MB，推荐的语音识别模型需下载 2.5 GB。
-- Voxt 2 不会自动更新。新版本用同样的方式安装：从 dmg 安装，或者 `brew upgrade --cask voxt`。
+- Voxt 2 有新版本时会提示（“检查更新…”，以及每天一次的自动检查，可以在 设置 → 诊断与关于 里关掉），但不会自己安装。新版本用同样的方式安装：从 dmg 安装，或者 `brew upgrade --cask voxt`。
 
 ## 你的模型，你的数据
 
