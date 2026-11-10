@@ -1416,14 +1416,14 @@ class Qwen3TTSStreamingVocoderScheduler(
         self.async_stop.clear()
         self.initial_worker = threading.Thread(
             target=self.run_initial_worker,
-            name="qwen3-tts-vocoder-initial",
+            name="tts-voc-init",
             daemon=True,
         )
         self.followup_workers = [
             threading.Thread(
                 target=self.run_followup_worker,
                 args=(index,),
-                name=f"qwen3-tts-vocoder-followup-{index}",
+                name=f"tts-voc-fup-{index}",
                 daemon=True,
             )
             for index in range(self.followup_worker_count)
