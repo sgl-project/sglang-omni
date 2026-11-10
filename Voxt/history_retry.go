@@ -165,7 +165,7 @@ func (a *app) entryRetryButton(c *ui.Context, e store.Entry) {
 	label := retryLabel(e)
 	b := secondaryIconButton(c.Key("hist-detail-retry"), icons.Refresh, label).Label(label).Disabled(a.hist.retry.id != "")
 	if !retryWanted(e) {
-		b.Tooltip(i18n.T("Recognise the recording again and update this entry. Nothing is inserted."))
+		b.Tooltip(i18n.T("Recognise the recording again. Nothing is inserted."))
 	}
 	if b.Clicked() {
 		a.retryEntry(e)

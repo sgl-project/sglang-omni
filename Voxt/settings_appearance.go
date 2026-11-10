@@ -23,7 +23,7 @@ func sidebarChoice(ap settings.Appearance) int {
 
 func (a *app) sidebarRow(c *ui.Context) {
 	f := &a.settingsForm
-	settingRow(c, "sidebar-style", i18n.T("Sidebar"), i18n.T("Icons only leaves more room for the pages, and shows a name when the pointer rests on its icon. Automatic shows icons only while the window is narrow."), func() {
+	settingRow(c, "sidebar-style", i18n.T("Sidebar"), i18n.T("Automatic shows icons only while the window is narrow."), func() {
 		if ui.Segmented(c.Key("sidebar-seg"), &f.sidebar, i18n.T("Automatic"), i18n.T("Names and icons"), i18n.T("Icons only")).Label(i18n.T("Sidebar")).Changed() {
 			if f.sidebar == 0 {
 				a.updateSettings(func(s *settings.Settings) { s.Appearance.Rail, s.Appearance.RailChosen = false, false })
@@ -48,7 +48,7 @@ func (a *app) appearanceSettings(c *ui.Context) {
 		}
 	})
 	a.sidebarRow(c) // settings_appearance.go
-	settingRow(c, "motion", i18n.T("Reduce motion"), i18n.T("Pages and panels change without animation. Voxt also follows the system setting."), func() {
+	settingRow(c, "motion", i18n.T("Reduce motion"), i18n.T("Also follows the system setting."), func() {
 		if ui.Switch(c.Key("motion-switch"), &a.reduceMotion).Label(i18n.T("Reduce motion")).Changed() {
 			on := a.reduceMotion
 			a.updateSettings(func(s *settings.Settings) { s.Appearance.ReduceMotion = on })

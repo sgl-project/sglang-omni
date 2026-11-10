@@ -41,7 +41,7 @@ func (a *app) speechContextSection(c *ui.Context) {
 		sc.text, sc.seen = saved, saved
 	}
 	sectionTitle(c, i18n.T("Speech context"))
-	caption(c, i18n.T("Tell the speech model who is speaking and about what, such as names, topics and words to expect. It is sent with every recording. Speech services that take no prompt ignore it."))
+	caption(c, i18n.T("Tell the speech model who is speaking and about what."))
 	in := ui.TextArea(c.Key("models-speech-context"), &sc.text).Label(i18n.T("Speech context")).
 		Placeholder(i18n.T("For example: I work on LLM serving and speak Chinese with English technical terms.")).MinHeight(px(t, 72))
 	if in.Changed() {

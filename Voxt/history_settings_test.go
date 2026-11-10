@@ -131,7 +131,7 @@ func TestHistoryCleanupAsks(t *testing.T) {
 		t.Errorf("100: asked %v, %+v", a.histSet.pruneAsk, a.settings.Get().History)
 	}
 	click(t, tt, "Clean up history")
-	if !a.settings.Get().History.CleanupOff || has(tt, "Keep entries for") || !has(tt, "Entries stay until you delete them.") {
+	if !a.settings.Get().History.CleanupOff || has(tt, "Keep entries for") {
 		t.Errorf("off: %+v %q", a.settings.Get().History, firstTexts(tt))
 	}
 	seedAged(t, a, 50)

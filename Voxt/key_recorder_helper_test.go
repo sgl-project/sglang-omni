@@ -141,7 +141,7 @@ func TestKeyRecorderTapPaused(t *testing.T) {
 		}
 		fs.handlers[proto.MethodHotkeyCancelRecord] = func(json.RawMessage) (any, error) { return proto.Empty{}, nil }
 	})
-	notice := "Without Accessibility, only plain shortcuts work (⌃⌥⇧⌘ with a key). Shortcuts with fn or a single modifier, double taps and long presses need it."
+	notice := "Without Accessibility, only shortcuts like ⌃⌥Space work. fn, single modifiers, double taps and long presses need it."
 	lastBindings := func() int {
 		fake.mu.Lock()
 		defer fake.mu.Unlock()

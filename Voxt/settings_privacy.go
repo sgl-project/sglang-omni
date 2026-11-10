@@ -26,7 +26,7 @@ func (a *app) privacySettings(c *ui.Context) {
 		for _, s := range []string{
 			i18n.T("Your recordings are recognised on this Mac. If a feature uses a speech service you set up on the Speech models page, its recordings go to that service. Voxt has no server of its own."),
 			i18n.T("Text to clean up, translate or rewrite goes to the language model you set up on the Language models page. With a local server such as Ollama, it stays on this Mac. Otherwise it goes to that service."),
-			i18n.T("With ChatGPT (Codex), that text goes to OpenAI under your ChatGPT account, counts against your plan's usage, and is covered by OpenAI's terms for that account."),
+			i18n.T("With ChatGPT (Codex), that text goes to OpenAI under your account and its terms."),
 			online,
 			i18n.T("Voxt reads the address of the current browser tab only to pick your app enhancement rules. The language model never sees it, only the app's name."),
 			i18n.T("Voxt collects no usage data, crash reports or identifiers."),
@@ -37,7 +37,7 @@ func (a *app) privacySettings(c *ui.Context) {
 	})
 
 	sectionTitle(c, i18n.T("Kept on this Mac"))
-	settingRow(c, "priv-history", i18n.T("Keep a history"), i18n.T("Each transcription, translation and rewrite is saved with its source text, so you can find, copy or redo it."), func() {
+	settingRow(c, "priv-history", i18n.T("Keep a history"), "", func() {
 		if ui.Switch(c.Key("priv-history"), &a.settingsForm.keepHistory).Label(i18n.T("Save each result")).Changed() {
 			on := a.settingsForm.keepHistory
 			a.updateSettings(func(s *settings.Settings) {
@@ -48,13 +48,13 @@ func (a *app) privacySettings(c *ui.Context) {
 			})
 		}
 	})
-	settingRow(c, "priv-audio", i18n.T("Keep recordings"), i18n.T("Saves the audio with each entry, so you can play it back or recognise it again. When this is off, failed or cancelled recordings are still kept for 7 days so you can retry them."), func() {
+	settingRow(c, "priv-audio", i18n.T("Keep recordings"), i18n.T("When off, failed or cancelled recordings are still kept for 7 days so you can retry them."), func() {
 		if ui.Switch(c.Key("priv-audio"), &a.settingsForm.keepAudio).Label(i18n.T("Save each recording")).Disabled(!a.prefs.Privacy.KeepHistory).Changed() {
 			on := a.settingsForm.keepAudio
 			a.updateSettings(func(s *settings.Settings) { s.Privacy.KeepAudio = on })
 		}
 	})
-	settingRow(c, "priv-hist-settings", i18n.T("History settings"), i18n.T("Where the recordings are kept, exporting them, and the automatic clean-up of old entries."), func() {
+	settingRow(c, "priv-hist-settings", i18n.T("History settings"), "", func() {
 		if ui.Button(c.Key("priv-hist-settings"), i18n.T("Open…")).Clicked() {
 			a.showHistorySettings()
 		}
@@ -68,7 +68,7 @@ func (a *app) privacySettings(c *ui.Context) {
 	a.historyAccessSection(c) // history_access.go
 
 	sectionTitle(c, i18n.T("Logs"))
-	settingRow(c, "priv-log-text", i18n.T("Write text to the log"), i18n.T("When off, the log records only the lengths and timings of what you said and got back, never the text. Turn it on to report a problem, then turn it off again."), func() {
+	settingRow(c, "priv-log-text", i18n.T("Write text to the log"), i18n.T("When off, the log has no text, only lengths and timings. Turn it on only to report a problem."), func() {
 		if ui.Switch(c.Key("priv-log-text"), &a.settingsForm.logText).Label(i18n.T("Log what was said")).Changed() {
 			on := a.settingsForm.logText
 			a.updateSettings(func(s *settings.Settings) { s.Privacy.LogText = on })

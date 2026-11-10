@@ -68,7 +68,7 @@ func (a *app) meetingSettings(c *ui.Context) {
 		}
 	})
 	settingRow(c, "mt-hide-share", i18n.T("Hide from screen sharing"),
-		i18n.T("When on, the meeting overlay is hidden from screenshots and screen sharing."), func() {
+		"", func() {
 			if ui.Switch(c.Key("mt-hide-sw"), &u.hide).Label(i18n.T("Hide meeting overlay")).Changed() {
 				on := u.hide
 				a.updateSettings(func(s *settings.Settings) { s.Features.Meeting.HideFromSharing = on })

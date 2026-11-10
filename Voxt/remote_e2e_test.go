@@ -230,7 +230,7 @@ func TestSetupMissingItsKey(t *testing.T) {
 	a.local = &fakeLocal{ASRP: &fakeTranscriptions{}} // the speech models came over: only the language model is missing
 	a.checkModels()
 	a.navigate("/home")
-	if !has(tt, "DeepSeek needs its API key: paste it again to use it.") || !has(tt, "Complete setup") {
+	if !has(tt, "DeepSeek needs its API key. Paste it again to use it.") || !has(tt, "Complete setup") {
 		t.Fatalf("sidebar: %q", tt.Texts())
 	}
 	click(t, tt, "Complete setup")

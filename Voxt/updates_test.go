@@ -152,7 +152,7 @@ func TestBetaUpdates(t *testing.T) {
 	}
 	click(t, tt, "Get beta versions")
 	frames(tt)
-	if !hasPrefix(tt, "Releases only. Voxt keeps this beta until a newer release comes out") {
+	if !hasPrefix(tt, "Releases only. This beta stays until a newer release comes out") {
 		t.Errorf("off in a beta: %q", firstTexts(tt))
 	}
 	if f.prereleases() || a.prefs.Updates.Beta == nil || *a.prefs.Updates.Beta {
@@ -178,7 +178,7 @@ func TestBetaUpdates(t *testing.T) {
 	}
 	c.navigate("/settings/about")
 	see(t, tt3, "Get beta versions")
-	if !hasPrefix(tt3, "Releases only. Turn it on to get betas too") {
+	if !hasExact(tt3, "Releases only.") {
 		t.Errorf("off in a release: %q", firstTexts(tt3))
 	}
 	click(t, tt3, "Get beta versions")

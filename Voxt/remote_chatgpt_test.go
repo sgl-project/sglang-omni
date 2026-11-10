@@ -290,7 +290,7 @@ func TestChatGPTRevokedSignIn(t *testing.T) {
 		t.Fatalf("end %+v", a.sess)
 	}
 	msg, _, action := sessionProblemText(a.sess.Problem)
-	if action != actionSignIn || !strings.Contains(msg, "sign in again") || noticeActionLabel(action) != "Sign in" {
+	if action != actionSignIn || !strings.Contains(msg, "Sign in again") || noticeActionLabel(action) != "Sign in" {
 		t.Errorf("%q %q", msg, action)
 	}
 	if len(requests()) != 0 {

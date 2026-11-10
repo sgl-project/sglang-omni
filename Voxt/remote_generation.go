@@ -305,7 +305,7 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 	serviceDefault := i18n.T("Service default")
 	collapsible(c, i18n.T("Advanced"), &f.advanced, nil, func() {
 		if caps.APIFormat {
-			fieldInfo(c, i18n.T("API format"), i18n.T("Chat Completions works with nearly every service. Responses is OpenAI's newer API, and a custom service must offer POST /responses to use it. Stop sequences and Logprobs are not sent with Responses."), func() {
+			fieldInfo(c, i18n.T("API format"), i18n.T("Chat Completions works with nearly every service. Responses is OpenAI's newer API, and a custom service must support POST /responses."), func() {
 				ui.Select(c.Key("gen-api"), &f.api, titles(apiFormats, apiFormatTitle)).Label(i18n.T("API format")).Width(px(t, 240))
 			})
 		}

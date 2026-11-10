@@ -382,7 +382,7 @@ func TestImportReportGroups(t *testing.T) {
 	click(t, tt, "Done")
 	a.ob.legacy.todo = []legacyTodo{{text: setupNeedsText(local.LLM, settings.Provider{ID: "deepseek"}, providers.MissingKey), kind: local.LLM, id: "deepseek"}}
 	a.openOnboarding()
-	if !has(tt, "History: 3 entries") || !hasExact(tt, "To do") || !has(tt, "DeepSeek needs its API key: paste it again to use it.") {
+	if !has(tt, "History: 3 entries") || !hasExact(tt, "To do") || !has(tt, "DeepSeek needs its API key. Paste it again to use it.") {
 		t.Fatalf("the guide's card: %q", tt.Texts())
 	}
 	// With Linux's taller lines the button sits at the card's bottom edge:

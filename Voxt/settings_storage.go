@@ -380,7 +380,7 @@ func (a *app) storageSettings(c *ui.Context) {
 			a.resetAsk = "settings"
 		}
 	})
-	settingRow(c, "st-erase", i18n.T("Erase everything"), i18n.T("Deletes your history, recordings, dictionary, app enhancement rules, the local models no other app uses, settings and logs, then restarts Voxt from scratch."), func() {
+	settingRow(c, "st-erase", i18n.T("Erase everything"), i18n.T("Deletes all your data and settings, then restarts Voxt from scratch."), func() {
 		if ui.Button(c.Key("st-erase"), i18n.T("Erase…")).Disabled(a.erasing).Clicked() {
 			a.askErase()
 		}

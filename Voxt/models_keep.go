@@ -68,7 +68,7 @@ func keepLabel(v string) string {
 func (a *app) modelsAdvanced(c *ui.Context) {
 	t := c.Theme()
 	collapsible(c.Key("models-advanced"), i18n.T("Advanced"), &a.modelAdvanced, nil, func() {
-		help := i18n.T("Loaded models let each dictation start at once, but keep using the memory shown on their cards. Automatic unloads a speech model after it sits unused for 10 minutes.")
+		help := i18n.T("Loaded models start at once but keep using memory. Automatic unloads them after 10 minutes unused.")
 		settingRow(c, "models-keep", i18n.T("Keep models loaded"), help, func() {
 			// The label follows the setting and the language, unless a
 			// choice of this select is on its way to the setting.

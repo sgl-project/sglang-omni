@@ -274,7 +274,7 @@ func (a *app) importLegacy() {
 	}
 	go func() {
 		files, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.win, Title: i18n.T("Import from Voxt 1.x"),
-			Message:     i18n.T("This is the previous Voxt's data. Click Import to bring over its dictionary, history and settings. The previous Voxt keeps all its data."),
+			Message:     i18n.T("Click Import to bring over its dictionary, history and settings. The previous Voxt keeps all its data."),
 			ButtonLabel: i18n.T("Import"), DefaultPath: lib, Directory: true})
 		if err != nil || len(files) == 0 {
 			return

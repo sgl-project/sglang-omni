@@ -60,9 +60,6 @@ func TestLLMDebugPromptGrows(t *testing.T) {
 	a.readUnreadKeys()
 	a.navigate(llmDebugPath)
 	frames(tt)
-	if !has(tt, "This is the feature's Your rules, the same prompt as on its page. Edits apply only here until you click Use this prompt, which saves them there.") {
-		t.Errorf("no word on what the prompt is: %q", tt.Texts())
-	}
 	a.llmDbg.prompt = "x"
 	frames(tt)
 	short, ok := tt.Find("System prompt")
@@ -82,8 +79,8 @@ func TestLLMDebugButtonsFit(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	tt.SetSize(windowWidth, 2400)
 	for _, c := range []struct{ path, caption, label string }{
-		{remotePath, "Transcribe's clean-up, Translate and Rewrite use the language model you set up here. Voxt sends it the recognised or selected text, never your audio. Keys stay in this Mac's Keychain.", "Try prompts on a model…"},
-		{llmDebugPath, "Send your own text to a language model as a feature would, and try edits to its prompt here. Nothing is saved until you click Use this prompt.", "Open Language models"},
+		{remotePath, "Voxt sends the language model the recognised or selected text, never your audio.", "Try prompts on a model…"},
+		{llmDebugPath, "Try a prompt on your own text. Nothing is saved until you click Use this prompt.", "Open Language models"},
 	} {
 		a.navigate(c.path)
 		frames(tt)

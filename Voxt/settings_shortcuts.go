@@ -38,10 +38,10 @@ func featurePath(feature string) string {
 func (a *app) shortcutsSettings(c *ui.Context) {
 	t := c.Theme()
 	k := tok(t)
-	caption(c, i18n.T("The shortcuts work in every app. Click one to change it on its feature's page."))
+	caption(c, i18n.T("Click a shortcut to change it on its feature's page."))
 	if !a.hotkeys.Installed {
 		notice(c, "sc-no-tap", noticeWarn,
-			i18n.T("Without Accessibility, only plain shortcuts work (⌃⌥⇧⌘ with a key). Shortcuts with fn or a single modifier, double taps and long presses need it."),
+			i18n.T("Without Accessibility, only shortcuts like ⌃⌥Space work. fn, single modifiers, double taps and long presses need it."),
 			"", func() {
 				if ui.Button(c.Key("sc-open-perms"), i18n.T("Open Permissions")).Clicked() {
 					a.navigate("/settings/permissions")
@@ -191,9 +191,9 @@ func presetAbout(p string) string {
 func (a *app) shortcutPresetPicker(c *ui.Context, key string) {
 	t := c.Theme()
 	cur := settings.PresetOf(a.prefs.Features)
-	about := i18n.T("Sets Transcribe, Translate, Rewrite and Paste the last result at once. A shortcut you changed yourself stays as it is.")
+	about := i18n.T("Shortcuts you changed yourself stay as they are.")
 	if key == "ob" {
-		about = i18n.T("Pick a set of shortcuts. You can change them later in Settings → Shortcuts.")
+		about = i18n.T("You can change them later in Settings → Shortcuts.")
 	}
 	settingRow(c, key+"-preset", i18n.T("Preset"), about, func() {
 		var opts []string

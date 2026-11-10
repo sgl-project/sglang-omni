@@ -168,7 +168,7 @@ func (a *app) chatgptFields(c *ui.Context, d *providerDialog) {
 	t := c.Theme()
 	email := a.keyMasks[chatgptAccount()]
 	login := &a.chatLogin
-	info := i18n.T("Voxt uses your own ChatGPT plan and has no account of its own. The sign-in gives access to your whole ChatGPT account, so it is kept only in this Mac's Keychain, never in settings or logs. Signing out deletes it from this Mac.")
+	info := i18n.T("The sign-in is kept only in this Mac's Keychain. Signing out deletes it.")
 	fieldInfo(c, i18n.T("ChatGPT account"), info, func() {
 		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
 			switch {
@@ -185,7 +185,7 @@ func (a *app) chatgptFields(c *ui.Context, d *providerDialog) {
 					a.signOutChatGPT()
 				}
 			default:
-				caption(c, i18n.T("Opens your browser to sign in with your ChatGPT account.")).Grow(1).MinWidth(0)
+				ui.Spacer(c)
 				if ui.Button(c.Key("chatgpt-signin"), i18n.T("Sign in with ChatGPT")).Clicked() {
 					a.signInChatGPT()
 				}

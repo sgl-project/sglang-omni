@@ -70,7 +70,7 @@ func TestShortcutsSettings(t *testing.T) {
 	a.updateSettings(func(s *settings.Settings) {
 		s.Features.Translate.Hotkeys = []settings.Hotkey{{Keys: "RightOption", Trigger: settings.TriggerTap}}
 	})
-	if !has(tt, "Transcribe has the same keys and trigger: only one of them works.") || !has(tt, "Translate has the same keys and trigger: only one of them works.") {
+	if !has(tt, "Transcribe has the same keys and trigger, so only one of them works.") || !has(tt, "Translate has the same keys and trigger, so only one of them works.") {
 		t.Errorf("conflict: %q", tt.Texts())
 	}
 	a.updateSettings(func(s *settings.Settings) { s.Features.Rewrite.Hotkeys = nil })

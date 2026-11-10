@@ -115,10 +115,10 @@ func TestDictionaryGuide(t *testing.T) {
 	}
 	click(t, tt, title)
 	for _, want := range []string{
-		"takes effect the next time you use Voxt",
-		"as a word to expect, if that model takes hints. Aliases are not sent",
-		fmt.Sprintf("With up to %d enabled terms, it gets them all", compose.GlossaryAllUpTo),
-		fmt.Sprintf("by spelling or alias, up to %d", compose.MaxGlossaryTerms),
+		"is used in three places",
+		"as words to expect. Aliases are not sent",
+		fmt.Sprintf("With more than %d terms", compose.GlossaryAllUpTo),
+		fmt.Sprintf("are sent, up to %d.", compose.MaxGlossaryTerms),
 		"even without a language model",
 	} {
 		if !has(tt, want) {
@@ -128,9 +128,9 @@ func TestDictionaryGuide(t *testing.T) {
 	i18n.SetLocale("zh-Hans")
 	for _, want := range []string{
 		"词典的用法",
-		"下次使用 Voxt 时",
+		"启用的词条用在三个地方",
 		"别名不发送",
-		fmt.Sprintf("词条不超过 %d 个时全部发给模型", compose.GlossaryAllUpTo),
+		fmt.Sprintf("超过 %d 个时，只发送文本里出现的词条", compose.GlossaryAllUpTo),
 		fmt.Sprintf("最多 %d 个", compose.MaxGlossaryTerms),
 		"没有语言模型也有效",
 	} {

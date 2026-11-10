@@ -182,7 +182,7 @@ func (a *app) openBrowsers() {
 // aeEmpty is the page without groups.
 func (a *app) aeEmpty(c *ui.Context) {
 	emptyState(c, appEnhancementIcon, i18n.T("Rules for the frontmost app or website"),
-		i18n.T("Group apps and website addresses, and give each group a scene prompt (a chat app, your mail, code review). It is added on top of the features' own rules when you dictate there."), func() {
+		i18n.T("Give apps and websites their own prompt, such as a casual tone in chats."), func() {
 			if ghostIconButton(c.Key("ae-empty-new"), icons.Add, i18n.T("New group")).Clicked() {
 				a.addGroup()
 			}

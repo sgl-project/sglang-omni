@@ -61,7 +61,7 @@ func (a *app) aeDetail(c *ui.Context, g appctx.Group) {
 		ui.Row(c).Wrap().GapX(px(t, sp4)).GapY(px(t, sp1)).AlignItems(ui.Center).Children(func() {
 			ui.Row(c).Gap(px(t, 6)).AlignItems(ui.Center).Children(func() {
 				caption(c, i18n.T("Applies to"))
-				infoTip(c, i18n.T("Transcribe: the scene shapes the clean-up. Rewrite: it helps understand your spoken instruction. Translate: off by default, since a scene's tone rarely belongs in a translation."))
+				infoTip(c, i18n.T("Translate is off by default, since a scene's tone rarely suits a translation."))
 			})
 			for _, f := range []struct {
 				key, label string
@@ -92,7 +92,7 @@ func (a *app) aeScene(c *ui.Context, g appctx.Group) {
 	t := c.Theme()
 	k := tok(t)
 	p := &a.aePage
-	sectionTitleTip(c, i18n.T("Group prompt"), i18n.T("Added on top of the features' basic clean-up and your rules, never in place of them. Say what is special here (tone, format, names)."))
+	sectionTitleTip(c, i18n.T("Group prompt"), i18n.T("Added on top of each feature's own rules."))
 	in := ui.TextArea(c.Key("ae-prompt"), &p.prompt).Label(i18n.T("Prompt for this group")).
 		Placeholder(i18n.T("For example: this is a team chat; keep it short and casual, no greetings or sign-offs.")).MinHeight(px(t, 88))
 	if in.Changed() {
@@ -124,7 +124,7 @@ func (a *app) aeApps(c *ui.Context, g appctx.Group) {
 	t := c.Theme()
 	k := tok(t)
 	p := &a.aePage
-	if sectionTitleAdd(c, "ae-add-app", i18n.T("Apps"), i18n.T("The group applies when you dictate in one of these apps. A browser added here covers the websites that no group's website rule matches."), i18n.T("Add apps…")) {
+	if sectionTitleAdd(c, "ae-add-app", i18n.T("Apps"), i18n.T("A browser added here covers the websites no website rule matches."), i18n.T("Add apps…")) {
 		p.appsOpen, p.appsQuery, p.bundleIn = true, "", ""
 		a.loadApps()
 	}
@@ -162,7 +162,7 @@ func (a *app) aeURLs(c *ui.Context, g appctx.Group) {
 	t := c.Theme()
 	k := tok(t)
 	p := &a.aePage
-	sectionTitleTip(c, i18n.T("Websites"), i18n.T("In a browser, the address of the current tab is matched against these rules: a site (github.com), part of a site (github.com/acme/*) or any subdomain (*.notion.so). * matches anything. A website rule wins over the group the browser is in, and the most specific rule wins."))
+	sectionTitleTip(c, i18n.T("Websites"), i18n.T("Match a site (github.com), part of it (github.com/acme/*) or its subdomains (*.notion.so). A website rule wins over the browser's group."))
 	card(c.Key("ae-urls")).Gap(px(t, sp1)).Children(func() {
 		if len(g.URLs) == 0 {
 			caption(c, i18n.T("No website rules yet."))
@@ -232,7 +232,7 @@ func (a *app) aeAutoKey(c *ui.Context, g appctx.Group) {
 	t := c.Theme()
 	p := &a.aePage
 	sectionTitle(c, i18n.T("After inserting"))
-	settingRow(c, "ae-key", i18n.T("Press a key"), i18n.T("Pressed right after the text is inserted, such as Return to send in a chat app. Not pressed when the result shows in the answer card."), func() {
+	settingRow(c, "ae-key", i18n.T("Press a key"), i18n.T("For example, Return to send in a chat app."), func() {
 		opts := []string{i18n.T("None")}
 		byLabel := map[string]string{i18n.T("None"): ""}
 		for _, k := range autoKeys {

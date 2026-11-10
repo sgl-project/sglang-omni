@@ -21,7 +21,7 @@ import (
 func TestInfoTipClick(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate("/settings/audio")
-	const tip = "Voxt records from the first connected microphone in the list. If none is connected, or the list is empty, it uses the system's default input."
+	const tip = "Voxt uses the first connected microphone in the list, or the system default."
 	shown := func() int { // the ⓘ's own label counts once
 		frames(tt)
 		n := 0

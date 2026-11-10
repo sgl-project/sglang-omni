@@ -316,7 +316,7 @@ func (a *app) aboutSettings(c *ui.Context) {
 	a.updateSettingsSection(c) // updates.go
 
 	sectionTitle(c, i18n.T("Self-check"))
-	settingRow(c, "about-check", i18n.T("Check Voxt"), i18n.T("Checks the library, helper, models, data folder and permissions."), func() {
+	settingRow(c, "about-check", i18n.T("Check Voxt"), "", func() {
 		if a.selfChecking {
 			ui.Spinner(c)
 		}

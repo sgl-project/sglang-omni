@@ -62,7 +62,7 @@ func (a *app) aePreviewCard(c *ui.Context) {
 			case !a.helperReady():
 				addr = i18n.T("The helper is not running, so the address cannot be read.")
 			default:
-				addr = i18n.T("No address: %s does not show it to Accessibility right now. Voxt tries again when you press a shortcut there. If it never shows one, this browser matches only as an app.", app.Name)
+				addr = i18n.T("%s does not show its address right now, so it matches as an app.", app.Name)
 			}
 			truncText(c, addr).FontSize(px(t, fsCaption)).TextColor(k.Text2)
 		}

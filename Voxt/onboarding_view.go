@@ -164,13 +164,13 @@ func (a *app) obTitle(c *ui.Context) {
 		sub = i18n.T("Voxt recognises speech with a model on this Mac and cleans up, translates and rewrites with a language model you set up. The model below is the best start, and the Speech models page has others.")
 	case obTranscribe:
 		title = i18n.T("Try Transcribe")
-		sub = i18n.T("Transcribe writes down what you say, and the language model you set up tidies the punctuation and fillers. Press the shortcut (or Start), read the sentence below or say anything, then press it again to stop.")
+		sub = i18n.T("Transcribe writes down what you say. Press the shortcut (or Start), read the sentence below, then press it again to stop.")
 	case obTranslate:
 		title = i18n.T("Try Translate")
 		sub = i18n.T("Translate turns the selected text, or what you say, into the language you choose. Translate the sample below, or press the shortcut (or Start) and say a sentence.")
 	case obRewrite:
 		title = i18n.T("Try Rewrite")
-		sub = i18n.T("Unlike Transcribe, Rewrite does not write down your words. Tell Voxt what to write, or select text and say how to change it, and the language model writes the result. Press the shortcut (or Start) and ask for something short.")
+		sub = i18n.T("Rewrite writes what you ask for, or changes the selected text as you say. Press the shortcut (or Start) and ask for something short.")
 	default:
 		title = i18n.T("More to explore")
 		sub = i18n.T("Voxt is ready. Two more things make it yours.")

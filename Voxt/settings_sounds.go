@@ -252,7 +252,7 @@ func (a *app) trySound(c cue) {
 // soundsRow is the Play sounds row, and under it while on a line per cue.
 func (a *app) soundsRow(c *ui.Context) {
 	t := c.Theme()
-	settingRow(c, "audio-sounds", i18n.T("Play sounds"), i18n.T("A short sound when recording starts, and another when it stops. Choosing a sound plays it."), func() {
+	settingRow(c, "audio-sounds", i18n.T("Play sounds"), "", func() {
 		if ui.Switch(c.Key("audio-sounds-switch"), &a.settingsForm.sounds).Label(i18n.T("Play sounds")).Changed() {
 			on := a.settingsForm.sounds
 			a.updateSettings(func(s *settings.Settings) { s.Audio.Sounds = on })

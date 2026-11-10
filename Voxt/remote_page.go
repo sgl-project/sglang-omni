@@ -30,7 +30,7 @@ func (a *app) remotePage(c *ui.Context) {
 	ui.Scroll(c.Key("remote-scroll")).Grow(1).MinHeight(0).Children(func() {
 		pageColumn(c).Gap(px(t, sp4)).Children(func() {
 			a.obBackBar(c, remotePath) // onboarding.go: left from the setup guide
-			caption(c, i18n.T("Transcribe's clean-up, Translate and Rewrite use the language model you set up here. Voxt sends it the recognised or selected text, never your audio. Keys stay in this Mac's Keychain."))
+			caption(c, i18n.T("Voxt sends the language model the recognised or selected text, never your audio."))
 			a.providerCards(c, local.LLM)
 			if ui.Button(c.Key("remote-debug"), i18n.T("Try prompts on a model…")).AlignSelf(ui.Start).Clicked() {
 				a.navigate(llmDebugPath)
@@ -78,7 +78,7 @@ func (a *app) providerCards(c *ui.Context, kind local.Kind) {
 		}
 		if rest := append(here, online...); len(rest) > 0 {
 			sectionTitle(c, i18n.T("Online services"))
-			caption(c, i18n.T("Buy an API key from the service, then set it up here. A Whisper server on this Mac needs no key. Recordings go to a service only for the features you choose it for."))
+			caption(c, i18n.T("A service gets your recordings only for the features you choose it for."))
 			grid("remote-asr-online", rest)
 		}
 		return
@@ -89,12 +89,11 @@ func (a *app) providerCards(c *ui.Context, kind local.Kind) {
 	}
 	if len(here) > 0 {
 		sectionTitle(c, i18n.T("On this Mac"))
-		caption(c, i18n.T("Free, and the text stays on this Mac. Install Ollama, LM Studio or oMLX, download a model in it, then set it up here."))
+		caption(c, i18n.T("Free, and the text stays on this Mac."))
 		grid("remote-here", here)
 	}
 	if len(online) > 0 {
 		sectionTitle(c, i18n.T("Online services"))
-		caption(c, i18n.T("Buy an API key from the service, then set it up here."))
 		grid("remote-online", online)
 	}
 }

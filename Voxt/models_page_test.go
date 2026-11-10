@@ -298,7 +298,7 @@ func TestModelDownloadStates(t *testing.T) {
 	}
 
 	// Deleting what a stopped download kept.
-	click(t, tt, "Delete what was downloaded of Qwen3-ASR 0.6B (4bit)")
+	click(t, tt, "Delete the partial download of Qwen3-ASR 0.6B (4bit)")
 	drain()
 	if st := a.modelStatus[models.ASRFast]; st.Done != 0 || has(tt, "Resume") {
 		t.Errorf("kept: %+v", st)

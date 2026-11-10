@@ -131,9 +131,9 @@ func (a *app) providerDialogView(c *ui.Context) {
 			a.chatgptFields(c, d) // remote_chatgpt.go
 		}
 		mask := a.keyMasks[providers.Account(d.kind, d.id)]
-		keyInfo := i18n.T("Saved in this Mac's Keychain, never in Voxt's settings or logs.")
+		keyInfo := i18n.T("Saved in this Mac's Keychain.")
 		if sv.keyOptional {
-			keyInfo = i18n.T("Optional for a server on this Mac. Saved in this Mac's Keychain, never in Voxt's settings or logs.")
+			keyInfo = i18n.T("Optional for a server on this Mac. Saved in this Mac's Keychain.")
 		}
 		if !sv.signIn {
 			fieldInfo(c, i18n.T("API key"), keyInfo, func() {
@@ -181,7 +181,7 @@ func (a *app) providerDialogView(c *ui.Context) {
 			}
 		})
 		if d.kind == local.ASR {
-			fieldInfo(c, i18n.T("Recognition prompt"), i18n.T("Optional. Goes after the global speech context on the Speech models page. Use {{USER_MAIN_LANGUAGE}}, {{USER_OTHER_LANGUAGES}} and {{DICTIONARY_TERMS}} for your languages and dictionary. Services that do not support prompts ignore it."), func() {
+			fieldInfo(c, i18n.T("Recognition prompt"), i18n.T("Optional. Added after the speech context on the Speech models page. You can use {{USER_MAIN_LANGUAGE}}, {{USER_OTHER_LANGUAGES}} and {{DICTIONARY_TERMS}}."), func() {
 				ui.TextArea(c.Key("remote-asr-prompt"), &d.recognitionPrompt).Label(i18n.T("Recognition prompt")).
 					Placeholder(i18n.T("For example: Technical talk; prefer product names from the dictionary.")).MinHeight(px(t, 72))
 			})

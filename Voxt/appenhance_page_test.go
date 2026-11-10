@@ -216,7 +216,7 @@ func TestAppEnhancementPreview(t *testing.T) {
 	// Safari gives no address: it says so, and nothing matches.
 	a.helperNotified(appActivated(proto.App{PID: 902, BundleID: "com.apple.Safari", Name: "Safari"}))
 	frames(tt)
-	if !has(tt, "No group matches, so only the features' own rules apply.") || !tt.HasText("does not show it to Accessibility right now") {
+	if !has(tt, "No group matches, so only the features' own rules apply.") || !tt.HasText("does not show its address right now") {
 		t.Errorf("safari %q", firstTexts(tt))
 	}
 	// Add Safari to the group shown, from the preview.
@@ -383,7 +383,7 @@ func TestAppEnhancementHeader(t *testing.T) {
 			if br.Y > float32(titleBarHeight) {
 				t.Errorf("%v %s: Browsers %+v below the header", size, lang, br)
 			}
-			tip, ok := tt.Find(i18n.T("Added on top of the features' basic clean-up and your rules, never in place of them. Say what is special here (tone, format, names)."))
+			tip, ok := tt.Find(i18n.T("Added on top of each feature's own rules."))
 			if !ok || tip.W > 20 || tip.H > 20 {
 				t.Errorf("%v %s: the scene prompt's help %+v %v, not a ⓘ", size, lang, tip, ok)
 			}

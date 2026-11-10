@@ -41,9 +41,8 @@ func (a *app) modelsPage(c *ui.Context) {
 	ui.Scroll(c.Key("models-scroll")).Grow(1).MinHeight(0).Children(func() {
 		pageColumn(c).Gap(px(t, sp3)).Children(func() {
 			a.obBackBar(c, modelsPath) // onboarding.go: left from the setup guide
-			caption(c, i18n.T("A speech model turns what you say into text, and every feature needs one to work by voice. Models on this Mac keep your audio here. A remote service gets your recording only when you choose it. Language models are on the Language models page."))
 			sectionTitle(c, i18n.T("On this Mac"))
-			caption(c, i18n.T("Free, and your audio stays on this Mac. Download a model once and it runs here."))
+			caption(c, i18n.T("Free, and your audio stays on this Mac."))
 			a.modelCards(c, models.ASR)
 			if !a.modelHidden(dictation.ModelID) {
 				a.dictationCard(c)
@@ -51,7 +50,7 @@ func (a *app) modelsPage(c *ui.Context) {
 			a.providerCards(c, local.ASR) // remote_page.go
 			a.speechContextSection(c)     // models_context.go
 			if a.anyModelShown(models.LLM) {
-				sectionTitleTip(c, i18n.T("Language models no longer used"), i18n.T("Voxt 2.0 ran these on this Mac, but now uses the models on the Language models page. Delete them to free up space. Any that another app uses are kept."))
+				sectionTitleTip(c, i18n.T("Language models no longer used"), i18n.T("Voxt no longer uses these. Delete them to free up space."))
 				a.modelCards(c, models.LLM)
 			}
 			a.hiddenModelCards(c)
@@ -160,7 +159,6 @@ func (a *app) hiddenModelCards(c *ui.Context) {
 		return
 	}
 	collapsible(c.Key("models-hidden"), i18n.T("Hidden models"), &a.modelHiddenOpen, func() { caption(c, strconv.Itoa(len(ids))) }, func() {
-		caption(c, i18n.T("These models are hidden from the features' menus. Click Show to bring one back."))
 		for _, id := range ids {
 			if id == dictation.ModelID {
 				a.dictationCard(c)
@@ -388,12 +386,11 @@ func (a *app) draftRow(c *ui.Context, id string) {
 		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp1)).Children(func() {
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
 				ui.Text(c, i18n.T("Faster transcription")).FontWeight(600)
-				infoTip(c.Key("how"), i18n.T("Speculative decoding: a small draft model proposes several words at a time and the speech model checks them."))
 				if st.Installed {
 					statusMark(c, icons.CheckCircle, k.Success, i18n.T("Installed"))
 				}
 			})
-			caption(c, i18n.T("Download to speed up transcription with this model. You can remove the add-on and keep using the model."))
+			caption(c, i18n.T("Download to make this model faster."))
 			caption(c.Key("size"), modelSizeText(d, st))
 		})
 		ui.Row(c.Key("actions")).Gap(px(t, sp2)).Shrink(0).Children(func() { a.modelActions(c, d, st) })

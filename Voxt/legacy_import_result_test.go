@@ -90,7 +90,7 @@ func TestLegacyCodexLeftOut(t *testing.T) {
 	}{
 		{"setup only", codexSetup, "", []string{"Codex setup: sign in to ChatGPT (Codex) on the Language models page"}, []string{"used by", "not available"}},
 		{"all features", codexSetup, `{"transcription":{"llmEnabled":true,"llmSelectionID":"remote-llm:codex"},"translation":{"modelSelectionID":"remote-llm:codex"},"rewrite":{"llmSelectionID":"remote-llm:codex"}}`,
-			[]string{"Codex (used by Transcribe, Translate, Rewrite): not imported; sign in to ChatGPT (Codex) or choose another language model"}, []string{"Codex setup", "not available"}},
+			[]string{"Codex (used by Transcribe, Translate, Rewrite): sign in to ChatGPT (Codex) or choose another language model"}, []string{"Codex setup", "not available"}},
 		{"Transcribe had clean-up off", codexSetup, `{"transcription":{"llmEnabled":false,"llmSelectionID":"remote-llm:codex"},"rewrite":{"llmSelectionID":"remote-llm:codex"}}`,
 			[]string{"used by Rewrite"}, []string{"Transcribe"}},
 		{"no Codex", openAISetup, "", nil, []string{"Codex"}},

@@ -274,25 +274,25 @@ func (a *app) updateSettingsSection(c *ui.Context) {
 	if !a.updKnown || !p.Enabled {
 		return
 	}
-	settingRow(c, "about-update-auto", i18n.T("Check automatically"), i18n.T("Once a day, in the background. When a new version is out, a window shows its release notes and asks before installing."), func() {
+	settingRow(c, "about-update-auto", i18n.T("Check automatically"), i18n.T("Once a day. Voxt asks before installing."), func() {
 		if ui.Switch(c.Key("about-update-auto-switch"), &a.updPrefs.AutoCheck).Label(i18n.T("Check for updates automatically")).Changed() {
 			a.setAutoCheck(a.updPrefs.AutoCheck)
 		}
 	})
 	beta := a.betaOn()
-	note := i18n.T("Releases only. Turn it on to get betas too, with new features sooner and more bugs.")
+	note := i18n.T("Releases only.")
 	switch {
 	case beta:
-		note = i18n.T("Betas and releases, whichever is newer. Betas bring new features sooner, and more bugs.")
+		note = i18n.T("Betas and releases, whichever is newer.")
 	case strings.Contains(a.version, "-"):
-		note = i18n.T("Releases only. Voxt keeps this beta until a newer release comes out, and never goes back to an older version.")
+		note = i18n.T("Releases only. This beta stays until a newer release comes out.")
 	}
 	settingRowNote(c, "about-update-beta", i18n.T("Beta updates"), note, func() {
 		if ui.Switch(c.Key("about-update-beta-switch"), &beta).Label(i18n.T("Get beta versions")).Changed() {
 			a.setBeta(beta)
 		}
 	})
-	settingRow(c, "about-update-install", i18n.T("Install updates automatically"), i18n.T("Updates found in the background download and install without asking, then Voxt asks to restart."), func() {
+	settingRow(c, "about-update-install", i18n.T("Install updates automatically"), i18n.T("Voxt asks only to restart."), func() {
 		if ui.Switch(c.Key("about-update-install-switch"), &a.updPrefs.AutoInstall).Label(i18n.T("Install updates without asking")).Disabled(!a.updPrefs.AutoCheck).Changed() {
 			a.setAutoInstall(a.updPrefs.AutoInstall)
 		}
