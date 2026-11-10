@@ -14,6 +14,26 @@
 
 --------------------------------------------------------------------------------
 
+## News
+
+- [2026/11] 🎙️ [Voxt 2.0](./Voxt/README.md) redefines open-source voice interaction on Mac: voice input, any-to-any translation, and a local AI assistant, with a 92% shorter wait after long dictation than 1.x. \[[Download](https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v2.0.3)\] \[[Changelog](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/CHANGELOG.md)\]
+- [2026/11] 🔁 OpenRSI × SGLang-Omni: recursive self-improvement (RSI) scaled to production AI infrastructure, with 14 merged PRs across 8 speech and omni models and +7.6% to +326.5% throughput on H100. \[[Blog](https://index.openrsi.foundation/blog/2026/openrsi-sglang-omni/)\]
+- [2026/10] 🗺️ A unified runtime for interactive intelligence: native full-duplex models, turn-based multimodal models, and cascaded systems, coordinated through composable graphs and persistent sessions. \[[Blog](https://www.sglang.io/blog/omni-interactive-runtime)\]
+- [2026/10] 🚀 SGLang-Omni **v0.2.0** is on [PyPI](https://pypi.org/project/sglang-omni/). Install with `uv pip install --prerelease=allow "sglang-omni==0.2.0"`. \[[Installation](https://sgl-project.github.io/sglang-omni/get_started/installation.html)\]
+- [2026/10] 🐟 Day-0 support for [Fish Audio Drama 3](https://huggingface.co/fishaudio/drama-3): multi-speaker text-to-speech with voice cloning and natural-language control, streamed on `/v1/audio/speech`. \[[Blog](https://www.sglang.io/blog/spg-topology)\] \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html)\] \[[Technical Report](https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf)\]
+- [2026/10] 🎙️ Introducing [Voxt](https://github.com/sgl-project/sglang-omni/tree/main/Voxt), an open-source voice input tool for Mac, now integrating SGLang-Omni for faster local speech recognition on Apple Silicon. Combine ASR with LLM-based text refinement and personal system prompts for accurate technical terminology and personalized voice input, with fully local or remote inference options. [[Download](https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v2.0.3)][[Demo]](https://x.com/GenAI_is_real/status/2109419016205017181)
+
+<details>
+<summary>Earlier news</summary>
+
+- [2026/09] 🐧 Day-0 support for [AuK](https://huggingface.co/tencent/AuK) and [AuK-Flash](https://huggingface.co/tencent/AuK-Flash): text + voice instructions → 24 kHz speech on `/v1/audio/speech`, audio + editing instructions → edited speech on `/generate`. \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/auk.html)\]
+- [2026/08] 🎵 Day-0 support for [MiniMax Music 3](https://huggingface.co/MiniMaxAI/MiniMax-Music3): lyrics + caption → 32 kHz stereo song on `/v1/audio/speech`. \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/minimax_music3.html)\]
+- [2026/08] 🚀 TTS architecture refactor: shared pipeline state, engine construction, reference encoding, capability metadata, and vocoder scheduling. \[[Roadmap](https://github.com/sgl-project/sglang-omni/issues/985)\] \[[Blog](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/sglang/sglang-omni/tts-refactor.md)\]
+- [2026/06] 🔥 MOSS-TTS Local Transformer v1.5 on SGLang-Omni with native-streaming 48 kHz speech. \[[Blog](https://lmsys.org/blog/2026-06-17-moss-tts-local-v15/)\] \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/moss_tts_local.html)\]
+- [2026/06] 🔥 Higgs Audio v3 TTS for real-time, controllable speech. \[[Blog](https://lmsys.org/blog/2026-06-04-higgs-audio-v3-tts/)\] \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/higgs_tts.html)\]
+
+</details>
+
 <p align="center">
 <a href="https://lmsys.org/blog/"><b>Blog</b></a> |
 <a href="https://sgl-project.github.io/sglang-omni/"><b>Documentation</b></a> |
@@ -26,26 +46,6 @@
 <p align="center">
 ⭐ <b><a href="https://github.com/sgl-project/sglang-omni/stargazers">Star SGLang-Omni</a> to help more builders discover open infrastructure for multimodal and speech serving!</b>
 </p>
-
-## News
-
-- [2026/11] 🔁 OpenRSI × SGLang-Omni: recursive self-improvement (RSI) scaled to production AI infrastructure, with 14 merged PRs across 8 speech and omni models and +7.6% to +326.5% throughput on H100. \[[Blog](https://index.openrsi.foundation/blog/2026/openrsi-sglang-omni/)\]
-- [2026/11] 🎙️ [Voxt 2.0](https://voxt.actnow.dev/) redefines open-source voice interaction on Mac: voice input, any-to-any translation, and a local AI assistant, with a 92% shorter wait after long dictation than 1.x. \[[Download](https://sgl-project.github.io/sglang-omni/get_started/voxt.html)\] \[[Changelog](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/CHANGELOG.md)\]
-- [2026/10] 🗺️ A unified runtime for interactive intelligence: native full-duplex models, turn-based multimodal models, and cascaded systems, coordinated through composable graphs and persistent sessions. \[[Blog](https://www.sglang.io/blog/omni-interactive-runtime)\]
-- [2026/10] 🚀 SGLang-Omni **v0.2.0** is on [PyPI](https://pypi.org/project/sglang-omni/). Install with `uv pip install --prerelease=allow "sglang-omni==0.2.0"`. \[[Installation](https://sgl-project.github.io/sglang-omni/get_started/installation.html)\]
-- [2026/10] 🐟 Day-0 support for [Fish Audio Drama 3](https://huggingface.co/fishaudio/drama-3): multi-speaker text-to-speech with voice cloning and natural-language control, streamed on `/v1/audio/speech`. \[[Blog](https://www.sglang.io/blog/spg-topology)\] \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html)\] \[[Technical Report](https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf)\]
-- [2026/10] 🎙️ Introducing [Voxt](https://github.com/sgl-project/sglang-omni/tree/main/Voxt), an open-source voice input tool for Mac, now integrating SGLang-Omni for faster local speech recognition on Apple Silicon. Combine ASR with LLM-based text refinement and personal system prompts for accurate technical terminology and personalized voice input, with fully local or remote inference options. [[Download](https://sgl-project.github.io/sglang-omni/get_started/voxt.html)][[Demo]](https://x.com/GenAI_is_real/status/2109419016205017181)
-
-<details>
-<summary>Earlier news</summary>
-
-- [2026/09] 🐧 Day-0 support for [AuK](https://huggingface.co/tencent/AuK) and [AuK-Flash](https://huggingface.co/tencent/AuK-Flash): text + voice instructions → 24 kHz speech on `/v1/audio/speech`, audio + editing instructions → edited speech on `/generate`. \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/auk.html)\]
-- [2026/08] 🎵 Day-0 support for [MiniMax Music 3](https://huggingface.co/MiniMaxAI/MiniMax-Music3): lyrics + caption → 32 kHz stereo song on `/v1/audio/speech`. \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/minimax_music3.html)\]
-- [2026/08] 🚀 TTS architecture refactor: shared pipeline state, engine construction, reference encoding, capability metadata, and vocoder scheduling. \[[Roadmap](https://github.com/sgl-project/sglang-omni/issues/985)\] \[[Blog](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/sglang/sglang-omni/tts-refactor.md)\]
-- [2026/06] 🔥 MOSS-TTS Local Transformer v1.5 on SGLang-Omni with native-streaming 48 kHz speech. \[[Blog](https://lmsys.org/blog/2026-06-17-moss-tts-local-v15/)\] \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/moss_tts_local.html)\]
-- [2026/06] 🔥 Higgs Audio v3 TTS for real-time, controllable speech. \[[Blog](https://lmsys.org/blog/2026-06-04-higgs-audio-v3-tts/)\] \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/higgs_tts.html)\]
-
-</details>
 
 ## About
 

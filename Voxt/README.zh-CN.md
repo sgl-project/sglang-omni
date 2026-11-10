@@ -69,7 +69,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 
 ### 第一次用 Voxt
 
-1. **下载**：从 [Voxt 的 Release 页面][download]下载最新的 `Voxt-X.Y.Z-arm64.dmg`，打开后把 **Voxt** 拖进“应用程序”。也可以用 Homebrew 安装：
+1. **下载**：从 [Voxt v2.0.3 发布页][download]下载 `Voxt-2.0.3-arm64.dmg`，打开后把 **Voxt** 拖进“应用程序”。也可以用 Homebrew 安装：
 
    ```sh
    brew install --cask hehehai/tap/voxt
@@ -160,7 +160,7 @@ Apache License 2.0（[LICENSE](LICENSE)），与本仓其余部分一致。版�
 
 [![回到顶部][back-to-top]](#readme-top)
 
-[download]: https://github.com/sgl-project/sglang-omni/releases?q=voxt-v&expanded=true
+[download]: https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v2.0.3
 [install-guide]: https://sgl-project.github.io/sglang-omni/get_started/voxt.html
 [issues]: https://github.com/sgl-project/sglang-omni/issues/new/choose
 [slack]: https://slack.sglang.io
