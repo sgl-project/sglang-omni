@@ -1229,7 +1229,7 @@ window.runMermaid = runMermaid;</script>
 <section id="pipeline-layer">
 <h2>Pipeline Layer<a class="headerlink" href="#pipeline-layer" title="Link to this heading">#</a></h2>
 <section id="http-websocket">
-<h3>HTTP/Websocket<a class="headerlink" href="#http-websocket" title="Link to this heading">#</a></h3>
+<span id="httpwebsocket"></span><h3>HTTP/Websocket<a class="headerlink" href="#http-websocket" title="Link to this heading">#</a></h3>
 <p>HTTP and WebSocket are SGLang-Omni’s externally exposed request endpoints.</p>
 <ul class="simple">
 <li><p><strong>HTTP:</strong></p>
@@ -1323,7 +1323,7 @@ receiver has finished with the request.</p>
 <p>We chose not to. Ray’s overhead — extra runtime, object-store semantics, and operational footprint — is significant for our shape: a small fixed number of stages on a small fixed number of GPUs, with no autoscaling. ZMQ + relay covers the topology with much less moving infrastructure. The decision is revisitable; nothing in the pipeline layer hard-bakes “no Ray” beyond the relay backend list.</p>
 </section>
 <section id="relay-io-utility-module">
-<h3><code class="docutils literal notranslate"><span class="pre">relay_io</span></code> Utility Module<a class="headerlink" href="#relay-io-utility-module" title="Link to this heading">#</a></h3>
+<span id="relay_io-utility-module"></span><h3><code class="docutils literal notranslate"><span class="pre">relay_io</span></code> Utility Module<a class="headerlink" href="#relay-io-utility-module" title="Link to this heading">#</a></h3>
 <p>Utility module providing:</p>
 <ul class="simple">
 <li><p><strong>User-facing API</strong></p>
@@ -1354,7 +1354,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <h2>Scheduling Layer<a class="headerlink" href="#scheduling-layer" title="Link to this heading">#</a></h2>
 <p>All schedulers share the same interface: <code class="docutils literal notranslate"><span class="pre">inbox</span></code>, <code class="docutils literal notranslate"><span class="pre">outbox</span></code>, <code class="docutils literal notranslate"><span class="pre">start()</span></code>, <code class="docutils literal notranslate"><span class="pre">stop()</span></code>, <code class="docutils literal notranslate"><span class="pre">abort()</span></code>.</p>
 <section id="omnischeduler-composition-with-sglang">
-<h3>OmniScheduler — Composition with SGLang<a class="headerlink" href="#omnischeduler-composition-with-sglang" title="Link to this heading">#</a></h3>
+<span id="omnischeduler--composition-with-sglang"></span><h3>OmniScheduler — Composition with SGLang<a class="headerlink" href="#omnischeduler-composition-with-sglang" title="Link to this heading">#</a></h3>
 <p>For AR stages. Subset of SGLang Scheduler — reuses <code class="docutils literal notranslate"><span class="pre">get_next_batch_to_run()</span></code>, <code class="docutils literal notranslate"><span class="pre">run_batch()</span></code>, <code class="docutils literal notranslate"><span class="pre">process_batch_result()</span></code>, <code class="docutils literal notranslate"><span class="pre">event_loop_normal()</span></code>. (Overlap scheduling ended up unsupported: the <code class="docutils literal notranslate"><span class="pre">Req.inflight_middle_chunks</span></code> decrement lags one iteration on that loop, so <code class="docutils literal notranslate"><span class="pre">_event_loop_overlap</span></code> refuses to run.)</p>
 <ul class="simple">
 <li><p><strong>Reused from SGLang:</strong> <code class="docutils literal notranslate"><span class="pre">get_next_batch_to_run()</span></code>, <code class="docutils literal notranslate"><span class="pre">process_batch_result()</span></code>, <code class="docutils literal notranslate"><span class="pre">self_check_during_idle()</span></code> — KV cache management, prefill/decode scheduling, tree cache, dLLM support</p></li>
@@ -1413,7 +1413,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 </section>
 <hr class="docutils" />
 <section id="model-runner-callbacks">
-<h2>Model Runner + Callbacks<a class="headerlink" href="#model-runner-callbacks" title="Link to this heading">#</a></h2>
+<span id="model-runner--callbacks"></span><h2>Model Runner + Callbacks<a class="headerlink" href="#model-runner-callbacks" title="Link to this heading">#</a></h2>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>ForwardBatch → before_*() → custom_*_forward() or standard forward → post_*() → sample/output
                     ↑ hook             ↑ explicit custom path          ↑ hook
 </pre></div>
@@ -1547,7 +1547,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p>Adding a third model = write a new <code class="docutils literal notranslate"><span class="pre">callbacks.py</span></code> with three functions.</p>
 </section>
 <section id="model-forward-one-decode-step-ar-codebook">
-<h3>Model.forward(): One Decode Step (AR + Codebook)<a class="headerlink" href="#model-forward-one-decode-step-ar-codebook" title="Link to this heading">#</a></h3>
+<span id="modelforward-one-decode-step-ar--codebook"></span><h3>Model.forward(): One Decode Step (AR + Codebook)<a class="headerlink" href="#model-forward-one-decode-step-ar-codebook" title="Link to this heading">#</a></h3>
 <p>Both Qwen3 talker and Fish TTS follow the same internal pattern:</p>
 <ol class="arabic simple">
 <li><p>Read previous step’s feedback from model buffers (written by <code class="docutils literal notranslate"><span class="pre">FeedbackARModelRunner</span></code>)</p></li>
@@ -1847,7 +1847,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
     P[preprocessing] --&gt; E[tts_engine&lt;br/&gt;GPU 0] --&gt; V[vocoder&lt;br/&gt;terminal]
     </pre></section>
 <section id="mimo-audio-249-planned">
-<h3>MiMo-Audio (<a class="reference external" href="https://github.com/sgl-project/sglang-omni/issues/249">#249</a>) — planned<a class="headerlink" href="#mimo-audio-249-planned" title="Link to this heading">#</a></h3>
+<span id="mimo-audio-249--planned"></span><h3>MiMo-Audio (<a class="reference external" href="https://github.com/sgl-project/sglang-omni/issues/249">#249</a>) — planned<a class="headerlink" href="#mimo-audio-249-planned" title="Link to this heading">#</a></h3>
 <pre  class="mermaid">
         graph LR
     P[preprocessing] --&gt; T[&quot;thinker&lt;br/&gt;(text + audio codes)&quot;] --&gt; CP[code_predictor] --&gt; V[vocoder&lt;br/&gt;terminal]
@@ -1855,7 +1855,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
     </pre><p>4-stage, single GPU. Thinker generates text + audio codes in one pass. No new abstractions needed.</p>
 </section>
 <section id="ming-omni-236-planned">
-<h3>Ming-Omni (<a class="reference external" href="https://github.com/sgl-project/sglang-omni/issues/236">#236</a>) — planned<a class="headerlink" href="#ming-omni-236-planned" title="Link to this heading">#</a></h3>
+<span id="ming-omni-236--planned"></span><h3>Ming-Omni (<a class="reference external" href="https://github.com/sgl-project/sglang-omni/issues/236">#236</a>) — planned<a class="headerlink" href="#ming-omni-236-planned" title="Link to this heading">#</a></h3>
 <pre  class="mermaid">
         graph LR
    P[preprocessing] --&gt; AE[audio_encoder] --&gt; AG[aggregate]
@@ -1888,7 +1888,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <h2>Design Decision History<a class="headerlink" href="#design-decision-history" title="Link to this heading">#</a></h2>
 <p>This section consolidates the design rationale from RFC-style PRs that shaped the architecture, ordered by PR creation date. Each header links back to the PR for the full body and discussion. State and merge date appear in the italic line below the header. Each entry has the same shape: a one- or two-sentence summary, a few bullets expanding the scope, and a “Why it matters” note on the role the PR plays in the broader refactor.</p>
 <section id="pr-294-alternative-pipeline-added-rfc">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/294">2026-04-15 — PR #294: Alternative pipeline added [RFC]</a><a class="headerlink" href="#pr-294-alternative-pipeline-added-rfc" title="Link to this heading">#</a></h3>
+<span id="2026-04-15--pr-294-alternative-pipeline-added-rfc"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/294">2026-04-15 — PR #294: Alternative pipeline added [RFC]</a><a class="headerlink" href="#pr-294-alternative-pipeline-added-rfc" title="Link to this heading">#</a></h3>
 <p><em>State: CLOSED (kickoff; superseded by the per-phase RFCs below).</em></p>
 <p>Opening RFC of the V1 refactor series, sketching a four-phase plan for replacing the V0 pipeline without a long-lived divergent branch.</p>
 <ul class="simple">
@@ -1900,7 +1900,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> This is the canonical statement of refactor intent. The PR closed without merging, but the side-by-side migration discipline it established — every intermediate state has a working server — is the rule every subsequent PR in this history followed.</p>
 </section>
 <section id="pr-334-v1-pipeline-added-rfc">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/334">2026-04-23 — PR #334: V1 pipeline added [RFC]</a><a class="headerlink" href="#pr-334-v1-pipeline-added-rfc" title="Link to this heading">#</a></h3>
+<span id="2026-04-23--pr-334-v1-pipeline-added-rfc"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/334">2026-04-23 — PR #334: V1 pipeline added [RFC]</a><a class="headerlink" href="#pr-334-v1-pipeline-added-rfc" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-05-02. Run with <code class="docutils literal notranslate"><span class="pre">--version</span> <span class="pre">v1</span></code>.</em></p>
 <p>Introduced the V1 pipeline as an opt-in path via <code class="docutils literal notranslate"><span class="pre">--version</span> <span class="pre">v1</span></code>, and published the project trackboard that anchored the rest of the refactor.</p>
 <ul class="simple">
@@ -1913,7 +1913,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><a id="2026-05-04--pr-385-openai-realtime-websocket-endpoint-v1-feature"></a></p>
 </section>
 <section id="pr-385-openai-realtime-websocket-endpoint-v1-feature">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/385">2026-05-04 — PR #385: OpenAI Realtime WebSocket endpoint [V1, Feature]</a><a class="headerlink" href="#pr-385-openai-realtime-websocket-endpoint-v1-feature" title="Link to this heading">#</a></h3>
+<span id="2026-05-04--pr-385-openai-realtime-websocket-endpoint-v1-feature"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/385">2026-05-04 — PR #385: OpenAI Realtime WebSocket endpoint [V1, Feature]</a><a class="headerlink" href="#pr-385-openai-realtime-websocket-endpoint-v1-feature" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-05-18. Disabled by default; opt in with <code class="docutils literal notranslate"><span class="pre">--enable-realtime</span></code>.</em></p>
 <p>Mounts <code class="docutils literal notranslate"><span class="pre">/v1/realtime</span></code>, an OpenAI-Realtime-compatible WebSocket API on top of V1, enabling streaming audio in and streaming transcript deltas out for low-latency voice agents and live transcription / translation.</p>
 <ul class="simple">
@@ -1926,7 +1926,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> Demonstrates that the V1 Coordinator entry point is general enough to host OpenAI-spec endpoints as thin adapters rather than parallel engine paths. Validates the bidirectional Coordinator stream API as the intended way to add future protocols.</p>
 </section>
 <section id="pr-397-v1-unit-test-rewrite-top-down-rfc">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/397">2026-05-05 — PR #397: V1 unit test rewrite top-down [RFC]</a><a class="headerlink" href="#pr-397-v1-unit-test-rewrite-top-down-rfc" title="Link to this heading">#</a></h3>
+<span id="2026-05-05--pr-397-v1-unit-test-rewrite-top-down-rfc"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/397">2026-05-05 — PR #397: V1 unit test rewrite top-down [RFC]</a><a class="headerlink" href="#pr-397-v1-unit-test-rewrite-top-down-rfc" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-05-12. No runtime changes; reorganization + contract tests.</em></p>
 <p>Reorganized the V1 unit tests into component-focused folders so each file maps directly to the behavior it protects.</p>
 <ul class="simple">
@@ -1938,13 +1938,13 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> Establishes the test baseline that subsequent feature PRs extend rather than reinvent. The restraint prevents the historical drift where unit tests grow into a parallel re-implementation that decays in lockstep with the real code.</p>
 </section>
 <section id="pr-401-sglang-omni-router-for-v1-router">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/401">2026-05-06 — PR #401: SGLang-Omni Router for V1 [Router]</a><a class="headerlink" href="#pr-401-sglang-omni-router-for-v1-router" title="Link to this heading">#</a></h3>
+<span id="2026-05-06--pr-401-sglang-omni-router-for-v1-router"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/401">2026-05-06 — PR #401: SGLang-Omni Router for V1 [Router]</a><a class="headerlink" href="#pr-401-sglang-omni-router-for-v1-router" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-05-13. Part of #376.</em></p>
 <p>Introduced the original Python router for complete V1 server replicas, with worker selection, health checks, administrative broadcasts, and managed local workers. That implementation has been retired. See the <a class="reference internal" href="../basic_usage/omni_router.html"><span class="std std-doc">Omni Router guide</span></a> for the current Rust executable and TOML configuration.</p>
 <p><strong>Why it matters:</strong> Decouples horizontal scaling from the pipeline architecture. Each worker remains a full V1 replica with its own Coordinator — the router never splits a request across stages — which keeps the V1 boundary intact while letting deployments scale by replication.</p>
 </section>
 <section id="pr-406-qwen3-omni-v1-real-text-and-audio-streaming-v1-feature">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/406">2026-05-07 — PR #406: Qwen3-Omni V1 real text and audio streaming [V1 Feature]</a><a class="headerlink" href="#pr-406-qwen3-omni-v1-real-text-and-audio-streaming-v1-feature" title="Link to this heading">#</a></h3>
+<span id="2026-05-07--pr-406-qwen3-omni-v1-real-text-and-audio-streaming-v1-feature"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/406">2026-05-07 — PR #406: Qwen3-Omni V1 real text and audio streaming [V1 Feature]</a><a class="headerlink" href="#pr-406-qwen3-omni-v1-real-text-and-audio-streaming-v1-feature" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-05-15.</em></p>
 <p>Turns Qwen3-Omni V1 from “<code class="docutils literal notranslate"><span class="pre">stream=true</span></code> is a no-op” into real per-token text streaming on <code class="docutils literal notranslate"><span class="pre">thinker</span> <span class="pre">→</span> <span class="pre">decode</span></code> and real per-window audio streaming on <code class="docutils literal notranslate"><span class="pre">talker_ar</span> <span class="pre">→</span> <span class="pre">code2wav</span> <span class="pre">→</span> <span class="pre">Coordinator</span></code>.</p>
 <ul class="simple">
@@ -1957,7 +1957,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> Lifts streaming from a model-specific feature into a V1 framework primitive (terminal-stage forwarding + per-request streaming-flag latching). Future modal endpoints inherit this pattern rather than re-inventing it.</p>
 </section>
 <section id="pr-407-unify-v1-launcher-on-multiprocess-runner-bugfix-rfc">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/407">2026-05-07 — PR #407: Unify V1 launcher on multiprocess runner [Bugfix, RFC]</a><a class="headerlink" href="#pr-407-unify-v1-launcher-on-multiprocess-runner-bugfix-rfc" title="Link to this heading">#</a></h3>
+<span id="2026-05-07--pr-407-unify-v1-launcher-on-multiprocess-runner-bugfix-rfc"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/407">2026-05-07 — PR #407: Unify V1 launcher on multiprocess runner [Bugfix, RFC]</a><a class="headerlink" href="#pr-407-unify-v1-launcher-on-multiprocess-runner-bugfix-rfc" title="Link to this heading">#</a></h3>
 <p><em>State: CLOSED (folded into #447 / launcher consolidation work).</em></p>
 <p>Argued that the V1 single-process launcher is just the multi-process launcher with one stage — keeping both is redundant double maintenance for endpoint allocation, factory-arg resolution, and process spawning.</p>
 <ul class="simple">
@@ -1970,7 +1970,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><a id="2026-05-12--pr-430-colocated-stage-execution-colocation"></a></p>
 </section>
 <section id="pr-430-colocated-stage-execution-colocation">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/430">2026-05-12 — PR #430: Colocated Stage Execution [Colocation]</a><a class="headerlink" href="#pr-430-colocated-stage-execution-colocation" title="Link to this heading">#</a></h3>
+<span id="2026-05-12--pr-430-colocated-stage-execution-colocation"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/430">2026-05-12 — PR #430: Colocated Stage Execution [Colocation]</a><a class="headerlink" href="#pr-430-colocated-stage-execution-colocation" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-05-16. Follows colocation RFC + #329 / #376.</em></p>
 <p>Implements the colocated-stage execution path for Omni V1, making Qwen3-Omni speech runnable as a single colocated v1 server while preserving the V1 architecture boundary.</p>
 <ul class="simple">
@@ -1984,7 +1984,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><a id="2026-05-15--pr-447-unify-serving-on-multiprocess-runner-rfc"></a></p>
 </section>
 <section id="pr-447-unify-serving-on-multiprocess-runner-rfc">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/447">2026-05-15 — PR #447: Unify serving on multiprocess runner [RFC]</a><a class="headerlink" href="#pr-447-unify-serving-on-multiprocess-runner-rfc" title="Link to this heading">#</a></h3>
+<span id="2026-05-15--pr-447-unify-serving-on-multiprocess-runner-rfc"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/447">2026-05-15 — PR #447: Unify serving on multiprocess runner [RFC]</a><a class="headerlink" href="#pr-447-unify-serving-on-multiprocess-runner-rfc" title="Link to this heading">#</a></h3>
 <p><em>State: CLOSED. Compiler delete + endpoint allocation move; ideas referenced inline above.</em></p>
 <p>Proposed unifying pipeline serving on <code class="docutils literal notranslate"><span class="pre">MultiProcessPipelineRunner</span></code> and removing the legacy direct compiler / runtime path that had grown ad-hoc helpers across the codebase.</p>
 <ul class="simple">
@@ -1998,7 +1998,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> The structural cleanup that finally retired the dual launcher architecture. Although the PR closed without merging through this branch, the compiler removal and <code class="docutils literal notranslate"><span class="pre">_resolve_factory_args</span></code> deduplication landed via this work — the PipelineConfig section above references that resolution.</p>
 </section>
 <section id="pr-461-stage-gpu-process-topology-rfc">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/461">2026-05-17 — PR #461: Stage-GPU-process topology [RFC]</a><a class="headerlink" href="#pr-461-stage-gpu-process-topology-rfc" title="Link to this heading">#</a></h3>
+<span id="2026-05-17--pr-461-stage-gpu-process-topology-rfc"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/461">2026-05-17 — PR #461: Stage-GPU-process topology [RFC]</a><a class="headerlink" href="#pr-461-stage-gpu-process-topology-rfc" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-05-17. Resolves issue #459.</em></p>
 <p>Locks in the stage → GPU → process topology mapping as the canonical V1 placement model.</p>
 <ul class="simple">
@@ -2011,7 +2011,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> Crystallizes the placement rules that earlier RFCs introduced piecewise. After this PR there is one canonical way to express “where does a stage run” — every subsequent feature (router, realtime, colocation refinements) builds on this topology contract rather than inventing its own.</p>
 </section>
 <section id="pr-496-topology-aware-inter-stage-data-transport-optimization-perf-transport">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/496">2026-05-20 — PR #496: Topology-aware inter-stage data transport optimization [Perf/Transport]</a><a class="headerlink" href="#pr-496-topology-aware-inter-stage-data-transport-optimization-perf-transport" title="Link to this heading">#</a></h3>
+<span id="2026-05-20--pr-496-topology-aware-inter-stage-data-transport-optimization-perftransport"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/496">2026-05-20 — PR #496: Topology-aware inter-stage data transport optimization [Perf/Transport]</a><a class="headerlink" href="#pr-496-topology-aware-inter-stage-data-transport-optimization-perf-transport" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-05-27. Relay stays the fallback path; faster transports only engage where topology is safe.</em></p>
 <p>Adds topology-aware transport selection for inter-stage pipeline data, so colocated stages bypass the default relay path and use cheaper transport where safe.</p>
 <ul class="simple">
@@ -2022,7 +2022,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> The core data-plane optimization the RFC now documents, turning the relay from a mandatory hop into a fallback and unlocking direct transport for colocated stages (text-only same-process saw -33% mean latency).</p>
 </section>
 <section id="pr-509-remove-tcp-control-plane-endpoints-rfc-feat">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/509">2026-05-21 — PR #509: Remove TCP control-plane endpoints [RFC, Feat]</a><a class="headerlink" href="#pr-509-remove-tcp-control-plane-endpoints-rfc-feat" title="Link to this heading">#</a></h3>
+<span id="2026-05-21--pr-509-remove-tcp-control-plane-endpoints-rfc-feat"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/509">2026-05-21 — PR #509: Remove TCP control-plane endpoints [RFC, Feat]</a><a class="headerlink" href="#pr-509-remove-tcp-control-plane-endpoints-rfc-feat" title="Link to this heading">#</a></h3>
 <p><em>State: OPEN as of this writing.</em></p>
 <p>Removes TCP endpoint support from the pipeline control plane and makes IPC the only supported transport.</p>
 <ul class="simple">
@@ -2034,7 +2034,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> Final cleanup of port-based control-plane configuration. Removes a known fragile transport and shrinks the surface area the rest of the framework has to support. The last open-RFC item in this history; expected to land soon.</p>
 </section>
 <section id="pr-558-refactor-model-hooks-payload-names-and-stage-workers-rfc-cleanup">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/558">2026-05-24 — PR #558: Refactor model hooks, payload names, and stage workers [RFC-cleanup]</a><a class="headerlink" href="#pr-558-refactor-model-hooks-payload-names-and-stage-workers-rfc-cleanup" title="Link to this heading">#</a></h3>
+<span id="2026-05-24--pr-558-refactor-model-hooks-payload-names-and-stage-workers-rfc-cleanup"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/558">2026-05-24 — PR #558: Refactor model hooks, payload names, and stage workers [RFC-cleanup]</a><a class="headerlink" href="#pr-558-refactor-model-hooks-payload-names-and-stage-workers-rfc-cleanup" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-06-01. Resolves #538 items 1.2 / 1.3 / 1.4 (and 2.3).</em></p>
 <p>RFC cleanup that sharpens the <code class="docutils literal notranslate"><span class="pre">ModelRunner</span></code> hook contract, de-framework-ifies model payload type names, and consolidates the stage-worker modules.</p>
 <ul class="simple">
@@ -2045,7 +2045,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> Tightens the runner/stage contract surface the RFC depends on, separating per-step state mutation from custom forward execution and giving stage-worker lifecycle code one home.</p>
 </section>
 <section id="pr-589-add-framework-level-stage-fusion-feat-topology">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/589">2026-05-26 — PR #589: Add framework-level stage fusion [Feat/Topology]</a><a class="headerlink" href="#pr-589-add-framework-level-stage-fusion-feat-topology" title="Link to this heading">#</a></h3>
+<span id="2026-05-26--pr-589-add-framework-level-stage-fusion-feattopology"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/589">2026-05-26 — PR #589: Add framework-level stage fusion [Feat/Topology]</a><a class="headerlink" href="#pr-589-add-framework-level-stage-fusion-feat-topology" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-05-28. Framework-only; first fusion form is conservative (adjacent, ordered, linear, non-TP, one GPU).</em></p>
 <p>Adds a framework-level <code class="docutils literal notranslate"><span class="pre">fused_stages</span></code> config knob that colocates selected adjacent logical stages into one runtime process when the topology is safe, without introducing a new scheduler path.</p>
 <ul class="simple">
@@ -2055,7 +2055,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> A topology/placement primitive alongside colocation (#430) and the stage-gpu-process topology (#461), letting operators collapse adjacent stages into one process from config rather than restructuring the pipeline.</p>
 </section>
 <section id="pr-824-framework-level-unified-sampling-seed-feat-sampling">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/824">2026-06-18 — PR #824: Framework-level unified sampling seed [Feat/Sampling]</a><a class="headerlink" href="#pr-824-framework-level-unified-sampling-seed-feat-sampling" title="Link to this heading">#</a></h3>
+<span id="2026-06-18--pr-824-framework-level-unified-sampling-seed-featsampling"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/824">2026-06-18 — PR #824: Framework-level unified sampling seed [Feat/Sampling]</a><a class="headerlink" href="#pr-824-framework-level-unified-sampling-seed-feat-sampling" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-06-19. Strict no-op when no request in the batch supplies a seed.</em></p>
 <p>Makes a request <code class="docutils literal notranslate"><span class="pre">seed</span></code> honored uniformly across every AR sampling model via a reusable seed hook in the base <code class="docutils literal notranslate"><span class="pre">ModelRunner</span></code>, a prerequisite for reproducible RL rollouts.</p>
 <ul class="simple">
@@ -2066,7 +2066,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><em>The entries below trace the model-onboarding and TTS-optimization thread that ran alongside the V1-refactor and framework series above: onboarding the Ming-Omni, LLaDA2.0-Uni, Qwen3-TTS / Voxtral, Higgs Audio v3, and MOSS-TTS families plus the serving-path optimizations they drove. They are ordered by PR creation date among themselves.</em></p>
 </section>
 <section id="pr-428-feat-higgs-tts-add-higgs-audio-v3-tts-support-higgs-feature">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/428">2026-05-11 — PR #428: feat(higgs-tts): add Higgs Audio v3 TTS support [Higgs, Feature]</a><a class="headerlink" href="#pr-428-feat-higgs-tts-add-higgs-audio-v3-tts-support-higgs-feature" title="Link to this heading">#</a></h3>
+<span id="2026-05-11--pr-428-feathiggs-tts-add-higgs-audio-v3-tts-support-higgs-feature"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/428">2026-05-11 — PR #428: feat(higgs-tts): add Higgs Audio v3 TTS support [Higgs, Feature]</a><a class="headerlink" href="#pr-428-feat-higgs-tts-add-higgs-audio-v3-tts-support-higgs-feature" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-05-18.</em></p>
 <p>Onboards Higgs Audio v3, a 4B multi-codebook AR TTS model, into the project as a new served model with quality validated and inference performance flagged as still needing improvement.</p>
 <ul class="simple">
@@ -2077,7 +2077,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> Establishes the Higgs TTS baseline on which the entire scheduler, CUDA-graph, batching, and async-decode optimization series is layered.</p>
 </section>
 <section id="pr-437-ming-omni-v1-migration-v1-model">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/437">2026-05-13 — PR #437: Ming-Omni V1 migration [V1/Model]</a><a class="headerlink" href="#pr-437-ming-omni-v1-migration-v1-model" title="Link to this heading">#</a></h3>
+<span id="2026-05-13--pr-437-ming-omni-v1-migration-v1model"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/437">2026-05-13 — PR #437: Ming-Omni V1 migration [V1/Model]</a><a class="headerlink" href="#pr-437-ming-omni-v1-migration-v1-model" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-05-20. Per RFC #429; closes #405.</em></p>
 <p>Ports Ming-Omni off the legacy runner onto <code class="docutils literal notranslate"><span class="pre">sglang_omni_v1</span></code>, the staged multiprocess pipeline (preprocess -&gt; thinker -&gt; talker) already used by Qwen3-Omni and S2-Pro.</p>
 <ul class="simple">
@@ -2087,7 +2087,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> Brings another model onto the common V1 staged runner and server under the same migration discipline tracked for Fish and Qwen, so it shares the pipeline rather than the legacy path.</p>
 </section>
 <section id="pr-446-initial-llada2-0-uni-support-feature-model">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/446">2026-05-15 — PR #446: Initial LLaDA2.0-Uni support [Feature/Model]</a><a class="headerlink" href="#pr-446-initial-llada2-0-uni-support-feature-model" title="Link to this heading">#</a></h3>
+<span id="2026-05-15--pr-446-initial-llada20-uni-support-featuremodel"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/446">2026-05-15 — PR #446: Initial LLaDA2.0-Uni support [Feature/Model]</a><a class="headerlink" href="#pr-446-initial-llada2-0-uni-support-feature-model" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-05-23. Initial support: text+image -&gt; text only; other modalities are follow-ups.</em></p>
 <p>Onboards LLaDA2.0-Uni, a multimodal diffusion LLM (DLLM), to V1; unlike the existing AR models its parallel-denoising decode needed a dedicated scheduler and data flow.</p>
 <ul class="simple">
@@ -2097,7 +2097,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> Introduces a genuinely new non-AR decode paradigm into the framework, proving the Stage contract can host a parallel-denoising diffusion model alongside the autoregressive ones.</p>
 </section>
 <section id="pr-451-support-qwen3-tts-and-voxtral-tts-feature-tts">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/451">2026-05-16 — PR #451: Support Qwen3-TTS and Voxtral-TTS [Feature/TTS]</a><a class="headerlink" href="#pr-451-support-qwen3-tts-and-voxtral-tts-feature-tts" title="Link to this heading">#</a></h3>
+<span id="2026-05-16--pr-451-support-qwen3-tts-and-voxtral-tts-featuretts"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/451">2026-05-16 — PR #451: Support Qwen3-TTS and Voxtral-TTS [Feature/TTS]</a><a class="headerlink" href="#pr-451-support-qwen3-tts-and-voxtral-tts-feature-tts" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-05-23. Follows the S2-Pro integration pattern; closes #444.</em></p>
 <p>Adds native <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> serving for the Qwen3-TTS and Voxtral-TTS families onto the existing S2-Pro-style staged TTS path rather than a separate serving surface.</p>
 <ul class="simple">
@@ -2108,7 +2108,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> Establishes the follow-S2-Pro precedent for onboarding TTS families onto the V1 staged TTS path, a pattern later reused by MOSS.</p>
 </section>
 <section id="pr-476-refactor-higgs-tts-replace-higgsscheduler-with-omnischeduler-higgs-refactor">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/476">2026-05-18 — PR #476: refactor(higgs-tts): replace HiggsScheduler with OmniScheduler [Higgs, Refactor]</a><a class="headerlink" href="#pr-476-refactor-higgs-tts-replace-higgsscheduler-with-omnischeduler-higgs-refactor" title="Link to this heading">#</a></h3>
+<span id="2026-05-18--pr-476-refactorhiggs-tts-replace-higgsscheduler-with-omnischeduler-higgs-refactor"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/476">2026-05-18 — PR #476: refactor(higgs-tts): replace HiggsScheduler with OmniScheduler [Higgs, Refactor]</a><a class="headerlink" href="#pr-476-refactor-higgs-tts-replace-higgsscheduler-with-omnischeduler-higgs-refactor" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-05-24.</em></p>
 <p>Deletes the bespoke 478-line <code class="docutils literal notranslate"><span class="pre">HiggsScheduler</span></code> machinery and drives Higgs through the shared <code class="docutils literal notranslate"><span class="pre">OmniScheduler</span></code> that already powers Qwen3-Omni, for a net −440 LOC. Implements RFC #450.</p>
 <ul class="simple">
@@ -2119,7 +2119,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> Collapses three parallel AR schedulers (Higgs / Fish / Qwen3-Omni) into one, so paged-attention batching, KV cache, and radix integration are maintained in a single place.</p>
 </section>
 <section id="pr-503-feat-higgs-tts-cuda-graph-capture-for-ar-decode-higgs-perf">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/503">2026-05-21 — PR #503: feat(higgs-tts): CUDA Graph capture for AR decode [Higgs, Perf]</a><a class="headerlink" href="#pr-503-feat-higgs-tts-cuda-graph-capture-for-ar-decode-higgs-perf" title="Link to this heading">#</a></h3>
+<span id="2026-05-21--pr-503-feathiggs-tts-cuda-graph-capture-for-ar-decode-higgs-perf"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/503">2026-05-21 — PR #503: feat(higgs-tts): CUDA Graph capture for AR decode [Higgs, Perf]</a><a class="headerlink" href="#pr-503-feat-higgs-tts-cuda-graph-capture-for-ar-decode-higgs-perf" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-05-24.</em></p>
 <p>Captures the AR decode forward into CUDA Graphs to eliminate Python and launch-dispatch overhead (~3-5 ms per step), which required tensorizing the per-request sampler state and vectorizing the sampler step so capture could be handed to sglang’s existing <code class="docutils literal notranslate"><span class="pre">CudaGraphRunner</span></code>.</p>
 <ul class="simple">
@@ -2131,7 +2131,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> Removes the per-step CPU dispatch tax from the multi-codebook decode loop, the dominant cost in AR TTS serving, without quality regression.</p>
 </section>
 <section id="pr-574-add-higgs-batched-vocoder-decode-higgs-perf">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/574">2026-05-25 — PR #574: Add higgs batched vocoder decode [Higgs, Perf]</a><a class="headerlink" href="#pr-574-add-higgs-batched-vocoder-decode-higgs-perf" title="Link to this heading">#</a></h3>
+<span id="2026-05-25--pr-574-add-higgs-batched-vocoder-decode-higgs-perf"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/574">2026-05-25 — PR #574: Add higgs batched vocoder decode [Higgs, Perf]</a><a class="headerlink" href="#pr-574-add-higgs-batched-vocoder-decode-higgs-perf" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-05-28.</em></p>
 <p>Wires a real <code class="docutils literal notranslate"><span class="pre">batch_compute_fn</span></code> into the vocoder’s <code class="docutils literal notranslate"><span class="pre">SimpleScheduler</span></code>, which previously collected up to 4 requests but still decoded each serially, by exploiting the codec’s native batched <code class="docutils literal notranslate"><span class="pre">[B,</span> <span class="pre">N,</span> <span class="pre">T]</span> <span class="pre">-&gt;</span> <span class="pre">[B,</span> <span class="pre">1,</span> <span class="pre">L]</span></code> decode. Closes #569.</p>
 <ul class="simple">
@@ -2142,7 +2142,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> Reclaims throughput in the post-AR vocoder stage, which (unlike the encoder) does not contend with the AR-engine bottleneck, so batching there is a clean win.</p>
 </section>
 <section id="pr-590-async-decode-one-step-lookahead-for-the-omni-ar-loop-higgs-perf">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/590">2026-05-26 — PR #590: Async decode (one-step lookahead) for the omni AR loop [Higgs, Perf]</a><a class="headerlink" href="#pr-590-async-decode-one-step-lookahead-for-the-omni-ar-loop-higgs-perf" title="Link to this heading">#</a></h3>
+<span id="2026-05-26--pr-590-async-decode-one-step-lookahead-for-the-omni-ar-loop-higgs-perf"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/590">2026-05-26 — PR #590: Async decode (one-step lookahead) for the omni AR loop [Higgs, Perf]</a><a class="headerlink" href="#pr-590-async-decode-one-step-lookahead-for-the-omni-ar-loop-higgs-perf" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-05-29. Off by default; opt in with <code class="docutils literal notranslate"><span class="pre">--enable-async-decode</span></code> / <code class="docutils literal notranslate"><span class="pre">SGLANG_OMNI_ENABLE_ASYNC_DECODE=1</span></code>.</em></p>
 <p>Overlaps each AR step’s host-side collect with the next step’s GPU forward by splitting <code class="docutils literal notranslate"><span class="pre">ModelRunner.execute()</span></code> into launch and resolve halves and running a launch-first one-step lookahead in <code class="docutils literal notranslate"><span class="pre">OmniScheduler</span></code>.</p>
 <ul class="simple">
@@ -2154,7 +2154,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> Hides the heavy per-step Python collect of the multi-codebook loop behind the GPU forward, as shared base-<code class="docutils literal notranslate"><span class="pre">ModelRunner</span></code> infrastructure that any <code class="docutils literal notranslate"><span class="pre">OmniScheduler</span></code> model can opt into via two hooks.</p>
 </section>
 <section id="pr-609-add-moss-tts-openmoss-support-model">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/609">2026-05-29 — PR #609: Add MOSS-TTS (OpenMOSS) support [Model]</a><a class="headerlink" href="#pr-609-add-moss-tts-openmoss-support-model" title="Link to this heading">#</a></h3>
+<span id="2026-05-29--pr-609-add-moss-tts-openmoss-support-model"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/609">2026-05-29 — PR #609: Add MOSS-TTS (OpenMOSS) support [Model]</a><a class="headerlink" href="#pr-609-add-moss-tts-openmoss-support-model" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-06-02. Eager baseline integration; CUDA Graph + torch.compile deferred to follow-up.</em></p>
 <p>Onboards OpenMOSS MOSS-TTS Delay as a native OmniScheduler 3-stage pipeline, making the delay-pattern model runnable end to end.</p>
 <ul class="simple">
@@ -2166,7 +2166,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> First MOSS-TTS family onboarding, establishing the 3-stage delay-pattern pipeline layout that every later MOSS-TTS-Local PR builds on.</p>
 </section>
 <section id="pr-610-add-higgsaudiocodec-encode-batch-batched-audio-encoder-higgs-feature">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/610">2026-05-29 — PR #610: Add HiggsAudioCodec.encode_batch (batched audio encoder) [Higgs, Feature]</a><a class="headerlink" href="#pr-610-add-higgsaudiocodec-encode-batch-batched-audio-encoder-higgs-feature" title="Link to this heading">#</a></h3>
+<span id="2026-05-29--pr-610-add-higgsaudiocodecencode_batch-batched-audio-encoder-higgs-feature"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/610">2026-05-29 — PR #610: Add HiggsAudioCodec.encode_batch (batched audio encoder) [Higgs, Feature]</a><a class="headerlink" href="#pr-610-add-higgsaudiocodec-encode-batch-batched-audio-encoder-higgs-feature" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-05-31. Offline/bulk API only; deliberately not wired into the serving pipeline.</em></p>
 <p>Adds <code class="docutils literal notranslate"><span class="pre">HiggsAudioCodec.encode_batch</span></code> as the standard API for offline and bulk reference-audio encoding, exposing the tokenizer’s native batched <code class="docutils literal notranslate"><span class="pre">[B,</span> <span class="pre">1,</span> <span class="pre">L]</span> <span class="pre">-&gt;</span> <span class="pre">[B,</span> <span class="pre">N,</span> <span class="pre">T]</span></code> forward that was previously reachable only one clip at a time. Related to #603.</p>
 <ul class="simple">
@@ -2177,7 +2177,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> Documents an empirically grounded boundary, batching helps a post-AR stage like the vocoder but hurts a pre-AR stage that contends with the bottleneck, so the encoder stays single-clip in serving.</p>
 </section>
 <section id="pr-612-torch-compile-the-dac-audio-encoder-higgs-perf">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/612">2026-05-29 — PR #612: torch.compile the DAC audio encoder [Higgs, Perf]</a><a class="headerlink" href="#pr-612-torch-compile-the-dac-audio-encoder-higgs-perf" title="Link to this heading">#</a></h3>
+<span id="2026-05-29--pr-612-torchcompile-the-dac-audio-encoder-higgs-perf"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/612">2026-05-29 — PR #612: torch.compile the DAC audio encoder [Higgs, Perf]</a><a class="headerlink" href="#pr-612-torch-compile-the-dac-audio-encoder-higgs-perf" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-05-30.</em></p>
 <p>Applies <code class="docutils literal notranslate"><span class="pre">torch.compile</span></code> to the DAC audio encoder, trading a small quality-tail cost for a measurable speedup on the full SeedTTS-EN set.</p>
 <ul class="simple">
@@ -2188,7 +2188,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> Shaves encoder compute through compilation, a self-contained per-stage optimization that stacks with the AR-loop and vocoder work elsewhere in the series.</p>
 </section>
 <section id="pr-638-feat-default-higgs-tts-async-decode-on-with-async-decode-toggle-higgs-feature">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/638">2026-06-01 — PR #638: feat: default Higgs TTS async-decode on with –async-decode toggle [Higgs, Feature]</a><a class="headerlink" href="#pr-638-feat-default-higgs-tts-async-decode-on-with-async-decode-toggle-higgs-feature" title="Link to this heading">#</a></h3>
+<span id="2026-06-01--pr-638-feat-default-higgs-tts-async-decode-on-with---async-decode-toggle-higgs-feature"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/638">2026-06-01 — PR #638: feat: default Higgs TTS async-decode on with –async-decode toggle [Higgs, Feature]</a><a class="headerlink" href="#pr-638-feat-default-higgs-tts-async-decode-on-with-async-decode-toggle-higgs-feature" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-06-01. Async decode now on by default for Higgs; opt out with <code class="docutils literal notranslate"><span class="pre">--async-decode</span> <span class="pre">off</span></code>.</em></p>
 <p>Flips the one-step-lookahead async decode from #590 to on by default for the Higgs <code class="docutils literal notranslate"><span class="pre">tts_engine</span></code> stage, backed by full-set quality validation, and replaces the bool <code class="docutils literal notranslate"><span class="pre">--enable-async-decode</span></code> flag with a tri-state <code class="docutils literal notranslate"><span class="pre">--async-decode</span> <span class="pre">default|on|off</span></code>.</p>
 <ul class="simple">
@@ -2199,7 +2199,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> Promotes a validated optimization from opt-in to the default for the model it was built for, while keeping a clean per-model off-switch and leaving every other model’s behavior unchanged.</p>
 </section>
 <section id="pr-655-add-pcm-audio-streaming-controls-for-higgs-tts-higgs-feature">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/655">2026-06-02 — PR #655: Add PCM audio streaming controls for Higgs TTS [Higgs, Feature]</a><a class="headerlink" href="#pr-655-add-pcm-audio-streaming-controls-for-higgs-tts-higgs-feature" title="Link to this heading">#</a></h3>
+<span id="2026-06-02--pr-655-add-pcm-audio-streaming-controls-for-higgs-tts-higgs-feature"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/655">2026-06-02 — PR #655: Add PCM audio streaming controls for Higgs TTS [Higgs, Feature]</a><a class="headerlink" href="#pr-655-add-pcm-audio-streaming-controls-for-higgs-tts-higgs-feature" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-06-03. Raw PCM streaming is opt-in via <code class="docutils literal notranslate"><span class="pre">stream_format=&quot;audio&quot;</span></code> so existing SSE clients are unchanged.</em></p>
 <p>Adds raw PCM audio streaming for <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> and wires Higgs’s first-chunk tuning knob, while deliberately keeping SSE the default to avoid silently changing existing-client semantics. Fixes #654.</p>
 <ul class="simple">
@@ -2210,7 +2210,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> Gives latency-sensitive clients an explicit raw-audio transport and a first-emission tuning lever, with the conservative-default choice keeping the existing SSE contract intact.</p>
 </section>
 <section id="pr-728-add-moss-tts-local-transformer-v1-5-support-model">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/728">2026-06-10 — PR #728: Add MOSS-TTS-Local-Transformer-v1.5 support [Model]</a><a class="headerlink" href="#pr-728-add-moss-tts-local-transformer-v1-5-support-model" title="Link to this heading">#</a></h3>
+<span id="2026-06-10--pr-728-add-moss-tts-local-transformer-v15-support-model"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/728">2026-06-10 — PR #728: Add MOSS-TTS-Local-Transformer-v1.5 support [Model]</a><a class="headerlink" href="#pr-728-add-moss-tts-local-transformer-v1-5-support-model" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-06-10.</em></p>
 <p>Onboards MOSS-TTS-Local-Transformer-v1.5, a non-delay-pattern frame-local model, reusing the #609 3-stage layout but resolving directly by model id.</p>
 <ul class="simple">
@@ -2222,7 +2222,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> Establishes the MOSS-TTS-Local v1.5 serving path that all subsequent local-runtime optimizations target.</p>
 </section>
 <section id="pr-745-moss-tts-local-v1-5-decode-state-pool-735-refactor">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/745">2026-06-11 — PR #745: MOSS-TTS-Local v1.5 decode-state pool (#735) [Refactor]</a><a class="headerlink" href="#pr-745-moss-tts-local-v1-5-decode-state-pool-735-refactor" title="Link to this heading">#</a></h3>
+<span id="2026-06-11--pr-745-moss-tts-local-v15-decode-state-pool-735-refactor"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/745">2026-06-11 — PR #745: MOSS-TTS-Local v1.5 decode-state pool (#735) [Refactor]</a><a class="headerlink" href="#pr-745-moss-tts-local-v1-5-decode-state-pool-735-refactor" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-06-12. Strictly behavior-neutral apart from one disclosed chunked-prefill bugfix.</em></p>
 <p>Moves next-step-critical per-request decode state out of request-local Python objects into stable row-indexed GPU buffers, with output collection moving to a per-step journal.</p>
 <ul class="simple">
@@ -2234,7 +2234,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> The row-indexed pool is the substrate that unblocks async decode (#758) and frame-launch-state pooling (#759); it makes next-step state stable across retraction/resume and CUDA-graph capture.</p>
 </section>
 <section id="pr-748-reference-audio-cache-for-moss-tts-local-v1-5-lru-single-flight-dedup-perf">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/748">2026-06-11 — PR #748: Reference audio cache for MOSS-TTS-Local-v1.5 (LRU + single-flight dedup) [Perf]</a><a class="headerlink" href="#pr-748-reference-audio-cache-for-moss-tts-local-v1-5-lru-single-flight-dedup-perf" title="Link to this heading">#</a></h3>
+<span id="2026-06-11--pr-748-reference-audio-cache-for-moss-tts-local-v15-lru--single-flight-dedup-perf"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/748">2026-06-11 — PR #748: Reference audio cache for MOSS-TTS-Local-v1.5 (LRU + single-flight dedup) [Perf]</a><a class="headerlink" href="#pr-748-reference-audio-cache-for-moss-tts-local-v1-5-lru-single-flight-dedup-perf" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-06-11.</em></p>
 <p>Lands the MOSS-TTS-Local v1.5 reference-audio cache so repeated reference clips skip the ~0.25 GPU-second codec encode.</p>
 <ul class="simple">
@@ -2244,7 +2244,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> Removes redundant per-request reference encodes from the hot path, the dominant fixed cost for reference-audio cloning under concurrency.</p>
 </section>
 <section id="pr-753-moss-tts-local-streaming-feat">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/753">2026-06-11 — PR #753: MOSS-TTS-Local streaming [Feat]</a><a class="headerlink" href="#pr-753-moss-tts-local-streaming-feat" title="Link to this heading">#</a></h3>
+<span id="2026-06-11--pr-753-moss-tts-local-streaming-feat"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/753">2026-06-11 — PR #753: MOSS-TTS-Local streaming [Feat]</a><a class="headerlink" href="#pr-753-moss-tts-local-streaming-feat" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-06-13.</em></p>
 <p>Wires MOSS-TTS-Local into the streaming TTS API, exploiting that the MOSS-Audio-Tokenizer-v2 codec is natively streamable so chunked output is bit-identical to offline decode by construction (no chunk-boundary seams, no overlap re-decode).</p>
 <ul class="simple">
@@ -2255,7 +2255,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> Turns MOSS-TTS-Local from offline-only into a streaming model, cutting time-to-first-audio at low concurrency by ~5× while preserving bit-identical audio.</p>
 </section>
 <section id="pr-758-moss-tts-local-v1-5-async-decode-one-step-lookahead-734-perf">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/758">2026-06-12 — PR #758: MOSS-TTS-Local v1.5 async decode (one-step lookahead) (#734) [Perf]</a><a class="headerlink" href="#pr-758-moss-tts-local-v1-5-async-decode-one-step-lookahead-734-perf" title="Link to this heading">#</a></h3>
+<span id="2026-06-12--pr-758-moss-tts-local-v15-async-decode-one-step-lookahead-734-perf"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/758">2026-06-12 — PR #758: MOSS-TTS-Local v1.5 async decode (one-step lookahead) (#734) [Perf]</a><a class="headerlink" href="#pr-758-moss-tts-local-v1-5-async-decode-one-step-lookahead-734-perf" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-06-13. Default-OFF; correctness contract plus a reserved overlap slot, default-flip deferred.</em></p>
 <p>Enables the #590 one-step-lookahead async decode on the MOSS-TTS-Local v1.5 path, built on the #745 state pool.</p>
 <ul class="simple">
@@ -2267,7 +2267,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> Lands the async-decode correctness machinery (the bs=1 stop-id snapshot) as a reserved overlap slot, to be flipped on once #757 vectorization makes the resolve path heavy enough to hide.</p>
 </section>
 <section id="pr-759-pool-moss-tts-local-frame-launch-state-perf">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/759">2026-06-12 — PR #759: Pool MOSS-TTS Local frame launch state [Perf]</a><a class="headerlink" href="#pr-759-pool-moss-tts-local-frame-launch-state-perf" title="Link to this heading">#</a></h3>
+<span id="2026-06-12--pr-759-pool-moss-tts-local-frame-launch-state-perf"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/759">2026-06-12 — PR #759: Pool MOSS-TTS Local frame launch state [Perf]</a><a class="headerlink" href="#pr-759-pool-moss-tts-local-frame-launch-state-perf" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-06-13. Hot-path cleanup / graph-readiness, not an e2e throughput claim.</em></p>
 <p>Moves the remaining per-frame launch state out of Python request objects into pool tensors so <code class="docutils literal notranslate"><span class="pre">_collect_frame</span></code> gathers launch inputs with <code class="docutils literal notranslate"><span class="pre">row_t</span></code>.</p>
 <ul class="simple">
@@ -2278,7 +2278,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> Completes the #745 pool migration so the entire next-step launch path gathers from pool tensors, keeping the no-penalty frame decode on the CUDA-graph path.</p>
 </section>
 <section id="pr-798-cuda-graph-the-streaming-vocoder-codec-decode-default-on-bit-identical-perf">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/798">2026-06-15 — PR #798: CUDA-graph the streaming vocoder codec decode (default-on, bit-identical) [Perf]</a><a class="headerlink" href="#pr-798-cuda-graph-the-streaming-vocoder-codec-decode-default-on-bit-identical-perf" title="Link to this heading">#</a></h3>
+<span id="2026-06-15--pr-798-cuda-graph-the-streaming-vocoder-codec-decode-default-on-bit-identical-perf"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/798">2026-06-15 — PR #798: CUDA-graph the streaming vocoder codec decode (default-on, bit-identical) [Perf]</a><a class="headerlink" href="#pr-798-cuda-graph-the-streaming-vocoder-codec-decode-default-on-bit-identical-perf" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-06-17. Default-on, fail-safe to eager on every failure path; opt out via <code class="docutils literal notranslate"><span class="pre">cuda_graph:</span> <span class="pre">false</span></code>.</em></p>
 <p>Captures the streaming codec decode step into per-T CUDA graphs and replays them, keeping the decode fully stateful (per-slot causal offset/KV) and bit-for-bit identical to eager, targeting the streaming vocoder identified as the c8 serving bottleneck (~58–63% of per-request wall-clock).</p>
 <ul class="simple">
@@ -2290,7 +2290,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p><strong>Why it matters:</strong> Attacks the actual MOSS-TTS-Local serving bottleneck (the launch-bound per-frame streaming codec decode), buying a real ~22% c8 latency cut with provably unchanged audio.</p>
 </section>
 <section id="pr-810-tune-moss-local-colocated-ar-memory-budgeting-moss">
-<h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/810">2026-06-16 — PR #810: Tune MOSS Local colocated AR memory budgeting [MOSS]</a><a class="headerlink" href="#pr-810-tune-moss-local-colocated-ar-memory-budgeting-moss" title="Link to this heading">#</a></h3>
+<span id="2026-06-16--pr-810-tune-moss-local-colocated-ar-memory-budgeting-moss"></span><h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/810">2026-06-16 — PR #810: Tune MOSS Local colocated AR memory budgeting [MOSS]</a><a class="headerlink" href="#pr-810-tune-moss-local-colocated-ar-memory-budgeting-moss" title="Link to this heading">#</a></h3>
 <p><em>State: MERGED 2026-06-16.</em></p>
 <p>Wires single-GPU MOSS Local into the process-scoped <code class="docutils literal notranslate"><span class="pre">total_gpu_memory_fraction</span></code> path so the colocated AR stage budgets memory with codec residency accounted for, instead of falling back to the generic SGLang free-memory path.</p>
 <ul class="simple">

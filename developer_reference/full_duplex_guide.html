@@ -586,7 +586,7 @@
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#connect-a-client">Connect a Client</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#browser-demo">Browser Demo</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-full-duplex-protocol">Native Full-Duplex Protocol</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#full-duplex-protocol">Native Full-Duplex Protocol</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#full-duplex-bench-runbook">Full-Duplex-Bench runbook</a><ul class="pst-show_toc_level nav section-nav flex-column">
@@ -603,7 +603,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#duplex-ci">Duplex CI</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#full-duplex-bench-v1-0-unified-metrics">Full-Duplex-Bench v1.0 unified metrics</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#unified-v10-metrics">Full-Duplex-Bench v1.0 unified metrics</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#why-the-official-numbers-are-only-a-reference">Why the official numbers are only a reference</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#inputs-and-checks">Inputs and checks</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#metrics">Metrics</a></li>
@@ -1163,8 +1163,8 @@ uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </s
 </table>
 </div>
 </section>
-<section id="native-full-duplex-protocol">
-<span id="full-duplex-protocol"></span><h3>Native Full-Duplex Protocol<a class="headerlink" href="#native-full-duplex-protocol" title="Link to this heading">#</a></h3>
+<section id="full-duplex-protocol">
+<span id="native-full-duplex-protocol"></span><h3>Native Full-Duplex Protocol<a class="headerlink" href="#full-duplex-protocol" title="Link to this heading">#</a></h3>
 <p>Clients connect to <code class="docutils literal notranslate"><span class="pre">/v1/realtime</span></code> over WebSocket. They send 16 kHz mono PCM16 audio in <code class="docutils literal notranslate"><span class="pre">input_audio_buffer.append</span></code>; the server returns 24 kHz audio in <code class="docutils literal notranslate"><span class="pre">response.output_audio.delta</span></code> and text in <code class="docutils literal notranslate"><span class="pre">response.output_audio_transcript.delta</span></code>. The model decides once per second of audio whether to keep listening or to speak.</p>
 <ol class="arabic simple">
 <li><p>After <code class="docutils literal notranslate"><span class="pre">session.created</span></code>, send <code class="docutils literal notranslate"><span class="pre">session.update</span></code> and wait for <code class="docutils literal notranslate"><span class="pre">session.updated</span></code>.</p></li>
@@ -2249,8 +2249,8 @@ python<span class="w"> </span>-m<span class="w"> </span>benchmarks.eval.benchmar
 <p>The job gates the four v1.5 behavior rates, the two v1.5 latency means, the three v1.0 rates and the UTMOS and voice similarity means; the omission rate and the semantic judge’s two rates are reported only. It records MiniCPM-o with <code class="docutils literal notranslate"><span class="pre">--gpus</span> <span class="pre">0,1</span> <span class="pre">--num-shards</span> <span class="pre">16</span></code>, so that job needs GPUs 0 and 1 visible, Qwen3-Omni with <code class="docutils literal notranslate"><span class="pre">--num-shards</span> <span class="pre">4</span></code> and the cascade with <code class="docutils literal notranslate"><span class="pre">--num-shards</span> <span class="pre">16</span></code>, and pins the judge to revision <code class="docutils literal notranslate"><span class="pre">1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0</span></code>, where a fresh <code class="docutils literal notranslate"><span class="pre">setup</span></code> resolves the judge’s current Hub revision and reuses it afterwards. The sample counts and the gates are in <code class="docutils literal notranslate"><span class="pre">tests/utils/fdb_ci.py</span></code>, the presets and baselines in <code class="docutils literal notranslate"><span class="pre">tests/test_model/fdb_ci_config.py</span></code>.</p>
 </section>
 </section>
-<section id="full-duplex-bench-v1-0-unified-metrics">
-<span id="unified-v10-metrics"></span><h2>Full-Duplex-Bench v1.0 unified metrics<a class="headerlink" href="#full-duplex-bench-v1-0-unified-metrics" title="Link to this heading">#</a></h2>
+<section id="unified-v10-metrics">
+<span id="full-duplex-bench-v1-0-unified-metrics"></span><span id="full-duplex-bench-v10-unified-metrics"></span><h2>Full-Duplex-Bench v1.0 unified metrics<a class="headerlink" href="#unified-v10-metrics" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">unified-score</span></code> scores a Full-Duplex-Bench v1.0 reference tree with turn-taking metrics that do not depend on how a system decides to speak. It reads the same Parakeet transcripts and dataset annotations as the official evaluator, and for user interruption it also runs Silero VAD on the exported audio, so native full-duplex, turn-based and cascade systems are scored by the same rules. It needs no GPU, LLM or network access.</p>
 <section id="why-the-official-numbers-are-only-a-reference">
 <h3>Why the official numbers are only a reference<a class="headerlink" href="#why-the-official-numbers-are-only-a-reference" title="Link to this heading">#</a></h3>
@@ -3483,7 +3483,7 @@ interruption or reply-boundary detection to VoiceChat.</p>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#connect-a-client">Connect a Client</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#browser-demo">Browser Demo</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-full-duplex-protocol">Native Full-Duplex Protocol</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#full-duplex-protocol">Native Full-Duplex Protocol</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#full-duplex-bench-runbook">Full-Duplex-Bench runbook</a><ul class="pst-show_toc_level nav section-nav flex-column">
@@ -3500,7 +3500,7 @@ interruption or reply-boundary detection to VoiceChat.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#duplex-ci">Duplex CI</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#full-duplex-bench-v1-0-unified-metrics">Full-Duplex-Bench v1.0 unified metrics</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#unified-v10-metrics">Full-Duplex-Bench v1.0 unified metrics</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#why-the-official-numbers-are-only-a-reference">Why the official numbers are only a reference</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#inputs-and-checks">Inputs and checks</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#metrics">Metrics</a></li>

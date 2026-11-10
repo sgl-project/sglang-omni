@@ -845,7 +845,7 @@ config differences (excluding those, corpus is EN ~1.3% / ZH ~1.4–1.7%). All E
 </table>
 </div>
 <section id="streaming-throughput-stream-emit-chunk-frames">
-<h3>Streaming throughput (<code class="docutils literal notranslate"><span class="pre">stream_emit_chunk_frames</span></code>)<a class="headerlink" href="#streaming-throughput-stream-emit-chunk-frames" title="Link to this heading">#</a></h3>
+<span id="streaming-throughput-stream_emit_chunk_frames"></span><h3>Streaming throughput (<code class="docutils literal notranslate"><span class="pre">stream_emit_chunk_frames</span></code>)<a class="headerlink" href="#streaming-throughput-stream-emit-chunk-frames" title="Link to this heading">#</a></h3>
 <p>In streaming mode the AR engine pushes sampled frames to the vocoder over an in-process queue.
 In steady state the engine <strong>coalesces <code class="docutils literal notranslate"><span class="pre">stream_emit_chunk_frames=32</span></code> frames into one message</strong>
 instead of one <code class="docutils literal notranslate"><span class="pre">put()</span></code> per frame; the per-frame puts run on the resolve host loop and serialize

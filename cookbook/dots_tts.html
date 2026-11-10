@@ -596,7 +596,7 @@
                 <article class="bd-article">
                   
   <section class="tex2jax_ignore mathjax_ignore" id="dots-tts">
-<h1>dots.tts<a class="headerlink" href="#dots-tts" title="Link to this heading">#</a></h1>
+<span id="dotstts"></span><h1>dots.tts<a class="headerlink" href="#dots-tts" title="Link to this heading">#</a></h1>
 <p><a class="reference external" href="https://huggingface.co/dots-studio/dots.tts-mf">dots.tts</a> is a text-to-speech model from rednote-hilab. It outputs 48 kHz speech and clones a speaker from a short reference clip plus its transcript.</p>
 <p>dots.tts is a continuous-latent model, not a codec model. The backbone emits no audio tokens. Each AR step gives a hidden state; a MeanFlow DiT uses it to sample one latent patch (4 frames × 128 dims); a semantic encoder turns the patch back into the next backbone input; an AudioVAE decodes latents to waveform. No codebook, no token sampler. So <code class="docutils literal notranslate"><span class="pre">temperature</span></code> and <code class="docutils literal notranslate"><span class="pre">top_k</span></code> do nothing here — use the solver knobs (<code class="docutils literal notranslate"><span class="pre">num_steps</span></code>, <code class="docutils literal notranslate"><span class="pre">guidance_scale</span></code>) instead.</p>
 <div class="pst-scrollable-table-container"><table class="table">

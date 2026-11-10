@@ -597,7 +597,7 @@
                 <article class="bd-article">
                   
   <section class="tex2jax_ignore mathjax_ignore" id="installation-intel-cpu">
-<h1>Installation — Intel CPU<a class="headerlink" href="#installation-intel-cpu" title="Link to this heading">#</a></h1>
+<span id="installation--intel-cpu"></span><h1>Installation — Intel CPU<a class="headerlink" href="#installation-intel-cpu" title="Link to this heading">#</a></h1>
 <p>Install SGLang-Omni for CPU-only inference on Intel Xeon. For NVIDIA GPUs,
 use the <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">CUDA installation</span></a>.</p>
 <section id="prerequisites">
@@ -687,7 +687,7 @@ layer reports <code class="docutils literal notranslate"><span class="pre">devic
 that branches on the platform silently takes the accelerator path.</p>
 </div></blockquote>
 <section id="audio-decoding-fails-with-libtorchcodec-core-so">
-<h3>Audio decoding fails with <code class="docutils literal notranslate"><span class="pre">libtorchcodec_core*.so</span></code><a class="headerlink" href="#audio-decoding-fails-with-libtorchcodec-core-so" title="Link to this heading">#</a></h3>
+<span id="audio-decoding-fails-with-libtorchcodec_coreso"></span><h3>Audio decoding fails with <code class="docutils literal notranslate"><span class="pre">libtorchcodec_core*.so</span></code><a class="headerlink" href="#audio-decoding-fails-with-libtorchcodec-core-so" title="Link to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">utils/audio.py</span></code> decodes through <code class="docutils literal notranslate"><span class="pre">torchcodec</span></code>, which loads FFmpeg’s shared
 libraries at import. An unsupported FFmpeg version can surface as the unhelpful
 <code class="docutils literal notranslate"><span class="pre">Could</span> <span class="pre">not</span> <span class="pre">load</span> <span class="pre">this</span> <span class="pre">library</span></code> error.</p>

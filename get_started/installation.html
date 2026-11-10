@@ -576,9 +576,9 @@
                 <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#other-platforms">Other platforms</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#install-sglang-omni">Install SGLang-Omni</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#docker-recommended">Docker (recommended)</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#pip-uv">pip / uv</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#from-source">From source</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#option-a-docker-recommended">Docker (recommended)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#option-b-manual-install">pip / uv</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#install-from-source">From source</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#next-steps">Next steps</a></li>
@@ -595,7 +595,7 @@
                 <article class="bd-article">
                   
   <section class="tex2jax_ignore mathjax_ignore" id="installation-cuda">
-<h1>Installation — CUDA<a class="headerlink" href="#installation-cuda" title="Link to this heading">#</a></h1>
+<span id="installation--cuda"></span><h1>Installation — CUDA<a class="headerlink" href="#installation-cuda" title="Link to this heading">#</a></h1>
 <p>Install SGLang-Omni on Linux with an NVIDIA GPU. Docker is recommended.
 The current stable release is <a class="reference external" href="https://pypi.org/project/sglang-omni/">v0.2.0 on PyPI</a>.</p>
 <section id="other-platforms">
@@ -612,8 +612,8 @@ The current stable release is <a class="reference external" href="https://pypi.o
 <p>Choose <a class="reference internal" href="#docker-recommended"><span class="std std-ref">Docker</span></a> for a prebuilt CUDA environment,
 <a class="reference internal" href="#pip-uv"><span class="std std-ref">pip / uv</span></a> to install into your own environment, or
 <a class="reference internal" href="#from-source"><span class="std std-ref">From source</span></a> to work on the code.</p>
-<section id="docker-recommended">
-<span id="option-a-docker-recommended"></span><h3>Docker (recommended)<a class="headerlink" href="#docker-recommended" title="Link to this heading">#</a></h3>
+<section id="option-a-docker-recommended">
+<span id="docker-recommended"></span><h3>Docker (recommended)<a class="headerlink" href="#option-a-docker-recommended" title="Link to this heading">#</a></h3>
 <p><strong>Prerequisites.</strong> Use a CUDA-compatible NVIDIA driver, Docker, and the
 <a class="reference external" href="https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html">NVIDIA Container Toolkit</a>.
 The image includes UCX, flash-attn, SGLang, and CUDA.</p>
@@ -651,8 +651,8 @@ uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </s
 </pre></div>
 </div>
 </section>
-<section id="pip-uv">
-<span id="option-b-manual-install"></span><h3>pip / uv<a class="headerlink" href="#pip-uv" title="Link to this heading">#</a></h3>
+<section id="option-b-manual-install">
+<span id="pip-uv"></span><span id="pip--uv"></span><h3>pip / uv<a class="headerlink" href="#option-b-manual-install" title="Link to this heading">#</a></h3>
 <p><strong>Prerequisites.</strong> Use a CUDA environment with glibc 2.34 or newer and install
 these build dependencies first:</p>
 <ul class="simple">
@@ -673,8 +673,8 @@ uv<span class="w"> </span>venv<span class="w"> </span>.venv<span class="w"> </sp
 </div>
 <p>To install the latest version on the index, run <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">pip</span> <span class="pre">install</span> <span class="pre">--prerelease=allow</span> <span class="pre">sglang-omni</span></code>.</p>
 </section>
-<section id="from-source">
-<span id="install-from-source"></span><h3>From source<a class="headerlink" href="#from-source" title="Link to this heading">#</a></h3>
+<section id="install-from-source">
+<span id="from-source"></span><h3>From source<a class="headerlink" href="#install-from-source" title="Link to this heading">#</a></h3>
 <p>Use this path for development or unreleased changes. Start with the
 <a class="reference internal" href="#pip-uv"><span class="std std-ref">pip / uv prerequisites</span></a>.</p>
 <p><strong>Get the source.</strong></p>
@@ -756,9 +756,9 @@ For model-specific configuration and other request formats, see the
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#other-platforms">Other platforms</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#install-sglang-omni">Install SGLang-Omni</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#docker-recommended">Docker (recommended)</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#pip-uv">pip / uv</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#from-source">From source</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#option-a-docker-recommended">Docker (recommended)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#option-b-manual-install">pip / uv</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#install-from-source">From source</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#next-steps">Next steps</a></li>

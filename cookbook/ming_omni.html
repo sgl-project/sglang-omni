@@ -1243,7 +1243,7 @@ window.runMermaid = runMermaid;</script>
 </div>
 </section>
 <section id="text-input-text-audio-output">
-<h3>Text Input, Text + Audio Output<a class="headerlink" href="#text-input-text-audio-output" title="Link to this heading">#</a></h3>
+<span id="text-input-text--audio-output"></span><h3>Text Input, Text + Audio Output<a class="headerlink" href="#text-input-text-audio-output" title="Link to this heading">#</a></h3>
 <p>Launch the speech server first (the <code class="docutils literal notranslate"><span class="pre">Text</span> <span class="pre">+</span> <span class="pre">Audio</span> <span class="pre">Output</span></code> command above), then request audio with <code class="docutils literal notranslate"><span class="pre">modalities:</span> <span class="pre">[&quot;text&quot;,</span> <span class="pre">&quot;audio&quot;]</span></code>. The speech reply comes back in <code class="docutils literal notranslate"><span class="pre">choices[0].message.audio.data</span></code> as base64 WAV.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>

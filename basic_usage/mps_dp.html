@@ -606,7 +606,7 @@
 <p>Same-GPU data parallelism runs several complete serving replicas on one GPU and lets <a class="reference external" href="https://docs.nvidia.com/deploy/mps/index.html">CUDA MPS</a> share the GPU between them. This is a conditional and ongoing optimization. We are excited to share it and call for the community to join the exploration.</p>
 <p><img alt="Multiple host chains plus CUDA MPS filling the idle GPU" src="../_images/same-gpu-dp-mps.svg" /></p>
 <section id="native-runtime-support-mps">
-<h2>Native runtime support (<code class="docutils literal notranslate"><span class="pre">--mps</span></code>)<a class="headerlink" href="#native-runtime-support-mps" title="Link to this heading">#</a></h2>
+<span id="native-runtime-support---mps"></span><h2>Native runtime support (<code class="docutils literal notranslate"><span class="pre">--mps</span></code>)<a class="headerlink" href="#native-runtime-support-mps" title="Link to this heading">#</a></h2>
 <p>The runtime can manage MPS itself for the processes of <strong>one pipeline</strong>. When a
 pipeline colocates two or more single-GPU stage processes on one GPU (for
 example a frontend process next to the generation process, or process-level

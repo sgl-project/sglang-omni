@@ -701,7 +701,7 @@
 <p>Conditioning and DiT sampling use dynamic batching, with default maximum batch sizes of 8 and 16. VAE decoding groups equal-length latents (up to 4 requests) to preserve boundary behavior. The stages can overlap on separate CUDA streams and share VAE weights within the same process/device. Conditioning loads the Qwen encoder, the VAE and the two hidden-state fusion parameters; only the sampling stage loads the DiT. Set <code class="docutils literal notranslate"><span class="pre">--conditioning.factory.max_batch_size</span></code>, <code class="docutils literal notranslate"><span class="pre">--auk_engine.factory.max_batch_size</span></code>, or <code class="docutils literal notranslate"><span class="pre">--decode.factory.max_batch_size</span></code> to tune them. Audio is returned after decoding completes; incremental audio streaming is not implemented.</p>
 </section>
 <section id="dit-q-k-fusion">
-<h2>DiT Q/K fusion<a class="headerlink" href="#dit-q-k-fusion" title="Link to this heading">#</a></h2>
+<span id="dit-qk-fusion"></span><h2>DiT Q/K fusion<a class="headerlink" href="#dit-q-k-fusion" title="Link to this heading">#</a></h2>
 <p>On CUDA, the DiT uses a Triton kernel that fuses per-head RMSNorm with
 interleaved rotary embedding. Disable it to use the native PyTorch path:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>sglang_omni.cli<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>tencent/AuK<span class="w"> </span><span class="se">\</span>

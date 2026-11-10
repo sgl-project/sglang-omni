@@ -825,7 +825,7 @@ queueing, and vocoder execution; the overall coalescing benchmark does not
 isolate the early-prefix setting.</p>
 </section>
 <section id="id1">
-<h3>Launch the Server<a class="headerlink" href="#id1" title="Link to this heading">#</a></h3>
+<span id="launch-the-server-1"></span><h3>Launch the Server<a class="headerlink" href="#id1" title="Link to this heading">#</a></h3>
 <p>Speech mode can run as a colocated one-GPU worker using the colocated config:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-Omni-30B-A3B-Instruct<span class="w"> </span><span class="se">\</span>
@@ -1033,7 +1033,7 @@ layout regardless, since TTFA is the latency users notice first.</p>
 </section>
 </section>
 <section id="single-gpu-fp8-on-h100-h20">
-<h2>Single-GPU FP8 on H100/H20<a class="headerlink" href="#single-gpu-fp8-on-h100-h20" title="Link to this heading">#</a></h2>
+<span id="single-gpu-fp8-on-h100h20"></span><h2>Single-GPU FP8 on H100/H20<a class="headerlink" href="#single-gpu-fp8-on-h100-h20" title="Link to this heading">#</a></h2>
 <p>SGLang-Omni can also serve native FP8 Qwen3-Omni checkpoints. Native FP8 uses
 the checkpoint quantization config when loading the thinker and talker AR stages,
 while keeping the same Qwen3-Omni request format shown below.</p>
@@ -1063,7 +1063,7 @@ precompile session while keeping DeepGEMM available for dense FP8 GEMMs.</p>
 </div>
 </section>
 <section id="single-gpu-autoround-int4-thinker-on-h100-h20">
-<h2>Single-GPU AutoRound INT4 Thinker on H100/H20<a class="headerlink" href="#single-gpu-autoround-int4-thinker-on-h100-h20" title="Link to this heading">#</a></h2>
+<span id="single-gpu-autoround-int4-thinker-on-h100h20"></span><h2>Single-GPU AutoRound INT4 Thinker on H100/H20<a class="headerlink" href="#single-gpu-autoround-int4-thinker-on-h100-h20" title="Link to this heading">#</a></h2>
 <p>SGLang-Omni also supports AutoRound INT4 quantized Qwen3-Omni checkpoints.
 AutoRound uses a 4-bit quantization scheme with group size 128, significantly
 reducing memory footprint compared to BF16 or FP8.</p>
@@ -1086,7 +1086,7 @@ with the AutoRound checkpoint:</p>
 <li><p><strong>Accuracy at ultra-low bit widths</strong>: maintains high accuracy even at 2–4 bits, requiring minimal tuning effort thanks to its sign-gradient descent optimization.</p></li>
 </ul>
 <section id="id2">
-<h3>Image and Text Input<a class="headerlink" href="#id2" title="Link to this heading">#</a></h3>
+<span id="image-and-text-input-1"></span><h3>Image and Text Input<a class="headerlink" href="#id2" title="Link to this heading">#</a></h3>
 <p>Send an image with a text question to get both text and audio responses. Set <code class="docutils literal notranslate"><span class="pre">&quot;modalities&quot;:</span> <span class="pre">[&quot;text&quot;,</span> <span class="pre">&quot;audio&quot;]</span></code> to enable audio output.</p>
 <p><strong>cURL</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8008/v1/chat/completions<span class="w"> </span><span class="se">\</span>
@@ -1127,7 +1127,7 @@ with the AutoRound checkpoint:</p>
 </div>
 </section>
 <section id="id3">
-<h3>Audio and Image Input<a class="headerlink" href="#id3" title="Link to this heading">#</a></h3>
+<span id="audio-and-image-input-1"></span><h3>Audio and Image Input<a class="headerlink" href="#id3" title="Link to this heading">#</a></h3>
 <p>Send an audio file with an image. The model hears the spoken question and sees the image, then responds with both text and audio.</p>
 <p><strong>cURL</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8008/v1/chat/completions<span class="w"> </span><span class="se">\</span>
@@ -1170,7 +1170,7 @@ with the AutoRound checkpoint:</p>
 </div>
 </section>
 <section id="id4">
-<h3>Video and Audio Input<a class="headerlink" href="#id4" title="Link to this heading">#</a></h3>
+<span id="video-and-audio-input-1"></span><h3>Video and Audio Input<a class="headerlink" href="#id4" title="Link to this heading">#</a></h3>
 <p>Send a video with a spoken audio question. The model watches the video, hears the question, and responds with both text and audio.</p>
 <p><strong>cURL</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8008/v1/chat/completions<span class="w"> </span><span class="se">\</span>

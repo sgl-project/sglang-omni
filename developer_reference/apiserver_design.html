@@ -659,10 +659,10 @@
 <p>If you are tracing endpoint behavior, <code class="docutils literal notranslate"><span class="pre">openai_api.py</span></code> and <code class="docutils literal notranslate"><span class="pre">client.py</span></code> are usually the best places to start.</p>
 </section>
 <section id="create-app-vs-launch-server">
-<h2><code class="docutils literal notranslate"><span class="pre">create_app()</span></code> vs <code class="docutils literal notranslate"><span class="pre">launch_server()</span></code><a class="headerlink" href="#create-app-vs-launch-server" title="Link to this heading">#</a></h2>
+<span id="create_app-vs-launch_server"></span><h2><code class="docutils literal notranslate"><span class="pre">create_app()</span></code> vs <code class="docutils literal notranslate"><span class="pre">launch_server()</span></code><a class="headerlink" href="#create-app-vs-launch-server" title="Link to this heading">#</a></h2>
 <p>This is the most important distinction in the serving code.</p>
 <section id="create-app-client-model-name">
-<h3><code class="docutils literal notranslate"><span class="pre">create_app(client,</span> <span class="pre">model_name=...)</span></code><a class="headerlink" href="#create-app-client-model-name" title="Link to this heading">#</a></h3>
+<span id="create_appclient-model_name"></span><h3><code class="docutils literal notranslate"><span class="pre">create_app(client,</span> <span class="pre">model_name=...)</span></code><a class="headerlink" href="#create-app-client-model-name" title="Link to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">create_app()</span></code> only builds the FastAPI app and registers the core routes.</p>
 <p>It does <strong>not</strong>:</p>
 <ul class="simple">
@@ -675,7 +675,7 @@
 <p>Use it when you already have a live <code class="docutils literal notranslate"><span class="pre">Client</span></code> and want to embed the HTTP layer yourself.</p>
 </section>
 <section id="launch-server-pipeline-config">
-<h3><code class="docutils literal notranslate"><span class="pre">launch_server(pipeline_config,</span> <span class="pre">...)</span></code><a class="headerlink" href="#launch-server-pipeline-config" title="Link to this heading">#</a></h3>
+<span id="launch_serverpipeline_config-"></span><h3><code class="docutils literal notranslate"><span class="pre">launch_server(pipeline_config,</span> <span class="pre">...)</span></code><a class="headerlink" href="#launch-server-pipeline-config" title="Link to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">launch_server()</span></code> is the full built-in server lifecycle.</p>
 <p>It:</p>
 <ul class="simple">
@@ -829,7 +829,7 @@ to an <code class="docutils literal notranslate"><span class="pre">OmniRequest</
 </ul>
 </section>
 <section id="speech-tts">
-<h3>Speech / TTS<a class="headerlink" href="#speech-tts" title="Link to this heading">#</a></h3>
+<span id="speech--tts"></span><h3>Speech / TTS<a class="headerlink" href="#speech-tts" title="Link to this heading">#</a></h3>
 <p>The speech route reuses the same internal request path rather than introducing a separate serving stack.</p>
 <p><code class="docutils literal notranslate"><span class="pre">CreateSpeechRequest</span></code> is converted into a <code class="docutils literal notranslate"><span class="pre">GenerateRequest</span></code> with:</p>
 <ul class="simple">

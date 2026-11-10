@@ -949,7 +949,7 @@ flow_merge_pad_budget_percent = 25
 <p>On CUDA the TTS engine replays prompt prefills from full CUDA graphs captured on the prefill batch ladder, which starts at <code class="docutils literal notranslate"><span class="pre">1</span></code> because a prompt that is already cached prefills a single token. The graphs need the <code class="docutils literal notranslate"><span class="pre">fa3</span></code>, <code class="docutils literal notranslate"><span class="pre">fa4</span></code> or <code class="docutils literal notranslate"><span class="pre">flashinfer</span></code> attention backend, and with any other backend the default prefill runs in eager mode. Opt out with <code class="docutils literal notranslate"><span class="pre">--tts_engine.engine.cuda_graph_backend_prefill</span> <span class="pre">disabled</span></code>. Declaring <code class="docutils literal notranslate"><span class="pre">cuda_graph_bs_prefill</span></code> keeps the declared list as is.</p>
 </section>
 <section id="torch-compile-for-the-dit-backbone">
-<h3>torch.compile for the DiT backbone<a class="headerlink" href="#torch-compile-for-the-dit-backbone" title="Link to this heading">#</a></h3>
+<span id="torchcompile-for-the-dit-backbone"></span><h3>torch.compile for the DiT backbone<a class="headerlink" href="#torch-compile-for-the-dit-backbone" title="Link to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">torch.compile</span></code> is on by default. It reduces DiT kernel-launch overhead for supported TTS execution paths, including streaming PackedDiT. Startup warmup covers varying batch sizes and mel lengths before serving. Existing CUDA Graph behavior is unchanged. Pass <code class="docutils literal notranslate"><span class="pre">enable_dit_torch_compile=false</span></code> to run the DiT eager.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>FunAudioLLM/Fun-CosyVoice3-0.5B-2512<span class="w"> </span><span class="se">\</span>
@@ -1149,7 +1149,7 @@ flow_merge_pad_budget_percent = 25
 <p>The vocoder takes a growing share of each request as concurrency rises, so the end-to-end gain is largest at low concurrency.</p>
 </section>
 <section id="id1">
-<h3>Zero-shot Voice Cloning<a class="headerlink" href="#id1" title="Link to this heading">#</a></h3>
+<span id="zero-shot-voice-cloning-1"></span><h3>Zero-shot Voice Cloning<a class="headerlink" href="#id1" title="Link to this heading">#</a></h3>
 <p>CosyVoice3 clones a voice from a short reference audio clip. <code class="docutils literal notranslate"><span class="pre">ref_audio</span></code> can be a local
 path, file URL, data URL, or HTTP URL. <code class="docutils literal notranslate"><span class="pre">ref_text</span></code> (the transcript of the reference clip)
 is optional but recommended for better alignment.</p>
@@ -1183,7 +1183,7 @@ is optional but recommended for better alignment.</p>
 </div>
 </section>
 <section id="id2">
-<h3>Cross-lingual Synthesis<a class="headerlink" href="#id2" title="Link to this heading">#</a></h3>
+<span id="cross-lingual-synthesis-1"></span><h3>Cross-lingual Synthesis<a class="headerlink" href="#id2" title="Link to this heading">#</a></h3>
 <p>CosyVoice3 supports cross-lingual voice cloning where the reference speaker speaks a
 different language than the synthesis text. Omit <code class="docutils literal notranslate"><span class="pre">ref_text</span></code> to enter cross-lingual mode.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
@@ -1198,7 +1198,7 @@ different language than the synthesis text. Omit <code class="docutils literal n
 </div>
 </section>
 <section id="id3">
-<h3>Instruction-based Style Control<a class="headerlink" href="#id3" title="Link to this heading">#</a></h3>
+<span id="instruction-based-style-control-1"></span><h3>Instruction-based Style Control<a class="headerlink" href="#id3" title="Link to this heading">#</a></h3>
 <p>Pass <code class="docutils literal notranslate"><span class="pre">instructions</span></code> to guide prosody, emotion, or speaking style:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
@@ -1213,7 +1213,7 @@ different language than the synthesis text. Omit <code class="docutils literal n
 </div>
 </section>
 <section id="id4">
-<h3>Speed Control<a class="headerlink" href="#id4" title="Link to this heading">#</a></h3>
+<span id="speed-control-1"></span><h3>Speed Control<a class="headerlink" href="#id4" title="Link to this heading">#</a></h3>
 <p>Adjust playback speed with <code class="docutils literal notranslate"><span class="pre">speed</span></code> (default <code class="docutils literal notranslate"><span class="pre">1.0</span></code>):</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
@@ -1228,7 +1228,7 @@ different language than the synthesis text. Omit <code class="docutils literal n
 </div>
 </section>
 <section id="id5">
-<h3>Streaming<a class="headerlink" href="#id5" title="Link to this heading">#</a></h3>
+<span id="streaming-1"></span><h3>Streaming<a class="headerlink" href="#id5" title="Link to this heading">#</a></h3>
 <p>Incremental Flow + HiFT decoding is enabled. Set <code class="docutils literal notranslate"><span class="pre">stream:</span> <span class="pre">true</span></code> and use
 <code class="docutils literal notranslate"><span class="pre">response_format:</span> <span class="pre">&quot;pcm&quot;</span></code> so the server can emit audio before speech-token
 generation finishes.</p>
@@ -1281,7 +1281,7 @@ in sync if you change the hop):</p>
 </section>
 </section>
 <section id="id6">
-<h2>Generation Parameters<a class="headerlink" href="#id6" title="Link to this heading">#</a></h2>
+<span id="generation-parameters-1"></span><h2>Generation Parameters<a class="headerlink" href="#id6" title="Link to this heading">#</a></h2>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Parameter</p></th>
