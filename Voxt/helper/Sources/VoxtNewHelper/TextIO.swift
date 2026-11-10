@@ -225,6 +225,12 @@ final class TextIO: @unchecked Sendable {
                 if !saw, let now = focusedElement(pid: pid_t(frontPid)) { moved = !CFEqual(now, e) }
             }
             check = PasteChecker.outcome(sawChange: saw, before: before, last: last, focusMoved: moved)
+            if check == PasteCheck.unchanged, let e = watched,
+               string(e, kAXRoleAttribute) == "AXWebArea" || inEditableRegion(e) {
+                // Chromium/GitHub editors often accept ⌘V while AX still reads the same length.
+                check = PasteCheck.unknown
+                checkMs = nil
+            }
             if check != PasteCheck.unknown { checkMs = round1(monotonicMs() - posted) }
             field = PasteField(role: watched.flatMap { string($0, kAXRoleAttribute) }, before: before.state, after: last?.state)
         }

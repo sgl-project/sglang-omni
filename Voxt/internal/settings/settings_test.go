@@ -414,8 +414,30 @@ func TestShortcutPresets(t *testing.T) {
 	if !ApplyPreset(&f, PresetOption) || !reflect.DeepEqual(f, Defaults().Features) {
 		t.Fatalf("mixed to right Option: %+v", f)
 	}
-	if ApplyPreset(&f, "command") || !reflect.DeepEqual(f, Defaults().Features) {
+	if ApplyPreset(&f, "unknown") || !reflect.DeepEqual(f, Defaults().Features) {
 		t.Fatalf("unknown preset: %+v", f)
+	}
+	f = Defaults().Features
+	if !ApplyPreset(&f, PresetCommand) {
+		t.Fatal("command changed nothing")
+	}
+	wantCmd := Defaults().Features
+	wantCmd.Transcribe.Hotkeys, wantCmd.Translate.Hotkeys, wantCmd.Rewrite.Hotkeys = tap("RightCommand"), tap("RightCommand+Shift"), tap("RightCommand+Option")
+	wantCmd.PasteLast = Hotkey{Keys: "Control+Command+V", Trigger: TriggerTap}
+	if !reflect.DeepEqual(f, wantCmd) || PresetOf(f) != PresetCommand {
+		t.Fatalf("command: %+v preset %q", f, PresetOf(f))
+	}
+	f = Defaults().Features
+	if !ApplyPreset(&f, PresetMouseMiddle) {
+		t.Fatal("mouse middle changed nothing")
+	}
+	wantMouse := Defaults().Features
+	wantMouse.Transcribe.Hotkeys = tap("Mouse3")
+	wantMouse.Translate.Hotkeys = tap("Fn+Shift")
+	wantMouse.Rewrite.Hotkeys = []Hotkey{{Keys: "Mouse3", Trigger: TriggerDouble}}
+	wantMouse.PasteLast = Hotkey{Keys: "Control+Command+V", Trigger: TriggerTap}
+	if !reflect.DeepEqual(f, wantMouse) || PresetOf(f) != PresetMouseMiddle {
+		t.Fatalf("mouse middle: %+v preset %q", f, PresetOf(f))
 	}
 }
 
@@ -474,6 +496,81 @@ func TestMuteOutput(t *testing.T) {
 		*c.Audio.MuteOutput = !on
 		if m.Audio.MuteOn() != on {
 			t.Fatal("clone shares the choice")
+		}
+	}
+}
+
+// TestMigrateShowCard: each feature has its own card switch. The one
+// switch of the 2.0.3 betas (features.showCard), on, turns all three on;
+// Translate's own (2.0.1's) is read as it is; Rewrite's is on unless the
+// document says off.
+func TestMigrateShowCard(t *testing.T) {
+	type cards struct{ transcribe, translate, rewrite bool }
+	for _, tc := range []struct {
+		doc  string
+		want cards
+	}{
+		{`{"version":4,"features":{"translate":{"showCard":true}}}`, cards{false, true, true}},
+		{`{"version":4,"features":{"translate":{"cleanup":true}}}`, cards{false, false, true}},
+		{`{"version":4,"features":{"showCard":true,"translate":{}}}`, cards{true, true, true}},
+		{`{"version":4,"features":{"rewrite":{"showCard":false}}}`, cards{false, false, false}},
+		{`{"version":4,"features":{"transcribe":{"showCard":true},"rewrite":{"showCard":false}}}`, cards{true, false, false}},
+	} {
+		s, err := Migrate([]byte(tc.doc))
+		f := s.Features
+		if got := (cards{f.Transcribe.ShowCard, f.Translate.ShowCard, f.Rewrite.ShowCard}); err != nil || got != tc.want {
+			t.Errorf("%s: cards %+v, want %+v (%v)", tc.doc, got, tc.want, err)
+		}
+		if f.ShowsCard("transcribe") != f.Transcribe.ShowCard || f.ShowsCard("translate") != f.Translate.ShowCard || f.ShowsCard("rewrite") != f.Rewrite.ShowCard {
+			t.Errorf("%s: ShowsCard disagrees with the fields", tc.doc)
+		}
+		// Saved and read again, Rewrite's off stays off.
+		out, _ := json.Marshal(s)
+		again, err := Migrate(out)
+		if g := again.Features; err != nil || (cards{g.Transcribe.ShowCard, g.Translate.ShowCard, g.Rewrite.ShowCard}) != tc.want {
+			t.Errorf("%s: saved as %s, read back %+v", tc.doc, out, g)
+		}
+	}
+}
+
+// TestMigrateOptionsJSON: a setup's Options JSON becomes the request
+// parameters' "options"; the parameters' own "options" wins.
+func TestMigrateOptionsJSON(t *testing.T) {
+	doc := `{"version":4,"providers":{"llm":[
+		{"id":"ollama","generation":{"optionsJSON":"{\"num_ctx\": 8192}","extraBodyJSON":"{\"user\": \"me\"}"}},
+		{"id":"omlx","generation":{"optionsJSON":"{\"num_ctx\": 1}","extraBodyJSON":"{\"options\": {}}"}}]}}`
+	s, err := Migrate([]byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if json.Unmarshal([]byte(s.Providers.LLM[0].Generation.ExtraBodyJSON), &got) != nil || got["user"] != "me" || got["options"].(map[string]any)["num_ctx"] != 8192.0 {
+		t.Errorf("folded %q", s.Providers.LLM[0].Generation.ExtraBodyJSON)
+	}
+	if s.Providers.LLM[1].Generation.ExtraBodyJSON != `{"options": {}}` {
+		t.Errorf("kept %q", s.Providers.LLM[1].Generation.ExtraBodyJSON)
+	}
+}
+
+// TestLiveLinesDefault: Lines is the default live text layout (11-09),
+// for a document saved before too (it had no key unless Lines was
+// chosen); One line, chosen, is written and read back.
+func TestLiveLinesDefault(t *testing.T) {
+	for _, tc := range []struct {
+		doc  string
+		want bool
+	}{
+		{`{"version":4}`, true},
+		{`{"version":4,"overlay":{"liveLines":true}}`, true},
+		{`{"version":4,"overlay":{"liveLines":false}}`, false},
+	} {
+		s, err := Migrate([]byte(tc.doc))
+		if err != nil || s.Overlay.LiveLines != tc.want {
+			t.Errorf("%s: LiveLines %v, want %v (%v)", tc.doc, s.Overlay.LiveLines, tc.want, err)
+		}
+		out, _ := json.Marshal(s)
+		if again, err := Migrate(out); err != nil || again.Overlay.LiveLines != tc.want {
+			t.Errorf("%s: saved as %s, read back %v", tc.doc, out, again.Overlay.LiveLines)
 		}
 	}
 }

@@ -81,7 +81,7 @@ func (s *stream) start(params []byte) error {
 	}
 	if f.Type == FullServerResponse {
 		if _, err := parseResponse(f.Payload); err != nil {
-			return s.withLog(err)
+			return withLog(err, s.logID)
 		}
 	}
 	return nil
@@ -91,27 +91,27 @@ func (s *stream) start(params []byte) error {
 // becomes its *asr.Error.
 func (s *stream) decode(typ websocket.MessageType, data []byte) (Frame, error) {
 	if typ != websocket.MessageBinary {
-		return Frame{}, s.withLog(protoErr("unexpected text message: %s", asr.Clip(string(data), 200)))
+		return Frame{}, withLog(protoErr("unexpected text message: %s", asr.Clip(string(data), 200)), s.logID)
 	}
 	f, err := Decode(data)
 	if err != nil {
-		return f, s.withLog(err)
+		return f, withLog(err, s.logID)
 	}
 	switch f.Type {
 	case ServerError:
-		return f, s.withLog(codeError(f.Code, f.Payload))
+		return f, withLog(codeError(f.Code, f.Payload), s.logID)
 	case FullServerResponse, ServerAck:
 		return f, nil
 	}
-	return f, s.withLog(protoErr("unexpected %s from the service", f.Type))
+	return f, withLog(protoErr("unexpected %s from the service", f.Type), s.logID)
 }
 
 // withLog adds the service's log id (X-Tt-Logid, what its support asks
 // for) to an error's detail.
-func (s *stream) withLog(err error) error {
+func withLog(err error, logID string) error {
 	var e *asr.Error
-	if s.logID != "" && errors.As(err, &e) {
-		e.Detail += " (logid " + s.logID + ")"
+	if logID != "" && errors.As(err, &e) {
+		e.Detail += " (logid " + logID + ")"
 	}
 	return err
 }
@@ -140,7 +140,7 @@ func (s *stream) read() {
 		}
 		p, err := parseResponse(f.Payload)
 		if err != nil {
-			s.fail(s.withLog(err))
+			s.fail(withLog(err, s.logID))
 			return
 		}
 		// An empty answer (an acknowledgement, silence) keeps the text: the
@@ -206,7 +206,7 @@ func (s *stream) connErr(err error) error {
 	if s.timedOut.Load() {
 		return &asr.Error{Kind: asr.KindNetwork, Provider: ID, Detail: "no final result in time", Retryable: true}
 	}
-	return s.withLog(asr.WSError(s.parent, ID, err))
+	return withLog(asr.WSError(s.parent, ID, err), s.logID)
 }
 
 func (s *stream) write(f Frame) error {

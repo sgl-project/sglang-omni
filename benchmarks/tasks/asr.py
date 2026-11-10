@@ -325,6 +325,7 @@ def make_asr_send_fn(
     lang: str = "en",
     *,
     stream: bool = False,
+    fallback_sample_ids: frozenset[str] = frozenset(),
 ) -> SendFn:
     """Return a send_fn(session, sample) -> RequestResult that transcribes one
     SeedTTS reference clip via the Omni /v1/audio/transcriptions endpoint.
@@ -350,6 +351,8 @@ def make_asr_send_fn(
         form.add_field("model", model_name)
         form.add_field("language", "en" if lang == "en" else lang)
         form.add_field("response_format", "json")
+        if sample.sample_id in fallback_sample_ids:
+            form.add_field("repetition_penalty", "1.2")
         if stream:
             form.add_field("stream", "true")
         form.add_field(
@@ -443,13 +446,25 @@ async def run_asr_transcription(
     request_timeout_s: int = QWEN3_ASR_REQUEST_TIMEOUT_S,
     disable_tqdm: bool = True,
     stream: bool = False,
+    fallback_percentage: int = 0,
 ) -> tuple[list[RequestResult], float]:
     """Transcribe samples against a running ASR router at one concurrency.
 
     Returns (outputs, wall_clock_s) via the shared BenchmarkRunner.
     """
     api_url = f"http://{host}:{port}/v1/audio/transcriptions"
-    send_fn = make_asr_send_fn(model_path, api_url, lang=lang, stream=stream)
+    fallback_sample_ids = frozenset(
+        sample.sample_id
+        for index, sample in enumerate(samples)
+        if (index + 1) * fallback_percentage // 100 > index * fallback_percentage // 100
+    )
+    send_fn = make_asr_send_fn(
+        model_path,
+        api_url,
+        lang=lang,
+        stream=stream,
+        fallback_sample_ids=fallback_sample_ids,
+    )
     runner = BenchmarkRunner(
         RunConfig(
             max_concurrency=concurrency,

@@ -10,9 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/ink"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
@@ -107,6 +109,7 @@ func TestAnswerCardStates(t *testing.T) {
 	for _, pos := range []string{"bottom", "top"} {
 		t.Run(pos, func(t *testing.T) {
 			a, _, _ := newTestApp(t)
+			shortScreen(t, a)
 			// Saved, so that a later save (Setup.Tried) keeps it.
 			a.updateSettings(func(s *settings.Settings) { s.Overlay.Position = pos })
 			for _, st := range cardSteps() {
@@ -159,6 +162,7 @@ func TestAnswerCardStates(t *testing.T) {
 // down to just above the bottom padding (no empty space, nothing cut).
 func TestAnswerCardInk(t *testing.T) {
 	a, _, _ := newTestApp(t)
+	shortScreen(t, a)
 	defer func() { a.measureHook = guessText }()
 	for _, st := range cardSteps() {
 		st.apply(a)
@@ -192,7 +196,7 @@ func TestAnswerCardInteraction(t *testing.T) {
 	ft := new(fakeTimers).install(a)
 	steps := cardSteps()
 	steps[0].apply(a) // the short answer
-	tt := cardTester(a)
+	tt := cardTester(t, a)
 	frames(tt)
 	for _, s := range []string{"Translation", "goroutine 是由 Go 运行时管理的轻量级线程。", "Simplified Chinese", "Insert", "Copy", "Close"} {
 		if !has(tt, s) {
@@ -307,6 +311,7 @@ func TestLanguageMenuPlace(t *testing.T) {
 	for _, pos := range []string{"bottom", "top"} {
 		t.Run(pos, func(t *testing.T) {
 			a, _, _ := newTestApp(t)
+			shortScreen(t, a)
 			// Saved, so that a later save (Setup.Tried) keeps it.
 			a.updateSettings(func(s *settings.Settings) { s.Overlay.Position = pos })
 			cardSteps()[0].apply(a) // a translation in the card
@@ -420,5 +425,117 @@ func TestCardHeaderFits(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestCardSizes: a feature's page sets its own answer card size; a larger
+// card is wider, and any card grows with a long answer to the work
+// area's height, its ink still from padding to padding. The other features keep theirs
+// (#3644 FB41: a long explanation read badly in the small card).
+func TestCardSizes(t *testing.T) {
+	if hotkey.Transcribe != string(store.KindTranscribe) || hotkey.Translate != string(store.KindTranslate) || hotkey.Rewrite != string(store.KindRewrite) {
+		t.Fatal("Features.CardSizes's keys: the pages' feature ids are not store.Kind's")
+	}
+	a, tt := pageTester(t, "/rewrite")
+	if err := tt.ClickControl("Large"); err != nil {
+		t.Fatal(err)
+	}
+	frames(tt)
+	if got := a.settings.Get().Features.CardSizes; got[hotkey.Rewrite] != 2 || len(got) != 1 {
+		t.Fatalf("card sizes %v", got)
+	}
+	long := strings.Repeat("A goroutine is a lightweight thread managed by the Go runtime. ", 90)
+	a.ov.area = a.overlayArea() // as when the card shows: its size depends on the screen's room
+	for _, c := range []struct {
+		kind store.Kind
+		size layout.CardSize
+	}{{store.KindRewrite, layout.CardSizes[2]}, {store.KindTranslate, layout.CardSizes[0]}} {
+		a.answer = answerCard{open: true, kind: c.kind, text: long}
+		want := layout.CardChrome + a.cardBodyMax(a.cardNow())
+		if w, h, _ := a.cardSize(); w != c.size.W || h != want {
+			t.Errorf("%s: %d×%d, want %d×%d", c.kind, w, h, c.size.W, want)
+		}
+	}
+	defer func() { a.measureHook = guessText }()
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: long}
+	a.overlaySync()
+	img := renderOverlay(t, a)
+	if _, bad := ink.Check(img, 2, cardInkWant(ink.Want{W: a.ov.w, H: a.ov.h}, a.cardNow())); len(bad) > 0 || a.ov.w != layout.CardSizes[2].W {
+		t.Errorf("the large card, %d wide: %v", a.ov.w, bad)
+	}
+	if dir := os.Getenv("VOXTNEW_INK"); dir != "" {
+		var b bytes.Buffer
+		png.Encode(&b, img)
+		os.WriteFile(filepath.Join(dir, "card-large.png"), b.Bytes(), 0o644)
+	}
+}
+
+// TestCardResizeOnCard: the card steps through its sizes from the card
+// itself (#3644 FB41: a long answer needed a trip to the feature's page
+// for a larger card): Small, Medium, Large and back to Small, saved as the
+// feature's size, and the card takes each at once.
+func TestCardResizeOnCard(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: strings.Repeat("A goroutine is a lightweight thread managed by the Go runtime. ", 30)}
+	a.overlaySync()
+	tt := hudTester(a.overlayView, layout.CardSizes[2].W+2*layout.Pad, 900)
+	for i, c := range []struct {
+		label string
+		step  int
+	}{{"Make the card larger", 1}, {"Make the card larger", 2}, {"Make the card smaller", 0}} {
+		frames(tt)
+		if err := tt.ClickControl(c.label); err != nil {
+			t.Fatalf("step %d: %v (controls %q)", i, err, tt.AccessLabels())
+		}
+		frames(tt)
+		got := a.settings.Get().Features.CardSizes
+		_, kept := got[hotkey.Rewrite]
+		if got[hotkey.Rewrite] != c.step || kept != (c.step != 0) || a.ov.w != layout.CardSizes[c.step].W {
+			t.Errorf("step %d: sizes %v, the card %d wide", i, got, a.ov.w)
+		}
+	}
+}
+
+// TestCardFitsTheScreen: a large card with a long answer on a short
+// screen keeps its text to the room the work area leaves, instead of
+// reaching past the screen's other edge.
+func TestCardFitsTheScreen(t *testing.T) {
+	saved := ovTestArea
+	t.Cleanup(func() { ovTestArea = saved })
+	ovTestArea = mygo.Rectangle{X: 0, Y: 25, Width: 1280, Height: 600}
+	a, _, _ := newTestApp(t)
+	a.updateSettings(func(s *settings.Settings) { s.Features.CardSizes = map[string]int{hotkey.Rewrite: 2} })
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: strings.Repeat("A goroutine is a lightweight thread managed by the Go runtime. ", 90)}
+	a.overlaySync()
+	if f := a.ov.frame; f.Y < ovTestArea.Y || f.Y+f.Height > ovTestArea.Y+ovTestArea.Height {
+		t.Errorf("the card's window %+v is not inside the work area %+v", f, ovTestArea)
+	}
+}
+
+// TestCardDragged: a card the user dragged (overlayDragged keeps the
+// offset) keeps its place as its answer grows, stays on the screen, and
+// the next card shows at the anchor again.
+func TestCardDragged(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
+	a.overlaySync()
+	anchored := a.ov.frame
+	a.ov.dragged.x, a.ov.dragged.y = -300, -200
+	a.answer.text = strings.Repeat("A longer answer, a few lines more. ", 12)
+	a.overlaySync()
+	if f := a.ov.frame; f.Height <= anchored.Height || f.X != anchored.X-300 || f.Y+f.Height != anchored.Y+anchored.Height-200 {
+		t.Errorf("dragged, then grown: %+v; anchored %+v", f, anchored)
+	}
+	a.ov.dragged.y = -5000
+	a.overlaySync()
+	if a.ov.frame.Y != a.ov.area.Y-layout.Pad {
+		t.Errorf("dragged past the top: %+v", a.ov.frame)
+	}
+	a.answer = answerCard{}
+	a.overlaySync()
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
+	a.overlaySync()
+	if a.ov.frame != anchored {
+		t.Errorf("the next card: %+v, want %+v", a.ov.frame, anchored)
 	}
 }

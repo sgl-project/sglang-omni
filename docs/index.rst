@@ -98,17 +98,24 @@ Scroll sideways for more updates.
 
    <ul class="omni-news" role="list" tabindex="0" aria-label="News and latest blogs">
      <li>
+       <a href="https://github.com/sgl-project/sglang-omni/blob/main/Voxt/README.md">
+         <img class="omni-news-logo" src="https://raw.githubusercontent.com/sgl-project/sglang-omni/main/Voxt/resources/icon.png" alt="" loading="lazy">
+         <strong>Voxt 2.0.3: Open-source voice input for Mac</strong>
+         <time datetime="2026-11-10">November 10, 2026</time>
+       </a>
+     </li>
+     <li>
+       <a href="https://index.openrsi.foundation/blog/2026/openrsi-sglang-omni/">
+         <img class="omni-news-logo" src="_static/image/sgl-omni-logo.svg" alt="" loading="lazy">
+         <strong>OpenRSI × SGLang-Omni: Scaling RSI for AI Infra</strong>
+         <time datetime="2026-11-09">November 9, 2026</time>
+       </a>
+     </li>
+     <li>
        <a href="https://github.com/sgl-project/sglang-omni/releases/tag/v0.2.0">
          <img class="omni-news-logo" src="_static/image/sgl-omni-logo.svg" alt="" loading="lazy">
          <strong>SGLang-Omni v0.2.0</strong>
          <time datetime="2026-10-27">October 27, 2026</time>
-       </a>
-     </li>
-     <li>
-       <a href="https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v1.16.3">
-         <img class="omni-news-logo" src="https://raw.githubusercontent.com/sgl-project/sglang-omni/7be1317/Voxt/Voxt/VoxtIcon.icon/Assets/Voxt.png" alt="" loading="lazy">
-         <strong>Voxt v1.16.3</strong>
-         <time datetime="2026-10-23">October 23, 2026</time>
        </a>
      </li>
      <li>
@@ -151,6 +158,7 @@ Community & Resources
    Welcome to SGLang-Omni <self>
    Quickstart <get_started/quickstart>
    Installation <get_started/installation>
+   Install Voxt (Mac app) <get_started/voxt>
    get_started/examples
    get_started/troubleshooting.md
 
@@ -198,6 +206,7 @@ Community & Resources
    basic_usage/native_chat_stage.md
    basic_usage/audio_translations.md
    basic_usage/tts.md
+   basic_usage/asr.md
    basic_usage/process_topology.md
    basic_usage/tts_process_topology.md
    basic_usage/process_topology_migration.md
@@ -223,7 +232,6 @@ Community & Resources
    developer_reference/profiler.md
    developer_reference/qwen3_asr_concurrency_profile.md
    developer_reference/full_duplex_guide.md
-   developer_reference/duplex_load_generator_pacing.md
    developer_reference/tts_bench.md
    developer_reference/tts_model_integration.md
    developer_reference/asr_bench.md
