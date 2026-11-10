@@ -242,5 +242,46 @@
       "model.safetensors": "bf31b4e5fb713a565750e120ebadd54de245eb1214e46d14fc5108f1e79171a1",
       "codec.safetensors": "c2096e27a1bb69a05151ccb502649a88744712270d9b029a68a3c9305f2b1edf"
     }
+  },
+  "mlx-community/ZONOS3-Mini": {
+    "revision": "c3b1320037be83fdbe57586bd6678573de1789f4",
+    "files": {
+      "config.json": "d8df208560722933c0cabf0c41ef6a9dd8e230217d7fc65498a51ecf92a1632f",
+      "tokenizer.json": "90322f910600027dee7fe63d400d1d9dc1035c167d560aadf0871e3661d08bf3",
+      "model.safetensors": "43c056e279153165c91ba691f030d2034bcbb23a760039e6f121fe409245ec66",
+      "voices.json": "ae62e3034f50e45f7e28cd74c485bf16bc4fcb87aff7d2ce219b36fecdee50f4",
+      "codec/config.json": "db61914017434dbeedd2e6d5dc7e5c7920f47de95ef545848bdbec09b7d144fa",
+      "codec/model.safetensors": "1848f4160413d75f7e01bf2919bf23671f97fc0d2fb397c575a0a1ce18a2e9b6",
+      "speaker_encoder/config.json": "311ea38698a2fa2438ce685a2097f1921007a083dbcdf56d33bdc438758d0533",
+      "speaker_encoder/frontend.npz": "523924d33714caf18dbcb5b5a2c2cf9f46afcdfc2889675a726363bde7715a5b",
+      "speaker_encoder/model.safetensors": "81e16f0ff71e7305bb43437cc83a2eb8508638901ad30d3da0d7be89ac410deb",
+      "voices/Ananya_hi_F_1.embedding.npz": "96f93e89e3da2066ace97bbb0d6634e1b627a01ffb163571ba0846c433828e9f",
+      "voices/Arjun_hi_M_1.embedding.npz": "02cfa4797a69865d094e0aa54f286e1f8f8b946d967dd5dd066a9b2558b5fbe8",
+      "voices/Chaitanya_te_M_1.embedding.npz": "4cece7d76ee433577f7d6a7bfbc4d78a8fc97372625251a7c34335a3434ed2b6",
+      "voices/Cillian_en-Irish_M_1.embedding.npz": "85b02d5eb3c49cc990b779cfaf08a895746e4f41adf9eae3bc8cd6f8dd825d75",
+      "voices/Gaspard_fr_M_1.embedding.npz": "d9ded858cf7f30693ceba01cf2ef0a9bde77585f7b635d009375adcffb35520f",
+      "voices/Ginevra_it_F_1.embedding.npz": "7d483d2d3d4bf7b82c6f97a6e74c6ac33560d371e7d695145d16ea82fbe29f39",
+      "voices/Haoran_zh-energetic_M_1.embedding.npz": "48e015f07f50cdd4aa2894f6e1182344042cded0210ce658d407af1c5e7f4a9a",
+      "voices/Imogen_en-British_F_1.embedding.npz": "2f6b7c25d319d29cb3ad994a0190b9a897bbedb019ad7f3201bfd6ee2b740f6e",
+      "voices/Jett_en-energetic_M_1.embedding.npz": "cd96714be84028f18a38a1192a2811d1be3e1e23c2cba77e4f57f88afbb54e03",
+      "voices/Leonor_pt_F_1.embedding.npz": "15a8c46ee0ba03a589372f6fe190c874068e8b38b443f4c6d222fa17739e473a",
+      "voices/Liesel_de_F_1.embedding.npz": "4020ae38158657da5dd5b27675a860332f21fb4db734b5575b7f42d8f88800bc",
+      "voices/Lorenzo_it_M_1.embedding.npz": "90428c67659a08277d4d0e6da7af8cb89ba8d237b6cd899f437fef824827c65e",
+      "voices/Meilin_zh-energetic_F_1.embedding.npz": "51730de15670ea851f159870f944c3d5df8e339fdce74ce43c9536ec8c7ac0d6",
+      "voices/Minjun_ko_M_1.embedding.npz": "61c31b658bafdec9cc3f4b11b1b918a318e4db9f554bc3a25dfa7f88abaf6bbd",
+      "voices/Morgana_en-witch_F_1.embedding.npz": "3185e130d990731e51a62007285b8f053d8a4ebc66ca5086c8c5804a3f9f70a1",
+      "voices/Rodrigo_es_M_1.embedding.npz": "823fb3b619aca47104bb1dc040f40fc51b944709818390992ae5f3253b3a6408",
+      "voices/Rupert_en-British_M_1.embedding.npz": "90a00601fee898b7d2c45446849236fd95e92cdcc14694f73b8839e29bd31912",
+      "voices/Sakura_en-anime_F_1.embedding.npz": "c42840b3a35ebcade9d13e67d645140da1bfe1888df60f2abf7eeeb545314f14",
+      "voices/Savannah_en-American_F_1.embedding.npz": "812e02f1f318c0ad4d14280ee06ee4ef80fb0bde6599138762a85821a2db235f",
+      "voices/Seoyeon_ko_F_1.embedding.npz": "086febcfacba8351726bdad660aca12aa82a6eeee5877c7ca4f2c901f588c3f2",
+      "voices/Sravya_te_F_1.embedding.npz": "06a157102429ebedb6e956d89e68bcd36895372fd7c6e7bec00a826293239216",
+      "voices/Thaddeus_en-announcervoice_M_1.embedding.npz": "b2b3bc28ed961c100dc35871ee2d4538934412ff9c39692e90023e5067f5404b",
+      "voices/Thiago_pt_M_1.embedding.npz": "abd32f1483c304cfdde7af6ca358d750426cf4fc86e96c1af3b10c0bd20ed784",
+      "voices/Willow_en-asrm_F_1.embedding.npz": "6882c57360d3ff6dbc322ed6ea4ddf11369a04dca9592147a5b6a70f09620c38",
+      "voices/Wolfgang_de_M_1.embedding.npz": "b5c7d23aca415d4d6c8d689b75bc6a728ed5bac167d36a4b1a9a87a81ecf5fca",
+      "voices/Wyatt_en-American_M_1.embedding.npz": "67352643017465052ca15d30e6b808b68472f7697ab2dabf274b3875f9477984",
+      "voices/Ximena_es_F_1.embedding.npz": "26d14dc343a682dbb1757a918c40f632128f53b1484506f16c3d45b58e8cdfa0"
+    }
   }
 }
