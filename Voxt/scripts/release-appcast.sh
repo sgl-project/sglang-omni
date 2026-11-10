@@ -15,7 +15,8 @@
 #   scripts/release-appcast.sh info-plist 2.0.1    # {"CFBundleVersion":"200000199","SUPublicEDKey":"…"}
 #   scripts/release-appcast.sh assets 2.0.1        # Voxt-2.0.1-macOS.zip Voxt-2.0.1-arm64.dmg
 #   scripts/release-appcast.sh entry beta 2.0.1    # the update service's entry (beta or stable), JSON
-#   scripts/release-appcast.sh notes < NOTES.md    # the release notes as the update window's HTML
+#   scripts/release-appcast.sh notes < NOTES.md    # the English release notes as HTML
+#   scripts/release-appcast.sh notes-by-locale < NOTES.md   # the release notes as HTML by locale, JSON
 #   scripts/release-appcast.sh items < appcast.xml # each item's sparkle:version and hardware requirement
 #   scripts/release-appcast.sh hardware-kept BUILD REPLY < APPCASTS   # fails unless the update service kept arm64
 #   scripts/release-appcast.sh cask 2.0.1 SHA256 OWNER/REPO   # Homebrew's Casks/voxt.rb
@@ -82,6 +83,37 @@ items() {
   '
 }
 
+notes_html() {
+  awk -v locale="$1" '
+    function inline_html(text,    html) {
+      gsub(/&/, "\\&amp;", text); gsub(/</, "\\&lt;", text); gsub(/>/, "\\&gt;", text); gsub(/"/, "\\&quot;", text)
+      while (match(text, /\*\*[^*]+\*\*/)) {
+        html = html substr(text, 1, RSTART - 1) "<strong>" substr(text, RSTART + 2, RLENGTH - 4) "</strong>"
+        text = substr(text, RSTART + RLENGTH)
+      }
+      return html text
+    }
+    function end_list() { if (in_list) print "</ul>"; in_list = 0 }
+    BEGIN { section_locale = "en" }
+    { sub(/^[ \t]+/, ""); sub(/[ \t\r]+$/, "") }
+    /^## / { exit }
+    $0 == "### 中文" { end_list(); section_locale = "zh-Hans"; next }
+    /^### / { end_list(); section_locale = "en" }
+    section_locale != locale { next }
+    $0 == "" { end_list(); next }
+    /^### / { print "<h3>" inline_html(substr($0, 5)) "</h3>"; next }
+    /^#### / {
+      end_list()
+      heading = locale == "zh-Hans" ? "h3" : "h4"
+      print "<" heading ">" inline_html(substr($0, 6)) "</" heading ">"
+      next
+    }
+    /^[-*] / { if (!in_list) print "<ul>"; in_list = 1; print "<li>" inline_html(substr($0, 3)) "</li>"; next }
+    { end_list(); print "<p>" inline_html($0) "</p>" }
+    END { end_list() }
+  '
+}
+
 case "${1:-}" in
   info-plist)
     (($# == 2)) || usage
@@ -123,21 +155,16 @@ case "${1:-}" in
     ;;
   notes)
     (($# == 1)) || usage
-    # As Voxt 1.x's notes: headings, lists and paragraphs, the text escaped.
-    awk '
-      function esc(s) {
-        gsub(/&/, "\\&amp;", s); gsub(/</, "\\&lt;", s); gsub(/>/, "\\&gt;", s); gsub(/"/, "\\&quot;", s)
-        return s
-      }
-      function end_list() { if (in_list) print "</ul>"; in_list = 0 }
-      { sub(/^[ \t]+/, ""); sub(/[ \t\r]+$/, "") }
-      $0 == "" { end_list(); next }
-      /^### / { end_list(); print "<h3>" esc(substr($0, 5)) "</h3>"; next }
-      /^#### / { end_list(); print "<h4>" esc(substr($0, 6)) "</h4>"; next }
-      /^- / { if (!in_list) print "<ul>"; in_list = 1; print "<li>" esc(substr($0, 3)) "</li>"; next }
-      { end_list(); print "<p>" esc($0) "</p>" }
-      END { end_list() }
-    '
+    notes_html en
+    ;;
+  notes-by-locale)
+    (($# == 1)) || usage
+    release_body="$(cat)"
+    english_notes="$(notes_html en <<< "$release_body")"
+    [[ -n "$english_notes" ]] || fail "release notes must include English content before the first level-two heading"
+    chinese_notes="$(notes_html zh-Hans <<< "$release_body")"
+    jq -cn --arg en "$english_notes" --arg zh "$chinese_notes" \
+      '{en: $en} + (if $zh == "" then {} else {"zh-Hans": $zh} end)'
     ;;
   cask)
     (($# == 4)) || usage
