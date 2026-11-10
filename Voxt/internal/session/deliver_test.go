@@ -233,3 +233,24 @@ func TestDeliverUnconfirmed(t *testing.T) {
 		})
 	}
 }
+
+// TestCmuxPasteDoesNotShowFailureCard: a successful cmux paste can leave
+// its Accessibility value and selection at zero throughout verification.
+func TestCmuxPasteDoesNotShowFailureCard(t *testing.T) {
+	cmux := proto.App{PID: 1701, BundleID: "com.cmuxterm.app", Name: "cmux"}
+	empty := &proto.FieldState{Length: 0, Selection: &proto.TextRange{Location: 0, Length: 0}}
+	h := newHarness(t, &fakeFile{text: "hello"}, nil, nil)
+	h.text.focus = proto.FocusResult{PID: cmux.PID, App: &cmux, Role: "AXTextArea", Editable: true}
+	h.text.check = proto.CheckUnchanged
+	h.text.field = &proto.PasteField{Role: "AXTextArea", Before: empty, After: empty}
+	id, err := h.m.Start(StartRequest{Kind: store.KindTranscribe, Target: cmux})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.speak(id, 3)
+	end := h.rec.wait(t)
+	entries := h.hist.all()
+	if end.State != Done || !end.Inserted || end.Card || end.Delivery != deliver.ReasonNone || len(entries) != 1 || entries[0].Delivery != "insert" {
+		t.Errorf("end %+v, entries %+v: want a completed insert without a failure card", end, entries)
+	}
+}

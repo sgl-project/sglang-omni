@@ -430,6 +430,7 @@ type fakeText struct {
 	// secure the app with secure input on.
 	check  string
 	secure *proto.App
+	field  *proto.PasteField
 	// onFocus, when set, runs in each focus read before it answers; an
 	// error ends that read.
 	onFocus func(ctx context.Context) error
@@ -455,7 +456,7 @@ func (f *fakeText) Paste(_ context.Context, p proto.PasteParams) (proto.PasteRes
 	f.pasted = append(f.pasted, p.Text)
 	f.presses = append(f.presses, p.Press)
 	f.verify = append(f.verify, p.VerifyMS)
-	res := proto.PasteResult{Posted: true, Restored: true, SecureInput: f.secure}
+	res := proto.PasteResult{Posted: true, Restored: true, SecureInput: f.secure, Field: f.field}
 	if p.VerifyMS > 0 {
 		res.Check = cmp.Or(f.check, proto.CheckInserted)
 		if res.Check == proto.CheckUnchanged {

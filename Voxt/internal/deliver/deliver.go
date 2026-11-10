@@ -261,10 +261,17 @@ func insert(ctx context.Context, io TextIO, r Request) Result {
 		return res
 	}
 	if p.Check == proto.CheckUnchanged {
-		if p.Field != nil && p.Field.Role == "AXWebArea" && p.SecureInput == nil {
-			// A web page container often does not update AXValue after ⌘V; trust the paste.
-			res.Inserted = true
-			return res
+		if p.Field != nil && p.SecureInput == nil {
+			before, after := p.Field.Before, p.Field.After
+			cmuxEmpty := res.To.BundleID == "com.cmuxterm.app" && p.Field.Role == "AXTextArea" &&
+				before != nil && after != nil && before.Length == 0 && after.Length == 0 &&
+				(before.Selection == nil || *before.Selection == (proto.TextRange{})) &&
+				(after.Selection == nil || *after.Selection == (proto.TextRange{})) && !before.Marker && !after.Marker
+			// cmux's terminal reports an empty AXTextArea even after a successful paste.
+			if p.Field.Role == "AXWebArea" || cmuxEmpty {
+				res.Inserted = true
+				return res
+			}
 		}
 		res.Reason = ReasonUnconfirmed
 		if p.SecureInput != nil {

@@ -255,6 +255,43 @@ func TestInsertChecked(t *testing.T) {
 	}
 }
 
+// TestCmuxPasteWithEmptyAccessibilityValue: cmux can accept a paste while
+// reporting an empty AXTextArea and a stationary caret throughout the check.
+func TestCmuxPasteWithEmptyAccessibilityValue(t *testing.T) {
+	cmux := proto.App{PID: 1701, BundleID: "com.cmuxterm.app", Name: "cmux"}
+	empty := &proto.FieldState{Length: 0, Selection: &proto.TextRange{Location: 0, Length: 0}}
+	emptyWithoutSelection := &proto.FieldState{Length: 0}
+	withMarker := &proto.FieldState{Length: 0, Marker: true}
+	nonempty := &proto.FieldState{Length: 5, Selection: &proto.TextRange{Location: 5, Length: 0}}
+	secure := &proto.App{PID: 1702, BundleID: "com.apple.Terminal", Name: "Terminal"}
+	for _, tc := range []struct {
+		name     string
+		app      proto.App
+		field    *proto.PasteField
+		secure   *proto.App
+		inserted bool
+		reason   Reason
+	}{
+		{name: "cmux terminal", app: cmux, field: &proto.PasteField{Role: "AXTextArea", Before: empty, After: empty}, inserted: true},
+		{name: "cmux terminal without selection", app: cmux, field: &proto.PasteField{Role: "AXTextArea", Before: emptyWithoutSelection, After: emptyWithoutSelection}, inserted: true},
+		{name: "other app", app: slack, field: &proto.PasteField{Role: "AXTextArea", Before: empty, After: empty}, reason: ReasonUnconfirmed},
+		{name: "cmux text field", app: cmux, field: &proto.PasteField{Role: "AXTextField", Before: empty, After: empty}, reason: ReasonUnconfirmed},
+		{name: "cmux with a text marker", app: cmux, field: &proto.PasteField{Role: "AXTextArea", Before: withMarker, After: withMarker}, reason: ReasonUnconfirmed},
+		{name: "cmux readable area", app: cmux, field: &proto.PasteField{Role: "AXTextArea", Before: nonempty, After: nonempty}, reason: ReasonUnconfirmed},
+		{name: "cmux secure input", app: cmux, field: &proto.PasteField{Role: "AXTextArea", Before: empty, After: empty}, secure: secure, reason: ReasonSecureInput},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			focus := proto.FocusResult{PID: tc.app.PID, App: &tc.app, Role: tc.field.Role, Editable: true}
+			paste := proto.PasteResult{Posted: true, Check: proto.CheckUnchanged, CheckMS: 1000, Field: tc.field, Kept: true, PressSkipped: true, SecureInput: tc.secure}
+			io := &fakeIO{focus: []proto.FocusResult{focus}, paste: paste}
+			result := Insert(context.Background(), io, Request{Text: "test", Target: tc.app, VerifyMS: DefaultVerifyMS, Press: []proto.KeyPress{{Key: 36}}})
+			if result.Inserted != tc.inserted || result.Reason != tc.reason || result.Pressed || !result.Paste.Kept {
+				t.Errorf("result %+v; want inserted %v, reason %q, clipboard kept, no auto key", result, tc.inserted, tc.reason)
+			}
+		})
+	}
+}
+
 func TestDiagNotPasted(t *testing.T) {
 	res := Insert(context.Background(), &fakeIO{focus: []proto.FocusResult{{PID: 530, App: &textEdit, Error: "no focused element"}}}, Request{Text: "hi", Target: slack})
 	if d := res.Diag(); d != "focus no role in TextEdit (pid 530, value 0, no focused element); not pasted (notEditable)" {
