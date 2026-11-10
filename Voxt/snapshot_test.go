@@ -186,7 +186,11 @@ func snapshotsMain(t *testing.T, out string) {
 		a.sheetOpen = false
 		a.logsPanel = true
 		save("logs-panel")
-		a.logsPanel = false
+		a.logsQuery = "zzqx" // a filter that matches no line
+		save("logs-panel-no-match")
+		a.navigate("/logs")
+		save("page-logs-no-match")
+		a.logsQuery, a.logsPanel = "", false
 
 		// The foot of the sidebar (shell_notices.go): no notification,
 		// one, three stacked; then the rail's dot and its popover.
