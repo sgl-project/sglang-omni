@@ -41,7 +41,9 @@ def builder() -> Yue2RequestBuilder:
         mergeable_ranks={bytes([index]): index for index in range(256)},
         special_tokens={},
     )
-    return Yue2RequestBuilder(tokenizer, context_tokens=24576, vocab_size=184704)
+    return Yue2RequestBuilder(
+        tokenizer, context_tokens=24576, vocab_size=184704, max_rows=16
+    )
 
 
 def payload(
@@ -84,6 +86,14 @@ def test_audio_phase_pairs_guided_requests_with_a_twin(
     unguided = builder(payload(abc="X:1\nK:C\nCDEF"))
     assert unguided.phase == "semantic" and unguided.cfg_uncond is None
     assert unguided.req.eos_token_ids == {MUSIC_END}
+
+
+def test_guidance_needs_two_rows(builder: Yue2RequestBuilder) -> None:
+    builder.max_rows = 1
+    assert builder(payload(abc="X:1\nK:C\nCDEF")).cfg_uncond is None
+    with pytest.raises(ValueError, match="max_concurrency") as rejected:
+        builder(payload(cfg_scale=1.5))
+    assert generation_error_status_code(RuntimeError(str(rejected.value))) == 400
 
 
 def test_context_overflow_is_a_client_error(builder: Yue2RequestBuilder) -> None:
@@ -207,6 +217,38 @@ def test_retracting_one_cfg_row_requeues_the_pair(
     assert [id(req) for req in scheduler.waiting_queue] == [id(req) for req in rows]
     assert [id(req) for req in batch.reqs] == [id(single)]
     assert batch.release_req.call_count == 2 - len(retracted)
+
+
+@pytest.mark.parametrize("client_abort", [True, False])
+def test_retracted_row_with_an_aborted_twin(
+    builder: Yue2RequestBuilder, monkeypatch: pytest.MonkeyPatch, client_abort: bool
+) -> None:
+    guided, twin = cfg_pair(builder, "b")
+    twin.to_finish = object()
+    guided.to_finish = object() if client_abort else None
+    batch = SimpleNamespace(reqs=[twin] if client_abort else [], release_req=Mock())
+
+    def filter_batch(keep_indices: list[int]) -> None:
+        batch.reqs = [batch.reqs[index] for index in keep_indices]
+
+    batch.filter_batch = filter_batch
+    monkeypatch.setattr(
+        OmniScheduler,
+        "_add_request_to_queue",
+        lambda scheduler, req, is_retracted=False: scheduler.waiting_queue.append(req),
+    )
+    scheduler = object.__new__(Yue2Scheduler)
+    scheduler.waiting_queue = []
+    scheduler.decoding_batch = batch
+    scheduler.emit_request_error = Mock()
+    scheduler._add_request_to_queue(  # noqa: leading-underscore  # upstream spelling
+        guided, is_retracted=True
+    )
+    # A client abort requeues the pair whole; a twin SGLang aborted for memory fails the request.
+    queued = [guided, twin] if client_abort else []
+    assert [id(req) for req in scheduler.waiting_queue] == [id(req) for req in queued]
+    assert batch.reqs == []
+    assert scheduler.emit_request_error.call_count == (0 if client_abort else 1)
 
 
 def test_cfg_pair_above_the_prefill_budget_is_admitted_whole(

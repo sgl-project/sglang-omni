@@ -111,6 +111,7 @@ class Yue2EngineBuilder(TtsEngineBuilder[Yue2ARRequestData]):
             Yue2Tokenizer(Path(self.checkpoint_dir) / "qwen.tiktoken"),
             context_tokens=self.model_config.max_position_embeddings,
             vocab_size=self.model_config.vocab_size,
+            max_rows=self.max_running_requests,
         )
         return builder, builder.result
 

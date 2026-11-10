@@ -145,7 +145,7 @@ class Yue2Scheduler(OmniScheduler[Yue2ARRequestData]):
             leading_pair_tokens = 0
         deferred = queue[limit:]
         del queue[limit:]
-        if leading_pair_tokens > token_budget:
+        if leading_pair_tokens >= token_budget:
             # note (ruiling): SGLang admits only one request above the prefill budget; a CFG pair needs both.
             self.max_prefill_tokens = token_budget + leading_pair_tokens
         else:
@@ -266,14 +266,14 @@ class Yue2Scheduler(OmniScheduler[Yue2ARRequestData]):
         else:
             assert data.cfg_uncond is not None
             twin = data.cfg_uncond.req
-            if twin.to_finish is not None or twin.finished():
+            if twin.to_finish is not None and req.to_finish is None:
                 # note (ruiling): SGLang aborts the last row when even it does not fit the KV cache.
                 self.emit_request_error(
-                    req.rid,
-                    RuntimeError("YuE2 request: the KV cache cannot hold its CFG rows"),
+                    req.rid, RuntimeError("YuE2 CFG rows do not fit the KV cache")
                 )
                 pair = []
             else:
+                # note (ruiling): an aborted pair is requeued whole and finishes on its next step.
                 pair = [req, twin]
         for row in pair:
             index = next(

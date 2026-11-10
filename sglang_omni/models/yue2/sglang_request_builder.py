@@ -66,11 +66,16 @@ class Yue2RequestBuilder:
     """Build one SGLang request per generation phase; the score phase comes first."""
 
     def __init__(
-        self, tokenizer: Yue2Tokenizer, context_tokens: int, vocab_size: int
+        self,
+        tokenizer: Yue2Tokenizer,
+        context_tokens: int,
+        vocab_size: int,
+        max_rows: int,
     ) -> None:
         self.tokenizer = tokenizer
         self.context_tokens = context_tokens
         self.vocab_size = vocab_size
+        self.max_rows = max_rows
 
     def __call__(self, payload: StagePayload) -> Yue2ARRequestData:
         if payload.request_id.endswith((SCORE_SUFFIX, GUIDANCE_SUFFIX)):
@@ -84,6 +89,13 @@ class Yue2RequestBuilder:
             request = build_request(payload)
         except ValueError as error:
             raise ValueError(f"YuE2 request: {error}") from error
+        if request.guidance != 1 and self.max_rows < 2:
+            # note (ruiling): a guided request decodes as two rows and would wait forever for the second.
+            raise ValueError(
+                "YuE2 request: classifier-free guidance needs max_concurrency of at least 2"
+            )
+        else:
+            pass
         options = request.options
         if options.cot == "off":
             return self.semantic(payload, request, [], abc_truncated=False)
@@ -123,7 +135,9 @@ class Yue2RequestBuilder:
         prefix = self.tokenizer.prefix(request, abc_tokens)
         seed = derive_sampling_seed(SAMPLING_NAMESPACE, request.seed, "semantic")
         legacy_off = request.options.cot == "off"
-        if request.guidance != 1:
+        if request.guidance == 1:
+            unconditional = None
+        else:
             negative = self.tokenizer.negative_prefix(request, abc_tokens)
             unconditional = Yue2ARRequestData(
                 request=request,
@@ -139,8 +153,6 @@ class Yue2RequestBuilder:
                     MUSIC_END,
                 ),
             )
-        else:
-            unconditional = None
         return Yue2ARRequestData(
             request=request,
             sampling=sampling,
