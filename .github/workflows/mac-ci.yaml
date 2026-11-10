@@ -125,13 +125,20 @@ jobs:
           fi
           ccache --version | head -1
 
-      # MLX comes prebuilt from its wheel: this keeps the objects of the runtime's own C and C++ and of its FetchContent dependencies.
+      # This keeps the objects of the runtime's own C and C++ and of its FetchContent dependencies.
       - name: Restore the compiler cache
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/ccache
           key: voxt-native-ccache-${{ env.DEVELOPER_DIR }}-${{ github.run_id }}
           restore-keys: voxt-native-ccache-${{ env.DEVELOPER_DIR }}-
+
+      # build_runtime.sh builds MLX from the commit it pins, Metal kernels included, which ccache does not keep: this keeps the installed build.
+      - name: Restore the MLX build
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/runtime-build/mlx
+          key: voxt-native-mlx-${{ env.DEVELOPER_DIR }}-${{ hashFiles('sglang_omni_mlx/native/scripts/build_runtime.sh') }}
 
       - name: Build the runtime and the stub server
         env:

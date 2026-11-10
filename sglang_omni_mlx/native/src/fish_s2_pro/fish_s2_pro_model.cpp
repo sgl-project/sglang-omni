@@ -253,7 +253,7 @@ FishS2ProModel::Forward(const mx::array &x, const TransformerConfig &config,
         caches[layer].UpdateAndFetch(rotate(keys), values);
     const mx::array attended = mx::fast::scaled_dot_product_attention(
         rotate(queries), cached_keys, cached_values, scale,
-        length > 1 ? "causal" : "");
+        /*window_size=*/-1, length > 1 ? "causal" : "");
     hidden = mx::add(
         hidden,
         checkpoint_.Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),

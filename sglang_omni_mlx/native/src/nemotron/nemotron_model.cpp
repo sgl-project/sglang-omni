@@ -202,7 +202,8 @@ mx::array NemotronModel::RelativeAttention(const mx::array &queries,
   // Note (Dayuxiaoshui): the position scores ride in as the additive mask, so
   // the fused kernel adds them to the content scores before the softmax.
   const mx::array attended = mx::fast::scaled_dot_product_attention(
-      content_queries, keys, values, scale, "array", position_scores);
+      content_queries, keys, values, scale, /*window_size=*/-1, "array",
+      position_scores);
   return checkpoint_.Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
                                         {1, query_count, config_.model_width}),
                             prefix + ".linear_out");

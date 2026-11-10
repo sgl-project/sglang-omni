@@ -109,7 +109,7 @@ The chat response keeps the generated answer. Set `modalities` to `["text", "aud
 
 ## Apple Silicon: native MLX
 
-The standalone `ming3_audio_server` serves `/v1/chat/completions` on an Apple Silicon Mac using [Ming-3.0-audio-tiny](https://huggingface.co/inclusionAI/Ming-3.0-audio-tiny). Inference runs in C++ with the native runtime's MLX 0.32.3 toolchain, without Python, PyTorch or CUDA.
+The standalone `ming3_audio_server` serves `/v1/chat/completions` on an Apple Silicon Mac using [Ming-3.0-audio-tiny](https://huggingface.co/inclusionAI/Ming-3.0-audio-tiny). Inference runs in C++ with the native runtime's pinned MLX toolchain, without Python, PyTorch or CUDA.
 
 ```bash
 python sglang_omni_mlx/native/ci/provision_models.py "$MING3_AUDIO_DATA" \

@@ -205,13 +205,15 @@ mx::array Qwen3Decoder::Layer(const mx::array &x, int layer, KVCache &cache,
   std::optional<mx::array> attended;
   if (rotary.has_value() && rotary->mask.has_value()) {
     attended = mx::fast::scaled_dot_product_attention(
-        queries, cached_keys, cached_values, scale, "", *rotary->mask);
+        queries, cached_keys, cached_values, scale, /*window_size=*/-1, "",
+        *rotary->mask);
   } else if (rotary.has_value()) {
     attended = mx::fast::scaled_dot_product_attention(queries, cached_keys,
                                                       cached_values, scale);
   } else {
     attended = mx::fast::scaled_dot_product_attention(
-        queries, cached_keys, cached_values, scale, length > 1 ? "causal" : "");
+        queries, cached_keys, cached_values, scale, /*window_size=*/-1,
+        length > 1 ? "causal" : "");
   }
   const mx::array hidden = mx::add(
       x, checkpoint_.Linear(mx::reshape(mx::transpose(*attended, {0, 2, 1, 3}),
@@ -398,7 +400,7 @@ mx::array Qwen3Decoder::BatchLayer(const mx::array &x, int layer,
   const mx::array attended = mx::fast::scaled_dot_product_attention(
       queries, cached_keys, cached_values,
       static_cast<float>(std::pow(static_cast<double>(head_dim), -0.5)),
-      "array", mask);
+      /*window_size=*/-1, "array", mask);
   const mx::array hidden = mx::add(
       x, checkpoint_.Linear(
              mx::reshape(mx::transpose(attended, {0, 2, 1, 3}), {batch, 1, -1}),

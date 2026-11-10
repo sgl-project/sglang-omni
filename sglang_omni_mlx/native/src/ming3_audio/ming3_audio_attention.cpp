@@ -112,7 +112,7 @@ mx::array Model::LatentAttention(const mx::array &hidden,
       mx::transpose(mx::fast::scaled_dot_product_attention(
                         queries, cached_keys, cached_values,
                         1.0f / std::sqrt(plain_width + rotary_width),
-                        length > 1 ? "causal" : ""),
+                        /*window_size=*/-1, length > 1 ? "causal" : ""),
                     {0, 2, 1, 3});
   const auto gate = mx::astype(
       mx::sigmoid(mx::astype(checkpoint_.Linear(hidden, prefix + ".g_proj"),

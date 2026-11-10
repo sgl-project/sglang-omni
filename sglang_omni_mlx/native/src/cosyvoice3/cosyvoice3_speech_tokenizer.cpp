@@ -108,7 +108,8 @@ mx::array SpeechTokenizer::Block(const mx::array &x, int layer,
   const mx::array attention = mx::fast::scaled_dot_product_attention(
       mx::multiply(mx::transpose(q, {0, 2, 1, 3}), scale),
       mx::multiply(mx::transpose(k, {0, 2, 1, 3}), scale),
-      mx::transpose(v, {0, 2, 1, 3}), 1.0f, "array", attention_mask);
+      mx::transpose(v, {0, 2, 1, 3}), 1.0f, /*window_size=*/-1, "array",
+      attention_mask);
   const mx::array attended = mx::reshape(mx::transpose(attention, {0, 2, 1, 3}),
                                          {1, positions, kHiddenSize});
   const mx::array after_attention = mx::add(

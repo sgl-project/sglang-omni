@@ -255,7 +255,7 @@ mx::array AudioCodec::TransformerLayer(const mx::array &x,
   const mx::array attended = mx::fast::scaled_dot_product_attention(
       queries, keys, values,
       static_cast<float>(std::pow(static_cast<double>(head_dim_), -0.5)),
-      "array", mx::expand_dims(bias, 0));
+      /*window_size=*/-1, "array", mx::expand_dims(bias, 0));
   const mx::array hidden = mx::add(
       x, mx::multiply(checkpoint_.Weight(prefix + ".attention_scale"),
                       checkpoint_.Linear(

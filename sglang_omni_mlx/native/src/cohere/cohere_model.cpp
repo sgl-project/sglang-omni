@@ -426,10 +426,11 @@ mx::array CohereModel::DecoderAttention(
       static_cast<float>(config_.decoder_width / config_.decoder_head_count),
       -0.5f);
   const mx::array attended =
-      mask.has_value() ? mx::fast::scaled_dot_product_attention(
-                             queries, keys, values, scale, "", *mask)
-                       : mx::fast::scaled_dot_product_attention(queries, keys,
-                                                                values, scale);
+      mask.has_value()
+          ? mx::fast::scaled_dot_product_attention(
+                queries, keys, values, scale, /*window_size=*/-1, "", *mask)
+          : mx::fast::scaled_dot_product_attention(queries, keys, values,
+                                                   scale);
   return Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
                             {batch, length, config_.decoder_width}),
                 prefix + ".out_proj");

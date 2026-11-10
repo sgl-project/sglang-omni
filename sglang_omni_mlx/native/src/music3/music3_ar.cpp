@@ -62,7 +62,7 @@ mx::array Model::Depth(const mx::array &embeddings) const {
     const mx::array attended = mx::fast::scaled_dot_product_attention(
         project("to_q"), project("to_k"), project("to_v"),
         static_cast<float>(std::pow(static_cast<double>(head_dim), -0.5)),
-        "causal");
+        /*window_size=*/-1, "causal");
     hidden = hidden + checkpoint_.Linear(
                           mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
                                       {2, length, hidden_size}),

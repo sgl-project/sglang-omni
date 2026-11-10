@@ -11,7 +11,7 @@ How to build Voxt from source, sign it during development and run its tests. To 
 
 ## Build from source
 
-Needs Go 1.27.1 (`GOTOOLCHAIN=auto` fetches it) and, to build the app, an Apple silicon Mac with macOS 15 or later, Xcode (the helper), and [uv](https://docs.astral.sh/uv/) or Python 3 for the Omni runtime's build tools (`scripts/build-omni.sh` builds `sglang_omni_mlx/native` with its pinned MLX; CMake fetches its C++ dependencies from GitHub, through the shell's `https_proxy` if needed). Run from `Voxt/`:
+Needs Go 1.27.1 (`GOTOOLCHAIN=auto` fetches it) and, to build the app, an Apple silicon Mac with macOS 15 or later, Xcode (the helper), and [uv](https://docs.astral.sh/uv/) or Python 3 for the Omni runtime's build tools (`scripts/build-omni.sh` builds `sglang_omni_mlx/native` and, the first time, the MLX commit it pins; git and CMake fetch MLX and the C++ dependencies from GitHub and metal-cpp from developer.apple.com, through the shell's `https_proxy` if needed). Run from `Voxt/`:
 
 ```sh
 scripts/build-helper.sh              # the Swift helper, into resources/darwin-arm64/helper/

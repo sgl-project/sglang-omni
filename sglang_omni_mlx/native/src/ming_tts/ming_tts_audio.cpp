@@ -102,8 +102,8 @@ mx::array AudioTransformer::Forward(mx::array hidden,
     }
     const mx::array attended = mx::fast::scaled_dot_product_attention(
         queries, keys, values,
-        static_cast<float>(std::pow(static_cast<double>(head_dim), -0.5)), "",
-        mask);
+        static_cast<float>(std::pow(static_cast<double>(head_dim), -0.5)),
+        /*window_size=*/-1, "", mask);
     cache.offset += length;
     const int trim =
         windows_[layer] > 0 ? std::max(0, keys.shape(2) - windows_[layer]) : 0;
