@@ -22,7 +22,10 @@ SERVED_KINDS = {
     "qwen3_tts_server": ("qwen3_tts",),
     "cosyvoice3_server": ("cosyvoice3",),
     "fishaudio_drama3_server": ("fishaudio_drama3",),
+    "fish_s2_pro_server": ("fish_s2_pro",),
     "music3_server": ("minimax_music3",),
+    "ming3_audio_server": ("ming3_audio",),
+    "ming_tts_server": ("ming_tts",),
 }
 SYSTEM_LIBRARY_PREFIXES = ("/usr/lib/", "/System/Library/")
 
@@ -106,11 +109,19 @@ def test_a_load_without_a_checkpoint_reports_failed(
         ("qwen3_asr_server", ("--first-decode-ms", "-1"), "--first-decode-ms must not be negative"),
         ("qwen3_asr_server", ("--draft-bits", "-1"), "--draft-bits must be 4, 6 or 8"),
         ("qwen3_asr_server", ("--draft-bits", "8"), "--draft-bits needs --draft-model-path"),
+        ("moss_transcribe_diarize_server", ("--draft-bits", "-1"), "--draft-bits must be 4, 6 or 8"),
+        ("moss_transcribe_diarize_server", ("--draft-bits", "8"), "--draft-bits needs --draft-model-path"),
+        ("qwen3_asr_server", ("--cache-limit-mb", "-2"), "--cache-limit-mb must be 0 to 1073741824"),
+        ("qwen3_asr_server", ("--max-batch", "0"), "--max-batch must be at least 1"),
+        ("qwen3_asr_server", ("--max-batch", "-3"), "--max-batch must be at least 1"),
         ("music3_server", ("--request-timeout-s", "0"), "--request-timeout-s must be above 0"),
         ("music3_server", ("--stage-offload-components", "ar"), "requires both ar,dit"),
         ("music3_server", ("--stage-offload-components", "ar,dit,other"), "requires both ar,dit"),
         ("music3_server", ("--stage-offload-components", ""), "requires both ar,dit"),
         ("cosyvoice3_server", ("--max-queued-requests", "-1"), "--max-queued-requests must not be negative"),
+        ("ming3_audio_server", ("--context-length", "0"), "--context-length must be a positive integer"),
+        ("fish_s2_pro_server", ("--max-queued-requests", "-1"), "--max-queued-requests must not be negative"),
+        ("fish_s2_pro_server", ("--request-timeout-s", "0"), "--request-timeout-s must be above 0"),
     ],
 )  # fmt: skip
 def test_invalid_server_flags_exit_before_the_load(
@@ -135,6 +146,7 @@ def test_invalid_server_flags_exit_before_the_load(
             for penalty in ("0", "-1", "nan", "inf")
         ],
         ("music3_synthesize", ("--stage-offload-components", "dit"), "requires both ar,dit"),
+        ("ming3_audio_chat", ("--context-length", "0"), "--context-length must be a positive integer"),
     ],
 )  # fmt: skip
 def test_invalid_tool_flags_fail_before_the_load(

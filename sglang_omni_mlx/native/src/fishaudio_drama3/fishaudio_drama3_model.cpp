@@ -9,10 +9,6 @@ namespace mx = mlx::core;
 
 namespace {
 
-// Tensors of the backbone, the semantic head and the tower; the checkpoint's
-// codec.safetensors loads into AudioCodec.
-constexpr const char *kModelPrefixes[] = {"backbone.", "semantic_head.",
-                                          "tower."};
 // The defaults the reference takes for settings a config leaves out.
 constexpr double kDefaultPartialRotaryFactor = 0.25;
 constexpr float kDefaultRopeTheta = 100000.0f;
@@ -89,27 +85,17 @@ nlohmann::json CheckedConfig(const std::filesystem::path &model_directory) {
   return config;
 }
 
-omni_common::WeightMap
-LoadModelWeights(const std::filesystem::path &model_directory) {
-  omni_common::WeightMap weights =
-      omni_common::LoadSafetensors(model_directory);
-  std::erase_if(weights, [](const auto &named) {
-    for (const char *prefix : kModelPrefixes) {
-      if (named.first.starts_with(prefix)) {
-        return false;
-      } else {
-      }
-    }
-    return true;
-  });
-  return weights;
-}
-
 } // namespace
 
-Drama3Model::Drama3Model(const std::filesystem::path &model_directory)
+Drama3Model::Drama3Model(const std::filesystem::path &model_directory,
+                         bool offload_experts)
     : config_(CheckedConfig(model_directory)),
-      checkpoint_(LoadModelWeights(model_directory), config_),
+      expert_cache_(offload_experts ? std::make_unique<ExpertCache>(
+                                          model_directory, config_)
+                                    : nullptr),
+      checkpoint_(expert_cache_ ? expert_cache_->TakeResidentWeights()
+                                : LoadDrama3Weights(model_directory, false),
+                  config_),
       tokenizer_(model_directory), codec_(model_directory),
       candidate_ids_(mx::array(0)) {
   const nlohmann::json &text = config_.at("text_config");

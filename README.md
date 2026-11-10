@@ -29,10 +29,12 @@
 
 ## News
 
+- [2026/11] 🔁 OpenRSI × SGLang-Omni: recursive self-improvement (RSI) scaled to production AI infrastructure, with 14 merged PRs across 8 speech and omni models and +7.6% to +326.5% throughput on H100. \[[Blog](https://index.openrsi.foundation/blog/2026/openrsi-sglang-omni/)\]
+- [2026/11] 🎙️ [Voxt 2.0](https://voxt.actnow.dev/) redefines open-source voice interaction on Mac: voice input, any-to-any translation, and a local AI assistant, with a 92% shorter wait after long dictation than 1.x. \[[Download](https://sgl-project.github.io/sglang-omni/get_started/voxt.html)\] \[[Changelog](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/CHANGELOG.md)\]
 - [2026/10] 🗺️ A unified runtime for interactive intelligence: native full-duplex models, turn-based multimodal models, and cascaded systems, coordinated through composable graphs and persistent sessions. \[[Blog](https://www.sglang.io/blog/omni-interactive-runtime)\]
 - [2026/10] 🚀 SGLang-Omni **v0.2.0** is on [PyPI](https://pypi.org/project/sglang-omni/). Install with `uv pip install --prerelease=allow "sglang-omni==0.2.0"`. \[[Installation](https://sgl-project.github.io/sglang-omni/get_started/installation.html)\]
 - [2026/10] 🐟 Day-0 support for [Fish Audio Drama 3](https://huggingface.co/fishaudio/drama-3): multi-speaker text-to-speech with voice cloning and natural-language control, streamed on `/v1/audio/speech`. \[[Blog](https://www.sglang.io/blog/spg-topology)\] \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html)\] \[[Technical Report](https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf)\]
-- [2026/10] 🎙️ Introducing [Voxt](https://github.com/sgl-project/sglang-omni/tree/main/Voxt), an open-source voice input tool for Mac, now integrating SGLang-Omni for faster local speech recognition on Apple Silicon. Combine ASR with LLM-based text refinement and personal system prompts for accurate technical terminology and personalized voice input, with fully local or remote inference options. [[Download](https://github.com/sgl-project/sglang-omni/releases#release-voxt-v1.16.0)][[Demo]](https://x.com/GenAI_is_real/status/2109419016205017181)
+- [2026/10] 🎙️ Introducing [Voxt](https://github.com/sgl-project/sglang-omni/tree/main/Voxt), an open-source voice input tool for Mac, now integrating SGLang-Omni for faster local speech recognition on Apple Silicon. Combine ASR with LLM-based text refinement and personal system prompts for accurate technical terminology and personalized voice input, with fully local or remote inference options. [[Download](https://sgl-project.github.io/sglang-omni/get_started/voxt.html)][[Demo]](https://x.com/GenAI_is_real/status/2109419016205017181)
 
 <details>
 <summary>Earlier news</summary>
@@ -73,7 +75,7 @@ SGLang-Omni is a multi-stage serving runtime for omni, speech, and TTS models. I
 |---------|--------|-------|
 | **NVIDIA CUDA** | Supported | Default backend with full model coverage. |
 | **Apple Silicon** | Experimental | Qwen3-ASR runs through Torch MPS on macOS arm64. Install with [`install.sh`](./install.sh) and follow the [Qwen3-ASR guide](./docs/cookbook/qwen3_asr.md#apple-silicon). |
-| **Intel GPU (XPU)** | Experimental | Intel Arc GPUs via PyTorch XPU. **Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, ZONOS2, Audar-TTS, Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni, Ming-Omni-TTS, Nemotron VoiceChat, PersonaPlex, AuK/AuK-Flash and dots.tts serve end-to-end**. The [Intel XPU guide](./docs/get_started/installation_xpu.md) has the install steps, each model's launch command and how many cards it needs; the backend is auto-detected. |
+| **Intel GPU (XPU)** | Supported | Intel Arc GPUs via PyTorch XPU. **Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, ZONOS2, Audar-TTS, Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni, Ming-Omni-TTS, Nemotron VoiceChat, PersonaPlex, AuK/AuK-Flash and dots.tts serve end-to-end**. The [Intel XPU guide](./docs/other_platforms/installation_xpu.md) has the install steps, each model's launch command and how many cards it needs; the backend is auto-detected. |
 
 Additional model guides, including experimental and research-oriented paths, are available in the [Cookbook](https://sgl-project.github.io/sglang-omni/).
 

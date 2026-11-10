@@ -1,0 +1,298 @@
+package main
+
+// The menu bar icon (AudioSmith's dictation tray, for
+// VoxtNew): Start transcribing, Paste the last result, the microphones
+// (a click puts one first in Settings → Audio's list), the last three
+// results (a click copies one), Open VoxtNew, Settings, Quit. With
+// Settings → General → "Keep running when the window closes", closing
+// the window hides it, so the shortcuts keep working; the Dock icon or
+// the menu brings it back. Start transcribing records for the app in
+// front (as the shortcut does) and turns into Stop while a session runs;
+// the icon (Voxt's microphone) shows a recording dot meanwhile.
+
+import (
+	"context"
+	"strings"
+	"time"
+
+	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/transfer"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/trayicon"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
+)
+
+// trayState is the menu bar icon.
+type trayState struct {
+	tray     *mygo.Tray
+	trayLive bool     // the icon shows the recording one
+	quitting bool     // Quit was chosen: closing the window must not hide it
+	recent   []string // the last results, newest first (trayRecentN at most)
+	// copyText puts text on the clipboard (mygo.Clipboard); tests record.
+	copyText func(string) error
+	// life is the main window as the window life uses it: a.win, or a fake in tests.
+	life lifeWindow
+}
+
+// trayRecentN is how many results the menu lists (each as wide as
+// uitext.TrayRecentWidth); trayTipRunes how much of one the tooltip shows.
+const (
+	trayRecentN  = 3
+	trayTipRunes = 400
+)
+
+// openTray makes the menu bar icon when the settings want one; it runs in
+// App.WhenReady.
+func (a *app) openTray() { a.applyTray() }
+
+// applyTray shows or removes the icon as Settings → General says.
+func (a *app) applyTray() {
+	if !a.hasMenu {
+		return
+	}
+	if !a.prefs.General.MenuBar {
+		a.closeTray()
+		return
+	}
+	if a.tray != nil {
+		return
+	}
+	live := a.trayShowsRecording()
+	// Voxt's microphone, a 36 px template image MyGo shows 18 pt tall
+	// (Voxt: 18×18 pt, template); while recording it has a dot.
+	t, err := mygo.NewTray(mygo.TrayOptions{Icon: trayicon.Icon(live), IconIsTemplate: true, ToolTip: a.trayToolTip()})
+	if err != nil {
+		a.toast(i18n.T("The menu bar icon could not be made: %v", err))
+		return
+	}
+	a.tray, a.trayLive = t, live
+	a.buildTrayMenu()
+	a.loadTrayRecent()
+}
+
+func (a *app) closeTray() {
+	if a.tray != nil {
+		a.tray.Destroy()
+		a.tray = nil
+	}
+}
+
+// loadTrayRecent reads the last results from the history for the menu,
+// then builds it again; at start and after the history changed.
+func (a *app) loadTrayRecent() {
+	if a.tray == nil && a.win != nil {
+		return // no menu to show them in
+	}
+	h := a.lib.store.History()
+	a.async(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		es, err := h.List(ctx, store.HistoryQuery{Limit: 20})
+		if err != nil {
+			return
+		}
+		a.post(func() {
+			a.recent = uitext.RecentResults(es, trayRecentN)
+			a.buildTrayMenu()
+		})
+	})
+}
+
+// trayTip is a result as its item's tooltip shows it: whole, unless very
+// long.
+func trayTip(text string) string {
+	text = strings.TrimSpace(text)
+	if r := []rune(text); len(r) > trayTipRunes {
+		return strings.TrimSpace(string(r[:trayTipRunes])) + "…"
+	}
+	return text
+}
+
+// buildTrayMenu builds the icon's menu in the current language, and
+// shows the recording icon while a session runs.
+func (a *app) buildTrayMenu() {
+	if a.tray == nil {
+		return
+	}
+	live := a.trayShowsRecording()
+	if live != a.trayLive {
+		if a.tray.SetIcon(trayicon.Icon(live), true) == nil {
+			a.trayLive = live
+		}
+	}
+	a.tray.SetToolTip(a.trayToolTip())
+	a.tray.SetMenu(mygo.NewMenu(a.trayItems()))
+}
+
+// trayShowsRecording is whether the menu bar icon uses the recording dot.
+func (a *app) trayShowsRecording() bool {
+	return a.sess.State.Live() || a.meetingActive()
+}
+
+func (a *app) trayToolTip() string {
+	if a.meetingActive() {
+		if a.meetSnap.State == meeting.StatePaused {
+			return i18n.T("Meeting paused")
+		}
+		return i18n.T("Meeting in progress")
+	}
+	if a.sess.State.Live() {
+		return i18n.T("Transcribing")
+	}
+	return "Voxt"
+}
+
+// trayItems are the menu's items.
+func (a *app) trayItems() []*mygo.MenuItem {
+	act := func(fn func()) func(*mygo.MenuItem, *mygo.Window) {
+		return func(*mygo.MenuItem, *mygo.Window) { a.post(fn) }
+	}
+	f := a.prefs.Features
+	start := i18n.T("Start transcribing")
+	if a.sess.State.Live() {
+		start = i18n.T("Stop transcribing")
+	}
+	if len(f.Transcribe.Hotkeys) > 0 {
+		start += "    " + uitext.HotkeyGlyphs(f.Transcribe.Hotkeys[0].Keys)
+	}
+	items := []*mygo.MenuItem{
+		{Label: start, Click: act(a.toggleTranscribe)},
+		{Label: i18n.T("Paste the last result") + "    " + uitext.HotkeyGlyphs(f.PasteLast.Keys), Click: act(func() { a.pasteLast(a.front) })},
+		{Label: i18n.T("Microphone"), Submenu: a.trayMicrophones(act)},
+	}
+	if a.meetingEnabled() {
+		mt := i18n.T("Start meeting")
+		if a.meetingActive() {
+			mt = i18n.T("End meeting")
+		}
+		items = append(items, &mygo.MenuItem{Label: mt, Click: act(func() {
+			if a.meetingActive() {
+				a.meetingFinish()
+			} else {
+				a.startMeeting()
+			}
+		})})
+	}
+	if len(a.recent) > 0 {
+		items = append(items, mygo.Separator(), &mygo.MenuItem{Label: i18n.T("Recent results"), Disabled: true})
+		for _, text := range a.recent {
+			items = append(items, &mygo.MenuItem{Label: uitext.TrayLabel(text), ToolTip: trayTip(text), Click: act(func() { a.copyRecent(text) })})
+		}
+	}
+	items = append(items,
+		mygo.Separator(),
+		&mygo.MenuItem{Label: i18n.T("Open Voxt"), Click: act(a.showMainWindow)},
+		&mygo.MenuItem{Label: i18n.T("Settings…"), Click: act(func() { a.showMainWindow(); a.navigate("/settings") })},
+	)
+	items = append(items, a.updateMenuItems(act)...) // updates.go
+	return append(items,
+		mygo.Separator(),
+		&mygo.MenuItem{Label: i18n.T("Quit Voxt"), Click: act(func() { a.quitting = true; mygo.App.Quit() })},
+	)
+}
+
+// trayMicrophones are the Microphone submenu's items: the inputs the
+// helper listed last, the one a recording would use checked.
+func (a *app) trayMicrophones(act func(func()) func(*mygo.MenuItem, *mygo.Window)) []*mygo.MenuItem {
+	if len(a.audio.devices) == 0 {
+		return []*mygo.MenuItem{{Label: i18n.T("No microphone available"), Disabled: true}}
+	}
+	inUse := deviceInUse(a.prefs.Audio.Devices, a.audio.devices)
+	var items []*mygo.MenuItem
+	for _, d := range a.audio.devices {
+		items = append(items, &mygo.MenuItem{Label: d.Name, Type: mygo.MenuItemRadio, Checked: d.ID == inUse, Click: act(func() { a.useDevice(d) })})
+	}
+	return items
+}
+
+// copyRecent copies a recent result (the menu bar).
+func (a *app) copyRecent(text string) {
+	cp := a.copyText
+	if cp == nil {
+		cp = func(s string) error { return mygo.Clipboard.Write(transfer.TextData(s)) }
+	}
+	if err := cp(text); err != nil {
+		a.toast(i18n.T("Could not copy: %v", err))
+	}
+}
+
+// showMainWindow brings the main window back (it may be hidden in the
+// menu bar).
+func (a *app) showMainWindow() {
+	if a.life != nil {
+		a.life.Show()
+	}
+}
+
+// connectWindowLife keeps VoxtNew in the menu bar when its window closes
+// (the setting, while the menu bar icon shows), and quits otherwise; it
+// reads the permissions again whenever VoxtNew comes to the front
+// (System Settings may have changed them).
+func (a *app) connectWindowLife() {
+	if a.life == nil {
+		return
+	}
+	a.life.OnClose(a.windowClosing)
+	a.life.OnClosed(func() { mygo.App.Quit() })
+	mygo.App.OnActivate(func(bool) { a.reopenWindow() })
+	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { a.quitting = true })
+	mygo.App.OnDidBecomeActive(func() {
+		a.post(a.recheckPermissions)
+		a.post(a.familyActivated) // family.go: the family's files again (notifications are hints)
+		a.post(a.checkAnnouncements)
+	})
+}
+
+// lifeWindow is the main window as the window life uses it: a.win, or a
+// fake in tests.
+type lifeWindow interface {
+	Show()
+	Hide()
+	Close()
+	IsVisible() bool
+	OnClose(fn func(*mygo.CloseEvent)) (off func())
+	OnClosed(fn func()) (off func())
+}
+
+// windowClosing runs when the red × or ⌘W closes the window: with the
+// setting and the menu bar icon, the window hides and VoxtNew keeps running.
+func (a *app) windowClosing(e *mygo.CloseEvent) {
+	if a.prefs.General.CloseToTray && !a.quitting && a.tray != nil {
+		e.PreventDefault()
+		a.life.Hide()
+	}
+}
+
+// closeWindow is ⌘W (the Window menu): it closes the window as the red ×
+// does, so windowClosing decides.
+func (a *app) closeWindow() {
+	if a.life != nil {
+		a.life.Close()
+	}
+}
+
+// reopenWindow shows the window again when VoxtNew is opened (the Dock icon,
+// or the menu bar).
+func (a *app) reopenWindow() {
+	if !a.life.IsVisible() {
+		a.life.Show()
+	}
+}
+
+// setDockShown shows VoxtNew in the Dock or leaves it out (an accessory
+// app); tests replace it. A test app has no Dock.
+var setDockShown = func(a *app, shown bool) {
+	if !a.hasMenu {
+		return
+	}
+	p := mygo.ActivationPolicyAccessory
+	if shown {
+		p = mygo.ActivationPolicyRegular
+	}
+	mygo.App.SetActivationPolicy(p)
+}
+
+// applyDock puts VoxtNew in the Dock or not, as the settings say.
+func (a *app) applyDock() { setDockShown(a, !a.prefs.General.HideDock) }
