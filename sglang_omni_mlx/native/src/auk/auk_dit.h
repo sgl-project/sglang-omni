@@ -31,6 +31,18 @@ public:
                           const std::function<void()> &check_cancelled) const;
 
 private:
+  struct Config {
+    int hidden_channels;
+    int head_count;
+    int head_channels;
+    int text_channels;
+    int latent_channels;
+    int feed_forward_channels;
+    int joint_layer_count;
+    int single_layer_count;
+    bool attention_mask_enabled;
+    static Config Read(const nlohmann::json &architecture, int latent_channels);
+  };
   void ValidateWeights() const;
   struct PreparedReference {
     std::optional<mlx::core::array> conditional;
@@ -51,15 +63,11 @@ private:
                            const PreparedReference &reference,
                            bool classifier_free_guidance) const;
 
-  nlohmann::json config_;
+  Config config_;
   omni_common::Checkpoint checkpoint_;
   // fast::rope takes each pair's period, the reciprocal of inv_freq.
   mlx::core::array rotary_periods_;
   mlx::core::Dtype dtype_;
-  int head_count_;
-  int joint_layer_count_;
-  int single_layer_count_;
-  bool attention_mask_enabled_;
 };
 
 } // namespace auk

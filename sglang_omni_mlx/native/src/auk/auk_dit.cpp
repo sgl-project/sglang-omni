@@ -286,17 +286,17 @@ mx::array DiT::Predict(const mx::array &latents,
   const std::optional<mx::array> joint_mask =
       audio_mask ? std::optional(mx::concatenate({*audio_mask, text_mask}, 1))
                  : std::nullopt;
-  for (int layer = 0; layer < joint_layer_count_; ++layer) {
+  for (int layer = 0; layer < config_.joint_layer_count; ++layer) {
     const std::string prefix =
         "transformer.transformer_blocks." + std::to_string(layer);
     const auto text_modulation =
         Modulate(checkpoint_, text, time_embedding, prefix + ".attn_norm_c");
     const auto audio_modulation =
         Modulate(checkpoint_, audio, time_embedding, prefix + ".attn_norm_x");
-    const auto attended =
-        Attention(checkpoint_, audio_modulation.normalized,
-                  text_modulation.normalized, prefix + ".attn", rotary_periods_,
-                  head_count_, joint_mask, attention_mask_enabled_);
+    const auto attended = Attention(
+        checkpoint_, audio_modulation.normalized, text_modulation.normalized,
+        prefix + ".attn", rotary_periods_, config_.head_count, joint_mask,
+        config_.attention_mask_enabled);
     text = FeedForward(checkpoint_,
                        text + text_modulation.attention_gate * attended[1],
                        text_modulation, prefix + ".ff_c");
@@ -308,14 +308,15 @@ mx::array DiT::Predict(const mx::array &latents,
   const std::optional<mx::array> single_mask =
       audio_mask ? std::optional(mx::concatenate({text_mask, *audio_mask}, 1))
                  : std::nullopt;
-  for (int layer = 0; layer < single_layer_count_; ++layer) {
+  for (int layer = 0; layer < config_.single_layer_count; ++layer) {
     const std::string prefix =
         "transformer.single_transformer_blocks." + std::to_string(layer);
     const auto modulation =
         Modulate(checkpoint_, audio, time_embedding, prefix + ".attn_norm");
-    const auto attended = Attention(
-        checkpoint_, modulation.normalized, std::nullopt, prefix + ".attn",
-        rotary_periods_, head_count_, single_mask, attention_mask_enabled_);
+    const auto attended =
+        Attention(checkpoint_, modulation.normalized, std::nullopt,
+                  prefix + ".attn", rotary_periods_, config_.head_count,
+                  single_mask, config_.attention_mask_enabled);
     audio = FeedForward(checkpoint_,
                         audio + modulation.attention_gate * attended[0],
                         modulation, prefix + ".ff");
@@ -339,8 +340,7 @@ mx::array DiT::Sample(const mx::array &conditioning,
                       const mx::array &times, float guidance_strength,
                       const std::function<void()> &check_cancelled) const {
   if (noise.ndim() != 2 || noise.shape(0) < 1 ||
-      noise.shape(1) !=
-          checkpoint_.Weight("transformer.proj_out.weight").shape(0)) {
+      noise.shape(1) != config_.latent_channels) {
     throw std::invalid_argument(
         "AuK noise must contain positive frames and latent channels");
   } else {

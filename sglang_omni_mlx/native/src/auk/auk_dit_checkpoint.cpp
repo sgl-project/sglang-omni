@@ -68,85 +68,98 @@ void RequireBlock(const Checkpoint &checkpoint, const std::string &prefix,
 
 } // namespace
 
+DiT::Config DiT::Config::Read(const nlohmann::json &architecture,
+                              int latent_channels) {
+  const int hidden_channels = architecture.at("dim").get<int>();
+  return {
+      .hidden_channels = hidden_channels,
+      .head_count = architecture.at("heads").get<int>(),
+      .head_channels = architecture.value("dim_head", 64),
+      .text_channels = architecture.at("text_hidden_dim").get<int>(),
+      .latent_channels = latent_channels,
+      .feed_forward_channels = static_cast<int>(
+          hidden_channels * architecture.at("ff_mult").get<double>()),
+      .joint_layer_count = architecture.at("num_layers").get<int>(),
+      .single_layer_count = architecture.at("num_single_layers").get<int>(),
+      .attention_mask_enabled =
+          architecture.at("attn_mask_enabled").get<bool>(),
+  };
+}
+
 DiT::DiT(omni_common::WeightMap weights, const nlohmann::json &architecture,
          int latent_channels, mx::Dtype dtype)
-    : config_({{"arch", architecture}, {"latent_dim", latent_channels}}),
-      checkpoint_(ConvertWeights(std::move(weights), dtype), config_),
+    : config_(Config::Read(architecture, latent_channels)),
+      checkpoint_(ConvertWeights(std::move(weights), dtype),
+                  nlohmann::json::object()),
       rotary_periods_(mx::reciprocal(
           checkpoint_.Weight("transformer.rotary_embed.inv_freq"))),
-      dtype_(dtype), head_count_(config_.at("arch").at("heads").get<int>()),
-      joint_layer_count_(config_.at("arch").at("num_layers").get<int>()),
-      single_layer_count_(
-          config_.at("arch").at("num_single_layers").get<int>()),
-      attention_mask_enabled_(
-          config_.at("arch").at("attn_mask_enabled").get<bool>()) {
+      dtype_(dtype) {
   ValidateWeights();
   mx::eval(rotary_periods_);
 }
 
 void DiT::ValidateWeights() const {
-  const auto &architecture = config_.at("arch");
-  const int hidden_channels = architecture.at("dim").get<int>();
-  const int head_channels = architecture.value("dim_head", 64);
-  const int text_channels = architecture.at("text_hidden_dim").get<int>();
-  const int latent_channels = config_.at("latent_dim").get<int>();
-  const int feed_forward_channels = static_cast<int>(
-      hidden_channels * architecture.at("ff_mult").get<double>());
-  if (head_count_ <= 0 || hidden_channels % head_count_ != 0 ||
-      hidden_channels / head_count_ != head_channels ||
-      head_channels % 2 != 0) {
+  if (config_.head_count <= 0 ||
+      config_.hidden_channels % config_.head_count != 0 ||
+      config_.hidden_channels / config_.head_count != config_.head_channels ||
+      config_.head_channels % 2 != 0) {
     throw std::invalid_argument("unsupported AuK DiT architecture");
   } else {
   }
   checkpoint_.RequireShape("layer_scale", {1});
   checkpoint_.RequireShape("transformer.rotary_embed.inv_freq",
-                           {head_channels / 2});
-  RequireLinear(checkpoint_, "transformer.txt_proj", hidden_channels,
-                text_channels);
-  checkpoint_.RequireShape("transformer.txt_norm.weight", {hidden_channels});
-  RequireLinear(checkpoint_, "transformer.audio_embed.linear", hidden_channels,
-                latent_channels);
+                           {config_.head_channels / 2});
+  RequireLinear(checkpoint_, "transformer.txt_proj", config_.hidden_channels,
+                config_.text_channels);
+  checkpoint_.RequireShape("transformer.txt_norm.weight",
+                           {config_.hidden_channels});
+  RequireLinear(checkpoint_, "transformer.audio_embed.linear",
+                config_.hidden_channels, config_.latent_channels);
   for (int layer : {0, 2}) {
     const std::string prefix =
         "transformer.audio_embed.conv_pos_embed.conv1d." +
         std::to_string(layer);
     const auto &weight = checkpoint_.Weight(prefix + ".weight");
-    if (weight.ndim() != 3 || weight.shape(0) != hidden_channels ||
+    if (weight.ndim() != 3 || weight.shape(0) != config_.hidden_channels ||
         weight.shape(1) <= 0 || weight.shape(1) % 2 != 1 ||
-        weight.shape(2) <= 0 || hidden_channels % weight.shape(2) != 0) {
+        weight.shape(2) <= 0 ||
+        config_.hidden_channels % weight.shape(2) != 0) {
       throw std::invalid_argument(
           "AuK positional convolution has incompatible geometry: " + prefix);
     } else {
     }
-    checkpoint_.RequireShape(prefix + ".bias", {hidden_channels});
+    checkpoint_.RequireShape(prefix + ".bias", {config_.hidden_channels});
   }
   const auto &time_weight =
       checkpoint_.Weight("transformer.time_embed.time_mlp.0.weight");
-  if (time_weight.ndim() != 2 || time_weight.shape(0) != hidden_channels ||
+  if (time_weight.ndim() != 2 ||
+      time_weight.shape(0) != config_.hidden_channels ||
       time_weight.shape(1) < 4 || time_weight.shape(1) % 2 != 0) {
     throw std::invalid_argument(
         "AuK timestep embedding has incompatible geometry");
   } else {
   }
   RequireLinear(checkpoint_, "transformer.time_embed.time_mlp.0",
-                hidden_channels, time_weight.shape(1));
+                config_.hidden_channels, time_weight.shape(1));
   RequireLinear(checkpoint_, "transformer.time_embed.time_mlp.2",
-                hidden_channels, hidden_channels);
-  for (int layer = 0; layer < joint_layer_count_; ++layer) {
+                config_.hidden_channels, config_.hidden_channels);
+  for (int layer = 0; layer < config_.joint_layer_count; ++layer) {
     RequireBlock(checkpoint_,
                  "transformer.transformer_blocks." + std::to_string(layer),
-                 hidden_channels, head_channels, feed_forward_channels, true);
+                 config_.hidden_channels, config_.head_channels,
+                 config_.feed_forward_channels, true);
   }
-  for (int layer = 0; layer < single_layer_count_; ++layer) {
+  for (int layer = 0; layer < config_.single_layer_count; ++layer) {
     RequireBlock(checkpoint_,
                  "transformer.single_transformer_blocks." +
                      std::to_string(layer),
-                 hidden_channels, head_channels, feed_forward_channels, false);
+                 config_.hidden_channels, config_.head_channels,
+                 config_.feed_forward_channels, false);
   }
-  RequireLinear(checkpoint_, "transformer.norm_out.linear", 2 * hidden_channels,
-                hidden_channels);
-  RequireLinear(checkpoint_, "transformer.proj_out", latent_channels,
-                hidden_channels);
+  RequireLinear(checkpoint_, "transformer.norm_out.linear",
+                2 * config_.hidden_channels, config_.hidden_channels);
+  RequireLinear(checkpoint_, "transformer.proj_out", config_.latent_channels,
+                config_.hidden_channels);
 }
 
 void DiT::ValidateInputDimensions(int text_layers,
