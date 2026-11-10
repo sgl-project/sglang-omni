@@ -23,24 +23,9 @@ mx::array Normalize(const mx::array &hidden_states) {
 }
 
 mx::array ApplyRotary(const mx::array &hidden_states,
-                      const mx::array &inverse_frequencies) {
-  const int channels = hidden_states.shape(3);
-  const mx::array angles =
-      mx::multiply(mx::reshape(mx::arange(hidden_states.shape(2), mx::float32),
-                               {1, 1, -1, 1}),
-                   inverse_frequencies);
-  mx::Shape stop = hidden_states.shape();
-  const mx::array even =
-      mx::slice(hidden_states, {0, 0, 0, 0}, stop, {1, 1, 1, 2});
-  const mx::array odd =
-      mx::slice(hidden_states, {0, 0, 0, 1}, stop, {1, 1, 1, 2});
-  const mx::array cosine = mx::cos(angles), sine = mx::sin(angles);
-  return mx::astype(mx::reshape(mx::stack({even * cosine - odd * sine,
-                                           odd * cosine + even * sine},
-                                          -1),
-                                {hidden_states.shape(0), hidden_states.shape(1),
-                                 hidden_states.shape(2), channels}),
-                    hidden_states.dtype());
+                      const mx::array &rotary_periods) {
+  return mx::fast::rope(hidden_states, hidden_states.shape(3), true,
+                        std::nullopt, 1.0f, 0, rotary_periods);
 }
 
 struct AttentionProjection {
@@ -50,7 +35,7 @@ struct AttentionProjection {
 AttentionProjection
 ProjectAttention(const Checkpoint &checkpoint, const mx::array &hidden_states,
                  const std::string &prefix, const std::string &suffix,
-                 const mx::array &inverse_frequencies, int head_count) {
+                 const mx::array &rotary_periods, int head_count) {
   const auto projected = mx::split(
       checkpoint.Linear(hidden_states, prefix + ".to_qkv" + suffix), 3, -1);
   std::vector<mx::array> heads;
@@ -63,24 +48,24 @@ ProjectAttention(const Checkpoint &checkpoint, const mx::array &hidden_states,
   const std::string norm_prefix = prefix + (suffix.empty() ? "." : ".c_");
   return {ApplyRotary(
               checkpoint.RmsNorm(heads[0], norm_prefix + "q_norm", kRmsEpsilon),
-              inverse_frequencies),
+              rotary_periods),
           ApplyRotary(
               checkpoint.RmsNorm(heads[1], norm_prefix + "k_norm", kRmsEpsilon),
-              inverse_frequencies),
+              rotary_periods),
           heads[2]};
 }
 
 std::vector<mx::array>
 Attention(const Checkpoint &checkpoint, const mx::array &hidden_states,
           const std::optional<mx::array> &conditioning,
-          const std::string &prefix, const mx::array &inverse_frequencies,
+          const std::string &prefix, const mx::array &rotary_periods,
           int head_count, const std::optional<mx::array> &valid_positions,
           bool attention_mask_enabled) {
   auto projection = ProjectAttention(checkpoint, hidden_states, prefix, "",
-                                     inverse_frequencies, head_count);
+                                     rotary_periods, head_count);
   if (conditioning) {
     const auto text = ProjectAttention(checkpoint, *conditioning, prefix, "_c",
-                                       inverse_frequencies, head_count);
+                                       rotary_periods, head_count);
     projection.queries = mx::concatenate({projection.queries, text.queries}, 2);
     projection.keys = mx::concatenate({projection.keys, text.keys}, 2);
     projection.values = mx::concatenate({projection.values, text.values}, 2);
@@ -297,8 +282,6 @@ mx::array DiT::Predict(const mx::array &latents,
   } else {
   }
   const int token_count = text.shape(1);
-  const auto &inverse_frequencies =
-      checkpoint_.Weight("transformer.rotary_embed.inv_freq");
   const mx::array text_mask = mx::ones({text.shape(0), token_count}, mx::bool_);
   const std::optional<mx::array> joint_mask =
       audio_mask ? std::optional(mx::concatenate({*audio_mask, text_mask}, 1))
@@ -310,10 +293,10 @@ mx::array DiT::Predict(const mx::array &latents,
         Modulate(checkpoint_, text, time_embedding, prefix + ".attn_norm_c");
     const auto audio_modulation =
         Modulate(checkpoint_, audio, time_embedding, prefix + ".attn_norm_x");
-    const auto attended = Attention(
-        checkpoint_, audio_modulation.normalized, text_modulation.normalized,
-        prefix + ".attn", inverse_frequencies, head_count_, joint_mask,
-        attention_mask_enabled_);
+    const auto attended =
+        Attention(checkpoint_, audio_modulation.normalized,
+                  text_modulation.normalized, prefix + ".attn", rotary_periods_,
+                  head_count_, joint_mask, attention_mask_enabled_);
     text = FeedForward(checkpoint_,
                        text + text_modulation.attention_gate * attended[1],
                        text_modulation, prefix + ".ff_c");
@@ -332,7 +315,7 @@ mx::array DiT::Predict(const mx::array &latents,
         Modulate(checkpoint_, audio, time_embedding, prefix + ".attn_norm");
     const auto attended = Attention(
         checkpoint_, modulation.normalized, std::nullopt, prefix + ".attn",
-        inverse_frequencies, head_count_, single_mask, attention_mask_enabled_);
+        rotary_periods_, head_count_, single_mask, attention_mask_enabled_);
     audio = FeedForward(checkpoint_,
                         audio + modulation.attention_gate * attended[0],
                         modulation, prefix + ".ff");

@@ -72,6 +72,8 @@ DiT::DiT(omni_common::WeightMap weights, const nlohmann::json &architecture,
          int latent_channels, mx::Dtype dtype)
     : config_({{"arch", architecture}, {"latent_dim", latent_channels}}),
       checkpoint_(ConvertWeights(std::move(weights), dtype), config_),
+      rotary_periods_(mx::reciprocal(
+          checkpoint_.Weight("transformer.rotary_embed.inv_freq"))),
       dtype_(dtype), head_count_(config_.at("arch").at("heads").get<int>()),
       joint_layer_count_(config_.at("arch").at("num_layers").get<int>()),
       single_layer_count_(
@@ -79,6 +81,7 @@ DiT::DiT(omni_common::WeightMap weights, const nlohmann::json &architecture,
       attention_mask_enabled_(
           config_.at("arch").at("attn_mask_enabled").get<bool>()) {
   ValidateWeights();
+  mx::eval(rotary_periods_);
 }
 
 void DiT::ValidateWeights() const {

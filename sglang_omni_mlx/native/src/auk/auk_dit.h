@@ -53,6 +53,8 @@ private:
 
   nlohmann::json config_;
   omni_common::Checkpoint checkpoint_;
+  // fast::rope takes each pair's period, the reciprocal of inv_freq.
+  mlx::core::array rotary_periods_;
   mlx::core::Dtype dtype_;
   int head_count_;
   int joint_layer_count_;

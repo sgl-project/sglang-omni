@@ -52,16 +52,6 @@ LoadConditionerWeights(const std::filesystem::path &directory,
   return weights;
 }
 
-mx::array HalfRoPE(const mx::array &value, const mx::array &cosine,
-                   const mx::array &sine) {
-  const auto halves = mx::split(value, 2, -1);
-  const mx::array rotated =
-      mx::concatenate({mx::negative(halves[1]), halves[0]}, -1);
-  return mx::astype(
-      mx::add(mx::multiply(value, cosine), mx::multiply(rotated, sine)),
-      value.dtype());
-}
-
 } // namespace
 
 Conditioner::Config
@@ -268,8 +258,7 @@ mx::array Conditioner::Encode(
 }
 
 mx::array Conditioner::TextLayer(const mx::array &hidden, int layer,
-                                 const mx::array &mask, const mx::array &cosine,
-                                 const mx::array &sine) const {
+                                 const mx::array &mask) const {
   const std::string prefix = "model.layers." + std::to_string(layer);
   const int length = hidden.shape(1);
   const int head_size = config_.hidden_size / config_.text_head_count;
@@ -286,9 +275,11 @@ mx::array Conditioner::TextLayer(const mx::array &hidden, int layer,
         {0, 2, 1, 3});
   };
   const mx::array queries =
-      HalfRoPE(project("q_proj", config_.text_head_count), cosine, sine);
+      mx::fast::rope(project("q_proj", config_.text_head_count), head_size,
+                     false, config_.rope_theta, 1.0f, 0);
   const mx::array keys =
-      HalfRoPE(project("k_proj", config_.text_kv_head_count), cosine, sine);
+      mx::fast::rope(project("k_proj", config_.text_kv_head_count), head_size,
+                     false, config_.rope_theta, 1.0f, 0);
   const mx::array values = project("v_proj", config_.text_kv_head_count);
   const mx::array attended = mx::fast::scaled_dot_product_attention(
       queries, keys, values,
@@ -322,7 +313,6 @@ Conditioner::EncodeInputs(const std::vector<int> &token_ids,
   }
   const int length = static_cast<int>(token_ids.size());
   std::vector<int> audio_positions;
-  std::vector<float> positions;
   for (int token = 0; token < length; ++token) {
     const int id = token_ids[token];
     if (id < 0 || id >= config_.vocabulary_size ||
@@ -334,7 +324,6 @@ Conditioner::EncodeInputs(const std::vector<int> &token_ids,
       audio_positions.push_back(token);
     } else {
     }
-    positions.push_back(static_cast<float>(token));
   }
   mx::array embeddings = checkpoint_.Embed(
       mx::array(token_ids.data(), {length}, mx::int32), "model.embed_tokens");
@@ -355,18 +344,6 @@ Conditioner::EncodeInputs(const std::vector<int> &token_ids,
         "AuK audio placeholder tokens require reference features");
   } else {
   }
-  const int head_size = config_.hidden_size / config_.text_head_count;
-  const mx::array inv_freq = mx::divide(
-      mx::array(1.0f),
-      mx::power(mx::array(config_.rope_theta),
-                mx::divide(mx::arange(0, head_size, 2, mx::float32),
-                           mx::array(static_cast<float>(head_size)))));
-  const mx::array angles = mx::multiply(
-      mx::array(positions.data(), {length, 1}, mx::float32), inv_freq);
-  const mx::array doubled = mx::reshape(mx::concatenate({angles, angles}, -1),
-                                        {1, 1, length, head_size});
-  const mx::array cosine = mx::cos(doubled);
-  const mx::array sine = mx::sin(doubled);
   const mx::array indices = mx::arange(length);
   const mx::array distances =
       mx::subtract(mx::reshape(indices, {length, 1}), indices);
@@ -377,7 +354,7 @@ Conditioner::EncodeInputs(const std::vector<int> &token_ids,
   std::vector<mx::array> states;
   for (int layer = 0; layer < config_.text_layer_count; ++layer) {
     states.push_back(hidden);
-    hidden = TextLayer(hidden, layer, mask, cosine, sine);
+    hidden = TextLayer(hidden, layer, mask);
     mx::eval(hidden);
   }
   states.push_back(
