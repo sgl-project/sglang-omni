@@ -201,6 +201,7 @@ class Yue2ModelRunner(ModelRunner[Yue2ARRequestData]):
             else:
                 pass
         # note (ruiling): one copy per step; building each row tensor on the device would sync the stream per tensor.
+        # note (ruiling): the seeded sampler reads positions through a raw pointer, so each field is one contiguous row.
         row_values = to_device(
             torch.tensor(
                 [
@@ -213,10 +214,12 @@ class Yue2ModelRunner(ModelRunner[Yue2ARRequestData]):
                     for data in members
                 ],
                 dtype=torch.long,
-            ),
+            )
+            .t()
+            .contiguous(),
             device,
         )
-        seeds, positions, slots, allow_end = row_values.unbind(-1)
+        seeds, positions, slots, allow_end = row_values.unbind(0)
         recent = torch.stack([data.recent_tokens for data in members])
         scores = masked_scores(
             logits, sampling, recent, allow_end.bool(), phase, legacy_off

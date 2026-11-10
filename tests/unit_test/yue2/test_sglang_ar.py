@@ -346,6 +346,32 @@ def test_runner_matches_cfg_rows_after_sglang_reorders_the_batch() -> None:
     assert [(row.conditional, row.unconditional) for row in rows] == [(1, None), (2, 0)]
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_rows_sampled_together_match_rows_sampled_alone() -> None:
+    """On CUDA, a row sampled next to other rows drew its noise for the wrong position."""
+    logits = torch.randn((8, 184704), generator=torch.Generator().manual_seed(0)).cuda()
+
+    def members() -> list[Yue2ARRequestData]:
+        return [
+            Yue2ARRequestData(
+                sampling=SamplingConfig(),
+                sampling_seed=100 + index,
+                generated_tokens=300 + 7 * index,
+            )
+            for index in range(8)
+        ]
+
+    together = Yue2ModelRunner.sample_group(logits, members(), "semantic", False)
+    alone = [
+        Yue2ModelRunner.sample_group(
+            logits[index : index + 1], [member], "semantic", False
+        ).item()
+        for index, member in enumerate(members())
+    ]
+    assert together.tolist() == alone
+
+
 def test_runner_rejects_a_twin_without_its_request() -> None:
     sampling = SamplingConfig()
     twin = Yue2ARRequestData(sampling=sampling, is_cfg_uncond=True)
