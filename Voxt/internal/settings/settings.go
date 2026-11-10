@@ -263,6 +263,14 @@ type Dictionary struct {
 	// what) that the speech model gets before the hints, with the
 	// dictionary on or off; a service that takes no prompt ignores it.
 	SpeechContext string `json:"speechContext,omitempty"`
+	// Notes is the personal dictionary: Markdown the user writes once (a
+	// table of standard spelling, what recognition makes of it, and when
+	// it applies, or any notes) that goes into the language model's
+	// system prompt for Transcribe, Translate and Rewrite, never to
+	// speech recognition (compose.Input.Dictionary). NotesOff keeps it
+	// out of the prompt; notes are sent by default once written.
+	Notes    string `json:"notes,omitempty"`
+	NotesOff bool   `json:"notesOff,omitempty"`
 	// Learn watches the field a Transcribe result was pasted into for
 	// 30 s and proposes a term when the user corrects a word of it
 	// (internal/learn). Off by default.

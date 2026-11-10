@@ -73,3 +73,12 @@ var copiesLine = map[string]bool{
 // copiesLinePrefixes are families of such apps: Cursor and other
 // ToDesktop builds, JetBrains, Windsurf (Exafunction), Trae, Qoder.
 var copiesLinePrefixes = []string{"com.todesktop.", "com.jetbrains.", "com.exafunction.", "com.trae.", "cn.trae.", "com.qoder."}
+
+// PromptDictionary is the personal dictionary for the language model's
+// prompt, when the settings send it; "" otherwise.
+func PromptDictionary(s settings.Settings) string {
+	if !s.Dictionary.Enabled || s.Dictionary.NotesOff {
+		return ""
+	}
+	return s.Dictionary.Notes
+}

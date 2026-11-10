@@ -430,8 +430,8 @@ func (r *run) transcribeInput(raw string) compose.Input {
 	return compose.Input{
 		Task: compose.Transcribe, Cleanup: f.Cleanup, Structure: f.Structure, TaskPrompt: f.Prompt,
 		MainLanguage: MainLanguage(r.settings, r.m.cfg.Locale()), OtherLanguages: r.settings.General.OtherLanguages, Text: raw,
-		Glossary: r.glossary(),
-		Scene:    r.composeScene(),
+		Glossary: r.glossary(), Dictionary: PromptDictionary(r.settings),
+		Scene: r.composeScene(),
 	}
 }
 

@@ -6,12 +6,14 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
+- **Personal dictionary** on the Dictionary page: write your names, terms and numbers once in Markdown, for example a table of the standard spelling, what speech recognition writes instead, and when it applies. Transcribe, Translate and Rewrite add it to the language model's prompt, right after the task's rules (also with your own full prompt), and speech recognition does not get it. How it is used, under the editor, shows an example built from your settings: the system prompt, the dictionary, your input and the speech recognition text, then what the model receives. The switch Add to the language model prompt keeps it out; terms and aliases work as before.
 - **Voxt 1.x on Apple silicon updates to Voxt 2 by itself**: each release also has the app as `Voxt-X.Y.Z-macOS.zip`, which Voxt 1.x's in-app update installs on a Mac with Apple silicon (first for those who turned on Beta Updates, then for everyone there) and the Homebrew cask (`brew install --cask hehehai/tap/voxt`, Apple silicon only) installs. Voxt 1.x on an Intel Mac is not offered Voxt 2, which does not run there, and stays on Voxt 1.x. After the update, allow the microphone and accessibility again: macOS sees Voxt 2 as another app.
 
 ### 中文
 
 #### 新增
 
+- **个人词典**（词典页）：用 Markdown 把名字、术语和数字的写法写一次，例如一张表：标准写法、语音识别会写成什么、什么情况下适用。转录、翻译和改写会把它加到语言模型的提示词里，紧跟在任务规则后面（用自己的完整提示词时也加），语音识别不会收到。编辑框下面的“怎么使用”用你的设置举例：系统提示词、个人词典、你的输入、语音识别文本，以及模型最后收到的内容。关掉“加到语言模型的提示词里”就不发送；词条和别名照旧生效。
 - **Apple 芯片上的 Voxt 1.x 自己更新到 Voxt 2**：每个版本还附带 app 的 `Voxt-X.Y.Z-macOS.zip`，在 Apple 芯片的 Mac 上，Voxt 1.x 的应用内更新安装它（先给打开了“Beta 更新”的用户，再给其他人），Homebrew 的 cask（`brew install --cask hehehai/tap/voxt`，只支持 Apple 芯片）也装它。Intel Mac 上的 Voxt 1.x 不会收到 Voxt 2（Voxt 2 不能在 Intel 上运行），继续用 Voxt 1.x。更新后要重新允许麦克风和辅助功能：macOS 把 Voxt 2 当成另一个 app。
 
 ## [2.0.3] - 2026-11-10
