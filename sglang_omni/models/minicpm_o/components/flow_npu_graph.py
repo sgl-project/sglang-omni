@@ -56,6 +56,7 @@ def install_flow_npu_graph(model):
     backend = NpuDeviceGraphBackend()
     lock = threading.Lock()
     entries = {}
+    graph_stream = None
     max_graphs = len(SUPPORTED_WINDOWS)
     disabled = False
     verify = os.environ.get("SPEECH_FLOW_NPU_GRAPH_VERIFY", "1") == "1"
@@ -72,7 +73,7 @@ def install_flow_npu_graph(model):
     def forward_chunk(mu, speaker_embeddings, mel_conditioning, n_timesteps=10,
                       temperature=1.0, convolution_cache=None,
                       attention_window=None, layout=None):
-        nonlocal disabled
+        nonlocal disabled, graph_stream
         values = (mu, speaker_embeddings, mel_conditioning, n_timesteps,
                   temperature, convolution_cache, attention_window, layout)
         with lock:
@@ -92,6 +93,9 @@ def install_flow_npu_graph(model):
             storages = [tensor.untyped_storage().data_ptr() for tensor in sources]
             if len(storages) != len(set(storages)):
                 return fallback("shared_input_storage", values)
+            current_stream = torch.npu.current_stream(mu.device)
+            if graph_stream is not None and current_stream != graph_stream:
+                return fallback("different_stream", values)
             signature = (tuple((tuple(t.shape), tuple(t.stride()), t.dtype, t.device)
                                for t in sources), n_timesteps, temperature)
             try:
@@ -100,21 +104,21 @@ def install_flow_npu_graph(model):
                         return fallback("graph_capacity", values)
                     static = map_tensors(values, lambda tensor: tensor.clone())
                     destinations = tensor_list(static)
-                    current = torch.npu.current_stream()
                     side = torch.npu.Stream()
-                    side.wait_stream(current)
+                    side.wait_stream(current_stream)
                     with torch.npu.stream(side):
                         for _ in range(3):
                             for destination, source in zip(destinations, sources):
                                 destination.copy_(source)
                             original(*static)
-                    current.wait_stream(side)
+                    current_stream.wait_stream(side)
                     torch.npu.synchronize()
                     for destination, source in zip(destinations, sources):
                         destination.copy_(source)
                     with backend.capture(pool=backend.graph_pool_handle()) as graph:
                         output = original(*static)
                     entries[signature] = (static, graph, output)
+                    graph_stream = current_stream
                     stats["capture"] += 1
                     logger.warning(f"SPEECH_FLOW_GRAPH_CAPTURE frames={shape_key[0]} "
                                    f"window={shape_key[1]} graphs={len(entries)}")
