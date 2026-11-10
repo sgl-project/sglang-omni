@@ -458,7 +458,7 @@ func (a *app) releaseDialog(c *ui.Context) {
 			if a.relFound.Notes != "" {
 				markdown.View(c, a.relFound.Notes, &a.relMD)
 			}
-			caption(c, i18n.T("Download opens its disk image. With Homebrew, run brew upgrade --cask voxt instead."))
+			caption(c, i18n.T("Download gets it from GitHub. With Homebrew, run brew upgrade --cask voxt instead."))
 		}
 	}, func() {
 		ui.Spacer(c)

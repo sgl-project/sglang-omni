@@ -236,7 +236,7 @@ func TestReleaseDialog(t *testing.T) {
 	}
 
 	a.checkForUpdates() // the menus' and ⌘K's
-	if !has(tt, "Voxt 2.0.4 is available") || !has(tt, "You have Voxt 2.0.3.") || !has(tt, "Faster.") || !hasPrefix(tt, "Download opens its disk image.") {
+	if !has(tt, "Voxt 2.0.4 is available") || !has(tt, "You have Voxt 2.0.3.") || !has(tt, "Faster.") || !hasPrefix(tt, "Download gets it from GitHub.") {
 		t.Fatalf("available: %q", firstTexts(tt))
 	}
 	click(t, tt, "Download")

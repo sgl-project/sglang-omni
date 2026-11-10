@@ -82,7 +82,7 @@
   "A single key would be taken from every app. Add ⌃, ⌥, ⇧, ⌘ or fn.": "单独一个键会让所有 App 都用不了这个键，请加上 ⌃、⌥、⇧、⌘ 或 fn。",
   "Checking for updates…": "正在检查更新…",
   "Couldn't check for updates": "无法检查更新",
-  "Download opens its disk image. With Homebrew, run brew upgrade --cask voxt instead.": "“下载”会打开它的 dmg。用 Homebrew 安装的，改为运行 brew upgrade --cask voxt。",
+  "Download gets it from GitHub. With Homebrew, run brew upgrade --cask voxt instead.": "“下载”会从 GitHub 获取新版本。用 Homebrew 安装的，改为运行 brew upgrade --cask voxt。",
   "GitHub did not answer in time. Check your connection, or the proxy in Speech models → Network.": "GitHub 没有及时回应。请检查网络连接，或“语音识别模型 → 网络”里的代理。",
   "GitHub limits how often Voxt can check. Try again in an hour.": "GitHub 限制了检查的频率。请一小时后再试。",
   "Install it from its disk image, or with brew upgrade --cask voxt.": "从它的 dmg 安装，或运行 brew upgrade --cask voxt。",
