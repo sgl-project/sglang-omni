@@ -9,7 +9,6 @@ from collections.abc import Mapping
 
 import torch
 
-from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import store_state
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
@@ -46,14 +45,6 @@ def create_ar_executor(
     max_concurrency: int = _DEFAULT_AR_CONCURRENCY,
     server_args_overrides: Mapping[str, object] | None = None,
 ):
-    if not (
-        current_platform.is_cuda()
-        or current_platform.is_musa()
-        or current_platform.is_xpu()
-    ):
-        raise RuntimeError("MiniMax Music 3 requires CUDA/MUSA/XPU backend")
-    else:
-        pass
     torch.backends.cudnn.enabled = False
     torch.backends.cuda.enable_cudnn_sdp(False)
 
