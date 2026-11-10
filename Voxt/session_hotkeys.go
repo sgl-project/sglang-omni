@@ -32,6 +32,22 @@ func (a *app) hotkeyPhase() hotkey.Phase {
 	return hotkey.Idle
 }
 
+// strictFeature is the feature whose shortcuts stop the session with
+// Strict shortcuts on ("": off, any feature's do).
+func (a *app) strictFeature() string {
+	switch {
+	case !a.prefs.Features.StrictShortcuts:
+		return ""
+	case a.sess.Note:
+		return hotkey.Note
+	case a.sess.Kind == store.KindTranslate:
+		return hotkey.Translate
+	case a.sess.Kind == store.KindRewrite:
+		return hotkey.Rewrite
+	}
+	return hotkey.Transcribe
+}
+
 // hotkeyFired acts on a shortcut (the helper's hotkey.event, or a Carbon
 // shortcut).
 func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
@@ -59,7 +75,7 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 			return
 		}
 	}
-	d := hotkey.Route(e, a.hotkeyPhase(), a.sess.HoldBinding)
+	d := hotkey.Route(e, a.hotkeyPhase(), a.sess.HoldBinding, a.strictFeature())
 	switch d.Action {
 	case hotkey.Start:
 		hold := ""
