@@ -21,7 +21,6 @@ from sglang_omni.models.fun_cosyvoice3.dspark_draft import (
     DRAFT_TOKENS_PER_STEP,
     MASK_TOKEN_ID,
     UNIFIED_MASK_TOKEN_ID,
-    VERIFY_TOKENS_PER_STEP,
     MirroredMarkovHead,
     materialize_draft_checkpoint,
 )
@@ -543,8 +542,8 @@ def run_speculative_step(
     )
     executor = object.__new__(ExactVerifyExecutor)
     executor.step_state = state
-    executor.gamma = DRAFT_TOKENS_PER_STEP
-    executor.verify_num_draft_tokens = VERIFY_TOKENS_PER_STEP
+    executor.gamma = base_logits.shape[1]
+    executor.verify_num_draft_tokens = executor.gamma + 1
     accept = executor.accept_and_finalize(
         folded_accept=False,
         bs=request_count,
@@ -562,17 +561,20 @@ def run_speculative_step(
 
 @pytest.mark.accelerator
 @REQUIRES_CUDA
-def test_a_seeded_request_steps_the_same_beside_any_other_request() -> None:
+@pytest.mark.parametrize("draft_tokens_per_step", [1, 2, 3, DRAFT_TOKENS_PER_STEP])
+def test_a_seeded_request_steps_the_same_beside_any_other_request(
+    draft_tokens_per_step: int,
+) -> None:
     """Every speculative draw used the global RNG, so a seed fixed only the first token."""
     torch.manual_seed(0)
     device = torch.device("cuda")
     markov_head = MirroredMarkovHead(vocab_size=TOTAL_VOCAB_SIZE, markov_rank=4).to(
         device
     )
-    rows = DRAFT_TOKENS_PER_STEP + 1
+    rows = draft_tokens_per_step + 1
     # Near-flat draft and target overlap mostly, so the noise decides the drafts,
     # how many are accepted and the residual draw.
-    seeded_base_logits = torch.randn(DRAFT_TOKENS_PER_STEP, TOTAL_VOCAB_SIZE) * 0.1
+    seeded_base_logits = torch.randn(draft_tokens_per_step, TOTAL_VOCAB_SIZE) * 0.1
     seeded_target_logits = torch.randn(rows, TOTAL_VOCAB_SIZE) * 0.1
 
     def seeded_step(
@@ -581,7 +583,7 @@ def test_a_seeded_request_steps_the_same_beside_any_other_request() -> None:
         seeded = seeded_step_request("seeded", 1234, seeded_output_ids, slot=0)
         requests = [seeded, neighbor] if seeded_first else [neighbor, seeded]
         row = 0 if seeded_first else 1
-        base_logits = torch.randn(2, DRAFT_TOKENS_PER_STEP, TOTAL_VOCAB_SIZE)
+        base_logits = torch.randn(2, draft_tokens_per_step, TOTAL_VOCAB_SIZE)
         base_logits[row] = seeded_base_logits
         target_logits = torch.randn(2, rows, TOTAL_VOCAB_SIZE)
         target_logits[row] = seeded_target_logits
@@ -610,7 +612,7 @@ def test_a_seeded_request_steps_the_same_beside_any_other_request() -> None:
 
     assert beside_unseeded == beside_seeded
     assert (
-        one_token_later[:DRAFT_TOKENS_PER_STEP] != beside_seeded[:DRAFT_TOKENS_PER_STEP]
+        one_token_later[:draft_tokens_per_step] != beside_seeded[:draft_tokens_per_step]
     )
 
 
@@ -744,7 +746,10 @@ def test_target_keeps_every_token_the_request_admits(
     )
 
 
-def test_materialized_draft_names_the_stage_vocabulary_layout(tmp_path: Path) -> None:
+@pytest.mark.parametrize("draft_tokens_per_step", [1, 2, 3, DRAFT_TOKENS_PER_STEP])
+def test_materialized_draft_names_the_stage_vocabulary_layout(
+    tmp_path: Path, draft_tokens_per_step: int
+) -> None:
     source = tmp_path / "speculators"
     source.mkdir()
     (source / "model.safetensors").write_bytes(b"weights")
@@ -771,7 +776,9 @@ def test_materialized_draft_names_the_stage_vocabulary_layout(tmp_path: Path) ->
         )
     )
 
-    draft_dir = materialize_draft_checkpoint(str(source), None)
+    draft_dir = materialize_draft_checkpoint(
+        str(source), None, draft_tokens_per_step=draft_tokens_per_step
+    )
 
     config = json.loads((Path(draft_dir) / "config.json").read_text())
     assert config["architectures"] == [DRAFT_ARCHITECTURE]
@@ -779,7 +786,8 @@ def test_materialized_draft_names_the_stage_vocabulary_layout(tmp_path: Path) ->
     assert config["vocab_size"] == TOTAL_VOCAB_SIZE
     assert config["dflash_config"]["target_layer_ids"] == [1, 11, 20]
     assert config["mask_token_id"] == MASK_TOKEN_ID == TOTAL_VOCAB_SIZE - 1
-    assert config["block_size"] == DRAFT_TOKENS_PER_STEP
+    assert config["block_size"] == draft_tokens_per_step
+    assert config["dflash_config"]["block_size"] == draft_tokens_per_step
     assert config["sample_from_anchor"] is False
     assert config["layer_types"] == ["sliding_attention"] * 3
     assert os.path.realpath(Path(draft_dir) / "model.safetensors") == str(
@@ -803,7 +811,9 @@ def test_materialized_draft_refuses_another_vocabulary_or_block(
     (tmp_path / "config.json").write_text(json.dumps(source_config))
 
     with pytest.raises(ValueError, match="vocabulary"):
-        materialize_draft_checkpoint(str(tmp_path), None)
+        materialize_draft_checkpoint(
+            str(tmp_path), None, draft_tokens_per_step=DRAFT_TOKENS_PER_STEP
+        )
 
 
 def dspark_overrides(
@@ -825,7 +835,7 @@ def materialized_draft(monkeypatch: pytest.MonkeyPatch) -> str:
     monkeypatch.setattr(
         dspark_draft,
         "materialize_draft_checkpoint",
-        lambda draft_model_path, revision: draft_dir,
+        lambda draft_model_path, revision, *, draft_tokens_per_step: draft_dir,
     )
     return draft_dir
 
@@ -839,8 +849,23 @@ def materialized_draft(monkeypatch: pytest.MonkeyPatch) -> str:
             "supports DSPARK",
         ),
         (
-            {"speculative_draft_model_path": "d", "speculative_dspark_block_size": 4},
-            "tokens per step",
+            {"speculative_draft_model_path": "d", "speculative_dspark_block_size": 0},
+            "must be between",
+        ),
+        (
+            {"speculative_draft_model_path": "d", "speculative_dspark_block_size": 8},
+            "must be between",
+        ),
+        (
+            {
+                "speculative_draft_model_path": "d",
+                "speculative_dspark_block_size": True,
+            },
+            "must be between",
+        ),
+        (
+            {"speculative_draft_model_path": "d", "speculative_dspark_block_size": "3"},
+            "must be between",
         ),
     ],
 )
@@ -851,18 +876,26 @@ def test_engine_builder_refuses_what_the_dspark_draft_cannot_serve(
         dspark_overrides(**server_args_overrides)
 
 
+@pytest.mark.parametrize("draft_tokens_per_step", [None, 1, 3, 7])
 def test_dspark_draft_reserves_its_verify_windows_in_the_kv_pool_cap(
     materialized_draft: str,
+    draft_tokens_per_step: int | None,
 ) -> None:
     builder, overrides = dspark_overrides(
-        speculative_draft_model_path="yuekai/cosyvoice3_llm_dspark"
+        speculative_draft_model_path="yuekai/cosyvoice3_llm_dspark",
+        speculative_dspark_block_size=draft_tokens_per_step,
+    )
+    resolved_tokens_per_step = (
+        DRAFT_TOKENS_PER_STEP
+        if draft_tokens_per_step is None
+        else draft_tokens_per_step
     )
 
     assert overrides["speculative_algorithm"] == "DSPARK"
     assert overrides["speculative_draft_model_path"] == materialized_draft
-    assert overrides["speculative_dspark_block_size"] == DRAFT_TOKENS_PER_STEP
+    assert overrides["speculative_dspark_block_size"] == resolved_tokens_per_step
     assert overrides["max_total_tokens"] == 32 * (
-        builder.context_length + 2 * (DRAFT_TOKENS_PER_STEP + 1)
+        builder.context_length + 2 * (resolved_tokens_per_step + 1)
     )
     assert builder.infra_kwargs() == {
         "supports_speculative_decoding": True,

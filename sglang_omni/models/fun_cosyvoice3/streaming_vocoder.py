@@ -42,6 +42,7 @@ from sglang_omni.models.fun_cosyvoice3.streaming import (
     prompt_token_pad,
 )
 from sglang_omni.models.fun_cosyvoice3.utils import MAX_REFERENCE_SECONDS
+from sglang_omni.profiler.event_recorder import emit, get_recorder
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.pipeline_state import build_usage
@@ -119,6 +120,40 @@ class LaunchedStep:
     samples: HiftStepSamples
 
 
+def record_vocoder_batch_event(
+    event_name: Literal[
+        "vocoder_launch_start",
+        "vocoder_flow_submitted",
+        "vocoder_hift_submitted",
+        "vocoder_audio_ready",
+    ],
+    participants: list[tuple[str, CosyVoice3StreamState]],
+) -> None:
+    """Record host boundaries without synchronizing the vocoder CUDA stream."""
+    if not get_recorder().is_active():
+        return
+    else:
+        timestamp_nanoseconds = time.time_ns()
+        monotonic_seconds = time.monotonic()
+        first_audio_count = sum(
+            state.first_emit_at is None for _, state in participants
+        )
+        for request_id, state in participants:
+            emit(
+                request_id=request_id,
+                stage="vocoder",
+                event_name=event_name,
+                timestamp_ns=timestamp_nanoseconds,
+                metadata={
+                    "batch_size": len(participants),
+                    "first_audio_count": first_audio_count,
+                    "token_offset": state.token_offset,
+                    "ready_since_seconds": state.ready_since,
+                    "monotonic_seconds": monotonic_seconds,
+                },
+            )
+
+
 class FunCosyVoice3StreamingVocoderScheduler(
     StreamingVocoderBase[CosyVoice3StreamState, NextDecode]
 ):
@@ -131,6 +166,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
         self,
         vocoder: CosyVoice3Vocoder,
         *,
+        should_complete_first_chunk_immediately: bool,
         max_batch_size: int = 8,
         max_batch_wait_ms: int = 2,
         sample_rate: int = SAMPLE_RATE,
@@ -153,6 +189,9 @@ class FunCosyVoice3StreamingVocoderScheduler(
             self.token_hop_len = hop
             self.token_max_hop_len = max_hop
             self.disable_hop_growth = bool(disable_hop_growth)
+            self.should_complete_first_chunk_immediately: bool = (
+                should_complete_first_chunk_immediately
+            )
             self.vocoder = vocoder
             self.clock: Callable[[], float] = time.monotonic
             self.launched_step: LaunchedStep | None = None
@@ -169,9 +208,10 @@ class FunCosyVoice3StreamingVocoderScheduler(
         )
 
     def pump_one_step(self) -> list[str] | None:
-        """Launch the next step, then complete the step launched before it, so the device
-        runs one while the host reads the other. None when no stream is ready and no step
-        is in flight; otherwise the request ids a failed step aborted."""
+        """Overlap launches and reads, optionally completing first audio immediately.
+
+        Return aborted request IDs, or None when no work is ready or in flight.
+        """
         previous = self.launched_step
         participants = self.select_step_participants()
         if not participants and previous is None:
@@ -180,6 +220,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
             pass
         failed: list[str] = []
         launched: LaunchedStep | None = None
+        has_first_audio = any(state.first_emit_at is None for _, state in participants)
         if participants:
             try:
                 with self.vocoder.stream_context:
@@ -192,9 +233,12 @@ class FunCosyVoice3StreamingVocoderScheduler(
             failed.extend(self.complete_step(previous))
         else:
             pass
-        # note (ratish): samples already on the host need no wait, so such a step
-        # completes at its launch, as before.
-        if launched is not None and launched.samples.copy_done is None:
+        # note (ratish): samples already on the host need no wait, so such a step completes at launch.
+        # note (yaourt): a first-audio batch can also complete before the next launch.
+        if launched is not None and (
+            launched.samples.copy_done is None
+            or (self.should_complete_first_chunk_immediately and has_first_audio)
+        ):
             failed.extend(self.complete_step(launched))
             launched = None
         else:
@@ -717,7 +761,9 @@ class FunCosyVoice3StreamingVocoderScheduler(
             request_id, _ = participants[0]
             self.complete_stream_request(request_id, self.finish_stream(request_id))
             return None
-        elif plan == "leftover":
+        else:
+            record_vocoder_batch_event("vocoder_launch_start", participants)
+        if plan == "leftover":
             items = [
                 FlowBatchInput(
                     token=torch.tensor(
@@ -731,7 +777,9 @@ class FunCosyVoice3StreamingVocoderScheduler(
             ]
             logger.info(f"Fun-CosyVoice3 leftover Flow batch size={len(items)}")
             mels = self.vocoder.leftover_batch(items)
+            record_vocoder_batch_event("vocoder_flow_submitted", participants)
             samples = self.hift_step(participants, mels, is_final=True)
+            record_vocoder_batch_event("vocoder_hift_submitted", participants)
             for (_, state), offset in zip(
                 participants, samples.emitted_samples, strict=True
             ):
@@ -756,7 +804,9 @@ class FunCosyVoice3StreamingVocoderScheduler(
             ]
             logger.info(f"Fun-CosyVoice3 causal Flow batch size={len(items)}")
             mels = self.hop_batch_with_prefix(participants, items)
+            record_vocoder_batch_event("vocoder_flow_submitted", participants)
             samples = self.hift_step(participants, mels, is_final=False)
+            record_vocoder_batch_event("vocoder_hift_submitted", participants)
             now = self.clock()
             for (_, state), new_samples, offset in zip(
                 participants, samples.new_samples, samples.emitted_samples, strict=True
@@ -785,6 +835,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
         chunk and then its result. Streams cleared since the launch get nothing."""
         try:
             deltas = launched.samples.wait()
+            record_vocoder_batch_event("vocoder_audio_ready", launched.participants)
             for (request_id, state), delta in zip(
                 launched.participants, deltas, strict=True
             ):

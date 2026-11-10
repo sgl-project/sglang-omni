@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import signal
+import sys
 import threading
 import weakref
 from collections.abc import Awaitable, Callable, Coroutine
@@ -1651,3 +1652,30 @@ def test_launcher_cleans_up_before_passing_on_sigterm(
         assert "RuntimeError: stop failed" in error_text
     else:
         pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interval_seconds", [None, 0.001, 0.005])
+async def test_launcher_applies_thread_interval_before_serving(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interval_seconds: float | None
+) -> None:
+    """The API uses the requested interval while handling requests."""
+    config = make_config(tmp_path)
+    config.python_thread_switch_interval_seconds = interval_seconds
+    original_interval_seconds = sys.getswitchinterval()
+
+    async def check_serving_interval() -> None:
+        assert sys.getswitchinterval() == pytest.approx(
+            interval_seconds
+            if interval_seconds is not None
+            else original_interval_seconds
+        )
+
+    try:
+        await run_launcher_with_fake_runner(
+            config=config,
+            serve_mock=AsyncMock(side_effect=check_serving_interval),
+            monkeypatch=monkeypatch,
+        )
+    finally:
+        sys.setswitchinterval(original_interval_seconds)

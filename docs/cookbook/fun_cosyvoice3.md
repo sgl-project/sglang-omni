@@ -220,7 +220,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 ### Streaming
 
-Incremental Flow + HiFT decoding supports streaming. Set `stream: true` and `response_format: "pcm"` to emit audio before AR generation completes. The vocoder uses CosyVoice3's causal chunk loop: 25 speech tokens per hop (~1 s of audio). The first PCM chunk is emitted once AR produces `28 + prompt_pad` tokens (where `prompt_pad` rounds the Flow prompt length to a 25-token multiple). Later hops grow from 25 to 50 to 100 tokens in vocoder to increase batching efficiency without affecting audio continuity or real-time factor, only the decoding granularity changes, not the total synthesis time. The scheduler processes at most one hop per request per step to prevent backlogged streams from monopolizing the GPU. Non-streaming requests decode the entire utterance in one pass.
+Incremental Flow + HiFT decoding supports streaming. Set `stream: true` and `response_format: "pcm"` to emit audio before AR generation completes. The vocoder uses CosyVoice3's causal chunk loop: 25 speech tokens per hop (~1 s of audio). The first causal PCM chunk becomes eligible after AR produces 28 generated tokens (25 for the hop and 3 for lookahead); Flow prompt tensors are padded separately to align the reference to a hop boundary. Later hops grow from 25 to 50 to 100 tokens in vocoder to increase batching efficiency without affecting audio continuity or real-time factor, only the decoding granularity changes, not the total synthesis time. The scheduler processes at most one hop per request per step to prevent backlogged streams from monopolizing the GPU. Non-streaming requests decode the entire utterance in one pass.
 
 Optional serving knobs (vocoder factory):
 
@@ -260,7 +260,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 | `repetition_penalty` | `1.21` | Repetition penalty |
 | `max_new_tokens` | `min(2048, 20x target text tokens)` | Maximum number of generated speech tokens. If omitted, derived from the target text length (capped at 2048); stop tokens are also suppressed until at least `2x` that length has been generated |
 | `seed` | `null` | Random seed for reproducibility |
-| `stream` | `false` | Incremental causal Flow + HiFT; first PCM chunk after `28 + prompt_pad` speech tokens (`prompt_pad` rounds the prompt length to a multiple of 25) |
+| `stream` | `false` | Incremental causal Flow + HiFT; first causal PCM chunk after 28 generated speech tokens; reference hop alignment is applied to Flow prompt tensors |
 
 ## Serving Optimization
 
@@ -351,7 +351,7 @@ This result is only demonstrative, since we have further optimization after the 
 
 ### Speculative Decoding
 
-SpeechSpec's DSpark draft [`yuekai/cosyvoice3_llm_dspark`](https://huggingface.co/yuekai/cosyvoice3_llm_dspark) proposes 7 speech tokens per step from three of the LLM's hidden layers, and the LLM verifies them in one forward pass.
+SpeechSpec's DSpark draft [`yuekai/cosyvoice3_llm_dspark`](https://huggingface.co/yuekai/cosyvoice3_llm_dspark) proposes 7 speech tokens per step by default from three of the LLM's hidden layers, and the LLM verifies them in one forward pass.
 
 ```bash
 sgl-omni serve \
@@ -364,6 +364,8 @@ sgl-omni serve \
 Send `return_spec_tokens_details: true` with a speech request to get its acceptance statistics. Buffered audio adds `X-SGLang-Omni-Spec-Accept-Length`, `X-SGLang-Omni-Spec-Accept-Rate`, `X-SGLang-Omni-Spec-Num-Correct-Drafts`, `X-SGLang-Omni-Spec-Num-Proposed-Drafts` and `X-SGLang-Omni-Spec-Verify-Ct` headers; the SSE `speech.audio.done` event and the raw PCM outcome from `GET /v1/audio/speech/{request_id}` carry `sglext.spec_tokens_details`, which also holds the per-verify histogram. `spec_accept_length` is speech tokens per verify, including the token sampled at prefill, so it can read higher than the scheduler log's `accept len`, which counts only verified tokens. `spec_accept_rate` and `spec_num_proposed_drafts`, and their headers, are left out when no drafts were proposed or the draft width is adaptive.
 
 Verification reproduces CosyVoice3's sampler exactly: temperature, top-k/top-p, the repetition penalty, the minimum-length stop mask and the repetition-aware redraw. The speech tokens therefore follow the same distribution as without the draft. A request's `seed` fixes every draft and verify draw, so a seeded request reproduces its speech tokens while the draft is on; they differ from the tokens the same seed gives without the draft, which samples differently.
+
+Set `tts_engine.engine.speculative_dspark_block_size` to an integer from 1 through 7 to tune the number of proposals per step. Shorter blocks reduce the work of one verification but can require more decoding steps; measure both first-chunk latency and throughput at the intended concurrency. The adapter keeps the draft model's block configuration and KV reservation consistent with the selected length. The sampler and audio chunk size are unchanged, but changing the proposal count can change a seeded request's speech tokens.
 
 LLM speech-token throughput without the vocoder (Seed-TTS zh, 2,020 utterances, one H200 141GB with SGLang 0.5.22, target and draft on FA3, each batch run to completion), with the default sampling and about 3.0 tokens accepted per verify:
 
@@ -385,6 +387,46 @@ End-to-end streaming on the same GPU (`benchmark_tts_seedtts --stream`, all 2,02
 | 16 | 18.02 → 21.08 req/s | 0.169 → 0.146 | 0.306 → 0.333 s | 0.76% → 0.73% |
 
 The vocoder takes a growing share of each request as concurrency rises, so the end-to-end gain is largest at low concurrency.
+
+### Separate Vocoder on H100
+
+The experimental [H100 configuration](../../examples/configs/fun_cosyvoice3_dspark_h100.yaml) puts the vocoder in a separate process on the same GPU. Start NVIDIA MPS and set both CPU thread variables in the launch environment. The configuration assigns 15% of GPU memory to the TTS engine and 75% to the vocoder, with a 32 GiB Flow prefix cache cap. It uses seven draft proposals per step and a vocoder batch size of eight.
+
+```bash
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
+export CUDA_MPS_PIPE_DIRECTORY="$(mktemp -d)"
+export CUDA_MPS_LOG_DIRECTORY="$(mktemp -d)"
+nvidia-cuda-mps-control -d
+sgl-omni serve \
+  --config examples/configs/fun_cosyvoice3_dspark_h100.yaml \
+  --model-name FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --host 127.0.0.1 --port 8000
+# After stopping the server:
+echo quit | nvidia-cuda-mps-control
+```
+
+Use a dedicated GPU for this MPS instance. Setting only the stage's environment defaults does not replace an existing `MKL_NUM_THREADS` value. The server log should report `torch_num_threads=1` for the vocoder warmup.
+
+The preset enables `vocoder.factory.should_complete_first_chunk_immediately`: a step containing first audio completes before the next step is launched, while batches containing only subsequent chunks keep launch/read overlap. The regular pipeline leaves this option off.
+
+Set the top-level `python_thread_switch_interval_seconds` in the YAML to tune Python thread scheduling in the API and stage worker processes, for example `0.001` for 1 ms. Leaving it unset preserves the interpreter setting. Each process logs the effective interval at startup. Compare draft and no-draft runs with the same interval.
+
+### Profiling First Audio
+
+The request profiler records `vocoder_launch_start`, `vocoder_flow_submitted`, `vocoder_hift_submitted` and `vocoder_audio_ready` for each participating request. The shared profiler report pairs these events into Flow submission, HiFT submission and audio completion intervals. Record a small streaming workload separately from throughput measurements:
+
+```bash
+curl -X POST http://localhost:8000/start_request_profile \
+  -H 'Content-Type: application/json' \
+  -d '{"run_id":"cosyvoice-first-audio","event_dir":"/tmp/cosyvoice-events","event_buffer_capacity":131072}'
+# Run a small streaming workload, then stop recording.
+curl -X POST http://localhost:8000/stop_request_profile \
+  -H 'Content-Type: application/json' \
+  -d '{"run_id":"cosyvoice-first-audio"}'
+python -m sglang_omni.profiler /tmp/cosyvoice-events --format table
+```
+
+Launch events include `batch_size` and `first_audio_count`; group events by their shared timestamp to count steps containing first audio and mixed batches. The events record host boundaries without adding CUDA synchronization. Submission intervals include host work and CUDA waits; the interval from HiFT submission to audio readiness includes deferred completion and may overlap the next hop. Use a GPU timeline to separate device execution from host scheduling. Check the report's event-storage completeness before interpreting the intervals; increase `event_buffer_capacity` and recollect when events were dropped.
 
 ### Zero-shot Voice Cloning
 
@@ -477,14 +519,7 @@ Incremental Flow + HiFT decoding is enabled. Set `stream: true` and use
 `response_format: "pcm"` so the server can emit audio before speech-token
 generation finishes.
 
-The vocoder follows CosyVoice3's causal chunk loop: 25 speech tokens per hop
-(`pre_lookahead_len=3`, 25 Hz → about 1 s of audio per chunk). The first PCM
-chunk is emitted once the AR stage has produced `28 + prompt_pad` tokens,
-where `prompt_pad` (0–24) rounds the Flow prompt-token length up to a
-multiple of 25. Later hops grow 25 → 50 → 100 tokens like the upstream
-`CosyVoice3Model` (default; keep growth on). Each scheduler step runs at most
-one hop per request so a backlogged stream cannot monopolize the GPU.
-Non-streaming requests still use the buffered Flow + HiFT path for the whole utterance.
+The vocoder follows CosyVoice3's causal chunk loop: 25 speech tokens per hop (`pre_lookahead_len=3`, 25 Hz → about 1 s of audio per chunk). The first causal PCM chunk becomes eligible once the AR stage has produced 28 generated tokens. Flow prompt tensors are padded separately to a multiple of 25. Later hops grow 25 → 50 → 100 tokens like the upstream `CosyVoice3Model` (default; keep growth on). Each scheduler step runs at most one hop per request so a backlogged stream cannot monopolize the GPU. Non-streaming requests still use the buffered Flow + HiFT path for the whole utterance.
 
 Optional serving knobs (vocoder factory; keep `tts_engine.factory.token_hop_len`
 in sync if you change the hop):
@@ -525,7 +560,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 | `repetition_penalty` | `1.21` | Repetition penalty |
 | `max_new_tokens` | `min(2048, 20x target text tokens)` | Maximum number of generated speech tokens. If omitted, derived from the target text length (capped at 2048); stop tokens are also suppressed until at least `2x` that length has been generated |
 | `seed` | `null` | Random seed for reproducibility |
-| `stream` | `false` | Incremental causal Flow + HiFT; first PCM chunk after `28 + prompt_pad` speech tokens (`prompt_pad` rounds the prompt length to a multiple of 25) |
+| `stream` | `false` | Incremental causal Flow + HiFT; first causal PCM chunk after 28 generated speech tokens; reference hop alignment is applied to Flow prompt tensors |
 
 Sampling is repetition-aware, as in upstream CosyVoice: a sampled speech token that already appears among the last 10 generated tokens is masked and redrawn once from the full distribution at the request temperature. Greedy requests (`top_k = 1`) sample without the redraw.
 

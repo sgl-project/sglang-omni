@@ -56,6 +56,7 @@ from sglang_omni.utils.imports import import_string
 from sglang_omni.utils.ipc_weights import prepare_weight_share_process_compat
 from sglang_omni.utils.logging import configure_dependency_loggers
 from sglang_omni.utils.process import (
+    configure_python_thread_switch_interval,
     exit_without_teardown,
     register_prewarm_cuda_ipc_handle,
 )
@@ -193,6 +194,7 @@ class StageWorkerProcessSpec:
     # launcher passes its own root level so --log-level reaches every stage.
     log_level: int = logging.INFO
     cpu_threads: int | None = None
+    python_thread_switch_interval_seconds: float | None = None
     cpu_affinity: frozenset[int] | None = None
     # note (Richard Wang): a counter the stage process bumps whenever its
     # startup moves forward, so the launcher times out on a stall, not on a
@@ -707,6 +709,7 @@ def stage_process_main(
     )
     logging.getLogger().setLevel(spec.log_level)
     configure_dependency_loggers()
+    configure_python_thread_switch_interval(spec.python_thread_switch_interval_seconds)
     if not spec.stage_specs:
         raise ValueError(f"Process {spec.process_name!r} requires at least one stage")
     else:
