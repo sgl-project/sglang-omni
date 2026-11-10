@@ -8,9 +8,8 @@
 #include <stdexcept>
 #include <string_view>
 
-#include <civetweb.h>
-
 #include "common/audio.h"
+#include "common/text.h"
 #include "qwen3_asr/speech_service.h"
 
 namespace auk {
@@ -21,36 +20,33 @@ using speech_service::FieldOr;
 using speech_service::Json;
 constexpr size_t kMaximumTextBytes = 8192;
 
-const Json &ObjectField(const Json &request, const std::string &name) {
-  static const Json empty = Json::object();
-  if (!request.contains(name) || request.at(name).is_null()) {
-    return empty;
-  } else if (!request.at(name).is_object()) {
-    throw std::invalid_argument(name + " must be an object");
+Json ObjectField(const Json &request, const char *name) {
+  const Json value = FieldOr(request, name, Json::object());
+  if (!value.is_object()) {
+    throw std::invalid_argument(std::string(name) + " must be an object");
   } else {
-    return request.at(name);
+    return value;
   }
 }
 
-std::string TextField(const Json &request, const std::string &name,
+std::string TextField(const Json &request, const char *name,
                       const std::string &fallback = "") {
-  if (!request.contains(name) || request.at(name).is_null()) {
-    return fallback;
-  } else if (!request.at(name).is_string()) {
-    throw std::invalid_argument(name + " must be a string");
+  const Json value = FieldOr(request, name, Json(fallback));
+  if (!value.is_string()) {
+    throw std::invalid_argument(std::string(name) + " must be a string");
   } else {
-    return request.at(name).get<std::string>();
+    return value.get<std::string>();
   }
 }
 
-std::string PromptTextField(const Json &request, const std::string &name,
+std::string PromptTextField(const Json &request, const char *name,
                             const std::string &fallback = "") {
   const std::string text = TextField(request, name, fallback);
   const size_t marker = text.find("<|");
   if (marker != std::string::npos &&
       text.find("|>", marker + 2) != std::string::npos) {
     throw std::invalid_argument(
-        name + " must not contain <|...|> special-token markers");
+        std::string(name) + " must not contain <|...|> special-token markers");
   } else {
     return text;
   }
@@ -94,9 +90,9 @@ SynthesisRequest ParseRequest(const Json &request, bool raw_instruction,
         "input or prompt must contain 1 to 8192 bytes of text");
   } else {
   }
-  const Json &metadata = ObjectField(request, "metadata");
-  const Json &parameters =
-      raw_instruction ? ObjectField(metadata, "tts_params") : request;
+  const Json metadata = ObjectField(request, "metadata");
+  const Json tts_parameters = ObjectField(metadata, "tts_params");
+  const Json &parameters = raw_instruction ? tts_parameters : request;
   if (raw_instruction) {
     for (const auto &[name, value] : metadata.items()) {
       if (name != "tts_params") {
@@ -114,8 +110,8 @@ SynthesisRequest ParseRequest(const Json &request, bool raw_instruction,
   } else {
   }
   const std::string reference_text = PromptTextField(parameters, "ref_text");
-  const Json &stages = ObjectField(request, "stage_params");
-  const Json &engine = ObjectField(stages, "auk_engine");
+  const Json stages = ObjectField(request, "stage_params");
+  const Json engine = ObjectField(stages, "auk_engine");
   for (const auto &[name, value] : stages.items()) {
     if (name != "auk_engine") {
       throw std::invalid_argument("only stage_params.auk_engine is supported");
@@ -138,26 +134,14 @@ SynthesisRequest ParseRequest(const Json &request, bool raw_instruction,
           "ref_audio must be a data:audio/wav;base64 URI");
     } else {
     }
-    const std::string_view encoded =
-        std::string_view(reference).substr(prefix.size());
-    const size_t padding = encoded.find('=');
-    if (encoded.size() % 4 != 0 ||
-        (padding != std::string::npos &&
-         (padding < encoded.size() - 2 ||
-          encoded.find_first_not_of('=', padding) != std::string::npos))) {
-      throw std::invalid_argument("ref_audio contains invalid base64 padding");
-    } else {
-    }
-    std::string bytes(encoded.size(), '\0');
-    size_t length = bytes.size();
-    if (mg_base64_decode(encoded.data(), encoded.size(),
-                         reinterpret_cast<unsigned char *>(bytes.data()),
-                         &length) != -1) {
+    const auto bytes =
+        omni_common::DecodeBase64(reference.substr(prefix.size()));
+    if (!bytes) {
       throw std::invalid_argument("ref_audio contains invalid base64");
     } else {
     }
-    bytes.resize(length - 1);
-    auto audio = omni_common::DecodeAudioWav(bytes);
+    auto audio = omni_common::DecodeAudioWav(
+        {reinterpret_cast<const char *>(bytes->data()), bytes->size()});
     // The conditioner needs three mel frames, 30 ms at 16 kHz.
     if (audio.samples.size() <
             static_cast<size_t>(
