@@ -21,6 +21,8 @@ from sglang_omni.models.nemotron_transcribe.hf_config import (
 )
 from sglang_omni.models.nemotron_transcribe.request_builders import (
     DEFAULT_PROMPT,
+    FORCED_TOKEN_BIAS,
+    is_silent,
     make_scheduler_adapters,
     make_stream_output_builder,
     transcript_token_budget,
@@ -59,11 +61,23 @@ class FakeTokenizer:
         clean_up_tokenization_spaces: bool,
     ) -> str:
         assert not skip_special_tokens and not clean_up_tokenization_spaces
-        vocabulary = {7: "Hello", 8: " world", EOS_TOKEN_ID: "<eos>"}
+        vocabulary = {
+            0: "<unk>",
+            7: "Hello",
+            8: " world",
+            EOS_TOKEN_ID: "<eos>",
+            12: "<think>",
+            13: "</think>",
+        }
         return "".join(vocabulary[token_id] for token_id in token_ids)
 
 
 def load_test_audio(source: object, **decode_options: object) -> np.ndarray:
+    # A quiet tone at -40 dBFS: above the silence threshold.
+    return np.full(16000, 0.01, dtype=np.float32)
+
+
+def load_silent_audio(source: object, **decode_options: object) -> np.ndarray:
     return np.zeros(16000, dtype=np.float32)
 
 
@@ -220,6 +234,37 @@ def test_result_strips_eos_and_preserves_usage() -> None:
     assert result.data["finish_reason"] == "length"
     assert result.data["usage"]["completion_tokens"] == 2
     assert result.data["usage"]["prompt_tokens"] == 15
+
+
+def test_result_drops_reasoning_markers_and_unknown_runs() -> None:
+    build_request, adapt_result = make_scheduler_adapters(
+        tokenizer=FakeTokenizer(), max_new_tokens=32
+    )
+    request = build_request(make_payload())
+    request.output_ids = [12, 13, 7, 0, 0, 8, EOS_TOKEN_ID]
+    assert adapt_result(request).data["text"] == "Hello world"
+
+
+def test_silent_audio_is_forced_to_an_empty_transcript(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(transcription, "load_audio", load_silent_audio)
+    build_request, adapt_result = make_scheduler_adapters(
+        tokenizer=FakeTokenizer(), max_new_tokens=32
+    )
+    request = build_request(make_payload({"max_new_tokens": 64}))
+    sampling = request.req.sampling_params
+    assert request.max_new_tokens == 1
+    assert sampling.max_new_tokens == 1
+    assert sampling.logit_bias == {str(EOS_TOKEN_ID): FORCED_TOKEN_BIAS}
+    request.output_ids = [EOS_TOKEN_ID]
+    assert adapt_result(request).data["text"] == ""
+
+
+def test_quiet_speech_level_audio_is_not_silence() -> None:
+    assert not is_silent(np.full(16000, 0.01, dtype=np.float32))
+    assert is_silent(np.full(16000, 1e-5, dtype=np.float32))
+    assert is_silent(np.zeros(0, dtype=np.float32))
 
 
 def test_streamed_text_matches_final_response() -> None:

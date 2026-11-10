@@ -51,6 +51,8 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
   -F response_format=json
 ```
 
+The served text drops reasoning markers, runs of `<unk>`, and an assistant refusal appended after the speech; speaker, event, and style tags stay. An upload whose peak is under -60 dBFS and whose RMS is under -90 dBFS returns an empty transcript without decoding it.
+
 The default instruction asks for a verbatim transcript in the spoken language. Supply `prompt` to replace that instruction:
 
 ```bash

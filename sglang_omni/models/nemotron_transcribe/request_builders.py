@@ -9,6 +9,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
+import numpy as np
+import numpy.typing as npt
 import torch
 from sglang.srt.managers.schedule_batch import (
     Modality,
@@ -38,6 +40,7 @@ from sglang_omni.models.nemotron_transcribe.speaker_attribution import (
     diarization_segments,
     strip_speaker_tags,
 )
+from sglang_omni.models.nemotron_transcribe.transcript_cleanup import clean_transcript
 from sglang_omni.models.nemotron_transcribe.word_timestamps import align_transcript
 from sglang_omni.preprocessing.transcription import prepare_audio
 from sglang_omni.proto.request import StagePayload
@@ -54,6 +57,10 @@ DEFAULT_PROMPT = (
     "abbreviations, numbers, dates, measurements, acronyms, and technical terms "
     "as clearly as possible. Keep the same language as spoken and do not translate."
 )
+# Near-digital silence: quieter than recorded speech, louder than dither.
+SILENCE_PEAK = 1e-3
+SILENCE_RMS = 3e-5
+FORCED_TOKEN_BIAS = 1.0e4
 
 
 @dataclass
@@ -101,6 +108,19 @@ def decode_tokens(tokenizer: PreTrainedTokenizerBase, ids: list[int]) -> str:
     return tokenizer.decode(
         ids, skip_special_tokens=False, clean_up_tokenization_spaces=False
     )
+
+
+def is_silent(waveform: npt.NDArray[np.floating]) -> bool:
+    """True when the peak is under -60 dBFS and the RMS under -90 dBFS."""
+    if waveform.size == 0:
+        return True
+    else:
+        pass
+    if float(np.abs(waveform).max()) >= SILENCE_PEAK:
+        return False
+    else:
+        pass
+    return float(np.sqrt(np.mean(np.square(waveform, dtype=np.float64)))) < SILENCE_RMS
 
 
 def transcript_token_budget(
@@ -287,6 +307,13 @@ def make_scheduler_adapters(
             sampling_kwargs["sampling_seed"] = seed_value
         else:
             pass
+        if is_silent(prepared.waveform):
+            # The scheduler has no finished-at-admission path, so silence decodes
+            # one token that is forced to be the end of the transcript.
+            request_max_new_tokens = 1
+            sampling_kwargs["logit_bias"] = {str(int(eos_token_id)): FORCED_TOKEN_BIAS}
+        else:
+            pass
         sampling_params = SamplingParams(
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,
@@ -340,7 +367,7 @@ def make_scheduler_adapters(
         payload = data.stage_payload
         assert payload is not None
         output_ids = [t for t in (data.output_ids or []) if t != eos_token_id]
-        text = decode_tokens(tokenizer, output_ids).strip()
+        text = clean_transcript(decode_tokens(tokenizer, output_ids))
         engine_time_s = (
             time.perf_counter() - data.engine_start_s if data.engine_start_s else 0.0
         )
