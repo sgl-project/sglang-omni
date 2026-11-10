@@ -101,6 +101,7 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         perception_compile_mode: EncoderCompileMode,
         perception_fp8: bool,
         prompt_layout: PromptLayout = "audio_first",
+        loop_guard: bool = True,
     ) -> None:
         if perception_cuda_graphs and not compile_perception:
             raise ValueError("perception_cuda_graphs requires compile_perception=true")
@@ -125,6 +126,7 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         self.perception_compile_mode = perception_compile_mode
         self.perception_fp8 = bool(perception_fp8)
         self.prompt_layout: PromptLayout = prompt_layout
+        self.loop_guard = bool(loop_guard)
         self.tokenizer: PreTrainedTokenizerBase | None = None
         self.hf_config: NemotronTranscribeConfig | None = None
         self.audio_encoder_service: NemotronTranscribePreLMEncoderService | None = None
@@ -162,6 +164,13 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
             "dtype": dtype,
             "cuda_graph_backend_prefill": CudaGraphBackend.DISABLED,
         }
+
+    def adjust_overrides(self, overrides: dict[str, object]) -> None:
+        if self.loop_guard:
+            # SGLang runs per-request logit processors only behind this flag.
+            overrides["enable_custom_logit_processor"] = True
+        else:
+            pass
 
     def customize_server_args(self, server_args: ServerArgs) -> None:
         if server_args.enable_torch_compile:
@@ -271,6 +280,7 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
             max_new_tokens=self.max_new_tokens,
             context_length=self.context_length,
             prompt_layout=self.prompt_layout,
+            loop_guard=self.loop_guard,
             audio_token_estimator=self.hf_config.audio_token_estimator,
             audio_token_id=self.hf_config.audio_token_id,
             eos_token_id=self.hf_config.eos_token_id,

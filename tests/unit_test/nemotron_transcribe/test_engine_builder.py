@@ -57,6 +57,18 @@ def test_decoder_defaults_keep_cuda_graphs_and_disable_compilation() -> None:
     assert defaults["disable_radix_cache"] is True
 
 
+def test_loop_guard_enables_per_request_logit_processors() -> None:
+    builder = make_builder()
+    overrides: dict[str, object] = {}
+    builder.adjust_overrides(overrides)
+    assert overrides == {"enable_custom_logit_processor": True}
+
+    builder.loop_guard = False
+    overrides = {}
+    builder.adjust_overrides(overrides)
+    assert overrides == {}
+
+
 def test_decoder_compilation_has_an_actionable_error() -> None:
     with pytest.raises(ValueError, match="compile_perception"):
         make_builder().customize_server_args(SimpleNamespace(enable_torch_compile=True))

@@ -19,6 +19,9 @@ from sglang_omni.models.nemotron_transcribe.hf_config import (
     AUDIO_TOKEN_ID,
     EOS_TOKEN_ID,
 )
+from sglang_omni.models.nemotron_transcribe.loop_guard import (
+    NemotronTranscribeLoopGuard,
+)
 from sglang_omni.models.nemotron_transcribe.request_builders import (
     DEFAULT_PROMPT,
     FORCED_TOKEN_BIAS,
@@ -112,6 +115,25 @@ def test_audio_placeholders_and_offsets_match_encoded_duration() -> None:
     assert tokenizer.messages == [
         {"role": "user", "content": f"<|audio|>\n{DEFAULT_PROMPT}"}
     ]
+
+
+def test_loop_guard_rides_on_each_request_when_enabled() -> None:
+    build_request, _ = make_scheduler_adapters(
+        tokenizer=FakeTokenizer(), max_new_tokens=32, loop_guard=True
+    )
+    request = build_request(make_payload())
+    assert request.req.custom_logit_processor == NemotronTranscribeLoopGuard.to_str()
+    custom_params = request.req.sampling_params.custom_params
+    assert custom_params["eos_token_id"] == EOS_TOKEN_ID
+    # SGLang hands the processor its request, whose output_ids it inspects.
+    assert custom_params["__req__"].rid == request.req.rid
+
+    build_request, _ = make_scheduler_adapters(
+        tokenizer=FakeTokenizer(), max_new_tokens=32
+    )
+    request = build_request(make_payload())
+    assert request.req.custom_logit_processor is None
+    assert request.req.sampling_params.custom_params is None
 
 
 def test_instruction_first_layout_puts_the_audio_after_the_instruction() -> None:

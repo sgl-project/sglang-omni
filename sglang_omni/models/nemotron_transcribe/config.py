@@ -49,6 +49,7 @@ class NemotronTranscribeFactoryArgs(FactoryArgs):
     perception_compile_mode: EncoderCompileMode | None = None
     perception_fp8: bool | None = None
     prompt_layout: PromptLayout | None = None
+    loop_guard: bool | None = None
 
 
 class NemotronTranscribeStageConfig(EngineStageConfig):
@@ -111,6 +112,7 @@ class NemotronTranscribePipelineConfig(PipelineConfig):
                 perception_compile_mode="default",
                 perception_fp8=True,
                 prompt_layout="audio_first",
+                loop_guard=True,
             ),
             engine=EngineArgs(
                 max_running_requests=DEFAULT_MAX_RUNNING_REQUESTS,

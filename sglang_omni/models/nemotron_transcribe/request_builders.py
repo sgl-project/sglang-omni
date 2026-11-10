@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import time
 from collections.abc import Callable
@@ -36,6 +37,10 @@ from sglang_omni.models.nemotron_transcribe.hf_config import (
     num_audio_tokens,
 )
 from sglang_omni.models.nemotron_transcribe.languages import language_name
+from sglang_omni.models.nemotron_transcribe.loop_guard import (
+    NemotronTranscribeLoopGuard,
+    loop_period,
+)
 from sglang_omni.models.nemotron_transcribe.speaker_attribution import (
     activity_rows,
     attribute_speakers,
@@ -51,6 +56,8 @@ from sglang_omni.scheduling.token_text_streaming import (
     make_token_text_stream_output_builder,
 )
 from sglang_omni.scheduling.types import DeferredAdmission, StreamOutputBuilder
+
+logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
 AUDIO_TOKEN = "<|audio|>"
@@ -223,6 +230,7 @@ def make_scheduler_adapters(
     max_new_tokens: int,
     context_length: int | None = None,
     prompt_layout: PromptLayout = "audio_first",
+    loop_guard: bool = False,
     audio_token_estimator: dict[str, object] | None = None,
     audio_token_id: int = AUDIO_TOKEN_ID,
     eos_token_id: int = EOS_TOKEN_ID,
@@ -234,6 +242,8 @@ def make_scheduler_adapters(
     RequestBuilder,
     ResultAdapter,
 ]:
+    loop_guard_processor = NemotronTranscribeLoopGuard.to_str() if loop_guard else None
+
     def request_builder(
         payload: StagePayload,
     ) -> (
@@ -339,6 +349,10 @@ def make_scheduler_adapters(
             sampling_kwargs["logit_bias"] = {str(int(eos_token_id)): FORCED_TOKEN_BIAS}
         else:
             pass
+        if loop_guard_processor is not None:
+            sampling_kwargs["custom_params"] = {"eos_token_id": int(eos_token_id)}
+        else:
+            pass
         sampling_params = SamplingParams(
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,
@@ -355,6 +369,7 @@ def make_scheduler_adapters(
             sampling_params=sampling_params,
             vocab_size=vocab_size,
             extra_key=prepared.fingerprint,
+            custom_logit_processor=loop_guard_processor,
         )
         req.multimodal_inputs = mm_inputs
 
@@ -392,6 +407,20 @@ def make_scheduler_adapters(
         payload = data.stage_payload
         assert payload is not None
         output_ids = [t for t in (data.output_ids or []) if t != eos_token_id]
+        if loop_guard_processor is not None and data.finish_reason == "stop":
+            period = loop_period(output_ids)
+            if period:
+                logger.info(
+                    "Nemotron Transcribe loop guard ended %s after %d tokens "
+                    "(period %d)",
+                    payload.request_id,
+                    len(output_ids),
+                    period,
+                )
+            else:
+                pass
+        else:
+            pass
         text = clean_transcript(decode_tokens(tokenizer, output_ids))
         engine_time_s = (
             time.perf_counter() - data.engine_start_s if data.engine_start_s else 0.0

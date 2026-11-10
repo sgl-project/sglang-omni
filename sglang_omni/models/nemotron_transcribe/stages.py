@@ -40,6 +40,7 @@ def create_nemotron_transcribe_executor(
     perception_compile_mode: EncoderCompileMode,
     perception_fp8: bool,
     prompt_layout: PromptLayout,
+    loop_guard: bool,
     device: str | None = None,
     gpu_id: int | None = None,
     mem_fraction_static: float | None = None,
@@ -65,6 +66,7 @@ def create_nemotron_transcribe_executor(
         perception_compile_mode=perception_compile_mode,
         perception_fp8=perception_fp8,
         prompt_layout=prompt_layout,
+        loop_guard=loop_guard,
     ).build(
         model_path,
         device=device,
