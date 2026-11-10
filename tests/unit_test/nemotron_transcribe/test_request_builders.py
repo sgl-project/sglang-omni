@@ -114,6 +114,20 @@ def test_audio_placeholders_and_offsets_match_encoded_duration() -> None:
     ]
 
 
+def test_instruction_first_layout_puts_the_audio_after_the_instruction() -> None:
+    tokenizer = FakeTokenizer()
+    build_request, _ = make_scheduler_adapters(
+        tokenizer=tokenizer, max_new_tokens=32, prompt_layout="instruction_first"
+    )
+    build_request(make_payload({"language": "en"}))
+    assert tokenizer.messages == [
+        {
+            "role": "user",
+            "content": f"{DEFAULT_PROMPT} The speech is in English. <|audio|>",
+        }
+    ]
+
+
 @pytest.mark.parametrize(
     ("language", "name"),
     [

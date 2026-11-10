@@ -38,6 +38,7 @@ The pipeline runs one ASR stage. It accepts uploads up to one hour, resamples to
 | `--asr.factory.mm_embedding_cache_size_bytes` | `0` | Audio embedding cache capacity |
 | `--asr.factory.compile_perception` | `false` | Compile encoder transformer layers |
 | `--asr.factory.perception_cuda_graphs` | `false` | Capture encoder graphs; requires compilation |
+| `--asr.factory.prompt_layout` | `audio_first` | `audio_first` sends `<\|audio\|>`, a newline, then the instruction; `instruction_first` sends the instruction, one space, then `<\|audio\|>`, the layout NeMo's SpeechLM serving uses |
 | `--asr.factory.perception_fp8` | `true` | Run an FP8 checkpoint's encoder linears as FP8 GEMMs; `false` dequantizes them to BF16 |
 
 Decoder CUDA graphs are enabled. Decoder compilation is unsupported in this integration; use encoder compilation to reduce launch overhead. Encoder batch size bounds activation memory separately from decoder concurrency. For longer audio or a smaller GPU, reduce the encoder batch size and choose a memory fraction that still fits the model weights.

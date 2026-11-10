@@ -24,6 +24,7 @@ from transformers import PreTrainedTokenizerBase
 from sglang_omni.models.nemotron_transcribe.config import (
     MINIMUM_TRANSCRIPT_TOKENS,
     TRANSCRIPT_TOKENS_PER_SECOND,
+    PromptLayout,
 )
 from sglang_omni.models.nemotron_transcribe.encoder_service import (
     NemotronTranscribePreLMEncoderService,
@@ -90,13 +91,18 @@ def render_prompt_ids(
     tokenizer: PreTrainedTokenizerBase,
     instruction: str,
     system_prompt: str = "",
+    layout: PromptLayout = "audio_first",
 ) -> list[int]:
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     else:
         pass
-    messages.append({"role": "user", "content": f"{AUDIO_TOKEN}\n{instruction}"})
+    if layout == "instruction_first":
+        content = f"{instruction} {AUDIO_TOKEN}"
+    else:
+        content = f"{AUDIO_TOKEN}\n{instruction}"
+    messages.append({"role": "user", "content": content})
     text = tokenizer.apply_chat_template(
         messages,
         tokenize=False,
@@ -216,6 +222,7 @@ def make_scheduler_adapters(
     tokenizer: PreTrainedTokenizerBase,
     max_new_tokens: int,
     context_length: int | None = None,
+    prompt_layout: PromptLayout = "audio_first",
     audio_token_estimator: dict[str, object] | None = None,
     audio_token_id: int = AUDIO_TOKEN_ID,
     eos_token_id: int = EOS_TOKEN_ID,
@@ -268,7 +275,10 @@ def make_scheduler_adapters(
         else:
             pass
         prompt_ids = render_prompt_ids(
-            tokenizer, instruction, str(params.get("system_prompt") or "")
+            tokenizer,
+            instruction,
+            str(params.get("system_prompt") or ""),
+            layout=prompt_layout,
         )
         if prompt_ids.count(audio_token_id) != 1:
             raise ValueError(

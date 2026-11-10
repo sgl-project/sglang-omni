@@ -31,6 +31,7 @@ DEFAULT_MAX_NEW_TOKENS = (
 )
 DEFAULT_MAX_RUNNING_REQUESTS = 64
 EncoderCompileMode = Literal["default", "max-autotune-no-cudagraphs"]
+PromptLayout = Literal["audio_first", "instruction_first"]
 
 
 class NemotronTranscribeFactoryArgs(FactoryArgs):
@@ -47,6 +48,7 @@ class NemotronTranscribeFactoryArgs(FactoryArgs):
     perception_cuda_graphs: bool | None = None
     perception_compile_mode: EncoderCompileMode | None = None
     perception_fp8: bool | None = None
+    prompt_layout: PromptLayout | None = None
 
 
 class NemotronTranscribeStageConfig(EngineStageConfig):
@@ -108,6 +110,7 @@ class NemotronTranscribePipelineConfig(PipelineConfig):
                 perception_cuda_graphs=False,
                 perception_compile_mode="default",
                 perception_fp8=True,
+                prompt_layout="audio_first",
             ),
             engine=EngineArgs(
                 max_running_requests=DEFAULT_MAX_RUNNING_REQUESTS,

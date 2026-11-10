@@ -22,6 +22,7 @@ from transformers import AutoTokenizer, PreTrainedTokenizerBase
 from sglang_omni.models.nemotron_transcribe.config import (
     DEFAULT_MAX_RUNNING_REQUESTS,
     EncoderCompileMode,
+    PromptLayout,
 )
 from sglang_omni.models.nemotron_transcribe.encoder_service import (
     NemotronTranscribePreLMEncoderService,
@@ -99,6 +100,7 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         perception_cuda_graphs: bool,
         perception_compile_mode: EncoderCompileMode,
         perception_fp8: bool,
+        prompt_layout: PromptLayout = "audio_first",
     ) -> None:
         if perception_cuda_graphs and not compile_perception:
             raise ValueError("perception_cuda_graphs requires compile_perception=true")
@@ -122,6 +124,7 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         self.perception_cuda_graphs = perception_cuda_graphs
         self.perception_compile_mode = perception_compile_mode
         self.perception_fp8 = bool(perception_fp8)
+        self.prompt_layout: PromptLayout = prompt_layout
         self.tokenizer: PreTrainedTokenizerBase | None = None
         self.hf_config: NemotronTranscribeConfig | None = None
         self.audio_encoder_service: NemotronTranscribePreLMEncoderService | None = None
@@ -267,6 +270,7 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
             tokenizer=self.tokenizer,
             max_new_tokens=self.max_new_tokens,
             context_length=self.context_length,
+            prompt_layout=self.prompt_layout,
             audio_token_estimator=self.hf_config.audio_token_estimator,
             audio_token_id=self.hf_config.audio_token_id,
             eos_token_id=self.hf_config.eos_token_id,
