@@ -165,6 +165,25 @@ class CommandAdapter(GatedAdapter):
         pass
 
 
+class GatedNaturalTailAdapter(GatedAdapter):
+    def __init__(self) -> None:
+        super().__init__([])
+        self.tail_started = asyncio.Event()
+        self.release_tail = asyncio.Event()
+        self.cancel_called = asyncio.Event()
+        self.tail_calls = 0
+
+    async def finish_tail(self, last_unit: Unit, max_tail_units: int) -> None:
+        assert last_unit.eos
+        assert max_tail_units == 3
+        self.tail_calls += 1
+        self.tail_started.set()
+        await self.release_tail.wait()
+
+    async def cancel(self) -> None:
+        self.cancel_called.set()
+
+
 class RejectedOpenAdapter(GatedAdmissionAdapter):
     def __init__(self, open_error: Exception | None = None) -> None:
         super().__init__([])
@@ -273,6 +292,7 @@ async def open_runtime(
     adapter: GatedAdapter,
     limits: RuntimeLimits | None = None,
     capabilities: Capabilities | None = None,
+    config: SessionConfiguration | None = None,
 ) -> AsyncIterator[SessionRuntime]:
     runtime = SessionRuntime(
         MODEL_NAME,
@@ -281,7 +301,7 @@ async def open_runtime(
         limits or RuntimeLimits(),
     )
     async with running_runtime(runtime):
-        await runtime.update({}, "client_update")
+        await runtime.update(config or {}, "client_update")
         yield runtime
 
 
@@ -324,6 +344,59 @@ async def test_eos_marks_only_the_last_unit_when_end_arrives_mid_backlog() -> No
         assert [unit.eos for unit in adapter.units] == [False, False, True]
         assert isinstance(drained, Drained)
         assert (drained.accepted_end_ms, drained.consumed_ms) == (60.0, 60.0)
+
+
+@pytest.mark.asyncio
+async def test_cancel_is_processed_while_natural_tail_is_in_flight() -> None:
+    """An input-end tail must not delay response.cancel until all silence is processed."""
+    adapter = GatedNaturalTailAdapter()
+    adapter.release.set()
+    async with open_runtime(
+        adapter,
+        capabilities=Capabilities(supports_natural_finish=True),
+        config={"sglang": {"finish_mode": "natural", "max_tail_units": 3}},
+    ) as runtime:
+        await runtime.append(b"\1" * UNIT_BYTES, 0, None, "client_append")
+        await runtime.end("client_end")
+        try:
+            await asyncio.wait_for(
+                adapter.tail_started.wait(), TEST_WAIT_TIMEOUT_SECONDS
+            )
+            assert runtime.is_unit_in_flight
+            await asyncio.wait_for(runtime.cancel(), TEST_WAIT_TIMEOUT_SECONDS)
+            assert adapter.cancel_called.is_set()
+            assert not adapter.release_tail.is_set()
+        finally:
+            adapter.release_tail.set()
+        assert runtime.pump_task is not None
+        await asyncio.wait_for(runtime.pump_task, TEST_WAIT_TIMEOUT_SECONDS)
+        assert adapter.tail_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_duplicate_input_end_is_rejected_while_natural_tail_runs() -> None:
+    """A repeated end during tail processing must not start another terminal path."""
+    adapter = GatedNaturalTailAdapter()
+    adapter.release.set()
+    async with open_runtime(
+        adapter,
+        capabilities=Capabilities(supports_natural_finish=True),
+        config={"sglang": {"finish_mode": "natural", "max_tail_units": 3}},
+    ) as runtime:
+        await runtime.append(b"\1" * UNIT_BYTES, 0, None, "client_append")
+        await runtime.end("client_end")
+        try:
+            await asyncio.wait_for(
+                adapter.tail_started.wait(), TEST_WAIT_TIMEOUT_SECONDS
+            )
+            with pytest.raises(ProtocolError) as error:
+                await runtime.end("duplicate_end")
+            assert error.value.code == "invalid_state"
+            assert adapter.tail_calls == 1
+        finally:
+            adapter.release_tail.set()
+        assert runtime.pump_task is not None
+        await asyncio.wait_for(runtime.pump_task, TEST_WAIT_TIMEOUT_SECONDS)
 
 
 @pytest.mark.asyncio

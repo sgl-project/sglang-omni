@@ -112,6 +112,7 @@ class VoiceCoordinator(FakeSessionClient):
 
     def __init__(self) -> None:
         super().__init__(auto_done=False)
+        self.append_started = asyncio.Event()
 
     async def append_session(
         self,
@@ -121,7 +122,9 @@ class VoiceCoordinator(FakeSessionClient):
         ready_timestamp_ns: int | None = None,
         ready_run_id: str | None = None,
     ) -> int:
-        return await super().append_session(session_identity, chunk)
+        appended_unit_index = await super().append_session(session_identity, chunk)
+        self.append_started.set()
+        return appended_unit_index
 
     def voice(
         self, input_seq: int, turn: int | None, payload: dict[str, object]
@@ -287,6 +290,47 @@ async def test_natural_tail_generates_bounded_silence_then_ends_the_session_inpu
     assert finished.status == (
         "completed" if expected_reason == "stop" else "incomplete"
     )
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_natural_tail_stops_after_the_current_unit() -> None:
+    """Cancelling a speaking reply during tail must not spend the remaining silence budget."""
+    coordinator = VoiceCoordinator()
+    adapter, events = await open_adapter(coordinator)
+    await run_unit(adapter, coordinator, 0, 1, voice(HEARD_PCM))
+
+    coordinator.append_started.clear()
+    tail_task = asyncio.create_task(adapter.finish_tail(replace(unit(0), eos=True), 3))
+    try:
+        await asyncio.wait_for(coordinator.append_started.wait(), 5)
+        assert coordinator.appended[-1].seq == 1
+        await adapter.cancel()
+        coordinator.append_started.clear()
+        coordinator.done(1)
+        await asyncio.wait_for(coordinator.append_started.wait(), 5)
+        assert coordinator.appended[-1].seq == 2
+        assert coordinator.appended[-1].eos
+        coordinator.voice(2, 1, voice(b"", end_of_turn=True))
+        coordinator.done(2)
+        await asyncio.wait_for(tail_task, 5)
+    finally:
+        if not tail_task.done():
+            tail_task.cancel()
+            await asyncio.gather(tail_task, return_exceptions=True)
+        else:
+            pass
+        await adapter.close()
+
+    assert [(chunk.seq, chunk.eos) for chunk in coordinator.appended] == [
+        (0, False),
+        (1, False),
+        (2, True),
+    ]
+    assert [event for event in events if isinstance(event, ResponseFinished)] == [
+        ResponseFinished(
+            FIRST_RESPONSE, FIRST_ITEM, "", True, "cancelled", "interrupted"
+        )
+    ]
 
 
 @pytest.mark.asyncio
