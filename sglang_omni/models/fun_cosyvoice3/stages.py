@@ -1476,6 +1476,23 @@ def set_dit_compile_config() -> None:
         _set_triton_libdevice_path()
 
 
+def dit_torch_compile_allowed(requested: bool, platform=None) -> bool:
+    """Keep the DiT compile decision with the model, not the platform."""
+    if not requested:
+        return False
+    else:
+        pass
+    platform = current_platform if platform is None else platform
+    if platform.device_type == "npu":
+        # The model that compiles on NPU lets dynamo infer its dynamic dims.
+        # This backbone marks batch and length itself, where inductor's
+        # value-range analysis folds inf * 0 into nan and raises
+        # `Invalid NaN comparison`.
+        return False
+    else:
+        return True
+
+
 def compile_dit_backbone(
     flow: FunCosyVoice3Flow,
     *,
@@ -2599,6 +2616,15 @@ def create_vocoder_executor(
 
     patch_chunk_mask()
 
+    dit_compile_requested = enable_dit_torch_compile
+    enable_dit_torch_compile = dit_torch_compile_allowed(dit_compile_requested)
+    if dit_compile_requested and not enable_dit_torch_compile:
+        logger.info(
+            f"Fun-CosyVoice3 DiT stays eager on {device_obj}: the compiled "
+            "backbone is not usable on this platform"
+        )
+    else:
+        pass
     # note (ratish): the packed route leaves the padded DiT only the fallback decode,
     # which runs it eagerly, so its compile and graphs would serve no request.
     if enable_dit_torch_compile and flow.is_buffered_packed:
