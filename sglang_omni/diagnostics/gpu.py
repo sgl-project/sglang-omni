@@ -417,6 +417,36 @@ def logical_devices(
     return devices
 
 
+def musa_driver_version(warnings: list[str]) -> str | None:
+    """Query the optional MTML driver version and release its library handle."""
+    try:
+        mtml = importlib.import_module("pymtml")
+    except ModuleNotFoundError as exc:
+        if exc.name == "pymtml":
+            return None
+        else:
+            raise
+
+    try:
+        mtml.mtmlLibraryInit()
+    except Exception as exc:
+        warnings.append(f"MUSA driver query failed: {exc}")
+        return None
+
+    driver_version: str | None = None
+    try:
+        system = mtml.mtmlLibraryInitSystem()
+        driver_version = decode_nvml_string(mtml.mtmlSystemGetDriverVersion(system))
+    except Exception as exc:
+        warnings.append(f"MUSA driver query failed: {exc}")
+    finally:
+        try:
+            mtml.mtmlLibraryShutDown()
+        except Exception as exc:
+            warnings.append(f"MUSA driver query cleanup failed: {exc}")
+    return driver_version
+
+
 def accelerator_logical_devices(
     torch: ModuleType,
     device_type: str,
@@ -430,36 +460,7 @@ def accelerator_logical_devices(
     """
 
     device_module = torch.get_device_module(device_type)
-    driver_version: str | None = None
-    if device_type == "musa":
-        try:
-            mtml = importlib.import_module("pymtml")
-        except ModuleNotFoundError as exc:
-            if exc.name != "pymtml":
-                raise
-            else:
-                pass
-        else:
-            mtml_initialized = False
-            try:
-                mtml.mtmlLibraryInit()
-                mtml_initialized = True
-                system = mtml.mtmlLibraryInitSystem()
-                driver_version = decode_nvml_string(
-                    mtml.mtmlSystemGetDriverVersion(system)
-                )
-            except Exception as exc:
-                warnings.append(f"MUSA driver query failed: {exc}")
-            finally:
-                if mtml_initialized:
-                    try:
-                        mtml.mtmlLibraryShutDown()
-                    except Exception as exc:
-                        warnings.append(f"MUSA driver query cleanup failed: {exc}")
-                else:
-                    pass
-    else:
-        pass
+    driver_version = musa_driver_version(warnings) if device_type == "musa" else None
     if not device_module.is_available():
         return [], driver_version
     else:
