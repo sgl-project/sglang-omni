@@ -120,10 +120,14 @@ class MiniCPMOCode2Wav(nn.Module):
                 dtype=torch_dtype,
                 n_timesteps=n_timesteps,
             )
-        if resolved_device.type == "npu":
+        if resolved_device.type == "npu" and internal_format_option is not None:
             npu_extension = importlib.import_module("torch_npu")
-            actual_format = npu_extension._C._npu_getOption("ALLOW_INTERNAL_FORMAT").decode()
-            logger.warning(f"SPEECH_NPU_INTERNAL_FORMAT_ACTUAL after_model_load={actual_format}")
+            actual_format = npu_extension._C._npu_getOption(
+                "ALLOW_INTERNAL_FORMAT"
+            ).decode()
+            logger.warning(
+                f"SPEECH_NPU_INTERNAL_FORMAT_ACTUAL after_model_load={actual_format}"
+            )
         install_flow_npu_graph(self.token2wav)
         self.token2wav.flow.decoder.estimator.enable_variable_length = (
             enable_flow_variable_length
