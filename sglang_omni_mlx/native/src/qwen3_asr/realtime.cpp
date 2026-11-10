@@ -249,6 +249,10 @@ void RealtimeSession::StartSegment(long start_sample) {
   segment.start_sample = start_sample;
   segment.next_refresh_sample = start_sample + settings_.first_decode_samples;
   segment.language = language_;
+  if (transcriber_.CanReuseRefreshes()) {
+    segment.reuse = std::make_shared<RefreshReuse>();
+  } else {
+  }
   segment_ = std::move(segment);
 }
 
@@ -259,28 +263,38 @@ std::vector<float> RealtimeSession::SegmentSamples(const Segment &segment,
   return std::vector<float>(samples_.begin() + begin, samples_.begin() + end);
 }
 
-TranscriptionOptions RealtimeSession::DecodeOptions(Segment &segment) {
+TranscriptionOptions RealtimeSession::DecodeOptions(Segment &segment,
+                                                    bool is_refresh) {
   TranscriptionOptions options;
   options.language = segment.language;
   const bool use_prefix = segment.decode_count >= kPrefixAfterRefreshCount &&
                           !segment.transcript.empty() &&
                           segment.language.has_value();
   if (use_prefix) {
-    auto [ids, text] = transcriber_.RetainedPrefix(segment.transcript,
-                                                   kPrefixRollbackTokenCount);
-    options.prefix_token_ids = std::move(ids);
-    options.prefix_text = std::move(text);
+    RetainedText retained = transcriber_.RetainedPrefix(
+        segment.transcript, kPrefixRollbackTokenCount);
+    options.prefix_token_ids = std::move(retained.prefix_ids);
+    options.prefix_text = std::move(retained.prefix_text);
+    // Note (XXXXRT666): a refresh checks the rolled-back tokens as guesses;
+    // the final decode decodes them as before.
+    if (is_refresh) {
+      options.guessed_token_ids = std::move(retained.rest_ids);
+    } else {
+    }
   } else {
   }
   segment.decode_count += 1;
   return options;
 }
 
-Transcription RealtimeSession::Decode(std::vector<float> samples,
-                                      TranscriptionOptions options) const {
+Transcription
+RealtimeSession::Decode(std::vector<float> samples,
+                        TranscriptionOptions options,
+                        std::shared_ptr<RefreshReuse> reuse) const {
   return [&transcriber = transcriber_, samples = std::move(samples),
-          options = std::move(options)](const std::atomic<bool> &cancel) {
-    return transcriber.Transcribe(samples, options, cancel);
+          options = std::move(options),
+          reuse = std::move(reuse)](const std::atomic<bool> &cancel) {
+    return transcriber.Transcribe(samples, options, cancel, reuse.get());
   };
 }
 
@@ -296,6 +310,7 @@ void RealtimeSession::ApplyResult(Segment &segment,
 void RealtimeSession::MaybeStartRefresh() {
   std::vector<float> samples;
   TranscriptionOptions options;
+  std::shared_ptr<RefreshReuse> reuse;
   int segment_id = 0;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -320,14 +335,15 @@ void RealtimeSession::MaybeStartRefresh() {
       return;
     } else {
     }
-    options = DecodeOptions(segment);
+    options = DecodeOptions(segment, true);
+    reuse = segment.reuse;
     segment_id = segment.segment_id;
     refreshing_ = true;
   }
   std::weak_ptr<RealtimeSession> weak_self =
       std::static_pointer_cast<RealtimeSession>(shared_from_this());
   worker_.Submit(
-      Decode(std::move(samples), std::move(options)), cancel_,
+      Decode(std::move(samples), std::move(options), std::move(reuse)), cancel_,
       [weak_self, segment_id](std::optional<TranscriptionResult> result,
                               std::exception_ptr error) {
         const std::shared_ptr<RealtimeSession> self = weak_self.lock();
@@ -399,11 +415,11 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
       TranscriptionOptions options;
       {
         std::lock_guard<std::mutex> lock(mutex_);
-        options = DecodeOptions(segment);
+        options = DecodeOptions(segment, false);
       }
       try {
         const TranscriptionResult result = worker_.Transcribe(
-            Decode(std::move(samples), std::move(options)), cancel_);
+            Decode(std::move(samples), std::move(options), nullptr), cancel_);
         ApplyResult(segment, result);
         text = result.text;
       } catch (...) {

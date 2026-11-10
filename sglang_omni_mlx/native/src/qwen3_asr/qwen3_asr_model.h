@@ -37,6 +37,10 @@ public:
   mlx::core::array Decode(const mlx::core::array &embeddings,
                           std::vector<KVCache> &caches) const;
   std::vector<KVCache> NewCaches() const;
+  // Mel frames per attention window of the encoder. A mel cut at a multiple
+  // of it encodes to the rows its windows get in the whole mel, but for the
+  // rounding of matrices with other row counts.
+  int WindowFrameCount() const;
   const Qwen3Decoder &decoder() const { return decoder_; }
   // One decode step for a batch; see Qwen3Decoder::DecodeBatch.
   mlx::core::array DecodeBatch(const mlx::core::array &embeddings,

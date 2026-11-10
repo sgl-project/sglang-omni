@@ -252,4 +252,10 @@ std::vector<KVCache> Qwen3ASR::NewCaches() const {
   return decoder_.NewCaches();
 }
 
+int Qwen3ASR::WindowFrameCount() const {
+  const int chunk_frame_count = audio_.n_window * 2;
+  return std::max(1, audio_.n_window_infer / chunk_frame_count) *
+         chunk_frame_count;
+}
+
 } // namespace qwen3_asr
