@@ -221,7 +221,6 @@ def decode(
         backend.req_to_token_pool.req_to_token[request_index, token_length] = (
             token_slots[request_index - 1]
         )
-    model.decode_input_embedding.weight[:batch_size].copy_(feedback_embeddings)
     batch = ForwardBatch(
         forward_mode=ForwardMode.DECODE,
         batch_size=batch_size,
@@ -237,4 +236,6 @@ def decode(
     )
     backend.init_forward_metadata(batch)
     with forward_context(ForwardContext(attn_backend=backend)):
-        return model(batch.input_ids, batch.positions, batch)
+        return model(
+            batch.input_ids, batch.positions, batch, input_embeds=feedback_embeddings
+        )

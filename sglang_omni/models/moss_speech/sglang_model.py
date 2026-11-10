@@ -97,14 +97,18 @@ class MossSpeechSGLangModel(torch.nn.Module):
         self.audio_lm_head: ParallelLMHead = ParallelLMHead(
             self.audio_vocab_size, self.hidden_size
         )
-        self.decode_input_embedding: torch.nn.Embedding = torch.nn.Embedding(
-            config.moss_decode_buffer_bs,
-            self.hidden_size,
-            device=init_device or torch.device("cpu"),
-            dtype=self.dtype,
-        )
-        self.decode_input_embedding.weight.requires_grad_(False)
         assert self.attention_layer_ids() == list(range(self.total_attention_layers))
+
+    def rows_to_embeddings(self, rows: torch.Tensor) -> torch.Tensor:
+        rows = rows.to(device=self.embed_tokens.weight.device, dtype=torch.long)
+        text_tokens, audio_tokens = rows[:, 0], rows[:, 1]
+        audio_positions = text_tokens == self.config.modality_pad_token_id
+        text_embeddings = self.embed_tokens(text_tokens.masked_fill(audio_positions, 0))
+        audio_embeddings = self.audio_embed(audio_tokens)
+        text_selection = (~audio_positions).unsqueeze(-1).to(text_embeddings.dtype)
+        return text_embeddings * text_selection + audio_embeddings * (
+            1 - text_selection
+        )
 
     def attention_layer_ids(self) -> list[int]:
         return [
@@ -127,7 +131,11 @@ class MossSpeechSGLangModel(torch.nn.Module):
         if input_embeds is not None:
             hidden_states = input_embeds
         elif is_decode:
-            hidden_states = self.decode_input_embedding(input_ids)
+            rows = torch.stack(
+                (input_ids // self.audio_vocab_size, input_ids % self.audio_vocab_size),
+                dim=1,
+            )
+            hidden_states = self.rows_to_embeddings(rows)
         else:
             raise ValueError("MOSS-Speech prefill requires dual-channel embeddings")
         if is_decode:

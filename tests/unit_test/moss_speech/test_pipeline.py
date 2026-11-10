@@ -111,6 +111,9 @@ class SpeechClient(Client):
     def __init__(self, codec: MossSpeechCodec) -> None:
         self.codec = codec
 
+    async def abort(self, request_id: str) -> bool:
+        return True
+
     async def generate(
         self, request: GenerateRequest, request_id: str | None = None
     ) -> AsyncIterator[GenerateChunk]:
