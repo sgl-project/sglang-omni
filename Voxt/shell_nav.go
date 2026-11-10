@@ -175,36 +175,37 @@ func (a *app) navRail(c *ui.Context) {
 		})
 		ui.Box(c).Absolute().Left(0).Right(0).Bottom(0).Height(px(t, 16)).Gradient(k.Sidebar.Alpha(0), k.Sidebar, 180).PassThrough()
 	})
-	// Settings, with a dot while there are notifications: then it opens
-	// them, with Settings under them (shell_notices.go).
-	ui.Column(c).AlignItems(ui.Center).Padding(px(t, 4), 0, px(t, 6)).Shrink(0).Children(func() {
-		tip, dot := i18n.T("Settings")+" (⌘,)", ""
-		if n := len(a.notices); n > 0 {
-			tip = i18n.N(n, "%d notification", "%d notifications", n) + " · " + tip
-			dot = "notices"
-		}
-		b := a.railButton(c, "rail/settings", icons.Settings, i18n.T("Settings"), tip, a.settingsOpen || a.noticesOpen, dot, func() {
-			if len(a.notices) > 0 {
-				a.noticesOpen = !a.noticesOpen
-				return
-			}
-			a.navigate("/settings")
-		})
-		if len(a.notices) == 0 {
-			a.noticesOpen = false
-		}
-		ui.Popover(c, b, &a.noticesOpen, func() { a.noticePopover(c) })
-	})
 }
 
-// railItem is a page's icon in the rail.
+// railItem is a page's icon in the rail. Settings' has a dot while there
+// are notifications: then it opens them, with Settings under them
+// (shell_notices.go).
 func (a *app) railItem(c *ui.Context, path string, ic icons.Icon, title string) {
 	tip := title
 	if k := pageKeys(path); k != "" {
 		tip += " (" + k + ")"
 	}
-	selected := !a.settingsOpen && section(a.router.Path()) == path
-	a.railButton(c, "rail"+path, ic, title, tip, selected, a.navBadge(path), func() { a.navigate(path) })
+	if path != settingsPath {
+		selected := !a.settingsOpen && section(a.router.Path()) == path
+		a.railButton(c, "rail"+path, ic, title, tip, selected, a.navBadge(path), func() { a.navigate(path) })
+		return
+	}
+	tip, dot := tip+" (⌘,)", ""
+	if n := len(a.notices); n > 0 {
+		tip = i18n.N(n, "%d notification", "%d notifications", n) + " · " + tip
+		dot = "notices"
+	}
+	b := a.railButton(c, "rail"+path, ic, title, tip, a.settingsOpen || a.noticesOpen, dot, func() {
+		if len(a.notices) > 0 {
+			a.noticesOpen = !a.noticesOpen
+			return
+		}
+		a.navigate(settingsPath)
+	})
+	if len(a.notices) == 0 {
+		a.noticesOpen = false
+	}
+	ui.Popover(c, b, &a.noticesOpen, func() { a.noticePopover(c) })
 }
 
 // railButton is a button of the rail: Bold on the pressed face while
@@ -256,6 +257,13 @@ func (a *app) sidebar(c *ui.Context) {
 	side.SurfaceHover, side.SurfacePressed = k.G[2], k.G[3]
 	chosen := side
 	chosen.Accent = k.Text
+	// Settings' item is the chosen one while its dialog shows, over the
+	// page, and the page's again once it closes.
+	if a.settingsOpen {
+		a.nav = settingsPath
+	} else if a.nav == settingsPath {
+		a.nav = section(a.router.Path())
+	}
 	// The list scrolls: a fade at its foot says there is more below.
 	ui.Column(c).Grow(1).MinHeight(0).Children(func() {
 		ui.Sidebar(c, &a.nav, func() {
@@ -295,23 +303,10 @@ func (a *app) sidebar(c *ui.Context) {
 		ui.Box(c).Absolute().Left(0).Right(0).Bottom(0).Height(px(t, 20)).Gradient(k.Sidebar.Alpha(0), k.Sidebar, 180).PassThrough()
 	})
 	a.saveClosedSections()
-	// The notifications, over Settings (shell_notices.go).
+	// The notifications, at the foot (shell_notices.go).
 	if len(a.notices) > 0 {
 		ui.Column(c).Shrink(0).Padding(px(t, sp1), px(t, 10), px(t, sp2)).Children(func() { a.noticeStack(c) })
 	}
-	ui.Column(c).Shrink(0).Padding(px(t, 6), px(t, 10), px(t, 8)).BorderWidth(1, 0, 0, 0).BorderColor(k.Line).Children(func() {
-		b := ghostBase(c.Key("nav-settings")).Padding(px(t, 6), px(t, sp2)).Gap(px(t, sp2)).Justify(ui.Start).Label(i18n.T("Settings")).Tooltip(i18n.T("Settings") + " (⌘,)")
-		b.Children(func() {
-			ui.Icon(c, icons.Settings.Get(a.settingsOpen)).Size(px(t, 16), px(t, 16)).TextColor(k.Text2)
-			ui.Text(c, i18n.T("Settings")).TextColor(k.G[8]).SingleLine().Grow(1).MinWidth(0)
-			if a.version != "" {
-				ui.Text(c, "v"+a.version).FontSize(px(t, fsMicro)).TextColor(k.Text3).SingleLine().Shrink(0)
-			}
-		})
-		if b.Clicked() {
-			a.navigate("/settings")
-		}
-	})
 }
 
 // sidebarSearch is the sidebar's search field: it opens the palette.

@@ -1,10 +1,10 @@
 package main
 
 // The notifications (the notification centre's, internal/notify), shown
-// as a stack of cards at the foot of the sidebar, over the Settings row:
+// as a stack of cards at the foot of the sidebar:
 // the newest whole, up to two more peeking under it; × dismisses one and
-// the next comes up. The icon rail shows a dot on its Settings icon, which
-// then opens the same stack in a popover. There is no status bar: what it
+// the next comes up. The icon rail shows a dot on its Settings icon (the
+// System section's), which then opens the same stack in a popover. There is no status bar: what it
 // showed (the services Transcribe uses, the helper) becomes a card while
 // something is wrong (setProblem), with the action that fixes it.
 

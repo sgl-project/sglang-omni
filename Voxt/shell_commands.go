@@ -313,6 +313,9 @@ func (a *app) buildMenu() {
 			goItems = append(goItems, mygo.Separator())
 		}
 		for _, p := range g.pages {
+			if p.path == settingsPath {
+				continue // the app menu's Settings… (⌘,)
+			}
 			acc := ""
 			if k := pageKeys(p.path); k != "" {
 				acc = "CmdOrCtrl+" + k[len("⌘"):]

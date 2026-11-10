@@ -31,8 +31,8 @@ func TestSidebarAndShortcuts(t *testing.T) {
 	frames(tt)
 	a.clearNotices()
 	for _, p := range pages {
-		// The last rows can sit under the Settings footer: scroll the list
-		// to them, as a person would.
+		// The last rows can sit under the fade at the list's foot: scroll
+		// the list to them, as a person would.
 		if r, ok := tt.Find(pageTitle(p.path)); ok && r.H < 10 {
 			home, _ := tt.Find(pageTitle("/home"))
 			tt.Scroll(home.X+home.W/2, float32(windowHeight)/2, 0, 200)
@@ -54,13 +54,17 @@ func TestSidebarAndShortcuts(t *testing.T) {
 	if len(shortcutPages) != 6 {
 		t.Errorf("%d shortcut pages", len(shortcutPages))
 	}
-	// Settings, at the foot of the sidebar, opens the dialog over the page.
+	// Settings, the System section's last item, opens the dialog over the
+	// page, and is the chosen item while it shows.
 	click(t, tt, "Settings")
-	if !a.settingsOpen || a.shownPath() != "/settings/general" || a.router.Path() != "/app-enhancement" {
-		t.Fatalf("settings: %v %s over %s", a.settingsOpen, a.shownPath(), a.router.Path())
+	if !a.settingsOpen || a.shownPath() != "/settings/general" || a.router.Path() != "/app-enhancement" || a.nav != settingsPath {
+		t.Fatalf("settings: %v %s over %s, chosen %s", a.settingsOpen, a.shownPath(), a.router.Path(), a.nav)
 	}
 	tt.Key(0, ui.KeyEscape)
 	frames(tt)
+	if a.nav != "/app-enhancement" {
+		t.Errorf("the sidebar chose %s once the settings closed", a.nav)
+	}
 	if a.settingsOpen {
 		t.Error("Escape left the settings open")
 	}
