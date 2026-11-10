@@ -28,7 +28,7 @@ var answerSchema = func() *llm.Schema {
 func (r *run) writeInput(raw, selection string) compose.Input {
 	in := compose.Input{
 		MainLanguage: MainLanguage(r.settings, r.m.cfg.Locale()), OtherLanguages: r.settings.General.OtherLanguages,
-		Glossary: r.glossary(), Scene: r.composeScene(), // the group decides whether it applies to the feature (appctx)
+		Glossary: r.glossary(), Dictionary: PromptDictionary(r.settings), Scene: r.composeScene(), // the group decides whether it applies to the feature (appctx)
 	}
 	switch r.req.Kind {
 	case store.KindTranslate:

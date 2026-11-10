@@ -91,7 +91,7 @@ func (a *app) llmDebugInput(p llmDebugPreset, prompt string) compose.Input {
 	u, f := &a.llmDbg, a.prefs.Features
 	in := compose.Input{
 		MainLanguage: session.MainLanguage(a.prefs, i18n.Locale()), OtherLanguages: a.prefs.General.OtherLanguages,
-		Text: strings.TrimSpace(u.input),
+		Text: strings.TrimSpace(u.input), Dictionary: session.PromptDictionary(a.prefs),
 	}
 	rules := prompt
 	if p.group != "" {

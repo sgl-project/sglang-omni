@@ -73,3 +73,11 @@
 - **应看到**：说话时和模型生成时，浮窗都不显示文字；结果照常插入，答案卡片照常显示结果。
 - **边界**：关掉后再打开，下一次录音就会恢复显示实时文字。
 - **覆盖**：`TestLiveTextSwitch`、`TestLiveTextCard`、`TestLiveTextNoLLMDraft`；手测 9.4、9.13。
+
+## S10. 写一份个人词典
+
+- **起点**：用户有一张自己的写法表（标准写法、纠正映射、条件），原来分别粘贴在转录、翻译、改写的提示词里。
+- **操作**：词典页 → 切到“个人词典” → 把表格粘贴进编辑框 → 看下面的“怎么使用”，切换转录、翻译、改写。
+- **应看到**：内容自动保存，重启后还在；“怎么使用”分别显示系统提示词、个人词典、你的输入、语音识别文本，再显示语言模型收到的消息，个人词典紧跟在系统提示词的任务规则后面；关掉“加到语言模型的提示词里”后示例里写“不发送”。
+- **边界**：编辑框为空、开关关掉或词典总开关关掉时都不发送；语音识别从来不收到它；原有词条和别名照常生效；用户自己写了完整提示词时也只加一次；200 行的表格整页滚动，不在编辑框里另出一个滚动条。
+- **覆盖**：`TestDictionaryNotes`、`TestPersonalDictionary`、`TestGoldenDictionary`、`TestDictionaryKeepsThePrefix`、`TestDictionaryMarkdown`、`TestDictionaryNotesUpgrade`；截图 `page-dictionary-notes*`。

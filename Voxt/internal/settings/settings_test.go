@@ -574,3 +574,22 @@ func TestLiveLinesDefault(t *testing.T) {
 		}
 	}
 }
+
+// TestDictionaryNotesUpgrade: 2.0.3's settings, which have no personal
+// dictionary, read with none and its switch on; notes and the switch
+// round-trip.
+func TestDictionaryNotesUpgrade(t *testing.T) {
+	old, err := Migrate([]byte(`{"version":4,"dictionary":{"enabled":true,"asrHints":true,"glossary":true,"speechContext":"Leo"}}`))
+	if d := old.Dictionary; err != nil || d.Notes != "" || d.NotesOff || !d.Enabled || !d.Glossary || d.SpeechContext != "Leo" {
+		t.Fatalf("2.0.3's dictionary: %+v %v", d, err)
+	}
+	for _, off := range []bool{false, true} {
+		s := Defaults()
+		s.Dictionary.Notes, s.Dictionary.NotesOff = "| 101 | `幺零幺` → 101 |\n\n```\nx | y\n```", off
+		out, _ := json.Marshal(s)
+		again, err := Migrate(out)
+		if err != nil || again.Dictionary != s.Dictionary {
+			t.Errorf("saved as %s, read back %+v (%v)", out, again.Dictionary, err)
+		}
+	}
+}
