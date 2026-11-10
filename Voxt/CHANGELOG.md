@@ -38,6 +38,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **A large dictionary no longer slows dictation down**: after you dictate, Voxt replaces the dictionary's aliases with their terms. It now checks only the aliases that start with the letter at each place. With 1,000 terms, a 4 KB transcript took 57 ms and now takes 2 ms; a 20 KB one took 280 ms and now takes 8 ms (Apple M5 Max). The result is the same.
 
+### Fixed
+
+- **A connection test without an API key says why in words**: in a language model's dialog, Test connection with no key saved or typed now says "Paste the service's API key above, then test again." The ⓘ beside it now gives that whole sentence before the error's detail. Before, it showed only the error code (`llm.no_key provider="anthropic"`), and the message pointed you to the Language models page you were already on.
+
 ### 中文
 
 #### 修复
@@ -73,6 +77,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 变更
 
 - **词典很大时听写不再变慢**：听写完成后，Voxt 会把词典里的别名换成对应的词条，现在每个位置只检查以该字开头的别名。词典有 1000 个词条时，4 KB 的转录稿从 57 毫秒降到 2 毫秒，20 KB 的从 280 毫秒降到 8 毫秒（Apple M5 Max）。替换结果不变。
+
+#### 修复
+
+- **没有 API Key 时测试连接，会用文字说明原因**：在语言模型的对话框里，没保存也没填写 Key 就点“测试连接”，提示改为“请在上方粘贴该服务的 API Key，然后再测试。”旁边的 ⓘ 先给出这句完整的话，再给错误详情。以前 ⓘ 只显示错误代码（`llm.no_key provider="anthropic"`），提示还让你去当前已经在的“语言模型”页。
 
 ## [2.0.3] - 2026-11-10
 

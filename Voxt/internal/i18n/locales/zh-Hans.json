@@ -573,6 +573,7 @@
   "New website rule": "新的网站规则",
   "Newest %d": "最新 %d 条",
   "No API key is saved for the remote model. Add one on the Language models page.": "远程模型还没有保存 API Key，请在“语言模型”页添加。",
+  "Paste the service's API key above, then test again.": "请在上方粘贴该服务的 API Key，然后再测试。",
   "No address": "没有地址",
   "%s does not show its address right now, so it matches as an app.": "%s 现在读不到网址，只能按 App 匹配。",
   "No address: app only": "读不到网址：只能按 App 匹配",
