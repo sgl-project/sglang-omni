@@ -113,20 +113,6 @@ func numberInput(c *ui.Context, value *float64, lo, hi, step float64, o numOpts)
 	return changed
 }
 
-// popoverWithFooter is a popover's content: body in a scroll as tall as
-// the window allows, and footer (Reset…) pinned under it, past a hairline,
-// so it shows however long the body is.
-func popoverWithFooter(c *ui.Context, key string, footer, body func()) {
-	t := c.Theme()
-	_, h := c.Size()
-	maxH := max(px(t, 180), min(px(t, 420), h*0.4)) // room above or below the button it opens from
-	ui.Column(c.Key(key + "-pop-frame")).Children(func() {
-		ui.Scroll(c.Key(key + "-pop-scroll")).MaxHeight(maxH).Children(body)
-		ui.Divider(c)
-		ui.Column(c.Key(key + "-pop-footer")).Padding(px(t, 10)).AlignItems(ui.Stretch).Children(footer)
-	})
-}
-
 // segmentedSome is ui.Segmented (as wide as its segments, as
 // segmentedFit) whose segments may be off: off[i] true greys segment i
 // out, and tips[i] ("" for none) says why, as its tooltip. Its Changed
