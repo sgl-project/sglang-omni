@@ -8,11 +8,19 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Voxt 1.x on Apple silicon updates to Voxt 2 by itself**: each release also has the app as `Voxt-X.Y.Z-macOS.zip`, which Voxt 1.x's in-app update installs on a Mac with Apple silicon (first for those who turned on Beta Updates, then for everyone there) and the Homebrew cask (`brew install --cask hehehai/tap/voxt`, Apple silicon only) installs. Voxt 1.x on an Intel Mac is not offered Voxt 2, which does not run there, and stays on Voxt 1.x. After the update, allow the microphone and accessibility again: macOS sees Voxt 2 as another app.
 
+### Changed
+
+- **A large dictionary no longer slows dictation down**: after you dictate, Voxt replaces the dictionary's aliases with their terms. It now checks only the aliases that start with the letter at each place. With 1,000 terms, a 4 KB transcript took 57 ms and now takes 2 ms; a 20 KB one took 280 ms and now takes 8 ms (Apple M5 Max). The result is the same.
+
 ### 中文
 
 #### 新增
 
 - **Apple 芯片上的 Voxt 1.x 自己更新到 Voxt 2**：每个版本还附带 app 的 `Voxt-X.Y.Z-macOS.zip`，在 Apple 芯片的 Mac 上，Voxt 1.x 的应用内更新安装它（先给打开了“Beta 更新”的用户，再给其他人），Homebrew 的 cask（`brew install --cask hehehai/tap/voxt`，只支持 Apple 芯片）也装它。Intel Mac 上的 Voxt 1.x 不会收到 Voxt 2（Voxt 2 不能在 Intel 上运行），继续用 Voxt 1.x。更新后要重新允许麦克风和辅助功能：macOS 把 Voxt 2 当成另一个 app。
+
+#### 变更
+
+- **词典很大时听写不再变慢**：听写完成后，Voxt 会把词典里的别名换成对应的词条，现在每个位置只检查以该字开头的别名。词典有 1000 个词条时，4 KB 的转录稿从 57 毫秒降到 2 毫秒，20 KB 的从 280 毫秒降到 8 毫秒（Apple M5 Max）。替换结果不变。
 
 ## [2.0.3] - 2026-11-10
 
