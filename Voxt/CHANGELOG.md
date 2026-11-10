@@ -4,11 +4,19 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Fixed
+
+- **Meetings use your main language**: the live transcript and the transcript made after a meeting now give the speech model the same language hint as dictation (your main language in Settings → General, such as Simplified or Traditional Chinese). Before, meetings gave no hint and the model guessed the language. The speech model still picks the Chinese script itself: Voxt does not convert between Simplified and Traditional.
+
 ### Added
 
 - **Voxt 1.x on Apple silicon updates to Voxt 2 by itself**: each release also has the app as `Voxt-X.Y.Z-macOS.zip`, which Voxt 1.x's in-app update installs on a Mac with Apple silicon (first for those who turned on Beta Updates, then for everyone there) and the Homebrew cask (`brew install --cask hehehai/tap/voxt`, Apple silicon only) installs. Voxt 1.x on an Intel Mac is not offered Voxt 2, which does not run there, and stays on Voxt 1.x. After the update, allow the microphone and accessibility again: macOS sees Voxt 2 as another app.
 
 ### 中文
+
+#### 修复
+
+- **会议也按主语言识别**：会议的实时字幕和会后整理的转录稿，现在和听写一样把主语言（设置 → 通用 → 主语言，比如简体中文或繁体中文）告诉语音识别模型。以前会议不告诉模型，由模型自己猜语言。简体还是繁体仍由模型决定，Voxt 不做简繁转换。
 
 #### 新增
 
