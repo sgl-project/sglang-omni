@@ -21,6 +21,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
@@ -166,7 +167,13 @@ func (a *app) llmDebugPage(c *ui.Context) {
 	t := c.Theme()
 	k := tok(t)
 	u := &a.llmDbg
-	columnPageHeader(c, i18n.T("Language model debug"), nil)
+	// The page opens from Language models over its own route: Esc or ×
+	// goes back there (#3781).
+	columnPageHeader(c, i18n.T("Language model debug"), func() {
+		if iconButton(c.Key("llmdbg-close"), icons.Close, i18n.T("Close")).Clicked() || c.Shortcut(0, ui.KeyEscape) {
+			a.navigate(remotePath)
+		}
+	})
 	ui.Scroll(c.Key("llmdbg-scroll")).Grow(1).MinHeight(0).Children(func() {
 		pageColumn(c).Gap(px(t, sp4)).Children(func() {
 			caption(c, i18n.T("Try a prompt on your own text. Nothing is saved until you click Use this prompt."))

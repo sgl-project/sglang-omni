@@ -19,6 +19,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **System dictation keeps what was said before a pause**: some macOS versions restart their speech recognition after a short pause, and the result held only the words after it, in History and in the app the text went to. Voxt now keeps each part and joins them.
 - **One Escape closes a dialog** (History settings, the setup guide, Network, a language model's settings): with the keyboard focus on a button that shows a tip, such as the dialog's ×, the first Escape only hid the tip and the second closed the dialog.
 - **Logs says when the filter matches nothing**: a filter that matches no line shows "Nothing matches" with Clear filter, on the Logs page and in the logs panel, instead of "No log lines yet."
+- **Language model debug closes with Esc or ×**: opened from Try prompts on a model…, it had no close control: only the sidebar, or Open Language models before a model is set up, led away from it. Esc and the × at the top right now go back to Language models; Esc in an open menu still closes only the menu.
 
 ### 中文
 
@@ -37,6 +38,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **系统听写不再丢掉停顿之前说的话**：有些 macOS 版本在短暂停顿后会重新开始识别，结果里只剩停顿之后的话，历史记录和输入的 app 里都一样。现在 Voxt 把每一段都留下，再接起来。
 - **按一次 Esc 就能关对话框**（历史设置、设置引导、网络、语言模型的设置）：焦点在带提示的按钮上时（比如对话框右上角的 ×），第一次 Esc 只收起提示，第二次才关掉对话框。
 - **日志筛选没有匹配时如实说明**：筛选不到任何一行时，日志页和日志面板显示“没有匹配的记录”和“清除筛选”，不再显示“还没有日志。”
+- **语言模型调试页可以按 Esc 或 × 关掉**：从“调试提示词…”打开后，页面上原来没有关闭按钮，只能点侧边栏，或者在还没设置模型时点“打开语言模型页”离开。现在按 Esc 或点右上角的 × 都会回到语言模型页；菜单打开时按 Esc 仍然只关菜单。
 
 ## [2.0.3] - 2026-11-10
 
