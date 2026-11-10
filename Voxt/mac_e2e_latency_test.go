@@ -14,7 +14,10 @@ package main
 //	switch  the first session after Transcribe's speech model changed, the same wait after the change
 //
 // MEASURE lines give each session's stages from the shortcut, then each
-// scenario's median and range (scripts/mac-latency.sh runs it):
+// scenario's median and range (scripts/mac-latency.sh runs it).
+// VOXTNEW_LATENCY_PCM names another recording to play and
+// VOXTNEW_LATENCY_SPEAK (2s) how long a session records after its first
+// live text (long sessions: memory, the live text's pace, the Final):
 //
 //	VOXTNEW_LATENCY=1 VOXTNEW_OMNI_RUNTIME=… VOXTNEW_OMNI_MODELS="asr.accurate=…;asr.fast=…;vad.silero=…" \
 //	  go test -count=1 -run TestMacE2EFirstLatency -v -timeout 30m .
@@ -158,7 +161,7 @@ func TestMacE2EFirstLatency(t *testing.T) {
 	for round := 1; round <= rounds; round++ {
 		t.Run(fmt.Sprintf("round%d", round), func(t *testing.T) {
 			opened := time.Now()
-			a := newSessionApp(t, "frame-ms=100,"+helpertest.Opt("pcm", speechSample()), func(s *settings.Settings) {
+			a := newSessionApp(t, "frame-ms=100,"+helpertest.Opt("pcm", latencyAudio()), func(s *settings.Settings) {
 				s.Features.Transcribe.Enhance = false
 				s.Features.Transcribe.ASR = ids[0]
 				s.General.MainLanguage = "zh"
@@ -238,7 +241,17 @@ func latencySession(t *testing.T, a *sessionApp, lg *latencyLog, from time.Time,
 		t.Fatalf("%s: no live text (session %s %+v)", name, a.sess.State, a.sess.Problem)
 	}
 	st.partial = time.Since(t0)
-	a.pumpFor(2*time.Second, func() bool { return false })
+	// The live text's updates while the user speaks: their count and the longest wait between two.
+	speak, updates, gap, seen, at := 2*time.Second, 0, time.Duration(0), a.sess.Partial, time.Now()
+	if d, err := time.ParseDuration(os.Getenv("VOXTNEW_LATENCY_SPEAK")); err == nil {
+		speak = d
+	}
+	a.pumpFor(speak, func() bool {
+		if a.sess.Partial != seen {
+			seen, updates, gap, at = a.sess.Partial, updates+1, max(gap, time.Since(at)), time.Now()
+		}
+		return a.sess.State.Ended()
+	})
 	stopped := time.Now()
 	a.stopSession()
 	if !a.pumpFor(time.Minute, func() bool { return a.sess.State.Ended() }) || a.sess.State != session.Done || a.sess.ASR.ID != id {
@@ -248,8 +261,24 @@ func latencySession(t *testing.T, a *sessionApp, lg *latencyLog, from time.Time,
 	if r, ok := lg.since(id, from); ok {
 		st.ready, st.load = r.at.Sub(t0), r.load
 	}
-	t.Logf("MEASURE latency %s %s: first audio %v, server ready %v (its start %v), first partial %v, final %v after Stop: %q", name, id,
+	t.Logf("MEASURE latency %s %s: first audio %v, server ready %v (its start %v), first partial %v, %d live updates in %v (longest wait %v), final %v after Stop: %d characters %q", name, id,
 		st.heard.Round(time.Millisecond), st.ready.Round(time.Millisecond), st.load.Round(time.Millisecond),
-		st.partial.Round(time.Millisecond), st.final.Round(time.Millisecond), a.sess.Raw)
+		st.partial.Round(time.Millisecond), updates, speak, gap.Round(time.Millisecond), st.final.Round(time.Millisecond), len([]rune(a.sess.Raw)), firstRunes(a.sess.Raw, 40))
 	return st
+}
+
+// latencyAudio is the recording the fake helper plays:
+// VOXTNEW_LATENCY_PCM, else the speech sample.
+func latencyAudio() string {
+	if p := os.Getenv("VOXTNEW_LATENCY_PCM"); p != "" {
+		return p
+	}
+	return speechSample()
+}
+
+func firstRunes(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n]) + "…"
+	}
+	return s
 }
