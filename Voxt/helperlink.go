@@ -117,6 +117,10 @@ func (a *app) helperChanged(st helper.Status) {
 		a.iconsHelperReady() // appicons.go: the icons that failed, again
 		a.loadLast()
 		a.loadDevices() // settings_audio.go: the microphones, for Settings → Audio and the menu bar
+		if !a.speechWarmed { // once: a restarted helper loads no model again
+			a.speechWarmed = true
+			a.warmSpeech() // models_omni.go: the first session finds its model loaded
+		}
 		// The app in front until the first app.activated: the target of a
 		// session started from the menu bar.
 		helperCall(a, proto.MethodAppFrontmost, nil, 5*time.Second, func(front proto.App, err error) {
