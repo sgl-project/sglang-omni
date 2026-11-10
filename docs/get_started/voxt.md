@@ -2,7 +2,7 @@
 
 [Voxt](https://github.com/sgl-project/sglang-omni/tree/main/Voxt) is voice input for macOS built on SGLang-Omni: press a shortcut in any app, speak, and the text appears where your cursor is. Speech is recognised on your Mac by SGLang-Omni's native MLX runtime.
 
-**Download:** the newest `Voxt-X.Y.Z-arm64.dmg` from [the Voxt releases](https://github.com/sgl-project/sglang-omni/releases?q=voxt-v&expanded=true). Or install it with Homebrew: `brew install --cask hehehai/tap/voxt`.
+**Download:** the newest `Voxt-X.Y.Z-arm64.dmg` from [the Voxt releases](https://github.com/sgl-project/sglang-omni/releases). Or install it with Homebrew: `brew install --cask hehehai/tap/voxt`.
 
 **Needs:** a Mac with Apple silicon and macOS 15 or later. The app is about 280 MB; the recommended speech model is a 2.5 GB download. Voxt 2 does not run on an Intel Mac; there, keep using Voxt 1.x.
 

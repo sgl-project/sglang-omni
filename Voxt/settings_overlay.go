@@ -185,7 +185,7 @@ const (
 func (a *app) overlayPreview(c *ui.Context) {
 	t := c.Theme()
 	o := a.prefs.Overlay
-	w := layout.RowWidth(o.ShowTime, 0) + 2*layout.PillPadX
+	s := previewSession()
 	cardH := px(t, ovPreviewH)
 	// The distance from the edge, from none to ovMaxMargin, across the
 	// card's room.
@@ -205,13 +205,18 @@ func (a *app) overlayPreview(c *ui.Context) {
 		}
 		place.Children(func() {
 			c.SetTheme(overlayTheme())
+			row, _ := recordingPillRow(s, true, o.ShowTime, 0, func(k ovSized) (float32, bool) {
+				width, _ := c.MeasureText(k.wrap, k.span())
+				return width, true
+			})
+			w := row + 2*layout.PillPadX
 			ui.Box(c.Key("ov-preview-pill")).Size(float32(w), layout.PillH).Shrink(0).Children(func() {
 				// The blur of what is under it, then the face, positioned
 				// too to paint over the blur.
 				ui.Box(c).Absolute().Fill().Radius(radius).Material(glass.Blur{Radius: 8})
 				face := ui.Column(c.Key("ov-preview-face")).Absolute().Left(0).Top(0).Right(0).Bottom(0)
 				faceStyle(face, o, ovRecording, layout.PillH).Children(func() {
-					overlayPill(c, previewSession(), ovRecording, pillLook{time: o.ShowTime, w: w})
+					overlayPill(c, s, ovRecording, pillLook{time: o.ShowTime, w: w})
 				})
 			})
 			c.SetTheme(t)
