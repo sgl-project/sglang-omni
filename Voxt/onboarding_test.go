@@ -46,7 +46,7 @@ func TestOnboardingLanguageModelGuide(t *testing.T) {
 	a.obGo(obTranslate)
 	frames(tt)
 	for _, s := range []string{
-		"No language model is set up: set one up to translate.",
+		"No language model is set up. Set one up to translate.",
 		"Set up a language model",
 		"Set one up on the Language models page",
 		"Skip this step",
@@ -70,7 +70,7 @@ func TestOnboardingLanguageModelGuide(t *testing.T) {
 	readyASROnly(a2)
 	a2.obGo(obRewrite)
 	frames(tt2)
-	if !has(tt2, "No language model is set up: set one up to rewrite.") {
+	if !has(tt2, "No language model is set up. Set one up to rewrite.") {
 		t.Errorf("rewrite without LLM: %q", tt2.Texts())
 	}
 }
@@ -147,7 +147,7 @@ func TestOnboardingSteps(t *testing.T) {
 	a.navigate("/settings/general")
 	frames(tt)
 	tt.Scroll(windowWidth*0.7, windowHeight*0.6, 0, 600) // the row is under the fold
-	click(t, tt, "Open the setup guide")
+	click(t, tt, "Open setup guide")
 	if !a.ob.open || a.settingsOpen || a.ob.step != obWelcome {
 		t.Errorf("reopen: %v %v %d", a.ob.open, a.settingsOpen, a.ob.step)
 	}
@@ -324,7 +324,7 @@ func TestOnboardingStepsOneLine(t *testing.T) {
 				titles := obStepTitles()
 				first, ok1 := tt.Find(titles[0])
 				last, ok2 := tt.Find(titles[len(titles)-1])
-				x, ok3 := tt.Find(i18n.T("Close the guide"))
+				x, ok3 := tt.Find(i18n.T("Close guide"))
 				if !ok1 || !ok2 || !ok3 {
 					t.Fatalf("%s %v: steps or × not found in %q", lang, size, tt.Texts())
 				}
@@ -343,7 +343,7 @@ func TestOnboardingStepsExplainTheFeature(t *testing.T) {
 		obPermissions: "Voxt needs the microphone to hear you",
 		obTranscribe:  "Transcribe writes down what you say",
 		obTranslate:   "Translate turns the selected text",
-		obRewrite:     "Rewrite is not dictation",
+		obRewrite:     "Rewrite writes what you ask for",
 	} {
 		a.obGo(step)
 		if !has(tt, want) {
@@ -373,7 +373,7 @@ func TestOnboardingComesBack(t *testing.T) {
 	a.navigate("/settings/general")
 	frames(tt)
 	tt.Scroll(windowWidth*0.7, windowHeight*0.6, 0, 600) // the row is under the fold
-	click(t, tt, "Open the setup guide")
+	click(t, tt, "Open setup guide")
 	if !a.ob.open || a.ob.step != obModels {
 		t.Fatalf("from Settings: open %v, step %d", a.ob.open, a.ob.step)
 	}

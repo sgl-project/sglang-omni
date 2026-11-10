@@ -133,17 +133,17 @@ func chatgptLoginText(err error) (msg, more string) {
 	}
 	switch e.Kind {
 	case codexauth.KindPortInUse:
-		return i18n.T("Another program is using port %d, which the sign-in needs (a running `codex login`, perhaps). Close it and try again.", e.Port), more
+		return i18n.T("The sign-in needs port %d, but another program is using it (perhaps a running `codex login`). Close it and try again.", e.Port), more
 	case codexauth.KindDenied:
 		return i18n.T("The sign-in was refused in the browser."), more
 	case codexauth.KindTimeout:
-		return i18n.T("The sign-in timed out: the browser did not come back to Voxt."), more
+		return i18n.T("The sign-in timed out before the browser came back to Voxt."), more
 	case codexauth.KindNetwork:
-		return i18n.T("Could not reach ChatGPT's sign-in service: check your network and proxy."), more
+		return i18n.T("Could not reach ChatGPT's sign-in service. Check your network and proxy."), more
 	case codexauth.KindStore:
 		return i18n.T("Could not save the sign-in in the Keychain."), more
 	}
-	return i18n.T("ChatGPT did not finish the sign-in: try again."), more
+	return i18n.T("ChatGPT did not finish the sign-in. Try again."), more
 }
 
 // signOutChatGPT deletes the sign-in from this Mac; the setup stays.
@@ -168,14 +168,14 @@ func (a *app) chatgptFields(c *ui.Context, d *providerDialog) {
 	t := c.Theme()
 	email := a.keyMasks[chatgptAccount()]
 	login := &a.chatLogin
-	info := i18n.T("Voxt uses your own ChatGPT plan, and has no account of its own. The sign-in is kept in this Mac's Keychain, never in settings or logs, and it stands for your whole ChatGPT account. Signing out deletes it from this Mac.")
+	info := i18n.T("The sign-in is kept only in this Mac's Keychain. Signing out deletes it.")
 	fieldInfo(c, i18n.T("ChatGPT account"), info, func() {
 		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
 			switch {
 			case login.running:
 				ui.Spinner(c).Size(px(t, 14), px(t, 14)).Shrink(0)
 				caption(c, i18n.T("Waiting for the browser…")).Grow(1).MinWidth(0)
-				if ghostButton(c.Key("chatgpt-cancel"), i18n.T("Cancel")).Label(i18n.T("Cancel the sign-in")).Clicked() {
+				if ghostButton(c.Key("chatgpt-cancel"), i18n.T("Cancel")).Label(i18n.T("Cancel sign-in")).Clicked() {
 					a.cancelChatGPTLogin()
 				}
 			case email != "":
@@ -185,7 +185,7 @@ func (a *app) chatgptFields(c *ui.Context, d *providerDialog) {
 					a.signOutChatGPT()
 				}
 			default:
-				caption(c, i18n.T("Opens your browser to sign in with your ChatGPT plan.")).Grow(1).MinWidth(0)
+				ui.Spacer(c)
 				if ui.Button(c.Key("chatgpt-signin"), i18n.T("Sign in with ChatGPT")).Clicked() {
 					a.signInChatGPT()
 				}

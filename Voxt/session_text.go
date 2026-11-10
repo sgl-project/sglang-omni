@@ -30,14 +30,14 @@ func sessionProblemText(p *session.Problem) (text, more, action string) {
 	case session.ProblemDevice:
 		return i18n.T("No sound came from any microphone."), errText(p.Err), actionNone
 	case session.ProblemHelper:
-		return i18n.T("The helper stopped: try again in a moment."), errText(p.Err), actionHelper
+		return i18n.T("The helper stopped. Try again in a moment."), errText(p.Err), actionHelper
 	case session.ProblemASR:
 		msg, more := uitext.ModelErrorText(p.Err)
 		if p.Degraded {
 			if asr.KindOf(p.Err) == asr.KindTimeout {
-				return i18n.T("Used the live text: full recognition took too long."), more, actionNone
+				return i18n.T("Full recognition took too long, so the live text was used."), more, actionNone
 			}
-			return i18n.T("Used the live text: full recognition failed."), more, actionNone
+			return i18n.T("Full recognition failed, so the live text was used."), more, actionNone
 		}
 		if errors.Is(p.Err, dictation.ErrNotAllowed) {
 			return i18n.T("Speech recognition failed: %s", msg), more, actionPermissions
@@ -48,7 +48,7 @@ func sessionProblemText(p *session.Problem) (text, more, action string) {
 	case session.ProblemEmpty:
 		return i18n.T("The language model returned an empty answer."), "", actionNone
 	case session.ProblemTruncated:
-		return i18n.T("The model hit its length limit: the answer may be incomplete."), "", actionNone
+		return i18n.T("The model hit its length limit, so the answer may be incomplete."), "", actionNone
 	case session.ProblemLLM:
 		if !p.Degraded {
 			msg, more := uitext.ModelErrorText(p.Err)
@@ -82,17 +82,17 @@ func degradedLLMText(p *session.Problem, note bool) string {
 	usage := llm.Code(p.Err) == llm.CodeUsageLimit
 	switch {
 	case note && usage:
-		return i18n.T("Saved to Notes as recognised: your ChatGPT plan's usage is used up.")
+		return i18n.T("Your ChatGPT plan has no usage left, so the recognised text was saved to Notes.")
 	case usage:
-		return i18n.T("Inserted as recognised: your ChatGPT plan's usage is used up.")
+		return i18n.T("Your ChatGPT plan has no usage left, so the recognised text was inserted.")
 	case note && timeout:
-		return i18n.T("Saved to Notes as recognised: the language model did not answer in time.")
+		return i18n.T("The language model did not answer in time, so the recognised text was saved to Notes.")
 	case note:
-		return i18n.T("Saved to Notes as recognised: the language model failed.")
+		return i18n.T("The language model failed, so the recognised text was saved to Notes.")
 	case timeout:
-		return i18n.T("Inserted as recognised: the language model did not answer in time.")
+		return i18n.T("The language model did not answer in time, so the recognised text was inserted.")
 	}
-	return i18n.T("Inserted as recognised: the language model failed.")
+	return i18n.T("The language model failed, so the recognised text was inserted.")
 }
 
 // llmAction is the notice's button for a language model's failure: the
@@ -120,7 +120,7 @@ func noticeActionLabel(action string) string {
 	case actionPermissions:
 		return i18n.T("Open Permissions")
 	case actionHelper:
-		return i18n.T("Restart the helper")
+		return i18n.T("Restart helper")
 	case actionRetry:
 		return i18n.T("Retry")
 	}

@@ -136,7 +136,7 @@ func (a *app) histRecordingsSection(c *ui.Context) {
 	h := a.lib.store.History()
 	busy := hs.busy != ""
 	sectionTitleText(c, i18n.T("Recordings"))
-	settingRow(c, "hist-set-audio", i18n.T("Keep the recordings"), i18n.T("Saves the audio with each history entry, to listen again or recognise it once more. When this is off, a recording whose recognition failed, or that you cancelled, is still kept for 7 days, so that you can retry it."), func() {
+	settingRow(c, "hist-set-audio", i18n.T("Keep recordings"), i18n.T("When off, failed or cancelled recordings are still kept for 7 days so you can retry them."), func() {
 		if ui.Switch(c.Key("hist-set-audio"), &a.settingsForm.keepAudio).Label(i18n.T("Save each recording")).Disabled(!a.prefs.Privacy.KeepHistory).Changed() {
 			on := a.settingsForm.keepAudio
 			a.updateSettings(func(s *settings.Settings) { s.Privacy.KeepAudio = on })
@@ -147,7 +147,7 @@ func (a *app) histRecordingsSection(c *ui.Context) {
 	if shown == "" {
 		shown = h.DefaultAudioDir()
 	}
-	move := i18n.T("Choosing another folder moves the recordings there: each one is copied and checked before the original is deleted.")
+	move := i18n.T("Choosing another folder moves the recordings there.")
 	settingRowNoteTip(c, "hist-set-dir", i18n.T("Storage location"), move, uitext.ShortPath(shown), func() {
 		if ui.Button(c.Key("hist-set-choose"), i18n.T("Choose…")).Disabled(busy).Clicked() {
 			chooseFolder(a, i18n.T("Move the recordings to…"), i18n.T("Move here"), a.moveRecordings)
@@ -155,12 +155,12 @@ func (a *app) histRecordingsSection(c *ui.Context) {
 		if iconButton(c.Key("hist-set-reveal"), icons.FolderOpen, i18n.T("Show in Finder")).Clicked() {
 			revealInFinder(h.AudioDir())
 		}
-		if chosen != "" && ui.Button(c.Key("hist-set-default"), i18n.T("Use the default")).Disabled(busy).Clicked() {
+		if chosen != "" && ui.Button(c.Key("hist-set-default"), i18n.T("Use default")).Disabled(busy).Clicked() {
 			a.moveRecordings("")
 		}
 	})
 	if m := hs.audioMissing; m != "" {
-		notice(c, "hist-set-missing", noticeWarn, i18n.T("%s is not available: new recordings go to %s until it is back.", uitext.ShortPath(m), uitext.ShortPath(h.DefaultAudioDir())), "", nil, nil)
+		notice(c, "hist-set-missing", noticeWarn, i18n.T("%s is not available, so new recordings go to %s until it is back.", uitext.ShortPath(m), uitext.ShortPath(h.DefaultAudioDir())), "", nil, nil)
 	}
 	usage := i18n.T("Measuring…")
 	switch {
@@ -175,7 +175,7 @@ func (a *app) histRecordingsSection(c *ui.Context) {
 			hs.delAudioAsk = true
 		}
 	})
-	settingRow(c, "hist-set-export", i18n.T("Export recordings"), i18n.T("Copies the recordings into a folder you choose: a folder for each feature, each file named by its date and first words."), func() {
+	settingRow(c, "hist-set-export", i18n.T("Export recordings"), "", func() {
 		opts := []string{i18n.T("All recordings"), a.shownLabel()}
 		if !slices.Contains(opts, hs.exportSel) {
 			hs.exportSel = opts[0]
@@ -229,17 +229,17 @@ func (a *app) histWorkRow(c *ui.Context) {
 	})
 }
 
-// histCleanupSection is the dialog's Auto-cleanup section.
+// histCleanupSection is the dialog's Automatic clean-up section.
 func (a *app) histCleanupSection(c *ui.Context) {
 	t := c.Theme()
 	hs := &a.histSet
-	sectionTitleText(c, i18n.T("Auto-cleanup")).Margin(px(t, sp4), 0, 0, 0)
+	sectionTitleText(c, i18n.T("Automatic clean-up")).Margin(px(t, sp4), 0, 0, 0)
 	ask := func(next settings.History) {
 		hs.formFor = "asking"
 		a.askCleanup(next)
 	}
-	settingRow(c, "hist-set-clean", i18n.T("Clean up automatically"), i18n.T("Deletes old entries with their recordings: when Voxt starts, after each new entry, and when you change these settings."), func() {
-		if ui.Switch(c.Key("hist-set-clean"), &hs.cleanOn).Label(i18n.T("Clean up the history")).Changed() {
+	settingRow(c, "hist-set-clean", i18n.T("Clean up automatically"), "", func() {
+		if ui.Switch(c.Key("hist-set-clean"), &hs.cleanOn).Label(i18n.T("Clean up history")).Changed() {
 			next := a.prefs.History
 			next.CleanupOff = !hs.cleanOn
 			if hs.cleanOn {
@@ -250,7 +250,6 @@ func (a *app) histCleanupSection(c *ui.Context) {
 		}
 	})
 	if !hs.cleanOn {
-		caption(c, i18n.T("Entries stay until you delete them."))
 		return
 	}
 	settingRow(c, "hist-set-days", i18n.T("Keep entries for"), "", func() {
@@ -261,7 +260,7 @@ func (a *app) histCleanupSection(c *ui.Context) {
 			ask(next)
 		}
 	})
-	settingRow(c, "hist-set-count", i18n.T("Keep at most"), i18n.T("The newest entries of each feature: Transcribe, Translate and Rewrite each keep this many."), func() {
+	settingRow(c, "hist-set-count", i18n.T("Keep at most"), i18n.T("For each feature."), func() {
 		opts := keepCountLabels()
 		if ui.Select(c.Key("hist-set-count"), &hs.countSel, opts).Label(i18n.T("Keep at most")).Width(px(t, 160)).Changed() {
 			next := a.prefs.History
@@ -299,12 +298,12 @@ func (a *app) histSetQuestions(c *ui.Context) {
 	if hs.delAudioAsk {
 		ui.Modal(c.Key("hist-delaudio-ask"), &hs.delAudioAsk, func() {
 			ui.Text(c, i18n.T("Delete every recording?")).Bold()
-			ui.Text(c, i18n.T("The recordings of every entry are deleted; the entries and their texts stay. This cannot be undone.")).Width(px(t, 380))
+			ui.Text(c, i18n.T("All recordings will be deleted. The entries and their text stay. This cannot be undone.")).Width(px(t, 380))
 			ui.Row(c).Gap(px(t, sp2)).Justify(ui.End).Children(func() {
 				if ui.Button(c.Key("hist-delaudio-cancel"), i18n.T("Cancel")).AutoFocus().Clicked() {
 					hs.delAudioAsk = false
 				}
-				if recordButton(c.Key("hist-delaudio-ok"), i18n.T("Delete the recordings")).Clicked() {
+				if recordButton(c.Key("hist-delaudio-ok"), i18n.T("Delete recordings")).Clicked() {
 					hs.delAudioAsk = false
 					a.deleteRecordings()
 				}
@@ -322,7 +321,7 @@ func (a *app) historyFolderNotice(c *ui.Context) {
 	}
 	t := c.Theme()
 	ui.Column(c).Padding(0, px(t, sp6), px(t, sp3)).Shrink(0).Children(func() {
-		notice(c, "hist-missing", noticeWarn, i18n.T("%s is not available: new recordings go to %s until it is back.", uitext.ShortPath(m), uitext.ShortPath(a.lib.store.History().DefaultAudioDir())), "", func() {
+		notice(c, "hist-missing", noticeWarn, i18n.T("%s is not available, so new recordings go to %s until it is back.", uitext.ShortPath(m), uitext.ShortPath(a.lib.store.History().DefaultAudioDir())), "", func() {
 			if ghostButton(c.Key("hist-missing-open"), i18n.T("History settings")).Clicked() {
 				a.openHistorySettingsDialog()
 			}

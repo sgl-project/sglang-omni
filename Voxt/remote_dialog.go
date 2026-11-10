@@ -123,7 +123,7 @@ func (a *app) providerDialogView(c *ui.Context) {
 			}
 		})
 		if sv.appID {
-			fieldInfo(c, i18n.T("App ID"), i18n.T("From the app in the Volcengine speech console, with its Access Token as the key below. A key of the newer console needs no App ID."), func() {
+			fieldInfo(c, i18n.T("App ID"), i18n.T("From your app in the Volcengine speech console. Use its Access Token as the key below. Keys from the newer console need no App ID."), func() {
 				ui.TextInput(c.Key("remote-appid"), &d.appID).Placeholder(i18n.T("Optional")).Label(i18n.T("App ID"))
 			})
 		}
@@ -131,9 +131,9 @@ func (a *app) providerDialogView(c *ui.Context) {
 			a.chatgptFields(c, d) // remote_chatgpt.go
 		}
 		mask := a.keyMasks[providers.Account(d.kind, d.id)]
-		keyInfo := i18n.T("Saved in this Mac's Keychain, never in Voxt's settings or logs.")
+		keyInfo := i18n.T("Saved in this Mac's Keychain.")
 		if sv.keyOptional {
-			keyInfo = i18n.T("Optional for a server on this Mac. Saved in this Mac's Keychain, never in Voxt's settings or logs.")
+			keyInfo = i18n.T("Optional for a server on this Mac. Saved in this Mac's Keychain.")
 		}
 		if !sv.signIn {
 			fieldInfo(c, i18n.T("API key"), keyInfo, func() {
@@ -143,7 +143,7 @@ func (a *app) providerDialogView(c *ui.Context) {
 						ph = i18n.T("Saved: %s · paste a new one to replace it", mask)
 					}
 					ui.TextInput(c.Key("remote-key"), &d.key).Password().Placeholder(ph).Label(i18n.T("API key")).Grow(1).MinWidth(0)
-					if mask != "" && !d.removeKey && ghostButton(c.Key("remote-key-remove"), i18n.T("Remove")).Label(i18n.T("Remove the saved key")).Clicked() {
+					if mask != "" && !d.removeKey && ghostButton(c.Key("remote-key-remove"), i18n.T("Remove")).Label(i18n.T("Remove saved key")).Clicked() {
 						d.removeKey, d.key = true, ""
 					}
 				})
@@ -152,7 +152,7 @@ func (a *app) providerDialogView(c *ui.Context) {
 				}
 			})
 		}
-		epInfo := i18n.T("The API root, ending in /v1; leave it empty for the service's own. Only https://, or http:// to this Mac.")
+		epInfo := i18n.T("The API root, ending in /v1. Leave it empty for the service's own. Only https://, or http:// to this Mac.")
 		switch {
 		case streams:
 			epInfo = i18n.T("Leave it empty for the service's own. Only wss://, or ws:// to this Mac.")
@@ -181,7 +181,7 @@ func (a *app) providerDialogView(c *ui.Context) {
 			}
 		})
 		if d.kind == local.ASR {
-			fieldInfo(c, i18n.T("Recognition prompt"), i18n.T("Optional. Goes after the global speech context on the Speech models page. Use {{USER_MAIN_LANGUAGE}}, {{USER_OTHER_LANGUAGES}} and {{DICTIONARY_TERMS}} for your languages and dictionary. Services that take no prompt ignore it."), func() {
+			fieldInfo(c, i18n.T("Recognition prompt"), i18n.T("Optional. Added after the speech context on the Speech models page. You can use {{USER_MAIN_LANGUAGE}}, {{USER_OTHER_LANGUAGES}} and {{DICTIONARY_TERMS}}."), func() {
 				ui.TextArea(c.Key("remote-asr-prompt"), &d.recognitionPrompt).Label(i18n.T("Recognition prompt")).
 					Placeholder(i18n.T("For example: Technical talk; prefer product names from the dictionary.")).MinHeight(px(t, 72))
 			})

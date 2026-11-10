@@ -284,7 +284,7 @@ func (a *app) meetingsPage(c *ui.Context) {
 						n.detail = nil
 					}
 				}
-				sidePanel(c, "mt-detail", w, inline, i18n.T("Meeting detail"), closePanel, func() {
+				sidePanel(c, "mt-detail", w, inline, i18n.T("Meeting details"), closePanel, func() {
 					a.meetingDetailSection(c, closePanel)
 				})
 			}
@@ -301,7 +301,7 @@ func (a *app) meetingsEmpty(c *ui.Context) {
 	if q := strings.TrimSpace(n.query); q != "" {
 		emptyState(c, icons.Magnifer, i18n.T("Nothing matches “%s”", q),
 			i18n.T("Try another search, or clear the field to see every meeting."), func() {
-				if ghostButton(c.Key("meetings-clear"), i18n.T("Clear the search")).Clicked() {
+				if ghostButton(c.Key("meetings-clear"), i18n.T("Clear search")).Clicked() {
 					n.query, n.page = "", 0
 					a.loadMeetings()
 				}
@@ -398,7 +398,7 @@ func (a *app) meetingDetailTitle(c *ui.Context, mt store.Meeting, close func()) 
 			})
 		}
 		active := a.meetingActive() && mt.Status == store.MeetingRecording
-		if iconButton(c.Key("mt-del"), icons.TrashBinMinimalistic, i18n.T("Delete the meeting…")).Disabled(active).Clicked() {
+		if iconButton(c.Key("mt-del"), icons.TrashBinMinimalistic, i18n.T("Delete meeting…")).Disabled(active).Clicked() {
 			a.mv.delID = mt.ID
 		}
 		if iconButton(c.Key("panel-close"), icons.Close, i18n.T("Close")).Clicked() {
@@ -408,7 +408,7 @@ func (a *app) meetingDetailTitle(c *ui.Context, mt store.Meeting, close func()) 
 	caption(c, meetingMeta(mt))
 	if mt.Status == store.MeetingInterrupted || mt.Status == store.MeetingFinishing {
 		ui.Row(c).Margin(px(t, sp2), 0, 0, 0).Children(func() {
-			if ui.Button(c.Key("mt-continue"), i18n.T("Continue final pass")).Clicked() {
+			if ui.Button(c.Key("mt-continue"), i18n.T("Continue processing")).Clicked() {
 				a.meetingReprocess(mt.ID)
 			}
 		})

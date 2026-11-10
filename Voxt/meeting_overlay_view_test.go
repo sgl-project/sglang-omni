@@ -33,10 +33,10 @@ func TestMeetingProblemMessageKeys(t *testing.T) {
 		key  string
 		want string
 	}{
-		{meeting.ProblemKeySystemSilent, "If others are speaking but you see no text from them, open System Settings → Privacy & Security → Screen & System Audio Recording and allow Voxt."},
-		{meeting.ProblemKeyLiveBacklog, "Live captions are falling behind; the final transcript will catch up after you end the meeting."},
+		{meeting.ProblemKeySystemSilent, "If you see no text when others speak, allow Voxt in System Settings → Privacy & Security → Screen & System Audio Recording."},
+		{meeting.ProblemKeyLiveBacklog, "Live captions are falling behind. The final transcript will catch up after you end the meeting."},
 		{meeting.ProblemKeyDiskLow, "Disk space is running low. End the meeting soon or free space on this Mac."},
-		{meeting.ProblemKeyHelperOld, "This meeting needs a newer Voxt helper with system audio capture. Update Voxt or record microphone only."},
+		{meeting.ProblemKeyHelperOld, "Recording system audio needs a newer Voxt helper. Update Voxt, or record the microphone only."},
 		{"meeting.track.degraded.system", "One audio track stopped. Voxt switched to a simpler capture mode."},
 	} {
 		if got := meetingOverlayProblemText(tc.key); got != tc.want {

@@ -16,8 +16,8 @@ func TestResponsesOnlyText(t *testing.T) {
 
 func TestPlanErrorTexts(t *testing.T) {
 	for code, want := range map[string]string{
-		llm.CodeSignIn:      "sign in again",
-		llm.CodeUsageLimit:  "used up",
+		llm.CodeSignIn:      "Sign in again",
+		llm.CodeUsageLimit:  "usage limit",
 		llm.CodeNotEligible: "cannot use Codex",
 	} {
 		if msg, _ := ModelErrorText(&llm.Error{Code: code}); !strings.Contains(msg, want) {

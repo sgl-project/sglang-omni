@@ -8,11 +8,23 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Voxt 1.x on Apple silicon updates to Voxt 2 by itself**: each release also has the app as `Voxt-X.Y.Z-macOS.zip`, which Voxt 1.x's in-app update installs on a Mac with Apple silicon (first for those who turned on Beta Updates, then for everyone there) and the Homebrew cask (`brew install --cask hehehai/tap/voxt`, Apple silicon only) installs. Voxt 1.x on an Intel Mac is not offered Voxt 2, which does not run there, and stays on Voxt 1.x. After the update, allow the microphone and accessibility again: macOS sees Voxt 2 as another app.
 
+### Changed
+
+- **Plainer text across the app**: about 300 English strings stop chaining clauses with colons and semicolons and leave out details nobody needs, about 360 Chinese strings read as written in Chinese and name each thing one way, and about 50 help texts that only said what the page already shows are gone. In Chinese, Rewrite is now 改写 (转写 also meant a transcript), a transcript is 转录稿, speech models are 语音识别模型 and an app is always App.
+- **Sound: Built-in, macOS or None** (Settings → Audio): one choice says where the recording's start and stop sounds come from. Built-in lists six pairs of a start and a stop sound, each to try with ▶ and pick with a click; macOS picks a system sound for each; None plays nothing. The default pair is now Pebble and Nib, softer than Tally and Wrap. The panel of sounds by group, tag and search is gone, and so is Use Voxt 1.x's sounds: macOS starts on Pop and Tink.
+- **Settings sits in the sidebar's System section**, under Logs, instead of a row of its own at the foot of the sidebar; the version number is on About. In the icon rail its icon is in that section too, with the dot while there are notifications.
+
 ### 中文
 
 #### 新增
 
 - **Apple 芯片上的 Voxt 1.x 自己更新到 Voxt 2**：每个版本还附带 app 的 `Voxt-X.Y.Z-macOS.zip`，在 Apple 芯片的 Mac 上，Voxt 1.x 的应用内更新安装它（先给打开了“Beta 更新”的用户，再给其他人），Homebrew 的 cask（`brew install --cask hehehai/tap/voxt`，只支持 Apple 芯片）也装它。Intel Mac 上的 Voxt 1.x 不会收到 Voxt 2（Voxt 2 不能在 Intel 上运行），继续用 Voxt 1.x。更新后要重新允许麦克风和辅助功能：macOS 把 Voxt 2 当成另一个 app。
+
+#### 变更
+
+- **中英文文案过了一遍**：约 300 条英文不再用冒号、分号把几句硬连在一起，也删掉了用不着的细节；约 360 条中文去掉了翻译腔，同一个东西只用一种叫法；约 50 条只是重复界面内容的说明删掉了。Rewrite 改叫“改写”（原来的“转写”也指转录稿），会议和文件的 transcript 统一叫“转录稿”，语音模型统一叫“语音识别模型”，app 统一写作“App”。
+- **音效：自带、系统或无**（设置 → 音频）：一个选项决定录音开始和结束的提示音从哪里来。“自带”列出 6 组成对的开始音和结束音，点 ▶ 试听，点一下选中；“系统”给开始和结束各选一个 macOS 声音；“无”就不响。默认换成更轻的 Pebble 和 Nib（原来是 Tally 和 Wrap）。按分组、标签和搜索找声音的面板去掉了，“使用 Voxt 1.x 的提示音”也去掉了：选“系统”默认就是 Pop 和 Tink。
+- **“设置”放进了侧边栏的“系统”分组**，在“日志”下面，不再单独占侧边栏底部一行；版本号在“诊断与关于”里。侧边栏收成图标时，“设置”图标也在这一组里，有通知时照样显示红点。
 
 ## [2.0.2] - 2026-11-09
 

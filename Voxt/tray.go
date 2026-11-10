@@ -64,7 +64,7 @@ func (a *app) applyTray() {
 	// (Voxt: 18×18 pt, template); while recording it has a dot.
 	t, err := mygo.NewTray(mygo.TrayOptions{Icon: trayicon.Icon(live), IconIsTemplate: true, ToolTip: a.trayToolTip()})
 	if err != nil {
-		a.toast(i18n.T("The menu bar icon could not be made: %v", err))
+		a.toast(i18n.T("Could not create the menu bar icon: %v", err))
 		return
 	}
 	a.tray, a.trayLive = t, live

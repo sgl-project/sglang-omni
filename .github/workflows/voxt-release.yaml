@@ -188,7 +188,7 @@ jobs:
           if [[ -n "${ACTNOW_SOUNDS_TOKEN:-}" ]]; then
             auth="$(printf 'x-access-token:%s' "$ACTNOW_SOUNDS_TOKEN" | base64)"
             git -c http.extraheader="Authorization: Basic $auth" \
-              clone -q --depth 1 https://github.com/hehehai/actnow-sounds "$RUNNER_TEMP/actnow-sounds"
+              clone --depth 1 https://github.com/hehehai/actnow-sounds "$RUNNER_TEMP/actnow-sounds"
             export ACTNOW_SOUNDS="$RUNNER_TEMP/actnow-sounds"
           else
             echo "::warning::No ACTNOW_SOUNDS_TOKEN: this build has no sound library and plays macOS's system sounds"

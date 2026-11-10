@@ -37,7 +37,7 @@ var histExportFormats = []string{"Markdown", "JSONL"}
 func (a *app) histExportTextRow(c *ui.Context) {
 	t := c.Theme()
 	hs := &a.histSet
-	settingRow(c, "hist-set-text", i18n.T("Export text"), i18n.T("Saves the text of your history to a file you choose. The file is yours: the automatic clean-up and Clear the history do not touch it."), func() {
+	settingRow(c, "hist-set-text", i18n.T("Export text"), "", func() {
 		scopes := []string{i18n.T("All entries"), a.shownLabel()}
 		if !slices.Contains(scopes, hs.textScope) {
 			hs.textScope = scopes[0]

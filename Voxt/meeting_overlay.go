@@ -330,12 +330,12 @@ func meetingOverlayFinishing(c *ui.Context, s meeting.Snapshot, look pillLook) {
 	msg := i18n.T("Finishing the meeting…")
 	switch s.Stage {
 	case meeting.StageTranscribing:
-		msg = i18n.T("Finalizing transcript…")
+		msg = i18n.T("Finalising transcript…")
 		if s.Progress > 0 {
 			msg += fmt.Sprintf(" %.0f%%", s.Progress*100)
 		}
 	case meeting.StageSummary:
-		msg = i18n.T("Summarizing…")
+		msg = i18n.T("Summarising…")
 	}
 	ui.Row(c).Height(meetingOvBarH).Shrink(0).Gap(8).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 		overlayLoader(c, msg, look, 0)

@@ -4,7 +4,7 @@
 
 ## What VoxtNew is
 
-A lean macOS voice input app on **local models only**: 转录 Transcribe, 翻译 Translate, 转写 Rewrite, 应用增强 App enhancement and the 词典 Dictionary, with the history, overlay, shortcuts, menu bar, setup guide, settings and updates. No remote models, meetings, notes, file transcription or sync. It is Auralink (the same author's Go/MyGo app on remote models) with its remote layer replaced, plus the Omni behaviour of the old Swift Voxt (removed from this repository).
+A lean macOS voice input app on **local models only**: 转录 Transcribe, 翻译 Translate, 改写 Rewrite, 应用增强 App enhancement and the 词典 Dictionary, with the history, overlay, shortcuts, menu bar, setup guide, settings and updates. No remote models, meetings, notes, file transcription or sync. It is Auralink (the same author's Go/MyGo app on remote models) with its remote layer replaced, plus the Omni behaviour of the old Swift Voxt (removed from this repository).
 
 *2.1 (2026-11-06) changed two of these decisions, after the team's feedback on 2.0.0: the language models are remote services the user sets up (OpenAI-compatible, Ollama on this Mac included; the local ones are retired), and the UI names each model by its family, size and quantisation (behavior.md 3.32–3.34).*
 

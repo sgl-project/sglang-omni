@@ -174,7 +174,7 @@ func (a *app) obModelsStep(c *ui.Context) {
 			})
 		}
 		if st.Downloading {
-			caption(c, i18n.T("The model downloads in the background. You can continue; it is ready when the bar fills."))
+			caption(c, i18n.T("The model downloads in the background, so you can continue. It is ready when the bar fills."))
 		}
 	}
 	ui.Row(c).Margin(px(t, sp1), 0, 0, 0).Children(func() {

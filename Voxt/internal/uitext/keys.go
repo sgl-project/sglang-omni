@@ -113,7 +113,7 @@ func ParseErrorText(err error) string {
 	case errors.Is(err, hotkey.ErrFnSide):
 		return i18n.T("fn has no left or right side.")
 	}
-	return i18n.T("A key is unknown. Write the modifiers first, then one key: Fn, RightCommand, Control+Option+Space, Fn+F5.")
+	return i18n.T("Unknown key. Type the modifiers first, then one key, as in Fn, RightCommand, Control+Option+Space or Fn+F5.")
 }
 
 // systemShortcutName names what macOS uses keys for.
@@ -141,11 +141,11 @@ func HotkeyProblemText(p hotkey.Problem) string {
 	case hotkey.ProblemDuplicate:
 		return i18n.T("The same keys as shortcut %d.", p.OtherIndex+1)
 	case hotkey.ProblemConflict:
-		return i18n.T("%s has the same keys and trigger: only one of them works.", FeatureTitle(p.Other))
+		return i18n.T("%s has the same keys and trigger, so only one of them works.", FeatureTitle(p.Other))
 	case hotkey.ProblemSystem:
 		return i18n.T("macOS uses these keys for %s.", systemShortcutName(p.System))
 	case hotkey.ProblemBareKey:
-		return i18n.T("A key alone would be taken from every app: add ⌃, ⌥, ⇧, ⌘ or fn.")
+		return i18n.T("A single key would be taken from every app. Add ⌃, ⌥, ⇧, ⌘ or fn.")
 	}
 	return ""
 }
@@ -161,7 +161,7 @@ func HotkeyProblems(f settings.Features, feature string) map[int][]string {
 			out[p.Index] = append(out[p.Index], HotkeyProblemText(p))
 		case p.Code == hotkey.ProblemConflict && p.Other == feature:
 			out[p.OtherIndex] = append(out[p.OtherIndex],
-				i18n.T("%s has the same keys and trigger: only one of them works.", FeatureTitle(p.Feature)))
+				i18n.T("%s has the same keys and trigger, so only one of them works.", FeatureTitle(p.Feature)))
 		}
 	}
 	return out

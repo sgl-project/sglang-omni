@@ -92,7 +92,7 @@ func TestRewriteSelectionInCard(t *testing.T) {
 	if a.sess.Inserted || !a.answer.open || a.answer.input.Selection != "hey all, ship friday" || len(a.pasted()) != 0 {
 		t.Fatalf("end %+v card %+v", a.sess, a.answer)
 	}
-	if v := a.cardNow(); v.title != "AI Answer" || !v.canFollowUp || !v.canInsert {
+	if v := a.cardNow(); v.title != "AI answer" || !v.canFollowUp || !v.canInsert {
 		t.Errorf("card %+v", v)
 	}
 	msgs := chatMessages(chat.requests()[0])

@@ -164,11 +164,9 @@ func snapshotsMain(t *testing.T, out string) {
 			if s.id == "audio" { // the sounds and the output's mute, under the fold
 				scrollToText(tt, i18n.T("Mute system audio while recording"))
 				save("settings-audio-sounds")
-				tt.Click(i18n.T("Start sound")) // the sound picker's panel (settings_soundpicker.go)
+				tt.Click(i18n.T("macOS")) // the macOS sounds' lines (settings_soundchoice.go)
 				frames(tt)
-				save("settings-audio-sounds-menu")
-				tt.Key(0, ui.KeyEscape)
-				frames(tt)
+				save("settings-audio-sounds-macos")
 			}
 			if s.id == "overlay" { // its preview, under the controls
 				w, h := snapshotSize()

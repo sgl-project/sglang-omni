@@ -75,7 +75,7 @@ func sectionTitleTip(c *ui.Context, title, tip string) {
 
 // sectionTitleAdd is sectionTitleTip with a small Add button on the
 // right of its row, for a card of items below it (shortcuts, apps), so
-// the card holds only its items. It reports a click.
+// the card holds only its items (tip "" for no ⓘ). It reports a click.
 //
 // The row is as wide as the card. As the title starts on the card's left
 // edge, the button's label ends on its right edge: the button's right
@@ -87,7 +87,9 @@ func sectionTitleAdd(c *ui.Context, key, title, tip, add string) bool {
 	clicked := false
 	ui.Row(c).Gap(px(t, 6)).AlignItems(ui.Center).Margin(px(t, sp2), 0, 0, 0).Children(func() {
 		sectionTitleText(c, title).SingleLine().Shrink(0)
-		infoTip(c, tip).Shrink(0)
+		if tip != "" {
+			infoTip(c, tip).Shrink(0)
+		}
 		ui.Spacer(c)
 		b := quietButton(c.Key(key), icons.Add, add).Margin(px(t, -3.5), -titleAddHang(t), px(t, -3.5), 0)
 		clicked = b.Clicked()

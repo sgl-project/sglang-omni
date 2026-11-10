@@ -74,7 +74,7 @@ func TestEntryMenuItems(t *testing.T) {
 	}{
 		// Done, the recognised text differs from the result, a recording.
 		{"Let's move the design review to Thursday afternoon.",
-			[]string{"Copy", "Copy the recognised text", "Show details", "Show the recording in Finder", "Transcribe again", "-", "Delete"}},
+			[]string{"Copy", "Copy recognised text", "Show details", "Show recording in Finder", "Transcribe again", "-", "Delete"}},
 		// Done, the result is the recognised text: one Copy.
 		{"Buy milk and eggs.", []string{"Copy", "Show details", "-", "Delete"}},
 		// Failed after recognition: Copy copies the recognised text.
@@ -117,7 +117,7 @@ func TestEntryMenuActions(t *testing.T) {
 		t.Error("no Copied toast")
 	}
 	openMenu(t, tt, row)
-	choose(t, tt, "Copy the recognised text")
+	choose(t, tt, "Copy recognised text")
 	if got := tt.Clipboard(); got != "um so let's move the design review to thursday afternoon and I'll send the new agenda tonight" {
 		t.Errorf("clipboard = %q", got)
 	}
@@ -126,7 +126,7 @@ func TestEntryMenuActions(t *testing.T) {
 	}
 	fallback := keptInFallbackFolder(t, a, histInserted+".wav")
 	openMenu(t, tt, row)
-	choose(t, tt, "Show the recording in Finder")
+	choose(t, tt, "Show recording in Finder")
 	if want := fallback; len(revealed) != 1 || revealed[0] != want {
 		t.Errorf("revealed %v, want %s", revealed, want)
 	}
@@ -181,7 +181,7 @@ func TestHomeRecentMenu(t *testing.T) {
 	frames(tt)
 	e := a.hm.recent[0]
 	title, _ := uitext.EntryTitle(e)
-	want := []string{"Copy", "Copy the recognised text", "Show details", "Show the recording in Finder", "Transcribe again", "-", "Delete"}
+	want := []string{"Copy", "Copy recognised text", "Show details", "Show recording in Finder", "Transcribe again", "-", "Delete"}
 	if got := openMenu(t, tt, title); !slices.Equal(got, want) {
 		t.Errorf("menu %q, want %q", got, want)
 	}

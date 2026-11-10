@@ -161,9 +161,9 @@ func (a *app) modelMoveDialog(c *ui.Context) {
 		panel.Width(px(t, 440)).Radius(px(t, radiusCard)).Background(t.Background).Border(1, t.Border).Padding(px(t, sp5)).Label(i18n.T("Moving the models"))
 		ui.Column(c).Gap(px(t, 10)).Children(func() {
 			ui.Text(c, i18n.T("Moving the models")).Bold()
-			body := i18n.T("Bringing the models to %s: linked on the same disk, copied to another. Then Voxt restarts. The old folder stays as it was.", uitext.ShortPath(a.modelMoveTo))
+			body := i18n.T("Moving the models to %s, then Voxt restarts. The old folder is left as it is.", uitext.ShortPath(a.modelMoveTo))
 			if a.familyOthers() {
-				body = i18n.T("Bringing the models to %s, the other apps' too: linked on the same disk, copied to another. Then every app keeps its models there, and Voxt restarts. The old folders stay as they were.", uitext.ShortPath(a.modelMoveTo))
+				body = i18n.T("Moving every app's models to %s, then Voxt restarts. The old folders are left as they are.", uitext.ShortPath(a.modelMoveTo))
 			}
 			ui.Text(c, body).FontSize(px(t, fsCaption))
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
@@ -279,7 +279,7 @@ func (a *app) eraseDialog(c *ui.Context) {
 	erase := a.resetAsk == "everything"
 	ui.Modal(c.Key("st-ask-erase"), &erase, func() {
 		ui.Text(c, i18n.T("Erase everything?")).Bold()
-		ui.Text(c, i18n.T("This deletes your history and its recordings, your meetings and their recordings, your dictionary, your app enhancement rules, the local models no other app uses, every setting and the logs. It cannot be undone. Voxt restarts as on its first day, and the models download again.")).Width(px(t, 420))
+		ui.Text(c, i18n.T("This deletes your history and meetings with their recordings, your dictionary, app enhancement rules, every setting, the logs and the local models no other app uses. It cannot be undone. Voxt then restarts from scratch, and the models download again.")).Width(px(t, 420))
 		if kept := keptModelsText(a.eraseKept, a.eraseKeptBytes); kept != "" { // models_delete.go
 			ui.Text(c, kept).Width(px(t, 420))
 		}

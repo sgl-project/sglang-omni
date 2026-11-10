@@ -31,8 +31,8 @@ func TestSidebarAndShortcuts(t *testing.T) {
 	frames(tt)
 	a.clearNotices()
 	for _, p := range pages {
-		// The last rows can sit under the Settings footer: scroll the list
-		// to them, as a person would.
+		// The last rows can sit under the fade at the list's foot: scroll
+		// the list to them, as a person would.
 		if r, ok := tt.Find(pageTitle(p.path)); ok && r.H < 10 {
 			home, _ := tt.Find(pageTitle("/home"))
 			tt.Scroll(home.X+home.W/2, float32(windowHeight)/2, 0, 200)
@@ -54,13 +54,17 @@ func TestSidebarAndShortcuts(t *testing.T) {
 	if len(shortcutPages) != 6 {
 		t.Errorf("%d shortcut pages", len(shortcutPages))
 	}
-	// Settings, at the foot of the sidebar, opens the dialog over the page.
+	// Settings, the System section's last item, opens the dialog over the
+	// page, and is the chosen item while it shows.
 	click(t, tt, "Settings")
-	if !a.settingsOpen || a.shownPath() != "/settings/general" || a.router.Path() != "/app-enhancement" {
-		t.Fatalf("settings: %v %s over %s", a.settingsOpen, a.shownPath(), a.router.Path())
+	if !a.settingsOpen || a.shownPath() != "/settings/general" || a.router.Path() != "/app-enhancement" || a.nav != settingsPath {
+		t.Fatalf("settings: %v %s over %s, chosen %s", a.settingsOpen, a.shownPath(), a.router.Path(), a.nav)
 	}
 	tt.Key(0, ui.KeyEscape)
 	frames(tt)
+	if a.nav != "/app-enhancement" {
+		t.Errorf("the sidebar chose %s once the settings closed", a.nav)
+	}
 	if a.settingsOpen {
 		t.Error("Escape left the settings open")
 	}
@@ -73,7 +77,7 @@ func TestSidebarAndShortcuts(t *testing.T) {
 	if a.router.Path() != "/history" {
 		t.Errorf("rail: %s", a.router.Path())
 	}
-	click(t, tt, "Show the sidebar")
+	click(t, tt, "Show sidebar")
 	if a.prefs.Appearance.Rail {
 		t.Error("rail still on")
 	}
@@ -232,7 +236,7 @@ func TestProblemCards(t *testing.T) {
 	if !has(tt, "Helper missing") {
 		t.Fatalf("missing helper again: %q", firstTexts(tt))
 	}
-	click(t, tt, "Restart the helper")
+	click(t, tt, "Restart helper")
 	if a.helperStatus().State != helper.Ready || has(tt, "Helper missing") {
 		t.Errorf("after restart: %+v %q", a.helperStatus(), firstTexts(tt))
 	}
@@ -370,14 +374,14 @@ func TestPrivacyGoesOnline(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate("/settings/privacy")
 	frames(tt)
-	if !has(tt, "Otherwise Voxt goes online only to check for updates, to download models and to read Voxt's announcements, which sends nothing about you.") {
+	if !has(tt, "Otherwise, Voxt goes online only to check for updates, download models and read its announcements. Reading them sends nothing about you.") {
 		t.Errorf("with an update feed: %q", firstTexts(tt))
 	}
 	a.upd = nil
 	a.navigate("/home")
 	a.navigate("/settings/privacy")
 	frames(tt)
-	if !has(tt, "Otherwise Voxt goes online only to download models and to read Voxt's announcements, which sends nothing about you.") || has(tt, "check for updates") {
+	if !has(tt, "Otherwise, Voxt goes online only to download models and read its announcements. Reading them sends nothing about you.") || has(tt, "check for updates") {
 		t.Errorf("without an update feed: %q", firstTexts(tt))
 	}
 }
@@ -431,7 +435,7 @@ func TestPrivacyClearsHistory(t *testing.T) {
 	if !a.clearHistoryAsk {
 		t.Fatal("no confirmation")
 	}
-	click(t, tt, "Delete the history")
+	click(t, tt, "Delete history")
 	if list, _ := h.List(context.Background(), store.HistoryQuery{}); len(list) != 0 {
 		t.Errorf("%d entries left", len(list))
 	}

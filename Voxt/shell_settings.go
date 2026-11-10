@@ -48,7 +48,6 @@ type settingsForm struct {
 	keepHistory  bool
 	keepAudio    bool
 	logText      bool
-	sounds       bool
 	skipSilence  bool        // !Audio.VAD.Off
 	liveResult   bool        // Audio.LiveResult
 	cleanSound   bool        // !Audio.Clean.Off
@@ -156,7 +155,7 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 			err := mygo.App.SetOpenAtLogin(on)
 			a.post(func() {
 				if err != nil {
-					a.toast(i18n.T("Could not change opening at login: %v", err))
+					a.toast(i18n.T("Could not change “Open at login”: %v", err))
 					return
 				}
 				a.loginIs = on
@@ -231,7 +230,6 @@ func (a *app) loadSettingsForm() {
 	f.dock, f.copyResult = !s.General.HideDock, s.General.CopyResult
 	f.keepHistory, f.keepAudio, f.logText = s.Privacy.KeepHistory, s.Privacy.KeepAudio, s.Privacy.LogText
 	f.historyAccess, f.historySelection = s.Privacy.HistoryAccess, s.Privacy.HistorySelection
-	f.sounds = s.Audio.Sounds
 	f.skipSilence = !s.Audio.VAD.Off
 	f.liveResult = s.Audio.LiveResult
 	f.cleanSound = !s.Audio.Clean.Off

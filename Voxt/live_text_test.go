@@ -23,7 +23,7 @@ func TestLiveTextSwitch(t *testing.T) {
 	if text, _ := pillLine(a.pillSession()); text != "so the meeting moves" {
 		t.Fatalf("on: %q", text)
 	}
-	for _, label := range []string{"Show live text", "Show the recording time"} {
+	for _, label := range []string{"Show live text", "Show recording time"} {
 		if err := tt.ClickControl(label); err != nil {
 			t.Fatal(err)
 		}

@@ -72,13 +72,13 @@ func meetingOverlayProblemText(key string) string {
 	}
 	switch key {
 	case meeting.ProblemKeySystemSilent:
-		return i18n.T("If others are speaking but you see no text from them, open System Settings → Privacy & Security → Screen & System Audio Recording and allow Voxt.")
+		return i18n.T("If you see no text when others speak, allow Voxt in System Settings → Privacy & Security → Screen & System Audio Recording.")
 	case meeting.ProblemKeyLiveBacklog:
-		return i18n.T("Live captions are falling behind; the final transcript will catch up after you end the meeting.")
+		return i18n.T("Live captions are falling behind. The final transcript will catch up after you end the meeting.")
 	case meeting.ProblemKeyDiskLow:
 		return i18n.T("Disk space is running low. End the meeting soon or free space on this Mac.")
 	case meeting.ProblemKeyHelperOld:
-		return i18n.T("This meeting needs a newer Voxt helper with system audio capture. Update Voxt or record microphone only.")
+		return i18n.T("Recording system audio needs a newer Voxt helper. Update Voxt, or record the microphone only.")
 	default:
 		if strings.HasPrefix(key, "meeting.track.degraded.") {
 			return i18n.T("One audio track stopped. Voxt switched to a simpler capture mode.")
