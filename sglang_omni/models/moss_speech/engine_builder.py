@@ -138,31 +138,6 @@ class MossSpeechEngineBuilder(
         else:
             pass
 
-    def setup_model(
-        self,
-        *,
-        model_worker: ModelWorker,
-        checkpoint_dir: str,
-        device: str,
-        gpu_id: int,
-        server_args: ServerArgs,
-    ) -> None:
-        model = model_worker.model_runner.model
-        assert isinstance(model, MossSpeechSGLangModel)
-        configuration = resolved_view(server_args)
-        if (
-            configuration.max_running_requests
-            > model.decode_input_embedding.num_embeddings
-        ):
-            raise ValueError(
-                "max_running_requests exceeds the MOSS-Speech decode embedding capacity"
-            )
-        else:
-            pass
-        model.decode_input_embedding = model.decode_input_embedding.to(
-            torch.device(device)
-        )
-
     def make_model_runner(
         self, model_worker: ModelWorker, output_proc: SGLangOutputProcessor
     ) -> MossSpeechModelRunner:

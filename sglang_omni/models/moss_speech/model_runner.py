@@ -15,7 +15,6 @@ from sglang_omni.model_runner.prefill_inputs import (
     attach_omni_prefill_inputs,
 )
 from sglang_omni.models.moss_speech.fsm import (
-    MODALITY_PAD,
     channel_histories,
     finalize_row,
     next_mode,
@@ -45,17 +44,7 @@ class MossSpeechModelRunner(ModelRunner[MossSpeechSGLangRequestData]):
         assert isinstance(self.model, MossSpeechSGLangModel)
 
     def rows_to_embeddings(self, rows: torch.Tensor) -> torch.Tensor:
-        rows = rows.to(device=self.model.embed_tokens.weight.device, dtype=torch.long)
-        text_tokens, audio_tokens = rows[:, 0], rows[:, 1]
-        audio_positions = text_tokens == MODALITY_PAD
-        text_embeddings = self.model.embed_tokens(
-            text_tokens.masked_fill(audio_positions, 0)
-        )
-        audio_embeddings = self.model.audio_embed(audio_tokens)
-        text_selection = (~audio_positions).unsqueeze(-1).to(text_embeddings.dtype)
-        return text_embeddings * text_selection + audio_embeddings * (
-            1 - text_selection
-        )
+        return self.model.rows_to_embeddings(rows)
 
     def custom_prefill_forward(
         self,
@@ -121,31 +110,18 @@ class MossSpeechModelRunner(ModelRunner[MossSpeechSGLangRequestData]):
             return
         else:
             pass
-        embedding_weights = self.model.decode_input_embedding.weight
-        if (
-            batch_size > embedding_weights.shape[0]
-            or forward_batch.input_ids.numel() != batch_size
-        ):
-            raise RuntimeError(
-                "MOSS-Speech decode batch exceeds its embedding staging capacity"
-            )
+        if forward_batch.input_ids.numel() != batch_size:
+            raise RuntimeError("MOSS-Speech decode requires one row per request")
         else:
             pass
-        feedback_embeddings = []
-        for request in requests:
-            feedback_queue = moss_request_data(request).pending_feedback_queue
-            if feedback_queue:
-                feedback_embeddings.append(feedback_queue.popleft())
-            else:
-                raise RuntimeError(f"Missing decode feedback for {request.request_id}")
-        with torch.no_grad():
-            embedding_weights[:batch_size].copy_(
-                torch.stack(feedback_embeddings).to(embedding_weights)
-            )
+        # note (BraveBeter): Pack both channels into SG's native graph input buffer.
+        rows = torch.tensor(
+            [moss_request_data(request).output_rows[-1] for request in requests],
+            dtype=torch.long,
+            device=forward_batch.input_ids.device,
+        )
         forward_batch.input_ids.copy_(
-            torch.arange(
-                batch_size, dtype=torch.long, device=forward_batch.input_ids.device
-            )
+            rows[:, 0] * self.model.audio_vocab_size + rows[:, 1]
         )
 
     @staticmethod
@@ -203,11 +179,6 @@ class MossSpeechModelRunner(ModelRunner[MossSpeechSGLangRequestData]):
             row = finalize_row(text_token, audio_token, request_data.mode)
             request_data.output_rows.append(row)
             selected_tokens.append(row_selected_token(row))
-            request_data.pending_feedback_queue.append(
-                self.rows_to_embeddings(torch.tensor([row], dtype=torch.long))[
-                    0
-                ].detach()
-            )
             if stop_hit(row):
                 request_data.finished = True
                 request_data.stop_reason = "stop_token"

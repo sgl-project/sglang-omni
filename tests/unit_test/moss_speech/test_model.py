@@ -50,6 +50,51 @@ NATIVE_CPU = pytest.mark.skipif(
 
 
 @NATIVE_CPU
+def test_decode_packs_both_channels_in_current_batch_order() -> None:
+    """Changing decode order must move token rows rather than stale embeddings."""
+    with native_runtime(torch.device("cpu")), torch.no_grad():
+        model = tiny_model(torch.device("cpu"))
+        runner = object.__new__(MossSpeechModelRunner)
+        runner.model = model
+        rows = [(3, 17), (model.config.modality_pad_token_id, 4)]
+        requests = [
+            SchedulerRequest(
+                request_id=str(index),
+                data=MossSpeechSGLangRequestData(output_rows=[row]),
+            )
+            for index, row in enumerate(rows)
+        ]
+        batch = type(
+            "DecodeBatch", (), {"input_ids": torch.zeros(2, dtype=torch.long)}
+        )()
+        for order in (requests, requests[::-1]):
+            runner.before_decode(batch, None, order)
+            unpacked = torch.stack(
+                (
+                    batch.input_ids // model.audio_vocab_size,
+                    batch.input_ids % model.audio_vocab_size,
+                ),
+                dim=1,
+            )
+            assert unpacked.tolist() == [
+                list(request.data.output_rows[-1]) for request in order
+            ]
+            expected = torch.stack(
+                [
+                    (
+                        model.audio_embed.weight[row[1]]
+                        if row[0] == model.config.modality_pad_token_id
+                        else model.embed_tokens.weight[row[0]]
+                    )
+                    for row in unpacked.tolist()
+                ]
+            )
+            torch.testing.assert_close(
+                model.rows_to_embeddings(unpacked), expected, rtol=0, atol=0
+            )
+
+
+@NATIVE_CPU
 def test_actual_worker_allocates_both_modality_tails_without_rewriting_hf_layers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -348,14 +393,4 @@ def test_replayed_dual_logits_follow_current_request_order_and_active_rows() -> 
                 assert int(selected[index]) == (
                     audio_token if index % 2 else text_token
                 )
-                expected_embedding = model.audio_embed.weight[audio_token]
-                if index % 2 == 0:
-                    expected_embedding = model.embed_tokens.weight[text_token]
-                else:
-                    pass
-                torch.testing.assert_close(
-                    request.data.pending_feedback_queue.popleft(),
-                    expected_embedding,
-                    rtol=0,
-                    atol=0,
-                )
+                assert not request.data.pending_feedback_queue
