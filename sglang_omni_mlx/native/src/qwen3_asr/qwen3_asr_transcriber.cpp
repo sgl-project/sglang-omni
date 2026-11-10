@@ -22,6 +22,11 @@ constexpr const char *kAsrTextMarker = "<asr_text>";
 constexpr const char *kAudioPad = "<|audio_pad|>";
 constexpr int kOutputTokensPerAudioSecond = 10;
 constexpr int kMinDefaultOutputTokens = 128;
+// The pinned drafts were trained on recordings up to 240 s (about 3,000 audio
+// tokens) and accept almost nothing beyond about 1.5 times that, so acceptance
+// collapses on recordings over six minutes; scaling their rotary base by
+// prompt length restores most of it. Values are empirical.
+const std::map<int, float> kDraftRopeThetaScale = {{4096, 2.0f}, {6144, 3.0f}};
 
 const std::map<std::string, std::string> &LanguageCodeToName() {
   static const std::map<std::string, std::string> table = {
@@ -133,7 +138,7 @@ Qwen3ASRTranscriber::Qwen3ASRTranscriber(
       asr_text_ids_(tokenizer_.Encode(kAsrTextMarker)) {
   if (!draft_directory.empty()) {
     draft_.emplace(draft_directory, draft_quantization_bits,
-                   model_.decoder().config());
+                   model_.decoder().config(), kDraftRopeThetaScale);
   } else {
   }
 }
