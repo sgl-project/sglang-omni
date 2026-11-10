@@ -165,6 +165,9 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 	if old.Overlay != new.Overlay {
 		a.overlayRestyle() // overlay.go
 	}
+	if old.Features.Transcribe.ASR != new.Features.Transcribe.ASR {
+		a.warmSpeech() // models_omni.go: the new model loads before its first session
+	}
 	if old.Models.KeepLoaded != new.Models.KeepLoaded {
 		a.applyKeepLoaded(new.Models) // models_keep.go
 	}

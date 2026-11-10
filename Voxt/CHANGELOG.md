@@ -20,6 +20,13 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **One Escape closes a dialog** (History settings, the setup guide, Network, a language model's settings): with the keyboard focus on a button that shows a tip, such as the dialog's ×, the first Escape only hid the tip and the second closed the dialog.
 - **Logs says when the filter matches nothing**: a filter that matches no line shows "Nothing matches" with Clear filter, on the Logs page and in the logs panel, instead of "No log lines yet."
 - **Language model debug closes with Esc or ×**: opened from Try prompts on a model…, it had no close control: only the sidebar, or Open Language models before a model is set up, led away from it. Esc and the × at the top right now go back to Language models; Esc in an open menu still closes only the menu.
+### Changed
+
+- **The speech model loads before the first dictation**: Voxt now loads Transcribe's on-device speech model when it starts and when you choose another one, instead of at the first press of the shortcut. The first live text after a launch or a change of model no longer waits for the load (0.2 to 0.5 s on an M-series Mac with 36 GB, longer on a busy Mac or one with less memory). The model leaves memory after 10 idle minutes, as before.
+
+### Fixed
+
+- **A dictation survives a speech model that quit**: when the on-device speech model's process died during a recording (a crash, or macOS ending it under memory pressure), stopping gave only the live text heard until then, with a warning. Voxt now starts the model again and recognises the whole recording, about 0.2 s later on an M5 Max.
 
 ### 中文
 
@@ -39,6 +46,13 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **按一次 Esc 就能关对话框**（历史设置、设置引导、网络、语言模型的设置）：焦点在带提示的按钮上时（比如对话框右上角的 ×），第一次 Esc 只收起提示，第二次才关掉对话框。
 - **日志筛选没有匹配时如实说明**：筛选不到任何一行时，日志页和日志面板显示“没有匹配的记录”和“清除筛选”，不再显示“还没有日志。”
 - **语言模型调试页可以按 Esc 或 × 关掉**：从“调试提示词…”打开后，页面上原来没有关闭按钮，只能点侧边栏，或者在还没设置模型时点“打开语言模型页”离开。现在按 Esc 或点右上角的 × 都会回到语言模型页；菜单打开时按 Esc 仍然只关菜单。
+#### 变更
+
+- **语音识别模型在第一次听写前就加载好**：Voxt 启动时、换语音识别模型时就加载转录用的本地模型，不再等到第一次按快捷键。启动后和换模型后的第一次实时文字不用再等加载（36 GB 的 M 系列 Mac 上是 0.2 到 0.5 秒，机器忙或内存小时更久）。模型空闲 10 分钟后照旧从内存卸载。
+
+#### 修复
+
+- **语音识别模型中途退出，口述也不丢**：录音时本地语音识别模型的进程退出了（崩溃，或内存紧张时被 macOS 结束），停止后以前只得到退出前的实时文字，并带一条警告。现在 Voxt 重新启动模型，识别整段录音，在 M5 Max 上多等约 0.2 秒。
 
 ## [2.0.3] - 2026-11-10
 

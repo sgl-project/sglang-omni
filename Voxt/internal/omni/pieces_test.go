@@ -179,8 +179,8 @@ func TestLiveFinalFailsWithText(t *testing.T) {
 	}{
 		{"error", omnitest.Opts{FailFrom: 1}, "transcription_failed"},
 		{"error after two pieces", omnitest.Opts{FailFrom: 3}, "transcription_failed"},
-		// A piece stalls first: its server is killed, and the Final finds it gone.
-		{"stall", omnitest.Opts{Mode: omnitest.ModeStall}, "exited"},
+		// A piece stalls first: its server is killed, the Final finds it gone and stalls again on a new one.
+		{"stall", omnitest.Opts{Mode: omnitest.ModeStall}, "stopped answering"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFake(t, tc.o, func(c *Config) { c.StallTimeout = 300 * time.Millisecond })
