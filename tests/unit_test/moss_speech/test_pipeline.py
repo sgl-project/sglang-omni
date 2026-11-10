@@ -48,6 +48,9 @@ class TextTokenizer:
         assert not add_special_tokens
         return list(text.encode("utf-8"))
 
+    def decode(self, tokens: list[int], *, skip_special_tokens: bool) -> str:
+        return bytes(token for token in tokens if token < 256).decode()
+
 
 class ReferenceEncoder(torch.nn.Module):
     def forward(
@@ -121,13 +124,19 @@ class SpeechClient(Client):
         prepared = preprocess_request(
             StagePayload(request_id, Client.build_omni_request(request), {}),
             TextTokenizer(),
+            self.codec,
         )
         native = build_sglang_moss_request(prepared)
-        native.output_rows = [(SOSP, AUDIO_PAD), (MODALITY_PAD, 3), (MODALITY_PAD, 4)][
-            : native.max_new_tokens
-        ]
+        if MossSpeechState.from_dict(prepared.data).output_modality == "text":
+            native.output_rows = [(token, AUDIO_PAD) for token in b"four"]
+        else:
+            native.output_rows = [
+                (SOSP, AUDIO_PAD),
+                (MODALITY_PAD, 3),
+                (MODALITY_PAD, 4),
+            ][: native.max_new_tokens]
         native.finish_reason = "length"
-        result = self.codec.decode(build_result(native))
+        result = self.codec.decode(build_result(native), tokenizer=TextTokenizer())
         yield Client.default_result_builder(request_id, result.data)
 
 
@@ -236,7 +245,7 @@ def test_http_rejects_unsupported_or_empty_audio_without_server_error(
         assert response.status_code == 400, response.text
 
 
-def test_public_speech_encodes_waveform_and_chat_is_rejected() -> None:
+def test_public_speech_and_chat_return_the_requested_modality() -> None:
     with TestClient(
         create_app(SpeechClient(make_codec()), model_name="moss-speech")
     ) as http:
@@ -255,7 +264,8 @@ def test_public_speech_encodes_waveform_and_chat_is_rejected() -> None:
             "/v1/chat/completions",
             json={"messages": [{"role": "user", "content": "Hello"}], "stream": False},
         )
-        assert response.status_code == 400, response.text
+        assert response.status_code == 200, response.text
+        assert response.json()["choices"][0]["message"]["content"] == "four"
 
 
 @pytest.mark.parametrize(
@@ -377,7 +387,110 @@ def test_cli_binds_only_three_stages_and_vocoder_assets(tmp_path: Path) -> None:
         ]
         assert config.stage_named("audio_vocoder").factory.codec_path == "codec"
     with pytest.raises(ValueError, match="codec_path"):
-        create_audio_vocoder_executor(codec_path=None, device="cpu")
+        create_audio_vocoder_executor(
+            model_path="unused", codec_path=None, device="cpu"
+        )
+
+
+@pytest.mark.parametrize("speech_input", [False, True])
+@pytest.mark.parametrize("output_modality", ["text", "audio"])
+def test_chat_preserves_both_token_channels_and_output_modality(
+    speech_input: bool, output_modality: str
+) -> None:
+    """Text and audio prompts must reach one AR engine without losing codec rows."""
+    encoder = Mock()
+    encoder.encode_audio.return_value = [3, 17]
+    content = (
+        [{"type": "audio_url", "audio_url": {"url": "speech.wav"}}]
+        if speech_input
+        else "What is two plus two?"
+    )
+    payload = StagePayload(
+        "chat",
+        OmniRequest(
+            inputs=[{"role": "user", "content": content}],
+            params={"temperature": 0, "max_new_tokens": 128},
+            metadata=(
+                {
+                    "output_modalities": [output_modality],
+                    "audio_config": {"ref_audio": "voice.wav", "format": "wav"},
+                }
+                if output_modality == "audio"
+                else {"output_modalities": ["text"]}
+            ),
+        ),
+        {},
+    )
+    prepared = preprocess_request(payload, TextTokenizer(), encoder)
+    state = MossSpeechState.from_dict(prepared.data)
+    native = build_sglang_moss_request(prepared)
+    assert state.output_modality == output_modality
+    assert native.prompt_rows.shape == (state.prompt_token_count, 2)
+    if speech_input:
+        encoder.encode_audio.assert_called_once_with("speech.wav")
+        assert native.prompt_rows[
+            native.prompt_rows[:, 0] == MODALITY_PAD
+        ].tolist() == [[MODALITY_PAD, 3], [MODALITY_PAD, 17], [MODALITY_PAD, 16384]]
+    else:
+        encoder.encode_audio.assert_not_called()
+        assert (
+            native.prompt_rows[:, 1].tolist() == [AUDIO_PAD] * state.prompt_token_count
+        )
+    native.output_rows = [
+        (102, AUDIO_PAD),
+        (111, AUDIO_PAD),
+        (117, AUDIO_PAD),
+        (114, AUDIO_PAD),
+    ]
+    native.finish_reason = "length"
+    result = build_result(native)
+    assert not MossSpeechState.from_dict(result.data).audio_token_ids
+    if output_modality == "text":
+        codec = make_codec()
+        codec.decoder = None
+        assert codec.decode(result, tokenizer=TextTokenizer()).data["text"] == "four"
+    else:
+        assert MossSpeechState.from_dict(result.data).reference_audio == "voice.wav"
+
+
+@pytest.mark.parametrize("speech_input", [False, True])
+@pytest.mark.parametrize("output_modality", ["text", "audio"])
+def test_chat_http_supports_all_four_modalities(
+    speech_input: bool, output_modality: str
+) -> None:
+    """Chat audio inputs and text outputs previously failed at the TTS-only boundary."""
+    reference = audio_reference()
+    content = (
+        [
+            {
+                "type": "input_audio",
+                "input_audio": {"data": reference.split(",", 1)[1], "format": "wav"},
+            }
+        ]
+        if speech_input
+        else "What is two plus two?"
+    )
+    body = {
+        "model": "moss-speech",
+        "messages": [{"role": "user", "content": content}],
+        "modalities": [output_modality],
+        "stream": False,
+        "max_tokens": 8,
+    }
+    if output_modality == "audio":
+        body["audio"] = {"ref_audio": reference, "format": "wav"}
+    else:
+        pass
+    with TestClient(
+        create_app(SpeechClient(make_codec()), model_name="moss-speech")
+    ) as http:
+        response = http.post("/v1/chat/completions", json=body)
+    assert response.status_code == 200, response.text
+    message = response.json()["choices"][0]["message"]
+    if output_modality == "text":
+        assert message["content"] == "four"
+    else:
+        assert message["audio"]["data"]
 
 
 @pytest.mark.parametrize("prompt_tokens,budget", [(40959, 1), (39960, 1000)])
