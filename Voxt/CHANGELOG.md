@@ -8,11 +8,19 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Voxt 1.x on Apple silicon updates to Voxt 2 by itself**: each release also has the app as `Voxt-X.Y.Z-macOS.zip`, which Voxt 1.x's in-app update installs on a Mac with Apple silicon (first for those who turned on Beta Updates, then for everyone there) and the Homebrew cask (`brew install --cask hehehai/tap/voxt`, Apple silicon only) installs. Voxt 1.x on an Intel Mac is not offered Voxt 2, which does not run there, and stays on Voxt 1.x. After the update, allow the microphone and accessibility again: macOS sees Voxt 2 as another app.
 
+### Fixed
+
+- **Language model debug closes with Esc or ×**: opened from Try prompts on a model…, it had no close control: only the sidebar, or Open Language models before a model is set up, led away from it. Esc and the × at the top right now go back to Language models; Esc in an open menu still closes only the menu.
+
 ### 中文
 
 #### 新增
 
 - **Apple 芯片上的 Voxt 1.x 自己更新到 Voxt 2**：每个版本还附带 app 的 `Voxt-X.Y.Z-macOS.zip`，在 Apple 芯片的 Mac 上，Voxt 1.x 的应用内更新安装它（先给打开了“Beta 更新”的用户，再给其他人），Homebrew 的 cask（`brew install --cask hehehai/tap/voxt`，只支持 Apple 芯片）也装它。Intel Mac 上的 Voxt 1.x 不会收到 Voxt 2（Voxt 2 不能在 Intel 上运行），继续用 Voxt 1.x。更新后要重新允许麦克风和辅助功能：macOS 把 Voxt 2 当成另一个 app。
+
+#### 修复
+
+- **语言模型调试页可以按 Esc 或 × 关掉**：从“调试提示词…”打开后，页面上原来没有关闭按钮，只能点侧边栏，或者在还没设置模型时点“打开语言模型页”离开。现在按 Esc 或点右上角的 × 都会回到语言模型页；菜单打开时按 Esc 仍然只关菜单。
 
 ## [2.0.3] - 2026-11-10
 
