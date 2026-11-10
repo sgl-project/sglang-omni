@@ -139,7 +139,7 @@ func (a *app) obBackBar(c *ui.Context, path string) {
 	if a.ob.awayTo != path || a.ob.open {
 		return
 	}
-	notice(c, "ob-back", noticeInfo, i18n.T("The setup guide waits at its %s step.", obStepTitles()[a.ob.step]), "", func() {
+	notice(c, "ob-back", noticeInfo, i18n.T("The setup guide is paused at the %s step.", obStepTitles()[a.ob.step]), "", func() {
 		if ui.Button(c.Key("ob-back-open"), i18n.T("Back to the setup guide")).Clicked() {
 			a.openOnboarding()
 		}
@@ -203,10 +203,10 @@ func (a *app) tryIgnored(kind store.Kind) {
 	}
 	keys := a.featureKeys(string(want))
 	if keys == "" {
-		a.ob.hint = i18n.T("That was the %s shortcut: this step tries %s.", uitext.KindTitle(kind), uitext.KindTitle(want))
+		a.ob.hint = i18n.T("That was the %s shortcut. This step tests %s.", uitext.KindTitle(kind), uitext.KindTitle(want))
 		return
 	}
-	a.ob.hint = i18n.T("That was the %s shortcut: this step tries %s (%s).", uitext.KindTitle(kind), uitext.KindTitle(want), keys)
+	a.ob.hint = i18n.T("That was the %s shortcut. This step tests %s (%s).", uitext.KindTitle(kind), uitext.KindTitle(want), keys)
 }
 
 // obSessionChanged passes a step whose own try ended with a result.
@@ -251,8 +251,8 @@ func (a *app) obGo(step int) {
 
 // onboardingRow is Settings → General's way back to the guide.
 func (a *app) onboardingRow(c *ui.Context) {
-	settingRow(c, "setup-guide", i18n.T("Setup guide"), i18n.T("Permissions, the speech models, and a try of each feature, as on the first day."), func() {
-		if ui.Button(c.Key("setup-guide-open"), i18n.T("Open the setup guide")).Clicked() {
+	settingRow(c, "setup-guide", i18n.T("Setup guide"), "", func() {
+		if ui.Button(c.Key("setup-guide-open"), i18n.T("Open setup guide")).Clicked() {
 			a.openOnboarding()
 		}
 	})

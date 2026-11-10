@@ -41,6 +41,10 @@ func Main() {
 			os.Exit(2)
 		}
 	}
+	if o.NoDraft && arg(args, "--draft-model-path") != "" {
+		fmt.Fprintln(os.Stderr, "unknown argument --draft-model-path")
+		os.Exit(2)
+	}
 	record(o, Record{Event: "launch", Args: args, Binary: filepath.Base(os.Args[0])})
 	emit := func(v map[string]any) {
 		b, _ := json.Marshal(v)

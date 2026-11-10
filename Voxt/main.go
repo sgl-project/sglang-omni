@@ -30,6 +30,11 @@ import (
 )
 
 func main() {
+	// `Voxt history …` (history_cli.go) only talks to the running app: no
+	// window, no data, no lock.
+	if len(os.Args) > 1 && os.Args[1] == "history" {
+		os.Exit(runHistoryCLI(os.Args[2:]))
+	}
 	// The languages VoxtNew is written in, of which MyGo shows one
 	// (showLanguage, settings_locale.go).
 	mygo.App.SetLanguages(i18n.Supported()...)
@@ -118,6 +123,7 @@ func main() {
 		a.connectWindowLife() // tray.go
 		a.watchBundle()       // updates.go: an update installed while it runs
 		a.expireRecordings()  // history_retry.go: recordings kept for a retry, past their time
+		a.openHistoryAccess() // history_access.go: the socket, when the setting is on
 		a.announceURL = announce.URL
 		a.checkAnnouncements() // announcements.go
 		mygo.App.OnSecondInstance(func([]string, string) { a.post(a.showMainWindow) })

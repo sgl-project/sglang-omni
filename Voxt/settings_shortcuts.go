@@ -38,10 +38,10 @@ func featurePath(feature string) string {
 func (a *app) shortcutsSettings(c *ui.Context) {
 	t := c.Theme()
 	k := tok(t)
-	caption(c, i18n.T("The shortcuts work in every app. Click one to change it on its feature's page."))
+	caption(c, i18n.T("Click a shortcut to change it on its feature's page."))
 	if !a.hotkeys.Installed {
 		notice(c, "sc-no-tap", noticeWarn,
-			i18n.T("Without Accessibility only plain shortcuts work (⌃⌥⇧⌘ with a key); fn, a single modifier, double taps and long presses need it."),
+			i18n.T("Without Accessibility, only shortcuts like ⌃⌥Space work. fn, single modifiers, double taps and long presses need it."),
 			"", func() {
 				if ui.Button(c.Key("sc-open-perms"), i18n.T("Open Permissions")).Clicked() {
 					a.navigate("/settings/permissions")
@@ -136,7 +136,7 @@ func (a *app) shortcutRow(c *ui.Context, feature string, i int, h *settings.Hotk
 						if !a.hotkeys.Installed {
 							col = k.Warning
 						}
-						iconMark(c, icons.Accessibility, col, i18n.T("Works only while Voxt may use Accessibility."))
+						iconMark(c, icons.Accessibility, col, i18n.T("Works only with Accessibility access."))
 					}
 					if len(problems) > 0 {
 						iconMark(c, icons.DangerTriangle, k.Warning, strings.Join(problems, "\n"))
@@ -175,13 +175,13 @@ func presetTitle(p string) string {
 func presetAbout(p string) string {
 	switch p {
 	case settings.PresetOption:
-		return i18n.T("Right ⌥: one handed, Voxt's default; good when fn is the Globe key or shared with Auralink.")
+		return i18n.T("Right ⌥: one-handed and Voxt's default. Good when fn is the Globe key or shared with Auralink.")
 	case settings.PresetFn:
-		return i18n.T("fn: matches Auralink and many 1.x setups; watch for Globe-key and input-source clashes.")
+		return i18n.T("fn: matches Auralink and many Voxt 1.x setups. Watch for clashes with the Globe key and input sources.")
 	case settings.PresetCommand:
-		return i18n.T("⌘ combination: right ⌘ only, away from letter keys; for users who keep Option for input.")
+		return i18n.T("⌘ combination: right ⌘ only, away from the letter keys. Good if you keep Option for typing.")
 	case settings.PresetMouseMiddle:
-		return i18n.T("Middle mouse + fn⇧: click the wheel to transcribe, double-click to rewrite; needs Accessibility for mouse shortcuts.")
+		return i18n.T("Middle mouse + fn⇧: click the wheel to transcribe, double-click to rewrite. Mouse shortcuts need Accessibility.")
 	}
 	return ""
 }
@@ -191,9 +191,9 @@ func presetAbout(p string) string {
 func (a *app) shortcutPresetPicker(c *ui.Context, key string) {
 	t := c.Theme()
 	cur := settings.PresetOf(a.prefs.Features)
-	about := i18n.T("Sets Transcribe, Translate, Rewrite and Paste the last result at once. A shortcut you changed yourself stays as it is.")
+	about := i18n.T("Shortcuts you changed yourself stay as they are.")
 	if key == "ob" {
-		about = i18n.T("Pick the set of shortcuts you want. You can change them later in Settings → Shortcuts.")
+		about = i18n.T("You can change them later in Settings → Shortcuts.")
 	}
 	settingRow(c, key+"-preset", i18n.T("Preset"), about, func() {
 		var opts []string
@@ -222,7 +222,7 @@ func (a *app) shortcutPresetPicker(c *ui.Context, key string) {
 func (a *app) shortcutPresetWarnings(c *ui.Context, cur string) {
 	switch cur {
 	case settings.PresetFn:
-		warnLine(c, i18n.T("Auralink uses fn too: while it runs, both apps react to these keys."))
+		warnLine(c, i18n.T("Auralink uses fn too, so while it runs, both apps react to these keys."))
 		warnLine(c, i18n.T("macOS may react to fn too (the Globe key). If it gets in the way, set it to Do Nothing in System Settings → Keyboard."))
 	case settings.PresetMouseMiddle:
 		if !a.hotkeys.Installed {
@@ -235,7 +235,7 @@ func (a *app) shortcutPresetWarnings(c *ui.Context, cur string) {
 // p's keys, or says that there are none.
 func (a *app) applyShortcutPreset(p string) {
 	if f := a.prefs.Features; !settings.ApplyPreset(&f, p) {
-		a.toast(i18n.T("You changed every shortcut yourself: the preset keeps them."))
+		a.toast(i18n.T("You changed every shortcut yourself, so the preset leaves them as they are."))
 		return
 	}
 	a.updateSettings(func(s *settings.Settings) { settings.ApplyPreset(&s.Features, p) })

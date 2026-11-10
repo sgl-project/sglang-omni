@@ -81,7 +81,7 @@ func TestKeyRecorderHidden(t *testing.T) {
 // name, and shows it so once chosen.
 func TestCancelKeysEsc(t *testing.T) {
 	a, tt := trTester(t)
-	click(t, tt, "Keys to cancel transcription")
+	click(t, tt, "Keys to cancel recording")
 	click(t, tt, "Off")
 	if k := a.lib.settings.Get().Features.Cancel.Keys; k != "" {
 		t.Fatalf("turned off: %q", k)
@@ -90,7 +90,7 @@ func TestCancelKeysEsc(t *testing.T) {
 	if i := slices.Index(opts, "Esc"); i != 1 || byLabel["Esc"] != "Escape" {
 		t.Fatalf("options %q", opts)
 	}
-	click(t, tt, "Keys to cancel transcription")
+	click(t, tt, "Keys to cancel recording")
 	click(t, tt, "Esc")
 	frames(tt)
 	if k := a.lib.settings.Get().Features.Cancel.Keys; k != "Escape" || a.fui(hotkey.Transcribe).cancel.sel != "Esc" || !hasExact(tt, "Esc") {

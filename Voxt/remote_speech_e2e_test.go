@@ -256,7 +256,7 @@ func TestRemoteSpeechPage(t *testing.T) {
 		t.Fatal("no speech services on the Speech models page, or a Set up group with none set up")
 	}
 	// A service that takes no key from a server on this Mac says so.
-	keyless := "Optional for a server on this Mac. Saved in this Mac's Keychain, never in Voxt's settings or logs."
+	keyless := "Optional for a server on this Mac. Saved in this Mac's Keychain."
 	scrollToText(tt, "OpenAI Transcribe")
 	click(t, tt, "OpenAI Transcribe")
 	frames(tt)
@@ -269,7 +269,7 @@ func TestRemoteSpeechPage(t *testing.T) {
 	scrollToText(tt, "Doubao (Volcengine)")
 	click(t, tt, "Doubao (Volcengine)")
 	frames(tt)
-	if has(tt, keyless) || !has(tt, "Saved in this Mac's Keychain, never in Voxt's settings or logs.") {
+	if has(tt, keyless) || !has(tt, "Saved in this Mac's Keychain.") {
 		t.Errorf("Doubao's key hint: %q", tt.Texts())
 	}
 	a.provDlg.key, a.provDlg.appID = "token-0123456789", "app-42"

@@ -14,14 +14,14 @@ func TestAutoRail(t *testing.T) {
 	}
 	tt.SetSize(windowMinWidth, windowMinHeight)
 	frames(tt)
-	if !a.railMode() || !has(tt, "Show the sidebar") {
+	if !a.railMode() || !has(tt, "Show sidebar") {
 		t.Fatal("no rail in a narrow window")
 	}
 	if a.prefs.Appearance.Rail || a.prefs.Appearance.RailChosen {
 		t.Error("the automatic rail was saved")
 	}
 	// The user's choice wins, at any width.
-	click(t, tt, "Show the sidebar")
+	click(t, tt, "Show sidebar")
 	if a.railMode() || !a.prefs.Appearance.RailChosen {
 		t.Fatalf("chose the sidebar: rail %v %+v", a.railMode(), a.prefs.Appearance)
 	}

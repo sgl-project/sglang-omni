@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -36,6 +37,38 @@ func TestTrayIcons(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestTrayMeetingStatus(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	meetingDevHook = func() bool { return true }
+	t.Cleanup(func() { meetingDevHook = nil })
+	a.openMeetings()
+	if a.trayShowsRecording() {
+		t.Fatal("idle icon at rest")
+	}
+	a.meetSnap.State = meeting.StateRecording
+	a.meetSnap.ID = "m1"
+	if !a.trayShowsRecording() {
+		t.Fatal("recording icon during meeting")
+	}
+	if tip := a.trayToolTip(); tip != "Meeting in progress" {
+		t.Fatalf("tooltip %q", tip)
+	}
+	labels := func() []string {
+		var out []string
+		for _, it := range a.trayItems() {
+			out = append(out, it.Label)
+		}
+		return out
+	}
+	if !slices.Contains(labels(), "End meeting") {
+		t.Fatalf("menu %q", labels())
+	}
+	a.meetSnap.State = meeting.StatePaused
+	if a.trayToolTip() != "Meeting paused" {
+		t.Fatal("paused tooltip")
 	}
 }
 

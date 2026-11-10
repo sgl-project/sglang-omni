@@ -39,7 +39,7 @@ func TestParseErrorText(t *testing.T) {
 		"":         "Type the keys, as in Control+Option+Space.",
 		"A+B":      "Only one key besides the modifiers.",
 		"LeftFn":   "fn has no left or right side.",
-		"Hyper+K":  "A key is unknown. Write the modifiers first, then one key: Fn, RightCommand, Control+Option+Space, Fn+F5.",
+		"Hyper+K":  "Unknown key. Type the modifiers first, then one key, as in Fn, RightCommand, Control+Option+Space or Fn+F5.",
 		"Option+K": "",
 	} {
 		_, err := hotkey.Parse(keys)

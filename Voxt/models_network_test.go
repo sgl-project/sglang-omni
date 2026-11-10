@@ -47,7 +47,7 @@ func TestNetworkDialog(t *testing.T) {
 	if a.currentPage() != "models" || !a.netOpen || !has(tt, "How model downloads reach Hugging Face") {
 		t.Fatalf("deep link: page %q open %v %q", a.currentPage(), a.netOpen, tt.Texts())
 	}
-	if !has(tt, "Applies to all apps that use this model library") || !has(tt, "The proxy in the Mac's network settings, or the one the environment names.") {
+	if !has(tt, "Applies to all apps that use this model library") || !has(tt, "The proxy in this Mac's network settings, or one set by an environment variable.") {
 		t.Fatalf("defaults: %q", tt.Texts())
 	}
 
@@ -55,7 +55,7 @@ func TestNetworkDialog(t *testing.T) {
 	click(t, tt, "Custom")
 	a.netForm.proxyURL = "ftp://127.0.0.1:21"
 	click(t, tt, "Save")
-	if !a.netOpen || !has(tt, "Enter a proxy's address that starts with http://, https:// or socks5://, like http://127.0.0.1:7890.") {
+	if !a.netOpen || !has(tt, "Enter a proxy address that starts with http://, https:// or socks5://, such as http://127.0.0.1:7890.") {
 		t.Fatalf("an ftp proxy was taken: %q", tt.Texts())
 	}
 	a.netForm.proxyURL = " socks5://127.0.0.1:1080 "
