@@ -18,7 +18,7 @@ func TestWorkingTexts(t *testing.T) {
 		{session.Snapshot{Kind: store.KindRewrite, State: session.Composing}, "Writing…"},
 		{session.Snapshot{Kind: store.KindRewrite, State: session.Composing, Selection: "x"}, "Rewriting the selection…"},
 		{session.Snapshot{Kind: store.KindTranslate, State: session.Reading}, "Reading the selection…"},
-		{session.Snapshot{Kind: store.KindRewrite, State: session.Recognizing}, "Recognizing…"},
+		{session.Snapshot{Kind: store.KindRewrite, State: session.Recognizing}, "Recognising…"},
 		{session.Snapshot{Kind: store.KindRewrite, State: session.Delivering}, "Inserting…"},
 	} {
 		if got := WorkingText(tc.s); got != tc.want {

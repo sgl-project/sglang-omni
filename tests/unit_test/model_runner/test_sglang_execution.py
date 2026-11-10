@@ -4,8 +4,19 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+from sglang.srt.model_executor.forward_batch_info import ForwardMode
+from sglang.srt.model_executor.forward_context import (
+    ForwardContext,
+    forward_context,
+    get_attn_backend,
+)
+from sglang.srt.model_executor.model_runner import ModelRunner as NativeModelRunner
+from sglang.srt.model_executor.model_runner import ModelRunnerOutput
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
 from sglang_omni.model_runner.sglang_execution import SGLangExecutionBridge
+from sglang_omni.model_runner.sglang_model_runner import SGLModelRunner
 
 
 class FutureMap:
@@ -18,6 +29,50 @@ class FutureMap:
 
     def publish(self, indices, seq_lens) -> None:
         self.published = (indices, seq_lens)
+
+
+def test_plain_decode_selects_its_backend_inside_an_existing_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller's verify context must not leak into ordinary decode."""
+    target_runner = object.__new__(SGLModelRunner)
+    plain_runner = object.__new__(SGLModelRunner)
+    plain_runner.attn_backend = SimpleNamespace()
+    target_runner.plain_decode_runner = plain_runner
+    plain_runner.plain_decode_runner = None
+    outer_backend = SimpleNamespace()
+    batch = SimpleNamespace(
+        forward_mode=ForwardMode.DECODE,
+        spec_algorithm=SpeculativeAlgorithm.NONE,
+        attn_backend=outer_backend,
+        moe_num_token_non_padded=None,
+    )
+    expected_output = ModelRunnerOutput(
+        logits_output=LogitsProcessorOutput(next_token_logits=torch.zeros(1, 2)),
+        can_run_graph=False,
+    )
+
+    def native_forward(
+        runner: NativeModelRunner,
+        forward_batch: SimpleNamespace,
+        pp_proxy_tensors: None,
+        reinit_attn_backend: bool,
+        split_forward_count: int,
+    ) -> ModelRunnerOutput:
+        assert runner is plain_runner
+        assert forward_batch is batch
+        assert pp_proxy_tensors is None
+        assert not reinit_attn_backend and split_forward_count == 1
+        assert get_attn_backend() is plain_runner.attn_backend
+        assert batch.attn_backend is plain_runner.attn_backend
+        return expected_output
+
+    monkeypatch.setattr(NativeModelRunner, "_forward_raw", native_forward)
+    with forward_context(ForwardContext(attn_backend=outer_backend)):
+        assert (
+            target_runner._forward_raw(batch, None) is expected_output
+        )  # noqa: leading-underscore  # native forward interface
+        assert get_attn_backend() is outer_backend
 
 
 class SpecAlgorithm:

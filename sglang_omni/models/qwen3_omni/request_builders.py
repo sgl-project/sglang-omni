@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, TypedDict, overload
 
 import torch
 import xxhash
-from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
 from sglang.srt.tokenizer.tiktoken_tokenizer import TiktokenTokenizer
 from transformers import PreTrainedTokenizerBase
@@ -37,6 +36,7 @@ from sglang_omni.scheduling.sglang_backend.prompt_hidden import (
 )
 from sglang_omni.scheduling.sglang_backend.request_data import (
     SGLangARRequestData,
+    ThinkerRequest,
     validate_prompt_token_ids,
 )
 from sglang_omni.scheduling.types import ARRequestData, RequestOutput
@@ -67,16 +67,8 @@ MM_AGGREGATE_STAGE = "mm_aggregate"
 MAX_INT32_POSITIVE = 0x7FFFFFFF
 
 
-class QwenThinkerRequest(Req):
-    """Restore multimodal inputs and generated-text positions when rebuilding KV."""
-
-    omni_data: SGLangARRequestData | None
-
-    def reset_for_retract(self) -> None:
-        super().reset_for_retract()
-        assert self.omni_data is not None, "a retracted request still owns its data"
-        self.omni_model_inputs = self.omni_data.model_inputs or None
-        self._omni_consumed = None  # noqa: leading-underscore  # model runner contract
+class QwenThinkerRequest(ThinkerRequest):
+    """Also restore generated-text M-RoPE positions when rebuilding KV."""
 
     def init_next_round_input(
         self,

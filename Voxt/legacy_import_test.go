@@ -9,7 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
 // The previous Voxt's databases in testdata/legacy:
@@ -93,13 +96,13 @@ func TestReadLegacyTermsRich(t *testing.T) {
 }
 
 // History: dictation, translation and rewrite come over with stable ids;
-// a meeting transcript and an empty entry are skipped.
+// an empty entry is skipped; transcript rows go to meetings, not history.
 func TestReadLegacyHistory(t *testing.T) {
 	entries, skipped, err := readLegacyHistory(context.Background(), legacyDatabase(copyFixture(t, "hist")))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 3 || skipped != 2 {
+	if len(entries) != 3 || skipped != 1 {
 		t.Fatalf("got %d entries, %d skipped: %+v", len(entries), skipped, entries)
 	}
 	want := map[string]string{"legacy-a1": "transcribe", "legacy-a2": "translate", "legacy-a3": "rewrite"}
@@ -279,7 +282,7 @@ func TestImportEndsTheOffer(t *testing.T) {
 	a, _, _ := newTestAppIn(t, dir)
 	a.importLegacyFrom(copyFixture(t, "real")) // from the setup guide, before Setup is done
 	if !a.ob.legacyDone {
-		t.Fatalf("the import did not succeed: %q", a.ob.legacyMsg)
+		t.Fatalf("the import did not succeed: %q", a.ob.legacy.text())
 	}
 	a.quit()
 	b, _, _ := newTestAppIn(t, dir)
@@ -316,5 +319,82 @@ func TestLegacyModelRoots(t *testing.T) {
 	}
 	if got := legacyModelRoots(voxtDir); len(got) != 2 || got[1] != chosen {
 		t.Errorf("with a chosen folder: roots %v, want it second", got)
+	}
+}
+
+// The upgrade test's import check (VOXTNEW_SMOKE_LEGACY=1,
+// .github/workflows/voxt-upgrade-test.yaml): --smoke reads the previous
+// Voxt's container without the open panel, imports it into its own data
+// folder and prints what that folder then holds; an empty container fails.
+func TestSmokeLegacy(t *testing.T) {
+	t.Setenv("VOXTNEW_SMOKE_LEGACY", "1")
+	for _, c := range []struct{ fixture, want string }{
+		{"real", "smoke: legacy import: 3 terms, 0 history entries"},
+		{"hist", "smoke: legacy import: 1 terms, 3 history entries"},
+		{"", "is not readable without asking"},
+	} {
+		home := t.TempDir()
+		container := filepath.Join(home, "Library", "Containers", legacyBundleID, "Data")
+		if err := os.MkdirAll(container, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		lib := t.TempDir()
+		if c.fixture != "" {
+			lib = copyFixture(t, c.fixture)
+		}
+		if err := os.Symlink(lib, filepath.Join(container, "Library")); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("VOXTNEW_LEGACY_HOME", home)
+		out, err := os.CreateTemp(t.TempDir(), "stdout")
+		if err != nil {
+			t.Fatal(err)
+		}
+		stdout := os.Stdout
+		os.Stdout = out
+		code := runSmoke(t.TempDir())
+		os.Stdout = stdout
+		printed, _ := os.ReadFile(out.Name())
+		if !strings.Contains(string(printed), c.want) || (code == 0) != (c.fixture != "") {
+			t.Errorf("%q: exit %d, printed:\n%s\nwant a line %q", c.fixture, code, printed, c.want)
+		}
+	}
+}
+
+// TestImportReportGroups: the bug was the import's result as one long
+// paragraph. It reads in groups: what came over, what was left out and
+// why (the history's meetings and empty entries), and what is left to do,
+// each with Complete setup. An import from outside the setup guide shows
+// them in a dialog; the guide's card shows them in place, and a to-do's
+// Complete setup opens the setup's dialog with the way back to the guide.
+func TestImportReportGroups(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "Library", "Containers", legacyBundleID), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VOXTNEW_LEGACY_HOME", home)
+	a, _, tt := newTestApp(t)
+	a.importLegacyFrom(copyFixture(t, "hist"))
+	if !a.ob.legacyOpen || !has(tt, "Imported from the previous Voxt") || !hasExact(tt, "Imported") || !has(tt, "History: 3 entries") ||
+		!hasExact(tt, "Left out") || !has(tt, "1 history entry: empty") || hasExact(tt, "To do") {
+		t.Fatalf("dialog: %q", tt.Texts())
+	}
+	click(t, tt, "Done")
+	a.ob.legacy.todo = []legacyTodo{{text: setupNeedsText(local.LLM, settings.Provider{ID: "deepseek"}, providers.MissingKey), kind: local.LLM, id: "deepseek"}}
+	a.openOnboarding()
+	if !has(tt, "History: 3 entries") || !hasExact(tt, "To do") || !has(tt, "DeepSeek needs its API key. Paste it again to use it.") {
+		t.Fatalf("the guide's card: %q", tt.Texts())
+	}
+	// With Linux's taller lines the button sits at the card's bottom edge:
+	// scroll the card to it first.
+	todo, _ := tt.Find("To do")
+	tt.Scroll(todo.X+todo.W/2, todo.Y, 0, 200)
+	frames(tt)
+	if err := tt.ClickControl("Complete setup of DeepSeek"); err != nil {
+		t.Fatal(err)
+	}
+	frames(tt)
+	if a.ob.open || a.shownPath() != remotePath || !a.provDlg.open || a.provDlg.id != "deepseek" || a.ob.awayTo != remotePath {
+		t.Errorf("Complete setup: guide %v, %s, dialog %v %q", a.ob.open, a.shownPath(), a.provDlg.open, a.provDlg.id)
 	}
 }
