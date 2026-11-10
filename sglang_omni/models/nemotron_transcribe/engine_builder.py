@@ -288,6 +288,7 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
             vocab_size=self.hf_config.vocab_size,
             audio_encoder_service=self.audio_encoder_service,
             should_wait_for_encode=self.should_wait_for_encode,
+            ctc_scorer=model.ctc_column_scores,
         )
 
     def extra_scheduler_kwargs(self) -> SchedulerExtras[NemotronTranscribeRequestData]:

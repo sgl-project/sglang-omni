@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import math
 import time
@@ -58,6 +59,9 @@ from sglang_omni.scheduling.token_text_streaming import (
 from sglang_omni.scheduling.types import DeferredAdmission, StreamOutputBuilder
 
 logger = logging.getLogger(__name__)
+
+# (ASR states of one upload, CTC classes) -> (frames, classes) log-probs
+CtcScorer = Callable[[torch.Tensor, list[int]], torch.Tensor]
 
 SAMPLE_RATE = 16000
 AUDIO_TOKEN = "<|audio|>"
@@ -168,7 +172,9 @@ def transcript_token_budget(
 
 
 def timestamp_transcription(
-    data: NemotronTranscribeRequestData, text: str
+    data: NemotronTranscribeRequestData,
+    text: str,
+    ctc_scorer: CtcScorer | None = None,
 ) -> dict[str, object] | None:
     """Align the transcript when this request asked for word timestamps."""
     request = data.req
@@ -198,7 +204,13 @@ def timestamp_transcription(
     else:
         pass
     align_text = strip_speaker_tags(text) if "<spk:" in text else text
-    transcription = align_transcript(align_text, evidence)
+    score_columns = None
+    asr_states = (evidence or {}).get("asr_states")
+    if ctc_scorer is not None and isinstance(asr_states, torch.Tensor):
+        score_columns = functools.partial(ctc_scorer, asr_states)
+    else:
+        pass
+    transcription = align_transcript(align_text, evidence, score_columns)
     rows = activity_rows(evidence)
     frame_seconds = 0.0
     if evidence is not None and isinstance(
@@ -238,6 +250,7 @@ def make_scheduler_adapters(
     vocab_size: int = AUDIO_TOKEN_ID,
     audio_encoder_service: NemotronTranscribePreLMEncoderService | None = None,
     should_wait_for_encode: Callable[[], bool] | None = None,
+    ctc_scorer: CtcScorer | None = None,
 ) -> tuple[
     RequestBuilder,
     ResultAdapter,
@@ -438,7 +451,7 @@ def make_scheduler_adapters(
             },
             "modality": "text",
         }
-        transcription = timestamp_transcription(data, text)
+        transcription = timestamp_transcription(data, text, ctc_scorer)
         if transcription is not None:
             body["transcription"] = transcription
         else:

@@ -9,14 +9,17 @@ invents a span by stretching the text across the file.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
+import numpy as np
 import torch
 
 logger = logging.getLogger(__name__)
 
+ScoreColumns = Callable[[list[int]], torch.Tensor]
+
 _ENGLISH = {"en", "eng", "english"}
-_NEG = -1.0e30
 
 
 def english_timestamp_language(language: str | None) -> str | None:
@@ -44,7 +47,8 @@ def forced_align(
     """Return an inclusive frame span for each target token.
 
     ``log_probs`` is ``(time, classes)``. ``None`` means the transcript does
-    not fit the frames.
+    not fit the frames. Each frame updates every CTC state at once; only the
+    one-byte choice per frame and state is kept for the backtrace.
     """
     if log_probs.ndim != 2:
         raise ValueError("log_probs must have shape (time, classes)")
@@ -63,76 +67,41 @@ def forced_align(
         return None
     else:
         pass
-    expanded = [blank_id]
-    for token in targets:
-        expanded.append(token)
-        expanded.append(blank_id)
-    states = len(expanded)
     if time_steps < len(targets):
         return None
     else:
         pass
-
-    scores = log_probs.detach().to(dtype=torch.float32, device="cpu")
-    dp = torch.full((time_steps, states), _NEG)
-    backpointer = torch.full((time_steps, states), -1, dtype=torch.int16)
-    dp[0, 0] = scores[0, blank_id]
-    if states > 1:
-        dp[0, 1] = scores[0, expanded[1]]
-    else:
-        pass
+    labels = np.full(2 * len(targets) + 1, blank_id, dtype=np.int64)
+    labels[1::2] = targets
+    states = labels.size
+    # A label may skip the blank before it unless it repeats the label before that.
+    can_skip = np.zeros(states, dtype=bool)
+    can_skip[2:] = (labels[2:] != blank_id) & (labels[2:] != labels[:-2])
+    scores = log_probs.detach().to(dtype=torch.float32, device="cpu").numpy()
+    every_state = np.arange(states)
+    previous = np.full(states, -np.inf, dtype=np.float32)
+    previous[:2] = scores[0, labels[:2]]
+    # 0 stays in the state, 1 steps from the state before, 2 skips a blank.
+    choices = np.zeros((time_steps, states), dtype=np.uint8)
+    candidates = np.full((3, states), -np.inf, dtype=np.float32)
     for time in range(1, time_steps):
-        for state in range(states):
-            best = dp[time - 1, state]
-            origin = state
-            if state > 0 and dp[time - 1, state - 1] > best:
-                best = dp[time - 1, state - 1]
-                origin = state - 1
-            else:
-                pass
-            label = expanded[state]
-            if (
-                state > 1
-                and label != blank_id
-                and label != expanded[state - 2]
-                and dp[time - 1, state - 2] > best
-            ):
-                best = dp[time - 1, state - 2]
-                origin = state - 2
-            else:
-                pass
-            if best <= _NEG / 2:
-                continue
-            else:
-                pass
-            dp[time, state] = best + scores[time, label]
-            backpointer[time, state] = origin
-
-    if states == 1:
-        end_state = 0
-    elif dp[-1, -1] >= dp[-1, -2]:
-        end_state = states - 1
-    else:
-        end_state = states - 2
-    if dp[-1, end_state] <= _NEG / 2:
+        candidates[0] = previous
+        candidates[1, 1:] = previous[:-1]
+        candidates[2, 2:] = np.where(can_skip[2:], previous[:-2], -np.inf)
+        choice = candidates.argmax(axis=0)
+        choices[time] = choice
+        previous = candidates[choice, every_state] + scores[time, labels]
+    end_state = states - 1 if previous[-1] >= previous[-2] else states - 2
+    if not np.isfinite(previous[end_state]):
         return None
     else:
         pass
-
-    path: list[int] = []
+    path = [0] * time_steps
     state = end_state
-    for time in range(time_steps - 1, -1, -1):
-        path.append(state)
-        if time == 0:
-            break
-        else:
-            pass
-        state = int(backpointer[time, state])
-        if state < 0:
-            return None
-        else:
-            pass
-    path.reverse()
+    for time in range(time_steps - 1, 0, -1):
+        path[time] = state
+        state -= int(choices[time, state])
+    path[0] = state
 
     spans: list[tuple[int, int]] = []
     open_frame: int | None = None
@@ -267,8 +236,13 @@ def tokenize_words(proto: bytes, words: list[str]) -> list[list[int]] | None:
 def align_transcript(
     text: str,
     evidence: dict[str, Any] | None,
+    score_columns: ScoreColumns | None = None,
 ) -> dict[str, Any]:
-    """Align ``text`` to encoder evidence stashed during perception."""
+    """Align ``text`` to the encoder evidence stashed during perception.
+
+    ``score_columns`` returns ``(time, len(columns))`` CTC log-probs for the
+    requested classes, so only the transcript's own classes are scored.
+    """
     if not evidence:
         return unavailable("ctc_evidence_unavailable")
     else:
@@ -282,14 +256,15 @@ def align_transcript(
         return unavailable("empty_transcript")
     else:
         pass
-    log_probs = evidence.get("log_probs")
     proto = evidence.get("tokenizer_proto")
     blank_id = evidence.get("blank_id")
+    class_count = evidence.get("class_count")
     frame_seconds = evidence.get("frame_seconds")
     if (
-        not isinstance(log_probs, torch.Tensor)
+        score_columns is None
         or not isinstance(proto, (bytes, bytearray))
         or not isinstance(blank_id, int)
+        or not isinstance(class_count, int)
         or not isinstance(frame_seconds, (int, float))
     ):
         return unavailable("ctc_evidence_unavailable")
@@ -300,10 +275,24 @@ def align_transcript(
         return unavailable("ctc_alignment_failed")
     else:
         pass
+    targets = {token for piece in pieces for token in piece}
+    if any(token < 0 or token >= class_count or token == blank_id for token in targets):
+        return unavailable("ctc_alignment_failed")
+    else:
+        pass
+    columns = sorted({*targets, blank_id})
+    compact = {token: index for index, token in enumerate(columns)}
+    try:
+        log_probs = score_columns(columns)
+    except RuntimeError:
+        logger.exception("CTC scoring failed; word timestamps are unavailable")
+        return unavailable("ctc_evidence_unavailable")
+    else:
+        pass
     return align_token_pieces(
         log_probs,
         words,
-        pieces,
-        blank_id=blank_id,
+        [[compact[token] for token in piece] for piece in pieces],
+        blank_id=compact[blank_id],
         frame_seconds=float(frame_seconds),
     )

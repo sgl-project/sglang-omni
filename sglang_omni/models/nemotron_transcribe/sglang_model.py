@@ -31,6 +31,7 @@ from sglang_omni.models.nemotron_transcribe.checkpoint_contract import (
 from sglang_omni.models.nemotron_transcribe.ctc_head import (
     CtcTimestampHead,
     load_ctc_head,
+    windowed_ctc_scores,
 )
 from sglang_omni.models.nemotron_transcribe.decoder_weights import (
     checkpoint_to_language_model_weights,
@@ -180,7 +181,11 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
         activity: torch.Tensor | None,
         asr_frames: int,
     ) -> None:
-        """Keep CPU CTC scores on the audio item for the result adapter."""
+        """Keep the upload's ASR states on the CPU for alignment after the decode.
+
+        The CTC head runs only at alignment time, over the transcript's own
+        classes, so a long upload never holds its full class log-probs.
+        """
         specific = item.model_specific_data
         if specific is None:
             return
@@ -216,24 +221,42 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
             return
         else:
             pass
-        parameter = next(head.parameters())
-        if parameter.device != asr_state.device:
-            head.to(device=asr_state.device)
-        else:
-            pass
-        with torch.inference_mode():
-            log_probs = head(asr_state[:, :frames].unsqueeze(0).float())
         evidence.update(
             {
-                "log_probs": log_probs[0]
-                .detach()
-                .to(device="cpu", dtype=torch.float32),
+                "asr_states": asr_state[:, :frames].detach().to(device="cpu"),
                 "blank_id": int(head.blank_id),
+                "class_count": int(head.blank_id) + 1,
                 "frame_seconds": float(self.ctc_frame_seconds()),
                 "tokenizer_proto": head.tokenizer_proto,
             }
         )
         specific["timestamp_evidence"] = evidence
+
+    @torch.inference_mode()
+    def ctc_column_scores(
+        self, asr_states: torch.Tensor, columns: list[int]
+    ) -> torch.Tensor:
+        """CTC log-probs of ``columns`` for each frame of ``(width, time)`` states."""
+        head = self.ctc_head
+        if head is None or not head.usable:
+            raise RuntimeError("CTC timestamp head is not usable")
+        else:
+            pass
+        device = next(self.perception.parameters()).device
+        if next(head.parameters()).device != device:
+            head.to(device=device)
+        else:
+            pass
+        encoder = self.perception.encoder
+        scores = windowed_ctc_scores(
+            head,
+            asr_states.to(device=device, dtype=torch.float32).unsqueeze(0),
+            torch.tensor(columns, dtype=torch.long, device=device),
+            core_frames=int(encoder.online_frames),
+            left_frames=int(encoder.left_context_frames),
+            right_frames=int(encoder.right_context_frames),
+        )
+        return scores.float().cpu()
 
     def forward(
         self,

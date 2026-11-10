@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -146,6 +147,37 @@ class CtcBridge(nn.Module):
         else:
             pass
         return hidden.transpose(1, 2)
+
+
+def windowed_ctc_scores(
+    head: Callable[[torch.Tensor], torch.Tensor],
+    states: torch.Tensor,
+    columns: torch.Tensor,
+    *,
+    core_frames: int,
+    left_frames: int,
+    right_frames: int,
+) -> torch.Tensor:
+    """Log-probs of ``columns`` for every frame, one encoder window at a time.
+
+    ``states`` is ``(1, width, time)``. Each window sees the left and right
+    context the encoder used and keeps only its own core frames, as NeMo
+    applies the head. The result is ``(time, len(columns))``.
+    """
+    total = states.shape[-1]
+    if core_frames <= 0 or total <= core_frames:
+        return head(states)[0].index_select(-1, columns)
+    else:
+        pass
+    blocks = []
+    for start in range(0, total, core_frames):
+        end = min(start + core_frames, total)
+        context_start = max(start - left_frames, 0)
+        context_end = min(end + right_frames, total)
+        block = head(states[:, :, context_start:context_end])[0]
+        offset = start - context_start
+        blocks.append(block[offset : offset + end - start].index_select(-1, columns))
+    return torch.cat(blocks, dim=0)
 
 
 def load_ctc_head(checkpoint_dir: str | Path) -> CtcTimestampHead | None:
