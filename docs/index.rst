@@ -98,17 +98,17 @@ Scroll sideways for more updates.
 
    <ul class="omni-news" role="list" tabindex="0" aria-label="News and latest blogs">
      <li>
+       <a href="https://github.com/sgl-project/sglang-omni/blob/main/Voxt/README.md">
+         <img class="omni-news-logo" src="https://raw.githubusercontent.com/sgl-project/sglang-omni/main/Voxt/resources/icon.png" alt="" loading="lazy">
+         <strong>Voxt 2.0.3: Open-source voice input for Mac</strong>
+         <time datetime="2026-11-10">November 10, 2026</time>
+       </a>
+     </li>
+     <li>
        <a href="https://index.openrsi.foundation/blog/2026/openrsi-sglang-omni/">
          <img class="omni-news-logo" src="_static/image/sgl-omni-logo.svg" alt="" loading="lazy">
          <strong>OpenRSI × SGLang-Omni: Scaling RSI for AI Infra</strong>
          <time datetime="2026-11-09">November 9, 2026</time>
-       </a>
-     </li>
-     <li>
-       <a href="get_started/voxt.html">
-         <img class="omni-news-logo" src="https://raw.githubusercontent.com/sgl-project/sglang-omni/main/Voxt/resources/icon.png" alt="" loading="lazy">
-         <strong>Voxt 2.0: Open-source voice input for Mac</strong>
-         <time datetime="2026-11-06">November 6, 2026</time>
        </a>
      </li>
      <li>
