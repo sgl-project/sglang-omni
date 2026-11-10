@@ -72,8 +72,8 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     without Chinese characters. Without a known user language `auto` tags by
     script like `English`. A sentence tagged English reaches the service with
     its numbers read out as words. sentence_pause_ms of silence goes before
-    each sentence after the reply's first audio, but not inside a sentence
-    cut by max_sentence_words.
+    each spoken sentence after the reply's first audio, but not inside a
+    sentence cut by max_sentence_words.
     """
 
     kind: Literal["openai_speech"] = "openai_speech"
@@ -319,10 +319,11 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
                 async for samples in self.speak(sentence, language):
                     audio_ms += len(samples) * 1000 / self.sample_rate_hz
                     emit(audio_chunk(samples, self.sample_rate_hz, turn))
+                follows_sentence_end = ends_sentence
             else:
-                pass
+                # note (Haoling Pu): a span with no word plays nothing, so a sentence end before it or at its end still puts a pause before the next spoken sentence.
+                follows_sentence_end = follows_sentence_end or ends_sentence
             text_end += len(span)
-            follows_sentence_end = ends_sentence
             self.progress(emit, turn, text_end, audio_ms)
 
     async def close(self) -> None:

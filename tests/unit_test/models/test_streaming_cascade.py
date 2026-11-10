@@ -213,6 +213,20 @@ async def test_sentences_keep_the_reply_spacing_and_split_cjk_without_spaces():
     assert "".join(spans) == REPLY
 
 
+@pytest.mark.asyncio
+async def test_sentences_say_which_spans_end_their_sentence():
+    """A span cut by max_words does not end its sentence, also in the reply's last sentence, which is cut only once the reply is complete."""
+
+    async def stream():
+        yield text_chunk("Sure. Alpha beta gamma delta.", 1)
+
+    assert [pair async for pair in sentences(stream(), max_words=3)] == [
+        ("Sure.", True),
+        (" Alpha beta", False),
+        (" gamma delta.", True),
+    ]
+
+
 async def spans_of(*parts: str, max_words: int = 24) -> list[str]:
     async def stream():
         for part in parts:
@@ -1380,13 +1394,17 @@ async def test_openai_speech_flushes_each_reply_before_turn_done(backends):
 async def test_openai_speech_pauses_before_each_sentence_after_the_first_audio(
     backends,
 ):
-    """A pause goes before each spoken sentence after the reply's first audio, not before that audio, not at a cut inside a sentence and not for a sentence with no word, and reply.progress counts it."""
+    """A pause goes before each spoken sentence after the reply's first audio, not before that audio, not at a cut inside a sentence even across a span with no word, and not for a sentence with no word, but still when a span with no word sits between two sentences, and reply.progress counts it."""
     settings, _, spoken, _ = backends
     tts = settings.component_graph().node("tts").component.model_dump()
     outputs = await drain(
         build({**tts, "max_sentence_words": 2, "sentence_pause_ms": 0.125}),
         [
-            text_chunk("😀. Hello there my friend. 😀. Second one. 😀.", 1),
+            text_chunk(
+                "😀. Hello there my friend 😀. Second one. 😀 😀 Third one. "
+                "Four five 😀 😀 six seven. 😀.",
+                1,
+            ),
             control_chunk(TURN_DONE, turn=1),
         ],
     )
@@ -1395,8 +1413,18 @@ async def test_openai_speech_pauses_before_each_sentence_after_the_first_audio(
     )
     progress = [o.payload for o in outputs if control_type(o) == REPLY_PROGRESS]
     speech = [0.0, 0.5, -0.5]
-    assert spoken == ["Hello there", "my friend.", "Second one."]
-    assert played.tolist() == speech + speech + [0.0, 0.0, 0.0] + speech
+    pause = [0.0, 0.0, 0.0]
+    assert spoken == [
+        "Hello there",
+        "my friend",
+        "Second one.",
+        "Third one.",
+        "Four five",
+        "six seven.",
+    ]
+    assert played.tolist() == (
+        speech + speech + pause + speech + pause + speech + pause + speech + speech
+    )
     assert [point["audio_ms"] for point in progress] == [
         0.0,
         0.125,
@@ -1404,6 +1432,11 @@ async def test_openai_speech_pauses_before_each_sentence_after_the_first_audio(
         0.25,
         0.5,
         0.5,
+        0.75,
+        1.0,
+        1.0,
+        1.125,
+        1.125,
     ]
 
 
