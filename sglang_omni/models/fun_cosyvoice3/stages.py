@@ -25,9 +25,17 @@ from sglang.srt.arg_groups.cuda_graph_hook import (
     generate_prefill_cuda_graph_batch_sizes,
 )
 from sglang.srt.utils.common import async_d2h, is_pin_memory_available
-from torch._inductor.runtime.compile_tasks import _set_triton_libdevice_path
 from torch.nn.utils.parametrize import is_parametrized, remove_parametrizations
 from x_transformers.x_transformers import apply_rotary_pos_emb
+
+# The libdevice pinning in `set_dit_compile_config` needs a private inductor
+# helper that only exists in torch builds linked against CUDA's libdevice.
+try:
+    from torch._inductor.runtime.compile_tasks import _set_triton_libdevice_path
+
+    _LIBDEVICE_PINNING_AVAILABLE = True
+except ImportError:  # pragma: no cover - depends on the torch build
+    _LIBDEVICE_PINNING_AVAILABLE = False
 
 if TYPE_CHECKING:
     from cosyvoice.flow.flow import CausalMaskedDiffWithDiT
@@ -1450,6 +1458,12 @@ def set_dit_compile_config() -> None:
     inductor_config.fx_graph_cache = True
     dynamo.config.cache_size_limit = 1024
     dynamo.config.accumulated_cache_size_limit = 1024
+    # The libdevice helper only exists in builds that compile against CUDA's
+    # libdevice, so keep the pinning optional.
+    if not _LIBDEVICE_PINNING_AVAILABLE:
+        return
+    else:
+        pass
     # note(ratish): Inductor picks CUDA's libdevice on its first kernel build;
     # cache entries record the file, so a warm boot's first lookups would miss.
     with inductor_config.patch({"eager_numerics.use_pytorch_libdevice": True}):
