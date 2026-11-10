@@ -263,3 +263,36 @@ func TestHideFeatures(t *testing.T) {
 		t.Fatalf("shown again: sidebar %v, palette %v, shortcuts %v, scenes %v", sidebar, palette, keys, scenes)
 	}
 }
+
+// TestOverlayPreviewKeepsItsSide: the preview's pill stays in the half of
+// the card of the position chosen, closer to the middle the farther the
+// distance from the edge, up to the largest (#3785: at 240 the top's pill
+// drew at the bottom).
+func TestOverlayPreviewKeepsItsSide(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 1600) // the preview on screen
+	a.navigate("/settings/overlay")
+	for _, pos := range []string{"top", "bottom"} {
+		var from [2]float32 // the pill's middle from its edge, at margin 0 and the largest
+		for i, margin := range []float64{0, ovMaxMargin} {
+			a.updateSettings(func(s *settings.Settings) { s.Overlay.Position, s.Overlay.Margin = pos, margin })
+			tt.Frame()
+			card, ok := tt.Find("Preview of the overlay")
+			pill, ok2 := tt.Find("Input level") // the waveform, centred in the pill
+			if !ok || !ok2 {
+				t.Fatalf("%s %v: no preview: %q", pos, margin, firstTexts(tt))
+			}
+			mid := pill.Y + pill.H/2 - card.Y
+			if pos == "bottom" {
+				mid = card.H - mid
+			}
+			if mid >= card.H/2 {
+				t.Errorf("%s at %v: the pill's middle is %.1f from its edge of a %.1f card: not in its half", pos, margin, mid, card.H)
+			}
+			from[i] = mid
+		}
+		if from[1] <= from[0] {
+			t.Errorf("%s: the pill is %.1f from its edge at the largest distance, %.1f at none", pos, from[1], from[0])
+		}
+	}
+}
