@@ -75,7 +75,7 @@ func settingsSections() []settingsSection {
 		{"permissions", i18n.T("Permissions"), "Permissions microphone accessibility privacy"},
 		{"audio", i18n.T("Audio"), "Audio microphone input device sounds silence"},
 		{"overlay", i18n.T("Overlay style"), "Overlay style position opacity corners recording pill"},
-		{"shortcuts", i18n.T("Shortcuts"), "Shortcuts hotkeys keys fn strict"},
+		{"shortcuts", i18n.T("Shortcuts"), "Shortcuts hotkeys keys fn"},
 		{"appearance", i18n.T("Appearance"), "Appearance theme size sidebar"},
 		{"privacy", i18n.T("Privacy"), "Privacy history audio logs"},
 		{"storage", i18n.T("Storage"), "Storage disk data folder reset"},
