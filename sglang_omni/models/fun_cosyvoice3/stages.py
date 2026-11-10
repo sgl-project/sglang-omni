@@ -159,7 +159,7 @@ class HiFTDecode(Protocol):
 
 
 class MpsHiFTAdapter:
-    """Keep HiFT's float64 F0 branch on CPU while decoding on MPS."""
+    """Keep HiFT's float64 F0 branch on CPU when the device lacks float64."""
 
     upsample_rates: list[int]
     istft_params: dict[str, int]
@@ -1249,6 +1249,12 @@ def load_cosyvoice3_flow_hift(
         "parametrizations)",
         folded,
     )
+    if not current_platform.is_float64_supported():
+        # The F0 branch is cast to float64 on purpose; devices without float64
+        # support would keep float32 weights and reject the double input.
+        hift = MpsHiFTAdapter(hift, device)
+    else:
+        pass
     del cv.model.llm
     if autocast_dtype is not None and torch.device(device).type == "cuda":
         # note(ratish): autocast caches no weight cast under inference mode, so
