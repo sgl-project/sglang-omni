@@ -115,8 +115,13 @@ func (f *ovFlow) String() string {
 	return b.String()
 }
 
-// TestOverlayFlowsTrace logs each flow's steps (VOXTNEW_FLOWS=1).
+// TestOverlayFlowsTrace logs each flow's steps (VOXTNEW_FLOWS=1) and writes
+// their pictures (VOXTNEW_FLOW_SHOTS=DIR). It checks nothing, so it skips
+// unless one is set: TestOverlayFlows runs the same flows and checks them.
 func TestOverlayFlowsTrace(t *testing.T) {
+	if os.Getenv("VOXTNEW_FLOWS") == "" && os.Getenv("VOXTNEW_FLOW_SHOTS") == "" {
+		t.Skip("set VOXTNEW_FLOWS=1 or VOXTNEW_FLOW_SHOTS to a directory")
+	}
 	for _, fl := range overlayFlows() {
 		t.Run(fl.name, func(t *testing.T) {
 			f := fl.run(t)
