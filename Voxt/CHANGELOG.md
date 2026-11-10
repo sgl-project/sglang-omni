@@ -4,11 +4,19 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Fixed
+
+- **Dictation goes into Raycast and other launcher panels**: a panel that takes the keyboard without bringing its app to the front (Raycast, Tinycast) got nothing and Voxt showed the answer card instead. The text is now pasted into the panel's field.
+
 ### Added
 
 - **Voxt 1.x on Apple silicon updates to Voxt 2 by itself**: each release also has the app as `Voxt-X.Y.Z-macOS.zip`, which Voxt 1.x's in-app update installs on a Mac with Apple silicon (first for those who turned on Beta Updates, then for everyone there) and the Homebrew cask (`brew install --cask hehehai/tap/voxt`, Apple silicon only) installs. Voxt 1.x on an Intel Mac is not offered Voxt 2, which does not run there, and stays on Voxt 1.x. After the update, allow the microphone and accessibility again: macOS sees Voxt 2 as another app.
 
 ### 中文
+
+#### 修复
+
+- **听写的文字能输入到 Raycast 等启动器的面板里**：Raycast、Tinycast 这类面板接管键盘，但它们的 App 不到前台，以前文字进不去，Voxt 改为弹出结果卡片。现在文字会粘贴到面板的输入框里。
 
 #### 新增
 
