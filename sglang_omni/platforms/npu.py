@@ -15,14 +15,14 @@ else:
 
 
 def validate_npu_graph_environment(model_name: str) -> None:
-    """Reject Host queue settings that would stall NPU pre-LM graph streams."""
+    """Reject Host queue settings that would stall NPU graph streams."""
     if (
         os.environ.get("PER_STREAM_QUEUE") != "1"
         or os.environ.get("TASK_QUEUE_ENABLE", "1") != "1"
         or os.environ.get("ASCEND_LAUNCH_BLOCKING") == "1"
     ):
         raise ValueError(
-            f"{model_name} NPU pre-LM graphs require PER_STREAM_QUEUE=1, "
+            f"{model_name} NPU graphs require PER_STREAM_QUEUE=1, "
             "TASK_QUEUE_ENABLE unset or 1, and ASCEND_LAUNCH_BLOCKING unset or 0 "
             "before starting the server"
         )
