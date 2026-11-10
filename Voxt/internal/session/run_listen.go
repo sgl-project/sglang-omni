@@ -75,6 +75,14 @@ func (r *run) readSelection() string {
 		r.logf("info", "no selection (%s, %.0f ms)", res.Via, res.MS)
 		return ""
 	}
+	for _, t := range r.req.Previous {
+		// A follow-up's: the text selected before, still selected, is in
+		// the conversation already (#3816).
+		if strings.TrimSpace(t.Selection) == strings.TrimSpace(text) {
+			r.logf("info", "the selection is in the conversation already")
+			return ""
+		}
+	}
 	r.logf("info", "selection: %s via %s in %.0f ms", r.logText(text), res.Via, res.MS)
 	r.m.update(r, func(s *Snapshot) { s.Selection, s.SelectionVia = text, res.Via })
 	return text
