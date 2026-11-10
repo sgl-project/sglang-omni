@@ -69,11 +69,7 @@ Every shortcut can be changed on its feature's page, and Settings → Shortcuts 
 
 ### New to Voxt
 
-1. **Download** `Voxt-2.0.3-arm64.dmg` from [the Voxt v2.0.3 release][download], open it and drag **Voxt** to **Applications**. Or install it with Homebrew:
-
-   ```sh
-   brew install --cask hehehai/tap/voxt
-   ```
+1. **Download** `Voxt-2.0.3-arm64.dmg` from [the Voxt v2.0.3 release][download], open it and drag **Voxt** to **Applications**.
 
 2. **Open Voxt and follow the setup guide**: allow the microphone and Accessibility, download the recommended speech model (Qwen3-ASR 1.7B (8bit), 2.5 GB), and set up a language model for clean-up, Translate and Rewrite.
 3. **Tap the right Option key** in any app, speak, and tap it again.
@@ -82,11 +78,10 @@ Step by step: [Install Voxt][install-guide].
 
 ### Coming from Voxt 1.x
 
-Take whichever way is easiest:
+Take whichever way is easier:
 
-- **From inside Voxt 1.x**: choose **Check for Updates…**. On a Mac with Apple silicon it offers Voxt 2 together with the upgrade guide.
+- **From inside Voxt 1.x**: on a Mac with Apple silicon, turn on **Beta Updates** (Settings → About) and choose **Check for Updates…**. It offers Voxt 2 together with the upgrade guide. Without Beta Updates, Voxt 1.x does not offer Voxt 2 yet.
 - **Install over it**: quit Voxt 1.x, download the newest disk image and drag Voxt to Applications. Choose **Replace** when Finder asks.
-- **Homebrew**: the cask above installs Voxt 2.
 
 Then, in Voxt 2:
 
@@ -100,7 +95,7 @@ What the import brings, with screenshots: [From Voxt 1.x to Voxt 2](docs/voxt-mi
 
 - A Mac with **Apple silicon** and **macOS 15** or later. Voxt 2 does not run on an Intel Mac; there, keep using Voxt 1.x.
 - About 280 MB for the app, and 2.5 GB for the recommended speech model.
-- Voxt 2 does not update itself. Install a newer version the same way: from its disk image, or with `brew upgrade --cask voxt`.
+- Voxt 2 does not update itself. Install a newer version the same way: from its disk image.
 
 ## Your models, your data
 
