@@ -31,6 +31,7 @@ type Store interface {
 	History() History
 	Dictionary() Dictionary
 	Notes() Notes
+	Meetings() Meetings
 	Close() error
 }
 
@@ -138,6 +139,16 @@ type HistoryQuery struct {
 	Offset int
 	// WithAudio selects only the entries with a recording kept.
 	WithAudio bool
+	// After (inclusive) and Before (exclusive) bound CreatedAt; zero means
+	// no bound. With AfterID, After is the last row of a page: the list
+	// resumes strictly past (After, AfterID) in Oldest's order.
+	After   time.Time
+	AfterID string
+	Before  time.Time
+	// Oldest lists oldest first instead of newest first.
+	Oldest bool
+	// Finished selects only entries that ended well and have a result.
+	Finished bool
 }
 
 // Retention is what the history keeps (its automatic clean-up): the
@@ -158,6 +169,8 @@ type History interface {
 	Put(ctx context.Context, e Entry) error
 	Get(ctx context.Context, id string) (Entry, error)
 	List(ctx context.Context, q HistoryQuery) ([]Entry, error)
+	// Count is how many entries q selects (its Limit and Offset ignored).
+	Count(ctx context.Context, q HistoryQuery) (int, error)
 	// Delete removes the entry and its audio file.
 	Delete(ctx context.Context, id string) error
 	// DeleteAll removes every entry of kind ("" = all) and their audio,
@@ -231,4 +244,87 @@ type Notes interface {
 	// List returns every note, newest first.
 	List(ctx context.Context) ([]Note, error)
 	Delete(ctx context.Context, id string) error
+}
+
+// MeetingStatus is where a meeting is in its lifecycle.
+type MeetingStatus string
+
+const (
+	MeetingRecording   MeetingStatus = "recording"
+	MeetingInterrupted MeetingStatus = "interrupted"
+	MeetingAsking      MeetingStatus = "asking"
+	MeetingFinishing   MeetingStatus = "finishing"
+	MeetingDone        MeetingStatus = "done"
+	MeetingFailed      MeetingStatus = "failed"
+)
+
+// MeetingMode is what the user chose when the meeting started.
+type MeetingMode string
+
+const (
+	MeetingModeMeeting   MeetingMode = "meeting"
+	MeetingModeSubtitles MeetingMode = "subtitles"
+	MeetingModeRecording MeetingMode = "recording"
+)
+
+// SegmentSource is which audio track produced a segment.
+type SegmentSource string
+
+const (
+	SegmentMic    SegmentSource = "mic"
+	SegmentSystem SegmentSource = "system"
+)
+
+// Meeting is one recorded session (rows in meetings; C1-1b-store).
+type Meeting struct {
+	Seq        int64 // the database rowid meetings_fts may index later
+	ID         string
+	CreatedAt  time.Time
+	EndedAt    time.Time
+	Status     MeetingStatus
+	Mode       MeetingMode
+	Title      string
+	DurationMS int64
+	ASRModel   string
+	DiarModel  string
+	LLMModel   string
+	Speakers   string // JSON object, e.g. {"s1":"Alice"}
+	Summary    string // JSON {title, body, todos, generated_at}
+	Chat       string // JSON array of Q&A (C1-7)
+	Audio      string // folder name under <data>/meetings/; "" when deleted
+	AudioUntil time.Time
+}
+
+// MeetingSegment is one sentence on a track.
+type MeetingSegment struct {
+	MeetingSeq  int64
+	Idx         int // meeting_segments.idx; <0 lets AppendSegments assign the next index
+	Source      SegmentSource
+	Speaker     string
+	StartMS     int64
+	EndMS       int64
+	Text        string
+	Translation string
+	Final       bool
+}
+
+// MeetingQuery lists meetings; zero lists all, newest first.
+type MeetingQuery struct {
+	Search string // full text on segment text and translation
+	Limit  int
+	Offset int
+}
+
+// Meetings stores meeting metadata and segments (no call site in C1-1b-store).
+type Meetings interface {
+	CreateMeeting(ctx context.Context, m Meeting) (Meeting, error)
+	UpdateMeeting(ctx context.Context, m Meeting) error
+	AppendSegments(ctx context.Context, seq int64, segs []MeetingSegment) error
+	UpdateSegmentTranslation(ctx context.Context, seq int64, idx int, translation string) error
+	ReplaceSegments(ctx context.Context, seq int64, src SegmentSource, segs []MeetingSegment) error
+	Meeting(ctx context.Context, id string) (Meeting, []MeetingSegment, error)
+	ListMeetings(ctx context.Context, q MeetingQuery) ([]Meeting, error)
+	DeleteMeeting(ctx context.Context, id string) error
+	Unfinished(ctx context.Context) ([]Meeting, error)
+	ExpiredAudio(ctx context.Context, now time.Time) ([]Meeting, error)
 }

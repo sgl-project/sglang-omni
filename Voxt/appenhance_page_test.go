@@ -101,7 +101,7 @@ func TestAppEnhancementEmpty(t *testing.T) {
 	}
 	// The master switch is a setting.
 	click(t, tt, "Use App enhancement")
-	if a.lib.settings.Get().AppEnhancement.Enabled || !has(tt, "App enhancement is off: every app gets only the features' own rules.") {
+	if a.lib.settings.Get().AppEnhancement.Enabled || !has(tt, "App enhancement is off, so every app uses only the features' own rules.") {
 		t.Error("switch not saved")
 	}
 }
@@ -136,19 +136,19 @@ func TestAppEnhancementEdit(t *testing.T) {
 	// Website rules: an invalid one says why; a valid one is added.
 	click(t, tt, "New website rule")
 	tt.Type("not a site")
-	click(t, tt, "Add the website rule")
-	if !has(tt, "A website rule has no spaces.") {
+	click(t, tt, "Add website rule")
+	if !has(tt, "A website rule cannot contain spaces.") {
 		t.Errorf("no error: %q", firstTexts(tt))
 	}
 	a.aePage.urlIn = "*.notion.so"
 	frames(tt)
-	click(t, tt, "Add the website rule")
+	click(t, tt, "Add website rule")
 	if g, _ := storedRules(t, a).Group("g-code"); len(g.URLs) != 3 || g.URLs[2] != "*.notion.so" || a.aePage.urlIn != "" {
 		t.Errorf("urls %q", g.URLs)
 	}
 	a.aePage.urlIn = "GitHub.com/"
 	frames(tt)
-	click(t, tt, "Add the website rule")
+	click(t, tt, "Add website rule")
 	if !has(tt, "This rule is in the group already.") {
 		t.Error("duplicate rule added")
 	}
@@ -158,7 +158,7 @@ func TestAppEnhancementEdit(t *testing.T) {
 	}
 	// Delete the group.
 	click(t, tt, "More actions")
-	if err := tt.ChooseMenuItem("Delete the group…"); err != nil {
+	if err := tt.ChooseMenuItem("Delete group…"); err != nil {
 		t.Fatal(err)
 	}
 	click(t, tt, "Delete")
@@ -179,7 +179,7 @@ func TestAppEnhancementAutoKey(t *testing.T) {
 	frames(tt)
 	click(t, tt, "Custom key after inserting")
 	tt.Key(0, ui.KeyEnter)
-	if !has(tt, "One key, with modifiers or not: Return, Command+Return, Tab.") {
+	if !has(tt, "Enter one key, with or without modifiers: Return, Command+Return, Tab.") {
 		t.Errorf("no error: %q", firstTexts(tt))
 	}
 	a.aePage.keyText = "command+return"
@@ -210,13 +210,13 @@ func TestAppEnhancementPreview(t *testing.T) {
 	// Slack: its group.
 	a.helperNotified(appActivated(proto.App{PID: 812, BundleID: "com.tinyspeck.slackmacgap", Name: "Slack"}))
 	frames(tt)
-	if !has(tt, "Matches Team chat, as its app") {
+	if !has(tt, "Matches Team chat, by the app") {
 		t.Errorf("slack %q", firstTexts(tt))
 	}
 	// Safari gives no address: it says so, and nothing matches.
 	a.helperNotified(appActivated(proto.App{PID: 902, BundleID: "com.apple.Safari", Name: "Safari"}))
 	frames(tt)
-	if !has(tt, "No group matches: only the features' own rules apply.") || !tt.HasText("does not show it to Accessibility now") {
+	if !has(tt, "No group matches, so only the features' own rules apply.") || !tt.HasText("does not show its address right now") {
 		t.Errorf("safari %q", firstTexts(tt))
 	}
 	// Add Safari to the group shown, from the preview.
@@ -247,7 +247,7 @@ func TestAppEnhancementApps(t *testing.T) {
 	click(t, tt, "Mail") // not Notes: the sidebar has a page of that name
 	click(t, tt, "Bundle ID")
 	tt.Type("com.example.editor")
-	click(t, tt, "Add the bundle ID")
+	click(t, tt, "Add bundle ID")
 	click(t, tt, "Done")
 	g, _ := storedRules(t, a).Group("g-code")
 	if !g.HasApp("com.apple.mail") || !g.HasApp("com.example.editor") {
@@ -273,7 +273,7 @@ func TestAppEnhancementBrowsers(t *testing.T) {
 	}
 	a.aePage.brID, a.aePage.brName = "org.example.browser", "Example"
 	frames(tt)
-	click(t, tt, "Add the browser")
+	click(t, tt, "Add browser")
 	if bs := a.lib.settings.Get().AppEnhancement.Browsers; len(bs) != 1 || bs[0].BundleID != "org.example.browser" {
 		t.Fatalf("browsers %+v", bs)
 	}
@@ -383,7 +383,7 @@ func TestAppEnhancementHeader(t *testing.T) {
 			if br.Y > float32(titleBarHeight) {
 				t.Errorf("%v %s: Browsers %+v below the header", size, lang, br)
 			}
-			tip, ok := tt.Find(i18n.T("Added on top of the features' basic clean-up and your rules, never instead of them: say what is special here (tone, format, names)."))
+			tip, ok := tt.Find(i18n.T("Added on top of each feature's own rules."))
 			if !ok || tip.W > 20 || tip.H > 20 {
 				t.Errorf("%v %s: the scene prompt's help %+v %v, not a ⓘ", size, lang, tip, ok)
 			}

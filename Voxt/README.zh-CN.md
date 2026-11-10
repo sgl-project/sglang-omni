@@ -1,111 +1,171 @@
+<div align="center"><a name="readme-top"></a>
+
+<img src="resources/icon.png" width="128" alt="Voxt 图标">
+
 # Voxt
+
+**在 Mac 的任意 App 里开口说话，Voxt 帮你写下来、译出来，或者直接回答你。**
+
+开源的 macOS 语音输入工具，由 [SGLang-Omni](https://github.com/sgl-project/sglang-omni) 团队出品。
 
 [English](README.md) · **简体中文**
 
-macOS 语音输入：在任意 App 里按下快捷键说话，文字出现在光标处。语音**在你的 Mac 上**识别；整理、翻译和改写用的语言模型由你选择：服务商的 API，或者用 Ollama 在这台 Mac 上运行的模型。
+[![Voxt 最新版本][release-shield]][download]
+[![macOS 15 及以上，Apple 芯片][macos-shield]](#系统要求)
+[![Apache License 2.0][licence-shield]](LICENSE)
 
-- **转录**：把说的话输入到光标处，说话时实时显示文字，可以再由语言模型整理（去掉口头语和说了一半的话，补上标点）。
-- **翻译**：把选中的文字，或者说的话，译成另一种语言。
-- **转写**：说一句怎么改（“短一点”“正式一点”）来改写选中的文字，或者按语音要求写新内容；在答案卡片里可以继续追问。
-- **应用增强**：把 App 和网站分组，每组有自己的场景提示词和插入后的按键（聊天时口语一些，插入后按回车发送）。
-- **词典**：人名和专业术语，语音识别模型提前知道，语言模型照你的写法输出。
+[![下载 Voxt][download-shield]][download]
 
-还有历史、浮窗、快捷键、菜单栏、设置引导、设置和更新。
+[安装指南][install-guide] · [更新日志](CHANGELOG.md) · [官网](https://voxt.actnow.dev) · [反馈问题][issues] · [Slack][slack]
 
-**快捷键**（在各功能页里可以改）：单按**右 Option** 转录，右 Option 加 Shift 翻译，Control 加右 Option 转写；Control-Option-V 粘贴上一条结果。这套按键把 fn 留给 Auralink，两个 app 可以同时使用。
+https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 
-**更新**：这个版本不会自动更新，新版本需要自己安装。
+▶ **观看 Voxt 2.0 发布视频**：[中文](https://youtu.be/mOwWavTSXu0) · [English](https://youtu.be/ktJRE7AB2mU)
 
-> **状态：2.0.0**。上面的功能都已在本地模型上可用，见 [CHANGELOG.md](CHANGELOG.md)。
+</div>
 
-## 在你的 Mac 上运行什么
+## Voxt 2.0 正式发布
 
-所有听到你说话的部分都在本机：
+今天，我们正式发布 **Voxt 2.0**，重新定义开源语音的全新交互生态！
 
-- **语音识别**和**声音检测**跑在 sglang-omni 的原生 MLX 服务上（[`sglang_omni_mlx/native`](../sglang_omni_mlx/native)，C++，不用 Python），每个模型一个进程，用到时启动，10 分钟不用就停（本地模型页的“高级”里可以改）。
-- 一个小的 Swift 辅助进程负责要用苹果框架的事：麦克风、全局快捷键、辅助功能、粘贴。
+无论是语音输入法所依赖的 ASR 识别 + LLM 润色，还是基于 LLM 的 Any to Any translation，以及选中任意文本直接通过语音得到反馈的本地 AI 助手，Voxt 2.0 是让我们 SGLang-Omni 团队自豪的全新交互智能入口。
 
-Voxt 只提供少数几个为它调好的模型，在你需要时从 Hugging Face（或镜像）下载，每个文件都按固定的 SHA-256 校验：
+- **从 Swift 到 Go 的高性能重构。** 语音输入在超长输入后的等待时间相比 1.x 缩短 **92%**：Voxt 2 在你说话的同时就识别已经说完的部分，不再等停下后把整段录音从头识别。一段 4 分 46 秒的录音，在 M4、24 GB 的 Mac 上，停止后的等待从 32.3 秒降到 2.6 秒（[测量方法](docs/eval.md#long-recordings-on-the-speech-model-10-17-testevallongasr)）。
+- **Voxt 1.x 一键迁移。** 词典、历史、兼容的语音识别模型和服务配置等用户习惯，都可以一键带过来。
+- **说过的话不会丢。** 识别失败时录音会保留，在历史里点“重试”就能重新识别。
+- **答案卡片里自由地连续交互。** 结果可以留在浮动的卡片里，接着用语音追问，再复制或插入。
+- **充分的模型生态，数据由你定义。** 语音既能使用本地由 SGLang-Omni MLX Runtime 强力支持的 Qwen3-ASR 或 MOSS-Transcribe-Diarize，也能接入云端 ASR API。语言模型方面，任何提供 OpenAI compatible API 的模型都可以作为强力支持：无论是 SGLang MLX、Ollama，还是我们团队常用的 DeepSeek V4.1 和 Kimi K3.1。数据去哪里，由你决定。
+- **Qwen3-ASR 可选的 DFlash 转录加速。** “转录加速”加一个小的草稿模型，用推测解码让语音识别模型更快。
+- **还有**：ChatGPT 登录（不用填 API Key）、翻译备用模型、自定义提示词，以及 Markdown / JSONL 历史导出。
+
+已经在用 Voxt 1.x？看[从 Voxt 1.x 升级](#从-voxt-1x-升级)。各版本的改动见 [CHANGELOG.md](CHANGELOG.md)。
+
+## Voxt 能做什么
+
+在任意 App 里按一下快捷键，说话，再按一下。按 Esc 取消。
+
+### 转录：语音输入法
+
+单按**右 ⌥ Option**。说的话输入到光标处；说话时实时显示文字，还可以由语言模型整理润色：去掉口头语和说了一半的话，补上标点。
+
+### 翻译：Any to Any
+
+**右 ⌥** 加 **⇧ Shift**。把选中的文字，或者说的话，译成另一种语言：22 种目标语言，由你选的语言模型翻译。
+
+### 改写：你的 AI 助手
+
+**⌃ Control** 加**右 ⌥**。选中任意文本，说一句要求：“短一点”“正式一点”“解释一下”；什么都不选，就按语音要求写新内容。回答留在卡片里，可以接着用语音追问，再复制或插入。
+
+### 还有这些
+
+- **应用增强**：把 App 和网站分组，每组有自己的提示词和插入后的按键，比如聊天时口语一些，插入后按回车发送。
+- **词典**：人名和专业术语，语音识别模型提前知道，语言模型照你的写法输出。Voxt 还会从历史和你的改正里建议新词。
+- **笔记**：单按右 ⌘ 说话，Voxt 把说的话存成笔记，不输入到 App 里。
+- **历史**：每一条结果都在，可以搜索、从录音“重试”、导出。
+
+每个快捷键都可以在对应的功能页里改，“设置 → 快捷键”里还有预设：右 ⌥、fn、⌘ 组合键，或者鼠标中键。⌃⌥V 再次粘贴上一条结果。
+
+## 安装
+
+### 第一次用 Voxt
+
+1. **下载**：从 [Voxt v2.0.3 发布页][download]下载 `Voxt-2.0.3-arm64.dmg`，打开后把 **Voxt** 拖进“应用程序”。也可以用 Homebrew 安装：
+
+   ```sh
+   brew install --cask hehehai/tap/voxt
+   ```
+
+2. **打开 Voxt，跟着设置引导走**：授权麦克风和辅助功能，下载推荐的语音识别模型（Qwen3-ASR 1.7B (8bit)，2.5 GB），再配置一个语言模型用于整理、翻译和改写。
+3. 在任意 App 里**单按右 Option**，说话，再按一下。
+
+分步说明：[Install Voxt][install-guide]。
+
+### 从 Voxt 1.x 升级
+
+三种方式任选其一：
+
+- **在 Voxt 1.x 里检查更新**：点“检查更新…”，在 Apple 芯片的 Mac 上会看到 Voxt 2 和升级指南。
+- **覆盖安装**：退出 Voxt 1.x，下载最新的 dmg，把 Voxt 拖进“应用程序”，访达询问时选“替换”。
+- **Homebrew**：上面的 cask 装的就是 Voxt 2。
+
+装好后，在 Voxt 2 里：
+
+1. 在设置引导里点**从旧版 Voxt 导入**：词典、历史、已下载的语音识别模型，以及语言模型服务和语音服务的配置都会带过来。Voxt 1.x 的数据只读不改。
+2. 重新授权麦克风和辅助功能：macOS 把 Voxt 2 当成一个新的 app。
+3. 重新粘贴 API Key，再确认一下快捷键：这两样不会导入。
+
+导入了什么（附截图）：[From Voxt 1.x to Voxt 2](docs/voxt-migration.md)。
+
+### 系统要求
+
+- **Apple 芯片**、**macOS 15** 及以上的 Mac。Voxt 2 不能在 Intel Mac 上运行，那里请继续用 Voxt 1.x。
+- app 约 280 MB，推荐的语音识别模型需下载 2.5 GB。
+- Voxt 2 不会自动更新。新版本用同样的方式安装：从 dmg 安装，或者 `brew upgrade --cask voxt`。
+
+## 你的模型，你的数据
+
+### 语音识别模型
+
+语音**在你的 Mac 上**识别，由 [SGLang-Omni MLX Runtime](../sglang_omni_mlx/native) 驱动：基于 MLX 的原生 C++，不用 Python。模型在你需要时才从 Hugging Face 下载（连不上时走镜像），每个文件都按固定的 SHA-256 校验；第一次听写时加载，闲置 10 分钟后卸载。
 
 | 模型 | 擅长什么 | 下载大小 |
 |---|---|---|
-| Qwen3-ASR 1.7B (8bit)（推荐） | 最准确；口音、方言、人名、一句话里夹几种语言；实时显示文字 | 2.5 GB |
-| Qwen3-ASR 0.6B (4bit) | 更快、更省内存，适合在安静环境里清晰地说话 | 713 MB |
+| **Qwen3-ASR 1.7B (8bit)**，推荐 | 最准确：口音、方言、人名、一句话里夹几种语言。实时显示文字。 | 2.5 GB |
+| **Qwen3-ASR 0.6B (4bit)** | 更快、更省内存，适合在安静环境里清晰地说话。实时显示文字。 | 713 MB |
 
-Voxt 1.x 的其他本地模型也都在：Qwen3-ASR 1.7B (6bit)、Whisper Large v3 Turbo、Whisper Large v3 和 Whisper Small（约 100 种语言）、Parakeet TDT 0.6B v3（25 种欧洲语言）、SenseVoice Small（中文、粤语、英语、日语、韩语）、Cohere Transcribe 03-2026（14 种语言）、Nemotron 3.5 ASR 0.6B（28 种语言，实时显示文字）和 MOSS-Transcribe-Diarize（中文和英语，实时显示文字）。只有 Qwen3-ASR 使用你的词典。Voxt 1.x 下载过的模型直接带过来，不用重新下载（docs/voxt-migration.md）。
+- **更多本地模型**：MOSS-Transcribe-Diarize（中文和英语，实时显示文字）、Nemotron 3.5 ASR 0.6B（28 种语言，实时显示文字）、Qwen3-ASR 1.7B (6bit)、Whisper Large v3 Turbo / Large v3 / Small（约 100 种语言）、Parakeet TDT 0.6B v3（25 种欧洲语言）、SenseVoice Small（中文、粤语、英语、日语、韩语）和 Cohere Transcribe 03-2026（14 种语言）。macOS 自带的系统听写也可以用，无需下载。
+- **Qwen3-ASR** 支持 30 种语言和 22 种中文方言，并且会用到你的词典；其他可下载的模型不用词典。
+- **转录加速**（DFlash）：在 Qwen3-ASR 1.7B (8bit) 和 0.6B (4bit) 的卡片上下载一个草稿模型（726 MB 和 262 MB），它每步先提出几个词，再由语音识别模型校验。删掉它，模型照常工作。
+- **云端语音 API**，如果你更想用：OpenAI Transcribe、豆包（火山引擎）、智谱 GLM-ASR、阿里云百炼、阶跃星辰、小米 MiMo 和 Google Gemini。
 
-声音检测（Silero VAD v6，1.2 MB）随第一个语音识别模型一起安装。Qwen3-ASR 模型支持 30 种语言和 22 种中文方言。Qwen3-ASR 1.7B (8bit) 和 0.6B (4bit) 的卡片上还有**转录加速**：一个用于推测解码的草稿模型（726 MB 和 262 MB），每步先提出几个词，再由语音识别模型校验。
+### 语言模型
 
-**语言模型**是你在“语言模型”页设置的服务，通过它们的 OpenAI 兼容 API 调用：OpenAI、Anthropic、Google Gemini、DeepSeek、通义千问（阿里云百炼）、Kimi、智谱 GLM、豆包（火山方舟）、MiniMax、阶跃星辰、小米 MiMo、xAI、OpenRouter，其他兼容的服务，或者本机的服务（Ollama、LM Studio、oMLX：免费，文字不离开这台 Mac）。没有语言模型时，转录直接输入识别出的原文；翻译和转写需要它。
+整理、翻译和改写使用你在“语言模型”页设置的模型，通过它的 OpenAI 兼容 API 调用：
 
-**需要** Apple 芯片、macOS 15 及以上的 Mac。app 约 280 MB；推荐的语音识别模型需下载 2.5 GB。8 GB 内存的 Mac 请选 Qwen3-ASR 0.6B (4bit)。
+- **在你的 Mac 上**，文字不离开本机：Ollama、LM Studio、oMLX、SGLang MLX，或者其他兼容的服务。
+- **在线服务**：OpenAI、Anthropic、Google Gemini、DeepSeek、通义千问（阿里云百炼）、Kimi、智谱 GLM、豆包（火山方舟）、MiniMax、阶跃星辰、小米 MiMo、xAI 和 OpenRouter。
+- **ChatGPT**：在浏览器里用你自己的 ChatGPT 套餐登录，不用 API Key。
+
+没有语言模型时，转录直接输入识别出的原文；翻译和改写需要它。每个功能可以用各自的模型和各自的提示词（“你的规则”），翻译还可以设一个备用模型，在第一个模型失败时接手。
 
 ## 隐私
 
-语音在这台 Mac 上识别；如果你在语音模型页给某个功能设置了在线语音服务（OpenAI、豆包、阿里云等），这个功能的录音会发给那个服务。要整理、翻译或改写的文字只发给你设置的语言模型；用 Ollama、LM Studio 或 oMLX 时文字也留在本机。API Key 保存在 macOS 钥匙串里。Voxt 没有自己的服务器，不需要账号，也不做统计。除此之外它只在下载你选择的模型时联网（从 Hugging Face，走系统代理；连不上时用 hf-mirror.com）。历史、可选保存的录音、词典和设置都在 `~/Library/Application Support/VoxtNew/`。
+- **语音留在你的 Mac 上**，除非你给某个功能设置了云端语音 API：这个功能的录音只会发给那个服务。
+- **文字只发给你设置的语言模型。** 用本机的服务时，文字也留在本机。音频从不发给语言模型。
+- **API Key 保存在 macOS 钥匙串里**，不会写进 Voxt 的设置或日志。
+- **不需要账号，也不做统计。** Voxt 没有接收你音频或文字的服务器。除此之外，它只在下载你选择的模型和读取 Voxt 的公告时联网，读取公告的请求不带任何关于你的信息。
+- **数据在两个文件夹里**：历史、可选保存的录音、词典和设置在 `~/Library/Application Support/VoxtNew/`，模型在 `~/Library/Application Support/SGLang Omni/models`。
 
-## 从源码构建
+## 帮助与社区
 
-需要 Go 1.27.1（`GOTOOLCHAIN=auto` 会自动下载）；构建 app 需要 Apple 芯片、macOS 15 及以上的 Mac，Xcode（编译辅助进程），以及 [uv](https://docs.astral.sh/uv/) 或 Python 3（Omni 运行时的构建工具：`scripts/build-omni.sh` 用固定版本的 MLX 编译 `sglang_omni_mlx/native`，CMake 会从 GitHub 下载 C++ 依赖，需要时走 shell 的 `https_proxy`）。在 `Voxt/` 下执行：
+- **安装和升级**：[Install Voxt][install-guide] 和 [From Voxt 1.x to Voxt 2](docs/voxt-migration.md)。
+- **遇到问题**：“设置 → 诊断与关于 → 反馈问题”会打开一个已填好诊断信息的 GitHub issue；也可以直接[提 issue][issues]，标题带上“[Voxt]”。
+- **提问和建议**：加入 SGLang 的 [Slack][slack]。
+- **给你自己的脚本和 agent**：让这台 Mac 上的其他程序[读取听写历史](docs/history-access.md)，默认关闭。
 
-```sh
-scripts/build-helper.sh              # Swift 辅助进程，输出到 resources/darwin-arm64/helper/
-scripts/build-omni.sh                # Omni 运行时（语音识别模型），输出到 resources/darwin-arm64/omni/
-go tool mygo dev                     # 热重载运行
-go tool mygo build                   # 生成 build/darwin-arm64/Voxt.app 和 dmg
-```
+## 开发者
 
-`go tool mygo build` 和 `mygo dev` 之前必须先编好辅助进程：`mygo.json` 给它指定了 entitlement，缺了就会失败。没有 Omni 运行时 app 也能运行，但不能识别语音（也可以把 `VOXTNEW_OMNI_RUNTIME` 指向 `scripts/build-omni.sh --out DIR` 编出的运行时）。
+Voxt 是基于 [MyGo](https://github.com/egoist/mygo) 的 Go 应用，带一个小的 Swift 辅助进程，内置 SGLang-Omni 的原生运行时。相关内容都在这个目录里：
 
-**发布版本**在 Mac 上用一条命令构建：`scripts/release.sh` 编译这三样，打包、签名 app 并检查结果（`--runtimes DIR` 直接用编好的运行时；有 Developer ID 时，`--notarize` 做公证（2.0.0 没有更新通道，不用 `--publish`）；ssh 里经 `scripts/mac-gui.sh` 运行）。正式版就是在 GitHub 上跑这个构建：推一个 `voxt-vX.Y.Z` tag，Voxt Release 工作流用 RY2TQTYSKQ 团队的 Developer ID 签名、公证，把磁盘映像放进 GitHub 的草稿 Release。见 [docs/release.md](docs/release.md)。
+- [从源码构建、签名和测试](docs/development.zh-CN.md)
+- [怎么提交改动](CONTRIBUTING.md#参与贡献)和[架构](docs/architecture.md)
 
-在 Linux 上，`scripts/mac.sh <命令>` 会把项目同步到 Mac（`MAC_HOST` 默认 `mac-air`，`MAC_DIR` 默认 `code/VoxtNew`）并在那里执行，例如 `scripts/mac.sh 'scripts/build-helper.sh && go tool mygo build'`。
+## 致谢
 
-<details>
-<summary>开发时的签名（重新构建后保留权限）</summary>
-
-macOS 按签名记住麦克风和辅助功能的授权。ad hoc 签名的构建（默认）每次重新构建签名都会变，所以重建以后 macOS 会忘掉授权：麦克风变成**拒绝且不再询问**，辅助功能在系统设置里看着是开的，却不起作用。辅助进程的授权就是 app 的（macOS 把 Voxt.app 当作它的责任进程），所以它也一样。解决办法：
-
-- **只改辅助进程时**：保留一个构建好的 app，用 bundle 外面的辅助进程运行它。辅助进程放在哪里都继承 app 的授权，重编它不受影响：
-  ```sh
-  scripts/build-helper.sh --out ~/voxtnew-dev
-  open --env VOXTNEW_HELPER=$HOME/voxtnew-dev/voxtnew-helper build/darwin-arm64/Voxt.app
-  ```
-- **重新开始**：`tccutil reset Microphone dev.hehehai.voxtnew`（`Accessibility` 同理），再打开 app 重新授权。如果旧的辅助功能记录开着却不起作用，在系统设置里用 − 删掉再重新授权。
-- **用固定的身份签名**：Apple Development 证书能让授权在重建后保留：`go tool mygo build -sign "Apple Development: …"`（或者在本地的 mygo.json 里写 `macos.signingIdentity`；`scripts/build-helper.sh` 用 `VOXTNEW_SIGN_IDENTITY`）。通过 ssh 时，`codesign` 会报 `errSecInternalComponent`，直到允许不经图形界面使用私钥：在 Mac 的“终端”里执行一次 `security set-key-partition-list -S apple-tool:,apple: -s ~/Library/Keychains/login.keychain-db`。
-
-在自己编的版本和发布版（Developer ID）之间切换，也要这样 reset 一次（[docs/release.md](docs/release.md) §4）。下载好的模型会保留。
-
-</details>
-
-## 开发
-
-Voxt 是基于 [MyGo](https://github.com/egoist/mygo) 的 Go 应用（用 Go 写原生 macOS 界面，不用 cgo）。由 Go 做决定；辅助进程和模型运行时照指令办事，通过 stdin/stdout 上的 JSON 行（辅助进程）或回环地址上的 HTTP（Omni 服务）通信。除了 Swift 代码，全部是普通的 Go，在 Linux 上用辅助进程和运行时的假实现测试。在 `Voxt/` 下执行：
-
-```sh
-CGO_ENABLED=0 go test ./...          # 全部测试，Linux 上可跑
-go tool mygo vet .                   # go vet 和 MyGo 的 UI 生命周期检查
-VOXTNEW_SNAPSHOTS=/tmp/shots go test -run TestSnapshots .   # 每个页面截图，浅色/深色、英文/简体中文
-cd helper && swift test              # Swift 辅助进程的测试（在 Mac 上），用同一套协议 fixture
-scripts/mac.sh scripts/mac-e2e.sh    # Mac 上的无界面测试：真实的辅助进程，假的模型
-scripts/mac.sh scripts/mac-regress.sh   # Mac 上的真实模型：运行时、评测、打包好的 app
-```
-
-存储的测试用 MyGo 的 SQLite 插件，它会下载一次自己的库（按 SHA-256 校验），或者用 `MYGO_SQLITE_LIBRARY`。在 Linux 上，浮窗中文文字的像素检查需要 CJK 字体（Ubuntu：`fonts-noto-cjk`）。
-
-- [docs/architecture.md](docs/architecture.md)：包结构、线程、会话、运行时、磁盘上的数据、测试。
-- [docs/plan.md](docs/plan.md)：这个 app 是什么，以及里程碑。
-- [docs/behavior.md](docs/behavior.md)：这个 app 和 Swift 版 Voxt（[hehehai/voxt](https://github.com/hehehai/voxt)）行为上的不同，以及原因。
-- [docs/llm-models.md](docs/llm-models.md)：已退役的本地语言模型、它们的参数和实测（历史记录）。
-- [docs/eval.md](docs/eval.md)：模型在评测集上的质量，以及由此做的决定。
-- [docs/helper-protocol.md](docs/helper-protocol.md)：辅助进程的协议。
-- [docs/manual-test.md](docs/manual-test.md)：在 Mac 上手动验证的清单，以及自动的真机测试。
-- [docs/release.md](docs/release.md)：构建、签名、公证和发布，以及更新。
-- [AGENTS.md](AGENTS.md)：改动规则（文字、线程、协议）。
-- [CHANGELOG.md](CHANGELOG.md)：各版本的变化。[CONTRIBUTING.md](CONTRIBUTING.md)：怎么提交改动。
-
-Voxt 取代了本仓在 2.0.0 之前的 Swift 版 Voxt（1.x）：装上它会替换“应用程序”里那个 Voxt.app，两者的数据互不相干；Voxt 可以把旧版的词典、历史和下载好的语音模型导入过来（[docs/voxt-migration.md](docs/voxt-migration.md)）。内部有些名字仍叫 VoxtNew（Swift 包、进程、bundle id 和数据目录）。它由 [Auralink](https://github.com/hehehai/Auralink) 复制而来。Auralink 是同一作者基于远程模型的应用，它用 Go 和 MyGo 以 [AudioSmith](https://github.com/hehehai/AudioSmith) 的界面重写了 [Voxt](https://github.com/hehehai/voxt)；VoxtNew 的本地模型运行时和请求策略沿用 Voxt 的做法。
+Voxt 2 取代了 Swift 版的 [Voxt](https://github.com/hehehai/voxt) 1.x。它由同一作者的 [Auralink](https://github.com/hehehai/Auralink) 发展而来，界面来自 [AudioSmith](https://github.com/hehehai/AudioSmith)。第三方代码、运行时和它们的许可见 [NOTICE](NOTICE)；模型按各自的许可下载。
 
 ## 许可
 
-Apache License 2.0（[LICENSE](LICENSE)），与本仓其余部分一致。版权归 SGLang-Omni 团队所有。第三方代码、运行时及其许可见 [NOTICE](NOTICE)；模型按各自的许可下载。
+Apache License 2.0（[LICENSE](LICENSE)），与本仓其余部分一致。版权归 SGLang-Omni 团队所有。
+
+[![回到顶部][back-to-top]](#readme-top)
+
+[download]: https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v2.0.3
+[install-guide]: https://sgl-project.github.io/sglang-omni/get_started/voxt.html
+[issues]: https://github.com/sgl-project/sglang-omni/issues/new/choose
+[slack]: https://slack.sglang.io
+[release-shield]: https://img.shields.io/github/v/release/sgl-project/sglang-omni?filter=Voxt%20v%2A&display_name=release&label=latest&style=flat-square&labelColor=000000&color=3fb950&logo=github&logoColor=white
+[macos-shield]: https://img.shields.io/badge/macOS-15%2B%20%C2%B7%20Apple%20silicon-58a6ff?style=flat-square&labelColor=000000&logo=apple&logoColor=white
+[licence-shield]: https://img.shields.io/badge/licence-Apache%202.0-58a6ff?style=flat-square&labelColor=000000&logo=apache&logoColor=white
+[download-shield]: https://img.shields.io/badge/Download-Voxt%20for%20Mac-000000?style=for-the-badge&logo=apple&logoColor=white
+[back-to-top]: https://img.shields.io/badge/-BACK_TO_TOP-151515?style=flat-square

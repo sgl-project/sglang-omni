@@ -176,7 +176,7 @@ func (a *app) noteKeysRow(c *ui.Context) {
 	r := &n.keys
 	problems := uitext.HotkeyProblems(a.prefs.Features, hotkey.Note)[0]
 	ui.Column(c.Key("notes-keys")).Gap(px(t, 6)).Children(func() {
-		settingRow(c, "notes-keys-row", i18n.T("Shortcut"), i18n.T("Press it in any app to start a note, and again to save it."), func() {
+		settingRow(c, "notes-keys-row", i18n.T("Shortcut"), "", func() {
 			opts, byLabel := keyOptions(cur, true)
 			if !slices.Contains(opts, r.sel) {
 				r.sel = chordLabel(cur)

@@ -169,13 +169,14 @@ func cmpOr(a, b string) string {
 }
 
 // writingAnswer says whether Rewrite's first answer is being written, its
-// first words in: the pill hands over to the answer card, which the
-// answer streams into, instead of a loader until the whole answer is in
-// (#3644). Not with Show live text off, nor for a follow-up (its card is
-// open already) or a try (the page shows it).
+// first words in, and will end in the card: the pill hands over to the
+// answer card, which the answer streams into, instead of a loader until
+// the whole answer is in (#3644). Not with Show live text off, nor for a
+// follow-up (its card is open already), a try (the page shows it) or an
+// answer that goes in at once (the card switch off: the pill shows it).
 func (a *app) writingAnswer() bool {
 	s := a.pillSession()
-	return !a.answer.open && s.Kind == store.KindRewrite && s.State == session.Composing && !s.Try && strings.TrimSpace(s.Draft) != ""
+	return !a.answer.open && s.Kind == store.KindRewrite && s.State == session.Composing && s.Card && !s.Try && strings.TrimSpace(s.Draft) != ""
 }
 
 // cardRecording says whether the card shows a follow-up recording (its

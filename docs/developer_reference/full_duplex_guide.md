@@ -1,20 +1,42 @@
 # Full-Duplex Guide
 
-This page consolidates three parts of the SGLang-Omni developer reference on real-time voice conversation, covering three layers: how the system works (the Full Duplex Interactive Model), how to benchmark it (the Full-Duplex-Bench runbook), and how to interpret the benchmark numbers (the v1.0 unified metrics). Together they form the complete chain: **Service → Measurement → Interpretation**.
+SGLang-Omni serves live voice conversations on `/v1/realtime` with three interaction strategies. This page takes each one end to end: how to install it, how to launch it, how to talk to it, and how to benchmark it with Full-Duplex-Bench. The reference sections at the end hold the metric definitions, the cascade configuration and the Session graph that all three run on.
 
-This page covers full-duplex serving and benchmarking in SGLang-Omni in three parts: the [Full Duplex Interactive Model](#full-duplex-interactive-model), the [Full-Duplex-Bench runbook](#full-duplex-bench-runbook), and the [v1.0 unified metrics](#full-duplex-bench-v10-unified-metrics) specification.
+## Choose a Strategy
 
-## Full Duplex Interactive Model
+| Strategy | How the conversation works | Reference system | GPUs | Launch | Benchmark `ENGINE` | CI label |
+| --- | --- | --- | --- | --- | --- | --- |
+| Native full duplex | One model listens and speaks at the same time and decides itself when to talk | MiniCPM-o 4.5; also PersonaPlex and Nemotron VoiceChat | 1 | [MiniCPM-o](#native-full-duplex-minicpm-o) | `minicpmo` (default) | `run-native-duplex` |
+| Turn-based | One omni model answers each user turn; the server's VAD ends the turn, and speaking over a reply interrupts it | Qwen3-Omni-30B-A3B-Instruct | 2 H100 or 1 H200 | [Qwen3-Omni](#turn-based-qwen3-omni) | `qwen3-omni` | `run-turn-based-duplex` |
+| Cascaded | Separate ASR, LLM and TTS services, composed by the server with VAD, conversation history, turn taking and interruption | Qwen3-ASR-1.7B, Qwen3.8-27B and Qwen3-TTS-12Hz-1.7B-Base | 1 or 2, by profile | [Streaming cascade](#streaming-cascade) | `cascade` | `run-cascaded-duplex` |
 
+All three run as a [Session](#session-graph) on the server and speak the same realtime protocol, so one browser demo, one client and one benchmark cover them all. `GET /v1/realtime/capabilities` says which strategy a server runs: a native server answers `"native_full_duplex":true`, a turn-based server or cascade `"interaction":"turn_based"`.
 
-SGLang-Omni serves a live voice conversation on `/v1/realtime` in two ways. A native full-duplex model such as MiniCPM-o 4.5 listens and speaks at the same time and decides itself when to talk. The streaming cascade composes independent speech recognition, language model and speech synthesis services into a turn-based conversation, and the server adds voice activity detection, the conversation history, turn taking and interruption. Both run as a Session on the server, a stateful conversation described under [Session Graph](#session-graph).
+## Install
 
-| Model | Interaction | Launch |
+Install SGLang-Omni [from source](../get_started/installation.md#from-source), or use the Docker image with a clone of the repository: the browser demos (`playground/`), the cascade profiles and session configs (`examples/`) and the benchmark (`benchmarks/`) are in the repository, not in the wheel. Run every command on this page from the repository root.
+
+Then add what the strategy needs:
+
+| Strategy | Extra packages | Checkpoints |
 | --- | --- | --- |
-| MiniCPM-o 4.5 | Native full duplex, audio and camera input | [Native Full Duplex: MiniCPM-o](#native-full-duplex-minicpm-o) |
-| PersonaPlex | Native full duplex, audio input | [Native Full Duplex: PersonaPlex](#native-full-duplex-personaplex) |
-| Nemotron VoiceChat | Native full duplex, audio input | [Native Full Duplex: Nemotron VoiceChat](#native-full-duplex-nemotron-voicechat) |
-| Streaming cascade | Turn-based, with interruption | [Streaming Cascade](#streaming-cascade) |
+| Native: MiniCPM-o | `uv pip install onnx einops` (the `minicpm-o` extra) | `hf download openbmb/MiniCPM-o-4_5` |
+| Native: PersonaPlex | `pyloudnorm`, only for recorded voice prompts | `hf download nvidia/personaplex-7b-v1` (gated: accept the license and `hf auth login` first) |
+| Native: Nemotron VoiceChat | None | `hf download nvidia/NVIDIA-NemotronLabs-VoiceChat-11B` (the tokenizer comes from `nvidia/NVIDIA-Nemotron-Nano-9B-v2`; see [Nemotron VoiceChat](../cookbook/nemotron_voicechat.md)) |
+| Turn-based: Qwen3-Omni | None | `hf download Qwen/Qwen3-Omni-30B-A3B-Instruct` |
+| Cascaded | `uv pip install websockets httpx`, the dependencies of [Qwen3-ASR](../cookbook/qwen3_asr.md) and [Qwen3-TTS](../cookbook/qwen3_tts.md), and a separate venv for the {ref}`forced-alignment worker <the-forced-alignment-worker>` | The profile's models; see [Streaming Cascade](#streaming-cascade) |
+
+The benchmark installs its own models, datasets and scoring venv with `python -m benchmarks.duplex.fdb setup`; see [Setup](#setup). Its serving venv gets only the `minicpm-o` extra, so the Cascaded row above is still required before benchmarking the cascade.
+
+## Launch
+
+Each strategy is one `serve` command with `--enable-realtime`, which mounts `/v1/realtime`, `/v1/realtime/capabilities` and `/v1/session`. A server is ready when the capabilities endpoint answers:
+
+```bash
+curl --fail http://localhost:8000/v1/realtime/capabilities
+```
+
+A session server accepts only realtime sessions; serve the model's default pipeline for chat completions, `/generate` or offline recordings.
 
 ### Native Full Duplex: MiniCPM-o
 
@@ -74,74 +96,6 @@ The results should be as follows:
 {"model":"openbmb/MiniCPM-o-4_5","interaction":"native","native_full_duplex":true,"proactive_output":false,"turn_control":[null],"client_commit":false,"input_modalities":["audio","image"],"output_modalities":["audio","text"],"input_audio_format":{"type":"audio/pcm","rate":16000},"output_audio_format":{"type":"audio/pcm","rate":24000},"native_unit_ms":1000,"first_unit_ms":1000,"microturn_ms":"variable","tail_policy":"pad","supports_server_interrupt":false,"supports_truncate":true,"supports_cancel":true,"supports_resume":false,"partial_style":"append_only","pressure_policy":"reject","strict_order":true,"sampling_parameters":["greedy","temperature","top_k","top_p","repetition_penalty","listen_prob_scale","force_listen_count","max_new_tokens_per_unit","repetition_window_size","talker_temperature","talker_repetition_penalty"],"supports_reference_audio":true,"supports_instruction_updates":false,"supports_sampling_updates":false,"input_image_format":{"types":["image/jpeg","image/png"],"max_bytes":524288,"max_frames_per_unit":4,"max_slice_nums":9},"limits":{"max_input_bytes":1920000,"max_output_bytes":33554432,"max_history_chars":65536,"cleanup_timeout_s":30,"session_update_timeout_s":60,"idle_timeout_s":300}}#
 ```
 
-The duplex server only accepts `/v1/realtime` requests; other chat completions or voice cloning against it fail.
-
-(browser-demo)=
-
-**Browser demo**
-
-
-With the full-duplex server running, start the demo page in another terminal:
-
-```bash
-python playground/realtime/app.py --api-base http://127.0.0.1:8000 --port 8080
-```
-
-Thanks to the OpenMoss team for the demo page.
-
-Once the terminal prints `Running on`, open <http://localhost:8080> and click **Start talking** to talk through your microphone; the camera can be turned on during the call. If the server is remote, first run `ssh -N -L 8080:127.0.0.1:8080 USER@SERVER` on your own machine. Open the page through `localhost`, or the browser will not grant microphone access.
-
-The settings panel shows only the controls the deployment declares in `/v1/realtime/capabilities`: the system prompt, the presets and a reference voice when `supports_reference_audio` is true (a preset pairs a MiniCPM-o duplex prompt with a voice, so no other backend gets them), a named voice when `voices` is listed, turn detection when `turn_control` lists `server_vad` or `semantic_vad`, camera detail when `input_image_format` allows more than one slice, and one numeric field per key in `sampling_parameters`, labelled for that backend (`max_new_tokens_per_unit` is tokens per 1 s unit on a native model and the reply token limit on a turn-based one). An empty field is not sent, so the deployment's default applies. The page sends every setting in its first `session.update`, so a change applies to the next conversation. Everything under `sglang` (sampling, voice, reference audio, image detail) is fixed once the session is open. Turn detection and `output_modalities` may change in a later `session.update`, and `instructions` only on a deployment that supports instruction updates, which is the cascade with a `system_prompt` node; MiniCPM-o, PersonaPlex and Qwen3-Omni freeze them with the first `session.update`. Settings are kept in the browser per deployment model. The download button in the top bar saves the conversation trace; attach it when reporting a problem.
-
-The stop button in the call dock follows `supports_cancel` from `session.updated`. Where it is granted, as on MiniCPM-o, the Qwen3-Omni session graph and the cascade, the button sends `response.cancel`, shows Stopping until the server's `response.done` for the reply arrives, and Stopped when that status is `cancelled`. A reply that ended on its own in the meantime shows no stop. This page sends no `conversation.item.truncate`, so a turn-based history keeps what the server delivered. Where it is not granted, as on PersonaPlex and Nemotron VoiceChat, the button is labelled as a local mute: it sends nothing and the reply is not cancelled on the server. In both cases the page then plays no model audio, under any response id, until you speak again: on a turn-based deployment the server's `input_audio_buffer.speech_started` lifts the mute, on a native one the microphone's own level does, since a stopped model may continue its answer under a new response and a new response id alone is no proof of a new answer. Speaking over the model is left to the model on a native deployment.
-
-An empty field falls back to the deployment's default, which lives here:
-
-| Backend | Sampling | Turn detection and voice |
-| --- | --- | --- |
-| MiniCPM-o | `MiniCPMODuplexSampling` in `sglang_omni/models/minicpm_o/native_config.py`; `--sampling.<field>` changes one | No turn detection. The voice is the deployment's `reference_audio` |
-| PersonaPlex | `PersonaPlexSessionSampling` in `sglang_omni/models/personaplex/config.py` (`--sampling.<field>`); a field left unset there keeps the offline value in `sglang_omni/models/personaplex/architecture.py` and `request_builders.py` | No turn detection. Voice `NATF2` unless the deployment sets `voice` |
-| Qwen3-Omni | `QwenSessionSampling` in `sglang_omni/models/qwen3_omni/session_preprocessing.py`; the deployment has no override, only a session changes them | `silence_duration_ms` 800 from the `vad` stage in `sglang_omni/models/vad/node.py`; `--vad.factory.silence_duration_ms` changes it |
-| Streaming cascade | The profile's node options; `--session_nodes.llm.<option>` changes one. `max_tokens` is 512 in the bundled profiles, and a `temperature` the profile leaves unset is not sent, so the chat service applies its own | The `vad` stage as above unless the profile sets it: `qwen3-asr-qwen3-tts-base-clone` runs it at 160 ms as Smart Turn's candidate pause, so picking server VAD in the panel prefills 800 ms. `eagerness` `medium` from `sglang_omni/models/turn_detection/node.py`; `--turn_detection.factory.eagerness` changes it |
-
-
-(full-duplex-protocol)=
-
-**Full-duplex protocol**
-
-
-Clients connect to `/v1/realtime` over WebSocket. They send 16 kHz mono PCM16 audio in `input_audio_buffer.append`; the server returns 24 kHz audio in `response.output_audio.delta` and text in `response.output_audio_transcript.delta`. The model decides once per second of audio whether to keep listening or to speak.
-
-1. After `session.created`, send `session.update` and wait for `session.updated`.
-2. Send audio with `input_audio_buffer.append` at the pace it is captured; replies arrive while you send.
-3. When the audio ends, send `sglang.input_audio.end`, wait for `sglang.input_audio.drained`, then send `session.close`.
-
-When the session ends, the server closes the WebSocket with one of these codes:
-
-| Close code | Meaning | Close reason |
-|---|---|---|
-| `1000` | Normal close | `client_closed`, `disconnect` |
-| `1008` | A server limit was reached | `session_update_timeout`, `idle_timeout`, `session_idle_timeout`, `context_exhausted`, `context_limit`, `output_budget_exhausted` |
-| `1011` | Server error | For example `internal`, `session_open_timeout` or `cleanup_timeout` |
-
-If a session has no input and no output for `realtime_idle_timeout_s`, the server closes it with `idle_timeout`. The pipeline configuration defaults to 300 seconds for native sessions and 6 hours for audio Session graphs, including the streaming cascade. WebSocket pings do not count as activity. Set `realtime_idle_timeout_s` in the pipeline YAML or override it with `--realtime-idle-timeout-s`. The server also waits for the first `session.update` up to `realtime_session_update_timeout_s` (default 60 seconds), which can be overridden with `--realtime-session-update-timeout-s`.
-
-For a Python client, see `warmup` in `playground/realtime/app.py`.
-
-Session settings go in the `sglang` field of `session.update`, before the first audio packet, and stay fixed for the session:
-
-| Setting | Field | Notes |
-|---|---|---|
-| Voice | `reference_audio` | `{"media_type": "audio/wav", "data": "<base64>"}`, a PCM16 WAV of at most 30 s and 1 MiB; `tts_reference_audio` changes only the output voice |
-| Sampling | `sampling` | For example `temperature`, `top_p` and `listen_prob_scale`; unset fields keep the server's defaults (`sampling` above) |
-| Image detail | `max_slice_nums` | Higher is sharper but accepts fewer frames per second |
-
-Send camera frames with `sglang.input_image.append`: a base64 JPEG or PNG in `image`, and its position on the audio timeline in `sglang.t_ms`. By default up to 4 frames per second are accepted; `session.updated` reports the actual limit.
-
-`response.cancel` ends the reply in progress: the turn ends, the server drops the audio of that reply it has not sent yet, and `response.done` arrives with status `cancelled` and reason `interrupted` about one second later, once the unit that was running completes. The unit the client did not receive is dropped from the session history, and the thinker then listens on every unit until the user speaks again, so the model does not resume the stopped answer. A cancel with no reply in progress, or a second cancel of the same reply, does nothing. `conversation.item.truncate` with `audio_end_ms` cuts a reply the client stopped, or one the model ended, at the last unit whose audio fully played, never past what the client received.
-
-[Full-Duplex-Bench](#what-is-measured) measures a native full-duplex deployment.
-
 ### Native Full Duplex: PersonaPlex
 
 [PersonaPlex](https://huggingface.co/nvidia/personaplex-7b-v1) is served for full duplex with its `session` variant; [PersonaPlex](../cookbook/personaplex.md) covers its installation and offline usage.
@@ -170,7 +124,7 @@ The full-duplex server is ready when this returns JSON containing `"native_full_
 curl --fail http://localhost:8000/v1/realtime/capabilities
 ```
 
-The protocol follows the [MiniCPM-o steps](#full-duplex-protocol), with these differences:
+The protocol follows the {ref}`MiniCPM-o steps <full-duplex-protocol>`, with these differences:
 
 | Setting | Field | Notes |
 |---|---|---|
@@ -205,7 +159,7 @@ The full-duplex server is ready when this returns JSON containing `"native_full_
 curl --fail http://localhost:8000/v1/realtime/capabilities
 ```
 
-The protocol follows the [MiniCPM-o steps](#full-duplex-protocol), with these differences:
+The protocol follows the {ref}`MiniCPM-o steps <full-duplex-protocol>`, with these differences:
 
 | Setting | Field | Notes |
 |---|---|---|
@@ -214,22 +168,69 @@ The protocol follows the [MiniCPM-o steps](#full-duplex-protocol), with these di
 
 The whole session is one response, and every unit brings 80 ms of agent audio, silent while the model listens. The session variant only accepts `/v1/realtime` requests; use the default pipeline for offline recordings.
 
-### Streaming Cascade
+### Turn-Based: Qwen3-Omni
 
-A profile names the services the cascade calls; one command starts them and the cascade, and the conversation is served on `/v1/realtime` and `/v1/session`.
+[Qwen3-Omni-30B-A3B-Instruct](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct) is served as a turn-based voice assistant by its Session graph: a VAD node ends the user's turn, a `dialog` node turns the audio of that turn into one user message, and the model answers it with the conversation so far. It does not listen while it speaks; speech that starts during a reply, or a `response.cancel`, stops the reply. [Qwen3-Omni](../cookbook/qwen3_omni.md) covers its installation and offline usage.
 
-(prerequisites)=
-
-**Prerequisites**
-
-
-Install `sglang-omni` by following [Installation](../get_started/installation.md), then install the network clients the nodes use:
+On two H100s:
 
 ```bash
-python -m pip install websockets httpx
+sgl-omni serve --config examples/qwen3_omni/session_h100.yaml --enable-realtime --port 8000
 ```
 
-The profile `qwen3-asr-qwen3-tts-base-clone` runs three Qwen models on one GPU: [Qwen3-ASR](../cookbook/qwen3_asr.md) for recognition, Qwen3-4B for the answers and [Qwen3-TTS](../cookbook/qwen3_tts.md) Base speaking in a voice cloned from `reference_zh.wav` in the profile's directory, with Qwen3-ForcedAligner finding where each word of the reply ends in its audio and [Smart Turn v3.2](https://huggingface.co/pipecat-ai/smart-turn-v3) deciding when the user has finished speaking. Install the two speech models' dependencies as their cookbooks say, then download the checkpoints (all public, no token):
+On one H200, use `examples/qwen3_omni/session_h200.yaml`. The config file sets what depends on the device: the GPU and memory fraction of each stage, and `max_sessions`. A session keeps up to the thinker's `max_seq_len` (32768) tokens of KV, so `max_sessions` is the thinker's KV pool, which the thinker logs at startup as `KV Cache is allocated. ... #tokens`, divided by 32768: 16 on one H200. The H100 file holds only 83,502 tokens and sets 4 for short conversations such as Full-Duplex-Bench's; pass `--max_sessions 2` for full-length conversations. On another device, write a config with both for that device; colocated stages require explicit memory fractions.
+
+The server is ready when the capabilities contain `"interaction":"turn_based"`.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `--vad.factory.silence_duration_ms` | 800 | Silence that ends a user turn |
+| `max_utterance_seconds` | 60 | Audio of one utterance; a client past it ends its session |
+| `max_queued_turns` | 8 | Finished utterances waiting behind the turn being answered; a client past it ends its session |
+| `max_utterance_frames` | 4 | The newest camera frames that go to the model with a turn; each costs thinker context for the rest of the session |
+| Sampling | Greedy thinker, `max_new_tokens` 2048 per turn; the talker from the checkpoint's `generation_config.json` (`talker_temperature` 0.9, `talker_top_k` 50, `talker_top_p` 1.0, `talker_repetition_penalty` 1.05, `talker_max_new_tokens` 4096) | `QwenSessionSampling` in `sglang_omni/models/qwen3_omni/session_preprocessing.py`; only a session changes it |
+
+The thinker and talker keep each session's KV, and its request row, between units, so a prefill batch admits the next unit of every waiting session, not only as many as there are free rows. `--thinker.factory.continuation_aware_admission false` and `--talker_ar.factory.continuation_aware_admission false` leave that count to SGLang; the KV is still kept and the rows still reused.
+
+A client sends 16 kHz PCM16 audio and, optionally, camera frames with `sglang.input_image.append` as on {ref}`MiniCPM-o <full-duplex-protocol>`, and selects `server_vad` under `session.audio.input.turn_detection`. The reply streams as `response.output_audio.delta` at 24 kHz with its text. `sglang.sampling` in a later `session.update` applies from the next unit; `instructions` is accepted only in the first `session.update`. After an interruption, send `conversation.item.truncate` with the milliseconds of reply audio the listener heard, so the history keeps only that much of the reply; without it the whole reply generated so far stays in the history. No user transcript is published.
+
+To end turns on meaning rather than silence, add the {ref}`turn detection node <turn-detection-node>` to the config: declare `turn_detection: {stages: [turn_detection], inputs: ["input:pcm16", "input:session", "vad:session"]}` beside `vad`, let `dialog` read `turn_detection:session` in place of `vad:session`, and publish `turn_detection: [session]` in place of `vad: [session]`. The stage loads Smart Turn v3.2 from `pipecat-ai/smart-turn-v3` unless `factory.model_path` names a local copy, and clients then select `semantic_vad`.
+
+(realtime-on-the-speech-pipeline)=
+
+**Realtime on the speech pipeline**
+
+The standard Qwen3-Omni speech pipeline also takes `--enable-realtime` and serves an older turn-based protocol, without the Session graph:
+
+```bash
+sgl-omni serve --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct --enable-realtime --port 8008
+```
+
+Its `session.update` takes `modalities: ["text", "audio"]`, `input_audio_format` and `output_audio_format` `pcm16`, and `turn_detection` at the top of the session: `server_vad` (the default) ends a turn after `silence_duration_ms` of silence, and `semantic_vad` with `eagerness` `low`, `medium` (default) or `high` adds Smart Turn v3.2. For `semantic_vad`, set `SGLANG_OMNI_SMART_TURN_MODEL_PATH` to a local `smart-turn-v3.2-gpu.onnx` (the server never downloads it and checks its SHA-256); without it, semantic requests fall back to `server_vad`. Text arrives in `response.text.delta` and 24 kHz PCM16 audio in `response.audio.delta`, followed by `response.audio.done` and `response.done`. Audio output is opt-in, and a `--text-only` server rejects it.
+
+With audio output, speech that the detector hears during a reply cancels it with reason `turn_detected`; `turn_detection.interrupt_response: false` turns that off, and `response.cancel` cancels with `client_cancelled`. The client must stop its playback on `input_audio_buffer.speech_started` and drop every later `response.audio.delta` of that response; if playback had begun, it sends `conversation.item.truncate` with the assistant `item_id` from `response.audio.delta`, `content_index: 0` and the played `audio_end_ms`, and the server removes the whole assistant item from the history. Both fields are required, and `content_index` must be 0 although the audio delta carries 1. The browser example is `playground/qwen-omni/realtime`; [its README](https://github.com/sgl-project/sglang-omni/blob/main/playground/qwen-omni/realtime/README.md) gives the rest of the client contract, such as checking `turn_detection` in the capabilities before asking for `semantic_vad` and dropping a response that an interruption already ended. The benchmark records this protocol with the profile `qwen3-omni-half-duplex` (see {ref}`Turn-based recordings <turn-based-recordings>`).
+
+### Streaming Cascade
+
+The cascade composes independent speech recognition, language model and speech synthesis services into a turn-based conversation; the server adds voice activity detection, the conversation history, turn taking and interruption. A profile, a `launch.yaml` under `examples/streaming_cascade/profiles/`, names the services and the nodes that call them, and one command starts both.
+
+| Profile | Recognizer | Language model | Speech | GPUs | Start beforehand |
+| --- | --- | --- | --- | --- | --- |
+| `qwen3-asr-qwen3-tts-base-clone` | Qwen3-ASR-1.7B on 8002 | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `reference_zh.wav` in the profile directory, with Smart Turn v3.2 turn detection | 1 | Alignment worker on 8010 |
+| `qwen3-asr-qwen3.8-27b-vivian` (benchmark and CI) | Qwen3-ASR-1.7B on 8002 | Qwen3.8-27B on 8003, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` | 2: the language model on GPU 0, both speech models on GPU 1 | Alignment worker on 8010 |
+| `qwen3-asr-qwen3-tts-vivian` | Qwen3-ASR-1.7B on 8002 | Qwen3.8-27B on 8000, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` | 2, as above | Alignment worker on 8010 |
+| `qwen3-asr-qwen3-tts-vivian-dflash` | Qwen3-ASR-1.7B with DFlash on 8002 | Qwen3.8-27B with DFlash on 8000, thinking off | As above | 2, as above | Alignment worker on 8010 |
+| `qwen3-asr-streaming-qwen3-tts-vivian` | Qwen3-ASR-1.7B on 8002 with `--enable-realtime`, a partial transcript every 1000 ms of speech | Qwen3.8-27B on 8000, thinking off | As above | 2, as above | Alignment worker on 8010 |
+| `nemotron-qwen3-tts` | Nemotron 3.5 streaming ASR on 8001 | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-0.6B-Base on 8004, cloning `reference.wav` | 1 | Alignment worker on 8010; a recording at `reference.wav`, with `reference_text` set to its transcript |
+| `nemotron-stage-qwen3-tts` | Nemotron 3.5 ASR as the in-server `asr` stage on GPU 0 | Qwen3-4B-Instruct-2507 on 8000 | As above | 1 | As above |
+
+`qwen3-asr-qwen3-tts-vivian-dflash` is `qwen3-asr-qwen3-tts-vivian` with DFlash speculative decoding for chat and ASR. The DFlash profile uses the `incoai/Qwen3.8-27B-DFlash2` chat draft pinned to revision `015e795645c74b1a0eeef3b570031fb62e769bc5` and the ASR draft configured in `examples/configs/qwen3_asr_1_7b_dflash.yaml`. Both verify blocks of eight tokens. Qwen3-TTS has no speculative decoding adapter. The profile keeps the default profile's GPU placement, memory fractions, ports and voice; the draft weights and caches also occupy GPU memory. Both profiles need the forced-alignment worker described above.
+
+Compared with the default profile, DFlash lowers the chat server's effective maximum concurrent requests. Without FlashInfer AOT kernels, the first start can spend about nine minutes JIT-compiling FlashInfer's `topk` module on H100; combined with model loading, this can exceed the 600 s service readiness timeout. Use AOT kernels or start the chat service separately and wait for readiness before launching the cascade.
+
+For a baseline comparison, select the default profile. For a chat-only comparison, copy the DFlash launch file and remove the ASR service's `--config` argument and its value. Stop the services between configurations: an existing service on the same port is reused, so changing a launch file alone does not change its decoding settings. Use the repository's `benchmarks.eval.benchmark_duplex_serving` with `--dataset v1.5 --profile turn-based` as shown in {ref}`v1.5 scoring <v15-scoring>`, and set `--model` to the selected profile's `model_path`. Its first-audio latency starts at `response.created`, after the ASR transcript opens the reply; evaluating ASR's contribution also requires the speech-stop and transcription events in the recording's `continuous.jsonl`.
+
+The steps below run `qwen3-asr-qwen3-tts-base-clone` on one GPU; every checkpoint is public. Download the models:
 
 ```bash
 hf download Qwen/Qwen3-ASR-1.7B
@@ -239,59 +240,942 @@ hf download Qwen/Qwen3-ForcedAligner-0.6B
 hf download pipecat-ai/smart-turn-v3 smart-turn-v3.2-gpu.onnx
 ```
 
-(launching)=
-
-**Launching**
-
-
-The profile's `aligner` node asks a forced-alignment worker where each word of the reply ends in its audio, so an interrupted reply can be cut at the last word heard. Start the worker first, from a separate virtual environment set up as [The forced-alignment worker](#the-forced-alignment-worker) describes:
+The profile's `aligner` node asks a forced-alignment worker where each word of the reply ends in its audio, so an interrupted reply is cut at the last word the listener heard. The worker needs `qwen-asr`, which pins its own `transformers`, so it runs from a venv of its own:
 
 ```bash
-PYTHONPATH=. python examples/streaming_cascade/alignment_worker.py --model Qwen/Qwen3-ForcedAligner-0.6B --device cuda:0 --language English --port 8010
+uv venv aligner-venv -p 3.12
+uv pip install --python aligner-venv/bin/python qwen-asr fastapi uvicorn regex httpx msgpack msgspec numpy pydantic websockets
+PYTHONPATH=. aligner-venv/bin/python examples/streaming_cascade/alignment_worker.py --model Qwen/Qwen3-ForcedAligner-0.6B --device cuda:0 --language English --port 8010
 ```
 
-Then start the cascade:
+`curl http://127.0.0.1:8010/health` answers `{"status":"ready"}` once the aligner is loaded. Then start the cascade in another terminal:
 
 ```bash
 sgl-omni serve --config examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-base-clone/launch.yaml --enable-realtime --port 8765
 ```
 
-Then open the browser page and talk, as [Voice Conversation](#voice-conversation) describes:
+The server starts the profile's `services` in order and waits for each, reuses a service already answering on its port, and starts the cascade once every service and the worker answer; stopping the server stops the services it started. The cascade listens on 8765 because the profile's language model takes 8000. The server is ready when the capabilities on port 8765 contain `"interaction":"turn_based"`.
+
+To run without the worker, switch the aligner on the command line: `--session_nodes.aligner.method asr --session_nodes.aligner.alignment_url ""` for a Qwen3-ASR profile, `--session_nodes.aligner.method sentence --session_nodes.aligner.alignment_url ""` for a Nemotron profile. Any other profile field is overridden the same way. To use a language model you already run, remove the `chat` entry from the profile's `services` and set both `--session_nodes.llm.base_url` (such as `http://127.0.0.1:9000/v1`) and `--session_nodes.llm.model`; with only `base_url`, the server still starts the profile's chat service and the node still asks for the profile's model. {ref}`Services you run elsewhere <services-you-run-elsewhere>` has the details; [Streaming Cascade Reference](#streaming-cascade-reference) lists every setting, the cascade protocol and the settings that cannot be combined.
+
+## Connect a Client
+
+### Browser Demo
+
+| Server | Page |
+| --- | --- |
+| Native models and the Qwen3-Omni Session graph | `python playground/realtime/app.py --api-base http://127.0.0.1:8000 --port 8080` |
+| Streaming cascade | `python playground/cascade/app.py --api-base http://127.0.0.1:8765 --port 8090` |
+| Qwen3-Omni speech pipeline | `playground/qwen-omni/realtime` |
+
+Thanks to the OpenMoss team for the demo page.
+
+Once the terminal prints `Running on`, open <http://localhost:8080> (<http://localhost:8090> for the cascade page) and click **Start talking** to talk through your microphone; the camera can be turned on during the call. If the server is remote, first run `ssh -N -L 8080:127.0.0.1:8080 USER@SERVER` on your own machine (`8090:127.0.0.1:8090` for the cascade page). Open the page through `localhost`, or the browser will not grant microphone access.
+
+The settings panel shows only the controls the deployment declares in `/v1/realtime/capabilities`: the system prompt, the presets and a reference voice when `supports_reference_audio` is true (a preset pairs a MiniCPM-o duplex prompt with a voice, so no other backend gets them), a named voice when `voices` is listed, turn detection when `turn_control` lists `server_vad` or `semantic_vad`, camera detail when `input_image_format` allows more than one slice, and one numeric field per key in `sampling_parameters`, labelled for that backend (`max_new_tokens_per_unit` is tokens per 1 s unit on a native model and the reply token limit on a turn-based one). An empty field is not sent, so the deployment's default applies. The page sends every setting in its first `session.update`, so a change applies to the next conversation. Everything under `sglang` (sampling, voice, reference audio, image detail) is fixed once the session is open. Turn detection and `output_modalities` may change in a later `session.update`, and `instructions` only on a deployment that supports instruction updates, which is the cascade with a `system_prompt` node; MiniCPM-o, PersonaPlex and Qwen3-Omni freeze them with the first `session.update`. Settings are kept in the browser per deployment model. The download button in the top bar saves the conversation trace; attach it when reporting a problem.
+
+The stop button in the call dock follows `supports_cancel` from `session.updated`. Where it is granted, as on MiniCPM-o, the Qwen3-Omni session graph and the cascade, the button sends `response.cancel`, shows Stopping until the server's `response.done` for the reply arrives, and Stopped when that status is `cancelled`. A reply that ended on its own in the meantime shows no stop. This page sends no `conversation.item.truncate`, so a turn-based history keeps what the server delivered. Where it is not granted, as on PersonaPlex and Nemotron VoiceChat, the button is labelled as a local mute: it sends nothing and the reply is not cancelled on the server. In both cases the page then plays no model audio, under any response id, until you speak again: on a turn-based deployment the server's `input_audio_buffer.speech_started` lifts the mute, on a native one the microphone's own level does, since a stopped model may continue its answer under a new response and a new response id alone is no proof of a new answer. Speaking over the model is left to the model on a native deployment.
+
+An empty field falls back to the deployment's default, which lives here:
+
+| Backend | Sampling | Turn detection and voice |
+| --- | --- | --- |
+| MiniCPM-o | `MiniCPMODuplexSampling` in `sglang_omni/models/minicpm_o/native_config.py`; `--sampling.<field>` changes one | No turn detection. The voice is the deployment's `reference_audio` |
+| PersonaPlex | `PersonaPlexSessionSampling` in `sglang_omni/models/personaplex/config.py` (`--sampling.<field>`); a field left unset there keeps the offline value in `sglang_omni/models/personaplex/architecture.py` and `request_builders.py` | No turn detection. Voice `NATF2` unless the deployment sets `voice` |
+| Qwen3-Omni | `QwenSessionSampling` in `sglang_omni/models/qwen3_omni/session_preprocessing.py`; the deployment has no override, only a session changes them | `silence_duration_ms` 800 from the `vad` stage in `sglang_omni/models/vad/node.py`; `--vad.factory.silence_duration_ms` changes it |
+| Streaming cascade | The profile's node options; `--session_nodes.llm.<option>` changes one. `max_tokens` is 512 in the bundled profiles, and a `temperature` the profile leaves unset is not sent, so the chat service applies its own | The `vad` stage as above unless the profile sets it: `qwen3-asr-qwen3-tts-base-clone` runs it at 160 ms as Smart Turn's candidate pause, so picking server VAD in the panel prefills 800 ms. `eagerness` `medium` from `sglang_omni/models/turn_detection/node.py`; `--turn_detection.factory.eagerness` changes it |
+
+(full-duplex-protocol)=
+
+### Native Full-Duplex Protocol
+
+Clients connect to `/v1/realtime` over WebSocket. They send 16 kHz mono PCM16 audio in `input_audio_buffer.append`; the server returns 24 kHz audio in `response.output_audio.delta` and text in `response.output_audio_transcript.delta`. The model decides once per second of audio whether to keep listening or to speak.
+
+1. After `session.created`, send `session.update` and wait for `session.updated`.
+2. Send audio with `input_audio_buffer.append` at the pace it is captured; replies arrive while you send.
+3. When the audio ends, send `sglang.input_audio.end`, wait for `sglang.input_audio.drained`, then send `session.close`.
+
+When the session ends, the server closes the WebSocket with one of these codes:
+
+| Close code | Meaning | Close reason |
+|---|---|---|
+| `1000` | Normal close | `client_closed`, `disconnect` |
+| `1008` | A server limit was reached | `session_update_timeout`, `idle_timeout`, `session_idle_timeout`, `context_exhausted`, `context_limit`, `output_budget_exhausted` |
+| `1011` | Server error | For example `internal`, `session_open_timeout` or `cleanup_timeout` |
+
+If a session has no input and no output for `realtime_idle_timeout_s`, the server closes it with `idle_timeout`. The pipeline configuration defaults to 300 seconds for native sessions and 6 hours for audio Session graphs, including the streaming cascade. WebSocket pings do not count as activity. Set `realtime_idle_timeout_s` in the pipeline YAML or override it with `--realtime-idle-timeout-s`. The server also waits for the first `session.update` up to `realtime_session_update_timeout_s` (default 60 seconds), which can be overridden with `--realtime-session-update-timeout-s`.
+
+For a Python client, see `warmup` in `playground/realtime/app.py`.
+
+Session settings go in the `sglang` field of `session.update`, before the first audio packet, and stay fixed for the session:
+
+| Setting | Field | Notes |
+|---|---|---|
+| Voice | `reference_audio` | `{"media_type": "audio/wav", "data": "<base64>"}`, a PCM16 WAV of at most 30 s and 1 MiB; `tts_reference_audio` changes only the output voice |
+| Sampling | `sampling` | For example `temperature`, `top_p` and `listen_prob_scale`; unset fields keep the server's defaults (`sampling` above) |
+| Image detail | `max_slice_nums` | Higher is sharper but accepts fewer frames per second |
+
+Send camera frames with `sglang.input_image.append`: a base64 JPEG or PNG in `image`, and its position on the audio timeline in `sglang.t_ms`. By default up to 4 frames per second are accepted; `session.updated` reports the actual limit.
+
+`response.cancel` ends the reply in progress: the turn ends, the server drops the audio of that reply it has not sent yet, and `response.done` arrives with status `cancelled` and reason `interrupted` about one second later, once the unit that was running completes. The unit the client did not receive is dropped from the session history, and the thinker then listens on every unit until the user speaks again, so the model does not resume the stopped answer. A cancel with no reply in progress, or a second cancel of the same reply, does nothing. `conversation.item.truncate` with `audio_end_ms` cuts a reply the client stopped, or one the model ended, at the last unit whose audio fully played, never past what the client received.
+
+## Full-Duplex-Bench runbook
+
+This page runs [Full-Duplex-Bench](https://github.com/DanielLin94144/Full-Duplex-Bench) (FDB) v1.0 and v1.5 against any of the three strategies served by SGLang-Omni: MiniCPM-o 4.5 by default, or Qwen3-Omni or the cascade with `ENGINE` (see {ref}`Choosing the system under test <choosing-the-system-under-test>`). Every step is a subcommand of `python -m benchmarks.duplex.fdb`; the code is in `benchmarks/duplex/fdb/`.
+
+### What is measured
+
+FDB has two datasets, and they test different behavior:
+
+- **v1.0** tests turn-taking. The model should stay quiet through a pause in the user's turn, come in once the turn ends, stop and answer when the user interrupts it, and, while the user talks at length, give short backchannels such as "mm-hmm" without taking the turn.
+- **v1.5** tests overlap handling. The user asks something, and while the model answers, more speech arrives: an interruption, a backchannel, speech to someone else, or background speech. The question is what the model does with it.
+
+The two measure different things, so a run takes samples from both by default. Each dataset gets its own result table, and their numbers are never pooled.
+
+(v10)=
+
+**v1.0**
+
+
+v1.0 has 727 samples in five subsets. A sample is one input audio file plus an annotation (the pause positions, the end of the user's turn, the interruption, or the human backchannel timing), streamed in one session.
+
+| Subset | Samples | Task | Source | Reported numbers |
+|---|---:|---|---|---|
+| `synthetic_pause_handling` | 137 | Pause handling | Synthetic | Takeover rate (lower is better) |
+| `candor_pause_handling` | 216 | Pause handling | Candor conversations | Takeover rate (lower is better) |
+| `candor_turn_taking` | 119 | Turn-taking | Candor conversations | Takeover rate (higher), latency (lower) |
+| `synthetic_user_interruption` | 200 | User interruption | Synthetic | Takeover rate (higher), latency (lower), relevance (higher) |
+| `icc_backchannel` | 55 | Backchannel | ICC conversations | Takeover rate (lower), backchannel frequency, backchannel JSD (lower) |
+
+The following official reference numbers come from the evaluator at the pinned revision, run unchanged on the transcript of the model's output. The runbook also reports [unified v1.0 metrics](#results) for pause handling, turn taking and interruption:
+
+- **Takeover rate**: the share of samples in which the model took the turn, meaning its transcript spans at least 1 s or has more than 3 words.
+- **Latency**: the time from the annotated end of the user's turn to the model's first word, averaged over the samples in which the model took the turn. A start before the end of the turn counts as 0.
+- **Relevance**: a 0-5 rating of the model's reply to the interruption, given by the judge (see {ref}`Judges <judges>`).
+- **Backchannel frequency** and **JSD**: how often the model backchannels, and how far its backchannel timing is from the human one.
+
+The capture, VAD and judge can differ from the paper's, so compare these numbers between runs of this runbook, not with the published tables.
+
+(v15)=
+
+**v1.5**
+
+
+v1.5 has 498 pairs in four categories: `user_interruption` (200), `user_backchannel` (98), `talking_to_other` (100) and `background_speech` (100). A pair is two input files with the same user query: `input.wav` contains the later overlapping speech and `clean_input.wav` does not. Each file is streamed in its own session.
+
+- **Stop latency**: how long the model keeps talking while the other speech overlaps it. Lower is better on `user_interruption`, where the model should give way. In the other three categories the model should keep its turn, so the overlap mostly tracks how long the other speech lasts.
+- **Response latency**: the time from the end of a user speech span to the start of the next model speech. Lower is better when a reply is due. Both latencies are whole-file intervals from the official timing code, not latencies around the overlap event.
+- **Behavior labels**: the judge gives each pair one label for how the model handled the overlap. `C_RESPOND`: it addressed the overlap's content. `C_RESUME`: it ignored the overlap and continued. `C_UNCERTAIN_HANDLING`: it asked for a repeat or showed that it did not catch the overlap. `C_UNKNOWN`: its reply was off-target, or it said nothing. The share that should be high is `C_RESPOND` on `user_interruption` and `C_RESUME` in the other categories; `C_UNKNOWN` should be low.
+- **Semantic quality** (`JUDGE=qwen` only, not part of the paper): a label says what the model did, not whether that was right, so a `C_RESUME` that ignored a real interruption looks the same as one that correctly ignored a backchannel. The semantic judge grades each pair on three axes, each `accept`, `fail` or `unresolved`: `interaction_handling` (the overlap was handled correctly for its category), `relevance` (the reply addressed the request that mattered) and `grounding` (no unsupported facts, claimed actions or false memories). `joint` accepts only when all three accept. A verdict must quote the transcript it relies on, and a verdict with a missing or wrong quote becomes `unresolved`. Each cell reports `quality = A/(A+F)` and `coverage = (A+F)/N` over all N selected pairs; read the two together, since a high quality over a low coverage judges few pairs.
+
+(listening-quality)=
+
+**Listening quality**
+
+
+The timing, label and semantic numbers say what the model did and when, not how its replies sound. `asr` also scores every reply of both datasets on its own, and `RESULTS.md` reports the scores per v1.5 category and per v1.0 subset, never as one total. A reply is the audio of one response, its deltas back to back as a client with enough buffer plays them, up to where the simulated playout stopped when a protocol cuts replies at barge-in; gaps from deltas that arrive late are left out, because the [serving metrics](#serving-metrics) measure them as underruns.
+
+- **Omission rate** (lower is better): the words of the transcript in `response.done` that are missing from the reply's Parakeet transcript, over the transcript's words, pooled over the completed replies of a category. Both texts go through Whisper's English normalizer before alignment. A cancelled reply is not compared: its transcript can run past the audio it played.
+- **WER** (lower is better): substitutions, deletions and insertions of the same alignment. A swallowed syllable often shows up as a substitution rather than a deletion. Both rates include Parakeet's own errors, so compare them between systems rather than read them as absolute rates.
+- **UTMOS** (1-5, higher is better): the UTMOS prediction of each reply of at least 3 s, the model the TTS benchmarks use; it drops for clicks, distortion and unnatural prosody. The table shows the mean and the 10th percentile.
+- **Voice similarity** (higher is better): 100 times the cosine of the WavLM speaker embedding of a reply's middle 3 s with the mean embedding of the same window of every other reply in the repeat, so a reply whose voice drifts from the model's usual one scores low. The table shows the mean and the 10th percentile.
+- **Short replies**: replies with audio shorter than 3 s, such as most backchannels. They are compared for omission but get no UTMOS or voice score.
+
+The 3 s comes from MiniCPM-o replies. Middle crops of replies of 6 s or more score within 0.07 of the full reply's UTMOS from 2 s on and 0.38 below it at 1 s. A speaker embedding depends on length at every duration measured, so the voice score compares windows of one length; copies of the replies shifted up 4 semitones separate from the originals by d = 2.7 with 2 s windows, 4.0 with 3 s and 5.0 with 4 s, while the replies long enough to score drop from 44 of 50 at 3 s to 38 at 4 s.
+
+The metrics move for their own defects. On 24 MiniCPM-o replies, removing the middle 40% of the audio raises the omission rate from 4.4% to 43.4%; adding 10 clicks per second drops UTMOS from 4.26 to 2.08; shifting up 4 semitones drops voice similarity from 72.5 to 52.5. The omission rate moves at most 0.6 points under the clicks and the pitch shift, and voice similarity at most 0.5 under the cut and the clicks. UTMOS also drops 0.22 for the cut, which leaves a splice, and to 1.41 for the pitch shift, whose phase vocoder adds artifacts.
+
+`RESULTS.md` gives them no pass mark; [Duplex CI](#duplex-ci) gates the UTMOS and voice similarity means. `listening/scores.json` keeps each reply's duration, transcript, Parakeet text and scores.
+
+### Setup
+
+You need one GPU with at least 80 GB (H100 or H200) for MiniCPM-o and two for Qwen3-Omni or the cascade, and `git`, `uv` and the FFmpeg shared libraries (version 4 to 8) on the host. Run every command in this page from the repository root, with the sglang-omni virtualenv active (`which python` should print its interpreter). `ENGINE` picks the strategy and defaults to `minicpmo` (see {ref}`Choosing the system under test <choosing-the-system-under-test>`); for Qwen3-Omni or the cascade, export it first, so that setup, the preflight and the runs below all use it:
 
 ```bash
-python playground/cascade/app.py --api-base http://127.0.0.1:8765 --port 8090
+export ENGINE=minicpmo   # or qwen3-omni, cascade; these two also need CUDA_VISIBLE_DEVICES with two GPUs
+python -m benchmarks.duplex.fdb setup
 ```
 
-One command starts everything: the profile's `services` are started in order and waited for, a service already answering on its port is reused, and the cascade starts once every service and the worker answer; stopping the server stops the services it started. The profile's `turn_detection` node ends a turn only when Smart Turn takes a pause for its end, so a pause in the middle of a sentence does not cut it, as [Turn Detection](#turn-detection) describes. When an interrupted reply is cut, the profile's aligner keeps the words the listener heard: the forced aligner's word ends for the sentences whose audio was complete, and its own recognizer's transcript of the delivered audio for the sentence it was cut in. The page sends the position it played with `conversation.item.truncate` and marks the heard part of the reply. [Profiles](#profiles) lists the other bundled profiles, such as `qwen3-asr-qwen3.8-27b-vivian` with Qwen3.8-27B on two GPUs.
+`setup` is safe to rerun and skips finished steps. It installs the `minicpm-o` extra of sglang-omni (`onnx` and `einops`) into the active venv and puts everything else under `FDB_WORK` (default `$HOME/fdb`):
 
-To use services you already run, drop their `services` entries and point the nodes' `base_url` at them; a command-line override such as `--session_nodes.llm.base_url http://127.0.0.1:9000/v1` changes one field without editing the file. The rest of this section lists every launch mode and what each profile needs started beforehand; [Configuration](#configuration), [Node Reference](#node-reference) and [Compatibility and Constraints](#compatibility-and-constraints) list every setting and the settings that cannot be combined.
+| Path | Content |
+|---|---|
+| `Full-Duplex-Bench/` | Official scoring code at the pinned revision `3e799c4`; file hashes are checked |
+| `dataset/v1.0/`, `dataset/v1.5/` | The two datasets from the official Google Drive; `dataset/v1.0.revision` and `dataset/v1.5.revision` hold the archive hashes |
+| `scoring-venv/` | Python 3.12 with NeMo, torch, Silero VAD and torchcodec for ASR, timing and the official evaluators. torchcodec loads FFmpeg, and `setup` checks that it can |
+| `models/parakeet-tdt-0.6b-v2/` | ASR checkpoint, SHA-256 checked |
+| `models/MiniCPM-o-4_5/` | Model under test at revision `503e754`, with `ENGINE=minicpmo`. To reuse an existing copy, symlink it here or set `MODEL_PATH`. The other engines' models go to the Hugging Face cache |
+| `models/Qwen3.8-27B/` | Judge checkpoint; its commit is saved in `models/Qwen3.8-27B.revision` |
 
-(one-command-with-a-profile)=
+(judges)=
 
-**One command with a profile**
+**Judges**
 
 
-The default Vivian cascade profile uses Qwen3.8-27B with thinking off on GPU 0 and Qwen3-ASR/Qwen3-TTS Base on GPU 1. The audio-file example in `examples/streaming_cascade/run.py` uses this profile when `--config` is omitted.
+`JUDGE` selects the judge:
 
-It runs without speculative decoding:
+| `JUDGE` | v1.5 behavior labels | v1.5 semantic quality | v1.0 interruption relevance |
+|---|---|---|---|
+| `qwen` (default) | [Qwen3.8-27B](https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.8-27B), served locally: non-thinking, greedy, seeds 1-3 | Qwen3.8-27B: thinking, temperature 0, seed 1 | Qwen3.8-27B with the official prompt: non-thinking, seed 0 |
+| `gpt` | `gpt-4o-2024-08-06`, the paper's judge | not run | `gpt-4-turbo`, which the official evaluator requests |
+
+`JUDGE=gpt` needs `OPENAI_API_KEY`. With `JUDGE=qwen` the labels and ratings are not the paper's, but the judge is local and pinned, so runs with the same settings stay comparable with each other. The semantic judge sends six control cases (`benchmarks/duplex/semantic/`) together with its first grading batches and keeps the grades only if all 18 control axis statuses match `control-expected.json`; otherwise it discards them and stops. The controls check the rubric, not the judge's accuracy.
+
+`--skip-semantic-judge` on `judge`, or on `generate` with `--all-stages`, leaves the semantic judge out because it is the slowest judge phase, ~5 minutes for 20 pairs on one H100.
+
+A judge starts only when the step has a request for it: the v1.5 pairs and the v1.0 interruption subset need one, while the other v1.0 subsets are scored without an LLM. A run with only those subsets starts no judge server and needs no API key.
+
+(choosing-the-system-under-test)=
+
+**Choosing the system under test**
+
+`ENGINE` picks the strategy. `setup` downloads that engine's models, and `generate` launches its server with the same command as [Launch](#launch). The recorder asks every `qwen3-omni` and `cascade` session for `server_vad` with `silence_duration_ms` 500, so their results and CI baselines end a turn after 500 ms of silence, while the launched profiles default to 800 ms (the base-clone demo uses Smart Turn instead):
+
+| `ENGINE` | System | Server | GPUs for the server |
+| --- | --- | --- | --- |
+| `minicpmo` (default) | MiniCPM-o 4.5 at revision `503e754`, native | `--model-path $MODEL_PATH --variant session --max_sessions 8` | 1 per server; `--gpus` starts one per listed GPU |
+| `qwen3-omni` | Qwen3-Omni-30B-A3B-Instruct, turn-based | `--config examples/qwen3_omni/session_h100.yaml` | 2 |
+| `cascade` | Qwen3-ASR-1.7B, Qwen3.8-27B and Qwen3-TTS Base cloning Vivian | `--config examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian/launch.yaml`, plus the forced-alignment worker, which `setup` installs into `$FDB_WORK/aligner-venv` | 2 |
+
+A two-GPU engine needs `CUDA_VISIBLE_DEVICES` to list exactly two GPUs; ASR and the judge run on the first. A run remembers its engine, and a later step with a different `ENGINE` stops with an error.
 
 ```bash
-sgl-omni serve --config examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-vivian/launch.yaml --enable-realtime --port 8765
+export CUDA_VISIBLE_DEVICES=0,1
+ENGINE=qwen3-omni python -m benchmarks.duplex.fdb setup
+ENGINE=qwen3-omni python -m benchmarks.duplex.fdb generate --run-name qwen3-omni-10 --v15-per-subset 10 --v10-per-subset 10 --num-shards 4 --all-stages
+ENGINE=cascade python -m benchmarks.duplex.fdb setup
+ENGINE=cascade python -m benchmarks.duplex.fdb generate --run-name cascade-10 --v15-per-subset 10 --v10-per-subset 10 --num-shards 4 --all-stages
 ```
 
-To enable DFlash for chat and ASR, select the separate `qwen3-asr-qwen3-tts-vivian-dflash` profile:
+The three strategies behave differently by design, so compare a run with earlier runs of the same engine; side by side, the v1.0 {ref}`unified metrics <unified-v10-metrics>` are the ones scored by the same rules for all three.
+
+| Event | Meaning |
+| --- | --- |
+| `input_audio_buffer.speech_started`, `input_audio_buffer.speech_stopped` | The start and the end of your utterance. |
+| `conversation.item.input_audio_transcription.delta`, `.completed` | Partial and final transcript of what you said. |
+| `response.created` | A reply begins. |
+| `response.output_text.delta`, `response.output_audio.delta` | Reply text and reply audio, base64 PCM16 at 24 kHz mono. |
+| `sglang.response.progress` | In a profile that publishes its aligner's `session`: `text_end`, the length of the reply text whose audio has been produced, and `audio_ms`, where that audio ends in the reply's audio, so a client can mark the text as it plays. |
+| `sglang.response.heard` | After a `conversation.item.truncate`, in a profile that publishes its dialog's `session`: `text_end`, the length of the cut reply's text the history keeps, sent again whenever the cut moves, so a client can show what the history kept. |
+| `response.done` | The reply is complete; `response.status_details.reason` is `stop`, `empty_turn` when the utterance had no words, or `interrupted` when you spoke over it. |
+| `error` | The request or the session failed. |
+
+Native full-duplex responses also report backend latency in a top-level `response_request_metrics` object. The first non-empty text delta carries `ttft_ms`, the first non-empty audio delta carries `ttfp_ms`, and `response.done` repeats every value observed for that response. Both intervals use the server monotonic clock and begin when the model-turn request starts, immediately before the native adapter processes its input unit. Pending input units keep the latest start until `response.created`; that event locks the start for the response, so input accepted while the response is streaming does not shorten its latency.
+
+`response.cancel` interrupts the reply from the client side. The capabilities grant `supports_cancel` when a node takes `interrupt` from `input` on a control edge, as every bundled profile's dialog does, and `supports_truncate` always. An interrupted reply stays in the history only up to the last boundary whose audio the server had sent before the interruption: the last word with a forced aligner, the part of the sentence at the cut that its transcript says with `heard_asr_url`, the last sentence otherwise. `conversation.item.truncate` with `audio_end_ms` tells the server how much of the reply was heard; the history then keeps the reply up to the last boundary whose audio ended by then, never past what the server sent. A reply the history keeps nothing of, such as one interrupted before its first boundary, leaves no answer: your next utterance joins the one before it in a single user message, as if you had kept talking. An utterance you finished before the interruption is answered once the server knows how much of the interrupted reply it delivered, so its prompt keeps that part. The truncate cuts only the reply its `item_id` names, also after the next reply began, so the prompts after that keep what you heard; one for a reply the backend can no longer cut, such as an earlier reply after a later one ended, changes nothing, and an `item_id` the session never sent gets an `item_not_found` error. The language model sees a cut reply ending with …, and while the history holds one, the system message, including instructions a client sets, ends with a sentence saying such a reply was cut off by the user. A reply the model finished is shown without a trailing …, so that it does not read as cut.
+### Run the benchmark
+
+A run has three steps, then an aggregation. Each step starts the server it needs and stops it when it exits. `generate --all-stages` runs the other three after recording, so one command goes from recording to `RESULTS.md`:
 
 ```bash
-sgl-omni serve --config examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-vivian-dflash/launch.yaml --enable-realtime --port 8765
+python -m benchmarks.duplex.fdb generate --run-name minicpmo-10 --v15-per-subset 10 --v10-per-subset 10 --all-stages
 ```
 
-The DFlash profile uses the `incoai/Qwen3.8-27B-DFlash2` chat draft pinned to revision `015e795645c74b1a0eeef3b570031fb62e769bc5` and the ASR draft configured in `examples/configs/qwen3_asr_1_7b_dflash.yaml`. Both verify blocks of eight tokens. Qwen3-TTS has no speculative decoding adapter. The profile keeps the default profile's GPU placement, memory fractions, ports and voice; the draft weights and caches also occupy GPU memory. Both profiles need the forced-alignment worker described above.
+Without `--all-stages`, `generate` only records, and each later step is its own subcommand.
 
-Compared with the default profile, DFlash lowers the chat server's effective maximum concurrent requests. Without FlashInfer AOT kernels, the first start can spend about nine minutes JIT-compiling FlashInfer's `topk` module on H100; combined with model loading, this can exceed the 600 s service readiness timeout. Use AOT kernels or start the chat service separately and wait for readiness before launching the cascade.
+| Step | Subcommand | What it does |
+|---|---|---|
+| 1 | `generate` | Starts the model server, streams the selected inputs to `/v1/realtime` (two sessions per v1.5 pair, one per v1.0 sample), records the model's audio, stops the server, then cuts a fixed observation window from each session |
+| 2 | `asr` | Transcribes the windows with word timestamps (Parakeet), computes v1.5 official speech intervals, writes v1.0 unified metrics from the saved transcript and annotations on CPU, then cuts every reply and scores its {ref}`listening quality <listening-quality>` |
+| 3 | `judge` | Runs the official v1.0 evaluator on the v1.0 subsets that need no LLM, then judges the v1.5 pairs and the v1.0 interruption subset (with `JUDGE=qwen` it starts the judge server for them and stops it after), and writes the per-repeat summaries |
+| | `aggregate` | Combines the repeats of a run into `RESULTS.md` |
 
-For a baseline comparison, select the default profile. For a chat-only comparison, copy the DFlash launch file and remove the ASR service's `--config` argument and its value. Stop the services between configurations: an existing service on the same port is reused, so changing a launch file alone does not change its decoding settings. Use the repository's `benchmarks.eval.benchmark_duplex_serving` with `--dataset v1.5 --profile turn-based` as shown in [v1.5 scoring](#v15-scoring), and set `--model` to the selected profile's `model_path`. Its first-audio latency starts at `response.created`, after the ASR transcript opens the reply; evaluating ASR's contribution also requires the speech-stop and transcription events in the recording's `continuous.jsonl`.
+Run a small preflight first. It takes one pair per v1.5 category and three samples per v1.0 subset (about 15 minutes) and catches environment problems before a long run. v1.0 needs three samples rather than one because the official turn-taking and interruption evaluators divide by the number of takeovers and fail when no selected sample takes the turn.
 
-`--enable-realtime` mounts `/v1/realtime`, `/v1/realtime/capabilities` and `/v1/session`; without it the server starts the cascade but serves none of them.
+```bash
+python -m benchmarks.duplex.fdb generate --run-name preflight --v15-per-subset 1 --v10-per-subset 3 --all-stages
+```
+
+The preflight passes when `generate` prints `{"pass": 8}` and `{"eligible_pairs": 4, ...}` for v1.5 and `{"pass": 15}` with 3 eligible samples per v1.0 subset; `asr` prints `{"ok": 16}`, `{"ok": 8}` and 3 transcripts per v1.0 subset; and `judge` prints `{"valid": 4}`, `controls: 18/18 axis statuses match` and the parsed v1.0 results of each subset as JSON (the evaluator's own `[Result]` block is in `repeat-N/v10/reference/logs/evaluate-<subset>.log`). If anything differs, see [Troubleshooting](#troubleshooting).
+
+A run is one fixed selection of samples under `$FDB_WORK/runs/RUN_NAME`. Decoding uses sampling, so two generations of the same inputs differ; to measure that variance, run the steps several times under one run name with `--repeat 1`, `--repeat 2`, and so on. `--repeat N` only names the output directory `repeat-N/`; one command always runs once. `aggregate` presents unified v1.0 scores per repeat and means ± standard deviations in its v1.5 and official v1.0 reference tables.
+
+```bash
+for repeat in 1 2 3; do
+    python -m benchmarks.duplex.fdb generate --run-name minicpmo-12 --repeat "$repeat" --v15-per-subset 12 --v10-per-subset 12 --all-stages
+done
+```
+
+Each repeat ends with `aggregate`, so `RESULTS.md` covers every repeat finished so far.
+
+`generate` refuses to write into a repeat that already holds a recording; to redo one, delete its `repeat-N/` directory and run its three steps again. When `asr` or `judge` stops a `--all-stages` run, its message names the command that continues it; run that step and the ones after it on their own. `asr` and `judge` resume finished work when rerun. For v1.0, `asr` runs unified scoring after a successful or already completed `reference-asr`; failed ASR does not trigger scoring. The unified scorer does not need `judge` or its `summary.json`.
+
+Every subcommand takes `--log-level` (`info` by default). With `--log-level debug`, a step also prints the server and recorder logs it writes, each line prefixed with the log's name, such as `[judge-server]` or `[record-shard-0]`. The logs are written under `repeat-N/` at either level (see the files table in [Results](#results)).
+
+(choosing-samples)=
+
+**Choosing samples**
+
+
+Only `generate` selects samples; `asr` and `judge` score whatever the repeat recorded. Selection works the same way for both datasets and is never random: each subset (v1.5 calls them categories) takes its first N samples in numeric ID order (1, 2, …, 10, 11, …). So every repeat with the same options gets the same samples, and a smaller N is always a prefix of a larger one.
+
+The options come in two matching sets, `--v15-*` and `--v10-*`. Both default to 12 per subset. A count of 0 leaves that dataset out of the run; leaving both out is an error.
+
+| `generate` option | Effect |
+|---|---|
+| `--v15-per-subset N`, `--v10-per-subset N` | N samples from every subset of that dataset (default 12); `all` takes the whole dataset; `0` leaves it out |
+| `--v15-subset-count NAME=N`, `--v10-subset-count NAME=N` | Overrides the count for one subset; `0` skips it, `all` takes all of it. Repeatable |
+| `--v15-sample-id NAME/ID`, `--v10-sample-id NAME/ID` | Exactly these samples. Repeatable |
+| `--v15-sample-ids-file PATH`, `--v10-sample-ids-file PATH` | One `NAME/ID` per line, such as another run's `repeat-1/sample-ids.txt` or `repeat-1/v10/sample-ids.txt` |
+
+```bash
+# Both full datasets.
+python -m benchmarks.duplex.fdb generate --run-name minicpmo-full --v15-per-subset all --v10-per-subset all
+# v1.0 only; v1.5 only.
+python -m benchmarks.duplex.fdb generate --run-name v10-only --v15-per-subset 0
+python -m benchmarks.duplex.fdb generate --run-name v15-only --v10-per-subset 0
+# 20 v1.5 interruptions, 10 v1.5 backchannels and every v1.0 backchannel sample.
+python -m benchmarks.duplex.fdb generate --run-name small \
+    --v15-per-subset 0 --v15-subset-count user_interruption=20 --v15-subset-count user_backchannel=10 \
+    --v10-per-subset 0 --v10-subset-count icc_backchannel=all
+# Three specific samples.
+python -m benchmarks.duplex.fdb generate --run-name debug \
+    --v15-sample-id user_interruption/1 --v15-sample-id background_speech/7 \
+    --v10-sample-id candor_turn_taking/37
+# Another run's selection.
+python -m benchmarks.duplex.fdb generate --run-name replay \
+    --v15-sample-ids-file "$FDB_WORK/runs/minicpmo-12/repeat-1/sample-ids.txt" \
+    --v10-sample-ids-file "$FDB_WORK/runs/minicpmo-12/repeat-1/v10/sample-ids.txt"
+```
+
+`generate` prints how many samples it selected per subset and writes their IDs to `repeat-N/sample-ids.txt` (v1.5) and `repeat-N/v10/sample-ids.txt` (v1.0). All repeats of a run must select the same samples, so pass the same options every time; a repeat with a different selection stops with an error.
+
+Sessions run in real time, so `generate` dominates the wall time. Approximate times per repeat on one H200, one session at a time, without the 1 minute of model server startup per `generate` and 2 minutes of judge server startup per `judge`:
+
+| Selection | `generate` | `asr` | `judge` |
+|---|---|---|---|
+| 48 v1.5 pairs (12 per category) | ~25 min | ~1 min | ~6 min |
+| 498 v1.5 pairs | ~4 h | ~10 min | ~45 min |
+| 60 v1.0 samples (12 per subset) | ~20 min | ~1 min | ~1 min |
+| 727 v1.0 samples | ~3.6 h | ~10 min | ~5 min |
+
+A v1.5 session lasts about 15 s and a v1.0 sample about 18 s on average. Most of a v1.5 `judge` is the semantic judge, which runs 8 thinking-mode batches of up to 8 pairs concurrently at about 5 minutes per batch; the Qwen behavior judge sends up to 16 requests at once. `generate --num-shards 2` roughly halves the generation time, but read the note on it in [Notes](#notes) first; `--gpus 0,1 --num-shards 2` halves it without sharing a GPU.
+
+### Results
+
+`aggregate` prints its tables and writes them to `$FDB_WORK/runs/RUN_NAME/RESULTS.md`, with one section per dataset the run selected. The v1.0 unified section shows each repeat separately, without averaging its rates, quantiles or confidence intervals. In the v1.5 and official v1.0 reference tables, a numeric cell is the mean ± sample standard deviation over repeats with available values; a count cell shows one value or a range when repeats differ.
+
+The v1.5 section has one row per category and one for all of them. This example is a validation run (MiniCPM-o 4.5, 3 pairs per category, two repeats, Qwen judge), so the samples are small:
+
+| Category | Pairs | Timed overlap sessions | Stop latency (s) | Response latency (s) | C_RESPOND | C_RESUME | C_UNCERTAIN_HANDLING | C_UNKNOWN | Judged pairs |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| all | 12 | 12 | 1.483 ± 0.070 | 2.698 ± 0.075 | 25.0 ± 11.8% | 66.7 ± 11.8% | 8.3 ± 0.0% | 0.0 ± 0.0% | 12 |
+| user_interruption | 3 | 3 | 2.161 ± 0.015 | 2.479 ± 0.128 | 50.0 ± 23.6% | 50.0 ± 23.6% | 0.0 ± 0.0% | 0.0 ± 0.0% | 3 |
+| user_backchannel | 3 | 3 | 0.625 ± 0.000 | 2.308 ± 0.121 | 0.0 ± 0.0% | 100.0 ± 0.0% | 0.0 ± 0.0% | 0.0 ± 0.0% | 3 |
+| talking_to_other | 3 | 3 | 1.751 ± 0.083 | 2.742 ± 0.083 | 33.3 ± 0.0% | 66.7 ± 0.0% | 0.0 ± 0.0% | 0.0 ± 0.0% | 3 |
+| background_speech | 3 | 3 | 1.393 ± 0.181 | 3.204 ± 0.034 | 16.7 ± 23.6% | 50.0 ± 23.6% | 33.3 ± 0.0% | 0.0 ± 0.0% | 3 |
+
+`Pairs` counts every selected pair, failed or not. `Timed overlap sessions` counts the overlap sessions that produced timing intervals. `Judged pairs` counts the pairs with a valid label, and the label shares are over these pairs only.
+
+With `JUDGE=qwen` the v1.5 section adds the semantic table. From the same validation run:
+
+| Category | interaction_handling quality | interaction_handling coverage | relevance quality | relevance coverage | grounding quality | grounding coverage | joint quality | joint coverage |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| all | 73.9 ± 1.6% | 95.8 ± 5.9% | 85.9 ± 5.8% | 87.5 ± 5.9% | 52.2 ± 11.0% | 79.2 ± 5.9% | 32.2 ± 17.3% | 79.2 ± 5.9% |
+| user_interruption | 66.7 ± 47.1% | 83.3 ± 23.6% | 66.7 ± 47.1% | 83.3 ± 23.6% | 58.3 ± 11.8% | 83.3 ± 23.6% | 25.0 ± 35.4% | 83.3 ± 23.6% |
+| user_backchannel | 100.0 ± 0.0% | 100.0 ± 0.0% | 100.0 ± 0.0% | 100.0 ± 0.0% | 100.0 ± 0.0% | 50.0 ± 23.6% | 100.0 ± 0.0% | 50.0 ± 23.6% |
+| talking_to_other | 50.0 ± 23.6% | 100.0 ± 0.0% | 75.0 ± 35.4% | 66.7 ± 0.0% | 58.3 ± 11.8% | 83.3 ± 23.6% | 16.7 ± 23.6% | 83.3 ± 23.6% |
+| background_speech | 83.3 ± 23.6% | 100.0 ± 0.0% | 100.0 ± 0.0% | 100.0 ± 0.0% | 16.7 ± 23.6% | 100.0 ± 0.0% | 16.7 ± 23.6% | 100.0 ± 0.0% |
+
+The v1.0 unified section first shows per-repeat coverage and metric tables for pause handling, turn taking and user interruption. Coverage lists declared, selected, eligible and ineligible samples, exclusion reasons and the minimum observable horizon after the reference point. A sample rate uses eligible samples as its denominator; its Wilson 95% interval describes sampling uncertainty, while the all-selected bounds allow each ineligible outcome to be either false or true. Per-pause and seconds-per-second ratios pool their respective denominators over eligible samples. Other intervals bootstrap whole samples. `n/a` with zero eligible samples means no data. `not reached` with a positive eligible count means the requested response-latency quantile was not observed, including nonresponses; a window shorter than a response threshold limits the corresponding rate. The report labels any missing, stale, unsupported or incomplete unified artifacts unavailable and gives a CPU-only backfill command. It does not display stale numeric scores. Backchannel remains official-reference-only.
+
+The following v1.0 official reference table has one row per selected subset. `Selected` counts the recorded samples, `Eligible` the ones the official evaluator can score, and `Evaluated` the ones it scored; then come `Takeover rate`, `Latency (s)`, `Relevance (0-5)`, `Judge retries`, `Backchannel frequency` and `Backchannel JSD`, with `n/a` where the subset's task does not report a number. A subset whose sessions all failed still has a row, with `Eligible 0`. A subset that a repeat has not evaluated is listed under the table as not evaluated yet (`judge` has not reached it) or failed (with its evaluator log); its cells average the repeats that did evaluate it, and show `n/a` when none did. A nonzero `Judge retries` means the interruption takeover rate is inflated (see {ref}`v1.0 scoring <v10-scoring>`).
+
+The listening-quality section comes last, with one table per dataset and the same mean ± deviation cells; see {ref}`Listening quality <listening-quality>` for what each column measures. Its v1.5 table from a validation run (MiniCPM-o 4.5, 4 pairs per category, one repeat):
+
+| Category | Replies | Short replies | Compared replies | Omission rate | WER | UTMOS mean | UTMOS p10 | Voice similarity mean | Voice similarity p10 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| all | 35 | 1 | 35 | 4.2% | 7.3% | 4.271 | 3.893 | 74.412 | 67.846 |
+| user_interruption | 9 | 0 | 9 | 3.9% | 7.0% | 4.358 | 4.163 | 76.408 | 68.144 |
+| user_backchannel | 8 | 0 | 8 | 5.5% | 6.7% | 4.248 | 3.960 | 72.195 | 67.167 |
+| talking_to_other | 10 | 0 | 10 | 3.1% | 8.7% | 4.226 | 3.868 | 75.081 | 70.286 |
+| background_speech | 8 | 1 | 8 | 4.0% | 7.1% | 4.250 | 3.910 | 73.422 | 67.977 |
+
+Each repeat writes these files under `$FDB_WORK/runs/RUN_NAME/repeat-N/`:
+
+| Path | Content |
+|---|---|
+| `sample-ids.txt`, `v10/sample-ids.txt` | The selected v1.5 pairs (empty when v1.5 was left out) and v1.0 samples (`v10/` exists only when v1.0 was selected) |
+| `recording/shard-*/`, `v10/recording/shard-*/` | Raw session traces, input and output audio, protocol reports |
+| `warmup/` | The unscored warmup sessions recorded before them, with their recorder logs; nothing reads them |
+| `logs/`, `v10/logs/` | `logs/` has the server logs and the v1.5 recorder logs, `v10/logs/` the v1.0 recorder logs; the v1.5 ASR and timing logs are in `scores/logs/` |
+| `reference-audio/` | v1.5 fixed-window WAVs and `reference-manifest.json` with eligibility |
+| `scores/summary.json` | v1.5 timing, ASR coverage and, with `JUDGE=gpt`, behavior labels |
+| `judge-qwen/summary.json` | v1.5 behavior labels with `JUDGE=qwen` |
+| `semantic-qwen/` | Semantic judge: control comparison, the exact packets sent, raw responses, per-pair outcomes and `summary.json` |
+| `report.txt` | Readable v1.5 report: coverage, timing and semantic quality |
+| `listening/` | One 16 kHz WAV per reply in `wav/` and its scored 3 s window in `voice-window/`, `replies.json` with each reply's status, transcript and Parakeet text, `scores.json` with each reply's scores, and the per-category `summary.json` with the checkpoint hashes |
+| `v10/reference/` | v1.0 windows (`<subset>/<id>/output.wav`), `manifest.json`, the ASR receipt `asr.json`, per-repeat `unified.json` and `unified-samples.jsonl`, official `summary.json`, the judge ledger in `judge/` and evaluator logs in `logs/` |
+
+With `JUDGE=qwen`, the "Official behavior label distribution" section of `report.txt` shows `0 / 0` and `not_prepared`, because that section counts GPT-4o labels only; the Qwen labels are in `judge-qwen/summary.json` and `RESULTS.md`.
+
+### Settings
+
+Per-run choices (`--run-name`, `--repeat`, sample selection, `--num-shards`, `--log-level`) are command options; `--help` on any subcommand lists them. Machine settings are environment variables, read in `benchmarks/duplex/fdb/common.py`:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FDB_WORK` | `$HOME/fdb` | Root for downloads, environments and results |
+| `JUDGE` | `qwen` | `qwen` or `gpt` |
+| `CUDA_VISIBLE_DEVICES` | unset | The GPU indices this job may use. The first is the job GPU: it runs the one model server of `generate`, `asr` and `judge`; `generate --gpus` may list any of the others. See [Running jobs in parallel](#running-jobs-in-parallel) |
+| `GPU` | `0` | The GPU index when `CUDA_VISIBLE_DEVICES` is unset |
+| `SERVER_PORT`, `JUDGE_PORT` | `8097 + 10×GPU`, `30000 + 10×GPU` | Local ports. The judge also uses the next port for NCCL. Avoid 29500-29899, which the model server uses for NCCL |
+| `ENGINE` | `minicpmo` | System under test: `minicpmo`, `qwen3-omni` or `cascade`; see {ref}`Choosing the system under test <choosing-the-system-under-test>` |
+| `MODEL_PATH` | `$FDB_WORK/models/MiniCPM-o-4_5` | Checkpoint of the model under test with `ENGINE=minicpmo` |
+| `MODEL_REVISION` | `503e754…` | Recorded in the run manifest; must match `MODEL_PATH` |
+| `JUDGE_MODEL_PATH` | `$FDB_WORK/models/Qwen3.8-27B` | Checkpoint of the Qwen judge |
+| `SESSION_TIMEOUT_S`, `V10_SESSION_TIMEOUT_S` | `90`, `230` | Per-session client deadline for v1.5 and v1.0. v1.5 inputs run up to about 18 s; v1.0 inputs average about 18 s and some run past 90 s. Neither deadline may exceed the recorder's 230 s |
+| `SCORING_VENV` | `$FDB_WORK/scoring-venv` | Venv that runs ASR, timing, the evaluators and the judge clients |
+
+### Running jobs in parallel
+
+With `ENGINE=minicpmo` one job uses one GPU. To run several at once, open one terminal per GPU and give each its own GPU index and run name:
+
+```bash
+export FDB_WORK="${FDB_WORK:-$HOME/fdb}"
+unset GPU SERVER_PORT JUDGE_PORT
+export CUDA_VISIBLE_DEVICES=1    # 0 in the first terminal, 1 in the second, and so on
+RUN=minicpmo-30-gpu1
+python -m benchmarks.duplex.fdb generate --run-name "$RUN" --v15-per-subset 30 --v10-per-subset 30
+python -m benchmarks.duplex.fdb asr --run-name "$RUN"
+python -m benchmarks.duplex.fdb judge --run-name "$RUN"
+python -m benchmarks.duplex.fdb aggregate --run-name "$RUN"
+```
+
+The ports, the judge config and the compile caches follow the GPU index: the model port is `8097 + 10×GPU`, the judge port `30000 + 10×GPU`, the judge config is in `$FDB_WORK/judge/port-<judge port>/` and the caches in `$FDB_WORK/cache/gpu-<index>/`. The first line `generate` prints confirms them, for example `Job GPU 1: model port 8107, judge port 30010 (nccl 30011), ...`. The `unset` line matters when a shell profile sets `GPU` or a port. Never point two terminals at the same run name.
+
+`ENGINE=qwen3-omni` and `ENGINE=cascade` run one server on two GPUs, so each job needs its own pair in `CUDA_VISIBLE_DEVICES`, and `generate` refuses `--gpus` with more than one GPU; raise `--num-shards` for parallel sessions instead. `qwen3-omni` takes any pair. The bundled cascade profile pins its services with `env: {CUDA_VISIBLE_DEVICES: ...}`, the language model on GPU 0 and the speech models on GPU 1, and a service's `env` overrides the job's, so a cascade job runs on GPUs 0 and 1 whatever pair it is given unless that `env` is edited; only the forced-alignment worker, ASR and the judge follow the pair. Only the model and judge ports follow the GPU: the cascade's services (8002, 8003, 8005) and the forced-alignment worker (8010) keep fixed ports, so run one cascade job per host.
+
+### Serving metrics
+
+Serving metrics answer how well a server keeps up when several sessions share it. They are computed only from what the client records, which means any server that speaks the same realtime session protocol or the legacy turn-based protocol can be put in the same table.
+
+Start the server with `max_sessions` at least the largest level, then sweep. The command below targets `python -m benchmarks.duplex.fdb serve-model` on GPU 0, which serves MiniCPM-o with `max_sessions` 8 on port 8097; for a server started as in [Launch](#launch), point `--url` at port 8000 (8765 for the cascade). A turn-based server records with `--profile turn-based` and a `--turn-detection` object instead of the native profile, as in {ref}`Turn-based recordings <turn-based-recordings>`:
+
+```bash
+eval "$(python -m benchmarks.duplex.fdb env)"
+python -m benchmarks.eval.benchmark_duplex_serving sweep \
+  --dataset v1.5 --concurrency 1,2,4,8 --output "$FDB_WORK/serving/minicpmo" -- \
+  --url ws://127.0.0.1:8097/v1/realtime --profile minicpmo-native-pr2377 \
+  --dataset-root "$FDB_WORK/dataset/v1.5" --dataset-revision "$(cat $FDB_WORK/dataset/v1.5.revision)" \
+  --server-revision "$(git rev-parse HEAD)" --model openbmb/MiniCPM-o-4_5 --model-revision 503e754207c94da6bb26850b4469f367c9ea3582 \
+  --max-per-subset 4
+```
+
+The options after `--` go unchanged to the `record` command of `benchmark_duplex_v15` (or `benchmark_duplex_v10` with `--dataset v1.0`); the sweep adds `--concurrency N` and `--output <output>/concurrency-N` for each level. It writes `serving.json`, `SERVING.md` and one run directory per level, and keeps going when a level has failed sessions, since those are part of the result. `report --run <run> --run <run> ... --output serving.json` builds the same table from runs that are already recorded.
+
+Each level is one row:
+
+| Column | Meaning |
+|---|---|
+| `mean open` | Sessions open at once, averaged over the level's recording; the first and last sessions of a level have fewer neighbours |
+| `sessions failed` | Runtime, protocol or cleanup failures, excluding clean final admission rejection |
+| `503 / in-session` | Sessions affected by HTTP 503 and by in-session `admission_rejected`, respectively; a session can appear in both counts |
+| `rejected` | Sessions whose complete trace shows final admission rejection without another failure |
+| `affected`, `denial events` | Unique sessions encountering either rejection type, including recovered sessions; and total rejection events, including the final exhausted attempt |
+| `pacing violations` | Sessions whose input drifted more than one 80 ms packet from its schedule. A pacing violation means the load generator fell behind, so the level does not measure the server |
+| `unit miss` | Native profiles only. Units whose lag exceeds one nominal unit (1000 ms for MiniCPM-o), plus every expected unit of a runtime or protocol failure. Final admission rejections are excluded from both missed and expected units; the rate is `-` when no expected units remain |
+| `unit lag` | Native profiles only. Receipt of `sglang.unit.done` minus the time the client finished sending the packet holding the unit's last audio; the short last unit, which the server fills with silence, starts at the input end instead. On MiniCPM-o it matches the server-side `ready_to_finished_ms` of the request event recorder within a few milliseconds |
+| `first audio` | Native: from the unit carrying a reply's first audio being ready to that audio's receipt. Turn-based: from `response.created`, which arrives when the server ends the user's turn, to the first audio |
+| `buffer needed` | The smallest startup buffer with which a reply plays without a gap. It does not depend on `--playback-reserve-ms` |
+| `underrun replies` | Replies that a player starting `--playback-reserve-ms` (80 ms by default) after their first audio would have to pause. This column depends on the reserve: at concurrency 8 on MiniCPM-o, 21 of 35 replies pause at 80 ms while `buffer needed` p90 is 251 ms |
+| `RTF p90` | Turn-based only. The time from a reply's first to its last audio arrival over the audio before the last chunk. Native profiles show `-`, because a native reply comes out one unit per input unit and its factor stays near 1 whatever the load |
+| `meets targets` | `yes`, or the targets the level misses |
+
+A level meets the targets when no session failed, no session was denied or rejected admission, no input pacing was violated, and, for native profiles, the unit miss rate is at most 1%, or, for turn-based profiles, the reply RTF p90 is below 1. A turn-based server's unit receipts track input intake, so it is judged by how fast its replies stream. The capacity is the highest level below the first one that misses; when every recorded level meets the targets, the capacity is at least the highest one and a higher level has to be recorded.
+
+HTTP 503 and in-session rejection share `ADMISSION_RETRIES` retries after the initial attempt, with an `ADMISSION_BACKOFF_S` backoff (currently 3 retries and 0.25 seconds). These constants are defined in `benchmarks/duplex/client.py`. The manifest records the policy as `config.transport.admission_retries` and `admission_backoff_s`. In-session backoff can end early on abort. The recorder keeps the original rejection events; clean exhaustion is classified by replay rather than emitting an artificial runtime error. Interrupted or incomplete traces do not establish clean exhaustion. Older recordings used separate budgets for the two transports despite the same manifest field name, so replaying a mixed-retry recording under the shared-budget rule can change its verdict.
+
+Serving JSON retains `admission_denials` for HTTP-affected sessions and adds `sessions_with_admission_rejections` for in-session-affected sessions, `sessions_with_admission_events` for their union, and `sessions_rejected` for final rejections. `admission_denial_events` is the event total, split into `http_admission_denial_events` and `session_admission_rejection_events`. `sessions_failed` excludes variants classified with `failure_kind: admission_rejected`. Older run records without this classification retain their existing failure counts; older clients also omitted the final exhausted HTTP 503, which cannot be recovered from their traces.
+
+These are client-side times on the client's host: they include the network to the server and leave out the player's device and the acoustics. Where the time goes inside SGLang-Omni comes from the request event recorder instead; see [Full Duplex session Unit metrics](profiler.md#full-duplex-session-unit-metrics).
+
+The benchmark client keeps its 80 ms input pacing up to about 128 sessions in one process ([#3288](https://github.com/sgl-project/sglang-omni/pull/3288)); at higher levels, check `pacing violations` before reading a level as a server measurement.
+
+(minicpm-o-45-on-one-h100)=
+
+**MiniCPM-o 4.5 on one H100**
+
+On one H100 80 GB, a short v1.5 cohort (128 sessions of at most 16 s) met a strict gate, under 1% late units with no failed session, at 4 concurrent sessions in five runs, with a unit-lag p95 of about 420 ms. 8 sessions passed once and failed once, 16 failed, and 32 or more ran out of memory. The server ran `--max_sessions 64` with explicit memory budgets at commit `3ae4c24`; [#2869](https://github.com/sgl-project/sglang-omni/pull/2869) has the commands and the full record.
+
+(turn-latency)=
+
+**Turn latency**
+
+`benchmarks/realtime_turn_latency.py` measures one conversation from the moment the user stops speaking: for each turn it prints when turn detection ended the turn, when the user transcript, the first text and the first audio arrived, and when the reply finished. Unlike the serving sweep, whose turn-based `first audio` starts at `response.created`, this includes the turn-detection wait, so it is the latency the listener hears. It streams one WAV, needs no dataset, and waits for each turn's user transcript, so it runs against servers that publish one, such as the streaming cascade; the Qwen3-Omni Session graph publishes none:
+
+```bash
+python benchmarks/realtime_turn_latency.py --url ws://127.0.0.1:8765/v1/realtime --audio question.wav --turns 5
+```
+
+### Notes
+
+- **Keep the settings fixed across the repeats of a run.** Mixing repeats with different selections, `--num-shards` or judges makes their mean meaningless; use a new run name instead.
+- **`--num-shards` changes what you measure.** With `--num-shards 2`, two sessions share the GPU, so the latencies are measured under load and do not compare with one shard. `generate` refuses more shards per server than the engine's `max_sessions` up front: 8 for `minicpmo`, 4 for `qwen3-omni` and 16 for `cascade`.
+- **`--gpus` spreads the shards over GPUs.** `--gpus 0,1` starts one model server on each listed GPU, each with its own port (`8097 + 10×GPU`) and caches, and sends shard i to the i-th server modulo their count. With as many shards as GPUs every session has a GPU to itself, so the timing compares with one shard. `asr` and `judge` still run on the job GPU, the first index of `CUDA_VISIBLE_DEVICES`, so `CUDA_VISIBLE_DEVICES=0,1` with `--gpus 0,1` records on both GPUs and transcribes on GPU 0.
+- **`generate` warms the model servers up first.** Once the servers are ready, every shard records the first selected sample, the first v1.5 pair or, with v1.5 left out, the first v1.0 sample, before any scored session starts. A fresh server pays its first-use costs in its first sessions, and with every shard starting at once those sessions answered seconds late, after the overlap they were meant to test had ended. These sessions go to `warmup/` and are never scored, and a failed one only logs a warning. `--skip-warmup` leaves them out, for example to compare a cold start with a warm one; keep that choice the same across the repeats of a run.
+- **The first N samples are not a random sample.** They give fast numbers that compare between runs, not estimates for the full dataset.
+- **Failed sessions are never dropped.** They stay in the denominators as ineligible, and an empty set of intervals shows as `n/a`, not as zero.
+
+### Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `ERROR: the model server did not become ready` (or the judge server) | The message ends with the last lines of the server log; the full log is `repeat-N/logs/model-server-gpu<N>.log` or `judge-server.log` |
+| `ERROR: the model server exited with code N during the recordings` | The model server died while recording; the message ends with the last lines of that GPU's `repeat-N/logs/model-server-gpu<N>.log`. Fix the cause, delete the repeat and generate it again |
+| `ERROR: the judge server exited with code N before ...` or `during ...` | The judge server died; the message names the phase and ends with the last lines of `repeat-N/logs/judge-server.log`. Fix the cause and rerun `judge` with `--retry-failed`. If the phase is the v1.5 semantic judge, delete `repeat-N/semantic-qwen` first, because the batches it could not grade are saved as unresolved and a rerun reuses them |
+| `ERROR: something already serves ...` | Another server holds the port, often left from an interrupted run or a second job on the same GPU. Stop it, or give this job another `CUDA_VISIBLE_DEVICES` |
+| `ERROR: .../repeat-N already holds a recording` | That repeat was generated before; use the next `--repeat`, or delete the directory to redo it |
+| `ERROR: ... selects different pairs` or `... selects different v1.0 samples` | An earlier repeat of this run used another selection; pass the same options, or use a new run name |
+| `ERROR: .../repeat-N is a v1.5-only repeat` | The earlier repeats of this run left v1.0 out; continue with the option change the message names, or use a new run name |
+| `ERROR: both datasets are left out` | Give at least one dataset a nonzero count |
+| `ERROR: .../dataset/v1.0 lacks the v1.0 subset(s) ...` | The workspace was set up without v1.0; rerun `setup`, which adds it |
+| `ERROR: .../reference-manifest.json is missing` or `.../v10/reference/manifest.json is missing` | `generate` recorded that dataset but did not finish its export; delete the repeat and generate it again |
+| A shard log reports `fail` or `error` sessions | They stay in the denominators. Read `repeat-N/logs/record-shard-*.log` or `repeat-N/v10/logs/record-shard-*.log`; if most sessions fail, fix the server and redo the repeat |
+| `ERROR: --num-shards N over G GPU(s) exceeds the model server's max_sessions` | Lower `--num-shards` or add GPUs with `--gpus`; `generate` refuses more shards than the servers admit before recording |
+| `ERROR: ENGINE=... runs one server on every visible GPU` | `qwen3-omni` and `cascade` take two GPUs per server; leave out `--gpus` and raise `--num-shards` for parallel sessions |
+| `ERROR: --num-shards N leaves model servers idle` | Use at least as many shards as GPUs in `--gpus` |
+| `ERROR: SERVER_PORT gives every model server the same port` | Unset `SERVER_PORT` when `--gpus` lists several GPUs; each server then derives its port from its GPU |
+| HTTP 503 in a record log | Another client may hold the server's sessions; check for competing recordings |
+| `failure_kind: admission_rejected` | The shared retry budget was exhausted without admission. Inspect the HTTP and `admission_rejected` records for the cause; in-session `admission_rejected` is emitted only for `QueueFullError`. In a serving sweep this is part of the level's result. Outside a serving sweep, lower `--concurrency` when the records indicate capacity pressure |
+| `ERROR: CUDA_VISIBLE_DEVICES must list distinct numeric GPU indices` | Export indices such as `0` or `0,1`, not GPU UUIDs |
+| `ERROR: --gpus ... reaches outside CUDA_VISIBLE_DEVICES` | List only GPUs that `CUDA_VISIBLE_DEVICES` names, or widen it |
+| `--device cuda needs exactly one visible GPU` (manual ASR command) | Export a single index for that command |
+| `ERROR: GPU and CUDA_VISIBLE_DEVICES disagree` | Unset `GPU`, or set it to the first index |
+| `WARNING: a v1.5 phase reported failures` | Rerun the command the warning prints; it adds `--retry-failed` |
+| `WARNING: the v1.0 ASR failed` | `repeat-N/v10/reference/logs/asr.log` has the official script's output and the terminal has the traceback. A rerun of `asr` transcribes every v1.0 sample again |
+| `WARNING: v1.0 unified scoring failed` | ASR completed, but the saved export, transcript or annotation did not score. Fix the stated cause and run the CPU-only backfill command printed in the warning; it does not repeat ASR or v1.5 work. Rerun `aggregate` to refresh `RESULTS.md` |
+| `Unified metrics unavailable` in `RESULTS.md` | The report names a missing export/ASR file, missing output pair, stale hashes, unsupported version or incomplete subset. Repair the export or ASR if named, then use the per-repeat backfill command in the report and rerun `aggregate` |
+| `WARNING: the listening-quality phase failed` | The terminal has the traceback. A `ModuleNotFoundError` for `s3prl` or `whisper` means the serving venv lacks the repository's dependencies; reinstall them. Rerun `asr`; it recomputes the listening metrics in full |
+| `WARNING: the v1.0 evaluation failed for ...` | The traceback is at the end of `repeat-N/v10/reference/logs/evaluate-<subset>.log`. A `ZeroDivisionError` in `candor_turn_taking` or `synthetic_user_interruption` means no selected sample took the turn, so select more samples in a new run. After fixing another cause, rerun `judge`; it evaluates the missing subsets again |
+| `judge request ... got no parsable rating in 3 attempts` | The v1.0 relevance judge answered without a rating; the ledger in `v10/reference/judge/` has each reply. The official parser needs `Analysis: <text>`, a line break, then `I would rate the AI's response as <digit>`. The attempts share a seed, so a local judge repeats the same reply and a rerun fails again |
+| `custom judge identity changed; use a new --out` | The judge config changed since this repeat was judged, for example after an SGLang upgrade. Delete `repeat-N/judge-qwen` and rerun `judge` |
+| `Control check failed: this judge configuration is not accepted.` | The judge missed a control case, listed in the output; nothing graded alongside the controls is kept. Check that the judge server runs the pinned Qwen3.8-27B revision; do not grade with a configuration that fails the controls |
+| `... changed since this directory was created; use a new --out` | The semantic judge settings, prompt or inputs changed since this repeat was graded. Delete `repeat-N/semantic-qwen` and rerun `judge` |
+| `model_mismatch` with `JUDGE=gpt` | The endpoint answered with a model other than `gpt-4o-2024-08-06`; use an endpoint that serves exactly that model |
+| `No module named 'onnx'` (or `einops`) in `model-server-gpu<N>.log`, or `ModuleNotFoundError` in `asr` | Rerun `setup` |
+| `setup` stops with `torchcodec cannot load its FFmpeg libraries` | Install the FFmpeg shared libraries (version 4 to 8) and rerun `setup` |
+
+### Scoring CLI reference
+
+The runbook wraps three CLIs, which also score a recording by hand: `benchmarks.eval.benchmark_duplex_v15` records v1.5 sessions, `benchmarks.eval.benchmark_duplex_reference` scores them with the official v1.5 ASR, timing and behavior code, and `benchmarks.eval.benchmark_duplex_v10` records and scores v1.0 sessions. Run `eval "$(python -m benchmarks.duplex.fdb env)"` first to set the variables the commands below use. Recording and export run in the sglang-omni venv (`python`); ASR, timing, judging and evaluation need the packages `setup` installs in the scoring venv, so those commands run with `"$SCORING_PYTHON"`. `record` needs the model server and `custom-judge` the judge server; `python -m benchmarks.duplex.fdb serve-model` and `serve-judge` start them in the foreground until Ctrl-C. `env` sets `MODEL_REVISION` only for `minicpmo`, so the commands pass `--model-revision` only when it is set. With `ENGINE=cascade`, `serve-model` starts only the cascade server, so start the forced-alignment worker first: `PYTHONPATH=. "$FDB_WORK/aligner-venv/bin/python" examples/streaming_cascade/alignment_worker.py --model Qwen/Qwen3-ForcedAligner-0.6B --device cuda:0 --language English --port 8010`.
+
+(dependencies-and-source)=
+
+**Dependencies and source**
+
+
+The official scoring scripts and the behavior prompt are not vendored. They are loaded from a [Full-Duplex-Bench checkout](https://github.com/DanielLin94144/Full-Duplex-Bench/tree/3e799c45a045256f47d5f1c9cda90157e2d2ec9e) at revision `3e799c45a045256f47d5f1c9cda90157e2d2ec9e`, and their SHA-256 is checked before every run. Their [CC BY-NC 4.0 license](https://github.com/DanielLin94144/Full-Duplex-Bench/blob/3e799c45a045256f47d5f1c9cda90157e2d2ec9e/LICENSE) applies.
+
+The scoring venv uses Python 3.12, torch and torchaudio 2.11.0+cu130, NeMo 3.0.0, Silero VAD 6.2.1, numpy 2.5.3, scipy 1.18.1, soundfile 0.14.0, openai 3.28.0, pydantic, python-dotenv and torchcodec 0.11. Each phase records the package versions it ran with. No command downloads a model on its own. ASR uses a local `nvidia/parakeet-tdt-0.6b-v2` checkpoint at revision `ae9ad07059c7c739ffaf932226a8fe64ae2620b0`, `.nemo` SHA-256 `d99e39955c9d3d0350d8fb7c75e40c64a2b2eaeb003883d7c941fd2e8747b28c`.
+
+(v15-scoring)=
+
+**v1.5 scoring**
+
+
+Record and export:
+
+```bash
+OUT=results/fdb-manual
+python -m benchmarks.eval.benchmark_duplex_v15 record \
+    --profile minicpmo-native-pr2377 \
+    --dataset-root "$FDB_DATASET" --dataset-revision "$(cat "$FDB_WORK/dataset/v1.5.revision")" \
+    --url "$REALTIME_URL" --model "$MODEL_ID" ${MODEL_REVISION:+--model-revision "$MODEL_REVISION"} \
+    --server-revision "$(git rev-parse HEAD)" --timeout "$SESSION_TIMEOUT_S" \
+    --output "$OUT/recording"
+
+python -m benchmarks.eval.benchmark_duplex_reference export \
+    --engine model --trace-format realtime-pcm16-v1 --run "$OUT/recording" \
+    --dataset-root "$FDB_DATASET" --out "$OUT/reference-audio"
+```
+
+`record` takes the full dataset unless `--max-per-subset N` or repeated `--sample-id category/id` narrows it, and exits 0 only when every selected session passes. `export` cuts the observation windows into a new directory without touching the recording. With `--dataset-root`, every dataset pair that was not recorded counts as missing, so a partial run also passes `--only category/id` for each recorded pair. Repeated `--run` takes disjoint shards; `--engine` is a free label for the scored cohort.
+
+(turn-based-recordings)=
+
+**Turn-based recordings**
+
+A turn-based (half-duplex) endpoint speaks the conversation protocol instead of the native session protocol: it takes a `turn_detection` object in `session.update`, sends none of the `sglang.input_audio.*` receipts or `sglang.unit.done`, and streams `response.audio.delta` at 24 kHz. The profile `qwen3-omni-half-duplex` switches the recorder, the protocol oracle and the export to that protocol:
+
+```bash
+python -m benchmarks.eval.benchmark_duplex_v15 record \
+    --profile qwen3-omni-half-duplex \
+    --turn-detection '{"type": "server_vad", "silence_duration_ms": 500}' \
+    --dataset-root "$FDB_DATASET" --dataset-revision "$(cat "$FDB_WORK/dataset/v1.5.revision")" \
+    --url "$REALTIME_URL" --model "$MODEL_ID" ${MODEL_REVISION:+--model-revision "$MODEL_REVISION"} \
+    --server-revision "$(git rev-parse HEAD)" --timeout "$SESSION_TIMEOUT_S" \
+    --output "$OUT/recording"
+
+python -m benchmarks.eval.benchmark_duplex_reference export \
+    --engine model --trace-format realtime-legacy-pcm16-v1 --run "$OUT/recording" \
+    --dataset-root "$FDB_DATASET" --out "$OUT/reference-audio"
+```
+
+- `--turn-detection` is required for this profile and rejected for native ones. It is sent once per session, so a detector sweep is one run per setting against the same server: `server_vad` takes `threshold`, `prefix_padding_ms` and `silence_duration_ms`, `semantic_vad` takes `eagerness`, and both take `interrupt_response`. The manifest records it under `config.legacy`. `benchmark_duplex_v10 record` takes the same options.
+- A session fails unless `session.updated` echoes the requested `turn_detection.type`, so a detector that silently falls back is caught. There are no input or drain receipts: the session ends `--legacy-tail` seconds (default 1.0) after the input with a no-op `session.update`, whose `session.updated` proves the server is alive.
+- Any `error` event fails the session. A response cancelled with reason `turn_detected` is accepted only after an `input_audio_buffer.speech_started` during it.
+- Simulated playout follows the server's barge-in: it is cut at `output_audio_buffer.cleared`, or at `input_audio_buffer.speech_started` unless the session set `interrupt_response: false`. The export applies the same cut, records `barge_in_cuts`, and marks a session eligible only when its protocol verdict is `pass`.
+
+A turn-based endpoint can also speak the session protocol. It takes `turn_detection` under `session.audio.input` in `session.update`, grants `interaction: turn_based` with 200 ms units and a flushed input tail, sends the `sglang.input_audio.*` receipts and `sglang.unit.done`, detects the turns itself and streams `response.output_audio.delta` at 24 kHz. The profile `turn-based` records it, and its export takes `--trace-format realtime-turn-based-pcm16-v1`:
+
+```bash
+python -m benchmarks.eval.benchmark_duplex_v15 record \
+    --profile turn-based \
+    --turn-detection '{"type": "server_vad", "silence_duration_ms": 500}' \
+    --dataset-root "$FDB_DATASET" --dataset-revision "$(cat "$FDB_WORK/dataset/v1.5.revision")" \
+    --url "$REALTIME_URL" --model "$MODEL_ID" ${MODEL_REVISION:+--model-revision "$MODEL_REVISION"} \
+    --server-revision "$(git rev-parse HEAD)" --timeout "$SESSION_TIMEOUT_S" \
+    --output "$OUT/recording"
+
+python -m benchmarks.eval.benchmark_duplex_reference export \
+    --engine model --trace-format realtime-turn-based-pcm16-v1 --run "$OUT/recording" \
+    --dataset-root "$FDB_DATASET" --out "$OUT/reference-audio"
+```
+
+- `--turn-detection` is required. These endpoints accept only `server_vad`, configured by `threshold`, `prefix_padding_ms` and `silence_duration_ms`. A session fails unless `session.updated` echoes the type under `session.audio.input.turn_detection`. The manifest records the setting under `config.turn_based`.
+- The session ends like a native one: `sglang.input_audio.end` at the input end, then `session.close` after `sglang.input_audio.drained`. The server first answers the utterance still open at the input end, so `--timeout` must cover the longest input plus that answer.
+- A response may end `completed` with reason `stop` or `empty_turn`, or `cancelled` with reason `interrupted`. Each cancellation needs its own earlier `input_audio_buffer.speech_started`, but not one during the response, because the server can create the reply it cancels after that event. Any `error` fails the session. `supports_truncate` may take either value.
+- The cut point differs from the legacy rule. These endpoints send no `output_audio_buffer.cleared`, so simulated playout and the export do not cut at `speech_started`; they drop queued audio when a `response.done` with status `cancelled` arrives. As for the legacy protocol, the export records `barge_in_cuts` and marks a session eligible only when its protocol verdict is `pass`.
+- v1.0 recordings export the same way: `benchmark_duplex_v10 reference-export --trace-format realtime-turn-based-pcm16-v1` resamples the 24 kHz audio to 16 kHz and keeps only sessions whose protocol verdict is `pass`.
+
+Score:
+
+```bash
+TREE=(--reference-source "$FDB_SOURCE" --tree "model=$OUT/reference-audio")
+"$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_reference asr "${TREE[@]}" \
+    --out "$OUT/scores" --nemo "$PARAKEET_NEMO" --nemo-sha256 "$PARAKEET_SHA256" --device cuda
+"$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_reference timing "${TREE[@]}" \
+    --out "$OUT/scores" --audio-loader soundfile
+"$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_reference prepare-judge "${TREE[@]}" --out "$OUT/scores"
+"$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_reference judge "${TREE[@]}" --out "$OUT/scores" \
+    --judge gpt-4o-2024-08-06 --api-key-env OPENAI_API_KEY
+"$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_reference summarize "${TREE[@]}" --out "$OUT/scores"
+"$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_reference report --scores "$OUT/scores" --engine model
+```
+
+Run the phases in order on one output directory with the same `--tree`; repeat `--tree` to score several cohorts together. CUDA ASR needs exactly one visible GPU. A rerun resumes from the receipts; `--retry-failed` retries failed work units, and `--limit N` caps the units of one call. After changing the recording, the scoring configuration or the reference code, use a new output directory. A zero exit means the phase finished, not that every sample qualified.
+
+`report` reads only `summary.json` and the manifest, so it needs no GPU or key. It prints the populations, protocol verdicts, ASR and timing coverage, interval statistics with confidence intervals, and the behavior label distribution. `--semantic-summary` adds the semantic judge's `summary.json`, and `--replay replay.json` adds offline replay agreement in the form `{"selected": N, "replayed": M, "samples": [{"sample": "category/id", "variant": "overlap", "recorded_status": "pass", "status": "match"}]}`.
+
+The GPT judge reads its key from `OPENAI_API_KEY`, never from an argument or a manifest; `--base-url` selects a compatible endpoint. It sends the exact reference prompt with seed 1 and makes at most three attempts. A reply from a model other than `gpt-4o-2024-08-06`, a malformed label or a failed request leaves the label invalid, with no fallback judge. Without a key the labels stay pending and `summarize` still runs.
+
+`custom-judge` sends the same prompt to a self-hosted model. Its labels never replace GPT-4o labels. It reads an existing scoring directory and writes to a separate new one:
+
+```bash
+"$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_reference custom-judge "${TREE[@]}" \
+    --source-scores "$OUT/scores" --out "$OUT/judge-qwen" \
+    --judge-config "$JUDGE_CONFIG" --base-url "$JUDGE_URL"
+"$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_reference custom-summarize "${TREE[@]}" \
+    --source-scores "$OUT/scores" --out "$OUT/judge-qwen" \
+    --judge-config "$JUDGE_CONFIG"
+```
+
+`judge` and `serve-judge` write the judge config to `$JUDGE_CONFIG`, which is `$FDB_WORK/judge/port-$JUDGE_PORT/judge-config.json`:
+
+```json
+{
+  "model_id": "Qwen/Qwen3.8-27B",
+  "model_revision": "<40-hex commit>",
+  "tokenizer_id": "Qwen/Qwen3.8-27B",
+  "tokenizer_revision": "<40-hex commit>",
+  "served_model": "qwen3.8-27b",
+  "precision": "bf16",
+  "enable_thinking": false,
+  "decoding": {
+    "temperature": 0.0, "top_p": 1.0, "top_k": -1,
+    "min_p": 0.0, "repetition_penalty": 1.0, "max_tokens": 512
+  },
+  "seeds": [1, 2, 3],
+  "server_launch_receipt": "launch-receipt.json",
+  "server_launch_receipt_sha256": "<sha256 of the receipt>"
+}
+```
+
+Both revisions must be full commit hashes. `temperature`, `top_p` and `max_tokens` are required; the other decoding fields and `enable_thinking` are sent only when present, so leave out any the endpoint does not support. The launch receipt records the server command, runtime version, checkpoint and tokenizer revisions and precision, and the client checks its hash, because the model name an endpoint returns does not prove which checkpoint it loaded. The endpoint key goes in `CUSTOM_JUDGE_API_KEY`, or a placeholder such as `EMPTY` without authentication. A rerun with the same config skips finished samples; a changed config or selection needs a new `--out`. `--concurrency` (default 16) caps the requests in flight and is recorded with the run. `--retry-failed` retries transport and parsing failures only; wrong models, invalid labels and non-`stop` finishes stay invalid. The per-category Wilson 95% intervals describe dataset sampling, not judge agreement or generation variance.
+
+(v10-scoring)=
+
+**v1.0 scoring**
+
+
+v1.0 runs the official `get_transcript/asr.py` and `evaluation/evaluate.py` unchanged:
+
+```bash
+OUT=results/fdb10
+python -m benchmarks.eval.benchmark_duplex_v10 record \
+    --profile minicpmo-native-pr2377 \
+    --dataset-root "$FDB10_DATASET" --dataset-revision "$(cat "$FDB_WORK/dataset/v1.0.revision")" \
+    --url "$REALTIME_URL" --model "$MODEL_ID" ${MODEL_REVISION:+--model-revision "$MODEL_REVISION"} \
+    --server-revision "$(git rev-parse HEAD)" --timeout "$V10_SESSION_TIMEOUT_S" \
+    --output "$OUT/recording"
+python -m benchmarks.eval.benchmark_duplex_v10 reference-export \
+    --run "$OUT/recording" --dataset-root "$FDB10_DATASET" --out "$OUT/reference"
+"$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_v10 reference-asr \
+    --tree "$OUT/reference" --reference-source "$FDB_SOURCE" \
+    --nemo "$PARAKEET_NEMO" --nemo-sha256 "$PARAKEET_SHA256" --device cuda
+CUDA_VISIBLE_DEVICES="" "$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_v10 unified-score \
+    --tree "$OUT/reference"
+"$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_v10 reference-evaluate \
+    --tree "$OUT/reference" --reference-source "$FDB_SOURCE"
+```
+
+- `reference-export` writes each sample's window as `<subset>/<id>/output.wav` with its annotation into a new directory, plus `manifest.json`. Repeated `--run` takes shards. An ineligible session gets no folder and keeps its reasons in the manifest. A recording made with the `turn-based` profile needs `--trace-format realtime-turn-based-pcm16-v1`, and one made with the legacy `qwen3-omni-half-duplex` profile `--trace-format realtime-legacy-pcm16-v1`; as in the v1.5 export, the audio is resampled from the profile's output rate and a session is eligible only when its protocol verdict is `pass`.
+- `reference-asr` transcribes every sample with the local Parakeet checkpoint. For user interruption it cuts the audio at the end of the interruption and shifts the word times back, so the transcript holds only the reply. It writes `output.json` per sample and the receipt `asr.json`, and runs once per export.
+- `unified-score` reads the saved manifest, ASR transcript and annotations on CPU, then writes `unified.json` and `unified-samples.jsonl`. It is independent of the official evaluator and can be rerun for an existing export without repeating ASR. To backfill a runbook repeat, use `eval "$(python -m benchmarks.duplex.fdb env)"`, then `CUDA_VISIBLE_DEVICES="" "$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_v10 unified-score --tree "$FDB_WORK/runs/RUN_NAME/repeat-N/v10/reference"`, replacing `RUN_NAME` and `N` with the recorded run and repeat; rerun `aggregate` afterward.
+- `reference-evaluate` runs the evaluator per subset and stores the printed `[Result]` numbers, the counts and the log path in `summary.json`. `--subset` evaluates only the named subsets; the rest can follow later.
+
+The interruption relevance is rated by `gpt-4-turbo` with seed 0, as the official evaluator requests, for every interruption the model took over. That needs `OPENAI_API_KEY` (or the variable named by `--api-key-env`); without a key, evaluate the other subsets with `--subset`. `--base-url URL --served-model NAME` sends the same prompts to a self-hosted judge, with thinking off and the reply capped at 512 tokens, since the evaluator sets neither and SGLang would stop at 128 tokens. `summary.json` records the endpoint actually used and marks the rating official only for OpenAI's endpoint without `--served-model`. Every exchange is appended to `judge/user-interruption-<UTC time>.jsonl`.
+
+The official evaluator has a retry bug: when a rating does not parse, it resends the same request without limit, and each retry counts that sample's takeover again. The client stops after three identical requests, which fails the subset, and `summary.json` reports `retries`. A nonzero value means the interruption takeover rate is inflated.
+
+(measurement-definitions)=
+
+**Measurement definitions**
+
+
+- **Input pacing.** Audio is sent in 80 ms packets. A packet that starts more than 80 ms off its source cadence makes the session ineligible. This bounds transport jitter only.
+- **Observation window.** Both datasets score the output over `[0, T]`, where T is the input length, counted from the first input packet. Received audio plays first-in first-out, so initial delay, gaps and queueing stay in; audio still queued at T is cut, and the rest is silence. The window is mono 16 kHz PCM16 with exactly the input's sample count. An error inside the window makes the session ineligible; silence is valid output.
+- **v1.5 intervals.** The official timing code merges VAD speech spans across gaps of 0.6 s (user) and 0.5 s (model). Stop intervals are overlaps of user and model spans; response intervals run from the end of a user span to the start of the next model span. `summary.json` reports their pooled means and medians with sample-cluster bootstrap intervals.
+- **v1.0 takeover and latency.** The evaluator reads the Parakeet transcript of the window. A sample took the turn when the words span at least 1 s or number more than 3. The latency is the first word's start minus the annotated end of the user's turn, clamped at 0. Pause handling looks at the whole window, not only at the annotated pauses.
+- **Missing values.** Empty interval sets and missing labels are null, never a zero latency or 0%. The counts keep every selected, eligible, invalid and unscored sample.
+- **Limits.** Simulated playout is not acoustic latency, and the window can cut long replies. One generation per sample does not estimate generation variance. Prosody and MOS are not measured.
+
+(verification)=
+
+**Verification**
+
+
+The unit tests run the official formulas on synthetic fixtures without a GPU or API key, and cover export, missing samples, valid silence, timing, ASR deduplication, bounded and concurrent judging, the semantic judge's control gate, resumption, and the runbook's selection, phase gating, server checks and aggregation for both datasets:
+
+```bash
+FDB_REFERENCE_SOURCE="$FDB_SOURCE" python -m pytest -q \
+    tests/unit_test/benchmarks/test_duplex*.py tests/unit_test/benchmarks/test_fdb*.py
+```
+
+Export is deterministic: exporting a recording again reproduces every eligible WAV byte for byte, and summarizing saved transcripts and intervals again reproduces the same summaries.
+
+### Duplex CI
+
+The `run-native-duplex`, `run-turn-based-duplex` and `run-cascaded-duplex` labels each run this runbook on one strategy, with the first 5 samples of every v1.5 category and v1.0 subset except `icc_backchannel`, and gate the scores against that strategy's own baseline; [CI Labels](ci_labels.md#duplex) describes the gates. The same job runs locally, with `FDB_CI_STRATEGY` set to `full-duplex`, `turn-based` or `cascaded`, two GPUs visible, and `OMNI_CI_HOME` set to a work directory. The job uses `$OMNI_CI_HOME/fdb` as its `FDB_WORK` and deletes its run `ci-<engine>` there before recording:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 OMNI_CI_HOME=$HOME/omni-ci FDB_CI_STRATEGY=turn-based pytest tests/test_model/test_fdb_ci.py -v -s -x
+```
+
+The job gates the four v1.5 behavior rates, the two v1.5 latency means, the three v1.0 rates and the UTMOS and voice similarity means; the omission rate and the semantic judge's two rates are reported only. It records MiniCPM-o with `--gpus 0,1 --num-shards 16`, so that job needs GPUs 0 and 1 visible, Qwen3-Omni with `--num-shards 4` and the cascade with `--num-shards 16`, and pins the judge to revision `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`, where a fresh `setup` resolves the judge's current Hub revision and reuses it afterwards. The sample counts and the gates are in `tests/utils/fdb_ci.py`, the presets and baselines in `tests/test_model/fdb_ci_config.py`.
+
+(unified-v10-metrics)=
+
+## Full-Duplex-Bench v1.0 unified metrics
+
+
+`unified-score` scores a Full-Duplex-Bench v1.0 reference tree with turn-taking metrics that do not depend on how a system decides to speak. It reads the same Parakeet transcripts and dataset annotations as the official evaluator, and for user interruption it also runs Silero VAD on the exported audio, so native full-duplex, turn-based and cascade systems are scored by the same rules. It needs no GPU, LLM or network access.
+
+### Why the official numbers are only a reference
+
+`reference-evaluate` runs the pinned official evaluator unchanged, and its numbers stay in the report as the reference column. Four of its rules measure something other than their names suggest:
+
+1. **Talking over the user gives the best latency.** `eval_smooth_turn_taking.py` sets a negative latency, a reply that starts before the user's turn ends, to 0. On one 119-sample capture of a native full-duplex model, 39 latencies were clamped this way.
+2. **Pause takeover does not look at the pauses.** `eval_pause_handling.py` never reads `pause.json`. It counts a takeover in every nonempty transcript of the whole window except one that both spans less than 1 s and has at most 3 words. Speech before the user's first pause counts, and an output of at most 3 words within 1 s, such as a takeover that the user's resumed speech cuts off, does not. On Candor pause handling, the official rule found a takeover in 30 samples of a turn-based system that answers after 500 ms of silence, while that system's transcript contained a word onset at or after the first annotated pause in 67.
+3. **Non-responders leave the latency average.** Latency is averaged only over samples that took the turn, so a model too slow to answer inside the window drops out and can look faster.
+4. **Not every interruption interrupts.** `eval_user_interruption.py` scores every sample alike, whether or not the model was speaking when the user cut in. On one 200-sample capture of a native full-duplex model, no speech was detected at the interruption onset in 87 samples, and a reply after R in those samples still enters the official takeover rate, latency and judge rating.
+
+### Inputs and checks
+
+Run it on a tree written by `reference-export` and transcribed by `reference-asr` (see the [runbook](#full-duplex-bench-runbook)). All times are seconds on the input window `[0, T]`, where T is the input length recorded in `manifest.json`. Each transcript word has a start and an end from `output.json`; a word with a null end counts as zero-length at its start. Times are rounded to the microsecond before any comparison. This removes float noise in the files (an annotation at 6.32000000000005 against a word at 6.32), not ASR alignment error.
+
+Loading a sample checks its times and stops with the sample id and the problem if any check fails: every word starts in `[0, T]`; the reference times E, S and R defined below lie in `[0, T]` with `S <= R`; `pause.json` lists at least one pause, each `[a, b]` with `a <= b` inside `[0, T]`, sorted and not overlapping; and no interruption word starts before R.
+
+These annotations do not reliably label backchannels versus aborted turn starts; we therefore count every word onset, including a one-word "yeah". The rules are a strict word-timing proxy that also penalizes acknowledgments a listener might accept.
+
+### Metrics
+
+(pause-handling)=
+
+**Pause handling**
+
+
+Subsets `synthetic_pause_handling` and `candor_pause_handling`, reported separately. The official evaluator scores the whole window as one user turn, and we operationally treat the window as a non-yielding user turn. From the start of the first annotated pause to T the user is pausing or speaking again, so a model word starting in that region takes the floor too early. Each pause owns the time from its start to the next pause start, and the last pause owns the time to T.
+
+| Metric | Definition | Better |
+|---|---|---|
+| `pause_intrusion_rate` | Samples with a model word starting at or after the first pause start | Lower |
+| `pause_intrusion_per_pause` | Pauses whose owned time contains a model word start, over all pauses | Lower |
+| `intrusion_s_per_pause_s` | Annotated pause seconds covered by ASR word spans, over all annotated pause seconds | Lower |
+| `inside_pause_onset_rate` | Samples with a model word starting inside an annotated pause `[a, b)` | Context |
+| `pre_pause_speech_rate` | Samples with a model word starting before the first pause start | Context |
+| `carry_in_rate` | Samples with a model word that starts before the first pause start and ends after it | Context |
+| `any_speech_rate` | Samples with any model word in the window | Context |
+
+`pause_intrusion_rate` is the headline. It counts onsets up to T, not only inside the pauses, because a model whose reaction time exceeds a pause replies after the user has resumed; this needs no added reaction-time parameter. `inside_pause_onset_rate` is the narrower count of onsets inside the pauses.
+
+Onsets before the first pause are outside this pause-conditioned observation region: they cannot react to a pause that has not started. Their samples stay in the denominator, and a model still talking at the first pause counts once it starts another word. This is a scope restriction, not a judgment that early talk is harmless; `pre_pause_speech_rate` and `carry_in_rate` report it.
+
+`intrusion_s_per_pause_s` measures coverage of annotated pause time by ASR word spans, not acoustic occupancy. Any word overlapping a pause adds that overlap, including one that started before the first pause, and a zero-length word adds nothing. `pause_intrusion_per_pause` is an owned-interval diagnostic, not a per-pause takeover probability: one continuing utterance can place words in several owned intervals, the intervals differ in length, and the last one runs to T. `intrusion_words` in `unified-samples.jsonl` counts the intruding word onsets, not utterances or seconds.
+
+(smooth-turn-taking)=
+
+**Smooth turn-taking**
+
+
+Subset `candor_turn_taking`. The reference time E is `turn_taking.json[0].timestamp[0]`, the time the official evaluator uses as the end of the user's turn. Each sample has exactly one outcome:
+
+- `early_start`: a model word starts before E.
+- `response`: no word starts before E and at least one starts at or after it. The latency is the start of the first word minus E.
+- `no_response`: no transcribed word in the window.
+
+| Metric | Definition | Better |
+|---|---|---|
+| `early_start_rate` | `early_start` samples | Lower |
+| `response_rate_1s`, `_2s`, `_5s` | `response` samples with a latency of at most 1, 2 or 5 s | Higher |
+| `no_response_rate` | `no_response` samples | Lower |
+| `response_latency_s` | Median with its interval, and p90, of the latency, where a sample without a `response` never responds | Lower |
+
+An early start never counts as a response, so talking through the end of the user's turn cannot buy a short latency, and an early acknowledgment followed by a good answer is an early start. `no_response` means no transcribed word, not every failed sample, so a system can have no silent samples and still not reach its p90.
+
+Let F(t) be the share of samples with a `response` latency of at most t. Then `response_rate_ks` is F(k), and a latency quantile is Q(q) = inf{t : F(t) >= q}, the ceil(qN)-th smallest latency with no interpolation. The quantiles and the response rates are one curve: Q(q) is at most k exactly when `response_rate_ks` is at least q, so the median is the time by which half of all samples have responded. A quantile that falls on a sample without a `response` is reported as not reached. Placing those samples at infinity is a scoring convention for a valid response within the window, not an estimate of when a silent system would answer.
+
+(user-interruption)=
+
+**User interruption**
+
+
+Subset `synthetic_user_interruption`. `interrupt.json[0].timestamp` gives the onset S and the end R of the user's interruption. `reference-asr` cuts the audio at R before transcribing, so the transcript holds only words from R on and cannot show whether the model stopped. Silero VAD on the full `output.wav` supplies that (see {ref}`Speech detection <speech-detection>`). Each sample records whether detected speech covers S (`speech_at_onset`, a segment with start <= S < end) and whether speech that began before R carries over it (`speech_at_end`, start < R < end; a reply that begins exactly at R does not). The outcome is decided in this order:
+
+- `not_exercised`: no detected speech at S, so the interruption did not cut into detected speech. The sample keeps `speech_at_end`, so a model that starts talking during the interruption and talks past R stays visible.
+- `speaking_at_end`: speech at S and at R. The words after R may continue the interrupted answer, so the sample has no latency. A model that stopped and then started a reply before R lands here too, the interruption counterpart of an early start.
+- `response`: speech at S, none carried over R, and a transcribed word starts at or after R. The latency is the start of the first word minus R.
+- `no_response`: speech at S, none carried over R, and no transcribed word after R.
+
+| Metric | Definition | Better |
+|---|---|---|
+| `exercised_rate` | Eligible samples with speech at S | Context |
+| `speaking_at_end_rate` | Exercised samples that are `speaking_at_end` | Lower |
+| `response_rate_1s`, `_2s`, `_5s` | Exercised samples with a `response` within 1, 2 or 5 s | Higher |
+| `no_response_rate` | Exercised samples that are `no_response` | Lower |
+| `response_latency_s` | Median with its interval, and p90, over exercised samples, as for turn-taking | Lower |
+| `stop_latency_s` | Median with its interval, and p90, of the time from S to the end of the segment covering S; a segment that runs to T has no observed stop | Lower |
+| `speech_s_per_interruption_s` | Detected speech seconds inside [S, R] over interruption seconds, pooled over exercised samples | Lower |
+| `restart_rate` | Exercised samples with a segment starting inside (S, R) | Lower |
+
+The outcome only checks the endpoint R. A model can keep talking through most of the interruption, stop just before R and still get a `response`; `stop_latency_s`, `speech_s_per_interruption_s` and `restart_rate` show that. None of them tells a reactive stop from an answer that ended on its own, which would need a matched run with the interruption muted.
+
+Every metric except `exercised_rate` is over exercised samples. Whether a sample is exercised depends on the system as well as the dataset, because S is fixed in input time: a model that answers briefly or late is silent at S more often. A `not_exercised` sample therefore counts as an unknown outcome in the selected bounds of those metrics, like an ineligible one; for `exercised_rate` itself it is a known no. A model silent at every S gets bounds of `[0, 1]` and is visibly unmeasured, and a terse model's lower bound drops. The bounds are worst-case completions under this fixed-onset protocol, not a bound on how a model would handle an interruption timed while it speaks. Read `exercised_rate` and the bounds with every interruption number.
+
+(backchannel)=
+
+**Backchannel**
+
+
+`icc_backchannel` has no unified metric; the official frequency and JSD are the reference. `eval_backchannel.py` has known problems. Fixing them needs new definitions with their own validation, so they are only listed here:
+
+- It adds every VAD segment up to 3 s to the backchannel list, including the ones it classified as a takeover.
+- Its takeover flag is overwritten by each segment, and the loop stops at the first segment over 3 s, which also drops the later segments from frequency and timing.
+- The timing score is SciPy's Jensen-Shannon distance with the natural log, at most about 0.83, while a sample without backchannels is given 1. The average therefore mixes the share of samples without backchannels with the timing distance of the rest.
+
+(speech-detection)=
+
+**Speech detection**
+
+
+The scorer runs the Silero model that `load_silero_vad()` loads, with Silero's default threshold 0.5, minimum speech 250 ms and minimum silence 100 ms, and no padding. The default 30 ms of padding widens each segment on both sides and can move a reply that starts just after R to before it. `output.wav` must hold exactly T seconds of samples. Segments come from the whole file, so near S they can depend on audio after S. A pause longer than 100 ms ends a segment, so a model pausing between sentences exactly at S counts as `not_exercised`. On one 200-sample capture of a native full-duplex model, thresholds from 0.3 to 0.7 and minimum silences from 50 to 500 ms moved `not_exercised` between 85 and 95 samples, `response_rate_2s` between 0.952 and 0.957 and the median `stop_latency_s` between 1.04 and 1.27 s, and left `speaking_at_end` at 4. `restart_rate` ran from 0.05 to 0.27, because a shorter minimum silence splits speech into more segments, so it is a diagnostic and does not rank systems.
+
+The audio is the received output played in order. For the turn-based realtime protocol the playout drops queued audio when the server reports that the user started speaking while interruptions are on; native full-duplex traces have no such event, so audio a system has already sent plays out, and the outcome describes the system as delivered.
+
+(reading-them-together)=
+
+**Reading them together**
+
+
+Silence scores perfectly on pause handling, and one canned word right after E counts as a response. Read pause restraint and response rates together, from the same system configuration; neither is enough alone.
+
+### Denominators and intervals
+
+- Sample shares and latency quantiles are over the subset's eligible samples, and for interruption over its exercised ones. Eligible samples are those whose capture passed the `reference-export` checks (input pacing, an error-free observation window, dataset hashes that match the run). The pooled ratios divide by the pauses and the pause seconds of the eligible samples. `declared` is the full subset size.
+- Ineligible samples are counted under `counts`, never dropped silently. A sample can have several reasons, so the counts in `counts.ineligible_reasons` need not sum to `ineligible`.
+- An ineligible sample's outcome is unknown, and a capture failure can depend on the system. Every sample share therefore also has `selected_bounds`, `[count / selected, (count + unknown) / selected]`: its value over all selected samples with each unknown outcome taken as no, then as yes. The unknown samples are the ineligible ones, plus the `not_exercised` ones for every interruption metric except `exercised_rate`. `coverage` is eligible over selected for each subset.
+- A share of samples has a 95% Wilson interval, whose endpoints are exactly 0 at a count of 0 and exactly 1 at a count of n. The pooled ratios and the median latency have a 95% percentile bootstrap interval that resamples whole samples (2000 resamples, seed 0), because the pauses of one sample are not independent. Each resample's median and the interval endpoints use the same quantile rule as above. A resample with no pause time has no `intrusion_s_per_pause_s` and is skipped. The output is deterministic.
+- `min_observable_s` is the shortest time from the reference to T. T is the dataset input length, so every system has the same horizon on a sample. A response after T is not observed, so `response_rate_ks` is a lower bound when `min_observable_s` is below k. Candor turn-taking windows end about 5 s after E, so there `response_rate_5s` is close to the share that responded inside the window.
+- The intervals cover dataset sampling only, not repeated generations or ASR errors. To compare two systems, pair their rows in `unified-samples.jsonl` by `sample_id` over the samples eligible in both, and for interruption exercised in both. Pairing does not remove selection bias, so report coverage, `exercised_rate` and the selected bounds as well, and for interruption how many samples eligible in both were exercised in both, only in one system, or in neither.
+
+### Run
+
+```bash
+python -m benchmarks.eval.benchmark_duplex_v10 unified-score --tree "$OUT/reference"
+```
+
+It refuses a tree without `asr.json`, stops if the transcript or annotation of an eligible sample, or the `output.wav` of an interruption sample, differs from `asr.json` or `manifest.json`, and stops on a time that fails the checks above. It writes:
+
+- `unified.json`: per subset, the counts, `coverage` and every metric with its interval, plus `selected_bounds` for sample shares and `min_observable_s` for turn-taking and interruption. Only the median latency has an interval, not p90. At the top are the definitions version (`fdb-v1.0-unified-4`), the hashes of `manifest.json` and `asr.json`, and the silero-vad version, model file hash and settings.
+- `unified-samples.jsonl`: one row per selected sample of the four scored subsets (`icc_backchannel` has no rows) with every per-sample quantity, including the pause flags `pause_intrusion`, `inside_pause_onset`, `pre_pause_speech`, `carry_in` and `any_speech`, and for interruption the outcome, S, `speech_at_onset`, `speech_at_end`, `speech_before_onset`, `stop_s`, `speech_in_interruption_s` and `restarts`. Ineligible rows keep their sample id, subset and task and add their reasons.
+
+It prints each subset's metrics as value, interval and count, with the bounds over all selected samples for each share. When `reference-evaluate` has written `summary.json` from the same `manifest.json` and `asr.json`, its numbers are printed below them as the reference column; if either hash differs, the column is left out and a line says which input changed. Interruption numbers rated by a judge other than the official one are labeled with that judge's model instead of `official`. `summary.json` is never written or used for scoring. Rerunning on the same tree writes the same bytes.
+
+### Not measured
+
+- **Why the model stops after an interruption.** `stop_latency_s` says when the speech covering S ends, not whether the model stopped because of the interruption; that needs a matched run with the interruption muted.
+- **The end of the user's speech in a pause sample.** The window is treated as a non-yielding user turn. The official evaluator reads output chunks, not a user-end annotation, so it does not establish the true turn end either. A reply that starts in a short trailing silence counts as an intrusion, so not every counted onset is premature.
+- **Relevance of a reply.** Neither these metrics nor the official turn-taking score check that a reply answers the user. Only the official interruption judge rating covers it, and that rating depends on the judge model the run configured.
+- **ASR errors.** A missed or invented word changes the metrics it falls in. All systems share the pinned Parakeet checkpoint, which does not mean they share the same recognition error.
+- **Acoustic latency.** The output is a simulated playout of the received audio.
+
+## Streaming Cascade Reference
+
+### Cascade Protocol
+
+Open the cascade's [browser page](#browser-demo), speak, and the reply plays as it is produced; speaking while it plays interrupts it. Any OpenAI Realtime client works the same way. Open a WebSocket to `/v1/realtime`, wait for `session.created`, and send the session settings:
+
+```json
+{"type": "session.update", "event_id": "cfg-1", "session": {"instructions": "Answer in one short English sentence.", "output_modalities": ["text", "audio"], "audio": {"input": {"turn_detection": {"type": "server_vad", "silence_duration_ms": 800}}}}}
+```
+
+Send 16 kHz mono PCM16 audio at real-time pace as `{"type": "input_audio_buffer.append", "event_id": "...", "audio": "<base64>", "sglang": {"seq": 0}}`, with `seq` counting up from 0 for the whole session. The server answers with these events:
+
+| Event | Meaning |
+| --- | --- |
+| `input_audio_buffer.speech_started`, `input_audio_buffer.speech_stopped` | The start and the end of your utterance. |
+| `conversation.item.input_audio_transcription.delta`, `.completed` | Partial and final transcript of what you said. |
+| `response.created` | A reply begins. |
+| `response.output_text.delta`, `response.output_audio.delta` | Reply text and reply audio, base64 PCM16 at 24 kHz mono. |
+| `sglang.response.progress` | In a profile that publishes its aligner's `session`: `text_end`, the length of the reply text whose audio has been produced, and `audio_ms`, where that audio ends in the reply's audio, so a client can mark the text as it plays. |
+| `sglang.response.heard` | After a `conversation.item.truncate`, in a profile that publishes its dialog's `session`: `text_end`, the length of the cut reply's text the history keeps, sent again whenever the cut moves, so a client can show what the history kept. |
+| `response.done` | The reply is complete; `response.status_details.reason` is `stop`, `empty_turn` when the utterance had no words, or `interrupted` when you spoke over it. |
+| `error` | The request or the session failed. |
+
+`response.cancel` interrupts the reply from the client side. The capabilities grant `supports_cancel` when a node takes `interrupt` from `input` on a control edge, as every bundled profile's dialog does, and `supports_truncate` always. An interrupted reply stays in the history only up to the last boundary whose audio the server had sent before the interruption: the last word with a forced aligner, the part of the sentence at the cut that its transcript says with `heard_asr_url`, the last sentence otherwise. `conversation.item.truncate` with `audio_end_ms` tells the server how much of the reply was heard; the history then keeps the reply up to the last boundary whose audio ended by then, never past what the server sent. A reply the history keeps nothing of, such as one interrupted before its first boundary, leaves no answer: your next utterance joins the one before it in a single user message, as if you had kept talking. An utterance you finished before the interruption is answered once the server knows how much of the interrupted reply it delivered, so its prompt keeps that part. The truncate cuts only the reply its `item_id` names, also after the next reply began, so the prompts after that keep what you heard; one for a reply the backend can no longer cut, such as an earlier reply after a later one ended, changes nothing, and an `item_id` the session never sent gets an `item_not_found` error. The language model sees a cut reply ending with …, and while the history holds one, the system message, including instructions a client sets, ends with a sentence saying such a reply was cut off by the user. A reply the model finished is shown without a trailing …, so that it does not read as cut.
+
+To end turns yourself instead of by silence, set `"turn_detection": null` in the first `session.update`; `input_audio_buffer.commit` then ends the utterance after the audio sent before it.
+
+Instructions and sampling (`sglang.sampling.temperature`, `max_new_tokens_per_unit`) can change with a later `session.update` and apply from the next reply; a reply in progress keeps the settings it started with. Turn detection can change the same way and applies from the next audio unit. `session.updated` reports `supports_instruction_updates` and `supports_sampling_updates`, false in a profile whose nodes have no `system_prompt` or no `temperature` and `max_tokens`, respectively. {ref}`Session settings <session-settings>` lists every field.
+
+(turn-detection)=
+
+**Turn Detection**
+
+
+Without it an utterance ends when the `vad` node hears `silence_duration_ms` of silence, so a pause to think in the middle of a sentence ends the turn and the reply answers half a sentence. A profile with a `turn_detection` node, such as `qwen3-asr-qwen3-tts-base-clone`, ends the turn only when the [Smart Turn v3.2](https://huggingface.co/pipecat-ai/smart-turn-v3) end-of-turn model, scoring the utterance so far at each pause the `vad` node reports, finds it complete, or when the pause outlasts the longest pause the eagerness allows. The node reads the Session input and `vad:session` and publishes `session`: its `speech.started` opens the turn and its `speech.stopped` ends it, so the recognizer, the dialog and the client read `turn_detection:session` where they read `vad:session` before, and speech that resumes inside a held pause continues the utterance instead of interrupting a reply.
+
+The stage loads the BSD-2 licensed `smart-turn-v3.2-gpu.onnx` from the Hugging Face repository `pipecat-ai/smart-turn-v3` through the Hugging Face cache, or from the file or directory `stages.turn_detection.factory.model_path` names, and verifies its SHA-256 at startup. The stage's `factory.eagerness` (`low`, `medium` or `high`, default `medium`) sets how readily a pause ends the turn: `high` takes a shorter silence on a confident score and gives up a held pause sooner, `low` waits longer. The profile sets the `vad` node's `silence_duration_ms` to 160, the pause the detector scores as a candidate end; a client that selects `{"type": "server_vad"}` on this profile gets the VAD's boundaries unchanged, with that pause.
+
+A client selects the behaviour per session with the standard field, `{"turn_detection": {"type": "semantic_vad", "eagerness": "high"}}`; `session.created` lists `semantic_vad` under `turn_control` when the profile has the node. The Qwen3-Omni Session graph takes the node the same way: declare it in `examples/qwen3_omni/session_h200.yaml` beside `vad`, let `dialog` read `turn_detection:session` in place of `vad:session`, and publish `turn_detection: [session]` in place of `vad: [session]`.
+
+(scripted-conversation)=
+
+**Scripted Conversation**
+
+
+The same conversation runs without the realtime protocol through the Session API:
+
+```bash
+PYTHONPATH=. python examples/streaming_cascade/run.py question.wav followup.wav --output response.wav
+```
+
+Each input is a 16 kHz mono signed 16-bit PCM WAV. The command runs the cascade in its own process without starting the profile's `services`, so start them first. It streams the files back to back through one Session of the profile named by `--config` and writes the reply audio to `response.wav`; the second file is answered with the first turn in the history. `--config` defaults to `qwen3-asr-qwen3-tts-vivian`. Pass `--commit` for a profile without the VAD node. The `/v1/session` protocol is described in {ref}`Session API <session-api>`.
+
+(services-and-launch-modes)=
+
+### Services and Launch Modes
 
 The server starts the profile's `services` one after another, in the order they are listed, before it starts the cascade. For each entry it first requests `http://127.0.0.1:<port>/v1/models`: a service that answers 200 is reused and left running when the server stops, and the log shows `service 'tts' already serving on :8005`. Otherwise it runs `command` with its own environment plus the entry's `env`, in the directory `sgl-omni serve` was started from, and polls the port every second for up to 600 s. A service that exits first fails the start with `service '<name>' exited with code <n> before :<port> answered`; one that does not answer in time fails it with `service '<name>' did not answer on :<port> within 600 s`. The cascade itself must then start within `SGLANG_OMNI_STARTUP_TIMEOUT` seconds (default 600).
 
@@ -306,7 +1190,7 @@ A service's port appears in three places that must agree: the `--port` inside it
 **Services you run elsewhere**
 
 
-Remove the service's entry from `services` and set the node's `base_url` and `model` to the running service. `openai_transcription`, `openai_chat` and `openai_speech` work with any OpenAI-compatible transcription, chat completions and speech endpoint; `api_key_env` names the environment variable holding its bearer token. A `services` entry is only for a service on this machine, since its readiness check requests `127.0.0.1`. The node still probes the service at startup, so a wrong `base_url` fails the start (see [Verifying a Deployment](#verifying-a-deployment)).
+Remove the service's entry from `services` and set the node's `base_url` and `model` to the running service. `openai_transcription`, `openai_chat` and `openai_speech` work with any OpenAI-compatible transcription, chat completions and speech endpoint; `api_key_env` names the environment variable holding its bearer token. A `services` entry is only for a service on this machine, since its readiness check requests `127.0.0.1`. The node still probes the service at startup, so a wrong `base_url` fails the start (see {ref}`Verifying a Deployment <verifying-a-deployment>`).
 
 (a-model-inside-the-server-as-a-stage)=
 
@@ -345,16 +1229,7 @@ Each service picks its GPUs through `env`, as `qwen3-asr-qwen3.8-27b-vivian` doe
 
 **The forced-alignment worker**
 
-
-Word boundaries use Unicode character offsets into the original reply, not into the aligner's normalized text. The worker maps removed punctuation and Japanese compatibility normalization back to the source and rejects missing or changed tokens instead of searching ahead. An expanded number or compatibility character becomes heard only after its last aligned token finishes. The worker's tests use the actual language-specific tokenizer with simulated timestamps; real-model playback remains a separate validation step.
-
-The heard-ASR matcher accepts joined spellings such as `long-term` / `long term`, `one-time` / `onetime`, and `U.S.` / `US`, but commits only at complete units on both sides. Thus `can` does not match `cannot`, and `now here` does not match `nowhere`. English and Chinese requests also compare the existing spoken number readings, preserving original offsets: `350` matches `three hundred fifty`, but `21` does not commit after only `twenty`. Both the original-spelling and expanded-reading comparisons must match a strict prefix; the former preserves counting sequences that the TTS reader treats as grouped digits. This change does not extend the TTS reading rules for contractions, percentages, versions or decades.
-
 An `alignment` node with `method: forced` sends each finished sentence and its audio to a worker that returns word boundaries. The worker cannot be a `services` entry: it answers `/health` and `/align` but not the `/v1/models` request the server waits for, and it needs the `qwen-asr` package, which pins a `transformers` release of its own, so it runs from a separate virtual environment. In that environment install `qwen-asr`, `fastapi`, `regex` and `uvicorn`, plus `httpx`, `msgpack`, `msgspec`, `numpy`, `pydantic` and `websockets` for the modules it shares with the server, then start it from the repository root before `sgl-omni serve`:
-
-```bash
-PYTHONPATH=. python examples/streaming_cascade/alignment_worker.py --model Qwen/Qwen3-ForcedAligner-0.6B --device cuda:0 --language English --port 8010
-```
 
 | Flag | Default | Effect |
 | --- | --- | --- |
@@ -375,106 +1250,18 @@ PYTHONPATH=. python examples/streaming_cascade/alignment_worker.py --model Qwen/
 python playground/cascade/app.py --api-base http://127.0.0.1:8765 --port 8090
 ```
 
-It needs `aiohttp`, serves the page on `--host` (default `127.0.0.1`) and `--port` (default `8080`), and forwards `/v1/realtime` and `/v1/realtime/capabilities` to `--api-base` (default `http://127.0.0.1:8000`). Its settings panel is the [browser demo's](#browser-demo): the system prompt, turn detection (`server_vad` with its silence, `semantic_vad` with its eagerness, as `turn_control` lists them) and one field per key in `sampling_parameters`, labelled for the cascade (`max_new_tokens_per_unit` is the reply token limit). It offers no text-only replies, because its captions and `conversation.item.truncate` follow audio playback. The fields are empty until you fill them, kept per deployment model in this browser, and cleared by Reset to defaults. While they are empty the page sends only `output_modalities` in its `session.update`, so the profile's prompt and turn detection apply; a filled field is sent in the first `session.update` and applies to the next conversation, with sampling fixed for the session as [Session settings](#session-settings) describes. Its stop button sends `response.cancel`. When a reply is interrupted, by the button or by speaking over it, the page sends `conversation.item.truncate` with the audio it played, and it marks the heard part of the reply from `sglang.response.progress` and the audio it has played, word by word through the stretch being played, at an even pace between two progress points; a cut reply then shows the part the history kept, from `sglang.response.heard`. A long reply's caption grows up to the room under the orb and then scrolls to keep the line being heard in view; the transcript holds the whole reply. Browsers grant the microphone only to `localhost` or HTTPS pages, so open the page on the same machine or forward its port.
+It needs `aiohttp`, serves the page on `--host` (default `127.0.0.1`) and `--port` (default `8080`), and forwards `/v1/realtime` and `/v1/realtime/capabilities` to `--api-base` (default `http://127.0.0.1:8000`). Its settings panel is the [browser demo's](#browser-demo): the system prompt, turn detection (`server_vad` with its silence, `semantic_vad` with its eagerness, as `turn_control` lists them) and one field per key in `sampling_parameters`, labelled for the cascade (`max_new_tokens_per_unit` is the reply token limit). It offers no text-only replies, because its captions and `conversation.item.truncate` follow audio playback. The fields are empty until you fill them, kept per deployment model in this browser, and cleared by Reset to defaults. While they are empty the page sends only `output_modalities` in its `session.update`, so the profile's prompt and turn detection apply; a filled field is sent in the first `session.update` and applies to the next conversation, with sampling fixed for the session as {ref}`Session settings <session-settings>` describes. Its stop button sends `response.cancel`. When a reply is interrupted, by the button or by speaking over it, the page sends `conversation.item.truncate` with the audio it played, and it marks the heard part of the reply from `sglang.response.progress` and the audio it has played, word by word through the stretch being played, at an even pace between two progress points; a cut reply then shows the part the history kept, from `sglang.response.heard`. A long reply's caption grows up to the room under the orb and then scrolls to keep the line being heard in view; the transcript holds the whole reply. Browsers grant the microphone only to `localhost` or HTTPS pages, so open the page on the same machine or forward its port.
 
 (an-openai-realtime-client-or-the-session-api)=
 
 **An OpenAI Realtime client or the Session API**
 
 
-Any OpenAI Realtime client connects to `/v1/realtime` with the session flow in [Voice Conversation](#voice-conversation). `/v1/session` serves the same Session without the realtime protocol. `examples/streaming_cascade/run.py` runs a profile in its own process instead of connecting to a server; it does not start the profile's `services`, so start them first.
-
-(profiles)=
-
-**Profiles**
-
-
-Every profile is a `launch.yaml` under `examples/streaming_cascade/profiles/`.
-
-| Profile | Recognizer | Language model | Speech | GPUs | Nodes | Start beforehand |
-| --- | --- | --- | --- | --- | --- | --- |
-| `qwen3-asr-qwen3.8-27b-vivian` | Qwen3-ASR-1.7B service on 8002 (`openai_transcription`) | Qwen3.8-27B on 8003, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` | 2: the language model on GPU 0, both speech models on GPU 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut) | Alignment worker on 8010 |
-| `qwen3-asr-qwen3-tts-vivian` (default) | Qwen3-ASR-1.7B service on 8002 | Qwen3.8-27B on 8000, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` | 2: the language model on GPU 0, both speech models on GPU 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
-| `qwen3-asr-qwen3-tts-vivian-dflash` | Qwen3-ASR-1.7B with DFlash on 8002 | Qwen3.8-27B with DFlash on 8000, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` | 2: the language model on GPU 0, both speech models on GPU 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
-| `qwen3-asr-streaming-qwen3-tts-vivian` | Qwen3-ASR-1.7B service on 8002 started with `--enable-realtime` (`streaming_transcription`, a partial transcript every 1000 ms of speech) | Qwen3.8-27B on 8000, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` | 2: the language model on GPU 0, both speech models on GPU 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
-| `qwen3-asr-qwen3-tts-base-clone` | Qwen3-ASR-1.7B service on 8002 | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `reference_zh.wav` in the profile directory | 1 | `vad`, `turn_detection` (published), `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
-| `nemotron-qwen3-tts` | Nemotron 3.5 streaming ASR service on 8001 (`realtime_transcription`) | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-0.6B-Base on 8004, cloning `reference.wav` | 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced) | Alignment worker on 8010; a recording at `reference.wav`, with `reference_text` set to its transcript |
-| `nemotron-stage-qwen3-tts` | Nemotron 3.5 ASR as the `asr` stage on GPU 0, with `running_transcript` | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-0.6B-Base on 8004, cloning `reference.wav` | 1 | `vad`, `asr` (stage), `transcript`, `dialog`, `llm`, `tts`, `aligner` (forced) | Alignment worker on 8010; a recording at `reference.wav`, with `reference_text` set to its transcript |
-
-`qwen3-asr-qwen3-tts-vivian`, `qwen3-asr-qwen3-tts-vivian-dflash` and `qwen3-asr-qwen3-tts-base-clone` publish their aligner's `session`, so their clients receive `sglang.response.progress`. Every profile cuts an interrupted reply at the word ends of the sentences whose audio was complete; the Qwen3-ASR profiles also send the delivered audio of the sentence at the cut to their own recognizer, so a sentence cut before its audio was complete keeps the part the listener heard.
-
-(voice-conversation)=
-
-**Voice Conversation**
-
-
-With the page from [Launching](#launching) running, open `http://127.0.0.1:8090`, speak, and the reply plays as it is produced. Speaking while the reply plays interrupts it.
-
-Any OpenAI Realtime client works the same way. Open a WebSocket to `/v1/realtime`, wait for `session.created`, and send the session settings:
-
-```json
-{"type": "session.update", "event_id": "cfg-1", "session": {"instructions": "Answer in one short English sentence.", "output_modalities": ["text", "audio"], "audio": {"input": {"turn_detection": {"type": "server_vad", "silence_duration_ms": 800}}}}}
-```
-
-Send 16 kHz mono PCM16 audio at real-time pace as `{"type": "input_audio_buffer.append", "event_id": "...", "audio": "<base64>", "sglang": {"seq": 0}}`, with `seq` counting up from 0 for the whole session. The server answers with these events:
-
-| Event | Meaning |
-| --- | --- |
-| `input_audio_buffer.speech_started`, `input_audio_buffer.speech_stopped` | The start and the end of your utterance. |
-| `conversation.item.input_audio_transcription.delta`, `.completed` | Partial and final transcript of what you said. |
-| `response.created` | A reply begins. |
-| `response.output_text.delta`, `response.output_audio.delta` | Reply text and reply audio, base64 PCM16 at 24 kHz mono. |
-| `sglang.response.progress` | In a profile that publishes its aligner's `session`: `text_end`, the length of the reply text whose audio has been produced, and `audio_ms`, where that audio ends in the reply's audio, so a client can mark the text as it plays. |
-| `sglang.response.heard` | After a `conversation.item.truncate`, in a profile that publishes its dialog's `session`: `text_end`, the length of the cut reply's text the history keeps, sent again whenever the cut moves, so a client can show what the history kept. |
-| `response.done` | The reply is complete; `response.status_details.reason` is `stop`, `empty_turn` when the utterance had no words, or `interrupted` when you spoke over it. |
-| `error` | The request or the session failed. |
-
-Native full-duplex responses also report backend latency in a top-level `response_request_metrics` object. The first non-empty text delta carries `ttft_ms`, the first non-empty audio delta carries `ttfp_ms`, and `response.done` repeats every value observed for that response. Both intervals use the server monotonic clock and begin when the model-turn request starts, immediately before the native adapter processes its input unit. Pending input units keep the latest start until `response.created`; that event locks the start for the response, so input accepted while the response is streaming does not shorten its latency.
-
-`response.cancel` interrupts the reply from the client side. The capabilities grant `supports_cancel` when a node takes `interrupt` from `input` on a control edge, as every bundled profile's dialog does, and `supports_truncate` always. An interrupted reply stays in the history only up to the last boundary whose audio the server had sent before the interruption: the last word with a forced aligner, the part of the sentence at the cut that its transcript says with `heard_asr_url`, the last sentence otherwise. `conversation.item.truncate` with `audio_end_ms` tells the server how much of the reply was heard; the history then keeps the reply up to the last boundary whose audio ended by then, never past what the server sent. A reply the history keeps nothing of, such as one interrupted before its first boundary, leaves no answer: your next utterance joins the one before it in a single user message, as if you had kept talking. An utterance you finished before the interruption is answered once the server knows how much of the interrupted reply it delivered, so its prompt keeps that part. The truncate cuts only the reply its `item_id` names, also after the next reply began, so the prompts after that keep what you heard; one for a reply the backend can no longer cut, such as an earlier reply after a later one ended, changes nothing, and an `item_id` the session never sent gets an `item_not_found` error. The language model sees a cut reply ending with …, and while the history holds one, the system message, including instructions a client sets, ends with a sentence saying such a reply was cut off by the user. A reply the model finished is shown without a trailing …, so that it does not read as cut.
-
-To end turns yourself instead of by silence, set `"turn_detection": null` in the first `session.update`; `input_audio_buffer.commit` then ends the utterance after the audio sent before it.
-
-Instructions and sampling (`sglang.sampling.temperature`, `max_new_tokens_per_unit`) can change with a later `session.update` and apply from the next reply; a reply in progress keeps the settings it started with. Turn detection can change the same way and applies from the next audio unit. `session.updated` reports `supports_instruction_updates` and `supports_sampling_updates`, false in a profile whose nodes have no `system_prompt` or no `temperature` and `max_tokens`, respectively. [Session settings](#session-settings) lists every field.
-
-(turn-detection)=
-
-**Turn Detection**
-
-
-Without it an utterance ends when the `vad` node hears `silence_duration_ms` of silence, so a pause to think in the middle of a sentence ends the turn and the reply answers half a sentence. A profile with a `turn_detection` node, such as `qwen3-asr-qwen3-tts-base-clone`, ends the turn only when the [Smart Turn v3.2](https://huggingface.co/pipecat-ai/smart-turn-v3) end-of-turn model, scoring the utterance so far at each pause the `vad` node reports, finds it complete, or when the pause outlasts the longest pause the eagerness allows. The node reads the Session input and `vad:session` and publishes `session`: its `speech.started` opens the turn and its `speech.stopped` ends it, so the recognizer, the dialog and the client read `turn_detection:session` where they read `vad:session` before, and speech that resumes inside a held pause continues the utterance instead of interrupting a reply.
-
-The stage loads the BSD-2 licensed `smart-turn-v3.2-gpu.onnx` from the Hugging Face repository `pipecat-ai/smart-turn-v3` through the Hugging Face cache, or from the file or directory `stages.turn_detection.factory.model_path` names, and verifies its SHA-256 at startup. The stage's `factory.eagerness` (`low`, `medium` or `high`, default `medium`) sets how readily a pause ends the turn: `high` takes a shorter silence on a confident score and gives up a held pause sooner, `low` waits longer. The profile sets the `vad` node's `silence_duration_ms` to 160, the pause the detector scores as a candidate end; a client that selects `{"type": "server_vad"}` on this profile gets the VAD's boundaries unchanged, with that pause.
-
-A client selects the behaviour per session with the standard field, `{"turn_detection": {"type": "semantic_vad", "eagerness": "high"}}`; `session.created` lists `semantic_vad` under `turn_control` when the profile has the node. The Qwen3-Omni Session graph takes the node the same way: declare it in `examples/qwen3_omni/session_h200.yaml` beside `vad`, let `dialog` read `turn_detection:session` in place of `vad:session`, and publish `turn_detection: [session]` in place of `vad: [session]`.
-
-(scripted-conversation)=
-
-**Scripted Conversation**
-
-
-The same conversation runs without the realtime protocol through the Session API:
-
-```bash
-PYTHONPATH=. python examples/streaming_cascade/run.py question.wav followup.wav --output response.wav
-```
-
-Each input is a 16 kHz mono signed 16-bit PCM WAV. The command runs the cascade in its own process without starting the profile's `services`, so start them first. It streams the files back to back through one Session of the profile named by `--config` and writes the reply audio to `response.wav`; the second file is answered with the first turn in the history. `--config` defaults to `nemotron-qwen3-tts`. Pass `--commit` for a profile without the VAD node. The `/v1/session` protocol is described in [Session API](#session-api).
-
-(benchmarking)=
-
-**Benchmarking**
-
-
-The turn latency benchmark streams one WAV for several turns and prints, per turn, the time from speech end to first text, first audio, final transcript and completion:
-
-```bash
-python benchmarks/realtime_turn_latency.py --url ws://127.0.0.1:8765/v1/realtime --audio question.wav --turns 5
-```
+Any OpenAI Realtime client connects to `/v1/realtime` with the session flow in [Cascade Protocol](#cascade-protocol). `/v1/session` serves the same Session without the realtime protocol. `examples/streaming_cascade/run.py` runs a profile in its own process instead of connecting to a server; it does not start the profile's `services`, so start them first.
 
 (configuration)=
 
-**Configuration**
+### Configuration
 
 
 A setting comes from one of three places: the profile file, read at launch; command-line overrides of the profile, also read at launch; and the settings a client sends for its own session.
@@ -558,7 +1345,7 @@ A realtime client sends its settings in `session.update`. The first `session.upd
 | `instructions` | `system_prompt` of every node that has it (the `dialog`) | Any time; applies to the next prompt. At most 65536 characters, else `instructions exceed context or have invalid type`. |
 | `sglang.sampling.temperature` | `temperature` of every node that has it (`openai_chat`), 0 to 2 | Any time; applies to the next reply, a reply in progress keeps its value. |
 | `sglang.sampling.max_new_tokens_per_unit` | `max_tokens` of `openai_chat`, at least 1 | Any time; applies to the next reply, a reply in progress keeps its value. |
-| `audio.input.turn_detection` | `type: server_vad` reaches the session's `vad` stage: `threshold`, `prefix_padding_ms`, `silence_duration_ms`; with a `turn_detection` node, `type: semantic_vad` and its `eagerness` reach that node, and `server_vad` makes it pass the VAD's boundaries through | Any time. `null` turns detection off and utterances end only at `input_audio_buffer.commit`; send it in the first `session.update` (see [Allowed, with consequences](#allowed-with-consequences)). `interrupt_response` is accepted and has no effect. |
+| `audio.input.turn_detection` | `type: server_vad` reaches the session's `vad` stage: `threshold`, `prefix_padding_ms`, `silence_duration_ms`; with a `turn_detection` node, `type: semantic_vad` and its `eagerness` reach that node, and `server_vad` makes it pass the VAD's boundaries through | Any time. `null` turns detection off and utterances end only at `input_audio_buffer.commit`; send it in the first `session.update` (see {ref}`Allowed, with consequences <allowed-with-consequences>`). `interrupt_response` is accepted and has no effect. |
 | `output_modalities` | `["text", "audio"]` or `["text"]` | Any time. |
 
 The realtime endpoint takes no per-node options. A `/v1/session` client sets them, together with the standard fields, as the `params` of its open frame and later as the fields of a `configure` control:
@@ -581,7 +1368,7 @@ What needs a restart and what does not:
 
 (node-reference)=
 
-**Node Reference**
+### Node Reference
 
 
 Every node of a kind has `kind` (required) and `timeout_s`. Options marked required have no default.
@@ -730,7 +1517,7 @@ Declared as `vad: {stages: [vad], inputs: [input]}`; reports `speech.started` an
 | --- | --- | --- | --- |
 | `threshold` | number 0 to 1 | `0.5` | Speech probability above which a frame is speech. |
 | `prefix_padding_ms` | integer ≥ 0 | `300` | Audio before the first speech frame that belongs to the utterance. |
-| `silence_duration_ms` | integer ≥ 0 | `500` | Silence that ends an utterance. |
+| `silence_duration_ms` | integer ≥ 0 | `800` | Silence that ends an utterance. |
 | `background_margin_db` | number ≥ 0 or `null` | `6` | A voice this many dB quieter than the last utterance starts no speech, so it neither opens a turn nor interrupts the reply. `null` hears every voice. A session's `turn_detection` does not change it. |
 | `max_open_sessions` | integer ≥ 1 | `16` | Sessions the detector holds at once. |
 | `max_concurrency` | integer ≥ 1 | `4` | Sessions it processes at once. |
@@ -758,7 +1545,7 @@ Declared as `asr: {stages: [asr], inputs: ["input:pcm16"]}`; runs Nemotron 3.5 s
 
 (compatibility-and-constraints)=
 
-**Compatibility and Constraints**
+### Compatibility and Constraints
 
 
 (rejected-when-the-profile-loads)=
@@ -812,7 +1599,7 @@ Each rule is followed by the error it raises.
 - `--services.0.<...>` — `services is addressed by name, not by index`.
 - A flag naming a group instead of a value — `addresses a settings group, not a single value`.
 - `--mem-fraction-static` — `--mem-fraction-static requires a pipeline with at least one SGLang engine stage`.
-- A service that exits or does not answer `/v1/models` on its port — the service errors under [One command with a profile](#one-command-with-a-profile).
+- A service that exits or does not answer `/v1/models` on its port — the service errors under {ref}`Services and Launch Modes <services-and-launch-modes>`.
 - A node whose service does not answer its probe: `openai_transcription`, `openai_chat` and `openai_speech` request `<base_url>/models`, `openai_chat` then streams one token sampled with the node's settings, `realtime_transcription` requests `/v1/models` on the `http` form of its `base_url`, a forced `alignment` requests `<alignment_url>/health` and then aligns one second of silence, and an `alignment` with `heard_asr_url` requests `<heard_asr_url>/models` — `cannot reach <url>: ...` or `<url> answered <status>`, or the error of the chat token's completion, and the server stops.
 
 (rejected-in-a-realtime-session)=
@@ -822,7 +1609,7 @@ Each rule is followed by the error it raises.
 During initial session opening, only a capacity rejection is reported as `admission_rejected` with `sglang.fatal: false`; the client may retry `session.update` on the same WebSocket before sending audio, within the admission deadline. If opening exceeds its own deadline, the server sends fatal `session_open_timeout` and closes the session. This differs from `session_update_timeout`, which limits the wait for an initial update or retryable admission; an admission already in progress may finish after that deadline. The separate pipeline idle fallback reports `session_idle_timeout`. Other initialization failures close the session with their known error code, or `internal` when no specific code is available. Configuration negotiation errors below retain their existing request-error behavior.
 
 - A sampling parameter other than `temperature` and `max_new_tokens_per_unit` — `unsupported sampling parameters: ...`.
-- A field other than the hot ones in [Session settings](#session-settings) changed after the first `session.update`, or `instructions` or `sglang.sampling` in a profile whose capabilities report `supports_instruction_updates` or `supports_sampling_updates` as false — `session field is frozen`.
+- A field other than the hot ones in {ref}`Session settings <session-settings>` changed after the first `session.update`, or `instructions` or `sglang.sampling` in a profile whose capabilities report `supports_instruction_updates` or `supports_sampling_updates` as false — `session field is frozen`.
 - `instructions` longer than 65536 characters — `instructions exceed context or have invalid type`.
 - A `model` other than the deployment's — `model differs from deployment`.
 - An audio format other than 16 kHz input or 24 kHz output PCM — `unsupported PCM format or sample rate`.
@@ -880,7 +1667,7 @@ Every failure ends the realtime session with an `error` event.
 
 (verifying-a-deployment)=
 
-**Verifying a Deployment**
+### Verifying a Deployment
 
 
 A healthy start logs each service as `starting service '<name>': ...` and `service '<name>' serving on :<port>` (or `already serving`), then `Pipeline '<model_path>' started (<n> GPU(s))`, then the HTTP server listening on its port. A failed node probe logs `Scheduler thread for stage <node> crashed` with the probe error, and the server stops.
@@ -910,18 +1697,18 @@ A healthy start logs each service as `starting service '<name>': ...` and `servi
 }
 ```
 
-with further fields omitted here. `turn_control` is `[null]` for a profile without a `vad` node, `output_modalities` is `["text"]` for one that publishes no audio, `sampling_parameters` is empty and `supports_sampling_updates` false when no node takes `temperature` or `max_tokens`, and `supports_instruction_updates` is false when no node has a `system_prompt`. A first conversation turn through the playground or the [turn latency benchmark](#benchmarking) confirms the whole chain.
+with further fields omitted here. `turn_control` is `[null]` for a profile without a `vad` node, `output_modalities` is `["text"]` for one that publishes no audio, `sampling_parameters` is empty and `supports_sampling_updates` false when no node takes `temperature` or `max_tokens`, and `supports_instruction_updates` is false when no node has a `system_prompt`. A first conversation turn through the playground or the {ref}`turn latency benchmark <turn-latency>` confirms the whole chain.
 
 (known-limitations)=
 
-**Known Limitations**
+### Known Limitations
 
 
 - **Reasoning models must have thinking off.** The cascade speaks everything the language model returns as content. A model that thinks by default needs `enable_thinking: false` in the node's `extra_body` and a reasoning parser on its server (`--reasoning-parser qwen3` for Qwen3.8, as in `qwen3-asr-qwen3.8-27b-vivian`), or its reasoning is synthesized.
 - **History is bounded.** A conversation whose history exceeds `max_history_chars` fails its next turn; open a new session.
 - **Audio only.** The cascade takes audio input and produces text and audio; image input is not supported.
 
-### Session Graph
+## Session Graph
 
 A Session is one stateful conversation on the server: the client opens it, appends input for its whole lifetime, reads what it publishes and closes it. A pipeline declares the shape of its Session in its config, and the coordinator opens it; the serving layer appends input and reads the published formats without knowing the nodes behind them. A Session is either the one stage route from the pipeline's entry stage or a graph of nodes declared in `session_nodes`.
 
@@ -1029,788 +1816,3 @@ A `configure` control reaches every node reading `input`. Its standard fields re
 An EOS append ends the input readers in graph order, after their upstream input readers finish. Its confirmation waits for pending routed input and published reply turns to drain. Background component failures fail the output read without waiting for another append.
 
 The cascade graph enables `shared_timeline`: its published reply chunks use one coordinator-owned media clock. A reply starts no earlier than the latest client audio or the previous reply's audio end; audio advances that clock, and interruption resets it to the client audio clock. Speech boundaries retain their original input timestamps. Other graphs preserve their nodes' timestamps by default.
-
-## Full-Duplex-Bench runbook
-
-This page runs [Full-Duplex-Bench](https://github.com/DanielLin94144/Full-Duplex-Bench) (FDB) v1.0 and v1.5 against a full-duplex model served by SGLang-Omni (MiniCPM-o 4.5 by default). Every step is a subcommand of `python -m benchmarks.duplex.fdb`; the code is in `benchmarks/duplex/fdb/`.
-
-### What is measured
-
-FDB has two datasets, and they test different behavior:
-
-- **v1.0** tests turn-taking. The model should stay quiet through a pause in the user's turn, come in once the turn ends, stop and answer when the user interrupts it, and, while the user talks at length, give short backchannels such as "mm-hmm" without taking the turn.
-- **v1.5** tests overlap handling. The user asks something, and while the model answers, more speech arrives: an interruption, a backchannel, speech to someone else, or background speech. The question is what the model does with it.
-
-The two measure different things, so a run takes samples from both by default. Each dataset gets its own result table, and their numbers are never pooled.
-
-(v10)=
-
-**v1.0**
-
-
-v1.0 has 727 samples in five subsets. A sample is one input audio file plus an annotation (the pause positions, the end of the user's turn, the interruption, or the human backchannel timing), streamed in one session.
-
-| Subset | Samples | Task | Source | Reported numbers |
-|---|---:|---|---|---|
-| `synthetic_pause_handling` | 137 | Pause handling | Synthetic | Takeover rate (lower is better) |
-| `candor_pause_handling` | 216 | Pause handling | Candor conversations | Takeover rate (lower is better) |
-| `candor_turn_taking` | 119 | Turn-taking | Candor conversations | Takeover rate (higher), latency (lower) |
-| `synthetic_user_interruption` | 200 | User interruption | Synthetic | Takeover rate (higher), latency (lower), relevance (higher) |
-| `icc_backchannel` | 55 | Backchannel | ICC conversations | Takeover rate (lower), backchannel frequency, backchannel JSD (lower) |
-
-The following official reference numbers come from the evaluator at the pinned revision, run unchanged on the transcript of the model's output. The runbook also reports [unified v1.0 metrics](#results) for pause handling, turn taking and interruption:
-
-- **Takeover rate**: the share of samples in which the model took the turn, meaning its transcript spans at least 1 s or has more than 3 words.
-- **Latency**: the time from the annotated end of the user's turn to the model's first word, averaged over the samples in which the model took the turn. A start before the end of the turn counts as 0.
-- **Relevance**: a 0-5 rating of the model's reply to the interruption, given by the judge (see [Judges](#judges)).
-- **Backchannel frequency** and **JSD**: how often the model backchannels, and how far its backchannel timing is from the human one.
-
-The capture, VAD and judge can differ from the paper's, so compare these numbers between runs of this runbook, not with the published tables.
-
-(v15)=
-
-**v1.5**
-
-
-v1.5 has 498 pairs in four categories: `user_interruption` (200), `user_backchannel` (98), `talking_to_other` (100) and `background_speech` (100). A pair is two input files with the same user query: `input.wav` contains the later overlapping speech and `clean_input.wav` does not. Each file is streamed in its own session.
-
-- **Stop latency**: how long the model keeps talking while the other speech overlaps it. Lower is better on `user_interruption`, where the model should give way. In the other three categories the model should keep its turn, so the overlap mostly tracks how long the other speech lasts.
-- **Response latency**: the time from the end of a user speech span to the start of the next model speech. Lower is better when a reply is due. Both latencies are whole-file intervals from the official timing code, not latencies around the overlap event.
-- **Behavior labels**: the judge gives each pair one label for how the model handled the overlap. `C_RESPOND`: it addressed the overlap's content. `C_RESUME`: it ignored the overlap and continued. `C_UNCERTAIN_HANDLING`: it asked for a repeat or showed that it did not catch the overlap. `C_UNKNOWN`: its reply was off-target, or it said nothing. The share that should be high is `C_RESPOND` on `user_interruption` and `C_RESUME` in the other categories; `C_UNKNOWN` should be low.
-- **Semantic quality** (`JUDGE=qwen` only, not part of the paper): a label says what the model did, not whether that was right, so a `C_RESUME` that ignored a real interruption looks the same as one that correctly ignored a backchannel. The semantic judge grades each pair on three axes, each `accept`, `fail` or `unresolved`: `interaction_handling` (the overlap was handled correctly for its category), `relevance` (the reply addressed the request that mattered) and `grounding` (no unsupported facts, claimed actions or false memories). `joint` accepts only when all three accept. A verdict must quote the transcript it relies on, and a verdict with a missing or wrong quote becomes `unresolved`. Each cell reports `quality = A/(A+F)` and `coverage = (A+F)/N` over all N selected pairs; read the two together, since a high quality over a low coverage judges few pairs.
-
-(listening-quality)=
-
-**Listening quality**
-
-
-The timing, label and semantic numbers say what the model did and when, not how its replies sound. `asr` also scores every reply of both datasets on its own, and `RESULTS.md` reports the scores per v1.5 category and per v1.0 subset, never as one total. A reply is the audio of one response, its deltas back to back as a client with enough buffer plays them, up to where the simulated playout stopped when a protocol cuts replies at barge-in; gaps from deltas that arrive late are left out, because the [serving metrics](#serving-metrics) measure them as underruns.
-
-- **Omission rate** (lower is better): the words of the transcript in `response.done` that are missing from the reply's Parakeet transcript, over the transcript's words, pooled over the completed replies of a category. Both texts go through Whisper's English normalizer before alignment. A cancelled reply is not compared: its transcript can run past the audio it played.
-- **WER** (lower is better): substitutions, deletions and insertions of the same alignment. A swallowed syllable often shows up as a substitution rather than a deletion. Both rates include Parakeet's own errors, so compare them between systems rather than read them as absolute rates.
-- **UTMOS** (1-5, higher is better): the UTMOS prediction of each reply of at least 3 s, the model the TTS benchmarks use; it drops for clicks, distortion and unnatural prosody. The table shows the mean and the 10th percentile.
-- **Voice similarity** (higher is better): 100 times the cosine of the WavLM speaker embedding of a reply's middle 3 s with the mean embedding of the same window of every other reply in the repeat, so a reply whose voice drifts from the model's usual one scores low. The table shows the mean and the 10th percentile.
-- **Short replies**: replies with audio shorter than 3 s, such as most backchannels. They are compared for omission but get no UTMOS or voice score.
-
-The 3 s comes from MiniCPM-o replies. Middle crops of replies of 6 s or more score within 0.07 of the full reply's UTMOS from 2 s on and 0.38 below it at 1 s. A speaker embedding depends on length at every duration measured, so the voice score compares windows of one length; copies of the replies shifted up 4 semitones separate from the originals by d = 2.7 with 2 s windows, 4.0 with 3 s and 5.0 with 4 s, while the replies long enough to score drop from 44 of 50 at 3 s to 38 at 4 s.
-
-The metrics move for their own defects. On 24 MiniCPM-o replies, removing the middle 40% of the audio raises the omission rate from 4.4% to 43.4%; adding 10 clicks per second drops UTMOS from 4.26 to 2.08; shifting up 4 semitones drops voice similarity from 72.5 to 52.5. The omission rate moves at most 0.6 points under the clicks and the pitch shift, and voice similarity at most 0.5 under the cut and the clicks. UTMOS also drops 0.22 for the cut, which leaves a splice, and to 1.41 for the pitch shift, whose phase vocoder adds artifacts.
-
-These are reported only, with no pass mark yet. `listening/scores.json` keeps each reply's duration, transcript, Parakeet text and scores.
-
-### Setup
-
-You need one GPU with at least 80 GB (H100 or H200), and `git`, `uv` and the FFmpeg shared libraries (version 4 to 8) on the host. Run every command in this page from the repository root, with the sglang-omni virtualenv active (`which python` should print its interpreter).
-
-```bash
-python -m benchmarks.duplex.fdb setup
-```
-
-`setup` is safe to rerun and skips finished steps. It installs the `minicpm-o` extra of sglang-omni (`onnx` and `einops`) into the active venv and puts everything else under `FDB_WORK` (default `$HOME/fdb`):
-
-| Path | Content |
-|---|---|
-| `Full-Duplex-Bench/` | Official scoring code at the pinned revision `3e799c4`; file hashes are checked |
-| `dataset/v1.0/`, `dataset/v1.5/` | The two datasets from the official Google Drive; `dataset/v1.0.revision` and `dataset/v1.5.revision` hold the archive hashes |
-| `scoring-venv/` | Python 3.12 with NeMo, torch, Silero VAD and torchcodec for ASR, timing and the official evaluators. torchcodec loads FFmpeg, and `setup` checks that it can |
-| `models/parakeet-tdt-0.6b-v2/` | ASR checkpoint, SHA-256 checked |
-| `models/MiniCPM-o-4_5/` | Model under test at revision `503e754`. To reuse an existing copy, symlink it here or set `MODEL_PATH` |
-| `models/Qwen3.8-27B/` | Judge checkpoint; its commit is saved in `models/Qwen3.8-27B.revision` |
-
-(judges)=
-
-**Judges**
-
-
-`JUDGE` selects the judge:
-
-| `JUDGE` | v1.5 behavior labels | v1.5 semantic quality | v1.0 interruption relevance |
-|---|---|---|---|
-| `qwen` (default) | [Qwen3.8-27B](https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.8-27B), served locally: non-thinking, greedy, seeds 1-3 | Qwen3.8-27B: thinking, temperature 0, seed 1 | Qwen3.8-27B with the official prompt: non-thinking, seed 0 |
-| `gpt` | `gpt-4o-2024-08-06`, the paper's judge | not run | `gpt-4-turbo`, which the official evaluator requests |
-
-`JUDGE=gpt` needs `OPENAI_API_KEY`. With `JUDGE=qwen` the labels and ratings are not the paper's, but the judge is local and pinned, so runs with the same settings stay comparable with each other. The semantic judge sends six control cases (`benchmarks/duplex/semantic/`) together with its first grading batches and keeps the grades only if all 18 control axis statuses match `control-expected.json`; otherwise it discards them and stops. The controls check the rubric, not the judge's accuracy.
-
-`--skip-semantic-judge` on `judge`, or on `generate` with `--all-stages`, leaves the semantic judge out because it is the slowest judge phase, ~5 minutes for 20 pairs on one H100.
-
-A judge starts only when the step has a request for it: the v1.5 pairs and the v1.0 interruption subset need one, while the other v1.0 subsets are scored without an LLM. A run with only those subsets starts no judge server and needs no API key.
-
-### Run the benchmark
-
-A run has three steps, then an aggregation. Each step starts the server it needs and stops it when it exits. `generate --all-stages` runs the other three after recording, so one command goes from recording to `RESULTS.md`:
-
-```bash
-python -m benchmarks.duplex.fdb generate --run-name minicpmo-10 --v15-per-subset 10 --v10-per-subset 10 --all-stages
-```
-
-Without `--all-stages`, `generate` only records, and each later step is its own subcommand.
-
-| Step | Subcommand | What it does |
-|---|---|---|
-| 1 | `generate` | Starts the model server, streams the selected inputs to `/v1/realtime` (two sessions per v1.5 pair, one per v1.0 sample), records the model's audio, stops the server, then cuts a fixed observation window from each session |
-| 2 | `asr` | Transcribes the windows with word timestamps (Parakeet), computes v1.5 official speech intervals, writes v1.0 unified metrics from the saved transcript and annotations on CPU, then cuts every reply and scores its [listening quality](#listening-quality) |
-| 3 | `judge` | Runs the official v1.0 evaluator on the v1.0 subsets that need no LLM, then judges the v1.5 pairs and the v1.0 interruption subset (with `JUDGE=qwen` it starts the judge server for them and stops it after), and writes the per-repeat summaries |
-| | `aggregate` | Combines the repeats of a run into `RESULTS.md` |
-
-Run a small preflight first. It takes one pair per v1.5 category and three samples per v1.0 subset (about 15 minutes) and catches environment problems before a long run. v1.0 needs three samples rather than one because the official turn-taking and interruption evaluators divide by the number of takeovers and fail when no selected sample takes the turn.
-
-```bash
-python -m benchmarks.duplex.fdb generate --run-name preflight --v15-per-subset 1 --v10-per-subset 3 --all-stages
-```
-
-The preflight passes when `generate` prints `{"pass": 8}` and `{"eligible_pairs": 4, ...}` for v1.5 and `{"pass": 15}` with 3 eligible samples per v1.0 subset; `asr` prints `{"ok": 16}`, `{"ok": 8}` and 3 transcripts per v1.0 subset; and `judge` prints `{"valid": 4}`, `controls: 18/18 axis statuses match` and the parsed v1.0 results of each subset as JSON (the evaluator's own `[Result]` block is in `repeat-N/v10/reference/logs/evaluate-<subset>.log`). If anything differs, see [Troubleshooting](#troubleshooting).
-
-A run is one fixed selection of samples under `$FDB_WORK/runs/RUN_NAME`. Decoding uses sampling, so two generations of the same inputs differ; to measure that variance, run the steps several times under one run name with `--repeat 1`, `--repeat 2`, and so on. `--repeat N` only names the output directory `repeat-N/`; one command always runs once. `aggregate` presents unified v1.0 scores per repeat and means ± standard deviations in its v1.5 and official v1.0 reference tables.
-
-```bash
-for repeat in 1 2 3; do
-    python -m benchmarks.duplex.fdb generate --run-name minicpmo-12 --repeat "$repeat" --v15-per-subset 12 --v10-per-subset 12 --all-stages
-done
-```
-
-Each repeat ends with `aggregate`, so `RESULTS.md` covers every repeat finished so far.
-
-`generate` refuses to write into a repeat that already holds a recording; to redo one, delete its `repeat-N/` directory and run its three steps again. When `asr` or `judge` stops a `--all-stages` run, its message names the command that continues it; run that step and the ones after it on their own. `asr` and `judge` resume finished work when rerun. For v1.0, `asr` runs unified scoring after a successful or already completed `reference-asr`; failed ASR does not trigger scoring. The unified scorer does not need `judge` or its `summary.json`.
-
-Every subcommand takes `--log-level` (`info` by default). With `--log-level debug`, a step also prints the server and recorder logs it writes, each line prefixed with the log's name, such as `[judge-server]` or `[record-shard-0]`. The logs are written under `repeat-N/` at either level (see the files table in [Results](#results)).
-
-(choosing-samples)=
-
-**Choosing samples**
-
-
-Only `generate` selects samples; `asr` and `judge` score whatever the repeat recorded. Selection works the same way for both datasets and is never random: each subset (v1.5 calls them categories) takes its first N samples in numeric ID order (1, 2, …, 10, 11, …). So every repeat with the same options gets the same samples, and a smaller N is always a prefix of a larger one.
-
-The options come in two matching sets, `--v15-*` and `--v10-*`. Both default to 12 per subset. A count of 0 leaves that dataset out of the run; leaving both out is an error.
-
-| `generate` option | Effect |
-|---|---|
-| `--v15-per-subset N`, `--v10-per-subset N` | N samples from every subset of that dataset (default 12); `all` takes the whole dataset; `0` leaves it out |
-| `--v15-subset-count NAME=N`, `--v10-subset-count NAME=N` | Overrides the count for one subset; `0` skips it, `all` takes all of it. Repeatable |
-| `--v15-sample-id NAME/ID`, `--v10-sample-id NAME/ID` | Exactly these samples. Repeatable |
-| `--v15-sample-ids-file PATH`, `--v10-sample-ids-file PATH` | One `NAME/ID` per line, such as another run's `repeat-1/sample-ids.txt` or `repeat-1/v10/sample-ids.txt` |
-
-```bash
-# Both full datasets.
-python -m benchmarks.duplex.fdb generate --run-name minicpmo-full --v15-per-subset all --v10-per-subset all
-# v1.0 only; v1.5 only.
-python -m benchmarks.duplex.fdb generate --run-name v10-only --v15-per-subset 0
-python -m benchmarks.duplex.fdb generate --run-name v15-only --v10-per-subset 0
-# 20 v1.5 interruptions, 10 v1.5 backchannels and every v1.0 backchannel sample.
-python -m benchmarks.duplex.fdb generate --run-name small \
-    --v15-per-subset 0 --v15-subset-count user_interruption=20 --v15-subset-count user_backchannel=10 \
-    --v10-per-subset 0 --v10-subset-count icc_backchannel=all
-# Three specific samples.
-python -m benchmarks.duplex.fdb generate --run-name debug \
-    --v15-sample-id user_interruption/1 --v15-sample-id background_speech/7 \
-    --v10-sample-id candor_turn_taking/37
-# Another run's selection.
-python -m benchmarks.duplex.fdb generate --run-name replay \
-    --v15-sample-ids-file "$FDB_WORK/runs/minicpmo-12/repeat-1/sample-ids.txt" \
-    --v10-sample-ids-file "$FDB_WORK/runs/minicpmo-12/repeat-1/v10/sample-ids.txt"
-```
-
-`generate` prints how many samples it selected per subset and writes their IDs to `repeat-N/sample-ids.txt` (v1.5) and `repeat-N/v10/sample-ids.txt` (v1.0). All repeats of a run must select the same samples, so pass the same options every time; a repeat with a different selection stops with an error.
-
-Sessions run in real time, so `generate` dominates the wall time. Approximate times per repeat on one H200, one session at a time, without the 1 minute of model server startup per `generate` and 2 minutes of judge server startup per `judge`:
-
-| Selection | `generate` | `asr` | `judge` |
-|---|---|---|---|
-| 48 v1.5 pairs (12 per category) | ~25 min | ~1 min | ~6 min |
-| 498 v1.5 pairs | ~4 h | ~10 min | ~45 min |
-| 60 v1.0 samples (12 per subset) | ~20 min | ~1 min | ~1 min |
-| 727 v1.0 samples | ~3.6 h | ~10 min | ~5 min |
-
-A v1.5 session lasts about 15 s and a v1.0 sample about 18 s on average. Most of a v1.5 `judge` is the semantic judge, which runs 8 thinking-mode batches of up to 8 pairs concurrently at about 5 minutes per batch; the Qwen behavior judge sends up to 16 requests at once. `generate --num-shards 2` roughly halves the generation time, but read the note on it in [Notes](#notes) first; `--gpus 0,1 --num-shards 2` halves it without sharing a GPU.
-
-### Results
-
-`aggregate` prints its tables and writes them to `$FDB_WORK/runs/RUN_NAME/RESULTS.md`, with one section per dataset the run selected. The v1.0 unified section shows each repeat separately, without averaging its rates, quantiles or confidence intervals. In the v1.5 and official v1.0 reference tables, a numeric cell is the mean ± sample standard deviation over repeats with available values; a count cell shows one value or a range when repeats differ.
-
-The v1.5 section has one row per category and one for all of them. This example is a validation run (MiniCPM-o 4.5, 3 pairs per category, two repeats, Qwen judge), so the samples are small:
-
-| Category | Pairs | Timed overlap sessions | Stop latency (s) | Response latency (s) | C_RESPOND | C_RESUME | C_UNCERTAIN_HANDLING | C_UNKNOWN | Judged pairs |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| all | 12 | 12 | 1.483 ± 0.070 | 2.698 ± 0.075 | 25.0 ± 11.8% | 66.7 ± 11.8% | 8.3 ± 0.0% | 0.0 ± 0.0% | 12 |
-| user_interruption | 3 | 3 | 2.161 ± 0.015 | 2.479 ± 0.128 | 50.0 ± 23.6% | 50.0 ± 23.6% | 0.0 ± 0.0% | 0.0 ± 0.0% | 3 |
-| user_backchannel | 3 | 3 | 0.625 ± 0.000 | 2.308 ± 0.121 | 0.0 ± 0.0% | 100.0 ± 0.0% | 0.0 ± 0.0% | 0.0 ± 0.0% | 3 |
-| talking_to_other | 3 | 3 | 1.751 ± 0.083 | 2.742 ± 0.083 | 33.3 ± 0.0% | 66.7 ± 0.0% | 0.0 ± 0.0% | 0.0 ± 0.0% | 3 |
-| background_speech | 3 | 3 | 1.393 ± 0.181 | 3.204 ± 0.034 | 16.7 ± 23.6% | 50.0 ± 23.6% | 33.3 ± 0.0% | 0.0 ± 0.0% | 3 |
-
-`Pairs` counts every selected pair, failed or not. `Timed overlap sessions` counts the overlap sessions that produced timing intervals. `Judged pairs` counts the pairs with a valid label, and the label shares are over these pairs only.
-
-With `JUDGE=qwen` the v1.5 section adds the semantic table. From the same validation run:
-
-| Category | interaction_handling quality | interaction_handling coverage | relevance quality | relevance coverage | grounding quality | grounding coverage | joint quality | joint coverage |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| all | 73.9 ± 1.6% | 95.8 ± 5.9% | 85.9 ± 5.8% | 87.5 ± 5.9% | 52.2 ± 11.0% | 79.2 ± 5.9% | 32.2 ± 17.3% | 79.2 ± 5.9% |
-| user_interruption | 66.7 ± 47.1% | 83.3 ± 23.6% | 66.7 ± 47.1% | 83.3 ± 23.6% | 58.3 ± 11.8% | 83.3 ± 23.6% | 25.0 ± 35.4% | 83.3 ± 23.6% |
-| user_backchannel | 100.0 ± 0.0% | 100.0 ± 0.0% | 100.0 ± 0.0% | 100.0 ± 0.0% | 100.0 ± 0.0% | 50.0 ± 23.6% | 100.0 ± 0.0% | 50.0 ± 23.6% |
-| talking_to_other | 50.0 ± 23.6% | 100.0 ± 0.0% | 75.0 ± 35.4% | 66.7 ± 0.0% | 58.3 ± 11.8% | 83.3 ± 23.6% | 16.7 ± 23.6% | 83.3 ± 23.6% |
-| background_speech | 83.3 ± 23.6% | 100.0 ± 0.0% | 100.0 ± 0.0% | 100.0 ± 0.0% | 16.7 ± 23.6% | 100.0 ± 0.0% | 16.7 ± 23.6% | 100.0 ± 0.0% |
-
-The v1.0 unified section first shows per-repeat coverage and metric tables for pause handling, turn taking and user interruption. Coverage lists declared, selected, eligible and ineligible samples, exclusion reasons and the minimum observable horizon after the reference point. A sample rate uses eligible samples as its denominator; its Wilson 95% interval describes sampling uncertainty, while the all-selected bounds allow each ineligible outcome to be either false or true. Per-pause and seconds-per-second ratios pool their respective denominators over eligible samples. Other intervals bootstrap whole samples. `n/a` with zero eligible samples means no data. `not reached` with a positive eligible count means the requested response-latency quantile was not observed, including nonresponses; a window shorter than a response threshold limits the corresponding rate. The report labels any missing, stale, unsupported or incomplete unified artifacts unavailable and gives a CPU-only backfill command. It does not display stale numeric scores. Backchannel remains official-reference-only.
-
-The following v1.0 official reference table has one row per selected subset. `Selected` counts the recorded samples, `Eligible` the ones the official evaluator can score, and `Evaluated` the ones it scored; then come `Takeover rate`, `Latency (s)`, `Relevance (0-5)`, `Judge retries`, `Backchannel frequency` and `Backchannel JSD`, with `n/a` where the subset's task does not report a number. A subset whose sessions all failed still has a row, with `Eligible 0`. A subset that a repeat has not evaluated is listed under the table as not evaluated yet (`judge` has not reached it) or failed (with its evaluator log); its cells average the repeats that did evaluate it, and show `n/a` when none did. A nonzero `Judge retries` means the interruption takeover rate is inflated (see [v1.0 scoring](#v10-scoring)).
-
-The listening-quality section comes last, with one table per dataset and the same mean ± deviation cells; see [Listening quality](#listening-quality) for what each column measures. Its v1.5 table from a validation run (MiniCPM-o 4.5, 4 pairs per category, one repeat):
-
-| Category | Replies | Short replies | Compared replies | Omission rate | WER | UTMOS mean | UTMOS p10 | Voice similarity mean | Voice similarity p10 |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| all | 35 | 1 | 35 | 4.2% | 7.3% | 4.271 | 3.893 | 74.412 | 67.846 |
-| user_interruption | 9 | 0 | 9 | 3.9% | 7.0% | 4.358 | 4.163 | 76.408 | 68.144 |
-| user_backchannel | 8 | 0 | 8 | 5.5% | 6.7% | 4.248 | 3.960 | 72.195 | 67.167 |
-| talking_to_other | 10 | 0 | 10 | 3.1% | 8.7% | 4.226 | 3.868 | 75.081 | 70.286 |
-| background_speech | 8 | 1 | 8 | 4.0% | 7.1% | 4.250 | 3.910 | 73.422 | 67.977 |
-
-Each repeat writes these files under `$FDB_WORK/runs/RUN_NAME/repeat-N/`:
-
-| Path | Content |
-|---|---|
-| `sample-ids.txt`, `v10/sample-ids.txt` | The selected v1.5 pairs (empty when v1.5 was left out) and v1.0 samples (`v10/` exists only when v1.0 was selected) |
-| `recording/shard-*/`, `v10/recording/shard-*/` | Raw session traces, input and output audio, protocol reports |
-| `warmup/` | The unscored warmup sessions recorded before them, with their recorder logs; nothing reads them |
-| `logs/`, `v10/logs/` | `logs/` has the server logs and the v1.5 recorder logs, `v10/logs/` the v1.0 recorder logs; the v1.5 ASR and timing logs are in `scores/logs/` |
-| `reference-audio/` | v1.5 fixed-window WAVs and `reference-manifest.json` with eligibility |
-| `scores/summary.json` | v1.5 timing, ASR coverage and, with `JUDGE=gpt`, behavior labels |
-| `judge-qwen/summary.json` | v1.5 behavior labels with `JUDGE=qwen` |
-| `semantic-qwen/` | Semantic judge: control comparison, the exact packets sent, raw responses, per-pair outcomes and `summary.json` |
-| `report.txt` | Readable v1.5 report: coverage, timing and semantic quality |
-| `listening/` | One 16 kHz WAV per reply in `wav/` and its scored 3 s window in `voice-window/`, `replies.json` with each reply's status, transcript and Parakeet text, `scores.json` with each reply's scores, and the per-category `summary.json` with the checkpoint hashes |
-| `v10/reference/` | v1.0 windows (`<subset>/<id>/output.wav`), `manifest.json`, the ASR receipt `asr.json`, per-repeat `unified.json` and `unified-samples.jsonl`, official `summary.json`, the judge ledger in `judge/` and evaluator logs in `logs/` |
-
-With `JUDGE=qwen`, the "Official behavior label distribution" section of `report.txt` shows `0 / 0` and `not_prepared`, because that section counts GPT-4o labels only; the Qwen labels are in `judge-qwen/summary.json` and `RESULTS.md`.
-
-### Settings
-
-Per-run choices (`--run-name`, `--repeat`, sample selection, `--num-shards`, `--log-level`) are command options; `--help` on any subcommand lists them. Machine settings are environment variables, read in `benchmarks/duplex/fdb/common.py`:
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `FDB_WORK` | `$HOME/fdb` | Root for downloads, environments and results |
-| `JUDGE` | `qwen` | `qwen` or `gpt` |
-| `CUDA_VISIBLE_DEVICES` | unset | The GPU indices this job may use. The first is the job GPU: it runs the one model server of `generate`, `asr` and `judge`; `generate --gpus` may list any of the others. See [Running jobs in parallel](#running-jobs-in-parallel) |
-| `GPU` | `0` | The GPU index when `CUDA_VISIBLE_DEVICES` is unset |
-| `SERVER_PORT`, `JUDGE_PORT` | `8097 + 10×GPU`, `30000 + 10×GPU` | Local ports. The judge also uses the next port for NCCL. Avoid 29500-29899, which the model server uses for NCCL |
-| `MODEL_PATH` | `$FDB_WORK/models/MiniCPM-o-4_5` | Checkpoint of the model under test |
-| `MODEL_REVISION` | `503e754…` | Recorded in the run manifest; must match `MODEL_PATH` |
-| `JUDGE_MODEL_PATH` | `$FDB_WORK/models/Qwen3.8-27B` | Checkpoint of the Qwen judge |
-| `SESSION_TIMEOUT_S`, `V10_SESSION_TIMEOUT_S` | `90`, `230` | Per-session client deadline for v1.5 and v1.0. v1.5 inputs run up to about 18 s; v1.0 inputs average about 18 s and some run past 90 s. Neither deadline may exceed the recorder's 230 s |
-| `SCORING_VENV` | `$FDB_WORK/scoring-venv` | Venv that runs ASR, timing, the evaluators and the judge clients |
-
-### Running jobs in parallel
-
-One job uses one GPU. To run several at once, open one terminal per GPU and give each its own GPU index and run name:
-
-```bash
-export FDB_WORK="${FDB_WORK:-$HOME/fdb}"
-unset GPU SERVER_PORT JUDGE_PORT
-export CUDA_VISIBLE_DEVICES=1    # 0 in the first terminal, 1 in the second, and so on
-RUN=minicpmo-30-gpu1
-python -m benchmarks.duplex.fdb generate --run-name "$RUN" --v15-per-subset 30 --v10-per-subset 30
-python -m benchmarks.duplex.fdb asr --run-name "$RUN"
-python -m benchmarks.duplex.fdb judge --run-name "$RUN"
-python -m benchmarks.duplex.fdb aggregate --run-name "$RUN"
-```
-
-The ports, the judge config and the compile caches follow the GPU index: the model port is `8097 + 10×GPU`, the judge port `30000 + 10×GPU`, the judge config is in `$FDB_WORK/judge/port-<judge port>/` and the caches in `$FDB_WORK/cache/gpu-<index>/`. The first line `generate` prints confirms them, for example `Job GPU 1: model port 8107, judge port 30010 (nccl 30011), ...`. The `unset` line matters when a shell profile sets `GPU` or a port. Never point two terminals at the same run name.
-
-### Serving metrics
-
-Serving metrics answer how well a server keeps up when several sessions share it. They are computed only from what the client records, which means any server that speaks the same realtime session protocol or the legacy turn-based protocol can be put in the same table.
-
-Start the server yourself, with `max_sessions` at least the largest level, then sweep:
-
-```bash
-python -m benchmarks.eval.benchmark_duplex_serving sweep \
-  --dataset v1.5 --concurrency 1,2,4,8 --output "$FDB_WORK/serving/minicpmo" -- \
-  --url ws://127.0.0.1:8097/v1/realtime --profile minicpmo-native-pr2377 \
-  --dataset-root "$FDB_WORK/dataset/v1.5" --dataset-revision "$(cat $FDB_WORK/dataset/v1.5.revision)" \
-  --server-revision "$(git rev-parse HEAD)" --model openbmb/MiniCPM-o-4_5 --model-revision 503e754 \
-  --max-per-subset 4
-```
-
-The options after `--` go unchanged to the `record` command of `benchmark_duplex_v15` (or `benchmark_duplex_v10` with `--dataset v1.0`); the sweep adds `--concurrency N` and `--output <output>/concurrency-N` for each level. It writes `serving.json`, `SERVING.md` and one run directory per level, and keeps going when a level has failed sessions, since those are part of the result. `report --run <run> --run <run> ... --output serving.json` builds the same table from runs that are already recorded.
-
-Each level is one row:
-
-| Column | Meaning |
-|---|---|
-| `mean open` | Sessions open at once, averaged over the level's recording; the first and last sessions of a level have fewer neighbours |
-| `sessions failed` | Runtime, protocol or cleanup failures, excluding clean final admission rejection |
-| `503 / in-session` | Sessions affected by HTTP 503 and by in-session `admission_rejected`, respectively; a session can appear in both counts |
-| `rejected` | Sessions whose complete trace shows final admission rejection without another failure |
-| `affected`, `denial events` | Unique sessions encountering either rejection type, including recovered sessions; and total rejection events, including the final exhausted attempt |
-| `pacing violations` | Sessions whose input drifted more than one 80 ms packet from its schedule. A pacing violation means the load generator fell behind, so the level does not measure the server |
-| `unit miss` | Native profiles only. Units whose lag exceeds one nominal unit (1000 ms for MiniCPM-o), plus every expected unit of a runtime or protocol failure. Final admission rejections are excluded from both missed and expected units; the rate is `-` when no expected units remain |
-| `unit lag` | Native profiles only. Receipt of `sglang.unit.done` minus the time the client finished sending the packet holding the unit's last audio; the short last unit, which the server fills with silence, starts at the input end instead. On MiniCPM-o it matches the server-side `ready_to_finished_ms` of the request event recorder within a few milliseconds |
-| `first audio` | Native: from the unit carrying a reply's first audio being ready to that audio's receipt. Turn-based: from `response.created`, which arrives when the server ends the user's turn, to the first audio |
-| `buffer needed` | The smallest startup buffer with which a reply plays without a gap. It does not depend on `--playback-reserve-ms` |
-| `underrun replies` | Replies that a player starting `--playback-reserve-ms` (80 ms by default) after their first audio would have to pause. This column depends on the reserve: at concurrency 8 on MiniCPM-o, 21 of 35 replies pause at 80 ms while `buffer needed` p90 is 251 ms |
-| `RTF p90` | Turn-based only. The time from a reply's first to its last audio arrival over the audio before the last chunk. Native profiles show `-`, because a native reply comes out one unit per input unit and its factor stays near 1 whatever the load |
-| `meets targets` | `yes`, or the targets the level misses |
-
-A level meets the targets when no session failed, no session was denied or rejected admission, no input pacing was violated, and, for native profiles, the unit miss rate is at most 1%, or, for turn-based profiles, the reply RTF p90 is below 1. A turn-based server's unit receipts track input intake, so it is judged by how fast its replies stream. The capacity is the highest level below the first one that misses; when every recorded level meets the targets, the capacity is at least the highest one and a higher level has to be recorded.
-
-HTTP 503 and in-session rejection share `ADMISSION_RETRIES` retries after the initial attempt, with an `ADMISSION_BACKOFF_S` backoff (currently 3 retries and 0.25 seconds). These constants are defined in `benchmarks/duplex/client.py`. The manifest records the policy as `config.transport.admission_retries` and `admission_backoff_s`. In-session backoff can end early on abort. The recorder keeps the original rejection events; clean exhaustion is classified by replay rather than emitting an artificial runtime error. Interrupted or incomplete traces do not establish clean exhaustion. Older recordings used separate budgets for the two transports despite the same manifest field name, so replaying a mixed-retry recording under the shared-budget rule can change its verdict.
-
-Serving JSON retains `admission_denials` for HTTP-affected sessions and adds `sessions_with_admission_rejections` for in-session-affected sessions, `sessions_with_admission_events` for their union, and `sessions_rejected` for final rejections. `admission_denial_events` is the event total, split into `http_admission_denial_events` and `session_admission_rejection_events`. `sessions_failed` excludes variants classified with `failure_kind: admission_rejected`. Older run records without this classification retain their existing failure counts; older clients also omitted the final exhausted HTTP 503, which cannot be recovered from their traces.
-
-These are client-side times on the client's host: they include the network to the server and leave out the player's device and the acoustics. Where the time goes inside SGLang-Omni comes from the request event recorder instead; see [Full Duplex session Unit metrics](profiler.md#full-duplex-session-unit-metrics).
-
-(minicpm-o-45-on-one-h100)=
-
-**MiniCPM-o 4.5 on one H100**
-
-
-One H100 80 GB ran a short v1.5 audio cohort with the native session protocol. Each recording selected the first 16 naturally sorted pairs from each of the four v1.5 subsets, including both clean and overlap variants: 128 sessions and 1,744 nominal input units per recording. The server allowed 64 session slots, but its memory pools were sized for this short cohort. A warmup pair was excluded. Each recording used a fresh client process against the same continuously running server.
-
-For this campaign, a recording passed only with **fewer than 1%** late or missing units, all 128 sessions successful, no admission failures, no input pacing violations, and the requested overlap of complete input streams. A unit missed when `sglang.unit.done` arrived more than 1,000 ms after the client had its input ready. This strict campaign gate differs from the general serving target above, which permits exactly 1% misses. `session.created` alone does not establish model admission.
-
-| Concurrent sessions | Recorded result | Qualification |
-| ---: | --- | --- |
-| 1, 2 | One screening run each, with no unit misses | Both passed; neither was repeated. |
-| 4 | Five passing runs, 640 successful sessions, 0 of 8,720 unit misses | Highest tested level confirmed by five runs. The median of the five per-run unit-lag p95 values was 421.4 ms, with a range of 406.5 to 433.1 ms. |
-| 8 | Two valid runs: 3 of 1,744 misses (0.172%) and 25 of 1,744 (1.433%) | The first passed; the second failed the unit gate. |
-| 16 | Two valid runs: 103 of 1,744 misses (5.906%) and 90 of 1,744 (5.161%) | Both failed the unit gate. |
-| 32, 48, 64 | CUDA out-of-memory failures with failed sessions and invalid aggregate input pacing | Observed failures. Their latency and unit-miss aggregates are not qualified paced-load results. |
-
-The C4 runs reached four overlapping complete input streams with no session, admission, or pacing failures. At the separate 80 ms playback reserve, simulated playback still underruns in 438 of 731 C4 replies. Each C4 run recorded audio in 126 or 127 of its 128 sessions. Protocol success does not establish response quality. Concurrencies 5 through 7 were not measured, so the result does not identify an exact maximum concurrency of four. The cohort also does not qualify long calls, video input, semantic quality, or an H100 versus H200 comparison.
-
-The 128 inputs totaled 1,676.565 seconds; the longest was 15.763 seconds. The run used Python 3.12.3, torch 2.13.0+cu130, sglang 0.5.21, transformers 5.12.1, websockets 17.1, and soundfile 0.13.1, with 64 assigned CPU threads. The screen order was C8, C16, C32, C48, C64, C4, C2, then C1. After a valid C8 repeat failed the unit gate, repeats 3 through 5 at C8 and C16 were cancelled and four more C4 runs were recorded. The lower-concurrency cells therefore include the same server's earlier high-load history.
-
-To reproduce the configuration, use server and serving-tool commit [`3ae4c2464eb0b44e0850a9f17da46461a688bc32`](https://github.com/sgl-project/sglang-omni/commit/3ae4c2464eb0b44e0850a9f17da46461a688bc32), the [client changes with the measured file bytes](https://github.com/edwingao28/sglang-omni/commit/0b2ca15afa211cd5c2212a8803a20b7c5db6d880), and model snapshot `503e754207c94da6bb26850b4469f367c9ea3582`. The client changes move per-variant report writes off the event loop and import only the selected recorder. The separate empty-EOS scoring fix in [PR #2868](https://github.com/sgl-project/sglang-omni/pull/2868) was not applied to these measurements; the selected inputs had no integer-second durations. Keep the 80 ms input pacing tolerance unchanged.
-
-The `--dataset-revision` value below is the retained historical label, not a content pin for the upstream Drive archives. The campaign verified all 448 selected file hashes against its retained inputs. Those hashes remain with the private recording artifacts; a fresh dataset download alone does not establish identical inputs.
-
-After [setup](#setup), point `MODEL_PATH` at that exact model snapshot and use the v1.5 dataset described above. Start the server in one terminal:
-
-```bash
-export FDB_WORK="${FDB_WORK:-$HOME/fdb}"
-export MODEL_PATH="$FDB_WORK/models/MiniCPM-o-4_5"
-export OMP_NUM_THREADS=8 MKL_NUM_THREADS=8
-python -m sglang_omni.cli serve \
-  --model-path "$MODEL_PATH" --variant session --max_sessions 64 \
-  --thinker.engine.kv_cache_bytes 17179869184 \
-  --perception.gpu_memory_fraction null \
-  --perception.total_reserve_bytes 17179869184 \
-  --talker.engine.max_total_tokens 65536 \
-  --talker.gpu_memory_fraction 0.08 \
-  --enable-realtime --host 127.0.0.1 --port 8099
-```
-
-Run each concurrency and repeat in a new client process and output directory. For example, set `CONCURRENCY=4` and vary `REPEAT` from 1 through 5:
-
-```bash
-export FDB_WORK="${FDB_WORK:-$HOME/fdb}"
-CONCURRENCY=4
-REPEAT=1
-python -m benchmarks.eval.benchmark_duplex_serving sweep \
-  --dataset v1.5 --concurrency "$CONCURRENCY" \
-  --output "$FDB_WORK/serving/h100-short/c${CONCURRENCY}-r${REPEAT}" -- \
-  --url ws://127.0.0.1:8099/v1/realtime \
-  --profile minicpmo-native-pr2377 \
-  --dataset-root "$FDB_WORK/dataset/v1.5" \
-  --dataset-revision 3e799c45a045256f47d5f1c9cda90157e2d2ec9e \
-  --server-revision 3ae4c2464eb0b44e0850a9f17da46461a688bc32 \
-  --model openbmb/MiniCPM-o-4_5 \
-  --model-revision 503e754207c94da6bb26850b4469f367c9ea3582 \
-  --timeout 90 --max-per-subset 16
-```
-
-The reported results came from one C1 and C2 screen, five C4 runs, two C8 runs, and two C16 runs. C32, C48, and C64 were attempted once each; their failed recordings remain part of the observation. The complete raw traces remain in the original experiment storage, and the selected local audit copy cannot rescore every session. Neither raw tree is hosted with this runbook.
-
-### Notes
-
-- **Keep the settings fixed across the repeats of a run.** Mixing repeats with different selections, `--num-shards` or judges makes their mean meaningless; use a new run name instead.
-- **`--num-shards` changes what you measure.** With `--num-shards 2`, two sessions share the GPU, so the latencies are measured under load and do not compare with one shard. The model server keeps `max_sessions` at 2, so `generate` refuses more than 2 shards per server up front.
-- **`--gpus` spreads the shards over GPUs.** `--gpus 0,1` starts one model server on each listed GPU, each with its own port (`8097 + 10×GPU`) and caches, and sends shard i to the i-th server modulo their count. With as many shards as GPUs every session has a GPU to itself, so the timing compares with one shard. `asr` and `judge` still run on the job GPU, the first index of `CUDA_VISIBLE_DEVICES`, so `CUDA_VISIBLE_DEVICES=0,1` with `--gpus 0,1` records on both GPUs and transcribes on GPU 0.
-- **`generate` warms the model servers up first.** Once the servers are ready, every shard records the first selected sample, the first v1.5 pair or, with v1.5 left out, the first v1.0 sample, before any scored session starts. A fresh server pays its first-use costs in its first sessions, and with every shard starting at once those sessions answered seconds late, after the overlap they were meant to test had ended. These sessions go to `warmup/` and are never scored, and a failed one only logs a warning. `--skip-warmup` leaves them out, for example to compare a cold start with a warm one; keep that choice the same across the repeats of a run.
-- **The first N samples are not a random sample.** They give fast numbers that compare between runs, not estimates for the full dataset.
-- **Failed sessions are never dropped.** They stay in the denominators as ineligible, and an empty set of intervals shows as `n/a`, not as zero.
-
-### Troubleshooting
-
-| Symptom | Fix |
-|---|---|
-| `ERROR: the model server did not become ready` (or the judge server) | The message ends with the last lines of the server log; the full log is `repeat-N/logs/model-server-gpu<N>.log` or `judge-server.log` |
-| `ERROR: the model server exited with code N during the recordings` | The model server died while recording; the message ends with the last lines of that GPU's `repeat-N/logs/model-server-gpu<N>.log`. Fix the cause, delete the repeat and generate it again |
-| `ERROR: the judge server exited with code N before ...` or `during ...` | The judge server died; the message names the phase and ends with the last lines of `repeat-N/logs/judge-server.log`. Fix the cause and rerun `judge` with `--retry-failed`. If the phase is the v1.5 semantic judge, delete `repeat-N/semantic-qwen` first, because the batches it could not grade are saved as unresolved and a rerun reuses them |
-| `ERROR: something already serves ...` | Another server holds the port, often left from an interrupted run or a second job on the same GPU. Stop it, or give this job another `CUDA_VISIBLE_DEVICES` |
-| `ERROR: .../repeat-N already holds a recording` | That repeat was generated before; use the next `--repeat`, or delete the directory to redo it |
-| `ERROR: ... selects different pairs` or `... selects different v1.0 samples` | An earlier repeat of this run used another selection; pass the same options, or use a new run name |
-| `ERROR: .../repeat-N is a v1.5-only repeat` | The earlier repeats of this run left v1.0 out; continue with the option change the message names, or use a new run name |
-| `ERROR: both datasets are left out` | Give at least one dataset a nonzero count |
-| `ERROR: .../dataset/v1.0 lacks the v1.0 subset(s) ...` | The workspace was set up without v1.0; rerun `setup`, which adds it |
-| `ERROR: .../reference-manifest.json is missing` or `.../v10/reference/manifest.json is missing` | `generate` recorded that dataset but did not finish its export; delete the repeat and generate it again |
-| A shard log reports `fail` or `error` sessions | They stay in the denominators. Read `repeat-N/logs/record-shard-*.log` or `repeat-N/v10/logs/record-shard-*.log`; if most sessions fail, fix the server and redo the repeat |
-| `ERROR: --num-shards N over G GPU(s) exceeds the model server's max_sessions` | Lower `--num-shards` or add GPUs with `--gpus`; `generate` refuses more shards than the servers admit before recording |
-| `ERROR: --num-shards N leaves model servers idle` | Use at least as many shards as GPUs in `--gpus` |
-| `ERROR: SERVER_PORT gives every model server the same port` | Unset `SERVER_PORT` when `--gpus` lists several GPUs; each server then derives its port from its GPU |
-| HTTP 503 in a record log | Another client may hold the server's sessions; check for competing recordings |
-| `failure_kind: admission_rejected` | The shared retry budget was exhausted without admission. Inspect the HTTP and `admission_rejected` records for the cause; in-session `admission_rejected` is emitted only for `QueueFullError`. In a serving sweep this is part of the level's result. Outside a serving sweep, lower `--concurrency` when the records indicate capacity pressure |
-| `ERROR: CUDA_VISIBLE_DEVICES must list distinct numeric GPU indices` | Export indices such as `0` or `0,1`, not GPU UUIDs |
-| `ERROR: --gpus ... reaches outside CUDA_VISIBLE_DEVICES` | List only GPUs that `CUDA_VISIBLE_DEVICES` names, or widen it |
-| `--device cuda needs exactly one visible GPU` (manual ASR command) | Export a single index for that command |
-| `ERROR: GPU and CUDA_VISIBLE_DEVICES disagree` | Unset `GPU`, or set it to the first index |
-| `WARNING: a v1.5 phase reported failures` | Rerun the command the warning prints; it adds `--retry-failed` |
-| `WARNING: the v1.0 ASR failed` | `repeat-N/v10/reference/logs/asr.log` has the official script's output and the terminal has the traceback. A rerun of `asr` transcribes every v1.0 sample again |
-| `WARNING: v1.0 unified scoring failed` | ASR completed, but the saved export, transcript or annotation did not score. Fix the stated cause and run the CPU-only backfill command printed in the warning; it does not repeat ASR or v1.5 work. Rerun `aggregate` to refresh `RESULTS.md` |
-| `Unified metrics unavailable` in `RESULTS.md` | The report names a missing export/ASR file, missing output pair, stale hashes, unsupported version or incomplete subset. Repair the export or ASR if named, then use the per-repeat backfill command in the report and rerun `aggregate` |
-| `WARNING: the listening-quality phase failed` | The terminal has the traceback. A `ModuleNotFoundError` for `s3prl` or `whisper` means the serving venv lacks the repository's dependencies; reinstall them. Rerun `asr`; it recomputes the listening metrics in full |
-| `WARNING: the v1.0 evaluation failed for ...` | The traceback is at the end of `repeat-N/v10/reference/logs/evaluate-<subset>.log`. A `ZeroDivisionError` in `candor_turn_taking` or `synthetic_user_interruption` means no selected sample took the turn, so select more samples in a new run. After fixing another cause, rerun `judge`; it evaluates the missing subsets again |
-| `judge request ... got no parsable rating in 3 attempts` | The v1.0 relevance judge answered without a rating; the ledger in `v10/reference/judge/` has each reply. The official parser needs `Analysis: <text>`, a line break, then `I would rate the AI's response as <digit>`. The attempts share a seed, so a local judge repeats the same reply and a rerun fails again |
-| `custom judge identity changed; use a new --out` | The judge config changed since this repeat was judged, for example after an SGLang upgrade. Delete `repeat-N/judge-qwen` and rerun `judge` |
-| `Control check failed: this judge configuration is not accepted.` | The judge missed a control case, listed in the output; nothing graded alongside the controls is kept. Check that the judge server runs the pinned Qwen3.8-27B revision; do not grade with a configuration that fails the controls |
-| `... changed since this directory was created; use a new --out` | The semantic judge settings, prompt or inputs changed since this repeat was graded. Delete `repeat-N/semantic-qwen` and rerun `judge` |
-| `model_mismatch` with `JUDGE=gpt` | The endpoint answered with a model other than `gpt-4o-2024-08-06`; use an endpoint that serves exactly that model |
-| `No module named 'onnx'` (or `einops`) in `model-server-gpu<N>.log`, or `ModuleNotFoundError` in `asr` | Rerun `setup` |
-| `setup` stops with `torchcodec cannot load its FFmpeg libraries` | Install the FFmpeg shared libraries (version 4 to 8) and rerun `setup` |
-
-### Scoring CLI reference
-
-The runbook wraps three CLIs, which also score a recording by hand: `benchmarks.eval.benchmark_duplex_v15` records v1.5 sessions, `benchmarks.eval.benchmark_duplex_reference` scores them with the official v1.5 ASR, timing and behavior code, and `benchmarks.eval.benchmark_duplex_v10` records and scores v1.0 sessions. Run `eval "$(python -m benchmarks.duplex.fdb env)"` first to set the variables the commands below use. Recording and export run in the sglang-omni venv (`python`); ASR, timing, judging and evaluation need the packages `setup` installs in the scoring venv, so those commands run with `"$SCORING_PYTHON"`. `record` needs the model server and `custom-judge` the judge server; `python -m benchmarks.duplex.fdb serve-model` and `serve-judge` start them in the foreground until Ctrl-C.
-
-(dependencies-and-source)=
-
-**Dependencies and source**
-
-
-The official scoring scripts and the behavior prompt are not vendored. They are loaded from a [Full-Duplex-Bench checkout](https://github.com/DanielLin94144/Full-Duplex-Bench/tree/3e799c45a045256f47d5f1c9cda90157e2d2ec9e) at revision `3e799c45a045256f47d5f1c9cda90157e2d2ec9e`, and their SHA-256 is checked before every run. Their [CC BY-NC 4.0 license](https://github.com/DanielLin94144/Full-Duplex-Bench/blob/3e799c45a045256f47d5f1c9cda90157e2d2ec9e/LICENSE) applies.
-
-The scoring venv uses Python 3.12, torch and torchaudio 2.11.0+cu130, NeMo 3.0.0, Silero VAD 6.2.1, numpy 2.5.3, scipy 1.18.1, soundfile 0.14.0, openai 3.28.0, pydantic, python-dotenv and torchcodec 0.11. Each phase records the package versions it ran with. No command downloads a model on its own. ASR uses a local `nvidia/parakeet-tdt-0.6b-v2` checkpoint at revision `ae9ad07059c7c739ffaf932226a8fe64ae2620b0`, `.nemo` SHA-256 `d99e39955c9d3d0350d8fb7c75e40c64a2b2eaeb003883d7c941fd2e8747b28c`.
-
-(v15-scoring)=
-
-**v1.5 scoring**
-
-
-Record and export:
-
-```bash
-OUT=results/fdb-manual
-python -m benchmarks.eval.benchmark_duplex_v15 record \
-    --profile minicpmo-native-pr2377 \
-    --dataset-root "$FDB_DATASET" --dataset-revision "$(cat "$FDB_WORK/dataset/v1.5.revision")" \
-    --url "$REALTIME_URL" --model "$MODEL_ID" --model-revision "$MODEL_REVISION" \
-    --server-revision "$(git rev-parse HEAD)" --timeout "$SESSION_TIMEOUT_S" \
-    --output "$OUT/recording"
-
-python -m benchmarks.eval.benchmark_duplex_reference export \
-    --engine model --trace-format realtime-pcm16-v1 --run "$OUT/recording" \
-    --dataset-root "$FDB_DATASET" --out "$OUT/reference-audio"
-```
-
-`record` takes the full dataset unless `--max-per-subset N` or repeated `--sample-id category/id` narrows it, and exits 0 only when every selected session passes. `export` cuts the observation windows into a new directory without touching the recording. With `--dataset-root`, every dataset pair that was not recorded counts as missing, so a partial run also passes `--only category/id` for each recorded pair. Repeated `--run` takes disjoint shards; `--engine` is a free label for the scored cohort.
-
-A turn-based (half-duplex) endpoint speaks the conversation protocol instead of the native session protocol: it takes a `turn_detection` object in `session.update`, sends none of the `sglang.input_audio.*` receipts or `sglang.unit.done`, and streams `response.audio.delta` at 24 kHz. The profile `qwen3-omni-half-duplex` switches the recorder, the protocol oracle and the export to that protocol:
-
-```bash
-python -m benchmarks.eval.benchmark_duplex_v15 record \
-    --profile qwen3-omni-half-duplex \
-    --turn-detection '{"type": "server_vad", "silence_duration_ms": 500}' \
-    --dataset-root "$FDB_DATASET" --dataset-revision "$(cat "$FDB_WORK/dataset/v1.5.revision")" \
-    --url "$REALTIME_URL" --model "$MODEL_ID" --model-revision "$MODEL_REVISION" \
-    --server-revision "$(git rev-parse HEAD)" --timeout "$SESSION_TIMEOUT_S" \
-    --output "$OUT/recording"
-
-python -m benchmarks.eval.benchmark_duplex_reference export \
-    --engine model --trace-format realtime-legacy-pcm16-v1 --run "$OUT/recording" \
-    --dataset-root "$FDB_DATASET" --out "$OUT/reference-audio"
-```
-
-- `--turn-detection` is required for this profile and rejected for native ones. It is sent once per session, so a detector sweep is one run per setting against the same server: `server_vad` takes `threshold`, `prefix_padding_ms` and `silence_duration_ms`, `semantic_vad` takes `eagerness`, and both take `interrupt_response`. The manifest records it under `config.legacy`. `benchmark_duplex_v10 record` takes the same options.
-- A session fails unless `session.updated` echoes the requested `turn_detection.type`, so a detector that silently falls back is caught. There are no input or drain receipts: the session ends `--legacy-tail` seconds (default 1.0) after the input with a no-op `session.update`, whose `session.updated` proves the server is alive.
-- Any `error` event fails the session. A response cancelled with reason `turn_detected` is accepted only after an `input_audio_buffer.speech_started` during it.
-- Simulated playout follows the server's barge-in: it is cut at `output_audio_buffer.cleared`, or at `input_audio_buffer.speech_started` unless the session set `interrupt_response: false`. The export applies the same cut, records `barge_in_cuts`, and marks a session eligible only when its protocol verdict is `pass`.
-
-A turn-based endpoint can also speak the session protocol. It takes `turn_detection` under `session.audio.input` in `session.update`, grants `interaction: turn_based` with 200 ms units and a flushed input tail, sends the `sglang.input_audio.*` receipts and `sglang.unit.done`, detects the turns itself and streams `response.output_audio.delta` at 24 kHz. The profile `turn-based` records it, and its export takes `--trace-format realtime-turn-based-pcm16-v1`:
-
-```bash
-python -m benchmarks.eval.benchmark_duplex_v15 record \
-    --profile turn-based \
-    --turn-detection '{"type": "server_vad", "silence_duration_ms": 500}' \
-    --dataset-root "$FDB_DATASET" --dataset-revision "$(cat "$FDB_WORK/dataset/v1.5.revision")" \
-    --url "$REALTIME_URL" --model "$MODEL_ID" --model-revision "$MODEL_REVISION" \
-    --server-revision "$(git rev-parse HEAD)" --timeout "$SESSION_TIMEOUT_S" \
-    --output "$OUT/recording"
-
-python -m benchmarks.eval.benchmark_duplex_reference export \
-    --engine model --trace-format realtime-turn-based-pcm16-v1 --run "$OUT/recording" \
-    --dataset-root "$FDB_DATASET" --out "$OUT/reference-audio"
-```
-
-- `--turn-detection` is required. These endpoints accept only `server_vad`, configured by `threshold`, `prefix_padding_ms` and `silence_duration_ms`. A session fails unless `session.updated` echoes the type under `session.audio.input.turn_detection`. The manifest records the setting under `config.turn_based`.
-- The session ends like a native one: `sglang.input_audio.end` at the input end, then `session.close` after `sglang.input_audio.drained`. The server first answers the utterance still open at the input end, so `--timeout` must cover the longest input plus that answer.
-- A response may end `completed` with reason `stop` or `empty_turn`, or `cancelled` with reason `interrupted`. Each cancellation needs its own earlier `input_audio_buffer.speech_started`, but not one during the response, because the server can create the reply it cancels after that event. Any `error` fails the session. `supports_truncate` may take either value.
-- The cut point differs from the legacy rule. These endpoints send no `output_audio_buffer.cleared`, so simulated playout and the export do not cut at `speech_started`; they drop queued audio when a `response.done` with status `cancelled` arrives. As for the legacy protocol, the export records `barge_in_cuts` and marks a session eligible only when its protocol verdict is `pass`.
-- v1.0 recordings export the same way: `benchmark_duplex_v10 reference-export --trace-format realtime-turn-based-pcm16-v1` resamples the 24 kHz audio to 16 kHz and keeps only sessions whose protocol verdict is `pass`.
-
-Score:
-
-```bash
-TREE=(--reference-source "$FDB_SOURCE" --tree "model=$OUT/reference-audio")
-"$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_reference asr "${TREE[@]}" \
-    --out "$OUT/scores" --nemo "$PARAKEET_NEMO" --nemo-sha256 "$PARAKEET_SHA256" --device cuda
-"$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_reference timing "${TREE[@]}" \
-    --out "$OUT/scores" --audio-loader soundfile
-"$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_reference prepare-judge "${TREE[@]}" --out "$OUT/scores"
-"$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_reference judge "${TREE[@]}" --out "$OUT/scores" \
-    --judge gpt-4o-2024-08-06 --api-key-env OPENAI_API_KEY
-"$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_reference summarize "${TREE[@]}" --out "$OUT/scores"
-"$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_reference report --scores "$OUT/scores" --engine model
-```
-
-Run the phases in order on one output directory with the same `--tree`; repeat `--tree` to score several cohorts together. CUDA ASR needs exactly one visible GPU. A rerun resumes from the receipts; `--retry-failed` retries failed work units, and `--limit N` caps the units of one call. After changing the recording, the scoring configuration or the reference code, use a new output directory. A zero exit means the phase finished, not that every sample qualified.
-
-`report` reads only `summary.json` and the manifest, so it needs no GPU or key. It prints the populations, protocol verdicts, ASR and timing coverage, interval statistics with confidence intervals, and the behavior label distribution. `--semantic-summary` adds the semantic judge's `summary.json`, and `--replay replay.json` adds offline replay agreement in the form `{"selected": N, "replayed": M, "samples": [{"sample": "category/id", "variant": "overlap", "recorded_status": "pass", "status": "match"}]}`.
-
-The GPT judge reads its key from `OPENAI_API_KEY`, never from an argument or a manifest; `--base-url` selects a compatible endpoint. It sends the exact reference prompt with seed 1 and makes at most three attempts. A reply from a model other than `gpt-4o-2024-08-06`, a malformed label or a failed request leaves the label invalid, with no fallback judge. Without a key the labels stay pending and `summarize` still runs.
-
-`custom-judge` sends the same prompt to a self-hosted model. Its labels never replace GPT-4o labels. It reads an existing scoring directory and writes to a separate new one:
-
-```bash
-"$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_reference custom-judge "${TREE[@]}" \
-    --source-scores "$OUT/scores" --out "$OUT/judge-qwen" \
-    --judge-config "$JUDGE_CONFIG" --base-url "$JUDGE_URL"
-"$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_reference custom-summarize "${TREE[@]}" \
-    --source-scores "$OUT/scores" --out "$OUT/judge-qwen" \
-    --judge-config "$JUDGE_CONFIG"
-```
-
-`judge` and `serve-judge` write the judge config to `$JUDGE_CONFIG`, which is `$FDB_WORK/judge/port-$JUDGE_PORT/judge-config.json`:
-
-```json
-{
-  "model_id": "Qwen/Qwen3.8-27B",
-  "model_revision": "<40-hex commit>",
-  "tokenizer_id": "Qwen/Qwen3.8-27B",
-  "tokenizer_revision": "<40-hex commit>",
-  "served_model": "qwen3.8-27b",
-  "precision": "bf16",
-  "enable_thinking": false,
-  "decoding": {
-    "temperature": 0.0, "top_p": 1.0, "top_k": -1,
-    "min_p": 0.0, "repetition_penalty": 1.0, "max_tokens": 512
-  },
-  "seeds": [1, 2, 3],
-  "server_launch_receipt": "launch-receipt.json",
-  "server_launch_receipt_sha256": "<sha256 of the receipt>"
-}
-```
-
-Both revisions must be full commit hashes. `temperature`, `top_p` and `max_tokens` are required; the other decoding fields and `enable_thinking` are sent only when present, so leave out any the endpoint does not support. The launch receipt records the server command, runtime version, checkpoint and tokenizer revisions and precision, and the client checks its hash, because the model name an endpoint returns does not prove which checkpoint it loaded. The endpoint key goes in `CUSTOM_JUDGE_API_KEY`, or a placeholder such as `EMPTY` without authentication. A rerun with the same config skips finished samples; a changed config or selection needs a new `--out`. `--concurrency` (default 16) caps the requests in flight and is recorded with the run. `--retry-failed` retries transport and parsing failures only; wrong models, invalid labels and non-`stop` finishes stay invalid. The per-category Wilson 95% intervals describe dataset sampling, not judge agreement or generation variance.
-
-(v10-scoring)=
-
-**v1.0 scoring**
-
-
-v1.0 runs the official `get_transcript/asr.py` and `evaluation/evaluate.py` unchanged:
-
-```bash
-OUT=results/fdb10
-python -m benchmarks.eval.benchmark_duplex_v10 record \
-    --profile minicpmo-native-pr2377 \
-    --dataset-root "$FDB10_DATASET" --dataset-revision "$(cat "$FDB_WORK/dataset/v1.0.revision")" \
-    --url "$REALTIME_URL" --model "$MODEL_ID" --model-revision "$MODEL_REVISION" \
-    --server-revision "$(git rev-parse HEAD)" --timeout "$V10_SESSION_TIMEOUT_S" \
-    --output "$OUT/recording"
-python -m benchmarks.eval.benchmark_duplex_v10 reference-export \
-    --run "$OUT/recording" --dataset-root "$FDB10_DATASET" --out "$OUT/reference"
-"$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_v10 reference-asr \
-    --tree "$OUT/reference" --reference-source "$FDB_SOURCE" \
-    --nemo "$PARAKEET_NEMO" --nemo-sha256 "$PARAKEET_SHA256" --device cuda
-CUDA_VISIBLE_DEVICES="" "$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_v10 unified-score \
-    --tree "$OUT/reference"
-"$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_v10 reference-evaluate \
-    --tree "$OUT/reference" --reference-source "$FDB_SOURCE"
-```
-
-- `reference-export` writes each sample's window as `<subset>/<id>/output.wav` with its annotation into a new directory, plus `manifest.json`. Repeated `--run` takes shards. An ineligible session gets no folder and keeps its reasons in the manifest. A recording made with a turn-based profile needs `--trace-format realtime-legacy-pcm16-v1`; as in the v1.5 export, the audio is resampled from the profile's output rate and a session is eligible only when its protocol verdict is `pass`.
-- `reference-asr` transcribes every sample with the local Parakeet checkpoint. For user interruption it cuts the audio at the end of the interruption and shifts the word times back, so the transcript holds only the reply. It writes `output.json` per sample and the receipt `asr.json`, and runs once per export.
-- `unified-score` reads the saved manifest, ASR transcript and annotations on CPU, then writes `unified.json` and `unified-samples.jsonl`. It is independent of the official evaluator and can be rerun for an existing export without repeating ASR. To backfill a runbook repeat, use `eval "$(python -m benchmarks.duplex.fdb env)"`, then `CUDA_VISIBLE_DEVICES="" "$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_v10 unified-score --tree "$FDB_WORK/runs/RUN_NAME/repeat-N/v10/reference"`, replacing `RUN_NAME` and `N` with the recorded run and repeat; rerun `aggregate` afterward.
-- `reference-evaluate` runs the evaluator per subset and stores the printed `[Result]` numbers, the counts and the log path in `summary.json`. `--subset` evaluates only the named subsets; the rest can follow later.
-
-The interruption relevance is rated by `gpt-4-turbo` with seed 0, as the official evaluator requests, for every interruption the model took over. That needs `OPENAI_API_KEY` (or the variable named by `--api-key-env`); without a key, evaluate the other subsets with `--subset`. `--base-url URL --served-model NAME` sends the same prompts to a self-hosted judge, with thinking off and the reply capped at 512 tokens, since the evaluator sets neither and SGLang would stop at 128 tokens. `summary.json` records the endpoint actually used and marks the rating official only for OpenAI's endpoint without `--served-model`. Every exchange is appended to `judge/user-interruption-<UTC time>.jsonl`.
-
-The official evaluator has a retry bug: when a rating does not parse, it resends the same request without limit, and each retry counts that sample's takeover again. The client stops after three identical requests, which fails the subset, and `summary.json` reports `retries`. A nonzero value means the interruption takeover rate is inflated.
-
-(measurement-definitions)=
-
-**Measurement definitions**
-
-
-- **Input pacing.** Audio is sent in 80 ms packets. A packet that starts more than 80 ms off its source cadence makes the session ineligible. This bounds transport jitter only.
-- **Observation window.** Both datasets score the output over `[0, T]`, where T is the input length, counted from the first input packet. Received audio plays first-in first-out, so initial delay, gaps and queueing stay in; audio still queued at T is cut, and the rest is silence. The window is mono 16 kHz PCM16 with exactly the input's sample count. An error inside the window makes the session ineligible; silence is valid output.
-- **v1.5 intervals.** The official timing code merges VAD speech spans across gaps of 0.6 s (user) and 0.5 s (model). Stop intervals are overlaps of user and model spans; response intervals run from the end of a user span to the start of the next model span. `summary.json` reports their pooled means and medians with sample-cluster bootstrap intervals.
-- **v1.0 takeover and latency.** The evaluator reads the Parakeet transcript of the window. A sample took the turn when the words span at least 1 s or number more than 3. The latency is the first word's start minus the annotated end of the user's turn, clamped at 0. Pause handling looks at the whole window, not only at the annotated pauses.
-- **Missing values.** Empty interval sets and missing labels are null, never a zero latency or 0%. The counts keep every selected, eligible, invalid and unscored sample.
-- **Limits.** Simulated playout is not acoustic latency, and the window can cut long replies. One generation per sample does not estimate generation variance. Prosody and MOS are not measured.
-
-(verification)=
-
-**Verification**
-
-
-The unit tests run the official formulas on synthetic fixtures without a GPU or API key, and cover export, missing samples, valid silence, timing, ASR deduplication, bounded and concurrent judging, the semantic judge's control gate, resumption, and the runbook's selection, phase gating, server checks and aggregation for both datasets:
-
-```bash
-FDB_REFERENCE_SOURCE="$FDB_SOURCE" python -m pytest -q \
-    tests/unit_test/benchmarks/test_duplex*.py tests/unit_test/benchmarks/test_fdb*.py
-```
-
-Export is deterministic: exporting a recording again reproduces every eligible WAV byte for byte, and summarizing saved transcripts and intervals again reproduces the same summaries.
-
-## Full-Duplex-Bench v1.0 unified metrics
-
-
-`unified-score` scores a Full-Duplex-Bench v1.0 reference tree with turn-taking metrics that do not depend on how a system decides to speak. It reads the same Parakeet transcripts and dataset annotations as the official evaluator, and for user interruption it also runs Silero VAD on the exported audio, so native full-duplex, turn-based and cascade systems are scored by the same rules. It needs no GPU, LLM or network access.
-
-### Why the official numbers are only a reference
-
-`reference-evaluate` runs the pinned official evaluator unchanged, and its numbers stay in the report as the reference column. Four of its rules measure something other than their names suggest:
-
-1. **Talking over the user gives the best latency.** `eval_smooth_turn_taking.py` sets a negative latency, a reply that starts before the user's turn ends, to 0. On one 119-sample capture of a native full-duplex model, 39 latencies were clamped this way.
-2. **Pause takeover does not look at the pauses.** `eval_pause_handling.py` never reads `pause.json`. It counts a takeover in every nonempty transcript of the whole window except one that both spans less than 1 s and has at most 3 words. Speech before the user's first pause counts, and an output of at most 3 words within 1 s, such as a takeover that the user's resumed speech cuts off, does not. On Candor pause handling, the official rule found a takeover in 30 samples of a turn-based system that answers after 500 ms of silence, while that system's transcript contained a word onset at or after the first annotated pause in 67.
-3. **Non-responders leave the latency average.** Latency is averaged only over samples that took the turn, so a model too slow to answer inside the window drops out and can look faster.
-4. **Not every interruption interrupts.** `eval_user_interruption.py` scores every sample alike, whether or not the model was speaking when the user cut in. On one 200-sample capture of a native full-duplex model, no speech was detected at the interruption onset in 87 samples, and a reply after R in those samples still enters the official takeover rate, latency and judge rating.
-
-### Inputs and checks
-
-Run it on a tree written by `reference-export` and transcribed by `reference-asr` (see the [runbook](#full-duplex-bench-runbook)). All times are seconds on the input window `[0, T]`, where T is the input length recorded in `manifest.json`. Each transcript word has a start and an end from `output.json`; a word with a null end counts as zero-length at its start. Times are rounded to the microsecond before any comparison. This removes float noise in the files (an annotation at 6.32000000000005 against a word at 6.32), not ASR alignment error.
-
-Loading a sample checks its times and stops with the sample id and the problem if any check fails: every word starts in `[0, T]`; the reference times E, S and R defined below lie in `[0, T]` with `S <= R`; `pause.json` lists at least one pause, each `[a, b]` with `a <= b` inside `[0, T]`, sorted and not overlapping; and no interruption word starts before R.
-
-These annotations do not reliably label backchannels versus aborted turn starts; we therefore count every word onset, including a one-word "yeah". The rules are a strict word-timing proxy that also penalizes acknowledgments a listener might accept.
-
-### Metrics
-
-(pause-handling)=
-
-**Pause handling**
-
-
-Subsets `synthetic_pause_handling` and `candor_pause_handling`, reported separately. The official evaluator scores the whole window as one user turn, and we operationally treat the window as a non-yielding user turn. From the start of the first annotated pause to T the user is pausing or speaking again, so a model word starting in that region takes the floor too early. Each pause owns the time from its start to the next pause start, and the last pause owns the time to T.
-
-| Metric | Definition | Better |
-|---|---|---|
-| `pause_intrusion_rate` | Samples with a model word starting at or after the first pause start | Lower |
-| `pause_intrusion_per_pause` | Pauses whose owned time contains a model word start, over all pauses | Lower |
-| `intrusion_s_per_pause_s` | Annotated pause seconds covered by ASR word spans, over all annotated pause seconds | Lower |
-| `inside_pause_onset_rate` | Samples with a model word starting inside an annotated pause `[a, b)` | Context |
-| `pre_pause_speech_rate` | Samples with a model word starting before the first pause start | Context |
-| `carry_in_rate` | Samples with a model word that starts before the first pause start and ends after it | Context |
-| `any_speech_rate` | Samples with any model word in the window | Context |
-
-`pause_intrusion_rate` is the headline. It counts onsets up to T, not only inside the pauses, because a model whose reaction time exceeds a pause replies after the user has resumed; this needs no added reaction-time parameter. `inside_pause_onset_rate` is the narrower count of onsets inside the pauses.
-
-Onsets before the first pause are outside this pause-conditioned observation region: they cannot react to a pause that has not started. Their samples stay in the denominator, and a model still talking at the first pause counts once it starts another word. This is a scope restriction, not a judgment that early talk is harmless; `pre_pause_speech_rate` and `carry_in_rate` report it.
-
-`intrusion_s_per_pause_s` measures coverage of annotated pause time by ASR word spans, not acoustic occupancy. Any word overlapping a pause adds that overlap, including one that started before the first pause, and a zero-length word adds nothing. `pause_intrusion_per_pause` is an owned-interval diagnostic, not a per-pause takeover probability: one continuing utterance can place words in several owned intervals, the intervals differ in length, and the last one runs to T. `intrusion_words` in `unified-samples.jsonl` counts the intruding word onsets, not utterances or seconds.
-
-(smooth-turn-taking)=
-
-**Smooth turn-taking**
-
-
-Subset `candor_turn_taking`. The reference time E is `turn_taking.json[0].timestamp[0]`, the time the official evaluator uses as the end of the user's turn. Each sample has exactly one outcome:
-
-- `early_start`: a model word starts before E.
-- `response`: no word starts before E and at least one starts at or after it. The latency is the start of the first word minus E.
-- `no_response`: no transcribed word in the window.
-
-| Metric | Definition | Better |
-|---|---|---|
-| `early_start_rate` | `early_start` samples | Lower |
-| `response_rate_1s`, `_2s`, `_5s` | `response` samples with a latency of at most 1, 2 or 5 s | Higher |
-| `no_response_rate` | `no_response` samples | Lower |
-| `response_latency_s` | Median with its interval, and p90, of the latency, where a sample without a `response` never responds | Lower |
-
-An early start never counts as a response, so talking through the end of the user's turn cannot buy a short latency, and an early acknowledgment followed by a good answer is an early start. `no_response` means no transcribed word, not every failed sample, so a system can have no silent samples and still not reach its p90.
-
-Let F(t) be the share of samples with a `response` latency of at most t. Then `response_rate_ks` is F(k), and a latency quantile is Q(q) = inf{t : F(t) >= q}, the ceil(qN)-th smallest latency with no interpolation. The quantiles and the response rates are one curve: Q(q) is at most k exactly when `response_rate_ks` is at least q, so the median is the time by which half of all samples have responded. A quantile that falls on a sample without a `response` is reported as not reached. Placing those samples at infinity is a scoring convention for a valid response within the window, not an estimate of when a silent system would answer.
-
-(user-interruption)=
-
-**User interruption**
-
-
-Subset `synthetic_user_interruption`. `interrupt.json[0].timestamp` gives the onset S and the end R of the user's interruption. `reference-asr` cuts the audio at R before transcribing, so the transcript holds only words from R on and cannot show whether the model stopped. Silero VAD on the full `output.wav` supplies that (see [Speech detection](#speech-detection)). Each sample records whether detected speech covers S (`speech_at_onset`, a segment with start <= S < end) and whether speech that began before R carries over it (`speech_at_end`, start < R < end; a reply that begins exactly at R does not). The outcome is decided in this order:
-
-- `not_exercised`: no detected speech at S, so the interruption did not cut into detected speech. The sample keeps `speech_at_end`, so a model that starts talking during the interruption and talks past R stays visible.
-- `speaking_at_end`: speech at S and at R. The words after R may continue the interrupted answer, so the sample has no latency. A model that stopped and then started a reply before R lands here too, the interruption counterpart of an early start.
-- `response`: speech at S, none carried over R, and a transcribed word starts at or after R. The latency is the start of the first word minus R.
-- `no_response`: speech at S, none carried over R, and no transcribed word after R.
-
-| Metric | Definition | Better |
-|---|---|---|
-| `exercised_rate` | Eligible samples with speech at S | Context |
-| `speaking_at_end_rate` | Exercised samples that are `speaking_at_end` | Lower |
-| `response_rate_1s`, `_2s`, `_5s` | Exercised samples with a `response` within 1, 2 or 5 s | Higher |
-| `no_response_rate` | Exercised samples that are `no_response` | Lower |
-| `response_latency_s` | Median with its interval, and p90, over exercised samples, as for turn-taking | Lower |
-| `stop_latency_s` | Median with its interval, and p90, of the time from S to the end of the segment covering S; a segment that runs to T has no observed stop | Lower |
-| `speech_s_per_interruption_s` | Detected speech seconds inside [S, R] over interruption seconds, pooled over exercised samples | Lower |
-| `restart_rate` | Exercised samples with a segment starting inside (S, R) | Lower |
-
-The outcome only checks the endpoint R. A model can keep talking through most of the interruption, stop just before R and still get a `response`; `stop_latency_s`, `speech_s_per_interruption_s` and `restart_rate` show that. None of them tells a reactive stop from an answer that ended on its own, which would need a matched run with the interruption muted.
-
-Every metric except `exercised_rate` is over exercised samples. Whether a sample is exercised depends on the system as well as the dataset, because S is fixed in input time: a model that answers briefly or late is silent at S more often. A `not_exercised` sample therefore counts as an unknown outcome in the selected bounds of those metrics, like an ineligible one; for `exercised_rate` itself it is a known no. A model silent at every S gets bounds of `[0, 1]` and is visibly unmeasured, and a terse model's lower bound drops. The bounds are worst-case completions under this fixed-onset protocol, not a bound on how a model would handle an interruption timed while it speaks. Read `exercised_rate` and the bounds with every interruption number.
-
-(backchannel)=
-
-**Backchannel**
-
-
-`icc_backchannel` has no unified metric; the official frequency and JSD are the reference. `eval_backchannel.py` has known problems. Fixing them needs new definitions with their own validation, so they are only listed here:
-
-- It adds every VAD segment up to 3 s to the backchannel list, including the ones it classified as a takeover.
-- Its takeover flag is overwritten by each segment, and the loop stops at the first segment over 3 s, which also drops the later segments from frequency and timing.
-- The timing score is SciPy's Jensen-Shannon distance with the natural log, at most about 0.83, while a sample without backchannels is given 1. The average therefore mixes the share of samples without backchannels with the timing distance of the rest.
-
-(speech-detection)=
-
-**Speech detection**
-
-
-The scorer runs the Silero model that `load_silero_vad()` loads, with Silero's default threshold 0.5, minimum speech 250 ms and minimum silence 100 ms, and no padding. The default 30 ms of padding widens each segment on both sides and can move a reply that starts just after R to before it. `output.wav` must hold exactly T seconds of samples. Segments come from the whole file, so near S they can depend on audio after S. A pause longer than 100 ms ends a segment, so a model pausing between sentences exactly at S counts as `not_exercised`. On one 200-sample capture of a native full-duplex model, thresholds from 0.3 to 0.7 and minimum silences from 50 to 500 ms moved `not_exercised` between 85 and 95 samples, `response_rate_2s` between 0.952 and 0.957 and the median `stop_latency_s` between 1.04 and 1.27 s, and left `speaking_at_end` at 4. `restart_rate` ran from 0.05 to 0.27, because a shorter minimum silence splits speech into more segments, so it is a diagnostic and does not rank systems.
-
-The audio is the received output played in order. For the turn-based realtime protocol the playout drops queued audio when the server reports that the user started speaking while interruptions are on; native full-duplex traces have no such event, so audio a system has already sent plays out, and the outcome describes the system as delivered.
-
-(reading-them-together)=
-
-**Reading them together**
-
-
-Silence scores perfectly on pause handling, and one canned word right after E counts as a response. Read pause restraint and response rates together, from the same system configuration; neither is enough alone.
-
-### Denominators and intervals
-
-- Sample shares and latency quantiles are over the subset's eligible samples, and for interruption over its exercised ones. Eligible samples are those whose capture passed the `reference-export` checks (input pacing, an error-free observation window, dataset hashes that match the run). The pooled ratios divide by the pauses and the pause seconds of the eligible samples. `declared` is the full subset size.
-- Ineligible samples are counted under `counts`, never dropped silently. A sample can have several reasons, so the counts in `counts.ineligible_reasons` need not sum to `ineligible`.
-- An ineligible sample's outcome is unknown, and a capture failure can depend on the system. Every sample share therefore also has `selected_bounds`, `[count / selected, (count + unknown) / selected]`: its value over all selected samples with each unknown outcome taken as no, then as yes. The unknown samples are the ineligible ones, plus the `not_exercised` ones for every interruption metric except `exercised_rate`. `coverage` is eligible over selected for each subset.
-- A share of samples has a 95% Wilson interval, whose endpoints are exactly 0 at a count of 0 and exactly 1 at a count of n. The pooled ratios and the median latency have a 95% percentile bootstrap interval that resamples whole samples (2000 resamples, seed 0), because the pauses of one sample are not independent. Each resample's median and the interval endpoints use the same quantile rule as above. A resample with no pause time has no `intrusion_s_per_pause_s` and is skipped. The output is deterministic.
-- `min_observable_s` is the shortest time from the reference to T. T is the dataset input length, so every system has the same horizon on a sample. A response after T is not observed, so `response_rate_ks` is a lower bound when `min_observable_s` is below k. Candor turn-taking windows end about 5 s after E, so there `response_rate_5s` is close to the share that responded inside the window.
-- The intervals cover dataset sampling only, not repeated generations or ASR errors. To compare two systems, pair their rows in `unified-samples.jsonl` by `sample_id` over the samples eligible in both, and for interruption exercised in both. Pairing does not remove selection bias, so report coverage, `exercised_rate` and the selected bounds as well, and for interruption how many samples eligible in both were exercised in both, only in one system, or in neither.
-
-### Run
-
-```bash
-python -m benchmarks.eval.benchmark_duplex_v10 unified-score --tree "$OUT/reference"
-```
-
-It refuses a tree without `asr.json`, stops if the transcript or annotation of an eligible sample, or the `output.wav` of an interruption sample, differs from `asr.json` or `manifest.json`, and stops on a time that fails the checks above. It writes:
-
-- `unified.json`: per subset, the counts, `coverage` and every metric with its interval, plus `selected_bounds` for sample shares and `min_observable_s` for turn-taking and interruption. Only the median latency has an interval, not p90. At the top are the definitions version (`fdb-v1.0-unified-4`), the hashes of `manifest.json` and `asr.json`, and the silero-vad version, model file hash and settings.
-- `unified-samples.jsonl`: one row per selected sample of the four scored subsets (`icc_backchannel` has no rows) with every per-sample quantity, including the pause flags `pause_intrusion`, `inside_pause_onset`, `pre_pause_speech`, `carry_in` and `any_speech`, and for interruption the outcome, S, `speech_at_onset`, `speech_at_end`, `speech_before_onset`, `stop_s`, `speech_in_interruption_s` and `restarts`. Ineligible rows keep their sample id, subset and task and add their reasons.
-
-It prints each subset's metrics as value, interval and count, with the bounds over all selected samples for each share. When `reference-evaluate` has written `summary.json` from the same `manifest.json` and `asr.json`, its numbers are printed below them as the reference column; if either hash differs, the column is left out and a line says which input changed. Interruption numbers rated by a judge other than the official one are labeled with that judge's model instead of `official`. `summary.json` is never written or used for scoring. Rerunning on the same tree writes the same bytes.
-
-### Not measured
-
-- **Why the model stops after an interruption.** `stop_latency_s` says when the speech covering S ends, not whether the model stopped because of the interruption; that needs a matched run with the interruption muted.
-- **The end of the user's speech in a pause sample.** The window is treated as a non-yielding user turn. The official evaluator reads output chunks, not a user-end annotation, so it does not establish the true turn end either. A reply that starts in a short trailing silence counts as an intrusion, so not every counted onset is premature.
-- **Relevance of a reply.** Neither these metrics nor the official turn-taking score check that a reply answers the user. Only the official interruption judge rating covers it, and that rating depends on the judge model the run configured.
-- **ASR errors.** A missed or invented word changes the metrics it falls in. All systems share the pinned Parakeet checkpoint, which does not mean they share the same recognition error.
-- **Acoustic latency.** The output is a simulated playout of the received audio.

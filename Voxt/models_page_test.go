@@ -84,7 +84,7 @@ func TestModelsPage(t *testing.T) {
 		t.Errorf("translate uses a retired model: %+v", m)
 	}
 	a.navigate("/translate")
-	if !has(tt, "No language model is set up: set one up to translate.") || has(tt, "Automatic (now: Hy-MT2 1.8B (Q4_K_M))") {
+	if !has(tt, "No language model is set up. Set one up to translate.") || has(tt, "Automatic (now: Hy-MT2 1.8B (Q4_K_M))") {
 		t.Errorf("translate: %q", tt.Texts())
 	}
 
@@ -298,7 +298,7 @@ func TestModelDownloadStates(t *testing.T) {
 	}
 
 	// Deleting what a stopped download kept.
-	click(t, tt, "Delete what was downloaded of Qwen3-ASR 0.6B (4bit)")
+	click(t, tt, "Delete the partial download of Qwen3-ASR 0.6B (4bit)")
 	drain()
 	if st := a.modelStatus[models.ASRFast]; st.Done != 0 || has(tt, "Resume") {
 		t.Errorf("kept: %+v", st)
@@ -448,6 +448,7 @@ func modelShots(t *testing.T, a *app, tt *ui.Tester, save func(string)) {
 	fastName := uitext.ModelName(models.ASRFast)
 	a.navigate("/home")
 	a.navigate(modelsPath)
+	scrollToText(tt, fastName) // on screen: a click off it does nothing (the smallest window)
 	click(t, tt, i18n.T("Hide %s", fastName))
 	scrollToText(tt, i18n.T("Hidden models"))
 	click(t, tt, i18n.T("Hidden models"))
