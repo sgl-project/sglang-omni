@@ -379,6 +379,39 @@ curl --fail-with-body -sS -X POST http://localhost:8000/v1/audio/speech \
 
 To stream the same reference, add `"stream": true` and use the [streaming examples](#streaming). The example allows `us.aws.cdn.hf.co`, the redirect host observed for this clip; if the download redirects to a different host, allow that host too.
 
+## Voice Design
+
+Voice design generates a voice from a text description without reference audio. Support and required fields vary by model. Describing a voice is different from controlling the speaking style of a preset or reference voice.
+
+### Qwen3-TTS VoiceDesign
+
+This example requires the 1.7B VoiceDesign checkpoint, not CustomVoice or Base. The `task_type: "VoiceDesign"` setting is specific to Qwen3-TTS.
+
+Launch VoiceDesign:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign \
+  --config examples/configs/qwen3_tts_1_7b_voicedesign.yaml \
+  --port 8000
+```
+
+After `/health` returns HTTP 200, provide the text to speak in `input` and a non-empty voice description in `instructions`. Omit `voice` and reference-audio fields.
+
+```bash
+curl --fail-with-body http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+    "input": "Hello from Qwen VoiceDesign.",
+    "task_type": "VoiceDesign",
+    "instructions": "A warm, natural young adult voice."
+  }' \
+  --output designed-voice.wav
+```
+
+To stream the generated speech, add `"stream": true` and use the [streaming examples](#streaming). See the [Qwen3-TTS cookbook](../cookbook/qwen3_tts.md#voicedesign-checkpoint) for model selection and configuration details.
+
 ## Batch Speech
 
 Use `/v1/audio/speech/batch` when one request should synthesize several
