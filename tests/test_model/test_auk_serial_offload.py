@@ -23,6 +23,8 @@ import torch
 
 pytest.importorskip("pynvml", reason="CUDA measurements require nvidia-ml-py")
 
+from sglang_omni.models.auk.config import AuKPipelineConfig
+from sglang_omni.models.auk.step_cuda_graph import DEFAULT_CAPTURE_SHAPES
 from sglang_omni.scheduling.stage_residency import offload_environment
 from sglang_omni.utils.connection import find_available_port
 from tests.test_model.auk_offload_helpers import generate_audio, measured_server
@@ -39,6 +41,7 @@ REPEAT_REQUESTS = 5
 def test_auk_serial_offload_http_parity_and_memory(
     tmp_path: Path, compilation: bool, graphs: bool
 ) -> None:
+    """Offloading with compilation and CUDA Graphs must preserve seeded audio."""
     checkpoint = os.environ.get("AUK_OFFLOAD_CHECKPOINT")
     reference = os.environ.get("AUK_OFFLOAD_REFERENCE")
     if not checkpoint or not reference:
@@ -66,50 +69,57 @@ def test_auk_serial_offload_http_parity_and_memory(
         "data:audio/wav;base64,"
         + base64.b64encode(Path(reference).read_bytes()).decode()
     )
-    capture_shapes = "[[1,192,0,192],[1,320,320,384]]"
+    capture_shapes = os.environ.get("AUK_OFFLOAD_CAPTURE_SHAPES")
     expected_audio: dict[str, bytes] = {}
     results: dict[str, dict[str, int | float | str | list[float]]] = {}
     cache_directory = os.environ.get("AUK_OFFLOAD_CACHE_DIR", str(tmp_path / "weights"))
+    server_script = (
+        "import logging, sys; "
+        "from sglang_omni.models.auk.config import AuKPipelineConfig; "
+        "from sglang_omni.serve.launcher import launch_server; "
+        "logging.basicConfig(level=logging.INFO); "
+        "launch_server(AuKPipelineConfig.model_validate_json(sys.argv[1]), "
+        "host='127.0.0.1', port=int(sys.argv[2]), model_name='auk')"
+    )
     for mode in selected_modes:
         log_path = tmp_path / f"{mode}.log"
         port = find_available_port(host="127.0.0.1")
-        command = [
-            sys.executable,
-            "-m",
-            "sglang_omni.cli",
-            "serve",
-            "--model-path",
-            checkpoint,
-            "--model-name",
-            "auk",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(port),
-            "--conditioning.factory.max_batch_size",
-            "1",
-            "--auk_engine.factory.max_batch_size",
-            "1",
-            "--decode.factory.max_batch_size",
-            "1",
-            "--auk_engine.factory.enable_dit_torch_compile",
-            str(compilation).lower(),
-            "--auk_engine.factory.enable_dit_cuda_graph",
-            str(graphs).lower(),
-            "--auk_engine.factory.dit_cuda_graph_capture_shapes",
-            capture_shapes,
-        ]
-        if mode != "resident":
-            command += [
-                "--stage-offload-components",
-                "conditioning,dit,vae",
-                "--conditioning.factory.serial_offload_source",
-                mode,
-                "--conditioning.factory.serial_offload_cache_dir",
-                cache_directory,
-            ]
+        configuration = AuKPipelineConfig(model_path=checkpoint)
+        for stage in configuration.stages[1:]:
+            stage.factory.max_batch_size = 1
+        conditioning = configuration.stage_named("conditioning")
+        conditioning.factory_path = "tests.test_model.auk_offload_helpers.create_deterministic_conditioning_executor"
+        encoder_checkpoint = os.environ.get("AUK_QWEN_CHECKPOINT")
+        if encoder_checkpoint is not None:
+            conditioning.factory.text_encoder_path = encoder_checkpoint
         else:
             pass
+        engine = configuration.stage_named("auk_engine")
+        engine.factory.enable_dit_torch_compile = compilation
+        engine.factory.enable_dit_cuda_graph = graphs
+        if capture_shapes is not None:
+            engine.factory.dit_cuda_graph_capture_shapes = json.loads(capture_shapes)
+            expected_graph_count = len(json.loads(capture_shapes))
+        else:
+            expected_graph_count = sum(
+                mode == "resident" or shape.batch == 1
+                for shape in DEFAULT_CAPTURE_SHAPES
+            )
+        if mode != "resident":
+            conditioning.factory.serial_offload_source = mode
+            conditioning.factory.serial_offload_cache_dir = cache_directory
+            configuration = configuration.with_serial_offload(
+                frozenset({"conditioning", "dit", "vae"})
+            )
+        else:
+            pass
+        command = [
+            sys.executable,
+            "-c",
+            server_script,
+            configuration.model_dump_json(serialize_as_any=True),
+            str(port),
+        ]
         try:
             with measured_server(
                 command,
@@ -128,11 +138,12 @@ def test_auk_serial_offload_http_parity_and_memory(
                         r"AuK DiT step graphs: captured (\d+)",
                         log_path.read_text(),
                     )
-                    assert captures and int(captures[-1]) == len(
-                        json.loads(capture_shapes)
+                    captured_graph_count = int(captures[-1]) if captures else 0
+                    assert (
+                        captured_graph_count == expected_graph_count
                     ), "Accelerated test requires every declared graph to be captured"
                 else:
-                    pass
+                    captured_graph_count = 0
 
                 if mode == "mmap" and os.environ.get("AUK_OFFLOAD_COLD_WAKE"):
                     evicted_bytes = 0
@@ -195,6 +206,9 @@ def test_auk_serial_offload_http_parity_and_memory(
                     else:
                         pass
                 results[mode] = {
+                    "cudnn_deterministic": True,
+                    "sdpa_backends": "efficient,math",
+                    "captured_graph_count": captured_graph_count,
                     "checkpoint": checkpoint,
                     "accelerated": int(compilation and graphs),
                     "compilation": int(compilation),

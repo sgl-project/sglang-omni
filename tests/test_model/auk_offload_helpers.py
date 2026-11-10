@@ -28,6 +28,7 @@ import soundfile
 import torch
 
 from benchmarks.benchmarker.utils import start_server_from_cmd, stop_server
+from sglang_omni.models.auk.constants import DEFAULT_TEXT_ENCODER
 from sglang_omni.models.auk.offload_scheduler import AuKOffloadScheduler
 from sglang_omni.models.auk.request_builders import preprocess_auk_payload
 from sglang_omni.models.auk.stages import (
@@ -37,6 +38,7 @@ from sglang_omni.models.auk.stages import (
     create_preprocessing_executor,
 )
 from sglang_omni.proto.request import OmniRequest, StagePayload
+from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.serve.protocol import (
     CreateSpeechRequest,
     GenerateResponse,
@@ -47,6 +49,39 @@ from sglang_omni.serve.protocol import (
 STARTUP_TIMEOUT_SECONDS = 1800
 REQUEST_TIMEOUT_SECONDS = 600
 MEMORY_SAMPLE_SECONDS = 0.05
+
+
+def create_deterministic_conditioning_executor(
+    model_path: str,
+    *,
+    device: str,
+    gpu_id: int | None,
+    dtype: str,
+    text_encoder_path: str,
+    max_batch_size: int,
+    max_batch_wait_ms: int,
+    enable_serial_offload: bool,
+    serial_offload_source: Literal["ram", "mmap"],
+    serial_offload_cache_dir: str | None,
+) -> SimpleScheduler[StagePayload, StagePayload]:
+    """Fix numerical kernels for strict parity across independent CUDA allocations."""
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cuda.enable_cudnn_sdp(False)
+    torch.backends.cuda.enable_flash_sdp(False)
+    torch.backends.cuda.enable_mem_efficient_sdp(True)
+    torch.backends.cuda.enable_math_sdp(True)
+    return create_conditioning_executor(
+        model_path,
+        device=device,
+        gpu_id=gpu_id,
+        dtype=dtype,
+        text_encoder_path=text_encoder_path,
+        max_batch_size=max_batch_size,
+        max_batch_wait_ms=max_batch_wait_ms,
+        enable_serial_offload=enable_serial_offload,
+        serial_offload_source=serial_offload_source,
+        serial_offload_cache_dir=serial_offload_cache_dir,
+    )
 
 
 @dataclass(kw_only=True)
@@ -228,11 +263,14 @@ def run_recovery_and_long_requests(source: Literal["ram", "mmap"], output: str) 
     checkpoint = os.environ["AUK_OFFLOAD_CHECKPOINT"]
     output_directory = Path(output)
     create_preprocessing_executor(checkpoint)
-    conditioning = create_conditioning_executor(
+    conditioning = create_deterministic_conditioning_executor(
         checkpoint,
         device="cuda",
         gpu_id=0,
+        dtype="bfloat16",
         max_batch_size=1,
+        max_batch_wait_ms=0,
+        text_encoder_path=os.environ.get("AUK_QWEN_CHECKPOINT", DEFAULT_TEXT_ENCODER),
         enable_serial_offload=True,
         serial_offload_source=source,
         serial_offload_cache_dir=os.environ.get(

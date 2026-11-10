@@ -111,11 +111,11 @@ class AuKPipelineConfig(PipelineConfig):
 
     @model_validator(mode="after")
     def validate_offload(self) -> AuKPipelineConfig:
-        gpu_stages = [
-            self.stage_named(name)
-            for name in (CONDITIONING_STAGE, ENGINE_STAGE, DECODE_STAGE)
+        enabled = [
+            stage.factory.enable_serial_offload
+            for stage in self.stages
+            if isinstance(stage.factory, AuKFactoryArgs)
         ]
-        enabled = [stage.factory.enable_serial_offload for stage in gpu_stages]
         if not any(enabled):
             return self
         elif not all(enabled):
@@ -123,7 +123,10 @@ class AuKPipelineConfig(PipelineConfig):
                 "AuK offload must be enabled on conditioning, auk_engine and decode together"
             )
         else:
-            pass
+            gpu_stages = [
+                self.stage_named(name)
+                for name in (CONDITIONING_STAGE, ENGINE_STAGE, DECODE_STAGE)
+            ]
         if len(
             {stage.gpu for stage in gpu_stages if isinstance(stage.gpu, int)}
         ) != 1 or any(
@@ -156,7 +159,8 @@ class AuKPipelineConfig(PipelineConfig):
             or gpu_stages[1].next != DECODE_STAGE
             or not gpu_stages[2].terminal
             or any(
-                stage.route_fn is not None or stage.stream_to for stage in self.stages
+                stage.route_fn is not None or stage.stream_to or stage.wait_for
+                for stage in self.stages
             )
         ):
             raise ValueError("AuK offload requires the standard linear pipeline")
@@ -182,7 +186,11 @@ class AuKPipelineConfig(PipelineConfig):
 
     def resolved_env_defaults(self) -> dict[str, str]:
         environment = super().resolved_env_defaults()
-        if self.stage_named(CONDITIONING_STAGE).factory.enable_serial_offload:
+        if any(
+            isinstance(stage.factory, AuKFactoryArgs)
+            and stage.factory.enable_serial_offload
+            for stage in self.stages
+        ):
             return offload_environment(environment)
         else:
             return environment

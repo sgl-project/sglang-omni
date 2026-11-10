@@ -90,9 +90,11 @@ def test_hub_config_yaml_resolves_without_snapshot(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize(
-    "invalid", ["gpu", "process", "device", "replica", "concurrency", "order"]
+    "invalid",
+    ["gpu", "process", "device", "replica", "concurrency", "order", "wait_for"],
 )
 def test_offload_rejects_incompatible_placement(invalid: str) -> None:
+    """Offload must reject nonserial placement and cyclic fan-in dependencies."""
     config = AuKPipelineConfig(model_path="test")
     for stage in config.stages[1:]:
         stage.factory.device = "cuda"
@@ -106,10 +108,42 @@ def test_offload_rejects_incompatible_placement(invalid: str) -> None:
         config.processes["pipeline"] = ProcessConfig(num_replicas=2)
     elif invalid == "concurrency":
         config.stage_named(ENGINE_STAGE).factory.max_concurrency = 2
+    elif invalid == "wait_for":
+        config.stage_named(ENGINE_STAGE).wait_for = [CONDITIONING_STAGE, DECODE_STAGE]
+        config.stage_named(ENGINE_STAGE).merge_fn = "test.merge"
     else:
         config.stages[1], config.stages[2] = config.stages[2], config.stages[1]
     with pytest.raises(ValueError, match="AuK offload requires"):
         config.with_serial_offload(frozenset({"conditioning", "dit", "vae"}))
+
+
+def test_resident_supports_custom_stage_names() -> None:
+    """Renaming resident stages must not trigger offload validation or environment setup."""
+    environment = {"OMP_NUM_THREADS": "2"}
+    configuration = AuKPipelineConfig(
+        model_path="test", env_defaults=environment
+    ).model_dump()
+    for stage in configuration["stages"]:
+        stage["name"] = f"custom_{stage['name']}"
+        if stage["next"] is not None:
+            stage["next"] = f"custom_{stage['next']}"
+        else:
+            pass
+    pipeline = AuKPipelineConfig(**configuration)
+    assert pipeline.resolved_env_defaults() == environment
+
+
+@pytest.mark.parametrize(
+    "enabled_stage", [CONDITIONING_STAGE, ENGINE_STAGE, DECODE_STAGE]
+)
+def test_offload_requires_all_gpu_stages(enabled_stage: str) -> None:
+    """Partially enabled offload must fail validation rather than use resident settings."""
+    configuration = AuKPipelineConfig(model_path="test")
+    configuration.stage_named(enabled_stage).factory.enable_serial_offload = True
+    with pytest.raises(ValueError, match="must be enabled on .* together"):
+        AuKPipelineConfig.model_validate(
+            configuration.model_dump(serialize_as_any=True)
+        )
 
 
 def test_capture_shapes_cli_text_becomes_a_list_of_shapes() -> None:
