@@ -5,6 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.model_executor.model_runner_components.weight_updater import (
+    _unsupported_derived_weight_cache_error,
+)
 from torch import nn
 
 import sglang_omni.models.nemotron_transcribe.engine_builder as engine_builder
@@ -83,6 +86,7 @@ def test_encoder_compilation_uses_resolved_decoder_concurrency(
     )
     assert encoder.dynamic_batches is expected_dynamic
     assert model.encoder_max_batch_size == 8
+    assert _unsupported_derived_weight_cache_error(model.perception) is None
 
 
 @pytest.mark.parametrize(
@@ -118,6 +122,7 @@ def test_fp8_encoder_linears_need_the_option_and_fp8_gemms(
     )
     assert isinstance(model.perception[0], Fp8Linear) is keeps_fp8
     assert isinstance(model.perception[0], nn.Linear) is not keeps_fp8
+    assert _unsupported_derived_weight_cache_error(model.perception) is not None
 
 
 def test_pre_lm_encoder_starts_after_model_setup(

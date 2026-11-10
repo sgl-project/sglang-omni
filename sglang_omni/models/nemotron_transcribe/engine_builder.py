@@ -205,6 +205,10 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
             return
         else:
             pass
+        perception._derived_weight_cache_error = (  # noqa: leading-underscore - SGLang contract
+            "Online weight updates are unsupported for Nemotron Transcribe FP8 "
+            "encoder weights. Restart the server to load new weights."
+        )
         device = next(perception.parameters()).device
         if self.perception_fp8 and fp8_gemm_supported(device):
             logger.info(
