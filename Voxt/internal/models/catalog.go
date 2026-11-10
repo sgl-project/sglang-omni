@@ -69,9 +69,10 @@ const (
 	// app installed them (Borrowed).
 	LLMQwen3  = "llm.qwen3"
 	LLMGemma4 = "llm.gemma4"
-	// The speech models' DFlash drafts (Draft), one each.
+	// The speech models' DFlash drafts (Draft), one per size: quants of a size share it.
 	ASRAccurateDraft = "asr.accurate.draft"
 	ASRFastDraft     = "asr.fast.draft"
+	ASRMossDraft     = "asr.moss.draft"
 )
 
 // File is one file of a model, at its path in the repo (and in the
@@ -212,7 +213,7 @@ var catalog = []Model{
 		},
 	},
 	{
-		ID: ASRQwen6bit, Name: "Qwen3-ASR 1.7B (6bit)", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero},
+		ID: ASRQwen6bit, Name: "Qwen3-ASR 1.7B (6bit)", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero}, Draft: ASRAccurateDraft,
 		Family: "qwen3-asr", Quant: "6bit",
 		Repo: "mlx-community/Qwen3-ASR-1.7B-6bit", Revision: "edd077a475c4da058e25b6e6ec1199115ca1be2b",
 		Files: []File{
@@ -295,7 +296,7 @@ var catalog = []Model{
 		},
 	},
 	{
-		ID: ASRMoss, Name: "MOSS-Transcribe-Diarize", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero},
+		ID: ASRMoss, Name: "MOSS-Transcribe-Diarize", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero}, Draft: ASRMossDraft,
 		Family: "moss-transcribe-diarize", Quant: "bf16",
 		Repo: "OpenMOSS-Team/MOSS-Transcribe-Diarize", Revision: "704aa4a9c304e8520be88901e0d1960158ef5b15",
 		Files: []File{
@@ -350,6 +351,14 @@ var catalog = []Model{
 		Files: []File{
 			{"config.json", 1858, "de349d2f8494363a3a3641ca6554a3841e001f769de089974a5349c9580931da", false},
 			{"model.safetensors", 262451248, "bbfc427b9e57cb3663d23ab796d05ca82070bbdfe4c42dc9a5813430a0ace219", true},
+		},
+	},
+	{
+		ID: ASRMossDraft, Name: "MOSS-Transcribe-Diarize DFlash draft", Kind: Draft, Runtime: Omni, Family: "moss-transcribe-diarize-dflash", Quant: "bf16",
+		Repo: "wilsonzheng0327/MOSS-Transcribe-Diarize-dflash", Revision: "2e3f00b0932112e4f92a4ef67a4cd60ee855056c",
+		Files: []File{
+			{"config.json", 1888, "c240f41c98040d6eec7ca8f0f6bd548d3d9df302cbe10f5a91e2e833d1463250", false},
+			{"model.safetensors", 262451248, "b7ee3fde257d5f0c95a0f8805f62934e202e4d6b7d993f04dd53e4d512045a10", true},
 		},
 	},
 	{
