@@ -18,9 +18,9 @@
 
 [安装指南][install-guide] · [更新日志](CHANGELOG.md) · [官网](https://voxt.actnow.dev) · [反馈问题][issues] · [Slack][slack]
 
-<a href="https://youtu.be/2f8uCPznI7E"><img src="https://img.youtube.com/vi/2f8uCPznI7E/maxresdefault.jpg" width="720" alt="观看 Voxt 2.0 发布视频"></a>
+<a href="https://youtu.be/mOwWavTSXu0"><img src="https://img.youtube.com/vi/mOwWavTSXu0/maxresdefault.jpg" width="720" alt="观看 Voxt 2.0 发布视频"></a>
 
-▶ **观看 Voxt 2.0 发布视频**：[中文](https://youtu.be/2f8uCPznI7E) · [English](https://youtu.be/x1um6S6Rrh8)
+▶ **观看 Voxt 2.0 发布视频**：[中文](https://youtu.be/mOwWavTSXu0) · [English](https://youtu.be/ktJRE7AB2mU)
 
 </div>
 
