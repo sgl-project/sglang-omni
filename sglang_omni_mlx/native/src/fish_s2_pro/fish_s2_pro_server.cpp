@@ -45,8 +45,11 @@
 
 namespace {
 
+using speech_service::DecodeReferenceAudio;
 using speech_service::FieldOr;
+using speech_service::IsAboveInt64;
 using speech_service::Json;
+using speech_service::NumberOr;
 using speech_service::PresentFieldOr;
 
 constexpr size_t kMaxInputCharacters = 4096;
@@ -123,73 +126,6 @@ void RejectUnsupportedFields(const Json &body) {
       "seed.");
 }
 
-// Whether value is a JSON integer too large for int64, which nlohmann would
-// wrap to a negative number.
-bool IsAboveInt64(const Json &value) {
-  return value.is_number_unsigned() &&
-         value.get<uint64_t>() >
-             static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
-}
-
-// An optional number field: fallback when missing or null, else a finite
-// number that stays finite as float32.
-double NumberOr(const Json &body, const char *name, double fallback) {
-  const Json value = FieldOr(body, name, Json(fallback));
-  if (!value.is_number() || !std::isfinite(value.get<double>())) {
-    throw std::invalid_argument(std::string(name) + " must be a number");
-  } else if (std::abs(value.get<double>()) >
-             std::numeric_limits<float>::max()) {
-    throw std::invalid_argument(std::string(name) +
-                                " must fit in a finite float32 number");
-  } else {
-  }
-  return value.get<double>();
-}
-
-// The base64 payload of a reference audio string: a base64 WAV or a data:
-// URL of one. Paths and URLs are the CUDA server's and not read.
-std::string ReferencePayload(const std::string &audio,
-                             const std::string &field) {
-  if (audio.rfind("data:", 0) == 0) {
-    return omni_common::AudioDataUrlPayload(audio, field);
-  } else if (audio.rfind("http://", 0) == 0 ||
-             audio.rfind("https://", 0) == 0 ||
-             audio.rfind("file://", 0) == 0 || audio.rfind("/", 0) == 0 ||
-             audio.rfind("./", 0) == 0 || audio.rfind("../", 0) == 0 ||
-             audio.rfind("~", 0) == 0) {
-    throw std::invalid_argument(
-        field + " must be a WAV file as base64 or a data: URL; this server "
-                "reads no paths or URLs");
-  } else {
-    return audio;
-  }
-}
-
-// The WAV of a reference audio string, at its own rate, checked to resample;
-// the worker resamples it once the request is admitted.
-omni_common::DecodedAudio DecodeReference(const std::string &audio,
-                                          const std::string &field) {
-  const std::optional<std::vector<uint8_t>> bytes =
-      omni_common::DecodeBase64(ReferencePayload(audio, field));
-  if (!bytes.has_value() || bytes->empty()) {
-    throw std::invalid_argument(field + " is not valid base64");
-  } else {
-  }
-  omni_common::DecodedAudio wav;
-  try {
-    wav = omni_common::DecodeAnyWav(std::string_view(
-        reinterpret_cast<const char *>(bytes->data()), bytes->size()));
-  } catch (const std::invalid_argument &error) {
-    throw std::invalid_argument(field + ": " + error.what());
-  }
-  if (wav.samples.empty()) {
-    throw std::invalid_argument(field + " has no samples");
-  } else {
-  }
-  omni_common::CheckResampleRates(wav.sample_rate, fish_dac::kSampleRate);
-  return wav;
-}
-
 // A references item: {audio_path, ref_audio, audio, data, media_type, text,
 // vq_codes}, as CUDA's SpeechReference.
 ParsedReference ParseReference(const Json &item, int index,
@@ -253,7 +189,8 @@ ParsedReference ParseReference(const Json &item, int index,
     const Json audio = FieldOr(item, name, Json());
     if (audio.is_string()) {
       reference.wav =
-          DecodeReference(audio.get<std::string>(), field + "." + name);
+          DecodeReferenceAudio(audio.get<std::string>(), field + "." + name,
+                               fish_dac::kSampleRate);
       return reference;
     } else if (!audio.is_null()) {
       throw std::invalid_argument(field + "." + name + " must be a string");
@@ -322,7 +259,8 @@ private:
     }
     if (reference_audio.is_string()) {
       add({reference_text.is_string() ? reference_text.get<std::string>() : "",
-           DecodeReference(reference_audio.get<std::string>(), "ref_audio"),
+           DecodeReferenceAudio(reference_audio.get<std::string>(), "ref_audio",
+                                fish_dac::kSampleRate),
            {},
            0});
     } else {

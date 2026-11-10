@@ -389,6 +389,28 @@ set_target_properties(fish_s2_pro_server fish_s2_pro_synthesize PROPERTIES
   INSTALL_RPATH "@loader_path")
 install(TARGETS fish_s2_pro_server fish_s2_pro_synthesize RUNTIME DESTINATION bin)
 
+# ZONOS3-Mini: zonos3_server, with the CUDA server's /v1/audio/speech API,
+# bundled voices and reference-audio speaker embeddings, and its parity tool.
+add_library(zonos3 STATIC
+  src/zonos3/zonos3_weights.cpp
+  src/zonos3/zonos3_text.cpp
+  src/zonos3/zonos3_istft_stream.cpp
+  src/zonos3/zonos3_codec.cpp
+  src/zonos3/zonos3_speaker.cpp
+  src/zonos3/zonos3_model.cpp)
+target_link_libraries(zonos3 PUBLIC qwen3_asr)
+target_compile_options(zonos3 PRIVATE -Wall -Wextra -ffp-contract=off)
+add_executable(zonos3_server src/zonos3/zonos3_server.cpp)
+target_link_libraries(zonos3_server PRIVATE zonos3 speech_service)
+target_compile_options(zonos3_server PRIVATE -Wall -Wextra)
+add_executable(zonos3_synthesize tools/zonos3_synthesize.cpp)
+target_link_libraries(zonos3_synthesize PRIVATE zonos3)
+set_target_properties(zonos3_server zonos3_synthesize PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS zonos3_server zonos3_synthesize RUNTIME DESTINATION bin)
+install(FILES licenses/zonos3-MIT.txt DESTINATION licenses)
+
 # The protocol tests' stand-in server (tests/stub_server.cpp); built only on
 # request and never installed.
 add_executable(stub_server EXCLUDE_FROM_ALL tests/stub_server.cpp)

@@ -269,11 +269,14 @@ void Tokenizer::LoadJson(const nlohmann::json &tokenizer) {
       (!end_of_word_suffix.is_null() && end_of_word_suffix != "") ||
       model.value("byte_fallback", false) ||
       model.value("ignore_merges", false) ||
-      tokenizer.at("normalizer").at("type") != "NFC" ||
+      (!tokenizer.at("normalizer").is_null() &&
+       tokenizer.at("normalizer").at("type") != "NFC") ||
       pre.at("type") != "Sequence" || pre.at("pretokenizers").size() != 2) {
-    throw std::invalid_argument("tokenizer requires NFC and byte-level BPE");
+    throw std::invalid_argument(
+        "tokenizer requires NFC or no normalizer and byte-level BPE");
   } else {
   }
+  normalizes_nfc_ = !tokenizer.at("normalizer").is_null();
   const auto &split = pre.at("pretokenizers").at(0);
   const auto &bytes = pre.at("pretokenizers").at(1);
   if (split.at("type") != "Split" || split.at("behavior") != "Isolated" ||
@@ -383,7 +386,7 @@ void Tokenizer::EncodeOrdinary(const std::string &raw_text,
     return;
   } else {
   }
-  const std::string text = NormalizeNfc(raw_text);
+  const std::string text = normalizes_nfc_ ? NormalizeNfc(raw_text) : raw_text;
   pcre2_match_data *match_data =
       pcre2_match_data_create_from_pattern(split_pattern_->code, nullptr);
   const auto subject = reinterpret_cast<PCRE2_SPTR>(text.data());

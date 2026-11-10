@@ -2,6 +2,8 @@
 #include "qwen3_asr/speech_service.h"
 
 #include <cctype>
+#include <cmath>
+#include <limits>
 #include <condition_variable>
 #include <deque>
 #include <filesystem>
@@ -14,6 +16,7 @@
 #include "civetweb.h"
 #include "common/audio.h"
 #include "common/http.h"
+#include "common/reference_audio.h"
 #include "common/text.h"
 
 namespace speech_service {
@@ -73,7 +76,69 @@ void LogFailure(std::exception_ptr error) {
   }
 }
 
+// The base64 payload of a reference audio string: a base64 WAV or a data:
+// URL of one. Paths and URLs are the CUDA server's and not read.
+std::string ReferencePayload(const std::string &audio,
+                             const std::string &field) {
+  if (audio.rfind("data:", 0) == 0) {
+    return omni_common::AudioDataUrlPayload(audio, field);
+  } else if (audio.rfind("http://", 0) == 0 ||
+             audio.rfind("https://", 0) == 0 ||
+             audio.rfind("file://", 0) == 0 || audio.rfind("/", 0) == 0 ||
+             audio.rfind("./", 0) == 0 || audio.rfind("../", 0) == 0 ||
+             audio.rfind("~", 0) == 0) {
+    throw std::invalid_argument(
+        field + " must be a WAV file as base64 or a data: URL; this server "
+                "reads no paths or URLs");
+  } else {
+    return audio;
+  }
+}
+
 } // namespace
+
+bool IsAboveInt64(const Json &value) {
+  return value.is_number_unsigned() &&
+         value.get<uint64_t>() >
+             static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+}
+
+double NumberOr(const Json &body, const char *name, double fallback) {
+  const Json value = FieldOr(body, name, Json(fallback));
+  if (!value.is_number() || !std::isfinite(value.get<double>())) {
+    throw std::invalid_argument(std::string(name) + " must be a number");
+  } else if (std::abs(value.get<double>()) >
+             std::numeric_limits<float>::max()) {
+    throw std::invalid_argument(std::string(name) +
+                                " must fit in a finite float32 number");
+  } else {
+  }
+  return value.get<double>();
+}
+
+omni_common::DecodedAudio DecodeReferenceAudio(const std::string &audio,
+                                               const std::string &field,
+                                               int sample_rate) {
+  const std::optional<std::vector<uint8_t>> bytes =
+      omni_common::DecodeBase64(ReferencePayload(audio, field));
+  if (!bytes.has_value() || bytes->empty()) {
+    throw std::invalid_argument(field + " is not valid base64");
+  } else {
+  }
+  omni_common::DecodedAudio wav;
+  try {
+    wav = omni_common::DecodeAnyWav(std::string_view(
+        reinterpret_cast<const char *>(bytes->data()), bytes->size()));
+  } catch (const std::invalid_argument &error) {
+    throw std::invalid_argument(field + ": " + error.what());
+  }
+  if (wav.samples.empty()) {
+    throw std::invalid_argument(field + " has no samples");
+  } else {
+  }
+  omni_common::CheckResampleRates(wav.sample_rate, sample_rate);
+  return wav;
+}
 
 Json FieldOr(const Json &body, const char *name, Json fallback) {
   const auto found = body.find(name);

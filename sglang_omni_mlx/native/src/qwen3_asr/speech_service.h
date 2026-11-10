@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "common/http.h"
+#include "common/reference_audio.h"
 #include "qwen3_asr/asr_service.h"
 #include "qwen3_asr/qwen3_asr_transcriber.h"
 
@@ -56,6 +57,18 @@ Json PresentFieldOr(const Json &body, const char *name, Json fallback);
 // The model field; throws std::invalid_argument unless it is a string or
 // null.
 std::optional<std::string> ParseModel(const Json &body);
+// Whether value is a JSON integer too large for int64, which nlohmann would
+// wrap to a negative number.
+bool IsAboveInt64(const Json &value);
+// An optional number field: fallback when missing or null, else a finite
+// number that stays finite as float32; throws std::invalid_argument.
+double NumberOr(const Json &body, const char *name, double fallback);
+// The WAV of a reference audio string (base64 WAV or a data: URL of one), at
+// its own rate, checked to resample to sample_rate; throws
+// std::invalid_argument naming field. Paths and URLs are not read.
+omni_common::DecodedAudio DecodeReferenceAudio(const std::string &audio,
+                                               const std::string &field,
+                                               int sample_rate);
 // The response_format, stream and stream_format fields, as the CUDA
 // server's CreateSpeechRequest reads them; throws std::invalid_argument.
 SpeechJob ParseCommonFields(const Json &body);
