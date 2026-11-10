@@ -345,11 +345,9 @@ func (a *app) settingsDialog(c *ui.Context) {
 			ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 				a.setRouter.View(c, func(r *ui.Route) {
 					title := ""
-					var sectionEn string
 					for _, s := range settingsSections() {
 						if r.Match("/" + s.id) {
 							title = s.title
-							sectionEn = s.en
 						}
 					}
 					f := &a.settingsForm
@@ -365,17 +363,19 @@ func (a *app) settingsDialog(c *ui.Context) {
 						}
 					})
 					query := f.search
-					if query != "" && !settingsTextMatches(query, title, sectionEn) {
-						ui.Column(c).Padding(px(t, sp6)).Children(func() {
-							caption(c, i18n.T("Nothing in this section matches your search."))
-						})
-						return
-					}
 					ui.Scroll(c).Grow(1).MinHeight(0).Children(func() {
-						ui.Column(c).Padding(px(t, sp1), px(t, sp6), px(t, sp6)).Gap(px(t, sp4)).MaxWidth(px(t, settingsContentMaxW)).Children(func() {
-							settingsSearchQuery = query
-							a.settingsSection(c, r)
-							settingsSearchQuery = ""
+						ui.Column(c).Padding(px(t, sp1), px(t, sp6), px(t, sp6)).MaxWidth(px(t, settingsContentMaxW)).Children(func() {
+							// The section builds even when no row matches, so its
+							// state lives on; then it is hidden and takes no room.
+							sec := ui.Column(c).Gap(px(t, sp4)).Children(func() {
+								settingsSearchQuery, settingsSearchHits = query, 0
+								a.settingsSection(c, r)
+								settingsSearchQuery = ""
+							})
+							if query != "" && settingsSearchHits == 0 {
+								sec.Invisible().Height(0).Clip()
+								caption(c, i18n.T("Nothing in this section matches your search."))
+							}
 						})
 					})
 				}).Grow(1).MinHeight(0)
