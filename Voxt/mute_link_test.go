@@ -96,7 +96,7 @@ func TestRecordingMutesOutput(t *testing.T) {
 	if r.muted() {
 		t.Fatal("still muted after the recording")
 	}
-	if got := r.takeCues(); !slices.Equal(got, []string{"tally:audible", "wrap:audible"}) {
+	if got := r.takeCues(); !slices.Equal(got, []string{"pebble:audible", "nib:audible"}) {
 		t.Fatalf("cues %v: the start cue before the mute, the stop cue after it", got)
 	}
 	for _, end := range []session.State{session.Cancelled, session.Failed} {
@@ -170,7 +170,7 @@ func TestRecordingMuteWithoutSounds(t *testing.T) {
 	// A start cue that does not end mutes once its audible part played
 	// (startCueWait: Tally's 0.35 s, not its file's 0.45 s); one that ends
 	// after the recording stopped mutes nothing (its engage is late).
-	r.updateSettings(func(s *settings.Settings) { s.Audio.Sounds = true })
+	r.updateSettings(func(s *settings.Settings) { s.Audio.Sounds, s.Audio.StartSound = true, "tally" })
 	block := make(chan struct{})
 	defer close(block)
 	r.playSound = func(sounds.Target) { <-block }

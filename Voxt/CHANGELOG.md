@@ -11,6 +11,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Changed
 
 - **Plainer text across the app**: about 300 English strings stop chaining clauses with colons and semicolons and leave out details nobody needs, about 360 Chinese strings read as written in Chinese and name each thing one way, and about 50 help texts that only said what the page already shows are gone. In Chinese, Rewrite is now 改写 (转写 also meant a transcript), a transcript is 转录稿, speech models are 语音识别模型 and an app is always App.
+- **Sound: Built-in, macOS or None** (Settings → Audio): one choice says where the recording's start and stop sounds come from. Built-in lists six pairs of a start and a stop sound, each to try with ▶ and pick with a click; macOS picks a system sound for each; None plays nothing. The default pair is now Pebble and Nib, softer than Tally and Wrap. The panel of sounds by group, tag and search is gone, and so is Use Voxt 1.x's sounds: macOS starts on Pop and Tink.
 
 ### 中文
 
@@ -21,6 +22,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 变更
 
 - **中英文文案过了一遍**：约 300 条英文不再用冒号、分号把几句硬连在一起，也删掉了用不着的细节；约 360 条中文去掉了翻译腔，同一个东西只用一种叫法；约 50 条只是重复界面内容的说明删掉了。Rewrite 改叫“改写”（原来的“转写”也指转录稿），会议和文件的 transcript 统一叫“转录稿”，语音模型统一叫“语音识别模型”，app 统一写作“App”。
+- **音效：自带、系统或无**（设置 → 音频）：一个选项决定录音开始和结束的提示音从哪里来。“自带”列出 6 组成对的开始音和结束音，点 ▶ 试听，点一下选中；“系统”给开始和结束各选一个 macOS 声音；“无”就不响。默认换成更轻的 Pebble 和 Nib（原来是 Tally 和 Wrap）。按分组、标签和搜索找声音的面板去掉了，“使用 Voxt 1.x 的提示音”也去掉了：选“系统”默认就是 Pop 和 Tink。
 
 ## [2.0.2] - 2026-11-09
 

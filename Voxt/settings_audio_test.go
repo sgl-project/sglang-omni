@@ -163,7 +163,7 @@ func TestRecordingCues(t *testing.T) {
 		start, stop string
 		want        [2]string
 	}{
-		{"", "", [2]string{"tally", "wrap"}},
+		{"", "", [2]string{"pebble", "nib"}},
 		{"pebble", "system:Tink", [2]string{"pebble", "Tink"}},
 		{"none", "ghost", [2]string{"", "Tink"}},
 	} {
@@ -195,7 +195,7 @@ func TestSessionSounds(t *testing.T) {
 	a.mute.Wait()
 	mu.Lock()
 	defer mu.Unlock()
-	if want := []string{"tally", "wrap", "tally"}; !slices.Equal(cues, want) {
+	if want := []string{"pebble", "nib", "pebble"}; !slices.Equal(cues, want) {
 		t.Fatalf("cues %q, want %q", cues, want)
 	}
 	// Other sounds: a system sound to start, a family sound to stop.
