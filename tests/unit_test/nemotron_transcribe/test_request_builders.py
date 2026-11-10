@@ -114,6 +114,43 @@ def test_audio_placeholders_and_offsets_match_encoded_duration() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("language", "name"),
+    [
+        ("en", "English"),
+        ("en-US", "English"),
+        ("de_DE", "German"),
+        ("zh-Hans-CN", "Chinese"),
+    ],
+)
+def test_a_known_language_is_named_in_the_default_instruction(
+    language: str, name: str
+) -> None:
+    tokenizer = FakeTokenizer()
+    build_request, _ = make_scheduler_adapters(tokenizer=tokenizer, max_new_tokens=32)
+    build_request(make_payload({"language": language}))
+    assert tokenizer.messages == [
+        {
+            "role": "user",
+            "content": f"<|audio|>\n{DEFAULT_PROMPT} The speech is in {name}.",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "parameters",
+    [{"language": "xx"}, {"language": "en us"}, {"language": "en", "prompt": "Hi."}],
+)
+def test_unknown_languages_and_client_prompts_get_no_language_hint(
+    parameters: dict[str, object],
+) -> None:
+    tokenizer = FakeTokenizer()
+    build_request, _ = make_scheduler_adapters(tokenizer=tokenizer, max_new_tokens=32)
+    build_request(make_payload(parameters))
+    content = tokenizer.messages[-1]["content"]
+    assert "The speech is in" not in content
+
+
 def test_non_negative_seed_reaches_the_decoder_sampler() -> None:
     build_request, _ = make_scheduler_adapters(
         tokenizer=FakeTokenizer(), max_new_tokens=32

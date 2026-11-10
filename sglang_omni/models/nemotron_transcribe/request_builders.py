@@ -34,6 +34,7 @@ from sglang_omni.models.nemotron_transcribe.hf_config import (
     num_audio_frames,
     num_audio_tokens,
 )
+from sglang_omni.models.nemotron_transcribe.languages import language_name
 from sglang_omni.models.nemotron_transcribe.speaker_attribution import (
     activity_rows,
     attribute_speakers,
@@ -57,6 +58,7 @@ DEFAULT_PROMPT = (
     "abbreviations, numbers, dates, measurements, acronyms, and technical terms "
     "as clearly as possible. Keep the same language as spoken and do not translate."
 )
+LANGUAGE_HINT = "The speech is in {language}."
 # Near-digital silence: quieter than recorded speech, louder than dither.
 SILENCE_PEAK = 1e-3
 SILENCE_RMS = 3e-5
@@ -108,6 +110,15 @@ def decode_tokens(tokenizer: PreTrainedTokenizerBase, ids: list[int]) -> str:
     return tokenizer.decode(
         ids, skip_special_tokens=False, clean_up_tokenization_spaces=False
     )
+
+
+def default_instruction(language: str | None) -> str:
+    """The served instruction, naming the spoken language when the request gives one."""
+    name = language_name(language)
+    if name is None:
+        return DEFAULT_PROMPT
+    else:
+        return f"{DEFAULT_PROMPT} {LANGUAGE_HINT.format(language=name)}"
 
 
 def is_silent(waveform: npt.NDArray[np.floating]) -> bool:
@@ -251,7 +262,11 @@ def make_scheduler_adapters(
         else:
             pass
 
-        instruction = str(params.get("prompt") or DEFAULT_PROMPT)
+        instruction = default_instruction(params.get("language"))
+        if params.get("prompt"):
+            instruction = str(params["prompt"])
+        else:
+            pass
         prompt_ids = render_prompt_ids(
             tokenizer, instruction, str(params.get("system_prompt") or "")
         )

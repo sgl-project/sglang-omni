@@ -53,7 +53,7 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
 
 The served text drops reasoning markers, runs of `<unk>`, and an assistant refusal appended after the speech; speaker, event, and style tags stay. An upload whose peak is under -60 dBFS and whose RMS is under -90 dBFS returns an empty transcript without decoding it.
 
-The default instruction asks for a verbatim transcript in the spoken language. Supply `prompt` to replace that instruction:
+The default instruction asks for a verbatim transcript in the spoken language. A `language` tag such as `en`, `de-DE`, or `zh-CN` appends a sentence naming the language, for example `The speech is in German.`, when the tag is one of the 40 languages in `sglang_omni/models/nemotron_transcribe/languages.py`; any other tag leaves the instruction unchanged. Supply `prompt` to replace that instruction; a custom prompt is sent as written:
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/transcriptions \
