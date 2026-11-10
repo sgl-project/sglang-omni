@@ -6,12 +6,14 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
+- **Use transcript while the language model works, and a longer wait if you need it**: while Transcribe or Translate waits for the language model, the overlay shows Use transcript; click it or press the cancel shortcut (Esc unless you changed it) to insert the recognised text right away. When a translation of speech runs out of time, the recognised speech is inserted with a warning, as Transcribe already did. Language models → Wait for the language model sets how long Voxt waits at least (Automatic, 1, 2, 5 or 10 minutes) for Transcribe, Translate and Rewrite.
 - **Voxt 1.x on Apple silicon updates to Voxt 2 by itself**: each release also has the app as `Voxt-X.Y.Z-macOS.zip`, which Voxt 1.x's in-app update installs on a Mac with Apple silicon (first for those who turned on Beta Updates, then for everyone there) and the Homebrew cask (`brew install --cask hehehai/tap/voxt`, Apple silicon only) installs. Voxt 1.x on an Intel Mac is not offered Voxt 2, which does not run there, and stays on Voxt 1.x. After the update, allow the microphone and accessibility again: macOS sees Voxt 2 as another app.
 
 ### 中文
 
 #### 新增
 
+- **语言模型处理时可以直接用识别原文，也可以让它多等一会**：转录或翻译在等语言模型时，浮窗显示“用识别原文”，点它或按取消键（默认 Esc），马上插入识别出的原文。语音翻译超时后插入识别原文并提示，和转录一样。语言模型页的“等待语言模型”设置转录、翻译、改写至少等多久（自动、1、2、5、10 分钟）。
 - **Apple 芯片上的 Voxt 1.x 自己更新到 Voxt 2**：每个版本还附带 app 的 `Voxt-X.Y.Z-macOS.zip`，在 Apple 芯片的 Mac 上，Voxt 1.x 的应用内更新安装它（先给打开了“Beta 更新”的用户，再给其他人），Homebrew 的 cask（`brew install --cask hehehai/tap/voxt`，只支持 Apple 芯片）也装它。Intel Mac 上的 Voxt 1.x 不会收到 Voxt 2（Voxt 2 不能在 Intel 上运行），继续用 Voxt 1.x。更新后要重新允许麦克风和辅助功能：macOS 把 Voxt 2 当成另一个 app。
 
 ## [2.0.3] - 2026-11-10

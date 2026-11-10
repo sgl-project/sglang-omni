@@ -73,3 +73,11 @@
 - **应看到**：说话时和模型生成时，浮窗都不显示文字；结果照常插入，答案卡片照常显示结果。
 - **边界**：关掉后再打开，下一次录音就会恢复显示实时文字。
 - **覆盖**：`TestLiveTextSwitch`、`TestLiveTextCard`、`TestLiveTextNoLLMDraft`；手测 9.4、9.13。
+
+## S10. 语言模型太慢时直接用识别原文
+
+- **起点**：录了一段长话，语言模型半天没整理完。
+- **操作**：转录或语音翻译停止录音后，浮窗显示“整理中”时点“用识别原文”，或按取消键（默认 Esc）。另试：语言模型页 → “等待语言模型”选 5 分钟。
+- **应看到**：马上插入识别原文，没有警告；历史记一条成功的记录。选了等待时长后，模型慢也会等到这个时长；语音翻译超时后插入识别原文并提示“语言模型没有及时响应”。
+- **边界**：改写在处理时没有这个按钮，按取消键仍然取消整段；选区翻译也没有；没有按钮时浮窗照旧让鼠标穿过。
+- **覆盖**：`TestSkipLLMPill`、`TestSkipLLMEndToEnd`、`TestLLMWaitRow`；`internal/session` 的 `TestSkipLLM`、`TestLLMWaitSetting`、`TestTranslateTimeoutKeepsSpeech`。

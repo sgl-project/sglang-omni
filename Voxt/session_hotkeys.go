@@ -102,6 +102,10 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 	case hotkey.Stop:
 		a.stopSession()
 	case hotkey.Cancel:
+		if a.sess.State == session.Composing && a.sess.CanSkip {
+			a.skipLLM() // the preview's Use transcript (#3821)
+			return
+		}
 		a.cancelSession()
 	case hotkey.Paste:
 		a.pasteLast(target)
