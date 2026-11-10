@@ -23,10 +23,24 @@ from sglang_omni.utils.device import resolve_concrete_device
 
 def create_preprocessing_executor(
     model_path: str,
+    *,
+    codec_path: str | None = None,
+    device: str | None = None,
+    gpu_id: int | None = None,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     ensure_moss_speech_config_registered()
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=False)
-    return SimpleScheduler(partial(preprocess_request, tokenizer=tokenizer))
+    codec = (
+        MossSpeechCodec(
+            codec_path, resolve_concrete_device(device, gpu_id), load_decoder=False
+        )
+        if codec_path is not None
+        else None
+    )
+    return SimpleScheduler(
+        partial(preprocess_request, tokenizer=tokenizer, audio_encoder=codec),
+        shutdown_callback=codec.close if codec is not None else None,
+    )
 
 
 def create_ar_engine_executor(
@@ -53,6 +67,7 @@ def create_ar_engine_executor(
 
 
 def create_audio_vocoder_executor(
+    model_path: str,
     *,
     codec_path: str | None,
     device: str | None = None,
@@ -63,4 +78,7 @@ def create_audio_vocoder_executor(
     else:
         pass
     codec = MossSpeechCodec(codec_path, resolve_concrete_device(device, gpu_id))
-    return SimpleScheduler(codec.decode, shutdown_callback=codec.close)
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=False)
+    return SimpleScheduler(
+        partial(codec.decode, tokenizer=tokenizer), shutdown_callback=codec.close
+    )

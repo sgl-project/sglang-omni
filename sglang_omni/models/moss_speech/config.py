@@ -33,15 +33,18 @@ class MossSpeechVocoderStage(StageConfig):
 class MossSpeechPipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = "MossSpeechForCausalLM"
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+        "preprocessing": MossSpeechVocoderStage,
         "ar_engine": EngineStageConfig,
         "audio_vocoder": MossSpeechVocoderStage,
     }
     entry_stage: str | None = "preprocessing"
     stages: list[StageConfig] = [
-        StageConfig(
+        MossSpeechVocoderStage(
             name="preprocessing",
             process="preprocessing",
             factory_path=f"{PACKAGE}.stages.create_preprocessing_executor",
+            gpu=0,
+            gpu_memory_fraction=0.08,
             next="ar_engine",
         ),
         EngineStageConfig(
