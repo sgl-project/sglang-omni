@@ -66,6 +66,9 @@ mlx::core::array Gelu(const mlx::core::array &x);
 // GELU's tanh approximation, mlx.nn.gelu_approx.
 mlx::core::array TanhGelu(const mlx::core::array &x);
 mlx::core::array Silu(const mlx::core::array &x);
+// Silu(gate) * up, the gated MLP's activation.
+mlx::core::array Swiglu(const mlx::core::array &gate,
+                        const mlx::core::array &up);
 
 // A mixture of experts' outputs [tokens, experts_per_token, width] for hidden
 // [tokens, width] routed to indices [tokens, experts_per_token]. run_experts

@@ -42,6 +42,10 @@ std::vector<mx::array> SiluGraph(const std::vector<mx::array> &inputs) {
   return {mx::multiply(inputs[0], mx::sigmoid(inputs[0]))};
 }
 
+std::vector<mx::array> SwigluGraph(const std::vector<mx::array> &inputs) {
+  return {mx::multiply(SiluGraph({inputs[0]})[0], inputs[1])};
+}
+
 } // namespace
 
 mx::array Scalar(float value, mx::Dtype dtype) {
@@ -67,6 +71,13 @@ mx::array TanhGelu(const mx::array &x) {
 mx::array Silu(const mx::array &x) {
   static const auto compiled = mx::compile(SiluGraph, true);
   return compiled({x})[0];
+}
+
+// Note (XXXXRT666): one kernel instead of Silu's and the multiply's, which
+// takes a dependent dispatch per layer off a decode step.
+mx::array Swiglu(const mx::array &gate, const mx::array &up) {
+  static const auto compiled = mx::compile(SwigluGraph, true);
+  return compiled({gate, up})[0];
 }
 
 mx::array RouteToExperts(const mx::array &hidden, const mx::array &indices,
