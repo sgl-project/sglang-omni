@@ -291,3 +291,4 @@ Auralink 的这一节对照的是远程 ASR / LLM 服务（豆包、阿里百炼
 | 剪贴板恢复 | 用 changeCount 判断剪贴板是不是自己写的 | 保留（helper 的 `textio.paste`，§4.5） | 避免覆盖用户在这期间复制的内容 | ✅ |
 | 会议存储（C1） | 1.x 会议表 + 句子 FTS | `meetings` / `meeting_segments`（迁移 **007**；006 已被笔记占用）、`Store.Meetings()`；尚无 UI 或调用方（C1-1b-store） | 设计 design-C1 §4.10 | ✅ C1-1b-store |
 | 会议录音骨架（C1-1b） | 1.x 会议列表 + 浮窗 + 设置 | 开发版：会议页、开始会议、采集模式、浮窗暂停/结束/取消（确认）、保存历史关时询问；`Features.Meeting` 快捷键；菜单「开始会议」；存储页统计 `meetings/`；清除全部含会议 | 入口等 C1-10；无实时字幕（C1-2） | ✅ C1-1b |
+| 会议实时句子（#3431） | 停顿 0.75 s 把当时的整句提交成一句；模型随后改了句尾的字，下一句只认“提交的整句是新文字的前缀”或“与新文字开头重叠”两种情况，都不满足就把整句再出一遍（`MeetingMLXNativeLiveSession.uncommittedSuffix`） | `meeting.uncommittedSuffix`：按和已提交文字的最长公共前缀（对齐到字符）切，下一句只出前缀之后的字；已提交的那句不回改。识别流轮换时清空已提交文字，新流的字全部算新的 | 1.x 停顿后句尾被改，下一句会从头重复整句（#3431）；回改已出的句子要先定实时句子怎么显示修订，这次不做。结束后的整段识别不受影响 | ✅ `TestCommitterPauseRevisedTail`、`TestLiveRotateStartsFreshText` |
