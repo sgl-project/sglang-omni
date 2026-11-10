@@ -28,6 +28,21 @@ def wait_barrier(barrier, phase):
 
 
 @cute.jit
+def wait_cluster_barrier(barrier, phase):
+    """Wait for a phase that peer CTAs complete, acquiring at cluster scope.
+
+    The complete-tx of a peer's st.async releases at cluster scope and the
+    default CTA-scope wait does not synchronize with it, so the mailbox reads
+    after the wait would be unordered against the peers' stores.
+    """
+    while not p.mbarrier_try_wait_parity(
+        barrier, phase, scope=p.MBarrierScope.CLUSTER, order=p.MemOrder.RELAXED
+    ):
+        pass
+    p.fence_sync_restrict(p.MemOrder.ACQUIRE)
+
+
+@cute.jit
 def prefetch_gate_up(weights, bars, weight_map, tile, thread):
     """Prefetch a resident 128-KiB gate/up tile."""
     if thread == 0:
@@ -314,7 +329,7 @@ def scatter_partial(
             )
     else:
         pass
-    wait_barrier(ready.subview(phase), 0)
+    wait_cluster_barrier(ready.subview(phase), 0)
 
 
 @cute.jit
