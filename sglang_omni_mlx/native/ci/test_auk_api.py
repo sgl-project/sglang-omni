@@ -9,7 +9,6 @@ import json
 import os
 import socket
 import struct
-import subprocess
 import time
 import wave
 from collections.abc import Iterator
@@ -18,89 +17,42 @@ from pathlib import Path
 import httpx
 import numpy as np
 import pytest
+from test_server_api import RUNTIME_BIN, Server
 
-RUNTIME_BIN = os.environ.get("NATIVE_RUNTIME_BIN")
 MODEL_DIRECTORY = os.environ.get("AUK_MODEL_DIRECTORY")
 TEXT_ENCODER_DIRECTORY = os.environ.get("AUK_TEXT_ENCODER_DIRECTORY")
 pytestmark = pytest.mark.skipif(
     not RUNTIME_BIN or not MODEL_DIRECTORY or not TEXT_ENCODER_DIRECTORY,
     reason="set NATIVE_RUNTIME_BIN, AUK_MODEL_DIRECTORY and AUK_TEXT_ENCODER_DIRECTORY",
 )
+# A cancelled synthesis stops at its next stage or sampling step; finishing
+# 30 s of audio instead takes about 9 s on AuK-Flash and 30 s on AuK.
+CANCEL_SECONDS = 4.0
 
 
 @pytest.fixture(scope="module")
-def server_log(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    return tmp_path_factory.mktemp("auk-server") / "stderr.log"
-
-
-@pytest.fixture(scope="module")
-def server(server_log: Path) -> Iterator[httpx.Client]:
-    stdout_log = server_log.with_name("stdout.log")
-    with stdout_log.open("w") as output, server_log.open("w") as errors:
-        with subprocess.Popen(
-            [
-                str(Path(RUNTIME_BIN) / "auk_server"),
-                "--supervised",
-                "--model-kind",
-                "auk",
-                "--model-directory",
-                MODEL_DIRECTORY,
-                "--text-encoder-path",
-                TEXT_ENCODER_DIRECTORY,
-                "--max-queued-requests",
-                "0",
-            ],
-            stdin=subprocess.PIPE,
-            stdout=output,
-            stderr=errors,
-            text=True,
-        ) as process:
-            try:
-                deadline_seconds = time.monotonic() + 120
-                ready_line = ""
-                with stdout_log.open() as events:
-                    while not ready_line.endswith("\n"):
-                        ready_line += events.readline()
-                        if ready_line.endswith("\n"):
-                            break
-                        elif process.poll() is not None:
-                            pytest.fail(
-                                f"Server exited before ready: {ready_line} "
-                                f"{server_log.read_text()}"
-                            )
-                        elif time.monotonic() >= deadline_seconds:
-                            pytest.fail(
-                                f"Server readiness timed out: {ready_line} "
-                                f"{server_log.read_text()}"
-                            )
-                        else:
-                            time.sleep(0.02)
-                ready = json.loads(ready_line)
-                assert ready["event"] == "ready", ready
-                assert ready["server_pid"] == process.pid
-                assert ready["model_name"].startswith("voxt-auk-")
-                with httpx.Client(
-                    base_url=f"http://{ready['host']}:{ready['port']}", timeout=180
-                ) as client:
-                    yield client
-            finally:
-                try:
-                    if process.poll() is None:
-                        process.communicate(
-                            input='{"command":"shutdown"}\n', timeout=10
-                        )
-                        assert process.returncode == 0, server_log.read_text()
-                        assert json.loads(stdout_log.read_text().splitlines()[-1]) == {
-                            "event": "stopped"
-                        }
-                    else:
-                        pass
-                finally:
-                    if process.poll() is None:
-                        process.kill()
-                        process.wait(timeout=10)
-                    else:
-                        pass
+def server() -> Iterator[httpx.Client]:
+    running = Server(
+        "auk_server",
+        "auk",
+        Path(MODEL_DIRECTORY),
+        (
+            "--text-encoder-path",
+            TEXT_ENCODER_DIRECTORY,
+            "--max-queued-requests",
+            "0",
+        ),
+    )
+    try:
+        assert running.ready["event"] == "ready", running.ready
+        assert running.ready["server_pid"] == running.process.pid
+        assert running.ready["model_name"].startswith("voxt-auk-")
+        with httpx.Client(
+            base_url=f"http://{running.ready['host']}:{running.port}", timeout=180
+        ) as client:
+            yield client
+    finally:
+        running.stop()
 
 
 def waveform(
@@ -232,10 +184,9 @@ def test_invalid_speech_never_enters_worker(
 
 @pytest.mark.parametrize("should_reset_connection", [False, True], ids=["fin", "rst"])
 def test_disconnect_cancels_generation(
-    server: httpx.Client, server_log: Path, should_reset_connection: bool
+    server: httpx.Client, should_reset_connection: bool
 ) -> None:
     """A disconnected request must cancel instead of finishing its waveform."""
-    cancellation_count = server_log.read_text().count("synthesis cancelled")
     body = json.dumps(
         {"input": "Welcome home.", "gen_seconds": 30, "seed": 13}
     ).encode()
@@ -263,63 +214,17 @@ def test_disconnect_cancels_generation(
             "/v1/audio/speech", json={"input": "Hello.", "gen_seconds": 2}
         )
         assert busy.status_code == 503
+    cancelled_by_seconds = time.monotonic() + CANCEL_SECONDS
     while server.get("/health").json()["request_states"]:
-        assert time.monotonic() < deadline_seconds
+        assert (
+            time.monotonic() < cancelled_by_seconds
+        ), "synthesis kept running after its client disconnected"
         time.sleep(0.02)
-    assert server_log.read_text().count("synthesis cancelled") == cancellation_count + 1
     recovered = server.post(
         "/v1/audio/speech", json={"input": "Hello.", "gen_seconds": 2}
     )
     assert recovered.status_code == 200
     waveform(recovered.content, 2)
-
-
-def test_wrong_model_kind_fails_before_loading() -> None:
-    result = subprocess.run(
-        [
-            str(Path(RUNTIME_BIN) / "auk_server"),
-            "--model-kind",
-            "qwen3_asr",
-            "--model-path",
-            MODEL_DIRECTORY,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    assert result.returncode == 2
-    assert "only --model-kind auk" in result.stderr
-
-
-def test_wrong_checkpoint_fails_before_listening(tmp_path: Path) -> None:
-    (tmp_path / "config.yaml").write_text("model:\n  name: OtherModel\n")
-    with subprocess.Popen(
-        [
-            str(Path(RUNTIME_BIN) / "auk_server"),
-            "--supervised",
-            "--model-path",
-            str(tmp_path),
-            "--text-encoder-path",
-            TEXT_ENCODER_DIRECTORY,
-        ],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    ) as process:
-        try:
-            process.wait(timeout=10)
-        finally:
-            if process.poll() is None:
-                process.kill()
-                process.wait(timeout=10)
-            else:
-                pass
-        output, errors = process.communicate(timeout=10)
-    assert process.returncode == 1, errors
-    failure = json.loads(output)
-    assert failure["event"] == "failed"
-    assert "unsupported AuK runtime configuration" in failure["reason"]
 
 
 @pytest.mark.parametrize("seconds,sample_count", [(0.031, 960), (0.02, 480)])

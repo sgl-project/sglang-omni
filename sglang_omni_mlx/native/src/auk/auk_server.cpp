@@ -20,7 +20,6 @@
 #include <cmath>
 #include <filesystem>
 #include <functional>
-#include <iostream>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -86,7 +85,6 @@ private:
                const speech_service::SpeechContext &context) {
       const auto check_cancelled = [&context] {
         if (context.cancel.load()) {
-          std::cerr << "synthesis cancelled\n";
           throw qwen3_asr::TranscriptionCancelled();
         } else {
         }
