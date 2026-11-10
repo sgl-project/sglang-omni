@@ -77,10 +77,17 @@ Model::SamplingRecipe Model::ReadSamplingRecipe(const nlohmann::json &config,
       (dtype != mx::float32 && dtype != mx::bfloat16)) {
     throw std::invalid_argument("unsupported AuK runtime configuration");
   } else if (config.at("name") == "AuK-Flash") {
-    return {kFlashSteps, kFlashGuidanceStrength, std::nullopt,
-            std::vector<float>(kFlashTimeGrid.begin(), kFlashTimeGrid.end())};
+    mx::array times(kFlashTimeGrid.data(),
+                    {static_cast<int>(kFlashTimeGrid.size())});
+    mx::eval(times);
+    return {times, kFlashGuidanceStrength};
   } else {
-    return {kAukSteps, kAukGuidanceStrength, kAukSwayCoefficient, {}};
+    mx::array times = mx::linspace(0, 1, kAukSteps + 1, mx::float32);
+    times = times + mx::array(kAukSwayCoefficient) *
+                        (mx::cos(mx::array(static_cast<float>(M_PI_2)) * times) -
+                         mx::array(1.0f) + times);
+    mx::eval(times);
+    return {times, kAukGuidanceStrength};
   }
 }
 
@@ -160,9 +167,8 @@ Model::Synthesize(const SynthesisRequest &request,
                                         mx::float32, generation_key);
   const auto latents =
       diffusion.Sample(conditioning, reference_latents, reference_length, noise,
-                       sampling_recipe.steps, sampling_recipe.guidance_strength,
-                       sampling_recipe.sway_coefficient,
-                       sampling_recipe.time_grid, check_cancelled);
+                       sampling_recipe.times, sampling_recipe.guidance_strength,
+                       check_cancelled);
   if (!mx::all(mx::isfinite(latents)).item<bool>()) {
     throw std::runtime_error("AuK produced non-finite latents");
   } else {

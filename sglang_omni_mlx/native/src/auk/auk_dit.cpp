@@ -352,33 +352,17 @@ mx::array DiT::Predict(const mx::array &latents,
 
 mx::array DiT::Sample(const mx::array &conditioning,
                       const std::optional<mx::array> &reference,
-                      int reference_length, const mx::array &noise, int steps,
-                      float guidance_strength,
-                      std::optional<float> sway_coefficient,
-                      const std::vector<float> &time_grid,
+                      int reference_length, const mx::array &noise,
+                      const mx::array &times, float guidance_strength,
                       const std::function<void()> &check_cancelled) const {
   if (noise.ndim() != 2 || noise.shape(0) < 1 ||
       noise.shape(1) !=
           checkpoint_.Weight("transformer.proj_out.weight").shape(0)) {
     throw std::invalid_argument(
         "AuK noise must contain positive frames and latent channels");
-  } else if (time_grid.empty() ? steps < 1 : time_grid.size() < 2) {
-    throw std::invalid_argument(
-        "AuK sampling requires a positive step count or a time grid");
   } else {
   }
   check_cancelled();
-  mx::array times =
-      time_grid.empty()
-          ? mx::linspace(0, 1, steps + 1, mx::float32)
-          : mx::array(time_grid.data(), {static_cast<int>(time_grid.size())});
-  if (time_grid.empty() && sway_coefficient) {
-    times =
-        times + mx::array(*sway_coefficient) *
-                    (mx::cos(mx::array(static_cast<float>(M_PI_2)) * times) -
-                     mx::array(1.0f) + times);
-  } else {
-  }
   const bool use_guidance = guidance_strength >= 1e-5f;
   const mx::array projected_text = ProjectText(conditioning);
   const auto prepared =

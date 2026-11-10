@@ -43,10 +43,8 @@ public:
 
 private:
   struct SamplingRecipe {
-    int steps;
+    mlx::core::array times;
     float guidance_strength;
-    std::optional<float> sway_coefficient;
-    std::vector<float> time_grid;
   };
   Model(const nlohmann::json &config,
         const std::filesystem::path &model_directory,

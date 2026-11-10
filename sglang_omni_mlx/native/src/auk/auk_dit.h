@@ -5,7 +5,6 @@
 #include <filesystem>
 #include <functional>
 #include <optional>
-#include <vector>
 
 #include "common/layers.h"
 
@@ -27,9 +26,8 @@ public:
   mlx::core::array Sample(const mlx::core::array &conditioning,
                           const std::optional<mlx::core::array> &reference,
                           int reference_length, const mlx::core::array &noise,
-                          int steps, float guidance_strength,
-                          std::optional<float> sway_coefficient,
-                          const std::vector<float> &time_grid,
+                          const mlx::core::array &times,
+                          float guidance_strength,
                           const std::function<void()> &check_cancelled) const;
 
 private:
