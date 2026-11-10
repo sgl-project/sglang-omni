@@ -18,7 +18,7 @@ Open-source voice input for macOS, from the [SGLang-Omni](https://github.com/sgl
 
 [Install guide][install-guide] · [Changelog](CHANGELOG.md) · [Website](https://voxt.actnow.dev) · [Report a problem][issues] · [Slack][slack]
 
-<a href="https://youtu.be/ktJRE7AB2mU"><img src="https://img.youtube.com/vi/ktJRE7AB2mU/maxresdefault.jpg" width="720" alt="Watch the Voxt 2.0 launch video"></a>
+https://github.com/user-attachments/assets/8faf2c9b-a500-4d62-befc-0a82086883c1
 
 ▶ **Watch the Voxt 2.0 launch video**: [English](https://youtu.be/ktJRE7AB2mU) · [中文](https://youtu.be/mOwWavTSXu0)
 
