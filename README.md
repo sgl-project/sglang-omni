@@ -14,6 +14,19 @@
 
 --------------------------------------------------------------------------------
 
+<p align="center">
+<a href="https://lmsys.org/blog/"><b>Blog</b></a> |
+<a href="https://sgl-project.github.io/sglang-omni/"><b>Documentation</b></a> |
+<a href="#quick-start"><b>Quick Start</b></a> |
+<a href="https://sgl-project.github.io/sglang-omni/index.html"><b>Cookbook</b></a> |
+<a href="https://github.com/sgl-project/sglang"><b>SGLang</b></a> |
+<a href="https://slack.sglang.io"><b>Join Slack</b></a>
+</p>
+
+<p align="center">
+⭐ <b><a href="https://github.com/sgl-project/sglang-omni/stargazers">Star SGLang-Omni</a> to help more builders discover open infrastructure for multimodal and speech serving!</b>
+</p>
+
 ## News
 
 - [2026/11] 🎙️ [Voxt 2.0](./Voxt/README.md) redefines open-source voice interaction on Mac: voice input, any-to-any translation, and a local AI assistant, with a 92% shorter wait after long dictation than 1.x. \[[Download](https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v2.0.3)\] \[[Changelog](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/CHANGELOG.md)\]
@@ -33,19 +46,6 @@
 - [2026/06] 🔥 Higgs Audio v3 TTS for real-time, controllable speech. \[[Blog](https://lmsys.org/blog/2026-06-04-higgs-audio-v3-tts/)\] \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/higgs_tts.html)\]
 
 </details>
-
-<p align="center">
-<a href="https://lmsys.org/blog/"><b>Blog</b></a> |
-<a href="https://sgl-project.github.io/sglang-omni/"><b>Documentation</b></a> |
-<a href="#quick-start"><b>Quick Start</b></a> |
-<a href="https://sgl-project.github.io/sglang-omni/index.html"><b>Cookbook</b></a> |
-<a href="https://github.com/sgl-project/sglang"><b>SGLang</b></a> |
-<a href="https://slack.sglang.io"><b>Join Slack</b></a>
-</p>
-
-<p align="center">
-⭐ <b><a href="https://github.com/sgl-project/sglang-omni/stargazers">Star SGLang-Omni</a> to help more builders discover open infrastructure for multimodal and speech serving!</b>
-</p>
 
 ## About
 
