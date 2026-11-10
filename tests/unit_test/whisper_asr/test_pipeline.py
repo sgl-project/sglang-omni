@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,15 +13,18 @@ from sglang.srt.arg_groups import memory_hook
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.hardware_backend.npu import utils as npu_utils
 from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool
+from sglang.srt.server_args import ServerArgs
 from transformers import WhisperConfig
 
 import sglang_omni.model_runner.base as model_runner_base
+import sglang_omni.models.whisper_asr.config as whisper_asr_config
 import sglang_omni.models.whisper_asr.stages as whisper_asr_stages
 import sglang_omni.scheduling.bootstrap as bootstrap
 import sglang_omni.scheduling.omni_scheduler as omni_scheduler
 import sglang_omni.scheduling.sglang_backend as sglang_backend
 import sglang_omni.utils.cuda_graph_batch_validator as cuda_graph_batch_validator
 from sglang_omni import platforms
+from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.model_runner.whisper_prefill_cuda_graph_runner import (
     WhisperPrefillCudaGraphRunner,
 )
@@ -205,6 +209,65 @@ def test_whisper_encoder_decoder_attention_backend_defaults(
         assert "attention_backend" not in defaults
     else:
         assert defaults["attention_backend"] == expected_backend
+
+
+@pytest.mark.parametrize(
+    ("platform_type", "memory_fraction", "expected_memory_fraction"),
+    [
+        (NPUOmniPlatform, None, 0.50),
+        (CUDAOmniPlatform, None, 0.85),
+        (NPUOmniPlatform, 0.85, 0.85),
+        (CUDAOmniPlatform, 0.50, 0.50),
+    ],
+)
+def test_whisper_config_memory_default_and_overrides_reach_server_args(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    platform_type: type[OmniPlatform],
+    memory_fraction: float | None,
+    expected_memory_fraction: float,
+) -> None:
+    platform = platform_type()
+    monkeypatch.setattr(whisper_asr_config, "current_platform", platform)
+    monkeypatch.setattr(whisper_asr_builder, "current_platform", platform)
+    monkeypatch.setattr(platforms, "current_platform", platform)
+    monkeypatch.setattr(
+        memory_hook, "get_device_memory_capacity", lambda device: 64 * 1024
+    )
+    monkeypatch.setattr(npu_utils, "get_npu_memory_capacity", lambda: 64 * 1024)
+    WhisperConfig(architectures=["WhisperForConditionalGeneration"]).save_pretrained(
+        tmp_path
+    )
+    config = WhisperASRPipelineConfig(model_path=str(tmp_path))
+    if memory_fraction is not None:
+        config.stage_named("asr").engine.mem_fraction_static = memory_fraction
+    else:
+        pass
+
+    def build_server_args(
+        builder: WhisperASREngineBuilder,
+        checkpoint_dir: str,
+        *,
+        device: str | None,
+        gpu_id: int | None,
+        dtype: str,
+        server_args_overrides: Mapping[str, object] | None,
+    ) -> ServerArgs:
+        builder.encoder_token_count = 1500
+        overrides = build_generation_batch_overrides(
+            **builder.generation_defaults(dtype=dtype),
+            server_args_overrides=server_args_overrides,
+        )
+        builder.adjust_overrides(overrides)
+        return sglang_backend.build_sglang_server_args(
+            checkpoint_dir, context_length=1988, **overrides
+        )
+
+    monkeypatch.setattr(WhisperASREngineBuilder, "build", build_server_args)
+    server_args = whisper_asr_stages.create_sglang_whisper_asr_executor(
+        **resolve_stage_factory_args(config.stage_named("asr"), config)
+    )
+    assert resolved_view(server_args).mem_fraction_static == expected_memory_fraction
 
 
 def test_whisper_breakable_prefill_graph_policy() -> None:
@@ -554,6 +617,7 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(
     assert build_kwargs["chunked_prefill_size"] == 0
     assert build_kwargs["enable_custom_logit_processor"] is True
     assert build_kwargs["max_prefill_tokens"] == 6144
+    assert build_kwargs["mem_fraction_static"] == 0.85
     assert scheduler_kwargs["enable_async_decode"] is False
     assert scheduler_kwargs["async_decode_min_batch_size"] == 4
     assert build_kwargs["cuda_graph_backend_prefill"] == CudaGraphBackend.BREAKABLE
