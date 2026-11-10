@@ -33,6 +33,7 @@ func (a *app) remotePage(c *ui.Context) {
 			a.obBackBar(c, remotePath) // onboarding.go: left from the setup guide
 			caption(c, i18n.T("Voxt sends the language model the recognised or selected text, never your audio."))
 			a.providerCards(c, local.LLM)
+			a.llmWaitRow(c) // llm_wait.go
 			if ui.Button(c.Key("remote-debug"), i18n.T("Try prompts on a model…")).AlignSelf(ui.Start).Clicked() {
 				a.navigate(llmDebugPath)
 			}

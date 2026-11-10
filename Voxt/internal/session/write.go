@@ -78,7 +78,13 @@ func (r *run) write(raw, selection string) {
 	if len(r.req.Previous) > 0 {
 		o.card = deliver.ReasonCard
 	}
-	r.m.update(r, func(s *Snapshot) { s.State, s.Selection, s.Card = Composing, selection, o.card != "" && !r.req.Try })
+	// Translate's speech can go in as said, when the model is skipped or
+	// too slow (#3821); Rewrite's is an instruction, a selection is
+	// already there.
+	keepSpeech := kind == store.KindTranslate && selection == "" && raw != ""
+	r.m.update(r, func(s *Snapshot) {
+		s.State, s.Selection, s.Card, s.CanSkip = Composing, selection, o.card != "" && !r.req.Try, keepSpeech
+	})
 
 	// Can it replace the selection? If not, the answer streams into the
 	// card at once. Other answers go where the user is typing when they
@@ -116,6 +122,16 @@ func (r *run) write(raw, selection string) {
 		return
 	}
 	r.m.update(r, func(s *Snapshot) { s.Profile, s.Timings.LLM = profile, llmTime })
+	switch {
+	case r.skipped.Load():
+		r.logf("info", "the language model was skipped after %v: the speech goes on as recognised", llmTime.Round(time.Millisecond))
+		r.finish(Done, nil, raw, o)
+		return
+	case err != nil && keepSpeech && TimedOut(err):
+		r.logf("warning", "language model %s (model %s) did not answer in %v, the speech goes on as recognised: %v", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, llmTime.Round(time.Millisecond), err)
+		r.finish(Done, &Problem{Code: ProblemLLM, Err: err, Degraded: true}, raw, o)
+		return
+	}
 	if err != nil {
 		r.logf("warning", "language model %s (model %s) failed after %v: %v", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, llmTime.Round(time.Millisecond), err)
 		r.endWriteFailed(&Problem{Code: ProblemLLM, Err: err}, true)
@@ -150,7 +166,7 @@ func (r *run) askOrFallback(in compose.Input) (compose.Answer, string, bool, err
 	res, profile, truncated, err := r.ask(in)
 	// A used-up plan is the user's to manage: moving to another paid
 	// service without asking would spend it unseen.
-	if err == nil || r.svc.Fallback == nil || r.ctx.Err() != nil || llm.Code(err) == llm.CodeUsageLimit {
+	if err == nil || r.svc.Fallback == nil || r.ctx.Err() != nil || r.skipped.Load() || llm.Code(err) == llm.CodeUsageLimit {
 		return res, profile, truncated, err
 	}
 	r.logf("warning", "language model %s (model %s) failed: %v: asking the fallback %s (model %s)", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, err, r.svc.FallbackInfo.ID, r.svc.FallbackInfo.Model)
@@ -207,7 +223,7 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 	for _, t := range in.Previous { // note (luojiaxuan): a follow-up sends the earlier turns again, read before the first token
 		chars += utf8.RuneCountInString(t.Instruction + t.Selection + t.Answer.Title + t.Answer.Content)
 	}
-	resp, err := r.llmChat(cfg.llmDeadlines(req, chars, cfg.WriteTimeout))
+	resp, err := r.llmChat(cfg.llmDeadlines(req, chars, r.llmFloor(cfg.WriteTimeout)))
 	if err != nil {
 		return compose.Answer{}, out.Profile(), false, err
 	}

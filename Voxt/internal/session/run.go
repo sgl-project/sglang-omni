@@ -30,7 +30,12 @@ type run struct {
 	ctx       context.Context // the session's: cancelled by Cancel and at the end
 	cancel    context.CancelFunc
 	cancelled atomic.Bool
-	stop      chan struct{}
+	// llmCtx is the language model's requests': SkipLLM cancels it
+	// (llmStop), and skipped says so; the session goes on.
+	llmCtx  context.Context
+	llmStop context.CancelFunc
+	skipped atomic.Bool
+	stop    chan struct{}
 	// recorded is closed once listen's recording loop has the capture's
 	// end: the stream's Finish waits for it, so that the Final's answer
 	// never comes while that loop still runs.

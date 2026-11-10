@@ -129,6 +129,14 @@ func (a *app) cancelSession() {
 	}
 }
 
+// skipLLM inserts the recognised text of the live session in place of
+// the language model's answer (session.Manager's SkipLLM).
+func (a *app) skipLLM() {
+	if a.mgr != nil {
+		a.mgr.SkipLLM(a.sess.ID)
+	}
+}
+
 // toggleTranscribe is the menu bar's Start / Stop transcribing.
 func (a *app) toggleTranscribe() {
 	switch {

@@ -81,3 +81,11 @@
 - **应看到**：内容自动保存，重启后还在；“怎么使用”分别显示系统提示词、个人词典、你的输入、语音识别文本，再显示语言模型收到的消息，个人词典紧跟在系统提示词的任务规则后面；关掉“加到语言模型的提示词里”后示例里写“不发送”。
 - **边界**：编辑框为空、开关关掉或词典总开关关掉时都不发送；语音识别从来不收到它；原有词条和别名照常生效；用户自己写了完整提示词时也只加一次；200 行的表格整页滚动，不在编辑框里另出一个滚动条。
 - **覆盖**：`TestDictionaryNotes`、`TestPersonalDictionary`、`TestGoldenDictionary`、`TestDictionaryKeepsThePrefix`、`TestDictionaryMarkdown`、`TestDictionaryNotesUpgrade`；截图 `page-dictionary-notes*`。
+
+## S11. 语言模型太慢时直接用识别原文
+
+- **起点**：录了一段长话，语言模型半天没整理完。
+- **操作**：转录或语音翻译停止录音后，浮窗显示“整理中”时点“用识别原文”，或按取消键（默认 Esc）。另试：语言模型页 → “等待语言模型”选 5 分钟。
+- **应看到**：马上插入识别原文，没有警告；历史记一条成功的记录。选了等待时长后，模型慢也会等到这个时长；语音翻译超时后插入识别原文并提示“语言模型没有及时响应”。
+- **边界**：改写在处理时没有这个按钮，按取消键仍然取消整段；选区翻译也没有；没有按钮时浮窗照旧让鼠标穿过。
+- **覆盖**：`TestSkipLLMPill`、`TestSkipLLMEndToEnd`、`TestLLMWaitRow`；`internal/session` 的 `TestSkipLLM`、`TestLLMWaitSetting`、`TestTranslateTimeoutKeepsSpeech`。
