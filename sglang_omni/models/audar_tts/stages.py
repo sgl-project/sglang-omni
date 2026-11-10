@@ -236,8 +236,6 @@ def create_reference_encoder_executor(
 
 
 def resolve_gguf(model_path: str, filename: str, revision: str) -> str:
-    from huggingface_hub import hf_hub_download
-
     path = Path(model_path).expanduser()
     if path.is_file():
         return str(path)
@@ -252,6 +250,8 @@ def resolve_gguf(model_path: str, filename: str, revision: str) -> str:
         return str(candidate)
     else:
         pass
+    from huggingface_hub import hf_hub_download
+
     return hf_hub_download(repo_id=model_path, filename=filename, revision=revision)
 
 
