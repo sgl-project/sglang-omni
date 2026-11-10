@@ -65,6 +65,7 @@ class MossSpeechEngineBuilder(
         else:
             return {
                 "max_running_requests": max_running_requests,
+                "prefill_max_requests": 1,
                 "attention_backend": "flashinfer",
                 "dtype": dtype,
                 "cuda_graph_max_bs": max_running_requests,
