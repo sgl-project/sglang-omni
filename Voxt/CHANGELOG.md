@@ -42,6 +42,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **A connection test without an API key says why in words**: in a language model's dialog, Test connection with no key saved or typed now says "Paste the service's API key above, then test again." The ⓘ beside it now gives that whole sentence before the error's detail. Before, it showed only the error code (`llm.no_key provider="anthropic"`), and the message pointed you to the Language models page you were already on.
 
+### Fixed
+
+- **The command palette no longer offers Meetings in a release build.** Meetings is only in development builds, and choosing it in the palette opened a "Not found" page.
+
 ### 中文
 
 #### 修复
@@ -81,6 +85,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 
 - **没有 API Key 时测试连接，会用文字说明原因**：在语言模型的对话框里，没保存也没填写 Key 就点“测试连接”，提示改为“请在上方粘贴该服务的 API Key，然后再测试。”旁边的 ⓘ 先给出这句完整的话，再给错误详情。以前 ⓘ 只显示错误代码（`llm.no_key provider="anthropic"`），提示还让你去当前已经在的“语言模型”页。
+
+#### 修复
+
+- **正式版的命令面板不再列出“会议”。** 会议只在开发版里有，在命令面板里选它会打开“未找到”页面。
 
 ## [2.0.3] - 2026-11-10
 
