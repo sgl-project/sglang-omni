@@ -1,0 +1,1 @@
+Output: only the translation, without quotes, labels, notes, the source text or <input> tags. If there is nothing to translate, return an empty string.

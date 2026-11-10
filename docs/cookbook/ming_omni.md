@@ -12,7 +12,7 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 hf download inclusionAI/Ming-flash-omni-2.0
 ```
 
-For Intel GPUs, follow the [Ming-Omni XPU recipe](../get_started/installation_xpu.md#ming-omni-omni-chat-and-speech-one-or-two-xpus).
+For Intel GPUs, follow the [Ming-Omni XPU recipe](../other_platforms/installation_xpu.md#ming-omni-omni-chat-and-speech-one-or-two-xpus).
 
 The speech path expects the checkpoint to include the `talker/` assets, including `talker/data/voice_name.json` and `talker/vae/`. The default voice in the current Ming speech pipeline is `DB30`. `campplus.onnx` and `talker_tn` are optional runtime helpers: missing `campplus.onnx` disables speaker embedding extraction, and missing `talker_tn` falls back to identity text normalization.
 
@@ -231,6 +231,8 @@ The audio clip features a woman's voice, while the image depicts a woman and a d
 ```
 
 ### Video Input
+
+Video files decode on parallel decoders that share min(16, the preprocessing stage's CPUs) FFmpeg threads, split evenly among a request's videos. Set `--preprocessing.factory.video_decode_threads N` to choose that count. A value at or below the video reader's own threads (`TORCHCODEC_NUM_THREADS`, 8 by default) decodes each video on the reader alone.
 
 Video files use the same top-level request style. Limit frame count or pixel budget for predictable latency:
 

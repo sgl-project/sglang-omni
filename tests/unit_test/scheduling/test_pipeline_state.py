@@ -50,6 +50,27 @@ def test_build_usage_includes_total_and_rounded_engine_time() -> None:
     }
 
 
+def test_speech_usage_survives_state_transport_without_replacing_native_counts() -> (
+    None
+):
+    """Speech counters, including zero output, must survive the vocoder state handoff."""
+    state = DeclarativeStateBase(
+        prompt_tokens=3,
+        completion_tokens=2,
+        speech_input_tokens=9,
+        speech_output_tokens=0,
+    )
+    restored_state = DeclarativeStateBase.from_dict(state.to_dict())
+
+    assert build_usage(restored_state) == {
+        "prompt_tokens": 3,
+        "completion_tokens": 2,
+        "total_tokens": 5,
+        "speech_input_tokens": 9,
+        "speech_output_tokens": 0,
+    }
+
+
 def test_serialize_value_detaches_tensor_to_cpu() -> None:
     tensor = torch.tensor([1, 2], requires_grad=False)
 
@@ -292,6 +313,7 @@ def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
                 instructions="fast",
                 ref_audio={"path": "ref.wav"},
                 ref_text="ref",
+                speaker_embedding=[0.5, -0.25],
                 uploaded_voice_name="uploaded",
                 uploaded_voice_created_at=456,
                 x_vector_only_mode=True,

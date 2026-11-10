@@ -414,7 +414,9 @@ async def test_probe_closes_a_stream_past_its_byte_limit(
 
 
 @pytest.mark.asyncio
-async def test_probe_flags_generation_beyond_the_legacy_limit(tmp_path: Path) -> None:
+async def test_probe_flags_generation_beyond_only_the_requests_own_limit(
+    tmp_path: Path,
+) -> None:
     def answer(request: httpx.Request) -> httpx.Response:
         if request.method == "POST":
             return httpx.Response(
@@ -430,7 +432,7 @@ async def test_probe_flags_generation_beyond_the_legacy_limit(tmp_path: Path) ->
                 200,
                 json={
                     "request_id": "speech-1",
-                    "finish_reason": "length",
+                    "finish_reason": "stop",
                     "usage": {"completion_tokens": 3000},
                 },
             )
@@ -444,9 +446,10 @@ async def test_probe_flags_generation_beyond_the_legacy_limit(tmp_path: Path) ->
             range(1),
             True,
             tmp_path / "probe",
-            include_baseline=False,
         )
-    assert results[0].errors == ["Generation exceeded the 2048-frame limit"]
+    assert [result.policy for result in results] == ["baseline", "text"]
+    assert results[0].errors == ["Generation exceeded the request's 2048-frame limit"]
+    assert results[1].errors == []
 
 
 @pytest.mark.asyncio

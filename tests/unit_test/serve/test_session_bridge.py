@@ -2,6 +2,7 @@
 """SessionBridge: units become appends and Session outputs become realtime events."""
 
 import asyncio
+import logging
 from dataclasses import replace
 
 import numpy as np
@@ -10,6 +11,7 @@ import pytest
 from sglang_omni.admission import QueueFullError
 from sglang_omni.models.qwen3_omni.session_node import SESSION_PORTS as QWEN3_OMNI_PORTS
 from sglang_omni.models.streaming_cascade.config import StreamingCascadePipelineConfig
+from sglang_omni.pipeline.types import SessionIdleTimeoutError, SessionOutputBudgetError
 from sglang_omni.proto.session import SessionLimits
 from sglang_omni.proto.streams import (
     AUDIO,
@@ -61,6 +63,7 @@ from sglang_omni.serve.realtime.session_deployment import build_realtime_deploym
 from sglang_omni.serve.realtime.types import ProtocolError, RuntimeLimits, Unit
 from tests.unit_test.fixtures.session_client import PORTS, FakeSessionClient
 
+BRIDGE_LOGGER_NAME = "sglang_omni.serve.realtime.session_bridge"
 RATE = 16000
 UNIT_SAMPLES = 3200
 CONFIG = {"audio": {"input": {"format": {"type": "audio/pcm", "rate": RATE}}}}
@@ -402,6 +405,40 @@ async def test_reader_failure_reports_turn_failure_and_fails_the_next_unit():
     with pytest.raises(RuntimeError, match="output stream closed"):
         await h.bridge.process(unit(0))
     await h.bridge.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "code", "is_logged"),
+    [
+        (RuntimeError("talker step failed"), "internal", True),
+        (SessionIdleTimeoutError(300), "session_idle_timeout", False),
+        (SessionOutputBudgetError(), "output_budget_exhausted", False),
+        (
+            RuntimeError("context_exhausted: the session is full"),
+            "context_exhausted",
+            False,
+        ),
+    ],
+)
+async def test_reader_failure_reaches_the_client_with_its_own_code(
+    error: Exception,
+    code: str,
+    is_logged: bool,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A reader failure must reach the client under its own code, not internal, and only an unclassified one is logged with a traceback."""
+    h = Harness()
+    await h.open()
+    with caplog.at_level(logging.ERROR, logger=BRIDGE_LOGGER_NAME):
+        h.client.outputs.put_nowait(error)
+        await settle()
+    await h.bridge.close()
+
+    assert h.published[-1] == TurnFailure("server_error", code, str(error))
+    assert any(record.name == BRIDGE_LOGGER_NAME for record in caplog.records) == (
+        is_logged
+    )
 
 
 @pytest.mark.asyncio

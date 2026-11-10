@@ -174,6 +174,67 @@ class WindowEligibility(AudioFixture):
             self.assertIn(expect, " ".join(record["window"]["reasons"]))
             self.assertIsNone(out)
 
+    def test_rejection_recovery_requires_correlated_retry_before_audio(self) -> None:
+        """An uncorrelated rejection or late retry ack used to retain the export window."""
+        for scenario in ("recovered", "missing_error_id", "wrong_ack", "late_ack"):
+            with self.subTest(scenario=scenario):
+                records = list(
+                    map(json.loads, make_session_trace(self.pcm).splitlines())
+                )
+                acknowledgment = records[0]
+                acknowledgment["event"]["client_event_id"] = (
+                    "unknown" if scenario == "wrong_ack" else "retry"
+                )
+                if scenario == "late_ack":
+                    acknowledgment["time_s"] = TRACE_ORIGIN_S + 0.001
+                else:
+                    pass
+                error = {"code": "admission_rejected", "event_id": "initial"}
+                if scenario == "missing_error_id":
+                    error.pop("event_id")
+                else:
+                    pass
+                records.extend(
+                    [
+                        {
+                            "direction": "send",
+                            "time_s": TRACE_ORIGIN_S - 0.04,
+                            "event": {"type": "session.update", "event_id": "initial"},
+                        },
+                        {
+                            "direction": "receive",
+                            "time_s": TRACE_ORIGIN_S - 0.03,
+                            "event": {
+                                "type": "error",
+                                "sglang": {"fatal": False},
+                                "error": error,
+                            },
+                        },
+                        {
+                            "direction": "send",
+                            "time_s": TRACE_ORIGIN_S - 0.02,
+                            "event": {"type": "session.update", "event_id": "retry"},
+                        },
+                    ]
+                )
+                trace = "".join(
+                    json.dumps(record) + "\n"
+                    for record in sorted(records, key=lambda record: record["time_s"])
+                )
+                record, _, audio = self.analyze(self.pcm, trace)
+                if scenario == "recovered":
+                    self.assertTrue(
+                        record["window"]["valid"], record["window"]["reasons"]
+                    )
+                    self.assertIsNotNone(audio)
+                    self.assertIn(
+                        "admission_rejected",
+                        json.dumps(record["lifecycle"]["protocol_anomalies"]),
+                    )
+                else:
+                    self.assertFalse(record["window"]["valid"])
+                    self.assertIsNone(audio)
+
     def test_liveness_after_window_must_be_proven(self) -> None:
         record, _, _ = self.analyze(
             self.pcm, make_session_trace(self.pcm, close_offset_s=False)
@@ -458,6 +519,15 @@ class ReferenceExport(AudioFixture):
 
         output = self.root / "export"
         result = export_runs([run], output, "sglang")
+
+        self.assertEqual(
+            result["builder_sha256"]["oracle_models.py"],
+            hashlib.sha256(
+                Path(reference_audio.__file__)
+                .with_name("oracle_models.py")
+                .read_bytes()
+            ).hexdigest(),
+        )
 
         self.assertEqual(result["counts"]["eligible_variants"], 2)
         for variant in result["samples"][0]["variants"].values():

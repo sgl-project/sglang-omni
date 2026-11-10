@@ -33,7 +33,7 @@ import signal
 import socket
 import threading
 import time
-from collections.abc import Callable, Generator
+from collections.abc import Awaitable, Callable, Generator
 from contextlib import contextmanager, suppress
 from dataclasses import replace
 from types import FrameType
@@ -42,7 +42,7 @@ from typing import TypedDict
 import httpx
 import uvicorn
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sglang.srt.utils.network import NetworkAddress
 
 from sglang_omni.client import Client
@@ -53,6 +53,7 @@ from sglang_omni.models.model_capabilities import get_model_capabilities
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
 from sglang_omni.preprocessing.resource_connector import export_media_policy
+from sglang_omni.profiler.event_recorder import DEFAULT_FINALIZATION_TIMEOUT_SECONDS
 from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.profiler.profiler_control import ProfilerControlClient
 from sglang_omni.proto.messages import StreamMessage
@@ -63,7 +64,7 @@ from sglang_omni.serve.protocol import (
     CreateSpeechRequest,
 )
 from sglang_omni.serve.realtime.manager import RealtimeDeployment
-from sglang_omni.serve.realtime.types import RuntimeLimits
+from sglang_omni.serve.realtime.types import ProtocolError, RuntimeLimits
 from sglang_omni.serve.server_warmup import TranscriptionWarmupRequest
 from sglang_omni.serve.services import ServiceProcesses
 from sglang_omni.serve.stage_routes import (
@@ -367,6 +368,7 @@ class StartReq(BaseModel):
     config: dict[str, object] | None = None
     event_dir: str | None = None
     enable_torch: bool = True
+    event_buffer_capacity: int | None = Field(default=None, gt=0, strict=True)
 
 
 class StopReq(BaseModel):
@@ -376,6 +378,7 @@ class StopReq(BaseModel):
 class StartRequestProfileReq(BaseModel):
     run_id: str | None = None
     event_dir: str | None = None
+    event_buffer_capacity: int | None = Field(default=None, gt=0, strict=True)
 
 
 def default_event_dir(profiler_dir: str, run_id: str) -> str:
@@ -424,13 +427,23 @@ def mount_profiler_routes(
         if event_dir is not None:
             try:
                 _get_event_recorder().start(
-                    run_id=run_id, event_dir=event_dir, stage="coordinator"
+                    run_id=run_id,
+                    event_dir=event_dir,
+                    stage="coordinator",
+                    event_buffer_capacity=req.event_buffer_capacity,
                 )
-            except Exception:
+            except RuntimeError as exc:
+                logger.warning(
+                    "Failed to start coordinator request event recorder",
+                    exc_info=False,
+                )
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            except Exception as exc:
                 logger.warning(
                     "Failed to start coordinator request event recorder",
                     exc_info=True,
                 )
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
         else:
             pass
         await profiler_ctl.broadcast_start(
@@ -439,6 +452,9 @@ def mount_profiler_routes(
             config=req.config,
             event_dir=event_dir,
             enable_torch=req.enable_torch,
+            event_buffer_capacity=(
+                req.event_buffer_capacity if event_dir is not None else None
+            ),
         )
         return {
             "run_id": run_id,
@@ -468,18 +484,29 @@ def mount_profiler_routes(
             pass
         try:
             _get_event_recorder().start(
-                run_id=run_id, event_dir=event_dir, stage="coordinator"
+                run_id=run_id,
+                event_dir=event_dir,
+                stage="coordinator",
+                event_buffer_capacity=req.event_buffer_capacity,
             )
-        except Exception:
+        except RuntimeError as exc:
+            logger.warning(
+                "Failed to start coordinator request event recorder",
+                exc_info=False,
+            )
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
             logger.warning(
                 "Failed to start coordinator request event recorder",
                 exc_info=True,
             )
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
         await profiler_ctl.broadcast_start(
             run_id=run_id,
             trace_path_template="",
             event_dir=event_dir,
             enable_torch=False,
+            event_buffer_capacity=req.event_buffer_capacity,
         )
         return {"run_id": run_id, "event_dir": event_dir}
 
@@ -490,7 +517,7 @@ def mount_profiler_routes(
         recorder = _get_event_recorder()
         active = recorder.active_run_id() if recorder.is_active() else None
         if recorder.is_active() and (run_id is None or active == run_id):
-            recorder.stop(run_id=active)
+            recorder.stop(run_id=run_id, wait=False)
         else:
             pass
         await profiler_ctl.broadcast_stop(run_id=run_id)
@@ -503,7 +530,7 @@ def mount_profiler_routes(
         recorder = _get_event_recorder()
         active = recorder.active_run_id() if recorder.is_active() else None
         if recorder.is_active() and (run_id is None or active == run_id):
-            recorder.stop(run_id=active)
+            recorder.stop(run_id=run_id, wait=False)
         else:
             pass
         await profiler_ctl.broadcast_stop(run_id=run_id)
@@ -588,17 +615,19 @@ async def warm_up_server(
         ChatCompletionRequest | CreateSpeechRequest | TranscriptionWarmupRequest
     ],
     timeout_s: float,
+    realtime_warmup: Callable[[float], Awaitable[None]] | None = None,
 ) -> None:
     """Mark the server up once its warmup requests have crossed every stage.
 
     A fresh process builds kernels on its first request; this keeps that cost
-    off user requests. Every process then freezes the heap warmup built. A failed
-    warmup stops the server and raises; a shutdown that starts first drops the
-    request in flight and leaves the server down.
+    off user requests. The realtime deployment's warmup, when it has one, runs
+    after the requests. Every process then freezes the heap warmup built. A
+    failed warmup stops the server and raises; a shutdown that starts first
+    drops the work in flight and leaves the server down.
     """
     while not server.started:
         await asyncio.sleep(SERVER_START_POLL_S)
-    if not requests:
+    if not requests and realtime_warmup is None:
         app.state.server_status = ServerStatus.UP
         await freeze_serving_gc(server, coordinator)
         return
@@ -609,7 +638,28 @@ async def warm_up_server(
         is_warmed_up = await send_warmup_requests(
             server, base_url=base_url, requests=requests, timeout_s=timeout_s
         )
-    except (httpx.HTTPError, RuntimeError) as exc:
+        if is_warmed_up and realtime_warmup is not None:
+            warmup_task = asyncio.create_task(
+                asyncio.wait_for(realtime_warmup(timeout_s), timeout_s)
+            )
+            try:
+                while not warmup_task.done() and not server.should_exit:
+                    await asyncio.wait({warmup_task}, timeout=SERVER_START_POLL_S)
+                if warmup_task.done():
+                    warmup_task.result()
+                else:
+                    is_warmed_up = False
+            finally:
+                # note (Junnan Li): run_server cancels this coroutine on shutdown, and the warmup session must not outlive the pipeline.
+                if not warmup_task.done():
+                    warmup_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await warmup_task
+                else:
+                    pass
+        else:
+            pass
+    except (httpx.HTTPError, ProtocolError, RuntimeError, TimeoutError) as exc:
         logger.error(f"Server warmup failed, stopping the server: {exc!r}")
         server.should_exit = True
         raise
@@ -623,8 +673,9 @@ async def warm_up_server(
     gc.collect()
     app.state.server_status = ServerStatus.UP
     await freeze_serving_gc(server, coordinator)
+    realtime_note = "" if realtime_warmup is None else " and a realtime session"
     logger.info(
-        f"Server warmup of {len(requests)} request(s) finished in "
+        f"Server warmup of {len(requests)} request(s){realtime_note} finished in "
         f"{time.perf_counter() - start:.1f} s; the server is ready"
     )
 
@@ -643,6 +694,7 @@ async def run_server(
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
+    enable_speech_sse_named_events: bool = False,
     skip_server_warmup: bool = False,
 ) -> None:
     """Start the pipeline and run the OpenAI server.
@@ -753,6 +805,7 @@ async def run_server(
                 required_speech_reference_count=(
                     pipeline_config.required_speech_reference_count
                 ),
+                speaker_embedding_size=pipeline_config.resolve_speaker_embedding_size(),
                 speech_reference_text_required=(
                     pipeline_config.speech_reference_text_required
                 ),
@@ -771,6 +824,7 @@ async def run_server(
                 allowed_local_media_path=allowed_local_media_path,
                 allowed_media_domains=allowed_media_domains,
                 tts_batch_max_items=tts_batch_max_items,
+                enable_speech_sse_named_events=enable_speech_sse_named_events,
                 architectures=[pipeline_config.architecture],
                 audio_chunking=pipeline_config.resolved_audio_chunking,
                 interleaved_output=type(pipeline_config).interleaved_output,
@@ -818,6 +872,11 @@ async def run_server(
                     timeout_s=float(
                         os.environ.get("SGLANG_OMNI_WARMUP_TIMEOUT", "600")
                     ),
+                    realtime_warmup=(
+                        None
+                        if skip_server_warmup or realtime_deployment is None
+                        else realtime_deployment.warmup
+                    ),
                 )
             )
             try:
@@ -830,7 +889,28 @@ async def run_server(
                     await warmup_task
         finally:
             logger.info("Shutting down pipeline …")
-            await mp_runner.stop()
+            try:
+                await mp_runner.stop()
+            finally:
+                recorder = _get_event_recorder()
+                try:
+                    recorder.deactivate()
+                    finalization_complete = await asyncio.to_thread(
+                        recorder.wait_for_finalizations,
+                        DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
+                    )
+                    if not finalization_complete:
+                        logger.warning(
+                            f"Coordinator profiler event finalization did not finish "
+                            f"within {DEFAULT_FINALIZATION_TIMEOUT_SECONDS:g}s"
+                        )
+                    else:
+                        pass
+                except Exception:
+                    logger.warning(
+                        "Coordinator profiler cleanup failed during shutdown",
+                        exc_info=True,
+                    )
             logger.info("Pipeline stopped.")
 
 
@@ -902,6 +982,7 @@ def launch_server(
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
+    enable_speech_sse_named_events: bool = False,
     skip_server_warmup: bool = False,
 ) -> None:
     """Blocking helper: start the pipeline and OpenAI-compatible server.
@@ -926,8 +1007,9 @@ def launch_server(
         allowed_media_domains: Domains allowed for remote TTS reference audio.
         tts_batch_max_items: Maximum items accepted by
             ``/v1/audio/speech/batch``.
-        skip_server_warmup: Report ready without sending the pipeline's
-            warmup requests first.
+        enable_speech_sse_named_events: Add event names to speech SSE frames.
+        skip_server_warmup: Report ready without running the pipeline's
+            warmup requests or its realtime deployment's warmup first.
     """
     apply_gpu_compat_env_defaults()
     sigterm_received = False
@@ -953,6 +1035,7 @@ def launch_server(
             allowed_local_media_path=allowed_local_media_path,
             allowed_media_domains=allowed_media_domains,
             tts_batch_max_items=tts_batch_max_items,
+            enable_speech_sse_named_events=enable_speech_sse_named_events,
             skip_server_warmup=skip_server_warmup,
         )
         previous_handler = signal.getsignal(signal.SIGTERM)

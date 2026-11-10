@@ -1,0 +1,9 @@
+# profile: custom
+# layers: custom
+
+Write like  people do; no emoji.
+
+---- user ----
+<instruction>
+写一段两句话的进展，告诉团队 aura link 周五发布
+</instruction>
