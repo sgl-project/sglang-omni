@@ -58,9 +58,10 @@ type Decision struct {
 //   - Idle: a tap or double tap of a feature's binding starts it; a long
 //     press starts it on "down" and its "up" stops it; PasteLast pastes;
 //     Note starts a note (Decision.Feature Note).
-//   - Recording: any feature's binding stops (the "common stop"): a tap
-//     fires at once while active; the "up" of the long press that started
-//     the session stops it, other "up"s do nothing. The cancel shortcut
+//   - Recording: the shortcut that started the session fixed its mode; any
+//     feature's binding only stops (the "common stop"), never switches
+//     mode. A tap fires at once while active; the "up" of the long press
+//     that started the session stops it, other "up"s do nothing. Cancel
 //     cancels.
 //   - Busy: the cancel shortcut cancels; everything else waits.
 //

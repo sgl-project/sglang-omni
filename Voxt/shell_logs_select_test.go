@@ -334,7 +334,7 @@ func TestLogsKeys(t *testing.T) {
 	}
 	wantSelected(t, a)
 	// The filter keeps its own ⌘A.
-	if err := tt.Click("Filter the logs"); err != nil {
+	if err := tt.Click("Filter logs"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Key(ui.Cmd, ui.KeyA)
@@ -380,7 +380,7 @@ func TestLogsChinese(t *testing.T) {
 	}
 	x, y := lineAt(t, tt, 2)
 	tt.RightClickAt(x, y)
-	if got := tt.Menu(); !slices.Equal(got, []string{"复制这一行", "复制选中的 3 行", "复制全部显示的行"}) {
+	if got := tt.Menu(); !slices.Equal(got, []string{"复制这一行", "复制选中的 3 行", "复制显示的全部行"}) {
 		t.Errorf("menu %q", got)
 	}
 	tt.CloseMenu()

@@ -12,18 +12,31 @@ import (
 // ---- Text, marks and chips ----
 
 // infoTip is a ⓘ that tells text as a tooltip, in place of a line of
-// help under a control. It takes the keyboard focus, so the tip shows
-// from the keyboard too.
+// help under a control. A click (or Space from the keyboard) keeps the
+// tip open in a popover until a click elsewhere or Escape: people click
+// an ⓘ rather than rest the pointer on it.
 func infoTip(c *ui.Context, text string) ui.Element {
 	t := c.Theme()
 	k := tok(t)
-	b := ui.ButtonBase(c).Size(px(t, 18), px(t, 18)).Center().Radius(px(t, 9)).Label(text).Tooltip(text)
+	b := ui.ButtonBase(c).Size(px(t, 18), px(t, 18)).Center().Radius(px(t, 9)).Label(text)
+	open := ui.Local(b, "open", func() bool { return false })
+	if b.Clicked() {
+		*open = !*open
+	}
+	if !*open { // the popover says it already
+		b.Tooltip(text)
+	}
 	b.Children(func() {
 		col := k.Text3
-		if b.Hovered() {
+		if b.Hovered() || *open {
 			col = k.Text2
 		}
 		ui.Icon(c, icons.InfoCircle.Linear).Size(px(t, 14), px(t, 14)).TextColor(col)
+	})
+	ui.Popover(c, b, open, func() {
+		ui.Column(c).MaxWidth(px(t, 320)).Padding(px(t, sp1)).Children(func() {
+			ui.Text(c, text).FontSize(px(t, fsCaption))
+		})
 	})
 	return b
 }
