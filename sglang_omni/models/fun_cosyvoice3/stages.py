@@ -2604,6 +2604,19 @@ def create_vocoder_executor(
 
     patch_chunk_mask()
 
+    dit_compile_requested = enable_dit_torch_compile
+    if dit_compile_requested and device_obj.type == "npu":
+        # The model that compiles on NPU lets dynamo infer its dynamic dims.
+        # This backbone marks batch and length itself, where inductor's
+        # value-range analysis folds inf * 0 into nan and raises
+        # `Invalid NaN comparison`.
+        enable_dit_torch_compile = False
+        logger.info(
+            f"Fun-CosyVoice3 DiT stays eager on {device_obj}: the compiled "
+            "backbone is not usable on this platform"
+        )
+    else:
+        pass
     # note (ratish): the packed route leaves the padded DiT only the fallback decode,
     # which runs it eagerly, so its compile and graphs would serve no request.
     if enable_dit_torch_compile and flow.is_buffered_packed:
