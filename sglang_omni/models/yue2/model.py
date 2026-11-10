@@ -33,7 +33,6 @@ class Yue2Model(nn.Module):
         super().__init__()
         self.config = config
         self.model = Backbone(config)
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.llm2vae = nn.Linear(config.hidden_size, config.latent_dim)
         self.vae2llm = nn.Linear(config.latent_dim, config.hidden_size)
         self.time_embedder = TimestepEmbedder(config.hidden_size)
@@ -55,7 +54,8 @@ class Yue2Model(nn.Module):
                 else:
                     pass
 
-    def forward(self, tokens: torch.Tensor, cache: TokenCache) -> torch.Tensor:
+    def forward(self, tokens: torch.Tensor, cache: TokenCache) -> None:
+        """Append every layer's keys and values for the tokens to the cache."""
         token_count = tokens.shape[1]
         assert cache.length == 0 or token_count == 1
         positions = torch.arange(
@@ -72,18 +72,18 @@ class Yue2Model(nn.Module):
                 hidden_states, cosine, sine, positions
             )
             key, value = cache.append(layer_index, key, value)
-            attended = layer.self_attn.attend(query, key, value, causal=token_count > 1)
-            hidden_states, residual = layer.post_attention_layernorm.add(
-                attended, residual
-            )
-            hidden_states = layer.mlp(hidden_states)
-            if layer_index + 1 < len(self.model.layers):
+            if layer_index + 1 == len(self.model.layers):
+                # note (ruiling): the last layer's output only fed the token head, which runs on the SGLang engine.
+                break
+            else:
+                attended = layer.self_attn.attend(
+                    query, key, value, causal=token_count > 1
+                )
+                hidden_states, residual = layer.post_attention_layernorm.add(
+                    attended, residual
+                )
+                hidden_states = layer.mlp(hidden_states)
                 hidden_states, residual = self.model.layers[
                     layer_index + 1
                 ].input_layernorm.add(hidden_states, residual)
-            else:
-                hidden_states, residual = self.model.norm.add(
-                    hidden_states[:, -1:], residual[:, -1:]
-                )
         cache.length += token_count
-        return self.lm_head(hidden_states[:, -1:])[:, -1]

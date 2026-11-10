@@ -169,11 +169,16 @@ def test_cfg_keeps_exact_score_tokens(cot: str, tokenizer: Yue2Tokenizer) -> Non
 @torch.inference_mode()
 def test_cached_decode_matches_full_prefix(model: Yue2Model) -> None:
     tokens = torch.tensor([[1, 2, 3, 4]])
-    expected = model(tokens, TokenCache(capacity=4))
-    cache = TokenCache(capacity=4)
-    model(tokens[:, :3], cache)
-    actual = model(tokens[:, 3:], cache)
-    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+    expected = TokenCache(capacity=4)
+    model(tokens, expected)
+    actual = TokenCache(capacity=4)
+    model(tokens[:, :3], actual)
+    model(tokens[:, 3:], actual)
+    assert actual.length == expected.length == 4
+    for actual_tensor, expected_tensor in zip(
+        actual.keys + actual.values, expected.keys + expected.values
+    ):
+        torch.testing.assert_close(actual_tensor, expected_tensor, rtol=1e-5, atol=1e-6)
 
 
 @pytest.mark.parametrize("phase,end_token", [("abc", ABC_END), ("semantic", MUSIC_END)])
@@ -324,22 +329,34 @@ def test_weight_loading_rejects_missing_tensors(
     model: Yue2Model, tmp_path: Path
 ) -> None:
     weights = dict(model.state_dict())
-    weights.pop("lm_head.weight")
+    weights["lm_head.weight"] = torch.zeros(1)
     save_file(weights, tmp_path / "model.safetensors")
-    with pytest.raises(RuntimeError, match="lm_head.weight"):
-        load_weights(model, tmp_path, decoder_only=False)
+    load_weights(model, tmp_path, skipped_prefix="lm_head.")
+    weights.pop("llm2vae.weight")
+    save_file(weights, tmp_path / "model.safetensors")
+    with pytest.raises(RuntimeError, match="llm2vae.weight"):
+        load_weights(model, tmp_path, skipped_prefix="lm_head.")
 
 
 @torch.inference_mode()
-def test_projection_fusion_preserves_logits_and_checkpoint(model: Yue2Model) -> None:
+def test_projection_fusion_preserves_outputs_and_checkpoint(model: Yue2Model) -> None:
     tokens = torch.tensor([[1, 2, 3, 4]])
-    expected = model(tokens, TokenCache(capacity=4))
+    hidden_states = torch.linspace(-1, 1, 32).reshape(1, 4, 8)
+    layer = model.model.layers[0]
+    expected_cache = TokenCache(capacity=4)
+    model(tokens, expected_cache)
+    expected_mlp = layer.mlp(hidden_states)
     names = set(model.state_dict())
-    for layer in model.model.layers:
-        layer.self_attn.fuse_projections()
-        layer.mlp.fuse_projections()
-    actual = model(tokens, TokenCache(capacity=4))
-    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+    layer.self_attn.fuse_projections()
+    layer.mlp.fuse_projections()
+    actual_cache = TokenCache(capacity=4)
+    model(tokens, actual_cache)
+    for actual, expected in [
+        (actual_cache.keys[0], expected_cache.keys[0]),
+        (actual_cache.values[0], expected_cache.values[0]),
+        (layer.mlp(hidden_states), expected_mlp),
+    ]:
+        torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
     assert set(model.state_dict()) == names
 
 

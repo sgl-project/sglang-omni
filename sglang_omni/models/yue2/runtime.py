@@ -20,7 +20,7 @@ from sglang_omni.models.yue2.vae import VaeConfig, Yue2Vae
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 
 
-def load_weights(module: nn.Module, directory: Path, *, decoder_only: bool) -> None:
+def load_weights(module: nn.Module, directory: Path, *, skipped_prefix: str) -> None:
     index = directory / "model.safetensors.index.json"
     if index.is_file():
         mapping = json.loads(index.read_text())["weight_map"]
@@ -31,7 +31,7 @@ def load_weights(module: nn.Module, directory: Path, *, decoder_only: bool) -> N
     for filename in filenames:
         with safe_open(directory / filename, framework="pt", device="cpu") as archive:
             for name in archive.keys():
-                if decoder_only and name.startswith("encoder."):
+                if name.startswith(skipped_prefix):
                     continue
                 elif name in weights:
                     raise ValueError(f"Duplicate checkpoint tensor: {name}")
@@ -104,8 +104,9 @@ class Yue2Runtime:
         with torch.device("meta"):
             model = Yue2Model(model_config)
             vae = Yue2Vae(vae_config)
-        load_weights(model, model_directory, decoder_only=False)
-        load_weights(vae, vae_directory, decoder_only=True)
+        # note (ruiling): the token head is only needed by the AR stage on the SGLang engine.
+        load_weights(model, model_directory, skipped_prefix="lm_head.")
+        load_weights(vae, vae_directory, skipped_prefix="encoder.")
         model.to(device=device, dtype=torch.bfloat16).eval().requires_grad_(False)
         vae.to(device=device, dtype=torch.float32).eval().requires_grad_(False)
         return cls(
