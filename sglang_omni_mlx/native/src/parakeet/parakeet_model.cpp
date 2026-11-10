@@ -217,7 +217,8 @@ mx::array ParakeetModel::Attention(const mx::array &x,
       mx::slice(position_scores, {0, 0, 0, 0}, {1, head_count, time, time}),
       mx::array(scale, position_scores.dtype()));
   const mx::array attended = mx::fast::scaled_dot_product_attention(
-      content_queries, keys, values, scale, "array", position_scores);
+      content_queries, keys, values, scale, /*window_size=*/-1, "array",
+      position_scores);
   return checkpoint_.Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
                                         {1, time, config_.model_width}),
                             prefix + ".linear_out");
