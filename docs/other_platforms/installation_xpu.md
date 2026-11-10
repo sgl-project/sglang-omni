@@ -693,6 +693,50 @@ audio input, and voice cloning.
 
 **Expected result:** Play `out.wav` to hear the input text.
 
+### MiniCPM-o 4.5 AWQ (4-bit backbone, single XPU)
+
+`openbmb/MiniCPM-o-4_5-awq` serves on Intel XPU with the same command, and it is the
+faster way to run this model on a 24 GB card. SGLang registers its INT4 dense linear
+path under `AWQXPUConfig` only on XPU, and the checkpoint quantizes just the `llm.*`
+backbone -- the vision tower, audio tower, resampler and talker stay bf16:
+
+| | bf16 | AWQ 4-bit |
+|---|---|---|
+| `llm` backbone weights | 15.25 GiB | **5.68 GiB** |
+| all other submodules | 1.56 GiB | 1.56 GiB |
+| checkpoint total | 17.46 GiB | **7.88 GiB** |
+
+**Launch**
+
+```bash
+ZE_AFFINITY_MASK=0 sgl-omni serve --model-path openbmb/MiniCPM-o-4_5-awq \
+  --thinker.engine.mem_fraction_static 0.80 \
+  --talker.engine.max_total_tokens 8192 \
+  --code2wav.factory.decode_stream_priority 0 \
+  --code2wav.factory.enable_dit_torch_compile false \
+  --code2wav.factory.enable_hift_torch_compile false \
+  --host 0.0.0.0 --port 8000
+```
+
+Every quirk of the bf16 section still applies, for the same reasons: cap the talker's
+KV, give Code2Wav's decode stream normal priority, and leave its `torch.compile` off.
+The talker's sampling graph still falls back to eager sampling.
+
+Measured on one Arc Pro B60, text output, 128 tokens, greedy, against the bf16
+checkpoint on the same card: TTFT 37.9 ms against 82.9, inter-token latency 14.74 ms
+against 37.34 (**2.5x**), and 692 output tokens per second at concurrency 16 against
+378. GSM8K over 100 problems scored 91% against bf16's 93%. Relaunching reproduced the
+inter-token latency to 0.1%.
+
+Do not read that speedup across to a quantized MoE. Weight-only 4-bit is a win here
+because the dense backbone is bandwidth-bound and Intel's INT4 dense kernel is well
+optimized; a group-packed *MoE* checkpoint resolves to the Triton WNA16 runner instead,
+where the dequantisation costs more than the bandwidth it saves.
+
+**Expected result:** The same text chat as the bf16 section, from a checkpoint less
+than half the size. The numbers above are for text output; speech from this checkpoint
+has not been checked on XPU yet.
+
 ### MiniMax Music 3 (text-to-music, two XPUs)
 **Launch**
 
