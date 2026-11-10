@@ -30,6 +30,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **A dictation survives a speech model that quit**: when the on-device speech model's process died during a recording (a crash, or macOS ending it under memory pressure), stopping gave only the live text heard until then, with a warning. Voxt now starts the model again and recognises the whole recording, about 0.2 s later on an M5 Max.
 - **The overlay preview keeps the pill on the chosen side** (Settings → Overlay style): at a large distance from the screen edge, Top centre drew the pill near the bottom of the preview and Bottom centre near the top. The pill now moves toward the middle as the distance grows and stays in its own half.
 
+### Fixed
+
+- **Show in the Dock** (Settings → General → Menu bar and login): Voxt 2.0.0 and 2.0.1 did not read Voxt 1.x's Show in Dock, so who set up Voxt 2 with Show in Dock off in Voxt 1.x stayed in the Dock. Unless Voxt 2.0.2 or later imported Voxt 1.x's data, or the switch is already off, Voxt reads it at the next start, once; turned back on, the Dock stays. Find in settings finds a setting by its name in any section (before, "Dock" or "clipboard" found nothing in General), and in Chinese by its English name too ("Dock" finds 在程序坞中显示). Turning the switch off keeps the Voxt window in front.
+
 ### 中文
 
 #### 修复
@@ -57,6 +61,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **语音识别模型中途退出，口述也不丢**：录音时本地语音识别模型的进程退出了（崩溃，或内存紧张时被 macOS 结束），停止后以前只得到退出前的实时文字，并带一条警告。现在 Voxt 重新启动模型，识别整段录音，在 M5 Max 上多等约 0.2 秒。
 - **浮窗预览里的胶囊留在所选的一侧**（设置 → 浮窗样式）：与屏幕边缘的距离调大时，选“顶部居中”预览里的胶囊画在靠下的位置，选“底部居中”画在靠上的位置。现在距离越大，胶囊越靠近中间，但始终留在自己那一半。
+
+#### 修复
+
+- **在程序坞中显示**（设置 → 通用 → 菜单栏与登录）：Voxt 2.0.0 和 2.0.1 不读 Voxt 1.x 的“在程序坞中显示”，在 Voxt 1.x 里关了它的用户装上 Voxt 2 后仍在程序坞里。没有用 Voxt 2.0.2 或更新的版本导入过 Voxt 1.x 的数据、开关也没关的，下次启动时补读一次；之后再打开，程序坞图标就留着。“在设置中查找”能按名称找到任何一部分里的设置（以前在“通用”里搜“Dock”或“clipboard”什么也找不到），中文界面下也能用英文名称找（搜“Dock”能找到“在程序坞中显示”）。关掉这个开关后，Voxt 窗口仍在最前面。
 
 ## [2.0.3] - 2026-11-10
 

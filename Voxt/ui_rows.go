@@ -12,7 +12,7 @@ import (
 // settingRow is a setting: its name, a ⓘ telling what it does (desc, ""
 // for none) and its control on the right (formRow in ui_layout.go).
 func settingRow(c *ui.Context, key, title, desc string, control func()) {
-	if !settingsTextMatches(settingsSearchQuery, title, desc) {
+	if !settingsSearchShows(title, desc) {
 		return
 	}
 	formRow(c, key, title, desc, control)
@@ -27,7 +27,7 @@ func settingRowNote(c *ui.Context, key, title, note string, control func()) {
 // settingRowNoteTip is settingRowNote with a ⓘ beside the name telling
 // what the setting does (tip, "" for none).
 func settingRowNoteTip(c *ui.Context, key, title, tip, note string, control func()) {
-	if !settingsTextMatches(settingsSearchQuery, title, tip, note) {
+	if !settingsSearchShows(title, tip, note) {
 		return
 	}
 	t := c.Theme()
@@ -51,7 +51,7 @@ func settingRowNoteTip(c *ui.Context, key, title, tip, note string, control func
 
 // sectionTitle heads a group of settings.
 func sectionTitle(c *ui.Context, title string) {
-	if !settingsTextMatches(settingsSearchQuery, title) {
+	if !settingsSearchShows(title) {
 		return
 	}
 	t := c.Theme()
