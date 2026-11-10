@@ -37,8 +37,8 @@ from sglang_omni.scheduling.sglang_backend.request_data import (
 TRUNCATE_FORMAT = "qwen.truncate"
 # One codec frame is 1920 samples at 24 kHz: the code2wav upsample ratios 8·5·4·3 and 2·2 of the checkpoint.
 CODEC_FRAME_MS = 80
-# The talker prefill template takes the reply's first three text rows; each later codec frame reads one more.
-PREFILL_TEXT_ROWS = 3
+# note (luojiaxuan): The talker reads the reply's text a row per codec frame but speaks far slower: over 175 replies of 20 or more tokens that Qwen3-Omni-30B-A3B-Instruct ended on its own, a thinker token took a median 3.69 frames (p10 3.18, p90 4.16; English 3.72, Chinese 3.62).
+SPOKEN_FRAMES_PER_TOKEN = 3.69
 
 ModelInputs = dict[str, torch.Tensor | list[torch.Tensor] | bool]
 
@@ -84,7 +84,8 @@ class ThinkerHistory:
 
 
 def heard_tokens(audio_end_ms: float) -> int:
-    return PREFILL_TEXT_ROWS + int(audio_end_ms // CODEC_FRAME_MS)
+    """The reply tokens spoken in the first audio_end_ms of its audio, at the talker's median pace."""
+    return int(audio_end_ms / CODEC_FRAME_MS / SPOKEN_FRAMES_PER_TOKEN)
 
 
 def merge_model_inputs(retained: ModelInputs, incoming: ModelInputs) -> ModelInputs:
@@ -149,7 +150,6 @@ class QwenThinkerSessionAdapter(ARSessionAdapter):
     def control(self, session_identity: SessionIdentity, event: TimedChunk) -> None:
         history = self.states[session_identity]
         if event.format == TRUNCATE_FORMAT:
-            # Note (Junnan Li): The talker's one-text-row-per-codec-frame cadence converts the heard audio time into heard reply tokens.
             self.truncate(
                 history,
                 int(event.payload["turn"]),
