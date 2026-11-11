@@ -51,7 +51,6 @@ from sglang_omni.vendor.sglang.core import (
 __all__ = [
     "Drama3ModelRunner",
     "Drama3DecodeStatePool",
-    "extend_frame_history",
     "extend_frame_rows",
     "ras_window",
     "request_data_of",

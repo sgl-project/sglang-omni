@@ -61,7 +61,6 @@ __all__ = [
     "Drama3ForCausalLM",
     "Drama3Backbone",
     "Drama3DecodeBuffers",
-    "Drama3DecodeStatePool",
     "Drama3StepInputs",
     "StepExchange",
     "PagedTowerAttention",
