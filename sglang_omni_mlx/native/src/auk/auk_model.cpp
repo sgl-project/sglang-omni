@@ -18,8 +18,8 @@ namespace mx = mlx::core;
 
 namespace {
 
-constexpr int SAMPLES_PER_FRAME = 480;
-constexpr int LATENT_CHANNELS = 64;
+constexpr int kSamplesPerFrame = 480;
+constexpr int kLatentChannels = 64;
 // Note (XXXXRT666): the released sampling recipes, as
 // sglang_omni/models/auk/constants.py has them.
 constexpr int kAukSteps = 32;
@@ -73,7 +73,7 @@ Model::SamplingRecipe Model::ReadSamplingRecipe(const nlohmann::json &config,
                                                 mx::Dtype dtype) {
   if ((config.at("name") != "AuK" && config.at("name") != "AuK-Flash") ||
       config.at("vae").at("target_sample_rate") != kSampleRate ||
-      config.at("vae").at("latent_dim") != LATENT_CHANNELS ||
+      config.at("vae").at("latent_dim") != kLatentChannels ||
       (dtype != mx::float32 && dtype != mx::bfloat16)) {
     throw std::invalid_argument("unsupported AuK runtime configuration");
   } else if (config.at("name") == "AuK-Flash") {
@@ -83,9 +83,10 @@ Model::SamplingRecipe Model::ReadSamplingRecipe(const nlohmann::json &config,
     return {times, kFlashGuidanceStrength};
   } else {
     mx::array times = mx::linspace(0, 1, kAukSteps + 1, mx::float32);
-    times = times + mx::array(kAukSwayCoefficient) *
-                        (mx::cos(mx::array(static_cast<float>(M_PI_2)) * times) -
-                         mx::array(1.0f) + times);
+    times =
+        times + mx::array(kAukSwayCoefficient) *
+                    (mx::cos(mx::array(static_cast<float>(M_PI_2)) * times) -
+                     mx::array(1.0f) + times);
     mx::eval(times);
     return {times, kAukGuidanceStrength};
   }
@@ -101,19 +102,19 @@ Model::Model(const nlohmann::json &config,
              const std::filesystem::path &model_directory,
              const std::filesystem::path &text_encoder_directory,
              mx::Dtype dtype)
-    : sampling_recipe(ReadSamplingRecipe(config, dtype)),
-      conditioner(text_encoder_directory, dtype),
-      diffusion(LoadCheckpointWeights(model_directory /
-                                      (config.at("name") == "AuK-Flash"
-                                           ? "auk_flash.safetensors"
-                                           : "auk_base.safetensors")),
-                config.at("arch"), config.at("vae").at("latent_dim").get<int>(),
-                dtype),
-      vae(LoadCheckpointWeights(model_directory / "vae.safetensors"),
-          VaeConfig(config)) {
-  diffusion.ValidateInputDimensions(conditioner.TextLayerCount(),
-                                    conditioner.TextHiddenChannels());
-  if (vae.HopSize() != SAMPLES_PER_FRAME) {
+    : sampling_recipe_(ReadSamplingRecipe(config, dtype)),
+      conditioner_(text_encoder_directory, dtype),
+      diffusion_(LoadCheckpointWeights(model_directory /
+                                       (config.at("name") == "AuK-Flash"
+                                            ? "auk_flash.safetensors"
+                                            : "auk_base.safetensors")),
+                 config.at("arch"),
+                 config.at("vae").at("latent_dim").get<int>(), dtype),
+      vae_(LoadCheckpointWeights(model_directory / "vae.safetensors"),
+           VaeConfig(config)) {
+  diffusion_.ValidateInputDimensions(conditioner_.TextLayerCount(),
+                                     conditioner_.TextHiddenChannels());
+  if (vae_.HopSize() != kSamplesPerFrame) {
     throw std::invalid_argument("unsupported AuK VAE hop size");
   } else {
   }
@@ -141,40 +142,41 @@ Model::Synthesize(const SynthesisRequest &request,
     conditioner_audio = omni_common::ResampleAudio(
         request.reference_audio, request.reference_sample_rate,
         omni_common::kSampleRate);
-    reference_length = static_cast<int>(reference_audio.size()) / vae.HopSize();
+    reference_length =
+        static_cast<int>(reference_audio.size()) / vae_.HopSize();
     const auto waveform = mx::array(reference_audio.data(),
                                     {static_cast<int>(reference_audio.size())});
-    const auto posterior = vae.Posterior(waveform);
+    const auto posterior = vae_.Posterior(waveform);
     const auto posterior_noise =
-        mx::random::normal({1, posterior.mean.shape(0), vae.LatentDimension()},
+        mx::random::normal({1, posterior.mean.shape(0), vae_.LatentDimension()},
                            mx::float32, reference_key);
-    reference_latents = vae.Encode(posterior, mx::squeeze(posterior_noise, 0));
+    reference_latents = vae_.Encode(posterior, mx::squeeze(posterior_noise, 0));
     reference_length = std::min(reference_length, reference_latents->shape(0));
     mx::async_eval(*reference_latents);
   } else {
   }
   check_cancelled();
-  const auto conditioning = diffusion.FuseHiddenStates(
-      conditioner.Encode(request.instruction, conditioner_audio));
+  const auto conditioning = diffusion_.FuseHiddenStates(
+      conditioner_.Encode(request.instruction, conditioner_audio));
   mx::async_eval(conditioning);
   check_cancelled();
   const int output_frames =
       request.match_reference_duration
           ? std::max(1, reference_length)
           : std::max(1, static_cast<int>(std::ceil(
-                            request.seconds * kSampleRate / vae.HopSize())));
-  const auto noise = mx::random::normal({output_frames, vae.LatentDimension()},
+                            request.seconds * kSampleRate / vae_.HopSize())));
+  const auto noise = mx::random::normal({output_frames, vae_.LatentDimension()},
                                         mx::float32, generation_key);
   const auto latents =
-      diffusion.Sample(conditioning, reference_latents, reference_length, noise,
-                       sampling_recipe.times, sampling_recipe.guidance_strength,
-                       check_cancelled);
+      diffusion_.Sample(conditioning, reference_latents, reference_length,
+                        noise, sampling_recipe_.times,
+                        sampling_recipe_.guidance_strength, check_cancelled);
   if (!mx::all(mx::isfinite(latents)).item<bool>()) {
     throw std::runtime_error("AuK produced non-finite latents");
   } else {
   }
   check_cancelled();
-  const auto waveform = vae.Decode(latents);
+  const auto waveform = vae_.Decode(latents);
   mx::eval(waveform);
   if (!mx::all(mx::isfinite(waveform)).item<bool>()) {
     throw std::runtime_error("AuK produced non-finite audio");

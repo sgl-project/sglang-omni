@@ -15,19 +15,21 @@ namespace auk {
 
 // The VAE's sample rate, and so every output's.
 inline constexpr int kSampleRate = 24000;
+// A raw request's duration without a reference or gen_seconds.
+inline constexpr double kDefaultSeconds = 5.0;
 
 struct SynthesisRequest {
   std::string instruction;
   std::vector<float> reference_audio;
   int reference_sample_rate = kSampleRate;
-  double seconds;
+  double seconds = kDefaultSeconds;
   std::optional<uint64_t> seed;
   bool match_reference_duration = false;
 };
 
 struct SynthesisResult {
   std::vector<float> samples;
-  int sample_rate;
+  int sample_rate = kSampleRate;
 };
 
 class Model {
@@ -53,10 +55,10 @@ private:
   static SamplingRecipe ReadSamplingRecipe(const nlohmann::json &config,
                                            mlx::core::Dtype dtype);
 
-  SamplingRecipe sampling_recipe;
-  Conditioner conditioner;
-  DiT diffusion;
-  VAE vae;
+  SamplingRecipe sampling_recipe_;
+  Conditioner conditioner_;
+  DiT diffusion_;
+  VAE vae_;
 };
 
 } // namespace auk

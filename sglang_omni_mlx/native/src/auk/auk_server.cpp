@@ -102,10 +102,10 @@ private:
 } // namespace
 
 int main(int argc, char **argv) {
-  constexpr size_t GIBIBYTE = size_t{1} << 30;
+  constexpr size_t kGibibyte = size_t{1} << 30;
   mlx::core::Dtype dtype = mlx::core::bfloat16;
   float max_seconds = 30.0f;
-  size_t cache_limit_bytes = GIBIBYTE;
+  size_t cache_limit_bytes = kGibibyte;
   std::filesystem::path text_encoder_directory;
   asr_service::ServedKind kind;
   kind.model_kind = "auk";
@@ -146,7 +146,7 @@ int main(int argc, char **argv) {
   kind.flags["--cache-limit-gb"] = [&](const std::string &value) {
     size_t parsed = 0;
     const double cache_limit_gibibytes = std::stod(value, &parsed);
-    const double requested_cache_bytes = cache_limit_gibibytes * GIBIBYTE;
+    const double requested_cache_bytes = cache_limit_gibibytes * kGibibyte;
     if (parsed != value.size() || !std::isfinite(cache_limit_gibibytes) ||
         cache_limit_gibibytes < 0 ||
         requested_cache_bytes >=

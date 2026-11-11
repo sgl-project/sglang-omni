@@ -207,7 +207,8 @@ SynthesisRequest ParseRequest(const Json &request, bool raw_instruction,
       synthesis.seconds = duration.get<double>();
     }
   } else if (raw_instruction) {
-    synthesis.seconds = reference_seconds > 0 ? reference_seconds : 5.0;
+    synthesis.seconds =
+        reference_seconds > 0 ? reference_seconds : kDefaultSeconds;
     synthesis.match_reference_duration = reference_seconds > 0;
   } else {
     if (reference_seconds <= 0 || reference_text.empty()) {
