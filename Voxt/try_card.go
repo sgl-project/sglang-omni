@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -25,38 +24,6 @@ func (a *app) trySessionOf(feature string) bool {
 	return s.ID != "" && s.Try && s.Kind == featureKind(feature)
 }
 
-// tryIntro is what a feature's Try area says before a try: its shortcut
-// (pressed while VoxtNew is in front, it starts a try here) or Start.
-func (a *app) tryIntro(feature string) string {
-	keys := a.featureKeys(feature)
-	switch feature {
-	case hotkey.Translate:
-		if keys != "" {
-			return i18n.T("Press %s or Start, then say a sentence or two. The translation shows here and is not typed anywhere.", keys)
-		}
-		return i18n.T("Say a sentence or two. The translation shows here and is not typed anywhere.")
-	case hotkey.Rewrite:
-		if keys != "" {
-			return i18n.T("Press %s or Start, then say what to write (\"a short note saying I will be late\"). The answer shows here and is not typed anywhere.", keys)
-		}
-		return i18n.T("Say what to write (\"a short note saying I will be late\"). The answer shows here and is not typed anywhere.")
-	}
-	if keys != "" {
-		return i18n.T("Press %s or Start, then say a sentence or two. The result shows here and is not typed anywhere.", keys)
-	}
-	return i18n.T("Say a sentence or two. The result shows here and is not typed anywhere.")
-}
-
-func (a *app) featureTry(c *ui.Context, feature string) {
-	u := a.fui(feature)
-	sectionTitle(c, i18n.T("Try it"))
-	a.tryCard(c, tryOpts{
-		prefix: uitext.FeaturePrefix(feature), feature: feature, mine: a.trySessionOf(feature),
-		intro: a.tryIntro(feature), block: &u.block,
-		start: func() *sessionNotice { _, n := a.startTry(featureKind(feature)); return n },
-	})
-}
-
 // tryOpts describe a Try card: a feature page's, Home's, a step of the
 // setup guide's.
 type tryOpts struct {
@@ -64,8 +31,7 @@ type tryOpts struct {
 	feature string // what Start tries
 	// mine: the current session is this card's try (its id, for the
 	// setup guide: a late or another place's session never shows).
-	mine  bool
-	intro string // before a try
+	mine bool
 	// block is why Start (or the shortcut) did not start, nil for
 	// nothing; start starts a try and says why not.
 	block **sessionNotice
@@ -102,8 +68,6 @@ func (a *app) tryCard(c *ui.Context, o tryOpts) {
 		}
 		if try && s.State.Ended() {
 			a.tryEnded(c, p, s, clear)
-		} else if o.intro != "" {
-			caption(c, o.intro)
 		}
 		if n := *o.block; n != nil {
 			notice(c, p+"-try-block", noticeError, n.text, n.more, a.noticeButton(c, p+"-try-block-action", n.action, clear), clear)

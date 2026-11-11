@@ -28,24 +28,20 @@ var navGroups = []navGroup{
 	{"", []navPage{
 		{"/home", "Home", homeIcon},
 		{"/history", "History", historyIcon},
-	}},
-	{"Features", []navPage{
-		{"/transcribe", "Transcribe", transcribeIcon},
-		{"/translate", "Translate", translateIcon},
-		{"/rewrite", "Rewrite", rewriteIcon},
+		{"/dictionary", "Dictionary", dictionaryIcon},
 		{"/notes", "Notes", notesIcon},
 		{"/meetings", "Meetings", meetingIcon},
 		{"/app-enhancement", "App enhancement", appEnhancementIcon},
 	}},
-	{"Resources", []navPage{
-		{modelsPath, "Speech models", modelsIcon},
-		{remotePath, "Language models", remoteIcon},
-		{"/dictionary", "Dictionary", dictionaryIcon},
-	}},
 	{"System", []navPage{
-		{"/logs", "Logs", logsIcon},
 		{settingsPath, "Settings", settingsIcon}, // the dialog over the page, not a page of the router
 	}},
+}
+
+// offNavPages are the router's pages the sidebar does not list: Settings
+// links to them.
+var offNavPages = []navPage{
+	{"/logs", "Logs", logsIcon},
 }
 
 // settingsPath opens the settings dialog (navigate), at the section shown
@@ -53,7 +49,7 @@ var navGroups = []navGroup{
 const settingsPath = "/settings"
 
 // shortcutPages are the pages ⌘1…⌘6 open, in that order.
-var shortcutPages = []string{"/home", "/history", "/transcribe", "/translate", "/rewrite", "/app-enhancement"}
+var shortcutPages = []string{"/home", "/history", "/dictionary", "/notes", "/meetings", "/app-enhancement"}
 
 // pageHidden reports whether path is the page of a feature the user hid
 // (settings.Features.Hidden, whose ids are the pages' paths) or a
@@ -76,7 +72,7 @@ var pages = func() []navPage {
 			}
 		}
 	}
-	return out
+	return append(out, offNavPages...)
 }()
 
 // pageKeys is the shortcut of a page ("⌘1"), "" when it has none.
@@ -148,6 +144,11 @@ func pageTitle(path string) string {
 // notifications and old settings may still name them.
 var movedPaths = map[string]string{
 	"/permissions": "/settings/permissions", // a page of the sidebar until 10-2026
+	"/transcribe":  "/settings/transcribe",  // the features and the models: sections of Settings
+	"/translate":   "/settings/translate",
+	"/rewrite":     "/settings/rewrite",
+	modelsPath:     "/settings/models",
+	remotePath:     "/settings/language-models",
 }
 
 // The pages' and the shell's icons (Solar; internal/icons/names.txt).

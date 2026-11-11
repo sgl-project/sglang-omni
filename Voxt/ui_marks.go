@@ -41,6 +41,16 @@ func infoTip(c *ui.Context, text string) ui.Element {
 	return b
 }
 
+// tipText is a label that tells tip as a tooltip ("" for none), in place
+// of a ⓘ or a line of help beside it.
+func tipText(c *ui.Context, text, tip string) ui.Element {
+	e := ui.Text(c, text).MinWidth(0)
+	if tip != "" {
+		e.Tooltip(tip)
+	}
+	return e
+}
+
 // truncText is a line of text that ends in "…" when it does not fit, and
 // shows all of itself as a tooltip.
 func truncText(c *ui.Context, s string) ui.Element {

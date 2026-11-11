@@ -172,7 +172,6 @@ func (a *app) audioSettings(c *ui.Context) {
 
 	ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Margin(px(t, sp2), 0, 0, 0).Children(func() {
 		sectionTitleText(c, i18n.T("Microphones"))
-		infoTip(c.Key("audio-mics-info"), i18n.T("Voxt uses the first connected microphone in the list, or the system default."))
 		ui.Spacer(c)
 		if iconButton(c.Key("audio-refresh"), icons.Refresh, i18n.T("Refresh microphones")).Disabled(!a.helperReady() || a.audio.loading).Clicked() {
 			a.loadDevices()

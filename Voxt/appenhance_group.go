@@ -59,10 +59,7 @@ func (a *app) aeDetail(c *ui.Context, g appctx.Group) {
 		})
 		// The features it applies to.
 		ui.Row(c).Wrap().GapX(px(t, sp4)).GapY(px(t, sp1)).AlignItems(ui.Center).Children(func() {
-			ui.Row(c).Gap(px(t, 6)).AlignItems(ui.Center).Children(func() {
-				caption(c, i18n.T("Applies to"))
-				infoTip(c, i18n.T("Translate is off by default, since a scene's tone rarely suits a translation."))
-			})
+			caption(c, i18n.T("Applies to"))
 			for _, f := range []struct {
 				key, label string
 				get        func(appctx.Features) bool
@@ -275,7 +272,6 @@ func (a *app) aeAutoKey(c *ui.Context, g appctx.Group) {
 		if p.keyErr != "" {
 			warnLine(c, p.keyErr)
 		} else {
-			caption(c, i18n.T("Type the keys and press Return: Command+Return, Control+Return, Tab."))
 		}
 	}
 }

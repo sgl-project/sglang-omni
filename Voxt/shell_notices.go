@@ -277,9 +277,6 @@ func (a *app) noticeCard(c *ui.Context, n core.Notification) {
 		})
 		// Under the title, from its start.
 		ui.Column(c).Gap(px(t, 2)).Padding(0, px(t, sp1), 0, px(t, 20)).Children(func() {
-			if n.Body != "" {
-				ui.Text(c, n.Body).FontSize(px(t, fsMicro)).TextColor(k.Text2).MaxLines(3).Ellipsis("…")
-			}
 			if n.Link != "" {
 				label := cardActionLabel(n.Link)
 				b := ui.ButtonBase(c.Key("notice-act")).Padding(px(t, 2), 0).Label(label).AlignSelf(ui.Start).MinWidth(0)

@@ -152,16 +152,10 @@ func (a *app) networkDialog(c *ui.Context) {
 	if dialogFrame(c, "net-dlg", &open, i18n.T("Network"), i18n.T("How model downloads reach Hugging Face"), 540, func() {
 		ui.Text(c, i18n.T("Proxy")).FontWeight(600)
 		segmentedFit(c.Key("net-proxy"), &f.proxyMode, i18n.T("Automatic"), i18n.T("No proxy"), i18n.T("Custom")).Label(i18n.T("Proxy"))
-		switch f.proxyMode {
-		case proxyAuto:
-			caption(c, i18n.T("The proxy in this Mac's network settings, or one set by an environment variable."))
-		case proxyNone:
-			caption(c, i18n.T("Downloads connect to the server directly."))
-		default:
+		if f.proxyMode != proxyAuto && f.proxyMode != proxyNone {
 			ui.TextInput(c.Key("net-proxy-url"), &f.proxyURL).Label(i18n.T("Proxy address")).Placeholder("http://127.0.0.1:7890").Font("monospace").Width(px(t, 320))
 			ui.TextInput(c.Key("net-proxy-user"), &f.proxyUser).Label(i18n.T("Proxy user name")).Placeholder(i18n.T("User name (optional)")).Width(px(t, 320))
 			ui.TextInput(c.Key("net-proxy-password"), &f.proxyPassword).Password().Label(i18n.T("Proxy password")).Placeholder(i18n.T("Password (optional)")).Width(px(t, 320))
-			caption(c, i18n.T("The password is kept in the Keychain."))
 			if f.proxyErr != "" {
 				caption(c, f.proxyErr).TextColor(t.Danger)
 			}
@@ -175,12 +169,7 @@ func (a *app) networkDialog(c *ui.Context) {
 			labels = append(labels, i18n.T("Other"))
 		}
 		segmentedFit(c.Key("net-source"), &f.source, labels...).Label(i18n.T("Download source"))
-		switch {
-		case f.source == 0:
-			caption(c, i18n.T("Whichever answers first. Every file is checked."))
-		case f.source < len(networkSources):
-			caption(c, i18n.T("Only this server. If it cannot be reached, downloads fail."))
-		default:
+		if f.source >= len(networkSources) {
 			caption(c, i18n.T("Custom servers: %s", f.sourceURL))
 		}
 		a.networkFamilyLine(c, actnow.KeyHFEndpoints, i18n.T("Other apps that share this model library use a different download source."))

@@ -36,39 +36,6 @@ func (a *app) featureModels(c *ui.Context, feature string) {
 		u.asr, u.llm, u.fallback = modelLabel(readyA, f.ASR, autoA), modelLabel(readyL, f.LLM, autoL), modelLabel(readyL, fb, optsF[0])
 	}
 	sectionTitleTip(c, i18n.T("Models"), i18n.T("Automatic uses the recommended speech model and your first language model. With no speech model installed, it uses a remote speech service you set up."))
-	opened := false // one "Open Speech models" per page
-	openModels := func() {
-		if opened {
-			return
-		}
-		opened = true
-		if ui.Button(c.Key(p+"-open-models"), i18n.T("Open Speech models")).Clicked() {
-			a.navigate(modelsPath)
-		}
-	}
-	if len(readyA) == 0 {
-		switch feature {
-		case hotkey.Translate:
-			notice(c, p+"-no-asr", noticeInfo, i18n.T("No speech model is installed, so only selected text can be translated."), "", openModels, nil)
-		case hotkey.Rewrite:
-			notice(c, p+"-no-asr", noticeWarn, i18n.T("No speech model is installed. Install one to rewrite."), "", openModels, nil)
-		default:
-			notice(c, p+"-no-asr", noticeWarn, i18n.T("No speech model is installed. Install one to transcribe."), "", openModels, nil)
-		}
-	}
-	setUpLLM := func() {
-		if ui.Button(c.Key(p+"-open-llm"), i18n.T("Set up a language model")).Clicked() {
-			a.navigate(remotePath)
-		}
-	}
-	if len(readyL) == 0 {
-		switch feature {
-		case hotkey.Translate:
-			notice(c, p+"-no-llm", noticeWarn, i18n.T("No language model is set up. Set one up to translate."), "", setUpLLM, nil)
-		case hotkey.Rewrite:
-			notice(c, p+"-no-llm", noticeWarn, i18n.T("No language model is set up. Set one up to rewrite."), "", setUpLLM, nil)
-		}
-	}
 	var asrLabel, llmLabel string
 	switch feature {
 	case hotkey.Translate:
@@ -102,9 +69,6 @@ func (a *app) featureModels(c *ui.Context, feature string) {
 				a.updateSettings(func(s *settings.Settings) { s.Features.Translate.Fallback = id })
 			}
 		})
-	}
-	if feature == hotkey.Transcribe && len(readyL) == 0 && enhance {
-		notice(c, "tr-no-llm", noticeInfo, i18n.T("No language model is set up, so the text is typed as recognised, without clean-up."), "", setUpLLM, nil)
 	}
 }
 

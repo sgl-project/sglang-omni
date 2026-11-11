@@ -51,8 +51,6 @@ func (a *app) pageShown(path string) {
 		a.loadNotes() // notes_page.go
 	case "/meetings":
 		a.loadMeetings() // meetings_page.go
-	case modelsPath:
-		a.modelsShown() // models_memory.go
 	}
 }
 
@@ -64,21 +62,6 @@ func (a *app) page(c *ui.Context, p navPage) {
 		return
 	case "/logs":
 		a.logsPage(c)
-		return
-	case modelsPath:
-		a.modelsPage(c) // models_page.go
-		return
-	case remotePath:
-		a.remotePage(c) // remote_page.go
-		return
-	case "/transcribe":
-		a.transcribePage(c) // feature_page.go
-		return
-	case "/translate":
-		a.translatePage(c) // feature_page.go
-		return
-	case "/rewrite":
-		a.rewritePage(c) // feature_page.go
 		return
 	case "/history":
 		a.historyPage(c) // history_page.go

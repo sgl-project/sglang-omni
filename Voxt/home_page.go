@@ -41,6 +41,7 @@ type homeState struct {
 		read, loading, stale bool
 		seq                  int
 		today                dayStats
+		usage                usageStats // home_usage.go
 		recent               []store.Entry
 		err                  string
 		// block says why the Try area's Start did not start.
@@ -104,6 +105,10 @@ func (a *app) loadHome() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		st, recent, err := readHome(ctx, h, time.Now())
+		usage, usageErr := readUsage(ctx, h, time.Now())
+		if err == nil {
+			err = usageErr
+		}
 		a.post(func() {
 			if seq != a.hm.seq {
 				return
@@ -114,7 +119,7 @@ func (a *app) loadHome() {
 				hm.err = err.Error()
 				return
 			}
-			hm.today, hm.recent, hm.err = st, recent, ""
+			hm.today, hm.recent, hm.usage, hm.err = st, recent, usage, ""
 			if len(recent) > 0 {
 				a.markTried() // a history from before the flag
 			}
@@ -152,21 +157,9 @@ func (a *app) homePage(c *ui.Context) {
 	ui.Scroll(c.Key("home-scroll")).Grow(1).MinHeight(0).Children(func() {
 		pageColumn(c).Gap(px(t, sp3)).Children(func() {
 			a.homeSlogan(c)
-			a.homeReadiness(c)
-			mine := a.sess.Try && a.sess.ID != "" && !a.obOwns(a.sess.ID)
-			if a.homeShowsTry(mine) {
-				sectionTitle(c, i18n.T("Try it"))
-				a.tryCard(c, tryOpts{
-					prefix: "home", feature: hotkey.Transcribe, mine: mine,
-					intro: a.tryIntro(hotkey.Transcribe), block: &hm.block,
-					start: func() *sessionNotice { _, n := a.startTry(featureKind(hotkey.Transcribe)); return n },
-				})
-			}
-			a.homeToday(c)
-			a.homeRecentList(c)
+			a.homeUsage(c) // home_usage.go
 		})
 	})
-	a.historyDeleteDialog(c) // the recent results' Delete (history_menu.go)
 }
 
 // ---- The slogan ----
@@ -196,8 +189,7 @@ func sloganHint(h *settings.Hotkey) (before, keys, after string) {
 	return before, uitext.HotkeyText(h.Keys), after
 }
 
-// homeSlogan is the line under Home's title: what VoxtNew does, then how
-// to start it (Transcribe's shortcut in a key cap, or a link to add one).
+// homeSlogan is the line under Home's title: how to start Transcribe (Transcribe's shortcut in a key cap, or a link to add one).
 func (a *app) homeSlogan(c *ui.Context) {
 	t := c.Theme()
 	k := tok(t)
@@ -212,8 +204,6 @@ func (a *app) homeSlogan(c *ui.Context) {
 		}
 	}
 	ui.Row(c.Key("home-slogan")).Wrap().GapX(px(t, 6)).GapY(px(t, sp1)).AlignItems(ui.Center).Children(func() {
-		text(i18n.T("Speak anywhere and Voxt types at your cursor"), k.Text)
-		text("·", k.Text3)
 		if keys == "" {
 			l := ui.ButtonBase(c.Key("home-slogan-add")).Label(before)
 			l.Children(func() {
@@ -233,44 +223,10 @@ func (a *app) homeSlogan(c *ui.Context) {
 			keycap(c, keys)
 			text(after, k.Text2)
 		})
-	})
-}
-
-// homeToday is today's numbers.
-func (a *app) homeToday(c *ui.Context) {
-	t := c.Theme()
-	k := tok(t)
-	hm := &a.hm
-	sectionTitle(c, i18n.T("Today"))
-	if !a.prefs.Privacy.KeepHistory {
-		caption(c, i18n.T("History is off, so nothing is counted."))
-		return
-	}
-	st := hm.today
-	tile := func(key, value, label string) {
-		fillCard(c.Key(key)).Gap(px(t, 2)).Grow(1).Basis(px(t, 140)).MinWidth(px(t, 120)).Padding(px(t, sp3), px(t, sp4)).Children(func() {
-			ui.Text(c, value).FontSize(px(t, fsTitle)).FontWeight(600).SingleLine()
-			ui.Text(c, label).FontSize(px(t, fsCaption)).TextColor(k.Text2).SingleLine().Ellipsis("…").MinWidth(0)
-		})
-	}
-	ui.Row(c.Key("home-today")).Wrap().Gap(px(t, sp3)).Children(func() {
-		tile("home-count", itoa(st.count), i18n.N(st.count, "result", "results"))
-		tile("home-chars", groupDigits(st.chars), i18n.N(st.chars, "character", "characters"))
-		// By feature: each one's icon and count.
-		fillCard(c.Key("home-kinds")).Gap(px(t, 2)).Grow(1).Basis(px(t, 140)).MinWidth(px(t, 120)).Padding(px(t, sp3), px(t, sp4)).Children(func() {
-			ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Center).Height(px(t, fsTitle*1.3)).Children(func() {
-				for _, kd := range store.Kinds {
-					if a.prefs.Features.IsHidden(string(kd)) {
-						continue
-					}
-					ui.Row(c.Key("kind-" + string(kd))).Gap(px(t, 4)).AlignItems(ui.Center).Label(uitext.KindTitle(kd) + " " + itoa(st.byKind[kd])).Tooltip(uitext.KindTitle(kd)).Children(func() {
-						ui.Icon(c, kindIcon(kd).Linear).Size(px(t, 16), px(t, 16)).TextColor(k.Text2)
-						ui.Text(c, itoa(st.byKind[kd])).FontSize(px(t, fsSection)).FontWeight(600).SingleLine()
-					})
-				}
-			})
-			ui.Text(c, i18n.T("By feature")).FontSize(px(t, fsCaption)).TextColor(k.Text2).SingleLine().Ellipsis("…").MinWidth(0)
-		})
+		if model := a.hm.usage.lastModel; model != "" {
+			ui.Spacer(c)
+			tagChip(c, uitext.ModelName(model))
+		}
 	})
 }
 

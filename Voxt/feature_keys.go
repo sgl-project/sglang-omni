@@ -187,15 +187,6 @@ func (a *app) featureShortcuts(c *ui.Context, feature string) {
 		h := newHotkey(a.prefs.Features)
 		a.setHotkeys(feature, true, func(hs []settings.Hotkey) []settings.Hotkey { return append(hs, h) })
 	}
-	if !a.hotkeys.Installed {
-		notice(c, p+"-no-tap", noticeWarn,
-			i18n.T("Without Accessibility, only shortcuts like ⌃⌥Space work. fn, single modifiers, double taps and long presses need it."),
-			"", func() {
-				if ui.Button(c.Key(p+"-open-perms"), i18n.T("Open Permissions")).Clicked() {
-					a.navigate("/settings/permissions")
-				}
-			}, nil)
-	}
 	problems := uitext.HotkeyProblems(a.prefs.Features, feature)
 	card(c.Key(p + "-keys")).Gap(px(t, sp2)).Children(func() {
 		hs := hotkey.HotkeysOf(a.prefs.Features, feature)
@@ -221,8 +212,6 @@ func (a *app) featureShortcuts(c *ui.Context, feature string) {
 		a.trPasteRow(c)
 		a.trCancelRow(c)
 		a.trEndWordRow(c) // feature_endword.go
-	case hotkey.Rewrite:
-		caption(c, i18n.T("With an answer in the card, the shortcut asks a follow-up and adds the text you select first."))
 	}
 }
 
@@ -350,11 +339,7 @@ func (a *app) customKeys(c *ui.Context, r *keyRow, label string, save func(keys 
 	case r.edited:
 		caption(c, i18n.T("Press Return to use %s.", uitext.HotkeyText(r.text)))
 		return
-	default:
-		caption(c, i18n.T("Modifiers first, then one key: Fn, RightCommand, Control+Option+Space, Fn+F5."))
 	}
-	// Also under an error: Mouse1 is refused, mouse buttons are not.
-	caption(c, i18n.T("Mouse buttons work too: Mouse3 (middle), Mouse4 and up (side), also with modifiers (Option+Mouse4)."))
 }
 
 // problemLines are a binding's problems, in the warning colour.
