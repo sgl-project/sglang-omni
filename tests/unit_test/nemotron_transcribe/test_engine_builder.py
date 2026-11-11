@@ -74,6 +74,22 @@ def test_nextn_is_off_by_default_and_keeps_server_overrides_unchanged() -> None:
     assert make_builder().infra_kwargs() == {}
 
 
+def test_nextn_disabled_preserves_async_and_non_speculative_overrides() -> None:
+    original = {
+        "revision": "operator-revision",
+        "disable_overlap_schedule": False,
+        "enable_mixed_chunk": True,
+    }
+    overrides, enabled = prepare_nemotron_speculative_options(
+        "model",
+        original,
+        enable_async_decode=True,
+    )
+
+    assert overrides == original
+    assert enabled is False
+
+
 def test_nextn_registers_the_native_draft_with_shared_infrastructure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
