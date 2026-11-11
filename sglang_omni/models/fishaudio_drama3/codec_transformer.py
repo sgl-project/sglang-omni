@@ -5,6 +5,7 @@ window; it keeps the module's weights, intermediate dtypes and attention mask.""
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import torch
@@ -21,6 +22,8 @@ try:
 except ImportError:
     triton = None
     tl = None
+
+logger = logging.getLogger(__name__)
 
 if triton is not None:
 
@@ -360,7 +363,9 @@ class CodecTransformer:
 def codec_transformer(module: nn.Module) -> CodecTransformer | nn.Module:
     """The fused forward of module when its device and configuration allow one, else the
     module itself."""
-    if fused_transformer_unsupported_reason(module) is None:
+    reason = fused_transformer_unsupported_reason(module)
+    if reason is None:
         return CodecTransformer(module)
     else:
+        logger.info(f"Drama 3 codec transformer: module forward, {reason}")
         return module
