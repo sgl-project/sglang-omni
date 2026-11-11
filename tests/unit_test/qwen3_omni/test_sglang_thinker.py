@@ -169,6 +169,8 @@ def test_talker_config_rebuilt_from_serialized_hf_config_keeps_mrope_and_theta()
     assert rebuilt.text_config.rope_theta == 123456.0
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 @pytest.mark.parametrize("native_interleaved", [None, False])
 def test_serialized_talker_rotates_image_positions_in_checkpoint_axis_order(
     native_interleaved: bool | None,
