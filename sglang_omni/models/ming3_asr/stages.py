@@ -12,9 +12,11 @@ from pydantic import JsonValue
 from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.models.registry import ModelRegistry
 from sglang.srt.sampling.sampling_params import SamplingParams
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from transformers import AutoConfig, PreTrainedTokenizerFast
 
 from sglang_omni.models.ming3_asr.encoder_service import Ming3ASRPreLMEncoderService
+from sglang_omni.models.ming3_asr.mtp import Ming3ASRMTP
 from sglang_omni.models.ming3_asr.preprocessing import (
     Ming3ASRPreprocessor,
     TranscriptionState,
@@ -110,6 +112,43 @@ def create_thinker_executor(
         )
     else:
         pass
+    overrides = dict(server_args_overrides or {})
+    speculative_algorithm = SpeculativeAlgorithm.from_string(
+        overrides.get("speculative_algorithm")
+    )
+    model_overrides: dict[str, JsonValue] = {
+        "architectures": ["BailingMoeV3ForCausalLM"]
+    }
+    if speculative_algorithm.is_none():
+        pass
+    elif speculative_algorithm != SpeculativeAlgorithm.EAGLE:
+        raise ValueError("Ming ASR supports NEXTN (EAGLE) with its bundled MTP")
+    else:
+        if overrides.get("speculative_draft_model_path") not in (None, model_path):
+            raise ValueError("Ming ASR MTP must use the thinker's checkpoint")
+        elif overrides.get("speculative_draft_model_revision") not in (
+            None,
+            overrides.get("revision"),
+        ):
+            raise ValueError("Ming ASR MTP must use the thinker's revision")
+        elif overrides.get("speculative_eagle_topk") not in (None, 1):
+            raise ValueError(
+                "Ming ASR KDA verification requires speculative_eagle_topk=1"
+            )
+        elif overrides.get("enable_multi_layer_eagle"):
+            raise ValueError(
+                "Ming ASR has one MTP layer; enable_multi_layer_eagle is unsupported"
+            )
+        else:
+            pass
+        # note (wirybeaver): NextN selects the V3 decoder and weight loader by the flattened model type.
+        model_overrides["model_type"] = "bailing_hybrid"
+        overrides.update(
+            speculative_draft_model_path=model_path,
+            speculative_draft_model_revision=overrides.get("revision"),
+            enable_mixed_chunk=False,
+        )
+        ModelRegistry.models["BailingMoeForCausalLMNextN"] = Ming3ASRMTP
     resolved_device = resolve_concrete_device(device, gpu_id)
     configuration = load_checkpoint_config(model_path)
     encoder = Ming3AudioEncoder(
@@ -122,14 +161,11 @@ def create_thinker_executor(
     encoder = encoder.eval().to(resolved_device, dtype=torch.bfloat16)
     AutoConfig.register(Ming3ASRConfig.model_type, Ming3ASRConfig, exist_ok=True)
     ModelRegistry.models["BailingMoeV3ForCausalLM"] = Ming3AudioThinker
-    overrides = dict(server_args_overrides or {})
     overrides.update(
         tp_size=tp_size,
         trust_remote_code=False,
         skip_tokenizer_init=True,
-        json_model_override_args=json.dumps(
-            {"architectures": ["BailingMoeV3ForCausalLM"]}
-        ),
+        json_model_override_args=json.dumps(model_overrides),
         disable_radix_cache=True,
         chunked_prefill_size=-1,
     )
@@ -143,9 +179,12 @@ def create_thinker_executor(
             tp_rank=tp_rank,
             nccl_port=nccl_port,
             total_gpu_memory_fraction=total_gpu_memory_fraction,
+            supports_speculative_decoding=True,
         )
     )
-    tokenizer = PreTrainedTokenizerFast.from_pretrained(model_path)
+    tokenizer = PreTrainedTokenizerFast.from_pretrained(
+        model_path, revision=overrides.get("revision")
+    )
     end_token_id = configuration["text_config"]["eos_token_id"]
     encoder_service = Ming3ASRPreLMEncoderService(
         encoder,
@@ -203,6 +242,7 @@ def create_thinker_executor(
         payload.data = {
             "text": extract_transcript(generated_text, language=request.language),
             "finish_reason": request.finish_reason,
+            "spec_tokens_details": request.spec_tokens_details,
             "usage": {
                 "prompt_tokens": len(request.input_ids),
                 "completion_tokens": len(request.output_ids),
