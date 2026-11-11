@@ -187,23 +187,24 @@ def preprocess_request(
                 ]
         else:
             pass
+        if output_modalities == ["audio"] and (
+            reference_audio is None or not reference_audio.strip()
+        ):
+            raise ValueError("Provide ref_audio with each TTS request")
+        else:
+            pass
+        if (
+            parameters.seed is not None
+            and voice_options.seed is not None
+            and parameters.seed != voice_options.seed
+        ):
+            raise ValueError("conflicting speech seeds")
+        else:
+            pass
         rows = chat_rows(conversation, tokenizer, audio_encoder, output_modalities[0])
     except ValueError as error:
         raise RequestValidationError(str(error)) from error
-    if output_modalities == ["audio"] and (
-        reference_audio is None or not reference_audio.strip()
-    ):
-        raise RequestValidationError("Provide ref_audio with each TTS request")
-    else:
-        pass
-    if (
-        parameters.seed is not None
-        and voice_options.seed is not None
-        and parameters.seed != voice_options.seed
-    ):
-        raise RequestValidationError("conflicting speech seeds")
-    else:
-        seed = parameters.seed if parameters.seed is not None else voice_options.seed
+    seed = parameters.seed if parameters.seed is not None else voice_options.seed
     if seed is None:
         seed = int.from_bytes(
             hashlib.blake2b(payload.request_id.encode(), digest_size=8).digest(), "big"
