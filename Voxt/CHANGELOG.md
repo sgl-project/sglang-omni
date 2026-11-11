@@ -21,6 +21,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **The speech model loads before the first dictation**: Voxt now loads Transcribe's on-device speech model when it starts and when you choose another one, instead of at the first press of the shortcut. The first live text after a launch or a change of model no longer waits for the load (0.2 to 0.5 s on an M-series Mac with 36 GB, longer on a busy Mac or one with less memory). The model leaves memory after 10 idle minutes, as before.
 - **A large dictionary no longer slows dictation down**: after you dictate, Voxt replaces the dictionary's aliases with their terms. It now checks only the aliases that start with the letter at each place. With 1,000 terms, a 4 KB transcript took 57 ms and now takes 2 ms; a 20 KB one took 280 ms and now takes 8 ms (Apple M5 Max). The result is the same.
 - **Translating selected text no longer waits for the speech model** (#3838): Translate with text selected uses only the language model (and its fallback), so Voxt no longer opens the on-device speech model first. After 10 idle minutes that model leaves memory, and loading it again made a selection translation wait for a model it never used. It also works with no speech model installed. With nothing selected, Translate records and uses the speech model as before.
+- **Faster transcription uses less memory**: the speech model's draft now runs at 8 bits instead of 16. On Voxt's test recordings the text is the same word for word, the speech model uses about 120 MB (0.6B) or 300 MB (1.7B) less memory, and recognition is 1–2% faster (Apple M5 Max).
 
 ### Fixed
 
@@ -63,6 +64,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **语音识别模型在第一次听写前就加载好**：Voxt 启动时、换语音识别模型时就加载转录用的本地模型，不再等到第一次按快捷键。启动后和换模型后的第一次实时文字不用再等加载（36 GB 的 M 系列 Mac 上是 0.2 到 0.5 秒，机器忙或内存小时更久）。模型空闲 10 分钟后照旧从内存卸载。
 - **词典很大时听写不再变慢**：听写完成后，Voxt 会把词典里的别名换成对应的词条，现在每个位置只检查以该字开头的别名。词典有 1000 个词条时，4 KB 的转录稿从 57 毫秒降到 2 毫秒，20 KB 的从 280 毫秒降到 8 毫秒（Apple M5 Max）。替换结果不变。
 - **翻译选中文字不再等语音识别模型**（#3838）：选中文字后用翻译，只用语言模型（和备用模型），Voxt 不再先打开本地语音识别模型。这个模型空闲 10 分钟后会退出内存，重新加载要等，而翻译选中文字根本用不到它。没装语音识别模型也能翻译选中文字。没选中文字时，翻译照旧录音、用语音识别模型。
+- **转录加速更省内存**：语音识别模型的草稿改用 8 位运行，原来是 16 位。在 Voxt 的测试录音上转出的文字逐字相同，语音识别模型少占约 120 MB（0.6B）或 300 MB（1.7B）内存，识别快 1–2%（Apple M5 Max）。
 
 #### 修复
 
