@@ -209,6 +209,7 @@ def test_thinker_stage_sampling_overrides_reach_the_thinker(
         tokenizer=FakeQwenTokenizer(),
         vocab_size=256,
         capture_prompt_hidden_states=False,
+        speech_enabled=False,
     )
     payload = make_qwen_payload(
         params=Client.build_omni_request(build_generate_request(api_request)).params
