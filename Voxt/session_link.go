@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"slices"
@@ -144,9 +145,17 @@ func (a *app) openSessions() {
 	logs := a.logs
 	st := a.settings
 	a.mgr = session.New(session.Config{
-		Audio:   session.HelperAudio{H: sup},
-		Text:    a.textIO(), // family_runtime.go: the family's paste rule
-		Select:  session.HelperText{H: sup},
+		Audio:  session.HelperAudio{H: sup},
+		Text:   a.textIO(), // family_runtime.go: the family's paste rule
+		Select: session.HelperText{H: sup},
+		Window: func(ctx context.Context, pid int) ([]byte, error) {
+			var r proto.ScreenWindowResult
+			raw, err := sup.Call(ctx, "", proto.MethodScreenWindow, proto.ScreenWindowParams{PID: pid}, nil)
+			if err == nil {
+				err = json.Unmarshal(raw, &r)
+			}
+			return r.JPEG, err
+		},
 		Resolve: resolver(lm),
 		History: lib.store.History(),
 		Glossary: func(ctx context.Context) ([]store.Term, error) {

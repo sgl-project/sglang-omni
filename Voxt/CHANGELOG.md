@@ -6,6 +6,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
+- **Send a screenshot to language models that read images** (#3846): turn on Settings → Privacy → Send the window to the language model, and when you start Transcribe, Translate or Rewrite, Voxt takes a screenshot of the window you speak into and sends it to the language model with the text, so names and terms on screen come out right. Off by default. It needs Screen Recording permission, which Voxt asks for when you turn it on. A model that takes no images gets the text alone, as before.
 - **Rewrite: Continue adds the text you select now**: select more text (say, the messages that came in since) before you press Continue or the Rewrite shortcut in the answer card, and the follow-up sends it to the language model with your new instruction, next to the text selected the first time. The card shows it under what you said, shortened until you click Show all. With nothing new selected, the follow-up works as before.
 - **Personal dictionary** on the Dictionary page: write your names, terms and numbers once in Markdown, for example a table of the standard spelling, what speech recognition writes instead, and when it applies. Transcribe, Translate and Rewrite add it to the language model's prompt, right after the task's rules (also with your own full prompt), and speech recognition does not get it. How it is used, under the editor, shows an example built from your settings: the system prompt, the dictionary, your input and the speech recognition text, then what the model receives. The switch Add to the language model prompt keeps it out; terms and aliases work as before.
 - **Use transcript while the language model works, and a longer wait if you need it**: while Transcribe or Translate waits for the language model, the overlay shows Use transcript; click it or press the cancel shortcut (Esc unless you changed it) to insert the recognised text right away. When a translation of speech runs out of time, the recognised speech is inserted with a warning, as Transcribe already did. Language models → Wait for the language model sets how long Voxt waits at least (Automatic, 1, 2, 5 or 10 minutes) for Transcribe, Translate and Rewrite.
@@ -40,6 +41,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 新增
 
+- **给能看图的语言模型发截图**（#3846）：在“设置 → 隐私”打开“把窗口截图发给语言模型”后，每次开始转录、翻译或改写时，Voxt 会截取你正在输入的窗口，和文字一起发给语言模型，让屏幕上的名字和术语写对。默认关闭。需要“屏幕录制”权限，打开时 Voxt 会请求。不能看图的模型照旧只收到文字。
 - **改写：“继续”会带上现在选中的文字**：在答案卡片里点“继续”或按改写快捷键之前，先选中更多文字（比如之后新来的消息），追问时这段文字会和新的指令一起发给语言模型，和第一次选中的文字都在对话里。卡片在你说的话下面显示这段文字，长的先截短，点“展开”看全文。没有新选中文字时，追问和以前一样。
 - **个人词典**（词典页）：用 Markdown 把名字、术语和数字的写法写一次，例如一张表：标准写法、语音识别会写成什么、什么情况下适用。转录、翻译和改写会把它加到语言模型的提示词里，紧跟在任务规则后面（用自己的完整提示词时也加），语音识别不会收到。编辑框下面的“怎么使用”用你的设置举例：系统提示词、个人词典、你的输入、语音识别文本，以及模型最后收到的内容。关掉“加到语言模型的提示词里”就不发送；词条和别名照旧生效。
 - **语言模型处理时可以直接用识别原文，也可以让它多等一会**：转录或翻译在等语言模型时，浮窗显示“用识别原文”，点它或按取消键（默认 Esc），马上插入识别出的原文。语音翻译超时后插入识别原文并提示，和转录一样。语言模型页的“等待语言模型”设置转录、翻译、改写至少等多久（自动、1、2、5、10 分钟）。
