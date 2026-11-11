@@ -76,8 +76,8 @@ type cardView struct {
 	// size is the card's, its feature's (Features.CardSizes).
 	size layout.CardSize
 	// writing: Rewrite's first answer as the model writes it
-	// (writingAnswer), the card at its full height from the first words:
-	// it does not grow line by line (10-15).
+	// (writingAnswer), shown at a steady pace in a card that grows a few
+	// lines at a time (overlay_stream.go, #3836).
 	writing bool
 }
 
