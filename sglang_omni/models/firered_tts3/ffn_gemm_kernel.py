@@ -10,15 +10,15 @@ import triton.language as tl
 
 @triton.jit
 def ffn_gemm_kernel(
-    X,
-    W,
-    BIAS,
-    Y,
+    X: torch.Tensor,
+    W: torch.Tensor,
+    BIAS: torch.Tensor,
+    Y: torch.Tensor,
     M: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
-):
+) -> None:
     tiles_m = tl.cdiv(M, BLOCK_M)
     rows = tl.program_id(0) % tiles_m * BLOCK_M + tl.arange(0, BLOCK_M)
     cols = tl.program_id(0) // tiles_m * BLOCK_N + tl.arange(0, BLOCK_N)
@@ -70,17 +70,17 @@ def ffn_gemm_kernel(
 
 @triton.jit
 def packed_fp32_kernel(
-    X,
-    W,
-    BIAS,
-    Y,
+    X: torch.Tensor,
+    W: torch.Tensor,
+    BIAS: torch.Tensor,
+    Y: torch.Tensor,
     M: tl.constexpr,
     N: tl.constexpr,
     K: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
-):
+) -> None:
     tiles_m = tl.cdiv(M, BLOCK_M)
     tile_m = tl.program_id(0) % tiles_m
     tile_n = tl.program_id(0) // tiles_m

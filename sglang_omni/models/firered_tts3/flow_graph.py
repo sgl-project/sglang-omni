@@ -24,7 +24,7 @@ from sglang_omni.models.firered_tts3.flow_graph_resources import (
     FlowGraphCounters,
     FlowGraphEntry,
 )
-from sglang_omni.models.firered_tts3.flow_time_cache import FlowPrecisionGate
+from sglang_omni.models.firered_tts3.flow_precision import FlowPrecisionGate
 
 logger = logging.getLogger(__name__)
 

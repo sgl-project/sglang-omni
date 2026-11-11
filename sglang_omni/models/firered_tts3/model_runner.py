@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
 
 import torch
 from sglang.srt.managers.schedule_batch import FINISH_MATCHED_TOKEN, ScheduleBatch
@@ -13,7 +12,13 @@ from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode, Forw
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.model_worker import ModelWorker
-from sglang_omni.models.firered_tts3.flow_execution import euler_flow_loop, flow_t_span
+from sglang_omni.models.firered_tts3.embeddings import materialize_decode_embeddings
+from sglang_omni.models.firered_tts3.flow_batch import (
+    FlowRow,
+    build_flow_row,
+    execute_flow_rows,
+)
+from sglang_omni.models.firered_tts3.flow_execution import flow_t_span
 from sglang_omni.models.firered_tts3.flow_graph import FlowGraphRunner
 from sglang_omni.models.firered_tts3.payload_types import TEXT_TOKEN_BUDGET
 from sglang_omni.models.firered_tts3.prefill import (
@@ -43,16 +48,6 @@ from sglang_omni.scheduling.types import SchedulerRequest
 # note (kermit): Base/Instruct share these ids; Speaker checkpoints resolve tokens by name.
 TEXT_EOT_ID = 151677
 AUDIO_SOS_ID = 151669
-
-
-@dataclass(kw_only=True)
-class FlowRow:
-    """One request's inputs to a batched Euler integration."""
-
-    request_data: FireRedTTS3SGLangRequestData
-    history_latents: torch.Tensor
-    initial_noise: torch.Tensor
-    conditioning: torch.Tensor
 
 
 # note (kermit): Unused hook arguments are required by the shared ModelRunner interface.
@@ -111,8 +106,8 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
         model.text_logits_requested = any(
             (request.data.text_ar_mode == TEXT_MODE_TEXT for request in requests)
         )
-        embedding_rows = []
-        materialized_requests = []
+        embedding_rows: list[torch.Tensor] = []
+        materialized_requests: list[tuple[str, FireRedTTS3SGLangRequestData]] = []
         try:
             for request in requests:
                 request_data = request.data
@@ -165,58 +160,10 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
         else:
             pass
         assert forward_batch is not None
-        model = self.model
-        model.text_logits_requested = any(
+        self.model.text_logits_requested = any(
             (request.data.text_ar_mode == TEXT_MODE_TEXT for request in requests)
         )
-        embedding_rows = []
-        for request_row_index, request in enumerate(requests):
-            request_data = request.data
-            feed_is_patch = (
-                not request_data.dual_stream
-                and request_data.text_ar_mode == TEXT_MODE_AUDIO
-                or (
-                    request_data.dual_stream
-                    and request_data.dual_stream_stage == DS_STAGE_PATCH
-                )
-            )
-            if feed_is_patch:
-                feedback_queue = request_data.pending_feedback_queue
-                if feedback_queue:
-                    embedding_rows.append(feedback_queue.popleft())
-                elif request_data.stop_pending:
-                    # note (kermit): Deferred stop discards this feed; decode still owns KV cleanup.
-                    embedding_rows.append(
-                        torch.zeros(
-                            model.llm_hidden_size,
-                            device=forward_batch.input_ids.device,
-                            dtype=next(model.parameters()).dtype,
-                        )
-                    )
-                else:
-                    raise RuntimeError(
-                        "FireRedTTS3 decode is missing its latent feedback"
-                    )
-            else:
-                token_id = int(forward_batch.input_ids[request_row_index])
-                embedding_rows.append(
-                    model.get_input_embeddings()(
-                        torch.tensor(
-                            [token_id],
-                            dtype=torch.long,
-                            device=forward_batch.input_ids.device,
-                        )
-                    )[0]
-                )
-        feedback_buffer = model.graph_feedback_buffer
-        if feedback_buffer is not None:
-            # note (kermit): Decode graphs read this persistent buffer rather than input_embeds.
-            torch.stack(embedding_rows, out=feedback_buffer[: len(embedding_rows)])
-        else:
-            forward_batch.input_embeds = torch.stack(embedding_rows).to(
-                device=forward_batch.input_ids.device,
-                dtype=next(model.parameters()).dtype,
-            )
+        materialize_decode_embeddings(self.model, forward_batch, requests)
 
     def requested_capture_hidden_mode_prefill(
         self, schedule_batch: ScheduleBatch | None, requests: list[SchedulerRequest]
@@ -291,7 +238,7 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
         else:
             pass
         hidden_row_offset = 0
-        next_token_ids = []
+        next_token_ids: list[int] = []
         flow_rows: list[FlowRow] | None = [] if self.flow_batching else None
         for request_row_index, request in enumerate(requests):
             request_data = request.data
@@ -310,8 +257,8 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
                 continue
             else:
                 pass
-            flow = request_data.flow_state
-            assert isinstance(flow, FlowState)
+            flow_state = request_data.flow_state
+            assert isinstance(flow_state, FlowState)
             text_feed_token_id = self.advance_text_phase(
                 request_data, result, request_row_index
             )
@@ -326,10 +273,10 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
                     continue
                 else:
                     pass
-                if flow.patch_count > 0:
-                    flow.backbone_conditioning = torch.cat(
+                if flow_state.patch_count > 0:
+                    flow_state.backbone_conditioning = torch.cat(
                         [
-                            flow.backbone_conditioning,
+                            flow_state.backbone_conditioning,
                             dual_stream_conditioning_rows(
                                 request_data, hidden_states_float32
                             ),
@@ -349,22 +296,22 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
                 continue
             else:
                 pass
-            if flow.patch_count > 0:
+            if flow_state.patch_count > 0:
                 prompt_hidden_start = (
-                    request_data.prefill_token_count - flow.prompt_patch_count
+                    request_data.prefill_token_count - flow_state.prompt_patch_count
                 )
                 audio_hidden_start = (
                     request_data.prefill_token_count
                     + audio_hidden_row_offset(request_data)
                 )
                 conditioning_parts = [
-                    flow.backbone_conditioning,
+                    flow_state.backbone_conditioning,
                     hidden_states_float32[
                         prompt_hidden_start : request_data.prefill_token_count
                     ].unsqueeze(0),
                     hidden_states_float32[audio_hidden_start:-1].unsqueeze(0),
                 ]
-                flow.backbone_conditioning = torch.cat(conditioning_parts, dim=1)
+                flow_state.backbone_conditioning = torch.cat(conditioning_parts, dim=1)
             else:
                 pass
             self.flow_step(
@@ -482,7 +429,7 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
             )
         else:
             pass
-        next_token_ids = []
+        next_token_ids: list[int] = []
         flow_rows: list[FlowRow] | None = [] if self.flow_batching else None
         for request_row_index, request in enumerate(requests):
             request_data = request.data
@@ -606,13 +553,13 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
     ) -> bool:
         """Evaluate the fp32 stop head with the minimum patch floor."""
         model = self.model
-        flow = request_data.flow_state
-        assert isinstance(flow, FlowState)
+        flow_state = request_data.flow_state
+        assert isinstance(flow_state, FlowState)
         state = request_data.state
         if (
             self.skip_min_patch_stop
             and self.is_sync_speaker_audio(request_data)
-            and (flow.patch_count < state.min_patches)
+            and (flow_state.patch_count < state.min_patches)
         ):
             return False
         else:
@@ -622,7 +569,8 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
             stop_logits = model.stop_head(hidden_states_float32[-1:].unsqueeze(0))
             stop_score = float(torch.sigmoid(stop_logits).reshape(-1)[-1].item())
         return (
-            stop_score >= state.stop_threshold and flow.patch_count >= state.min_patches
+            stop_score >= state.stop_threshold
+            and flow_state.patch_count >= state.min_patches
         )
 
     def run_flow(
@@ -646,116 +594,11 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
         hidden_states_float32: torch.Tensor,
     ) -> FlowRow:
         """Append conditioning and draw noise from this request generator."""
-        model = self.model
-        flow = request_data.flow_state
-        assert isinstance(flow, FlowState)
-        assert request_data.probe is not None
-        with torch.inference_mode(), request_data.probe.segment("cond"):
-            if flow.patch_count == 0 and flow.prompt_patch_count > 0:
-                conditioning_rows = hidden_states_float32[-flow.prompt_patch_count :]
-            else:
-                conditioning_rows = hidden_states_float32[-1:]
-            flow.backbone_conditioning = torch.cat(
-                [flow.backbone_conditioning, conditioning_rows.unsqueeze(0)], dim=1
-            )
-            conditioning_window = flow.backbone_conditioning[
-                :, -(model.history_patches + 1) :
-            ]
-            backbone_conditioning = model.dit_head(conditioning_window)
-            backbone_conditioning = backbone_conditioning.repeat_interleave(
-                model.patch_size, dim=1
-            )
-            if flow.speaker_conditioning is not None:
-                speaker_conditioning = flow.speaker_conditioning.unsqueeze(1).expand(
-                    -1, backbone_conditioning.shape[1], -1
-                )
-                conditioning = torch.cat(
-                    [backbone_conditioning, speaker_conditioning], dim=-1
-                )
-            else:
-                conditioning = backbone_conditioning
-            history_latents = flow.latent_history[:, -model.history_length :]
-            initial_noise = torch.empty(
-                1,
-                model.patch_size,
-                model.redae_dim,
-                device=conditioning.device,
-                dtype=torch.float32,
-            )
-            initial_noise.normal_(generator=flow.generator)
-        return FlowRow(
-            request_data=request_data,
-            history_latents=history_latents,
-            initial_noise=initial_noise,
-            conditioning=conditioning,
-        )
+        return build_flow_row(self.model, request_data, hidden_states_float32)
 
     def run_flow_rows(self, flow_rows: list[FlowRow]) -> None:
         """Group flow rows by Euler step count and write feedback in request order."""
-        model = self.model
-        groups: dict[int, list[FlowRow]] = {}
-        for flow_row in flow_rows:
-            groups.setdefault(int(flow_row.request_data.state.n_timesteps), []).append(
-                flow_row
-            )
-        feedback_dtype = next(model.parameters()).dtype
-        for n_timesteps, flow_group in groups.items():
-            with torch.inference_mode():
-                history_latents = torch.cat(
-                    [flow_row.history_latents for flow_row in flow_group]
-                )
-                initial_noise = torch.cat(
-                    [flow_row.initial_noise for flow_row in flow_group]
-                )
-                conditioning = torch.cat(
-                    [flow_row.conditioning for flow_row in flow_group]
-                )
-                guidance_scales = torch.tensor(
-                    [
-                        float(flow_row.request_data.state.inference_cfg)
-                        for flow_row in flow_group
-                    ],
-                    dtype=torch.float32,
-                    device=conditioning.device,
-                ).view(-1, 1, 1)
-                probes = [flow_row.request_data.probe for flow_row in flow_group]
-                with ProfilingProbe.shared_segment("dit_flow", probes):
-                    graphs = self.flow_graphs
-                    patches = (
-                        graphs.run(
-                            history_latents,
-                            initial_noise,
-                            conditioning,
-                            guidance_scales,
-                            n_timesteps,
-                        )
-                        if graphs is not None
-                        else None
-                    )
-                    if patches is None:
-                        patches = euler_flow_loop(
-                            model.dit,
-                            torch.cat([history_latents, initial_noise], dim=1),
-                            conditioning,
-                            self.t_span(n_timesteps, conditioning.device),
-                            guidance_scales,
-                            n_timesteps,
-                            model.patch_size,
-                        )
-                    else:
-                        pass
-                with ProfilingProbe.shared_segment("patch_encoder", probes):
-                    feedbacks = model.patch_encoder(patches)
-                for request_row_index, flow_row in enumerate(flow_group):
-                    request_data = flow_row.request_data
-                    flow = request_data.flow_state
-                    patch = patches[request_row_index : request_row_index + 1]
-                    flow.latent_history = torch.cat([flow.latent_history, patch], dim=1)
-                    flow.patch_count += 1
-                    request_data.latent_patches.append(patch)
-                    request_data.pending_feedback_queue.append(
-                        feedbacks[0, request_row_index].to(dtype=feedback_dtype)
-                    )
+        execute_flow_rows(self.model, self.flow_graphs, flow_rows, self.t_span)
 
     @staticmethod
     def hidden_states(result: GenerationBatchResult) -> torch.Tensor:
@@ -800,10 +643,12 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
 
     def suspend_request_data(self, request_data: FireRedTTS3SGLangRequestData) -> None:
         """Release temporary flow buffers while retaining generator state."""
-        flow = request_data.flow_state
-        assert flow is not None and (not isinstance(flow, FireRedFlowResume))
+        flow_state = request_data.flow_state
+        assert flow_state is not None and (
+            not isinstance(flow_state, FireRedFlowResume)
+        )
         request_data.flow_state = FireRedFlowResume(
-            rng_state=flow.generator.get_state()
+            rng_state=flow_state.generator.get_state()
         )
         request_data.pending_feedback_queue.clear()
 

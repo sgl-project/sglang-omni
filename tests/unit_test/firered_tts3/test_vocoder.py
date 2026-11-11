@@ -137,6 +137,50 @@ def test_coalesced_streams_keep_request_audio_and_respect_slot_limit(
             )
 
 
+def test_coalesced_stream_dispatches_vocoder_overrides(
+    decoder: RedAEAudioDecoder,
+) -> None:
+    """Coalesced decoding must use the same overridable hooks as serial decoding."""
+    generator = torch.Generator().manual_seed(121)
+    latents = torch.randn(2, 4, 64, generator=generator)
+    vocoder = make_streaming_vocoder(
+        decoder,
+        redae_scale=1.0,
+        sample_rate=24000,
+        prompt_predecode=False,
+        stream_batching=True,
+    )
+    participants = []
+    for index in range(2):
+        state = vocoder.create_stream_state(str(index))
+        state.pending_latents.append(latents[index : index + 1])
+        participants.append((str(index), state))
+    with (
+        patch.object(
+            vocoder, "wait_codes_ready", wraps=vocoder.wait_codes_ready
+        ) as wait,
+        patch.object(
+            vocoder, "complete_chunk", wraps=vocoder.complete_chunk
+        ) as complete,
+        patch.object(vocoder, "emit_cpu_window", wraps=vocoder.emit_cpu_window) as emit,
+        patch.object(
+            vocoder, "latent_parts", wraps=vocoder.latent_parts
+        ) as latent_parts,
+        patch.object(vocoder, "step_group_key", wraps=vocoder.step_group_key) as group,
+    ):
+        plan = vocoder.build_step_plan(participants)
+        actual = vocoder.run_step(participants, plan)
+    with torch.inference_mode():
+        expected, _ = decoder.forward_stream(latents, None, last_chunk=False)
+    for index in range(2):
+        assert torch.equal(actual[str(index)], expected[index : index + 1])
+    assert wait.call_count == 2
+    assert complete.call_count == 2
+    assert emit.call_count == 2
+    assert latent_parts.call_count == 2
+    assert group.call_count == 2
+
+
 def test_stream_rejects_duplicate_prompt_and_nonpositive_context(
     decoder: RedAEAudioDecoder,
 ) -> None:

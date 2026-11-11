@@ -10,11 +10,12 @@ from typing import Protocol, TypedDict
 import torch
 from torch.utils._python_dispatch import TorchDispatchMode
 
-from sglang_omni.models.firered_tts3.compiled_dit import FfnGemmMode
 from sglang_omni.models.firered_tts3.conv_cache import Conv1dWeightCache
+from sglang_omni.models.firered_tts3.ffn_gemm import FfnGemmMode
+from sglang_omni.models.firered_tts3.flow_precision import FlowPrecisionGate
 from sglang_omni.models.firered_tts3.flow_time_cache import (
-    FlowPrecisionGate,
     TimeCacheUnavailable,
+    TimeGemmMode,
     TimeGemmTable,
 )
 
@@ -123,6 +124,60 @@ def check_flow_precision(
         )
     else:
         pass
+
+
+def prepare_flow_probes(
+    flow_state: torch.Tensor,
+    conditioning: torch.Tensor,
+    guidance_scales: torch.Tensor,
+    time_mode: TimeGemmMode | None,
+    strict_gate: FlowPrecisionGate,
+    body: FlowCaptureBody,
+) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
+    """Validate baseline and time-cache outputs before capturing replay graphs."""
+    probes: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] = []
+    generator = torch.Generator(device=flow_state.device).manual_seed(41729)
+    for probe in range(3):
+        if probe == 0:
+            probe_state = torch.zeros_like(flow_state)
+            probe_conditioning = torch.zeros_like(conditioning)
+            probe_scales = torch.zeros_like(guidance_scales)
+        else:
+            probe_state = torch.randn(
+                flow_state.shape,
+                device=flow_state.device,
+                dtype=flow_state.dtype,
+                generator=generator,
+            )
+            probe_conditioning = torch.randn(
+                conditioning.shape,
+                device=conditioning.device,
+                dtype=conditioning.dtype,
+                generator=generator,
+            )
+            probe_scales = torch.full_like(guidance_scales, 1.2 if probe == 1 else 2.0)
+        expected = body(probe_state.clone(), probe_conditioning, probe_scales, ())
+        probes.append((probe_state, probe_conditioning, probe_scales, expected))
+        observed = body(
+            probe_state.clone(), probe_conditioning, probe_scales, (), observed=True
+        )
+        check_flow_precision(
+            "observed", observed, expected, strict_gate, probe, flow_state.shape[0]
+        )
+        if time_mode is not None:
+            cached_time = body(
+                probe_state.clone(),
+                probe_conditioning,
+                probe_scales,
+                (time_mode,),
+                observed=True,
+            )
+            check_flow_precision(
+                "time", cached_time, expected, strict_gate, probe, flow_state.shape[0]
+            )
+        else:
+            pass
+    return probes
 
 
 class FlowGraphResources:

@@ -221,7 +221,7 @@ class Conv1dWeightCache(TorchDispatchMode):
     def __torch_dispatch__(
         self,
         func: OpOverload,
-        types: tuple[type, ...],
+        types: tuple[type[torch.Tensor], ...],
         args: tuple[object, ...] = (),
         kwargs: dict[str, object] | None = None,
     ) -> object:

@@ -8,24 +8,22 @@ import logging
 import torch
 from torch.utils._python_dispatch import TorchDispatchMode
 
-from sglang_omni.models.firered_tts3.compiled_dit import (
-    QKV_CONFIGS,
-    CompiledDiTExecutor,
-    FfnGemmMode,
-)
+from sglang_omni.models.firered_tts3.compiled_dit import CompiledDiTExecutor
 from sglang_omni.models.firered_tts3.conv_cache import (
     INPUT_SHAPE as CONTROLLED_CONV_INPUT_SHAPE,
 )
 from sglang_omni.models.firered_tts3.conv_cache import Conv1dWeightCache
+from sglang_omni.models.firered_tts3.ffn_gemm import QKV_CONFIGS, FfnGemmMode
 from sglang_omni.models.firered_tts3.flow_execution import euler_flow_loop
 from sglang_omni.models.firered_tts3.flow_graph_resources import (
     FlowGraphCounters,
     FlowGraphEntry,
     FlowGraphResources,
     check_flow_precision,
+    prepare_flow_probes,
 )
+from sglang_omni.models.firered_tts3.flow_precision import FlowPrecisionGate
 from sglang_omni.models.firered_tts3.flow_time_cache import (
-    FlowPrecisionGate,
     TimeCacheUnavailable,
     TimeConditionCache,
 )
@@ -207,52 +205,15 @@ class FlowGraphCapture:
                         modes += (time_mode,)
                     else:
                         pass
-                    generator = torch.Generator(device=flow_state.device).manual_seed(
-                        41729
-                    )
                     strict_gate = FlowPrecisionGate()
-                    for probe in range(3):
-                        if probe == 0:
-                            probe_xt = torch.zeros_like(flow_state)
-                            probe_cond = torch.zeros_like(conditioning)
-                            probe_cfg = torch.zeros_like(guidance_scales)
-                        else:
-                            probe_xt = torch.randn(
-                                flow_state.shape,
-                                device=flow_state.device,
-                                dtype=flow_state.dtype,
-                                generator=generator,
-                            )
-                            probe_cond = torch.randn(
-                                conditioning.shape,
-                                device=conditioning.device,
-                                dtype=conditioning.dtype,
-                                generator=generator,
-                            )
-                            probe_cfg = torch.full_like(
-                                guidance_scales, 1.2 if probe == 1 else 2.0
-                            )
-                        expected = body(probe_xt.clone(), probe_cond, probe_cfg, ())
-                        probes.append((probe_xt, probe_cond, probe_cfg, expected))
-                        observed = body(
-                            probe_xt.clone(), probe_cond, probe_cfg, (), observed=True
-                        )
-                        check_precision(
-                            "observed", observed, expected, strict_gate, probe
-                        )
-                        if time_mode is not None:
-                            cached_time = body(
-                                probe_xt.clone(),
-                                probe_cond,
-                                probe_cfg,
-                                (time_mode,),
-                                observed=True,
-                            )
-                            check_precision(
-                                "time", cached_time, expected, strict_gate, probe
-                            )
-                        else:
-                            pass
+                    probes = prepare_flow_probes(
+                        flow_state,
+                        conditioning,
+                        guidance_scales,
+                        time_mode,
+                        strict_gate,
+                        body,
+                    )
                     graph = capture_graph(modes, strict_gate)
                 except Exception:
                     logger.warning(
