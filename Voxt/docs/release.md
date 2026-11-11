@@ -113,7 +113,7 @@ gh workflow run voxt-upgrade-test.yaml --repo sgl-project/sglang-omni -f from_ta
 
 ## Beta（GitHub Actions）
 
-[voxt-beta.yaml](../../.github/workflows/voxt-beta.yaml) 在 main 每合入一次 Voxt 的改动就跑一次上面的工作流：改了 `Voxt/` 或 app 里带的原生运行时 `sglang_omni_mlx/native/`（只改 Markdown 的不算），或者改了 voxt-beta.yaml、voxt-release.yaml。版本号是 mygo.json 的版本加 `-beta.YYYYMMDD.N`（UTC 日期，N 是 voxt-beta.yaml 的运行序号，区分同一天的几次）。签名、公证和 `release-verify.sh developer-id` 都和 nightly 一样，dmg 和它的 `.sha256` 是运行的 artifact `Voxt-X.Y.Z-beta.YYYYMMDD.N-arm64`，保留 14 天。合入的改动在 PR 里已经跑过 Voxt CI，beta 不再跑测试；新的合入会取消还没构建完的上一个 beta。改了 voxt-beta.yaml 的 PR 也跑它，构建进不了环境，做的是 ad hoc 构建。从别的分支手动运行（Actions → Voxt Beta → Run workflow，选那个分支）时和 main 上一样签名、公证，版本号用那个分支 mygo.json 的版本（环境要放行那个分支，见上）。
+[voxt-beta.yaml](../../.github/workflows/voxt-beta.yaml) 在 main 每合入一次 Voxt 的改动就跑一次上面的工作流：改了 `Voxt/` 或 app 里带的原生运行时 `sglang_omni_mlx/native/`（只改 Markdown 的不算），或者改了 voxt-beta.yaml、voxt-release.yaml。版本号是 mygo.json 的版本把补丁号加一，再加 `-beta.YYYYMMDD.N`（UTC 日期，N 是 voxt-beta.yaml 的运行序号，区分同一天的几次）：发完 2.0.3 后的 beta 是 `2.0.4-beta.…`，比 2.0.3 新、比 2.0.4 旧，app 的“Beta 更新”才会提供它（#3850）。签名、公证和 `release-verify.sh developer-id` 都和 nightly 一样，dmg 和它的 `.sha256` 是运行的 artifact `Voxt-X.Y.Z-beta.YYYYMMDD.N-arm64`，保留 14 天。main 上的 beta 还发成 GitHub 的 prerelease `voxt-vX.Y.Z-beta.YYYYMMDD.N`（附 dmg 和 `.sha256`，说明是 CHANGELOG 的 Unreleased 一节，不设为 Latest），只留最新的 5 个，更早的连同 tag 一起删掉；打开“Beta 更新”的 app 从这里拿到 beta，不用登录 GitHub 下载。这个 tag 由工作流的 token 创建，不会触发正式版的构建；正式版检查“比所有 voxt-v tag 新”时只看 X.Y.Z 形式的 tag。合入的改动在 PR 里已经跑过 Voxt CI，beta 不再跑测试；新的合入会取消还没构建完的上一个 beta。改了 voxt-beta.yaml 的 PR 也跑它，构建进不了环境，做的是 ad hoc 构建。从别的分支手动运行（Actions → Voxt Beta → Run workflow，选那个分支）时和 main 上一样签名、公证，版本号用那个分支 mygo.json 的版本（环境要放行那个分支，见上）。
 
 和正式版、nightly 不同（它们每次从头编），beta 用 GitHub Actions 的缓存复用 Omni 运行时，再交给 `release.sh --runtimes`：缓存的是 `build-omni.sh --out` 编出来的成品，缓存键是 `sglang_omni_mlx/native/`、`build-omni.sh` 和 runner 上 Xcode 版本的哈希。成品和 app 的版本号、签名身份无关（它自己是 ad hoc 签名，mygo build 给 app 里的那份重新签名），源码没变就直接用，变了就从头编。
 
@@ -126,7 +126,7 @@ gh run download RUN_ID --repo sgl-project/sglang-omni
 
 ## 0. 两个通道
 
-**2.0.0 没有更新通道**：`release/mygo.release.json` 是 `{}`，构建里没有更新源，app 不能自更新（`main.go` 用补丁 0008 的 `mygo.Updater.HasFeed` 判断）。这样的正式版（版本号是 X.Y.Z 或 X.Y.Z-beta.N、不是开发构建）只检查 GitHub 上这个仓库的 Release（`updates_github.go`，#3786）：取最新的、不是草稿的 `voxt-vX.Y.Z` tag（打开“Beta 更新”时也取 `-beta.N`），“检查更新…”在 app 里的对话框显示更新说明和“下载”（Release 里文件名带版本号的 dmg，没有就打开 Release 页），每天在后台查一次，有新版本时在侧边栏放一张卡片。所以每个 Release 的说明要写给用户看，dmg 要带版本号（`Voxt-X.Y.Z-arm64.dmg`）。开发构建没有“检查更新…”，关于面板写“这个版本不会自动更新”。没有通道时`release.sh --publish` 直接报错，不走 `actnow-publish.sh`。下面是有通道时的做法，代码都留着：以后有了 sgl-project 自己的通道，把 `updates`（公钥、`url`、`prereleases`）加回 `release/mygo.release.json` 就照旧。
+**2.0.0 没有更新通道**：`release/mygo.release.json` 是 `{}`，构建里没有更新源，app 不能自更新（`main.go` 用补丁 0008 的 `mygo.Updater.HasFeed` 判断）。这样的正式版（版本号是 X.Y.Z、X.Y.Z-beta.N 或 X.Y.Z-beta.YYYYMMDD.N，不是开发构建）只检查 GitHub 上这个仓库的 Release（`updates_github.go`，#3786）：取最新的、不是草稿的 `voxt-vX.Y.Z` tag（打开“Beta 更新”时也取 `-beta.N` 和 Voxt Beta 发的 `-beta.YYYYMMDD.N` prerelease），“检查更新…”在 app 里的对话框显示更新说明和“下载”（Release 里文件名带版本号的 dmg，没有就打开 Release 页），每天在后台查一次，有新版本时在侧边栏放一张卡片。所以每个 Release 的说明要写给用户看，dmg 要带版本号（`Voxt-X.Y.Z-arm64.dmg`）。开发构建没有“检查更新…”，关于面板写“这个版本不会自动更新”。没有通道时`release.sh --publish` 直接报错，不走 `actnow-publish.sh`。下面是有通道时的做法，代码都留着：以后有了 sgl-project 自己的通道，把 `updates`（公钥、`url`、`prereleases`）加回 `release/mygo.release.json` 就照旧。
 
 | | 正式版 | beta 版 |
 |---|---|---|
