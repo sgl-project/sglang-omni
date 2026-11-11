@@ -212,6 +212,7 @@ class GenerateChunk:
     sample_rate: int | None = None
     diarization: DiarizationResult | None = None
     image: str | None = None  # base64-encoded PNG from the terminal result
+    transcription: dict[str, object] | None = None
 
     @property
     def reported_finish_reason(self) -> str:
@@ -241,6 +242,7 @@ class GenerateChunk:
             "media": self.media,
             "sample_rate": self.sample_rate,
             "image": self.image,
+            "transcription": self.transcription,
         }
 
 
@@ -366,6 +368,7 @@ class CompletionResult:
     language: str | None = None
     diarization: DiarizationResult | None = None
     image: str | None = None  # base64-encoded PNG
+    transcription: dict[str, object] | None = None
 
 
 @dataclass

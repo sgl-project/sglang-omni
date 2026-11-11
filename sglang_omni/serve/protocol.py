@@ -698,6 +698,25 @@ class TranscriptionUsage(BaseModel):
     seconds: int
 
 
+class TranscriptionWord(BaseModel):
+    """One forced-aligned word. Times are seconds."""
+
+    word: str
+    start: float
+    end: float
+    speaker: str | None = None
+    speaker_slot: int | None = None
+    speaker_confidence: float | None = None
+
+
+class DiarizationTimestamp(BaseModel):
+    """One post-processed Sortformer segment. Times are seconds."""
+
+    speaker: int
+    start: float
+    end: float
+
+
 class TranscriptionResponse(BaseModel):
     """OpenAI-compatible transcription response."""
 
@@ -705,6 +724,8 @@ class TranscriptionResponse(BaseModel):
     usage: TranscriptionUsage | None = None
     finish_reason: str | None = None
     sglext: SglExt | None = None
+    words: list[TranscriptionWord] | None = None
+    word_timestamp_alignment: dict[str, str] | None = None
 
 
 class TranscriptionSegment(BaseModel):
@@ -724,6 +745,10 @@ class TranscriptionVerboseResponse(BaseModel):
     duration: float | None = None
     text: str
     segments: list[TranscriptionSegment] = Field(default_factory=list)
+    words: list[TranscriptionWord] | None = None
+    word_timestamp_alignment: dict[str, str] | None = None
+    diarization_timestamps: list[DiarizationTimestamp] | None = None
+    diarization_frame_seconds: float | None = None
     usage: TranscriptionUsage | None = None
     finish_reason: str | None = None
     sglext: SglExt | None = None

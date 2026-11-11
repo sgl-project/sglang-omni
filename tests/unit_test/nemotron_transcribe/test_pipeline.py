@@ -9,7 +9,6 @@ import pytest
 
 from sglang_omni.config.runtime import resolve_stage_typed_kwargs
 from sglang_omni.models.nemotron_transcribe.config import (
-    ARCHITECTURE,
     NemotronTranscribeFactoryArgs,
     NemotronTranscribePipelineConfig,
 )
@@ -18,6 +17,10 @@ from sglang_omni.models.nemotron_transcribe.stages import (
     create_nemotron_transcribe_executor,
 )
 from sglang_omni.models.registry import import_pipeline_configs
+from sglang_omni.serve.speech_to_text import resolve_speech_to_text_adapter
+from sglang_omni.serve.transcription_adapters.nemotron import (
+    NemotronTranscriptionAdapter,
+)
 
 
 def test_pipeline_is_one_whole_file_asr_stage() -> None:
@@ -28,9 +31,28 @@ def test_pipeline_is_one_whole_file_asr_stage() -> None:
     assert config.stages[0].terminal is True
 
 
-def test_architecture_registers_with_the_model_registry() -> None:
+@pytest.mark.parametrize(
+    "architecture",
+    [
+        "Nemotron3_5TranscribeForConditionalGeneration",
+        "NeMoSpeechLMForConditionalGeneration",
+    ],
+)
+def test_architecture_registers_with_the_model_registry(architecture: str) -> None:
+    """Renamed Transcribe checkpoints must resolve to the transcription pipeline."""
     configs = import_pipeline_configs("sglang_omni.models", "config")
-    assert configs[ARCHITECTURE] is NemotronTranscribePipelineConfig
+    assert configs[architecture] is NemotronTranscribePipelineConfig
+
+
+def test_served_architecture_resolves_the_word_timestamp_adapter() -> None:
+    """The server reports the pipeline's architecture, never the checkpoint alias."""
+    adapter = resolve_speech_to_text_adapter(
+        [NemotronTranscribePipelineConfig.architecture]
+    )
+
+    assert isinstance(adapter, NemotronTranscriptionAdapter)
+    assert adapter.supports_word_timestamps
+    assert adapter.supports_segment_timestamps
 
 
 def test_audio_placeholder_counts_cover_one_hour_uploads() -> None:

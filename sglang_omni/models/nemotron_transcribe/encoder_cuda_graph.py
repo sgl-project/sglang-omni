@@ -67,7 +67,10 @@ class EncoderCudaGraphs:
             current_stream.wait_stream(capture_stream)
             graph = torch.cuda.CUDAGraph()
             # note (yhayaran): Separate pools allow shapes to replay in any order.
-            with torch.cuda.graph(graph, stream=capture_stream):
+            # note (yhayaran): The decoder thread keeps allocating while an encoder shape captures.
+            with torch.cuda.graph(
+                graph, stream=capture_stream, capture_error_mode="thread_local"
+            ):
                 static_output = self.forward(static_hidden_states, static_key_mask)
             current_stream.wait_stream(capture_stream)
             capture = EncoderGraph(

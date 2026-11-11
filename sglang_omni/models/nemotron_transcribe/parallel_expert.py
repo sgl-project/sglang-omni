@@ -98,9 +98,18 @@ class ParallelExpertEncoder(nn.Module):
         return self.asr_encoder.subsampling_factor
 
     def forward(
-        self, mel: torch.Tensor, mel_lengths: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """mel is (batch, bins, time). Returns fused states and encoder frame counts."""
+        self,
+        mel: torch.Tensor,
+        mel_lengths: torch.Tensor,
+        *,
+        return_evidence: bool = False,
+    ) -> tuple[torch.Tensor, ...]:
+        """mel is (batch, bins, time). Returns fused states and encoder frame counts.
+
+        With ``return_evidence``, also returns pre-fusion ASR states
+        ``(batch, width, time)`` and Sortformer probabilities
+        ``(batch, time, speakers)``.
+        """
         mel_lengths = mel_lengths.to(device=mel.device, dtype=torch.long)
         asr_mel = match_module(
             normalize_features(mel, mel_lengths, self.asr_normalize), self.asr_encoder
@@ -159,8 +168,13 @@ class ParallelExpertEncoder(nn.Module):
                 right_offset,
             )
             diar_parts.append(align_time(total[:, previous:], core))
-        fused = self.fuse(torch.cat(asr_parts, dim=2), torch.cat(diar_parts, dim=1))
-        return fused, self.encoded_lengths(mel_lengths, mel.shape[-1])
+        asr_encoded = torch.cat(asr_parts, dim=2)
+        fused = self.fuse(asr_encoded, torch.cat(diar_parts, dim=1))
+        lengths = self.encoded_lengths(mel_lengths, mel.shape[-1])
+        if return_evidence:
+            return fused, lengths, asr_encoded, total
+        else:
+            return fused, lengths
 
     def output_frames(self, mel_frames: int) -> int:
         return (mel_frames + self.subsampling_factor - 1) // self.subsampling_factor

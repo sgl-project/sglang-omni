@@ -27,11 +27,14 @@ from sglang_omni.client import (
 )
 from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.serve.protocol import (
+    DiarizationTimestamp,
     SglExt,
     TranscriptionResponse,
     TranscriptionTextDeltaEvent,
     TranscriptionTextDoneEvent,
     TranscriptionUsage,
+    TranscriptionVerboseResponse,
+    TranscriptionWord,
     build_sglext,
 )
 from sglang_omni.serve.streaming import (
@@ -39,6 +42,7 @@ from sglang_omni.serve.streaming import (
     ClosableStreamingResponse,
     close_async_iterator_if_supported,
 )
+from sglang_omni.serve.subtitle_cues import segments_from_word_timestamps
 from sglang_omni.serve.subtitles import segments_to_srt, segments_to_vtt
 from sglang_omni.serve.transcription_adapters import resolve_adapter
 from sglang_omni.serve.transcription_adapters.base import TranscriptionAdapter
@@ -64,6 +68,8 @@ class SpeechToTextForm:
     temperature: float | None
     repetition_penalty: float | None
     max_new_tokens: int | None
+    seed: int | None
+    word_timestamps: bool
     stream: bool
     return_spec_tokens_details: bool
 
@@ -77,6 +83,8 @@ async def parse_speech_to_text_form(
     temperature: float | None = Form(default=None, ge=0.0),
     repetition_penalty: float | None = Form(default=None, gt=0.0, le=2.0),
     max_new_tokens: int | None = Form(default=None, ge=1),
+    seed: int | None = Form(default=None, ge=0),
+    word_timestamps: bool = Form(default=False),
     stream: bool = Form(default=False),
     return_spec_tokens_details: bool = Form(default=False),
 ) -> SpeechToTextForm:
@@ -89,6 +97,8 @@ async def parse_speech_to_text_form(
         temperature=temperature,
         repetition_penalty=repetition_penalty,
         max_new_tokens=max_new_tokens,
+        seed=seed,
+        word_timestamps=word_timestamps,
         stream=stream,
         return_spec_tokens_details=return_spec_tokens_details,
     )
@@ -153,6 +163,8 @@ def build_speech_to_text_generate_request(
     temperature: float | None,
     repetition_penalty: float | None = None,
     max_new_tokens: int | None = None,
+    seed: int | None = None,
+    word_timestamps: bool = False,
     stream: bool = False,
     task: str = "transcribe",
     detect_language: bool = False,
@@ -177,11 +189,16 @@ def build_speech_to_text_generate_request(
         params["segment_timestamps"] = True
     else:
         pass
+    if word_timestamps:
+        params["word_timestamps"] = True
+    else:
+        pass
     # note (ratish): 0.0 is the transcription API's own default temperature.
     sampling = SamplingParams(
         temperature=temperature if temperature is not None else 0.0,
         repetition_penalty=repetition_penalty,
         max_new_tokens=max_new_tokens,
+        seed=seed,
     )
 
     return GenerateRequest(
@@ -435,6 +452,7 @@ def assemble_speech_to_text_response(
     response_formats: Collection[str] = DEFAULT_RESPONSE_FORMATS,
     finish_reason: str | None = None,
     sglext: SglExt | None = None,
+    transcription: dict[str, object] | None = None,
 ) -> Response:
     """Keep response schemas consistent across sibling endpoints."""
     normalized_response_format = validate_speech_to_text_response_format(
@@ -477,11 +495,19 @@ def assemble_speech_to_text_response(
     if normalized_response_format in {"verbose_json", *SEGMENT_RESPONSE_FORMATS}:
         if normalized_response_format in SEGMENT_RESPONSE_FORMATS:
             try:
-                response = adapter.build_timestamped_response(
-                    text=raw_text,
-                    language=language,
-                    audio_duration_s=duration_s,
-                )
+                if transcription is not None:
+                    response = TranscriptionVerboseResponse(
+                        language=language,
+                        duration=round(max(float(duration_s), 0.0), 2),
+                        text=text,
+                        segments=segments_from_word_timestamps(transcription),
+                    )
+                else:
+                    response = adapter.build_timestamped_response(
+                        text=raw_text,
+                        language=language,
+                        audio_duration_s=duration_s,
+                    )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
         else:
@@ -494,6 +520,7 @@ def assemble_speech_to_text_response(
         response.usage = usage
         response.finish_reason = visible_finish_reason
         response.sglext = sglext
+        attach_word_timestamps(response, transcription)
         if normalized_response_format == "srt":
             return PlainTextResponse(
                 segments_to_srt(response.segments), headers=headers
@@ -517,6 +544,45 @@ def assemble_speech_to_text_response(
         ).model_dump(exclude_none=True),
         headers=headers,
     )
+
+
+def attach_word_timestamps(
+    response: TranscriptionResponse | TranscriptionVerboseResponse,
+    transcription: dict[str, object] | None,
+) -> None:
+    """Copy aligned words onto a json or verbose_json response."""
+    if not transcription:
+        return
+    else:
+        pass
+    words = transcription.get("words")
+    alignment = transcription.get("word_timestamp_alignment")
+    if isinstance(words, list):
+        response.words = [TranscriptionWord.model_validate(word) for word in words]
+    else:
+        pass
+    if isinstance(alignment, dict):
+        response.word_timestamp_alignment = {
+            str(key): str(value) for key, value in alignment.items()
+        }
+    else:
+        pass
+    if not isinstance(response, TranscriptionVerboseResponse):
+        return
+    else:
+        pass
+    diarization = transcription.get("diarization_timestamps")
+    frame_seconds = transcription.get("diarization_frame_seconds")
+    if isinstance(diarization, list):
+        response.diarization_timestamps = [
+            DiarizationTimestamp.model_validate(segment) for segment in diarization
+        ]
+    else:
+        pass
+    if isinstance(frame_seconds, (int, float)):
+        response.diarization_frame_seconds = float(frame_seconds)
+    else:
+        pass
 
 
 async def cancel_task_bounded(
