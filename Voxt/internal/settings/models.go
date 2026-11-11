@@ -23,6 +23,21 @@ type Models struct {
 	// (internal/session's LLMTimeout and WriteTimeout), so older documents
 	// need no migration (#3821). Either way a long text gets longer.
 	LLMWait string `json:"llmWait,omitempty"`
+	// Faster is each speech model's Faster transcription switch (its id:
+	// on): whether its server verifies the model's speculative draft. A
+	// model the user never switched is on while its draft is installed,
+	// as 2.0.2 and 2.0.3 did (the download turned it on), so who
+	// downloaded the draft keeps it (#3873).
+	Faster map[string]bool `json:"faster,omitempty"`
+}
+
+// FasterOn says whether speech model id uses its draft, given whether
+// the draft is installed: the switch, else the installed draft.
+func (m Models) FasterOn(id string, draftInstalled bool) bool {
+	if on, set := m.Faster[id]; set {
+		return on && draftInstalled
+	}
+	return draftInstalled
 }
 
 // The choices of Models.LLMWait.

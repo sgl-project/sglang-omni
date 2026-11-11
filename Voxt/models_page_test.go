@@ -461,3 +461,50 @@ func modelShots(t *testing.T, a *app, tt *ui.Tester, save func(string)) {
 	frames(tt)
 	scrollToText(tt, uitext.ModelName(models.LLMFast))
 }
+
+// TestModelsPageFaster (#3873): Faster transcription is a switch on the
+// speech model's card. Off, the card offers no draft download; on
+// without the draft, it says the draft is needed and offers it; the
+// draft's download does not turn it on, and off keeps the draft on disk
+// (deletable) but unused. A model never switched follows its draft.
+func TestModelsPageFaster(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 1600)
+	seedModels(t, a, models.ASRFast)
+	a.navigate(modelsPath)
+	const sw, dl = "Faster transcription for Qwen3-ASR 0.6B (4bit)", "Download Qwen3-ASR 0.6B DFlash draft"
+	if !has(tt, "Faster transcription") || has(tt, "Download the draft model to use this.") || tt.HasText(dl) {
+		t.Fatalf("off: %q", tt.Texts())
+	}
+	click(t, tt, sw)
+	if !a.settings.Get().Models.Faster[models.ASRFast] || !has(tt, "Download the draft model to use this.") || !has(tt, "262.5 MB download") || !tt.HasText(dl) {
+		t.Fatalf("on without the draft: %+v %q", a.settings.Get().Models, tt.Texts())
+	}
+	click(t, tt, sw)
+	if on, set := a.settings.Get().Models.Faster[models.ASRFast]; !set || on {
+		t.Fatalf("switched off: %+v", a.settings.Get().Models)
+	}
+
+	// The draft arrives with the switch off: installed, unused.
+	seedModels(t, a, models.ASRFast, models.ASRFastDraft)
+	a.navigate("/home")
+	a.navigate(modelsPath)
+	if !has(tt, "262.5 MB on disk") || has(tt, "Download the draft model to use this.") || a.omniDraft(models.ASRFast) != "" {
+		t.Fatalf("installed, off: %q, omniDraft %q", tt.Texts(), a.omniDraft(models.ASRFast))
+	}
+	click(t, tt, sw)
+	if a.omniDraft(models.ASRFast) == "" {
+		t.Error("switched on with the draft: unused")
+	}
+
+	// Never switched: the installed draft is used, the switch shows on.
+	a.updateSettings(func(s *settings.Settings) { s.Models.Faster = nil })
+	frames(tt)
+	if a.omniDraft(models.ASRFast) == "" {
+		t.Error("never switched, installed: unused")
+	}
+	click(t, tt, sw)
+	if on, set := a.settings.Get().Models.Faster[models.ASRFast]; !set || on || a.omniDraft(models.ASRFast) != "" {
+		t.Errorf("never switched, then off: %+v", a.settings.Get().Models)
+	}
+}
