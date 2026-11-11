@@ -333,13 +333,18 @@ def advance_text(
         tokenizer=tokenizer,
         config=config,
     )
-    # The conditional row also holds the EOI that closes the frame, and the image request pads each branch up to its block column.
+    # note (qiujiawei): rows only share a block column, whole pad blocks change nothing.
+    pad_lengths = {
+        name: (len(full_ids) - len(branch)) % block_size
+        for name, branch in plan.branches.items()
+    }
+    # The conditional row also holds the EOI that closes the frame.
     longest_row = max(
         [
             len(full_ids) + 1,
             *(
-                len(branch) + (len(full_ids) - len(branch)) % block_size
-                for branch in plan.branches.values()
+                len(branch) + pad_lengths[name]
+                for name, branch in plan.branches.items()
             ),
         ]
     )
@@ -363,6 +368,7 @@ def advance_text(
         "mode": plan.mode,
         "branches": copy.deepcopy(plan.branches),
         "pad_starts": dict(plan.pad_starts),
+        "pad_lengths": pad_lengths,
         "cfg_scale": plan.cfg_scale,
         "cfg_text_scale": plan.cfg_text_scale,
         "cfg_image_scale": plan.cfg_image_scale,

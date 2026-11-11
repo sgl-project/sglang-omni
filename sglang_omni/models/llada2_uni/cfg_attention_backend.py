@@ -257,7 +257,7 @@ class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
         self.forward_metadata = PrefillMetadata(
             wrappers,
             use_ragged=True,
-            extend_no_prefix=False,
+            extend_no_prefix=not any(paged_lens),
         )
 
     def forward_extend(

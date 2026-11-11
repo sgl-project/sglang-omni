@@ -82,7 +82,7 @@ def test_image_phase_generates_the_frame_grid_and_closes_it_with_eoi():
     assert state.prompt["input_ids"][0, -1].item() == 11
 
 
-def test_image_phase_budget_counts_the_padding_of_the_longest_row():
+def test_image_phase_budget_counts_the_padding_of_the_longest_row() -> None:
     state = LLaDA2UniPipelineState.from_dict(initial_payload().data)
     advance(state, [71, 10, 22, 23, 12])
     advance(state, [IMAGE_TOKEN_OFFSET + i for i in range(6)])
@@ -101,7 +101,27 @@ def test_image_phase_budget_counts_the_padding_of_the_longest_row():
         image_request(state)
 
 
-def test_every_frame_the_text_phase_accepts_fits_its_image_request():
+def test_no_text_row_tells_the_scheduler_where_its_padding_sits() -> None:
+    state = LLaDA2UniPipelineState.from_dict(initial_payload().data)
+    advance(state, [71, 10, 22, 23, 12])
+    advance(state, [IMAGE_TOKEN_OFFSET + i for i in range(6)])
+    history_length = state.prompt["input_ids"].shape[1]
+    advance(state, [10, 22, 23, 12])
+
+    req = image_request(state)
+
+    pad_start = req._uncond_pad_start  # noqa: leading-underscore  # DLLM protocol
+    pad_length = req._uncond_pad_len  # noqa: leading-underscore  # DLLM protocol
+    companion_ids = req._uncond_input_ids  # noqa: leading-underscore  # DLLM protocol
+    assert pad_start == history_length and pad_length
+    assert [
+        index
+        for index, companion_id in enumerate(companion_ids)
+        if companion_id == Tokenizer.mask_token_id
+    ] == list(range(pad_start, pad_start + pad_length))
+
+
+def test_every_frame_the_text_phase_accepts_fits_its_image_request() -> None:
     """A frame accepted near the context limit failed once its no-text row was padded to the conditional block column."""
     state = LLaDA2UniPipelineState.from_dict(initial_payload().data)
     advance(state, [71, 10, 22, 23, 12])
@@ -124,7 +144,9 @@ def test_every_frame_the_text_phase_accepts_fits_its_image_request():
 
 
 @pytest.mark.parametrize("text_ids", [[72, 10, 22, 23, 12], [75, 2]])
-def test_text_after_an_image_drops_the_image_tokens_it_opens_with(text_ids):
+def test_text_after_an_image_drops_the_image_tokens_it_opens_with(
+    text_ids: list[int],
+) -> None:
     """Text that opened with an image token right after an image failed the request."""
     state = LLaDA2UniPipelineState.from_dict(initial_payload().data)
     advance(state, [71, 10, 22, 23, 12])
@@ -226,7 +248,7 @@ def test_frames_decode_while_the_thinker_writes_and_segments_keep_model_order():
     assert not adapter.runs
 
 
-def test_thinker_phase_hands_its_context_to_the_next_thinker_phase():
+def test_thinker_phase_hands_its_context_to_the_next_thinker_phase() -> None:
     adapter = LLaDA2UniUMMAdapter("m")
     context = umm_context()
     start = adapter.start(context)

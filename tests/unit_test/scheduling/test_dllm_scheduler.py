@@ -449,31 +449,6 @@ def test_cfg_chunked_admission_rolls_back_and_retries(
     assert all(req.extend_len == 32 for req in batch.reqs)
 
 
-def use_unequal_cfg_rows(
-    scheduler: DllmScheduler, monkeypatch: pytest.MonkeyPatch, lengths: list[int]
-) -> list[DllmRequest]:
-    requests = scheduler.waiting_queue.copy()
-    for request, length in zip(requests, lengths, strict=True):
-        request.origin_input_ids = array("q", [1] * length)
-    scheduler.cond_to_unconds = {"cond": ["uncond"]}
-    scheduler.uncond_to_cond = {"uncond": "cond"}
-    scheduler.uncond_rids = {"uncond"}
-    scheduler.orphaned_uncond_rids = set()
-    requests[1]._is_uncond = True  # noqa: leading-underscore  # DLLM protocol
-    monkeypatch.setattr(
-        dllm_scheduler_module,
-        "ScheduleBatch",
-        SimpleNamespace(
-            init_new=lambda **kwargs: SimpleNamespace(
-                reqs=kwargs["reqs"],
-                prepare_for_extend=lambda: None,
-                filter_batch=lambda **kwargs: None,
-            )
-        ),
-    )
-    return requests
-
-
 @pytest.mark.parametrize(
     ("lengths", "expected_rounds"),
     [
@@ -504,7 +479,25 @@ def test_cfg_rows_encode_at_their_own_length_then_decode_together(
     expected_rounds: list[dict[str, tuple[int, int]]],
 ) -> None:
     scheduler = chunked_scheduler
-    use_unequal_cfg_rows(scheduler, monkeypatch, lengths)
+    requests = scheduler.waiting_queue.copy()
+    for request, length in zip(requests, lengths, strict=True):
+        request.origin_input_ids = array("q", [1] * length)
+    scheduler.cond_to_unconds = {"cond": ["uncond"]}
+    scheduler.uncond_to_cond = {"uncond": "cond"}
+    scheduler.uncond_rids = {"uncond"}
+    scheduler.orphaned_uncond_rids = set()
+    requests[1]._is_uncond = True  # noqa: leading-underscore  # DLLM protocol
+    monkeypatch.setattr(
+        dllm_scheduler_module,
+        "ScheduleBatch",
+        SimpleNamespace(
+            init_new=lambda **kwargs: SimpleNamespace(
+                reqs=kwargs["reqs"],
+                prepare_for_extend=lambda: None,
+                filter_batch=lambda **kwargs: None,
+            )
+        ),
+    )
 
     rounds = []
     with get_context().override_server_args(page_size=1, max_prefill_tokens=64):
@@ -529,6 +522,24 @@ def test_companion_in_another_block_column_is_rejected(
         scheduler.create_uncond_companion(
             conditional, [1] * 129, 0, 0, "-uncond", mark_img=False
         )
+
+
+def test_companion_keeps_the_span_of_its_padding(
+    chunked_scheduler: DllmScheduler,
+) -> None:
+    scheduler = chunked_scheduler
+    conditional = scheduler.waiting_queue[0]
+
+    scheduler.create_uncond_companion(
+        conditional, [1] * 96, 3, 40, "-uncond", mark_img=False
+    )
+
+    companion = scheduler.waiting_queue[-1]
+    assert companion.rid == "cond-uncond"
+    assert (
+        companion._dllm_pad_start,  # noqa: leading-underscore  # DLLM protocol
+        companion._dllm_pad_len,  # noqa: leading-underscore  # DLLM protocol
+    ) == (40, 3)
 
 
 def test_dllm_staging_admission_uses_dllm_config(

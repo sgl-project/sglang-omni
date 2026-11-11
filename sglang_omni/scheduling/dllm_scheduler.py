@@ -12,7 +12,7 @@ import queue as _queue_mod
 import threading
 import time
 from array import array
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from copy import copy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -666,14 +666,10 @@ class DllmScheduler:
         ]
 
         # note (qiujiawei): pinned prefixes cannot be evicted, so give them up before this round's blocks run out of pages.
-        page_size = get_schedule().page_size
-        block_charge = (
-            (self.dllm_config.block_size + page_size - 1) // page_size * page_size
-        )
         while self.retained_contexts and (
             self.token_to_kv_pool_allocator.available_size()
             + self.tree_cache.evictable_size()
-            < len(runnable_rows) * block_charge
+            < len(runnable_rows) * adder.ceil_paged_tokens(self.dllm_config.block_size)
         ):
             self.release_context(next(iter(self.retained_contexts)))
 
@@ -850,7 +846,7 @@ class DllmScheduler:
                 try:
                     result = self.result_adapter(req_data)
                     message_type = "result"
-                    if CONTEXT_KEY in result.data:
+                    if isinstance(result.data, Mapping) and CONTEXT_KEY in result.data:
                         self.contexts_to_retain.add(req.rid)
                     else:
                         pass

@@ -188,8 +188,7 @@ def build_dllm_thinker_request(
         length = len(input_ids_array)
         for name, ids in plan["branches"].items():
             branch = "uncond" if name == "unconditional" else "uncond_img"
-            # note (qiujiawei): rows only share a block column, whole pad blocks change nothing.
-            pad_length = (len(input_ids_array) - len(ids)) % dllm_config.block_size
+            pad_length = plan["pad_lengths"][name]
             pad_start = plan["pad_starts"].get(name, 0)
             cfg_settings[f"{branch}_input_ids"] = [
                 *ids[:pad_start],
@@ -306,6 +305,17 @@ def build_dllm_thinker_request(
             if not 0 <= pad_start <= pad_start + pad_len <= len(branch_ids):
                 raise ValueError(
                     f"CFG {branch} padding is outside its prompt: "
+                    f"start={pad_start}, length={pad_len}"
+                )
+            else:
+                pass
+            # The scheduler masks this span by position alone, so it must be the padding.
+            if any(
+                padding_id != tokenizer.mask_token_id
+                for padding_id in branch_ids[pad_start : pad_start + pad_len]
+            ):
+                raise ValueError(
+                    f"CFG {branch} padding does not cover mask tokens: "
                     f"start={pad_start}, length={pad_len}"
                 )
             else:

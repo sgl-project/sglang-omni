@@ -53,6 +53,7 @@ class InterleavedCFGPlan(TypedDict):
     mode: Literal["none", "simple", "editing"]
     branches: dict[str, list[int]]
     pad_starts: dict[str, int]
+    pad_lengths: dict[str, int]
     cfg_scale: float
     cfg_text_scale: float
     cfg_image_scale: float

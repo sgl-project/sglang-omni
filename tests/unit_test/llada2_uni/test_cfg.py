@@ -580,6 +580,29 @@ def test_attention_masks_local_and_cached_padding() -> None:
     backend.init_forward_metadata(batch)
     assert not backend.cfg_local_pad_active
     assert begin_forward.call_args.args[3].tolist() == [8, 2]
+    assert not backend.forward_metadata.extend_no_prefix
+
+
+def test_attention_reads_no_cached_kv_while_the_padding_is_still_ahead() -> None:
+    """A cold group whose only padding sat in a later block ran a paged pass over no KV."""
+    backend, begin_forward = make_planning_backend()
+    batch = NS(
+        dllm_pad_lens_cpu=[0, 2],
+        dllm_pad_starts_cpu=[0, 5],
+        extend_prefix_lens_cpu=[0, 0],
+        extend_seq_lens_cpu=[4, 4],
+        forward_mode=NS(is_dllm_extend=lambda: True),
+        seq_lens=torch.tensor([4, 4]),
+        extend_prefix_lens=torch.tensor([0, 0]),
+        req_pool_indices=torch.tensor([0, 1]),
+        kv_loc_plan=None,
+    )
+
+    backend.init_forward_metadata(batch)
+
+    assert not backend.cfg_local_pad_active
+    assert begin_forward.call_args.args[3].tolist() == [0, 0]
+    assert backend.forward_metadata.extend_no_prefix
 
     batch.batch_size = 2
     backend.cfg_replay_batch = batch
