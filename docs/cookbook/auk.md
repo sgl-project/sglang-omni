@@ -50,16 +50,17 @@ The speech-generation example below works with either server. For cloning or edi
 
 BF16 is the default matrix precision; `--dtype float32` selects FP32. Text residuals, hidden-state fusion, rotary positions, VAE computation and Euler integration stay in FP32. Use `MLX_ENABLE_TF32=0` for FP32 comparisons. Sampling follows each checkpoint's released recipe.
 
-For a local Torch MPS comparison, use the ordinary Omni server with each stage's `max_batch_size` set to 1 and DiT CUDA graphs, compilation, and fused Q/K normalization disabled. Run the two servers separately. The native benchmark client sends the same requests to either server:
+For a local Torch MPS comparison, use the ordinary Omni server with each stage's `max_batch_size` set to 1 and DiT CUDA graphs, compilation, and fused Q/K normalization disabled. Run the two servers separately and send both the same Seed-TTS requests with the shared benchmark:
 
 ```bash
-python -m sglang_omni_mlx.native.ci.benchmark_auk \
-  --meta zhaochenyang20/seed-tts-eval-arrow --base-url http://127.0.0.1:8000 \
-  --model tencent/AuK-Flash --server-pid "$SERVER_PID" \
+python -m benchmarks.eval.benchmark_tts_seedtts \
+  --model tencent/AuK-Flash --meta zhaochenyang20/seed-tts-eval-arrow \
+  --base-url http://127.0.0.1:8000 --use-existing-server --generate-only \
+  --inline-ref-audio --server-pid "$SERVER_PID" \
   --output-dir results/native-flash
 ```
 
-Run it from the repository root in the sglang-omni Python environment. It is the shared Seed-TTS generation pass with the AuK profile (concurrency 1, one warmup request, `seed=1234`); it inlines each reference WAV as a data URI before timing starts, and with `--server-pid` it also writes `memory.json`, the physical footprint of the server's whole process tree sampled every 250 ms. `--model` must name the checkpoint, since it selects that profile. Start a fresh server for each independent trial. The two backends use their own random generators, so equal seeds do not imply equal noise or waveforms.
+The AuK profile sends one request at a time after one warmup request, with `seed=1234`. `--inline-ref-audio` sends each reference WAV as a data URI, which the native server requires. `--server-pid` writes `memory.json`, the physical footprint of the server's whole process tree sampled every 250 ms. Start a fresh server for each independent trial. The two backends use their own random generators, so equal seeds do not imply equal noise or waveforms.
 
 Native AuK model checks run locally, outside Mac CI. Use the shared [TTS evaluation tools](../developer_reference/tts_bench.md) for ASR scoring of generated audio.
 
