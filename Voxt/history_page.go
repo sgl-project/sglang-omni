@@ -50,6 +50,7 @@ type historyState struct {
 type historyView struct {
 	tab   int    // the kind shown: an index in store.Kinds
 	query string // the search field
+	find  finder // Return steps through the matches (find_marks.go)
 	// list holds the entries read for listFor (the kind and the search),
 	// "" before the first read; seq numbers the reads, so that only the
 	// last one lands.
@@ -162,6 +163,16 @@ func (a *app) historyPage(c *ui.Context) {
 			caption(c, label).SingleLine()
 		}
 	})
+	list, q := h.list, strings.TrimSpace(h.query)
+	hits := findHits(q, len(list), func(i int) []string {
+		line, _ := historyLine(list[i], q)
+		return []string{line}
+	})
+	if h.find.advance(hits[len(list)]) {
+		row, _ := rowOf(hits, h.find.cur)
+		h.listUI.ScrollIntoView(row)
+	}
+	cur, curAt := rowOf(hits, h.find.cur)
 	pageBody(c).Children(func() {
 		ui.Row(c).Padding(px(t, sp1), px(t, sp6), px(t, sp3)).Gap(px(t, sp2)).AlignItems(ui.Center).Shrink(0).Children(func() {
 			tabs := []string{i18n.T("Transcribe"), i18n.T("Translate"), i18n.T("Rewrite")}
@@ -169,8 +180,11 @@ func (a *app) historyPage(c *ui.Context) {
 				h.sel = ""
 				a.loadHistory()
 			}
-			if searchField(c, "hist-search", &h.query, i18n.T("Search"), px(t, 360)).Label(i18n.T("Search history")).Changed() {
+			if h.find.field(c, "hist-search", &h.query, i18n.T("Search"), px(t, 360)).Label(i18n.T("Search history")).Changed() {
 				a.loadHistory()
+			}
+			if hits[len(list)] > 0 { // the store's search also finds words in other forms and fields
+				h.find.count(c, q, hits[len(list)])
 			}
 			a.historySettingsButton(c) // history_settings.go
 		})
@@ -193,7 +207,7 @@ func (a *app) historyPage(c *ui.Context) {
 				}, nil)
 			})
 		}
-		list, sel := h.list, h.selected()
+		sel := h.selected()
 		w := px(t, historyPanelW)
 		inline := a.pageWidth(c)-w >= px(t, historyListMinW)
 		ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
@@ -207,7 +221,11 @@ func (a *app) historyPage(c *ui.Context) {
 					c.After(time.Minute) // the times are relative
 					ui.List(c.Key("hist-list"), &h.listUI, len(list)).Grow(1).MinHeight(0).Gap(px(t, 2)).Padding(0, 0, px(t, sp4)).
 						ItemKey(func(i int) any { return list[i].ID }).Rows(func(r ui.ListRow) {
-						a.historyRow(c, list[r.Index])
+						at := -1
+						if r.Index == cur {
+							at = curAt
+						}
+						a.historyRow(c, list[r.Index], q, at)
 					})
 				}
 			})
@@ -272,12 +290,13 @@ func (a *app) historyEmpty(c *ui.Context) {
 // historyRow is an entry in the list: the first line of its result (why
 // it failed, when it did), its marks, and when, in which app and how long
 // it was spoken. A click shows its details, or hides them; its context
-// menu copies, shows or deletes it.
-func (a *app) historyRow(c *ui.Context, e store.Entry) {
+// menu copies, shows or deletes it. The matches of the search q in its
+// first line are marked, at the current one (-1 for none).
+func (a *app) historyRow(c *ui.Context, e store.Entry, q string, at int) {
 	t := c.Theme()
 	k := tok(t)
 	h := &a.hist
-	title, failed := uitext.EntryTitle(e)
+	title, failed := historyLine(e, q)
 	row := ui.ButtonBase(c.Key("hist-row-"+e.ID)).Padding(px(t, sp2), px(t, sp2)).Margin(0, px(t, sp4)).Radius(px(t, radiusControl)).
 		Label(title).Gap(px(t, sp2)).AlignItems(ui.Start).
 		Role(ui.RoleGroup) // a group, not a button: assistive technology reaches its Retry chip too
@@ -298,7 +317,7 @@ func (a *app) historyRow(c *ui.Context, e store.Entry) {
 	row.Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, 3)).Children(func() {
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-				tx := ui.Text(c, title).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
+				tx := markedText(c, title, q, at).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
 				if failed {
 					tx.TextColor(k.Text2)
 				}
@@ -307,6 +326,23 @@ func (a *app) historyRow(c *ui.Context, e store.Entry) {
 			ui.Text(c, uitext.EntryMeta(e)).FontSize(px(t, fsCaption)).TextColor(k.Text3).SingleLine().Ellipsis("…").MinWidth(0)
 		})
 	})
+}
+
+// historyLine is the line an entry's row shows: its title, or, when the
+// search q is not in it, the first line of its text holding q (#3869).
+func historyLine(e store.Entry, q string) (line string, failed bool) {
+	title, failed := uitext.EntryTitle(e)
+	if q == "" || len(findFolded(title, q)) > 0 {
+		return title, failed
+	}
+	for _, s := range []string{e.Result, e.RawText, e.SourceText} {
+		for l := range strings.SplitSeq(s, "\n") {
+			if l = strings.TrimSpace(l); len(findFolded(l, q)) > 0 {
+				return l, false
+			}
+		}
+	}
+	return title, failed
 }
 
 // entryMarks are an entry's status marks: failed or cancelled, or left
