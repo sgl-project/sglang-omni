@@ -64,11 +64,7 @@ from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputP
 
 logger = logging.getLogger(__name__)
 
-MTP_DEFAULT_OVERRIDES = {
-    "speculative_num_steps": 3,
-    "speculative_eagle_topk": 1,
-    "speculative_num_draft_tokens": 4,
-}
+MTP_DEFAULT_NUM_STEPS = 7
 MTP_ALGORITHMS = ("EAGLE", "NEXTN")
 
 
@@ -198,8 +194,11 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
             pass
         overrides["speculative_draft_model_path"] = self.checkpoint_dir
         overrides["speculative_draft_model_revision"] = None
-        for key, value in MTP_DEFAULT_OVERRIDES.items():
-            overrides.setdefault(key, value)
+        overrides.setdefault("speculative_eagle_topk", 1)
+        num_steps = int(
+            overrides.setdefault("speculative_num_steps", MTP_DEFAULT_NUM_STEPS)
+        )
+        overrides.setdefault("speculative_num_draft_tokens", num_steps + 1)
         overrides["enable_mixed_chunk"] = False
         ModelRegistry.models["NemotronHForCausalLMMTP"] = NemotronTranscribeMTPDraft
         self.enable_mtp_draft = True
