@@ -20,11 +20,19 @@ class ToolResponse(BaseModel):
 
 
 def tool_call_chunk(
-    calls: list[ToolCall], turn: int, language: str | None = None
+    calls: list[ToolCall],
+    turn: int,
+    language: str | None = None,
+    is_partial: bool = False,
 ) -> TimedChunk:
+    """The calls of a completion, or with `is_partial` one increment of a call still being written: from a generator the next piece of its arguments text, from a dialog `{"text": ...}` with the next piece of a speech. The complete chunk follows the partial ones."""
     payload: dict[str, object] = {"calls": [call.model_dump() for call in calls]}
     if language is not None:
         payload["language"] = language
+    else:
+        pass
+    if is_partial:
+        payload["is_partial"] = True
     else:
         pass
     return TimedChunk(
@@ -55,6 +63,10 @@ def tool_calls_of(chunk: TimedChunk) -> list[ToolCall]:
         raise ValueError("expected a tool_call chunk")
     else:
         return [ToolCall.model_validate(call) for call in chunk.payload["calls"]]
+
+
+def is_partial_call(chunk: TimedChunk) -> bool:
+    return bool(chunk.payload.get("is_partial"))
 
 
 def tool_responses_of(chunk: TimedChunk) -> list[ToolResponse]:

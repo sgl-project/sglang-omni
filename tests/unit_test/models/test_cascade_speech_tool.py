@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The model speaks through a tool: the dialog, the synthesizer and the generator around tts_start."""
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from sglang_omni.models.streaming_cascade.base import (
     transcript_chunk,
 )
 from sglang_omni.models.streaming_cascade.config import StreamingCascadePipelineConfig
+from sglang_omni.models.streaming_cascade.dialog import SpokenTextReader
 from sglang_omni.models.streaming_cascade.generators import (
     ChatDelta,
     FunctionDelta,
@@ -41,7 +43,12 @@ from sglang_omni.proto.streams import (
     TURN_STARTED,
     control_type,
 )
-from sglang_omni.proto.tools import ToolCall, tool_call_chunk, tool_calls_of
+from sglang_omni.proto.tools import (
+    ToolCall,
+    is_partial_call,
+    tool_call_chunk,
+    tool_calls_of,
+)
 from tests.unit_test.fixtures.cascade_fakes import build, drain
 
 SPEECH_PROFILE = Path(
@@ -102,105 +109,67 @@ def progress_of(dialog) -> list[object]:
 
 
 @pytest.mark.asyncio
-async def test_a_call_is_answered_when_its_speech_ends_and_the_model_is_prompted_unannounced():
+async def test_a_call_is_answered_when_its_speech_ends_and_the_model_is_not_prompted_again():
     dialog = speech_dialog()
     outputs = await drain(dialog, [transcript_chunk("question", True), speech_call()])
     assert spoken(outputs) == [SPEECH]
     assert len(prompts(outputs)) == 1
 
-    outputs = await drain(dialog, [control_chunk(TURN_DONE, turn=1)])
+    # The model spoke for the utterance, so the end of its speech prompts nothing.
+    assert await drain(dialog, [control_chunk(TURN_DONE, turn=1)]) == []
+    assert dialog.reply is None
+    assert answers(dialog.messages) == {"call_1": COMPLETED}
+
+    # It reads the answer in the prompt for the next utterance.
+    outputs = await drain(dialog, [transcript_chunk("next", True)])
+    assert turn_events(outputs) == [(TURN_QUEUED, 2), (TURN_STARTED, 2)]
     [prompt] = prompts(outputs)
     assert [message.role for message in prompt] == [
         "system",
         "user",
         "assistant",
         "tool",
+        "user",
     ]
     assert json.loads(prompt[2].tool_calls[0].function.arguments) == {"text": SPEECH}
     assert answers(prompt) == {"call_1": COMPLETED}
-    assert turn_events(outputs) == []
 
 
 @pytest.mark.asyncio
-async def test_only_the_first_prompt_of_an_utterance_requires_a_call():
+async def test_every_prompt_requires_a_call():
     dialog = speech_dialog()
     outputs = await drain(
-        dialog,
-        [
-            transcript_chunk("question", True),
-            speech_call(),
-            control_chunk(TURN_DONE, turn=1),
-        ],
+        dialog, [transcript_chunk("question", True), speech_call(text="")]
     )
     assert [
         output.payload.get("tool_choice")
         for output in outputs
         if output.format == MESSAGES
-    ] == ["required", None]
+    ] == ["required", "required"]
 
 
 @pytest.mark.asyncio
-async def test_a_call_repeating_the_last_speech_is_refused_until_the_next_utterance():
+async def test_a_speech_that_failed_may_be_said_again():
     dialog = speech_dialog()
-    await drain(
-        dialog,
-        [
-            transcript_chunk("question", True),
-            speech_call(),
-            control_chunk(TURN_DONE, turn=1),
-        ],
-    )
-    outputs = await drain(dialog, [speech_call(SPEECH + " ", "call_2", 2)])
-    assert spoken(outputs) == []
-    assert answers(dialog.messages)["call_2"]["status"] == "failed"
-
     outputs = await drain(
         dialog,
         [
-            control_chunk(TURN_DONE, turn=3),
-            transcript_chunk("next", True),
-            speech_call(SPEECH, "call_3", 4),
+            transcript_chunk("question", True),
+            speech_call(),
+            control_chunk(TURN_DONE, turn=1, **{SPEECH_ERROR: "503"}),
         ],
     )
+    assert len(prompts(outputs)) == 2
+    outputs = await drain(dialog, [speech_call(SPEECH, "call_2", 2)])
     assert spoken(outputs) == [SPEECH]
-
-
-@pytest.mark.asyncio
-async def test_a_model_with_nothing_to_add_leaves_no_trace_on_the_client():
-    dialog = speech_dialog()
-    await drain(
-        dialog,
-        [
-            transcript_chunk("question", True),
-            speech_call(),
-            control_chunk(TURN_DONE, turn=1),
-        ],
-    )
     assert await drain(dialog, [control_chunk(TURN_DONE, turn=2)]) == []
-    assert dialog.reply is None
-
-    outputs = await drain(dialog, [transcript_chunk("next", True)])
-    assert turn_events(outputs) == [(TURN_QUEUED, 3), (TURN_STARTED, 3)]
-    assert [message.role for message in prompts(outputs)[0]] == [
-        "system",
-        "user",
-        "assistant",
-        "tool",
-        "user",
-    ]
+    assert answers(dialog.messages)["call_2"] == COMPLETED
 
 
 @pytest.mark.asyncio
-async def test_a_later_speech_is_a_turn_announced_before_the_synthesizer_gets_it():
+async def test_a_speech_after_a_refused_call_is_a_turn_announced_before_the_synthesizer_gets_it():
     dialog = speech_dialog()
-    await drain(
-        dialog,
-        [
-            transcript_chunk("question", True),
-            speech_call(),
-            control_chunk(TURN_DONE, turn=1),
-        ],
-    )
+    await drain(dialog, [transcript_chunk("question", True), speech_call(text="")])
     outputs = await drain(dialog, [speech_call("More.", "call_2", 2)])
     assert [control_type(output) or output.format for output in outputs] == [
         TURN_QUEUED,
@@ -287,8 +256,8 @@ async def test_only_the_first_valid_call_is_spoken_and_every_call_gets_one_answe
     # The history can only render arguments that are a JSON object.
     assert dialog.messages[2].tool_calls[2].function.arguments == "{}"
 
-    outputs = await drain(dialog, [control_chunk(TURN_DONE, turn=1)])
-    assert answers(prompts(outputs)[0])["first"] == COMPLETED
+    await drain(dialog, [control_chunk(TURN_DONE, turn=1)])
+    assert answers(dialog.messages)["first"] == COMPLETED
 
 
 @pytest.mark.asyncio
@@ -323,34 +292,6 @@ async def test_text_the_model_wrote_without_a_call_is_spoken_and_ends_its_replie
         "assistant",
         "Plain answer.",
     )
-
-
-@pytest.mark.asyncio
-async def test_text_the_model_writes_after_a_speech_is_neither_spoken_nor_kept():
-    dialog = speech_dialog()
-    await drain(
-        dialog,
-        [
-            transcript_chunk("question", True),
-            speech_call(),
-            control_chunk(TURN_DONE, turn=1),
-        ],
-    )
-    outputs = await drain(
-        dialog,
-        [
-            text_chunk("The answer has been delivered.", 2),
-            control_chunk(TURN_DONE, turn=2),
-        ],
-    )
-    assert outputs == []
-    assert dialog.reply is None
-    assert [message.role for message in dialog.messages] == [
-        "system",
-        "user",
-        "assistant",
-        "tool",
-    ]
 
 
 @pytest.mark.asyncio
@@ -405,14 +346,8 @@ async def test_text_beside_a_call_is_recorded_but_not_spoken():
 @pytest.mark.asyncio
 async def test_speech_over_an_unannounced_prompt_stops_the_model_and_tells_the_client_nothing():
     dialog = speech_dialog()
-    await drain(
-        dialog,
-        [
-            transcript_chunk("question", True),
-            speech_call(),
-            control_chunk(TURN_DONE, turn=1),
-        ],
-    )
+    # A refused call prompts the model again in a turn the client has not heard of.
+    await drain(dialog, [transcript_chunk("question", True), speech_call(text="")])
     outputs = await drain(dialog, [control_chunk(SPEECH_STARTED)])
     assert turn_events(outputs) == [(INTERRUPT, 2)]
 
@@ -445,7 +380,7 @@ async def test_speech_over_the_first_prompt_joins_the_utterances_as_a_plain_repl
 
 
 @pytest.mark.asyncio
-async def test_a_waiting_utterance_is_answered_instead_of_the_prompt_after_a_speech():
+async def test_a_waiting_utterance_is_answered_when_the_speech_ends():
     dialog = speech_dialog()
     await drain(
         dialog,
@@ -463,16 +398,14 @@ async def test_a_waiting_utterance_is_answered_instead_of_the_prompt_after_a_spe
 
 
 @pytest.mark.asyncio
-async def test_a_model_that_keeps_talking_stops_being_prompted_at_the_bound():
+async def test_a_model_whose_calls_keep_being_refused_stops_being_prompted_at_the_bound():
     dialog = speech_dialog(max_inferences_per_utterance=2)
     outputs = await drain(
         dialog,
         [
             transcript_chunk("question", True),
-            speech_call(),
-            control_chunk(TURN_DONE, turn=1),
-            speech_call("Again.", "call_2", 2),
-            control_chunk(TURN_DONE, turn=2),
+            speech_call(text=""),
+            speech_call("", "call_2", 2),
         ],
     )
     assert len(prompts(outputs)) == 2
@@ -482,8 +415,7 @@ async def test_a_model_that_keeps_talking_stops_being_prompted_at_the_bound():
         dialog, [transcript_chunk("next", True), speech_call("Yes.", "call_3", 3)]
     )
     assert spoken(outputs) == ["Yes."]
-    outputs = await drain(dialog, [control_chunk(TURN_DONE, turn=3)])
-    assert len(prompts(outputs)) == 1
+    assert await drain(dialog, [control_chunk(TURN_DONE, turn=3)]) == []
 
 
 @pytest.mark.asyncio
@@ -506,6 +438,59 @@ async def test_a_failed_speech_is_reported_to_the_model_and_no_truncate_rewrites
 
 
 @pytest.mark.asyncio
+async def test_a_speech_that_failed_after_some_audio_tells_the_model_what_was_heard():
+    dialog = speech_dialog()
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("question", True),
+            speech_call(),
+            *progress_of(dialog),
+            control_chunk(TURN_DONE, turn=1, **{SPEECH_ERROR: "503"}),
+        ],
+    )
+    assert answers(dialog.messages)["call_1"] == {
+        "status": "failed",
+        "error": "503",
+        "heard_prefix": "One two.\nThree four.",
+    }
+    # The prompt that lets the model speak again says what heard_prefix means there.
+    [_, retry] = prompts(outputs)
+    assert "broke off" in retry[0].content
+    assert "cut you off" not in retry[0].content
+
+
+@pytest.mark.asyncio
+async def test_a_speech_keeps_its_place_when_a_late_truncate_removes_the_reply_before_it():
+    dialog = speech_dialog()
+    await drain(
+        dialog,
+        [
+            transcript_chunk("question", True),
+            # A reply the model wrote without a call: the generator ends it, then the synthesizer.
+            text_chunk("Plain answer.", 1),
+            control_chunk(TURN_DONE, turn=1),
+            control_chunk(TURN_DONE, turn=1),
+            transcript_chunk("next", True),
+            speech_call("Said.", "call_1", 2),
+            # The client reports late that it heard nothing of the first reply, while the second is spoken.
+            control_chunk(TRUNCATE, turn=1, t_ms=0),
+            control_chunk(TURN_DONE, turn=2),
+        ],
+    )
+    assert [(message.role, message.content) for message in dialog.messages[1:2]] == [
+        ("user", "question next")
+    ]
+    assert [message.role for message in dialog.messages] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+    ]
+    assert answers(dialog.messages) == {"call_1": COMPLETED}
+
+
+@pytest.mark.asyncio
 async def test_a_silent_first_prompt_ends_the_turn_and_the_next_utterance_joins_it():
     dialog = speech_dialog()
     outputs = await drain(
@@ -522,12 +507,11 @@ async def test_the_arguments_of_past_speeches_count_toward_the_history_bound():
     dialog = speech_dialog(max_history_chars=2000, max_text_chars=100)
     long_speech = "word " * 19
     inputs: list[object] = []
-    for index in range(1, 40, 2):
+    for index in range(1, 21):
         inputs += [
             transcript_chunk("question", True),
             speech_call(long_speech, f"call_{index}", index),
             control_chunk(TURN_DONE, turn=index),
-            control_chunk(TURN_DONE, turn=index + 1),
         ]
     with pytest.raises(ValueError, match="max_history_chars"):
         await drain(dialog, inputs)
@@ -542,23 +526,22 @@ async def test_only_a_cut_speech_adds_a_note_to_the_prompt_the_client_set():
             transcript_chunk("question", True),
             speech_call(),
             control_chunk(TURN_DONE, turn=1),
-            control_chunk(TURN_DONE, turn=2),
             transcript_chunk("next", True),
-            speech_call(SPEECH + " More.", "call_2", 3),
+            speech_call(SPEECH + " More.", "call_2", 2),
             *[
                 lambda text_end=text_end, audio_ms=audio_ms: dialog.control(
                     control_chunk(
-                        REPLY_PROGRESS, turn=3, text_end=text_end, audio_ms=audio_ms
+                        REPLY_PROGRESS, turn=2, text_end=text_end, audio_ms=audio_ms
                     )
                 )
                 for text_end, audio_ms in SPEECH_PROGRESS_POINTS
             ],
             control_chunk(SPEECH_STARTED),
-            control_chunk(REPLY_DELIVERED, turn=3, audio_ms=1100),
+            control_chunk(REPLY_DELIVERED, turn=2, audio_ms=1100),
             transcript_chunk("last", True),
         ],
     )
-    first, _, _, last = prompts(outputs)
+    first, _, last = prompts(outputs)
     assert first[0].content == "Be terse."
     assert last[0].content.startswith("Be terse. ")
     assert "heard_prefix" in last[0].content
@@ -574,7 +557,6 @@ async def test_new_instructions_stand_beside_the_next_utterance_in_its_prompt_on
             transcript_chunk("question", True),
             speech_call(),
             control_chunk(TURN_DONE, turn=1),
-            control_chunk(TURN_DONE, turn=2),
         ],
     )
     replacement = speech_dialog(system_prompt="Be terse.")
@@ -583,13 +565,12 @@ async def test_new_instructions_stand_beside_the_next_utterance_in_its_prompt_on
         replacement,
         [
             transcript_chunk("next", True),
-            speech_call("Yes.", "call_2", 3),
-            control_chunk(TURN_DONE, turn=3),
-            control_chunk(TURN_DONE, turn=4),
+            speech_call("Yes.", "call_2", 2),
+            control_chunk(TURN_DONE, turn=2),
             transcript_chunk("last", True),
         ],
     )
-    next_prompt, _, last_prompt = prompts(outputs)
+    next_prompt, last_prompt = prompts(outputs)
     assert next_prompt[-1].content == "next\n\n[Be terse.]"
     assert last_prompt[-1].content == "last"
     assert [message.content for message in replacement.messages].count("next") == 1
@@ -604,7 +585,6 @@ async def test_a_replacement_with_the_same_instructions_adds_nothing():
             transcript_chunk("question", True),
             speech_call(),
             control_chunk(TURN_DONE, turn=1),
-            control_chunk(TURN_DONE, turn=2),
         ],
     )
     replacement = speech_dialog()
@@ -619,8 +599,8 @@ async def test_a_replacement_dialog_keeps_the_speech_it_is_waiting_for():
     await drain(dialog, [transcript_chunk("question", True), speech_call()])
     replacement = speech_dialog()
     replacement.adopt(dialog)
-    outputs = await drain(replacement, [control_chunk(TURN_DONE, turn=1)])
-    assert answers(prompts(outputs)[0])["call_1"] == COMPLETED
+    await drain(replacement, [control_chunk(TURN_DONE, turn=1)])
+    assert answers(replacement.messages)["call_1"] == COMPLETED
 
 
 def speech_synthesizer():
@@ -672,6 +652,23 @@ async def test_a_failed_speech_service_ends_the_speech_with_the_error_instead_of
     assert "refused" in outputs[-1].payload[SPEECH_ERROR]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["...", "👍"])
+async def test_a_speech_with_nothing_to_speak_is_reported_instead_of_completed(text):
+    synthesizer = speech_synthesizer()
+    sentences: list[str] = []
+
+    async def speak(sentence: str, language: str | None):
+        sentences.append(sentence)
+        yield np.zeros(240, dtype="<f4")
+
+    synthesizer.speak = speak
+    outputs = await drain(synthesizer, [speech_call(text)])
+    assert sentences == []
+    assert control_type(outputs[-1]) == TURN_DONE
+    assert "no audio was produced" in outputs[-1].payload[SPEECH_ERROR]
+
+
 def tool_generator():
     return build(
         {
@@ -718,8 +715,19 @@ async def test_the_generator_joins_call_fragments_into_one_chunk_and_leaves_the_
     outputs = []
     await generator.reply(messages, 1, None, outputs.append)
     await generator.close()
-    assert [output.format for output in outputs] == [TEXT_DELTA, TOOL_CALL]
-    assert tool_calls_of(outputs[1]) == [
+    assert [output.format for output in outputs] == [
+        TEXT_DELTA,
+        TOOL_CALL,
+        TOOL_CALL,
+        TOOL_CALL,
+    ]
+    # The first call's arguments go out as they arrive, before the complete call.
+    assert [is_partial_call(output) for output in outputs[1:]] == [True, True, False]
+    assert [tool_calls_of(output)[0].arguments for output in outputs[1:3]] == [
+        '{"te',
+        'xt": "Hi."}',
+    ]
+    assert tool_calls_of(outputs[3]) == [
         ToolCall(id="call_a", name="tts_start", arguments={"text": "Hi."})
     ]
 
@@ -800,3 +808,250 @@ INTERRUPT_EDGE = {"kind": "control", "source": "dialog", "event": INTERRUPT}
 def test_a_graph_that_would_speak_twice_or_not_at_all_fails_at_load(changes, error):
     with pytest.raises(ValueError, match=error):
         speech_profile(**changes)
+
+
+def speech_pieces(pieces: list[str], call_id: str = "call_1", turn: int = 1):
+    """The arguments of a call as the generator sends them while the model writes."""
+    return [
+        tool_call_chunk(
+            [ToolCall(id=call_id, name="tts_start", arguments=piece)],
+            turn,
+            is_partial=True,
+        )
+        for piece in pieces
+    ]
+
+
+def streamed(outputs: list[TimedChunk]) -> list[str]:
+    return [
+        tool_calls_of(output)[0].arguments["text"]
+        for output in outputs
+        if output.format == TOOL_CALL and is_partial_call(output)
+    ]
+
+
+def completed_calls(outputs: list[TimedChunk]) -> list[str]:
+    return [
+        tool_calls_of(output)[0].arguments["text"]
+        for output in outputs
+        if output.format == TOOL_CALL and not is_partial_call(output)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("arguments", "text"),
+    [
+        ('{"text": "One two. Three."}', "One two. Three."),
+        ('{"action": "speak", "speed": 1.5, "text": "Hi."}', "Hi."),
+        (
+            json.dumps({"text": 'A "quote", a \\ and a\nline.'}),
+            'A "quote", a \\ and a\nline.',
+        ),
+        (json.dumps({"text": "你好 😀"}), "你好 😀"),
+        (json.dumps({"text": "你好 😀"}, ensure_ascii=False), "你好 😀"),
+        (
+            json.dumps({"text": "a \\ud83d is not an escape"}),
+            "a \\ud83d is not an escape",
+        ),
+        ('{"note": "the \\"text\\": \\"trap", "text": "Real."}', "Real."),
+        ('{"text": ""}', ""),
+        ('{"other": "no text here"}', ""),
+    ],
+)
+def test_the_reader_finds_the_text_whatever_the_pieces(arguments: str, text: str):
+    for size in (1, 2, 3, 7, len(arguments)):
+        reader = SpokenTextReader()
+        seen = ""
+        for start in range(0, len(arguments), size):
+            reader.feed(arguments[start : start + size])
+            # What was read never has to be taken back.
+            assert reader.text.startswith(seen)
+            seen = reader.text
+        assert reader.text == text
+
+
+@pytest.mark.asyncio
+async def test_a_speech_starts_with_its_first_words_and_ends_with_the_call():
+    dialog = speech_dialog()
+    pieces = ['{"te', 'xt": "', "One two.", "\\nThree", " four. Five six."]
+    outputs = await drain(
+        dialog, [transcript_chunk("question", True), *speech_pieces(pieces)]
+    )
+    assert streamed(outputs) == ["One two.", "\nThree", " four. Five six."]
+    assert completed_calls(outputs) == []
+    # The history already holds the call, answered as cut with nothing heard, as a whole call's is.
+    assert json.loads(dialog.messages[2].tool_calls[0].function.arguments) == {
+        "text": SPEECH
+    }
+    assert answers(dialog.messages) == {
+        "call_1": {"status": "interrupted", "heard_prefix": ""}
+    }
+
+    outputs = await drain(dialog, [*speech_pieces(['"}']), speech_call()])
+    assert streamed(outputs) == []
+    assert completed_calls(outputs) == [SPEECH]
+
+    assert await drain(dialog, [control_chunk(TURN_DONE, turn=1)]) == []
+    assert json.loads(dialog.messages[2].tool_calls[0].function.arguments) == {
+        "text": SPEECH
+    }
+    assert answers(dialog.messages) == {"call_1": COMPLETED}
+
+
+@pytest.mark.asyncio
+async def test_a_speech_cut_while_the_model_writes_keeps_what_was_heard():
+    dialog = speech_dialog()
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("question", True),
+            *speech_pieces(['{"text": "One two.', "\\nThree four."]),
+            *progress_of(dialog),
+            control_chunk(SPEECH_STARTED),
+        ],
+    )
+    assert turn_events(outputs)[-2:] == [(INTERRUPT, 1), (TURN_INTERRUPTED, 1)]
+    await drain(dialog, [control_chunk(REPLY_DELIVERED, turn=1, audio_ms=1200)])
+    assert answers(dialog.messages)["call_1"] == {
+        "status": "interrupted",
+        "heard_prefix": "One two.",
+    }
+    # The call keeps the text the model had written when it was cut; the rest never arrives.
+    outputs = await drain(dialog, [*speech_pieces([" Five six."]), speech_call()])
+    assert outputs == []
+    assert json.loads(dialog.messages[2].tool_calls[0].function.arguments) == {
+        "text": "One two.\nThree four."
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_streamed_call_the_token_budget_cut_keeps_the_text_that_was_spoken():
+    dialog = speech_dialog()
+    cut = '{"text": "One two. Three'
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("question", True),
+            *speech_pieces([cut]),
+            tool_call_chunk(
+                [ToolCall(id="call_1", name="tts_start", arguments=cut)], 1
+            ),
+        ],
+    )
+    assert streamed(outputs) == ["One two. Three"]
+    assert completed_calls(outputs) == ["One two. Three"]
+    assert json.loads(dialog.messages[2].tool_calls[0].function.arguments) == {
+        "text": "One two. Three"
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_second_call_beside_a_streamed_speech_is_refused():
+    dialog = speech_dialog()
+    calls = [
+        ToolCall(id="call_1", name="tts_start", arguments={"text": "One."}),
+        ToolCall(id="call_2", name="tts_start", arguments={"text": "Two."}),
+    ]
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("question", True),
+            *speech_pieces(['{"text": "One."}']),
+            tool_call_chunk(calls, 1),
+        ],
+    )
+    assert completed_calls(outputs) == ["One."]
+    assert [message.role for message in dialog.messages[2:]] == [
+        "assistant",
+        "tool",
+        "tool",
+    ]
+    assert answers(dialog.messages)["call_2"] == {"status": "failed", "error": "BUSY"}
+
+
+@pytest.mark.asyncio
+async def test_a_speech_after_a_refused_call_starts_with_its_first_words_too():
+    dialog = speech_dialog()
+    await drain(dialog, [transcript_chunk("question", True), speech_call(text="")])
+    outputs = await drain(dialog, speech_pieces(['{"text": "Hi.'], "call_2", 2))
+    assert turn_events(outputs) == [(TURN_QUEUED, 2), (TURN_STARTED, 2)]
+    assert streamed(outputs) == ["Hi."]
+
+
+@pytest.mark.asyncio
+async def test_a_blank_streamed_text_is_refused_as_a_whole_call_is():
+    dialog = speech_dialog()
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("question", True),
+            *speech_pieces(['{"text": " "}']),
+            speech_call(" "),
+        ],
+    )
+    assert spoken(outputs) == []
+    assert answers(dialog.messages)["call_1"]["status"] == "failed"
+
+
+def spoken_pieces(texts: list[str], turn: int = 1) -> list[TimedChunk]:
+    """A speech as the dialog streams it: its text in pieces, then the complete call."""
+    pieces = [
+        tool_call_chunk(
+            [ToolCall(id="call_1", name="tts_start", arguments={"text": text})],
+            turn,
+            "English",
+            is_partial=True,
+        )
+        for text in texts
+    ]
+    whole = ToolCall(id="call_1", name="tts_start", arguments={"text": "".join(texts)})
+    return [*pieces, tool_call_chunk([whole], turn, "English")]
+
+
+@pytest.mark.asyncio
+async def test_the_synthesizer_speaks_a_sentence_before_the_call_is_complete():
+    synthesizer = speech_synthesizer()
+    events: list[str] = []
+
+    async def speak(sentence: str, language: str | None):
+        events.append(sentence)
+        yield np.zeros(240, dtype="<f4")
+
+    async def note_arrival():
+        # The first sentence must already be spoken when the rest of the call arrives.
+        for _ in range(20):
+            await asyncio.sleep(0)
+        events.append("rest arrives")
+
+    synthesizer.speak = speak
+    first, second, whole = spoken_pieces(["One. Tw", "o."])
+    outputs = await drain(synthesizer, [first, note_arrival, second, whole])
+    assert events == ["One.", "rest arrives", "Two."]
+    texts = [
+        output.payload["text"] for output in outputs if output.format == TEXT_DELTA
+    ]
+    assert texts == ["One. Tw", "o."]
+    assert [control_type(output) for output in outputs].count(TURN_DONE) == 1
+    assert control_type(outputs[-1]) == TURN_DONE
+
+
+@pytest.mark.asyncio
+async def test_pieces_of_a_streamed_speech_that_failed_start_no_other_speech():
+    synthesizer = speech_synthesizer()
+    attempts: list[str] = []
+
+    async def speak(sentence: str, language: str | None):
+        attempts.append(sentence)
+        raise httpx.ConnectError("refused")
+        yield
+
+    async def let_it_fail():
+        for _ in range(20):
+            await asyncio.sleep(0)
+
+    synthesizer.speak = speak
+    first, second, whole = spoken_pieces(["One. ", "Two."])
+    outputs = await drain(synthesizer, [first, let_it_fail, second, whole])
+    assert attempts == ["One."]
+    done = [output for output in outputs if control_type(output) == TURN_DONE]
+    assert len(done) == 1 and "refused" in done[0].payload[SPEECH_ERROR]

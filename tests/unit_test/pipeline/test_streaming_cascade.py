@@ -187,68 +187,62 @@ async def prompts_reach(messages: list[list[dict]], count: int) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backends", ["speech_tool"], indirect=True)
-async def test_a_model_speaking_through_a_tool_reaches_the_client_as_one_reply_per_speech(
+async def test_a_model_speaking_through_a_tool_reaches_the_client_as_one_reply_per_utterance(
     backends, backend_requests
 ):
     config, _, words, messages = backends
     async with conversation(config) as session:
-        await session.audio()
-        await session.command(COMMIT)
-        await session.until(
-            lambda: any(
-                control_type(o) == TURN_DONE and o.turn == 1 for o in session.outputs
+        for turn in (1, 2):
+            await session.audio()
+            await session.command(COMMIT)
+            await session.until(
+                lambda: any(
+                    control_type(o) == TURN_DONE and o.turn == turn
+                    for o in session.outputs
+                )
             )
-        )
-        # The prompt after a speech comes only once its paced turn.done reached the client, and no output follows it.
-        assert len(messages) == 1
-        await asyncio.wait_for(prompts_reach(messages, 2), 15)
-        assert messages[1][-1]["content"] == '{"status": "completed"}'
-        await session.audio()
-        await session.command(COMMIT)
-        await asyncio.wait_for(prompts_reach(messages, 4), 15)
+        # A completed speech prompts nothing, so each utterance took one prompt, and the second read the first call's answer.
+        assert len(messages) == 2
         assert words == ["Hello", "world."] * 2
-        assert [message["role"] for message in messages[2]] == [
+        assert [message["role"] for message in messages[1]] == [
             "system",
             "user",
             "assistant",
             "tool",
             "user",
         ]
-        arguments = messages[2][2]["tool_calls"][0]["function"]["arguments"]
+        assert messages[1][3]["content"] == '{"status": "completed"}'
+        arguments = messages[1][2]["tool_calls"][0]["function"]["arguments"]
         assert yaml.safe_load(arguments) == {"text": "Hello world."}
-        await session.until(
-            lambda: any(
-                control_type(o) == TURN_DONE and o.turn == 3 for o in session.outputs
-            )
-        )
         replies = [
             (control_type(o), o.turn)
             for o in session.outputs
             if control_type(o) in (TURN_STARTED, TURN_DONE, TURN_EMPTY)
         ]
-        # The prompts of turns 2 and 4 said nothing, so the client never heard of them.
         assert replies == [
             (TURN_STARTED, 1),
             (TURN_DONE, 1),
-            (TURN_STARTED, 3),
-            (TURN_DONE, 3),
+            (TURN_STARTED, 2),
+            (TURN_DONE, 2),
         ]
-        captions = [
-            (o.payload["text"], o.turn)
-            for o in session.outputs
-            if o.format == TEXT_DELTA
-        ]
-        assert captions == [("Hello world.", 1), ("Hello world.", 3)]
+        # A speech is spoken as the model writes it, so its caption comes in pieces.
+        captions: dict[int, str] = {}
+        for o in session.outputs:
+            if o.format == TEXT_DELTA:
+                captions[o.turn] = captions.get(o.turn, "") + o.payload["text"]
+            else:
+                pass
+        assert captions == {1: "Hello world.", 2: "Hello world."}
         assert [
             request.get("tool_choice")
             for request in backend_requests
             if request.get("max_tokens") != 1
-        ] == ["required", None, "required", None]
+        ] == ["required", "required"]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backends", ["speech_tool"], indirect=True)
-async def test_new_instructions_reach_the_prompt_after_a_speech(backends):
+async def test_new_instructions_reach_the_prompt_for_the_next_utterance(backends):
     config, _, _, messages = backends
     async with conversation(config) as session:
         await session.audio()
@@ -258,11 +252,10 @@ async def test_new_instructions_reach_the_prompt_after_a_speech(backends):
                 control_type(o) == TURN_DONE and o.turn == 1 for o in session.outputs
             )
         )
-        # The client answers the end of a reply at once, while the prompt after the speech runs.
         await session.command(CONFIGURE, instructions="Say banana.")
         await session.audio()
         await session.command(COMMIT)
-        await asyncio.wait_for(prompts_reach(messages, 3), 15)
+        await asyncio.wait_for(prompts_reach(messages, 2), 15)
         assert messages[-1][0] == {"role": "system", "content": "Say banana."}
         assert messages[-1][-1]["content"].endswith("[Say banana.]")
         assert [message["role"] for message in messages[-1]] == [

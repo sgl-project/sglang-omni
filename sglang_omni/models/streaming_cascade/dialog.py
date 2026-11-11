@@ -45,7 +45,12 @@ from sglang_omni.proto.streams import (
     chunk_style,
     control_type,
 )
-from sglang_omni.proto.tools import ToolCall, tool_call_chunk, tool_calls_of
+from sglang_omni.proto.tools import (
+    ToolCall,
+    is_partial_call,
+    tool_call_chunk,
+    tool_calls_of,
+)
 from sglang_omni.scheduling.session import ChunkEmitter
 
 if TYPE_CHECKING:
@@ -82,8 +87,10 @@ CUT_REPLY_NOTE = "A reply of yours that ends with … was cut off when the user 
 SPEECH_BUSY = "BUSY"
 # note (Jingwen): only when a speech was cut, since a longer note of rules on every prompt took Qwen3.8-27B from 7 of 8 to 4 of 8 samples following a client's new instructions.
 CUT_SPEECH_NOTE = 'A tool result of {"status": "interrupted", "heard_prefix": ...} means the user cut you off and heard only heard_prefix.'
-# note (Jingwen): with thinking off Qwen3.8-27B called the speech tool in 12 of 24 first prompts without this and in 36 of 36 with it, and no prompt wording closed the gap. A later prompt cannot use it, or the model could never stop.
-FIRST_PROMPT_TOOL_CHOICE = "required"
+# note (Jingwen): without this Qwen3.8-27B said the whole text again after a speech that failed part-way in 13 of 20 samples, and with it went on from heard_prefix in 20 of 20.
+FAILED_SPEECH_NOTE = 'A tool result of {"status": "failed", "heard_prefix": ...} means your speech broke off after the user heard heard_prefix; say only what comes after it.'
+# note (Jingwen): with thinking off Qwen3.8-27B called the speech tool in 12 of 24 first prompts without this and in 36 of 36 with it, and no prompt wording closed the gap. Every prompt uses it, so the model is never prompted once it has spoken for the utterance: with a `silent` tool or a `silent` action to choose instead, it repeated its answer after a completed speech in 10 of 49 and 22 of 50 samples.
+SPEECH_TOOL_CHOICE = "required"
 
 
 def tagged(content: str, style_starts: list[tuple[int, str]]) -> str:
@@ -103,8 +110,10 @@ def prompt_messages(messages: list[ChatMessage]) -> list[ChatMessage]:
     for message in messages:
         if message.role == "tool":
             prompt.append(message)
-            if message.is_cut and CUT_SPEECH_NOTE not in notes:
-                notes.append(CUT_SPEECH_NOTE)
+            is_failed = '"status": "failed"' in message.content
+            note = FAILED_SPEECH_NOTE if is_failed else CUT_SPEECH_NOTE
+            if message.is_cut and note not in notes:
+                notes.append(note)
             else:
                 pass
         elif message.is_cut:
@@ -174,12 +183,75 @@ class Speech:
 
     text: str
     entry_index: int
+    # True while the model is still writing the call: `text` is what reached the synthesizer so far.
+    is_streaming: bool = False
+
+
+# The arguments of a call up to the opening quote of its `text` value, with any scalar arguments written before it.
+TEXT_VALUE_START = re.compile(
+    r'\s*\{(?:\s*"(?:[^"\\]|\\.)*"\s*:\s*(?:"(?:[^"\\]|\\.)*"|[^,{}\[\]"]+)\s*,)*\s*"text"\s*:\s*"'
+)
+HIGH_SURROGATE_ESCAPE = re.compile(r"\\u[dD][89abAB][0-9a-fA-F]{2}")
+
+
+class SpokenTextReader:
+    """Reads the `text` value out of a speech call's arguments while the model is still writing them."""
+
+    def __init__(self) -> None:
+        self.raw = ""
+        self.text = ""
+        self.read_end: int | None = None
+        self.is_closed = False
+
+    def feed(self, fragment: str) -> None:
+        """Add the next piece of the arguments; `text` grows by what it completes."""
+        self.raw += fragment
+        if self.read_end is None:
+            match = TEXT_VALUE_START.match(self.raw)
+            if match is None:
+                return
+            else:
+                self.read_end = match.end()
+        else:
+            pass
+        end = self.read_end
+        # Where the first half of a character written as two escapes begins, while its second half may still be on its way.
+        held: int | None = None
+        while not self.is_closed:
+            if end >= len(self.raw):
+                break
+            elif self.raw[end] == '"':
+                self.is_closed = True
+            else:
+                if self.raw[end] != "\\":
+                    step = 1
+                elif self.raw[end + 1 : end + 2] == "u":
+                    step = 6
+                else:
+                    step = 2
+                if end + step > len(self.raw):
+                    break
+                else:
+                    is_high = step == 6 and HIGH_SURROGATE_ESCAPE.match(
+                        self.raw, end, end + 6
+                    )
+                    held = end if is_high else None
+                    end += step
+        if held is not None and not self.is_closed:
+            end = held
+        else:
+            pass
+        try:
+            self.text += json.loads(f'"{self.raw[self.read_end:end]}"')
+        except json.JSONDecodeError:
+            self.is_closed = True
+        self.read_end = end
 
 
 class DialogConfig(ComponentConfig):
     """Conversation history; one messages chunk per answered utterance.
 
-    `speech_tool` names the tool the generator speaks through; without it the synthesizer reads the generator's text. `max_inferences_per_utterance` bounds how many times the model is prompted for one utterance, so it cannot talk on forever.
+    `speech_tool` names the tool the generator speaks through; without it the synthesizer reads the generator's text. `max_inferences_per_utterance` bounds how many times the model is prompted for one utterance, so calls that keep being refused or failing cannot go on forever.
     """
 
     kind: Literal["dialog"] = "dialog"
@@ -235,17 +307,17 @@ class Dialog(StreamComponent):
     and the client's truncate all apply to it as to a reply. The call's answer
     enters the history as `{"status": "interrupted", "heard_prefix": ...}`
     until the speech ends, and every later report of what was heard rewrites
-    it, so the next prompt holds the last known position. A completed speech
-    prompts the model again with no turn announced, unless the user is
-    speaking or an utterance waits; the turn is announced only if the model
-    speaks, so a model that has nothing to add leaves no trace on the client.
-    The first prompt for an utterance requires a tool call. Text the model
-    writes without one is spoken as it is when nothing was spoken for the
-    utterance yet, so the user does not sit through a silent reply; after a
-    speech it is the model describing what it did, and goes nowhere, not even
-    into the history, and a call that repeats the last speech is refused. New
-    instructions are repeated beside the next utterance in its prompt only,
-    since a long past speech otherwise outweighs them.
+    it, so the next prompt holds the last known position. Every prompt
+    requires a tool call, so the model speaks once for an utterance and is not
+    prompted again when that speech completes: it reads the answer in the
+    prompt for the next utterance. It is prompted again, with no turn
+    announced, only when a call was refused or its speech failed, unless the
+    user is speaking or an utterance waits; the turn is announced only if the
+    model then speaks. The speech starts with the first words of the call's
+    text while the model still writes the rest. Text the model writes without
+    a call is spoken as it is, so the user does not sit through a silent
+    reply. New instructions are repeated beside the next utterance in its
+    prompt only, since a long past speech otherwise outweighs them.
     """
 
     def __init__(self, config: DialogConfig) -> None:
@@ -265,8 +337,8 @@ class Dialog(StreamComponent):
         self.announced_turn = 0
         self.should_follow_up = False
         self.inference_count = 0
-        # The text last spoken for the current utterance; None while nothing was.
-        self.spoken_text: str | None = None
+        # Reads the text of the call the model is writing; None between calls.
+        self.text_reader: SpokenTextReader | None = None
         # note (Jingwen): with a long past speech in the history and a call required, Qwen3.8-27B followed a client's new instructions in 3 of 12 samples, and in 10 of 12 with them repeated beside the next utterance.
         self.has_new_instructions = False
         # Reply audio produced so far as (characters of the reply text with audio, audio ms), one entry per spoken sentence, for truncating an interrupted reply to what was heard.
@@ -304,7 +376,7 @@ class Dialog(StreamComponent):
             self.announced_turn = previous.announced_turn
             self.should_follow_up = previous.should_follow_up
             self.inference_count = previous.inference_count
-            self.spoken_text = previous.spoken_text
+            self.text_reader = previous.text_reader
             self.has_new_instructions = (
                 previous.has_new_instructions
                 or self.config.system_prompt != previous.config.system_prompt
@@ -386,7 +458,10 @@ class Dialog(StreamComponent):
             else:
                 pass
         elif chunk.format == TOOL_CALL and self.is_reply(chunk):
-            self.start_speech(tool_calls_of(chunk))
+            if is_partial_call(chunk):
+                self.stream_speech(tool_calls_of(chunk)[0])
+            else:
+                self.start_speech(tool_calls_of(chunk))
         elif control_type(chunk) == TURN_DONE and self.is_reply(chunk):
             if self.speech is not None:
                 self.end_speech(chunk)
@@ -456,8 +531,6 @@ class Dialog(StreamComponent):
             return SPEECH_BUSY
         elif not isinstance(text, str) or not text.strip():
             return "text must be a non-empty string"
-        elif text.strip() == self.spoken_text:
-            return "the user already heard this text"
         elif len(text) > self.config.max_text_chars:
             return f"text exceeds {self.config.max_text_chars} characters"
         else:
@@ -466,6 +539,12 @@ class Dialog(StreamComponent):
     def start_speech(self, calls: list[ToolCall]) -> None:
         """Record the model's calls and speak the first one that can be; any other is answered at once, so the next prompt holds one answer per call."""
         assert self.reply is not None
+        self.text_reader = None
+        if self.speech is not None and self.speech.is_streaming:
+            self.finish_streamed_speech(calls)
+            return
+        else:
+            pass
         self.messages.append(
             ChatMessage(
                 role="assistant",
@@ -496,17 +575,115 @@ class Dialog(StreamComponent):
         else:
             self.speak(spoken)
 
-    def speak(self, call: ToolCall) -> None:
-        """Hand the call to the synthesizer, announcing a turn the client has not heard of."""
+    def announce_turn(self) -> None:
+        """Tell the client of a turn it has not heard of, now that the model speaks in it."""
         assert self.emit is not None
-        self.spoken_text = call.arguments["text"].strip()
         if self.announced_turn != self.reply_turn:
             self.announced_turn = self.reply_turn
             self.emit(control_chunk(TURN_QUEUED, turn=self.reply_turn))
             self.emit(control_chunk(TURN_STARTED, turn=self.reply_turn))
         else:
             pass
+
+    def speak(self, call: ToolCall) -> None:
+        """Hand the call to the synthesizer, announcing a turn the client has not heard of."""
+        assert self.emit is not None
+        self.announce_turn()
         self.emit(tool_call_chunk([call], self.reply_turn, self.language))
+
+    def stream_speech(self, call: ToolCall) -> None:
+        """One more piece of the arguments of the call the model is writing. The speech starts with the first words of its text and each later piece follows them to the synthesizer, so the first sentence is spoken while the model writes the rest."""
+        assert self.emit is not None and self.reply is not None
+        if call.name != self.config.speech_tool or not isinstance(call.arguments, str):
+            return
+        elif self.speech is not None and not self.speech.is_streaming:
+            return
+        else:
+            pass
+        if self.text_reader is None:
+            self.text_reader = SpokenTextReader()
+        else:
+            pass
+        self.text_reader.feed(call.arguments)
+        text = self.text_reader.text[: self.config.max_text_chars]
+        if self.speech is None and not text.strip():
+            return
+        elif self.speech is None:
+            self.messages.append(
+                ChatMessage(role="assistant", content="".join(self.reply))
+            )
+            self.messages.append(
+                tool_message(call.id, {"status": "interrupted", "heard_prefix": ""})
+            )
+            self.reply = []
+            self.speech = Speech(
+                text="", entry_index=len(self.messages) - 1, is_streaming=True
+            )
+            self.announce_turn()
+        else:
+            pass
+        speech = self.speech
+        delta = text[len(speech.text) :]
+        if delta:
+            speech.text = text
+            self.record_streamed_calls(
+                [ToolCall(id=call.id, name=call.name, arguments={"text": text})]
+            )
+            self.emit(
+                tool_call_chunk(
+                    [ToolCall(id=call.id, name=call.name, arguments={"text": delta})],
+                    self.reply_turn,
+                    self.language,
+                    is_partial=True,
+                )
+            )
+        else:
+            pass
+
+    def record_streamed_calls(self, calls: list[ToolCall]) -> None:
+        """Show the calls of the speech being streamed in its assistant entry, which sits before the call's answer."""
+        assert self.speech is not None
+        index = self.speech.entry_index - 1
+        self.messages[index] = self.messages[index].model_copy(
+            update={"tool_calls": [assistant_tool_call(call) for call in calls]}
+        )
+
+    def finish_streamed_speech(self, calls: list[ToolCall]) -> None:
+        """The model finished the call whose text is already being spoken: the synthesizer is told the text is complete, and any other call is answered at once. A call the token budget cut has no arguments to read, so what was spoken is its text."""
+        assert self.emit is not None and self.speech is not None
+        speech = self.speech
+        first = calls[0]
+        arguments = first.arguments if isinstance(first.arguments, dict) else {}
+        whole = arguments.get("text")
+        if isinstance(whole, str) and whole.startswith(speech.text):
+            text = whole[: self.config.max_text_chars]
+        else:
+            text = speech.text
+        rest = text[len(speech.text) :]
+        spoken = ToolCall(
+            id=first.id, name=first.name, arguments={**arguments, "text": text}
+        )
+        self.record_streamed_calls([spoken, *calls[1:]])
+        for call in calls[1:]:
+            error = self.speech_call_error(call, True)
+            logger.warning(f"turn {self.reply_turn}: {call.name} refused: {error}")
+            self.messages.append(
+                tool_message(call.id, {"status": "failed", "error": error})
+            )
+        speech.text = text
+        speech.is_streaming = False
+        if rest:
+            self.emit(
+                tool_call_chunk(
+                    [ToolCall(id=first.id, name=first.name, arguments={"text": rest})],
+                    self.reply_turn,
+                    self.language,
+                    is_partial=True,
+                )
+            )
+        else:
+            pass
+        self.emit(tool_call_chunk([spoken], self.reply_turn, self.language))
 
     def end_speech(self, chunk: TimedChunk) -> None:
         """The speech's audio reached the client, or its synthesis failed; a call is answered, and a text the model wrote without a call ends the utterance's replies."""
@@ -522,20 +699,28 @@ class Dialog(StreamComponent):
                 entry.tool_call_id, {"status": "completed"}
             )
             self.end_reply(speech.entry_index, speech.text, [])
-            self.should_follow_up = True
         else:
-            self.messages[speech.entry_index] = tool_message(
-                entry.tool_call_id, {"status": "failed", "error": str(error)}
+            result = {"status": "failed", "error": str(error)}
+            # note (Jinyan Su): the sentences whose audio was complete before the service failed reached the client, so the model is told where to go on from.
+            heard = (
+                speech.text[: self.progress[-1][0]].rstrip() if self.progress else ""
             )
+            if heard:
+                result["heard_prefix"] = heard
+            else:
+                pass
+            self.messages[speech.entry_index] = tool_message(
+                entry.tool_call_id, result, is_cut=bool(heard)
+            )
+            self.progress = []
             self.reply = None
             self.should_follow_up = True
 
     def end_inference(self) -> None:
-        """The model ended a completion without calling anything: what it wrote is spoken unless something was spoken for the utterance already, and anything else leaves the turn silent."""
+        """The model ended a completion without calling anything, as a service that ignores `tool_choice` lets it: what it wrote is spoken, and writing nothing leaves the turn silent."""
         assert self.reply is not None
         text = "".join(self.reply).strip()
-        # note (Jingwen): after a completed speech Qwen3.8-27B with thinking off wrote text such as "The answer has been delivered." in 12 of 12 samples and never stayed silent.
-        if text and self.spoken_text is None:
+        if text:
             logger.warning(
                 f"turn {self.reply_turn}: the model wrote text without calling {self.config.speech_tool}; speaking it"
             )
@@ -566,7 +751,7 @@ class Dialog(StreamComponent):
             pass
 
     def follow_up(self) -> None:
-        """Prompt the model after a speech ended or a call was refused, with no turn announced; the model decides whether to say more."""
+        """Prompt the model again after a call was refused or its speech failed, with no turn announced, since the utterance has no spoken answer yet."""
         assert self.emit is not None
         self.should_follow_up = False
         if self.inference_count >= self.config.max_inferences_per_utterance:
@@ -576,12 +761,16 @@ class Dialog(StreamComponent):
         else:
             self.turns += 1
             self.inference_count += 1
+            self.text_reader = None
             self.reply = []
             self.reply_turn = self.turns
             self.progress = []
             self.emit(
                 messages_chunk(
-                    prompt_messages(self.messages), self.reply_turn, self.language
+                    prompt_messages(self.messages),
+                    self.reply_turn,
+                    self.language,
+                    SPEECH_TOOL_CHOICE,
                 )
             )
 
@@ -616,6 +805,7 @@ class Dialog(StreamComponent):
             pass
         self.reply = None
         self.speech = None
+        self.text_reader = None
         self.should_follow_up = False
         self.emit(control_chunk(INTERRUPT, turn=turn))
         if self.announced_turn == turn:
@@ -713,10 +903,19 @@ class Dialog(StreamComponent):
                 content=f"{self.messages[index - 1].content} {self.messages[index + 1].content}",
             )
             del self.messages[index : index + 2]
+            removed = 2
         else:
             self.messages.pop(index)
+            removed = 1
         if self.truncatable is not None and self.truncatable[1] == index:
             self.truncatable = None
+        elif self.truncatable is not None and self.truncatable[1] > index:
+            self.truncatable = (self.truncatable[0], self.truncatable[1] - removed)
+        else:
+            pass
+        # note (yxs): a late truncate can empty the reply before a speech that is still being spoken, and the speech's entry moves with the entries removed before it.
+        if self.speech is not None and self.speech.entry_index > index:
+            self.speech.entry_index -= removed
         else:
             pass
 
@@ -776,17 +975,13 @@ class Dialog(StreamComponent):
             self.progress = []
             self.should_follow_up = False
             self.inference_count = 1
-            self.spoken_text = None
+            self.text_reader = None
             return [
                 control_chunk(TURN_STARTED, turn=turn),
                 messages_chunk(
                     prompt,
                     turn,
                     self.language,
-                    (
-                        None
-                        if self.config.speech_tool is None
-                        else FIRST_PROMPT_TOOL_CHOICE
-                    ),
+                    (None if self.config.speech_tool is None else SPEECH_TOOL_CHOICE),
                 ),
             ]

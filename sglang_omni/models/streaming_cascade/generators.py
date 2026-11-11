@@ -237,6 +237,23 @@ class OpenAIChatGenerator(Replier):
                     arguments.setdefault(fragment.index, []).append(function.arguments)
                 else:
                     pass
+                # The first call's arguments go out as they arrive, so a dialog that speaks through it can start before the completion ends.
+                if function.arguments and fragment.index == 0 and 0 in names:
+                    emit(
+                        tool_call_chunk(
+                            [
+                                ToolCall(
+                                    id=ids.get(0, f"call_{turn}_0"),
+                                    name=names[0],
+                                    arguments=function.arguments,
+                                )
+                            ],
+                            turn,
+                            is_partial=True,
+                        )
+                    )
+                else:
+                    pass
         if partial_tag:
             emit(text_chunk(partial_tag, turn, language, style))
         else:

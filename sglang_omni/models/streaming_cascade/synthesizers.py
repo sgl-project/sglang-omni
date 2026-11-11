@@ -29,6 +29,7 @@ from sglang_omni.models.streaming_cascade.base import (
 from sglang_omni.models.streaming_cascade.numerals import spoken_text
 from sglang_omni.proto.session import TimedChunk
 from sglang_omni.proto.streams import (
+    PCM_F32,
     REPLY_PROGRESS,
     REPLY_SENTENCE,
     SPEECH_ERROR,
@@ -39,10 +40,13 @@ from sglang_omni.proto.streams import (
     chunk_style,
     control_type,
 )
-from sglang_omni.proto.tools import tool_calls_of
+from sglang_omni.proto.tools import is_partial_call, tool_calls_of
 from sglang_omni.scheduling.session import ChunkEmitter
 
 logger = logging.getLogger(__name__)
+
+# The error of a speech whose text held no words to speak.
+NOTHING_TO_SPEAK = "no audio was produced: the text has no words to speak"
 
 # Note (ruoyu): Qwen3-TTS reads an emoji as stray syllables or runs on for minutes and spells out a link target.
 MARKDOWN_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
@@ -145,28 +149,71 @@ class TurnSpeaker(Replier):
             await self.speak_reply(iterate(deltas), turn, emit)
             emit(control_chunk(TURN_DONE, turn=turn))
 
-        async def speak_call_then_end(turn: int, text: TimedChunk) -> None:
-            speech: asyncio.Queue[TimedChunk | None] = asyncio.Queue()
-            speech.put_nowait(text)
-            speech.put_nowait(None)
-            emit(text)
+        # The turn of the call whose text is arriving in pieces, until its complete chunk; a piece for it once its speech ended, cut or failed, is dropped.
+        streamed_turn: int | None = None
+
+        async def published(
+            speech: asyncio.Queue[TimedChunk | None],
+        ) -> AsyncIterator[TimedChunk]:
+            async for text in iterate(speech):
+                emit(text)
+                yield text
+
+        async def speak_call_then_end(
+            turn: int, speech: asyncio.Queue[TimedChunk | None]
+        ) -> None:
+            audio_count = 0
+
+            def emit_counting(chunk: TimedChunk) -> None:
+                nonlocal audio_count
+                if chunk.format == PCM_F32:
+                    audio_count += 1
+                else:
+                    pass
+                emit(chunk)
+
             try:
-                await self.speak_reply(iterate(speech), turn, emit)
+                await self.speak_reply(published(speech), turn, emit_counting)
             except httpx.HTTPError as error:
                 logger.error(f"speech of turn {turn} failed: {error!r}")
                 emit(control_chunk(TURN_DONE, turn=turn, **{SPEECH_ERROR: repr(error)}))
             else:
-                emit(control_chunk(TURN_DONE, turn=turn))
+                if audio_count == 0:
+                    # note (Jinyan Su): a text of only symbols, such as "..." or an emoji, leaves nothing to speak, and the model must not be told it was heard.
+                    logger.warning(f"speech of turn {turn} had nothing to speak")
+                    emit(
+                        control_chunk(
+                            TURN_DONE, turn=turn, **{SPEECH_ERROR: NOTHING_TO_SPEAK}
+                        )
+                    )
+                else:
+                    emit(control_chunk(TURN_DONE, turn=turn))
 
         async def handle(chunk: TimedChunk, replies: Replies) -> None:
-            nonlocal deltas
+            nonlocal deltas, streamed_turn
             if chunk.format == TOOL_CALL:
-                await replies.finish()
                 [call] = tool_calls_of(chunk)
                 text = text_chunk(
                     call.arguments["text"], chunk.turn, chunk_language(chunk)
                 )
-                replies.start(chunk.turn, speak_call_then_end(chunk.turn, text))
+                is_streamed = chunk.turn == streamed_turn
+                if not is_streamed:
+                    await replies.finish()
+                    deltas = asyncio.Queue()
+                    replies.start(chunk.turn, speak_call_then_end(chunk.turn, deltas))
+                    deltas.put_nowait(text)
+                elif is_partial_call(chunk) and replies.is_running(chunk.turn):
+                    deltas.put_nowait(text)
+                else:
+                    pass
+                if is_partial_call(chunk):
+                    streamed_turn = chunk.turn
+                else:
+                    streamed_turn = None
+                    if is_streamed and not replies.is_running(chunk.turn):
+                        pass
+                    else:
+                        deltas.put_nowait(None)
             elif chunk.format == TEXT_DELTA and chunk.turn in replies.interrupted:
                 # Note (Junnan Li): The generator may emit a few deltas after the interrupt before it stops.
                 pass

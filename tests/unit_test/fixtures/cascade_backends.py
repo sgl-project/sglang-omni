@@ -142,26 +142,20 @@ def backends(request, backend_requests):
             self.wfile.write(b"data: [DONE]\n\n")
 
         def call_speech_tool(self, messages: list[dict]) -> None:
-            """Speak through tts_start in two fragments, and say nothing more once a call is answered."""
-            if messages[-1]["role"] == "tool":
-                finish_reason = "stop"
-            else:
-                finish_reason = "tool_calls"
-                for fragment in (
-                    {
-                        "index": 0,
-                        "id": f"call_{len(received_messages)}",
-                        "function": {
-                            "name": "tts_start",
-                            "arguments": '{"text": "Hel',
-                        },
+            """Speak through tts_start in two fragments."""
+            for fragment in (
+                {
+                    "index": 0,
+                    "id": f"call_{len(received_messages)}",
+                    "function": {
+                        "name": "tts_start",
+                        "arguments": '{"text": "Hel',
                     },
-                    {"index": 0, "function": {"arguments": 'lo world."}'}},
-                ):
-                    self.event(
-                        {"delta": {"tool_calls": [fragment]}, "finish_reason": None}
-                    )
-            self.event({"delta": {}, "finish_reason": finish_reason})
+                },
+                {"index": 0, "function": {"arguments": 'lo world."}'}},
+            ):
+                self.event({"delta": {"tool_calls": [fragment]}, "finish_reason": None})
+            self.event({"delta": {}, "finish_reason": "tool_calls"})
             self.wfile.write(b"data: [DONE]\n\n")
 
         def event(self, choice: dict) -> None:
