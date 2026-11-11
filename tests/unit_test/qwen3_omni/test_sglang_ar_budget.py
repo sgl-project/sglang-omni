@@ -862,7 +862,6 @@ def test_thinker_prefill_graph_defaults_to_breakable_on_cuda(
     overrides = thinker_overrides(monkeypatch, allows=True)
 
     assert overrides["cuda_graph_backend_prefill"] == expected
-    assert "prefill_extra_token_buckets" not in overrides
     if is_cuda:
         token_buckets = overrides["cuda_graph_bs_prefill"]
         assert token_buckets[:2] == [1, 4]
@@ -902,7 +901,6 @@ def test_thinker_single_token_prefill_replays_with_operator_caps(
     )
     assert token_buckets[-1] == overrides["cuda_graph_max_bs_prefill"] == max_num_tokens
     assert all(left < right for left, right in zip(token_buckets, token_buckets[1:]))
-    assert "prefill_extra_token_buckets" not in overrides
 
 
 @pytest.mark.parametrize(

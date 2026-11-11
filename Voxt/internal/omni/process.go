@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -49,16 +50,33 @@ type readyEvent struct {
 	Reason string `json:"reason"`
 }
 
-// spawn starts the server for spec's model in dir; the channel gets its
-// first event (or closes when stdout ends without one).
+// spawn starts the server for spec's model in dir, verifying the
+// speculative draft in draft ("" none); the channel gets its first event
+// (or closes when stdout ends without one).
 // cacheLimit: pass spec's --cache-limit-mb (the binary knows it).
-func spawn(cfg Config, spec Spec, dir string, cacheLimit bool) (*process, <-chan readyEvent, error) {
+func spawn(cfg Config, spec Spec, dir, draft string, cacheLimit bool) (*process, <-chan readyEvent, error) {
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 		return nil, nil, fmt.Errorf("no model directory %s", dir)
 	}
 	args := []string{"--supervised", "--host", "127.0.0.1", "--port", "0",
 		"--model-directory", dir, "--startup-timeout-s", ftoa(cfg.StartTimeout.Seconds())}
-	cmd := exec.Command(cfg.Binary, append(args, spec.launchArgs(cacheLimit)...)...)
+	bin := cfg.Binary
+	if spec.Binary != "" {
+		// A runtime without Silero's copy (built before it, or sglang's
+		// own build) runs it on qwen3_asr_server; the other kinds need
+		// their own server.
+		switch b := filepath.Join(filepath.Dir(cfg.Binary), spec.Binary); {
+		case exists(b):
+			bin = b
+		case !servedByQwen(spec.Kind):
+			return nil, nil, fmt.Errorf("the speech runtime has no %s (it was built without this model's server)", spec.Binary)
+		}
+	}
+	args = append(args, spec.launchArgs(cacheLimit)...)
+	if draft != "" {
+		args = append(args, "--draft-model-path", draft)
+	}
+	cmd := exec.Command(bin, args...)
 	cmd.Env = append(serverEnv(os.Environ()), cfg.Env...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -253,4 +271,10 @@ func (t *tail) String() string {
 		return "(no output)"
 	}
 	return strings.Join(t.lines, " | ")
+}
+
+// exists reports whether path is a file that can be found.
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }

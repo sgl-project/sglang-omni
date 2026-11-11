@@ -29,9 +29,13 @@ func newSoundsRig(t *testing.T) *soundsRig {
 		r.plays = append(r.plays, s.Name)
 		return func() { r.plays = append(r.plays, "-"+s.Name) }
 	}
-	tt.SetSize(windowWidth, 1400) // the whole section, without scrolling
+	tt.SetSize(windowWidth, 1400)
 	a.navigate("/settings/audio")
 	frames(tt)
+	if title, ok := tt.Find("Sounds"); ok { // the section at the top of the dialog (600 high), all of it in view
+		tt.Scroll(windowWidth/2, 700, 0, title.Y-450)
+		frames(tt)
+	}
 	return r
 }
 
@@ -41,189 +45,122 @@ func (r *soundsRig) takePlays() []string {
 	return p
 }
 
-// center is the middle of the text s on screen.
-func (r *soundsRig) center(t *testing.T, s string) (float32, float32) {
-	t.Helper()
-	rc, ok := r.tt.Find(s)
-	if !ok {
-		t.Fatalf("no %q on screen: %q", s, firstTexts(r.tt))
-	}
-	return rc.X + rc.W/2, rc.Y + rc.H/2
-}
-
-// TestSoundsRow: while Play sounds is on, a line for each cue shows its
-// sound (the family's Tally and Wrap by default) and Try; off, they go.
-func TestSoundsRow(t *testing.T) {
+// TestSoundSource: Sound offers Built-in, macOS and None. Built-in lists
+// the pairs this build has, Soft (Pebble → Nib) chosen by default; macOS
+// has a line per cue with its sound and Try, Pop and Tink until the user
+// picks; None turns the sounds off and hides the rest; Built-in again gives
+// the default pair back.
+func TestSoundSource(t *testing.T) {
 	r := newSoundsRig(t)
-	for _, s := range []string{"When recording starts", "When recording stops", "Tally", "Wrap", "Try the start sound", "Try the stop sound"} {
+	for _, s := range []string{"Sound", "Built-in", "macOS", "None", "Soft", "Pebble → Nib", "Beep", "Tally → Wrap", "Volume"} {
 		if !has(r.tt, s) {
 			t.Fatalf("no %q: %q", s, firstTexts(r.tt))
 		}
 	}
-	// The switch is above Try (the title's text, first, has its name).
-	try, _ := r.tt.Find("Try the start sound")
-	_, y := r.center(t, "Play sounds")
-	sw := try.X + try.W/2 - 4
-	r.tt.ClickAt(sw, y)
-	frames(r.tt)
-	if r.prefs.Audio.Sounds || has(r.tt, "When recording starts") || has(r.tt, "Try the start sound") {
-		rc, _ := r.tt.Find("Play sounds")
-		t.Fatalf("the cues show while the sounds are off: on %v, title at %+v", r.prefs.Audio.Sounds, rc)
+	if has(r.tt, "Switch") || has(r.tt, "Try the start sound") {
+		t.Errorf("a pair this build lacks, or Try: %q", firstTexts(r.tt))
 	}
-	r.tt.ClickAt(sw, y)
-	frames(r.tt)
-	if !r.prefs.Audio.Sounds || !has(r.tt, "Tally") {
-		t.Fatal("the cues did not come back")
+	click(t, r.tt, "macOS")
+	if s := r.settings.Get().Audio; !s.Sounds || s.StartSound != "system:Pop" || s.StopSound != "system:Tink" {
+		t.Fatalf("macOS: %+v", s)
 	}
-	if p := r.takePlays(); len(p) != 0 {
-		t.Errorf("the switch played %q", p)
+	for _, s := range []string{"When recording starts", "When recording stops", "Pop", "Tink", "Try the start sound"} {
+		if !has(r.tt, s) {
+			t.Errorf("macOS: no %q", s)
+		}
+	}
+	if p := r.takePlays(); !slices.Equal(p, []string{"Pop"}) {
+		t.Errorf("macOS played %q", p)
+	}
+	click(t, r.tt, "None")
+	if r.settings.Get().Audio.Sounds || has(r.tt, "When recording starts") || has(r.tt, "Volume") {
+		t.Fatalf("None: %+v %q", r.settings.Get().Audio, firstTexts(r.tt))
+	}
+	click(t, r.tt, "Built-in")
+	if s := r.settings.Get().Audio; !s.Sounds || s.StartSound != "" || s.StopSound != "" || !has(r.tt, "Pebble → Nib") {
+		t.Errorf("Built-in again: %+v", s)
 	}
 }
 
-// TestSoundsChoose: the picker's panel shows the suggested sounds (None
-// first) on one line each, with their type; its type menu has All,
-// Suggested, every group and macOS's sounds; choosing one keeps it and
-// plays it at once, ▶ plays one without choosing it, Try plays the choice.
-func TestSoundsChoose(t *testing.T) {
+// TestSoundPairs: a click on a pair keeps its two sounds and plays them one
+// after the other; ▶ plays a pair without choosing it and stops it while it
+// plays; a choice that is no pair shows first, as Your choice.
+func TestSoundPairs(t *testing.T) {
 	r := newSoundsRig(t)
-	click(t, r.tt, "Start sound")
-	for _, s := range []string{"Search sounds", "Type", "Suggested", "Volume", "None", "Tally", "Pebble", "Media", "Tap"} {
-		if !has(r.tt, s) {
-			t.Errorf("the panel has no %q", s)
-		}
+	click(t, r.tt, "Beep")
+	if s := r.settings.Get().Audio; s.StartSound != "tally" || s.StopSound != "wrap" {
+		t.Fatalf("Beep: %+v", s)
 	}
-	for _, s := range []string{"0.3 s", "0.2 s", "All"} { // no durations, tags or chips
-		if has(r.tt, s) {
-			t.Errorf("the panel shows %q", s)
-		}
-	}
-	click(t, r.tt, "Type")
-	if got := r.tt.Menu(); !slices.Equal(got, []string{"All", "Suggested", "-", "Tap", "Media", "Notify", "-", "macOS"}) {
-		t.Errorf("type menu %q", got)
-	}
-	r.tt.CloseMenu()
-	if has(r.tt, "Chime") {
-		t.Error("Chime is suggested for the start of a recording")
-	}
-	click(t, r.tt, "Pebble")
-	if got := r.settings.Get().Audio.StartSound; got != "pebble" {
-		t.Fatalf("start %q", got)
-	}
-	click(t, r.tt, "Play Tally")
-	if got := r.settings.Get().Audio.StartSound; got != "pebble" {
-		t.Fatalf("▶ chose %q", got)
-	}
-	if p := r.takePlays(); !slices.Equal(p, []string{"pebble", "-pebble", "tally"}) {
+	if p := r.takePlays(); !slices.Equal(p, []string{"tally"}) {
 		t.Fatalf("plays %q", p)
 	}
-	// A group, then a system sound found by searching.
-	chooseIn(t, r.tt, "Type", "Notify")
-	if !has(r.tt, "Chime") || has(r.tt, "Play Pebble") {
-		tx := r.tt.Texts()
-		t.Errorf("Notify: %q", tx[max(0, len(tx)-40):])
+	r.ft.advance(350*time.Millisecond + pairGap) // Tally's audible part, then the gap
+	if p := r.takePlays(); !slices.Equal(p, []string{"-tally", "wrap"}) {
+		t.Fatalf("then %q", p)
 	}
-	chooseIn(t, r.tt, "Type", "macOS")
-	click(t, r.tt, "Search sounds")
-	r.tt.Type("sub")
+	click(t, r.tt, "Play Soft")
+	if s := r.settings.Get().Audio; s.StartSound != "tally" {
+		t.Fatalf("▶ chose %q", s.StartSound)
+	}
+	if ch, left := r.previewPlaying(); ch != "pebble" || left <= 0 || !has(r.tt, "Stop Soft") {
+		t.Fatalf("playing %q %v", ch, left)
+	}
+	click(t, r.tt, "Stop Soft")
+	if ch, _ := r.previewPlaying(); ch != "" || !has(r.tt, "Play Soft") {
+		t.Errorf("stopped %q", ch)
+	}
+	r.chooseSounds("chime", "tink")
 	frames(r.tt)
-	if has(r.tt, "Basso") {
-		t.Error("the search kept Basso")
-	}
-	click(t, r.tt, "Submarine")
-	if got := r.settings.Get().Audio.StartSound; got != "system:Submarine" {
-		t.Fatalf("system %q", got)
-	}
-	r.tt.Key(0, ui.KeyEscape)
-	frames(r.tt)
-	r.takePlays()
-	// None: the start cue is silent; the stop cue is still Wrap.
-	r.chooseSound(recordStartEvent, sounds.None)
-	frames(r.tt)
-	if r.cueTarget(startCue).Kind != sounds.KindNone || r.cueTarget(stopCue).Name != "wrap" {
-		t.Fatalf("none: %+v %+v", r.cueTarget(startCue), r.cueTarget(stopCue))
-	}
-	click(t, r.tt, "Try the stop sound")
-	if p := r.takePlays(); !slices.Equal(p, []string{"-Submarine", "wrap"}) { // the last preview stops
-		t.Fatalf("Try: %q", p)
-	}
-	// Back to the default: nothing stored.
-	r.chooseSound(recordStartEvent, "tally")
-	if s := r.settings.Get().Audio; s.StartSound != "" || s.StopSound != "" {
-		t.Errorf("defaults stored: %+v", s)
+	if !has(r.tt, "Your choice") || !has(r.tt, "Chime → Tink") {
+		t.Errorf("no Your choice: %q", firstTexts(r.tt))
 	}
 }
 
-// TestSoundsVolume: the panel's volume button lists the steps, loudest
-// first (the current one checked: the nearest to a volume set before);
-// choosing one sets the cues' volume, Mute silences them.
+// TestSoundsVolume: Volume offers the steps, the one nearest to a volume
+// set before shown; choosing one sets the cues' volume.
 func TestSoundsVolume(t *testing.T) {
 	r := newSoundsRig(t)
 	r.updateSettings(func(s *settings.Settings) { s.Audio.SoundVolume = 40 })
 	if v := r.cueTarget(startCue).Volume; v != 0.4 {
 		t.Fatalf("volume %v", v)
 	}
-	click(t, r.tt, "Stop sound")
-	click(t, r.tt, "Volume")
-	if got := r.tt.Menu(); !slices.Equal(got, []string{"100%", "75%", "50%", "25%", "Mute"}) {
-		t.Errorf("volume menu %q", got)
-	}
-	if err := r.tt.ChooseMenuItem("25%"); err != nil {
+	if err := r.tt.ClickControl("Volume"); err != nil { // the select, not the row's name
 		t.Fatal(err)
 	}
 	frames(r.tt)
+	for _, s := range []string{"100%", "75%", "50%", "25%"} {
+		if !has(r.tt, s) {
+			t.Errorf("no %q in the volumes: %q", s, firstTexts(r.tt))
+		}
+	}
+	click(t, r.tt, "25%")
 	if v := r.cueTarget(startCue).Volume; v != 0.25 {
 		t.Errorf("25%%: %v", v)
 	}
-	chooseIn(t, r.tt, "Volume", "Mute")
-	if a := r.settings.Get().Audio; a.SoundVolume != -1 || a.SoundVolumeOrDefault() != 0 || r.cueTarget(startCue).Volume != 0 {
-		t.Errorf("mute: %+v", a)
+	// Muted before (the picker of 10-20 had Mute): None, and Built-in unmutes.
+	r.updateSettings(func(s *settings.Settings) { s.Audio.SetSoundVolume(0) })
+	if r.soundSource() != soundNone {
+		t.Fatalf("muted: %v", r.soundSource())
 	}
-	if !has(r.tt, "Search sounds") {
-		t.Error("the menus closed the panel")
+	r.setSoundSource(soundBuiltIn)
+	if v := r.settings.Get().Audio.SoundVolumeOrDefault(); v != settings.DefaultSoundVolume {
+		t.Errorf("unmuted to %d", v)
 	}
-}
-
-// TestSoundsPlaying: ▶ is in the accent while its sound plays, and a click
-// on it then stops it.
-func TestSoundsPlaying(t *testing.T) {
-	r := newSoundsRig(t)
-	click(t, r.tt, "Start sound")
-	click(t, r.tt, "Play Pebble")
-	if ch, left := r.previewPlaying(); ch != "pebble" || left <= 0 || !has(r.tt, "Stop Pebble") {
-		t.Fatalf("playing %q %v", ch, left)
-	}
-	click(t, r.tt, "Stop Pebble")
-	if ch, _ := r.previewPlaying(); ch != "" || !has(r.tt, "Play Pebble") {
-		t.Errorf("stopped %q", ch)
-	}
-	if p := r.takePlays(); !slices.Equal(p, []string{"pebble", "-pebble"}) {
-		t.Errorf("plays %q", p)
-	}
-}
-
-// chooseIn opens the menu of the button labelled button and chooses item.
-func chooseIn(t *testing.T, tt *ui.Tester, button, item string) {
-	t.Helper()
-	click(t, tt, button)
-	if err := tt.ChooseMenuItem(item); err != nil {
-		t.Fatalf("%s → %s: %v (menu %q)", button, item, err, tt.Menu())
-	}
-	frames(tt)
 }
 
 // TestSoundsTryAccent: Try shows the accent while the sound is heard (at
 // least previewMin), and a second Try keeps it on until its own end.
 func TestSoundsTryAccent(t *testing.T) {
 	r := newSoundsRig(t)
-	click(t, r.tt, "Try the start sound")
-	if r.sounds.previewing != recordStartEvent.ID || !slices.Equal(r.takePlays(), []string{"tally"}) {
-		t.Fatal("Try did not play Tally")
+	r.trySound(startCue)
+	if r.sounds.previewing != recordStartEvent.ID || !slices.Equal(r.takePlays(), []string{"pebble"}) {
+		t.Fatal("Try did not play Pebble")
 	}
 	r.ft.advance(previewMin - 1)
 	if r.sounds.previewing == "" {
 		t.Fatal("the accent went before previewMin")
 	}
-	click(t, r.tt, "Try the start sound")
+	r.trySound(startCue)
 	r.ft.advance(1)
 	if r.sounds.previewing == "" {
 		t.Fatal("the first preview's timer ended the second's accent")
@@ -235,7 +172,7 @@ func TestSoundsTryAccent(t *testing.T) {
 	}
 	// A long sound keeps it longer: Chime's 1.44 s and the margin.
 	r.chooseSound(recordStartEvent, "chime")
-	click(t, r.tt, "Try the start sound")
+	r.trySound(startCue)
 	r.ft.advance(previewMin)
 	if r.sounds.previewing == "" {
 		t.Fatal("Chime's accent ended at previewMin")
@@ -243,6 +180,13 @@ func TestSoundsTryAccent(t *testing.T) {
 	r.ft.advance(1440*time.Millisecond + cueMargin - previewMin)
 	if r.sounds.previewing != "" {
 		t.Fatal("Chime's accent stayed")
+	}
+	// macOS's Try buttons play the cue's sound.
+	click(t, r.tt, "macOS")
+	r.takePlays()
+	click(t, r.tt, "Try the stop sound")
+	if p := r.takePlays(); !slices.Equal(p, []string{"-Pop", "Tink"}) {
+		t.Errorf("Try: %q", p)
 	}
 }
 
@@ -282,7 +226,7 @@ func TestSoundsWhileRecording(t *testing.T) {
 		t.Fatalf("muted %v, state %s, muting %q, plays %q", r.muted(), r.sess.State, r.muting, plays)
 	}
 	r.feed("s1", session.Recognizing)
-	if got := r.takeCues(); !slices.Equal(got, []string{"tally:audible", "wrap:audible"}) {
+	if got := r.takeCues(); !slices.Equal(got, []string{"pebble:audible", "nib:audible"}) {
 		t.Fatalf("cues %v", got)
 	}
 }

@@ -14,6 +14,9 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
@@ -90,11 +93,34 @@ func snapshotsMain(t *testing.T, out string) {
 			}
 			save("page-" + name)
 		}
+		// The Language models page's foot, with the way to the prompt debug
+		// page, and that page (llm_debug.go).
+		a.navigate("/language-models")
+		scrollToText(tt, i18n.T("Try prompts on a model…"))
+		save("page-language-models-debug")
+		a.navigate(llmDebugPath)
+		save("page-llm-debug")
+		// Set up: the prompt, long as the saved ones are, the page around it.
+		oldLLM := a.prefs.Providers.LLM
+		a.updateSettings(func(s *settings.Settings) {
+			s.Providers.LLM = []settings.Provider{{ID: llm.Custom, Endpoint: "http://127.0.0.1:1/v1", Model: "mock-model"}}
+		})
+		acct := providers.Account(local.LLM, llm.Custom)
+		if a.keyMasks == nil {
+			a.keyMasks = map[string]string{}
+		}
+		a.keyMasks[acct] = "sk-…123"
+		frames(tt)
+		save("page-llm-debug-ready")
+		delete(a.keyMasks, acct)
+		a.updateSettings(func(s *settings.Settings) { s.Providers.LLM = oldLLM })
 		snapshotHistoryDetail(a, save)   // history_page_test.go
 		historySettingsShots(a, save)    // history_settings_test.go
+		historyAccessShots(a, tt, save)  // history_access_test.go
 		transcribeShots(a, tt, save)     // the Try area's states (feature_page_test.go)
 		appEnhanceShots(a, fs, tt, save) // appenhance_page_test.go
 		dictShots(t, a, save)            // dictionary_page_test.go
+		speechShots(a, tt, save)         // remote_speech_e2e_test.go
 		// The settings dialog, section by section.
 		a.updateSettings(func(s *settings.Settings) {
 			s.General.OtherLanguages = []string{"zh", "en", "ja"} // the main language's is not shown
@@ -125,13 +151,12 @@ func snapshotsMain(t *testing.T, out string) {
 				save("settings-about-beta-off")
 				a.prefs.Updates.Beta = nil
 				a.version = ver
-				// The self-check: both runtimes in the app, no model yet
+				// The self-check: the speech runtime in the app, no model yet
 				// (settings_about_models.go).
-				oldOmni, oldLLM := omniLocate, llmLocate
+				oldOmni := omniLocate
 				omniLocate = func() (string, error) { return "VoxtNew.app/Contents/Resources/omni/bin/qwen3_asr_server", nil }
-				llmLocate = func() string { return "VoxtNew.app/Contents/Resources/llm/voxtnew-llm" }
 				a.runSelfCheck()
-				omniLocate, llmLocate = oldOmni, oldLLM
+				omniLocate = oldOmni
 				scrollToText(tt, i18n.T("Self-check"))
 				save("settings-about-check")
 				a.checks = nil
@@ -139,11 +164,9 @@ func snapshotsMain(t *testing.T, out string) {
 			if s.id == "audio" { // the sounds and the output's mute, under the fold
 				scrollToText(tt, i18n.T("Mute system audio while recording"))
 				save("settings-audio-sounds")
-				tt.Click(i18n.T("Start sound")) // the sound picker's panel (settings_soundpicker.go)
+				tt.Click(i18n.T("macOS")) // the macOS sounds' lines (settings_soundchoice.go)
 				frames(tt)
-				save("settings-audio-sounds-menu")
-				tt.Key(0, ui.KeyEscape)
-				frames(tt)
+				save("settings-audio-sounds-macos")
 			}
 			if s.id == "overlay" { // its preview, under the controls
 				w, h := snapshotSize()

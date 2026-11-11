@@ -210,6 +210,36 @@ func (rt *engine) reveal(id uint64) {
 	rt.requestFrame()
 }
 
+// revealPart is the box x, y, w, h within element id's box to scroll into
+// view.
+type revealPart struct {
+	id         uint64
+	x, y, w, h float32
+}
+
+// revealPart scrolls the box x, y, w, h within element id's box into view
+// once this frame is laid out.
+func (rt *engine) revealPart(id uint64, x, y, w, h float32) {
+	rt.revealParts = append(rt.revealParts, revealPart{id, x, y, w, h})
+}
+
+// revealPartsIn scrolls the parts of root's elements into view, in that
+// order.
+func revealPartsIn(root *node, parts []revealPart) {
+	var walk func(e *node)
+	walk = func(e *node) {
+		for _, p := range parts {
+			if p.id == e.id {
+				revealIn(e, e.x+p.x, e.y+p.y, p.w, p.h)
+			}
+		}
+		for ch := e.first; ch != nil; ch = ch.next {
+			walk(ch)
+		}
+	}
+	walk(root)
+}
+
 // revealAll scrolls the elements of root with the given ids into view, in
 // that order.
 func revealAll(root *node, ids []uint64) {
@@ -238,7 +268,13 @@ func reveal(e *node) {
 	for e.isInline() {
 		e = e.parent
 	}
-	x, y, w, h := e.x, e.y, e.w, e.h
+	revealIn(e, e.x, e.y, e.w, e.h)
+}
+
+// revealIn scrolls the containers around e, innermost first, as little as
+// shows the box x, y, w, h, given relative to e's parent as e's own box is:
+// e's box, or a part of it.
+func revealIn(e *node, x, y, w, h float32) {
 	frame := e.c.rt.frame
 	for ch, p := e, e.parent; p != nil; ch, p = p, p.parent {
 		if p.scrolls() && ch.flags&flagAbsolute == 0 {

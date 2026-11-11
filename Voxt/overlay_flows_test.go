@@ -195,6 +195,9 @@ func overlayFlows() []ovFlowCase {
 		{"rewrite-selection", func(t *testing.T) *ovFlow {
 			return two(t, helpertest.Opt("selection", "release thursday onboarding first")+",", "rewrite", "make it a full sentence", draft(long, 150*time.Millisecond), nil)
 		}},
+		{"rewrite-no-card", func(t *testing.T) *ovFlow {
+			return two(t, helpertest.Opt("selection", "release thursday onboarding first")+",", "rewrite", "make it a full sentence", draft(long, 150*time.Millisecond), rewriteNoCard)
+		}},
 		{"follow-up", func(t *testing.T) *ovFlow {
 			chat := &fakeChat{texts: []string{`{"title":"Release","content":"` + long + `"}`, "Thursday: onboarding, history, then the card."}, delay: 150 * time.Millisecond}
 			s, keys, tr := fileSetup(t, "write that the release moves to thursday", chat)
@@ -218,8 +221,14 @@ func overlayFlows() []ovFlowCase {
 	}
 }
 
-// flowSettings: the pictures in Chinese.
+// rewriteNoCard turns Rewrite's answer card switch off (on by default):
+// its answer goes in at once.
+func rewriteNoCard(st *settings.Settings) { st.Features.Rewrite.ShowCard = false }
+
+// flowSettings: the one-line pill (its rules are what TestOverlayFlows
+// checks; Lines, the default, is TestLiveLines'), the pictures in Chinese.
 func flowSettings(st *settings.Settings) {
+	st.Overlay.LiveLines = false
 	if os.Getenv("VOXTNEW_FLOW_SHOTS") != "" {
 		st.General.Language = "zh-Hans"
 	}
@@ -241,6 +250,7 @@ func TestOverlayFlows(t *testing.T) {
 		"translate-selection-readonly": "working answer",
 		"rewrite":                      "recording working answer",
 		"rewrite-selection":            "recording working answer",
+		"rewrite-no-card":              "recording working",
 		"follow-up":                    "answer",
 	}
 	for _, fl := range overlayFlows() {
@@ -267,18 +277,22 @@ func TestOverlayFlows(t *testing.T) {
 					if s.w != layout.AnswerW {
 						t.Errorf("step %v: the card is %d wide, not %d", s, s.w, layout.AnswerW)
 					}
-					if fl.name != "follow-up" && s.state.Live() {
+					// Rewrite's answer writes into the card (#3644); every
+					// other result comes in the card when it is done.
+					writing := strings.HasPrefix(fl.name, "rewrite") && s.state == session.Composing
+					if fl.name != "follow-up" && s.state.Live() && !writing {
 						t.Errorf("step %v: a card before the result", s)
 					}
 				case ovRecording, ovWorking:
 					if card {
 						t.Errorf("step %v: back to the pill after the card", s)
 					}
+					mini := layout.PillW
 					switch {
-					case s.text == "" && (s.w != layout.PillW || s.h != layout.PillH):
-						t.Errorf("step %v: the mini pill is %d×%d", s, s.w, s.h)
-					case s.text != "" && (s.h != layout.LiveH || s.w < layout.PillW || s.w > layout.LiveMaxW):
-						t.Errorf("step %v: the line of text is %d×%d (the pill's rule: %d to %d wide, %d high)", s, s.w, s.h, layout.PillW, layout.LiveMaxW, layout.LiveH)
+					case s.text == "" && (s.w < mini || s.h != layout.PillH):
+						t.Errorf("step %v: the mini pill is %d×%d, want at least %d×%d", s, s.w, s.h, mini, layout.PillH)
+					case s.text != "" && (s.h != layout.LiveH || s.w < mini || s.w > layout.LiveMaxW):
+						t.Errorf("step %v: the line of text is %d×%d (the pill's rule: %d to %d wide, %d high)", s, s.w, s.h, mini, layout.LiveMaxW, layout.LiveH)
 					}
 				}
 			}

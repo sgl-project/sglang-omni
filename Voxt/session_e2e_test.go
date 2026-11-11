@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
@@ -167,6 +168,7 @@ func fileSetup(t *testing.T, asrText string, chat *fakeChat) (func(*settings.Set
 
 // TestSessionEndToEnd: fn, speak, fn: the cleaned-up text is pasted into
 // the app that was in front, kept in the history, and ⌃⌘V pastes it again.
+// The clean-up asks with no temperature: the service's default.
 func TestSessionEndToEnd(t *testing.T) {
 	chat := &fakeChat{text: "Hello, VoxtNew."}
 	set, keys, tr := fileSetup(t, "hello aura link", chat)
@@ -221,7 +223,7 @@ func TestSessionEndToEnd(t *testing.T) {
 	sys, _ := msgs[0].(map[string]any)["content"].(string)
 	user, _ := msgs[len(msgs)-1].(map[string]any)["content"].(string) // after the clean-up's example turn
 	if len(msgs) != 4 || !strings.Contains(sys, "Keep it short.") || strings.Contains(sys, "hello aura link") || user != "<input>\nhello aura link\n</input>" ||
-		reqs[0]["temperature"] != 0.1 {
+		reqs[0]["temperature"] != nil {
 		t.Errorf("chat %v", reqs[0])
 	}
 }
@@ -316,7 +318,7 @@ func TestSessionEscapeAndFailures(t *testing.T) {
 		if p := a.pasted(); len(p) != 1 || p[0].Text != "hello there" {
 			t.Errorf("pasted %+v", p)
 		}
-		if a.notice == nil || !a.notice.warn || a.ov.mode != ovNotice || a.notice.text != "Inserted as recognised: the language model failed." {
+		if a.notice == nil || !a.notice.warn || a.ov.mode != ovNotice || a.notice.text != "The language model failed, so the recognised text was inserted." {
 			t.Errorf("notice %+v, overlay %s", a.notice, a.ov.mode)
 		}
 		if es := a.history(); len(es) != 1 || es[0].Error == "" || es[0].Status != store.StatusDone {
@@ -377,4 +379,97 @@ func chatMessages(req map[string]any) [][2]string {
 		out = append(out, [2]string{role, content})
 	}
 	return out
+}
+
+// TestSessionSystemDictation: with no speech model downloaded, Transcribe
+// hears through System dictation (the helper's speech.*) in the user's
+// main language: its partial shows while recording and its text is
+// pasted. A main language macOS has no on-device model for fails the
+// session with words that say so.
+func TestSessionSystemDictation(t *testing.T) {
+	keys := func(t *testing.T) string {
+		return script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(600, "transcribe/0", proto.PhaseTrigger))
+	}
+	t.Run("heard", func(t *testing.T) {
+		a := newSessionApp(t, helpertest.Opt("speech", "你好 Voxt")+","+keys(t), func(s *settings.Settings) {
+			s.Features.Transcribe.Enhance = false
+			s.General.MainLanguage = "zh"
+		}, nil)
+		partial := false
+		a.pump("the end", func() bool {
+			partial = partial || a.sess.State == session.Recording && a.sess.Partial != ""
+			return a.sess.State.Ended()
+		})
+		if end := a.sess; end.State != session.Done || end.Result != "你好 Voxt" || !end.Inserted || !partial {
+			t.Fatalf("end %+v, a partial while recording: %v", end, partial)
+		}
+		if es := a.history(); len(es) != 1 || es[0].ASRProvider != dictation.ModelID {
+			t.Errorf("history %+v", es)
+		}
+	})
+	t.Run("no on-device model", func(t *testing.T) {
+		a := newSessionApp(t, "speech,"+keys(t), func(s *settings.Settings) { s.General.MainLanguage = "fr" }, nil)
+		a.pump("the end", func() bool { return a.sess.State.Ended() })
+		if a.sess.State != session.Failed || a.notice == nil || !strings.Contains(a.notice.text, "cannot recognise your main language") {
+			t.Fatalf("end %+v, notice %+v", a.sess, a.notice)
+		}
+	})
+}
+
+// TestSessionStopHotkeyKeepsStartMode: starting with one feature's shortcut
+// and stopping with another's runs the first feature only.
+func TestSessionStopHotkeyKeepsStartMode(t *testing.T) {
+	chat := &fakeChat{text: "早上好，团队。"}
+	set, keys, _ := fileSetup(t, "hello aura link", chat)
+	ev := script(t,
+		hotkeyLine(0, "translate/0", proto.PhaseTrigger),
+		hotkeyLine(400, "transcribe/0", proto.PhaseTrigger),
+	)
+	a := newSessionApp(t, ev, func(s *settings.Settings) {
+		set(s)
+		s.Features.Translate.Target = "zh-Hans"
+	}, keys)
+	var kind store.Kind
+	a.pump("the end", func() bool {
+		if a.sess.State.Live() {
+			kind = a.sess.Kind
+		}
+		return a.sess.State.Ended()
+	})
+	if kind != store.KindTranslate {
+		t.Fatalf("recording kind %q", kind)
+	}
+	end := a.sess
+	if end.Kind != store.KindTranslate || end.State != session.Done || end.Result != "早上好，团队。" {
+		t.Fatalf("end %+v", end)
+	}
+	if es := a.history(); len(es) != 1 || es[0].Kind != store.KindTranslate {
+		t.Errorf("history %+v", es)
+	}
+}
+
+// TestSessionInputSwitches: the chosen microphone goes away after three
+// frames; the next one in Settings → Audio's list records on, the pill
+// names it for a moment, and the recognition hears both.
+func TestSessionInputSwitches(t *testing.T) {
+	set, keys, tr := fileSetup(t, "hello aura link", &fakeChat{text: "Hello."})
+	ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(900, "transcribe/0", proto.PhaseTrigger))
+	a := newSessionApp(t, ev, func(s *settings.Settings) {
+		set(s)
+		s.Audio.Devices = []string{"lost", "AirPodsPro:input"}
+	}, keys)
+	a.pump("the switch", func() bool { return a.sess.Switched == 1 })
+	if s := a.sess; s.Device != "AirPods Pro" || s.State != session.Recording {
+		t.Fatalf("after the switch %+v", s)
+	}
+	if text, _ := pillLine(a.pillSession()); text != "Switched the microphone to AirPods Pro. Recording continues." {
+		t.Errorf("the pill says %q", text)
+	}
+	a.pump("the end", func() bool { return a.sess.State.Ended() })
+	if end := a.sess; end.State != session.Done || end.Switched != 1 {
+		t.Fatalf("end %+v", end)
+	}
+	if calls, size := tr.uploads(); calls != 1 || size < 6*3200 { // more than the lost input's three 100 ms frames
+		t.Errorf("uploads %d, %d bytes", calls, size)
+	}
 }
