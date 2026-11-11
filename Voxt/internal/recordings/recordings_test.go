@@ -124,7 +124,7 @@ func TestMove(t *testing.T) {
 
 // TestMoveBackKeepsFallbackRecordings: a recording kept in the default
 // folder while the chosen one was on a disconnected drive survives
-// "Use the default" after the drive is back. Moving back used to take
+// "Use default" after the drive is back. Moving back used to take
 // that file, already in its destination, for an original and delete
 // its only copy, and still report success.
 func TestMoveBackKeepsFallbackRecordings(t *testing.T) {

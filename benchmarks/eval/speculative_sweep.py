@@ -13,7 +13,7 @@ Usage:
 
     CUDA_VISIBLE_DEVICES=0 python -m benchmarks.eval.speculative_sweep \\
         --draft-config examples/configs/qwen3_asr_1_7b_dflash.yaml \\
-        --workload seedtts-en \\
+        --workload seedtts-en-unique-clips \\
         --output-dir results/sweep/qwen3_asr_seedtts_en
 """
 

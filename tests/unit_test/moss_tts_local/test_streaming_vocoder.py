@@ -1275,6 +1275,42 @@ def test_non_streaming_path_with_and_without_live_session(monkeypatch) -> None:
     )
 
 
+@pytest.mark.parametrize("is_last_chunk_queued", [False, True])
+def test_non_streaming_decode_yields_to_a_due_stream(
+    monkeypatch: pytest.MonkeyPatch, is_last_chunk_queued: bool
+) -> None:
+    """Queued non-streaming requests kept the vocoder from every stream step, so streams under mixed load got no audio until that traffic stopped."""
+    processor = FakeProcessor()
+    scheduler = make_scheduler(
+        monkeypatch, processor, stream_chunk_frames=10, initial_chunk_frames=5
+    )
+    rows = make_rows(5, seed=70)
+    metadata = make_metadata()
+    for index, row in enumerate(rows[:4]):
+        scheduler.handle_stream_chunk("req", stream_item(row, metadata, index))
+    last_chunk = stream_item(rows[4], metadata, 4)
+    if is_last_chunk_queued:
+        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", last_chunk))
+    else:
+        scheduler.handle_stream_chunk("req", last_chunk)
+
+    scheduler.handle_new_request_batch(
+        [
+            IncomingMessage(
+                "whole", "new_request", offline_payload(make_rows(4, seed=71), "whole")
+            )
+        ]
+    )
+
+    messages = []
+    while not scheduler.outbox.empty():
+        messages.append(scheduler.outbox.get_nowait())
+    assert [(m.request_id, m.type) for m in messages] == [
+        ("whole", "result"),
+        ("req", "stream"),
+    ]
+
+
 def test_offline_batch_uses_batched_path_with_live_session(monkeypatch) -> None:
     del monkeypatch
     processor = FakeProcessor()

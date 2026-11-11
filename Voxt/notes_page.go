@@ -78,37 +78,39 @@ func (a *app) notesPage(c *ui.Context) {
 	if !n.read && !n.loading {
 		a.loadNotes()
 	}
-	pageHeader(c, i18n.T("Notes"), func() {
+	widePageHeader(c, i18n.T("Notes"), func() {
 		if len(n.list) > 0 {
 			caption(c, i18n.N(len(n.list), "%d note", "%d notes", len(n.list))).SingleLine()
 		}
 	})
-	ui.Column(c).Padding(px(t, sp1), px(t, sp6), px(t, sp2)).Gap(px(t, sp2)).Shrink(0).Children(func() {
-		a.noteKeysRow(c)
-		if n.err != "" {
-			notice(c, "notes-err", noticeError, i18n.T("Could not read the notes."), n.err, func() {
-				if ghostButton(c.Key("notes-retry"), i18n.T("Try again")).Clicked() {
-					a.loadNotes()
-				}
-			}, nil)
-		}
-	})
-	list := n.list
-	ui.Column(c).Grow(1).MinHeight(0).Children(func() {
-		switch {
-		case !n.read:
-		case len(list) == 0:
-			hint := i18n.T("Choose a shortcut above, then press it in any app and speak. What you say is saved here instead of typed.")
-			if k := a.prefs.Features.Note.Keys; k != "" && len(uitext.HotkeyProblems(a.prefs.Features, hotkey.Note)[0]) == 0 {
-				hint = i18n.T("Press %s in any app, speak, and press it again. What you say is saved here instead of typed.", uitext.HotkeyText(k))
+	pageBody(c).Children(func() {
+		ui.Column(c).Padding(px(t, sp1), px(t, sp6), px(t, sp2)).Gap(px(t, sp2)).Shrink(0).Children(func() {
+			a.noteKeysRow(c)
+			if n.err != "" {
+				notice(c, "notes-err", noticeError, i18n.T("Could not read the notes."), n.err, func() {
+					if ghostButton(c.Key("notes-retry"), i18n.T("Try again")).Clicked() {
+						a.loadNotes()
+					}
+				}, nil)
 			}
-			emptyState(c, notesIcon, i18n.T("No notes yet"), hint, nil)
-		default:
-			ui.List(c.Key("notes-list"), &n.listUI, len(list)).Grow(1).MinHeight(0).Gap(px(t, 2)).Padding(0, 0, px(t, sp4)).
-				ItemKey(func(i int) any { return list[i].ID }).Rows(func(r ui.ListRow) {
-				a.noteRow(c, list[r.Index])
-			})
-		}
+		})
+		list := n.list
+		ui.Column(c).Grow(1).MinHeight(0).Children(func() {
+			switch {
+			case !n.read:
+			case len(list) == 0:
+				hint := i18n.T("Choose a shortcut above, then press it in any app and speak. What you say is saved here instead of typed.")
+				if k := a.prefs.Features.Note.Keys; k != "" && len(uitext.HotkeyProblems(a.prefs.Features, hotkey.Note)[0]) == 0 {
+					hint = i18n.T("Press %s in any app, speak, and press it again. What you say is saved here instead of typed.", uitext.HotkeyText(k))
+				}
+				emptyState(c, notesIcon, i18n.T("No notes yet"), hint, nil)
+			default:
+				ui.List(c.Key("notes-list"), &n.listUI, len(list)).Grow(1).MinHeight(0).Gap(px(t, 2)).Padding(0, 0, px(t, sp4)).
+					ItemKey(func(i int) any { return list[i].ID }).Rows(func(r ui.ListRow) {
+					a.noteRow(c, list[r.Index])
+				})
+			}
+		})
 	})
 }
 
@@ -174,7 +176,7 @@ func (a *app) noteKeysRow(c *ui.Context) {
 	r := &n.keys
 	problems := uitext.HotkeyProblems(a.prefs.Features, hotkey.Note)[0]
 	ui.Column(c.Key("notes-keys")).Gap(px(t, 6)).Children(func() {
-		settingRow(c, "notes-keys-row", i18n.T("Shortcut"), i18n.T("Press it in any app to start a note, and again to save it."), func() {
+		settingRow(c, "notes-keys-row", i18n.T("Shortcut"), "", func() {
 			opts, byLabel := keyOptions(cur, true)
 			if !slices.Contains(opts, r.sel) {
 				r.sel = chordLabel(cur)
@@ -196,7 +198,7 @@ func (a *app) noteKeysRow(c *ui.Context) {
 			}
 		})
 		if r.custom {
-			a.customKeys(c, r, i18n.T("Custom keys to record a note"), a.setNoteKeys)
+			a.keysField(c, r, i18n.T("Custom keys to record a note"), a.setNoteKeys)
 		}
 		if cur == "" {
 			caption(c, i18n.T("Set a shortcut to record notes."))
