@@ -22,6 +22,7 @@ using omni_common::kSampleRate;
 using omni_common::kWhisperWindowSampleCount;
 using omni_common::StripUnicodeWhitespace;
 using omni_common::WhisperWindowFeatures;
+using qwen3_asr::DraftStatistics;
 using qwen3_asr::FinishReason;
 using qwen3_asr::KVCache;
 using qwen3_asr::SpeakerSegment;
@@ -416,9 +417,9 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
       return static_cast<int>(output_ids.size()) >= max_new_tokens;
     }
   };
-  int verify_round_count = 0;
+  DraftStatistics draft_statistics;
   if (draft_.has_value()) {
-    verify_round_count =
+    draft_statistics =
         draft_->Decode(model_.decoder(), embeddings, max_new_tokens,
                        kPrefillStepTokens, commit, cancel);
   } else {
@@ -468,7 +469,9 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
                     offset_seconds);
   result.generated_token_count = static_cast<int>(output_ids.size());
   result.finish_reason = finish_reason;
-  result.verify_round_count = verify_round_count;
+  result.verify_round_count = draft_statistics.verify_round_count;
+  result.proposed_draft_token_count = draft_statistics.proposed_token_count;
+  result.accepted_draft_token_count = draft_statistics.accepted_token_count;
   return result;
 }
 
@@ -513,6 +516,8 @@ MossTranscriber::Transcribe(const std::vector<float> &samples,
                              result.segments.end());
     combined.generated_token_count += result.generated_token_count;
     combined.verify_round_count += result.verify_round_count;
+    combined.proposed_draft_token_count += result.proposed_draft_token_count;
+    combined.accepted_draft_token_count += result.accepted_draft_token_count;
     // Note (Dayuxiaoshui): one truncated chunk cuts the whole transcript short.
     if (result.finish_reason == FinishReason::kLength) {
       combined.finish_reason = FinishReason::kLength;
