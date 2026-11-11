@@ -9,7 +9,6 @@ import math
 import time
 
 import torch
-import torchaudio
 from dac.nn.quantize import VectorQuantize
 
 from sglang_omni.models.fishaudio_drama3.codec_encoder import CodecEncoder
@@ -196,26 +195,7 @@ class Drama3ReferenceEncodeHook(FishReferenceEncodeHook):
             return super().encode_reference_waveform(audio, sr)
         else:
             pass
-        # note (Wenyao Gao): the same preparation as
-        # FishReferenceEncodeHook.encode_reference_waveform up to its codec call.
-        if audio.shape[-1] > self.max_reference_audio_seconds * sr:
-            raise ValueError(
-                f"reference audio lasts {audio.shape[-1] / sr:.1f} s, longer than "
-                f"the {self.max_reference_audio_seconds:g} s limit; shorten it or "
-                f"raise max_reference_audio_seconds"
-            )
-        else:
-            pass
-        if audio.shape[0] > 1:
-            audio = audio.mean(0, keepdim=True)
-        else:
-            pass
-        audio = torchaudio.functional.resample(audio, sr, self.codec.sample_rate)
-        if self.autocast_dtype is not None:
-            audio = audio.clamp(-1.0, 1.0)
-        else:
-            pass
-        return self.encode_waveform(audio)
+        return self.encode_waveform(self.prepare_reference_waveform(audio, sr))
 
     def encode_waveform(self, waveform: torch.Tensor) -> torch.Tensor:
         """[codebooks, frames] CPU codes of a [1, samples] CPU waveform at the codec's
