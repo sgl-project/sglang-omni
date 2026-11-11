@@ -7,6 +7,7 @@ package uitext
 
 import (
 	"errors"
+	"runtime"
 	"strings"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
@@ -25,6 +26,9 @@ func HotkeyText(keys string) string {
 		return strings.TrimSpace(keys)
 	}
 	glyph := map[string]string{proto.ModControl: "⌃", proto.ModOption: "⌥", proto.ModShift: "⇧", proto.ModCommand: "⌘"}
+	if runtime.GOOS == "windows" {
+		glyph = map[string]string{proto.ModControl: "Ctrl", proto.ModOption: "Alt", proto.ModShift: "Shift", proto.ModCommand: "Win"}
+	}
 	var parts []string
 	if _, ok := c.Mods[proto.ModFn]; ok {
 		parts = append(parts, "fn")

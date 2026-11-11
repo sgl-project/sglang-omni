@@ -9,10 +9,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"slices"
 	"strings"
-	"syscall"
 
 	"github.com/hehehai/actnowkit/family"
 	fammodels "github.com/hehehai/actnowkit/models"
@@ -207,22 +205,6 @@ func (m *Manager) others(hub string, srcs []string, keep func(root string) bool)
 		want = append(want, cs.Claims...)
 	}
 	return srcs, want
-}
-
-// SameVolume reports whether a and b are folders on one volume, where
-// a model is hard-linked instead of copied.
-func SameVolume(a, b string) bool {
-	sa, err := os.Stat(a)
-	if err != nil {
-		return false
-	}
-	sb, err := os.Stat(b)
-	if err != nil {
-		return false
-	}
-	da, ok := sa.Sys().(*syscall.Stat_t)
-	db, ok2 := sb.Sys().(*syscall.Stat_t)
-	return ok && ok2 && da.Dev == db.Dev
 }
 
 // notBrought names the models of want that one of srcs has and hub does
