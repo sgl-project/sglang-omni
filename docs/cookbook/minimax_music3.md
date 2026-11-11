@@ -49,6 +49,12 @@ Default optimizations that are on without further flags: backbone decode device 
 
 Classifier-free guidance is on in both stages and has no flag. See [Guidance](#guidance) for what it costs you, because the AR half changes how much a request occupies.
 
+To run it on Ascend NPU first follow [Ascend NPU installation guide](../get_started/installation_npu.md) then use command below.
+
+```bash
+sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --dit_dav.factory.compile_acoustic False --minimax_music3_ar.engine.enable_deterministic_inference False
+```
+
 ## Generating Music
 
 Two fields carry the request. `input` is the lyrics; `instructions` is the caption that describes style, instrumentation, tempo and mood. Both are required, and both matter: the caption is what decides genre and arrangement, and the lyrics are what gets sung.
