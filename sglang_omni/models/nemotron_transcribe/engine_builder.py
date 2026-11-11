@@ -36,9 +36,7 @@ from sglang_omni.models.nemotron_transcribe.hf_config import (
 from sglang_omni.models.nemotron_transcribe.model_runner import (
     NemotronTranscribeModelRunner,
 )
-from sglang_omni.models.nemotron_transcribe.mtp_draft import (
-    NemotronTranscribeMTPDraft,
-)
+from sglang_omni.models.nemotron_transcribe.mtp_draft import NemotronTranscribeMTPDraft
 from sglang_omni.models.nemotron_transcribe.request_builders import (
     NemotronTranscribeRequestData,
     RequestBuilder,
