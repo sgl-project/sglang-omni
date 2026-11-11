@@ -15,18 +15,47 @@ import torch
 import torchaudio
 import torchaudio.compliance.kaldi as kaldi
 from safetensors.torch import load_file
-from transformers import DynamicCache, EncoderDecoderCache, WhisperFeatureExtractor
+from transformers import (
+    DynamicCache,
+    EncoderDecoderCache,
+    PreTrainedTokenizerBase,
+    WhisperFeatureExtractor,
+)
 from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
 from sglang_omni.models.moss_speech.request_builders import (
     MossSpeechState,
     RequestValidationError,
 )
+from sglang_omni.preprocessing.base import MediaIO, is_url
+from sglang_omni.preprocessing.resource_connector import get_global_resource_connector
 from sglang_omni.proto.request import StagePayload
-from sglang_omni.utils.audio import load_audio
+from sglang_omni.utils.audio import (
+    audio_request_timeout,
+    decode_audio_data_uri,
+    load_audio,
+)
 
 SAMPLE_RATE_HZ = 24000
 MAX_REFERENCE_SECONDS = 30
+
+
+class MossSpeechAudioBytes(MediaIO[bytes]):
+    """Read authorized media without changing HF audio decoding or resampling."""
+
+    def load_bytes(self, data: bytes) -> bytes:
+        return data
+
+    def load_base64(self, media_type: str, data: str) -> bytes:
+        encoded = decode_audio_data_uri(f"data:{media_type};base64,{data}")
+        assert encoded is not None
+        return encoded
+
+    def load_file(self, filepath: Path) -> bytes:
+        try:
+            return filepath.read_bytes()
+        except (FileNotFoundError, IsADirectoryError, PermissionError) as error:
+            raise ValueError(f"Could not read speech input: {filepath}") from error
 
 
 class VoiceConditioning(TypedDict):
@@ -83,7 +112,9 @@ def codec_rng() -> Iterator[None]:
 
 
 class MossSpeechCodec:
-    def __init__(self, codec_path: str, device: torch.device) -> None:
+    def __init__(
+        self, codec_path: str, device: torch.device, *, load_decoder: bool = True
+    ) -> None:
         self.device: torch.device = device
         codec_directory = Path(codec_path)
         decoder_class = get_class_from_dynamic_module(
@@ -93,13 +124,17 @@ class MossSpeechCodec:
             "modeling_whisper.WhisperVQEncoder", codec_path, local_files_only=True
         )
         with codec_rng():
-            self.decoder: AudioDecoder | None = decoder_class(
-                config_path=codec_directory / "flow/config.yaml",
-                flow_ckpt_path=codec_directory / "flow/flow.pt",
-                hift_ckpt_path=codec_directory / "flow/hift.pt",
-                campplus_model=codec_directory / "flow/campplus.onnx",
-                device=device,
-            ).eval()
+            self.decoder: AudioDecoder | None = (
+                decoder_class(
+                    config_path=codec_directory / "flow/config.yaml",
+                    flow_ckpt_path=codec_directory / "flow/flow.pt",
+                    hift_ckpt_path=codec_directory / "flow/hift.pt",
+                    campplus_model=codec_directory / "flow/campplus.onnx",
+                    device=device,
+                ).eval()
+                if load_decoder
+                else None
+            )
             configuration = encoder_class.config_class.from_pretrained(codec_path)
             encoder = encoder_class(configuration).to(device, torch.float32).eval()
             checkpoint = load_file(str(codec_directory / "model.safetensors"))
@@ -131,6 +166,66 @@ class MossSpeechCodec:
             )
 
     @torch.inference_mode()
+    def encode_tokens(self, waveform: torch.Tensor, sample_rate: int) -> torch.Tensor:
+        assert self.encoder is not None
+        if waveform.numel() == 0 or not torch.isfinite(waveform).all():
+            raise RequestValidationError(
+                "Speech input must contain finite, nonempty audio"
+            )
+        else:
+            pass
+        token_waveform = torchaudio.transforms.Resample(sample_rate, 16000).to(
+            self.device
+        )(waveform.to(self.device))
+        tokens: list[torch.Tensor] = []
+        for segment in token_waveform[0].split(MAX_REFERENCE_SECONDS * 16000):
+            features = self.feature_extractor(
+                [segment.cpu().numpy()],
+                sampling_rate=16000,
+                return_attention_mask=True,
+                return_tensors="pt",
+                device=self.device,
+                padding="longest",
+                pad_to_multiple_of=self.feature_frames_per_token
+                * self.feature_extractor.hop_length,
+            ).to(self.device)
+            encoded = self.encoder(
+                input_features=features.input_features,
+                attention_mask=features.attention_mask,
+                return_dict=True,
+                past_key_values=EncoderDecoderCache(DynamicCache(), DynamicCache()),
+            )
+            tokens.append(
+                encoded.quantized_token_ids[0][
+                    features.attention_mask[0, :: self.feature_frames_per_token].bool()
+                ]
+            )
+        return torch.cat(tokens)
+
+    def encode_audio(self, source: str) -> list[int]:
+        connector = get_global_resource_connector()
+        if source.startswith(("http://", "https://")):
+            connector.assert_url_allowed(source)
+        elif source.startswith("file:") and connector.allowed_local_media_path is None:
+            raise ValueError("Local file loading is disabled.")
+        else:
+            pass
+        media_io = MossSpeechAudioBytes()
+        encoded = (
+            connector.load_resource(source, media_io, timeout=audio_request_timeout())
+            if is_url(source)
+            else connector.load_local_path(source, media_io)
+        )
+        samples, sample_rate = load_audio(
+            encoded,
+            source_name="reference audio",
+            mono=False,
+            preserve_sample_rate=True,
+        )
+        waveform = torch.from_numpy(samples[:1])
+        return self.encode_tokens(waveform, sample_rate).cpu().tolist()
+
+    @torch.inference_mode()
     def encode_reference(self, reference_audio: str) -> VoiceConditioning:
         assert self.encoder is not None and self.decoder is not None
         samples, reference_sample_rate = load_audio(
@@ -159,30 +254,7 @@ class MossSpeechCodec:
             )
         else:
             pass
-        # note (BraveBeter): Token features use the original rate on the encoder device.
-        token_waveform_16khz = torchaudio.transforms.Resample(
-            reference_sample_rate, 16000
-        ).to(self.device)(reference_waveform.to(self.device))
-        audio_features = self.feature_extractor(
-            [token_waveform_16khz[0].cpu().numpy()],
-            sampling_rate=16000,
-            return_attention_mask=True,
-            return_tensors="pt",
-            device=self.device,
-            padding="longest",
-            pad_to_multiple_of=self.feature_frames_per_token
-            * self.feature_extractor.hop_length,
-        ).to(self.device)
-        # Explicit cache and return type avoid removed Transformers legacy defaults.
-        encoded = self.encoder(
-            input_features=audio_features.input_features,
-            attention_mask=audio_features.attention_mask,
-            return_dict=True,
-            past_key_values=EncoderDecoderCache(DynamicCache(), DynamicCache()),
-        )
-        prompt_tokens = encoded.quantized_token_ids[0][
-            audio_features.attention_mask[0, :: self.feature_frames_per_token].bool()
-        ]
+        prompt_tokens = self.encode_tokens(reference_waveform, reference_sample_rate)
         prompt_mel = (
             self.decoder.feat_extractor(waveform)
             .squeeze(0)
@@ -218,9 +290,31 @@ class MossSpeechCodec:
         )
 
     @torch.inference_mode()
-    def decode(self, payload: StagePayload) -> StagePayload:
+    def decode(
+        self, payload: StagePayload, *, tokenizer: PreTrainedTokenizerBase | None = None
+    ) -> StagePayload:
         state = MossSpeechState.from_dict(payload.data)
-        if not state.audio_codes:
+        usage = {
+            "prompt_tokens": state.prompt_token_count,
+            "completion_tokens": state.completion_token_count,
+            "total_tokens": state.prompt_token_count + state.completion_token_count,
+        }
+        if state.output_modality == "text":
+            assert tokenizer is not None
+            return StagePayload(
+                payload.request_id,
+                payload.request,
+                {
+                    "text": tokenizer.decode(
+                        state.output_text_token_ids, skip_special_tokens=True
+                    )
+                    .replace("<|empty|>", ".")
+                    .replace("<|end_empty|>", ":"),
+                    "finish_reason": state.finish_reason,
+                    "usage": usage,
+                },
+            )
+        elif not state.audio_codes:
             raise RequestValidationError(
                 "Generation ended before producing audio; increase max_new_tokens or retry"
             )
@@ -255,12 +349,7 @@ class MossSpeechCodec:
                 "audio_data": waveform.tolist(),
                 "sample_rate": SAMPLE_RATE_HZ,
                 "finish_reason": state.finish_reason,
-                "usage": {
-                    "prompt_tokens": state.prompt_token_count,
-                    "completion_tokens": state.completion_token_count,
-                    "total_tokens": state.prompt_token_count
-                    + state.completion_token_count,
-                },
+                "usage": usage,
             },
         )
 
