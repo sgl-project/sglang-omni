@@ -20,6 +20,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
+- **No more Voxt 1.x announcements, and none in another language**: Voxt reads the announcements of Voxt 1.x's server, which still lists its 1.13 announcement of meetings and notes, in Chinese. Every new Voxt 2 user saw it as a card in the sidebar, in the English UI too, although Voxt 2's release builds have no meetings or notes. Voxt now shows only announcements for Voxt 2, and Chinese ones only in the Chinese UI. If the card is still there, dismiss it: it does not come back.
 - **The answer card stays shut when its switch is off**: when a result could not go in (no text field had the focus, a password field, or the paste did not show), Transcribe and Translate opened the answer card even with their answer card turned off. Now the card opens only when it is on; otherwise Voxt copies the result and the overlay says to press ⌘V. The result is in History either way. Rewrite still keeps such an answer in the card, where you can ask a follow-up.
 - **A dictation is no longer cut off at 10 minutes**: Transcribe, Translate and Rewrite stopped recording by themselves after 10 minutes, so a long dictation such as a podcast ended without a key press. A recording now has no time limit: it runs until you stop it.
 - **Meetings use your main language**: the live transcript and the transcript made after a meeting now give the speech model the same language hint as dictation (your main language in Settings → General, such as Simplified or Traditional Chinese). Before, meetings gave no hint and the model guessed the language. The speech model still picks the Chinese script itself: Voxt does not convert between Simplified and Traditional.
@@ -54,6 +55,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
+- **不再显示 Voxt 1.x 的公告，也不显示别的语言的公告**：Voxt 读的是 Voxt 1.x 服务器上的公告，那里还挂着 1.13 介绍会议和笔记的中文公告。每个新装 Voxt 2 的用户都会在侧边栏看到这张卡片，英文界面也一样，可 Voxt 2 正式版没有会议和笔记。现在只显示写给 Voxt 2 的公告，中文公告只在中文界面显示。卡片还在的话点 × 关掉，不会再出现。
 - **关掉答案卡片后不再弹出卡片**：结果插不进去时（没有选中输入框、焦点在密码框，或者粘贴后没有出现），即使转录、翻译的答案卡片关着，Voxt 也会打开卡片。现在只有开着时才打开；关着时 Voxt 把结果复制到剪贴板，浮窗提示按 ⌘V 粘贴。两种情况历史里都有这条结果。改写插不进去时仍然放在卡片里，方便继续追问。
 - **长时间口述不再在 10 分钟时被截断**：转录、翻译和改写录到 10 分钟会自己停下，录播客这样的长段口述没按快捷键就结束了。现在录音没有时长上限，录到你按停止为止。
 - **会议也按主语言识别**：会议的实时字幕和会后整理的转录稿，现在和听写一样把主语言（设置 → 通用 → 主语言，比如简体中文或繁体中文）告诉语音识别模型。以前会议不告诉模型，由模型自己猜语言。简体还是繁体仍由模型决定，Voxt 不做简繁转换。
