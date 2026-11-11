@@ -119,10 +119,12 @@ class CodecLoads:
     """Stands in for load_codec and records each call."""
 
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[tuple[str, str, bool]] = []
 
-    def __call__(self, checkpoint_dir: str, device: str) -> FrameNumberCodec:
-        self.calls.append((checkpoint_dir, device))
+    def __call__(
+        self, checkpoint_dir: str, device: str, *, encode_only: bool = False
+    ) -> FrameNumberCodec:
+        self.calls.append((checkpoint_dir, device, encode_only))
         return FrameNumberCodec()
 
 
@@ -164,7 +166,7 @@ def test_preprocessing_reads_the_checkpoint_and_loads_the_codec_on_cpu(
     preprocessor = scheduler.fn
     assert isinstance(preprocessor, Drama3SpeechPreprocessor)
     assert scheduler.max_concurrency == 2
-    assert codec_loads.calls == [(str(tmp_path), "cpu")]
+    assert codec_loads.calls == [(str(tmp_path), "cpu", True)]
     hook = preprocessor.reference_encoder.hook
     assert isinstance(hook, FishReferenceEncodeHook)
     assert (hook.device, hook.autocast_dtype, hook.max_reference_audio_seconds) == (
@@ -239,7 +241,15 @@ def test_preprocessing_warms_the_encoder_up_once_on_an_accelerator(
         pass
     write_toy_checkpoint(tmp_path)
     codec = EncodeRecordingCodec()
-    monkeypatch.setattr(stages, "load_codec", lambda checkpoint_dir, device: codec)
+
+    def load_codec(
+        checkpoint_dir: str, device: str, *, encode_only: bool = False
+    ) -> EncodeRecordingCodec:
+        assert checkpoint_dir == str(tmp_path)
+        assert encode_only
+        return codec
+
+    monkeypatch.setattr(stages, "load_codec", load_codec)
 
     stages.create_preprocessing_executor(
         str(tmp_path / "checkpoint"),
@@ -410,7 +420,7 @@ def test_the_vocoder_factory_loads_the_codec_on_its_device_with_the_windows(
     )
 
     assert isinstance(vocoder, Drama3VocoderScheduler)
-    assert codec_loads.calls == [(str(tmp_path), "cpu")]
+    assert codec_loads.calls == [(str(tmp_path), "cpu", False)]
     assert isinstance(vocoder.codec, FrameNumberCodec)
     assert vocoder.codec.is_weight_norm_folded
     assert vocoder.decode_window == vocoder.codec.from_indices
