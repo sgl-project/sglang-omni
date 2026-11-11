@@ -703,6 +703,11 @@ def test_qwen3_asr_dflash_build_uses_sync_runtime_and_cleans_resources(
     recorded = patch_engine_dependencies(monkeypatch, want_cuda_graph=True)
     monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: True)
     monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cpu", lambda: False)
+    # note (siju-samuel): the platform must allow launch-first prefill, or the
+    # async_prefill assert below passes without the DFlash exclusion.
+    monkeypatch.setattr(
+        qwen3_asr_builder.current_platform, "enable_async_prefill", lambda: True
+    )
     source_config = {
         "speculators_model_type": "dflash",
         "sample_from_anchor": False,
