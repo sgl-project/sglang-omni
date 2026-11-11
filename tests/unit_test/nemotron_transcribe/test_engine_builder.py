@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Engine option handling without model weights or CUDA initialization."""
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from huggingface_hub.errors import LocalEntryNotFoundError
 from torch import nn
 
 import sglang_omni.models.nemotron_transcribe.engine_builder as engine_builder
@@ -12,7 +15,6 @@ from sglang_omni.models.nemotron_transcribe.config import (
     NemotronTranscribePipelineConfig,
 )
 from sglang_omni.models.nemotron_transcribe.engine_builder import (
-    PINNED_CHECKPOINT_REVISION,
     NemotronTranscribeEngineBuilder,
     prepare_nemotron_speculative_options,
     validate_nemotron_mtp_metadata,
@@ -23,6 +25,42 @@ from sglang_omni.models.nemotron_transcribe.speech_transformer import (
 from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
 )
+
+
+def synthetic_checkpoint_config(
+    *, pattern: str = "*E", physical_depth: int = 2
+) -> dict[str, object]:
+    return {
+        "llm_config": {"num_nextn_predict_layers": 1},
+        "eos_token_id": [11],
+        "perception": {},
+        "pe_encoder_config": {},
+        "mtp": {
+            "enabled": True,
+            "num_nextn_predict_layers": physical_depth,
+            "use_repeated_layer": True,
+            "hybrid_override_pattern": pattern,
+        },
+    }
+
+
+def write_synthetic_checkpoint(
+    checkpoint_directory: Path,
+    *,
+    pattern: str = "*E",
+    physical_depth: int = 2,
+) -> Path:
+    checkpoint_directory.mkdir(parents=True, exist_ok=True)
+    (checkpoint_directory / "config.json").write_text(
+        json.dumps(
+            synthetic_checkpoint_config(
+                pattern=pattern,
+                physical_depth=physical_depth,
+            )
+        )
+    )
+    (checkpoint_directory / "weights.safetensors").write_bytes(b"checkpoint")
+    return checkpoint_directory
 
 
 def make_builder(
@@ -102,14 +140,12 @@ def test_nextn_registers_the_native_draft_with_shared_infrastructure(
         "nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B",
         {"speculative_algorithm": "NEXTN"},
     )
-    builder = make_builder(
-        nextn_enabled=enabled,
-        checkpoint_revision=PINNED_CHECKPOINT_REVISION,
-    )
+    builder = make_builder(nextn_enabled=enabled)
 
     assert enabled is True
     assert overrides["speculative_algorithm"] == "NEXTN"
-    assert overrides["revision"] == PINNED_CHECKPOINT_REVISION
+    assert "revision" not in overrides
+    assert "speculative_draft_model_revision" not in overrides
     assert overrides["speculative_eagle_topk"] == 1
     assert overrides["enable_mixed_chunk"] is False
     assert builder.model_arch_override == "NemotronTranscribeForConditionalGeneration"
@@ -120,14 +156,21 @@ def test_nextn_registers_the_native_draft_with_shared_infrastructure(
     )
 
 
+def test_nextn_preserves_an_operator_selected_revision() -> None:
+    overrides, enabled = prepare_nemotron_speculative_options(
+        "org/nemotron-transcribe",
+        {"speculative_algorithm": "NEXTN", "revision": "release-2026-10"},
+    )
+
+    assert enabled is True
+    assert overrides["revision"] == "release-2026-10"
+    assert overrides["speculative_draft_model_revision"] == "release-2026-10"
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
         ({"speculative_algorithm": "DFLASH"}, "bundled NEXTN only"),
-        (
-            {"speculative_algorithm": "NEXTN", "revision": "other"},
-            "checkpoint revision",
-        ),
         (
             {
                 "speculative_algorithm": "NEXTN",
@@ -139,6 +182,14 @@ def test_nextn_registers_the_native_draft_with_shared_infrastructure(
             {
                 "speculative_algorithm": "NEXTN",
                 "speculative_draft_model_revision": "other",
+            },
+            "target checkpoint revision",
+        ),
+        (
+            {
+                "speculative_algorithm": "NEXTN",
+                "revision": "target-revision",
+                "speculative_draft_model_revision": "draft-revision",
             },
             "target checkpoint revision",
         ),
@@ -181,10 +232,7 @@ def test_async_decode_is_rejected_for_nextn() -> None:
 def test_nextn_post_resolution_validation_checks_only_resolved_draft_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    builder = make_builder(
-        nextn_enabled=True,
-        checkpoint_revision=PINNED_CHECKPOINT_REVISION,
-    )
+    builder = make_builder(nextn_enabled=True)
     builder.checkpoint_dir = "resolved-target"
     monkeypatch.setattr(
         engine_builder.AsrEngineBuilder,
@@ -201,30 +249,175 @@ def test_nextn_post_resolution_validation_checks_only_resolved_draft_path(
         builder.validate_before_infrastructure(SimpleNamespace())
 
 
-def test_nextn_requires_the_known_two_layer_physical_pattern() -> None:
+@pytest.mark.parametrize(("pattern", "physical_depth"), [("E*", 2), ("E", 1)])
+def test_nextn_accepts_supported_physical_mtp_patterns(
+    pattern: str, physical_depth: int
+) -> None:
     validate_nemotron_mtp_metadata(
-        {
-            "llm_config": {"num_nextn_predict_layers": 1},
-            "mtp": {
-                "enabled": True,
-                "num_nextn_predict_layers": 2,
-                "use_repeated_layer": True,
-                "hybrid_override_pattern": "*E",
-            },
-        }
+        synthetic_checkpoint_config(pattern=pattern, physical_depth=physical_depth)
     )
-    with pytest.raises(ValueError, match="two physical MTP layers"):
-        validate_nemotron_mtp_metadata(
-            {
-                "llm_config": {"num_nextn_predict_layers": 1},
-                "mtp": {
-                    "enabled": True,
-                    "num_nextn_predict_layers": 1,
-                    "use_repeated_layer": True,
-                    "hybrid_override_pattern": "*E",
-                },
-            }
-        )
+
+
+def test_nextn_rejects_unsupported_mtp_metadata() -> None:
+    checkpoint_config = synthetic_checkpoint_config(pattern="?E", physical_depth=2)
+    with pytest.raises(ValueError, match="unsupported types"):
+        validate_nemotron_mtp_metadata(checkpoint_config)
+
+    checkpoint_config = synthetic_checkpoint_config(pattern="E*", physical_depth=1)
+    with pytest.raises(ValueError, match="pattern length"):
+        validate_nemotron_mtp_metadata(checkpoint_config)
+
+    checkpoint_config = synthetic_checkpoint_config(pattern="E", physical_depth=1)
+    llm_config = checkpoint_config["llm_config"]
+    assert isinstance(llm_config, dict)
+    llm_config["num_nextn_predict_layers"] = 2
+    with pytest.raises(ValueError, match="one logical MTP step"):
+        validate_nemotron_mtp_metadata(checkpoint_config)
+
+    checkpoint_config = synthetic_checkpoint_config(pattern="E", physical_depth=1)
+    mtp_config = checkpoint_config["mtp"]
+    assert isinstance(mtp_config, dict)
+    mtp_config["enabled"] = False
+    with pytest.raises(ValueError, match="does not enable bundled MTP"):
+        validate_nemotron_mtp_metadata(checkpoint_config)
+
+    checkpoint_config = synthetic_checkpoint_config(pattern="E", physical_depth=1)
+    mtp_config = checkpoint_config["mtp"]
+    assert isinstance(mtp_config, dict)
+    mtp_config["use_repeated_layer"] = False
+    with pytest.raises(ValueError, match="repeated MTP layers"):
+        validate_nemotron_mtp_metadata(checkpoint_config)
+
+    checkpoint_config = synthetic_checkpoint_config(pattern="", physical_depth=0)
+    with pytest.raises(ValueError, match="non-empty MTP pattern"):
+        validate_nemotron_mtp_metadata(checkpoint_config)
+
+
+@pytest.mark.parametrize("nextn_enabled", [False, True])
+@pytest.mark.parametrize("cache_hit", [False, True])
+def test_remote_revision_resolves_the_requested_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    nextn_enabled: bool,
+    cache_hit: bool,
+) -> None:
+    snapshot_directory = write_synthetic_checkpoint(tmp_path / "snapshot")
+    requested: list[tuple[str, str | None, bool]] = []
+
+    def download_snapshot(
+        model_path: str,
+        *,
+        revision: str | None,
+        local_files_only: bool,
+    ) -> str:
+        requested.append((model_path, revision, local_files_only))
+        if local_files_only and not cache_hit:
+            raise LocalEntryNotFoundError("cache miss")
+        else:
+            pass
+        return str(snapshot_directory)
+
+    monkeypatch.setattr(engine_builder, "snapshot_download", download_snapshot)
+    builder = make_builder(
+        nextn_enabled=nextn_enabled,
+        checkpoint_revision="operator-revision",
+    )
+    resolved_directory = Path(builder.resolve_checkpoint("org/model"))
+
+    expected_requests = [("org/model", "operator-revision", True)]
+    if not cache_hit:
+        expected_requests.append(("org/model", "operator-revision", False))
+    else:
+        pass
+    assert requested == expected_requests
+    assert (resolved_directory / "weights.safetensors").resolve() == (
+        snapshot_directory / "weights.safetensors"
+    ).resolve()
+    if nextn_enabled:
+        builder.checkpoint_dir = str(resolved_directory)
+        overrides = {"revision": "operator-revision"}
+        builder.adjust_overrides(overrides)
+        assert overrides["revision"] == "operator-revision"
+        assert overrides["speculative_draft_model_path"] == str(resolved_directory)
+        assert overrides["speculative_draft_model_revision"] == "operator-revision"
+    else:
+        pass
+
+
+def test_remote_nextn_uses_default_revision_without_a_pin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_directory = write_synthetic_checkpoint(
+        tmp_path / "snapshot", pattern="E", physical_depth=1
+    )
+    resolved: list[str] = []
+    local_requests: list[tuple[str, bool]] = []
+
+    def find_cached_snapshot(
+        model_path: str,
+        *,
+        revision: str | None,
+        local_files_only: bool,
+    ) -> str:
+        local_requests.append((model_path, local_files_only))
+        assert revision is None
+        assert local_files_only is True
+        raise LocalEntryNotFoundError("cache miss")
+
+    def resolve_default_revision(model_path: str) -> Path:
+        resolved.append(model_path)
+        return snapshot_directory
+
+    monkeypatch.setattr(engine_builder, "snapshot_download", find_cached_snapshot)
+    monkeypatch.setattr(engine_builder, "resolve_model_path", resolve_default_revision)
+    builder = make_builder(nextn_enabled=True)
+
+    resolved_directory = Path(builder.resolve_checkpoint("org/model"))
+
+    assert resolved == ["org/model"]
+    assert local_requests == [("org/model", True)]
+    assert builder.checkpoint_revision is None
+    assert (resolved_directory / "weights.safetensors").resolve() == (
+        snapshot_directory / "weights.safetensors"
+    ).resolve()
+
+
+def test_local_nextn_checkpoint_uses_same_resolved_target_and_draft(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    local_checkpoint = write_synthetic_checkpoint(
+        tmp_path / "local-checkpoint", pattern="E", physical_depth=1
+    )
+
+    def fail_download(
+        model_path: str,
+        *,
+        revision: str | None,
+        local_files_only: bool,
+    ) -> str:
+        del model_path, revision, local_files_only
+        raise AssertionError("local checkpoint must not be downloaded")
+
+    monkeypatch.setattr(engine_builder, "snapshot_download", fail_download)
+    builder = make_builder(
+        nextn_enabled=True,
+        checkpoint_revision="operator-revision",
+    )
+
+    resolved_directory = Path(builder.resolve_checkpoint(str(local_checkpoint)))
+    builder.checkpoint_dir = str(resolved_directory)
+    overrides = {"revision": "operator-revision"}
+    builder.adjust_overrides(overrides)
+
+    assert resolved_directory != local_checkpoint
+    assert (resolved_directory / "weights.safetensors").resolve() == (
+        local_checkpoint / "weights.safetensors"
+    ).resolve()
+    assert overrides["revision"] == "operator-revision"
+    assert overrides["speculative_draft_model_path"] == str(resolved_directory)
+    assert overrides["speculative_draft_model_revision"] == "operator-revision"
 
 
 def test_decoder_compilation_has_an_actionable_error() -> None:

@@ -12,6 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from huggingface_hub import snapshot_download
+from huggingface_hub.errors import LocalEntryNotFoundError
 from sglang.kernels.ops.mamba.triton_ops import (
     initialize_mamba_selective_state_update_backend,
 )
@@ -60,7 +61,6 @@ from sglang_omni.scheduling.engine_factory import (
 from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 
 logger = logging.getLogger(__name__)
-PINNED_CHECKPOINT_REVISION = "c17667641642c4265ff2b7037dd101b7d456763"
 
 
 def prepare_nemotron_speculative_options(
@@ -95,19 +95,11 @@ def prepare_nemotron_speculative_options(
         pass
 
     revision = overrides.get("revision")
-    if revision not in (None, PINNED_CHECKPOINT_REVISION):
-        raise ValueError(
-            "Nemotron Transcribe NEXTN requires checkpoint revision "
-            f"{PINNED_CHECKPOINT_REVISION}"
-        )
-    elif overrides.get("speculative_draft_model_path") not in (None, model_path):
+    if overrides.get("speculative_draft_model_path") not in (None, model_path):
         raise ValueError(
             "Nemotron Transcribe NEXTN draft must use the target checkpoint"
         )
-    elif overrides.get("speculative_draft_model_revision") not in (
-        None,
-        PINNED_CHECKPOINT_REVISION,
-    ):
+    elif overrides.get("speculative_draft_model_revision") not in (None, revision):
         raise ValueError(
             "Nemotron Transcribe NEXTN draft must use the target checkpoint revision"
         )
@@ -131,11 +123,13 @@ def prepare_nemotron_speculative_options(
     overrides.update(
         speculative_algorithm="NEXTN",
         speculative_draft_model_path=model_path,
-        speculative_draft_model_revision=PINNED_CHECKPOINT_REVISION,
         speculative_eagle_topk=1,
-        revision=PINNED_CHECKPOINT_REVISION,
         enable_mixed_chunk=False,
     )
+    if revision is not None:
+        overrides["speculative_draft_model_revision"] = revision
+    else:
+        pass
     return overrides, True
 
 
@@ -151,12 +145,23 @@ def validate_nemotron_mtp_metadata(checkpoint_config: dict[str, object]) -> None
         raise ValueError("Nemotron Transcribe NEXTN requires one logical MTP step")
     elif mtp_config.get("enabled") is not True:
         raise ValueError("Nemotron Transcribe checkpoint does not enable bundled MTP")
-    elif mtp_config.get("num_nextn_predict_layers") != 2:
-        raise ValueError("Nemotron Transcribe NEXTN requires two physical MTP layers")
     elif mtp_config.get("use_repeated_layer") is not True:
         raise ValueError("Nemotron Transcribe NEXTN requires repeated MTP layers")
-    elif mtp_config.get("hybrid_override_pattern") != "*E":
-        raise ValueError("Nemotron Transcribe NEXTN requires MTP pattern '*E'")
+    else:
+        pass
+    pattern = mtp_config.get("hybrid_override_pattern")
+    physical_layer_count = mtp_config.get("num_nextn_predict_layers")
+    if not isinstance(pattern, str) or not pattern:
+        raise ValueError("Nemotron Transcribe NEXTN requires a non-empty MTP pattern")
+    elif any(character not in "ME*-" for character in pattern):
+        raise ValueError(
+            "Nemotron Transcribe NEXTN MTP pattern contains unsupported types"
+        )
+    elif physical_layer_count != len(pattern):
+        raise ValueError(
+            "Nemotron Transcribe NEXTN MTP physical layer count must match "
+            "the pattern length"
+        )
     else:
         pass
 
@@ -231,25 +236,28 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
 
     def resolve_checkpoint(self, model_path: str) -> str:
         register_nemotron_transcribe_hf_config()
-        if self.nextn_enabled:
-            if self.checkpoint_revision != PINNED_CHECKPOINT_REVISION:
-                raise ValueError(
-                    "Nemotron Transcribe NEXTN requires the pinned checkpoint revision"
-                )
-            else:
-                pass
-            if Path(model_path).exists():
-                checkpoint_directory = Path(model_path)
-            else:
+        if Path(model_path).exists():
+            checkpoint_directory = Path(model_path)
+        else:
+            try:
                 checkpoint_directory = Path(
                     snapshot_download(
                         model_path,
                         revision=self.checkpoint_revision,
-                        local_files_only=False,
+                        local_files_only=True,
                     )
                 )
-        else:
-            checkpoint_directory = Path(resolve_model_path(model_path))
+            except LocalEntryNotFoundError:
+                if self.checkpoint_revision is None:
+                    checkpoint_directory = Path(resolve_model_path(model_path))
+                else:
+                    checkpoint_directory = Path(
+                        snapshot_download(
+                            model_path,
+                            revision=self.checkpoint_revision,
+                            local_files_only=False,
+                        )
+                    )
         checkpoint_config = json.loads(
             (checkpoint_directory / "config.json").read_text()
         )
