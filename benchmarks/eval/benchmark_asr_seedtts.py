@@ -891,6 +891,7 @@ def main() -> None:
             "server": collect_server_identity(f"http://{args.host}:{args.port}"),
         }
     output_path = os.path.abspath(args.output)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w") as handle:
         json.dump(payload, handle, indent=2)
     print(f"\nWrote results to {output_path}")

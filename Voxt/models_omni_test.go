@@ -268,3 +268,35 @@ func openTestModels(t *testing.T, ids ...string) (*models.Manager, string) {
 	t.Cleanup(m.Close)
 	return m, fx.Hub
 }
+
+// TestWarmSpeech: Transcribe's speech model starts loading once the app
+// is ready, and the model chosen instead as soon as it is chosen, both
+// before any session; a helper that starts again loads nothing.
+func TestWarmSpeech(t *testing.T) {
+	log := fakeOmni(t, omnitest.Opts{})
+	a := newSessionApp(t, "", func(s *settings.Settings) { s.Features.Transcribe.ASR = models.ASRFast },
+		realLocal{installed: []string{models.ASRFast, models.ASRAccurate}})
+	launched := func(id string) int {
+		n, dir := 0, a.models.Dir(id)
+		for _, r := range omnitest.Of(omnitest.Records(log), "launch") {
+			if slices.Contains(r.Args, dir) {
+				n++
+			}
+		}
+		return n
+	}
+	a.pump("the helper", a.helperReady)
+	eventually(t, "the model loading at the start", func() bool { return launched(models.ASRFast) == 1 })
+	if launched(models.ASRAccurate) != 0 {
+		t.Error("the other model loaded too")
+	}
+	a.updateSettings(func(s *settings.Settings) { setFeatureModel(s, local.ASR, "transcribe", models.ASRAccurate) })
+	a.pump("the chosen model loading", func() bool { return launched(models.ASRAccurate) == 1 })
+
+	a.restartHelper()
+	a.pump("the helper stopping", func() bool { return !a.helperReady() })
+	a.pump("the helper again", a.helperReady)
+	if launched(models.ASRFast) != 1 || launched(models.ASRAccurate) != 1 {
+		t.Errorf("after the helper started again: %d and %d launches", launched(models.ASRFast), launched(models.ASRAccurate))
+	}
+}

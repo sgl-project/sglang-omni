@@ -222,7 +222,7 @@ func (a *app) featureShortcuts(c *ui.Context, feature string) {
 		a.trCancelRow(c)
 		a.trEndWordRow(c) // feature_endword.go
 	case hotkey.Rewrite:
-		caption(c, i18n.T("With an answer in the card, the shortcut asks a follow-up."))
+		caption(c, i18n.T("With an answer in the card, the shortcut asks a follow-up and adds the text you select first."))
 	}
 }
 

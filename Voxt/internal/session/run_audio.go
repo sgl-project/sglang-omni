@@ -51,19 +51,8 @@ func (r *run) remoteRecognitionPrompt() string {
 	return ""
 }
 
-// speechLang is the language hint of the speech model: the user's main
-// language (General.MainLanguage, else the UI's), but an English UI is no
-// hint. English is the UI of every system language but Simplified
-// Chinese, so it says nothing about what the user speaks, and forcing it
-// turned Chinese dictation into English (#3398); the Chinese UI's "zh"
-// costs nothing on English speech and keeps a long mixed dictation
-// Chinese (docs/eval.md). The model decides whether to use it.
 func (r *run) speechLang() string {
-	l := MainLanguage(r.settings, r.m.cfg.Locale())
-	if r.settings.General.MainLanguage == "" && l == "en" {
-		return ""
-	}
-	return l
+	return SpeechLang(r.settings, r.m.cfg.Locale())
 }
 
 // onAudio handles the recording's events (on the helper's reader
