@@ -5,6 +5,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from sglang_omni.models.qwen3_asr.engine_builder import Qwen3ASREngineBuilder
+from sglang_omni.models.qwen3_asr.request_builders import Qwen3ASRRequestData
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
 
 def create_sglang_qwen3_asr_executor(
     model_path: str,
@@ -19,6 +23,7 @@ def create_sglang_qwen3_asr_executor(
     enable_torch_compile: bool | None = None,
     torch_compile_max_bs: int = 1,
     enable_async_decode: bool = True,
+    enable_plain_fallback: bool = False,
     async_decode_min_batch_size: int = 1,
     mm_attention_backend: str | None = None,
     request_build_max_workers: int = 8,
@@ -37,13 +42,12 @@ def create_sglang_qwen3_asr_executor(
     enable_encoder_cuda_graph: bool = True,
     max_audio_clip_s: float | None = None,
     server_args_overrides: Mapping[str, object] | None = None,
-):
-    from sglang_omni.models.qwen3_asr.engine_builder import Qwen3ASREngineBuilder
-
-    return Qwen3ASREngineBuilder(
+) -> OmniScheduler[Qwen3ASRRequestData]:
+    builder = Qwen3ASREngineBuilder(
         max_running_requests=max_running_requests,
         max_new_tokens=max_new_tokens,
         enable_async_decode=enable_async_decode,
+        enable_plain_fallback=enable_plain_fallback,
         async_decode_min_batch_size=async_decode_min_batch_size,
         mem_fraction_static=mem_fraction_static,
         mm_embedding_cache_size_bytes=mm_embedding_cache_size_bytes,
@@ -69,13 +73,20 @@ def create_sglang_qwen3_asr_executor(
         pre_lm_max_batch_wait_ms=pre_lm_max_batch_wait_ms,
         enable_encoder_cuda_graph=enable_encoder_cuda_graph,
         max_audio_clip_s=max_audio_clip_s,
-    ).build(
-        model_path,
-        device=device,
-        gpu_id=gpu_id,
-        dtype=dtype,
-        server_args_overrides=server_args_overrides,
     )
+    try:
+        return builder.build(
+            model_path,
+            device=device,
+            gpu_id=gpu_id,
+            dtype=dtype,
+            server_args_overrides=server_args_overrides,
+        )
+    finally:
+        if builder.draft_checkpoint is not None:
+            builder.draft_checkpoint.cleanup()
+        else:
+            pass
 
 
 def create_qwen3_asr_executor(*args, **kwargs):

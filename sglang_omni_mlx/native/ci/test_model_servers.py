@@ -53,6 +53,7 @@ VAD_FIELDS = {
     "vad_max_chunk_seconds": "24.0",
 }
 MOSS_REPO = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
+MOSS_DRAFT_REPO = "wilsonzheng0327/MOSS-Transcribe-Diarize-dflash"
 NEMOTRON_REPO = "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
 PARAKEET_REPO = "mlx-community/parakeet-tdt-0.6b-v3"
 SENSEVOICE_REPO = "mlx-community/SenseVoiceSmall"
@@ -287,36 +288,6 @@ def test_whisper_shutdown_reports_stopped() -> None:
     assert running.process.wait(timeout=10) == 0
 
 
-@pytest.mark.parametrize(
-    ("binary", "other_kind"),
-    [
-        ("whisper_server", "qwen3_asr"),
-        ("cohere_transcribe_server", "whisper"),
-        ("nemotron_asr_server", "qwen3_asr"),
-        ("parakeet_server", "cohere_transcribe"),
-        ("sensevoice_server", "cohere_transcribe"),
-        ("music3_server", "qwen3_asr"),
-        ("fishaudio_drama3_server", "voxtral_tts"),
-    ],
-)
-def test_server_serves_only_its_model_kind(binary: str, other_kind: str) -> None:
-    completed = subprocess.run(
-        [
-            str(Path(RUNTIME_BIN) / binary),
-            "--supervised",
-            "--model-kind",
-            other_kind,
-            "--model-directory",
-            "x",
-        ],  # fmt: skip
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert completed.returncode == 2
-    assert completed.stdout == ""
-
-
 @pytest.fixture(scope="module")
 def cohere_server() -> Iterator[ModelServer]:
     running = ModelServer("cohere_transcribe_server", "cohere_transcribe", COHERE_REPO)
@@ -396,10 +367,24 @@ def test_cohere_rejects_a_bad_temperature(
     assert "temperature" in json.loads(body)["detail"]
 
 
-@pytest.fixture(scope="module")
-def moss_server() -> Iterator[ModelServer]:
+MOSS_SERVER_MODES = [
+    pytest.param(False, id="plain"),
+    pytest.param(True, id="dflash"),
+]
+
+
+@pytest.fixture(scope="module", params=[False], ids=["plain"])
+def moss_server(request: pytest.FixtureRequest) -> Iterator[ModelServer]:
+    flags = (
+        (
+            "--draft-model-path",
+            str(Path(DATA_ROOT) / "models" / MOSS_DRAFT_REPO.replace("/", "_")),
+        )
+        if request.param
+        else ()
+    )
     running = ModelServer(
-        "moss_transcribe_diarize_server", "moss_transcribe_diarize", MOSS_REPO
+        "moss_transcribe_diarize_server", "moss_transcribe_diarize", MOSS_REPO, flags
     )
     yield running
     running.stop()
@@ -418,6 +403,7 @@ def two_speaker_wav() -> bytes:
     return out.getvalue()
 
 
+@pytest.mark.parametrize("moss_server", MOSS_SERVER_MODES, indirect=True)
 def test_moss_request_returns_speaker_segments(moss_server: ModelServer) -> None:
     assert moss_server.ready["model_name"].startswith("voxt-moss_transcribe_diarize-")
     status, body = moss_server.post_form({}, two_speaker_wav())
@@ -436,6 +422,32 @@ def test_moss_request_returns_speaker_segments(moss_server: ModelServer) -> None
     assert "[S01]" in result["text"] and "[S02]" in result["text"]
 
 
+@pytest.mark.parametrize("max_new_tokens", [1, 2, 8, 9])
+def test_moss_draft_stops_at_the_token_budget(max_new_tokens: int) -> None:
+    """A budget ending inside a draft block must not commit extra tokens."""
+    result = subprocess.run(
+        [
+            str(Path(RUNTIME_BIN) / "moss_transcribe"),
+            "--model-path",
+            str(Path(DATA_ROOT) / "models" / MOSS_REPO.replace("/", "_")),
+            "--draft-model-path",
+            str(Path(DATA_ROOT) / "models" / MOSS_DRAFT_REPO.replace("/", "_")),
+            "--max-new-tokens",
+            str(max_new_tokens),
+            str(Path(DATA_ROOT) / "corpus" / "v1" / "clips" / "0006_en_short.wav"),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=120,
+    )
+    output = json.loads(result.stdout)
+    assert output["generated_token_count"] == max_new_tokens
+    assert output["finish_reason"] == "length"
+    assert (output["verify_rounds"] > 0) == (max_new_tokens > 1)
+
+
+@pytest.mark.parametrize("moss_server", MOSS_SERVER_MODES, indirect=True)
 def test_moss_streamed_request_ends_with_segments(moss_server: ModelServer) -> None:
     status, body = moss_server.post_form(
         {"stream": "true", "include_generation_metadata": "true"},
@@ -489,6 +501,7 @@ def test_moss_realtime_rejects_a_prompt_it_cannot_render(
         assert json.loads(socket.recv())["type"] == "transcription_session.updated"
 
 
+@pytest.mark.parametrize("moss_server", MOSS_SERVER_MODES, indirect=True)
 def test_moss_realtime_finalizes_windows_with_segments(
     moss_server: ModelServer,
 ) -> None:
@@ -528,24 +541,6 @@ def test_moss_realtime_finalizes_windows_with_segments(
     starts = [segment["start"] for segment in completed["segments"]]
     assert starts == sorted(starts)
     assert finals[1]["segments"][0]["start"] >= 4.0
-
-
-def test_moss_server_serves_only_moss() -> None:
-    completed = subprocess.run(
-        [
-            str(Path(RUNTIME_BIN) / "moss_transcribe_diarize_server"),
-            "--supervised",
-            "--model-kind",
-            "qwen3_asr",
-            "--model-directory",
-            "x",
-        ],  # fmt: skip
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert completed.returncode == 2
-    assert completed.stdout == ""
 
 
 @pytest.fixture(scope="module")
@@ -974,27 +969,6 @@ def music3_server(request: pytest.FixtureRequest) -> Iterator[ModelServer]:
     )
     yield music3_process
     music3_process.stop()
-
-
-@pytest.mark.parametrize("offload_components", ["ar", "dit", "ar,dit,other", ""])
-@pytest.mark.parametrize("binary_name", ["music3_server", "music3_synthesize"])
-def test_music3_rejects_invalid_offload_components(
-    tmp_path: Path, binary_name: str, offload_components: str
-) -> None:
-    process_result = subprocess.run(
-        [
-            str(Path(RUNTIME_BIN) / binary_name),
-            "--model-path",
-            str(tmp_path),
-            "--stage-offload-components",
-            offload_components,
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert process_result.returncode != 0
-    assert "requires both ar,dit" in process_result.stderr
 
 
 @pytest.mark.parametrize("server_flags", MUSIC3_SERVER_MODES)

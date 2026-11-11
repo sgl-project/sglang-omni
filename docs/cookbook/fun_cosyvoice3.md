@@ -110,7 +110,7 @@ The native server differs from the CUDA server in that:
 
 Measured on an Apple M5 (24 GB, macOS 26.3.1), warm, over 8 utterances (76 s of audio): 0.2 s load, real-time factor 0.33, about 2.4 GB peak MLX memory (3.2 GB with a reference). With the same speech tokens, the legacy Python MLX implementation from [#1964](https://github.com/sgl-project/sglang-omni/pull/1964) takes RTF 0.36 on the same MLX build. Transcribed back with Qwen3-ASR-1.7B-8bit, 16 English corpus sentences give 0.62% WER and 16 Chinese ones 0.97% CER. Against the official ONNX front end, the native one gives identical reference speech tokens on 20 of 20 corpus clips (speaker embedding cosine 0.99999, prompt mel within 7e-4), and with the same seed identical cloned speech tokens; cloned output transcribes at 1.03% WER (English) and 5.83% CER (Chinese, mostly digits and Latin names), the same with either front end. Mac CI checks seven seeded requests' speech tokens (English, Chinese, Chinese with instructions, a `max_new_tokens` cap, the default length limit, an English clone and a cross-lingual clone) against `sglang_omni_mlx/native/ci/model_golden/fun-cosyvoice3-0.5b-2512.json`, and on every chip the mel of two of them vocoded from the recorded tokens, within a tolerance.
 
-For Intel GPUs, follow the [Fun-CosyVoice3 XPU recipe](../get_started/installation_xpu.md#fun-cosyvoice3-text-to-speech-single-xpu).
+For Intel GPUs, follow the [Fun-CosyVoice3 XPU recipe](../other_platforms/installation_xpu.md#fun-cosyvoice3-text-to-speech-single-xpu).
 
 ## Synthesizing Speech
 
@@ -356,11 +356,14 @@ SpeechSpec's DSpark draft [`yuekai/cosyvoice3_llm_dspark`](https://huggingface.c
 ```bash
 sgl-omni serve \
   --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --tts_engine.engine.speculative_algorithm DSPARK \
   --tts_engine.engine.speculative_draft_model_path yuekai/cosyvoice3_llm_dspark \
   --port 8000
 ```
 
-Verification reproduces CosyVoice3's sampler exactly: temperature, top-k/top-p, the repetition penalty, the minimum-length stop mask and the repetition-aware redraw. The speech tokens therefore follow the same distribution as without the draft. A request's `seed` fixes only its first token, because the draft and verify draws come from the process's random generator, so seeded output is not reproducible while the draft is on.
+Send `return_spec_tokens_details: true` with a speech request to get its acceptance statistics. Buffered audio adds `X-SGLang-Omni-Spec-Accept-Length`, `X-SGLang-Omni-Spec-Accept-Rate`, `X-SGLang-Omni-Spec-Num-Correct-Drafts`, `X-SGLang-Omni-Spec-Num-Proposed-Drafts` and `X-SGLang-Omni-Spec-Verify-Ct` headers; the SSE `speech.audio.done` event and the raw PCM outcome from `GET /v1/audio/speech/{request_id}` carry `sglext.spec_tokens_details`, which also holds the per-verify histogram. `spec_accept_length` is speech tokens per verify, including the token sampled at prefill, so it can read higher than the scheduler log's `accept len`, which counts only verified tokens. `spec_accept_rate` and `spec_num_proposed_drafts`, and their headers, are left out when no drafts were proposed or the draft width is adaptive.
+
+Verification reproduces CosyVoice3's sampler exactly: temperature, top-k/top-p, the repetition penalty, the minimum-length stop mask and the repetition-aware redraw. The speech tokens therefore follow the same distribution as without the draft. A request's `seed` fixes every draft and verify draw, so a seeded request reproduces its speech tokens while the draft is on; they differ from the tokens the same seed gives without the draft, which samples differently.
 
 LLM speech-token throughput without the vocoder (Seed-TTS zh, 2,020 utterances, one H200 141GB with SGLang 0.5.22, target and draft on FA3, each batch run to completion), with the default sampling and about 3.0 tokens accepted per verify:
 
@@ -564,5 +567,5 @@ Use `--lang zh --no-ref-text` for the Chinese cross-lingual split. See
 - **Voice conversion.** Voice conversion is outside the current zero-shot TTS scope.
 - **Streaming decode.** Causal Flow + HiFT emit PCM after each hop (hop grows 25 → 50 → 100 by default). Quality can differ slightly from the buffered whole-utterance path. Opt-in TensorRT (`enable_flow_estimator_trt`) also accelerates streaming hops; it turns the `enable_dit_torch_compile` default off. TRT freezes DiT attention, so streaming+TRT is not bit-exact with PyTorch streaming. Keep the Module TRT wrapper when streaming: CosyVoice's raw TRT enqueue is incompatible with packed hop-batch CFG shapes.
 - **Flow batch scope.** Flow batching supports the CosyVoice PyTorch estimator and the opt-in TensorRT estimator. Buffered HiFT grouping is independent and uses `hift_max_padding_waste`. Streaming coalesces first/follow-up hops across requests (`_can_batch_stream_chunks`, short peer wait) so TTFP stays low under load.
-- **Speculative decoding.** The DSpark draft runs on CUDA with TP 1, the TTS engine's scheduler steps synchronously while it is on, weight updates are refused while it is loaded, and `seed` does not make output reproducible.
+- **Speculative decoding.** The DSpark draft runs on CUDA with TP 1, the TTS engine's scheduler steps synchronously while it is on, and weight updates are refused while it is loaded.
 - **cosyvoice dependency.** The `cosyvoice` package has no PyPI release and must be installed from GitHub. Matcha-TTS is a required submodule and must also be importable; only the CosyVoice Flow and HiFT paths are used by the vocoder.
