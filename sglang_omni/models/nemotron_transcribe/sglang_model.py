@@ -83,7 +83,6 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
         return self.language_model.lm_head
 
     def get_embed_and_head(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """The MTP draft shares the decoder's embeddings and lm_head."""
         return self.language_model.get_embed_and_head()
 
     def set_embed_and_head(self, embed: torch.Tensor, head: torch.Tensor) -> None:
@@ -143,7 +142,6 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
         forward_batch: ForwardBatch,
         language_model_kwargs: dict[str, object],
     ) -> torch.Tensor:
-        """Token embeddings with the audio features scattered over their placeholder positions."""
         # note (yhayaran): get_audio_feature runs here only when the pre-LM encoder is disabled.
         audio_request_ids = [
             request_id
@@ -154,7 +152,6 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
         ]
 
         def encode_audio_with_events(items: list[MultimodalDataItem]) -> torch.Tensor:
-            # The request profile reads these spans as the Parallel Expert Encoder's share of a request.
             metadata = {"modality": "audio", "batch_size": len(items)}
             for request_id in audio_request_ids:
                 emit_request_event(
@@ -190,7 +187,6 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
         input_embeds: torch.Tensor | None = None,
         **kwargs: object,
     ) -> LogitsProcessorOutput:
-        # The runner's prefill sidecar arrives as input_embeds plus bookkeeping the decoder does not take.
         kwargs.pop("omni_prefill_rids", None)
         kwargs.pop("input_embeds_are_projected", None)
         kwargs["positions"] = positions

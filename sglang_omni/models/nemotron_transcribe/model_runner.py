@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Omni model runner for Nemotron Transcribe: composes prefill embeddings a speculative draft can reuse."""
+"""Omni model runner for Nemotron Transcribe."""
 
 from __future__ import annotations
 
@@ -18,12 +18,6 @@ from sglang_omni.scheduling.types import SchedulerRequest
 
 
 class NemotronTranscribeModelRunner(ModelRunner[NemotronTranscribeRequestData]):
-    """Attaches the audio-aware prompt embeddings to the prefill batch when a draft will extend over them.
-
-    The EAGLE-style MTP draft rebuilds its KV over the prompt from the same embeddings the decoder saw, audio
-    positions included. The upstream eager runner forwards a copy of the batch, so the sidecar is attached here,
-    on the batch the runner retains, and the model forward reads it back as input_embeds.
-    """
 
     def before_prefill(
         self,

@@ -60,7 +60,6 @@ from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputP
 
 logger = logging.getLogger(__name__)
 
-# The checkpoint's single MTP layer is replayed as a chain; one step per draft token keeps the verify batch small.
 MTP_DEFAULT_OVERRIDES = {
     "speculative_num_steps": 3,
     "speculative_eagle_topk": 1,
@@ -193,7 +192,6 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
             )
         else:
             pass
-        # The shim directory carries the NemotronH config the draft's ModelConfig can parse.
         overrides["speculative_draft_model_path"] = self.checkpoint_dir
         overrides["speculative_draft_model_revision"] = None
         for key, value in MTP_DEFAULT_OVERRIDES.items():

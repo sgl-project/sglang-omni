@@ -23,10 +23,7 @@ SKIPPED_CHECKPOINT_PREFIXES = (
 def classify_checkpoint_name(
     name: str, *, is_mtp_draft: bool = False
 ) -> tuple[CheckpointTensorKind, str]:
-    """Return the tensor kind and its target name or fused expert module prefix.
-
-    The MTP draft keeps only llm.mtp.*; it shares embeddings and lm_head with the target at runtime.
-    """
+    """Return the tensor kind and its target name or fused expert module prefix."""
     if "._extra_state" in name:
         return "skip", ""
     elif is_mtp_draft:
