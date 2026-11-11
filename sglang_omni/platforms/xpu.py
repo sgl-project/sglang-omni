@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
+from sglang.srt.layers.quantization.compressed_tensors.utils import should_ignore_layer
 from sglang.srt.platforms.xpu import XpuDeviceMixin
 
 from sglang_omni.platforms.interface import JointRopeInplaceKernel, OmniPlatform
@@ -25,6 +26,19 @@ if TYPE_CHECKING:
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
 else:
     pass
+
+
+def stage_has_quantized_experts(
+    quant_dict: dict[str, object], num_hidden_layers: int
+) -> bool:
+    """True unless ignore lists expert 0 of every MoE layer, the probe SGLang uses."""
+    ignored = quant_dict.get("ignore") or []
+    return any(
+        not should_ignore_layer(
+            f"model.layers.{index}.mlp.experts.0.gate_proj", ignore=ignored
+        )
+        for index in range(num_hidden_layers)
+    )
 
 
 class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
@@ -135,17 +149,14 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
         else:
             pass
 
-        # SGLang resolves a weight-only group-packed MoE to the Marlin runner,
-        # which has no XPU kernel; Triton is the one Intel implements. Block-FP8
-        # is left alone: its XPU fused_experts path is reached only while the
-        # runner is not triton.
+        # note (siju-samuel): Marlin has no XPU kernel, so only a stage with packed experts needs Triton.
+        quant_dict = resolve_quant_config(model_config.hf_config)
         if (
             is_qwen3_omni_arch
             and moe_runner_backend == "auto"
             and model_config_has_moe(model_config)
-            and is_pack_quantized_weight_only(
-                resolve_quant_config(model_config.hf_config)
-            )
+            and is_pack_quantized_weight_only(quant_dict)
+            and stage_has_quantized_experts(quant_dict, model_config.num_hidden_layers)
         ):
             override_server_args(
                 server_args,
