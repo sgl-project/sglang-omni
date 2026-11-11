@@ -407,6 +407,8 @@ class TestNormalizeCompressedTensorsIgnoreList:
             r"re:thinker\.^audio_tower",
             r"re:thinker\.\Aaudio_tower",
             r"re:thinker\.(?<=\.)visual\..*",
+            r"re:thinker\.[]|thinker\.]",
+            r"re:thinker\.audio_tower\..*|xx[^]|thinker\.]",
         ],
         ids=[
             "quantifier_owns_the_dot",
@@ -417,6 +419,8 @@ class TestNormalizeCompressedTensorsIgnoreList:
             "start_anchor_after_the_prefix",
             "string_anchor_after_the_prefix",
             "lookbehind_after_the_prefix",
+            "alternation_inside_a_class_led_by_a_literal_bracket",
+            "alternation_inside_a_negated_class_led_by_a_literal_bracket",
         ],
     )
     def test_untranslatable_regex_is_reported_and_left_alone(

@@ -297,18 +297,21 @@ def split_top_level_alternatives(pattern: str) -> list[str]:
     depth = 0
     escaped = False
     in_class = False
+    class_body_start = 0
     for index, char in enumerate(pattern):
         if escaped:
             escaped = False
         elif char == "\\":
             escaped = True
         elif in_class:
-            if char == "]":
+            # note (siju-samuel): a ] right after [ or [^ is a literal member, not the close.
+            if char == "]" and index != class_body_start:
                 in_class = False
             else:
                 pass
         elif char == "[":
             in_class = True
+            class_body_start = index + (2 if pattern.startswith("^", index + 1) else 1)
         elif char == "(":
             depth += 1
         elif char == ")":
