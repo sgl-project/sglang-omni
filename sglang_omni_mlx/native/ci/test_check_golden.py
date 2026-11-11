@@ -237,8 +237,8 @@ def test_a_recorded_chip_requires_every_voxtral_code() -> None:
 
 
 def test_a_recorded_chip_requires_the_same_decoded_audio() -> None:
-    """Drama 3, Qwen3-TTS and S2-Pro goldens hold a hash of the decoded audio beside
-    the codes; only a recorded chip is held to it."""
+    """Drama 3, Qwen3-TTS, S2-Pro and ZONOS3 goldens hold a hash of the decoded audio
+    beside the codes; only a recorded chip is held to it."""
     recorded = {**SPEECH, "pcm_sha256": "ab"}
     golden = {
         **speech_golden_file(),
