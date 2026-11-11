@@ -1079,9 +1079,9 @@ def test_qwen3_asr_metadata_graph_is_off_only_on_xpu(
     )
 
 
-@pytest.mark.parametrize("platform_enables_it", [True, False])
+@pytest.mark.parametrize("platform_enables_async_prefill", [True, False])
 def test_qwen3_asr_async_prefill_follows_the_platform(
-    monkeypatch: pytest.MonkeyPatch, platform_enables_it: bool
+    monkeypatch: pytest.MonkeyPatch, platform_enables_async_prefill: bool
 ) -> None:
     """Launch-first prefill is a platform policy, not a CUDA-only path: any
     platform whose hook says yes gets it."""
@@ -1089,12 +1089,12 @@ def test_qwen3_asr_async_prefill_follows_the_platform(
     monkeypatch.setattr(
         qwen3_asr_builder.current_platform,
         "enable_async_prefill",
-        lambda: platform_enables_it,
+        lambda: platform_enables_async_prefill,
     )
 
     scheduler = qwen3_asr_stages.create_sglang_qwen3_asr_executor("dummy")
 
-    assert scheduler.async_prefill is platform_enables_it
+    assert scheduler.async_prefill is platform_enables_async_prefill
 
 
 @pytest.mark.parametrize("decode_backend", ["fa3", "flashinfer"])
