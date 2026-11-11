@@ -47,6 +47,14 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
     PinnedDraft(
         model_path="inclusionAI/Ming-3.0-asr-tiny",
         stage="thinker",
+        algorithm="NEXTN",
+        draft_model_path="wirybeaver/Ming-3.0-asr-tiny-mtp",
+        draft_model_revision="5d6dabd0ba4c739c011951f8982d9d75077ab0e4",
+        license="mit",
+    ),
+    PinnedDraft(
+        model_path="inclusionAI/Ming-3.0-asr-tiny",
+        stage="thinker",
         algorithm="DSPARK",
         draft_model_path="wirybeaver/Ming-3.0-asr-tiny-dspark",
         draft_model_revision="3c4d61f6b0e09e91db3480c73b9227e6e2af451d",
