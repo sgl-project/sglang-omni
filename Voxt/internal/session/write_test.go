@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -591,6 +592,58 @@ func TestWarmLLM(t *testing.T) {
 			if p.Skill != chat.Skill || len(p.Messages) != n || n < 2 || !reflect.DeepEqual(p.Messages[:n-1], chat.Messages[:n-1]) ||
 				p.Messages[n-1].Content == chat.Messages[n-1].Content {
 				t.Errorf("prefill %+v\nchat %+v", p, chat)
+			}
+		})
+	}
+}
+
+// TestTranslateOpensNoSpeechModelItDoesNotUse: a selection to translate
+// and a typed text are not heard, so the session does not ask for a
+// speech model (it waited for one to load again after it went idle,
+// #3838) and works with none installed; with no selection, Translate
+// asks again with one and hears the text; speech Translate is unchanged.
+func TestTranslateOpensNoSpeechModelItDoesNotUse(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		sel    Selector
+		req    StartRequest
+		speak  bool
+		speech []bool
+		asked  string // in the language model's last message
+	}{
+		{"a selection", &fakeSelector{text: "Voxt 把选中的 text 翻译成英文"}, StartRequest{}, false, []bool{false}, "Voxt 把选中的 text 翻译成英文"},
+		{"no selection", &fakeSelector{}, StartRequest{}, true, []bool{false, true}, "hello VoxtNew"},
+		{"the selection is not read", &fakeSelector{err: errors.New("AX failed")}, StartRequest{}, true, []bool{false, true}, "hello VoxtNew"},
+		{"a typed text", &fakeSelector{text: "unused"}, StartRequest{Text: &TextInput{Selection: "Good morning"}}, false, []bool{false}, "Good morning"},
+		{"no selector: speech", nil, StartRequest{}, true, []bool{true}, "hello VoxtNew"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &fakeLLM{text: "好的。"} // the target language: no strict retry
+			h := newHarness(t, &fakeFile{text: "hello aura link"}, model, func(c *Config, _ *settings.Settings) { c.Select = tc.sel })
+			if !tc.speak {
+				h.asr = nil // no speech model installed
+			}
+			req := tc.req
+			req.Kind, req.Target = store.KindTranslate, slack
+			id, err := h.m.Start(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.speak {
+				h.speak(id, 5)
+			}
+			end := h.rec.wait(t)
+			reqs := model.requests()
+			if end.State != Done || len(reqs) != 1 || !strings.Contains(reqs[0].Messages[len(reqs[0].Messages)-1].Content, tc.asked) {
+				t.Fatalf("end %s %v, requests %+v", end.State, end.Problem, reqs)
+			}
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			if !slices.Equal(h.speech, tc.speech) {
+				t.Errorf("Resolve asked for speech %v; want %v", h.speech, tc.speech)
+			}
+			if !tc.speak && h.audio.recorded() != 0 {
+				t.Errorf("recorded %d frames", h.audio.recorded())
 			}
 		})
 	}

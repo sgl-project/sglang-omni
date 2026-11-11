@@ -140,7 +140,6 @@ func (r *run) canSelect() bool {
 // recognition, composition, delivery, history.
 func (r *run) main() {
 	defer r.cancel()
-	cfg := r.m.cfg
 	kind := r.req.Kind
 	switch kind {
 	case store.KindTranscribe, store.KindTranslate, store.KindRewrite:
@@ -150,16 +149,10 @@ func (r *run) main() {
 	}
 	r.logf("info", "start %s in %s", kind, r.req.Target.BundleID)
 
-	// The services and the dictionary, meanwhile.
-	r.svcDone = make(chan svcResult, 1)
-	go func() {
-		svc, err := cfg.Resolve(r.ctx, kind, r.settings)
-		var terms []store.Term
-		if err == nil && r.settings.Dictionary.Enabled && cfg.Glossary != nil {
-			terms, _ = cfg.Glossary(r.ctx)
-		}
-		r.svcDone <- svcResult{svc, terms, err}
-	}()
+	// The services and the dictionary, meanwhile. A typed text or a
+	// selection to translate is not heard: no speech model (#3838).
+	selTranslate := kind == store.KindTranslate && r.canSelect()
+	r.resolve(r.req.Text == nil && !selTranslate)
 
 	if t := r.req.Text; t != nil {
 		if r.awaitServices() {
@@ -169,7 +162,7 @@ func (r *run) main() {
 	}
 	var selDone chan string
 	switch {
-	case kind == store.KindTranslate && r.canSelect():
+	case selTranslate:
 		sel := r.readSelection()
 		if r.ctx.Err() != nil {
 			r.endCancelled(nil)
@@ -181,6 +174,8 @@ func (r *run) main() {
 			}
 			return
 		}
+		// No selection: Translate hears the text, with a speech model.
+		r.resolve(true)
 		r.m.update(r, func(s *Snapshot) { s.State = Recording })
 	case kind == store.KindRewrite && r.canSelect():
 		selDone = make(chan string, 1)
@@ -209,6 +204,23 @@ func (r *run) main() {
 		}
 		r.write(text, sel)
 	}
+}
+
+// resolve opens the session's services and reads the dictionary,
+// meanwhile, into a new svcDone (an earlier resolve's result is
+// dropped); speech: as Resolver's.
+func (r *run) resolve(speech bool) {
+	cfg := r.m.cfg
+	done := make(chan svcResult, 1)
+	r.svcDone = done
+	go func() {
+		svc, err := cfg.Resolve(r.ctx, r.req.Kind, r.settings, speech)
+		var terms []store.Term
+		if err == nil && r.settings.Dictionary.Enabled && cfg.Glossary != nil {
+			terms, _ = cfg.Glossary(r.ctx)
+		}
+		done <- svcResult{svc, terms, err}
+	}()
 }
 
 // finishOpts say how a result is delivered: card, when set, sends it to

@@ -169,18 +169,21 @@ func (a *app) openSessions() {
 
 // resolver opens a session's local models (off the main thread: opening
 // one may start its runtime). A model that is not installed stays nil:
-// the session says what it lacks when it needs it (a selection to
-// translate needs no speech model).
+// the session says what it lacks when it needs it. Without speech the
+// speech model is not opened at all: loading it again after it went
+// idle cost a selection Translate seconds (#3838).
 func resolver(lm local.Services) session.Resolver {
-	return func(ctx context.Context, kind session.Kind, s settings.Settings) (session.Services, error) {
+	return func(ctx context.Context, kind session.Kind, s settings.Settings, speech bool) (session.Services, error) {
 		f := featureOf(s, string(kind))
 		var svc session.Services
-		p, m, err := lm.ASR(ctx, f.ASR)
-		switch {
-		case err == nil:
-			svc.ASR, svc.ASRInfo = p, sessionModel(m)
-		case !errors.Is(err, local.ErrNotInstalled):
-			return svc, err
+		if speech {
+			p, m, err := lm.ASR(ctx, f.ASR)
+			switch {
+			case err == nil:
+				svc.ASR, svc.ASRInfo = p, sessionModel(m)
+			case !errors.Is(err, local.ErrNotInstalled):
+				return svc, err
+			}
 		}
 		if va, ok := svc.ASR.(local.VoiceActivity); ok {
 			// No model: speech is found by energy.
