@@ -351,6 +351,15 @@ func (a *app) cardBodyHeight(v cardView) (int, bool) {
 		// An answer on its way: the card grows a few lines at a time,
 		// not with every line (#3836).
 		h = float32(math.Ceil(float64(h/streamGrowStep))) * streamGrowStep
+		// A guess for text the view has not measured yet runs a little
+		// long: it kept the card a step taller until the measure came
+		// back a frame later, so the card grew and dropped back. Keep
+		// the last measured height until then.
+		if r := &a.ov.stream; exact {
+			r.h = h
+		} else if r.h > 0 {
+			h = r.h
+		}
 	}
 	return min(int(math.Ceil(float64(h))), bodyMax), exact
 }

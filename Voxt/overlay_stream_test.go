@@ -77,3 +77,42 @@ func TestStreamedAnswerCalm(t *testing.T) {
 		t.Errorf("%d steps still on their way after the model ended", len(clock.timers))
 	}
 }
+
+// TestStreamedAnswerNoDip (#3839 verify): on the Mac the view measures
+// each new text a frame after the card first sized it from a guess, and
+// the guess runs long. The card must not grow a step on the guess and
+// drop back when the measure comes: while the answer streams its height
+// never goes down.
+func TestStreamedAnswerNoDip(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.measureHook = nil // the overlay's view measures its texts, as on the Mac
+	defer func() { a.measureHook = guessText }()
+	clock := (&fakeTimers{}).install(a)
+	long := strings.Repeat("The meeting moves to Thursday at three, and the room is the big one upstairs. ", 20)
+	s := session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: session.Composing, Card: true, Partial: "make it longer", Selection: "x"}
+	last := 0
+	check := func(when string) {
+		t.Helper()
+		if _, h, _ := a.cardSize(); h < last {
+			t.Fatalf("at %d of %d runes (%s) the card went from %d to %d pt", len(a.cardNow().text), len(long), when, last, h)
+		} else {
+			last = h
+		}
+	}
+	for n := 8; n < len(long); n += 8 {
+		s.Draft = long[:n]
+		snap(a, s)
+		clock.advance(20 * time.Millisecond)
+		check("guessed")
+		for _, k := range a.overlayTexts() { // the view's measure: a line less than the guess
+			if _, ok := a.ov.textW[k]; !ok {
+				w, h := guessText(k)
+				if a.ov.textW == nil {
+					a.ov.textW = map[ovSized]ovMeasured{}
+				}
+				a.ov.textW[k] = ovMeasured{w, max(h-19, 19)}
+			}
+		}
+		check("measured")
+	}
+}

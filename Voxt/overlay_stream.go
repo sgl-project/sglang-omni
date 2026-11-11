@@ -26,8 +26,9 @@ const (
 // streamReveal is how much of a session's draft the card shows.
 type streamReveal struct {
 	id      string
-	shown   int  // runes
-	ticking bool // a step is on its way
+	shown   int     // runes
+	ticking bool    // a step is on its way
+	h       float32 // the card's last measured body height (cardBodyHeight)
 }
 
 // revealRunes is how many runes of a total-rune draft show dt after shown
