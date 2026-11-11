@@ -1,0 +1,12 @@
+## client → service
+GET /api-ws/v1/realtime?model=qwen3-asr-flash-realtime
+Authorization: Bearer <key>
+OpenAI-Beta: realtime=v1
+→ text {"event_id":"<event-id>","session":{"input_audio_format":"pcm","modalities":["text"],"sample_rate":16000,"turn_detection":{"silence_duration_ms":800,"threshold":0.35,"type":"server_vad"}},"type":"session.update"}
+→ text {"audio":"<base64 of 3200 bytes>","event_id":"<event-id>","type":"input_audio_buffer.append"}
+→ text {"event_id":"<event-id>","type":"session.finish"}
+
+## events
+partial: 好的
+final: 好的
+  model=qwen3-asr-flash-realtime lang=zh duration=100ms

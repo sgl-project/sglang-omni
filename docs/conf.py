@@ -88,8 +88,21 @@ language = "en"
 
 exclude_patterns = ["build", "Thumbs.db", ".DS_Store", "developer_reference/mlx.md"]
 
+doc_redirects = {
+    "get_started/apiserver_quickstart": "get_started/quickstart",
+    "get_started/installation_apple_silicon": "other_platforms/installation_apple_silicon",
+    "get_started/installation_cpu": "other_platforms/installation_cpu",
+    "get_started/installation_musa": "other_platforms/installation_musa",
+    "get_started/installation_npu": "other_platforms/installation_npu",
+    "get_started/installation_xpu": "other_platforms/installation_xpu",
+    "developer_reference/mlx": "developer_reference/mlx/index",
+    "mlx/index": "developer_reference/mlx/index",
+    "mlx/long_audio": "developer_reference/mlx/long_audio",
+    "developer_reference/duplex_load_generator_pacing": "developer_reference/full_duplex_guide",
+}
+
 html_additional_pages = {
-    "developer_reference/mlx": "mlx_redirect.html",
+    **dict.fromkeys(doc_redirects, "doc_redirect.html"),
     "developer_reference/full_duplex_bench": "full_duplex_bench_redirect.html",
     "developer_reference/full_duplex_metrics": "full_duplex_metrics_redirect.html",
     "developer_reference/full_duplex_interactive_model": "full_duplex_interactive_model_redirect.html",
@@ -121,6 +134,7 @@ html_theme_options = {
 }
 
 html_context = {
+    "doc_redirects": doc_redirects,
     "display_github": True,
     "github_user": "sgl-project",
     "github_repo": "sgl-project.github.io",

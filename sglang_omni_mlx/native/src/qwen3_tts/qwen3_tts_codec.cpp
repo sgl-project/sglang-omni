@@ -5,8 +5,11 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
+
+#include <mlx/memory.h>
 
 namespace qwen3_tts {
 
@@ -24,6 +27,38 @@ constexpr std::array<int, 3> kResidualDilations = {1, 3, 9};
 constexpr int kChunkFrames = 300;
 constexpr int kLeftContextFrames = 25;
 constexpr int kStreamedChunkFrames = 25;
+
+// Note (Codex): on M5 Pro, this limit reduced long-chunk footprint without
+// slowing generation. Note (Codex): MLX cache limits are process-wide; the
+// native server owns one model worker.
+constexpr size_t kCodecCacheLimitBytes = 512ULL * 1024 * 1024;
+std::mutex codec_cache_limit_mutex;
+
+class ScopedCodecCacheLimit {
+public:
+  explicit ScopedCodecCacheLimit(bool enabled)
+      : lock_(codec_cache_limit_mutex), enabled_(enabled) {
+    if (enabled_) {
+      previous_cache_limit_bytes_ = mx::set_cache_limit(0);
+      mx::set_cache_limit(
+          std::min(previous_cache_limit_bytes_, kCodecCacheLimitBytes));
+    } else {
+    }
+  }
+  ~ScopedCodecCacheLimit() {
+    if (enabled_) {
+      mx::set_cache_limit(previous_cache_limit_bytes_);
+    } else {
+    }
+  }
+  ScopedCodecCacheLimit(const ScopedCodecCacheLimit &) = delete;
+  ScopedCodecCacheLimit &operator=(const ScopedCodecCacheLimit &) = delete;
+
+private:
+  std::unique_lock<std::mutex> lock_;
+  bool enabled_;
+  size_t previous_cache_limit_bytes_ = 0;
+};
 
 // The other half of each head, the first half negated.
 mx::array RotateHalf(const mx::array &x) {
@@ -374,6 +409,7 @@ std::vector<float> SpeechStream::Finish() {
 }
 
 std::vector<float> SpeechStream::DecodeChunk(int end_frame) {
+  const ScopedCodecCacheLimit cache_limit(!streamed_);
   const int context_frames = std::min(kLeftContextFrames, emitted_frames_);
   const int start_frame = emitted_frames_ - context_frames;
   const std::vector<mx::array> window(frames_.begin() + start_frame,
