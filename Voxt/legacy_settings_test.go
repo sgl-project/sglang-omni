@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"encoding/xml"
 	"os"
@@ -362,5 +363,66 @@ func TestLegacyAPIFormat(t *testing.T) {
 		if p, _, ok := s.provider(); !ok || p.APIFormat != c.want {
 			t.Errorf("%+v: %q (ok %v)", c, p.APIFormat, ok)
 		}
+	}
+}
+
+// Who imported before 2.0.2 with Show in Dock off in Voxt 1.x gets it at
+// the next start, once: turned back on, the Dock stays (#3788). Who
+// imported since read it then, and may have changed the switch since.
+func TestLegacyDockAtStart(t *testing.T) {
+	if _, err := os.Stat("/usr/bin/plutil"); err != nil {
+		t.Skip("no plutil: the previous Voxt's preferences are read on macOS only")
+	}
+	home := t.TempDir()
+	lib := filepath.Join(home, "Library", "Containers", legacyBundleID, "Data", "Library")
+	voxtDir := filepath.Join(lib, "Application Support", "Voxt")
+	prefs := filepath.Join(lib, "Preferences", legacyBundleID+".plist")
+	for _, d := range []string{voxtDir, filepath.Dir(prefs)} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(voxtDir, "voxt.sqlite"), []byte("SQLite format 3\x00"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(prefs, []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>showInDock</key><false/></dict></plist>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VOXTNEW_LEGACY_HOME", home)
+	ctx := context.Background()
+	start := func(dir string, done bool) *app {
+		a, _, tt := newTestAppIn(t, dir)
+		a.prefs.Setup.Done = done
+		a.prefs.General.MenuBar = false
+		a.legacyDockAtStart()
+		frames(tt)
+		return a
+	}
+
+	dir := testDir(t)
+	if a := start(dir, false); a.prefs.General.HideDock { // the setup guide's import reads it
+		t.Fatal("out of the Dock before the setup guide is done")
+	} else {
+		a.quit()
+	}
+	a := start(dir, true)
+	if g := a.prefs.General; !g.HideDock || !g.MenuBar {
+		t.Fatalf("set up before 2.0.2: %+v", g)
+	}
+	a.updateSettings(func(s *settings.Settings) { s.General.HideDock = false })
+	a.quit()
+	if b := start(dir, true); b.prefs.General.HideDock {
+		t.Error("the Dock switch turned back on did not stay")
+	}
+
+	dir = testDir(t)
+	c, _, _ := newTestAppIn(t, dir)
+	if err := c.lib.store.Documents().Put(ctx, legacyEnhanceSettled, []byte("true")); err != nil {
+		t.Fatal(err)
+	}
+	c.quit()
+	if d := start(dir, true); d.prefs.General.HideDock {
+		t.Error("imported since 2.0.2: the switch changed again")
 	}
 }

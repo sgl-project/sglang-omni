@@ -15,6 +15,9 @@ func TestUncommittedSuffix(t *testing.T) {
 		{"今天下午开会", "今天下午开会", ""},
 		{"今天下午开会吧", "今天下午开会", "吧"},
 		{"好的", "今天下午开会", "好的"},
+		// The model revised the committed tail: emit only what follows the shared prefix (#3431).
+		{"今天下午开会吧", "今天下午开个", "会吧"},
+		{"今天下午很好", "今天下午开会", "很好"},
 	}
 	for _, tc := range tests {
 		got := uncommittedSuffix(tc.cumulative, tc.committed)
@@ -88,5 +91,24 @@ func TestCommitterLive(t *testing.T) {
 	c.committed = "你好"
 	if g := c.Live(); g != "世界" {
 		t.Fatalf("live after partial commit %q", g)
+	}
+}
+
+// TestCommitterPauseRevisedTail replays #3431: a pause commits a provisional
+// tail, the model then revises it, and the next bubble must not repeat the sentence.
+func TestCommitterPauseRevisedTail(t *testing.T) {
+	var c Committer
+	c.BeginPhrase(0)
+	c.Partial("Yeah,你看这个应该都可以。但是你选不同的语言，它就会倾向于去翻译个问题。")
+	if _, ok := c.Tick(time.Second, silenceFinalizeLive); !ok {
+		t.Fatal("expected commit after pause")
+	}
+	c.Partial("Yeah,你看这个应该都可以。但是你选不同的语言，它就会倾向于去翻译更加，呃，你选的那个语言。")
+	if g := c.Live(); g != "更加，呃，你选的那个语言。" {
+		t.Fatalf("live after revision %q", g)
+	}
+	seg, ok := c.Tick(2*time.Second, silenceFinalizeLive)
+	if !ok || seg.Text != "更加，呃，你选的那个语言。" {
+		t.Fatalf("second commit got %q ok=%v", seg.Text, ok)
 	}
 }

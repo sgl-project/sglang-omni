@@ -108,11 +108,7 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 			a.stopSession()
 		}
 	case v.canFollowUp:
-		tip := i18n.T("Follow up by voice")
-		if v.follow != "" {
-			tip = i18n.T("Follow up by voice (%s)", v.follow)
-		}
-		if cardCapsule(c.Key("ov-card-continue"), i18n.T("Continue"), tip) {
+		if cardCapsule(c.Key("ov-card-continue"), i18n.T("Continue"), continueTip(v.follow)) {
 			a.closeLangMenu()
 			a.followUpAnswer("")
 		}
@@ -143,6 +139,15 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 	if cardIconButton(c.Key("ov-card-close"), i18n.T("Close"), "", icons.Close, true) {
 		a.closeAnswer()
 	}
+}
+
+// continueTip is Continue's tip, with the Rewrite shortcut's glyphs
+// keys: it also takes the text selected now (#3816).
+func continueTip(keys string) string {
+	if keys == "" {
+		return i18n.T("Follow up by voice. Text you select first goes with it.")
+	}
+	return i18n.T("Follow up by voice (%s). Text you select first goes with it.", keys)
 }
 
 // ovCardIconA is how opaque the card's icon is: Voxt's microphone over a
@@ -344,6 +349,9 @@ func (a *app) cardBubbleView(c *ui.Context, b cardBlock) {
 			if !b.live {
 				t.Selectable()
 			}
+			if b.quote.text != "" {
+				a.cardQuoteView(c, b)
+			}
 			if hover {
 				copied := a.ov.bubbleCopied == b.text.text
 				label, ic := i18n.T("Copy"), icons.Copy
@@ -363,6 +371,33 @@ func (a *app) cardBubbleView(c *ui.Context, b cardBlock) {
 			}
 		})
 	})
+}
+
+// cardQuoteView is a follow-up's text selected since, under its
+// instruction (#3816): dimmer, its start aligned, Show all when cut.
+func (a *app) cardQuoteView(c *ui.Context, b cardBlock) {
+	ui.Text(c, b.quote.text).FontSize(b.quote.size).TextColor(ui.RGBA(255, 255, 255, 0.64)).Width(b.quote.wrap).Selectable()
+	if !b.cut {
+		return
+	}
+	label := i18n.T("Show all")
+	if b.open {
+		label = i18n.T("Show less")
+	}
+	if ui.ButtonBase(c.Key("quote")).Height(quoteToggleH).Label(label).Children(func() {
+		ui.Text(c, label).FontSize(11).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, 0.78)).SingleLine()
+	}).Clicked() {
+		a.toggleQuote(b.turn)
+	}
+}
+
+// toggleQuote shows a follow-up's selection whole, or short again.
+func (a *app) toggleQuote(turn int) {
+	if a.answer.quotesOpen == nil {
+		a.answer.quotesOpen = map[int]bool{}
+	}
+	a.answer.quotesOpen[turn] = !a.answer.quotesOpen[turn]
+	a.overlaySync()
 }
 
 // bubbleMark is how long a bubble's Copy shows its mark (Voxt's).

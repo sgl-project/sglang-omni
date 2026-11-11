@@ -263,6 +263,14 @@ type Dictionary struct {
 	// what) that the speech model gets before the hints, with the
 	// dictionary on or off; a service that takes no prompt ignores it.
 	SpeechContext string `json:"speechContext,omitempty"`
+	// Notes is the personal dictionary: Markdown the user writes once (a
+	// table of standard spelling, what recognition makes of it, and when
+	// it applies, or any notes) that goes into the language model's
+	// system prompt for Transcribe, Translate and Rewrite, never to
+	// speech recognition (compose.Input.Dictionary). NotesOff keeps it
+	// out of the prompt; notes are sent by default once written.
+	Notes    string `json:"notes,omitempty"`
+	NotesOff bool   `json:"notesOff,omitempty"`
 	// Learn watches the field a Transcribe result was pasted into for
 	// 30 s and proposes a term when the user corrects a word of it
 	// (internal/learn). Off by default.
@@ -278,15 +286,23 @@ type Setup struct {
 	Tried bool `json:"tried,omitempty"`
 }
 
-// Updates: what the updater offers (Settings → About → Updates). Its
-// other preferences (automatic checks and installs) are the updater
-// plugin's, in its own updater.json.
+// Updates: what the updater offers (Settings → About → Updates). With an
+// update feed, its other preferences (automatic checks and installs) are
+// the updater plugin's, in its own updater.json; without one, the check
+// of GitHub's releases (updates_github.go) keeps its own here.
 type Updates struct {
 	// Beta offers beta versions (the feed's beta channel) too. Nil until the
 	// user chooses: then on while the running version is a beta (BetaOn),
 	// so that a beta's users get the next one. No migration: older
 	// documents have none.
 	Beta *bool `json:"beta,omitempty"`
+	// NoAutoCheck turns off the daily check of GitHub's releases (on by
+	// default); LastCheck is when one last succeeded.
+	NoAutoCheck bool      `json:"noAutoCheck,omitempty"`
+	LastCheck   time.Time `json:"lastCheck,omitzero"`
+	// Dismissed is the version whose "is available" card the user
+	// dismissed: no card for it again, one for a newer version.
+	Dismissed string `json:"dismissed,omitempty"`
 }
 
 // BetaOn reports whether updates include betas for the app of version
