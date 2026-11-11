@@ -187,12 +187,17 @@ class MossSpeechSGLangModel(torch.nn.Module):
                 ).cumsum(0)
                 - 1
             )
+        projection_lengths = [1] * len(token_lengths)
         text_logits = request_linear(
-            normalized_text_hidden_states, self.text_lm_head.weight, token_lengths
-        )[last_token_indices, : self.text_vocab_size]
+            normalized_text_hidden_states[last_token_indices],
+            self.text_lm_head.weight,
+            projection_lengths,
+        )[:, : self.text_vocab_size]
         audio_logits = request_linear(
-            normalized_audio_hidden_states, self.audio_lm_head.weight, token_lengths
-        )[last_token_indices, : self.audio_vocab_size]
+            normalized_audio_hidden_states[last_token_indices],
+            self.audio_lm_head.weight,
+            projection_lengths,
+        )[:, : self.audio_vocab_size]
         return MossSpeechModelOutput(
             next_token_logits=text_logits,
             text_logits=text_logits,
