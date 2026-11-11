@@ -42,8 +42,12 @@ READER_FFMPEG_THREADS = 8
 FFMPEG_MAX_DECODER_THREADS = 16
 
 current_platform: LazyImport = LazyImport("sglang_omni.platforms", "current_platform")
-# note (Rahul): bounds the full-size frames one device decode holds on the card; not tuned.
-DEVICE_DECODE_FRAMES_PER_BATCH = 32
+DEVICE_DECODE_MAX_FRAMES_PER_BATCH = 32
+# note (Rahul): bounds one batch's full-size frames on the card, which may be a thinker card.
+DEVICE_DECODE_BATCH_BUDGET_BYTES = 1 << 30
+DECODED_FRAME_BYTES_PER_PIXEL = 3
+# note (Rahul): measured on Arc Pro B60, 720p to 4K: the RGB frames plus the bicubic resize's float32 buffers.
+RESIZED_DECODE_BYTES_PER_PIXEL = 29
 # note (Rahul): WORKAROUND(torchcodec-xpu) two device decoders in one process fail, so device decodes run one at a time.
 DEVICE_DECODE_LOCK = threading.Lock()
 DEVICE_DECODE_FALLBACK_LOGGED = threading.Event()
@@ -572,6 +576,26 @@ def warn_device_decode_fallback(decode_device: str, error: Exception) -> None:
         pass
 
 
+def device_decode_frames_per_batch(
+    decoder: VideoDecoder, device_bytes_per_pixel: int
+) -> int:
+    """Frames per device decode batch that keep the batch within DEVICE_DECODE_BATCH_BUDGET_BYTES."""
+    if decoder.metadata.width is None or decoder.metadata.height is None:
+        raise RuntimeError("Video stream metadata has no frame size")
+    else:
+        pass
+    frame_bytes = (
+        decoder.metadata.width * decoder.metadata.height * device_bytes_per_pixel
+    )
+    return max(
+        1,
+        min(
+            DEVICE_DECODE_MAX_FRAMES_PER_BATCH,
+            DEVICE_DECODE_BATCH_BUDGET_BYTES // frame_bytes,
+        ),
+    )
+
+
 def resized_frame_size(
     video_options: Mapping[str, str | float | int],
     frame_count: int,
@@ -617,13 +641,14 @@ def decode_video_on_device(
             frame_total=decoder.metadata.num_frames,
             video_fps=decoder.metadata.average_fps,
         )
+        frames_per_batch = device_decode_frames_per_batch(
+            decoder, RESIZED_DECODE_BYTES_PER_PIXEL
+        )
         resized_size: tuple[int, int] | None = None
         resized_batches: list[torch.Tensor] = []
-        for batch_start in range(0, len(frame_indices), DEVICE_DECODE_FRAMES_PER_BATCH):
+        for batch_start in range(0, len(frame_indices), frames_per_batch):
             frames = decoder.get_frames_at(
-                indices=frame_indices[
-                    batch_start : batch_start + DEVICE_DECODE_FRAMES_PER_BATCH
-                ]
+                indices=frame_indices[batch_start : batch_start + frames_per_batch]
             ).data
             if resized_size is None:
                 resized_size = resized_frame_size(
@@ -685,6 +710,9 @@ def load_video_path(
         except (RuntimeError, ValueError) as device_exc:
             # note (Rahul): the CPU reader below decodes the same frames and classifies invalid media.
             warn_device_decode_fallback(decode_device, device_exc)
+        finally:
+            # note (Rahul): the caching allocator would otherwise keep the decode's peak reserved on the card.
+            current_platform.empty_cache()
     else:
         pass
     backend = qwen_vision.get_video_reader_backend()

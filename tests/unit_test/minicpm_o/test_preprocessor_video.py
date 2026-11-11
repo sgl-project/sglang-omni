@@ -42,6 +42,7 @@ from sglang_omni.preprocessing.resource_connector import (
 from sglang_omni.preprocessing.video import load_video_path
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
+from sglang_omni.serve.openai_errors import is_bad_request_error
 from tests.unit_test.minicpm_o.test_preprocessor_prompt import (
     CHAT_TEMPLATE,
     ProcessorOutput,
@@ -55,7 +56,9 @@ def decode_timed_video_on(
     monkeypatch.setattr(
         video_frontend,
         "current_platform",
-        SimpleNamespace(get_video_decode_device=lambda: decode_device),
+        SimpleNamespace(
+            get_video_decode_device=lambda: decode_device, empty_cache=lambda: None
+        ),
     )
 
 
@@ -1008,6 +1011,40 @@ def test_a_failed_device_timed_video_decode_falls_back_to_decord(
         np.asarray(frame).tobytes() for frame in reference.frames
     ]
     assert preprocessing_video.DEVICE_DECODE_FALLBACK_LOGGED.is_set()
+
+
+@pytest.mark.parametrize(
+    ("media", "max_frames", "expected_error"),
+    [
+        ("valid", 0, ValueError),
+        ("corrupt", None, preprocessing_video.VideoDecodeError),
+    ],
+    ids=["zero_max_frames", "corrupt_upload"],
+)
+def test_a_bad_timed_video_request_without_decord_is_a_bad_request(
+    encoded_video_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    media: str,
+    max_frames: int | None,
+    expected_error: type[Exception],
+) -> None:
+    """Without decord, a bad request on the device path used to surface as the requires-decord server error."""
+    if media == "corrupt":
+        video_path = tmp_path / "corrupt.mp4"
+        video_path.write_bytes(encoded_video_path.read_bytes()[:200])
+    else:
+        video_path = encoded_video_path
+    decode_timed_video_on(monkeypatch, "cpu")
+    monkeypatch.setattr(video_frontend, "VideoReader", None)
+    monkeypatch.setattr(
+        preprocessing_video, "DEVICE_DECODE_FALLBACK_LOGGED", threading.Event()
+    )
+    with pytest.raises(expected_error) as raised:
+        MiniCPMVideoIO(use_audio=False, max_frames=max_frames).load_file(video_path)
+
+    assert is_bad_request_error(raised.value)
+    assert not preprocessing_video.DEVICE_DECODE_FALLBACK_LOGGED.is_set()
 
 
 def test_video_audio_decoder_uses_fallback_when_backend_is_unavailable(

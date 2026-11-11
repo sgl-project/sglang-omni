@@ -20,25 +20,27 @@ VIDEO_DECODE_ENV = "SGLANG_OMNI_XPU_VIDEO_DECODE"
 
 
 @functools.cache
-def video_decode_setting() -> str | None:
-    """The XPU device SGLANG_OMNI_XPU_VIDEO_DECODE names, or None when it is off."""
+def video_decode_device() -> str | None:
+    """The XPU device SGLANG_OMNI_XPU_VIDEO_DECODE names, or None to decode request videos on the CPU."""
     # note (Rahul): off by default, since full-size frames on a card the thinker has filled slow the thinker.
     setting = os.environ.get(VIDEO_DECODE_ENV, "0").strip().lower()
     if setting in ("0", "false", "no", "off"):
         return None
-    elif setting in ("1", "true", "yes", "on"):
-        return "xpu"
-    elif re.fullmatch(r"xpu:\d+", setting):
-        return setting
-    else:
+    elif not (
+        setting in ("1", "true", "yes", "on") or re.fullmatch(r"xpu:\d+", setting)
+    ):
         raise ValueError(
             f'"{setting}" is not a valid {VIDEO_DECODE_ENV} value: use a boolean or xpu:N'
         )
-
-
-@functools.cache
-def torchcodec_xpu_installed() -> bool:
-    return importlib.util.find_spec("torchcodec_xpu") is not None
+    elif importlib.util.find_spec("torchcodec_xpu") is None:
+        logger.warning(
+            f"{VIDEO_DECODE_ENV}={setting} is ignored: torchcodec-xpu is not installed, so request videos decode on the CPU"
+        )
+        return None
+    elif setting.startswith("xpu:"):
+        return setting
+    else:
+        return "xpu"
 
 
 if TYPE_CHECKING:
@@ -67,11 +69,7 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
 
     def get_video_decode_device(self) -> str | None:
         """The card whose media engine torchcodec decodes on, through the torchcodec-xpu plugin; opt-in."""
-        device = video_decode_setting()
-        if device is not None and torchcodec_xpu_installed():
-            return device
-        else:
-            return None
+        return video_decode_device()
 
     def get_fused_qk_norm_rope_with_cos_sin_cache(self):
         try:

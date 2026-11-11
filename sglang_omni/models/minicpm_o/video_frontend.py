@@ -27,10 +27,13 @@ from sglang_omni.preprocessing.resource_connector import (
     global_thread_pool,
 )
 from sglang_omni.preprocessing.video import (
-    DEVICE_DECODE_FRAMES_PER_BATCH,
+    DECODED_FRAME_BYTES_PER_PIXEL,
     DEVICE_DECODE_LOCK,
+    VideoDecodeError,
     VideoDecoder,
+    device_decode_frames_per_batch,
     extract_audio_from_path,
+    is_invalid_video,
     warn_device_decode_fallback,
 )
 
@@ -184,17 +187,16 @@ class MiniCPMVideoIO(MediaIO[TimedVideo]):
             timestamps_seconds, frame_indices, duration_seconds = self.sample_timeline(
                 decoder.metadata.num_frames, decoder.metadata.average_fps
             )
+            frames_per_batch = device_decode_frames_per_batch(
+                decoder, DECODED_FRAME_BYTES_PER_PIXEL
+            )
             frame_pixels = [
                 decoder.get_frames_at(
-                    indices=frame_indices[
-                        batch_start : batch_start + DEVICE_DECODE_FRAMES_PER_BATCH
-                    ]
+                    indices=frame_indices[batch_start : batch_start + frames_per_batch]
                 )
                 .data.cpu()
                 .numpy()
-                for batch_start in range(
-                    0, len(frame_indices), DEVICE_DECODE_FRAMES_PER_BATCH
-                )
+                for batch_start in range(0, len(frame_indices), frames_per_batch)
             ]
         frames = [
             Image.fromarray(frame).convert("RGB")
@@ -214,12 +216,22 @@ class MiniCPMVideoIO(MediaIO[TimedVideo]):
                 frames, timestamps_seconds, duration_seconds = (
                     self.read_frames_on_device(video_path, decode_device)
                 )
-            except (RuntimeError, ValueError) as device_exc:
-                # note (Rahul): decord samples the same timeline and reports invalid media itself.
-                warn_device_decode_fallback(decode_device, device_exc)
-                frames, timestamps_seconds, duration_seconds = (
-                    self.read_frames_with_decord(video_path)
-                )
+            except RuntimeError as device_exc:
+                if VideoReader is None and is_invalid_video(video_path, device_exc):
+                    raise VideoDecodeError(
+                        f"Invalid media data while decoding video path={video_path}: {device_exc}"
+                    ) from device_exc
+                elif VideoReader is None:
+                    raise
+                else:
+                    # note (Rahul): decord samples the same timeline and reports invalid media itself.
+                    warn_device_decode_fallback(decode_device, device_exc)
+                    frames, timestamps_seconds, duration_seconds = (
+                        self.read_frames_with_decord(video_path)
+                    )
+            finally:
+                # note (Rahul): the caching allocator would otherwise keep the decode's peak reserved on the card.
+                current_platform.empty_cache()
         if self.use_audio:
             try:
                 with warnings.catch_warnings():

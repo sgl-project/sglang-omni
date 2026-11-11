@@ -546,12 +546,18 @@ def write_h264_video(path: Path, frame_count: int = 40, frame_rate: int = 10) ->
             container.mux(packet)
 
 
-def decode_on(monkeypatch: pytest.MonkeyPatch, decode_device: str | None) -> None:
+def decode_on(monkeypatch: pytest.MonkeyPatch, decode_device: str | None) -> list[str]:
+    """Routes request videos to decode_device; returns the log of device cache releases."""
+    cache_releases: list[str] = []
     monkeypatch.setattr(
         video,
         "current_platform",
-        SimpleNamespace(get_video_decode_device=lambda: decode_device),
+        SimpleNamespace(
+            get_video_decode_device=lambda: decode_device,
+            empty_cache=lambda: cache_releases.append("released"),
+        ),
     )
+    return cache_releases
 
 
 @pytest.mark.parametrize(
@@ -569,11 +575,12 @@ def test_device_decode_hands_the_processor_the_cpu_reader_frames(
         path, **sampling, decode_threads=16
     )
 
-    decode_on(monkeypatch, "cpu")
+    cache_releases = decode_on(monkeypatch, "cpu")
     monkeypatch.setattr(video, "DEVICE_DECODE_FALLBACK_LOGGED", threading.Event())
     frames, sample_fps = video.load_video_path(path, **sampling, decode_threads=16)
 
     assert not video.DEVICE_DECODE_FALLBACK_LOGGED.is_set()
+    assert cache_releases == ["released"]
     assert frames.dtype == torch.float32 and frames.device.type == "cpu"
     assert sample_fps == reference_fps
     assert torch.equal(frames, reference)
@@ -593,7 +600,9 @@ def test_a_failed_device_decode_falls_back_to_the_cpu_reader_and_warns_once(
     class FailingDeviceDecoder:
         def __init__(self, source: str, device: str) -> None:
             lock_held.append(video.DEVICE_DECODE_LOCK.locked())
-            self.metadata = SimpleNamespace(average_fps=10.0, num_frames=40)
+            self.metadata = SimpleNamespace(
+                average_fps=10.0, num_frames=40, width=128, height=96
+            )
 
         def get_frames_at(self, indices: list[int]) -> SimpleNamespace:
             lock_held.append(video.DEVICE_DECODE_LOCK.locked())
@@ -607,7 +616,7 @@ def test_a_failed_device_decode_falls_back_to_the_cpu_reader_and_warns_once(
         else:
             return FailingDeviceDecoder(source, device)
 
-    decode_on(monkeypatch, "xpu")
+    cache_releases = decode_on(monkeypatch, "xpu")
     monkeypatch.setattr(video, "VideoDecoder", failing_on_the_device)
     monkeypatch.setattr(video, "DEVICE_DECODE_FALLBACK_LOGGED", threading.Event())
     with caplog.at_level("WARNING", logger=video.__name__):
@@ -616,6 +625,7 @@ def test_a_failed_device_decode_falls_back_to_the_cpu_reader_and_warns_once(
         ]
 
     assert lock_held and all(lock_held)
+    assert len(cache_releases) == 2
     for frames, sample_fps in results:
         assert sample_fps == reference_fps
         assert torch.equal(frames, reference)
@@ -623,6 +633,38 @@ def test_a_failed_device_decode_falls_back_to_the_cpu_reader_and_warns_once(
         record for record in caplog.records if "decoding on the CPU" in record.message
     ]
     assert len(warnings) == 1
+
+
+def test_a_4k_device_decode_keeps_each_batch_within_the_device_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 4K clip used to decode 32 full-size frames per batch, about 7 GiB on the card with the resize."""
+    pytest.importorskip("torchcodec")
+    path = tmp_path / "moving.mp4"
+    write_h264_video(path)
+    batch_frame_counts: list[int] = []
+
+    class UltraHighDefinitionDecoder:
+        def __init__(self, source: str, device: str) -> None:
+            self.metadata = SimpleNamespace(
+                average_fps=30.0, num_frames=600, width=3840, height=2160
+            )
+
+        def get_frames_at(self, indices: list[int]) -> SimpleNamespace:
+            batch_frame_counts.append(len(indices))
+            return SimpleNamespace(
+                data=torch.zeros(len(indices), 3, 96, 128, dtype=torch.uint8)
+            )
+
+    decode_on(monkeypatch, "xpu")
+    monkeypatch.setattr(video, "VideoDecoder", UltraHighDefinitionDecoder)
+    frames, _ = video.load_video_path(path, fps=2.0, decode_threads=16)
+
+    batch_bytes = (
+        max(batch_frame_counts) * 3840 * 2160 * video.RESIZED_DECODE_BYTES_PER_PIXEL
+    )
+    assert sum(batch_frame_counts) == frames.shape[0] > max(batch_frame_counts)
+    assert batch_bytes <= video.DEVICE_DECODE_BATCH_BUDGET_BYTES
 
 
 @pytest.mark.accelerator

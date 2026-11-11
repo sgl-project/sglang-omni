@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from importlib.machinery import ModuleSpec
 
 import pytest
 
@@ -88,9 +89,9 @@ def test_sglang_caps_xpu_free_memory_against_the_allocator(monkeypatch) -> None:
 @pytest.fixture
 def fresh_video_decode_setting() -> Iterator[None]:
     """The setting is read once per process; each case reads its own and leaves none behind."""
-    xpu_platform.video_decode_setting.cache_clear()
+    xpu_platform.video_decode_device.cache_clear()
     yield
-    xpu_platform.video_decode_setting.cache_clear()
+    xpu_platform.video_decode_device.cache_clear()
 
 
 @pytest.mark.parametrize(
@@ -107,20 +108,36 @@ def fresh_video_decode_setting() -> Iterator[None]:
 def test_xpu_decodes_video_on_the_media_engine_only_when_enabled_with_the_plugin(
     fresh_video_decode_setting: None,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
     setting: str | None,
     plugin_installed: bool,
     expected_device: str | None,
 ) -> None:
-    """Off by default, since decoding on a card the thinker has filled slows serving; a named card is used as given; without torchcodec-xpu, video decodes on the CPU."""
+    """Off by default, since decoding on a card the thinker has filled slows serving; a named card is used as given; without torchcodec-xpu, video decodes on the CPU with a warning."""
     if setting is None:
         monkeypatch.delenv(xpu_platform.VIDEO_DECODE_ENV, raising=False)
     else:
         monkeypatch.setenv(xpu_platform.VIDEO_DECODE_ENV, setting)
+    find_spec = xpu_platform.importlib.util.find_spec
     monkeypatch.setattr(
-        xpu_platform, "torchcodec_xpu_installed", lambda: plugin_installed
+        xpu_platform.importlib.util,
+        "find_spec",
+        lambda name: (
+            find_spec(name)
+            if name != "torchcodec_xpu"
+            else (ModuleSpec(name, None) if plugin_installed else None)
+        ),
     )
+    with caplog.at_level("WARNING", logger=xpu_platform.__name__):
+        decode_device = xpu_platform.XPUOmniPlatform().get_video_decode_device()
 
-    assert xpu_platform.XPUOmniPlatform().get_video_decode_device() == expected_device
+    assert decode_device == expected_device
+    plugin_warnings = [
+        record
+        for record in caplog.records
+        if "torchcodec-xpu is not installed" in record.message
+    ]
+    assert len(plugin_warnings) == (1 if setting == "1" and not plugin_installed else 0)
 
 
 @pytest.mark.parametrize("setting", ["sometimes", "xpu:", "cuda:0", "xpu:1,2"])
