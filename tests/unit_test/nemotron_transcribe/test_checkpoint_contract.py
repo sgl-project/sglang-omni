@@ -180,6 +180,39 @@ def test_mtp_mapping_preserves_qkv_names_expert_transforms_and_bias_dtype() -> N
         )
 
 
+def test_mtp_expert_conversion_preserves_ungated_relu2_computation() -> None:
+    up_weights = torch.arange(24, dtype=torch.float32).reshape(2, 3, 4) / 16
+    down_weights = torch.arange(24, dtype=torch.float32).reshape(2, 4, 3) / 16
+    converted = dict(
+        checkpoint_to_mtp_weights(
+            [
+                (
+                    "llm.mtp.layers.1.mixer.experts.gate_and_up_projs",
+                    up_weights,
+                ),
+                ("llm.mtp.layers.1.mixer.experts.down_projs", down_weights),
+            ]
+        )
+    )
+    hidden_states = torch.tensor([[1.0, -2.0, 3.0]])
+    for expert_index in range(2):
+        prefix = f"mtp.layers.1.mixer.experts.{expert_index}"
+        reference = (
+            F.relu(hidden_states @ up_weights[expert_index]).square()
+            @ down_weights[expert_index]
+        )
+        actual = F.linear(
+            F.relu(
+                F.linear(
+                    hidden_states,
+                    converted[f"{prefix}.up_proj.weight"],
+                )
+            ).square(),
+            converted[f"{prefix}.down_proj.weight"],
+        )
+        torch.testing.assert_close(actual, reference)
+
+
 def test_mtp_inventory_expands_qkv_and_moe_parameters_and_fails_closed() -> None:
     expected = expected_mtp_checkpoint_names(
         {

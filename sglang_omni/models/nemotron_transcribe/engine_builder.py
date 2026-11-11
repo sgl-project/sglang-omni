@@ -74,32 +74,15 @@ def prepare_nemotron_speculative_options(
     algorithm_name = overrides.get("speculative_algorithm")
     if algorithm_name is not None and not isinstance(algorithm_name, str):
         raise ValueError("speculative_algorithm must be a string")
-    else:
-        pass
     algorithm = SpeculativeAlgorithm.from_string(algorithm_name)
+    if algorithm.is_none():
+        return overrides, False
     if enable_async_decode or overrides.get("enable_async_decode") is True:
         raise ValueError("Nemotron Transcribe does not support async decode")
-    else:
-        pass
     if "enable_async_decode" in overrides:
         overrides.pop("enable_async_decode")
-    else:
-        pass
-    if algorithm.is_none():
-        if overrides.get("speculative_draft_model_path") is not None:
-            raise ValueError(
-                "speculative_draft_model_path needs speculative_algorithm=NEXTN"
-            )
-        elif overrides.get("speculative_draft_model_revision") is not None:
-            raise ValueError(
-                "speculative_draft_model_revision needs speculative_algorithm=NEXTN"
-            )
-        else:
-            return overrides, False
-    elif algorithm != SpeculativeAlgorithm.EAGLE:
+    if algorithm != SpeculativeAlgorithm.EAGLE:
         raise ValueError("Nemotron Transcribe supports bundled NEXTN only")
-    else:
-        pass
 
     revision = overrides.get("revision")
     if revision not in (None, PINNED_CHECKPOINT_REVISION):
@@ -128,13 +111,9 @@ def prepare_nemotron_speculative_options(
         raise ValueError("Nemotron Transcribe NEXTN supports one logical MTP step")
     elif overrides.get("speculative_use_rejection_sampling") is True:
         raise ValueError("Nemotron Transcribe NEXTN supports greedy decoding only")
-    else:
-        pass
     for name in ("tp_size", "pp_size"):
         if overrides.get(name, 1) != 1:
             raise ValueError(f"Nemotron Transcribe NEXTN requires {name}=1")
-        else:
-            pass
     overrides.update(
         speculative_algorithm="NEXTN",
         speculative_draft_model_path=model_path,

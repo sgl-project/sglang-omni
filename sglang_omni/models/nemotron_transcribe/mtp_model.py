@@ -69,21 +69,20 @@ def validate_mtp_tensor_dtype(name: str, tensor: torch.Tensor) -> None:
 
 def validate_mtp_checkpoint_inventory(
     expected: set[str],
-    loaded: set[str],
+    seen: set[str],
     unexpected: set[str],
     duplicates: set[str],
 ) -> None:
-    """Fail closed when the bundled MTP tensor inventory differs from the model."""
-    missing = expected - loaded
+    """Fail when seen MTP tensors do not match the model's expected inventory."""
+    missing = expected - seen
     if missing or unexpected or duplicates:
         raise ValueError(
-            "Nemotron Transcribe MTP checkpoint layout mismatch: "
+            "Nemotron Transcribe MTP checkpoint layout mismatch; "
+            "seen tensor names differ: "
             f"missing={sorted(missing)[:8]}, "
             f"unexpected={sorted(unexpected)[:8]}, "
             f"duplicates={sorted(duplicates)[:8]}"
         )
-    else:
-        pass
 
 
 class NemotronTranscribeMTP(NemotronHForCausalLMMTP):
@@ -101,7 +100,7 @@ class NemotronTranscribeMTP(NemotronHForCausalLMMTP):
             dict(self.named_parameters()),
             num_experts=self.config.max_n_routed_experts,
         )
-        loaded: set[str] = set()
+        seen: set[str] = set()
         unexpected: set[str] = set()
         duplicates: set[str] = set()
 
@@ -109,11 +108,11 @@ class NemotronTranscribeMTP(NemotronHForCausalLMMTP):
             for name, tensor in checkpoint_to_mtp_weights(weights):
                 if name not in expected:
                     unexpected.add(name)
-                elif name in loaded:
+                elif name in seen:
                     duplicates.add(name)
                 else:
                     validate_mtp_tensor_dtype(name, tensor)
-                    loaded.add(name)
+                    seen.add(name)
                     yield name, tensor
 
         try:
@@ -123,7 +122,7 @@ class NemotronTranscribeMTP(NemotronHForCausalLMMTP):
                 "Nemotron Transcribe MTP tensor shape is incompatible with "
                 "SGLang's NemotronHForCausalLMMTP"
             ) from error
-        validate_mtp_checkpoint_inventory(expected, loaded, unexpected, duplicates)
+        validate_mtp_checkpoint_inventory(expected, seen, unexpected, duplicates)
 
 
 __all__ = [
