@@ -8,12 +8,16 @@ from dataclasses import dataclass
 from types import ModuleType, SimpleNamespace
 
 import pytest
+import torch
 from sglang.srt.arg_groups.overrides import resolution_result
+from sglang.srt.layers.quantization.compressed_tensors.compressed_tensors import (
+    CompressedTensorsConfig,
+)
 
 from sglang_omni.model_runner import model_worker
 from sglang_omni.platforms import cuda
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
-from sglang_omni.platforms.xpu import XPUOmniPlatform
+from sglang_omni.platforms.xpu import XPUOmniPlatform, expert_config_group
 from sglang_omni.utils.misc import model_config_has_moe
 
 cuda_platform = CUDAOmniPlatform()
@@ -671,6 +675,95 @@ def test_the_experts_own_group_decides_on_xpu(
     )
 
     assert resolution_result(server_args, "moe_runner_backend") == expected
+
+
+@pytest.mark.parametrize(
+    "fused_moe_activations_quantized, linear_activations_quantized, expected",
+    [(False, True, "triton"), (True, False, "auto")],
+    ids=["w4a16_fused_moe_over_w4a8_linear", "w4a8_fused_moe_over_w4a16_linear"],
+)
+def test_an_explicit_fused_moe_target_outranks_linear_on_xpu(
+    fused_moe_activations_quantized: bool,
+    linear_activations_quantized: bool,
+    expected: str,
+) -> None:
+    """Linear stands in for the experts only when no group targets FusedMoE."""
+    server_args = make_server_args(moe_runner_backend="auto")
+
+    XPUOmniPlatform().apply_model_worker_backend_policy(
+        server_args,
+        make_model_config(
+            quantization="compressed-tensors",
+            pack_quantized=True,
+            config_groups={
+                "dense": int4_group(
+                    ["Linear"], activations_quantized=linear_activations_quantized
+                ),
+                "experts": int4_group(
+                    ["FusedMoE"],
+                    activations_quantized=fused_moe_activations_quantized,
+                ),
+            },
+        ),
+        "Qwen3OmniThinkerForCausalLM",
+    )
+
+    assert resolution_result(server_args, "moe_runner_backend") == expected
+
+
+@pytest.mark.parametrize(
+    "targets_per_group, expected_group",
+    [
+        ([["Linear"]], 0),
+        ([["Linear"], ["FusedMoE"]], 1),
+        ([["FusedMoE"], ["Linear"]], 0),
+        ([["Linear"], [r"re:.*mlp\.experts\..*"]], 1),
+        ([["Linear"], ["MoE"]], 1),
+        ([["re:.*"], ["re:.*experts.*", "re:.*"]], 1),
+        ([["Embedding"]], None),
+    ],
+    ids=[
+        "linear_stands_in",
+        "fused_moe_target_after_linear",
+        "fused_moe_target_before_linear",
+        "expert_name_regex",
+        "class_name_substring",
+        "later_group_overwrites_a_shared_target",
+        "no_matching_target",
+    ],
+)
+def test_expert_lookup_agrees_with_sglang(
+    targets_per_group: list[list[str]], expected_group: int | None
+) -> None:
+    """The XPU override must pick the group SGLang's own MoE lookup picks."""
+    groups = {}
+    for index, targets in enumerate(targets_per_group):
+        groups[f"group_{index}"] = int4_group(targets)
+        groups[f"group_{index}"]["weights"]["group_size"] = 32 * (index + 1)
+    quant_config = {
+        "quant_method": "compressed-tensors",
+        "format": "pack-quantized",
+        "config_groups": groups,
+        "ignore": [],
+    }
+    expert = "model.layers.0.mlp.experts.0.gate_proj"
+    # SGLang matches the module's class name, so a bare module named FusedMoE stands in.
+    moe_layer = type("FusedMoE", (torch.nn.Module,), {})()
+    sglang_config = CompressedTensorsConfig.from_config(quant_config)
+    sglang_config._add_fused_moe_to_target_scheme_map()  # noqa: leading-underscore  # upstream name
+
+    chosen = expert_config_group(quant_config, expert)
+
+    if expected_group is None:
+        with pytest.raises(ValueError, match="Unable to find matching target"):
+            sglang_config.get_scheme_dict(moe_layer, expert)
+        assert chosen is None
+    else:
+        expected_size = 32 * (expected_group + 1)
+        assert sglang_config.get_scheme_dict(moe_layer, expert)[
+            "weights"
+        ].group_size == (expected_size)
+        assert chosen["weights"]["group_size"] == expected_size
 
 
 def test_block_fp8_moe_is_left_alone_on_xpu() -> None:

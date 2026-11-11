@@ -29,24 +29,35 @@ else:
     pass
 
 
+def target_matches(value: str, target: str, check_contains: bool) -> bool:
+    """SGLang's compressed-tensors target test: a re: regex, else substring or equality."""
+    if target.startswith("re:"):
+        return re.match(target[3:], value) is not None
+    elif check_contains:
+        return target.lower() in value.lower()
+    else:
+        return target == value
+
+
 def expert_config_group(
     quant_dict: dict[str, object], expert_name: str
 ) -> dict[str, object] | None:
-    """The config group SGLang applies to an expert: a name or regex target first, then Linear."""
-    groups = list((quant_dict.get("config_groups") or {}).values())
-    for group in groups:
+    """The config group SGLang's MoE lookup applies to an expert, or None if none matches."""
+    group_by_target: dict[str, dict[str, object]] = {}
+    for group in (quant_dict.get("config_groups") or {}).values():
         for target in group.get("targets") or []:
-            if target == expert_name or (
-                target.startswith("re:") and re.match(target[3:], expert_name)
-            ):
+            group_by_target[target] = group
+    # note (siju-samuel): Linear stands in for FusedMoE only when no group targets FusedMoE.
+    if "Linear" in group_by_target and "FusedMoE" not in group_by_target:
+        group_by_target["FusedMoE"] = group_by_target["Linear"]
+    else:
+        pass
+    for value, check_contains in ((expert_name, False), ("FusedMoE", True)):
+        for target, group in group_by_target.items():
+            if target_matches(value, target, check_contains):
                 return group
             else:
                 pass
-    for group in groups:
-        if "Linear" in (group.get("targets") or []):
-            return group
-        else:
-            pass
     return None
 
 
