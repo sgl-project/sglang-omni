@@ -58,8 +58,7 @@ private:
   EncodeInputs(const std::vector<int> &token_ids,
                const std::optional<mlx::core::array> &features) const;
   mlx::core::array EncodeAudio(const mlx::core::array &features) const;
-  mlx::core::array TextLayer(const mlx::core::array &hidden, int layer,
-                             const mlx::core::array &mask) const;
+  mlx::core::array TextLayer(const mlx::core::array &hidden, int layer) const;
 
   Config config_;
   omni_common::Checkpoint checkpoint_;

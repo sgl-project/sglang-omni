@@ -256,8 +256,7 @@ mx::array Conditioner::Encode(
   return EncodeInputs(token_ids, features);
 }
 
-mx::array Conditioner::TextLayer(const mx::array &hidden, int layer,
-                                 const mx::array &mask) const {
+mx::array Conditioner::TextLayer(const mx::array &hidden, int layer) const {
   const std::string prefix = "model.layers." + std::to_string(layer);
   const int length = hidden.shape(1);
   const int head_size = config_.hidden_size / config_.text_head_count;
@@ -282,8 +281,8 @@ mx::array Conditioner::TextLayer(const mx::array &hidden, int layer,
   const mx::array values = project("v_proj", config_.text_kv_head_count);
   const mx::array attended = mx::fast::scaled_dot_product_attention(
       queries, keys, values,
-      static_cast<float>(std::pow(static_cast<double>(head_size), -0.5)), "",
-      mask);
+      static_cast<float>(std::pow(static_cast<double>(head_size), -0.5)),
+      "causal");
   const mx::array residual = mx::add(
       hidden,
       checkpoint_.Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
@@ -343,17 +342,12 @@ Conditioner::EncodeInputs(const std::vector<int> &token_ids,
         "AuK audio placeholder tokens require reference features");
   } else {
   }
-  const mx::array indices = mx::arange(length);
-  const mx::array distances =
-      mx::subtract(mx::reshape(indices, {length, 1}), indices);
-  const mx::array mask = mx::reshape(mx::greater_equal(distances, mx::array(0)),
-                                     {1, 1, length, length});
   mx::array hidden = mx::reshape(mx::astype(embeddings, mx::float32),
                                  {1, length, config_.hidden_size});
   std::vector<mx::array> states;
   for (int layer = 0; layer < config_.text_layer_count; ++layer) {
     states.push_back(hidden);
-    hidden = TextLayer(hidden, layer, mask);
+    hidden = TextLayer(hidden, layer);
   }
   states.push_back(
       checkpoint_.RmsNorm(hidden, "model.norm", config_.rms_norm_epsilon));
