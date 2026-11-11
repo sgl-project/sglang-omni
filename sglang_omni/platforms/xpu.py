@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
@@ -11,7 +12,7 @@ from sglang.srt.layers.quantization.compressed_tensors.utils import should_ignor
 from sglang.srt.platforms.xpu import XpuDeviceMixin
 
 from sglang_omni.platforms.interface import JointRopeInplaceKernel, OmniPlatform
-from sglang_omni.quantization import is_pack_quantized_weight_only, resolve_quant_config
+from sglang_omni.quantization import is_pack_quantized, resolve_quant_config
 from sglang_omni.utils.misc import model_config_has_moe
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
@@ -28,17 +29,55 @@ else:
     pass
 
 
-def stage_has_quantized_experts(
+def expert_config_group(
+    quant_dict: dict[str, object], expert_name: str
+) -> dict[str, object] | None:
+    """The config group SGLang applies to an expert: a name or regex target first, then Linear."""
+    groups = list((quant_dict.get("config_groups") or {}).values())
+    for group in groups:
+        for target in group.get("targets") or []:
+            if target == expert_name or (
+                target.startswith("re:") and re.match(target[3:], expert_name)
+            ):
+                return group
+            else:
+                pass
+    for group in groups:
+        if "Linear" in (group.get("targets") or []):
+            return group
+        else:
+            pass
+    return None
+
+
+def is_weight_only_int_group(group: dict[str, object]) -> bool:
+    """SGLang's WNA16 test: static int weights by channel or group, activations unquantized."""
+    weights = group.get("weights") or {}
+    return (
+        group.get("input_activations") is None
+        and weights.get("type") == "int"
+        and weights.get("strategy") in ("channel", "group")
+        and not weights.get("dynamic")
+    )
+
+
+def stage_has_weight_only_packed_experts(
     quant_dict: dict[str, object], num_hidden_layers: int
 ) -> bool:
-    """True unless ignore lists expert 0 of every MoE layer, the probe SGLang uses."""
+    """True when some MoE layer's experts take SGLang's weight-only WNA16 scheme."""
     ignored = quant_dict.get("ignore") or []
-    return any(
-        not should_ignore_layer(
-            f"model.layers.{index}.mlp.experts.0.gate_proj", ignore=ignored
-        )
-        for index in range(num_hidden_layers)
-    )
+    for index in range(num_hidden_layers):
+        expert = f"model.layers.{index}.mlp.experts.0.gate_proj"
+        if should_ignore_layer(expert, ignore=ignored):
+            continue
+        else:
+            pass
+        group = expert_config_group(quant_dict, expert)
+        if group is not None and is_weight_only_int_group(group):
+            return True
+        else:
+            pass
+    return False
 
 
 class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
@@ -149,14 +188,16 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
         else:
             pass
 
-        # note (siju-samuel): Marlin has no XPU kernel, so only a stage with packed experts needs Triton.
+        # note (siju-samuel): Marlin has no XPU kernel, so only a stage with weight-only packed experts needs Triton.
         quant_dict = resolve_quant_config(model_config.hf_config)
         if (
             is_qwen3_omni_arch
             and moe_runner_backend == "auto"
             and model_config_has_moe(model_config)
-            and is_pack_quantized_weight_only(quant_dict)
-            and stage_has_quantized_experts(quant_dict, model_config.num_hidden_layers)
+            and is_pack_quantized(quant_dict)
+            and stage_has_weight_only_packed_experts(
+                quant_dict, model_config.num_hidden_layers
+            )
         ):
             override_server_args(
                 server_args,

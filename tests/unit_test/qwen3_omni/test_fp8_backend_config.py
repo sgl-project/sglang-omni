@@ -83,12 +83,14 @@ def make_model_config(
     ignore: list[str] | None = None,
     num_hidden_layers: int = 2,
     architecture: str | None = None,
+    config_groups: dict[str, object] | None = None,
 ) -> SimpleNamespace:
     attrs = {"num_experts_per_tok": 8} if has_moe else {}
     if pack_quantized:
         quantization_config = {
             "quant_method": "compressed-tensors",
             "format": "pack-quantized",
+            "config_groups": config_groups or {"group_0": int4_group(["Linear"])},
             "ignore": list(ignore or []),
         }
     elif native_fp8_block_quant:
@@ -104,6 +106,27 @@ def make_model_config(
             architectures=[architecture] if architecture else [],
         ),
     )
+
+
+def int4_group(targets: list[str], activations_quantized: bool = False) -> dict:
+    """A W4A16 group-32 config group, or W4A8 when the activations are quantized."""
+    activations = (
+        {"num_bits": 8, "type": "int", "strategy": "token", "dynamic": True}
+        if activations_quantized
+        else None
+    )
+    return {
+        "targets": targets,
+        "weights": {
+            "num_bits": 4,
+            "type": "int",
+            "strategy": "group",
+            "group_size": 32,
+            "symmetric": True,
+            "dynamic": False,
+        },
+        "input_activations": activations,
+    }
 
 
 def expert_names(layer_index: int, prefix: str = "") -> list[str]:
@@ -594,6 +617,57 @@ def test_stage_decision_reads_the_normalized_checkpoint_names(
     model_worker.apply_omni_quantization_adapters(model_config)
     XPUOmniPlatform().apply_model_worker_backend_policy(
         server_args, model_config, architecture
+    )
+
+    assert resolution_result(server_args, "moe_runner_backend") == expected
+
+
+def test_activation_quantized_pack_quantized_moe_keeps_auto_on_xpu() -> None:
+    """The pack-quantized format also carries W4A8, which SGLang routes away from WNA16."""
+    server_args = make_server_args(moe_runner_backend="auto")
+
+    XPUOmniPlatform().apply_model_worker_backend_policy(
+        server_args,
+        make_model_config(
+            quantization="compressed-tensors",
+            pack_quantized=True,
+            config_groups={
+                "group_0": int4_group(["Linear"], activations_quantized=True)
+            },
+        ),
+        "Qwen3OmniThinkerForCausalLM",
+    )
+
+    assert resolution_result(server_args, "moe_runner_backend") == "auto"
+
+
+@pytest.mark.parametrize(
+    "experts_activations_quantized, expected",
+    [(False, "triton"), (True, "auto")],
+    ids=["weight_only_experts", "w4a8_experts"],
+)
+def test_the_experts_own_group_decides_on_xpu(
+    experts_activations_quantized: bool, expected: str
+) -> None:
+    """A name target outranks Linear, so the experts' group decides, not the attention's."""
+    server_args = make_server_args(moe_runner_backend="auto")
+
+    XPUOmniPlatform().apply_model_worker_backend_policy(
+        server_args,
+        make_model_config(
+            quantization="compressed-tensors",
+            pack_quantized=True,
+            config_groups={
+                "attention": int4_group(
+                    ["Linear"], activations_quantized=not experts_activations_quantized
+                ),
+                "experts": int4_group(
+                    [r"re:.*mlp\.experts\..*"],
+                    activations_quantized=experts_activations_quantized,
+                ),
+            },
+        ),
+        "Qwen3OmniThinkerForCausalLM",
     )
 
     assert resolution_result(server_args, "moe_runner_backend") == expected

@@ -43,7 +43,7 @@ __all__ = [
     "resolve_quant_config",
     "quant_method_name",
     "is_fp8_block_quant",
-    "is_pack_quantized_weight_only",
+    "is_pack_quantized",
     "convert_fp8_weight_scale_inv",
     "get_weight_preprocessor",
     "needs_quant_config_normalization",
@@ -201,8 +201,8 @@ def needs_quant_config_normalization(
     return method in ("auto-round", "compressed-tensors")
 
 
-def is_pack_quantized_weight_only(quant_dict: dict[str, object] | None) -> bool:
-    """True for a group-packed weight-only compressed-tensors checkpoint, such as W4A16."""
+def is_pack_quantized(quant_dict: dict[str, object] | None) -> bool:
+    """True for a compressed-tensors checkpoint in the group-packed serialization format."""
     if quant_method_name(quant_dict) != "compressed-tensors":
         return False
     else:
@@ -364,6 +364,11 @@ def normalize_ignore_regex(
     Returns None while any part of the pattern still names the stage.
     """
     stage_name = stage_prefix.rstrip(".")
+    if "#" in pattern:
+        # note (siju-samuel): a verbose-mode comment can hide parentheses and |, so it is never split.
+        return None if stage_name in pattern else pattern
+    else:
+        pass
     translated: list[str] = []
     for branch in split_top_level_alternatives(pattern):
         stripped = strip_leading_stage_prefix(branch, stage_prefix, escaped_prefix)
