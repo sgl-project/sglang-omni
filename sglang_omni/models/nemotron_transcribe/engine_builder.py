@@ -34,6 +34,7 @@ from sglang_omni.models.nemotron_transcribe.encoder_service import (
 from sglang_omni.models.nemotron_transcribe.hf_config import (
     BACKBONE_ARCH,
     MODEL_ARCH_OVERRIDE,
+    MODEL_TYPE,
     NemotronTranscribeConfig,
     register_nemotron_transcribe_hf_config,
 )
@@ -69,7 +70,7 @@ def prepare_nemotron_speculative_options(
     *,
     enable_async_decode: bool = False,
 ) -> tuple[dict[str, object], bool]:
-    """Validate this model's bundled NEXTN options without touching the checkpoint."""
+    """Validate NEXTN options; default to two steps and one extra draft token."""
     overrides = dict(server_args_overrides or {})
     algorithm_name = overrides.get("speculative_algorithm")
     if algorithm_name is not None and not isinstance(algorithm_name, str):
@@ -120,10 +121,42 @@ def prepare_nemotron_speculative_options(
             raise ValueError(f"Nemotron Transcribe NEXTN requires {name}=1")
         else:
             pass
+    speculative_num_steps = overrides.get("speculative_num_steps", 2)
+    if speculative_num_steps is None:
+        speculative_num_steps = 2
+    else:
+        pass
+    if (
+        isinstance(speculative_num_steps, bool)
+        or not isinstance(speculative_num_steps, int)
+        or speculative_num_steps < 1
+    ):
+        raise ValueError(
+            "Nemotron Transcribe NEXTN requires speculative_num_steps to be a "
+            "positive integer"
+        )
+    else:
+        pass
+    speculative_num_draft_tokens = speculative_num_steps + 1
+    configured_num_draft_tokens = overrides.get("speculative_num_draft_tokens")
+    if configured_num_draft_tokens is not None and (
+        isinstance(configured_num_draft_tokens, bool)
+        or not isinstance(configured_num_draft_tokens, int)
+        or configured_num_draft_tokens != speculative_num_draft_tokens
+    ):
+        raise ValueError(
+            "Nemotron Transcribe NEXTN requires speculative_num_draft_tokens="
+            f"{speculative_num_draft_tokens} for speculative_num_steps="
+            f"{speculative_num_steps} and speculative_eagle_topk=1"
+        )
+    else:
+        pass
     overrides.update(
         speculative_algorithm="NEXTN",
         speculative_draft_model_path=model_path,
         speculative_eagle_topk=1,
+        speculative_num_steps=speculative_num_steps,
+        speculative_num_draft_tokens=speculative_num_draft_tokens,
         enable_mixed_chunk=False,
     )
     if revision is not None:
@@ -135,13 +168,22 @@ def prepare_nemotron_speculative_options(
 
 def validate_nemotron_mtp_metadata(checkpoint_config: dict[str, object]) -> None:
     """Reject checkpoints whose bundled MTP layout differs from this adapter."""
+    is_converted_config = (
+        "llm_config" not in checkpoint_config
+        and checkpoint_config.get("model_type") == MODEL_TYPE
+    )
     decoder_config = checkpoint_config.get("llm_config", checkpoint_config)
     mtp_config = checkpoint_config.get("mtp")
     if not isinstance(decoder_config, dict) or not isinstance(mtp_config, dict):
+        raise ValueError("Nemotron Transcribe NEXTN requires target and MTP metadata")
+    elif is_converted_config and decoder_config.get("num_nextn_predict_layers") != 0:
         raise ValueError(
-            "Nemotron Transcribe NEXTN requires llm_config and mtp metadata"
+            "converted Nemotron Transcribe target config requires "
+            "num_nextn_predict_layers=0"
         )
-    elif decoder_config.get("num_nextn_predict_layers") != 1:
+    elif (
+        not is_converted_config and decoder_config.get("num_nextn_predict_layers") != 1
+    ):
         raise ValueError("Nemotron Transcribe NEXTN requires one logical MTP step")
     elif mtp_config.get("enabled") is not True:
         raise ValueError("Nemotron Transcribe checkpoint does not enable bundled MTP")
@@ -153,11 +195,16 @@ def validate_nemotron_mtp_metadata(checkpoint_config: dict[str, object]) -> None
     physical_layer_count = mtp_config.get("num_nextn_predict_layers")
     if not isinstance(pattern, str) or not pattern:
         raise ValueError("Nemotron Transcribe NEXTN requires a non-empty MTP pattern")
-    elif any(character not in "ME*-" for character in pattern):
+    elif any(character not in "*E" for character in pattern):
         raise ValueError(
-            "Nemotron Transcribe NEXTN MTP pattern contains unsupported types"
+            "Nemotron Transcribe NEXTN MTP pattern supports only '*' attention "
+            "and 'E' MoE layers"
         )
-    elif physical_layer_count != len(pattern):
+    elif (
+        isinstance(physical_layer_count, bool)
+        or not isinstance(physical_layer_count, int)
+        or physical_layer_count != len(pattern)
+    ):
         raise ValueError(
             "Nemotron Transcribe NEXTN MTP physical layer count must match "
             "the pattern length"
