@@ -44,7 +44,6 @@ class MossSpeechConfig(PretrainedConfig):
         eosp_token_id: int | None = None,
         num_shared_layers: int = 32,
         num_modality_layers: int = 4,
-        moss_decode_buffer_bs: int = 128,
         **kwargs: object,
     ) -> None:
         assert num_shared_layers + num_modality_layers == num_hidden_layers
@@ -81,7 +80,6 @@ class MossSpeechConfig(PretrainedConfig):
         self.eosp_token_id: int | None = eosp_token_id
         self.num_shared_layers: int = num_shared_layers
         self.num_modality_layers: int = num_modality_layers
-        self.moss_decode_buffer_bs: int = moss_decode_buffer_bs
         if layer_types is None:
             self.layer_types: list[str] = [
                 (
