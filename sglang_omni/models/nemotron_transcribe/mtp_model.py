@@ -13,8 +13,6 @@ from sglang_omni.models.nemotron_transcribe.decoder_weights import (
     checkpoint_to_mtp_weights,
 )
 
-ROUTER_CORRECTION_BIAS = "mtp.layers.1.mixer.gate.e_score_correction_bias"
-
 
 def expected_mtp_checkpoint_names(
     parameter_names: Iterable[str], *, num_experts: int
@@ -37,34 +35,18 @@ def expected_mtp_checkpoint_names(
         elif ".experts.w13_weight" in parameter_name:
             expert_prefix = checkpoint_name.split(".experts.w13_weight", 1)[0]
             for expert_index in range(num_experts):
-                expected.add(
-                    f"{expert_prefix}.experts.{expert_index}.up_proj.weight"
-                )
+                expected.add(f"{expert_prefix}.experts.{expert_index}.up_proj.weight")
             else:
                 pass
         elif ".experts.w2_weight" in parameter_name:
             expert_prefix = checkpoint_name.split(".experts.w2_weight", 1)[0]
             for expert_index in range(num_experts):
-                expected.add(
-                    f"{expert_prefix}.experts.{expert_index}.down_proj.weight"
-                )
+                expected.add(f"{expert_prefix}.experts.{expert_index}.down_proj.weight")
             else:
                 pass
         else:
             expected.add(checkpoint_name)
     return expected
-
-
-def validate_mtp_tensor_dtype(name: str, tensor: torch.Tensor) -> None:
-    """Reject dtype drift instead of silently casting checkpoint tensors."""
-    expected_dtype = torch.float32 if name == ROUTER_CORRECTION_BIAS else torch.bfloat16
-    if tensor.dtype != expected_dtype:
-        raise ValueError(
-            f"Nemotron Transcribe MTP tensor {name} has dtype {tensor.dtype}; "
-            f"expected {expected_dtype}"
-        )
-    else:
-        pass
 
 
 def validate_mtp_checkpoint_inventory(
@@ -83,6 +65,8 @@ def validate_mtp_checkpoint_inventory(
             f"unexpected={sorted(unexpected)[:8]}, "
             f"duplicates={sorted(duplicates)[:8]}"
         )
+    else:
+        pass
 
 
 class NemotronTranscribeMTP(NemotronHForCausalLMMTP):
@@ -111,7 +95,6 @@ class NemotronTranscribeMTP(NemotronHForCausalLMMTP):
                 elif name in seen:
                     duplicates.add(name)
                 else:
-                    validate_mtp_tensor_dtype(name, tensor)
                     seen.add(name)
                     yield name, tensor
 
@@ -129,5 +112,4 @@ __all__ = [
     "NemotronTranscribeMTP",
     "expected_mtp_checkpoint_names",
     "validate_mtp_checkpoint_inventory",
-    "validate_mtp_tensor_dtype",
 ]
