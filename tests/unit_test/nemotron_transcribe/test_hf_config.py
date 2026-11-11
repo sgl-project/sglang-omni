@@ -33,6 +33,7 @@ def raw_checkpoint_config() -> dict[str, object]:
             "trained_depths": 2,
             "use_repeated_layer": True,
             "hybrid_override_pattern": "*E",
+            "num_nextn_predict_layers": 2,
         },
     }
 

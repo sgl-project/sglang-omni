@@ -26,6 +26,7 @@ from sglang_omni.speculative.target_worker import SpeculativeTargetWorker
         ("EAGLE3", False, True, "retained"),
         ("DFLASH", False, False, None),
         ("EAGLE3", True, False, "target"),
+        ("NEXTN", True, False, "target"),
         ("EAGLE3", True, True, "retained"),
     ],
 )
@@ -96,6 +97,9 @@ def test_target_prefill_preserves_and_publishes_multimodal_embeddings(
         model_worker, SpeculativeAlgorithm.from_string(speculative_algorithm)
     )
     target.attach_runner(runner)
+    should_retain_prefill_embeddings = speculative_algorithm in ("EAGLE3", "NEXTN")
+    assert target.publishes_prefill_input_embeds is should_retain_prefill_embeddings
+    assert runner.retain_prefill_input_embeds is should_retain_prefill_embeddings
     batch = SimpleNamespace(
         reqs=[SimpleNamespace(rid="req-1", omni_data=None)], is_prefill_only=False
     )
@@ -108,6 +112,11 @@ def test_target_prefill_preserves_and_publishes_multimodal_embeddings(
         None: None,
     }[expected_source]
     assert result.logits_output.mm_input_embeds is expected_embeddings
+    if expected_embeddings is not None:
+        assert result.logits_output.mm_input_embeds.shape == expected_embeddings.shape
+        assert torch.equal(result.logits_output.mm_input_embeds, expected_embeddings)
+    else:
+        pass
     assert runner.retained_prefill_input_embeds is None
 
     runner.target_multimodal_embeddings = second_request_multimodal_embeddings
@@ -117,6 +126,10 @@ def test_target_prefill_preserves_and_publishes_multimodal_embeddings(
     assert (
         second_result.logits_output.mm_input_embeds
         is second_request_multimodal_embeddings
+    )
+    assert torch.equal(
+        second_result.logits_output.mm_input_embeds,
+        second_request_multimodal_embeddings,
     )
     assert runner.retained_prefill_input_embeds is None
 
