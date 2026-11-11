@@ -8,7 +8,6 @@ from collections.abc import Mapping
 from sglang_omni.models.nemotron_transcribe.config import EncoderCompileMode
 from sglang_omni.models.nemotron_transcribe.engine_builder import (
     NemotronTranscribeEngineBuilder,
-    PINNED_CHECKPOINT_REVISION,
     prepare_nemotron_speculative_options,
 )
 from sglang_omni.models.nemotron_transcribe.request_builders import (
@@ -48,6 +47,7 @@ def create_nemotron_transcribe_executor(
         None if server_args_overrides is None else dict(server_args_overrides),
         enable_async_decode=enable_async_decode,
     )
+    revision = overrides.get("revision")
     builder = NemotronTranscribeEngineBuilder(
         max_new_tokens=max_new_tokens,
         context_length=context_length,
@@ -67,9 +67,7 @@ def create_nemotron_transcribe_executor(
         perception_cuda_graphs=perception_cuda_graphs,
         perception_compile_mode=perception_compile_mode,
         nextn_enabled=nextn_enabled,
-        checkpoint_revision=(
-            PINNED_CHECKPOINT_REVISION if nextn_enabled else None
-        ),
+        checkpoint_revision=revision if isinstance(revision, str) else None,
     )
     return builder.build(
         model_path,
