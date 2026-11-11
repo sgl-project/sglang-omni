@@ -64,15 +64,17 @@ func (a *app) paceDraft() {
 	if r.id != a.sess.ID {
 		*r = streamReveal{id: a.sess.ID}
 	}
-	if r.ticking || r.shown >= utf8.RuneCountInString(a.sess.Draft) || !a.timersRun() || a.overlayModeNow() != ovAnswer {
+	if r.ticking || r.shown >= utf8.RuneCountInString(a.sess.Draft) || !a.sess.State.Live() || !a.timersRun() || a.overlayModeNow() != ovAnswer {
 		return
 	}
 	r.ticking = true
+	id := r.id
 	a.later(revealFrame, func() {
-		r.ticking = false
-		if r.id == a.sess.ID {
-			r.shown = revealRunes(r.shown, utf8.RuneCountInString(a.sess.Draft), revealFrame)
+		if r.id != id {
+			return // another session's: its own steps run
 		}
+		r.ticking = false
+		r.shown = revealRunes(r.shown, utf8.RuneCountInString(a.sess.Draft), revealFrame)
 		a.overlaySync()
 	})
 }

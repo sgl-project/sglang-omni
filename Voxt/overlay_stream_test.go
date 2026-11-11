@@ -72,4 +72,8 @@ func TestStreamedAnswerCalm(t *testing.T) {
 	if v := a.cardNow(); v.text != long {
 		t.Errorf("the model ended: the card shows %d of %d runes", len(v.text), len(long))
 	}
+	clock.advance(time.Second)
+	if len(clock.timers) != 0 {
+		t.Errorf("%d steps still on their way after the model ended", len(clock.timers))
+	}
 }
