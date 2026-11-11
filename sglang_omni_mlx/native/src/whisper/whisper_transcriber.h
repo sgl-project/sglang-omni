@@ -55,17 +55,23 @@ private:
   // Text of generated ids: special and timestamp ids dropped, byte-level
   // decoded, tokenization spaces cleaned up.
   std::string DecodeText(const std::vector<int> &token_ids) const;
+  // The suppressed logits' next token: sampled at a positive temperature,
+  // else the most likely.
+  mlx::core::array NextToken(mlx::core::array logits, bool first_step,
+                             float temperature) const;
   WindowResult TranscribeWindow(const std::vector<float> &window_samples,
                                 const std::vector<int> &prompt_ids,
                                 int max_new_tokens, float temperature,
                                 const std::atomic<bool> &cancel) const;
-
-  mlx::core::array NextToken(mlx::core::array logits, bool first_step,
-                             float temperature) const;
-  WindowResult TranscribeWithDraft(const mlx::core::array &encoder_states,
-                                   const std::vector<int> &prompt_ids,
-                                   int max_new_tokens,
-                                   const std::atomic<bool> &cancel) const;
+  // Greedy decoding with the draft from the prompt the caches hold and its
+  // next token: each round the target verifies the draft's proposals and
+  // keeps the agreeing ones plus its own next token.
+  WindowResult DecodeWithDraft(const mlx::core::array &encoder_states,
+                               const mlx::core::array &prompt,
+                               mlx::core::array token,
+                               std::vector<DecoderLayerCache> &caches,
+                               int max_new_tokens,
+                               const std::atomic<bool> &cancel) const;
 
   WhisperModel model_;
   std::optional<WhisperModel> draft_;

@@ -412,8 +412,7 @@ mx::array WhisperModel::Decode(const mx::array &token_ids, int start_position,
                     mx::transpose(Weight("decoder.token_embedding.weight")));
 }
 
-void WhisperModel::TruncateCaches(std::vector<DecoderLayerCache> &caches,
-                                  int token_count) {
+void TruncateCaches(std::vector<DecoderLayerCache> &caches, int token_count) {
   for (auto &cache : caches) {
     for (auto *values : {&cache.self_keys, &cache.self_values}) {
       if (values->has_value()) {

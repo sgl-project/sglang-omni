@@ -38,6 +38,10 @@ struct DecoderLayerCache {
   std::optional<mlx::core::array> cross_values;
 };
 
+// Keeps the first token_count positions of each layer's self-attention keys
+// and values.
+void TruncateCaches(std::vector<DecoderLayerCache> &caches, int token_count);
+
 class WhisperModel {
 public:
   // Reads config.json and the weights (*.safetensors, else weights.npz) of an
@@ -59,8 +63,6 @@ public:
                           const mlx::core::array &encoder_states,
                           std::vector<DecoderLayerCache> &caches,
                           bool all_positions = false) const;
-  static void TruncateCaches(std::vector<DecoderLayerCache> &caches,
-                             int token_count);
 
 private:
   const mlx::core::array &Weight(const std::string &name) const;
