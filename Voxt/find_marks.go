@@ -19,10 +19,14 @@ type finder struct {
 	cur, step int
 }
 
-// field is searchField stepping f with Return and Shift+Return; typing
-// starts the count again.
+// field is searchField stepping f with Return and Shift+Return (keys).
 func (f *finder) field(c *ui.Context, key string, value *string, placeholder string, maxW float32) ui.Element {
-	in := searchField(c, key, value, placeholder, maxW)
+	return f.keys(searchField(c, key, value, placeholder, maxW))
+}
+
+// keys steps f with Return and Shift+Return in the text input in; typing
+// starts the count again.
+func (f *finder) keys(in ui.Element) ui.Element {
 	in.OnTextKey(func(k ui.TextKey) bool {
 		if k.Key != ui.KeyEnter || (k.Mods != 0 && k.Mods != ui.Shift) {
 			return false
