@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import ast
+from collections.abc import Iterable
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.models.nemotron_h_mtp import NemotronHForCausalLMMTP
 from torch.nn import functional as F
 
 from sglang_omni.models.nemotron_transcribe.checkpoint_contract import (
@@ -19,6 +22,7 @@ from sglang_omni.models.nemotron_transcribe.decoder_weights import (
     checkpoint_to_mtp_weights,
 )
 from sglang_omni.models.nemotron_transcribe.mtp_model import (
+    NemotronTranscribeMTP,
     expected_mtp_checkpoint_names,
     validate_mtp_checkpoint_inventory,
 )
@@ -200,6 +204,55 @@ def test_mtp_expert_conversion_preserves_ungated_relu2_computation() -> None:
             converted[f"{prefix}.down_proj.weight"],
         )
         torch.testing.assert_close(actual, reference)
+
+
+def test_mtp_loader_forwards_tensors_and_propagates_parent_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = NemotronTranscribeMTP.__new__(NemotronTranscribeMTP)
+    adapter.config = SimpleNamespace(max_n_routed_experts=1)
+
+    def named_parameters(
+        model: NemotronTranscribeMTP,
+    ) -> list[tuple[str, torch.Tensor]]:
+        del model
+        return [("model.layers.0.mixer.norm.weight", torch.empty(1))]
+
+    monkeypatch.setattr(NemotronTranscribeMTP, "named_parameters", named_parameters)
+
+    checkpoint_tensor = torch.ones(2, dtype=torch.float16)
+    checkpoint_weights = [("llm.mtp.layers.0.mixer.norm.weight", checkpoint_tensor)]
+    forwarded: list[tuple[str, torch.Tensor]] = []
+
+    def capture_parent_weights(
+        model: NemotronHForCausalLMMTP,
+        weights: Iterable[tuple[str, torch.Tensor]],
+    ) -> None:
+        del model
+        forwarded.extend(weights)
+
+    monkeypatch.setattr(NemotronHForCausalLMMTP, "load_weights", capture_parent_weights)
+    adapter.load_weights(checkpoint_weights)
+
+    assert len(forwarded) == 1
+    assert forwarded[0][0] == "mtp.layers.0.mixer.norm.weight"
+    assert forwarded[0][1] is checkpoint_tensor
+    assert forwarded[0][1].dtype == torch.float16
+
+    parent_error = RuntimeError("parent loader failed")
+
+    def raise_parent_error(
+        model: NemotronHForCausalLMMTP,
+        weights: Iterable[tuple[str, torch.Tensor]],
+    ) -> None:
+        del model, weights
+        raise parent_error
+
+    monkeypatch.setattr(NemotronHForCausalLMMTP, "load_weights", raise_parent_error)
+    with pytest.raises(RuntimeError) as error:
+        adapter.load_weights(checkpoint_weights)
+
+    assert error.value is parent_error
 
 
 def test_mtp_inventory_expands_qkv_and_moe_parameters_and_fails_closed() -> None:
