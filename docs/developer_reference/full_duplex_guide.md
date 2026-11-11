@@ -93,7 +93,7 @@ curl --fail http://localhost:8000/v1/realtime/capabilities
 The results should be as follows:
 
 ```json
-{"model":"openbmb/MiniCPM-o-4_5","interaction":"native","native_full_duplex":true,"proactive_output":false,"turn_control":[null],"client_commit":false,"input_modalities":["audio","image"],"output_modalities":["audio","text"],"input_audio_format":{"type":"audio/pcm","rate":16000},"output_audio_format":{"type":"audio/pcm","rate":24000},"native_unit_ms":1000,"first_unit_ms":1000,"microturn_ms":"variable","tail_policy":"pad","supports_server_interrupt":false,"supports_truncate":true,"supports_cancel":true,"supports_resume":false,"partial_style":"append_only","pressure_policy":"reject","strict_order":true,"sampling_parameters":["greedy","temperature","top_k","top_p","repetition_penalty","listen_prob_scale","force_listen_count","max_new_tokens_per_unit","repetition_window_size","talker_temperature","talker_repetition_penalty"],"supports_reference_audio":true,"supports_instruction_updates":false,"supports_sampling_updates":false,"input_image_format":{"types":["image/jpeg","image/png"],"max_bytes":524288,"max_frames_per_unit":4,"max_slice_nums":9},"limits":{"max_input_bytes":1920000,"max_output_bytes":33554432,"max_history_chars":65536,"cleanup_timeout_s":30,"session_update_timeout_s":60,"idle_timeout_s":300}}#
+{"model":"openbmb/MiniCPM-o-4_5","interaction":"native","native_full_duplex":true,"proactive_output":false,"turn_control":[null],"client_commit":false,"input_modalities":["audio","image"],"output_modalities":["audio","text"],"input_audio_format":{"type":"audio/pcm","rate":16000},"output_audio_format":{"type":"audio/pcm","rate":24000},"native_unit_ms":1000,"first_unit_ms":1000,"microturn_ms":"variable","tail_policy":"pad","supports_server_interrupt":false,"supports_truncate":true,"supports_cancel":true,"supports_resume":false,"partial_style":"append_only","pressure_policy":"reject","strict_order":true,"sampling_parameters":["greedy","temperature","top_k","top_p","repetition_penalty","listen_prob_scale","force_listen_count","max_new_tokens_per_unit","repetition_window_size","talker_temperature","talker_repetition_penalty"],"supports_reference_audio":true,"supports_instruction_updates":false,"supports_sampling_updates":false,"input_image_format":{"types":["image/jpeg","image/png"],"max_bytes":524288,"max_frames_per_unit":4,"max_slice_nums":9},"limits":{"max_input_bytes":1920000,"max_output_bytes":33554432,"max_history_chars":65536,"cleanup_timeout_s":30,"session_update_timeout_s":60,"idle_timeout_s":300}}
 ```
 
 ### Native Full Duplex: PersonaPlex
@@ -272,7 +272,7 @@ Thanks to the OpenMoss team for the demo page.
 
 Once the terminal prints `Running on`, open <http://localhost:8080> (<http://localhost:8090> for the cascade page) and click **Start talking** to talk through your microphone; the camera can be turned on during the call. If the server is remote, first run `ssh -N -L 8080:127.0.0.1:8080 USER@SERVER` on your own machine (`8090:127.0.0.1:8090` for the cascade page). Open the page through `localhost`, or the browser will not grant microphone access.
 
-The settings panel shows only the controls the deployment declares in `/v1/realtime/capabilities`: the system prompt, the presets and a reference voice when `supports_reference_audio` is true (a preset pairs a MiniCPM-o duplex prompt with a voice, so no other backend gets them), a named voice when `voices` is listed, turn detection when `turn_control` lists `server_vad` or `semantic_vad`, camera detail when `input_image_format` allows more than one slice, and one numeric field per key in `sampling_parameters`, labelled for that backend (`max_new_tokens_per_unit` is tokens per 1 s unit on a native model and the reply token limit on a turn-based one). An empty field is not sent, so the deployment's default applies. The page sends every setting in its first `session.update`, so a change applies to the next conversation. Everything under `sglang` (sampling, voice, reference audio, image detail) is fixed once the session is open. Turn detection and `output_modalities` may change in a later `session.update`, and `instructions` only on a deployment that supports instruction updates, which is the cascade with a `system_prompt` node; MiniCPM-o, PersonaPlex and Qwen3-Omni freeze them with the first `session.update`. Settings are kept in the browser per deployment model. The download button in the top bar saves the conversation trace; attach it when reporting a problem.
+The settings panel shows only the controls the deployment declares in `/v1/realtime/capabilities`: the system prompt, the presets and a reference voice when `supports_reference_audio` is true (a preset pairs a MiniCPM-o duplex prompt with a voice, so no other backend gets them), a named voice when `voices` is listed, turn detection when `turn_control` lists `server_vad` or `semantic_vad`, camera detail when `input_image_format` allows more than one slice, and one numeric field per key in `sampling_parameters`, labelled for that backend (`max_new_tokens_per_unit` is tokens per 1 s unit on a native model and the reply token limit on a turn-based one). An empty field is not sent, so the deployment's default applies. The page sends every setting in its first `session.update`, so a change applies to the next conversation. Voice, reference audio and image detail stay fixed once the session is open; sampling may change when `supports_sampling_updates` is true. Turn detection and `output_modalities` may change in a later `session.update`, and `instructions` only on a deployment that supports instruction updates, which is the cascade with a `system_prompt` node; MiniCPM-o, PersonaPlex and Qwen3-Omni freeze them with the first `session.update`. Settings are kept in the browser per deployment model. The download button in the top bar saves the conversation trace; attach it when reporting a problem.
 
 The stop button in the call dock follows `supports_cancel` from `session.updated`. Where it is granted, as on MiniCPM-o, the Qwen3-Omni session graph and the cascade, the button sends `response.cancel`, shows Stopping until the server's `response.done` for the reply arrives, and Stopped when that status is `cancelled`. A reply that ended on its own in the meantime shows no stop. This page sends no `conversation.item.truncate`, so a turn-based history keeps what the server delivered. Where it is not granted, as on PersonaPlex and Nemotron VoiceChat, the button is labelled as a local mute: it sends nothing and the reply is not cancelled on the server. In both cases the page then plays no model audio, under any response id, until you speak again: on a turn-based deployment the server's `input_audio_buffer.speech_started` lifts the mute, on a native one the microphone's own level does, since a stopped model may continue its answer under a new response and a new response id alone is no proof of a new answer. Speaking over the model is left to the model on a native deployment.
 
@@ -1183,7 +1183,7 @@ Remove the service's entry from `services` and set the node's `base_url` and `mo
 **A model inside the server as a stage**
 
 
-A node written `stages: [...]` runs a model inside this server instead of calling a service. Two stage routes exist: `vad`, the voice activity detector, and `asr`, Nemotron 3.5 streaming ASR. Any other stage name fails the load with `no stage group serves the stages [...]`.
+A node written `stages: [...]` runs a model inside this server instead of calling a service. Three stage routes exist: `vad`, the voice activity detector, `turn_detection`, the end-of-turn detector, and `asr`, Nemotron 3.5 streaming ASR. Any other stage name fails the load with `no stage group serves the stages [...]`.
 
 `nemotron-stage-qwen3-tts` runs Nemotron 3.5 ASR as the `asr` stage node reading `input:pcm16`, and a `running_transcript` node turns its running text into utterances:
 
@@ -1349,7 +1349,7 @@ What needs a restart and what does not:
 | `services`, the node set, `inputs`, `session_publish`, `stages`, `timeout_s`, `unit_ms`, `max_sessions`, `max_output_lead_ms`, `max_pending_output_*` | Restart the server. |
 | Default node options and VAD defaults | Restart, or per session as above. |
 | Node options through `nodes` | When a `/v1/session` session opens, and later through `configure` for nodes that read `input`. |
-| `sglang.sampling` | When a realtime session opens. |
+| `sglang.sampling` | Any time when `supports_sampling_updates` is true; applies to the next reply. |
 | `instructions`, `turn_detection`, `output_modalities` | Any time in a realtime session. |
 
 (node-reference)=
@@ -1564,7 +1564,7 @@ Each rule is followed by the error it raises.
 - No published `session` of `openai_chat` or `openai_speech` while a `dialog` exists — `no published node ends turns`.
 - Both `openai_chat` and `openai_speech` publish `session` — `turns end twice: [...] all publish turn.done`.
 - A `dialog` whose `session` is not published — `nodes [...] open turns and must publish 'session'`.
-- A stage name other than `vad` or `asr` — `no stage group serves the stages [...]`.
+- A stage name other than `vad`, `turn_detection` or `asr` — `no stage group serves the stages [...]`.
 - `base_url` of `realtime_transcription` not `ws://` or `wss://`, or of the other service kinds not `http://` or `https://` — `String should match pattern ...`.
 - `method: forced` without `alignment_url` — `the forced method needs alignment_url`.
 - `alignment_url` with a method other than `forced` — `alignment_url belongs to the forced method`.
@@ -1773,17 +1773,9 @@ A Session takes four operations: `open`, `append`, `control` and `close`. `Clien
 
 A `/v1/session` client opens the Session the pipeline declares; the open frame carries `params`, and the Session's limits are the deployment's. An `append` frame carries a `chunk` and is answered with `accepted`; a `control` frame carries the event as its `chunk`, with optional `stages` and `should_preempt`, and is answered with `controlled`. Both answers carry the chunk's seq, and a full queue answers either with `rejected` and leaves the Session open.
 
-A chunk's `turn` identifies a cancellable reply within the Session, not a tool
-call or an input audio frame. All work belonging to that reply preserves the
-same ID, including tool responses. Interrupted reply IDs remain fenced for the
-lifetime of the graph, including tool results carried by control edges. Session
-control commands such as interrupt and truncate remain deliverable. Nodes must discard any matching
-work they have already buffered when they receive the interrupt.
+A chunk's `turn` identifies a cancellable reply within the Session, not a tool call or an input audio frame. All work belonging to that reply preserves the same ID, including tool responses. Interrupted reply IDs remain fenced for the lifetime of the graph, including tool results carried by control edges. Session control commands such as interrupt and truncate remain deliverable. Nodes must discard any matching work they have already buffered when they receive the interrupt.
 
-A producer without reply boundaries leaves `turn` unset. VoiceChat's continuous
-duplex stream does not currently allocate reply turns; tool call IDs identify its
-individual calls. Passing through a supplied `turn` does not add native speech
-interruption or reply-boundary detection to VoiceChat.
+A producer without reply boundaries leaves `turn` unset. VoiceChat's continuous duplex stream does not currently allocate reply turns; tool call IDs identify its individual calls. Passing through a supplied `turn` does not add native speech interruption or reply-boundary detection to VoiceChat.
 
 
 (cascade-components)=
