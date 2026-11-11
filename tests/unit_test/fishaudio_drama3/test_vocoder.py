@@ -29,7 +29,11 @@ from sglang_omni.models.fishaudio_drama3.request_builders import (
 )
 from sglang_omni.models.fishaudio_drama3.stages import resolve_codec_directory
 from sglang_omni.models.fishaudio_drama3.stream_windows import (
+    crossfade_frames,
+    discarded_frames,
+    flush_window_shapes,
     frames_in_complete_windows,
+    stream_window_discards,
     stream_window_lengths,
     utterance_graph_lengths,
 )
@@ -480,11 +484,12 @@ def test_the_stream_never_reads_the_frames_a_window_skips(
 ) -> None:
     codec = FrameNumberCodec()
     decoder = ZeroingSuffixDecoder(codec)
+    factory_args = Drama3VocoderFactoryArgs(
+        stream_crossfade_samples=stream_crossfade_samples
+    )
     vocoder = vocoder_with(
         codec,
-        factory_args=Drama3VocoderFactoryArgs(
-            stream_crossfade_samples=stream_crossfade_samples
-        ),
+        factory_args=factory_args,
         window_batch_decoder=decoder,
         suffix_decoder=decoder,
     )
@@ -514,6 +519,24 @@ def test_the_stream_never_reads_the_frames_a_window_skips(
         np.repeat(np.arange(214, dtype=np.float32), SAMPLES_PER_FRAME),
         rtol=1e-6,
     )
+    # note (Wenyao Gao): a shape the factory captures no graph for would decode its
+    # whole window instead, and nothing else would show it.
+    window_schedule = factory_args.model_dump(
+        include={
+            "stream_stride",
+            "stream_followup_stride_ramp",
+            "stream_followup_stride",
+            "stream_overlap_tokens",
+        }
+    )
+    kept_frames = crossfade_frames(stream_crossfade_samples, SAMPLES_PER_FRAME)
+    assert set(expected_shapes) <= {
+        (frame_count, discarded_frames(overlap_frames, kept_frames))
+        for frame_count, overlap_frames in (
+            *stream_window_discards(**window_schedule).items(),
+            *flush_window_shapes(**window_schedule),
+        )
+    }
 
 
 def test_every_streamed_window_decodes_through_the_given_window_decoder() -> None:
