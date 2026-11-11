@@ -15,6 +15,7 @@
 [![Apache License 2.0][licence-shield]](LICENSE)
 
 [![下载 Voxt][download-shield]][download]
+[![下载 Voxt Beta][beta-download-shield]][beta-download]
 
 [安装指南][install-guide] · [更新日志](CHANGELOG.md) · [官网](https://voxt.actnow.dev) · [反馈问题][issues] · [Slack][slack]
 
@@ -75,6 +76,8 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 3. 在任意 App 里**单按右 Option**，说话，再按一下。
 
 分步说明：[Install Voxt][install-guide]。
+
+安装 Beta `2.0.3-beta.20261111.38` 时，先登录 GitHub，下载并解压 ZIP，然后打开 DMG，把 **Voxt** 拖进“应用程序”。如果直链未开始下载，请到 [Voxt Beta #38][beta-run] 的 Artifacts 下载 arm64 安装包。要找更新的 Beta，请打开 [Actions → Voxt Beta][beta-workflow] 中 `main` 分支最新一次成功的运行。
 
 ### 从 Voxt 1.x 升级
 
@@ -156,6 +159,9 @@ Apache License 2.0（[LICENSE](LICENSE)），与本仓其余部分一致。版�
 [![回到顶部][back-to-top]](#readme-top)
 
 [download]: https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.0.3/Voxt-2.0.3-arm64.dmg
+[beta-download]: https://github.com/sgl-project/sglang-omni/actions/runs/42954481839/artifacts/13825829109
+[beta-run]: https://github.com/sgl-project/sglang-omni/actions/runs/42954481839#artifacts
+[beta-workflow]: https://github.com/sgl-project/sglang-omni/actions/workflows/voxt-beta.yaml
 [install-guide]: https://sgl-project.github.io/sglang-omni/get_started/voxt.html
 [issues]: https://github.com/sgl-project/sglang-omni/issues/new/choose
 [slack]: https://slack.sglang.io
@@ -163,4 +169,5 @@ Apache License 2.0（[LICENSE](LICENSE)），与本仓其余部分一致。版�
 [macos-shield]: https://img.shields.io/badge/macOS-15%2B%20%C2%B7%20Apple%20silicon-58a6ff?style=flat-square&labelColor=000000&logo=apple&logoColor=white
 [licence-shield]: https://img.shields.io/badge/licence-Apache%202.0-58a6ff?style=flat-square&labelColor=000000&logo=apache&logoColor=white
 [download-shield]: https://img.shields.io/badge/Download-Voxt%20for%20Mac-000000?style=for-the-badge&logo=apple&logoColor=white
+[beta-download-shield]: https://img.shields.io/badge/Download-Voxt%20Beta-1f6feb?style=for-the-badge&logo=github&logoColor=white
 [back-to-top]: https://img.shields.io/badge/-BACK_TO_TOP-151515?style=flat-square
