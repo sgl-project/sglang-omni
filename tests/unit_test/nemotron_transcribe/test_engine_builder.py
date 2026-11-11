@@ -207,7 +207,7 @@ def test_nextn_requires_the_known_two_layer_physical_pattern() -> None:
             "llm_config": {"num_nextn_predict_layers": 1},
             "mtp": {
                 "enabled": True,
-                "trained_depths": 2,
+                "num_nextn_predict_layers": 2,
                 "use_repeated_layer": True,
                 "hybrid_override_pattern": "*E",
             },
@@ -219,7 +219,7 @@ def test_nextn_requires_the_known_two_layer_physical_pattern() -> None:
                 "llm_config": {"num_nextn_predict_layers": 1},
                 "mtp": {
                     "enabled": True,
-                    "trained_depths": 1,
+                    "num_nextn_predict_layers": 1,
                     "use_repeated_layer": True,
                     "hybrid_override_pattern": "*E",
                 },
