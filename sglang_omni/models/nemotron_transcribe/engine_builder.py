@@ -151,7 +151,7 @@ def validate_nemotron_mtp_metadata(checkpoint_config: dict[str, object]) -> None
         raise ValueError("Nemotron Transcribe NEXTN requires one logical MTP step")
     elif mtp_config.get("enabled") is not True:
         raise ValueError("Nemotron Transcribe checkpoint does not enable bundled MTP")
-    elif mtp_config.get("trained_depths") != 2:
+    elif mtp_config.get("num_nextn_predict_layers") != 2:
         raise ValueError("Nemotron Transcribe NEXTN requires two physical MTP layers")
     elif mtp_config.get("use_repeated_layer") is not True:
         raise ValueError("Nemotron Transcribe NEXTN requires repeated MTP layers")
