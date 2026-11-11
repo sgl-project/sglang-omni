@@ -21,6 +21,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Fixed
 
 - **The answer card stays shut when its switch is off**: when a result could not go in (no text field had the focus, a password field, or the paste did not show), Transcribe and Translate opened the answer card even with their answer card turned off. Now the card opens only when it is on; otherwise Voxt copies the result and the overlay says to press ⌘V. The result is in History either way. Rewrite still keeps such an answer in the card, where you can ask a follow-up.
+- **Long recordings work with OpenAI and Doubao file recognition** (#3840): OpenAI and the services that use its API took at most 25 MB of audio, about 13 minutes, and Doubao's fast file recognition at most 100 MB, about 52 minutes. A longer dictation, or Retry from History, failed with "over the 25 MB limit". Voxt now sends a longer recording in pieces under the limit, cut at a pause, and joins the text.
 - **A dictation is no longer cut off at 10 minutes**: Transcribe, Translate and Rewrite stopped recording by themselves after 10 minutes, so a long dictation such as a podcast ended without a key press. A recording now has no time limit: it runs until you stop it.
 - **Meetings use your main language**: the live transcript and the transcript made after a meeting now give the speech model the same language hint as dictation (your main language in Settings → General, such as Simplified or Traditional Chinese). Before, meetings gave no hint and the model guessed the language. The speech model still picks the Chinese script itself: Voxt does not convert between Simplified and Traditional.
 - **Dictation goes into Raycast and other launcher panels**: a panel that takes the keyboard without bringing its app to the front (Raycast, Tinycast) got nothing and Voxt showed the answer card instead. The text is now pasted into the panel's field.
@@ -55,6 +56,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 
 - **关掉答案卡片后不再弹出卡片**：结果插不进去时（没有选中输入框、焦点在密码框，或者粘贴后没有出现），即使转录、翻译的答案卡片关着，Voxt 也会打开卡片。现在只有开着时才打开；关着时 Voxt 把结果复制到剪贴板，浮窗提示按 ⌘V 粘贴。两种情况历史里都有这条结果。改写插不进去时仍然放在卡片里，方便继续追问。
+- **OpenAI 和豆包极速版能识别长录音**（#3840）：OpenAI 以及用它的接口的服务一次最多收 25 MB 音频（约 13 分钟），豆包极速版文件识别最多 100 MB（约 52 分钟）。更长的口述，或在历史里点重试，会报“超过 25 MB 上限”。现在 Voxt 把长录音在停顿处切成不超过上限的几段依次发送，再把文字拼起来。
 - **长时间口述不再在 10 分钟时被截断**：转录、翻译和改写录到 10 分钟会自己停下，录播客这样的长段口述没按快捷键就结束了。现在录音没有时长上限，录到你按停止为止。
 - **会议也按主语言识别**：会议的实时字幕和会后整理的转录稿，现在和听写一样把主语言（设置 → 通用 → 主语言，比如简体中文或繁体中文）告诉语音识别模型。以前会议不告诉模型，由模型自己猜语言。简体还是繁体仍由模型决定，Voxt 不做简繁转换。
 - **听写的文字能输入到 Raycast 等启动器的面板里**：Raycast、Tinycast 这类面板接管键盘，但它们的 App 不到前台，以前文字进不去，Voxt 改为弹出结果卡片。现在文字会粘贴到面板的输入框里。
