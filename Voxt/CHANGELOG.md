@@ -20,6 +20,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
+- **Rewrite reads text selected on a web page or in a PDF** (#3835): with a whole page selected with ⌘A in Chrome, or a page of a PDF selected in Acrobat, Rewrite sent the language model only your instruction, and the model answered that no text was given. Voxt took the empty selection that these apps report to Accessibility for no selection at all and did not try copying. It now copies the selection there (and puts your clipboard back), as it already did in apps that report nothing. In a text field, a caret with nothing selected still sends no text.
 - **The answer card no longer jumps while a fast model writes a long answer** (#3836): when the language model wrote quickly (a fast remote model writing a long Rewrite answer), the card grew by a few lines on every chunk, several times a second. The card now shows the answer at a steady pace, a little behind the model, and grows about four lines at a time. The whole answer shows as soon as the model finishes, without waiting for the pace to catch up. A follow-up's answer streams the same way.
 - **The answer card stays shut when its switch is off**: when a result could not go in (no text field had the focus, a password field, or the paste did not show), Transcribe and Translate opened the answer card even with their answer card turned off. Now the card opens only when it is on; otherwise Voxt copies the result and the overlay says to press ⌘V. The result is in History either way. Rewrite still keeps such an answer in the card, where you can ask a follow-up.
 - **A dictation is no longer cut off at 10 minutes**: Transcribe, Translate and Rewrite stopped recording by themselves after 10 minutes, so a long dictation such as a podcast ended without a key press. A recording now has no time limit: it runs until you stop it.
@@ -55,6 +56,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
+- **改写能读到网页和 PDF 里选中的文字**（#3835）：在 Chrome 里用 ⌘A 全选一个网页，或在 Acrobat 里选中 PDF 的一页，改写只把你说的指令发给语言模型，模型回答说没有收到文字。原因是这些应用通过辅助功能报告了一个空的选区，Voxt 当成什么都没选，也没有再试复制。现在 Voxt 会在这些地方复制选中的文字（之后把剪贴板还原），和在什么都不报告的应用里一样。在输入框里只有光标、没有选中文字时，仍然不发送文字。
 - **快速模型写长回答时，答案卡片不再跳动**（#3836）：模型出字很快时（比如快速的远程模型写一段长的改写回答），卡片每收到一段文字就往下长几行，一秒跳好几次。现在卡片以稳定的速度逐字显示回答，略落后于模型，每次长四行左右。模型一写完，整段回答马上全部显示，不用等动画。追问的回答也一样。
 - **关掉答案卡片后不再弹出卡片**：结果插不进去时（没有选中输入框、焦点在密码框，或者粘贴后没有出现），即使转录、翻译的答案卡片关着，Voxt 也会打开卡片。现在只有开着时才打开；关着时 Voxt 把结果复制到剪贴板，浮窗提示按 ⌘V 粘贴。两种情况历史里都有这条结果。改写插不进去时仍然放在卡片里，方便继续追问。
 - **长时间口述不再在 10 分钟时被截断**：转录、翻译和改写录到 10 分钟会自己停下，录播客这样的长段口述没按快捷键就结束了。现在录音没有时长上限，录到你按停止为止。
