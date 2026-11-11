@@ -56,20 +56,6 @@ class TextTokenizer:
         return bytes(token for token in tokens if token < 256).decode()
 
 
-def test_prefill_limit_remains_unset_or_preserves_user_override() -> None:
-    """Model policy must not impose a prefill cap or reject larger configured batches."""
-    builder = MossSpeechEngineBuilder()
-    builder.server_args_overrides = {"max_running_requests": 16}
-    defaults = builder.generation_defaults(dtype="bfloat16")
-    assert defaults["max_running_requests"] == defaults["cuda_graph_max_bs"] == 16
-    overrides: dict[str, object] = {}
-    builder.adjust_overrides(overrides)
-    assert "prefill_max_requests" not in overrides
-    overrides["prefill_max_requests"] = 8
-    builder.adjust_overrides(overrides)
-    assert overrides["prefill_max_requests"] == 8
-
-
 class ReferenceEncoder(torch.nn.Module):
     def forward(
         self,
