@@ -152,7 +152,6 @@ def make_scheduler_adapters(
             model_specific_data={
                 "num_audio_tokens": n_audio,
                 "audio_fingerprint": prepared.fingerprint,
-                "request_id": payload.request_id,
             },
         )
         audio_item.set_pad_value()

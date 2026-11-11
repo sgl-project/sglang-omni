@@ -36,7 +36,6 @@ from sglang_omni.models.nemotron_transcribe.perception import (
     build_audio_perception,
     load_perception_weights,
 )
-from sglang_omni.profiler.event_recorder import emit as emit_request_event
 
 logger = logging.getLogger(__name__)
 
@@ -143,40 +142,12 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
         language_model_kwargs: dict[str, object],
     ) -> torch.Tensor:
         # note (yhayaran): get_audio_feature runs here only when the pre-LM encoder is disabled.
-        audio_request_ids = [
-            request_id
-            for request_id, mm_input in zip(
-                forward_batch.rids or [], forward_batch.mm_inputs or []
-            )
-            if mm_input is not None
-        ]
-
-        def encode_audio_with_events(items: list[MultimodalDataItem]) -> torch.Tensor:
-            metadata = {"modality": "audio", "batch_size": len(items)}
-            for request_id in audio_request_ids:
-                emit_request_event(
-                    request_id=request_id,
-                    stage=None,
-                    event_name="encoder_start",
-                    metadata=metadata,
-                )
-            try:
-                return self.get_audio_feature(items)
-            finally:
-                for request_id in audio_request_ids:
-                    emit_request_event(
-                        request_id=request_id,
-                        stage=None,
-                        event_name="encoder_end",
-                        metadata=metadata,
-                    )
-
         return prepare_mm_inputs(
             input_ids,
             forward_batch,
             self.language_model,
             language_model_kwargs,
-            data_embedding_funcs={Modality.AUDIO: encode_audio_with_events},
+            data_embedding_funcs={Modality.AUDIO: self.get_audio_feature},
         )
 
     def forward(

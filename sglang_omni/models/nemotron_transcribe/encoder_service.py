@@ -13,7 +13,6 @@ import torch
 from sglang.srt.managers.schedule_batch import MultimodalDataItem
 
 from sglang_omni.models.qwen3_asr.encoder_service import Qwen3ASRPreLMEncoderService
-from sglang_omni.profiler.event_recorder import emit as emit_request_event
 from sglang_omni.scheduling.pre_lm_encoder import QueueEntry, QueueSignal
 
 if TYPE_CHECKING:
@@ -88,34 +87,6 @@ class NemotronTranscribePreLMEncoderService(Qwen3ASRPreLMEncoderService):
     @staticmethod
     def output_hidden_size(model: NemotronTranscribeForConditionalGeneration) -> int:
         return int(model.perception.proj.out_features)
-
-    def on_batch_start(
-        self, batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]]
-    ) -> None:
-        super().on_batch_start(batch)
-        for entry in batch:
-            emit_request_event(
-                request_id=str(entry.item.model_specific_data["request_id"]),
-                stage=None,
-                event_name="encoder_start",
-                metadata={"modality": "audio", "batch_size": len(batch)},
-            )
-
-    def on_batch_finished(
-        self,
-        batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]],
-        batch_exc: Exception | None,
-        retry_recovered: int | None,
-        elapsed_s: float,
-    ) -> None:
-        super().on_batch_finished(batch, batch_exc, retry_recovered, elapsed_s)
-        for entry in batch:
-            emit_request_event(
-                request_id=str(entry.item.model_specific_data["request_id"]),
-                stage=None,
-                event_name="encoder_end",
-                metadata={"modality": "audio", "batch_size": len(batch)},
-            )
 
     def next_batch(
         self,
