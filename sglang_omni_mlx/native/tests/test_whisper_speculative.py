@@ -1,42 +1,81 @@
 # SPDX-License-Identifier: Apache-2.0
 """Greedy speculation must preserve output across rejection, EOS and budgets."""
 
-import json
-import os
-import subprocess
-import wave
-from pathlib import Path
+from __future__ import annotations
 
-import mlx.core as mx
-import numpy as np
+import json
+import math
+import random
+import struct
+import subprocess
+from pathlib import Path
+from typing import NamedTuple
+
 import pytest
+from native_server import silent_wav
+
+WIDTH = 8
+VOCABULARY_SIZE = 32
+TEXT_CONTEXT_LENGTH = 32
+MEL_BIN_COUNT = 80
+# The tiny checkpoints' vocab.json spells token i as chr(FIRST_TOKEN_CODE + i).
+FIRST_TOKEN_CODE = 65
+
+
+class Tensor(NamedTuple):
+    shape: tuple[int, ...]
+    values: list[float]
+
+
+def write_safetensors(path: Path, tensors: dict[str, Tensor]) -> None:
+    """Float32 tensors in the safetensors layout: header size, header JSON, data."""
+    header: dict[str, dict[str, str | list[int]]] = {}
+    data = bytearray()
+    for name, tensor in tensors.items():
+        start = len(data)
+        data += struct.pack(f"<{len(tensor.values)}f", *tensor.values)
+        header[name] = {
+            "dtype": "F32",
+            "shape": list(tensor.shape),
+            "data_offsets": [start, len(data)],
+        }
+    encoded_header = json.dumps(header).encode()
+    path.write_bytes(struct.pack("<Q", len(encoded_header)) + encoded_header + data)
 
 
 @pytest.fixture
 def checkpoints(tmp_path: Path) -> tuple[Path, Path, Path]:
-    generator = np.random.default_rng(42)
-    width, vocabulary = 8, 32
-    config = dict(
-        n_mels=80,
-        n_audio_ctx=1500,
-        n_audio_state=width,
-        n_audio_head=2,
-        n_audio_layer=1,
-        n_vocab=vocabulary,
-        n_text_ctx=32,
-        n_text_head=2,
-        n_text_layer=1,
-    )
-    weights: dict[str, mx.array] = {}
+    """A one-layer target, a draft equal to it, and a decoder-only draft unlike it."""
+    generator = random.Random(42)
+
+    def normal(standard_deviation: float, shape: tuple[int, ...]) -> Tensor:
+        return Tensor(
+            shape,
+            [generator.gauss(0.0, standard_deviation) for _ in range(math.prod(shape))],
+        )
+
+    def constant(value: float, shape: tuple[int, ...]) -> Tensor:
+        return Tensor(shape, [value] * math.prod(shape))
+
+    config = {
+        "n_mels": MEL_BIN_COUNT,
+        "n_audio_ctx": 1500,
+        "n_audio_state": WIDTH,
+        "n_audio_head": 2,
+        "n_audio_layer": 1,
+        "n_vocab": VOCABULARY_SIZE,
+        "n_text_ctx": TEXT_CONTEXT_LENGTH,
+        "n_text_head": 2,
+        "n_text_layer": 1,
+    }
+    weights: dict[str, Tensor] = {}
     for side in ("encoder", "decoder"):
         for attention in ("attn",) if side == "encoder" else ("attn", "cross_attn"):
             for projection in ("query", "key", "value", "out"):
                 prefix = f"{side}.blocks.0.{attention}.{projection}"
-                weights[f"{prefix}.weight"] = mx.array(
-                    generator.normal(0, 0.15, (width, width)).astype(np.float32)
-                )
+                weights[f"{prefix}.weight"] = normal(0.15, (WIDTH, WIDTH))
                 if projection != "key":
-                    weights[f"{prefix}.bias"] = mx.zeros((width,))
+                    weights[f"{prefix}.bias"] = constant(0.0, (WIDTH,))
                 else:
                     pass
         norms = (
@@ -45,36 +84,37 @@ def checkpoints(tmp_path: Path) -> tuple[Path, Path, Path]:
             else ("attn_ln", "mlp_ln", "cross_attn_ln")
         )
         for norm in norms:
-            weights[f"{side}.blocks.0.{norm}.weight"] = mx.ones((width,))
-            weights[f"{side}.blocks.0.{norm}.bias"] = mx.zeros((width,))
+            weights[f"{side}.blocks.0.{norm}.weight"] = constant(1.0, (WIDTH,))
+            weights[f"{side}.blocks.0.{norm}.bias"] = constant(0.0, (WIDTH,))
         for projection, shape in (
-            ("mlp1", (4 * width, width)),
-            ("mlp2", (width, 4 * width)),
+            ("mlp1", (4 * WIDTH, WIDTH)),
+            ("mlp2", (WIDTH, 4 * WIDTH)),
         ):
-            weights[f"{side}.blocks.0.{projection}.weight"] = mx.array(
-                generator.normal(0, 0.15, shape).astype(np.float32)
-            )
-            weights[f"{side}.blocks.0.{projection}.bias"] = mx.zeros((shape[0],))
+            weights[f"{side}.blocks.0.{projection}.weight"] = normal(0.15, shape)
+            weights[f"{side}.blocks.0.{projection}.bias"] = constant(0.0, (shape[0],))
         final_norm = "encoder.ln_post" if side == "encoder" else "decoder.ln"
-        weights[f"{final_norm}.weight"] = mx.ones((width,))
-        weights[f"{final_norm}.bias"] = mx.zeros((width,))
-    for convolution, inputs in (("conv1", 80), ("conv2", width)):
-        weights[f"encoder.{convolution}.weight"] = mx.array(
-            generator.normal(0, 0.05, (width, 3, inputs)).astype(np.float32)
+        weights[f"{final_norm}.weight"] = constant(1.0, (WIDTH,))
+        weights[f"{final_norm}.bias"] = constant(0.0, (WIDTH,))
+    for convolution, input_channels in (("conv1", MEL_BIN_COUNT), ("conv2", WIDTH)):
+        weights[f"encoder.{convolution}.weight"] = normal(
+            0.05, (WIDTH, 3, input_channels)
         )
-        weights[f"encoder.{convolution}.bias"] = mx.zeros((width,))
-    weights["decoder.token_embedding.weight"] = mx.array(
-        generator.normal(0, 0.4, (vocabulary, width)).astype(np.float32)
-    )
-    weights["decoder.positional_embedding"] = mx.array(
-        generator.normal(0, 0.5, (32, width)).astype(np.float32)
+        weights[f"encoder.{convolution}.bias"] = constant(0.0, (WIDTH,))
+    weights["decoder.token_embedding.weight"] = normal(0.4, (VOCABULARY_SIZE, WIDTH))
+    weights["decoder.positional_embedding"] = normal(0.5, (TEXT_CONTEXT_LENGTH, WIDTH))
+    different_weights = {
+        name: tensor for name, tensor in weights.items() if name.startswith("decoder.")
+    }
+    embedding = weights["decoder.token_embedding.weight"]
+    different_weights["decoder.token_embedding.weight"] = Tensor(
+        embedding.shape, [-value for value in embedding.values]
     )
     paths = [tmp_path / name for name in ("target", "identical", "different")]
     for path in paths:
         path.mkdir()
         (path / "config.json").write_text(json.dumps(config))
         (path / "vocab.json").write_text(
-            json.dumps({chr(65 + i): i for i in range(vocabulary)})
+            json.dumps({chr(FIRST_TOKEN_CODE + i): i for i in range(VOCABULARY_SIZE)})
         )
         (path / "merges.txt").write_text("#version: 0.2\n")
         (path / "tokenizer_config.json").write_text(
@@ -91,27 +131,31 @@ def checkpoints(tmp_path: Path) -> tuple[Path, Path, Path]:
                 }
             )
         )
-        if path.name == "different":
-            weights["decoder.token_embedding.weight"] = -weights[
-                "decoder.token_embedding.weight"
-            ]
-        else:
-            pass
-        mx.save_safetensors(str(path / "model.safetensors"), weights)
-    return tuple(paths)
+        write_safetensors(
+            path / "model.safetensors",
+            different_weights if path.name == "different" else weights,
+        )
+    return paths[0], paths[1], paths[2]
+
+
+@pytest.fixture
+def audio(tmp_path: Path) -> Path:
+    path = tmp_path / "silence.wav"
+    path.write_bytes(silent_wav(1600))
+    return path
 
 
 @pytest.mark.parametrize("budget", [1, 2, 7, 23])
 def test_speculative_matches_greedy(
-    checkpoints: tuple[Path, Path, Path], tmp_path: Path, budget: int
+    runtime_bin: Path,
+    checkpoints: tuple[Path, Path, Path],
+    audio: Path,
+    budget: int,
 ) -> None:
+    """Drafted decoding keeps plain greedy output whether proposals are accepted or rejected, up to the budget."""
     target, identical, different = checkpoints
-    audio = tmp_path / "silence.wav"
-    with wave.open(str(audio), "wb") as output:
-        output.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
-        output.writeframes(bytes(3200))
     command = [
-        str(Path(os.environ["NATIVE_RUNTIME_BIN"]) / "whisper_transcribe"),
+        str(runtime_bin / "whisper_transcribe"),
         "--model-path",
         str(target),
         "--max-new-tokens",
@@ -151,30 +195,34 @@ def test_speculative_matches_greedy(
 
 
 def test_a_draft_with_fewer_text_positions_fails_at_load(
-    checkpoints: tuple[Path, Path, Path]
+    runtime_bin: Path, checkpoints: tuple[Path, Path, Path]
 ) -> None:
+    """A draft that cannot place every position the target decodes is refused at load."""
     target, _, draft = checkpoints
     config = json.loads((draft / "config.json").read_text())
     config["n_text_ctx"] = 16
     (draft / "config.json").write_text(json.dumps(config))
-    binary = Path(os.environ["NATIVE_RUNTIME_BIN"]) / "whisper_transcribe"
     result = subprocess.run(
-        [str(binary), "--model-path", str(target), "--draft-model-path", str(draft)],
+        [
+            str(runtime_bin / "whisper_transcribe"),
+            "--model-path",
+            str(target),
+            "--draft-model-path",
+            str(draft),
+        ],
         capture_output=True,
         text=True,
     )
     assert result.returncode != 0
-    assert "fewer than the target's 32" in result.stderr
+    assert f"fewer than the target's {TEXT_CONTEXT_LENGTH}" in result.stderr
 
 
-def test_immediate_eos(checkpoints: tuple[Path, Path, Path], tmp_path: Path) -> None:
+def test_immediate_eos(
+    runtime_bin: Path, checkpoints: tuple[Path, Path, Path], audio: Path
+) -> None:
+    """An end of text as the first token gives empty output, with or without the draft."""
     target, draft, _ = checkpoints
-    audio = tmp_path / "silence.wav"
-    with wave.open(str(audio), "wb") as output:
-        output.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
-        output.writeframes(bytes(3200))
-    binary = Path(os.environ["NATIVE_RUNTIME_BIN"]) / "whisper_transcribe"
-    command = [str(binary), "--model-path", str(target)]
+    command = [str(runtime_bin / "whisper_transcribe"), "--model-path", str(target)]
     first = json.loads(
         subprocess.check_output(
             [*command, "--max-new-tokens", "1", str(audio)], text=True
@@ -182,7 +230,7 @@ def test_immediate_eos(checkpoints: tuple[Path, Path, Path], tmp_path: Path) -> 
     )
     assert len(first["text"]) == 1
     generation = json.loads((target / "generation_config.json").read_text())
-    generation["eos_token_id"] = ord(first["text"]) - 65
+    generation["eos_token_id"] = ord(first["text"]) - FIRST_TOKEN_CODE
     generation["begin_suppress_tokens"] = []
     (target / "generation_config.json").write_text(json.dumps(generation))
     for flags in ([], ["--draft-model-path", str(draft)]):
