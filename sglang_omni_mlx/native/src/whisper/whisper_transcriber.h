@@ -63,12 +63,12 @@ private:
                                 const std::vector<int> &prompt_ids,
                                 int max_new_tokens, float temperature,
                                 const std::atomic<bool> &cancel) const;
-  // Greedy decoding with the draft from the prompt the caches hold and its
-  // next token: each round the target verifies the draft's proposals and
-  // keeps the agreeing ones plus its own next token.
+  // Greedy decoding with the draft after the prompt the caches hold and the
+  // first token after it: each round the target verifies the draft's
+  // proposals and keeps the agreeing ones plus its own next token.
   WindowResult DecodeWithDraft(const mlx::core::array &encoder_states,
                                const mlx::core::array &prompt,
-                               mlx::core::array token,
+                               const mlx::core::array &first_token,
                                std::vector<DecoderLayerCache> &caches,
                                int max_new_tokens,
                                const std::atomic<bool> &cancel) const;

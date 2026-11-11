@@ -323,89 +323,100 @@ WhisperTranscriber::TranscribeWindow(const std::vector<float> &window_samples,
 }
 
 WhisperTranscriber::WindowResult WhisperTranscriber::DecodeWithDraft(
-    const mx::array &encoder_states, const mx::array &prompt, mx::array token,
-    std::vector<DecoderLayerCache> &caches, int max_new_tokens,
-    const std::atomic<bool> &cancel) const {
-  WindowResult result;
-  std::vector<int> generated_ids;
+    const mx::array &encoder_states, const mx::array &prompt,
+    const mx::array &first_token, std::vector<DecoderLayerCache> &caches,
+    int max_new_tokens, const std::atomic<bool> &cancel) const {
   std::vector<DecoderLayerCache> draft_caches(
       draft_->config().text_layer_count);
-  const auto draft_prefill =
-      draft_->Decode(prompt, 0, encoder_states, draft_caches, 1);
-  mx::eval({draft_prefill});
+  // Note (XXXXRT666): only the draft's caches of the prompt are used; they are
+  // evaluated with the first round's proposals.
+  draft_->Decode(prompt, 0, encoder_states, draft_caches, 1);
+  WindowResult result;
+  std::vector<int> generated_ids;
+  // Positions the target's caches hold: the prompt, then the output before
+  // the anchor.
   int position = prompt.shape(1);
-  bool stopped = false;
-  while (static_cast<int>(generated_ids.size()) < max_new_tokens) {
+  // Output before the anchor that the draft has not decoded yet.
+  std::vector<int> undrafted_ids;
+  int anchor = static_cast<int>(first_token.item<uint32_t>());
+  while (true) {
     if (cancel.load()) {
       throw qwen3_asr::TranscriptionCancelled();
-    } else {
-    }
-    const int anchor = token.item<uint32_t>();
-    if (anchor == end_of_text_id_) {
-      stopped = true;
+    } else if (anchor == end_of_text_id_) {
       break;
     } else {
-      generated_ids.push_back(anchor);
     }
-    const int remaining = max_new_tokens - generated_ids.size();
+    generated_ids.push_back(anchor);
+    const int remaining =
+        max_new_tokens - static_cast<int>(generated_ids.size());
     if (remaining == 0) {
+      result.reached_token_limit = true;
       break;
     } else {
     }
+    // Note (XXXXRT666): the target's token after the last accepted proposal
+    // takes the last place of the budget, so the draft proposes one fewer.
     const int proposal_count = std::min(draft_steps_, remaining - 1);
-    std::vector<int> block = {anchor};
-    for (int i = 0; i < proposal_count; ++i) {
-      if (cancel.load()) {
-        throw qwen3_asr::TranscriptionCancelled();
-      } else {
+    // Note (XXXXRT666): each proposal feeds the draft's next step on the GPU,
+    // so a round reads back only the target's verdict.
+    std::vector<mx::array> block = {mx::array({static_cast<uint32_t>(anchor)})};
+    if (proposal_count > 0) {
+      int draft_position = position - static_cast<int>(undrafted_ids.size());
+      for (const int token_id : undrafted_ids) {
+        draft_->Decode(mx::array(&token_id, {1, 1}, mx::int32), draft_position,
+                       encoder_states, draft_caches, 1);
+        ++draft_position;
       }
-      const mx::array input(&block.back(), {1, 1}, mx::int32);
-      auto proposal = NextToken(
-          draft_->Decode(input, position + i, encoder_states, draft_caches, 1),
-          false, 0.0f);
-      block.push_back(proposal.item<uint32_t>());
+      undrafted_ids.clear();
+      for (int i = 0; i < proposal_count; ++i) {
+        block.push_back(NextToken(
+            draft_->Decode(mx::reshape(block.back(), {1, 1}), position + i,
+                           encoder_states, draft_caches, 1),
+            false, 0.0f));
+      }
+    } else {
+      undrafted_ids.push_back(anchor);
     }
-    auto predictions = NextToken(
-        model_.Decode(
-            mx::array(block.data(), {1, int(block.size())}, mx::int32),
-            position, encoder_states, caches, static_cast<int>(block.size())),
-        false, 0.0f);
-    mx::eval({predictions});
-    ++result.verify_round_count;
-    result.proposed_draft_token_count += proposal_count;
-    const auto *predicted_ids = predictions.data<uint32_t>();
+    const int block_length = proposal_count + 1;
+    const mx::array block_ids = mx::concatenate(block);
+    const mx::array predictions =
+        NextToken(model_.Decode(mx::reshape(block_ids, {1, block_length}),
+                                position, encoder_states, caches, block_length),
+                  false, 0.0f);
+    mx::eval({block_ids, predictions});
+    const uint32_t *block_values = block_ids.data<uint32_t>();
+    const uint32_t *predicted_ids = predictions.data<uint32_t>();
     int accepted = 0;
+    bool stopped = false;
     while (accepted < proposal_count &&
-           block[accepted + 1] == int(predicted_ids[accepted])) {
+           block_values[accepted + 1] == predicted_ids[accepted]) {
       ++accepted;
-      ++result.accepted_draft_token_count;
-      if (block[accepted] == end_of_text_id_) {
+      if (static_cast<int>(block_values[accepted]) == end_of_text_id_) {
         stopped = true;
         break;
       } else {
-        generated_ids.push_back(block[accepted]);
+        generated_ids.push_back(static_cast<int>(block_values[accepted]));
       }
     }
+    ++result.verify_round_count;
+    result.proposed_draft_token_count += proposal_count;
+    result.accepted_draft_token_count += accepted;
     if (stopped) {
       break;
+    } else if (accepted < proposal_count) {
+      TruncateCaches(caches, position + accepted + 1);
+      TruncateCaches(draft_caches, position + accepted + 1);
+    } else if (proposal_count > 0) {
+      // Note (XXXXRT666): the draft proposed the last token without decoding
+      // it.
+      undrafted_ids.push_back(static_cast<int>(block_values[proposal_count]));
     } else {
     }
-    token = mx::array(predicted_ids[accepted], mx::uint32);
-    // note (ruiling): The last proposal has not yet entered the draft cache.
-    if (accepted == proposal_count) {
-      const mx::array input(&block.back(), {1, 1}, mx::int32);
-      const auto catch_up = draft_->Decode(input, position + accepted,
-                                           encoder_states, draft_caches, 1);
-      mx::eval({catch_up});
-    } else {
-    }
+    anchor = static_cast<int>(predicted_ids[accepted]);
     position += accepted + 1;
-    TruncateCaches(caches, position);
-    TruncateCaches(draft_caches, position);
   }
-  result.reached_token_limit = !stopped;
   result.text = DecodeText(generated_ids);
-  result.generated_token_count = generated_ids.size();
+  result.generated_token_count = static_cast<int>(generated_ids.size());
   return result;
 }
 
