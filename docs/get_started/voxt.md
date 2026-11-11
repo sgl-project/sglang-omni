@@ -2,7 +2,7 @@
 
 [Voxt](https://github.com/sgl-project/sglang-omni/tree/main/Voxt) is voice input for macOS built on SGLang-Omni: press a shortcut in any app, speak, and the text appears where your cursor is. Speech is recognised on your Mac by SGLang-Omni's native MLX runtime.
 
-**Download:** the newest `Voxt-X.Y.Z-arm64.dmg` from [the Voxt releases](https://github.com/sgl-project/sglang-omni/releases?q=voxt-v&expanded=true).
+**Download:** [Voxt 2.0.3 for Mac (`Voxt-2.0.3-arm64.dmg`)](https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.0.3/Voxt-2.0.3-arm64.dmg).
 
 **Needs:** a Mac with Apple silicon and macOS 15 or later. The app is about 280 MB; the recommended speech model is a 2.5 GB download. Voxt 2 does not run on an Intel Mac; there, keep using Voxt 1.x.
 
@@ -44,6 +44,6 @@ Voxt 2 does not update itself: install each new version from its disk image. The
 
 **Another Mac:** in Voxt 1.x, export the dictionary (Dictionary → More → Export); in Voxt 2, import the file (Dictionary → ••• → Import…). Only the dictionary moves this way.
 
-**Going back:** reinstall [Voxt 1.16.3](https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v1.16.3). Its data is where Voxt 1.x left it.
+**Going back:** reinstall [Voxt 1.16.3](https://github.com/sgl-project/sglang-omni/releases/download/voxt-v1.16.3/Voxt-1.16.3.dmg). Its data is where Voxt 1.x left it.
 
 More detail, with screenshots: [From Voxt 1.x to Voxt 2](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/docs/voxt-migration.md).

@@ -45,6 +45,7 @@ scripts/mac-gui.sh scripts/release.sh（在 Mac 上，ssh 里经 mac-gui.sh 进�
 3. 工作流把 tag 的版本号写进 mygo.json 和两个 Info.plist，导入 `voxt-release` 环境的 Developer ID（[scripts/release-identity.sh](../scripts/release-identity.sh) 检查它是 RY2TQTYSKQ 的），用 App Store Connect API key 建 notarytool 配置，跑 `scripts/release.sh --notarize voxt-notary --keychain …`（`EXPECT_TEAM=RY2TQTYSKQ`，`release-verify.sh developer-id` 全部通过才继续），再把 `Voxt-X.Y.Z-arm64.dmg`、app 的 ZIP `Voxt-X.Y.Z-macOS.zip`（给 Voxt 1.x 的应用内更新和 Homebrew）和它们的 `.sha256` 传到草稿 Release “Voxt vX.Y.Z”。说明依次是要求、安装、CHANGELOG 里的那一节和构建来源。
 4. 在 Release 页面检查说明后发布（默认标成 Latest）。用户下载 dmg，把 Voxt 拖进“应用程序”，会替换 Swift 版 Voxt 1.x 的 Voxt.app。2.0.0 不会自动更新，新版本也这样装。
 5. 推给 Voxt 1.x 的用户和 Homebrew：发布后手动运行 Voxt Appcast 工作流，先放进 1.x 的 beta 通道，在真机上测通后再发到 stable，只给 Apple 芯片上的 1.x，见 [Voxt 1.x 的应用内更新和 Homebrew](#voxt-1x-的应用内更新和-homebrew)。
+6. 下载链接：README.md、Voxt/README.md、Voxt/README.zh-CN.md 和 docs/get_started/voxt.md 的下载链接都直接下载 dmg（`https://github.com/sgl-project/sglang-omni/releases/download/voxt-vX.Y.Z/Voxt-X.Y.Z-arm64.dmg`），不指向 Release 页，也不指向 Release 搜索（GitHub 的搜索列不出最新的几个版本）。mygo.json 改成 X.Y.Z 的提交里同时改这些链接，Release 发布后链接才能下载；`TestDownloadLinks` 检查它们都是 mygo.json 的版本。
 
 `voxt-release` 环境是 Swift 版 Voxt 1.x 发版时建的，部署规则放行 `main` 和 `voxt-v*` tag，没有审批。这个工作流（tag 发布，main 上或手动运行的 nightly 和 beta）用到它的这些 secret。从别的分支手动运行 nightly 或 beta 也签名，要先在仓库 Settings → Environments → voxt-release 的部署规则里放行那个分支，否则 job 一开始就失败：
 

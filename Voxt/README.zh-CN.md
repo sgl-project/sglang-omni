@@ -69,7 +69,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 
 ### 第一次用 Voxt
 
-1. **下载**：从 [Voxt v2.0.3 发布页][download]下载 `Voxt-2.0.3-arm64.dmg`，打开后把 **Voxt** 拖进“应用程序”。
+1. **下载** [`Voxt-2.0.3-arm64.dmg`][download]，打开后把 **Voxt** 拖进“应用程序”。
 
 2. **打开 Voxt，跟着设置引导走**：授权麦克风和辅助功能，下载推荐的语音识别模型（Qwen3-ASR 1.7B (8bit)，2.5 GB），再配置一个语言模型用于整理、翻译和改写。
 3. 在任意 App 里**单按右 Option**，说话，再按一下。
@@ -155,7 +155,7 @@ Apache License 2.0（[LICENSE](LICENSE)），与本仓其余部分一致。版�
 
 [![回到顶部][back-to-top]](#readme-top)
 
-[download]: https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v2.0.3
+[download]: https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.0.3/Voxt-2.0.3-arm64.dmg
 [install-guide]: https://sgl-project.github.io/sglang-omni/get_started/voxt.html
 [issues]: https://github.com/sgl-project/sglang-omni/issues/new/choose
 [slack]: https://slack.sglang.io

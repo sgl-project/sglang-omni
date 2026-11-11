@@ -69,7 +69,7 @@ Every shortcut can be changed on its feature's page, and Settings → Shortcuts 
 
 ### New to Voxt
 
-1. **Download** `Voxt-2.0.3-arm64.dmg` from [the Voxt v2.0.3 release][download], open it and drag **Voxt** to **Applications**.
+1. **Download** [`Voxt-2.0.3-arm64.dmg`][download], open it and drag **Voxt** to **Applications**.
 
 2. **Open Voxt and follow the setup guide**: allow the microphone and Accessibility, download the recommended speech model (Qwen3-ASR 1.7B (8bit), 2.5 GB), and set up a language model for clean-up, Translate and Rewrite.
 3. **Tap the right Option key** in any app, speak, and tap it again.
@@ -155,7 +155,7 @@ Apache License 2.0 ([LICENSE](LICENSE)), as the rest of this repository. Copyrig
 
 [![Back to top][back-to-top]](#readme-top)
 
-[download]: https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v2.0.3
+[download]: https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.0.3/Voxt-2.0.3-arm64.dmg
 [install-guide]: https://sgl-project.github.io/sglang-omni/get_started/voxt.html
 [issues]: https://github.com/sgl-project/sglang-omni/issues/new/choose
 [slack]: https://slack.sglang.io
