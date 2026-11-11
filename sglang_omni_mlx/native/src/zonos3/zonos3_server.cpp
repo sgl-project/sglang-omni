@@ -382,10 +382,8 @@ private:
         request, context.cancel,
         [&](const mlx::core::array &) { context.check_deadline(); },
         [&](std::vector<float> audio) { context.send(std::move(audio)); });
-    if (result.frame_count == 0) {
-      throw std::runtime_error("ZONOS3 generated no audio frames");
-    } else {
-    }
+    // A budget too small to complete one frame answers empty audio, as the
+    // reference does.
     return speech_service::SpeechResult{
         result.finish_reason, static_cast<size_t>(result.prompt_row_count),
         result.generated_row_count};
