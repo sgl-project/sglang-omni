@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -126,6 +127,14 @@ func Open(cfg Config, prefs settings.Settings) *Family {
 // runningBundleID is the bundle's identifier, DevBundleID outside one or
 // for an identifier outside the family.
 func runningBundleID() string {
+	// .app bundles exist only on macOS; on other systems (Windows, Linux)
+	// skip the executable-path probe entirely. registry.BundlePath walks
+	// the executable path looking for a ".app" directory, and its loop only
+	// terminates on Unix-style roots - it spins forever at the Windows
+	// drive root (filepath.Dir("C:\\") yields "C:\\" again).
+	if runtime.GOOS != "darwin" {
+		return DevBundleID
+	}
 	if p := registry.BundlePath(); p != "" {
 		if id, err := registry.BundleIDAt(p); err == nil {
 			if _, _, err := family.ParseBundleID(id); err == nil {

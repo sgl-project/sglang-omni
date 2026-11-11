@@ -20,7 +20,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
@@ -250,8 +249,7 @@ func (h *OutputHelper) alive(pid int) bool {
 	if h.Alive != nil {
 		return h.Alive(pid)
 	}
-	p, err := os.FindProcess(pid)
-	return err == nil && p.Signal(syscall.Signal(0)) == nil
+	return processAlive(pid)
 }
 
 // Claims are the devices it muted.
