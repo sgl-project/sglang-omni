@@ -11,6 +11,7 @@ discarded experts stayed alive until cyclic gc.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch.nn as nn
@@ -91,19 +92,9 @@ def test_talker_layer_builds_exactly_one_talker_moe_block(
             self.kwargs = kwargs
             attention_calls.append(kwargs)
 
-    class FakeLayerCommunicator(nn.Module):
-        def __init__(self, **kwargs) -> None:
-            super().__init__()
-            self.kwargs = kwargs
-
     class FakeRMSNorm(nn.Module):
         def __init__(self, *args, **kwargs) -> None:
             super().__init__()
-
-    class FakeScatterModes:
-        @staticmethod
-        def init_new(**kwargs) -> object:
-            return object()
 
     def record_thinker_moe_init(self, *args, **kwargs) -> None:
         thinker_moe_built.append((args, kwargs))
@@ -117,8 +108,9 @@ def test_talker_layer_builds_exactly_one_talker_moe_block(
         "get_parallel",
         lambda: SimpleNamespace(attn_tp_size=1, attn_tp_rank=0),
     )
-    monkeypatch.setattr(thinker_module, "LayerScatterModes", FakeScatterModes)
-    monkeypatch.setattr(thinker_module, "LayerCommunicator", FakeLayerCommunicator)
+    monkeypatch.setattr(
+        thinker_module, "append_stages", Mock(return_value=(nn.Module(), nn.Module()))
+    )
     monkeypatch.setattr(thinker_module, "RMSNorm", FakeRMSNorm)
     monkeypatch.setattr(
         Qwen3OmniMoeTalkerDecoderLayer, "sparse_moe_block_cls", RecordingMoe
