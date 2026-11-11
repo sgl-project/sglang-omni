@@ -3,6 +3,7 @@
 
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import torch
@@ -394,3 +395,24 @@ def test_replayed_dual_logits_follow_current_request_order_and_active_rows() -> 
                     audio_token if index % 2 else text_token
                 )
                 assert not request.data.pending_feedback_queue
+
+
+@NATIVE_CPU
+def test_prefill_projects_only_one_hidden_state_per_request() -> None:
+    """Prefill allocated vocabulary logits for positions discarded before sampling."""
+    with native_runtime(torch.device("cpu")), torch.no_grad():
+        model = tiny_model(torch.device("cpu"))
+        prompts = [
+            model.rows_to_embeddings(torch.tensor([[3, 0], [4, 0], [5, 0]])),
+            model.rows_to_embeddings(torch.tensor([[6, 0], [7, 0]])),
+        ]
+        with patch(
+            "sglang_omni.models.moss_speech.sglang_model.request_linear",
+            wraps=request_linear,
+        ) as projection:
+            output, _ = prefill(model, prompts, ["long", "short"])
+        assert output.text_logits.shape == (2, model.text_vocab_size)
+        assert output.audio_logits.shape == (2, model.audio_vocab_size)
+        assert all(
+            call.args[0].shape[0] == len(prompts) for call in projection.call_args_list
+        )
