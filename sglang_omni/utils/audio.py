@@ -324,7 +324,10 @@ def load_audio(
     mono: bool = True,
     trim_top_db: float | None = None,
     resample_kwargs: ResampleOptions | None = None,
-) -> NDArray[np.float32]:
+    *,
+    preserve_sample_rate: bool = False,
+) -> NDArray[np.float32] | tuple[NDArray[np.float32], int]:
+    """Load samples, or return native samples and their rate when preservation is enabled."""
     if isinstance(source, memoryview):
         source = source.tobytes()
     else:
@@ -353,7 +356,12 @@ def load_audio(
     if isinstance(source, bytes):
         # Note (akazaakane): The direct WAV/NumPy path avoids torchaudio decoder
         # startup when mono=True without changing channel-preserving loads.
-        if mono and trim_top_db is None and is_riff_wav(source):
+        if (
+            not preserve_sample_rate
+            and mono
+            and trim_top_db is None
+            and is_riff_wav(source)
+        ):
             fast = try_fast_wav_decode(
                 source, target_sample_rate, resample_kwargs=resample_kwargs
             )
@@ -387,7 +395,7 @@ def load_audio(
         audio = torch.from_numpy(trimmed)
     else:
         pass
-    if sample_rate != target_sample_rate:
+    if not preserve_sample_rate and sample_rate != target_sample_rate:
         if current_platform.supports_torchaudio_resample():
             audio = torchaudio.functional.resample(
                 audio,
@@ -407,7 +415,8 @@ def load_audio(
         audio = audio.squeeze(0)
     else:
         pass
-    return audio.cpu().numpy()
+    samples = audio.cpu().numpy()
+    return (samples, int(sample_rate)) if preserve_sample_rate else samples
 
 
 def audio_fingerprint(audio: NDArray[np.generic]) -> str:
