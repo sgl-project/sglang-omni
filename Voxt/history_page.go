@@ -1,7 +1,8 @@
 package main
 
 // The History page (/history): finished sessions by feature
-// (Transcribe, Translate, Rewrite), newest first, searchable (the store's
+// (Transcribe, Translate, Rewrite) or of every feature (All, each row
+// naming its feature), newest first, searchable (the store's
 // full-text index), and the details of one in a side panel beside the
 // list, or over it when the window is narrow: its texts to copy, where it
 // went, the models, the time of each stage, why it failed,
@@ -17,6 +18,7 @@ package main
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"time"
 
@@ -48,7 +50,7 @@ type historyState struct {
 
 // historyView is the History page's state.
 type historyView struct {
-	tab   int    // the kind shown: an index in store.Kinds
+	tab   int    // the kind shown: an index in store.Kinds, len(store.Kinds) for All
 	query string // the search field
 	find  finder // Return steps through the matches (find_marks.go)
 	// list holds the entries read for listFor (the kind and the search),
@@ -71,9 +73,25 @@ type historyView struct {
 // revealInFinder shows a file in Finder; tests replace it.
 var revealInFinder = func(path string) { mygo.Shell.ShowItemInFolder(path) }
 
-// historyKind is the kind of the tab shown.
+// kind is the kind of the tab shown, "" for All.
 func (h *historyView) kind() store.Kind {
+	if h.tab == len(store.Kinds) {
+		return ""
+	}
 	return store.Kinds[min(max(h.tab, 0), len(store.Kinds)-1)]
+}
+
+// historyTabs names the tabs: store.Kinds, then All.
+func historyTabs() []string {
+	return []string{i18n.T("Transcribe"), i18n.T("Translate"), i18n.T("Rewrite"), i18n.T("All")}
+}
+
+// kindName names an entry's feature, as its tab does.
+func kindName(k store.Kind) string {
+	if i := slices.Index(store.Kinds, k); i >= 0 {
+		return historyTabs()[i]
+	}
+	return string(k)
 }
 
 // wants says what the list should hold: the kind and the search.
@@ -175,8 +193,7 @@ func (a *app) historyPage(c *ui.Context) {
 	cur, curAt := rowOf(hits, h.find.cur)
 	pageBody(c).Children(func() {
 		ui.Row(c).Padding(px(t, sp1), px(t, sp6), px(t, sp3)).Gap(px(t, sp2)).AlignItems(ui.Center).Shrink(0).Children(func() {
-			tabs := []string{i18n.T("Transcribe"), i18n.T("Translate"), i18n.T("Rewrite")}
-			if ui.Segmented(c.Key("hist-tab"), &h.tab, tabs...).Label(i18n.T("Feature")).Shrink(0).Changed() {
+			if ui.Segmented(c.Key("hist-tab"), &h.tab, historyTabs()...).Label(i18n.T("Feature")).Shrink(0).Changed() {
 				h.sel = ""
 				a.loadHistory()
 			}
@@ -263,6 +280,9 @@ func (a *app) historyEmpty(c *ui.Context) {
 		return
 	}
 	switch h.kind() {
+	case "":
+		emptyState(c, icons.History, i18n.T("No history yet"),
+			i18n.T("Transcriptions, translations and rewrites show up here."), nil)
 	case store.KindTranslate:
 		emptyState(c, translateIcon, i18n.T("No translations yet"),
 			i18n.T("Translations show up here with their source."), func() {
@@ -323,7 +343,11 @@ func (a *app) historyRow(c *ui.Context, e store.Entry, q string, at int) {
 				}
 				a.entryStatus(c, e) // history_retry.go
 			})
-			ui.Text(c, uitext.EntryMeta(e)).FontSize(px(t, fsCaption)).TextColor(k.Text3).SingleLine().Ellipsis("…").MinWidth(0)
+			meta := uitext.EntryMeta(e)
+			if h.kind() == "" {
+				meta = kindName(e.Kind) + " · " + meta
+			}
+			ui.Text(c, meta).FontSize(px(t, fsCaption)).TextColor(k.Text3).SingleLine().Ellipsis("…").MinWidth(0)
 		})
 	})
 }
