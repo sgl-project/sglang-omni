@@ -381,3 +381,14 @@ def test_full_context_survives_scheduler_admission(
         request.req.sampling_params.max_new_tokens == request.max_new_tokens == budget
     )
     assert scheduler.request_kv_capacity_error(request.req) is None
+
+
+@pytest.mark.parametrize("dtype", ["bfloat16", "bf16"])
+def test_engine_accepts_bf16_spellings(dtype: str) -> None:
+    builder = MossSpeechEngineBuilder()
+    builder.server_args_overrides = {"max_running_requests": 4}
+    overrides = {"dtype": dtype}
+    builder.adjust_overrides(overrides)
+    assert overrides["dtype"] == "bfloat16"
+    with pytest.raises(ValueError, match="rejects dtype"):
+        builder.adjust_overrides({"dtype": "float16"})

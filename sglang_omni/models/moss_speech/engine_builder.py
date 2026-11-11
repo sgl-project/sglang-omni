@@ -79,6 +79,8 @@ class MossSpeechEngineBuilder(
         for name, value in self.generation_defaults(dtype="bfloat16").items():
             if name in ("attention_backend", "cuda_graph_max_bs"):
                 continue
+            elif name == "dtype" and overrides.get(name) == "bf16":
+                overrides[name] = value
             elif name in overrides and overrides[name] != value:
                 raise ValueError(
                     f"MOSS-Speech inference rejects {name}={overrides[name]!r}"
