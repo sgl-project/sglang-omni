@@ -250,6 +250,9 @@ func (r *run) listen() (string, bool) {
 	first := time.Duration(captured.res.FirstFrameMS * float64(time.Millisecond))
 	r.logf("info", "recorded %v (%s, %d frames, %d restarts, first audio after %v from %s)", audioLen.Round(time.Millisecond), captured.res.Reason,
 		captured.res.Frames, captured.res.Restarts, first.Round(time.Millisecond), r.m.Current().Device)
+	if captured.res.Reason == proto.CaptureMaxSeconds {
+		r.logf("warning", "the recording reached its %v limit: it stopped by itself", cfg.MaxRecording)
+	}
 	if first > slowMic {
 		r.logf("warning", "the microphone gave its first audio %v after the start: what was said before is not in the recording", first.Round(time.Millisecond))
 	}

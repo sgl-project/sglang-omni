@@ -517,6 +517,18 @@ func TestBusyTryShortAndMore(t *testing.T) {
 		if end.State != Done || end.Result != "long" || end.StoppedAt.IsZero() {
 			t.Errorf("end %+v", end)
 		}
+		// A podcast is dictated whole: the guard against a lost
+		// capture.stop is 2 hours, not 10 minutes, and the log says it ended
+		// the recording.
+		h.audio.mu.Lock()
+		p := h.audio.params
+		h.audio.mu.Unlock()
+		h.mu.Lock()
+		logs := strings.Join(h.logs, "\n")
+		h.mu.Unlock()
+		if len(p) != 1 || p[0].MaxSeconds != 2*60*60 || !strings.Contains(logs, "the recording reached its 2h0m0s limit") {
+			t.Errorf("params %+v, logs %q", p, logs)
+		}
 	})
 	t.Run("a stop that does not stop", func(t *testing.T) {
 		h := newHarness(t, &fakeFile{text: "x"}, nil, nil)

@@ -387,7 +387,7 @@ type Config struct {
 
 // Defaults of Config's limits.
 const (
-	DefaultMaxRecording   = 10 * time.Minute
+	DefaultMaxRecording   = 2 * time.Hour // a guard against a lost capture.stop; a podcast is longer than 10 minutes
 	DefaultMinRecording   = 300 * time.Millisecond
 	DefaultASRTimeout     = 60 * time.Second
 	DefaultASRPerSecond   = time.Second
