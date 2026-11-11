@@ -6,7 +6,7 @@ For shared request examples, response formats, SSE clients, and error handling, 
 
 ## Prerequisites
 
-Install SGLang-Omni using the [installation guide](../get_started/installation.md).
+Install `sglang-omni` using the [installation guide](../get_started/installation.md).
 
 ## Server Configuration
 
