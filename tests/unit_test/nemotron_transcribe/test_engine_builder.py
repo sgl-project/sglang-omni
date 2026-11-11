@@ -12,8 +12,8 @@ from sglang_omni.models.nemotron_transcribe.config import (
     NemotronTranscribePipelineConfig,
 )
 from sglang_omni.models.nemotron_transcribe.engine_builder import (
-    NemotronTranscribeEngineBuilder,
     PINNED_CHECKPOINT_REVISION,
+    NemotronTranscribeEngineBuilder,
     prepare_nemotron_speculative_options,
     validate_nemotron_mtp_metadata,
 )
@@ -176,6 +176,29 @@ def test_async_decode_is_rejected_for_nextn() -> None:
         prepare_nemotron_speculative_options(
             "model", {"speculative_algorithm": "NEXTN"}, enable_async_decode=True
         )
+
+
+def test_nextn_post_resolution_validation_checks_only_resolved_draft_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builder = make_builder(
+        nextn_enabled=True,
+        checkpoint_revision=PINNED_CHECKPOINT_REVISION,
+    )
+    builder.checkpoint_dir = "resolved-target"
+    monkeypatch.setattr(
+        engine_builder.AsrEngineBuilder,
+        "validate_before_infrastructure",
+        lambda self, server_args: None,
+    )
+    monkeypatch.setattr(
+        engine_builder,
+        "resolved_view",
+        lambda server_args: SimpleNamespace(speculative_draft_model_path="user-target"),
+    )
+
+    with pytest.raises(ValueError, match="resolved target checkpoint"):
+        builder.validate_before_infrastructure(SimpleNamespace())
 
 
 def test_nextn_requires_the_known_two_layer_physical_pattern() -> None:

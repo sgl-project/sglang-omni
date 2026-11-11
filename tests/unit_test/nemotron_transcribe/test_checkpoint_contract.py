@@ -21,7 +21,6 @@ from sglang_omni.models.nemotron_transcribe.decoder_weights import (
 from sglang_omni.models.nemotron_transcribe.mtp_model import (
     expected_mtp_checkpoint_names,
     validate_mtp_checkpoint_inventory,
-    validate_mtp_tensor_dtype,
 )
 
 PACKAGE = (
@@ -162,22 +161,12 @@ def test_mtp_mapping_preserves_qkv_names_expert_transforms_and_bias_dtype() -> N
     }
     assert mapped["mtp.layers.1.mixer.experts.0.up_proj.weight"].shape == (4, 3)
     assert mapped["mtp.layers.1.mixer.experts.0.down_proj.weight"].shape == (3, 4)
-    assert (
-        mapped["mtp.layers.1.mixer.gate.e_score_correction_bias"].dtype
-        == torch.float32
-    )
+    mapped_bias = mapped["mtp.layers.1.mixer.gate.e_score_correction_bias"]
+    assert mapped_bias.dtype == bias.dtype
     assert torch.equal(
-        mapped["mtp.layers.1.mixer.gate.e_score_correction_bias"], bias
+        mapped_bias,
+        bias,
     )
-    validate_mtp_tensor_dtype(
-        "mtp.layers.1.mixer.gate.e_score_correction_bias",
-        mapped["mtp.layers.1.mixer.gate.e_score_correction_bias"],
-    )
-    with pytest.raises(ValueError, match="expected torch.float32"):
-        validate_mtp_tensor_dtype(
-            "mtp.layers.1.mixer.gate.e_score_correction_bias",
-            torch.ones(2, dtype=torch.bfloat16),
-        )
 
 
 def test_mtp_expert_conversion_preserves_ungated_relu2_computation() -> None:

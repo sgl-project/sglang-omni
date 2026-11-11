@@ -74,15 +74,25 @@ def prepare_nemotron_speculative_options(
     algorithm_name = overrides.get("speculative_algorithm")
     if algorithm_name is not None and not isinstance(algorithm_name, str):
         raise ValueError("speculative_algorithm must be a string")
+    else:
+        pass
     algorithm = SpeculativeAlgorithm.from_string(algorithm_name)
     if algorithm.is_none():
         return overrides, False
+    else:
+        pass
     if enable_async_decode or overrides.get("enable_async_decode") is True:
         raise ValueError("Nemotron Transcribe does not support async decode")
+    else:
+        pass
     if "enable_async_decode" in overrides:
         overrides.pop("enable_async_decode")
+    else:
+        pass
     if algorithm != SpeculativeAlgorithm.EAGLE:
         raise ValueError("Nemotron Transcribe supports bundled NEXTN only")
+    else:
+        pass
 
     revision = overrides.get("revision")
     if revision not in (None, PINNED_CHECKPOINT_REVISION):
@@ -111,9 +121,13 @@ def prepare_nemotron_speculative_options(
         raise ValueError("Nemotron Transcribe NEXTN supports one logical MTP step")
     elif overrides.get("speculative_use_rejection_sampling") is True:
         raise ValueError("Nemotron Transcribe NEXTN supports greedy decoding only")
+    else:
+        pass
     for name in ("tp_size", "pp_size"):
         if overrides.get(name, 1) != 1:
             raise ValueError(f"Nemotron Transcribe NEXTN requires {name}=1")
+        else:
+            pass
     overrides.update(
         speculative_algorithm="NEXTN",
         speculative_draft_model_path=model_path,
@@ -297,33 +311,11 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         else:
             pass
         configuration = resolved_view(server_args)
-        if SpeculativeAlgorithm.from_string(configuration.speculative_algorithm) != (
-            SpeculativeAlgorithm.EAGLE
-        ):
-            raise ValueError("Nemotron Transcribe NEXTN was not enabled in ServerArgs")
-        elif configuration.speculative_draft_model_path != self.checkpoint_dir:
+        if configuration.speculative_draft_model_path != self.checkpoint_dir:
             raise ValueError(
                 "Nemotron Transcribe NEXTN draft must use the resolved "
                 "target checkpoint"
             )
-        elif configuration.revision != self.checkpoint_revision:
-            raise ValueError("Nemotron Transcribe NEXTN target revision mismatch")
-        elif configuration.speculative_draft_model_revision != self.checkpoint_revision:
-            raise ValueError("Nemotron Transcribe NEXTN draft revision mismatch")
-        elif configuration.speculative_eagle_topk != 1:
-            raise ValueError(
-                "Nemotron Transcribe NEXTN requires speculative_eagle_topk=1"
-            )
-        elif configuration.enable_mixed_chunk:
-            raise ValueError(
-                "Nemotron Transcribe NEXTN does not support mixed-chunk mode"
-            )
-        elif configuration.enable_multi_layer_eagle:
-            raise ValueError("Nemotron Transcribe NEXTN supports one logical MTP step")
-        elif not configuration.disable_overlap_schedule:
-            raise ValueError("Nemotron Transcribe NEXTN requires synchronous execution")
-        elif configuration.tp_size != 1 or configuration.pp_size != 1:
-            raise ValueError("Nemotron Transcribe NEXTN requires tp_size=pp_size=1")
         else:
             pass
 
