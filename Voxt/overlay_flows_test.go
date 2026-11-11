@@ -195,6 +195,9 @@ func overlayFlows() []ovFlowCase {
 		{"rewrite-selection", func(t *testing.T) *ovFlow {
 			return two(t, helpertest.Opt("selection", "release thursday onboarding first")+",", "rewrite", "make it a full sentence", draft(long, 150*time.Millisecond), nil)
 		}},
+		{"rewrite-no-card", func(t *testing.T) *ovFlow {
+			return two(t, helpertest.Opt("selection", "release thursday onboarding first")+",", "rewrite", "make it a full sentence", draft(long, 150*time.Millisecond), rewriteNoCard)
+		}},
 		{"follow-up", func(t *testing.T) *ovFlow {
 			chat := &fakeChat{texts: []string{`{"title":"Release","content":"` + long + `"}`, "Thursday: onboarding, history, then the card."}, delay: 150 * time.Millisecond}
 			s, keys, tr := fileSetup(t, "write that the release moves to thursday", chat)
@@ -218,8 +221,14 @@ func overlayFlows() []ovFlowCase {
 	}
 }
 
-// flowSettings: the pictures in Chinese.
+// rewriteNoCard turns Rewrite's answer card switch off (on by default):
+// its answer goes in at once.
+func rewriteNoCard(st *settings.Settings) { st.Features.Rewrite.ShowCard = false }
+
+// flowSettings: the one-line pill (its rules are what TestOverlayFlows
+// checks; Lines, the default, is TestLiveLines'), the pictures in Chinese.
 func flowSettings(st *settings.Settings) {
+	st.Overlay.LiveLines = false
 	if os.Getenv("VOXTNEW_FLOW_SHOTS") != "" {
 		st.General.Language = "zh-Hans"
 	}
@@ -241,6 +250,7 @@ func TestOverlayFlows(t *testing.T) {
 		"translate-selection-readonly": "working answer",
 		"rewrite":                      "recording working answer",
 		"rewrite-selection":            "recording working answer",
+		"rewrite-no-card":              "recording working",
 		"follow-up":                    "answer",
 	}
 	for _, fl := range overlayFlows() {

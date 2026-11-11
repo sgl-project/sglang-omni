@@ -96,13 +96,13 @@ func TestReadLegacyTermsRich(t *testing.T) {
 }
 
 // History: dictation, translation and rewrite come over with stable ids;
-// a meeting transcript and an empty entry are skipped.
+// an empty entry is skipped; transcript rows go to meetings, not history.
 func TestReadLegacyHistory(t *testing.T) {
 	entries, skipped, err := readLegacyHistory(context.Background(), legacyDatabase(copyFixture(t, "hist")))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 3 || skipped != 2 {
+	if len(entries) != 3 || skipped != 1 {
 		t.Fatalf("got %d entries, %d skipped: %+v", len(entries), skipped, entries)
 	}
 	want := map[string]string{"legacy-a1": "transcribe", "legacy-a2": "translate", "legacy-a3": "rewrite"}
@@ -376,15 +376,20 @@ func TestImportReportGroups(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.importLegacyFrom(copyFixture(t, "hist"))
 	if !a.ob.legacyOpen || !has(tt, "Imported from the previous Voxt") || !hasExact(tt, "Imported") || !has(tt, "History: 3 entries") ||
-		!hasExact(tt, "Left out") || !has(tt, "2 history entries: meetings or empty") || hasExact(tt, "To do") {
+		!hasExact(tt, "Left out") || !has(tt, "1 history entry: empty") || hasExact(tt, "To do") {
 		t.Fatalf("dialog: %q", tt.Texts())
 	}
 	click(t, tt, "Done")
 	a.ob.legacy.todo = []legacyTodo{{text: setupNeedsText(local.LLM, settings.Provider{ID: "deepseek"}, providers.MissingKey), kind: local.LLM, id: "deepseek"}}
 	a.openOnboarding()
-	if !has(tt, "History: 3 entries") || !hasExact(tt, "To do") || !has(tt, "DeepSeek needs its API key: paste it again to use it.") {
+	if !has(tt, "History: 3 entries") || !hasExact(tt, "To do") || !has(tt, "DeepSeek needs its API key. Paste it again to use it.") {
 		t.Fatalf("the guide's card: %q", tt.Texts())
 	}
+	// With Linux's taller lines the button sits at the card's bottom edge:
+	// scroll the card to it first.
+	todo, _ := tt.Find("To do")
+	tt.Scroll(todo.X+todo.W/2, todo.Y, 0, 200)
+	frames(tt)
 	if err := tt.ClickControl("Complete setup of DeepSeek"); err != nil {
 		t.Fatal(err)
 	}

@@ -21,7 +21,7 @@ import (
 func TestInfoTipClick(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate("/settings/audio")
-	const tip = "Voxt records from the first microphone of the list that is connected. When none of them is, or the list is empty, it records from the system's default input."
+	const tip = "Voxt uses the first connected microphone in the list, or the system default."
 	shown := func() int { // the ⓘ's own label counts once
 		frames(tt)
 		n := 0
@@ -74,10 +74,10 @@ func TestAudioSettingsDevices(t *testing.T) {
 	if !slices.Contains(fs.methods(), proto.MethodCaptureDevices) {
 		t.Fatalf("the section did not list the inputs: %v", fs.methods())
 	}
-	if !has(tt, "No microphone chosen: Voxt records from the system's default input.") || !has(tt, "MacBook Air Microphone") {
+	if !has(tt, "No microphone chosen, so Voxt records from the system's default input.") || !has(tt, "MacBook Air Microphone") {
 		t.Fatalf("empty list: %q", firstTexts(tt))
 	}
-	if !has(tt, "Skip silence") || !has(tt, "Optimize sound") {
+	if !has(tt, "Skip silence") || !has(tt, "Optimise sound") {
 		t.Errorf("no recognition switches: %q", firstTexts(tt))
 	}
 	click(t, tt, "Add AirPods Pro")
@@ -86,7 +86,7 @@ func TestAudioSettingsDevices(t *testing.T) {
 	if !slices.Equal(got.Devices, []string{"AirPodsPro:input", "BuiltInMicrophoneDevice"}) || got.DeviceNames["AirPodsPro:input"] != "AirPods Pro" {
 		t.Fatalf("added: %+v", got)
 	}
-	if !has(tt, "Records now") || !has(tt, "No other microphone is connected.") {
+	if !has(tt, "In use") || !has(tt, "No other microphone is connected.") {
 		t.Errorf("after adding: %q", firstTexts(tt))
 	}
 	click(t, tt, "Move MacBook Air Microphone up")
@@ -103,13 +103,13 @@ func TestAudioSettingsDevices(t *testing.T) {
 		return proto.DevicesResult{Devices: []proto.CaptureDevice{{ID: "BuiltInMicrophoneDevice", Name: "MacBook Air Microphone", Default: true}}}, nil
 	}
 	fs.mu.Unlock()
-	click(t, tt, "Refresh the microphones")
-	if !has(tt, "AirPods Pro") || !has(tt, "Not connected") || !has(tt, "Records now · System default") {
+	click(t, tt, "Refresh microphones")
+	if !has(tt, "AirPods Pro") || !has(tt, "Not connected") || !has(tt, "In use · System default") {
 		t.Errorf("unplugged: %q", firstTexts(tt))
 	}
 	// Without the helper: a notice, no list.
 	fs.set(helper.Status{State: helper.Stopped})
-	if !has(tt, "The helper is not running: the microphones cannot be listed.") {
+	if !has(tt, "The helper is not running, so microphones cannot be listed.") {
 		t.Errorf("no helper: %q", firstTexts(tt))
 	}
 }
@@ -163,7 +163,7 @@ func TestRecordingCues(t *testing.T) {
 		start, stop string
 		want        [2]string
 	}{
-		{"", "", [2]string{"tally", "wrap"}},
+		{"", "", [2]string{"pebble", "nib"}},
 		{"pebble", "system:Tink", [2]string{"pebble", "Tink"}},
 		{"none", "ghost", [2]string{"", "Tink"}},
 	} {
@@ -195,7 +195,7 @@ func TestSessionSounds(t *testing.T) {
 	a.mute.Wait()
 	mu.Lock()
 	defer mu.Unlock()
-	if want := []string{"tally", "wrap", "tally"}; !slices.Equal(cues, want) {
+	if want := []string{"pebble", "nib", "pebble"}; !slices.Equal(cues, want) {
 		t.Fatalf("cues %q, want %q", cues, want)
 	}
 	// Other sounds: a system sound to start, a family sound to stop.

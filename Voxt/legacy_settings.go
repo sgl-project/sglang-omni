@@ -15,7 +15,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"net/url"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -27,16 +30,33 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
+// legacyPlutil is the binary plist's reader; a test's fake replaces it.
+var legacyPlutil = "/usr/bin/plutil"
+
 // legacyPreference is the previous Voxt's preference key as text, from
 // its preferences beside voxtDir (its Application Support/Voxt): "" without
-// plutil (the binary plist's reader), the file or the key.
+// plutil, the file or the key.
 func legacyPreference(voxtDir, key string) string {
-	prefs := filepath.Join(voxtDir, "..", "..", "Preferences", legacyBundleID+".plist")
-	out, err := exec.Command("/usr/bin/plutil", "-extract", key, "raw", "-o", "-", prefs).Output()
+	out, err := exec.Command(legacyPlutil, "-extract", key, "raw", "-o", "-", legacyPreferences(voxtDir)).Output()
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func legacyPreferences(voxtDir string) string {
+	return filepath.Join(voxtDir, "..", "..", "Preferences", legacyBundleID+".plist")
+}
+
+// legacyPreferencesReadable is false when the previous Voxt's preferences
+// are there and plutil cannot read them, which legacyPreference alone
+// cannot tell from a key the user never set.
+func legacyPreferencesReadable(voxtDir string) bool {
+	prefs := legacyPreferences(voxtDir)
+	if _, err := os.Stat(prefs); errors.Is(err, fs.ErrNotExist) {
+		return true
+	}
+	return exec.Command(legacyPlutil, "-lint", "-s", prefs).Run() == nil
 }
 
 // legacyLLMServices are this app's presets for the previous Voxt's
@@ -63,20 +83,34 @@ var legacyDefaultEndpoints = map[string]string{
 	"stepFun": "https://api.stepfun.com/v1/chat/completions", "xiaomiMiMo": "https://api.xiaomimimo.com/v1/chat/completions",
 }
 
+// legacyAPIRoots are the paths the previous Voxt added to an address with
+// none, by preset: "/v1" for those not named. Gemini's is its OpenAI-compatible
+// path, not the native one it used.
+var legacyAPIRoots = map[string]string{"volcengine": "/api/v3", "dashscope": "/compatible-mode/v1", "gemini": "/v1beta/openai"}
+
 // legacyEndpoint is the address of a setup of the previous Voxt's language
 // model service (its service id) as an API root here, and whether the user
 // should check it. The service's own default is the preset's (""); any
 // other address keeps its host, never replaced by the preset's, which
 // would send the requests elsewhere. It loses the request path it ended
-// in; Ollama's native API becomes its OpenAI-compatible /v1. The previous
-// Voxt spoke Anthropic's, Gemini's and MiniMax's own APIs, which this app
-// does not: their other addresses are kept (Gemini's native /v1beta/models
-// becomes /v1beta/openai on the same host), to check.
+// in; Ollama's native API becomes its OpenAI-compatible /v1. An address
+// with no path gets the service's API root, as the previous Voxt added it,
+// to check. A query string has no place here, where the path follows the
+// address: it goes, to check. The previous Voxt spoke Anthropic's, Gemini's
+// and MiniMax's own APIs, which this app does not: their other addresses
+// are kept (Gemini's native /v1beta/models becomes /v1beta/openai on the
+// same host), to check.
 func legacyEndpoint(service, endpoint string) (root string, check bool) {
 	id := legacyLLMServices[service]
-	e := strings.TrimRight(strings.TrimSpace(endpoint), "/")
+	address, query, _ := strings.Cut(strings.TrimSpace(endpoint), "?")
+	e := strings.TrimRight(address, "/")
 	if e == "" || e == legacyDefaultEndpoints[service] {
-		return "", false
+		return "", query != ""
+	}
+	u, err := url.Parse(e)
+	bare := err == nil && u.Host != "" && u.Path == "" && id != "ollama" // Ollama's gets its /v1 below
+	if bare {
+		e += cmp.Or(legacyAPIRoots[id], "/v1")
 	}
 	paths := []string{"/chat/completions", "/responses", "/models", "/messages", "/text/chatcompletion_v2"}
 	switch id {
@@ -98,9 +132,9 @@ func legacyEndpoint(service, endpoint string) (root string, check bool) {
 		e += "/v1"
 	}
 	if p, ok := llm.LookupPreset(id); ok && strings.TrimRight(p.BaseURL, "/") == e {
-		return "", false
+		return "", query != ""
 	}
-	return e, id == "anthropic" || id == "gemini" || id == "minimax"
+	return e, bare || query != "" || id == "anthropic" || id == "gemini" || id == "minimax"
 }
 
 // legacyLLMSetup is a language model setup as the previous Voxt saved it
@@ -110,6 +144,7 @@ type legacyLLMSetup struct {
 	ProviderID, Model, Endpoint   string
 	StoredCredentialPresence      struct{ APIKey, AccessToken bool }
 	OpenAITextVerbosity           string
+	OpenAIAPIFormat               string
 	OllamaKeepAlive               string
 	OllamaJSONSchema              string
 	OmlxJSONSchema                string
@@ -130,13 +165,18 @@ type legacyLLMSetup struct {
 	} `json:"generationSettings"`
 }
 
+// made reports whether the setup was ever made: a model, an address or a key.
+func (s legacyLLMSetup) made() bool {
+	c := s.StoredCredentialPresence
+	return strings.TrimSpace(s.Model) != "" || strings.TrimSpace(s.Endpoint) != "" || c.APIKey || c.AccessToken
+}
+
 // provider is s as a setup here, and whether the user should check its
 // address (legacyEndpoint); ok is false for a service without a preset
-// here and for a setup never made (no model, address or key).
+// here and for a setup never made.
 func (s legacyLLMSetup) provider() (p settings.Provider, check, ok bool) {
 	id, ok := legacyLLMServices[s.ProviderID]
-	keyed := s.StoredCredentialPresence.APIKey || s.StoredCredentialPresence.AccessToken
-	if !ok || strings.TrimSpace(s.Model) == "" && strings.TrimSpace(s.Endpoint) == "" && !keyed {
+	if !ok || !s.made() {
 		return settings.Provider{}, false, false
 	}
 	g := s.Generation
@@ -144,7 +184,10 @@ func (s legacyLLMSetup) provider() (p settings.Provider, check, ok bool) {
 		MaxOutputTokens: g.MaxOutputTokens, Temperature: g.Temperature, TopP: g.TopP, TopK: g.TopK, MinP: g.MinP, Seed: g.Seed,
 		Stop: g.Stop, PresencePenalty: g.PresencePenalty, FrequencyPenalty: g.FrequencyPenalty, RepetitionPenalty: g.RepetitionPenalty,
 		Logprobs: g.Logprobs, TopLogprobs: g.TopLogprobs, KeepAlive: strings.TrimSpace(s.OllamaKeepAlive),
-		OptionsJSON: strings.TrimSpace(g.ExtraOptionsJSON), ExtraBodyJSON: strings.TrimSpace(g.ExtraBodyJSON),
+		ExtraBodyJSON: strings.TrimSpace(g.ExtraBodyJSON),
+	}
+	if id != "openai" { // the previous Voxt never sent its options to OpenAI
+		gen.ExtraBodyJSON = settings.WithOptions(gen.ExtraBodyJSON, g.ExtraOptionsJSON)
 	}
 	switch g.ResponseFormat {
 	case llm.ResponseJSON:
@@ -168,7 +211,17 @@ func (s legacyLLMSetup) provider() (p settings.Provider, check, ok bool) {
 		gen.IncludeUsage = &usage
 	}
 	endpoint, check := legacyEndpoint(s.ProviderID, s.Endpoint)
-	return settings.Provider{ID: id, Endpoint: endpoint, Model: strings.TrimSpace(s.Model), Generation: gen}, check, true
+	model := strings.TrimSpace(s.Model)
+	if s.ProviderID == "openAI" {
+		gen = legacyOpenAIGeneration(gen, model)
+		// Extra Body went into a Responses request here; those models only exist there.
+		check = check || gen.ExtraBodyJSON != "" || legacyModelIs(model, "gpt-5.2-pro") || legacyModelIs(model, "gpt-5-pro")
+	}
+	p = settings.Provider{ID: id, Endpoint: endpoint, Model: model, Generation: gen}
+	if id == "openai" && legacyResponsesAPI(s.OpenAIAPIFormat, s.Endpoint) {
+		p.APIFormat = llm.APIResponses
+	}
+	return p, check, true
 }
 
 // legacySpeechServices are this app's speech services for the previous
@@ -289,15 +342,15 @@ var legacyBuiltInPrompts = map[string][]string{
 }
 
 // legacyOwnPrompt is a prompt the previous Voxt saved, as rules here: ""
-// for none and for one of its built-in ones of kind. Its transcript
-// variable goes: the input is never in the rules here.
+// for none and for one of its built-in ones of kind, and without its input
+// variables.
 func legacyOwnPrompt(kind, prompt string) string {
 	p := strings.TrimSpace(prompt)
 	sum := sha256.Sum256([]byte(p))
 	if p == "" || slices.Contains(legacyBuiltInPrompts[kind], hex.EncodeToString(sum[:])) {
 		return ""
 	}
-	return strings.TrimSpace(strings.ReplaceAll(p, "{{RAW_TRANSCRIPTION}}", ""))
+	return legacyWithoutInput(p)
 }
 
 // legacyContextMarkers are phrases that together mark an older built-in
@@ -375,6 +428,17 @@ type legacySettings struct {
 	// checkLLM and checkSpeech are the setups whose address or model may
 	// not work here as it did (by id): the result says so.
 	checkLLM, checkSpeech []string
+	// keyedLLM are the setups that had a key there, whether or not this
+	// app's preset needs one (by id). refusedLLM are those of checkLLM at
+	// an address this app never connects to (llm.ProviderConfig.Resolve).
+	keyedLLM, refusedLLM []string
+	// enhanceOff: Transcribe's clean-up was off there (llmEnabled).
+	enhanceOff bool
+	// codexSetup: a Codex setup was made there; codexFeatures are the
+	// features (Transcribe, Translate, Rewrite) that used it. A sign-in
+	// does not carry over: the result says so.
+	codexSetup    bool
+	codexFeatures [3]bool
 }
 
 // parseLegacySettings reads the previous Voxt's settings from its
@@ -390,8 +454,16 @@ func parseLegacySettings(llmSetups, speechSetups, features, tuning string) legac
 	var savedLLM []legacyLLMSetup
 	json.Unmarshal([]byte(llmSetups), &savedLLM) // not JSON: no setups
 	for _, s := range savedLLM {
+		l.codexSetup = l.codexSetup || s.ProviderID == "codex" && s.made()
 		if p, check, ok := s.provider(); ok && !has(l.llm, p.ID) {
 			l.llm = append(l.llm, p)
+			if s.StoredCredentialPresence.APIKey {
+				l.keyedLLM = append(l.keyedLLM, p.ID)
+			}
+			if _, err := providers.Config(p).Resolve(); err != nil {
+				l.refusedLLM = append(l.refusedLLM, p.ID)
+				check = true
+			}
 			if check {
 				l.checkLLM = append(l.checkLLM, p.ID)
 			}
@@ -408,11 +480,17 @@ func parseLegacySettings(llmSetups, speechSetups, features, tuning string) legac
 		}
 	}
 	var f struct {
-		Transcription struct{ ASRSelectionID, LLMSelectionID, Prompt string }
-		Translation   struct{ ASRSelectionID, ModelSelectionID, Prompt string }
-		Rewrite       struct{ ASRSelectionID, LLMSelectionID, Prompt string }
+		Transcription struct {
+			ASRSelectionID, LLMSelectionID, Prompt string
+			LLMEnabled                             *bool
+		}
+		Translation struct{ ASRSelectionID, ModelSelectionID, Prompt string }
+		Rewrite     struct{ ASRSelectionID, LLMSelectionID, Prompt string }
 	}
 	json.Unmarshal([]byte(features), &f)
+	l.enhanceOff = f.Transcription.LLMEnabled != nil && !*f.Transcription.LLMEnabled
+	const codex = "remote-llm:codex"
+	l.codexFeatures = [3]bool{!l.enhanceOff && f.Transcription.LLMSelectionID == codex, f.Translation.ModelSelectionID == codex, f.Rewrite.LLMSelectionID == codex}
 	// used is the setup here of a feature's remote selection ("remote-llm:openAI").
 	used := func(selection, prefix string, services map[string]string, list []settings.Provider) string {
 		service, remote := strings.CutPrefix(selection, prefix)
@@ -451,9 +529,10 @@ func parseLegacySettings(llmSetups, speechSetups, features, tuning string) legac
 
 // apply puts l into s where s has nothing of its own: a service set up
 // here, a feature's chosen models and rules, and the speech context stay.
-// It returns the language model and speech setups it added and the
-// prompts it filled.
-func (l legacySettings) apply(s *settings.Settings) (llmAdded, speechAdded []settings.Provider, prompts int) {
+// Clean-up that was off stays off while Transcribe has no language model
+// chosen here. It returns the language model and speech setups it added
+// and the prompts it filled.
+func (l legacySettings) apply(s *settings.Settings, voxtDir string) (llmAdded, speechAdded []settings.Provider, prompts int) {
 	add := func(list *[]settings.Provider, from []settings.Provider) (added []settings.Provider) {
 		for _, p := range from {
 			if !slices.ContainsFunc(*list, func(q settings.Provider) bool { return q.ID == p.ID }) {
@@ -464,6 +543,9 @@ func (l legacySettings) apply(s *settings.Settings) (llmAdded, speechAdded []set
 		return added
 	}
 	llmAdded, speechAdded = add(&s.Providers.LLM, l.llm), add(&s.Providers.ASR, l.speech)
+	if l.enhanceOff && s.Features.Transcribe.LLM == "" {
+		s.Features.Transcribe.Enhance = false
+	}
 	for i, f := range []*settings.Feature{&s.Features.Transcribe.Feature, &s.Features.Translate.Feature, &s.Features.Rewrite.Feature} {
 		if f.LLM == "" {
 			f.LLM = l.featureLLM[i]
@@ -479,6 +561,11 @@ func (l legacySettings) apply(s *settings.Settings) (llmAdded, speechAdded []set
 	if s.Dictionary.SpeechContext == "" && l.speechContext != "" {
 		s.Dictionary.SpeechContext = l.speechContext
 		prompts++
+	}
+	if len(s.Features.Meeting.Hotkeys) == 0 {
+		if hks := parseLegacyMeetingHotkeys(voxtDir); len(hks) > 0 {
+			s.Features.Meeting.Hotkeys = hks
+		}
 	}
 	return llmAdded, speechAdded, prompts
 }

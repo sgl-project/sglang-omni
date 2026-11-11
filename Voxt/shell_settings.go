@@ -48,13 +48,14 @@ type settingsForm struct {
 	keepHistory  bool
 	keepAudio    bool
 	logText      bool
-	sounds       bool
 	skipSilence  bool        // !Audio.VAD.Off
 	liveResult   bool        // Audio.LiveResult
 	cleanSound   bool        // !Audio.Clean.Off
 	muteOutput   bool        // Audio.MuteOn()
 	sidebar      int         // automatic, names and icons, icons only (settings_appearance.go)
 	ovStyle      overlayForm // settings_overlay.go
+
+	historyAccess, historySelection bool // history_access.go
 
 	clearHistoryAsk bool // Privacy's Clear the history… dialog
 	// loginIs is whether macOS opens VoxtNew at login, as last read or
@@ -154,7 +155,7 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 			err := mygo.App.SetOpenAtLogin(on)
 			a.post(func() {
 				if err != nil {
-					a.toast(i18n.T("Could not change opening at login: %v", err))
+					a.toast(i18n.T("Could not change “Open at login”: %v", err))
 					return
 				}
 				a.loginIs = on
@@ -172,6 +173,7 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 		a.syncRemote()
 	}
 	a.historySettingsChanged(old, new) // history_settings_ops.go
+	a.syncHistoryAccess()              // history_access.go
 	// The problems' cards: the language of their text may have changed
 	// (shell_notices.go).
 	a.checkModels()
@@ -227,7 +229,7 @@ func (a *app) loadSettingsForm() {
 	f.menuBar, f.closeToTray, f.openAtLogin = s.General.MenuBar, s.General.CloseToTray, s.General.LaunchAtLogin
 	f.dock, f.copyResult = !s.General.HideDock, s.General.CopyResult
 	f.keepHistory, f.keepAudio, f.logText = s.Privacy.KeepHistory, s.Privacy.KeepAudio, s.Privacy.LogText
-	f.sounds = s.Audio.Sounds
+	f.historyAccess, f.historySelection = s.Privacy.HistoryAccess, s.Privacy.HistorySelection
 	f.skipSilence = !s.Audio.VAD.Off
 	f.liveResult = s.Audio.LiveResult
 	f.cleanSound = !s.Audio.Clean.Off

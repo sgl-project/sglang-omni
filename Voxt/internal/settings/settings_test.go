@@ -500,30 +500,77 @@ func TestMuteOutput(t *testing.T) {
 	}
 }
 
-// TestMigrateShowCard: Translate's card switch, the only one before,
-// becomes every feature's; a document saved since keeps its choice.
+// TestMigrateShowCard: each feature has its own card switch. The one
+// switch of the 2.0.3 betas (features.showCard), on, turns all three on;
+// Translate's own (2.0.1's) is read as it is; Rewrite's is on unless the
+// document says off.
 func TestMigrateShowCard(t *testing.T) {
+	type cards struct{ transcribe, translate, rewrite bool }
+	for _, tc := range []struct {
+		doc  string
+		want cards
+	}{
+		{`{"version":4,"features":{"translate":{"showCard":true}}}`, cards{false, true, true}},
+		{`{"version":4,"features":{"translate":{"cleanup":true}}}`, cards{false, false, true}},
+		{`{"version":4,"features":{"showCard":true,"translate":{}}}`, cards{true, true, true}},
+		{`{"version":4,"features":{"rewrite":{"showCard":false}}}`, cards{false, false, false}},
+		{`{"version":4,"features":{"transcribe":{"showCard":true},"rewrite":{"showCard":false}}}`, cards{true, false, false}},
+	} {
+		s, err := Migrate([]byte(tc.doc))
+		f := s.Features
+		if got := (cards{f.Transcribe.ShowCard, f.Translate.ShowCard, f.Rewrite.ShowCard}); err != nil || got != tc.want {
+			t.Errorf("%s: cards %+v, want %+v (%v)", tc.doc, got, tc.want, err)
+		}
+		if f.ShowsCard("transcribe") != f.Transcribe.ShowCard || f.ShowsCard("translate") != f.Translate.ShowCard || f.ShowsCard("rewrite") != f.Rewrite.ShowCard {
+			t.Errorf("%s: ShowsCard disagrees with the fields", tc.doc)
+		}
+		// Saved and read again, Rewrite's off stays off.
+		out, _ := json.Marshal(s)
+		again, err := Migrate(out)
+		if g := again.Features; err != nil || (cards{g.Transcribe.ShowCard, g.Translate.ShowCard, g.Rewrite.ShowCard}) != tc.want {
+			t.Errorf("%s: saved as %s, read back %+v", tc.doc, out, g)
+		}
+	}
+}
+
+// TestMigrateOptionsJSON: a setup's Options JSON becomes the request
+// parameters' "options"; the parameters' own "options" wins.
+func TestMigrateOptionsJSON(t *testing.T) {
+	doc := `{"version":4,"providers":{"llm":[
+		{"id":"ollama","generation":{"optionsJSON":"{\"num_ctx\": 8192}","extraBodyJSON":"{\"user\": \"me\"}"}},
+		{"id":"omlx","generation":{"optionsJSON":"{\"num_ctx\": 1}","extraBodyJSON":"{\"options\": {}}"}}]}}`
+	s, err := Migrate([]byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if json.Unmarshal([]byte(s.Providers.LLM[0].Generation.ExtraBodyJSON), &got) != nil || got["user"] != "me" || got["options"].(map[string]any)["num_ctx"] != 8192.0 {
+		t.Errorf("folded %q", s.Providers.LLM[0].Generation.ExtraBodyJSON)
+	}
+	if s.Providers.LLM[1].Generation.ExtraBodyJSON != `{"options": {}}` {
+		t.Errorf("kept %q", s.Providers.LLM[1].Generation.ExtraBodyJSON)
+	}
+}
+
+// TestLiveLinesDefault: Lines is the default live text layout (11-09),
+// for a document saved before too (it had no key unless Lines was
+// chosen); One line, chosen, is written and read back.
+func TestLiveLinesDefault(t *testing.T) {
 	for _, tc := range []struct {
 		doc  string
 		want bool
 	}{
-		{`{"version":4,"features":{"translate":{"showCard":true}}}`, true},
-		{`{"version":4,"features":{"translate":{"cleanup":true}}}`, false},
-		{`{"version":4,"features":{"showCard":true,"translate":{}}}`, true},
-		{`{"version":4,"features":{"translate":{}}}`, false},
+		{`{"version":4}`, true},
+		{`{"version":4,"overlay":{"liveLines":true}}`, true},
+		{`{"version":4,"overlay":{"liveLines":false}}`, false},
 	} {
 		s, err := Migrate([]byte(tc.doc))
-		if err != nil || s.Features.ShowCard != tc.want {
-			t.Errorf("%s: ShowCard %v, want %v (%v)", tc.doc, s.Features.ShowCard, tc.want, err)
+		if err != nil || s.Overlay.LiveLines != tc.want {
+			t.Errorf("%s: LiveLines %v, want %v (%v)", tc.doc, s.Overlay.LiveLines, tc.want, err)
 		}
 		out, _ := json.Marshal(s)
-		var doc struct {
-			Features struct {
-				Translate map[string]any `json:"translate"`
-			} `json:"features"`
-		}
-		if json.Unmarshal(out, &doc) != nil || doc.Features.Translate["showCard"] != nil {
-			t.Errorf("%s: Translate still has a card switch: %s", tc.doc, out)
+		if again, err := Migrate(out); err != nil || again.Overlay.LiveLines != tc.want {
+			t.Errorf("%s: saved as %s, read back %v", tc.doc, out, again.Overlay.LiveLines)
 		}
 	}
 }

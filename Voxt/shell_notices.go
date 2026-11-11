@@ -1,10 +1,10 @@
 package main
 
 // The notifications (the notification centre's, internal/notify), shown
-// as a stack of cards at the foot of the sidebar, over the Settings row:
+// as a stack of cards at the foot of the sidebar:
 // the newest whole, up to two more peeking under it; × dismisses one and
-// the next comes up. The icon rail shows a dot on its Settings icon, which
-// then opens the same stack in a popover. There is no status bar: what it
+// the next comes up. The icon rail shows a dot on its Settings icon (the
+// System section's), which then opens the same stack in a popover. There is no status bar: what it
 // showed (the services Transcribe uses, the helper) becomes a card while
 // something is wrong (setProblem), with the action that fixes it.
 
@@ -122,7 +122,7 @@ func (a *app) checkModels() {
 	switch {
 	case !asrOK && !llmOK:
 		code = "both"
-		n = &core.Notification{Title: i18n.T("No models"), Body: i18n.T("Install a speech model, then set up a language model, to start.")}
+		n = &core.Notification{Title: i18n.T("No models"), Body: i18n.T("To start, install a speech model, then set up a language model.")}
 	case !asrOK:
 		code = "asr"
 		n = &core.Notification{Title: i18n.T("No speech model"), Body: i18n.T("Transcribe, Translate and Rewrite need one to hear you.")}
@@ -132,7 +132,7 @@ func (a *app) checkModels() {
 		}
 	case !llmOK:
 		code, link = "llm", remotePath
-		n = &core.Notification{Title: i18n.T("No language model"), Body: i18n.T("Translate and Rewrite need one; Transcribe types what it hears.")}
+		n = &core.Notification{Title: i18n.T("No language model"), Body: i18n.T("Translate and Rewrite need one. Without it, Transcribe types the text as recognised.")}
 		if p, missing, ok := a.pendingSetup(local.LLM); ok {
 			code, link = "llm/"+p.ID+"/"+missing, linkCompleteSetup+string(local.LLM)+"/"+p.ID
 			n.Body = setupNeedsText(local.LLM, p, missing)
@@ -164,7 +164,7 @@ func (a *app) checkHelper() {
 		return
 	}
 	a.setProblem(problemHelper, string(st.Reason), &core.Notification{Severity: core.SeverityError, Title: uitext.HelperFailText(st),
-		Body: i18n.T("Recording and the shortcuts wait for it."), Link: linkRestartHelper})
+		Body: i18n.T("Recording and shortcuts work again once it is running."), Link: linkRestartHelper})
 }
 
 // cardAction runs a card's action: restart the helper, or open its link.
@@ -312,7 +312,7 @@ func (a *app) noticePopover(c *ui.Context) {
 func cardActionLabel(link string) string {
 	switch link {
 	case linkRestartHelper:
-		return i18n.T("Restart the helper")
+		return i18n.T("Restart helper")
 	case linkRelaunch:
 		return i18n.T("Restart Voxt")
 	case modelsPath:

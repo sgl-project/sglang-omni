@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/hehehai/actnowkit/sounds"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,6 +57,18 @@ func runIsolated(m *testing.M) int {
 	}
 	defer os.RemoveAll(tmp)
 	realHub = models.Hub()
+	realCache, _ := os.UserCacheDir()
+	// LegacyHubs always considers ~/.cache/huggingface/hub; point HOME away so
+	// unit tests do not import catalogue models from the developer machine.
+	os.Setenv("HOME", tmp)
+	os.Setenv("XDG_CACHE_HOME", filepath.Join(tmp, "cache"))
+	// mygo's sqlite plugin finds its dylib only under UserCacheDir; keep the
+	// real one so each run does not download it from GitHub again.
+	if cache, err := os.UserCacheDir(); err == nil && realCache != "" && cache != realCache {
+		if os.MkdirAll(cache, 0o755) == nil {
+			os.Symlink(filepath.Join(realCache, "mygo"), filepath.Join(cache, "mygo"))
+		}
+	}
 	os.Setenv(family.EnvDir, filepath.Join(tmp, "ActNow"))
 	os.Setenv("HF_HUB_CACHE", filepath.Join(tmp, "hub"))
 	os.Unsetenv("HF_HOME")
@@ -378,7 +391,19 @@ func hudTester(view func(*ui.Context), w, h int) *ui.Tester {
 }
 
 // cardTester is a tester of the overlay's window as large as the
-// highest answer card.
-func cardTester(a *app) *ui.Tester {
+// highest answer card on a short screen (shortScreen), which it makes the
+// work area.
+func cardTester(t *testing.T, a *app) *ui.Tester {
+	shortScreen(t, a)
 	return hudTester(a.overlayView, layout.AnswerW+2*layout.Pad, layout.CardMaxH+2*layout.Pad)
+}
+
+// shortScreen makes the tests' work area just high enough for a card of
+// layout.CardBodyMax text, as a short screen's: there a long answer
+// scrolls, as the tests of the card's scroll and images want.
+func shortScreen(t *testing.T, a *app) {
+	saved := ovTestArea
+	t.Cleanup(func() { ovTestArea = saved })
+	ovTestArea.Height = layout.CardBodyMax + int(math.Round(a.prefs.Overlay.Margin)) + layout.Pad + layout.CardChrome
+	a.ov.area = ovTestArea
 }

@@ -58,6 +58,7 @@ func TestOverlayModes(t *testing.T) {
 		t.Fatalf("starts %s", a.ov.mode)
 	}
 	now := time.Now()
+	a.prefs.Overlay.LiveLines = false // the small pill (Lines: TestLiveLinesFromStart)
 	snap(a, session.Snapshot{State: session.Recording, StartedAt: now})
 	wantW := a.ov.w
 	if a.ov.mode != ovRecording || a.ov.w < layout.PillW || a.ov.h != layout.PillH {
@@ -141,12 +142,12 @@ func TestAnswerCardButtons(t *testing.T) {
 		snap(a, session.Snapshot{ID: id, State: session.Done, Result: "Answer " + id, Card: true, Delivery: deliver.ReasonNotEditable})
 	}
 	card("c1")
-	tt := cardTester(a)
+	tt := cardTester(t, a)
 	frames(tt)
-	if !tt.HasText("Answer c1") || tt.HasText("No text field is focused: click where it should go, then insert, or copy it.") {
+	if !tt.HasText("Answer c1") || tt.HasText("No text field is focused. Click where the text should go and insert, or copy it.") {
 		t.Errorf("card texts %q", firstTexts(tt))
 	}
-	if a.answer.why != "No text field is focused: click where it should go, then insert, or copy it." {
+	if a.answer.why != "No text field is focused. Click where the text should go and insert, or copy it." {
 		t.Errorf("why %q", a.answer.why)
 	}
 	if err := tt.Click("Copy"); err != nil {
@@ -172,7 +173,7 @@ func TestAnswerCardButtons(t *testing.T) {
 	focus = proto.FocusResult{PID: 530, Error: "no focused element"} // another app came to the front, nothing focused
 	card("c3")
 	a.insertAnswer()
-	if !a.answer.open || a.answer.inserting || a.ov.mode != ovAnswer || a.answer.msg != "No text field is focused: click where the text should go, then insert." || len(pasted) != 1 {
+	if !a.answer.open || a.answer.inserting || a.ov.mode != ovAnswer || a.answer.msg != "No text field is focused. Click where the text should go, then insert." || len(pasted) != 1 {
 		t.Errorf("elsewhere: %s %+v", a.ov.mode, a.answer)
 	}
 	h := a.ov.h
@@ -181,7 +182,7 @@ func TestAnswerCardButtons(t *testing.T) {
 	}
 	focus = proto.FocusResult{PID: 530, Role: "AXTextField", Subrole: "AXSecureTextField", Editable: true}
 	a.insertAnswer()
-	if !a.answer.open || a.answer.msg != "A password field is focused: Voxt never types into one." || len(pasted) != 1 {
+	if !a.answer.open || a.answer.msg != "Voxt never types into password fields." || len(pasted) != 1 {
 		t.Errorf("a password field: %+v", a.answer)
 	}
 	textEdit := helpertest.Apps["com.apple.TextEdit"]
@@ -225,8 +226,8 @@ func TestSessionProblemTexts(t *testing.T) {
 		action string
 	}{
 		{session.Problem{Code: session.ProblemNoASR}, "No speech model is installed.", actionModels},
-		{session.Problem{Code: session.ProblemMicrophone, Err: errors.New("x")}, "Voxt may not use the microphone.", actionPermissions},
-		{session.Problem{Code: session.ProblemHelper}, "The helper stopped: try again in a moment.", actionHelper},
+		{session.Problem{Code: session.ProblemMicrophone, Err: errors.New("x")}, "Voxt does not have microphone access.", actionPermissions},
+		{session.Problem{Code: session.ProblemHelper}, "The helper stopped. Try again in a moment.", actionHelper},
 		{session.Problem{Code: session.ProblemNoSpeech}, "Nothing was heard.", actionNone},
 		{session.Problem{Code: session.ProblemTooShort}, "", actionNone},
 		{session.Problem{Code: session.ProblemInternal, Err: errors.New("boom")}, "Something went wrong: boom", actionNone},
@@ -334,6 +335,8 @@ func overlayShots(t *testing.T, a *app, out, suffix string, dark bool) {
 			Partial: "那个我们明天，不对，后天下午三点开会，讨论一下 VoxtNew 的发布计划，然后把引导页和历史页先做完"}, nil, nil},
 		// Live text layout → Lines (FB5): wide from the first word, wrapped,
 		// then the newest ten lines.
+		{"overlay-lines-start", session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-1 * time.Second), Levels: wave()},
+			func() { a.prefs.Overlay.LiveLines = true }, nil}, // wide before any text
 		{"overlay-live-lines", session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-47 * time.Second), Levels: wave(),
 			Partial: "So the plan for the release is to finish the onboarding first, then the history page, and after that we look at the translation card"},
 			func() { a.prefs.Overlay.LiveLines = true }, nil},
@@ -356,7 +359,7 @@ func overlayShots(t *testing.T, a *app, out, suffix string, dark bool) {
 		{"overlay-translate-recording", session.Snapshot{Kind: store.KindTranslate, State: session.Recording, StartedAt: now, HeardAt: now.Add(-5 * time.Second), Levels: wave(), TargetLanguage: "en"}, nil, nil},
 		{"overlay-translate-selection", session.Snapshot{Kind: store.KindTranslate, State: session.Composing, Selection: "A goroutine is a lightweight thread.", TargetLanguage: "zh-Hans",
 			Draft: "goroutine 是一种轻量级"}, nil, nil},
-		{"overlay-rewrite-writing", session.Snapshot{Kind: store.KindRewrite, State: session.Composing, Raw: "write a short note saying I will be late",
+		{"overlay-rewrite-writing", session.Snapshot{Kind: store.KindRewrite, State: session.Composing, Card: true, Raw: "write a short note saying I will be late",
 			Draft: "Sorry, I'm running about ten minutes late"}, nil, nil},
 		{"overlay-translate-card-streaming", session.Snapshot{Kind: store.KindTranslate, State: session.Composing, Card: true, Delivery: deliver.ReasonNotEditable,
 			Selection: "A goroutine is a lightweight thread managed by the Go runtime.", TargetLanguage: "zh-Hans", Draft: "goroutine 是由 Go 运行时管理的"}, nil, nil},
@@ -519,12 +522,39 @@ func TestOverlaySceneLabel(t *testing.T) {
 		}
 	}
 	a, _, _ := newTestApp(t)
+	a.prefs.Overlay.LiveLines = false // the small pill (Lines: TestLiveLinesFromStart)
 	snap(a, session.Snapshot{ID: "s1", State: session.Recording, Target: proto.App{Name: "Slack"}, Scene: sceneMatch("Team chat", appctx.SourceApp, "")})
 	if want := recordingPillFaceW(a.sess, false); a.ov.w != want || a.ov.h != layout.PillH {
 		t.Errorf("size %dx%d, want %dx%d", a.ov.w, a.ov.h, want, layout.PillH)
 	}
 	if uitext.SceneShort(a.sess) != "Team chat" {
 		t.Errorf("short %q", uitext.SceneShort(a.sess))
+	}
+}
+
+// TestOverlayHidesWhileInserting: once the result is ready and goes into
+// the app, the preview of the speech it came from leaves at once instead
+// of staying over the inserted text until the paste is checked (up to the
+// deliver timeout); a result that could not go in comes back in the card.
+func TestOverlayHidesWhileInserting(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	ft := new(fakeTimers).install(a)
+	snap(a, session.Snapshot{ID: "s1", State: session.Recording, Partial: "meet at three"})
+	snap(a, session.Snapshot{ID: "s1", State: session.Composing, Partial: "meet at three"})
+	if a.ov.mode != ovWorking || !a.ov.shown {
+		t.Fatalf("composing: %s, shown %v", a.ov.mode, a.ov.shown)
+	}
+	snap(a, session.Snapshot{ID: "s1", State: session.Delivering, Partial: "meet at three", Result: "Meet at three."})
+	if a.ov.shown {
+		t.Fatalf("delivering: still shown (%s)", a.ov.mode)
+	}
+	ft.advance(ovGone)
+	if a.ov.visible {
+		t.Fatal("delivering: still on screen")
+	}
+	snap(a, session.Snapshot{ID: "s1", State: session.Done, Result: "Meet at three.", Card: true})
+	if a.ov.mode != ovAnswer || !a.ov.shown {
+		t.Errorf("not inserted: %s, shown %v; want the card", a.ov.mode, a.ov.shown)
 	}
 }
 
@@ -685,7 +715,9 @@ func TestOverlayInk(t *testing.T) {
 			}
 			a, _, _ := newTestApp(t)
 			a.measureHook = nil // the view measures
-			a.prefs.Overlay.ShowTime = c.time
+			// The one-line pill's rules (ink.Want's row and line); Lines
+			// is the default, its sizes are TestLiveLines'.
+			a.prefs.Overlay.ShowTime, a.prefs.Overlay.LiveLines = c.time, false
 			s := c.s
 			s.ID = "ink"
 			if s.State != session.Recording {

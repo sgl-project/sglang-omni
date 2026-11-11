@@ -169,13 +169,14 @@ func cmpOr(a, b string) string {
 }
 
 // writingAnswer says whether Rewrite's first answer is being written, its
-// first words in: the pill hands over to the answer card, which the
-// answer streams into, instead of a loader until the whole answer is in
-// (#3644). Not with Show live text off, nor for a follow-up (its card is
-// open already) or a try (the page shows it).
+// first words in, and will end in the card: the pill hands over to the
+// answer card, which the answer streams into, instead of a loader until
+// the whole answer is in (#3644). Not with Show live text off, nor for a
+// follow-up (its card is open already), a try (the page shows it) or an
+// answer that goes in at once (the card switch off: the pill shows it).
 func (a *app) writingAnswer() bool {
 	s := a.pillSession()
-	return !a.answer.open && s.Kind == store.KindRewrite && s.State == session.Composing && !s.Try && strings.TrimSpace(s.Draft) != ""
+	return !a.answer.open && s.Kind == store.KindRewrite && s.State == session.Composing && s.Card && !s.Try && strings.TrimSpace(s.Draft) != ""
 }
 
 // cardRecording says whether the card shows a follow-up recording (its
@@ -269,11 +270,9 @@ func (a *app) blockHeight(b cardBlock) (float32, bool) {
 }
 
 // cardBodyHeight is the height of v's text in the card: all of it up to
-// its size's BodyMax (then it scrolls), and whether it was measured.
+// cardBodyMax (then it scrolls), and whether it was measured.
 func (a *app) cardBodyHeight(v cardView) (int, bool) {
-	if v.writing {
-		return v.size.BodyMax, true
-	}
+	bodyMax := a.cardBodyMax(v)
 	var h float32
 	exact := true
 	for _, b := range cardBlocks(v) {
@@ -281,7 +280,19 @@ func (a *app) cardBodyHeight(v cardView) (int, bool) {
 		h += b.gap + bh
 		exact = exact && ok
 	}
-	return min(int(math.Ceil(float64(h))), v.size.BodyMax), exact
+	return min(int(math.Ceil(float64(h))), bodyMax), exact
+}
+
+// cardBodyMax is the most text v shows before it scrolls: as much as the
+// work area holds beside the overlay's margin, so that the card grows
+// with a long answer and stays on the screen (#3644 FB41); never less
+// than layout.CardBodyMax.
+func (a *app) cardBodyMax(v cardView) int {
+	room := a.ov.area.Height - int(math.Round(a.prefs.Overlay.Margin)) - layout.Pad - layout.CardChrome
+	if v.msg != "" {
+		room -= layout.CardMsgGap + layout.CardMsgH
+	}
+	return max(room, layout.CardBodyMax)
 }
 
 // cardSize is the card's width (its size's) and height, and whether its

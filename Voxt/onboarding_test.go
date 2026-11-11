@@ -46,7 +46,7 @@ func TestOnboardingLanguageModelGuide(t *testing.T) {
 	a.obGo(obTranslate)
 	frames(tt)
 	for _, s := range []string{
-		"No language model is set up: set one up to translate.",
+		"No language model is set up. Set one up to translate.",
 		"Set up a language model",
 		"Set one up on the Language models page",
 		"Skip this step",
@@ -70,7 +70,7 @@ func TestOnboardingLanguageModelGuide(t *testing.T) {
 	readyASROnly(a2)
 	a2.obGo(obRewrite)
 	frames(tt2)
-	if !has(tt2, "No language model is set up: set one up to rewrite.") {
+	if !has(tt2, "No language model is set up. Set one up to rewrite.") {
 		t.Errorf("rewrite without LLM: %q", tt2.Texts())
 	}
 }
@@ -78,8 +78,8 @@ func TestOnboardingLanguageModelGuide(t *testing.T) {
 func TestOnboardingSpeechDownloadGuide(t *testing.T) {
 	a, tt := obTester(t)
 	a.obGo(obModels)
-	m, _ := models.Lookup(obSpeech)
-	a.modelStatus[obSpeech] = models.Status{Downloading: true, Done: m.Size() / 3, Total: m.Size()}
+	m, _ := models.Lookup(a.obSpeech())
+	a.modelStatus[a.obSpeech()] = models.Status{Downloading: true, Done: m.Size() / 3, Total: m.Size()}
 	a.obGo(obTranscribe)
 	frames(tt)
 	if !has(tt, "still downloading (33%)") {
@@ -99,10 +99,10 @@ func TestOnboardingSteps(t *testing.T) {
 		t.Fatalf("permissions: step %d %q", a.ob.step, tt.Texts())
 	}
 	click(t, tt, "Continue")
-	if a.ob.step != obModels || !has(tt, "Models") || !has(tt, "Download (2.5 GB)") || !has(tt, "Set up a language model") {
+	if a.ob.step != obModels || !has(tt, "Models") || !has(tt, "Download and continue (2.5 GB)") || !has(tt, "Set up a language model") {
 		t.Fatalf("models: step %d %q", a.ob.step, tt.Texts())
 	}
-	click(t, tt, "Continue")
+	click(t, tt, "Skip this step")
 	if a.ob.step != obTranscribe || !has(tt, "Try Transcribe") || !has(tt, "Skip this step") {
 		t.Fatalf("transcribe: step %d %q", a.ob.step, tt.Texts())
 	}
@@ -147,7 +147,7 @@ func TestOnboardingSteps(t *testing.T) {
 	a.navigate("/settings/general")
 	frames(tt)
 	tt.Scroll(windowWidth*0.7, windowHeight*0.6, 0, 600) // the row is under the fold
-	click(t, tt, "Open the setup guide")
+	click(t, tt, "Open setup guide")
 	if !a.ob.open || a.settingsOpen || a.ob.step != obWelcome {
 		t.Errorf("reopen: %v %v %d", a.ob.open, a.settingsOpen, a.ob.step)
 	}
@@ -195,7 +195,7 @@ func TestOnboardingTryPasses(t *testing.T) {
 	// Another feature's shortcut does not start anything here.
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: "translate/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: selfFront()})
 	frames(tt)
-	if a.sess.Kind == store.KindTranslate || !hasPrefix(tt, "That was the Translate shortcut: this step tries Transcribe (Right ⌥)") {
+	if a.sess.Kind == store.KindTranslate || !hasPrefix(tt, "That was the Translate shortcut. This step tests Transcribe (Right ⌥)") {
 		t.Errorf("translate's shortcut: %+v %q", a.sess, tt.Texts())
 	}
 
@@ -276,7 +276,8 @@ func onboardingShots(a *app, tt *ui.Tester, save func(string)) {
 	}
 	// Last, as they change the models' statuses (the page behind scrolls).
 	a.ob.step = obModels
-	obFamilyShots(a, save) // family_ui_test.go
+	obFamilyShots(a, save)  // family_ui_test.go
+	obDefaultShots(a, save) // nothing on this Mac: the easy default
 	a.ob.open = false
 }
 
@@ -323,7 +324,7 @@ func TestOnboardingStepsOneLine(t *testing.T) {
 				titles := obStepTitles()
 				first, ok1 := tt.Find(titles[0])
 				last, ok2 := tt.Find(titles[len(titles)-1])
-				x, ok3 := tt.Find(i18n.T("Close the guide"))
+				x, ok3 := tt.Find(i18n.T("Close guide"))
 				if !ok1 || !ok2 || !ok3 {
 					t.Fatalf("%s %v: steps or × not found in %q", lang, size, tt.Texts())
 				}
@@ -342,7 +343,7 @@ func TestOnboardingStepsExplainTheFeature(t *testing.T) {
 		obPermissions: "Voxt needs the microphone to hear you",
 		obTranscribe:  "Transcribe writes down what you say",
 		obTranslate:   "Translate turns the selected text",
-		obRewrite:     "Rewrite is not dictation",
+		obRewrite:     "Rewrite writes what you ask for",
 	} {
 		a.obGo(step)
 		if !has(tt, want) {
@@ -361,7 +362,7 @@ func TestOnboardingComesBack(t *testing.T) {
 	click(t, tt, "Get started")
 	click(t, tt, "Continue")
 	click(t, tt, "Set up a language model")
-	if a.ob.open || a.shownPath() != remotePath || !has(tt, "The setup guide waits at its Models step.") {
+	if a.ob.open || a.shownPath() != remotePath || !has(tt, "The setup guide is paused at the Models step.") {
 		t.Fatalf("left: open %v, %s, %q", a.ob.open, a.shownPath(), tt.Texts())
 	}
 	click(t, tt, "Back to the setup guide")
@@ -372,7 +373,7 @@ func TestOnboardingComesBack(t *testing.T) {
 	a.navigate("/settings/general")
 	frames(tt)
 	tt.Scroll(windowWidth*0.7, windowHeight*0.6, 0, 600) // the row is under the fold
-	click(t, tt, "Open the setup guide")
+	click(t, tt, "Open setup guide")
 	if !a.ob.open || a.ob.step != obModels {
 		t.Fatalf("from Settings: open %v, step %d", a.ob.open, a.ob.step)
 	}

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -45,7 +47,7 @@ func TestTranscribePageRenders(t *testing.T) {
 	for _, s := range []string{
 		"Transcribe", "Shortcuts", "Right ⌥", "Tap", "Double tap", "Long press", "Add a shortcut",
 		"Paste the last result", "⌃⌥V",
-		"Models", "No speech model is installed: install one to transcribe.", "Open Speech models",
+		"Models", "No speech model is installed. Install one to transcribe.", "Open Speech models",
 		"Clean-up", "Clean up with a language model", "Basic clean-up", "Structure",
 		"Your rules", "characters",
 		"Try it", "Start",
@@ -58,7 +60,7 @@ func TestTranscribePageRenders(t *testing.T) {
 	if !has(tt, "Open Permissions") {
 		t.Error("no Accessibility notice")
 	}
-	if _, ok := tt.Find("Works only while Voxt may use Accessibility."); !ok {
+	if _, ok := tt.Find("Works only with Accessibility access."); !ok {
 		t.Error("Right ⌥ is not marked as needing Accessibility")
 	}
 	click(t, tt, "Open Permissions")
@@ -139,7 +141,7 @@ func TestTranscribeHotkeysEdit(t *testing.T) {
 // shows by its name in the try card, and goes to the helper as its button
 // number.
 func TestTranscribeMouseButton(t *testing.T) {
-	const hint = "Mouse buttons work too: Mouse3 is the middle button, Mouse4 and up the side buttons, with modifiers or without (Option+Mouse4)."
+	const hint = "Mouse buttons work too: Mouse3 (middle), Mouse4 and up (side), also with modifiers (Option+Mouse4)."
 	a, tt := trTester(t)
 	if err := tt.ClickControl("Keys of shortcut 1"); err != nil {
 		t.Fatal(err)
@@ -159,7 +161,7 @@ func TestTranscribeMouseButton(t *testing.T) {
 	if hs := a.lib.settings.Get().Features.Transcribe.Hotkeys; hs[0].Keys != settings.DefaultTranscribe {
 		t.Fatalf("Mouse1 saved %+v", hs)
 	}
-	if !has(tt, "A key is unknown. Write the modifiers first, then one key: Fn, RightCommand, Control+Option+Space, Fn+F5.") || !has(tt, hint) {
+	if !has(tt, "Unknown key. Type the modifiers first, then one key, as in Fn, RightCommand, Control+Option+Space or Fn+F5.") || !has(tt, hint) {
 		t.Errorf("Mouse1: no unknown-key warning or no mouse hint in %q", tt.Texts())
 	}
 	for range len("mouse1") {
@@ -174,7 +176,7 @@ func TestTranscribeMouseButton(t *testing.T) {
 	if b, _ := json.Marshal(a.hotkeyPlan().Bindings[0]); string(b) != `{"id":"transcribe/0","modifiers":{},"button":3,"behavior":"tap"}` {
 		t.Errorf("sent the helper %s", b)
 	}
-	if !has(tt, "Press Mouse button 4 or Start and say a sentence or two: the result shows here and is not typed anywhere.") {
+	if !has(tt, "Press Mouse button 4 or Start, then say a sentence or two. The result shows here and is not typed anywhere.") {
 		t.Errorf("the try card does not name the button: %q", tt.Texts())
 	}
 }
@@ -203,12 +205,12 @@ func TestTranscribeHotkeyConflicts(t *testing.T) {
 		s.Features.PasteLast = settings.Hotkey{Keys: "Command+Space"}
 	})
 	for _, s := range []string{
-		"Translate has the same keys and trigger: only one of them works.",
+		"Translate has the same keys and trigger, so only one of them works.",
 		"The same keys as shortcut 1.",
 		"macOS uses these keys for Spotlight.",
-		"A key alone would be taken from every app: add ⌃, ⌥, ⇧, ⌘ or fn.",
-		"Paste the last result has the same keys and trigger: only one of them works.",
-		"Transcribe has the same keys and trigger: only one of them works.",
+		"A single key would be taken from every app. Add ⌃, ⌥, ⇧, ⌘ or fn.",
+		"Paste the last result has the same keys and trigger, so only one of them works.",
+		"Transcribe has the same keys and trigger, so only one of them works.",
 	} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, tt.Texts())
@@ -235,7 +237,7 @@ func TestTranscribeServicesAndSwitches(t *testing.T) {
 	readyModels(a)
 	a.local.(*fakeLocal).MoreLLM = []local.Model{{Kind: local.LLM, ID: models.LLMFast, Name: "Qwen3.5 2B (4bit)"}}
 	frames(tt)
-	if has(tt, "No speech model is installed: install one to transcribe.") {
+	if has(tt, "No speech model is installed. Install one to transcribe.") {
 		t.Error("notice with a model installed")
 	}
 	click(t, tt, "Language model for Transcribe")
@@ -435,7 +437,7 @@ func trySnapshot(a *app, st session.State) session.Snapshot {
 func TestTranscribeTry(t *testing.T) {
 	a, tt := trTester(t)
 	// Nothing set up: Start says what is missing, on the page.
-	click(t, tt, "Start a try")
+	click(t, tt, "Start a test")
 	if a.sess.State.Live() || !has(tt, "No speech model is installed.") {
 		t.Fatalf("blocked try: %+v %q", a.sess, tt.Texts())
 	}
@@ -469,7 +471,7 @@ func TestTranscribeTry(t *testing.T) {
 			t.Errorf("done: no %q in %q", s, tt.Texts())
 		}
 	}
-	click(t, tt, "Copy the result")
+	click(t, tt, "Copy result")
 	if tt.Clipboard() != "The meeting moves to Thursday at four." {
 		t.Errorf("clipboard %q", tt.Clipboard())
 	}
@@ -604,13 +606,29 @@ func TestSectionTitleAdd(t *testing.T) {
 	}
 }
 
-// Your rules start folded, so open the section to see its two-stage
-// caption: the rules act after recognition, the speech hints before it.
-func TestRulesExplainTwoStages(t *testing.T) {
-	_, tt := trTester(t)
-	click(t, tt, "Your rules")
-	frames(tt)
-	if !strings.Contains(strings.Join(tt.Texts(), "\n"), "Rules act after recognition, on the text the speech model produced.") {
-		t.Errorf("no two-stage caption in %q", tt.Texts())
+// TestFeaturePageColumns: a feature page reads in one column at any
+// window width, the answer card's section under the shortcuts (11-09: the
+// user did not want the two columns a wide window had, #3644 FB16).
+func TestFeaturePageColumns(t *testing.T) {
+	for _, c := range []struct{ w, h int }{{1600, 2400}, {windowWidth, 2400}} {
+		a, _, tt := newTestApp(t)
+		tt.SetSize(c.w, c.h)
+		for _, page := range []string{"/transcribe", "/translate", "/rewrite"} {
+			a.navigate(page)
+			frames(tt)
+			keys, ok1 := tt.Find(i18n.T("Shortcuts"))
+			card, ok2 := tt.Find(i18n.T("Answer card"))
+			if !ok1 || !ok2 {
+				t.Fatalf("%s %d wide: Shortcuts %v, Answer card %v", page, c.w, ok1, ok2)
+			}
+			if card.X > keys.X+1 || card.Y <= keys.Y {
+				t.Errorf("%s %d wide: Shortcuts at %.0f,%.0f, Answer card at %.0f,%.0f: not one column", page, c.w, keys.X, keys.Y, card.X, card.Y)
+			}
+		}
+		if dir := os.Getenv("VOXTNEW_SHOTS"); dir != "" {
+			var b bytes.Buffer
+			png.Encode(&b, tt.Image())
+			os.WriteFile(filepath.Join(dir, fmt.Sprintf("rewrite-%d.png", c.w)), b.Bytes(), 0o644)
+		}
 	}
 }

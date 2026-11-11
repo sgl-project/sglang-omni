@@ -86,6 +86,9 @@ func (s State) Ended() bool { return s == Done || s == Cancelled || s == Failed 
 const (
 	// ProblemNoASR: no speech model is ready (Speech models).
 	ProblemNoASR = "noASR"
+	// ProblemSpeechWait: the speech model is still downloading
+	// (StartRequest.SpeechWait, which Err says).
+	ProblemSpeechWait = "speechWait"
 	// ProblemMicrophone: macOS refused the microphone.
 	ProblemMicrophone = "microphone"
 	// ProblemDevice: no input gave audio.
@@ -347,18 +350,18 @@ type Config struct {
 	// recognition failed (or found no text) when the settings keep no
 	// recordings: for Retry (DefaultAudioRetention).
 	AudioRetention time.Duration
-	// A language model's request ends when it makes no progress
-	// (behavior.md 5.5, llmDeadlines): no first token within
-	// LLMFirstToken (plus llmPrefillPerChar per character of its input),
-	// no next one within LLMStall; and in all after LLMPerChar per
-	// character, at least LLMTimeout for a piece of Transcribe's clean-up
-	// and WriteTimeout for Translate's and Rewrite's answer.
-	LLMFirstToken time.Duration // DefaultLLMFirstToken
-	LLMStall      time.Duration // DefaultLLMStall
-	LLMPerChar    time.Duration // DefaultLLMPerChar
-	LLMTimeout    time.Duration // DefaultLLMTimeout
-	WriteTimeout  time.Duration // DefaultWriteTimeout
-	ReadTimeout   time.Duration // reading the selection; DefaultReadTimeout
+	// A language model's request ends when its answer, once it streams,
+	// stops for LLMStall, or after LLMBase plus LLMPerChar (and
+	// llmPrefillPerChar) per character of its input, at least
+	// LLMTimeout for a piece of Transcribe's clean-up and WriteTimeout
+	// for Translate's and Rewrite's answer (behavior.md 5.5,
+	// llmDeadlines).
+	LLMBase      time.Duration // DefaultLLMBase
+	LLMStall     time.Duration // DefaultLLMStall
+	LLMPerChar   time.Duration // DefaultLLMPerChar
+	LLMTimeout   time.Duration // DefaultLLMTimeout
+	WriteTimeout time.Duration // DefaultWriteTimeout
+	ReadTimeout  time.Duration // reading the selection; DefaultReadTimeout
 	// RewriteReadTimeout is Rewrite's: it reads the selection while the
 	// user speaks, so a long one (a page of a web editor read through
 	// Accessibility's text markers) may take longer without delaying
@@ -386,7 +389,7 @@ const (
 	DefaultASRTimeout     = 60 * time.Second
 	DefaultASRPerSecond   = time.Second
 	DefaultAudioRetention = 7 * 24 * time.Hour
-	DefaultLLMFirstToken  = 15 * time.Second
+	DefaultLLMBase        = 15 * time.Second
 	DefaultLLMStall       = 5 * time.Second
 	DefaultLLMPerChar     = 100 * time.Millisecond
 	DefaultLLMTimeout     = 20 * time.Second
@@ -433,6 +436,10 @@ type StartRequest struct {
 	// Previous are a Rewrite conversation's earlier turns: the session is
 	// a follow-up to the answer card.
 	Previous []compose.Turn
+	// SpeechWait, when set, ends the session with these words instead of
+	// recording: the speech model it should use is still downloading.
+	// Translating a selection needs none and goes on.
+	SpeechWait string
 }
 
 // TextInput is a session's input given at Start.

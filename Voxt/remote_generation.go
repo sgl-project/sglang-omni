@@ -33,8 +33,11 @@ type genForm struct {
 	format, schema, stop            string // stop: one per line
 	verbosity, keepAlive            string
 	usage                           bool // oMLX: usage in stream events (on by default)
-	options, extraBody              string
+	extraBody                       string
 	advanced                        bool // the folding section, open
+	// api is the API format's title (it is saved in settings.Provider, not
+	// in Generation).
+	api string
 }
 
 // The menus' choices: values and their titles.
@@ -85,7 +88,15 @@ func formatTitle(v string) string {
 var (
 	responseFormats = []string{"", llm.ResponseJSON, llm.ResponseJSONSchema}
 	verbosities     = []string{"", "low", "medium", "high"}
+	apiFormats      = []string{"", llm.APIResponses}
 )
+
+func apiFormatTitle(v string) string {
+	if v == llm.APIResponses {
+		return "Responses"
+	}
+	return "Chat Completions"
+}
 
 func verbosityTitle(v string) string {
 	if v == "" {
@@ -122,7 +133,7 @@ func genFormOf(g settings.Generation) genForm {
 		logprobs: g.Logprobs, topLogprobs: numText(g.TopLogprobs),
 		format: formatTitle(g.ResponseFormat), schema: g.JSONSchema, stop: strings.Join(g.Stop, "\n"),
 		verbosity: verbosityTitle(g.Verbosity), keepAlive: g.KeepAlive, usage: g.IncludeUsage == nil || *g.IncludeUsage,
-		options: g.OptionsJSON, extraBody: g.ExtraBodyJSON,
+		extraBody: g.ExtraBodyJSON,
 	}
 	if g.ThinkingBudget > 0 {
 		f.budget = strconv.Itoa(g.ThinkingBudget)
@@ -211,7 +222,7 @@ func (f *genForm) settings() (g settings.Generation, bad string) {
 		off := false
 		g.IncludeUsage = &off
 	}
-	g.OptionsJSON, g.ExtraBodyJSON = strings.TrimSpace(f.options), strings.TrimSpace(f.extraBody)
+	g.ExtraBodyJSON = strings.TrimSpace(f.extraBody)
 	return g, bad
 }
 
@@ -252,9 +263,9 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 	f.fit(caps) // the model changed: a mode it lacks
 	if len(caps.ThinkModes) > 0 {
 		modes := titles(caps.ThinkModes, thinkTitle)
-		fieldInfo(c, i18n.T("Think"), "", func() {
+		fieldInfo(c, i18n.T("Thinking"), "", func() {
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
-				ui.Select(c.Key("gen-think"), &f.think, modes).Label(i18n.T("Think")).Width(px(t, 240))
+				ui.Select(c.Key("gen-think"), &f.think, modes).Label(i18n.T("Thinking")).Width(px(t, 240))
 				switch valueOf(f.think, caps.ThinkModes, thinkTitle) {
 				case llm.ThinkEffort:
 					if len(caps.Efforts) == 0 {
@@ -286,13 +297,19 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 		num("gen-keepalive", i18n.T("Keep the model loaded for"), i18n.T("e.g. 5m"), &f.keepAlive)
 	}
 	if caps.IncludeUsage {
-		ui.Switch(c.Key("gen-usage"), &f.usage).Label(i18n.T("Usage in stream events"))
+		ui.Switch(c.Key("gen-usage"), &f.usage).Label(i18n.T("Include usage in streamed responses"))
 	}
 
 	// The sampling fields: empty sends nothing, and the service uses its
 	// own default for the model.
 	serviceDefault := i18n.T("Service default")
 	collapsible(c, i18n.T("Advanced"), &f.advanced, nil, func() {
+		if caps.APIFormat {
+			fieldInfo(c, i18n.T("API format"), i18n.T("Chat Completions works with nearly every service. Responses is OpenAI's newer API, and a custom service must support POST /responses."), func() {
+				ui.Select(c.Key("gen-api"), &f.api, titles(apiFormats, apiFormatTitle)).Label(i18n.T("API format")).Width(px(t, 240))
+			})
+		}
+		responses := valueOf(f.api, apiFormats, apiFormatTitle) == llm.APIResponses
 		pair(func() {
 			if caps.Temperature {
 				half("gen-temp", i18n.T("Temperature"), serviceDefault, &f.temperature)
@@ -334,25 +351,26 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 				ui.TextArea(c.Key("gen-schema"), &f.schema).Label("JSON Schema").Placeholder(`{"type": "object", …}`).MinHeight(px(t, 96))
 			}
 		}
-		if caps.Logprobs {
-			ui.Switch(c.Key("gen-logprobs"), &f.logprobs).Label("Logprobs")
+		if caps.Logprobs && !responses {
+			fieldInfo(c, "Logprobs", "", func() {
+				ui.Switch(c.Key("gen-logprobs"), &f.logprobs).Label("Logprobs")
+			})
 			if f.logprobs {
 				num("gen-toplogprobs", i18n.T("Top logprobs (optional)"), "5", &f.topLogprobs)
 			}
 		}
-		if caps.Stop {
+		if caps.Stop && !responses {
 			fieldInfo(c, i18n.T("Stop sequences"), "", func() {
 				ui.TextArea(c.Key("gen-stop"), &f.stop).Label(i18n.T("Stop sequences")).Placeholder(i18n.T("One stop sequence per line")).MinHeight(px(t, 56))
 			})
 		}
 		if caps.ExtraBody {
-			fieldInfo(c, i18n.T("Extra Body JSON"), i18n.T("Merged into the request body after Voxt's own fields, so its keys win."), func() {
-				ui.TextArea(c.Key("gen-extra"), &f.extraBody).Label(i18n.T("Extra Body JSON")).Placeholder(`{"key": "value"}`).MinHeight(px(t, 72))
-			})
-		}
-		if caps.Options {
-			fieldInfo(c, "Options JSON", i18n.T("Merged into Ollama's options, so its keys win."), func() {
-				ui.TextArea(c.Key("gen-options"), &f.options).Label("Options JSON").Placeholder(`{"num_ctx": 8192}`).MinHeight(px(t, 72))
+			example := `{"user": "me"}`
+			if caps.KeepAlive { // note (luojiaxuan): Ollama, whose model options go in "options"
+				example = `{"options": {"num_ctx": 8192}}`
+			}
+			fieldInfo(c, i18n.T("Request parameters"), i18n.T("A JSON object merged into the request. Its keys override Voxt's, nested objects are merged, and null leaves a field out."), func() {
+				ui.TextArea(c.Key("gen-extra"), &f.extraBody).Label(i18n.T("Request parameters")).Placeholder(example).MinHeight(px(t, 72))
 			})
 		}
 	})

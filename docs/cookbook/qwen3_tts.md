@@ -1,12 +1,6 @@
 # Qwen3-TTS
 
-[Qwen3-TTS-12Hz-Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) is a discrete
-multi-codebook text-to-speech model from the Qwen team. It performs fast voice cloning from a
-short reference clip, supports 10 languages, and streams 24 kHz speech with low latency. The
-`12Hz` in the name refers to the codec **frame rate** (12 acoustic frames per second), not the
-playback sample rate. SGLang-Omni serves two checkpoints — `0.6B` and `1.7B` — through the same
-`preprocessing → tts_engine → vocoder` pipeline and the OpenAI-compatible `/v1/audio/speech`
-endpoint.
+Qwen3-TTS is a multi-codebook text-to-speech model family that streams 24 kHz speech in 10 languages. The `12Hz` checkpoint name refers to the codec frame rate. SGLang-Omni serves Base for voice cloning, [CustomVoice](#customvoice-checkpoints) for built-in speakers, and [VoiceDesign](#voicedesign-checkpoint) for voices described in natural language through the OpenAI-compatible `/v1/audio/speech` endpoint.
 
 ## Prerequisites
 
@@ -347,6 +341,10 @@ weights.
 
 ## Synthesizing Speech
 
+Send the JSON payload for your checkpoint to `POST /v1/audio/speech` using the curl, Python, or [OpenAI SDK examples](../basic_usage/tts.md#openai-python-sdk) in [TTS Model Usage](../basic_usage/tts.md).
+
+With the OpenAI SDK, pass Qwen-specific fields such as `references`, `language`, and `task_type` in `extra_body`. Use `voice="default"` when the payload omits `voice` and the client requires it.
+
 ### Text-only Requests
 
 Qwen3-TTS Base checkpoints require a reference clip. Text-only requests are supported by CustomVoice and VoiceDesign checkpoints; see [TTS Model Usage](../basic_usage/tts.md) for those launch commands.
@@ -506,37 +504,9 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 ### Streaming
 
-Set `"stream": true` to receive raw audio chunks in real time. `stream_format` defaults to `"audio"`, and `response_format` defaults to `"wav"`. Set `response_format="pcm"` for raw PCM bytes:
+Use the WAV/PCM and Python streaming examples in [TTS Model Usage](../basic_usage/tts.md), or use its [SSE](../basic_usage/tts.md#sse-event-framing) or [WebSocket](../basic_usage/tts.md#websocket-speech-streaming) clients. Include the reference, speaker, or instructions required by your checkpoint.
 
-```bash
-curl -N -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
-    "voice": "default",
-    "input": "Get the trust fund to the bank early.",
-    "references": [{
-      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-      "text": "We asked over twenty different people, and they all said it was his."
-    }],
-    "stream": true,
-    "response_format": "pcm"
-  }' \
-  --output output.pcm
-```
-
-Streaming returns `audio/pcm` 16-bit mono PCM bytes with sample-rate metadata in
-the response headers. See the [Higgs TTS cookbook](../cookbook/higgs_tts.md#streaming)
-for a full Python raw PCM consumer.
-
-Omit `response_format` or set it to `"wav"` for raw WAV streaming with one header followed by PCM chunks. Set `stream_format="sse"` for SSE events, which can omit `stream=true`. Every HTTP mode defaults to WAV; an explicit `response_format` overrides that default.
-
-All three task types (Base/reference-cloning, CustomVoice and VoiceDesign) use
-true incremental codec and vocoder streaming, for both this HTTP endpoint and
-`/v1/audio/speech/stream` WebSocket sessions with `stream_audio=true`. Pass
-`"stream_codec_output": false` on a request, or launch with
-`--preprocessing.factory.stream_codec_output false`, to restore whole-utterance
-decoding.
+All three modes support audio streaming over HTTP and WebSocket. By default, the talker passes codec frames to the vocoder as it generates them. Set `"stream_codec_output": false` in the request or launch with `--preprocessing.factory.stream_codec_output false` to decode the whole utterance at once.
 
 Streamed CustomVoice output on validated voice/language pairs (currently
 Ryan/English with default sampling) withholds the model's silent bootstrap
@@ -547,14 +517,9 @@ not actually silent. Opt out per request with
 `"suppress_bootstrap_silence": false` or per deployment with
 `--vocoder.factory.suppress_bootstrap_silence false`.
 
-When `initial_codec_chunk_frames` is omitted, Qwen3-TTS ramps its first chunks
-`1 -> 2 -> 4` codec frames before the steady stride, so first audio leaves after a
-single AR step while the playback cushion is rebuilt within four chunks. Pass an
-explicit value to trade continuity against time-to-first-audio.
-Utterances that finish in fewer than the first chunk's generated codec frames never reach the
-first chunk, so their audio arrives complete in a single final flush.
+By default the [first-audio chunk ramp](#first-audio-chunk-ramp) starts decoding after one generated codec frame. When an utterance ends before the first chunk fills, its audio arrives in a single final flush.
 
-**Codec decoding defaults**
+### Codec decoding defaults
 
 Streaming decodes run on the stateful incremental codec by default: each
 follow-up chunk decodes only its fresh frames against per-stream state held in
@@ -599,7 +564,7 @@ The follow-up workers also commit each in-flight cohort as soon as its decode
 has finished, checked at the top of the worker loop and before each launch,
 instead of at the next drain.
 
-**First-audio chunk ramp**
+### First-audio chunk ramp
 
 For latency-sensitive deployments the whole early chunk schedule can be
 configured server-side with `stream_chunk_ramp` on the vocoder stage: entry
@@ -703,6 +668,47 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   }' \
   --output custom-voice.wav
 ```
+
+## VoiceDesign Checkpoint
+
+VoiceDesign creates a voice from a natural-language description. Start the 1.7B VoiceDesign checkpoint with its matching configuration.
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign \
+  --config examples/configs/qwen3_tts_1_7b_voicedesign.yaml \
+  --port 8000
+```
+
+Set `task_type` to `VoiceDesign` and provide non-empty `instructions`. Omit `voice`, `ref_audio`, `ref_text`, `references`, and `x_vector_only_mode`.
+
+```json
+{
+  "model": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+  "input": "Hello from Qwen VoiceDesign.",
+  "task_type": "VoiceDesign",
+  "instructions": "A warm, natural young adult voice."
+}
+```
+
+## Benchmarking
+
+Prepare the SeedTTS dataset, then run the English split against 0.6B Base. The benchmark launches the configured TTS server on port 8000 and starts the ASR server after generation.
+
+```bash
+python -m benchmarks.dataset.prepare --dataset seedtts
+
+python -m benchmarks.eval.benchmark_tts_seedtts \
+  --meta zhaochenyang20/seed-tts-eval-arrow \
+  --model Qwen/Qwen3-TTS-12Hz-0.6B-Base \
+  --server-config examples/configs/qwen3_tts_0_6b.yaml \
+  --port 8000 \
+  --output-dir results/qwen3_tts_0_6b_en \
+  --lang en \
+  --max-concurrency 16
+```
+
+For the Chinese split, set `--lang zh` and use a separate output directory. For 1.7B Base, set `--model Qwen/Qwen3-TTS-12Hz-1.7B-Base` and `--server-config examples/configs/qwen3_tts_1_7b.yaml`. See the [TTS benchmark reference](../developer_reference/tts_bench.md) for methodology and additional workloads.
 
 ## Benchmark Results
 

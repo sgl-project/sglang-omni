@@ -51,11 +51,11 @@ func allowAll(a *app) {
 func TestHomeReadiness(t *testing.T) {
 	a, tt := homeTester(t)
 	for _, s := range []string{
-		"No speech model is installed: install one to transcribe, translate and rewrite by voice.",
-		"No language model is set up: Translate and Rewrite need one, and Transcribe types the text as recognised.",
-		"Without Accessibility results are copied for you to paste, and shortcuts such as Right ⌥ do not work.",
+		"No speech model is installed. Install one to transcribe, translate and rewrite by voice.",
+		"No language model is set up. Translate and Rewrite need one, and Transcribe types the text as recognised.",
+		"Without Accessibility access, results are copied for you to paste, and shortcuts such as Right ⌥ do not work.",
 		"Right ⌥ (once Accessibility is allowed)",
-		"Try it", "Today", "Recent results", "Results show here once you use a shortcut.",
+		"Try it", "Today", "Recent results", "Results appear here after you use a shortcut.",
 	} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, tt.Texts())
@@ -66,11 +66,9 @@ func TestHomeReadiness(t *testing.T) {
 	}
 	// The whole line is the way to fix it: speech models are local,
 	// language models are set up on their page.
-	click(t, tt, "Speech recognition: Open Speech models")
-	if a.shownPath() != modelsPath {
-		t.Fatalf("went to %s", a.shownPath())
+	if _, ok := tt.Find("Speech recognition: Download (2.5 GB)"); !ok {
+		t.Fatalf("no download on the speech line: %q", tt.Texts())
 	}
-	a.navigate("/home")
 	click(t, tt, "Language model: Open Language models")
 	if a.shownPath() != remotePath {
 		t.Fatalf("went to %s", a.shownPath())
@@ -79,7 +77,7 @@ func TestHomeReadiness(t *testing.T) {
 
 	// A speech model only: the language model is missing.
 	a.local = &fakeLocal{ASRP: &fakeTranscriptions{}}
-	if !has(tt, "No language model is set up: Translate and Rewrite need one, and Transcribe types the text as recognised.") || !has(tt, fakeASRModel.Name) {
+	if !has(tt, "No language model is set up. Translate and Rewrite need one, and Transcribe types the text as recognised.") || !has(tt, fakeASRModel.Name) {
 		t.Errorf("no language model: %q", tt.Texts())
 	}
 
@@ -123,7 +121,7 @@ func TestHomeReadinessLive(t *testing.T) {
 	}
 	// Accessibility taken away.
 	a.perms.access = false
-	if !has(tt, "1 step to go") || !has(tt, "Without Accessibility results are copied for you to paste, and shortcuts such as Right ⌥ do not work.") {
+	if !has(tt, "1 step to go") || !has(tt, "Without Accessibility access, results are copied for you to paste, and shortcuts such as Right ⌥ do not work.") {
 		t.Errorf("access revoked: %q", tt.Texts())
 	}
 	a.perms.access = true
@@ -132,7 +130,7 @@ func TestHomeReadinessLive(t *testing.T) {
 	}
 	// The language model removed.
 	a.local.(*fakeLocal).Chat = nil
-	if !has(tt, "1 step to go") || !has(tt, "No language model is set up: Translate and Rewrite need one, and Transcribe types the text as recognised.") {
+	if !has(tt, "1 step to go") || !has(tt, "No language model is set up. Translate and Rewrite need one, and Transcribe types the text as recognised.") {
 		t.Errorf("model deleted: %q", tt.Texts())
 	}
 	readyModels(a)
@@ -255,7 +253,7 @@ func TestSloganHint(t *testing.T) {
 // cap, and without one, a link to add it.
 func TestHomeSlogan(t *testing.T) {
 	a, tt := homeTester(t)
-	for _, s := range []string{"Speak anywhere, it types at your cursor", "Press", "Right ⌥", "to start"} {
+	for _, s := range []string{"Speak anywhere and Voxt types at your cursor", "Press", "Right ⌥", "to start"} {
 		if !hasExact(tt, s) {
 			t.Errorf("no %q in %q", s, tt.Texts())
 		}
@@ -491,7 +489,7 @@ func TestWidePageCentered(t *testing.T) {
 	tt.SetSize(w, 1100)
 	a.navigate("/home")
 	frames(tt)
-	slogan, ok1 := tt.Find("Speak anywhere, it types at your cursor")
+	slogan, ok1 := tt.Find("Speak anywhere and Voxt types at your cursor")
 	guide, ok2 := tt.Find("Setup guide")
 	history, ok3 := tt.Find("Open History")
 	if !ok1 || !ok2 || !ok3 {
@@ -509,7 +507,7 @@ func TestWidePageCentered(t *testing.T) {
 	// up with it too.
 	a.navigate("/dictionary")
 	frames(tt)
-	search, ok1 := tt.Find("Search the dictionary")
+	search, ok1 := tt.Find("Search dictionary")
 	add, ok2 := tt.Find("Add term")
 	if !ok1 || !ok2 {
 		t.Fatalf("Dictionary: found search %v, Add term %v", ok1, ok2)

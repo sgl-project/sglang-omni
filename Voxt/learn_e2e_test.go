@@ -294,7 +294,7 @@ func TestLearnSwitch(t *testing.T) {
 	frames(tt)
 	tt.Advance(time.Second)
 	frames(tt)
-	if want := i18n.T("After Voxt inserts a Transcribe result into another app, it reads the text around that spot for up to %d seconds. If you correct a word there, it suggests adding your spelling to the dictionary. What it reads is not saved or sent, and password fields are never read.", learn.WatchSeconds); !hasExact(tt, want) || !strings.Contains(want, fmt.Sprintf("up to %d seconds", learn.WatchSeconds)) {
+	if want := i18n.T("For %d seconds after inserting, Voxt reads the text around it. If you correct a word, it suggests your spelling. Nothing it reads is saved or sent.", learn.WatchSeconds); !hasExact(tt, want) || !strings.Contains(want, fmt.Sprintf("For %d seconds", learn.WatchSeconds)) {
 		t.Fatalf("no tip %q in %q", want, firstTexts(tt))
 	}
 	clickControl(t, tt, name)

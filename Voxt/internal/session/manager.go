@@ -53,7 +53,7 @@ func New(cfg Config) *Manager {
 	def(&cfg.ASRTimeout, DefaultASRTimeout)
 	def(&cfg.ASRPerSecond, DefaultASRPerSecond)
 	def(&cfg.AudioRetention, DefaultAudioRetention)
-	def(&cfg.LLMFirstToken, DefaultLLMFirstToken)
+	def(&cfg.LLMBase, DefaultLLMBase)
 	def(&cfg.LLMStall, DefaultLLMStall)
 	def(&cfg.LLMPerChar, DefaultLLMPerChar)
 	def(&cfg.LLMTimeout, DefaultLLMTimeout)

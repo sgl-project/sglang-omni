@@ -353,7 +353,7 @@ func showFatal(err error) {
 				Message: i18n.T("Voxt cannot open its library"),
 				Detail: i18n.T("Your history, dictionary and settings are kept in a database in %s. It could not be opened: %v", dataDir, err) +
 					"\n\n" + i18n.T("If a newer Voxt created it, use that version. Nothing was changed."),
-				Buttons: []string{i18n.T("Quit"), i18n.T("Show the folder")},
+				Buttons: []string{i18n.T("Quit"), i18n.T("Show folder")},
 			})
 			if res.Button == 1 {
 				mygo.Shell.OpenPath(dataDir)
