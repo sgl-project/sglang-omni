@@ -26,7 +26,6 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
@@ -35,7 +34,6 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 // sessionSource is the logs' source of session lines.
@@ -275,11 +273,8 @@ func (a *app) sessionEnded(s session.Snapshot) {
 	if !s.Card && !s.Inserted && s.Delivery != "" && s.Result != "" && s.State == session.Done {
 		// Not inserted and the card is off: the clipboard has it (Voxt 1.x).
 		a.copyRecent(s.Result)
-		text := uitext.DeliveryText(deliver.Result{Reason: s.Delivery}, s.Target)
-		if s.Delivery != deliver.ReasonUnconfirmed && s.Delivery != deliver.ReasonSecureInput {
-			text = i18n.T("Voxt could not insert the text here and copied it. Press ⌘V to paste it.")
-		}
-		copied = &sessionNotice{text: text, warn: true}
+		// One short line: a notice is one line, cut past NoticeW2.
+		copied = &sessionNotice{text: i18n.T("Not inserted. Copied: press ⌘V to paste."), warn: true}
 	}
 	if s.ID != "" && a.followUp != "" && !s.Card {
 		a.followUp = "" // a follow-up that ended without an answer: the card keeps the last one

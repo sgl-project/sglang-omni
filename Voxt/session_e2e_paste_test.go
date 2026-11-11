@@ -13,22 +13,18 @@ import (
 // TestSessionPasteChecked: every paste is checked (verifyMs). The focused
 // field not changing after ⌘V (10-20, Arc: "pasted, nothing there, no
 // word") is no insert: with the card off, the notice says the clipboard
-// has it, and the log says what the field read; with secure input on, the
-// notice says that. A check that cannot tell (a web area) is an insert,
+// has it, and the log says what the field read. A check that cannot tell (a web area) is an insert,
 // as before.
 func TestSessionPasteChecked(t *testing.T) {
 	for _, tc := range []struct {
 		name, opts string
 		inserted   bool
 		reason     deliver.Reason
-		why        string // the notice
 	}{
 		{name: "inserted", opts: "paste-check=inserted", inserted: true},
 		{name: "unknown", opts: "paste-check=unknown", inserted: true},
-		{name: "unchanged", opts: "paste-check=unchanged", reason: deliver.ReasonUnconfirmed,
-			why: "The text did not show up where you type. Press ⌘V to paste it from the clipboard."},
-		{name: "secure input", opts: "paste-check=unchanged,secure-input=Terminal", reason: deliver.ReasonSecureInput,
-			why: "Secure input is on and may block the keys Voxt sends. Press ⌘V to paste the text from the clipboard."},
+		{name: "unchanged", opts: "paste-check=unchanged", reason: deliver.ReasonUnconfirmed},
+		{name: "secure input", opts: "paste-check=unchanged,secure-input=Terminal", reason: deliver.ReasonSecureInput},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(400, "transcribe/0", proto.PhaseTrigger))
@@ -51,7 +47,7 @@ func TestSessionPasteChecked(t *testing.T) {
 				return
 			}
 			// The card is off: no card, the notice says the clipboard has it.
-			if end.Inserted || end.Card || end.Delivery != tc.reason || a.answer.open || a.notice == nil || a.notice.text != tc.why {
+			if end.Inserted || end.Card || end.Delivery != tc.reason || a.answer.open || a.notice == nil || a.notice.text != copiedNotice {
 				t.Fatalf("end %+v, card %v, notice %+v", end, a.answer.open, a.notice)
 			}
 		})

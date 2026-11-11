@@ -42,7 +42,7 @@ func TestCopyResult(t *testing.T) {
 
 // copiedNotice is what the overlay says when a result that did not go in
 // was copied instead of shown in the card.
-const copiedNotice = "Voxt could not insert the text here and copied it. Press ⌘V to paste it."
+const copiedNotice = "Not inserted. Copied: press ⌘V to paste."
 
 // TestNotInsertedCardOff: a dictation that cannot go in (nothing editable
 // has the focus) with Transcribe's card off copies the text and says so;
