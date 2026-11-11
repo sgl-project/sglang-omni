@@ -108,8 +108,6 @@ class MossSpeechSGLangRequestData(SGLangARRequestData):
     mode: Mode = 0
     params: MossSamplingParams = field(default_factory=MossSamplingParams)
     effective_seed: int = 0
-    finished: bool = False
-    stop_reason: Literal["stop_token", "length"] | None = None
     rng_generator: torch.Generator | None = None
 
 

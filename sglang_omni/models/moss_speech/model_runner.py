@@ -20,7 +20,6 @@ from sglang_omni.models.moss_speech.fsm import (
     next_mode,
     row_selected_token,
     sample_row,
-    stop_hit,
 )
 from sglang_omni.models.moss_speech.request_builders import MossSpeechSGLangRequestData
 from sglang_omni.models.moss_speech.sglang_model import (
@@ -179,11 +178,6 @@ class MossSpeechModelRunner(ModelRunner[MossSpeechSGLangRequestData]):
             row = finalize_row(text_token, audio_token, request_data.mode)
             request_data.output_rows.append(row)
             selected_tokens.append(row_selected_token(row))
-            if stop_hit(row):
-                request_data.finished = True
-                request_data.stop_reason = "stop_token"
-            else:
-                pass
         return torch.tensor(selected_tokens, dtype=torch.long, device=logits_device)
 
     def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
