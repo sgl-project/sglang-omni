@@ -21,6 +21,7 @@ from sglang_omni.mps.manager import (
     MpsLease,
     MpsManager,
     MpsProcessIdentity,
+    MpsRetryableControlError,
 )
 from sglang_omni.mps.state import MpsGpuPaths
 
@@ -42,6 +43,7 @@ class FakeControlClient:
         self.held_owner_pids: set[int] = set()
         self.client_tokens: dict[int, str] = {}
         self.snapshots: dict[str, set[MpsClientRef]] = {}
+        self.snapshot_calls = 0
         self.server_identities: dict[int, MpsProcessIdentity] = {}
         self.start_fails = False
         self.snapshot_error: str | None = None
@@ -79,6 +81,7 @@ class FakeControlClient:
         return MpsProcessIdentity(pid, self.daemon_starttimes.setdefault(pid, 1))
 
     def snapshot(self, pipe_dir):
+        self.snapshot_calls += 1
         if self.snapshot_error is not None:
             raise MpsControlError(self.snapshot_error)
         if str(pipe_dir) not in self.daemons:
@@ -331,7 +334,7 @@ def test_unresponsive_new_daemon_is_persisted_without_process_signals(short_root
     client.snapshot_error = "control unavailable"
     manager = make_manager(short_root, client)
 
-    with pytest.raises(MpsError, match="control daemon"):
+    with pytest.raises(MpsError, match="control unavailable"):
         manager.acquire({"worker": "owner-worker"})
 
     assert client.unsafe_daemon_signals == []
@@ -395,6 +398,24 @@ def test_verify_matches_inherited_process_token_on_cuda_client(short_root):
     assert manager.verify(lease) == {MpsClientRef(7000, 200)}
 
 
+def test_verify_retains_all_managed_server_identities(short_root):
+    client = FakeControlClient()
+    manager = make_manager(short_root, client)
+    lease = manager.acquire({"a": "owner-a", "b": "owner-b"})
+    client.set_clients(
+        manager.paths.pipe_dir,
+        {7000: [101], 8000: [102], 9000: [909]},
+    )
+    client.client_tokens.update({101: "owner-a", 102: "owner-b", 909: "foreign"})
+
+    attached = manager.verify(lease)
+
+    assert attached == {MpsClientRef(7000, 101), MpsClientRef(8000, 102)}
+    assert lease.server_identities == frozenset(
+        {MpsProcessIdentity(7000, 1), MpsProcessIdentity(8000, 1)}
+    )
+
+
 def test_verify_requires_each_managed_server_identity(short_root, monkeypatch):
     client = FakeControlClient()
     manager = make_manager(short_root, client)
@@ -438,15 +459,19 @@ def test_verify_does_not_accumulate_clients_across_snapshots(short_root, monkeyp
 def test_probe_checks_session_identities_without_client_snapshot(short_root):
     client = FakeControlClient()
     manager, lease = start_serving(short_root, client)
+    client.snapshot_calls = 0
     assert manager.probe(lease) is None
+    assert client.snapshot_calls == 0
 
     client.snapshot_error = "snapshot must not run"
     client.set_clients(manager.paths.pipe_dir, {})
     assert manager.probe(lease) is None
+    assert client.snapshot_calls == 0
 
     client.identity_error = "native PID unavailable"
-    reason = manager.probe(lease)
-    assert reason is not None and "control identity" in reason
+    assert manager.probe(lease) == (
+        "control identity unavailable: native PID unavailable"
+    )
 
     client.identity_error = None
     replacement_pid = lease.daemon_pid + 1
@@ -454,24 +479,29 @@ def test_probe_checks_session_identities_without_client_snapshot(short_root):
     client.alive_pids.add(replacement_pid)
     daemon_pid_file(manager.paths).write_text(str(replacement_pid))
     client.daemon_starttimes[replacement_pid] = 2
-    reason = manager.probe(lease)
-    assert reason is not None and "control identity" in reason
+    assert manager.probe(lease) == (
+        f"control identity changed: expected 4242/1, got {replacement_pid}/2"
+    )
 
     client.daemons[str(manager.paths.pipe_dir)] = lease.daemon_pid
     daemon_pid_file(manager.paths).write_text(str(lease.daemon_pid))
     client.daemon_starttimes[lease.daemon_pid] = 2
-    reason = manager.probe(lease)
-    assert reason is not None and "control identity" in reason
+    assert manager.probe(lease) == (
+        "control identity changed: expected 4242/1, got 4242/2"
+    )
     client.daemon_starttimes[lease.daemon_pid] = 1
 
     client.server_identities[7000] = MpsProcessIdentity(7000, 2)
-    reason = manager.probe(lease)
-    assert reason is not None and "server identity" in reason
+    assert manager.probe(lease) == (
+        "server identity changed: expected 7000/1, got 7000/2"
+    )
     client.server_identities[7000] = MpsProcessIdentity(7000, 1)
 
     client.server_identities.pop(7000)
-    reason = manager.probe(lease)
-    assert reason is not None and "server identity" in reason
+    assert manager.probe(lease) == (
+        "server identity unavailable for pid 7000: unverified server pid 7000"
+    )
+    assert client.snapshot_calls == 0
 
 
 def test_dead_root_with_live_descendant_persists_dirty_and_reports_cleanup(
@@ -856,3 +886,186 @@ def test_retire_is_a_noop_for_an_unmanaged_process(short_root):
 
     assert manager.retire_clients_for(lease, "not-managed") == set()
     assert client.terminated == []
+
+
+def test_retire_checks_ownership_and_terminates_under_one_gpu_lock(
+    short_root, monkeypatch
+):
+    client = FakeControlClient()
+    manager, lease = start_serving(short_root, client)
+    lock_path = manager.paths.state_root / f".lock-{manager.gpu_uuid}"
+    observed = []
+
+    def assert_locked():
+        with lock_path.open("r") as fd, pytest.raises(BlockingIOError):
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    original_snapshot = client.snapshot
+    original_token = client.client_token
+    original_terminate = client.terminate_client
+
+    def snapshot(pipe_dir):
+        observed.append("snapshot")
+        assert_locked()
+        return original_snapshot(pipe_dir)
+
+    def client_token(pid):
+        observed.append("token")
+        assert_locked()
+        return original_token(pid)
+
+    def terminate(pipe_dir, ref):
+        observed.append("terminate")
+        assert_locked()
+        original_terminate(pipe_dir, ref)
+
+    monkeypatch.setattr(client, "snapshot", snapshot)
+    monkeypatch.setattr(client, "client_token", client_token)
+    monkeypatch.setattr(client, "terminate_client", terminate)
+
+    assert manager.retire_clients_for(lease, "worker") == {MpsClientRef(7000, 101)}
+    assert observed == ["snapshot", "token", "terminate"]
+    manager.release(lease)
+
+
+def test_retire_retries_read_failure_with_gpu_lock_released(short_root, monkeypatch):
+    client = FakeControlClient()
+    manager, lease = start_serving(short_root, client)
+    original_snapshot = client.snapshot
+    attempts = []
+
+    def snapshot(pipe_dir):
+        attempts.append(True)
+        if len(attempts) == 1:
+            raise MpsRetryableControlError("temporary snapshot failure")
+        return original_snapshot(pipe_dir)
+
+    def during_backoff(_seconds):
+        lock_path = manager.paths.state_root / f".lock-{manager.gpu_uuid}"
+        with lock_path.open("r") as fd:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    monkeypatch.setattr(client, "snapshot", snapshot)
+    monkeypatch.setattr(manager_module.time, "sleep", during_backoff)
+
+    assert manager.retire_clients_for(lease, "worker") == {MpsClientRef(7000, 101)}
+    assert len(attempts) == 2
+    assert client.terminated == [MpsClientRef(7000, 101)]
+    manager.release(lease)
+
+
+def test_release_does_not_hold_gpu_lock_during_client_drain(short_root, monkeypatch):
+    client = FakeControlClient()
+    manager, lease = start_serving(short_root, client)
+    waits = []
+
+    def during_backoff(_seconds):
+        waits.append(True)
+        lock_path = manager.paths.state_root / f".lock-{manager.gpu_uuid}"
+        with lock_path.open("r") as fd:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        client.set_clients(manager.paths.pipe_dir, {})
+
+    monkeypatch.setattr(manager_module.time, "sleep", during_backoff)
+    manager.release(lease)
+
+    assert waits == [True]
+    assert lease.owner_fd == -1
+    assert not manager.paths.state_dir.exists()
+
+
+def test_release_recovers_from_transient_read_without_repeating_quit(
+    short_root, monkeypatch
+):
+    client = FakeControlClient()
+    manager, lease = start_serving(short_root, client)
+    client.set_clients(manager.paths.pipe_dir, {})
+    original_snapshot = client.snapshot
+    original_quit = client.quit_daemon
+    attempts = []
+    quits = []
+
+    def snapshot(pipe_dir):
+        attempts.append(True)
+        if len(attempts) == 1:
+            raise MpsRetryableControlError("temporary snapshot failure")
+        return original_snapshot(pipe_dir)
+
+    def quit_daemon(pipe_dir):
+        quits.append(True)
+        original_quit(pipe_dir)
+
+    monkeypatch.setattr(client, "snapshot", snapshot)
+    monkeypatch.setattr(client, "quit_daemon", quit_daemon)
+    manager.release(lease)
+
+    assert len(attempts) == 2
+    assert len(quits) == 1
+
+
+def test_daemon_exit_read_retry_never_reissues_quit(short_root, monkeypatch):
+    client = FakeControlClient()
+    manager, lease = start_serving(short_root, client)
+    client.set_clients(manager.paths.pipe_dir, {})
+    original_alive = client.daemon_process_alive
+    original_quit = client.quit_daemon
+    reads = []
+    quits = []
+
+    def alive(pid):
+        reads.append(True)
+        if len(reads) == 1:
+            raise MpsRetryableControlError("temporary process read failure")
+        return original_alive(pid)
+
+    def quit_daemon(pipe_dir):
+        quits.append(True)
+        original_quit(pipe_dir)
+
+    monkeypatch.setattr(client, "daemon_process_alive", alive)
+    monkeypatch.setattr(client, "quit_daemon", quit_daemon)
+    manager.release(lease)
+
+    assert len(reads) == 2
+    assert len(quits) == 1
+
+
+def test_ambiguous_quit_timeout_never_reissues_quit(short_root, monkeypatch):
+    client = FakeControlClient()
+    manager, lease = start_serving(short_root, client)
+    client.set_clients(manager.paths.pipe_dir, {})
+    quits = []
+
+    def quit_daemon(_pipe_dir):
+        quits.append(True)
+        raise MpsRetryableControlError("quit timed out")
+
+    monkeypatch.setattr(client, "quit_daemon", quit_daemon)
+
+    with pytest.raises(MpsDirtyStateError, match="quit timed out"):
+        manager.release(lease)
+
+    assert len(quits) == 1
+    assert lease.owner_fd == -1
+    assert owner_marker(manager).read_text() == "retained\n"
+
+
+def test_exhausted_release_read_retries_preserve_dirty_state(short_root, monkeypatch):
+    client = FakeControlClient()
+    manager, lease = start_serving(short_root, client)
+    manager.drain_timeout = 0
+    client.set_clients(manager.paths.pipe_dir, {})
+    quits = []
+
+    def unavailable(_pipe_dir):
+        raise MpsRetryableControlError("snapshot temporarily unavailable")
+
+    monkeypatch.setattr(client, "snapshot", unavailable)
+    monkeypatch.setattr(client, "quit_daemon", lambda _pipe: quits.append(True))
+
+    with pytest.raises(MpsDirtyStateError, match="snapshot temporarily unavailable"):
+        manager.release(lease)
+
+    assert not quits
+    assert lease.owner_fd == -1
+    assert owner_marker(manager).read_text() == "retained\n"
