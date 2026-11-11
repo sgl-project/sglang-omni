@@ -422,7 +422,9 @@ def defer_first_token_finish(reqs: list[Req]) -> Generator[None, None, None]:
             ) = values
 
 
-def build_kv_pool(token_to_kv_pool: KVCache, *, pool_id: str) -> KVPool:
+def kv_buffer_regions(
+    token_to_kv_pool: KVCache, *, prefix: str
+) -> tuple[KVBufferRegion, ...]:
     getter = getattr(
         token_to_kv_pool, "_pd_registerable_tensors", None
     )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -442,21 +444,39 @@ def build_kv_pool(token_to_kv_pool: KVCache, *, pool_id: str) -> KVPool:
         raise ValueError("SGLang KV pool exposed incompatible buffer metadata")
     else:
         pass
+    return tuple(
+        KVBufferRegion(
+            name=f"{prefix}.{index}",
+            tensor=tensor,
+            bytes_per_page=int(item_len),
+        )
+        for index, (tensor, item_len) in enumerate(zip(tensors, item_lens))
+    )
+
+
+def kv_pool_layout_name(token_to_kv_pool: KVCache) -> str:
+    return f"{type(token_to_kv_pool).__module__}.{type(token_to_kv_pool).__qualname__}"
+
+
+def build_kv_pool(
+    token_to_kv_pool: KVCache,
+    *,
+    pool_id: str,
+    draft_kv_pool: KVCache | None = None,
+) -> KVPool:
+    """Register the target KV, plus a DFlash draft KV that shares its slot ids."""
+    buffers = kv_buffer_regions(token_to_kv_pool, prefix="kv_buffer")
+    layout_id = f"{kv_pool_layout_name(token_to_kv_pool)}:page_size=1"
+    if draft_kv_pool is not None:
+        buffers += kv_buffer_regions(draft_kv_pool, prefix="draft_kv_buffer")
+        layout_id += f"+draft={kv_pool_layout_name(draft_kv_pool)}"
+    else:
+        pass
     return KVPool(
         pool_id=pool_id,
-        layout_id=(
-            f"{type(token_to_kv_pool).__module__}."
-            f"{type(token_to_kv_pool).__qualname__}:page_size=1"
-        ),
+        layout_id=layout_id,
         page_size=1,
-        buffers=tuple(
-            KVBufferRegion(
-                name=f"kv_buffer.{index}",
-                tensor=tensor,
-                bytes_per_page=int(item_len),
-            )
-            for index, (tensor, item_len) in enumerate(zip(tensors, item_lens))
-        ),
+        buffers=buffers,
     )
 
 

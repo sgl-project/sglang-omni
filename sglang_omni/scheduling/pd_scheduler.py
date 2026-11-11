@@ -143,6 +143,7 @@ class OmniPrefillScheduler(PDKVLifecycle):
         pool = build_kv_pool(
             self.token_to_kv_pool_allocator.get_kvcache(),
             pool_id=self.pd_pool_id,
+            draft_kv_pool=pd_draft_kv_pool(self),
         )
         self.kv_registrations = ((pool, None),)
 
@@ -320,6 +321,7 @@ class OmniDecodeScheduler(PDKVLifecycle):
         pool = build_kv_pool(
             self.token_to_kv_pool_allocator.get_kvcache(),
             pool_id=pool_id,
+            draft_kv_pool=pd_draft_kv_pool(self),
         )
         receiver = DecodeKVReceiver(
             pool_id=pool_id,
@@ -439,6 +441,11 @@ class OmniDecodeScheduler(PDKVLifecycle):
                     self.emit_request_error(request_id, exc)
                     continue
                 self.pd_deferred_admission = None
+                if self.draft_worker is not None:
+                    # Prefill admitted this request to the speculative path.
+                    req.omni_data.decode_path = "spec"
+                else:
+                    pass
                 self.waiting_queue.append(req)
                 self.outbox.put(admitted)
 
@@ -448,7 +455,9 @@ class OmniDecodeScheduler(PDKVLifecycle):
         return_logprob: bool = False,
         skip_req: Req | None = None,
     ) -> None:
-        if not self.emit_transferred_token:
+        if not self.emit_transferred_token or self.draft_worker is not None:
+            # Speculative emission counts committed tokens from the first one,
+            # so it already streams the transferred token exactly once.
             super().stream_output(reqs, return_logprob, skip_req)
             return
         else:
@@ -550,7 +559,21 @@ def validate_pd_runtime(scheduler: OmniScheduler) -> None:
         raise NotImplementedError("PD currently requires RadixCache disabled")
     else:
         pass
-    if not scheduler.spec_algorithm.is_none():
-        raise NotImplementedError("PD does not support speculative decoding")
+    if scheduler.spec_algorithm.is_none():
+        pass
+    elif not scheduler.spec_algorithm.is_dflash():
+        raise NotImplementedError("PD supports DFLASH speculative decoding only")
+    elif scheduler.enable_plain_fallback:
+        raise NotImplementedError("PD does not carry the plain-fallback decode path")
+    elif pd_draft_kv_pool(scheduler) is None:
+        raise NotImplementedError("PD requires a device-resident DFLASH draft KV pool")
     else:
         pass
+
+
+def pd_draft_kv_pool(scheduler: OmniScheduler):
+    """The DFlash draft KV pool, indexed by the target's KV slot ids."""
+    if scheduler.draft_worker is None:
+        return None
+    else:
+        return scheduler.draft_worker.primary_draft_kv_pool
