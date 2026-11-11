@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import torch
 from sglang.srt.arg_groups.model_override_base import (
     attention_backends_of,
     resolved_view,
@@ -19,6 +20,7 @@ from sglang_omni.models.llada2_uni.cfg_attention_backend import (
     register_llada2_cfg_flashinfer_backend,
 )
 from sglang_omni.models.llada2_uni.low_confidence_cfg import LowConfidenceCFG
+from sglang_omni.models.llada2_uni.offload_scheduler import SerialOffloadDllmScheduler
 from sglang_omni.models.llada2_uni.request_builders import (
     make_dllm_thinker_scheduler_adapters,
 )
@@ -70,6 +72,7 @@ def create_dllm_thinker_scheduler(
     *,
     tp_rank: int = 0,
     nccl_port: int | None = None,
+    enable_serial_offload: bool = False,
 ) -> DllmScheduler:
     """Create an DllmScheduler for the LLaDA2-Uni thinker.
 
@@ -109,7 +112,10 @@ def create_dllm_thinker_scheduler(
         dllm_config=dllm_config,
     )
 
-    return DllmScheduler(
+    scheduler_class = (
+        SerialOffloadDllmScheduler if enable_serial_offload else DllmScheduler
+    )
+    scheduler = scheduler_class(
         tp_worker=model_worker,
         tree_cache=tree_cache,
         req_to_token_pool=req_to_token_pool,
@@ -120,3 +126,8 @@ def create_dllm_thinker_scheduler(
         request_builder=request_builder,
         result_adapter=result_adapter,
     )
+    if isinstance(scheduler, SerialOffloadDllmScheduler):
+        scheduler.configure_offload(torch.device("cuda", gpu_id))
+    else:
+        pass
+    return scheduler
