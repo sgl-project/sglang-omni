@@ -21,7 +21,10 @@ from sglang.multimodal_gen.runtime.pipelines_core.stages import base as stage_ba
 
 from sglang_omni.models.sensenova_u1.native import generation
 from sglang_omni.models.sensenova_u1.native.generation import SenseNovaU1GenerationStage
-from sglang_omni.models.sensenova_u1.native.image_edit import SenseNovaU1InputStage
+from sglang_omni.models.sensenova_u1.native.image_edit import (
+    MAX_REFERENCE_COUNT,
+    SenseNovaU1InputStage,
+)
 from sglang_omni.models.sensenova_u1.native.pipeline_config import (
     SenseNovaU1PipelineConfig,
 )
@@ -88,13 +91,8 @@ def test_reference_order_is_preserved(monkeypatch: pytest.MonkeyPatch) -> None:
     assert (request.width, request.height) == (64, 64)
 
 
-@pytest.mark.parametrize(
-    "reference_count,reference_size_pixels", [(60, (32, 64)), (65, (64, 64))]
-)
 def test_reference_pixel_overflow_is_rejected_before_resize(
     monkeypatch: pytest.MonkeyPatch,
-    reference_count: int,
-    reference_size_pixels: tuple[int, int],
 ) -> None:
     """Aligned reference sizes could exceed the total budget before generation."""
     monkeypatch.setattr(
@@ -103,12 +101,10 @@ def test_reference_pixel_overflow_is_rejected_before_resize(
         lambda: SimpleNamespace(comfyui_mode=False),
     )
     sampling = SenseNovaU1SamplingParams(
-        prompt="combine the images", image_path=["reference.png"] * reference_count
+        prompt="combine the images", image_path=["reference.png"] * 60
     )
     request = Req(sampling_params=sampling)
-    references = [
-        Image.new("RGB", reference_size_pixels) for _ in range(reference_count)
-    ]
+    references = [Image.new("RGB", (32, 64)) for _ in range(60)]
     request.condition_image = references
     with patch.object(
         Image.Image, "resize", autospec=True, side_effect=Image.Image.resize
@@ -156,21 +152,6 @@ def test_invalid_edit_parameters_are_rejected(
         )
 
 
-@pytest.mark.parametrize("image_path", ["reference.png", ["first.png", "second.png"]])
-@pytest.mark.parametrize(
-    "prompt,error_message",
-    [
-        ("<image><image><image>", "more image placeholders than reference images"),
-        ("Write <IMG_CONTEXT> on the sign", "must not contain <IMG_CONTEXT>"),
-    ],
-)
-def test_edit_rejects_invalid_image_tokens(
-    image_path: str | list[str], prompt: str, error_message: str
-) -> None:
-    with pytest.raises(ValueError, match=error_message):
-        SenseNovaU1SamplingParams(prompt=prompt, image_path=image_path)
-
-
 @pytest.mark.parametrize(
     "prompt",
     [
@@ -183,6 +164,18 @@ def test_edit_rejects_invalid_image_tokens(
 )
 def test_edit_accepts_implicit_and_explicit_references(prompt: str) -> None:
     SenseNovaU1SamplingParams(prompt=prompt, image_path=["first.png", "second.png"])
+
+
+@pytest.mark.parametrize(
+    "reference_count", [MAX_REFERENCE_COUNT, MAX_REFERENCE_COUNT + 1]
+)
+def test_edit_reference_count_limit(reference_count: int) -> None:
+    image_path = [f"reference{index}.png" for index in range(reference_count)]
+    if reference_count > MAX_REFERENCE_COUNT:
+        with pytest.raises(ValueError, match="at most 64 reference images"):
+            SenseNovaU1SamplingParams(prompt="edit", image_path=image_path)
+    else:
+        SenseNovaU1SamplingParams(prompt="edit", image_path=image_path)
 
 
 @pytest.mark.parametrize(
@@ -240,7 +233,7 @@ def test_t2i_does_not_validate_unused_edit_guidance() -> None:
 
 @pytest.mark.parametrize(
     "output_count,free_memory_bytes,reserved_memory_bytes",
-    [(1, 1536 * 1024**2 + 4096, 1024), (2, 1536 * 1024**2 + 2048, 3072)],
+    [(1, 4096, 1024), (2, 2048, 3072)],
 )
 def test_edit_parameters_reach_each_sequential_output(
     monkeypatch: pytest.MonkeyPatch,

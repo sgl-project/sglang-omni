@@ -195,8 +195,9 @@ def test_parallel_request_fails_before_loading_weights() -> None:
 
 @pytest.mark.parametrize("explicit_offload", [False, True])
 def test_offload_default_is_reset_but_explicit_request_is_rejected(
-    explicit_offload: bool,
+    monkeypatch: pytest.MonkeyPatch, explicit_offload: bool
 ) -> None:
+    monkeypatch.setattr(os, "environ", dict(os.environ))
     config = get_model_info(
         "sensenova/SenseNova-U1.5-8B-MoT", backend="sglang"
     ).pipeline_config_cls()
@@ -215,6 +216,40 @@ def test_offload_default_is_reset_but_explicit_request_is_rejected(
     else:
         config.validate_server_args(server_args)
         assert server_args.dit_cpu_offload is False
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        ({}, "expandable_segments:True"),
+        (
+            {"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False"},
+            "expandable_segments:False",
+        ),
+        ({"PYTORCH_ALLOC_CONF": "expandable_segments:False"}, None),
+    ],
+)
+def test_startup_enables_expandable_segments_unless_configured(
+    monkeypatch: pytest.MonkeyPatch, configured: dict[str, str], expected: str | None
+) -> None:
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if name not in ("PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_ALLOC_CONF")
+    } | configured
+    monkeypatch.setattr(os, "environ", environment)
+    config = get_model_info(
+        "sensenova/SenseNova-U1.5-8B-MoT", backend="sglang"
+    ).pipeline_config_cls()
+    config.validate_server_args(
+        SimpleNamespace(
+            num_gpus=1,
+            enable_torch_compile=False,
+            lora_path=None,
+            is_arg_explicitly_set=lambda option: False,
+        )
+    )
+    assert environment.get("PYTORCH_CUDA_ALLOC_CONF") == expected
 
 
 @pytest.mark.parametrize(

@@ -11,6 +11,7 @@ from sglang.multimodal_gen.configs.sample.sampling_params import (
     SamplingParams,
 )
 
+from sglang_omni.models.sensenova_u1.native.image_edit import MAX_REFERENCE_COUNT
 from sglang_omni.models.sensenova_u1.native.options import (
     DEFAULT_CFG_INTERVAL,
     DEFAULT_CFG_NORM,
@@ -127,6 +128,13 @@ class SenseNovaU1SamplingParams(SamplingParams):
             reference_count = (
                 len(self.image_path) if isinstance(self.image_path, list) else 1
             )
+            if reference_count > MAX_REFERENCE_COUNT:
+                raise ValueError(
+                    "SenseNova editing accepts at most "
+                    f"{MAX_REFERENCE_COUNT} reference images"
+                )
+            else:
+                pass
             if self.prompt.count("<image>") > reference_count:
                 raise ValueError(
                     "Prompt has more image placeholders than reference images"

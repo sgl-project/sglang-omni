@@ -24,9 +24,6 @@ from sglang_omni.models.sensenova_u1.native.options import (
 from sglang_omni.vendor.sensenova_u1.image_edit import it2i_generate
 from sglang_omni.vendor.sensenova_u1.modeling_neo_chat import NEOChatModel
 
-# note (Wes): Calibrated on a 48 GiB RTX 4090 with BF16 2K edits, including allocator headroom.
-EDIT_WORKSPACE_RESERVE_BYTES = 1536 * 1024**2
-
 
 @dataclass(frozen=True)
 class SenseNovaU1GenerationOptions:
@@ -143,12 +140,7 @@ class SenseNovaU1GenerationStage(PipelineStage):
                     seed=seeds[0],
                     timestep_shift=generation_options.timestep_shift,
                     t_eps=generation_options.t_eps,
-                    memory_budget_bytes=max(
-                        0,
-                        free_memory_bytes
-                        + reusable_memory_bytes
-                        - EDIT_WORKSPACE_RESERVE_BYTES,
-                    ),
+                    memory_budget_bytes=free_memory_bytes + reusable_memory_bytes,
                 )
         else:
             generation_result = self.model.t2i_generate(

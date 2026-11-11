@@ -12,7 +12,7 @@ def estimate_it2i_prefix_memory_bytes(
     output_size_pixels: tuple[int, int],
     reference_sizes_pixels: list[tuple[int, int]],
 ) -> int:
-    """Estimate dominant buffers; the caller must budget for remaining workspaces."""
+    """Estimate the peak bytes of the edit prefix and its expanded caches."""
     embedding = model.language_model.get_input_embeddings().weight
     element_bytes = embedding.element_size()
     # note (Wes): The FP32 mask promotes scores, which coexist with softmax output and its dtype conversion.
@@ -22,6 +22,13 @@ def estimate_it2i_prefix_memory_bytes(
         + (element_bytes if embedding.dtype != torch.float32 else 0)
     )
     attention_heads = model.config.llm_config.num_attention_heads
+    attention = model.language_model.model.layers[0].self_attn
+    # note (Richard Wang): Hidden states, rotated and repeated query and key copies stay live at the attention peak.
+    activation_bytes_per_token = (
+        4 * embedding.shape[1]
+        + 9 * attention.q_proj.out_features // 2
+        + 3 * attention.k_proj.out_features // 2
+    ) * element_bytes
     cache_bytes_per_token = sum(
         (layer.self_attn.k_proj.out_features + layer.self_attn.v_proj.out_features)
         * element_bytes
@@ -53,7 +60,10 @@ def estimate_it2i_prefix_memory_bytes(
         )
         peak_prefix_bytes = max(
             peak_prefix_bytes,
-            reference_memory_bytes + prefix_cache_bytes + attention_bytes,
+            reference_memory_bytes
+            + prefix_cache_bytes
+            + attention_bytes
+            + token_count * activation_bytes_per_token,
         )
     output_tokens = (output_size_pixels[0] // image_patch_size_pixels) * (
         output_size_pixels[1] // image_patch_size_pixels

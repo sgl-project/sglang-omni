@@ -329,7 +329,13 @@ class NEOChatModel(PreTrainedModel):
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         raise NotImplementedError("forward")
 
-    def extract_feature(self, pixel_values, grid_hw=None, *, gen_model=True):
+    def extract_feature(
+        self,
+        pixel_values: torch.Tensor,
+        grid_hw: torch.Tensor | None = None,
+        *,
+        gen_model: bool = True,
+    ) -> torch.Tensor:
         vision_model = (
             self.fm_modules["vision_model_mot_gen"] if gen_model else self.vision_model
         )
