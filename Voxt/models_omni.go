@@ -217,14 +217,19 @@ func (a *app) omniSilero(rt *omni.Runtime) *omni.VAD {
 }
 
 // omniDraft is the folder of speech model id's installed draft (its
-// catalogue Draft), "" when it has none or it is not installed: the
-// server then decodes without one.
+// catalogue Draft), "" when it has none, it is not installed or its
+// Faster transcription is off: the server then decodes without one.
+// Off the UI goroutine: the switch is read from the settings service.
 func (a *app) omniDraft(id string) string {
 	m, ok := models.Lookup(id)
 	if !ok || m.Draft == "" || a.models == nil {
 		return ""
 	}
-	return a.models.Dir(m.Draft)
+	dir := a.models.Dir(m.Draft)
+	if a.settings != nil && !a.settings.Get().Models.FasterOn(id, dir != "") {
+		return ""
+	}
+	return dir
 }
 
 // omniMeetingHold keeps the meeting's local omni ASR and Silero VAD loaded.

@@ -17,6 +17,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Changed
 
+- **Faster transcription is a switch** (#3873): on a speech model's card in Speech models, Faster transcription now has a switch, and its ⓘ says it needs a draft model and how large it is. The switch decides whether the model uses the draft. Downloading the draft no longer turns it on, and turning it off keeps the draft on disk without using it. With the switch on and no draft, the card asks you to download it. If you downloaded the draft in 2.0.2 or 2.0.3, the switch starts on.
 - **The speech model loads before the first dictation**: Voxt now loads Transcribe's on-device speech model when it starts and when you choose another one, instead of at the first press of the shortcut. The first live text after a launch or a change of model no longer waits for the load (0.2 to 0.5 s on an M-series Mac with 36 GB, longer on a busy Mac or one with less memory). The model leaves memory after 10 idle minutes, as before.
 - **A large dictionary no longer slows dictation down**: after you dictate, Voxt replaces the dictionary's aliases with their terms. It now checks only the aliases that start with the letter at each place. With 1,000 terms, a 4 KB transcript took 57 ms and now takes 2 ms; a 20 KB one took 280 ms and now takes 8 ms (Apple M5 Max). The result is the same.
 - **Translating selected text no longer waits for the speech model** (#3838): Translate with text selected uses only the language model (and its fallback), so Voxt no longer opens the on-device speech model first. After 10 idle minutes that model leaves memory, and loading it again made a selection translation wait for a model it never used. It also works with no speech model installed. With nothing selected, Translate records and uses the speech model as before.
@@ -58,6 +59,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 变更
 
+- **转录加速改成开关**（#3873）：语音识别模型页里，模型卡片上的“转录加速”现在是一个开关，旁边的 ⓘ 说明它需要一个草稿模型以及草稿有多大。开关决定模型用不用草稿：下载草稿不会再自动打开它，关掉开关时草稿留在磁盘上但不用。开关打开而还没有草稿时，卡片会提示下载。在 2.0.2 或 2.0.3 里下载过草稿的，开关一开始是开着的。
 - **语音识别模型在第一次听写前就加载好**：Voxt 启动时、换语音识别模型时就加载转录用的本地模型，不再等到第一次按快捷键。启动后和换模型后的第一次实时文字不用再等加载（36 GB 的 M 系列 Mac 上是 0.2 到 0.5 秒，机器忙或内存小时更久）。模型空闲 10 分钟后照旧从内存卸载。
 - **词典很大时听写不再变慢**：听写完成后，Voxt 会把词典里的别名换成对应的词条，现在每个位置只检查以该字开头的别名。词典有 1000 个词条时，4 KB 的转录稿从 57 毫秒降到 2 毫秒，20 KB 的从 280 毫秒降到 8 毫秒（Apple M5 Max）。替换结果不变。
 - **翻译选中文字不再等语音识别模型**（#3838）：选中文字后用翻译，只用语言模型（和备用模型），Voxt 不再先打开本地语音识别模型。这个模型空闲 10 分钟后会退出内存，重新加载要等，而翻译选中文字根本用不到它。没装语音识别模型也能翻译选中文字。没选中文字时，翻译照旧录音、用语音识别模型。

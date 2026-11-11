@@ -183,6 +183,26 @@ func TestOmniDraft(t *testing.T) {
 	if p2, _ := a.openOmniASR(context.Background(), models.ASRFast, dir); p2 != p1 {
 		t.Error("a second open made another provider")
 	}
+	// Faster transcription off (#3873): the draft stays installed, unused,
+	// and the provider changes; on again, the draft is back.
+	faster := func(on bool) {
+		if err := a.settings.Update(context.Background(), func(s *settings.Settings) {
+			s.Models.Faster = map[string]bool{models.ASRFast: on}
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	faster(false)
+	if a.omniDraft(models.ASRFast) != "" || !a.models.Installed(models.ASRFastDraft) {
+		t.Fatalf("switched off: omniDraft %q", a.omniDraft(models.ASRFast))
+	}
+	if p3, _ := a.openOmniASR(context.Background(), models.ASRFast, dir); p3 == p1 {
+		t.Error("switched off, the provider with the draft")
+	}
+	faster(true)
+	if a.omniDraft(models.ASRFast) != draft {
+		t.Errorf("switched on again: omniDraft %q", a.omniDraft(models.ASRFast))
+	}
 	a.unloadOmni(models.ASRFastDraft)
 	if len(a.omniASR) != 0 {
 		t.Errorf("%d providers after the draft's unload", len(a.omniASR))
