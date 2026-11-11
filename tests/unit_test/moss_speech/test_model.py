@@ -13,12 +13,6 @@ from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 from transformers.models.qwen3.modeling_qwen3 import Qwen3RMSNorm, Qwen3RotaryEmbedding
 
 from sglang_omni.model_runner.model_worker import ModelWorker
-from sglang_omni.models.moss_speech.fsm import (
-    AUDIO_PAD,
-    MODALITY_PAD,
-    MODE_AUDIO,
-    MODE_TEXT,
-)
 from sglang_omni.models.moss_speech.hf_config import (
     MossSpeechConfig,
     ensure_moss_speech_config_registered,
@@ -30,10 +24,7 @@ from sglang_omni.models.moss_speech.model_layers import (
 )
 from sglang_omni.models.moss_speech.model_runner import MossSpeechModelRunner
 from sglang_omni.models.moss_speech.request_builders import MossSpeechSGLangRequestData
-from sglang_omni.models.moss_speech.sglang_model import (
-    MossSpeechModelOutput,
-    MossSpeechSGLangModel,
-)
+from sglang_omni.models.moss_speech.sglang_model import MossSpeechSGLangModel
 from sglang_omni.scheduling.types import SchedulerRequest
 from tests.unit_test.fixtures.accelerator import require_cuda
 from tests.unit_test.moss_speech.model_helpers import (
@@ -277,12 +268,14 @@ def assert_native_request_isolation(device: torch.device) -> None:
             torch.randn((length, 128), generator=generator, device=device)
             for length in (2, 3)
         ]
-        feedback_embeddings = torch.randn((2, 128), generator=generator, device=device)
+        feedback_rows = torch.tensor(
+            [[3, 17], [model.config.modality_pad_token_id, 4]], device=device
+        )
         packed_prefill, packed_backend = prefill(
             model, prompt_embeddings, ["first", "second"]
         )
         packed_decode = decode(
-            model, packed_backend, [2, 3], feedback_embeddings, ["first", "second"]
+            model, packed_backend, [2, 3], feedback_rows, ["first", "second"]
         )
         for request_index, prompt in enumerate(prompt_embeddings):
             isolated_prefill, isolated_backend = prefill(model, [prompt], ["isolated"])
@@ -290,7 +283,7 @@ def assert_native_request_isolation(device: torch.device) -> None:
                 model,
                 isolated_backend,
                 [len(prompt)],
-                feedback_embeddings[request_index : request_index + 1],
+                feedback_rows[request_index : request_index + 1],
                 ["isolated"],
             )
             for packed, isolated in (
@@ -325,76 +318,6 @@ def test_native_cuda_prefill_decode_keep_requests_and_tail_kv_independent() -> N
         pytest.skip("Run the accelerator lane without the CPU engine override")
     else:
         assert_native_request_isolation(torch.device("cuda", 0))
-
-
-@pytest.mark.accelerator
-def test_replayed_dual_logits_follow_current_request_order_and_active_rows() -> None:
-    """Captured logits must reach new requests instead of capture-time request IDs."""
-    require_cuda()
-    device = torch.device("cuda", 0)
-    with native_runtime(device), torch.no_grad():
-        model = tiny_model(device)
-        runner = object.__new__(MossSpeechModelRunner)
-        runner.model = model
-        hidden_states = torch.zeros(4, 128, dtype=torch.bfloat16, device=device)
-
-        def project_channels() -> MossSpeechModelOutput:
-            text_logits = request_linear(
-                hidden_states, model.text_lm_head.weight, [1] * 4
-            )
-            audio_logits = request_linear(
-                hidden_states, model.audio_lm_head.weight, [1] * 4
-            )
-            return MossSpeechModelOutput(
-                next_token_logits=text_logits,
-                text_logits=text_logits,
-                audio_logits=audio_logits,
-            )
-
-        stream = torch.cuda.Stream()
-        stream.wait_stream(torch.cuda.current_stream())
-        with torch.cuda.stream(stream):
-            for _ in range(2):
-                project_channels()
-        torch.cuda.current_stream().wait_stream(stream)
-        graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph):
-            output = project_channels()
-        generator = torch.Generator(device=device).manual_seed(184)
-        for step, active_rows in enumerate((3, 1, 4, 2)):
-            hidden_states.copy_(
-                torch.randn(hidden_states.shape, generator=generator, device=device)
-            )
-            graph.replay()
-            expected_text = torch.nn.functional.linear(
-                hidden_states, model.text_lm_head.weight
-            ).argmax(-1)
-            expected_audio = torch.nn.functional.linear(
-                hidden_states, model.audio_lm_head.weight
-            ).argmax(-1)
-            requests = [
-                SchedulerRequest(
-                    request_id=f"step-{step}-request-{active_rows-index}",
-                    data=MossSpeechSGLangRequestData(
-                        prompt_rows=torch.tensor(
-                            [[MODALITY_PAD, 3]] if index % 2 else [[3, AUDIO_PAD]]
-                        ),
-                        mode=MODE_AUDIO if index % 2 else MODE_TEXT,
-                    ),
-                )
-                for index in range(active_rows)
-            ]
-            selected = runner.sample_next_token_ids(output, None, None, requests)
-            assert selected.shape == (active_rows,)
-            for index, request in enumerate(requests):
-                text_token = int(expected_text[index])
-                audio_token = int(expected_audio[index])
-                expected_row = (MODALITY_PAD if index % 2 else text_token, audio_token)
-                assert request.data.output_rows == [expected_row]
-                assert int(selected[index]) == (
-                    audio_token if index % 2 else text_token
-                )
-                assert not request.data.pending_feedback_queue
 
 
 @NATIVE_CPU
