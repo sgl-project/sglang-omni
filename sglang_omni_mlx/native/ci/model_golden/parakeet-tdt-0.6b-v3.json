@@ -2,7 +2,7 @@
  "model": "mlx-community/parakeet-tdt-0.6b-v3",
  "tool": "parakeet_transcribe",
  "request": {
-  "chunk_duration": 1200
+  "chunk_duration": 5
  },
  "language_by_clip_language": {
   "en": null,

@@ -18,10 +18,21 @@ namespace mx = mlx::core;
 namespace {
 
 constexpr const char *kWordMarker = "\xE2\x96\x81"; // U+2581
-// The Swift port's chunking: 5 s chunks for a whole-recording request,
-// never shorter than 0.5 s, each overlapping the last by 1 s.
 constexpr double kWholeRecordingChunkSeconds = 1199.0;
-constexpr double kWholeRecordingChunkReplacementSeconds = 5.0;
+// Note (Mengwei Liu): quiet cuts and a useful final tail reduce blank
+// predictions on short crops without unbounded encoder attention.
+constexpr double kFinalChunkSeconds = 30.0;
+// Note (Mengwei Liu): these bounded settings recover the frozen short-tail
+// and seed-2888 blank-chunk regressions; they are not universal optima.
+constexpr double kFinalMinimumTailSeconds = 10.0;
+constexpr double kRecoveryPaddingSeconds = 0.25;
+constexpr double kRecoveryGapSeconds = 3.0;
+constexpr int kRecoveryAttemptCount = 2;
+// Note (Mengwei Liu): the -50 dBFS RMS gate excludes silence, not noise.
+constexpr double kRecoveryMinimumMeanSquaredAmplitude = 1e-5;
+constexpr double kChunkSearchSeconds = 5.0;
+constexpr double kChunkEnergyWindowSeconds = 0.1;
+constexpr size_t kBufferCacheLimitBytes = 256ULL << 20;
 constexpr double kMinChunkSeconds = 0.5;
 constexpr double kChunkOverlapSeconds = 1.0;
 
@@ -230,6 +241,9 @@ std::vector<AlignedToken> MergeTokens(const std::vector<AlignedToken> &a,
 ParakeetTranscriber::ParakeetTranscriber(
     const std::filesystem::path &model_directory)
     : model_(model_directory) {
+  // Note (Mengwei Liu): each process serves one model; bound freed buffers
+  // for both the server and multi-file CLI, not only when a server is idle.
+  mx::set_cache_limit(kBufferCacheLimitBytes);
   for (const std::string &piece : model_.config().vocabulary) {
     std::string text = piece;
     for (size_t marker = text.find(kWordMarker); marker != std::string::npos;
@@ -247,6 +261,10 @@ ParakeetTranscriber::ParakeetTranscriber(
 std::vector<AlignedToken>
 ParakeetTranscriber::DecodeChunk(const std::vector<float> &samples,
                                  const std::atomic<bool> &cancel) const {
+  if (cancel.load()) {
+    throw qwen3_asr::TranscriptionCancelled();
+  } else {
+  }
   const ParakeetConfig &config = model_.config();
   const mx::array encoded = model_.Encode(model_.Features(samples));
   mx::eval(encoded);
@@ -303,40 +321,131 @@ ParakeetTranscriber::DecodeChunk(const std::vector<float> &samples,
   return ordered;
 }
 
+std::vector<AlignedToken>
+ParakeetTranscriber::DecodeFinalChunk(const std::vector<float> &samples,
+                                      const std::atomic<bool> &cancel) const {
+  std::vector<AlignedToken> tokens = DecodeChunk(samples, cancel);
+  const size_t sample_rate_hertz = omni_common::kSampleRate;
+  const size_t padding_samples =
+      static_cast<size_t>(kRecoveryPaddingSeconds * sample_rate_hertz);
+  const size_t max_chunk_samples =
+      static_cast<size_t>(kFinalChunkSeconds * sample_rate_hertz);
+  const size_t recovery_context_samples =
+      static_cast<size_t>(kChunkOverlapSeconds * sample_rate_hertz);
+  for (int attempt = 0; attempt < kRecoveryAttemptCount && !cancel.load();
+       ++attempt) {
+    const double decoded_end_seconds =
+        tokens.empty() ? 0.0 : tokens.back().end_seconds();
+    const size_t decoded_end_sample =
+        std::min(samples.size(),
+                 static_cast<size_t>(decoded_end_seconds * sample_rate_hertz));
+    if (samples.size() - decoded_end_sample <
+        static_cast<size_t>(kRecoveryGapSeconds * sample_rate_hertz)) {
+      break;
+    } else {
+    }
+    double tail_squared_amplitude_sum = 0.0;
+    for (size_t i = decoded_end_sample; i < samples.size(); ++i) {
+      tail_squared_amplitude_sum +=
+          static_cast<double>(samples[i]) * samples[i];
+    }
+    if (tail_squared_amplitude_sum / (samples.size() - decoded_end_sample) <
+        kRecoveryMinimumMeanSquaredAmplitude) {
+      break;
+    } else {
+    }
+    const size_t start_sample =
+        decoded_end_sample > recovery_context_samples
+            ? decoded_end_sample - recovery_context_samples
+            : 0;
+    const size_t requested_padding_samples =
+        tokens.empty() ? (attempt + 1) * padding_samples
+                       : (attempt > 0 ? padding_samples : 0);
+    // Note (Mengwei Liu): padding uses spare encoder capacity, never space
+    // obtained by discarding the source tail.
+    const size_t leading_padding_samples =
+        std::min(requested_padding_samples,
+                 max_chunk_samples - (samples.size() - start_sample));
+    const size_t end_sample = samples.size();
+    std::vector<float> retry_samples(leading_padding_samples, 0.0f);
+    retry_samples.insert(retry_samples.end(), samples.begin() + start_sample,
+                         samples.begin() + end_sample);
+    std::vector<AlignedToken> retry_tokens = DecodeChunk(retry_samples, cancel);
+    const double shift_seconds =
+        (static_cast<double>(start_sample) - leading_padding_samples) /
+        sample_rate_hertz;
+    for (AlignedToken &token : retry_tokens) {
+      const double end_seconds =
+          std::clamp(token.end_seconds() + shift_seconds, 0.0,
+                     static_cast<double>(samples.size()) / sample_rate_hertz);
+      token.start_seconds =
+          std::clamp(token.start_seconds + shift_seconds, 0.0, end_seconds);
+      token.duration_seconds = end_seconds - token.start_seconds;
+    }
+    // Note (Mengwei Liu): empty or nonadvancing retries keep the original.
+    // A successful retry may revise tokens in the one-second overlap.
+    if (!retry_tokens.empty() &&
+        retry_tokens.back().end_seconds() > decoded_end_seconds) {
+      tokens = MergeTokens(tokens, retry_tokens, kChunkOverlapSeconds);
+    } else {
+    }
+  }
+  return tokens;
+}
+
 qwen3_asr::TranscriptionResult
 ParakeetTranscriber::Transcribe(const std::vector<float> &samples,
                                 const ParakeetOptions &options,
                                 const std::atomic<bool> &cancel) const {
   const double sample_rate = omni_common::kSampleRate;
+  const bool whole_recording =
+      options.chunk_duration_seconds >= kWholeRecordingChunkSeconds;
   const double chunk_seconds =
-      options.chunk_duration_seconds >= kWholeRecordingChunkSeconds
-          ? kWholeRecordingChunkReplacementSeconds
+      whole_recording
+          ? kFinalChunkSeconds
           : std::max(kMinChunkSeconds, options.chunk_duration_seconds);
   const size_t chunk_samples =
       std::max<size_t>(1, static_cast<size_t>(chunk_seconds * sample_rate));
   const size_t overlap_samples =
       std::min(chunk_samples - 1,
                static_cast<size_t>(kChunkOverlapSeconds * sample_rate));
-  const size_t step_samples =
-      std::max<size_t>(1, chunk_samples - overlap_samples);
+  std::vector<std::pair<size_t, size_t>> chunks;
+  if (whole_recording) {
+    chunks = omni_common::EnergyCutChunks(
+        samples, chunk_samples,
+        static_cast<size_t>(kChunkSearchSeconds * sample_rate),
+        static_cast<size_t>(kChunkEnergyWindowSeconds * sample_rate),
+        static_cast<size_t>(kFinalMinimumTailSeconds * sample_rate));
+  } else {
+    const size_t step_samples = chunk_samples - overlap_samples;
+    for (size_t start = 0; start < samples.size(); start += step_samples) {
+      const size_t end = std::min(start + chunk_samples, samples.size());
+      chunks.emplace_back(start, end);
+      if (end >= samples.size()) {
+        break;
+      } else {
+      }
+    }
+  }
   std::vector<AlignedToken> tokens;
-  for (size_t start = 0; start < samples.size(); start += step_samples) {
-    const size_t end = std::min(start + chunk_samples, samples.size());
+  for (const auto &[start, end] : chunks) {
     // Note (Dayuxiaoshui): the front end's preemphasis needs two samples;
     // a shorter chunk has no speech to decode.
-    std::vector<AlignedToken> chunk_tokens =
-        end - start < 2
-            ? std::vector<AlignedToken>()
-            : DecodeChunk(std::vector<float>(samples.begin() + start,
-                                             samples.begin() + end),
-                          cancel);
+    const std::vector<float> chunk(samples.begin() + start,
+                                   samples.begin() + end);
+    std::vector<AlignedToken> chunk_tokens;
+    if (chunk.size() >= 2) {
+      chunk_tokens = whole_recording ? DecodeFinalChunk(chunk, cancel)
+                                     : DecodeChunk(chunk, cancel);
+    } else {
+    }
     for (AlignedToken &token : chunk_tokens) {
       token.start_seconds += static_cast<double>(start) / sample_rate;
     }
-    tokens = MergeTokens(tokens, chunk_tokens, kChunkOverlapSeconds);
-    if (end >= samples.size()) {
-      break;
+    if (whole_recording) {
+      tokens.insert(tokens.end(), chunk_tokens.begin(), chunk_tokens.end());
     } else {
+      tokens = MergeTokens(tokens, chunk_tokens, kChunkOverlapSeconds);
     }
   }
 

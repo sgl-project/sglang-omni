@@ -30,6 +30,28 @@ SERVED_KINDS = {
 SYSTEM_LIBRARY_PREFIXES = ("/usr/lib/", "/System/Library/")
 
 
+@pytest.mark.parametrize("chunk_duration", ["nan", "inf", "-1", "0", "1", "600"])
+def test_parakeet_cli_rejects_bad_chunk_duration_before_loading(
+    runtime_bin: Path, chunk_duration: str, tmp_path: Path
+) -> None:
+    """Invalid lengths must fail before a checkpoint or an encoder is loaded."""
+    completed = subprocess.run(
+        [
+            str(runtime_bin / "parakeet_transcribe"),
+            "--model-path",
+            str(tmp_path),
+            "--chunk-duration",
+            chunk_duration,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=EXIT_TIMEOUT_SECONDS,
+    )
+    assert completed.returncode == 2
+    assert "chunk_duration must be" in completed.stderr
+    assert "config.json" not in completed.stderr
+
+
 def mach_o_load_commands(path: Path) -> tuple[list[str], list[str]]:
     """The libraries path links and its run-path search entries, without its own install name."""
     libraries = subprocess.run(
