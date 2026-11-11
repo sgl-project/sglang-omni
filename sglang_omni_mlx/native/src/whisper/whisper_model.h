@@ -58,11 +58,11 @@ public:
   // width].
   mlx::core::array Encode(const std::vector<float> &window_samples) const;
   // Token ids [1, length] placed from start_position on, to the logits of the
-  // last position [vocabulary].
+  // last logit_count positions [logit_count, vocabulary].
   mlx::core::array Decode(const mlx::core::array &token_ids, int start_position,
                           const mlx::core::array &encoder_states,
                           std::vector<DecoderLayerCache> &caches,
-                          bool all_positions = false) const;
+                          int logit_count) const;
 
 private:
   const mlx::core::array &Weight(const std::string &name) const;

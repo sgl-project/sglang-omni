@@ -266,10 +266,8 @@ mx::array WhisperTranscriber::NextToken(mx::array logits, bool first_step,
   if (temperature <= 0.0f) {
     return mx::argmax(logits, -1);
   } else {
-    return mx::reshape(
-        mx::random::categorical(mx::expand_dims(
-            mx::divide(logits, mx::array(temperature, logits.dtype())), 0)),
-        {});
+    return mx::random::categorical(
+        mx::divide(logits, mx::array(temperature, logits.dtype())));
   }
 }
 
@@ -282,8 +280,8 @@ WhisperTranscriber::TranscribeWindow(const std::vector<float> &window_samples,
   std::vector<DecoderLayerCache> caches(model_.config().text_layer_count);
   const mx::array prompt(prompt_ids.data(),
                          {1, static_cast<int>(prompt_ids.size())}, mx::int32);
-  mx::array token = NextToken(model_.Decode(prompt, 0, encoder_states, caches),
-                              true, temperature);
+  mx::array token = NextToken(
+      model_.Decode(prompt, 0, encoder_states, caches, 1), true, temperature);
   mx::async_eval({token});
   if (draft_.has_value() && temperature == 0.0f) {
     return DecodeWithDraft(encoder_states, prompt, token, caches,
@@ -307,7 +305,7 @@ WhisperTranscriber::TranscribeWindow(const std::vector<float> &window_samples,
       token =
           NextToken(model_.Decode(mx::reshape(current, {1, 1}),
                                   static_cast<int>(prompt_ids.size()) + step,
-                                  encoder_states, caches),
+                                  encoder_states, caches, 1),
                     false, temperature);
       mx::async_eval({token});
     } else {
@@ -333,7 +331,7 @@ WhisperTranscriber::WindowResult WhisperTranscriber::DecodeWithDraft(
   std::vector<DecoderLayerCache> draft_caches(
       draft_->config().text_layer_count);
   const auto draft_prefill =
-      draft_->Decode(prompt, 0, encoder_states, draft_caches);
+      draft_->Decode(prompt, 0, encoder_states, draft_caches, 1);
   mx::eval({draft_prefill});
   int position = prompt.shape(1);
   bool stopped = false;
@@ -363,15 +361,15 @@ WhisperTranscriber::WindowResult WhisperTranscriber::DecodeWithDraft(
       }
       const mx::array input(&block.back(), {1, 1}, mx::int32);
       auto proposal = NextToken(
-          draft_->Decode(input, position + i, encoder_states, draft_caches),
+          draft_->Decode(input, position + i, encoder_states, draft_caches, 1),
           false, 0.0f);
       block.push_back(proposal.item<uint32_t>());
     }
-    auto predictions =
-        NextToken(model_.Decode(mx::array(block.data(), {1, int(block.size())},
-                                          mx::int32),
-                                position, encoder_states, caches, true),
-                  false, 0.0f);
+    auto predictions = NextToken(
+        model_.Decode(
+            mx::array(block.data(), {1, int(block.size())}, mx::int32),
+            position, encoder_states, caches, static_cast<int>(block.size())),
+        false, 0.0f);
     mx::eval({predictions});
     ++result.verify_round_count;
     result.proposed_draft_token_count += proposal_count;
@@ -397,7 +395,7 @@ WhisperTranscriber::WindowResult WhisperTranscriber::DecodeWithDraft(
     if (accepted == proposal_count) {
       const mx::array input(&block.back(), {1, 1}, mx::int32);
       const auto catch_up = draft_->Decode(input, position + accepted,
-                                           encoder_states, draft_caches);
+                                           encoder_states, draft_caches, 1);
       mx::eval({catch_up});
     } else {
     }

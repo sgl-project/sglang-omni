@@ -55,8 +55,8 @@ private:
   // Text of generated ids: special and timestamp ids dropped, byte-level
   // decoded, tokenization spaces cleaned up.
   std::string DecodeText(const std::vector<int> &token_ids) const;
-  // The suppressed logits' next token: sampled at a positive temperature,
-  // else the most likely.
+  // Logits [length, vocabulary] to the next token ids [length], from the
+  // suppressed logits: sampled at a positive temperature, else the most likely.
   mlx::core::array NextToken(mlx::core::array logits, bool first_step,
                              float temperature) const;
   WindowResult TranscribeWindow(const std::vector<float> &window_samples,

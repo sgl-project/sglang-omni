@@ -368,7 +368,7 @@ mx::array WhisperModel::DecoderLayer(const mx::array &x, int layer,
 mx::array WhisperModel::Decode(const mx::array &token_ids, int start_position,
                                const mx::array &encoder_states,
                                std::vector<DecoderLayerCache> &caches,
-                               bool all_positions) const {
+                               int logit_count) const {
   const int length = token_ids.shape(1);
   const int total_length = start_position + length;
   std::vector<int32_t> position_values(length);
@@ -399,16 +399,12 @@ mx::array WhisperModel::Decode(const mx::array &token_ids, int start_position,
   }
   hidden = LayerNorm(hidden, "decoder.ln");
   const int width = hidden.shape(2);
-  if (all_positions) {
-    return mx::matmul(mx::reshape(hidden, {length, width}),
-                      mx::transpose(Weight("decoder.token_embedding.weight")));
-  } else {
-  }
-  const mx::array last = mx::reshape(
-      mx::slice(hidden, {0, length - 1, 0}, {1, length, width}), {width});
+  const mx::array rows = mx::reshape(
+      mx::slice(hidden, {0, length - logit_count, 0}, {1, length, width}),
+      {logit_count, width});
   // Note (khazic): tied output projection: the token embedding used as a linear
   // layer.
-  return mx::matmul(last,
+  return mx::matmul(rows,
                     mx::transpose(Weight("decoder.token_embedding.weight")));
 }
 
