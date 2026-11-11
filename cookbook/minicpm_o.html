@@ -579,6 +579,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#normal-usage">Normal Usage</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#video-chat-inputs">Video Chat Inputs</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-full-duplex-ability">Native Full-Duplex Ability</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#realtime-venus">Realtime-Venus</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#text-to-speech">Text to speech</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speculative-decoding">Speculative Decoding</a></li>
 </ul>
@@ -677,6 +678,20 @@ Those pixel options do not bound the initial native-resolution allocation.</p>
 <h2>Native Full-Duplex Ability<a class="headerlink" href="#native-full-duplex-ability" title="Link to this heading">#</a></h2>
 <p>MiniCPM-o 4.5 also serves live full-duplex voice and video calls on <code class="docutils literal notranslate"><span class="pre">/v1/realtime</span></code>. Launching, settings, the browser demo, the protocol and benchmarking are in <a class="reference internal" href="../developer_reference/full_duplex_guide.html#native-full-duplex-minicpm-o"><span class="std std-ref">Full-Duplex Guide</span></a>.</p>
 </section>
+<section id="realtime-venus">
+<h2>Realtime-Venus<a class="headerlink" href="#realtime-venus" title="Link to this heading">#</a></h2>
+<p><a class="reference external" href="https://huggingface.co/inclusionAI/Realtime-Venus">Realtime-Venus</a> is a pair of MiniCPM-o 4.5 fine-tunes from inclusionAI: Realtime-Venus-Omni for audio-visual full-duplex calls and Realtime-Venus-Audio for audio-only chat and calls. Both keep the MiniCPM-o weight layout and serve with the commands on this page.</p>
+<p>The two checkpoints are subdirectories of one repository, and each config.json points at the repository’s config.yaml, so download them with the repository’s script, which keeps config.yaml beside the model directories:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>hf<span class="w"> </span>download<span class="w"> </span>inclusionAI/Realtime-Venus<span class="w"> </span>download_models.py<span class="w"> </span>--local-dir<span class="w"> </span>.
+python<span class="w"> </span>download_models.py<span class="w"> </span>--model<span class="w"> </span>omni<span class="w"> </span>--local-dir<span class="w"> </span>Realtime-Venus
+</pre></div>
+</div>
+<p>Pass the model directory, not the repository id, and serve a full-duplex call with the session variant:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>sglang_omni.cli<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>Realtime-Venus/Realtime-Venus-Omni<span class="w"> </span>--variant<span class="w"> </span>session<span class="w"> </span>--enable-realtime<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">--model</span> <span class="pre">audio</span></code> downloads Realtime-Venus-Audio instead; it serves chat, speech and full-duplex calls with the MiniCPM-o 4.5 commands.</p>
+</section>
 <section id="text-to-speech">
 <h2>Text to speech<a class="headerlink" href="#text-to-speech" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> reads the given text aloud. MiniCPM-o prefills the text in one Thinker pass and conditions the Talker on each of its tokens, instead of generating the same words one token at a time. Set <code class="docutils literal notranslate"><span class="pre">language</span></code> to <code class="docutils literal notranslate"><span class="pre">Chinese</span></code> for Chinese text, and pass a base64 audio data URI as <code class="docutils literal notranslate"><span class="pre">ref_audio</span></code> to clone a voice.</p>
@@ -762,6 +777,7 @@ Those pixel options do not bound the initial native-resolution allocation.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#normal-usage">Normal Usage</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#video-chat-inputs">Video Chat Inputs</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-full-duplex-ability">Native Full-Duplex Ability</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#realtime-venus">Realtime-Venus</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#text-to-speech">Text to speech</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speculative-decoding">Speculative Decoding</a></li>
 </ul>
