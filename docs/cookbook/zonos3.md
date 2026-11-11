@@ -109,3 +109,47 @@ Throughput by concurrency on the same H100 setup: one pass per level, except con
 | Streaming first audio (s) | 0.057 | 0.078 | 0.140 | 0.221 | 0.264 |
 
 These original measurements did not record an immutable checkpoint revision and have not been rerun for the staging checkpoint linked above.
+
+## Apple Silicon (Native MLX)
+
+`zonos3_server` from the native MLX runtime (`sglang_omni_mlx/native`) serves the same `/v1/audio/speech` API on an Apple Silicon Mac, from [`mlx-community/ZONOS3-Mini`](https://huggingface.co/mlx-community/ZONOS3-Mini) (1.3 GB), as one C++ process without CUDA, PyTorch or Python. It peaks at about 2 GB of memory, so any Apple Silicon Mac runs it.
+
+```bash
+sglang_omni_mlx/native/scripts/build_runtime.sh ~/omni-runtime
+
+hf download mlx-community/ZONOS3-Mini \
+  --revision c3b1320037be83fdbe57586bd6678573de1789f4 --local-dir ZONOS3-Mini
+
+~/omni-runtime/bin/zonos3_server --model-path ZONOS3-Mini \
+  --model-name mlx-community/ZONOS3-Mini --port 8000
+```
+
+The checkpoint is mlx-audio's conversion of the release, and the native server follows mlx-audio's ZONOS3 port (commit `2c4122d7`): a seeded request gives its codes and float32 samples bit for bit, streamed or not. It therefore differs from the CUDA server above:
+
+| | CUDA server | Native MLX server |
+|---|---|---|
+| Backbone | bf16 | 8-bit projections and 4-bit experts, float32 activations |
+| Codec decoder | full_mr head | keep2 head |
+| Voice cloning | Reference codes as a prompt prefix | A 192-dimensional speaker embedding, from reference audio or given as `references[0].speaker_embedding`; no transcript needed |
+| Default voice | No speaker | `jett`; `voice` takes the 27 bundled voices in any case, or `none` |
+| Text | As written | Numbers, dates, times, money and units spelled out in English words unless `language` is not English |
+| `max_new_tokens` | `2048` by default | `2000` by default, capped by the 32768-row context |
+| Extra fields | | `speed`, `condition_buckets` or `condition_values` (`loudness`, `fmax`, `speaking_rate`), `prepend_silence` |
+
+- Reference audio comes in the request body: `ref_audio` is a WAV file as base64 or a `data:audio/wav;base64,...` URL, and a `references` item takes it as `data` or `audio`. Paths, URLs, `audio_path` and `vq_codes` return 400. One reference per request; the first 60 s count.
+- `response_format` is `wav` or `pcm`; a streamed request sends audio every 8 frames (0.53 s).
+- Started with `--model-name`, it returns 404 for any other `model`; without that flag, `model` is ignored.
+- Errors are `{"detail": "..."}`, and every invalid field returns 400. A `max_new_tokens` too small to complete one frame returns empty audio.
+- Requests run one at a time and `--max-queued-requests` (default 2) more wait; the rest get 503. A request not finished `--request-timeout-s` (default 600) seconds after it arrives is cancelled with 504, or its stream ends early; a client that disconnects cancels its request. A request body over 16 MiB returns 413.
+- An English voice reads Chinese text poorly: with the default `jett`, SeedTTS zh scored 39% CER; choose a Chinese voice such as `meilin` or `haoran`.
+
+Measured on an Apple M4 (16 GB), MLX 0.32.3, SeedTTS text-only (first 50 samples of each split, concurrency 1), transcribed with Qwen3-ASR-1.7B-8bit:
+
+| Language | Voice | Mode | WER / CER | Samples above 50% | RTF mean | First audio (s) |
+|---|---|---|---:|---:|---:|---:|
+| en | `jett` | Non-streaming | 8.69% (1.85% for samples ≤50%) | 3 | 0.182 | - |
+| en | `jett` | Streaming | 10.64% (1.10% for samples ≤50%) | 3 | 0.259 | 0.197 |
+| zh | `meilin` | Non-streaming | 0.64% | 0 | 0.211 | - |
+| zh | `meilin` | Streaming | 0.64% | 0 | 0.276 | 0.211 |
+
+The English samples above 50% speak the text and then keep talking before the end of audio; mlx-audio gives the same speech for the same seed. `sglang_omni_mlx/native/ci/check_model_golden.py` checks eight seeded requests' prompt ids, audio codes and PCM against `sglang_omni_mlx/native/ci/model_golden/zonos3-mini.json`, and `sglang_omni_mlx/native/ci/test_zonos3_api.py` runs the server against the real model. Mac CI runs no model, so both are run by hand.
