@@ -140,6 +140,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 - **遇到问题**：“设置 → 诊断与关于 → 反馈问题”会打开一个已填好诊断信息的 GitHub issue；也可以直接[提 issue][issues]，标题带上“[Voxt]”。
 - **提问和建议**：加入 SGLang 的 [Slack][slack]。
 - **给你自己的脚本和 agent**：让这台 Mac 上的其他程序[读取听写历史](docs/history-access.md)，默认关闭。
+- **把录音和视频转成字幕**：[`Voxt transcribe`](docs/transcribe.md) 用你的语音识别模型把本地音频或视频文件转成 SRT 或纯文本。
 
 ## 开发者
 

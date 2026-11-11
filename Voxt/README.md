@@ -140,6 +140,7 @@ Without a language model, Transcribe types the text as recognised; Translate and
 - **Something is wrong**: Settings → About → **Report a problem** opens a GitHub issue with the diagnostics filled in. Or [open an issue][issues] with "[Voxt]" in its title.
 - **Questions and ideas**: join the SGLang [Slack][slack].
 - **For your own scripts and agents**: [read your dictation history](docs/history-access.md) from other programs on your Mac. It is off by default.
+- **Transcribe recordings and videos to subtitles**: [`Voxt transcribe`](docs/transcribe.md) turns a local audio or video file into SRT or text with your speech model.
 
 ## For developers
 
