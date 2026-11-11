@@ -248,7 +248,7 @@ class TestObjectShapedConfig:
 
 
 class TestNormalizeCompressedTensorsIgnoreList:
-    """Tests for stripping the stage prefix from a compressed-tensors `ignore`."""
+    """Tests for stripping the stage prefix from a compressed-tensors ignore list."""
 
     def test_strips_thinker_prefix_from_ignore_entries(self) -> None:
         quant_config = {
@@ -317,9 +317,7 @@ class TestNormalizeCompressedTensorsIgnoreList:
         ]
 
     def test_translates_stage_prefix_in_regex_entries(self) -> None:
-        """compressed-tensors also accepts `re:` entries, which SGLang matches
-        with `re.match`. A prefix at the front of an alternative is removed; a
-        prefix anywhere else is left as written rather than half-translated."""
+        """A prefix leading an alternative is removed; one anywhere else is left as written."""
         quant_config = {
             "quant_method": "compressed-tensors",
             "format": "pack-quantized",
@@ -406,6 +404,9 @@ class TestNormalizeCompressedTensorsIgnoreList:
             r"re:thinker\.*",
             r"re:(thinker\.audio_tower|thinker\.visual)\..*",
             r"re:.*thinker\.audio_tower\..*thinker\..*",
+            r"re:thinker\.^audio_tower",
+            r"re:thinker\.\Aaudio_tower",
+            r"re:thinker\.(?<=\.)visual\..*",
         ],
         ids=[
             "quantifier_owns_the_dot",
@@ -413,15 +414,15 @@ class TestNormalizeCompressedTensorsIgnoreList:
             "quantifier_owns_escaped_dot",
             "prefix_inside_a_group",
             "second_occurrence_mid_pattern",
+            "start_anchor_after_the_prefix",
+            "string_anchor_after_the_prefix",
+            "lookbehind_after_the_prefix",
         ],
     )
     def test_untranslatable_regex_is_reported_and_left_alone(
         self, raw: str, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """A prefix this code will not rewrite must not be half-translated.
-        Deleting it blindly produced the uncompilable `re:*`, and making it
-        optional let `.*thinker\\.(?!model\\.).*` swallow the quantized text
-        layers it was written to exclude."""
+        """A prefix this code will not rewrite is reported, never half-translated."""
         quant_config = {
             "quant_method": "compressed-tensors",
             "format": "pack-quantized",
@@ -437,9 +438,7 @@ class TestNormalizeCompressedTensorsIgnoreList:
         re.compile(quant_config["ignore"][0][len("re:") :])
 
     def test_whole_stage_entry_translates_to_match_everything(self) -> None:
-        """`.*thinker\..*` names every module in the stage, so the faithful
-        stage-local translation really is `.*`. Kept out of the over-match
-        guard below because excluding everything is what it asked for."""
+        r"""An entry of .*thinker\..* names the whole stage, so .* is its faithful translation."""
         quant_config = {
             "quant_method": "compressed-tensors",
             "format": "pack-quantized",

@@ -80,12 +80,16 @@ def make_model_config(
     native_fp8_block_quant: bool = False,
     has_moe: bool = True,
     pack_quantized: bool = False,
+    ignore: list[str] | None = None,
+    num_hidden_layers: int = 2,
+    architecture: str | None = None,
 ) -> SimpleNamespace:
     attrs = {"num_experts_per_tok": 8} if has_moe else {}
     if pack_quantized:
         quantization_config = {
             "quant_method": "compressed-tensors",
             "format": "pack-quantized",
+            "ignore": list(ignore or []),
         }
     elif native_fp8_block_quant:
         quantization_config = {"quant_method": "fp8", "weight_block_size": [128, 128]}
@@ -93,9 +97,20 @@ def make_model_config(
         quantization_config = None
     return SimpleNamespace(
         quantization=quantization,
+        num_hidden_layers=num_hidden_layers,
         hf_text_config=SimpleNamespace(**attrs),
-        hf_config=SimpleNamespace(quantization_config=quantization_config),
+        hf_config=SimpleNamespace(
+            quantization_config=quantization_config,
+            architectures=[architecture] if architecture else [],
+        ),
     )
+
+
+def expert_names(layer_index: int, prefix: str = "") -> list[str]:
+    return [
+        f"{prefix}model.layers.{layer_index}.mlp.experts.0.{projection}"
+        for projection in ("gate_proj", "up_proj", "down_proj")
+    ]
 
 
 @pytest.mark.parametrize(
@@ -520,6 +535,68 @@ def test_pack_quantized_moe_selects_triton_on_xpu() -> None:
 
     assert effective_quantization == "compressed-tensors"
     assert resolution_result(server_args, "moe_runner_backend") == "triton"
+
+
+def test_bf16_talker_of_a_pack_quantized_checkpoint_keeps_auto_on_xpu() -> None:
+    """A stage whose experts the checkpoint left bf16 keeps fused_experts, not Triton."""
+    server_args = make_server_args(moe_runner_backend="auto")
+
+    XPUOmniPlatform().apply_model_worker_backend_policy(
+        server_args,
+        make_model_config(
+            quantization="compressed-tensors",
+            pack_quantized=True,
+            ignore=expert_names(0) + expert_names(1),
+        ),
+        "Qwen3OmniTalker",
+    )
+
+    assert resolution_result(server_args, "moe_runner_backend") == "auto"
+
+
+def test_one_packed_moe_layer_is_enough_to_select_triton_on_xpu() -> None:
+    """SGLang picks the scheme per layer, so a single packed layer still needs Triton."""
+    server_args = make_server_args(moe_runner_backend="auto")
+
+    XPUOmniPlatform().apply_model_worker_backend_policy(
+        server_args,
+        make_model_config(
+            quantization="compressed-tensors",
+            pack_quantized=True,
+            ignore=expert_names(0),
+        ),
+        "Qwen3OmniThinkerForCausalLM",
+    )
+
+    assert resolution_result(server_args, "moe_runner_backend") == "triton"
+
+
+@pytest.mark.parametrize(
+    "architecture, stage_prefix, expected",
+    [
+        ("Qwen3OmniTalker", "talker.", "auto"),
+        ("Qwen3OmniThinkerForCausalLM", "thinker.", "triton"),
+    ],
+    ids=["bf16_talker", "packed_thinker"],
+)
+def test_stage_decision_reads_the_normalized_checkpoint_names(
+    architecture: str, stage_prefix: str, expected: str
+) -> None:
+    """The checkpoint lists experts under stage prefixes, as the W4A16 Qwen3-Omni build does."""
+    model_config = make_model_config(
+        quantization="compressed-tensors",
+        pack_quantized=True,
+        ignore=expert_names(0, "talker.") + expert_names(1, "talker."),
+        architecture=architecture,
+    )
+    server_args = make_server_args(moe_runner_backend="auto")
+
+    model_worker.apply_omni_quantization_adapters(model_config)
+    XPUOmniPlatform().apply_model_worker_backend_policy(
+        server_args, model_config, architecture
+    )
+
+    assert resolution_result(server_args, "moe_runner_backend") == expected
 
 
 def test_block_fp8_moe_is_left_alone_on_xpu() -> None:
