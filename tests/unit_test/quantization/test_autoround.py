@@ -409,6 +409,7 @@ class TestNormalizeCompressedTensorsIgnoreList:
             r"re:thinker\.(?<=\.)visual\..*",
             r"re:thinker\.[]|thinker\.]",
             r"re:thinker\.audio_tower\..*|xx[^]|thinker\.]",
+            "re:thinker\\.(?x:audio_tower\\..* # )\n|thinker\\.model\\..*)",
         ],
         ids=[
             "quantifier_owns_the_dot",
@@ -421,6 +422,7 @@ class TestNormalizeCompressedTensorsIgnoreList:
             "lookbehind_after_the_prefix",
             "alternation_inside_a_class_led_by_a_literal_bracket",
             "alternation_inside_a_negated_class_led_by_a_literal_bracket",
+            "alternation_hidden_by_a_verbose_comment",
         ],
     )
     def test_untranslatable_regex_is_reported_and_left_alone(
@@ -440,6 +442,24 @@ class TestNormalizeCompressedTensorsIgnoreList:
         assert quant_config["ignore"] == [raw]
         assert "will not rewrite" in caplog.text
         re.compile(quant_config["ignore"][0][len("re:") :])
+
+    def test_a_comment_without_the_stage_is_left_alone_quietly(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Only a stage-naming comment is refused, so an unrelated one draws no warning."""
+        raw = "re:(?x).*lm_head  # untied head"
+        quant_config = {
+            "quant_method": "compressed-tensors",
+            "format": "pack-quantized",
+            "ignore": [raw],
+        }
+        with caplog.at_level(logging.WARNING, logger="sglang_omni.quantization"):
+            normalize_quant_config(
+                make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
+            )
+
+        assert quant_config["ignore"] == [raw]
+        assert caplog.text == ""
 
     def test_whole_stage_entry_translates_to_match_everything(self) -> None:
         r"""An entry of .*thinker\..* names the whole stage, so .* is its faithful translation."""
