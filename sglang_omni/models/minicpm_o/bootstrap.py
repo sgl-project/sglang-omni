@@ -230,6 +230,7 @@ def create_thinker_scheduler(
             total_gpu_memory_fraction=total_gpu_memory_fraction,
             defer_cuda_graph_capture=defer_cuda_graph_capture,
             supports_speculative_decoding=True,
+            enable_async_decode=enable_async_decode,
             before_memory_pool=configure_talker_capture,
         )
         if speech_enabled and speculative:
