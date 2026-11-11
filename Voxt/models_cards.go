@@ -22,41 +22,30 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/omni"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
-func (a *app) modelsPage(c *ui.Context) {
-	t := c.Theme()
-	columnPageHeader(c, i18n.T("Speech models"), func() {
-		if ghostButton(c.Key("models-network"), i18n.T("Network…")).Tooltip(i18n.T("How model downloads reach Hugging Face")).Clicked() {
-			a.openNetwork()
-		}
-	})
-	ui.Scroll(c.Key("models-scroll")).Grow(1).MinHeight(0).Children(func() {
-		pageColumn(c).Gap(px(t, sp3)).Children(func() {
-			a.obBackBar(c, modelsPath) // onboarding.go: left from the setup guide
-			sectionTitle(c, i18n.T("On this Mac"))
-			caption(c, i18n.T("Free, and your audio stays on this Mac."))
-			a.modelCards(c, models.ASR)
-			if !a.modelHidden(dictation.ModelID) {
-				a.dictationCard(c)
-			}
-			a.providerCards(c, local.ASR) // remote_page.go
-			a.speechContextSection(c)     // models_context.go
-			if a.anyModelShown(models.LLM) {
-				sectionTitleTip(c, i18n.T("Language models no longer used"), i18n.T("Voxt no longer uses these. Delete them to free up space."))
-				a.modelCards(c, models.LLM)
-			}
-			a.hiddenModelCards(c)
-			a.modelsAdvanced(c) // models_keep.go
-		})
-	})
+// modelsSettings is the Speech models section of the settings dialog.
+func (a *app) modelsSettings(c *ui.Context) {
+	a.obBackBar(c, modelsPath) // onboarding.go: left from the setup guide
+	a.modelCards(c, models.ASR)
+	if !a.modelHidden(dictation.ModelID) {
+		a.dictationCard(c)
+	}
+	a.providerCards(c, local.ASR) // remote_page.go
+	a.speechContextSection(c)     // models_context.go
+	if a.anyModelShown(models.LLM) {
+		sectionTitleTip(c, i18n.T("Language models no longer used"), i18n.T("Voxt no longer uses these. Delete them to free up space."))
+		a.modelCards(c, models.LLM)
+	}
+	a.hiddenModelCards(c)
+	a.modelsAdvanced(c) // models_keep.go
+	if ghostButton(c.Key("models-network"), i18n.T("Network…")).Tooltip(i18n.T("How model downloads reach Hugging Face")).AlignSelf(ui.Start).Clicked() {
+		a.openNetwork()
+	}
 	a.modelDeleteDialogs(c) // models_delete.go
 	a.networkDialog(c)      // models_network.go
 	a.providerDialogView(c) // remote_dialog.go
@@ -90,45 +79,20 @@ func (a *app) modelCards(c *ui.Context, kind models.Kind) {
 }
 
 // familyCard is one family's speech models, as Voxt 1.x grouped its list:
-// the family's name, how many of its models there are and are installed,
-// the languages they know, then a row per model.
+// the family's name, then a row per model.
 func (a *app) familyCard(c *ui.Context, list []models.Model) {
 	t := c.Theme()
 	k := tok(t)
-	installed := 0
-	for _, m := range list {
-		if a.modelStatus[m.ID].Installed {
-			installed++
-		}
-	}
-	count := i18n.N(len(list), "%d model", "%d models", len(list))
-	if installed > 0 {
-		count += " · " + i18n.T("%d installed", installed)
-	}
 	card(c.Key("family-" + list[0].Family)).Children(func() {
 		ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Center).Wrap().Children(func() {
 			ui.Icon(c, icons.Soundwave.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Text2).Shrink(0)
-			ui.Text(c, uitext.FamilyName(list[0].Family)).FontWeight(600)
-			caption(c, count)
+			ui.Text(c, uitext.FamilyName(list[0].Family)).FontWeight(600).Tooltip(uitext.ModelLanguages(list[0].ID))
 		})
-		modelLanguages(c, list[0].ID)
 		for _, m := range list {
 			ui.Box(c.Key("line-" + m.ID)).Height(1).Background(k.Line).Shrink(0)
 			ui.Column(c.Key("model-" + m.ID)).Gap(px(t, sp3)).Children(func() { a.modelRow(c, m, false) })
 		}
 	})
-}
-
-// modelLanguages is the line saying which languages model id knows
-// (nothing when it says none).
-func modelLanguages(c *ui.Context, id string) {
-	t := c.Theme()
-	if l := uitext.ModelLanguages(id); l != "" {
-		ui.Row(c).Gap(px(t, 4)).AlignItems(ui.Center).Children(func() {
-			ui.Icon(c, icons.Global.Linear).Size(px(t, 14), px(t, 14)).TextColor(tok(t).Text2).Shrink(0)
-			caption(c, l).MinWidth(0)
-		})
-	}
 }
 
 // modelHidden says whether the user hid speech model id from the
@@ -203,20 +167,6 @@ func (a *app) modelShown(m models.Model) bool {
 	return true
 }
 
-// modelTags are m's labels: uitext.ModelTags, then whether a speech
-// model knows the user's main language.
-func (a *app) modelTags(m models.Model) []string {
-	tags := uitext.ModelTags(m.ID)
-	if spec, ok := omni.Lookup(m.ID); ok && len(spec.Languages) > 0 {
-		if slices.Contains(spec.Languages, lang.Canonical(session.MainLanguage(a.prefs, i18n.Locale()))) {
-			tags = append(tags, i18n.T("Supports your main language"))
-		} else {
-			tags = append(tags, i18n.T("Does not support your main language"))
-		}
-	}
-	return tags
-}
-
 // anyModelShown says whether the page shows a model of kind.
 func (a *app) anyModelShown(kind models.Kind) bool {
 	for _, m := range models.Catalog() {
@@ -241,8 +191,8 @@ func (a *app) dictationCard(c *ui.Context) {
 	t := c.Theme()
 	k := tok(t)
 	card(c.Key("model-" + dictation.ModelID)).Children(func() {
-		ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Start).Children(func() {
-			ui.Icon(c, icons.Soundwave.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Text2).Shrink(0).Margin(px(t, 1), 0, 0, 0)
+		ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Center).Children(func() {
+			ui.Icon(c, icons.Soundwave.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Text2).Shrink(0)
 			// modelCard's order: the name, "Built-in" where a size would be and
 			// where it is used, what it is good at, then the labels at the foot.
 			ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp2)).Children(func() {
@@ -253,16 +203,6 @@ func (a *app) dictationCard(c *ui.Context) {
 						meta += " · " + used
 					}
 					caption(c, meta)
-				})
-				ui.Text(c, uitext.ModelAbout(dictation.ModelID))
-				ui.Row(c).Gap(px(t, 4)).AlignItems(ui.Center).Children(func() {
-					ui.Icon(c, icons.Global.Linear).Size(px(t, 14), px(t, 14)).TextColor(k.Text2).Shrink(0)
-					caption(c, uitext.ModelLanguages(dictation.ModelID)).MinWidth(0)
-				})
-				ui.Row(c.Key("tags")).Gap(px(t, 6)).AlignItems(ui.Center).Wrap().Children(func() {
-					for _, tag := range uitext.ModelTags(dictation.ModelID) {
-						tagChip(c, tag)
-					}
 				})
 			})
 			ui.Row(c.Key("actions")).Gap(px(t, sp2)).Shrink(0).Children(func() { a.hideButton(c, dictation.ModelID) })
@@ -286,9 +226,9 @@ func (a *app) modelRow(c *ui.Context, m models.Model, alone bool) {
 	if m.Kind == models.LLM {
 		ic = icons.ChatRoundLine
 	}
-	ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Start).Children(func() {
+	ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Center).Children(func() {
 		if alone {
-			ui.Icon(c, ic.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Text2).Shrink(0).Margin(px(t, 1), 0, 0, 0)
+			ui.Icon(c, ic.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Text2).Shrink(0)
 		}
 		// Voxt 1.x's order: the name, then its size and where it is used,
 		// then what it is good at, then the small labels at the foot.
@@ -304,37 +244,11 @@ func (a *app) modelRow(c *ui.Context, m models.Model, alone bool) {
 						tagChip(c, i18n.T("Default"))
 					}
 					if st.Installed {
-						statusMark(c, icons.CheckCircle, k.Success, i18n.T("Installed"))
+						iconMark(c, icons.CheckCircle, k.Text2, i18n.T("Installed"))
 					}
 				})
-				ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
-					meta := size
-					if used := a.usedBy(local.Kind(m.Kind), m.ID); used != "" {
-						meta += " · " + used
-					}
-					caption(c, meta)
-					if mem, ok := a.modelMem[m.ID]; ok && st.Installed { // models_memory.go
-						ui.Row(c.Key("loaded")).Gap(px(t, 6)).AlignItems(ui.Center).Children(func() {
-							statusDot(c, k.Accent)
-							caption(c, modelMemText(mem))
-						})
-					}
-				})
-				if family != "" {
-					caption(c.Key("family"), family)
-				}
+				caption(c, size).Tooltip(family)
 			})
-			ui.Text(c, uitext.ModelAbout(m.ID))
-			if alone {
-				modelLanguages(c, m.ID)
-			}
-			if tags := a.modelTags(m); len(tags) > 0 && !m.Retired {
-				ui.Row(c.Key("tags")).Gap(px(t, 6)).AlignItems(ui.Center).Wrap().Children(func() {
-					for _, tag := range tags {
-						tagChip(c, tag)
-					}
-				})
-			}
 		})
 		ui.Row(c.Key("actions")).Gap(px(t, sp2)).Shrink(0).Children(func() {
 			if m.Kind == models.ASR {
@@ -382,22 +296,20 @@ func (a *app) draftRow(c *ui.Context, id string) {
 	k := tok(t)
 	d, _ := models.Lookup(id)
 	st := a.modelStatus[id]
-	ui.Row(c.Key("draft")).Gap(px(t, sp3)).AlignItems(ui.Start).Margin(px(t, sp2), 0, 0, px(t, 32)).Children(func() {
-		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp1)).Children(func() {
+	ui.Row(c.Key("draft")).Gap(px(t, sp3)).AlignItems(ui.Center).Children(func() {
+		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, 2)).Children(func() {
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
-				ui.Text(c, i18n.T("Faster transcription")).FontWeight(600)
-				infoTip(c.Key("how"), i18n.T("Uses speculative decoding. A small draft model proposes several words at a time, and the speech model checks them."))
+				tipText(c, i18n.T("Speed-up model"), i18n.T("Uses speculative decoding. A small draft model proposes several words at a time, and the speech model checks them."))
 				if st.Installed {
-					statusMark(c, icons.CheckCircle, k.Success, i18n.T("Installed"))
+					iconMark(c, icons.CheckCircle, k.Text2, i18n.T("Installed"))
 				}
 			})
-			caption(c, i18n.T("Download to make this model faster."))
 			caption(c.Key("size"), modelSizeText(d, st))
 		})
 		ui.Row(c.Key("actions")).Gap(px(t, sp2)).Shrink(0).Children(func() { a.modelActions(c, d, st) })
 	})
 	if st.Downloading || st.Err != nil { // under the row's text, not the card's icon
-		ui.Column(c.Key("draft-progress")).Margin(0, 0, 0, px(t, 32)).Children(func() { a.modelProgress(c, "draft-err", d, st) })
+		ui.Column(c.Key("draft-progress")).Children(func() { a.modelProgress(c, "draft-err", d, st) })
 	}
 }
 

@@ -24,7 +24,6 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
@@ -59,8 +58,6 @@ type dictView struct {
 	err     string
 	total   int // terms in the dictionary (the last read without a search)
 	listUI  ui.ListState
-	// guideOpen: the usage guide is unfolded.
-	guideOpen bool
 	// The term dialog.
 	editOpen bool
 	edit     termEdit
@@ -159,23 +156,22 @@ func (a *app) dictionaryPage(c *ui.Context) {
 	}
 	scanModel, canScan := a.scanModel()
 	widePageHeader(c, i18n.T("Dictionary"), func() {
-		if d.total > 0 {
-			caption(c, i18n.N(d.total, "%d term", "%d terms", d.total)).SingleLine()
-		}
-		on := &a.prefs.Dictionary.Enabled
-		state := i18n.T("Off")
-		if *on {
-			state = i18n.T("On")
-		}
-		caption(c, state).SingleLine()
-		if ui.Switch(c.Key("dict-on"), on).Label(i18n.T("Use the dictionary")).Tooltip(i18n.T("Use the dictionary")).Changed() {
-			v := *on
-			a.updateSettings(func(s *settings.Settings) { s.Dictionary.Enabled = v })
-		}
-		if ui.Button(c.Key("dict-scan"), i18n.T("Scan history…")).Disabled(!canScan).Clicked() {
-			a.openScan(scanModel)
-		}
 		moreMenu(c.Key("dict-more"), "", func(m *ui.Menu) {
+			dictionary := a.prefs.Dictionary
+			toggle := func(label string, on, disabled bool, set func(*settings.Settings, bool)) {
+				if m.Item(label).Checked(on).Disabled(disabled).Chosen() {
+					a.updateSettings(func(s *settings.Settings) { set(s, !on) })
+				}
+			}
+			off := !dictionary.Enabled
+			toggle(i18n.T("Use the dictionary"), dictionary.Enabled, false, func(s *settings.Settings, v bool) { s.Dictionary.Enabled = v })
+			toggle(i18n.T("Speech hints"), dictionary.ASRHints, off, func(s *settings.Settings, v bool) { s.Dictionary.ASRHints = v })
+			toggle(i18n.T("Glossary for the language model"), dictionary.Glossary, off, func(s *settings.Settings, v bool) { s.Dictionary.Glossary = v })
+			toggle(i18n.T("Learn from my corrections"), dictionary.Learn, off, func(s *settings.Settings, v bool) { s.Dictionary.Learn = v })
+			m.Separator()
+			if m.Item(i18n.T("Scan history…")).Disabled(!canScan).Chosen() {
+				a.openScan(scanModel)
+			}
 			if m.Item(i18n.T("Import…")).Chosen() {
 				a.importTerms()
 			}
@@ -206,20 +202,7 @@ func (a *app) dictionaryPage(c *ui.Context) {
 				if searchField(c, "dict-search", &d.query, i18n.T("Search terms"), px(t, 320)).Label(i18n.T("Search dictionary")).Changed() {
 					a.loadDict()
 				}
-				a.dictSwitches(c)
 			})
-			if !canScan {
-				ui.Row(c).Gap(px(t, sp1)).AlignItems(ui.Center).Children(func() {
-					caption(c, i18n.T("Choose a language model for Transcribe first")).SingleLine().MinWidth(0).Shrink(1)
-					if ghostButton(c.Key("dict-scan-model"), i18n.T("Open Transcribe")).Clicked() {
-						a.navigate("/transcribe")
-					}
-				})
-			}
-			a.dictGuide(c)
-			if !a.prefs.Dictionary.Enabled {
-				notice(c, "dict-off", noticeInfo, i18n.T("The dictionary is off, so its terms are not used."), "", nil, nil)
-			}
 			if d.err != "" {
 				notice(c, "dict-err", noticeError, i18n.T("Could not read the dictionary."), d.err, func() {
 					if ghostButton(c.Key("dict-retry"), i18n.T("Try again")).Clicked() {
@@ -245,44 +228,6 @@ func (a *app) dictionaryPage(c *ui.Context) {
 	})
 	a.termDialog(c)
 	a.scanDialog(c)
-}
-
-// dictSwitches say where the terms go.
-func (a *app) dictSwitches(c *ui.Context) {
-	t := c.Theme()
-	off := !a.prefs.Dictionary.Enabled
-	ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Center).Wrap().Children(func() {
-		hints := &a.prefs.Dictionary.ASRHints
-		if ui.Checkbox(c.Key("dict-hints"), hints, i18n.T("Speech hints")).Disabled(off).
-			Tooltip(i18n.T("Terms go to the speech model as words to expect.")).Changed() {
-			v := *hints
-			a.updateSettings(func(s *settings.Settings) { s.Dictionary.ASRHints = v })
-		}
-		gl := &a.prefs.Dictionary.Glossary
-		if ui.Checkbox(c.Key("dict-glossary"), gl, i18n.T("Glossary for the language model")).Disabled(off).
-			Tooltip(i18n.T("The language model writes terms as spelled here.")).Changed() {
-			v := *gl
-			a.updateSettings(func(s *settings.Settings) { s.Dictionary.Glossary = v })
-		}
-		learnOn := &a.prefs.Dictionary.Learn
-		if ui.Checkbox(c.Key("dict-learn"), learnOn, i18n.T("Learn from my corrections")).Disabled(off).
-			Tooltip(i18n.T("For %d seconds after inserting, Voxt reads the text around it. If you correct a word, it suggests your spelling. Nothing it reads is saved or sent.", learn.WatchSeconds)).Changed() {
-			v := *learnOn
-			a.updateSettings(func(s *settings.Settings) { s.Dictionary.Learn = v })
-		}
-	})
-}
-
-// dictGuide says where a term applies, folded under the switches
-// (docs/behavior.md 5.16, 7.9, 7.9a).
-func (a *app) dictGuide(c *ui.Context) {
-	collapsible(c.Key("dict-guide"), i18n.T("How the dictionary works"), &a.dv.guideOpen, nil, func() {
-		caption(c, i18n.T("Each enabled term is used in three places:"))
-		caption(c, i18n.T("Speech recognition: with Speech hints on, terms go to the speech model as words to expect. Aliases are not sent."))
-		caption(c, i18n.T("Language model: with Glossary for the language model on, the model writes terms as spelled here. With more than %d terms, only those found in the text are sent, up to %d.", compose.GlossaryAllUpTo, compose.MaxGlossaryTerms))
-		caption(c, i18n.T("Aliases: misspellings Voxt replaces with the term, even without a language model."))
-		caption(c, i18n.T("Rules a term cannot hold, such as when a spelling applies, go in the Personal dictionary: Markdown notes for the language model only, with an example of the prompt."))
-	})
 }
 
 // dictEmpty is the list's empty state.

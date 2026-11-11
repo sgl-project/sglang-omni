@@ -124,32 +124,24 @@ func collapsible(c *ui.Context, title string, open *bool, trailing, fn func()) u
 	return root
 }
 
-// formRow is a setting: its name, a ⓘ with what it does (info, "" for
-// none), and its control on the right.
+// formRow is a setting: its name, which tells what it does as a tooltip
+// (info, "" for none), and its control on the right.
 func formRow(c *ui.Context, key, title, info string, control func()) {
 	t := c.Theme()
 	// The control goes under the name when both do not fit on a line.
 	ui.Row(c.Key(key)).Wrap().GapX(px(t, sp4)).GapY(px(t, 6)).AlignItems(ui.Center).MinHeight(px(t, 32)).Children(func() {
-		ui.Row(c).Grow(1).Basis(px(t, 160)).MinWidth(px(t, 120)).Gap(px(t, 6)).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, title).MinWidth(0)
-			if info != "" {
-				infoTip(c, info)
-			}
+		ui.Row(c).Grow(1).Basis(px(t, 160)).MinWidth(px(t, 120)).AlignItems(ui.Center).Children(func() {
+			tipText(c, title, info)
 		})
 		ui.Row(c).Wrap().Gap(px(t, sp2)).AlignItems(ui.Center).Shrink(1).MinWidth(0).Children(control)
 	})
 }
 
-// fieldInfo is a labelled control with a ⓘ beside its label.
+// fieldInfo is a labelled control whose label tells info as a tooltip.
 func fieldInfo(c *ui.Context, label, info string, control func()) {
 	t := c.Theme()
 	ui.Column(c).Gap(px(t, 6)).Children(func() {
-		ui.Row(c).Gap(px(t, 6)).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, label).MinWidth(0)
-			if info != "" {
-				infoTip(c, info)
-			}
-		})
+		tipText(c, label, info)
 		control()
 	})
 }
@@ -182,10 +174,7 @@ func emptyState(c *ui.Context, ic icons.Icon, title, body string, actions func()
 	k := tok(t)
 	return ui.Column(c).Grow(1).Center().Gap(px(t, sp2)).Padding(px(t, sp6)).Children(func() {
 		ui.Icon(c, ic.Linear).Size(px(t, 36), px(t, 36)).TextColor(k.Text3)
-		ui.Text(c, title).FontSize(px(t, fsSection)).FontWeight(600).TextAlign(ui.Center)
-		if body != "" {
-			ui.Text(c, body).TextColor(k.Text2).TextAlign(ui.Center).MaxWidth(px(t, 420))
-		}
+		ui.Text(c, title).FontSize(px(t, fsSection)).FontWeight(600).TextAlign(ui.Center).Tooltip(body)
 		if actions != nil {
 			ui.Row(c).Gap(px(t, sp2)).Wrap().Justify(ui.Center).Margin(px(t, sp2), 0, 0).Children(actions)
 		}

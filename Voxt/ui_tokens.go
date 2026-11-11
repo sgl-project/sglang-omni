@@ -52,17 +52,18 @@ var (
 // accentSet is an accent in the light and the dark theme.
 type accentSet struct{ light, dark string }
 
-// accents are the brand accent candidates; AudioSmith's design review
-// (2026-10-14) chose teal, and VoxtNew keeps it for now (plan D3).
+// accents are the brand accent candidates. Graphite keeps the app in one
+// tone: state reads by weight and fill, not by hue.
 // accentName is the one in use: changing it re-colours the app.
 var accents = map[string]accentSet{
-	"blue":   {"#2f6bf0", "#4f86f7"},
-	"indigo": {"#5752e0", "#7d79f2"},
-	"teal":   {"#0d9384", "#2bb3a3"},
+	"blue":     {"#2f6bf0", "#4f86f7"},
+	"indigo":   {"#5752e0", "#7d79f2"},
+	"teal":     {"#0d9384", "#2bb3a3"},
+	"graphite": {"#1f1f1f", "#a3a3a3"},
 }
 
 // accentName is the brand accent (a key of accents).
-var accentName = "teal"
+var accentName = "graphite"
 
 // tokens are the colours of one appearance.
 type tokens struct {
@@ -101,15 +102,17 @@ func makeTokens(dark bool) *tokens {
 		accent = ui.Hex(ac.dark)
 		k = &tokens{G: g,
 			InkHover: ui.Hex("#dcdcdc"), InkPressed: ui.Hex("#c4c4c4"),
-			Record: ui.Hex("#ff6b47"), Success: ui.Hex("#3ccb7f"), Warning: ui.Hex("#f2a53a"),
+			Record: ui.Hex("#ff6b47"),
 		}
 	} else {
 		k.InkHover, k.InkPressed = ui.Hex("#2e2e2e"), ui.Hex("#454545")
-		k.Record, k.Success, k.Warning = ui.Hex("#eb5230"), ui.Hex("#1f9d55"), ui.Hex("#c27803")
+		k.Record = ui.Hex("#eb5230")
 	}
 	k.Bg, k.Sidebar, k.Subtle = g[0], g[1], g[1]
 	k.Hover, k.Pressed, k.Line = g[2], g[3], g[3]
 	k.Text, k.Text2, k.Text3 = g[9], g[7], g[6]
+	// Success and warning are told by their icon, in the secondary grey.
+	k.Success, k.Warning = k.Text2, k.Text2
 	k.Ink, k.OnInk = g[9], g[0]
 	k.Accent = accent
 	k.AccentSoft = accent.Alpha(0.12)
@@ -156,6 +159,9 @@ func styleTheme(th *ui.Theme) {
 	th.AccentText = ui.Hex("#ffffff")
 	if th.Dark && accentName == "teal" {
 		th.AccentText = ui.Hex("#06201c") // dark text on the light teal
+	}
+	if accentName == "graphite" {
+		th.AccentText = k.OnInk
 	}
 	th.Danger, th.Warning, th.Success = k.Danger, k.Warning, k.Success
 	th.Selection = k.Accent.Alpha(0.22)

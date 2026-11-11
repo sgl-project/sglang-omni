@@ -33,14 +33,7 @@ func settingRowNoteTip(c *ui.Context, key, title, tip, note string, control func
 	t := c.Theme()
 	ui.Row(c.Key(key)).Wrap().GapX(px(t, sp4)).GapY(px(t, 6)).AlignItems(ui.Center).MinHeight(px(t, 32)).Children(func() {
 		ui.Column(c).Grow(1).Basis(px(t, 200)).MinWidth(px(t, 140)).Gap(px(t, 2)).Children(func() {
-			if tip == "" {
-				ui.Text(c, title)
-			} else {
-				ui.Row(c).Gap(px(t, 6)).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, title).MinWidth(0)
-					infoTip(c, tip)
-				})
-			}
+			tipText(c, title, tip)
 			if note != "" {
 				caption(c, note).Selectable()
 			}
@@ -63,14 +56,10 @@ func sectionTitleText(c *ui.Context, title string) ui.Element {
 	return ui.Text(c, title).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(tok(t).Text2)
 }
 
-// sectionTitleTip is sectionTitle with a ⓘ beside it: the margin goes on
-// the row, so the title and the ⓘ share one centre line.
+// sectionTitleTip is sectionTitle that tells tip as a tooltip.
 func sectionTitleTip(c *ui.Context, title, tip string) {
 	t := c.Theme()
-	ui.Row(c).Gap(px(t, 6)).AlignItems(ui.Center).Margin(px(t, sp2), 0, 0, 0).Children(func() {
-		sectionTitleText(c, title)
-		infoTip(c, tip)
-	})
+	sectionTitleText(c, title).Tooltip(tip).Margin(px(t, sp2), 0, 0, 0)
 }
 
 // sectionTitleAdd is sectionTitleTip with a small Add button on the
@@ -86,9 +75,9 @@ func sectionTitleAdd(c *ui.Context, key, title, tip, add string) bool {
 	t := c.Theme()
 	clicked := false
 	ui.Row(c).Gap(px(t, 6)).AlignItems(ui.Center).Margin(px(t, sp2), 0, 0, 0).Children(func() {
-		sectionTitleText(c, title).SingleLine().Shrink(0)
+		st := sectionTitleText(c, title).SingleLine().Shrink(0)
 		if tip != "" {
-			infoTip(c, tip).Shrink(0)
+			st.Tooltip(tip)
 		}
 		ui.Spacer(c)
 		b := quietButton(c.Key(key), icons.Add, add).Margin(px(t, -3.5), -titleAddHang(t), px(t, -3.5), 0)

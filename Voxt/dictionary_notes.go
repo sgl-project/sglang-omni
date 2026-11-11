@@ -51,7 +51,6 @@ func (a *app) notesView(c *ui.Context) {
 	}
 	ui.Scroll(c.Key("dict-notes-scroll")).Grow(1).MinHeight(0).Children(func() {
 		ui.Column(c).Padding(px(t, sp2), px(t, sp6), px(t, sp6)).Gap(px(t, sp2)).Children(func() {
-			caption(c, i18n.T("Write your names, terms and numbers once, in Markdown: for example a table of the standard spelling, what speech recognition writes instead, and when it applies. Transcribe, Translate and Rewrite add it to the language model's prompt. Speech recognition does not get it."))
 			off := !a.prefs.Dictionary.Enabled
 			formRow(c, "dict-notes-on-row", i18n.T("Add to the language model prompt"), "", func() {
 				on := !a.prefs.Dictionary.NotesOff
@@ -112,7 +111,6 @@ func (a *app) notesExample(c *ui.Context) {
 	t := c.Theme()
 	d := &a.dv
 	sectionTitle(c, i18n.T("How it is used"))
-	caption(c, i18n.T("An example with your settings: system prompt + personal dictionary + your input + speech recognition text = what the language model receives. The dictionary comes right after the system prompt, before anything that changes from one request to the next, so the model server can reuse its cache."))
 	segmentedFit(c.Key("dict-notes-feature"), &d.notesFeature, i18n.T("Transcribe"), i18n.T("Translate"), i18n.T("Rewrite")).Label(i18n.T("Example for"))
 	feature := notesFeatures[d.notesFeature]
 	if feature == hotkey.Transcribe && !a.prefs.Features.Transcribe.Enhance {

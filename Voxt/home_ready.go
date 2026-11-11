@@ -162,7 +162,7 @@ func homeMissing(list []readiness) (missing, ready []readiness) {
 func (a *app) homeReadiness(c *ui.Context) {
 	t := c.Theme()
 	k := tok(t)
-	missing, ready := homeMissing(a.readinessList())
+	missing, _ := homeMissing(a.readinessList())
 	if len(missing) == 0 {
 		return
 	}
@@ -183,10 +183,7 @@ func (a *app) homeReadiness(c *ui.Context) {
 			}
 			row.Children(func() {
 				ui.Icon(c, ic.Linear).Size(px(t, 16), px(t, 16)).TextColor(col).Shrink(0)
-				ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, 2)).Children(func() {
-					ui.Text(c, r.title).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0)
-					ui.Text(c, r.text).FontSize(px(t, fsCaption)).TextColor(k.Text2).MinWidth(0)
-				})
+				ui.Text(c, r.title).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
 				if r.fix != nil {
 					ui.Row(c).Gap(px(t, 2)).AlignItems(ui.Center).Shrink(0).Children(func() {
 						ui.Text(c, r.action).FontSize(px(t, fsCaption)).TextColor(k.Text2).SingleLine()
@@ -197,23 +194,6 @@ func (a *app) homeReadiness(c *ui.Context) {
 			if row.Clicked() && r.fix != nil {
 				r.fix()
 			}
-		}
-	})
-	if len(ready) == 0 {
-		return
-	}
-	// What is ready, quieter: a mark and a name each.
-	ui.Row(c.Key("home-ready")).Wrap().GapX(px(t, sp4)).GapY(px(t, sp1)).Padding(0, px(t, sp1)).Children(func() {
-		for _, r := range ready {
-			ic, col := icons.CheckCircle, k.Success
-			if r.warn {
-				ic, col = icons.DangerTriangle, k.Warning
-			}
-			ui.Row(c.Key(r.key)).Gap(px(t, 6)).AlignItems(ui.Center).MinWidth(0).Tooltip(r.text).Children(func() {
-				ui.Icon(c, ic.Linear).Size(px(t, 14), px(t, 14)).TextColor(col).Shrink(0)
-				ui.Text(c, r.title).FontSize(px(t, fsCaption)).TextColor(k.Text3).SingleLine()
-				ui.Text(c, r.text).FontSize(px(t, fsCaption)).TextColor(k.Text2).SingleLine().Ellipsis("…").MinWidth(0).MaxWidth(px(t, 220))
-			})
 		}
 	})
 }

@@ -159,12 +159,6 @@ func (a *app) keyRecorder(c *ui.Context, r *keyRow, label string, save func(keys
 		} else {
 			caption(c, i18n.T("Press the keys you want, such as ⌥Space. Each press replaces the last."))
 		}
-	default:
-		if a.helperRecordsKeys() {
-			caption(c, i18n.T("Click the field, then press the shortcut, including fn, a left or right modifier, or a mouse button."))
-		} else {
-			caption(c, i18n.T("Click the field and press the keys, such as ⌥Space. To use fn, a left or right modifier or a mouse button, allow Accessibility in Permissions."))
-		}
 	}
 	if ghostButton(c.Key("type-keys"), i18n.T("Type the keys instead")).Clicked() {
 		r.typing, r.unknown = true, false

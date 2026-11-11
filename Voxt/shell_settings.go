@@ -6,8 +6,8 @@ package main
 // /settings/{section}. The dialog is AudioSmith's, with the sections
 // every app of the family has and VoxtNew's own: Audio
 // (settings_audio.go), Overlay style (settings_overlay.go) and the table
-// of Shortcuts (settings_shortcuts.go). The features' own settings live
-// on their pages (Transcribe, Translate, Rewrite…).
+// of Shortcuts (settings_shortcuts.go), a section for each feature
+// (feature_page.go) and the models' two (models_cards.go, remote_page.go).
 
 import (
 	"context"
@@ -17,6 +17,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -72,6 +73,11 @@ type settingsSection struct{ id, title, en string }
 func settingsSections() []settingsSection {
 	return []settingsSection{
 		{"general", i18n.T("General"), "General language menu bar login"},
+		{"transcribe", i18n.T("Transcribe"), "Transcribe dictation clean-up shortcut"},
+		{"translate", i18n.T("Translate"), "Translate target language shortcut"},
+		{"rewrite", i18n.T("Rewrite"), "Rewrite answer shortcut"},
+		{"models", i18n.T("Speech models"), "Speech models download recognition"},
+		{"language-models", i18n.T("Language models"), "Language models API key service"},
 		{"permissions", i18n.T("Permissions"), "Permissions microphone accessibility privacy"},
 		{"audio", i18n.T("Audio"), "Audio microphone input device sounds silence"},
 		{"overlay", i18n.T("Overlay style"), "Overlay style position opacity corners recording pill"},
@@ -90,6 +96,16 @@ func settingsSectionIcon(id string) icons.Icon {
 	switch id {
 	case "general":
 		return icons.Settings
+	case "transcribe":
+		return transcribeIcon
+	case "translate":
+		return translateIcon
+	case "rewrite":
+		return rewriteIcon
+	case "models":
+		return modelsIcon
+	case "language-models":
+		return remoteIcon
 	case "permissions":
 		return permissionsIcon
 	case "audio":
@@ -277,6 +293,8 @@ func (a *app) settingsShown(sub string) {
 		a.recheckPermissions() // permissions.go
 	case "/audio":
 		a.loadDevices() // settings_audio.go
+	case "/models":
+		a.modelsShown() // models_memory.go
 	}
 }
 
@@ -309,16 +327,16 @@ func (a *app) settingsDialog(c *ui.Context) {
 		ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 			// As wide as the longest name: 诊断与关于, Overlay style.
 			ui.Column(c).Width(px(t, settingsColumnW)).Shrink(0).Background(k.Sidebar).Children(func() {
-				ui.Row(c).Height(px(t, 52)).Shrink(0).AlignItems(ui.Center).Padding(0, px(t, sp4)).Children(func() {
+				ui.Row(c).Height(px(t, 60)).Shrink(0).AlignItems(ui.Center).Padding(0, px(t, sp5)).Children(func() {
 					ui.Text(c, i18n.T("Settings")).FontSize(px(t, fsSection)).FontWeight(600).SingleLine()
 				})
 				ui.Scroll(c).Grow(1).Children(func() {
-					ui.Column(c).Padding(0, px(t, sp2), px(t, sp2)).Gap(px(t, 2)).Children(func() {
+					ui.Column(c).Padding(0, px(t, sp3), px(t, sp3)).Gap(px(t, 4)).Children(func() {
 						cur := strings.TrimPrefix(a.setRouter.Path(), "/")
 						cur, _, _ = strings.Cut(cur, "/")
 						for _, s := range settingsSections() {
 							sel := cur == s.id
-							b := ui.ButtonBase(c.Key("settings-"+s.id)).Padding(px(t, 6), px(t, sp2)).Gap(px(t, sp2)).Radius(px(t, radiusControl)).
+							b := ui.ButtonBase(c.Key("settings-"+s.id)).Padding(px(t, sp2), px(t, sp3)).Gap(px(t, sp3)).Radius(px(t, radiusControl)).
 								Justify(ui.Start).Label(s.title).Checked(sel)
 							switch {
 							case sel:
@@ -358,7 +376,7 @@ func (a *app) settingsDialog(c *ui.Context) {
 						}
 					}
 					f := &a.settingsForm
-					ui.Row(c).Height(px(t, 52)).Shrink(0).AlignItems(ui.Center).Padding(0, px(t, sp3), 0, px(t, sp6)).Gap(px(t, sp2)).Children(func() {
+					ui.Row(c).Height(px(t, 60)).Shrink(0).AlignItems(ui.Center).Padding(0, px(t, sp4), 0, px(t, sp8)).Gap(px(t, sp2)).Children(func() {
 						ui.Text(c, title).FontSize(px(t, fsSection)).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
 						sf := searchField(c, "settings-search", &f.search, i18n.T("Find in settings"), px(t, 240))
 						if f.searchFocus {
@@ -375,9 +393,9 @@ func (a *app) settingsDialog(c *ui.Context) {
 						query = ""
 					}
 					ui.Scroll(c).Grow(1).MinHeight(0).Children(func() {
-						ui.Column(c).Padding(px(t, sp1), px(t, sp6), px(t, sp6)).Gap(px(t, sp4)).MaxWidth(px(t, settingsContentMaxW)).Children(func() {
+						ui.Column(c).Padding(px(t, sp2), px(t, sp8), px(t, sp8)).Gap(px(t, sp5)).MaxWidth(px(t, settingsContentMaxW)).Children(func() {
 							settingsSearchQuery, settingsSearchHits = query, 0
-							body := ui.Column(c).Gap(px(t, sp4))
+							body := ui.Column(c).Gap(px(t, sp5))
 							body.Children(func() { a.settingsSection(c, r) })
 							settingsSearchQuery = ""
 							if query != "" && settingsSearchHits == 0 { // its other parts (lists, cards) do not match either
@@ -398,10 +416,10 @@ func (a *app) settingsDialog(c *ui.Context) {
 // smallest. Its column of sections is settingsColumnW wide, its content
 // settingsContentMaxW at most (it is narrower in the default window).
 const (
-	settingsMaxW        = 760
-	settingsMaxH        = 600
-	settingsColumnW     = 176
-	settingsContentMaxW = 600
+	settingsMaxW        = 920
+	settingsMaxH        = 700
+	settingsColumnW     = 200
+	settingsContentMaxW = 720
 )
 
 func settingsDialogSize(t *ui.Theme, w, h float32) (dw, dh float32) {
@@ -413,15 +431,20 @@ func settingsDialogSize(t *ui.Theme, w, h float32) (dw, dh float32) {
 // settingsSection builds the section of the settings dialog r shows.
 func (a *app) settingsSection(c *ui.Context, r *ui.Route) {
 	sections := map[string]func(*ui.Context){
-		"general":     a.generalSettings,
-		"permissions": a.permissionsSettings, // permissions.go
-		"audio":       a.audioSettings,       // settings_audio.go
-		"overlay":     a.overlaySettings,     // settings_overlay.go
-		"shortcuts":   a.shortcutsSettings,   // settings_shortcuts.go
-		"appearance":  a.appearanceSettings,
-		"privacy":     a.privacySettings, // settings_privacy.go
-		"storage":     a.storageSettings, // settings_storage.go
-		"about":       a.aboutSettings,   // settings_about.go
+		"general":         a.generalSettings,
+		"transcribe":      func(c *ui.Context) { a.featureSettings(c, hotkey.Transcribe) }, // feature_page.go
+		"translate":       func(c *ui.Context) { a.featureSettings(c, hotkey.Translate) },
+		"rewrite":         func(c *ui.Context) { a.featureSettings(c, hotkey.Rewrite) },
+		"models":          a.modelsSettings,      // models_cards.go
+		"language-models": a.remoteSettings,      // remote_page.go
+		"permissions":     a.permissionsSettings, // permissions.go
+		"audio":           a.audioSettings,       // settings_audio.go
+		"overlay":         a.overlaySettings,     // settings_overlay.go
+		"shortcuts":       a.shortcutsSettings,   // settings_shortcuts.go
+		"appearance":      a.appearanceSettings,
+		"privacy":         a.privacySettings, // settings_privacy.go
+		"storage":         a.storageSettings, // settings_storage.go
+		"about":           a.aboutSettings,   // settings_about.go
 	}
 	for _, s := range settingsSections() {
 		if r.Match("/" + s.id) {

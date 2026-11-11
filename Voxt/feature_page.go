@@ -16,12 +16,8 @@ package main
 // elsewhere; each feature has its own (featureUI).
 
 import (
-	"time"
-
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -99,52 +95,20 @@ func featureKind(feature string) store.Kind {
 
 // ---- The page ----
 
-// transcribePage builds the Transcribe page.
-func (a *app) transcribePage(c *ui.Context) { a.featurePage(c, hotkey.Transcribe) }
-
-// translatePage builds the Translate page.
-func (a *app) translatePage(c *ui.Context) { a.featurePage(c, hotkey.Translate) }
-
-// rewritePage builds the Rewrite page.
-func (a *app) rewritePage(c *ui.Context) { a.featurePage(c, hotkey.Rewrite) }
-
-// featurePage builds a feature's page, one column at any window width
-// (11-09: the user did not want it split in two in a wide window, #3644
-// FB16): how the feature starts and its models, then what it does with
-// the text, its card, its rules and its Try area.
-func (a *app) featurePage(c *ui.Context, feature string) {
-	t := c.Theme()
-	p := uitext.FeaturePrefix(feature)
-	columnPageHeader(c, uitext.FeatureTitle(feature), nil)
-	if a.sess.Try && a.sess.State == session.Recording {
-		c.After(250 * time.Millisecond) // the Try area's clock
+// featureSettings is a feature's section of the settings dialog: how it
+// starts and its models, then what it does with the text, its card and
+// its rules.
+func (a *app) featureSettings(c *ui.Context, feature string) {
+	a.featureShortcuts(c, feature)
+	a.featureModels(c, feature)
+	switch feature {
+	case hotkey.Translate:
+		a.translateSettings(c)
+	case hotkey.Rewrite:
+		a.rewriteSettings(c)
+	default:
+		a.trEnhance(c)
 	}
-	left := func() {
-		switch feature {
-		case hotkey.Translate:
-			caption(c, i18n.T("Translates the selected text in place, or what you say when nothing is selected."))
-		case hotkey.Rewrite:
-			caption(c, i18n.T("Changes the selected text as you say (\"shorter\", \"more formal\"), or writes what you ask for."))
-		default:
-			caption(c, i18n.T("Press a shortcut anywhere, speak, and the text is typed where your cursor is."))
-		}
-		a.featureShortcuts(c, feature)
-		a.featureModels(c, feature)
-	}
-	right := func() {
-		switch feature {
-		case hotkey.Translate:
-			a.translateSettings(c)
-		case hotkey.Rewrite:
-			a.rewriteSettings(c)
-		default:
-			a.trEnhance(c)
-		}
-		a.cardSetting(c, p, feature)
-		a.featureRules(c, feature)
-		a.featureTry(c, feature)
-	}
-	ui.Scroll(c.Key(p + "-scroll")).Grow(1).MinHeight(0).Children(func() {
-		pageColumn(c).Gap(px(t, sp3)).Children(func() { left(); right() })
-	})
+	a.cardSetting(c, uitext.FeaturePrefix(feature), feature)
+	a.featureRules(c, feature)
 }

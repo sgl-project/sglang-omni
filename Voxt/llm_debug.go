@@ -176,7 +176,6 @@ func (a *app) llmDebugPage(c *ui.Context) {
 	})
 	ui.Scroll(c.Key("llmdbg-scroll")).Grow(1).MinHeight(0).Children(func() {
 		pageColumn(c).Gap(px(t, sp4)).Children(func() {
-			caption(c, i18n.T("Try a prompt on your own text. Nothing is saved until you click Use this prompt."))
 			setups := providers.Ready(a.prefs, func(id string) bool { return a.hasKey(local.LLM, id) })
 			if len(setups) == 0 {
 				caption(c, i18n.T("Set up a language model first."))
