@@ -8,7 +8,6 @@ ARSessionBridge checks that SGLang put exactly the expected history ahead of the
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -47,6 +46,32 @@ class LayerKVCache(Protocol):
 
     def get_value_buffer(self, layer_id: int) -> torch.Tensor:
         pass
+
+
+class KeyPositionShifter(Protocol):
+    def __call__(self, keys: torch.Tensor, distances: torch.Tensor) -> torch.Tensor:
+        pass
+
+
+@dataclass(frozen=True)
+class DraftSessionKV:
+    """A static draft pool sharing the target's token slots and using full Neox RoPE."""
+
+    cache: LayerKVCache
+    cos_sin_cache: torch.Tensor
+
+    def shift_key_positions(
+        self, keys: torch.Tensor, distances: torch.Tensor
+    ) -> torch.Tensor:
+        cosine, sine = self.cos_sin_cache[distances].float().unsqueeze(1).chunk(2, -1)
+        first_half, second_half = keys.float().chunk(2, -1)
+        return torch.cat(
+            (
+                first_half * cosine + second_half * sine,
+                second_half * cosine - first_half * sine,
+            ),
+            dim=-1,
+        ).to(keys.dtype)
 
 
 @dataclass(frozen=True)
@@ -131,7 +156,9 @@ def cut_retained_kv(
     kv_cache: LayerKVCache,
     kv: RetainedKV,
     cut: HistoryCut,
-    shift_key_positions: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+    shift_key_positions: KeyPositionShifter,
+    *,
+    draft_kv: DraftSessionKV | None = None,
 ) -> None:
     """Move the KV kept after the cut down the session row, with each key re-encoded at its new position, and free the row tail.
 
@@ -158,6 +185,36 @@ def cut_retained_kv(
     )
     source_slots = row[kept_positions].to(torch.int64)
     target_slots = row[first_start:kept_length].to(torch.int64)
+    move_retained_kv(
+        kv_cache, source_slots, target_slots, distances, shift_key_positions
+    )
+    if draft_kv is not None:
+        move_retained_kv(
+            draft_kv.cache,
+            source_slots,
+            target_slots,
+            distances,
+            draft_kv.shift_key_positions,
+        )
+    else:
+        pass
+    tail_start = ceil_align(kept_length, rows.page_size)
+    if tail_start < kv.kv_allocated_len:
+        rows.free_kv_row(kv, [(tail_start, kv.kv_allocated_len)])
+    else:
+        pass
+    kv.kv_allocated_len = kept_length
+    kv.kv_committed_len = kept_length
+
+
+def move_retained_kv(
+    kv_cache: LayerKVCache,
+    source_slots: torch.Tensor,
+    target_slots: torch.Tensor,
+    distances: torch.Tensor,
+    shift_key_positions: KeyPositionShifter,
+) -> None:
+    """Move one model's retained keys and values without releasing shared slots."""
     for layer_id in range(
         kv_cache.start_layer, kv_cache.start_layer + kv_cache.layer_num
     ):
@@ -179,10 +236,3 @@ def cut_retained_kv(
         value_rows.index_copy_(
             0, target_slots, value_rows.index_select(0, source_slots)
         )
-    tail_start = ceil_align(kept_length, rows.page_size)
-    if tail_start < kv.kv_allocated_len:
-        rows.free_kv_row(kv, [(tail_start, kv.kv_allocated_len)])
-    else:
-        pass
-    kv.kv_allocated_len = kept_length
-    kv.kv_committed_len = kept_length

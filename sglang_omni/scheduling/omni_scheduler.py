@@ -36,6 +36,7 @@ from sglang.srt.disaggregation.utils import DisaggregationMode
 from sglang.srt.environ import envs
 from sglang.srt.layers.dp_attention import get_dp_tp_group
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+from sglang.srt.layers.rotary_embedding.base import RotaryEmbedding
 from sglang.srt.managers.io_struct import AbortReq
 from sglang.srt.managers.overlap_utils import resolve_forward_inputs
 from sglang.srt.managers.schedule_batch import (
@@ -59,7 +60,11 @@ from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
 from sglang.srt.mem_cache.allocator.swa import PureSWATokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
 from sglang.srt.mem_cache.common import release_kv_cache
-from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool, ReqToTokenPool
+from sglang.srt.mem_cache.memory_pool import (
+    HybridReqToTokenPool,
+    MHATokenToKVPool,
+    ReqToTokenPool,
+)
 from sglang.srt.runtime_context import get_model, get_parallel, get_serving, get_spec
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.session.session_controller import SessionController
@@ -115,6 +120,7 @@ from sglang_omni.scheduling.sglang_backend.ar_session import (
     SessionUnit,
     is_close_request,
 )
+from sglang_omni.scheduling.sglang_backend.history_cut import DraftSessionKV
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.types import (
     ARRequestData,
@@ -676,8 +682,6 @@ class OmniScheduler(Generic[RequestDataT]):
         self.draft_worker = tp_worker.speculative_worker
         if self.draft_worker is None:
             self.spec_algorithm = SpeculativeAlgorithm.NONE
-        elif session_adapter is not None:
-            raise ValueError("speculative decoding does not support sessions")
         elif server_args.enable_mixed_chunk:
             raise ValueError(
                 "speculative decoding verifies whole blocks; disable enable_mixed_chunk"
@@ -685,6 +689,12 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             self.spec_algorithm = SpeculativeAlgorithm.from_string(
                 get_spec().speculative_algorithm
+            )
+        if self.draft_worker is None or self.session_adapter is None:
+            self.session_draft_kv: DraftSessionKV | None = None
+        else:
+            self.session_draft_kv = self.speculative_session_draft_kv(
+                self.req_to_token_pool, self.token_to_kv_pool_allocator
             )
         self.draft_algorithm = self.spec_algorithm
         self.enable_plain_fallback = enable_plain_fallback
@@ -889,6 +899,72 @@ class OmniScheduler(Generic[RequestDataT]):
         self.model_runner = model_runner
         self.execution_bridge = bridge
 
+    def speculative_session_draft_kv(
+        self,
+        req_to_token_pool: ReqToTokenPool,
+        token_to_kv_pool_allocator: BaseTokenToKVPoolAllocator,
+    ) -> DraftSessionKV:
+        """Return the draft KV that session history cuts move with the target's; raise for a draft sessions cannot keep."""
+        if self.spec_algorithm not in (
+            SpeculativeAlgorithm.DFLASH,
+            SpeculativeAlgorithm.EAGLE3,
+        ):
+            raise ValueError(
+                "speculative sessions support DFLASH and EAGLE3 drafts, "
+                f"not {self.spec_algorithm.name}"
+            )
+        elif self.enable_overlap:
+            raise ValueError(
+                "speculative sessions require synchronous decoding; disable enable_async_decode"
+            )
+        elif self.spec_algorithm == SpeculativeAlgorithm.DFLASH:
+            draft_runner = self.draft_worker.draft_model_runner
+            draft_layers = self.draft_worker.draft_model.layers
+        elif get_spec().enable_multi_layer_eagle:
+            raise ValueError(
+                "speculative sessions require a single-runner EAGLE3 draft; "
+                "disable enable_multi_layer_eagle"
+            )
+        else:
+            draft_runner = self.draft_worker.draft_worker.draft_runner
+            draft_layers = draft_runner.model.model.layers
+        target_pool = token_to_kv_pool_allocator.get_kvcache()
+        draft_pool = draft_runner.token_to_kv_pool
+        if (
+            get_spec().speculative_draft_window_size is not None
+            or draft_runner.req_to_token_pool is not req_to_token_pool
+            or any(
+                type(pool) is not MHATokenToKVPool
+                or pool.page_size != 1
+                or pool.is_quantized_kv_cache
+                or pool.kv_cache_layout != "nhd"
+                for pool in (target_pool, draft_pool)
+            )
+        ):
+            raise ValueError(
+                "speculative sessions require static NHD token pools without draft windowing"
+            )
+        else:
+            pass
+        rotary_embeddings = [layer.self_attn.rotary_emb for layer in draft_layers]
+        rotary_embedding = rotary_embeddings[0]
+        if any(
+            type(rotary) is not RotaryEmbedding
+            or rotary is not rotary_embedding
+            or rotary.rotary_dim != rotary.head_size
+            or not rotary.is_neox_style
+            or rotary.position_start != 0
+            for rotary in rotary_embeddings
+        ):
+            raise ValueError(
+                "speculative sessions require a draft with shared full Neox RoPE"
+            )
+        else:
+            return DraftSessionKV(
+                cache=draft_pool,
+                cos_sin_cache=rotary_embedding.cos_sin_cache,
+            )
+
     def init_upstream_compat_flags(self, server_args: ServerArgs) -> None:
         self.enable_hisparse = bool(server_args.enable_hisparse)
         self.hisparse_coordinator = None
@@ -923,10 +999,17 @@ class OmniScheduler(Generic[RequestDataT]):
         from types import SimpleNamespace
 
         self.session_controller = SessionController(self.tree_cache)
-        if self.session_adapter is not None:
+        if self.session_adapter is None:
+            pass
+        elif self.draft_worker is None:
             self.session_bridge = ARSessionBridge(self, self.session_adapter)
         else:
-            pass
+            self.session_bridge = ARSessionBridge(
+                self,
+                self.session_adapter,
+                speculative_reserve_tokens=get_alloc_reserve_per_decode(),
+                draft_kv=self.session_draft_kv,
+            )
         self.dllm_manager = SimpleNamespace(any_staging_reqs=lambda: False)
         self.load_snapshot_writer = None
         self.kv_events_publisher = SimpleNamespace(
@@ -3281,19 +3364,31 @@ class OmniScheduler(Generic[RequestDataT]):
         scheduler_request = SchedulerRequest(request_id=request_id, data=request_data)
         self.model_runner.on_speculative_tokens(scheduler_request, new_token_ids)
         stream_output_builder = self.stream_output_builder
-        if stream_output_builder is None:
+        bridge = self.session_bridge
+        session_unit = self.active_session_unit(request_id)
+        is_session_output = (
+            session_unit is not None and _get_active_stage() == session_unit.stages[-1]
+        )
+        if stream_output_builder is None and not is_session_output:
             return
         else:
             pass
         messages: list[OutgoingMessage] = []
         for token_id in new_token_ids:
-            messages.extend(
-                stream_output_builder(
-                    request_id,
-                    request_data,
-                    RequestOutput(request_id=request_id, data=token_id),
+            output = RequestOutput(request_id=request_id, data=token_id)
+            if is_session_output:
+                assert bridge is not None
+                messages.extend(
+                    bridge.stream_messages(request_id, request_data, output)
                 )
-            )
+            else:
+                messages.extend(
+                    stream_output_builder(
+                        request_id,
+                        request_data,
+                        output,
+                    )
+                )
         self.put_stream_messages(request_id, messages)
 
     def on_stream_chunk(self, request_id: str, chunk: StreamItem) -> None:
