@@ -276,6 +276,13 @@ def test_interleaved_variant_runs_the_adapter_and_refuses_what_it_cannot_serve(
     )
     config = manager.ConfigManager.from_model_path("m", "interleaved").config
     assert type(config) is LLaDA2UniInterleavedPipelineConfig
+    # Only this variant's phases continue one sequence, so only its thinker reuses prefixes.
+    assert resolve_stage_typed_kwargs(config.stage_named("thinker"))["reuse_prefix"]
+    for variant in ("text", "omni"):
+        other = manager.ConfigManager.from_model_path("m", variant).config
+        assert "reuse_prefix" not in resolve_stage_typed_kwargs(
+            other.stage_named("thinker")
+        )
     args = {
         **resolve_stage_typed_kwargs(config.stage_named("orchestrator")),
         **config.stage_factory_kwargs("orchestrator"),

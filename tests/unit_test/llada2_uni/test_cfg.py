@@ -525,6 +525,34 @@ def test_thinker_result_reports_context_only_while_a_phase_follows(
     assert result.data.get(CONTEXT_KEY) == expected_context
 
 
+@pytest.mark.parametrize("reuse_prefix", [False, True])
+def test_only_a_thinker_asked_to_reuse_prefixes_keeps_the_radix_cache(
+    monkeypatch: pytest.MonkeyPatch, reuse_prefix: bool
+) -> None:
+    from sglang.srt.arg_groups.model_override_base import resolved_view
+    from sglang.srt.server_args import ServerArgs
+
+    from sglang_omni.models.llada2_uni import bootstrap
+    from sglang_omni.scheduling import bootstrap as scheduling_bootstrap
+
+    class Stop(Exception):
+        pass
+
+    def stop_at_infrastructure(server_args: ServerArgs, *args: int, **kwargs: object):
+        raise Stop
+
+    monkeypatch.setattr(DllmConfig, "from_server_args", lambda server_args: None)
+    monkeypatch.setattr(
+        scheduling_bootstrap, "create_sglang_infrastructure", stop_at_infrastructure
+    )
+    server_args = ServerArgs(model_path="dummy")
+
+    with pytest.raises(Stop):
+        bootstrap.create_dllm_thinker_scheduler(server_args, reuse_prefix=reuse_prefix)
+
+    assert resolved_view(server_args).disable_radix_cache is not reuse_prefix
+
+
 def make_planning_backend() -> (
     tuple[cfg_attention_backend.LLaDA2CFGFlashInferAttnBackend, NS]
 ):
