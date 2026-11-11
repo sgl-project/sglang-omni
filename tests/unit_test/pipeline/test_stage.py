@@ -25,6 +25,7 @@ from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, construct_stage
 from sglang_omni.proto import (
     DataReadyMessage,
+    OmniRequest,
     ShutdownMessage,
     StagePayload,
     SubmitMessage,
@@ -34,12 +35,17 @@ from sglang_omni.proto.session import (
     SESSION_METADATA_KEY,
     SessionIdentity,
     SessionOperation,
+    SessionOperationKind,
     TimedChunk,
 )
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
-from sglang_omni.scheduling.message import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
-from sglang_omni.scheduling.session import SessionHooks, SessionScheduler
+from sglang_omni.scheduling.session import (
+    SessionContext,
+    SessionHooks,
+    SessionScheduler,
+)
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from tests.unit_test.fixtures.pipeline_fakes import (
@@ -191,6 +197,166 @@ def test_stage_routes_results_streams_and_clears_abort_state(monkeypatch) -> Non
         assert relay.cleaned[-1] == "req-1"
         assert scheduler.aborted == ["req-1"]
         assert not stage_obj.stream_queue.has("req-1")
+
+    asyncio.run(run())
+
+
+def test_abort_during_session_append_forwarding_drops_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        scheduler = FakeScheduler()
+        stage_obj = make_stage(
+            name="source", scheduler=scheduler, stream_targets=["sink"]
+        )
+        forwarding = asyncio.Event()
+        release = asyncio.Event()
+
+        async def hold_send_to_stage(
+            request_id: str,
+            target: str,
+            payload: StagePayload,
+            **kwargs: object,
+        ) -> None:
+            del request_id, target, payload, kwargs
+            forwarding.set()
+            await release.wait()
+
+        monkeypatch.setattr(stage_obj, "send_to_stage", hold_send_to_stage)
+        payload = make_stage_payload(request_id="u1")
+        payload.request.metadata[SESSION_METADATA_KEY] = SessionOperation(
+            operation="append",
+            session_identity=SessionIdentity("session"),
+            stages=("source", "sink"),
+            chunk=TimedChunk("audio", 0, 20, 0, b"pcm"),
+        ).to_dict()
+        dispatch = asyncio.create_task(stage_obj.execute(payload))
+        await asyncio.wait_for(forwarding.wait(), timeout=1)
+
+        stage_obj.on_abort("u1")
+        release.set()
+        await dispatch
+
+        assert scheduler.aborted == ["u1"]
+        assert scheduler.inbox.empty()
+
+    asyncio.run(run())
+
+
+def test_unexpected_stage_abort_fences_successor_and_isolates_other_session() -> None:
+    class AbortHooks(SessionHooks):
+        def __init__(self) -> None:
+            self.appended: list[str] = []
+            self.first_entered = threading.Event()
+            self.healthy_entered = threading.Event()
+            self.release_first = threading.Event()
+            self.failed_closed = threading.Event()
+            self.cancelled_during_first_hook = False
+
+        def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
+            del session_identity, request
+
+        def append(
+            self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
+        ) -> StagePayload:
+            del chunk
+            self.appended.append(payload.request_id)
+            if payload.request_id == "u1":
+                self.first_entered.set()
+                self.release_first.wait(5)
+                self.cancelled_during_first_hook = context.cancelled.is_set()
+            elif payload.request_id == "healthy":
+                self.healthy_entered.set()
+            else:
+                pass
+            return payload
+
+        def close(self, session_identity: SessionIdentity) -> None:
+            if session_identity.id == "failed":
+                self.failed_closed.set()
+            else:
+                pass
+
+    async def run() -> None:
+        hooks = AbortHooks()
+        scheduler = SessionScheduler(hooks, max_concurrency=3)
+        stage_obj = make_stage(name="source", scheduler=scheduler)
+        worker = threading.Thread(target=scheduler.start, daemon=True)
+        worker.start()
+        failed_identity = SessionIdentity("failed")
+        healthy_identity = SessionIdentity("healthy")
+
+        def session_payload(
+            request_id: str,
+            operation: SessionOperationKind,
+            session_identity: SessionIdentity,
+            chunk: TimedChunk | None = None,
+        ) -> StagePayload:
+            payload = make_stage_payload(request_id=request_id)
+            payload.request.metadata[SESSION_METADATA_KEY] = SessionOperation(
+                operation=operation,
+                session_identity=session_identity,
+                stages=("source",),
+                chunk=chunk,
+            ).to_dict()
+            return payload
+
+        def next_output(request_id: str) -> OutgoingMessage:
+            while True:
+                output = scheduler.outbox.get(timeout=5)
+                if output.request_id == request_id:
+                    return output
+
+        try:
+            await stage_obj.execute(
+                session_payload("open-failed", "open", failed_identity)
+            )
+            await stage_obj.execute(
+                session_payload("open-healthy", "open", healthy_identity)
+            )
+            await stage_obj.execute(
+                session_payload(
+                    "u1",
+                    "append",
+                    failed_identity,
+                    TimedChunk("audio", 0, 20, 0, b"u1"),
+                )
+            )
+            assert await asyncio.to_thread(hooks.first_entered.wait, 5)
+            await stage_obj.execute(
+                session_payload(
+                    "u2",
+                    "append",
+                    failed_identity,
+                    TimedChunk("audio", 20, 20, 1, b"u2"),
+                )
+            )
+            await stage_obj.execute(
+                session_payload(
+                    "healthy",
+                    "append",
+                    healthy_identity,
+                    TimedChunk("audio", 0, 20, 0, b"healthy"),
+                )
+            )
+            assert await asyncio.to_thread(hooks.healthy_entered.wait, 5)
+
+            stage_obj.on_abort("u1")
+            assert scheduler.append_operation_states["u1"].cancelled.is_set()
+            hooks.release_first.set()
+
+            successor_output = await asyncio.to_thread(next_output, "u2")
+            assert successor_output.type == "error"
+            assert "terminal" in str(successor_output.data)
+            assert await asyncio.to_thread(hooks.failed_closed.wait, 5)
+            assert hooks.cancelled_during_first_hook
+            assert sorted(hooks.appended) == ["healthy", "u1"]
+            assert healthy_identity in scheduler.open_sessions
+        finally:
+            hooks.release_first.set()
+            scheduler.stop()
+            await asyncio.to_thread(worker.join, 5)
+        assert not worker.is_alive()
 
     asyncio.run(run())
 

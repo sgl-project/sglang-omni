@@ -44,6 +44,7 @@ that append; chunks emitted at any other time go back on the session's read.
 from __future__ import annotations
 
 import asyncio
+import logging
 import queue
 import threading
 import time
@@ -76,6 +77,7 @@ DEFAULT_MAX_OPEN_SESSIONS = 64
 DEFAULT_MAX_CONCURRENCY = 4
 NODE_STAGE_MAX_OPEN_SESSIONS = 16
 DEFAULT_MAX_STATE_BYTES_PER_SESSION = 1 << 30
+logger = logging.getLogger(__name__)
 
 
 class ChunkEmitter(Protocol):
@@ -162,6 +164,7 @@ class BatchedSessionHooks(SessionHooks):
 @dataclass(kw_only=True)
 class StageSession:
     is_open: bool = False
+    is_close_failed: bool = False
     output_read: StagePayload | None = None
     # note (luojiaxuan): the fragments held for the chunk the next append restores; all of one turn.
     fragments: list[TimedChunk] = field(default_factory=list)
@@ -198,6 +201,15 @@ class SessionOperationCursor:
     next_sequence: int = 0
     runnable_sequence: int = 0
     completed_sequences: set[int] = field(default_factory=set)
+    failed_sequence: int | None = None
+    failed_operation: SessionOperationKind | None = None
+
+
+@dataclass(kw_only=True)
+class AppendOperationState:
+    session_identity: SessionIdentity
+    cancelled: threading.Event
+    is_executing: bool = False
 
 
 class SessionInbox(queue.Queue[IncomingMessage]):
@@ -239,7 +251,8 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
         self.max_open_sessions = max_open_sessions
         self.max_state_bytes_per_session = max_state_bytes_per_session
         self.open_sessions: dict[SessionIdentity, StageSession] = {}
-        self.append_cancel_events: dict[str, threading.Event] = {}
+        self.append_operation_states: dict[str, AppendOperationState] = {}
+        self.intentional_preemptions: set[str] = set()
         self.session_table_lock = threading.Lock()
         self.is_shutting_down = False
         self.arrivals_by_request_id: dict[str, OperationArrival] = {}
@@ -318,13 +331,17 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
                 )
                 cursor.next_sequence += 1
                 if session_operation.should_preempt:
-                    for request_id, arrival in self.arrivals_by_request_id.items():
-                        cancel_event = self.append_cancel_events.get(request_id)
+                    for (
+                        request_id,
+                        append_state,
+                    ) in self.append_operation_states.items():
+                        arrival = self.arrivals_by_request_id.get(request_id)
                         if (
-                            arrival.session_identity == session_identity
-                            and cancel_event is not None
+                            append_state.session_identity == session_identity
+                            and arrival is not None
+                            and arrival.operation == "append"
                         ):
-                            cancel_event.set()
+                            append_state.cancelled.set()
                         else:
                             pass
                 else:
@@ -333,35 +350,133 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
 
     def finish_operation(self, request_id: str) -> None:
         with self.operation_finished:
-            arrival = self.arrivals_by_request_id.pop(request_id, None)
-            if arrival is None:
+            self.finish_operation_locked(request_id)
+
+    def finish_operation_locked(self, request_id: str) -> None:
+        self.append_operation_states.pop(request_id, None)
+        self.intentional_preemptions.discard(request_id)
+        arrival = self.arrivals_by_request_id.pop(request_id, None)
+        if arrival is None:
+            return
+        else:
+            cursor = self.cursors_by_session.get(arrival.session_identity)
+            if cursor is None:
                 return
             else:
-                cursor = self.cursors_by_session.get(arrival.session_identity)
-                if cursor is None:
-                    return
-                else:
-                    # Note (Junnan Li): An aborted operation can finish before its predecessors ran.
-                    cursor.completed_sequences.add(arrival.sequence)
-                    while cursor.runnable_sequence in cursor.completed_sequences:
-                        cursor.completed_sequences.discard(cursor.runnable_sequence)
-                        cursor.runnable_sequence += 1
-                    if cursor.runnable_sequence == cursor.next_sequence:
+                cursor.completed_sequences.add(arrival.sequence)
+                while cursor.runnable_sequence in cursor.completed_sequences:
+                    cursor.completed_sequences.discard(cursor.runnable_sequence)
+                    cursor.runnable_sequence += 1
+                if cursor.runnable_sequence == cursor.next_sequence:
+                    if (
+                        cursor.failed_sequence is None
+                        or arrival.session_identity not in self.open_sessions
+                    ):
                         self.cursors_by_session.pop(arrival.session_identity)
                     else:
                         pass
-                    self.operation_finished.notify_all()
+                else:
+                    pass
+                self.operation_finished.notify_all()
+
+    def mark_operation_failed_locked(self, arrival: OperationArrival) -> None:
+        cursor = self.cursors_by_session.get(arrival.session_identity)
+        assert cursor is not None, "an arrival has no session cursor"
+        if cursor.failed_sequence is None or arrival.sequence < cursor.failed_sequence:
+            cursor.failed_sequence = arrival.sequence
+            cursor.failed_operation = arrival.operation
+        else:
+            pass
+        self.operation_finished.notify_all()
+
+    def mark_operation_failed(self, request_id: str) -> None:
+        with self.operation_finished:
+            arrival = self.arrivals_by_request_id.get(request_id)
+            if arrival is not None:
+                self.mark_operation_failed_locked(arrival)
+            else:
+                pass
+
+    def operation_is_terminal_locked(
+        self, request_id: str, session_identity: SessionIdentity
+    ) -> bool:
+        cursor = self.cursors_by_session.get(session_identity)
+        if cursor is None or cursor.failed_sequence is None:
+            return False
+        else:
+            arrival = self.arrivals_by_request_id.get(request_id)
+            if arrival is None:
+                return True
+            else:
+                return arrival.sequence >= cursor.failed_sequence
+
+    def operation_is_terminal(
+        self, request_id: str, session_identity: SessionIdentity
+    ) -> bool:
+        with self.operation_finished:
+            return self.operation_is_terminal_locked(request_id, session_identity)
+
+    def begin_append_execution(
+        self, request_id: str, session_identity: SessionIdentity
+    ) -> bool:
+        with self.operation_finished:
+            append_state = self.append_operation_states.get(request_id)
+            arrival = self.arrivals_by_request_id.get(request_id)
+            if (
+                append_state is None
+                or arrival is None
+                or self.is_shutting_down
+                or self.operation_is_terminal_locked(request_id, session_identity)
+            ):
+                return False
+            elif self.is_aborted(request_id):
+                if request_id not in self.intentional_preemptions:
+                    self.mark_operation_failed_locked(arrival)
+                else:
+                    pass
+                append_state.cancelled.set()
+                return False
+            else:
+                append_state.is_executing = True
+                return True
 
     def consume_if_aborted(self, request_id: str) -> bool:
         aborted = super().consume_if_aborted(request_id)
-        with self.session_table_lock:
+        session_identity: SessionIdentity | None = None
+        is_close_operation = False
+        with self.operation_finished:
             arrival = self.arrivals_by_request_id.get(request_id)
-            is_close_operation = arrival is not None and arrival.operation == "close"
+            is_close_operation = (
+                aborted and arrival is not None and arrival.operation == "close"
+            )
+            if aborted and arrival is not None:
+                session_identity = arrival.session_identity
+                if arrival.operation == "open" or (
+                    arrival.operation == "append"
+                    and request_id not in self.intentional_preemptions
+                ):
+                    self.mark_operation_failed_locked(arrival)
+                else:
+                    pass
+                append_state = self.append_operation_states.get(request_id)
+                if not is_close_operation and (
+                    append_state is None or not append_state.is_executing
+                ):
+                    self.finish_operation_locked(request_id)
+                else:
+                    pass
+            elif aborted:
+                self.intentional_preemptions.discard(request_id)
+            else:
+                pass
         if aborted and is_close_operation:
             # Note (Junnan Li): A timed-out close is request-aborted; skipping it would leak the state.
             return False
         elif aborted:
-            self.finish_operation(request_id)
+            if session_identity is not None:
+                self.close_failed_session_if_ready(session_identity)
+            else:
+                pass
             return aborted
         else:
             return aborted
@@ -402,19 +517,72 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
     def settle_operation(
         self, request_id: str, session_identity: SessionIdentity
     ) -> None:
-        # Note (Junnan Li): stop skips a session whose hook is running; it is closed here.
-        with self.session_table_lock:
+        with self.operation_finished:
+            arrival = self.arrivals_by_request_id.get(request_id)
+            if (
+                arrival is not None
+                and (
+                    arrival.operation == "open"
+                    or (
+                        arrival.operation == "append"
+                        and request_id not in self.intentional_preemptions
+                    )
+                )
+                and self.is_aborted(request_id)
+            ):
+                self.mark_operation_failed_locked(arrival)
+            else:
+                pass
+            self.finish_operation_locked(request_id)
+            is_shutting_down = self.is_shutting_down
             session = (
-                self.open_sessions.get(session_identity)
-                if self.is_shutting_down
-                else None
+                self.open_sessions.get(session_identity) if is_shutting_down else None
             )
-        if session is not None:
+        if is_shutting_down and session is not None:
             with session.lock:
                 self.close_session(session_identity, session)
-        else:
+        elif is_shutting_down:
             pass
-        self.finish_operation(request_id)
+        else:
+            self.close_failed_session_if_ready(session_identity)
+
+    def close_failed_session_if_ready(self, session_identity: SessionIdentity) -> None:
+        with self.operation_finished:
+            cursor = self.cursors_by_session.get(session_identity)
+            session = self.open_sessions.get(session_identity)
+            if (
+                cursor is None
+                or cursor.failed_sequence is None
+                or cursor.failed_operation not in ("open", "append")
+                or cursor.runnable_sequence <= cursor.failed_sequence
+                or session is None
+                or session.is_close_failed
+                or self.is_shutting_down
+            ):
+                return
+            else:
+                pass
+        with session.lock:
+            with self.operation_finished:
+                cursor = self.cursors_by_session.get(session_identity)
+                should_close = (
+                    self.open_sessions.get(session_identity) is session
+                    and cursor is not None
+                    and cursor.failed_sequence is not None
+                    and cursor.failed_operation in ("open", "append")
+                    and cursor.runnable_sequence > cursor.failed_sequence
+                    and not session.is_close_failed
+                    and not self.is_shutting_down
+                )
+            if should_close:
+                try:
+                    self.close_session(session_identity, session)
+                except Exception:
+                    logger.exception(
+                        f"Failed to close terminal session {session_identity}"
+                    )
+            else:
+                pass
 
     def run_batch(
         self, batch: list[IncomingMessage], loop: asyncio.AbstractEventLoop
@@ -427,8 +595,8 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
             pass
         batch = [
             message
-            for index, message in enumerate(batch)
-            if index == 0 or not self.consume_if_aborted(message.request_id)
+            for message in batch
+            if not self.consume_if_aborted(message.request_id)
         ]
         try:
             results = self.compute_batch([message.data for message in batch])
@@ -556,12 +724,36 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
         return [results[payload.request_id] for payload in payloads]
 
     def cancel_operation(self, request_id: str) -> None:
-        with self.session_table_lock:
-            cancel_event = self.append_cancel_events.get(request_id)
-            if cancel_event is not None:
-                cancel_event.set()
+        with self.operation_finished:
+            arrival = self.arrivals_by_request_id.get(request_id)
+            if arrival is not None and (
+                arrival.operation == "open"
+                or (
+                    arrival.operation == "append"
+                    and request_id not in self.intentional_preemptions
+                )
+            ):
+                self.mark_operation_failed_locked(arrival)
             else:
                 pass
+            if arrival is not None and arrival.operation == "append":
+                append_state = self.append_operation_states.get(request_id)
+                if append_state is not None:
+                    append_state.cancelled.set()
+                else:
+                    pass
+            else:
+                pass
+
+    def abort_preempted(self, request_id: str) -> None:
+        """Abort a deliberately preempted append without failing its session."""
+        with self.operation_finished:
+            arrival = self.arrivals_by_request_id.get(request_id)
+            if arrival is not None and arrival.operation == "append":
+                self.intentional_preemptions.add(request_id)
+            else:
+                pass
+        super().abort(request_id)
 
     def release_sessions_on_scheduler_stop(self) -> None:
         """Release every session still open when this stage's scheduler stops.
@@ -571,11 +763,18 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
         release_sessions_on_scheduler_stop is used when a stage/scheduler stops.
         In this time, all the sessions that are still open should be closed.
         """
-        with self.session_table_lock:
+        with self.operation_finished:
             self.is_shutting_down = True
-            for cancel_event in self.append_cancel_events.values():
-                cancel_event.set()
+            for append_state in self.append_operation_states.values():
+                append_state.cancelled.set()
             open_sessions = list(self.open_sessions.items())
+            for request_id in tuple(self.arrivals_by_request_id):
+                append_state = self.append_operation_states.get(request_id)
+                if append_state is None or not append_state.is_executing:
+                    self.finish_operation_locked(request_id)
+                else:
+                    pass
+            self.operation_finished.notify_all()
         errors: list[Exception] = []
         for session_identity, session in open_sessions:
             if session.lock.acquire(blocking=False):
@@ -603,14 +802,25 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
         on the stage/scheduler should not be affected.
         """
         if session.is_open:
-            self.session_hooks.close(session_identity)
-            session.is_open = False
+            try:
+                self.session_hooks.close(session_identity)
+            except BaseException:
+                session.is_close_failed = True
+                raise
+            else:
+                session.is_open = False
+                session.is_close_failed = False
         else:
             pass
-        with self.session_table_lock:
+        with self.operation_finished:
             self.open_sessions.pop(session_identity, None)
             reader = session.output_read
             session.output_read = None
+            cursor = self.cursors_by_session.get(session_identity)
+            if cursor is not None and cursor.runnable_sequence == cursor.next_sequence:
+                self.cursors_by_session.pop(session_identity)
+            else:
+                pass
         if reader is not None:
             reader.data = {"closed": True}
             self.emit_result(reader.request_id, reader, self.outbox)
@@ -702,6 +912,12 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
     ) -> StagePayload:
         session_identity = session_operation.session_identity
         operation = session_operation.operation
+        if operation != "close" and self.operation_is_terminal(
+            payload.request_id, session_identity
+        ):
+            raise RuntimeError("session is terminal after an uncommitted operation")
+        else:
+            pass
         if operation == "open":
             self.open_session(session_identity, payload.request)
             payload.data = {"opened": True}
@@ -718,7 +934,13 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
             else:
                 with session.lock:
                     if operation == "close":
-                        self.close_session(session_identity, session)
+                        try:
+                            self.close_session(session_identity, session)
+                        except BaseException:
+                            self.mark_operation_failed(payload.request_id)
+                            raise
+                        else:
+                            pass
                         payload.data = {"closed": True}
                         return payload
                     elif self.is_shutting_down:
@@ -746,8 +968,26 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
                         payload.data = {"controlled": True}
                         return payload
                     else:
-                        append = self.start_append(payload, session_operation, session)
                         try:
+                            append = self.start_append(
+                                payload, session_operation, session
+                            )
+                            if not self.begin_append_execution(
+                                payload.request_id, session_identity
+                            ):
+                                with self.operation_finished:
+                                    is_intentional_preemption = (
+                                        payload.request_id
+                                        in self.intentional_preemptions
+                                    )
+                                if is_intentional_preemption:
+                                    return payload
+                                else:
+                                    raise RuntimeError(
+                                        "session append was aborted before execution"
+                                    )
+                            else:
+                                pass
                             emit_session_stage_started(
                                 request_id=payload.request_id,
                                 session_identity=session_identity,
@@ -759,12 +999,10 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
                             self.check_usage(session_identity)
                             return updated_payload
                         except BaseException:
+                            self.mark_operation_failed(payload.request_id)
                             # note (Junnan Li): A later unit of this session may already be queued; closing keeps it off the state this unit left behind.
                             self.close_session(session_identity, session)
                             raise
-                        finally:
-                            with self.session_table_lock:
-                                self.append_cancel_events.pop(payload.request_id, None)
 
     def start_append(
         self,
@@ -790,10 +1028,23 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
         else:
             pass
         cancel_event = threading.Event()
+        append_state = AppendOperationState(
+            session_identity=session_operation.session_identity,
+            cancelled=cancel_event,
+        )
         with self.session_table_lock:
-            self.append_cancel_events[payload.request_id] = cancel_event
+            self.append_operation_states[payload.request_id] = append_state
         if self.is_aborted(payload.request_id):
             cancel_event.set()
+            with self.operation_finished:
+                if payload.request_id not in self.intentional_preemptions:
+                    arrival = self.arrivals_by_request_id.get(payload.request_id)
+                    if arrival is not None:
+                        self.mark_operation_failed_locked(arrival)
+                    else:
+                        pass
+                else:
+                    pass
         else:
             pass
 
@@ -827,11 +1078,22 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
         results: dict[str, StagePayload | Exception] = {}
         started: list[SessionAppend] = []
         started_sessions: list[StageSession] = []
+        runnable: list[SessionAppend] = []
+        runnable_sessions: list[StageSession] = []
 
-        def fail(append: SessionAppend, session: StageSession, exc: Exception) -> None:
+        def fail_append(
+            request_id: str,
+            session_identity: SessionIdentity,
+            session: StageSession,
+            exception: Exception,
+        ) -> None:
+            self.mark_operation_failed(request_id)
             # note (Junnan Li): A later unit of this session may already be queued; closing keeps it off the state this unit left behind.
-            self.close_session(append.context.session_identity, session)
-            results[append.payload.request_id] = exc
+            try:
+                self.close_session(session_identity, session)
+            except Exception:
+                logger.exception(f"Failed to close session {session_identity}")
+            results[request_id] = exception
 
         try:
             with ExitStack() as held_locks:
@@ -841,26 +1103,59 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
                             session_operation.session_identity
                         )
                     if session is None:
-                        results[payload.request_id] = ValueError(
-                            "unknown session open index"
-                        )
+                        if self.operation_is_terminal(
+                            payload.request_id, session_operation.session_identity
+                        ):
+                            results[payload.request_id] = RuntimeError(
+                                "session is terminal after an uncommitted operation"
+                            )
+                        else:
+                            results[payload.request_id] = ValueError(
+                                "unknown session open index"
+                            )
                     else:
                         held_locks.enter_context(session.lock)
                         if self.is_shutting_down:
                             results[payload.request_id] = RuntimeError(
                                 "session scheduler is stopping"
                             )
-                        else:
-                            started.append(
-                                self.start_append(payload, session_operation, session)
+                        elif self.operation_is_terminal(
+                            payload.request_id, session_operation.session_identity
+                        ):
+                            results[payload.request_id] = RuntimeError(
+                                "session is terminal after an uncommitted operation"
                             )
-                            started_sessions.append(session)
-                if started:
+                        else:
+                            try:
+                                started.append(
+                                    self.start_append(
+                                        payload, session_operation, session
+                                    )
+                                )
+                                started_sessions.append(session)
+                            except Exception as exc:
+                                fail_append(
+                                    payload.request_id,
+                                    session_operation.session_identity,
+                                    session,
+                                    exc,
+                                )
+                for append, session in zip(started, started_sessions, strict=True):
+                    if self.begin_append_execution(
+                        append.payload.request_id, append.context.session_identity
+                    ):
+                        runnable.append(append)
+                        runnable_sessions.append(session)
+                    else:
+                        results[append.payload.request_id] = RuntimeError(
+                            "session append was aborted before execution"
+                        )
+                if runnable:
                     try:
                         batch_observation = capture_session_stage_start()
                         if batch_observation is not None:
                             run_id, batch_start_ns = batch_observation
-                            for append in started:
+                            for append in runnable:
                                 emit_session_stage_started(
                                     request_id=append.payload.request_id,
                                     session_identity=append.context.session_identity,
@@ -870,30 +1165,56 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
                                 )
                         else:
                             pass
-                        updated_payloads = self.session_hooks.append_batch(started)
+                        updated_payloads = self.session_hooks.append_batch(runnable)
+                        if len(updated_payloads) != len(runnable):
+                            raise RuntimeError(
+                                "session append batch returned an unexpected number of payloads"
+                            )
+                        else:
+                            pass
                     except Exception as exc:
                         for append, session in zip(
-                            started, started_sessions, strict=True
+                            runnable, runnable_sessions, strict=True
                         ):
-                            fail(append, session, exc)
+                            fail_append(
+                                append.payload.request_id,
+                                append.context.session_identity,
+                                session,
+                                exc,
+                            )
                     else:
                         for append, session, updated_payload in zip(
-                            started, started_sessions, updated_payloads, strict=True
+                            runnable,
+                            runnable_sessions,
+                            updated_payloads,
+                            strict=True,
                         ):
                             try:
                                 self.check_usage(append.context.session_identity)
                                 results[append.payload.request_id] = updated_payload
                             except Exception as exc:
-                                fail(append, session, exc)
+                                fail_append(
+                                    append.payload.request_id,
+                                    append.context.session_identity,
+                                    session,
+                                    exc,
+                                )
                 else:
                     pass
         except Exception as exc:
+            for append, session in zip(started, started_sessions, strict=True):
+                if append.payload.request_id not in results:
+                    fail_append(
+                        append.payload.request_id,
+                        append.context.session_identity,
+                        session,
+                        exc,
+                    )
+                else:
+                    pass
             for payload, _ in appends:
                 results.setdefault(payload.request_id, exc)
         finally:
-            with self.session_table_lock:
-                for append in started:
-                    self.append_cancel_events.pop(append.payload.request_id, None)
             for payload, session_operation in appends:
                 self.settle_operation(
                     payload.request_id, session_operation.session_identity

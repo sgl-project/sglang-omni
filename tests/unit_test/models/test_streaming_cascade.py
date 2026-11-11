@@ -1169,7 +1169,7 @@ def test_a_client_cancel_while_a_dialog_append_is_in_flight_keeps_the_session(
     cancel = start(
         operation("cancel", "control", control_chunk(INTERRUPT), should_preempt=True)
     )
-    assert scheduler.append_cancel_events["question"].wait(5)
+    assert scheduler.append_operation_states["question"].cancelled.wait(5)
     # note (luojiaxuan): the dialog takes the chunk only after the preempt has cancelled its append.
     time.sleep(0.1)
     release.set()
@@ -1205,7 +1205,7 @@ def test_a_client_cancel_while_the_dialog_interrupts_its_reply_keeps_the_interru
                 ),
             )
         )
-        assert scheduler.append_cancel_events["speech"].is_set()
+        assert scheduler.append_operation_states["speech"].cancelled.is_set()
         interrupt_reply(dialog)
 
     monkeypatch.setattr(Dialog, "interrupt_reply", preempted_interrupt_reply)

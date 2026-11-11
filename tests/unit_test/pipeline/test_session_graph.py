@@ -1252,7 +1252,14 @@ class HeldRelay(SessionHooks):
     ) -> StagePayload:
         self.events.put(("append", self.name, context.session_identity.id, chunk.turn))
         if self.name == "source" and chunk.turn == 1:
-            context.cancelled.wait(OUTPUT_TIMEOUT_S)
+            cancelled = context.cancelled.wait(OUTPUT_TIMEOUT_S)
+            self.events.put(
+                (
+                    "cancelled" if cancelled else "finished",
+                    self.name,
+                    context.session_identity.id,
+                )
+            )
             payload.data = {}
         elif self.name == "source":
             payload.data = {"turn": chunk.turn}
@@ -1298,6 +1305,7 @@ async def test_a_preempting_interrupt_drops_its_turn_at_every_owner_of_the_targe
     ) as (coordinator, events, _):
         coordinator.session_graph = preempt_graph()
         identity = await coordinator.open_session(OmniRequest(None))
+        relay_identity = coordinator.graphs[identity.id].nodes["relay"]
         outputs = coordinator.session_outputs(identity)
         log: list[StageEvent] = []
 
@@ -1318,6 +1326,7 @@ async def test_a_preempting_interrupt_drops_its_turn_at_every_owner_of_the_targe
             {"turn": 2}
         ]
         assert has_appended("sink", 2) and not has_appended("sink", 1)
+        assert ("cancelled", "source", relay_identity.id) in log
         await outputs.aclose()
         await wait_until(lambda: not coordinator.sessions and not coordinator.graphs)
 

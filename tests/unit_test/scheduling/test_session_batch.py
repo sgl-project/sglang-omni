@@ -336,7 +336,26 @@ def test_failed_batch_ends_only_its_sessions():
     assert hooks.calls == [["a0", "b0"]]
 
 
-def test_aborted_unit_leaves_the_batch_without_blocking_its_session():
+def test_batch_result_count_mismatch_fails_every_runnable_session() -> None:
+    class ShortBatchHooks(RecordingHooks):
+        def append_batch(self, appends: list[SessionAppend]) -> list[StagePayload]:
+            return super().append_batch(appends)[:1]
+
+    hooks = ShortBatchHooks()
+    scheduler = SessionScheduler(hooks)
+    outputs = run_backlog(
+        scheduler,
+        opens("a", "b")
+        + [message("a0", "append", "a", 0), message("b0", "append", "b", 0)],
+    )
+    assert outputs["a0"].type == outputs["b0"].type == "error"
+    assert isinstance(outputs["a0"].data, RuntimeError)
+    assert isinstance(outputs["b0"].data, RuntimeError)
+    assert hooks.calls == [["a0", "b0"]]
+    assert not scheduler.open_sessions
+
+
+def test_aborted_append_before_execution_fences_only_its_session():
     hooks = RecordingHooks()
     scheduler = SessionScheduler(hooks)
     outputs = run_backlog(
@@ -350,4 +369,7 @@ def test_aborted_unit_leaves_the_batch_without_blocking_its_session():
         aborted=("b0",),
     )
     assert set(outputs) == {"open-a", "open-b", "a0", "b1"}
-    assert hooks.calls == [["a0", "b1"]]
+    assert outputs["a0"].type == "result"
+    assert outputs["b1"].type == "error"
+    assert isinstance(outputs["b1"].data, RuntimeError)
+    assert hooks.calls == [["a0"]]
