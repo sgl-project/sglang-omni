@@ -641,6 +641,47 @@ def test_coalesced_chunks_vocode_each_request_like_one_chunk_at_a_time() -> None
         )
 
 
+class FailingBatchDecoder:
+    """Fails every decode, after the client of one request went away during it."""
+
+    def __init__(self, aborted_request_id: str) -> None:
+        self.aborted_request_id = aborted_request_id
+        self.vocoder: Drama3VocoderScheduler | None = None
+
+    def decode_windows(
+        self, codebook_codes: list[torch.Tensor], discard_frames: int = 0
+    ) -> list[torch.Tensor]:
+        assert self.vocoder is not None
+        self.vocoder.record_aborted_request_id(self.aborted_request_id)
+        raise RuntimeError("decode failed")
+
+
+def test_a_failed_window_decode_reports_no_error_for_a_request_aborted_during_it() -> (
+    None
+):
+    """A client that went away while its window decoded with others got an error
+    message when that decode failed."""
+    decoder = FailingBatchDecoder("request-b")
+    vocoder = vocoder_with(FrameNumberCodec(), window_batch_decoder=decoder)
+    decoder.vocoder = vocoder
+    for request_id in ("request-a", "request-b"):
+        vocoder.inbox.put(
+            IncomingMessage(
+                request_id=request_id,
+                type="stream_chunk",
+                data=StreamItem(
+                    chunk_id=0, data=numbered_frames(4).T, from_stage="tts_engine"
+                ),
+            )
+        )
+
+    vocoder.handle_message(vocoder.get_batch_message(), None)
+
+    assert [(message.request_id, message.type) for message in drained(vocoder)] == [
+        ("request-a", "error")
+    ]
+
+
 @pytest.mark.accelerator
 def test_window_graphs_decode_every_window_length_like_eager() -> None:
     if not torch.cuda.is_available():

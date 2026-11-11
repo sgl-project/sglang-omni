@@ -385,7 +385,10 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
                 )
         except Exception as exc:
             for window in windows:
-                self.fail_stream(window.request_id, exc, failed)
+                if self.is_aborted(window.request_id):
+                    pass
+                else:
+                    self.fail_stream(window.request_id, exc, failed)
             return
         for window, audio in zip(windows, audios, strict=True):
             if self.is_aborted(window.request_id):
