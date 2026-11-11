@@ -114,6 +114,10 @@ func decodeAudio(path string) ([]byte, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, err
 	}
+	path, err := filepath.Abs(path) // a name starting with "-" is not an option to afconvert
+	if err != nil {
+		return nil, err
+	}
 	dir, err := os.MkdirTemp("", "voxt-transcribe-")
 	if err != nil {
 		return nil, err

@@ -126,6 +126,11 @@ func TestDecodeAudioReadsWAVAndRefusesText(t *testing.T) {
 	if err != nil || len(pcm) < 10000 || len(pcm) > 11500 {
 		t.Fatalf("pcm %d bytes, err %v", len(pcm), err)
 	}
+	t.Chdir(dir)
+	os.Rename(in, filepath.Join(dir, "-a.wav"))
+	if pcm, err := decodeAudio("-a.wav"); err != nil || len(pcm) < 10000 {
+		t.Fatalf("-a.wav: %d bytes, err %v", len(pcm), err)
+	}
 	txt := filepath.Join(dir, "notes.txt")
 	os.WriteFile(txt, []byte("hello"), 0o644)
 	if _, err := decodeAudio(txt); err == nil || !strings.Contains(err.Error(), "not an audio or video file") {
