@@ -401,6 +401,24 @@ func TestRewriteReadsASlowSelection(t *testing.T) {
 	}
 }
 
+// TestRewriteLogsNoSelection: when the helper reads no selection, the
+// log says which steps it tried, so a report from an app that hides its
+// selection (Acrobat, a page selected with ⌘A) shows where the read
+// stopped (#3835).
+func TestRewriteLogsNoSelection(t *testing.T) {
+	sel := &fakeSelector{steps: []string{"focus=AXWebArea", "range=0,0", "copy: clipboard unchanged held=control"}}
+	h := newHarness(t, &fakeFile{text: " hello aura link "}, &fakeLLM{text: "Short."}, func(c *Config, s *settings.Settings) { c.Select = sel })
+	id, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Target: slack})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.speak(id, 5)
+	h.rec.wait(t)
+	if !h.logged("no selection (none, 1 ms; focus=AXWebArea, range=0,0, copy: clipboard unchanged held=control)") {
+		t.Errorf("logs %q", h.logs)
+	}
+}
+
 // TestWriteCancel cancels Translate while it reads the selection and
 // while the answer streams: nothing is pasted or kept.
 func TestWriteCancel(t *testing.T) {
