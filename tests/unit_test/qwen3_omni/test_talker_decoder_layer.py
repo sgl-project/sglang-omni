@@ -129,6 +129,11 @@ def test_talker_layer_builds_exactly_one_talker_moe_block(
     assert layer.mlp.kwargs["layer_id"] == 1
     assert layer.mlp.kwargs["config"] is config
     assert layer.mlp.kwargs["prefix"] == "mlp"
+    assert len(attention_calls) == 1
+    assert layer.self_attn.kwargs is attention_calls[0]
+    assert attention_calls[0]["config"] is config
+    assert attention_calls[0]["layer_id"] == 1
+    assert attention_calls[0]["prefix"] == "self_attn"
     assert thinker_moe_built == []
 
     # A non-empty weight prefix must propagate to both submodule paths.
@@ -139,5 +144,9 @@ def test_talker_layer_builds_exactly_one_talker_moe_block(
     assert len(built) == 2
     assert prefixed.mlp.kwargs["layer_id"] == 2
     assert prefixed.mlp.kwargs["prefix"] == "talker.layers.2.mlp"
-    assert attention_calls[-1]["prefix"] == "talker.layers.2.self_attn"
+    assert len(attention_calls) == 2
+    assert prefixed.self_attn.kwargs is attention_calls[1]
+    assert attention_calls[1]["config"] is config
+    assert attention_calls[1]["layer_id"] == 2
+    assert attention_calls[1]["prefix"] == "talker.layers.2.self_attn"
     assert thinker_moe_built == []
