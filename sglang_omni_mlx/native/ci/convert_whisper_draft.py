@@ -13,6 +13,9 @@ def convert(source: Path, destination: Path) -> None:
     config = json.loads((source / "config.json").read_text())
     if config.get("model_type") != "whisper" or "quantization_config" in config:
         raise ValueError("expected an unquantized Whisper checkpoint")
+    elif not config.get("tie_word_embeddings", True):
+        # note (XXXXRT666): the native decoder projects with the token embedding, so proj_out.weight is only its tied copy.
+        raise ValueError("expected an output projection tied to the token embedding")
     elif destination.exists():
         raise FileExistsError(destination)
     else:
@@ -53,7 +56,9 @@ def convert(source: Path, destination: Path) -> None:
             elif not name.startswith("model."):
                 raise ValueError(f"unexpected tensor: {name}")
             else:
-                name = re.sub(r"\.layers\.(\d+)\.", r".blocks.\1.", name[6:])
+                name = re.sub(
+                    r"\.layers\.(\d+)\.", r".blocks.\1.", name.removeprefix("model.")
+                )
             for original, converted in replacements:
                 name = name.replace(original, converted)
             if name in {"encoder.conv1.weight", "encoder.conv2.weight"}:
