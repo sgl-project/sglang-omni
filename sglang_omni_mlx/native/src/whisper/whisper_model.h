@@ -43,6 +43,11 @@ public:
   // Reads config.json and the weights (*.safetensors, else weights.npz) of an
   // mlx-community Whisper checkpoint.
   explicit WhisperModel(const std::filesystem::path &model_directory);
+  // Reads only the decoder of a draft checkpoint, in the target's dtype, to
+  // decode against the target's encoder states; refuses a draft whose decoder
+  // cannot read them.
+  WhisperModel(const std::filesystem::path &draft_directory,
+               const WhisperModel &target);
 
   const WhisperConfig &config() const { return config_; }
   // One window of kWindowSampleCount samples to encoder states [1, 1500,
@@ -54,7 +59,6 @@ public:
                           const mlx::core::array &encoder_states,
                           std::vector<DecoderLayerCache> &caches,
                           bool all_positions = false) const;
-  void PrepareDraft(const WhisperModel &target);
   static void TruncateCaches(std::vector<DecoderLayerCache> &caches,
                              int token_count);
 

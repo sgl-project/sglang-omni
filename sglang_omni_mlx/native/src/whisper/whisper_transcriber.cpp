@@ -135,8 +135,7 @@ WhisperTranscriber::WhisperTranscriber(
   if (draft_steps < 1 || draft_steps > 16) {
     throw std::invalid_argument("draft steps must be between 1 and 16");
   } else if (!draft_directory.empty()) {
-    draft_.emplace(draft_directory);
-    draft_->PrepareDraft(model_);
+    draft_.emplace(draft_directory, model_);
   } else {
   }
   const nlohmann::json tokenizer_config =

@@ -114,6 +114,38 @@ WhisperConfig ReadConfig(const std::filesystem::path &model_directory) {
           config.at("n_text_layer").get<int>()};
 }
 
+// The tensors of a checkpoint's *.safetensors, else of its weights.npz; the
+// safetensors ones stay unread until evaluated.
+std::unordered_map<std::string, mx::array>
+LoadWeights(const std::filesystem::path &model_directory) {
+  std::vector<std::filesystem::path> weight_files;
+  for (const auto &entry :
+       std::filesystem::directory_iterator(model_directory)) {
+    if (entry.path().extension() == ".safetensors") {
+      weight_files.push_back(entry.path());
+    } else {
+    }
+  }
+  std::sort(weight_files.begin(), weight_files.end());
+  std::unordered_map<std::string, mx::array> weights;
+  // Note (khazic): mlx-community converted the older checkpoints to weights.npz
+  // only.
+  if (!weight_files.empty()) {
+    for (const auto &path : weight_files) {
+      auto [loaded, metadata] = mx::load_safetensors(path.string());
+      for (auto &[name, array] : loaded) {
+        weights.insert_or_assign(name, array);
+      }
+    }
+  } else if (std::filesystem::exists(model_directory / "weights.npz")) {
+    weights = npz::Load(model_directory / "weights.npz");
+  } else {
+    throw std::runtime_error("no Whisper weights in " +
+                             model_directory.string());
+  }
+  return weights;
+}
+
 // [batch, length, width] to [batch, heads, length, width / heads].
 mx::array SplitHeads(const mx::array &x, int head_count) {
   return mx::transpose(mx::reshape(x, {x.shape(0), x.shape(1), head_count,
@@ -125,31 +157,8 @@ mx::array SplitHeads(const mx::array &x, int head_count) {
 
 WhisperModel::WhisperModel(const std::filesystem::path &model_directory)
     : config_(ReadConfig(model_directory)), hann_window_(HannWindow()),
-      mel_filters_(MelFilters(config_.mel_bin_count)) {
-  std::vector<std::filesystem::path> weight_files;
-  for (const auto &entry :
-       std::filesystem::directory_iterator(model_directory)) {
-    if (entry.path().extension() == ".safetensors") {
-      weight_files.push_back(entry.path());
-    } else {
-    }
-  }
-  std::sort(weight_files.begin(), weight_files.end());
-  // Note (khazic): mlx-community converted the older checkpoints to weights.npz
-  // only.
-  if (!weight_files.empty()) {
-    for (const auto &path : weight_files) {
-      auto [loaded, metadata] = mx::load_safetensors(path.string());
-      for (auto &[name, array] : loaded) {
-        weights_.insert_or_assign(name, array);
-      }
-    }
-  } else if (std::filesystem::exists(model_directory / "weights.npz")) {
-    weights_ = npz::Load(model_directory / "weights.npz");
-  } else {
-    throw std::runtime_error("no Whisper weights in " +
-                             model_directory.string());
-  }
+      mel_filters_(MelFilters(config_.mel_bin_count)),
+      weights_(LoadWeights(model_directory)) {
   weights_.erase("alignment_heads");
   // Note (khazic): the checkpoint leaves out the fixed encoder positions.
   if (weights_.count("encoder.positional_embedding") == 0) {
@@ -162,6 +171,45 @@ WhisperModel::WhisperModel(const std::filesystem::path &model_directory)
   std::vector<mx::array> parameters = {hann_window_, mel_filters_};
   for (const auto &[name, array] : weights_)
     parameters.push_back(array);
+  mx::eval(parameters);
+}
+
+WhisperModel::WhisperModel(const std::filesystem::path &draft_directory,
+                           const WhisperModel &target)
+    : config_(ReadConfig(draft_directory)), hann_window_(HannWindow()),
+      mel_filters_(MelFilters(config_.mel_bin_count)),
+      weights_(LoadWeights(draft_directory)) {
+  const std::string draft = "the Whisper draft at " + draft_directory.string();
+  if (config_.audio_width != target.config_.audio_width) {
+    throw std::runtime_error(draft + " reads encoder states of width " +
+                             std::to_string(config_.audio_width) +
+                             ", the target's are " +
+                             std::to_string(target.config_.audio_width));
+  } else if (config_.vocabulary_size != target.config_.vocabulary_size) {
+    throw std::runtime_error(draft + " has a vocabulary of " +
+                             std::to_string(config_.vocabulary_size) +
+                             ", the target's is " +
+                             std::to_string(target.config_.vocabulary_size));
+  } else if (config_.text_context_length < target.config_.text_context_length) {
+    throw std::runtime_error(
+        draft + " places " + std::to_string(config_.text_context_length) +
+        " text positions, fewer than the target's " +
+        std::to_string(target.config_.text_context_length));
+  } else {
+  }
+  // Note (XXXXRT666): the draft decodes the target's encoder states, so its own
+  // encoder is never read; an encoder unlike the target's only lowers how many
+  // proposals the target accepts.
+  std::erase_if(weights_, [](const auto &entry) {
+    return !entry.first.starts_with("decoder.");
+  });
+  const mx::Dtype dtype =
+      target.Weight("decoder.token_embedding.weight").dtype();
+  std::vector<mx::array> parameters;
+  for (auto &[name, weight] : weights_) {
+    weight = mx::astype(weight, dtype);
+    parameters.push_back(weight);
+  }
   mx::eval(parameters);
 }
 
@@ -362,43 +410,6 @@ mx::array WhisperModel::Decode(const mx::array &token_ids, int start_position,
   // layer.
   return mx::matmul(last,
                     mx::transpose(Weight("decoder.token_embedding.weight")));
-}
-
-void WhisperModel::PrepareDraft(const WhisperModel &target) {
-  const auto &expected = target.config();
-  if (config_.audio_width != expected.audio_width ||
-      config_.vocabulary_size != expected.vocabulary_size ||
-      config_.text_context_length != expected.text_context_length ||
-      config_.mel_bin_count != expected.mel_bin_count ||
-      config_.audio_layer_count != expected.audio_layer_count ||
-      config_.audio_head_count != expected.audio_head_count ||
-      config_.audio_context_length != expected.audio_context_length) {
-    throw std::invalid_argument(
-        "Whisper draft architecture differs from target");
-  } else {
-  }
-  // note (ruiling): Check every encoder tensor before sharing states across
-  // half precisions.
-  for (const auto &[name, expected_weight] : target.weights_) {
-    if (name.starts_with("encoder.")) {
-      const auto &weight = Weight(name);
-      if (weight.shape() != expected_weight.shape() ||
-          !mx::allclose(mx::astype(weight, mx::float32),
-                        mx::astype(expected_weight, mx::float32), 1e-2, 1e-5)
-               .item<bool>()) {
-        throw std::invalid_argument("Whisper draft encoder differs at " + name);
-      } else {
-      }
-    } else {
-    }
-  }
-  std::erase_if(weights_, [](const auto &parameter) {
-    return parameter.first.starts_with("encoder.");
-  });
-  for (auto &[name, weight] : weights_) {
-    weight = mx::astype(
-        weight, target.Weight("decoder.token_embedding.weight").dtype());
-  }
 }
 
 void WhisperModel::TruncateCaches(std::vector<DecoderLayerCache> &caches,

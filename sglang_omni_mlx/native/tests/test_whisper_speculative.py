@@ -150,13 +150,13 @@ def test_speculative_matches_greedy(
                 pass
 
 
-def test_incompatible_encoder_fails_before_decode(
+def test_a_draft_with_fewer_text_positions_fails_at_load(
     checkpoints: tuple[Path, Path, Path]
 ) -> None:
     target, _, draft = checkpoints
-    weights = mx.load(str(draft / "model.safetensors"))
-    weights["encoder.conv1.weight"] = weights["encoder.conv1.weight"] + 1
-    mx.save_safetensors(str(draft / "model.safetensors"), weights)
+    config = json.loads((draft / "config.json").read_text())
+    config["n_text_ctx"] = 16
+    (draft / "config.json").write_text(json.dumps(config))
     binary = Path(os.environ["NATIVE_RUNTIME_BIN"]) / "whisper_transcribe"
     result = subprocess.run(
         [str(binary), "--model-path", str(target), "--draft-model-path", str(draft)],
@@ -164,7 +164,7 @@ def test_incompatible_encoder_fails_before_decode(
         text=True,
     )
     assert result.returncode != 0
-    assert "draft encoder differs" in result.stderr
+    assert "fewer than the target's 32" in result.stderr
 
 
 def test_immediate_eos(checkpoints: tuple[Path, Path, Path], tmp_path: Path) -> None:
