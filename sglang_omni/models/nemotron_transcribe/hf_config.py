@@ -52,6 +52,15 @@ class NemotronTranscribeConfig(NemotronHConfig):
             raise TypeError("llm_config must be a dictionary")
         else:
             pass
+        mtp_config = nemo_config.get("mtp", {})
+        if isinstance(mtp_config, dict):
+            mtp_pattern = mtp_config.get("hybrid_override_pattern")
+            if isinstance(mtp_pattern, str):
+                decoder_config["mtp_hybrid_override_pattern"] = mtp_pattern
+            else:
+                pass
+        else:
+            pass
         for name in ("architectures", "model_type", "torch_dtype", "dtype"):
             decoder_config.pop(name, None)
         timestep_limits = decoder_config.pop("time_step_limit", None)

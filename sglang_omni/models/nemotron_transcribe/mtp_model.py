@@ -1,0 +1,134 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Nemotron Transcribe adapter for SGLang's bundled NemotronH MTP model."""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+
+import torch
+from sglang.srt.models.nemotron_h_mtp import NemotronHForCausalLMMTP
+from sglang.srt.models.utils import WeightsMapper
+
+from sglang_omni.models.nemotron_transcribe.decoder_weights import (
+    checkpoint_to_mtp_weights,
+)
+
+ROUTER_CORRECTION_BIAS = "mtp.layers.1.mixer.gate.e_score_correction_bias"
+
+
+def expected_mtp_checkpoint_names(
+    parameter_names: Iterable[str], *, num_experts: int
+) -> set[str]:
+    """Return source names that cover SGLang's physical MTP-layer parameters."""
+    expected: set[str] = set()
+    for parameter_name in parameter_names:
+        if not parameter_name.startswith("model.layers."):
+            continue
+        else:
+            pass
+        checkpoint_name = parameter_name.replace("model.layers.", "mtp.layers.", 1)
+        if ".qkv_proj." in parameter_name:
+            for projection_name in ("q_proj", "k_proj", "v_proj"):
+                expected.add(
+                    checkpoint_name.replace(".qkv_proj.", f".{projection_name}.")
+                )
+            else:
+                pass
+        elif ".experts.w13_weight" in parameter_name:
+            expert_prefix = checkpoint_name.split(".experts.w13_weight", 1)[0]
+            for expert_index in range(num_experts):
+                expected.add(
+                    f"{expert_prefix}.experts.{expert_index}.up_proj.weight"
+                )
+            else:
+                pass
+        elif ".experts.w2_weight" in parameter_name:
+            expert_prefix = checkpoint_name.split(".experts.w2_weight", 1)[0]
+            for expert_index in range(num_experts):
+                expected.add(
+                    f"{expert_prefix}.experts.{expert_index}.down_proj.weight"
+                )
+            else:
+                pass
+        else:
+            expected.add(checkpoint_name)
+    return expected
+
+
+def validate_mtp_tensor_dtype(name: str, tensor: torch.Tensor) -> None:
+    """Reject dtype drift instead of silently casting checkpoint tensors."""
+    expected_dtype = torch.float32 if name == ROUTER_CORRECTION_BIAS else torch.bfloat16
+    if tensor.dtype != expected_dtype:
+        raise ValueError(
+            f"Nemotron Transcribe MTP tensor {name} has dtype {tensor.dtype}; "
+            f"expected {expected_dtype}"
+        )
+    else:
+        pass
+
+
+def validate_mtp_checkpoint_inventory(
+    expected: set[str],
+    loaded: set[str],
+    unexpected: set[str],
+    duplicates: set[str],
+) -> None:
+    """Fail closed when the bundled MTP tensor inventory differs from the model."""
+    missing = expected - loaded
+    if missing or unexpected or duplicates:
+        raise ValueError(
+            "Nemotron Transcribe MTP checkpoint layout mismatch: "
+            f"missing={sorted(missing)[:8]}, "
+            f"unexpected={sorted(unexpected)[:8]}, "
+            f"duplicates={sorted(duplicates)[:8]}"
+        )
+    else:
+        pass
+
+
+class NemotronTranscribeMTP(NemotronHForCausalLMMTP):
+    """Reuse SGLang's MTP forward path with strict NeMo checkpoint routing."""
+
+    hf_to_sglang_mapper = NemotronHForCausalLMMTP.hf_to_sglang_mapper | WeightsMapper(
+        orig_to_new_prefix={"llm.mtp.": "mtp."}
+    )
+
+    def load_weights(
+        self, weights: Iterable[tuple[str, torch.Tensor]], is_mtp: bool = False
+    ) -> None:
+        del is_mtp
+        expected = expected_mtp_checkpoint_names(
+            dict(self.named_parameters()),
+            num_experts=self.config.max_n_routed_experts,
+        )
+        loaded: set[str] = set()
+        unexpected: set[str] = set()
+        duplicates: set[str] = set()
+
+        def checked_weights() -> Iterable[tuple[str, torch.Tensor]]:
+            for name, tensor in checkpoint_to_mtp_weights(weights):
+                if name not in expected:
+                    unexpected.add(name)
+                elif name in loaded:
+                    duplicates.add(name)
+                else:
+                    validate_mtp_tensor_dtype(name, tensor)
+                    loaded.add(name)
+                    yield name, tensor
+
+        try:
+            super().load_weights(checked_weights())
+        except (RuntimeError, AssertionError) as error:
+            raise ValueError(
+                "Nemotron Transcribe MTP tensor shape is incompatible with "
+                "SGLang's NemotronHForCausalLMMTP"
+            ) from error
+        validate_mtp_checkpoint_inventory(expected, loaded, unexpected, duplicates)
+
+
+__all__ = [
+    "NemotronTranscribeMTP",
+    "expected_mtp_checkpoint_names",
+    "validate_mtp_checkpoint_inventory",
+    "validate_mtp_tensor_dtype",
+]

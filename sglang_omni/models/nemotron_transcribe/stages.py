@@ -8,6 +8,8 @@ from collections.abc import Mapping
 from sglang_omni.models.nemotron_transcribe.config import EncoderCompileMode
 from sglang_omni.models.nemotron_transcribe.engine_builder import (
     NemotronTranscribeEngineBuilder,
+    PINNED_CHECKPOINT_REVISION,
+    prepare_nemotron_speculative_options,
 )
 from sglang_omni.models.nemotron_transcribe.request_builders import (
     NemotronTranscribeRequestData,
@@ -35,12 +37,18 @@ def create_nemotron_transcribe_executor(
     compile_perception: bool,
     perception_cuda_graphs: bool,
     perception_compile_mode: EncoderCompileMode,
+    enable_async_decode: bool = False,
     device: str | None = None,
     gpu_id: int | None = None,
     mem_fraction_static: float | None = None,
     server_args_overrides: Mapping[str, object] | None = None,
 ) -> OmniScheduler[NemotronTranscribeRequestData]:
-    return NemotronTranscribeEngineBuilder(
+    overrides, nextn_enabled = prepare_nemotron_speculative_options(
+        model_path,
+        None if server_args_overrides is None else dict(server_args_overrides),
+        enable_async_decode=enable_async_decode,
+    )
+    builder = NemotronTranscribeEngineBuilder(
         max_new_tokens=max_new_tokens,
         context_length=context_length,
         max_audio_seconds=max_audio_seconds,
@@ -58,12 +66,17 @@ def create_nemotron_transcribe_executor(
         compile_perception=compile_perception,
         perception_cuda_graphs=perception_cuda_graphs,
         perception_compile_mode=perception_compile_mode,
-    ).build(
+        nextn_enabled=nextn_enabled,
+        checkpoint_revision=(
+            PINNED_CHECKPOINT_REVISION if nextn_enabled else None
+        ),
+    )
+    return builder.build(
         model_path,
         device=device,
         gpu_id=gpu_id,
         dtype=dtype,
-        server_args_overrides=server_args_overrides,
+        server_args_overrides=overrides,
     )
 
 

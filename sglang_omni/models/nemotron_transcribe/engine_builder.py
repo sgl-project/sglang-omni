@@ -11,11 +11,15 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
+from huggingface_hub import snapshot_download
 from sglang.kernels.ops.mamba.triton_ops import (
     initialize_mamba_selective_state_update_backend,
 )
+from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
+from sglang.srt.models.registry import ModelRegistry
 from sglang.srt.server_args import ServerArgs
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 from sglang_omni.models.nemotron_transcribe.config import (
@@ -27,10 +31,12 @@ from sglang_omni.models.nemotron_transcribe.encoder_service import (
     build_cache_namespace,
 )
 from sglang_omni.models.nemotron_transcribe.hf_config import (
+    BACKBONE_ARCH,
     MODEL_ARCH_OVERRIDE,
     NemotronTranscribeConfig,
     register_nemotron_transcribe_hf_config,
 )
+from sglang_omni.models.nemotron_transcribe.mtp_model import NemotronTranscribeMTP
 from sglang_omni.models.nemotron_transcribe.request_builders import (
     NemotronTranscribeRequestData,
     RequestBuilder,
@@ -45,6 +51,7 @@ from sglang_omni.models.nemotron_transcribe.speech_transformer import (
     SpeechTransformerEncoder,
 )
 from sglang_omni.models.weight_loader import resolve_model_path
+from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.engine_factory import (
     AsrEngineBuilder,
     GenerationDefaults,
@@ -53,6 +60,112 @@ from sglang_omni.scheduling.engine_factory import (
 from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 
 logger = logging.getLogger(__name__)
+PINNED_CHECKPOINT_REVISION = "c17667641642c4265ff2b7037dd101b7d456763"
+
+
+def prepare_nemotron_speculative_options(
+    model_path: str,
+    server_args_overrides: dict[str, object] | None,
+    *,
+    enable_async_decode: bool = False,
+) -> tuple[dict[str, object], bool]:
+    """Validate this model's bundled NEXTN options without touching the checkpoint."""
+    overrides = dict(server_args_overrides or {})
+    algorithm_name = overrides.get("speculative_algorithm")
+    if algorithm_name is not None and not isinstance(algorithm_name, str):
+        raise ValueError("speculative_algorithm must be a string")
+    else:
+        pass
+    algorithm = SpeculativeAlgorithm.from_string(algorithm_name)
+    if enable_async_decode or overrides.get("enable_async_decode") is True:
+        raise ValueError("Nemotron Transcribe does not support async decode")
+    else:
+        pass
+    if "enable_async_decode" in overrides:
+        overrides.pop("enable_async_decode")
+    else:
+        pass
+    if algorithm.is_none():
+        if overrides.get("speculative_draft_model_path") is not None:
+            raise ValueError(
+                "speculative_draft_model_path needs speculative_algorithm=NEXTN"
+            )
+        elif overrides.get("speculative_draft_model_revision") is not None:
+            raise ValueError(
+                "speculative_draft_model_revision needs speculative_algorithm=NEXTN"
+            )
+        else:
+            return overrides, False
+    elif algorithm != SpeculativeAlgorithm.EAGLE:
+        raise ValueError("Nemotron Transcribe supports bundled NEXTN only")
+    else:
+        pass
+
+    revision = overrides.get("revision")
+    if revision not in (None, PINNED_CHECKPOINT_REVISION):
+        raise ValueError(
+            "Nemotron Transcribe NEXTN requires checkpoint revision "
+            f"{PINNED_CHECKPOINT_REVISION}"
+        )
+    elif overrides.get("speculative_draft_model_path") not in (None, model_path):
+        raise ValueError(
+            "Nemotron Transcribe NEXTN draft must use the target checkpoint"
+        )
+    elif overrides.get("speculative_draft_model_revision") not in (
+        None,
+        PINNED_CHECKPOINT_REVISION,
+    ):
+        raise ValueError(
+            "Nemotron Transcribe NEXTN draft must use the target checkpoint revision"
+        )
+    elif overrides.get("speculative_eagle_topk") not in (None, 1):
+        raise ValueError("Nemotron Transcribe NEXTN requires speculative_eagle_topk=1")
+    elif overrides.get("disable_overlap_schedule") is False:
+        raise ValueError("Nemotron Transcribe NEXTN requires synchronous execution")
+    elif overrides.get("enable_mixed_chunk") is True:
+        raise ValueError("Nemotron Transcribe NEXTN does not support mixed-chunk mode")
+    elif overrides.get("enable_multi_layer_eagle") is True:
+        raise ValueError("Nemotron Transcribe NEXTN supports one logical MTP step")
+    elif overrides.get("speculative_use_rejection_sampling") is True:
+        raise ValueError("Nemotron Transcribe NEXTN supports greedy decoding only")
+    else:
+        pass
+    for name in ("tp_size", "pp_size"):
+        if overrides.get(name, 1) != 1:
+            raise ValueError(f"Nemotron Transcribe NEXTN requires {name}=1")
+        else:
+            pass
+    overrides.update(
+        speculative_algorithm="NEXTN",
+        speculative_draft_model_path=model_path,
+        speculative_draft_model_revision=PINNED_CHECKPOINT_REVISION,
+        speculative_eagle_topk=1,
+        revision=PINNED_CHECKPOINT_REVISION,
+        enable_mixed_chunk=False,
+    )
+    return overrides, True
+
+
+def validate_nemotron_mtp_metadata(checkpoint_config: dict[str, object]) -> None:
+    """Reject checkpoints whose bundled MTP layout differs from this adapter."""
+    decoder_config = checkpoint_config.get("llm_config", checkpoint_config)
+    mtp_config = checkpoint_config.get("mtp")
+    if not isinstance(decoder_config, dict) or not isinstance(mtp_config, dict):
+        raise ValueError(
+            "Nemotron Transcribe NEXTN requires llm_config and mtp metadata"
+        )
+    elif decoder_config.get("num_nextn_predict_layers") != 1:
+        raise ValueError("Nemotron Transcribe NEXTN requires one logical MTP step")
+    elif mtp_config.get("enabled") is not True:
+        raise ValueError("Nemotron Transcribe checkpoint does not enable bundled MTP")
+    elif mtp_config.get("trained_depths") != 2:
+        raise ValueError("Nemotron Transcribe NEXTN requires two physical MTP layers")
+    elif mtp_config.get("use_repeated_layer") is not True:
+        raise ValueError("Nemotron Transcribe NEXTN requires repeated MTP layers")
+    elif mtp_config.get("hybrid_override_pattern") != "*E":
+        raise ValueError("Nemotron Transcribe NEXTN requires MTP pattern '*E'")
+    else:
+        pass
 
 
 def create_checkpoint_shim(checkpoint_directory: Path) -> Path:
@@ -92,6 +205,8 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         compile_perception: bool,
         perception_cuda_graphs: bool,
         perception_compile_mode: EncoderCompileMode,
+        nextn_enabled: bool = False,
+        checkpoint_revision: str | None = None,
     ) -> None:
         if perception_cuda_graphs and not compile_perception:
             raise ValueError("perception_cuda_graphs requires compile_perception=true")
@@ -114,6 +229,8 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         self.compile_perception = compile_perception
         self.perception_cuda_graphs = perception_cuda_graphs
         self.perception_compile_mode = perception_compile_mode
+        self.nextn_enabled = nextn_enabled
+        self.checkpoint_revision = checkpoint_revision
         self.tokenizer: PreTrainedTokenizerBase | None = None
         self.hf_config: NemotronTranscribeConfig | None = None
         self.audio_encoder_service: NemotronTranscribePreLMEncoderService | None = None
@@ -121,13 +238,48 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
 
     def resolve_checkpoint(self, model_path: str) -> str:
         register_nemotron_transcribe_hf_config()
-        checkpoint_directory = Path(resolve_model_path(model_path))
+        if self.nextn_enabled:
+            if self.checkpoint_revision != PINNED_CHECKPOINT_REVISION:
+                raise ValueError(
+                    "Nemotron Transcribe NEXTN requires the pinned checkpoint revision"
+                )
+            else:
+                pass
+            if Path(model_path).exists():
+                checkpoint_directory = Path(model_path)
+            else:
+                checkpoint_directory = Path(
+                    snapshot_download(
+                        model_path,
+                        revision=self.checkpoint_revision,
+                        local_files_only=False,
+                    )
+                )
+        else:
+            checkpoint_directory = Path(resolve_model_path(model_path))
         checkpoint_config = json.loads(
             (checkpoint_directory / "config.json").read_text()
         )
+        if self.nextn_enabled:
+            validate_nemotron_mtp_metadata(checkpoint_config)
+        else:
+            pass
         if checkpoint_config.get("model_type") == "nemotron_transcribe":
             self.hf_config = NemotronTranscribeConfig.from_dict(checkpoint_config)
-            return str(checkpoint_directory)
+            if self.nextn_enabled:
+                mtp_config = checkpoint_config["mtp"]
+                assert isinstance(mtp_config, dict)
+                self.hf_config.architectures = [BACKBONE_ARCH]
+                self.hf_config.mtp_hybrid_override_pattern = str(
+                    mtp_config["hybrid_override_pattern"]
+                )
+                shim_directory = create_checkpoint_shim(checkpoint_directory)
+                (shim_directory / "config.json").write_text(
+                    self.hf_config.to_json_string()
+                )
+                return str(shim_directory)
+            else:
+                return str(checkpoint_directory)
         else:
             self.hf_config = NemotronTranscribeConfig.from_nemo_dict(checkpoint_config)
             shim_directory = create_checkpoint_shim(checkpoint_directory)
@@ -151,6 +303,57 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
             "dtype": dtype,
             "cuda_graph_backend_prefill": CudaGraphBackend.DISABLED,
         }
+
+    def adjust_overrides(self, overrides: dict[str, object]) -> None:
+        if self.nextn_enabled:
+            overrides["speculative_draft_model_path"] = self.checkpoint_dir
+            overrides["speculative_draft_model_revision"] = self.checkpoint_revision
+        else:
+            pass
+
+    def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
+        super().validate_before_infrastructure(server_args)
+        if not self.nextn_enabled:
+            return
+        else:
+            pass
+        configuration = resolved_view(server_args)
+        if SpeculativeAlgorithm.from_string(configuration.speculative_algorithm) != (
+            SpeculativeAlgorithm.EAGLE
+        ):
+            raise ValueError("Nemotron Transcribe NEXTN was not enabled in ServerArgs")
+        elif configuration.speculative_draft_model_path != self.checkpoint_dir:
+            raise ValueError(
+                "Nemotron Transcribe NEXTN draft must use the resolved "
+                "target checkpoint"
+            )
+        elif configuration.revision != self.checkpoint_revision:
+            raise ValueError("Nemotron Transcribe NEXTN target revision mismatch")
+        elif configuration.speculative_draft_model_revision != self.checkpoint_revision:
+            raise ValueError("Nemotron Transcribe NEXTN draft revision mismatch")
+        elif configuration.speculative_eagle_topk != 1:
+            raise ValueError(
+                "Nemotron Transcribe NEXTN requires speculative_eagle_topk=1"
+            )
+        elif configuration.enable_mixed_chunk:
+            raise ValueError(
+                "Nemotron Transcribe NEXTN does not support mixed-chunk mode"
+            )
+        elif configuration.enable_multi_layer_eagle:
+            raise ValueError("Nemotron Transcribe NEXTN supports one logical MTP step")
+        elif not configuration.disable_overlap_schedule:
+            raise ValueError("Nemotron Transcribe NEXTN requires synchronous execution")
+        elif configuration.tp_size != 1 or configuration.pp_size != 1:
+            raise ValueError("Nemotron Transcribe NEXTN requires tp_size=pp_size=1")
+        else:
+            pass
+
+    def infra_kwargs(self) -> InfrastructureOptions:
+        if self.nextn_enabled:
+            ModelRegistry.models["NemotronHForCausalLMMTP"] = NemotronTranscribeMTP
+            return {"supports_speculative_decoding": True}
+        else:
+            return {}
 
     def customize_server_args(self, server_args: ServerArgs) -> None:
         if server_args.enable_torch_compile:
@@ -240,6 +443,7 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
             vocab_size=self.hf_config.vocab_size,
             audio_encoder_service=self.audio_encoder_service,
             should_wait_for_encode=self.should_wait_for_encode,
+            greedy_only=self.nextn_enabled,
         )
 
     def extra_scheduler_kwargs(self) -> SchedulerExtras[NemotronTranscribeRequestData]:
