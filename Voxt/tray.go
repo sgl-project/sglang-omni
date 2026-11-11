@@ -18,6 +18,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/transfer"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/trayicon"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
@@ -58,12 +59,12 @@ func (a *app) applyTray() {
 	if a.tray != nil {
 		return
 	}
-	live := a.sess.State.Live()
+	live := a.trayShowsRecording()
 	// Voxt's microphone, a 36 px template image MyGo shows 18 pt tall
 	// (Voxt: 18×18 pt, template); while recording it has a dot.
-	t, err := mygo.NewTray(mygo.TrayOptions{Icon: trayicon.Icon(live), IconIsTemplate: true, ToolTip: "Voxt"})
+	t, err := mygo.NewTray(mygo.TrayOptions{Icon: trayicon.Icon(live), IconIsTemplate: true, ToolTip: a.trayToolTip()})
 	if err != nil {
-		a.toast(i18n.T("The menu bar icon could not be made: %v", err))
+		a.toast(i18n.T("Could not create the menu bar icon: %v", err))
 		return
 	}
 	a.tray, a.trayLive = t, live
@@ -115,12 +116,32 @@ func (a *app) buildTrayMenu() {
 	if a.tray == nil {
 		return
 	}
-	if live := a.sess.State.Live(); live != a.trayLive {
+	live := a.trayShowsRecording()
+	if live != a.trayLive {
 		if a.tray.SetIcon(trayicon.Icon(live), true) == nil {
 			a.trayLive = live
 		}
 	}
+	a.tray.SetToolTip(a.trayToolTip())
 	a.tray.SetMenu(mygo.NewMenu(a.trayItems()))
+}
+
+// trayShowsRecording is whether the menu bar icon uses the recording dot.
+func (a *app) trayShowsRecording() bool {
+	return a.sess.State.Live() || a.meetingActive()
+}
+
+func (a *app) trayToolTip() string {
+	if a.meetingActive() {
+		if a.meetSnap.State == meeting.StatePaused {
+			return i18n.T("Meeting paused")
+		}
+		return i18n.T("Meeting in progress")
+	}
+	if a.sess.State.Live() {
+		return i18n.T("Transcribing")
+	}
+	return "Voxt"
 }
 
 // trayItems are the menu's items.
@@ -140,6 +161,19 @@ func (a *app) trayItems() []*mygo.MenuItem {
 		{Label: start, Click: act(a.toggleTranscribe)},
 		{Label: i18n.T("Paste the last result") + "    " + uitext.HotkeyGlyphs(f.PasteLast.Keys), Click: act(func() { a.pasteLast(a.front) })},
 		{Label: i18n.T("Microphone"), Submenu: a.trayMicrophones(act)},
+	}
+	if a.meetingEnabled() {
+		mt := i18n.T("Start meeting")
+		if a.meetingActive() {
+			mt = i18n.T("End meeting")
+		}
+		items = append(items, &mygo.MenuItem{Label: mt, Click: act(func() {
+			if a.meetingActive() {
+				a.meetingFinish()
+			} else {
+				a.startMeeting()
+			}
+		})})
 	}
 	if len(a.recent) > 0 {
 		items = append(items, mygo.Separator(), &mygo.MenuItem{Label: i18n.T("Recent results"), Disabled: true})
@@ -258,6 +292,9 @@ var setDockShown = func(a *app, shown bool) {
 		p = mygo.ActivationPolicyRegular
 	}
 	mygo.App.SetActivationPolicy(p)
+	if !shown && a.life.IsVisible() {
+		mygo.App.Focus() // macOS deactivates an app that turns accessory: its window stays in front
+	}
 }
 
 // applyDock puts VoxtNew in the Dock or not, as the settings say.

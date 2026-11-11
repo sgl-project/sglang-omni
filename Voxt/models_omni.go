@@ -24,6 +24,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // omniSource is the logs' source of the runtime's lines.
@@ -39,6 +40,9 @@ type omniState struct {
 	omniVAD *omni.VAD
 	omniDir string // the VAD's folder
 	omniEnd bool   // closed: quitting
+	// speechWarmed: Transcribe's speech model was warmed at the start
+	// (warmSpeech; main thread only).
+	speechWarmed bool
 	// omniCache holds the folders of links omniFolder makes ("": the
 	// system's temporary folder, in tests).
 	omniCache string
@@ -117,6 +121,25 @@ func (a *app) openOmniASR(_ context.Context, id, dir string) (asr.Provider, erro
 		v.Warm()
 	}
 	return p, nil
+}
+
+// warmSpeech starts loading Transcribe's speech model when it is a local
+// one (a remote service and System dictation load nothing), so that the
+// first session after the app opened, or after another model was chosen,
+// finds its server ready. The server stops when idle, as after a session.
+func (a *app) warmSpeech() {
+	m, ok := a.featureModel(local.ASR, string(store.KindTranscribe))
+	if cm, _ := models.Lookup(m.ID); !ok || cm.Runtime != models.Omni {
+		return
+	}
+	lm := a.local
+	a.async(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, _, err := lm.ASR(ctx, m.ID); err != nil { // openOmniASR warms it
+			a.omniLog("warning", "warming "+m.ID+": "+err.Error())
+		}
+	})
 }
 
 // omniFolder is the folder model id's server loads: dir, its snapshot, or,
@@ -202,6 +225,65 @@ func (a *app) omniDraft(id string) string {
 		return ""
 	}
 	return a.models.Dir(m.Draft)
+}
+
+// omniMeetingHold keeps the meeting's local omni ASR and Silero VAD loaded.
+func (a *app) omniMeetingHold() (release func()) {
+	a.omniMu.Lock()
+	defer a.omniMu.Unlock()
+	if a.omniEnd {
+		return func() {}
+	}
+	rt, err := a.omniRuntime()
+	if err != nil {
+		return func() {}
+	}
+	asrID := a.prefs.Features.Meeting.ASR
+	dir := ""
+	if asrID != "" {
+		m, ok := models.Lookup(asrID)
+		if !ok || m.Runtime != models.Omni {
+			return func() {}
+		}
+		dir = a.models.Dir(asrID)
+	} else {
+		asrID, dir = a.firstOmniASR()
+	}
+	if dir == "" {
+		return func() {}
+	}
+	spec, ok := omni.Lookup(asrID)
+	if !ok {
+		return func() {}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), omni.DefaultStartTimeout+time.Second)
+	defer cancel()
+	targets := []omni.HoldTarget{{Spec: spec, Dir: dir, Draft: a.omniDraft(asrID)}}
+	if vadDir := a.models.Dir(models.VADSilero); vadDir != "" {
+		if vspec, ok := omni.Lookup(omni.VADSilero); ok {
+			targets = append(targets, omni.HoldTarget{Spec: vspec, Dir: vadDir})
+		}
+	}
+	rel, err := rt.Hold(ctx, targets...)
+	if err != nil {
+		a.omniLog("warning", "meeting hold: "+err.Error())
+		return func() {}
+	}
+	return rel
+}
+
+// firstOmniASR is the speech model a meeting on Automatic uses: the
+// first of Installed, the recommended one first.
+func (a *app) firstOmniASR() (id, dir string) {
+	if a.models == nil || a.local == nil {
+		return "", ""
+	}
+	for _, m := range a.local.Installed(local.ASR) {
+		if m.Stream { // an Omni model
+			return m.ID, a.models.Dir(m.ID)
+		}
+	}
+	return "", ""
 }
 
 // unloadOmni stops model id's server before its files are deleted; a

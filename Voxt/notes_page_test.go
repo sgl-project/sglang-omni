@@ -80,7 +80,7 @@ func TestNoteNotices(t *testing.T) {
 	}
 	a.sessionEnded(session.Snapshot{ID: "s2", Kind: store.KindTranscribe, State: session.Done, Note: true, Result: "buy milk", Card: true,
 		Problem: &session.Problem{Code: session.ProblemInternal, Err: errors.New("disk full"), Degraded: true}})
-	if a.notice == nil || a.notice.text != "The note could not be saved: the card shows it." || !a.answer.open {
+	if a.notice == nil || a.notice.text != "Could not save the note, so the card shows it." || !a.answer.open {
 		t.Errorf("not saved: %+v, card %v", a.notice, a.answer.open)
 	}
 }
@@ -94,8 +94,8 @@ func TestNoteNoticesLanguageModel(t *testing.T) {
 		err  error
 		want string
 	}{
-		{errors.New("bad gateway"), "Saved to Notes as recognised: the language model failed."},
-		{context.DeadlineExceeded, "Saved to Notes as recognised: the language model did not answer in time."},
+		{errors.New("bad gateway"), "The language model failed, so the recognised text was saved to Notes."},
+		{context.DeadlineExceeded, "The language model did not answer in time, so the recognised text was saved to Notes."},
 	} {
 		a.sessionEnded(session.Snapshot{ID: "s3", Kind: store.KindTranscribe, State: session.Done, Note: true, Result: "buy milk",
 			Problem: &session.Problem{Code: session.ProblemLLM, Err: tc.err, Degraded: true}})

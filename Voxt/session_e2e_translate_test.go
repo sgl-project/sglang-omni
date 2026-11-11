@@ -83,7 +83,7 @@ func TestTranslateSpeechCard(t *testing.T) {
 	ev := script(t, hotkeyLine(0, "translate/0", proto.PhaseTrigger), hotkeyLine(500, "translate/0", proto.PhaseTrigger))
 	a := newSessionApp(t, ev, func(s *settings.Settings) {
 		set(s)
-		s.Features.ShowCard = true
+		s.Features.Translate.ShowCard = true
 		s.Features.Translate.Cleanup = true
 		s.General.MainLanguage = "zh" // the target is English
 	}, keys)
@@ -109,7 +109,7 @@ func TestTranslateSpeechCard(t *testing.T) {
 	// Another language: into the card whatever the setting (Voxt's menu
 	// replaces the card's answer); the card keeps its text meanwhile,
 	// with a spinner and the new language in its menu.
-	a.updateSettings(func(s *settings.Settings) { s.Features.ShowCard = false })
+	a.updateSettings(func(s *settings.Settings) { s.Features.Translate.ShowCard = false })
 	first := a.sess.ID
 	chat.mu.Lock()
 	chat.delay = 150 * time.Millisecond

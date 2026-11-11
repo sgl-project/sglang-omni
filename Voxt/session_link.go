@@ -30,6 +30,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -92,6 +93,8 @@ type answerCard struct {
 	// the card shows them as one (Voxt's conversation mode), from then on.
 	turns        []compose.Turn
 	conversation bool
+	// quotesOpen are the turns whose selection shows whole (#3816).
+	quotesOpen map[int]bool
 	// redo is the session translating the text into redoLang, another
 	// language chosen in the card, while it runs: the card keeps the text
 	// it shows, with a spinner, until the new one replaces it (Voxt's).
@@ -109,7 +112,9 @@ const (
 	actionLanguage    = "language" // the Language models page (remote_page.go)
 	actionPermissions = "permissions"
 	actionHelper      = "helper"
-	actionRetry       = "retry" // the session's entry, in History (history_retry.go)
+	actionRetry       = "retry"  // the session's entry, in History (history_retry.go)
+	actionSignIn      = "signin" // the ChatGPT (Codex) dialog (remote_chatgpt.go)
+	actionUsage       = "usage"  // the ChatGPT usage page, in the browser
 )
 
 // sessionNotice is a one-line message in the overlay, where
@@ -264,6 +269,13 @@ func (a *app) sessionEnded(s session.Snapshot) {
 		a.openAnswer(s)
 		a.syncHotkeys() // the cancel shortcut closes the card
 	}
+	var copied *sessionNotice
+	if !s.Card && !s.Inserted && s.Delivery != "" && s.Result != "" && s.State == session.Done {
+		// Not inserted and the card is off: the clipboard has it (Voxt 1.x).
+		a.copyRecent(s.Result)
+		// One short line: a notice is one line, cut past NoticeW2.
+		copied = &sessionNotice{text: i18n.T("Not inserted. Copied: press ⌘V to paste."), warn: true}
+	}
 	if s.ID != "" && a.followUp != "" && !s.Card {
 		a.followUp = "" // a follow-up that ended without an answer: the card keeps the last one
 	}
@@ -274,7 +286,7 @@ func (a *app) sessionEnded(s session.Snapshot) {
 		text, more, action := sessionProblemText(p)
 		switch {
 		case s.Note && s.Card:
-			text = i18n.T("The note could not be saved: the card shows it.")
+			text = i18n.T("Could not save the note, so the card shows it.")
 		case s.Note && p.Code == session.ProblemLLM && p.Degraded:
 			text = degradedLLMText(p, true) // the recognised text went to Notes
 		}
@@ -284,10 +296,17 @@ func (a *app) sessionEnded(s session.Snapshot) {
 			if p.Code == session.ProblemASR && s.Recording {
 				n.action, n.entry = actionRetry, s.ID // the entry kept the recording: Retry
 			}
+			if copied != nil {
+				n.then = func() { a.showNotice(*copied) }
+			}
 			a.showNotice(n)
+		} else if copied != nil {
+			a.showNotice(*copied)
 		}
 	} else if s.Note && s.State == session.Done && s.Result != "" {
 		a.showNotice(sessionNotice{text: i18n.T("Saved to Notes")})
+	} else if copied != nil {
+		a.showNotice(*copied)
 	}
 	if s.State != session.Cancelled {
 		a.historyChanged()
@@ -339,6 +358,11 @@ func (a *app) noticeAction(action string) {
 		a.navigate("/settings/permissions")
 	case actionHelper:
 		a.restartHelper()
+	case actionSignIn:
+		a.showMainWindow()
+		a.completeSetup(local.LLM, providers.ChatGPT)
+	case actionUsage:
+		go openBrowser(chatgptUsageURL)
 	}
 }
 

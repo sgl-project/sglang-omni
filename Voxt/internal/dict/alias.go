@@ -50,10 +50,18 @@ func Replace(text string, terms []store.Term) string {
 		return text
 	}
 	sort.SliceStable(patterns, func(i, j int) bool { return patterns[i].size > patterns[j].size })
+	// Each place tries only the patterns that start with its letter, in
+	// any case, in the same order.
+	byFirst := map[rune][]pattern{}
+	for _, p := range patterns {
+		r, _ := utf8.DecodeRuneInString(p.words[0])
+		byFirst[foldKey(r)] = append(byFirst[foldKey(r)], p)
+	}
 	var b strings.Builder
 	for i := 0; i < len(text); {
+		r, _ := utf8.DecodeRuneInString(text[i:])
 		matched := false
-		for _, p := range patterns {
+		for _, p := range byFirst[foldKey(r)] {
 			if n := matchAt(text, i, p.words); n > 0 {
 				if p.term == "" {
 					b.WriteString(text[i : i+n])
@@ -126,6 +134,16 @@ func prefixFold(s, w string) int {
 		j += n
 	}
 	return j
+}
+
+// foldKey is the same rune for every case of r (foldEqual): the least
+// of them.
+func foldKey(r rune) rune {
+	k := r
+	for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+		k = min(k, f)
+	}
+	return k
 }
 
 // foldEqual: a and b are the same letter, ignoring case.

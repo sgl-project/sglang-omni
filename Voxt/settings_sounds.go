@@ -1,15 +1,14 @@
 package main
 
-// Settings → Audio → Play sounds (settings_audio.go): whether a recording
-// plays its cues, which sound it plays when it starts and when it stops
-// (the ActNow family's sounds, actnowkit's sounds package, shipped in
-// resources/sounds; a macOS system sound; none), their volume, and trying
-// them. While the switch is on, a line for each cue shows under the row:
-// its sound picker (settings_soundpicker.go: a panel of sounds by group
-// and tag, each with ▶) and Try. A preview cuts the one before it short;
-// Try shows the accent while it is heard. The cues of a recording are
-// recordingAudio's (mute_link.go). Without the family's sounds (a build
-// without resources/sounds) the cues are Voxt's Pop and Tink.
+// The sounds of a recording, Settings → Audio → Sound (settings_audio.go;
+// its controls are settings_soundchoice.go's): which sound plays when a
+// recording starts and when it stops (the ActNow family's sounds,
+// actnowkit's sounds package, shipped in resources/sounds; a macOS system
+// sound; none), their volume, and trying them. A preview cuts the one
+// before it short; Try shows the accent while it is heard. The cues of a
+// recording are recordingAudio's (mute_link.go). Without the family's
+// sounds (a build without resources/sounds) the cues are Voxt's Pop and
+// Tink.
 
 import (
 	"os"
@@ -24,24 +23,25 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
-// The recording's cues: the family's Tally and Wrap (a clear double beep
-// as recording starts, a falling pair as it stops), Voxt's Pop and Tink
-// in a build without the family's sounds.
+// The recording's cues: the family's Pebble and Nib (a soft tap as
+// recording starts, a short tick as it stops; Tally and Wrap's beeps
+// until 11-10, which users found harsh), Voxt's Pop and Tink in a build
+// without the family's sounds.
 var (
 	recordStartEvent = sounds.Event{ID: "record.start", Name: sounds.Text{En: "Recording starts", Zh: "开始录音"},
-		Default: "tally", Fallback: "Pop", Uses: []string{"record.start"}}
+		Default: "pebble", Fallback: "Pop", Uses: []string{"record.start"}}
 	recordStopEvent = sounds.Event{ID: "record.stop", Name: sounds.Text{En: "Recording stops", Zh: "结束录音"},
-		Default: "wrap", Fallback: "Tink", Uses: []string{"record.stop"}}
+		Default: "nib", Fallback: "Tink", Uses: []string{"record.stop"}}
 )
 
 // soundsState is the cues' sounds and the previews of Settings → Audio →
-// Play sounds.
+// Sound.
 type soundsState struct {
 	sounds struct {
 		previewing string // the cue whose Try shows the accent ("" none)
 		seq        int    // numbers the previews: a preview's timer ends only its own
-		// playing is the choice a preview plays until playingEnd (the
-		// picker's ▶ in the accent).
+		// playing is the choice a preview plays until playingEnd (a
+		// pair's ▶ in the accent).
 		playing    string
 		playingEnd time.Time
 	}
@@ -81,7 +81,7 @@ func loadCueSounds() *sounds.Catalog {
 	return cat
 }
 
-// systemSounds are the Mac's system sounds, for the picker.
+// systemSounds are the Mac's system sounds, for the macOS choice.
 func (a *app) systemSounds() []string {
 	if !a.sysRead {
 		a.sysSounds, a.sysRead = sounds.SystemSounds(""), true
@@ -115,6 +115,19 @@ func (a *app) cueTarget(c cue) sounds.Target {
 func (a *app) chooseSound(ev sounds.Event, choice string) {
 	p := a.soundPrefs()
 	p.Choose(ev, choice)
+	a.keepSounds(p)
+}
+
+// chooseSounds keeps start and stop as the cues' sounds, at once.
+func (a *app) chooseSounds(start, stop string) {
+	p := a.soundPrefs()
+	p.Choose(recordStartEvent, start)
+	p.Choose(recordStopEvent, stop)
+	a.keepSounds(p)
+}
+
+// keepSounds saves p's choices (a default is stored as "").
+func (a *app) keepSounds(p sounds.Prefs) {
 	a.updateSettings(func(s *settings.Settings) {
 		s.Audio.StartSound, s.Audio.StopSound = p.Events[recordStartEvent.ID], p.Events[recordStopEvent.ID]
 	})
@@ -195,8 +208,8 @@ func (p *previewPlayer) play(seq int, t sounds.Target, start func(sounds.Target)
 	}
 }
 
-// previewSound plays choice for ev (Try, ▶ in the picker), at the cues'
-// volume, Play sounds on or off; key names the Try button that shows the
+// previewSound plays choice for ev (Try, a pair's ▶), at the cues'
+// volume, the sounds on or off; key names the Try button that shows the
 // accent meanwhile ("" none). It has nothing to do with a session: one
 // that records goes on (its muted output may hide the preview).
 func (a *app) previewSound(ev sounds.Event, choice, key string) {
@@ -230,7 +243,7 @@ func (a *app) stopPreview() {
 }
 
 // previewPlaying is the choice a preview plays and how long it has left
-// (the picker's ▶).
+// (a pair's ▶).
 func (a *app) previewPlaying() (string, time.Duration) {
 	if a.sounds.playing == "" {
 		return "", 0
@@ -248,66 +261,6 @@ func (a *app) trySound(c cue) {
 	ev := cueEvent(c)
 	a.previewSound(ev, a.soundPrefs().Choice(ev), ev.ID)
 }
-
-// soundsRow is the Play sounds row, and under it while on a line per cue.
-func (a *app) soundsRow(c *ui.Context) {
-	t := c.Theme()
-	settingRow(c, "audio-sounds", i18n.T("Play sounds"), i18n.T("A short sound when recording starts, and another when it stops. Choosing a sound plays it."), func() {
-		if ui.Switch(c.Key("audio-sounds-switch"), &a.settingsForm.sounds).Label(i18n.T("Play sounds")).Changed() {
-			on := a.settingsForm.sounds
-			a.updateSettings(func(s *settings.Settings) { s.Audio.Sounds = on })
-		}
-	})
-	if !a.settingsForm.sounds {
-		return
-	}
-	ui.Column(c.Key("audio-cues")).Gap(px(t, sp1)).Padding(0, 0, 0, px(t, sp4)).Children(func() {
-		for _, cu := range []cue{startCue, stopCue} {
-			ev := cueEvent(cu)
-			label, name := i18n.T("When recording starts"), i18n.T("Start sound")
-			if cu == stopCue {
-				label, name = i18n.T("When recording stops"), i18n.T("Stop sound")
-			}
-			settingRow(c, "audio-cue-"+ev.ID, label, "", func() {
-				choice := a.soundPrefs().Choice(ev)
-				soundPicker(c.Key("pick-"+ev.ID), soundPickerSpec{
-					Name:      name,
-					Event:     ev,
-					Choice:    choice,
-					Volume:    a.prefs.Audio.SoundVolumeOrDefault(),
-					Catalog:   a.soundCat,
-					System:    a.systemSounds(),
-					Label:     a.soundLabel,
-					Choose:    func(ch string) { a.chooseSound(ev, ch) },
-					Preview:   func(ch string) { a.previewSound(ev, ch, "") },
-					Stop:      a.stopPreview,
-					Playing:   a.previewPlaying,
-					SetVolume: func(v int) { a.updateSettings(func(s *settings.Settings) { s.Audio.SetSoundVolume(v) }) },
-				})
-				if a.tryButton(c.Key("try-"+ev.ID), ev.ID).Clicked() {
-					a.trySound(cu)
-				}
-			})
-		}
-		// Voxt 1.x's default pair (its "soft" preset), which the import
-		// turned into the family's default.
-		start, stop := sounds.System(legacyStartSound), sounds.System(legacyStopSound)
-		if a.prefs.Audio.StartSound != start || a.prefs.Audio.StopSound != stop {
-			b := ghostButton(c.Key("audio-legacy-sounds"), i18n.T("Use Voxt 1.x's sounds")).Tooltip(i18n.T("Pop when recording starts and Tink when it stops, as Voxt 1.x played them."))
-			if b.Clicked() {
-				a.updateSettings(func(s *settings.Settings) { s.Audio.StartSound, s.Audio.StopSound = start, stop })
-				a.previewSound(recordStartEvent, start, "")
-			}
-		}
-	})
-}
-
-// legacyStartSound and legacyStopSound are the macOS system sounds of Voxt
-// 1.x's default cues ("soft": Pop, then Tink).
-const (
-	legacyStartSound = "Pop"
-	legacyStopSound  = "Tink"
-)
 
 // tryButton is Try sound: iconButton's face, its note in the accent while
 // the preview of key plays.

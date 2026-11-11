@@ -111,6 +111,36 @@ func TestOpenAIChat(t *testing.T) {
 	}
 }
 
+// TestOpenAIRelaxesGeneration: a rejected temperature or top_p that came
+// from the setup's settings (or its Extra Body) is dropped too; a rejection
+// naming something the body does not carry is not retried.
+func TestOpenAIRelaxesGeneration(t *testing.T) {
+	reject := jsonReply(400, map[string]any{"error": map[string]any{"message": "Unsupported value: 'temperature' does not support 0.2"}})
+	for name, g := range map[string]Generation{
+		"temperature": {Temperature: ptr(0.2)},
+		"top_p":       {TopP: ptr(0.9)},
+		"extra body":  {ExtraBody: map[string]any{"temperature": 0.2}},
+	} {
+		f := newFakeServer(t, reject, jsonReply(200, oaText("ok")))
+		p := presetAt(t, "openai", f.srv.URL)
+		p.Generation = g
+		c := NewOpenAI(p, "k", f.srv.Client())
+		if _, err := c.Chat(context.Background(), Request{Messages: msgs("hi")}); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		rs := f.requests()
+		if len(rs) != 2 || rs[1].Body["temperature"] != nil || rs[1].Body["top_p"] != nil {
+			t.Fatalf("%s: requests %+v", name, rs)
+		}
+	}
+	// Nothing to drop: not resent.
+	f := newFakeServer(t, reject)
+	c := NewOpenAI(presetAt(t, "openai", f.srv.URL), "k", f.srv.Client())
+	if _, err := c.Chat(context.Background(), Request{Messages: msgs("hi")}); err == nil || len(f.requests()) != 1 {
+		t.Fatalf("err %v, %d requests", err, len(f.requests()))
+	}
+}
+
 // TestOpenAIStreaming: deltas in order on the caller's goroutine, keep-
 // alive comments skipped, the usage of the last chunk; the progress
 // deadlines stream too.

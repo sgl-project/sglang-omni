@@ -110,6 +110,44 @@ func TestRemoteModelEndToEnd(t *testing.T) {
 	}
 }
 
+// TestRemoteModelOverResponses: a setup on the Responses API goes to
+// /v1/responses, with store off, and its answer is pasted.
+func TestRemoteModelOverResponses(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		raw, _ := json.Marshal(body)
+		mu.Lock()
+		got = append(got, r.URL.Path+" "+string(raw))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}\n\n")
+		for _, part := range []string{"早上好，", "团队。"} {
+			fmt.Fprintf(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":%q}\n\n", part)
+		}
+		fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n")
+	}))
+	t.Cleanup(srv.Close)
+	useKeys(t, &memKeys{m: map[string]string{"llm." + llm.Custom: "sk-mock-123"}})
+	ev := script(t, hotkeyLine(0, "translate/0", proto.PhaseTrigger))
+	a := newSessionApp(t, helpertest.Opt("selection", "Good morning, team.")+","+ev, func(s *settings.Settings) {
+		s.Features.Translate.Target = "zh-Hans"
+		s.Features.Translate.LLM = llm.Custom
+		s.Providers.LLM = []settings.Provider{{ID: llm.Custom, Endpoint: srv.URL + "/v1", Model: "mock-model", APIFormat: llm.APIResponses}}
+	}, local.NotInstalled{})
+	a.pump("the end", func() bool { return a.sess.State.Ended() })
+	if end := a.sess; end.State != session.Done || end.Result != "早上好，团队。" {
+		t.Fatalf("end %+v", end)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 1 || !strings.HasPrefix(got[0], "/v1/responses ") || !strings.Contains(got[0], `"store":false`) || !strings.Contains(got[0], "Good morning, team.") || strings.Contains(got[0], `"messages"`) {
+		t.Fatalf("requests %q", got)
+	}
+}
+
 // TestRemoteErrorKeepsNoKey: a remote model that quotes the key in its
 // error fails the session, and the error kept in the history has the key
 // blanked out.
@@ -192,7 +230,7 @@ func TestSetupMissingItsKey(t *testing.T) {
 	a.local = &fakeLocal{ASRP: &fakeTranscriptions{}} // the speech models came over: only the language model is missing
 	a.checkModels()
 	a.navigate("/home")
-	if !has(tt, "DeepSeek needs its API key: paste it again to use it.") || !has(tt, "Complete setup") {
+	if !has(tt, "DeepSeek needs its API key. Paste it again to use it.") || !has(tt, "Complete setup") {
 		t.Fatalf("sidebar: %q", tt.Texts())
 	}
 	click(t, tt, "Complete setup")
@@ -209,5 +247,30 @@ func TestSetupMissingItsKey(t *testing.T) {
 	frames(tt)
 	if !a.provDlg.open || a.provDlg.id != "deepseek" {
 		t.Errorf("the card's Complete setup: %+v", a.provDlg.open)
+	}
+}
+
+// TestDialogTestWithoutKey: the bug was a connection test with no API key
+// whose ⓘ (and its access label) said only "llm.no_key provider=…". The
+// ⓘ tells the whole reason in words, and the reason fits the dialog the
+// key is typed in.
+func TestDialogTestWithoutKey(t *testing.T) {
+	useKeys(t, &memKeys{m: map[string]string{}})
+	a, _, tt := newTestApp(t)
+	a.navigate(remotePath)
+	click(t, tt, "Anthropic")
+	click(t, tt, "Test connection")
+	const want = "Paste the service's API key above, then test again."
+	if a.provDlg.test.res.Err == nil || !has(tt, want) {
+		t.Fatalf("test %+v, texts %q", a.provDlg.test, tt.Texts())
+	}
+	var info string
+	for _, l := range tt.AccessLabels() {
+		if strings.Contains(l, "llm.no_key") {
+			info = l
+		}
+	}
+	if !strings.HasPrefix(info, want) {
+		t.Errorf("the ⓘ says %q", info)
 	}
 }

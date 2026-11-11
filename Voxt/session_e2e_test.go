@@ -75,6 +75,7 @@ func newSessionApp(t *testing.T, opts string, set func(*settings.Settings), svc 
 	a := newApp(lib, &helperHost{bin: self, env: helpertest.Env("frame-ms=20," + helpertest.Opt("paste-log", pasteLog) + "," + opts)})
 	a.measureHook = guessText
 	s := &sessionApp{app: a, t: t, queue: make(chan func(), 4096), pasteLog: pasteLog}
+	a.copyText = func(string) error { return nil } // the real clipboard blocks without a UI session
 	a.postQueue = func(fn func()) { s.queue <- fn }
 	a.muteJournal = outputJournal(t.TempDir(), "") // as main.go: the helper's claims survive its crash
 	a.connectHelper()
@@ -229,12 +230,12 @@ func TestSessionEndToEnd(t *testing.T) {
 }
 
 // TestSessionStreamingCard: a streaming model shows its partial while
-// recording; the app in front takes no text, so the result waits in the
-// answer card, whose Insert pastes it anyway.
+// recording; with the answer card on, the result waits in the card,
+// whose Insert pastes it.
 func TestSessionStreamingCard(t *testing.T) {
 	ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(600, "transcribe/0", proto.PhaseTrigger))
 	a := newSessionApp(t, "readonly,"+ev, func(s *settings.Settings) {
-		s.Features.Transcribe.Enhance = false
+		s.Features.Transcribe.Enhance, s.Features.Transcribe.ShowCard = false, true
 	}, &fakeLocal{ASRP: fakeStreamer{final: "你好，VoxtNew"}})
 	partial := false
 	a.pump("the end", func() bool {
@@ -318,7 +319,7 @@ func TestSessionEscapeAndFailures(t *testing.T) {
 		if p := a.pasted(); len(p) != 1 || p[0].Text != "hello there" {
 			t.Errorf("pasted %+v", p)
 		}
-		if a.notice == nil || !a.notice.warn || a.ov.mode != ovNotice || a.notice.text != "Inserted as recognised: the language model failed." {
+		if a.notice == nil || !a.notice.warn || a.ov.mode != ovNotice || a.notice.text != "The language model failed, so the recognised text was inserted." {
 			t.Errorf("notice %+v, overlay %s", a.notice, a.ov.mode)
 		}
 		if es := a.history(); len(es) != 1 || es[0].Error == "" || es[0].Status != store.StatusDone {

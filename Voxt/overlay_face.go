@@ -54,9 +54,12 @@ func (a *app) overlayView(c *ui.Context) {
 		case ovNotice:
 			a.overlayNotice(c)
 		default:
-			// The pointer goes through it (passThrough): nothing to drag.
-			faceStyle(ui.Column(c.Key("ov-face")), o, a.ov.mode, a.ov.h).Children(func() {
-				overlayPill(c, a.pillSession(), a.ov.mode, look) // mute_link.go: the output's note
+			// In lines it moves where it is dragged, as the card; the small
+			// pill lets the pointer through (syncPassThrough).
+			faceStyle(ui.Column(c.Key("ov-face")), o, a.ov.mode, a.ov.h).DragWindow().Children(func() {
+				if overlayPill(c, a.pillSession(), a.ov.mode, look) { // mute_link.go: the output's note
+					a.skipLLM()
+				}
 			})
 		}
 	})
@@ -105,13 +108,18 @@ type pillLook struct {
 // wide: the feature's icon, the waveform or the loader, the time and the
 // matched group when they show, in a row centred in the pill (Voxt's
 // compact card); with live text the row and the text's line under it,
-// both centred, in the wider padding of Voxt's card with text.
-func overlayPill(c *ui.Context, s session.Snapshot, mode overlayMode, look pillLook) {
+// both centred, in the wider padding of Voxt's card with text. While the
+// language model works on speech that can go in as said, the row ends
+// with Use transcript (canSkip); it reports a click on it.
+func overlayPill(c *ui.Context, s session.Snapshot, mode overlayMode, look pillLook) (skip bool) {
 	text, hint := pillLine(s)
 	// The face's border takes layout.Border of its padding (MyGo's border box).
 	col := ui.Column(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Padding(layout.PillPadY-layout.Border, layout.PillPadX-layout.Border)
-	if text != "" {
+	if text != "" || look.lines {
 		col.Padding(layout.LivePadY-layout.Border, layout.LivePadX-layout.Border).Gap(layout.LiveGap)
+	}
+	if look.lines {
+		col.Justify(ui.Start) // the row stays put as the lines under it grow
 	}
 	col.Children(func() {
 		ui.Row(c).Height(layout.RowH).Shrink(0).Gap(layout.Gap).AlignItems(ui.Center).Children(func() {
@@ -135,11 +143,14 @@ func overlayPill(c *ui.Context, s session.Snapshot, mode overlayMode, look pillL
 					})
 				}
 			} else {
-				overlayLoader(c, uitext.WorkingText(s), look)
+				overlayLoader(c, uitext.WorkingText(s), look, layout.WaveSlotW)
 			}
 			if name := uitext.SceneShort(s); name != "" {
 				ui.Text(c, name).FontSize(layout.SceneSize).TextColor(ovText2).SingleLine().Ellipsis("…").MaxWidth(layout.SceneMaxW).MinWidth(0).Shrink(1).
 					Label(i18n.T("App enhancement: %s", uitext.SceneLabel(s)))
+			}
+			if canSkip(s, mode) {
+				skip = cardCapsule(c.Key("ov-skip"), skipText().text, i18n.T("Insert the recognised text without waiting for the language model"))
 			}
 		})
 		switch {
@@ -153,9 +164,21 @@ func overlayPill(c *ui.Context, s session.Snapshot, mode overlayMode, look pillL
 			liveLines(c.Key("ov-lines"), look.scroll, s.ID, text)
 		case text != "":
 			liveLine(c.Key("ov-live-"+s.ID), text, float32(max(look.w, layout.PillW)-2*layout.LivePadX), look.motion)
+		case look.lines:
+			ui.Box(c).Height(layout.LineH).Shrink(0) // the first line's room, before any text
 		}
 	})
+	return skip
 }
+
+// canSkip: the pill in mode offers Use transcript (session.Manager's
+// SkipLLM, #3821).
+func canSkip(s session.Snapshot, mode overlayMode) bool {
+	return mode == ovWorking && s.State == session.Composing && s.CanSkip
+}
+
+// skipText is Use transcript's label as it draws (cardCapsule's).
+func skipText() ovSized { return ovSized{i18n.T("Use transcript"), 11, 600, 0} }
 
 // pillLine is the line under the pill's row: the live text, else (hint)
 // "Starting the microphone…" while the microphone gives no audio (what
@@ -223,17 +246,6 @@ func liveLines(c *ui.Context, l *linesScroll, id, text string) {
 	ui.Scroll(c).Width(layout.LinesTextW).MaxHeight(layout.LinesMax * layout.LineH).Shrink(0).TrackScroll(&l.st).Label(text).Children(func() {
 		ui.Text(c, text).FontSize(layout.LiveSize).FontWeight(layout.LiveWeight).TextColor(ovText).Shrink(0)
 	})
-}
-
-// liveLinesOverflow says whether the live text in lines is longer than
-// the face shows (more than layout.LinesMax lines), so that it scrolls.
-func (a *app) liveLinesOverflow() bool {
-	text, hint := pillLine(a.pillSession())
-	if !a.prefs.Overlay.LiveLines || hint || text == "" || (a.ov.mode != ovRecording && a.ov.mode != ovWorking) {
-		return false
-	}
-	h, _ := a.ovTextHeight(liveLinesKey(text))
-	return h > layout.LinesMax*layout.LineH
 }
 
 // liveLine is the live text on one line, width DIPs wide: centred while

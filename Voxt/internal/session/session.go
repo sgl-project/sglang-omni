@@ -86,6 +86,9 @@ func (s State) Ended() bool { return s == Done || s == Cancelled || s == Failed 
 const (
 	// ProblemNoASR: no speech model is ready (Speech models).
 	ProblemNoASR = "noASR"
+	// ProblemSpeechWait: the speech model is still downloading
+	// (StartRequest.SpeechWait, which Err says).
+	ProblemSpeechWait = "speechWait"
 	// ProblemMicrophone: macOS refused the microphone.
 	ProblemMicrophone = "microphone"
 	// ProblemDevice: no input gave audio.
@@ -194,6 +197,9 @@ type Snapshot struct {
 	// Retried: Translate asked again, strictly (the first answer looked
 	// untranslated).
 	Retried bool
+	// CanSkip: while Composing, SkipLLM inserts the recognised text in
+	// place of the model's answer (Transcribe, and Translate of speech).
+	CanSkip bool
 	// Inserted: the result was pasted; Card: it shows in the answer card
 	// (Delivery says why it was not inserted). While the model writes,
 	// Card says the answer streams into the card.
@@ -334,7 +340,6 @@ type Config struct {
 	NewID func() string
 
 	// Limits (0: the defaults).
-	MaxRecording time.Duration // DefaultMaxRecording
 	MinRecording time.Duration // DefaultMinRecording
 	// Recognition after Stop gets ASRTimeout plus ASRPerSecond per second
 	// of the recording (asrLimit): a local model that stopped answering is
@@ -381,7 +386,6 @@ type Config struct {
 
 // Defaults of Config's limits.
 const (
-	DefaultMaxRecording   = 10 * time.Minute
 	DefaultMinRecording   = 300 * time.Millisecond
 	DefaultASRTimeout     = 60 * time.Second
 	DefaultASRPerSecond   = time.Second
@@ -433,6 +437,10 @@ type StartRequest struct {
 	// Previous are a Rewrite conversation's earlier turns: the session is
 	// a follow-up to the answer card.
 	Previous []compose.Turn
+	// SpeechWait, when set, ends the session with these words instead of
+	// recording: the speech model it should use is still downloading.
+	// Translating a selection needs none and goes on.
+	SpeechWait string
 }
 
 // TextInput is a session's input given at Start.

@@ -36,13 +36,23 @@ func (a *app) overlaySize(mode overlayMode) (w, h int, exact bool) {
 		}
 		row, rowExact := recordingPillRow(a.sess, mode == ovRecording, mode == ovRecording && a.prefs.Overlay.ShowTime, scene, a.ovTextWidth)
 		exact = exact && rowExact
+		if canSkip(a.sess, mode) {
+			w, ok := a.ovTextWidth(skipText())
+			row += layout.Gap + 2*10 + int(math.Ceil(float64(w))) // cardCapsule's padding
+			exact = exact && ok
+		}
 		text, hint := pillLine(a.pillSession())
+		if a.prefs.Overlay.LiveLines {
+			// Wide from the start, before any text: the face does not jump
+			// from the small pill at the first word (the user, 11-09).
+			if text == "" || hint {
+				return layout.LinesW, layout.LinesHeight(0), true
+			}
+			th, known := a.ovTextHeight(liveLinesKey(text))
+			return layout.LinesW, layout.LinesHeight(th), known
+		}
 		if text == "" {
 			return row + 2*layout.PillPadX, layout.PillH, exact
-		}
-		if a.prefs.Overlay.LiveLines && !hint {
-			th, known := a.ovTextHeight(liveLinesKey(text))
-			return layout.LinesW, layout.LinesHeight(th), exact && known
 		}
 		tw, known := a.ovTextWidth(liveTextKey(text))
 		w := layout.LiveWidth(row, tw)
@@ -166,6 +176,9 @@ func (a *app) overlayTexts() []ovSized {
 		}
 		if a.ov.mode == ovRecording && a.sess.Waiting == session.WaitNone {
 			out = append(out, kindTitleText(a.sess.Kind))
+		}
+		if canSkip(a.sess, a.ov.mode) {
+			out = append(out, skipText())
 		}
 		if text, hint := pillLine(a.pillSession()); text != "" && a.prefs.Overlay.LiveLines && !hint {
 			out = append(out, liveLinesKey(text))

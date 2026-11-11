@@ -92,15 +92,15 @@ type overlayState struct {
 		// it appears (the display under the pointer); a resize stays there.
 		area mygo.Rectangle
 		// dragged is how far the user moved the window from its anchored
-		// place by dragging the face (the card's background, a notice;
-		// overlayDragged): the face keeps it as it grows, until the
+		// place by dragging the face (the card's background, a notice, the
+		// live text in lines; overlayDragged): the face keeps it as it grows, until the
 		// overlay hides.
 		dragged struct{ x, y int }
 		// style is the material's shape last given to the window.
 		style mygo.VibrancyStyle
-		// passThrough: the window lets the pointer through (recording and
-		// working: nothing in it takes a click), but not while the live
-		// text in lines overflows (liveLinesOverflow): the wheel scrolls it.
+		// passThrough: the window lets the pointer through (the small pill,
+		// recording and working: nothing in it takes a click), but not the
+		// face with live text in lines: it drags, and the wheel scrolls it.
 		passThrough bool
 		// lines is the scroll of the live text in lines (liveLines).
 		lines linesScroll
@@ -280,12 +280,12 @@ func (a *app) overlayDragged() {
 	a.syncLangMenu() // overlay_lang.go: the language menu stays by the card
 }
 
-// syncPassThrough lets the pointer through the window while nothing in it
-// takes a click (recording, working), but not while the live text in lines
-// overflows, so that the wheel scrolls it; the measured height of a text
-// can say so after it showed (overlayRestyle).
+// syncPassThrough lets the pointer through the small pill (recording,
+// working: nothing in it takes a click, but Use transcript), but not through the face with
+// live text in lines (Overlay.LiveLines): it is dragged as the card is,
+// and the wheel scrolls its text.
 func (a *app) syncPassThrough() {
-	pass := (a.ov.mode == ovRecording || a.ov.mode == ovWorking) && !a.liveLinesOverflow()
+	pass := (a.ov.mode == ovRecording || a.ov.mode == ovWorking && !canSkip(a.sess, ovWorking)) && !a.prefs.Overlay.LiveLines
 	if pass == a.ov.passThrough {
 		return
 	}

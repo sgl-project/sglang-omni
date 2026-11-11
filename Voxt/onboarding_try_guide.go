@@ -6,7 +6,6 @@ package main
 import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -28,9 +27,9 @@ func (a *app) obLanguageGuide(c *ui.Context, kind store.Kind, prefix string) {
 	var detail string
 	switch kind {
 	case store.KindTranslate:
-		detail = i18n.T("No language model is set up: set one up to translate.")
+		detail = i18n.T("No language model is set up. Set one up to translate.")
 	case store.KindRewrite:
-		detail = i18n.T("No language model is set up: set one up to rewrite.")
+		detail = i18n.T("No language model is set up. Set one up to rewrite.")
 	default:
 		detail = i18n.T("No language model is set up.")
 	}
@@ -42,14 +41,10 @@ func (a *app) obSpeechDownloadGuide(c *ui.Context, kind store.Kind, prefix strin
 	if kind == store.KindTranslate {
 		return
 	}
-	if _, ok := a.featureModel(local.ASR, string(kind)); ok {
+	n := a.speechWaits(kind)
+	if n == nil {
 		return
 	}
-	st := a.modelStatus[obSpeech]
-	if !st.Downloading || st.Total <= 0 {
-		return
-	}
-	pct := int(100 * float64(st.Done) / float64(st.Total))
 	more := i18n.T("The model downloads in the background. You can continue the guide and try again when the bar fills, or skip this step.")
-	notice(c, prefix+"-asr-dl", noticeInfo, i18n.T("The speech model is still downloading (%d%%).", pct), more, nil, nil)
+	notice(c, prefix+"-asr-dl", noticeInfo, n.text, more, nil, nil)
 }

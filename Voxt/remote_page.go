@@ -18,6 +18,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -30,9 +31,10 @@ func (a *app) remotePage(c *ui.Context) {
 	ui.Scroll(c.Key("remote-scroll")).Grow(1).MinHeight(0).Children(func() {
 		pageColumn(c).Gap(px(t, sp4)).Children(func() {
 			a.obBackBar(c, remotePath) // onboarding.go: left from the setup guide
-			caption(c, i18n.T("Transcribe's clean-up, Translate and Rewrite use the language model you set up here, over its OpenAI-compatible API. Voxt sends it the recognised or selected text, never your audio; keys stay in this Mac's Keychain."))
+			caption(c, i18n.T("Voxt sends the language model the recognised or selected text, never your audio."))
 			a.providerCards(c, local.LLM)
-			if ghostButton(c.Key("remote-debug"), i18n.T("Try prompts on a model…")).Clicked() {
+			a.llmWaitRow(c) // llm_wait.go
+			if ui.Button(c.Key("remote-debug"), i18n.T("Try prompts on a model…")).AlignSelf(ui.Start).Clicked() {
 				a.navigate(llmDebugPath)
 			}
 		})
@@ -78,7 +80,7 @@ func (a *app) providerCards(c *ui.Context, kind local.Kind) {
 		}
 		if rest := append(here, online...); len(rest) > 0 {
 			sectionTitle(c, i18n.T("Online services"))
-			caption(c, i18n.T("Buy an API key from the service, then set it up here; a Whisper server on this Mac needs no key. Your recording goes to the service only for the features you choose it on."))
+			caption(c, i18n.T("A service gets your recordings only for the features you choose it for."))
 			grid("remote-asr-online", rest)
 		}
 		return
@@ -89,12 +91,11 @@ func (a *app) providerCards(c *ui.Context, kind local.Kind) {
 	}
 	if len(here) > 0 {
 		sectionTitle(c, i18n.T("On this Mac"))
-		caption(c, i18n.T("Free, and the text stays here: install Ollama, LM Studio or oMLX, download a model in it, then set it up here."))
+		caption(c, i18n.T("Free, and the text stays on this Mac."))
 		grid("remote-here", here)
 	}
 	if len(online) > 0 {
 		sectionTitle(c, i18n.T("Online services"))
-		caption(c, i18n.T("Buy an API key from the service, then set it up here."))
 		grid("remote-online", online)
 	}
 }
@@ -107,9 +108,14 @@ func (a *app) providerState(c *ui.Context, kind local.Kind, p settings.Provider,
 	}
 	switch a.setupMissing(kind, p) {
 	case providers.MissingKey:
+		if lookupService(kind, p.ID).signIn {
+			return k.Warning, i18n.T("Sign-in needed")
+		}
 		return k.Warning, i18n.T("API key needed")
 	case providers.MissingEndpoint:
 		return k.Warning, i18n.T("No address")
+	case providers.MissingAddress:
+		return k.Warning, i18n.T("Address not allowed")
 	case providers.MissingModel:
 		return k.Warning, i18n.T("No model")
 	}
@@ -262,12 +268,15 @@ func testStatus(c *ui.Context, tr providerTest, long bool) {
 		statusMark(c, icons.CheckCircle, k.Success, text).Shrink(1).Tooltip(text)
 	default:
 		msg, _ := uitext.ModelErrorText(tr.res.Err)
+		if long && llm.Code(tr.res.Err) == llm.CodeNoKey {
+			msg = i18n.T("Paste the service's API key above, then test again.") // the dialog has the key's field
+		}
 		tip := msg + "\n\n" + tr.detail
 		if !long {
 			statusMark(c, icons.CloseCircle, k.Danger, i18n.T("Failed")).Shrink(0).Tooltip(tip)
 			return
 		}
 		statusMark(c, icons.CloseCircle, k.Danger, msg).Shrink(1).Tooltip(tip)
-		infoTip(c, tr.detail).Shrink(0)
+		infoTip(c, tip).Shrink(0) // the reason is cut beside the button: the ⓘ tells all of it
 	}
 }

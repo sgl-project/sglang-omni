@@ -169,7 +169,7 @@ func (a *app) historyPage(c *ui.Context) {
 				h.sel = ""
 				a.loadHistory()
 			}
-			if searchField(c, "hist-search", &h.query, i18n.T("Search"), px(t, 360)).Label(i18n.T("Search the history")).Changed() {
+			if searchField(c, "hist-search", &h.query, i18n.T("Search"), px(t, 360)).Label(i18n.T("Search history")).Changed() {
 				a.loadHistory()
 			}
 			a.historySettingsButton(c) // history_settings.go
@@ -177,7 +177,7 @@ func (a *app) historyPage(c *ui.Context) {
 		a.historyFolderNotice(c)
 		if !a.prefs.Privacy.KeepHistory {
 			ui.Column(c).Padding(0, px(t, sp6), px(t, sp3)).Shrink(0).Children(func() {
-				notice(c, "hist-off", noticeInfo, i18n.T("History is off: new results are not kept."), "", func() {
+				notice(c, "hist-off", noticeInfo, i18n.T("History is off, so new results are not kept."), "", func() {
 					if ghostButton(c.Key("hist-privacy"), i18n.T("Privacy settings")).Clicked() {
 						a.navigate("/settings/privacy")
 					}
@@ -236,8 +236,8 @@ func (a *app) historyEmpty(c *ui.Context) {
 			q = string(r[:40]) + "…"
 		}
 		emptyState(c, icons.Magnifer, i18n.T("Nothing matches “%s”", q),
-			i18n.T("The search looks in what was said, selected and written."), func() {
-				if ghostButton(c.Key("hist-clear-search"), i18n.T("Clear the search")).Clicked() {
+			"", func() {
+				if ghostButton(c.Key("hist-clear-search"), i18n.T("Clear search")).Clicked() {
 					h.query = ""
 					a.loadHistory()
 				}
@@ -247,21 +247,21 @@ func (a *app) historyEmpty(c *ui.Context) {
 	switch h.kind() {
 	case store.KindTranslate:
 		emptyState(c, translateIcon, i18n.T("No translations yet"),
-			i18n.T("Select text, or speak, and press your Translate shortcut: each translation shows up here with its source."), func() {
+			i18n.T("Translations show up here with their source."), func() {
 				if ghostButton(c.Key("hist-go-translate"), i18n.T("Set up Translate")).Clicked() {
 					a.navigate("/translate")
 				}
 			})
 	case store.KindRewrite:
 		emptyState(c, rewriteIcon, i18n.T("No rewrites yet"),
-			i18n.T("Press your Rewrite shortcut and say what to write, or how to change the selected text: each answer shows up here with your instruction."), func() {
+			i18n.T("Rewrites show up here with your instruction."), func() {
 				if ghostButton(c.Key("hist-go-rewrite"), i18n.T("Set up Rewrite")).Clicked() {
 					a.navigate("/rewrite")
 				}
 			})
 	default:
 		emptyState(c, icons.History, i18n.T("No transcriptions yet"),
-			i18n.T("Press your Transcribe shortcut and speak: each result shows up here, to find and copy again."), func() {
+			i18n.T("Each result shows up here."), func() {
 				if ghostButton(c.Key("hist-go-transcribe"), i18n.T("Set up Transcribe")).Clicked() {
 					a.navigate("/transcribe")
 				}
@@ -323,7 +323,7 @@ func entryMarks(c *ui.Context, e store.Entry) {
 	}
 	switch e.Delivery {
 	case "card":
-		tagChip(c, i18n.T("Not inserted")).Tooltip(i18n.T("Shown in the answer card, and not inserted"))
+		tagChip(c, i18n.T("Not inserted")).Tooltip(i18n.T("Shown in the answer card, not inserted"))
 	case "copy":
 		tagChip(c, i18n.T("Copied")).Tooltip(i18n.T("Copied from the answer card"))
 	}

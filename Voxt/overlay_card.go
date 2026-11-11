@@ -86,6 +86,46 @@ type cardBubble struct {
 	user        bool
 	title, text string
 	live        bool // being said, or written
+	// quote: a follow-up's text selected since, under its instruction
+	// (#3816), shortened unless open; turn is its index in the turns.
+	quote     string
+	cut, open bool
+	turn      int
+}
+
+// quoteMax is how much of a follow-up's selection its bubble shows
+// before Show all: runes, lines.
+const quoteMax, quoteLines = 160, 3
+
+// quoteText is sel as a bubble shows it: whole when open, else cut to
+// quoteMax runes or quoteLines lines, and whether it was cut.
+func quoteText(sel string, open bool) (string, bool) {
+	sel = strings.TrimSpace(sel)
+	short := sel
+	if lines := strings.SplitN(short, "\n", quoteLines+1); len(lines) > quoteLines {
+		short = strings.Join(lines[:quoteLines], "\n")
+	}
+	if r := []rune(short); len(r) > quoteMax {
+		short = string(r[:quoteMax])
+	}
+	if short == sel {
+		return sel, false
+	}
+	if open {
+		return sel, true
+	}
+	return strings.TrimSpace(short) + "…", true
+}
+
+// userBubble is a turn's user side: what was said, and the text selected
+// since for a follow-up (the first turn's selection is the card's text).
+func (card answerCard) userBubble(turn int, said, sel string, live bool) (cardBubble, bool) {
+	b := cardBubble{user: true, title: i18n.T("You"), text: strings.TrimSpace(said), live: live, turn: turn}
+	if turn > 0 {
+		b.open = card.quotesOpen[turn]
+		b.quote, b.cut = quoteText(sel, b.open)
+	}
+	return b, b.text != "" || b.quote != ""
 }
 
 // cardNow is the card as it shows now.
@@ -135,24 +175,24 @@ func (a *app) cardNow() cardView {
 	}
 	v.recording = follow && s.State == session.Recording
 	v.levels, v.heard = s.Levels, !s.HeardAt.IsZero()
-	for _, t := range card.turns {
-		if in := strings.TrimSpace(t.Instruction); in != "" {
-			v.bubbles = append(v.bubbles, cardBubble{user: true, title: i18n.T("You"), text: in})
+	for i, t := range card.turns {
+		if b, ok := card.userBubble(i, t.Instruction, t.Selection, false); ok {
+			v.bubbles = append(v.bubbles, b)
 		}
 		v.bubbles = append(v.bubbles, cardBubble{title: t.Answer.Title, text: t.Answer.Content})
 	}
 	switch {
 	case follow:
-		if said := cmpOr(strings.TrimSpace(s.Raw), strings.TrimSpace(s.Partial)); said != "" {
-			v.bubbles = append(v.bubbles, cardBubble{user: true, title: i18n.T("You"), text: said, live: true})
+		if b, ok := card.userBubble(len(card.turns), cmpOr(strings.TrimSpace(s.Raw), strings.TrimSpace(s.Partial)), s.Selection, true); ok {
+			v.bubbles = append(v.bubbles, b)
 		}
 		if s.State != session.Recording {
 			v.bubbles = append(v.bubbles, cardBubble{title: s.Title, text: s.Draft, live: true})
 		}
 	case card.problem != nil:
 		// The follow-up that failed: what was said; why, under the card.
-		if in := strings.TrimSpace(card.input.Raw); in != "" {
-			v.bubbles = append(v.bubbles, cardBubble{user: true, title: i18n.T("You"), text: in})
+		if b, ok := card.userBubble(len(card.turns), card.input.Raw, card.input.Selection, false); ok {
+			v.bubbles = append(v.bubbles, b)
 		}
 		if v.msg == "" {
 			v.msg, _, _ = sessionProblemText(card.problem)
@@ -169,13 +209,14 @@ func cmpOr(a, b string) string {
 }
 
 // writingAnswer says whether Rewrite's first answer is being written, its
-// first words in: the pill hands over to the answer card, which the
-// answer streams into, instead of a loader until the whole answer is in
-// (#3644). Not with Show live text off, nor for a follow-up (its card is
-// open already) or a try (the page shows it).
+// first words in, and will end in the card: the pill hands over to the
+// answer card, which the answer streams into, instead of a loader until
+// the whole answer is in (#3644). Not with Show live text off, nor for a
+// follow-up (its card is open already), a try (the page shows it) or an
+// answer that goes in at once (the card switch off: the pill shows it).
 func (a *app) writingAnswer() bool {
 	s := a.pillSession()
-	return !a.answer.open && s.Kind == store.KindRewrite && s.State == session.Composing && !s.Try && strings.TrimSpace(s.Draft) != ""
+	return !a.answer.open && s.Kind == store.KindRewrite && s.State == session.Composing && s.Card && !s.Try && strings.TrimSpace(s.Draft) != ""
 }
 
 // cardRecording says whether the card shows a follow-up recording (its
@@ -199,7 +240,16 @@ type cardBlock struct {
 	bubble     bool
 	title      ovSized
 	user, live bool
+	// quote: a follow-up's selection under the text; cut, open: Show all
+	// or Show less under it, for the turn's.
+	quote     ovSized
+	cut, open bool
+	turn      int
 }
+
+// quoteGap is the space above a bubble's selection and its Show all
+// (the bubble column's gap), quoteToggleH that line's height.
+const quoteGap, quoteToggleH, quoteSize = layout.BubbleTitleGap, 16, 12
 
 // cardBlocks are the pieces of v's text, in order.
 func cardBlocks(v cardView) []cardBlock {
@@ -213,7 +263,11 @@ func cardBlocks(v cardView) []cardBlock {
 			if text == "" {
 				text = "…"
 			}
-			blk := cardBlock{bubble: true, user: b.user, live: b.live, text: ovSized{text, layout.BubbleTextSize, 500, inner}}
+			blk := cardBlock{bubble: true, user: b.user, live: b.live, text: ovSized{text, layout.BubbleTextSize, 500, inner},
+				cut: b.cut, open: b.open, turn: b.turn}
+			if b.quote != "" {
+				blk.quote = ovSized{b.quote, quoteSize, 0, inner}
+			}
 			// An answer without a title has no heading (Voxt's).
 			if title := strings.TrimSpace(b.title); title != "" {
 				blk.title = ovSized{title, layout.BubbleTitleSize, 600, 0}
@@ -248,6 +302,9 @@ func cardTexts(v cardView) []ovSized {
 		if b.title.text != "" {
 			out = append(out, b.title)
 		}
+		if b.quote.text != "" {
+			out = append(out, b.quote)
+		}
 	}
 	return out
 }
@@ -263,6 +320,13 @@ func (a *app) blockHeight(b cardBlock) (float32, bool) {
 		if b.title.text != "" {
 			th, ok := a.ovTextHeight(b.title)
 			h, exact = h+th+layout.BubbleTitleGap, exact && ok
+		}
+		if b.quote.text != "" {
+			qh, ok := a.ovTextHeight(b.quote)
+			h, exact = h+quoteGap+qh, exact && ok
+			if b.cut {
+				h += quoteGap + quoteToggleH
+			}
 		}
 	}
 	return h, exact

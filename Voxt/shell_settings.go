@@ -35,26 +35,28 @@ type settingsState struct {
 type settingsForm struct {
 	systemLocale string // mygo.App.Locale(), read when the window opens
 
-	language     string // label
-	mainLanguage string // label
-	theme        int
-	scale        int
-	reduceMotion bool
-	menuBar      bool
-	dock         bool
-	copyResult   bool
-	closeToTray  bool
-	openAtLogin  bool
-	keepHistory  bool
-	keepAudio    bool
-	logText      bool
-	sounds       bool
-	skipSilence  bool        // !Audio.VAD.Off
-	liveResult   bool        // Audio.LiveResult
-	cleanSound   bool        // !Audio.Clean.Off
-	muteOutput   bool        // Audio.MuteOn()
-	sidebar      int         // automatic, names and icons, icons only (settings_appearance.go)
-	ovStyle      overlayForm // settings_overlay.go
+	language        string // label
+	mainLanguage    string // label
+	theme           int
+	scale           int
+	reduceMotion    bool
+	menuBar         bool
+	dock            bool
+	copyResult      bool
+	strictShortcuts bool // Features.StrictShortcuts
+	closeToTray     bool
+	openAtLogin     bool
+	keepHistory     bool
+	keepAudio       bool
+	logText         bool
+	skipSilence     bool        // !Audio.VAD.Off
+	liveResult      bool        // Audio.LiveResult
+	cleanSound      bool        // !Audio.Clean.Off
+	muteOutput      bool        // Audio.MuteOn()
+	sidebar         int         // automatic, names and icons, icons only (settings_appearance.go)
+	ovStyle         overlayForm // settings_overlay.go
+
+	historyAccess, historySelection bool // history_access.go
 
 	clearHistoryAsk bool // Privacy's Clear the history… dialog
 	// loginIs is whether macOS opens VoxtNew at login, as last read or
@@ -154,7 +156,7 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 			err := mygo.App.SetOpenAtLogin(on)
 			a.post(func() {
 				if err != nil {
-					a.toast(i18n.T("Could not change opening at login: %v", err))
+					a.toast(i18n.T("Could not change “Open at login”: %v", err))
 					return
 				}
 				a.loginIs = on
@@ -164,6 +166,9 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 	if old.Overlay != new.Overlay {
 		a.overlayRestyle() // overlay.go
 	}
+	if old.Features.Transcribe.ASR != new.Features.Transcribe.ASR {
+		a.warmSpeech() // models_omni.go: the new model loads before its first session
+	}
 	if old.Models.KeepLoaded != new.Models.KeepLoaded {
 		a.applyKeepLoaded(new.Models) // models_keep.go
 	}
@@ -172,6 +177,7 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 		a.syncRemote()
 	}
 	a.historySettingsChanged(old, new) // history_settings_ops.go
+	a.syncHistoryAccess()              // history_access.go
 	// The problems' cards: the language of their text may have changed
 	// (shell_notices.go).
 	a.checkModels()
@@ -226,8 +232,9 @@ func (a *app) loadSettingsForm() {
 	f.reduceMotion = s.Appearance.ReduceMotion
 	f.menuBar, f.closeToTray, f.openAtLogin = s.General.MenuBar, s.General.CloseToTray, s.General.LaunchAtLogin
 	f.dock, f.copyResult = !s.General.HideDock, s.General.CopyResult
+	f.strictShortcuts = s.Features.StrictShortcuts
 	f.keepHistory, f.keepAudio, f.logText = s.Privacy.KeepHistory, s.Privacy.KeepAudio, s.Privacy.LogText
-	f.sounds = s.Audio.Sounds
+	f.historyAccess, f.historySelection = s.Privacy.HistoryAccess, s.Privacy.HistorySelection
 	f.skipSilence = !s.Audio.VAD.Off
 	f.liveResult = s.Audio.LiveResult
 	f.cleanSound = !s.Audio.Clean.Off
@@ -362,18 +369,21 @@ func (a *app) settingsDialog(c *ui.Context) {
 							a.settingsOpen = false
 						}
 					})
+					// The section's name matching shows it whole; else its rows that match.
 					query := f.search
-					if query != "" && !settingsTextMatches(query, title, sectionEn) {
-						ui.Column(c).Padding(px(t, sp6)).Children(func() {
-							caption(c, i18n.T("Nothing in this section matches your search."))
-						})
-						return
+					if settingsTextMatches(query, title, sectionEn) {
+						query = ""
 					}
 					ui.Scroll(c).Grow(1).MinHeight(0).Children(func() {
 						ui.Column(c).Padding(px(t, sp1), px(t, sp6), px(t, sp6)).Gap(px(t, sp4)).MaxWidth(px(t, settingsContentMaxW)).Children(func() {
-							settingsSearchQuery = query
-							a.settingsSection(c, r)
+							settingsSearchQuery, settingsSearchHits = query, 0
+							body := ui.Column(c).Gap(px(t, sp4))
+							body.Children(func() { a.settingsSection(c, r) })
 							settingsSearchQuery = ""
+							if query != "" && settingsSearchHits == 0 { // its other parts (lists, cards) do not match either
+								body.Invisible().Height(0)
+								caption(c, i18n.T("Nothing in this section matches your search."))
+							}
 						})
 					})
 				}).Grow(1).MinHeight(0)

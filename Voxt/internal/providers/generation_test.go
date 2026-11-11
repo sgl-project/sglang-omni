@@ -70,3 +70,28 @@ func TestGenerationSettings(t *testing.T) {
 		t.Errorf("unset settings saved: %s", raw)
 	}
 }
+
+// TestAPIFormat: only OpenAI and custom services offer the Responses API,
+// a setup passes its choice on, and one saved before the option existed
+// stays on chat completions.
+func TestAPIFormat(t *testing.T) {
+	for _, pr := range llm.Presets() {
+		if got, want := Capabilities(pr.ID, "").APIFormat, pr.ID == "openai" || pr.ID == llm.Custom; got != want {
+			t.Errorf("%s: APIFormat %v", pr.ID, got)
+		}
+	}
+	if api := Config(settings.Provider{ID: "openai", APIFormat: llm.APIResponses}).API; api != llm.APIResponses {
+		t.Errorf("API %q", api)
+	}
+	var old settings.Provider
+	if err := json.Unmarshal([]byte(`{"id":"openai","model":"gpt-4.1-mini"}`), &old); err != nil {
+		t.Fatal(err)
+	}
+	if api := Config(old).API; api != "" {
+		t.Errorf("an old setup: API %q", api)
+	}
+	raw, _ := json.Marshal(old)
+	if strings.Contains(string(raw), "apiFormat") {
+		t.Errorf("the default is written: %s", raw)
+	}
+}

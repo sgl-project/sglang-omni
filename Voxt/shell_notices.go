@@ -1,10 +1,10 @@
 package main
 
 // The notifications (the notification centre's, internal/notify), shown
-// as a stack of cards at the foot of the sidebar, over the Settings row:
+// as a stack of cards at the foot of the sidebar:
 // the newest whole, up to two more peeking under it; × dismisses one and
-// the next comes up. The icon rail shows a dot on its Settings icon, which
-// then opens the same stack in a popover. There is no status bar: what it
+// the next comes up. The icon rail shows a dot on its Settings icon (the
+// System section's), which then opens the same stack in a popover. There is no status bar: what it
 // showed (the services Transcribe uses, the helper) becomes a card while
 // something is wrong (setProblem), with the action that fixes it.
 
@@ -49,6 +49,9 @@ func (a *app) notify(sev core.Severity, title, body, link string) {
 
 // dismissNotice removes one notification (its card's ×).
 func (a *app) dismissNotice(id string) {
+	if i := slices.IndexFunc(a.notices, func(n core.Notification) bool { return n.ID == id }); i >= 0 {
+		a.releaseCardGone(a.notices[i]) // updates_github.go
+	}
 	a.notices = slices.DeleteFunc(a.notices, func(n core.Notification) bool { return n.ID == id })
 	a.problemSeen(id)
 	notes := a.notes
@@ -59,6 +62,7 @@ func (a *app) dismissNotice(id string) {
 func (a *app) clearNotices() {
 	for _, n := range a.notices {
 		a.problemSeen(n.ID)
+		a.releaseCardGone(n)
 	}
 	a.notices = nil
 	a.noticesOpen = false
@@ -132,7 +136,7 @@ func (a *app) checkModels() {
 		}
 	case !llmOK:
 		code, link = "llm", remotePath
-		n = &core.Notification{Title: i18n.T("No language model"), Body: i18n.T("Translate and Rewrite need one; Transcribe types what it hears.")}
+		n = &core.Notification{Title: i18n.T("No language model"), Body: i18n.T("Translate and Rewrite need one. Without it, Transcribe types the text as recognised.")}
 		if p, missing, ok := a.pendingSetup(local.LLM); ok {
 			code, link = "llm/"+p.ID+"/"+missing, linkCompleteSetup+string(local.LLM)+"/"+p.ID
 			n.Body = setupNeedsText(local.LLM, p, missing)
@@ -183,6 +187,11 @@ func (a *app) cardAction(n core.Notification) {
 		return
 	case linkAnnouncement:
 		a.announceShown, a.announceShownOpen = n, true // announcements.go
+		return
+	}
+	if u, ok := strings.CutPrefix(n.Link, linkDownload); ok {
+		a.dismissNotice(n.ID)
+		openExternal(u) // updates_github.go
 		return
 	}
 	if setup, ok := strings.CutPrefix(n.Link, linkCompleteSetup); ok {
@@ -312,7 +321,7 @@ func (a *app) noticePopover(c *ui.Context) {
 func cardActionLabel(link string) string {
 	switch link {
 	case linkRestartHelper:
-		return i18n.T("Restart the helper")
+		return i18n.T("Restart helper")
 	case linkRelaunch:
 		return i18n.T("Restart Voxt")
 	case modelsPath:
@@ -323,6 +332,9 @@ func cardActionLabel(link string) string {
 		return i18n.T("Import") // the card's title says from where
 	case linkAnnouncement:
 		return i18n.T("Read")
+	}
+	if strings.HasPrefix(link, linkDownload) {
+		return i18n.T("Download")
 	}
 	if strings.HasPrefix(link, linkCompleteSetup) {
 		return i18n.T("Complete setup")
