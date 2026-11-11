@@ -16,12 +16,27 @@ from sglang_omni.speculative.target_worker import SpeculativeTargetWorker
 
 
 @pytest.mark.parametrize(
-    ("speculative_algorithm", "is_published"),
-    [("EAGLE3", True), ("DFLASH", False)],
+    (
+        "speculative_algorithm",
+        "has_target_embeddings",
+        "has_retained_embeddings",
+        "expected_source",
+    ),
+    [
+        ("EAGLE3", False, True, "retained"),
+        ("DFLASH", False, False, None),
+        ("EAGLE3", True, False, "target"),
+        ("EAGLE3", True, True, "retained"),
+    ],
 )
-def test_target_prefill_hands_an_eagle_draft_the_composed_embeds(
-    monkeypatch, speculative_algorithm: str, is_published: bool
+def test_target_prefill_preserves_and_publishes_multimodal_embeddings(
+    monkeypatch: pytest.MonkeyPatch,
+    speculative_algorithm: str,
+    has_target_embeddings: bool,
+    has_retained_embeddings: bool,
+    expected_source: str | None,
 ) -> None:
+    """Target embeddings survive empty sidecars, and retained values are consumed once."""
     monkeypatch.setattr(
         target_worker.ForwardBatch,
         "init_new",
@@ -29,19 +44,46 @@ def test_target_prefill_hands_an_eagle_draft_the_composed_embeds(
             seq_lens=torch.tensor([3]), input_ids=torch.tensor([1, 2, 3])
         ),
     )
-    composed_embeds = torch.ones(3, 2)
+    target_multimodal_embeddings = torch.ones(3, 2)
+    retained_multimodal_embeddings = torch.full((3, 2), 2.0)
+    second_request_multimodal_embeddings = torch.full((3, 2), 3.0)
 
     class Runner:
-        retain_prefill_input_embeds = False
+        retain_prefill_input_embeds: bool = False
         retained_prefill_input_embeds: torch.Tensor | None = None
+        target_multimodal_embeddings: torch.Tensor | None
+        next_retained_multimodal_embeddings: torch.Tensor | None
+        tp_worker: SimpleNamespace
 
-        def prepare_and_forward(self, forward_batch, batch, requests, is_prefill):
+        def __init__(self) -> None:
+            self.target_multimodal_embeddings = (
+                target_multimodal_embeddings if has_target_embeddings else None
+            )
+            self.next_retained_multimodal_embeddings = (
+                retained_multimodal_embeddings if has_retained_embeddings else None
+            )
+
+        def prepare_and_forward(
+            self,
+            forward_batch: SimpleNamespace,
+            batch: SimpleNamespace,
+            requests: list[SimpleNamespace],
+            is_prefill: bool,
+        ) -> SimpleNamespace:
             if self.retain_prefill_input_embeds:
-                self.retained_prefill_input_embeds = composed_embeds
+                if self.next_retained_multimodal_embeddings is not None:
+                    self.retained_prefill_input_embeds = (
+                        self.next_retained_multimodal_embeddings
+                    )
+                    self.next_retained_multimodal_embeddings = None
+                else:
+                    pass
             else:
                 pass
             return SimpleNamespace(
-                logits_output=SimpleNamespace(mm_input_embeds=None),
+                logits_output=SimpleNamespace(
+                    mm_input_embeds=self.target_multimodal_embeddings
+                ),
                 next_token_ids=torch.tensor([7]),
             )
 
@@ -60,8 +102,21 @@ def test_target_prefill_hands_an_eagle_draft_the_composed_embeds(
 
     result = target.forward_batch_generation(batch)
 
-    assert result.logits_output.mm_input_embeds is (
-        composed_embeds if is_published else None
+    expected_embeddings = {
+        "retained": retained_multimodal_embeddings,
+        "target": target_multimodal_embeddings,
+        None: None,
+    }[expected_source]
+    assert result.logits_output.mm_input_embeds is expected_embeddings
+    assert runner.retained_prefill_input_embeds is None
+
+    runner.target_multimodal_embeddings = second_request_multimodal_embeddings
+    batch.reqs[0].rid = "req-2"
+    second_result = target.forward_batch_generation(batch)
+
+    assert (
+        second_result.logits_output.mm_input_embeds
+        is second_request_multimodal_embeddings
     )
     assert runner.retained_prefill_input_embeds is None
 
