@@ -195,7 +195,9 @@ class Drama3ForCausalLM(nn.Module):
         elif forward_mode != ForwardMode.DECODE:
             raise NotImplementedError(f"forward mode {forward_mode} is not supported")
         elif decode_buffers is None or decode_state is None:
-            raise RuntimeError("the engine allocated no Drama 3 decode buffers")
+            raise RuntimeError(
+                "the engine allocated no Drama 3 decode buffers or state pool"
+            )
         else:
             # note (Wenyao Gao): a CUDA graph replays this branch with the batch
             # padded to its size; SGLang points every padded row at request slot 0.
