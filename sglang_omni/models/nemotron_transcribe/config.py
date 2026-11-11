@@ -49,6 +49,11 @@ class NemotronTranscribePipelineConfig(PipelineConfig):
     """Whole-file transcription. Audio up to one hour is one decoder request."""
 
     architecture: ClassVar[str] = ARCHITECTURE
+    # The Hugging Face release renamed the architecture when it gained native Transformers support; the weights and
+    # the NeMo config sections are unchanged.
+    architecture_aliases: ClassVar[tuple[str, ...]] = (
+        "Nemotron3_5TranscribeForConditionalGeneration",
+    )
     allow_audio_chunking: ClassVar[bool] = False
     max_native_clip_s: ClassVar[float] = float(MAX_AUDIO_SECONDS)
 
