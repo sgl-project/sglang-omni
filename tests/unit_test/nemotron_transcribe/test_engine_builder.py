@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 from huggingface_hub.errors import LocalEntryNotFoundError
+from sglang.srt.arg_groups.overrides import resolved_view
+from sglang.srt.server_args import ServerArgs
 from torch import nn
 
 import sglang_omni.models.nemotron_transcribe.engine_builder as engine_builder
@@ -18,6 +20,10 @@ from sglang_omni.models.nemotron_transcribe.engine_builder import (
     NemotronTranscribeEngineBuilder,
     prepare_nemotron_speculative_options,
     validate_nemotron_mtp_metadata,
+)
+from sglang_omni.models.nemotron_transcribe.hf_config import (
+    NemotronTranscribeConfig,
+    register_nemotron_transcribe_hf_config,
 )
 from sglang_omni.models.nemotron_transcribe.speech_transformer import (
     SpeechTransformerEncoder,
@@ -147,6 +153,8 @@ def test_nextn_registers_the_native_draft_with_shared_infrastructure(
     assert "revision" not in overrides
     assert "speculative_draft_model_revision" not in overrides
     assert overrides["speculative_eagle_topk"] == 1
+    assert overrides["speculative_num_steps"] == 2
+    assert overrides["speculative_num_draft_tokens"] == 3
     assert overrides["enable_mixed_chunk"] is False
     assert builder.model_arch_override == "NemotronTranscribeForConditionalGeneration"
     assert builder.infra_kwargs() == {"supports_speculative_decoding": True}
@@ -165,6 +173,45 @@ def test_nextn_preserves_an_operator_selected_revision() -> None:
     assert enabled is True
     assert overrides["revision"] == "release-2026-10"
     assert overrides["speculative_draft_model_revision"] == "release-2026-10"
+
+
+def test_nextn_preserves_explicit_steps_and_derives_matching_draft_tokens() -> None:
+    overrides, enabled = prepare_nemotron_speculative_options(
+        "org/nemotron-transcribe",
+        {
+            "speculative_algorithm": "NEXTN",
+            "speculative_num_steps": 7,
+            "speculative_num_draft_tokens": 8,
+        },
+    )
+
+    assert enabled is True
+    assert overrides["speculative_num_steps"] == 7
+    assert overrides["speculative_num_draft_tokens"] == 8
+
+
+def test_nextn_defaults_resolve_through_sglang_server_args(
+    tmp_path: Path,
+) -> None:
+    register_nemotron_transcribe_hf_config()
+    NemotronTranscribeConfig.from_nemo_dict(
+        synthetic_checkpoint_config()
+    ).save_pretrained(tmp_path)
+    overrides, enabled = prepare_nemotron_speculative_options(
+        str(tmp_path), {"speculative_algorithm": "NEXTN"}
+    )
+    assert enabled is True
+
+    server_args_overrides = dict(overrides, disable_overlap_schedule=True)
+    server_args = ServerArgs(
+        model_path=str(tmp_path), device="cpu", **server_args_overrides
+    )
+    server_args.resolve_once()
+    resolved = resolved_view(server_args)
+
+    assert resolved.speculative_num_steps == 2
+    assert resolved.speculative_eagle_topk == 1
+    assert resolved.speculative_num_draft_tokens == 3
 
 
 @pytest.mark.parametrize(
@@ -196,6 +243,14 @@ def test_nextn_preserves_an_operator_selected_revision() -> None:
         (
             {"speculative_algorithm": "NEXTN", "speculative_eagle_topk": 2},
             "topk=1",
+        ),
+        (
+            {
+                "speculative_algorithm": "NEXTN",
+                "speculative_num_steps": 4,
+                "speculative_num_draft_tokens": 4,
+            },
+            "speculative_num_draft_tokens=5",
         ),
         (
             {"speculative_algorithm": "NEXTN", "disable_overlap_schedule": False},
@@ -259,9 +314,13 @@ def test_nextn_accepts_supported_physical_mtp_patterns(
 
 
 def test_nextn_rejects_unsupported_mtp_metadata() -> None:
-    checkpoint_config = synthetic_checkpoint_config(pattern="?E", physical_depth=2)
-    with pytest.raises(ValueError, match="unsupported types"):
-        validate_nemotron_mtp_metadata(checkpoint_config)
+    for unsupported_pattern in ("?E", "M", "-"):
+        checkpoint_config = synthetic_checkpoint_config(
+            pattern=unsupported_pattern,
+            physical_depth=len(unsupported_pattern),
+        )
+        with pytest.raises(ValueError, match="supports only"):
+            validate_nemotron_mtp_metadata(checkpoint_config)
 
     checkpoint_config = synthetic_checkpoint_config(pattern="E*", physical_depth=1)
     with pytest.raises(ValueError, match="pattern length"):
@@ -291,6 +350,24 @@ def test_nextn_rejects_unsupported_mtp_metadata() -> None:
     checkpoint_config = synthetic_checkpoint_config(pattern="", physical_depth=0)
     with pytest.raises(ValueError, match="non-empty MTP pattern"):
         validate_nemotron_mtp_metadata(checkpoint_config)
+
+    checkpoint_config = synthetic_checkpoint_config()
+    checkpoint_config.pop("mtp")
+    with pytest.raises(ValueError, match="target and MTP metadata"):
+        validate_nemotron_mtp_metadata(checkpoint_config)
+
+
+def test_converted_target_config_keeps_zero_layers_and_validates_original_mtp() -> None:
+    converted_config = NemotronTranscribeConfig.from_nemo_dict(
+        synthetic_checkpoint_config()
+    ).to_dict()
+
+    assert converted_config["num_nextn_predict_layers"] == 0
+    validate_nemotron_mtp_metadata(converted_config)
+
+    converted_config["num_nextn_predict_layers"] = 1
+    with pytest.raises(ValueError, match="converted Nemotron Transcribe target config"):
+        validate_nemotron_mtp_metadata(converted_config)
 
 
 @pytest.mark.parametrize("nextn_enabled", [False, True])
