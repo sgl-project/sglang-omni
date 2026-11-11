@@ -21,7 +21,6 @@ HTTP API -> Client -> Coordinator -> Stage -> Scheduler -> ModelRunner -> model 
 | [ModelRunner](./pipeline.md)      | AR forward preparation, model forward dispatch, output extraction                      |
 | [Communication](./communication.md) | Control-plane messages and relay data transfer between stages                         |
 | [TTS Integration](./tts_model_integration.md) | Checklist and lifecycle rules for adding TTS model families                         |
-| [Nemotron Transcribe MTP draft](./nemotron_transcribe_mtp_draft.md) | How the checkpoint's native MTP layer is served as an EAGLE-style draft   |
 
 Refer to the layer-specific document for specific design details.
 
