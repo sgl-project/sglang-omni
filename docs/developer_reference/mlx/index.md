@@ -60,6 +60,10 @@ The Qwen3-ASR drafts are pinned in `ci/models.json`; the MOSS-TD draft is pinned
 
 `moss_transcribe_diarize_server` and `moss_transcribe` take the same two flags; the CLI's `verify_rounds` sums over audio chunks.
 
+`whisper_server` and `whisper_transcribe` take `--draft-model-path DIR` and `--draft-steps N` (proposals per round, 7 by default). The draft is a distil Whisper decoder: each round it proposes N tokens and the target verifies them in one pass, so a greedy request keeps the target's transcript; a request with a positive `temperature` samples without the draft. The draft decodes the target's encoder states, so only its decoder is loaded, in the target's dtype, after its width, vocabulary and text positions are checked against the target. For `mlx-community/whisper-large-v3-mlx`, convert `wilsonzheng0327/Whisper-large-v3-distil-draft` (pinned in `ci/model_pins.json`) with `python ci/convert_whisper_draft.py HF_DIRECTORY NATIVE_DIRECTORY`. The CLI reports `verify_rounds`, `proposed_draft_token_count` and `accepted_draft_token_count` per file.
+
+A drafted request that sets `include_generation_metadata` also gets `verify_round_count`, `proposed_draft_token_count` and `accepted_draft_token_count` in its done event's `generation_metadata`, for every server above; the target's own token each round counts in neither token count.
+
 ## Rule 2: Contribution requirements
 
 **Placement and reuse**
