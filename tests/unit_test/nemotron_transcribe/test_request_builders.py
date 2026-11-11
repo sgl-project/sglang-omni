@@ -94,6 +94,22 @@ def test_audio_placeholders_and_offsets_match_encoded_duration() -> None:
     ]
 
 
+def test_nextn_rejects_non_greedy_sampling_before_audio_decode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: pytest.fail("greedy validation must run first"),
+    )
+    build_request, _ = make_scheduler_adapters(
+        tokenizer=FakeTokenizer(), max_new_tokens=32, greedy_only=True
+    )
+
+    with pytest.raises(ValueError, match="supports only greedy decoding"):
+        build_request(make_payload({"temperature": 0.1}))
+
+
 def test_request_overrides_prompt_and_generation_budget() -> None:
     tokenizer = FakeTokenizer()
     build_request, _ = make_scheduler_adapters(tokenizer=tokenizer, max_new_tokens=32)

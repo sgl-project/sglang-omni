@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Literal
 
 CheckpointTensorKind = Literal["skip", "perception", "rename", "split_down", "split_up"]
+MTPCheckpointTensorKind = Literal["skip", "rename", "split_down", "split_up"]
 
 FP32_PARAM_HOLDER_RENAMES = {
     ".mixer._fp32_params.A_log": ".mixer.A_log",
@@ -47,3 +48,26 @@ def classify_checkpoint_name(name: str) -> tuple[CheckpointTensorKind, str]:
         return "split_up", hf_name[: -len(".experts.gate_and_up_projs")]
     else:
         return "rename", hf_name
+
+
+def classify_mtp_checkpoint_name(name: str) -> tuple[MTPCheckpointTensorKind, str]:
+    """Map bundled MTP checkpoint names without changing target-loader rules."""
+    if "._extra_state" in name:
+        return "skip", ""
+    else:
+        pass
+    prefixes = ("llm.mtp.", "language_model.mtp.", "mtp.")
+    for prefix in prefixes:
+        if name.startswith(prefix):
+            mtp_name = "mtp." + name[len(prefix) :]
+            break
+        else:
+            pass
+    else:
+        return "skip", ""
+    if mtp_name.endswith(".experts.down_projs"):
+        return "split_down", mtp_name[: -len(".experts.down_projs")]
+    elif mtp_name.endswith(".experts.gate_and_up_projs"):
+        return "split_up", mtp_name[: -len(".experts.gate_and_up_projs")]
+    else:
+        return "rename", mtp_name

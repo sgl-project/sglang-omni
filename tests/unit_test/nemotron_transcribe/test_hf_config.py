@@ -19,11 +19,17 @@ def raw_checkpoint_config() -> dict[str, object]:
     return {
         "llm_config": {
             "time_step_limit": [0.0, {"__float__": "Infinity"}],
-            "num_nextn_predict_layers": 2,
+            "num_nextn_predict_layers": 1,
         },
         "eos_token_id": [11],
         "perception": {},
         "pe_encoder_config": {},
+        "mtp": {
+            "enabled": True,
+            "trained_depths": 2,
+            "use_repeated_layer": True,
+            "hybrid_override_pattern": "*E",
+        },
     }
 
 
@@ -32,6 +38,8 @@ def test_conversion_retains_hybrid_decoder_identity() -> None:
     assert isinstance(configuration, NemotronHConfig)
     assert configuration.architectures == ["NemotronHForCausalLM"]
     assert configuration.num_nextn_predict_layers == 0
+    assert configuration.mtp_hybrid_override_pattern == "*E"
+    assert configuration.mtp_layers_block_type == ["attention", "moe"]
     assert configuration.eos_token_id == 11
     assert configuration.time_step_limit[0] == 0.0
     assert math.isinf(configuration.time_step_limit[1])

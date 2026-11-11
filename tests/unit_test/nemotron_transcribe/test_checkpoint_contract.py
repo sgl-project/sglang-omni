@@ -6,14 +6,22 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
 import torch
 from torch.nn import functional as F
 
 from sglang_omni.models.nemotron_transcribe.checkpoint_contract import (
     classify_checkpoint_name,
+    classify_mtp_checkpoint_name,
 )
 from sglang_omni.models.nemotron_transcribe.decoder_weights import (
     checkpoint_to_language_model_weights,
+    checkpoint_to_mtp_weights,
+)
+from sglang_omni.models.nemotron_transcribe.mtp_model import (
+    expected_mtp_checkpoint_names,
+    validate_mtp_checkpoint_inventory,
+    validate_mtp_tensor_dtype,
 )
 
 PACKAGE = (
@@ -94,3 +102,106 @@ def test_expert_weight_conversion_preserves_ungated_relu2_computation() -> None:
             converted[f"{prefix}.down_proj.weight"],
         )
         torch.testing.assert_close(actual, reference)
+
+
+def test_mtp_names_are_routed_separately_from_target_weights() -> None:
+    assert classify_checkpoint_name("llm.mtp.layers.0.mixer.q_proj.weight") == (
+        "skip",
+        "",
+    )
+    assert classify_mtp_checkpoint_name("llm.mtp.layers.0.mixer.q_proj.weight") == (
+        "rename",
+        "mtp.layers.0.mixer.q_proj.weight",
+    )
+    assert classify_mtp_checkpoint_name("llm.mtp.layers.1._extra_state") == (
+        "skip",
+        "",
+    )
+
+
+def test_mtp_mapping_preserves_qkv_names_expert_transforms_and_bias_dtype() -> None:
+    bias = torch.tensor([0.25, -0.5], dtype=torch.float32)
+    weights = [
+        (
+            "llm.mtp.layers.0.mixer.q_proj.weight",
+            torch.ones((2, 2), dtype=torch.bfloat16),
+        ),
+        (
+            "llm.mtp.layers.0.mixer.k_proj.weight",
+            torch.ones((2, 2), dtype=torch.bfloat16),
+        ),
+        (
+            "llm.mtp.layers.0.mixer.v_proj.weight",
+            torch.ones((2, 2), dtype=torch.bfloat16),
+        ),
+        (
+            "llm.mtp.layers.1.mixer.experts.gate_and_up_projs",
+            torch.arange(24, dtype=torch.bfloat16).reshape(2, 3, 4),
+        ),
+        (
+            "llm.mtp.layers.1.mixer.experts.down_projs",
+            torch.arange(24, dtype=torch.bfloat16).reshape(2, 4, 3),
+        ),
+        ("llm.mtp.layers.1.mixer.gate.e_score_correction_bias", bias),
+        (
+            "llm.mtp.layers.1._extra_state",
+            torch.ones(1, dtype=torch.float32),
+        ),
+    ]
+    mapped = dict(checkpoint_to_mtp_weights(weights))
+
+    assert set(mapped) == {
+        "mtp.layers.0.mixer.q_proj.weight",
+        "mtp.layers.0.mixer.k_proj.weight",
+        "mtp.layers.0.mixer.v_proj.weight",
+        "mtp.layers.1.mixer.experts.0.up_proj.weight",
+        "mtp.layers.1.mixer.experts.1.up_proj.weight",
+        "mtp.layers.1.mixer.experts.0.down_proj.weight",
+        "mtp.layers.1.mixer.experts.1.down_proj.weight",
+        "mtp.layers.1.mixer.gate.e_score_correction_bias",
+    }
+    assert mapped["mtp.layers.1.mixer.experts.0.up_proj.weight"].shape == (4, 3)
+    assert mapped["mtp.layers.1.mixer.experts.0.down_proj.weight"].shape == (3, 4)
+    assert (
+        mapped["mtp.layers.1.mixer.gate.e_score_correction_bias"].dtype
+        == torch.float32
+    )
+    assert torch.equal(
+        mapped["mtp.layers.1.mixer.gate.e_score_correction_bias"], bias
+    )
+    validate_mtp_tensor_dtype(
+        "mtp.layers.1.mixer.gate.e_score_correction_bias",
+        mapped["mtp.layers.1.mixer.gate.e_score_correction_bias"],
+    )
+    with pytest.raises(ValueError, match="expected torch.float32"):
+        validate_mtp_tensor_dtype(
+            "mtp.layers.1.mixer.gate.e_score_correction_bias",
+            torch.ones(2, dtype=torch.bfloat16),
+        )
+
+
+def test_mtp_inventory_expands_qkv_and_moe_parameters_and_fails_closed() -> None:
+    expected = expected_mtp_checkpoint_names(
+        {
+            "model.layers.0.mixer.qkv_proj.weight",
+            "model.layers.1.mixer.experts.w13_weight",
+            "model.layers.1.mixer.experts.w2_weight",
+            "model.layers.1.mixer.gate.e_score_correction_bias",
+            "lm_head.weight",
+        },
+        num_experts=2,
+    )
+    assert "mtp.layers.0.mixer.q_proj.weight" in expected
+    assert "mtp.layers.0.mixer.k_proj.weight" in expected
+    assert "mtp.layers.0.mixer.v_proj.weight" in expected
+    assert "mtp.layers.1.mixer.experts.1.up_proj.weight" in expected
+    assert "mtp.layers.1.mixer.experts.1.down_proj.weight" in expected
+    assert "mtp.layers.1.mixer.gate.e_score_correction_bias" in expected
+    validate_mtp_checkpoint_inventory(expected, expected, set(), set())
+    with pytest.raises(ValueError, match="layout mismatch"):
+        validate_mtp_checkpoint_inventory(
+            expected,
+            expected - {"mtp.layers.0.mixer.q_proj.weight"},
+            {"mtp.layers.9.unexpected.weight"},
+            set(),
+        )
