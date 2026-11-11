@@ -41,7 +41,6 @@ logger = logging.getLogger(__name__)
 # Note (Ratish): fixed top-k width keeps decode graph shape stable;
 # per-request top_k is masked inside _decode_codebooks.
 _GRAPH_TOP_K = 30
-_NO_SEED = -1  # sentinel: keep the legacy unseeded torch.multinomial draw
 _DEFAULT_TEMPERATURE = 0.8
 _DEFAULT_TOP_P = 0.8
 _DEFAULT_REP_PENALTY = 1.1
@@ -320,10 +319,9 @@ class S2ProSGLangTextModel(nn.Module):
         self.sampling_rep_penalty = torch.full(
             (max_batch_size,), _DEFAULT_REP_PENALTY, device=device
         )
-        # Per-request seed (``_NO_SEED`` = unseeded) + AR step for reproducible
-        # semantic-token sampling via multinomial_with_seed.
-        self.sampling_seeds = torch.full(
-            (max_batch_size,), _NO_SEED, dtype=torch.long, device=device
+        # Per-request seed + AR step for reproducible semantic-token sampling.
+        self.sampling_seeds = torch.zeros(
+            max_batch_size, dtype=torch.long, device=device
         )
         self.step_count = torch.zeros(max_batch_size, dtype=torch.long, device=device)
         self.ras_temperature = torch.full((max_batch_size,), 1.0, device=device)
@@ -471,14 +469,11 @@ class S2ProSGLangTextModel(nn.Module):
         probs = torch.nn.functional.softmax(
             top_k_logits / temperature.clamp(min=1e-5), dim=-1
         )
-        # Seeded rows draw reproducibly from (seed, step); unseeded rows keep the
-        # legacy torch.multinomial draw, so unseeded decode is unchanged.
+        # Every row draws reproducibly from request-scoped (seed, step).
         seeds = self.sampling_seeds[:bs]
-        unseeded_choice = torch.multinomial(probs, num_samples=1)
-        seeded_choice = multinomial_with_seed(
+        choice = multinomial_with_seed(
             torch.log(probs), seeds.clamp_min(0), self.step_count[:bs]
         )
-        choice = torch.where((seeds >= 0).unsqueeze(-1), seeded_choice, unseeded_choice)
         semantic_token = top_k_indices.gather(-1, choice).squeeze(-1)
 
         # Batched codebook loop

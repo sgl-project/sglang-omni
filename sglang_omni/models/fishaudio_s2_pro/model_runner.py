@@ -7,13 +7,13 @@ from typing import Protocol
 
 import torch
 
-from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.base import (
+    ModelRunner,
+    rank_shared_unseeded_sampling_seed,
+)
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.fishaudio_s2_pro.request_builders import S2ProSGLangRequestData
-from sglang_omni.models.fishaudio_s2_pro.sglang_model import (
-    _NO_SEED,
-    S2ProSGLangTextModel,
-)
+from sglang_omni.models.fishaudio_s2_pro.sglang_model import S2ProSGLangTextModel
 from sglang_omni.sampling.seed import resolve_row_seed
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.types import SchedulerRequest
@@ -175,7 +175,7 @@ class FishS2ProModelRunner(ModelRunner):
 
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
-            self.sync_decode_row_state(row_idx, data)
+            self.sync_decode_row_state(row_idx, sched_req)
 
             last_codes = data.last_codebook_values
             if last_codes is None:
@@ -254,18 +254,22 @@ class FishS2ProModelRunner(ModelRunner):
 
     def sync_decode_state(self, requests: list[SchedulerRequest]) -> None:
         for row_idx, sched_req in enumerate(requests):
-            self.sync_decode_row_state(row_idx, sched_req.data)
+            self.sync_decode_row_state(row_idx, sched_req)
 
-    def sync_decode_row_state(self, row_idx: int, data: S2ProSGLangRequestData) -> None:
+    def sync_decode_row_state(self, row_idx: int, sched_req: SchedulerRequest) -> None:
+        data = sched_req.data
+        seed = data.seed
+        if seed is None:
+            seed = rank_shared_unseeded_sampling_seed(sched_req, row_idx)
+        else:
+            pass
         self.model.sampling_temperature[row_idx] = data.temperature
         self.model.sampling_top_p[row_idx] = data.top_p
         self.model.sampling_top_k[row_idx] = data.top_k
         self.model.sampling_rep_penalty[row_idx] = data.repetition_penalty
         self.model.ras_temperature[row_idx] = data.ras_temperature
         self.model.ras_top_p[row_idx] = data.ras_top_p
-        self.model.sampling_seeds[row_idx] = (
-            _NO_SEED if data.seed is None else resolve_row_seed(data.seed)
-        )
+        self.model.sampling_seeds[row_idx] = resolve_row_seed(seed)
         # semantic_history_count is the uncapped per-request AR step (pre-step).
         self.model.step_count[row_idx] = int(data.semantic_history_count)
 
