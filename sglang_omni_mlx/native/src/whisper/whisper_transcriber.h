@@ -17,6 +17,10 @@
 
 namespace whisper {
 
+// Draft proposals per round unless a flag sets them; the M5 Pro corpus runs
+// used 7.
+inline constexpr int kDefaultDraftSteps = 7;
+
 struct WhisperOptions {
   // An ISO code or an English language name; blank or unknown leaves the
   // language token out.
@@ -32,9 +36,11 @@ class WhisperTranscriber {
 public:
   // Reads the checkpoint and the tokenizer files Voxt places beside it:
   // vocab.json, merges.txt, tokenizer_config.json and generation_config.json.
-  explicit WhisperTranscriber(const std::filesystem::path &model_directory,
-                              const std::filesystem::path &draft_directory = {},
-                              int draft_steps = 7);
+  // With a draft directory, greedy decoding verifies draft_steps proposals of
+  // that distil decoder per round.
+  WhisperTranscriber(const std::filesystem::path &model_directory,
+                     const std::filesystem::path &draft_directory,
+                     int draft_steps);
 
   qwen3_asr::TranscriptionResult
   Transcribe(const std::vector<float> &samples, const WhisperOptions &options,

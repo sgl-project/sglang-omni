@@ -3,12 +3,14 @@
 // supervisor protocol, without qwen3_asr_server's realtime API.
 //
 //   whisper_server --model-path DIR [--model-name NAME] [--host H] [--port P]
+//     [--draft-model-path DIR [--draft-steps N]]
 //   whisper_server --supervised --model-kind whisper --model-directory DIR
 //
 // Request fields beside the audio: language (a code in the checkpoint's
 // tokenizer, or one of the English names Swift's WhisperTokenizer maps; any
 // other value sends no language token), max_new_tokens, temperature, stream
 // and include_generation_metadata.
+#include <optional>
 #include <stdexcept>
 
 #include "qwen3_asr/asr_service.h"
@@ -53,7 +55,7 @@ private:
 
 int main(int argc, char **argv) {
   std::filesystem::path draft_directory;
-  int draft_steps = 7;
+  std::optional<int> draft_steps;
   asr_service::ServedKind kind;
   kind.flags = {{"--draft-model-path",
                  [&](const std::string &value) { draft_directory = value; }},
@@ -61,15 +63,18 @@ int main(int argc, char **argv) {
                    draft_steps = std::stoi(value);
                  }}};
   kind.check_flags = [&]() {
-    if (draft_steps < 1 || draft_steps > 16) {
-      throw std::invalid_argument("draft steps must be between 1 and 16");
+    if (draft_steps.has_value() && *draft_steps < 1) {
+      throw std::invalid_argument("--draft-steps must be at least 1");
+    } else if (draft_steps.has_value() && draft_directory.empty()) {
+      throw std::invalid_argument("--draft-steps needs --draft-model-path");
     } else {
     }
   };
   kind.model_kind = "whisper";
   kind.load = [&](const std::filesystem::path &model_directory) {
-    return std::make_unique<WhisperModelService>(model_directory,
-                                                 draft_directory, draft_steps);
+    return std::make_unique<WhisperModelService>(
+        model_directory, draft_directory,
+        draft_steps.value_or(whisper::kDefaultDraftSteps));
   };
   return asr_service::Serve(argc, argv, kind);
 }

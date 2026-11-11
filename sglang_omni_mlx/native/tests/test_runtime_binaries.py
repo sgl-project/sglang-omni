@@ -122,6 +122,8 @@ def test_a_load_without_a_checkpoint_reports_failed(
         ("ming3_audio_server", ("--context-length", "0"), "--context-length must be a positive integer"),
         ("fish_s2_pro_server", ("--max-queued-requests", "-1"), "--max-queued-requests must not be negative"),
         ("fish_s2_pro_server", ("--request-timeout-s", "0"), "--request-timeout-s must be above 0"),
+        ("whisper_server", ("--draft-steps", "0"), "--draft-steps must be at least 1"),
+        ("whisper_server", ("--draft-steps", "3"), "--draft-steps needs --draft-model-path"),
     ],
 )  # fmt: skip
 def test_invalid_server_flags_exit_before_the_load(
@@ -147,6 +149,8 @@ def test_invalid_server_flags_exit_before_the_load(
         ],
         ("music3_synthesize", ("--stage-offload-components", "dit"), "requires both ar,dit"),
         ("ming3_audio_chat", ("--context-length", "0"), "--context-length must be a positive integer"),
+        ("whisper_transcribe", ("--draft-steps", "0"), "--draft-steps must be at least 1"),
+        ("whisper_transcribe", ("--draft-steps", "3"), "--draft-steps needs --draft-model-path"),
     ],
 )  # fmt: skip
 def test_invalid_tool_flags_fail_before_the_load(

@@ -132,9 +132,7 @@ WhisperTranscriber::WhisperTranscriber(
     const std::filesystem::path &draft_directory, int draft_steps)
     : model_(model_directory), draft_steps_(draft_steps),
       tokenizer_(model_directory) {
-  if (draft_steps < 1 || draft_steps > 16) {
-    throw std::invalid_argument("draft steps must be between 1 and 16");
-  } else if (!draft_directory.empty()) {
+  if (!draft_directory.empty()) {
     draft_.emplace(draft_directory, model_);
   } else {
   }
@@ -283,7 +281,7 @@ WhisperTranscriber::TranscribeWindow(const std::vector<float> &window_samples,
   mx::array token = NextToken(
       model_.Decode(prompt, 0, encoder_states, caches, 1), true, temperature);
   mx::async_eval({token});
-  if (draft_.has_value() && temperature == 0.0f) {
+  if (draft_.has_value() && temperature <= 0.0f) {
     return DecodeWithDraft(encoder_states, prompt, token, caches,
                            max_new_tokens, cancel);
   } else {
