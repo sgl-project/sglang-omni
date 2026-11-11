@@ -119,8 +119,6 @@ uv pip install --prerelease=allow -v -e .   # drop -e for a non-editable install
 
 ### MOSS-Speech codec dependencies
 
-MOSS-Speech generates spoken responses to the supplied user text. The adapter passes that text unchanged; it does not add an instruction to repeat it. See the [MOSS-Speech cookbook](../cookbook/moss_speech.md) for the request format and current interface coverage.
-
 From the source checkout with your virtual environment activated, install the MOSS-Speech extra and prepare the external codec sources. The extra installs Python dependencies; the codec also requires the MOSS-Speech and Matcha-TTS source trees because MOSS-Speech does not provide an installable Python package. These revisions match MOSS-Speech-Codec revision `eeec733e4e1dea7da444d332d8e1621ef257414c`.
 
 ```bash
