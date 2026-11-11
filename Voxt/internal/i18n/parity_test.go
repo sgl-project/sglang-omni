@@ -194,7 +194,7 @@ func TestKeyParity(t *testing.T) {
 }
 
 // TestNoOldNames: the app is called Voxt and its text names no other
-// brand: VoxtNew (its name before 1.0.0, still that of its data folders,
+// brand: VoxtNew (its name before 2.0.0, still that of its data folders,
 // processes and Swift packages), ActNow and actnow.dev are in no message (every
 // message is a key of each translation: TestKeyParity) and no
 // translation.
@@ -206,6 +206,30 @@ func TestNoOldNames(t *testing.T) {
 					t.Errorf("%s: %q names %s", tag, k, name)
 				}
 			}
+		}
+	}
+}
+
+// TestPlainChinese: the Chinese reads as written in Chinese, not
+// translated word for word. Users found "及其", "以便", "无权", "将被" and
+// a colon joining a request ("……：请……") stiff; each has a plain form
+// ("和它们的", "方便", "没有……权限", "会", a comma).
+func TestPlainChinese(t *testing.T) {
+	for k, v := range readLocale(t, "zh-Hans") {
+		for _, stiff := range []string{"及其", "以便", "无权", "将被", "：请"} {
+			if strings.Contains(v, stiff) {
+				t.Errorf("%q: %q has %q", k, v, stiff)
+			}
+		}
+	}
+}
+
+// TestDockInChinese: macOS's Simplified Chinese calls the Dock 程序坞,
+// and the strings use the same word.
+func TestDockInChinese(t *testing.T) {
+	for k, v := range readLocale(t, "zh-Hans") {
+		if strings.Contains(v, "Dock") {
+			t.Errorf("%q: %q says Dock, not 程序坞", k, v)
 		}
 	}
 }

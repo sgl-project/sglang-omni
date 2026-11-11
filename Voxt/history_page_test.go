@@ -247,7 +247,7 @@ func TestHistoryOff(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.updateSettings(func(s *settings.Settings) { s.Privacy.KeepHistory = false })
 	a.navigate("/history")
-	if !has(tt, "History is off: new results are not kept.") {
+	if !has(tt, "History is off, so new results are not kept.") {
 		t.Fatalf("no notice: %q", firstTexts(tt))
 	}
 }
@@ -257,7 +257,7 @@ func TestHistorySearch(t *testing.T) {
 	seedHistory(t, a)
 	a.navigate("/history")
 	frames(tt)
-	if err := tt.Click("Search the history"); err != nil {
+	if err := tt.Click("Search history"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Type("agenda") // full text (3 characters and more)
@@ -278,9 +278,9 @@ func TestHistorySearch(t *testing.T) {
 	if !has(tt, "Nothing matches “nothing like this”") {
 		t.Fatalf("no empty search state: %q", firstTexts(tt))
 	}
-	click(t, tt, "Clear the search")
+	click(t, tt, "Clear search")
 	if a.hist.query != "" || len(a.hist.list) != 4 {
-		t.Errorf("after Clear the search: %q, %v", a.hist.query, historyIDs(a))
+		t.Errorf("after Clear search: %q, %v", a.hist.query, historyIDs(a))
 	}
 }
 
@@ -316,23 +316,23 @@ func TestHistoryDetail(t *testing.T) {
 	}
 	for _, s := range []string{
 		"Entry details", "Result", "Recognised text", "Inserted", "Notes",
-		"Accurate speech recognition", "Balanced language model", "7.4 s", "620 ms", "1.2 s", "9.3 s",
-		"Sound optimization", "Hum filtered, volume +7.5 dB",
+		"Qwen3-ASR 1.7B (8bit)", "Qwen3.5 4B OptiQ (4bit)", "7.4 s", "620 ms", "1.2 s", "9.3 s",
+		"Sound optimisation", "Hum filtered, volume +7.5 dB",
 	} {
 		if !has(tt, s) {
 			t.Errorf("the details do not show %q (texts: %q)", s, tt.Texts())
 		}
 	}
-	click(t, tt, "Copy the result")
+	click(t, tt, "Copy result")
 	if got := tt.Clipboard(); got != "Let's move the design review to Thursday afternoon.\nI'll send the new agenda tonight." {
 		t.Errorf("clipboard = %q", got)
 	}
-	click(t, tt, "Copy the recognised text")
+	click(t, tt, "Copy recognised text")
 	if got := tt.Clipboard(); got != "um so let's move the design review to thursday afternoon and I'll send the new agenda tonight" {
 		t.Errorf("clipboard = %q", got)
 	}
 	fallback := keptInFallbackFolder(t, a, histInserted+".wav")
-	click(t, tt, "Show the recording in Finder")
+	click(t, tt, "Show recording in Finder")
 	if want := fallback; len(revealed) != 1 || revealed[0] != want {
 		t.Errorf("revealed %v, want %s", revealed, want)
 	}
@@ -346,7 +346,7 @@ func TestHistoryDetail(t *testing.T) {
 	if !has(tt, "Failed: asr.accurate: the speech server stopped answering (15s)") {
 		t.Errorf("no failure notice: %q", tt.Texts())
 	}
-	if tt.HasText("Show the recording in Finder") {
+	if tt.HasText("Show recording in Finder") {
 		t.Error("Show in Finder without a recording")
 	}
 	click(t, tt, "Close")
@@ -360,7 +360,7 @@ func TestHistoryDelete(t *testing.T) {
 	seedHistory(t, a)
 	a.navigate("/history")
 	click(t, tt, "明天上午十点的站会改到线上，链接我稍后发到群里。")
-	click(t, tt, "Delete the entry…")
+	click(t, tt, "Delete entry…")
 	if !a.hist.delAsk || !has(tt, "Delete this entry?") {
 		t.Fatalf("no confirmation: %q", firstTexts(tt))
 	}
@@ -368,7 +368,7 @@ func TestHistoryDelete(t *testing.T) {
 	if _, err := a.lib.store.History().Get(context.Background(), histCard); err != nil {
 		t.Fatalf("Cancel deleted it: %v", err)
 	}
-	click(t, tt, "Delete the entry…")
+	click(t, tt, "Delete entry…")
 	if err := tt.Click("Delete"); err != nil {
 		t.Fatal(err)
 	}

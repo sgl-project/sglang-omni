@@ -3,6 +3,7 @@ package actnow
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -59,7 +60,7 @@ func TestManifest(t *testing.T) {
 		}
 	}
 	want := []sc{{"transcribe", "RightOption", "tap"}, {"transcribe.2", "Option+Space", "hold"}, {"translate", "RightOption+Shift", "tap"},
-		{"rewrite", "Control+RightOption", "double"}, {"pasteLast", "Control+Option+V", "press"}}
+		{"rewrite", "Control+RightOption", "double"}, {"pasteLast", "Control+Option+V", "press"}, {"note", "RightCommand", "tap"}}
 	if !slices.Equal(have, want) {
 		t.Errorf("shortcuts %v, want %v", have, want)
 	}
@@ -161,6 +162,36 @@ func TestSharedSettings(t *testing.T) {
 	}
 	if v, _ := f.Shared().Get(KeyLanguage); v != "zh-Hans" {
 		t.Errorf("language %q", v)
+	}
+}
+
+// TestHub: VoxtNew's model library is its own folder, SGLang Omni/models
+// beside the family directory, until the family's models.root names one
+// and VoxtNew follows it.
+func TestHub(t *testing.T) {
+	fx := conformance.New(t)
+	ctx := context.Background()
+	hub := func(prefs settings.Settings) string {
+		return Open(Config{BundleID: "dev.hehehai.voxtnew", Version: "0.1.0-beta.1", Dir: fx.Family,
+			System: conformance.FixtureSystem{}, Logf: t.Logf}, prefs).Hub()
+	}
+	prefs := settings.Defaults()
+	own := filepath.Join(filepath.Dir(fx.Family.Root), "SGLang Omni", "models")
+	if got := hub(prefs); got != own {
+		t.Fatalf("default %q, want %q", got, own)
+	}
+	root := t.TempDir()
+	if _, err := famsettings.Set(ctx, fx.Family, "dev.hehehai.dicta", KeyModelsRoot, root); err != nil {
+		t.Fatal(err)
+	}
+	f := open(t, fx, prefs)
+	f.Follow(&prefs, KeyModelsRoot, true)
+	if got := hub(prefs); got != root {
+		t.Errorf("following %q, want %q", got, root)
+	}
+	f.Follow(&prefs, KeyModelsRoot, false)
+	if got := hub(prefs); got != own {
+		t.Errorf("not following %q, want %q", got, own)
 	}
 }
 

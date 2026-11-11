@@ -70,6 +70,7 @@ def adapter(monkeypatch: pytest.MonkeyPatch) -> QwenThinkerSessionAdapter:
         vocab_size,
         request_id,
         capture_prompt_hidden_states,
+        speaks,
     ):
         return SimpleNamespace(
             req=SimpleNamespace(
@@ -81,7 +82,9 @@ def adapter(monkeypatch: pytest.MonkeyPatch) -> QwenThinkerSessionAdapter:
         )
 
     monkeypatch.setattr(thinker_session, "build_sglang_thinker_request", build_request)
-    result = QwenThinkerSessionAdapter(tokenizer, 200, thinker_config())
+    result = QwenThinkerSessionAdapter(
+        tokenizer, 200, thinker_config(), speech_enabled=True
+    )
     result.open(IDENTITY, OmniRequest(None))
     return result
 

@@ -272,18 +272,9 @@ int SpeechServedModel::Speak(mg_connection *connection) {
         channel->error = error;
         channel->ready.notify_all();
       });
-  if (job.stream) {
-    mg_printf(connection,
-              "HTTP/1.1 200 OK\r\nContent-Type: audio/pcm\r\n"
-              "X-Request-Id: %s\r\nX-SGLang-Omni-Speech-Id: %s\r\n"
-              "X-Sample-Rate: %d\r\nX-Channels: 1\r\nX-Bit-Depth: 16\r\n"
-              "Cache-Control: no-cache\r\nConnection: close\r\n\r\n",
-              request_id.c_str(), request_id.c_str(), SampleRate());
-  } else {
-  }
-
   const int client_socket = omni_server::ClientSocket(connection);
   std::vector<float> samples;
+  bool stream_started = false;
   bool timed_out = false;
   bool client_left = false;
   std::unique_lock<std::mutex> lock(channel->mutex);
@@ -315,6 +306,16 @@ int SpeechServedModel::Speak(mg_connection *connection) {
     channel->chunks.pop_front();
     lock.unlock();
     if (job.stream) {
+      if (!stream_started) {
+        mg_printf(connection,
+                  "HTTP/1.1 200 OK\r\nContent-Type: audio/pcm\r\n"
+                  "X-Request-Id: %s\r\nX-SGLang-Omni-Speech-Id: %s\r\n"
+                  "X-Sample-Rate: %d\r\nX-Channels: 1\r\nX-Bit-Depth: 16\r\n"
+                  "Cache-Control: no-cache\r\nConnection: close\r\n\r\n",
+                  request_id.c_str(), request_id.c_str(), SampleRate());
+        stream_started = true;
+      } else {
+      }
       const std::string pcm = omni_common::Pcm16Bytes(chunk);
       // Note (Minyi Tang): a write fails once the peer is gone, which
       // cancels the generation that feeds it.
@@ -351,12 +352,21 @@ int SpeechServedModel::Speak(mg_connection *connection) {
     LogFailure(channel->error);
   } else {
   }
-  if (job.stream) {
+  if (stream_started) {
     return 200;
   } else if (timed_out) {
     return omni_server::WriteJson(connection, 504,
                                   {{"detail", "Speech generation timed out."}});
   } else if (channel->error) {
+    try {
+      std::rethrow_exception(channel->error);
+    } catch (const std::invalid_argument &error) {
+      return omni_server::BadRequest(connection, error.what());
+    } catch (...) {
+      return omni_server::WriteJson(connection, 500,
+                                    {{"detail", "Speech generation failed."}});
+    }
+  } else if (job.stream) {
     return omni_server::WriteJson(connection, 500,
                                   {{"detail", "Speech generation failed."}});
   } else {

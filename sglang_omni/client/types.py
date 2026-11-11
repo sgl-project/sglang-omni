@@ -19,6 +19,8 @@ class TokenUsageDict(TypedDict):
 
 class UsageInfoDict(TokenUsageDict, total=False):
     engine_time_s: float
+    speech_input_tokens: int
+    speech_output_tokens: int
 
 
 # note (Yucheng Hu): finish reason reported on speech surfaces when the model
@@ -65,6 +67,8 @@ class UsageInfo:
     completion_tokens: int | None = None
     total_tokens: int | None = None
     engine_time_s: float | None = None
+    speech_input_tokens: int | None = None
+    speech_output_tokens: int | None = None
 
     @classmethod
     def from_dict(cls, data: Mapping[str, object] | None) -> "UsageInfo | None":
@@ -77,6 +81,8 @@ class UsageInfo:
             completion_tokens=data.get("completion_tokens"),
             total_tokens=data.get("total_tokens"),
             engine_time_s=data.get("engine_time_s"),
+            speech_input_tokens=data.get("speech_input_tokens"),
+            speech_output_tokens=data.get("speech_output_tokens"),
         )
 
     def to_dict(self) -> UsageInfoDict:
@@ -87,6 +93,14 @@ class UsageInfo:
         }
         if self.engine_time_s is not None:
             d["engine_time_s"] = self.engine_time_s
+        else:
+            pass
+        if self.speech_input_tokens is not None:
+            d["speech_input_tokens"] = self.speech_input_tokens
+        else:
+            pass
+        if self.speech_output_tokens is not None:
+            d["speech_output_tokens"] = self.speech_output_tokens
         else:
             pass
         return d

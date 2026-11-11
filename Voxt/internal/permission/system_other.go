@@ -11,3 +11,7 @@ func (other) Microphone() State                 { return Unknown }
 func (other) RequestMicrophone(done func(bool)) { go done(false) }
 func (other) AccessibilityTrusted() bool        { return false }
 func (other) PromptAccessibility()              {}
+func (other) SpeechRecognition() State          { return Unknown }
+func (other) RequestSpeechRecognition(done func(bool)) {
+	go done(false)
+}

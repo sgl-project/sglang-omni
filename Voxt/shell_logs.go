@@ -70,7 +70,7 @@ func (a *app) logsView(c *ui.Context, panel bool) {
 				}
 			}
 		}
-		ui.TextInput(c.Key("logs-search"), &a.logsQuery).Placeholder(i18n.T("Filter")).Width(px(t, 200)).Shrink(1).MinWidth(px(t, 80)).Label(i18n.T("Filter the logs"))
+		ui.TextInput(c.Key("logs-search"), &a.logsQuery).Placeholder(i18n.T("Filter")).Width(px(t, 200)).Shrink(1).MinWidth(px(t, 80)).Label(i18n.T("Filter logs"))
 		ui.Spacer(c)
 		if n := picked.Count(); n > 0 {
 			// While lines are selected: how many, Copy and Deselect.
@@ -100,8 +100,20 @@ func (a *app) logsView(c *ui.Context, panel bool) {
 	})
 	ui.Divider(c)
 	if len(lines) == 0 {
-		ui.Column(c).Grow(1).Center().Children(func() {
-			ui.Text(c, i18n.T("No log lines yet.")).TextColor(t.TextMuted)
+		// Compact, not emptyState: the panel can be 120 points high.
+		ui.Column(c).Grow(1).Center().Gap(px(t, sp2)).Children(func() {
+			q := strings.TrimSpace(a.logsQuery)
+			if q == "" {
+				ui.Text(c, i18n.T("No log lines yet.")).TextColor(t.TextMuted)
+				return
+			}
+			if r := []rune(q); len(r) > 40 {
+				q = string(r[:40]) + "…"
+			}
+			ui.Text(c, i18n.T("Nothing matches “%s”", q)).TextColor(t.TextMuted).TextAlign(ui.Center)
+			if ghostButton(c.Key("logs-clear-filter"), i18n.T("Clear filter")).Clicked() {
+				a.logsQuery = ""
+			}
 		})
 		return
 	}

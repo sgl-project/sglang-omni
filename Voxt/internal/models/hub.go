@@ -4,6 +4,9 @@ package models
 // and as a claim (family spec §7.3), and where it is on disk.
 
 import (
+	"path/filepath"
+
+	"github.com/hehehai/actnowkit/family"
 	"github.com/hehehai/actnowkit/hfhub"
 	fammodels "github.com/hehehai/actnowkit/models"
 )
@@ -100,8 +103,17 @@ func Installed(hub string, m Model) string {
 	return SnapshotDir(hub, m, rev)
 }
 
-// Hub is the family's default model library
-// (~/Library/Application Support/ActNow/models/hub, spec v1.0.9), for
-// tools and tests; the app resolves it with the family's settings first
-// (internal/actnow).
-func Hub() string { return fammodels.DefaultHub() }
+// HubIn is VoxtNew's own model library for the family directory d, used
+// when the family's settings name none: "SGLang Omni/models" beside d,
+// i.e. ~/Library/Application Support/SGLang Omni/models. The local models
+// are SGLang Omni's (its MLX runtime serves them), and the folder says so.
+// Up to 2.0.0 it was the family's default library, ActNow/models/hub,
+// which Manager.Import takes the models over from.
+func HubIn(d family.Dir) string {
+	return filepath.Join(filepath.Dir(d.Root), "SGLang Omni", "models")
+}
+
+// Hub is VoxtNew's default model library (HubIn of the family's default
+// directory), for tools and tests; the app resolves it with the family's
+// settings first (internal/actnow).
+func Hub() string { return HubIn(family.Default()) }

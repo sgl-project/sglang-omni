@@ -3,8 +3,8 @@ package main
 // In-process local models for the app's tests (local.Services): a speech
 // model that transcribes recordings (fakeTranscriptions) or streams
 // (fakeStreamer), and a language model (fakeChat) behind llm.Client, as
-// internal/llmrt's backend is. They stand where the runtimes' processes
-// run in the app, and keep what the tests read: the chat requests in the
+// a remote service's backend is. They stand where the runtimes and the
+// services are in the app, and keep what the tests read: the chat requests in the
 // shape of an OpenAI request ({"messages": […], "stream": …}).
 
 import (
@@ -20,8 +20,8 @@ import (
 
 // The models the fakes say they are.
 var (
-	fakeASRModel = local.Model{Kind: local.ASR, ID: models.ASRAccurate, Name: "Accurate speech recognition"}
-	fakeLLMModel = local.Model{Kind: local.LLM, ID: models.LLMBalanced, Name: "Balanced language model"}
+	fakeASRModel = local.Model{Kind: local.ASR, ID: models.ASRAccurate, Name: "Qwen3-ASR 1.7B (8bit)", Stream: true}
+	fakeLLMModel = local.Model{Kind: local.LLM, ID: models.LLMBalanced, Name: "Qwen3.5 4B OptiQ (4bit)"}
 )
 
 // fakeLocal is local.Services over fakes: a nil ASR or Chat is a model
@@ -31,6 +31,8 @@ type fakeLocal struct {
 	Chat local.Chat
 	// MoreLLM are more language models installed (their opens get Chat).
 	MoreLLM []local.Model
+	// NoStream: its speech model gets the recording once it stops.
+	NoStream bool
 }
 
 // readyLocal is a speech model and a language model, both installed,
@@ -42,7 +44,9 @@ func readyLocal() *fakeLocal {
 func (f *fakeLocal) Installed(kind local.Kind) []local.Model {
 	switch {
 	case kind == local.ASR && f.ASRP != nil:
-		return []local.Model{fakeASRModel}
+		m := fakeASRModel
+		m.Stream = !f.NoStream
+		return []local.Model{m}
 	case kind == local.LLM && f.Chat != nil:
 		return append([]local.Model{fakeLLMModel}, f.MoreLLM...)
 	}

@@ -31,6 +31,7 @@ type harness struct {
 	mu         sync.Mutex
 	asr        asr.Provider
 	llm        LLM
+	fallback   LLM // Translate's fallback model (nil: none)
 	resolveErr error
 	logs       []string
 	// vadModel is the voice activity model the services have (nil: none).
@@ -54,6 +55,9 @@ func newHarness(t *testing.T, prov asr.Provider, model LLM, cfgFn func(*Config, 
 			if h.llm != nil {
 				svc.LLM, svc.LLMInfo = h.llm, Model{ID: "deepseek", Name: "DeepSeek", Model: "deepseek-chat"}
 			}
+			if h.fallback != nil {
+				svc.Fallback, svc.FallbackInfo = h.fallback, Model{ID: "ollama", Name: "Ollama", Model: "qwen3"}
+			}
 			return svc, nil
 		},
 		Glossary: func(context.Context) ([]store.Term, error) {
@@ -65,7 +69,7 @@ func newHarness(t *testing.T, prov asr.Provider, model LLM, cfgFn func(*Config, 
 			h.logs = append(h.logs, level+" "+msg)
 			h.mu.Unlock()
 		},
-		LLMFirstToken: time.Second, LLMStall: 500 * time.Millisecond, LLMPerChar: time.Millisecond, LLMTimeout: 2 * time.Second,
+		LLMBase: time.Second, LLMStall: 500 * time.Millisecond, LLMPerChar: time.Millisecond, LLMTimeout: 2 * time.Second,
 		ASRTimeout: 2 * time.Second, StopGrace: 200 * time.Millisecond,
 	}
 	if cfgFn != nil {
@@ -116,9 +120,36 @@ func statesString(ss []State) string {
 	return strings.Join(b, " ")
 }
 
+// TestPreviewPartialStaysStreaming: the offline Final does not replace
+// the streaming partial the overlay preview froze on (FB6).
+func TestPreviewPartialStaysStreaming(t *testing.T) {
+	h := newHarness(t, &fakeStreamer{final: "hello aura link"}, &fakeLLM{text: "Hello."}, func(c *Config, s *settings.Settings) {
+		s.Features.Transcribe.Enhance = true
+	})
+	id := h.start()
+	h.speak(id, 5)
+	h.rec.waitFor(t, "composing", func(s Snapshot) bool { return s.State == Composing && s.Raw == "hello aura link" })
+	for _, s := range h.rec.all() {
+		if s.State != Recognizing && s.State != Composing {
+			continue
+		}
+		if s.Partial == "hello aura link" {
+			t.Fatalf("%s: preview partial must not show the Final %q", s.State, s.Partial)
+		}
+		if s.Partial != "" && s.Partial != "partial" {
+			t.Fatalf("%s: partial %q", s.State, s.Partial)
+		}
+	}
+	end := h.rec.wait(t)
+	if end.Result != "Hello." || end.Raw != "hello aura link" {
+		t.Fatalf("end %+v", end)
+	}
+}
+
 // TestPipeline runs whole sessions: both kinds of speech model, the
 // language model on, off, failing and timing out, and a target that takes
-// no text.
+// no text. Both kinds of speech model get the speech context as their
+// prompt (it was never sent).
 func TestPipeline(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -153,7 +184,9 @@ func TestPipeline(t *testing.T) {
 			h := newHarness(t, prov, model, func(c *Config, s *settings.Settings) {
 				s.Features.Transcribe.Enhance = tc.enhance
 				s.Features.Transcribe.Prompt = "Be brief."
-				c.LLMFirstToken, c.LLMTimeout = 50*time.Millisecond, 100*time.Millisecond
+				s.Dictionary.SpeechContext = " Leo works on LLM serving. "
+				s.Audio.LiveResult = true
+				c.LLMBase, c.LLMTimeout = 50*time.Millisecond, 100*time.Millisecond
 			})
 			if !tc.writable {
 				h.text.focus = proto.FocusResult{PID: 812, Role: "AXButton"}
@@ -180,7 +213,7 @@ func TestPipeline(t *testing.T) {
 					t.Errorf("pasted %q, %+v", pastes, end)
 				}
 			case tc.card:
-				if len(pastes) != 0 || !end.Card || end.Inserted || end.Delivery != deliver.ReasonNotEditable {
+				if len(pastes) != 0 || end.Card || end.Inserted || end.Delivery != deliver.ReasonNotEditable {
 					t.Errorf("card: pasted %q, %+v", pastes, end)
 				}
 			default:
@@ -194,11 +227,11 @@ func TestPipeline(t *testing.T) {
 				if len(st.streams) != 1 || st.streams[0].bytes != h.audio.recorded()*len(frame) {
 					t.Errorf("streamed %d bytes of %d frames", st.streams[0].bytes, h.audio.recorded())
 				}
-				if strings.Join(st.hints, ",") != "VoxtNew" {
-					t.Errorf("hints %q", st.hints)
+				if strings.Join(st.hints, ",") != "VoxtNew" || st.prompt != "Leo works on LLM serving." || !st.liveResult {
+					t.Errorf("hints %q, prompt %q, live result %v", st.hints, st.prompt, st.liveResult)
 				}
-			} else if f := prov.(*fakeFile); f.calls != 1 || f.bytes != h.audio.recorded()*len(frame) {
-				t.Errorf("uploaded %d calls, %d bytes", f.calls, f.bytes)
+			} else if f := prov.(*fakeFile); f.calls != 1 || f.bytes != h.audio.recorded()*len(frame) || f.prompt != "Leo works on LLM serving." {
+				t.Errorf("uploaded %d calls, %d bytes, prompt %q", f.calls, f.bytes, f.prompt)
 			}
 			if tc.llm != nil && tc.enhance {
 				reqs := tc.llm.requests()
@@ -212,7 +245,7 @@ func TestPipeline(t *testing.T) {
 					strings.Contains(sys, "hello") || user != "<input>\nhello VoxtNew\n</input>" || reqs[0].Skill != llm.SkillTranscribeEnhance {
 					t.Errorf("request %+v", reqs[0])
 				}
-				if end.Profile != "transcribe:cleanup+custom+glossary" {
+				if end.Profile != "custom:glossary" {
 					t.Errorf("profile %q", end.Profile)
 				}
 			}
@@ -229,7 +262,7 @@ func TestPipeline(t *testing.T) {
 			e := entries[0]
 			wantDelivery := "insert"
 			if tc.card {
-				wantDelivery = "card"
+				wantDelivery = "" // card off: not inserted, the app copies it
 			}
 			if e.ID != id || e.Kind != store.KindTranscribe || e.Status != store.StatusDone || e.RawText != "hello aura link" || e.Result != tc.result ||
 				e.AppBundle != slack.BundleID || e.AppName != "Slack" || e.ASRProvider != "doubao" || e.Delivery != wantDelivery || e.Audio != "" {
@@ -483,6 +516,14 @@ func TestBusyTryShortAndMore(t *testing.T) {
 		end := h.rec.wait(t)
 		if end.State != Done || end.Result != "long" || end.StoppedAt.IsZero() {
 			t.Errorf("end %+v", end)
+		}
+		// A podcast is dictated whole: no maxSeconds goes to capture.start,
+		// the recording runs until Stop (Voxt stopped one at 10:00).
+		h.audio.mu.Lock()
+		p := h.audio.params
+		h.audio.mu.Unlock()
+		if len(p) != 1 || p[0].MaxSeconds != 0 {
+			t.Errorf("params %+v", p)
 		}
 	})
 	t.Run("a stop that does not stop", func(t *testing.T) {

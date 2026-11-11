@@ -1,0 +1,9 @@
+POST /v1/audio/transcriptions
+Authorization: Bearer sk-test
+Accept: application/json, text/plain
+User-Agent: Voxt
+Content-Type: multipart/form-data (boundary set: true, <nil>)
+part file: file "audio.wav" audio/wav, 32044 bytes; wav 16000 Hz 1 ch 32000 PCM bytes <nil>
+part model: "glm-asr-2512"
+part prompt: "Voxt, 智谱"
+--

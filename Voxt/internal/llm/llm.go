@@ -4,9 +4,10 @@
 //
 //   - the request and response types a session sends (Request, Response,
 //     Message, Format, Schema) and the skills that tag them;
-//   - Backend: one model, one attempt per call. VoxtNew's language models
-//     are local (internal/local: mlx-swift-lm and a few GGUF models in
-//     the voxtnew-llm process, internal/llmrt); there is no backend here;
+//   - Backend: one model, one attempt per call. The language models the
+//     user sets up are OpenAI here: Auralink's OpenAI-compatible chat
+//     completions transport and its services' presets (presets.json),
+//     with Probe for a connection test;
 //   - Client: a Backend plus timeouts, retries with backoff, usage
 //     accounting, thinking stripped from the text and JSON / structured
 //     output (schema validation and a repair retry).
@@ -79,26 +80,9 @@ type Request struct {
 	FirstTokenTimeout time.Duration
 	StallTimeout      time.Duration
 
-	// Skill tags the call for usage accounting and its default
-	// temperature (DefaultTemperature).
+	// Skill tags the call for usage accounting.
 	Skill Skill
-
-	// Translate describes a translation (SkillTranslateText) for a model
-	// that takes a prompt of its own instead of Messages (a translation
-	// model: internal/llmrt's Hy-MT2). nil for other requests; chat
-	// models ignore it.
-	Translate *TranslateHint
 }
-
-// TranslateHint is what a translation model needs: the text and the
-// target language.
-type TranslateHint struct {
-	Text   string // the text to translate: a selection as it is, speech without its fillers (compose.StripFillers)
-	Target string // the target language's code (internal/lang)
-}
-
-// F64 returns a pointer to v, for Request.Temperature and TopP.
-func F64(v float64) *float64 { return &v }
 
 // Usage is the token count of a call. Estimated is true when the
 // backend reported none and the counts come from EstimateTokens.

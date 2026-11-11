@@ -30,12 +30,37 @@ func obRow(c *ui.Context, key string, ic icons.Icon, title, detail string) {
 
 // obWelcomeStep is the privacy promise.
 func (a *app) obWelcomeStep(c *ui.Context) {
-	obRow(c, "ob-p-local-models", modelsIcon, i18n.T("Your audio and text stay on this Mac"),
-		i18n.T("Speech recognition and the language models run here. Voxt has no server of its own, no account and no analytics."))
+	if legacyLibrary() != "" { // first, so it shows without scrolling
+		a.obLegacyCard(c)
+	}
+	obRow(c, "ob-p-local-models", modelsIcon, i18n.T("Your audio stays on this Mac"),
+		i18n.T("Speech is recognised on this Mac unless you choose a remote speech service. Text goes only to the language model you set up. Voxt has no server of its own, no account and no analytics."))
 	obRow(c, "ob-p-local", icons.Database, i18n.T("History stays on this Mac"),
-		i18n.T("Results (and, if you choose, their recordings) are kept here only. Turn them off in Settings → Privacy."))
-	obRow(c, "ob-p-urls", appEnhancementIcon, i18n.T("Browser addresses only pick your rules"),
-		i18n.T("With App enhancement, the address of the tab in front chooses a group of rules; the language model never sees it."))
+		i18n.T("Results, and their recordings if you choose, are kept only on this Mac. You can turn this off in Settings → Privacy."))
+	obRow(c, "ob-p-urls", appEnhancementIcon, i18n.T("Browser addresses only choose which rules apply"),
+		i18n.T("With App enhancement, the address of the current tab picks a group of rules. The language model never sees it."))
+}
+
+// obLegacyCard offers the previous Voxt's dictionary when that app's data
+// is on this Mac: one button, then one click in the panel it opens.
+func (a *app) obLegacyCard(c *ui.Context) {
+	t := c.Theme()
+	card(c.Key("ob-legacy")).Children(func() {
+		ui.Column(c).Gap(px(t, sp2)).Children(func() {
+			ui.Text(c, i18n.T("The previous Voxt is on this Mac")).FontWeight(600)
+			caption(c, i18n.T("Click Import from Voxt 1.x to bring over its dictionary, history and settings. The previous Voxt keeps all its data."))
+			if a.ob.legacyDone || a.ob.legacy.failed != "" {
+				a.legacyReportView(c, a.ob.legacy) // legacy_report.go
+			}
+			button, label := primaryButton, i18n.T("Import from Voxt 1.x")
+			if a.ob.legacyDone {
+				button, label = ghostButton, i18n.T("Import again")
+			}
+			if button(c.Key("ob-legacy-import"), label).Clicked() {
+				a.importLegacy()
+			}
+		})
+	})
 }
 
 // obTryStep is a try step: the shortcut, a sample, the Try area, and
@@ -50,7 +75,7 @@ func (a *app) obTryStep(c *ui.Context) {
 	ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
 		hs := hotkey.HotkeysOf(a.prefs.Features, feature)
 		if len(hs) == 0 {
-			caption(c, i18n.T("%s has no shortcut: use Start, and add one on its page.", uitext.KindTitle(kind)))
+			caption(c, i18n.T("%s has no shortcut yet. Use Start, or add one on its page.", uitext.KindTitle(kind)))
 			return
 		}
 		caption(c, i18n.T("Shortcut"))
@@ -58,9 +83,12 @@ func (a *app) obTryStep(c *ui.Context) {
 		ui.Text(c, uitext.HotkeyText(h.Keys)).FontSize(px(t, fsCaption)).Font("monospace").Padding(px(t, 2), px(t, 8)).Radius(px(t, 4)).Background(k.Hover)
 		caption(c, uitext.TriggerHowText(h.Trigger))
 		if hotkey.NeedsTap(h) && !a.hotkeys.Installed {
-			warnLine(c, i18n.T("This shortcut works once Voxt may use Accessibility; Start works now."))
+			warnLine(c, i18n.T("This shortcut works once Voxt has Accessibility access. Start works now."))
 		}
 	})
+	if hs := hotkey.HotkeysOf(a.prefs.Features, feature); len(hs) > 0 {
+		a.obKeyboard(c, hs[0].Keys) // onboarding_keys.go
+	}
 	problemLines(c, a.conflictLines(feature, 0)) // another ActNow app's keys too
 	if a.ob.passed[step] {
 		notice(c, "ob-passed", noticeOK, i18n.T("It works. Continue, or try again."), "", nil, nil)
@@ -83,6 +111,7 @@ func (a *app) obTryStep(c *ui.Context) {
 	if a.ob.hint != "" {
 		warnLine(c, a.ob.hint)
 	}
+	a.obTryPrereqs(c, kind, "ob-"+uitext.FeaturePrefix(feature))
 	id := a.ob.tries[step]
 	a.tryCard(c, tryOpts{
 		prefix: "ob-" + uitext.FeaturePrefix(feature), feature: feature, mine: id != "" && a.sess.ID == id,
@@ -117,7 +146,7 @@ func (a *app) obMoreStep(c *ui.Context) {
 					caption(c, about)
 					ui.Row(c).Children(func() {
 						if ui.Button(c.Key(key+"-open"), button).Clicked() {
-							a.closeOnboarding()
+							a.finishOnboarding() // the last step: the guide is done
 							a.navigate(path)
 						}
 					})
@@ -126,12 +155,13 @@ func (a *app) obMoreStep(c *ui.Context) {
 		})
 	}
 	feature("ob-ae", appEnhancementIcon, i18n.T("App enhancement"),
-		i18n.T("Rules by app or website: a casual tone in chats, a formal one in mail, Return pressed after inserting in a messenger. The overlay shows which group applies."),
+		i18n.T("Rules for each app or website: a casual tone in chats, a formal one in mail, or pressing Return after inserting in a messenger. The overlay shows which group applies."),
 		i18n.T("Open App enhancement"), "/app-enhancement")
 	feature("ob-dict", dictionaryIcon, i18n.T("Dictionary"),
 		i18n.T("Names and jargon the speech model should expect and the language model should keep as written."),
 		i18n.T("Open Dictionary"), "/dictionary")
 	sectionTitle(c, i18n.T("Your shortcuts"))
+	a.shortcutPresetPicker(c, "ob")
 	ui.Column(c.Key("ob-keys")).Gap(px(t, sp1)).Children(func() {
 		row := func(feature, keys string) {
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {

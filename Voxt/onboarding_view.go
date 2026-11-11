@@ -110,7 +110,7 @@ func (a *app) obHeader(c *ui.Context) {
 				})
 			}
 		})
-		if iconButton(c.Key("ob-close"), icons.Close, i18n.T("Close the guide")).Tooltip(i18n.T("Close the guide (Settings → General opens it again)")).Clicked() {
+		if iconButton(c.Key("ob-close"), icons.Close, i18n.T("Close guide")).Tooltip(i18n.T("Close guide (Settings → General opens it again)")).Clicked() {
 			a.closeOnboarding()
 		}
 	})
@@ -155,21 +155,22 @@ func (a *app) obTitle(c *ui.Context) {
 	switch a.ob.step {
 	case obWelcome:
 		title = i18n.T("Welcome to Voxt")
-		sub = i18n.T("Speak in any app and get text where your cursor is: transcribe, translate and rewrite with models that run on this Mac. A few short steps; you can skip any of them.")
+		sub = i18n.T("Speak in any app and get text where your cursor is: transcribe, translate and rewrite. There are a few short steps, and you can skip any of them.")
 	case obPermissions:
 		title = i18n.T("Permissions")
+		sub = i18n.T("Voxt needs the microphone to hear you, and Accessibility to type the result where your cursor is. Allow them here, or later in Settings → Permissions.")
 	case obModels:
-		title = i18n.T("Local models")
-		sub = i18n.T("Voxt runs its models on this Mac. These two are the best start; the Local models page has the others.")
+		title = i18n.T("Models")
+		sub = i18n.T("Voxt recognises speech with a model on this Mac and cleans up, translates and rewrites with a language model you set up. The model below is the best start, and the Speech models page has others.")
 	case obTranscribe:
 		title = i18n.T("Try Transcribe")
-		sub = i18n.T("Press the shortcut (or Start), read the sentence below or say anything, then press it again to stop. The result shows here.")
+		sub = i18n.T("Transcribe writes down what you say. Press the shortcut (or Start), read the sentence below, then press it again to stop.")
 	case obTranslate:
 		title = i18n.T("Try Translate")
-		sub = i18n.T("Translate selected text, or what you say. Translate the sample below, or press the shortcut (or Start) and say a sentence.")
+		sub = i18n.T("Translate turns the selected text, or what you say, into the language you choose. Translate the sample below, or press the shortcut (or Start) and say a sentence.")
 	case obRewrite:
 		title = i18n.T("Try Rewrite")
-		sub = i18n.T("With nothing selected, say what to write; with text selected, say how to change it. Press the shortcut (or Start) and ask for something short.")
+		sub = i18n.T("Rewrite writes what you ask for, or changes the selected text as you say. Press the shortcut (or Start) and ask for something short.")
 	default:
 		title = i18n.T("More to explore")
 		sub = i18n.T("Voxt is ready. Two more things make it yours.")
@@ -186,7 +187,8 @@ func (a *app) obTitle(c *ui.Context) {
 // step). A try step's Continue waits for its try to pass; Skip moves on
 // without it. Nothing moves while the step's try runs. Continue is a
 // secondary button while the models step's reuse card shows its Use
-// them.
+// them, and Download and continue (beside Skip) while the models step has
+// only the download to offer.
 func (a *app) obFooter(c *ui.Context) {
 	t := c.Theme()
 	busy := a.obBusy()
@@ -198,16 +200,16 @@ func (a *app) obFooter(c *ui.Context) {
 		}
 		ui.Spacer(c)
 		if busy {
-			caption(c, i18n.T("Finish or cancel the try first.")).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
+			caption(c, i18n.T("Finish or cancel the test first.")).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
 		}
 		switch {
 		case a.ob.step == obMore:
 			if primaryButton(c.Key("ob-finish"), i18n.T("Start using Voxt")).Clicked() {
-				a.closeOnboarding()
+				a.finishOnboarding()
 				a.navigate("/home")
 			}
 		case a.ob.step == obWelcome:
-			if ghostButton(c.Key("ob-later"), i18n.T("Set up later")).Tooltip(i18n.T("Close the guide (Settings → General opens it again)")).Clicked() {
+			if ghostButton(c.Key("ob-later"), i18n.T("Set up later")).Tooltip(i18n.T("Close guide (Settings → General opens it again)")).Clicked() {
 				a.closeOnboarding()
 			}
 			if primaryButton(c.Key("ob-next"), i18n.T("Get started")).Clicked() {
@@ -217,9 +219,22 @@ func (a *app) obFooter(c *ui.Context) {
 			if ghostButton(c.Key("ob-skip"), i18n.T("Skip this step")).Disabled(busy).Clicked() {
 				a.obGo(a.ob.step + 1)
 			}
-			primaryButton(c.Key("ob-next"), i18n.T("Continue")).Disabled(true).Tooltip(i18n.T("A try that gives a result unlocks Continue"))
+			primaryButton(c.Key("ob-next"), i18n.T("Continue")).Disabled(true).Tooltip(i18n.T("Continue is available once a test gives a result"))
 		case a.obReuseShown(): // the reuse card's Use them is the step's primary button
 			if ui.Button(c.Key("ob-next"), i18n.T("Continue")).Clicked() {
+				a.obGo(a.ob.step + 1)
+			}
+		case a.obNeedsDownload():
+			if ghostButton(c.Key("ob-skip"), i18n.T("Skip this step")).Disabled(busy).Clicked() {
+				a.obGo(a.ob.step + 1)
+			}
+			if primaryButton(c.Key("ob-next"), i18n.T("Download and continue (%s)", a.obDownloadLeft())).Disabled(busy).Clicked() {
+				a.downloadModel(a.obSpeech())
+				a.obGo(a.ob.step + 1)
+			}
+		case a.ob.step == obModels && a.modelStatus[a.obSpeech()].Downloading:
+			tip := i18n.T("The speech model is still downloading. Later steps work once it is ready, or you can skip them.")
+			if primaryButton(c.Key("ob-next"), i18n.T("Continue")).Tooltip(tip).Disabled(busy).Clicked() {
 				a.obGo(a.ob.step + 1)
 			}
 		default:

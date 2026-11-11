@@ -113,20 +113,6 @@ func numberInput(c *ui.Context, value *float64, lo, hi, step float64, o numOpts)
 	return changed
 }
 
-// popoverWithFooter is a popover's content: body in a scroll as tall as
-// the window allows, and footer (Reset…) pinned under it, past a hairline,
-// so it shows however long the body is.
-func popoverWithFooter(c *ui.Context, key string, footer, body func()) {
-	t := c.Theme()
-	_, h := c.Size()
-	maxH := max(px(t, 180), min(px(t, 420), h*0.4)) // room above or below the button it opens from
-	ui.Column(c.Key(key + "-pop-frame")).Children(func() {
-		ui.Scroll(c.Key(key + "-pop-scroll")).MaxHeight(maxH).Children(body)
-		ui.Divider(c)
-		ui.Column(c.Key(key + "-pop-footer")).Padding(px(t, 10)).AlignItems(ui.Stretch).Children(footer)
-	})
-}
-
 // segmentedSome is ui.Segmented (as wide as its segments, as
 // segmentedFit) whose segments may be off: off[i] true greys segment i
 // out, and tips[i] ("" for none) says why, as its tooltip. Its Changed
@@ -175,7 +161,9 @@ func segmentedSome(c *ui.Context, selected *int, labels []string, off []bool, ti
 // to the window's height less margins, with a title row (title, a
 // caption under it, "" for none, and ×), body in a scroll, and footer
 // (the dialog's actions: one primaryButton at most) pinned under a
-// hairline. Escape, a click beside it or × close it (*open false).
+// hairline. Escape, a click beside it or × close it (*open false); a
+// form keeps itself open on a Dismissed Escape or click while it holds
+// unsaved input, so that a click back into the window loses nothing.
 func dialogFrame(c *ui.Context, key string, open *bool, title, sub string, width float32, body, footer func()) ui.Element {
 	t := c.Theme()
 	k := tok(t)
