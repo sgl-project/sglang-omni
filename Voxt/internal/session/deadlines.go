@@ -44,6 +44,9 @@ func TimedOut(err error) bool {
 func (r *run) llmChat(req llm.Request) (llm.Response, error) {
 	ctx, cancel := context.WithTimeout(r.llmCtx, req.Timeout)
 	defer cancel()
+	if r.shot != nil {
+		req.Image = r.shot()
+	}
 	resp, err := r.svc.LLM.Chat(ctx, req)
 	if err == nil || r.ctx.Err() != nil {
 		return resp, err

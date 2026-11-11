@@ -313,6 +313,10 @@ type Config struct {
 	// Select reads the selection (nil: Translate and Rewrite never see
 	// one).
 	Select Selector
+	// Window takes a JPEG of app pid's front window (the helper's
+	// screen.window; nil without a picture) for the language model, when
+	// the settings send one (Privacy.SendWindow). Nil: never.
+	Window func(ctx context.Context, pid int) ([]byte, error)
 	// History keeps finished sessions (nil: none); Glossary lists the
 	// dictionary's enabled terms (nil: none).
 	History  store.History

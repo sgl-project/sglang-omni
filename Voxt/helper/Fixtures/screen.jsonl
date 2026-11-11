@@ -1,0 +1,6 @@
+{"to":"helper","msg":{"id":"s1","method":"screen.window","params":{"pid":812,"maxSide":1600}}}
+{"to":"app","msg":{"id":"s1","result":{"jpeg":"/9j/4AAQSkZJRgABAQAAAQABAAD/2Q=="}}}
+{"to":"helper","msg":{"id":"s2","method":"screen.window","params":{"pid":813}}}
+{"to":"app","msg":{"id":"s2","result":{}}}
+{"to":"helper","msg":{"id":"s3","method":"screen.window","params":{"pid":812}}}
+{"to":"app","msg":{"id":"s3","error":{"code":"permission_denied","message":"Voxt may not record the screen","data":{"permission":"screenRecording"}}}}

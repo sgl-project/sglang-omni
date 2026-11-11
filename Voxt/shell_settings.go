@@ -49,6 +49,7 @@ type settingsForm struct {
 	keepHistory     bool
 	keepAudio       bool
 	logText         bool
+	sendWindow      bool
 	skipSilence     bool        // !Audio.VAD.Off
 	liveResult      bool        // Audio.LiveResult
 	cleanSound      bool        // !Audio.Clean.Off
@@ -236,6 +237,7 @@ func (a *app) loadSettingsForm() {
 	f.dock, f.copyResult = !s.General.HideDock, s.General.CopyResult
 	f.strictShortcuts = s.Features.StrictShortcuts
 	f.keepHistory, f.keepAudio, f.logText = s.Privacy.KeepHistory, s.Privacy.KeepAudio, s.Privacy.LogText
+	f.sendWindow = s.Privacy.SendWindow
 	f.historyAccess, f.historySelection = s.Privacy.HistoryAccess, s.Privacy.HistorySelection
 	f.skipSilence = !s.Audio.VAD.Off
 	f.liveResult = s.Audio.LiveResult

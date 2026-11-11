@@ -68,6 +68,9 @@ type run struct {
 	// retry's entry.
 	dsp    string
 	gainDB float64
+	// shot is the picture of the target's window for the language model
+	// (window.go); nil: none.
+	shot func() []byte
 	// heard takes the stream's live texts to the recording loop while it
 	// listens for the end word (endword.go); nil otherwise.
 	heard chan string
@@ -148,6 +151,7 @@ func (r *run) main() {
 		return
 	}
 	r.logf("info", "start %s in %s", kind, r.req.Target.BundleID)
+	r.shootWindow()
 
 	// The services and the dictionary, meanwhile. A typed text or a
 	// selection to translate is not heard: no speech model (#3838).
