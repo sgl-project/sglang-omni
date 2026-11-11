@@ -48,7 +48,6 @@ func New(cfg Config) *Manager {
 			*d = v
 		}
 	}
-	def(&cfg.MaxRecording, DefaultMaxRecording)
 	def(&cfg.MinRecording, DefaultMinRecording)
 	def(&cfg.ASRTimeout, DefaultASRTimeout)
 	def(&cfg.ASRPerSecond, DefaultASRPerSecond)

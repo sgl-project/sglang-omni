@@ -340,7 +340,6 @@ type Config struct {
 	NewID func() string
 
 	// Limits (0: the defaults).
-	MaxRecording time.Duration // DefaultMaxRecording
 	MinRecording time.Duration // DefaultMinRecording
 	// Recognition after Stop gets ASRTimeout plus ASRPerSecond per second
 	// of the recording (asrLimit): a local model that stopped answering is
@@ -387,7 +386,6 @@ type Config struct {
 
 // Defaults of Config's limits.
 const (
-	DefaultMaxRecording   = 2 * time.Hour // a guard against a lost capture.stop; a podcast is longer than 10 minutes
 	DefaultMinRecording   = 300 * time.Millisecond
 	DefaultASRTimeout     = 60 * time.Second
 	DefaultASRPerSecond   = time.Second

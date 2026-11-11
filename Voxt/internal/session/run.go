@@ -277,7 +277,11 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 		if l, ok := dres.Landing(); ok {
 			s.Landing = &l
 		}
-		s.Card = result != "" && !r.req.Try && !dres.Inserted && !noted
+		// A text that did not go in shows in the card only when it must (a
+		// forced card, an unsaved note, Rewrite's follow-ups) or the
+		// feature's card is on; else the app copies it and says so.
+		s.Card = result != "" && !r.req.Try && !dres.Inserted && !noted &&
+			(o.card != "" || r.req.Note || r.req.Kind == store.KindRewrite || r.settings.Features.ShowsCard(string(r.req.Kind)))
 		s.Delivery = dres.Reason
 		s.Timings.Deliver, s.Timings.Total = dres.Elapsed, total
 	}, func(s Snapshot) { r.keep(s, store.StatusDone) })
