@@ -326,6 +326,7 @@ def make_asr_send_fn(
     *,
     stream: bool = False,
     fallback_sample_ids: frozenset[str] = frozenset(),
+    resample_to_16_khz: bool = False,
 ) -> SendFn:
     """Return a send_fn(session, sample) -> RequestResult that transcribes one
     SeedTTS reference clip via the Omni /v1/audio/transcriptions endpoint.
@@ -346,6 +347,11 @@ def make_asr_send_fn(
             result.error = str(exc)
             return result
         result.audio_duration_s = get_wav_duration(audio_bytes)
+        # note (Imran Nazir): the native MLX qwen3_asr_server accepts only 16 kHz mono WAV.
+        if resample_to_16_khz:
+            audio_bytes = _wav_bytes_from_mono_16k(_load_wav_mono_16k(sample.ref_audio))
+        else:
+            pass
 
         form = aiohttp.FormData()
         form.add_field("model", model_name)
@@ -447,6 +453,7 @@ async def run_asr_transcription(
     disable_tqdm: bool = True,
     stream: bool = False,
     fallback_percentage: int = 0,
+    resample_to_16_khz: bool = False,
 ) -> tuple[list[RequestResult], float]:
     """Transcribe samples against a running ASR router at one concurrency.
 
@@ -464,6 +471,7 @@ async def run_asr_transcription(
         lang=lang,
         stream=stream,
         fallback_sample_ids=fallback_sample_ids,
+        resample_to_16_khz=resample_to_16_khz,
     )
     runner = BenchmarkRunner(
         RunConfig(

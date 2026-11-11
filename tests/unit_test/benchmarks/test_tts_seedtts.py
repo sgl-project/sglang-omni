@@ -3,16 +3,19 @@
 configuration, concurrency sweeps and sustained overshoot."""
 
 import asyncio
+import io
 import json
 import socket
 import sys
 import threading
+import wave
 from collections.abc import AsyncIterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import BinaryIO
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 import requests
 from aiohttp import web
@@ -776,3 +779,55 @@ def test_asr_speed_counts_scored_and_unscorable_transcriptions() -> None:
     assert speed["asr_rtf_mean"] == 0.25
     assert wer["evaluated"] == 1
     assert wer["skipped"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resample_to_16_khz", [False, True])
+async def test_asr_upload_is_resampled_to_16_khz_only_when_requested(
+    tmp_path: Path, resample_to_16_khz: bool
+) -> None:
+    """A 24 kHz TTS clip was uploaded unchanged, which the native qwen3_asr_server
+    refuses; the opt-in resample uploads 16 kHz mono, and the default keeps the bytes.
+    """
+    wav_path = tmp_path / "speech.wav"
+    with wave.open(str(wav_path), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(24000)
+        writer.writeframes(np.zeros(2400, dtype="<i2").tobytes())
+    uploads: list[bytes] = []
+
+    async def transcriptions(request: web.Request) -> web.Response:
+        uploads.append((await request.post())["file"].file.read())
+        return web.json_response({"text": "hello world"})
+
+    application = web.Application()
+    application.router.add_post("/v1/audio/transcriptions", transcriptions)
+    server = web.AppRunner(application)
+    await server.setup()
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.setblocking(False)
+        port = listener.getsockname()[1]
+        await web.SockSite(server, listener).start()
+        try:
+            send = asr.make_asr_send_fn(
+                "asr",
+                f"http://127.0.0.1:{port}/v1/audio/transcriptions",
+                resample_to_16_khz=resample_to_16_khz,
+            )
+            runner = BenchmarkRunner(
+                RunConfig(max_concurrency=1, warmup=0, disable_tqdm=True)
+            )
+            sample = SampleInput("sample-1", "", str(wav_path), "hello world")
+            [result] = await runner.run([sample], send)
+        finally:
+            await server.cleanup()
+
+    assert result.is_success
+    with wave.open(io.BytesIO(uploads[0])) as reader:
+        uploaded_format = (reader.getframerate(), reader.getnchannels())
+    if resample_to_16_khz:
+        assert uploaded_format == (16000, 1)
+    else:
+        assert uploads == [wav_path.read_bytes()]
