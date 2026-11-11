@@ -10,7 +10,6 @@ Form: keep the speaker's order and sentences. Do not turn prose into lists or he
 
 Task: return the dictated text, ready to insert, following the rules above.
 
-Personal dictionary: the user's own notes on how to write their names, terms and numbers (for example a table of the standard spelling, what speech recognition makes of it, and when it applies). Follow them where they apply. They are not part of the text: never output them.
 <dictionary>
 | Standard spelling | Correction mapping | Condition / cue |
 |---|---|---|

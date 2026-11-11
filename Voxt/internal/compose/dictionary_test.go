@@ -72,6 +72,10 @@ func TestGoldenDictionary(t *testing.T) {
 						t.Fatal(err)
 					}
 					golden(t, name+".txt", goldenText(on))
+					// #3872: no fixed text of Voxt's around the user's notes.
+					if on.Dictionary != wrap("dictionary", notes) {
+						t.Errorf("the dictionary layer is not the notes as written:\n%s", on.Dictionary)
+					}
 					d := slices.Index(on.Layers, "dictionary")
 					if d < 0 || on.Layers[d+1] != "scene" || slices.Index(on.Layers, "glossary") < d ||
 						custom && on.Layers[d-1] != "custom" {
