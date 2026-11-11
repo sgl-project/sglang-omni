@@ -49,6 +49,9 @@ func (a *app) notify(sev core.Severity, title, body, link string) {
 
 // dismissNotice removes one notification (its card's ×).
 func (a *app) dismissNotice(id string) {
+	if i := slices.IndexFunc(a.notices, func(n core.Notification) bool { return n.ID == id }); i >= 0 {
+		a.releaseCardGone(a.notices[i]) // updates_github.go
+	}
 	a.notices = slices.DeleteFunc(a.notices, func(n core.Notification) bool { return n.ID == id })
 	a.problemSeen(id)
 	notes := a.notes
@@ -59,6 +62,7 @@ func (a *app) dismissNotice(id string) {
 func (a *app) clearNotices() {
 	for _, n := range a.notices {
 		a.problemSeen(n.ID)
+		a.releaseCardGone(n)
 	}
 	a.notices = nil
 	a.noticesOpen = false
@@ -183,6 +187,11 @@ func (a *app) cardAction(n core.Notification) {
 		return
 	case linkAnnouncement:
 		a.announceShown, a.announceShownOpen = n, true // announcements.go
+		return
+	}
+	if u, ok := strings.CutPrefix(n.Link, linkDownload); ok {
+		a.dismissNotice(n.ID)
+		openExternal(u) // updates_github.go
 		return
 	}
 	if setup, ok := strings.CutPrefix(n.Link, linkCompleteSetup); ok {
@@ -323,6 +332,9 @@ func cardActionLabel(link string) string {
 		return i18n.T("Import") // the card's title says from where
 	case linkAnnouncement:
 		return i18n.T("Read")
+	}
+	if strings.HasPrefix(link, linkDownload) {
+		return i18n.T("Download")
 	}
 	if strings.HasPrefix(link, linkCompleteSetup) {
 		return i18n.T("Complete setup")

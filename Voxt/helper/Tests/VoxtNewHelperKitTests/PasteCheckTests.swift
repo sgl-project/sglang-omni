@@ -52,4 +52,15 @@ final class PasteCheckTests: XCTestCase {
         XCTAssertEqual(FieldReading(length: nil, selection: caret0).state, FieldState(length: 0, selection: caret0))
         XCTAssertEqual(FieldReading(length: 7, digest: 1, selection: nil).state, FieldState(length: 7, selection: nil))
     }
+
+    /// textio.paste's targetPid: the app in front, or the process of the
+    /// focused element when that is a non-activating panel of another app
+    /// (Raycast, Tinycast: they take the keyboard without coming to the
+    /// front, and ⌘V at the HID level goes to them).
+    func testTargetReached() {
+        XCTAssertTrue(PasteChecker.targetReached(812, front: 812, focusOwner: nil))
+        XCTAssertTrue(PasteChecker.targetReached(900, front: 812, focusOwner: 900), "a panel over the app in front")
+        XCTAssertFalse(PasteChecker.targetReached(900, front: 812, focusOwner: 812), "focus moved back to the app in front")
+        XCTAssertFalse(PasteChecker.targetReached(900, front: 812, focusOwner: nil))
+    }
 }

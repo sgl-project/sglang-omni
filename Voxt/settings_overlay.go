@@ -179,17 +179,18 @@ const (
 // overlayPreview is the overlay's pill as it draws, at its size, in its
 // dark theme, over a desktop picture that shows through it blurred (the
 // desktop does, on the Mac), after Voxt's preview: where the settings put
-// it (the bottom or the top, the distance from the edge to scale with the
-// card), as opaque, as round, with the time when it shows it. A change
-// shows at once.
+// it (the bottom or the top, the distance from the edge to scale with
+// its half of the card), as opaque, as round, with the time when it
+// shows it. A change shows at once.
 func (a *app) overlayPreview(c *ui.Context) {
 	t := c.Theme()
 	o := a.prefs.Overlay
-	w := layout.RowWidth(o.ShowTime, 0) + 2*layout.PillPadX
+	s := previewSession()
 	cardH := px(t, ovPreviewH)
 	// The distance from the edge, from none to ovMaxMargin, across the
-	// card's room.
-	room := max(cardH-layout.PillH-2*px(t, ovPreviewInset), 0)
+	// room in the pill's half of the card: at the largest the pill still
+	// shows on its side (#3785).
+	room := max(cardH/2-layout.PillH-px(t, ovPreviewInset), 0)
 	off := px(t, ovPreviewInset) + room*float32(min(max(o.Margin, 0), ovMaxMargin)/ovMaxMargin)
 	radius := faceRadius(o, ovRecording, layout.PillH)
 	ui.Box(c.Key("ov-preview")).FillWidth().MinWidth(0).Height(cardH).Shrink(0).Radius(px(t, ovPreviewRadius)).Clip().
@@ -205,13 +206,18 @@ func (a *app) overlayPreview(c *ui.Context) {
 		}
 		place.Children(func() {
 			c.SetTheme(overlayTheme())
+			row, _ := recordingPillRow(s, true, o.ShowTime, 0, func(k ovSized) (float32, bool) {
+				width, _ := c.MeasureText(k.wrap, k.span())
+				return width, true
+			})
+			w := row + 2*layout.PillPadX
 			ui.Box(c.Key("ov-preview-pill")).Size(float32(w), layout.PillH).Shrink(0).Children(func() {
 				// The blur of what is under it, then the face, positioned
 				// too to paint over the blur.
 				ui.Box(c).Absolute().Fill().Radius(radius).Material(glass.Blur{Radius: 8})
 				face := ui.Column(c.Key("ov-preview-face")).Absolute().Left(0).Top(0).Right(0).Bottom(0)
 				faceStyle(face, o, ovRecording, layout.PillH).Children(func() {
-					overlayPill(c, previewSession(), ovRecording, pillLook{time: o.ShowTime, w: w})
+					overlayPill(c, s, ovRecording, pillLook{time: o.ShowTime, w: w})
 				})
 			})
 			c.SetTheme(t)

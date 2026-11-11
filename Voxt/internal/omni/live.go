@@ -345,7 +345,16 @@ func (s *live) finalPass(pcm []byte) {
 	text := ""
 	var err error
 	if tail := pcm[done:]; len(tail) > 0 {
-		text, language, err = s.a.final(s.ctx, s.l, tail, language, s.bias)
+		hint := language
+		text, language, err = s.a.final(s.ctx, s.l, tail, hint, s.bias)
+		if err != nil && s.ctx.Err() == nil && !s.l.p.alive() {
+			// The server died under the recording (a crash, memory pressure): the audio is all here, so once more on a new one.
+			if l, aerr := s.a.rt.acquire(s.ctx, s.a.spec, s.a.dir, s.a.draft); aerr == nil {
+				s.a.rt.logf("warning", "%s: its server died during the session (%v): the Final runs again on a new one", s.a.spec.ID, err)
+				text, language, err = s.a.final(s.ctx, l, tail, hint, s.bias)
+				l.release()
+			}
+		}
 	}
 	took := time.Since(start)
 	s.logFinal(pcm, done, len(texts), busy, took, err)

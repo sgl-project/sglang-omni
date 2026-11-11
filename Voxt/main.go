@@ -105,14 +105,18 @@ func main() {
 	a.muteJournal = outputJournal(home, cacheDir) // mute_link.go
 	a.connectShell(logDir)                        // shell.go
 	a.connectHelper()                             // helperlink.go
-	// A build without an update feed (2.0.0, every development build)
-	// has no updater: no Check for Updates…, and About says so.
+	// A release without an update feed (2.0.x) checks GitHub's releases
+	// (updates_github.go); a development build has no updater: no Check
+	// for Updates…, and About says so.
 	if mygo.Updater.HasFeed() {
 		a.upd = pluginUpdates{}
+	} else if v := mygo.App.Version(); checksReleases(mygo.IsDev(), v) {
+		a.upd = newReleaseUpdates(a.settings, releasesURL, v, a.checkReleasesNow)
 	}
 	a.bundleStale = h.stale
-	a.connectUpdates() // updates.go
-	a.startFamily()    // family.go: the manifest, the other ActNow apps, the first start's migration
+	a.connectUpdates()                    // updates.go
+	a.keepReleaseCard(mygo.App.Version()) // updates_github.go
+	a.startFamily()                       // family.go: the manifest, the other ActNow apps, the first start's migration
 
 	mygo.App.WhenReady(func() {
 		a.openWindow()        // shell.go
@@ -122,6 +126,7 @@ func main() {
 		a.applyDock()         // tray.go: in the Dock or not
 		a.connectWindowLife() // tray.go
 		a.watchBundle()       // updates.go: an update installed while it runs
+		a.watchReleases()     // updates_github.go: the daily check without a feed
 		a.expireRecordings()  // history_retry.go: recordings kept for a retry, past their time
 		a.openHistoryAccess() // history_access.go: the socket, when the setting is on
 		a.announceURL = announce.URL

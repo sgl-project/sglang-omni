@@ -36,6 +36,7 @@ var localeFS embed.FS
 type catalog struct {
 	tag      string
 	messages map[string]string
+	sources  map[string]string // translation → English source, for Source
 }
 
 var current atomic.Pointer[catalog]
@@ -70,6 +71,13 @@ func SetLocale(tag string) string {
 		if err := json.Unmarshal(data, &c.messages); err != nil {
 			panic("i18n: locales/" + tag + ".json: " + err.Error()) // caught by tests
 		}
+	}
+	c.sources = make(map[string]string, len(c.messages))
+	for k, v := range c.messages {
+		if _, msg, ok := strings.Cut(k, "\x04"); ok { // X's context goes
+			k = msg
+		}
+		c.sources[v] = k
 	}
 	current.Store(c)
 	return tag
@@ -116,6 +124,11 @@ func N(n int, one, other string, args ...any) string {
 	}
 	return format(lookup(msg), args)
 }
+
+// Source is the English source of s, a translation T or X returned in the
+// active locale without arguments, or "" (English, or not a translation):
+// so a search finds a Chinese label by its English name too.
+func Source(s string) string { return current.Load().sources[s] }
 
 func lookup(msg string) string {
 	if s, ok := current.Load().messages[msg]; ok && s != "" {

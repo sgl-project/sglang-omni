@@ -386,6 +386,7 @@ func (a *app) draftRow(c *ui.Context, id string) {
 		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp1)).Children(func() {
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
 				ui.Text(c, i18n.T("Faster transcription")).FontWeight(600)
+				infoTip(c.Key("how"), i18n.T("Uses speculative decoding. A small draft model proposes several words at a time, and the speech model checks them."))
 				if st.Installed {
 					statusMark(c, icons.CheckCircle, k.Success, i18n.T("Installed"))
 				}

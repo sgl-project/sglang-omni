@@ -58,6 +58,8 @@ package helpertest
 //	front=BUNDLE     the app in front (default com.tinyspeck.slackmacgap, Slack, pid 812)
 //	selection=TEXT   textio.selection reads TEXT through Accessibility
 //	copy-selection=TEXT  textio.selection reads TEXT only with allowCopy (via copy)
+//	selection-file=PATH  textio.selection reads PATH's text at each call ("" or no
+//	                 file: nothing selected): the user selects something else
 //	readonly[=BUNDLE]  textio.focus: the focused element is not editable (of BUNDLE only)
 //	focus=none       textio.focus: nothing is focused (Finder's desktop)
 //	focus=secure     textio.focus: a password field (AXSecureTextField)
