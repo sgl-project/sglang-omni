@@ -98,13 +98,7 @@ class NemotronTranscribeMTP(NemotronHForCausalLMMTP):
                     seen.add(name)
                     yield name, tensor
 
-        try:
-            super().load_weights(checked_weights())
-        except (RuntimeError, AssertionError) as error:
-            raise ValueError(
-                "Nemotron Transcribe MTP tensor shape is incompatible with "
-                "SGLang's NemotronHForCausalLMMTP"
-            ) from error
+        super().load_weights(checked_weights())
         validate_mtp_checkpoint_inventory(expected, seen, unexpected, duplicates)
 
 
