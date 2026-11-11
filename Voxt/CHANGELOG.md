@@ -12,6 +12,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Voxt 1.x on Apple silicon updates to Voxt 2 by itself**: each release also has the app as `Voxt-X.Y.Z-macOS.zip`, which Voxt 1.x's in-app update installs on a Mac with Apple silicon (first for those who turned on Beta Updates, then for everyone there) and the Homebrew cask (`brew install --cask hehehai/tap/voxt`, Apple silicon only) installs. Voxt 1.x on an Intel Mac is not offered Voxt 2, which does not run there, and stays on Voxt 1.x. After the update, allow the microphone and accessibility again: macOS sees Voxt 2 as another app.
 - **Voxt tells you when a new version is out** (#3786): Check for Updates… is back in the app menu, the menu bar menu, ⌘K and Settings → Diagnostics & About. It opens a dialog that asks GitHub for the newest release and shows its notes with Download (its disk image), says you are up to date, or says why the check failed, with Try again. Once a day Voxt also checks in the background (Settings → Diagnostics & About → Check automatically, on by default) and shows a card in the sidebar when a new version is out; dismiss it and it stays away until the next version. Voxt still does not install updates itself: install the new version from its disk image, or with `brew upgrade --cask voxt`. The check sends only Voxt's version to GitHub.
 - **Strict shortcuts** in Settings → Shortcuts: while you record, only the shortcut that started the recording stops it. Another feature's shortcut does nothing. Off by default, so any feature's shortcut stops the recording, as in Voxt 1.x (#3823).
+- **History has an All tab** (#3848): after Transcribe, Translate and Rewrite, All lists the records of every feature together, newest first, and each row names its feature. Search works across them. The three feature tabs work as before.
 
 ### Changed
 
@@ -46,6 +47,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Apple 芯片上的 Voxt 1.x 自己更新到 Voxt 2**：每个版本还附带 app 的 `Voxt-X.Y.Z-macOS.zip`，在 Apple 芯片的 Mac 上，Voxt 1.x 的应用内更新安装它（先给打开了“Beta 更新”的用户，再给其他人），Homebrew 的 cask（`brew install --cask hehehai/tap/voxt`，只支持 Apple 芯片）也装它。Intel Mac 上的 Voxt 1.x 不会收到 Voxt 2（Voxt 2 不能在 Intel 上运行），继续用 Voxt 1.x。更新后要重新允许麦克风和辅助功能：macOS 把 Voxt 2 当成另一个 app。
 - **有新版本时 Voxt 会告诉你**（#3786）：应用菜单、菜单栏菜单、⌘K 和 设置 → 诊断与关于 里又有了“检查更新…”。它打开一个对话框，向 GitHub 查最新版本：有新版本就显示更新说明和“下载”（打开它的 dmg）；已是最新就直说；查不到就说明原因，可以重试。Voxt 每天还会在后台查一次（设置 → 诊断与关于 →“自动检查”，默认打开），有新版本时侧边栏出现一张卡片；关掉以后，下一个版本出来之前不再出现。Voxt 仍然不会自己安装更新：新版本从 dmg 安装，或者运行 `brew upgrade --cask voxt`。检查时只把 Voxt 的版本号发给 GitHub。
 - **快捷键严格模式**（设置 → 快捷键）：录音时只有开始录音的那个快捷键能停止它，按别的功能的快捷键不起作用。默认关闭，和 Voxt 1.x 一样，任何功能的快捷键都能停止录音（#3823）。
+- **历史页加了“全部”标签**（#3848）：在转录、翻译、改写之后，“全部”把所有功能的记录放在一起，从新到旧，每行写明来自哪个功能，搜索也覆盖全部记录。原来三个标签不变。
 
 #### 变更
 
