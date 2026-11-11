@@ -3,11 +3,16 @@
 
 from __future__ import annotations
 
+import functools
+import logging
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
+import numpy as np
+import numpy.typing as npt
 import torch
 from sglang.srt.managers.schedule_batch import (
     Modality,
@@ -18,6 +23,11 @@ from sglang.srt.managers.schedule_batch import (
 from sglang.srt.sampling.sampling_params import SamplingParams
 from transformers import PreTrainedTokenizerBase
 
+from sglang_omni.models.nemotron_transcribe.config import (
+    MINIMUM_TRANSCRIPT_TOKENS,
+    TRANSCRIPT_TOKENS_PER_SECOND,
+    PromptLayout,
+)
 from sglang_omni.models.nemotron_transcribe.encoder_service import (
     NemotronTranscribePreLMEncoderService,
 )
@@ -27,6 +37,22 @@ from sglang_omni.models.nemotron_transcribe.hf_config import (
     num_audio_frames,
     num_audio_tokens,
 )
+from sglang_omni.models.nemotron_transcribe.languages import (
+    language_name,
+    translation_instruction,
+)
+from sglang_omni.models.nemotron_transcribe.loop_guard import (
+    NemotronTranscribeLoopGuard,
+    loop_period,
+)
+from sglang_omni.models.nemotron_transcribe.speaker_attribution import (
+    activity_rows,
+    attribute_speakers,
+    diarization_segments,
+    strip_speaker_tags,
+)
+from sglang_omni.models.nemotron_transcribe.transcript_cleanup import clean_transcript
+from sglang_omni.models.nemotron_transcribe.word_timestamps import align_transcript
 from sglang_omni.preprocessing.transcription import prepare_audio
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
@@ -35,6 +61,11 @@ from sglang_omni.scheduling.token_text_streaming import (
 )
 from sglang_omni.scheduling.types import DeferredAdmission, StreamOutputBuilder
 
+logger = logging.getLogger(__name__)
+
+# (ASR states of one upload, CTC classes) -> (frames, classes) log-probs
+CtcScorer = Callable[[torch.Tensor, list[int]], torch.Tensor]
+
 SAMPLE_RATE = 16000
 AUDIO_TOKEN = "<|audio|>"
 DEFAULT_PROMPT = (
@@ -42,6 +73,11 @@ DEFAULT_PROMPT = (
     "abbreviations, numbers, dates, measurements, acronyms, and technical terms "
     "as clearly as possible. Keep the same language as spoken and do not translate."
 )
+LANGUAGE_HINT = "The speech is in {language}."
+# Near-digital silence: quieter than recorded speech, louder than dither.
+SILENCE_PEAK = 1e-3
+SILENCE_RMS = 3e-5
+FORCED_TOKEN_BIAS = 1.0e4
 
 
 @dataclass
@@ -69,13 +105,18 @@ def render_prompt_ids(
     tokenizer: PreTrainedTokenizerBase,
     instruction: str,
     system_prompt: str = "",
+    layout: PromptLayout = "audio_first",
 ) -> list[int]:
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     else:
         pass
-    messages.append({"role": "user", "content": f"{AUDIO_TOKEN}\n{instruction}"})
+    if layout == "instruction_first":
+        content = f"{instruction} {AUDIO_TOKEN}"
+    else:
+        content = f"{AUDIO_TOKEN}\n{instruction}"
+    messages.append({"role": "user", "content": content})
     text = tokenizer.apply_chat_template(
         messages,
         tokenize=False,
@@ -91,10 +132,120 @@ def decode_tokens(tokenizer: PreTrainedTokenizerBase, ids: list[int]) -> str:
     )
 
 
+def default_instruction(language: str | None) -> str:
+    """The served instruction, naming the spoken language when the request gives one."""
+    name = language_name(language)
+    if name is None:
+        return DEFAULT_PROMPT
+    else:
+        return f"{DEFAULT_PROMPT} {LANGUAGE_HINT.format(language=name)}"
+
+
+def is_silent(waveform: npt.NDArray[np.floating]) -> bool:
+    """True when the peak is under -60 dBFS and the RMS under -90 dBFS."""
+    if waveform.size == 0:
+        return True
+    else:
+        pass
+    if float(np.abs(waveform).max()) >= SILENCE_PEAK:
+        return False
+    else:
+        pass
+    return float(np.sqrt(np.mean(np.square(waveform, dtype=np.float64)))) < SILENCE_RMS
+
+
+def transcript_token_budget(
+    duration_s: float,
+    *,
+    ceiling: int,
+    prompt_tokens: int,
+    context_length: int | None,
+) -> int:
+    """Response tokens for a transcript of this audio, within the ceiling and context."""
+    budget = min(
+        ceiling,
+        math.ceil(duration_s * TRANSCRIPT_TOKENS_PER_SECOND)
+        + MINIMUM_TRANSCRIPT_TOKENS,
+    )
+    if context_length is not None:
+        budget = min(budget, context_length - prompt_tokens)
+    else:
+        pass
+    return max(1, budget)
+
+
+def timestamp_transcription(
+    data: NemotronTranscribeRequestData,
+    text: str,
+    ctc_scorer: CtcScorer | None = None,
+) -> dict[str, object] | None:
+    """Align the transcript when this request asked for word timestamps."""
+    request = data.req
+    if request is None or request.multimodal_inputs is None:
+        return None
+    else:
+        pass
+    items = request.multimodal_inputs.mm_items
+    if not items:
+        return None
+    else:
+        pass
+    specific = items[0].model_specific_data or {}
+    if not specific.get("word_timestamps"):
+        return None
+    else:
+        pass
+    evidence = specific.get("timestamp_evidence")
+    if not isinstance(evidence, dict):
+        evidence = None
+    else:
+        pass
+    prompt = ""
+    if data.stage_payload is not None and data.stage_payload.request is not None:
+        params = data.stage_payload.request.params or {}
+        prompt = str(params.get("prompt") or "")
+    else:
+        pass
+    align_text = strip_speaker_tags(text) if "<spk:" in text else text
+    score_columns = None
+    asr_states = (evidence or {}).get("asr_states")
+    if ctc_scorer is not None and isinstance(asr_states, torch.Tensor):
+        score_columns = functools.partial(ctc_scorer, asr_states)
+    else:
+        pass
+    transcription = align_transcript(align_text, evidence, score_columns)
+    rows = activity_rows(evidence)
+    frame_seconds = 0.0
+    if evidence is not None and isinstance(
+        evidence.get("speaker_frame_seconds"), (int, float)
+    ):
+        frame_seconds = float(evidence["speaker_frame_seconds"])
+    else:
+        pass
+    if rows is not None and frame_seconds > 0:
+        transcription["diarization_timestamps"] = diarization_segments(
+            rows, frame_seconds, float(data.audio_duration_s)
+        )
+        transcription["diarization_frame_seconds"] = frame_seconds
+    else:
+        pass
+    words = transcription.get("words")
+    if isinstance(words, list):
+        transcription["words"] = attribute_speakers(
+            words, text, prompt, rows, frame_seconds
+        )
+    else:
+        pass
+    return transcription
+
+
 def make_scheduler_adapters(
     *,
     tokenizer: PreTrainedTokenizerBase,
     max_new_tokens: int,
+    context_length: int | None = None,
+    prompt_layout: PromptLayout = "audio_first",
+    loop_guard: bool = False,
     audio_token_estimator: dict[str, object] | None = None,
     audio_token_id: int = AUDIO_TOKEN_ID,
     eos_token_id: int = EOS_TOKEN_ID,
@@ -102,10 +253,13 @@ def make_scheduler_adapters(
     vocab_size: int = AUDIO_TOKEN_ID,
     audio_encoder_service: NemotronTranscribePreLMEncoderService | None = None,
     should_wait_for_encode: Callable[[], bool] | None = None,
+    ctc_scorer: CtcScorer | None = None,
 ) -> tuple[
     RequestBuilder,
     ResultAdapter,
 ]:
+    loop_guard_processor = NemotronTranscribeLoopGuard.to_str() if loop_guard else None
+
     def request_builder(
         payload: StagePayload,
     ) -> (
@@ -125,17 +279,36 @@ def make_scheduler_adapters(
             )
         else:
             n_audio = num_audio_tokens(waveform.numel(), audio_token_estimator)
+        word_timestamps = bool(params.get("word_timestamps"))
+        task = str(params.get("task") or "transcribe")
+        if word_timestamps and task != "transcribe":
+            raise ValueError(
+                "Nemotron Transcribe supports word_timestamps only for transcriptions"
+            )
+        else:
+            pass
         cached_embedding = None
-        if audio_encoder_service is not None:
+        # A cached embedding has no CTC frames, so a timestamp request encodes again.
+        if audio_encoder_service is not None and not word_timestamps:
             cached_embedding = audio_encoder_service.lookup_cached_embedding(
                 prepared.fingerprint, n_audio
             )
         else:
             pass
 
-        instruction = str(params.get("prompt") or DEFAULT_PROMPT)
+        if task == "translate":
+            instruction = translation_instruction(params.get("language"))
+        else:
+            instruction = default_instruction(params.get("language"))
+        if params.get("prompt"):
+            instruction = str(params["prompt"])
+        else:
+            pass
         prompt_ids = render_prompt_ids(
-            tokenizer, instruction, str(params.get("system_prompt") or "")
+            tokenizer,
+            instruction,
+            str(params.get("system_prompt") or ""),
+            layout=prompt_layout,
         )
         if prompt_ids.count(audio_token_id) != 1:
             raise ValueError(
@@ -152,6 +325,7 @@ def make_scheduler_adapters(
             model_specific_data={
                 "num_audio_tokens": n_audio,
                 "audio_fingerprint": prepared.fingerprint,
+                "word_timestamps": word_timestamps,
             },
         )
         audio_item.set_pad_value()
@@ -164,13 +338,47 @@ def make_scheduler_adapters(
         mm_inputs = MultimodalInputs(mm_items=[audio_item], num_image_tokens=n_audio)
         mm_inputs.audio_token_id = audio_token_id
 
-        request_max_new_tokens = int(params.get("max_new_tokens") or max_new_tokens)
+        if params.get("max_new_tokens"):
+            request_max_new_tokens = int(params["max_new_tokens"])
+        else:
+            request_max_new_tokens = transcript_token_budget(
+                prepared.duration_s,
+                ceiling=max_new_tokens,
+                prompt_tokens=len(input_ids),
+                context_length=context_length,
+            )
         temperature = float(params.get("temperature") or 0.0)
+        seed = params.get("seed")
+        sampling_kwargs: dict[str, object] = {}
+        if seed is not None:
+            seed_value = int(seed)
+            if seed_value < 0:
+                raise ValueError(
+                    "Nemotron Transcribe seed must be a non-negative integer"
+                )
+            else:
+                pass
+            # SGLang draws from sampling_seed. Temperature 0 stays greedy.
+            sampling_kwargs["sampling_seed"] = seed_value
+        else:
+            pass
+        if is_silent(prepared.waveform):
+            # The scheduler has no finished-at-admission path, so silence decodes
+            # one token that is forced to be the end of the transcript.
+            request_max_new_tokens = 1
+            sampling_kwargs["logit_bias"] = {str(int(eos_token_id)): FORCED_TOKEN_BIAS}
+        else:
+            pass
+        if loop_guard_processor is not None:
+            sampling_kwargs["custom_params"] = {"eos_token_id": int(eos_token_id)}
+        else:
+            pass
         sampling_params = SamplingParams(
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,
             top_p=float(params.get("top_p") or 1.0),
             stop_token_ids=[int(eos_token_id)],
+            **sampling_kwargs,
         )
         sampling_params.normalize(tokenizer=None)
 
@@ -181,6 +389,7 @@ def make_scheduler_adapters(
             sampling_params=sampling_params,
             vocab_size=vocab_size,
             extra_key=prepared.fingerprint,
+            custom_logit_processor=loop_guard_processor,
         )
         req.multimodal_inputs = mm_inputs
 
@@ -218,26 +427,46 @@ def make_scheduler_adapters(
         payload = data.stage_payload
         assert payload is not None
         output_ids = [t for t in (data.output_ids or []) if t != eos_token_id]
-        text = decode_tokens(tokenizer, output_ids).strip()
+        if loop_guard_processor is not None and data.finish_reason == "stop":
+            period = loop_period(output_ids)
+            if period:
+                logger.info(
+                    "Nemotron Transcribe loop guard ended %s after %d tokens "
+                    "(period %d)",
+                    payload.request_id,
+                    len(output_ids),
+                    period,
+                )
+            else:
+                pass
+        else:
+            pass
+        text = clean_transcript(decode_tokens(tokenizer, output_ids))
         engine_time_s = (
             time.perf_counter() - data.engine_start_s if data.engine_start_s else 0.0
         )
+        body: dict[str, object] = {
+            "text": text,
+            "language": data.language,
+            "duration_s": data.audio_duration_s,
+            "asr_latency_s": engine_time_s,
+            "finish_reason": data.finish_reason,
+            "usage": {
+                "engine_time_s": engine_time_s,
+                "prompt_tokens": len(data.prompt_token_ids or []),
+                "completion_tokens": len(output_ids),
+            },
+            "modality": "text",
+        }
+        transcription = timestamp_transcription(data, text, ctc_scorer)
+        if transcription is not None:
+            body["transcription"] = transcription
+        else:
+            pass
         return StagePayload(
             request_id=payload.request_id,
             request=payload.request,
-            data={
-                "text": text,
-                "language": data.language,
-                "duration_s": data.audio_duration_s,
-                "asr_latency_s": engine_time_s,
-                "finish_reason": data.finish_reason,
-                "usage": {
-                    "engine_time_s": engine_time_s,
-                    "prompt_tokens": len(data.prompt_token_ids or []),
-                    "completion_tokens": len(output_ids),
-                },
-                "modality": "text",
-            },
+            data=body,
         )
 
     return request_builder, result_adapter

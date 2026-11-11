@@ -7,6 +7,7 @@ import torch
 from torch import nn
 
 from sglang_omni.models.nemotron_diarization.model import SortformerModules
+from sglang_omni.models.nemotron_transcribe.fp8_linear import attach_fp8_linears
 from sglang_omni.models.nemotron_transcribe.hf_config import decode_nemo_floats
 from sglang_omni.models.nemotron_transcribe.mel_features import LogMelFrontend
 from sglang_omni.models.nemotron_transcribe.parallel_expert import ParallelExpertEncoder
@@ -46,9 +47,21 @@ class AudioPerception(nn.Module):
         self.proj = nn.Linear(encoder.asr_encoder.d_model, output_width)
 
     def forward(
-        self, input_signal: torch.Tensor, input_signal_length: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        self,
+        input_signal: torch.Tensor,
+        input_signal_length: torch.Tensor,
+        *,
+        return_evidence: bool = False,
+    ) -> tuple[torch.Tensor, ...]:
         mel, frame_counts = self.preprocessor(input_signal, input_signal_length)
+        if return_evidence:
+            encoded, encoded_counts, asr_encoded, activity = self.encoder(
+                mel, frame_counts, return_evidence=True
+            )
+            embeddings = self.proj(encoded.transpose(1, 2))
+            return embeddings, encoded_counts, asr_encoded, activity
+        else:
+            pass
         encoded, encoded_counts = self.encoder(mel, frame_counts)
         return self.proj(encoded.transpose(1, 2)), encoded_counts
 
@@ -136,7 +149,12 @@ def load_perception_weights(
 ) -> None:
     # note (yhayaran): SGLang builds this in the serving dtype, so float the frontend before loading.
     perception.preprocessor.float()
-    incompatible = perception.load_state_dict(weights, strict=False)
+    # note (yhayaran): Cast before attaching FP8 linears; a dtype cast would also cast their FP8 weights.
+    perception.encoder.to(dtype)
+    perception.proj.to(dtype)
+    incompatible = perception.load_state_dict(
+        attach_fp8_linears(perception, weights), strict=False
+    )
     missing = [k for k in incompatible.missing_keys if "._extra_state" not in k]
     unexpected = [k for k in incompatible.unexpected_keys if "._extra_state" not in k]
     if missing or unexpected:
@@ -146,8 +164,6 @@ def load_perception_weights(
         )
     else:
         pass
-    perception.encoder.to(dtype)
-    perception.proj.to(dtype)
     perception.eval()
 
 

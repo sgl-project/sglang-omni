@@ -12,9 +12,13 @@ from fastapi import FastAPI
 from sglang_omni.admission import QueueFullError
 from sglang_omni.client import GenerateChunk
 from sglang_omni.client.types import CompletionResult, GenerateRequest
+from sglang_omni.models.nemotron_transcribe.config import (
+    NemotronTranscribePipelineConfig,
+)
 from sglang_omni.serve import create_app
 
 WHISPER_MODEL = "openai/whisper-large-v3"
+NEMOTRON_MODEL = "nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B"
 # Per-model capability truth lives in test_translation_capability.py; the
 # route only sees a boolean, so one unsupported model exercises the path.
 UNSUPPORTED_MODEL = "Qwen/Qwen3-ASR-1.7B"
@@ -190,6 +194,43 @@ def test_omitted_language_detects_the_source() -> None:
     assert response.status_code == 200
     assert response.json()["text"] == "hello world"
     assert backend.requests[-1].extra_params["language"] == "zh"
+
+
+def nemotron_translation_client() -> tuple[FastAPI, RecordingTranslationClient]:
+    backend = RecordingTranslationClient()
+    app = create_app(
+        backend,
+        model_name=NEMOTRON_MODEL,
+        architectures=[NemotronTranscribePipelineConfig.architecture],
+        supports_audio_translation=True,
+    )
+    return app, backend
+
+
+def test_nemotron_translation_does_not_run_whisper_language_detection() -> None:
+    client, backend = nemotron_translation_client()
+
+    response = post_translation(client, model=NEMOTRON_MODEL, language=None)
+
+    assert response.status_code == 200
+    assert len(backend.requests) == 1
+    assert backend.requests[0].extra_params["task"] == "translate"
+    assert "language" not in backend.requests[0].extra_params
+
+
+@pytest.mark.parametrize("response_format", ["srt", "vtt"])
+def test_nemotron_translation_refuses_subtitles_before_decoding(
+    response_format: str,
+) -> None:
+    client, backend = nemotron_translation_client()
+
+    response = post_translation(
+        client, model=NEMOTRON_MODEL, response_format=response_format
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["param"] == "response_format"
+    assert backend.requests == []
 
 
 def test_invalid_response_format_returns_openai_400() -> None:

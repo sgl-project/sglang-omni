@@ -19,6 +19,8 @@ _BAD_REQUEST_MARKERS = (
     "accepts audio up to",
     "requires at least two valid mel frames",
     "must contain exactly one <|audio|> token",
+    "Nemotron Transcribe seed must be",
+    "Nemotron Transcribe supports word_timestamps only",
     "could not decode the uploaded audio",
     "use_audio_in_video requires every video in a multi-video request",
     "Embedded audio stream decoded no samples:",

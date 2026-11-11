@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import ClassVar, Literal
 
 from pydantic import Field
@@ -17,11 +18,20 @@ from sglang_omni.config import (
 )
 
 PACKAGE = "sglang_omni.models.nemotron_transcribe"
-ARCHITECTURE = "NeMoSpeechLMForConditionalGeneration"
+ARCHITECTURE = "Nemotron3_5TranscribeForConditionalGeneration"
 MAX_AUDIO_SECONDS = 3600
 DECODER_CONTEXT_TOKENS = 73728
+# A transcript gets this many tokens per second of audio, plus a floor for short clips.
+TRANSCRIPT_TOKENS_PER_SECOND = 6.0
+MINIMUM_TRANSCRIPT_TOKENS = 24
+# One hour's budget fits beside its 45,000 audio tokens in the decoder context.
+DEFAULT_MAX_NEW_TOKENS = (
+    math.ceil(MAX_AUDIO_SECONDS * TRANSCRIPT_TOKENS_PER_SECOND)
+    + MINIMUM_TRANSCRIPT_TOKENS
+)
 DEFAULT_MAX_RUNNING_REQUESTS = 64
 EncoderCompileMode = Literal["default", "max-autotune-no-cudagraphs"]
+PromptLayout = Literal["audio_first", "instruction_first"]
 
 
 class NemotronTranscribeFactoryArgs(FactoryArgs):
@@ -37,6 +47,9 @@ class NemotronTranscribeFactoryArgs(FactoryArgs):
     compile_perception: bool | None = None
     perception_cuda_graphs: bool | None = None
     perception_compile_mode: EncoderCompileMode | None = None
+    perception_fp8: bool | None = None
+    prompt_layout: PromptLayout | None = None
+    loop_guard: bool | None = None
 
 
 class NemotronTranscribeStageConfig(EngineStageConfig):
@@ -49,12 +62,19 @@ class NemotronTranscribePipelineConfig(PipelineConfig):
     """Whole-file transcription. Audio up to one hour is one decoder request."""
 
     architecture: ClassVar[str] = ARCHITECTURE
+    architecture_aliases: ClassVar[tuple[str, ...]] = (
+        "NeMoSpeechLMForConditionalGeneration",
+    )
     allow_audio_chunking: ClassVar[bool] = False
     max_native_clip_s: ClassVar[float] = float(MAX_AUDIO_SECONDS)
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         "asr": NemotronTranscribeStageConfig,
     }
+
+    def supports_audio_translation(self) -> bool:
+        """Nemotron Transcribe translates speech into English."""
+        return True
 
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
@@ -78,7 +98,7 @@ class NemotronTranscribePipelineConfig(PipelineConfig):
             factory_path=f"{PACKAGE}.stages.create_nemotron_transcribe_executor",
             factory=NemotronTranscribeFactoryArgs(
                 dtype="bfloat16",
-                max_new_tokens=16384,
+                max_new_tokens=DEFAULT_MAX_NEW_TOKENS,
                 context_length=DECODER_CONTEXT_TOKENS,
                 max_audio_seconds=float(MAX_AUDIO_SECONDS),
                 mm_embedding_cache_size_bytes=0,
@@ -94,6 +114,9 @@ class NemotronTranscribePipelineConfig(PipelineConfig):
                 compile_perception=False,
                 perception_cuda_graphs=False,
                 perception_compile_mode="default",
+                perception_fp8=True,
+                prompt_layout="audio_first",
+                loop_guard=True,
             ),
             engine=EngineArgs(
                 max_running_requests=DEFAULT_MAX_RUNNING_REQUESTS,
