@@ -482,12 +482,6 @@ class ChannelsLastDecoder:
         """(hidden_states + hidden_bias) + (residual + residual_bias) in one pass."""
         batch_size, frame_count, channel_count = residual.shape
         assert hidden_states.shape == residual.shape
-        if not residual.is_cuda:
-            return add_bias(hidden_states, hidden_bias) + add_bias(
-                residual, residual_bias
-            )
-        else:
-            pass
         for activation in (hidden_states, residual):
             assert activation.stride(2) == 1
             assert activation.stride(1) == channel_count

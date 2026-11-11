@@ -889,7 +889,8 @@ def test_a_non_streaming_batch_decodes_through_the_given_window_decoder() -> Non
 
 
 class CpuSnakeDecoder(ChannelsLastDecoder):
-    """Runs the real sequence and convolution paths with a CPU Snake boundary."""
+    """Runs the real sequence and convolution paths with the snake and residual-add
+    kernels replaced by their CPU formulas."""
 
     def snake(
         self,
@@ -907,6 +908,15 @@ class CpuSnakeDecoder(ChannelsLastDecoder):
             .contiguous()
         )
         return F.pad(activated, (0, 0, pad_left, pad_right))
+
+    def residual_add(
+        self,
+        hidden_states: torch.Tensor,
+        hidden_bias: torch.Tensor | None,
+        residual: torch.Tensor,
+        residual_bias: torch.Tensor | None,
+    ) -> torch.Tensor:
+        return add_bias(hidden_states, hidden_bias) + add_bias(residual, residual_bias)
 
 
 @pytest.mark.parametrize("context", ["sequence", "residual", "block", "decoder"])
