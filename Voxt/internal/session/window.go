@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // windowTimeout bounds taking the picture: the language model never
@@ -13,11 +15,13 @@ const windowTimeout = 3 * time.Second
 // shootWindow starts taking a picture of the target app's window, when
 // the settings send one to the language model (Privacy.SendWindow): at
 // the start, while the window the user speaks into is still in front.
-// Not for a try, nor in Voxt itself.
+// Not for a try, nor in Voxt itself, nor for Transcribe without its
+// clean-up (no language model).
 func (r *run) shootWindow() {
 	cfg := r.m.cfg
 	t := r.req.Target
-	if !r.settings.Privacy.SendWindow || cfg.Window == nil || r.req.Try || t.PID == 0 || t.PID == cfg.Self {
+	noLLM := r.req.Kind == store.KindTranscribe && !r.settings.Features.Transcribe.Enhance
+	if !r.settings.Privacy.SendWindow || noLLM || cfg.Window == nil || r.req.Try || t.PID == 0 || t.PID == cfg.Self {
 		return
 	}
 	done := make(chan []byte, 1)
