@@ -575,6 +575,7 @@
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ascend-npu">Ascend NPU</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#encoder-cuda-graph">Encoder CUDA Graph</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#breakable-prefill-cuda-graph">Breakable Prefill CUDA Graph</a></li>
@@ -604,14 +605,26 @@
 <p>Whisper ASR checkpoints can be started through the OpenAI-compatible <code class="docutils literal notranslate"><span class="pre">/v1/audio/transcriptions</span></code> endpoint. This path remains experimental in the current SGLang-Omni tree; validate checkpoint-specific accuracy and operational behavior before production deployment.</p>
 <section id="prerequisites">
 <h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
-<p>Install <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> by following <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a>, then download a Whisper checkpoint:</p>
+<p>Install <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> by following <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a> or <a class="reference internal" href="#../get_started/installation_npu.md"><span class="xref myst">Installation - Ascend NPU</span></a>, then download a Whisper checkpoint:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>hf<span class="w"> </span>download<span class="w"> </span>openai/whisper-large-v3
 </pre></div>
 </div>
 </section>
+<section id="ascend-npu">
+<h2>Ascend NPU<a class="headerlink" href="#ascend-npu" title="Link to this heading">#</a></h2>
+<p>Follow <a class="reference internal" href="#../get_started/installation_npu.md"><span class="xref myst">NPU Installation</span></a> and use the SGLang/CANN runtime specified in <a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/pyproject_npu.toml">pyproject_npu.toml</a>. Whisper runs on a single Ascend NPU in FP16. Select a device and start the service:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">ASCEND_RT_VISIBLE_DEVICES</span><span class="o">=</span><span class="m">0</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">SGLANG_OMNI_PLATFORM_SPEC</span><span class="o">=</span>sglang_omni.platforms.npu.NPUOmniPlatform
+sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>openai/whisper-large-v3<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>Pipeline startup defaults to <code class="docutils literal notranslate"><span class="pre">mem_fraction_static=0.50</span></code> on NPU and <code class="docutils literal notranslate"><span class="pre">0.85</span></code> elsewhere. Set <code class="docutils literal notranslate"><span class="pre">stages.asr.engine.mem_fraction_static</span></code> in a pipeline YAML to override this budget; explicit values take precedence, including <code class="docutils literal notranslate"><span class="pre">0.85</span></code> on NPU. Direct Python calls to <code class="docutils literal notranslate"><span class="pre">create_sglang_whisper_asr_executor</span></code> bypass pipeline configuration and retain the original <code class="docutils literal notranslate"><span class="pre">mem_fraction_static:</span> <span class="pre">float</span> <span class="pre">=</span> <span class="pre">0.85</span></code> default; pass <code class="docutils literal notranslate"><span class="pre">0.50</span></code> explicitly when needed.</p>
+<p>NPU decode graphs are disabled by default so Whisper can use the existing attention backend with ordinary decode. Prefill graph and compilation settings are preserved. Explicit graph overrides retain their precedence, but re-enabling NPU decode graphs is outside the validated scope. Ordinary decode can reduce throughput.</p>
+<p>The encoder uses NPU SDPA; the encoder CUDA Graph and optional dense-prefill optimizations described below apply to CUDA only.</p>
+</section>
 <section id="server-configuration">
 <h2>Server Configuration<a class="headerlink" href="#server-configuration" title="Link to this heading">#</a></h2>
-<p>Whisper ASR runs a single ASR stage on one GPU.</p>
+<p>Whisper ASR runs a single ASR stage on one GPU/Ascend NPU.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>openai/whisper-large-v3<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
@@ -1348,6 +1361,7 @@ contain Whisper special tokens.</p></li>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ascend-npu">Ascend NPU</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#encoder-cuda-graph">Encoder CUDA Graph</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#breakable-prefill-cuda-graph">Breakable Prefill CUDA Graph</a></li>

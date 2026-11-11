@@ -626,6 +626,12 @@ then download the model:</p>
 <section id="ascend-npu-graph-execution">
 <h3>Ascend NPU graph execution<a class="headerlink" href="#ascend-npu-graph-execution" title="Link to this heading">#</a></h3>
 <p>See <a class="reference internal" href="../other_platforms/installation_npu.html#qwen3-asr-graph-execution"><span class="std std-ref">Qwen3-ASR graph execution on Ascend NPU</span></a> for queue settings and runtime restrictions.</p>
+<p>After following the <a class="reference internal" href="../other_platforms/installation_npu.html"><span class="std std-doc">Ascend NPU installation guide</span></a>, start the server with the shared example.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--config<span class="w"> </span>examples/configs/qwen3_asr_ascend910.yaml<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>The example defaults to Qwen3-ASR-1.7B. To use 0.6B, add <code class="docutils literal notranslate"><span class="pre">--model-path</span> <span class="pre">Qwen/Qwen3-ASR-0.6B</span></code>. For a local checkpoint, pass its path with <code class="docutils literal notranslate"><span class="pre">--model-path</span></code> and the model identifier used in transcription requests with <code class="docutils literal notranslate"><span class="pre">--model-name</span></code>.</p>
+<p>This example uses eager LM decode and prefill to avoid truncated outputs observed in <a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/3199#discussion_r4510634009">targeted transcription checks on Ascend910_9362</a>, while retaining the default encoder graphs.</p>
 <p><a id="apple-silicon-torch-mps"></a></p>
 </section>
 <section id="apple-silicon">
