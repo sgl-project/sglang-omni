@@ -17,6 +17,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **The speech model loads before the first dictation**: Voxt now loads Transcribe's on-device speech model when it starts and when you choose another one, instead of at the first press of the shortcut. The first live text after a launch or a change of model no longer waits for the load (0.2 to 0.5 s on an M-series Mac with 36 GB, longer on a busy Mac or one with less memory). The model leaves memory after 10 idle minutes, as before.
 - **A large dictionary no longer slows dictation down**: after you dictate, Voxt replaces the dictionary's aliases with their terms. It now checks only the aliases that start with the letter at each place. With 1,000 terms, a 4 KB transcript took 57 ms and now takes 2 ms; a 20 KB one took 280 ms and now takes 8 ms (Apple M5 Max). The result is the same.
+- **Long History records scroll smoothly**: with the details of a record over about 57,000 characters open (an hour of dictation, a long article you translated), every frame laid its text out again, so the whole History page reacted slowly: a tenth of a second per mouse move or scroll at 60,000 characters, almost 4 s at 100,000. Voxt now lays the text out once when the details open; each frame after that takes 0.3 ms (Apple M5 Max). Shorter records were fast already.
 
 ### Fixed
 
@@ -51,6 +52,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **语音识别模型在第一次听写前就加载好**：Voxt 启动时、换语音识别模型时就加载转录用的本地模型，不再等到第一次按快捷键。启动后和换模型后的第一次实时文字不用再等加载（36 GB 的 M 系列 Mac 上是 0.2 到 0.5 秒，机器忙或内存小时更久）。模型空闲 10 分钟后照旧从内存卸载。
 - **词典很大时听写不再变慢**：听写完成后，Voxt 会把词典里的别名换成对应的词条，现在每个位置只检查以该字开头的别名。词典有 1000 个词条时，4 KB 的转录稿从 57 毫秒降到 2 毫秒，20 KB 的从 280 毫秒降到 8 毫秒（Apple M5 Max）。替换结果不变。
+- **历史里很长的记录也能流畅滚动**：打开超过约 5.7 万字的记录详情（一小时的口述、翻译过的长文章）后，每一帧都要把全文重新排版，整个历史页都反应慢：6 万字时每次移动鼠标或滚动要 0.1 秒，10 万字时将近 4 秒。现在打开详情时排版一次，之后每帧 0.3 毫秒（Apple M5 Max）。短一些的记录本来就快。
 
 #### 修复
 

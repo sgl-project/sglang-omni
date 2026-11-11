@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -352,6 +354,40 @@ func TestHistoryDetail(t *testing.T) {
 	click(t, tt, "Close")
 	if a.hist.sel != "" {
 		t.Errorf("still selected: %q", a.hist.sel)
+	}
+}
+
+// A record of 60,000 characters (an hour's dictation, a translated article)
+// lays out once when its details open; later frames reuse the layout. Its
+// layout is over MyGo's ordinary cache budget, and every frame laid it out
+// again, about a tenth of a second each (mygo-patches 0014).
+func TestHistoryDetailLongTextLaysOutOnce(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(1100, 720)
+	unit := "So let's move the design review to Thursday afternoon. 我们把设计评审挪到周四下午。\n"
+	// MyGo's text cache is the process's: a text of its own makes this run lay it out anew.
+	long := []rune(fmt.Sprint(time.Now().UnixNano(), " ", strings.Repeat(unit, 60000/len([]rune(unit))+1)))[:60000]
+	e := store.Entry{ID: "01LONGDETAIL", Kind: store.KindTranscribe, CreatedAt: time.Now(), Status: store.StatusDone,
+		AppName: "Notes", RawText: string(long), Result: string(long), Delivery: "insert"}
+	if err := a.lib.store.History().Put(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	a.navigate("/history")
+	frames(tt)
+	start := time.Now()
+	a.hist.sel = e.ID
+	frames(tt)
+	open := time.Since(start)
+	if !has(tt, "Entry details") {
+		t.Fatalf("the details did not open: %q", firstTexts(tt))
+	}
+	start = time.Now()
+	for i := range 10 {
+		tt.Move(800, 150+float32(i)*20)
+		tt.Frame()
+	}
+	if frame := time.Since(start) / 10; frame > open/4 {
+		t.Errorf("a frame over the open details takes %v, opening them %v: the text is laid out again each frame", frame, open)
 	}
 }
 
