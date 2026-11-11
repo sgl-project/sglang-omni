@@ -49,11 +49,7 @@ Default optimizations that are on without further flags: backbone decode device 
 
 Classifier-free guidance is on in both stages and has no flag. See [Guidance](#guidance) for what it costs you, because the AR half changes how much a request occupies.
 
-To run it on Ascend NPU first follow [Ascend NPU installation guide](../get_started/installation_npu.md) then use command below.
-
-```bash
-sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --dit_dav.factory.compile_acoustic False --minimax_music3_ar.engine.enable_deterministic_inference False
-```
+To run it on Ascend NPU, follow the [MiniMax-Music3 Ascend NPU guide](../other_platforms/installation_npu.md#minimax-music3).
 
 ## Apple Silicon: native MLX
 
