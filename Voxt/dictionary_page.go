@@ -6,7 +6,8 @@ package main
 // Terms go to the speech model as hints (dict.Hints) and to the
 // language model as a glossary (compose.Glossary); the switches at the
 // top say where. Search, add, edit, delete, and import or export CSV and
-// plain text (internal/dict).
+// plain text (internal/dict). The Personal dictionary view, Markdown notes
+// for the language model: dictionary_notes.go.
 //
 // The page keeps the terms of its search in memory, read in the
 // background when it shows and after each change; sessions read the
@@ -70,6 +71,15 @@ type dictView struct {
 	allSuggestions bool
 	// scan is the history scan's dialog (dictionary_scan.go).
 	scan scanState
+	// tab is the view: the terms or the personal dictionary
+	// (dictionary_notes.go), whose editor is notes and whose example is
+	// of notesFeatures[notesFeature].
+	tab          int
+	notes        speechContextState
+	notesFeature int
+	// all are the terms of the last read without a search, for the
+	// example's glossary.
+	all []store.Term
 }
 
 // termEdit is the term dialog's fields: a new term when id is "".
@@ -135,7 +145,7 @@ func (a *app) loadDict() {
 			}
 			d.list, d.err = list, ""
 			if q == "" {
-				d.total = len(list)
+				d.total, d.all = len(list), list
 			}
 		})
 	})
@@ -184,6 +194,13 @@ func (a *app) dictionaryPage(c *ui.Context) {
 		}
 	})
 	pageBody(c).Children(func() {
+		ui.Row(c).Padding(px(t, sp1), px(t, sp6), 0).Shrink(0).Children(func() {
+			segmentedFit(c.Key("dict-tab"), &d.tab, i18n.T("Terms"), i18n.T("Personal dictionary")).Label(i18n.T("Dictionary view"))
+		})
+		if d.tab == dictNotesTab {
+			a.notesView(c)
+			return
+		}
 		ui.Column(c).Padding(px(t, sp1), px(t, sp6), px(t, sp2)).Gap(px(t, sp2)).Shrink(0).Children(func() {
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
 				if searchField(c, "dict-search", &d.query, i18n.T("Search terms"), px(t, 320)).Label(i18n.T("Search dictionary")).Changed() {
@@ -264,6 +281,7 @@ func (a *app) dictGuide(c *ui.Context) {
 		caption(c, i18n.T("Speech recognition: with Speech hints on, terms go to the speech model as words to expect. Aliases are not sent."))
 		caption(c, i18n.T("Language model: with Glossary for the language model on, the model writes terms as spelled here. With more than %d terms, only those found in the text are sent, up to %d.", compose.GlossaryAllUpTo, compose.MaxGlossaryTerms))
 		caption(c, i18n.T("Aliases: misspellings Voxt replaces with the term, even without a language model."))
+		caption(c, i18n.T("Rules a term cannot hold, such as when a spelling applies, go in the Personal dictionary: Markdown notes for the language model only, with an example of the prompt."))
 	})
 }
 

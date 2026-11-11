@@ -126,7 +126,7 @@ gh run download RUN_ID --repo sgl-project/sglang-omni
 
 ## 0. 两个通道
 
-**2.0.0 没有更新通道**：`release/mygo.release.json` 是 `{}`，构建里没有更新源，app 不检查更新（菜单里没有“检查更新…”，关于面板写“这个版本不会自动更新”，`main.go` 用补丁 0008 的 `mygo.Updater.HasFeed` 判断），`release.sh --publish` 直接报错，不走 `actnow-publish.sh`。下面是有通道时的做法，代码都留着：以后有了 sgl-project 自己的通道，把 `updates`（公钥、`url`、`prereleases`）加回 `release/mygo.release.json` 就照旧。
+**2.0.0 没有更新通道**：`release/mygo.release.json` 是 `{}`，构建里没有更新源，app 不能自更新（`main.go` 用补丁 0008 的 `mygo.Updater.HasFeed` 判断）。这样的正式版（版本号是 X.Y.Z 或 X.Y.Z-beta.N、不是开发构建）只检查 GitHub 上这个仓库的 Release（`updates_github.go`，#3786）：取最新的、不是草稿的 `voxt-vX.Y.Z` tag（打开“Beta 更新”时也取 `-beta.N`），“检查更新…”在 app 里的对话框显示更新说明和“下载”（Release 里文件名带版本号的 dmg，没有就打开 Release 页），每天在后台查一次，有新版本时在侧边栏放一张卡片。所以每个 Release 的说明要写给用户看，dmg 要带版本号（`Voxt-X.Y.Z-arm64.dmg`）。开发构建没有“检查更新…”，关于面板写“这个版本不会自动更新”。没有通道时`release.sh --publish` 直接报错，不走 `actnow-publish.sh`。下面是有通道时的做法，代码都留着：以后有了 sgl-project 自己的通道，把 `updates`（公钥、`url`、`prereleases`）加回 `release/mygo.release.json` 就照旧。
 
 | | 正式版 | beta 版 |
 |---|---|---|
