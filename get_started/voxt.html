@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Install Voxt &#8212; SGLang</title>
+    <title>Voxt for macOS &#8212; SGLang</title>
   
   
   
@@ -57,8 +57,8 @@
     <link rel="icon" href="../_static/logo.ico"/>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Examples" href="examples.html" />
-    <link rel="prev" title="Installation — CUDA" href="installation.html" />
+    <link rel="next" title="Installation — Apple Silicon" href="../other_platforms/installation_apple_silicon.html" />
+    <link rel="prev" title="Troubleshooting" href="troubleshooting.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.2.0" />
@@ -206,13 +206,16 @@
         <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
     <div class="bd-toc-item navbar-nav active">
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
-<ul class="current nav bd-sidenav">
+<ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../index.html">Welcome to SGLang-Omni</a></li>
 <li class="toctree-l1"><a class="reference internal" href="quickstart.html">Quickstart</a></li>
 <li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
-<li class="toctree-l1 current active"><a class="current reference internal" href="#">Install Voxt (Mac app)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="examples.html">Examples</a></li>
 <li class="toctree-l1"><a class="reference internal" href="troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Voxt</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Quickstart</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Other Platforms</span></p>
 <ul class="nav bd-sidenav">
@@ -564,7 +567,7 @@
               
 
 <div id="jb-print-docs-body" class="onlyprint">
-    <h1>Install Voxt</h1>
+    <h1>Voxt for macOS</h1>
     <!-- Table of contents -->
     <div id="print-main-content">
         <div id="jb-print-toc">
@@ -574,9 +577,8 @@
             </div>
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-is-new-in-voxt-2">What is new in Voxt 2</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#new-users">New users</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upgrading-from-voxt-1-x">Upgrading from Voxt 1.x</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#install">Install</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#features">Features</a></li>
 </ul>
             </nav>
         </div>
@@ -588,58 +590,31 @@
 <div id="searchbox"></div>
                 <article class="bd-article">
                   
-  <section class="tex2jax_ignore mathjax_ignore" id="install-voxt">
-<h1>Install Voxt<a class="headerlink" href="#install-voxt" title="Link to this heading">#</a></h1>
-<p><a class="reference external" href="https://github.com/sgl-project/sglang-omni/tree/main/Voxt">Voxt</a> is voice input for macOS built on SGLang-Omni: press a shortcut in any app, speak, and the text appears where your cursor is. Speech is recognised on your Mac by SGLang-Omni’s native MLX runtime.</p>
-<p><strong>Download:</strong> the newest <code class="docutils literal notranslate"><span class="pre">Voxt-X.Y.Z-arm64.dmg</span></code> from <a class="reference external" href="https://github.com/sgl-project/sglang-omni/releases?q=voxt-v&amp;expanded=true">the Voxt releases</a>.</p>
-<p><strong>Needs:</strong> a Mac with Apple silicon and macOS 15 or later. The app is about 280 MB; the recommended speech model is a 2.5 GB download. Voxt 2 does not run on an Intel Mac; there, keep using Voxt 1.x.</p>
-<section id="what-is-new-in-voxt-2">
-<h2>What is new in Voxt 2<a class="headerlink" href="#what-is-new-in-voxt-2" title="Link to this heading">#</a></h2>
-<p>Voxt 2 is a new app that replaces the Swift Voxt 1.x. The biggest changes:</p>
-<ul class="simple">
-<li><p><strong>Speech recognition runs on SGLang-Omni</strong>: the local speech models (Qwen3-ASR 1.7B and 0.6B, and the 1.x models such as Whisper, Parakeet and SenseVoice) run on SGLang-Omni’s native MLX servers, with the text shown live as you speak. <strong>Faster transcription</strong> adds a small draft model that speeds up Qwen3-ASR by speculative decoding.</p></li>
-<li><p><strong>You choose the language model</strong>: clean-up, Translate and Rewrite use a service you set up (OpenAI, Anthropic, Gemini, DeepSeek, Qwen, Kimi, GLM, Doubao and others), or one on your Mac with Ollama, LM Studio or oMLX. Voxt 2 no longer runs language models itself.</p></li>
-<li><p><strong>Rewrite keeps a conversation</strong> in the answer card: say a follow-up (“shorter”, “now in English”), then copy or insert the answer.</p></li>
-<li><p><strong>The dictionary learns</strong>: Voxt suggests names and terms from your history and from the corrections you make after it types.</p></li>
-<li><p><strong>One-click import from Voxt 1.x</strong>: the dictionary, history, downloaded speech models, and your language model and speech service setups come over.</p></li>
-<li><p><strong>Open source</strong> in this repository, under the Apache License 2.0.</p></li>
-</ul>
-<p>Voxt 2 does not update itself: install each new version from its disk image. The full list of changes is in the <a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/Voxt/CHANGELOG.md">changelog</a>.</p>
-</section>
-<section id="new-users">
-<h2>New users<a class="headerlink" href="#new-users" title="Link to this heading">#</a></h2>
+  <section class="tex2jax_ignore mathjax_ignore" id="voxt-for-macos">
+<h1>Voxt for macOS<a class="headerlink" href="#voxt-for-macos" title="Link to this heading">#</a></h1>
+<p>Dictate, translate, and rewrite text by voice in any Mac app.</p>
+<p><a class="reference external" href="https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.0.3/Voxt-2.0.3-arm64.dmg"><img alt="Download Voxt for Mac" src="https://img.shields.io/badge/Download-Voxt%20for%20Mac-000000?style=for-the-badge&amp;logo=apple&amp;logoColor=white" /></a>
+<a class="reference external" href="https://github.com/sgl-project/sglang-omni/actions/runs/42954481839/artifacts/13825829109"><img alt="Download Voxt Beta" src="https://img.shields.io/badge/Download-Voxt%20Beta-1f6feb?style=for-the-badge&amp;logo=github&amp;logoColor=white" /></a></p>
+<p>Apple silicon · macOS 15+</p>
+<section id="install">
+<h2>Install<a class="headerlink" href="#install" title="Link to this heading">#</a></h2>
 <ol class="arabic simple">
-<li><p>Download the disk image and open it.</p></li>
-<li><p>Drag <strong>Voxt</strong> to <strong>Applications</strong>, then open Voxt from Applications.</p></li>
-<li><p>Follow the setup guide:</p>
-<ul class="simple">
-<li><p>Grant the <strong>microphone</strong> and <strong>Accessibility</strong> permissions.</p></li>
-<li><p>Download the recommended speech model, <strong>Qwen3-ASR 1.7B (8bit)</strong> (2.5 GB).</p></li>
-<li><p>For clean-up, Translate and Rewrite, set up a language model on the <strong>Language models</strong> page.</p></li>
-</ul>
-</li>
-<li><p>Tap the <strong>right Option</strong> key in any app, speak, and tap it again.</p></li>
+<li><p>Open the DMG, drag <strong>Voxt</strong> to <strong>Applications</strong>, and open it.</p></li>
+<li><p>Follow the setup guide to grant microphone and Accessibility permissions and download the recommended speech model.</p></li>
+<li><p>Tap <strong>Right Option</strong> in any app, speak, and tap it again to finish.</p></li>
 </ol>
+<p>To install Beta <code class="docutils literal notranslate"><span class="pre">2.0.3-beta.20261111.38</span></code>, sign in to GitHub, download and unzip the ZIP, then open the DMG and drag <strong>Voxt</strong> to <strong>Applications</strong>. If the download does not start, select the arm64 artifact in <a class="reference external" href="https://github.com/sgl-project/sglang-omni/actions/runs/42954481839#artifacts">Voxt Beta #38</a>. For newer builds, open the latest successful <code class="docutils literal notranslate"><span class="pre">main</span></code> run in <a class="reference external" href="https://github.com/sgl-project/sglang-omni/actions/workflows/voxt-beta.yaml">Actions → Voxt Beta</a>.</p>
 </section>
-<section id="upgrading-from-voxt-1-x">
-<span id="upgrading-from-voxt-1x"></span><h2>Upgrading from Voxt 1.x<a class="headerlink" href="#upgrading-from-voxt-1-x" title="Link to this heading">#</a></h2>
-<ol class="arabic simple">
-<li><p><strong>Quit Voxt 1.x</strong> from its menu bar icon. If it does not quit, use Force Quit (⌥⌘⎋).</p></li>
-<li><p>Open the Voxt 2 disk image and drag <strong>Voxt</strong> to <strong>Applications</strong>. When Finder asks:</p>
+<section id="features">
+<h2>Features<a class="headerlink" href="#features" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p><strong>Replace</strong> replaces the app. Voxt 1.x’s data stays, so reinstalling Voxt 1.x brings it back.</p></li>
-<li><p><strong>Keep Both</strong> keeps Voxt 1.x next to Voxt 2. Their default shortcuts do not overlap.</p></li>
+<li><p><strong>Dictation (Right Option)</strong>. Type what you say at the cursor.</p></li>
+<li><p><strong>Translate (Shift + Right Option)</strong>. Translate speech or selected text.</p></li>
+<li><p><strong>Rewrite (Control + Right Option)</strong>. Select text and say how you want it rewritten.</p></li>
+<li><p><strong>Notes (Right Command)</strong>. Speak to save a note in Voxt.</p></li>
 </ul>
-</li>
-<li><p>Open Voxt. The setup guide starts with <strong>Import from the previous Voxt</strong>. Click it. If an open panel appears, click <strong>Import</strong> without changing the folder.</p></li>
-<li><p>The import brings over the dictionary, the history, your language model and speech service setups, and the speech models Voxt 1.x downloaded (no new download). It does not bring over API keys, shortcuts, other settings apart from Show in the Dock, or Voxt 1.x’s local language models.</p></li>
-<li><p><strong>Grant the microphone and Accessibility again.</strong> macOS treats Voxt 2 as a different app, so the permissions of Voxt 1.x do not carry over.</p></li>
-<li><p>Set up a language model on the <strong>Language models</strong> page.</p></li>
-</ol>
-<p><strong>Other ways to upgrade:</strong> on a Mac with Apple silicon, turn on <strong>Beta Updates</strong> in Voxt 1.x (Settings → About) and choose <strong>Check for Updates…</strong>: it offers Voxt 2 together with the upgrade guide. Without Beta Updates, Voxt 1.x does not offer Voxt 2 yet. Then continue from step 3.</p>
-<p><strong>Another Mac:</strong> in Voxt 1.x, export the dictionary (Dictionary → More → Export); in Voxt 2, import the file (Dictionary → ••• → Import…). Only the dictionary moves this way.</p>
-<p><strong>Going back:</strong> reinstall <a class="reference external" href="https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v1.16.3">Voxt 1.16.3</a>. Its data is where Voxt 1.x left it.</p>
-<p>More detail, with screenshots: <a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/Voxt/docs/voxt-migration.md">From Voxt 1.x to Voxt 2</a>.</p>
+<p>Set up a language model in Voxt to use Translate and Rewrite. Voxt also has a custom dictionary, history retry and export, and app-specific prompts.</p>
+<p><a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/Voxt/docs/voxt-migration.md">Upgrade from Voxt 1.x</a> · <a class="reference external" href="https://github.com/sgl-project/sglang-omni/tree/main/Voxt#what-voxt-does">Full feature list</a> · <a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/Voxt/CHANGELOG.md">Changelog</a></p>
 </section>
 </section>
 
@@ -655,20 +630,20 @@
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="installation.html"
+       href="troubleshooting.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Installation — CUDA</p>
+        <p class="prev-next-title">Troubleshooting</p>
       </div>
     </a>
     <a class="right-next"
-       href="examples.html"
+       href="../other_platforms/installation_apple_silicon.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Examples</p>
+        <p class="prev-next-title">Installation — Apple Silicon</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -690,9 +665,8 @@
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-is-new-in-voxt-2">What is new in Voxt 2</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#new-users">New users</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upgrading-from-voxt-1-x">Upgrading from Voxt 1.x</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#install">Install</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#features">Features</a></li>
 </ul>
   </nav></div>
 

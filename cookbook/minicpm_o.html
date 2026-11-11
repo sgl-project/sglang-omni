@@ -210,9 +210,12 @@
 <li class="toctree-l1"><a class="reference internal" href="../index.html">Welcome to SGLang-Omni</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../get_started/quickstart.html">Quickstart</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../get_started/installation.html">Installation</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../get_started/voxt.html">Install Voxt (Mac app)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../get_started/examples.html">Examples</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../get_started/troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Voxt</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../get_started/voxt.html">Quickstart</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Other Platforms</span></p>
 <ul class="nav bd-sidenav">
@@ -719,7 +722,7 @@ python<span class="w"> </span>download_models.py<span class="w"> </span>--model<
 <li><p><strong>Speech output.</strong> The Talker reads one Thinker hidden row per text token, and the draft’s layer capture keeps the row of every verified token, so a speech server accepts drafts that verify one linear block per request: a chain EAGLE3 draft (<code class="docutils literal notranslate"><span class="pre">speculative_eagle_topk</span> <span class="pre">1</span></code>), DFlash or DSpark. Qwen3-8B DFlash drafts mask with token 151669, which is <code class="docutils literal notranslate"><span class="pre">&lt;image&gt;</span></code> in MiniCPM-o, so they accept almost no tokens here.</p></li>
 <li><p><strong>Supported settings.</strong> DSpark uses static verification. DFlash and DSpark reject a request seed for sampled verification; greedy and prefill-only requests still accept a seed. Speech verification supports at most 8,192 hidden rows per batch, including graph padding. Prefill storage follows the configured token ceiling; text-only serving does not allocate speech hidden buffers.</p></li>
 <li><p><strong>Sampling.</strong> <code class="docutils literal notranslate"><span class="pre">length_penalty</span></code> applies to every verified token. Requests with <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code>, <code class="docutils literal notranslate"><span class="pre">frequency_penalty</span></code>, <code class="docutils literal notranslate"><span class="pre">presence_penalty</span></code>, <code class="docutils literal notranslate"><span class="pre">min_p</span></code> or logprobs are rejected, because the draft workers cannot reproduce them. A prefill-only request keeps them, since the runner’s own sampler draws its single token on the target prefill and never reaches a verify.</p></li>
-<li><p><strong>Scheduling.</strong> Async decode is turned off, and so is the stage’s own mixed-chunk default. An explicit <code class="docutils literal notranslate"><span class="pre">enable_mixed_chunk</span></code> is refused rather than silently turned off.</p></li>
+<li><p><strong>Scheduling.</strong> Speculative decoding runs with async decode overlap enabled, while the stage’s own mixed-chunk default is turned off. An explicit <code class="docutils literal notranslate"><span class="pre">enable_mixed_chunk</span></code> is refused rather than silently turned off.</p></li>
 <li><p><strong>Startup.</strong> The thinker serves EAGLE3, DFlash and DSpark only, and <code class="docutils literal notranslate"><span class="pre">speculative_algorithm</span></code> and <code class="docutils literal notranslate"><span class="pre">speculative_draft_model_path</span></code> are given together. <code class="docutils literal notranslate"><span class="pre">max_seq_len</span></code> stays within the draft’s own <code class="docutils literal notranslate"><span class="pre">max_position_embeddings</span></code>, so raising it for long video prompts needs a draft whose context reaches that far.</p></li>
 </ul>
 </section>
