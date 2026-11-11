@@ -3,35 +3,38 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
 
 import torch
+from sglang.srt.managers.schedule_batch import ScheduleBatch
+from sglang.srt.managers.scheduler import GenerationBatchResult
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.voxtral_tts.acoustic_transformer import AudioSpecialTokens
+from sglang_omni.models.voxtral_tts.request_builders import VoxtralSGLangRequestData
+from sglang_omni.models.voxtral_tts.sglang_model import VoxtralSGLangTTSModel
+from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.types import (
     RequestOutput,
     SchedulerOutput,
     SchedulerRequest,
 )
 
-if TYPE_CHECKING:
-    from sglang.srt.managers.schedule_batch import ScheduleBatch
-    from sglang.srt.managers.scheduler import GenerationBatchResult
-    from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
-    from sglang_omni.models.voxtral_tts.request_builders import VoxtralSGLangRequestData
-    from sglang_omni.models.voxtral_tts.sglang_model import VoxtralSGLangTTSModel
-    from sglang_omni.scheduling.sglang_backend.output_processor import (
-        SGLangOutputProcessor,
-    )
-else:
-    pass
+@dataclass(kw_only=True)
+class VoxtralDecodeStep:
+    """Device codes and pinned host rows owned by one unresolved decode step."""
+
+    audio_codes: torch.Tensor
+    host_audio_codes: torch.Tensor
 
 
 class VoxtralTTSModelRunner(ModelRunner):
     model: VoxtralSGLangTTSModel
+    pending_host_audio_codes: torch.Tensor | None = None
+    pending_skip_request_ids: frozenset[str] = frozenset()
 
     def __init__(
         self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor
@@ -104,6 +107,54 @@ class VoxtralTTSModelRunner(ModelRunner):
     ) -> None:
         del forward_batch
         self.collect_audio_step(result, schedule_batch, requests)
+
+    def post_decode_launch(
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> VoxtralDecodeStep:
+        """Publish feedback before host collection so the next forward can launch."""
+        self.collect_audio_step(result, None, requests)
+        audio_codes = self.pending_audio_codes
+        audio_embeddings = self.pending_audio_embeds
+        assert audio_codes is not None and audio_embeddings is not None
+        self.pending_audio_codes = None
+        self.pending_audio_embeds = None
+        for row_index, request in enumerate(requests):
+            request.data.pending_feedback_queue.append(
+                audio_embeddings[row_index, 0].detach().clone()
+            )
+        host_audio_codes = self.next_host_staging(audio_codes.shape, audio_codes.dtype)
+        host_audio_codes = host_audio_codes[: len(requests)]
+        host_audio_codes.copy_(audio_codes, non_blocking=True)
+        return VoxtralDecodeStep(
+            audio_codes=audio_codes, host_audio_codes=host_audio_codes
+        )
+
+    def post_decode_resolve(
+        self,
+        launch_buf: VoxtralDecodeStep,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
+    ) -> None:
+        self.pending_audio_codes = launch_buf.audio_codes
+        self.pending_audio_embeds = None
+        # note (Codex): streaming rows must outlive the reused pinned host buffer.
+        self.pending_host_audio_codes = launch_buf.host_audio_codes.clone()
+        result.next_token_ids = self.pending_host_audio_codes[:, 0]
+        self.pending_skip_request_ids = frozenset(
+            request.request_id
+            for request in requests
+            if request.data.req.finished() or self.req_is_retracted(request.data.req)
+        )
+        for request in requests:
+            if request.request_id in self.pending_skip_request_ids:
+                request.data.pending_feedback_queue.clear()
+            else:
+                pass
 
     def build_prefill_input_embeds(
         self,
@@ -178,22 +229,31 @@ class VoxtralTTSModelRunner(ModelRunner):
         del result
         codes = self.pending_audio_codes
         embeds = self.pending_audio_embeds
+        host_codes = self.pending_host_audio_codes
+        skip_request_ids = self.pending_skip_request_ids
         self.pending_audio_codes = None
         self.pending_audio_embeds = None
-        if codes is None or embeds is None:
+        self.pending_host_audio_codes = None
+        self.pending_skip_request_ids = frozenset()
+        if codes is None:
             return
         else:
             pass
 
         eos_id = AudioSpecialTokens.id(AudioSpecialTokens.end_audio)
-        host_codes = (
-            codes.to("cpu")
-            if any(sched_req.data.stream for sched_req in scheduler_output.requests)
-            else None
-        )
+        if host_codes is None and any(
+            request.data.stream for request in scheduler_output.requests
+        ):
+            host_codes = codes.to("cpu")
+        else:
+            pass
         for row_idx, sched_req in enumerate(scheduler_output.requests):
             req_output = outputs[sched_req.request_id]
-            if req_output.data is None or int(req_output.data) == eos_id:
+            if (
+                sched_req.request_id in skip_request_ids
+                or req_output.data is None
+                or int(req_output.data) == eos_id
+            ):
                 continue
             else:
                 pass
@@ -202,6 +262,9 @@ class VoxtralTTSModelRunner(ModelRunner):
                 sched_req.data.stream_pending_rows.append(host_codes[row_idx])
             else:
                 pass
-            sched_req.data.pending_feedback_queue.append(
-                embeds[row_idx, 0].detach().clone()
-            )
+            if embeds is not None:
+                sched_req.data.pending_feedback_queue.append(
+                    embeds[row_idx, 0].detach().clone()
+                )
+            else:
+                pass
