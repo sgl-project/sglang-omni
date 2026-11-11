@@ -26,6 +26,16 @@ Set up a language model in Voxt to use Translate and Rewrite. Voxt also has a cu
 
 [Upgrade from Voxt 1.x](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/docs/voxt-migration.md) · [Full feature list](https://github.com/sgl-project/sglang-omni/tree/main/Voxt#what-voxt-does) · [Changelog](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/CHANGELOG.md)
 
+## Voxt tutorials in Chinese
+
+[Voxt 中文上手教程](voxt-tutorials/index.md)
+
+```{toctree}
+:hidden:
+
+voxt-tutorials/index
+```
+
 [download]: https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.0.3/Voxt-2.0.3-arm64.dmg
 [beta-download]: https://github.com/sgl-project/sglang-omni/actions/runs/42954481839/artifacts/13825829109
 [beta-run]: https://github.com/sgl-project/sglang-omni/actions/runs/42954481839#artifacts
