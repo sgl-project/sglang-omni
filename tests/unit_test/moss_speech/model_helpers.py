@@ -207,7 +207,7 @@ def decode(
     model: MossSpeechSGLangModel,
     backend: TorchNativeAttnBackend,
     prompt_lengths: list[int],
-    feedback_embeddings: torch.Tensor,
+    feedback_rows: torch.Tensor,
     request_ids: list[str],
 ) -> MossSpeechModelOutput:
     device = model.embed_tokens.weight.device
@@ -224,7 +224,7 @@ def decode(
     batch = ForwardBatch(
         forward_mode=ForwardMode.DECODE,
         batch_size=batch_size,
-        input_ids=torch.arange(batch_size, device=device),
+        input_ids=feedback_rows[:, 0] * model.audio_vocab_size + feedback_rows[:, 1],
         req_pool_indices=torch.arange(1, batch_size + 1, device=device),
         seq_lens=torch.tensor(
             [length + 1 for length in prompt_lengths], dtype=torch.int32, device=device
@@ -236,6 +236,4 @@ def decode(
     )
     backend.init_forward_metadata(batch)
     with forward_context(ForwardContext(attn_backend=backend)):
-        return model(
-            batch.input_ids, batch.positions, batch, input_embeds=feedback_embeddings
-        )
+        return model(batch.input_ids, batch.positions, batch)
