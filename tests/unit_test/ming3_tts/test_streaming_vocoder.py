@@ -117,9 +117,10 @@ def test_incremental_audio_matches_full_decode_and_flushes_tail(
     else:
         pass
     vocoder.stream_payloads["speech"] = payload
-    terminal_messages = vocoder.on_stream_done("speech")
+    vocoder.handle_stream_done("speech")
+    while vocoder.has_ready_work():
+        vocoder.run_ready_step()
     messages.extend(list(vocoder.outbox.queue))
-    messages.extend(terminal_messages)
     actual = torch.from_numpy(
         np.concatenate(
             [
@@ -226,6 +227,8 @@ def test_interleaved_streams_finish_after_late_payload_and_release_state(
         vocoder.handle_new_request_batch(
             [IncomingMessage(request_id=request_id, type="new_request", data=payload)]
         )
+        while vocoder.has_ready_work():
+            vocoder.run_ready_step()
         assert request_id not in vocoder.stream_states
         assert request_id not in vocoder.stream_payloads
     messages = list(vocoder.outbox.queue)
@@ -288,6 +291,168 @@ def test_ready_streams_share_one_decoder_step(vocoder: Ming3StreamingVocoder) ->
     assert decode.call_count == 1
     assert len(decode.call_args.kwargs["slot_ids"]) == 2
     assert len(set(decode.call_args.kwargs["slot_ids"])) == 2
+
+
+@pytest.mark.parametrize("invalid_payload", [False, True])
+@torch.inference_mode()
+def test_terminal_tail_shares_step_with_waiting_first_audio(
+    vocoder: Ming3StreamingVocoder,
+    invalid_payload: bool,
+) -> None:
+    """A finishing stream must not run a separate decoder step ahead of first audio."""
+    vocoder.abort_callback = Mock()
+    ending_latents = torch.full((1, 9, 4), 2.0)
+    for chunk_id in range(16):
+        items = [
+            (
+                "opening",
+                StreamItem(chunk_id, torch.ones(1, 4), "tts_engine", {"stream": True}),
+            )
+        ]
+        if chunk_id < 9:
+            items.insert(
+                0,
+                (
+                    "ending",
+                    StreamItem(
+                        chunk_id,
+                        ending_latents[:, chunk_id],
+                        "tts_engine",
+                        {"stream": True},
+                    ),
+                ),
+            )
+        else:
+            pass
+        vocoder.on_stream_chunk_batch(items)
+
+    payload = StagePayload(
+        "ending",
+        OmniRequest("text", params={"stream": True}),
+        {"usage": {}} if invalid_payload else {"usage": {}, "finish_reason": "stop"},
+    )
+    with patch.object(
+        vocoder.decoder, "run_streaming", wraps=vocoder.decoder.run_streaming
+    ) as decode:
+        vocoder.handle_stream_done("ending")
+        vocoder.handle_new_request_batch(
+            [IncomingMessage(request_id="ending", type="new_request", data=payload)]
+        )
+        assert decode.call_count == 0
+        vocoder.on_stream_chunk_batch(
+            [
+                (
+                    "opening",
+                    StreamItem(16, torch.ones(1, 4), "tts_engine", {"stream": True}),
+                )
+            ]
+        )
+    assert decode.call_count == 1
+    assert decode.call_args.kwargs["terminal_flags"] == (True, False)
+    messages = [(message.request_id, message.type) for message in vocoder.outbox.queue]
+    assert messages == [
+        ("ending", "stream"),
+        ("opening", "stream"),
+        ("ending", "error" if invalid_payload else "result"),
+    ]
+    assert "ending" not in vocoder.stream_states
+    assert vocoder.slot_bindings.slot_for("ending") is None
+    assert "opening" in vocoder.stream_states
+    expected_audio, _, _ = vocoder.vae.decode(ending_latents)
+    ending_audio = np.concatenate(
+        [
+            np.frombuffer(message.data["audio_waveform"], dtype=np.float32)
+            for message in vocoder.outbox.queue
+            if message.request_id == "ending" and message.type == "stream"
+        ]
+    )
+    torch.testing.assert_close(
+        torch.from_numpy(ending_audio), expected_audio.reshape(-1), atol=1e-5, rtol=1e-4
+    )
+    if invalid_payload:
+        vocoder.abort_callback.assert_called_once_with("ending")
+    else:
+        vocoder.abort_callback.assert_not_called()
+
+
+@torch.inference_mode()
+def test_terminal_audio_before_payload_completes_without_rebinding(
+    vocoder: Ming3StreamingVocoder,
+) -> None:
+    """A terminal step may emit before its payload without leaking or repeating audio."""
+    for chunk_id in range(5):
+        vocoder.handle_stream_chunk(
+            "speech",
+            StreamItem(chunk_id, torch.ones(1, 4), "tts_engine", {"stream": True}),
+        )
+    vocoder.handle_stream_done("speech")
+    assert vocoder.has_ready_work()
+    vocoder.run_ready_step()
+    assert vocoder.stream_states["speech"].terminal_committed
+    assert vocoder.slot_bindings.slot_for("speech") is None
+    assert [message.type for message in vocoder.outbox.queue] == ["stream"]
+
+    payload = StagePayload(
+        "speech",
+        OmniRequest("text", params={"stream": True}),
+        {"usage": {}, "finish_reason": "stop"},
+    )
+    vocoder.handle_new_request_batch(
+        [IncomingMessage(request_id="speech", type="new_request", data=payload)]
+    )
+    assert [message.type for message in vocoder.outbox.queue] == ["stream", "result"]
+    assert vocoder.slot_bindings.slot_for("speech") is None
+    assert not vocoder.pending_release_ids
+
+
+@torch.inference_mode()
+def test_slotless_terminal_keeps_full_decode_fallback(
+    vocoder: Ming3StreamingVocoder,
+) -> None:
+    """A completed stream still produces audio when all decoder slots are busy."""
+    for chunk_id in range(9):
+        vocoder.on_stream_chunk_batch(
+            [
+                (
+                    request_id,
+                    StreamItem(
+                        chunk_id, torch.ones(1, 4), "tts_engine", {"stream": True}
+                    ),
+                )
+                for request_id in ("occupied_one", "occupied_two")
+            ]
+        )
+    for chunk_id in range(5):
+        vocoder.handle_stream_chunk(
+            "slotless",
+            StreamItem(chunk_id, torch.ones(1, 4), "tts_engine", {"stream": True}),
+        )
+    vocoder.stream_payloads["slotless"] = StagePayload(
+        "slotless",
+        OmniRequest("text", params={"stream": True}),
+        {"usage": {}, "finish_reason": "stop"},
+    )
+    vocoder.handle_stream_done("slotless")
+    assert [message.type for message in vocoder.outbox.queue] == ["stream", "result"]
+    assert "slotless" not in vocoder.stream_states
+    assert vocoder.slot_bindings.slot_for("slotless") is None
+
+
+@torch.inference_mode()
+def test_abort_deferred_terminal_releases_slot(vocoder: Ming3StreamingVocoder) -> None:
+    """Cancelling a deferred terminal cannot retain its decoder slot or emit audio."""
+    for chunk_id in range(9):
+        vocoder.handle_stream_chunk(
+            "cancelled",
+            StreamItem(chunk_id, torch.ones(1, 4), "tts_engine", {"stream": True}),
+        )
+    vocoder.handle_stream_done("cancelled")
+    assert vocoder.has_ready_work()
+    vocoder.abort("cancelled")
+    assert "cancelled" not in vocoder.stream_states
+    vocoder.run_ready_step()
+    assert vocoder.slot_bindings.slot_for("cancelled") is None
+    assert vocoder.outbox.empty()
 
 
 @torch.inference_mode()
@@ -358,6 +523,8 @@ def test_nonstream_keeps_graph_dispatch_and_stream_uses_cache(
             {"usage": {}, "finish_reason": "stop"},
         )
         scheduler.handle_stream_done("stream")
+        while scheduler.has_ready_work():
+            scheduler.run_ready_step()
         assert full_decode.call_count == 1
         assert "stream" not in scheduler.stream_states
 
