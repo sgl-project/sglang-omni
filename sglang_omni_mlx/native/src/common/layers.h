@@ -5,6 +5,7 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -68,7 +69,21 @@ mlx::core::array Scalar(float value, const mlx::core::array &like);
 
 // Activations in x's dtype.
 mlx::core::array Gelu(const mlx::core::array &x);
+// GELU's tanh approximation, mlx.nn.gelu_approx.
+mlx::core::array TanhGelu(const mlx::core::array &x);
 mlx::core::array Silu(const mlx::core::array &x);
+
+// A mixture of experts' outputs [tokens, experts_per_token, width] for hidden
+// [tokens, width] routed to indices [tokens, experts_per_token]. run_experts
+// applies each row's expert, gathering by row_experts: rows [tokens *
+// experts_per_token, 1, width] sorted by expert for more than one token, else
+// [tokens, 1, 1, width] under indices.
+using ExpertRunner = std::function<mlx::core::array(
+    const mlx::core::array &rows, const mlx::core::array &row_experts,
+    bool sorted)>;
+mlx::core::array RouteToExperts(const mlx::core::array &hidden,
+                                const mlx::core::array &indices,
+                                const ExpertRunner &run_experts);
 
 // Transformer-XL's relative shift of position scores [batch, heads, queries,
 // positions]: a left zero column, then rows reread one step along, so each

@@ -8,6 +8,7 @@
 
 #include "auk/auk_model.h"
 #include "common/audio.h"
+#include "common/reference_audio.h"
 
 namespace {
 
@@ -99,7 +100,7 @@ int main(int argc, char **argv) {
         }
         const std::string wav_bytes(std::istreambuf_iterator<char>{reference},
                                     {});
-        auto audio = omni_common::DecodeAudioWav(wav_bytes);
+        auto audio = omni_common::DecodeAnyWav(wav_bytes);
         synthesis.reference_audio = std::move(audio.samples);
         synthesis.reference_sample_rate = audio.sample_rate;
       } else {

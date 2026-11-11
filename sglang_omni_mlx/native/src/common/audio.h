@@ -22,12 +22,6 @@ inline constexpr float kLogMelDynamicRange = 8.0f;
 // std::invalid_argument for anything else.
 std::vector<float> DecodeWav(std::string_view wav_bytes,
                              int sample_rate = kSampleRate);
-struct DecodedAudio {
-  std::vector<float> samples;
-  int sample_rate;
-};
-// The same at whatever positive sample rate the file declares.
-DecodedAudio DecodeAudioWav(std::string_view wav_bytes);
 // Samples as 16-bit little-endian PCM, clipped to [-1, 1] and scaled by
 // 32767 as the CUDA server's encode_pcm does.
 std::string Pcm16Bytes(const std::vector<float> &samples);

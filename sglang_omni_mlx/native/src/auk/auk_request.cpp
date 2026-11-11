@@ -6,9 +6,8 @@
 #include <cstdint>
 #include <set>
 #include <stdexcept>
-#include <string_view>
 
-#include "common/audio.h"
+#include "common/reference_audio.h"
 #include "common/text.h"
 #include "qwen3_asr/speech_service.h"
 
@@ -128,19 +127,17 @@ SynthesisRequest ParseRequest(const Json &request, bool raw_instruction,
   SynthesisRequest synthesis{};
   const std::string reference = TextField(parameters, "ref_audio");
   if (!reference.empty()) {
-    constexpr std::string_view prefix = "data:audio/wav;base64,";
-    if (!reference.starts_with(prefix)) {
-      throw std::invalid_argument(
-          "ref_audio must be a data:audio/wav;base64 URI");
+    if (!reference.starts_with("data:")) {
+      throw std::invalid_argument("ref_audio must be a base64 audio data URL");
     } else {
     }
-    const auto bytes =
-        omni_common::DecodeBase64(reference.substr(prefix.size()));
+    const auto bytes = omni_common::DecodeBase64(
+        omni_common::AudioDataUrlPayload(reference, "ref_audio"));
     if (!bytes) {
       throw std::invalid_argument("ref_audio contains invalid base64");
     } else {
     }
-    auto audio = omni_common::DecodeAudioWav(
+    auto audio = omni_common::DecodeAnyWav(
         {reinterpret_cast<const char *>(bytes->data()), bytes->size()});
     // The conditioner needs three mel frames, 30 ms at 16 kHz.
     if (audio.samples.size() <
@@ -150,10 +147,6 @@ SynthesisRequest ParseRequest(const Json &request, bool raw_instruction,
             static_cast<size_t>(audio.sample_rate * max_seconds)) {
       throw std::invalid_argument(
           "ref_audio must contain at least 30 ms and fit --max-seconds");
-    } else if (!std::all_of(
-                   audio.samples.begin(), audio.samples.end(),
-                   [](float sample) { return std::isfinite(sample); })) {
-      throw std::invalid_argument("ref_audio samples must be finite");
     } else {
     }
     synthesis.reference_audio = std::move(audio.samples);

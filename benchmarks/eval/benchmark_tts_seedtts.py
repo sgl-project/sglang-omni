@@ -112,7 +112,7 @@ from benchmarks.metrics.performance import (
     compute_speed_metrics,
     print_speed_summary,
 )
-from benchmarks.runtime_metrics import ProcessTreeMemoryMonitor
+from benchmarks.runtime_metrics import ProcessTreeMemoryMonitor, ResourceMonitor
 from benchmarks.tasks.asr import (
     DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
     QWEN3_ASR_MODEL_PATH,
@@ -262,6 +262,7 @@ class TtsSeedttsBenchmarkConfig:
     asr_model_path: str = QWEN3_ASR_MODEL_PATH
     asr_concurrency: int = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
     environment_fingerprint: BenchmarkFingerprint | None = None
+    measure_gpu_memory: bool = False
 
 
 def resolve_max_new_tokens(config: TtsSeedttsBenchmarkConfig) -> int | None:
@@ -474,6 +475,7 @@ async def run_tts_seedtts_benchmark(
             arrival_seed=config.arrival_seed,
         )
     )
+    monitor = ResourceMonitor().start() if config.measure_gpu_memory else None
     memory_monitor = (
         ProcessTreeMemoryMonitor(config.server_process_id).start()
         if config.server_process_id is not None
@@ -486,6 +488,7 @@ async def run_tts_seedtts_benchmark(
         else:
             outputs = await runner.run(samples, send_fn)
     finally:
+        resources = monitor.stop() if monitor is not None else None
         if memory_monitor is not None:
             save_json_results(memory_monitor.stop(), config.output_dir, "memory.json")
         else:
@@ -493,6 +496,14 @@ async def run_tts_seedtts_benchmark(
     warn_if_tail_percentile_is_thin(len(outputs))
 
     metrics = compute_speed_metrics(outputs, wall_clock_s=runner.wall_clock_s)
+    metrics["wall_clock_s"] = runner.wall_clock_s
+    if resources is None:
+        pass
+    elif resources["available"]:
+        metrics["gpu_memory_peak_mib"] = resources["gpu_memory_used_mib"]["max"]
+    else:
+        metrics["gpu_memory_peak_mib"] = None
+        logger.warning(f"TTS GPU memory unavailable: {resources['error']}")
     results_config = _build_results_config(config, base_url=base_url)
     benchmark_results = build_speed_results(outputs, metrics, results_config)
     save_speed_results(outputs, metrics, results_config, config.output_dir)
@@ -578,6 +589,7 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         collect_stream_outcomes=args.collect_stream_outcomes,
         server_process_id=args.server_process_id,
         initial_codec_chunk_frames=args.initial_codec_chunk_frames,
+        measure_gpu_memory=args.measure_gpu_memory,
         disable_tqdm=args.disable_tqdm,
         max_running_requests=args.max_running_requests,
         max_queued_requests=args.max_queued_requests,
@@ -1061,6 +1073,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Legacy flag kept for backward compatibility. The unified "
         "benchmark always saves generated WAVs so the transcribe phase can "
         "reuse them; passing this flag is a no-op.",
+    )
+    parser.add_argument(
+        "--measure-gpu-memory",
+        action="store_true",
+        help="Sample memory used on the first visible local GPU during TTS generation.",
     )
     parser.add_argument("--disable-tqdm", action="store_true")
     parser.add_argument(
