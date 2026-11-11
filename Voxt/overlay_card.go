@@ -137,7 +137,7 @@ func (a *app) cardNow() cardView {
 	if !a.answer.open {
 		if a.writingAnswer() {
 			s := a.pillSession()
-			return cardView{kind: s.Kind, title: uitext.CardTitle(s.Kind, s.Title), text: s.Draft, busy: true, writing: true,
+			return cardView{kind: s.Kind, title: uitext.CardTitle(s.Kind, s.Title), text: a.shownDraft(s), busy: true, writing: true,
 				target: s.Target.Name, size: layout.CardSizes[a.prefs.Features.CardSize(string(s.Kind))]}
 		}
 		return cardView{size: layout.CardSizes[0]} // no card: the pill shows the session
@@ -187,7 +187,7 @@ func (a *app) cardNow() cardView {
 			v.bubbles = append(v.bubbles, b)
 		}
 		if s.State != session.Recording {
-			v.bubbles = append(v.bubbles, cardBubble{title: s.Title, text: s.Draft, live: true})
+			v.bubbles = append(v.bubbles, cardBubble{title: s.Title, text: a.shownDraft(s), live: true})
 		}
 	case card.problem != nil:
 		// The follow-up that failed: what was said; why, under the card.
@@ -332,6 +332,10 @@ func (a *app) blockHeight(b cardBlock) (float32, bool) {
 	return h, exact
 }
 
+// streamGrowStep is how much the card grows at a time while an answer
+// streams into it: four lines of its text.
+const streamGrowStep = 4 * 19 // layout.CardTextSize × 1.3, rounded up (guessText)
+
 // cardBodyHeight is the height of v's text in the card: all of it up to
 // cardBodyMax (then it scrolls), and whether it was measured.
 func (a *app) cardBodyHeight(v cardView) (int, bool) {
@@ -342,6 +346,11 @@ func (a *app) cardBodyHeight(v cardView) (int, bool) {
 		bh, ok := a.blockHeight(b)
 		h += b.gap + bh
 		exact = exact && ok
+	}
+	if v.writing || v.conversation && v.busy && !v.recording {
+		// An answer on its way: the card grows a few lines at a time,
+		// not with every line (#3836).
+		h = float32(math.Ceil(float64(h/streamGrowStep))) * streamGrowStep
 	}
 	return min(int(math.Ceil(float64(h))), bodyMax), exact
 }
