@@ -19,6 +19,7 @@ from sglang_omni.config.patch import (
 )
 from sglang_omni.config.path import ConfigPath, ConfigPathError
 from sglang_omni.config.sources import dump_user_config, patches_from_model_path_flag
+from sglang_omni.models.llada2_uni.config import LLaDA2UniOmniPipelineConfig
 from sglang_omni.models.minimax_music3.config import MiniMaxMusic3PipelineConfig
 from sglang_omni.preprocessing.resource_connector import (
     resolve_allowed_local_media_path,
@@ -359,7 +360,9 @@ def apply_stage_offload_cli_overrides(
     else:
         pass
 
-    if not isinstance(pipeline_config, MiniMaxMusic3PipelineConfig):
+    if not isinstance(
+        pipeline_config, (MiniMaxMusic3PipelineConfig, LLaDA2UniOmniPipelineConfig)
+    ):
         raise typer.BadParameter(
             "--stage-offload-components is not supported by this pipeline"
         )
@@ -479,7 +482,7 @@ def serve(
             "--stage-offload-components",
             "--stage_offload_components",
             help=(
-                "Comma-separated components to run request-serially, each "
+                "Comma-separated components to run serially on the GPU, each "
                 "offloading itself from the GPU before the next one runs."
             ),
         ),

@@ -39,6 +39,25 @@ generation settings. CUDA Graph execution is controlled separately.
 
 ## Image Generation and Editing
 
+### Optional CUDA stage offload
+
+The single-image `omni` pipeline supports an opt-in serial GPU residency mode:
+
+```bash
+sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --port 8000 \
+  --stage-offload-components thinker,decoder,vae
+```
+
+This mode colocates the image encoder, thinker, and image decoder in one process on one GPU. The image encoder and decoder components load onto CPU; the thinker loads alone on GPU, then releases its weights before serving begins. During requests, an exclusive residency lock covers each complete encoder, thinker CFG group, SigVQ, diffusion sampling, or VAE phase. Each phase releases its weights before another phase can restore them. Concurrent submissions queue for GPU access; no request owns the lock while its payload is in transit between stages. The normal resident path is unchanged when the flag is absent.
+
+The thinker uses `torch_memory_saver==0.0.10` with CPU weight backup to preserve tensor addresses. The launcher supplies its CUDA allocator preload library to the worker. The decoder uses whole-module CPU transfers and requires the `diffusers` backend. Both normal and turbo decoding are supported. CUDA graphs, `torch.compile`, and overlap scheduling are disabled for the offloaded thinker. Tensor parallelism, multiple process replicas, the `text` variant, and interleaved generation are outside this mode's scope.
+
+KV cache, runtime workspaces, and intermediate tensors remain on GPU. Host memory must accommodate the thinker weight backup and CPU decoder components; this mode does not make a thinker that cannot fit by itself load successfully. Transfers add latency, and logs report `restore_seconds` and `release_seconds` for each component. Cancellation waits for the active compute phase to retire before releasing its weights; it never moves weights from a concurrent abort callback. A failed residency transfer stops further compute in this mode and requires a worker restart.
+
+Validation with full checkpoints is pending. Before claiming a memory or latency improvement, compare resident and offloaded servers using the same checkpoint revision, GPU, seed, image size, CFG settings, and decoder steps. Include generation and editing, repeated normal/turbo requests, overlapping submissions, and cancellation followed by a fresh request. Record startup and active GPU peaks, host-memory peak, component transfer times, request latency, and output correctness.
+
+### Requests
+
 Use `POST /v1/images/generations` for T2I and `POST /v1/images/edits` for
 editing. These routes use SGLang Diffusion's image request and response
 schemas while executing Omni's Thinker and selected image decoder backend.
