@@ -120,8 +120,8 @@ std::vector<mx::array> GatedDeltaStepGraph(const std::vector<mx::array> &in) {
   mx::array state = mx::multiply(in[5], mx::expand_dims(gates, {-1, -2}));
   const mx::array memory =
       mx::sum(mx::multiply(state, mx::expand_dims(keys, -2)), -1);
-  const mx::array delta = mx::multiply(mx::subtract(values, memory),
-                                       mx::expand_dims(beta, -1));
+  const mx::array delta =
+      mx::multiply(mx::subtract(values, memory), mx::expand_dims(beta, -1));
   state = mx::add(state, mx::multiply(mx::expand_dims(keys, -2),
                                       mx::expand_dims(delta, -1)));
   const mx::array output =
@@ -163,21 +163,20 @@ GatedDelta(const mx::array &queries, const mx::array &keys,
   } else {
   }
   static const auto kernel = mx::fast::metal_kernel(
-      "zonos3_gated_delta_step",
-      {"q", "k", "v", "g", "beta", "state_in", "T"}, {"y", "state_out"},
-      kGatedDeltaSource);
-  const std::vector<mx::array> outputs = kernel(
-      {queries, keys, values, gates, beta, state, mx::array(rows)},
-      {{batch, rows, value_heads, value_size}, state.shape()},
-      {queries.dtype(), state.dtype()}, {32, value_size, batch * value_heads},
-      {32, 4, 1},
-      {{"InT", queries.dtype()},
-       {"StT", state.dtype()},
-       {"Dk", key_size},
-       {"Dv", value_size},
-       {"Hk", key_heads},
-       {"Hv", value_heads}},
-      std::nullopt, false, {});
+      "zonos3_gated_delta_step", {"q", "k", "v", "g", "beta", "state_in", "T"},
+      {"y", "state_out"}, kGatedDeltaSource);
+  const std::vector<mx::array> outputs =
+      kernel({queries, keys, values, gates, beta, state, mx::array(rows)},
+             {{batch, rows, value_heads, value_size}, state.shape()},
+             {queries.dtype(), state.dtype()},
+             {32, value_size, batch * value_heads}, {32, 4, 1},
+             {{"InT", queries.dtype()},
+              {"StT", state.dtype()},
+              {"Dk", key_size},
+              {"Dv", value_size},
+              {"Hk", key_heads},
+              {"Hv", value_heads}},
+             std::nullopt, false, {});
   return {outputs[0], outputs[1]};
 }
 
@@ -200,7 +199,8 @@ ModelConfig ParseConfig(const nlohmann::json &backbone) {
   config.delta_head_count = backbone.at("gdn_heads").get<int>();
   config.delta_head_dimension = backbone.at("gdn_head_dim").get<int>();
   config.delta_kernel_size = backbone.at("gdn_kernel").get<int>();
-  config.speaker_embedding_size = backbone.at("speaker_embedding_dim").get<int>();
+  config.speaker_embedding_size =
+      backbone.at("speaker_embedding_dim").get<int>();
   config.condition_bucket_counts =
       backbone.at("condition_bucket_counts").get<std::vector<int>>();
   config.condition_names =
@@ -213,7 +213,8 @@ ModelConfig ParseConfig(const nlohmann::json &backbone) {
   config.query_key_norm_epsilon = backbone.at("qk_eps").get<float>();
   config.logit_softcap = backbone.at("loss_softcap").get<float>();
   config.gated_delta_period = backbone.at("gdn_period").get<int>();
-  config.silence_frame = backbone.at("silence_frame").get<std::vector<int32_t>>();
+  config.silence_frame =
+      backbone.at("silence_frame").get<std::vector<int32_t>>();
   if (backbone.value("text_extra_tokens", 0) != 0 ||
       !backbone.value("span_end_id", nlohmann::json()).is_null()) {
     throw std::runtime_error(
@@ -237,7 +238,8 @@ ModelConfig ParseConfig(const nlohmann::json &backbone) {
 
 std::string Sha256(const std::vector<float> &samples) {
   std::string digest(CC_SHA256_DIGEST_LENGTH, '\0');
-  CC_SHA256(samples.data(), static_cast<CC_LONG>(samples.size() * sizeof(float)),
+  CC_SHA256(samples.data(),
+            static_cast<CC_LONG>(samples.size() * sizeof(float)),
             reinterpret_cast<unsigned char *>(digest.data()));
   return digest;
 }
@@ -252,18 +254,19 @@ std::vector<float> HostFloats(const mx::array &array) {
 // The reference's output limiter: gain, then a tanh knee from -1 dBFS.
 std::vector<float> OutputAudio(const mx::array &audio, float gain) {
   const double knee = std::pow(10.0, -1.0 / 20.0);
-  const mx::array scaled = mx::multiply(mx::astype(audio, mx::float32),
-                                        Scalar(gain));
+  const mx::array scaled =
+      mx::multiply(mx::astype(audio, mx::float32), Scalar(gain));
   const mx::array magnitude = mx::abs(scaled);
-  const mx::array limited = mx::add(
-      Scalar(static_cast<float>(knee)),
-      mx::multiply(Scalar(static_cast<float>(1.0 - knee)),
-                   mx::tanh(mx::divide(
-                       mx::subtract(magnitude, Scalar(static_cast<float>(knee))),
-                       Scalar(static_cast<float>(1.0 - knee))))));
-  return HostFloats(mx::where(
-      mx::greater(magnitude, Scalar(static_cast<float>(knee))),
-      mx::multiply(mx::sign(scaled), limited), scaled));
+  const mx::array limited =
+      mx::add(Scalar(static_cast<float>(knee)),
+              mx::multiply(
+                  Scalar(static_cast<float>(1.0 - knee)),
+                  mx::tanh(mx::divide(
+                      mx::subtract(magnitude, Scalar(static_cast<float>(knee))),
+                      Scalar(static_cast<float>(1.0 - knee))))));
+  return HostFloats(
+      mx::where(mx::greater(magnitude, Scalar(static_cast<float>(knee))),
+                mx::multiply(mx::sign(scaled), limited), scaled));
 }
 
 // The aligned frames [frames - start, codebooks] of delayed rows [rows,
@@ -282,10 +285,10 @@ mx::array AlignedCodes(const mx::array &rows, int codebook_count,
   const mx::array kept = Rows(rows, start, length + codebook_count - 1);
   std::vector<mx::array> columns;
   for (int codebook = 0; codebook < codebook_count; ++codebook) {
-    columns.push_back(mx::reshape(
-        mx::slice(kept, {codebook, codebook},
-                  {codebook + length - start, codebook + 1}),
-        {length - start}));
+    columns.push_back(
+        mx::reshape(mx::slice(kept, {codebook, codebook},
+                              {codebook + length - start, codebook + 1}),
+                    {length - start}));
   }
   return mx::stack(columns, -1);
 }
@@ -293,8 +296,8 @@ mx::array AlignedCodes(const mx::array &rows, int codebook_count,
 } // namespace
 
 Zonos3Model::Zonos3Model(const std::filesystem::path &model_directory)
-    : config_(ParseConfig(
-          omni_common::ReadJson(model_directory / "config.json").at("backbone"))),
+    : config_(ParseConfig(omni_common::ReadJson(model_directory / "config.json")
+                              .at("backbone"))),
       weights_(model_directory, "backbone.params."),
       text_(model_directory,
             omni_common::ReadJson(model_directory / "config.json")
@@ -329,8 +332,9 @@ Zonos3Model::Zonos3Model(const std::filesystem::path &model_directory)
   }
   for (int layer = 0; layer < c.layer_count; ++layer) {
     const std::string prefix = "blk." + std::to_string(layer) + ".";
-    require(weights_.HasMatrix(c.IsGatedDelta(layer) ? prefix + "gdn_in.weight"
-                                                     : prefix + "attn_q.weight"),
+    require(weights_.HasMatrix(c.IsGatedDelta(layer)
+                                   ? prefix + "gdn_in.weight"
+                                   : prefix + "attn_q.weight"),
             "layer " + std::to_string(layer) + " mixer");
     require(weights_.HasMatrix(prefix + "ffn_up.weight") ||
                 weights_.HasMatrix(prefix + "ffn_gate_exps.weight"),
@@ -407,8 +411,8 @@ Zonos3Model::ReferenceEmbedding(const std::vector<float> &samples) {
   }
   const std::vector<float> kept(
       samples.begin(),
-      samples.begin() + std::min<size_t>(samples.size(),
-                                         kMaxReferenceSeconds * kSampleRate));
+      samples.begin() +
+          std::min<size_t>(samples.size(), kMaxReferenceSeconds * kSampleRate));
   const std::string key = Sha256(kept);
   for (auto entry = reference_embeddings_.begin();
        entry != reference_embeddings_.end(); ++entry) {
@@ -492,7 +496,8 @@ Prompt Zonos3Model::BuildPrompt(const SynthesisRequest &request) const {
           : request.text;
   const std::vector<int> tokens = text_.Encode(text);
   const int offset = request.speaker_embedding.has_value() ? 1 : 0;
-  const int condition_count = static_cast<int>(c.condition_bucket_counts.size());
+  const int condition_count =
+      static_cast<int>(c.condition_bucket_counts.size());
   Prompt prompt;
   const std::vector<int32_t> pad_row = [&] {
     std::vector<int32_t> row(c.codebook_count + 1, c.audio_pad_id);
@@ -548,14 +553,15 @@ mx::array Zonos3Model::GlobalAttention(const mx::array &x, int layer,
   const int key_value_heads = c.key_value_head_count;
   const int head_size = c.head_dimension;
   const int low = state.position;
-  const mx::array gate = mx::sigmoid(weights_.Linear(x, prefix + "attn_gate.weight"));
+  const mx::array gate =
+      mx::sigmoid(weights_.Linear(x, prefix + "attn_gate.weight"));
   mx::array queries = mx::reshape(weights_.Linear(x, prefix + "attn_q.weight"),
                                   {rows, heads, head_size});
   mx::array keys = mx::reshape(weights_.Linear(x, prefix + "attn_k.weight"),
                                {rows, key_value_heads, head_size});
-  const mx::array values = mx::reshape(
-      weights_.Linear(x, prefix + "attn_v.weight"),
-      {rows, key_value_heads, head_size});
+  const mx::array values =
+      mx::reshape(weights_.Linear(x, prefix + "attn_v.weight"),
+                  {rows, key_value_heads, head_size});
   queries = mx::multiply(
       mx::fast::rms_norm(queries, std::nullopt, c.query_key_norm_epsilon),
       mx::expand_dims(weights_.Table(prefix + "attn_temp"), 1));
@@ -569,18 +575,18 @@ mx::array Zonos3Model::GlobalAttention(const mx::array &x, int layer,
   std::optional<mx::array> &cached_values = state.values[layer];
   const int need = low + rows;
   if (!cached_keys.has_value() || cached_keys->shape(1) < need) {
-    const int capacity =
-        (need + kKeyValueBlockRows - 1) / kKeyValueBlockRows * kKeyValueBlockRows;
-    const int grow = capacity - (cached_keys.has_value() ? cached_keys->shape(1) : 0);
+    const int capacity = (need + kKeyValueBlockRows - 1) / kKeyValueBlockRows *
+                         kKeyValueBlockRows;
+    const int grow =
+        capacity - (cached_keys.has_value() ? cached_keys->shape(1) : 0);
     const mx::array pad =
         mx::zeros({key_value_heads, grow, head_size}, mx::float32);
-    cached_keys = cached_keys.has_value()
-                      ? mx::concatenate({*cached_keys, pad}, 1)
-                      : pad;
-    cached_values = cached_values.has_value()
-                        ? mx::concatenate({*cached_values, pad}, 1)
-                        : mx::zeros({key_value_heads, grow, head_size},
-                                    mx::float32);
+    cached_keys =
+        cached_keys.has_value() ? mx::concatenate({*cached_keys, pad}, 1) : pad;
+    cached_values =
+        cached_values.has_value()
+            ? mx::concatenate({*cached_values, pad}, 1)
+            : mx::zeros({key_value_heads, grow, head_size}, mx::float32);
   } else {
   }
   cached_keys = mx::slice_update(*cached_keys, keys, {0, low, 0},
@@ -606,9 +612,9 @@ mx::array Zonos3Model::GlobalAttention(const mx::array &x, int layer,
         mx::expand_dims(queries, 0), mx::expand_dims(visible_keys, 0),
         mx::expand_dims(visible_values, 0), scale);
   }
-  const mx::array output = mx::multiply(
-      mx::transpose(mx::squeeze(attended, 0), {1, 0, 2}),
-      mx::expand_dims(gate, 2));
+  const mx::array output =
+      mx::multiply(mx::transpose(mx::squeeze(attended, 0), {1, 0, 2}),
+                   mx::expand_dims(gate, 2));
   return weights_.Linear(mx::reshape(output, {rows, heads * head_size}),
                          prefix + "attn_output.weight");
 }
@@ -641,7 +647,8 @@ mx::array Zonos3Model::GatedDeltaNet(const mx::array &x, int layer,
   };
   mx::array convolved = mx::multiply(Rows(sequence, 0, rows), tap(0));
   for (int j = 1; j < kernel; ++j) {
-    convolved = mx::add(convolved, mx::multiply(Rows(sequence, j, j + rows), tap(j)));
+    convolved =
+        mx::add(convolved, mx::multiply(Rows(sequence, j, j + rows), tap(j)));
   }
   convolved = Silu(convolved);
   history = mx::transpose(
@@ -651,9 +658,9 @@ mx::array Zonos3Model::GatedDeltaNet(const mx::array &x, int layer,
                        {rows, heads, head_size});
   };
   const auto l2_normalize = [&](const mx::array &v) {
-    return mx::multiply(
-        v, mx::rsqrt(mx::add(mx::sum(mx::multiply(v, v), -1, true),
-                             Scalar(kQueryKeyL2Epsilon))));
+    return mx::multiply(v,
+                        mx::rsqrt(mx::add(mx::sum(mx::multiply(v, v), -1, true),
+                                          Scalar(kQueryKeyL2Epsilon))));
   };
   const mx::array queries = l2_normalize(split(0));
   const mx::array keys = l2_normalize(split(1));
@@ -671,17 +678,16 @@ mx::array Zonos3Model::GatedDeltaNet(const mx::array &x, int layer,
           : mx::zeros({heads, head_size, head_size}, mx::float32);
   const auto [output, final_state] = GatedDelta(
       mx::expand_dims(
-          mx::multiply(queries, Scalar(static_cast<float>(
-                                    std::pow(static_cast<double>(head_size), -0.5)))),
+          mx::multiply(queries, Scalar(static_cast<float>(std::pow(
+                                    static_cast<double>(head_size), -0.5)))),
           0),
       mx::expand_dims(keys, 0), mx::expand_dims(values, 0),
       mx::expand_dims(decay, 0), mx::expand_dims(beta, 0),
       mx::expand_dims(initial, 0));
   recurrent = mx::squeeze(final_state, 0);
-  const mx::array normalized =
-      mx::fast::rms_norm(mx::squeeze(output, 0),
-                         weights_.Table(prefix + "gdn_norm.weight"),
-                         kGatedDeltaNormEpsilon);
+  const mx::array normalized = mx::fast::rms_norm(
+      mx::squeeze(output, 0), weights_.Table(prefix + "gdn_norm.weight"),
+      kGatedDeltaNormEpsilon);
   const mx::array gated = mx::reshape(
       mx::multiply(normalized,
                    Silu(mx::reshape(output_gate, {rows, heads, head_size}))),
@@ -704,14 +710,15 @@ mx::array Zonos3Model::FeedForward(const mx::array &x, int layer) const {
                          c.norm_epsilon),
       prefix + "router.weight");
   const int top = c.experts_per_row;
-  const mx::array choices = Columns(
-      mx::argpartition(
-          mx::subtract(weights_.Table(prefix + "router_bias"), logits), top - 1,
-          -1),
-      0, top);
-  const mx::array expert_weights =
-      mx::softmax(mx::take_along_axis(logits, choices, -1), std::vector<int>{-1});
-  const mx::array latent = weights_.Linear(x, prefix + "ffn_latent_down.weight");
+  const mx::array choices =
+      Columns(mx::argpartition(
+                  mx::subtract(weights_.Table(prefix + "router_bias"), logits),
+                  top - 1, -1),
+              0, top);
+  const mx::array expert_weights = mx::softmax(
+      mx::take_along_axis(logits, choices, -1), std::vector<int>{-1});
+  const mx::array latent =
+      weights_.Linear(x, prefix + "ffn_latent_down.weight");
   const mx::array rows = mx::expand_dims(latent, {1, 2});
   const mx::array gate =
       weights_.GatherLinear(rows, prefix + "ffn_gate_exps.weight", choices);
@@ -719,9 +726,9 @@ mx::array Zonos3Model::FeedForward(const mx::array &x, int layer) const {
       weights_.GatherLinear(rows, prefix + "ffn_up_exps.weight", choices);
   const mx::array down = weights_.GatherLinear(
       mx::multiply(Silu(gate), up), prefix + "ffn_down_exps.weight", choices);
-  const mx::array combined =
-      mx::sum(mx::multiply(mx::squeeze(down, 2), mx::expand_dims(expert_weights, 2)),
-              1);
+  const mx::array combined = mx::sum(
+      mx::multiply(mx::squeeze(down, 2), mx::expand_dims(expert_weights, 2)),
+      1);
   return weights_.Linear(combined, prefix + "ffn_latent_up.weight");
 }
 
@@ -754,9 +761,10 @@ mx::array Zonos3Model::Forward(
   };
   mx::array x = mx::take(weights_.Table("audio_embd.0.weight"), column(0), 0);
   for (int codebook = 1; codebook < c.codebook_count; ++codebook) {
-    x = mx::add(x, mx::take(weights_.Table("audio_embd." +
-                                           std::to_string(codebook) + ".weight"),
-                            column(codebook), 0));
+    x = mx::add(x,
+                mx::take(weights_.Table("audio_embd." +
+                                        std::to_string(codebook) + ".weight"),
+                         column(codebook), 0));
   }
   x = mx::add(x, mx::take(weights_.Table("text_embd.weight"),
                           column(c.codebook_count), 0));
@@ -766,11 +774,11 @@ mx::array Zonos3Model::Forward(
   };
   if (speaker_row.has_value() && low <= speaker_row->first &&
       speaker_row->first < low + count) {
-    const mx::array embedding = mx::array(
-        speaker_row->second.data(),
-        {1, static_cast<int>(speaker_row->second.size())});
-    const mx::array projected = mx::squeeze(
-        weights_.Linear(embedding, "speaker_proj.weight"), 0);
+    const mx::array embedding =
+        mx::array(speaker_row->second.data(),
+                  {1, static_cast<int>(speaker_row->second.size())});
+    const mx::array projected =
+        mx::squeeze(weights_.Linear(embedding, "speaker_proj.weight"), 0);
     replace_row(speaker_row->first,
                 mx::add(projected, weights_.Table("speaker_proj.bias")));
   } else {
@@ -809,7 +817,8 @@ mx::array Zonos3Model::Forward(
     }
     const mx::array weights =
         mx::softmax(mx::stack(query_scores), std::vector<int>{0});
-    return mx::sum(mx::multiply(mx::stack(bank), mx::expand_dims(weights, 2)), 0);
+    return mx::sum(mx::multiply(mx::stack(bank), mx::expand_dims(weights, 2)),
+                   0);
   };
   mx::array mixed = route(x, 0);
   for (int layer = 0; layer < c.layer_count; ++layer) {
@@ -820,14 +829,14 @@ mx::array Zonos3Model::Forward(
     }
     const mx::array attention_input = mx::fast::rms_norm(
         mixed, weights_.Table(prefix + "attn_norm.weight"), c.norm_epsilon);
-    const mx::array attention = c.IsGatedDelta(layer)
-                                    ? GatedDeltaNet(attention_input, layer, state)
-                                    : GlobalAttention(attention_input, layer, state);
+    const mx::array attention =
+        c.IsGatedDelta(layer) ? GatedDeltaNet(attention_input, layer, state)
+                              : GlobalAttention(attention_input, layer, state);
     mixed = route(attention, 2 * layer + 1);
-    x = FeedForward(mx::fast::rms_norm(mixed,
-                                       weights_.Table(prefix + "ffn_norm.weight"),
-                                       c.norm_epsilon),
-                    layer);
+    x = FeedForward(
+        mx::fast::rms_norm(mixed, weights_.Table(prefix + "ffn_norm.weight"),
+                           c.norm_epsilon),
+        layer);
   }
   mixed = route(x, 2 * c.layer_count);
   const mx::array normalized = mx::fast::rms_norm(
@@ -853,24 +862,23 @@ mx::array Zonos3Model::SampleRow(const mx::array &logits, int step,
       mx::logical_and(mx::greater_equal(ids, mx::array(c.codebook_size)),
                       mx::not_equal(ids, mx::array(c.end_of_audio_id))));
   invalid = mx::logical_or(
-      invalid,
-      mx::logical_and(
-          mx::equal(ids, mx::array(c.end_of_audio_id)),
-          mx::less(mx::array(step),
-                   mx::add(mx::array(sampling.min_frames), codebooks))));
+      invalid, mx::logical_and(mx::equal(ids, mx::array(c.end_of_audio_id)),
+                               mx::less(mx::array(step),
+                                        mx::add(mx::array(sampling.min_frames),
+                                                codebooks))));
   const float negative_infinity = -std::numeric_limits<float>::infinity();
   mx::array x = mx::where(invalid, Scalar(negative_infinity),
                           mx::astype(logits, mx::float32));
-  const int window = std::min(std::max(sampling.repetition_window, 0),
-                              history.shape(0));
+  const int window =
+      std::min(std::max(sampling.repetition_window, 0), history.shape(0));
   if (window > 0 && sampling.repetition_penalty > 1 &&
       sampling.repetition_codebooks != 0) {
-    const mx::array recent = mx::transpose(Columns(
-        Rows(history, history.shape(0) - window, history.shape(0)), 0,
-        c.codebook_count));
-    mx::array valid = mx::logical_and(
-        mx::greater_equal(recent, mx::array(0)),
-        mx::less(recent, mx::array(c.codebook_size)));
+    const mx::array recent = mx::transpose(
+        Columns(Rows(history, history.shape(0) - window, history.shape(0)), 0,
+                c.codebook_count));
+    mx::array valid =
+        mx::logical_and(mx::greater_equal(recent, mx::array(0)),
+                        mx::less(recent, mx::array(c.codebook_size)));
     if (sampling.repetition_codebooks >= 0) {
       valid = mx::logical_and(
           valid, mx::less(codebooks, mx::array(sampling.repetition_codebooks)));
@@ -886,8 +894,8 @@ mx::array Zonos3Model::SampleRow(const mx::array &logits, int step,
     const mx::array penalty =
         Scalar(static_cast<float>(sampling.repetition_penalty));
     x = mx::where(repeated,
-                  mx::where(mx::greater(x, Scalar(0.0f)), mx::divide(x, penalty),
-                            mx::multiply(x, penalty)),
+                  mx::where(mx::greater(x, Scalar(0.0f)),
+                            mx::divide(x, penalty), mx::multiply(x, penalty)),
                   x);
   } else {
   }
@@ -906,12 +914,12 @@ mx::array Zonos3Model::SampleRow(const mx::array &logits, int step,
     if (0 < sampling.top_p && sampling.top_p < 1) {
       const mx::array order = mx::argsort(mx::negative(probabilities), -1);
       mx::array ranked = mx::take_along_axis(probabilities, order, -1);
-      ranked = mx::where(
-          mx::greater(mx::subtract(mx::cumsum(ranked, -1), ranked),
-                      Scalar(static_cast<float>(sampling.top_p))),
-          Scalar(0.0f), ranked);
-      probabilities = mx::put_along_axis(mx::zeros_like(probabilities), order,
-                                         ranked, -1);
+      ranked =
+          mx::where(mx::greater(mx::subtract(mx::cumsum(ranked, -1), ranked),
+                                Scalar(static_cast<float>(sampling.top_p))),
+                    Scalar(0.0f), ranked);
+      probabilities =
+          mx::put_along_axis(mx::zeros_like(probabilities), order, ranked, -1);
       probabilities = mx::divide(
           probabilities,
           mx::maximum(mx::sum(probabilities, -1, true), Scalar(1e-8f)));
@@ -936,8 +944,9 @@ mx::array Zonos3Model::SampleRow(const mx::array &logits, int step,
     token = mx::random::categorical(mx::log(probabilities), -1, key);
   }
   if (!has_audio_prefix) {
-    token = mx::where(mx::greater(mx::arange(c.codebook_count), mx::array(step)),
-                      mx::array(c.audio_pad_id), token);
+    token =
+        mx::where(mx::greater(mx::arange(c.codebook_count), mx::array(step)),
+                  mx::array(c.audio_pad_id), token);
   } else {
   }
   return mx::astype(token, mx::int32);
@@ -953,10 +962,11 @@ SynthesisResult Zonos3Model::Synthesize(
   for (const auto &row : prompt.rows) {
     flat.insert(flat.end(), row.begin(), row.end());
   }
-  const mx::array rows = mx::array(
-      flat.data(), {static_cast<int>(prompt.rows.size()), c.codebook_count + 1});
-  const int budget =
-      std::min(request.max_rows, c.max_rows - static_cast<int>(prompt.rows.size()));
+  const mx::array rows =
+      mx::array(flat.data(),
+                {static_cast<int>(prompt.rows.size()), c.codebook_count + 1});
+  const int budget = std::min(
+      request.max_rows, c.max_rows - static_cast<int>(prompt.rows.size()));
   const bool guided = request.speaker_guidance_scale != 1.0;
   if (guided && !request.speaker_embedding.has_value()) {
     throw std::invalid_argument(
@@ -969,8 +979,9 @@ SynthesisResult Zonos3Model::Synthesize(
   } else {
   }
   BackboneState state;
-  mx::array logits = Rows(Forward(rows, state, speaker_row, prompt.condition_rows),
-                          rows.shape(0) - 1, rows.shape(0));
+  mx::array logits =
+      Rows(Forward(rows, state, speaker_row, prompt.condition_rows),
+           rows.shape(0) - 1, rows.shape(0));
   logits = mx::squeeze(logits, 0);
   BackboneState twin_state;
   std::optional<mx::array> twin_logits;
@@ -991,7 +1002,8 @@ SynthesisResult Zonos3Model::Synthesize(
   std::vector<mx::array> evaluated = {logits};
   const auto state_arrays = [](const BackboneState &s,
                                std::vector<mx::array> &out) {
-    for (const auto *arrays : {&s.keys, &s.values, &s.recurrent, &s.convolution}) {
+    for (const auto *arrays :
+         {&s.keys, &s.values, &s.recurrent, &s.convolution}) {
       for (const auto &array : *arrays) {
         if (array.has_value()) {
           out.push_back(*array);
@@ -1004,7 +1016,8 @@ SynthesisResult Zonos3Model::Synthesize(
   mx::eval(evaluated);
 
   const int silence_rows = prompt.silence_row_count;
-  mx::array history = mx::zeros({silence_rows + budget, c.codebook_count}, mx::int32);
+  mx::array history =
+      mx::zeros({silence_rows + budget, c.codebook_count}, mx::int32);
   if (silence_rows > 0) {
     history = mx::slice_update(
         history,
@@ -1021,9 +1034,9 @@ SynthesisResult Zonos3Model::Synthesize(
   }
   // Python's round(): halves go to the even neighbor, as nearbyint does in
   // the default rounding mode.
-  const int interval = std::max(
-      1, static_cast<int>(std::nearbyint(request.streaming_interval_seconds *
-                                         kFramesPerSecond)));
+  const int interval =
+      std::max(1, static_cast<int>(std::nearbyint(
+                      request.streaming_interval_seconds * kFramesPerSecond)));
   std::optional<int> end_of_audio_frame;
   int decoded = 0;
   int step = -1;
@@ -1046,9 +1059,9 @@ SynthesisResult Zonos3Model::Synthesize(
                                       request.sampling, silence_rows > 0);
     history = mx::slice_update(history, mx::expand_dims(token, 0), {t, 0},
                                {t + 1, c.codebook_count});
-    const mx::array last_stop = mx::max(
-        mx::where(mx::equal(token, mx::array(c.end_of_audio_id)),
-                  mx::arange(c.codebook_count), mx::array(-1)));
+    const mx::array last_stop =
+        mx::max(mx::where(mx::equal(token, mx::array(c.end_of_audio_id)),
+                          mx::arange(c.codebook_count), mx::array(-1)));
     std::vector<mx::array> step_arrays = {history, last_stop, token};
     state_arrays(state, step_arrays);
     mx::eval(step_arrays);
@@ -1067,15 +1080,14 @@ SynthesisResult Zonos3Model::Synthesize(
     } else {
     }
     if (codec_stream.has_value() && ready - decoded >= interval) {
-      const mx::array codes = AlignedCodes(Rows(history, 0, t + 1),
-                                           c.codebook_count, end_of_audio_frame,
-                                           decoded);
+      const mx::array codes =
+          AlignedCodes(Rows(history, 0, t + 1), c.codebook_count,
+                       end_of_audio_frame, decoded);
       const std::vector<float> audio = codec_stream->Decode(codes);
       decoded = ready;
       if (!audio.empty()) {
-        on_audio(OutputAudio(mx::array(audio.data(),
-                                       {static_cast<int>(audio.size())}),
-                             gain));
+        on_audio(OutputAudio(
+            mx::array(audio.data(), {static_cast<int>(audio.size())}), gain));
       } else {
       }
     } else {
@@ -1100,8 +1112,9 @@ SynthesisResult Zonos3Model::Synthesize(
   }
   const int generated = std::min(step + 1, budget);
   result.generated_row_count = generated;
-  const mx::array codes = AlignedCodes(Rows(history, 0, silence_rows + generated),
-                                       c.codebook_count, end_of_audio_frame, 0);
+  const mx::array codes =
+      AlignedCodes(Rows(history, 0, silence_rows + generated), c.codebook_count,
+                   end_of_audio_frame, 0);
   result.frame_count = codes.shape(0);
   if (codec_stream.has_value()) {
     std::vector<float> tail;
@@ -1111,8 +1124,8 @@ SynthesisResult Zonos3Model::Synthesize(
     }
     const std::vector<float> flushed = codec_stream->Flush();
     tail.insert(tail.end(), flushed.begin(), flushed.end());
-    on_audio(OutputAudio(mx::array(tail.data(), {static_cast<int>(tail.size())}),
-                         gain));
+    on_audio(OutputAudio(
+        mx::array(tail.data(), {static_cast<int>(tail.size())}), gain));
   } else {
     on_audio(OutputAudio(codec_.Decode(codes), gain));
   }

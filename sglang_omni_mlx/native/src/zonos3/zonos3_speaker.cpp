@@ -163,13 +163,12 @@ SpeakerEncoder::SpeakerEncoder(const std::filesystem::path &encoder_directory)
       for (int residual = 0; residual < MectB2()[stage][block].residual_count;
            ++residual) {
         for (const char *convolution : {"conv1", "conv2"}) {
-          const std::string prefix = "fe.b" + std::to_string(stage + 1) + "." +
-                                     std::to_string(block) + ".cnn." +
-                                     std::to_string(residual) + "." +
-                                     convolution;
+          const std::string prefix =
+              "fe.b" + std::to_string(stage + 1) + "." + std::to_string(block) +
+              ".cnn." + std::to_string(residual) + "." + convolution;
           std::vector<mx::array> slots;
-          while (weights_.HasTable(prefix + ".w" +
-                                   std::to_string(slots.size()))) {
+          while (
+              weights_.HasTable(prefix + ".w" + std::to_string(slots.size()))) {
             slots.push_back(
                 weights_.Table(prefix + ".w" + std::to_string(slots.size())));
           }
@@ -177,8 +176,8 @@ SpeakerEncoder::SpeakerEncoder(const std::filesystem::path &encoder_directory)
             throw std::runtime_error("speaker encoder is missing " + prefix);
           } else {
           }
-          grouped_.emplace(prefix, mx::transpose(mx::concatenate(slots, 1),
-                                                 {0, 2, 3, 1}));
+          grouped_.emplace(
+              prefix, mx::transpose(mx::concatenate(slots, 1), {0, 2, 3, 1}));
         }
       }
     }
@@ -192,8 +191,7 @@ SpeakerEncoder::SpeakerEncoder(const std::filesystem::path &encoder_directory)
 
 std::vector<float> SpeakerEncoder::Fbank(const std::vector<float> &samples,
                                          int &frame_count) const {
-  const long long length =
-      std::min<long long>(samples.size(), kMaxSamples16k);
+  const long long length = std::min<long long>(samples.size(), kMaxSamples16k);
   if (length < frame_length_) {
     throw std::invalid_argument("speaker audio is shorter than 25 ms");
   } else {
@@ -204,10 +202,11 @@ std::vector<float> SpeakerEncoder::Fbank(const std::vector<float> &samples,
   std::vector<double> frame(frame_length_);
   for (int t = 0; t < frame_count; ++t) {
     for (int i = 0; i < frame_length_; ++i) {
-      frame[i] = static_cast<double>(samples[t * frame_shift_ + i]) *
-                 waveform_scale_;
+      frame[i] =
+          static_cast<double>(samples[t * frame_shift_ + i]) * waveform_scale_;
     }
-    const double mean = PairwiseSum(frame.data(), frame_length_) / frame_length_;
+    const double mean =
+        PairwiseSum(frame.data(), frame_length_) / frame_length_;
     for (double &value : frame) {
       value -= mean;
     }
@@ -246,14 +245,16 @@ mx::array SpeakerEncoder::Pointwise(const mx::array &x,
                                     bool has_bias) const {
   const mx::array &weight = weights_.Table(prefix + ".weight");
   const mx::array y = mx::matmul(
-      x, mx::transpose(mx::reshape(weight, {weight.shape(0), weight.shape(1)})));
+      x,
+      mx::transpose(mx::reshape(weight, {weight.shape(0), weight.shape(1)})));
   return has_bias ? mx::add(y, weights_.Table(prefix + ".bias")) : y;
 }
 
 mx::array SpeakerEncoder::Linear(const mx::array &x,
                                  const std::string &prefix) const {
-  return mx::add(mx::matmul(x, mx::transpose(weights_.Table(prefix + ".weight"))),
-                 weights_.Table(prefix + ".bias"));
+  return mx::add(
+      mx::matmul(x, mx::transpose(weights_.Table(prefix + ".weight"))),
+      weights_.Table(prefix + ".bias"));
 }
 
 mx::array SpeakerEncoder::LayerNorm(const mx::array &x,
@@ -283,11 +284,10 @@ mx::array SpeakerEncoder::ResidualBlock(const mx::array &x,
                   Scalar(0.0f));
   mx::array shortcut = x;
   if (weights_.HasTable(prefix + "sc.weight")) {
-    const mx::array strided =
-        mx::slice(x, {0, 0, 0, 0}, x.shape(),
-                  {1, frequency_stride, time_stride, 1});
-    shortcut = BatchNorm(Pointwise(strided, prefix + "sc", false),
-                         prefix + "sc.bn");
+    const mx::array strided = mx::slice(x, {0, 0, 0, 0}, x.shape(),
+                                        {1, frequency_stride, time_stride, 1});
+    shortcut =
+        BatchNorm(Pointwise(strided, prefix + "sc", false), prefix + "sc.bn");
   } else {
   }
   return mx::add(t, shortcut);
@@ -303,9 +303,10 @@ mx::array SpeakerEncoder::Attention(const mx::array &hidden,
                       {1, 0, 2}),
         0);
   };
-  const mx::array queries = heads(mx::multiply(
-      Linear(hidden, prefix + "attn.q"),
-      Scalar(static_cast<float>(1.0 / std::sqrt(static_cast<double>(head_size))))));
+  const mx::array queries = heads(
+      mx::multiply(Linear(hidden, prefix + "attn.q"),
+                   Scalar(static_cast<float>(
+                       1.0 / std::sqrt(static_cast<double>(head_size))))));
   const mx::array keys = heads(Linear(hidden, prefix + "attn.k"));
   const mx::array values = heads(Linear(hidden, prefix + "attn.v"));
   const mx::array attended = mx::reshape(
@@ -324,8 +325,8 @@ mx::array SpeakerEncoder::Experts(const mx::array &hidden,
                  mx::transpose(weights_.Table(prefix + "moe.gate.weight"))),
       std::vector<int>{-1});
   const mx::array experts = mx::reshape(
-      NewGelu(mx::matmul(
-          hidden, mx::transpose(weights_.Table(prefix + "moe.experts.weight")))),
+      NewGelu(mx::matmul(hidden, mx::transpose(weights_.Table(
+                                     prefix + "moe.experts.weight")))),
       {hidden.shape(0), -1, kHiddenSize});
   const mx::array mixed =
       mx::sum(mx::multiply(experts, mx::expand_dims(routes, -1)), 1);
@@ -337,21 +338,23 @@ mx::array SpeakerEncoder::PositionConvolution(const mx::array &hidden,
   const int pad = position_kernel_ / 2;
   const mx::array &weight = weights_.Table(prefix + "pos.dw.weight");
   const mx::array padded = mx::concatenate(
-      {mx::zeros({pad, kHiddenSize}), hidden, mx::zeros({pad, kHiddenSize})}, 0);
-  mx::array accumulated = mx::squeeze(
-      mx::conv1d(mx::expand_dims(padded, 0), mx::expand_dims(weight, -1), 1, 0,
-                 1, kHiddenSize),
+      {mx::zeros({pad, kHiddenSize}), hidden, mx::zeros({pad, kHiddenSize})},
       0);
+  mx::array accumulated =
+      mx::squeeze(mx::conv1d(mx::expand_dims(padded, 0),
+                             mx::expand_dims(weight, -1), 1, 0, 1, kHiddenSize),
+                  0);
   accumulated = mx::add(accumulated, weights_.Table(prefix + "pos.dw.bias"));
-  accumulated =
-      mx::add(mx::multiply(accumulated, weights_.Table(prefix + "pos.bn.scale")),
-              weights_.Table(prefix + "pos.bn.shift"));
+  accumulated = mx::add(
+      mx::multiply(accumulated, weights_.Table(prefix + "pos.bn.scale")),
+      weights_.Table(prefix + "pos.bn.shift"));
   return Linear(ErfGelu(accumulated), prefix + "pos.pw");
 }
 
 std::pair<mx::array, mx::array>
 SpeakerEncoder::Block(const mx::array &x, const mx::array &flat,
-                      const BlockShape &shape, const std::string &prefix) const {
+                      const BlockShape &shape,
+                      const std::string &prefix) const {
   const int frames = x.shape(2);
   mx::array y = x;
   for (int residual = 0; residual < shape.residual_count; ++residual) {
@@ -366,7 +369,8 @@ SpeakerEncoder::Block(const mx::array &x, const mx::array &flat,
   const int frequencies = y.shape(1);
   const int channels = y.shape(3);
   const mx::array reduced = Flatten(y);
-  mx::array h = LayerNorm(Linear(reduced, prefix + "rproj"), prefix + "rproj.ln");
+  mx::array h =
+      LayerNorm(Linear(reduced, prefix + "rproj"), prefix + "rproj.ln");
   h = mx::add(h, PositionConvolution(h, prefix));
   h = LayerNorm(mx::add(h, Attention(h, prefix)), prefix + "ln1");
   h = LayerNorm(mx::add(h, Experts(h, prefix)), prefix + "ln2");
@@ -380,7 +384,8 @@ SpeakerEncoder::Block(const mx::array &x, const mx::array &flat,
   return {Unflatten(output, frequencies, channels), output};
 }
 
-std::vector<float> SpeakerEncoder::Embed(const std::vector<float> &samples) const {
+std::vector<float>
+SpeakerEncoder::Embed(const std::vector<float> &samples) const {
   if (samples.empty()) {
     throw std::invalid_argument("reference audio must not be empty");
   } else {
@@ -397,14 +402,14 @@ std::vector<float> SpeakerEncoder::Embed(const std::vector<float> &samples) cons
   const mx::array padded =
       mx::pad(input, {{kResampleWidth, static_cast<int>(pad_right)}},
               mx::array(0.0), "constant", cpu);
-  const mx::array windows =
-      mx::as_strided(padded, {static_cast<int>(blocks), taps},
-                     {kInputRate, 1}, 0, cpu);
+  const mx::array windows = mx::as_strided(
+      padded, {static_cast<int>(blocks), taps}, {kInputRate, 1}, 0, cpu);
   mx::array resampled = mx::astype(
-      mx::slice(mx::reshape(mx::matmul(windows, mx::transpose(resample_kernel_, cpu),
-                                       cpu),
-                            {-1}, cpu),
-                {0}, {static_cast<int>(total)}, cpu),
+      mx::slice(
+          mx::reshape(
+              mx::matmul(windows, mx::transpose(resample_kernel_, cpu), cpu),
+              {-1}, cpu),
+          {0}, {static_cast<int>(total)}, cpu),
       mx::float32, cpu);
   mx::eval(resampled);
   const float *resampled_data = resampled.data<float>();
@@ -445,11 +450,11 @@ std::vector<float> SpeakerEncoder::Embed(const std::vector<float> &samples) cons
   for (size_t stage = 0; stage < MectB2().size(); ++stage) {
     for (size_t block = 0; block < MectB2()[stage].size(); ++block) {
       const StageBlock &shape = MectB2()[stage][block];
-      auto [next, next_flat] =
-          Block(x, flat,
-                {shape.residual_count, shape.frequency_stride, shape.time_stride},
-                "fe.b" + std::to_string(stage + 1) + "." +
-                    std::to_string(block) + ".");
+      auto [next, next_flat] = Block(
+          x, flat,
+          {shape.residual_count, shape.frequency_stride, shape.time_stride},
+          "fe.b" + std::to_string(stage + 1) + "." + std::to_string(block) +
+              ".");
       x = next;
       flat = next_flat;
       mx::eval(x, flat);
@@ -476,10 +481,10 @@ std::vector<float> SpeakerEncoder::Embed(const std::vector<float> &samples) cons
   const mx::array deviation =
       mx::sqrt(mx::maximum(variance, Scalar(variance_floor_)));
   const mx::array pooled = mx::concatenate({mean, deviation}, 0);
-  mx::array embedding = mx::matmul(
-      mx::add(mx::multiply(pooled, weights_.Table("bn.scale")),
-              weights_.Table("bn.shift")),
-      mx::transpose(weights_.Table("linear.weight")));
+  mx::array embedding =
+      mx::matmul(mx::add(mx::multiply(pooled, weights_.Table("bn.scale")),
+                         weights_.Table("bn.shift")),
+                 mx::transpose(weights_.Table("linear.weight")));
   embedding = mx::astype(embedding, mx::float32);
   mx::eval(embedding);
   const float *data = embedding.data<float>();

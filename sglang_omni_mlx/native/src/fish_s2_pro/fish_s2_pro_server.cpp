@@ -188,9 +188,8 @@ ParsedReference ParseReference(const Json &item, int index,
   for (const char *name : {"data", "audio", "ref_audio"}) {
     const Json audio = FieldOr(item, name, Json());
     if (audio.is_string()) {
-      reference.wav =
-          DecodeReferenceAudio(audio.get<std::string>(), field + "." + name,
-                               fish_dac::kSampleRate);
+      reference.wav = DecodeReferenceAudio(
+          audio.get<std::string>(), field + "." + name, fish_dac::kSampleRate);
       return reference;
     } else if (!audio.is_null()) {
       throw std::invalid_argument(field + "." + name + " must be a string");

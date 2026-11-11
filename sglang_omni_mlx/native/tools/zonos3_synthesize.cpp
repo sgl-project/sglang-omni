@@ -180,9 +180,9 @@ int Run(int argc, char **argv) {
       request.speaker_embedding = model.VoiceEmbedding(voice);
     } else {
     }
-    request.condition_buckets = speed == 1.0
-                                    ? model.ConditionIds(std::nullopt, std::nullopt)
-                                    : model.SpeedConditionIds(speed);
+    request.condition_buckets =
+        speed == 1.0 ? model.ConditionIds(std::nullopt, std::nullopt)
+                     : model.SpeedConditionIds(speed);
   } catch (const std::invalid_argument &error) {
     throw UsageError(error.what());
   }
@@ -232,18 +232,16 @@ int Run(int argc, char **argv) {
       std::vector<int32_t> codes(codebooks);
       for (int codebook = 0; codebook < codebooks; ++codebook) {
         const int row = frame + codebook - prompt.silence_row_count;
-        codes[codebook] =
-            row >= 0 ? rows.at(row).at(codebook).get<int32_t>()
-                     : model.config().silence_frame[codebook];
+        codes[codebook] = row >= 0 ? rows.at(row).at(codebook).get<int32_t>()
+                                   : model.config().silence_frame[codebook];
       }
       frames.push_back(codes);
     }
-    WriteFile(codes_output_path,
-              nlohmann::json{{"prompt_ids", prompt_ids},
-                             {"rows", rows},
-                             {"frames", frames},
-                             {"samples", samples.size()}}
-                  .dump());
+    WriteFile(codes_output_path, nlohmann::json{{"prompt_ids", prompt_ids},
+                                                {"rows", rows},
+                                                {"frames", frames},
+                                                {"samples", samples.size()}}
+                                     .dump());
   } else {
   }
   const nlohmann::json line = {

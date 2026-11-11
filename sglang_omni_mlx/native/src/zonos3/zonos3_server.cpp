@@ -345,16 +345,18 @@ private:
     zonos3::SynthesisRequest probe = *request;
     if (voice->bundled.has_value() || voice->audio.has_value() ||
         voice->embedding.has_value()) {
-      probe.speaker_embedding = std::vector<float>(
-          model_.config().speaker_embedding_size, 0.0f);
+      probe.speaker_embedding =
+          std::vector<float>(model_.config().speaker_embedding_size, 0.0f);
     } else {
     }
     model_.BuildPrompt(probe);
 
-    job.synthesize = [this, voice, request = std::shared_ptr<const zonos3::SynthesisRequest>(request)](
-                         const speech_service::SpeechContext &context) {
-      return Synthesize(*request, *voice, context);
-    };
+    job.synthesize =
+        [this, voice,
+         request = std::shared_ptr<const zonos3::SynthesisRequest>(request)](
+            const speech_service::SpeechContext &context) {
+          return Synthesize(*request, *voice, context);
+        };
     return job;
   }
 

@@ -52,10 +52,9 @@ private:
 
   // x [rows, channels] through a causal ConvNeXt block; history holds the
   // kernel - 1 rows before x, zeros when unset.
-  mlx::core::array ConvNextBlock(const mlx::core::array &x,
-                                 const std::string &prefix,
-                                 const std::optional<mlx::core::array> &history)
-      const;
+  mlx::core::array
+  ConvNextBlock(const mlx::core::array &x, const std::string &prefix,
+                const std::optional<mlx::core::array> &history) const;
   // The latent [frames, latent] of codes [frames, codebooks] before the
   // transformer stages; histories, when given, carry the semantic head's
   // ConvNeXt inputs across calls.
@@ -116,8 +115,8 @@ private:
   std::vector<std::optional<mlx::core::array>> head_histories_;
   // Per stage and layer, the keys and values [heads, positions, head dim] of
   // the last context - 1 positions.
-  std::vector<std::vector<std::optional<std::pair<mlx::core::array,
-                                                  mlx::core::array>>>>
+  std::vector<
+      std::vector<std::optional<std::pair<mlx::core::array, mlx::core::array>>>>
       caches_;
   IstftHeadStream head_;
   ResamplerStream resampler_;

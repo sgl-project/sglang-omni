@@ -46,9 +46,9 @@ constexpr std::array<uint32_t, 68> kDecimalZeros = {
     0x16ac0, 0x16b50, 0x1d7ce, 0x1d7d8, 0x1d7e2, 0x1d7ec, 0x1d7f6, 0x1e140,
     0x1e2f0, 0x1e4f0, 0x1e950, 0x1fbf0};
 
-constexpr std::array<const char *, 10> kOnes = {
-    "zero", "one", "two", "three", "four",
-    "five", "six", "seven", "eight", "nine"};
+constexpr std::array<const char *, 10> kOnes = {"zero",  "one",  "two", "three",
+                                                "four",  "five", "six", "seven",
+                                                "eight", "nine"};
 constexpr std::array<const char *, 10> kTeens = {
     "ten",     "eleven",  "twelve",    "thirteen", "fourteen",
     "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"};
@@ -64,26 +64,26 @@ constexpr std::array<const char *, 12> kMonthNames = {
 
 const std::map<std::string, std::string> &OrdinalExceptions() {
   static const std::map<std::string, std::string> exceptions = {
-      {"zero", "zeroth"}, {"one", "first"}, {"two", "second"},
-      {"three", "third"}, {"five", "fifth"}, {"eight", "eighth"},
+      {"zero", "zeroth"}, {"one", "first"},     {"two", "second"},
+      {"three", "third"}, {"five", "fifth"},    {"eight", "eighth"},
       {"nine", "ninth"},  {"twelve", "twelfth"}};
   return exceptions;
 }
 
 const std::map<std::string, std::string> &MonthsByName() {
   static const std::map<std::string, std::string> months = {
-      {"jan", "january"},   {"january", "january"},
-      {"feb", "february"},  {"february", "february"},
-      {"mar", "march"},     {"march", "march"},
-      {"apr", "april"},     {"april", "april"},
-      {"may", "may"},       {"jun", "june"},
-      {"june", "june"},     {"jul", "july"},
-      {"july", "july"},     {"aug", "august"},
-      {"august", "august"}, {"sep", "september"},
+      {"jan", "january"},    {"january", "january"},
+      {"feb", "february"},   {"february", "february"},
+      {"mar", "march"},      {"march", "march"},
+      {"apr", "april"},      {"april", "april"},
+      {"may", "may"},        {"jun", "june"},
+      {"june", "june"},      {"jul", "july"},
+      {"july", "july"},      {"aug", "august"},
+      {"august", "august"},  {"sep", "september"},
       {"sept", "september"}, {"september", "september"},
-      {"oct", "october"},   {"october", "october"},
-      {"nov", "november"},  {"november", "november"},
-      {"dec", "december"},  {"december", "december"}};
+      {"oct", "october"},    {"october", "october"},
+      {"nov", "november"},   {"november", "november"},
+      {"dec", "december"},   {"december", "december"}};
   return months;
 }
 
@@ -104,10 +104,9 @@ const std::map<std::string, Currency> &Currencies() {
 
 const std::map<std::string, std::string> &Quantities() {
   static const std::map<std::string, std::string> quantities = {
-      {"k", "thousand"},       {"m", "million"},
-      {"b", "billion"},        {"bn", "billion"},
-      {"thousand", "thousand"}, {"million", "million"},
-      {"billion", "billion"},  {"trillion", "trillion"}};
+      {"k", "thousand"},      {"m", "million"},         {"b", "billion"},
+      {"bn", "billion"},      {"thousand", "thousand"}, {"million", "million"},
+      {"billion", "billion"}, {"trillion", "trillion"}};
   return quantities;
 }
 
@@ -188,10 +187,10 @@ public:
   explicit Regex(const std::string &pattern, bool caseless = false) {
     int error_code = 0;
     PCRE2_SIZE error_offset = 0;
-    code_ = pcre2_compile(reinterpret_cast<PCRE2_SPTR>(pattern.c_str()),
-                          PCRE2_ZERO_TERMINATED,
-                          PCRE2_UTF | PCRE2_UCP | (caseless ? PCRE2_CASELESS : 0),
-                          &error_code, &error_offset, nullptr);
+    code_ = pcre2_compile(
+        reinterpret_cast<PCRE2_SPTR>(pattern.c_str()), PCRE2_ZERO_TERMINATED,
+        PCRE2_UTF | PCRE2_UCP | (caseless ? PCRE2_CASELESS : 0), &error_code,
+        &error_offset, nullptr);
     if (code_ == nullptr) {
       throw std::logic_error("cannot compile " + pattern);
     } else {
@@ -321,13 +320,12 @@ std::string IntegerWords(const Integer &value) {
     } else if (number < 20) {
       return kTeens[number - 10];
     } else if (number < 100) {
-      return number % 10 == 0 ? std::string(kTens[number / 10])
-                              : std::string(kTens[number / 10]) + " " +
-                                    kOnes[number % 10];
+      return number % 10 == 0
+                 ? std::string(kTens[number / 10])
+                 : std::string(kTens[number / 10]) + " " + kOnes[number % 10];
     } else {
       const std::string words = std::string(kOnes[number / 100]) + " hundred";
-      return number % 100 == 0 ? words
-                               : words + " " + SmallWords(number % 100);
+      return number % 100 == 0 ? words : words + " " + SmallWords(number % 100);
     }
   } else {
   }
@@ -404,7 +402,8 @@ std::string NumberWords(const std::string &raw_value) {
 std::string OrdinalWords(const Integer &value) {
   std::string words = IntegerWords(value);
   const size_t last_space = words.rfind(' ');
-  const size_t last_begin = last_space == std::string::npos ? 0 : last_space + 1;
+  const size_t last_begin =
+      last_space == std::string::npos ? 0 : last_space + 1;
   const std::string last = words.substr(last_begin);
   const auto exception = OrdinalExceptions().find(last);
   if (exception != OrdinalExceptions().end()) {
@@ -500,8 +499,8 @@ std::string ReplaceMonthDate(const Match &match) {
     return match.Whole();
   } else {
   }
-  std::string words = found->second + " " +
-                      OrdinalWords(Integer::Parse(std::to_string(day)));
+  std::string words =
+      found->second + " " + OrdinalWords(Integer::Parse(std::to_string(day)));
   if (match.HasNamed("year")) {
     words += " " + YearWords(SmallValue(match.Named("year")));
   } else {
@@ -521,7 +520,8 @@ std::string ReplaceTime(const Match &match) {
   }
   std::string words = SmallWords(spoken_hour);
   if (minute != 0) {
-    words += " " + (minute < 10 ? "oh " + SmallWords(minute) : SmallWords(minute));
+    words +=
+        " " + (minute < 10 ? "oh " + SmallWords(minute) : SmallWords(minute));
   } else {
   }
   if (!second.empty() && SmallValue(second) != 0) {
@@ -540,8 +540,8 @@ std::string ReplaceMoney(const Match &match) {
   const std::string amount = WithoutCommas(match.Named("amount"));
   const std::string quantity = match.Named("quantity");
   if (!quantity.empty()) {
-    const std::string major = NumericIsOne(amount) ? currency.major_singular
-                                                   : currency.major_plural;
+    const std::string major =
+        NumericIsOne(amount) ? currency.major_singular : currency.major_plural;
     return NumberWords(amount) + " " + Quantities().at(AsciiLower(quantity)) +
            " " + major;
   } else {
@@ -568,9 +568,9 @@ std::string ReplaceMoney(const Match &match) {
   } else {
   }
   if (cents != 0) {
-    parts.push_back(SmallWords(cents) + " " +
-                    (cents == 1 ? currency.minor_singular
-                                : currency.minor_plural));
+    parts.push_back(
+        SmallWords(cents) + " " +
+        (cents == 1 ? currency.minor_singular : currency.minor_plural));
   } else {
   }
   if (parts.empty()) {
@@ -709,9 +709,8 @@ std::string NormalizeEnglishText(const std::string &input) {
                           "(?::(?P<second>[0-5]\\d))?(?:" +
                           space_class + "*(?P<suffix>[aApP]\\.?" + space_class +
                           "?[mM]\\.?))?" + boundary);
-  static const Regex money(not_after_word + "(?P<symbol>[$€£])" +
-                           space_class + "*(?P<amount>" + number + ")(?:" +
-                           space_class +
+  static const Regex money(not_after_word + "(?P<symbol>[$€£])" + space_class +
+                           "*(?P<amount>" + number + ")(?:" + space_class +
                            "*(?P<quantity>thousand|million|billion|trillion|"
                            "bn|BN|k|K|m|M|b|B)" +
                            boundary + ")?");
@@ -736,9 +735,9 @@ std::string NormalizeEnglishText(const std::string &input) {
   static const Regex phone(not_after_word + "(?:\\+?1" + separator +
                            ")?(?:(?:\\(?\\d{3}\\)?" + separator + ")?\\d{3}" +
                            separator + "\\d{4})" + not_before_word);
-  static const Regex integer("(?<![" + word_body +
-                             ".])(?P<number>-?(?:\\d{1,3}(?:,\\d{3})+|\\d+))(?![" +
-                             word_body + ".])");
+  static const Regex integer(
+      "(?<![" + word_body +
+      ".])(?P<number>-?(?:\\d{1,3}(?:,\\d{3})+|\\d+))(?![" + word_body + ".])");
   static const Regex acronym(boundary + "[A-Z]{2,}" + boundary);
   static const Regex space(space_class + "+");
   static const Regex space_before_punctuation(space_class + "+([.!?,;:])");
@@ -784,7 +783,8 @@ TextFrontend::TextFrontend(const std::filesystem::path &model_directory,
     throw std::runtime_error("unsupported SuperBPE id convention");
   } else if (text_pad_id !=
              tokenizer_spec.at("vocab_size").get<int>() + kTokenOffset) {
-    throw std::runtime_error("SuperBPE vocabulary does not fit the text column");
+    throw std::runtime_error(
+        "SuperBPE vocabulary does not fit the text column");
   } else {
   }
   const std::filesystem::path path =
@@ -793,7 +793,8 @@ TextFrontend::TextFrontend(const std::filesystem::path &model_directory,
   const std::string bytes((std::istreambuf_iterator<char>(stream)), {});
   if (!stream.good() && !stream.eof()) {
     throw std::runtime_error("cannot read " + path.string());
-  } else if (Sha256Hex(bytes) != tokenizer_spec.at("sha256").get<std::string>()) {
+  } else if (Sha256Hex(bytes) !=
+             tokenizer_spec.at("sha256").get<std::string>()) {
     throw std::runtime_error(path.string() +
                              " does not match the backbone's SuperBPE SHA-256");
   } else {

@@ -46,12 +46,12 @@ mx::array CausalDepthwise(const mx::array &x, const mx::array &weight,
                           const std::optional<mx::array> &history) {
   const int rows = x.shape(0);
   const int taps = weight.shape(1);
-  const mx::array previous =
-      history.has_value() ? mx::astype(*history, x.dtype())
-                          : mx::zeros({taps - 1, x.shape(1)}, x.dtype());
+  const mx::array previous = history.has_value()
+                                 ? mx::astype(*history, x.dtype())
+                                 : mx::zeros({taps - 1, x.shape(1)}, x.dtype());
   const mx::array padded = mx::concatenate({previous, x}, 0);
-  mx::array h =
-      mx::multiply(Rows(padded, 0, rows), mx::squeeze(Columns(weight, 0, 1), 1));
+  mx::array h = mx::multiply(Rows(padded, 0, rows),
+                             mx::squeeze(Columns(weight, 0, 1), 1));
   for (int k = 1; k < taps; ++k) {
     h = mx::add(h, mx::multiply(Rows(padded, k, k + rows),
                                 mx::squeeze(Columns(weight, k, k + 1), 1)));
@@ -130,8 +130,9 @@ mx::array SincResample(const mx::array &x, const mx::array &kernel, int from,
                   {block_count, from}),
       0, taps - from);
   const mx::array windows = mx::concatenate({first, second}, 1);
-  return mx::slice(mx::reshape(mx::matmul(windows, mx::transpose(kernel)), {-1}),
-                   {0}, {static_cast<int>(total)});
+  return mx::slice(
+      mx::reshape(mx::matmul(windows, mx::transpose(kernel)), {-1}), {0},
+      {static_cast<int>(total)});
 }
 
 } // namespace
@@ -194,10 +195,11 @@ float CodecDecoder::OutputGain(std::optional<double> headroom_db) const {
   return static_cast<float>(std::pow(10.0, -decibels / 20.0));
 }
 
-mx::array CodecDecoder::ConvNextBlock(
-    const mx::array &x, const std::string &prefix,
-    const std::optional<mx::array> &history) const {
-  mx::array h = CausalDepthwise(x, weights_.Table(prefix + ".dw.weight"), history);
+mx::array
+CodecDecoder::ConvNextBlock(const mx::array &x, const std::string &prefix,
+                            const std::optional<mx::array> &history) const {
+  mx::array h =
+      CausalDepthwise(x, weights_.Table(prefix + ".dw.weight"), history);
   h = mx::add(h, weights_.Table(prefix + ".dw.bias"));
   h = mx::fast::layer_norm(h, weights_.Table(prefix + ".norm.weight"),
                            weights_.Table(prefix + ".norm.bias"),
@@ -207,9 +209,9 @@ mx::array CodecDecoder::ConvNextBlock(
   return mx::add(x, h);
 }
 
-mx::array CodecDecoder::Latent(
-    const mx::array &codes,
-    std::vector<std::optional<mx::array>> *histories) const {
+mx::array
+CodecDecoder::Latent(const mx::array &codes,
+                     std::vector<std::optional<mx::array>> *histories) const {
   const int frames = codes.shape(0);
   mx::array x = mx::add(
       mx::take(weights_.Table("sem.table"),
@@ -234,12 +236,12 @@ mx::array CodecDecoder::Latent(
   x = weights_.Linear(x, "sem_head.out.weight", "sem_head.out.bias");
   for (int codebook = 1; codebook < codebook_count_; ++codebook) {
     x = mx::add(
-        x, mx::take(weights_.Table("res." + std::to_string(codebook - 1) +
-                                   ".table"),
-                    mx::reshape(mx::slice(codes, {0, codebook},
-                                          {frames, codebook + 1}),
-                                {frames}),
-                    0));
+        x,
+        mx::take(
+            weights_.Table("res." + std::to_string(codebook - 1) + ".table"),
+            mx::reshape(mx::slice(codes, {0, codebook}, {frames, codebook + 1}),
+                        {frames}),
+            0));
   }
   return mx::add(x, weights_.Table("res.bias"));
 }
@@ -279,14 +281,15 @@ mx::array CodecDecoder::TransformerLayer(const mx::array &x,
   const mx::array normed = mx::fast::layer_norm(
       x, weights_.Table(prefix + ".norm1.weight"),
       weights_.Table(prefix + ".norm1.bias"), layer_norm_epsilon_);
-  const mx::array query_key_value = mx::transpose(
-      mx::reshape(weights_.Linear(normed, prefix + ".qkv.weight"),
-                  {rows, 3, stage.head_count, head_size}),
-      {1, 2, 0, 3});
+  const mx::array query_key_value =
+      mx::transpose(mx::reshape(weights_.Linear(normed, prefix + ".qkv.weight"),
+                                {rows, 3, stage.head_count, head_size}),
+                    {1, 2, 0, 3});
   const auto part = [&](int index) {
-    return mx::squeeze(mx::slice(query_key_value, {index, 0, 0, 0},
-                                 {index + 1, stage.head_count, rows, head_size}),
-                       0);
+    return mx::squeeze(
+        mx::slice(query_key_value, {index, 0, 0, 0},
+                  {index + 1, stage.head_count, rows, head_size}),
+        0);
   };
   const mx::array queries =
       mx::fast::rope(part(0), head_size, true, kRopeBase, 1.0f, 0);
@@ -310,11 +313,11 @@ mx::array CodecDecoder::TransformerLayer(const mx::array &x,
           mx::slice(tensor, {0, from, 0}, {stage.head_count, to, head_size}),
           0);
     };
-    blocks.push_back(mx::squeeze(
-        mx::fast::scaled_dot_product_attention(
-            window(queries, begin, end), window(keys, left, end),
-            window(values, left, end), scale, "array", mask),
-        0));
+    blocks.push_back(
+        mx::squeeze(mx::fast::scaled_dot_product_attention(
+                        window(queries, begin, end), window(keys, left, end),
+                        window(values, left, end), scale, "array", mask),
+                    0));
   }
   const mx::array attended =
       blocks.size() == 1 ? blocks[0] : mx::concatenate(blocks, 1);
@@ -329,8 +332,8 @@ mx::array CodecDecoder::TransformerLayer(const mx::array &x,
   const mx::array feedforward = weights_.Linear(
       Gelu(weights_.Linear(normed_again, prefix + ".ffn1.weight")),
       prefix + ".ffn2.weight");
-  return mx::add(y, mx::multiply(feedforward,
-                                 weights_.Table(prefix + ".ffn_scale")));
+  return mx::add(
+      y, mx::multiply(feedforward, weights_.Table(prefix + ".ffn_scale")));
 }
 
 mx::array CodecDecoder::Istft(const mx::array &spectrum, int branch) const {
@@ -343,13 +346,13 @@ mx::array CodecDecoder::Istft(const mx::array &spectrum, int branch) const {
   const mx::array real = mx::multiply(magnitude, mx::cos(phase));
   const mx::array imaginary = mx::multiply(magnitude, mx::sin(phase));
   const mx::array bin_index = mx::arange(bins);
-  const mx::array edge = mx::astype(
-      mx::logical_and(mx::greater(bin_index, mx::array(0)),
-                      mx::less(bin_index, mx::array(bins - 1))),
-      mx::float32);
-  const mx::array complex_spectrum = mx::add(
-      real, mx::multiply(mx::array(std::complex<float>(0.0f, 1.0f)),
-                         mx::multiply(imaginary, edge)));
+  const mx::array edge =
+      mx::astype(mx::logical_and(mx::greater(bin_index, mx::array(0)),
+                                 mx::less(bin_index, mx::array(bins - 1))),
+                 mx::float32);
+  const mx::array complex_spectrum =
+      mx::add(real, mx::multiply(mx::array(std::complex<float>(0.0f, 1.0f)),
+                                 mx::multiply(imaginary, edge)));
   const mx::array frames = mx::multiply(
       mx::astype(mx::fft::irfft(complex_spectrum, fft_size, -1), mx::float32),
       windows_[branch]);
@@ -358,12 +361,12 @@ mx::array CodecDecoder::Istft(const mx::array &spectrum, int branch) const {
   mx::array overlap_add =
       mx::zeros({columns + overlap - 1, head_hop_}, mx::float32);
   for (int slot = 0; slot < overlap; ++slot) {
-    overlap_add = mx::add(
-        overlap_add,
-        mx::pad(mx::squeeze(mx::slice(chunks, {0, slot, 0},
-                                      {columns, slot + 1, head_hop_}),
-                            1),
-                {{slot, overlap - 1 - slot}, {0, 0}}));
+    overlap_add =
+        mx::add(overlap_add,
+                mx::pad(mx::squeeze(mx::slice(chunks, {0, slot, 0},
+                                              {columns, slot + 1, head_hop_}),
+                                    1),
+                        {{slot, overlap - 1 - slot}, {0, 0}}));
   }
   const mx::array squared_window =
       mx::reshape(mx::square(windows_[branch]), {overlap, head_hop_});
@@ -444,8 +447,7 @@ mx::array CodecDecoder::Decode(const mx::array &codes) const {
 }
 
 CodecStream::CodecStream(const CodecDecoder &decoder)
-    : decoder_(decoder),
-      semantic_histories_(decoder.semantic_depth_),
+    : decoder_(decoder), semantic_histories_(decoder.semantic_depth_),
       head_histories_(decoder.head_depth_), head_(decoder.head_config_),
       resampler_(HostMatrix(decoder.resample_kernel_), decoder.resample_from_,
                  decoder.resample_to_, decoder.resample_width_) {
@@ -470,9 +472,9 @@ std::vector<float> CodecStream::Decode(const mx::array &codes) {
 
 std::vector<float> CodecStream::DecodeChunk(const mx::array &codes) {
   const Weights &weights = decoder_.weights_;
-  mx::array x = decoder_.Latent(mx::maximum(mx::astype(codes, mx::int32),
-                                            mx::array(0)),
-                                &semantic_histories_);
+  mx::array x =
+      decoder_.Latent(mx::maximum(mx::astype(codes, mx::int32), mx::array(0)),
+                      &semantic_histories_);
   mx::eval(x);
   int positions_per_frame = 1;
   for (size_t stage_index = 0; stage_index < decoder_.stages_.size();
@@ -501,8 +503,8 @@ std::vector<float> CodecStream::DecodeChunk(const mx::array &codes) {
       };
       const mx::array queries = mx::fast::rope(part(0), head_size, true,
                                                kRopeBase, 1.0f, first_position);
-      mx::array keys = mx::fast::rope(part(1), head_size, true, kRopeBase,
-                                      1.0f, first_position);
+      mx::array keys = mx::fast::rope(part(1), head_size, true, kRopeBase, 1.0f,
+                                      first_position);
       mx::array values = part(2);
       auto &cache = caches_[stage_index][layer];
       if (cache.has_value()) {
@@ -520,11 +522,11 @@ std::vector<float> CodecStream::DecodeChunk(const mx::array &codes) {
                           mx::less(difference, mx::array(stage.context)));
       const float scale =
           static_cast<float>(std::pow(static_cast<double>(head_size), -0.5));
-      const mx::array attended = mx::squeeze(
-          mx::fast::scaled_dot_product_attention(
-              mx::expand_dims(queries, 0), mx::expand_dims(keys, 0),
-              mx::expand_dims(values, 0), scale, "array", mask),
-          0);
+      const mx::array attended =
+          mx::squeeze(mx::fast::scaled_dot_product_attention(
+                          mx::expand_dims(queries, 0), mx::expand_dims(keys, 0),
+                          mx::expand_dims(values, 0), scale, "array", mask),
+                      0);
       x = mx::add(
           x, mx::multiply(
                  weights.Linear(mx::reshape(mx::transpose(attended, {1, 0, 2}),
@@ -537,8 +539,8 @@ std::vector<float> CodecStream::DecodeChunk(const mx::array &codes) {
       const mx::array feedforward = weights.Linear(
           Gelu(weights.Linear(normed_again, prefix + ".ffn1.weight")),
           prefix + ".ffn2.weight");
-      x = mx::add(x, mx::multiply(feedforward,
-                                  weights.Table(prefix + ".ffn_scale")));
+      x = mx::add(
+          x, mx::multiply(feedforward, weights.Table(prefix + ".ffn_scale")));
       const int keep = stage.context - 1;
       if (keep > 0) {
         const int total = keys.shape(1);

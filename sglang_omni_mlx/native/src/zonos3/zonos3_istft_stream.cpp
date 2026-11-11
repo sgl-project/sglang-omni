@@ -257,7 +257,8 @@ void IstftHeadStream::Finalize(int branch, long long final_position) {
 
 std::vector<float> IstftHeadStream::MixEmit() {
   const long long taps = config_.mixer[0].size();
-  const long long available = std::min(mix_input_[0].size(), mix_input_[1].size());
+  const long long available =
+      std::min(mix_input_[0].size(), mix_input_[1].size());
   const long long last = available + mix_base_ - taps + 1;
   if (last <= mix_base_) {
     return {};

@@ -67,7 +67,8 @@ std::string ShapeText(const mx::Shape &shape) {
 
 Weights::Weights(const std::filesystem::path &directory,
                  const std::string &key_prefix) {
-  const nlohmann::json config = omni_common::ReadJson(directory / "config.json");
+  const nlohmann::json config =
+      omni_common::ReadJson(directory / "config.json");
   metadata_ = config.value("metadata", nlohmann::json::object());
   if (metadata_.contains("general.architecture")) {
     architecture_ = metadata_.at("general.architecture").get<std::string>();
@@ -185,13 +186,12 @@ const Weights::Matrix &Weights::FindMatrix(const std::string &name) const {
 mx::array Weights::Linear(const mx::array &x, const std::string &name) const {
   const Matrix &matrix = FindMatrix(name);
   if (matrix.scales.has_value()) {
-    return mx::quantized_matmul(x, matrix.weight, *matrix.scales,
-                                matrix.biases, true, kQuantizationGroupSize,
-                                matrix.bits, "affine");
+    return mx::quantized_matmul(x, matrix.weight, *matrix.scales, matrix.biases,
+                                true, kQuantizationGroupSize, matrix.bits,
+                                "affine");
   } else {
-    return mx::matmul(x,
-                      mx::swapaxes(mx::astype(matrix.weight, mx::float32), -1,
-                                   -2));
+    return mx::matmul(
+        x, mx::swapaxes(mx::astype(matrix.weight, mx::float32), -1, -2));
   }
 }
 
