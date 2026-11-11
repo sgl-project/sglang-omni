@@ -795,6 +795,11 @@ def test_qwen3_asr_dflash_build_overlaps_by_default_and_cleans_resources(
         qwen3_asr_builder.current_platform, "is_npu", lambda: platform == "npu"
     )
     monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cpu", lambda: False)
+    # note (siju-samuel): the platform must allow launch-first prefill, or the
+    # async_prefill assert below passes without the DFlash exclusion.
+    monkeypatch.setattr(
+        qwen3_asr_builder.current_platform, "enable_async_prefill", lambda: True
+    )
     monkeypatch.setenv("PER_STREAM_QUEUE", "1")
     monkeypatch.setenv("TASK_QUEUE_ENABLE", "1")
     monkeypatch.delenv("ASCEND_LAUNCH_BLOCKING", raising=False)
