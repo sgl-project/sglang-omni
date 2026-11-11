@@ -242,12 +242,14 @@ func (a *app) dictationCard(c *ui.Context) {
 	k := tok(t)
 	card(c.Key("model-" + dictation.ModelID)).Children(func() {
 		ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Start).Children(func() {
-			ui.Icon(c, icons.Soundwave.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Text2).Shrink(0).Margin(px(t, 1), 0, 0, 0)
 			// modelCard's order: the name, "Built-in" where a size would be and
 			// where it is used, what it is good at, then the labels at the foot.
 			ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp2)).Children(func() {
 				ui.Column(c).Gap(px(t, 2)).Children(func() {
-					ui.Text(c, uitext.ModelName(dictation.ModelID)).FontWeight(600)
+					ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
+						ui.Icon(c, icons.Soundwave.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Text2).Shrink(0)
+						ui.Text(c, uitext.ModelName(dictation.ModelID)).FontWeight(600)
+					})
 					meta := i18n.T("Built-in") // nothing to download
 					if used := a.usedBy(local.ASR, dictation.ModelID); used != "" {
 						meta += " · " + used
@@ -287,9 +289,6 @@ func (a *app) modelRow(c *ui.Context, m models.Model, alone bool) {
 		ic = icons.ChatRoundLine
 	}
 	ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Start).Children(func() {
-		if alone {
-			ui.Icon(c, ic.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Text2).Shrink(0).Margin(px(t, 1), 0, 0, 0)
-		}
 		// Voxt 1.x's order: the name, then its size and where it is used,
 		// then what it is good at, then the small labels at the foot.
 		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp2)).Children(func() {
@@ -299,6 +298,9 @@ func (a *app) modelRow(c *ui.Context, m models.Model, alone bool) {
 			}
 			ui.Column(c).Gap(px(t, 2)).Children(func() {
 				ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
+					if alone { // beside the name, as familyCard's header, so the text lines up with a family's (#3854)
+						ui.Icon(c, ic.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Text2).Shrink(0)
+					}
 					ui.Text(c, uitext.ModelName(m.ID)).FontWeight(600)
 					if m.Default && !m.Retired {
 						tagChip(c, i18n.T("Default"))
@@ -396,7 +398,7 @@ func (a *app) draftRow(c *ui.Context, id string) {
 		})
 		ui.Row(c.Key("actions")).Gap(px(t, sp2)).Shrink(0).Children(func() { a.modelActions(c, d, st) })
 	})
-	if st.Downloading || st.Err != nil { // under the row's text, not the card's icon
+	if st.Downloading || st.Err != nil { // under the draft row's text
 		ui.Column(c.Key("draft-progress")).Margin(0, 0, 0, px(t, 32)).Children(func() { a.modelProgress(c, "draft-err", d, st) })
 	}
 }
