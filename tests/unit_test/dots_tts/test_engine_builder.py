@@ -5,8 +5,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 import sglang_omni.models.dots_tts.engine_builder as engine_builder
+import sglang_omni.models.dots_tts.stages as stages
 from sglang_omni.models.dots_tts.engine_builder import DotsTTSEngineBuilder
 from sglang_omni.models.dots_tts.stages import (
     create_sglang_latent_engine_executor,
@@ -72,6 +74,51 @@ def test_accelerator_only_factories_reject_a_cpu_host(
         for device in (None, "cpu"):
             with pytest.raises(RuntimeError, match="requires an accelerator"):
                 factory("stub", device=device)
+
+
+@pytest.mark.parametrize(
+    ("device_type", "precision", "expected_dtype", "error"),
+    [
+        ("npu", "float32", torch.float32, None),
+        ("npu", "float16", torch.float16, None),
+        ("cuda", "float32", None, None),
+        ("cuda", "float16", None, "requires an NPU vocoder worker"),
+        ("npu", "float64", None, "Unsupported NPU decoder precision"),
+    ],
+)
+def test_vocoder_decoder_precision_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    device_type: str,
+    precision: str,
+    expected_dtype: torch.dtype | None,
+    error: str | None,
+) -> None:
+    monkeypatch.setattr(
+        stages,
+        "resolve_concrete_device",
+        lambda *_args: SimpleNamespace(type=device_type),
+    )
+    monkeypatch.setattr(
+        stages,
+        "current_platform",
+        SimpleNamespace(is_npu=lambda: device_type == "npu", device_type=device_type),
+    )
+
+    class CodecReached(Exception):
+        pass
+
+    def load_codec(model_path: str, *, device: str, decoder_dtype: torch.dtype | None):
+        assert model_path == "stub"
+        assert decoder_dtype == expected_dtype
+        raise CodecReached
+
+    monkeypatch.setattr(stages, "load_dots_audio_codec", load_codec)
+    if error is not None:
+        with pytest.raises(ValueError, match=error):
+            create_vocoder_executor("stub", npu_decoder_precision=precision)
+    else:
+        with pytest.raises(CodecReached):
+            create_vocoder_executor("stub", npu_decoder_precision=precision)
 
 
 @pytest.mark.parametrize(
