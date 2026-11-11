@@ -7,6 +7,72 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+try:
+    import triton
+    import triton.language as tl
+except ImportError:
+    triton = None
+    tl = None
+
+ROTARY_CACHE_BLOCK_SIZE = 256
+
+
+if triton is not None:
+
+    @triton.jit
+    def rotary_cache_kernel(
+        qkv,
+        cosine,
+        sine,
+        query,
+        key_cache,
+        value_cache,
+        batch_size,
+        position,
+        hidden_size: tl.constexpr,
+        head_dim: tl.constexpr,
+        max_positions: tl.constexpr,
+        block_size: tl.constexpr,
+    ):
+        index = tl.program_id(0) * block_size + tl.arange(0, block_size)
+        valid = index < batch_size * hidden_size
+        batch = index // hidden_size
+        channel = index % hidden_size
+        offset = batch * (3 * hidden_size) + channel
+        neighbor = batch * (3 * hidden_size) + (channel ^ 1)
+        dtype = qkv.dtype.element_ty
+        cos = tl.load(cosine + channel % head_dim, valid, other=0).to(dtype)
+        sin = tl.load(sine + channel % head_dim, valid, other=0).to(dtype)
+        cos = cos.to(tl.float32)
+        sin = sin.to(tl.float32)
+        sign = tl.where(channel % 2 == 0, -1.0, 1.0)
+        q = tl.load(qkv + offset, valid, other=0).to(tl.float32)
+        rotated_q = tl.load(qkv + neighbor, valid, other=0).to(tl.float32) * sign
+        k = tl.load(qkv + offset + hidden_size, valid, other=0).to(tl.float32)
+        rotated_k = (
+            tl.load(qkv + neighbor + hidden_size, valid, other=0).to(tl.float32) * sign
+        )
+        v = tl.load(qkv + offset + 2 * hidden_size, valid, other=0)
+        # note (Zhang Yiyang): Preserve eager rounding between the RoPE products and sum.
+        q = (q * cos).to(dtype).to(tl.float32) + (rotated_q * sin).to(dtype).to(
+            tl.float32
+        )
+        k = (k * cos).to(dtype).to(tl.float32) + (rotated_k * sin).to(dtype).to(
+            tl.float32
+        )
+        cache_offset = (
+            batch * hidden_size * max_positions
+            + (channel // head_dim) * max_positions * head_dim
+            + position * head_dim
+            + channel % head_dim
+        )
+        tl.store(query + index, q, valid)
+        tl.store(key_cache + cache_offset, k, valid)
+        tl.store(value_cache + cache_offset, v, valid)
+
+else:
+    pass
+
 
 def rotate_half_interleaved(x: torch.Tensor) -> torch.Tensor:
     """Interleaved-pair rotation: [x0, x1, x2, x3, ...] -> [-x1, x0, -x3, x2, ...]."""
@@ -150,23 +216,53 @@ class MossTTSLocalTransformer(nn.Module):
             pass
         batch_size = hidden_states.shape[0]
         self.ensure_kv_cache(batch_size, hidden_states.device, hidden_states.dtype)
-        cos = self.rope_cos[position].to(dtype=hidden_states.dtype)
-        sin = self.rope_sin[position].to(dtype=hidden_states.dtype)
+        cos = self.rope_cos[position]
+        sin = self.rope_sin[position]
 
         x = hidden_states
         for layer_idx, block in enumerate(self.h):
             normed = block.ln_1(x)
             qkv = block.attn.c_attn(normed)
-            query, key, value = qkv.split(self.hidden_size, dim=-1)
-            query = query.view(batch_size, self.num_heads, self.head_dim)
-            key = key.view(batch_size, self.num_heads, self.head_dim)
-            value = value.view(batch_size, self.num_heads, self.head_dim)
-            query = query * cos + rotate_half_interleaved(query) * sin
-            key = key * cos + rotate_half_interleaved(key) * sin
-
             key_cache, value_cache = self.kv_cache[layer_idx]
-            key_cache[:batch_size, :, position] = key
-            value_cache[:batch_size, :, position] = value
+            if (
+                triton is not None
+                and qkv.is_cuda
+                and qkv.dtype in (torch.float16, torch.bfloat16, torch.float32)
+            ):
+                query = torch.empty(
+                    (batch_size, self.num_heads, self.head_dim),
+                    device=qkv.device,
+                    dtype=qkv.dtype,
+                )
+                grid = (
+                    triton.cdiv(batch_size * self.hidden_size, ROTARY_CACHE_BLOCK_SIZE),
+                )
+                rotary_cache_kernel[grid](
+                    qkv,
+                    cos,
+                    sin,
+                    query,
+                    key_cache,
+                    value_cache,
+                    batch_size,
+                    position,
+                    self.hidden_size,
+                    self.head_dim,
+                    self.max_positions,
+                    ROTARY_CACHE_BLOCK_SIZE,
+                    enable_fp_fusion=False,
+                )
+            else:
+                cos = cos.to(dtype=hidden_states.dtype)
+                sin = sin.to(dtype=hidden_states.dtype)
+                query, key, value = qkv.split(self.hidden_size, dim=-1)
+                query = query.view(batch_size, self.num_heads, self.head_dim)
+                key = key.view(batch_size, self.num_heads, self.head_dim)
+                value = value.view(batch_size, self.num_heads, self.head_dim)
+                query = query * cos + rotate_half_interleaved(query) * sin
+                key = key * cos + rotate_half_interleaved(key) * sin
+                key_cache[:batch_size, :, position] = key
+                value_cache[:batch_size, :, position] = value
 
             attn_out = F.scaled_dot_product_attention(
                 query.unsqueeze(2),

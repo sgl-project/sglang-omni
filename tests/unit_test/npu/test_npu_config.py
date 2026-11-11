@@ -25,8 +25,8 @@ def config_root(tmp_path):
             f'sglang-version = "{CONFIG["sglang-version"]}"',
             'sglang-version = "99.0.0"',
         ),
-        (f'cann{MATRIX[1]["cann"]}-910b', "cann99.0.0-910b"),
-        ("-a3@sha256:", "-910b@sha256:"),
+        (f'cann{MATRIX[1]["cann"]}-950', "cann99.0.0-950"),
+        ("-a3@sha256:", "-950@sha256:"),
         (CONFIG["base-image-a3"], CONFIG["base-image-a3"].split("@", 1)[0]),
     ],
 )

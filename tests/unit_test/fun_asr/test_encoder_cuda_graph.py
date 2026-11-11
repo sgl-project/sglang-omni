@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import contextlib
 from types import SimpleNamespace
 
 import torch
 import torch.nn as nn
 
-from sglang_omni.models.fun_asr.encoder_cuda_graph import bucket_batch, bucket_t
+import sglang_omni.models.fun_asr.encoder_cuda_graph as encoder_cuda_graph
+from sglang_omni.models.fun_asr.encoder_cuda_graph import (
+    FunASREncoderCudaGraphRunner,
+    bucket_batch,
+    bucket_t,
+)
 from sglang_omni.models.fun_asr.sglang_model import FunAsrNanoForConditionalGeneration
 
 
@@ -119,3 +125,169 @@ def test_get_audio_feature_without_runner_truncates_embeddings() -> None:
     # single unpadded item keeps the maskless fast path
     assert model.audio_tower.calls == [((1, 12, 560), None)]
     assert out.shape == (2, 4)  # ceil(12 / 8)
+
+
+class FakeGraph:
+    def __init__(self, log: list[str]) -> None:
+        self.replays = 0
+        self.log = log
+
+    def replay(self) -> None:
+        self.replays += 1
+        self.log.append("replay")
+
+
+class InertStream:
+    def wait_stream(self, other: "InertStream") -> None:
+        pass
+
+    def record(self, stream: "InertStream") -> None:
+        pass
+
+    def wait(self, stream: "InertStream") -> None:
+        pass
+
+
+class FakeGraphBackend:
+    def __init__(
+        self,
+        log: list[str],
+        capture_kwargs: list[dict[str, str | bool]],
+        fail: bool = False,
+    ) -> None:
+        self.log = log
+        self.capture_kwargs = capture_kwargs
+        self.fail = fail
+
+    @contextlib.contextmanager
+    def capture(self, **kwargs):
+        self.capture_kwargs.append(kwargs)
+        self.log.append("capture:enter")
+        yield FakeGraph(self.log)
+        if self.fail:
+            raise RuntimeError("capture_end exploded")
+        self.log.append("capture:exit")
+
+
+class FakeDeviceModule:
+    def __init__(self, log: list[str]) -> None:
+        self.log = log
+        self.capture_kwargs: list[dict[str, str | bool]] = []
+        self.entry_stream = InertStream()
+
+    def Event(self) -> InertStream:  # noqa: N802 - mirrors the torch spelling
+        return InertStream()
+
+    def graph_pool_handle(self) -> str:
+        return "pool-token"
+
+    def Stream(self, device=None) -> InertStream:  # noqa: N802 - ditto
+        return InertStream()
+
+    def current_stream(self, device=None) -> InertStream:
+        # One stable object per module: the entry stream a caller records has to
+        # be distinguishable from the warmup stream, or restoring either passes.
+        return self.entry_stream
+
+    def set_stream(self, stream: InertStream) -> None:
+        self.log.append(("set_stream", stream))
+
+    @contextlib.contextmanager
+    def stream(self, stream: InertStream):
+        self.log.append("warmup-stream:enter")
+        yield
+
+    def synchronize(self, device=None) -> None:
+        pass
+
+    @contextlib.contextmanager
+    def device(self, device):
+        self.log.append("device:enter")
+        yield
+        self.log.append("device:exit")
+
+
+def runner_on(
+    module: FakeDeviceModule,
+    monkeypatch,
+    free_gb: float = 40.0,
+    backend: FakeGraphBackend | None = None,
+) -> FunASREncoderCudaGraphRunner:
+    backend = backend or FakeGraphBackend(module.log, module.capture_kwargs)
+    monkeypatch.setattr(
+        encoder_cuda_graph,
+        "get_available_gpu_memory",
+        lambda device_type, gpu_id, **kwargs: free_gb,
+    )
+    monkeypatch.setattr(torch, "get_device_module", lambda device: module)
+    return FunASREncoderCudaGraphRunner(
+        EagerTower(), EagerProjector(), graph_backend=backend, max_batch_size=4
+    )
+
+
+def record_sdpa_pin(monkeypatch, log: list[str]) -> None:
+    @contextlib.contextmanager
+    def pin():
+        log.append("sdpa:enter")
+        yield
+        log.append("sdpa:exit")
+
+    monkeypatch.setattr(
+        encoder_cuda_graph.current_platform, "graph_capture_attention", pin
+    )
+
+
+def test_a_bucket_is_declined_when_the_card_is_below_the_headroom(monkeypatch) -> None:
+    runner = runner_on(FakeDeviceModule([]), monkeypatch, free_gb=1.0)
+
+    assert runner.run(torch.zeros(1, 17, 560), [17]) is None
+
+
+def test_capture_warms_up_and_records_under_the_platform_sdpa_context(
+    monkeypatch,
+) -> None:
+    log: list[str] = []
+    module = FakeDeviceModule(log)
+    runner = runner_on(module, monkeypatch)
+    record_sdpa_pin(monkeypatch, log)
+
+    runner.run(torch.zeros(1, 17, 560), [17])
+
+    assert log.index("sdpa:enter") < log.index("warmup-stream:enter")
+    assert log.index("capture:exit") < log.index("sdpa:exit")
+    assert module.capture_kwargs == [
+        {"pool": "pool-token", "thread_local_errors": True}
+    ]
+
+
+def test_replay_pads_the_bucket_and_captures_once(monkeypatch) -> None:
+    log: list[str] = []
+    module = FakeDeviceModule(log)
+    runner = runner_on(module, monkeypatch)
+    record_sdpa_pin(monkeypatch, log)
+    xs = torch.zeros(1, 17, 560)
+
+    first = runner.run(xs, [17])
+    runner.run(xs, [17])
+
+    assert first is not None
+    assert first.shape == (1, 64, 4)
+    graph, _, static_ilens, _ = runner.graphs[(1, 64)]
+    assert graph.replays == 2
+    assert static_ilens.tolist() == [17]
+    assert len(module.capture_kwargs) == 1
+
+
+def test_a_failed_capture_restores_the_stream_it_was_entered_on(monkeypatch) -> None:
+    log: list[str] = []
+    module = FakeDeviceModule(log)
+    runner = runner_on(
+        module, monkeypatch, backend=FakeGraphBackend(log, [], fail=True)
+    )
+    record_sdpa_pin(monkeypatch, log)
+
+    assert runner.run(torch.zeros(1, 17, 560), [17]) is None
+
+    restored = log.index(("set_stream", module.entry_stream))
+    assert log.index("capture:enter") < restored
+    assert runner.graphs == {}

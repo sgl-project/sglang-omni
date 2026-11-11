@@ -6,10 +6,14 @@ Reference: https://developers.openai.com/api/docs/guides/realtime
 
 from __future__ import annotations
 
+import builtins
+from collections.abc import Mapping
 from enum import Enum
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
+
+MIN_DECODE_INTERVAL_MS = 200
 
 
 # Forward compatibility for future event types.
@@ -60,6 +64,7 @@ class TranscriptionSessionConfig(EventBase):
     model_config = ConfigDict(extra="forbid")
 
     language: str | None = None
+    decode_interval_ms: int | None = Field(default=None, ge=MIN_DECODE_INTERVAL_MS)
     turn_detection: TurnDetection | None = None
     input_audio_format: Literal["pcm16"] | None = None
 
@@ -68,7 +73,7 @@ class SessionObject(EventBase):
     id: str
     object: Literal["realtime.session"] = "realtime.session"
     model: str
-    capabilities: dict[str, Any] = Field(default_factory=dict)
+    capabilities: dict[str, builtins.object] = Field(default_factory=dict)
     modalities: list[str] = Field(default_factory=lambda: ["text"])
     instructions: str = ""
     input_audio_format: str = "pcm16"
@@ -92,13 +97,17 @@ class TranscriptionServerEvent(EventBase):
 class TranscriptionSegment(TranscriptionServerEvent):
     type: Literal["transcription.segment"] = "transcription.segment"
     segment_id: int
+    audio_start_ms: int
+    audio_end_ms: int
     text: str
     is_final: bool
+    language: str | None = None
 
 
 class TranscriptionCompleted(TranscriptionServerEvent):
     type: Literal["transcription.completed"] = "transcription.completed"
     text: str
+    language: str | None = None
 
 
 class TranscriptionSpeechStarted(TranscriptionServerEvent):
@@ -152,7 +161,7 @@ class TranscriptionSessionObject(EventBase):
     @field_serializer("turn_detection")
     def serialize_turn_detection(
         self, value: TurnDetection | None
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, builtins.object] | None:
         # Only the settings the client actually set are echoed back.
         return value.model_dump(exclude_none=True) if value is not None else None
 
@@ -215,10 +224,10 @@ class ConversationItemTruncate(ClientEvent):
     audio_end_ms: int = Field(ge=0)
 
 
-def make_event(event_type: str, **fields: Any) -> dict[str, Any]:
+def make_event(event_type: str, **fields: object) -> dict[str, object]:
     """Construct a server event dict. event_id is filled in by the
     session loop so handlers don't have to."""
-    payload: dict[str, Any] = {"type": event_type}
+    payload: dict[str, object] = {"type": event_type}
     for k, v in fields.items():
         if v is None:
             continue
@@ -246,7 +255,7 @@ _TRANSCRIPTION_CLIENT_EVENT_TYPES: dict[str, type[ClientEvent]] = {
 
 
 def parse(
-    raw: dict[str, Any], table: dict[str, type[ClientEvent]]
+    raw: Mapping[str, object], table: dict[str, type[ClientEvent]]
 ) -> ClientEvent | None:
     event_type = raw.get("type")
     if not isinstance(event_type, str):
@@ -261,11 +270,13 @@ def parse(
     return cls.model_validate(raw)
 
 
-def parse_conversation_client_event(raw: dict[str, Any]) -> ClientEvent | None:
+def parse_conversation_client_event(raw: Mapping[str, object]) -> ClientEvent | None:
     """Parse one client event of a conversation session, return None if not part of its protocol."""
     return parse(raw, _CONVERSATION_CLIENT_EVENT_TYPES)
 
 
-def parse_transcription_client_event(raw: dict[str, Any]) -> ClientEvent | None:
+def parse_transcription_client_event(
+    raw: Mapping[str, object],
+) -> ClientEvent | None:
     """Parse one client event of a transcription session, return None if not part of its protocol."""
     return parse(raw, _TRANSCRIPTION_CLIENT_EVENT_TYPES)

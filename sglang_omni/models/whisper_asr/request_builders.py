@@ -6,7 +6,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from threading import Lock
-from typing import Any, Callable
+from typing import Callable
 
 import torch
 from sglang.srt.managers.schedule_batch import (
@@ -16,14 +16,16 @@ from sglang.srt.managers.schedule_batch import (
     Req,
 )
 from sglang.srt.sampling.sampling_params import SamplingParams
-from transformers import GenerationConfig
+from transformers import GenerationConfig, WhisperProcessor, WhisperTokenizer
 
 from sglang_omni.models.whisper_asr.config import WHISPER_MAX_INPUT_SECONDS
+from sglang_omni.models.whisper_asr.encoder_service import WhisperPreLMEncoderService
 from sglang_omni.models.whisper_asr.timestamp_logit_processor import (
     WhisperTimestampLogitProcessor,
 )
 from sglang_omni.preprocessing.transcription import prepare_audio
 from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.exact_text_streaming import ExactTextStreamState
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 
 _WHISPER_SAMPLE_RATE = 16000
@@ -54,6 +56,7 @@ class WhisperASRRequestData(SGLangARRequestData):
     detect_language: bool = False
     segment_timestamps: bool = False
     engine_start_s: float = 0.0
+    exact_text_stream_state: ExactTextStreamState | None = None
 
 
 # Note (Akazaakane): Whisper timestamp token IDs advance in 20 ms steps from
@@ -62,7 +65,10 @@ _TIMESTAMP_STEP_S = 0.02
 
 
 def render_timestamped_text(
-    tokenizer: Any, output_ids: list[int], *, timestamp_begin_id: int
+    tokenizer: WhisperTokenizer,
+    output_ids: list[int],
+    *,
+    timestamp_begin_id: int,
 ) -> str:
     parts: list[str] = []
     text_ids: list[int] = []
@@ -84,7 +90,7 @@ def render_timestamped_text(
     return "".join(parts).strip()
 
 
-def resolve_language(value: Any) -> str:
+def resolve_language(value: object) -> str:
     if value is None:
         return "english"
     else:
@@ -107,7 +113,7 @@ def build_logit_bias(generation_config: GenerationConfig) -> dict[str, float] | 
 
 
 def build_prefix_tokens(
-    tokenizer: Any,
+    tokenizer: WhisperTokenizer,
     *,
     language: str,
     task: str,
@@ -142,7 +148,7 @@ def decoder_token_budgets(
 
 
 def build_prev_context_tokens(
-    tokenizer: Any, prompt: Any, *, max_prev_tokens: int
+    tokenizer: WhisperTokenizer, prompt: object, *, max_prev_tokens: int
 ) -> list[int]:
     """Map the OpenAI ``prompt`` field to Whisper prev-context tokens."""
     if max_prev_tokens < 2 or prompt is None:
@@ -162,15 +168,17 @@ def build_prev_context_tokens(
 
 def make_whisper_scheduler_adapters(
     *,
-    processor: Any,
-    tokenizer: Any,
+    processor: WhisperProcessor,
+    tokenizer: WhisperTokenizer,
     generation_config: GenerationConfig,
     encoder_token_count: int,
     max_new_tokens: int,
     decoder_context_len: int | None = None,
-    audio_encoder_service: Any | None = None,
+    audio_encoder_service: WhisperPreLMEncoderService | None = None,
+    speculative_num_steps: int = 0,
 ) -> tuple[
-    Callable[[StagePayload], WhisperASRRequestData], Callable[[Any], StagePayload]
+    Callable[[StagePayload], WhisperASRRequestData],
+    Callable[[WhisperASRRequestData], StagePayload],
 ]:
     logit_bias = build_logit_bias(generation_config)
     # note (Dayuxiaoshui): set_prefix_tokens mutates shared tokenizer state
@@ -204,9 +212,23 @@ def make_whisper_scheduler_adapters(
         or generation_config.max_length
         or _DEFAULT_DECODER_CONTEXT_LEN
     )
+    # note (wilsonzheng0327): a speculative verify reads speculative_num_steps
+    # positions past a request's newest token, so the request leaves them free.
+    decoder_context_len -= speculative_num_steps
 
     def request_builder(payload: StagePayload) -> WhisperASRRequestData:
         params = payload.request.params or {}
+        temperature = float(params.get("temperature") or 0.0)
+        segment_timestamps = bool(params.get("segment_timestamps"))
+        # note (wilsonzheng0327): the verify applies neither sampling nor timestamps.
+        if speculative_num_steps > 0 and (temperature != 0.0 or segment_timestamps):
+            raise ValueError(
+                "Whisper speculative decoding supports only greedy decoding without "
+                "segment timestamps; set temperature=0 and use a response_format "
+                "other than srt or vtt"
+            )
+        else:
+            pass
         prepared = prepare_audio(
             payload,
             source_name="Whisper ASR",
@@ -221,7 +243,6 @@ def make_whisper_scheduler_adapters(
         language = resolve_language(params.get("language"))
         task = str(params.get("task") or "transcribe")
         detect_language = bool(params.get("detect_language"))
-        segment_timestamps = bool(params.get("segment_timestamps"))
         if detect_language:
             prompt_token_ids = [sot_token_id]
             request_max_new_tokens = 1
@@ -294,7 +315,6 @@ def make_whisper_scheduler_adapters(
         else:
             pass
 
-        temperature = float(params.get("temperature") or 0.0)
         sampling_params = SamplingParams(
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,
@@ -365,6 +385,7 @@ def make_whisper_scheduler_adapters(
                 "language": data.language,
                 "duration_s": data.audio_duration_s,
                 "asr_latency_s": engine_time_s,
+                "finish_reason": data.finish_reason,
                 "usage": {"engine_time_s": engine_time_s},
                 "modality": "text",
             },

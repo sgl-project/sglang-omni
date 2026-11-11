@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import math
 
 import torch
@@ -16,6 +18,7 @@ SUBSAMPLING_STRIDE = 2
 SUBSAMPLING_CACHE_SIZE = SUBSAMPLING_KERNEL_SIZE - 1
 POINTWISE_CONV_KERNEL_SIZE = 1
 FEED_FORWARD_RESIDUAL_SCALE = 0.5
+GRAPH_WARMUP_STEPS = 3
 
 
 class CausalConv2d(nn.Conv2d):
@@ -207,13 +210,53 @@ class AudioPerception(nn.Module):
             int(config["encoder"]["d_model"]), int(config["output_dim"])
         )
 
-    def forward(self, waveform_BL):
-        assert waveform_BL.shape[0] == 1
-        assert waveform_BL.shape[1] % SAMPLES_PER_FRAME == 0
-        stream = StreamingPerception(self)
-        rows = [stream.push(block) for block in waveform_BL[0].split(SAMPLES_PER_FRAME)]
-        rows.append(stream.flush())
-        return torch.cat(rows).unsqueeze(0)
+    def forward(
+        self,
+        waveforms: list[torch.Tensor],
+        *,
+        stream: StreamingPerception | None = None,
+    ) -> list[torch.Tensor]:
+        assert all(waveform.shape[0] % SAMPLES_PER_FRAME == 0 for waveform in waveforms)
+        if stream is None:
+            stream = StreamingPerception(self, batch_size=len(waveforms))
+        else:
+            stream.reset()
+        frame_counts = [
+            waveform.shape[0] // SAMPLES_PER_FRAME for waveform in waveforms
+        ]
+        longest = max(frame_counts)
+        blocks_TBS = torch.zeros(
+            longest,
+            stream.batch_size,
+            SAMPLES_PER_FRAME,
+            device=stream.device,
+            dtype=stream.dtype,
+        )
+        for row, waveform in enumerate(waveforms):
+            blocks_TBS[: frame_counts[row], row] = waveform.view(-1, SAMPLES_PER_FRAME)
+        rows_TBD = torch.empty(
+            longest,
+            stream.batch_size,
+            self.proj.out_features,
+            device=stream.device,
+            dtype=stream.dtype,
+        )
+        trailing_BD_by_frame_count: dict[int, torch.Tensor] = {}
+        for step in range(longest + 1):
+            if step in frame_counts:
+                trailing_BD_by_frame_count[step] = stream.flush()
+            else:
+                pass
+            if step < longest:
+                rows_TBD[step] = stream.push(blocks_TBS[step])
+            else:
+                pass
+        return [
+            torch.cat(
+                (rows_TBD[:count, row], trailing_BD_by_frame_count[count][row, None])
+            )
+            for row, count in enumerate(frame_counts)
+        ]
 
 
 class StreamingPerception:
@@ -224,8 +267,9 @@ class StreamingPerception:
     plus the preemphasis carry, so each push touches one frame of compute.
     """
 
-    def __init__(self, perception: AudioPerception) -> None:
+    def __init__(self, perception: AudioPerception, *, batch_size: int) -> None:
         self.perception = perception
+        self.batch_size = batch_size
         parameter = perception.proj.weight
         self.device = parameter.device
         self.dtype = parameter.dtype
@@ -269,44 +313,43 @@ class StreamingPerception:
                 for layer in encoder.layers
             ]
 
-        self.reset()
-
-    def reset(self) -> None:
-        perception = self.perception
-        preprocessor = perception.preprocessor
-        self.preemphasis_carry = torch.zeros(1, device=self.device, dtype=self.dtype)
-        self.sample_buffer = torch.zeros(
-            preprocessor.left_padding, device=self.device, dtype=self.dtype
+        self.preemphasis_carry = torch.empty(
+            batch_size, 1, device=self.device, dtype=self.dtype
+        )
+        self.sample_buffer = torch.empty(
+            batch_size, preprocessor.left_padding, device=self.device, dtype=self.dtype
         )
 
         num_mels = preprocessor.featurizer.fb.shape[1]
-        sub_cache_shapes = []
+        sub_cache_shapes: list[tuple[int, int, int, int]] = []
         channels, freqs = 1, num_mels
         for conv, _ in self.sub_stages:
-            sub_cache_shapes.append((1, channels, SUBSAMPLING_CACHE_SIZE, freqs))
+            sub_cache_shapes.append(
+                (batch_size, channels, SUBSAMPLING_CACHE_SIZE, freqs)
+            )
             channels = conv.out_channels
             freqs = freqs // SUBSAMPLING_STRIDE + 1
         self.sub_caches = [
-            torch.zeros(shape, device=self.device, dtype=self.dtype)
+            torch.empty(shape, device=self.device, dtype=self.dtype)
             for shape in sub_cache_shapes
         ]
 
         layers = perception.encoder.layers
         self.key_caches = [
-            torch.zeros(
-                0, self.num_heads, self.head_size, device=self.device, dtype=self.dtype
+            torch.empty(
+                batch_size,
+                self.max_keys,
+                self.num_heads,
+                self.head_size,
+                device=self.device,
+                dtype=self.dtype,
             )
             for _ in layers
         ]
-        self.value_caches = [
-            torch.zeros(
-                0, self.num_heads, self.head_size, device=self.device, dtype=self.dtype
-            )
-            for _ in layers
-        ]
+        self.value_caches = [torch.empty_like(keys) for keys in self.key_caches]
         self.conv_caches = [
-            torch.zeros(
-                1,
+            torch.empty(
+                batch_size,
                 layer.conv.depthwise_conv.in_channels,
                 layer.conv.depthwise_conv.left_padding,
                 device=self.device,
@@ -314,125 +357,205 @@ class StreamingPerception:
             )
             for layer in layers
         ]
-        self.flushed = False
+        self.cached_frame_count = torch.empty(
+            batch_size, device=self.device, dtype=torch.long
+        )
+        self.key_positions_K = torch.arange(self.max_keys, device=self.device)
+        self.reset()
+
+    def state_buffers(self) -> list[torch.Tensor]:
+        return [
+            self.sample_buffer,
+            self.preemphasis_carry,
+            *self.sub_caches,
+            *self.key_caches,
+            *self.value_caches,
+            *self.conv_caches,
+            self.cached_frame_count,
+        ]
 
     @torch.inference_mode()
-    def push(self, samples_S: torch.Tensor) -> torch.Tensor:
+    def reset(self) -> None:
+        for buffer in self.state_buffers():
+            buffer.zero_()
+
+    @torch.inference_mode()
+    def push(self, samples_BS: torch.Tensor) -> torch.Tensor:
         """One 1280-sample block in, one acoustic row out; call i yields
         encoder row i (the first call returns the leading pad row)."""
-        assert not self.flushed
-        assert samples_S.shape == (SAMPLES_PER_FRAME,)
-        samples_S = samples_S.to(device=self.device, dtype=self.dtype)
-        mel_1TM = self.featurize(samples_S)
-        return self.encode(mel_1TM)
+        assert samples_BS.shape == (self.batch_size, SAMPLES_PER_FRAME)
+        samples_BS = samples_BS.to(device=self.device, dtype=self.dtype)
+        mel_BTM = self.featurize(samples_BS)
+        return self.encode(mel_BTM)
 
     @torch.inference_mode()
     def flush(self) -> torch.Tensor:
         """The trailing row whole-utterance encoding gets from its causal
         right padding; live sessions never need it."""
-        assert not self.flushed
-        self.flushed = True
+        # note (Xinhao Tan): batch rows end at different steps, so flush keeps all state.
+        saved_buffers = [buffer.clone() for buffer in self.state_buffers()]
         num_mels = self.perception.preprocessor.featurizer.fb.shape[1]
-        zero_mel_1TM = torch.zeros(1, 1, num_mels, device=self.device, dtype=self.dtype)
-        return self.encode(zero_mel_1TM)
+        zero_mel_B1M = torch.zeros(
+            self.batch_size, 1, num_mels, device=self.device, dtype=self.dtype
+        )
+        trailing_BD = self.encode(zero_mel_B1M)
+        for buffer, saved_buffer in zip(
+            self.state_buffers(), saved_buffers, strict=True
+        ):
+            buffer.copy_(saved_buffer)
+        return trailing_BD
 
-    def featurize(self, samples_S: torch.Tensor) -> torch.Tensor:
+    def featurize(self, samples_BS: torch.Tensor) -> torch.Tensor:
         preprocessor = self.perception.preprocessor
-        previous_S = torch.cat((self.preemphasis_carry, samples_S[:-1]))
-        preemphasized_S = samples_S - DEFAULT_PREEMPHASIS * previous_S
-        window_W = torch.cat((self.sample_buffer, preemphasized_S))
-        self.sample_buffer = window_W[-preprocessor.left_padding :]
-        self.preemphasis_carry = samples_S[-1:]
+        previous_BS = torch.cat((self.preemphasis_carry, samples_BS[:, :-1]), dim=1)
+        preemphasized_BS = samples_BS - DEFAULT_PREEMPHASIS * previous_BS
+        window_BW = torch.cat((self.sample_buffer, preemphasized_BS), dim=1)
+        self.sample_buffer.copy_(window_BW[:, -preprocessor.left_padding :])
+        self.preemphasis_carry.copy_(samples_BS[:, -1:])
 
-        spectrum_FT = torch.stft(
-            rearrange(window_W, "w -> 1 w"),
+        spectrum_BFT = torch.stft(
+            window_BW,
             n_fft=preprocessor.n_fft,
             hop_length=preprocessor.hop_length,
             win_length=preprocessor.win_length,
             return_complex=True,
             center=False,
             window=preprocessor.featurizer.window,
-        )[0]
-        power_FT = spectrum_FT.abs().square()
-        mel_MT = einsum(preprocessor.featurizer.fb[0], power_FT, "m f, f t -> m t")
-        log_mel_MT = torch.log(mel_MT + DEFAULT_LOG_ZERO_GUARD)
-        return rearrange(log_mel_MT, "m t -> 1 t m")
+        )
+        power_BFT = spectrum_BFT.abs().square()
+        mel_BMT = einsum(
+            preprocessor.featurizer.fb[0], power_BFT, "m f, b f t -> b m t"
+        )
+        log_mel_BMT = torch.log(mel_BMT + DEFAULT_LOG_ZERO_GUARD)
+        return rearrange(log_mel_BMT, "b m t -> b t m")
 
-    def encode(self, mel_1TM: torch.Tensor) -> torch.Tensor:
-        hidden_11D = self.subsample(mel_1TM) * self.xscale
+    def encode(self, mel_BTM: torch.Tensor) -> torch.Tensor:
+        hidden_B1D = self.subsample(mel_BTM) * self.xscale
         for index, layer in enumerate(self.perception.encoder.layers):
-            hidden_11D = hidden_11D + FEED_FORWARD_RESIDUAL_SCALE * layer.feed_forward1(
-                layer.norm_feed_forward1(hidden_11D)
+            hidden_B1D = hidden_B1D + FEED_FORWARD_RESIDUAL_SCALE * layer.feed_forward1(
+                layer.norm_feed_forward1(hidden_B1D)
             )
-            hidden_11D = hidden_11D + self.attend(
-                index, layer.self_attn, layer.norm_self_att(hidden_11D)
+            hidden_B1D = hidden_B1D + self.attend(
+                index, layer.self_attn, layer.norm_self_att(hidden_B1D)
             )
-            hidden_11D = hidden_11D + self.convolve(
-                index, layer.conv, layer.norm_conv(hidden_11D)
+            hidden_B1D = hidden_B1D + self.convolve(
+                index, layer.conv, layer.norm_conv(hidden_B1D)
             )
-            hidden_11D = hidden_11D + FEED_FORWARD_RESIDUAL_SCALE * layer.feed_forward2(
-                layer.norm_feed_forward2(hidden_11D)
+            hidden_B1D = hidden_B1D + FEED_FORWARD_RESIDUAL_SCALE * layer.feed_forward2(
+                layer.norm_feed_forward2(hidden_B1D)
             )
-            hidden_11D = layer.norm_out(hidden_11D)
-        return self.perception.proj(hidden_11D)[0]
+            hidden_B1D = layer.norm_out(hidden_B1D)
+        self.cached_frame_count.add_(1).clamp_(max=self.max_keys)
+        return self.perception.proj(hidden_B1D)[:, 0]
 
-    def subsample(self, mel_1TM: torch.Tensor) -> torch.Tensor:
-        hidden_1CTM = rearrange(mel_1TM, "b t m -> b 1 t m")
+    def subsample(self, mel_BTM: torch.Tensor) -> torch.Tensor:
+        hidden_BCTM = rearrange(mel_BTM, "b t m -> b 1 t m")
         for stage, (conv, pointwise) in enumerate(self.sub_stages):
-            hidden_1CTM = torch.cat((self.sub_caches[stage], hidden_1CTM), dim=2)
-            self.sub_caches[stage] = hidden_1CTM[:, :, -SUBSAMPLING_CACHE_SIZE:]
+            hidden_BCTM = torch.cat((self.sub_caches[stage], hidden_BCTM), dim=2)
+            self.sub_caches[stage].copy_(hidden_BCTM[:, :, -SUBSAMPLING_CACHE_SIZE:])
             # The cache stands in for the module's causal time padding; only
             # the frequency axis still pads here.
-            padded_1CTM = nn.functional.pad(hidden_1CTM, (*conv.causal_padding, 0, 0))
-            hidden_1CTM = nn.Conv2d.forward(conv, padded_1CTM)
+            padded_BCTM = nn.functional.pad(hidden_BCTM, (*conv.causal_padding, 0, 0))
+            hidden_BCTM = nn.Conv2d.forward(conv, padded_BCTM)
             if pointwise is not None:
-                hidden_1CTM = pointwise(hidden_1CTM)
+                hidden_BCTM = pointwise(hidden_BCTM)
             else:
                 pass
-            hidden_1CTM = torch.relu(hidden_1CTM)
+            hidden_BCTM = torch.relu(hidden_BCTM)
         return self.perception.encoder.pre_encode.out(
-            rearrange(hidden_1CTM, "b c t m -> b t (c m)")
+            rearrange(hidden_BCTM, "b c t m -> b t (c m)")
         )
 
-    def attend(self, index: int, attention, hidden_11D: torch.Tensor) -> torch.Tensor:
-        query_HS = rearrange(
-            attention.linear_q(hidden_11D), "1 1 (h s) -> h s", h=self.num_heads
+    def attend(
+        self,
+        index: int,
+        attention: RelPositionMultiHeadAttention,
+        hidden_B1D: torch.Tensor,
+    ) -> torch.Tensor:
+        query_BHS = rearrange(
+            attention.linear_q(hidden_B1D), "b 1 (h s) -> b h s", h=self.num_heads
         )
-        key_HS = rearrange(
-            attention.linear_k(hidden_11D), "1 1 (h s) -> h s", h=self.num_heads
+        key_BHS = rearrange(
+            attention.linear_k(hidden_B1D), "b 1 (h s) -> b h s", h=self.num_heads
         )
-        value_HS = rearrange(
-            attention.linear_v(hidden_11D), "1 1 (h s) -> h s", h=self.num_heads
+        value_BHS = rearrange(
+            attention.linear_v(hidden_B1D), "b 1 (h s) -> b h s", h=self.num_heads
         )
-        keys_KHS = torch.cat((self.key_caches[index], key_HS[None]))[-self.max_keys :]
-        values_KHS = torch.cat((self.value_caches[index], value_HS[None]))[
-            -self.max_keys :
+        keys_BKHS = torch.cat((self.key_caches[index], key_BHS[:, None]), dim=1)[:, 1:]
+        values_BKHS = torch.cat((self.value_caches[index], value_BHS[:, None]), dim=1)[
+            :, 1:
         ]
-        self.key_caches[index] = keys_KHS
-        self.value_caches[index] = values_KHS
+        self.key_caches[index].copy_(keys_BKHS)
+        self.value_caches[index].copy_(values_BKHS)
+        content_BKH = einsum(
+            query_BHS + attention.pos_bias_u, keys_BKHS, "b h s, b k h s -> b k h"
+        )
+        position_BKH = einsum(
+            query_BHS + attention.pos_bias_v,
+            self.posproj_LPHS[index],
+            "b h s, k h s -> b k h",
+        )
+        num_keys = (self.cached_frame_count + 1).clamp(max=self.max_keys)
+        is_padding_BK1 = (self.key_positions_K < (self.max_keys - num_keys)[:, None])[
+            :, :, None
+        ]
+        scores_BKH = (content_BKH + position_BKH) / math.sqrt(self.head_size)
+        weights_BKH = scores_BKH.masked_fill(is_padding_BK1, float("-inf")).softmax(
+            dim=1
+        )
+        attended_BHS = einsum(weights_BKH, values_BKHS, "b k h, b k h s -> b h s")
+        return attention.linear_out(rearrange(attended_BHS, "b h s -> b 1 (h s)"))
 
-        num_keys = keys_KHS.shape[0]
-        content_KH = einsum(
-            query_HS + attention.pos_bias_u, keys_KHS, "h s, k h s -> k h"
-        )
-        position_KH = einsum(
-            query_HS + attention.pos_bias_v,
-            self.posproj_LPHS[index][self.max_keys - num_keys :],
-            "h s, k h s -> k h",
-        )
-        weights_KH = ((content_KH + position_KH) / math.sqrt(self.head_size)).softmax(
-            dim=0
-        )
-        attended_HS = einsum(weights_KH, values_KHS, "k h, k h s -> h s")
-        return attention.linear_out(rearrange(attended_HS, "h s -> 1 1 (h s)"))
+    def convolve(
+        self, index: int, conv: ConformerConvolution, hidden_B1D: torch.Tensor
+    ) -> torch.Tensor:
+        gates_BGt = conv.pointwise_conv1(rearrange(hidden_B1D, "b t d -> b d t"))
+        hidden_BDt = nn.functional.glu(gates_BGt, dim=1)
+        window_BDT = torch.cat((self.conv_caches[index], hidden_BDt), dim=2)
+        self.conv_caches[index].copy_(window_BDT[:, :, 1:])
+        hidden_BDt = nn.Conv1d.forward(conv.depthwise_conv, window_BDT)
+        hidden_B1D = conv.batch_norm(rearrange(hidden_BDt, "b d t -> b t d"))
+        hidden_BDt = conv.activation(rearrange(hidden_B1D, "b t d -> b d t"))
+        hidden_BDt = conv.pointwise_conv2(hidden_BDt)
+        return rearrange(hidden_BDt, "b d t -> b t d")
 
-    def convolve(self, index: int, conv, hidden_11D: torch.Tensor) -> torch.Tensor:
-        gates_1Gt = conv.pointwise_conv1(rearrange(hidden_11D, "b t d -> b d t"))
-        hidden_1Dt = nn.functional.glu(gates_1Gt, dim=1)
-        window_1DT = torch.cat((self.conv_caches[index], hidden_1Dt), dim=2)
-        self.conv_caches[index] = window_1DT[:, :, 1:]
-        hidden_1Dt = nn.Conv1d.forward(conv.depthwise_conv, window_1DT)
-        hidden_11D = conv.batch_norm(rearrange(hidden_1Dt, "b d t -> b t d"))
-        hidden_1Dt = conv.activation(rearrange(hidden_11D, "b t d -> b d t"))
-        hidden_1Dt = conv.pointwise_conv2(hidden_1Dt)
-        return rearrange(hidden_1Dt, "b d t -> b t d")
+
+class GraphPerception(StreamingPerception):
+    def __init__(self, perception: AudioPerception, *, batch_size: int) -> None:
+        super().__init__(perception, batch_size=batch_size)
+        self.graph: torch.cuda.CUDAGraph | None = None
+        self.graph_input: torch.Tensor | None = None
+        self.graph_output: torch.Tensor | None = None
+
+    @torch.inference_mode()
+    def push(self, samples: torch.Tensor) -> torch.Tensor:
+        assert samples.shape == (self.batch_size, SAMPLES_PER_FRAME)
+        if self.device.type != "cuda":
+            return super().push(samples)
+        else:
+            pass
+        if self.graph is None:
+            buffers = self.state_buffers()
+            saved_values = [buffer.clone() for buffer in buffers]
+            self.graph_input = samples.to(device=self.device, dtype=self.dtype).clone()
+            capture_stream = torch.cuda.Stream(device=self.device)
+            current_stream = torch.cuda.current_stream(self.device)
+            capture_stream.wait_stream(current_stream)
+            with torch.cuda.stream(capture_stream):
+                for iteration in range(GRAPH_WARMUP_STEPS):
+                    super().push(self.graph_input)
+            current_stream.wait_stream(capture_stream)
+            for buffer, saved_value in zip(buffers, saved_values, strict=True):
+                buffer.copy_(saved_value)
+            self.graph = torch.cuda.CUDAGraph()
+            # note (Xinhao Tan): other threads of the stage process may use CUDA while a bucket captures.
+            with torch.cuda.graph(
+                self.graph, stream=capture_stream, capture_error_mode="thread_local"
+            ):
+                self.graph_output = super().push(self.graph_input)
+        else:
+            pass
+        assert self.graph_input is not None and self.graph_output is not None
+        self.graph_input.copy_(samples)
+        self.graph.replay()
+        return self.graph_output.clone()

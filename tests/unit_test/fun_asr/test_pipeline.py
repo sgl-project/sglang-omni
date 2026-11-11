@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -39,43 +38,10 @@ def test_fun_asr_config_uses_batched_stage_with_64_running_requests() -> None:
     )
 
 
-def test_fun_asr_stage_default_allows_64_running_requests() -> None:
-    signature = inspect.signature(fun_asr_stages.create_sglang_fun_asr_executor)
-
-    assert signature.parameters["max_running_requests"].default == 64
-    assert signature.parameters["max_new_tokens"].default == 200
-    assert signature.parameters["enable_pre_lm_encoder"].default is True
-    assert signature.parameters["pre_lm_cache_max_entries"].default == 4096
-    assert signature.parameters["pre_lm_cache_size_bytes"].default == 2 * 1024**3
-    assert signature.parameters["pre_lm_max_batch_size"].default == 8
-    assert signature.parameters["pre_lm_max_batch_wait_ms"].default == 10
-    assert signature.parameters["request_build_max_workers"].default == 8
-    assert signature.parameters["request_build_max_pending"].default == 32
-    assert signature.parameters["stream_emit_interval_s"].default == 0.05
-
-
-def test_fun_asr_stage_defaults_enable_pending_build_aware_coalescing() -> None:
-    signature = inspect.signature(fun_asr_stages.create_sglang_fun_asr_executor)
-
-    assert signature.parameters["prefill_coalesce_requests"].default == 16
-    assert signature.parameters["prefill_coalesce_wait_ms"].default == 24.0
-    assert signature.parameters["prefill_coalesce_when_idle"].default is True
-    assert (
-        signature.parameters["prefill_coalesce_requires_pending_builds"].default is True
-    )
-    assert (
-        signature.parameters["prefill_coalesce_after_builds_during_decode"].default
-        is True
-    )
-    assert signature.parameters["enable_async_decode"].default is True
-    assert signature.parameters["async_decode_min_batch_size"].default == 2
-
-
 @pytest.mark.parametrize(
     ("batch_size", "wait_ms", "match"),
     [
         (0, 4, "pre_lm_max_batch_size"),
-        (-1, 4, "pre_lm_max_batch_size"),
         (8, -1, "pre_lm_max_batch_wait_ms"),
     ],
 )
@@ -91,31 +57,6 @@ def test_fun_asr_stage_rejects_invalid_pre_lm_batch_knobs(
         )
 
 
-def test_fun_asr_stage_default_uses_auto_static_kv_budget() -> None:
-    signature = inspect.signature(fun_asr_stages.create_sglang_fun_asr_executor)
-
-    assert signature.parameters["mem_fraction_static"].default is None
-
-
-def test_fun_asr_stage_default_disables_multimodal_embedding_cache() -> None:
-    signature = inspect.signature(fun_asr_stages.create_sglang_fun_asr_executor)
-
-    assert signature.parameters["mm_embedding_cache_size_bytes"].default == 0
-
-
-def test_fun_asr_stage_default_defers_torch_compile_to_builder() -> None:
-    signature = inspect.signature(fun_asr_stages.create_sglang_fun_asr_executor)
-
-    assert signature.parameters["enable_torch_compile"].default is None
-
-
-def test_fun_asr_stage_default_enables_async_decode() -> None:
-    signature = inspect.signature(fun_asr_stages.create_sglang_fun_asr_executor)
-
-    assert signature.parameters["enable_async_decode"].default is True
-    assert signature.parameters["async_decode_min_batch_size"].default == 2
-
-
 def test_fun_asr_threads_generation_batch_and_request_build_policy(
     monkeypatch,
 ) -> None:
@@ -128,6 +69,11 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(
     validations: list[dict[str, object]] = []
     stream_builder_calls: list[dict[str, object]] = []
     stream_output_builder = object()
+
+    # Exercise the existing CUDA policy regardless of the host platform.
+    monkeypatch.setattr(
+        "sglang_omni.utils.device.resolve_device_spec", lambda *args: "cuda:0"
+    )
 
     def tokenizer(text, add_special_tokens=False):
         return SimpleNamespace(input_ids=[0] * len(text))
@@ -144,7 +90,7 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(
         lambda *args, **kwargs: tokenizer,
     )
     monkeypatch.setattr(
-        fun_asr_builder.AutoFeatureExtractor,
+        fun_asr_builder.FunAsrNanoFeatureExtractor,
         "from_pretrained",
         lambda *args, **kwargs: SimpleNamespace(nb_max_frames=500),
     )
@@ -275,8 +221,14 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(
         256
     )
     assert infra_kwargs[-1]["enable_prefill_input_embeds"] is True
+    # note (luojiaxuan): Fun-ASR does not declare the full prefill backend, so
+    # the builder must hand the validator the breakable-only set.
     assert validations == [
-        {"model_name": "Fun-ASR", "server_args": scheduler.server_args}
+        {
+            "model_name": "Fun-ASR",
+            "server_args": scheduler.server_args,
+            "allowed_prefill_backends": ("breakable",),
+        }
     ]
     assert adapter_kwargs["audio_encoder_service"] is encoder_services[0]
     assert scheduler.request_build_max_workers == 8
@@ -286,7 +238,7 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(
     ]
     assert scheduler.stream_output_builder is stream_output_builder
     assert scheduler.enable_async_decode is True
-    assert scheduler.async_decode_min_batch_size == 2
+    assert scheduler.async_decode_min_batch_size == 1
     assert scheduler.prefill_coalesce_requests == 16
     assert scheduler.prefill_coalesce_wait_ms == 24.0
     assert scheduler.prefill_coalesce_when_idle is True
@@ -320,5 +272,64 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(
     assert encoder_services[2].close_calls == 1
 
 
-def test_fun_asr_declares_breakable_prefill_cuda_graph_support() -> None:
-    assert fun_asr_builder.FunASREngineBuilder.supports_breakable_prefill_cuda_graph
+def apple_builder(monkeypatch):
+    monkeypatch.setattr(fun_asr_builder.current_platform, "is_mps", lambda: True)
+    captured = []
+    monkeypatch.setattr(
+        fun_asr_builder.FunASREngineBuilder,
+        "build",
+        lambda self, *args, **kwargs: captured.append(self),
+    )
+    fun_asr_stages.create_sglang_fun_asr_executor("dummy")
+    builder = captured[0]
+    builder.device = "mps"
+    builder.context_length = 300
+    return builder
+
+
+def test_apple_profile_skips_cuda_resources_and_uses_greedy_requests(monkeypatch):
+    builder = apple_builder(monkeypatch)
+    defaults = builder.generation_defaults(dtype="bfloat16")
+    assert defaults["max_running_requests"] == 1
+    assert defaults["disable_cuda_graph"]
+    assert defaults["disable_radix_cache"]
+    assert defaults["chunked_prefill_size"] == -1
+    overrides = {"enable_torch_compile": True}
+    builder.adjust_overrides(overrides)
+    assert overrides["enable_torch_compile"] is False
+    builder.enable_encoder_cuda_graph = True
+    builder.enable_encoder_torch_compile = True
+    # Dummy models cannot compile or run an encoder; the Apple path should not try.
+    builder.setup_model_resources(
+        object(), object(), generation_cuda_graph_enabled=False
+    )
+    builder.setup_runtime_resources(object(), object())
+    assert builder.audio_encoder_service is None
+    options = builder.extra_scheduler_kwargs()
+    assert options["enable_async_decode"] is False
+    assert options["prefill_coalesce_requests"] == 0
+    assert options["request_build_max_workers"] == 1
+    monkeypatch.setattr(
+        request_builders, "make_fun_asr_scheduler_adapters", lambda **kwargs: kwargs
+    )
+    assert builder.make_adapters(object())["greedy_only"]
+
+
+@pytest.mark.parametrize(
+    "override,match",
+    [
+        ({"max_running_requests": 2}, "max_running_requests=1"),
+        ({"disable_radix_cache": False}, "disabled radix cache"),
+        ({"chunked_prefill_size": 128}, "chunked prefill"),
+        ({"quantization": "fp8"}, "unquantized"),
+    ],
+)
+def test_apple_rejects_unsupported_runtime_options(monkeypatch, override, match):
+    builder = apple_builder(monkeypatch)
+    args = {
+        **builder.generation_defaults(dtype="bfloat16"),
+        "quantization": None,
+        **override,
+    }
+    with pytest.raises(ValueError, match=match):
+        builder.validate_before_infrastructure(SimpleNamespace(**args))

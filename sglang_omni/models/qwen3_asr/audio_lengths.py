@@ -3,12 +3,13 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import torch
+from numpy.typing import ArrayLike
 
 
-def qwen3_asr_audio_token_lengths(input_lengths: Any) -> torch.Tensor:
+def qwen3_asr_audio_token_lengths(
+    input_lengths: ArrayLike | torch.Tensor,
+) -> torch.Tensor:
     """Return Qwen3-ASR encoder output lengths for mel-frame lengths.
 
     This mirrors the upstream audio encoder shape math: 100-frame windows emit

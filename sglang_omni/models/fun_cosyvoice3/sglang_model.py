@@ -4,13 +4,23 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Optional, Tuple
+from collections.abc import Iterable
 
 import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+from sglang.srt.layers.quantization.base_config import QuantizationConfig
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.qwen2 import Qwen2ForCausalLM
+from sglang.srt.runtime_context import get_exec
 from torch import nn
+from transformers import Qwen2Config
+
+from sglang_omni.platforms import current_platform
+from sglang_omni.sampling.sampler_compile import (
+    SamplerCompileForms,
+    compile_sampler_functions,
+)
 
 VOCAB_SIZE = 6561
 TOTAL_VOCAB_SIZE = VOCAB_SIZE + 200
@@ -27,10 +37,10 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
 
     def __init__(
         self,
-        config: Any,
-        quant_config: Any = None,
+        config: Qwen2Config,
+        quant_config: QuantizationConfig | None = None,
         prefix: str = "",
-    ):
+    ) -> None:
         super().__init__(config, quant_config, prefix)
         self.text_embed_tokens = self.model.embed_tokens
         self.speech_embedding = nn.Embedding(TOTAL_VOCAB_SIZE, config.hidden_size)
@@ -45,23 +55,30 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
     def vocab_size(self, value: int) -> None:
         pass
 
-    def get_input_embeddings(self):
+    def get_input_embeddings(self) -> nn.Embedding:
         return self.speech_embedding
+
+    def set_dflash_layers_to_capture(self, layer_ids: list[int]) -> None:
+        """Capture the residual stream after each named layer for a DSpark draft."""
+        self.capture_aux_hidden_states = True
+        self.model.layers_to_capture = [layer_id + 1 for layer_id in layer_ids]
 
     @torch.no_grad()
     def forward(
         self,
         input_ids: torch.Tensor,
         positions: torch.Tensor,
-        forward_batch: Any,
-        input_embeds: torch.Tensor = None,
+        forward_batch: ForwardBatch,
+        input_embeds: torch.Tensor | None = None,
         get_embedding: bool = False,
-        pp_proxy_tensors: Optional[Any] = None,
-    ) -> Any:
+        pp_proxy_tensors: PPProxyTensors | None = None,
+        omni_prefill_rids: list[str] | None = None,
+    ) -> LogitsProcessorOutput:
+        """Logits of each request's last position; omni_prefill_rids comes with the
+        prefill embeddings and the logits do not depend on it."""
         fwd_mode = forward_batch.forward_mode
-        is_decode = fwd_mode.is_decode()
-
-        if is_decode:
+        # Decode and speculative verify feed sampled speech ids; prefill feeds embeds.
+        if fwd_mode.is_decode() or fwd_mode.is_target_verify():
             input_embeds = self.speech_embedding(input_ids)
         else:
             pass
@@ -73,8 +90,13 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
             input_embeds,
             pp_proxy_tensors=pp_proxy_tensors,
         )
+        if self.capture_aux_hidden_states:
+            hidden_states, auxiliary_hidden_states = hidden_states
+            captured_hidden_states = torch.cat(auxiliary_hidden_states, dim=-1)
+        else:
+            captured_hidden_states = None
 
-        if fwd_mode.is_extend():
+        if fwd_mode.is_extend() and not fwd_mode.is_target_verify():
             extend_seq_lens = forward_batch.extend_seq_lens
             if extend_seq_lens is not None:
                 last_indices = (
@@ -89,12 +111,39 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
         else:
             pass
 
-        logits = self.llm_decoder(hidden_states)
+        if current_platform.is_cuda():
+            # note (ratish): the sampler applies the temperature and the softmax in place
+            # in the logits' dtype, so the head writes float32 logits.
+            logits = torch.mm(
+                hidden_states, self.llm_decoder.weight.T, out_dtype=torch.float32
+            )
+        else:
+            logits = self.llm_decoder(hidden_states)
         return LogitsProcessorOutput(
-            next_token_logits=logits, hidden_states=hidden_states
+            next_token_logits=logits,
+            hidden_states=(
+                hidden_states
+                if captured_hidden_states is None
+                else captured_hidden_states
+            ),
         )
 
-    def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
+    def precompile_kernels_after_loading(self) -> None:
+        """Compile the repetition penalty every default request applies, on the float32
+        logits forward writes, and load FlashInfer's sampling module when it draws the
+        unseeded requests."""
+        compile_sampler_functions(
+            SamplerCompileForms(
+                device=self.llm_decoder.weight.device,
+                vocab_size=TOTAL_VOCAB_SIZE,
+                penalized_logits_dtype=torch.float32,
+                should_load_flashinfer_sampling=(
+                    get_exec().kernel.sampling_backend == "flashinfer"
+                ),
+            )
+        )
+
+    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> None:
         backbone_weights = []
 
         for name, loaded_weight in weights:

@@ -1,11 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """Typed references to data-plane buffers carried by control messages."""
+
 from __future__ import annotations
 
+import base64
+from collections.abc import Mapping
 from enum import Enum
-from typing import Any
+from typing import Annotated, TypeVar
 
 import msgspec
+
+DataRefValueT = TypeVar("DataRefValueT")
 
 
 class TransportKind(str, Enum):
@@ -40,7 +45,7 @@ class TensorMeta(msgspec.Struct, frozen=True):
     offset: int
     size: int
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, str | list[int] | int]:
         return {
             "path": self.path,
             "shape": list(self.shape),
@@ -51,7 +56,7 @@ class TensorMeta(msgspec.Struct, frozen=True):
         }
 
     @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> "TensorMeta":
+    def from_dict(cls, value: Mapping[str, object]) -> "TensorMeta":
         return cls(
             path=required(value, "path", str),
             shape=int_tuple(value, "shape"),
@@ -64,12 +69,12 @@ class TensorMeta(msgspec.Struct, frozen=True):
 
 class BackendRef(msgspec.Struct, frozen=True):
     transport: TransportKind
-    info: dict[str, Any]
+    info: dict[str, Annotated[object, msgspec.Meta(extra_json_schema={"anyOf": [{}]})]]
     length: int
 
     @classmethod
     def from_relay_info(
-        cls, *, transport: TransportKind, relay_info: dict[str, Any]
+        cls, *, transport: TransportKind, relay_info: dict[str, object]
     ) -> "BackendRef":
         transfer_info = required(relay_info, "transfer_info", dict)
         return cls(
@@ -78,7 +83,7 @@ class BackendRef(msgspec.Struct, frozen=True):
             length=required(transfer_info, "size", int),
         )
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "transport": self.transport.value,
             "info": self.info,
@@ -86,7 +91,7 @@ class BackendRef(msgspec.Struct, frozen=True):
         }
 
     @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> "BackendRef":
+    def from_dict(cls, value: Mapping[str, object]) -> "BackendRef":
         return cls(
             transport=TransportKind(required(value, "transport", str)),
             info=required(value, "info", dict),
@@ -98,11 +103,11 @@ class MetadataTensorRef(msgspec.Struct, frozen=True):
     path: str
     ref: "DataRef"
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {"path": self.path, "ref": self.ref.to_dict()}
 
     @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> "MetadataTensorRef":
+    def from_dict(cls, value: Mapping[str, object]) -> "MetadataTensorRef":
         return cls(
             path=required(value, "path", str),
             ref=DataRef.from_dict(required(value, "ref", dict)),
@@ -118,17 +123,17 @@ class DataRef(msgspec.Struct, frozen=True):
     transport: TransportKind
     layout: DataLayout
     buffer: BackendRef
-    header: str | None = None
+    header: bytes | None = None
     tensors: tuple[TensorMeta, ...] = ()
     shape: tuple[int, ...] | None = None
     dtype: str | None = None
     device: str | None = None
     offset: int | None = None
-    metadata: dict[str, Any] | None = None
+    metadata: dict[str, object] | None = None
     metadata_tensors: tuple[MetadataTensorRef, ...] = ()
 
-    def to_dict(self) -> dict[str, Any]:
-        value: dict[str, Any] = {
+    def to_dict(self) -> dict[str, object]:
+        value: dict[str, object] = {
             "_type": "DataRef",
             "version": self.version,
             "kind": self.kind.value,
@@ -168,7 +173,7 @@ class DataRef(msgspec.Struct, frozen=True):
         return value
 
     @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> "DataRef":
+    def from_dict(cls, value: Mapping[str, object]) -> "DataRef":
         if required(value, "_type", str) != "DataRef":
             raise ValueError("data_ref must have _type='DataRef'")
         else:
@@ -178,6 +183,14 @@ class DataRef(msgspec.Struct, frozen=True):
             raise ValueError(f"unsupported DataRef version {version}")
         else:
             pass
+        header = value.get("header")
+        if type(header) is str:
+            # note (koppx): senders before the binary header still send base64 text.
+            header = base64.b64decode(header)
+        elif header is not None and type(header) is not bytes:
+            raise TypeError("header must be str, bytes or None")
+        else:
+            pass
         return cls(
             version=version,
             kind=DataKind(required(value, "kind", str)),
@@ -185,7 +198,7 @@ class DataRef(msgspec.Struct, frozen=True):
             transport=TransportKind(required(value, "transport", str)),
             layout=DataLayout(required(value, "layout", str)),
             buffer=BackendRef.from_dict(required(value, "buffer", dict)),
-            header=optional(value, "header", str),
+            header=header,
             tensors=tuple(
                 TensorMeta.from_dict(item) for item in required(value, "tensors", list)
             ),
@@ -203,7 +216,9 @@ class DataRef(msgspec.Struct, frozen=True):
         )
 
 
-def required(value: dict[str, Any], key: str, expected: type) -> Any:
+def required(
+    value: Mapping[str, object], key: str, expected: type[DataRefValueT]
+) -> DataRefValueT:
     item = value[key]
     if type(item) is not expected:
         raise TypeError(f"{key} must be {expected.__name__}, got {type(item).__name__}")
@@ -212,7 +227,9 @@ def required(value: dict[str, Any], key: str, expected: type) -> Any:
     return item
 
 
-def optional(value: dict[str, Any], key: str, expected: type) -> Any | None:
+def optional(
+    value: Mapping[str, object], key: str, expected: type[DataRefValueT]
+) -> DataRefValueT | None:
     item = value.get(key)
     if item is None:
         return None
@@ -220,14 +237,14 @@ def optional(value: dict[str, Any], key: str, expected: type) -> Any | None:
         pass
     if type(item) is not expected:
         raise TypeError(
-            f"{key} must be {expected.__name__} or None, " f"got {type(item).__name__}"
+            f"{key} must be {expected.__name__} or None, got {type(item).__name__}"
         )
     else:
         pass
     return item
 
 
-def int_tuple(value: dict[str, Any], key: str) -> tuple[int, ...]:
+def int_tuple(value: Mapping[str, object], key: str) -> tuple[int, ...]:
     items = required(value, key, list)
     if not all(type(item) is int for item in items):
         raise TypeError(f"{key} must be list[int]")

@@ -5,16 +5,19 @@ Qwen3-ASR inherits mrope_section from the Omni thinker config, so sglang treats
 the model as mrope and rebuilds mrope_positions per request on every decode
 step. ASR has no spatial axes, so that work is pure overhead.
 
-Can set env SGLANG_OMNI_ASR_FAST_MROPE=0 to disable.
+Set SGLANG_OMNI_ASR_FAST_MROPE=0 to disable the decode shortcut.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from collections.abc import Callable
 
 import torch
+from sglang.srt.managers.schedule_batch import MultimodalInputs, ScheduleBatch
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+from sglang.srt.model_executor.model_runner import ModelRunner
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +25,12 @@ logger = logging.getLogger(__name__)
 # degenerate (text-equivalent) mrope: identical rows, delta == 0.
 DEGENERATE_MROPE_FLAG = "_asr_degenerate_mrope"
 
-_orig_compute_mrope_positions: Any = None
+_orig_compute_mrope_positions: (
+    Callable[[ForwardBatch, ModelRunner, ScheduleBatch], None] | None
+) = None
 
 
-def all_degenerate(multimodal_inputs: list[Any]) -> bool:
+def all_degenerate(multimodal_inputs: list[MultimodalInputs | None]) -> bool:
     for mm_input in multimodal_inputs:
         if mm_input is not None and not getattr(mm_input, DEGENERATE_MROPE_FLAG, False):
             return False
@@ -34,7 +39,9 @@ def all_degenerate(multimodal_inputs: list[Any]) -> bool:
     return True
 
 
-def fast_compute_mrope_positions(self: Any, model_runner: Any, batch: Any) -> None:
+def fast_compute_mrope_positions(
+    self: ForwardBatch, model_runner: ModelRunner, batch: ScheduleBatch
+) -> None:
     """Drop-in replacement for ForwardBatch._compute_mrope_positions.
 
     For a batch with multimodal inputs, upstream still walks the requests on
@@ -60,25 +67,18 @@ def fast_compute_mrope_positions(self: Any, model_runner: Any, batch: Any) -> No
 
 
 def apply_asr_mrope_fast_path() -> None:
-    """Patch ForwardBatch._compute_mrope_positions with the fast path."""
+    """Install the ASR decode MRoPE fast path."""
     global _orig_compute_mrope_positions
 
     if os.environ.get("SGLANG_OMNI_ASR_FAST_MROPE", "1") == "0":
         logger.info("[qwen3-asr] fast mrope decode path disabled via env")
-        return
+    elif _orig_compute_mrope_positions is None:
+        _orig_compute_mrope_positions = (
+            ForwardBatch._compute_mrope_positions  # noqa: leading-underscore  # inherited method
+        )
+        ForwardBatch._compute_mrope_positions = (  # noqa: leading-underscore  # inherited method
+            fast_compute_mrope_positions
+        )
+        logger.info("[qwen3-asr] fast mrope decode path applied")
     else:
         pass
-    if _orig_compute_mrope_positions is not None:
-        return
-    else:
-        pass
-
-    from sglang.srt.model_executor.forward_batch_info import ForwardBatch
-
-    _orig_compute_mrope_positions = (
-        ForwardBatch._compute_mrope_positions  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-    )  # save the original function
-    ForwardBatch._compute_mrope_positions = (  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-        fast_compute_mrope_positions  # replace with the fast path
-    )
-    logger.info("[qwen3-asr] fast mrope decode path applied")

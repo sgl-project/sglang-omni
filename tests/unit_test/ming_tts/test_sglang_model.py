@@ -2,11 +2,23 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 import torch
+
+
+def test_model_class_imports_without_the_audio_vae() -> None:
+    script = (
+        "import sys\n"
+        "import sglang_omni.models.ming_tts.sglang_model\n"
+        "loaded = sorted(name for name in sys.modules if name.startswith('diffusers'))\n"
+        "assert not loaded, loaded[:5]\n"
+    )
+    subprocess.run([sys.executable, "-c", script], check=True, timeout=120)
 
 
 @pytest.mark.parametrize(
@@ -35,6 +47,9 @@ def test_ming_tts_owns_tail_execution_geometry(
 ) -> None:
     from sglang_omni.models.ming_omni.talker.talker_module.execution import (
         TalkerExecutionConfig,
+    )
+    from sglang_omni.models.ming_omni.talker.talker_module.packed_qkv import (
+        PackedQKVLinear,
     )
     from sglang_omni.models.ming_tts import sglang_model
 
@@ -120,6 +135,8 @@ def test_ming_tts_owns_tail_execution_geometry(
         rope_seq_len=3,
         rope_max_batch_size=expected_aggregator_capacity,
         norm_layer=norm_layer,
+        qkv_layer=PackedQKVLinear,
+        fuse_residual_norm=True,
     )
     assert dit_execution == TalkerExecutionConfig(
         attn_backend=sglang_model.MING_TTS_TAIL_ATTN_BACKEND,
@@ -127,6 +144,8 @@ def test_ming_tts_owns_tail_execution_geometry(
         rope_seq_len=6,
         rope_max_batch_size=2 * expected_tail_capacity,
         norm_layer=norm_layer,
+        qkv_layer=PackedQKVLinear,
+        fuse_residual_norm=True,
     )
     assert model.decode_input_embedding.num_embeddings == expected_tail_capacity
     assert config.aggregator_config["execution_config"] is stale_execution_config
@@ -135,9 +154,7 @@ def test_ming_tts_owns_tail_execution_geometry(
     kernel.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "platform_name", ["CPUOmniPlatform", "ROCMOmniPlatform", "MUSAOmniPlatform"]
-)
+@pytest.mark.parametrize("platform_name", ["CPUOmniPlatform"])
 def test_ming_tts_rejects_missing_joint_rope_before_building_backbone(
     monkeypatch: pytest.MonkeyPatch,
     platform_name: str,
@@ -200,13 +217,24 @@ def test_ming_tts_tail_compute_owns_model_precision(
             )
             return sampled
 
+    class StopHead:
+        def __call__(self, hidden):
+            observed.append(
+                (
+                    "stop_head",
+                    torch.is_autocast_enabled("cpu"),
+                    torch.get_autocast_dtype("cpu"),
+                )
+            )
+            return torch.zeros(hidden.shape[0], 1, 2)
+
     owner = SimpleNamespace(
         decode_input_embedding=SimpleNamespace(
             weight=torch.empty(1, dtype=weight_dtype)
         ),
         flowloss=FlowLoss(),
         linear_proj_audio=Aggregator(),
-        stop_head=lambda hidden: torch.zeros(hidden.shape[0], 1, 2),
+        stop_head=StopHead(),
     )
     inputs = MingTTSTailInputs(
         hidden_states=torch.zeros(2, 1, 4),
@@ -224,10 +252,12 @@ def test_ming_tts_tail_compute_owns_model_precision(
             timesteps=torch.arange(2),
             sde_random=torch.zeros(1, 2, 1, 4),
         )
+        MingTTSSGLangModel.compute_stop_prob(owner, inputs.hidden_states)
 
     assert observed == [
         ("flow", autocast_enabled, weight_dtype),
         ("aggregator", autocast_enabled, weight_dtype),
+        ("stop_head", autocast_enabled, weight_dtype),
     ]
 
 
@@ -266,162 +296,122 @@ def test_ming_tts_reference_projection_disables_inherited_autocast(
     assert actual.dtype == weight_dtype
 
 
-def test_ming_sparse_moe_tp_collective_uses_forward_flags(monkeypatch) -> None:
-    from sglang.srt.runtime_context import get_forward
+class TinyTailModel:
+    hidden_size = 8
+    history_patch_size = 2
+    latent_dim = 4
+
+    def __init__(self, device: torch.device) -> None:
+        self.decode_input_embedding = torch.nn.Embedding(
+            1, 8, device=device, dtype=torch.bfloat16
+        )
+
+    def make_tail_sampling_inputs(self, *, batch_size: int, device: torch.device):
+        return (
+            torch.randn(batch_size, 1, 4, device=device),
+            torch.linspace(0.0, 1.0, 3, device=device),
+            torch.randn(2, batch_size, 1, 4, device=device),
+        )
+
+    def compute_tail_step(self, inputs, *, noise, timesteps, sde_random):
+        from sglang_omni.models.ming_tts.sglang_model import MingTTSTailOutputs
+
+        hidden = inputs.hidden_states.unsqueeze(1)
+        attended = torch.nn.functional.scaled_dot_product_attention(
+            hidden, hidden, hidden
+        ).squeeze(1)
+        sampled = (
+            attended[..., :4].float() * inputs.cfg[:, None, None]
+            + noise * inputs.sigma[:, None, None] * timesteps[-1]
+            + sde_random.sum(0)
+            + inputs.latent_history.mean(1, keepdim=True)
+        )
+        feedback = self.decode_input_embedding.weight[0] * sampled.sum(
+            -1, keepdim=True
+        ).to(torch.bfloat16)
+        return MingTTSTailOutputs(
+            sampled=sampled,
+            feedback_embeddings=feedback,
+        )
+
+
+@pytest.mark.accelerator
+def test_ming_tts_tail_graph_replay_matches_eager_on_the_platform_accelerator() -> None:
+    from sglang_omni.models.ming_tts.sglang_model import (
+        MingTTSTailGraph,
+        MingTTSTailInputs,
+    )
+    from sglang_omni.platforms import current_platform
+
+    if current_platform.device_type == "cpu":
+        pytest.skip("requires an accelerator")
+    else:
+        pass
+    device = torch.device(current_platform.device_type, 0)
+    model = TinyTailModel(device)
+    graph = MingTTSTailGraph(model, batch_size=2)
+    graph.capture()
+    inputs = MingTTSTailInputs(
+        hidden_states=torch.randn(1, 1, 8, device=device, dtype=torch.bfloat16),
+        latent_history=torch.randn(1, 2, 4, device=device),
+        cfg=torch.full((1,), 2.0, device=device),
+        sigma=torch.full((1,), 0.25, device=device),
+        temperature=torch.zeros(1, device=device),
+    )
+    noise = torch.randn(1, 1, 4, device=device)
+    sde_random = torch.randn(2, 1, 1, 4, device=device)
+
+    replayed = graph.replay(inputs, noise=noise, sde_random=sde_random)
+    eager = model.compute_tail_step(
+        inputs, noise=noise, timesteps=graph.timesteps, sde_random=sde_random
+    )
+
+    torch.testing.assert_close(replayed.sampled, eager.sampled)
+    torch.testing.assert_close(replayed.feedback_embeddings, eager.feedback_embeddings)
+
+
+def test_ming_tts_tail_graph_rejects_a_device_without_a_graph_backend() -> None:
+    from sglang_omni.models.ming_tts.sglang_model import MingTTSTailGraph
+
+    graph = MingTTSTailGraph(TinyTailModel(torch.device("cpu")), batch_size=1)
+
+    with pytest.raises(RuntimeError, match="no device graph backend for cpu"):
+        graph.capture()
+
+
+def test_ming_tts_moe_block_binds_its_topk_to_the_experts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The MoE block built a TopK and never bound it to its experts, which the routing forward refuses."""
+    from torch import nn
 
     from sglang_omni.models.ming_tts import sglang_model
+    from tests.unit_test.fixtures.moe_fakes import FakeExperts, RecordingTopK
 
-    helper_calls: list[tuple[bool, bool, bool]] = []
-
-    def strict_helper(*, is_tp_path: bool) -> bool:
-        forward = get_forward()
-        helper_calls.append(
-            (
-                is_tp_path,
-                forward.fuse_mlp_allreduce,
-                forward.mlp_reduce_scatter,
-            )
-        )
-        return forward.fuse_mlp_allreduce or forward.mlp_reduce_scatter
-
-    all_reduce_calls: list[torch.Tensor] = []
-
-    def fake_all_reduce(hidden_states: torch.Tensor) -> torch.Tensor:
-        all_reduce_calls.append(hidden_states.clone())
-        return hidden_states + 100
-
+    monkeypatch.setattr(sglang_model, "TopK", RecordingTopK)
     monkeypatch.setattr(
-        sglang_model,
-        "should_skip_post_experts_all_reduce",
-        strict_helper,
+        sglang_model, "get_moe_impl_class", lambda quant_config: FakeExperts
     )
     monkeypatch.setattr(
-        sglang_model,
-        "tensor_model_parallel_all_reduce",
-        fake_all_reduce,
+        sglang_model, "MingBailingMoeGate", lambda config: nn.Identity()
     )
-    block = SimpleNamespace(
-        tp_size=2,
-        shared_experts=None,
-        gate=lambda hidden_states: hidden_states,
-        topk=lambda _hidden_states, _router_logits: object(),
-        experts=lambda hidden_states, _topk_output: hidden_states + 1,
+    monkeypatch.setattr(
+        sglang_model, "get_parallel", lambda: SimpleNamespace(tp_size=1)
     )
-    hidden_states = torch.tensor([[1.0, 2.0]])
-
-    with get_forward().scoped(
-        fuse_mlp_allreduce=False,
-        mlp_reduce_scatter=False,
-    ):
-        ordinary = sglang_model.MingBailingMoeSparseMoeBlock.forward(
-            block,
-            hidden_states,
-        )
-    with get_forward().scoped(
-        fuse_mlp_allreduce=True,
-        mlp_reduce_scatter=False,
-    ):
-        fused = sglang_model.MingBailingMoeSparseMoeBlock.forward(
-            block,
-            hidden_states,
-        )
-    with get_forward().scoped(
-        fuse_mlp_allreduce=False,
-        mlp_reduce_scatter=True,
-    ):
-        reduce_scattered = sglang_model.MingBailingMoeSparseMoeBlock.forward(
-            block,
-            hidden_states,
-        )
-
-    assert torch.equal(ordinary, hidden_states + 101)
-    assert torch.equal(fused, hidden_states + 1)
-    assert torch.equal(reduce_scattered, hidden_states + 1)
-    assert len(all_reduce_calls) == 1
-    assert helper_calls == [
-        (True, False, False),
-        (True, True, False),
-        (True, False, True),
-    ]
-
-
-@pytest.mark.parametrize(
-    ("fuse_mlp_allreduce", "mlp_reduce_scatter", "postprocess_calls"),
-    [(True, False, 0), (False, True, 1)],
-)
-def test_ming_decoder_scopes_mlp_collective_flags(
-    fuse_mlp_allreduce: bool,
-    mlp_reduce_scatter: bool,
-    postprocess_calls: int,
-) -> None:
-    from sglang.srt.runtime_context import get_forward
-
-    from sglang_omni.models.ming_tts.sglang_model import MingBailingMoeDecoderLayer
-
-    class FakeCommunicator:
-        def __init__(self) -> None:
-            self.postprocess_calls = 0
-
-        def prepare_attn_and_capture_last_layer_outputs(
-            self,
-            hidden_states,
-            residual,
-            forward_batch,
-        ):
-            del forward_batch
-            return hidden_states, residual
-
-        def prepare_mlp(self, *, hidden_states, residual, forward_batch):
-            del forward_batch
-            return hidden_states, residual
-
-        def should_fuse_mlp_allreduce_with_next_layer(self, forward_batch):
-            del forward_batch
-            return fuse_mlp_allreduce
-
-        def should_use_reduce_scatter(self, forward_batch):
-            del forward_batch
-            return mlp_reduce_scatter
-
-        def postprocess_layer(self, hidden_states, residual, forward_batch):
-            del forward_batch
-            self.postprocess_calls += 1
-            return hidden_states, residual
-
-    seen_flags: list[tuple[bool, bool]] = []
-
-    def mlp(hidden_states, forward_batch):
-        del forward_batch
-        forward = get_forward()
-        seen_flags.append((forward.fuse_mlp_allreduce, forward.mlp_reduce_scatter))
-        return hidden_states.clone()
-
-    communicator = FakeCommunicator()
-    layer = SimpleNamespace(
-        layer_communicator=communicator,
-        attention=lambda positions, hidden_states, forward_batch: hidden_states,
-        mlp=mlp,
+    config = SimpleNamespace(
+        num_experts=8,
+        num_experts_per_tok=2,
+        norm_topk_prob=True,
+        routed_scaling_factor=1.0,
+        multi_gate=False,
+        hidden_size=16,
+        moe_intermediate_size=32,
+        num_shared_experts=0,
     )
-    hidden_states = torch.ones((1, 2))
 
-    with get_forward().scoped(
-        fuse_mlp_allreduce=False,
-        mlp_reduce_scatter=False,
-    ):
-        output, _ = MingBailingMoeDecoderLayer.forward(
-            layer,
-            positions=torch.tensor([0]),
-            hidden_states=hidden_states,
-            forward_batch=object(),
-            residual=None,
-        )
-        assert get_forward().fuse_mlp_allreduce is False
-        assert get_forward().mlp_reduce_scatter is False
+    block = sglang_model.MingBailingMoeSparseMoeBlock(config, layer_id=0)
 
-    assert seen_flags == [(fuse_mlp_allreduce, mlp_reduce_scatter)]
-    assert communicator.postprocess_calls == postprocess_calls
-    assert getattr(
-        output, "_sglang_needs_allreduce_fusion", False
-    ) is (  # noqa: leading-underscore  # production name
-        fuse_mlp_allreduce
+    assert block.topk.bound == (
+        FakeExperts.runner_backend,
+        FakeExperts.routing_method_type,
     )

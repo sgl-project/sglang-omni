@@ -1,7 +1,6 @@
 # Request-level profiler
 
-`sglang-omni` ships two complementary profilers that share the same `run_id`
-and are controlled by the same HTTP surface:
+`sglang-omni` ships two complementary profilers that share the same `run_id` and are controlled by the same HTTP surface:
 
 - a **request-level event recorder** that writes a JSONL stream of
   per-request milestones (admission, preprocess, encoder, prefill, first
@@ -20,8 +19,7 @@ deeper kernel investigation.
 
 ## Event model
 
-Every instrumentation point appends a single line of JSON to a per-process
-JSONL file. The shape:
+Every instrumentation point records one logical event. After the run is deactivated, each retained event is serialized as one line of JSON in a per-process JSONL file. The shape is:
 
 ```jsonc
 {
@@ -35,11 +33,26 @@ JSONL file. The shape:
 }
 ```
 
-Files are written under `<event_dir>/events_<stage>_<pid>.jsonl`. Multiple
-co-located stages in the same OS process share **one** JSONL file — the
-filename uses the first stage to start, and the per-event `stage` field
-identifies the owner. The views layer merges files from every process by
-`request_id`.
+Files are written under `<event_dir>/events_<stage>_<pid>.jsonl`. Multiple co-located stages in the same OS process share **one** JSONL file — the filename uses the first stage to start, and the per-event `stage` field identifies the owner. The views layer merges files from every process by `request_id`. The writer creates each JSONL file exclusively; an existing file is a storage failure rather than an append target.
+
+The recorder uses one bounded producer-private buffer per OS thread and one low-priority writer thread per process, created only after the run stops. Each producer can retain 1024 events by default. `event_buffer_capacity` overrides that per-producer limit for one recording; any positive integer is accepted, with no hard-coded maximum. The number of producer buffers remains separately bounded at 16 per process. An omitted value uses the recorder's constructor default on each new run, and capacity cannot change during an active run. Buffers grow dynamically as events are retained; event objects are not preallocated.
+
+To estimate memory, multiply the per-recording event capacity by each process's producer-buffer count and sum the results:
+
+```text
+retained_events <= sum(process producer_buffer_count * event_buffer_capacity)
+approximate_memory = retained_events * estimated_bytes_per_event
+```
+
+Bytes per event depends on the workload and Python object contents; measure it when accurate memory budgeting matters. A larger capacity can increase post-stop serialization and flush time. Overflow still drops events and marks the trace incomplete. Linux `SCHED_IDLE` is best effort and cannot guarantee zero Python GIL or CPU interference.
+
+Each OS thread registers its buffer once under a small control lock. Cached producers then capture timestamps, stage attribution, and bounded metadata without acquiring that lock. Buffer admission is the stop cutoff: the post-stop writer waits for admitted operations, while a capture that has not reserved a buffer before stop is ignored and does not consume its snapshots. `RequestEventBuffer` uses the same producer buffer: deferred records count against the same event limit and are snapshotted once. During capture, producers do not start a writer, open files, serialize JSON, flush, or enqueue into a shared queue. JSON serialization, file operations, and flushes run only after deactivation.
+
+Events do not exist on disk until the run has stopped. Consumers must treat a missing sidecar, or a sidecar with `complete: false`, as incomplete.
+
+Each finalized run also attempts to write `run_status_<pid>.json` beside the JSONL file. When publication succeeds, it records `run_id`, `pid`, `stages`, the effective `event_buffer_capacity`, `producer_buffer_count`, and `producer_buffer_event_counts` (accepted plus dropped records per registered buffer), followed by event counters, metadata snapshot and truncation counts, serialization/write/finalization failures, `incomplete_reasons`, and `complete`; that flag has `completeness_scope` set to `event_storage` and does not claim semantic timing or cross-process coverage. The sidecar also records whether the writer obtained `SCHED_IDLE` or used the default scheduling policy. `RequestEventFinalization.wait()` reports whether the status sidecar was published; inspect `complete` separately to determine whether the trace is complete. Producer-buffer overflow, writer failure, metadata snapshot failure, metadata truncation, and a missing or failed drain mark the run incomplete. Consumers must not treat a missing sidecar, or a sidecar with `complete: false`, as a complete trace.
+
+Metadata is intentionally limited to scalars, JSON-like mappings/sequences, and tensor-like values represented by shape/dtype/device summaries. Tensor contents are never materialized by the producer. Unsupported values are rejected without calling arbitrary `repr`; the serving path records a metadata snapshot failure and continues. Strings are bounded, and bytes are unsupported rather than copied into the trace. Bounded depth/item truncation is recorded in the event metadata and in the status sidecar rather than reported as complete.
 
 ### Standard event names
 
@@ -62,7 +75,7 @@ first executable prefill / extend batch is selected.
 | Talker request build execution start / end | `scheduler_request_build_start` / `_end` (stage = talker) | `OmniScheduler._run_request_builder` |
 | Talker prefill start | `scheduler_prefill_start` (stage = talker) | same |
 | First code chunk | `stage_first_stream_chunk_sent` (stage = talker) | `Stage._send_stream_to_target` |
-| Code2Wav first audio | `code2wav_first_audio` | `Code2WavScheduler.decode_delta` / `_flush_pending` / `run_step` |
+| Code2Wav first audio | `code2wav_first_audio` | `Code2WavScheduler.keep_audio` (every decoded or flushed window) |
 | Terminal response | `terminal_response` | `Coordinator._handle_completion` |
 
 Supporting events used for finer-grained breakdown:
@@ -78,11 +91,10 @@ Supporting events used for finer-grained breakdown:
 | Stage | `stage_stream_chunk_received` | Each stream chunk materialized and ready for the receiver scheduler, including coordinator terminal chunks |
 | AR scheduler | `scheduler_queue_enter` | Built request entered the scheduler queue |
 | AR scheduler | `scheduler_first_emit` | First `stream_output_builder` emission per request |
-| Code2Wav | `code2wav_decode_start` | Serial decode start: trigger, start/end/new/context/window frames, active and threshold-ready requests, inbox depth |
-| Code2Wav | `code2wav_decode_launched` | Pipelined serial window whose vocoder work and asynchronous D2H copy have been enqueued; includes execution mode and window/new-frame counts |
+| AR scheduler | `session_kv_snapshot` | Streaming-session KV after a completed Unit has checkpointed: logical/session-window lengths, allocated/available pool positions and cache-evictable positions |
+| Code2Wav | `code2wav_decode_start` | Each window's decode start: trigger, start/end/new/context/window frames, `rows` (the windows its replay decodes together), active and threshold-ready requests, inbox depth |
+| Code2Wav | `code2wav_decode_launched` | Pipelined window whose vocoder work and asynchronous D2H copy have been enqueued; includes execution mode, window/new-frame counts and `rows` |
 | Code2Wav | `code2wav_decode_end` | Repeats start metadata and adds the current decode's `audio_samples` plus execution metadata; output-overlap runs also include `pipelined` and the previous window's post-EOS-scan `d2h_wait_ns` |
-| Code2Wav | `code2wav_batch_start` | Coalesced step start: batch and bucket shape, new/window frames, active requests, inbox depth, oldest wait, fire reason, due-bucket count, and sub-batch decomposition |
-| Code2Wav | `code2wav_batch_end` | Repeats the start metadata and adds audio samples, execution mode, graph key, and fallback reason |
 
 Read `d2h_wait_ns` narrowly. With output overlap on, the lazy codec-EOS scan
 calls `.tolist()` on the staged frame heads, which is itself a host
@@ -94,6 +106,89 @@ measurement of whether blocking synchronization was actually removed.
 Custom callsites can call `sglang_omni.profiler.event_recorder.emit(...)` to
 add domain-specific events. Events from inactive recorders are no-ops, so
 instrumentation sites do not need to guard against the disabled case.
+
+## Full Duplex session Unit metrics
+
+Pass `event_buffer_capacity` to `POST /start_request_profile`, or to `POST /start_profile` when request-event recording is enabled. For example:
+
+```bash
+curl -X POST http://127.0.0.1:8000/start_request_profile \
+  -H 'Content-Type: application/json' \
+  -d '{"run_id":"performance_test","event_dir":"/tmp/performance_test/events","event_buffer_capacity":1500}'
+```
+
+The value applies per producer for that run and can be changed on the next profiling run without restarting the server.
+
+Enable the existing request event recorder with `POST /start_request_profile`
+and stop it with `POST /stop_request_profile`. The JSONL files then include a
+small session vocabulary that can be converted with
+`sglang_omni.profiler.duplex_metrics.build_duplex_session_metrics`.
+
+Each session-specific event carries its `request_id`; the report uses session
+metadata to name the Unit as `(session_id, session_open_index, input_seq)`.
+Unit lifecycle and start events carry the input modality and media clock.
+Output events carry the output sequence, modality, media clock, duration, and
+kind. Payload bytes are never stored.
+
+`session_kv_snapshot` is emitted after a completed AR Unit releases its request row into the streaming-session cache. Its `cache_type` and `kv_allocator_type` fields identify the active cache path. `session_logical_length` is the record's logical sequence length and can exceed the physical pool for a sliding-window model. `session_swa_evicted_length` is the record's SWA eviction cursor, and `session_window_kv_positions` is their difference. `kv_pool_capacity_positions`, `kv_pool_allocated_positions`, `available_kv_positions`, and `evictable_kv_positions` describe the allocator at that boundary. For a single PureSWA session with radix caching disabled, the session-window and pool-allocated counts must agree; their plateau, not the logical length or process GPU memory, shows whether the pool reuses expired slots during a long call.
+
+The event boundaries have these meanings:
+
+- `session_unit_ready` is declared by the ingress owner when a logical Unit
+  has all required input needed to run without waiting for more required
+  input. It is modality-independent and is not inferred by the profiler from
+  PCM, frames, or any other payload boundary.
+- `session_unit_admitted` is emitted after the coordinator accepts an append;
+  a rejected `QueueFullError` has no event.
+- `stage_dispatch` is the existing stage ingress observation used as the queue
+  boundary for a non-AR session Unit.
+- `scheduler_queue_enter` and `scheduler_prefill_start` are the existing AR
+  scheduler boundaries. For an AR Unit, they replace `stage_dispatch` and
+  `session_stage_started` for queue and start timing.
+- `session_stage_started` marks execution after per-session ordering for a
+  `SessionScheduler` stage.
+- `session_stage_bypassed` is the authoritative AR decision that an input
+  Unit completed without generation. Its `reason` metadata identifies the
+  bypass path, such as `generation_bypassed` or `finish_input`.
+- `stage_complete` is the existing stage result observation used as the finish
+  boundary for a session Unit.
+- `session_output_emitted` marks a model content chunk entering the
+  coordinator output buffer. `input_done` is a lifecycle completion and is
+  recorded as `session_unit_finished`, not as model output.
+
+The report joins generic stage events by `request_id`. For AR stages, `queue_ms`
+is `scheduler_queue_enter -> scheduler_prefill_start`; for
+`SessionScheduler` stages, it is `stage_dispatch -> session_stage_started`.
+`service_ms` is the observed execution-start to `stage_complete` interval, not
+pure GPU compute time. A stage is `observed` when its selected boundaries are
+complete, `bypassed` when `session_stage_bypassed` is present, and `incomplete`
+when a boundary is missing. Bypassed stages retain their timestamp and reason;
+queue and service durations remain `null`. `handoff_from_previous_ms` ends at
+the current stage's generic `stage_dispatch` boundary. The recorder carries
+the input media clock for later benchmarking, but this slice does not claim
+semantic input-to-output latency, playback underrun, or deadline misses.
+
+Readiness is observed only while the request event recorder is active. The
+internal observation carries that profiler run ID, and admission emits the
+ready event only when the same run is still active; a run rotation leaves the
+admitted-based values valid while ready-based values remain unavailable.
+
+The report names the ready-based values explicitly:
+`ready_to_admitted_ms`, `ready_to_first_output_ms`, and
+`ready_to_finished_ms`. They measure ingress wait, ready-to-first-output, and
+ready-to-finish directly from their event timestamps. The admitted-based
+decomposition remains available as `admitted_to_first_output_ms` and
+`admitted_to_finished_ms`; those intervals start when
+`CoordinatorSessions.append_session` accepts the Unit. They exclude any
+earlier `SessionRuntime.pending_pcm` buffering before submission and do not
+claim producer-ready, client/network, semantic-response, playback, or
+deadline latency. For a complete Unit, `ready_to_first_output_ms` is the
+ready-to-admission wait plus the post-admission time to first output; each
+value is derived per Unit before aggregation.
+
+The `SessionScheduler` scalar hook emits one start event per Unit immediately
+before append. `BatchedSessionHooks.append_batch` emits one event per row with
+one shared directly observed batch-start timestamp.
 
 ### Active-stage attribution
 
@@ -128,6 +223,13 @@ clears both the thread-local slot and the contextvar.
 
 ## Lifecycle
 
+**Intended use and assumptions:** Request event profiling is an opt-in tool for
+controlled performance investigations, not an always-on logging or recovery
+service. Use a **unique `run_id` and a fresh, empty `event_dir` for each
+recording**. Only one run can be active or draining in a process. A new run is
+rejected until the prior post-stop writer has finished; this prevents a new
+measured window from sharing a writer with the old one.
+
 The recorder is process-local. It is started on every stage and on the
 coordinator when `POST /start_profile` (or `POST /start_request_profile`)
 is hit:
@@ -140,8 +242,19 @@ is hit:
    the first stage to call `start()` wins the filename; every subsequent
    stage in the same process writes to the same file and the per-event
    `stage` field disambiguates.
-5. On `POST /stop_profile`, the recorder is closed everywhere; files
-   remain on disk under `<event_dir>`.
+5. On `POST /stop_profile`, every process deactivates its current run without
+   joining the writer on its serving/control loop. Accepted events still drain
+   and the writer creates the status sidecar during finalization. The HTTP
+   response is not an acknowledgement that every process has finalized its
+   artifact; inspect every expected process sidecar before analysis.
+
+The Python API is nonblocking by default: `RequestEventRecorder.stop()` is
+equivalent to `stop(wait=False)`. It deactivates promptly and returns the event
+path; it does not wait for disk finalization. Administrative code may use
+`stop(wait=True)`, the returned `RequestEventFinalization` handle, or
+`wait_for_finalizations(timeout_seconds=...)`. Serving control paths use
+`stop(wait=False)` or `deactivate()`. A stalled or failed writer cannot block
+serving, but the resulting status must be treated as incomplete.
 
 `POST /stop_profile` and `POST /stop_request_profile` accept an optional
 `run_id` field. When **omitted**, the request is a wildcard: every stage
@@ -161,7 +274,10 @@ Use the views module directly:
 from sglang_omni.profiler.views import build_report
 report = build_report("/tmp/profiles/demo-run/events")
 print(report["request_count"], len(report["stage_breakdown"]))
+print(report["completeness"]["state"])
 ```
+
+`build_report` validates the process-local `run_status_<pid>.json` sidecars against the supplied event filenames. It reports `complete`, `incomplete`, or `unknown`; missing or malformed sidecars are always `unknown` with `complete: false`. This checks only the files supplied to the report. A directory containing one TP rank's files can establish local event-storage completeness for that rank, but cannot establish that every expected TP rank or process is present. Global completeness requires an expected-process inventory, which this report does not provide.
 
 …or via the CLI:
 
@@ -218,7 +334,7 @@ multi-GB trace — only opt in when you need that specific information.
 |---|---|---|---|
 | POST | `/start_profile` | `{"run_id": ?, "trace_path_template": ?, "event_dir": ?, "enable_torch": true \| false, "config": ?}` | Starts torch trace + event recorder. `run_id` auto-generated if omitted. |
 | POST | `/stop_profile` | `{"run_id": ?}` | Stops torch trace + event recorder. Omitting `run_id` is a wildcard ("stop whatever's active"). |
-| POST | `/start_request_profile` | `{"run_id": ?, "event_dir": ?}` | Event recorder only — no torch trace. Lower overhead; safer to leave on. |
+| POST | `/start_request_profile` | `{"run_id": ?, "event_dir": ?}` | Event recorder only — no torch trace. Lower overhead; still intended for short, opt-in captures. |
 | POST | `/stop_request_profile` | `{"run_id": ?}` | Same wildcard semantics as `/stop_profile`. |
 
 Example: record cheap events on every request without a kernel trace:
@@ -233,15 +349,24 @@ python -m sglang_omni.profiler /tmp/profiles/demo/events --format table
 
 ## Discipline
 
-- **Profiling must never break serving.** The emitter swallows write
-  errors and counts drops; the first failure is logged once.
+- **Profiling must never break serving.** While active, the emitter performs
+  no JSON serialization or file I/O, takes no recorder-wide lock after its
+  one-time producer registration, and never waits for capacity or a writer.
+  Producer-buffer overflow and bounded registration failures are counted as
+  drops; writer failures are recorded in the run status.
+- **Finalization is deferred.** The writer starts only after the last local
+  stage releases the run or an administrative stop deactivates it. It waits
+  for in-flight producers to quiesce before freezing buffers, then flushes and
+  closes the JSONL file before publishing the status sidecar. A new run is
+  rejected while this drain is in progress.
 - **Tensors and large blobs stay out of event metadata.** Keep metadata
   to small scalars (ids, counts, durations, modality, error strings). The
   recorder enforces this defensively: if a tensor / numpy array ends up
-  in metadata, `_json_default` serializes a summary
-  (`{"__tensor_summary__": true, "type": ..., "shape": [...], "dtype":
-  "...", "device": "..."}`) instead of materializing the contents. 0-D
-  tensors / numpy scalars still serialize as plain scalars.
+  in metadata, the JSON default serializer emits a summary
+    (`{"__tensor_summary__": true, "type": ..., "shape": [...], "dtype":
+    "...", "device": "..."}`) instead of materializing the contents. CPU
+    0-D tensors / numpy scalars still serialize as plain scalars; device-backed
+    0-D values remain summaries.
 - **Event naming.** Lowercase snake_case, prefix with the layer that
   owns the event (`stage_*`, `scheduler_*`, `encoder_*`, etc.). Use the
   stage name (not the event name) to distinguish "thinker prefill start"

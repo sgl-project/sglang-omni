@@ -5,10 +5,11 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass
-from typing import Any
+from typing import SupportsFloat, SupportsIndex, SupportsInt
 from urllib.parse import unquote, urlparse
 
 import numpy as np
+from typing_extensions import Buffer
 
 from sglang_omni.models.auk import constants as C
 from sglang_omni.models.auk.hf_config import AuKRuntimeConfig
@@ -46,7 +47,9 @@ def get_context() -> AuKPreprocessingContext:
     return _CONTEXT
 
 
-def normalize_inputs(inputs: Any) -> tuple[str, list[dict[str, Any]], Any | None]:
+def normalize_inputs(
+    inputs: object,
+) -> tuple[str, list[dict[str, object]], object | None]:
     """Accept flat text, a dict payload, or a structured references list."""
     if isinstance(inputs, str):
         return inputs, [], None
@@ -79,9 +82,7 @@ def normalize_inputs(inputs: Any) -> tuple[str, list[dict[str, Any]], Any | None
     return text, references, ref_audio
 
 
-def resolve_reference(
-    references: list[dict[str, Any]], fallback: Any | None
-) -> Any | None:
+def resolve_reference(references: list[dict[str, object]], fallback: object) -> object:
     if fallback is not None:
         return fallback
     else:
@@ -99,7 +100,9 @@ def resolve_reference(
     )
 
 
-def resolve_float(raw: Any, default: float | None) -> float | None:
+def resolve_float(
+    raw: str | Buffer | SupportsFloat | SupportsIndex | None, default: float | None
+) -> float | None:
     if raw is None:
         return default
     else:
@@ -115,7 +118,7 @@ def resolve_float(raw: Any, default: float | None) -> float | None:
     return value
 
 
-def resolve_seed(raw: Any) -> int | None:
+def resolve_seed(raw: str | Buffer | SupportsInt | SupportsIndex | None) -> int | None:
     if raw is None:
         return None
     else:
@@ -130,7 +133,10 @@ def resolve_seed(raw: Any) -> int | None:
         raise ValueError(f"AuK seed must be an integer, got {raw!r}") from exc
 
 
-def load_reference(source: Any, sample_rate: int) -> tuple[np.ndarray, np.ndarray]:
+def load_reference(source: object, sample_rate: int) -> tuple[
+    np.ndarray[tuple[int, ...], np.dtype[np.float32]],
+    np.ndarray[tuple[int, ...], np.dtype[np.float32]],
+]:
     import librosa
 
     if isinstance(source, str):
@@ -216,8 +222,8 @@ def build_auk_state(payload: StagePayload, config: AuKRuntimeConfig) -> AuKState
 
     clip_seconds = get_context().max_seconds if _CONTEXT is not None else C.MAX_SECONDS
 
-    ref_audio: np.ndarray | None = None
-    qwen_audio: np.ndarray | None = None
+    ref_audio: np.ndarray[tuple[int, ...], np.dtype[np.float32]] | None = None
+    qwen_audio: np.ndarray[tuple[int, ...], np.dtype[np.float32]] | None = None
     ref_seconds = 0.0
     if ref_source is not None:
         ref_audio, qwen_audio = load_reference(ref_source, config.sample_rate)

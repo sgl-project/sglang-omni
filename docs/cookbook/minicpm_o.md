@@ -1,7 +1,37 @@
-# MiniCPM-o Reference Audio
+# MiniCPM-o
 
-On the speech pipeline, pass an explicit speaker reference in
-`audio.ref_audio` on `/v1/chat/completions`:
+[MiniCPM-o 4.5](https://huggingface.co/openbmb/MiniCPM-o-4_5) is a Gemini 2.5 Flash level model for vision, speech, and full-duplex live streaming. SGLang-Omni serves it in two ways:
+
+| Mode | Endpoint | Use it for |
+|---|---|---|
+| Chat | `/v1/chat/completions` | One request, one reply, in text or speech |
+| Full duplex | `/v1/realtime` (WebSocket) | A live voice or video call where the model listens and speaks at the same time |
+
+## Prerequisites
+
+Follow [Installation](../get_started/installation.md), then run from the repository root.
+
+For Intel GPUs, follow the [MiniCPM-o XPU recipe](../get_started/installation_xpu.md#minicpm-o-45-omni-chat-and-speech-single-xpu).
+
+Chat with speech output:
+
+```bash
+python -m sglang_omni.cli serve --model-path openbmb/MiniCPM-o-4_5 --port 8000
+```
+
+Chat with text output only:
+
+```bash
+python -m sglang_omni.cli serve --model-path openbmb/MiniCPM-o-4_5 --text-only --port 8000
+```
+
+## Ascend NPU
+
+See [Installation — NPU](../get_started/installation_npu.md#minicpm-o)
+for the NPU launch command, configuration, and validated versions.
+
+## Normal Usage
+
 
 ```python
 import base64
@@ -9,8 +39,8 @@ from pathlib import Path
 
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:30000/v1", api_key="unused")
-reference = base64.b64encode(Path("reference.wav").read_bytes()).decode("ascii")
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="unused")
+reference = base64.b64encode(Path("docs/_static/audio/male-voice.wav").read_bytes()).decode("ascii")
 response = client.chat.completions.create(
     model="MiniCPM-o-4_5",
     messages=[{"role": "user", "content": "Please say hello."}],
@@ -20,21 +50,65 @@ response = client.chat.completions.create(
         "ref_audio": f"data:audio/wav;base64,{reference}",
     },
 )
+message = response.choices[0].message
+Path("reply.wav").write_bytes(base64.b64decode(message.audio.data))
+print(message.audio.transcript or message.content)
 ```
 
-`stage_params.code2wav.ref_audio` is an alternative, with higher priority than
-`audio.ref_audio`. Both accept `prompt_wav` as an alias. The Python pipeline
-client can also supply `ref_audio` through `extra_params`. References must be
-base64 audio data URIs, inline `{data, media_type}` descriptors, or encoded audio
-bytes for the Python client. Paths and HTTP URLs are not fetched by this stage;
-read or download the file on the client before sending it.
+## Video Chat Inputs
 
-The reference conditions Token2wav's speaker embedding, prompt tokens, and mel
-features. Audio supplied in chat messages remains understanding input and is not
-automatically used as the speaker reference. Without an explicit reference,
-Token2wav uses the checkpoint's `assets/HT_ref_audio.wav` when available.
+Chat accepts inline video_url content and top-level video or videos fields.
+Top-level requests without use_audio_in_video retain the existing shared video
+sampling and resizing policy. They place explicit images, video frames, and
+independent audio before the final user message's text, in that order.
+Predecoded video tensors remain supported, including mixed file/tensor inputs.
 
-The vocoder caches only the most recently used reference by audio content. A
-different reference, including switching back to the default, rebuilds the
-conditioning. Invalid references fail instead of silently using the default.
-Audio output remains non-streaming.
+Top-level videos without use_audio_in_video decode on parallel decoders. Each of the four preprocessing workers gets min(16, the stage's CPUs divided by four) FFmpeg threads, split evenly among a request's videos. Set `--preprocessing.factory.video_decode_threads N` to choose that count. A value at or below the video reader's own threads (`TORCHCODEC_NUM_THREADS`, 8 by default) decodes each video on the reader alone.
+
+Inline videos and top-level requests with use_audio_in_video use MiniCPM timed
+video sampling. Set use_audio on an inline video, or use_audio_in_video on a
+top-level request, to include interleaved audio from file or URL sources.
+Top-level interleaved videos follow explicit images and independent audio.
+
+Timed video frames retain native resolution by default; the MiniCPM image processor
+performs the final resize. video_max_frames limits the sampled frame count,
+while video_max_pixels and video_total_pixels resize frames after decoding.
+Those pixel options do not bound the initial native-resolution allocation.
+
+## Native Full-Duplex Ability
+
+MiniCPM-o 4.5 also serves live full-duplex voice and video calls on `/v1/realtime`. Launching, settings, the browser demo and the protocol are in [Full Duplex Interactive Model](../developer_reference/full_duplex_guide.md#native-full-duplex-minicpm-o).
+
+## Text to speech
+
+`/v1/audio/speech` reads the given text aloud. MiniCPM-o prefills the text in one Thinker pass and conditions the Talker on each of its tokens, instead of generating the same words one token at a time. Set `language` to `Chinese` for Chinese text, and pass a base64 audio data URI as `ref_audio` to clone a voice.
+
+```python
+audio = client.audio.speech.create(
+    model="MiniCPM-o-4_5",
+    voice="default",
+    input="Hello!",
+    extra_body={"language": "English"},
+)
+```
+
+The speech output is non-streaming. The sampling fields you set, such as `temperature`, `top_p` and `max_new_tokens`, apply to the Talker, which generates the speech; the rest keep the Talker's defaults.
+
+## Speculative Decoding
+
+The Thinker can verify tokens proposed by a DSpark draft trained on its own answers to text, audio, image and video prompts, [`Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm`](https://huggingface.co/Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm):
+
+```bash
+python -m sglang_omni.cli serve --model-path openbmb/MiniCPM-o-4_5 --port 8000 \
+  --thinker.engine.speculative_algorithm DSPARK \
+  --thinker.engine.speculative_draft_model_path Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm
+```
+
+An EAGLE3 draft for Qwen3-8B, such as [`Tengyunw/qwen3_8b_eagle3`](https://huggingface.co/Tengyunw/qwen3_8b_eagle3), runs with `--thinker.engine.speculative_algorithm EAGLE3`, `speculative_num_steps 3`, `speculative_eagle_topk 1` and `speculative_num_draft_tokens 4`.
+
+- **Acceptance length.** Send `return_spec_tokens_details: true` with a chat request to get its `sglext.spec_tokens_details`: `spec_accept_length` (output tokens per verify, including the token sampled at prefill, so it can read higher than the scheduler log's `accept len`, which counts only verified tokens), `spec_accept_rate`, the draft counts and the per-verify histogram. A streamed response sends it in a chunk with empty `choices` before `[DONE]`. `spec_accept_rate` and `spec_num_proposed_drafts` are left out when no drafts were proposed or the draft width is adaptive. Only the Thinker draft is reported for now, including on speech responses; a per-stage field can follow once the Talker has a draft too.
+- **Speech output.** The Talker reads one Thinker hidden row per text token, and the draft's layer capture keeps the row of every verified token, so a speech server accepts drafts that verify one linear block per request: a chain EAGLE3 draft (`speculative_eagle_topk 1`), DFlash or DSpark. Qwen3-8B DFlash drafts mask with token 151669, which is `<image>` in MiniCPM-o, so they accept almost no tokens here.
+- **Supported settings.** DSpark uses static verification. DFlash and DSpark reject a request seed for sampled verification; greedy and prefill-only requests still accept a seed. Speech verification supports at most 8,192 hidden rows per batch, including graph padding. Prefill storage follows the configured token ceiling; text-only serving does not allocate speech hidden buffers.
+- **Sampling.** `length_penalty` applies to every verified token. Requests with `repetition_penalty`, `frequency_penalty`, `presence_penalty`, `min_p` or logprobs are rejected, because the draft workers cannot reproduce them. A prefill-only request keeps them, since the runner's own sampler draws its single token on the target prefill and never reaches a verify.
+- **Scheduling.** Async decode is turned off, and so is the stage's own mixed-chunk default. An explicit `enable_mixed_chunk` is refused rather than silently turned off.
+- **Startup.** The thinker serves EAGLE3, DFlash and DSpark only, and `speculative_algorithm` and `speculative_draft_model_path` are given together. `max_seq_len` stays within the draft's own `max_position_embeddings`, so raising it for long video prompts needs a draft whose context reaches that far.

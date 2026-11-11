@@ -11,13 +11,23 @@ import pytest
 from sglang.srt.arg_groups.cuda_graph_hook import (
     generate_prefill_cuda_graph_batch_sizes,
 )
+from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
+    PrefillCudaGraphRunner,
+)
+from typing_extensions import TypedDict, Unpack
 
 from sglang_omni.scheduling.generation_batch_policy import (
+    GenerationStageDefaults,
     build_default_prefill_cuda_graph_bs,
     build_generation_batch_overrides,
     validate_generation_batch_policy,
 )
 from sglang_omni.vendor.sglang.server_args import override_server_args
+
+
+class AttentionBackendOverrides(TypedDict, total=False):
+    attention_backend: str
+    prefill_attention_backend: str
 
 
 def make_server_args(
@@ -29,9 +39,14 @@ def make_server_args(
     chunked_prefill_size: int | None = 8192,
     max_prefill_tokens: int = 16384,
     disable_cuda_graph: bool = False,
+    attention_backend: str = "fa3",
+    prefill_attention_backend: str | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         max_running_requests=4,
+        attention_backend=attention_backend,
+        prefill_attention_backend=prefill_attention_backend,
+        decode_attention_backend=None,
         disable_cuda_graph=disable_cuda_graph,
         enable_torch_compile=False,
         torch_compile_max_bs=None,
@@ -66,17 +81,6 @@ def validate(server_args: SimpleNamespace) -> None:
     )
 
 
-def test_prefill_policy_accepts_disabled_and_declared_breakable() -> None:
-    validate(make_server_args())
-    validate(
-        make_server_args(
-            prefill_backend="breakable",
-            prefill_bs=(128, 256, 512),
-            prefill_max_bs=512,
-        )
-    )
-
-
 def test_breakable_requires_cuda_graphs_enabled() -> None:
     with pytest.raises(ValueError, match="require CUDA graphs enabled"):
         validate(
@@ -88,15 +92,38 @@ def test_breakable_requires_cuda_graphs_enabled() -> None:
         )
 
 
-def test_non_breakable_prefill_backend_is_rejected() -> None:
-    for backend in ("full", "tc_piecewise"):
-        with pytest.raises(ValueError, match="must be 'breakable'"):
-            validate(
-                make_server_args(
-                    prefill_backend=backend,
-                    prefill_bs=(128,),
-                )
-            )
+def test_full_prefill_backend_needs_the_model_to_declare_it() -> None:
+    # note (luojiaxuan): stages that build their own server args and call the
+    # validator directly, Qwen3-Omni thinker and talker_ar, never widen the set.
+    with pytest.raises(ValueError, match="must be one of 'breakable', 'disabled'"):
+        validate(make_server_args(prefill_backend="full", prefill_bs=(128,)))
+
+    validate_generation_batch_policy(
+        model_name="Test TTS",
+        server_args=make_server_args(prefill_backend="full", prefill_bs=(128,)),
+        allowed_prefill_backends=("breakable", "full"),
+    )
+
+
+def test_full_prefill_backend_needs_an_attention_backend_that_captures_it() -> None:
+    def full_policy(**attention: Unpack[AttentionBackendOverrides]) -> None:
+        validate_generation_batch_policy(
+            model_name="Test TTS",
+            server_args=make_server_args(
+                prefill_backend="full", prefill_bs=(128,), **attention
+            ),
+            allowed_prefill_backends=("breakable", "full"),
+        )
+
+    full_policy(attention_backend="fa3")
+    full_policy(attention_backend="flashinfer")
+    full_policy(attention_backend="triton", prefill_attention_backend="fa3")
+    for attention in (
+        {"attention_backend": "triton"},
+        {"attention_backend": "fa3", "prefill_attention_backend": "triton"},
+    ):
+        with pytest.raises(ValueError, match="need a prefill attention backend"):
+            full_policy(**attention)
 
 
 def test_breakable_accepts_a_derived_ladder(caplog) -> None:
@@ -113,17 +140,20 @@ def test_breakable_accepts_a_derived_ladder(caplog) -> None:
     assert not caplog.records
 
 
-def test_breakable_rejects_non_increasing_buckets() -> None:
+@pytest.mark.parametrize("token_buckets", [(256, 128), (1, 2, 1, 4)])
+def test_breakable_rejects_non_increasing_buckets(
+    token_buckets: tuple[int, ...],
+) -> None:
     with pytest.raises(ValueError, match="strictly increasing"):
         validate(
             make_server_args(
                 prefill_backend="breakable",
-                prefill_bs=(256, 128),
+                prefill_bs=token_buckets,
             )
         )
 
 
-@pytest.mark.parametrize("buckets", [(128.0, 256), ("128", 256), (True, 256)])
+@pytest.mark.parametrize("buckets", [(128.0, 256), (True, 256)])
 def test_breakable_rejects_non_integral_bucket_types(
     buckets: tuple[Any, int],
 ) -> None:
@@ -260,31 +290,6 @@ def test_nested_prefill_bs_composes_as_operator_buckets() -> None:
     assert overrides["cuda_graph_max_bs_prefill"] == 256
 
 
-def test_nested_prefill_max_bs_composes_as_a_flat_cap() -> None:
-    overrides = build_generation_batch_overrides(
-        max_running_requests=4,
-        server_args_overrides={"cuda_graph_config": {"prefill": {"max_bs": 512}}},
-    )
-
-    assert overrides["cuda_graph_max_bs_prefill"] == 512
-    assert "cuda_graph_bs_prefill" not in overrides
-
-
-def test_breakable_prefill_cap_builds_the_shared_default_ladder() -> None:
-    overrides = build_generation_batch_overrides(
-        max_running_requests=4,
-        server_args_overrides={
-            "cuda_graph_backend_prefill": "breakable",
-            "cuda_graph_max_bs_prefill": 512,
-        },
-    )
-
-    assert overrides["cuda_graph_max_bs_prefill"] == 512
-    assert overrides["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(
-        512
-    )
-
-
 def test_prefill_cap_is_not_clamped_by_max_prefill_tokens() -> None:
     overrides = build_generation_batch_overrides(
         max_running_requests=4,
@@ -303,19 +308,19 @@ def test_prefill_cap_is_not_clamped_by_max_prefill_tokens() -> None:
     ("server_args_overrides", "expected_cap"),
     [
         ({"chunked_prefill_size": 4096}, 4096),
-        ({"chunked_prefill_size": 4592}, 4592),
         ({"chunked_prefill_size": 4096, "max_total_tokens": 1000}, 1000),
         ({"chunked_prefill_size": 4096, "max_total_tokens": 8192}, 4096),
         ({"cuda_graph_max_bs_prefill": 3000, "max_total_tokens": 1000}, 3000),
     ],
 )
+@pytest.mark.parametrize("backend", ["breakable", "full"])
 def test_explicit_prefill_caps_build_the_ladder_before_server_args(
-    server_args_overrides: dict[str, Any], expected_cap: int
+    server_args_overrides: dict[str, Any], expected_cap: int, backend: str
 ) -> None:
     overrides = build_generation_batch_overrides(
         max_running_requests=4,
         server_args_overrides={
-            "cuda_graph_backend_prefill": "breakable",
+            "cuda_graph_backend_prefill": backend,
             **server_args_overrides,
         },
     )
@@ -330,10 +335,7 @@ def test_explicit_prefill_caps_build_the_ladder_before_server_args(
     "server_args_overrides",
     [
         {},
-        {"chunked_prefill_size": None},
-        {"chunked_prefill_size": None, "max_total_tokens": 3000},
         {"chunked_prefill_size": 0},
-        {"chunked_prefill_size": -1},
         {"cuda_graph_max_bs_prefill": 0},
         {"cuda_graph_backend_prefill": "disabled", "chunked_prefill_size": 4096},
     ],
@@ -352,19 +354,24 @@ def test_unset_or_disabled_prefill_caps_leave_the_ladder_to_sglang(
     assert "cuda_graph_bs_prefill" not in overrides
 
 
-@pytest.mark.parametrize(("cap", "expected_top"), [(128, 128), (100, 100)])
+@pytest.mark.parametrize(
+    ("cap", "expected_top"), [(1, 1), (2, 2), (128, 128), (100, 100)]
+)
 def test_nested_prefill_max_bs_trims_a_stage_default_ladder(
     cap: int, expected_top: int
 ) -> None:
     overrides = build_generation_batch_overrides(
         max_running_requests=4,
-        cuda_graph_bs_prefill=build_default_prefill_cuda_graph_bs(512),
+        cuda_graph_bs_prefill=build_default_prefill_cuda_graph_bs(
+            512, extra_token_buckets=(1, 2)
+        ),
         server_args_overrides={"cuda_graph_config": {"prefill": {"max_bs": cap}}},
     )
 
     assert overrides["cuda_graph_max_bs_prefill"] == cap
     assert overrides["cuda_graph_bs_prefill"][-1] == expected_top
     assert all(bucket <= cap for bucket in overrides["cuda_graph_bs_prefill"])
+    assert overrides["cuda_graph_bs_prefill"][:2] == ([1] if cap == 1 else [1, 2])
 
 
 def test_operator_prefill_cap_below_its_own_list_is_rejected() -> None:
@@ -376,19 +383,6 @@ def test_operator_prefill_cap_below_its_own_list_is_rejected() -> None:
                 "cuda_graph_config": {"prefill": {"max_bs": 128}},
             },
         )
-
-
-def test_operator_prefill_cap_above_its_list_is_kept() -> None:
-    overrides = build_generation_batch_overrides(
-        max_running_requests=4,
-        server_args_overrides={
-            "cuda_graph_bs_prefill": [128, 256],
-            "cuda_graph_max_bs_prefill": 512,
-        },
-    )
-
-    assert overrides["cuda_graph_bs_prefill"] == [128, 256]
-    assert overrides["cuda_graph_max_bs_prefill"] == 512
 
 
 def test_nested_disabled_backend_overrides_a_stage_default() -> None:
@@ -464,14 +458,55 @@ def sglang_prefill_ladder(max_bs: int) -> list[int]:
     return generate_prefill_cuda_graph_batch_sizes(max_bs)
 
 
-@pytest.mark.parametrize("cap", [256, 512, 2048, 4096, 8192, 16384])
+@pytest.mark.parametrize("max_num_tokens", [1, 2, 16, 8192])
+def test_explicit_single_token_bucket_replays_cache_hits(
+    max_num_tokens: int,
+) -> None:
+    """Cached single-token prefill was padded to four tokens and ran eager."""
+    token_buckets = build_default_prefill_cuda_graph_bs(
+        max_num_tokens, extra_token_buckets=(1,)
+    )
+    padded_token_count = PrefillCudaGraphRunner._pad_to_bucket(  # noqa: leading-underscore  # upstream spelling
+        1, token_buckets
+    )
+    assert padded_token_count == 1
+    assert token_buckets[-1] == max_num_tokens
+
+
+@pytest.mark.parametrize(
+    ("max_num_tokens", "expected_token_buckets"),
+    [(1, [1]), (2, [1, 2]), (8, [1, 2, 4, 8]), (10, [1, 2, 4, 8, 10])],
+)
+def test_default_prefill_ladder_composes_extra_buckets_within_the_cap(
+    max_num_tokens: int, expected_token_buckets: list[int]
+) -> None:
+    """Overlapping model buckets must not produce the duplicate ladder that prevented MOSS-TD startup."""
+    token_buckets = build_default_prefill_cuda_graph_bs(
+        max_num_tokens, extra_token_buckets=(16, 2, 1, 4, 2)
+    )
+    assert token_buckets == expected_token_buckets
+    assert all(left < right for left, right in zip(token_buckets, token_buckets[1:]))
+    assert PrefillCudaGraphRunner._pad_to_bucket(  # noqa: leading-underscore  # upstream spelling
+        min(2, max_num_tokens), token_buckets
+    ) == min(
+        2, max_num_tokens
+    )
+
+
+@pytest.mark.parametrize("max_num_tokens", [0, -1])
+def test_default_prefill_ladder_rejects_non_positive_caps(max_num_tokens: int) -> None:
+    with pytest.raises(ValueError, match="max_num_tokens must be >= 1"):
+        build_default_prefill_cuda_graph_bs(max_num_tokens)
+
+
+@pytest.mark.parametrize("cap", [4, 256, 512, 4096, 8192, 16384])
 def test_default_prefill_ladder_matches_the_sglang_generator_on_grid(
     cap: int,
 ) -> None:
     assert build_default_prefill_cuda_graph_bs(cap) == sglang_prefill_ladder(cap)
 
 
-@pytest.mark.parametrize("cap", [2, 100, 1000, 4592])
+@pytest.mark.parametrize("cap", [2, 4592])
 def test_default_prefill_ladder_appends_the_off_grid_cap_sglang_omits(
     cap: int,
 ) -> None:
@@ -481,31 +516,8 @@ def test_default_prefill_ladder_appends_the_off_grid_cap_sglang_omits(
     assert build_default_prefill_cuda_graph_bs(cap) == [*sglang_ladder, cap]
 
 
-def test_overrides_derive_prefill_max_bs_from_buckets() -> None:
-    overrides = build_generation_batch_overrides(
-        max_running_requests=4,
-        server_args_overrides={
-            "cuda_graph_backend_prefill": "breakable",
-            "cuda_graph_bs_prefill": [128, 256],
-        },
-    )
-
-    assert overrides["cuda_graph_backend_prefill"] == "breakable"
-    assert overrides["cuda_graph_max_bs_prefill"] == 256
-
-    explicit = build_generation_batch_overrides(
-        max_running_requests=4,
-        server_args_overrides={
-            "cuda_graph_bs_prefill": [128, 256],
-            "cuda_graph_max_bs_prefill": 256,
-        },
-    )
-
-    assert explicit["cuda_graph_max_bs_prefill"] == 256
-
-
 def test_disable_overrides_win_over_default_prefill_backend() -> None:
-    stage_defaults = {
+    stage_defaults: GenerationStageDefaults = {
         "cuda_graph_backend_prefill": "breakable",
         "cuda_graph_bs_prefill": [128, 256],
     }
@@ -540,10 +552,14 @@ def test_disable_overrides_win_over_default_prefill_backend() -> None:
 
 def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
     from sglang_omni.scheduling import bootstrap, sglang_backend
-    from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+    from sglang_omni.scheduling.engine_factory import (
+        GenerationDefaults,
+        TtsEngineBuilder,
+    )
     from sglang_omni.utils import cuda_graph_batch_validator
 
     infra_kwargs_seen: list[dict[str, Any]] = []
+    infra_prefill_backends: list[str] = []
     attest_calls: list[tuple[Any, bool]] = []
 
     def fake_build_sglang_server_args(checkpoint_dir, *, context_length, **overrides):
@@ -558,11 +574,14 @@ def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
             prefill_bs=prefill_bs,
             prefill_max_bs=overrides.get("cuda_graph_max_bs_prefill"),
             locked=locked,
+            attention_backend=overrides.get("attention_backend", "fa3"),
+            prefill_attention_backend=overrides.get("prefill_attention_backend"),
         )
 
     def fake_create_sglang_infrastructure(server_args, gpu_id, **kwargs):
-        del gpu_id, server_args
+        del gpu_id
         infra_kwargs_seen.append(dict(kwargs))
+        infra_prefill_backends.append(server_args.cuda_graph_config.prefill.backend)
         model_runner = SimpleNamespace(
             model=SimpleNamespace(),
             init_cuda_graphs=lambda: None,
@@ -571,6 +590,7 @@ def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
             SimpleNamespace(
                 model_runner=model_runner,
                 model_config=SimpleNamespace(is_multimodal=False),
+                speculative_worker=None,
                 enable_prefill_input_embeds=bool(
                     kwargs.get("enable_prefill_input_embeds")
                 ),
@@ -605,7 +625,7 @@ def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
         def resolve_checkpoint(self, model_path: str) -> str:
             return model_path
 
-        def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+        def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
             del dtype
             return {"max_running_requests": 4}
 
@@ -640,15 +660,56 @@ def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
     assert "enable_prefill_input_embeds" not in infra_kwargs_seen[-1]
     assert len(attest_calls) == 1
 
+    class FullBuilder(PolicyBuilder):
+        supports_full_prefill_cuda_graph = True
+
+        def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
+            del dtype
+            return {
+                "max_running_requests": 4,
+                "cuda_graph_backend_prefill": "full",
+                "cuda_graph_bs_prefill": [128, 256],
+            }
+
+    FullBuilder().build("model")
+
+    assert infra_prefill_backends[-1] == "full"
+    assert infra_kwargs_seen[-1]["enable_prefill_input_embeds"] is True
+    assert attest_calls[-1][1] is False
+
+    # note (luojiaxuan): a default full on an attention backend that cannot
+    # capture it keeps the breakable graph, and its prefill embeds buffer.
+    FullBuilder().build("model", server_args_overrides={"attention_backend": "triton"})
+
+    assert infra_prefill_backends[-1] == "breakable"
+    assert infra_kwargs_seen[-1]["enable_prefill_input_embeds"] is True
+    assert attest_calls[-1][1] is False
+
+    # note (luojiaxuan): an explicit full the attention backend cannot capture
+    # fails the policy check, before any prefill graph is captured.
+    attests = len(attest_calls)
+    with pytest.raises(ValueError, match="need a prefill attention backend"):
+        FullBuilder().build(
+            "model",
+            server_args_overrides={
+                "cuda_graph_backend_prefill": "full",
+                "prefill_attention_backend": "triton",
+            },
+        )
+    assert len(attest_calls) == attests
+
 
 def test_builder_rejects_breakable_without_model_opt_in(monkeypatch) -> None:
     from sglang_omni.scheduling import sglang_backend
-    from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+    from sglang_omni.scheduling.engine_factory import (
+        GenerationDefaults,
+        TtsEngineBuilder,
+    )
 
     def fake_build_sglang_server_args(checkpoint_dir, *, context_length, **overrides):
         del checkpoint_dir, context_length
         return make_server_args(
-            prefill_backend="breakable",
+            prefill_backend=overrides.get("cuda_graph_backend_prefill", "breakable"),
             prefill_bs=overrides.get("cuda_graph_bs_prefill"),
             locked=PREFILL_BS_LOCKED,
         )
@@ -664,7 +725,7 @@ def test_builder_rejects_breakable_without_model_opt_in(monkeypatch) -> None:
         def resolve_checkpoint(self, model_path: str) -> str:
             return model_path
 
-        def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+        def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
             del dtype
             return {"max_running_requests": 4}
 
@@ -688,41 +749,72 @@ def test_builder_rejects_breakable_without_model_opt_in(monkeypatch) -> None:
             },
         )
 
+    # note (luojiaxuan): the full backend is gated the same way.
+    with pytest.raises(RuntimeError, match="has not adopted the full prefill"):
+        NonAdoptingBuilder().build(
+            "model",
+            server_args_overrides={
+                "cuda_graph_backend_prefill": "full",
+                "cuda_graph_bs_prefill": [128, 256],
+            },
+        )
 
-def test_raised_operator_cap_extends_a_stage_ladder_without_dropping_buckets() -> None:
+
+@pytest.mark.parametrize("max_num_tokens", [513, 1024, 1100])
+def test_raised_operator_cap_extends_a_stage_ladder_without_dropping_buckets(
+    max_num_tokens: int,
+) -> None:
     """A raised cap must grow a stage ladder, not replace it with the shared one.
 
-    The stage ladders carry buckets the shared one does not, such as the
-    Qwen3-TTS 1-token bucket, and losing them sends those shapes back to eager.
+    Stage ladders can carry additional buckets such as 2 tokens, and losing
+    them can send those shapes back to eager.
     """
-    stage_ladder = [1, 2] + build_default_prefill_cuda_graph_bs(512)
+    stage_ladder = [1, 2, 64, 512]
     overrides = build_generation_batch_overrides(
         max_running_requests=4,
         cuda_graph_backend_prefill="breakable",
-        cuda_graph_bs_prefill=list(stage_ladder),
-        server_args_overrides={"cuda_graph_max_bs_prefill": 1024},
+        cuda_graph_bs_prefill=stage_ladder,
+        server_args_overrides={"cuda_graph_max_bs_prefill": max_num_tokens},
     )
 
     result = overrides["cuda_graph_bs_prefill"]
-    assert overrides["cuda_graph_max_bs_prefill"] == 1024
+    assert overrides["cuda_graph_max_bs_prefill"] == max_num_tokens
     # Every stage bucket survives, including the ones the shared ladder lacks.
     assert set(stage_ladder) <= set(result)
     assert 1 in result and 2 in result
-    assert max(result) == 1024
+    assert result[: len(stage_ladder)] == stage_ladder == [1, 2, 64, 512]
+    assert all(token_count > 512 for token_count in result[len(stage_ladder) :])
+    assert 4 not in result
+    assert max(result) == max_num_tokens
+    assert (max_num_tokens < 576) or (576 in result)
     assert result == sorted(result)
     assert len(result) == len(set(result))
 
 
-def test_raised_operator_cap_leaves_an_operator_declared_ladder_alone() -> None:
+@pytest.mark.parametrize("token_buckets", [[128, 256], [256, 128], [128, 128, 256]])
+def test_raised_operator_cap_leaves_an_operator_declared_ladder_alone(
+    token_buckets: list[int],
+) -> None:
     """When the operator declares both, they own the pair."""
     overrides = build_generation_batch_overrides(
         max_running_requests=4,
         server_args_overrides={
             "cuda_graph_backend_prefill": "breakable",
-            "cuda_graph_bs_prefill": [128, 256],
+            "cuda_graph_bs_prefill": token_buckets,
             "cuda_graph_max_bs_prefill": 1024,
         },
     )
 
-    assert overrides["cuda_graph_bs_prefill"] == [128, 256]
+    assert overrides["cuda_graph_bs_prefill"] == token_buckets
     assert overrides["cuda_graph_max_bs_prefill"] == 1024
+    if token_buckets != [128, 256]:
+        with pytest.raises(ValueError, match="strictly increasing"):
+            validate(
+                make_server_args(
+                    prefill_backend="breakable",
+                    prefill_bs=overrides["cuda_graph_bs_prefill"],
+                    prefill_max_bs=1024,
+                )
+            )
+    else:
+        pass

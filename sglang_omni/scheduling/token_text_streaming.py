@@ -5,13 +5,20 @@ from __future__ import annotations
 
 import time
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Callable
 
 from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.types import RequestOutput
+
+if TYPE_CHECKING:
+    from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+else:
+    pass
+
 
 DecodeFn = Callable[[list[int]], str]
-BuildMessageDataFn = Callable[[str], Any]
-BuildMessageMetadataFn = Callable[[int | None], dict[str, Any] | None]
+BuildMessageDataFn = Callable[[str], dict[str, str]]
+BuildMessageMetadataFn = Callable[[int | None], dict[str, str | int | None] | None]
 
 
 def make_token_text_stream_output_builder(
@@ -25,9 +32,13 @@ def make_token_text_stream_output_builder(
     min_emit_interval_s: float = 0.0,
     allow_terminal_flush: bool = False,
     emit_trailing_replacement_on_terminal: bool = False,
-) -> Callable[[str, Any, Any], list[OutgoingMessage]]:
+) -> Callable[
+    [str, SGLangARRequestData, RequestOutput | SimpleNamespace], list[OutgoingMessage]
+]:
     def _build_stream_output(
-        request_id: str, req_data: Any, req_output: Any
+        request_id: str,
+        req_data: SGLangARRequestData,
+        req_output: RequestOutput | SimpleNamespace,
     ) -> list[OutgoingMessage]:
         req = req_data.req
         if req is None:
@@ -134,7 +145,7 @@ def make_token_text_stream_output_builder(
     if allow_terminal_flush:
 
         def _flush_stream_output(
-            request_id: str, req_data: Any
+            request_id: str, req_data: SGLangARRequestData
         ) -> list[OutgoingMessage]:
             return _build_stream_output(
                 request_id,

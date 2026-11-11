@@ -3,13 +3,12 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import torch
+from numpy.typing import ArrayLike
 
 
 def split_moss_audio_segments(
-    delayed_audio_codes: Any,
+    delayed_audio_codes: ArrayLike | torch.Tensor | None,
     *,
     audio_pad_code: int,
     assistant_start_length: int = 0,

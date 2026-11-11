@@ -8,10 +8,9 @@ from __future__ import annotations
 import logging
 import time
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
 from functools import lru_cache
-from typing import Any
 
 import numpy as np
 import torch
@@ -43,6 +42,7 @@ from sglang_omni.models.auk.weight_loader import (
     load_vae_weights,
     resolve_weight_file,
 )
+from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage, load_state, store_state
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
@@ -153,7 +153,7 @@ def warmup_flow(
     flow: AuKFlowMatching,
     device: torch.device,
     dtype: torch.dtype,
-    sampling: dict[str, Any],
+    sampling: Mapping[str, int | float | tuple[float, ...] | None],
     step_graph: AuKStepCudaGraphRunner | None = None,
 ) -> None:
     """Pay the block compile, and every declared graph capture, at startup.
@@ -214,7 +214,7 @@ def create_preprocessing_executor(
     max_concurrency: int = 8,
     default_seconds: float = C.DEFAULT_SECONDS,
     max_seconds: float = C.MAX_SECONDS,
-) -> SimpleScheduler:
+) -> SimpleScheduler[StagePayload, StagePayload]:
     config = make_runtime_config(resolve_checkpoint(model_path))
     set_auk_preprocessing_context(
         AuKPreprocessingContext(
@@ -277,7 +277,7 @@ def create_conditioning_executor(
     text_encoder_path: str = C.DEFAULT_TEXT_ENCODER,
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 10,
-) -> SimpleScheduler:
+) -> SimpleScheduler[StagePayload, StagePayload]:
     compute_dtype = resolve_dtype(field="dtype", name=dtype)
     device = resolve_concrete_device(device, gpu_id)
     checkpoint = resolve_checkpoint(model_path)
@@ -342,7 +342,7 @@ def create_auk_engine_executor(
     enable_dit_torch_compile: bool = False,
     enable_dit_cuda_graph: bool = False,
     dit_cuda_graph_capture_shapes: Sequence[Sequence[int]] | None = None,
-) -> SimpleScheduler:
+) -> SimpleScheduler[StagePayload, StagePayload]:
     """Build the DiT sampling stage.
 
     A float32 weight_dtype keeps the weights under dtype autocast, the
@@ -451,7 +451,7 @@ def create_decode_executor(
     gpu_id: int | None = None,
     max_batch_size: int = 4,
     max_batch_wait_ms: int = 10,
-) -> SimpleScheduler:
+) -> SimpleScheduler[StagePayload, StagePayload]:
     device = resolve_concrete_device(device, gpu_id)
     checkpoint = resolve_checkpoint(model_path)
     vae = load_vae(checkpoint, str(device))

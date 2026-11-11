@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Mapping
 
 from sglang_omni.pipeline.control_plane import PushSocket
 from sglang_omni.proto import ProfilerStartMessage, ProfilerStopMessage
@@ -42,10 +42,11 @@ class ProfilerControlClient:
         self,
         run_id: str,
         trace_path_template: str,
-        config: dict[str, Any] | None = None,
+        config: Mapping[str, object] | None = None,
         stages: list[str] | None = None,
         event_dir: str | None = None,
         enable_torch: bool = True,
+        event_buffer_capacity: int | None = None,
     ) -> None:
         await self.start()
         assert self.socks is not None
@@ -55,6 +56,7 @@ class ProfilerControlClient:
             trace_path_template=trace_path_template,
             event_dir=event_dir,
             enable_torch=enable_torch,
+            event_buffer_capacity=event_buffer_capacity,
         )
         for s in targets:
             sock = self.socks.get(s)

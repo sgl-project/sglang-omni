@@ -3,26 +3,38 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from itertools import accumulate
+from typing import TYPE_CHECKING
+
+import torch
+from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
+from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
+from sglang_omni.models.minicpm_o.routing import (
+    THINKER_STAGE,
+    should_generate_audio_output,
+)
+from sglang_omni.scheduling.types import (
+    RequestOutput,
+    SchedulerOutput,
+    SchedulerRequest,
+)
 
 if TYPE_CHECKING:
-    import torch
+    from sglang.srt.layers.logits_processor import LogitsProcessorOutput
     from sglang.srt.managers.schedule_batch import ScheduleBatch
-    from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
+    from sglang.srt.model_executor.forward_batch_info import (
+        CaptureHiddenMode,
+        ForwardBatch,
+    )
 
     from sglang_omni.model_runner.model_worker import ModelWorker
     from sglang_omni.scheduling.sglang_backend.output_processor import (
         SGLangOutputProcessor,
     )
     from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
-    from sglang_omni.scheduling.types import (
-        RequestOutput,
-        SchedulerOutput,
-        SchedulerRequest,
-    )
 else:
     pass
 
@@ -30,8 +42,14 @@ else:
 class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
     """Run the thinker and accumulate hidden states for speech conditioning."""
 
+    speculative_verify_takes_logits_hooks = True
+    speculative_ignores_request_seed = True
+
     def __init__(
-        self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor
+        self,
+        tp_worker: ModelWorker,
+        output_processor: SGLangOutputProcessor,
+        eos_token_ids: list[int],
     ) -> None:
         from sglang.srt.model_executor.forward_batch_info import (
             CaptureHiddenMode,
@@ -52,6 +70,8 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         self.image_token_id = -1
         self.video_token_id = -1
         self.audio_token_id = -1
+        self.eos_token_ids = eos_token_ids
+        self.eos_token_id_cache: torch.Tensor | None = None
 
         self.capture_hidden_mode = (
             CaptureHiddenMode.FULL
@@ -59,6 +79,8 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
             else get_server_return_hidden_states_mode()
         )
         self.pending_hidden: dict[str, list[torch.Tensor]] = {}
+        self.hands_hidden_to_talker = output_processor.capture_hidden
+        self.speculative_hidden_queue: dict[str, torch.Tensor] = {}
 
     def requested_capture_hidden_mode_prefill(
         self, schedule_batch: ScheduleBatch, requests: list[SchedulerRequest]
@@ -72,9 +94,53 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         """Use deployment-wide capture; batch arguments follow the runner interface."""
         return self.capture_hidden_mode
 
+    def process_sampling_logits(
+        self,
+        logits_output: LogitsProcessorOutput,
+        requests: list[SchedulerRequest],
+    ) -> None:
+        """Scale end-of-sequence logits by each request's length_penalty."""
+        logits = logits_output.next_token_logits
+        for row_idx, sched_req in enumerate(requests):
+            params = sched_req.data.stage_payload.request.params or {}
+            thinker_params = (params.get("stage_params") or {}).get(THINKER_STAGE) or {}
+            length_penalty = thinker_params.get("length_penalty", 1.0)
+            if length_penalty == 1.0:
+                continue
+            else:
+                eos_ids = self.eos_token_id_tensor(logits.device)
+                eos_logits = logits[row_idx, eos_ids]
+                logits[row_idx, eos_ids] = torch.where(
+                    eos_logits > 0,
+                    eos_logits / length_penalty,
+                    eos_logits * length_penalty,
+                )
+
+    def eos_token_id_tensor(self, device: torch.device) -> torch.Tensor:
+        """Keep the EOS ids on the logits device so indexing needs no H2D copy."""
+        if self.eos_token_id_cache is None:
+            self.eos_token_id_cache = torch.tensor(self.eos_token_ids, device=device)
+        else:
+            pass
+        return self.eos_token_id_cache
+
+    def sample_lookahead(
+        self,
+        logits_output: LogitsProcessorOutput,
+        forward_batch: ForwardBatch,
+        requests: list[SchedulerRequest],
+    ) -> torch.Tensor:
+        """Apply length_penalty before the parent's lookahead sampling.
+
+        The penalty reads only the current logits and a per-request constant,
+        not output history, so the one-step-early lookahead sample matches sync.
+        """
+        self.process_sampling_logits(logits_output, requests)
+        return super().sample_lookahead(logits_output, forward_batch, requests)
+
     def post_process_outputs(
         self,
-        result: Any,
+        result: GenerationBatchResult,
         scheduler_output: SchedulerOutput,
         outputs: dict[str, RequestOutput],
     ) -> None:
@@ -90,14 +156,84 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
                 continue
             else:
                 pass
-            if sched_req.data.req.inflight_middle_chunks > 0:
+            prompt = (sched_req.data.stage_payload.data or {}).get("prompt") or {}
+            known_tts = prompt.get("known_tts_output_ids") is not None
+            if sched_req.data.req.inflight_middle_chunks > 0 and not known_tts:
                 continue
             else:
                 pass
-            hidden = hidden.reshape(-1, hidden.shape[-1])[-1]
             seq = self.pending_hidden.setdefault(sched_req.request_id, [])
-            # note (MayDomine): CUDA graph replay overwrites the original hidden buffer.
-            seq.append(hidden.detach().clone())
+            hidden_rows = hidden.reshape(-1, hidden.shape[-1])
+            if known_tts:
+                seq.extend(hidden_rows.detach().clone().unbind(0))
+            else:
+                # note (MayDomine): CUDA graph replay overwrites the original hidden buffer.
+                seq.append(hidden_rows[-1].detach().clone())
+
+    def after_speculative_step(
+        self, batch: ScheduleBatch, *, is_prefill: bool, num_draft_tokens: int
+    ) -> None:
+        """Queue each request's hidden rows for the tokens this step commits.
+
+        A prefill commits one token, generated from the last prompt row. A chain
+        verify commits the leading rows of a request's block, the rows plain decode
+        would have produced; emission trims the block to its committed tokens.
+        """
+        model = self.outer_model
+        if not self.hands_hidden_to_talker:
+            return
+        elif is_prefill:
+            end_rows = list(accumulate(batch.extend_lens))
+            last_rows = torch.tensor(
+                end_rows,
+                device=model.prefill_hidden_rows.device,
+            )
+            rows = model.prefill_hidden_rows[last_rows - 1]
+            start = 0
+            for index, (request, end) in enumerate(zip(batch.reqs, end_rows)):
+                payload = request.omni_data.stage_payload
+                prompt = (payload.data or {}).get("prompt") or {}
+                if not should_generate_audio_output(payload.request):
+                    pass
+                elif prompt.get("known_tts_output_ids") is not None:
+                    hidden = model.prefill_hidden_rows[start:end].detach().clone()
+                    self.pending_hidden.setdefault(request.rid, []).extend(
+                        hidden.unbind(0)
+                    )
+                else:
+                    self.speculative_hidden_queue[request.rid] = rows[index : index + 1]
+                start = end
+        else:
+            speaking = [
+                index
+                for index, req in enumerate(batch.reqs)
+                if should_generate_audio_output(req.omni_data.stage_payload.request)
+            ]
+            if not speaking:
+                return
+            else:
+                pass
+            block = model.speculative_hidden_rows[
+                : len(batch.reqs) * num_draft_tokens
+            ].clone()
+            for index in speaking:
+                start = index * num_draft_tokens
+                self.speculative_hidden_queue[batch.reqs[index].rid] = block[
+                    start : start + num_draft_tokens
+                ]
+
+    def on_speculative_tokens(
+        self, scheduler_request: SchedulerRequest, token_ids: list[int]
+    ) -> None:
+        """Append the queued rows of the committed tokens, which end at the stop."""
+        hidden = self.speculative_hidden_queue.pop(scheduler_request.request_id, None)
+        if hidden is None:
+            return
+        else:
+            pass
+        seq = self.pending_hidden.setdefault(scheduler_request.request_id, [])
+        # Row views would keep this step's whole block alive until the request ends.
+        seq.extend(hidden[: len(token_ids)].clone().unbind(0))
 
     def finalize_skip_rids(self, scheduler_output: SchedulerOutput) -> set[str]:
         """Do not advance generation state for non-final prefill chunks."""
@@ -111,16 +247,23 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         self, request_id: str, req_data: SGLangARRequestData
     ) -> None:
         """Flush the request's hidden accumulator with a single D2H copy."""
-        import torch
-
+        self.speculative_hidden_queue.pop(request_id, None)
         seq = self.pending_hidden.pop(request_id, None)
         if not seq:
             return
         else:
             pass
-        stacked = torch.stack(seq).to("cpu")
-        req_data.extra_model_outputs["hidden_states_seq"] = list(stacked.unbind(0))
+        payload = req_data.stage_payload
+        prompt = MiniCPMOPipelineState.from_dict(payload.data).prompt or {}
+        known_tts_output_ids = prompt.get("known_tts_output_ids")
+        if known_tts_output_ids is not None:
+            # Keep only the text rows, excluding <|tts_eos|>.
+            seq = seq[-len(known_tts_output_ids) - 1 : -1]
+        else:
+            pass
+        req_data.extra_model_outputs["hidden_states_seq"] = torch.stack(seq).to("cpu")
 
     def reset_request(self, request_id: str) -> None:
         """Drop accumulated hidden states on abort (no terminal flush runs)."""
+        self.speculative_hidden_queue.pop(request_id, None)
         self.pending_hidden.pop(request_id, None)

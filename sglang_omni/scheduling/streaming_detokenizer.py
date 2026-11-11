@@ -75,6 +75,9 @@ class StreamingDetokenizeScheduler:
         self.request_states: dict[str, RequestState] = {}
         self.done_seen: OrderedDict[str, None] = OrderedDict()
 
+    def warm_up_serving_thread(self) -> None:
+        pass
+
     def start(self) -> None:
         self.is_running = True
         while self.is_running:
@@ -142,7 +145,9 @@ class StreamingDetokenizeScheduler:
         candidate = self.tokenizer.decode(
             request_state.pending_tokens, skip_special_tokens=True
         )
-        if "\ufffd" in candidate:
+        # note (ratish): emitted tokens leave pending_tokens, so an incomplete UTF-8
+        # sequence can only end the candidate; a literal U+FFFD before it streams.
+        if candidate.endswith("\ufffd"):
             return
         else:
             pass

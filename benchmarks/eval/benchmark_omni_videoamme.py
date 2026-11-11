@@ -29,7 +29,7 @@ Last verified: 2026-04-26
 
 Accuracy
 
-| Model      | Config                | accuracy | correct | failed | mc_fallback | Source                                                              |
+| Model      | Config                | accuracy | correct | failed | unparseable | Source                                                              |
 | ---------- | --------------------- | -------- | ------- | ------ | ----------- | ------------------------------------------------------------------- |
 | Qwen3-Omni | thinker-only, ci-50, c=8 | 66.00%   | 33/50   | 0      | 0           | PR #411 [H200, c=8, max_tokens=256] |
 | Qwen3-Omni | thinker-talker, ci-50, c=8 | 64.00%   | 32/50   | 0      | 0           | PR #411 [H200, c=8, max_tokens=256] |
@@ -57,7 +57,7 @@ Local v1 Pipeline Result (this workspace, 2026-05-01)
 
 Accuracy
 
-| Model      | Config                   | accuracy | correct | failed | mc_fallback | Source                                               |
+| Model      | Config                   | accuracy | correct | failed | unparseable | Source                                               |
 | ---------- | ------------------------ | -------- | ------- | ------ | ----------- | ---------------------------------------------------- |
 | Qwen3-Omni | thinker-only, ci-50, c=8 | 68.00%   | 34/50   | 0      | 0           | local v1 sweep [H200, ci-50, c=8, max_tokens=256]   |
 
@@ -93,11 +93,7 @@ from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.video import print_videomme_accuracy_summary
 from benchmarks.metrics.wer import print_wer_summary
 from benchmarks.tasks.video_understanding import VIDEOAMME_REQUEST_TEXT
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(name)s %(levelname)s %(message)s",
-)
+from sglang_omni.utils.logging import configure_dependency_loggers
 
 
 async def run_videoamme_eval(
@@ -143,6 +139,11 @@ async def benchmark(args: argparse.Namespace) -> dict:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    configure_dependency_loggers()
     parser = argparse.ArgumentParser(
         description="Video-AMME benchmark for video + audio question models."
     )

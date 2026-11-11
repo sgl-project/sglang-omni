@@ -1,0 +1,156 @@
+{
+  "type": "object",
+  "properties": {
+    "assessments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sample_id": {
+            "type": "string"
+          },
+          "axes": {
+            "type": "object",
+            "properties": {
+              "interaction_handling": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "accept",
+                      "fail",
+                      "unresolved"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string",
+                    "maxLength": 350
+                  },
+                  "source": {
+                    "type": "string",
+                    "enum": [
+                      "output_asr_text",
+                      "native_output_text",
+                      "input_asr_text",
+                      "original_task",
+                      "event_text",
+                      "clean_output_asr_text",
+                      "none"
+                    ]
+                  },
+                  "quote": {
+                    "type": "string",
+                    "maxLength": 220
+                  }
+                },
+                "required": [
+                  "status",
+                  "reason",
+                  "source",
+                  "quote"
+                ],
+                "additionalProperties": false
+              },
+              "relevance": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "accept",
+                      "fail",
+                      "unresolved"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string",
+                    "maxLength": 350
+                  },
+                  "source": {
+                    "type": "string",
+                    "enum": [
+                      "output_asr_text",
+                      "native_output_text",
+                      "input_asr_text",
+                      "original_task",
+                      "event_text",
+                      "clean_output_asr_text",
+                      "none"
+                    ]
+                  },
+                  "quote": {
+                    "type": "string",
+                    "maxLength": 220
+                  }
+                },
+                "required": [
+                  "status",
+                  "reason",
+                  "source",
+                  "quote"
+                ],
+                "additionalProperties": false
+              },
+              "grounding": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "accept",
+                      "fail",
+                      "unresolved"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string",
+                    "maxLength": 350
+                  },
+                  "source": {
+                    "type": "string",
+                    "enum": [
+                      "output_asr_text",
+                      "native_output_text",
+                      "input_asr_text",
+                      "original_task",
+                      "event_text",
+                      "clean_output_asr_text",
+                      "none"
+                    ]
+                  },
+                  "quote": {
+                    "type": "string",
+                    "maxLength": 220
+                  }
+                },
+                "required": [
+                  "status",
+                  "reason",
+                  "source",
+                  "quote"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "interaction_handling",
+              "relevance",
+              "grounding"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "sample_id",
+          "axes"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "assessments"
+  ],
+  "additionalProperties": false
+}

@@ -4,45 +4,85 @@
 from __future__ import annotations
 
 import importlib
-from typing import Any
+from collections.abc import Callable
+from pathlib import Path
+from typing import TYPE_CHECKING
 
+from sglang.srt.configs.model_config_parser_registry import (
+    ModelConfigParserBase,
+    register_model_config_parser,
+)
+from sglang.srt.server_args import ServerArgs
+from torch import Tensor
+from transformers import PretrainedConfig
+
+from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.voxtral_tts import request_builders
+from sglang_omni.models.voxtral_tts.model_runner import VoxtralTTSModelRunner
 from sglang_omni.models.voxtral_tts.pipeline import stages as voxtral_stages
-from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.models.voxtral_tts.request_builders import VoxtralSGLangRequestData
+from sglang_omni.proto.request import StagePayload
+from sglang_omni.scheduling.engine_factory import (
+    GenerationDefaults,
+    SchedulerExtras,
+    TtsEngineBuilder,
+)
+from sglang_omni.scheduling.generation_batch_policy import get_decode_cuda_graph_bs
+from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
+
+if TYPE_CHECKING:
+
+    from sglang_omni.models.voxtral_tts.sglang_model import VoxtralSGLangTTSModel
+else:
+    pass
+
+VOXTRAL_CONFIG_PARSER = "voxtral_tts"
 
 
-class VoxtralTtsEngineBuilder(TtsEngineBuilder):
+class VoxtralConfigParser(ModelConfigParserBase):
+    """Builds the config from params.json, the checkpoint having no config.json."""
+
+    def parse(
+        self,
+        model: str | Path,
+        trust_remote_code: bool,
+        revision: str | None = None,
+        **kwargs: str,
+    ) -> PretrainedConfig:
+        del trust_remote_code, revision, kwargs
+        return voxtral_stages.build_voxtral_sglang_config(str(model))
+
+
+class VoxtralTtsEngineBuilder(TtsEngineBuilder[VoxtralSGLangRequestData]):
     model_name = "Voxtral TTS"
     context_length = 8192
 
     def __init__(self) -> None:
-        self.decrypted_config_file: str | None = None
-        self.voice_embeddings: dict[str, Any] = {}
+        self.voice_embeddings: dict[str, Tensor] = {}
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
-        self.decrypted_config_file = voxtral_stages.write_voxtral_sglang_config(
-            checkpoint_dir
-        )
+        del checkpoint_dir
+        register_model_config_parser(VOXTRAL_CONFIG_PARSER)(VoxtralConfigParser)
 
     def generation_defaults(
         self,
         *,
         dtype: str,
-    ) -> dict[str, Any]:
+    ) -> GenerationDefaults:
         del dtype
         return {
             "max_running_requests": 16,
             "dtype": "bfloat16",
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
-            "decrypted_config_file": self.decrypted_config_file,
+            "model_config_parser": VOXTRAL_CONFIG_PARSER,
             "enable_torch_compile": True,
             "mem_fraction_static": 0.85,
             "max_prefill_tokens": 8192,
             "sampling_backend": "pytorch",
         }
 
-    def customize_server_args(self, server_args: Any) -> None:
+    def customize_server_args(self, server_args: ServerArgs) -> None:
         if server_args.enable_torch_compile:
             voxtral_stages.enable_inductor_gemm_autotune()
         else:
@@ -51,11 +91,11 @@ class VoxtralTtsEngineBuilder(TtsEngineBuilder):
     def setup_model(
         self,
         *,
-        model_worker: Any,
+        model_worker: object,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
-        server_args: Any,
+        server_args: object,
     ) -> None:
         del model_worker, gpu_id, server_args
         self.voice_embeddings = voxtral_stages.load_voxtral_voice_embeddings(
@@ -63,14 +103,35 @@ class VoxtralTtsEngineBuilder(TtsEngineBuilder):
             device,
         )
 
-    def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+    def post_cuda_graph_setup(
+        self, model: VoxtralSGLangTTSModel, server_args: ServerArgs
+    ) -> None:
+        # Note (Jiaxin Deng): eager, the 7-step flow-matching loop is launch bound
+        # (~10 ms per decode step at any batch size); replay takes ~3.6 ms on H200.
+        batch_sizes = get_decode_cuda_graph_bs(server_args)
+        if batch_sizes and self.device.startswith("cuda"):
+            model.init_acoustic_graphs(list(batch_sizes))
+        else:
+            pass
+
+    def make_model_runner(
+        self,
+        model_worker: ModelWorker,
+        output_proc: SGLangOutputProcessor,
+    ) -> VoxtralTTSModelRunner:
         model_runner_mod = importlib.import_module(
             "sglang_omni.models.voxtral_tts.model_runner"
         )
 
         return model_runner_mod.VoxtralTTSModelRunner(model_worker, output_proc)
 
-    def make_adapters(self, model: Any) -> tuple[Any, Any]:
+    def extra_scheduler_kwargs(self) -> SchedulerExtras[VoxtralSGLangRequestData]:
+        return {"stream_output_builder": request_builders.VoxtralStreamOutput()}
+
+    def make_adapters(self, model: VoxtralSGLangTTSModel | None) -> tuple[
+        Callable[[StagePayload], VoxtralSGLangRequestData],
+        Callable[[VoxtralSGLangRequestData], StagePayload],
+    ]:
         return request_builders.make_voxtral_scheduler_adapters(
             model=model,
             voice_embeddings=self.voice_embeddings,

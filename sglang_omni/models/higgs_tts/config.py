@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from sglang_omni.config import (
     EngineStageConfig,
@@ -10,8 +10,10 @@ from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
 )
+from sglang_omni.config.schema import stage_process_name
 from sglang_omni.platforms import current_platform
 from sglang_omni.utils.cpu import bounded_intraop_threads
+from sglang_omni.utils.device import resolve_device_spec
 
 _PKG = "sglang_omni.models.higgs_tts"
 _PREPROCESS_MAX_WORKERS = 2
@@ -74,7 +76,7 @@ class HiggsTtsPipelineConfig(PipelineConfig):
         "initial_chunk_frames",
     )
 
-    def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, object]:
         if stage_name == "tts_engine":
             vocoder_extra = self.stage_named("vocoder").factory.model_extra or {}
             return {
@@ -89,7 +91,7 @@ class HiggsTtsPipelineConfig(PipelineConfig):
                 "compile_decode": False,
                 "decode_cuda_graph_frame_counts": (
                     tuple(range(1, 151))
-                    if current_platform.enable_code2wav_graph()
+                    if current_platform.enable_codec_decode_graph()
                     else ()
                 ),
             }
@@ -97,21 +99,57 @@ class HiggsTtsPipelineConfig(PipelineConfig):
             pass
         return {}
 
-    def model_post_init(self, __context: Any = None) -> None:
-        super().model_post_init(__context)
-        stages = {stage.name: stage for stage in self.stages}
-        preprocessing = stages["preprocessing"]
-        if "OMP_NUM_THREADS" not in self.env_defaults:
-            preprocessing.env.setdefault(
-                "OMP_NUM_THREADS",
-                str(
+    def resolved_stage_env_defaults(self, stage_name: str) -> dict[str, str]:
+        env_defaults = super().resolved_stage_env_defaults(stage_name)
+        if stage_name == "preprocessing" and "OMP_NUM_THREADS" not in env_defaults:
+            process_name = stage_process_name(self.stage_named(stage_name))
+            # note (Richard Wang): a value written on any stage of the process wins.
+            if not any(
+                "OMP_NUM_THREADS" in stage.env
+                for stage in self.stages
+                if stage_process_name(stage) == process_name
+            ):
+                env_defaults["OMP_NUM_THREADS"] = str(
                     bounded_intraop_threads(
                         worker_count=_PREPROCESS_MAX_WORKERS, max_threads=8
                     )
-                ),
-            )
+                )
+            else:
+                pass
         else:
             pass
+        return env_defaults
+
+    def validate_processes(self) -> None:
+        super().validate_processes()
+        audio_encoder = self.stage_named("audio_encoder")
+        if resolve_device_spec(audio_encoder.factory.device) != "cuda":
+            return
+        else:
+            pass
+
+        encoder_process = stage_process_name(audio_encoder)
+        for stage in self.stages:
+            if stage.name == audio_encoder.name or (
+                stage.gpu is None and stage.name not in ("tts_engine", "vocoder")
+            ):
+                continue
+            elif (
+                stage_process_name(stage) == encoder_process
+                and resolve_device_spec(stage.factory.device) == "cuda"
+            ):
+                # note (Ratish): cuDNN and SDPA policy is process-wide, even across GPUs.
+                raise ValueError(
+                    "CUDA audio_encoder must use a separate process from "
+                    f"CUDA stage {stage.name!r}; reference encoding changes "
+                    "process-wide cuDNN and SDPA settings"
+                )
+            else:
+                pass
+
+    def model_post_init(self, __context: object = None) -> None:
+        super().model_post_init(__context)
+        stages = {stage.name: stage for stage in self.stages}
         vocoder_extra = stages["vocoder"].factory.model_extra or {}
         tts_engine_extra = stages["tts_engine"].factory.model_extra or {}
         for key in self.STREAM_CADENCE_KEYS:

@@ -8,10 +8,19 @@ import logging
 import os
 import re
 import tempfile
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
+from ctypes import _Pointer as Pointer
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from types import ModuleType
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+
+    from pynvml import struct_c_nvmlDevice_t
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +61,29 @@ def parse_cuda_visible_devices(value: str | None = None) -> list[int | str]:
         except ValueError:
             devices.append(item)
     return devices
+
+
+def narrow_visible_devices(
+    visible: str | None, gpu_ids: Sequence[int], variable: str
+) -> str:
+    """The ``variable`` value that exposes only ``gpu_ids``, in their order.
+
+    The ids index the devices that ``visible`` lists, or the physical
+    devices when it is unset.
+    """
+    if not visible:
+        return ",".join(str(gpu_id) for gpu_id in gpu_ids)
+    else:
+        pass
+    devices = [item.strip() for item in visible.split(",")]
+    if max(gpu_ids) >= len(devices):
+        raise ValueError(
+            f"GPUs {list(gpu_ids)} need {max(gpu_ids) + 1} visible devices, "
+            f"but {variable} only exposes {devices}"
+        )
+    else:
+        pass
+    return ",".join(devices[gpu_id] for gpu_id in gpu_ids)
 
 
 def resolve_visible_device_id(
@@ -330,7 +362,7 @@ def get_gpu_startup_lock_path(
 
 
 @contextmanager
-def gpu_startup_lock(logical_gpu_id: int):
+def gpu_startup_lock(logical_gpu_id: int) -> Generator[Path, None, None]:
     """Serialize heavyweight scheduler construction on one visible GPU."""
 
     import fcntl
@@ -345,14 +377,16 @@ def gpu_startup_lock(logical_gpu_id: int):
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
-def try_import_pynvml() -> Any | None:
+def try_import_pynvml() -> ModuleType | None:
     try:
         return importlib.import_module("pynvml")
     except ModuleNotFoundError:
         return None
 
 
-def get_device_handle(pynvml: Any, device_id: int | str) -> Any:
+def get_device_handle(
+    pynvml: ModuleType, device_id: int | str
+) -> "Pointer[struct_c_nvmlDevice_t]":
     if isinstance(device_id, int):
         return pynvml.nvmlDeviceGetHandleByIndex(device_id)
     else:
@@ -373,7 +407,7 @@ def decode_nvml_string(value: str | bytes) -> str:
     return value
 
 
-def shutdown_nvml(pynvml: Any) -> None:
+def shutdown_nvml(pynvml: ModuleType) -> None:
     try:
         pynvml.nvmlShutdown()
     except Exception:

@@ -133,6 +133,7 @@ class FakeGroup:
         self.processes = [FakeProcess(events)] if direct_process else []
         self.spawn_env = object()
         self.before_signal = object()
+        self.failure: str = ""
         self.dead = False
         self.process_specs = [
             StageWorkerProcessSpec(
@@ -159,6 +160,9 @@ class FakeGroup:
         self.events.append("ready")
         if self.ready_error is not None:
             raise self.ready_error
+
+    def failure_summary(self) -> str:
+        return self.failure
 
     def any_dead(self) -> bool:
         return self.dead
@@ -298,6 +302,10 @@ class ProcessStartFailureContext:
     def Queue(self):
         return SpawnQueue()
 
+    def Value(self, typecode, value):
+        del typecode
+        return value
+
     def Process(self, **kwargs):
         del kwargs
         return ProcessStartFailure()
@@ -415,6 +423,39 @@ async def test_mps_startup_cancellation_cleans_children_before_close(
     assert events.index("stage terminate") < events.index("MPS close")
     assert not fake_mps.has_leases
     assert fake_mps.close_process_start_attempts == {"pipeline"}
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_startup_cleanup_still_stops_children(
+    short_base,
+    monkeypatch,
+):
+    events: list[str] = []
+    group = FakeGroup(
+        events,
+        ready_error=RuntimeError("ready failed"),
+        direct_process=True,
+    )
+    fake_mps = FakeMps(events)
+    patch_runner(monkeypatch, events, group, fake_mps)
+    runner = mp_runner.MultiProcessPipelineRunner(make_config(short_base))
+    start_task = asyncio.current_task()
+    retire_process_clients = fake_mps.retire_process_clients
+
+    async def retire_during_sigterm(process_name: str) -> set[str]:
+        start_task.cancel()
+        await asyncio.sleep(0)
+        return await retire_process_clients(process_name)
+
+    fake_mps.retire_process_clients = retire_during_sigterm
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner.start()
+
+    assert events.index("MPS retire pipeline") < events.index("stage terminate")
+    assert events.index("coordinator stop") < events.index("MPS close")
+    assert runner.ipc_runtime_dir is None
+    assert not fake_mps.has_leases
 
 
 @pytest.mark.asyncio
@@ -559,9 +600,11 @@ async def test_mps_close_cancellation_finishes_runner_cleanup_before_propagating
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reported_failure", [False, True])
 async def test_mps_off_keeps_merge_base_spawn_and_failure_order(
     short_base,
     monkeypatch,
+    reported_failure: bool,
 ):
     events: list[str] = []
     entered = asyncio.Event()
@@ -585,11 +628,17 @@ async def test_mps_off_keeps_merge_base_spawn_and_failure_order(
     await runner.start()
     assert group.spawn_env is None
 
-    group.dead = True
+    if reported_failure:
+        group.failure = "pipeline (pid=123)"
+    else:
+        group.dead = True
     waiter = asyncio.create_task(runner.wait_failed())
     await entered.wait()
     assert waiter.done()
-    with pytest.raises(RuntimeError, match="Dead stage process"):
+    expected_error = (
+        "Stage process failure reported" if reported_failure else "Dead stage process"
+    )
+    with pytest.raises(RuntimeError, match=expected_error):
         await waiter
     release.set()
     assert "MPS close" not in events
@@ -723,3 +772,26 @@ async def test_runner_supplies_the_retirement_hook_only_with_mps(
     await off_runner.start()
     await off_runner.stop()
     assert off_group.before_signal is None
+
+
+@pytest.mark.asyncio
+async def test_reported_worker_failure_preserves_mps_launcher_cleanup(
+    short_base: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    group = FakeGroup(events)
+    fake_mps = FakeMps(events)
+    patch_runner(monkeypatch, events, group, fake_mps)
+    runner = mp_runner.MultiProcessPipelineRunner(make_config(short_base))
+    await runner.start()
+    group.failure = "pipeline (pid=123)"
+    try:
+        with pytest.raises(RuntimeError, match="Stage process failure reported"):
+            await asyncio.wait_for(runner.wait_failed(), timeout=10)
+        assert "process shutdown" not in events
+        assert "MPS close" not in events
+    finally:
+        await runner.stop()
+    assert events.index("process shutdown") < events.index("MPS close")
+    assert events.index("MPS close") < events.index("coordinator stop")

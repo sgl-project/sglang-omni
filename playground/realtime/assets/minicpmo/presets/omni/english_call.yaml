@@ -1,0 +1,6 @@
+id: english_call
+order: 2
+name: "English Call"
+description: "English voice assistant (Omni)"
+system_prompt: "Streaming Omni Conversation."
+ref_audio_path: "assets/minicpmo/ref_audio/ref_en_dlc_1.wav"

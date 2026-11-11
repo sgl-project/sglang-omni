@@ -1,0 +1,30 @@
+{"to":"helper","msg":{"id":"c20","method":"textio.focus"}}
+{"to":"app","msg":{"id":"c20","result":{"pid":812,"app":{"pid":812,"bundleId":"com.tinyspeck.slackmacgap","name":"Slack"},"role":"AXTextArea","editable":true,"selection":{"location":12,"length":5},"valueLength":40}}}
+{"to":"helper","msg":{"id":"c21","method":"textio.focus"}}
+{"to":"app","msg":{"id":"c21","result":{"pid":530,"app":{"pid":530,"bundleId":"com.apple.finder","name":"Finder"},"editable":false,"valueLength":0,"error":"no focused element"}}}
+{"to":"helper","msg":{"id":"c29","method":"textio.focus"}}
+{"to":"app","msg":{"id":"c29","result":{"pid":901,"app":{"pid":901,"bundleId":"com.google.Chrome","name":"Google Chrome"},"role":"AXTextField","subrole":"AXSecureTextField","editable":true,"selection":{"location":0,"length":0},"valueLength":0}}}
+{"to":"helper","msg":{"id":"c30","method":"textio.focus"}}
+{"to":"app","msg":{"id":"c30","result":{"pid":530,"role":"AXTextArea","editable":true,"valueLength":12}}}
+{"to":"helper","msg":{"id":"c22","method":"textio.selection"}}
+{"to":"app","msg":{"id":"c22","result":{"text":"Hello world","via":"ax","ms":2.4,"steps":["focus=AXTextArea"]}}}
+{"to":"helper","msg":{"id":"c23","method":"textio.selection","params":{"allowCopy":true}}}
+{"to":"app","msg":{"id":"c23","result":{"text":"const x = 1","via":"copy","ms":41.3,"steps":["focus=AXGroup","range=nil","copy: changed"]}}}
+{"to":"helper","msg":{"id":"c24","method":"textio.selection"}}
+{"to":"app","msg":{"id":"c24","result":{"via":"none","ms":1.1,"steps":["focus=AXTextField","range=3,0","caret-only"]}}}
+{"to":"helper","msg":{"id":"c25","method":"textio.paste","params":{"text":"你好，世界。","targetPid":812,"press":[{"key":36}],"pressDelayMs":120}}}
+{"to":"app","msg":{"id":"c25","result":{"posted":true,"restored":true,"clipboardTaken":false,"ms":624.8}}}
+{"to":"helper","msg":{"id":"c26","method":"textio.paste","params":{"text":"Hi","keepClipboard":true,"press":[{"key":36,"modifiers":["command"]}]}}}
+{"to":"app","msg":{"id":"c26","result":{"posted":true,"restored":false,"clipboardTaken":false,"ms":130.2}}}
+{"to":"helper","msg":{"id":"c27","method":"textio.paste","params":{"text":"Hi","restoreDelayMs":800,"targetPid":812}}}
+{"to":"app","msg":{"id":"c27","result":{"posted":false,"restored":false,"clipboardTaken":false,"ms":0.3,"front":{"pid":530,"bundleId":"com.apple.finder","name":"Finder"}}}}
+{"to":"helper","msg":{"id":"c28","method":"textio.paste","params":{"text":"Hi"}}}
+{"to":"app","msg":{"id":"c28","result":{"posted":true,"restored":false,"clipboardTaken":true,"ms":512.6}}}
+{"to":"helper","msg":{"id":"c31","method":"textio.paste","params":{"text":"这个要优化一下。","targetPid":9286,"press":[{"key":36}],"verifyMs":1000}}}
+{"to":"app","msg":{"id":"c31","result":{"posted":true,"restored":true,"clipboardTaken":false,"ms":271.4,"check":"inserted","checkMs":96.2,"field":{"role":"AXTextArea","before":{"length":12,"selection":{"location":12,"length":0}},"after":{"length":20,"selection":{"location":20,"length":0}}}}}}
+{"to":"helper","msg":{"id":"c32","method":"textio.paste","params":{"text":"Hi","targetPid":9286,"press":[{"key":36}],"verifyMs":1000}}}
+{"to":"app","msg":{"id":"c32","result":{"posted":true,"restored":false,"clipboardTaken":false,"ms":1003.8,"check":"unchanged","checkMs":1000.1,"field":{"role":"AXTextArea","before":{"length":0,"selection":{"location":0,"length":0}},"after":{"length":0,"selection":{"location":0,"length":0}}},"secureInput":{"pid":1702,"bundleId":"com.apple.Terminal","name":"Terminal"},"pressSkipped":true,"kept":true}}}
+{"to":"helper","msg":{"id":"c33","method":"textio.paste","params":{"text":"Hi","verifyMs":1000}}}
+{"to":"app","msg":{"id":"c33","result":{"posted":true,"restored":true,"clipboardTaken":false,"ms":503.1,"check":"unknown","field":{"role":"AXWebArea"}}}}
+{"to":"helper","msg":{"id":"c34","method":"textio.paste","params":{"text":"Hi","targetPid":9286,"verifyMs":1000}}}
+{"to":"app","msg":{"id":"c34","result":{"posted":true,"restored":false,"clipboardTaken":false,"ms":1002.4,"check":"unchanged","checkMs":1000.2,"field":{"role":"AXWebArea","before":{"length":0,"marker":true},"after":{"length":0,"marker":true}},"kept":true}}}

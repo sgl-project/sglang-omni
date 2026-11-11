@@ -3,42 +3,28 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, TypedDict
 
 import numpy as np
 import torch
+from typing_extensions import NotRequired, Unpack
 
-
-def linear_mrope_positions(
-    seq_len: int,
-    *,
-    device: torch.device | None = None,
-    dtype: torch.dtype = torch.long,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """arange broadcast to [3, seq] with delta 0."""
-    # Note (guozhihao): clone so MultimodalInputs owns a contiguous buffer
-    # (expand returns a view).
-    positions = (
-        torch.arange(seq_len, device=device, dtype=dtype)
-        .unsqueeze(0)
-        .expand(3, -1)
-        .clone()
-    )
-    delta = torch.zeros((1, 1), device=device, dtype=dtype)
-    return positions, delta
+if TYPE_CHECKING:
+    from transformers import PretrainedConfig
+else:
+    pass
 
 
 def talker_can_use_linear_mrope(
     input_ids: torch.Tensor,
-    model_inputs: dict[str, Any],
-    thinker_config: Any,
+    model_inputs: Mapping[str, object],
+    thinker_config: "PretrainedConfig",
 ) -> bool:
-    """True when linear arange+delta0 matches full mm MRoPE."""
-    # Note (guozhihao): talker uses MRotaryEmbedding; decode is
-    # seq_len + delta - 1. Mm placeholders + grids make positions/delta
-    # diverge from arange+0 (#1149 Part B), so only short-circuit when no
-    # multimodal segment would be emitted (no grids, or grids but no
-    # vision_start/audio_start in input_ids).
+    """True when the prompt's MRoPE positions are the arange with delta 0, so the
+    talker request needs no multimodal inputs."""
+    # Note (guozhihao): vision segments move positions and delta off the arange, so
+    # with grids, any vision_start or audio_start counts as not linear.
     has_image = model_inputs.get("image_grid_thw") is not None
     has_video = model_inputs.get("video_grid_thw") is not None
     if not has_image and not has_video:
@@ -124,6 +110,14 @@ def merge_audio_in_video(video_pos: np.ndarray, audio_pos: np.ndarray) -> np.nda
     return np.concatenate([video_pos, audio_pos], axis=1)[:, order]
 
 
+class RopeIndexKwargs(TypedDict):
+    audio_token_id: int
+    audio_start_token_id: int
+    position_id_per_seconds: int
+    use_audio_in_video: NotRequired[object]
+    audio_seqlens: NotRequired[object]
+
+
 def get_rope_index_qwen3_omni_vectorized(
     spatial_merge_size: int,
     image_token_id: int,
@@ -134,7 +128,7 @@ def get_rope_index_qwen3_omni_vectorized(
     image_grid_thw: torch.LongTensor | None = None,
     video_grid_thw: torch.LongTensor | None = None,
     second_per_grid_ts: torch.Tensor | None = None,
-    **kwargs: Any,
+    **kwargs: Unpack[RopeIndexKwargs],
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Drop-in for get_rope_index_qwen3_omni with vectorized blocks."""
     del tokens_per_second

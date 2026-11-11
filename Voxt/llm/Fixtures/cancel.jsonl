@@ -1,0 +1,9 @@
+{"to":"llm","msg":{"id":"c1","method":"llm.hello","params":{"protocol":1,"app":"0.1.0-beta.1"}}}
+{"to":"app","msg":{"id":"c1","result":{"protocol":1,"version":"0.1.0-beta.1","pid":4242,"methods":["llm.hello","llm.shutdown","job.cancel","model.load","model.unload","model.status","chat"],"device":{"name":"Mac16,13","os":"macOS 26.7","memoryBytes":25769803776}}}}
+{"to":"llm","msg":{"id":"c2","method":"chat","params":{"model":{"id":"llm.balanced","format":"mlx","path":"/models/llm.balanced"},"messages":[{"role":"user","content":"Write a long story."}],"maxTokens":1536,"sampling":{"temperature":0.5}}}}
+{"to":"app","msg":{"method":"chat.delta","params":{"job":"c2","text":"Once upon"}}}
+{"to":"llm","msg":{"id":"c3","method":"job.cancel","params":{"job":"c2"}}}
+{"to":"app","msg":{"id":"c2","error":{"code":"cancelled","message":"The chat was cancelled"}}}
+{"to":"app","msg":{"id":"c3","result":{"cancelled":true}}}
+{"to":"llm","msg":{"id":"c4","method":"job.cancel","params":{"job":"c2"}}}
+{"to":"app","msg":{"id":"c4","result":{"cancelled":false}}}

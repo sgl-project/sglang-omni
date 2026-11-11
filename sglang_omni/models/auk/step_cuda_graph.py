@@ -10,13 +10,18 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable, Iterable, Mapping, Sequence
-from typing import Any, NamedTuple
+from collections.abc import Iterable, Mapping, Sequence
+from typing import NamedTuple, Protocol
 
 import torch
 
 from sglang_omni.platforms import current_platform
-from sglang_omni.platforms.device_graph import DeviceGraphBackend
+from sglang_omni.platforms.device_graph import (
+    CudaGraphPoolHandle,
+    DeviceGraphBackend,
+    ReplayableGraph,
+    XpuGraphPoolHandle,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +52,30 @@ DEFAULT_CAPTURE_SHAPES: tuple[AuKGraphShape, ...] = tuple(
     for ref, text in CONDITIONING
 )
 
-StepFn = Callable[[Mapping[str, Any], torch.Tensor, torch.Tensor], torch.Tensor]
+StepGraphKeyPart = (
+    tuple[tuple[int, ...], torch.dtype]
+    | tuple[str, tuple[int, ...], torch.dtype]
+    | tuple[str, bool | None]
+)
+StepGraphKey = tuple[tuple[StepGraphKeyPart, ...], tuple[float, ...]]
+
+
+class AuKStepFunction(Protocol):
+    def __call__(
+        self,
+        inputs: Mapping[str, torch.Tensor | bool | None],
+        time: torch.Tensor,
+        x: torch.Tensor,
+        /,
+    ) -> torch.Tensor: ...
+
+
+class AuKStepReplay(Protocol):
+    def __call__(self, time: torch.Tensor, x: torch.Tensor, /) -> torch.Tensor: ...
+
+
+class AuKTrajectoryRun(Protocol):
+    def __call__(self, shape: AuKGraphShape, /) -> list[torch.Tensor]: ...
 
 
 class CapturedStep(NamedTuple):
@@ -56,8 +84,8 @@ class CapturedStep(NamedTuple):
     The graph is typed by the backend that recorded it rather than torch.cuda.
     """
 
-    graph: Any
-    static_inputs: dict[str, Any]
+    graph: ReplayableGraph
+    static_inputs: dict[str, torch.Tensor | bool | None]
     static_x: torch.Tensor
     static_time: torch.Tensor
     static_out: torch.Tensor
@@ -128,13 +156,15 @@ class AuKStepCudaGraphRunner:
             pass
         self.min_free_bytes = int(min_free_gb * 1024**3)
         self.warmup_iters = warmup_iters
-        self.graphs: dict[tuple, CapturedStep] = {}
+        self.graphs: dict[StepGraphKey, CapturedStep] = {}
         self.ready: set[AuKGraphShape] = set()
         self.capturing: AuKGraphShape | None = None
-        self.pool: Any | None = None
+        self.pool: CudaGraphPoolHandle | XpuGraphPoolHandle | tuple[int, int] | None = (
+            None
+        )
         self.graph_bytes = 0
 
-    def capture_declared(self, run_trajectory: Callable[[AuKGraphShape], Any]) -> None:
+    def capture_declared(self, run_trajectory: AuKTrajectoryRun) -> None:
         """Capture every declared shape by running one trajectory through each.
 
         The trajectories come from the caller so that a capture records exactly
@@ -198,13 +228,13 @@ class AuKStepCudaGraphRunner:
 
     def bind(
         self,
-        step: StepFn,
-        inputs: Mapping[str, Any],
+        step: AuKStepFunction,
+        inputs: Mapping[str, torch.Tensor | bool | None],
         *,
         x: torch.Tensor,
         time: torch.Tensor,
-        baked: Sequence[Any] = (),
-    ) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor] | None:
+        baked: Sequence[float] = (),
+    ) -> AuKStepReplay | None:
         """Load this trajectory's constants into a captured step, or return None.
 
         baked names the values the step closes over rather than reads from its
@@ -245,9 +275,12 @@ class AuKStepCudaGraphRunner:
         return replay
 
     def graph_key(
-        self, inputs: Mapping[str, Any], x: torch.Tensor, baked: Sequence[Any]
-    ) -> tuple:
-        parts: list[Any] = [(tuple(x.shape), x.dtype)]
+        self,
+        inputs: Mapping[str, torch.Tensor | bool | None],
+        x: torch.Tensor,
+        baked: Sequence[float],
+    ) -> StepGraphKey:
+        parts: list[StepGraphKeyPart] = [(tuple(x.shape), x.dtype)]
         for name, value in sorted(inputs.items()):
             if isinstance(value, torch.Tensor):
                 parts.append((name, tuple(value.shape), value.dtype))
@@ -257,9 +290,9 @@ class AuKStepCudaGraphRunner:
 
     def prepare(
         self,
-        key: tuple,
-        step: StepFn,
-        inputs: Mapping[str, Any],
+        key: StepGraphKey,
+        step: AuKStepFunction,
+        inputs: Mapping[str, torch.Tensor | bool | None],
         x: torch.Tensor,
         time: torch.Tensor,
     ) -> CapturedStep | None:
@@ -296,8 +329,8 @@ class AuKStepCudaGraphRunner:
 
     def capture(
         self,
-        step: StepFn,
-        inputs: Mapping[str, Any],
+        step: AuKStepFunction,
+        inputs: Mapping[str, torch.Tensor | bool | None],
         x: torch.Tensor,
         time: torch.Tensor,
     ) -> CapturedStep:

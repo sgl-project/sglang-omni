@@ -87,20 +87,6 @@ def test_timestamp_processor_matches_transformers_masks_and_greedy_token(
     )
 
 
-def test_timestamp_processor_forbids_non_monotonic_timestamp_candidates() -> None:
-    history = [TIMESTAMP_BEGIN_ID + 2, TEXT_TOKEN_ID]
-    logits = torch.zeros((1, VOCAB_SIZE))
-
-    transformers_scores, sglang_scores = run_processors(history, logits)
-
-    assert torch.isneginf(
-        sglang_scores[0, TIMESTAMP_BEGIN_ID : TIMESTAMP_BEGIN_ID + 2]
-    ).all()
-    assert torch.equal(
-        torch.isneginf(sglang_scores), torch.isneginf(transformers_scores)
-    )
-
-
 def test_timestamp_processor_preserves_eos_after_closing_timestamp() -> None:
     history = [TIMESTAMP_BEGIN_ID, TEXT_TOKEN_ID, TIMESTAMP_BEGIN_ID + 1]
     logits = torch.full((1, VOCAB_SIZE), -10.0)

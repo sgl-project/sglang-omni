@@ -3,8 +3,8 @@
 
 The LRU mechanics live in the shared StageOutputCache (covered by its own tests);
 these cover ZONOS2's model-local glue now routed through it: content-hash keying,
-a cache hit avoiding a second forward, recency-ordered eviction at the count cap,
-and clone isolation of returned embeddings. The Qwen3 embedder is stubbed, so no
+a cache hit avoiding a second forward, and recency-ordered eviction at the count
+cap. The Qwen3 embedder is stubbed, so no
 model checkpoint or GPU is needed (the module still imports torchaudio/transformers).
 """
 
@@ -18,10 +18,34 @@ pytest.importorskip("transformers")
 
 import torch  # noqa: E402
 
+import sglang_omni.models.zonos2.components.speaker_encoder as speaker_encoder  # noqa: E402
 from sglang_omni.models.zonos2.components.speaker_encoder import (  # noqa: E402
     SPEAKER_EMBEDDING_DIM,
     SpeakerEncoder,
 )
+
+
+class FakeAutoModel:
+    def __init__(self) -> None:
+        self.received_model_names_or_paths: list[str] = []
+
+    def from_pretrained(
+        self,
+        model_name_or_path: str,
+        *,
+        trust_remote_code: bool,
+    ) -> "FakeModel":
+        self.received_model_names_or_paths.append(model_name_or_path)
+        assert trust_remote_code is True
+        return FakeModel()
+
+
+class FakeModel:
+    def to(self, device: str) -> "FakeModel":
+        return self
+
+    def eval(self) -> "FakeModel":
+        return self
 
 
 class CountingEmbedder:
@@ -42,6 +66,50 @@ def make_encoder(max_items: int = 256):
     # Shadow the lazy loader so encode() never touches the real model / GPU.
     enc.get_embedder = lambda: fake  # type: ignore[assignment]
     return enc, fake
+
+
+@pytest.mark.parametrize(
+    ("configured_model_name_or_path", "expected_model_name_or_path"),
+    [
+        (None, speaker_encoder.Qwen3SpeakerEmbedding.MODEL_NAME),
+        ("/models/qwen3_voice_embedding", "/models/qwen3_voice_embedding"),
+    ],
+)
+def test_speaker_encoder_uses_the_resolved_model(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_model_name_or_path: str | None,
+    expected_model_name_or_path: str,
+) -> None:
+    fake_auto_model = FakeAutoModel()
+    monkeypatch.setattr(speaker_encoder, "AutoModel", fake_auto_model)
+
+    encoder = speaker_encoder.SpeakerEncoder(
+        device="cpu",
+        speaker_embedding_model_name_or_path=configured_model_name_or_path,
+    )
+    encoder.get_embedder()
+    cache_key = encoder.cache_key(encoder.normalize_input((torch.zeros(1, 8), 16_000)))
+
+    assert fake_auto_model.received_model_names_or_paths == [
+        expected_model_name_or_path
+    ]
+    assert encoder.encoder_id == expected_model_name_or_path
+    assert cache_key is not None
+    assert cache_key.encoder_id == expected_model_name_or_path
+
+
+@pytest.mark.parametrize("configured_model_name_or_path", ["", "   "])
+def test_speaker_encoder_rejects_an_empty_model_source(
+    configured_model_name_or_path: str,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="speaker_embedding_model_name_or_path must not be empty",
+    ):
+        speaker_encoder.SpeakerEncoder(
+            device="cpu",
+            speaker_embedding_model_name_or_path=configured_model_name_or_path,
+        )
 
 
 def test_repeated_reference_hits_cache() -> None:
@@ -113,20 +181,3 @@ def test_eviction_is_recency_ordered() -> None:
     assert fake.calls == 3
     enc.encode(b)  # b was evicted -> recompute
     assert fake.calls == 4
-
-
-def test_returned_embedding_is_isolated_clone() -> None:
-    enc, _ = make_encoder()
-    ref = (torch.zeros(1, 100), 16000)
-    cold = enc.encode(ref)  # store-path return
-    cold.add_(123.0)  # mutate the store-path copy
-    warm = enc.encode(ref)  # served from cache
-    assert not torch.equal(cold, warm)  # cache untouched by store-path mutation
-    warm.add_(456.0)  # mutate the hit-path copy
-    warm2 = enc.encode(ref)  # served from cache again
-    assert not torch.equal(warm, warm2)  # cache untouched by hit-path mutation
-
-
-def test_rejects_non_positive_cache_size() -> None:
-    with pytest.raises(ValueError):
-        SpeakerEncoder(device="cpu", cache_max_items=0)

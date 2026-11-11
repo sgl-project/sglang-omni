@@ -6,9 +6,21 @@ from __future__ import annotations
 import base64
 import binascii
 import math
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
+
+from sglang_omni.client.types import UsageInfo
+from sglang_omni.scheduling.types import SpecTokensDetailsDict
 
 
 class UsageResponse(BaseModel):
@@ -19,13 +31,52 @@ class UsageResponse(BaseModel):
     total_tokens: int = 0
 
 
+class SpecTokensDetails(BaseModel):
+    """Per-request speculative decoding statistics."""
+
+    spec_accept_rate: float | None = None
+    spec_accept_length: float
+    spec_num_correct_drafts: int
+    spec_num_proposed_drafts: int | None = None
+    spec_verify_ct: int
+    spec_correct_drafts_histogram: list[int]
+
+    @model_serializer(mode="wrap")
+    def drop_unknown_rate(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, object]:
+        data = handler(self)
+        if self.spec_accept_rate is None:
+            data.pop("spec_accept_rate", None)
+            data.pop("spec_num_proposed_drafts", None)
+        else:
+            pass
+        return data
+
+
+class SglExt(BaseModel):
+    """Response-level extension fields outside the OpenAI schema."""
+
+    spec_tokens_details: SpecTokensDetails
+
+
+def build_sglext(
+    return_spec_tokens_details: bool,
+    spec_tokens_details: SpecTokensDetailsDict | None,
+) -> SglExt | None:
+    if return_spec_tokens_details and spec_tokens_details is not None:
+        return SglExt(spec_tokens_details=SpecTokensDetails(**spec_tokens_details))
+    else:
+        return None
+
+
 class ChatMessage(BaseModel):
     """A single message in a chat conversation."""
 
     role: str
-    content: Any = None
+    content: object = None
     name: str | None = None
-    tool_calls: list[dict[str, Any]] | None = None
+    tool_calls: list[dict[str, object]] | None = None
     tool_call_id: str | None = None
 
 
@@ -36,6 +87,38 @@ class ChatCompletionAudio(BaseModel):
     data: str  # base64-encoded audio
     expires_at: int | None = None
     transcript: str | None = None
+
+
+class ImageGenerationParams(BaseModel):
+    """Per-request image generation and editing controls (sglang-omni extension).
+
+    Text-to-image defaults to 1024x1024; edits follow the input image grid.
+    """
+
+    model_config = ConfigDict(allow_inf_nan=False, extra="forbid")
+
+    mode: Literal["normal", "thinking"] = "normal"
+    decode_mode: Literal["normal", "decoder-turbo"] = "normal"
+    decoder_steps: int | None = Field(default=None, ge=1)
+    seed: int | None = None
+    cfg_scale: float = Field(default=1.0, ge=1.0)
+    cfg_text_scale: float | None = Field(default=None, ge=0.0)
+    cfg_image_scale: float = Field(default=0.0, ge=0.0)
+    cfg_rescale: float = Field(default=0.7, ge=0.0, le=1.0)
+    image_h: int | None = Field(default=None, ge=32, multiple_of=32)
+    image_w: int | None = Field(default=None, ge=32, multiple_of=32)
+    dllm_steps: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_decoder_steps(self) -> ImageGenerationParams:
+        if self.decode_mode == "normal" and self.decoder_steps == 1:
+            raise ValueError(
+                "normal decoding requires decoder_steps >= 2; use decoder-turbo "
+                "for a one-step request"
+            )
+        else:
+            pass
+        return self
 
 
 class ChatCompletionRequest(BaseModel):
@@ -52,8 +135,8 @@ class ChatCompletionRequest(BaseModel):
     top_k: int | None = None
     min_p: float | None = None
     repetition_penalty: float | None = None
-    max_tokens: int | None = None
-    max_completion_tokens: int | None = None
+    max_tokens: int | None = Field(default=None, ge=1)
+    max_completion_tokens: int | None = Field(default=None, ge=1)
     stop: str | list[str] | None = None
     seed: int | None = None
 
@@ -64,7 +147,7 @@ class ChatCompletionRequest(BaseModel):
     modalities: list[str] | None = None  # e.g. ["text", "audio"]
 
     # Audio output configuration
-    audio: dict[str, Any] | None = None  # {"voice": "...", "format": "wav"}
+    audio: dict[str, object] | None = None  # {"voice": "...", "format": "wav"}
 
     # Audio input (sglang-omni extension)
     # Can be a list of audio file paths (local paths or URLs)
@@ -82,10 +165,11 @@ class ChatCompletionRequest(BaseModel):
     video_min_pixels: int | None = None
     video_max_pixels: int | None = None
     video_total_pixels: int | None = None
+    use_audio_in_video: bool | None = None
 
     # Per-stage sampling overrides (sglang-omni specific)
-    stage_sampling: dict[str, dict[str, Any]] | None = None
-    stage_params: dict[str, dict[str, Any]] | None = None
+    stage_sampling: dict[str, dict[str, object]] | None = None
+    stage_params: dict[str, dict[str, object]] | None = None
 
     # Talker-specific overrides for Qwen3-Omni speech output
     talker_temperature: float | None = None
@@ -95,8 +179,19 @@ class ChatCompletionRequest(BaseModel):
     talker_max_new_tokens: int | None = None
 
     # Misc
+    return_spec_tokens_details: bool = False
     request_id: str | None = None
     user: str | None = None
+
+    @model_validator(mode="after")
+    def validate_input_present(self) -> ChatCompletionRequest:
+        if not self.messages and not (self.audios or self.images or self.videos):
+            raise ValueError(
+                "messages must not be empty without audios, images or videos"
+            )
+        else:
+            pass
+        return self
 
     @property
     def effective_max_tokens(self) -> int | None:
@@ -107,7 +202,7 @@ class ChatCompletionChoice(BaseModel):
     """A single choice in a chat completion response."""
 
     index: int = 0
-    message: dict[str, Any]
+    message: dict[str, object]
     finish_reason: str | None = "stop"
 
 
@@ -120,6 +215,18 @@ class ChatCompletionResponse(BaseModel):
     model: str
     choices: list[ChatCompletionChoice]
     usage: UsageResponse | None = None
+    sglext: SglExt | None = None
+
+    @model_serializer(mode="wrap")
+    def drop_unset_sglext(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, object]:
+        data = handler(self)
+        if self.sglext is None:
+            data.pop("sglext", None)
+        else:
+            pass
+        return data
 
 
 class ChatCompletionStreamDelta(BaseModel):
@@ -147,6 +254,7 @@ class ChatCompletionStreamResponse(BaseModel):
     model: str
     choices: list[ChatCompletionStreamChoice]
     usage: UsageResponse | None = None
+    sglext: SglExt | None = None
 
 
 class RolloutSamplingParams(BaseModel):
@@ -170,7 +278,7 @@ class RolloutMessage(BaseModel):
     """Chat message for ``POST /generate`` (role and content required)."""
 
     role: str = Field(min_length=1)
-    content: str | list[Any]
+    content: str | list[object]
 
 
 _SERIALIZED_DTYPE_ITEMSIZE = {
@@ -227,6 +335,10 @@ class SerializedMultimodalInputs(BaseModel):
     tensors: dict[str, SerializedMultimodalTensor] = Field(min_length=1)
 
 
+# Token ids are stored as signed 64-bit integers.
+TOKEN_ID_STORAGE_BOUND = 1 << 63
+
+
 class RolloutGenerateRequest(BaseModel):
     """Rollout request for ``POST /generate``; set exactly one of
     ``input_ids``, ``prompt``, ``messages``."""
@@ -235,26 +347,40 @@ class RolloutGenerateRequest(BaseModel):
 
     model: str | None = None
 
-    input_ids: list[int] | None = None
+    input_ids: list[int] | None = Field(default=None, min_length=1)
     prompt: str | None = None
-    messages: list[RolloutMessage] | None = None
+    messages: list[RolloutMessage] | None = Field(default=None, min_length=1)
 
     sampling_params: RolloutSamplingParams = Field(
         default_factory=RolloutSamplingParams
     )
     stream: bool = False
     stage_sampling: dict[str, RolloutSamplingParams] | None = None
-    stage_params: dict[str, dict[str, Any]] | None = None
+    stage_params: dict[str, dict[str, object]] | None = None
     output_modalities: list[str] | None = None
 
     multimodal_train_inputs: SerializedMultimodalInputs | None = None
 
-    metadata: dict[str, Any] | None = None
+    metadata: dict[str, object] | None = None
 
     return_logprob: bool = True
     return_omni_rollout: bool = False
     return_routed_experts: bool = False
     return_indexer_topk: bool = False
+
+    @field_validator("input_ids")
+    @classmethod
+    def validate_input_ids(cls, input_ids: list[int] | None) -> list[int] | None:
+        # One located error keeps the 422 small for a long invalid prompt.
+        for index, token_id in enumerate(input_ids or ()):
+            if not 0 <= token_id < TOKEN_ID_STORAGE_BOUND:
+                raise ValueError(
+                    f"input_ids[{index}] is {token_id}. "
+                    "Token ids must be in [0, 2**63)."
+                )
+            else:
+                pass
+        return input_ids
 
 
 class GenerateFinishReason(BaseModel):
@@ -281,9 +407,9 @@ class GenerateMetaInfo(BaseModel):
     completion_tokens: int = 0
     cached_tokens: int = 0
     weight_version: str | None = None
-    request_metadata: dict[str, Any] | None = None
-    output_token_logprobs: list[Any] | None = None
-    omni_rollout: dict[str, Any] | None = None
+    request_metadata: dict[str, object] | None = None
+    output_token_logprobs: list[object] | None = None
+    omni_rollout: dict[str, object] | None = None
 
 
 class GenerateResponse(BaseModel):
@@ -326,6 +452,7 @@ class SpeechReference(BaseModel):
     media_type: str | None = None
     text: str | None = None
     vq_codes: list[list[int]] | list[int] | None = None
+    speaker_embedding: list[float] | None = None
 
 
 class CreateSpeechRequest(BaseModel):
@@ -347,6 +474,7 @@ class CreateSpeechRequest(BaseModel):
     response_format: str = "wav"
     speed: float = 1.0
     stream: bool = False
+    stream_format: Literal["audio", "sse"] = "audio"
 
     # Advanced TTS extensions
     task_type: str | None = None  # e.g. "Base", "CustomVoice", "VoiceDesign"
@@ -369,11 +497,14 @@ class CreateSpeechRequest(BaseModel):
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
+    epsilon_cutoff: float | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
 
     # Per-stage overrides (sglang-omni specific)
-    stage_params: dict[str, dict[str, Any]] | None = None
+    stage_params: dict[str, dict[str, object]] | None = None
+
+    return_spec_tokens_details: bool = False
 
 
 class SpeechBatchItem(BaseModel):
@@ -381,34 +512,35 @@ class SpeechBatchItem(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="allow")
 
-    model: Any = None
-    input: Any = None
-    voice: Any = Field(
+    model: object = None
+    input: object = None
+    voice: object = Field(
         default=None,
         validation_alias=AliasChoices("voice", "speaker"),
     )
-    response_format: Any = None
-    speed: Any = None
-    stream: Any = None
-    task_type: Any = None
-    language: Any = None
-    instructions: Any = None
-    ref_audio: Any = None
-    ref_text: Any = None
-    references: Any = None
-    x_vector_only_mode: Any = None
-    stream_codec_output: Any = None
-    suppress_bootstrap_silence: Any = None
-    token_count: Any = None
-    duration_tokens: Any = None
-    max_new_tokens: Any = None
-    initial_codec_chunk_frames: Any = None
-    temperature: Any = None
-    top_p: Any = None
-    top_k: Any = None
-    repetition_penalty: Any = None
-    seed: Any = None
-    stage_params: Any = None
+    response_format: object = None
+    speed: object = None
+    stream: object = None
+    task_type: object = None
+    language: object = None
+    instructions: object = None
+    ref_audio: object = None
+    ref_text: object = None
+    references: object = None
+    x_vector_only_mode: object = None
+    stream_codec_output: object = None
+    suppress_bootstrap_silence: object = None
+    token_count: object = None
+    duration_tokens: object = None
+    max_new_tokens: object = None
+    initial_codec_chunk_frames: object = None
+    temperature: object = None
+    top_p: object = None
+    top_k: object = None
+    epsilon_cutoff: object = None
+    repetition_penalty: object = None
+    seed: object = None
+    stage_params: object = None
 
 
 class CreateSpeechBatchRequest(BaseModel):
@@ -441,9 +573,10 @@ class CreateSpeechBatchRequest(BaseModel):
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
+    epsilon_cutoff: float | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
-    stage_params: dict[str, dict[str, Any]] | None = None
+    stage_params: dict[str, dict[str, object]] | None = None
 
 
 class SpeechBatchResult(BaseModel):
@@ -455,7 +588,27 @@ class SpeechBatchResult(BaseModel):
     format: str | None = None
     media_type: str | None = None
     finish_reason: str | None = None
-    error: dict[str, Any] | None = None
+    error: dict[str, object] | None = None
+
+
+class SpeechStreamOutcome(BaseModel):
+    """Terminal state of a finished raw PCM speech stream."""
+
+    request_id: str
+    finish_reason: str
+    usage: UsageInfo | None = None
+    sglext: SglExt | None = None
+
+    @model_serializer(mode="wrap")
+    def drop_unset_sglext(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, object]:
+        data = handler(self)
+        if self.sglext is None:
+            data.pop("sglext", None)
+        else:
+            pass
+        return data
 
 
 class SpeechBatchResponse(BaseModel):
@@ -498,9 +651,10 @@ class SpeechStreamSessionConfig(BaseModel):
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
+    epsilon_cutoff: float | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
-    stage_params: dict[str, dict[str, Any]] | None = None
+    stage_params: dict[str, dict[str, object]] | None = None
 
 
 class UploadedVoiceMetadata(BaseModel):
@@ -537,6 +691,8 @@ class TranscriptionResponse(BaseModel):
 
     text: str
     usage: TranscriptionUsage | None = None
+    finish_reason: str | None = None
+    sglext: SglExt | None = None
 
 
 class TranscriptionSegment(BaseModel):
@@ -557,6 +713,8 @@ class TranscriptionVerboseResponse(BaseModel):
     text: str
     segments: list[TranscriptionSegment] = Field(default_factory=list)
     usage: TranscriptionUsage | None = None
+    finish_reason: str | None = None
+    sglext: SglExt | None = None
 
 
 class TranscriptionTextDeltaEvent(BaseModel):
@@ -572,6 +730,8 @@ class TranscriptionTextDoneEvent(BaseModel):
     type: str = "transcript.text.done"
     text: str
     usage: TranscriptionUsage | None = None
+    finish_reason: str | None = None
+    sglext: SglExt | None = None
 
 
 class ModelPermission(BaseModel):
@@ -630,11 +790,11 @@ class UpdateWeightFromDiskRequest(AdminRequestBase):
     recapture_cuda_graph: bool = False
     token_step: int = 0
     flush_cache: bool = True
-    manifest: dict[str, Any] | None = None
+    manifest: dict[str, object] | None = None
 
 
 class UpdateWeightsFromTensorRequest(AdminRequestBase):
-    serialized_named_tensors: list[Any] | None = None
+    serialized_named_tensors: list[object] | None = None
     load_format: str | None = None
     flush_cache: bool = True
     abort_all_requests: bool = False

@@ -240,7 +240,7 @@ def load_dots_audio_codec(model_path: str, *, device: str) -> DotsAudioCodec:
         return codec
 
 
-class DotsReferenceHook(KeyedReferenceEncodeHook[str, dict, dict]):
+class DotsReferenceHook(KeyedReferenceEncodeHook[str, dict, dict, str]):
     model_revision = ""
     encoder_id = "dots_audio_vae_campplus"
     artifact_kind = "reference_conditioning"

@@ -10,12 +10,35 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Iterable, Iterator, Literal
+
+from typing_extensions import NotRequired, TypedDict
+
+from sglang_omni.utils.json import JsonValue
 
 logger = logging.getLogger(__name__)
+
+
+class ProfilerCompleteness(TypedDict):
+    state: Literal["complete", "incomplete", "unknown"]
+    complete: bool
+    scope: str
+    expected_status_files: int
+    found_status_files: int
+    missing_status_files: list[str]
+    incomplete_reasons: list[str]
+
+
+class ProfilerReport(TypedDict):
+    timelines: NotRequired[dict[str, list[dict[str, JsonValue]]]]
+    stage_breakdown: list[dict[str, str | int | float]]
+    hop_breakdown: list[dict[str, str | int | float]]
+    request_count: int
+    completeness: ProfilerCompleteness
 
 
 # ---------------------------------------------------------------------------
@@ -23,22 +46,30 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def iter_events(source: str | Path | Iterable[str | Path]) -> Iterator[dict[str, Any]]:
-    """Yield every JSON event from a file, directory, or list of either."""
+EVENT_FILENAME_RE = re.compile(r"^events_.+_(?P<pid>[0-9]+)\.jsonl$")
+STATUS_FILENAME_RE = re.compile(r"^run_status_(?P<pid>[0-9]+)\.json$")
+
+
+def event_paths(source: str | Path | Iterable[str | Path]) -> list[Path]:
     paths: list[Path] = []
     if isinstance(source, (str, Path)):
         sources: list[str | Path] = [source]
     else:
         sources = list(source)
     for raw in sources:
-        p = Path(raw).expanduser()
-        if p.is_dir():
-            paths.extend(sorted(p.glob("events_*.jsonl")))
-        elif p.is_file():
-            paths.append(p)
+        path = Path(raw).expanduser()
+        if path.is_dir():
+            paths.extend(sorted(path.glob("events_*.jsonl")))
+        elif path.is_file():
+            paths.append(path)
         else:
-            logger.warning("iter_events: skipping non-existent path %s", p)
-    for path in paths:
+            logger.warning("profiler: skipping non-existent path %s", path)
+    return paths
+
+
+def iter_events(source: str | Path | Iterable[str | Path]) -> Iterator[JsonValue]:
+    """Yield every JSON event from a file, directory, or list of either."""
+    for path in event_paths(source):
         with path.open("r", encoding="utf-8") as fp:
             for line_no, line in enumerate(fp, 1):
                 line = line.strip()
@@ -56,7 +87,156 @@ def iter_events(source: str | Path | Iterable[str | Path]) -> Iterator[dict[str,
                     )
 
 
-def load_events(source: str | Path | Iterable[str | Path]) -> list[dict[str, Any]]:
+def assess_completeness(
+    source: str | Path | Iterable[str | Path],
+) -> ProfilerCompleteness:
+    """Assess process-local event storage using its status sidecars.
+
+    A report is never considered complete merely because its JSONL files are
+    readable. Missing or malformed sidecars are reported as ``unknown`` and
+    ``complete`` is always false in that case.
+    """
+    sources = [source] if isinstance(source, (str, Path)) else list(source)
+    directory_paths = {
+        path for raw_path in sources if (path := Path(raw_path).expanduser()).is_dir()
+    }
+    events = event_paths(sources)
+    expected_status_paths: set[Path] = set()
+    incomplete_reasons: set[str] = set()
+    event_pids_by_directory: dict[Path, set[str]] = {}
+    invalid_event_filename = False
+    for event_path in events:
+        match = EVENT_FILENAME_RE.match(event_path.name)
+        if match is None:
+            invalid_event_filename = True
+            incomplete_reasons.add("unrecognized_event_filename")
+        else:
+            pid = match.group("pid")
+            expected_status_paths.add(event_path.parent / f"run_status_{pid}.json")
+            event_pids_by_directory.setdefault(event_path.parent, set()).add(pid)
+
+    invalid_status = False
+    status_without_event_file = False
+    for directory_path in directory_paths:
+        for status_path in sorted(directory_path.glob("run_status_*.json")):
+            expected_status_paths.add(status_path)
+            match = STATUS_FILENAME_RE.match(status_path.name)
+            if match is None:
+                invalid_status = True
+            elif match.group("pid") not in event_pids_by_directory.get(
+                directory_path, set()
+            ):
+                status_without_event_file = True
+            else:
+                pass
+
+    missing_status_files: list[str] = []
+    found_status_files = 0
+    incomplete_status = False
+    for status_path in sorted(expected_status_paths):
+        if not status_path.is_file():
+            missing_status_files.append(str(status_path))
+        else:
+            try:
+                status = json.loads(status_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                invalid_status = True
+            else:
+                if not isinstance(status, dict):
+                    invalid_status = True
+                else:
+                    reasons = status.get("incomplete_reasons")
+                    counters = (
+                        "accepted_events",
+                        "processed_events",
+                        "written_events",
+                        "unwritten_events",
+                        "dropped_events",
+                        "metadata_snapshot_failures",
+                        "metadata_truncations",
+                        "serialization_failures",
+                        "event_file_open_failures",
+                        "write_failures",
+                        "finalization_failures",
+                    )
+                    if (
+                        not isinstance(status.get("complete"), bool)
+                        or status.get("completeness_scope") != "event_storage"
+                        or not isinstance(reasons, list)
+                        or any(
+                            not isinstance(status.get(counter), int)
+                            or isinstance(status.get(counter), bool)
+                            or status[counter] < 0
+                            for counter in counters
+                        )
+                    ):
+                        invalid_status = True
+                    elif status["complete"] is False:
+                        incomplete_status = True
+                        incomplete_reasons.update(
+                            reason for reason in reasons if isinstance(reason, str)
+                        )
+                    else:
+                        if (
+                            reasons
+                            or status["accepted_events"] != status["processed_events"]
+                            or status["accepted_events"] != status["written_events"]
+                            or status["unwritten_events"]
+                            or status["dropped_events"]
+                            or any(status[counter] for counter in counters[5:])
+                        ):
+                            incomplete_status = True
+                            incomplete_reasons.add("status_incomplete_reasons_present")
+                        else:
+                            pass
+                found_status_files += 1
+
+    if status_without_event_file:
+        incomplete_reasons.add("status_without_event_file")
+    else:
+        pass
+
+    if not events:
+        state: Literal["complete", "incomplete", "unknown"] = "unknown"
+        incomplete_reasons.add("no_event_files")
+    elif (
+        invalid_event_filename
+        or not expected_status_paths
+        or missing_status_files
+        or invalid_status
+    ):
+        state = "unknown"
+        if not expected_status_paths:
+            incomplete_reasons.add("missing_status_sidecar")
+        else:
+            pass
+        if missing_status_files:
+            incomplete_reasons.add("missing_status_sidecar")
+        else:
+            pass
+        if invalid_status:
+            incomplete_reasons.add("invalid_status_sidecar")
+        else:
+            pass
+    elif incomplete_status or status_without_event_file:
+        state = "incomplete"
+    else:
+        state = "complete"
+
+    return {
+        "state": state,
+        "complete": state == "complete",
+        "scope": "event_storage",
+        "expected_status_files": len(expected_status_paths),
+        "found_status_files": found_status_files,
+        "missing_status_files": missing_status_files,
+        "incomplete_reasons": sorted(incomplete_reasons),
+    }
+
+
+def load_events(
+    source: str | Path | Iterable[str | Path],
+) -> list[dict[str, JsonValue]]:
     """Return all events sorted by ``timestamp_ns`` (stable)."""
     events = list(iter_events(source))
     events.sort(key=lambda e: e.get("timestamp_ns", 0))
@@ -73,7 +253,7 @@ class RequestTimeline:
     """All events for a single request, sorted by time."""
 
     request_id: str
-    events: list[dict[str, Any]] = field(default_factory=list)
+    events: list[dict[str, JsonValue]] = field(default_factory=list)
 
     @property
     def t0_ns(self) -> int | None:
@@ -102,7 +282,7 @@ class RequestTimeline:
         assert t0 is not None and t1 is not None
         return (t1 - t0) / 1e6
 
-    def to_relative(self) -> list[dict[str, Any]]:
+    def to_relative(self) -> list[dict[str, JsonValue]]:
         """Return events with an added ``t_rel_ms`` field anchored at t0."""
         if not self.events:
             return []
@@ -110,7 +290,7 @@ class RequestTimeline:
             pass
         t0 = self.t0_ns
         assert t0 is not None
-        result = []
+        result: list[dict[str, JsonValue]] = []
         for ev in self.events:
             out = dict(ev)
             out["t_rel_ms"] = (ev["timestamp_ns"] - t0) / 1e6
@@ -123,7 +303,7 @@ def reconstruct_timelines(
 ) -> dict[str, RequestTimeline]:
     """Group every event by ``request_id`` into a per-request timeline."""
     events = load_events(source)
-    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    grouped: dict[str, list[dict[str, JsonValue]]] = defaultdict(list)
     for ev in events:
         rid = ev.get("request_id")
         if not rid:
@@ -187,7 +367,7 @@ class StageBreakdownRow:
     p95_ms: float
     max_ms: float
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, str | int | float]:
         return {
             "stage": self.stage,
             "interval": self.interval_name,
@@ -327,7 +507,7 @@ class HopBreakdownRow:
     p95_ms: float
     max_ms: float
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, str | int | float]:
         return {
             "src": self.src_stage,
             "dst": self.dst_stage,
@@ -432,18 +612,24 @@ def hop_breakdown(
 # ---------------------------------------------------------------------------
 
 
-def build_report(source: str | Path | Iterable[str | Path]) -> dict[str, Any]:
+def build_report(source: str | Path | Iterable[str | Path]) -> ProfilerReport:
     """Return all three views as a single dict for JSON serialization."""
-    timelines = reconstruct_timelines(source)
+    if isinstance(source, (str, Path)):
+        report_source: str | Path | list[str | Path] = source
+    else:
+        report_source = list(source)
+    completeness = assess_completeness(report_source)
+    timelines = reconstruct_timelines(report_source)
     return {
         "timelines": {rid: tl.to_relative() for rid, tl in timelines.items()},
         "stage_breakdown": [row.to_dict() for row in stage_breakdown(timelines)],
         "hop_breakdown": [row.to_dict() for row in hop_breakdown(timelines)],
         "request_count": len(timelines),
+        "completeness": completeness,
     }
 
 
-def format_table(rows: list[dict[str, Any]], columns: list[str]) -> str:
+def format_table(rows: list[dict[str, str | int | float]], columns: list[str]) -> str:
     """Pretty-print a list of dicts as a fixed-width table."""
     if not rows:
         return "(empty)\n"

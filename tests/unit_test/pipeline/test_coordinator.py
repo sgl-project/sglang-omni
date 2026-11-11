@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import gc
+from collections.abc import AsyncGenerator
 
 import pytest
 
-from sglang_omni.admission import QueueFullError
+from sglang_omni.admission import AdminDroppedRequestError, QueueFullError
 from sglang_omni.config import PipelineConfig, ProcessConfig
 from sglang_omni.config.topology import compile_logical_processes
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.pipeline.replicas import ReplicaTopology, expand_replica_stages
 from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
+from sglang_omni.proto.messages import AbortMessage
+from sglang_omni.proto.request import RequestState
 from tests.unit_test.fixtures.pipeline_fakes import RecordingCoordinatorControlPlane
 from tests.unit_test.pipeline.helpers import stage
 
@@ -209,8 +212,10 @@ def test_coordinator_stream_received_event_pairs_terminal_chunk(monkeypatch) -> 
             entry_stage="preprocess",
             terminal_stages=["decode"],
         )
+        coordinator.control_plane = RecordingCoordinatorControlPlane()
+        coordinator.register_stage("preprocess", "inproc://preprocess")
         queue: asyncio.Queue = asyncio.Queue()
-        coordinator.stream_queues["req-1"] = queue
+        await coordinator.submit_request("req-1", "hello", stream_queue=queue)
 
         await coordinator.handle_stream(
             StreamMessage(
@@ -256,7 +261,10 @@ def test_stream_message_round_trips_terminal_chunk_id() -> None:
     assert round_trip.modality == "text"
 
 
-def test_coordinator_failure_completion_fails_fast_and_cleans_state() -> None:
+@pytest.mark.parametrize("abort_fails", [False, True])
+def test_coordinator_failure_completion_fails_fast_and_cleans_state(
+    abort_fails: bool,
+) -> None:
     """Preserves fail-fast behavior and cleanup after any terminal failure."""
 
     async def run() -> None:
@@ -277,20 +285,40 @@ def test_coordinator_failure_completion_fails_fast_and_cleans_state() -> None:
         )
         assert coordinator.partial_results["req-1"] == {"decode": {"text": "hi"}}
 
+        recording_abort = control_plane.broadcast_abort
+        if abort_fails:
+
+            async def unavailable_abort(msg) -> None:
+                await recording_abort(msg)
+                raise RuntimeError("abort transport unavailable")
+
+            control_plane.broadcast_abort = unavailable_abort
         await coordinator.handle_completion(
             CompleteMessage("req-1", "code2wav", False, error="boom")
         )
 
         with pytest.raises(RuntimeError, match="boom"):
             await future
-        assert "req-1" not in coordinator.requests
         assert "req-1" not in coordinator.partial_results
         assert control_plane.aborts[-1].request_id == "req-1"
+        if abort_fails:
+            # Stages may still hold the request, so late output cannot release it
+            # and its ID stays reserved until an abort is delivered.
+            for terminal in ("decode", "code2wav"):
+                await coordinator.handle_completion(
+                    CompleteMessage("req-1", terminal, True, result={"text": "late"})
+                )
+            with pytest.raises(ValueError, match="already exists"):
+                await coordinator.submit_request("req-1", "hello")
+            control_plane.broadcast_abort = recording_abort
+            assert await coordinator.abort("req-1") is True
+        assert "req-1" not in coordinator.requests
 
     asyncio.run(run())
 
 
-def test_coordinator_fail_pending_requests_resolves_waiters() -> None:
+@pytest.mark.parametrize("stopping", [False, True])
+def test_coordinator_fail_pending_requests_resolves_waiters(stopping: bool) -> None:
     async def run() -> None:
         coordinator = Coordinator(
             "inproc://complete",
@@ -300,16 +328,26 @@ def test_coordinator_fail_pending_requests_resolves_waiters() -> None:
         )
         coordinator.control_plane = RecordingCoordinatorControlPlane()
         coordinator.register_stage("preprocess", "inproc://preprocess")
+        await coordinator.start()
 
         await coordinator.submit_request("req-1", "hello")
         future = coordinator.completion_futures["req-1"]
 
-        await coordinator.fail_pending_requests(RuntimeError("stage died"))
+        expected_error = "Coordinator stopped" if stopping else "stage died"
+        if stopping:
+            await coordinator.stop()
+        else:
+            await coordinator.fail_pending_requests(RuntimeError(expected_error))
 
-        with pytest.raises(RuntimeError, match="stage died"):
-            await future
+        with pytest.raises(RuntimeError, match=expected_error):
+            await asyncio.wait_for(future, timeout=1)
         assert coordinator.requests == {}
         assert coordinator.partial_results == {}
+
+        # Later work is rejected instead of being sent to a pipeline that is gone.
+        with pytest.raises(RuntimeError, match=expected_error):
+            await coordinator.submit_request("req-2", "hello")
+        assert coordinator.requests == {}
 
     asyncio.run(run())
 
@@ -368,6 +406,121 @@ def test_coordinator_stream_early_close_aborts_and_cleans_state() -> None:
         assert "req-1" not in coordinator.requests
         assert "req-1" not in coordinator.stream_queues
         assert "req-1" not in coordinator.completion_futures
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("mode", "stages", "admin_fails", "ended"),
+    [
+        ("abort", None, False, True),
+        ("abort", None, True, True),
+        ("abort", ["decode"], False, False),
+        ("in_place", None, False, False),
+    ],
+)
+def test_abort_mode_pause_ends_in_flight_streams(
+    mode: str, stages: list[str] | None, admin_fails: bool, ended: bool
+) -> None:
+    async def run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode"],
+        )
+        control_plane = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+
+        async def paused(*_args, **_kwargs):
+            if admin_fails:
+                raise TimeoutError("pause_generation timed out")
+            else:
+                pass
+            return {
+                "op_id": "op",
+                "action": "pause_generation",
+                "success": True,
+                "message": "",
+                "results": [{"data": {"mode": mode}}],
+            }
+
+        coordinator.admin = paused
+        stream = coordinator.stream("req-1", OmniRequest(inputs="hello"))
+        next_message = asyncio.create_task(anext(stream))
+        for _ in range(100):
+            if "req-1" in coordinator.stream_queues:
+                break
+            await asyncio.sleep(0)
+
+        if admin_fails:
+            with pytest.raises(TimeoutError):
+                await coordinator.pause_generation({"mode": mode}, stages=stages)
+        else:
+            await coordinator.pause_generation({"mode": mode}, stages=stages)
+        await asyncio.sleep(0)
+
+        assert next_message.done() is ended
+        assert [msg.request_id for msg in control_plane.aborts] == (
+            ["req-1"] if ended else []
+        )
+        next_message.cancel()
+        await asyncio.gather(next_message, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("broadcast_fails", [False, True])
+def test_request_a_stage_dropped_in_an_admin_action_ends_as_an_abort(
+    broadcast_fails: bool,
+) -> None:
+    async def run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode"],
+        )
+        control_plane = RecordingCoordinatorControlPlane()
+        recorded_abort = control_plane.broadcast_abort
+        failing = [broadcast_fails]
+
+        async def broadcast_abort(msg: AbortMessage) -> None:
+            if failing[0]:
+                raise RuntimeError("abort socket closed")
+            else:
+                await recorded_abort(msg)
+
+        control_plane.broadcast_abort = broadcast_abort
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+        stream = coordinator.stream("req-1", OmniRequest(inputs="hello"))
+        next_message = asyncio.create_task(anext(stream))
+        for _ in range(100):
+            if "req-1" in coordinator.stream_queues:
+                break
+            await asyncio.sleep(0)
+
+        dropped = CompleteMessage(
+            "req-1", "decode", False, error=AdminDroppedRequestError.MESSAGE
+        )
+        await coordinator.handle_completion(dropped)
+        await coordinator.handle_completion(dropped)
+
+        with pytest.raises(
+            Exception, match="dropped" if broadcast_fails else "aborted"
+        ):
+            await next_message
+        if broadcast_fails:
+            # The request stays owned until a later abort is delivered.
+            assert "req-1" in coordinator.requests
+            failing[0] = False
+            assert await coordinator.abort("req-1")
+        else:
+            pass
+        assert [msg.request_id for msg in control_plane.aborts] == ["req-1"]
+        assert "req-1" not in coordinator.requests
 
     asyncio.run(run())
 
@@ -584,7 +737,8 @@ def test_stream_abort_reserves_request_id_while_broadcast_is_in_flight() -> None
     asyncio.run(run())
 
 
-def test_stream_cancellation_is_preserved_after_abort_cleanup() -> None:
+@pytest.mark.parametrize("streaming", [False, True])
+def test_cancellation_is_preserved_after_abort_cleanup(streaming: bool) -> None:
     async def run() -> None:
         coordinator = Coordinator(
             "inproc://complete",
@@ -596,7 +750,12 @@ def test_stream_cancellation_is_preserved_after_abort_cleanup() -> None:
         coordinator.control_plane = control_plane
         coordinator.register_stage("preprocess", "inproc://preprocess")
 
-        next_event = asyncio.create_task(anext(coordinator.stream("req-1", "hello")))
+        operation = (
+            anext(coordinator.stream("req-1", "hello"))
+            if streaming
+            else coordinator.submit("req-1", "hello")
+        )
+        next_event = asyncio.create_task(operation)
         for _ in range(100):
             if "req-1" in coordinator.requests:
                 break
@@ -611,6 +770,65 @@ def test_stream_cancellation_is_preserved_after_abort_cleanup() -> None:
         assert coordinator.completion_futures == {}
         assert coordinator.stream_queues == {}
         assert coordinator.abort_tasks == {}
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("failure", ["serialization", "cancelled_send"])
+def test_failed_submission_releases_its_request(streaming: bool, failure: str) -> None:
+    class FailingSendControlPlane(RecordingCoordinatorControlPlane):
+        def __init__(self) -> None:
+            super().__init__()
+            self.send_started = asyncio.Event()
+
+        async def submit_to_stage(self, stage: str, endpoint: str, msg) -> None:
+            if msg.request_id != "failed":
+                await super().submit_to_stage(stage, endpoint, msg)
+            elif failure == "serialization":
+                raise TypeError("cannot serialize request")
+            else:
+                self.send_started.set()
+                await asyncio.Event().wait()
+
+    async def run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            max_in_flight=1,
+        )
+        control_plane = FailingSendControlPlane()
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+
+        operation = (
+            anext(coordinator.stream("failed", "hello"))
+            if streaming
+            else coordinator.submit("failed", "hello")
+        )
+        task = asyncio.create_task(operation)
+        if failure == "serialization":
+            with pytest.raises(TypeError, match="cannot serialize request"):
+                await task
+        else:
+            await control_plane.send_started.wait()
+            future = coordinator.completion_futures["failed"]
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            # The abort must not leave an exception that nobody retrieves.
+            assert future.cancelled()
+
+        # A send that raised queued nothing, so no abort retires the ID at the
+        # stages. A cancelled send may already be queued for the stage, so that
+        # request is aborted before its ID and admission slot are released.
+        expected_aborts = [] if failure == "serialization" else ["failed"]
+        assert [msg.request_id for msg in control_plane.aborts] == expected_aborts
+        assert not coordinator.request_id_is_reserved("failed")
+        assert coordinator.stream_backlogs == {}
+        await coordinator.submit_request("healthy", "hello")
+        assert list(coordinator.requests) == ["healthy"]
 
     asyncio.run(run())
 
@@ -705,7 +923,10 @@ def test_coordinator_stream_abort_cancels_future_without_unretrieved_exception()
     asyncio.run(run())
 
 
-def test_coordinator_stream_fail_pending_requests_cancels_future() -> None:
+@pytest.mark.parametrize("stopping", [False, True])
+def test_coordinator_stream_fail_pending_requests_cancels_future(
+    stopping: bool,
+) -> None:
     """A coordinator failure reaches the stream without leaving an exception
     on its unused completion future."""
 
@@ -729,10 +950,14 @@ def test_coordinator_stream_fail_pending_requests_cancels_future() -> None:
             coordinator, "req-1"
         )
 
-        await coordinator.fail_pending_requests(RuntimeError("stage died"))
+        expected_error = "Coordinator stopped" if stopping else "stage died"
+        if stopping:
+            await coordinator.stop()
+        else:
+            await coordinator.fail_pending_requests(RuntimeError(expected_error))
         await asyncio.wait_for(task, timeout=1)
 
-        assert error_sink == ["stage died"]
+        assert error_sink == [expected_error]
         assert future.cancelled() is True
         assert "req-1" not in coordinator.completion_futures
 
@@ -745,7 +970,8 @@ def test_coordinator_stream_fail_pending_requests_cancels_future() -> None:
     asyncio.run(run())
 
 
-def test_coordinator_stream_stage_failure_cancels_future() -> None:
+@pytest.mark.parametrize("abort_fails", [False, True])
+def test_coordinator_stream_stage_failure_cancels_future(abort_fails: bool) -> None:
     """A stage failure on a streaming request cancels the completion future
     (which the stream consumer never awaits) rather than setting an exception
     that would be reported as never retrieved."""
@@ -757,14 +983,26 @@ def test_coordinator_stream_stage_failure_cancels_future() -> None:
             entry_stage="preprocess",
             terminal_stages=["decode"],
         )
-        coordinator.control_plane = RecordingCoordinatorControlPlane()
+        control_plane = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control_plane
         coordinator.register_stage("preprocess", "inproc://preprocess")
+        await coordinator.start()
+        completion_loop = asyncio.create_task(coordinator.run_completion_loop())
 
         task, error_sink, future = await drive_stream_until_registered(
             coordinator, "req-1"
         )
 
-        await coordinator.handle_completion(
+        recording_abort = control_plane.broadcast_abort
+        if abort_fails:
+
+            async def abort_fails_once(msg) -> None:
+                control_plane.broadcast_abort = recording_abort
+                await recording_abort(msg)
+                raise RuntimeError("abort transport unavailable")
+
+            control_plane.broadcast_abort = abort_fails_once
+        control_plane.events.put_nowait(
             CompleteMessage("req-1", "decode", False, error="boom")
         )
         await asyncio.wait_for(task, timeout=1)
@@ -772,6 +1010,69 @@ def test_coordinator_stream_stage_failure_cancels_future() -> None:
         assert error_sink == ["boom"]
         assert future.cancelled() is True
         assert "req-1" not in coordinator.completion_futures
+        assert "req-1" not in coordinator.requests
+
+        # The same completion loop keeps serving other requests.
+        healthy = asyncio.create_task(coordinator.submit("req-2", "hello"))
+        for _ in range(100):
+            if "req-2" in coordinator.requests:
+                break
+            await asyncio.sleep(0)
+        control_plane.events.put_nowait(
+            CompleteMessage("req-2", "decode", True, result={"text": "ok"})
+        )
+        assert await asyncio.wait_for(healthy, timeout=1) == {"text": "ok"}
+        completion_loop.cancel()
+        await asyncio.gather(completion_loop, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+def test_session_operation_keeps_stage_error_when_abort_fails() -> None:
+    """A failed session operation reports the stage error and releases its
+    completion future even when every abort broadcast fails."""
+
+    class FailingOpenControlPlane(RecordingCoordinatorControlPlane):
+        def __init__(self, coordinator: Coordinator) -> None:
+            super().__init__()
+            self.coordinator = coordinator
+            self.completions: list[asyncio.Task] = []
+
+        async def submit_to_stage(self, stage: str, endpoint: str, msg) -> None:
+            await super().submit_to_stage(stage, endpoint, msg)
+            is_open = len(self.submitted) == 1
+            completion = CompleteMessage(
+                msg.request_id,
+                stage,
+                not is_open,
+                result=None if is_open else {},
+                error="open failed" if is_open else None,
+            )
+            self.completions.append(
+                asyncio.create_task(self.coordinator.handle_completion(completion))
+            )
+
+        async def broadcast_abort(self, msg) -> None:
+            await super().broadcast_abort(msg)
+            raise RuntimeError("abort transport unavailable")
+
+    async def run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+        )
+        control_plane = FailingOpenControlPlane(coordinator)
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+        await coordinator.start()
+
+        with pytest.raises(RuntimeError, match="open failed"):
+            await asyncio.wait_for(
+                coordinator.open_session(OmniRequest(None), stages=["preprocess"]),
+                timeout=1,
+            )
+        assert coordinator.completion_futures == {}
 
     asyncio.run(run())
 
@@ -803,6 +1104,27 @@ def test_coordinator_rejects_submit_when_in_flight_cap_is_reached() -> None:
             "req-1",
             "req-2",
         ]
+
+    asyncio.run(run())
+
+
+def test_coordinator_rejects_bounded_stream_queue() -> None:
+    async def run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+        )
+        control_plane = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+
+        with pytest.raises(ValueError, match="stream_queue must be unbounded"):
+            await coordinator.submit_request(
+                "req-1", "hello", stream_queue=asyncio.Queue(maxsize=1)
+            )
+        assert not coordinator.request_id_is_reserved("req-1")
+        assert control_plane.submitted == []
 
     asyncio.run(run())
 
@@ -1075,5 +1397,366 @@ def test_coordinator_without_replicas_sends_no_bindings() -> None:
         await coordinator.submit_request("req-0", "hello")
 
         assert control_plane.submitted[0][2].replica_bindings is None
+
+    asyncio.run(run())
+
+
+def audio_chunk(request_id: str, payload_bytes: int) -> StreamMessage:
+    return StreamMessage(
+        request_id=request_id,
+        from_stage="decode",
+        chunk={"audio_waveform": bytes(payload_bytes), "sample_rate": 24000},
+        stage_name="decode",
+        modality="audio",
+    )
+
+
+def audio_completion(request_id: str, payload_bytes: int) -> CompleteMessage:
+    return CompleteMessage(
+        request_id,
+        "decode",
+        True,
+        result={"audio_waveform": bytes(payload_bytes), "sample_rate": 24000},
+    )
+
+
+def backlog_coordinator(
+    *,
+    max_total_backlog_bytes: int | None = None,
+    terminal_stages: list[str] | None = None,
+) -> tuple[Coordinator, RecordingCoordinatorControlPlane]:
+    coordinator = Coordinator(
+        "inproc://complete",
+        "inproc://abort",
+        entry_stage="preprocess",
+        terminal_stages=terminal_stages or ["decode"],
+        max_total_backlog_bytes=max_total_backlog_bytes,
+    )
+    control_plane = RecordingCoordinatorControlPlane()
+    coordinator.control_plane = control_plane
+    coordinator.register_stage("preprocess", "inproc://preprocess")
+    return coordinator, control_plane
+
+
+async def open_stream(coordinator: Coordinator, request_id: str) -> tuple[
+    AsyncGenerator[CompleteMessage | StreamMessage, None],
+    asyncio.Task[CompleteMessage | StreamMessage],
+]:
+    """Start a reader and wait until its request is registered."""
+    stream = coordinator.stream(request_id, "hello")
+    first_message = asyncio.create_task(anext(stream))
+    for _ in range(100):
+        if request_id in coordinator.stream_queues:
+            break
+        else:
+            await asyncio.sleep(0)
+    return stream, first_message
+
+
+async def open_stream_and_take_one(
+    coordinator: Coordinator, request_id: str, payload_bytes: int
+) -> AsyncGenerator[CompleteMessage | StreamMessage, None]:
+    stream, first_message = await open_stream(coordinator, request_id)
+    await coordinator.handle_stream(audio_chunk(request_id, payload_bytes))
+    await first_message
+    return stream
+
+
+@pytest.mark.parametrize("is_generation_done", [False, True])
+def test_total_backlog_cap_fails_the_longest_idle_reader(
+    is_generation_done: bool,
+) -> None:
+    async def run() -> None:
+        coordinator, control_plane = backlog_coordinator(max_total_backlog_bytes=10)
+        stalled_stream = await open_stream_and_take_one(coordinator, "req-stalled", 4)
+        await coordinator.handle_stream(audio_chunk("req-stalled", 4))
+        await coordinator.handle_stream(audio_chunk("req-stalled", 4))
+        coordinator.stream_backlogs["req-stalled"].reader_idle_since_s -= 100.0
+        if is_generation_done:
+            await coordinator.handle_completion(
+                CompleteMessage("req-stalled", "decode", True, result={})
+            )
+        else:
+            pass
+        delivery = coordinator.health()["stream_delivery"]
+        assert delivery["stream_backlog_bytes"] == 8
+        assert delivery["generation_finished_stream_count"] == int(is_generation_done)
+
+        reading_stream, reading_first_message = await open_stream(
+            coordinator, "req-reading"
+        )
+        await coordinator.handle_stream(audio_chunk("req-reading", 4))
+
+        assert (await reading_first_message).chunk["audio_waveform"] == bytes(4)
+        delivery = coordinator.health()["stream_delivery"]
+        assert delivery["stream_backlog_bytes"] == 0
+        assert delivery["failed_stream_count"] == 1
+        if is_generation_done:
+            assert control_plane.aborts == []
+        else:
+            assert [msg.request_id for msg in control_plane.aborts] == ["req-stalled"]
+        assert "req-stalled" not in coordinator.requests
+        # note (Haoling Pu): the ID stays reserved until the stalled reader closes.
+        assert "req-stalled" in coordinator.stream_queues
+        await coordinator.handle_stream(audio_chunk("req-stalled", 4))
+        assert coordinator.health()["stream_delivery"]["stream_backlog_bytes"] == 0
+        with pytest.raises(QueueFullError):
+            await anext(stalled_stream)
+        assert "req-stalled" not in coordinator.stream_queues
+
+        await coordinator.handle_stream(audio_chunk("req-reading", 4))
+        assert (await anext(reading_stream)).chunk["audio_waveform"] == bytes(4)
+        await reading_stream.aclose()
+        assert coordinator.stream_backlogs == {}
+        assert coordinator.health()["stream_delivery"]["stream_backlog_bytes"] == 0
+
+    asyncio.run(run())
+
+
+def test_total_backlog_cap_prefers_the_idle_reader_over_the_larger_backlog() -> None:
+    async def run() -> None:
+        coordinator, control_plane = backlog_coordinator(max_total_backlog_bytes=12)
+        idle_stream = await open_stream_and_take_one(coordinator, "req-idle", 4)
+        await coordinator.handle_stream(audio_chunk("req-idle", 4))
+        coordinator.stream_backlogs["req-idle"].reader_idle_since_s -= 100.0
+        behind_stream = await open_stream_and_take_one(coordinator, "req-behind", 4)
+        await coordinator.handle_stream(audio_chunk("req-behind", 4))
+        await coordinator.handle_stream(audio_chunk("req-behind", 4))
+        assert coordinator.health()["stream_delivery"]["stream_backlog_bytes"] == 12
+        delivery = coordinator.health()["stream_delivery"]
+        assert delivery["open_stream_count"] == 2
+        assert delivery["longest_reader_idle_s"] >= 100.0
+
+        await coordinator.handle_stream(audio_chunk("req-behind", 4))
+
+        assert [msg.request_id for msg in control_plane.aborts] == ["req-idle"]
+        assert coordinator.health()["stream_delivery"]["stream_backlog_bytes"] == 12
+        with pytest.raises(QueueFullError):
+            await anext(idle_stream)
+        for _ in range(3):
+            assert (await anext(behind_stream)).chunk["audio_waveform"] == bytes(4)
+        await behind_stream.aclose()
+        assert coordinator.health()["stream_delivery"]["stream_backlog_bytes"] == 0
+
+    asyncio.run(run())
+
+
+def test_total_backlog_cap_fails_streams_until_the_total_fits() -> None:
+    async def run() -> None:
+        coordinator, control_plane = backlog_coordinator(max_total_backlog_bytes=12)
+        oldest_stream = await open_stream_and_take_one(coordinator, "req-oldest", 4)
+        await coordinator.handle_stream(audio_chunk("req-oldest", 2))
+        coordinator.stream_backlogs["req-oldest"].reader_idle_since_s -= 200.0
+        older_stream = await open_stream_and_take_one(coordinator, "req-older", 4)
+        await coordinator.handle_stream(audio_chunk("req-older", 4))
+        coordinator.stream_backlogs["req-older"].reader_idle_since_s -= 100.0
+        fresh_stream = await open_stream_and_take_one(coordinator, "req-fresh", 4)
+        await coordinator.handle_stream(audio_chunk("req-fresh", 4))
+        assert coordinator.health()["stream_delivery"]["stream_backlog_bytes"] == 10
+
+        await coordinator.handle_stream(audio_chunk("req-fresh", 6))
+
+        assert [msg.request_id for msg in control_plane.aborts] == [
+            "req-oldest",
+            "req-older",
+        ]
+        assert coordinator.health()["stream_delivery"]["stream_backlog_bytes"] == 10
+        assert coordinator.health()["stream_delivery"]["failed_stream_count"] == 2
+        for stream in (oldest_stream, older_stream):
+            with pytest.raises(QueueFullError):
+                await anext(stream)
+        await fresh_stream.aclose()
+        assert coordinator.health()["stream_delivery"]["stream_backlog_bytes"] == 0
+
+    asyncio.run(run())
+
+
+def test_total_backlog_cap_skips_a_reader_that_holds_nothing() -> None:
+    async def run() -> None:
+        coordinator, control_plane = backlog_coordinator(max_total_backlog_bytes=10)
+        waiting_stream, waiting_first_message = await open_stream(
+            coordinator, "req-waiting"
+        )
+        coordinator.stream_backlogs["req-waiting"].reader_idle_since_s -= 300.0
+        stalled_stream = await open_stream_and_take_one(coordinator, "req-stalled", 4)
+        await coordinator.handle_stream(audio_chunk("req-stalled", 4))
+        await coordinator.handle_stream(audio_chunk("req-stalled", 4))
+        coordinator.stream_backlogs["req-stalled"].reader_idle_since_s -= 100.0
+
+        await coordinator.handle_stream(audio_chunk("req-stalled", 4))
+
+        assert [msg.request_id for msg in control_plane.aborts] == ["req-stalled"]
+        with pytest.raises(QueueFullError):
+            await anext(stalled_stream)
+        await coordinator.handle_stream(audio_chunk("req-waiting", 4))
+        assert (await waiting_first_message).chunk["audio_waveform"] == bytes(4)
+        await waiting_stream.aclose()
+        assert coordinator.health()["stream_delivery"]["stream_backlog_bytes"] == 0
+
+    asyncio.run(run())
+
+
+def test_total_backlog_cap_measures_idle_from_the_last_read() -> None:
+    async def run() -> None:
+        coordinator, control_plane = backlog_coordinator(max_total_backlog_bytes=15)
+        active_stream = await open_stream_and_take_one(coordinator, "req-active", 4)
+        stalled_stream = await open_stream_and_take_one(coordinator, "req-stalled", 4)
+        await coordinator.handle_stream(audio_chunk("req-stalled", 4))
+        await coordinator.handle_stream(audio_chunk("req-active", 4))
+        await coordinator.handle_stream(audio_chunk("req-active", 4))
+        coordinator.stream_backlogs["req-active"].reader_idle_since_s -= 200.0
+        coordinator.stream_backlogs["req-stalled"].reader_idle_since_s -= 100.0
+
+        # note (Haoling Pu): reads reset the idle clock; chunks while behind do not.
+        assert (await anext(active_stream)).chunk["audio_waveform"] == bytes(4)
+        await coordinator.handle_stream(audio_chunk("req-active", 4))
+        await coordinator.handle_stream(audio_chunk("req-stalled", 4))
+
+        assert [msg.request_id for msg in control_plane.aborts] == ["req-stalled"]
+        assert coordinator.health()["stream_delivery"]["stream_backlog_bytes"] == 8
+        with pytest.raises(QueueFullError):
+            await anext(stalled_stream)
+        await active_stream.aclose()
+        assert coordinator.health()["stream_delivery"]["stream_backlog_bytes"] == 0
+
+    asyncio.run(run())
+
+
+def test_stream_backlog_is_released_when_the_reader_closes_early() -> None:
+    async def run() -> None:
+        coordinator, _ = backlog_coordinator(max_total_backlog_bytes=100)
+        stream = await open_stream_and_take_one(coordinator, "req-1", 4)
+        await coordinator.handle_stream(audio_chunk("req-1", 4))
+        await coordinator.handle_stream(audio_chunk("req-1", 4))
+        delivery = coordinator.health()["stream_delivery"]
+        assert delivery["stream_backlog_bytes"] == 8
+        assert delivery["open_stream_count"] == 1
+
+        await stream.aclose()
+
+        assert coordinator.health()["stream_delivery"]["stream_backlog_bytes"] == 0
+        assert coordinator.stream_backlogs == {}
+
+    asyncio.run(run())
+
+
+def test_backlog_cap_reaches_a_reader_whose_failed_request_is_still_owned() -> None:
+    async def run() -> None:
+        coordinator, control_plane = backlog_coordinator(max_total_backlog_bytes=10)
+        stream = await open_stream_and_take_one(coordinator, "req-1", 4)
+        await coordinator.handle_stream(audio_chunk("req-1", 4))
+
+        async def unavailable_abort(msg: AbortMessage) -> None:
+            raise RuntimeError("abort transport unavailable")
+
+        control_plane.broadcast_abort = unavailable_abort
+        await coordinator.handle_completion(
+            CompleteMessage("req-1", "decode", False, error="boom")
+        )
+        assert coordinator.requests["req-1"].state == RequestState.FAILED
+
+        await coordinator.handle_stream(audio_chunk("req-1", 8))
+
+        with pytest.raises(QueueFullError):
+            await asyncio.wait_for(anext(stream), timeout=1)
+        assert coordinator.health()["stream_delivery"]["stream_backlog_bytes"] == 0
+
+    asyncio.run(run())
+
+
+def test_backlog_failure_after_one_of_two_terminals_cleans_partial_results() -> None:
+    async def run() -> None:
+        coordinator, control_plane = backlog_coordinator(
+            max_total_backlog_bytes=10, terminal_stages=["thinker", "decode"]
+        )
+        stream = await open_stream_and_take_one(coordinator, "req-1", 4)
+        await coordinator.handle_completion(
+            CompleteMessage("req-1", "thinker", True, result={"text": "hi"})
+        )
+        assert "req-1" in coordinator.partial_results
+        await coordinator.handle_stream(audio_chunk("req-1", 6))
+        await coordinator.handle_stream(audio_chunk("req-1", 6))
+
+        assert [msg.request_id for msg in control_plane.aborts] == ["req-1"]
+        assert "req-1" not in coordinator.partial_results
+        assert "req-1" not in coordinator.requests
+        with pytest.raises(QueueFullError):
+            await anext(stream)
+        assert coordinator.stream_queues == {}
+        assert coordinator.completion_futures == {}
+
+    asyncio.run(run())
+
+
+def test_total_backlog_cap_counts_a_terminal_waveform_the_reader_never_takes() -> None:
+    async def run() -> None:
+        coordinator, control_plane = backlog_coordinator(max_total_backlog_bytes=10)
+        stalled_stream = await open_stream_and_take_one(coordinator, "req-stalled", 4)
+        await coordinator.handle_completion(audio_completion("req-stalled", 8))
+        coordinator.stream_backlogs["req-stalled"].reader_idle_since_s -= 100.0
+        delivery = coordinator.health()["stream_delivery"]
+        assert delivery["stream_backlog_bytes"] == 8
+        assert delivery["generation_finished_stream_count"] == 1
+
+        reading_stream, reading_first_message = await open_stream(
+            coordinator, "req-reading"
+        )
+        await coordinator.handle_stream(audio_chunk("req-reading", 4))
+
+        assert (await reading_first_message).chunk["audio_waveform"] == bytes(4)
+        assert control_plane.aborts == []
+        assert "req-stalled" not in coordinator.completion_futures
+        delivery = coordinator.health()["stream_delivery"]
+        assert delivery["stream_backlog_bytes"] == 0
+        assert delivery["failed_stream_count"] == 1
+        with pytest.raises(QueueFullError):
+            await anext(stalled_stream)
+        await reading_stream.aclose()
+        assert coordinator.stream_backlogs == {}
+
+    asyncio.run(run())
+
+
+def test_reading_the_terminal_waveform_releases_its_backlog() -> None:
+    async def run() -> None:
+        coordinator, _ = backlog_coordinator(max_total_backlog_bytes=100)
+        stream = await open_stream_and_take_one(coordinator, "req-1", 4)
+        await coordinator.handle_completion(audio_completion("req-1", 8))
+        assert coordinator.health()["stream_delivery"]["stream_backlog_bytes"] == 8
+
+        terminal_message = await anext(stream)
+
+        assert terminal_message.result["audio_waveform"] == bytes(8)
+        assert coordinator.health()["stream_delivery"]["stream_backlog_bytes"] == 0
+        with pytest.raises(StopAsyncIteration):
+            await anext(stream)
+        assert coordinator.stream_backlogs == {}
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("terminal_stages", [["decode"], ["thinker", "decode"]])
+def test_last_terminal_waveform_over_the_cap_fails_its_own_stream(
+    terminal_stages: list[str],
+) -> None:
+    async def run() -> None:
+        coordinator, control_plane = backlog_coordinator(
+            max_total_backlog_bytes=10, terminal_stages=terminal_stages
+        )
+        stream = await open_stream_and_take_one(coordinator, "req-1", 4)
+        for text_stage in terminal_stages[:-1]:
+            await coordinator.handle_completion(
+                CompleteMessage("req-1", text_stage, True, result={"text": "hi"})
+            )
+
+        await coordinator.handle_completion(audio_completion("req-1", 12))
+
+        assert control_plane.aborts == []
+        assert "req-1" not in coordinator.requests
+        assert "req-1" not in coordinator.partial_results
+        assert coordinator.health()["stream_delivery"]["stream_backlog_bytes"] == 0
+        with pytest.raises(QueueFullError):
+            await anext(stream)
+        assert coordinator.stream_queues == {}
 
     asyncio.run(run())

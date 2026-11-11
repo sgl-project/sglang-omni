@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sglang.srt.server_args import ServerArgs
+else:
+    pass
 
 
-def override_server_args(server_args: Any, source: str, **fields: Any) -> None:
+def override_server_args(
+    server_args: ServerArgs, source: str, **fields: object
+) -> None:
     """Apply an audited ServerArgs mutation at the right lifecycle stage.
 
     A record that is not published yet takes the change as a declaration

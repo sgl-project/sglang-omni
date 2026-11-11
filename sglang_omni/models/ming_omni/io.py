@@ -3,26 +3,51 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypedDict
+from typing import Literal, TypedDict
+
+import torch
 
 
 class PromptInputs(TypedDict):
     """Tokenized prompt inputs for the thinker."""
 
-    input_ids: Any
-    attention_mask: Any
+    input_ids: torch.Tensor
+    attention_mask: torch.Tensor
     prompt_text: str
 
 
-class PreprocessingData(TypedDict, total=False):
-    """Preprocessing outputs stored on StagePayload.data."""
+class UsagePromptInputs(TypedDict):
+    input_ids: torch.Tensor
 
-    raw_inputs: Any
-    prompt: PromptInputs
-    mm_inputs: dict[str, Any]
-    encoder_inputs: dict[str, dict[str, Any]]
-    stream_state: dict[str, Any]
+
+class EncoderCacheKeyInputs(TypedDict, total=False):
+    cache_key: str
+
+
+class AudioEncoderInputs(EncoderCacheKeyInputs):
+    audio_feats: torch.Tensor
+    audio_feats_lengths: torch.Tensor
+    audio_placeholder_loc_lens: torch.Tensor
+
+
+class ImageEncoderInputs(EncoderCacheKeyInputs, total=False):
+    pixel_values: torch.Tensor | None
+    image_grid_thw: torch.Tensor | None
+    pixel_values_videos: torch.Tensor | None
+    video_grid_thw: torch.Tensor | None
+
+
+class SkippedEncoderInputs(EncoderCacheKeyInputs):
+    _skip: bool
+    _result: dict[str, object]
+
+
+class ThinkerEmbeddingInputs(TypedDict, total=False):
+    audio_embeds: torch.Tensor | None
+    image_embeds: torch.Tensor | None
+    video_embeds: torch.Tensor | None
 
 
 class ThinkerOutput(TypedDict, total=False):
@@ -31,7 +56,16 @@ class ThinkerOutput(TypedDict, total=False):
     output_ids: list[int]
     step: int
     is_final: bool
-    extra_model_outputs: dict[str, Any]
+    extra_model_outputs: dict[str, torch.Tensor | list[torch.Tensor] | list[int]]
+    finish_reason: str
+
+
+class StreamState(TypedDict, total=False):
+    token_ids: list[int]
+    text: str
+    emitted_text: str
+    emitted_ids: list[int]
+    accumulated_text: str
 
 
 @dataclass
@@ -42,18 +76,20 @@ class MingOmniPipelineState:
     process boundaries.
     """
 
-    raw_inputs: Any | None = None
-    prompt: PromptInputs | None = None
-    mm_inputs: dict[str, Any] = field(default_factory=dict)
-    encoder_inputs: dict[str, dict[str, Any]] = field(default_factory=dict)
-    encoder_outs: dict[str, Any] = field(default_factory=dict)
-    thinker_inputs: dict[str, Any] = field(default_factory=dict)
+    raw_inputs: object | None = None
+    prompt: PromptInputs | UsagePromptInputs | None = None
+    mm_inputs: dict[str, object] = field(default_factory=dict)
+    encoder_inputs: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
+    encoder_outs: dict[str, object] = field(default_factory=dict)
+    thinker_inputs: dict[str, Mapping[str, torch.Tensor | str]] = field(
+        default_factory=dict
+    )
     thinker_out: ThinkerOutput | None = None
-    engine_outputs: dict[str, Any] = field(default_factory=dict)
-    stream_state: dict[str, Any] = field(default_factory=dict)
+    engine_outputs: dict[str, object] = field(default_factory=dict)
+    stream_state: StreamState = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: Any) -> "MingOmniPipelineState":
+    def from_dict(cls, data: object) -> "MingOmniPipelineState":
         if not isinstance(data, dict):
             data = {}
         else:
@@ -77,8 +113,8 @@ class MingOmniPipelineState:
             stream_state=stream_state if isinstance(stream_state, dict) else {},
         )
 
-    def to_dict(self) -> dict[str, Any]:
-        data: dict[str, Any] = {}
+    def to_dict(self) -> dict[str, object]:
+        data: dict[str, object] = {}
         if self.raw_inputs is not None:
             data["raw_inputs"] = self.raw_inputs
         else:
@@ -134,5 +170,5 @@ class MingOmniEvent:
 
     type: MingOmniEventType
     modality: str
-    payload: dict[str, Any]
+    payload: dict[str, str | list[str]]
     is_final: bool = False

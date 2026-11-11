@@ -30,12 +30,9 @@ env:
   # (NVIDIA/nccl#2077); the TP=2 stages hit it, and two-GPU TP gains nothing from NVLS.
   NCCL_NVLS_ENABLE: "0"
 
-# Invoked by omni-ci.yaml after TTS CI. Restores omni only.
-# DAG:
-#   stage-1-thinker -> stage-2-tts -> stage-3-mmmu -> stage-4-mmmu-talker
-#     -> stage-5-mmsu -> stage-6-mmsu-talker -> stage-7-videomme
-#     -> stage-8-videomme-talker -> stage-9-videoamme
-#     -> stage-10-videoamme-talker-tp2 -> stage-11-process-replicas
+# Invoked by omni-ci.yaml after unit tests. Restores omni only.
+# Every stage starts its own server and reads no other stage's output, so all
+# stages run side by side. stage-11-process-replicas runs only for qwen3-omni.
 
 jobs:
   stage-1-thinker:
@@ -43,7 +40,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 20
     container:
-      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -80,12 +77,10 @@ jobs:
 
   stage-2-tts:
     name: stage 2 - TTS speed + WER + SIM
-    needs: stage-1-thinker
-    if: always() && !cancelled()
     runs-on: [self-hosted, h100]
     timeout-minutes: 25
     container:
-      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -139,12 +134,10 @@ jobs:
 
   stage-3-mmmu:
     name: stage 3 - MMMU accuracy + speed
-    needs: stage-2-tts
-    if: always() && !cancelled()
     runs-on: [self-hosted, h100]
     timeout-minutes: 20
     container:
-      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -185,12 +178,10 @@ jobs:
 
   stage-4-mmmu-talker:
     name: stage 4 - MMMU Talker
-    needs: stage-3-mmmu
-    if: always() && !cancelled()
     runs-on: [self-hosted, h100]
     timeout-minutes: 15
     container:
-      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -231,12 +222,10 @@ jobs:
 
   stage-5-mmsu:
     name: stage 5 - MMSU accuracy + speed
-    needs: stage-4-mmmu-talker
-    if: always() && !cancelled()
     runs-on: [self-hosted, h100]
     timeout-minutes: 20
     container:
-      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -278,12 +267,10 @@ jobs:
 
   stage-6-mmsu-talker:
     name: stage 6 - MMSU Talker
-    needs: stage-5-mmsu
-    if: always() && !cancelled()
     runs-on: [self-hosted, h100]
     timeout-minutes: 15
     container:
-      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -324,12 +311,10 @@ jobs:
 
   stage-7-videomme:
     name: stage 7 - Video-MME accuracy + speed
-    needs: stage-6-mmsu-talker
-    if: always() && !cancelled()
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -370,12 +355,10 @@ jobs:
 
   stage-8-videomme-talker:
     name: stage 8 - Video-MME Talker
-    needs: stage-7-videomme
-    if: always() && !cancelled()
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -416,12 +399,10 @@ jobs:
 
   stage-9-videoamme:
     name: stage 9 - Video-AMME accuracy + speed
-    needs: stage-8-videomme-talker
-    if: always() && !cancelled()
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -462,12 +443,10 @@ jobs:
 
   stage-10-videoamme-talker-tp2:
     name: stage 10 - Video-AMME Talker
-    needs: stage-9-videoamme
-    if: always() && !cancelled()
     runs-on: [self-hosted, h100]
     timeout-minutes: 35
     container:
-      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       # note (Yue Yin): TP=2 relay uses pidfd_getfd to pass fds between stage
       # processes; CAP_SYS_PTRACE is required (else every request 500s).
       options: >-
@@ -510,12 +489,11 @@ jobs:
 
   stage-11-process-replicas:
     name: stage 11 - process replicas
-    needs: stage-10-videoamme-talker-tp2
-    if: always() && !cancelled() && inputs.omni_ci_model == 'qwen3-omni'
+    if: inputs.omni_ci_model == 'qwen3-omni'
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
 
 from sglang_omni.models.audar_tts.payload_types import AudarTTSState
 from sglang_omni.proto import StagePayload
@@ -14,12 +14,6 @@ _DEFAULT_GENERATION = {
     "top_k": 40,
     "top_p": 0.9,
     "repetition_penalty": 1.1,
-}
-_IMPLICIT_SAMPLING_DEFAULTS = {
-    "temperature": {0.8, 1.0},
-    "top_p": {0.8, 1.0},
-    "top_k": {-1, 30},
-    "repetition_penalty": {1.0, 1.1},
 }
 
 
@@ -68,16 +62,9 @@ def build_audar_state(payload: StagePayload) -> AudarTTSState:
 
 
 def build_generation_kwargs(
-    params: dict[str, Any], *, tts_params: dict[str, Any]
-) -> dict[str, Any]:
+    params: Mapping[str, object], *, tts_params: Mapping[str, object]
+) -> dict[str, int | float]:
     generation = dict(_DEFAULT_GENERATION)
-    explicit = tts_params.get("explicit_generation_params")
-    explicit_fields = (
-        {str(field) for field in explicit}
-        if isinstance(explicit, (list, tuple, set))
-        else set()
-    )
-
     max_new_tokens = params.get("max_new_tokens")
     if max_new_tokens is not None:
         generation["max_new_tokens"] = int(max_new_tokens)
@@ -86,10 +73,6 @@ def build_generation_kwargs(
     for field in ("temperature", "top_k", "top_p", "repetition_penalty"):
         value = params.get(field)
         if value is None:
-            continue
-        else:
-            pass
-        if field not in explicit_fields and value in _IMPLICIT_SAMPLING_DEFAULTS[field]:
             continue
         else:
             pass
@@ -108,7 +91,7 @@ def build_generation_kwargs(
     return generation
 
 
-def normalize_inputs(inputs: Any) -> tuple[str, list[dict[str, Any]]]:
+def normalize_inputs(inputs: object) -> tuple[str, list[dict[str, object]]]:
     if isinstance(inputs, str):
         return inputs, []
     else:
@@ -131,7 +114,7 @@ def normalize_inputs(inputs: Any) -> tuple[str, list[dict[str, Any]]]:
     ]
 
 
-def reference_from_value(value: Any) -> dict[str, Any]:
+def reference_from_value(value: object) -> dict[str, object]:
     if isinstance(value, dict):
         return dict(value)
     else:
@@ -149,7 +132,7 @@ def reference_from_value(value: Any) -> dict[str, Any]:
     return {"audio_path": str(value)}
 
 
-def normalize_reference_audio(reference: dict[str, Any]) -> dict[str, Any]:
+def normalize_reference_audio(reference: Mapping[str, object]) -> dict[str, object]:
     if reference.get("audio_path") is not None:
         return {"audio_path": str(reference["audio_path"])}
     else:
@@ -174,7 +157,7 @@ def normalize_reference_audio(reference: dict[str, Any]) -> dict[str, Any]:
     raise ValueError("Audar-TTS reference has no audio payload")
 
 
-def validate_generation_kwargs(generation: dict[str, Any]) -> None:
+def validate_generation_kwargs(generation: Mapping[str, int | float]) -> None:
     if generation["max_new_tokens"] <= 0:
         raise ValueError("Audar-TTS max_new_tokens must be positive")
     else:

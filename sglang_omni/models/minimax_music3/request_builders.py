@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
 
 from sglang_omni.proto import StagePayload
 
@@ -29,7 +29,7 @@ _UNSUPPORTED_TTS_PARAMS = {
 }
 
 
-def as_non_empty_string(value: Any, field: str) -> str:
+def as_non_empty_string(value: object, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"MiniMax Music 3 {field} must be a non-empty string")
     else:
@@ -37,16 +37,7 @@ def as_non_empty_string(value: Any, field: str) -> str:
     return value
 
 
-def explicit_params(tts_params: dict[str, Any]) -> set[str]:
-    raw = tts_params.get("explicit_generation_params", [])
-    if isinstance(raw, (list, tuple, set)):
-        return {str(x) for x in raw}
-    else:
-        pass
-    return set()
-
-
-def parse_seed(value: Any) -> int:
+def parse_seed(value: object) -> int:
     if value is None:
         return 0
     else:
@@ -63,7 +54,7 @@ def parse_seed(value: Any) -> int:
     return seed
 
 
-def parse_max_frames(value: Any) -> int:
+def parse_max_frames(value: object) -> int:
     if value is None:
         return DEFAULT_MAX_AUDIO_FRAMES
     else:
@@ -86,7 +77,7 @@ def parse_max_frames(value: Any) -> int:
     return frames
 
 
-def validate_tts_contract(tts_params: dict[str, Any]) -> None:
+def validate_tts_contract(tts_params: Mapping[str, object]) -> None:
     unsupported = sorted(
         field
         for field in _UNSUPPORTED_TTS_PARAMS
@@ -132,7 +123,9 @@ def build_ttm_state(payload: StagePayload) -> MiniMaxMusic3State:
     )
 
     params = request.params or {}
-    unsupported = explicit_params(tts_params) & _UNSUPPORTED_SAMPLING_PARAMS
+    unsupported = {
+        field for field in _UNSUPPORTED_SAMPLING_PARAMS if params.get(field) is not None
+    }
     if unsupported:
         raise ValueError(
             "MiniMax Music 3 does not support sampling parameters: "

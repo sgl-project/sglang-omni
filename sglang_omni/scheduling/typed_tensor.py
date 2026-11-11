@@ -15,10 +15,19 @@ when it never crosses a control-plane message (relay side-channel hops only).
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, overload
+
+if TYPE_CHECKING:
+    import torch
+    from numpy.typing import ArrayLike
+else:
+    pass
 
 
-def encode_typed_tensor(value: Any, *, key: str) -> dict[str, Any]:
+def encode_typed_tensor(
+    value: ArrayLike | torch.Tensor, *, key: str
+) -> dict[str, bytes | list[int] | str]:
     """Pack a tensor as {key}_bytes/_shape/_dtype (merge into payload.data)."""
     import numpy as np
 
@@ -54,9 +63,24 @@ def encode_typed_tensor(value: Any, *, key: str) -> dict[str, Any]:
     }
 
 
+@overload
 def decode_typed_tensor(
-    data: dict[str, Any], *, key: str, legacy_key: str | None = None
-) -> Any | None:
+    data: Mapping[str, bytes | list[int] | str],
+    *,
+    key: str,
+    legacy_key: None = None,
+) -> torch.Tensor | None: ...
+
+
+@overload
+def decode_typed_tensor(
+    data: Mapping[str, object], *, key: str, legacy_key: str
+) -> object: ...
+
+
+def decode_typed_tensor(
+    data: Mapping[str, object], *, key: str, legacy_key: str | None = None
+) -> object:
     """Inverse of encode_typed_tensor; legacy_key reads pre-encoding list/tensor payloads."""
     import numpy as np
     import torch

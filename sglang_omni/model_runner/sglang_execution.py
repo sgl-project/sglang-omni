@@ -8,28 +8,35 @@ SGLang's scheduler/worker boundary is an explicit protocol:
   ForwardBatch.init_new applies per-forward overrides passed as explicit
   keyword arguments, never by mutating the batch.
 
-Omni owns its scheduler loop and model-runner wrapper, so it cannot rely on
-sglang.srt.managers.scheduler.Scheduler.run_batch to provide that protocol.
-This adapter is the single compatibility boundary used by both synchronous and
-lookahead execution.
-
-Upstream's protocol also splits scheduler writes and model forwards onto
-separate CUDA streams, fenced by the decode CUDA-graph read-done event. That
-two-stream contract belongs to the upstream-style overlap loop, which Omni
-refuses to run (OmniScheduler._event_loop_overlap raises), so this bridge
-is deliberately single-stream: launch-current/resolve-previous on one stream.
+This adapter handles ordinary synchronous and single-stream lookahead execution.
+Native speculative workers use OmniScheduler.run_speculative_batch for their cross-stream handoff and result completion.
 """
 
 from __future__ import annotations
 
 import contextlib
 from collections.abc import Iterator
-from typing import Any
+from typing import TYPE_CHECKING, Protocol
 
 import torch
 
+if TYPE_CHECKING:
+    from sglang.srt.layers.attention.base_attn_backend import AttentionBackend
+    from sglang.srt.managers.overlap_utils import FutureMap
+    from sglang.srt.managers.schedule_batch import ScheduleBatch
 
-def attn_forward_context(attn_backend: Any):
+    from sglang_omni.model_runner.model_worker import ModelWorker
+else:
+    pass
+
+
+class SpeculativeAlgorithm(Protocol):
+    def is_none(self) -> bool: ...
+
+
+def attn_forward_context(
+    attn_backend: "AttentionBackend",
+) -> contextlib.AbstractContextManager[None]:
     """Enter SGLang's ambient ForwardContext unless one is already active.
 
     Attention backends read the context that ModelRunner._forward_raw
@@ -57,9 +64,9 @@ class SGLangExecutionBridge:
         self,
         *,
         device: torch.device,
-        worker: Any,
-        spec_algorithm: Any,
-        future_map: Any,
+        worker: "ModelWorker",
+        spec_algorithm: SpeculativeAlgorithm,
+        future_map: "FutureMap",
     ) -> None:
         from sglang.srt.managers.overlap_utils import RelayPayload
 
@@ -75,11 +82,17 @@ class SGLangExecutionBridge:
         self.device_module = torch.get_device_module(device)
         self.future_map = future_map
         self.relay_payload_type = RelayPayload
+        # note (ratish): launch first scheduling holds two steps in flight, the one just
+        # launched and the one before it, so two events serve every launch.
+        self.completion_events: list[torch.cuda.Event | torch.xpu.Event] = [
+            self.device_module.Event() for _ in range(2)
+        ]
+        self.completion_event_slot: int = 0
 
     @contextlib.contextmanager
     def forward_context(
         self,
-        batch: Any,
+        batch: "ScheduleBatch",
         *,
         isolate_sampling: bool = False,
     ) -> Iterator[None]:
@@ -103,7 +116,7 @@ class SGLangExecutionBridge:
 
     def publish_next_tokens(
         self,
-        batch: Any,
+        batch: "ScheduleBatch",
         next_token_ids: torch.Tensor | None,
     ) -> None:
         """Publish one forward's GPU token relay and retire live input_ids."""
@@ -131,6 +144,7 @@ class SGLangExecutionBridge:
 
     def record_completion(self):
         """Record completion of the current launch on its producing stream."""
-        event = self.device_module.Event()
+        event = self.completion_events[self.completion_event_slot]
+        self.completion_event_slot ^= 1
         event.record()
         return event

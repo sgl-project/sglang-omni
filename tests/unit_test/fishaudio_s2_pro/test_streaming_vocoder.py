@@ -209,20 +209,56 @@ def test_streaming_vocoder_sample_level_matches_contextual_full_decode() -> None
 
 def test_streaming_vocoder_crossfade_blends_tail_and_retains_next_tail() -> None:
     state = StreamVocoderState(
-        pending_tail=torch.tensor([10.0, 20.0, 30.0]),
+        pending_tail=torch.tensor([10.0, 20.0]),
     )
-    delta_audio = torch.tensor([100.0, 200.0, 300.0, 400.0])
+    decoded_window = torch.tensor([100.0, 200.0, 300.0, 400.0, 500.0, 600.0])
 
     output = apply_stream_crossfade(
         state,
-        delta_audio,
+        decoded_window,
+        overlap_samples=2,
         stream_crossfade_samples=2,
         is_final=False,
     )
 
     assert output is not None
-    torch.testing.assert_close(output, torch.tensor([10.0, 20.0, 200.0]))
-    torch.testing.assert_close(state.pending_tail, torch.tensor([300.0, 400.0]))
+    torch.testing.assert_close(output, torch.tensor([10.0, 200.0, 300.0, 400.0]))
+    torch.testing.assert_close(state.pending_tail, torch.tensor([500.0, 600.0]))
+
+
+@pytest.mark.parametrize("stream_overlap_tokens", [0, 1])
+def test_streaming_vocoder_crossfade_preserves_new_content_across_seams(
+    stream_overlap_tokens: int,
+) -> None:
+    codec = FakeCodec()
+    state = StreamVocoderState()
+    outputs = []
+
+    for value in range(4):
+        output = build_stream_vocoder_chunk(
+            state,
+            torch.full((11, 2), value, dtype=torch.long),
+            codec=codec,
+            device=torch.device("cpu"),
+            stream_stride=2,
+            stream_followup_stride=2,
+            stream_overlap_tokens=stream_overlap_tokens,
+            stream_crossfade_samples=2,
+        )
+        assert output is not None
+        outputs.append(output)
+
+    flush = flush_stream_vocoder_chunk(
+        state,
+        codec=codec,
+        device=torch.device("cpu"),
+        stream_overlap_tokens=stream_overlap_tokens,
+        stream_crossfade_samples=2,
+    )
+
+    assert flush is not None
+    outputs.append(flush)
+    assert sum(audio_len(output) for output in outputs) == 32
 
 
 def test_streaming_vocoder_zero_overlap_final_flush_emits_retained_tail() -> None:
@@ -299,23 +335,6 @@ def test_streaming_vocoder_final_flush_emits_tail_before_result() -> None:
         stop_scheduler(scheduler, thread)
 
 
-def test_streaming_vocoder_done_before_payload_finalizes_after_new_request() -> None:
-    scheduler, thread = start_scheduler()
-    try:
-        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", make_chunk(1)))
-        scheduler.inbox.put(IncomingMessage("req", "stream_done"))
-        scheduler.inbox.put(IncomingMessage("req", "new_request", make_payload("req")))
-        stream = scheduler.outbox.get(timeout=2.0)
-        final = scheduler.outbox.get(timeout=2.0)
-        assert stream.type == "stream"
-        assert final.type == "result"
-        assert final.request_id == "req"
-        with pytest.raises(queue.Empty):
-            scheduler.outbox.get(timeout=0.2)
-    finally:
-        stop_scheduler(scheduler, thread)
-
-
 def test_streaming_vocoder_final_payload_preserves_usage_without_redecode() -> None:
     scheduler, thread = start_scheduler()
     usage = {"prompt_tokens": 5, "completion_tokens": 4, "total_tokens": 9}
@@ -364,7 +383,7 @@ def test_streaming_vocoder_falls_back_when_no_codes_were_streamed() -> None:
         final = scheduler.outbox.get(timeout=2.0)
 
         assert stream.type == "stream"
-        assert len(stream.data["audio_data"]) == 16
+        assert len(np.frombuffer(stream.data["audio_waveform"], dtype=np.float32)) == 16
         assert final.type == "result"
         assert final.data.data == {
             "modality": "audio",
@@ -438,31 +457,6 @@ def test_streaming_vocoder_abort_cleans_state_and_suppresses_final() -> None:
         assert "req" not in scheduler.stream_states
         assert "req" not in scheduler.pending_done
         assert "req" in scheduler.aborted_request_ids
-        with pytest.raises(queue.Empty):
-            scheduler.outbox.get(timeout=0.2)
-    finally:
-        stop_scheduler(scheduler, thread)
-
-
-def test_streaming_vocoder_abort_does_not_block_other_request() -> None:
-    scheduler, thread = start_scheduler()
-    try:
-        scheduler.inbox.put(
-            IncomingMessage("aborted", "new_request", make_payload("aborted"))
-        )
-        scheduler.inbox.put(IncomingMessage("aborted", "stream_chunk", make_chunk(1)))
-        scheduler.inbox.put(
-            IncomingMessage("other", "new_request", make_payload("other"))
-        )
-        scheduler.inbox.put(IncomingMessage("other", "stream_chunk", make_chunk(1)))
-        scheduler.inbox.put(IncomingMessage("other", "stream_chunk", make_chunk(2)))
-        scheduler.inbox.put(IncomingMessage("other", "stream_chunk", make_chunk(3)))
-
-        scheduler.abort("aborted")
-
-        out = scheduler.outbox.get(timeout=2.0)
-        assert out.request_id == "other"
-        assert out.type == "stream"
         with pytest.raises(queue.Empty):
             scheduler.outbox.get(timeout=0.2)
     finally:

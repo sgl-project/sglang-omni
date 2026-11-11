@@ -1,6 +1,6 @@
-# 🚀 Installation — MUSA
+# Installation — MUSA
 
-This document describes how to install SGLang-Omni on Moore Threads GPUs.
+Install SGLang-Omni on Moore Threads GPUs.
 
 SGLang owns the base MUSA runtime environment. Install or build SGLang's MUSA
 environment first, then install SGLang-Omni as an overlay.
@@ -10,25 +10,29 @@ environment first, then install SGLang-Omni as an overlay.
 Install the Moore Threads driver and MUSA runtime on the host first. For the
 base SGLang environment, follow the SGLang Moore Threads GPU installation guide.
 
-## 🐳 Option A: Docker
+## Install SGLang-Omni
 
-Clone SGLang-Omni first. The installation below is pinned to SGLang `v0.5.20`.
+<a id="option-a-docker"></a>
+
+### Docker
+
+Clone SGLang-Omni first. The installation below is pinned to SGLang `v0.5.23`.
 
 ```bash
 git clone https://github.com/sgl-project/sglang-omni.git sglang-omni
 omni_root="$(cd sglang-omni && pwd)"
-git clone --branch v0.5.20 --single-branch \
+git clone --branch v0.5.23 --single-branch \
   https://github.com/sgl-project/sglang.git "${omni_root}/../sglang"
 cd "${omni_root}/../sglang"
 docker build -f docker/musa.Dockerfile \
-  -t sglang:v0.5.20-musa520-s5000 .
+  -t sglang:v0.5.23-musa520-s5000 .
 cd "${omni_root}"
 docker build -f docker/musa.Dockerfile \
-  --build-arg SGLANG_MUSA_IMAGE=sglang:v0.5.20-musa520-s5000 \
+  --build-arg SGLANG_MUSA_IMAGE=sglang:v0.5.23-musa520-s5000 \
   -t sglang-omni:main-musa520-s5000 .
 ```
 
-The base image is built from the immutable `v0.5.20` release tag, which
+The base image is built from the immutable `v0.5.23` release tag, which
 includes `docker/musa.Dockerfile`.
 
 Run the image with MUSA devices exposed by the host runtime. If `mthreads` is
@@ -47,14 +51,16 @@ docker run -it --rm \
   sglang-omni:main-musa520-s5000
 ```
 
-## 🛠️ Option B: Install from Source
+<a id="option-b-install-from-source"></a>
 
-Start from an environment where SGLang `v0.5.20` has been installed with MUSA
+### From source
+
+Start from an environment where SGLang `v0.5.23` has been installed with MUSA
 support. If you build SGLang from source, clone the pinned tag rather than
 `main`:
 
 ```bash
-git clone --depth 1 --branch v0.5.20 \
+git clone --depth 1 --branch v0.5.23 \
   https://github.com/sgl-project/sglang.git sglang
 ```
 
@@ -123,7 +129,9 @@ The MUSA pyproject installs only SGLang-Omni overlay dependencies. The base
 MUSA torch stack, SGLang, sgl-kernel, Triton, TileLang, and MATE are inherited
 from the SGLang MUSA environment.
 
-## Verify
+<a id="verify"></a>
+
+## Verify the installation
 
 ```bash
 python - <<'PY'
@@ -139,3 +147,5 @@ print("sglang:", sglang.__version__)
 print("sglang_omni:", sglang_omni.__file__)
 PY
 ```
+
+Check that `devices` is greater than zero and that both SGLang packages import.

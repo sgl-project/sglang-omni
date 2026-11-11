@@ -1,17 +1,7 @@
-# 🚀 Installation — Intel CPU
+# Installation — Intel CPU
 
-Installs `sglang-omni` for **CPU-only inference**. The default
-[installation](./installation.md) targets CUDA, so this path uses the separate
-[`pyproject_cpu.toml`](../../pyproject_cpu.toml) and the PyTorch CPU wheel index.
-
-> **`--no-build-isolation` is required** for the editable `sglang-omni` install.
-
-## Why a separate pyproject
-
-`pip install -e .` resolves [`pyproject.toml`](../../pyproject.toml). In CUDA-oriented
-checkouts, that can pull CUDA-only wheels and replace a CPU torch stack.
-[`pyproject_cpu.toml`](../../pyproject_cpu.toml) pins the torch family to CPU wheels and
-omits accelerator-only packages.
+Install SGLang-Omni for CPU-only inference on Intel Xeon. For NVIDIA GPUs,
+use the [CUDA installation](./installation.md).
 
 ## Prerequisites
 
@@ -20,7 +10,9 @@ omits accelerator-only packages.
 - A CPU build of SGLang from the matching upstream release.
 - Standard audio runtime libraries such as `ffmpeg` and `libsndfile`.
 
-## 🐳 Option A: Docker
+<a id="option-a-docker"></a>
+
+## Docker
 
 ```bash
 # Clone the SGLang-omni repository
@@ -37,7 +29,19 @@ docker run -it --shm-size 32g --ipc host --network host sglang-omni:cpu
 The image installs upstream SGLang with its CPU pyproject, then installs `sglang-omni`
 with `pyproject_cpu.toml`. It sets `SGLANG_USE_CPU_ENGINE=1` for the runtime.
 
-## 🛠️ Option B: Manual install
+<a id="option-b-manual-install"></a>
+
+## Manual install
+
+<a id="why-a-separate-pyproject"></a>
+
+```{note}
+[`pyproject_cpu.toml`](https://github.com/sgl-project/sglang-omni/blob/main/pyproject_cpu.toml)
+selects CPU wheels. A plain editable install uses the CUDA
+[`pyproject.toml`](https://github.com/sgl-project/sglang-omni/blob/main/pyproject.toml)
+and can replace your CPU torch build. The editable CPU install requires
+`--no-build-isolation`.
+```
 
 Create and activate an environment first:
 
@@ -56,7 +60,7 @@ Install the matching CPU SGLang build:
 ```bash
 git clone https://github.com/sgl-project/sglang ../sglang
 cd ../sglang
-git checkout v0.5.20
+git checkout v0.5.23
 
 cd python
 cp pyproject_cpu.toml pyproject.toml
@@ -74,7 +78,9 @@ cd "$OMNI_DIR"
 bash scripts/cpu/install_cpu.sh
 ```
 
-## Verify
+<a id="verify"></a>
+
+## Verify the installation
 
 ```bash
 python -c "import sglang_omni, torch; print(sglang_omni.__file__, torch.__version__)"
@@ -102,3 +108,23 @@ libraries at import. An unsupported FFmpeg version can surface as the unhelpful
 `torchcodec` ships loaders for FFmpeg majors 4–8 only; FFmpeg 9 satisfies none
 of them. Pin an older major if needed. Docker users get a supported major from
 `apt`.
+
+<a id="serve"></a>
+
+## Serve a model
+
+### Whisper ASR (speech-to-text, Intel Xeon CPU)
+
+Whisper-base and Whisper-large-v3 have been validated on an AMX-capable Intel Xeon CPU. SGLang selects `intel_amx` by default on x86 CPUs and automatically falls back to `torch_native` when AMX is unavailable; graph capture, torch.compile, and async decode are disabled by default on CPU.
+
+Run inside the CPU environment installed above:
+
+```bash
+SGLANG_USE_CPU_ENGINE=1 sgl-omni serve \
+  --model-path openai/whisper-large-v3 \
+  --port 8000
+```
+
+To explicitly select PyTorch native attention, including on AMX-capable Xeon CPUs, append `--asr.engine.attention_backend torch_native` to the server command.
+
+See the [Whisper cookbook](../cookbook/whisper_asr.md) for request parameters, supported response formats, and the SeedTTS WER benchmark.

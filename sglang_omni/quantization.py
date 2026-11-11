@@ -10,16 +10,17 @@ custom weight loaders.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     import torch
+    from sglang.srt.configs.model_config import ModelConfig
+    from transformers import PretrainedConfig
 else:
     pass
 
 # A weight preprocessor maps `(target_name, loaded_weight) -> loaded_weight`.
 WeightPreprocessor = Callable[[str, "torch.Tensor"], "torch.Tensor"]
-
 
 _QUANT_METADATA_KEYS: tuple[str, ...] = ("quantization_config", "compression_config")
 _NESTED_QUANT_CONFIG_ATTRS: tuple[str, ...] = (
@@ -44,7 +45,7 @@ __all__ = [
 ]
 
 
-def to_mutable_dict(quant_config: Any, metadata_key: str) -> dict[str, Any]:
+def to_mutable_dict(quant_config: object, metadata_key: str) -> dict[str, object]:
     """Normalize a quantization metadata value to a mutable dict."""
     if isinstance(quant_config, dict):
         return quant_config
@@ -68,7 +69,7 @@ def to_mutable_dict(quant_config: Any, metadata_key: str) -> dict[str, Any]:
     )
 
 
-def read_metadata(node: Any, key: str) -> Any:
+def read_metadata(node: object, key: str) -> object:
     """Read `key` off an object- or dict-shaped config node, or `None`."""
     if isinstance(node, dict):
         return node.get(key)
@@ -77,11 +78,11 @@ def read_metadata(node: Any, key: str) -> Any:
     return getattr(node, key, None)
 
 
-def resolve_quant_config(config: Any) -> dict[str, Any] | None:
+def resolve_quant_config(config: PretrainedConfig | None) -> dict[str, object] | None:
     """Extract a `quantization_config` dict from a root or sub-model config."""
     visited: set[int] = set()
 
-    def _search(node: Any) -> dict[str, Any] | None:
+    def _search(node: object) -> dict[str, object] | None:
         if node is None or id(node) in visited:
             return None
         else:
@@ -106,7 +107,7 @@ def resolve_quant_config(config: Any) -> dict[str, Any] | None:
     return _search(config)
 
 
-def quant_method_name(quant_dict: dict[str, Any] | None) -> str | None:
+def quant_method_name(quant_dict: dict[str, object] | None) -> str | None:
     """Return the checkpoint's normalized quantization method name, or `None`."""
     if not quant_dict:
         return None
@@ -120,7 +121,7 @@ def quant_method_name(quant_dict: dict[str, Any] | None) -> str | None:
     return str(method).lower().replace("_", "-")
 
 
-def is_fp8_block_quant(quant_dict: dict[str, Any] | None) -> bool:
+def is_fp8_block_quant(quant_dict: dict[str, object] | None) -> bool:
     """True when the checkpoint is native block-FP8."""
     if not quant_dict:
         return False
@@ -172,7 +173,7 @@ def identity_preprocessor(
 
 
 def get_weight_preprocessor(
-    config: Any = None,
+    config: PretrainedConfig | None = None,
     *,
     fp8_scale_inverted: bool = False,
 ) -> WeightPreprocessor:
@@ -186,7 +187,9 @@ def get_weight_preprocessor(
     return identity_preprocessor
 
 
-def needs_quant_config_normalization(quant_dict: dict[str, Any] | None) -> bool:
+def needs_quant_config_normalization(
+    quant_dict: dict[str, object] | None,
+) -> bool:
     """True when the checkpoint's method uses stage-local per-block quant names."""
     method = quant_method_name(quant_dict)
     return method == "auto-round"
@@ -213,7 +216,7 @@ def strip_stage_prefix(pattern: str, plain_prefix: str, escaped_prefix: str) -> 
 
 
 def normalize_extra_config_keys(
-    quant_config: dict[str, Any], stage_prefix: str
+    quant_config: dict[str, object], stage_prefix: str
 ) -> bool:
     """Strip `stage_prefix` from the leading edge of every regex key."""
     extra_config = quant_config.get("extra_config")
@@ -223,7 +226,7 @@ def normalize_extra_config_keys(
         pass
 
     escaped_prefix = stage_prefix.replace(".", r"\.")
-    normalized_extra: dict[str, Any] = {}
+    normalized_extra: dict[str, object] = {}
     changed = False
     for key, value in extra_config.items():
         normalized_key = strip_stage_prefix(key, stage_prefix, escaped_prefix)
@@ -240,7 +243,7 @@ def normalize_extra_config_keys(
 
 
 def normalize_block_name_to_quantize(
-    quant_config: dict[str, Any], stage_prefix: str
+    quant_config: dict[str, object], stage_prefix: str
 ) -> bool:
     """Strip `stage_prefix` from every entry of `block_name_to_quantize`."""
     blocks = quant_config.get("block_name_to_quantize")
@@ -273,14 +276,14 @@ def normalize_block_name_to_quantize(
 
 
 def load_writable_quant_config(
-    hf_config: Any,
-) -> tuple[Any, str, dict[str, Any], bool] | None:
+    hf_config: PretrainedConfig,
+) -> tuple[object, str, dict[str, object], bool] | None:
     """Return `(owner, metadata_key, quant_config, needs_writeback)` for the
     quant metadata discovered on `hf_config` or a nested stage sub-config,
     or `None` if none is found."""
     visited: set[int] = set()
 
-    def _search(node: Any) -> tuple[Any, str, dict[str, Any], bool] | None:
+    def _search(node: object) -> tuple[object, str, dict[str, object], bool] | None:
         if node is None or id(node) in visited:
             return None
         else:
@@ -311,7 +314,7 @@ def load_writable_quant_config(
     return _search(hf_config)
 
 
-def resolve_stage_prefix(hf_config: Any) -> str | None:
+def resolve_stage_prefix(hf_config: PretrainedConfig) -> str | None:
     """Return the checkpoint prefix for the active stage architecture."""
     architectures = getattr(hf_config, "architectures", None) or []
     if not architectures:
@@ -321,7 +324,7 @@ def resolve_stage_prefix(hf_config: Any) -> str | None:
     return _STAGE_PREFIX_BY_ARCH.get(architectures[0])
 
 
-def normalize_quant_config(model_config: Any) -> None:
+def normalize_quant_config(model_config: ModelConfig) -> None:
     """Strip the active stage's checkpoint prefix from the quant config"""
     hf_config = getattr(model_config, "hf_config", None)
     if hf_config is None:

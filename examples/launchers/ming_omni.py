@@ -220,6 +220,7 @@ def launch_ming_text_server(args: argparse.Namespace) -> None:
         host=args.host,
         port=args.port,
         model_name=args.model_name,
+        skip_server_warmup=args.skip_server_warmup,
     )
 
 
@@ -333,6 +334,7 @@ def launch_ming_speech_server(args: argparse.Namespace) -> None:
         host=args.host,
         port=args.port,
         model_name=args.model_name,
+        skip_server_warmup=args.skip_server_warmup,
     )
 
 

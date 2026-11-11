@@ -15,7 +15,9 @@ def test_dllm_thinker_request_uses_upstream_token_array() -> None:
     state = LLaDA2UniPipelineState(
         prompt={"input_ids": torch.tensor([[11, 12, 13]], dtype=torch.long)}
     )
-    dllm_config = SimpleNamespace(block_size=2, mask_id=99)
+    dllm_config = SimpleNamespace(
+        block_size=2, mask_id=99, requires_separate_context_encoding=False
+    )
 
     data = build_dllm_thinker_request(
         state,

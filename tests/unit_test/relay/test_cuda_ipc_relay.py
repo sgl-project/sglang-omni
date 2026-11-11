@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 import multiprocessing as mp
 import queue
+import threading
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from multiprocessing.connection import Connection
 
@@ -21,9 +23,11 @@ import torch
 from sglang_omni.comm.kv_transfer import KVBufferRegion, KVPool
 from sglang_omni.relay.cuda_ipc import (
     ContiguousSlotAllocator,
+    CudaIpcGetOperation,
     CudaIpcPutOperation,
     CudaIpcRelay,
 )
+from tests.unit_test.fixtures.trace_capture import capture_comm_trace
 
 N = 1024 * 1024  # 1 MiB payload
 PAGED_PAGE_COUNT = 9
@@ -43,7 +47,9 @@ def make_expected(n: int) -> torch.Tensor:
     return (torch.arange(n, dtype=torch.int64) % 251).to(torch.uint8)
 
 
-def test_cuda_ipc_put_timeout_fails_relay_without_releasing_slot() -> None:
+def test_cuda_ipc_put_timeout_fails_relay_without_releasing_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     released = False
     failed: list[BaseException] = []
 
@@ -54,6 +60,8 @@ def test_cuda_ipc_put_timeout_fails_relay_without_releasing_slot() -> None:
     async def run() -> None:
         op = CudaIpcPutOperation(
             metadata={},
+            engine_id="sender",
+            device="cuda:0",
             ready_event=object(),  # type: ignore[arg-type]
             source_tensor=object(),  # type: ignore[arg-type]
             slot_index=0,
@@ -61,15 +69,144 @@ def test_cuda_ipc_put_timeout_fails_relay_without_releasing_slot() -> None:
             size=1,
             release_cb=release,
             fail_cb=failed.append,
+            cancel_callback=failed.append,
         )
         with pytest.raises(TimeoutError):
             await op.wait_for_completion(timeout=0.0)
 
-    asyncio.run(run())
+    with capture_comm_trace(monkeypatch) as events:
+        asyncio.run(run())
 
     assert released is False
     assert len(failed) == 1
     assert isinstance(failed[0], TimeoutError)
+    stranded = [
+        event for event in events if event["event"] == "cuda_ipc_slots_stranded"
+    ]
+    assert len(stranded) == 1
+    assert stranded[0]["engine_id"] == "sender"
+    assert stranded[0]["device"] == "cuda:0"
+    assert stranded[0]["request_id"] == "r"
+    assert stranded[0]["slot_index"] == 0
+    assert stranded[0]["num_slots"] == 1
+    assert stranded[0]["bytes"] == 1
+    assert stranded[0]["reason"] == "TimeoutError"
+
+
+def test_cuda_ipc_put_cancellation_traces_slot_without_releasing_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    relay = CudaIpcRelay(engine_id="sender", device="cuda:0")
+    allocator = ContiguousSlotAllocator(slot_count=4, slot_size=8)
+    ready_event = object()
+    source_tensor = object()
+
+    async def run() -> CudaIpcPutOperation:
+        num_slots = 2
+        allocation = await allocator.acquire_async(num_slots)
+        operation = CudaIpcPutOperation(
+            metadata={},
+            engine_id="sender",
+            device="cuda:0",
+            ready_event=ready_event,  # type: ignore[arg-type]
+            source_tensor=source_tensor,  # type: ignore[arg-type]
+            slot_index=allocation.offset // allocator.slot_size,
+            request_id="cancelled-request",
+            size=num_slots * allocator.slot_size,
+            release_cb=lambda: allocator.release(allocation.offset, num_slots),
+            fail_cb=lambda error: relay.record_stranded_slots(
+                allocator,
+                num_slots,
+                error,
+            ),
+            cancel_callback=lambda error: relay.record_stranded_slots(
+                allocator,
+                num_slots,
+                error,
+                mark_relay_failed=False,
+            ),
+            num_slots=num_slots,
+        )
+        wait_task = asyncio.create_task(operation.wait_for_completion())
+        await asyncio.sleep(0)
+        wait_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await wait_task
+        with pytest.raises(asyncio.CancelledError):
+            await operation.wait_for_completion()
+        return operation
+
+    with capture_comm_trace(monkeypatch) as events:
+        operation = asyncio.run(run())
+
+    layout = allocator.snapshot_layout()
+    assert layout.free_slots == 2
+    assert relay.stranded_slots_total == 2
+    assert relay.failed_error is None
+    assert operation.completed is False
+    assert operation.has_traced_cancellation is True
+    assert operation.ready_event is ready_event
+    assert operation.source_tensor is source_tensor
+    stranded = [
+        event for event in events if event["event"] == "cuda_ipc_slots_stranded"
+    ]
+    assert len(stranded) == 1
+    assert stranded[0]["engine_id"] == "sender"
+    assert stranded[0]["device"] == "cuda:0"
+    assert stranded[0]["request_id"] == "cancelled-request"
+    assert stranded[0]["slot_index"] == 0
+    assert stranded[0]["num_slots"] == 2
+    assert stranded[0]["bytes"] == 16
+    assert stranded[0]["reason"] == "CancelledError"
+    pool_state = [event for event in events if event["event"] == "cuda_ipc_pool_state"]
+    assert len(pool_state) == 1
+    assert pool_state[0]["stranded_slots_total"] == 2
+
+
+def test_cuda_ipc_relay_traces_pool_state_when_slots_are_stranded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        relay = CudaIpcRelay(engine_id="sender", device="cuda:0")
+        allocator = ContiguousSlotAllocator(slot_count=4, slot_size=8)
+        await allocator.acquire_async(2)
+        relay.record_stranded_slots(allocator, 2, TimeoutError("ack timeout"))
+
+    with capture_comm_trace(monkeypatch) as events:
+        asyncio.run(run())
+
+    pool_state = [event for event in events if event["event"] == "cuda_ipc_pool_state"]
+    assert len(pool_state) == 1
+    assert pool_state[0]["engine_id"] == "sender"
+    assert pool_state[0]["device"] == "cuda:0"
+    assert pool_state[0]["free_slots"] == 2
+    assert pool_state[0]["largest_free_run"] == 2
+    assert pool_state[0]["stranded_slots_total"] == 2
+
+
+def test_cuda_ipc_relay_traces_final_pool_state_on_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    relay = CudaIpcRelay(engine_id="sender", device="cuda:0")
+    allocator = ContiguousSlotAllocator(slot_count=4, slot_size=8)
+
+    async def reserve_slots() -> None:
+        await allocator.acquire_async(2)
+
+    asyncio.run(reserve_slots())
+    relay.allocator = allocator
+    relay.stranded_slots_total = 2
+
+    with capture_comm_trace(monkeypatch) as events:
+        relay.close()
+
+    pool_state = [event for event in events if event["event"] == "cuda_ipc_pool_state"]
+    assert len(pool_state) == 1
+    assert pool_state[0]["engine_id"] == "sender"
+    assert pool_state[0]["device"] == "cuda:0"
+    assert pool_state[0]["free_slots"] == 2
+    assert pool_state[0]["largest_free_run"] == 2
+    assert pool_state[0]["stranded_slots_total"] == 2
 
 
 def test_cuda_ipc_relay_failure_wakes_blocked_slot_acquire() -> None:
@@ -110,23 +247,103 @@ def test_cuda_ipc_put_fails_fast_after_relay_failure() -> None:
     asyncio.run(run())
 
 
-def test_cuda_ipc_default_pool_uses_small_slots() -> None:
-    relay = CudaIpcRelay(engine_id="sender", device="cuda:0")
-    assert relay.slot_size == 64 * 1024
-    assert relay.pool_size == 1024 * 1024 * 1024
-    assert relay.slot_count == 16 * 1024
+class GatedCopyEvent:
+    """CPU stand-in for the CUDA event that marks a launched copy as finished."""
+
+    def __init__(self) -> None:
+        self.copy_done = threading.Event()
+
+    def query(self) -> bool:
+        return self.copy_done.is_set()
+
+    def synchronize(self) -> None:
+        self.copy_done.wait()
 
 
-def test_cuda_ipc_pool_size_and_slot_size_are_configurable() -> None:
-    relay = CudaIpcRelay(
-        engine_id="sender",
-        device="cuda:0",
-        pool_size_mb=1,
-        slot_size_kb=256,
+def make_copy_owning_get(
+    event: GatedCopyEvent, executor: ThreadPoolExecutor
+) -> CudaIpcGetOperation:
+    # A negative device index makes torch.cuda.device a no-op, so this runs on CPU.
+    return CudaIpcGetOperation(
+        event,
+        None,
+        0,
+        1,
+        request_id="copy-owning-get",
+        size=0,
+        device_index=-1,
+        wait_executor=executor,
+        finish_on_interrupt=True,
     )
-    assert relay.slot_size == 256 * 1024
-    assert relay.pool_size == 1024 * 1024
-    assert relay.slot_count == 4
+
+
+@pytest.mark.parametrize(
+    "interruption", ["timeout", "timeout_then_cancel", "cancel_twice"]
+)
+def test_cuda_ipc_get_waits_for_launched_copy_through_interruptions(
+    interruption: str,
+) -> None:
+    event = GatedCopyEvent()
+    executor = ThreadPoolExecutor(max_workers=1)
+
+    async def run() -> None:
+        timeout = 0.01 if interruption.startswith("timeout") else 30.0
+        task = asyncio.create_task(
+            make_copy_owning_get(event, executor).wait_for_completion(timeout=timeout)
+        )
+        try:
+            await asyncio.sleep(0.05)
+            if interruption == "timeout_then_cancel":
+                task.cancel()
+            elif interruption == "cancel_twice":
+                task.cancel()
+                await asyncio.sleep(0.05)
+                task.cancel()
+            await asyncio.sleep(0.05)
+            assert not task.done(), "receive returned while its GPU copy was running"
+        finally:
+            event.copy_done.set()
+
+        expected = (
+            asyncio.TimeoutError
+            if interruption == "timeout"
+            else asyncio.CancelledError
+        )
+        with pytest.raises(expected):
+            await task
+
+    try:
+        asyncio.run(run())
+    finally:
+        executor.shutdown(wait=True)
+
+
+def test_cuda_ipc_relay_close_keeps_queued_copy_waits(monkeypatch) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_CUDA_IPC_WAIT_THREADS", "1")
+    relay = CudaIpcRelay(engine_id="receiver", device="cuda:0", pool_size_mb=1)
+    event = GatedCopyEvent()
+
+    async def run() -> None:
+        tasks = [
+            asyncio.create_task(
+                make_copy_owning_get(event, relay.wait_executor).wait_for_completion()
+            )
+            for _ in range(2)
+        ]
+        try:
+            await asyncio.sleep(0.05)
+            relay.close()
+            await asyncio.sleep(0.05)
+            assert not any(task.done() for task in tasks), "close dropped a copy wait"
+        finally:
+            event.copy_done.set()
+
+        assert await asyncio.gather(*tasks) == [None, None]
+
+    try:
+        asyncio.run(run())
+    finally:
+        relay.wait_executor.shutdown(wait=True)
 
 
 def test_contiguous_slot_allocator_waits_for_contiguous_range() -> None:

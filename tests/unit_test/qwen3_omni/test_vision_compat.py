@@ -1,25 +1,58 @@
 # SPDX-License-Identifier: Apache-2.0
+"""Contracts for Qwen3-Omni vision encoding."""
 
+import copy
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal
+from unittest.mock import Mock
 
 import pytest
 import torch
+from safetensors.torch import save_file
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_modeling
 
-from sglang_omni.models.qwen3_omni.components import vision_compat
+import sglang_omni.models.qwen3_omni.components.vision_encoder as vision_runtime
+from sglang_omni.models.qwen3_omni.components import image_encoder, vision_compat
+from sglang_omni.models.qwen3_omni.components.vision_encoder import (
+    Qwen3OmniVisionEncoder,
+)
+
+GRID_CASES = {
+    "single": [[1, 16, 16]],
+    "single-large": [[1, 64, 98]],
+    "multi-mixed": [[1, 16, 24], [1, 32, 12], [1, 8, 40]],
+    "video": [[4, 16, 20]],
+    "video-plus-image": [[3, 12, 16], [1, 20, 28], [2, 8, 8]],
+    "many": [[1, 24, 24]] * 8,
+}
+DEVICES = [
+    "cpu",
+    pytest.param(
+        "cuda",
+        marks=[
+            pytest.mark.accelerator,
+            pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA"),
+        ],
+    ),
+]
 
 
-def make_encoder() -> vision_compat.Qwen3OmniMoeVisionEncoderCompat:
+def make_encoder(
+    dtype: torch.dtype, device: str
+) -> vision_compat.Qwen3OmniMoeVisionEncoderCompat:
     encoder = vision_compat.Qwen3OmniMoeVisionEncoderCompat.__new__(
         vision_compat.Qwen3OmniMoeVisionEncoderCompat
     )
     torch.nn.Module.__init__(encoder)
-    encoder.config = SimpleNamespace(spatial_merge_size=2)
+    encoder.spatial_merge_size = 2
     encoder.num_grid_per_side = 48
     encoder.pos_embed = torch.nn.Embedding(
         48 * 48,
         16,
-        dtype=torch.bfloat16,
+        dtype=dtype,
+        device=device,
     )
     with torch.no_grad():
         values = torch.arange(
@@ -32,19 +65,18 @@ def make_encoder() -> vision_compat.Qwen3OmniMoeVisionEncoderCompat:
 
 def transformers_5_6_pos_embed_interpolate(
     encoder: vision_compat.Qwen3OmniMoeVisionEncoderCompat,
-    grid_thw: torch.Tensor,
+    grid_thw: list[list[int]],
 ) -> torch.Tensor:
     """Frozen reference for the Transformers 5.6 interpolation implementation."""
-    grid_thw_list = grid_thw.tolist()
-    grid_ts = [row[0] for row in grid_thw_list]
-    grid_hs = [row[1] for row in grid_thw_list]
-    grid_ws = [row[2] for row in grid_thw_list]
+    grid_ts = [row[0] for row in grid_thw]
+    grid_hs = [row[1] for row in grid_thw]
+    grid_ws = [row[2] for row in grid_thw]
     device = encoder.pos_embed.weight.device
 
     idx_list = [[] for _ in range(4)]
     weight_list = [[] for _ in range(4)]
 
-    for _, h, w in grid_thw_list:
+    for _, h, w in grid_thw:
         h_idxs = torch.linspace(0, encoder.num_grid_per_side - 1, h)
         w_idxs = torch.linspace(0, encoder.num_grid_per_side - 1, w)
 
@@ -87,7 +119,7 @@ def transformers_5_6_pos_embed_interpolate(
     patch_pos_embeds = patch_pos_embeds.split([h * w for h, w in zip(grid_hs, grid_ws)])
 
     permuted = []
-    merge_size = encoder.config.spatial_merge_size
+    merge_size = encoder.spatial_merge_size
     for pos_embed, t, h, w in zip(patch_pos_embeds, grid_ts, grid_hs, grid_ws):
         pos_embed = pos_embed.repeat(t, 1)
         pos_embed = (
@@ -106,50 +138,269 @@ def transformers_5_6_pos_embed_interpolate(
     return torch.cat(permuted)
 
 
-@pytest.mark.parametrize(
-    "grid_thw",
-    [
-        [[1, 4, 6]],
-        [[3, 6, 4]],
-        [[1, 4, 6], [2, 6, 8]],
-        [[1, 50, 52]],
-    ],
-    ids=["image", "video", "mixed-grid", "upsampling"],
-)
-def test_interpolation_is_bit_exact_to_transformers_5_6(grid_thw) -> None:
-    encoder = make_encoder()
-    grid = torch.tensor(grid_thw, dtype=torch.long)
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("grid_thw", list(GRID_CASES.values()), ids=list(GRID_CASES))
+def test_position_interpolation_is_bit_exact_to_transformers_5_6(
+    grid_thw: list[list[int]],
+    dtype: torch.dtype,
+    device: str,
+) -> None:
+    encoder = make_encoder(dtype, device)
 
-    expected = transformers_5_6_pos_embed_interpolate(encoder, grid)
-    actual = encoder.legacy_pos_embed_interpolate(grid)
+    expected = transformers_5_6_pos_embed_interpolate(encoder, grid_thw)
+    actual = encoder.interpolate_position_embeddings(grid_thw)
 
+    assert actual.device == encoder.pos_embed.weight.device
     assert torch.equal(actual, expected)
 
 
-def test_compat_encoder_preserves_transformers_5_12_output_contract() -> None:
+def apply_cpu_joint_rope(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    cos_sin_cache: torch.Tensor,
+    positions: torch.Tensor,
+    *,
+    is_neox: bool,
+) -> None:
+    assert is_neox
+    assert cos_sin_cache.dtype == torch.float32
+    cos, sin = cos_sin_cache[positions].chunk(2, dim=-1)
+    rotated_query, rotated_key = hf_modeling.apply_rotary_pos_emb_vision(
+        query, key, torch.cat((cos, cos), dim=-1), torch.cat((sin, sin), dim=-1)
+    )
+    query.copy_(rotated_query)
+    key.copy_(rotated_key)
+
+
+@pytest.fixture
+def vision_encoder() -> vision_compat.Qwen3OmniMoeVisionEncoderCompat:
+    # note (yzxiao): Keep the serving head dimension (72) in the small CPU model.
     config = hf_modeling.Qwen3OmniMoeVisionEncoderConfig(
-        depth=1,
-        hidden_size=16,
+        depth=2,
+        hidden_size=144,
         intermediate_size=32,
-        num_heads=4,
+        num_heads=2,
         in_channels=3,
         patch_size=2,
         spatial_merge_size=2,
         temporal_patch_size=2,
         out_hidden_size=16,
         num_position_embeddings=64,
-        deepstack_visual_indexes=(0,),
+        deepstack_visual_indexes=(0, 1),
     )
-    encoder = vision_compat.Qwen3OmniMoeVisionEncoderCompat(config)
-    encoder.eval().to(torch.bfloat16)
-    grid = torch.tensor([[1, 4, 4]], dtype=torch.long)
-    hidden_states = torch.randn(16, 24, dtype=torch.bfloat16)
+    previous_dtype = torch.get_default_dtype()
+    with torch.device("cpu"), torch.random.fork_rng(devices=[]):
+        torch.manual_seed(734)
+        torch.set_default_dtype(torch.bfloat16)
+        try:
+            encoder = vision_compat.Qwen3OmniMoeVisionEncoderCompat(config)
+        finally:
+            torch.set_default_dtype(previous_dtype)
+    return encoder.eval()
 
-    with torch.inference_mode():
-        output = encoder(hidden_states, grid_thw=grid)
 
-    assert isinstance(output, hf_modeling.BaseModelOutputWithDeepstackFeatures)
-    assert output.last_hidden_state.shape == (16, 16)
-    assert output.pooler_output.shape == (4, 16)
-    assert len(output.deepstack_features) == 1
-    assert output.deepstack_features[0].shape == (4, 16)
+@pytest.mark.parametrize(
+    ("platform_device", "has_provider", "should_use_joint_kernel"),
+    [("cpu", True, True), ("cpu", False, False), ("cuda", True, False)],
+    ids=["joint-provider", "native-rope", "model-platform-mismatch"],
+)
+def test_image_encoder_preserves_outputs_with_platform_rotary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    vision_encoder: vision_compat.Qwen3OmniMoeVisionEncoderCompat,
+    platform_device: Literal["cpu", "cuda"],
+    has_provider: bool,
+    should_use_joint_kernel: bool,
+) -> None:
+    save_file(
+        {
+            f"thinker.visual.{name}": tensor
+            for name, tensor in vision_encoder.state_dict().items()
+        },
+        tmp_path / "model.safetensors",
+    )
+    kernel = Mock(side_effect=apply_cpu_joint_rope)
+    provider = Mock(return_value=kernel if has_provider else None)
+    monkeypatch.setattr(
+        vision_runtime,
+        "current_platform",
+        SimpleNamespace(
+            device_type=platform_device, get_joint_rope_inplace_kernel=provider
+        ),
+    )
+    monkeypatch.setattr(
+        image_encoder,
+        "load_thinker_config",
+        Mock(return_value=SimpleNamespace(vision_config=vision_encoder.config)),
+    )
+    model = image_encoder.Qwen3OmniImageEncoder(
+        str(tmp_path), device="cpu", dtype="bf16"
+    )
+    image_encoder.optimize_patch_embed(vision_encoder)
+    image_grid = torch.tensor([[1, 4, 4], [1, 4, 6]], dtype=torch.long, device="cpu")
+    video_grid = torch.tensor([[2, 6, 4]], dtype=torch.long, device="cpu")
+    image_pixels = torch.randn(40, 24, dtype=torch.bfloat16, device="cpu")
+    video_pixels = torch.randn(48, 24, dtype=torch.bfloat16, device="cpu")
+
+    with torch.no_grad():
+        actual = model(
+            pixel_values=image_pixels,
+            image_grid_thw=image_grid,
+            pixel_values_videos=video_pixels,
+            video_grid_thw=video_grid,
+        )
+        expected_image = vision_encoder(
+            image_pixels, grid_thw=image_grid, return_dict=True
+        )
+        expected_video = vision_encoder(
+            video_pixels, grid_thw=video_grid, return_dict=True
+        )
+
+    torch.testing.assert_close(
+        actual,
+        {
+            "image_embeds": expected_image.pooler_output,
+            "image_grid_thw": image_grid,
+            "image_token_counts": torch.tensor([4, 6], device="cpu"),
+            "deepstack_visual_embeds_image": expected_image.deepstack_features,
+            "video_embeds": expected_video.pooler_output,
+            "video_grid_thw": video_grid,
+            "video_token_counts": torch.tensor([12], device="cpu"),
+            "deepstack_visual_embeds_video": expected_video.deepstack_features,
+        },
+        rtol=0,
+        atol=0,
+    )
+    expected_kernel_calls = (
+        2 * vision_encoder.config.depth if should_use_joint_kernel else 0
+    )
+    assert kernel.call_count == expected_kernel_calls
+    assert provider.call_count == (1 if platform_device == "cpu" else 0)
+
+
+@pytest.mark.parametrize(
+    "has_joint_kernel", [False, True], ids=["native-rope", "joint-rope"]
+)
+def test_flash_backend_receives_host_max_sequence_lengths(
+    monkeypatch: pytest.MonkeyPatch,
+    vision_encoder: vision_compat.Qwen3OmniMoeVisionEncoderCompat,
+    has_joint_kernel: bool,
+) -> None:
+    kernel = Mock(side_effect=apply_cpu_joint_rope)
+    encoder = (
+        Qwen3OmniVisionEncoder(
+            vision_encoder.config,
+            joint_rope_kernel=kernel if has_joint_kernel else None,
+            packed_attention=None,
+        )
+        .eval()
+        .to(torch.bfloat16)
+    )
+    encoder.load_state_dict(vision_encoder.state_dict(), strict=True)
+    grid = torch.tensor([[1, 4, 4], [2, 4, 6]], dtype=torch.long, device="cpu")
+    pixels = torch.randn(64, 24, dtype=torch.bfloat16, device="cpu")
+    attention_output = pixels.new_zeros(
+        1,
+        pixels.shape[0],
+        encoder.config.num_heads,
+        encoder.config.hidden_size // encoder.config.num_heads,
+    )
+    flash_backend = Mock(return_value=(attention_output, None))
+    monkeypatch.setattr(
+        hf_modeling, "is_flash_attention_requested", Mock(return_value=True)
+    )
+    monkeypatch.setattr(
+        hf_modeling.ALL_ATTENTION_FUNCTIONS,
+        "get_interface",
+        Mock(return_value=flash_backend),
+    )
+
+    with torch.no_grad():
+        encoder(pixels, grid_thw=grid)
+
+    assert flash_backend.call_count == vision_encoder.config.depth
+    for backend_call in flash_backend.call_args_list:
+        assert isinstance(backend_call.kwargs["max_length_q"], int)
+        assert isinstance(backend_call.kwargs["max_length_k"], int)
+        assert backend_call.kwargs["max_length_q"] == 24
+        assert backend_call.kwargs["max_length_k"] == 24
+
+
+def test_packed_attention_receives_every_sequence_and_the_host_max_length(
+    vision_encoder: vision_compat.Qwen3OmniMoeVisionEncoderCompat,
+) -> None:
+    packed_attention = Mock(
+        side_effect=lambda query, key, value, cu_seqlens, **kwargs: value
+    )
+    encoder = (
+        Qwen3OmniVisionEncoder(
+            vision_encoder.config,
+            joint_rope_kernel=None,
+            packed_attention=packed_attention,
+        )
+        .eval()
+        .to(torch.bfloat16)
+    )
+    encoder.load_state_dict(vision_encoder.state_dict(), strict=True)
+    grid = torch.tensor([[1, 4, 4], [2, 4, 6]], dtype=torch.long, device="cpu")
+    pixels = torch.randn(64, 24, dtype=torch.bfloat16, device="cpu")
+
+    with torch.no_grad():
+        encoder(pixels, grid_thw=grid)
+
+    assert packed_attention.call_count == vision_encoder.config.depth
+    metadata = packed_attention.call_args.kwargs["forward_metadata"]
+    assert metadata.cu_seqlens.tolist() == [0, 16, 40, 64]
+    assert isinstance(metadata.max_seqlen, int)
+    assert metadata.max_seqlen == 24
+    for attention_call in packed_attention.call_args_list:
+        assert attention_call.kwargs["forward_metadata"] is metadata
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize(
+    ("dtype", "tolerance"), [("bf16", 2e-2), ("fp32", 1e-3)], ids=["bf16", "fp32"]
+)
+def test_cuda_image_encoder_matches_the_fp32_transformers_encoder(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    vision_encoder: vision_compat.Qwen3OmniMoeVisionEncoderCompat,
+    dtype: Literal["bf16", "fp32"],
+    tolerance: float,
+) -> None:
+    """A CUDA image encoder encodes in fp32, and in bf16 with SGLANG_VIT_ENABLE_CUDA_GRAPH set."""
+    monkeypatch.setenv("SGLANG_VIT_ENABLE_CUDA_GRAPH", "1")
+    save_file(
+        {
+            f"thinker.visual.{name}": tensor
+            for name, tensor in vision_encoder.state_dict().items()
+        },
+        tmp_path / "model.safetensors",
+    )
+    monkeypatch.setattr(
+        image_encoder,
+        "load_thinker_config",
+        Mock(return_value=SimpleNamespace(vision_config=vision_encoder.config)),
+    )
+    model = image_encoder.Qwen3OmniImageEncoder(
+        str(tmp_path), device="cuda", dtype=dtype
+    )
+    reference = copy.deepcopy(vision_encoder).to("cuda", torch.float32)
+    grid = torch.tensor([[1, 4, 4], [2, 4, 6]], dtype=torch.long)
+    torch.manual_seed(0)
+    pixels = torch.randn(64, 24)
+
+    with torch.no_grad():
+        with sdpa_kernel(SDPBackend.MATH):
+            expected = reference(
+                pixels.to("cuda"), grid_thw=grid.to("cuda"), return_dict=True
+            )
+        actual = model(pixel_values=pixels, image_grid_thw=grid)
+
+    for got, want in zip(
+        (actual["image_embeds"], *actual["deepstack_visual_embeds_image"]),
+        (expected.pooler_output, *expected.deepstack_features),
+    ):
+        torch.testing.assert_close(got.float(), want, rtol=tolerance, atol=tolerance)

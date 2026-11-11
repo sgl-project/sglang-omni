@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import TypedDict
 
 import torch
 from transformers import PreTrainedTokenizerFast
@@ -35,6 +35,12 @@ class Reference:
     vq_codes: torch.Tensor | None = None
 
 
+class S2ProPrompt(TypedDict):
+    input_ids: torch.Tensor
+    vq_mask_tokens: torch.Tensor
+    vq_parts: list[torch.Tensor]
+
+
 class InferencePromptEncoder:
     """Accumulate the tensor fields consumed by the Fish serving path."""
 
@@ -51,17 +57,15 @@ class InferencePromptEncoder:
 
     def append_vq(self, codes: torch.Tensor) -> None:
         codes = codes.clone().to(torch.int)
-        tokens = torch.tensor(
-            self.tokenizer.convert_tokens_to_ids(
-                [SEMANTIC_TOKEN_TEMPLATE.format(i=code) for code in codes[0].int()]
-            ),
-            dtype=torch.int,
+        # Semantic ids are contiguous, as the engine's semantic logit bias assumes.
+        tokens = codes[0] + self.tokenizer.convert_tokens_to_ids(
+            SEMANTIC_TOKEN_TEMPLATE.format(i=0)
         )
         self.token_segments.append(tokens)
         self.vq_mask_segments.append(torch.ones_like(tokens, dtype=torch.bool))
         self.vq_parts.append(codes)
 
-    def finish(self) -> dict[str, Any]:
+    def finish(self) -> S2ProPrompt:
         return {
             "input_ids": torch.cat(self.token_segments, dim=0),
             "vq_mask_tokens": torch.cat(self.vq_mask_segments, dim=0),
@@ -94,8 +98,8 @@ class S2ProTokenizerAdapter:
         *,
         num_codebooks: int = 10,
         speaker: int | str = 0,
-        **kwargs: Any,
-    ) -> dict[str, Any]:
+        **kwargs: object,
+    ) -> S2ProPrompt:
         """Build an S2-Pro inference prompt using Qwen3 chat format."""
         if references:
             for index, ref in enumerate(references):

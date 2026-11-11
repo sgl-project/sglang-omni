@@ -5,7 +5,8 @@ import asyncio
 import logging
 import time
 import uuid
-from typing import Any, Callable, Dict
+from collections.abc import Mapping
+from typing import Callable, Dict
 
 import numpy as np
 import torch
@@ -51,13 +52,15 @@ class Connection:
 class NixlOperation(RelayOperation):
     """Base class for async operations."""
 
-    def __init__(self, connection: Connection, metadata: Any = None):
+    def __init__(
+        self, connection: Connection, metadata: dict[str, object] | None = None
+    ) -> None:
         self.conn = connection
         self._metadata = metadata  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         self.completed = False
 
     @property
-    def metadata(self) -> Any:
+    def metadata(self) -> dict[str, object] | None:
         return (
             self._metadata
         )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -73,10 +76,10 @@ class PutOperation(NixlOperation):
     def __init__(
         self,
         connection: Connection,
-        metadata: Any,
+        metadata: dict[str, object],
         expected_notification: bytes,
         on_completion_cb: Callable[[], None],
-    ):
+    ) -> None:
         super().__init__(connection, metadata)
         self.expected_notification = expected_notification
         self.on_completion_cb = on_completion_cb
@@ -136,7 +139,7 @@ class GetOperation(NixlOperation):
         dest_tensor: torch.Tensor,
         copy_size: int,
         on_completion_cb: Callable[[], None],
-    ):
+    ) -> None:
         super().__init__(
             connection, metadata=None
         )  # Get usually doesn't return metadata
@@ -261,7 +264,7 @@ class NixlRelay(Relay):
 
             # 3. Prepare Metadata
             mem_type = "VRAM" if "cuda" in self.device else "DRAM"
-            payload = {
+            payload: dict[str, object] = {
                 "engine_id": self.engine_id,
                 "agent_meta": self.connection.get_agent_metadata(),
                 "mem_type": mem_type,
@@ -288,7 +291,10 @@ class NixlRelay(Relay):
             raise e
 
     async def get_async(
-        self, metadata: Any, dest_tensor: torch.Tensor, request_id: str = None
+        self,
+        metadata: Mapping[str, object],
+        dest_tensor: torch.Tensor,
+        request_id: str | None = None,
     ) -> GetOperation:
         """
         Asynchronously get tensor. Returns a GetOperation.

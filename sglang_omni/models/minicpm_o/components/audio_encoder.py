@@ -3,12 +3,19 @@
 
 from __future__ import annotations
 
+import logging
+from dataclasses import dataclass
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers import PretrainedConfig
-from transformers.activations import ACT2FN
 
+from sglang_omni.models.minicpm_o.components.whisper_encoder import (
+    AudioEncoderState,
+    MiniCPMWhisperEncoder,
+)
 from sglang_omni.models.minicpm_o.hf_config import MiniCPMOConfig
 from sglang_omni.models.weight_loader import (
     load_weights_by_prefix,
@@ -18,6 +25,31 @@ from sglang_omni.models.weight_loader import (
 
 # note (MayDomine): finite mask values avoid NaNs on fully masked padding rows.
 MASK_MIN = -1e9
+
+logger = logging.getLogger(__name__)
+
+AudioBatchKey = tuple[tuple[int, ...], int, int]
+# note (Junnan Li): cuDNN attention rebuilds a graph for every new key length, and streaming makes a new one each unit.
+STREAMING_ATTENTION_BACKENDS = [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
+
+
+@dataclass(kw_only=True)
+class StreamingAudioChunk:
+    """One session's mel chunk and the attention history it continues; the forward takes the history."""
+
+    audio_features: torch.Tensor
+    state: AudioEncoderState | None
+    prefix_extra_frames: int
+    suffix_extra_frames: int
+
+    def batch_key(self) -> AudioBatchKey:
+        """Chunks with equal keys share one forward; history lengths may differ."""
+        return (
+            tuple(self.audio_features.shape),
+            self.prefix_extra_frames,
+            self.suffix_extra_frames,
+        )
+
 
 QKV_SHARDS = {"q_proj": 0, "k_proj": 1, "v_proj": 2}
 
@@ -57,112 +89,6 @@ def feature_lens_after_pooling(
 def min_mel_frames(pool_step: int) -> int:
     """Fewest mel frames the pooling stage accepts (one pooled frame)."""
     return 2 * pool_step - 1
-
-
-class MiniCPMWhisperEncoderAttention(nn.Module):
-    """Whisper self-attention with fused QKV and an additive SDPA mask."""
-
-    def __init__(self, config: PretrainedConfig) -> None:
-        super().__init__()
-        self.embed_dim = config.d_model
-        self.num_heads = config.encoder_attention_heads
-        self.head_dim = self.embed_dim // self.num_heads
-        self.qkv_proj = nn.Linear(self.embed_dim, 3 * self.embed_dim)
-        # note (MayDomine): Whisper's K projection is bias-free.
-        with torch.no_grad():
-            self.qkv_proj.bias[self.embed_dim : 2 * self.embed_dim].zero_()
-        self.out_proj = nn.Linear(self.embed_dim, self.embed_dim)
-
-    def reshape_heads(self, states: torch.Tensor) -> torch.Tensor:
-        batch_size, seq_len, _ = states.shape
-        return states.view(
-            batch_size, seq_len, self.num_heads, self.head_dim
-        ).transpose(1, 2)
-
-    def forward(
-        self, hidden_states: torch.Tensor, attn_mask: torch.Tensor
-    ) -> torch.Tensor:
-        query, key, value = self.qkv_proj(hidden_states).chunk(3, dim=-1)
-        attn_output = F.scaled_dot_product_attention(
-            self.reshape_heads(query),
-            self.reshape_heads(key),
-            self.reshape_heads(value),
-            attn_mask=attn_mask,
-            dropout_p=0.0,
-        )
-        attn_output = attn_output.transpose(1, 2).reshape(
-            hidden_states.shape[0],
-            hidden_states.shape[1],
-            self.embed_dim,
-        )
-        return self.out_proj(attn_output)
-
-
-class MiniCPMWhisperEncoderLayer(nn.Module):
-    def __init__(self, config: PretrainedConfig) -> None:
-        super().__init__()
-        self.self_attn = MiniCPMWhisperEncoderAttention(config)
-        self.self_attn_layer_norm = nn.LayerNorm(config.d_model)
-        self.fc1 = nn.Linear(config.d_model, config.encoder_ffn_dim)
-        self.fc2 = nn.Linear(config.encoder_ffn_dim, config.d_model)
-        self.final_layer_norm = nn.LayerNorm(config.d_model)
-        self.activation_fn = ACT2FN[config.activation_function]
-
-    def forward(
-        self, hidden_states: torch.Tensor, attn_mask: torch.Tensor
-    ) -> torch.Tensor:
-        residual = hidden_states
-        hidden_states = self.self_attn_layer_norm(hidden_states)
-        hidden_states = self.self_attn(hidden_states, attn_mask)
-        hidden_states = residual + hidden_states
-
-        residual = hidden_states
-        hidden_states = self.final_layer_norm(hidden_states)
-        hidden_states = self.fc2(self.activation_fn(self.fc1(hidden_states)))
-        return residual + hidden_states
-
-
-class MiniCPMWhisperEncoder(nn.Module):
-    """Standard Whisper encoder stack driven by an external additive mask."""
-
-    def __init__(self, config: PretrainedConfig) -> None:
-        super().__init__()
-        self.config = config
-        self.conv1 = nn.Conv1d(
-            config.num_mel_bins,
-            config.d_model,
-            kernel_size=3,
-            padding=1,
-        )
-        self.conv2 = nn.Conv1d(
-            config.d_model,
-            config.d_model,
-            kernel_size=3,
-            stride=2,
-            padding=1,
-        )
-        self.embed_positions = nn.Embedding(config.max_source_positions, config.d_model)
-        self.layers = nn.ModuleList(
-            [MiniCPMWhisperEncoderLayer(config) for _ in range(config.encoder_layers)]
-        )
-        self.layer_norm = nn.LayerNorm(config.d_model)
-
-    def forward(
-        self, input_features: torch.Tensor, attn_mask: torch.Tensor
-    ) -> torch.Tensor:
-        hidden_states = input_features.to(
-            device=self.conv1.weight.device, dtype=self.conv1.weight.dtype
-        )
-        hidden_states = F.gelu(self.conv1(hidden_states))
-        hidden_states = F.gelu(self.conv2(hidden_states))
-        hidden_states = hidden_states.permute(0, 2, 1)
-
-        embed_pos = self.embed_positions.weight[: hidden_states.shape[1]]
-        hidden_states = hidden_states + embed_pos.to(hidden_states.device)
-
-        for layer in self.layers:
-            hidden_states = layer(hidden_states, attn_mask)
-        return self.layer_norm(hidden_states)
 
 
 class MultiModalProjector(nn.Module):
@@ -311,3 +237,105 @@ class MiniCPMOAudioEncoder(nn.Module):
         pool_range = torch.arange(audio_embeds.shape[1], device=self.device)
         keep = pool_range[None, :] < pooled_lens.to(self.device)[:, None]
         return {"audio_embeds": audio_embeds[keep]}
+
+    @torch.no_grad()
+    def forward_streaming_batch(
+        self, chunks: list[StreamingAudioChunk]
+    ) -> list[tuple[torch.Tensor, AudioEncoderState]]:
+        """Encode one mel chunk per session in one forward; histories are left-padded and the padding is masked."""
+        first = chunks[0]
+        convolution_length = (first.audio_features.shape[-1] + 1) // 2
+        states: list[AudioEncoderState] = []
+        for chunk in chunks:
+            state = AudioEncoderState() if chunk.state is None else chunk.state
+            chunk.state = None
+            if (
+                state.past_length + convolution_length
+                >= self.apm.embed_positions.num_embeddings
+            ):
+                logger.info(f"Resetting audio encoder KV at {state.past_length} frames")
+                state = AudioEncoderState()
+            else:
+                pass
+            states.append(state)
+        current_length = (
+            convolution_length
+            - (first.prefix_extra_frames + 1) // 2
+            - (first.suffix_extra_frames + 1) // 2
+        )
+        if current_length < self.audio_pool_step:
+            raise ValueError("streaming audio chunk is too short after context removal")
+        else:
+            pass
+        past_lengths = [state.past_length for state in states]
+        longest = max(past_lengths)
+        attention = self.apm.layers[0].self_attn
+        # note (Junnan Li): Zeros, not empty memory: masked keys still multiply their values, and garbage could be NaN.
+        key_value_states = torch.zeros(
+            (
+                len(self.apm.layers),
+                2,
+                len(chunks),
+                attention.num_heads,
+                longest + current_length,
+                attention.head_dim,
+            ),
+            dtype=self.dtype,
+            device=self.device,
+        )
+        for row, state in enumerate(states):
+            if state.key_value_states is None:
+                pass
+            else:
+                key_value_states[
+                    :, :, row, :, longest - state.past_length : longest
+                ] = state.key_value_states[:, :, 0]
+        # note (Junnan Li): The batch tensor now holds every history, so free the old ones before the forward allocates the new ones.
+        del state, states
+        # note (Junnan Li): A non-blocking copy from pageable memory is staged at once and does not wait for the GPU.
+        device_past_lengths = torch.tensor(past_lengths).to(
+            self.device, non_blocking=True
+        )
+        key_positions = torch.arange(longest + current_length, device=self.device)
+        is_padding = key_positions[None, :] < (longest - device_past_lengths)[:, None]
+        attention_mask = (
+            torch.where(is_padding, MASK_MIN, 0.0)
+            .to(self.dtype)[:, None, None, :]
+            .expand(-1, 1, current_length, -1)
+            .contiguous()
+        )
+        positions = device_past_lengths[:, None] + torch.arange(
+            current_length, device=self.device
+        )
+        with sdpa_kernel(STREAMING_ATTENTION_BACKENDS):
+            hidden_states = self.apm(
+                torch.cat([chunk.audio_features for chunk in chunks]).to(
+                    self.device, non_blocking=True
+                ),
+                attention_mask,
+                key_value_states,
+                positions,
+                prefix_extra_frames=first.prefix_extra_frames,
+                suffix_extra_frames=first.suffix_extra_frames,
+            )
+        embeds = self.audio_projection_layer(hidden_states)
+        embeds = self.audio_avg_pooler(embeds.transpose(1, 2)).transpose(1, 2)
+        if len(chunks) == 1:
+            session_states = [AudioEncoderState(key_value_states=key_value_states)]
+        else:
+            # note (Junnan Li): Copy each session's rows out so its state owns exactly its history and the batch tensor is freed.
+            session_states = [
+                AudioEncoderState(
+                    key_value_states=key_value_states[
+                        :, :, row : row + 1, :, longest - past_length :
+                    ].clone()
+                )
+                for row, past_length in enumerate(past_lengths)
+            ]
+        pooled_length = feature_lens_after_pooling(
+            torch.tensor([first.audio_features.shape[-1]]), self.audio_pool_step
+        ).item()
+        return [
+            (embeds[row, :pooled_length], session_state)
+            for row, session_state in enumerate(session_states)
+        ]

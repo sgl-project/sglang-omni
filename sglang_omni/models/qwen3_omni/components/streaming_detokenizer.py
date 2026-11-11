@@ -9,6 +9,7 @@ from sglang_omni.models.qwen3_omni.merge import decode_events
 from sglang_omni.models.qwen3_omni.payload_types import (
     Qwen3OmniEvent,
     Qwen3OmniPipelineState,
+    ThinkerOutput,
 )
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.streaming_detokenizer import (
@@ -28,7 +29,7 @@ def event_to_dict(event: Qwen3OmniEvent) -> dict:
     }
 
 
-def thinker_output(state: Qwen3OmniPipelineState) -> dict:
+def thinker_output(state: Qwen3OmniPipelineState) -> ThinkerOutput:
     thinker_out = state.thinker_out or state.engine_outputs.get(THINKER_STAGE)
     if isinstance(thinker_out, dict):
         return thinker_out
@@ -103,7 +104,12 @@ def build_decode_result(
             pass
     else:
         pass
-    for key in ("finish_reason", "output_token_logprobs", "weight_version"):
+    for key in (
+        "finish_reason",
+        "output_token_logprobs",
+        "weight_version",
+        "spec_tokens_details",
+    ):
         value = thinker_out.get(key)
         if value is not None:
             result.setdefault(key, value)

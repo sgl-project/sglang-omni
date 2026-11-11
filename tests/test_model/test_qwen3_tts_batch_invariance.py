@@ -279,8 +279,9 @@ def test_qwen3_tts_custom_voice_deterministic_batch_invariance(
 ) -> None:
     """Match batch-one and batch-eight on the checkpoints that graph prefill.
 
-    CustomVoice rejects ref_audio, so the Base tests above cannot cover it, yet
-    it is the family that takes the breakable prefill graph by default. Padded
+    CustomVoice rejects ref_audio, so the Base tests above cannot cover it.
+    Its default is the full prefill graph, but this launcher's triton attention
+    cannot capture one, so the default keeps the breakable graph here. Padded
     graph buckets are the failure mode this guards: a bucket that changes the
     numerics shows up as a batch-one/batch-eight mismatch.
     """

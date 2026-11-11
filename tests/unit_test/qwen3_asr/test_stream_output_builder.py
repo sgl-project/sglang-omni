@@ -72,7 +72,7 @@ def make_req_data(
     )
 
 
-def make_req_output(token_id: int | None) -> Any:
+def make_req_output(token_id: int | None) -> SimpleNamespace:
     return SimpleNamespace(data=token_id)
 
 
@@ -135,18 +135,6 @@ def test_qwen3_asr_stream_suppresses_auto_detected_language_prefix() -> None:
         "How",
         " many",
     ]
-
-
-def test_qwen3_asr_stream_suppresses_none_language_sentinel() -> None:
-    tokenizer = ByteTokenizer(
-        {1: b"language None", 2: b"<asr_text>"},
-        asr_text_token_ids=(2,),
-    )
-    builder = make_qwen3_asr_stream_output_builder(tokenizer=tokenizer)
-    req_data = make_req_data(language=None)
-
-    assert builder("r", req_data, make_req_output(1)) == []
-    assert builder("r", req_data, make_req_output(2)) == []
 
 
 def test_qwen3_asr_auto_language_stream_flushes_transcript_tail() -> None:

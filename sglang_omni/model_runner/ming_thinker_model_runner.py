@@ -3,19 +3,37 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, SupportsIndex, SupportsInt
 
 import torch
+from sglang.srt.layers.vocab_parallel_embedding import VocabParallelEmbedding
+from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
 from sglang.srt.managers.scheduler import GenerationBatchResult
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+from transformers import PretrainedConfig
+from typing_extensions import Buffer
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.sglang_execution import attn_forward_context
+from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
+from sglang_omni.scheduling.types import SchedulerRequest
+
+if TYPE_CHECKING:
+
+    from sglang_omni.models.ming_omni.io import ThinkerEmbeddingInputs
+    from sglang_omni.models.ming_omni.thinker import BailingMoeV2TextModel
+else:
+    pass
 
 
 class MingThinkerModelRunner(ModelRunner):
     """Inject Ming image/audio embeddings into thinker prefill requests."""
 
-    def __init__(self, tp_worker: Any, output_processor: Any):
+    def __init__(
+        self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor
+    ) -> None:
         super().__init__(tp_worker, output_processor)
 
         self.outer_model = self.model
@@ -37,7 +55,9 @@ class MingThinkerModelRunner(ModelRunner):
         self.audio_token_id = self.token_id(hf_config, "audio_token_id")
 
     @staticmethod
-    def get_embed_tokens(text_model: Any) -> Any:
+    def get_embed_tokens(
+        text_model: "BailingMoeV2TextModel",
+    ) -> VocabParallelEmbedding:
         embed_tokens = getattr(text_model, "embed_tokens", None)
         if embed_tokens is not None:
             return embed_tokens
@@ -55,7 +75,12 @@ class MingThinkerModelRunner(ModelRunner):
         return embed_tokens
 
     @staticmethod
-    def token_id(config: Any, name: str, *, fallback: Any = None) -> int | None:
+    def token_id(
+        config: PretrainedConfig,
+        name: str,
+        *,
+        fallback: str | Buffer | SupportsInt | SupportsIndex | None = None,
+    ) -> int | None:
         value = getattr(config, name, None)
         if value is None:
             value = fallback
@@ -64,8 +89,11 @@ class MingThinkerModelRunner(ModelRunner):
         return int(value) if value is not None else None
 
     def custom_prefill_forward(
-        self, forward_batch: Any, schedule_batch: Any, requests: list
-    ):
+        self,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
+    ) -> GenerationBatchResult | None:
         """Custom prefill for multimodal inputs."""
         del requests
         if not schedule_batch.forward_mode.is_extend():
@@ -81,7 +109,7 @@ class MingThinkerModelRunner(ModelRunner):
         return self.forward_with_omni_embeds(forward_batch, input_embeds)
 
     def inject_multimodal_embeds(
-        self, forward_batch: Any, schedule_batch: Any
+        self, forward_batch: ForwardBatch | None, schedule_batch: ScheduleBatch
     ) -> torch.Tensor | None:
         if not any(req.omni_model_inputs is not None for req in schedule_batch.reqs):
             return None
@@ -183,7 +211,9 @@ class MingThinkerModelRunner(ModelRunner):
 
     @staticmethod
     def resolve_match_id(
-        pad_values: dict[str, Any], modality: str, token_id: int | None
+        pad_values: Mapping[str, str | Buffer | SupportsInt | SupportsIndex],
+        modality: str,
+        token_id: int | None,
     ) -> int | None:
         if modality in pad_values:
             return int(pad_values[modality])
@@ -192,7 +222,7 @@ class MingThinkerModelRunner(ModelRunner):
         return token_id
 
     @staticmethod
-    def num_embed_rows(embeds: Any) -> int:
+    def num_embed_rows(embeds: torch.Tensor) -> int:
         shape = getattr(embeds, "shape", None)
         if shape is not None and len(shape) > 0:
             return int(shape[0])
@@ -201,11 +231,11 @@ class MingThinkerModelRunner(ModelRunner):
         return len(embeds)
 
     @staticmethod
-    def request_id(req: Any) -> str:
+    def request_id(req: Req) -> str:
         return str(getattr(req, "rid", getattr(req, "request_id", "<unknown>")))
 
     def validate_final_consumption(
-        self, req: Any, omni_inputs: dict[str, Any], consumed: dict[str, int]
+        self, req: Req, omni_inputs: ThinkerEmbeddingInputs, consumed: dict[str, int]
     ) -> None:
         req_id = self.request_id(req)
         for modality, embed_key in [
@@ -260,8 +290,8 @@ class MingThinkerModelRunner(ModelRunner):
         )
 
     def forward_with_omni_embeds(
-        self, forward_batch: Any, input_embeds: torch.Tensor
-    ) -> Any:
+        self, forward_batch: ForwardBatch, input_embeds: torch.Tensor
+    ) -> GenerationBatchResult:
         model_runner = self.tp_worker.model_runner
         outer = self.outer_model
 

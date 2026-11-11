@@ -15,11 +15,19 @@ sources beyond the default payload keys (e.g. MOSS-Transcribe-Diarize).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Callable
+from urllib.parse import unquote, urlparse
 
 import numpy as np
+from numpy.typing import NDArray
 
-from sglang_omni.utils.audio import audio_fingerprint, audio_fingerprint_int, load_audio
+from sglang_omni.preprocessing.resource_connector import get_global_resource_connector
+from sglang_omni.utils.audio import (
+    audio_fingerprint,
+    audio_fingerprint_int,
+    audio_request_timeout,
+    load_audio,
+)
 from sglang_omni.utils.g711 import resolve_g711_encoding, wrap_g711_as_wav
 
 if TYPE_CHECKING:
@@ -35,7 +43,7 @@ _BYTES_SOURCE_KEYS = ("audio_bytes", "bytes", "file")
 _PATH_SOURCE_KEYS = ("audio_path", "path", "url")
 
 
-def resolve_audio_source(payload: StagePayload) -> Any:
+def resolve_audio_source(payload: StagePayload) -> object:
     """Default source resolver shared by the ASR request builders."""
     inputs = payload.request.inputs
     if isinstance(inputs, dict):
@@ -67,11 +75,39 @@ def resolve_audio_source(payload: StagePayload) -> Any:
     return inputs
 
 
+def police_request_audio(source: object) -> object:
+    """Apply the server's media policy to an audio path or URL from a request.
+
+    Without a policy the source is read as before. With one, a bare path or
+    file URL must sit in the allowed directory, and an http(s) URL is fetched
+    through the connector, which checks the domain on every redirect.
+    """
+    connector = get_global_resource_connector()
+    if (
+        not isinstance(source, str)
+        or source.startswith("data:")
+        or (
+            connector.allowed_local_media_path is None
+            and not connector.allowed_media_domains
+        )
+    ):
+        return source
+    elif source.startswith(("http://", "https://")):
+        data, _ = connector.load_http_bytes(
+            source, timeout=audio_request_timeout(), max_bytes=None
+        )
+        return data
+    elif source.startswith("file://"):
+        return str(connector.local_media_path(unquote(urlparse(source).path)))
+    else:
+        return str(connector.local_media_path(source))
+
+
 @dataclass(frozen=True)
 class PreparedAudio:
     """Decoded waveform plus the derived per-request audio metadata."""
 
-    waveform: np.ndarray
+    waveform: NDArray[np.float32]
     sample_rate: int
     duration_s: float
     fingerprint: str
@@ -86,13 +122,13 @@ def prepare_audio(
     *,
     source_name: str,
     target_sample_rate: int = DEFAULT_TARGET_SAMPLE_RATE,
-    source_resolver: Callable[[StagePayload], Any] = resolve_audio_source,
+    source_resolver: Callable[[StagePayload], object] = resolve_audio_source,
     max_duration_s: float | None = None,
     max_duration_message: str | None = None,
 ) -> PreparedAudio:
     """Resolve, load, and fingerprint the payload's audio for one request."""
 
-    source = source_resolver(payload)
+    source = police_request_audio(source_resolver(payload))
     waveform = load_audio(
         source,
         source_name=source_name,

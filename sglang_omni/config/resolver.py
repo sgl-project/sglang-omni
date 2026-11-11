@@ -16,9 +16,10 @@ What it deliberately does *not* do:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any
+from typing import TypeGuard
 
 from sglang_omni.config.patch import ConfigPatch, ConfigPatchSet
 from sglang_omni.config.path import ConfigPath, ConfigPathError
@@ -36,7 +37,7 @@ class ResolvedConfig:
     provenance: ProvenanceMap
     patches: ConfigPatchSet
 
-    def value(self, path: str) -> Any:
+    def value(self, path: str) -> object:
         return ConfigPath.parse(path, type(self.config)).read(self.config)
 
 
@@ -95,7 +96,7 @@ class ConfigResolver:
 # ----------------------------------------------------------------------
 
 
-def apply(data: dict[str, Any], patch: ConfigPatch) -> None:
+def apply(data: dict[str, object], patch: ConfigPatch) -> None:
     """Assign a leaf, or deep-merge a mapping written at a container path."""
     if patch.path.is_leaf or not isinstance(patch.value, dict):
         patch.path.write(data, deepcopy(patch.value))
@@ -110,17 +111,19 @@ def apply(data: dict[str, Any], patch: ConfigPatch) -> None:
         patch.path.write(data, deepcopy(patch.value))
 
 
-def deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+def deep_merge(
+    base: dict[str, object], overlay: dict[str, object]
+) -> dict[str, object]:
     merged = deepcopy(base)
     for key, value in overlay.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = deep_merge(merged[key], value)
+        if isinstance(value, dict) and isinstance(current := merged.get(key), dict):
+            merged[key] = deep_merge(current, value)
         else:
             merged[key] = deepcopy(value)
     return merged
 
 
-def safe_read(path: ConfigPath, data: dict[str, Any]) -> Any:
+def safe_read(path: ConfigPath, data: dict[str, object]) -> object:
     """Read a path that may not exist yet (a new mapping key, for instance)."""
     try:
         return path.read(data)
@@ -136,16 +139,16 @@ def safe_read(path: ConfigPath, data: dict[str, Any]) -> Any:
 @dataclass(frozen=True)
 class ConfigDifference:
     path: str
-    expected: Any
-    actual: Any
+    expected: object
+    actual: object
 
     def render(self) -> str:
         return f"{self.path}: expected {self.expected!r}, got {self.actual!r}"
 
 
 def diff_configs(
-    expected: PipelineConfig | dict[str, Any],
-    actual: PipelineConfig | dict[str, Any],
+    expected: PipelineConfig | dict[str, object],
+    actual: PipelineConfig | dict[str, object],
 ) -> list[ConfigDifference]:
     """Compare two configs field by field, addressing stages by name.
 
@@ -157,11 +160,11 @@ def diff_configs(
     return diff(as_dump(expected), as_dump(actual), "")
 
 
-def as_dump(value: PipelineConfig | dict[str, Any]) -> dict[str, Any]:
+def as_dump(value: PipelineConfig | dict[str, object]) -> Mapping[str, object]:
     return value.model_dump() if isinstance(value, PipelineConfig) else value
 
 
-def diff(expected: Any, actual: Any, prefix: str) -> list[ConfigDifference]:
+def diff(expected: object, actual: object, prefix: str) -> list[ConfigDifference]:
     if isinstance(expected, dict) and isinstance(actual, dict):
         out: list[ConfigDifference] = []
         for key in sorted(set(expected) | set(actual)):
@@ -203,7 +206,7 @@ def diff(expected: Any, actual: Any, prefix: str) -> list[ConfigDifference]:
     return []
 
 
-def is_named_list(value: Any) -> bool:
+def is_named_list(value: object) -> TypeGuard[list[dict[object, object]]]:
     return (
         isinstance(value, list)
         and bool(value)

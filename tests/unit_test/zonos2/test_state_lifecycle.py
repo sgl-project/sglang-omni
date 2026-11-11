@@ -5,14 +5,15 @@ from __future__ import annotations
 import contextlib
 import threading
 import time
+from collections.abc import Iterator
 from queue import Queue
 from types import SimpleNamespace
-from unittest import mock
 
 import pytest
 import torch
 
 from sglang_omni.models.zonos2 import request_builders
+from sglang_omni.models.zonos2.components.text_frontend import TTSSamplingParams
 from sglang_omni.models.zonos2.engine_builder import Zonos2EngineBuilder
 from sglang_omni.models.zonos2.model_runner import Zonos2ModelRunner
 from sglang_omni.models.zonos2.payload_types import (
@@ -192,6 +193,127 @@ def test_engine_builder_abort_callback_is_safe_before_and_after_allocation() -> 
     assert_row_reset(pool, row)
 
 
+class FakeEvent:
+    pass
+
+
+class FakeStream:
+    def __init__(self, device: torch.device) -> None:
+        self.device = device
+        self.waited_events: list[FakeEvent] = []
+        self.synchronized = False
+
+    def wait_stream(self, other: FakeStream) -> None:
+        pass
+
+    def wait_event(self, event: FakeEvent) -> None:
+        self.waited_events.append(event)
+
+    def synchronize(self) -> None:
+        self.synchronized = True
+
+
+class FakeDeviceModule:
+
+    def __init__(self) -> None:
+        self.streams: list[FakeStream] = []
+        self.entered_streams: list[FakeStream] = []
+
+    def Stream(self, device: torch.device) -> FakeStream:
+        stream = FakeStream(device)
+        self.streams.append(stream)
+        return stream
+
+    def current_stream(self, device: torch.device) -> FakeStream:
+        stream = FakeStream(device)
+        self.streams.append(stream)
+        return stream
+
+    def synchronize(self, device: torch.device) -> None:
+        pass
+
+    @contextlib.contextmanager
+    def stream(self, stream: FakeStream) -> Iterator[None]:
+        self.entered_streams.append(stream)
+        yield
+
+    @contextlib.contextmanager
+    def device(self, device: torch.device) -> Iterator[None]:
+        yield
+
+
+class FakeGraph:
+    pass
+
+
+class FakeGraphBackend:
+    def __init__(self, failing_capture_index: int | None = None) -> None:
+        self.failing_capture_index = failing_capture_index
+        self.graphs: list[FakeGraph] = []
+
+    @contextlib.contextmanager
+    def capture(self) -> Iterator[FakeGraph]:
+        if len(self.graphs) == self.failing_capture_index:
+            raise RuntimeError("backend ran out of capture memory")
+        else:
+            pass
+        graph = FakeGraph()
+        self.graphs.append(graph)
+        yield graph
+
+
+class CaptureHarness:
+    capture_tail_graphs = Zonos2SGLangModel.capture_tail_graphs
+
+    def __init__(self, device: torch.device) -> None:
+        self.device = device
+        self.dtype = torch.float32
+        self.n_codebooks = 2
+        self.audio_vocab = 8
+        self.config = SimpleNamespace(dim=4)
+        self.tail_buckets: list[int] = []
+        self.tail_graphs: dict[int, FakeGraph] = {}
+
+    def tail_compute(self, batch_size: int) -> None:
+        pass
+
+
+def patch_device_module(monkeypatch: pytest.MonkeyPatch) -> FakeDeviceModule:
+    device_module = FakeDeviceModule()
+    monkeypatch.setattr(torch, "get_device_module", lambda device: device_module)
+    return device_module
+
+
+def test_tail_graph_capture_binds_every_stream_to_the_model_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    device_module = patch_device_module(monkeypatch)
+    graph_backend = FakeGraphBackend()
+
+    device = torch.device("cpu")
+    harness = CaptureHarness(device)
+    harness.capture_tail_graphs([1, 2], TTSSamplingParams(), graph_backend)
+
+    assert {stream.device for stream in device_module.streams} == {device}
+    assert harness.tail_buckets == [1, 2]
+    assert harness.tail_graphs == dict(zip([1, 2], graph_backend.graphs))
+
+
+def test_tail_graph_capture_stays_disarmed_when_a_bucket_fails_to_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_device_module(monkeypatch)
+    graph_backend = FakeGraphBackend(failing_capture_index=1)
+
+    harness = CaptureHarness(torch.device("cpu"))
+    with pytest.raises(RuntimeError, match="capture memory"):
+        harness.capture_tail_graphs([1, 2], TTSSamplingParams(), graph_backend)
+
+    assert len(graph_backend.graphs) == 1
+    assert harness.tail_buckets == []
+    assert harness.tail_graphs == {}
+
+
 def test_release_resets_reused_row_without_touching_mixed_batch_survivor() -> None:
     model, pool = model_and_pool()
     done = SimpleNamespace(request_id="done")
@@ -249,11 +371,53 @@ def test_resolve_collects_compact_metadata_without_releasing_state() -> None:
     result = SimpleNamespace(next_token_ids=None)
     launch_buf = ([request], packed, N_CODEBOOKS, next_ids, object())
 
-    with mock.patch("torch.cuda.stream", lambda stream: contextlib.nullcontext()):
-        runner.collect_resolve(launch_buf, result)
+    runner.collect_resolve(launch_buf, result)
 
     assert data.output_codes[0].tolist() == codes
     assert data.eos_frame == 5
     assert torch.equal(result.next_token_ids, next_ids)
     assert pool.row_for(request_id) == row
     assert row not in pool.free_rows
+
+
+def test_resolve_takes_its_stream_from_the_tensors_own_accelerator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    accelerator = torch.device("privateuseone", 3)
+    device_module = FakeDeviceModule()
+    monkeypatch.setattr(
+        torch,
+        "get_device_module",
+        lambda device: device_module if device == accelerator else None,
+    )
+    codes = list(range(N_CODEBOOKS))
+
+    class OffDeviceTensor:
+        device = accelerator
+
+        def __init__(self) -> None:
+            self.copies: list[tuple[str, bool]] = []
+
+        def to(self, target: str, non_blocking: bool = False) -> torch.Tensor:
+            self.copies.append((target, non_blocking))
+            return torch.tensor([codes + [1, 5]], dtype=torch.int64)
+
+    runner = Zonos2ModelRunner.__new__(Zonos2ModelRunner)
+    runner.model, _ = model_and_pool()
+    runner.copy_stream = None
+    data = SimpleNamespace(output_codes=[], eos_frame=None)
+    request = SimpleNamespace(request_id="req-stream", data=data)
+    packed = OffDeviceTensor()
+    event = FakeEvent()
+
+    runner.collect_resolve(
+        ([request], packed, N_CODEBOOKS, torch.tensor([1]), event), None
+    )
+
+    assert runner.copy_stream.device == accelerator
+    assert device_module.entered_streams == [runner.copy_stream]
+    assert runner.copy_stream.waited_events == [event]
+    assert runner.copy_stream.synchronized is True
+    assert packed.copies == [("cpu", True)]
+    assert data.output_codes[0].tolist() == codes
+    assert data.eos_frame == 5

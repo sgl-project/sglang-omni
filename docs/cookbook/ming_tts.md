@@ -42,9 +42,11 @@ sgl-omni serve \
   --port 8000
 ```
 
-The provided configuration enables the AR and acoustic-tail CUDA graphs and a fixed-width CUDA
-graph for streaming AudioVAE transitions. Non-streaming full-sequence AudioVAE decode remains
-compact eager, and requests are non-streaming unless `stream` is set.
+The provided configuration enables the AR, acoustic-tail, and prefill CUDA graphs and a
+fixed-width CUDA graph for streaming AudioVAE transitions. Prefill uses the breakable backend
+(`cuda_graph_backend_prefill`) with token buckets up to 512; longer prefills run eager.
+Non-streaming full-sequence AudioVAE decode remains compact eager, and requests are non-streaming
+unless `stream` is set.
 
 For non-streaming requests, `audio_decode` sends the complete generated latent sequence through
 one full-sequence AudioVAE decode. Streaming requests use the separate incremental AudioVAE path
@@ -118,6 +120,8 @@ later call supplies the right-hand context needed to emit that initial group. Su
 consume `steady_chunk_patches` at a time. The provided configuration uses two initial patches and
 four steady patches, and the terminal step flushes any remainder. Pipe the response to `ffplay`
 to play it during generation:
+
+Streaming AudioVAE automatically uses Triton BTH upsampling when Triton is available and the input is a non-empty CUDA BF16 BTH tensor with non-negative strides; other streaming inputs use the existing PyTorch upsampler, and non-streaming AudioVAE decode is unchanged.
 
 ```bash
 curl -sS --fail --no-buffer -X POST http://localhost:8000/v1/audio/speech \
@@ -220,27 +224,29 @@ python -m benchmarks.eval.benchmark_tts_seedtts \
 
 ### Recommended Single-H200 TP1
 
-The recommended TP1 configuration was evaluated on **1× H200 141 GB** with concurrency 8, eight warmup requests, and the full Seed-TTS-Eval EN and ZH splits. Streaming used two initial patches followed by four-patch steady groups, with the AR, acoustic-tail, and streaming AudioVAE CUDA graphs enabled. Non-streaming requests continued to use compact full-sequence AudioVAE eager decode.
+The recommended TP1 configuration was evaluated on **1× H200 141 GB** with concurrency 8, eight warmup requests, and the full Seed-TTS-Eval EN and ZH splits. Streaming used two initial patches followed by four-patch steady groups, with the AR, breakable prefill, acoustic-tail, and streaming AudioVAE CUDA graphs enabled. Non-streaming requests continued to use compact full-sequence AudioVAE eager decode.
+
+`Corpus WER/CER` is the micro-averaged corpus rate over every sample, including outliers. The scorer splits Chinese into characters, so its ZH rate is a CER even though the log labels it WER.
 
 Streaming:
 
 | Slice | Lang | Samples | Failed | Corpus WER/CER | RTF Mean | Latency Mean (s) | First Audio Mean (s) | Throughput (qps) | Audio s/s |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| text-only | EN | 1088 | 0 | 0.95% | 0.1620 | 0.764 | 0.3380 | 10.456 | 49.428 |
-| text-only | ZH | 2020 | 0 | 0.64% | 0.1577 | 0.789 | 0.3283 | 10.124 | 50.770 |
-| reference | EN | 1088 | 0 | 1.25% | 0.1942 | 0.863 | 0.4501 | 9.247 | 41.769 |
-| reference | ZH | 2020 | 0 | 0.66% | 0.1659 | 0.953 | 0.4081 | 8.381 | 48.285 |
+| text-only | EN | 1088 | 0 | 0.96% | 0.0950 | 0.450 | 0.1992 | 17.743 | 84.201 |
+| text-only | ZH | 2020 | 0 | 0.70% | 0.0937 | 0.470 | 0.1999 | 17.010 | 85.302 |
+| reference | EN | 1088 | 0 | 1.03% | 0.1222 | 0.541 | 0.3091 | 14.759 | 66.595 |
+| reference | ZH | 2020 | 0 | 0.62% | 0.1026 | 0.587 | 0.2780 | 13.621 | 78.198 |
 
 Non-streaming:
 
 | Slice | Lang | Samples | Failed | Corpus WER/CER | RTF Mean | Latency Mean (s) | Throughput (qps) | Audio s/s |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| text-only | EN | 1088 | 0 | 0.95% | 0.1413 | 0.667 | 11.965 | 56.721 |
-| text-only | ZH | 2020 | 0 | 0.64% | 0.1335 | 0.668 | 11.959 | 60.040 |
-| reference | EN | 1088 | 0 | 1.26% | 0.1573 | 0.696 | 11.469 | 51.688 |
-| reference | ZH | 2020 | 0 | 0.67% | 0.1254 | 0.718 | 11.127 | 63.931 |
+| text-only | EN | 1088 | 0 | 0.92% | 0.0924 | 0.433 | 18.432 | 86.966 |
+| text-only | ZH | 2020 | 0 | 0.64% | 0.0895 | 0.446 | 17.920 | 89.597 |
+| reference | EN | 1088 | 0 | 1.05% | 0.1162 | 0.510 | 15.668 | 70.747 |
+| reference | ZH | 2020 | 0 | 0.78% | 0.0923 | 0.528 | 15.131 | 87.042 |
 
-All 12,432 requests completed successfully. Streaming returned its first audio payload in 0.33-0.45 seconds, while non-streaming retained higher complete-response throughput. The worst corpus WER was 1.26%, and the worst corpus CER was 0.67%.
+All 12,432 requests completed successfully. Streaming returned its first audio payload in 0.20-0.31 seconds, while non-streaming retained higher complete-response throughput. The worst corpus WER was 1.05%, and the worst corpus CER was 0.78%.
 
 Streaming playback continuity:
 
@@ -248,7 +254,7 @@ Streaming playback continuity:
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 | text-only | EN | 1088 | 0 | 0.0000 | 0.0000 | 100.00% | 100.00% | 100.00% |
 | text-only | ZH | 2020 | 0 | 0.0000 | 0.0000 | 100.00% | 100.00% | 100.00% |
-| reference | EN | 1072 | 16 | 0.0000 | 0.0000 | 100.00% | 100.00% | 100.00% |
+| reference | EN | 1076 | 12 | 0.0000 | 0.0000 | 100.00% | 100.00% | 100.00% |
 | reference | ZH | 2020 | 0 | 0.0000 | 0.0000 | 100.00% | 100.00% | 100.00% |
 
 `N/A` means that a request returned one PCM payload, so it had no inter-payload seam to score. Every scored slice has zero P95 and P99 measured playback underrun.

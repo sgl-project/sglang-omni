@@ -1,17 +1,43 @@
 # SPDX-License-Identifier: Apache-2.0
 """Control plane messages."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Literal, TypeAlias, TypedDict
 
 import msgspec
 
-from sglang_omni.proto.admin import AdminOperation, AdminResult
+from sglang_omni.proto.admin import AdminOperation, AdminResult, SerializedAdminResult
 from sglang_omni.proto.kv_transfer import (
     KVTransferPrepareMessage,
     KVTransferReadyMessage,
 )
 from sglang_omni.proto.request import StagePayload
+
+
+class DirectCudaIpcTensor(TypedDict):
+    path: str
+    tensor_bytes: bytes
+
+
+class DirectCudaIpcPayloadRef(TypedDict):
+    _type: Literal["TorchCudaIpcPayload"]
+    version: Literal[1]
+    header: bytes
+    tensors: list[DirectCudaIpcTensor]
+
+
+class DirectCudaIpcStreamChunkOptionalFields(TypedDict, total=False):
+    metadata: dict[str, object]
+
+
+class DirectCudaIpcStreamChunkRef(DirectCudaIpcStreamChunkOptionalFields):
+    _type: Literal["TorchCudaIpcStreamChunk"]
+    version: Literal[1]
+    tensor_bytes: bytes
+
+
+StageDataRef: TypeAlias = DirectCudaIpcPayloadRef | DirectCudaIpcStreamChunkRef
 
 
 @dataclass
@@ -21,13 +47,13 @@ class DataReadyMessage:
     request_id: str
     from_stage: str
     to_stage: str
-    data_ref: dict[str, Any] | None
+    data_ref: dict[str, object] | StageDataRef | None
     chunk_id: int | None = None
     is_done: bool = False
     error: str | None = None
     replica_bindings: dict[str, int] | None = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         require_str(self.request_id, "request_id")
         require_str(self.from_stage, "from_stage")
         require_str(self.to_stage, "to_stage")
@@ -52,7 +78,7 @@ class DataReadyMessage:
             )
         else:
             pass
-        d = {
+        d: dict[str, object] = {
             "type": "data_ready",
             "request_id": self.request_id,
             "from_stage": self.from_stage,
@@ -83,7 +109,7 @@ class DataReadyMessage:
         return d
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "DataReadyMessage":
+    def from_dict(cls, d: Mapping[str, object]) -> "DataReadyMessage":
         request_id = require_str(d.get("request_id"), "request_id")
         from_stage = require_str(d.get("from_stage"), "from_stage")
         to_stage = require_str(d.get("to_stage"), "to_stage")
@@ -133,6 +159,79 @@ class DataReadyMessage:
         )
 
 
+@dataclass
+class StreamChunkBatchMessage:
+    """Small CPU stream chunks of many requests for one target stage.
+
+    Index i of every list describes chunk i, and pickled_metadata is the pickled list of every chunk's metadata.
+    """
+
+    from_stage: str
+    to_stage: str
+    request_ids: list[str]
+    chunk_ids: list[int]
+    dtypes: list[str]
+    shapes: list[list[int]]
+    tensor_bytes: list[bytes]
+    pickled_metadata: bytes
+    replica_bindings: dict[str, dict[str, int]]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "type": "stream_chunk_batch",
+            "from_stage": self.from_stage,
+            "to_stage": self.to_stage,
+            "request_ids": self.request_ids,
+            "chunk_ids": self.chunk_ids,
+            "dtypes": self.dtypes,
+            "shapes": self.shapes,
+            "tensor_bytes": self.tensor_bytes,
+            "pickled_metadata": self.pickled_metadata,
+            "replica_bindings": self.replica_bindings,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, object]) -> "StreamChunkBatchMessage":
+        columns = [
+            d.get(name)
+            for name in ("request_ids", "chunk_ids", "dtypes", "shapes", "tensor_bytes")
+        ]
+        if not all(type(column) is list for column in columns):
+            raise TypeError("stream chunk batch columns must be lists")
+        else:
+            pass
+        if len({len(column) for column in columns}) != 1:
+            raise ValueError("stream chunk batch columns must have one length")
+        else:
+            pass
+        request_ids, chunk_ids, dtypes, shapes, tensor_bytes = columns
+        for request_id in request_ids:
+            require_str(request_id, "request_id")
+        for chunk_id in chunk_ids:
+            require_non_negative_int(chunk_id, "chunk_id")
+        pickled_metadata = d.get("pickled_metadata")
+        if type(pickled_metadata) is not bytes:
+            raise TypeError("stream chunk batch pickled_metadata must be bytes")
+        else:
+            pass
+        replica_bindings = d.get("replica_bindings")
+        if type(replica_bindings) is not dict:
+            raise TypeError("stream chunk batch replica_bindings must be dict")
+        else:
+            pass
+        return cls(
+            from_stage=require_str(d.get("from_stage"), "from_stage"),
+            to_stage=require_str(d.get("to_stage"), "to_stage"),
+            request_ids=request_ids,
+            chunk_ids=chunk_ids,
+            dtypes=dtypes,
+            shapes=shapes,
+            tensor_bytes=tensor_bytes,
+            pickled_metadata=pickled_metadata,
+            replica_bindings=replica_bindings,
+        )
+
+
 class DataAckMessage(msgspec.Struct):
     """Receiver completion for one data-plane object."""
 
@@ -143,7 +242,7 @@ class DataAckMessage(msgspec.Struct):
     success: bool = True
     error: str | None = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, str | bool]:
         require_str(self.request_id, "request_id")
         require_str(self.from_stage, "from_stage")
         require_str(self.to_stage, "to_stage")
@@ -159,7 +258,7 @@ class DataAckMessage(msgspec.Struct):
                 pass
         else:
             require_str(self.error, "error")
-        d: dict[str, Any] = {
+        d: dict[str, str | bool] = {
             "type": "data_ack",
             "request_id": self.request_id,
             "from_stage": self.from_stage,
@@ -174,7 +273,7 @@ class DataAckMessage(msgspec.Struct):
         return d
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "DataAckMessage":
+    def from_dict(cls, d: Mapping[str, object]) -> "DataAckMessage":
         success = d.get("success")
         if not isinstance(success, bool):
             raise TypeError("data_ack success must be bool")
@@ -204,11 +303,11 @@ class AbortMessage:
 
     request_id: str
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, str]:
         return {"type": "abort", "request_id": self.request_id}
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "AbortMessage":
+    def from_dict(cls, d: Mapping[str, object]) -> "AbortMessage":
         return cls(request_id=d["request_id"])
 
 
@@ -219,10 +318,10 @@ class CompleteMessage:
     request_id: str
     from_stage: str
     success: bool
-    result: Any = None
+    result: object = None
     error: str | None = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "type": "complete",
             "request_id": self.request_id,
@@ -233,7 +332,7 @@ class CompleteMessage:
         }
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "CompleteMessage":
+    def from_dict(cls, d: Mapping[str, object]) -> "CompleteMessage":
         return cls(
             request_id=d["request_id"],
             from_stage=d["from_stage"],
@@ -249,14 +348,14 @@ class StreamMessage:
 
     request_id: str
     from_stage: str
-    chunk: Any
+    chunk: object
     stage_id: int | None = None
     stage_name: str | None = None
     modality: str | None = None
     chunk_id: int | None = None
 
-    def to_dict(self) -> dict[str, Any]:
-        d = {
+    def to_dict(self) -> dict[str, object]:
+        d: dict[str, object] = {
             "type": "stream",
             "request_id": self.request_id,
             "from_stage": self.from_stage,
@@ -272,7 +371,7 @@ class StreamMessage:
         return d
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "StreamMessage":
+    def from_dict(cls, d: Mapping[str, object]) -> "StreamMessage":
         return cls(
             request_id=d["request_id"],
             from_stage=d["from_stage"],
@@ -289,10 +388,10 @@ class SubmitMessage:
     """Submit a new request to the entry stage."""
 
     request_id: str
-    data: Any
+    data: object
     replica_bindings: dict[str, int] | None = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         data = self.data
         if isinstance(self.data, StagePayload):
             data = self.data.to_dict()
@@ -306,7 +405,7 @@ class SubmitMessage:
         return d
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "SubmitMessage":
+    def from_dict(cls, d: Mapping[str, object]) -> "SubmitMessage":
         data = d["data"]
         if isinstance(data, dict) and data.get("_type") == "StagePayload":
             data = StagePayload.from_dict(data)
@@ -323,11 +422,23 @@ class SubmitMessage:
 class ShutdownMessage:
     """Signal graceful shutdown to a stage."""
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, str]:
         return {"type": "shutdown"}
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "ShutdownMessage":
+    def from_dict(cls, d: Mapping[str, object]) -> "ShutdownMessage":
+        return cls()
+
+
+@dataclass
+class FreezeGCMessage:
+    """Freeze the stage process's heap once the server is warmed up."""
+
+    def to_dict(self) -> dict[str, str]:
+        return {"type": "freeze_gc"}
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, object]) -> "FreezeGCMessage":
         return cls()
 
 
@@ -339,23 +450,37 @@ class ProfilerStartMessage:
     trace_path_template: str  # e.g. "/tmp/profiles/{run_id}/{stage}/trace"
     event_dir: str | None = None  # Per-stage JSONL event sink dir for request profiling
     enable_torch: bool = True  # When False, only request-level events are captured
+    event_buffer_capacity: int | None = None
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
+    def to_dict(self) -> dict[str, str | bool | int | None]:
+        message: dict[str, str | bool | int | None] = {
             "type": "profiler_start",
             "run_id": self.run_id,
             "trace_path_template": self.trace_path_template,
             "event_dir": self.event_dir,
             "enable_torch": self.enable_torch,
         }
+        if self.event_buffer_capacity is not None:
+            message["event_buffer_capacity"] = self.event_buffer_capacity
+        else:
+            pass
+        return message
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "ProfilerStartMessage":
+    def from_dict(cls, d: Mapping[str, object]) -> "ProfilerStartMessage":
+        event_buffer_capacity = d.get("event_buffer_capacity")
+        if event_buffer_capacity is not None and (
+            type(event_buffer_capacity) is not int or event_buffer_capacity <= 0
+        ):
+            raise TypeError("event_buffer_capacity must be a positive integer")
+        else:
+            pass
         return cls(
             run_id=d["run_id"],
             trace_path_template=d["trace_path_template"],
             event_dir=d.get("event_dir"),
             enable_torch=bool(d.get("enable_torch", True)),
+            event_buffer_capacity=event_buffer_capacity,
         )
 
 
@@ -365,11 +490,11 @@ class ProfilerStopMessage:
 
     run_id: str | None = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, str | None]:
         return {"type": "profiler_stop", "run_id": self.run_id}
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "ProfilerStopMessage":
+    def from_dict(cls, d: Mapping[str, object]) -> "ProfilerStopMessage":
         return cls(run_id=d.get("run_id"))
 
 
@@ -379,11 +504,11 @@ class AdminMessage:
 
     operation: AdminOperation
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, str | dict[str, object]]:
         return {"type": "admin", "operation": self.operation.to_dict()}
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "AdminMessage":
+    def from_dict(cls, d: Mapping[str, object]) -> "AdminMessage":
         return cls(operation=AdminOperation.from_dict(d["operation"]))
 
 
@@ -393,21 +518,22 @@ class AdminResultMessage:
 
     result: AdminResult
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, str | SerializedAdminResult]:
         return {"type": "admin_result", "result": self.result.to_dict()}
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "AdminResultMessage":
+    def from_dict(cls, d: Mapping[str, object]) -> "AdminResultMessage":
         return cls(result=AdminResult.from_dict(d["result"]))
 
 
 def parse_message(
-    d: dict[str, Any],
+    d: Mapping[str, object],
 ) -> (
     AdminMessage
     | AdminResultMessage
     | DataAckMessage
     | DataReadyMessage
+    | StreamChunkBatchMessage
     | KVTransferPrepareMessage
     | KVTransferReadyMessage
     | AbortMessage
@@ -415,6 +541,7 @@ def parse_message(
     | StreamMessage
     | SubmitMessage
     | ShutdownMessage
+    | FreezeGCMessage
     | ProfilerStartMessage
     | ProfilerStopMessage
 ):
@@ -422,6 +549,8 @@ def parse_message(
     msg_type = d.get("type")
     if msg_type == "data_ready":
         return DataReadyMessage.from_dict(d)
+    elif msg_type == "stream_chunk_batch":
+        return StreamChunkBatchMessage.from_dict(d)
     elif msg_type == "data_ack":
         return DataAckMessage.from_dict(d)
     elif msg_type == "kv_transfer_prepare":
@@ -438,6 +567,8 @@ def parse_message(
         return SubmitMessage.from_dict(d)
     elif msg_type == "shutdown":
         return ShutdownMessage.from_dict(d)
+    elif msg_type == "freeze_gc":
+        return FreezeGCMessage.from_dict(d)
     elif msg_type == "profiler_start":
         return ProfilerStartMessage.from_dict(d)
     elif msg_type == "profiler_stop":
@@ -450,7 +581,7 @@ def parse_message(
         raise ValueError(f"Unknown message type: {msg_type}")
 
 
-def require_str(value: Any, name: str) -> str:
+def require_str(value: object, name: str) -> str:
     if not isinstance(value, str) or value == "":
         raise TypeError(f"{name} must be a non-empty str")
     else:
@@ -458,7 +589,7 @@ def require_str(value: Any, name: str) -> str:
     return value
 
 
-def require_bool(value: Any, name: str) -> bool:
+def require_bool(value: object, name: str) -> bool:
     if type(value) is not bool:
         raise TypeError(f"{name} must be bool")
     else:
@@ -466,7 +597,7 @@ def require_bool(value: Any, name: str) -> bool:
     return value
 
 
-def require_non_negative_int(value: Any, name: str) -> int:
+def require_non_negative_int(value: object, name: str) -> int:
     if type(value) is not int or value < 0:
         raise TypeError(f"{name} must be a non-negative int")
     else:

@@ -3,12 +3,13 @@
 
 from __future__ import annotations
 
+import ctypes
 import threading
 import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -33,23 +34,29 @@ from sglang_omni.scheduling.reference_encoder import (
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
+if TYPE_CHECKING:
+    from neucodec import NeuCodec
+else:
+    pass
+
 DEFAULT_GGUF_FILENAME = "Audar-TTS-V1-Turbo-Q4_K_M.gguf"
 DEFAULT_CODEC_MODEL = "neuphonic/neucodec"
 REFERENCE_SAMPLE_RATE = 16000
 OUTPUT_SAMPLE_RATE = 24000
 MIN_REFERENCE_SECONDS = 5.0
 MAX_REFERENCE_SECONDS = 15.0
+XPU_WARMUP_PROMPT_TOKENS = 256  # measured on Arc Pro B60
 
 
 @dataclass(frozen=True)
 class ReferenceInput:
     source_kind: str
-    source: Any
+    source: str | bytes
     media_type: str | None = None
 
 
 @lru_cache(maxsize=None)
-def load_codec(model: str, revision: str, device: str) -> Any:
+def load_codec(model: str, revision: str, device: str) -> "NeuCodec":
     try:
         from neucodec import NeuCodec
     except ImportError as exc:
@@ -64,7 +71,7 @@ def codec_lock(model: str, revision: str, device: str) -> threading.Lock:
     return threading.Lock()
 
 
-def normalize_reference(raw_input: Any) -> ReferenceInput:
+def normalize_reference(raw_input: object) -> ReferenceInput:
     if not isinstance(raw_input, dict):
         raise TypeError("Audar-TTS reference input must be a dict")
     else:
@@ -126,7 +133,9 @@ def load_reference_waveform(item: ReferenceInput) -> torch.Tensor:
     return torch.from_numpy(audio).float().reshape(1, 1, -1)
 
 
-def encode_reference(codec: Any, device: str, item: ReferenceInput) -> torch.Tensor:
+def encode_reference(
+    codec: "NeuCodec", device: str, item: ReferenceInput
+) -> torch.Tensor:
     waveform = load_reference_waveform(item).to(device)
     with torch.inference_mode():
         codes = torch.as_tensor(codec.encode_code(waveform)).squeeze()
@@ -148,7 +157,7 @@ class AudarReferenceEncodeHook(TensorReferenceEncodeHook[ReferenceInput]):
     def __init__(
         self,
         *,
-        codec: Any,
+        codec: "NeuCodec",
         device: str,
         codec_model: str,
         codec_revision: str,
@@ -163,7 +172,7 @@ class AudarReferenceEncodeHook(TensorReferenceEncodeHook[ReferenceInput]):
             f"sample_rate:{REFERENCE_SAMPLE_RATE}".encode("utf-8")
         )
 
-    def normalize_input(self, raw_input: Any) -> ReferenceInput:
+    def normalize_input(self, raw_input: object) -> ReferenceInput:
         return normalize_reference(raw_input)
 
     def input_key(self, item: ReferenceInput) -> str | None:
@@ -177,7 +186,7 @@ class AudarReferenceEncodeHook(TensorReferenceEncodeHook[ReferenceInput]):
         return item.source_kind != "path" or reference_key(item) == key.input_key
 
 
-def create_preprocessing_executor() -> SimpleScheduler:
+def create_preprocessing_executor() -> SimpleScheduler[StagePayload, StagePayload]:
     return SimpleScheduler(
         lambda payload: store_state(payload, build_audar_state(payload))
     )
@@ -192,7 +201,7 @@ def create_reference_encoder_executor(
     cache_max_items: int = 256,
     cache_max_bytes: int = 64 * 1024 * 1024,
     max_concurrency: int = 8,
-) -> SimpleScheduler:
+) -> SimpleScheduler[StagePayload, StagePayload]:
     from sglang_omni.utils.device import resolve_concrete_device
 
     device = str(resolve_concrete_device(device, gpu_id))
@@ -255,7 +264,7 @@ def create_tts_engine_executor(
     model_revision: str = "main",
     n_ctx: int = 4096,
     n_gpu_layers: int = -1,
-) -> SimpleScheduler:
+) -> SimpleScheduler[StagePayload, StagePayload]:
     try:
         from llama_cpp import LLAMA_SPLIT_MODE_NONE, Llama
     except ImportError as exc:
@@ -266,14 +275,24 @@ def create_tts_engine_executor(
     from sglang_omni.utils.device import resolve_concrete_device
 
     concrete_device = resolve_concrete_device(device, gpu_id)
-    if concrete_device.type not in ("cpu", "cuda"):
+    if concrete_device.type not in ("cpu", "cuda", "xpu"):
         raise ValueError(
-            "Audar-TTS llama.cpp engine runs on cuda or cpu only; resolved "
+            "Audar-TTS llama.cpp engine runs on cuda, xpu or cpu only; resolved "
             f"device={concrete_device}"
         )
+    elif concrete_device.type == "xpu":
+        from llama_cpp._ggml import libggml
+
+        libggml.ggml_backend_reg_by_name.restype = ctypes.c_void_p
+        if libggml.ggml_backend_reg_by_name(b"SYCL") is None:
+            raise RuntimeError(
+                "Audar-TTS on xpu needs llama-cpp-python built with GGML_SYCL=ON"
+            )
+        else:
+            pass
     else:
         pass
-    main_gpu = concrete_device.index if concrete_device.type == "cuda" else 0
+    main_gpu = 0 if concrete_device.type == "cpu" else concrete_device.index
     if concrete_device.type == "cpu":
         # note (lennox): the n_gpu_layers default of -1 offloads every layer, so
         # a cpu resolution would still run on GPU 0 without this.
@@ -299,6 +318,14 @@ def create_tts_engine_executor(
     else:
         pass
     stop_token = stop_tokens[0]
+    if concrete_device.type == "xpu":
+        # note (siju-samuel): the first one-token decode reorders the Q4_K weights,
+        # which would make the first request sample unlike later ones, and the
+        # multi-token eval after it warms the prefill path on the reordered weights.
+        llm.eval([stop_token])
+        llm.eval([stop_token] * XPU_WARMUP_PROMPT_TOKENS)
+    else:
+        pass
 
     def _generate(payload: StagePayload) -> StagePayload:
         state = load_state(payload)
@@ -362,7 +389,7 @@ def create_vocoder_executor(
     gpu_id: int | None = None,
     codec_model: str = DEFAULT_CODEC_MODEL,
     codec_revision: str = "main",
-) -> SimpleScheduler:
+) -> SimpleScheduler[StagePayload, StagePayload]:
     from sglang_omni.utils.device import resolve_concrete_device
 
     device = str(resolve_concrete_device(device, gpu_id))
@@ -397,7 +424,7 @@ def create_vocoder_executor(
             pass
         return payload
 
-    return SimpleScheduler(_decode)
+    return SimpleScheduler[StagePayload, StagePayload](_decode)
 
 
 def load_state(payload: StagePayload) -> AudarTTSState:

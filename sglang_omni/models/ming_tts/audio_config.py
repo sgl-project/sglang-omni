@@ -4,18 +4,15 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any
 
 from transformers import PretrainedConfig
 
-from sglang_omni.models.ming_omni.talker.audio_vae.configuration_audio_vae import (
-    AudioVAEconfig,
-)
 from sglang_omni.models.ming_tts.payload_types import MING_TTS_SAMPLE_RATE
+from sglang_omni.modules.ming_audio.vae.configuration_audio_vae import AudioVAEconfig
 
 
 def resolve_ming_tts_audio_vae_config(
-    audio_config: AudioVAEconfig | PretrainedConfig | dict[str, Any],
+    audio_config: AudioVAEconfig | PretrainedConfig | dict[str, object],
     *,
     attn_implementation: str,
 ) -> AudioVAEconfig:

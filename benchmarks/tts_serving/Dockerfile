@@ -18,6 +18,7 @@ RUN mkdir -p /workspace/benchmarks/eval /workspace/benchmarks/tts_serving /var/b
 
 COPY benchmarks/eval/benchmark_tts_serving.py /workspace/benchmarks/eval/benchmark_tts_serving.py
 COPY benchmarks/tts_serving /workspace/benchmarks/tts_serving
+COPY sglang_omni/utils/logging.py /workspace/sglang_omni/utils/logging.py
 
 RUN useradd --create-home --uid 10001 benchmark \
     && chown -R benchmark:benchmark /workspace /var/benchmark

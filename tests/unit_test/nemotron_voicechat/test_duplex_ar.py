@@ -1,0 +1,656 @@
+# SPDX-License-Identifier: Apache-2.0
+"""AR adapters preserve fusion inputs across streaming continuations."""
+
+from unittest.mock import Mock
+
+import pytest
+import torch
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+from transformers import PreTrainedTokenizerBase
+
+from sglang_omni.admission import ContextExhaustedError
+from sglang_omni.model_runner.model_worker import ModelWorker
+from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
+from sglang_omni.models.nemotron_voicechat.duplex_ar import (
+    DuplexTalkerRunner,
+    DuplexThinkerRunner,
+    TalkerAdapter,
+    ThinkerAdapter,
+)
+from sglang_omni.models.nemotron_voicechat.duplex_stages import (
+    TalkerBuilder,
+    ThinkerBuilder,
+)
+from sglang_omni.models.nemotron_voicechat.fusion import AddFusion
+from sglang_omni.models.nemotron_voicechat.mog_head import MoGHead
+from sglang_omni.models.nemotron_voicechat.request_builders import (
+    NemotronVoiceChatRequestData,
+)
+from sglang_omni.models.nemotron_voicechat.talker import (
+    EarTtsTalker,
+    LevelScheduleEntry,
+)
+from sglang_omni.models.nemotron_voicechat.talker_model_runner import (
+    NemotronVoiceChatTalkerModelRunner,
+    VoiceChatTalkerModelRunner,
+)
+from sglang_omni.proto.request import OmniRequest, StagePayload
+from sglang_omni.proto.session import SessionIdentity, TimedChunk
+from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
+from sglang_omni.scheduling.types import SchedulerRequest
+
+TALKER_HIDDEN_SIZE = 32
+TALKER_NUM_QUANTIZERS = 4
+TALKER_CODEBOOK_SIZE = 16
+TALKER_LATENT_SIZE = 8
+SAMPLING_ITERATIONS = 4
+SAMPLE_COUNT = 2000
+
+
+@pytest.fixture
+def thinker_adapter() -> ThinkerAdapter:
+    embeddings = torch.nn.Embedding.from_pretrained(
+        torch.arange(40).float().reshape(10, 4)
+    )
+    model = Mock(
+        llm=Mock(
+            get_input_embeddings=Mock(return_value=embeddings),
+            config=Mock(vocab_size=10),
+        ),
+        fusion=AddFusion(
+            {
+                "duplex_user_channel_weight": 2,
+                "duplex_text_channel_weight": 3,
+                "duplex_function_channel_weight": 5,
+            }
+        ),
+    )
+    tokenizer = Mock(spec=PreTrainedTokenizerBase, all_special_ids=[0])
+    tokenizer.convert_tokens_to_ids.return_value = 0
+    tokenizer.decode.side_effect = lambda token_ids: "x" * len(token_ids)
+    runner = object.__new__(DuplexThinkerRunner)
+    runner.model = model
+    return ThinkerAdapter(
+        runner,
+        prompt_token_ids=[1, 2],
+        pad_token_id=0,
+        tokenizer=tokenizer,
+        context_length=8,
+    )
+
+
+@pytest.mark.parametrize("cached_positions", [0, 2, 3])
+def test_runner_forwards_only_uncached_fusion_inputs(
+    thinker_adapter: ThinkerAdapter,
+    cached_positions: int,
+) -> None:
+    session_identity = SessionIdentity("fusion")
+    thinker_adapter.open(session_identity, OmniRequest(None))
+    chunk = TimedChunk("audio", 0, 80, 0, bytes(2560), "pcm16")
+    first_request = thinker_adapter.build(
+        session_identity,
+        chunk,
+        StagePayload("first", OmniRequest(None), {"acoustic": torch.ones(1, 4)}),
+    )
+    first_request.output_ids = [3]
+    first_request.function_ids = [4]
+    thinker_adapter.result(session_identity, first_request)
+    next_request = thinker_adapter.build(
+        session_identity,
+        chunk,
+        StagePayload("next", OmniRequest(None), {"acoustic": torch.full((1, 4), 7)}),
+    )
+    forward_batch = Mock(
+        spec=ForwardBatch,
+        extend_prefix_lens_cpu=[cached_positions],
+        extend_seq_lens_cpu=[4 - cached_positions],
+        replace_embeds=None,
+        input_ids=torch.zeros(4 - cached_positions, dtype=torch.long),
+    )
+    DuplexThinkerRunner.before_prefill(
+        thinker_adapter.runner,
+        forward_batch,
+        Mock(),
+        [SchedulerRequest("next", data=next_request)],
+    )
+    embeddings = thinker_adapter.runner.model.llm.get_input_embeddings().weight
+    expected_rows = torch.stack(
+        [
+            2 * embeddings[1] + 8 * embeddings[0],
+            2 * embeddings[2] + 8 * embeddings[0],
+            2 * torch.ones(4) + 8 * embeddings[0],
+            2 * torch.full((4,), 7) + 3 * embeddings[3] + 5 * embeddings[4],
+        ]
+    )
+    actual_inputs = get_omni_prefill_inputs(forward_batch)
+    torch.testing.assert_close(
+        actual_inputs.input_embeds, expected_rows[cached_positions:]
+    )
+
+
+def test_thinker_continuation_reuses_pending_token_position(
+    thinker_adapter: ThinkerAdapter,
+) -> None:
+    session_identity = SessionIdentity("continuation")
+    thinker_adapter.open(session_identity, OmniRequest(None))
+    chunk = TimedChunk("audio", 0, 80, 0, bytes(2560), "pcm16")
+    first_request = thinker_adapter.build(
+        session_identity,
+        chunk,
+        StagePayload("first", OmniRequest(None), {"acoustic": torch.ones(1, 4)}),
+    )
+    assert first_request.input_ids.tolist() == [1, 2, 0]
+    first_request.output_ids = [3]
+    first_request.function_ids = [4]
+    first_output = thinker_adapter.result(session_identity, first_request)
+    assert first_output.data["text"] == "x"
+    assert first_output.data["text_token"] == 3
+    assert first_output.data["function_token"] == 4
+    next_request = thinker_adapter.build(
+        session_identity,
+        chunk,
+        StagePayload("next", OmniRequest(None), {"acoustic": torch.full((1, 4), 7)}),
+    )
+    assert next_request.input_ids.numel() == 0
+    assert next_request.max_new_tokens == 1
+    thinker_adapter.close(session_identity)
+    thinker_adapter.open(session_identity, OmniRequest(None))
+    reopened_request = thinker_adapter.build(
+        session_identity,
+        chunk,
+        StagePayload("reopened", OmniRequest(None), {"acoustic": torch.ones(1, 4)}),
+    )
+    assert reopened_request.input_ids.tolist() == [1, 2, 0]
+
+
+def test_duplex_ar_stages_disable_radix_cache_for_fusion_rows() -> None:
+    talker = TalkerBuilder()
+    talker.gpu_id = 0
+    assert ThinkerBuilder().generation_defaults(dtype="bfloat16")["disable_radix_cache"]
+    assert talker.generation_defaults(dtype="bfloat16")["disable_radix_cache"]
+
+
+def test_thinker_unit_runs_through_runner_output_hook(
+    thinker_adapter: ThinkerAdapter,
+) -> None:
+    session_identity = SessionIdentity("runner-output")
+    thinker_adapter.open(session_identity, OmniRequest(None))
+    request_data = thinker_adapter.build(
+        session_identity,
+        TimedChunk("audio", 0, 80, 0, bytes(2560), "pcm16"),
+        StagePayload("unit", OmniRequest(None), {"acoustic": torch.ones(1, 4)}),
+    )
+    assert isinstance(request_data, NemotronVoiceChatRequestData)
+
+    thinker_adapter.runner.model.function_ids = torch.tensor([4])
+    generation_result = Mock(
+        logits_output=Mock(next_token_logits=torch.tensor([[0.0, 0.0, 0.0, 1.0]]))
+    )
+    thinker_adapter.runner.post_prefill(
+        generation_result,
+        None,
+        Mock(),
+        [SchedulerRequest("unit", data=request_data)],
+    )
+    assert request_data.function_ids == [4]
+    assert request_data.pending_stream_tokens == [3]
+
+    request_data.output_ids = [3]
+    output = thinker_adapter.result(session_identity, request_data)
+    assert output.data["text_token"] == 3
+    assert output.data["function_token"] == 4
+
+
+def test_context_limit_rejects_unit_without_corrupting_reopened_session(
+    thinker_adapter: ThinkerAdapter,
+) -> None:
+    session_identity = SessionIdentity("context-limit")
+    thinker_adapter.open(session_identity, OmniRequest(None))
+    chunk = TimedChunk("audio", 0, 80, 0, bytes(2560), "pcm16")
+    for unit_index in range(4):
+        request = thinker_adapter.build(
+            session_identity,
+            chunk,
+            StagePayload(
+                str(unit_index), OmniRequest(None), {"acoustic": torch.ones(1, 4)}
+            ),
+        )
+        request.output_ids = [3]
+        request.function_ids = [4]
+        thinker_adapter.result(session_identity, request)
+    for attempt in range(2):
+        with pytest.raises(ContextExhaustedError, match="^context_exhausted:"):
+            thinker_adapter.build(
+                session_identity,
+                chunk,
+                StagePayload(
+                    f"overflow-{attempt}",
+                    OmniRequest(None),
+                    {"acoustic": torch.ones(1, 4)},
+                ),
+            )
+    thinker_adapter.close(session_identity)
+    thinker_adapter.open(session_identity, OmniRequest(None))
+    request = thinker_adapter.build(
+        session_identity,
+        chunk,
+        StagePayload("reopened", OmniRequest(None), {"acoustic": torch.ones(1, 4)}),
+    )
+    assert request.input_ids.tolist() == [1, 2, 0]
+
+
+def test_thinker_sessions_keep_text_history_independent(
+    thinker_adapter: ThinkerAdapter,
+) -> None:
+    first_session = SessionIdentity("first")
+    second_session = SessionIdentity("second")
+    for session_identity in (first_session, second_session):
+        thinker_adapter.open(session_identity, OmniRequest(None))
+    chunk = TimedChunk("audio", 0, 80, 0, bytes(2560), "pcm16")
+    texts: list[str] = []
+    for session_identity, token_ids in [
+        (first_session, [3]),
+        (second_session, [5]),
+        (first_session, [3, 4]),
+    ]:
+        request = thinker_adapter.build(
+            session_identity,
+            chunk,
+            StagePayload("unit", OmniRequest(None), {"acoustic": torch.ones(1, 4)}),
+        )
+        request.output_ids = token_ids[-1:]
+        request.function_ids = [4]
+        texts.append(thinker_adapter.result(session_identity, request).data["text"])
+        thinker_adapter.tokenizer.decode.assert_called_with(token_ids)
+    assert texts == ["x", "x", "x"]
+    thinker_adapter.close(first_session)
+    request = thinker_adapter.build(
+        second_session,
+        chunk,
+        StagePayload("still-open", OmniRequest(None), {"acoustic": torch.ones(1, 4)}),
+    )
+    assert request.input_ids.numel() == 0
+    request.output_ids = [6]
+    request.function_ids = [4]
+    assert thinker_adapter.result(second_session, request).data["text"] == "x"
+    thinker_adapter.tokenizer.decode.assert_called_with([5, 6])
+
+
+def test_thinker_withholds_incomplete_unicode_and_special_tokens(
+    thinker_adapter: ThinkerAdapter,
+) -> None:
+    thinker_adapter.tokenizer.decode.side_effect = ["\ufffd", "你", "你好"]
+    session_identity = SessionIdentity("unicode")
+    thinker_adapter.open(session_identity, OmniRequest(None))
+    chunk = TimedChunk("audio", 0, 80, 0, bytes(2560), "pcm16")
+    deltas: list[str] = []
+    for token_id in (0, 1, 2, 3):
+        request = thinker_adapter.build(
+            session_identity,
+            chunk,
+            StagePayload("unit", OmniRequest(None), {"acoustic": torch.ones(1, 4)}),
+        )
+        request.output_ids = [token_id]
+        request.function_ids = [4]
+        deltas.append(thinker_adapter.result(session_identity, request).data["text"])
+    assert deltas == ["", "", "你", "好"]
+
+
+def test_empty_eos_skips_ar_generation(thinker_adapter: ThinkerAdapter) -> None:
+    session_identity = SessionIdentity("drain")
+    thinker_adapter.open(session_identity, OmniRequest(None))
+    eos_payload = StagePayload(
+        "eos", OmniRequest(None), {"eos": True, "acoustic": None}
+    )
+    assert thinker_adapter.finish_input(session_identity, eos_payload) is eos_payload
+    audio_payload = StagePayload(
+        "last-audio", OmniRequest(None), {"eos": True, "acoustic": torch.ones(1, 4)}
+    )
+    assert thinker_adapter.finish_input(session_identity, audio_payload) is None
+
+
+def test_runner_rejects_misaligned_fusion_history(
+    thinker_adapter: ThinkerAdapter,
+) -> None:
+    session_identity = SessionIdentity("misaligned")
+    thinker_adapter.open(session_identity, OmniRequest(None))
+    chunk = TimedChunk("audio", 0, 80, 0, bytes(2560), "pcm16")
+    request = thinker_adapter.build(
+        session_identity,
+        chunk,
+        StagePayload("unit", OmniRequest(None), {"acoustic": torch.ones(1, 4)}),
+    )
+    forward_batch = Mock(
+        spec=ForwardBatch, extend_prefix_lens_cpu=[2], extend_seq_lens_cpu=[2]
+    )
+    with pytest.raises(RuntimeError, match="not aligned"):
+        DuplexThinkerRunner.before_prefill(
+            thinker_adapter.runner,
+            forward_batch,
+            Mock(),
+            [SchedulerRequest("unit", data=request)],
+        )
+
+
+def test_talker_continuation_fuses_previous_codes_with_current_text() -> None:
+    def fuse_codes_and_text(
+        previous_codes: torch.Tensor, text_token_ids: list[int]
+    ) -> torch.Tensor:
+        return previous_codes.float() + text_token_ids[0]
+
+    runner = Mock(
+        spec=DuplexTalkerRunner,
+        model=Mock(fusion_buffer=torch.zeros(1, 4), config=Mock(vocab_size=8)),
+    )
+    runner.pad_codes.return_value = torch.zeros(1, 4, dtype=torch.long)
+    runner.warmup.return_value = torch.ones(2, 4)
+    runner.step_rows.side_effect = fuse_codes_and_text
+    runner.generate_codes.return_value = torch.tensor([[5, 6, 7, 8]])
+    adapter = TalkerAdapter(runner, context_length=8)
+    session_identity = SessionIdentity("talker")
+    adapter.open(session_identity, OmniRequest(None))
+    chunk = TimedChunk("audio", 0, 80, 0, bytes(2560), "pcm16")
+    first_request = adapter.build(
+        session_identity,
+        chunk,
+        StagePayload("first", OmniRequest(None), {"text_token": 3}),
+    )
+    assert first_request.input_ids.tolist() == [0, 0, 0]
+    DuplexTalkerRunner.post_prefill(
+        runner, Mock(), Mock(), Mock(), [SchedulerRequest("first", data=first_request)]
+    )
+    first_output = adapter.result(session_identity, first_request)
+    torch.testing.assert_close(first_output.data["codes"], torch.tensor([[5, 6, 7, 8]]))
+    next_request = adapter.build(
+        session_identity,
+        chunk,
+        StagePayload("next", OmniRequest(None), {"text_token": 4}),
+    )
+    assert next_request.input_ids.numel() == 0
+    forward_batch = Mock(
+        spec=ForwardBatch,
+        extend_prefix_lens_cpu=[3],
+        extend_seq_lens_cpu=[1],
+        replace_embeds=None,
+        input_ids=torch.zeros(1, dtype=torch.long),
+    )
+    DuplexTalkerRunner.before_prefill(
+        runner, forward_batch, Mock(), [SchedulerRequest("next", data=next_request)]
+    )
+    torch.testing.assert_close(
+        get_omni_prefill_inputs(forward_batch).input_embeds,
+        torch.tensor([[9.0, 10.0, 11.0, 12.0]]),
+    )
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph requires GPU")
+@torch.inference_mode()
+def test_sampler_replay_uses_new_hidden_states_and_randomness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def sample_codes(
+        hidden: torch.Tensor,
+        head: torch.nn.Module,
+        *,
+        level_schedule: list[LevelScheduleEntry],
+        top_p: float,
+        noise_scale: float,
+    ) -> torch.Tensor:
+        return hidden + torch.rand_like(hidden)
+
+    def initialize_runner(
+        runner: VoiceChatTalkerModelRunner,
+        tp_worker: ModelWorker,
+        output_processor: SGLangOutputProcessor,
+    ) -> None:
+        runner.model = Mock(
+            hidden_out=torch.zeros(1, 16, device="cuda"),
+            talker=Mock(num_quantizers=8, generate_codes=sample_codes),
+            mog_head=Mock(),
+        )
+        runner.level_schedule = [
+            LevelScheduleEntry(first_level=0, level_count=4),
+            LevelScheduleEntry(first_level=4, level_count=4),
+        ]
+        runner.top_p = 0.9
+        runner.noise_scale = 1.0
+
+    monkeypatch.setattr(VoiceChatTalkerModelRunner, "__init__", initialize_runner)
+    runner = DuplexTalkerRunner(
+        Mock(spec=ModelWorker), Mock(spec=SGLangOutputProcessor)
+    )
+    first_codes = runner.generate_codes(0)
+    saved_codes = first_codes.clone()
+    second_codes = runner.generate_codes(0)
+    assert not torch.equal(first_codes, second_codes)
+    runner.model.hidden_out.fill_(10)
+    changed_codes = runner.generate_codes(0)
+    assert torch.all(changed_codes >= 10)
+    assert torch.all(changed_codes < 11)
+    torch.testing.assert_close(first_codes, saved_codes, rtol=0, atol=0)
+
+
+def test_thinker_routes_tool_call_out_and_forces_response_in(
+    thinker_adapter: ThinkerAdapter,
+) -> None:
+    start_of_call, call_body, end_of_call = 5, 7, 6
+    response_token_ids = [8, 9]
+    pieces = {
+        start_of_call: "<SPECIAL_20>",
+        call_body: '<TOOLCALL>[{"name": "f", "arguments": {"x": 1}}]</TOOLCALL>',
+        end_of_call: "<SPECIAL_21>",
+    }
+    tokenizer = thinker_adapter.tokenizer
+    tokenizer.decode.side_effect = lambda token_ids: "".join(
+        pieces[token_id] for token_id in token_ids
+    )
+    tokenizer.encode.return_value = response_token_ids
+    thinker_adapter.start_of_tool_call_id = start_of_call
+    thinker_adapter.end_of_tool_call_id = end_of_call
+    thinker_adapter.context_length = 64
+    session_identity = SessionIdentity("tool")
+    thinker_adapter.open(session_identity, OmniRequest(None))
+    chunk = TimedChunk("audio", 0, 80, 0, bytes(2560), "pcm16")
+
+    def frame(function_token_id: int) -> StagePayload:
+        request = thinker_adapter.build(
+            session_identity,
+            chunk,
+            StagePayload("frame", OmniRequest(None), {"acoustic": torch.ones(1, 4)}),
+        )
+        request.output_ids = [0]
+        request.function_ids = [function_token_id]
+        return thinker_adapter.result(session_identity, request)
+
+    # note (Junnan Li): The pad id inside a call span is not part of the call text.
+    tool_calls = [
+        frame(token_id).data["tool_calls"]
+        for token_id in (start_of_call, call_body, 0, end_of_call)
+    ]
+    assert tool_calls == [[], [], [], [{"name": "f", "arguments": {"x": 1}}]]
+
+    framed = StagePayload(
+        "framed",
+        OmniRequest(None),
+        {
+            "acoustic": torch.ones(1, 4),
+            "tool_response": {
+                "responses": [{"id": "call_1_0", "name": "f", "response": {"y": 2}}]
+            },
+        },
+    )
+    assert not thinker_adapter.prepare_unit(
+        session_identity, chunk, framed
+    ).bypass_generation
+    assert "tool_response" not in framed.data
+    tokenizer.encode.assert_called_once_with(
+        '<TOOL_RESPONSE>[{"y": 2}]</TOOL_RESPONSE>', add_special_tokens=False
+    )
+    embeddings = thinker_adapter.runner.model.llm.get_input_embeddings().weight
+    state = thinker_adapter.states[session_identity]
+    # note (Junnan Li): The model's own prediction under a forced frame is ignored; 3 is not a call start.
+    for function_input, prediction in ((8, start_of_call), (9, 3), (3, 0)):
+        assert frame(prediction).data["tool_calls"] == []
+        torch.testing.assert_close(
+            state.fusion_rows[-1][0],
+            2 * torch.ones(4) + 3 * embeddings[0] + 5 * embeddings[function_input],
+        )
+    assert state.tool_call_token_ids is None
+
+
+def test_talker_samples_the_batch_once_and_gives_each_request_its_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sampled_row_counts: list[int] = []
+
+    def sample_codes(
+        hidden: torch.Tensor,
+        head: torch.nn.Module,
+        *,
+        level_schedule: list[LevelScheduleEntry],
+        top_p: float,
+        noise_scale: float,
+    ) -> torch.Tensor:
+        sampled_row_counts.append(hidden.shape[0])
+        return hidden.long()
+
+    def initialize_runner(
+        runner: NemotronVoiceChatTalkerModelRunner,
+        tp_worker: ModelWorker,
+        output_processor: SGLangOutputProcessor,
+    ) -> None:
+        runner.model = Mock(
+            hidden_out=torch.arange(24.0).reshape(6, 4),
+            talker=Mock(generate_codes=sample_codes),
+            mog_head=Mock(),
+        )
+        runner.level_schedule = []
+        runner.top_p = 0.9
+        runner.noise_scale = 1.0
+
+    monkeypatch.setattr(
+        NemotronVoiceChatTalkerModelRunner, "__init__", initialize_runner
+    )
+    runner = NemotronVoiceChatTalkerModelRunner(
+        Mock(spec=ModelWorker), Mock(spec=SGLangOutputProcessor)
+    )
+    requests = [
+        SchedulerRequest(
+            f"talker-{index}", data=Mock(talker_model_inputs={"codes_rows": []})
+        )
+        for index in range(3)
+    ]
+    runner.post_decode(Mock(), Mock(), Mock(), requests)
+
+    assert sampled_row_counts == [3]
+    for index, request in enumerate(requests):
+        inputs = request.data.talker_model_inputs
+        row_codes = torch.arange(4 * index, 4 * index + 4)[None]
+        torch.testing.assert_close(inputs["prev_codes"], row_codes)
+        torch.testing.assert_close(inputs["codes_rows"], [row_codes[0]])
+        torch.testing.assert_close(inputs["stream_chunk"], row_codes)
+        assert inputs["stream_chunk"].device.type == "cpu"
+
+
+def make_code_sampler() -> tuple[EarTtsTalker, MoGHead]:
+    torch.manual_seed(0)
+    talker = EarTtsTalker(
+        dict(
+            hidden_size=TALKER_HIDDEN_SIZE,
+            vocab_size=10,
+            char_vocab_size=8,
+            num_quantizers=TALKER_NUM_QUANTIZERS,
+            codebook_size=TALKER_CODEBOOK_SIZE,
+            latent_size=TALKER_LATENT_SIZE,
+            char_encoder_config={
+                "encoder": dict(
+                    hidden_size=16,
+                    intermediate_size=32,
+                    num_hidden_layers=1,
+                    num_attention_heads=2,
+                    num_key_value_heads=1,
+                    head_dim=8,
+                )
+            },
+        )
+    )
+    talker.rvq_embs.normal_()
+    mog_head = MoGHead(
+        dict(
+            hidden_size=TALKER_HIDDEN_SIZE,
+            intermediate_size=64,
+            num_layers=3,
+            num_predictions=TALKER_CODEBOOK_SIZE,
+            out_size=TALKER_LATENT_SIZE,
+            low_rank=4,
+        )
+    )
+    mog_head.low_mat.data.normal_()
+    return talker.eval(), mog_head.eval()
+
+
+def sample_rows(
+    talker: EarTtsTalker,
+    mog_head: MoGHead,
+    hidden_TD: torch.Tensor,
+    *,
+    top_p: float,
+    noise_scale: float,
+) -> torch.Tensor:
+    return talker.generate_codes(
+        hidden_TD,
+        mog_head,
+        level_schedule=talker.build_level_schedule(
+            SAMPLING_ITERATIONS, 1.0, hidden_TD.device
+        ),
+        top_p=top_p,
+        noise_scale=noise_scale,
+    )
+
+
+@torch.inference_mode()
+def test_batched_code_sampling_matches_each_row_sampled_alone_without_noise() -> None:
+    talker, mog_head = make_code_sampler()
+    hidden_TD = torch.randn(5, TALKER_HIDDEN_SIZE)
+    # note (Xinhao Tan): this nucleus keeps only the top component and zero noise
+    # samples its mean, so the codes are a pure function of the row.
+    batched = sample_rows(talker, mog_head, hidden_TD, top_p=1e-6, noise_scale=0.0)
+    alone = torch.cat(
+        [
+            sample_rows(talker, mog_head, row_D[None], top_p=1e-6, noise_scale=0.0)
+            for row_D in hidden_TD
+        ]
+    )
+    torch.testing.assert_close(batched, alone, rtol=0, atol=0)
+
+
+@torch.inference_mode()
+def test_a_rows_code_distribution_does_not_depend_on_its_batch() -> None:
+    talker, mog_head = make_code_sampler()
+    row_D = torch.randn(TALKER_HIDDEN_SIZE)
+    others_TD = torch.randn(SAMPLE_COUNT, TALKER_HIDDEN_SIZE)
+
+    def first_level_distribution(codes_TQ: torch.Tensor) -> torch.Tensor:
+        counts = torch.bincount(codes_TQ[:, 0], minlength=TALKER_CODEBOOK_SIZE)
+        return counts / codes_TQ.shape[0]
+
+    alone = torch.cat(
+        [
+            sample_rows(talker, mog_head, row_D[None], top_p=0.9, noise_scale=1.0)
+            for _ in range(SAMPLE_COUNT)
+        ]
+    )
+    interleaved_TD = torch.stack(
+        [row_D.repeat(SAMPLE_COUNT, 1), others_TD], dim=1
+    ).reshape(-1, TALKER_HIDDEN_SIZE)
+    mixed = sample_rows(talker, mog_head, interleaved_TD, top_p=0.9, noise_scale=1.0)
+    copies = sample_rows(
+        talker, mog_head, row_D.repeat(SAMPLE_COUNT, 1), top_p=0.9, noise_scale=1.0
+    )
+
+    alone_distribution = first_level_distribution(alone)
+    assert (alone_distribution > 0).sum() > 1
+    for batched in (mixed[::2], copies):
+        distance = (first_level_distribution(batched) - alone_distribution).abs()
+        assert 0.5 * distance.sum() < 0.1

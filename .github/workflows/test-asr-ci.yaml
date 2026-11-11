@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       asr_ci_model:
-        description: ASR CI model preset selected by the parent pick-asr-model job.
+        description: ASR CI model preset selected by the parent omni-ci preflight.
         type: string
         required: false
         default: fun
@@ -27,8 +27,7 @@ env:
   MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH: OpenMOSS-Team/MOSS-Transcribe-Diarize
 
 # Invoked by omni-ci.yaml after unit tests. Restores omni only.
-# DAG:
-#   stage-1-multi-speaker -> stage-2-seedtts
+# The stages share no data, so they run side by side.
 
 jobs:
   stage-1-multi-speaker:
@@ -37,7 +36,7 @@ jobs:
     # movies800 + stream + aishell4_long + googletime on DP=2.
     timeout-minutes: 90
     container:
-      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -89,12 +88,10 @@ jobs:
 
   stage-2-seedtts:
     name: stage 2 - SeedTTS ASR
-    needs: stage-1-multi-speaker
-    if: always() && !cancelled()
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES

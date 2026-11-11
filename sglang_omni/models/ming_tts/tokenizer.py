@@ -5,7 +5,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from transformers import PreTrainedTokenizerFast
+else:
+    pass
 
 BOS_TOKEN = "<|startoftext|>"
 EOS_TOKEN = "<|endoftext|>"
@@ -36,7 +41,7 @@ class MingTTSSpecialTokenIds:
 
 @dataclass(frozen=True)
 class MingTTSTokenizerBundle:
-    tokenizer: Any
+    tokenizer: "PreTrainedTokenizerFast"
     special: MingTTSSpecialTokenIds
 
     def encode_no_special(self, text: str) -> list[int]:
@@ -49,7 +54,7 @@ class MingTTSTokenizerBundle:
 def load_ming_tts_tokenizer(
     model_path: str | Path,
     *,
-    llm_config: Any | None = None,
+    llm_config: object = None,
 ) -> MingTTSTokenizerBundle:
     """Load the checkpoint fast tokenizer without importing remote tokenizer code."""
 
