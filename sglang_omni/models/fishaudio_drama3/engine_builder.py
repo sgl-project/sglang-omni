@@ -290,7 +290,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
                 self.context_length,
                 largest_prefill_graph_token_count,
             ),
-            frame_width=1 + model.config.audio_decoder_config.num_codebooks,
+            frame_width=frame_width,
             device=torch.device(device),
         )
         audio_decoder = model.audio_decoder
