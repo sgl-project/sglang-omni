@@ -113,9 +113,13 @@ class SpeculativeTargetWorker:
                 forward_batch, batch, requests, is_prefill=True
             )
             if omni_runner.retain_prefill_input_embeds:
-                batch_result.logits_output.mm_input_embeds = (
-                    omni_runner.retained_prefill_input_embeds
-                )
+                retained_input_embeddings = omni_runner.retained_prefill_input_embeds
+                if retained_input_embeddings is not None:
+                    batch_result.logits_output.mm_input_embeds = (
+                        retained_input_embeddings
+                    )
+                else:
+                    pass
                 omni_runner.retained_prefill_input_embeds = None
             else:
                 pass
