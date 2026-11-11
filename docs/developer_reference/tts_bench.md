@@ -376,6 +376,73 @@ If a command exits with an error, or a run is `INCOMPLETE`, do not use that meas
 
 For profiling, use the skill in `.claude/skills/model-profiling`.
 
+## Mixed Streaming and Non Streaming Load
+
+Real traffic mixes streaming and non streaming requests, and some scheduler problems only show under that mix. `--mixture NS+S` runs NS non streaming and S streaming closed loop clients against one server at the same time. Each client sends a request, waits for the whole response and sends the next one at once. `48+0` measures non streaming alone and `0+16` streaming alone, with the same method and the same result fields as a mixture load such as `48+16`.
+
+Each load runs this timeline:
+
+1. Warmup. Every client sends one request with the first sample of its class. It stays out of the results and `generated.json`, its audio is saved under the plain row id and not scored, and a failed warmup request stops the run. `--warmup 0` skips it.
+2. Settle. All clients start together and run for `--mixture-settle-s` seconds (default 10). Requests that finish in this time are recorded but not counted.
+3. Window. The next `--mixture-duration-s` seconds (default 120) are measured.
+4. Drain. Clients stop sending when the window ends and the requests in flight finish. They are recorded but not counted.
+
+A summary counts the requests whose response completed inside the window, and every throughput divides by the window length. Both classes walk the sample pool that `--max-samples` and `--sample-offset` select, in dataset order, non streaming from the first row and streaming from the middle row, and start over at the end. Request ids get a `#n<k>` or `#s<k>` suffix, so every saved WAV and `generated.json` entry is unique.
+
+One load writes to `--output-dir` and then scores WER on every request in `generated.json`, as a normal run does:
+
+```bash
+python -m benchmarks.eval.benchmark_tts_seedtts --meta zhaochenyang20/seed-tts-eval-arrow \
+    --model FunAudioLLM/Fun-CosyVoice3-0.5B-2512 --port 8000 --lang en \
+    --mixture 48+16 --output-dir /work/results/mix/cosyvoice3_48_16
+```
+
+Several loads, or `--repeats` above 1, need `--generate-only`. The loads run in the given order on one server. Each point goes to `ns<NS>_s<S>`, or `ns<NS>_s<S>_r<k>` with repeats, and `mixture_sweep.json` holds the mean, min, max and count of the main fields of each class across repeats, and every repeat's full summaries under `per_repeat`:
+
+```bash
+python -m benchmarks.eval.benchmark_tts_seedtts --meta zhaochenyang20/seed-tts-eval-arrow \
+    --model FunAudioLLM/Fun-CosyVoice3-0.5B-2512 --port 8000 --lang en \
+    --mixture 48+16,16+16,48+0,0+16,0+48 --generate-only --fingerprint --seed 1234 \
+    --output-dir /work/results/mix/cosyvoice3_sweep
+```
+
+For a smoke test, add `--mixture-duration-s 20 --mixture-settle-s 2 --max-samples 32`. Its numbers are not comparable with full runs.
+
+`--mixture` cannot be combined with `--concurrency` or `--max-concurrency`, `--concurrencies`, `--stream`, `--request-rate`, `--arrival-seed`, `--sustained-overshoot`, `--subtalker-dosample-ratio`, a `--warmup` other than 0, or the `--transcribe-only`, `--similarity-only` and `--utmos-only` phases. Run those phases later without `--mixture` on the output directory of one load, or on each point directory of a sweep. `wer_results.json` then still records the run as a mixture, and speaker similarity scores each repeated row against the reference audio of its dataset row. `--response-format` applies to the non streaming class, and the streaming class always reads raw PCM. A load above `--max-running-requests` plus `--max-queued-requests` needs `--warmup 0`, because the warmup sends one request per client at once and the server rejects the excess. The AuK profile sets a concurrency and a warmup, so AuK cannot run `--mixture`.
+
+### Mixture Fields
+
+`speed_results.json` of a mixture point keeps every usual key and adds `summary_by_class` and `mixture`:
+
+| Metric | Field | Unit |
+|---|---|---|
+| Total audio | `summary.audio_throughput_s_per_s` | Audio seconds per second of window, both classes |
+| Non streaming throughput | `summary_by_class.non_streaming.throughput_qps`, `audio_throughput_s_per_s` | Requests per second, audio seconds per second |
+| Non streaming latency | `summary_by_class.non_streaming.latency_median_s`, `latency_p95_s`, `latency_p99_s` | Seconds per request, end to end |
+| Streams finished | `summary_by_class.streaming.throughput_qps` | Streams per second |
+| First audio | `summary_by_class.streaming.audio_ttfp_median_s`, `audio_ttfp_p95_s`, `audio_ttfp_p99_s` | Seconds from send to the first audio chunk |
+| Playback underrun | `summary_by_class.streaming.max_playback_underrun_p99_s`, `max_playback_underrun_max_s` | Seconds of the longest playback gap in a stream |
+| Longest window with no stream finishing | `summary_by_class.streaming.stream_finish_gap_max_s` | Seconds, both window edges counted, the whole window when no stream finished in it |
+| Requests outside the window | `mixture.outside_window_requests`, `mixture.outside_window_failed_requests` | Requests per class |
+| Pool wraps | `mixture.pool_cycles` | Requests issued per class divided by the pool size |
+
+Each class summary has the fields of a normal `summary`, computed over that class only. A class that completes nothing inside the window reports `throughput_qps` and `audio_throughput_s_per_s` of 0, so starved streams read as the worst value and not as a missing one. The latency fields of the combined `summary` mix both classes, and its first audio fields come from the streams only, so read them per class. A class with no clients has no entry in `summary_by_class`. `per_request` lists every request after warmup with `request_class`, plus `sent_at_s` and `finished_at_s` in seconds from the window start, so a request is in the window when `0 <= finished_at_s <= mixture.duration_s`. A failed request stops its client for the rest of the load. Failures outside the window are in `mixture.outside_window_failed_requests`, and the `failed_requests` of a `mixture_sweep.json` row counts both.
+
+A load is complete when `summary.failed_requests` and every `mixture.outside_window_failed_requests` entry are 0. Also check that `finish_reason_observed` equals `completed_requests` in each class. If it is lower, `max_token_hits` undercounts, which is always the case for streams with `--no-collect-stream-outcomes`.
+
+In `mixture_sweep.json`, `config` describes the whole sweep: `mixture` lists the loads, the settle and the window, and `concurrency` and `warmup` are null (`warmup` is 0 with `--warmup 0`) because they change with the load. Each point's `speed_results.json` records its own. A mixture row gets `normalized_work` when the sweep also ran an `N+0` and a `0+M` load that completed work. It is the non streaming audio throughput divided by the highest `N+0` audio throughput, plus the streaming audio throughput divided by the highest `0+M` one. Streaming audio costs more vocoder time per second, so a change that moves work to the streams can lower total audio while normalized work stays the same (#3668).
+
+### Mixture Caveats
+
+- Mixture numbers are not comparable with the single pass numbers on this page. The pool starts over, so rows repeat and hit server caches more often. On one H100 with Fun-CosyVoice3, the non streaming class at 48+16 walked the 1088 rows 3.2 to 3.7 times per load, as `mixture.pool_cycles` reports.
+- The faster build in an A/B measures more requests and reaches further into the pool. Both builds send the same request sequence, but their windows cover different rows. Streams start halfway through the pool, so at 96+16 on one H100 the build before #3668, which finished about half as many streams, drew them from rows with about 3 percent more audio each. Check audio per request per class before you read a small throughput change.
+- `normalized_work` divides by the single mode loads of the same sweep, so in an A/B it also carries each sweep's single mode noise. To compare builds, divide both by the same references, such as the mean of both builds' single mode throughput.
+- Use the same `--seed` setting on both sides. Seeded server generation is not byte identical across runs, so compare `max_token_hits` and `output_tokens_total` per class before you trust a throughput change.
+- One Python event loop drives every client. Keep the CPU pinning from the setup above, and run the same build twice to see the run to run spread before you read small differences.
+- Every WAV is saved. At about 160 audio seconds per second, which Fun-CosyVoice3 reaches at 48+16 on one H100, a 120 s window holds about 19,000 audio seconds, about 0.9 GB at 24 kHz 16 bit mono.
+- Tails of a build that starves streams vary widely between legs. On one H100 at 48+16, the build before #3668 gave a max underrun p99 of 15.1 s in one leg and 7.7 s in the other, while its total audio stayed within 0.2 percent and its first audio and non streaming latency medians within 1.5 percent. Even its streaming audio moved 7 percent, from 18.4 to 19.8 audio seconds per second. Read such tails as a sign of starvation, not as a precise number.
+- #3668 measured a 7 to 9 percent speed difference between two H100s. Compare only legs on the same GPU, start each leg with a fresh server, and run the builds in a balanced order such as A, B, B, A.
+
 ## Reference Results
 
 These numbers were not measured with the setup on this page. Use them only to see whether your numbers are in a sensible range. Compare only numbers you measured yourself on one machine.
