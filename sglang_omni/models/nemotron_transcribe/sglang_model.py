@@ -13,7 +13,7 @@ from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.managers.mm_utils import (
     MultiModalityDataPaddingPatternMultimodalTokens,
-    general_mm_embed_routine,
+    prepare_mm_inputs,
 )
 from sglang.srt.managers.schedule_batch import (
     Modality,
@@ -36,6 +36,7 @@ from sglang_omni.models.nemotron_transcribe.perception import (
     build_audio_perception,
     load_perception_weights,
 )
+from sglang_omni.profiler.event_recorder import emit as emit_request_event
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,17 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
 
     def get_input_embeddings(self) -> nn.Module:
         return self.language_model.get_input_embeddings()
+
+    @property
+    def lm_head(self) -> nn.Module:
+        return self.language_model.lm_head
+
+    def get_embed_and_head(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """The MTP draft shares the decoder's embeddings and lm_head."""
+        return self.language_model.get_embed_and_head()
+
+    def set_embed_and_head(self, embed: torch.Tensor, head: torch.Tensor) -> None:
+        self.language_model.set_embed_and_head(embed, head)
 
     def pad_input_ids(
         self, input_ids: list[int], mm_inputs: MultimodalInputs
@@ -125,20 +137,72 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
             outputs.append(emb)
         return outputs
 
+    def compose_input_embeds(
+        self,
+        input_ids: torch.Tensor,
+        forward_batch: ForwardBatch,
+        language_model_kwargs: dict[str, object],
+    ) -> torch.Tensor:
+        """Token embeddings with the audio features scattered over their placeholder positions."""
+        # note (yhayaran): get_audio_feature runs here only when the pre-LM encoder is disabled.
+        audio_request_ids = [
+            request_id
+            for request_id, mm_input in zip(
+                forward_batch.rids or [], forward_batch.mm_inputs or []
+            )
+            if mm_input is not None
+        ]
+
+        def encode_audio_with_events(items: list[MultimodalDataItem]) -> torch.Tensor:
+            # The request profile reads these spans as the Parallel Expert Encoder's share of a request.
+            metadata = {"modality": "audio", "batch_size": len(items)}
+            for request_id in audio_request_ids:
+                emit_request_event(
+                    request_id=request_id,
+                    stage=None,
+                    event_name="encoder_start",
+                    metadata=metadata,
+                )
+            try:
+                return self.get_audio_feature(items)
+            finally:
+                for request_id in audio_request_ids:
+                    emit_request_event(
+                        request_id=request_id,
+                        stage=None,
+                        event_name="encoder_end",
+                        metadata=metadata,
+                    )
+
+        return prepare_mm_inputs(
+            input_ids,
+            forward_batch,
+            self.language_model,
+            language_model_kwargs,
+            data_embedding_funcs={Modality.AUDIO: encode_audio_with_events},
+        )
+
     def forward(
         self,
         input_ids: torch.Tensor,
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
+        input_embeds: torch.Tensor | None = None,
         **kwargs: object,
     ) -> LogitsProcessorOutput:
-        # note (yhayaran): get_audio_feature runs here only when the pre-LM encoder is disabled.
-        return general_mm_embed_routine(
-            input_ids=input_ids,
+        # The runner's prefill sidecar arrives as input_embeds plus bookkeeping the decoder does not take.
+        kwargs.pop("omni_prefill_rids", None)
+        kwargs.pop("input_embeds_are_projected", None)
+        kwargs["positions"] = positions
+        if input_embeds is None:
+            input_embeds = self.compose_input_embeds(input_ids, forward_batch, kwargs)
+        else:
+            pass
+        return self.language_model(
+            input_ids=None,
             forward_batch=forward_batch,
-            language_model=self.language_model,
-            data_embedding_funcs={Modality.AUDIO: self.get_audio_feature},
-            positions=positions,
+            input_embeds=input_embeds,
+            **kwargs,
         )
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> None:

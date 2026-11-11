@@ -18,6 +18,7 @@ from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 from sglang.srt.server_args import ServerArgs
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
+from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.nemotron_transcribe.config import (
     DEFAULT_MAX_RUNNING_REQUESTS,
     EncoderCompileMode,
@@ -30,6 +31,9 @@ from sglang_omni.models.nemotron_transcribe.hf_config import (
     MODEL_ARCH_OVERRIDE,
     NemotronTranscribeConfig,
     register_nemotron_transcribe_hf_config,
+)
+from sglang_omni.models.nemotron_transcribe.model_runner import (
+    NemotronTranscribeModelRunner,
 )
 from sglang_omni.models.nemotron_transcribe.request_builders import (
     NemotronTranscribeRequestData,
@@ -45,14 +49,24 @@ from sglang_omni.models.nemotron_transcribe.speech_transformer import (
     SpeechTransformerEncoder,
 )
 from sglang_omni.models.weight_loader import resolve_model_path
+from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.engine_factory import (
     AsrEngineBuilder,
     GenerationDefaults,
     SchedulerExtras,
 )
 from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
+from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 
 logger = logging.getLogger(__name__)
+
+# The checkpoint's single MTP layer is replayed as a chain; one step per draft token keeps the verify batch small.
+MTP_DEFAULT_OVERRIDES = {
+    "speculative_num_steps": 3,
+    "speculative_eagle_topk": 1,
+    "speculative_num_draft_tokens": 4,
+}
+MTP_ALGORITHMS = ("EAGLE", "NEXTN")
 
 
 def create_checkpoint_shim(checkpoint_directory: Path) -> Path:
@@ -118,6 +132,7 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         self.hf_config: NemotronTranscribeConfig | None = None
         self.audio_encoder_service: NemotronTranscribePreLMEncoderService | None = None
         self.should_wait_for_encode_fn: Callable[[], bool] | None = None
+        self.enable_mtp_draft = False
 
     def resolve_checkpoint(self, model_path: str) -> str:
         register_nemotron_transcribe_hf_config()
@@ -151,6 +166,46 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
             "dtype": dtype,
             "cuda_graph_backend_prefill": CudaGraphBackend.DISABLED,
         }
+
+    def make_model_runner(
+        self,
+        model_worker: ModelWorker,
+        output_proc: SGLangOutputProcessor,
+    ) -> NemotronTranscribeModelRunner:
+        return NemotronTranscribeModelRunner(model_worker, output_proc)
+
+    def adjust_overrides(self, overrides: dict[str, object]) -> None:
+        algorithm = overrides.get("speculative_algorithm")
+        if algorithm is None:
+            return
+        elif algorithm not in MTP_ALGORITHMS:
+            raise ValueError(
+                "Nemotron Transcribe speculative decoding serves the checkpoint's "
+                f"native MTP layer through EAGLE or NEXTN, not {algorithm}"
+            )
+        else:
+            pass
+        draft_model_path = overrides.get("speculative_draft_model_path")
+        if draft_model_path not in (None, self.checkpoint_dir):
+            raise ValueError(
+                "the Nemotron Transcribe MTP draft lives in the target checkpoint; "
+                "leave speculative_draft_model_path unset"
+            )
+        else:
+            pass
+        # The shim directory carries the NemotronH config the draft's ModelConfig can parse.
+        overrides["speculative_draft_model_path"] = self.checkpoint_dir
+        overrides["speculative_draft_model_revision"] = None
+        for key, value in MTP_DEFAULT_OVERRIDES.items():
+            overrides.setdefault(key, value)
+        overrides["enable_mixed_chunk"] = False
+        self.enable_mtp_draft = True
+
+    def infra_kwargs(self) -> InfrastructureOptions:
+        if self.enable_mtp_draft:
+            return {"supports_speculative_decoding": True}
+        else:
+            return {}
 
     def customize_server_args(self, server_args: ServerArgs) -> None:
         if server_args.enable_torch_compile:
