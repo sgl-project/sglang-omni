@@ -14,6 +14,7 @@ from sglang_omni.models.moss_speech.chat import chat_rows
 from sglang_omni.models.moss_speech.fsm import AUDIO_PAD, MODALITY_PAD
 from sglang_omni.models.moss_speech.request_builders import (
     MossSpeechState,
+    RequestValidationError,
     build_result,
     build_sglang_moss_request,
     preprocess_request,
@@ -179,3 +180,36 @@ def test_chat_http_supports_all_four_modalities(
         assert message["content"] == "four"
     else:
         assert message["audio"]["data"]
+
+
+@pytest.mark.parametrize("failure", ["missing_reference", "conflicting_seed"])
+def test_invalid_chat_is_rejected_before_audio_encoding(failure: str) -> None:
+    encoder = Mock()
+    encoder.encode_audio.return_value = [3, 17]
+    audio_config = (
+        {} if failure == "missing_reference" else {"ref_audio": "voice.wav", "seed": 2}
+    )
+    payload = StagePayload(
+        "invalid-chat",
+        OmniRequest(
+            inputs=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "audio_url", "audio_url": {"url": "unused.wav"}}
+                    ],
+                }
+            ],
+            params={"seed": 1},
+            metadata={"output_modalities": ["audio"], "audio_config": audio_config},
+        ),
+        {},
+    )
+    message = (
+        "Provide ref_audio"
+        if failure == "missing_reference"
+        else "conflicting speech seeds"
+    )
+    with pytest.raises(RequestValidationError, match=message):
+        preprocess_request(payload, TextTokenizer(), encoder)
+    encoder.encode_audio.assert_not_called()
