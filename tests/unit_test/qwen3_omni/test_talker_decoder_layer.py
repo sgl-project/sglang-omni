@@ -74,9 +74,9 @@ def test_talker_layer_builds_exactly_one_talker_moe_block(
     """Construction instantiates the subclass MoE exactly once and never builds
     a thinker MoE block on the side (the pre-#2358 discarded-experts path)."""
 
-    built: list = []
-    attention_calls: list = []
-    thinker_moe_built: list = []
+    built = []
+    attention_calls = []
+    thinker_moe_built = []
 
     # Module-valued fakes must be real nn.Modules so they land in _modules
     # exactly like the production submodules they stand in for.
