@@ -8,8 +8,10 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from sglang_omni.models.dots_tts.compat import import_dots_tts
+from sglang_omni.platforms import current_platform
 
 import_dots_tts()
 
@@ -23,6 +25,39 @@ FM_HIDDEN = 32
 LATENT_DIM = 6
 PATCH_SIZE = 2
 NFE = 2
+
+
+@pytest.mark.parametrize(
+    "platform_type,device_type",
+    [
+        ("cpu", "cpu"),
+        ("cuda", "cuda"),
+        ("rocm", "cuda"),
+        ("xpu", "xpu"),
+        ("npu", "npu"),
+        ("npu", "xpu"),
+    ],
+)
+def test_attention_context_preserves_policy_outside_npu(
+    monkeypatch: pytest.MonkeyPatch, platform_type: str, device_type: str
+) -> None:
+    monkeypatch.setattr(
+        tail,
+        "current_platform",
+        SimpleNamespace(
+            is_npu=lambda: platform_type == "npu", device_type=platform_type
+        ),
+        raising=False,
+    )
+    npu_context = platform_type == "npu" and device_type == "npu"
+    with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+        with tail.attention_context(SimpleNamespace(type=device_type)):
+            assert torch.backends.cuda.flash_sdp_enabled() == npu_context
+            assert torch.backends.cuda.mem_efficient_sdp_enabled() != npu_context
+            assert torch.backends.cuda.math_sdp_enabled() != npu_context
+        assert torch.backends.cuda.flash_sdp_enabled()
+        assert not torch.backends.cuda.mem_efficient_sdp_enabled()
+        assert not torch.backends.cuda.math_sdp_enabled()
 
 
 def test_batched_tail_mask_hides_padding_and_preserves_causality() -> None:
@@ -48,6 +83,51 @@ def test_batched_tail_mask_hides_padding_and_preserves_causality() -> None:
         [True, True, True, False, True, True, True, True],
         [True, True, True, False, True, True, True, True],
     ]
+
+
+@pytest.mark.parametrize(
+    "device_type",
+    [
+        "cpu",
+        pytest.param(
+            "npu",
+            marks=[
+                pytest.mark.accelerator,
+                pytest.mark.skipif(
+                    not current_platform.is_npu(), reason="requires NPU"
+                ),
+            ],
+        ),
+    ],
+)
+def test_tail_rotary_preserves_float32_without_changing_other_instances(
+    monkeypatch: pytest.MonkeyPatch, device_type: str
+) -> None:
+    unrelated_rotary = tail.RotaryEmbedding(8)
+    original_forward = type(unrelated_rotary).forward
+    device = torch.device(device_type)
+    acoustic_tail = build_tail(TailModel().to(device), slots=1, device=device)
+    positions = torch.tensor(
+        [0, 255, 256, 257, 4095, 4096, 4097], dtype=torch.float32, device=device
+    )
+    expected = original_forward(acoustic_tail.dit_rotary, positions)
+    original_einsum = torch.einsum
+    autocast_states: list[bool] = []
+
+    def observed_einsum(
+        equation: str, position_values: torch.Tensor, frequencies: torch.Tensor
+    ) -> torch.Tensor:
+        autocast_states.append(torch.is_autocast_enabled(position_values.device.type))
+        return original_einsum(equation, position_values, frequencies)
+
+    monkeypatch.setattr(torch, "einsum", observed_einsum)
+    with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+        actual = acoustic_tail.dit_rotary(positions)
+    assert autocast_states == [False]
+    assert actual.dtype == torch.float32
+    torch.testing.assert_close(actual, expected, rtol=0.0, atol=0.0)
+    assert type(unrelated_rotary).forward is original_forward
+    assert unrelated_rotary.forward.__func__ is original_forward
 
 
 class TailModel(torch.nn.Module):
@@ -263,12 +343,15 @@ def test_validate_acoustic_pool_memory_rejects_when_vram_is_tight(
         dtype=torch.bfloat16,
     )
     device = torch.device("cuda:0")
-    monkeypatch.setattr(torch.cuda, "device", lambda _device: nullcontext())
-    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    device_module = SimpleNamespace(
+        device=lambda _device: nullcontext(),
+        empty_cache=lambda: None,
+        mem_get_info=lambda _device=None: (4 << 30, 80 << 30),
+    )
     monkeypatch.setattr(
-        torch.cuda,
-        "mem_get_info",
-        lambda _device=None: (4 << 30, 80 << 30),
+        torch,
+        "get_device_module",
+        lambda _device: device_module,
     )
     with pytest.raises(ValueError, match="admission failed at startup") as caught:
         tail.validate_acoustic_pool_memory(estimate, device=device)
@@ -279,13 +362,13 @@ def test_validate_acoustic_pool_memory_rejects_when_vram_is_tight(
 
     # Enough free memory passes.
     monkeypatch.setattr(
-        torch.cuda,
+        device_module,
         "mem_get_info",
         lambda _device=None: (40 << 30, 80 << 30),
     )
     tail.validate_acoustic_pool_memory(estimate, device=device)
 
-    # Non-CUDA devices skip the gate.
+    # CPU devices skip the accelerator memory gate.
     tail.validate_acoustic_pool_memory(estimate, device=torch.device("cpu"))
 
 
@@ -304,16 +387,15 @@ def test_validate_acoustic_pool_memory_releases_cached_blocks_before_sampling_fr
         dtype=torch.uint8,
     )
     memory = {"free": 10}
-    monkeypatch.setattr(torch.cuda, "device", lambda _device: nullcontext())
-    monkeypatch.setattr(
-        torch.cuda,
-        "empty_cache",
-        lambda: memory.update(free=12),
+    device_module = SimpleNamespace(
+        device=lambda _device: nullcontext(),
+        empty_cache=lambda: memory.update(free=12),
+        mem_get_info=lambda _device=None: (memory["free"], 20),
     )
     monkeypatch.setattr(
-        torch.cuda,
-        "mem_get_info",
-        lambda _device=None: (memory["free"], 20),
+        torch,
+        "get_device_module",
+        lambda _device: device_module,
     )
 
     tail.validate_acoustic_pool_memory(
@@ -380,6 +462,32 @@ def test_fused_dit_builds_modulations_with_bfloat16_weights() -> None:
     mods = dit.build_mods(steps, duration=torch.full_like(steps, 0.5))
 
     assert mods.dtype == torch.bfloat16
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not current_platform.is_npu(), reason="requires NPU")
+def test_npu_eager_feedback_matches_full_encoder() -> None:
+    device_module = torch.get_device_module(current_platform.device_type)
+    if not device_module.is_available():
+        pytest.skip("NPU is unavailable")
+    else:
+        pass
+    device = torch.device(current_platform.device_type, device_module.current_device())
+    torch.manual_seed(1234)
+    model = TailModel().eval().to(device=device, dtype=torch.bfloat16)
+    acoustic_tail = build_tail(model, slots=2, device=device, dtype=torch.bfloat16)
+    reference_encoder = copy.deepcopy(acoustic_tail.encoder)
+    slot = acoustic_tail.acquire_slot()
+    latent_history: list[torch.Tensor] = []
+    with torch.no_grad():
+        for _ in range(3):
+            latent_patch = torch.randn(
+                1, PATCH_SIZE, LATENT_DIM, device=device, dtype=torch.bfloat16
+            )
+            latent_history.append(latent_patch)
+            expected = reference_encoder(torch.cat(latent_history, dim=1))[:, -1]
+            actual = acoustic_tail.encode_feedback([slot], latent_patch)
+            torch.testing.assert_close(actual, expected, rtol=2e-2, atol=2e-2)
 
 
 @pytest.mark.accelerator

@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
-from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from functools import partial
+from types import MethodType
 
 import torch
 import torch.nn as nn
@@ -15,12 +16,13 @@ import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from sglang_omni.models.dots_tts.compat import import_dots_tts
+from sglang_omni.platforms import current_platform
 
 import_dots_tts()
 
 from dots_tts.modules.backbone.dit_inference import FusedAdaLNDiT
 from dots_tts.modules.backbone.inference_utils import fuse_qkv_projection
-from dots_tts.modules.backbone.layers import rotate_half
+from dots_tts.modules.backbone.layers import RotaryEmbedding, rotate_half
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,20 @@ _TAIL_SDPA_BACKENDS = [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
 _GRAPH_BATCH_BUCKETS = (8, 16)
 _GRAPH_CONTEXT_PATCH_BUCKETS = (16, 32, 64, 128)
 _TAIL_STEP_LOG_INTERVAL = 50
+
+
+def attention_context(device: torch.device) -> AbstractContextManager[None]:
+    """Use the NPU default without changing other backend policies."""
+    if current_platform.is_npu() and device.type == current_platform.device_type:
+        return nullcontext()
+    else:
+        return sdpa_kernel(_TAIL_SDPA_BACKENDS)
+
+
+def rotary_forward(module: RotaryEmbedding, positions: torch.Tensor) -> torch.Tensor:
+    """Preserve float32 rotary positions under accelerator autocast."""
+    with torch.autocast(device_type=positions.device.type, enabled=False):
+        return type(module).forward(module, positions)
 
 
 def project_attention(
@@ -397,7 +413,7 @@ def batched_causal_update_mask(
 
 
 def rotary_cos_sin(
-    rotary: Callable[[torch.Tensor], torch.Tensor], starts: torch.Tensor, length: int
+    rotary: RotaryEmbedding, starts: torch.Tensor, length: int
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Per-slot-start form of
     ``dots_tts.modules.backbone.inference_utils.build_rotary_cos_sin``."""
@@ -435,6 +451,7 @@ class DotsTtsAcousticTail:
         dit_attention = dit.blocks[0].attn
         self.dit_layers = len(dit.blocks)
         self.dit_rotary = dit_attention.rotary
+        self.dit_rotary.forward = MethodType(rotary_forward, self.dit_rotary)
         self.dit_heads = int(dit_attention.num_heads)
         self.dit_head_dim = int(dit_attention.head_dim)
         encoder_attention = patch_encoder.encoder.layers[0].attn
@@ -442,6 +459,12 @@ class DotsTtsAcousticTail:
         self.encoder_rotary = (
             encoder_attention.rotary if encoder_attention.rotary_bias else None
         )
+        if self.encoder_rotary is not None:
+            self.encoder_rotary.forward = MethodType(
+                rotary_forward, self.encoder_rotary
+            )
+        else:
+            pass
         self.encoder_block = int(patch_encoder.out_ds_rate)
         self.encoder_heads = int(encoder_attention.num_heads)
         self.encoder_head_dim = int(encoder_attention.head_dim)
@@ -738,7 +761,7 @@ class DotsTtsAcousticTail:
             rotary = embedding.cos(), embedding.sin()
         else:
             pass
-        with sdpa_kernel(_TAIL_SDPA_BACKENDS):
+        with attention_context(self.device):
             for layer_index, layer in enumerate(encoder.encoder.layers):
                 output, key, item = project_attention(
                     layer.attn,
@@ -792,7 +815,7 @@ class DotsTtsAcousticTail:
         ).reshape(1, persistent)
         rotary = self.dit_rotary(positions)
         prefix = fm_rows[:persistent].unsqueeze(0)
-        with sdpa_kernel(_TAIL_SDPA_BACKENDS):
+        with attention_context(self.device):
             for ode_index in range(spec.nfe):
                 keys: list[torch.Tensor] = []
                 values: list[torch.Tensor] = []
@@ -980,7 +1003,7 @@ class DotsTtsAcousticTail:
         layer_index = self.dit_layer_index.reshape(self.dit_layers, 1, 1)
         batch_index = slot_index.reshape(1, rows, 1)
         promote = slice(capacity, capacity + unit)
-        with sdpa_kernel(_TAIL_SDPA_BACKENDS):
+        with attention_context(self.device):
             for ode_index in range(spec.nfe):
                 if direct_kv:
                     keys = self.dit_k[ode_index, :, :rows, :, : capacity + query_len]
@@ -1145,7 +1168,7 @@ class DotsTtsAcousticTail:
             slot_index,
             out=values[:, :, :, :capacity],
         )
-        with sdpa_kernel(_TAIL_SDPA_BACKENDS):
+        with attention_context(self.device):
             embeddings, conv_tail = self.encoder_step(
                 latent_patches.to(self.dtype),
                 self.encoder_conv_tail.index_select(0, slot_index),
