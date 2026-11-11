@@ -8,9 +8,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Protocol, TypedDict
-from urllib.parse import unquote, urlparse
 
-import httpx
 import numpy as np
 import onnxruntime
 import torch
@@ -25,38 +23,10 @@ from sglang_omni.models.moss_speech.request_builders import (
     RequestValidationError,
 )
 from sglang_omni.proto.request import StagePayload
-from sglang_omni.utils.audio import (
-    audio_request_timeout,
-    decode_audio_data_uri,
-    load_with_torchaudio,
-)
+from sglang_omni.utils.audio import load_audio
 
 SAMPLE_RATE_HZ = 24000
 MAX_REFERENCE_SECONDS = 30
-
-
-def load_reference_audio(reference_audio: str) -> tuple[torch.Tensor, int]:
-    """Decode a mono reference without changing its original sample rate."""
-    decoded = decode_audio_data_uri(reference_audio)
-    source: str | bytes
-    if decoded is not None:
-        source = decoded
-    elif reference_audio.startswith(("http://", "https://")):
-        response = httpx.get(
-            reference_audio, timeout=audio_request_timeout(), follow_redirects=True
-        )
-        response.raise_for_status()
-        source = response.content
-    elif reference_audio.startswith("file://"):
-        source = unquote(urlparse(reference_audio).path)
-    else:
-        source = reference_audio
-    waveform, sample_rate = load_with_torchaudio(source, source_name="reference audio")
-    if waveform.shape[0] > 1:
-        waveform = waveform.mean(dim=0, keepdim=True)
-    else:
-        pass
-    return waveform.to(torch.float32), sample_rate
 
 
 class VoiceConditioning(TypedDict):
@@ -163,9 +133,10 @@ class MossSpeechCodec:
     @torch.inference_mode()
     def encode_reference(self, reference_audio: str) -> VoiceConditioning:
         assert self.encoder is not None and self.decoder is not None
-        reference_waveform, reference_sample_rate = load_reference_audio(
-            reference_audio
+        samples, reference_sample_rate = load_audio(
+            reference_audio, source_name="reference audio", preserve_sample_rate=True
         )
+        reference_waveform = torch.from_numpy(samples).unsqueeze(0)
         waveform = torchaudio.transforms.Resample(
             reference_sample_rate, SAMPLE_RATE_HZ
         )(reference_waveform)
