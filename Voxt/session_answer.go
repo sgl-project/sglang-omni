@@ -44,7 +44,7 @@ func (a *app) openAnswer(s session.Snapshot) {
 		// A follow-up continues the card's conversation.
 		if a.answer.kind == store.KindRewrite && a.answer.id == a.followUp {
 			card.turns = append(card.turns, a.answer.turns...)
-			card.conversation = a.answer.conversation
+			card.conversation, card.quotesOpen = a.answer.conversation, a.answer.quotesOpen
 			if card.why == "" {
 				card.why = a.answer.why
 			}
@@ -115,7 +115,7 @@ func (a *app) retryAnswer(lang string) {
 		a.overlaySync()
 		return
 	}
-	if card.kind == store.KindRewrite && len(card.turns) > 0 && in.Selection == "" {
+	if card.kind == store.KindRewrite && len(card.turns) > 0 {
 		req.Previous = card.turns
 		if card.problem == nil {
 			return // nothing to ask again

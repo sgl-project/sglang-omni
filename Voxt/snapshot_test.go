@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"image/png"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -119,7 +120,7 @@ func snapshotsMain(t *testing.T, out string) {
 		historyAccessShots(a, tt, save)  // history_access_test.go
 		transcribeShots(a, tt, save)     // the Try area's states (feature_page_test.go)
 		appEnhanceShots(a, fs, tt, save) // appenhance_page_test.go
-		dictShots(t, a, save)            // dictionary_page_test.go
+		dictShots(t, a, tt, save)        // dictionary_page_test.go
 		speechShots(a, tt, save)         // remote_speech_e2e_test.go
 		// The settings dialog, section by section.
 		a.updateSettings(func(s *settings.Settings) {
@@ -137,6 +138,11 @@ func snapshotsMain(t *testing.T, out string) {
 				a.sys = &sysInfo{OS: "macOS 26.7", Chip: "Apple M2", Memory: 16 << 30, Cores: 8, Arch: "arm64"}
 			}
 			save("settings-" + s.id)
+			if s.id == "general" { // Find in settings, by a row's English name (#3788)
+				a.settingsForm.search = "Dock"
+				save("settings-general-search-dock")
+				a.settingsForm.search = ""
+			}
 			if s.id == "about" { // Updates, under the fold (updates.go)
 				scrollToText(tt, i18n.T("Updates"))
 				save("settings-about-updates")
@@ -168,6 +174,12 @@ func snapshotsMain(t *testing.T, out string) {
 				frames(tt)
 				save("settings-audio-sounds-macos")
 			}
+			if s.id == "shortcuts" { // Strict shortcuts, under the table: a taller window shows it
+				w, h := snapshotSize()
+				tt.SetSize(w, 780)
+				save("settings-shortcuts-strict")
+				tt.SetSize(w, h)
+			}
 			if s.id == "overlay" { // its preview, under the controls
 				w, h := snapshotSize()
 				tt.Scroll(float32(w)*0.7, float32(h)*0.6, 0, 600)
@@ -186,7 +198,11 @@ func snapshotsMain(t *testing.T, out string) {
 		a.sheetOpen = false
 		a.logsPanel = true
 		save("logs-panel")
-		a.logsPanel = false
+		a.logsQuery = "zzqx" // a filter that matches no line
+		save("logs-panel-no-match")
+		a.navigate("/logs")
+		save("page-logs-no-match")
+		a.logsQuery, a.logsPanel = "", false
 
 		// The foot of the sidebar (shell_notices.go): no notification,
 		// one, three stacked; then the rail's dot and its popover.
@@ -225,6 +241,39 @@ func snapshotsMain(t *testing.T, out string) {
 		a.bundleUpdated = false
 		a.setProblem(problemUpdate, "", nil)
 		fs.Start(context.Background())
+
+		// A release without an update feed (updates_github.go): About,
+		// the dialog's four states, the card of a background check.
+		fake := a.upd
+		srv := &ghServer{list: newerReleases}
+		a.upd = newReleaseUpdates(a.settings, srv.start(t), "2.0.3", a.checkReleasesNow)
+		a.updKnown = false
+		a.navigate("/settings/about")
+		scrollToText(tt, i18n.T("Updates"))
+		save("settings-about-releases")
+		a.settingsOpen = false
+		a.navigate("/home")
+		a.relOpen = true // checking: the answer has not come yet
+		save("release-checking")
+		a.checkForUpdates()
+		save("release-available")
+		srv.set(func(s *ghServer) { s.list = todayReleases })
+		a.checkForUpdates()
+		save("release-up-to-date")
+		srv.set(func(s *ghServer) {
+			s.status = http.StatusForbidden
+			s.header = http.Header{"X-Ratelimit-Remaining": {"0"}}
+		})
+		a.checkForUpdates()
+		save("release-failed")
+		a.relOpen = false
+		srv.set(func(s *ghServer) { s.status, s.list = 0, newerReleases })
+		a.clearNotices()
+		a.settings.Update(context.Background(), func(s *settings.Settings) { s.Updates.LastCheck, s.Updates.Dismissed = time.Time{}, "" })
+		a.autoCheckReleases()
+		save("sidebar-notices-release")
+		a.clearNotices()
+		a.upd, a.updKnown = fake, false
 
 		// The recording overlay, state by state (overlay_test.go).
 		overlayShots(t, a, out, suffix, run.dark)

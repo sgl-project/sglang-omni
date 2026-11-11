@@ -19,6 +19,7 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     build_sglang_thinker_request,
     compute_mrope_positions,
     extract_thinker_model_inputs,
+    should_generate_audio_output,
 )
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
@@ -132,11 +133,13 @@ class QwenThinkerSessionAdapter(ARSessionAdapter):
         vocab_size: int,
         thinker_config: Qwen3OmniMoeThinkerConfig,
         *,
+        speech_enabled: bool,
         is_speculative: bool = False,
     ) -> None:
         self.tokenizer: PreTrainedTokenizerBase = tokenizer
         self.vocab_size: int = vocab_size
         self.thinker_config: Qwen3OmniMoeThinkerConfig = thinker_config
+        self.speech_enabled = speech_enabled
         self.is_speculative: bool = is_speculative
         self.end_token_id: int = tokenizer.convert_tokens_to_ids("<|im_end|>")
         self.newline_ids: list[int] = tokenizer.encode("\n", add_special_tokens=False)
@@ -308,6 +311,7 @@ class QwenThinkerSessionAdapter(ARSessionAdapter):
             vocab_size=self.vocab_size,
             request_id=payload.request_id,
             capture_prompt_hidden_states=False,
+            speaks=self.speech_enabled and should_generate_audio_output(payload),
         )
         request_data.stage_payload = payload
         # Note (Junnan Li): The preprocessor sees one turn; the scheduler checks the context once the retained turns precede it.

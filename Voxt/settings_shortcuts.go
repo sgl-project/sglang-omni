@@ -78,6 +78,12 @@ func (a *app) shortcutsSettings(c *ui.Context) {
 			}
 		}
 	})
+	settingRow(c, "sc-strict", i18n.T("Strict shortcuts"), i18n.T("While recording, only the shortcut that started it stops it. Off: any feature's shortcut stops."), func() {
+		if ui.Switch(c.Key("sc-strict-switch"), &a.settingsForm.strictShortcuts).Label(i18n.T("Strict shortcuts")).Changed() {
+			on := a.settingsForm.strictShortcuts
+			a.updateSettings(func(s *settings.Settings) { s.Features.StrictShortcuts = on })
+		}
+	})
 }
 
 // shortcutMarksW is the room of a row's marks (Accessibility, a problem).
