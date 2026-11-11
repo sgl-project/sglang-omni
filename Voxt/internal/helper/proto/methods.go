@@ -18,21 +18,25 @@ const (
 	MethodShutdown  = "helper.shutdown" // request: cancel jobs, answer, exit 0
 	MethodJobCancel = "job.cancel"      // request
 
-	MethodPermissionsStatus  = "permissions.status"  // request: the Microphone and Accessibility, as the helper sees them
+	MethodPermissionsStatus  = "permissions.status"  // request: the Microphone, Accessibility and Speech Recognition, as the helper sees them
 	MethodPermissionsRequest = "permissions.request" // request: show macOS's prompt for one, then report
 
 	MethodCaptureDevices = "capture.devices" // request: the audio inputs
 	MethodCaptureStart   = "capture.start"   // request, job: records until capture.stop
-	MethodCaptureStop    = "capture.stop"    // request: ends a capture.start, which answers first
+	MethodCaptureStop    = "capture.stop"    // request: ends a capture.start or capture.system, which answers first
+	MethodCaptureSystem  = "capture.system"  // request, job: records the sound the Mac plays (other apps') until capture.stop
 
-	MethodHotkeyConfigure = "hotkey.configure" // request: the bindings the event tap watches (replaces all)
-	MethodHotkeyStatus    = "hotkey.status"    // request: the tap's state and counters
+	MethodHotkeyConfigure    = "hotkey.configure"    // request: the bindings the event tap watches (replaces all)
+	MethodHotkeyStatus       = "hotkey.status"       // request: the tap's state and counters
+	MethodHotkeyRecord       = "hotkey.record"       // request: one chord through a short-lived event tap
+	MethodHotkeyCancelRecord = "hotkey.cancelRecord" // request: cancel hotkey.record
 
 	MethodAppFrontmost = "app.frontmost" // request: the app in front
 
 	MethodTextFocus     = "textio.focus"     // request: the focused element of the app in front (can it take text?)
 	MethodTextSelection = "textio.selection" // request: the selected text (Accessibility, else ⌘C when allowed)
 	MethodTextPaste     = "textio.paste"     // request: insert text through the clipboard and ⌘V, then restore it
+	MethodTextRead      = "textio.read"      // request: a range of the focused element's text in an app in front
 
 	MethodAppList      = "app.list"      // request: running (and installed) apps, to pick from
 	MethodAppConfigure = "app.configure" // request: which apps get AXManualAccessibility as they come to the front
@@ -45,16 +49,21 @@ const (
 	MethodOutputRelease = "output.release" // request: give a claim back (unmuting it, unless the user did)
 	MethodOutputRecover = "output.recover" // request: undo the claims a helper that is gone left in the journal
 
+	MethodSpeechRecognize = "speech.recognize" // request, job: macOS's speech recognition, on this Mac, of what speech.audio brings
+	MethodSpeechAudio     = "speech.audio"     // request: audio for a speech.recognize job (end: the last)
+
 	// Notifications, helper → app.
-	MethodCaptureStarted   = "capture.started"   // a capture.start job records: which device, how long it took
-	MethodCaptureLevel     = "capture.level"     // input meter of a capture.start job, ~20 Hz
-	MethodCapturePCM       = "capture.pcm"       // audio of a capture.start job, a frame every ~100 ms
+	MethodCaptureStarted   = "capture.started"   // a capture.start or capture.system job records: which device, how long it took
+	MethodCaptureLevel     = "capture.level"     // input meter of a capture job, ~20 Hz
+	MethodCapturePCM       = "capture.pcm"       // audio of a capture job, a frame every ~100 ms
 	MethodCaptureRestarted = "capture.restarted" // the job's audio engine was rebuilt (watchdog, device change)
 	MethodHotkeyEvent      = "hotkey.event"      // a binding fired (or the cancel shortcut while active)
 	MethodHotkeyState      = "hotkey.state"      // the event tap was installed or lost (e.g. Accessibility granted)
 	MethodAppActivated     = "app.activated"     // another app came to the front
 	MethodOutputChanged    = "output.changed"    // the default output device or its mute changed (output.watch on)
 	MethodOutputReleased   = "output.released"   // the helper gave its claims back on its own (sleep)
+	MethodSpeechStarted    = "speech.started"    // a speech.recognize job's recognizer runs
+	MethodSpeechPartial    = "speech.partial"    // the text a speech.recognize job heard so far
 	MethodLog              = "log"               // a log line (stderr stays free-form text)
 )
 
@@ -122,12 +131,20 @@ func ParamsFor(method string) any {
 		return new(CaptureParams)
 	case MethodCaptureStop:
 		return new(CaptureStopParams)
+	case MethodCaptureSystem:
+		return new(SystemParams)
 	case MethodHotkeyConfigure:
 		return new(HotkeyConfigureParams)
+	case MethodHotkeyRecord:
+		return new(HotkeyRecordParams)
+	case MethodHotkeyCancelRecord:
+		return new(Empty)
 	case MethodTextSelection:
 		return new(SelectionParams)
 	case MethodTextPaste:
 		return new(PasteParams)
+	case MethodTextRead:
+		return new(ReadParams)
 	case MethodBrowserURL:
 		return new(BrowserURLParams)
 	case MethodAppList:
@@ -144,6 +161,14 @@ func ParamsFor(method string) any {
 		return new(OutputReleaseParams)
 	case MethodOutputRecover:
 		return new(OutputRecoverParams)
+	case MethodSpeechRecognize:
+		return new(SpeechParams)
+	case MethodSpeechAudio:
+		return new(SpeechAudioParams)
+	case MethodSpeechStarted:
+		return new(SpeechStartedParams)
+	case MethodSpeechPartial:
+		return new(SpeechPartialParams)
 	case MethodOutputChanged:
 		return new(OutputState)
 	case MethodOutputReleased:
@@ -173,7 +198,7 @@ func ResultFor(method string) any {
 	switch method {
 	case MethodHello:
 		return new(HelloResult)
-	case MethodShutdown, MethodAppConfigure:
+	case MethodShutdown, MethodAppConfigure, MethodSpeechAudio:
 		return new(Empty)
 	case MethodJobCancel:
 		return new(CancelResult)
@@ -181,12 +206,16 @@ func ResultFor(method string) any {
 		return new(PermissionsResult)
 	case MethodCaptureDevices:
 		return new(DevicesResult)
-	case MethodCaptureStart:
+	case MethodCaptureStart, MethodCaptureSystem:
 		return new(CaptureResult)
 	case MethodCaptureStop:
 		return new(CaptureStopResult)
 	case MethodHotkeyConfigure, MethodHotkeyStatus:
 		return new(HotkeyStatus)
+	case MethodHotkeyRecord:
+		return new(HotkeyRecordResult)
+	case MethodHotkeyCancelRecord:
+		return new(Empty)
 	case MethodAppFrontmost:
 		return new(App)
 	case MethodTextFocus:
@@ -195,6 +224,8 @@ func ResultFor(method string) any {
 		return new(SelectionResult)
 	case MethodTextPaste:
 		return new(PasteResult)
+	case MethodTextRead:
+		return new(ReadResult)
 	case MethodBrowserURL:
 		return new(BrowserURLResult)
 	case MethodAppList:
@@ -209,6 +240,8 @@ func ResultFor(method string) any {
 		return new(OutputReleaseResult)
 	case MethodOutputRecover:
 		return new(OutputRecoverResult)
+	case MethodSpeechRecognize:
+		return new(SpeechResult)
 	}
 	return nil
 }
@@ -219,18 +252,22 @@ var (
 	Requests = []string{
 		MethodHello, MethodShutdown, MethodJobCancel,
 		MethodPermissionsStatus, MethodPermissionsRequest,
-		MethodCaptureDevices, MethodCaptureStart, MethodCaptureStop,
-		MethodHotkeyConfigure, MethodHotkeyStatus,
+		MethodCaptureDevices, MethodCaptureStart, MethodCaptureStop, MethodCaptureSystem,
+		MethodHotkeyConfigure, MethodHotkeyStatus, MethodHotkeyRecord, MethodHotkeyCancelRecord,
 		MethodAppFrontmost, MethodAppList, MethodAppConfigure, MethodAppIcons,
-		MethodTextFocus, MethodTextSelection, MethodTextPaste,
+		MethodTextFocus, MethodTextSelection, MethodTextPaste, MethodTextRead,
 		MethodBrowserURL,
 		MethodOutputWatch, MethodOutputMute, MethodOutputRelease, MethodOutputRecover,
+		MethodSpeechRecognize, MethodSpeechAudio,
 	}
 	Notifications = []string{
 		MethodCaptureStarted, MethodCaptureLevel, MethodCapturePCM, MethodCaptureRestarted,
-		MethodHotkeyEvent, MethodHotkeyState, MethodAppActivated, MethodOutputChanged, MethodOutputReleased, MethodLog,
+		MethodHotkeyEvent, MethodHotkeyState, MethodAppActivated, MethodOutputChanged, MethodOutputReleased,
+		MethodSpeechStarted, MethodSpeechPartial, MethodLog,
 	}
 )
 
 // IsJob reports whether method is a long-running, cancellable job.
-func IsJob(method string) bool { return method == MethodCaptureStart }
+func IsJob(method string) bool {
+	return method == MethodCaptureStart || method == MethodCaptureSystem || method == MethodSpeechRecognize
+}

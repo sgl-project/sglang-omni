@@ -281,6 +281,8 @@ func TestAutoKey(t *testing.T) {
 		{"Tab", []proto.KeyPress{{Key: 48}}, nil},
 		{"Command", nil, ErrAutoKey},
 		{"Fn+Return", nil, ErrAutoKey},
+		{"Mouse4", nil, ErrAutoKey},
+		{"Command+Mouse3", nil, ErrAutoKey},
 		{"Return+Tab", nil, hotkey.ErrTwoKeys},
 		{"Bogus", nil, hotkey.ErrUnknown},
 	} {

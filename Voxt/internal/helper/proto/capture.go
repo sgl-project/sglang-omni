@@ -40,8 +40,23 @@ type CaptureParams struct {
 	MaxSeconds float64 `json:"maxSeconds,omitempty"`
 }
 
+// SystemParams starts capture.system: the sound the Mac plays (every
+// other app's, not VoxtNew's or the helper's), mixed to mono, from the
+// default output, which it follows when it changes (capture.restarted,
+// CaptureConfigurationChange). The fields are CaptureParams'. It runs
+// beside a capture.start: one of each at a time. It fails with
+// device_unavailable when there is no output device.
+type SystemParams struct {
+	SampleRate int     `json:"sampleRate,omitempty"`
+	FrameMS    int     `json:"frameMs,omitempty"`
+	LevelHz    int     `json:"levelHz,omitempty"`
+	MaxSeconds float64 `json:"maxSeconds,omitempty"`
+}
+
 // CaptureStartedParams: the job records. Until it comes the user's first
 // words are not being heard (200–400 ms after capture.start).
+// capture.system: Device is the output's UID, DeviceName "" (a Bluetooth
+// device's name may hold a person's), DeviceChannels 1 (the mix).
 type CaptureStartedParams struct {
 	Job        string `json:"job"`
 	Device     string `json:"device"` // the device that records
@@ -75,13 +90,17 @@ type PCMParams struct {
 }
 
 // RestartedParams: the job's audio engine was rebuilt (Reason
-// CaptureNoCallback, CaptureConfigurationChange or CaptureDeviceLost for
-// the default input, which follows the new default). Recording goes on.
+// CaptureNoCallback, CaptureConfigurationChange, or CaptureDeviceLost:
+// the input went away and the next of the devices still connected, else
+// the default input, records). Recording goes on.
 type RestartedParams struct {
 	Job     string `json:"job"`
 	Reason  string `json:"reason"`
 	Attempt int    `json:"attempt"`
 	Device  string `json:"device"` // the device it records from now
+	// DeviceName is Device's name (capture.start only: capture.system
+	// never names the output).
+	DeviceName string `json:"deviceName,omitempty"`
 }
 
 // CaptureResult describes the recording. Every capture.pcm of the job
@@ -89,7 +108,7 @@ type RestartedParams struct {
 type CaptureResult struct {
 	Device string `json:"device"` // the last device that recorded
 	// Reason is why it ended: CaptureStopped, CaptureMaxSeconds,
-	// CaptureDeviceLost (the chosen input went away) or CaptureNoCallback
+	// CaptureDeviceLost (the input went away and none other could record) or CaptureNoCallback
 	// (the input stopped delivering audio, restarts did not help).
 	Reason   string  `json:"reason"`
 	Frames   int     `json:"frames"`  // capture.pcm notifications sent
@@ -111,7 +130,7 @@ const (
 	CaptureConfigurationChange = "configurationChange"
 )
 
-// CaptureStopParams names the capture.start job to stop.
+// CaptureStopParams names the capture.start or capture.system job to stop.
 type CaptureStopParams struct {
 	Job string `json:"job"`
 }

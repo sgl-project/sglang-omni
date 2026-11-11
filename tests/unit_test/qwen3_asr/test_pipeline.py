@@ -113,12 +113,13 @@ def make_engine_builder(
     *,
     mm_attention_backend: str | None = None,
     context_length: int = 1636,
-    enable_async_decode: bool | None = True,
+    enable_async_decode: bool = True,
 ) -> qwen3_asr_builder.Qwen3ASREngineBuilder:
     builder = qwen3_asr_builder.Qwen3ASREngineBuilder(
         max_running_requests=64,
         max_new_tokens=128,
         enable_async_decode=enable_async_decode,
+        enable_plain_fallback=False,
         async_decode_min_batch_size=2,
         mem_fraction_static=None,
         mm_embedding_cache_size_bytes=0,
@@ -666,7 +667,9 @@ def test_qwen3_asr_prefill_ladder_is_accepted_by_the_shared_policy(caplog) -> No
         **builder.generation_defaults(dtype="bfloat16")
     )
     builder.adjust_overrides(overrides)
-    assert overrides["cuda_graph_bs_prefill"] == sglang_prefill_ladder(4096)
+    assert overrides["cuda_graph_bs_prefill"] == sorted(
+        {1, *sglang_prefill_ladder(4096)}
+    )
     server_args = fake_server_args_builder({})("dummy", 1636, **overrides)
 
     with caplog.at_level(logging.WARNING):
@@ -724,10 +727,10 @@ def write_dflash_checkpoint(directory: Path, *, non_causal: bool) -> None:
 
 
 @pytest.mark.parametrize("non_causal", [False, True])
-def test_qwen3_asr_dflash_build_uses_sync_runtime_and_cleans_resources(
+def test_qwen3_asr_dflash_build_overlaps_by_default_and_cleans_resources(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, non_causal: bool
 ) -> None:
-    """DFlash must release its temporary checkpoint after both successful and failed builds."""
+    """DFlash must run speculative overlap by default and release its temporary checkpoint after both successful and failed builds."""
     # note (WilsonZheng0327): Only DFlash tests require the Triton-dependent worker.
     from sglang_omni.speculative.dflash_draft import ReducedVocabularyDFlashWorker
 
@@ -776,12 +779,12 @@ def test_qwen3_asr_dflash_build_uses_sync_runtime_and_cleans_resources(
         recorded.infra_kwargs[-1]["speculative_worker_class"]
         is ReducedVocabularyDFlashWorker
     )
-    assert recorded.infra_kwargs[-1]["enable_async_decode"] is False
-    assert scheduler.enable_async_decode is False
+    assert recorded.infra_kwargs[-1]["enable_async_decode"] is True
+    assert scheduler.enable_async_decode is True
     assert scheduler.async_prefill is False
     assert recorded.adapter_kwargs["greedy_only"] is False
     assert recorded.build_kwargs["enable_mixed_chunk"] is False
-    assert recorded.build_kwargs["disable_overlap_schedule"] is True
+    assert recorded.build_kwargs["disable_overlap_schedule"] is False
     assert not recorded.build_kwargs.get("disable_cuda_graph", False)
     assert len(recorded.graph_init_calls) == 1
     assert len(recorded.attest_calls) == 1
@@ -807,23 +810,11 @@ def test_qwen3_asr_dflash_build_uses_sync_runtime_and_cleans_resources(
     assert not Path(recorded.build_kwargs["speculative_draft_model_path"]).exists()
 
 
-@pytest.mark.parametrize(
-    ("requested", "with_draft", "expected"),
-    [
-        (None, False, True),
-        (None, True, False),
-        (True, True, True),
-        (False, False, False),
-    ],
-)
-def test_qwen3_asr_speculative_overlap_is_an_explicit_opt_in(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    requested: bool | None,
-    with_draft: bool,
-    expected: bool,
+@pytest.mark.parametrize("with_draft", [False, True])
+def test_qwen3_asr_async_decode_false_turns_speculative_overlap_off(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, with_draft: bool
 ) -> None:
-    """Ordinary decode defaults to async; under a draft async decode means speculative overlap, so it runs only when the operator asks for it."""
+    """Async decode false must schedule synchronously with or without a draft, and under a draft the worker must get the synchronous verify loop."""
     monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: True)
     monkeypatch.setattr(
         request_builders,
@@ -831,7 +822,7 @@ def test_qwen3_asr_speculative_overlap_is_an_explicit_opt_in(
         lambda **kwargs: object(),
     )
     write_dflash_checkpoint(tmp_path, non_causal=False)
-    builder = make_engine_builder(enable_async_decode=requested)
+    builder = make_engine_builder(enable_async_decode=False)
     overrides: dict[str, object] = (
         {
             "speculative_algorithm": "DFLASH",
@@ -844,11 +835,11 @@ def test_qwen3_asr_speculative_overlap_is_an_explicit_opt_in(
 
     builder.adjust_overrides(overrides)
 
-    assert builder.extra_scheduler_kwargs()["enable_async_decode"] is expected
+    assert builder.extra_scheduler_kwargs()["enable_async_decode"] is False
     # note (wilsonzheng0327): SGLang builds the draft worker for one loop or the other, so the infrastructure must hear the same choice as the scheduler.
     if with_draft:
-        assert builder.infra_kwargs()["enable_async_decode"] is expected
-        assert overrides["disable_overlap_schedule"] is not expected
+        assert builder.infra_kwargs()["enable_async_decode"] is False
+        assert overrides["disable_overlap_schedule"] is True
         builder.draft_checkpoint.cleanup()
     else:
         assert builder.infra_kwargs() == {}

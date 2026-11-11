@@ -2,11 +2,12 @@ package main
 
 // Settings → Shortcuts (/settings/shortcuts): every global shortcut
 // in one table (Transcribe's, Translate's and Rewrite's, Paste the
-// last result, and Cancel transcription), with their trigger and what
+// last result, Cancel transcription and Notes'), with their trigger and what
 // hotkey.Check finds wrong:
 // clashes, keys macOS uses, keys that need Accessibility while the event
 // tap is missing, keys another ActNow app uses too. A row opens its
-// feature's page, where it changes.
+// feature's page, where it changes. Above it, the preset sets several at
+// once (internal/settings' Presets).
 
 import (
 	"slices"
@@ -27,6 +28,8 @@ func featurePath(feature string) string {
 		return "/translate"
 	case hotkey.Rewrite:
 		return "/rewrite"
+	case hotkey.Note:
+		return "/notes"
 	}
 	return "/transcribe" // Transcribe, Paste the last result, Cancel transcription
 }
@@ -35,16 +38,17 @@ func featurePath(feature string) string {
 func (a *app) shortcutsSettings(c *ui.Context) {
 	t := c.Theme()
 	k := tok(t)
-	caption(c, i18n.T("The shortcuts work in every app. Click one to change it on its feature's page."))
+	caption(c, i18n.T("Click a shortcut to change it on its feature's page."))
 	if !a.hotkeys.Installed {
 		notice(c, "sc-no-tap", noticeWarn,
-			i18n.T("Without Accessibility only plain shortcuts work (⌃⌥⇧⌘ with a key); fn, a single modifier, double taps and long presses need it."),
+			i18n.T("Without Accessibility, only shortcuts like ⌃⌥Space work. fn, single modifiers, double taps and long presses need it."),
 			"", func() {
 				if ui.Button(c.Key("sc-open-perms"), i18n.T("Open Permissions")).Clicked() {
 					a.navigate("/settings/permissions")
 				}
 			}, nil)
 	}
+	a.shortcutPresetPicker(c, "sc")
 	f := a.prefs.Features
 	keysW := px(t, 96)
 	card(c.Key("sc-table")).Gap(0).Padding(px(t, sp2)).Children(func() {
@@ -57,7 +61,10 @@ func (a *app) shortcutsSettings(c *ui.Context) {
 			head(i18n.T("Shortcut")).Width(keysW).Shrink(0)
 			ui.Box(c).Width(px(t, shortcutMarksW+14+sp2)).Shrink(0) // the marks and the chevron
 		})
-		for _, feat := range append(append([]string{}, hotkey.Features...), hotkey.PasteLast, hotkey.CancelID) {
+		for _, feat := range append(append([]string{}, hotkey.Features...), hotkey.PasteLast, hotkey.CancelID, hotkey.Note) {
+			if f.IsHidden(feat) {
+				continue
+			}
 			hs := hotkey.HotkeysOf(f, feat)
 			problems := uitext.HotkeyProblems(f, feat) // feature_keys_text.go
 			if len(hs) == 0 {
@@ -69,6 +76,12 @@ func (a *app) shortcutsSettings(c *ui.Context) {
 				lines := append(slices.Clone(problems[i]), a.conflictLines(feat, i)...)
 				a.shortcutRow(c, feat, i, &hs[i], lines, keysW)
 			}
+		}
+	})
+	settingRow(c, "sc-strict", i18n.T("Strict shortcuts"), i18n.T("While recording, only the shortcut that started it stops it. Off: any feature's shortcut stops."), func() {
+		if ui.Switch(c.Key("sc-strict-switch"), &a.settingsForm.strictShortcuts).Label(i18n.T("Strict shortcuts")).Changed() {
+			on := a.settingsForm.strictShortcuts
+			a.updateSettings(func(s *settings.Settings) { s.Features.StrictShortcuts = on })
 		}
 	})
 }
@@ -102,6 +115,9 @@ func (a *app) shortcutRow(c *ui.Context, feature string, i int, h *settings.Hotk
 				if feature == hotkey.CancelID {
 					ic = icons.CloseCircle
 				}
+				if feature == hotkey.Note {
+					ic = notesIcon
+				}
 				ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Grow(1).Basis(0).MinWidth(0).Children(func() {
 					if i == 0 {
 						ui.Icon(c, ic.Linear).Size(px(t, 16), px(t, 16)).TextColor(k.Text2).Shrink(0)
@@ -115,7 +131,7 @@ func (a *app) shortcutRow(c *ui.Context, feature string, i int, h *settings.Hotk
 					}
 					kbd(c, keys).MinWidth(0).Ellipsis("…") // shell_commands.go
 					trig := uitext.TriggerText(h.Trigger)
-					if feature == hotkey.PasteLast || feature == hotkey.CancelID {
+					if feature == hotkey.PasteLast || feature == hotkey.CancelID || feature == hotkey.Note {
 						trig = uitext.TriggerText(settings.TriggerTap) // always a tap
 					}
 					ui.Text(c, trig).FontSize(px(t, fsMicro)).TextColor(k.Text2).SingleLine().Ellipsis("…").MinWidth(0)
@@ -126,7 +142,7 @@ func (a *app) shortcutRow(c *ui.Context, feature string, i int, h *settings.Hotk
 						if !a.hotkeys.Installed {
 							col = k.Warning
 						}
-						iconMark(c, icons.Accessibility, col, i18n.T("Works only while Voxt may use Accessibility."))
+						iconMark(c, icons.Accessibility, col, i18n.T("Works only with Accessibility access."))
 					}
 					if len(problems) > 0 {
 						iconMark(c, icons.DangerTriangle, k.Warning, strings.Join(problems, "\n"))
@@ -144,4 +160,89 @@ func (a *app) shortcutRow(c *ui.Context, feature string, i int, h *settings.Hotk
 	if b.Clicked() {
 		a.navigate(featurePath(feature))
 	}
+}
+
+// presetTitle is a shortcut preset's name ("": custom).
+func presetTitle(p string) string {
+	switch p {
+	case settings.PresetOption:
+		return i18n.T("Right ⌥ (default)")
+	case settings.PresetFn:
+		return i18n.T("fn (Auralink's keys)")
+	case settings.PresetCommand:
+		return i18n.T("⌘ combination")
+	case settings.PresetMouseMiddle:
+		return i18n.T("Middle mouse + fn⇧")
+	}
+	return i18n.T("Custom")
+}
+
+// presetAbout is one line on who a preset suits (setup guide).
+func presetAbout(p string) string {
+	switch p {
+	case settings.PresetOption:
+		return i18n.T("Right ⌥: one-handed and Voxt's default. Good when fn is the Globe key or shared with Auralink.")
+	case settings.PresetFn:
+		return i18n.T("fn: matches Auralink and many Voxt 1.x setups. Watch for clashes with the Globe key and input sources.")
+	case settings.PresetCommand:
+		return i18n.T("⌘ combination: right ⌘ only, away from the letter keys. Good if you keep Option for typing.")
+	case settings.PresetMouseMiddle:
+		return i18n.T("Middle mouse + fn⇧: click the wheel to transcribe, double-click to rewrite. Mouse shortcuts need Accessibility.")
+	}
+	return ""
+}
+
+// shortcutPresetPicker is the preset dropdown and warnings (settings and
+// the setup guide). key prefixes control ids ("sc" or "ob").
+func (a *app) shortcutPresetPicker(c *ui.Context, key string) {
+	t := c.Theme()
+	cur := settings.PresetOf(a.prefs.Features)
+	about := i18n.T("Shortcuts you changed yourself stay as they are.")
+	if key == "ob" {
+		about = i18n.T("You can change them later in Settings → Shortcuts.")
+	}
+	settingRow(c, key+"-preset", i18n.T("Preset"), about, func() {
+		var opts []string
+		for _, p := range settings.Presets {
+			opts = append(opts, presetTitle(p))
+		}
+		if cur == "" {
+			opts = append(opts, presetTitle(cur))
+		}
+		sel := presetTitle(cur)
+		if ui.Select(c.Key(key+"-preset-sel"), &sel, opts).Label(i18n.T("Shortcut preset")).Width(px(t, 220)).Changed() {
+			for _, p := range settings.Presets {
+				if presetTitle(p) == sel {
+					a.applyShortcutPreset(p)
+				}
+			}
+		}
+	})
+	if line := presetAbout(cur); line != "" && key == "ob" {
+		caption(c, line)
+	}
+	a.shortcutPresetWarnings(c, cur)
+}
+
+// shortcutPresetWarnings are preset-specific cautions under the dropdown.
+func (a *app) shortcutPresetWarnings(c *ui.Context, cur string) {
+	switch cur {
+	case settings.PresetFn:
+		warnLine(c, i18n.T("Auralink uses fn too, so while it runs, both apps react to these keys."))
+		warnLine(c, i18n.T("macOS may react to fn too (the Globe key). If it gets in the way, set it to Do Nothing in System Settings → Keyboard."))
+	case settings.PresetMouseMiddle:
+		if !a.hotkeys.Installed {
+			warnLine(c, i18n.T("Mouse-button shortcuts need Accessibility. Use Start in the guide, or grant it in Permissions."))
+		}
+	}
+}
+
+// applyShortcutPreset gives the shortcuts the user did not change preset
+// p's keys, or says that there are none.
+func (a *app) applyShortcutPreset(p string) {
+	if f := a.prefs.Features; !settings.ApplyPreset(&f, p) {
+		a.toast(i18n.T("You changed every shortcut yourself, so the preset leaves them as they are."))
+		return
+	}
+	a.updateSettings(func(s *settings.Settings) { settings.ApplyPreset(&s.Features, p) })
 }

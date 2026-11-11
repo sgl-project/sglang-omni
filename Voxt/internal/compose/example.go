@@ -1,10 +1,7 @@
 package compose
 
 import (
-	"regexp"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
 )
@@ -42,43 +39,3 @@ func Example(in Input) (input, answer string, ok bool) {
 	}
 	return template(set, "example-input"), template(set, name), true
 }
-
-var (
-	// Hesitations anywhere; "啊", "哦" (also sentence particles), "额",
-	// "唔" (in 金额, 额外; Cantonese "not") and "那个", "就是说" (also
-	// words) only at the start of a clause and followed by a pause or a
-	// correction.
-	cjkFiller   = regexp.MustCompile(`[嗯呃][，,、。.…\s]*`)
-	cjkOpener   = regexp.MustCompile(`(^|[，,。.！!？?；;、\s])(?:啊|哦|额|唔|那个|就是说)(?:[，,、…\s]+|(不对|不是))`)
-	latinFiller = regexp.MustCompile(`(?i)(^|[\s,.;!?，。])(?:um+|uh+|erm|er|hmm+)\b[,.…]*\s*`)
-)
-
-// StripFillers drops spoken fillers from a transcript ("嗯", "呃",
-// "um", "uh", with the comma after them), for a model that translates the
-// text as it is (Hy-MT2 takes no clean-up rules). Nothing else changes:
-// self-corrections stay.
-func StripFillers(text string) string {
-	text = fillerBeforeStop.ReplaceAllString(text, "$1$2")
-	text = fillerInWords.ReplaceAllString(text, "$1 $2")
-	s := cjkFiller.ReplaceAllString(text, "")
-	for prev := ""; prev != s; {
-		prev, s = s, cjkOpener.ReplaceAllString(s, "$1$2")
-	}
-	s = latinFiller.ReplaceAllString(s, "$1")
-	s = strings.TrimLeft(strings.Join(strings.Fields(s), " "), "，,、 ")
-	// A text that began with "Um, so": "So".
-	if r, n := utf8.DecodeRuneInString(s); unicode.IsLower(r) {
-		if first, _ := utf8.DecodeRuneInString(strings.TrimSpace(text)); unicode.IsUpper(first) {
-			s = string(unicode.ToUpper(r)) + s[n:]
-		}
-	}
-	return s
-}
-
-// What removing a filler must keep: the full stop of the clause it ends,
-// also after several ("好的，嗯，嗯。" is "好的。", not "好的，"), and the space between the
-// Latin words it sat between ("and嗯and").
-var (
-	fillerBeforeStop = regexp.MustCompile(`(\S)[，,、]\s*(?:[嗯呃]+[，,、…\s]*)+([。.！!？?])`)
-	fillerInWords    = regexp.MustCompile(`([A-Za-z0-9])[嗯呃]+([A-Za-z0-9])`)
-)

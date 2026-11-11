@@ -6,6 +6,7 @@ package main
 
 import (
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
@@ -36,26 +37,14 @@ type readiness struct {
 // helper that is starting is neither: it is ready in a moment.
 func (a *app) readinessList() []readiness {
 	var out []readiness
-	openModels := func() { a.navigate(modelsPath) }
 	openPerms := func() { a.navigate("/settings/permissions") }
-	ma, okA := a.featureModel(local.ASR, hotkey.Transcribe)
 	ml, okL := a.featureModel(local.LLM, hotkey.Transcribe)
+	out = append(out, a.speechReadiness())
 	switch {
-	case !okA && !okL:
-		// Nothing installed: one line, one way.
-		out = append(out, readiness{key: "home-models", title: i18n.T("Models"), kind: noticeWarn,
-			text: i18n.T("No speech model or language model is installed: install one of each to start."), action: i18n.T("Open Local models"), fix: openModels})
-	case !okA:
-		out = append(out, readiness{key: "home-asr", title: i18n.T("Speech recognition"), kind: noticeWarn,
-			text: i18n.T("No speech model is installed: install one to transcribe, translate and rewrite by voice."), action: i18n.T("Open Local models"), fix: openModels})
-	default:
-		out = append(out, readiness{key: "home-asr", title: i18n.T("Speech recognition"), ok: true, text: ma.Name})
-	}
-	switch {
-	case !okA && !okL:
 	case !okL:
 		out = append(out, readiness{key: "home-llm", title: i18n.T("Language model"), kind: noticeWarn,
-			text: i18n.T("No language model is installed: Translate and Rewrite need one, and Transcribe types the text as recognised."), action: i18n.T("Open Local models"), fix: openModels})
+			text: i18n.T("No language model is set up. Translate and Rewrite need one, and Transcribe types the text as recognised."), action: i18n.T("Open Language models"),
+			fix: func() { a.navigate(remotePath) }})
 	default:
 		out = append(out, readiness{key: "home-llm", title: i18n.T("Language model"), ok: true, text: ml.Name})
 	}
@@ -67,10 +56,10 @@ func (a *app) readinessList() []readiness {
 	case a.perms.mic == permission.NotDetermined:
 		out = append(out, readiness{key: "home-mic", title: i18n.T("Microphone"), kind: noticeInfo,
 			text: i18n.T("macOS asks for the microphone the first time you record."), action: i18n.T("Ask now"),
-			fix: func() { a.askPermission(proto.PermissionMicrophone) }})
+			fix: func() { a.askPermission(proto.PermissionMicrophone, nil) }})
 	default:
 		out = append(out, readiness{key: "home-mic", title: i18n.T("Microphone"), kind: noticeError,
-			text: i18n.T("Voxt may not use the microphone: allow it in System Settings."), action: i18n.T("Open Permissions"), fix: openPerms})
+			text: i18n.T("Voxt does not have microphone access. Allow it in System Settings."), action: i18n.T("Open Permissions"), fix: openPerms})
 	}
 	// Accessibility.
 	switch {
@@ -79,7 +68,7 @@ func (a *app) readinessList() []readiness {
 		out = append(out, readiness{key: "home-access", title: i18n.T("Accessibility"), ok: true, text: i18n.T("Allowed")})
 	default:
 		out = append(out, readiness{key: "home-access", title: i18n.T("Accessibility"), kind: noticeWarn,
-			text: i18n.T("Without Accessibility results are copied for you to paste, and shortcuts such as Right ⌥ do not work."), action: i18n.T("Open Permissions"), fix: openPerms})
+			text: i18n.T("Without Accessibility access, results are copied for you to paste, and shortcuts such as Right ⌥ do not work."), action: i18n.T("Open Permissions"), fix: openPerms})
 	}
 	// The shortcut.
 	out = append(out, a.shortcutReadiness())
@@ -91,9 +80,41 @@ func (a *app) readinessList() []readiness {
 			text: uitext.HelperFailText(st), action: i18n.T("Restart Voxt"), fix: a.relaunch})
 	default:
 		out = append(out, readiness{key: "home-helper", title: i18n.T("Helper"), kind: noticeError,
-			text: uitext.HelperFailText(st), action: i18n.T("Restart the helper"), fix: a.restartHelper})
+			text: uitext.HelperFailText(st), action: i18n.T("Restart helper"), fix: a.restartHelper})
 	}
 	return out
+}
+
+// speechReadiness is the speech model's line: the model Transcribe uses,
+// or how to get the recommended one. Automatic landing on System dictation
+// is not ready (it needs another permission and the language's on-device
+// model); System dictation chosen on the feature's page is.
+func (a *app) speechReadiness() readiness {
+	r := readiness{key: "home-asr", title: i18n.T("Speech recognition")}
+	m, ok := a.featureModel(local.ASR, hotkey.Transcribe)
+	if ok && (m.ID != dictation.ModelID || featureOf(a.prefs, hotkey.Transcribe).ASR == dictation.ModelID) {
+		r.ok, r.text = true, m.Name
+		return r
+	}
+	id := a.obSpeech()
+	st := a.modelStatus[id]
+	openModels := func() { a.navigate(modelsPath) }
+	download := func() { a.downloadModel(id) }
+	r.kind, r.text = noticeWarn, i18n.T("No speech model is installed. Install one to transcribe, translate and rewrite by voice.")
+	if ok {
+		r.kind, r.text = noticeInfo, i18n.T("Using System dictation for now.")
+	}
+	switch {
+	case st.Downloading:
+		r.kind, r.text, r.action, r.fix = noticeInfo, i18n.T("The speech model is still downloading (%d%%).", downloadPercent(st)), i18n.T("Open Speech models"), openModels
+	case st.OnDisk: // another app's, for the page to offer: nothing to download
+		r.action, r.fix = i18n.T("Open Speech models"), openModels
+	case ok:
+		r.action, r.fix = i18n.T("Download the recommended model (%s)", a.obDownloadLeft()), download
+	default:
+		r.action, r.fix = i18n.T("Download (%s)", a.obDownloadLeft()), download
+	}
+	return r
 }
 
 // shortcutReadiness says whether Transcribe's shortcut works: there is
@@ -103,7 +124,7 @@ func (a *app) shortcutReadiness() readiness {
 	openTr := func() { a.navigate("/transcribe") }
 	hs := hotkey.HotkeysOf(a.prefs.Features, hotkey.Transcribe)
 	if len(hs) == 0 {
-		r.kind, r.text, r.action, r.fix = noticeWarn, i18n.T("Transcribe has no shortcut: add one, or start from the menu bar."), i18n.T("Open Transcribe"), openTr
+		r.kind, r.text, r.action, r.fix = noticeWarn, i18n.T("Transcribe has no shortcut. Add one, or start it from the menu bar."), i18n.T("Open Transcribe"), openTr
 		return r
 	}
 	// Its own problems only: a clash is reported on the later binding,

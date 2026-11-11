@@ -1,0 +1,7 @@
+{
+  "source": "Constructed from Volcengine's SAUC docs (docs/6561/1354869) and Voxt (RemoteASRDoubaoStreaming.swift): an acknowledgement of the request, then only the last answer (the async endpoint sends results only when they change). The last answer has no audio_info, so the client takes the duration from what it sent.",
+  "frames": [
+    {"after": 1, "seq": 1, "payload": {"audio_info": {"duration": 0}, "result": {"text": ""}}},
+    {"after": -1, "seq": -2, "last": true, "payload": {"result": {"text": "你好，Voxt。"}}}
+  ]
+}

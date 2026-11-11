@@ -6,9 +6,9 @@ import Foundation
 
 // Text in and out of the app in front: what is focused (can it take
 // text?), the selected text (Accessibility first, ⌘C as a fallback that
-// puts the clipboard back, when the app allows it), and inserting text
+// puts the clipboard back, when the app allows it), inserting text
 // (the clipboard, ⌘V, keys after it, then the old clipboard back if
-// nobody wrote to it since). Go decides the policy (when ⌘C is allowed,
+// nobody wrote to it since), and reading a range of the focused field. Go decides the policy (when ⌘C is allowed,
 // the delays, the keys); the helper does it, beside the event tap whose
 // marker its posted keys carry.
 
@@ -167,7 +167,9 @@ final class TextIO: @unchecked Sendable {
         var frontPid = 0
         if let target = p.targetPid, target != 0 {
             let now = await front.current()
-            if now.pid != target {
+            var owner: pid_t = 0
+            if now.pid != target, let e = focusedElement(pid: pid_t(now.pid)) { AXUIElementGetPid(e, &owner) }
+            if !PasteChecker.targetReached(target, front: now.pid, focusOwner: owner != 0 ? Int(owner) : nil) {
                 return PasteResult(posted: false, restored: false, clipboardTaken: false, ms: round1(monotonicMs() - t0), front: now)
             }
             frontPid = now.pid
@@ -225,6 +227,12 @@ final class TextIO: @unchecked Sendable {
                 if !saw, let now = focusedElement(pid: pid_t(frontPid)) { moved = !CFEqual(now, e) }
             }
             check = PasteChecker.outcome(sawChange: saw, before: before, last: last, focusMoved: moved)
+            if check == PasteCheck.unchanged, let e = watched,
+               string(e, kAXRoleAttribute) == "AXWebArea" || inEditableRegion(e) {
+                // Chromium/GitHub editors often accept ⌘V while AX still reads the same length.
+                check = PasteCheck.unknown
+                checkMs = nil
+            }
             if check != PasteCheck.unknown { checkMs = round1(monotonicMs() - posted) }
             field = PasteField(role: watched.flatMap { string($0, kAXRoleAttribute) }, before: before.state, after: last?.state)
         }
@@ -303,6 +311,48 @@ final class TextIO: @unchecked Sendable {
         }
         return FieldReading(length: length, digest: digest, selection: range(e).map { TextRange(location: $0.location, length: $0.length) },
                             marker: marker)
+    }
+
+    /// A range of the focused element's text in app p.pid, which must be
+    /// in front and hold the focus (dictionary learning: the field a
+    /// result was pasted into). TextRead has the rules: never a password
+    /// field or under secure input, the whole value only when it is small.
+    /// The text never goes to the log.
+    func read(_ p: ReadParams) async throws -> ReadResult {
+        try requireTrust()
+        guard await front.current().pid == p.pid else { return ReadResult(error: ReadError.notFront) }
+        guard let e = focusedElement(pid: pid_t(p.pid)) else { return ReadResult(error: ReadError.noFocus) }
+        var owner: pid_t = 0
+        AXUIElementGetPid(e, &owner)
+        // A panel of another process has the focus: its text is not the target's.
+        guard Int(owner) == p.pid else { return ReadResult(error: ReadError.notFront) }
+        // A hung app must not hold the helper up: 0.25 s a call.
+        AXUIElementSetMessagingTimeout(e, 0.25)
+        if TextRead.refuses(subrole: string(e, kAXSubroleAttribute), secureInputOwner: secureInputOwner()?.pid, target: p.pid) {
+            return ReadResult(error: ReadError.secure)
+        }
+        var count: Int?
+        var v: CFTypeRef?
+        if AXUIElementCopyAttributeValue(e, kAXNumberOfCharactersAttribute as CFString, &v) == .success, let n = v as? Int {
+            count = n
+        }
+        guard var r = TextRead.read(p.range, length: count, byRange: { string(e, in: $0) }, value: { string(e, kAXValueAttribute) }) else {
+            return ReadResult(error: ReadError.unreadable)
+        }
+        r.element = Int(bitPattern: CFHash(e))
+        return r
+    }
+
+    /// The text of r in e (AXStringForRange), nil when e has none.
+    private func string(_ e: AXUIElement, in r: VoxtNewHelperKit.TextRange) -> String? { // Carbon has a TextRange too
+        var cf = CFRange(location: r.location, length: r.length)
+        var v: CFTypeRef?
+        guard let axr = AXValueCreate(.cfRange, &cf),
+              AXUIElementCopyParameterizedAttributeValue(e, kAXStringForRangeParameterizedAttribute as CFString, axr, &v) == .success, let v
+        else { return nil }
+        if let s = v as? String { return s }
+        if let a = v as? NSAttributedString { return a.string }
+        return nil
     }
 
     /// The app that has secure event input on (a password field focused,
