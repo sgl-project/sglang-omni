@@ -72,7 +72,7 @@ def test_request_layout_is_speaker_plus_text_plus_prompt_patches(
     engine_token_budget: int,
 ) -> None:
     request_data = build(state)
-    assert request_data.prefill_len == prefill_token_count
+    assert request_data.prefill_token_count == prefill_token_count
     assert request_data.prompt_patch_count == prompt_patch_count
     assert request_data.req.origin_input_ids == [CONTROL_TOKEN_ID] * prefill_token_count
     assert request_data.max_new_tokens == engine_token_budget
@@ -104,7 +104,7 @@ def test_apply_result_restores_state_with_latents_and_usage() -> None:
     assert restored.generated_latents is not None
     assert restored.generated_latents.shape == (1, 12, 64)
     assert torch.equal(restored.generated_latents, torch.cat(patches, dim=1))
-    assert restored.prompt_tokens == request_data.prefill_len
+    assert restored.prompt_tokens == request_data.prefill_token_count
     assert restored.completion_tokens == 3
     assert restored.finish_reason == "stop"
 
@@ -182,7 +182,7 @@ def test_instruct_request_uses_real_tokens_and_text_budget() -> None:
     )
     request_data = build(state)
     # Real chatml tokens (the pad slots ride inline), no placeholder row.
-    assert request_data.prefill_len == 5
+    assert request_data.prefill_token_count == 5
     assert request_data.req.origin_input_ids == [11, 22, 33, 151655, 151655]
     assert request_data.prompt_patch_count == 0
     assert request_data.text_ar_mode == "text"
@@ -228,7 +228,7 @@ def test_instruct_tts_task_has_no_text_phase() -> None:
     assert request_data.text_ar_mode == "audio"
     # ICL prompt patches are the trailing video_pad slots.
     assert request_data.prompt_patch_count == 2
-    assert request_data.prefill_len == 4
+    assert request_data.prefill_token_count == 4
     # temperature 0.0 normalizes to the greedy convention (top_k == 1).
     assert request_data.req.sampling_params.top_k == 1
 
@@ -278,7 +278,7 @@ def test_speaker_prefill_request_uses_real_chatml_tokens() -> None:
         max_engine_tokens=620,
     )
     request_data = build(state)
-    assert request_data.prefill_len == 4
+    assert request_data.prefill_token_count == 4
     assert request_data.req.origin_input_ids == [11, 22, 33, 151672]
     assert request_data.prompt_patch_count == 0
     assert request_data.text_ar_mode == "audio"
@@ -300,7 +300,7 @@ def test_speaker_dual_stream_request_carries_the_text_stream() -> None:
     assert request_data.dual_stream is True
     assert request_data.interleave_ratio == (2, 1)
     assert request_data.req.sampling_params.max_new_tokens == 1820
-    assert request_data.prefill_len == 3
+    assert request_data.prefill_token_count == 3
 
 
 def test_speaker_dual_stream_requires_ratio_and_text_stream() -> None:

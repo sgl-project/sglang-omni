@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
+import torch.nn.functional as F
 
 from sglang_omni.models.firered_tts3.payload_types import FireRedTTS3State
 from sglang_omni.models.firered_tts3.request_builders import (
@@ -12,13 +15,24 @@ from sglang_omni.models.firered_tts3.request_builders import (
     TEXT_MODE_AUDIO,
     TEXT_MODE_AUDIO_ZERO,
     TEXT_MODE_SOSP,
+    FireRedFlowResume,
     FireRedTTS3SGLangRequestData,
     FlowState,
 )
 from sglang_omni.models.firered_tts3.sglang_model import FireRedTTS3SGLangModel
+from sglang_omni.sampling.seed import derive_sampling_seed
 
 LATENT_IN_PAD_ID = 151655
 LATENT_OUT_PAD_ID = 151656
+
+
+@dataclass(kw_only=True)
+class PreparedPrefill:
+    """Temporary conditioning and flow state for one materialized request."""
+
+    flow_state: FlowState
+    prompt_latents: torch.Tensor | None
+    speaker_embedding: torch.Tensor | None
 
 
 def build_base_prefill_embeds(
@@ -186,8 +200,8 @@ def build_dual_stream_replay_rows(
     ), f"FireRedTTS3 dual-stream replay must leave at most one fed-back patch pending, got {pending_patch_count}"
     if pending_patch_count:
         assert (
-            request_data.ds_stage == DS_STAGE_PATCH
-        ), f"FireRedTTS3 dual-stream replay expects the machine at a patch feed when a patch is pending, got {request_data.ds_stage!r}"
+            request_data.dual_stream_stage == DS_STAGE_PATCH
+        ), f"FireRedTTS3 dual-stream replay expects the machine at a patch feed when a patch is pending, got {request_data.dual_stream_stage!r}"
         # note (kermit): A generated patch can outlive its interrupted input feed.
         request_data.pending_feedback_queue.append(
             model.patch_encoder(request_data.latent_patches[-1])[0, 0].to(
@@ -238,7 +252,7 @@ def dual_stream_conditioning_rows(
     remaining_patch_count = request_data.flow_state.patch_count
     group_index = 0
     while remaining_patch_count > 0:
-        group_start = request_data.prefill_len + group_index * group_steps
+        group_start = request_data.prefill_token_count + group_index * group_steps
         hidden_row_indices.append(group_start + text_steps - 1)
         remaining_patch_count -= 1
         for patch_index in range(patch_steps - 1):
@@ -250,3 +264,141 @@ def dual_stream_conditioning_rows(
             remaining_patch_count -= 1
         group_index += 1
     return hidden_states_float32[hidden_row_indices].unsqueeze(0)
+
+
+def prepare_prefill_flow(
+    model: FireRedTTS3SGLangModel,
+    request_data: FireRedTTS3SGLangRequestData,
+    request_id: str,
+    device: torch.device,
+) -> PreparedPrefill:
+    """Reconstruct request conditioning and generator state before prefill."""
+    state = request_data.state
+    resume = request_data.flow_state
+    if state.variant == "speaker":
+        if state.prompt_latents is not None or state.speaker_embedding is not None:
+            raise RuntimeError(
+                "FireRedTTS3 speaker-variant requests carry no reference-conditioning tensors (prompt_latents / speaker_embedding)"
+            )
+        else:
+            pass
+    elif state.variant != "instruct" and (
+        state.prompt_latents is None or state.speaker_embedding is None
+    ):
+        raise RuntimeError(
+            "FireRedTTS3 request is missing its reference-conditioning tensors (prompt_latents / speaker_embedding)"
+        )
+    else:
+        pass
+    prompt_latents = (
+        state.prompt_latents.to(device=device, dtype=torch.float32)
+        if state.prompt_latents is not None
+        else None
+    )
+    speaker_embedding = (
+        state.speaker_embedding.to(device=device, dtype=torch.float32)
+        if state.speaker_embedding is not None
+        else None
+    )
+    generator = torch.Generator(device=device)
+    if isinstance(resume, FireRedFlowResume) and resume.rng_state is not None:
+        generator.set_state(resume.rng_state)
+    elif state.seed is not None:
+        generator.manual_seed(int(state.seed))
+    else:
+        generator.manual_seed(derive_sampling_seed("fireredtts3-flow", request_id))
+    if prompt_latents is not None:
+        latent_history = F.pad(prompt_latents, (0, 0, model.history_length, 0))
+    else:
+        latent_history = torch.zeros(
+            1, model.history_length, model.redae_dim, device=device
+        )
+    if request_data.latent_patches:
+        latent_history = torch.cat(
+            [latent_history, *request_data.latent_patches], dim=1
+        )
+    else:
+        pass
+    return PreparedPrefill(
+        flow_state=FlowState(
+            generator=generator,
+            prompt_patch_count=request_data.prompt_patch_count,
+            speaker_conditioning=(
+                model.spk_proj_dit(speaker_embedding)
+                if model.spk_proj_dit is not None
+                else None
+            ),
+            backbone_conditioning=torch.zeros(
+                1, model.history_patches, model.llm_hidden_size, device=device
+            ),
+            latent_history=latent_history,
+            patch_count=len(request_data.latent_patches),
+        ),
+        prompt_latents=prompt_latents,
+        speaker_embedding=speaker_embedding,
+    )
+
+
+def materialize_prefill_embeddings(
+    model: FireRedTTS3SGLangModel,
+    request_data: FireRedTTS3SGLangRequestData,
+    prepared: PreparedPrefill,
+    device: torch.device,
+    embedding_dtype: torch.dtype,
+) -> torch.Tensor:
+    """Build prompt and retained-history embeddings in engine token order."""
+    state = request_data.state
+    assert request_data.probe is not None
+    with torch.inference_mode(), request_data.probe.segment("prefill_embeds"):
+        if state.variant == "base":
+            assert prepared.prompt_latents is not None
+            assert prepared.speaker_embedding is not None
+            prompt_embeddings = build_base_prefill_embeds(
+                model,
+                state,
+                prepared.prompt_latents,
+                prepared.speaker_embedding,
+                device,
+            )
+        else:
+            prompt_embeddings = build_chatml_prefill_embeds(model, state, device)
+        if prompt_embeddings.shape[1] != request_data.prefill_token_count:
+            raise RuntimeError(
+                f"FireRedTTS3 prefill row is {prompt_embeddings.shape[1]} positions, expected {request_data.prefill_token_count}"
+            )
+        else:
+            pass
+        request_embeddings = [prompt_embeddings[0].to(embedding_dtype)]
+        replay_embeddings = build_replay_rows(
+            model, request_data, device, embedding_dtype
+        )
+        if replay_embeddings is not None:
+            request_embeddings.append(replay_embeddings)
+        else:
+            pass
+    prefix_token_count = request_data.req.prefix_len
+    request_token_count = request_data.req.extend_len
+    generated_token_count = request_token_count - request_data.prefill_token_count
+    assert prefix_token_count == 0, "FireRedTTS3 radix prefix reuse is disabled"
+    if request_data.dual_stream:
+        patch_feeds = sum(
+            1
+            for token_id in request_data.req.output_ids
+            if int(token_id) == CONTROL_TOKEN_ID
+        )
+        excess = patch_feeds - len(request_data.latent_patches)
+        assert (
+            generated_token_count == len(request_data.req.output_ids)
+            and excess >= 0
+            and (excess == 0 or request_data.stop_pending)
+        ), "FireRedTTS3 dual-stream re-prefill history is inconsistent"
+    else:
+        excess = (
+            len(request_data.req.output_ids)
+            - text_output_token_count(request_data)
+            - len(request_data.latent_patches)
+        )
+        assert generated_token_count == len(request_data.req.output_ids) and (
+            excess >= 0 and (excess == 0 or request_data.stop_pending)
+        ), "FireRedTTS3 re-prefill history must match generated tokens"
+    return torch.cat(request_embeddings, dim=0)

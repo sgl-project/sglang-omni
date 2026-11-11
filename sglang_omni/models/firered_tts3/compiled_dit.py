@@ -3,12 +3,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
-from typing import Protocol, cast
+from typing import Protocol
 
 import torch
+from torch._dynamo.backends.registry import CompiledFn
 from torch._ops import OpOverload
 from torch.utils._python_dispatch import TorchDispatchMode
 
@@ -31,9 +32,12 @@ FFN_CONFIGS = {
 }
 QKV_CONFIGS = {192: (64, 128, 64, 4, 3), 384: (64, 64, 64, 4, 3)}
 FFN_LAYERS = 11
-CompileBackend = Callable[
-    [torch.fx.GraphModule, list[torch.Tensor]], Callable[..., tuple[torch.Tensor, ...]]
-]
+
+
+class CompileBackend(Protocol):
+    def __call__(
+        self, graph_module: torch.fx.GraphModule, example_inputs: list[torch.Tensor]
+    ) -> CompiledFn: ...
 
 
 class CompiledDiTExecutor:
@@ -53,16 +57,17 @@ class CompiledDiTExecutor:
 
     def compile_backend(
         self, graph_module: torch.fx.GraphModule, example_inputs: list[torch.Tensor]
-    ) -> Callable[..., tuple[torch.Tensor, ...]]:
+    ) -> CompiledFn:
         compiled = torch._inductor.compile(  # noqa: SLF001  # leading-underscore: PyTorch compiler API
             graph_module, example_inputs, options={"epilogue_fusion": False}
         )
 
-        def execute(*args: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        # note (kermit): TorchDynamo passes the graph's flattened inputs positionally.
+        def execute(*graph_inputs: torch.Tensor) -> tuple[torch.Tensor, ...]:
             with ExitStack() as stack:
                 for mode in self.active_modes.get():
                     stack.enter_context(mode)
-                return compiled(*args)
+                return compiled(*graph_inputs)
 
         return execute
 
@@ -351,17 +356,15 @@ class FfnGemmMode(TorchDispatchMode):
                 return func(*args, **kwargs)
             else:
                 inputs, bias, out = (fields[name] for name in ("mat1", "self", "out"))
-                if not all(
-                    isinstance(tensor, torch.Tensor) for tensor in (inputs, bias, out)
+                if (
+                    not isinstance(inputs, torch.Tensor)
+                    or not isinstance(bias, torch.Tensor)
+                    or not isinstance(out, torch.Tensor)
+                    or not isinstance(weight, torch.Tensor)
                 ):
                     self.misses += 1
                     return func(*args, **kwargs)
                 else:
-                    inputs, bias, out = cast(
-                        tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-                        (inputs, bias, out),
-                    )
-                    weight = cast(torch.Tensor, weight)
                     if (
                         fields["alpha"] != 1
                         or fields["beta"] != 1

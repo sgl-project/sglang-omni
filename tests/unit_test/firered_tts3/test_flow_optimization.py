@@ -12,11 +12,14 @@ import pytest
 import torch
 from torch.utils._python_dispatch import TorchDispatchMode
 
-import sglang_omni.models.firered_tts3.flow_graph as flow_graph_module
+import sglang_omni.models.firered_tts3.flow_graph_capture as flow_graph_module
 from sglang_omni.models.firered_tts3.compiled_dit import CompiledDiTExecutor
 from sglang_omni.models.firered_tts3.conv_cache import Conv1dWeightCache
 from sglang_omni.models.firered_tts3.dit import DiT
-from sglang_omni.models.firered_tts3.flow_graph import euler_flow_loop, prepare_flow_dit
+from sglang_omni.models.firered_tts3.flow_execution import (
+    euler_flow_loop,
+    prepare_flow_dit,
+)
 from sglang_omni.models.firered_tts3.flow_time_cache import (
     TimeConditionCache,
     TimeGemmMode,

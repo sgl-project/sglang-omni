@@ -133,18 +133,11 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 JSON
 ```
 
-For substitutions, use `Replace 'source' with 'target'.` with single quotes
-around both words. The quoted example above succeeded in a local ASR check;
-omitting quotes did not perform the intended replacement on the same audio.
-The `x-gen-text` response header contains edit masks, not a literal transcript
-of the generated audio. The replacement word may appear only in the audio.
-The heredoc preserves the instruction's single quotes in the shell command.
+For substitutions, use `Replace 'source' with 'target'.` with single quotes around both words. The quoted example above succeeded in a local ASR check; omitting quotes did not perform the intended replacement on the same audio. The `x-gen-text` response header contains edit masks, not a literal transcript of the generated audio. The replacement word may appear only in the audio. The heredoc preserves the instruction's single quotes in the shell command.
 
 `AcousticEdit` keeps the content and adjusts one acoustic attribute. The instruction comes from `instructions` verbatim, or is composed from `acoustic_attribute` (`Speed` / `Pitch` / `Volume`) and a value — the top-level `speed` field doubles as the Speed value:
 
-Raw instructions must use the trained templates: `adjust the speed to 0.8x`,
-`shift the pitch by 2 steps`, or `adjust the volume to 0.8`, for example.
-Free-form acoustic descriptions are unsupported.
+Raw instructions must use the trained templates: `adjust the speed to 0.8x`, `shift the pitch by 2 steps`, or `adjust the volume to 0.8`, for example. Free-form acoustic descriptions are unsupported.
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \

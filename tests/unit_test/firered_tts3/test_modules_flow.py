@@ -11,10 +11,11 @@ from sglang_omni.models.firered_tts3.config import FireRedTTS3PipelineConfig
 from sglang_omni.models.firered_tts3.conv_cache import Conv1dWeightCache
 from sglang_omni.models.firered_tts3.dit import DiT
 from sglang_omni.models.firered_tts3.engine_builder import FireRedTTS3EngineBuilder
+from sglang_omni.models.firered_tts3.flow_execution import prepare_flow_dit
+from sglang_omni.models.firered_tts3.flow_graph import FlowGraphRunner
+from sglang_omni.models.firered_tts3.flow_graph import flow_t_span as legacy_flow_t_span
 from sglang_omni.models.firered_tts3.flow_graph import (
-    FlowGraphRunner,
-    flow_t_span,
-    prepare_flow_dit,
+    prepare_flow_dit as legacy_prepare_flow_dit,
 )
 from sglang_omni.models.firered_tts3.flow_time_cache import (
     FlowPrecisionGate,
@@ -37,11 +38,11 @@ pytestmark = pytest.mark.usefixtures("disable_flow_optimization_environment")
 def test_flow_mode_validation() -> None:
     dit = tiny_cpu_dit()
     with pytest.raises(ValueError, match="unknown flow mode"):
-        prepare_flow_dit(dit, "compile-bf16")
+        legacy_prepare_flow_dit(dit, "compile-bf16")
     with pytest.raises(ValueError, match="unknown flow mode"):
         FlowGraphRunner(
             dit,
-            flow_t_span(N_TIMESTEPS, torch.device("cpu")),
+            legacy_flow_t_span(N_TIMESTEPS, torch.device("cpu")),
             n_timesteps=N_TIMESTEPS,
             patch_size=PATCH_SIZE,
             history_length=HISTORY_LENGTH,
@@ -159,14 +160,16 @@ def test_invalid_flow_cache_switches_fail(
 
 
 def test_private_model_keeps_source_and_forward_unchanged() -> None:
-    source = DiT(
-        in_channels=20,
-        out_channels=4,
-        hidden_size=32,
-        num_heads=4,
-        mlp_ratio=3,
-        depth=2,
-    ).eval()
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(7)
+        source = DiT(
+            in_channels=20,
+            out_channels=4,
+            hidden_size=32,
+            num_heads=4,
+            mlp_ratio=3,
+            depth=2,
+        ).eval()
     values = {name: tensor.clone() for name, tensor in source.state_dict().items()}
     random_state = torch.get_rng_state().clone()
     packed = PackedQkvModel(source)
@@ -176,7 +179,9 @@ def test_private_model_keeps_source_and_forward_unchanged() -> None:
         torch.equal(source.state_dict()[name], tensor)
         for name, tensor in values.items()
     )
-    x, time = torch.randn(2, 12, 20), torch.ones(2, 1, 1)
+    generator = torch.Generator().manual_seed(7)
+    x = torch.randn(2, 12, 20, generator=generator)
+    time = torch.ones(2, 1, 1)
     with torch.inference_mode():
         expected = source(x=x, t=time)
         actual = packed.model(x=x, t=time)

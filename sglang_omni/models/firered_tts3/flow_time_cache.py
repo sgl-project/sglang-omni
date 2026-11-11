@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Literal, cast
+from typing import Literal
 
 import torch
 from torch._ops import OpOverload
@@ -144,9 +144,18 @@ class TimeGemmMode(TorchDispatchMode):
             return func(*args, **kwargs)
         else:
             pass
-        bias, inputs, weight = cast(
-            tuple[torch.Tensor, torch.Tensor, torch.Tensor], args
-        )
+        if len(args) != 3:
+            return func(*args, **kwargs)
+        else:
+            bias, inputs, weight = args
+        if (
+            not isinstance(bias, torch.Tensor)
+            or not isinstance(inputs, torch.Tensor)
+            or not isinstance(weight, torch.Tensor)
+        ):
+            return func(*args, **kwargs)
+        else:
+            pass
         name = self.weights.get(weight.data_ptr())
         if name is None:
             return func(*args, **kwargs)
@@ -162,7 +171,11 @@ class TimeGemmMode(TorchDispatchMode):
         else:
             pass
         call.seen.add(name)
-        out = cast(torch.Tensor, kwargs["out"])
+        out = kwargs.get("out")
+        if not isinstance(out, torch.Tensor):
+            raise TimeCacheUnavailable(f"Unsupported time addmm output: {name}")
+        else:
+            pass
         signature = GemmSignature(
             input_shape=tuple(inputs.shape),
             input_stride=tuple(inputs.stride()),

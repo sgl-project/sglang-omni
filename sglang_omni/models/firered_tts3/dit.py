@@ -119,23 +119,27 @@ class DiTBlock(nn.Module):
         rope: tuple[torch.Tensor, float | torch.Tensor | None],
     ) -> torch.Tensor:
         (
-            shift_msa,
-            scale_msa,
-            gate_msa,
-            shift_mlp,
-            scale_mlp,
-            gate_mlp,
-            shift_conv,
-            scale_conv,
-            gate_conv,
+            attention_shift,
+            attention_scale,
+            attention_gate,
+            feed_forward_shift,
+            feed_forward_scale,
+            feed_forward_gate,
+            convolution_shift,
+            convolution_scale,
+            convolution_gate,
         ) = self.adaLN_modulation(timestep_embedding).chunk(9, dim=-1)
-        x = x + gate_msa * self.attn(
-            modulate(self.norm1(x), shift_msa, scale_msa), mask=mask, rope=rope
+        x = x + attention_gate * self.attn(
+            modulate(self.norm1(x), attention_shift, attention_scale),
+            mask=mask,
+            rope=rope,
         )
-        x = x + gate_conv * self.conv(
-            modulate(self.norm2(x), shift_conv, scale_conv), mask=mask
+        x = x + convolution_gate * self.conv(
+            modulate(self.norm2(x), convolution_shift, convolution_scale), mask=mask
         )
-        x = x + gate_mlp * self.mlp(modulate(self.norm3(x), shift_mlp, scale_mlp))
+        x = x + feed_forward_gate * self.mlp(
+            modulate(self.norm3(x), feed_forward_shift, feed_forward_scale)
+        )
         return x
 
 

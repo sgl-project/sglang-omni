@@ -1,10 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Per-request profiling probe for FireRedTTS3 stages.
-
-Set FIREREDTTS3_PROF=1 to enable per-segment host-side timing. The probe is
-trustworthy at concurrency 1; above that, segments from concurrent requests
-interleave on the same stage and only trends are meaningful.
-"""
+"""Per-request host timing; concurrent requests can interleave stage timings."""
 
 from __future__ import annotations
 
@@ -65,12 +60,7 @@ class ProfilingProbe:
     @staticmethod
     @contextmanager
     def shared_segment(name: str, probes: list["ProfilingProbe"]) -> Iterator[None]:
-        """Time one region once and attribute it to every probe.
-
-        A cross-request batched step runs once for all participating rows;
-        the batch's wall time is what each row waited, so every row's probe
-        accumulates the same duration.
-        """
+        """Record the batch wall time for each participating request."""
         active = [probe for probe in probes if probe.enabled]
         if not active:
             yield

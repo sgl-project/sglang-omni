@@ -6,7 +6,6 @@ from __future__ import annotations
 import weakref
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import cast
 
 import torch
 from torch._ops import OpOverload
@@ -266,8 +265,13 @@ class Conv1dWeightCache(TorchDispatchMode):
         }
         fields.update(zip(names, args))
         fields.update(kwargs or {})
-        inputs = cast(torch.Tensor, fields["input"])
-        weight = cast(torch.Tensor, fields["weight"])
+        inputs = fields.get("input")
+        weight = fields.get("weight")
+        if not isinstance(inputs, torch.Tensor) or not isinstance(weight, torch.Tensor):
+            self.misses += 1
+            return func(*args, **(kwargs or {}))
+        else:
+            pass
         entry = self.weights.get(weight.data_ptr())
         if entry is None:
             self.misses += 1
@@ -290,14 +294,35 @@ class Conv1dWeightCache(TorchDispatchMode):
             return func(*args, **(kwargs or {}))
         else:
             pass
-        if fields["transposed"] or any(cast(Sequence[int], fields["output_padding"])):
+        output_padding = fields["output_padding"]
+        stride = fields["stride"]
+        padding = fields["padding"]
+        dilation = fields["dilation"]
+        if (
+            not isinstance(output_padding, Sequence)
+            or not isinstance(stride, Sequence)
+            or not isinstance(padding, Sequence)
+            or not isinstance(dilation, Sequence)
+        ):
+            self.misses += 1
+            return func(*args, **(kwargs or {}))
+        elif not all(
+            isinstance(item, int | torch.SymInt)
+            for values in (output_padding, stride, padding, dilation)
+            for item in values
+        ):
             self.misses += 1
             return func(*args, **(kwargs or {}))
         else:
             pass
-        stride = list(cast(Sequence[int], fields["stride"]))
-        padding = list(cast(Sequence[int], fields["padding"]))
-        dilation = list(cast(Sequence[int], fields["dilation"]))
+        if fields["transposed"] or any(output_padding):
+            self.misses += 1
+            return func(*args, **(kwargs or {}))
+        else:
+            pass
+        stride = list(stride)
+        padding = list(padding)
+        dilation = list(dilation)
         if inputs.ndim == weight.ndim == 3:
             inputs = inputs.unsqueeze(2)
             stride, padding, dilation = [1, *stride], [0, *padding], [1, *dilation]

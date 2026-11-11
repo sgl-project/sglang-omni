@@ -69,7 +69,7 @@ def prefill(
 ) -> int:
     request_data = request.data
     request_data.req.prefix_len = 0
-    request_data.req.extend_end = request_data.prefill_len + len(
+    request_data.req.extend_end = request_data.prefill_token_count + len(
         request_data.req.output_ids
     )
     result = make_result(request_data.req.extend_len, sampled)
@@ -80,7 +80,7 @@ def prefill(
 def replay(runner: FireRedTTS3ModelRunner, request: SchedulerRequest) -> torch.Tensor:
     request_data = request.data
     request_data.req.prefix_len = 0
-    request_data.req.extend_end = request_data.prefill_len + len(
+    request_data.req.extend_end = request_data.prefill_token_count + len(
         request_data.req.output_ids
     )
     batch = SimpleNamespace(
@@ -99,7 +99,7 @@ def test_single_history_invariant_at_every_pause(samples: list[int]) -> None:
     request_data = request.data
     for sampled in [*samples, 0, 0, 0, 0]:
         replay(runner, request)
-        generated = request_data.req.extend_len - request_data.prefill_len
+        generated = request_data.req.extend_len - request_data.prefill_token_count
         assert (
             generated
             == len(request_data.req.output_ids)
@@ -150,7 +150,7 @@ def test_dual_reprefill_matches_uninterrupted_decode_at_every_pause(
         continuous_runner = make_runner(batching=batching)
         result = make_result(1)
         result.logits_output.hidden_states.fill_(
-            request_data.prefill_len + len(request_data.req.output_ids) - 1
+            request_data.prefill_token_count + len(request_data.req.output_ids) - 1
         )
         continuous_runner.post_decode(result, None, None, [continuous])
         produced = len(continuous.data.latent_patches) - len(
@@ -175,7 +175,7 @@ def test_dual_reprefill_matches_uninterrupted_decode_at_every_pause(
         runner.stop_predicted.reset_mock()
         token = prefill(runner, request)
         assert token == int(result.next_token_ids[0])
-        assert request_data.text_pos == continuous.data.text_pos
+        assert request_data.text_token_index == continuous.data.text_token_index
         assert len(request_data.pending_feedback_queue) == produced
         assert runner.prepare_flow_row.call_count == produced
         assert (
@@ -192,7 +192,7 @@ def test_dual_reprefill_matches_uninterrupted_decode_at_every_pause(
         )
         request_data.req.output_ids.append(token)
     assert len(request_data.latent_patches) == 3 * ratio[1]
-    assert request_data.text_pos == 3 * ratio[0] + 1
+    assert request_data.text_token_index == 3 * ratio[0] + 1
 
 
 @pytest.mark.parametrize("dual", [False, True])
@@ -205,7 +205,10 @@ def test_prefill_stop_finishes_on_next_sync_decode(dual: bool) -> None:
             result = make_result(1)
             runner.post_decode(result, None, None, [request])
             request_data.req.output_ids.append(int(result.next_token_ids[0]))
-        assert (request_data.ds_stage, request_data.ds_index) == (DS_STAGE_PATCH, 2)
+        assert (
+            request_data.dual_stream_stage,
+            request_data.dual_stream_step_index,
+        ) == (DS_STAGE_PATCH, 2)
         replay(runner, request)
     else:
         request_data.state.variant = "base"
@@ -263,7 +266,10 @@ def make_stopped_request(
             result = make_result(1)
             runner.post_decode(result, None, None, [request])
             request_data.req.output_ids.append(int(result.next_token_ids[0]))
-        assert (request_data.ds_stage, request_data.ds_index) == (DS_STAGE_PATCH, 2)
+        assert (
+            request_data.dual_stream_stage,
+            request_data.dual_stream_step_index,
+        ) == (DS_STAGE_PATCH, 2)
     else:
         pass
     replay(runner, request)
@@ -288,14 +294,14 @@ def test_deferred_stop_survives_repeated_retraction_until_decode(
     request_data = request.data
     machine = (
         request_data.text_ar_mode,
-        request_data.ds_stage,
-        request_data.ds_index,
-        request_data.text_pos,
+        request_data.dual_stream_stage,
+        request_data.dual_stream_step_index,
+        request_data.text_token_index,
     )
     patches = tuple(request_data.latent_patches)
     for excess in range(1, 5):
         output_ids = list(request_data.req.output_ids)
-        rows = replay(runner, request)[request_data.prefill_len :]
+        rows = replay(runner, request)[request_data.prefill_token_count :]
         expected = runner.model.get_input_embeddings()(
             torch.full((excess,), CONTROL_TOKEN_ID, dtype=torch.long)
         )
@@ -306,9 +312,9 @@ def test_deferred_stop_survives_repeated_retraction_until_decode(
         assert list(request_data.req.output_ids) == output_ids
         assert (
             request_data.text_ar_mode,
-            request_data.ds_stage,
-            request_data.ds_index,
-            request_data.text_pos,
+            request_data.dual_stream_stage,
+            request_data.dual_stream_step_index,
+            request_data.text_token_index,
         ) == machine
         assert len(request_data.latent_patches) == len(patches)
         for actual, original in zip(request_data.latent_patches, patches, strict=True):

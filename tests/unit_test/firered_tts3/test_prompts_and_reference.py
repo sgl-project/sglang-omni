@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Prompt formatting, Han token expansion, and resampled patch boundaries."""
+"""Prompt formatting, reference audio boundaries, and reference caching."""
 
 from __future__ import annotations
 
@@ -19,15 +19,18 @@ from urllib.request import urlopen
 import numpy as np
 import pytest
 import soundfile as sf
+import torch
 
 from sglang_omni.models.firered_tts3.preprocessing import (
     compose_speaker_chatml,
     encode_speaker_text,
 )
+from sglang_omni.models.firered_tts3.ref_encode import FireRedReferenceHook
 from sglang_omni.models.firered_tts3.task_prompts import (
     count_audio_patches,
     resolve_acoustic_instruction,
 )
+from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
 from tests.unit_test.fixtures.firered_tts3 import make_speaker_tokenizer
 
 
@@ -65,8 +68,8 @@ def test_speaker_text_expands_han_tokens_and_preserves_unknown_characters(
     text: str, expected_tokens: list[str]
 ) -> None:
     tokenizer = make_speaker_tokenizer()
-    encoded = encode_speaker_text(tokenizer, text)
-    assert encoded == [
+    token_ids = encode_speaker_text(tokenizer, text)
+    assert token_ids == [
         tokenizer.convert_tokens_to_ids(token) for token in expected_tokens
     ]
 
@@ -170,3 +173,91 @@ def test_compose_acoustic_instruction_templates() -> None:
         )
         == "shift the pitch by -1 step"
     )
+
+
+class ReferenceEncoderStub:
+    """Distinct artifacts make cache hits observable without loading an audio model."""
+
+    sample_rate: int = 24000
+    pad_multiple: int = 3840
+    redae_scale: float = 1.0
+    spk_extractor: torch.nn.Module | None = None
+
+    def __init__(self) -> None:
+        self.encode_calls: int = 0
+
+    def encode(
+        self, path: str, max_seconds: float | None = None
+    ) -> dict[str, torch.Tensor]:
+        self.encode_calls += 1
+        return {"prompt_latents": torch.full((1, 2, 4), float(self.encode_calls))}
+
+
+def make_reference_service(
+    reference_encoder: ReferenceEncoderStub, *, cache_enabled: bool = True
+) -> ReferenceEncodeService:
+    return ReferenceEncodeService(
+        FireRedReferenceHook(
+            reference_encoder, model_id="stub", cache_enabled=cache_enabled
+        ),
+        max_items=8,
+        max_bytes=1 << 20,
+    )
+
+
+def test_reference_cache_hit_reuses_stored_artifact(tmp_path: Path) -> None:
+    reference_encoder = ReferenceEncoderStub()
+    service = make_reference_service(reference_encoder)
+    reference_audio_path = tmp_path / "ref.wav"
+    reference_audio_path.write_bytes(b"ref-audio-bytes")
+
+    first = service.get_or_encode((str(reference_audio_path), None))
+    second = service.get_or_encode((str(reference_audio_path), None))
+    assert reference_encoder.encode_calls == 1
+    assert service.stats()["hits"] == 1
+    assert torch.equal(first["prompt_latents"], second["prompt_latents"])
+
+    second["prompt_latents"].fill_(-1.0)
+    third = service.get_or_encode((str(reference_audio_path), None))
+    assert torch.equal(third["prompt_latents"], first["prompt_latents"])
+    service.close()
+
+
+def test_reference_cache_key_separates_edit_cap(tmp_path: Path) -> None:
+    reference_encoder = ReferenceEncoderStub()
+    service = make_reference_service(reference_encoder)
+    reference_audio_path = tmp_path / "ref.wav"
+    reference_audio_path.write_bytes(b"ref-audio-bytes")
+
+    uncapped = service.get_or_encode((str(reference_audio_path), None))
+    capped = service.get_or_encode((str(reference_audio_path), 30.0))
+    assert reference_encoder.encode_calls == 2
+    assert service.stats()["entries"] == 2
+    assert torch.equal(uncapped["prompt_latents"], torch.ones(1, 2, 4))
+    assert torch.equal(capped["prompt_latents"], torch.full((1, 2, 4), 2.0))
+    assert torch.equal(
+        service.get_or_encode((str(reference_audio_path), None))["prompt_latents"],
+        uncapped["prompt_latents"],
+    )
+    assert torch.equal(
+        service.get_or_encode((str(reference_audio_path), 30.0))["prompt_latents"],
+        capped["prompt_latents"],
+    )
+    assert reference_encoder.encode_calls == 2
+    service.close()
+
+
+def test_reference_cache_disabled_encodes_every_call(tmp_path: Path) -> None:
+    reference_encoder = ReferenceEncoderStub()
+    service = make_reference_service(reference_encoder, cache_enabled=False)
+    reference_audio_path = tmp_path / "ref.wav"
+    reference_audio_path.write_bytes(b"ref-audio-bytes")
+
+    service.get_or_encode((str(reference_audio_path), None))
+    service.get_or_encode((str(reference_audio_path), None))
+    assert reference_encoder.encode_calls == 2
+    stats = service.stats()
+    assert stats["uncacheable"] == 2
+    assert stats["hits"] == 0
+    assert stats["entries"] == 0
+    service.close()

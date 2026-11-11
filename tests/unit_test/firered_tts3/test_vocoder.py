@@ -15,7 +15,7 @@ from sglang_omni.models.firered_tts3.redae_decoder import (
     RedAEAudioDecoder,
     rematerialize_istft_window,
 )
-from sglang_omni.models.firered_tts3.vocoder import FireRedTTS3BatchVocoder
+from sglang_omni.models.firered_tts3.vocoder_batch import FireRedTTS3BatchVocoder
 from sglang_omni.models.firered_tts3.vocoder_graph import RedAEVocoderGraphRunner
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import StagePayload
@@ -325,7 +325,8 @@ def test_istft_stream_envelope_clamp_keeps_output_finite() -> None:
     n_fft, hop = 1920, 480
     istft = ISTFT(n_fft=n_fft, hop_length=hop, win_length=n_fft)
     istft.window = torch.zeros_like(istft.window)
-    spec = torch.randn(2, n_fft // 2 + 1, 8, dtype=torch.float32)
+    generator = torch.Generator().manual_seed(7)
+    spec = torch.randn(2, n_fft // 2 + 1, 8, dtype=torch.float32, generator=generator)
     spec = torch.view_as_complex(torch.stack([spec, -spec], dim=-1))
     audio, cache = istft.forward_stream(spec, None, last_chunk=False)
     assert torch.isfinite(audio).all()

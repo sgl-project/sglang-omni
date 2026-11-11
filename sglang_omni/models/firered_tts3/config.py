@@ -13,7 +13,7 @@ from sglang_omni.config.schema import (
     PipelineConfig,
     StageConfig,
 )
-from sglang_omni.models.firered_tts3.flow_graph import FlowMode
+from sglang_omni.models.firered_tts3.flow_execution import FlowMode
 from sglang_omni.models.firered_tts3.hf_config import (
     FireRedTTS3Variant,
     detect_fireredtts3_variant,

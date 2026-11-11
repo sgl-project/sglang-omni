@@ -134,11 +134,8 @@ def test_generation_defaults_turn_the_decode_graph_on(
     builder = engine_builder
     defaults = builder.generation_defaults(dtype="bfloat16")
     assert defaults["disable_cuda_graph"] is False
-    # adjust_overrides runs on the merged dict (defaults + yaml overrides).
     overrides = dict(defaults)
     builder.adjust_overrides(overrides)
-    # The graph is captured with FULL hidden states; the runner requests the
-    # matching mode per step.
     assert overrides["enable_return_hidden_states"] is True
     eager_overrides = dict(defaults, disable_cuda_graph=True)
     builder.adjust_overrides(eager_overrides)

@@ -29,7 +29,10 @@ from sglang_omni.models.firered_tts3.hf_config import (
     detect_fireredtts3_variant,
     register_fireredtts3_hf_config,
 )
-from sglang_omni.models.firered_tts3.payload_types import FireRedTTS3State
+from sglang_omni.models.firered_tts3.payload_types import (
+    FireRedTTS3State,
+    engine_token_budget,
+)
 from sglang_omni.models.firered_tts3.sglang_model import FireRedTTS3SGLangModel
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.serve.openai_api import create_app
@@ -260,6 +263,63 @@ def test_firered_tts3_state_wire_round_trip() -> None:
             assert torch.equal(actual, expected), state_field.name
         else:
             assert actual == expected, state_field.name
+
+
+@pytest.mark.parametrize(
+    "wire_values, expected_fields, expected_budget",
+    [
+        ({}, (10, 400, 2.0, 0.5, 6), 420),
+        ({"variant": "speaker"}, (10, 400, 2.0, 0.5, 6), 420),
+        (
+            {
+                "n_timesteps": None,
+                "max_patches": None,
+                "inference_cfg": None,
+                "stop_threshold": None,
+                "min_patches": None,
+            },
+            (10, 400, 0.0, 0.0, 6),
+            420,
+        ),
+        (
+            {
+                "n_timesteps": 0,
+                "max_patches": 0,
+                "inference_cfg": 0,
+                "stop_threshold": 0,
+                "min_patches": 0,
+            },
+            (10, 400, 0.0, 0.0, 6),
+            420,
+        ),
+        (
+            {
+                "n_timesteps": 8,
+                "max_patches": 256,
+                "inference_cfg": 1.25,
+                "stop_threshold": 0.75,
+                "min_patches": 3,
+            },
+            (8, 256, 1.25, 0.75, 3),
+            276,
+        ),
+    ],
+)
+def test_legacy_state_wire_defaults_and_overrides(
+    wire_values: dict[str, JsonValue],
+    expected_fields: tuple[int, int, float, float, int],
+    expected_budget: int,
+) -> None:
+    """Preserve partial payloads and their derived engine budgets across upgrades."""
+    state = FireRedTTS3State.from_dict(wire_values)
+    assert (
+        state.n_timesteps,
+        state.max_patches,
+        state.inference_cfg,
+        state.stop_threshold,
+        state.min_patches,
+    ) == expected_fields
+    assert engine_token_budget(state) == expected_budget
 
 
 @pytest.mark.parametrize(

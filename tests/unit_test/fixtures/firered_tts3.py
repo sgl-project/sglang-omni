@@ -15,11 +15,8 @@ from typing_extensions import Unpack
 
 from sglang_omni.models.firered_tts3.config import FireRedTTS3PipelineConfig
 from sglang_omni.models.firered_tts3.dit import DiT
-from sglang_omni.models.firered_tts3.flow_graph import (
-    FlowGraphRunner,
-    euler_flow_loop,
-    flow_t_span,
-)
+from sglang_omni.models.firered_tts3.flow_execution import euler_flow_loop, flow_t_span
+from sglang_omni.models.firered_tts3.flow_graph import FlowGraphRunner
 from sglang_omni.models.firered_tts3.model_runner import FireRedTTS3ModelRunner
 from sglang_omni.models.firered_tts3.modules import PatchEncoder
 from sglang_omni.models.firered_tts3.payload_types import FireRedTTS3State
@@ -403,7 +400,7 @@ def make_flow_request(
         patch_count=6 if stopped else 0,
     )
     request_data.req.prefix_len = 0
-    request_data.req.extend_end = request_data.prefill_len
+    request_data.req.extend_end = request_data.prefill_token_count
     return SchedulerRequest(request_id=payload.request_id, data=request_data)
 
 

@@ -42,6 +42,7 @@ class FireRedTTS3State(DeclarativeStateBase):
     language: str | None = None
     audio_in_path: str | None = None
     input_ids: list[int] = wire(default_factory=list, codec="list")
+    # note (kermit): Missing legacy wire fields need fixed defaults independent of deployment settings.
     n_timesteps: int = wire(10, codec="int_or")
     inference_cfg: float = wire(2.0, codec="float")
     stop_threshold: float = wire(0.5, codec="float")

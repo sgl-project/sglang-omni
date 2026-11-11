@@ -8,7 +8,7 @@ from transformers import AutoTokenizer
 
 from sglang_omni.models.firered_tts3.config import DEFAULT_MAX_RUNNING_REQUESTS
 from sglang_omni.models.firered_tts3.engine_builder import FireRedTTS3EngineBuilder
-from sglang_omni.models.firered_tts3.flow_graph import FlowMode
+from sglang_omni.models.firered_tts3.flow_execution import FlowMode
 from sglang_omni.models.firered_tts3.hf_config import (
     load_checkpoint_hf_config,
     register_fireredtts3_hf_config,

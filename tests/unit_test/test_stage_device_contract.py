@@ -108,6 +108,8 @@ def factory_parameters(dotted: str) -> dict[str, object]:
 # note (lennox): these factories raise on torch.cuda.is_available() before
 # this test's mocks run, so they need a static accelerator mark (tests/README.md).
 REQUIRES_REAL_ACCELERATOR = {
+    ("firered_tts3", "talker"),
+    ("firered_tts3", "vocoder"),
     ("minimax_music3", "minimax_music3_ar"),
     ("minimax_music3", "dit_dav"),
     ("zonos2", "tts_engine"),
@@ -268,6 +270,11 @@ def test_gpu_stage_factories_forward_gpu_id_into_device_spec_resolution(
 # note (lennox): forwarding into resolve_device_spec isn't the same as binding
 # its result -- this drives the real build() chain and checks what it fixed.
 ENGINE_FACTORIES = {
+    "firered_tts3": (
+        "sglang_omni.models.firered_tts3.stages.create_talker_executor",
+        "sglang_omni.models.firered_tts3.engine_builder",
+        "FireRedTTS3EngineBuilder",
+    ),
     "nemotron_voicechat_thinker": (
         "sglang_omni.models.nemotron_voicechat.stages.create_thinker_executor",
         "sglang_omni.models.nemotron_voicechat.engine_builder",
@@ -369,7 +376,7 @@ ENGINE_FACTORIES = {
 
 # note (lennox): same CUDA-only models as REQUIRES_REAL_ACCELERATOR,
 # at this test's per-model (not per-stage) granularity.
-ACCELERATOR_ONLY_ENGINE_MODELS = {"minimax_music3", "zonos2"}
+ACCELERATOR_ONLY_ENGINE_MODELS = {"firered_tts3", "minimax_music3", "zonos2"}
 
 
 def engine_factory_ids():
@@ -415,14 +422,19 @@ def test_engine_factories_bind_the_placed_gpu(monkeypatch, model):
     monkeypatch.setattr(
         platforms.current_platform, "device_type", "cuda", raising=False
     )
+    factory_kwargs = (
+        pipeline_wiring("firered_tts3", "default", "talker")
+        if model == "firered_tts3"
+        else {}
+    )
 
     with pytest.raises(Stop):
-        factory(model_path="unused", device=None, gpu_id=2)
+        factory(model_path="unused", device=None, gpu_id=2, **factory_kwargs)
     assert final == {"device": "cuda:2", "gpu_id": 2}
 
     final.clear()
     with pytest.raises(Stop):
-        factory(model_path="unused", device="cuda", gpu_id=2)
+        factory(model_path="unused", device="cuda", gpu_id=2, **factory_kwargs)
     assert final == {"device": "cuda:2", "gpu_id": 2}
 
 

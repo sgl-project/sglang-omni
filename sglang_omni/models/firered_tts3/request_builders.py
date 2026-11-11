@@ -67,11 +67,11 @@ class FireRedTTS3SGLangRequestData(SGLangARRequestData):
     stage_payload: StagePayload = field()
     state: FireRedTTS3State = field(default_factory=FireRedTTS3State)
     prompt_patch_count: int = 0
-    prefill_len: int = 0
+    prefill_token_count: int = 0
     flow_state: FlowState | FireRedFlowResume | None = None
     latent_patches: list[torch.Tensor] = field(default_factory=list)
     probe: ProfilingProbe | None = None
-    engine_start_s: float = 0.0
+    engine_start_seconds: float = 0.0
     streamed_patches: int = 0
     stream_chunk_index: int = 0
     text_ar_mode: TextDecodeMode = TEXT_MODE_AUDIO
@@ -80,9 +80,9 @@ class FireRedTTS3SGLangRequestData(SGLangARRequestData):
     eot_sampled: bool = False
     dual_stream: bool = False
     interleave_ratio: tuple[int, int] | None = None
-    ds_stage: DualStreamStage = DS_STAGE_TEXT
-    ds_index: int = 0
-    text_pos: int = 0
+    dual_stream_stage: DualStreamStage = DS_STAGE_TEXT
+    dual_stream_step_index: int = 0
+    text_token_index: int = 0
     stop_pending: bool = False
 
 
@@ -175,10 +175,10 @@ def build_sglang_firered_tts3_request(
         req=request,
         output_ids=request.output_ids,
         prompt_patch_count=prompt_patch_count,
-        prefill_len=prefill_token_count,
+        prefill_token_count=prefill_token_count,
         max_new_tokens=max_engine_tokens,
         input_embeds_are_projected=True,
-        engine_start_s=time.perf_counter(),
+        engine_start_seconds=time.perf_counter(),
         text_ar_mode="text" if state.task_type in TEXT_PHASE_TASKS else "audio",
         dual_stream=state.dual_stream,
         interleave_ratio=interleave_ratio if state.dual_stream else None,
@@ -196,9 +196,9 @@ def apply_latent_result(
     else:
         pass
     state.generated_latents = torch.cat(request_data.latent_patches, dim=1)
-    state.prompt_tokens = request_data.prefill_len
+    state.prompt_tokens = request_data.prefill_token_count
     state.completion_tokens = len(request_data.latent_patches)
-    state.engine_time_s = time.perf_counter() - request_data.engine_start_s
+    state.engine_time_s = time.perf_counter() - request_data.engine_start_seconds
     state.finish_reason = request_data.finish_reason
     if request_data.text_token_ids and text_tokenizer is not None:
         state.gen_text = text_tokenizer.decode(request_data.text_token_ids)
