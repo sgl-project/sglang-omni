@@ -69,11 +69,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 
 ### 第一次用 Voxt
 
-1. **下载**：从 [Voxt v2.0.3 发布页][download]下载 `Voxt-2.0.3-arm64.dmg`，打开后把 **Voxt** 拖进“应用程序”。也可以用 Homebrew 安装：
-
-   ```sh
-   brew install --cask hehehai/tap/voxt
-   ```
+1. **下载**：从 [Voxt v2.0.3 发布页][download]下载 `Voxt-2.0.3-arm64.dmg`，打开后把 **Voxt** 拖进“应用程序”。
 
 2. **打开 Voxt，跟着设置引导走**：授权麦克风和辅助功能，下载推荐的语音识别模型（Qwen3-ASR 1.7B (8bit)，2.5 GB），再配置一个语言模型用于整理、翻译和改写。
 3. 在任意 App 里**单按右 Option**，说话，再按一下。
@@ -82,11 +78,10 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 
 ### 从 Voxt 1.x 升级
 
-三种方式任选其一：
+两种方式任选其一：
 
-- **在 Voxt 1.x 里检查更新**：点“检查更新…”，在 Apple 芯片的 Mac 上会看到 Voxt 2 和升级指南。
+- **在 Voxt 1.x 里检查更新**：在 Apple 芯片的 Mac 上，先打开“Beta 更新”（设置 → 关于），再点“检查更新…”，会看到 Voxt 2 和升级指南。没打开“Beta 更新”时，Voxt 1.x 暂时还不会提供 Voxt 2。
 - **覆盖安装**：退出 Voxt 1.x，下载最新的 dmg，把 Voxt 拖进“应用程序”，访达询问时选“替换”。
-- **Homebrew**：上面的 cask 装的就是 Voxt 2。
 
 装好后，在 Voxt 2 里：
 
@@ -100,7 +95,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 
 - **Apple 芯片**、**macOS 15** 及以上的 Mac。Voxt 2 不能在 Intel Mac 上运行，那里请继续用 Voxt 1.x。
 - app 约 280 MB，推荐的语音识别模型需下载 2.5 GB。
-- Voxt 2 不会自动更新。新版本用同样的方式安装：从 dmg 安装，或者 `brew upgrade --cask voxt`。
+- Voxt 2 有新版本时会提示（“检查更新…”，以及每天一次的自动检查，可以在 设置 → 诊断与关于 里关掉），但不会自己安装。新版本用同样的方式安装：从 dmg 安装。
 
 ## 你的模型，你的数据
 

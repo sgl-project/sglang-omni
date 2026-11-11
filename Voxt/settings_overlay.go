@@ -179,17 +179,18 @@ const (
 // overlayPreview is the overlay's pill as it draws, at its size, in its
 // dark theme, over a desktop picture that shows through it blurred (the
 // desktop does, on the Mac), after Voxt's preview: where the settings put
-// it (the bottom or the top, the distance from the edge to scale with the
-// card), as opaque, as round, with the time when it shows it. A change
-// shows at once.
+// it (the bottom or the top, the distance from the edge to scale with
+// its half of the card), as opaque, as round, with the time when it
+// shows it. A change shows at once.
 func (a *app) overlayPreview(c *ui.Context) {
 	t := c.Theme()
 	o := a.prefs.Overlay
 	s := previewSession()
 	cardH := px(t, ovPreviewH)
 	// The distance from the edge, from none to ovMaxMargin, across the
-	// card's room.
-	room := max(cardH-layout.PillH-2*px(t, ovPreviewInset), 0)
+	// room in the pill's half of the card: at the largest the pill still
+	// shows on its side (#3785).
+	room := max(cardH/2-layout.PillH-px(t, ovPreviewInset), 0)
 	off := px(t, ovPreviewInset) + room*float32(min(max(o.Margin, 0), ovMaxMargin)/ovMaxMargin)
 	radius := faceRadius(o, ovRecording, layout.PillH)
 	ui.Box(c.Key("ov-preview")).FillWidth().MinWidth(0).Height(cardH).Shrink(0).Radius(px(t, ovPreviewRadius)).Clip().

@@ -69,7 +69,8 @@ type fakeAudio struct {
 	late    map[string]func(AudioEvent) // the callback of an ended recording
 	frames  int
 	stopped int
-	running int // Records that have not returned
+	params  []proto.CaptureParams // of each Record
+	running int                   // Records that have not returned
 }
 
 func newFakeAudio() *fakeAudio {
@@ -82,6 +83,7 @@ func (f *fakeAudio) Record(ctx context.Context, id string, p proto.CaptureParams
 	}
 	stop := make(chan struct{})
 	f.mu.Lock()
+	f.params = append(f.params, p)
 	f.stops[id] = stop
 	f.running++
 	f.mu.Unlock()

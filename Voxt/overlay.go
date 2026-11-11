@@ -281,11 +281,11 @@ func (a *app) overlayDragged() {
 }
 
 // syncPassThrough lets the pointer through the small pill (recording,
-// working: nothing in it takes a click), but not through the face with
+// working: nothing in it takes a click, but Use transcript), but not through the face with
 // live text in lines (Overlay.LiveLines): it is dragged as the card is,
 // and the wheel scrolls its text.
 func (a *app) syncPassThrough() {
-	pass := (a.ov.mode == ovRecording || a.ov.mode == ovWorking) && !a.prefs.Overlay.LiveLines
+	pass := (a.ov.mode == ovRecording || a.ov.mode == ovWorking && !canSkip(a.sess, ovWorking)) && !a.prefs.Overlay.LiveLines
 	if pass == a.ov.passThrough {
 		return
 	}
