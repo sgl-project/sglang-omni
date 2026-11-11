@@ -15,6 +15,7 @@ from sglang.kernels.ops.mamba.triton_ops import (
     initialize_mamba_selective_state_update_backend,
 )
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
+from sglang.srt.models.registry import ModelRegistry
 from sglang.srt.server_args import ServerArgs
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
@@ -34,6 +35,9 @@ from sglang_omni.models.nemotron_transcribe.hf_config import (
 )
 from sglang_omni.models.nemotron_transcribe.model_runner import (
     NemotronTranscribeModelRunner,
+)
+from sglang_omni.models.nemotron_transcribe.mtp_draft import (
+    NemotronTranscribeMTPDraft,
 )
 from sglang_omni.models.nemotron_transcribe.request_builders import (
     NemotronTranscribeRequestData,
@@ -197,6 +201,7 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         for key, value in MTP_DEFAULT_OVERRIDES.items():
             overrides.setdefault(key, value)
         overrides["enable_mixed_chunk"] = False
+        ModelRegistry.models["NemotronHForCausalLMMTP"] = NemotronTranscribeMTPDraft
         self.enable_mtp_draft = True
 
     def infra_kwargs(self) -> InfrastructureOptions:
