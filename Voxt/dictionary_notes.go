@@ -10,6 +10,8 @@ package main
 
 import (
 	"math"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -19,6 +21,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // The Dictionary page's views (dictView.tab).
@@ -76,19 +79,32 @@ func (a *app) notesView(c *ui.Context) {
 // (session/run_listen.go, write.go), with the editor as typed and sample
 // text; no app scene, which depends on the app in front.
 func (a *app) notesExampleInput(feature string) compose.Input {
+	in := a.notesExampleRequest(feature)
+	for _, tm := range a.notesTerms() {
+		if tm.Enabled {
+			in.Glossary = append(in.Glossary, compose.Term{Term: tm.Term, Aliases: tm.Aliases})
+		}
+	}
+	return in
+}
+
+// notesTerms are the glossary's source: the dictionary's terms when the
+// glossary is sent, else nil.
+func (a *app) notesTerms() []store.Term {
+	if a.prefs.Dictionary.Enabled && a.prefs.Dictionary.Glossary {
+		return a.dv.all
+	}
+	return nil
+}
+
+// notesExampleRequest is notesExampleInput without the glossary.
+func (a *app) notesExampleRequest(feature string) compose.Input {
 	p := a.prefs
 	p.Dictionary.Notes = a.dv.notes.text
 	f := p.Features
 	in := compose.Input{
 		MainLanguage: session.MainLanguage(p, i18n.Locale()), OtherLanguages: p.General.OtherLanguages,
 		Dictionary: session.PromptDictionary(p),
-	}
-	if p.Dictionary.Enabled && p.Dictionary.Glossary {
-		for _, tm := range a.dv.all {
-			if tm.Enabled {
-				in.Glossary = append(in.Glossary, compose.Term{Term: tm.Term, Aliases: tm.Aliases})
-			}
-		}
 	}
 	switch feature {
 	case hotkey.Translate:
@@ -118,16 +134,12 @@ func (a *app) notesExample(c *ui.Context) {
 	if feature == hotkey.Transcribe && !a.prefs.Features.Transcribe.Enhance {
 		caption(c, i18n.T("Clean-up is off, so nothing is sent to a language model."))
 	}
-	in := a.notesExampleInput(feature)
-	out, err := compose.Build(in)
-	if err != nil {
-		caption(c, err.Error())
+	ex := a.notesExampleBuilt(feature)
+	if ex.err != nil {
+		caption(c, ex.err.Error())
 		return
 	}
-	without := in
-	without.Dictionary = ""
-	plain, _ := compose.Build(without)
-	system, dict := plain.System, out.Dictionary
+	in, system, dict := ex.in, ex.system, ex.dict
 	none := i18n.T("(none)")
 	or := func(s string) string {
 		if strings.TrimSpace(s) == "" {
@@ -148,7 +160,7 @@ func (a *app) notesExample(c *ui.Context) {
 		promptCard(c, "dict-ex-input", "+ "+i18n.T("Your input (the selected text)"), or(userInput))
 		promptCard(c, "dict-ex-speech", "+ "+i18n.T("Speech recognition text"), or(speech))
 		sectionTitle(c, "= "+i18n.T("What the language model receives"))
-		for i, m := range out.Messages() {
+		for i, m := range ex.msgs {
 			promptCard(c, "dict-ex-msg-"+strconv.Itoa(i), m.Role, m.Content)
 		}
 	})
@@ -164,4 +176,35 @@ func promptCard(c *ui.Context, key, title, text string) {
 			ui.Text(c, text).FontSize(px(t, fsCaption)).Font("monospace").Selectable()
 		})
 	})
+}
+
+// notesExampleCache is How it is used's last built request. With
+// thousands of terms Build takes milliseconds, too long to repeat on
+// every frame (a pointer move, a caret blink).
+type notesExampleCache struct {
+	in     compose.Input // the request without its glossary
+	terms  []store.Term  // its glossary's source, by identity: each read of the dictionary is a new slice
+	built  bool
+	system string // the system prompt without the dictionary
+	dict   string
+	msgs   []compose.Message
+	err    error
+}
+
+// notesExampleBuilt builds the example of feature, again only when the
+// request or the terms changed.
+func (a *app) notesExampleBuilt(feature string) *notesExampleCache {
+	ex := &a.dv.example
+	in, terms := a.notesExampleRequest(feature), a.notesTerms()
+	if ex.built && len(terms) == len(ex.terms) && (len(terms) == 0 || &terms[0] == &ex.terms[0]) && reflect.DeepEqual(in, ex.in) {
+		return ex
+	}
+	full := a.notesExampleInput(feature)
+	out, err := compose.Build(full)
+	without := full
+	without.Dictionary = ""
+	plain, _ := compose.Build(without)
+	in.OtherLanguages = slices.Clone(in.OtherLanguages) // the settings' slice could change under the key
+	*ex = notesExampleCache{in: in, terms: terms, built: true, system: plain.System, dict: out.Dictionary, msgs: out.Messages(), err: err}
+	return ex
 }

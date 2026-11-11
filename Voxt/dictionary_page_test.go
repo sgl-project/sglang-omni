@@ -357,3 +357,67 @@ func TestDictionaryNotes(t *testing.T) {
 		}
 	}
 }
+
+// TestDictionaryNotesExampleCached: How it is used builds its request
+// once, not on every frame, and builds it again whenever what it shows
+// depends on changes: the notes as typed, the example's feature, a term
+// read back, the dictionary's switches, the language.
+func TestDictionaryNotesExampleCached(t *testing.T) {
+	a, tt := dictTester(t)
+	a.loadDict()
+	frames(tt)
+	clickSegment(t, tt, "Dictionary view", dictNotesTab, 2)
+	system := func() string {
+		t.Helper()
+		frames(tt)
+		if len(a.dv.example.msgs) == 0 {
+			t.Fatal("no example")
+		}
+		return a.dv.example.msgs[0].Content
+	}
+	// An empty dictionary: nothing to send, and frames reuse the build.
+	if !has(tt, "(not sent: empty or switched off)") {
+		t.Fatalf("empty: %q", firstTexts(tt))
+	}
+	built := &a.dv.example.msgs[0]
+	for range 10 {
+		tt.Frame()
+	}
+	if &a.dv.example.msgs[0] != built {
+		t.Fatal("the example is built again on a frame that changes nothing")
+	}
+	// Terms read back join the glossary.
+	seedTerms(t, a)
+	a.loadDict()
+	if s := system(); !strings.Contains(s, "- VoxtNew") || !has(tt, s) {
+		t.Fatalf("new terms not in the example:\n%s", s)
+	}
+	// Notes as typed, Chinese and English mixed, before they are saved.
+	click(t, tt, "Personal dictionary in Markdown")
+	tt.Type("| 罗斯 Roth | wrath |")
+	if s := system(); !strings.Contains(s, "| 罗斯 Roth | wrath |") {
+		t.Fatalf("typed notes not in the example:\n%s", s)
+	}
+	// Another feature.
+	clickSegment(t, tt, "Example for", 2, 3)
+	if _, sel := rewriteSample(); !has(tt, sel) {
+		t.Fatalf("Rewrite's example: %q", firstTexts(tt))
+	}
+	// The glossary switched off, then the whole dictionary.
+	a.updateSettings(func(s *settings.Settings) { s.Dictionary.Glossary = false })
+	if s := system(); strings.Contains(s, "- VoxtNew") || !strings.Contains(s, "罗斯 Roth") {
+		t.Fatalf("glossary off:\n%s", s)
+	}
+	a.updateSettings(func(s *settings.Settings) { s.Dictionary.Enabled = false })
+	if s := system(); strings.Contains(s, "罗斯 Roth") {
+		t.Fatalf("dictionary off:\n%s", s)
+	}
+	a.updateSettings(func(s *settings.Settings) { s.Dictionary.Enabled, s.Dictionary.Glossary = true, true })
+	// The language: the sample text is in the new one.
+	en := system()
+	i18n.SetLocale("zh-Hans")
+	if zh := system(); zh == en {
+		t.Fatal("the example keeps the old language")
+	}
+	i18n.SetLocale("en")
+}

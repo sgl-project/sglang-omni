@@ -80,6 +80,8 @@ type dictView struct {
 	// all are the terms of the last read without a search, for the
 	// example's glossary.
 	all []store.Term
+	// example is the personal dictionary's example, as last built.
+	example notesExampleCache
 }
 
 // termEdit is the term dialog's fields: a new term when id is "".
