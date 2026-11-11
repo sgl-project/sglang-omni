@@ -20,6 +20,7 @@ from sglang_omni.models.moss_speech.fsm import (
     MODE_TEXT,
     SOSP,
     TEXT_ENDOFTEXT,
+    TEXT_VOCAB,
     Mode,
     MossSamplingParams,
     apply_warpers,
@@ -30,14 +31,21 @@ from sglang_omni.models.moss_speech.fsm import (
     repetition_penalty_scores,
     row_selected_token,
     sample_row,
-    stop_hit,
 )
 from sglang_omni.models.moss_speech.model_runner import MossSpeechModelRunner
 from sglang_omni.models.moss_speech.request_builders import (
     MossSpeechSGLangRequestData,
+    MossSpeechState,
+    build_result,
+    build_sglang_moss_request,
     extract_output_codes,
+    preprocess_request,
 )
+from sglang_omni.models.moss_speech.sglang_model import MossSpeechModelOutput
+from sglang_omni.proto.request import OmniRequest, StagePayload
+from sglang_omni.scheduling.types import SchedulerRequest
 from tests.unit_test.fixtures.accelerator import require_cuda
+from tests.unit_test.fixtures.moss_speech import TextTokenizer
 
 
 @pytest.mark.parametrize(
@@ -117,21 +125,6 @@ def test_modality_transitions_keep_audio_end_precedence(
     finalized = finalize_row(42, 7, expected_mode)
     assert finalized == ((MODALITY_PAD, 7) if expected_mode == MODE_AUDIO else (42, 7))
     assert row_selected_token(finalized) == (7 if expected_mode == MODE_AUDIO else 42)
-
-
-@pytest.mark.parametrize(
-    "row,expected_stop",
-    [
-        ((IM_END, 3), True),
-        ((TEXT_ENDOFTEXT, 3), True),
-        ((MODALITY_PAD, EOSP), False),
-        ((7, EOSP), False),
-    ],
-)
-def test_only_text_stop_tokens_terminate_generation(
-    row: tuple[int, int], expected_stop: bool
-) -> None:
-    assert stop_hit(row) is expected_stop
 
 
 def test_greedy_sampling_bypasses_warpers_and_penalizes_each_channel() -> None:
@@ -273,3 +266,39 @@ def test_terminal_audio_preserves_last_valid_code_at_length_boundary(
     codes = extract_output_codes(rows)
     assert len(codes) == expected_codes
     assert codes[-1] == (10 if natural_audio_end else 123)
+
+
+@pytest.mark.parametrize(
+    "terminal_token,termination",
+    [(IM_END, "stop"), (TEXT_ENDOFTEXT, "stop"), (8, "length"), (EOSP, "length")],
+)
+def test_sampled_tokens_use_engine_termination_state(
+    terminal_token: int, termination: str
+) -> None:
+    payload = StagePayload(
+        "termination",
+        OmniRequest(
+            inputs=[{"role": "user", "content": "Hello"}],
+            params={"max_new_tokens": 4 if termination == "stop" else 2},
+        ),
+        {},
+    )
+    native = build_sglang_moss_request(preprocess_request(payload, TextTokenizer()))
+    request = SchedulerRequest(request_id=payload.request_id, data=native)
+    runner = object.__new__(MossSpeechModelRunner)
+    for index, token in enumerate((7, terminal_token)):
+        text_logits = torch.full((1, TEXT_VOCAB), -10.0)
+        text_logits[0, token] = 10.0
+        output = MossSpeechModelOutput(
+            next_token_logits=text_logits,
+            text_logits=text_logits,
+            audio_logits=torch.zeros(1, AUDIO_VOCAB),
+        )
+        selected = runner.sample_next_token_ids(output, None, None, [request])
+        native.req.output_ids.append(int(selected[0]))
+        native.req.update_finish_state()
+        assert native.req.finished() is (index == 1)
+    native.finish_reason = native.req.finished_reason.to_json()["type"]
+    result = MossSpeechState.from_dict(build_result(native).data)
+    assert result.finish_reason == termination
+    assert result.completion_token_count == 2

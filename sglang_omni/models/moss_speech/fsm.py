@@ -141,10 +141,6 @@ def row_selected_token(row: tuple[int, int]) -> int:
     return row[1] if row[0] == MODALITY_PAD else row[0]
 
 
-def stop_hit(row: tuple[int, int]) -> bool:
-    return row[0] in (TEXT_ENDOFTEXT, IM_END)
-
-
 def channel_histories(
     prompt_rows: torch.Tensor, output_rows: list[tuple[int, int]]
 ) -> tuple[torch.Tensor, torch.Tensor]:
