@@ -21,7 +21,7 @@ from sglang_omni.mps.manager import (
 from tests.test_ci import test_mps_native as mps_ci
 
 
-def _proc_stat(pid: int, comm: str, state: str, starttime: int) -> str:
+def proc_stat(pid: int, comm: str, state: str, starttime: int) -> str:
     fields = [state, "1"] + ["0"] * 17 + [str(starttime)]
     return f"{pid} ({comm}) " + " ".join(fields)
 
@@ -73,20 +73,36 @@ def test_snapshot_holds_one_control_lock_across_all_queries(monkeypatch, tmp_pat
         "read_daemon_process_identity",
         lambda _pipe: MpsProcessIdentity(123, 1),
     )
+    lock_path = tmp_path / ".control.lock"
+    lock_path.touch()
+    contender = lock_path.open("a+")
+    real_flock = fcntl.flock
     events: list[str] = []
+    exclusive_acquisitions = 0
+    contended_commands: list[str] = []
     responses = {
         "get_server_list\n": "7000 8000\n",
         "get_client_list 7000\n": "101\n",
         "get_client_list 8000\n": "202\n",
     }
 
-    def flock(_file, operation):
+    def flock(file, operation):
+        nonlocal exclusive_acquisitions
         if operation == fcntl.LOCK_EX:
+            exclusive_acquisitions += 1
             events.append("lock")
+        return real_flock(file, operation)
 
     def run(args, **kwargs):
         command = kwargs["input"].strip()
         events.append(command)
+        try:
+            real_flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            contended_commands.append(command)
+        else:
+            real_flock(contender, fcntl.LOCK_UN)
+            pytest.fail(f"control lock was not held during {command!r}")
         return subprocess.CompletedProcess(
             args,
             returncode=0,
@@ -94,19 +110,31 @@ def test_snapshot_holds_one_control_lock_across_all_queries(monkeypatch, tmp_pat
             stderr="",
         )
 
-    monkeypatch.setattr(control.fcntl, "flock", flock)
-    monkeypatch.setattr(control.subprocess, "run", run)
+    try:
+        monkeypatch.setattr(control.fcntl, "flock", flock)
+        monkeypatch.setattr(control.subprocess, "run", run)
 
-    assert client.snapshot(pipe_dir) == {
-        MpsClientRef(7000, 101),
-        MpsClientRef(8000, 202),
-    }
-    assert events == [
-        "lock",
-        "get_server_list",
-        "get_client_list 7000",
-        "get_client_list 8000",
-    ]
+        assert client.snapshot(pipe_dir) == {
+            MpsClientRef(7000, 101),
+            MpsClientRef(8000, 202),
+        }
+        assert events == [
+            "lock",
+            "get_server_list",
+            "get_client_list 7000",
+            "get_client_list 8000",
+        ]
+        assert exclusive_acquisitions == 1
+        assert contended_commands == [
+            "get_server_list",
+            "get_client_list 7000",
+            "get_client_list 8000",
+        ]
+
+        real_flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        real_flock(contender, fcntl.LOCK_UN)
+    finally:
+        contender.close()
 
 
 def test_snapshot_rejects_daemon_identity_change(monkeypatch, tmp_path):
@@ -228,7 +256,7 @@ def test_daemon_process_identity_from_native_pid_file(monkeypatch):
         if path == pipe_dir / "nvidia-cuda-mps-control.pid":
             return "123\n"
         assert path == Path("/proc/123/stat")
-        return _proc_stat(123, "nvidia-cuda-mps-control", "T", 42)
+        return proc_stat(123, "nvidia-cuda-mps-control", "T", 42)
 
     def read_bytes(path):
         if path == Path("/proc/123/cmdline"):
@@ -246,34 +274,34 @@ def test_daemon_process_identity_from_native_pid_file(monkeypatch):
     ("stat_texts", "cmdline", "environ", "message"),
     [
         (
-            (_proc_stat(456, "nvidia-cuda-mps-server", "T", 84),) * 2,
+            (proc_stat(456, "nvidia-cuda-mps-server", "T", 84),) * 2,
             b"/usr/bin/nvidia-cuda-mps-server\x00",
             b"CUDA_MPS_PIPE_DIRECTORY=/mps/pipe\x00",
             None,
         ),
         ((), b"", b"", "does not exist"),
         (
-            (_proc_stat(456, "nvidia-cuda-mps-server", "Z", 84),) * 2,
+            (proc_stat(456, "nvidia-cuda-mps-server", "Z", 84),) * 2,
             b"",
             b"",
             "zombie",
         ),
         (
-            (_proc_stat(456, "nvidia-cuda-mps-server", "S", 84),) * 2,
+            (proc_stat(456, "nvidia-cuda-mps-server", "S", 84),) * 2,
             b"/usr/bin/python\x00",
             b"CUDA_MPS_PIPE_DIRECTORY=/mps/pipe\x00",
             "not nvidia-cuda-mps-server",
         ),
         (
-            (_proc_stat(456, "nvidia-cuda-mps-server", "S", 84),) * 2,
+            (proc_stat(456, "nvidia-cuda-mps-server", "S", 84),) * 2,
             b"/usr/bin/nvidia-cuda-mps-server\x00",
             b"CUDA_MPS_PIPE_DIRECTORY=/other/pipe\x00",
             "exact pipe directory",
         ),
         (
             (
-                _proc_stat(456, "nvidia-cuda-mps-server", "S", 84),
-                _proc_stat(456, "nvidia-cuda-mps-server", "S", 85),
+                proc_stat(456, "nvidia-cuda-mps-server", "S", 84),
+                proc_stat(456, "nvidia-cuda-mps-server", "S", 85),
             ),
             b"/usr/bin/nvidia-cuda-mps-server\x00",
             b"CUDA_MPS_PIPE_DIRECTORY=/mps/pipe\x00",
@@ -344,14 +372,14 @@ def test_client_token_is_read_from_the_current_client_environment(monkeypatch):
     assert client.client_token(123) is None
 
 
-def _make_pipe_dir(tmp_path):
+def make_pipe_dir(tmp_path):
     pipe_dir = tmp_path / "GPU-test" / "pipe"
     pipe_dir.mkdir(parents=True)
     return pipe_dir
 
 
 def test_operator_cleanup_preserves_signal_and_control_order(tmp_path, monkeypatch):
-    _make_pipe_dir(tmp_path)
+    make_pipe_dir(tmp_path)
     events: list[tuple] = []
     live_sessions = {700}
     clients = {"owned-client"}
@@ -430,7 +458,7 @@ def test_operator_cleanup_preserves_state_until_mps_processes_are_gone(
     tmp_path,
     monkeypatch,
 ):
-    _make_pipe_dir(tmp_path)
+    make_pipe_dir(tmp_path)
     identity = mps_ci.ProcessIdentity(900, 1)
 
     def assert_processes_gone(_identities):
@@ -458,7 +486,7 @@ def test_operator_cleanup_preserves_state_until_mps_processes_are_gone(
 
 
 def test_operator_cleanup_preserves_state_on_snapshot_error(tmp_path, monkeypatch):
-    _make_pipe_dir(tmp_path)
+    make_pipe_dir(tmp_path)
     signals: list[int] = []
 
     class Control:
@@ -489,7 +517,7 @@ def test_operator_cleanup_preserves_state_while_foreign_clients_remain(
     tmp_path,
     monkeypatch,
 ):
-    _make_pipe_dir(tmp_path)
+    make_pipe_dir(tmp_path)
 
     class Control:
         def read_daemon_process_identity(self, _pipe_dir):

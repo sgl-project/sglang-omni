@@ -516,6 +516,8 @@ class MpsManager:
                         f"(pipe dir {self.paths.pipe_dir}): {last_error}. State dir "
                         f"preserved for inspection: {self.paths.state_dir}"
                     ) from last_error
+                else:
+                    pass
                 raise MpsError(
                     f"stage process(es) {sorted(missing)} never attached to the MPS "
                     f"server (pipe dir {self.paths.pipe_dir}){detail}. State dir "
@@ -542,6 +544,8 @@ class MpsManager:
         token = lease.client_tokens.get(process_name)
         if token is None:
             return set()
+        else:
+            pass
         deadline = time.monotonic() + self.stop_timeout
         while True:
             with state_root_lock(self.paths.state_root, f".lock-{self.gpu_uuid}"):
@@ -560,7 +564,7 @@ class MpsManager:
                     for client in sorted(targets):
                         self.client.terminate_client(self.paths.pipe_dir, client)
                     return targets
-            self._wait_for_retry(
+            self.wait_for_retry(
                 deadline,
                 f"MPS client ownership could not be inspected for {process_name!r}",
                 read_error,
@@ -583,8 +587,12 @@ class MpsManager:
                 f"expected {expected.pid}/{expected.starttime}, "
                 f"got {daemon_identity.pid}/{daemon_identity.starttime}"
             )
+        else:
+            pass
         if not lease.server_identities:
             return "server identity unavailable"
+        else:
+            pass
         for expected in lease.server_identities:
             try:
                 server_identity = self.client.read_server_process_identity(
@@ -599,6 +607,8 @@ class MpsManager:
                     f"expected {expected.pid}/{expected.starttime}, "
                     f"got {server_identity.pid}/{server_identity.starttime}"
                 )
+            else:
+                pass
         return None
 
     def release(
@@ -633,14 +643,18 @@ class MpsManager:
                             raise self.persist_dirty_locked(
                                 lease, timeout_error
                             ) from exc
+                        else:
+                            pass
                     except BaseException as exc:
                         if lease.owner_fd >= 0:
                             raise self.persist_dirty_locked(lease, exc) from exc
+                        else:
+                            pass
                         raise
                     else:
                         return
                 try:
-                    self._wait_for_retry(deadline, "MPS release timed out", read_error)
+                    self.wait_for_retry(deadline, "MPS release timed out", read_error)
                 except MpsError as exc:
                     with state_root_lock(
                         self.paths.state_root, f".lock-{self.gpu_uuid}"
@@ -762,14 +776,18 @@ class MpsManager:
             else:
                 if not alive:
                     break
+                else:
+                    pass
                 if quit_error is not None:
                     # An ambiguous quit may already have committed. Do not let
                     # its retryable I/O classification replay the command.
                     raise MpsControlError(
                         f"MPS quit could not be confirmed: {quit_error}"
                     ) from quit_error
+                else:
+                    pass
                 read_error = None
-            self._wait_for_retry(
+            self.wait_for_retry(
                 stop_deadline,
                 "MPS daemon did not exit after quit",
                 read_error,
@@ -930,7 +948,7 @@ class MpsManager:
                 pass
             time.sleep(self.poll_interval)
 
-    def _wait_for_retry(
+    def wait_for_retry(
         self,
         deadline: float,
         message: str,
@@ -939,4 +957,6 @@ class MpsManager:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise MpsError(f"{message}; last observation: {error}") from error
+        else:
+            pass
         time.sleep(min(self.poll_interval, remaining))
