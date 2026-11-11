@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -97,3 +98,62 @@ def test_bounded_intraop_threads_accounts_for_outer_workers(
     monkeypatch.setattr(cpu, "effective_cpu_count", lambda: 32)
 
     assert cpu.bounded_intraop_threads(worker_count=16, max_threads=8) == 2
+
+
+@pytest.mark.parametrize(
+    ("current", "near", "switch", "expected"),
+    [
+        pytest.param(
+            range(36, 144), range(72), "1", frozenset(range(36, 72)), id="narrowed"
+        ),
+        pytest.param(range(144), [], "1", None, id="unknown"),
+        pytest.param(range(144), range(72), "0", None, id="switched-off"),
+    ],
+)
+def test_gpu_local_affinity(
+    monkeypatch: pytest.MonkeyPatch,
+    current: range,
+    near: range | list[int],
+    switch: str,
+    expected: frozenset[int] | None,
+) -> None:
+    monkeypatch.setattr(cpu.os, "sched_getaffinity", lambda _pid: set(current))
+    monkeypatch.setattr(cpu, "gpu_local_cpus", lambda _ids: set(near))
+    monkeypatch.setenv(cpu.GPU_LOCAL_CPUS_ENV, switch)
+
+    assert cpu.gpu_local_affinity([0]) == expected
+
+
+@pytest.mark.parametrize("local_cpu_text", ["0-3,8,10-11", None, "invalid"])
+@pytest.mark.parametrize("domain", [0, 0x10000])
+def test_gpu_cpu_locality_uses_sysfs_without_changing_thread_affinity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    local_cpu_text: str | None,
+    domain: int,
+) -> None:
+    """A truncated PCI domain can select another device's CPU locality."""
+    local_cpu_file = tmp_path / f"{domain:04x}:01:00.0" / "local_cpulist"
+    if local_cpu_text is not None:
+        write(local_cpu_file, local_cpu_text)
+    else:
+        pass
+
+    def nvml_affinity(handle: int, words: int) -> list[int]:
+        assert local_cpu_text != "0-3,8,10-11"
+        return [0b110]
+
+    nvml = SimpleNamespace(
+        nvmlInit=lambda: None,
+        nvmlShutdown=lambda: None,
+        nvmlDeviceGetPciInfo=lambda handle: SimpleNamespace(
+            busId=f"{domain:08x}:01:00.0".encode()
+        ),
+        nvmlDeviceGetCpuAffinity=nvml_affinity,
+    )
+    monkeypatch.setattr(cpu, "PCI_DEVICES_ROOT", tmp_path)
+    monkeypatch.setattr(cpu, "try_import_pynvml", lambda: nvml)
+    monkeypatch.setattr(cpu, "get_device_handle", lambda api, visible_id: 0)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    expected = {0, 1, 2, 3, 8, 10, 11} if local_cpu_text == "0-3,8,10-11" else {1, 2}
+    assert cpu.gpu_local_cpus([0]) == expected

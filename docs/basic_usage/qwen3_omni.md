@@ -6,6 +6,20 @@ This guide uses [Qwen3-Omni](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Inst
 
 Install `sglang-omni` by following [Installation](../get_started/installation.md).
 
+## Server Readiness
+
+Before it reports ready, the server sends itself a chat request with a small
+image, one second of audio and a short instruction (text and audio output in
+speech mode, text output in text-only mode, at most 8 new tokens from each
+stage that generates tokens), once per replica of its most
+replicated process, one after another, so that every replica serves one.
+`/health` returns 503 with status `starting` until these requests have passed
+through every stage, so the one-time kernel builds of that request path happen
+before the first user request. Inputs of other shapes, such as video or a large
+concurrent batch, can still build a kernel variant on first use. A failed
+warmup stops the server. `SGLANG_OMNI_WARMUP_TIMEOUT` (seconds, default 600)
+bounds each request, and `--skip-server-warmup` reports ready without them.
+
 ## Text-Only Mode
 
 Text-only mode runs the thinker pipeline on a single GPU. It accepts multi-modal input (text, image, audio) and produces text output only.
@@ -25,6 +39,8 @@ run it on a thread pool when CPU preprocessing is the bottleneck under
 concurrent load. Threaded preprocessing changes how requests arrive at the
 thinker, so greedy outputs of the bf16 MoE can differ from the serial default;
 keep the default when comparing accuracy across runs.
+
+Each preprocessing worker decodes a request's videos on parallel decoders that share min(16, the stage's CPUs divided by its workers) FFmpeg threads, split evenly among the request's videos. Set `--preprocessing.factory.video_decode_threads N` to choose that count. A value at or below the video reader's own threads (`TORCHCODEC_NUM_THREADS`, 8 by default) decodes each video on the reader alone.
 
 For MMSU-style audio-input / text-output benchmarks with short requests, use
 the fused text-path config so the full text path stays inside one worker
@@ -75,6 +91,26 @@ resp.raise_for_status()
 result = resp.json()
 print(result["choices"][0]["message"]["content"])
 ```
+
+Messages may also use OpenAI content parts: `text`, `image_url`, `video_url`,
+`audio_url`, and `input_audio` (base64 `wav` or `mp3`). A `url` can be an
+HTTP(S) URL, a data URL, or a local path visible to the server:
+
+```json
+{
+  "role": "user",
+  "content": [
+    {"type": "image_url", "image_url": {"url": "tests/data/cars.jpg"}},
+    {"type": "text", "text": "How many cars are there in the picture?"}
+  ]
+}
+```
+
+Media parts keep their message and their place in it across conversation turns.
+With the top-level `images`, `videos`, or `audios` fields as well, the top-level
+media follow the parts of the final user message. Any other part type is
+rejected with a 400. The optional `detail` field does not override the model's
+image preprocessing settings.
 
 ### Audio and Image Input
 
@@ -174,23 +210,22 @@ The speech pipeline sets `codec_coalesce_frames=10`,
 `stages.talker_ar.factory`. The first 10 codec frames are sent individually;
 later frames are coalesced into groups of 10. Omitting a YAML override keeps
 these pipeline defaults; set `codec_coalesce_early_frames=0` explicitly to
-disable the early prefix. This aligns with the default serial Code2Wav
-10-frame threshold: the first three windows contain 10, 20, and 30 frames,
-and subsequent full windows contain 35 frames including left context.
-These shapes can use the captured serial windows when CUDA Graph is enabled.
-An early prefix of 12 with this serial configuration instead produces
-22- and 32-frame windows that fall back to eager execution.
+disable the early prefix. This aligns with the default Code2Wav 10-frame
+threshold: the first three windows contain 10, 20, and 30 frames, and
+subsequent full windows contain 35 frames including left context. These
+shapes can use the captured windows when CUDA Graph is enabled. Each window
+decodes one 10-frame chunk past its context, so an early prefix of 12 keeps
+these window lengths and its two extra frames wait for the next window.
 
-With Code2Wav batching enabled, `initial_codec_chunk_frames=2`, and
-`stream_chunk_size=10`, explicitly set `codec_coalesce_early_frames=12` to
-make the first two windows eligible
-at generated frames 2 and 12.
+With `initial_codec_chunk_frames=2` and `stream_chunk_size=10`, explicitly set
+`codec_coalesce_early_frames=12` to make the first two windows eligible at
+generated frames 2 and 12.
 Uniform groups of 10 (`early_frames=0`, `first_frames=0`) instead publish the
 first group at step 11: the sender retains the newest row until the next step
 can exclude EOS, or the request finishes. For a request that continues past
 step 10, first-window input readiness therefore moves from step 2 to step 11,
 adding nine Talker decode intervals. If the interval is approximately `d` ms,
-the added input wait is approximately `9d` ms. With the serial 10-frame first
+the added input wait is approximately `9d` ms. With the default 10-frame first
 window, readiness instead moves from step 10 to step 11. The default 10-frame
 early prefix preserves readiness at step 10; the next two windows become
 ready at steps 21 and 31. The extra step after the prefix retains the newest
@@ -234,8 +269,12 @@ the model.
 
 The feature derives the exact `B=1` threshold windows from
 `stream_chunk_size` and `left_context_size`; the defaults capture
-`T{10,20,30,35}`. Unsupported shapes and final stream tails run eagerly.
-Capture-time incompatibilities also fall back to eager execution.
+`T{10,20,30,35}`. It also captures, best effort, the final window of every
+stream length: the 1 to `stream_chunk_size - 1` frames left after a stream's
+last threshold window plus the context it holds. With the threshold windows
+this covers every length from `T1` to `T35` at the defaults. A final window
+that capture skips runs eagerly, as does any other shape. Capture-time
+incompatibilities also fall back to eager execution.
 
 The SnakeBeta activation of the Code2Wav decoder runs as one fused Triton
 kernel by default on CUDA devices, shared with the Qwen3-TTS vocoder. The
@@ -252,6 +291,14 @@ stages:
     factory:
       fused_snake_activation: false
 ```
+
+Code2Wav takes every queued codec chunk before it decodes, then decodes the
+ready windows of one length in one replay, up to `max_replay_rows` (default 8)
+under `stages.code2wav.factory`, each row count a captured graph. A request
+alone still gets one window per replay; under load, the windows that several
+requests complete on the same talker step share one. A row of a shared replay
+can differ from the same window decoded alone in its last bits, since the
+convolution kernels depend on the batch.
 
 Output overlap is also enabled by default on CUDA devices: each threshold
 window's waveform readback runs as an asynchronous device-to-host copy into a
@@ -400,90 +447,7 @@ layout regardless, since TTFA is the latency users notice first.
 
 ### Realtime Speech with Server-Side Turn Detection
 
-The speech pipeline can stream spoken responses over `/v1/realtime`. Enable the
-WebSocket endpoint on the standard speech pipeline:
-
-```bash
-sgl-omni serve \
-  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
-  --port 8008 \
-  --enable-realtime
-```
-
-After connecting to `ws://localhost:8008/v1/realtime`, request text and audio
-output:
-
-```json
-{
-  "type": "session.update",
-  "session": {
-    "modalities": ["text", "audio"],
-    "input_audio_format": "pcm16",
-    "output_audio_format": "pcm16",
-    "turn_detection": {
-      "type": "semantic_vad",
-      "eagerness": "medium"
-    }
-  }
-}
-```
-
-Stream mono 16 kHz PCM16 input with `input_audio_buffer.append`. Turn
-detection auto-commits each utterance and starts generation. Check
-`session.created.capabilities.turn_detection` before requesting
-`semantic_vad` — older servers only support `server_vad`.
-
-`server_vad` (default) ends a turn after a fixed silence duration.
-`semantic_vad` adds a GPU Smart Turn v3.2 model on top of Silero speech
-detection, so a natural mid-thought pause doesn't end the turn early.
-`eagerness` (`low`/`medium`/`high`, default `medium`) trades latency for
-patience; `silence_duration_ms` only applies to `server_vad`.
-
-To enable `semantic_vad`, provision the BSD-2 licensed
-[Smart Turn v3.2](https://huggingface.co/pipecat-ai/smart-turn-v3)
-`smart-turn-v3.2-gpu.onnx` model and set `SGLANG_OMNI_SMART_TURN_MODEL_PATH`
-to its path (file or containing directory). The server never downloads it and
-verifies its SHA-256 on load. If the model is missing or invalid, the
-endpoint still works — semantic requests just fall back to `server_vad`.
-
-Text arrives in `response.text.delta` events; spoken output arrives as
-base64-encoded mono 24 kHz PCM16 in `response.audio.delta` events, followed by
-`response.audio.done` and `response.done`.
-
-Audio output is opt-in: sessions remain text-only unless both modalities are
-requested. A thinker-only server rejects audio negotiation because it has no
-`code2wav` stage.
-
-For text-and-audio sessions, server-owned barge-in is enabled by default. When
-the active turn detector emits `input_audio_buffer.speech_started`, the active
-response is cancelled with reason `turn_detected`; its user transcription still
-completes and enters conversation history before the next queued turn runs.
-Cancelled assistant output is not added to conversation history.
-
-Clients must stop buffered playback on `speech_started` and reject every later
-`response.audio.delta` for that response until its `response.done`. If speech
-starts before `response.created`, retain a pending-interruption flag and reject
-the response when its ID arrives. Automatic barge-in ends with
-`response.done.status="cancelled"` and reason `turn_detected`; explicit
-`response.cancel` uses reason `client_cancelled`.
-
-If assistant audio has already been scheduled for playback, the client must
-also send `conversation.item.truncate` with the assistant `item_id` from
-`response.audio.delta`, `content_index: 0`, and the played duration in
-`audio_end_ms`. The server replies with `conversation.item.truncated` and
-removes that assistant item from conversation history. The whole assistant
-transcript is removed because the endpoint cannot align text with played audio.
-
-Set `turn_detection.interrupt_response` to `false` in `session.update` to opt
-out. Partial updates preserve the active detector type and settings, so clients
-can change interruption behavior without dropping semantic VAD or its
-eagerness. Changing detector behavior rebuilds the detector and clears pending
-input audio; `interrupt_response` changes independently. Text-only responses
-are not interrupted automatically.
-
-The browser example in `playground/qwen-omni/realtime` captures microphone
-input, negotiates turn-detection support per connection, and lets the user
-select text-only output or text plus streamed PCM16 audio playback.
+The speech pipeline also streams spoken responses over `/v1/realtime` with `--enable-realtime`, with server-side turn detection and barge-in. Its protocol is in {ref}`Realtime on the speech pipeline <realtime-on-the-speech-pipeline>`; the Session graph that most realtime clients use is in [Turn-Based: Qwen3-Omni](../developer_reference/full_duplex_guide.md#turn-based-qwen3-omni).
 
 ## Single-GPU FP8 on H100/H20
 

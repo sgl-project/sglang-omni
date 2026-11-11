@@ -1,0 +1,36 @@
+GET /api/v3/sauc/bigmodel_async
+X-Api-Access-Key: test-token
+X-Api-App-Key: test-app
+X-Api-Connect-Id: <uuid>
+X-Api-Request-Id: <uuid>
+X-Api-Resource-Id: volc.bigasr.sauc.duration
+> full-client-request flags=seq ser=json comp=gzip seq=1
+{
+  "audio": {
+    "bits": 16,
+    "channel": 1,
+    "codec": "raw",
+    "format": "pcm",
+    "rate": 16000
+  },
+  "request": {
+    "corpus": {
+      "context": "{\"hotwords\":[{\"word\":\"Voxt\"},{\"word\":\"火山引擎\"}],\"context_type\":\"dialog_ctx\",\"context_data\":[{\"text\":\"Meeting about Voxt.\"}]}"
+    },
+    "enable_ddc": true,
+    "enable_itn": true,
+    "enable_nonstream": true,
+    "enable_punc": true,
+    "model_name": "bigmodel",
+    "output_zh_variant": "tw",
+    "show_utterances": true
+  },
+  "user": {
+    "uid": "voxt"
+  }
+}
+> audio-only-request flags=seq ser=none comp=gzip seq=2 bytes=6400
+> audio-only-request flags=seq ser=none comp=gzip seq=3 bytes=6400
+> audio-only-request flags=seq|last ser=none comp=none seq=-4 bytes=0
+--- events
+< final: 你好，Voxt。 (model volc.bigasr.sauc.duration, duration 400ms)

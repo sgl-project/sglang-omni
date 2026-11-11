@@ -7,7 +7,6 @@ from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -137,6 +136,11 @@ def _register_filesystem(app: FastAPI) -> None:
         file_path = _fs_resolve(root, path)
         if not file_path.exists() or not file_path.is_file():
             raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+        if _fs_classify(file_path) == "other":
+            raise HTTPException(
+                status_code=403,
+                detail="Only image, audio and video files can be read",
+            )
         media_type, _ = mimetypes.guess_type(file_path.name)
         return FileResponse(
             path=file_path,
@@ -153,13 +157,6 @@ def parse_args() -> argparse.Namespace:
 
 app = FastAPI(title="sglang-omni-playground")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 FRONTEND_DIR = Path(__file__).parent / "frontend"
 register_playground_favicon(app, frontend_dir=FRONTEND_DIR)
 _register_filesystem(app)
@@ -168,5 +165,6 @@ assert FRONTEND_DIR.is_dir(), "Frontend directory does not exist"
 app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True))
 logger.info(f"Serving playground UI from {FRONTEND_DIR}")
 
-args = parse_args()
-uvicorn.run(app, host="0.0.0.0", port=args.port)
+if __name__ == "__main__":
+    args = parse_args()
+    uvicorn.run(app, host="0.0.0.0", port=args.port)

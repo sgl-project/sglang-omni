@@ -1,0 +1,39 @@
+config_cls: MiniCPMOSpeechPipelineConfig
+model_path: openbmb/MiniCPM-o-4_5
+
+stages:
+  thinker:
+    gpu: 0
+    tp_size: 1
+    factory:
+      max_seq_len: 8192
+      enable_async_decode: true
+    engine:
+      attention_backend: ascend
+      disable_cuda_graph: false
+      enable_torch_compile: false
+      chunked_prefill_size: 8192
+      max_running_requests: 64
+      mem_fraction_static: 0.70
+      sampling_backend: pytorch
+  talker:
+    gpu: 0
+    tp_size: 1
+    factory:
+      max_seq_len: 4096
+    engine:
+      attention_backend: ascend
+      disable_cuda_graph: false
+      enable_torch_compile: false
+      max_running_requests: 32
+      mem_fraction_static: 0.15
+      sampling_backend: pytorch
+  image_encoder:
+    gpu: 0
+  audio_encoder:
+    gpu: 0
+  code2wav:
+    gpu: 0
+    factory:
+      enable_dit_torch_compile: false
+      enable_hift_torch_compile: false

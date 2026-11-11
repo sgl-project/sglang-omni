@@ -155,6 +155,9 @@ class StreamingSimpleScheduler:
     def run_ready_step(self) -> None:
         """One compute step on already-ingested state; runs off the inbox."""
 
+    def warm_up_serving_thread(self) -> None:
+        pass
+
     def start(self) -> None:
         self.running = True
         loop = asyncio.new_event_loop()

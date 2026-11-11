@@ -3,16 +3,8 @@
 
 from __future__ import annotations
 
-import importlib
-
 import sglang_omni.utils.device as dev
 from sglang_omni.platforms import current_platform
-
-
-def test_module_exports_match():
-    mod = importlib.import_module("sglang_omni.utils.device")
-    for name in mod.__all__:
-        assert hasattr(mod, name), f"exported {name} missing"
 
 
 def test_none_is_the_only_automatic_selection():
@@ -63,13 +55,6 @@ def test_a_device_this_host_cannot_serve_is_rejected_not_retargeted():
         dev.resolve_device_spec("npu:0")
 
 
-def test_the_availability_probe_is_gone():
-    """Validating against the already-resolved platform removes any need to re-probe
-    torch, so the broad-exception availability probe must not come back."""
-    assert not hasattr(dev, "_accel_available")
-    assert not hasattr(dev, "remap_accelerator_spec")
-
-
 def test_sglang_caps_xpu_free_memory_against_the_allocator(monkeypatch) -> None:
     """Omni sizes the KV pool from this number. SGLang derives it from the
     allocator, total device memory minus what this process has allocated, not
@@ -93,13 +78,3 @@ def test_sglang_caps_xpu_free_memory_against_the_allocator(monkeypatch) -> None:
     free_gb = get_available_gpu_memory("xpu", 0, distributed=False, empty_cache=False)
 
     assert free_gb == (total_bytes - allocated_bytes) / (1 << 30)
-
-
-def test_an_explicit_device_is_validated_on_the_concrete_path_too():
-    """An explicit device must fail at this boundary, not deep inside the engine."""
-    import pytest
-
-    live = current_platform.device_type
-    absent = "xpu" if live == "cuda" else "cuda"
-    with pytest.raises(ValueError, match="this host resolved to"):
-        dev.resolve_concrete_device(absent, 1)

@@ -2,101 +2,31 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from sglang.srt.hardware_backend.mlx import runtime as mlx_runtime
+from sglang.srt.arg_groups.model_override_base import (
+    attention_backends_of,
+    resolved_view,
+)
+from sglang.srt.runtime_context import override_platform
+from sglang.srt.server_args import ServerArgs
 
-from sglang_omni.models.fun_cosyvoice3 import engine_builder as engine_builder_module
+import sglang_omni.models.fun_cosyvoice3.engine_builder as engine_builder_module
 from sglang_omni.models.fun_cosyvoice3.engine_builder import FunCosyVoice3EngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import (
+    FULL_PREFILL_ATTENTION_BACKENDS,
+    CudaGraphBackend,
     build_generation_batch_overrides,
 )
-
-
-def enable_mlx(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: True)
-    monkeypatch.setattr(
-        engine_builder_module.current_platform,
-        "is_mps",
-        lambda: True,
-    )
-
-
-def valid_mlx_server_args() -> SimpleNamespace:
-    return SimpleNamespace(
-        max_running_requests=1,
-        disable_radix_cache=True,
-        chunked_prefill_size=-1,
-        disable_overlap_schedule=True,
-        enable_priority_scheduling=False,
-        mlx_enable_sampling=True,
-    )
-
-
-def test_mlx_engine_profile_disables_incompatible_scheduler_features(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    enable_mlx(monkeypatch)
-    builder = FunCosyVoice3EngineBuilder()
-    defaults = builder.generation_defaults(dtype="bfloat16")
-
-    assert defaults["max_running_requests"] == 1
-    assert defaults["disable_radix_cache"] is True
-    assert defaults["disable_overlap_schedule"] is True
-    assert defaults["chunked_prefill_size"] == -1
-    assert defaults["mlx_enable_sampling"] is True
-    assert builder.extra_scheduler_kwargs() == {
-        "enable_async_decode": True,
-        "async_decode_min_batch_size": 1,
-    }
-
-
-@pytest.mark.parametrize(
-    ("field", "value", "message"),
-    [
-        ("max_running_requests", 2, "max_running_requests=1"),
-        ("disable_radix_cache", False, "disable_radix_cache=True"),
-        ("chunked_prefill_size", 128, "chunked_prefill_size=-1"),
-        ("disable_overlap_schedule", False, "disable_overlap_schedule=True"),
-        ("enable_priority_scheduling", True, "priority preemption"),
-        ("mlx_enable_sampling", False, "mlx_enable_sampling=True"),
-    ],
+from sglang_omni.scheduling.sglang_backend.server_args_builder import (
+    build_sglang_server_args,
 )
-def test_mlx_engine_rejects_unsafe_overrides(
-    monkeypatch: pytest.MonkeyPatch,
-    field: str,
-    value: object,
-    message: str,
-) -> None:
-    enable_mlx(monkeypatch)
-    server_args = valid_mlx_server_args()
-    setattr(server_args, field, value)
-
-    with pytest.raises(ValueError, match=message):
-        FunCosyVoice3EngineBuilder().validate_before_infrastructure(server_args)
+from tests.unit_test.fixtures.mini_checkpoint import write_mini_llama_checkpoint
 
 
-def test_mlx_engine_passes_distinct_native_checkpoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    enable_mlx(monkeypatch)
-    builder = FunCosyVoice3EngineBuilder(
-        mlx_model_path="mlx-org/model",
-        mlx_model_revision="mlx-revision",
-    )
-    builder.checkpoint_root = "/official/model"
-
-    assert builder.infra_kwargs() == {
-        "mlx_model_path": "mlx-org/model",
-        "mlx_model_revision": "mlx-revision",
-    }
-
-
-def test_torch_mps_uses_single_request_native_attention(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: False)
+def test_torch_mps_uses_single_request_native_attention() -> None:
     builder = FunCosyVoice3EngineBuilder()
     builder.device = "mps:0"
 
@@ -110,9 +40,8 @@ def test_torch_mps_uses_single_request_native_attention(
 
 
 def cuda_overrides(
-    monkeypatch: pytest.MonkeyPatch, **server_args_overrides: object
+    **server_args_overrides: object,
 ) -> tuple[FunCosyVoice3EngineBuilder, dict[str, object]]:
-    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: False)
     builder = FunCosyVoice3EngineBuilder()
     builder.device = "cuda:0"
     overrides = build_generation_batch_overrides(
@@ -123,24 +52,93 @@ def cuda_overrides(
     return builder, overrides
 
 
-def test_cuda_engine_caps_the_kv_pool_at_the_running_requests(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    builder, overrides = cuda_overrides(monkeypatch)
+def test_cuda_engine_caps_the_kv_pool_at_the_running_requests() -> None:
+    builder, overrides = cuda_overrides()
 
     assert overrides["max_total_tokens"] == 32 * builder.context_length
 
 
-def test_kv_pool_cap_follows_an_operator_max_running_requests(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    builder, overrides = cuda_overrides(monkeypatch, max_running_requests=64)
+def test_kv_pool_cap_follows_an_operator_max_running_requests() -> None:
+    builder, overrides = cuda_overrides(max_running_requests=64)
 
     assert overrides["max_running_requests"] == 64
     assert overrides["max_total_tokens"] == 64 * builder.context_length
 
 
-def test_operator_max_total_tokens_is_kept(monkeypatch: pytest.MonkeyPatch) -> None:
-    _, overrides = cuda_overrides(monkeypatch, max_total_tokens=5000)
+def test_operator_max_total_tokens_is_kept() -> None:
+    _, overrides = cuda_overrides(max_total_tokens=5000)
 
     assert overrides["max_total_tokens"] == 5000
+
+
+def resolved_cuda_server_args(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    server_args_overrides: dict[str, object],
+) -> ServerArgs:
+    monkeypatch.setattr(
+        engine_builder_module, "current_platform", SimpleNamespace(is_cuda=lambda: True)
+    )
+    checkpoint = write_mini_llama_checkpoint(tmp_path)
+    builder = FunCosyVoice3EngineBuilder()
+    builder.device = "cuda:0"
+    builder.server_args_overrides = server_args_overrides
+    overrides = build_generation_batch_overrides(
+        server_args_overrides=server_args_overrides,
+        **builder.generation_defaults(dtype="bfloat16"),
+    )
+    builder.adjust_overrides(overrides)
+    server_args = build_sglang_server_args(
+        checkpoint, context_length=builder.context_length, device="cuda", **overrides
+    )
+    builder.customize_server_args(server_args)
+    return server_args
+
+
+@pytest.mark.parametrize(
+    "declared_ladder",
+    [
+        {"cuda_graph_bs_prefill": [4, 8], "cuda_graph_max_bs_prefill": 8},
+        {"cuda_graph_config": {"prefill": {"bs": [4, 8], "max_bs": 8}}},
+    ],
+    ids=["flat", "nested"],
+)
+def test_a_declared_prefill_ladder_is_served_without_an_added_bucket(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    declared_ladder: dict[str, object],
+) -> None:
+    server_args = resolved_cuda_server_args(
+        tmp_path, monkeypatch, {"attention_backend": "fa3", **declared_ladder}
+    )
+    prefill = resolved_view(server_args).cuda_graph_config.prefill
+
+    assert prefill.backend == CudaGraphBackend.FULL
+    assert prefill.bs == [4, 8]
+
+
+@pytest.mark.parametrize(
+    ("server_args_overrides", "platform"),
+    [
+        ({"attention_backend": "triton"}, {}),
+        ({}, {"is_sm100": True, "is_hopper_with_cuda_12_3": False}),
+    ],
+    ids=["operator_triton", "sm100_default"],
+)
+def test_prefill_stays_eager_where_the_attention_backend_cannot_capture_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    server_args_overrides: dict[str, object],
+    platform: dict[str, bool],
+) -> None:
+    """An attention backend that cannot capture a full prefill graph, the operator's or
+    SGLang's default on SM100, leaves the prefill eager instead of the breakable graph
+    this model refuses."""
+    with override_platform(**platform):
+        server_args = resolved_cuda_server_args(
+            tmp_path, monkeypatch, server_args_overrides
+        )
+    resolved = resolved_view(server_args)
+
+    assert attention_backends_of(resolved)[0] not in FULL_PREFILL_ATTENTION_BACKENDS
+    assert resolved.cuda_graph_config.prefill.backend == CudaGraphBackend.DISABLED

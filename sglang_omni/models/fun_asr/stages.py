@@ -119,7 +119,7 @@ def create_sglang_fun_asr_executor(
     enable_encoder_torch_compile: bool = False,
     enable_encoder_cuda_graph: bool = False,
     enable_async_decode: bool = True,
-    async_decode_min_batch_size: int = 2,
+    async_decode_min_batch_size: int = 1,
     prefill_coalesce_requests: int = 16,
     prefill_coalesce_wait_ms: float = 24.0,
     prefill_coalesce_when_idle: bool = True,
@@ -151,7 +151,7 @@ def create_sglang_fun_asr_executor(
 
     from sglang_omni.models.fun_asr.engine_builder import FunASREngineBuilder
 
-    return FunASREngineBuilder(
+    builder = FunASREngineBuilder(
         max_running_requests=max_running_requests,
         max_new_tokens=max_new_tokens,
         mem_fraction_static=mem_fraction_static,
@@ -179,13 +179,20 @@ def create_sglang_fun_asr_executor(
         request_build_max_workers=request_build_max_workers,
         request_build_max_pending=request_build_max_pending,
         stream_emit_interval_s=stream_emit_interval_s,
-    ).build(
-        model_path,
-        device=device,
-        gpu_id=gpu_id,
-        dtype=dtype,
-        server_args_overrides=server_args_overrides,
     )
+    try:
+        return builder.build(
+            model_path,
+            device=device,
+            gpu_id=gpu_id,
+            dtype=dtype,
+            server_args_overrides=server_args_overrides,
+        )
+    finally:
+        if builder.draft_checkpoint is not None:
+            builder.draft_checkpoint.cleanup()
+        else:
+            pass
 
 
 def create_fun_asr_executor(*args, **kwargs) -> OmniScheduler[FunASRRequestData]:

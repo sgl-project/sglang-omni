@@ -65,13 +65,7 @@ def build_zonos2_state(payload: StagePayload) -> Zonos2State:
         tts_params.get("language") or params.get("language")
     )
 
-    explicit = tts_params.get("explicit_generation_params")
-    explicit = (
-        {str(f) for f in explicit}
-        if isinstance(explicit, (list, tuple, set))
-        else set()
-    )
-    if "seed" in explicit or tts_params.get("seed") is not None:
+    if tts_params.get("seed") is not None:
         raise ValueError(
             "ZONOS2 does not support seed because sampling uses the shared device RNG"
         )
@@ -91,13 +85,7 @@ def build_zonos2_state(payload: StagePayload) -> Zonos2State:
                 continue
             else:
                 pass
-            # tts_params always wins; params only honored when explicitly whitelisted
-            if sampling_field in explicit or source is tts_params:
-                gen[sampling_field] = (
-                    int(val) if sampling_field == "top_k" else float(val)
-                )
-            else:
-                pass
+            gen[sampling_field] = int(val) if sampling_field == "top_k" else float(val)
             break
 
     return Zonos2State(

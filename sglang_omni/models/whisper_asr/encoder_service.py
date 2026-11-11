@@ -12,6 +12,7 @@ import queue
 import threading
 import time
 from collections.abc import Generator
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeGuard
 
 import torch
@@ -81,6 +82,18 @@ def expected_audio_tokens(item: MultimodalDataItem) -> int | None:
     return int(num_tokens) if num_tokens is not None else None
 
 
+@dataclass(kw_only=True)
+class LaunchedEncoderBatch:
+    """An encoder batch queued on the encoder stream but not yet delivered."""
+
+    batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]]
+    embeddings: list[torch.Tensor]
+    host_copies: list[torch.Tensor | None]
+    done: torch.cuda.Event | None
+    started_s: float
+    error: Exception | None = None
+
+
 class WhisperPreLMEncoderService(
     PreLMEncoderService[MultimodalDataItem, torch.Tensor, torch.Tensor]
 ):
@@ -99,6 +112,7 @@ class WhisperPreLMEncoderService(
         max_batch_size: int = 8,
         max_batch_wait_ms: int = 0,
         pin_host_memory: bool = True,
+        pipeline_batches: bool = False,
     ) -> None:
         if encoder_token_count < 1:
             raise ValueError(
@@ -114,6 +128,7 @@ class WhisperPreLMEncoderService(
             raise ValueError(f"cache_max_bytes must be >= 0, got {cache_max_bytes}")
         else:
             pass
+        self.pipeline_batches = pipeline_batches
         self.model = model
         reference = next(model.model.encoder.parameters())
         self.device = reference.device
@@ -493,6 +508,23 @@ class WhisperPreLMEncoderService(
             batch.append(queued)
         return batch, shutdown
 
+    def drain_queued_batch(
+        self,
+    ) -> tuple[list[QueueEntry[MultimodalDataItem, torch.Tensor]], bool]:
+        """Take what is already queued (up to a batch) without blocking."""
+        batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]] = []
+        while len(batch) < self.max_batch_size:
+            try:
+                queued = self.queue.get_nowait()
+            except queue.Empty:
+                break
+            if queued is QueueSignal.SHUTDOWN:
+                return batch, True
+            else:
+                pass
+            batch.append(queued)
+        return batch, False
+
     def next_batch(
         self,
     ) -> tuple[list[QueueEntry[MultimodalDataItem, torch.Tensor]], bool]:
@@ -583,6 +615,129 @@ class WhisperPreLMEncoderService(
             self.stream.synchronize()
         else:
             pass
+
+    def launch_batch(
+        self, batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]]
+    ) -> LaunchedEncoderBatch:
+        """Queue one batch on the encoder stream without waiting for it."""
+        self.notify_batch_start(batch)
+        items = [entry.item for entry in batch]
+        started_s = time.perf_counter()
+        host_copies: list[torch.Tensor | None] = []
+        try:
+            with self.batch_context():
+                embeddings = self.split_embeddings(items, self.encode_batch(items))
+                if len(embeddings) != len(items):
+                    raise RuntimeError(
+                        "Encoder output count does not match request batch"
+                    )
+                else:
+                    pass
+                for item, embedding in zip(items, embeddings):
+                    host_copies.append(self.stage_host_copy(item, embedding))
+                    self.attach_embedding(item, embedding)
+                done = torch.cuda.Event()
+                done.record(self.stream)
+        except Exception as exc:
+            return LaunchedEncoderBatch(
+                batch=batch,
+                embeddings=[],
+                host_copies=[],
+                done=None,
+                started_s=started_s,
+                error=exc,
+            )
+        return LaunchedEncoderBatch(
+            batch=batch,
+            embeddings=embeddings,
+            host_copies=host_copies,
+            done=done,
+            started_s=started_s,
+        )
+
+    def finish_batch(self, launched: LaunchedEncoderBatch) -> None:
+        """Wait for a launched batch and hand its embeddings to the waiters."""
+        error = launched.error
+        if error is None:
+            try:
+                assert launched.done is not None
+                launched.done.synchronize()
+                for entry, embedding, host_copy in zip(
+                    launched.batch, launched.embeddings, launched.host_copies
+                ):
+                    self.cache_embedding(entry.item, embedding, host_copy)
+            except Exception as exc:
+                error = exc
+            else:
+                pass
+        else:
+            pass
+        elapsed_s = time.perf_counter() - launched.started_s
+        if error is None:
+            for entry, embedding in zip(launched.batch, launched.embeddings):
+                self.set_result(entry, embedding)
+        else:
+            error = self.handle_batch_failure(launched.batch, error)
+            if self.retry_batch(launched.batch, error):
+                recovered = 0
+                for entry in launched.batch:
+                    try:
+                        self.set_result(entry, self.execute_batch([entry.item])[0])
+                        recovered += 1
+                    except Exception as exc:
+                        self.set_exception(entry, self.handle_item_failure(entry, exc))
+                self.notify_batch_finished(launched.batch, error, recovered, elapsed_s)
+                return
+            else:
+                for entry in launched.batch:
+                    self.set_exception(entry, error)
+        self.notify_batch_finished(launched.batch, error, None, elapsed_s)
+
+    def worker(self) -> None:
+        """Keep one batch in flight so the encoder stream never waits on the host.
+
+        Batch k+1 is drained and launched while batch k still runs, so the
+        stream goes straight from one encoder graph to the next instead of
+        idling through the result hand-off and the next drain.
+        """
+        if not self.pipeline_batches or self.stream is None:
+            super().worker()
+            return
+        else:
+            pass
+        in_flight: LaunchedEncoderBatch | None = None
+        launched: LaunchedEncoderBatch | None = None
+        batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]] = []
+        try:
+            shutdown = False
+            while not shutdown:
+                if in_flight is None:
+                    batch, shutdown = self.drain_batch()
+                else:
+                    batch, shutdown = self.drain_queued_batch()
+                launched = self.launch_batch(batch) if batch else None
+                batch = []
+                if in_flight is not None:
+                    self.finish_batch(in_flight)
+                else:
+                    pass
+                in_flight = launched
+            if in_flight is not None:
+                self.finish_batch(in_flight)
+            else:
+                pass
+        except Exception as worker_exc:
+            logger.exception("pre-LM encoder worker failed")
+            pending = list(batch)
+            if in_flight is not None:
+                pending.extend(in_flight.batch)
+            else:
+                pass
+            if launched is not None and launched is not in_flight:
+                pending.extend(launched.batch)
+            else:
+                pass
+            self.fail_worker(worker_exc, pending)
 
     def cache_embedding(
         self,

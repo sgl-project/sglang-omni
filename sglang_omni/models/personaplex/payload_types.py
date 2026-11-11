@@ -22,4 +22,5 @@ class PersonaPlexState(DeclarativeStateBase):
     user_codes: torch.Tensor | None = wire(None, codec="typed_tensor")
     voice_codes: torch.Tensor | None = wire(None, codec="typed_tensor")
     text_ids: list[int] = wire(default_factory=list, codec="list")
+    text: str = wire("", codec="str")
     codes: torch.Tensor | None = wire(None, codec="typed_tensor")

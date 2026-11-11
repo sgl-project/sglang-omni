@@ -2,13 +2,17 @@
 """Vocoder sessions: shared per-voice stream caches, turn resets and failed opens."""
 
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
 
+from sglang_omni.models.minicpm_o.components import tts_runtime as tts_runtime_module
+from sglang_omni.models.minicpm_o.components.token2wav.vocoder import StreamChunk
 from sglang_omni.models.minicpm_o.components.tts_runtime import (
     CODEC_CHUNK_SIZE,
     MiniCPMOVocoderRuntime,
+    SynthesisRequest,
 )
 from sglang_omni.scheduling.speaker_cache import estimate_cache_bytes
 
@@ -29,15 +33,12 @@ class FakeToken2Wav:
             "speech": torch.zeros(16)
         }
 
-    def stream(
-        self,
-        tokens: list[int],
-        prompt: tuple[torch.Tensor, ...],
-        caches: tuple[dict, dict],
-        is_last_chunk: bool = False,
-    ) -> tuple[bytes, tuple[dict, dict]]:
-        caches[0]["estimator_attention_cache"].add_(1)
-        return b"\0\0" * 100, caches
+    def stream_batch(
+        self, chunks: list[StreamChunk]
+    ) -> list[tuple[bytes, tuple[dict, dict]]]:
+        for chunk in chunks:
+            chunk.caches[0]["estimator_attention_cache"].add_(1)
+        return [(b"\0\0" * 100, chunk.caches) for chunk in chunks]
 
 
 class FakeCode2Wav:
@@ -62,7 +63,9 @@ class FakeCode2Wav:
 
 def test_voice_cache_lifecycle() -> None:
     code2wav = FakeCode2Wav()
-    runtime = MiniCPMOVocoderRuntime(code2wav)
+    runtime = MiniCPMOVocoderRuntime(
+        code2wav, max_state_bytes_per_session=1 << 30, max_open_sessions=2
+    )
 
     first = runtime.open_session("a", reference_audio=b"voice-1")
     second = runtime.open_session("b", reference_audio=b"voice-1")
@@ -89,19 +92,72 @@ def test_voice_cache_lifecycle() -> None:
     assert not runtime.speakers and not runtime.sessions
 
 
+@pytest.mark.parametrize(("has_existing_session",), [(False,), (True,)])
+def test_failed_cache_clone_leaves_no_speaker_owner(
+    monkeypatch: pytest.MonkeyPatch, has_existing_session: bool
+) -> None:
+    runtime = MiniCPMOVocoderRuntime(
+        FakeCode2Wav(), max_state_bytes_per_session=1 << 30, max_open_sessions=2
+    )
+    if has_existing_session:
+        runtime.open_session("existing", reference_audio=b"voice")
+    else:
+        pass
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            tts_runtime_module,
+            "clone_caches",
+            Mock(
+                spec=tts_runtime_module.clone_caches,
+                side_effect=torch.OutOfMemoryError("cache clone failed"),
+            ),
+        )
+        with pytest.raises(torch.OutOfMemoryError, match="cache clone failed"):
+            runtime.open_session("failed", reference_audio=b"voice")
+    if has_existing_session:
+        runtime.close_session("existing")
+    else:
+        pass
+
+    assert not runtime.speakers and not runtime.sessions
+    runtime.open_session("recovered", reference_audio=b"voice")
+    runtime.close_session("recovered")
+    assert not runtime.speakers and not runtime.sessions
+
+
 def test_turn_reset_restores_untouched_prompt_caches() -> None:
-    runtime = MiniCPMOVocoderRuntime(FakeCode2Wav())
+    runtime = MiniCPMOVocoderRuntime(
+        FakeCode2Wav(), max_state_bytes_per_session=1 << 30, max_open_sessions=2
+    )
     state = runtime.open_session("a", reference_audio=b"voice")
     runtime.open_session("b", reference_audio=b"voice")
 
-    runtime.synthesize(
-        "a",
-        [1] * (CODEC_CHUNK_SIZE + PRE_LOOKAHEAD),
-        is_turn_start=True,
-        end_of_turn=False,
+    list(
+        runtime.synthesize_batch(
+            [
+                SynthesisRequest(
+                    session_id="a",
+                    codec_token_ids=[1] * (CODEC_CHUNK_SIZE + PRE_LOOKAHEAD),
+                    is_turn_start=True,
+                    end_of_turn=False,
+                )
+            ]
+        )
     )
     assert state.caches[0]["estimator_attention_cache"].sum() > 0
     assert state.speaker.base_caches[0]["estimator_attention_cache"].sum() == 0
 
-    runtime.synthesize("a", [], is_turn_start=False, end_of_turn=True)
+    list(
+        runtime.synthesize_batch(
+            [
+                SynthesisRequest(
+                    session_id="a",
+                    codec_token_ids=[],
+                    is_turn_start=False,
+                    end_of_turn=True,
+                )
+            ]
+        )
+    )
     assert state.caches[0]["estimator_attention_cache"].sum() == 0

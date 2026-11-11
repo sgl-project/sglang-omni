@@ -1,18 +1,51 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import dataclasses
+import functools
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 from threading import Lock
 
 import torch
+from sglang.srt.configs.draft_parallel import DraftParallelLayout
 from sglang.srt.configs.model_config import ModelConfig
+from sglang.srt.layers.radix_attention import RadixAttention
+from sglang.srt.layers.sampler import (
+    Sampler,
+    _SamplingMaskCapture,
+    _select_sampling_mask_rows,
+    register_sampler_backend,
+    top_k_top_p_min_p_sampling_from_probs_torch,
+)
 from sglang.srt.mem_cache.kv_cache_configurator import KVCacheConfigurator
-from sglang.srt.model_executor.model_runner import ModelRunner
+from sglang.srt.mem_cache.memory_pool import KVCache, MHATokenToKVPool
+from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
+from sglang.srt.model_executor.forward_context import ForwardContext, forward_context
+from sglang.srt.model_executor.graph_memory_usage import (
+    replace_graph_memory_usage,
+    replace_graph_time_usage,
+)
+from sglang.srt.model_executor.model_runner import ModelRunner, ModelRunnerOutput
+from sglang.srt.model_executor.model_runner_components.attention_backend_setup import (
+    build_attention_backends,
+)
+from sglang.srt.model_executor.model_runner_components.layer_setup import (
+    AttentionAndMoeLayers,
+)
+from sglang.srt.model_executor.runner.eager_runner import EagerRunner
+from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
+    PrefillCudaGraphRunner,
+)
+from sglang.srt.platforms.interface import KVPoolKind
 from sglang.srt.runtime_context import get_exec, get_parallel, get_schedule
+from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.server_args import ServerArgs
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
+from torch import nn
 
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.utils.gpu_memory import (
@@ -49,6 +82,56 @@ def install_prefill_runner_dispatch() -> None:
         _PREFILL_RUNNER_DISPATCH_DEFAULT = default_cls
 
 
+class FlashInferSeededSampler(Sampler):
+    def _sample_from_probs(  # noqa: leading-underscore
+        self,
+        probs: torch.Tensor,
+        sampling_info: SamplingBatchInfo,
+        positions: torch.Tensor,
+        simple_sampling_case: bool,
+    ) -> tuple[torch.Tensor, _SamplingMaskCapture | None]:
+        if simple_sampling_case or (
+            sampling_info.sampling_seed is None
+            and not sampling_info.need_min_p_sampling
+        ):
+            return super()._sample_from_probs(  # noqa: leading-underscore
+                probs, sampling_info, positions, simple_sampling_case
+            )
+        else:
+            pass
+        # note (ratish): FlashInfer seeds a batch from its first row's seed and each
+        # row's index, and with min_p it cuts top_p after renormalizing top_k, for every
+        # row of the batch, so either batch takes the PyTorch backend's draw and mask.
+        capture_rows = sampling_info.sampling_mask_batch_indices
+        sample_result = top_k_top_p_min_p_sampling_from_probs_torch(
+            probs,
+            sampling_info.top_ks,
+            sampling_info.top_ps,
+            sampling_info.min_ps,
+            sampling_info.need_min_p_sampling,
+            sampling_info.sampling_seed,
+            positions,
+            return_filtered_probs=capture_rows is not None,
+        )
+        if capture_rows is None:
+            return sample_result, None
+        else:
+            pass
+        batch_next_token_ids, filtered_probs, token_ids, selected_weight = sample_result
+        return batch_next_token_ids, _SamplingMaskCapture(
+            weights=_select_sampling_mask_rows(filtered_probs, capture_rows),
+            token_ids=_select_sampling_mask_rows(token_ids, capture_rows),
+            selected_weight=_select_sampling_mask_rows(selected_weight, capture_rows),
+            batch_rows=capture_rows,
+        )
+
+
+@functools.cache
+def register_flashinfer_seeded_sampler() -> None:
+    """Make the FlashInfer backend build FlashInferSeededSampler, once per process."""
+    register_sampler_backend("flashinfer", FlashInferSeededSampler)
+
+
 def filter_weights_by_prefix(
     weights: Iterator[tuple[str, torch.Tensor]],
     prefix: str | None,
@@ -80,6 +163,26 @@ def free_gpu_memory_bytes(device: str, gpu_id: int) -> int:
     return int(free_gib * (1 << 30))
 
 
+class SeparateKVAllocationsPool(MHATokenToKVPool):
+    """MHA pool for a compiled engine, with K and V in separate allocations."""
+
+    # note (ratish): the compiled KV store mutates K and V; inductor writes in place to one input per storage, so sharing an allocation clones all of it every decode step.
+    def _create_buffers_normal(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self,
+    ) -> None:
+        k_shape, v_shape = (
+            self._kv_buffer_shapes()
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self.k_buffer = [
+            torch.zeros(k_shape, dtype=self.store_dtype, device=self.device)
+            for _ in range(self.layer_num)
+        ]
+        self.v_buffer = [
+            torch.zeros(v_shape, dtype=self.store_dtype, device=self.device)
+            for _ in range(self.layer_num)
+        ]
+
+
 @dataclass(slots=True, kw_only=True)
 class OmniKVCacheConfigurator(KVCacheConfigurator):
     """KV-cache configurator that honors an Omni colocated-stage memory budget.
@@ -91,6 +194,17 @@ class OmniKVCacheConfigurator(KVCacheConfigurator):
 
     total_gpu_memory_fraction: float | None = None
     kv_cache_bytes: int | None = None
+
+    def _resolve_kv_pool_class(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self, *, kind: KVPoolKind, default: type[KVCache]
+    ) -> type[KVCache]:
+        pool_class = KVCacheConfigurator._resolve_kv_pool_class(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            self, kind=kind, default=default
+        )
+        if pool_class is MHATokenToKVPool and get_exec().graph.enable_torch_compile:
+            return SeparateKVAllocationsPool
+        else:
+            return pool_class
 
     def _profile_available_bytes(self, pre_model_load_memory: float) -> int:
         """Profile KV-cache headroom for colocated SGLang AR stages.
@@ -113,9 +227,11 @@ class OmniKVCacheConfigurator(KVCacheConfigurator):
         total GPU memory times that budget minus this stage's measured memory.
         NVML process accounting is preferred. If NVML cannot identify the
         current process, use the stage-local load delta measured inside
-        SGLang's serialized initialization window. Without a stage budget, keep
-        upstream SGLang profiling semantics for ordinary non-colocated AR
-        serving.
+        SGLang's serialized initialization window. A hybrid linear-attention
+        model then sizes its recurrent-state pool out of that headroom, as
+        upstream profiling does, and the KV pool gets the rest. Without a stage
+        budget, keep upstream SGLang profiling semantics for ordinary
+        non-colocated AR serving.
         """
         if self.kv_cache_bytes is not None:
             if self.kv_cache_bytes <= 0:
@@ -175,17 +291,41 @@ class OmniKVCacheConfigurator(KVCacheConfigurator):
             pass
 
         if process_memory is None or process_memory <= 0:
-            return self.profile_available_bytes_from_stage_load_delta(
+            available_bytes = self.profile_available_bytes_from_stage_load_delta(
                 pre_model_load_memory,
                 total_memory,
             )
         else:
-            pass
+            available_bytes = self.profile_available_bytes_from_process_memory(
+                total_memory,
+                process_memory,
+            )
 
-        return self.profile_available_bytes_from_process_memory(
-            total_memory,
-            process_memory,
+        if self.mambaish_config is None:
+            return available_bytes
+        else:
+            pass
+        kv_bytes = int(
+            self._handle_max_mamba_cache(  # noqa: leading-underscore  # upstream name
+                available_bytes / (1 << 30)
+            )
+            * (1 << 30)
         )
+        state_bytes = available_bytes - kv_bytes
+        if kv_bytes <= 0:
+            raise RuntimeError(
+                "Colocated GPU memory budget leaves no KV-cache headroom after the "
+                f"hybrid state cache: state={format_bytes_gib(state_bytes)}, "
+                f"budget={format_bytes_gib(available_bytes)}. Raise the stage memory "
+                "fraction or lower max_running_requests."
+            )
+        else:
+            pass
+        logger.info(
+            f"SGLang AR memory profile: hybrid_state={format_bytes_gib(state_bytes)} "
+            f"available_for_kv={format_bytes_gib(kv_bytes)}"
+        )
+        return kv_bytes
 
     def free_gpu_memory_bytes(self) -> int:
         return free_gpu_memory_bytes(self.device, self.gpu_id)
@@ -252,6 +392,79 @@ class OmniKVCacheConfigurator(KVCacheConfigurator):
 class SGLModelRunner(ModelRunner):
     """Thin wrapper to bootstrap SGLang ModelRunner from backend args."""
 
+    plain_decode_runner: SGLModelRunner | None = None
+
+    def init_plain_decode_graphs(self) -> None:
+        """Capture ordinary decode with shared weights and separate attention state."""
+        if self.plain_decode_runner is not None:
+            return
+        else:
+            plain_decode_runner = copy.copy(self)
+            plain_decode_runner.spec_algorithm = SpeculativeAlgorithm.NONE
+            plain_decode_runner.plain_decode_runner = None
+            attention_backends = build_attention_backends(
+                model_runner=plain_decode_runner
+            )
+            plain_decode_runner.attn_backend = attention_backends.attn_backend
+            plain_decode_runner.decode_attn_backend = (
+                attention_backends.decode_attn_backend
+            )
+            plain_decode_runner.decode_attn_backend_group = (
+                attention_backends.decode_attn_backend_group
+            )
+            plain_decode_runner.kv_index_translator.bind_and_verify_backends(
+                [
+                    plain_decode_runner.attn_backend,
+                    plain_decode_runner.decode_attn_backend,
+                ]
+            )
+            plain_decode_runner.eager_runner = EagerRunner(
+                plain_decode_runner, run_warmup=False
+            )
+            plain_decode_runner.init_decode_cuda_graph()
+            self.plain_decode_runner = plain_decode_runner
+            self.graph_memory_usage = replace_graph_memory_usage(
+                self.graph_memory_usage,
+                {"decode": plain_decode_runner.graph_memory_usage["decode"]},
+                phases=("decode",),
+            )
+            self.graph_time_usage = replace_graph_time_usage(
+                self.graph_time_usage,
+                {"decode": plain_decode_runner.graph_time_usage["decode"]},
+                phases=("decode",),
+            )
+
+    def _forward_raw(  # noqa: leading-underscore  # native forward interface
+        self,
+        forward_batch: ForwardBatch,
+        pp_proxy_tensors: PPProxyTensors | None,
+        reinit_attn_backend: bool = False,
+        split_forward_count: int = 1,
+    ) -> ModelRunnerOutput:
+        if (
+            self.plain_decode_runner is not None
+            and forward_batch.forward_mode.is_decode()
+            and forward_batch.spec_algorithm.is_none()
+        ):
+            forward_batch.attn_backend = self.plain_decode_runner.attn_backend
+            with forward_context(
+                ForwardContext(attn_backend=self.plain_decode_runner.attn_backend),
+                forward_batch=forward_batch,
+            ):
+                return self.plain_decode_runner._forward_raw(  # noqa: leading-underscore  # native forward interface
+                    forward_batch,
+                    pp_proxy_tensors,
+                    reinit_attn_backend,
+                    split_forward_count,
+                )
+        else:
+            return super()._forward_raw(  # noqa: leading-underscore  # native forward interface
+                forward_batch,
+                pp_proxy_tensors,
+                reinit_attn_backend,
+                split_forward_count,
+            )
+
     def __init__(
         self,
         model_config: ModelConfig,
@@ -270,7 +483,10 @@ class SGLModelRunner(ModelRunner):
         self.weight_share_config = None
         self.weight_share_record = None
         self.weight_ipc_leader_monitor = None
+        self.extra_prefill_graph_attention_layers: list[RadixAttention] = []
+        self.prefill_graph_runner_class: type[PrefillCudaGraphRunner] | None = None
         self.register_omni_model()
+        register_flashinfer_seeded_sampler()
 
         super().__init__(
             model_config=model_config,
@@ -509,15 +725,42 @@ class SGLModelRunner(ModelRunner):
             pass
         return result
 
-    def prefill_cuda_graph_runner_cls(self):
-        from sglang.srt.model_executor.cuda_graph_config import (
-            Backend as CudaGraphBackend,
-        )
-
+    def get_cuda_graph_layers(self, layer_model: nn.Module) -> AttentionAndMoeLayers:
+        layers = super().get_cuda_graph_layers(layer_model)
         if (
-            self.model_arch_override == "WhisperForConditionalGeneration"
-            and get_exec().graph.cuda_graph_config.prefill.backend
+            get_exec().graph.cuda_graph_config.prefill.backend
+            != CudaGraphBackend.BREAKABLE
+        ):
+            return layers
+        else:
+            extra_layers = self.extra_prefill_graph_attention_layers
+            if self.model_arch_override == "WhisperForConditionalGeneration":
+                extra_layers = [
+                    layer.encoder_attn.attn for layer in self.model.model.decoder.layers
+                ] + extra_layers
+            else:
+                pass
+            return AttentionAndMoeLayers(
+                attention_layers=[*layers.attention_layers, *extra_layers],
+                moe_layers=layers.moe_layers,
+                moe_fusions=layers.moe_fusions,
+                dsa_indexers=layers.dsa_indexers,
+                mha_companion_layers=[
+                    *layers.mha_companion_layers,
+                    *[None] * len(extra_layers),
+                ],
+            )
+
+    def prefill_cuda_graph_runner_cls(self) -> type[PrefillCudaGraphRunner] | None:
+        is_breakable = (
+            get_exec().graph.cuda_graph_config.prefill.backend
             == CudaGraphBackend.BREAKABLE
+        )
+        if is_breakable and self.prefill_graph_runner_class is not None:
+            return self.prefill_graph_runner_class
+        elif (
+            is_breakable
+            and self.model_arch_override == "WhisperForConditionalGeneration"
         ):
             from sglang_omni.model_runner.whisper_prefill_cuda_graph_runner import (
                 WhisperPrefillCudaGraphRunner,
@@ -525,8 +768,7 @@ class SGLModelRunner(ModelRunner):
 
             return WhisperPrefillCudaGraphRunner
         else:
-            pass
-        return None
+            return None
 
     def weight_update_blocked_reason(self) -> str | None:
         ws = self.weight_share_config
@@ -614,15 +856,21 @@ class SGLModelRunner(ModelRunner):
             "Zonos2SGLangModel": "sglang_omni.models.zonos2.sglang_model:Zonos2SGLangModel",
             "LLaDA2MoeModelLM": "sglang_omni.models.llada2_uni.components.thinker:LLaDA2MoeModelLM",
             "WhisperForConditionalGeneration": "sglang_omni.models.whisper_asr.sglang_model:WhisperForConditionalGeneration",
+            "WhisperDraftForCausalLM": "sglang_omni.models.whisper_asr.speculative:WhisperDraftForCausalLM",
             "Qwen3ASRForConditionalGeneration": "sglang_omni.models.qwen3_asr.sglang_model:Qwen3ASRForConditionalGeneration",
             "FunAsrNanoForConditionalGeneration": "sglang_omni.models.fun_asr.sglang_model:FunAsrNanoForConditionalGeneration",
             "ArkasrForConditionalGeneration": "sglang_omni.models.arkasr.sglang_model:ArkasrForConditionalGeneration",
+            "HYV3SpeechForCausalLM": "sglang_omni.models.hy_simulmt.sglang_model:HYV3SpeechForCausalLM",
+            "NemotronTranscribeForConditionalGeneration": "sglang_omni.models.nemotron_transcribe.sglang_model:NemotronTranscribeForConditionalGeneration",
             "DotsTTSForConditionalGeneration": "sglang_omni.models.dots_tts.sglang_model:DotsTTSSGLangModel",
             "FunCosyVoice3SGLangModel": "sglang_omni.models.fun_cosyvoice3.sglang_model:FunCosyVoice3SGLangModel",
+            "FunCosyVoice3DSparkDraftModel": "sglang_omni.models.fun_cosyvoice3.dspark_draft:FunCosyVoice3DSparkDraftModel",
             "NemotronVoiceChatForCausalLM": "sglang_omni.models.nemotron_voicechat.thinker:NemotronVoiceChatForCausalLM",
             "NemotronVoiceChatTalker": "sglang_omni.models.nemotron_voicechat.talker:NemotronVoiceChatTalker",
             "PersonaPlexForCausalLM": "sglang_omni.models.personaplex.sglang_model:PersonaPlexForCausalLM",
             "MiniCPMO": "sglang_omni.models.minicpm_o.components.sglang_thinker:MiniCPMOThinkerForCausalLM",
+            "LlamaForCausalLMEagle3": "sglang_omni.speculative.eagle3_draft:OmniLlamaForCausalLMEagle3",
+            "ReducedVocabularyDFlashDraftModel": "sglang_omni.speculative.dflash_draft:ReducedVocabularyDFlashDraftModel",
         }
         for arch, path in sglang_omni_models.items():
             module_path, _, attr = path.partition(":")
@@ -644,7 +892,9 @@ class SGLModelRunner(ModelRunner):
         except Exception as exc:
             logger.warning(f"sglang-omni: skipping Ming-Omni registration ({exc})")
 
-    def init_kv_cache_configurator(self):
+    def init_kv_cache_configurator(
+        self, draft_parallel_layout: DraftParallelLayout | None = None
+    ) -> None:
         """Swap in the Omni configurator so the colocated budget stays hooked.
 
         Upstream keeps _profile_available_bytes on the composed
@@ -652,7 +902,7 @@ class SGLModelRunner(ModelRunner):
         the Omni subclass, copying every declared field so upstream can add
         fields without silently dropping them here.
         """
-        super().init_kv_cache_configurator()
+        super().init_kv_cache_configurator(draft_parallel_layout)
         base = self.kv_cache_configurator
         self.kv_cache_configurator = OmniKVCacheConfigurator(
             **{

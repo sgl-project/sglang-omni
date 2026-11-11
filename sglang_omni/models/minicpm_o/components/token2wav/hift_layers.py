@@ -128,6 +128,11 @@ class SineGen2(torch.nn.Module):
         self.sampling_rate = samp_rate
         self.voiced_threshold = voiced_threshold
         self.upsample_scale = upsample_scale
+        self.register_buffer(
+            "harmonic_multipliers",
+            torch.arange(1, self.harmonic_num + 2, dtype=torch.float32)[None, None, :],
+            persistent=False,
+        )
 
     def f02uv(self, f0: torch.Tensor) -> torch.Tensor:
         voiced_mask = (f0 > self.voiced_threshold).type(torch.float32)
@@ -161,9 +166,7 @@ class SineGen2(torch.nn.Module):
     def forward(
         self, f0: torch.Tensor, noise_generator: torch.Generator
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        harmonic_frequencies = torch.multiply(
-            f0, torch.FloatTensor([[range(1, self.harmonic_num + 2)]]).to(f0.device)
-        )
+        harmonic_frequencies = torch.multiply(f0, self.harmonic_multipliers)
         sine_waves = self.f02sine(harmonic_frequencies, noise_generator) * self.sine_amp
         voiced = self.f02uv(f0)
         noise_amplitude = voiced * self.noise_std + (1 - voiced) * self.sine_amp / 3

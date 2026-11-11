@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Qwen3-Omni as a realtime voice assistant over the Session API, on one H200.
+# The Python pipeline config owns the stage topology; this file sets what
+# depends on the device: per-stage memory budgets and the number of
+# concurrent sessions those budgets hold.
+#
+# The memory fractions are the colocated speech profile's
+# (examples/configs/qwen3_omni_colocated_h200.yaml), which keeps about 6% of
+# device memory outside stage budgets for CUDA graph capture, backend
+# workspaces, activation peaks, and allocator fragmentation.
+# max_sessions: a session retains at most max_seq_len (32768) thinker tokens
+# of KV, and the thinker's KV pool at these fractions holds 555,988 tokens.
+config_cls: Qwen3OmniSessionPipelineConfig
+model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
+max_sessions: 16
+
+stages:
+  image_encoder:
+    gpu: 0
+    gpu_memory_fraction: 0.017
+  audio_encoder:
+    gpu: 0
+    gpu_memory_fraction: 0.017
+  thinker:
+    gpu: 0
+    gpu_memory_fraction: 0.769
+  talker_ar:
+    gpu: 0
+    gpu_memory_fraction: 0.123
+  code2wav:
+    gpu: 0
+    gpu_memory_fraction: 0.014
+
+session_nodes:
+  vad:
+    stages: [vad]
+    inputs: ["input:pcm16", "input:session"]
+  qwen_omni:
+    stages: [preprocessing, image_encoder, audio_encoder, thinker, talker_ar, code2wav]
+    inputs:
+      - "dialog:qwen.unit"
+      - {kind: control, source: input, event: configure}
+      # Note (ruoyu): A configure appended with the audio, as /v1/realtime sends it, reaches only the readers of input:session; the dialog forwards it here.
+      - {kind: control, source: dialog, event: configure}
+      - {kind: control, source: dialog, event: interrupt, preempt: true}
+      - {kind: control, source: dialog, event: qwen.truncate}
+  dialog:
+    stages: [dialog]
+    inputs:
+      - "input:pcm16"
+      - "input:session"
+      - "input:image_frame"
+      - "vad:session"
+      - {kind: control, source: input, event: interrupt, preempt: true}
+      # A reply publishes three controls (turn.started, reply.progress, turn.done) and the dialog
+      # starts the next reply only once it took turn.done, or the reply.delivered of an interrupted
+      # one, so with an interrupted reply leaving at most three behind, the default capacity of 16
+      # never drops one.
+      - {source: "qwen_omni:session", feedback: true, overflow: drop_oldest}
+
+session_publish:
+  vad: [session]
+  dialog: [session]
+  qwen_omni: [pcm_f32le, session, text_delta]

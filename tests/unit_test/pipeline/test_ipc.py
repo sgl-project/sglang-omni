@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import signal
+import threading
+import weakref
+from collections.abc import Awaitable, Callable, Coroutine
 from pathlib import Path
 from traceback import format_exception
 from types import FrameType, SimpleNamespace
+from typing import ClassVar
 from unittest.mock import AsyncMock, Mock
 
+import httpx
 import pytest
-from fastapi import FastAPI
+import uvicorn
+from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 import sglang_omni.pipeline.mp_runner as mp_runner
@@ -18,11 +25,28 @@ import sglang_omni.pipeline.runtime_config as runtime_config
 from sglang_omni.config.schema import (
     CustomVoiceConfig,
     EndpointsConfig,
+    EngineStageConfig,
     PipelineConfig,
+    ProcessConfig,
     StageConfig,
 )
+from sglang_omni.config.topology import compile_logical_processes
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, StageWorkerProcessSpec
 from sglang_omni.profiler.event_recorder import get_recorder
+from sglang_omni.serve import launcher
+from sglang_omni.serve.openai_api import ServerStatus
+from sglang_omni.serve.protocol import (
+    ChatCompletionRequest,
+    ChatMessage,
+    CreateSpeechRequest,
+)
+from sglang_omni.serve.realtime.types import ProtocolError
+from sglang_omni.serve.server_warmup import (
+    TranscriptionWarmupRequest,
+    warmup_tone_wav_bytes,
+)
+from sglang_omni.serve.speech_to_text import SpeechToTextForm, parse_speech_to_text_form
+from sglang_omni.serve.transcriptions import TRANSCRIPTIONS_ENDPOINT
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, FakeRelay
 
 
@@ -63,6 +87,9 @@ class StubCoordinator:
 
     async def stop(self) -> None:
         self.stopped = True
+
+    async def freeze_gc(self) -> None:
+        pass
 
 
 def make_config(base_path: Path) -> PipelineConfig:
@@ -316,6 +343,51 @@ async def test_mp_runner_startup_failure_includes_child_factory_traceback(
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.parametrize(
+    ("entry_limit", "engine_admission_limits", "expected_max_in_flight"),
+    [(None, (), None), (3, (), 6), (3, ((8, 8), (1, 1)), 4)],
+)
+def test_coordinator_cap_follows_an_entry_stage_that_admits_requests(
+    tmp_path: Path,
+    entry_limit: int | None,
+    engine_admission_limits: tuple[tuple[int, int], ...],
+    expected_max_in_flight: int | None,
+) -> None:
+    class EntryAdmitsConfig(PipelineConfig):
+        stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+            "engine0": EngineStageConfig,
+            "engine1": EngineStageConfig,
+        }
+
+        def entry_stage_admission_limit(self) -> int | None:
+            return entry_limit
+
+    base = make_config(tmp_path).model_dump()
+    engine_stages = [
+        {
+            "name": f"engine{index}",
+            "process": "pipeline",
+            "factory_path": f"{__name__}.noop_factory",
+            "terminal": True,
+            "engine": {"max_running_requests": running, "max_queued_requests": queued},
+        }
+        for index, (running, queued) in enumerate(engine_admission_limits)
+    ]
+    config = EntryAdmitsConfig(
+        **{
+            **base,
+            "stages": [*base["stages"], *engine_stages],
+            "processes": {"pipeline": ProcessConfig(num_replicas=2)},
+        }
+    )
+    plan, _ = compile_logical_processes(config)
+
+    assert (
+        mp_runner.resolve_coordinator_max_in_flight(config, logical_process_plan=plan)
+        == expected_max_in_flight
+    )
+
+
 @pytest.mark.asyncio
 async def test_mp_runner_stop_cleans_runtime_dir(
     tmp_path: Path,
@@ -334,6 +406,10 @@ async def test_mp_runner_stop_cleans_runtime_dir(
             replica_topology=None,
             logical_process_plan=None,
             max_in_flight=None,
+            max_total_backlog_bytes: int | None = None,
+            session_route=None,
+            session_graph=None,
+            max_output_lead_ms=None,
         ) -> None:
             del (
                 abort_endpoint,
@@ -343,7 +419,11 @@ async def test_mp_runner_stop_cleans_runtime_dir(
                 replica_topology,
                 logical_process_plan,
                 max_in_flight,
+                session_route,
+                session_graph,
+                max_output_lead_ms,
             )
+            self.max_total_backlog_bytes = max_total_backlog_bytes
             self.control_plane = SimpleNamespace(
                 completion_endpoint=completion_endpoint
             )
@@ -386,6 +466,9 @@ async def test_mp_runner_stop_cleans_runtime_dir(
         async def wait_ready(self, timeout: float) -> None:
             del timeout
 
+        def failure_summary(self) -> str:
+            return ""
+
         def any_dead(self) -> bool:
             return False
 
@@ -406,6 +489,7 @@ async def test_mp_runner_stop_cleans_runtime_dir(
     await runner.start()
     capacity.assert_called_once_with()
     assert len([path for path in tmp_path.iterdir() if path.is_dir()]) == 1
+    assert runner.coordinator.max_total_backlog_bytes == 1024**3
 
     await runner.stop()
 
@@ -418,9 +502,14 @@ async def run_launcher_with_fake_runner(
     config: PipelineConfig,
     serve_mock: AsyncMock | None,
     monkeypatch: pytest.MonkeyPatch,
+    replica_counts: tuple[int, ...] = (1,),
+    host: str = "0.0.0.0",
+    created_runners: list[object] | None = None,
+    runner_stop_error: Exception | None = None,
 ) -> tuple[object, FastAPI, SimpleNamespace]:
     app = FastAPI()
     profiler_calls = SimpleNamespace(starts=[], stops=[])
+    runners = [] if created_runners is None else created_runners
 
     from sglang_omni.serve import launcher
 
@@ -430,10 +519,12 @@ async def run_launcher_with_fake_runner(
         def __init__(self, pipeline_config: PipelineConfig) -> None:
             del pipeline_config
             nonlocal runner_ref
+            runners.append(self)
             self.coordinator = StubCoordinator()
             self.stage_control_endpoints = {
                 "preprocessing": "ipc://stage_preprocessing.sock"
             }
+            self.stage_http_routes = []
             self.started = False
             self.stopped = False
             # launcher._run_server reads .prep.placement_plan / .process_plan
@@ -445,6 +536,11 @@ async def run_launcher_with_fake_runner(
                     groups=(),
                     tp_stage_to_processes={},
                 ),
+                logical_process_plan=SimpleNamespace(
+                    processes=tuple(
+                        SimpleNamespace(num_replicas=count) for count in replica_counts
+                    )
+                ),
             )
             runner_ref = self
 
@@ -454,6 +550,10 @@ async def run_launcher_with_fake_runner(
 
         async def stop(self) -> None:
             self.stopped = True
+            if runner_stop_error is not None:
+                raise runner_stop_error
+            else:
+                pass
 
         async def wait_failed(self) -> None:
             await asyncio.Future()
@@ -481,7 +581,7 @@ async def run_launcher_with_fake_runner(
     if serve_mock is not None:
         monkeypatch.setattr(launcher.uvicorn.Server, "serve", serve_mock)
 
-    await launcher.run_server(config, port=8000)
+    await launcher.run_server(config, host=host, port=8000)
     assert runner_ref is not None
     return runner_ref, app, profiler_calls
 
@@ -528,6 +628,488 @@ async def test_launcher_passes_moss_tts_speech_input_limit(
     assert app.state.create_app_kwargs["max_speech_input_chars"] is None
 
 
+def route_warmup_to(
+    monkeypatch: pytest.MonkeyPatch, transport: httpx.AsyncBaseTransport
+) -> None:
+    real_client = httpx.AsyncClient
+
+    def routed_client(
+        *, base_url: str, timeout: float, trust_env: bool
+    ) -> httpx.AsyncClient:
+        return real_client(
+            base_url=base_url,
+            timeout=timeout,
+            trust_env=trust_env,
+            transport=transport,
+        )
+
+    monkeypatch.setattr(launcher.httpx, "AsyncClient", routed_client)
+
+
+def answer_warmup_with(
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+    posted: list[ChatCompletionRequest],
+) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        posted.append(ChatCompletionRequest.model_validate_json(request.content))
+        return httpx.Response(status_code, text="warmup answer")
+
+    route_warmup_to(monkeypatch, httpx.MockTransport(respond))
+
+
+def build_test_warmup_request(pipeline_config: PipelineConfig) -> ChatCompletionRequest:
+    return ChatCompletionRequest(
+        messages=[ChatMessage(role="user", content="Hi")], max_tokens=8
+    )
+
+
+def make_started_server() -> SimpleNamespace:
+    return SimpleNamespace(started=True, should_exit=False, freeze_api_gc=lambda: None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("request_count", [0, 2])
+async def test_server_reports_up_after_warmup_then_freezes_every_process_heap(
+    monkeypatch: pytest.MonkeyPatch, request_count: int
+) -> None:
+    """A warmed-up server rescanned the heap its warmup built in every full collection."""
+    app = FastAPI()
+    app.state.server_status = ServerStatus.STARTING
+    posted: list[ChatCompletionRequest] = []
+    events: list[tuple[str, ServerStatus]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        posted.append(ChatCompletionRequest.model_validate_json(request.content))
+        events.append(("warmup request", app.state.server_status))
+        return httpx.Response(200)
+
+    class FreezeRecordingCoordinator:
+        async def freeze_gc(self) -> None:
+            events.append(("stage gc frozen", app.state.server_status))
+
+    route_warmup_to(monkeypatch, httpx.MockTransport(respond))
+    monkeypatch.setattr(
+        launcher.gc,
+        "collect",
+        lambda: events.append(("api gc collected", app.state.server_status)),
+    )
+    server = SimpleNamespace(
+        started=True,
+        should_exit=False,
+        freeze_api_gc=lambda: events.append(("api gc frozen", app.state.server_status)),
+    )
+    request = ChatCompletionRequest(
+        messages=[ChatMessage(role="user", content="Hi")], max_tokens=8
+    )
+
+    await launcher.warm_up_server(
+        server,
+        app,
+        FreezeRecordingCoordinator(),
+        base_url="http://127.0.0.1:8000",
+        requests=[request] * request_count,
+        timeout_s=5,
+    )
+
+    assert posted == [request] * request_count
+    collected = [("api gc collected", ServerStatus.STARTING)] if request_count else []
+    assert events == (
+        [("warmup request", ServerStatus.STARTING)] * request_count
+        + collected
+        + [
+            ("stage gc frozen", ServerStatus.UP),
+            ("api gc frozen", ServerStatus.UP),
+        ]
+    )
+    assert app.state.server_status is ServerStatus.UP
+    assert server.should_exit is False
+
+
+@pytest.mark.asyncio
+async def test_api_heap_freeze_keeps_no_warmup_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The API heap freeze kept every warmup response for the server's lifetime."""
+    response_references: list[weakref.ref[httpx.Response]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        response = httpx.Response(200)
+        response_references.append(weakref.ref(response))
+        return response
+
+    route_warmup_to(monkeypatch, httpx.MockTransport(respond))
+    server = launcher.PipelineUvicornServer(uvicorn.Config("unused:app"))
+    server.started = True
+    app = FastAPI()
+    app.state.server_status = ServerStatus.STARTING
+    request = ChatCompletionRequest(messages=[ChatMessage(role="user", content="Hi")])
+
+    try:
+        await launcher.warm_up_server(
+            server,
+            app,
+            StubCoordinator(),
+            base_url="http://127.0.0.1:8000",
+            requests=[request] * 2,
+            timeout_s=5,
+        )
+        gc.collect()
+
+        assert server.has_frozen_api_gc is True
+        assert [reference() for reference in response_references] == [None, None]
+    finally:
+        gc.unfreeze()
+
+
+@pytest.mark.asyncio
+async def test_warmup_sends_its_requests_one_at_a_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    in_flight_counts: list[int] = []
+    in_flight: list[httpx.Request] = []
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        in_flight.append(request)
+        in_flight_counts.append(len(in_flight))
+        await asyncio.sleep(0.01)
+        in_flight.remove(request)
+        return httpx.Response(200)
+
+    route_warmup_to(monkeypatch, httpx.MockTransport(respond))
+    server = make_started_server()
+    app = FastAPI()
+    app.state.server_status = ServerStatus.STARTING
+    request = ChatCompletionRequest(messages=[ChatMessage(role="user", content="Hi")])
+
+    await launcher.warm_up_server(
+        server,
+        app,
+        StubCoordinator(),
+        base_url="http://127.0.0.1:8000",
+        requests=[request] * 3,
+        timeout_s=5,
+    )
+
+    assert in_flight_counts == [1, 1, 1]
+    assert app.state.server_status is ServerStatus.UP
+
+
+@pytest.mark.asyncio
+async def test_warmup_drops_its_request_when_the_server_starts_shutting_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = asyncio.Event()
+    cancelled: list[bool] = []
+
+    async def hold(request: httpx.Request) -> httpx.Response:
+        started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+        return httpx.Response(200)
+
+    route_warmup_to(monkeypatch, httpx.MockTransport(hold))
+    server = make_started_server()
+    app = FastAPI()
+    app.state.server_status = ServerStatus.STARTING
+    request = ChatCompletionRequest(messages=[ChatMessage(role="user", content="Hi")])
+    warmup = asyncio.create_task(
+        launcher.warm_up_server(
+            server,
+            app,
+            StubCoordinator(),
+            base_url="http://127.0.0.1:8000",
+            requests=[request],
+            timeout_s=30,
+        )
+    )
+    await started.wait()
+
+    server.should_exit = True
+    await asyncio.wait_for(warmup, timeout=5)
+
+    assert cancelled == [True]
+    assert app.state.server_status is ServerStatus.STARTING
+
+
+@pytest.mark.asyncio
+async def test_transcription_warmup_uploads_a_form_the_transcription_route_parses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    forms: list[SpeechToTextForm] = []
+    uploaded_wavs: list[bytes] = []
+    route_app = FastAPI()
+
+    @route_app.post(TRANSCRIPTIONS_ENDPOINT)
+    async def transcribe(
+        form: SpeechToTextForm = Depends(parse_speech_to_text_form),
+    ) -> dict[str, str]:
+        forms.append(form)
+        uploaded_wavs.append(await form.file.read())
+        return {"text": ""}
+
+    route_warmup_to(monkeypatch, httpx.ASGITransport(app=route_app))
+    server = make_started_server()
+    app = FastAPI()
+    app.state.server_status = ServerStatus.STARTING
+    request = TranscriptionWarmupRequest(
+        wav_bytes=warmup_tone_wav_bytes(), max_new_tokens=8
+    )
+
+    await launcher.warm_up_server(
+        server,
+        app,
+        StubCoordinator(),
+        base_url="http://127.0.0.1:8000",
+        requests=[request],
+        timeout_s=5,
+    )
+
+    assert app.state.server_status is ServerStatus.UP
+    assert uploaded_wavs == [request.wav_bytes]
+    assert (forms[0].max_new_tokens, forms[0].response_format, forms[0].stream) == (
+        8,
+        "json",
+        False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_speech_warmup_posts_its_request_to_the_speech_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posted: list[tuple[str, CreateSpeechRequest]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        posted.append(
+            (
+                request.url.path,
+                CreateSpeechRequest.model_validate_json(request.content),
+            )
+        )
+        return httpx.Response(200)
+
+    route_warmup_to(monkeypatch, httpx.MockTransport(respond))
+    server = make_started_server()
+    app = FastAPI()
+    app.state.server_status = ServerStatus.STARTING
+    request = CreateSpeechRequest(
+        input="Hi", voice="Ryan", response_format="pcm", stream=True
+    )
+
+    await launcher.warm_up_server(
+        server,
+        app,
+        StubCoordinator(),
+        base_url="http://127.0.0.1:8000",
+        requests=[request],
+        timeout_s=5,
+    )
+
+    assert posted == [("/v1/audio/speech", request)]
+    assert app.state.server_status is ServerStatus.UP
+
+
+@pytest.mark.asyncio
+async def test_launcher_sends_one_warmup_request_per_replica_of_the_most_replicated_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        PipelineConfig,
+        "server_warmup_request_factory",
+        f"{__name__}.build_test_warmup_request",
+    )
+    warmup_requests: list[list[ChatCompletionRequest]] = []
+
+    def record_warmup(
+        server: uvicorn.Server,
+        app: FastAPI,
+        coordinator: StubCoordinator,
+        *,
+        base_url: str,
+        requests: list[ChatCompletionRequest],
+        timeout_s: float,
+        realtime_warmup: Callable[[float], Awaitable[None]] | None,
+    ) -> Coroutine[None, None, None]:
+        warmup_requests.append(requests)
+        return asyncio.sleep(0)
+
+    monkeypatch.setattr(launcher, "warm_up_server", record_warmup)
+    await run_launcher_with_fake_runner(
+        config=make_config(tmp_path),
+        serve_mock=AsyncMock(return_value=None),
+        monkeypatch=monkeypatch,
+        replica_counts=(1, 3, 2),
+    )
+
+    assert warmup_requests == [[build_test_warmup_request(make_config(tmp_path))] * 3]
+
+
+@pytest.mark.parametrize(
+    ("host", "base_url"),
+    [
+        ("0.0.0.0", "http://127.0.0.1:8000"),
+        ("", "http://127.0.0.1:8000"),
+        ("::", "http://[::1]:8000"),
+        ("::1", "http://[::1]:8000"),
+        ("10.1.2.3", "http://10.1.2.3:8000"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_launcher_warms_up_through_the_bind_host_or_loopback_for_a_wildcard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    host: str,
+    base_url: str,
+) -> None:
+    warmup_base_urls: list[str] = []
+
+    def record_warmup(
+        server: uvicorn.Server,
+        app: FastAPI,
+        coordinator: StubCoordinator,
+        *,
+        base_url: str,
+        requests: list[ChatCompletionRequest],
+        timeout_s: float,
+        realtime_warmup: Callable[[float], Awaitable[None]] | None,
+    ) -> Coroutine[None, None, None]:
+        warmup_base_urls.append(base_url)
+        return asyncio.sleep(0)
+
+    monkeypatch.setattr(launcher, "warm_up_server", record_warmup)
+    await run_launcher_with_fake_runner(
+        config=make_config(tmp_path),
+        serve_mock=AsyncMock(return_value=None),
+        monkeypatch=monkeypatch,
+        host=host,
+    )
+
+    assert warmup_base_urls == [base_url]
+
+
+@pytest.mark.asyncio
+async def test_failed_warmup_stops_the_server_before_it_reports_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    answer_warmup_with(monkeypatch, 500, [])
+    server = make_started_server()
+    app = FastAPI()
+    app.state.server_status = ServerStatus.STARTING
+    request = ChatCompletionRequest(messages=[ChatMessage(role="user", content="Hi")])
+
+    with pytest.raises(RuntimeError, match="status 500: warmup answer"):
+        await launcher.warm_up_server(
+            server,
+            app,
+            StubCoordinator(),
+            base_url="http://127.0.0.1:8000",
+            requests=[request],
+            timeout_s=5,
+        )
+
+    assert app.state.server_status is ServerStatus.STARTING
+    assert server.should_exit is True
+
+
+@pytest.mark.asyncio
+async def test_realtime_warmup_runs_before_the_server_reports_up() -> None:
+    server = make_started_server()
+    app = FastAPI()
+    app.state.server_status = ServerStatus.STARTING
+    warmup_calls: list[tuple[ServerStatus, float]] = []
+
+    async def warm_up_realtime(timeout_s: float) -> None:
+        warmup_calls.append((app.state.server_status, timeout_s))
+
+    await launcher.warm_up_server(
+        server,
+        app,
+        StubCoordinator(),
+        base_url="http://127.0.0.1:8000",
+        requests=[],
+        timeout_s=5,
+        realtime_warmup=warm_up_realtime,
+    )
+
+    assert warmup_calls == [(ServerStatus.STARTING, 5)]
+    assert app.state.server_status is ServerStatus.UP
+
+
+@pytest.mark.asyncio
+async def test_cancelled_server_warmup_cancels_the_realtime_warmup() -> None:
+    server = make_started_server()
+    app = FastAPI()
+    app.state.server_status = ServerStatus.STARTING
+    started = asyncio.Event()
+    cancelled: list[bool] = []
+
+    async def warm_up_realtime(timeout_s: float) -> None:
+        started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+
+    warmup = asyncio.create_task(
+        launcher.warm_up_server(
+            server,
+            app,
+            StubCoordinator(),
+            base_url="http://127.0.0.1:8000",
+            requests=[],
+            timeout_s=30,
+            realtime_warmup=warm_up_realtime,
+        )
+    )
+    await started.wait()
+
+    warmup.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await warmup
+
+    assert cancelled == [True]
+    assert app.state.server_status is ServerStatus.STARTING
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("warmup session failed"),
+        ProtocolError("admission_rejected", "warmup session refused"),
+    ],
+)
+async def test_failed_realtime_warmup_stops_the_server_before_it_reports_up(
+    error: Exception,
+) -> None:
+    server = make_started_server()
+    app = FastAPI()
+    app.state.server_status = ServerStatus.STARTING
+
+    async def warm_up_realtime(timeout_s: float) -> None:
+        raise error
+
+    with pytest.raises(type(error), match=str(error)):
+        await launcher.warm_up_server(
+            server,
+            app,
+            StubCoordinator(),
+            base_url="http://127.0.0.1:8000",
+            requests=[],
+            timeout_s=5,
+            realtime_warmup=warm_up_realtime,
+        )
+
+    assert app.state.server_status is ServerStatus.STARTING
+    assert server.should_exit is True
+
+
 @pytest.mark.asyncio
 async def test_launcher_uses_runner_and_mounts_profiler_routes(
     tmp_path: Path,
@@ -564,7 +1146,7 @@ async def test_launcher_uses_runner_and_mounts_profiler_routes(
     finally:
         rec = get_recorder()
         if rec.is_active():
-            rec.stop()
+            rec.stop(wait=True)
 
 
 def test_start_profile_request_only_mode_does_not_require_trace_template(
@@ -602,7 +1184,163 @@ def test_start_profile_request_only_mode_does_not_require_trace_template(
     finally:
         rec = get_recorder()
         if rec.is_active():
-            rec.stop()
+            rec.stop(wait=True)
+
+
+@pytest.mark.parametrize("endpoint", ["/start_profile", "/start_request_profile"])
+def test_profiler_start_routes_pass_event_buffer_capacity(
+    endpoint: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeRecorder:
+        def __init__(self) -> None:
+            self.capacities: list[int | None] = []
+
+        def start(
+            self,
+            run_id: str,
+            event_dir: str,
+            stage: str,
+            *,
+            event_buffer_capacity: int | None = None,
+        ) -> str:
+            self.capacities.append(event_buffer_capacity)
+            return "/tmp/events.jsonl"
+
+    class FakeProfilerControl:
+        def __init__(self) -> None:
+            self.capacities: list[int | None] = []
+
+        async def broadcast_start(
+            self,
+            run_id: str,
+            trace_path_template: str,
+            config: dict[str, object] | None = None,
+            stages: list[str] | None = None,
+            event_dir: str | None = None,
+            enable_torch: bool = True,
+            event_buffer_capacity: int | None = None,
+        ) -> None:
+            self.capacities.append(event_buffer_capacity)
+
+    recorder = FakeRecorder()
+    control = FakeProfilerControl()
+    monkeypatch.setattr(launcher, "_get_event_recorder", lambda: recorder)
+    app = FastAPI()
+    launcher.mount_profiler_routes(app, control, profiler_dir=str(tmp_path))
+    event_dir = str(tmp_path / "events")
+    body: dict[str, object] = {
+        "run_id": "capacity-test",
+        "event_dir": event_dir,
+        "event_buffer_capacity": 1500,
+    }
+    if endpoint == "/start_profile":
+        body["enable_torch"] = False
+    else:
+        pass
+
+    with TestClient(app) as client:
+        response = client.post(endpoint, json=body)
+
+    assert response.status_code == 200
+    assert recorder.capacities == [1500]
+    assert control.capacities == [1500]
+
+
+@pytest.mark.parametrize("invalid_capacity", [0, -1, True, 1.5, "1500"])
+def test_profiler_start_routes_reject_invalid_event_buffer_capacity(
+    invalid_capacity: object,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeRecorder:
+        def __init__(self) -> None:
+            self.starts = 0
+
+        def start(
+            self,
+            run_id: str,
+            event_dir: str,
+            stage: str,
+            *,
+            event_buffer_capacity: int | None = None,
+        ) -> str:
+            self.starts += 1
+            return "/tmp/events.jsonl"
+
+    class FakeProfilerControl:
+        def __init__(self) -> None:
+            self.starts = 0
+
+        async def broadcast_start(
+            self,
+            run_id: str,
+            trace_path_template: str,
+            config: dict[str, object] | None = None,
+            stages: list[str] | None = None,
+            event_dir: str | None = None,
+            enable_torch: bool = True,
+            event_buffer_capacity: int | None = None,
+        ) -> None:
+            self.starts += 1
+
+    recorder = FakeRecorder()
+    control = FakeProfilerControl()
+    monkeypatch.setattr(launcher, "_get_event_recorder", lambda: recorder)
+    app = FastAPI()
+    launcher.mount_profiler_routes(app, control, profiler_dir=str(tmp_path))
+    event_dir = str(tmp_path / "events")
+    request_body: dict[str, object] = {
+        "run_id": "invalid-capacity",
+        "event_dir": event_dir,
+        "enable_torch": False,
+        "event_buffer_capacity": invalid_capacity,
+    }
+
+    with TestClient(app) as client:
+        for endpoint in ("/start_profile", "/start_request_profile"):
+            response = client.post(endpoint, json=request_body)
+            assert response.status_code == 422
+
+    assert recorder.starts == 0
+    assert control.starts == 0
+
+
+class RecordingProfilerControl:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def broadcast_start(self, **kwargs: object) -> None:
+        self.calls.append("start")
+
+    async def broadcast_stop(self, **kwargs: object) -> None:
+        self.calls.append("stop")
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/start_profile",
+        "/stop_profile",
+        "/start_request_profile",
+        "/stop_request_profile",
+    ],
+)
+def test_profiler_routes_take_the_admin_key(
+    path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sglang_omni.serve import launcher
+
+    monkeypatch.setenv("SGLANG_OMNI_ADMIN_KEY", "admin-key")
+    app = FastAPI()
+    control = RecordingProfilerControl()
+    launcher.mount_profiler_routes(app, control, profiler_dir=str(tmp_path))
+    body = {"enable_torch": False, "event_dir": str(tmp_path / "events")}
+
+    with TestClient(app) as client:
+        assert client.post(path, json=body).status_code == 401
+    assert control.calls == []
 
 
 def test_start_profile_torch_mode_still_requires_trace_template() -> None:
@@ -628,15 +1366,110 @@ async def test_launcher_stops_runner_when_server_raises(
 ) -> None:
     config = make_config(tmp_path)
     server_serve = AsyncMock(side_effect=RuntimeError("server failed"))
+    runners: list[object] = []
 
     with pytest.raises(RuntimeError, match="server failed"):
         await run_launcher_with_fake_runner(
             config=config,
             serve_mock=server_serve,
             monkeypatch=monkeypatch,
+            created_runners=runners,
         )
 
     server_serve.assert_awaited_once()
+    assert len(runners) == 1
+    assert runners[0].started
+    assert runners[0].stopped
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "runner_stop_error",
+    [None, RuntimeError("runner stop failed")],
+    ids=["runner-stop-success", "runner-stop-failure"],
+)
+async def test_coordinator_shutdown_always_finalizes_profiler(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runner_stop_error: Exception | None,
+) -> None:
+    recorder = get_recorder()
+    if recorder.is_active():
+        recorder.stop(wait=True)
+    else:
+        pass
+    event_dir = tmp_path / "events"
+    recorder.start("shutdown-finalization", str(event_dir), "coordinator")
+
+    server_serve = AsyncMock(return_value=None)
+    if runner_stop_error is None:
+        await run_launcher_with_fake_runner(
+            config=make_config(tmp_path),
+            serve_mock=server_serve,
+            monkeypatch=monkeypatch,
+        )
+    else:
+        with pytest.raises(RuntimeError, match="runner stop failed"):
+            await run_launcher_with_fake_runner(
+                config=make_config(tmp_path),
+                serve_mock=server_serve,
+                monkeypatch=monkeypatch,
+                runner_stop_error=runner_stop_error,
+            )
+    assert recorder.is_active() is False
+    assert len(list(event_dir.glob("run_status_*.json"))) == 1
+
+
+@pytest.mark.asyncio
+async def test_coordinator_shutdown_waits_for_profiler_off_event_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = get_recorder()
+    if recorder.is_active():
+        recorder.stop(wait=True)
+    else:
+        pass
+    recorder.start("coordinator-shutdown", str(tmp_path / "events"), "coordinator")
+
+    loop = asyncio.get_running_loop()
+    wait_started = asyncio.Event()
+    release_wait = threading.Event()
+
+    def wait_for_finalizations(timeout_seconds: float) -> bool:
+        del timeout_seconds
+        loop.call_soon_threadsafe(wait_started.set)
+        return release_wait.wait(timeout=5)
+
+    monkeypatch.setattr(recorder, "wait_for_finalizations", wait_for_finalizations)
+    server_serve = AsyncMock(side_effect=RuntimeError("server failed"))
+    task = asyncio.create_task(
+        run_launcher_with_fake_runner(
+            config=make_config(tmp_path),
+            serve_mock=server_serve,
+            monkeypatch=monkeypatch,
+        )
+    )
+    try:
+        await asyncio.wait_for(wait_started.wait(), timeout=5)
+        assert task.done() is False
+        release_wait.set()
+        with pytest.raises(RuntimeError, match="server failed"):
+            await task
+    finally:
+        release_wait.set()
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        else:
+            pass
+        if recorder.is_active():
+            recorder.stop(wait=True)
+        else:
+            pass
 
 
 @pytest.mark.asyncio
@@ -748,6 +1581,7 @@ def test_launcher_cleans_up_before_passing_on_sigterm(
         def __init__(self, pipeline_config: PipelineConfig) -> None:
             self.coordinator = StubCoordinator()
             self.stage_control_endpoints = {}
+            self.stage_http_routes = []
             self.prep = SimpleNamespace(
                 placement_plan=SimpleNamespace(gpus={}),
                 process_plan=SimpleNamespace(groups=(), tp_stage_to_processes={}),

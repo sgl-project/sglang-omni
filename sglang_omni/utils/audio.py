@@ -4,11 +4,11 @@
 from __future__ import annotations
 
 import functools
-import importlib
 import io
 import logging
 import math
 import os
+import wave
 from typing import TypedDict
 from urllib.parse import unquote, urlparse
 
@@ -19,8 +19,9 @@ import torch
 import torchaudio
 import xxhash
 from numpy.typing import NDArray
+from sglang.utils import LazyImport
 
-from sglang_omni.platforms import current_platform
+current_platform: LazyImport = LazyImport("sglang_omni.platforms", "current_platform")
 
 _DEFAULT_REQUEST_TIMEOUT = 5
 logger = logging.getLogger(__name__)
@@ -41,7 +42,7 @@ _TORCHCODEC_USABLE: bool | None = None
 
 
 def check_torchcodec_ready() -> bool:
-    """Whether the torchcodec decoder backend can be imported and loaded.
+    """Whether the torchcodec decoder backend can be imported and can open a WAV.
 
     torchaudio 2.10+ delegates decoding to torchcodec. CPU-only torch images
     (e.g. Ascend NPU containers) may ship torchcodec wheels that cannot load
@@ -50,11 +51,17 @@ def check_torchcodec_ready() -> bool:
     """
     global _TORCHCODEC_USABLE
     if _TORCHCODEC_USABLE is None:
+        probe_wav = io.BytesIO()
+        with wave.open(probe_wav, "wb") as probe_writer:
+            probe_writer.setnchannels(1)
+            probe_writer.setsampwidth(2)
+            probe_writer.setframerate(16000)
+            probe_writer.writeframes(bytes(32))
         try:
-            # Probe import via importlib so the module name never binds a name
-            # that an unused-import linter would strip (the probe relies on the
-            # import raising for missing/unloadable torchcodec wheels).
-            importlib.import_module("torchcodec.decoders")
+            from torchcodec.decoders import AudioDecoder
+
+            # note (Haoling Pu): torchcodec imports fine on a host without FFmpeg and fails on its first decoder, so only a decoder shows that decoding works.
+            AudioDecoder(probe_wav.getvalue())
         except (ImportError, OSError, RuntimeError) as exc:
             _TORCHCODEC_USABLE = False
             logger.warning(
@@ -297,6 +304,19 @@ def decode_audio_data_uri(value: str) -> bytes | None:
         raise AudioDecodeError("Invalid base64 audio data URI") from exc
 
 
+def audio_request_timeout() -> int:
+    """Seconds an audio URL fetch may take, from REQUEST_TIMEOUT."""
+    try:
+        timeout = int(os.getenv("REQUEST_TIMEOUT", str(_DEFAULT_REQUEST_TIMEOUT)))
+    except ValueError:
+        return _DEFAULT_REQUEST_TIMEOUT
+    if timeout <= 0:
+        return _DEFAULT_REQUEST_TIMEOUT
+    else:
+        pass
+    return timeout
+
+
 def load_audio(
     source: object,
     source_name: str = "audio",
@@ -318,17 +338,9 @@ def load_audio(
         if decoded is not None:
             source = decoded
         elif source.startswith(("http://", "https://")):
-            try:
-                timeout = int(
-                    os.getenv("REQUEST_TIMEOUT", str(_DEFAULT_REQUEST_TIMEOUT))
-                )
-                if timeout <= 0:
-                    timeout = _DEFAULT_REQUEST_TIMEOUT
-                else:
-                    pass
-            except ValueError:
-                timeout = _DEFAULT_REQUEST_TIMEOUT
-            response = httpx.get(source, timeout=timeout, follow_redirects=True)
+            response = httpx.get(
+                source, timeout=audio_request_timeout(), follow_redirects=True
+            )
             response.raise_for_status()
             source = response.content
         elif source.startswith("file://"):

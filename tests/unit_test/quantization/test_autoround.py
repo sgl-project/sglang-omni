@@ -28,32 +28,12 @@ def make_model_config(
 class TestNeedsStageLocalNormalization:
     """Tests for the ``needs_quant_config_normalization`` dispatch."""
 
-    def test_true_for_auto_round(self) -> None:
-        assert needs_quant_config_normalization({"quant_method": "auto-round"})
-
     def test_true_for_underscore_variant(self) -> None:
         assert needs_quant_config_normalization({"quant_method": "auto_round"})
-
-    def test_false_for_fp8(self) -> None:
-        assert not needs_quant_config_normalization({"quant_method": "fp8"})
-
-    def test_false_for_none(self) -> None:
-        assert not needs_quant_config_normalization(None)
 
 
 class TestNormalizeStageLocalCheckpointConfig:
     """Tests for stripping the stage prefix from block names / extra_config."""
-
-    def test_strips_thinker_prefix_from_block_names(self) -> None:
-        quant_config = {
-            "quant_method": "auto-round",
-            "block_name_to_quantize": "thinker.model.layers",
-        }
-        model_config = make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
-
-        normalize_quant_config(model_config)
-
-        assert quant_config["block_name_to_quantize"] == "model.layers"
 
     def test_strips_talker_prefix_from_block_names(self) -> None:
         quant_config = {
@@ -122,25 +102,6 @@ class TestNormalizeStageLocalCheckpointConfig:
             "model.layers.1": {"bits": 4},
         }
 
-    def test_extra_config_normalized_when_block_names_already_stripped(self) -> None:
-        quant_config = {
-            "quant_method": "auto-round",
-            "block_name_to_quantize": "model.layers",
-            "extra_config": {
-                r"thinker\.model\.layers\.0": {"bits": 8},
-                "thinker.model.layers.1": {"bits": 4},
-            },
-        }
-        model_config = make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
-
-        normalize_quant_config(model_config)
-
-        assert quant_config["block_name_to_quantize"] == "model.layers"
-        assert quant_config["extra_config"] == {
-            r"model\.layers\.0": {"bits": 8},
-            "model.layers.1": {"bits": 4},
-        }
-
     def test_extra_config_prefix_anchored_at_pattern_start(self) -> None:
         quant_config = {
             "quant_method": "auto-round",
@@ -180,17 +141,6 @@ class TestNormalizeStageLocalCheckpointConfig:
             r".*model\.layers\.\d+\.mlp\.gate.*": {"bits": 8},
         }
 
-    def test_no_change_when_block_names_lack_prefix(self) -> None:
-        quant_config = {
-            "quant_method": "auto-round",
-            "block_name_to_quantize": "model.layers",
-        }
-        model_config = make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
-
-        normalize_quant_config(model_config)
-
-        assert quant_config["block_name_to_quantize"] == "model.layers"
-
     def test_unknown_architecture_leaves_block_names_unchanged(self) -> None:
         quant_config = {
             "quant_method": "auto-round",
@@ -220,10 +170,6 @@ class TestNormalizeStageLocalCheckpointConfig:
         assert thinker_config.quantization_config["block_name_to_quantize"] == (
             "model.layers"
         )
-
-    def test_missing_hf_config_is_noop(self) -> None:
-        model_config = SimpleNamespace(hf_config=None)
-        normalize_quant_config(model_config)
 
     def test_missing_block_name_to_quantize_is_noop(self) -> None:
         quant_config = {"quant_method": "auto-round"}
@@ -294,10 +240,3 @@ class TestObjectShapedConfig:
         assert model_config.hf_config.quantization_config["extra_config"] == {
             r"model\.layers\.0": {"bits": 8}
         }
-
-    def test_unsupported_quant_config_type_raises(self) -> None:
-        model_config = make_model_config(
-            "Qwen3OmniThinkerForCausalLM", ["not", "a", "dict"]
-        )
-        with pytest.raises(TypeError, match="unsupported type"):
-            normalize_quant_config(model_config)

@@ -12,25 +12,9 @@ import pytest
 from fastapi import HTTPException
 
 from sglang_omni.serve import speech_to_text
-from sglang_omni.serve.transcriptions import (
-    build_transcription_generate_request as legacy_transcription_request_builder,
-)
 
 
-def build_request(*, task: str = "transcribe"):
-    return speech_to_text.build_speech_to_text_generate_request(
-        audio_bytes=b"RIFF",
-        filename="sample.wav",
-        content_type="audio/wav",
-        model="openai/whisper-large-v3",
-        language="en",
-        prompt=None,
-        temperature=None,
-        task=task,
-    )
-
-
-def test_build_request_marks_repetition_penalty_explicit() -> None:
+def test_build_request_passes_a_set_repetition_penalty() -> None:
     req = speech_to_text.build_speech_to_text_generate_request(
         audio_bytes=b"RIFF",
         filename="sample.wav",
@@ -42,33 +26,22 @@ def test_build_request_marks_repetition_penalty_explicit() -> None:
         repetition_penalty=1.3,
     )
 
-    assert req.metadata["explicit_generation_params"] == ["repetition_penalty"]
     assert req.sampling.repetition_penalty == 1.3
 
 
-def test_build_request_leaves_repetition_penalty_implicit_by_default() -> None:
-    req = build_request()
-
-    explicit_generation_params = req.metadata.get("explicit_generation_params", [])
-    assert isinstance(explicit_generation_params, list)
-    assert "repetition_penalty" not in explicit_generation_params
-    assert req.sampling.repetition_penalty == 1.0
-
-
-def test_transcription_builder_import_keeps_shared_callable() -> None:
-    """Keep the pre-extraction import stable while stacked consumers migrate."""
-    assert (
-        legacy_transcription_request_builder
-        is speech_to_text.build_speech_to_text_generate_request
+def test_build_request_leaves_repetition_penalty_unset_by_default() -> None:
+    req = speech_to_text.build_speech_to_text_generate_request(
+        audio_bytes=b"RIFF",
+        filename="sample.wav",
+        content_type="audio/wav",
+        model="openai/whisper-large-v3",
+        language="en",
+        prompt=None,
+        temperature=None,
+        task="transcribe",
     )
 
-
-def test_build_request_defaults_to_transcribe_task() -> None:
-    assert build_request().extra_params["task"] == "transcribe"
-
-
-def test_build_request_accepts_sibling_endpoint_task() -> None:
-    assert build_request(task="translate").extra_params["task"] == "translate"
+    assert req.sampling.repetition_penalty is None
 
 
 def test_response_format_validation_preserves_endpoint_error_contract() -> None:
@@ -106,6 +79,72 @@ def test_assemble_uses_the_caller_probed_duration(monkeypatch) -> None:
     )
 
     assert json.loads(response.body)["usage"] == {"seconds": 3, "type": "duration"}
+    assert "finish_reason" not in json.loads(response.body)
+    assert "x-finish-reason" not in {name.lower() for name in response.headers}
+
+
+def test_assemble_surfaces_a_token_budget_stop() -> None:
+    response = speech_to_text.assemble_speech_to_text_response(
+        text="repeated sentence",
+        response_format="json",
+        endpoint_path="/v1/audio/transcriptions",
+        task="transcribe",
+        language="en",
+        audio_bytes=b"not-a-real-audio-file",
+        architectures=None,
+        duration_s=3600,
+        finish_reason="length",
+    )
+
+    assert response.status_code == 200
+    assert json.loads(response.body)["finish_reason"] == "length"
+    assert response.headers["x-finish-reason"] == "length"
+
+
+def test_text_response_surfaces_truncation_in_a_header() -> None:
+    response = speech_to_text.assemble_speech_to_text_response(
+        text="repeated sentence",
+        response_format="text",
+        endpoint_path="/v1/audio/transcriptions",
+        task="transcribe",
+        language="en",
+        audio_bytes=b"not-a-real-audio-file",
+        architectures=None,
+        duration_s=3600,
+        finish_reason="length",
+    )
+
+    assert response.body == b"repeated sentence"
+    assert response.headers["x-finish-reason"] == "length"
+
+
+@pytest.mark.asyncio
+async def test_stream_done_event_surfaces_a_token_budget_stop() -> None:
+    from sglang_omni.client import GenerateChunk
+
+    async def chunks():
+        yield GenerateChunk(request_id="req", text="hello ", modality="text")
+        yield GenerateChunk(
+            request_id="req",
+            text="hello again",
+            modality="text",
+            finish_reason="length",
+        )
+
+    events = [
+        line
+        async for line in speech_to_text.speech_to_text_stream(
+            chunks(),
+            first_chunk=None,
+            request_id="req",
+            adapter=speech_to_text.resolve_speech_to_text_adapter(None),
+            duration_s=3600,
+        )
+    ]
+
+    done = json.loads(events[-2].removeprefix("data: ").strip())
+    assert done["finish_reason"] == "length"
+    assert done["text"] == "hello again"
 
 
 def test_probe_measures_wav_without_the_av_fallback(monkeypatch) -> None:
@@ -124,18 +163,28 @@ def test_probe_measures_wav_without_the_av_fallback(monkeypatch) -> None:
     assert speech_to_text.probe_audio_duration(buffer.getvalue()) == pytest.approx(0.5)
 
 
-@pytest.mark.parametrize(
-    "header",
-    [
-        pytest.param(
-            b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\xff\xfb\x90\x00" * 32, id="id3-mp3"
-        ),
-        pytest.param(b"\xff\xfb\x90\x00" * 64, id="bare-mp3-frames"),
-        pytest.param(b"\x1a\x45\xdf\xa3" + b"\x00" * 64, id="webm"),
-        pytest.param(b"\x00\x00\x00\x20ftypM4A " + b"\x00" * 64, id="m4a"),
-    ],
-)
-def test_probe_keeps_estimated_containers_on_av(monkeypatch, header) -> None:
+def test_av_duration_measures_a_container_whose_tags_are_not_utf8() -> None:
+    title = b"\xff\xfe titles\x00"
+    info = b"INFO" + b"INAM" + struct.pack("<I", len(title)) + title
+    samples = b"\x00\x00" * 8000
+    body = (
+        b"WAVE"
+        + b"fmt "
+        + struct.pack("<IHHIIHH", 16, 1, 1, 16000, 32000, 2, 16)
+        + b"LIST"
+        + struct.pack("<I", len(info))
+        + info
+        + b"data"
+        + struct.pack("<I", len(samples))
+        + samples
+    )
+
+    upload = b"RIFF" + struct.pack("<I", len(body)) + body
+
+    assert speech_to_text.av_duration(upload) == pytest.approx(0.5)
+
+
+def test_probe_keeps_estimated_containers_on_av(monkeypatch) -> None:
     import soundfile
 
     monkeypatch.setattr(
@@ -146,6 +195,7 @@ def test_probe_keeps_estimated_containers_on_av(monkeypatch, header) -> None:
         ),
     )
     monkeypatch.setattr(speech_to_text, "av_duration", lambda audio_bytes: 86.0)
+    header = b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\xff\xfb\x90\x00" * 32
 
     assert speech_to_text.probe_audio_duration(header) == 86.0
 

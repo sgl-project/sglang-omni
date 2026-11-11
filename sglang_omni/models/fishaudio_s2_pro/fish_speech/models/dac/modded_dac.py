@@ -9,8 +9,10 @@ import torch
 from audiotools.ml import BaseModel
 from dac.model.base import CodecMixin
 from dac.nn.layers import Snake1d, WNConv1d, WNConvTranspose1d
+from dac.nn.quantize import VectorQuantize
 from torch import Tensor, nn
 from torch.nn import functional as F
+from torch.nn.utils import remove_weight_norm
 from torch.nn.utils.parametrizations import weight_norm
 from torch.nn.utils.parametrize import remove_parametrizations
 
@@ -123,9 +125,6 @@ class Transformer(nn.Module):
         else:
             self.register_buffer("freqs_cis", None)
 
-        causal_mask = torch.tril(torch.ones(32768, 32768, dtype=torch.bool))
-        self.register_buffer("causal_mask", causal_mask, persistent=False)
-
         self.max_batch_size = -1
         self.max_seq_length = -1
         self.use_kv_cache = False
@@ -155,8 +154,8 @@ class Transformer(nn.Module):
     def forward(
         self,
         x: Tensor,
-        input_pos: Optional[Tensor] = None,
-        mask: Optional[Tensor] = None,
+        input_pos: Tensor,
+        mask: Tensor,
     ) -> Tensor:
         if self.config.pos_embed_type == "rope":
             assert (
@@ -166,16 +165,6 @@ class Transformer(nn.Module):
             freqs_cis = self.freqs_cis[input_pos]
         else:
             freqs_cis = None
-
-        if mask is None:  # in case of non-causal model
-            if not self.training and self.use_kv_cache:
-                mask = self.causal_mask[None, None, input_pos]
-                mask = mask[..., : input_pos.max() + 1]
-            else:
-                mask = self.causal_mask[None, None, input_pos]
-                mask = mask[..., input_pos]
-        else:
-            pass
 
         for i, layer in enumerate(self.layers):
             x = layer(x, input_pos, freqs_cis, mask)
@@ -402,17 +391,18 @@ class WindowLimitedTransformer(Transformer):
     def make_window_limited_mask(
         self,
         max_length: int,
+        device: torch.device,
         x_lens: Optional[Tensor] = None,
     ) -> Tensor:
         """
         Make mask to form window limited attention.
         """
         if self.causal:
-            mask = torch.tril(torch.ones(max_length, max_length))
-            row_indices = torch.arange(max_length).view(-1, 1)
+            mask = torch.tril(torch.ones(max_length, max_length, device=device))
+            row_indices = torch.arange(max_length, device=device).view(-1, 1)
             window_size = self.window_size or max_length
             valid_range = (row_indices - window_size + 1).clamp(min=0)
-            column_indices = torch.arange(max_length)
+            column_indices = torch.arange(max_length, device=device)
             mask = (column_indices >= valid_range) & mask.bool()
         else:
             raise NotImplementedError
@@ -422,15 +412,16 @@ class WindowLimitedTransformer(Transformer):
     def make_mask(
         self,
         max_length: int,
+        device: torch.device,
         x_lens: Optional[Tensor] = None,
     ) -> Tensor:
         """
         Make ordinary mask if window size is not specified.
         """
         if self.causal:
-            mask = torch.tril(torch.ones(max_length, max_length))
+            mask = torch.tril(torch.ones(max_length, max_length, device=device))
         else:
-            mask = torch.ones(max_length, max_length)
+            mask = torch.ones(max_length, max_length, device=device)
             mask = mask.bool()[None, None]
             for i, x_len in enumerate(x_lens):
                 mask[:x_len, i] = 0
@@ -452,10 +443,9 @@ class WindowLimitedTransformer(Transformer):
         # construct mask to form window limited attention
         max_length = x.shape[1]
         if self.window_size is not None:
-            mask = self.make_window_limited_mask(max_length, x_lens)
+            mask = self.make_window_limited_mask(max_length, x.device, x_lens)
         else:
-            mask = self.make_mask(max_length, x_lens)
-        mask = mask.to(x.device)
+            mask = self.make_mask(max_length, x.device, x_lens)
         x = super().forward(x, input_pos, mask)
         x = self.output_proj(x)  # (B, T, D)
         if self.channels_first:
@@ -586,7 +576,7 @@ class CausalConvNet(nn.Module):
         return self
 
     def remove_weight_norm(self):
-        self.conv = remove_parametrizations(self.conv)
+        self.conv = remove_parametrizations(self.conv, "weight")
         return self
 
 
@@ -614,7 +604,7 @@ class CausalTransConvNet(nn.Module):
         return self
 
     def remove_weight_norm(self):
-        self.conv = remove_parametrizations(self.conv)
+        self.conv = remove_parametrizations(self.conv, "weight")
         return self
 
 
@@ -982,14 +972,34 @@ class DAC(BaseModel, CodecMixin):
             pass
 
         z = self.encoder(audio_data)
-        vq_results = self.quantizer(z, n_quantizers, **kwargs)
-        indices = vq_results.codes
+        encode_codes = getattr(self.quantizer, "encode_codes", None)
+        # note (Zhuofeng-Li): encoding needs codes, without reconstructing unused latents.
+        if (
+            not self.training
+            and not self.quantizer.training
+            and not kwargs
+            and callable(encode_codes)
+        ):
+            indices = encode_codes(z, n_quantizers=n_quantizers)
+        else:
+            vq_results = self.quantizer(z, n_quantizers, **kwargs)
+            indices = vq_results.codes
         indices_lens = torch.ceil(audio_lengths / self.frame_length).long()
         return indices, indices_lens
 
     def from_indices(self, indices: torch.Tensor):
         z = self.quantizer.decode(indices)
         return self.decoder(z)
+
+    def fold_weight_norm(self) -> None:
+        for module in list(self.modules()):
+            if isinstance(module, (CausalConvNet, CausalTransConvNet)):
+                module.remove_weight_norm()
+            elif isinstance(module, VectorQuantize):
+                remove_weight_norm(module.in_proj)
+                remove_weight_norm(module.out_proj)
+            else:
+                pass
 
     def decode(self, z: torch.Tensor):
         """Decode given latent codes and return audio data

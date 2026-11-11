@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import threading
 import time
 from dataclasses import dataclass
@@ -44,6 +45,7 @@ REFERENCE_SAMPLE_RATE = 16000
 OUTPUT_SAMPLE_RATE = 24000
 MIN_REFERENCE_SECONDS = 5.0
 MAX_REFERENCE_SECONDS = 15.0
+XPU_WARMUP_PROMPT_TOKENS = 256  # measured on Arc Pro B60
 
 
 @dataclass(frozen=True)
@@ -273,14 +275,24 @@ def create_tts_engine_executor(
     from sglang_omni.utils.device import resolve_concrete_device
 
     concrete_device = resolve_concrete_device(device, gpu_id)
-    if concrete_device.type not in ("cpu", "cuda"):
+    if concrete_device.type not in ("cpu", "cuda", "xpu"):
         raise ValueError(
-            "Audar-TTS llama.cpp engine runs on cuda or cpu only; resolved "
+            "Audar-TTS llama.cpp engine runs on cuda, xpu or cpu only; resolved "
             f"device={concrete_device}"
         )
+    elif concrete_device.type == "xpu":
+        from llama_cpp._ggml import libggml
+
+        libggml.ggml_backend_reg_by_name.restype = ctypes.c_void_p
+        if libggml.ggml_backend_reg_by_name(b"SYCL") is None:
+            raise RuntimeError(
+                "Audar-TTS on xpu needs llama-cpp-python built with GGML_SYCL=ON"
+            )
+        else:
+            pass
     else:
         pass
-    main_gpu = concrete_device.index if concrete_device.type == "cuda" else 0
+    main_gpu = 0 if concrete_device.type == "cpu" else concrete_device.index
     if concrete_device.type == "cpu":
         # note (lennox): the n_gpu_layers default of -1 offloads every layer, so
         # a cpu resolution would still run on GPU 0 without this.
@@ -306,6 +318,14 @@ def create_tts_engine_executor(
     else:
         pass
     stop_token = stop_tokens[0]
+    if concrete_device.type == "xpu":
+        # note (siju-samuel): the first one-token decode reorders the Q4_K weights,
+        # which would make the first request sample unlike later ones, and the
+        # multi-token eval after it warms the prefill path on the reordered weights.
+        llm.eval([stop_token])
+        llm.eval([stop_token] * XPU_WARMUP_PROMPT_TOKENS)
+    else:
+        pass
 
     def _generate(payload: StagePayload) -> StagePayload:
         state = load_state(payload)

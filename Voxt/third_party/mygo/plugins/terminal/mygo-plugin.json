@@ -1,0 +1,40 @@
+{
+  "libraries": [
+    {
+      "files": {
+        "darwin-amd64": {
+          "name": "libghostty-vt.dylib",
+          "sha256": "421e98d2683b39555209c59395655b4a217da0382e7669c92f6dff3949832664",
+          "url": "https://github.com/egoist/mygo/releases/download/libghostty-vt-befcdfd2c3a1/libghostty-vt-darwin-amd64.dylib"
+        },
+        "darwin-arm64": {
+          "name": "libghostty-vt.dylib",
+          "sha256": "6f385d3221f8c776ba40530db9baf8c71478907897959849896eeb0ddbf16b41",
+          "url": "https://github.com/egoist/mygo/releases/download/libghostty-vt-befcdfd2c3a1/libghostty-vt-darwin-arm64.dylib"
+        },
+        "linux-amd64": {
+          "name": "libghostty-vt.so",
+          "sha256": "9dcd8af0de67778a561f436cb673a9fb1738be8fa00849dad49606baed1e57d7",
+          "url": "https://github.com/egoist/mygo/releases/download/libghostty-vt-befcdfd2c3a1/libghostty-vt-linux-amd64.so"
+        },
+        "linux-arm64": {
+          "name": "libghostty-vt.so",
+          "sha256": "fb163f8f123206956751f1c4f0303b40899513b7dc171a8ab8d85ba7cd541bc0",
+          "url": "https://github.com/egoist/mygo/releases/download/libghostty-vt-befcdfd2c3a1/libghostty-vt-linux-arm64.so"
+        },
+        "windows-amd64": {
+          "name": "ghostty-vt.dll",
+          "sha256": "53e8e2dd979702e8f2c48107af19be5a76efc2e88eb7cf1097218e899665da41",
+          "url": "https://github.com/egoist/mygo/releases/download/libghostty-vt-befcdfd2c3a1/libghostty-vt-windows-amd64.dll"
+        },
+        "windows-arm64": {
+          "name": "ghostty-vt.dll",
+          "sha256": "de56a362f12cce8be38e883ffc8aec90a890e0574eb73aac6e833a60fda26064",
+          "url": "https://github.com/egoist/mygo/releases/download/libghostty-vt-befcdfd2c3a1/libghostty-vt-windows-arm64.dll"
+        }
+      },
+      "name": "libghostty-vt",
+      "source": "https://github.com/ghostty-org/ghostty/tree/befcdfd2c3a1cb24d9ec886e93c95b2b5daa7028"
+    }
+  ]
+}

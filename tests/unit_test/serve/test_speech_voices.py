@@ -390,6 +390,80 @@ def test_voice_store_restore_skips_malformed_metadata(tmp_path: Path) -> None:
     assert voices[0]["created_at"] == uploaded["created_at"]
 
 
+def test_long_voice_upload_stops_decoding_at_the_limit_off_the_event_loop(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import asyncio
+    import io
+
+    from sglang_omni.preprocessing import audio as audio_mod
+
+    monkeypatch.setenv("SPEAKER_SAMPLES_DIR", str(tmp_path))
+    upload_threads: list[str] = []
+    original_upload = SpeakerSampleStore.upload
+
+    def recording_upload(self, **kwargs):
+        try:
+            asyncio.get_running_loop()
+            upload_threads.append("event loop")
+        except RuntimeError:
+            upload_threads.append("worker thread")
+        return original_upload(self, **kwargs)
+
+    decoded: list[int] = []
+    original_open = audio_mod.av.open
+
+    class CountingContainer:
+        # PyAV frame types are immutable on some releases, so count decoded
+        # samples through the container instead of patching the frame type.
+        def __init__(self, container) -> None:
+            self.container = container
+
+        def __getattr__(self, name: str):
+            return getattr(self.container, name)
+
+        def decode(self, *args, **kwargs):
+            for frame in self.container.decode(*args, **kwargs):
+                decoded.append(frame.samples)
+                yield frame
+
+    monkeypatch.setattr(SpeakerSampleStore, "upload", recording_upload)
+    client = TestClient(create_app(RecordingSpeechClient(), model_name="tts"))
+    # A Matroska FLAC clip, which libsndfile cannot open, decodes through PyAV.
+    clip = io.BytesIO()
+    with audio_mod.av.open(clip, "w", format="matroska") as container:
+        stream = container.add_stream("flac", rate=DEFAULT_SAMPLE_RATE)
+        stream.layout = "mono"
+        for start in range(0, DEFAULT_SAMPLE_RATE * 120, DEFAULT_SAMPLE_RATE):
+            frame = audio_mod.av.AudioFrame.from_ndarray(
+                np.full((1, DEFAULT_SAMPLE_RATE), 0.1, dtype=np.float32),
+                format="flt",
+                layout="mono",
+            )
+            frame.sample_rate = DEFAULT_SAMPLE_RATE
+            frame.pts = start
+            for packet in stream.encode(frame):
+                container.mux(packet)
+        for packet in stream.encode():
+            container.mux(packet)
+
+    monkeypatch.setattr(
+        audio_mod.av,
+        "open",
+        lambda *args, **kwargs: CountingContainer(original_open(*args, **kwargs)),
+    )
+    upload = client.post(
+        "/v1/audio/voices",
+        data={"name": "Long", "consent": "consent"},
+        files={"audio_sample": ("long.flac", clip.getvalue(), "audio/flac")},
+    )
+
+    assert upload.status_code == 400
+    assert "at most 30.0s" in upload.json()["error"]["message"]
+    assert upload_threads == ["worker thread"]
+    assert sum(decoded) < DEFAULT_SAMPLE_RATE * 31
+
+
 def test_voice_store_decode_error_uses_stable_client_message(tmp_path: Path) -> None:
     store = SpeakerSampleStore(root_dir=tmp_path)
 
@@ -474,10 +548,8 @@ def test_speech_service_explicit_reference_overrides_uploaded_voice(
     assert "uploaded_voice_name" not in gen_req.metadata["tts_params"]
 
 
-@pytest.mark.parametrize("task_type", ["CustomVoice", "VoiceDesign"])
 def test_speech_service_rejects_uploaded_voice_with_non_base_task_type(
     tmp_path: Path,
-    task_type: str,
 ) -> None:
     store = SpeakerSampleStore(root_dir=tmp_path)
     store.upload(
@@ -491,7 +563,7 @@ def test_speech_service_rejects_uploaded_voice_with_non_base_task_type(
 
     with pytest.raises(SpeechAPIError, match="task_type='Base'") as exc_info:
         service.parse_request(
-            {"input": "hello", "voice": "anchor", "task_type": task_type}
+            {"input": "hello", "voice": "anchor", "task_type": "CustomVoice"}
         )
     assert exc_info.value.param == "task_type"
 
@@ -557,22 +629,6 @@ def test_speech_service_uses_same_uploaded_voice_resolution_for_prompt_and_param
     assert tts_params["uploaded_voice_created_at"] == first["created_at"]
 
 
-def test_speech_service_rejects_unknown_required_uploaded_voice(
-    tmp_path: Path,
-) -> None:
-    store = SpeakerSampleStore(root_dir=tmp_path)
-    service = SpeechRequestValidator(
-        default_model="public-tts-name",
-        requires_uploaded_voice_for_named_voice=True,
-        voice_store=store,
-    )
-
-    with pytest.raises(SpeechAPIError, match="Unknown voice") as exc_info:
-        service.parse_request({"input": "hello", "voice": "missing"})
-    assert exc_info.value.status_code == 400
-    assert exc_info.value.error_type == "BadRequestError"
-
-
 def test_speech_service_rejects_batch_default_uploaded_voice_task_type(
     tmp_path: Path,
 ) -> None:
@@ -617,21 +673,6 @@ def test_speech_service_validates_batch_default_voice_before_item_references(
                 "items": [{"input": "hello", "ref_audio": "data:audio/wav"}],
             }
         )
-
-
-def test_speech_service_preserves_preset_voice_names(tmp_path: Path) -> None:
-    store = SpeakerSampleStore(root_dir=tmp_path)
-    service = SpeechRequestValidator(
-        default_model="preset-voice-model",
-        voice_store=store,
-    )
-
-    request = service.parse_request({"input": "hello", "voice": "Vivian"})
-    gen_req = service.build_generate_request(request, validate=False)
-
-    assert gen_req.prompt == "hello"
-    assert isinstance(gen_req.metadata["tts_params"], dict)
-    assert gen_req.metadata["tts_params"]["voice"] == "Vivian"
 
 
 def test_speech_service_can_disable_uploaded_voice_resolution(

@@ -17,7 +17,7 @@ pip install --upgrade pip
 pip install uv
 
 uv venv .venv -p 3.12 && source .venv/bin/activate
-uv pip install --prerelease=allow "sglang-omni==0.1.7"
+uv pip install --prerelease=allow "sglang-omni==0.2.0"
 ```
 
 See [Installation](../get_started/installation.md) for Docker digests and source installs.
@@ -35,20 +35,22 @@ Use the selector below to generate the exact launch command for your configurati
 Colocated topology requires `--config examples/configs/qwen3_omni_colocated_h20.yaml`
 (or `qwen3_omni_colocated_h200.yaml` on H200) to set per-stage GPU memory budgets.
 
-| Mode | Topology | Thinker TP | Precision | Status |
-|---|---|---|---|---|
-| Thinker-only | — | — | BF16 | ✅ |
-| Thinker-only | — | — | FP8 | ✅ |
-| Thinker-only | — | — | AutoRound INT4 | ✅ |
-| Thinker-Talker | Disaggregated | TP=1 | BF16 | ✅ |
-| Thinker-Talker | Disaggregated | TP=1 | FP8 | ✅ |
-| Thinker-Talker | Disaggregated | TP=1 | AutoRound INT4 thinker + BF16 talker/code2wav | ✅ |
-| Thinker-Talker | Disaggregated | TP=2 | BF16 | ✅ |
-| Thinker-Talker | Disaggregated | TP=2 | FP8 | ✅ |
-| Thinker-Talker | Disaggregated | TP=2 | AutoRound INT4 thinker + BF16 talker/code2wav | ✅ |
-| Thinker-Talker | Colocated | TP=1 | BF16 | ✅ |
-| Thinker-Talker | Colocated | TP=1 | FP8 | ✅ |
-| Thinker-Talker | Colocated | TP=1 | AutoRound INT4 thinker + BF16 talker/code2wav | ✅ |
+All configurations listed below are supported.
+
+| Mode | Topology | Thinker TP | Precision |
+|---|---|---|---|
+| Thinker-only | — | — | BF16 |
+| Thinker-only | — | — | FP8 |
+| Thinker-only | — | — | AutoRound INT4 |
+| Thinker-Talker | Disaggregated | TP=1 | BF16 |
+| Thinker-Talker | Disaggregated | TP=1 | FP8 |
+| Thinker-Talker | Disaggregated | TP=1 | AutoRound INT4 thinker + BF16 talker/code2wav |
+| Thinker-Talker | Disaggregated | TP=2 | BF16 |
+| Thinker-Talker | Disaggregated | TP=2 | FP8 |
+| Thinker-Talker | Disaggregated | TP=2 | AutoRound INT4 thinker + BF16 talker/code2wav |
+| Thinker-Talker | Colocated | TP=1 | BF16 |
+| Thinker-Talker | Colocated | TP=1 | FP8 |
+| Thinker-Talker | Colocated | TP=1 | AutoRound INT4 thinker + BF16 talker/code2wav |
 
 ## Input / Output Modalities
 
@@ -80,7 +82,7 @@ Standard sampling parameters apply to the thinker stage. When `modalities` inclu
 
 | Parameter | Type | Default | Applies to |
 |---|---|---|---|
-| `temperature` | float | `1.0` | Thinker |
+| `temperature` | float | `0.0` (greedy) | Thinker |
 | `top_p` | float | `1.0` | Thinker |
 | `top_k` | int | `-1` | Thinker |
 | `min_p` | float | `0.0` | Thinker |
@@ -119,4 +121,45 @@ must check for an `error` event, including after partial output.
 - **`modalities: ["text", "audio"]` has no effect on a text-only server.** No error is raised — the response simply contains no audio. Use a speech-mode server (without `--text-only`) to get audio output.
 - **`content` must be `""` when the query is entirely in `audios`, `videos`, or `images`.** Leaving a text query in `content` alongside audio causes the model to process both, which is usually not what you want.
 - **Colocated topology does not support `--thinker.tp_size 2`.** The server raises a `ValueError` at startup ("Qwen Phase 1 colocation does not support thinker TP"). Use disaggregated topology for TP=2.
-- **Requests that exceed the model's context length are rejected with an error.** The preprocessor raises a `ValueError` when the prompt token count alone meets or exceeds `max_seq_len`, or when `prompt tokens + max_new_tokens ≥ max_seq_len`. Reduce input length or lower `max_tokens` to stay within the limit.
+- **Requests that exceed the model's context length are rejected with an error.** The preprocessor raises a `ValueError` when the prompt token count alone meets or exceeds `max_seq_len`, or when `prompt tokens + max_new_tokens ≥ max_seq_len`. Reduce input length or lower `max_tokens` to stay within the limit. Without `--preprocessing.factory.max_seq_len` and `--thinker.factory.max_seq_len`, the limit is the thinker's context in the checkpoint config (65,536 tokens for the Instruct checkpoint). Setting both to a lower value caps it. The talker's context is likewise the checkpoint's unless `--talker_ar.factory.max_seq_len` sets it. When a long spoken prompt leaves less room than `talker_max_new_tokens`, the talker generates only the frames that fit, so the audio can end before the text.
+
+## Qwen3-Omni persistent session stages
+
+The session profile serves Qwen3-Omni as a turn-based realtime voice assistant on `/v1/realtime`: a VAD node ends each user turn and the model answers it with the conversation so far. Launching on H100 or H200, settings, the protocol and benchmarking are in [Full-Duplex Guide](../developer_reference/full_duplex_guide.md#turn-based-qwen3-omni).
+
+## Speculative Decoding
+
+The thinker can verify tokens proposed by SpeechSpec's DFlash draft [`yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8`](https://huggingface.co/yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8) or EAGLE3 draft [`yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio`](https://huggingface.co/yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio) on a text-only server.
+
+```bash
+# DFlash: one 8-token block per step
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --text-only \
+  --thinker.engine.speculative_algorithm DFLASH \
+  --thinker.engine.speculative_draft_model_path yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8 \
+  --thinker.engine.speculative_num_draft_tokens 8 \
+  --port 8000
+
+# EAGLE3: a 3-step chain
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --text-only \
+  --thinker.engine.speculative_algorithm EAGLE3 \
+  --thinker.engine.speculative_draft_model_path yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio \
+  --thinker.engine.speculative_num_steps 3 \
+  --thinker.engine.speculative_eagle_topk 1 \
+  --thinker.engine.speculative_num_draft_tokens 4 \
+  --port 8000
+```
+
+- **Acceptance length.** Send `return_spec_tokens_details: true` with a chat request to get its `sglext.spec_tokens_details`: `spec_accept_length` (output tokens per verify, including the token sampled at prefill, so it can read higher than the scheduler log's `accept len`, which counts only verified tokens), `spec_accept_rate`, the draft counts and the per-verify histogram. A streamed response sends it in a chunk with empty `choices` before `[DONE]`. `spec_accept_rate` and `spec_num_proposed_drafts` are left out when no drafts were proposed or the draft width is adaptive. Only the Thinker draft is reported for now; a per-stage field can follow once the Talker has a draft too.
+- **Context.** The drafts shown above have an 8,192-token context. The prompt, output budget and speculative reservations must fit within it. Use `--preprocessing.factory.max_seq_len 8192` to reject oversized prompts early.
+- **Sampling.** Keep `repetition_penalty=1`, `frequency_penalty=0`, `presence_penalty=0`, and `min_p=0`. Disable logprobs and `return_hidden_states`. For `/generate`, send `return_logprob: false`.
+- **Scheduling.** Speculative decoding is synchronous by default. Add `--thinker.factory.enable_async_decode true` to either command to enable overlap, keeping `async_decode_min_batch_size=1`. Mixed prefill/decode batches (`enable_mixed_chunk=true`), sessions and weight updates are unsupported with a draft.
+- **Overlap trade-offs.** Overlap can improve decode throughput. Prefill-heavy workloads or short outputs can see higher TTFT and lower throughput.
+- **Prefill boundary.** Set `SGLANG_DISABLE_CONSECUTIVE_PREFILL_OVERLAP=1` before launch to process the previous prefill batch's result before launching the next consecutive prefill batch. This can lower TTFT at a throughput cost. Decode rounds continue to overlap.
+- **Execution failure.** An execution failure in speculative overlap stops the pipeline and fails its pending requests.
+- **Speech output.** Speech generation is unsupported with a draft; use `--text-only`.
+
+Compare modes with matching workloads and prefix-cache conditions. Measure TTFT, throughput and accuracy for your workload.

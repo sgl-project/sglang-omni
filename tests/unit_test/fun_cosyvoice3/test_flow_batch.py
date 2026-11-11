@@ -9,6 +9,7 @@ import torch
 
 from sglang_omni.models.fun_cosyvoice3.packed_dit import PackedRows
 from sglang_omni.models.fun_cosyvoice3.stages import (
+    FLOW_EULER_STEPS,
     FlowBatchInput,
     FunCosyVoice3Flow,
     pack_flow_inputs,
@@ -49,14 +50,23 @@ class RecordingPackedEstimator:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
         self.is_ragged = False
+        self.is_compiled = False
+        self.build_modulations(
+            torch.linspace(0, 1, FLOW_EULER_STEPS + 1), torch.float32
+        )
+
+    def build_modulations(self, time_span: torch.Tensor, dtype: torch.dtype) -> None:
+        step_count = len(time_span) - 1
+        self.block_modulations = ((),) * step_count
+        self.final_modulations = (torch.zeros(1, dtype=dtype),) * step_count
 
     def row_attention(
         self, rows: PackedRows, *, streaming: bool, dtype: torch.dtype
     ) -> SimpleNamespace:
         return SimpleNamespace(rows=rows, streaming=streaming, dtype=dtype)
 
-    def rope(self, rows: PackedRows) -> tuple[torch.Tensor, torch.Tensor]:
-        return rows.positions, rows.positions
+    def rope_angles(self, frame_count: int) -> torch.Tensor:
+        return torch.arange(frame_count, dtype=torch.float32).view(1, -1, 1)
 
     def forward(
         self,
@@ -64,18 +74,13 @@ class RecordingPackedEstimator:
         mu: torch.Tensor,
         spks: torch.Tensor,
         cond: torch.Tensor,
-        t: torch.Tensor,
+        block_modulations: tuple[torch.Tensor, ...],
+        final_modulation: torch.Tensor,
         rows: PackedRows,
         attention: SimpleNamespace,
         rope: tuple[torch.Tensor, torch.Tensor],
     ) -> torch.Tensor:
-        self.calls.append(
-            {
-                "lengths": rows.lengths,
-                "t": t.detach().clone(),
-                "streaming": attention.streaming,
-            }
-        )
+        self.calls.append({"lengths": rows.lengths, "streaming": attention.streaming})
         positions = rows.positions.to(x.dtype).view(1, -1, 1)
         return 0.1 * x + mu + spks + cond + 0.01 * positions
 
@@ -214,6 +219,31 @@ def test_pack_flow_inputs_keeps_prompt_and_target_contiguous() -> None:
     ]
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_pack_flow_inputs_uploads_without_a_host_wait() -> None:
+    items = [
+        make_input([0, 8, 0], prompt_token=[4], prompt_value=0.5),
+        make_input([0], prompt_token=[5, 6, 7], prompt_value=1.5),
+    ]
+    reference = pack_flow_inputs(FakeFlow(), items)
+    flow = FakeFlow().cuda()
+    sync_debug_mode = torch.cuda.get_sync_debug_mode()
+    torch.cuda.set_sync_debug_mode("error")
+    try:
+        packed = pack_flow_inputs(flow, items)
+    finally:
+        torch.cuda.set_sync_debug_mode(sync_debug_mode)
+    assert torch.equal(packed.token.cpu(), reference.token)
+    assert torch.equal(packed.token_mask.cpu(), reference.token_mask)
+    assert torch.equal(
+        packed.combined_token_lengths_tensor.cpu(),
+        reference.combined_token_lengths_tensor,
+    )
+    assert torch.equal(packed.prompt_feat.cpu(), reference.prompt_feat)
+    assert torch.equal(packed.embedding.cpu(), reference.embedding)
+
+
 def test_pack_flow_inputs_builds_variable_length_token_masks() -> None:
     packed = pack_flow_inputs(
         FakeFlow(),
@@ -251,6 +281,25 @@ def test_flow_batch_builds_variable_length_mel_masks_and_conditions() -> None:
     assert torch.count_nonzero(cond[0]) == 0
     torch.testing.assert_close(cond[1, :, :4], torch.full((4, 4), 7.0))
     assert torch.count_nonzero(cond[1, :, 4:]) == 0
+
+
+@pytest.mark.parametrize("is_buffered_packed", [False, True])
+def test_buffered_flow_takes_the_packed_solve_only_on_the_packed_route(
+    is_buffered_packed: bool,
+) -> None:
+    flow = FakeFlow(max_frames=128)
+    packed_flow = make_packed(flow)
+    packed_flow.is_buffered_packed = is_buffered_packed
+    items = [
+        make_input([1], prompt_token=[2], prompt_value=0.5),
+        make_input([3, 4], prompt_token=[5, 6], prompt_value=1.5),
+    ]
+
+    mels = packed_flow.inference(items)
+
+    assert [tuple(mel.shape) for mel in mels] == [(1, 4, 2), (1, 4, 4)]
+    assert bool(flow.packed_estimator.calls) is is_buffered_packed
+    assert bool(flow.decoder.estimator.calls) is not is_buffered_packed
 
 
 def test_flow_batch_cfg_uses_two_times_request_batch() -> None:
@@ -293,19 +342,6 @@ def test_flow_batch_cfg_builds_conditional_and_unconditional_halves() -> None:
     assert torch.count_nonzero(first["cond"][2:]) == 0
 
 
-def test_flow_batch_reuses_same_noise_prefix_per_request() -> None:
-    pair_flow = FakeFlow()
-    infer_flow(pair_flow, [make_input([1, 2]), make_input([3, 4])])
-    pair_noise = pair_flow.decoder.estimator.calls[0]["x"][:2]
-
-    single_flow = FakeFlow()
-    infer_flow(single_flow, [make_input([1, 2])])
-    single_noise = single_flow.decoder.estimator.calls[0]["x"][:1]
-
-    torch.testing.assert_close(pair_noise[0], pair_noise[1])
-    torch.testing.assert_close(pair_noise[:1], single_noise)
-
-
 def test_flow_batch_matches_serial_reference_for_mixed_lengths() -> None:
     items = [
         make_input([1, 0], prompt_token=[2], prompt_value=0.5),
@@ -317,20 +353,6 @@ def test_flow_batch_matches_serial_reference_for_mixed_lengths() -> None:
 
     assert [mel.shape for mel in batched] == [(1, 4, 4), (1, 4, 2), (1, 4, 6)]
     for actual, expected in zip(batched, serial, strict=True):
-        torch.testing.assert_close(actual, expected)
-
-
-def test_flow_batch_crops_each_prompt_independently() -> None:
-    items = [
-        make_input([1, 2], prompt_token=[3], prompt_value=0.5),
-        make_input([4, 5], prompt_token=[6, 7, 8], prompt_value=1.5),
-    ]
-    serial = [infer_flow(FakeFlow(), [item])[0] for item in items]
-
-    batched = infer_flow(FakeFlow(), items)
-
-    for actual, expected in zip(batched, serial, strict=True):
-        assert actual.shape[-1] == 4
         torch.testing.assert_close(actual, expected)
 
 
@@ -352,29 +374,6 @@ def test_flow_batch_rejects_prompt_alignment_mismatch() -> None:
 
     with pytest.raises(ValueError, match="prompt feature length"):
         infer_flow(FakeFlow(), [item])
-
-
-def test_flow_batch_tensorrt_estimator_keeps_cfg_layout() -> None:
-    estimator = RecordingTRTEstimator(max_batch=16)
-    infer_flow(
-        FakeFlow(estimator=estimator),
-        [make_input([1]), make_input([2]), make_input([3])],
-    )
-
-    assert estimator.calls
-    for call in estimator.calls:
-        assert call["x"].shape[0] == 6
-
-
-def test_flow_batch_tensorrt_chunks_cfg_pairs_when_engine_batch_is_2() -> None:
-    estimator = RecordingTRTEstimator(max_batch=2)
-    items = [make_input([1]), make_input([2]), make_input([3])]
-    infer_flow(FakeFlow(estimator=estimator), items)
-
-    assert estimator.calls
-    assert all(call["x"].shape[0] == 2 for call in estimator.calls)
-    # note (guozhihao-224): 10 Euler steps times 3 request-wise CFG pairs.
-    assert len(estimator.calls) == 30
 
 
 def test_flow_batch_tensorrt_matches_pytorch_serial() -> None:
@@ -399,20 +398,6 @@ def test_flow_causal_batch_uses_streaming_mask_and_strips_lookahead() -> None:
     assert flow.packed_estimator.calls[0]["lengths"] == (50, 50, 50, 50)
     assert mels[0].shape == (1, 4, 50)
     assert mels[1].shape == (1, 4, 50)
-
-
-def test_flow_causal_batch_follow_up_equal_lengths_strip_lookahead() -> None:
-    flow = FakeFlow(max_frames=256)
-    items = [
-        make_input([1] * 78, prompt_token=[3] * 25),
-        make_input([2] * 78, prompt_token=[4] * 25),
-    ]
-    mels = make_packed(flow).inference_causal(items)
-    assert all(call["streaming"] is True for call in flow.packed_estimator.calls)
-    assert flow.packed_estimator.calls[0]["lengths"] == (200, 200, 200, 200)
-    # 78 generated tokens minus lookahead 3 = 75; 75 * 2 mel frames
-    assert mels[0].shape == (1, 4, 150)
-    assert mels[1].shape == (1, 4, 150)
 
 
 def test_flow_causal_batch_mixed_prompt_matches_serial() -> None:

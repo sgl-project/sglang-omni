@@ -19,9 +19,14 @@ def supports_device_streams(device: torch.device) -> bool:
     return device.type in {"cuda", "musa", "xpu"}
 
 
+def has_device_streams(device: torch.device) -> bool:
+    """Whether the backend provides streams; each caller chooses whether to use them."""
+    return supports_device_streams(device) or device.type == "npu"
+
+
 def device_guard(device: torch.device) -> AbstractContextManager[None]:
     """Pin the calling thread to device, or do nothing off an accelerator."""
-    if supports_device_streams(device):
+    if has_device_streams(device):
         return torch.get_device_module(device).device(device)
     else:
         return nullcontext()
@@ -96,6 +101,7 @@ def resolve_concrete_device(
 
 __all__ = [
     "device_guard",
+    "has_device_streams",
     "resolve_concrete_device",
     "resolve_device_spec",
     "supports_device_streams",

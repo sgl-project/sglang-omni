@@ -10,6 +10,7 @@ root; the test skips otherwise.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from pathlib import Path
 
@@ -19,12 +20,14 @@ import torch
 from sglang_omni.models.minicpm_o.components.audio_encoder import (
     MiniCPMOAudioEncoder,
     MultiModalProjector,
+    StreamingAudioChunk,
     chunked_causal_mask,
     feature_lens_after_pooling,
     fuse_qkv,
     min_mel_frames,
 )
 from sglang_omni.models.minicpm_o.components.whisper_encoder import (
+    AudioEncoderState,
     MiniCPMWhisperEncoder,
 )
 
@@ -125,7 +128,7 @@ def test_golden_parity_vs_remote_code(lens: list[int]) -> None:
 
     native_mask = torch.where(allowed, 0.0, -1e9).unsqueeze(1)
     with torch.no_grad():
-        got, _ = native(mel, native_mask)
+        got = native(mel, native_mask)
 
     for i, length in enumerate(lens):
         valid_frames = (length - 1) // 2 + 1
@@ -237,3 +240,69 @@ def test_minimum_length_audio_still_encodes() -> None:
         out = encoder(audio_features=mel, audio_feature_lens=lens)
 
     assert out["audio_embeds"].shape[0] == 1
+
+
+STREAMING_MEL_FRAMES = 104
+
+
+def random_history(length: int, generator: torch.Generator) -> AudioEncoderState | None:
+    """A session's attention history of the given length, or none for a new session."""
+    config = small_whisper_config()
+    head_dim = config.d_model // config.encoder_attention_heads
+    if length == 0:
+        return None
+    else:
+        return AudioEncoderState(
+            key_value_states=torch.randn(
+                (
+                    config.encoder_layers,
+                    2,
+                    1,
+                    config.encoder_attention_heads,
+                    length,
+                    head_dim,
+                ),
+                generator=generator,
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "history_lengths",
+    [(300,), (0, 50, 200), (0, 0, 0), (1480, 100, 0)],
+    ids=["single", "staggered", "all_empty", "reset_in_batch"],
+)
+def test_batched_streaming_matches_each_session_alone(
+    history_lengths: tuple[int, ...],
+) -> None:
+    """Each session in a batch gets its own result and owns exactly its own history."""
+    encoder = tiny_audio_encoder()
+    generator = torch.Generator().manual_seed(1)
+    chunks = [
+        StreamingAudioChunk(
+            audio_features=torch.randn(
+                1, 80, STREAMING_MEL_FRAMES, generator=generator
+            ),
+            state=random_history(length, generator),
+            prefix_extra_frames=2,
+            suffix_extra_frames=2,
+        )
+        for length in history_lengths
+    ]
+    batch_chunks = [dataclasses.replace(chunk) for chunk in chunks]
+    batched = encoder.forward_streaming_batch(batch_chunks)
+    assert all(chunk.state is None for chunk in batch_chunks)
+    for chunk, (embeds, state) in zip(chunks, batched, strict=True):
+        [(alone_embeds, alone_state)] = encoder.forward_streaming_batch([chunk])
+        torch.testing.assert_close(embeds, alone_embeds, rtol=1e-5, atol=1e-5)
+        assert state.past_length == alone_state.past_length
+        torch.testing.assert_close(
+            state.key_value_states,
+            alone_state.key_value_states,
+            rtol=1e-5,
+            atol=1e-5,
+        )
+        assert (
+            state.key_value_states.untyped_storage().nbytes()
+            == state.key_value_states.nbytes
+        )

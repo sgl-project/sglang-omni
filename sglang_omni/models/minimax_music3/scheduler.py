@@ -7,6 +7,7 @@ from collections.abc import Iterable
 
 from sglang.srt.managers.schedule_batch import NextBatchPlan, Req, ScheduleBatch
 
+from sglang_omni.models.minimax_music3.serial_offload import get_coordinator
 from sglang_omni.models.minimax_music3.sglang_request_builder import (
     MiniMaxMusic3SGLangRequestData,
     cfg_uncond_rid,
@@ -93,10 +94,19 @@ class MiniMaxMusic3Scheduler(OmniScheduler["MiniMaxMusic3SGLangRequestData"]):
                 queue[index + 1].origin_input_ids
             )
             if index and tokens + pair_tokens > budget:
-                return index
+                limit = index
+                break
             else:
                 pass
             tokens += pair_tokens
+        coordinator = get_coordinator()
+        if coordinator.enabled:
+            if limit < 2 or not coordinator.try_acquire_ar(queue[0].rid):
+                return 0
+            else:
+                return 2
+        else:
+            pass
         return limit
 
     def stream_output(

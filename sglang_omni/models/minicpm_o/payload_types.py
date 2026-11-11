@@ -5,7 +5,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, NotRequired, TypedDict
+
+from sglang_omni.scheduling.types import SpecTokensDetailsDict
 
 if TYPE_CHECKING:
     import torch
@@ -19,6 +21,7 @@ class PromptInputs(TypedDict):
     input_ids: torch.Tensor
     attention_mask: torch.Tensor
     prompt_text: str
+    known_tts_output_ids: NotRequired[list[int] | None]
 
 
 class ThinkerOutput(TypedDict, total=False):
@@ -30,6 +33,7 @@ class ThinkerOutput(TypedDict, total=False):
     extra_model_outputs: dict[str, torch.Tensor | list[torch.Tensor] | list[int]]
     finish_reason: str
     weight_version: str
+    spec_tokens_details: SpecTokensDetailsDict
     output_token_logprobs: list[list[float | int]]
 
 

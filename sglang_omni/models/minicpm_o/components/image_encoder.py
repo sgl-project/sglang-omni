@@ -60,11 +60,9 @@ def init_sglang_tp() -> None:
 
     os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
     if "MASTER_PORT" not in os.environ:
-        import socket
+        from sglang_omni.utils.port_claim import claim_tcp_port
 
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("", 0))
-            os.environ["MASTER_PORT"] = str(s.getsockname()[1])
+        os.environ["MASTER_PORT"] = str(claim_tcp_port())
     else:
         pass
 

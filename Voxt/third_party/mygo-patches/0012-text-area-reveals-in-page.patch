@@ -1,0 +1,218 @@
+MyGo patch 0012 (VoxtNew): a text area as high as its text shows its
+caret in the page around it.
+
+A text area scrolls its caret into view, but only within itself. One as
+high as its text (Lines up to what it holds) has nothing of its own to
+scroll, so a caret moved past the window's edge, or a selection the app
+set there (a Find), stayed out of sight: VoxtNew capped its rules field
+at 36 lines and let it scroll inside the page, two scrollbars nested,
+for Find to work. Now the caret revealed is also scrolled into view by
+the containers around the area when the area has the focus (the user
+moves the caret or types) or when the app sets a selection
+(SetTextSelection); an edit the app makes to the text of an area that
+does not have the focus moves nothing. reveal is split in revealIn,
+which shows a box within an element's, and layoutTree reveals the parts
+queued while laying out (TestTextAreaRevealsInPage).
+
+diff --git a/ui/layout.go b/ui/layout.go
+index 2b7039a..d6d8de7 100644
+--- a/ui/layout.go
++++ b/ui/layout.go
+@@ -81,6 +81,10 @@ func layoutTree(root *node, w, h float32) {
+ 		revealAll(root, rt.revealIDs)
+ 		rt.revealIDs = rt.revealIDs[:0]
+ 	}
++	if len(rt.revealParts) > 0 {
++		revealPartsIn(root, rt.revealParts)
++		rt.revealParts = rt.revealParts[:0]
++	}
+ 	if rt.late {
+ 		// Rows built as their lists laid out handled their input as the
+ 		// view's elements do, and the next frame shows what that changed;
+diff --git a/ui/runtime.go b/ui/runtime.go
+index b745ed9..dd606c2 100644
+--- a/ui/runtime.go
++++ b/ui/runtime.go
+@@ -284,9 +284,12 @@ type engine struct {
+ 	// revealIDs are the elements to scroll into view once the frame is
+ 	// laid out.
+ 	revealIDs []uint64
+-	wakeMu    sync.Mutex
+-	wakeAt    time.Time
+-	cursor    Cursor
++	// revealParts are parts of elements to scroll into view once the
++	// frame is laid out: a text area's caret.
++	revealParts []revealPart
++	wakeMu      sync.Mutex
++	wakeAt      time.Time
++	cursor      Cursor
+ 	// ime is the text input state the host has, and base the rune of the
+ 	// focused editor its text starts at.
+ 	ime struct {
+diff --git a/ui/scroll.go b/ui/scroll.go
+index b538e7a..67f2e84 100644
+--- a/ui/scroll.go
++++ b/ui/scroll.go
+@@ -210,6 +210,36 @@ func (rt *engine) reveal(id uint64) {
+ 	rt.requestFrame()
+ }
+ 
++// revealPart is the box x, y, w, h within element id's box to scroll into
++// view.
++type revealPart struct {
++	id         uint64
++	x, y, w, h float32
++}
++
++// revealPart scrolls the box x, y, w, h within element id's box into view
++// once this frame is laid out.
++func (rt *engine) revealPart(id uint64, x, y, w, h float32) {
++	rt.revealParts = append(rt.revealParts, revealPart{id, x, y, w, h})
++}
++
++// revealPartsIn scrolls the parts of root's elements into view, in that
++// order.
++func revealPartsIn(root *node, parts []revealPart) {
++	var walk func(e *node)
++	walk = func(e *node) {
++		for _, p := range parts {
++			if p.id == e.id {
++				revealIn(e, e.x+p.x, e.y+p.y, p.w, p.h)
++			}
++		}
++		for ch := e.first; ch != nil; ch = ch.next {
++			walk(ch)
++		}
++	}
++	walk(root)
++}
++
+ // revealAll scrolls the elements of root with the given ids into view, in
+ // that order.
+ func revealAll(root *node, ids []uint64) {
+@@ -238,7 +268,13 @@ func reveal(e *node) {
+ 	for e.isInline() {
+ 		e = e.parent
+ 	}
+-	x, y, w, h := e.x, e.y, e.w, e.h
++	revealIn(e, e.x, e.y, e.w, e.h)
++}
++
++// revealIn scrolls the containers around e, innermost first, as little as
++// shows the box x, y, w, h, given relative to e's parent as e's own box is:
++// e's box, or a part of it.
++func revealIn(e *node, x, y, w, h float32) {
+ 	frame := e.c.rt.frame
+ 	for ch, p := e, e.parent; p != nil; ch, p = p, p.parent {
+ 		if p.scrolls() && ch.flags&flagAbsolute == 0 {
+diff --git a/ui/textarea.go b/ui/textarea.go
+index ff67523..46e5f25 100644
+--- a/ui/textarea.go
++++ b/ui/textarea.go
+@@ -35,6 +35,12 @@ type area struct {
+ 	// reveal scrolls the caret into view at the next layout, after an
+ 	// edit, a move of the caret or a press.
+ 	reveal bool
++	// page shows the caret revealed in the containers around the area as
++	// well, where the area has nothing of its own to scroll (as high as
++	// its text): for a selection the app sets (SetTextSelection); a reveal
++	// while the area has the focus does it too, an edit the app makes to
++	// its text does not.
++	page bool
+ 	// first and last are the paragraphs the view shows; laid counts those
+ 	// with a layout.
+ 	first, last int
+@@ -310,6 +316,8 @@ func (a *area) layout(e *node, cw, ch float32) {
+ 	// The text shows through the padding, inside the border.
+ 	above, below := e.pad[0], e.pad[2]
+ 	a.place(ed, ch, above, below)
++	page := a.reveal && (a.page || e.Focused())
++	a.page = false
+ 	if a.reveal {
+ 		a.reveal = false
+ 		_, y, h := a.caretAt(ed, ed.caret, ed.composeCaret)
+@@ -337,6 +345,10 @@ func (a *area) layout(e *node, cw, ch float32) {
+ 	}
+ 	st.scrollTo(st.scrollX, a.scroll)
+ 	a.lastScroll = a.scroll
++	if page {
++		x, y, h := a.caretAt(ed, ed.caret, ed.composeCaret)
++		e.c.rt.revealPart(e.id, ed.originX+x, ed.originY+float32(y-a.scroll), 1, h)
++	}
+ 	e.contentW, e.contentH = float64(e.w), total+float64(e.padY())
+ 	if a.laid > maxLaid+a.last-a.first {
+ 		a.forget(b)
+diff --git a/ui/textarea_test.go b/ui/textarea_test.go
+index 64bd436..67d1fe4 100644
+--- a/ui/textarea_test.go
++++ b/ui/textarea_test.go
+@@ -4,6 +4,7 @@ import (
+ 	"math"
+ 	"math/rand/v2"
+ 	"slices"
++	"strconv"
+ 	"strings"
+ 	"testing"
+ 	"unicode/utf8"
+@@ -874,3 +875,48 @@ func TestTextAnchorCaret(t *testing.T) {
+ 		t.Errorf("anchor %d, caret %d after Shift-Left, want 5 and 1", anchor, caret)
+ 	}
+ }
++
++// TestTextAreaRevealsInPage: a text area as high as its text has nothing
++// of its own to scroll, so the caret it is to show is shown by the
++// containers around it: at a selection the app sets and as the user moves
++// it; an edit the app makes while the area does not have the focus moves
++// nothing.
++func TestTextAreaRevealsInPage(t *testing.T) {
++	var b strings.Builder
++	for i := range 100 {
++		b.WriteString("line " + strconv.Itoa(i) + "\n")
++	}
++	s := b.String()
++	var page ScrollState
++	selectAt := -1
++	tt := coreNewTester(func(c *context) {
++		coreScroll(c).Fill().TrackScroll(&page).Children(func() {
++			coreBox(c).Height(50).Shrink(0)
++			ta := coreTextArea(c, &s).Lines(1, math.MaxInt32).Width(300).Shrink(0)
++			if selectAt >= 0 {
++				ta.SetTextSelection(selectAt, selectAt)
++				selectAt = -1
++			}
++		})
++	}, 400, 300)
++	tt.Frame()
++	s += "one more line\n"
++	tt.Frame()
++	tt.Frame()
++	if page.Y != 0 {
++		t.Fatalf("an edit by the app scrolled the page to %v", page.Y)
++	}
++	selectAt = utf8.RuneCountInString(s) - 3
++	tt.Frame()
++	tt.Frame()
++	if page.Y < 1000 {
++		t.Fatalf("a selection near the end left the page at %v", page.Y)
++	}
++	tt.Press(100, 150)
++	tt.Release(100, 150)
++	tt.Key(Ctrl, KeyHome)
++	tt.Frame()
++	if caret, ok := tt.TextCaret(); !ok || page.Y > 60 || caret.Y < 0 || caret.Y+caret.H > 300 {
++		t.Errorf("the caret at the start: the page at %v, the caret at %+v (%v)", page.Y, caret, ok)
++	}
++}
+diff --git a/ui/textinput.go b/ui/textinput.go
+index b14c75a..77ef196 100644
+--- a/ui/textinput.go
++++ b/ui/textinput.go
+@@ -231,7 +231,7 @@ func (e *node) SetTextSelection(start, end int) *node {
+ 	ed.editorSelection = editorSelection{anchor: start, caret: end}
+ 	ed.hasDesired = false
+ 	if ed.area != nil {
+-		ed.area.reveal = true
++		ed.area.reveal, ed.area.page = true, true
+ 	}
+ 	e.c.rt.requestFrame()
+ 	return e

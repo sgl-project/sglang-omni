@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import torch
-from einops import rearrange
 from torch import nn
 from transformers import AutoTokenizer
 
 from sglang_omni.models.nemotron_voicechat.code2wav_stream import (
+    DECODE_WINDOW_FRAMES,
     NemotronCode2WavScheduler,
 )
 from sglang_omni.models.nemotron_voicechat.codec import RVQVAEDecoder
+from sglang_omni.models.nemotron_voicechat.codec_cuda_graph import (
+    CodecDecodeGraphRunner,
+)
 from sglang_omni.models.nemotron_voicechat.conformer import (
     AudioPerception,
     GraphPerception,
@@ -31,16 +35,25 @@ from sglang_omni.models.weight_loader import (
     resolve_dtype,
     resolve_model_path,
 )
-from sglang_omni.preprocessing.transcription import resolve_audio_source
+from sglang_omni.platforms import current_platform
+from sglang_omni.preprocessing.transcription import (
+    police_request_audio,
+    resolve_audio_source,
+)
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.utils.audio import load_audio
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.device import resolve_concrete_device
 
+logger = logging.getLogger(__name__)
+
 PERCEPTION_PREFIX = "stt_model.perception."
 SAMPLES_PER_FRAME = 1_280
 INPUT_SAMPLE_RATE = 16_000
+# note (Xinhao Tan): no 16, on H200 one B=32 step (7.2 ms) is faster than one B=16 step (8.0 ms).
+PERCEPTION_BATCH_SIZES = (1, 2, 4, 8, 32)
 
 
 def perception_config(model_path: str) -> dict:
@@ -49,14 +62,16 @@ def perception_config(model_path: str) -> dict:
     return config["model"]["stt"]["model"]["perception"]
 
 
-def create_preprocessing_executor(model_path: str, **_):
+def create_preprocessing_executor(
+    model_path: str, *, max_concurrency: int = 4, **_
+) -> ThreadedSimpleScheduler[StagePayload, StagePayload]:
     del model_path
 
     def preprocess(payload: StagePayload) -> StagePayload:
         # Channel 0, not a downmix: this model speaks the other side of the
         # conversation, so a two-party recording carries the agent on channel 1.
         channels = load_audio(
-            resolve_audio_source(payload),
+            police_request_audio(resolve_audio_source(payload)),
             source_name="VoiceChat",
             target_sample_rate=INPUT_SAMPLE_RATE,
             mono=False,
@@ -67,6 +82,7 @@ def create_preprocessing_executor(model_path: str, **_):
             waveform = nn.functional.pad(waveform, (0, SAMPLES_PER_FRAME - remainder))
         else:
             pass
+        waveform = waveform.contiguous()
 
         state = NemotronVoiceChatState.from_dict(payload.data)
         state.waveform = waveform
@@ -74,7 +90,7 @@ def create_preprocessing_executor(model_path: str, **_):
         payload.data = state.to_dict()
         return payload
 
-    return SimpleScheduler(preprocess)
+    return ThreadedSimpleScheduler(preprocess, max_concurrency=max_concurrency)
 
 
 def create_perception_executor(
@@ -97,32 +113,60 @@ def create_perception_executor(
     )
     module.eval()
     parameter_dtype = module.proj.weight.dtype
-    perception_stream = (
-        GraphPerception(module) if enable_cuda_graph else StreamingPerception(module)
-    )
+    perception_streams = [
+        (
+            GraphPerception(module, batch_size=batch_size)
+            if enable_cuda_graph
+            else StreamingPerception(module, batch_size=batch_size)
+        )
+        for batch_size in PERCEPTION_BATCH_SIZES
+    ]
+    # note (Junnan Li): a bucket captured on its first batch would stall live requests, so every bucket captures before serving.
+    for perception_stream in perception_streams:
+        if enable_cuda_graph and perception_stream.device.type == "cuda":
+            perception_stream.push(
+                torch.zeros(
+                    perception_stream.batch_size,
+                    SAMPLES_PER_FRAME,
+                    device=perception_stream.device,
+                )
+            )
+            perception_stream.reset()
+        else:
+            pass
 
     @torch.inference_mode()
-    def encode(payload: StagePayload) -> StagePayload:
-        state = NemotronVoiceChatState.from_dict(payload.data)
-        waveform = state.waveform
-        waveform_1S = (
-            rearrange(waveform, "s -> 1 s") if waveform.ndim == 1 else waveform
+    def encode_batch(payloads: list[StagePayload]) -> list[StagePayload]:
+        states = [
+            NemotronVoiceChatState.from_dict(payload.data) for payload in payloads
+        ]
+        perception_stream = next(
+            stream for stream in perception_streams if stream.batch_size >= len(states)
         )
-
-        frames = module(
-            waveform_1S.to(device=device, dtype=parameter_dtype),
+        frames_list = module(
+            [
+                state.waveform.to(device=device, dtype=parameter_dtype)
+                for state in states
+            ],
             stream=perception_stream,
         )
-        assert frames.shape[1] == state.num_frames + 1, (
-            f"Perception returned {frames.shape[1]} rows for {state.num_frames} "
-            "frames of audio; expected one more than the frame count."
-        )
+        for payload, state, frames in zip(payloads, states, frames_list, strict=True):
+            assert frames.shape[0] == state.num_frames + 1, (
+                f"Perception returned {frames.shape[0]} rows for {state.num_frames} "
+                "frames of audio; expected one more than the frame count."
+            )
+            state.acoustic_frames = frames
+            payload.data = state.to_dict()
+        return payloads
 
-        state.acoustic_frames = frames[0]
-        payload.data = state.to_dict()
-        return payload
+    def encode(payload: StagePayload) -> StagePayload:
+        return encode_batch([payload])[0]
 
-    return SimpleScheduler(encode)
+    return SimpleScheduler(
+        encode,
+        batch_compute_fn=encode_batch,
+        max_batch_size=PERCEPTION_BATCH_SIZES[-1],
+    )
 
 
 def create_thinker_executor(
@@ -173,7 +217,16 @@ def create_talker_executor(
     )
 
 
-def create_code2wav_executor(model_path, *, dtype=None, device=None, gpu_id=None):
+def create_code2wav_executor(
+    model_path: str,
+    *,
+    chunk_frames: tuple[int, ...] = (1,),
+    max_batch_size: int = 1,
+    dtype: str | None = None,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    enable_cuda_graph: bool = True,
+) -> NemotronCode2WavScheduler:
     device = resolve_concrete_device(device, gpu_id)
     generation = speech_generation_config(model_path)
     weights = load_weights_by_prefix(model_path, prefix=("tts_model.audio_codec.",))
@@ -193,6 +246,20 @@ def create_code2wav_executor(model_path, *, dtype=None, device=None, gpu_id=None
     decoder.control_codes.copy_(markers["_control_codes"].reshape(-1))
     decoder.silence_codes.copy_(markers["codec_silence_tokens"].reshape(-1))
     decoder = decoder.to(device=device, dtype=resolve_dtype(dtype)).eval()
+    graph_backend = current_platform.get_device_graph_backend(device)
+    stream_decoder: RVQVAEDecoder | CodecDecodeGraphRunner
+    if (
+        enable_cuda_graph
+        and current_platform.enable_codec_decode_graph()
+        and graph_backend is not None
+        and current_platform.supports_graph_captured_fft()
+    ):
+        stream_decoder = CodecDecodeGraphRunner(
+            decoder, graph_backend, device, DECODE_WINDOW_FRAMES
+        )
+    else:
+        logger.info(f"Nemotron codec decode runs eagerly on {device}")
+        stream_decoder = decoder
 
     @torch.inference_mode()
     def decode(payload: StagePayload) -> StagePayload:
@@ -207,7 +274,13 @@ def create_code2wav_executor(model_path, *, dtype=None, device=None, gpu_id=None
         )
         return payload
 
-    return NemotronCode2WavScheduler(decoder, device, compute_fn=decode)
+    return NemotronCode2WavScheduler(
+        stream_decoder,
+        device,
+        chunk_frames=chunk_frames,
+        compute_fn=decode,
+        max_batch_size=max_batch_size,
+    )
 
 
 def create_decode_executor(model_path, **_):

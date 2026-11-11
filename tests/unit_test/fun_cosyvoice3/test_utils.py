@@ -6,6 +6,7 @@ import sys
 import types
 
 import numpy as np
+import pytest
 import torch
 
 from sglang_omni.models.fun_cosyvoice3 import utils
@@ -98,14 +99,29 @@ def test_cosyvoice3_prompt_mel_uses_flow_layout_and_fixed_configuration(
     assert torch.equal(result[0, 0], torch.arange(0, 80 * 3, 3, dtype=torch.float32))
 
 
-def test_cosyvoice3_reference_encoders_pin_onnx_providers(monkeypatch) -> None:
-    captured: list[object] = []
+def test_cosyvoice3_reference_encoders_pin_onnx_providers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[list[str | tuple[str, dict[str, str]]]] = []
+    session_configs: list[dict[str, str]] = []
 
-    def fake_session(model_path, sess_options, providers):
+    class SessionOptions:
+        def __init__(self) -> None:
+            self.config_entries: dict[str, str] = {}
+
+        def add_session_config_entry(self, name: str, value: str) -> None:
+            self.config_entries[name] = value
+
+    def fake_session(
+        model_path: str,
+        sess_options: SessionOptions,
+        providers: list[str | tuple[str, dict[str, str]]],
+    ) -> None:
         captured.append(providers)
+        session_configs.append(sess_options.config_entries)
 
     fake_onnxruntime = types.SimpleNamespace(
-        SessionOptions=types.SimpleNamespace,
+        SessionOptions=SessionOptions,
         GraphOptimizationLevel=types.SimpleNamespace(ORT_ENABLE_ALL=99),
         InferenceSession=fake_session,
     )
@@ -123,3 +139,4 @@ def test_cosyvoice3_reference_encoders_pin_onnx_providers(monkeypatch) -> None:
         ["CPUExecutionProvider"],
         ["CPUExecutionProvider"],
     ]
+    assert session_configs == [{}, {}, {"session.intra_op.allow_spinning": "0"}]
