@@ -31,7 +31,7 @@ func exportAll(t *testing.T, path string, req Request) []Row {
 // TestServeFileMode: Listen makes the socket 0600, and replaces a stale
 // one left by a crash.
 func TestServeFileMode(t *testing.T) {
-	path := filepath.Join(t.TempDir(), SocketName)
+	path := socketPath(t, SocketName)
 	stale, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatal(err)
