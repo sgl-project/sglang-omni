@@ -27,11 +27,35 @@ from sglang_omni.models.moss_speech.request_builders import (
     MossSpeechState,
     RequestValidationError,
 )
+from sglang_omni.preprocessing.base import MediaIO, is_url
+from sglang_omni.preprocessing.resource_connector import get_global_resource_connector
 from sglang_omni.proto.request import StagePayload
-from sglang_omni.utils.audio import load_audio
+from sglang_omni.utils.audio import (
+    audio_request_timeout,
+    decode_audio_data_uri,
+    load_audio,
+)
 
 SAMPLE_RATE_HZ = 24000
 MAX_REFERENCE_SECONDS = 30
+
+
+class MossSpeechAudioBytes(MediaIO[bytes]):
+    """Read authorized media without changing HF audio decoding or resampling."""
+
+    def load_bytes(self, data: bytes) -> bytes:
+        return data
+
+    def load_base64(self, media_type: str, data: str) -> bytes:
+        encoded = decode_audio_data_uri(f"data:{media_type};base64,{data}")
+        assert encoded is not None
+        return encoded
+
+    def load_file(self, filepath: Path) -> bytes:
+        try:
+            return filepath.read_bytes()
+        except (FileNotFoundError, IsADirectoryError, PermissionError) as error:
+            raise ValueError(f"Could not read speech input: {filepath}") from error
 
 
 class VoiceConditioning(TypedDict):
@@ -179,8 +203,24 @@ class MossSpeechCodec:
         return torch.cat(tokens)
 
     def encode_audio(self, source: str) -> list[int]:
+        connector = get_global_resource_connector()
+        if source.startswith(("http://", "https://")):
+            connector.assert_url_allowed(source)
+        elif source.startswith("file:") and connector.allowed_local_media_path is None:
+            raise ValueError("Local file loading is disabled.")
+        else:
+            pass
+        media_io = MossSpeechAudioBytes()
+        encoded = (
+            connector.load_resource(source, media_io, timeout=audio_request_timeout())
+            if is_url(source)
+            else connector.load_local_path(source, media_io)
+        )
         samples, sample_rate = load_audio(
-            source, source_name="reference audio", mono=False, preserve_sample_rate=True
+            encoded,
+            source_name="reference audio",
+            mono=False,
+            preserve_sample_rate=True,
         )
         waveform = torch.from_numpy(samples[:1])
         return self.encode_tokens(waveform, sample_rate).cpu().tolist()
