@@ -17,6 +17,40 @@ type Models struct {
 	// models page: the features' menus leave them out, unless one is in
 	// use (Voxt 1.x's hiddenModelVisibilityIDs).
 	Hidden []string `json:"hidden,omitempty"`
+	// LLMWait is how long Transcribe, Translate and Rewrite wait at least
+	// for a language model's answer: one of WaitChoices. "" (Automatic),
+	// or a value VoxtNew does not know, keeps the session's own limits
+	// (internal/session's LLMTimeout and WriteTimeout), so older documents
+	// need no migration (#3821). Either way a long text gets longer.
+	LLMWait string `json:"llmWait,omitempty"`
+}
+
+// The choices of Models.LLMWait.
+const (
+	WaitAuto  = ""
+	Wait1Min  = "1m"
+	Wait2Min  = "2m"
+	Wait5Min  = "5m"
+	Wait10Min = "10m"
+)
+
+// WaitChoices are Models.LLMWait's choices in the order the UI lists them.
+var WaitChoices = []string{WaitAuto, Wait1Min, Wait2Min, Wait5Min, Wait10Min}
+
+// LLMWaitFor is the least time LLMWait gives a language model's answer;
+// 0 for Automatic.
+func (m Models) LLMWaitFor() time.Duration {
+	switch m.LLMWait {
+	case Wait1Min:
+		return time.Minute
+	case Wait2Min:
+		return 2 * time.Minute
+	case Wait5Min:
+		return 5 * time.Minute
+	case Wait10Min:
+		return 10 * time.Minute
+	}
+	return 0
 }
 
 // The choices of Models.KeepLoaded.
