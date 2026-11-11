@@ -42,9 +42,6 @@ class MossSpeechModelRunner(ModelRunner[MossSpeechSGLangRequestData]):
         super().__init__(tp_worker, output_processor)
         assert isinstance(self.model, MossSpeechSGLangModel)
 
-    def rows_to_embeddings(self, rows: torch.Tensor) -> torch.Tensor:
-        return self.model.rows_to_embeddings(rows)
-
     def custom_prefill_forward(
         self,
         forward_batch: ForwardBatch | None,
@@ -69,7 +66,6 @@ class MossSpeechModelRunner(ModelRunner[MossSpeechSGLangRequestData]):
                     request_data.output_rows, dtype=torch.long
                 )
                 rows = torch.cat([rows, generated_rows], dim=0)
-                request_data.pending_feedback_queue.clear()
             else:
                 pass
             current_rows = rows[prefix_length : prefix_length + extend_length]
@@ -78,7 +74,7 @@ class MossSpeechModelRunner(ModelRunner[MossSpeechSGLangRequestData]):
                     f"MOSS-Speech prefill row mismatch for {request.request_id}"
                 )
             else:
-                embeddings.append(self.rows_to_embeddings(current_rows))
+                embeddings.append(self.model.rows_to_embeddings(current_rows))
         if embeddings:
             packed_embeddings = torch.cat(embeddings, dim=0)
         else:

@@ -78,7 +78,6 @@ def tiny_model(
         num_modality_layers=1,
         num_hidden_layers=3,
         max_position_embeddings=16,
-        moss_decode_buffer_bs=2,
     )
     model = MossSpeechSGLangModel(configuration, init_device=device)
     generator = torch.Generator(device=device).manual_seed(183)
