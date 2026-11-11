@@ -506,6 +506,9 @@ func TestModelsPageFaster(t *testing.T) {
 	click(t, tt, sw)
 	if on, set := a.settings.Get().Models.Faster[models.ASRFast]; !set || on || a.omniDraft(models.ASRFast) != "" {
 		t.Errorf("never switched, then off: %+v", a.settings.Get().Models)
+	}
+}
+
 // TestModelCardsLineUp: a speech model in a card of its own starts its
 // text at the card's edge, as the models of a family card do, its icon
 // beside its name (#3854: the text sat after an empty icon column). The
