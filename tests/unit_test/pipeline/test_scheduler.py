@@ -11,9 +11,11 @@ import time
 import weakref
 from array import array
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 from queue import Empty, Queue
 from types import SimpleNamespace
 from typing import Literal
@@ -771,7 +773,11 @@ def test_retracted_request_history_gets_its_own_storage_before_requeue(
     retracted = history_request(is_retracted=True, snapshots=snapshots, row=1)
     fresh = history_request(is_retracted=False, snapshots=snapshots, row=2)
     expected = torch.stack([snapshot[1] for snapshot in snapshots])
+    retracted_request_ids: list[str] = []
     scheduler = requeue_scheduler()
+    scheduler.model_runner = SimpleNamespace(
+        on_request_retracted=retracted_request_ids.append
+    )
 
     OmniScheduler._add_request_to_queue(
         scheduler, retracted, **requeue_kwargs
@@ -781,6 +787,7 @@ def test_retracted_request_history_gets_its_own_storage_before_requeue(
     )  # noqa: leading-underscore  # production name
 
     assert scheduler.waiting_queue == [retracted, fresh]
+    assert retracted_request_ids == [retracted.rid]
     history = retracted.omni_data.decode_input_embeds
     assert torch.equal(torch.stack(history), expected)
     storages = {row.untyped_storage().data_ptr() for row in history}
@@ -4631,6 +4638,113 @@ def test_spec_prefill_completion_precedes_host_result_processing(
         ),
     )
     assert events == ["copy done", "prefill end", "consume"]
+
+
+@pytest.mark.parametrize("is_prefill", [False, True])
+@pytest.mark.parametrize("takes_logits_hooks", [False, True])
+def test_run_speculative_batch_overlap_runs_hooks_and_step_callback_in_forward_stream(
+    monkeypatch: pytest.MonkeyPatch,
+    is_prefill: bool,
+    takes_logits_hooks: bool,
+) -> None:
+    """Overlap speculative batches bind verify requests before forward and capture hidden rows before the copy stream waits."""
+    events: list[tuple[str, tuple[str, ...]]] = []
+    active_streams: list[str] = []
+
+    @contextmanager
+    def stream_scope(stream_name: str) -> Iterator[None]:
+        active_streams.append(stream_name)
+        yield
+        assert active_streams.pop() == stream_name
+
+    monkeypatch.setattr(
+        omni_scheduler_module, "resolve_forward_inputs", lambda batch, future_map: None
+    )
+    monkeypatch.setattr(
+        sglang_scheduler_module.Scheduler,
+        "_relay_forward_payload",
+        lambda self, batch, future_indices, batch_result: None,
+    )
+    target_worker = SimpleNamespace(verify_requests=None)
+    request = multimodal_prefill_request("req-overlap", [1, 2])
+    request.omni_data = (
+        SGLangARRequestData()
+    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    batch = ScheduleBatch(
+        reqs=[request],
+        forward_mode=ForwardMode.EXTEND if is_prefill else ForwardMode.DECODE,
+        spec_algorithm=SpeculativeAlgorithm.DFLASH,
+        req_pool_indices=torch.tensor([3]),
+        input_ids=torch.tensor([5]),
+        enable_overlap=True,
+        device="cpu",
+    )
+    draft_result = SimpleNamespace(
+        extra_keep_alive_refs=None,
+        next_draft_input=SimpleNamespace(dsa_topk_indices=None),
+        copy_to_cpu=lambda *, return_logprob, return_hidden_states: events.append(
+            ("copy_to_cpu", tuple(active_streams))
+        ),
+    )
+
+    def forward_batch_generation(
+        step_batch: ScheduleBatch, *, on_publish: partial[None]
+    ) -> SimpleNamespace:
+        on_publish("published")
+        expected_ids = ["req-overlap"] if takes_logits_hooks else None
+        actual_ids = (
+            [req.request_id for req in target_worker.verify_requests]
+            if target_worker.verify_requests is not None
+            else None
+        )
+        assert actual_ids == expected_ids
+        step_batch.input_ids = torch.tensor([99])
+        events.append(("forward", tuple(active_streams)))
+        return draft_result
+
+    def after_speculative_step(
+        step_batch: ScheduleBatch, *, is_prefill: bool, num_draft_tokens: int
+    ) -> None:
+        assert torch.equal(step_batch.input_ids, torch.tensor([5]))
+        assert (is_prefill, num_draft_tokens) == (batch.forward_mode.is_extend(), 3)
+        events.append(("after_step", tuple(active_streams)))
+
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.enable_overlap = True
+    scheduler._confidence_budget_prepare = (
+        None  # noqa: leading-underscore  # native scheduler contract
+    )
+    scheduler.future_map = SimpleNamespace(
+        resolve_seq_lens_cpu=lambda step_batch: None,
+        publish=lambda indices, output: None,
+    )
+    scheduler.forward_stream = SimpleNamespace(wait_stream=lambda stream: None)
+    scheduler.schedule_stream = SimpleNamespace()
+    scheduler.copy_stream = SimpleNamespace(
+        wait_stream=lambda stream: events.append(("copy_wait", tuple(active_streams)))
+    )
+    scheduler.forward_stream_ctx = stream_scope("forward")
+    scheduler.copy_stream_ctx = stream_scope("copy")
+    scheduler.record_batch_in_overlap = lambda recorded_batch: None
+    scheduler.device_module = SimpleNamespace(Event=lambda: SimpleNamespace())
+    scheduler.tp_worker = SimpleNamespace(speculative_target_worker=target_worker)
+    scheduler.draft_worker = SimpleNamespace(
+        speculative_num_draft_tokens=3,
+        forward_batch_generation=forward_batch_generation,
+    )
+    scheduler.model_runner = SimpleNamespace(
+        speculative_verify_takes_logits_hooks=takes_logits_hooks,
+        restore_output_penalty_history=lambda step_batch: None,
+        after_speculative_step=after_speculative_step,
+    )
+
+    assert scheduler.run_speculative_batch(batch) is draft_result
+    assert events == [
+        ("forward", ("forward",)),
+        ("after_step", ("forward",)),
+        ("copy_wait", ("forward",)),
+        ("copy_to_cpu", ("forward", "copy")),
+    ]
 
 
 def test_omni_scheduler_normalizes_prefill_coalesce_args(monkeypatch) -> None:
