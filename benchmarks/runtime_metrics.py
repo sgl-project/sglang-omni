@@ -17,6 +17,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+import psutil
+
 _NVML_SESSION_LOCK = threading.Lock()
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -276,7 +278,6 @@ class RusageInfoV4(ctypes.Structure):
 
 
 RUSAGE_INFO_VERSION = 4
-MAXIMUM_CHILD_PROCESSES = 256
 
 
 class ProcessTreeMemoryMonitor:
@@ -291,6 +292,7 @@ class ProcessTreeMemoryMonitor:
             raise RuntimeError("process-tree footprint sampling requires macOS")
         else:
             self.root_process_id = root_process_id
+            self.root = psutil.Process(root_process_id)
             self.interval_s = interval_s
             self.samples: list[ProcessTreeSample] = []
             self.error: str | None = None
@@ -332,18 +334,20 @@ class ProcessTreeMemoryMonitor:
         while not self.stop_event.wait(self.interval_s):
             try:
                 self.samples.append(self.sample())
-            except OSError as exc:
+            except (OSError, psutil.Error) as exc:
                 self.error = f"server process {self.root_process_id} exited: {exc}"
                 return
 
     def sample(self) -> ProcessTreeSample:
         processes = []
-        for process_id in self.process_tree():
+        # Note (XXXXRT666): psutil lists the tree, but its macOS memory_info has
+        # no physical footprint, so libproc still reads that.
+        for process in [self.root, *self.root.children(recursive=True)]:
             try:
-                processes.append(self.footprint(process_id))
+                processes.append(self.footprint(process.pid))
             except OSError:
                 # A worker that exits between listing and sampling has no usage left.
-                if process_id == self.root_process_id:
+                if process.pid == self.root_process_id:
                     raise
                 else:
                     continue
@@ -354,16 +358,6 @@ class ProcessTreeMemoryMonitor:
                 process.physical_footprint_bytes for process in processes
             ),
         )
-
-    def process_tree(self) -> list[int]:
-        process_ids = [self.root_process_id]
-        children = (ctypes.c_int * MAXIMUM_CHILD_PROCESSES)()
-        for process_id in process_ids:
-            child_count = self.library.proc_listchildpids(
-                process_id, children, ctypes.sizeof(children)
-            )
-            process_ids.extend(children[:child_count])
-        return process_ids
 
     def footprint(self, process_id: int) -> ProcessFootprint:
         usage = RusageInfoV4()
