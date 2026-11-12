@@ -114,12 +114,10 @@ class MossSpeechDecoderLayer(torch.nn.Module):
         else:
             hidden_states, residual = self.input_layernorm(hidden_states, residual)
         attention = self.self_attn
-        query_weight, key_weight, value_weight = attention.qkv_proj.weight.split(
-            [attention.q_size, attention.kv_size, attention.kv_size], dim=0
+        qkv, _ = attention.qkv_proj(hidden_states)
+        q, k, v = qkv.split(
+            [attention.q_size, attention.kv_size, attention.kv_size], dim=-1
         )
-        q = torch.nn.functional.linear(hidden_states, query_weight)
-        k = torch.nn.functional.linear(hidden_states, key_weight)
-        v = torch.nn.functional.linear(hidden_states, value_weight)
         q = attention.q_norm(q.reshape(-1, attention.num_heads, attention.head_dim))
         k = attention.k_norm(k.reshape(-1, attention.num_kv_heads, attention.head_dim))
         with torch.autocast(device_type=positions.device.type, enabled=False):
@@ -143,9 +141,8 @@ class MossSpeechDecoderLayer(torch.nn.Module):
             hidden_states, attention.o_proj.weight
         )
         hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
-        gate_weight, up_weight = self.mlp.gate_up_proj.weight.chunk(2, dim=0)
-        gate = torch.nn.functional.linear(hidden_states, gate_weight)
-        up = torch.nn.functional.linear(hidden_states, up_weight)
+        gate_up, _ = self.mlp.gate_up_proj(hidden_states)
+        gate, up = gate_up.chunk(2, dim=-1)
         hidden_states = torch.nn.functional.linear(
             torch.nn.functional.silu(gate) * up, self.mlp.down_proj.weight
         )
