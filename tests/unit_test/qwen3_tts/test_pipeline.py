@@ -3701,13 +3701,16 @@ class FakeWindowRunner:
         widths: tuple[int, ...],
         bucket: int,
         miss_on_call: int | None = None,
+        fail_on_call: int | None = None,
     ) -> None:
         self.arena = scheduler.codec_arena
         self.decoder = decoder
+        self.mode = "window"
         self.fresh_frames = widths
         self.batch_sizes = (bucket,)
         self.bucket = bucket
         self.miss_on_call = miss_on_call
+        self.fail_on_call = fail_on_call
         self.enabled = True
         self.calls: list[tuple[tuple[int, ...], list[int]]] = []
 
@@ -3727,9 +3730,17 @@ class FakeWindowRunner:
         }
 
     def decode_slots(self, codes: torch.Tensor, slots) -> torch.Tensor | None:
+        if not self.enabled:
+            return None
+        else:
+            pass
         self.calls.append((tuple(codes.shape), list(slots)))
         if len(self.calls) == self.miss_on_call:
             return None
+        elif len(self.calls) == self.fail_on_call:
+            raise RuntimeError("injected replay failure")
+        else:
+            pass
         state = self.arena.gather(list(slots))
         waveform = self.decoder.decode(codes, state)
         self.arena.scatter(list(slots), state)
@@ -3742,6 +3753,7 @@ def windowed_scheduler(
     widths: tuple[int, ...] = (1, 2),
     bucket: int = 4,
     miss_on_call: int | None = None,
+    fail_on_call: int | None = None,
     cold_widths: tuple[int, ...] | None = None,
 ) -> tuple[
     Qwen3TTSStreamingVocoderScheduler,
@@ -3755,6 +3767,7 @@ def windowed_scheduler(
         widths=widths,
         bucket=bucket,
         miss_on_call=miss_on_call,
+        fail_on_call=fail_on_call,
     )
     scheduler.initial_window_decode_graphs = runner
     if cold_widths is not None:
@@ -3795,14 +3808,14 @@ def chunk_samples(message) -> list[float]:
 
 
 def whole_request_scheduler(
-    monkeypatch: pytest.MonkeyPatch, *, miss_on_call: int | None = None
+    monkeypatch: pytest.MonkeyPatch, *, fail_on_call: int | None = None
 ) -> tuple[
     Qwen3TTSStreamingVocoderScheduler,
     FakeIncrementalQwen3TTSDecoder,
     FakeWindowRunner,
 ]:
     scheduler, incremental, runner = windowed_scheduler(
-        monkeypatch, widths=(1, 2, 4), miss_on_call=miss_on_call
+        monkeypatch, widths=(1, 2, 4), fail_on_call=fail_on_call
     )
     scheduler.decodes_whole_requests = True
     scheduler.free_whole_request_slots = [
@@ -4157,7 +4170,7 @@ def test_qwen3_tts_whole_request_planned_on_lost_tail_graphs_fails_only_itself(
 def test_qwen3_tts_whole_request_failed_replay_fails_only_its_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    scheduler, _, runner = whole_request_scheduler(monkeypatch, miss_on_call=3)
+    scheduler, _, runner = whole_request_scheduler(monkeypatch, fail_on_call=3)
     messages = [
         whole_request_message("first", 8),
         whole_request_message("second", 8),
@@ -4207,7 +4220,6 @@ def test_qwen3_tts_whole_requests_finish_on_the_stateful_decoder_without_window_
     scheduler.run_non_streaming_batch([message], asyncio.new_event_loop())
     run_initial_worker_pass(scheduler)
     runner.enabled = False
-    monkeypatch.setattr(runner, "split_frames", lambda frames: None)
     results = run_whole_requests(scheduler)
 
     assert len(runner.calls) == 1
@@ -4657,6 +4669,7 @@ class FakeTailRunner:
     ) -> None:
         self.arena = scheduler.codec_arena
         self.decoder = decoder
+        self.mode = "tail"
         self.enabled = True
         self.fresh_frames = widths
         self.batch_sizes = (bucket,)

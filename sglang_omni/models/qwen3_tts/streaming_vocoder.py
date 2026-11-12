@@ -254,14 +254,17 @@ class IncrementalDecodePlan:
 
 @dataclass(eq=False)
 class IncrementalDecodeBatch:
-    """Cohort-wide arena bookkeeping for one incremental launch; a cohort with a tail_runner
-    holds reference-prefixed first chunks of different widths, decoded in one replay."""
+    """Cohort-wide arena bookkeeping for one incremental launch.
+
+    runner is the graph its planner chose, or None to pick one by width; a tail runner's
+    cohort holds reference-prefixed first chunks of different widths, decoded in one replay.
+    """
 
     decoder: Qwen3TTSIncrementalDecoder
     arena: Qwen3TTSCodecStateArena
     slots: list[int]
     cohort_state: Qwen3TTSIncrementalCodecState | None = None
-    tail_runner: Qwen3TTSIncrementalCodecCudaGraphRunner | None = None
+    runner: Qwen3TTSIncrementalCodecCudaGraphRunner | None = None
 
     def gathered(self) -> Qwen3TTSIncrementalCodecState:
         """The cohort's rows on the host-driven path; the graph path skips this."""
@@ -2139,7 +2142,11 @@ class Qwen3TTSStreamingVocoderScheduler(
             return Qwen3TTSDecodeHandle(deltas, bad_rows=None)
         else:
             pass
-        if incremental is not None and incremental.tail_runner is not None:
+        if (
+            incremental is not None
+            and incremental.runner is not None
+            and incremental.runner.mode == "tail"
+        ):
             width = max(plan.fresh_frames for plan in plans)
             decoder_input = torch.cat(
                 [
@@ -2189,8 +2196,8 @@ class Qwen3TTSStreamingVocoderScheduler(
         Returns each row's new samples and the waveform they view, which the
         caller keeps alive until they are copied out.
         """
-        if incremental.tail_runner is not None:
-            waveform = incremental.tail_runner.decode_slots(
+        if incremental.runner is not None and incremental.runner.mode == "tail":
+            waveform = incremental.runner.decode_slots(
                 gpu_input,
                 incremental.slots,
                 valid_frames=[plan.fresh_frames for plan in plans],
@@ -2202,31 +2209,34 @@ class Qwen3TTSStreamingVocoderScheduler(
             else:
                 pass
             return (self.split_batch_waveform(waveform, len(plans)), waveform)
+        elif incremental.runner is not None:
+            waveform = incremental.runner.decode_slots(gpu_input, incremental.slots)
         else:
-            pass
-        width = plans[0].fresh_frames
-        runner = self.runner_for_stream(
-            stream, self.initial_incremental_decode_graphs, "incremental_graphs"
-        )
-        captured = runner is not None and bool(runner.available_batch_sizes(width))
-        if stream is self.decode_stream and (not captured):
-            window_runner = self.initial_window_decode_graphs
-            split = (
-                window_runner.split_frames(width) if window_runner is not None else None
+            width = plans[0].fresh_frames
+            runner = self.runner_for_stream(
+                stream, self.initial_incremental_decode_graphs, "incremental_graphs"
             )
-            if split is not None:
-                return self.decode_incremental_windows(
-                    gpu_input, plans, incremental, window_runner, split
+            captured = runner is not None and bool(runner.available_batch_sizes(width))
+            if stream is self.decode_stream and (not captured):
+                window_runner = self.initial_window_decode_graphs
+                split = (
+                    window_runner.split_frames(width)
+                    if window_runner is not None
+                    else None
                 )
+                if split is not None:
+                    return self.decode_incremental_windows(
+                        gpu_input, plans, incremental, window_runner, split
+                    )
+                else:
+                    pass
             else:
                 pass
-        else:
-            pass
-        waveform = (
-            runner.decode_slots(gpu_input, incremental.slots)
-            if runner is not None
-            else None
-        )
+            waveform = (
+                runner.decode_slots(gpu_input, incremental.slots)
+                if runner is not None
+                else None
+            )
         if waveform is None:
             cohort_state = incremental.gathered()
             waveform = incremental.decoder.decode(gpu_input, cohort_state)
@@ -3025,7 +3035,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         self,
     ) -> tuple[
         list[tuple[Qwen3TTSWholeRequest, int]],
-        Qwen3TTSIncrementalCodecCudaGraphRunner | None,
+        Qwen3TTSIncrementalCodecCudaGraphRunner,
     ]:
         """The oldest row's next decode and each row that replays the same graph, with its frames.
 
@@ -3035,7 +3045,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         widths = window_runner.fresh_frames
         group: list[tuple[Qwen3TTSWholeRequest, int]] = []
         group_frames = 0
-        group_tail_runner: Qwen3TTSIncrementalCodecCudaGraphRunner | None = None
+        group_runner = window_runner
         largest_bucket = 0
         waiting_rows: deque[Qwen3TTSWholeRequest] = deque()
         for row in self.whole_request_rows:
@@ -3044,8 +3054,8 @@ class Qwen3TTSStreamingVocoderScheduler(
                 continue
             else:
                 pass
-            row_tail_runner = (
-                self.initial_tail_decode_graphs if row.tail_frames else None
+            row_runner = (
+                self.initial_tail_decode_graphs if row.tail_frames else window_runner
             )
             row_frames = (
                 row.tail_frames
@@ -3059,8 +3069,8 @@ class Qwen3TTSStreamingVocoderScheduler(
             if (
                 group
                 and (
-                    row_tail_runner is not group_tail_runner
-                    or (row_tail_runner is None and row_frames != group_frames)
+                    row_runner is not group_runner
+                    or (row_runner is window_runner and row_frames != group_frames)
                     or len(group) == largest_bucket
                 )
             ) or (row.slot is None and not self.free_whole_request_slots):
@@ -3084,13 +3094,15 @@ class Qwen3TTSStreamingVocoderScheduler(
                 pass
             if not group:
                 group_frames = row_frames
-                group_tail_runner = row_tail_runner
-                largest_bucket = (row_tail_runner or window_runner).batch_sizes[-1]
+                group_runner = row_runner
+                # note (ratish): the configured bucket, which still bounds an eager replay once
+                # a teardown has taken the graphs.
+                largest_bucket = row_runner.batch_sizes[-1]
             else:
                 pass
             group.append((row, row_frames))
         self.whole_request_rows = waiting_rows
-        return (group, group_tail_runner)
+        return (group, group_runner)
 
     def free_whole_request_slot(self, row: Qwen3TTSWholeRequest) -> None:
         if row.slot is not None:
@@ -3113,7 +3125,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             pass
 
     def run_whole_request_replay(self) -> None:
-        group, tail_runner = self.plan_whole_request_replay()
+        group, runner = self.plan_whole_request_replay()
         if not group:
             return
         else:
@@ -3139,7 +3151,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                     decoder=self.incremental_decoder,
                     arena=self.codec_arena,
                     slots=[plan.slot for plan in plans],
-                    tail_runner=tail_runner,
+                    runner=runner,
                 ),
             ).resolve_partial()
         except Exception as exc:
@@ -3427,7 +3439,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                         decoder=decoder,
                         arena=arena,
                         slots=slots,
-                        tail_runner=tail_runner,
+                        runner=tail_runner,
                     ),
                 )
             except Qwen3TTSInvalidCodeRows as exc:
