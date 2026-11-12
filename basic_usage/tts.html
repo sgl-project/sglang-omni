@@ -618,6 +618,10 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#qwen3-tts-base-voice-cloning">Qwen3-TTS Base Voice Cloning</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#voice-design">Voice Design</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#qwen3-tts-voicedesign">Qwen3-TTS VoiceDesign</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#batch-speech">Batch Speech</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#uploaded-voices">Uploaded Voices</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#request-parameters">Request Parameters</a></li>
@@ -639,7 +643,7 @@
 <p>Use the OpenAI-compatible <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> interface to synthesize text. This
 page covers common part in TTS cookbook inlcluding: model setup, required inputs, and
 implementation-specific options belong in the linked cookbooks. The examples
-use <a class="reference internal" href="../cookbook/qwen3_tts.html#customvoice-checkpoints"><span class="std std-ref">Qwen3-TTS CustomVoice</span></a>, which accepts text-only requests. Replace the model and add any fields required by your checkpoint.</p>
+use <a class="reference internal" href="../cookbook/qwen3_tts.html#customvoice"><span class="std std-ref">Qwen3-TTS CustomVoice</span></a>, which accepts text-only requests. Replace the model and add any fields required by your checkpoint.</p>
 <section id="prerequisites">
 <h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
 <p>Install SGLang-Omni using the <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">installation guide</span></a>
@@ -665,7 +669,7 @@ model you are serving.</p>
 <td><p>Yes</p></td>
 <td><p>Reference audio or a precomputed speaker embedding</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="../cookbook/qwen3_tts.html#customvoice-checkpoints"><span class="std std-ref">Qwen3-TTS CustomVoice</span></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="../cookbook/qwen3_tts.html#customvoice"><span class="std std-ref">Qwen3-TTS CustomVoice</span></a></p></td>
 <td><p>Yes</p></td>
 <td><p>Built-in speakers; 1.7B supports instruction control</p></td>
 </tr>
@@ -1061,6 +1065,34 @@ Requirements vary: some require a transcript, others use it only for a particula
 <p>To stream the same reference, add <code class="docutils literal notranslate"><span class="pre">&quot;stream&quot;:</span> <span class="pre">true</span></code> and use the <a class="reference internal" href="#streaming"><span class="std std-ref">streaming examples</span></a>. The example allows <code class="docutils literal notranslate"><span class="pre">us.aws.cdn.hf.co</span></code>, the redirect host observed for this clip; if the download redirects to a different host, allow that host too.</p>
 </section>
 </section>
+<section id="voice-design">
+<h2>Voice Design<a class="headerlink" href="#voice-design" title="Link to this heading">#</a></h2>
+<p>Voice design generates a voice from a text description without reference audio. Support and required fields vary by model. Describing a voice is different from controlling the speaking style of a preset or reference voice.</p>
+<section id="qwen3-tts-voicedesign">
+<h3>Qwen3-TTS VoiceDesign<a class="headerlink" href="#qwen3-tts-voicedesign" title="Link to this heading">#</a></h3>
+<p>This example requires the 1.7B VoiceDesign checkpoint, not CustomVoice or Base. The <code class="docutils literal notranslate"><span class="pre">task_type:</span> <span class="pre">&quot;VoiceDesign&quot;</span></code> setting is specific to Qwen3-TTS.</p>
+<p>Launch VoiceDesign:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--config<span class="w"> </span>examples/configs/qwen3_tts_1_7b_voicedesign.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>After <code class="docutils literal notranslate"><span class="pre">/health</span></code> returns HTTP 200, provide the text to speak in <code class="docutils literal notranslate"><span class="pre">input</span></code> and a non-empty voice description in <code class="docutils literal notranslate"><span class="pre">instructions</span></code>. Omit <code class="docutils literal notranslate"><span class="pre">voice</span></code> and reference-audio fields.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>--fail-with-body<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
+<span class="s1">    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",</span>
+<span class="s1">    "input": "Hello from Qwen VoiceDesign.",</span>
+<span class="s1">    "task_type": "VoiceDesign",</span>
+<span class="s1">    "instructions": "A warm, natural young adult voice."</span>
+<span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output<span class="w"> </span>designed-voice.wav
+</pre></div>
+</div>
+<p>To stream the generated speech, add <code class="docutils literal notranslate"><span class="pre">&quot;stream&quot;:</span> <span class="pre">true</span></code> and use the <a class="reference internal" href="#streaming"><span class="std std-ref">streaming examples</span></a>. See the <a class="reference internal" href="../cookbook/qwen3_tts.html#voicedesign"><span class="std std-ref">Qwen3-TTS cookbook</span></a> for model selection and configuration details.</p>
+</section>
+</section>
 <section id="batch-speech">
 <h2>Batch Speech<a class="headerlink" href="#batch-speech" title="Link to this heading">#</a></h2>
 <p>Use <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech/batch</span></code> when one request should synthesize several
@@ -1400,6 +1432,10 @@ reference inputs, and workload.</p>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#voice-cloning">Voice Cloning</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#qwen3-tts-base-voice-cloning">Qwen3-TTS Base Voice Cloning</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#voice-design">Voice Design</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#qwen3-tts-voicedesign">Qwen3-TTS VoiceDesign</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#batch-speech">Batch Speech</a></li>
