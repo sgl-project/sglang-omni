@@ -62,6 +62,25 @@ def decode_step(
     return int(result.next_token_ids[0])
 
 
+@pytest.mark.parametrize("is_prefill", [True, False])
+def test_sampling_hooks_check_text_requests_in_batch_order(is_prefill: bool) -> None:
+    runner = make_runner()
+    hook = (
+        runner.sample_before_post_prefill
+        if is_prefill
+        else runner.sample_before_post_decode
+    )
+    audio_request = make_request("tts")
+    audio_request.data.text_ar_mode = TEXT_MODE_AUDIO
+    text_request = make_request()
+    invalid_request = SchedulerRequest(request_id="invalid")
+    assert not hook(None, None, [])
+    assert not hook(None, None, [audio_request])
+    assert hook(None, None, [audio_request, text_request, invalid_request])
+    with pytest.raises(AssertionError):
+        hook(None, None, [audio_request, invalid_request, text_request])
+
+
 @pytest.mark.parametrize(
     "text_count,has_eot", [(0, True), (1, True), (199, True), (200, False)]
 )

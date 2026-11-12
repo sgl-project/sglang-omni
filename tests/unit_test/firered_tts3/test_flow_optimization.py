@@ -7,7 +7,7 @@ import collections
 import gc
 import weakref
 from typing import Literal
-from unittest.mock import create_autospec
+from unittest.mock import MagicMock, create_autospec
 
 import pytest
 import torch
@@ -17,6 +17,7 @@ import sglang_omni.models.firered_tts3.flow_graph_capture as flow_graph_module
 from sglang_omni.models.firered_tts3.compiled_dit import CompiledDiTExecutor
 from sglang_omni.models.firered_tts3.conv_cache import Conv1dWeightCache
 from sglang_omni.models.firered_tts3.dit import DiT
+from sglang_omni.models.firered_tts3.ffn_gemm import FFN_CONFIGS, QKV_CONFIGS
 from sglang_omni.models.firered_tts3.flow_execution import (
     euler_flow_loop,
     prepare_flow_dit,
@@ -32,7 +33,72 @@ from tests.unit_test.fixtures.firered_tts3 import (
     tiny_runner,
 )
 
+try:
+    import sglang_omni.models.firered_tts3.ffn_gemm_kernel as gemm_kernel_module
+except ImportError:
+    gemm_kernel_module = None
+
 pytestmark = pytest.mark.usefixtures("disable_flow_optimization_environment")
+
+
+@pytest.mark.parametrize(
+    "rows,grid,block_sizes",
+    [
+        (24, (96,), (16, 64, 64)),
+        (48, (96,), (32, 64, 64)),
+        (96, (72,), (32, 128, 64)),
+        (192, (72,), (64, 128, 64)),
+        (384, (288, 1), (64, 64, 64)),
+    ],
+)
+def test_gemm_launch_preserves_measured_geometry(
+    rows: int,
+    grid: tuple[int, ...],
+    block_sizes: tuple[int, int, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if gemm_kernel_module is None:
+        pytest.skip("Triton is required")
+    else:
+        pass
+    config = (FFN_CONFIGS | QKV_CONFIGS)[rows]
+    assert type(config) is tuple
+    kernel = MagicMock()
+    kernel_name = "packed_fp32_kernel" if rows == 384 else "ffn_gemm_kernel"
+    monkeypatch.setattr(gemm_kernel_module, kernel_name, kernel)
+    inputs = torch.empty((rows, 1024))
+    weight = torch.empty((1024, 3072))
+    bias = torch.empty(3072)
+    output = torch.empty((rows, 3072))
+
+    assert gemm_kernel_module.gemm_out(inputs, weight, bias, output, config) is output
+    kernel.__getitem__.assert_called_once_with(grid)
+    if rows == 384:
+        kernel.__getitem__.return_value.assert_called_once_with(
+            inputs,
+            weight,
+            bias,
+            output,
+            rows,
+            3072,
+            1024,
+            *block_sizes,
+            num_warps=4,
+            num_stages=3,
+            enable_fp_fusion=True,
+        )
+    else:
+        kernel.__getitem__.return_value.assert_called_once_with(
+            inputs,
+            weight,
+            bias,
+            output,
+            rows,
+            *block_sizes,
+            num_warps=4,
+            num_stages=3,
+            enable_fp_fusion=True,
+        )
 
 
 @pytest.mark.accelerator

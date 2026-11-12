@@ -118,9 +118,15 @@ def gemm_out(
     config: tuple[int, int, int, int, int],
 ) -> torch.Tensor:
     """Write a checked BF16 1024-to-3072 projection without allocating workspace."""
-    block_m, block_n, block_k, warps, stages = config
+    (
+        block_row_count,
+        block_column_count,
+        block_reduction_count,
+        warp_count,
+        stage_count,
+    ) = config
     rows = inputs.shape[0]
-    grid = triton.cdiv(rows, block_m) * triton.cdiv(3072, block_n)
+    grid = triton.cdiv(rows, block_row_count) * triton.cdiv(3072, block_column_count)
     if rows in (24, 48, 96, 192):
         ffn_gemm_kernel[(grid,)](
             inputs,
@@ -128,11 +134,11 @@ def gemm_out(
             bias,
             out,
             rows,
-            block_m,
-            block_n,
-            block_k,
-            num_warps=warps,
-            num_stages=stages,
+            block_row_count,
+            block_column_count,
+            block_reduction_count,
+            num_warps=warp_count,
+            num_stages=stage_count,
             enable_fp_fusion=True,
         )
     elif rows == 384:
@@ -146,11 +152,11 @@ def gemm_out(
             rows,
             3072,
             1024,
-            block_m,
-            block_n,
-            block_k,
-            num_warps=warps,
-            num_stages=stages,
+            block_row_count,
+            block_column_count,
+            block_reduction_count,
+            num_warps=warp_count,
+            num_stages=stage_count,
             enable_fp_fusion=True,
         )
     else:

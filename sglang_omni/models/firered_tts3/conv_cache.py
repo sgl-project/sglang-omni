@@ -228,6 +228,7 @@ class Conv1dWeightCache(TorchDispatchMode):
         args: tuple[object, ...] = (),
         kwargs: dict[str, object] | None = None,
     ) -> object:
+        """Preserve PyTorch's open operator argument and return contract."""
         if func not in (
             torch.ops.aten.convolution.default,
             torch.ops.aten.conv1d.default,

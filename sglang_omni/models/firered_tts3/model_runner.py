@@ -37,6 +37,7 @@ from sglang_omni.models.firered_tts3.request_builders import (
     FireRedFlowResume,
     FireRedTTS3SGLangRequestData,
     FlowState,
+    batch_has_text_phase,
     scheduler_request_data,
 )
 from sglang_omni.models.firered_tts3.sglang_model import FireRedTTS3SGLangModel
@@ -125,9 +126,8 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
         else:
             pass
         assert forward_batch is not None
-        self.model.text_logits_requested = any(
-            scheduler_request_data(request).text_ar_mode == TEXT_MODE_TEXT
-            for request in requests
+        self.model.text_logits_requested = batch_has_text_phase(
+            scheduler_request_data(request) for request in requests
         )
         materialize_decode_embeddings(self.model, forward_batch, requests)
 
@@ -153,9 +153,8 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
         schedule_batch: ScheduleBatch | None,
         requests: list[SchedulerRequest],
     ) -> bool:
-        return any(
-            scheduler_request_data(request).text_ar_mode == TEXT_MODE_TEXT
-            for request in requests
+        return batch_has_text_phase(
+            scheduler_request_data(request) for request in requests
         )
 
     def sample_before_post_decode(
@@ -164,9 +163,8 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
         schedule_batch: ScheduleBatch | None,
         requests: list[SchedulerRequest],
     ) -> bool:
-        return any(
-            scheduler_request_data(request).text_ar_mode == TEXT_MODE_TEXT
-            for request in requests
+        return batch_has_text_phase(
+            scheduler_request_data(request) for request in requests
         )
 
     def post_prefill(

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -91,6 +92,15 @@ def scheduler_request_data(request: SchedulerRequest) -> FireRedTTS3SGLangReques
     request_data = request.data
     assert isinstance(request_data, FireRedTTS3SGLangRequestData)
     return request_data
+
+
+def batch_has_text_phase(
+    request_data_batch: Iterable[FireRedTTS3SGLangRequestData],
+) -> bool:
+    return any(
+        request_data.text_ar_mode == TEXT_MODE_TEXT
+        for request_data in request_data_batch
+    )
 
 
 def build_sglang_firered_tts3_request(
@@ -296,6 +306,7 @@ def flush_stream_output(
     return [emit_latent_chunk(request_id, request_data, pending_patch_count)]
 
 
+# note (kermit): The shared scheduler discovers the optional terminal flush on the callback.
 build_stream_output.flush = flush_stream_output  # type: ignore[attr-defined]
 __all__ = [
     "CONTROL_TOKEN_ID",
@@ -313,6 +324,7 @@ __all__ = [
     "FireRedFlowResume",
     "FireRedTTS3SGLangRequestData",
     "apply_latent_result",
+    "batch_has_text_phase",
     "build_sglang_firered_tts3_request",
     "build_stream_output",
 ]

@@ -32,10 +32,15 @@ from sglang_omni.models.firered_tts3.profiling import ProfilingProbe
 from sglang_omni.models.firered_tts3.request_builders import (
     CONTROL_TOKEN_ID,
     TEXT_MODE_AUDIO,
-    TEXT_MODE_TEXT,
+)
+from sglang_omni.models.firered_tts3.request_builders import (
+    TEXT_MODE_TEXT as TEXT_MODE_TEXT,
+)
+from sglang_omni.models.firered_tts3.request_builders import (
     FireRedFlowResume,
     FireRedTTS3SGLangRequestData,
     FlowState,
+    batch_has_text_phase,
     scheduler_request_data,
 )
 from sglang_omni.models.firered_tts3.sglang_model import FireRedTTS3SGLangModel
@@ -67,9 +72,8 @@ def materialize_prefill_batch(
     """Prepare embeddings and roll back request state if preparation fails."""
     device = forward_batch.input_ids.device
     embedding_dtype = next(model.parameters()).dtype
-    model.text_logits_requested = any(
-        scheduler_request_data(request).text_ar_mode == TEXT_MODE_TEXT
-        for request in requests
+    model.text_logits_requested = batch_has_text_phase(
+        scheduler_request_data(request) for request in requests
     )
     embedding_rows: list[torch.Tensor] = []
     materialized_requests: list[tuple[str, FireRedTTS3SGLangRequestData]] = []

@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from sglang_omni.models.firered_tts3.conv_cache import Conv1dWeightCache
-from sglang_omni.models.firered_tts3.ffn_gemm import FfnGemmMode
+from sglang_omni.models.firered_tts3.ffn_gemm import FFN_CONFIGS, FfnGemmMode
 from sglang_omni.models.firered_tts3.flow_time_cache import TimeGemmMode
 from sglang_omni.models.firered_tts3.weights import FfnWeight
 
@@ -45,16 +45,21 @@ def test_dispatch_modes_preserve_custom_operator_values_and_errors() -> None:
     library.define("roundtrip(Tensor input, Any payload, *, str tag) -> Any")
 
     def roundtrip(
-        inputs: torch.Tensor, payload: dict[str, list[list[int]]], *, tag: str
-    ) -> dict[str, list[list[int]]]:
-        assert inputs.numel() == 1 and tag == "reference"
+        inputs: torch.Tensor,
+        payload: dict[str, list[list[int]]] | complex | torch.device | None,
+        *,
+        tag: str,
+    ) -> dict[str, list[list[int]]] | complex | torch.device | None:
+        if tag != "reference":
+            raise ValueError(f"unsupported tag: {tag}")
+        else:
+            pass
+        assert inputs.numel() == 1
         return payload
 
     library.impl("roundtrip", roundtrip, "CPU")
     inputs = torch.ones(1)
-    payload = {"blocks": [[1, 2], [3, 4]]}
     operation = torch.ops.firered_dispatch_boundary.roundtrip.default
-    expected = operation(inputs, payload, tag="reference")
     with pytest.raises(RuntimeError) as expected_error:
         torch.ops.aten.add.Tensor(torch.ones(2), torch.ones(3))
     ffn_mode = FfnGemmMode(torch.nn.Identity())
@@ -64,13 +69,27 @@ def test_dispatch_modes_preserve_custom_operator_values_and_errors() -> None:
         ffn_mode,
         TimeGemmMode({}, phase="collect", n_timesteps=1),
     )
+    payloads = (
+        {"blocks": [[1, 2], [3, 4]]},
+        complex(1, 2),
+        torch.device("cpu"),
+        None,
+    )
+    for payload in payloads:
+        expected = operation(inputs, payload, tag="reference")
+        for mode in modes:
+            with mode:
+                actual = operation(inputs, payload, tag="reference")
+                with pytest.raises(RuntimeError) as actual_error:
+                    torch.ops.aten.add.Tensor(torch.ones(2), torch.ones(3))
+            assert actual == expected == payload
+            assert str(actual_error.value) == str(expected_error.value)
+    with pytest.raises(ValueError) as expected_custom_error:
+        operation(inputs, None, tag="unsupported")
     for mode in modes:
-        with mode:
-            actual = operation(inputs, payload, tag="reference")
-            with pytest.raises(RuntimeError) as actual_error:
-                torch.ops.aten.add.Tensor(torch.ones(2), torch.ones(3))
-        assert actual == expected == payload
-        assert str(actual_error.value) == str(expected_error.value)
+        with mode, pytest.raises(ValueError) as actual_custom_error:
+            operation(inputs, None, tag="unsupported")
+        assert str(actual_custom_error.value) == str(expected_custom_error.value)
 
 
 def test_ffn_dispatch_preserves_addmm_keyword_fallback() -> None:
@@ -95,6 +114,7 @@ def test_ffn_dispatch_preserves_addmm_keyword_fallback() -> None:
 @pytest.mark.parametrize("argument_style", ["positional", "keywords"])
 def test_ffn_dispatch_uses_real_addmm_inputs(
     argument_style: Literal["positional", "keywords"],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(801)
@@ -106,6 +126,9 @@ def test_ffn_dispatch_uses_real_addmm_inputs(
     mode = FfnGemmMode(layer)
     mode.enabled = True
     mode.weights[weight.data_ptr()] = FfnWeight.from_linear("linear", layer)
+    launch_config = (32, 32, 128, 4, 2)
+    monkeypatch.setitem(FFN_CONFIGS, 24, launch_config)
+    selected_configs: list[tuple[int, int, int, int, int]] = []
 
     def cpu_gemm(
         inputs: torch.Tensor,
@@ -115,6 +138,7 @@ def test_ffn_dispatch_uses_real_addmm_inputs(
         config: tuple[int, int, int, int, int],
     ) -> torch.Tensor:
         # note (kermit): The CPU reference does not use GPU launch geometry.
+        selected_configs.append(config)
         return torch.addmm(bias, inputs, weight, out=out)
 
     mode.gemm_out = cpu_gemm
@@ -138,6 +162,7 @@ def test_ffn_dispatch_uses_real_addmm_inputs(
     assert result is output
     assert torch.equal(output, expected)
     assert mode.hits == 1 and mode.misses == 0
+    assert len(selected_configs) == 1 and selected_configs[0] is launch_config
 
 
 @pytest.mark.parametrize("operator", ["conv1d", "convolution"])

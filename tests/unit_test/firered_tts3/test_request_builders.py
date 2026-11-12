@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import Mock
+
 import pytest
 import torch
 
@@ -22,6 +24,7 @@ from sglang_omni.models.firered_tts3.request_builders import (
     flush_stream_output,
 )
 from sglang_omni.proto.request import OmniRequest, StagePayload
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
 PATCH_SIZE = 4
 VOCAB_SIZE = 151936
@@ -158,6 +161,23 @@ def test_stream_output_holds_back_below_the_ramp() -> None:
     assert build_stream_output("rid", request_data, None) == []
     flushed = flush_stream_output("rid", request_data)
     assert [int(message.data.shape[1]) for message in flushed] == [4]
+
+
+def test_scheduler_flushes_the_remaining_stream_patch() -> None:
+    request_data = streaming_data(2)
+    assert len(build_stream_output("rid", request_data, None)) == 1
+    scheduler = Mock(spec=OmniScheduler)
+    scheduler.active_session_unit.return_value = None
+    scheduler.stream_output_builder = build_stream_output
+
+    OmniScheduler.flush_stream_output(scheduler, "rid", request_data)
+
+    scheduler.put_stream_messages.assert_called_once()
+    request_id, messages = scheduler.put_stream_messages.call_args.args
+    assert request_id == "rid"
+    assert len(messages) == 1
+    assert torch.equal(messages[0].data, request_data.latent_patches[1])
+    assert request_data.streamed_patches == 2
 
 
 def test_stream_output_skips_non_streaming_requests() -> None:

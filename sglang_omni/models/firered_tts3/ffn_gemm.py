@@ -240,6 +240,7 @@ class FfnGemmMode(TorchDispatchMode):
         args: tuple[object, ...] = (),
         kwargs: dict[str, object] | None = None,
     ) -> object:
+        """Preserve PyTorch's open operator argument and return contract."""
         kwargs = kwargs or {}
         if not self.enabled or func is not torch.ops.aten.addmm.out:
             return func(*args, **kwargs)
