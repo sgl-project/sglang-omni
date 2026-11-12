@@ -384,6 +384,34 @@ def test_qwen3_tts_config_and_registry_contracts() -> None:
     )
 
 
+def test_qwen3_tts_speech_tokenizer_rejects_mps_before_loading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loads: list[str] = []
+
+    class FakeQwen3TTSTokenizer:
+        @classmethod
+        def from_pretrained(cls, path, **kwargs):
+            loads.append(path)
+            return cls()
+
+    qwen_tts_module = types.ModuleType("qwen_tts")
+    qwen_tts_module.Qwen3TTSTokenizer = FakeQwen3TTSTokenizer
+    monkeypatch.setitem(sys.modules, "qwen_tts", qwen_tts_module)
+    monkeypatch.setattr(qwen3_stages, "_resolve_checkpoint", lambda path: path)
+    monkeypatch.setattr(qwen3_stages, "_SPEECH_TOKENIZERS", {})
+
+    with pytest.raises(ValueError, match="native MLX qwen3_tts_server"):
+        qwen3_stages.load_qwen3_tts_tokenizer(
+            "/ckpt",
+            device="mps:0",
+            dtype="bfloat16",
+            attn_implementation=None,
+            float32_encoder=False,
+        )
+    assert loads == []
+
+
 def test_qwen3_tts_speech_tokenizer_is_loaded_once_per_process_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

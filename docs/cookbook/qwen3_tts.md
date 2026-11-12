@@ -6,6 +6,8 @@ Qwen3-TTS is a multi-codebook text-to-speech model family that streams 24 kHz sp
 
 Install `sglang-omni` by following [Installation](../get_started/installation.md).
 
+The Python pipeline does not run Qwen3-TTS on Apple Silicon (Torch/MPS) and rejects it at startup. On a Mac, use the native MLX `qwen3_tts_server` described in [Apple Silicon (Native MLX)](#apple-silicon-native-mlx).
+
 Qwen3-TTS Base uses the upstream `qwen-tts` package. Install it without
 dependencies so the SGLang-Omni Transformers 5.19 / SGLang 0.5.23 stack remains
 in place:
