@@ -70,9 +70,10 @@ type cardView struct {
 	conversation bool
 	bubbles      []cardBubble
 	// What the header offers.
-	canInsert, canCopy, canFollowUp, canStop, canRetry, canLang bool
-	copied                                                      bool
-	follow                                                      string // the Rewrite shortcut's glyphs
+	// canStopAnswer: the answer streams in, Stop keeps it so far (#3886).
+	canInsert, canCopy, canFollowUp, canStop, canStopAnswer, canRetry, canLang bool
+	copied                                                                     bool
+	follow                                                                     string // the Rewrite shortcut's glyphs
 	// size is the card's, its feature's (Features.CardSizes).
 	size layout.CardSize
 	// writing: Rewrite's first answer as the model writes it
@@ -137,7 +138,7 @@ func (a *app) cardNow() cardView {
 	if !a.answer.open {
 		if a.writingAnswer() {
 			s := a.pillSession()
-			return cardView{kind: s.Kind, title: uitext.CardTitle(s.Kind, s.Title), text: a.shownDraft(s), busy: true, writing: true,
+			return cardView{kind: s.Kind, title: uitext.CardTitle(s.Kind, s.Title), text: a.shownDraft(s), busy: true, writing: true, canStopAnswer: a.sess.CanStop(),
 				target: s.Target.Name, size: layout.CardSizes[a.prefs.Features.CardSize(string(s.Kind))]}
 		}
 		return cardView{size: layout.CardSizes[0]} // no card: the pill shows the session
@@ -158,6 +159,7 @@ func (a *app) cardNow() cardView {
 	v.canLang = card.kind == store.KindTranslate && card.problem == nil && !s.State.Live()
 	v.canFollowUp = a.canFollowUp()
 	v.canStop = follow && s.State == session.Recording
+	v.canStopAnswer = follow && a.sess.CanStop()
 	v.canRetry = card.problem != nil && !s.State.Live()
 	v.follow = a.featureKeys(hotkey.Rewrite)
 	if v.failed != nil && !v.conversation {

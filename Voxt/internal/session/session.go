@@ -38,6 +38,7 @@ package session
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/appctx"
@@ -226,6 +227,12 @@ type Snapshot struct {
 	// Recording: the session's history entry keeps its recording (the
 	// settings', or for a while because recognition failed: Retry).
 	Recording bool
+}
+
+// CanStop says whether StopLLM can end the answer streaming into the
+// answer card where it is, keeping what the model wrote so far (#3886).
+func (s Snapshot) CanStop() bool {
+	return s.State == Composing && s.Card && !s.Try && strings.TrimSpace(s.Draft) != ""
 }
 
 // Elapsed is how long the recording has run (from the first audio), at

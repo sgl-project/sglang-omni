@@ -960,6 +960,7 @@
   "Stop recording the follow-up": "结束追问录音",
   "Stop sound": "停止提示音",
   "Stop transcribing": "停止转录",
+  "Stop writing and keep the text so far": "停止生成，保留已写出的内容",
   "Stopped: %s of %s downloaded": "已暂停：已下载 %s / %s",
   "Storage": "存储",
   "Storage location": "存储位置",

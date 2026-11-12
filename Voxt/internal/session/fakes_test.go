@@ -410,7 +410,11 @@ func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, erro
 		}
 		for i := 0; i < len(rs); i += n {
 			if f.pause > 0 {
-				time.Sleep(f.pause)
+				select {
+				case <-time.After(f.pause):
+				case <-ctx.Done(): // a real service's stream ends with the request
+					return llm.Response{}, ctx.Err()
+				}
 			}
 			req.OnDelta(string(rs[i:min(i+n, len(rs))]))
 		}
