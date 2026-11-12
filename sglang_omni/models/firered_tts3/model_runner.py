@@ -209,15 +209,15 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
         for request_row_index, request in enumerate(requests):
             request_data = scheduler_request_data(request)
             request_token_count = request_data.req.extend_len
-            request_hidden = hidden_states[
+            request_hidden_states = hidden_states[
                 hidden_row_offset : hidden_row_offset + request_token_count
             ]
-            if request_hidden.size(0) != request_token_count:
+            if request_hidden_states.size(0) != request_token_count:
                 raise RuntimeError("FireRedTTS3 prefill hidden rows are incomplete")
             else:
                 pass
             hidden_row_offset += request_token_count
-            hidden_states_float32 = request_hidden.to(torch.float32)
+            hidden_states_float32 = request_hidden_states.to(torch.float32)
             if request_data.stop_pending:
                 next_token_ids.append(CONTROL_TOKEN_ID)
                 continue
@@ -435,9 +435,9 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
     ) -> int:
         """Interleave text and patch feeds, checking stop after each final patch feed."""
         assert request_data.interleave_ratio is not None
-        text_steps, patch_steps = request_data.interleave_ratio
+        text_step_count, patch_step_count = request_data.interleave_ratio
         if request_data.dual_stream_stage == DS_STAGE_TEXT:
-            if request_data.dual_stream_step_index >= text_steps - 1:
+            if request_data.dual_stream_step_index >= text_step_count - 1:
                 self.run_flow(request_data, hidden_states_float32, flow_rows)
                 request_data.dual_stream_stage = DS_STAGE_PATCH
                 request_data.dual_stream_step_index = 0
@@ -448,7 +448,7 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
             return self.next_text_feed(request_data)
         else:
             pass
-        if request_data.dual_stream_step_index >= patch_steps - 1:
+        if request_data.dual_stream_step_index >= patch_step_count - 1:
             request_data.dual_stream_stage = DS_STAGE_TEXT
             request_data.dual_stream_step_index = 0
             if self.stop_predicted(request_data, hidden_states_float32):

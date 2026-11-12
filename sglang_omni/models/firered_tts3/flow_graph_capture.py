@@ -193,13 +193,17 @@ class FlowGraphCapture:
                             self.time_cache = TimeConditionCache(executor.source)
                         else:
                             pass
-                        dit_inputs = torch.cat([flow_state, conditioning], dim=2)
-                        x_uncond = torch.cat([flow_state, conditioning * 0], dim=2)
-                        example = torch.cat([dit_inputs, x_uncond], dim=0).to(
-                            self.dit_dtype
+                        conditional_inputs = torch.cat(
+                            [flow_state, conditioning], dim=2
                         )
+                        unconditional_inputs = torch.cat(
+                            [flow_state, conditioning * 0], dim=2
+                        )
+                        example_inputs = torch.cat(
+                            [conditional_inputs, unconditional_inputs], dim=0
+                        ).to(self.dit_dtype)
                         time_table = self.time_cache.prepare(
-                            executor, example, self.t_span, self.n_timesteps
+                            executor, example_inputs, self.t_span, self.n_timesteps
                         )
                         time_mode = self.time_cache.mode(time_table)
                         modes += (time_mode,)

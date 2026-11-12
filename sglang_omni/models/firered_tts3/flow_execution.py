@@ -49,11 +49,11 @@ def flow_optimizations(mode: FlowMode) -> tuple[bool, bool]:
 
 
 def flow_ffn_optimization(mode: FlowMode) -> bool:
-    value = os.environ.get("FIRERED_TTS3_FFN_GEMM", "1")
-    if value not in ("0", "1"):
+    ffn_gemm_setting = os.environ.get("FIRERED_TTS3_FFN_GEMM", "1")
+    if ffn_gemm_setting not in ("0", "1"):
         raise ValueError("FIRERED_TTS3_FFN_GEMM must be 0 or 1")
     else:
-        return value == "1" and mode == "compile_bf16"
+        return ffn_gemm_setting == "1" and mode == "compile_bf16"
 
 
 def prepare_flow_dit(
@@ -64,9 +64,11 @@ def prepare_flow_dit(
         raise ValueError(f"unknown flow mode {mode!r}; expected one of {FLOW_MODES}")
     else:
         pass
-    time_cache, conv_cache = flow_optimizations(mode)
-    ffn_gemm = flow_ffn_optimization(mode)
-    if (time_cache or conv_cache) and not mode.startswith("compile"):
+    time_cache_enabled, convolution_cache_enabled = flow_optimizations(mode)
+    ffn_gemm_enabled = flow_ffn_optimization(mode)
+    if (time_cache_enabled or convolution_cache_enabled) and not mode.startswith(
+        "compile"
+    ):
         raise ValueError("Flow time/convolution caches require a compile flow mode")
     else:
         pass
@@ -81,7 +83,7 @@ def prepare_flow_dit(
         pass
     # note (kermit): Disable epilogue fusion to preserve the DiT precision gate.
     if mode.startswith("compile"):
-        if time_cache or conv_cache or ffn_gemm:
+        if time_cache_enabled or convolution_cache_enabled or ffn_gemm_enabled:
             return CompiledDiTExecutor(dit), dit
         else:
             pass
@@ -95,7 +97,7 @@ def prepare_flow_dit(
 
 
 def flow_t_span(n_timesteps: int, device: torch.device) -> torch.Tensor:
-    """The cosine t_span schedule (fp32 red line), n_timesteps + 1 knots."""
+    """Compute the cosine timestep knots in float32."""
     assert n_timesteps > 0, "Flow requires a positive timestep count"
     t = torch.linspace(0.0, 1.0, n_timesteps + 1, device=device, dtype=torch.float32)
     return 1.0 - torch.cos(t * 0.5 * torch.pi)

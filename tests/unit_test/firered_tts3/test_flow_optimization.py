@@ -42,11 +42,11 @@ pytestmark = pytest.mark.usefixtures("disable_flow_optimization_environment")
 
 
 @pytest.mark.accelerator
-@pytest.mark.parametrize("rows", [24, 48, 96, 192, 384])
-@pytest.mark.parametrize("pattern", ["bounded", "cancellation", "rounding"])
+@pytest.mark.parametrize("row_count", [24, 48, 96, 192, 384])
+@pytest.mark.parametrize("input_pattern", ["bounded", "cancellation", "rounding"])
 def test_gemm_matches_reference_for_supported_buckets(
-    rows: int,
-    pattern: Literal["bounded", "cancellation", "rounding"],
+    row_count: int,
+    input_pattern: Literal["bounded", "cancellation", "rounding"],
     device: torch.device,
 ) -> None:
     if gemm_kernel_module is None:
@@ -55,17 +55,17 @@ def test_gemm_matches_reference_for_supported_buckets(
         pytest.skip("Optimized FFN kernels require SM120")
     else:
         pass
-    row_indices = torch.arange(rows, device=device)
+    row_indices = torch.arange(row_count, device=device)
     reduction_indices = torch.arange(1024, device=device)
     column_indices = torch.arange(3072, device=device)
-    if pattern == "rounding":
+    if input_pattern == "rounding":
         # note (kermit): Half-ULP contributions distinguish per-chunk BF16 rounding from FP32 accumulation.
-        inputs = torch.ones((rows, 1024), dtype=torch.bfloat16, device=device)
+        inputs = torch.ones((row_count, 1024), dtype=torch.bfloat16, device=device)
         weight = torch.zeros((1024, 3072), dtype=torch.bfloat16, device=device)
         weight[0] = 1
         weight[128::128] = 1 / 256
         bias = torch.zeros(3072, dtype=torch.bfloat16, device=device)
-    elif pattern == "bounded":
+    elif input_pattern == "bounded":
         # note (kermit): Dense integer inputs keep each accumulated sum exactly representable in BF16.
         inputs = torch.where(
             (row_indices[:, None] * 11 + reduction_indices[None, :] * 7) % 17 < 8,
@@ -89,13 +89,15 @@ def test_gemm_matches_reference_for_supported_buckets(
     inputs = inputs.to(torch.bfloat16)
     weight = weight.to(torch.bfloat16).t().contiguous().t()
     bias = bias.to(torch.bfloat16)
-    output = torch.empty((rows, 3072), dtype=torch.bfloat16, device=device)
-    if pattern == "rounding":
-        expected = torch.full_like(output, 1.03125 if rows == 384 else 1.0)
+    output = torch.empty((row_count, 3072), dtype=torch.bfloat16, device=device)
+    if input_pattern == "rounding":
+        expected = torch.full_like(output, 1.03125 if row_count == 384 else 1.0)
     else:
         expected = torch.addmm(bias, inputs, weight)
-    config = (FFN_CONFIGS | QKV_CONFIGS)[rows]
-    actual = gemm_kernel_module.gemm_out(inputs, weight, bias, output, config)
+    launch_configuration = (FFN_CONFIGS | QKV_CONFIGS)[row_count]
+    actual = gemm_kernel_module.gemm_out(
+        inputs, weight, bias, output, launch_configuration
+    )
     assert actual is output
     assert torch.equal(actual, expected)
 

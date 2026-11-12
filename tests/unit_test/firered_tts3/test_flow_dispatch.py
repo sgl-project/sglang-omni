@@ -117,7 +117,7 @@ def test_ffn_dispatch_preserves_addmm_keyword_fallback() -> None:
 
 
 @pytest.mark.parametrize(
-    "rows,argument_style,override_config",
+    "row_count,argument_style,should_override_configuration",
     [
         (24, "positional", False),
         (48, "positional", False),
@@ -129,9 +129,9 @@ def test_ffn_dispatch_preserves_addmm_keyword_fallback() -> None:
     ],
 )
 def test_ffn_dispatch_uses_real_addmm_inputs(
-    rows: int,
+    row_count: int,
     argument_style: Literal["positional", "keywords"],
-    override_config: bool,
+    should_override_configuration: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with torch.random.fork_rng(devices=[]):
@@ -139,22 +139,22 @@ def test_ffn_dispatch_uses_real_addmm_inputs(
         layer = torch.nn.Linear(1024, 3072, dtype=torch.bfloat16).eval()
     generator = torch.Generator().manual_seed(802)
     assert layer.bias is not None
-    inputs = torch.randn(rows, 1024, dtype=torch.bfloat16, generator=generator)
+    inputs = torch.randn(row_count, 1024, dtype=torch.bfloat16, generator=generator)
     weight = layer.weight.t()
     mode = FfnGemmMode(layer)
     mode.enabled = True
-    if rows in FFN_CONFIGS:
+    if row_count in FFN_CONFIGS:
         mode.weights[weight.data_ptr()] = FfnWeight.from_linear("linear", layer)
-        configs = FFN_CONFIGS
+        launch_configurations = FFN_CONFIGS
     else:
         mode.packed_weights[weight.data_ptr()] = FfnWeight.from_linear("linear", layer)
-        configs = QKV_CONFIGS
-    if override_config:
-        launch_config = (32, 32, 128, 4, 2)
-        monkeypatch.setitem(configs, rows, launch_config)
+        launch_configurations = QKV_CONFIGS
+    if should_override_configuration:
+        launch_configuration = (32, 32, 128, 4, 2)
+        monkeypatch.setitem(launch_configurations, row_count, launch_configuration)
     else:
-        launch_config = configs[rows]
-    selected_configs: list[tuple[int, int, int, int, int]] = []
+        launch_configuration = launch_configurations[row_count]
+    selected_configurations: list[tuple[int, int, int, int, int]] = []
 
     def cpu_gemm(
         inputs: torch.Tensor,
@@ -164,7 +164,7 @@ def test_ffn_dispatch_uses_real_addmm_inputs(
         config: tuple[int, int, int, int, int],
     ) -> torch.Tensor:
         # note (kermit): The CPU reference does not use GPU launch geometry.
-        selected_configs.append(config)
+        selected_configurations.append(config)
         return torch.addmm(bias, inputs, weight, out=out)
 
     mode.gemm_out = cpu_gemm
@@ -188,8 +188,9 @@ def test_ffn_dispatch_uses_real_addmm_inputs(
     assert result is output
     assert torch.equal(output, expected)
     assert mode.hits == 1 and mode.misses == 0
-    assert len(selected_configs) == 1 and selected_configs[0] is launch_config
-    assert type(selected_configs[0]) is tuple
+    assert len(selected_configurations) == 1
+    assert selected_configurations[0] is launch_configuration
+    assert type(selected_configurations[0]) is tuple
 
 
 @pytest.mark.parametrize("operator", ["conv1d", "convolution"])
