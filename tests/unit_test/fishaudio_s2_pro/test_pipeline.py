@@ -44,6 +44,7 @@ from sglang_omni.models.fishaudio_s2_pro.tokenizer import (
     Reference,
     S2ProTokenizerAdapter,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
 from tests.unit_test.fixtures.fish_fakes import (
     FakeFishTokenizer,
@@ -181,8 +182,13 @@ def test_fish_preprocessing_encodes_references_on_the_placement_device(
 
     s2pro_stages.create_preprocessing_executor("ckpt", gpu_id=gpu_id, max_concurrency=1)
 
-    assert loaded_on == [expected_device]
-    assert warmups == ([] if expected_device == "cpu" else [(expected_device, 44100)])
+    resolved_device = (
+        expected_device
+        if expected_device == "cpu"
+        else str(torch.device("cuda", gpu_id))
+    )
+    assert loaded_on == [resolved_device]
+    assert warmups == ([] if resolved_device == "cpu" else [(resolved_device, 44100)])
     assert torch.backends.cudnn.allow_tf32 is expected_tf32
 
 
@@ -1560,6 +1566,9 @@ def test_fish_checkpoint_config_remains_registered_without_hf_slow_model(
     "capability,expected",
     [((8, 9), False), ((9, 0), True), ((10, 0), False), ((12, 0), False)],
 )
+@pytest.mark.skipif(
+    current_platform.is_musa(), reason="CUDA compute-capability selection test"
+)
 def test_fast_ar_fa3_selection_follows_compute_capability(
     monkeypatch: pytest.MonkeyPatch,
     capability: tuple[int, int],
@@ -1574,6 +1583,9 @@ def test_fast_ar_fa3_selection_follows_compute_capability(
     ) is expected
 
 
+@pytest.mark.skipif(
+    current_platform.is_musa(), reason="CUDA compute-capability validation test"
+)
 def test_fast_ar_rejects_unsupported_capability(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
