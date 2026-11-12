@@ -432,8 +432,8 @@ ChatResult Model::Generate(const PreparedChatRequest &prepared,
   } else {
   }
   const auto &request = prepared.request;
-  const auto mel = mx::transpose(
-      omni_common::LogMel(request.samples, omni_common::FinalStftFrame::kDropped));
+  const auto mel = mx::transpose(omni_common::LogMel(
+      request.samples, omni_common::FinalStftFrame::kDropped));
   const auto audio = Encode(mel);
   const auto prompt_ids =
       mx::array(prepared.prompt_ids.data(),
