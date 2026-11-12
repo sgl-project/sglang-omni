@@ -92,9 +92,6 @@ func (a *app) toggleThinkMenu() {
 	a.syncLangMenu()
 }
 
-// thinkMenuRows are the menu's rows, for its height.
-func (a *app) thinkMenuRows() int { return len(a.cardThinkLevels()) }
-
 // thinkMenuView is the thinking menu's rows.
 func (a *app) thinkMenuView(c *ui.Context) {
 	cur := a.cardNow().think

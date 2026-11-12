@@ -128,3 +128,42 @@ func TestCardThinkingLevel(t *testing.T) {
 		t.Errorf("escape: %+v %s", a.answer, a.sess.State)
 	}
 }
+
+// TestRewriteCardThinkingLevel: a Rewrite answer asked again with another
+// level becomes the conversation's first turn, so Continue follows up on
+// the answer the card shows.
+func TestRewriteCardThinkingLevel(t *testing.T) {
+	chat := &fakeChat{texts: []string{"Docs ready, tests running.", "Docs are ready; the tests still run.", "Shorter."}}
+	a, tr, _ := rewriteSelecting(t, chat, chatA, "summarize")
+	a.updateSettings(func(s *settings.Settings) { s.Providers.LLM = []settings.Provider{{ID: "deepseek"}} })
+	a.answer.llmID = "deepseek"
+	if v := a.cardNow(); !v.thinks || !v.canThink {
+		t.Fatalf("no button: %+v", v)
+	}
+	first := a.sess.ID
+	high := llm.Thinking{Mode: llm.ThinkEffort, Effort: "high"}
+	a.chooseThinking(&high)
+	a.pump("the redo", func() bool { return a.sess.ID != first && a.sess.State.Ended() })
+	if body := chat.requests()[1]; body["thinking"] != high || !strings.Contains(lastUser(chat, 1), "summarize") {
+		t.Errorf("request %v", body)
+	}
+	if a.answer.text != "Docs are ready; the tests still run." || len(a.answer.turns) != 1 || a.answer.turns[0].Answer.Content != a.answer.text || a.answer.conversation || len(a.pasted()) != 0 {
+		t.Fatalf("card %+v, pasted %v", a.answer, a.pasted())
+	}
+	// Continue: the follow-up holds the new answer.
+	a.recordFollowUp(t, tr, "shorter")
+	msgs := chatMessages(chat.requests()[2])
+	if !hasAnswer(msgs, "Docs are ready; the tests still run.") || hasAnswer(msgs, "Docs ready, tests running.") {
+		t.Errorf("follow-up messages %q", msgs)
+	}
+}
+
+// hasAnswer says whether msgs hold an assistant turn with text.
+func hasAnswer(msgs [][2]string, text string) bool {
+	for _, m := range msgs {
+		if m[0] == "assistant" && strings.Contains(m[1], text) {
+			return true
+		}
+	}
+	return false
+}

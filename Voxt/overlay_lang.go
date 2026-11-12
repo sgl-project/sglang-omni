@@ -121,7 +121,7 @@ func (a *app) syncLangMenu() {
 	}
 	frame := langMenuFrame(a.ov.frame, a.prefs.Overlay.Position == "top")
 	if a.answer.thinkMenu {
-		frame = thinkMenuFrame(frame, a.prefs.Overlay.Position == "top", a.thinkMenuRows())
+		frame = thinkMenuFrame(frame, a.prefs.Overlay.Position == "top", len(a.cardThinkLevels()))
 	} else if a.cardNow().thinks {
 		frame.X -= layout.CardBtn + layout.CardHeadGap // the thinking button sits between the capsule and Insert
 	}
