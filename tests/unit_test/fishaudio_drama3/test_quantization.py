@@ -211,7 +211,7 @@ def test_sglangs_moe_kernel_lookup_serves_the_tuned_tile_for_the_fp8_experts(
     moe_configs.install_tuned_moe_configs()
     expert_count, intermediate_size = moe_configs.EXPERT_SHAPE[:2]
     hidden_size = 1024
-    token_count = 16
+    token_count = 64
 
     config = fused_moe_triton_config.try_get_optimal_moe_config(
         (expert_count, 2 * intermediate_size, hidden_size),
