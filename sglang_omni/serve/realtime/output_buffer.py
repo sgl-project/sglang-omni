@@ -1,6 +1,7 @@
 """Realtime output delivery and completion state."""
 
 import asyncio
+import json
 import math
 from collections import deque
 from dataclasses import dataclass, replace
@@ -24,25 +25,42 @@ from sglang_omni.serve.realtime.types import (
     ContextLimitError,
     Envelope,
     OutputBudgetError,
+    ResponseRequestMeasurementOrigin,
+    ResponseRequestMetrics,
     RuntimeLimits,
     Unit,
 )
 
 # Note (Junnan Li): The JSON of one server event around its audio or text: type, event and item ids, indexes.
 ENVELOPE_BYTES = 256
+RESPONSE_REQUEST_MEASUREMENT_ORIGIN: ResponseRequestMeasurementOrigin = {
+    "ttft": (
+        "model-turn request start to first non-empty text output; pending requests "
+        "keep the latest start before response creation"
+    ),
+    "ttfp": (
+        "model-turn request start to first non-empty audio output; pending requests "
+        "keep the latest start before response creation"
+    ),
+}
 
 
 def envelope_size_bytes(envelope: Envelope) -> int:
     """The bytes the event puts on the websocket: its base64 audio or UTF-8 text plus the envelope."""
     event = envelope.event
+    metrics_bytes = (
+        len(json.dumps(envelope.response_request_metrics).encode())
+        if envelope.response_request_metrics is not None
+        else 0
+    )
     if isinstance(event, AudioDelta):
-        return math.ceil(len(event.pcm) / 3) * 4 + ENVELOPE_BYTES
+        return math.ceil(len(event.pcm) / 3) * 4 + ENVELOPE_BYTES + metrics_bytes
     elif isinstance(
         event, (TextDelta, TextFinished, ResponseFinished, InputTranscription)
     ):
-        return len(event.text.encode()) + ENVELOPE_BYTES
+        return len(event.text.encode()) + ENVELOPE_BYTES + metrics_bytes
     else:
-        return ENVELOPE_BYTES
+        return ENVELOPE_BYTES + metrics_bytes
 
 
 @dataclass(kw_only=True)
@@ -57,6 +75,30 @@ class ResponseState:
     is_text_done_sent: bool = False
     is_audio_done_sent: bool = False
     is_audio_visible: bool = False
+    request_started_at_seconds: float | None = None
+    time_to_first_text_milliseconds: float | None = None
+    time_to_first_pcm_milliseconds: float | None = None
+
+    def request_metrics(self) -> ResponseRequestMetrics | None:
+        if (
+            self.time_to_first_text_milliseconds is None
+            and self.time_to_first_pcm_milliseconds is None
+        ):
+            return None
+        else:
+            metrics: ResponseRequestMetrics = {
+                "source": "server_monotonic_request_start",
+                "measurement_origin": dict(RESPONSE_REQUEST_MEASUREMENT_ORIGIN),
+            }
+        if self.time_to_first_text_milliseconds is not None:
+            metrics["ttft_ms"] = self.time_to_first_text_milliseconds
+        else:
+            pass
+        if self.time_to_first_pcm_milliseconds is not None:
+            metrics["ttfp_ms"] = self.time_to_first_pcm_milliseconds
+        else:
+            pass
+        return metrics
 
 
 class OutputBuffer:
@@ -67,6 +109,11 @@ class OutputBuffer:
         self.output_ready = asyncio.Event()
         self.next_chunk_index = 0
         self.responses: dict[str, ResponseState] = {}
+        self.pending_request_started_at_seconds: float | None = None
+
+    def mark_model_turn_request_started(self, started_at_seconds: float) -> None:
+        """Keep the latest native request start until a response claims it."""
+        self.pending_request_started_at_seconds = started_at_seconds
 
     def append_unbounded(self, envelope: Envelope, size_bytes: int) -> None:
         self.queued_envelopes.append((envelope, size_bytes))
@@ -98,6 +145,7 @@ class OutputBuffer:
         event: OutputEvent,
         unit: Unit | None,
         output_modalities: tuple[str, ...],
+        observed_at_seconds: float | None = None,
     ) -> None:
         response_id = event.response_id if isinstance(event, ResponseEvent) else None
         # Note (Junnan Li): Keep each response's negotiated modalities across hot updates.
@@ -139,6 +187,7 @@ class OutputBuffer:
             else:
                 pass
             response_state.item_id = event.item_id
+            newly_observed_metrics = False
             if isinstance(event, (TextDelta, TextFinished)):
                 response_text = (
                     response_state.text + event.text
@@ -150,10 +199,41 @@ class OutputBuffer:
                 else:
                     pass
                 response_state.text = response_text
+                if (
+                    isinstance(event, TextDelta)
+                    and bool(event.text)
+                    and response_state.time_to_first_text_milliseconds is None
+                    and response_state.request_started_at_seconds is not None
+                    and observed_at_seconds is not None
+                ):
+                    response_state.time_to_first_text_milliseconds = max(
+                        (
+                            observed_at_seconds
+                            - response_state.request_started_at_seconds
+                        )
+                        * 1000.0,
+                        0.0,
+                    )
+                    newly_observed_metrics = True
+                else:
+                    pass
             elif isinstance(event, AudioDelta) and len(event.pcm) % (
                 PCM16_BYTES_PER_SAMPLE
             ):
                 raise RuntimeError("producer emitted invalid PCM16")
+            elif (
+                isinstance(event, AudioDelta)
+                and bool(event.pcm)
+                and response_state.time_to_first_pcm_milliseconds is None
+                and response_state.request_started_at_seconds is not None
+                and observed_at_seconds is not None
+            ):
+                response_state.time_to_first_pcm_milliseconds = max(
+                    (observed_at_seconds - response_state.request_started_at_seconds)
+                    * 1000.0,
+                    0.0,
+                )
+                newly_observed_metrics = True
             elif isinstance(event, ResponseFinished):
                 response_state.is_terminal = True
                 if event.status == "cancelled":
@@ -174,13 +254,20 @@ class OutputBuffer:
             else:
                 pass
         else:
-            pass
+            newly_observed_metrics = False
+        response_request_metrics = (
+            response_state.request_metrics()
+            if response_state is not None
+            and (newly_observed_metrics or isinstance(event, ResponseFinished))
+            else None
+        )
         self.enqueue(
             Envelope(
                 event=event,
                 unit=unit,
                 chunk_index=self.next_chunk_index,
                 output_modalities=tuple(modalities),
+                response_request_metrics=response_request_metrics,
             )
         )
         self.next_chunk_index += 1
@@ -189,7 +276,11 @@ class OutputBuffer:
         if response_id in self.responses:
             raise RuntimeError("duplicate response creation")
         else:
-            self.responses[response_id] = ResponseState(output_modalities=modalities)
+            self.responses[response_id] = ResponseState(
+                output_modalities=modalities,
+                request_started_at_seconds=self.pending_request_started_at_seconds,
+            )
+            self.pending_request_started_at_seconds = None
 
     def finish_responses(self, status: ResponseStatus, reason: str) -> None:
         """Queue at most three closing events per visible response."""
@@ -239,6 +330,11 @@ class OutputBuffer:
                     event=closing_event,
                     is_control=True,
                     output_modalities=tuple(response_state.output_modalities),
+                    response_request_metrics=(
+                        response_state.request_metrics()
+                        if isinstance(closing_event, ResponseFinished)
+                        else None
+                    ),
                 )
                 self.append_unbounded(envelope, envelope_size_bytes(envelope))
 

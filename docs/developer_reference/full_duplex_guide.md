@@ -449,6 +449,20 @@ ENGINE=cascade python -m benchmarks.duplex.fdb generate --run-name cascade-10 --
 
 The three strategies behave differently by design, so compare a run with earlier runs of the same engine; side by side, the v1.0 {ref}`unified metrics <unified-v10-metrics>` are the ones scored by the same rules for all three.
 
+| Event | Meaning |
+| --- | --- |
+| `input_audio_buffer.speech_started`, `input_audio_buffer.speech_stopped` | The start and the end of your utterance. |
+| `conversation.item.input_audio_transcription.delta`, `.completed` | Partial and final transcript of what you said. |
+| `response.created` | A reply begins. |
+| `response.output_text.delta`, `response.output_audio.delta` | Reply text and reply audio, base64 PCM16 at 24 kHz mono. |
+| `sglang.response.progress` | In a profile that publishes its aligner's `session`: `text_end`, the length of the reply text whose audio has been produced, and `audio_ms`, where that audio ends in the reply's audio, so a client can mark the text as it plays. |
+| `sglang.response.heard` | After a `conversation.item.truncate`, in a profile that publishes its dialog's `session`: `text_end`, the length of the cut reply's text the history keeps, sent again whenever the cut moves, so a client can show what the history kept. |
+| `response.done` | The reply is complete; `response.status_details.reason` is `stop`, `empty_turn` when the utterance had no words, or `interrupted` when you spoke over it. |
+| `error` | The request or the session failed. |
+
+Native full-duplex responses also report backend latency in a top-level `response_request_metrics` object. The first non-empty text delta carries `ttft_ms`, the first non-empty audio delta carries `ttfp_ms`, and `response.done` repeats every value observed for that response. Both intervals use the server monotonic clock and begin when the model-turn request starts, immediately before the native adapter processes its input unit. Pending input units keep the latest start until `response.created`; that event locks the start for the response, so input accepted while the response is streaming does not shorten its latency.
+
+`response.cancel` interrupts the reply from the client side. The capabilities grant `supports_cancel` when a node takes `interrupt` from `input` on a control edge, as every bundled profile's dialog does, and `supports_truncate` always. An interrupted reply stays in the history only up to the last boundary whose audio the server had sent before the interruption: the last word with a forced aligner, the part of the sentence at the cut that its transcript says with `heard_asr_url`, the last sentence otherwise. `conversation.item.truncate` with `audio_end_ms` tells the server how much of the reply was heard; the history then keeps the reply up to the last boundary whose audio ended by then, never past what the server sent. A reply the history keeps nothing of, such as one interrupted before its first boundary, leaves no answer: your next utterance joins the one before it in a single user message, as if you had kept talking. An utterance you finished before the interruption is answered once the server knows how much of the interrupted reply it delivered, so its prompt keeps that part. The truncate cuts only the reply its `item_id` names, also after the next reply began, so the prompts after that keep what you heard; one for a reply the backend can no longer cut, such as an earlier reply after a later one ended, changes nothing, and an `item_id` the session never sent gets an `item_not_found` error. The language model sees a cut reply ending with …, and while the history holds one, the system message, including instructions a client sets, ends with a sentence saying such a reply was cut off by the user. A reply the model finished is shown without a trailing …, so that it does not read as cut.
 ### Run the benchmark
 
 A run has three steps, then an aggregation. Each step starts the server it needs and stops it when it exits. `generate --all-stages` runs the other three after recording, so one command goes from recording to `RESULTS.md`:
