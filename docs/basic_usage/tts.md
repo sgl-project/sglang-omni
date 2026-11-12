@@ -3,7 +3,7 @@
 Use the OpenAI-compatible `/v1/audio/speech` interface to synthesize text. This
 page covers common part in TTS cookbook inlcluding: model setup, required inputs, and
 implementation-specific options belong in the linked cookbooks. The examples
-use [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md#customvoice-checkpoints), which accepts text-only requests. Replace the model and add any fields required by your checkpoint.
+use [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md#customvoice), which accepts text-only requests. Replace the model and add any fields required by your checkpoint.
 
 ## Prerequisites
 
@@ -19,7 +19,7 @@ model you are serving.
 |---|---|---|
 | [Fish Speech S2-Pro](../cookbook/fishaudio_s2_pro.md) | Yes | Text-only or voice cloning with `references` |
 | [Qwen3-TTS Base](../cookbook/qwen3_tts.md) | Yes | Reference audio or a precomputed speaker embedding |
-| [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md#customvoice-checkpoints) | Yes | Built-in speakers; 1.7B supports instruction control |
+| [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md#customvoice) | Yes | Built-in speakers; 1.7B supports instruction control |
 | [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | Yes | `task_type: "VoiceDesign"` and non-empty `instructions`; checkpoint `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` uses `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` |
 | [Fun-CosyVoice3](../cookbook/fun_cosyvoice3.md) | Yes | One reference clip; cloning, cross-lingual and instruction modes |
 | [MOSS-TTS](../cookbook/moss_tts.md) | Yes | Optional reference and model-specific duration control |
@@ -411,7 +411,7 @@ curl --fail-with-body http://localhost:8000/v1/audio/speech \
   --output designed-voice.wav
 ```
 
-To stream the generated speech, add `"stream": true` and use the [streaming examples](#streaming). See the [Qwen3-TTS cookbook](../cookbook/qwen3_tts.md#voicedesign-checkpoint) for model selection and configuration details.
+To stream the generated speech, add `"stream": true` and use the [streaming examples](#streaming). See the [Qwen3-TTS cookbook](../cookbook/qwen3_tts.md#voicedesign) for model selection and configuration details.
 
 ## Batch Speech
 
