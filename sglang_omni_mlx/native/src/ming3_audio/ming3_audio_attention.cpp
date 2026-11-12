@@ -144,7 +144,7 @@ mx::array Model::DeltaAttention(const mx::array &hidden,
                                 LayerCache &cache) const {
   const int length = hidden.shape(1), heads = text_.num_attention_heads;
   const int width = text_.head_dim, kernel = text_.short_conv_kernel_size;
-  std::vector<mx::array> projected, padded_projections;
+  std::vector<mx::array> projected, convolution_inputs;
   int projection_index = 0;
   for (const auto *name : {"q", "k", "v"}) {
     const std::string projection = prefix + "." + name;
@@ -152,7 +152,7 @@ mx::array Model::DeltaAttention(const mx::array &hidden,
     const auto history = cache.convolution[projection_index].value_or(
         mx::zeros({1, kernel - 1, heads * width}, hidden.dtype()));
     const auto padded = mx::concatenate({history, values}, 1);
-    padded_projections.push_back(padded);
+    convolution_inputs.push_back(padded);
     cache.convolution[projection_index++] =
         mx::slice(padded, {0, length, 0}, padded.shape());
     const auto convolved =
@@ -197,9 +197,9 @@ mx::array Model::DeltaAttention(const mx::array &hidden,
   const auto recurrence =
       RunDeltaRule(queries, keys, values, decay, beta, state);
   cache.recurrent = recurrence[1];
-  if (cache.keeps_verified_blocks) {
-    cache.verified_blocks.push_back(VerifiedBlock{
-        state, queries, keys, values, decay, beta, padded_projections});
+  if (cache.keeps_pending_rounds) {
+    cache.pending_rounds.push_back(PendingRound{
+        state, queries, keys, values, decay, beta, convolution_inputs});
   } else {
   }
   auto normalized = mx::fast::rms_norm(
@@ -214,33 +214,38 @@ mx::array Model::DeltaAttention(const mx::array &hidden,
                             prefix + ".o_proj");
 }
 
-void Model::Rewind(std::vector<LayerCache> &caches, int kept_tokens,
-                   int dropped_tokens) const {
+void Model::AcceptOldestRound(std::vector<LayerCache> &caches) const {
+  for (int layer = 0; layer < text_.num_hidden_layers; ++layer) {
+    if ((layer + 1) % text_.layer_group_size != 0) {
+      caches[layer].pending_rounds.pop_front();
+    } else {
+    }
+  }
+}
+
+void Model::RejectOldestDraft(std::vector<LayerCache> &caches,
+                              int dropped_positions) const {
   const int kernel = text_.short_conv_kernel_size;
   for (int layer = 0; layer < text_.num_hidden_layers; ++layer) {
     auto &cache = caches[layer];
     if ((layer + 1) % text_.layer_group_size == 0) {
-      cache.attention.Trim(dropped_tokens);
-    } else if (dropped_tokens == 0) {
-      cache.verified_blocks.pop_front();
+      cache.attention.Trim(dropped_positions);
     } else {
-      const auto &block = cache.verified_blocks.front();
-      const auto kept = [&](const mx::array &input) {
-        return mx::slice(input, {0, 0, 0},
-                         {kept_tokens, input.shape(1), input.shape(2)});
+      const auto &round = cache.pending_rounds.front();
+      const auto anchor = [](const mx::array &input) {
+        return mx::slice(input, {0, 0, 0}, {1, input.shape(1), input.shape(2)});
       };
-      cache.recurrent = RunDeltaRule(
-          kept(block.queries), kept(block.keys), kept(block.values),
-          kept(block.decay),
-          mx::slice(block.beta, {0, 0}, {kept_tokens, block.beta.shape(1)}),
-          block.state)[1];
+      cache.recurrent =
+          RunDeltaRule(anchor(round.queries), anchor(round.keys),
+                       anchor(round.values), anchor(round.decay),
+                       mx::slice(round.beta, {0, 0}, {1, round.beta.shape(1)}),
+                       round.state)[1];
       for (int i = 0; i < 3; ++i) {
-        const auto &padded = block.padded_projections[i];
+        const auto &inputs = round.convolution_inputs[i];
         cache.convolution[i] =
-            mx::slice(padded, {0, kept_tokens, 0},
-                      {1, kept_tokens + kernel - 1, padded.shape(2)});
+            mx::slice(inputs, {0, 1, 0}, {1, kernel, inputs.shape(2)});
       }
-      cache.verified_blocks.clear();
+      cache.pending_rounds.clear();
     }
   }
 }

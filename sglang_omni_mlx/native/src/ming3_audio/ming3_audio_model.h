@@ -17,8 +17,9 @@
 namespace ming3_audio {
 
 inline constexpr int kDefaultContextTokens = 8192;
+enum class SpeculativeAlgorithm { kNone, kNextN };
 int ParseContextLength(const std::string &value);
-bool ParseSpeculativeAlgorithm(const std::string &value);
+SpeculativeAlgorithm ParseSpeculativeAlgorithm(const std::string &value);
 
 using Cancellation = std::function<bool()>;
 
@@ -87,51 +88,52 @@ struct AudioConfig {
 class Model {
 public:
   Model(const std::filesystem::path &directory, int context_tokens,
-        bool speculative);
+        SpeculativeAlgorithm speculative_algorithm);
   PreparedChatRequest Prepare(ChatRequest request) const;
   ChatResult Generate(const PreparedChatRequest &prepared,
                       const Cancellation &cancel) const;
 
 private:
-  struct VerifiedBlock {
+  // A KDA layer's inputs for one round that is not verified yet.
+  struct PendingRound {
     mlx::core::array state;
     mlx::core::array queries;
     mlx::core::array keys;
     mlx::core::array values;
     mlx::core::array decay;
     mlx::core::array beta;
-    std::vector<mlx::core::array> padded_projections;
+    std::vector<mlx::core::array> convolution_inputs;
   };
 
   struct LayerCache {
     qwen3_asr::KVCache attention;
     std::array<std::optional<mlx::core::array>, 3> convolution;
     std::optional<mlx::core::array> recurrent;
-    bool keeps_verified_blocks = false;
-    std::deque<VerifiedBlock> verified_blocks;
+    bool keeps_pending_rounds = false;
+    std::deque<PendingRound> pending_rounds;
   };
 
   Model(const std::filesystem::path &directory, const nlohmann::json &config,
-        int context_tokens, bool speculative);
+        int context_tokens, SpeculativeAlgorithm speculative_algorithm);
   mlx::core::array Encode(const mlx::core::array &mel) const;
   mlx::core::array Embed(const mlx::core::array &token_ids) const;
   mlx::core::array Forward(const mlx::core::array &embeddings,
                            std::vector<LayerCache> &caches) const;
   static mlx::core::array LastPosition(const mlx::core::array &hidden);
   mlx::core::array Logits(const mlx::core::array &hidden) const;
-  mlx::core::array Draft(const mlx::core::array &next_embeddings,
-                         const mlx::core::array &hidden,
-                         qwen3_asr::KVCache &cache) const;
-  // Keeps the oldest verified block's first kept_tokens and undoes the
-  // dropped_tokens positions after them.
-  void Rewind(std::vector<LayerCache> &caches, int kept_tokens,
-              int dropped_tokens) const;
+  mlx::core::array DraftForward(const mlx::core::array &next_embeddings,
+                                const mlx::core::array &hidden,
+                                qwen3_asr::KVCache &cache) const;
+  void AcceptOldestRound(std::vector<LayerCache> &caches) const;
+  // Keeps the oldest pending round's anchor and undoes the dropped_positions
+  // latent-attention positions after it.
+  void RejectOldestDraft(std::vector<LayerCache> &caches,
+                         int dropped_positions) const;
   bool IsStopToken(int token) const;
-  void GenerateWithDraft(const mlx::core::array &embeddings,
-                         std::vector<LayerCache> &caches,
-                         const PreparedChatRequest &prepared,
-                         const Cancellation &cancel,
-                         std::vector<int> &generated) const;
+  std::vector<int> GenerateWithDraft(const mlx::core::array &embeddings,
+                                     const std::vector<int> &prompt_ids,
+                                     int max_new_tokens,
+                                     const Cancellation &cancel) const;
   int AudioTokenCount(int mel_frames) const;
   mlx::core::array RmsNorm(const mlx::core::array &hidden,
                            const std::string &prefix) const;
@@ -149,7 +151,7 @@ private:
   TextConfig text_;
   AudioConfig audio_;
   int context_tokens_;
-  bool speculative_;
+  SpeculativeAlgorithm speculative_algorithm_;
   omni_common::Checkpoint checkpoint_;
   omni_common::Tokenizer tokenizer_;
   std::vector<int> stop_tokens_;

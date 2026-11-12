@@ -9,13 +9,13 @@
 
 int main(int argc, char **argv) {
   int context_tokens = ming3_audio::kDefaultContextTokens;
-  bool speculative = false;
+  auto speculative_algorithm = ming3_audio::SpeculativeAlgorithm::kNone;
   return omni_server::Serve(
       argc, argv,
       {{"ming3_audio",
         [&](const std::filesystem::path &directory) {
           auto model = std::make_shared<ming3_audio::Model>(
-              directory, context_tokens, speculative);
+              directory, context_tokens, speculative_algorithm);
           return ming3_audio::CreateChatService(
               [model](ming3_audio::ChatRequest request) {
                 return model->Prepare(std::move(request));
@@ -31,7 +31,8 @@ int main(int argc, char **argv) {
           }},
          {"--speculative-algorithm",
           [&](const std::string &value) {
-            speculative = ming3_audio::ParseSpeculativeAlgorithm(value);
+            speculative_algorithm =
+                ming3_audio::ParseSpeculativeAlgorithm(value);
           }}},
         {}}});
 }

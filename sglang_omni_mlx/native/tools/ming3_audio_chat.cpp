@@ -13,7 +13,7 @@ int main(int argc, char **argv) {
     std::filesystem::path directory, audio_path;
     ming3_audio::ChatRequest request;
     int context_tokens = ming3_audio::kDefaultContextTokens;
-    bool speculative = false;
+    auto speculative_algorithm = ming3_audio::SpeculativeAlgorithm::kNone;
     for (int i = 1; i < argc; ++i) {
       const std::string option = argv[i];
       if (option == "--help") {
@@ -36,7 +36,7 @@ int main(int argc, char **argv) {
       } else if (option == "--system") {
         request.system_prompt = value;
       } else if (option == "--speculative-algorithm") {
-        speculative = ming3_audio::ParseSpeculativeAlgorithm(value);
+        speculative_algorithm = ming3_audio::ParseSpeculativeAlgorithm(value);
       } else if (option == "--context-length") {
         context_tokens = ming3_audio::ParseContextLength(value);
       } else if (option == "--max-new-tokens") {
@@ -64,7 +64,8 @@ int main(int argc, char **argv) {
     std::ostringstream bytes;
     bytes << input.rdbuf();
     request.samples = omni_common::DecodeWav(bytes.str());
-    const ming3_audio::Model model(directory, context_tokens, speculative);
+    const ming3_audio::Model model(directory, context_tokens,
+                                   speculative_algorithm);
     const auto cancelled = [] { return false; };
     const auto started = std::chrono::steady_clock::now();
     const auto result =

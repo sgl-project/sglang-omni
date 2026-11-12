@@ -62,7 +62,7 @@ omni_common::WeightMap LoadWeights(const std::filesystem::path &directory,
                                    const nlohmann::json &config,
                                    const TextConfig &text_config,
                                    const AudioConfig &audio_config,
-                                   bool speculative) {
+                                   bool loads_prediction_layer) {
   const auto &text = config.at("text_config");
   if (config.at("model_type") != "bailing_moe_v3_audio" ||
       config.contains("quantization") || !text.at("no_kda_lora").get<bool>() ||
@@ -77,8 +77,9 @@ omni_common::WeightMap LoadWeights(const std::filesystem::path &directory,
       config.at("audio_config").at("n_mels") != 128) {
     throw std::invalid_argument(
         "expected an unquantized Ming-3.0-audio-tiny checkpoint");
-  } else if (speculative && (text.at("num_nextn_predict_layers") != 1 ||
-                             text.at("mtp_use_kda").get<bool>())) {
+  } else if (loads_prediction_layer &&
+             (text.at("num_nextn_predict_layers") != 1 ||
+              text.at("mtp_use_kda").get<bool>())) {
     throw std::invalid_argument(
         "speculative decoding needs one latent-attention prediction layer");
   } else {
@@ -88,9 +89,11 @@ omni_common::WeightMap LoadWeights(const std::filesystem::path &directory,
       "model.layers." + std::to_string(text_config.num_hidden_layers) + ".";
   std::erase_if(weights, [&](const auto &parameter) {
     return parameter.first.starts_with("linear_proj.") ||
-           (!speculative && parameter.first.starts_with(prediction_prefix));
+           (!loads_prediction_layer &&
+            parameter.first.starts_with(prediction_prefix));
   });
-  const int moe_layers = text_config.num_hidden_layers + (speculative ? 1 : 0);
+  const int moe_layers =
+      text_config.num_hidden_layers + (loads_prediction_layer ? 1 : 0);
   for (int layer = text_config.first_k_dense_replace; layer < moe_layers;
        ++layer) {
     const std::string prefix =
@@ -193,18 +196,21 @@ std::string ChatPrompt(const ChatRequest &request, int audio_tokens) {
 } // namespace
 
 Model::Model(const std::filesystem::path &directory, int context_tokens,
-             bool speculative)
+             SpeculativeAlgorithm speculative_algorithm)
     : Model(directory, omni_common::ReadJson(directory / "config.json"),
-            context_tokens, speculative) {}
+            context_tokens, speculative_algorithm) {}
 
 Model::Model(const std::filesystem::path &directory,
-             const nlohmann::json &config, int context_tokens, bool speculative)
+             const nlohmann::json &config, int context_tokens,
+             SpeculativeAlgorithm speculative_algorithm)
     : text_(TextConfig::FromJson(config.at("text_config"))),
       audio_(AudioConfig::FromJson(config.at("audio_config"))),
       context_tokens_(std::min(context_tokens, text_.max_position_embeddings)),
-      speculative_(speculative),
-      checkpoint_(LoadWeights(directory, config, text_, audio_, speculative),
-                  config),
+      speculative_algorithm_(speculative_algorithm),
+      checkpoint_(
+          LoadWeights(directory, config, text_, audio_,
+                      speculative_algorithm == SpeculativeAlgorithm::kNextN),
+          config),
       tokenizer_(directory),
       stop_tokens_(omni_common::ReadJson(directory / "generation_config.json")
                        .at("eos_token_id")
@@ -454,7 +460,6 @@ ChatResult Model::Generate(const PreparedChatRequest &prepared,
   embeddings = mx::slice_update(
       embeddings, mx::expand_dims(audio, 0), {0, prepared.audio_start, 0},
       {1, prepared.audio_start + prepared.audio_tokens, embeddings.shape(2)});
-  std::vector<LayerCache> caches(text_.num_hidden_layers);
   ChatResult result;
   result.prompt_tokens = prepared.prompt_ids.size();
   std::vector<int> generated;
@@ -462,9 +467,11 @@ ChatResult Model::Generate(const PreparedChatRequest &prepared,
     throw Cancelled();
   } else {
   }
-  if (speculative_) {
-    GenerateWithDraft(embeddings, caches, prepared, cancel, generated);
+  if (speculative_algorithm_ == SpeculativeAlgorithm::kNextN) {
+    generated = GenerateWithDraft(embeddings, prepared.prompt_ids,
+                                  request.max_new_tokens, cancel);
   } else {
+    std::vector<LayerCache> caches(text_.num_hidden_layers);
     auto next_token =
         mx::argmax(Logits(LastPosition(Forward(embeddings, caches))));
     mx::async_eval({next_token});

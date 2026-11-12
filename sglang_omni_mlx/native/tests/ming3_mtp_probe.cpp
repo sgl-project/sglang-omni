@@ -11,8 +11,10 @@ int main(int argc, char **argv) {
     return 2;
   } else {
   }
-  const ming3_audio::Model plain(argv[1], 1024, false);
-  const ming3_audio::Model speculative(argv[1], 1024, true);
+  const ming3_audio::Model plain(argv[1], 1024,
+                                 ming3_audio::SpeculativeAlgorithm::kNone);
+  const ming3_audio::Model speculative(
+      argv[1], 1024, ming3_audio::SpeculativeAlgorithm::kNextN);
   nlohmann::json rows = nlohmann::json::array();
   for (int budget : {1, 2, 3, 4, 5, 17, 64}) {
     ming3_audio::ChatRequest request;
