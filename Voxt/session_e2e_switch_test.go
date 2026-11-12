@@ -14,20 +14,18 @@ import (
 
 // TestSessionSwitchedApp: the shortcut is pressed in Slack, then the user
 // goes to another app. A text field focused there gets the result (the
-// history keeps Slack and names that app apart); nothing focused (Finder's desktop) or a
-// password field leaves it in the answer card, saying why.
+// history keeps Slack and names that app apart); with nothing focused
+// (Finder's desktop) or a password field there, and the card off, the
+// app copies it and says so.
 func TestSessionSwitchedApp(t *testing.T) {
 	for _, tc := range []struct {
 		name, opts string
 		into       string // the app it went into; "": the card
-		why        string
 		reason     deliver.Reason
 	}{
 		{name: "a text field", opts: "switch=com.apple.TextEdit", into: "TextEdit"},
-		{name: "nothing focused", opts: "switch=com.apple.finder,focus=none", reason: deliver.ReasonNotEditable,
-			why: "No text field is focused. Click where the text should go and insert, or copy it."},
-		{name: "a password field", opts: "switch=com.apple.TextEdit,focus=secure", reason: deliver.ReasonSecure,
-			why: "Voxt never types into password fields. Copy the text, or click another field and insert."},
+		{name: "nothing focused", opts: "switch=com.apple.finder,focus=none", reason: deliver.ReasonNotEditable},
+		{name: "a password field", opts: "switch=com.apple.TextEdit,focus=secure", reason: deliver.ReasonSecure},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(400, "transcribe/0", proto.PhaseTrigger))
@@ -39,9 +37,9 @@ func TestSessionSwitchedApp(t *testing.T) {
 			if end.State != session.Done || end.Target.Name != "Slack" {
 				t.Fatalf("end %+v", end)
 			}
-			if tc.into == "" {
-				if end.Inserted || !end.Card || end.Delivery != tc.reason || len(a.pasted()) != 0 || !a.answer.open || a.answer.why != tc.why {
-					t.Errorf("card: end %+v, pasted %+v, card %+v", end, a.pasted(), a.answer)
+			if tc.into == "" { // the card is off: the app copies it and says so
+				if end.Inserted || end.Card || end.Delivery != tc.reason || len(a.pasted()) != 0 || a.answer.open || a.notice == nil || a.notice.text != copiedNotice {
+					t.Errorf("not inserted: end %+v, pasted %+v, card %v, notice %+v", end, a.pasted(), a.answer.open, a.notice)
 				}
 				return
 			}
@@ -72,8 +70,8 @@ func activatedLine(afterMS int, bundle string) string {
 	return string(b)
 }
 
-// TestCardInsertSwitchedApp: the user moved to Finder, where nothing
-// takes text, so the result waits in the card. Once the user is in
+// TestCardInsertSwitchedApp: with the answer card on, the result waits
+// in the card while the user is in Finder. Once the user is in
 // TextEdit, the card's Insert pastes there; the history keeps Slack, the
 // start app, and names TextEdit apart.
 func TestCardInsertSwitchedApp(t *testing.T) {
@@ -84,7 +82,7 @@ func TestCardInsertSwitchedApp(t *testing.T) {
 		activatedLine(1500, "com.apple.TextEdit"), // well after the end
 	)
 	a := newSessionApp(t, "readonly=com.apple.finder,"+ev, func(s *settings.Settings) {
-		s.Features.Transcribe.Enhance = false
+		s.Features.Transcribe.Enhance, s.Features.Transcribe.ShowCard = false, true
 	}, &fakeLocal{ASRP: fakeStreamer{final: "你好"}})
 	a.pump("the end", func() bool { return a.sess.State.Ended() })
 	end := a.sess

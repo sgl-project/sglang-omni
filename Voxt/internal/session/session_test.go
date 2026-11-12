@@ -213,7 +213,7 @@ func TestPipeline(t *testing.T) {
 					t.Errorf("pasted %q, %+v", pastes, end)
 				}
 			case tc.card:
-				if len(pastes) != 0 || !end.Card || end.Inserted || end.Delivery != deliver.ReasonNotEditable {
+				if len(pastes) != 0 || end.Card || end.Inserted || end.Delivery != deliver.ReasonNotEditable {
 					t.Errorf("card: pasted %q, %+v", pastes, end)
 				}
 			default:
@@ -262,7 +262,7 @@ func TestPipeline(t *testing.T) {
 			e := entries[0]
 			wantDelivery := "insert"
 			if tc.card {
-				wantDelivery = "card"
+				wantDelivery = "" // card off: not inserted, the app copies it
 			}
 			if e.ID != id || e.Kind != store.KindTranscribe || e.Status != store.StatusDone || e.RawText != "hello aura link" || e.Result != tc.result ||
 				e.AppBundle != slack.BundleID || e.AppName != "Slack" || e.ASRProvider != "doubao" || e.Delivery != wantDelivery || e.Audio != "" {
@@ -516,6 +516,14 @@ func TestBusyTryShortAndMore(t *testing.T) {
 		end := h.rec.wait(t)
 		if end.State != Done || end.Result != "long" || end.StoppedAt.IsZero() {
 			t.Errorf("end %+v", end)
+		}
+		// A podcast is dictated whole: no maxSeconds goes to capture.start,
+		// the recording runs until Stop (Voxt stopped one at 10:00).
+		h.audio.mu.Lock()
+		p := h.audio.params
+		h.audio.mu.Unlock()
+		if len(p) != 1 || p[0].MaxSeconds != 0 {
+			t.Errorf("params %+v", p)
 		}
 	})
 	t.Run("a stop that does not stop", func(t *testing.T) {

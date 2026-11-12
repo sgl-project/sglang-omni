@@ -4,8 +4,10 @@ import (
 	"context"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/vad"
 )
 
@@ -29,7 +31,8 @@ func (a *app) meetingTrackASR(ctx context.Context, src meeting.Source) (meeting.
 		return meeting.TrackASR{}, err
 	}
 	caps := p.Caps()
-	ta := meeting.TrackASR{Caps: caps}
+	l := session.SpeechLang(a.prefs, i18n.Locale())
+	ta := meeting.TrackASR{Caps: caps, Lang: l, StreamReq: asr.StreamRequest{Lang: l}}
 	if ft, ok := p.(asr.FileTranscriber); ok && caps.File {
 		ta.File = ft
 	}

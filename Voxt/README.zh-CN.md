@@ -15,6 +15,7 @@
 [![Apache License 2.0][licence-shield]](LICENSE)
 
 [![下载 Voxt][download-shield]][download]
+[![下载 Voxt Beta][beta-download-shield]][beta-download]
 
 [安装指南][install-guide] · [更新日志](CHANGELOG.md) · [官网](https://voxt.actnow.dev) · [反馈问题][issues] · [Slack][slack]
 
@@ -69,24 +70,21 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 
 ### 第一次用 Voxt
 
-1. **下载**：从 [Voxt v2.0.3 发布页][download]下载 `Voxt-2.0.3-arm64.dmg`，打开后把 **Voxt** 拖进“应用程序”。也可以用 Homebrew 安装：
-
-   ```sh
-   brew install --cask hehehai/tap/voxt
-   ```
+1. **下载**：从 [Voxt v2.0.3 发布页][download]下载 `Voxt-2.0.3-arm64.dmg`，打开后把 **Voxt** 拖进“应用程序”。
 
 2. **打开 Voxt，跟着设置引导走**：授权麦克风和辅助功能，下载推荐的语音识别模型（Qwen3-ASR 1.7B (8bit)，2.5 GB），再配置一个语言模型用于整理、翻译和改写。
 3. 在任意 App 里**单按右 Option**，说话，再按一下。
 
 分步说明：[Install Voxt][install-guide]。
 
+安装 Beta `2.0.3-beta.20261111.38` 时，先登录 GitHub，下载并解压 ZIP，然后打开 DMG，把 **Voxt** 拖进“应用程序”。如果直链未开始下载，请到 [Voxt Beta #38][beta-run] 的 Artifacts 下载 arm64 安装包。要找更新的 Beta，请打开 [Actions → Voxt Beta][beta-workflow] 中 `main` 分支最新一次成功的运行。
+
 ### 从 Voxt 1.x 升级
 
-三种方式任选其一：
+两种方式任选其一：
 
-- **在 Voxt 1.x 里检查更新**：点“检查更新…”，在 Apple 芯片的 Mac 上会看到 Voxt 2 和升级指南。
+- **在 Voxt 1.x 里检查更新**：在 Apple 芯片的 Mac 上，先打开“Beta 更新”（设置 → 关于），再点“检查更新…”，会看到 Voxt 2 和升级指南。没打开“Beta 更新”时，Voxt 1.x 暂时还不会提供 Voxt 2。
 - **覆盖安装**：退出 Voxt 1.x，下载最新的 dmg，把 Voxt 拖进“应用程序”，访达询问时选“替换”。
-- **Homebrew**：上面的 cask 装的就是 Voxt 2。
 
 装好后，在 Voxt 2 里：
 
@@ -100,7 +98,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 
 - **Apple 芯片**、**macOS 15** 及以上的 Mac。Voxt 2 不能在 Intel Mac 上运行，那里请继续用 Voxt 1.x。
 - app 约 280 MB，推荐的语音识别模型需下载 2.5 GB。
-- Voxt 2 不会自动更新。新版本用同样的方式安装：从 dmg 安装，或者 `brew upgrade --cask voxt`。
+- Voxt 2 有新版本时会提示（“检查更新…”，以及每天一次的自动检查，可以在 设置 → 诊断与关于 里关掉），但不会自己安装。新版本用同样的方式安装：从 dmg 安装。
 
 ## 你的模型，你的数据
 
@@ -161,6 +159,9 @@ Apache License 2.0（[LICENSE](LICENSE)），与本仓其余部分一致。版�
 [![回到顶部][back-to-top]](#readme-top)
 
 [download]: https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v2.0.3
+[beta-download]: https://github.com/sgl-project/sglang-omni/actions/runs/42954481839/artifacts/13825829109
+[beta-run]: https://github.com/sgl-project/sglang-omni/actions/runs/42954481839#artifacts
+[beta-workflow]: https://github.com/sgl-project/sglang-omni/actions/workflows/voxt-beta.yaml
 [install-guide]: https://sgl-project.github.io/sglang-omni/get_started/voxt.html
 [issues]: https://github.com/sgl-project/sglang-omni/issues/new/choose
 [slack]: https://slack.sglang.io
@@ -168,4 +169,5 @@ Apache License 2.0（[LICENSE](LICENSE)），与本仓其余部分一致。版�
 [macos-shield]: https://img.shields.io/badge/macOS-15%2B%20%C2%B7%20Apple%20silicon-58a6ff?style=flat-square&labelColor=000000&logo=apple&logoColor=white
 [licence-shield]: https://img.shields.io/badge/licence-Apache%202.0-58a6ff?style=flat-square&labelColor=000000&logo=apache&logoColor=white
 [download-shield]: https://img.shields.io/badge/Download-Voxt%20for%20Mac-000000?style=for-the-badge&logo=apple&logoColor=white
+[beta-download-shield]: https://img.shields.io/badge/Download-Voxt%20Beta-1f6feb?style=for-the-badge&logo=github&logoColor=white
 [back-to-top]: https://img.shields.io/badge/-BACK_TO_TOP-151515?style=flat-square
