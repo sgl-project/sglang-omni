@@ -39,7 +39,6 @@ class SuffixDecoder(Protocol):
         discard_frames frames' audio may be zero."""
 
 
-# note (Wenyao Gao): (batch size, frames, discarded frames) of a captured graph.
 GraphKey = tuple[int, int, int]
 
 
@@ -174,9 +173,6 @@ class WindowGraphDecoder:
                     ) as graph:
                         self.static_audio[graph_key] = decode(static_indices)
                 else:
-                    # note (Wenyao Gao): the discarded frames' audio stays zero and
-                    # the replay fills the rest, so the result reads like a
-                    # whole-window decode.
                     static_audio = torch.zeros(
                         (batch_size, 1, window_length * frame_length),
                         dtype=audio_dtype,

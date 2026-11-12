@@ -576,7 +576,6 @@ def test_coalesced_chunks_vocode_each_request_like_one_chunk_at_a_time() -> None
     )
     one_at_a_time_vocoder = vocoder_with(FrameNumberCodec())
 
-    # note (Wenyao Gao): 16 engine steps queue up behind each drain.
     for group_start_step in range(0, step_count, 16):
         group_end_step = group_start_step + 16
         for message in chunk_messages:
@@ -706,9 +705,6 @@ def test_window_graphs_decode_every_window_length_like_eager() -> None:
     for decoded_audio, expected_audio in replay_results:
         assert torch.equal(decoded_audio, expected_audio)
     assert torch.equal(decoder(codes[:, :, :20]), causal_decode(codes[:, :, :20]))
-    # note (Wenyao Gao): a discard replays the graph that skips those frames and
-    # leaves their audio zero; a shape without one falls back to the whole-window
-    # graph.
     for frame_count, discard_frames in ((96, 32), (35, 32), (20, 10)):
         window = codes[:1, :, :frame_count]
         decoded_audio = decoder(window, discard_frames=discard_frames)
@@ -931,7 +927,6 @@ def test_prepadded_causal_conv_keeps_original_length(
         actual = decoder.causal_conv(module, padded, original_frame_count=frame_count)
         fallback = decoder.causal_conv(module, activation)
     assert actual.shape == (2, frame_count, 4)
-    # note (Wenyao Gao): the conv leaves its bias to the next kernel.
     torch.testing.assert_close(actual + module.conv.bias, expected)
     assert torch.equal(actual, fallback)
 
