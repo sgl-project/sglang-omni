@@ -210,7 +210,7 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		r.m.update(r, func(s *Snapshot) { s.Draft, s.Title = a.Content, a.Title })
 	}
 	req := llm.Request{
-		Messages: msgs, Skill: skill,
+		Messages: msgs, Skill: skill, Thinking: r.req.Thinking,
 		OnDelta: func(d string) {
 			buf.WriteString(d)
 			publish(false)

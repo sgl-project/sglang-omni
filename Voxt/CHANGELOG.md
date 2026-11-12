@@ -17,6 +17,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Search marks every match and Return jumps to the next one** on the Dictionary and History pages and in Find in the prompt (part of #3869): each match of what you type is marked in bold red, the current one white on red. Return goes to the next match and Shift+Return to the previous one, scrolling it into view, and the field shows "2 of 5". The Dictionary marks matches in terms, aliases and notes. A History row shows the line of the entry that holds your search. In Find in the prompt, matches are red instead of the accent colour.
 - **The Meetings, Settings and Logs searches mark matches and jump with Return too** (#3869), as the Dictionary and History do. A meeting found by its transcript shows the transcript line that holds your search. Find in settings marks matches in the names of the settings shown. The logs' filter marks matches in each line.
 - **History has an All tab** (#3848): after Transcribe, Translate and Rewrite, All lists the records of every feature together, newest first, and each row names its feature. Search works across them. The three feature tabs work as before.
+- **Pick the thinking level for one input in the answer card** (#3879): when the language model service that answered takes a thinking setting, the Translate and Rewrite answer card has a button before Insert. It lists the levels the service offers (As in settings, off, on, its effort levels, or a budget of 1,024, 4,096 or 16,384 tokens). Pick one and Voxt asks again with the same input at that level and replaces the answer in the card. The service's Thinking setting does not change, and the next input uses it again.
 
 ### Changed
 
@@ -65,6 +66,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **搜索标出每个匹配，按回车跳到下一个**（词典页、历史页和“在提示词中查找”，#3869 的一部分）：输入的内容每处匹配都用红色粗体标出，当前那处是红底白字。按回车跳到下一处，Shift+回车跳到上一处，列表滚到那里，搜索框旁显示“第 2 处，共 5 处”这样的计数。词典在词条、别名和备注里标出匹配。历史的一行显示这条记录里含搜索词的那一行。“在提示词中查找”的匹配从主题色改成红色。
 - **会议、设置和日志的搜索也标出匹配，按回车跳转**（#3869），和词典、历史一样。按转写内容找到的会议，行里显示转写中含搜索词的那句。“在设置中查找”在显示出来的设置名里标出匹配。日志的过滤框在每一行里标出匹配。
 - **历史页加了“全部”标签**（#3848）：在转录、翻译、改写之后，“全部”把所有功能的记录放在一起，从新到旧，每行写明来自哪个功能，搜索也覆盖全部记录。原来三个标签不变。
+- **在答案卡片里为这一次输入选思考强度**（#3879）：回答所用的语言模型服务有思考设置时，翻译和改写的答案卡片在“插入”前面多一个按钮，列出这个服务支持的强度（按设置、关闭、开启、各档 effort，或 1,024、4,096、16,384 token 的预算）。选一个，Voxt 就用同样的输入按这个强度再问一次，替换卡片里的回答。服务的“思考”设置不变，下一次输入照旧用它。
 
 #### 变更
 

@@ -16,6 +16,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/ink"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -43,6 +44,7 @@ type cardStep struct {
 	body                                                   int
 	msg                                                    bool
 	insert, copy, followUp, stop, retry, lang, busy, convo bool
+	think                                                  bool // the thinking button
 }
 
 // cardSteps walk the answer card through its states, as one Translate
@@ -121,6 +123,24 @@ func cardSteps() []cardStep {
 			snap(a, session.Snapshot{ID: "t4", Kind: store.KindTranslate, State: session.Composing})
 			snap(a, cut)
 		}, msg: true, insert: true, copy: true, lang: true},
+		// A service with thinking levels (#3879): its button, by the
+		// language capsule; after Continue in Rewrite's.
+		{name: "thinking", apply: func(a *app) {
+			a.closeAnswer()
+			a.prefs.Providers.LLM = []settings.Provider{{ID: "deepseek"}}
+			th := tr(session.Done, "goroutine 是由 Go 运行时管理的轻量级线程。", "")
+			th.ID, th.LLM = "t5", session.Model{ID: "deepseek"}
+			snap(a, session.Snapshot{ID: "t5", Kind: store.KindTranslate, State: session.Composing})
+			snap(a, th)
+			a.answer.think = &llm.Thinking{Mode: llm.ThinkEffort, Effort: "high"}
+		}, insert: true, copy: true, lang: true, think: true},
+		{name: "thinking-rewrite", apply: func(a *app) {
+			a.closeAnswer()
+			snap(a, session.Snapshot{ID: "r5", Kind: store.KindRewrite, State: session.Recording})
+			snap(a, session.Snapshot{ID: "r5", Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard, Raw: "write that I am late",
+				Title: "Running late", Result: "Sorry, I am running about ten minutes late: please start without me.", LLM: session.Model{ID: "deepseek"}})
+			a.answer.think = &llm.Thinking{Mode: llm.ThinkOff}
+		}, body: -1, insert: true, copy: true, followUp: true, think: true},
 	}
 }
 
@@ -166,8 +186,8 @@ func TestAnswerCardStates(t *testing.T) {
 					t.Errorf("%s: %d high, want %d (line %q)", st.name, a.ov.h, want, v.msg)
 				}
 				anchored(t, st.name, a.prefs.Overlay, a.ov.frame)
-				got := []bool{v.canInsert, v.canCopy, v.canFollowUp, v.canStop, v.canRetry, v.canLang, v.busy, v.conversation}
-				exp := []bool{st.insert, st.copy, st.followUp, st.stop, st.retry, st.lang, st.busy, st.convo}
+				got := []bool{v.canInsert, v.canCopy, v.canFollowUp, v.canStop, v.canRetry, v.canLang, v.busy, v.conversation, v.thinks}
+				exp := []bool{st.insert, st.copy, st.followUp, st.stop, st.retry, st.lang, st.busy, st.convo, st.think}
 				for i := range got {
 					if got[i] != exp[i] {
 						t.Errorf("%s: insert, copy, follow up, stop, retry, language, busy, conversation = %v, want %v", st.name, got, exp)

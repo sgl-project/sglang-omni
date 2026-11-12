@@ -118,6 +118,9 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 			a.retryAnswer("")
 		}
 	}
+	if v.thinks && cardIconButton(c.Key("ov-card-think"), i18n.T("Thinking"), thinkText(v.think), icons.Tuning2, v.canThink) {
+		a.toggleThinkMenu()
+	}
 	if v.failed == nil {
 		tip := i18n.T("Insert into %s", cmpOr(v.target, i18n.T("the app")))
 		if v.why != "" {
@@ -210,7 +213,7 @@ func cardCapsule(c *ui.Context, label, tip string) bool {
 // (overlay_lang.go), where another translates the card's text again,
 // into the card.
 func (a *app) cardLanguage(c *ui.Context, v cardView) {
-	open := a.answer.langOpen && v.canLang
+	open := a.answer.langOpen && !a.answer.thinkMenu && v.canLang
 	b := ui.ButtonBase(c.Key("ov-card-lang")).Height(layout.CardBtn).Padding(0, 10-layout.Border).Radius(layout.CardBtn / 2).Shrink(0).
 		Label(i18n.T("Translate into")).Disabled(!v.canLang).Checked(open)
 	line, bg := ui.RGBA(255, 255, 255, 0.12), ui.RGBA(255, 255, 255, 0.08)
