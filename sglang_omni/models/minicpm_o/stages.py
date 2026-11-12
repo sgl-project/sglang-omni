@@ -478,9 +478,8 @@ def create_sglang_thinker_executor_from_config(
             )
         else:
             pass
-        # note (0xtoward): the draft worker verifies whole blocks in a synchronous loop.
+        # note (0xtoward): the draft worker verifies whole blocks without mixed-chunk prefill.
         overrides["enable_mixed_chunk"] = False
-        enable_async_decode = False
         # The draft has its own positional capacity; the target serves within it.
         draft_context_length = int(
             AutoConfig.from_pretrained(
