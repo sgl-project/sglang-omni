@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
-from contextlib import AbstractContextManager, nullcontext
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from numbers import Integral
 from typing import cast
@@ -291,6 +291,12 @@ class AudioVAEFixedStreamingTransition:
         self._latent_dim = latent_dim  # noqa: leading-underscore
         self._device = device  # noqa: leading-underscore
         self.device_module = torch.get_device_module(device)
+        # note (Dayuxiaoshui): Reference encoding runs on this process's default stream;
+        # a private stream keeps it from queuing behind streaming replays.
+        if device.type == "cpu":
+            self.stream: torch.Stream | None = None
+        else:
+            self.stream = self.device_module.Stream(device=device)
         self._input_dtype = input_dtype  # noqa: leading-underscore
         self.decoder = decoder
         self.upsampler = upsampler
@@ -373,6 +379,12 @@ class AudioVAEFixedStreamingTransition:
             for index in range(layer_count)
         ]
         self.cache = Cache(layers=self.cache_layers)
+        # The state bank and envelope tail were written on the caller's stream;
+        # the eager path can reach decode without the device sync graph prep does.
+        if self.stream is not None:
+            self.stream.wait_stream(self.device_module.current_stream(device))
+        else:
+            pass
 
     @property
     def capacity(self) -> int:
@@ -460,11 +472,16 @@ class AudioVAEFixedStreamingTransition:
                 tensor.zero_()
             self.synchronize_stream()
 
-    def device_context(self) -> AbstractContextManager[None]:
-        if self.device.type != "cpu":
-            return self.device_module.device(self.device)
+    @contextmanager
+    def device_context(self) -> Iterator[None]:
+        if self.stream is None:
+            yield
         else:
-            return nullcontext()
+            with (
+                self.device_module.device(self.device),
+                self.device_module.stream(self.stream),
+            ):
+                yield
 
     def synchronize_stream(self) -> None:
         if self.device.type != "cpu":
@@ -953,7 +970,7 @@ class MingAudioStreamingRunner:
             pass
         candidate_graph: torch.cuda.CUDAGraph | None = None
         try:
-            with torch.cuda.device(self.transition.device):
+            with self.transition.device_context():
                 torch.cuda.synchronize(self.transition.device)
                 allocated_before = int(
                     torch.cuda.memory_allocated(self.transition.device)
@@ -1069,6 +1086,6 @@ class MingAudioStreamingRunner:
             return
         else:
             pass
-        with torch.cuda.device(self.transition.device):
-            torch.cuda.current_stream(self.transition.device).synchronize()
+        with self.transition.device_context():
+            self.transition.synchronize_stream()
             captured.graph.reset()

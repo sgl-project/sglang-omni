@@ -450,6 +450,17 @@ def serve(
             help="Maximum number of items accepted by /v1/audio/speech/batch.",
         ),
     ] = DEFAULT_TTS_BATCH_MAX_ITEMS,
+    enable_speech_sse_named_events: Annotated[
+        bool,
+        typer.Option(
+            "--enable-speech-sse-named-events",
+            help=(
+                "Enable named SSE events for /v1/audio/speech with "
+                "stream_format=sse. Adds event lines and reports failures as "
+                "speech.audio.error. Omit to preserve data-only frames."
+            ),
+        ),
+    ] = False,
     mem_fraction_static: Annotated[
         float | None,
         typer.Option(
@@ -648,5 +659,6 @@ def serve(
         ),
         allowed_media_domains=normalize_allowed_media_domains(allowed_media_domain),
         tts_batch_max_items=validate_tts_batch_max_items(tts_batch_max_items),
+        enable_speech_sse_named_events=enable_speech_sse_named_events,
         skip_server_warmup=skip_server_warmup,
     )

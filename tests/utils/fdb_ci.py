@@ -93,7 +93,10 @@ METRIC_SPECS: dict[str, MetricSpec] = {
     ),
     "v10_candor_pause_intrusion_rate": MetricSpec(kind="rate", is_higher_better=False),
     "v10_turn_response_rate_2s": MetricSpec(kind="rate", is_higher_better=True),
-    "listening_omission_rate": MetricSpec(kind="omission_rate", is_higher_better=False),
+    # note (db-ol): reported, not gated, it swings between runs (about 0.005 to 0.032).
+    "listening_omission_rate": MetricSpec(
+        kind="omission_rate", is_higher_better=False, is_gated=False
+    ),
     "listening_utmos_mean": MetricSpec(kind="utmos", is_higher_better=True),
     "listening_voice_similarity_mean": MetricSpec(
         kind="voice_similarity", is_higher_better=True
