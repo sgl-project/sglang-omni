@@ -41,6 +41,8 @@ struct ChatResult {
   std::string finish_reason = "length";
   int prompt_tokens = 0;
   int completion_tokens = 0;
+  int draft_tokens = 0;
+  int accepted_draft_tokens = 0;
 };
 
 struct PreparedChatRequest {
@@ -113,6 +115,12 @@ private:
     std::deque<PendingRound> pending_rounds;
   };
 
+  struct DraftedGeneration {
+    std::vector<int> token_ids;
+    int draft_tokens = 0;
+    int accepted_draft_tokens = 0;
+  };
+
   Model(const std::filesystem::path &directory, const nlohmann::json &config,
         int context_tokens, SpeculativeAlgorithm speculative_algorithm);
   mlx::core::array Encode(const mlx::core::array &mel) const;
@@ -130,10 +138,10 @@ private:
   void RejectOldestDraft(std::vector<LayerCache> &caches,
                          int dropped_positions) const;
   bool IsStopToken(int token) const;
-  std::vector<int> GenerateWithDraft(const mlx::core::array &embeddings,
-                                     const std::vector<int> &prompt_ids,
-                                     int max_new_tokens,
-                                     const Cancellation &cancel) const;
+  DraftedGeneration GenerateWithDraft(const mlx::core::array &embeddings,
+                                      const std::vector<int> &prompt_ids,
+                                      int max_new_tokens,
+                                      const Cancellation &cancel) const;
   int AudioTokenCount(int mel_frames) const;
   mlx::core::array RmsNorm(const mlx::core::array &hidden,
                            const std::string &prefix) const;

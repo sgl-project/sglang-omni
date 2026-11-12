@@ -2,18 +2,19 @@
 """NEXTN decoding of a small random Ming3 checkpoint matches plain decoding.
 
 The checkpoint has one KDA layer, one latent-attention MoE layer and the
-prediction layer. About one draft in six is accepted, with and without a
-next round in flight, so both the commit and the rollback paths run. Changing
-the shapes, scales or seed needs a fresh check of that.
+prediction layer, whose drafts are accepted often enough that both the commit
+and the rollback paths run.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import random
 import struct
 import subprocess
 from pathlib import Path
+from typing import TypedDict
 
 import pytest
 
@@ -25,10 +26,24 @@ HIDDEN = 32
 LAYER_DEVIATION = 0.12
 
 
+class TensorHeader(TypedDict):
+    dtype: str
+    shape: list[int]
+    data_offsets: list[int]
+
+
+class ProbeRow(TypedDict):
+    budget: int
+    tokens: int
+    finish_reason: str
+    draft_tokens: int
+    accepted_draft_tokens: int
+
+
 def write_safetensors(
     path: Path, tensors: dict[str, tuple[list[int], list[float]]]
 ) -> None:
-    header: dict[str, object] = {}
+    header: dict[str, TensorHeader] = {}
     data = bytearray()
     for name, (shape, values) in tensors.items():
         header[name] = {
@@ -107,20 +122,14 @@ def checkpoint(tmp_path: Path) -> Path:
     generator = random.Random(26)
     tensors: dict[str, tuple[list[int], list[float]]] = {}
 
-    def size(shape: tuple[int, ...]) -> int:
-        count = 1
-        for dimension in shape:
-            count *= dimension
-        return count
-
     def normal(name: str, *shape: int, deviation: float = LAYER_DEVIATION) -> None:
         tensors[name] = (
             list(shape),
-            [generator.gauss(0, deviation) for _ in range(size(shape))],
+            [generator.gauss(0, deviation) for _ in range(math.prod(shape))],
         )
 
     def constant(name: str, value: float, *shape: int) -> None:
-        tensors[name] = (list(shape), [value] * size(shape))
+        tensors[name] = (list(shape), [value] * math.prod(shape))
 
     normal("model.word_embeddings.weight", VOCABULARY, HIDDEN, deviation=1)
     normal("lm_head.weight", VOCABULARY, HIDDEN, deviation=1)
@@ -184,25 +193,27 @@ def checkpoint(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def probe(probe_binary: Path, checkpoint: Path) -> list[dict[str, object]]:
+def probe(probe_binary: Path, checkpoint: Path) -> list[ProbeRow]:
     return json.loads(
         subprocess.check_output([str(probe_binary), str(checkpoint)], text=True)
     )
 
 
 def test_nextn_matches_plain_across_budgets(
-    mtp_probe_binary: Path, checkpoint: Path
+    ming3_mtp_probe_binary: Path, checkpoint: Path
 ) -> None:
-    rows = probe(mtp_probe_binary, checkpoint)
+    rows = probe(ming3_mtp_probe_binary, checkpoint)
     assert all(row["tokens"] <= row["budget"] for row in rows)
     assert any(row["tokens"] > 5 for row in rows)
+    accepted_draft_tokens = sum(row["accepted_draft_tokens"] for row in rows)
+    assert 0 < accepted_draft_tokens < sum(row["draft_tokens"] for row in rows)
 
 
 def test_nextn_stops_at_an_immediate_stop_token(
-    mtp_probe_binary: Path, checkpoint: Path
+    ming3_mtp_probe_binary: Path, checkpoint: Path
 ) -> None:
     (checkpoint / "generation_config.json").write_text(
         json.dumps({"eos_token_id": list(range(VOCABULARY))})
     )
-    rows = probe(mtp_probe_binary, checkpoint)
+    rows = probe(ming3_mtp_probe_binary, checkpoint)
     assert all(row["tokens"] == 1 and row["finish_reason"] == "stop" for row in rows)

@@ -46,7 +46,9 @@ int main(int argc, char **argv) {
       }
       rows.push_back({{"budget", budget},
                       {"tokens", actual.completion_tokens},
-                      {"finish_reason", actual.finish_reason}});
+                      {"finish_reason", actual.finish_reason},
+                      {"draft_tokens", actual.draft_tokens},
+                      {"accepted_draft_tokens", actual.accepted_draft_tokens}});
     }
   }
   std::cout << rows.dump() << '\n';

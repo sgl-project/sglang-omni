@@ -22,7 +22,7 @@ def stub_server_binary() -> Path:
 
 
 @pytest.fixture(scope="session")
-def mtp_probe_binary() -> Path:
+def ming3_mtp_probe_binary() -> Path:
     return Path(os.environ["NATIVE_MING3_MTP_PROBE"])
 
 

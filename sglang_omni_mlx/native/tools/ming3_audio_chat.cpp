@@ -70,17 +70,20 @@ int main(int argc, char **argv) {
     const auto started = std::chrono::steady_clock::now();
     const auto result =
         model.Generate(model.Prepare(std::move(request)), cancelled);
-    std::cout << nlohmann::json(
-                     {{"text", result.text},
-                      {"finish_reason", result.finish_reason},
-                      {"prompt_tokens", result.prompt_tokens},
-                      {"completion_tokens", result.completion_tokens},
-                      {"seconds",
-                       std::chrono::duration<double>(
-                           std::chrono::steady_clock::now() - started)
-                           .count()}})
-                     .dump()
-              << '\n';
+    auto output = nlohmann::json(
+        {{"text", result.text},
+         {"finish_reason", result.finish_reason},
+         {"prompt_tokens", result.prompt_tokens},
+         {"completion_tokens", result.completion_tokens},
+         {"seconds", std::chrono::duration<double>(
+                         std::chrono::steady_clock::now() - started)
+                         .count()}});
+    if (speculative_algorithm == ming3_audio::SpeculativeAlgorithm::kNextN) {
+      output["draft_tokens"] = result.draft_tokens;
+      output["accepted_draft_tokens"] = result.accepted_draft_tokens;
+    } else {
+    }
+    std::cout << output.dump() << '\n';
     return 0;
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';

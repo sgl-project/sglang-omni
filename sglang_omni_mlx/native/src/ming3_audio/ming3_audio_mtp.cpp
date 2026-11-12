@@ -38,12 +38,13 @@ mx::array Model::DraftForward(const mx::array &next_embeddings,
   return RmsNorm(drafted, prefix + ".final_layernorm");
 }
 
-std::vector<int> Model::GenerateWithDraft(const mx::array &embeddings,
-                                          const std::vector<int> &prompt_ids,
-                                          int max_new_tokens,
-                                          const Cancellation &cancel) const {
+Model::DraftedGeneration
+Model::GenerateWithDraft(const mx::array &embeddings,
+                         const std::vector<int> &prompt_ids, int max_new_tokens,
+                         const Cancellation &cancel) const {
   std::vector<LayerCache> caches(text_.num_hidden_layers);
-  std::vector<int> generated;
+  DraftedGeneration output;
+  auto &generated = output.token_ids;
   const auto token_ids = [](const std::vector<int> &ids) {
     return mx::array(ids.data(), {1, int(ids.size())}, mx::int32);
   };
@@ -96,10 +97,10 @@ std::vector<int> Model::GenerateWithDraft(const mx::array &embeddings,
   }
   mx::eval({first, first_draft});
   if (commit(first.item<int>())) {
-    return generated;
+    return output;
   } else if (max_new_tokens - int(generated.size()) == 1) {
     finish_with_one_step(first);
-    return generated;
+    return output;
   } else {
   }
   auto current = submit(first, first_draft);
@@ -122,21 +123,23 @@ std::vector<int> Model::GenerateWithDraft(const mx::array &embeddings,
     mx::eval({current.predictions, current.draft});
     const int drafted = current.draft.item<int>();
     const int32_t *predicted = current.predictions.data<int32_t>();
+    ++output.draft_tokens;
     if (drafted == predicted[0]) {
+      ++output.accepted_draft_tokens;
       const int bonus = predicted[1];
       AcceptOldestRound(caches);
       if (commit(drafted) || commit(bonus)) {
-        return generated;
+        return output;
       } else if (next.has_value()) {
         current = *next;
       } else {
         finish_with_one_step(token_ids({bonus}));
-        return generated;
+        return output;
       }
     } else {
       const int corrected = predicted[0];
       if (commit(corrected)) {
-        return generated;
+        return output;
       } else {
       }
       // note (altale): undo the rejected draft and the whole next round; the
@@ -146,7 +149,7 @@ std::vector<int> Model::GenerateWithDraft(const mx::array &embeddings,
       draft_cache.Trim(kRoundPositions * submitted_rounds);
       if (max_new_tokens - int(generated.size()) == 1) {
         finish_with_one_step(token_ids({corrected}));
-        return generated;
+        return output;
       } else {
       }
       current = submit(token_ids({corrected}),

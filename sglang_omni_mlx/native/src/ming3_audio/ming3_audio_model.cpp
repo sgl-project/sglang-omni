@@ -468,8 +468,11 @@ ChatResult Model::Generate(const PreparedChatRequest &prepared,
   } else {
   }
   if (speculative_algorithm_ == SpeculativeAlgorithm::kNextN) {
-    generated = GenerateWithDraft(embeddings, prepared.prompt_ids,
-                                  request.max_new_tokens, cancel);
+    auto drafted = GenerateWithDraft(embeddings, prepared.prompt_ids,
+                                     request.max_new_tokens, cancel);
+    generated = std::move(drafted.token_ids);
+    result.draft_tokens = drafted.draft_tokens;
+    result.accepted_draft_tokens = drafted.accepted_draft_tokens;
   } else {
     std::vector<LayerCache> caches(text_.num_hidden_layers);
     auto next_token =
