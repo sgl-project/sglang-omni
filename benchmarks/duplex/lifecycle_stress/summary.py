@@ -3,26 +3,31 @@
 
 from __future__ import annotations
 
-import json
 from collections import Counter
 from pathlib import Path
 
-from pydantic import JsonValue
+import numpy as np
+from pydantic import BaseModel, JsonValue
 
 from benchmarks.duplex.lifecycle_stress.records import (
-    REPORT_FILE,
     SUMMARY_FILE,
-    CycleSample,
+    CloseStyle,
+    DropPoint,
+    DropStyle,
+    Scenario,
+    ServerMode,
+    ServerSnapshot,
     StressSamples,
 )
-from benchmarks.duplex.pacing_probe import percentiles_ms
 
-MS_PER_SECOND = 1000
 # note (Yi Zhao): a steady server should not grow a full megabyte per cycle of churn.
 RSS_GROWTH_BUDGET_MEGABYTES_PER_CYCLE = 1.0
+REVISION_DISPLAY_LENGTH = 9
+UNMEASURED_SNAPSHOT = ServerSnapshot(taken_s=0.0)
 REPORT_COLUMNS = (
     "scenario",
     "mode",
+    "server revision",
     "client leaves",
     "processes x concurrency x cycles",
     "completed / dropped / denied / errored",
@@ -35,49 +40,120 @@ REPORT_COLUMNS = (
 )
 
 
-def count_outcomes(cycles: list[CycleSample], outcome: str) -> int:
-    return sum(
-        session.outcome == outcome for cycle in cycles for session in cycle.sessions
-    )
+class LatencyPercentiles(BaseModel):
+    p50_ms: float
+    p95_ms: float
+    p99_ms: float
+    max_ms: float
 
 
-def last_snapshot_field(samples: StressSamples, field: str) -> int | float | None:
-    snapshot = samples.cycles[-1].snapshot_after if samples.cycles else None
-    return None if snapshot is None else getattr(snapshot, field)
+class ServerChange(BaseModel):
+    """What one client process saw the server hold before its first cycle and after its last."""
+
+    sessions_left: int | None
+    rss_baseline_megabytes: float | None
+    rss_final_megabytes: float | None
+    rss_growth_megabytes: float | None
+    task_growth: int | None
+    thread_growth: int | None
+    open_fd_growth: int | None
 
 
-def growth(samples: StressSamples, field: str) -> int | float | None:
-    baseline = None if samples.baseline is None else getattr(samples.baseline, field)
-    final = last_snapshot_field(samples, field)
+class StressSummary(BaseModel):
+    scenario: Scenario
+    url: str
+    server: dict[str, JsonValue]
+    source: dict[str, JsonValue]
+    platform: str
+    server_mode: ServerMode | None
+    processes: int
+    concurrency: int
+    cycles: int
+    appends_per_session: int
+    close_style: CloseStyle
+    drop_point: DropPoint
+    drop_style: DropStyle
+    max_connections: int | None
+    has_debug_route: bool
+    sessions_attempted: int
+    sessions_completed: int
+    sessions_dropped: int
+    sessions_denied: int
+    sessions_errored: int
+    close_codes: dict[str, int]
+    cleanup_latency: LatencyPercentiles | None
+    cleanup_timeouts: int
+    capacity_recovery: LatencyPercentiles | None
+    capacity_probes_denied: int
+    server_changes: list[ServerChange]
+    rss_growth_per_cycle_megabytes: float | None
+    is_final_probe_completed: bool
+    client_cpu_cores_max: float
+    client_peak_rss_megabytes_max: float
+    unmet_targets: list[str]
+    targets_not_measurable: list[str]
+
+
+def latency_percentiles(latencies_ms: list[float]) -> LatencyPercentiles | None:
+    if latencies_ms:
+        p50_ms, p95_ms, p99_ms = np.percentile(latencies_ms, [50, 95, 99])
+        return LatencyPercentiles(
+            p50_ms=float(p50_ms),
+            p95_ms=float(p95_ms),
+            p99_ms=float(p99_ms),
+            max_ms=max(latencies_ms),
+        )
+    else:
+        return None
+
+
+def count_growth(baseline: int | None, final: int | None) -> int | None:
     return None if baseline is None or final is None else final - baseline
 
 
-def format_ms(value: JsonValue) -> str:
-    return "-" if value is None else f"{value:.0f}"
-
-
-def summarize(samples: list[StressSamples]) -> dict[str, JsonValue]:
+def summarize(samples: list[StressSamples]) -> StressSummary:
     assert samples, "no samples to summarize"
     first = samples[0]
     cycles = [cycle for sample in samples for cycle in sample.cycles]
-    cleanup_s = [
-        cycle.cleanup_latency_ms / MS_PER_SECOND
-        for cycle in cycles
-        if cycle.cleanup_latency_ms is not None
-    ]
-    recovery_s = [
-        cycle.capacity_recovery_ms / MS_PER_SECOND
-        for cycle in cycles
-        if cycle.capacity_recovery_ms is not None
-    ]
+    outcome_counts = Counter(
+        session.outcome for cycle in cycles for session in cycle.sessions
+    )
     close_codes: Counter[str] = Counter()
     for cycle in cycles:
         close_codes.update(cycle.close_codes)
-    sessions_left = [
-        last_snapshot_field(sample, "active_sessions") for sample in samples
+    probes_denied = sum(
+        cycle.capacity_probe.denied
+        for cycle in cycles
+        if cycle.capacity_probe is not None
+    )
+    server_changes: list[ServerChange] = []
+    for sample in samples:
+        last_snapshot = sample.cycles[-1].snapshot_after if sample.cycles else None
+        baseline = sample.baseline or UNMEASURED_SNAPSHOT
+        final = last_snapshot or UNMEASURED_SNAPSHOT
+        server_changes.append(
+            ServerChange(
+                sessions_left=final.active_sessions,
+                rss_baseline_megabytes=baseline.rss_megabytes,
+                rss_final_megabytes=final.rss_megabytes,
+                rss_growth_megabytes=(
+                    None
+                    if baseline.rss_megabytes is None or final.rss_megabytes is None
+                    else final.rss_megabytes - baseline.rss_megabytes
+                ),
+                task_growth=count_growth(baseline.task_count, final.task_count),
+                thread_growth=count_growth(baseline.thread_count, final.thread_count),
+                open_fd_growth=count_growth(
+                    baseline.open_fd_count, final.open_fd_count
+                ),
+            )
+        )
+    sessions_left = [change.sessions_left for change in server_changes]
+    measured_rss_growth = [
+        change.rss_growth_megabytes
+        for change in server_changes
+        if change.rss_growth_megabytes is not None
     ]
-    rss_growth = [growth(sample, "rss_megabytes") for sample in samples]
-    measured_rss_growth = [value for value in rss_growth if value is not None]
     growth_per_cycle = (
         None
         if not measured_rss_growth
@@ -86,15 +162,6 @@ def summarize(samples: list[StressSamples]) -> dict[str, JsonValue]:
     is_final_probe_completed = all(
         sample.final_probe is not None and sample.final_probe.outcome == "completed"
         for sample in samples
-    )
-    counts = {
-        outcome: count_outcomes(cycles, outcome)
-        for outcome in ("completed", "dropped", "denied", "errored")
-    }
-    probes_denied = sum(
-        cycle.capacity_probe.denied
-        for cycle in cycles
-        if cycle.capacity_probe is not None
     )
     targets: list[tuple[str, bool | None]] = [
         (
@@ -111,7 +178,7 @@ def summarize(samples: list[StressSamples]) -> dict[str, JsonValue]:
         ),
         (
             "no admission denied below the connection cap",
-            counts["denied"] > 0 if first.scenario == "churn" else None,
+            outcome_counts["denied"] > 0 if first.scenario == "churn" else None,
         ),
         (
             "every capacity probe fully admitted",
@@ -126,113 +193,117 @@ def summarize(samples: list[StressSamples]) -> dict[str, JsonValue]:
                 else growth_per_cycle > RSS_GROWTH_BUDGET_MEGABYTES_PER_CYCLE
             ),
         ),
-        ("no errored sessions", counts["errored"] > 0),
+        ("no errored sessions", outcome_counts["errored"] > 0),
     ]
-    return {
-        "scenario": first.scenario,
-        "url": first.url,
-        "server_mode": None if first.baseline is None else first.baseline.mode,
-        "processes": len(samples),
-        "concurrency": sum(sample.concurrency for sample in samples),
-        "cycles": first.cycles_requested,
-        "appends_per_session": first.appends_per_session,
-        "close_style": first.close_style,
-        "drop_point": first.drop_point,
-        "drop_style": first.drop_style,
-        "max_connections": first.max_connections,
-        "has_debug_route": all(sample.has_debug_route for sample in samples),
-        "sessions_attempted": sum(counts.values()),
-        **{f"sessions_{outcome}": count for outcome, count in counts.items()},
-        "close_codes": dict(close_codes),
-        **(percentiles_ms(cleanup_s, "cleanup_latency") if cleanup_s else {}),
-        "cleanup_timeouts": sum(cycle.is_cleanup_timed_out for cycle in cycles),
-        **(percentiles_ms(recovery_s, "capacity_recovery") if recovery_s else {}),
-        "capacity_probes_denied": probes_denied,
-        "sessions_left_after_last_cycle": sessions_left,
-        "rss_baseline_megabytes": [
-            None if sample.baseline is None else sample.baseline.rss_megabytes
-            for sample in samples
-        ],
-        "rss_final_megabytes": [
-            last_snapshot_field(sample, "rss_megabytes") for sample in samples
-        ],
-        "rss_growth_megabytes": rss_growth,
-        "rss_growth_per_cycle_megabytes": growth_per_cycle,
-        "task_growth": [growth(sample, "task_count") for sample in samples],
-        "thread_growth": [growth(sample, "thread_count") for sample in samples],
-        "open_fd_growth": [growth(sample, "open_fd_count") for sample in samples],
-        "final_probe_completed": is_final_probe_completed,
-        "client_cpu_cores_max": max(
+    return StressSummary(
+        scenario=first.scenario,
+        url=first.url,
+        server=first.server,
+        source=first.source,
+        platform=first.platform,
+        server_mode=None if first.baseline is None else first.baseline.mode,
+        processes=len(samples),
+        concurrency=sum(sample.concurrency for sample in samples),
+        cycles=first.cycles_requested,
+        appends_per_session=first.appends_per_session,
+        close_style=first.close_style,
+        drop_point=first.drop_point,
+        drop_style=first.drop_style,
+        max_connections=first.max_connections,
+        has_debug_route=all(sample.has_debug_route for sample in samples),
+        sessions_attempted=sum(outcome_counts.values()),
+        sessions_completed=outcome_counts["completed"],
+        sessions_dropped=outcome_counts["dropped"],
+        sessions_denied=outcome_counts["denied"],
+        sessions_errored=outcome_counts["errored"],
+        close_codes=dict(close_codes),
+        cleanup_latency=latency_percentiles(
+            [
+                cycle.cleanup_latency_ms
+                for cycle in cycles
+                if cycle.cleanup_latency_ms is not None
+            ]
+        ),
+        cleanup_timeouts=sum(cycle.is_cleanup_timed_out for cycle in cycles),
+        capacity_recovery=latency_percentiles(
+            [
+                cycle.capacity_recovery_ms
+                for cycle in cycles
+                if cycle.capacity_recovery_ms is not None
+            ]
+        ),
+        capacity_probes_denied=probes_denied,
+        server_changes=server_changes,
+        rss_growth_per_cycle_megabytes=growth_per_cycle,
+        is_final_probe_completed=is_final_probe_completed,
+        client_cpu_cores_max=max(
             sample.client_cpu_s / sample.client_wall_s for sample in samples
         ),
-        "client_peak_rss_megabytes_max": max(
+        client_peak_rss_megabytes_max=max(
             sample.client_peak_rss_megabytes for sample in samples
         ),
-        "python": first.python,
-        "websockets": first.websockets,
-        "platform": first.platform,
-        "unmet_targets": [label for label, is_unmet in targets if is_unmet is True],
-        "targets_not_measurable": [
+        unmet_targets=[label for label, is_unmet in targets if is_unmet is True],
+        targets_not_measurable=[
             label for label, is_unmet in targets if is_unmet is None
         ],
-    }
-
-
-def report_row(summary: dict[str, JsonValue]) -> str:
-    sessions_left = summary["sessions_left_after_last_cycle"]
-    assert isinstance(sessions_left, list)
-    rss_baseline = summary["rss_baseline_megabytes"]
-    rss_final = summary["rss_final_megabytes"]
-    assert isinstance(rss_baseline, list) and isinstance(rss_final, list)
-    task_growth = summary["task_growth"]
-    thread_growth = summary["thread_growth"]
-    assert isinstance(task_growth, list) and isinstance(thread_growth, list)
-    cells = (
-        str(summary["scenario"]),
-        str(summary["server_mode"] or "-"),
-        (
-            f"{summary['drop_point']} {summary['drop_style']}"
-            if summary["scenario"] == "drop"
-            else f"close {summary['close_style']}"
-        ),
-        f"{summary['processes']} x {summary['concurrency']} x {summary['cycles']}",
-        f"{summary['sessions_completed']} / {summary['sessions_dropped']} / "
-        f"{summary['sessions_denied']} / {summary['sessions_errored']}",
-        ", ".join("-" if left is None else str(left) for left in sessions_left),
-        f"{format_ms(summary.get('cleanup_latency_p50_ms'))} / "
-        f"{format_ms(summary.get('cleanup_latency_p99_ms'))}",
-        format_ms(summary.get("capacity_recovery_p99_ms")),
-        ", ".join(
-            "-" if before is None or after is None else f"{before:.0f} -> {after:.0f}"
-            for before, after in zip(rss_baseline, rss_final)
-        ),
-        ", ".join(
-            "-" if tasks is None or threads is None else f"{tasks:+d} / {threads:+d}"
-            for tasks, threads in zip(task_growth, thread_growth)
-        ),
-        "completed" if summary["final_probe_completed"] else "failed",
-    )
-    return "| " + " | ".join(cells) + " |"
-
-
-def render_report(summaries: list[dict[str, JsonValue]]) -> str:
-    header = "| " + " | ".join(REPORT_COLUMNS) + " |"
-    divider = "|" + "---|" * len(REPORT_COLUMNS)
-    return (
-        "\n".join([header, divider, *(report_row(summary) for summary in summaries)])
-        + "\n"
     )
 
 
-def write_summary(samples: list[StressSamples], output: Path) -> dict[str, JsonValue]:
+def render_report(summaries: list[StressSummary]) -> str:
+    lines = [
+        "| " + " | ".join(REPORT_COLUMNS) + " |",
+        "|" + "---|" * len(REPORT_COLUMNS),
+    ]
+    for summary in summaries:
+        cleanup = summary.cleanup_latency
+        recovery = summary.capacity_recovery
+        cells = (
+            summary.scenario,
+            summary.server_mode or "-",
+            str(summary.server["revision"])[:REVISION_DISPLAY_LENGTH],
+            (
+                f"{summary.drop_point} {summary.drop_style}"
+                if summary.scenario == "drop"
+                else f"close {summary.close_style}"
+            ),
+            f"{summary.processes} x {summary.concurrency} x {summary.cycles}",
+            f"{summary.sessions_completed} / {summary.sessions_dropped} / "
+            f"{summary.sessions_denied} / {summary.sessions_errored}",
+            ", ".join(
+                "-" if change.sessions_left is None else str(change.sessions_left)
+                for change in summary.server_changes
+            ),
+            (
+                "-"
+                if cleanup is None
+                else f"{cleanup.p50_ms:.0f} / {cleanup.p99_ms:.0f}"
+            ),
+            "-" if recovery is None else f"{recovery.p99_ms:.0f}",
+            ", ".join(
+                (
+                    "-"
+                    if change.rss_baseline_megabytes is None
+                    or change.rss_final_megabytes is None
+                    else f"{change.rss_baseline_megabytes:.0f} -> {change.rss_final_megabytes:.0f}"
+                )
+                for change in summary.server_changes
+            ),
+            ", ".join(
+                (
+                    "-"
+                    if change.task_growth is None or change.thread_growth is None
+                    else f"{change.task_growth:+d} / {change.thread_growth:+d}"
+                )
+                for change in summary.server_changes
+            ),
+            "completed" if summary.is_final_probe_completed else "failed",
+        )
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines) + "\n"
+
+
+def write_summary(samples: list[StressSamples], output: Path) -> StressSummary:
     summary = summarize(samples)
     output.mkdir(parents=True, exist_ok=True)
-    (output / SUMMARY_FILE).write_text(json.dumps(summary, indent=2) + "\n")
+    (output / SUMMARY_FILE).write_text(summary.model_dump_json(indent=2) + "\n")
     return summary
-
-
-def write_report(summaries: list[dict[str, JsonValue]], output: Path) -> str:
-    report = render_report(summaries)
-    output.mkdir(parents=True, exist_ok=True)
-    (output / REPORT_FILE).write_text(report)
-    return report

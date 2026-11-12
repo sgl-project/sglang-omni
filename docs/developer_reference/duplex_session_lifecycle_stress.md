@@ -58,23 +58,25 @@ Not recorded yet. The intended command is `run` with the GPU server's URL, its `
 `benchmarks/duplex/lifecycle_stress` has three subcommands.
 
 - `mock` serves the real `/v1/realtime` route of `sglang_omni.serve.openai_api` over an adapter that answers each 20 ms unit with a short text response, and adds a `/debug/lifecycle` route with the session count, RSS, task, thread and file descriptor counts. `--mode deployment` (default) is the shared-session path with a connection cap; `--mode legacy` is the per-connection path with the Silero and Smart Turn loads replaced by a detector that never hears speech.
-- `run` drives one scenario against any realtime URL and writes `samples.json` and `summary.json`.
-- `report` pools run directories into one summary per scenario and mode and writes `report.md`.
+- `run` drives one scenario against any realtime URL and writes `samples.json` and `summary.json`. Both carry the server identity the operator passes (`--server-revision`, `--model`, and optionally `--model-revision` and `--runtime`), the model IDs the server lists at `/v1/models`, and the client's commit, Python and package versions.
+- `report` pools run directories into one summary per scenario, mode and server revision and writes `report.md`, so runs against two branches stay in separate rows.
 
 ```bash
+server_revision=$(git rev-parse HEAD)
 python -m benchmarks.duplex.lifecycle_stress mock --port 8765 --max-connections 128 > mock.log &
 mock_pid=$!
 until grep -q listening mock.log; do sleep 0.2; done
-python -m benchmarks.duplex.lifecycle_stress run --url ws://127.0.0.1:8765/v1/realtime --scenario churn --concurrency 64 --cycles 50 --max-connections 128 --server-pid $mock_pid --output runs/churn
-python -m benchmarks.duplex.lifecycle_stress run --url ws://127.0.0.1:8765/v1/realtime --scenario drop --drop-point append --drop-style abort --concurrency 64 --cycles 50 --max-connections 128 --server-pid $mock_pid --output runs/drop
+python -m benchmarks.duplex.lifecycle_stress run --url ws://127.0.0.1:8765/v1/realtime --server-revision $server_revision --model lifecycle-stress-mock --scenario churn --concurrency 64 --cycles 50 --max-connections 128 --server-pid $mock_pid --output runs/churn
+python -m benchmarks.duplex.lifecycle_stress run --url ws://127.0.0.1:8765/v1/realtime --server-revision $server_revision --model lifecycle-stress-mock --scenario drop --drop-point append --drop-style abort --concurrency 64 --cycles 50 --max-connections 128 --server-pid $mock_pid --output runs/drop
 kill -INT $mock_pid; wait $mock_pid
 ```
 
 ```bash
+server_revision=$(git rev-parse HEAD)
 python -m benchmarks.duplex.lifecycle_stress mock --port 8766 --mode legacy > legacy.log &
 mock_pid=$!
 until grep -q listening legacy.log; do sleep 0.2; done
-python -m benchmarks.duplex.lifecycle_stress run --url ws://127.0.0.1:8766/v1/realtime --scenario drop --drop-point update --drop-style close --close-style frame --concurrency 64 --cycles 20 --cleanup-wait-s 2 --server-pid $mock_pid --output runs/legacy_drop
+python -m benchmarks.duplex.lifecycle_stress run --url ws://127.0.0.1:8766/v1/realtime --server-revision $server_revision --model lifecycle-stress-mock --scenario drop --drop-point update --drop-style close --close-style frame --concurrency 64 --cycles 20 --cleanup-wait-s 2 --server-pid $mock_pid --output runs/legacy_drop
 kill -INT $mock_pid; wait $mock_pid
 ```
 
@@ -95,3 +97,4 @@ python -m benchmarks.duplex.lifecycle_stress report runs/churn runs/drop runs/le
 - The mock answers every unit with text and never speaks; its RSS per leaked session is a floor, not the cost with a model.
 - One client process ran up to 64 sessions at once here at up to 0.4 of one core; above about 128 the duplex client needs its own host, see #3288.
 - The mock and the client disable WebSocket pings; a real uvicorn server pings every 20 s, which does not affect these short sessions.
+- The server revision is what the operator passes, not something the tool reads from the server. The client's commit is the checkout's HEAD, so uncommitted edits to this tool do not show in a run's record.

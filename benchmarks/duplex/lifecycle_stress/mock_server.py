@@ -77,14 +77,6 @@ class SilentVAD:
         pass
 
 
-def install_legacy_stubs() -> None:
-    """Keep the legacy per-connection session from loading Silero and the Smart Turn model."""
-    # note (Yi Zhao): #3561 measures the per-connection Silero load; this benchmark measures the session lifecycle around it.
-    session_module.StreamingVAD = SilentVAD
-    turn_detector_module.StreamingVAD = SilentVAD
-    smart_turn_module.load_smart_turn = lambda: None
-
-
 @dataclass(kw_only=True)
 class EchoAdapter(InteractionAdapter):
     """Answers every native unit with a short text response so the server keeps sending."""
@@ -143,24 +135,8 @@ class MockSettings:
     close_delay_ms: float = 0.0
 
 
-def add_lifecycle_debug_route(app: FastAPI, mode: ServerMode) -> None:
-    """Expose the session count and process resources that a real server does not."""
-
-    @app.get(DEBUG_ROUTE_PATH, response_model=ServerSnapshot)
-    async def lifecycle_snapshot() -> ServerSnapshot:
-        return ServerSnapshot(
-            taken_s=time.perf_counter(),
-            mode=mode,
-            active_sessions=len(app.state.realtime_manager.sessions),
-            rss_megabytes=read_rss_megabytes(os.getpid()),
-            peak_rss_megabytes=peak_rss_megabytes(),
-            task_count=len(asyncio.all_tasks()),
-            thread_count=threading.active_count(),
-            open_fd_count=read_open_fd_count(os.getpid()),
-        )
-
-
 def build_mock_app(settings: MockSettings) -> FastAPI:
+    """The real app over fakes, plus a route for the session count and process resources a real server does not expose."""
     client = Client(HealthyCoordinator())
     if settings.mode == "deployment":
         deployment = RealtimeDeployment(
@@ -181,9 +157,25 @@ def build_mock_app(settings: MockSettings) -> FastAPI:
             client, model_name=MOCK_MODEL_NAME, realtime_deployment=deployment
         )
     else:
-        install_legacy_stubs()
+        # note (Yi Zhao): #3561 measures the per-connection Silero load; this benchmark measures the session lifecycle around it.
+        session_module.StreamingVAD = SilentVAD
+        turn_detector_module.StreamingVAD = SilentVAD
+        smart_turn_module.load_smart_turn = lambda: None
         app = create_app(client, model_name=MOCK_MODEL_NAME, enable_realtime=True)
-    add_lifecycle_debug_route(app, settings.mode)
+
+    @app.get(DEBUG_ROUTE_PATH, response_model=ServerSnapshot)
+    async def lifecycle_snapshot() -> ServerSnapshot:
+        return ServerSnapshot(
+            taken_s=time.perf_counter(),
+            mode=settings.mode,
+            active_sessions=len(app.state.realtime_manager.sessions),
+            rss_megabytes=read_rss_megabytes(os.getpid()),
+            peak_rss_megabytes=peak_rss_megabytes(),
+            task_count=len(asyncio.all_tasks()),
+            thread_count=threading.active_count(),
+            open_fd_count=read_open_fd_count(os.getpid()),
+        )
+
     return app
 
 

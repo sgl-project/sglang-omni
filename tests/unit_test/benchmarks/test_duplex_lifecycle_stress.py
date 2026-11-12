@@ -7,6 +7,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from pydantic import JsonValue
 
 from benchmarks.duplex.lifecycle_stress.mock_server import (
     MockSettings,
@@ -27,11 +28,17 @@ from sglang_omni.serve.realtime import turn_detector as turn_detector_module
 
 CLEANUP_WAIT_S = 5.0
 ABNORMAL_CLOSE_CODE = 1006
+SERVER_REVISION = "0123456789abcdef0123456789abcdef01234567"
+SERVER: dict[str, JsonValue] = {
+    "revision": SERVER_REVISION,
+    "model": "lifecycle-stress-mock",
+}
 
 
 def settings_for(url: str, output: Path, **overrides: int | str) -> RunSettings:
     base = RunSettings(
         url=url,
+        server=SERVER,
         scenario="churn",
         concurrency=2,
         cycles=1,
@@ -74,6 +81,8 @@ def test_churn_cycle_completes_every_session_and_the_server_releases_them(
     assert samples.final_probe is not None
     assert samples.final_probe.outcome == "completed"
     assert samples.has_debug_route
+    assert samples.server == SERVER
+    assert "harness_git_head" in samples.source
 
 
 def test_drop_after_append_is_a_reset_the_shared_session_releases(
@@ -142,6 +151,9 @@ def stress_samples(
     return StressSamples(
         scenario="churn",
         url="ws://example/v1/realtime",
+        server=SERVER,
+        source={"harness_git_head": None},
+        platform="test",
         concurrency=1,
         cycles_requested=2,
         appends_per_session=1,
@@ -177,9 +189,6 @@ def stress_samples(
         client_wall_s=1.0,
         client_cpu_s=0.1,
         client_peak_rss_megabytes=50.0,
-        python="3.12",
-        websockets="17",
-        platform="test",
     )
 
 
@@ -187,12 +196,13 @@ def test_summary_targets_name_leftover_sessions_and_rss_growth() -> None:
     """Leftover sessions and a megabyte per cycle of RSS growth each fail their own target."""
     clean = summarize([stress_samples(0, 100.5)])
     leaking = summarize([stress_samples(3, 104.0)])
-    assert clean["unmet_targets"] == []
-    assert leaking["unmet_targets"] == [
+    assert clean.unmet_targets == []
+    assert leaking.unmet_targets == [
         "no sessions left after the last cycle",
         "server RSS growth per cycle under budget",
     ]
-    assert "every capacity probe fully admitted" in clean["targets_not_measurable"]
+    assert "every capacity probe fully admitted" in clean.targets_not_measurable
     report = render_report([clean, leaking])
     assert report.count("\n") == 4
     assert "| 3 |" in report
+    assert f"| {SERVER_REVISION[:9]} |" in report

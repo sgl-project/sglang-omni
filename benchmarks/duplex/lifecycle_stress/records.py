@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, JsonValue
 
 SAMPLES_FILE = "samples.json"
 SUMMARY_FILE = "summary.json"
@@ -66,6 +66,9 @@ class CycleSample(BaseModel):
 class StressSamples(BaseModel):
     scenario: Scenario
     url: str
+    server: dict[str, JsonValue]
+    source: dict[str, JsonValue]
+    platform: str
     concurrency: int
     cycles_requested: int
     appends_per_session: int
@@ -81,6 +84,3 @@ class StressSamples(BaseModel):
     client_wall_s: float
     client_cpu_s: float
     client_peak_rss_megabytes: float
-    python: str
-    websockets: str
-    platform: str
