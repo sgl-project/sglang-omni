@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 import torch
@@ -19,6 +19,7 @@ from sglang_omni.models.firered_tts3.model_runner import (
 )
 from sglang_omni.models.firered_tts3.payload_types import TEXT_TOKEN_BUDGET
 from sglang_omni.models.firered_tts3.prefill import text_output_token_count
+from sglang_omni.models.firered_tts3.profiling import ProfilingProbe
 from sglang_omni.models.firered_tts3.request_builders import (
     CONTROL_TOKEN_ID,
     DS_STAGE_PATCH,
@@ -89,6 +90,43 @@ def replay(runner: FireRedTTS3ModelRunner, request: SchedulerRequest) -> torch.T
     runner.before_prefill(batch, None, [request])
     assert batch.input_embeds.shape == (request_data.req.extend_len, 8)
     return batch.input_embeds
+
+
+def test_prefill_failure_clears_prepared_requests() -> None:
+    runner = make_runner()
+    first = make_flow_request(index=0, variant="instruct")
+    second = make_flow_request(index=1, variant="base")
+    runner.suspend_request_data = Mock(wraps=runner.suspend_request_data)
+    runner.clear_request_data = Mock(wraps=runner.clear_request_data)
+    batch = SimpleNamespace(input_ids=torch.zeros(6, dtype=torch.long))
+
+    with pytest.raises(RuntimeError, match="missing its reference-conditioning"):
+        runner.before_prefill(batch, None, [first, second])
+
+    assert runner.active_requests == {}
+    assert first.data.flow_state is None
+    assert not first.data.pending_feedback_queue
+    assert runner.suspend_request_data.call_count == 2
+    runner.clear_request_data.assert_called_once_with(first.data)
+
+
+def test_prefill_clock_failure_clears_prepared_requests() -> None:
+    runner = make_runner()
+    request = make_flow_request(index=0, variant="instruct")
+    batch = SimpleNamespace(input_ids=torch.zeros(3, dtype=torch.long))
+    clock = SimpleNamespace(perf_counter=Mock(side_effect=KeyboardInterrupt))
+    with (
+        patch.object(
+            ProfilingProbe, "create", return_value=ProfilingProbe(enabled=True)
+        ),
+        patch("sglang_omni.models.firered_tts3.prefill.time", clock),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        runner.before_prefill(batch, None, [request])
+
+    assert runner.active_requests == {}
+    assert request.data.flow_state is None
+    assert not request.data.pending_feedback_queue
 
 
 @pytest.mark.parametrize(

@@ -232,41 +232,9 @@ class Conv1dWeightCache(TorchDispatchMode):
             return func(*args, **(kwargs or {}))
         else:
             pass
-        if func is torch.ops.aten.conv1d.default:
-            names = (
-                "input",
-                "weight",
-                "bias",
-                "stride",
-                "padding",
-                "dilation",
-                "groups",
-            )
-        else:
-            names = (
-                "input",
-                "weight",
-                "bias",
-                "stride",
-                "padding",
-                "dilation",
-                "transposed",
-                "output_padding",
-                "groups",
-            )
-        fields: dict[str, object] = {
-            "bias": None,
-            "stride": [1],
-            "padding": [0],
-            "dilation": [1],
-            "transposed": False,
-            "output_padding": [0],
-            "groups": 1,
-        }
-        fields.update(zip(names, args))
-        fields.update(kwargs or {})
-        inputs = fields.get("input")
-        weight = fields.get("weight")
+        kwargs = kwargs or {}
+        inputs = kwargs.get("input", args[0] if args else None)
+        weight = kwargs.get("weight", args[1] if len(args) > 1 else None)
         if not isinstance(inputs, torch.Tensor) or not isinstance(weight, torch.Tensor):
             self.misses += 1
             return func(*args, **(kwargs or {}))
@@ -294,12 +262,25 @@ class Conv1dWeightCache(TorchDispatchMode):
             return func(*args, **(kwargs or {}))
         else:
             pass
-        output_padding = fields["output_padding"]
-        stride = fields["stride"]
-        padding = fields["padding"]
-        dilation = fields["dilation"]
+        bias = kwargs.get("bias", args[2] if len(args) > 2 else None)
+        stride = kwargs.get("stride", args[3] if len(args) > 3 else [1])
+        padding = kwargs.get("padding", args[4] if len(args) > 4 else [0])
+        dilation = kwargs.get("dilation", args[5] if len(args) > 5 else [1])
+        if func is torch.ops.aten.conv1d.default:
+            transposed = kwargs.get("transposed", False)
+            output_padding = kwargs.get("output_padding", [0])
+            groups = kwargs.get("groups", args[6] if len(args) > 6 else 1)
+        else:
+            transposed = kwargs.get("transposed", args[6] if len(args) > 6 else False)
+            output_padding = kwargs.get(
+                "output_padding", args[7] if len(args) > 7 else [0]
+            )
+            groups = kwargs.get("groups", args[8] if len(args) > 8 else 1)
         if (
-            not isinstance(output_padding, Sequence)
+            (bias is not None and not isinstance(bias, torch.Tensor))
+            or not isinstance(groups, int | torch.SymInt)
+            or not isinstance(transposed, bool)
+            or not isinstance(output_padding, Sequence)
             or not isinstance(stride, Sequence)
             or not isinstance(padding, Sequence)
             or not isinstance(dilation, Sequence)
@@ -315,7 +296,7 @@ class Conv1dWeightCache(TorchDispatchMode):
             return func(*args, **(kwargs or {}))
         else:
             pass
-        if fields["transposed"] or any(output_padding):
+        if transposed or any(output_padding):
             self.misses += 1
             return func(*args, **(kwargs or {}))
         else:
@@ -345,10 +326,10 @@ class Conv1dWeightCache(TorchDispatchMode):
             and inputs.dtype == torch.bfloat16
             and tuple(inputs.shape) == INPUT_SHAPE
             and tuple(entry.packed.shape) == WEIGHT_SHAPE
-            and fields["bias"] is None
+            and bias is None
             and stride == dilation == [1, 1]
             and padding == [0, 1]
-            and fields["groups"] == 1
+            and groups == 1
         ):
             # note (Codex): preserve the NCHW reduction plan for this NHWC shape.
             if self.controlled_plan is None:
@@ -360,12 +341,12 @@ class Conv1dWeightCache(TorchDispatchMode):
             result = torch.ops.aten.convolution.default(
                 inputs,
                 entry.packed,
-                fields["bias"],
+                bias,
                 stride,
                 padding,
                 dilation,
                 False,
                 [0, 0],
-                fields["groups"],
+                groups,
             )
         return (result.squeeze(2) if squeeze else result).contiguous()

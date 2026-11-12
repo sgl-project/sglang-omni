@@ -246,10 +246,10 @@ class FfnGemmMode(TorchDispatchMode):
         if not self.enabled or func is not torch.ops.aten.addmm.out:
             return func(*args, **kwargs)
         else:
-            fields: dict[str, object] = {"alpha": 1, "beta": 1}
-            fields.update(zip(("self", "mat1", "mat2"), args))
-            fields.update(kwargs)
-            weight = fields.get("mat2")
+            parameter_names = ("self", "mat1", "mat2")
+            provided_names = set(parameter_names[: len(args)]) | set(kwargs)
+            provided_names.update(("alpha", "beta"))
+            weight = kwargs.get("mat2", args[2] if len(args) > 2 else None)
             pointer = weight.data_ptr() if isinstance(weight, torch.Tensor) else None
             entry = self.weights.get(pointer)
             if entry is None:
@@ -259,7 +259,7 @@ class FfnGemmMode(TorchDispatchMode):
                 configs = FFN_CONFIGS
             if entry is None:
                 return func(*args, **kwargs)
-            elif len(args) > 3 or set(fields) != {
+            elif len(args) > 3 or provided_names != {
                 "self",
                 "mat1",
                 "mat2",
@@ -270,7 +270,9 @@ class FfnGemmMode(TorchDispatchMode):
                 self.misses += 1
                 return func(*args, **kwargs)
             else:
-                inputs, bias, out = (fields[name] for name in ("mat1", "self", "out"))
+                inputs = kwargs.get("mat1", args[1] if len(args) > 1 else None)
+                bias = kwargs.get("self", args[0] if args else None)
+                out = kwargs.get("out")
                 if (
                     not isinstance(inputs, torch.Tensor)
                     or not isinstance(bias, torch.Tensor)
@@ -281,8 +283,8 @@ class FfnGemmMode(TorchDispatchMode):
                     return func(*args, **kwargs)
                 else:
                     if (
-                        fields["alpha"] != 1
-                        or fields["beta"] != 1
+                        kwargs.get("alpha", 1) != 1
+                        or kwargs.get("beta", 1) != 1
                         or inputs.ndim != 2
                         or inputs.shape[0] not in configs
                         or inputs.shape[1] != 1024

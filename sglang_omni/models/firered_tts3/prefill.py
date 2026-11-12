@@ -3,10 +3,13 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
+from typing import Protocol
 
 import torch
 import torch.nn.functional as F
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
 from sglang_omni.models.firered_tts3.embeddings import (
     LATENT_IN_PAD_ID as LATENT_IN_PAD_ID,
@@ -25,15 +28,18 @@ from sglang_omni.models.firered_tts3.embeddings import (
     build_replay_rows,
     text_output_token_count,
 )
+from sglang_omni.models.firered_tts3.profiling import ProfilingProbe
 from sglang_omni.models.firered_tts3.request_builders import (
     CONTROL_TOKEN_ID,
     TEXT_MODE_AUDIO,
+    TEXT_MODE_TEXT,
     FireRedFlowResume,
     FireRedTTS3SGLangRequestData,
     FlowState,
 )
 from sglang_omni.models.firered_tts3.sglang_model import FireRedTTS3SGLangModel
 from sglang_omni.sampling.seed import derive_sampling_seed
+from sglang_omni.scheduling.types import SchedulerRequest
 
 
 @dataclass(kw_only=True)
@@ -43,6 +49,64 @@ class PreparedPrefill:
     flow_state: FlowState
     prompt_latents: torch.Tensor | None
     speaker_embedding: torch.Tensor | None
+
+
+class RequestStateHook(Protocol):
+    def __call__(self, request_data: FireRedTTS3SGLangRequestData) -> None: ...
+
+
+def materialize_prefill_batch(
+    model: FireRedTTS3SGLangModel,
+    forward_batch: ForwardBatch,
+    requests: list[SchedulerRequest],
+    active_requests: dict[str, FireRedTTS3SGLangRequestData],
+    suspend_request_data: RequestStateHook,
+    clear_request_data: RequestStateHook,
+) -> float | None:
+    """Prepare embeddings and roll back request state if preparation fails."""
+    device = forward_batch.input_ids.device
+    embedding_dtype = next(model.parameters()).dtype
+    model.text_logits_requested = any(
+        request.data.text_ar_mode == TEXT_MODE_TEXT for request in requests
+    )
+    embedding_rows: list[torch.Tensor] = []
+    materialized_requests: list[tuple[str, FireRedTTS3SGLangRequestData]] = []
+    try:
+        for request in requests:
+            request_data = request.data
+            if request_data.flow_state is not None and (
+                not isinstance(request_data.flow_state, FireRedFlowResume)
+            ):
+                suspend_request_data(request_data)
+            else:
+                pass
+            active_requests.pop(request.request_id, None)
+            prepared = prepare_prefill_flow(
+                model, request_data, request.request_id, device
+            )
+            request_data.flow_state = prepared.flow_state
+            request_data.probe = ProfilingProbe.create()
+            active_requests[request.request_id] = request_data
+            materialized_requests.append((request.request_id, request_data))
+            embedding_rows.append(
+                materialize_prefill_embeddings(
+                    model, request_data, prepared, device, embedding_dtype
+                )
+            )
+        forward_batch.input_embeds = torch.cat(embedding_rows, dim=0)
+        profiling_enabled = any(
+            request_data.probe.enabled
+            for request_id, request_data in materialized_requests
+        )
+        if profiling_enabled:
+            return time.perf_counter()
+        else:
+            return None
+    except BaseException:
+        for request_id, request_data in materialized_requests:
+            active_requests.pop(request_id, None)
+            clear_request_data(request_data)
+        raise
 
 
 def audio_hidden_row_offset(request_data: FireRedTTS3SGLangRequestData) -> int:
@@ -80,6 +144,36 @@ def dual_stream_conditioning_rows(
             remaining_patch_count -= 1
         group_index += 1
     return hidden_states_float32[hidden_row_indices].unsqueeze(0)
+
+
+def restore_prefill_conditioning(
+    request_data: FireRedTTS3SGLangRequestData, hidden_states_float32: torch.Tensor
+) -> None:
+    """Append retained hidden rows to the flow history after re-prefill."""
+    flow_state = request_data.flow_state
+    assert isinstance(flow_state, FlowState)
+    if flow_state.patch_count <= 0:
+        return
+    elif request_data.dual_stream:
+        conditioning_parts = [
+            flow_state.backbone_conditioning,
+            dual_stream_conditioning_rows(request_data, hidden_states_float32),
+        ]
+    else:
+        prompt_hidden_start = (
+            request_data.prefill_token_count - flow_state.prompt_patch_count
+        )
+        audio_hidden_start = request_data.prefill_token_count + audio_hidden_row_offset(
+            request_data
+        )
+        conditioning_parts = [
+            flow_state.backbone_conditioning,
+            hidden_states_float32[
+                prompt_hidden_start : request_data.prefill_token_count
+            ].unsqueeze(0),
+            hidden_states_float32[audio_hidden_start:-1].unsqueeze(0),
+        ]
+    flow_state.backbone_conditioning = torch.cat(conditioning_parts, dim=1)
 
 
 def prepare_prefill_flow(

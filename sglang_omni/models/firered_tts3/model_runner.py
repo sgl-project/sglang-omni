@@ -22,12 +22,9 @@ from sglang_omni.models.firered_tts3.flow_execution import flow_t_span
 from sglang_omni.models.firered_tts3.flow_graph import FlowGraphRunner
 from sglang_omni.models.firered_tts3.payload_types import TEXT_TOKEN_BUDGET
 from sglang_omni.models.firered_tts3.prefill import (
-    audio_hidden_row_offset,
-    dual_stream_conditioning_rows,
-    materialize_prefill_embeddings,
-    prepare_prefill_flow,
+    materialize_prefill_batch,
+    restore_prefill_conditioning,
 )
-from sglang_omni.models.firered_tts3.profiling import ProfilingProbe
 from sglang_omni.models.firered_tts3.request_builders import (
     CONTROL_TOKEN_ID,
     DS_STAGE_PATCH,
@@ -100,51 +97,18 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
             pass
         assert forward_batch is not None
         self.release_retracted_flow_states()
-        model = self.model
-        device = forward_batch.input_ids.device
-        embedding_dtype = next(model.parameters()).dtype
-        model.text_logits_requested = any(
-            (request.data.text_ar_mode == TEXT_MODE_TEXT for request in requests)
+        prefill_launch_at = materialize_prefill_batch(
+            self.model,
+            forward_batch,
+            requests,
+            self.active_requests,
+            self.suspend_request_data,
+            self.clear_request_data,
         )
-        embedding_rows: list[torch.Tensor] = []
-        materialized_requests: list[tuple[str, FireRedTTS3SGLangRequestData]] = []
-        try:
-            for request in requests:
-                request_data = request.data
-                if request_data.flow_state is not None and (
-                    not isinstance(request_data.flow_state, FireRedFlowResume)
-                ):
-                    self.suspend_request_data(request_data)
-                else:
-                    pass
-                self.active_requests.pop(request.request_id, None)
-                prepared = prepare_prefill_flow(
-                    model, request_data, request.request_id, device
-                )
-                request_data.flow_state = prepared.flow_state
-                request_data.probe = ProfilingProbe.create()
-                self.active_requests[request.request_id] = request_data
-                materialized_requests.append((request.request_id, request_data))
-                embedding_rows.append(
-                    materialize_prefill_embeddings(
-                        model, request_data, prepared, device, embedding_dtype
-                    )
-                )
-            forward_batch.input_embeds = torch.cat(embedding_rows, dim=0)
-            if any(
-                (
-                    request_data.probe.enabled
-                    for request_id, request_data in materialized_requests
-                )
-            ):
-                self.prefill_launch_at = time.perf_counter()
-            else:
-                pass
-        except BaseException:
-            for request_id, request_data in materialized_requests:
-                self.active_requests.pop(request_id, None)
-                self.clear_request_data(request_data)
-            raise
+        if prefill_launch_at is not None:
+            self.prefill_launch_at = prefill_launch_at
+        else:
+            pass
 
     def before_decode(
         self,
@@ -273,18 +237,7 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
                     continue
                 else:
                     pass
-                if flow_state.patch_count > 0:
-                    flow_state.backbone_conditioning = torch.cat(
-                        [
-                            flow_state.backbone_conditioning,
-                            dual_stream_conditioning_rows(
-                                request_data, hidden_states_float32
-                            ),
-                        ],
-                        dim=1,
-                    )
-                else:
-                    pass
+                restore_prefill_conditioning(request_data, hidden_states_float32)
                 next_token_ids.append(
                     self.dual_stream_step(
                         request_data,
@@ -296,24 +249,7 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
                 continue
             else:
                 pass
-            if flow_state.patch_count > 0:
-                prompt_hidden_start = (
-                    request_data.prefill_token_count - flow_state.prompt_patch_count
-                )
-                audio_hidden_start = (
-                    request_data.prefill_token_count
-                    + audio_hidden_row_offset(request_data)
-                )
-                conditioning_parts = [
-                    flow_state.backbone_conditioning,
-                    hidden_states_float32[
-                        prompt_hidden_start : request_data.prefill_token_count
-                    ].unsqueeze(0),
-                    hidden_states_float32[audio_hidden_start:-1].unsqueeze(0),
-                ]
-                flow_state.backbone_conditioning = torch.cat(conditioning_parts, dim=1)
-            else:
-                pass
+            restore_prefill_conditioning(request_data, hidden_states_float32)
             self.flow_step(
                 request_data, hidden_states_float32, flow_rows, defer_stop=True
             )
