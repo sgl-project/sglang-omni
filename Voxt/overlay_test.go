@@ -349,6 +349,7 @@ func overlayShots(t *testing.T, a *app, out, suffix string, dark bool) {
 			Scene: sceneMatch("Code review", appctx.SourceURL, "github.com")}, nil, nil},
 		{"overlay-recognizing", session.Snapshot{State: session.Recognizing}, nil, nil},
 		{"overlay-composing", session.Snapshot{State: session.Composing, Partial: "那个我们明天，不对，后天下午三点开会，讨论一下 VoxtNew 的发布计划"}, nil, nil},
+		{"overlay-composing-skip", session.Snapshot{Kind: store.KindTranscribe, State: session.Composing, CanSkip: true, Partial: "那个我们明天，不对，后天下午三点开会，讨论一下 VoxtNew 的发布计划"}, nil, nil}, // Use transcript (#3821)
 		{"overlay-error", session.Snapshot{State: session.Failed, Problem: &session.Problem{Code: session.ProblemASR, Err: &asr.Error{Kind: asr.KindAuth}}}, nil, nil},
 		{"overlay-no-speech", session.Snapshot{State: session.Done, Problem: &session.Problem{Code: session.ProblemNoSpeech}}, nil, nil},
 		{"overlay-warning", session.Snapshot{State: session.Done, Result: "x", Inserted: true, Problem: &session.Problem{Code: session.ProblemLLM, Degraded: true,

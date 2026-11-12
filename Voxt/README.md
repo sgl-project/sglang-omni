@@ -15,6 +15,7 @@ Open-source voice input for macOS, from the [SGLang-Omni](https://github.com/sgl
 [![Apache License 2.0][licence-shield]](LICENSE)
 
 [![Download Voxt for Mac][download-shield]][download]
+[![Download Voxt Beta][beta-download-shield]][beta-download]
 
 [Install guide][install-guide] · [Changelog](CHANGELOG.md) · [Website](https://voxt.actnow.dev) · [Report a problem][issues] · [Slack][slack]
 
@@ -69,24 +70,21 @@ Every shortcut can be changed on its feature's page, and Settings → Shortcuts 
 
 ### New to Voxt
 
-1. **Download** `Voxt-2.0.3-arm64.dmg` from [the Voxt v2.0.3 release][download], open it and drag **Voxt** to **Applications**. Or install it with Homebrew:
-
-   ```sh
-   brew install --cask hehehai/tap/voxt
-   ```
+1. **Download** `Voxt-2.0.3-arm64.dmg` from [the Voxt v2.0.3 release][download], open it and drag **Voxt** to **Applications**.
 
 2. **Open Voxt and follow the setup guide**: allow the microphone and Accessibility, download the recommended speech model (Qwen3-ASR 1.7B (8bit), 2.5 GB), and set up a language model for clean-up, Translate and Rewrite.
 3. **Tap the right Option key** in any app, speak, and tap it again.
 
 Step by step: [Install Voxt][install-guide].
 
+To install Beta `2.0.3-beta.20261111.38`, sign in to GitHub, download and unzip the ZIP, then open the DMG and drag **Voxt** to **Applications**. If the download does not start, select the arm64 artifact in [Voxt Beta #38][beta-run]. For newer builds, open the latest successful `main` run in [Actions → Voxt Beta][beta-workflow].
+
 ### Coming from Voxt 1.x
 
-Take whichever way is easiest:
+Take whichever way is easier:
 
-- **From inside Voxt 1.x**: choose **Check for Updates…**. On a Mac with Apple silicon it offers Voxt 2 together with the upgrade guide.
+- **From inside Voxt 1.x**: on a Mac with Apple silicon, turn on **Beta Updates** (Settings → About) and choose **Check for Updates…**. It offers Voxt 2 together with the upgrade guide. Without Beta Updates, Voxt 1.x does not offer Voxt 2 yet.
 - **Install over it**: quit Voxt 1.x, download the newest disk image and drag Voxt to Applications. Choose **Replace** when Finder asks.
-- **Homebrew**: the cask above installs Voxt 2.
 
 Then, in Voxt 2:
 
@@ -100,7 +98,7 @@ What the import brings, with screenshots: [From Voxt 1.x to Voxt 2](docs/voxt-mi
 
 - A Mac with **Apple silicon** and **macOS 15** or later. Voxt 2 does not run on an Intel Mac; there, keep using Voxt 1.x.
 - About 280 MB for the app, and 2.5 GB for the recommended speech model.
-- Voxt 2 does not update itself. Install a newer version the same way: from its disk image, or with `brew upgrade --cask voxt`.
+- Voxt 2 tells you when a new version is out (Check for Updates…, and a daily check you can turn off in Settings → Diagnostics & About), but does not install it itself. Install a newer version the same way: from its disk image.
 
 ## Your models, your data
 
@@ -161,6 +159,9 @@ Apache License 2.0 ([LICENSE](LICENSE)), as the rest of this repository. Copyrig
 [![Back to top][back-to-top]](#readme-top)
 
 [download]: https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v2.0.3
+[beta-download]: https://github.com/sgl-project/sglang-omni/actions/runs/42954481839/artifacts/13825829109
+[beta-run]: https://github.com/sgl-project/sglang-omni/actions/runs/42954481839#artifacts
+[beta-workflow]: https://github.com/sgl-project/sglang-omni/actions/workflows/voxt-beta.yaml
 [install-guide]: https://sgl-project.github.io/sglang-omni/get_started/voxt.html
 [issues]: https://github.com/sgl-project/sglang-omni/issues/new/choose
 [slack]: https://slack.sglang.io
@@ -168,4 +169,5 @@ Apache License 2.0 ([LICENSE](LICENSE)), as the rest of this repository. Copyrig
 [macos-shield]: https://img.shields.io/badge/macOS-15%2B%20%C2%B7%20Apple%20silicon-58a6ff?style=flat-square&labelColor=000000&logo=apple&logoColor=white
 [licence-shield]: https://img.shields.io/badge/licence-Apache%202.0-58a6ff?style=flat-square&labelColor=000000&logo=apache&logoColor=white
 [download-shield]: https://img.shields.io/badge/Download-Voxt%20for%20Mac-000000?style=for-the-badge&logo=apple&logoColor=white
+[beta-download-shield]: https://img.shields.io/badge/Download-Voxt%20Beta-1f6feb?style=for-the-badge&logo=github&logoColor=white
 [back-to-top]: https://img.shields.io/badge/-BACK_TO_TOP-151515?style=flat-square

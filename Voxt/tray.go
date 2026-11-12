@@ -292,6 +292,9 @@ var setDockShown = func(a *app, shown bool) {
 		p = mygo.ActivationPolicyRegular
 	}
 	mygo.App.SetActivationPolicy(p)
+	if !shown && a.life.IsVisible() {
+		mygo.App.Focus() // macOS deactivates an app that turns accessory: its window stays in front
+	}
 }
 
 // applyDock puts VoxtNew in the Dock or not, as the settings say.

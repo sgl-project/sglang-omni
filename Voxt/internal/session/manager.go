@@ -48,7 +48,6 @@ func New(cfg Config) *Manager {
 			*d = v
 		}
 	}
-	def(&cfg.MaxRecording, DefaultMaxRecording)
 	def(&cfg.MinRecording, DefaultMinRecording)
 	def(&cfg.ASRTimeout, DefaultASRTimeout)
 	def(&cfg.ASRPerSecond, DefaultASRPerSecond)
@@ -121,6 +120,7 @@ func (m *Manager) Start(req StartRequest) (string, error) {
 		m: m, id: m.cfg.NewID(), req: req, settings: m.cfg.Settings(), ctx: ctx, cancel: cancel,
 		stop: make(chan struct{}), recorded: make(chan struct{}), pcm: newPCMBuffer(),
 	}
+	r.llmCtx, r.llmStop = context.WithCancel(ctx)
 	m.cur = r
 	m.rev++
 	m.snap = Snapshot{
@@ -165,6 +165,20 @@ func (m *Manager) Cancel(id string) {
 	if ok {
 		r.cancelled.Store(true)
 		r.cancel()
+	}
+}
+
+// SkipLLM ends session id's language model step where it is, when its
+// snapshot says it can (Snapshot.CanSkip): the recognised text goes on
+// in place of the answer (#3821). Otherwise it does nothing.
+func (m *Manager) SkipLLM(id string) {
+	m.mu.Lock()
+	r := m.cur
+	ok := r != nil && r.id == id && m.snap.State == Composing && m.snap.CanSkip
+	m.mu.Unlock()
+	if ok {
+		r.skipped.Store(true)
+		r.llmStop()
 	}
 }
 

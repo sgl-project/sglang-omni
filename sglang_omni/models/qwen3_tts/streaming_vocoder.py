@@ -52,6 +52,7 @@ from sglang_omni.scheduling.streaming_vocoder import (
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.cuda_staging import GrowablePinnedBuffer, PinnedTransferSlot
 from sglang_omni.utils.device import has_device_streams, supports_device_streams
+from sglang_omni.utils.process import name_native_thread
 from sglang_omni.utils.snake_beta import fuse_vocoder_decoder
 
 if QTTS_BACKEND == "cutedsl":
@@ -1415,14 +1416,14 @@ class Qwen3TTSStreamingVocoderScheduler(
         self.async_stop.clear()
         self.initial_worker = threading.Thread(
             target=self.run_initial_worker,
-            name="qwen3-tts-vocoder-initial",
+            name="tts-voc-init",
             daemon=True,
         )
         self.followup_workers = [
             threading.Thread(
                 target=self.run_followup_worker,
                 args=(index,),
-                name=f"qwen3-tts-vocoder-followup-{index}",
+                name=f"tts-voc-fup-{index}",
                 daemon=True,
             )
             for index in range(self.followup_worker_count)
@@ -2790,6 +2791,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         return (plan, False)
 
     def run_initial_worker(self) -> None:
+        name_native_thread()
         self.activate_decode_worker(self.decode_stream)
         while True:
             batch = self.collect_async_batch(
@@ -3244,6 +3246,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             pass
 
     def run_followup_worker(self, index: int = 0) -> None:
+        name_native_thread()
         self.worker_ctx.graphs = (
             self.followup_graph_holders[index]
             if index < len(self.followup_graph_holders)

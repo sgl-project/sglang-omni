@@ -197,6 +197,9 @@ type Snapshot struct {
 	// Retried: Translate asked again, strictly (the first answer looked
 	// untranslated).
 	Retried bool
+	// CanSkip: while Composing, SkipLLM inserts the recognised text in
+	// place of the model's answer (Transcribe, and Translate of speech).
+	CanSkip bool
 	// Inserted: the result was pasted; Card: it shows in the answer card
 	// (Delivery says why it was not inserted). While the model writes,
 	// Card says the answer streams into the card.
@@ -337,7 +340,6 @@ type Config struct {
 	NewID func() string
 
 	// Limits (0: the defaults).
-	MaxRecording time.Duration // DefaultMaxRecording
 	MinRecording time.Duration // DefaultMinRecording
 	// Recognition after Stop gets ASRTimeout plus ASRPerSecond per second
 	// of the recording (asrLimit): a local model that stopped answering is
@@ -384,7 +386,6 @@ type Config struct {
 
 // Defaults of Config's limits.
 const (
-	DefaultMaxRecording   = 10 * time.Minute
 	DefaultMinRecording   = 300 * time.Millisecond
 	DefaultASRTimeout     = 60 * time.Second
 	DefaultASRPerSecond   = time.Second
