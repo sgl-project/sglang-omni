@@ -241,6 +241,7 @@ class Token2Wav(torch.nn.Module):
             decoder.rand_noise,
             estimator=estimator,
             inference_cfg_rate=decoder.inference_cfg_rate,
+            time_span=decoder.time_span(self.n_timesteps, self.device, torch.float32),
         )
         runner.capture(flow_capture_shapes)
         decoder.graph_runner = runner

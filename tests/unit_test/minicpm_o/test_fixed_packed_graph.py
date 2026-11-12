@@ -183,6 +183,7 @@ def test_packed_graph_replays_changed_layout_and_falls_back(
             decoder.rand_noise,
             estimator=dit,
             inference_cfg_rate=decoder.inference_cfg_rate,
+            time_span=decoder.time_span(10, torch.device("cuda"), torch.float32),
         )
         flow_runner.capture(((2, 32), (2, 48)))
         assert set(flow_runner.graphs) == {(2, 32), (2, 48)}

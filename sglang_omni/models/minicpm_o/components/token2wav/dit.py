@@ -438,12 +438,13 @@ class DiTBlock(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        timestep_embedding: torch.Tensor,
+        modulation: torch.Tensor,
         attn_mask: torch.Tensor | None,
         convolution_state: ConvBlockState | None = None,
         attention_state: AttentionState | None = None,
         attention_window: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, ConvBlockState | None, AttentionState | None]:
+        """modulation: adaLN_modulation of the step's timestep embedding, (rows or 1, 1, 9 * hidden)."""
         (
             shift_msa,
             scale_msa,
@@ -454,7 +455,7 @@ class DiTBlock(nn.Module):
             shift_conv,
             scale_conv,
             gate_conv,
-        ) = self.adaLN_modulation(timestep_embedding).chunk(9, dim=-1)
+        ) = modulation.chunk(9, dim=-1)
         attention, next_attention_state = self.attn(
             modulate(self.norm1(x), shift_msa, scale_msa),
             attn_mask,
@@ -513,10 +514,8 @@ class FinalLayer(nn.Module):
         self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-06)
         self.linear = nn.Linear(hidden_size, out_channels, bias=True)
 
-    def forward(
-        self, x: torch.Tensor, timestep_embedding: torch.Tensor
-    ) -> torch.Tensor:
-        shift, scale = self.adaLN_modulation(timestep_embedding).chunk(2, dim=-1)
+    def forward(self, x: torch.Tensor, modulation: torch.Tensor) -> torch.Tensor:
+        shift, scale = modulation.chunk(2, dim=-1)
         x = modulate(self.norm_final(x), shift, scale)
         x = self.linear(x)
         return x
@@ -598,6 +597,22 @@ class DiT(nn.Module):
             self.t_embedder(t).unsqueeze(1),
         )
 
+    def modulations(self, t: torch.Tensor) -> list[torch.Tensor]:
+        """Every block's adaLN modulation at time t, then the final layer's, each (rows, 1, width)."""
+        timestep_embedding = self.t_embedder(t).unsqueeze(1)
+        return [block.adaLN_modulation(timestep_embedding) for block in self.blocks] + [
+            self.final_layer.adaLN_modulation(timestep_embedding)
+        ]
+
+    def split_modulation(self, modulation: torch.Tensor) -> list[torch.Tensor]:
+        """Views of modulations concatenated on the last axis, in the order modulations returns."""
+        hidden_size = self.in_proj.out_features
+        return list(
+            modulation.split(
+                [9 * hidden_size] * len(self.blocks) + [2 * hidden_size], dim=-1
+            )
+        )
+
     def forward(
         self,
         x: torch.Tensor,
@@ -607,16 +622,18 @@ class DiT(nn.Module):
         speaker_embeddings: torch.Tensor | None = None,
         mel_conditioning: torch.Tensor | None = None,
         *,
+        modulation: torch.Tensor | None = None,
         packed_layout: FixedPackedLayout | None = None,
         packed_graph: CapturedPackedDiTGraph | None = None,
     ) -> torch.Tensor:
-        x, t = self.prepare_inputs(x, mu, t, speaker_embeddings, mel_conditioning)
+        """modulation: modulations at t concatenated on the last axis; the dense path then ignores t."""
         attn_mask = mask.bool()
         if (
             self.enable_variable_length
             and x.shape[0] >= MIN_PACKED_BATCH_SIZE
             and x.is_cuda
         ):
+            x, t = self.prepare_inputs(x, mu, t, speaker_embeddings, mel_conditioning)
             with torch.autocast(x.device.type, dtype=torch.bfloat16):
                 projected = self.in_proj(x).to(torch.bfloat16)
                 conditioning = t.to(torch.bfloat16)
@@ -631,10 +648,17 @@ class DiT(nn.Module):
                     )
                     x = self.forward_packed(projected, conditioning, sequence_lengths)
         else:
-            x = self.in_proj(x)
-            for block in self.blocks:
-                x, _, _ = block(x, t, attn_mask)
-            x = self.final_layer(x, t).transpose(1, 2)
+            modulations = (
+                self.modulations(t)
+                if modulation is None
+                else self.split_modulation(modulation)
+            )
+            x = self.in_proj(
+                self.pack_inputs(x, mu, speaker_embeddings, mel_conditioning)
+            )
+            for block, block_modulation in zip(self.blocks, modulations):
+                x, _, _ = block(x, block_modulation, attn_mask)
+            x = self.final_layer(x, modulations[-1]).transpose(1, 2)
         return x
 
     def pack_inputs(
@@ -666,9 +690,15 @@ class DiT(nn.Module):
         speaker_embeddings: torch.Tensor,
         mel_conditioning: torch.Tensor,
         state: DiTState,
+        *,
+        modulation: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, DiTState]:
         """Run one chunk against the streams' histories, masked only for ragged rows."""
-        timestep_embedding = self.t_embedder(t).unsqueeze(1)
+        modulations = (
+            self.modulations(t)
+            if modulation is None
+            else self.split_modulation(modulation)
+        )
         x = self.in_proj(self.pack_inputs(x, mu, speaker_embeddings, mel_conditioning))
         next_convolution: list[torch.Tensor] = []
         next_attention: list[torch.Tensor] = []
@@ -688,7 +718,7 @@ class DiT(nn.Module):
                 )
                 x, convolution_state, _ = block(
                     x,
-                    timestep_embedding,
+                    modulations[index],
                     state.attention_mask,
                     convolution_state,
                     None,
@@ -697,7 +727,7 @@ class DiT(nn.Module):
             else:
                 x, convolution_state, attention_state = block(
                     x,
-                    timestep_embedding,
+                    modulations[index],
                     state.attention_mask,
                     ConvBlockState(),
                     AttentionState(),
@@ -716,7 +746,7 @@ class DiT(nn.Module):
                     dim=1,
                 )
             )
-        x = self.final_layer(x, timestep_embedding).transpose(1, 2)
+        x = self.final_layer(x, modulations[-1]).transpose(1, 2)
         if state.attention is not None:
             next_attention_window = state.attention
         else:
