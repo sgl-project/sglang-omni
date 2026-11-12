@@ -514,28 +514,38 @@ def sources_from_config_file(
 
 
 def dump_user_config(config: PipelineConfig) -> dict[str, JsonValue]:
-    """Dump a config in the shape a config file is written in.
+    """Dump reloadable user settings with stages keyed by name.
 
     The internal stage list becomes the user-facing ``stages:`` mapping: the
-    key carries the name (so ``name`` leaves the body), and a non-engine
-    stage's ``engine: null`` placeholder is dropped because writing below it
-    is a path error. ``entry_stage`` is dropped too -- it belongs to the
-    model's config class, not to a config file. The result round-trips
-    through :func:`sources_from_config_file` back to an equal config.
+    key carries the name (so ``name`` leaves the body), internal topology fields
+    are filtered to public paths, and a non-engine stage's ``engine: null``
+    placeholder is dropped because writing below it is a path error.
+    ``entry_stage`` and unsupported ``audio_chunking`` are dropped too. The
+    result round-trips through :func:`sources_from_config_file` back to an equal
+    config.
     """
-    data = config.model_dump(mode="json")
-    data.pop("entry_stage", None)
+    document = config.model_dump(mode="json")
+    document.pop("entry_stage")
+    if not type(config).allow_audio_chunking:
+        document.pop("audio_chunking")
+    else:
+        pass
     stages: dict[str, dict[str, JsonValue]] = {}
-    for stage in data.get("stages", []):
-        body = dict(stage)
-        body.pop("name", None)
-        if body.get("engine") is None:
-            body.pop("engine", None)
+    for stage_settings in document["stages"]:
+        stage_name = stage_settings.pop("name")
+        if not type(config).stage_config_cls(stage_name).engine_stage:
+            stage_settings.pop("engine")
         else:
             pass
-        stages[stage["name"]] = body
-    data["stages"] = stages
-    return data
+        stages[stage_name] = {
+            field_name: value
+            for field_name, value in stage_settings.items()
+            if ConfigPath.parse(
+                f"stages.{stage_name}.{field_name}", type(config)
+            ).is_public()
+        }
+    document["stages"] = stages
+    return document
 
 
 def flatten(
