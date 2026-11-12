@@ -6,6 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.arg_groups.choices import (
+    DETERMINISTIC_ATTENTION_BACKEND_CHOICES,
+    RADIX_SUPPORTED_DETERMINISTIC_ATTENTION_BACKEND,
+)
 from sglang.srt.arg_groups.overrides import resolution_result
 from sglang.srt.platforms.device_mixin import DeviceMixin, PlatformEnum
 from sglang.srt.platforms.interface import SRTPlatform
@@ -15,9 +19,11 @@ from sglang.srt.platforms.xpu import XpuSRTPlatform
 import sglang_omni.platforms as platforms
 import sglang_omni.platforms.xpu as xpu_platform
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig
+from sglang_omni.platforms.apple import AppleOmniPlatform
 from sglang_omni.platforms.cpu import CPUOmniPlatform
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.musa import MUSAOmniPlatform
 from sglang_omni.platforms.npu import NPUOmniPlatform
 from sglang_omni.platforms.rocm import ROCMOmniPlatform
 from sglang_omni.platforms.xpu import XPUOmniPlatform
@@ -194,13 +200,11 @@ def test_each_platform_names_the_graph_backend_its_hardware_uses() -> None:
 
     CPU and Apple keep the base None.
     """
-    from sglang_omni.platforms.apple import AppleOmniPlatform
     from sglang_omni.platforms.device_graph import (
         CudaDeviceGraphBackend,
         NpuDeviceGraphBackend,
         XpuDeviceGraphBackend,
     )
-    from sglang_omni.platforms.musa import MUSAOmniPlatform
 
     expected = {
         CUDAOmniPlatform: CudaDeviceGraphBackend,
@@ -227,14 +231,6 @@ def test_only_xpu_replaces_sglangs_deterministic_attention_fallback() -> None:
 
     The XPU answer must stay deterministic and keep radix cache available.
     """
-    from sglang.srt.arg_groups.choices import (
-        DETERMINISTIC_ATTENTION_BACKEND_CHOICES,
-        RADIX_SUPPORTED_DETERMINISTIC_ATTENTION_BACKEND,
-    )
-
-    from sglang_omni.platforms.apple import AppleOmniPlatform
-    from sglang_omni.platforms.musa import MUSAOmniPlatform
-
     backend = XPUOmniPlatform().get_deterministic_attention_backend()
 
     assert backend == "triton"
