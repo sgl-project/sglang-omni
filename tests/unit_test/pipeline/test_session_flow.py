@@ -355,7 +355,7 @@ async def test_a_control_stops_at_the_owners_a_close_overtakes(
             session_identity, control_chunk("turn.done"), is_ordered=False
         )
     assert session.error is None
-    assert control_owners(events) == [("source", "turn.done")]  
+    assert control_owners(events) == [("source", "turn.done")]
 
 
 @pytest.mark.asyncio
