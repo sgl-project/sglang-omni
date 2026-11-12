@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from contextlib import AbstractContextManager, nullcontext
 from typing import TYPE_CHECKING, Protocol
 
+import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.platforms.device_mixin import DeviceMixin
 
@@ -14,7 +15,6 @@ from sglang_omni.utils.gpu_memory import narrow_visible_devices
 from sglang_omni.utils.misc import normalize_quantization
 
 if TYPE_CHECKING:
-    import torch
     from torch.nn.attention import SDPBackend
 
     from sglang_omni.comm.data_ref import TransportKind
@@ -43,6 +43,26 @@ class JointRopeInplaceKernel(Protocol):
         *,
         is_neox: bool,
     ) -> None: ...
+
+
+class RMSNormKernel(Protocol):
+    def __call__(
+        self,
+        hidden_states: torch.Tensor,
+        weight: torch.Tensor,
+        variance_epsilon: float,
+    ) -> torch.Tensor: ...
+
+
+def reference_rmsnorm(
+    hidden_states: torch.Tensor, weight: torch.Tensor, variance_epsilon: float
+) -> torch.Tensor:
+    """RMS normalization in float32, returned in the input dtype."""
+    normalized = hidden_states.float()
+    normalized = normalized * torch.rsqrt(
+        normalized.pow(2).mean(dim=-1, keepdim=True) + variance_epsilon
+    )
+    return (normalized * weight).to(hidden_states.dtype)
 
 
 def build_cuda_compatible_stage_process_env(
@@ -139,6 +159,10 @@ class OmniPlatform(DeviceMixin):
         tensors plus a cos/sin table, not the packed QKV and rotary parameters.
         """
         return None
+
+    def get_rmsnorm(self) -> RMSNormKernel:
+        """The RMS normalization kernel for a bare norm call on this device."""
+        return reference_rmsnorm
 
     def get_joint_rope_inplace_kernel(self) -> JointRopeInplaceKernel | None:
         # Note(yzxiao): None means this platform has no implementation. The

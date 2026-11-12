@@ -1,0 +1,10 @@
+{
+  "source": "Constructed from Volcengine's SAUC docs (docs/6561/1354869: 'full server response' fields and example, 'result_type' full, 'definite'; the server answers the full client request first) and Voxt (RemoteASRDoubaoStreaming.swift: whole-text snapshots, an empty answer keeps the text, the last answer has the last flag and a negative sequence). Client: 1.1 s of audio, so frames 2-6 are 200 ms packets and 7 the 100 ms last one.",
+  "frames": [
+    {"after": 1, "seq": 1, "payload": {"audio_info": {"duration": 0}, "result": {"additions": {"log_id": "20261015000000TEST"}, "text": ""}}},
+    {"after": 3, "seq": 2, "payload": {"audio_info": {"duration": 400}, "result": {"text": "这是", "utterances": [{"definite": false, "start_time": 0, "end_time": 400, "text": "这是"}]}}},
+    {"after": 5, "seq": 3, "payload": {"audio_info": {"duration": 800}, "result": {"text": "这是字节跳动，", "utterances": [{"definite": true, "start_time": 0, "end_time": 700, "text": "这是字节跳动，"}]}}},
+    {"after": 6, "seq": 4, "payload": {"audio_info": {"duration": 1000}, "result": {"text": "这是字节跳动，", "utterances": [{"definite": true, "start_time": 0, "end_time": 700, "text": "这是字节跳动，"}]}}},
+    {"after": -1, "seq": -5, "last": true, "payload": {"audio_info": {"duration": 1100}, "result": {"text": "这是字节跳动，今日头条母公司。", "utterances": [{"definite": true, "start_time": 0, "end_time": 700, "text": "这是字节跳动，"}, {"definite": true, "start_time": 750, "end_time": 1100, "text": "今日头条母公司。"}]}}}
+  ]
+}
