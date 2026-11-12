@@ -7,6 +7,7 @@ import ast
 from pathlib import Path
 
 import torch
+from sglang.srt.layers.quantization.modelopt_quant import ModelOptMixedPrecisionConfig
 from torch.nn import functional as F
 
 from sglang_omni.models.nemotron_transcribe.checkpoint_contract import (
@@ -14,6 +15,9 @@ from sglang_omni.models.nemotron_transcribe.checkpoint_contract import (
 )
 from sglang_omni.models.nemotron_transcribe.decoder_weights import (
     checkpoint_to_language_model_weights,
+)
+from sglang_omni.models.nemotron_transcribe.sglang_model import (
+    NemotronTranscribeForConditionalGeneration,
 )
 
 PACKAGE = (
@@ -67,6 +71,53 @@ def test_language_model_names_cover_the_decoder_remap() -> None:
     }
     for name, expected in samples.items():
         assert classify_checkpoint_name(name) == expected
+
+
+def test_mixed_precision_layers_resolve_under_the_transcribe_wrapper() -> None:
+    """The NVFP4 release keys layers as backbone.*; SGLang builds language_model.model.*."""
+    nvfp4 = {"quant_algo": "NVFP4", "group_size": 16}
+    model_class = NemotronTranscribeForConditionalGeneration
+    config = ModelOptMixedPrecisionConfig.from_config(
+        {
+            "producer": {"name": "modelopt"},
+            "quantization": {
+                "quant_algo": "MIXED_PRECISION",
+                "kv_cache_quant_algo": None,
+                "exclude_modules": ["backbone.embeddings", "lm_head", "ctc_timestamp*"],
+                "quantized_layers": {
+                    "backbone.layers.0.mixer.in_proj": {"quant_algo": "FP8"},
+                    "backbone.layers.0.mixer.out_proj": {"quant_algo": "FP8"},
+                    "backbone.layers.1.mixer.experts": nvfp4,
+                    "backbone.layers.1.mixer.shared_experts.up_proj": nvfp4,
+                    "backbone.layers.1.mixer.shared_experts.down_proj": nvfp4,
+                    "backbone.layers.5.mixer.q_proj": nvfp4,
+                    "backbone.layers.5.mixer.k_proj": nvfp4,
+                    "backbone.layers.5.mixer.v_proj": nvfp4,
+                    "backbone.layers.5.mixer.o_proj": nvfp4,
+                    "perception.encoder.asr_encoder.layers.0.attn.w_qkv": {
+                        "quant_algo": "FP8"
+                    },
+                },
+            },
+            "packed_modules_mapping": model_class.packed_modules_mapping,
+        }
+    )
+    config.apply_weight_name_mapper(model_class.hf_to_sglang_mapper)
+
+    layers = "language_model.model.layers"
+    expected = {
+        f"{layers}.0.mixer.in_proj": "FP8",
+        f"{layers}.0.mixer.out_proj": "FP8",
+        f"{layers}.1.mixer.experts": "NVFP4",
+        f"{layers}.1.mixer.shared_experts.up_proj": "NVFP4",
+        f"{layers}.1.mixer.shared_experts.down_proj": "NVFP4",
+        f"{layers}.5.mixer.qkv_proj": "NVFP4",
+        f"{layers}.5.mixer.o_proj": "NVFP4",
+        f"{layers}.1.mixer.gate": None,
+        "language_model.lm_head": None,
+    }
+    for prefix, quant_algo in expected.items():
+        assert config.resolve_quant_algo(prefix) == quant_algo, prefix
 
 
 def test_expert_weight_conversion_preserves_ungated_relu2_computation() -> None:

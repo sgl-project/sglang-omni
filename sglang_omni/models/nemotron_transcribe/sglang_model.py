@@ -22,6 +22,7 @@ from sglang.srt.managers.schedule_batch import (
 )
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.models.nemotron_h import NemotronHForCausalLM
+from sglang.srt.models.utils import WeightsMapper
 from sglang.srt.utils import add_prefix
 
 from sglang_omni.models.nemotron_transcribe.checkpoint_contract import (
@@ -52,6 +53,12 @@ def build_perception(config: NemotronTranscribeConfig) -> AudioPerception:
 
 
 class NemotronTranscribeForConditionalGeneration(nn.Module):
+    # note (yhayaran): SGLang reads these from the top-level class to find each ModelOpt layer's format.
+    packed_modules_mapping = dict(NemotronHForCausalLM.packed_modules_mapping)
+    hf_to_sglang_mapper = WeightsMapper(
+        orig_to_new_prefix={"backbone.": "language_model.model."}
+    )
+
     def __init__(
         self,
         config: NemotronTranscribeConfig,
