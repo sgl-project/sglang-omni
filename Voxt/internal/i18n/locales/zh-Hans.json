@@ -858,6 +858,8 @@
   "Search commands": "搜索命令",
   "Search terms": "搜索词条",
   "Search dictionary": "搜索词典",
+  "Search personal dictionary": "搜索个人词典",
+  "Find in the personal dictionary": "在个人词典里查找",
   "Search history": "搜索历史",
   "Sections": "栏目",
   "Secure input is on in %s and may block the keys Voxt sends. Press ⌘V to paste the text from the clipboard.": "%s 开启了安全输入，可能拦下 Voxt 发送的按键。文字已放到剪贴板，按 ⌘V 粘贴。",

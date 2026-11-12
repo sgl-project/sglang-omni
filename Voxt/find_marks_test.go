@@ -10,6 +10,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -292,5 +293,61 @@ func TestSettingsFind(t *testing.T) {
 	frames(tt)
 	if !has(tt, "在程序坞中显示") || has(tt, i18n.T("Not found")) {
 		t.Errorf(`zh-Hans "Dock": %q`, tt.Texts())
+	}
+}
+
+// TestDictionaryNotesFind (#3869): the Personal dictionary view has a
+// search too: it counts the matches in the Markdown, marks them in red,
+// and Return and Shift+Return step through them, the page scrolling to
+// the current one below the fold; typing starts the count again.
+func TestDictionaryNotesFind(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/dictionary")
+	frames(tt)
+	a.updateSettings(func(s *settings.Settings) { s.Dictionary.Notes = longNotes(200) })
+	clickSegment(t, tt, "Dictionary view", dictNotesTab, 2)
+	click(t, tt, "Search personal dictionary")
+	tt.Type("term15")
+	frames(tt)
+	if !has(tt, "10 matches") {
+		t.Fatalf("no count: %q", firstTexts(tt))
+	}
+	tt.Key(ui.Shift, ui.KeyEnter)
+	frames(tt)
+	if !has(tt, "10 of 10") {
+		t.Errorf("Shift+Return first: no “10 of 10” in %q", firstTexts(tt))
+	}
+	field, ok := tt.Find("Personal dictionary in Markdown")
+	if !ok {
+		t.Fatal("no editor")
+	}
+	img, red := tt.Image(), tok(ui.LightTheme()).Danger
+	seen := 0
+	for y := max(int(field.Y)+4, titleBarHeight); y < min(int(field.Y+field.H)-4, windowHeight); y++ {
+		for x := int(field.X) + 4; x < int(field.X+field.W)-4; x++ {
+			if near(img.RGBAAt(x, y), red) {
+				seen++
+			}
+		}
+	}
+	if seen < 10 {
+		t.Errorf("the match is not in view: %d red pixels in the editor's part of the window", seen)
+	}
+	for _, want := range []string{"1 of 10", "2 of 10"} {
+		tt.Key(0, ui.KeyEnter)
+		frames(tt)
+		if !has(tt, want) {
+			t.Errorf("after Return: no %q (at %d)", want, a.dv.notesFind.cur)
+		}
+	}
+	tt.Type("9")
+	frames(tt)
+	if !has(tt, "1 match") || has(tt, "2 of 10") {
+		t.Errorf("after typing: %q", firstTexts(tt))
+	}
+	tt.Key(0, ui.KeyEnter)
+	frames(tt)
+	if !has(tt, "1 of 1") || a.dv.notes.text != longNotes(200) {
+		t.Errorf("Return on one match: %q, notes changed %v", firstTexts(tt), a.dv.notes.text != longNotes(200))
 	}
 }

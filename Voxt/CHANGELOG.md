@@ -14,6 +14,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Strict shortcuts** in Settings → Shortcuts: while you record, only the shortcut that started the recording stops it. Another feature's shortcut does nothing. Off by default, so any feature's shortcut stops the recording, as in Voxt 1.x (#3823).
 - **Search marks every match and Return jumps to the next one** on the Dictionary and History pages and in Find in the prompt (part of #3869): each match of what you type is marked in bold red, the current one white on red. Return goes to the next match and Shift+Return to the previous one, scrolling it into view, and the field shows "2 of 5". The Dictionary marks matches in terms, aliases and notes. A History row shows the line of the entry that holds your search. In Find in the prompt, matches are red instead of the accent colour.
 - **The Meetings, Settings and Logs searches mark matches and jump with Return too** (#3869), as the Dictionary and History do. A meeting found by its transcript shows the transcript line that holds your search. Find in settings marks matches in the names of the settings shown. The logs' filter marks matches in each line.
+- **The Personal dictionary has a search box too** (#3869): it marks each match in the Markdown in bold red, and Return and Shift+Return select the next and previous match, scrolling to it, with the count beside the field, as in Find in the prompt.
 
 ### Changed
 
@@ -50,6 +51,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **快捷键严格模式**（设置 → 快捷键）：录音时只有开始录音的那个快捷键能停止它，按别的功能的快捷键不起作用。默认关闭，和 Voxt 1.x 一样，任何功能的快捷键都能停止录音（#3823）。
 - **搜索标出每个匹配，按回车跳到下一个**（词典页、历史页和“在提示词中查找”，#3869 的一部分）：输入的内容每处匹配都用红色粗体标出，当前那处是红底白字。按回车跳到下一处，Shift+回车跳到上一处，列表滚到那里，搜索框旁显示“第 2 处，共 5 处”这样的计数。词典在词条、别名和备注里标出匹配。历史的一行显示这条记录里含搜索词的那一行。“在提示词中查找”的匹配从主题色改成红色。
 - **会议、设置和日志的搜索也标出匹配，按回车跳转**（#3869），和词典、历史一样。按转写内容找到的会议，行里显示转写中含搜索词的那句。“在设置中查找”在显示出来的设置名里标出匹配。日志的过滤框在每一行里标出匹配。
+- **个人词典也有搜索框了**（#3869）：Markdown 里的每处匹配用红色粗体标出，按回车、Shift+回车选中下一处、上一处并滚到那里，搜索框旁显示计数，和“在提示词里查找”一样。
 
 #### 变更
 
