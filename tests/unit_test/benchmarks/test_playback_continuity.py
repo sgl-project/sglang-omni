@@ -102,6 +102,7 @@ def test_compute_speed_metrics_includes_continuity_gates() -> None:
     assert metrics["c100"] == pytest.approx(50.0)
     assert metrics["c200"] == pytest.approx(50.0)
     assert metrics["max_playback_underrun_mean_s"] == pytest.approx(0.135)
+    assert metrics["max_playback_underrun_max_s"] == pytest.approx(0.25)
 
 
 CONTINUITY_KEYS = (
@@ -110,6 +111,7 @@ CONTINUITY_KEYS = (
     "max_playback_underrun_mean_s",
     "max_playback_underrun_p95_s",
     "max_playback_underrun_p99_s",
+    "max_playback_underrun_max_s",
     "c50",
     "c100",
     "c200",
