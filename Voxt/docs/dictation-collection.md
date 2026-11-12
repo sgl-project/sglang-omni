@@ -10,14 +10,13 @@ Voxt keeps the texts of every dictation but **no recordings by default**, and re
 
 1. Use Voxt 2.0 (2.0.0 or later). Voxt 1.x keeps only the final text of each dictation, so its history cannot be used. When you upgrade, the setup guide's **Import from Voxt 1.x** (从旧版 Voxt 导入) brings over your dictionary, models and language model setups; paste the API keys again on the Language models page.
 2. History → **History settings** (历史设置) → turn on **Keep recordings** (保存录音). Settings → Privacy has the same switch.
-3. In the same sheet, set **Keep entries for** (保留时长) to 1 year, or turn off **Clean up automatically** (自动清理旧记录). By default entries and their recordings are deleted after 3 months.
-4. Dictate with Transcribe as usual, with **Clean up with a language model** (用语言模型整理) on. Translate and Rewrite are left out of the benchmark.
+3. Dictate with Transcribe as usual, with **Clean up with a language model** (用语言模型整理) on. Translate and Rewrite are left out of the benchmark.
 
 If tapping right Option does nothing, a key remapper such as Karabiner-Elements may be changing that key; record another shortcut on the Transcribe page.
 
 ## 2. Export
 
-After a week or two, run the script with the Python that comes with macOS (the first `python3` may ask to install the command line developer tools):
+Run the script after a week or two. Voxt deletes entries and their recordings after 3 months by default, so export at least once within that time. It runs on the Python that comes with macOS (the first `python3` may ask to install the command line developer tools):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/sgl-project/sglang-omni/main/Voxt/scripts/collect-dictations.py | python3 -
