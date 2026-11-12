@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import torch
+from transformers import (
+    AutoFeatureExtractor,
+    FeatureExtractionMixin,
+    Wav2Vec2BertModel,
+)
 
 from sglang_omni.models.audar_tts.payload_types import AudarTTSState
 from sglang_omni.models.audar_tts.protocol import (
@@ -37,7 +42,6 @@ from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 if TYPE_CHECKING:
     from neucodec import NeuCodec
-    from transformers import AutoFeatureExtractor, Wav2Vec2BertModel
 else:
     pass
 
@@ -56,13 +60,13 @@ _local_codec_construction_lock = threading.Lock()
 class LocalFeatureExtractorLoader:
     def __init__(
         self,
-        model_class: type["AutoFeatureExtractor"],
+        model_class: type[AutoFeatureExtractor],
         local_path: Path,
     ) -> None:
         self.model_class = model_class
         self.local_path = local_path
 
-    def from_pretrained(self, model_name_or_path: str) -> "AutoFeatureExtractor":
+    def from_pretrained(self, model_name_or_path: str) -> FeatureExtractionMixin:
         if model_name_or_path == DEFAULT_CODEC_W2V_MODEL:
             return self.model_class.from_pretrained(
                 str(self.local_path),
@@ -75,7 +79,7 @@ class LocalFeatureExtractorLoader:
 class LocalW2VModelLoader:
     def __init__(
         self,
-        model_class: type["Wav2Vec2BertModel"],
+        model_class: type[Wav2Vec2BertModel],
         local_path: Path,
     ) -> None:
         self.model_class = model_class
@@ -86,7 +90,7 @@ class LocalW2VModelLoader:
         model_name_or_path: str,
         *,
         output_hidden_states: bool,
-    ) -> "Wav2Vec2BertModel":
+    ) -> Wav2Vec2BertModel:
         if model_name_or_path == DEFAULT_CODEC_W2V_MODEL:
             return self.model_class.from_pretrained(
                 str(self.local_path),

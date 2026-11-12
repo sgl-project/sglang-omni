@@ -12,11 +12,12 @@ import time
 import types
 import wave
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar, cast
 
 import numpy as np
 import pytest
 import torch
+from transformers import AutoFeatureExtractor, FeatureExtractionMixin, Wav2Vec2BertModel
 
 from sglang_omni.client.client import Client
 from sglang_omni.comm import stage_io
@@ -609,11 +610,14 @@ def test_codec_model_and_lock_are_shared_between_stages(
     assert loads == 1
 
 
+CodecT = TypeVar("CodecT")
+
+
 def install_fake_neucodec(
     monkeypatch: pytest.MonkeyPatch,
-    neu_codec: type,
-    feature_extractor: type,
-    w2v_model: type,
+    neu_codec: type[CodecT],
+    feature_extractor: type[AutoFeatureExtractor],
+    w2v_model: type[Wav2Vec2BertModel],
 ) -> types.ModuleType:
     model_module = types.ModuleType("neucodec.model")
     model_module.NeuCodec = neu_codec
@@ -628,16 +632,6 @@ def install_fake_neucodec(
     return model_module
 
 
-def recording_pretrained(name: str, calls: list[tuple[str, object, bool]]) -> type:
-    class RecordingPretrained:
-        @classmethod
-        def from_pretrained(cls, model: object, *args: Any, **kwargs: Any) -> object:
-            calls.append((name, model, kwargs["local_files_only"]))
-            return object()
-
-    return RecordingPretrained
-
-
 def test_load_codec_constructs_a_local_directory_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -650,11 +644,36 @@ def test_load_codec_constructs_a_local_directory_snapshot(
     weights_path = codec_dir / "pytorch_model.bin"
     weights_path.touch()
     constructed: list[tuple[int, int]] = []
-    pretrained_calls: list[tuple[str, object, bool]] = []
-    loaded: list[tuple[dict[str, object], bool]] = []
+    pretrained_calls: list[tuple[str, str, bool, bool | None]] = []
+    loaded: list[tuple[dict[str, torch.Tensor], bool]] = []
     devices: list[str] = []
-    feature_extractor = recording_pretrained("feature_extractor", pretrained_calls)
-    w2v_model = recording_pretrained("w2v", pretrained_calls)
+
+    class RecordingFeatureExtractor(AutoFeatureExtractor):
+        @classmethod
+        def from_pretrained(
+            cls,
+            model_name_or_path: str,
+            *,
+            local_files_only: bool = False,
+        ) -> FeatureExtractionMixin:
+            pretrained_calls.append(
+                ("feature_extractor", model_name_or_path, local_files_only, None)
+            )
+            return cast(FeatureExtractionMixin, cls.__new__(cls))
+
+    class RecordingW2VModel(Wav2Vec2BertModel):
+        @classmethod
+        def from_pretrained(
+            cls,
+            model_name_or_path: str,
+            *,
+            output_hidden_states: bool = False,
+            local_files_only: bool = False,
+        ) -> Wav2Vec2BertModel:
+            pretrained_calls.append(
+                ("w2v", model_name_or_path, local_files_only, output_hidden_states)
+            )
+            return cast(Wav2Vec2BertModel, cls.__new__(cls))
 
     class RecordingCodec:
         def __init__(self, sample_rate: int, hop_length: int) -> None:
@@ -665,7 +684,9 @@ def test_load_codec_constructs_a_local_directory_snapshot(
             )
             model_module.AutoFeatureExtractor.from_pretrained("facebook/w2v-bert-2.0")
 
-        def load_state_dict(self, state_dict: dict[str, object], strict: bool) -> None:
+        def load_state_dict(
+            self, state_dict: dict[str, torch.Tensor], strict: bool
+        ) -> None:
             loaded.append((state_dict, strict))
 
         def eval(self) -> "RecordingCodec":
@@ -676,13 +697,21 @@ def test_load_codec_constructs_a_local_directory_snapshot(
             return self
 
     model_module = install_fake_neucodec(
-        monkeypatch, RecordingCodec, feature_extractor, w2v_model
+        monkeypatch, RecordingCodec, RecordingFeatureExtractor, RecordingW2VModel
     )
-    state_dict = {"kept": object(), "unexpected": object()}
-    torch_loads: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    state_dict = {
+        "kept": torch.tensor([1.0]),
+        "unexpected": torch.tensor([2.0]),
+    }
+    torch_loads: list[tuple[Path, str | torch.device, bool]] = []
 
-    def fake_torch_load(*args: object, **kwargs: object) -> dict[str, object]:
-        torch_loads.append((args, kwargs))
+    def fake_torch_load(
+        weights_path: Path,
+        *,
+        map_location: str | torch.device,
+        weights_only: bool,
+    ) -> dict[str, torch.Tensor]:
+        torch_loads.append((weights_path, map_location, weights_only))
         return state_dict
 
     monkeypatch.setattr(stages.torch, "load", fake_torch_load)
@@ -696,17 +725,15 @@ def test_load_codec_constructs_a_local_directory_snapshot(
         )
         assert isinstance(codec, RecordingCodec)
         assert constructed == [(24000, 480)]
-        assert torch_loads == [
-            ((weights_path,), {"map_location": "cpu", "weights_only": True})
-        ]
+        assert torch_loads == [(weights_path, "cpu", True)]
         assert loaded == [(state_dict, False)]
         assert devices == ["cpu"]
         assert pretrained_calls == [
-            ("w2v", str(w2v_dir), True),
-            ("feature_extractor", str(w2v_dir), True),
+            ("w2v", str(w2v_dir), True, True),
+            ("feature_extractor", str(w2v_dir), True, None),
         ]
-        assert model_module.AutoFeatureExtractor is feature_extractor
-        assert model_module.Wav2Vec2BertModel is w2v_model
+        assert model_module.AutoFeatureExtractor is RecordingFeatureExtractor
+        assert model_module.Wav2Vec2BertModel is RecordingW2VModel
 
         class FailingCodec:
             def __init__(self, sample_rate: int, hop_length: int) -> None:
@@ -722,8 +749,8 @@ def test_load_codec_constructs_a_local_directory_snapshot(
                 "cpu",
                 codec_w2v_model_path="~/w2v-bert-2.0",
             )
-        assert model_module.AutoFeatureExtractor is feature_extractor
-        assert model_module.Wav2Vec2BertModel is w2v_model
+        assert model_module.AutoFeatureExtractor is RecordingFeatureExtractor
+        assert model_module.Wav2Vec2BertModel is RecordingW2VModel
     finally:
         stages.load_codec.cache_clear()
 
