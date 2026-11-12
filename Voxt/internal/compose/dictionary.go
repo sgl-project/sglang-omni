@@ -9,10 +9,10 @@ import "strings"
 // notes as written, with no text or tags of Voxt's around them: every
 // prompt the user sees can be edited (#3872). It returns the layer.
 func addDictionary(in Input, add func(layer, text string)) string {
-	if strings.TrimSpace(in.Dictionary) == "" {
+	layer := strings.TrimSpace(in.Dictionary)
+	if layer == "" {
 		return ""
 	}
-	layer := strings.TrimSpace(in.Dictionary)
 	add("dictionary", layer)
 	return layer
 }
