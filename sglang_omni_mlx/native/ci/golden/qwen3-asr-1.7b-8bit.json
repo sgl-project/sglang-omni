@@ -21,7 +21,7 @@
   "Apple M5": {
    "metrics": {
     "wer_en": 0.0206,
-    "cer_zh": 0.05256,
+    "cer_zh": 0.05232,
     "mer_mixed": 0.12939
    },
    "clips": {
@@ -2382,7 +2382,7 @@
   "Apple M4 Pro": {
    "metrics": {
     "wer_en": 0.0206,
-    "cer_zh": 0.05194,
+    "cer_zh": 0.0517,
     "mer_mixed": 0.13196
    },
    "clips": {

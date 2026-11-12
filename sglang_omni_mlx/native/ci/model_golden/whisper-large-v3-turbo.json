@@ -24,7 +24,7 @@
   "Apple M1 Pro": {
    "metrics": {
     "wer_en": 0.06842,
-    "cer_zh": 0.12247,
+    "cer_zh": 0.12226,
     "mer_mixed": 0.18081
    },
    "clips": {

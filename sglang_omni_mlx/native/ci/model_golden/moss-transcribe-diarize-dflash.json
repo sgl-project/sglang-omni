@@ -30,7 +30,7 @@
   "Apple M4": {
    "metrics": {
     "wer_en": 0.0185,
-    "cer_zh": 0.05938,
+    "cer_zh": 0.05914,
     "mer_mixed": 0.14653
    },
    "clips": {

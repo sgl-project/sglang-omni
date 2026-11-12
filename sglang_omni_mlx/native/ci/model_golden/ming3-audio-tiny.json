@@ -23,7 +23,7 @@
   "Apple M4 Pro": {
    "metrics": {
     "wer_en": 0.01623,
-    "cer_zh": 0.05417,
+    "cer_zh": 0.05394,
     "mer_mixed": 0.09426
    },
    "clips": {
