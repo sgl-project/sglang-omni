@@ -143,8 +143,7 @@ class MossTTSDelayAudioGraphSampler(nn.Module):
                     self.delay_slot_token_id,
                 ],
                 dtype=torch.long,
-                device="cpu",
-            ).to(torch.get_default_device()),
+            ),
             persistent=False,
         )
         self.register_buffer(

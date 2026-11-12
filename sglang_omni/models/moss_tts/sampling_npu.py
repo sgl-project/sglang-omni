@@ -19,11 +19,9 @@ MOSS_HASH_SHIFT_CONSTANTS: dict[torch.device, tuple[torch.Tensor, ...]] = {}
 def moss_hash_shift_constants(device: torch.device) -> tuple[torch.Tensor, ...]:
     """Keep distinct device operands alive across sampling graph replays."""
     if device not in MOSS_HASH_SHIFT_CONSTANTS:
-        MOSS_HASH_SHIFT_CONSTANTS[device] = (
-            torch.tensor([32, 15, 17, 13, 19, 16], dtype=torch.int64, device="cpu")
-            .to(device)
-            .unbind()
-        )
+        MOSS_HASH_SHIFT_CONSTANTS[device] = torch.tensor(
+            [32, 15, 17, 13, 19, 16], dtype=torch.int64, device=device
+        ).unbind()
     else:
         pass
     return MOSS_HASH_SHIFT_CONSTANTS[device]
@@ -77,10 +75,7 @@ def multinomial_with_seed_npu(
     )
     hashes = moss_hash32(seeds, positions, columns)
     noise = torch_npu.npu_dtype_cast(hashes, torch.float64) / UINT32_MASK
-    noise = torch.clamp(
-        torch.log(noise), min=torch.finfo(torch.float64).min, max=-(2.0**-32)
-    )
-    noise = torch.mul(noise, -1.0)
-    noise = torch.mul(torch.log(noise), -1.0)
-    noise = torch.add(noise, torch_npu.npu_dtype_cast(scores, torch.float64))
+    noise.log_().clamp_(min=torch.finfo(torch.float64).min, max=-(2.0**-32)).neg_()
+    noise.log_().neg_()
+    noise.add_(torch_npu.npu_dtype_cast(scores, torch.float64))
     return torch.argmax(noise, dim=1)

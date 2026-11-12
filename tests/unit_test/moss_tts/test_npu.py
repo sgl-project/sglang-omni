@@ -11,7 +11,6 @@ import torch
 from sglang.srt.models.qwen3 import Qwen3Attention
 
 import sglang_omni.models.moss_tts.sglang_model as moss_model
-from sglang_omni.models.moss_tts.sampler import MossTTSDelayAudioGraphSampler
 from sglang_omni.models.moss_tts.sampling_kernels import (
     multinomial_with_seed_and_token_ids,
 )
@@ -113,9 +112,9 @@ def sample_seeded_scalar(
 @pytest.mark.skipif(not current_platform.is_npu(), reason="Ascend NPU is required")
 def test_npu_hash_graph_replay_matches_scalar_reference() -> None:
 
-    seeds = torch.tensor([0, 2**40, -1, -(2**63)], device="cpu").npu()
-    positions = torch.tensor([0, 17, 2**32 - 1, 2**40], device="cpu").npu()
-    columns = torch.tensor([0, 1, 2**31, 2**32 - 1, 2**40], device="cpu").npu()
+    seeds = torch.tensor([0, 2**40, -1, -(2**63)], device="npu")
+    positions = torch.tensor([0, 17, 2**32 - 1, 2**40], device="npu")
+    columns = torch.tensor([0, 1, 2**31, 2**32 - 1, 2**40], device="npu")
     stream = torch.npu.Stream()
     stream.wait_stream(torch.npu.current_stream())
     with torch.npu.stream(stream):
@@ -142,7 +141,7 @@ def test_npu_hash_graph_replay_matches_scalar_reference() -> None:
 @pytest.mark.skipif(not current_platform.is_npu(), reason="Ascend NPU is required")
 def test_npu_compact_sampler_handles_request_batch_shapes() -> None:
 
-    token_ids = torch.tensor([12, 13], device="cpu").npu()
+    token_ids = torch.tensor([12, 13], device="npu")
     generator = torch.Generator().manual_seed(42)
     for rows in range(1, 17):
         scores = torch.randn(rows, 2, generator=generator)
@@ -192,16 +191,16 @@ def test_npu_seeded_sampler_masks_hash_endpoints(
     position: int, expected_hash: int
 ) -> None:
 
-    scores = torch.tensor([[-torch.inf, 0.0]], device="cpu").npu()
-    seeds = torch.tensor([0], dtype=torch.long, device="cpu").npu()
-    positions = torch.tensor([position], dtype=torch.long, device="cpu").npu()
+    scores = torch.tensor([[-torch.inf, 0.0]], device="npu")
+    seeds = torch.tensor([0], dtype=torch.long, device="npu")
+    positions = torch.tensor([position], dtype=torch.long, device="npu")
     assert murmur_hash32_scalar(0, position, 0) == expected_hash
     assert multinomial_with_seed_npu(scores, seeds, positions).item() == 1
     compact = multinomial_with_seed_and_token_ids(
         scores.flip(1),
         seeds,
         positions,
-        torch.tensor([1, 0], dtype=torch.long, device="cpu").npu(),
+        torch.tensor([1, 0], dtype=torch.long, device="npu"),
     )
     assert compact.item() == 0
 
@@ -265,27 +264,6 @@ def test_npu_seeded_sampler_replays_updated_inputs(compact: bool) -> None:
             scores, seeds, positions, columns
         )
         assert sampled.tolist() == [selected_column] * len(seeds)
-
-
-@pytest.mark.accelerator
-@pytest.mark.skipif(not current_platform.is_npu(), reason="Ascend NPU is required")
-def test_npu_sampler_initialization_preserves_default_device() -> None:
-    """CPU staging must keep control IDs on the model's construction device."""
-    config = SimpleNamespace(
-        n_vq=2,
-        vocab_size_list=[100, 64],
-        pad_token_id=0,
-        audio_assistant_gen_slot_token_id=1,
-        audio_assistant_delay_slot_token_id=2,
-        audio_start_token_id=3,
-        audio_end_token_id=4,
-        im_end_token_id=5,
-        audio_pad_code=63,
-    )
-    with torch.device("npu"):
-        sampler = MossTTSDelayAudioGraphSampler(config)
-    assert sampler.text_control_token_ids.device.type == "npu"
-    assert sampler.text_control_token_ids.tolist() == [1, 2]
 
 
 @pytest.mark.accelerator

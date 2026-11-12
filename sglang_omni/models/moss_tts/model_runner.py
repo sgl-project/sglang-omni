@@ -519,7 +519,7 @@ class MossTTSModelRunner(ModelRunner):
         device: torch.device,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Upload seeds and positions without a pageable copy blocking the forward."""
-        values = torch.tensor([seeds, positions], dtype=torch.long, device="cpu").t()
+        values = torch.tensor([seeds, positions], dtype=torch.long).t()
         if device.type != "cuda":
             metadata = values.to(device=device)
         else:
@@ -606,8 +606,8 @@ class MossTTSModelRunner(ModelRunner):
                     int(data.is_audio),
                 ],
                 dtype=torch.long,
-                device="cpu",
-            ).to(device)
+                device=device,
+            )
         data.delay_state = state
         return state
 
@@ -643,38 +643,38 @@ class MossTTSModelRunner(ModelRunner):
         delayed = delay_state[:, 1]
         audio_mask = delay_state[:, 2].bool()
         gen_steps = torch.tensor(
-            [int(d.generation_steps) for d in datas], dtype=torch.long, device="cpu"
-        ).to(device)
+            [int(d.generation_steps) for d in datas], dtype=torch.long, device=device
+        )
         text_temp = torch.tensor(
             [float(d.text_temperature) for d in datas],
             dtype=torch.float32,
-            device="cpu",
-        ).to(device)
+            device=device,
+        )
         audio_temp = torch.tensor(
             [float(d.audio_temperature) for d in datas],
             dtype=torch.float32,
-            device="cpu",
-        ).to(device)
+            device=device,
+        )
         text_top_p = torch.tensor(
-            [float(d.text_top_p) for d in datas], dtype=torch.float32, device="cpu"
-        ).to(device)
+            [float(d.text_top_p) for d in datas], dtype=torch.float32, device=device
+        )
         text_top_k = torch.tensor(
-            [int(d.text_top_k) for d in datas], dtype=torch.long, device="cpu"
-        ).to(device)
+            [int(d.text_top_k) for d in datas], dtype=torch.long, device=device
+        )
         audio_top_p = torch.tensor(
-            [float(d.audio_top_p) for d in datas], dtype=torch.float32, device="cpu"
-        ).to(device)
+            [float(d.audio_top_p) for d in datas], dtype=torch.float32, device=device
+        )
         audio_top_k = torch.tensor(
-            [int(d.audio_top_k) for d in datas], dtype=torch.long, device="cpu"
-        ).to(device)
+            [int(d.audio_top_k) for d in datas], dtype=torch.long, device=device
+        )
         audio_rep = torch.tensor(
             [float(d.audio_repetition_penalty) for d in datas],
             dtype=torch.float32,
-            device="cpu",
-        ).to(device)
+            device=device,
+        )
         sampling_seeds = torch.tensor(
-            [int(d.sampling_seed) for d in datas], dtype=torch.long, device="cpu"
-        ).to(device)
+            [int(d.sampling_seed) for d in datas], dtype=torch.long, device=device
+        )
         num_channels = n_vq + 1
 
         text_logits = channel_logits[0].to(torch.float32)
@@ -714,8 +714,8 @@ class MossTTSModelRunner(ModelRunner):
                         if 0 <= t < vocab
                     ],
                     dtype=torch.long,
-                    device="cpu",
-                ).to(device)
+                    device=device,
+                )
                 text_logits[not_audio] = text_logits[not_audio].index_fill(
                     -1, exclude, _NEG_INF
                 )
