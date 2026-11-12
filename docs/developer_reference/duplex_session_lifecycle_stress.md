@@ -29,25 +29,25 @@ Every row is one client process of 64 concurrent sessions per cycle, 5 packets o
 
 | Scenario | Path | Client leaves by | Cycles | Sessions | Sessions left | Cleanup p50 / p99 ms | Capacity recovery p99 ms | Server RSS MB | Final probe |
 |---|---|---|---|---|---|---|---|---|---|
-| churn | shared | `session.close`, waits for `session.closed` | 50 | 3,200 completed, close 1000 | 0 | 17 / 18 | 18 | 532 to 548 | completed |
-| drop | shared | TCP reset after the last packet | 50 | 3,200 dropped | 0 | 62 / 117 | 117 | 548 to 553 | completed |
-| drop | shared | close frame right after `session.update`, replies unread | 50 | 3,200 dropped | 0 | 16 / 145 | 145 | 553 to 554 | completed |
-| churn | legacy | close frame after the last packet | 20 | 1,280 completed, close 1000 | 0 | 23 / 28 | not measurable | 530 to 539 | completed |
-| drop | legacy | TCP reset after the last packet | 20 | 1,280 dropped | 0 | 25 / 33 | not measurable | 539 to 544 | completed |
-| drop | legacy | close frame right after `session.update`, replies unread | 20 | 1,280 dropped | 1,280 | timed out in 20 of 20 cycles | not measurable | 544 to 579 | completed |
+| churn | shared | `session.close`, waits for `session.closed` | 50 | 3,200 completed, close 1000 | 0 | 18 / 20 | 20 | 524 to 539 | completed |
+| drop | shared | TCP reset after the last packet | 50 | 3,200 dropped | 0 | 65 / 123 | 123 | 539 to 544 | completed |
+| drop | shared | close frame right after `session.update`, replies unread | 50 | 3,200 dropped | 0 | 17 / 18 | 18 | 544 to 545 | completed |
+| churn | legacy | close frame after the last packet | 20 | 1,280 completed, close 1000 | 0 | 30 / 33 | not measurable | 521 to 530 | completed |
+| drop | legacy | TCP reset after the last packet | 20 | 1,280 dropped | 0 | 32 / 35 | not measurable | 530 to 536 | completed |
+| drop | legacy | close frame right after `session.update`, replies unread | 20 | 1,280 dropped | 1,280 | timed out in 20 of 20 cycles | not measurable | 536 to 570 | completed |
 
-The shared path releases a reset connection in about 60 ms at the median and a cleanly closed one in under 20 ms; the 145 ms tail of the close-frame drop is the server finishing 64 close handshakes at once. The legacy path releases both, except when the client's close frame arrives before the server has answered `session.update`: then `RealtimeSession.teardown` calls `websocket.close()` on a socket whose reply already failed, the call raises, and `RealtimeSessionManager.close` never removes the entry. Every one of the 1,280 such sessions stayed registered, 27 kB each with the model-free detector, and the server kept admitting new sessions because this path has no connection cap. The legacy churn row's 18 new threads are the default thread pool that `asyncio.to_thread` fills for the turn detector on the first cycles; they did not grow afterwards.
+The shared path releases a reset connection in about 65 ms at the median, with a tail past 120 ms, and a cleanly closed one in under 20 ms. The legacy path releases both, except when the client's close frame arrives before the server has answered `session.update`: then `RealtimeSession.teardown` calls `websocket.close()` on a socket whose reply already failed, the call raises, and `RealtimeSessionManager.close` never removes the entry. Every one of the 1,280 such sessions stayed registered, 27 kB each with the model-free detector, and the server kept admitting new sessions because this path has no connection cap. The legacy churn row's 18 new threads are the default thread pool that `asyncio.to_thread` fills for the turn detector on the first cycles; they did not grow afterwards. Latencies move by a few milliseconds between runs on this host: an earlier run of the same commands measured 23 ms for the legacy churn median that reads 30 ms here, and one 145 ms cycle in the shared close-frame drop that did not recur. The session counts, the timeouts and the RSS growth of the leaking row were the same in both.
 
 ### CPU-only mock, legacy path before and after #3504
 
-The same two legacy rows against #3504 at `074ab1d86`, which pops the manager entry even when teardown raises.
+The same two legacy rows against #3504 at `074ab1d86`, which pops the manager entry even when teardown raises. That branch starts from `c6158da69`, 36 commits before the main commit measured above; `sglang_omni/serve/realtime` and `sglang_omni/audio` did not change between the two, and the changes to `openai_api.py` in that range are outside the realtime route.
 
 | Scenario | Client leaves by | Branch | Sessions left | Cleanup p50 / p99 ms | Server RSS MB |
 |---|---|---|---|---|---|
-| churn | close frame after the last packet | main | 0 | 23 / 28 | 530 to 539 |
-| churn | close frame after the last packet | #3504 | 0 | 23 / 24 | 527 to 536 |
-| drop | close frame right after `session.update`, replies unread | main | 1,280 | timed out | 544 to 579 |
-| drop | close frame right after `session.update`, replies unread | #3504 | 0 | 14 / 15 | 536 to 536 |
+| churn | close frame after the last packet | main | 0 | 30 / 33 | 521 to 530 |
+| churn | close frame after the last packet | #3504 | 0 | 31 / 34 | 523 to 532 |
+| drop | close frame right after `session.update`, replies unread | main | 1,280 | timed out | 536 to 570 |
+| drop | close frame right after `session.update`, replies unread | #3504 | 0 | 18 / 21 | 532 to 532 |
 
 ### Model-backed
 
@@ -88,7 +88,8 @@ python -m benchmarks.duplex.lifecycle_stress report runs/churn runs/drop runs/le
 
 - Host: Apple M4 Pro, 48 GB, macOS 27.2; client and mock on the same host.
 - Python 3.12.15, websockets 17.2, uvicorn 0.54.0, starlette 1.7.0, fastapi 0.142.2.
-- Commit: main `c0776499c`; the fixed rows use #3504 at `074ab1d86`.
+- Commit: main `c0776499c`; the fixed rows use #3504 at `074ab1d86`. Each run was recorded with `--server-revision` set to the commit its mock served.
+- Measured on 2026-11-11.
 
 ## Limitations
 
