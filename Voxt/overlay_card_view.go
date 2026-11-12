@@ -102,6 +102,11 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 		a.cardLanguage(c, v)
 	}
 	switch {
+	case v.canStopAnswer:
+		if cardCapsule(c.Key("ov-card-stop-answer"), i18n.T("Stop"), i18n.T("Stop writing and keep the text so far")) {
+			a.closeLangMenu()
+			a.stopLLM()
+		}
 	case v.canStop:
 		if cardCapsule(c.Key("ov-card-stop"), i18n.T("Done"), i18n.T("Stop recording the follow-up")) {
 			a.closeLangMenu()

@@ -182,6 +182,20 @@ func (m *Manager) SkipLLM(id string) {
 	}
 }
 
+// StopLLM ends session id's answer where it is, when its snapshot says it
+// can (Snapshot.CanStop): the request to the model ends and the card keeps
+// the answer so far, to copy, insert or follow up (#3886).
+func (m *Manager) StopLLM(id string) {
+	m.mu.Lock()
+	r := m.cur
+	ok := r != nil && r.id == id && m.snap.CanStop()
+	m.mu.Unlock()
+	if ok {
+		r.stopped.Store(true)
+		r.llmStop()
+	}
+}
+
 // update changes the snapshot of run r, if r is still the current,
 // live session, and publishes it. It reports whether it did.
 func (m *Manager) update(r *run, fn func(*Snapshot)) bool {
