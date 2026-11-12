@@ -488,13 +488,12 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
         # below can free them.
         del params_dict
 
-        # FP8 decoder linears on SM120. The kernels import CuTe DSL, so the module
-        # loads only here and never on other platforms.
-        if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] == 12:
+        # note (emre570): the FP8 kernels import CuTe DSL, so they load only on NVIDIA SM120. ROCm gfx1200 also reports major 12.
+        if current_platform.is_cuda() and torch.cuda.get_device_capability()[0] == 12:
             from sglang_omni.models.qwen3_asr.fp8_linear import install_fp8_linears
 
             count = install_fp8_linears(self.language_model)
-            logger.info(f"Qwen3-ASR FP8 linears: lm_head + {count} decoder linears")
+            logger.info(f"Qwen3-ASR FP8 linears: {count} decoder linears")
         else:
             pass
 
