@@ -272,7 +272,6 @@ def test_preprocessing_warms_the_encoder_up_once_on_an_accelerator(
 
 def test_the_reference_codes_are_the_codec_encode_codes() -> None:
     codec = tiny_codec()
-    codec.fold_weight_norm()
     audio = 0.1 * torch.randn(1, 3 * codec.frame_length)
 
     with torch.no_grad():
@@ -333,9 +332,7 @@ def test_the_prepared_codec_encodes_bitwise_like_the_module(
     hook_codec = tiny_codec().cuda()
     hook_codec.fold_weight_norm()
     torch.manual_seed(0)
-    audio = (
-        0.1 * torch.randn(1, 1, 5 * module_codec.frame_length, device="cuda")
-    ).clamp(-1, 1)
+    audio = 0.1 * torch.randn(1, 1, 5 * module_codec.frame_length, device="cuda")
     hook = Drama3ReferenceEncodeHook(
         codec=hook_codec,
         checkpoint_id="codec.pth",
@@ -349,7 +346,7 @@ def test_the_prepared_codec_encodes_bitwise_like_the_module(
         torch.no_grad(),
         torch.autocast(
             "cuda",
-            dtype=autocast_dtype or torch.bfloat16,
+            dtype=autocast_dtype,
             enabled=autocast_dtype is not None,
             cache_enabled=False,
         ),
