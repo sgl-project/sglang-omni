@@ -148,7 +148,7 @@ func (f *fakeAudio) Record(ctx context.Context, id string, p proto.CaptureParams
 			if f.failAt > 0 && n == f.failAt {
 				return proto.CaptureResult{}, f.failErr
 			}
-			if f.maxFrame > 0 && n == f.maxFrame {
+			if (f.maxFrame > 0 && n == f.maxFrame) || (p.MaxSeconds > 0 && float64(n) >= p.MaxSeconds*10) { // 100 ms frames
 				return proto.CaptureResult{Reason: proto.CaptureMaxSeconds, Frames: n}, nil
 			}
 		}

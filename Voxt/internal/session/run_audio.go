@@ -61,12 +61,6 @@ func (r *run) onAudio(ev AudioEvent) {
 	switch {
 	case ev.PCM != nil:
 		r.pcm.append(ev.PCM.Data)
-		if most := r.settings.Audio.MaxSeconds; most > 0 && len(r.pcm.bytes()) >= most*2*asr.SampleRate {
-			r.stopOnce.Do(func() {
-				r.logf("info", "the recording reached the length limit (%d s): stopping it", most)
-				close(r.stop)
-			})
-		}
 	case ev.Started != nil:
 		st, at := ev.Started, r.now()
 		r.m.update(r, func(s *Snapshot) {

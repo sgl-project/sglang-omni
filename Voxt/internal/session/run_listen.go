@@ -119,7 +119,8 @@ func (r *run) listen() (string, bool) {
 	defer capCancel()
 	capDone := make(chan capResult, 1)
 	go func() {
-		params := proto.CaptureParams{Devices: r.settings.Audio.Devices, SampleRate: asr.SampleRate} // no maxSeconds: a podcast runs until Stop (StopGrace covers a lost stop)
+		// MaxSeconds: the user's length limit only (0: a podcast runs until Stop; StopGrace covers a lost stop).
+		params := proto.CaptureParams{Devices: r.settings.Audio.Devices, SampleRate: asr.SampleRate, MaxSeconds: float64(r.settings.Audio.MaxSeconds)}
 		res, err := cfg.Audio.Record(capCtx, r.id, params, r.onAudio)
 		r.pcm.close()
 		capDone <- capResult{res, err}
