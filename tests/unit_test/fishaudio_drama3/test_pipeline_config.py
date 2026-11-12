@@ -72,7 +72,6 @@ def test_each_factory_gets_the_defaults_written_once() -> None:
         "max_prompt_rows": 8192,
         "first_frame_cuda_graphs": True,
         "first_frame_cuda_graph_max_requests": 16,
-        "gdn_prefill_cuda_graphs": True,
         "triton_sampling": True,
         "tower_fused_layers": True,
         "enable_async_decode": False,
