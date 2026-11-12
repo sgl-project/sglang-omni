@@ -279,26 +279,29 @@ class PackedQkvModel:
 
     def __init__(self, source: torch.nn.Module) -> None:
         self.source: torch.nn.Module = source
-        original = dict(chain(source.named_parameters(), source.named_buffers()))
+        original_tensors = dict(
+            chain(source.named_parameters(), source.named_buffers())
+        )
         self.model: torch.nn.Module = copy.deepcopy(
-            source, memo={id(tensor): tensor for tensor in original.values()}
+            source, memo={id(tensor): tensor for tensor in original_tensors.values()}
         )
         self.layers: dict[str, PackedAttention] = {}
-        for name, attention in list(self.model.named_modules()):
-            if name.endswith(".attn"):
+        for layer_name, attention in list(self.model.named_modules()):
+            if layer_name.endswith(".attn"):
                 if type(attention) is not Attention:
-                    raise RuntimeError(f"Unsupported packed attention: {name}")
+                    raise RuntimeError(f"Unsupported packed attention: {layer_name}")
                 else:
                     packed = PackedAttention(attention)
-                    self.model.set_submodule(name, packed)
-                    self.layers[name] = packed
+                    self.model.set_submodule(layer_name, packed)
+                    self.layers[layer_name] = packed
             else:
                 pass
-        candidate = dict(
+        packed_tensors = dict(
             chain(self.model.named_parameters(), self.model.named_buffers())
         )
         if not self.layers or any(
-            candidate.get(name) is not value for name, value in original.items()
+            packed_tensors.get(tensor_name) is not original_tensor
+            for tensor_name, original_tensor in original_tensors.items()
         ):
             raise RuntimeError(
                 "Packed DiT must preserve all original parameter and buffer bindings"
@@ -306,20 +309,24 @@ class PackedQkvModel:
         else:
             pass
         self.projections: dict[str, TensorBinding] = {
-            f"{name}.{role}.{parameter}": TensorBinding(
-                value=value,
-                pointer=value.data_ptr(),
-                shape=value.shape,
-                stride=value.stride(),
-                dtype=value.dtype,
-                device=value.device,
+            f"{layer_name}.{projection_role}.{parameter_name}": TensorBinding(
+                value=parameter_value,
+                pointer=parameter_value.data_ptr(),
+                shape=parameter_value.shape,
+                stride=parameter_value.stride(),
+                dtype=parameter_value.dtype,
+                device=parameter_value.device,
                 version=(
-                    None if torch.is_inference(value) else value._version
+                    None
+                    if torch.is_inference(parameter_value)
+                    else parameter_value._version
                 ),  # noqa: SLF001  # leading-underscore: PyTorch tensor version API
             )
-            for name, layer in self.layers.items()
-            for role in ("to_q", "to_k", "to_v")
-            for parameter, value in layer.get_submodule(role).named_parameters()
+            for layer_name, layer in self.layers.items()
+            for projection_role in ("to_q", "to_k", "to_v")
+            for parameter_name, parameter_value in layer.get_submodule(
+                projection_role
+            ).named_parameters()
         }
         self.tensors: tuple[torch.Tensor, ...] = tuple(
             chain(self.model.parameters(), self.model.buffers())
@@ -327,22 +334,24 @@ class PackedQkvModel:
 
     def validate_weights(self) -> None:
         """Reject changes to source projections copied into the packed weights."""
-        for name, binding in self.projections.items():
-            current = self.source.get_parameter(name)
+        for parameter_name, binding in self.projections.items():
+            current_parameter = self.source.get_parameter(parameter_name)
             version = (
-                None if torch.is_inference(current) else current._version
+                None
+                if torch.is_inference(current_parameter)
+                else current_parameter._version
             )  # noqa: SLF001  # leading-underscore: PyTorch tensor version API
             if (
-                current is not binding.value
-                or current.data_ptr() != binding.pointer
-                or current.shape != binding.shape
-                or current.stride() != binding.stride
-                or current.dtype != binding.dtype
-                or current.device != binding.device
+                current_parameter is not binding.value
+                or current_parameter.data_ptr() != binding.pointer
+                or current_parameter.shape != binding.shape
+                or current_parameter.stride() != binding.stride
+                or current_parameter.dtype != binding.dtype
+                or current_parameter.device != binding.device
                 or version != binding.version
             ):
                 raise RuntimeError(
-                    f"Packed DiT projection changed; rebuild mode: {name}"
+                    f"Packed DiT projection changed; rebuild mode: {parameter_name}"
                 )
             else:
                 pass

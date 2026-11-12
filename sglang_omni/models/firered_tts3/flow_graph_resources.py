@@ -67,15 +67,15 @@ class FlowGraphEntry:
         else:
             pass
         if self.time_table is not None:
-            for step in self.time_table.steps:
-                for value in step.values():
-                    value.output.record_stream(stream)
+            for timestep_values in self.time_table.steps:
+                for time_gemm_value in timestep_values.values():
+                    time_gemm_value.output.record_stream(stream)
         else:
             pass
         for mode in self.dispatch_modes:
             if isinstance(mode, Conv1dWeightCache):
-                for weight in mode.weights.values():
-                    weight.packed.record_stream(stream)
+                for cached_weight in mode.weights.values():
+                    cached_weight.packed.record_stream(stream)
                 if mode.controlled_plan is not None:
                     mode.controlled_plan.workspace.record_stream(stream)
                 else:

@@ -88,8 +88,8 @@ class ProfilingProbe:
         else:
             pass
         detail = ", ".join(
-            f"{name}={duration * 1e3:.1f}ms"
-            for name, duration in sorted(self.segments.items())
+            f"{segment_name}={duration_seconds * 1e3:.1f}ms"
+            for segment_name, duration_seconds in sorted(self.segments.items())
         )
         logger.info(f"fireredtts3 profile request={request_id}: {detail}")
 

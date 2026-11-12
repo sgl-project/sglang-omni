@@ -114,20 +114,19 @@ def execute_flow_rows(
             ).view(-1, 1, 1)
             profiling_probes = [flow_row.request_data.probe for flow_row in flow_group]
             with ProfilingProbe.shared_segment("dit_flow", profiling_probes):
-                graphs = flow_graphs
-                patches = (
-                    graphs.run(
+                generated_patches = (
+                    flow_graphs.run(
                         history_latents,
                         initial_noise,
                         conditioning,
                         guidance_scales,
                         n_timesteps,
                     )
-                    if graphs is not None
+                    if flow_graphs is not None
                     else None
                 )
-                if patches is None:
-                    patches = euler_flow_loop(
+                if generated_patches is None:
+                    generated_patches = euler_flow_loop(
                         model.dit,
                         torch.cat([history_latents, initial_noise], dim=1),
                         conditioning,
@@ -139,17 +138,19 @@ def execute_flow_rows(
                 else:
                     pass
             with ProfilingProbe.shared_segment("patch_encoder", profiling_probes):
-                feedback_embeddings = model.patch_encoder(patches)
+                feedback_embeddings = model.patch_encoder(generated_patches)
             for request_row_index, flow_row in enumerate(flow_group):
                 request_data = flow_row.request_data
                 flow_state = request_data.flow_state
                 assert isinstance(flow_state, FlowState)
-                patch = patches[request_row_index : request_row_index + 1]
+                generated_patch = generated_patches[
+                    request_row_index : request_row_index + 1
+                ]
                 flow_state.latent_history = torch.cat(
-                    [flow_state.latent_history, patch], dim=1
+                    [flow_state.latent_history, generated_patch], dim=1
                 )
                 flow_state.patch_count += 1
-                request_data.latent_patches.append(patch)
+                request_data.latent_patches.append(generated_patch)
                 request_data.pending_feedback_queue.append(
                     feedback_embeddings[0, request_row_index].to(dtype=feedback_dtype)
                 )

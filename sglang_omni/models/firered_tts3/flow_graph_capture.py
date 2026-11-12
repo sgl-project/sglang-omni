@@ -102,9 +102,9 @@ class FlowGraphCapture:
         ) -> torch.Tensor:
             active_time = time_mode if time_mode in active_modes else None
             active_conv = conv_mode if conv_mode in active_modes else None
-            conv_hits = active_conv.hits if active_conv is not None else 0
+            convolution_hits_before = active_conv.hits if active_conv is not None else 0
             active_ffn = ffn_mode if ffn_mode in active_modes else None
-            ffn_hits = active_ffn.hits if active_ffn is not None else 0
+            ffn_hits_before = active_ffn.hits if active_ffn is not None else 0
             result = euler_flow_loop(
                 dit,
                 state,
@@ -119,8 +119,11 @@ class FlowGraphCapture:
                 time_mode=active_time,
             )
             if active_conv is not None:
-                expected = len(active_conv.weights) * self.n_timesteps
-                if expected == 0 or active_conv.hits - conv_hits != expected:
+                expected_hit_count = len(active_conv.weights) * self.n_timesteps
+                if (
+                    expected_hit_count == 0
+                    or active_conv.hits - convolution_hits_before != expected_hit_count
+                ):
                     raise TimeCacheUnavailable(
                         "Compiled convolution schema was not fully handled"
                     )
@@ -129,11 +132,14 @@ class FlowGraphCapture:
             else:
                 pass
             if active_ffn is not None:
-                expected = (
+                expected_hit_count = (
                     active_ffn.expected_hits(2 * state.shape[0] * state.shape[1])
                     * self.n_timesteps
                 )
-                if expected == 0 or active_ffn.hits - ffn_hits != expected:
+                if (
+                    expected_hit_count == 0
+                    or active_ffn.hits - ffn_hits_before != expected_hit_count
+                ):
                     raise RuntimeError("Compiled DiT GEMM schema was not fully handled")
                 else:
                     pass
@@ -176,12 +182,12 @@ class FlowGraphCapture:
             nonlocal conv_mode
             conv_mode = active_conv
             candidate_modes = time_modes + (active_conv,)
-            for probe, (state, condition, scales, expected) in enumerate(probes):
+            for probe_index, (state, condition, scales, expected) in enumerate(probes):
                 actual = body(
                     state.clone(), condition, scales, candidate_modes, observed=True
                 )
                 check_precision(
-                    "convolution", actual, expected, self.precision_gate, probe
+                    "convolution", actual, expected, self.precision_gate, probe_index
                 )
             return capture_graph(candidate_modes, self.precision_gate), candidate_modes
 
@@ -297,10 +303,12 @@ class FlowGraphCapture:
                             else:
                                 pass
                             ffn_mode = self.ffn_mode
-                            rows = 2 * flow_state.shape[0] * flow_state.shape[1]
+                            ffn_row_count = (
+                                2 * flow_state.shape[0] * flow_state.shape[1]
+                            )
                             if (
                                 ffn_mode.enabled
-                                and rows in QKV_CONFIGS
+                                and ffn_row_count in QKV_CONFIGS
                                 and ffn_mode.packed_compiled is None
                             ):
                                 ffn_mode.prepare_packed(
@@ -308,13 +316,13 @@ class FlowGraphCapture:
                                 )
                             else:
                                 pass
-                            if not ffn_mode.supports(rows):
+                            if not ffn_mode.supports(ffn_row_count):
                                 raise RuntimeError(ffn_mode.reason)
                             else:
                                 pass
                             ffn_mode.validate_weights()
                             modes = (*base_modes, ffn_mode)
-                            for probe, (
+                            for probe_index, (
                                 state,
                                 condition,
                                 scales,
@@ -347,7 +355,7 @@ class FlowGraphCapture:
                                         actual,
                                         uncached,
                                         strict_gate,
-                                        probe,
+                                        probe_index,
                                     )
                                 else:
                                     pass
@@ -356,7 +364,7 @@ class FlowGraphCapture:
                                     actual,
                                     expected,
                                     self.precision_gate,
-                                    probe,
+                                    probe_index,
                                 )
                             graph = capture_graph(modes, self.precision_gate)
                             self.counters["ffn_captures"] += 1

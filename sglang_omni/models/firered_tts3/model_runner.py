@@ -187,9 +187,9 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
             engine_prefill_seconds = time.perf_counter() - self.prefill_launch_at
             self.prefill_launch_at = None
             for request in requests:
-                probe = scheduler_request_data(request).probe
-                if probe is not None and probe.enabled:
-                    probe.segments["engine_prefill"] = engine_prefill_seconds
+                profiling_probe = scheduler_request_data(request).probe
+                if profiling_probe is not None and profiling_probe.enabled:
+                    profiling_probe.segments["engine_prefill"] = engine_prefill_seconds
                 else:
                     pass
         else:
@@ -304,20 +304,20 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
         self, request_data: FireRedTTS3SGLangRequestData, sampled: torch.Tensor
     ) -> int:
         """Retain sampled text, excluding EOT, before the audio transition feeds."""
-        token_id = int(sampled)
+        sampled_token_id = int(sampled)
         request_data.text_fed += 1
-        if token_id == TEXT_EOT_ID:
+        if sampled_token_id == TEXT_EOT_ID:
             request_data.eot_sampled = True
             request_data.text_ar_mode = TEXT_MODE_FINALIZE
-            return token_id
+            return sampled_token_id
         else:
             pass
-        request_data.text_token_ids.append(token_id)
+        request_data.text_token_ids.append(sampled_token_id)
         if request_data.text_fed >= TEXT_TOKEN_BUDGET:
             request_data.text_ar_mode = TEXT_MODE_FINALIZE
         else:
             pass
-        return token_id
+        return sampled_token_id
 
     def post_decode(
         self,
@@ -416,12 +416,12 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
 
     def next_text_feed(self, request_data: FireRedTTS3SGLangRequestData) -> int:
         """Feed the next text token, extending exhausted text with its padding token."""
-        token_ids = request_data.state.text_stream_ids
+        text_stream_token_ids = request_data.state.text_stream_ids
         text_token_index = request_data.text_token_index
         request_data.text_token_index += 1
         return (
-            int(token_ids[text_token_index])
-            if text_token_index < len(token_ids)
+            int(text_stream_token_ids[text_token_index])
+            if text_token_index < len(text_stream_token_ids)
             else int(request_data.state.text_pad_id)
         )
 

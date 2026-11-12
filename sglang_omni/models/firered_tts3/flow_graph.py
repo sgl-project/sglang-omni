@@ -64,10 +64,10 @@ class FlowGraphRunner:
         self.dit_fallback: torch.nn.Module | CompiledDiTExecutor = (
             dit_fallback if dit_fallback is not None else dit
         )
-        time_cache, optimize_convolution = flow_optimizations(mode)
+        time_cache_enabled, optimize_convolution = flow_optimizations(mode)
         self.optimize_convolution: bool = optimize_convolution
         self.precompute_time_conditions: bool = (
-            time_cache
+            time_cache_enabled
             if precompute_time_conditions is None
             else precompute_time_conditions
         )

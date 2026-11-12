@@ -12,17 +12,17 @@ from torch import nn
 
 def get_nonlinear(config_str: str, channels: int) -> nn.Sequential:
     nonlinear = nn.Sequential()
-    for name in config_str.split("-"):
-        if name == "relu":
+    for layer_name in config_str.split("-"):
+        if layer_name == "relu":
             nonlinear.add_module("relu", nn.ReLU(inplace=True))
-        elif name == "prelu":
+        elif layer_name == "prelu":
             nonlinear.add_module("prelu", nn.PReLU(channels))
-        elif name == "batchnorm":
+        elif layer_name == "batchnorm":
             nonlinear.add_module("batchnorm", nn.BatchNorm1d(channels))
-        elif name == "batchnorm_":
+        elif layer_name == "batchnorm_":
             nonlinear.add_module("batchnorm", nn.BatchNorm1d(channels, affine=False))
         else:
-            raise ValueError(f"Unexpected module ({name}).")
+            raise ValueError(f"Unexpected module ({layer_name}).")
     return nonlinear
 
 
