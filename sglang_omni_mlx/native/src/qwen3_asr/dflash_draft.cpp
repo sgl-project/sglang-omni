@@ -156,14 +156,32 @@ omni_common::WeightMap QuantizeWeights(omni_common::WeightMap weights,
   return quantized;
 }
 
+float RopeThetaScale(
+    const std::map<int, float> &rope_theta_scale_by_prompt_token_count,
+    int prompt_token_count) {
+  float scale = 1.0f;
+  for (const auto &[longer_than_token_count, longer_scale] :
+       rope_theta_scale_by_prompt_token_count) {
+    if (prompt_token_count > longer_than_token_count) {
+      scale = longer_scale;
+    } else {
+    }
+  }
+  return scale;
+}
+
 } // namespace
 
-DFlashDraft::DFlashDraft(const std::filesystem::path &directory,
-                         int quantization_bits,
-                         const Qwen3DecoderConfig &target)
-    : DFlashDraft(CheckedDraft(directory, target), quantization_bits) {}
+DFlashDraft::DFlashDraft(
+    const std::filesystem::path &directory, int quantization_bits,
+    const Qwen3DecoderConfig &target,
+    std::map<int, float> rope_theta_scale_by_prompt_token_count)
+    : DFlashDraft(CheckedDraft(directory, target), quantization_bits,
+                  std::move(rope_theta_scale_by_prompt_token_count)) {}
 
-DFlashDraft::DFlashDraft(LoadedDraft draft, int quantization_bits)
+DFlashDraft::DFlashDraft(
+    LoadedDraft draft, int quantization_bits,
+    std::map<int, float> rope_theta_scale_by_prompt_token_count)
     : checkpoint_(QuantizeWeights(std::move(draft.weights), quantization_bits),
                   QuantizationConfig(quantization_bits)),
       decoder_(checkpoint_, "",
@@ -172,13 +190,16 @@ DFlashDraft::DFlashDraft(LoadedDraft draft, int quantization_bits)
       aux_layers_(draft.config.at("aux_hidden_state_layer_ids")
                       .get<std::vector<int>>()),
       block_size_(draft.config.at("block_size").get<int>()),
-      mask_token_id_(draft.config.at("mask_token_id").get<int>()) {}
+      mask_token_id_(draft.config.at("mask_token_id").get<int>()),
+      rope_theta_scale_by_prompt_token_count_(
+          std::move(rope_theta_scale_by_prompt_token_count)) {}
 
 // note (wilsonzheng0327): the draft's trained sliding window is not enforced:
 // on a 194 s recording a 1.7B draft trained with a 2,048 window accepts 3.8
 // tokens a round with the whole context and 3.2 with the window, and the
 // transcript is the target's either way.
-void DFlashDraft::AppendContext(const std::vector<mx::array> &aux_hidden_states,
+void DFlashDraft::AppendContext(const Qwen3Decoder &draft_decoder,
+                                const std::vector<mx::array> &aux_hidden_states,
                                 int token_count,
                                 std::vector<KVCache> &caches) const {
   std::vector<mx::array> committed;
@@ -188,18 +209,19 @@ void DFlashDraft::AppendContext(const std::vector<mx::array> &aux_hidden_states,
   }
   const mx::array context = checkpoint_.RmsNorm(
       checkpoint_.Linear(mx::concatenate(committed, -1), "fc"), "hidden_norm",
-      decoder_.config().rms_norm_eps);
-  decoder_.AppendKeysValues(context, caches);
+      draft_decoder.config().rms_norm_eps);
+  draft_decoder.AppendKeysValues(context, caches);
 }
 
-mx::array DFlashDraft::ProposeBlock(const mx::array &block_embeddings,
+mx::array DFlashDraft::ProposeBlock(const Qwen3Decoder &draft_decoder,
+                                    const mx::array &block_embeddings,
                                     std::vector<KVCache> &caches) const {
   // note (wilsonzheng0327): the block attends causally, as the pinned drafts
   // were trained (sliding_window_non_causal is false, checked at load). A
   // bidirectional block, as in the DFlash reference, lowers the acceptance on
   // the 392-clip corpus: 4.86 to 4.42 a round on the 0.6B draft and 5.50 to
   // 4.95 on the 1.7B (measured by Jiaxin Deng), with the same transcripts.
-  const mx::array hidden = decoder_.Forward(block_embeddings, caches);
+  const mx::array hidden = draft_decoder.Forward(block_embeddings, caches);
   // note (wilsonzheng0327): only context keys and values stay in the draft
   // caches; the block's own are dropped once it has been proposed.
   for (KVCache &cache : caches) {
@@ -207,7 +229,7 @@ mx::array DFlashDraft::ProposeBlock(const mx::array &block_embeddings,
   }
   const mx::array proposals = checkpoint_.RmsNorm(
       mx::slice(hidden, {0, 1, 0}, {1, block_size_, hidden.shape(2)}), "norm",
-      decoder_.config().rms_norm_eps);
+      draft_decoder.config().rms_norm_eps);
   const mx::array draft_ids =
       mx::argmax(checkpoint_.Linear(proposals, "lm_head"), -1);
   // note (wilsonzheng0327): the draft predicts a reduced vocabulary; d2t
@@ -223,6 +245,13 @@ int DFlashDraft::Decode(const Qwen3Decoder &target, const mx::array &embeddings,
                         const std::atomic<bool> &cancel) const {
   std::vector<KVCache> caches = target.NewCaches();
   std::vector<KVCache> draft_caches = decoder_.NewCaches();
+  // The decoder only holds references and a config, so a per-request copy is
+  // cheap and leaves the shared draft unchanged for concurrent requests.
+  Qwen3DecoderConfig draft_config = decoder_.config();
+  draft_config.rope_theta *=
+      RopeThetaScale(rope_theta_scale_by_prompt_token_count_,
+                     static_cast<int>(embeddings.shape(1)));
+  const Qwen3Decoder draft_decoder(checkpoint_, "", draft_config);
   std::vector<mx::array> aux_hidden_states;
   int processed = 0;
   while (prefill_step_tokens > 0 && embeddings.shape(1) - processed > 1) {
@@ -236,7 +265,7 @@ int DFlashDraft::Decode(const Qwen3Decoder &target, const mx::array &embeddings,
         mx::slice(embeddings, {0, processed, 0},
                   {1, processed + token_count, embeddings.shape(2)}),
         caches, aux_layers_, &aux_hidden_states);
-    AppendContext(aux_hidden_states, token_count, draft_caches);
+    AppendContext(draft_decoder, aux_hidden_states, token_count, draft_caches);
     std::vector<mx::array> evaluated = {hidden};
     for (const KVCache &cache : draft_caches) {
       const auto arrays = cache.Arrays();
@@ -255,8 +284,8 @@ int DFlashDraft::Decode(const Qwen3Decoder &target, const mx::array &embeddings,
     const mx::array prompt_hidden = target.Forward(
         mx::slice(embeddings, {0, processed, 0}, embeddings.shape()), caches,
         aux_layers_, &aux_hidden_states);
-    AppendContext(aux_hidden_states, embeddings.shape(1) - processed,
-                  draft_caches);
+    AppendContext(draft_decoder, aux_hidden_states,
+                  embeddings.shape(1) - processed, draft_caches);
     anchor_id = static_cast<int>(
         mx::argmax(target.LastLogits(prompt_hidden)).item<uint32_t>());
   }
@@ -275,7 +304,8 @@ int DFlashDraft::Decode(const Qwen3Decoder &target, const mx::array &embeddings,
     std::vector<int> block_ids(block_size_, mask_token_id_);
     block_ids[0] = anchor_id;
     const mx::array proposed_ids =
-        ProposeBlock(target.EmbedTokens(mx::array(block_ids.data(),
+        ProposeBlock(draft_decoder,
+                     target.EmbedTokens(mx::array(block_ids.data(),
                                                   {1, block_size_}, mx::int32)),
                      draft_caches);
     // note (wilsonzheng0327): the block is cut to the tokens the budget still
@@ -318,7 +348,8 @@ int DFlashDraft::Decode(const Qwen3Decoder &target, const mx::array &embeddings,
     for (KVCache &cache : caches) {
       cache.Trim(verify_count - 1 - accepted_count);
     }
-    AppendContext(aux_hidden_states, accepted_count + 1, draft_caches);
+    AppendContext(draft_decoder, aux_hidden_states, accepted_count + 1,
+                  draft_caches);
   }
   return round_count;
 }
