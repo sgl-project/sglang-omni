@@ -10,17 +10,15 @@ import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from types import ModuleType
+from typing import TYPE_CHECKING
 
 import torch
 
-try:
-    import llama_cpp
-    from llama_cpp import _ggml as llama_cpp_ggml
+if TYPE_CHECKING:
     from neucodec import NeuCodec
-except ImportError as exc:
-    raise RuntimeError(
-        "Audar-TTS requires the 'audar-tts' optional dependencies"
-    ) from exc
+else:
+    pass
 
 from sglang_omni.models.audar_tts.payload_types import AudarTTSState
 from sglang_omni.models.audar_tts.protocol import (
@@ -52,6 +50,47 @@ MIN_REFERENCE_SECONDS = 5.0
 MAX_REFERENCE_SECONDS = 15.0
 XPU_WARMUP_PROMPT_TOKENS = 256  # measured on Arc Pro B60
 logger = logging.getLogger(__name__)
+_AUDAR_TTS_EXTRA_ERROR = "Audar-TTS requires the 'audar-tts' optional dependencies"
+llama_cpp: ModuleType | None = None
+llama_cpp_ggml: ModuleType | None = None
+
+
+def load_neucodec() -> type[NeuCodec]:
+    try:
+        from neucodec import NeuCodec
+    except ImportError as exc:
+        raise RuntimeError(_AUDAR_TTS_EXTRA_ERROR) from exc
+    else:
+        pass
+    return NeuCodec
+
+
+def load_llama_cpp() -> ModuleType:
+    global llama_cpp
+    if llama_cpp is None:
+        try:
+            import llama_cpp
+        except ImportError as exc:
+            raise RuntimeError(_AUDAR_TTS_EXTRA_ERROR) from exc
+        else:
+            pass
+    else:
+        pass
+    return llama_cpp
+
+
+def load_llama_cpp_ggml() -> ModuleType:
+    global llama_cpp_ggml
+    if llama_cpp_ggml is None:
+        try:
+            from llama_cpp import _ggml as llama_cpp_ggml
+        except ImportError as exc:
+            raise RuntimeError(_AUDAR_TTS_EXTRA_ERROR) from exc
+        else:
+            pass
+    else:
+        pass
+    return llama_cpp_ggml
 
 
 @dataclass(frozen=True)
@@ -63,6 +102,7 @@ class ReferenceInput:
 
 @lru_cache(maxsize=None)
 def load_codec(model: str, revision: str, device: str) -> NeuCodec:
+    NeuCodec = load_neucodec()
     return NeuCodec.from_pretrained(model, revision=revision).eval().to(device)
 
 
@@ -256,7 +296,7 @@ def resolve_gguf(model_path: str, filename: str, revision: str) -> str:
 
 
 def has_llama_cpp_backend(name: str) -> bool:
-    libggml = llama_cpp_ggml.libggml
+    libggml = load_llama_cpp_ggml().libggml
     libggml.ggml_backend_reg_by_name.restype = ctypes.c_void_p
     return libggml.ggml_backend_reg_by_name(name.encode()) is not None
 
@@ -273,6 +313,7 @@ def create_tts_engine_executor(
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     from sglang_omni.utils.device import resolve_concrete_device
 
+    llama_cpp = load_llama_cpp()
     concrete_device = resolve_concrete_device(device, gpu_id)
     if concrete_device.type not in ("cpu", "cuda", "xpu", "musa"):
         raise ValueError(

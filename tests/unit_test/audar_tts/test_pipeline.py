@@ -6,11 +6,14 @@ import asyncio
 import base64
 import concurrent.futures
 import io
+import sys
 import threading
 import time
 import types
 import wave
-from typing import Any
+from collections.abc import Iterator
+from dataclasses import dataclass
+from typing import Any, NoReturn
 
 import numpy as np
 import pytest
@@ -569,12 +572,14 @@ def test_codec_model_and_lock_are_shared_between_stages(
 
     class FakeNeuCodec:
         @classmethod
-        def from_pretrained(cls, *args: Any, **kwargs: Any) -> FakeCodec:
+        def from_pretrained(cls, model: str, *, revision: str) -> FakeCodec:
             nonlocal loads
             loads += 1
             return codec
 
-    monkeypatch.setattr(stages, "NeuCodec", FakeNeuCodec)
+    neucodec_module = types.ModuleType("neucodec")
+    neucodec_module.NeuCodec = FakeNeuCodec
+    monkeypatch.setitem(sys.modules, "neucodec", neucodec_module)
     stages.load_codec.cache_clear()
     stages.codec_lock.cache_clear()
     try:
@@ -591,17 +596,68 @@ def test_codec_model_and_lock_are_shared_between_stages(
     assert loads == 1
 
 
+def test_optional_dependencies_fail_in_consuming_factories(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(stages, "llama_cpp", None)
+    monkeypatch.setattr(stages, "llama_cpp_ggml", None)
+    monkeypatch.setitem(sys.modules, "llama_cpp", None)
+    monkeypatch.setitem(sys.modules, "neucodec", None)
+    stages.load_codec.cache_clear()
+
+    with pytest.raises(RuntimeError, match="optional dependencies"):
+        stages.load_codec("codec", "revision", "cpu")
+    with pytest.raises(RuntimeError, match="optional dependencies"):
+        stages.create_tts_engine_executor("unused", device="cpu")
+
+
+@dataclass(frozen=True)
+class LlamaInit:
+    model_path: str
+    n_ctx: int
+    n_gpu_layers: int
+    split_mode: int
+    main_gpu: int
+    verbose: bool
+
+
+@dataclass(frozen=True)
+class LlamaGenerateArgs:
+    temp: float
+    top_k: int
+    top_p: float
+    repeat_penalty: float
+
+
 def test_llama_cpp_stage_keeps_a_cpu_resolution_off_the_gpu(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """n_gpu_layers defaults to -1 (offload everything); a cpu resolution must
     zero it or the stage silently runs on GPU 0 anyway."""
-    captured: dict[str, object] = {}
+    captured: LlamaInit | None = None
 
-    class FakeLlama:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-            raise RuntimeError("stop after capture")
+    class StopAfterCapture(RuntimeError):
+        pass
+
+    def fake_llama(
+        *,
+        model_path: str,
+        n_ctx: int,
+        n_gpu_layers: int,
+        split_mode: int,
+        main_gpu: int,
+        verbose: bool,
+    ) -> NoReturn:
+        nonlocal captured
+        captured = LlamaInit(
+            model_path=model_path,
+            n_ctx=n_ctx,
+            n_gpu_layers=n_gpu_layers,
+            split_mode=split_mode,
+            main_gpu=main_gpu,
+            verbose=verbose,
+        )
+        raise StopAfterCapture
 
     def unexpected_backend_probe(name: bytes) -> None:
         raise AssertionError("an explicit CPU resolution must not probe llama.cpp GPUs")
@@ -609,7 +665,7 @@ def test_llama_cpp_stage_keeps_a_cpu_resolution_off_the_gpu(
     monkeypatch.setattr(
         stages,
         "llama_cpp",
-        types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=FakeLlama),
+        types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=fake_llama),
     )
     monkeypatch.setattr(
         stages,
@@ -624,31 +680,66 @@ def test_llama_cpp_stage_keeps_a_cpu_resolution_off_the_gpu(
     monkeypatch.setattr(current_platform, "device_type", "cpu", raising=False)
     monkeypatch.setattr(current_platform, "is_musa", lambda: True, raising=False)
 
-    with pytest.raises(RuntimeError, match="stop after capture"):
+    with pytest.raises(StopAfterCapture):
         stages.create_tts_engine_executor("unused", device="cpu")
 
-    assert captured["n_gpu_layers"] == 0
-    assert captured["main_gpu"] == 0
+    assert captured is not None
+    assert captured.n_gpu_layers == 0
+    assert captured.main_gpu == 0
 
 
-def test_llama_cpp_stage_falls_back_to_cpu_without_musa_backend(
+@pytest.mark.parametrize(
+    (
+        "backend_available",
+        "requested_gpu_layers",
+        "expected_gpu_layers",
+        "expected_main_gpu",
+        "expect_warning",
+    ),
+    [
+        (False, -1, 0, 0, True),
+        (True, 17, 17, 1, False),
+    ],
+)
+def test_llama_cpp_stage_selects_musa_backend(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    backend_available: bool,
+    requested_gpu_layers: int,
+    expected_gpu_layers: int,
+    expected_main_gpu: int,
+    expect_warning: bool,
 ) -> None:
-    captured: dict[str, object] = {}
+    captured: LlamaInit | None = None
 
     class StopAfterCapture(RuntimeError):
         pass
 
-    def fake_llama(**kwargs: object) -> None:
-        captured.update(kwargs)
+    def fake_llama(
+        *,
+        model_path: str,
+        n_ctx: int,
+        n_gpu_layers: int,
+        split_mode: int,
+        main_gpu: int,
+        verbose: bool,
+    ) -> NoReturn:
+        nonlocal captured
+        captured = LlamaInit(
+            model_path=model_path,
+            n_ctx=n_ctx,
+            n_gpu_layers=n_gpu_layers,
+            split_mode=split_mode,
+            main_gpu=main_gpu,
+            verbose=verbose,
+        )
         raise StopAfterCapture
 
     backend_queries: list[bytes] = []
 
-    def backend_registry(name: bytes) -> None:
+    def backend_registry(name: bytes) -> int | None:
         backend_queries.append(name)
-        return None
+        return 1 if backend_available else None
 
     monkeypatch.setattr(
         stages,
@@ -670,50 +761,15 @@ def test_llama_cpp_stage_falls_back_to_cpu_without_musa_backend(
     )
 
     with pytest.raises(StopAfterCapture):
-        stages.create_tts_engine_executor("unused", gpu_id=1)
+        stages.create_tts_engine_executor(
+            "unused", gpu_id=1, n_gpu_layers=requested_gpu_layers
+        )
 
-    assert captured["n_gpu_layers"] == 0
-    assert captured["main_gpu"] == 0
+    assert captured is not None
+    assert captured.n_gpu_layers == expected_gpu_layers
+    assert captured.main_gpu == expected_main_gpu
     assert backend_queries == [b"MUSA"]
-    assert "llama.cpp MUSA backend not detected" in caplog.text
-
-
-def test_llama_cpp_stage_uses_musa_backend_when_available(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, object] = {}
-
-    class StopAfterCapture(RuntimeError):
-        pass
-
-    def fake_llama(**kwargs: object) -> None:
-        captured.update(kwargs)
-        raise StopAfterCapture
-
-    monkeypatch.setattr(
-        stages,
-        "llama_cpp",
-        types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=fake_llama),
-    )
-    monkeypatch.setattr(
-        stages,
-        "llama_cpp_ggml",
-        types.SimpleNamespace(
-            libggml=types.SimpleNamespace(ggml_backend_reg_by_name=lambda name: 1)
-        ),
-    )
-    monkeypatch.setattr(stages, "resolve_gguf", lambda *args: "/model.gguf")
-    monkeypatch.setattr(stages.current_platform, "is_musa", lambda: True)
-    monkeypatch.setattr(
-        "sglang_omni.utils.device.resolve_concrete_device",
-        lambda device, gpu_id: types.SimpleNamespace(type="musa", index=gpu_id),
-    )
-
-    with pytest.raises(StopAfterCapture):
-        stages.create_tts_engine_executor("unused", gpu_id=1, n_gpu_layers=17)
-
-    assert captured["n_gpu_layers"] == 17
-    assert captured["main_gpu"] == 1
+    assert ("llama.cpp MUSA backend not detected" in caplog.text) is expect_warning
 
 
 def test_llama_cpp_stage_rejects_a_device_it_cannot_serve(
@@ -756,8 +812,24 @@ def test_llama_cpp_stage_offloads_to_the_xpu_and_warms_it(
     class FakeLlama:
         instance: "FakeLlama"
 
-        def __init__(self, **kwargs: str | int | bool) -> None:
-            self.kwargs = kwargs
+        def __init__(
+            self,
+            *,
+            model_path: str,
+            n_ctx: int,
+            n_gpu_layers: int,
+            split_mode: int,
+            main_gpu: int,
+            verbose: bool,
+        ) -> None:
+            self.init = LlamaInit(
+                model_path=model_path,
+                n_ctx=n_ctx,
+                n_gpu_layers=n_gpu_layers,
+                split_mode=split_mode,
+                main_gpu=main_gpu,
+                verbose=verbose,
+            )
             self.calls: list[list[int]] = []
             FakeLlama.instance = self
 
@@ -784,20 +856,38 @@ def test_llama_cpp_stage_offloads_to_the_xpu_and_warms_it(
 
     stages.create_tts_engine_executor("unused", device="xpu", gpu_id=1)
 
-    assert FakeLlama.instance.kwargs["main_gpu"] == 1
-    assert FakeLlama.instance.kwargs["n_gpu_layers"] == -1
+    assert FakeLlama.instance.init.main_gpu == 1
+    assert FakeLlama.instance.init.n_gpu_layers == -1
     assert FakeLlama.instance.calls[0] == [99]
 
 
 def test_llama_cpp_stage_matches_official_generation_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(stages.current_platform, "is_musa", lambda: False)
+
     class FakeLlama:
         instance: "FakeLlama"
 
-        def __init__(self, **kwargs: Any) -> None:
-            self.kwargs = kwargs
-            self.generate_kwargs: dict[str, Any] | None = None
+        def __init__(
+            self,
+            *,
+            model_path: str,
+            n_ctx: int,
+            n_gpu_layers: int,
+            split_mode: int,
+            main_gpu: int,
+            verbose: bool,
+        ) -> None:
+            self.init = LlamaInit(
+                model_path=model_path,
+                n_ctx=n_ctx,
+                n_gpu_layers=n_gpu_layers,
+                split_mode=split_mode,
+                main_gpu=main_gpu,
+                verbose=verbose,
+            )
+            self.generate_kwargs: LlamaGenerateArgs | None = None
             self.seed: int | None = None
             self.reset_calls = 0
             FakeLlama.instance = self
@@ -807,9 +897,22 @@ def test_llama_cpp_stage_matches_official_generation_loop(
             assert special is True
             return [99] if text == b"<|TARGET_CODES_END|>" else [1, 2, 3]
 
-        def generate(self, tokens: list[int], **kwargs: Any):
+        def generate(
+            self,
+            tokens: list[int],
+            *,
+            temp: float,
+            top_k: int,
+            top_p: float,
+            repeat_penalty: float,
+        ) -> Iterator[int]:
             assert tokens == [1, 2, 3]
-            self.generate_kwargs = kwargs
+            self.generate_kwargs = LlamaGenerateArgs(
+                temp=temp,
+                top_k=top_k,
+                top_p=top_p,
+                repeat_penalty=repeat_penalty,
+            )
             yield 10
             yield 11
             yield 99
@@ -859,13 +962,13 @@ def test_llama_cpp_stage_matches_official_generation_loop(
     assert result.completion_tokens == 2
     assert FakeLlama.instance.seed == 23
     assert FakeLlama.instance.reset_calls == 1
-    assert FakeLlama.instance.kwargs["main_gpu"] == 2
-    assert FakeLlama.instance.generate_kwargs == {
-        "temp": 1.0,
-        "top_k": 40,
-        "top_p": 0.9,
-        "repeat_penalty": 1.1,
-    }
+    assert FakeLlama.instance.init.main_gpu == 2
+    assert FakeLlama.instance.generate_kwargs == LlamaGenerateArgs(
+        temp=1.0,
+        top_k=40,
+        top_p=0.9,
+        repeat_penalty=1.1,
+    )
     assert scheduler.max_concurrency == 1
 
 
