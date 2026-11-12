@@ -599,6 +599,7 @@
                 <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installation-and-startup">Installation and Startup</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mtp-decoding">MTP decoding</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#dflash-decoding">DFlash decoding</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#transcription">Transcription</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-synthesis">Speech synthesis</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#audio-chat">Audio chat</a></li>
@@ -651,6 +652,92 @@
 <li><p>Keep <code class="docutils literal notranslate"><span class="pre">speculative_eagle_topk=1</span></code> and <code class="docutils literal notranslate"><span class="pre">repetition_penalty=1</span></code>. Prefix caching and chunked prefill are unavailable for this model.</p></li>
 </ul>
 <p>For MTP acceptance statistics, set <code class="docutils literal notranslate"><span class="pre">return_spec_tokens_details=true</span></code> on chat or transcription requests and read <code class="docutils literal notranslate"><span class="pre">sglext.spec_tokens_details</span></code> in the JSON response.</p>
+</section>
+<section id="dflash-decoding">
+<h2>DFlash decoding<a class="headerlink" href="#dflash-decoding" title="Link to this heading">#</a></h2>
+<p>The thinker can also verify tokens proposed by the DFlash draft <a class="reference external" href="https://huggingface.co/wilsonzheng0327/Ming-3.0-audio-flash-dflash"><code class="docutils literal notranslate"><span class="pre">wilsonzheng0327/Ming-3.0-audio-flash-dflash</span></code></a>, which was trained on English and Chinese transcription and proposes 15 tokens per step. Use it for a server that mainly transcribes; for audio chat, use MTP. The draft is off by default. Enable it with:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">CUDA_VISIBLE_DEVICES</span><span class="o">=</span><span class="m">0</span>,1<span class="w"> </span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>inclusionAI/Ming-3.0-audio-flash<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.tp_size<span class="w"> </span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.speculative_algorithm<span class="w"> </span>DFLASH<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.speculative_draft_model_path<span class="w"> </span>wilsonzheng0327/Ming-3.0-audio-flash-dflash<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.speculative_num_draft_tokens<span class="w"> </span><span class="m">16</span>
+</pre></div>
+</div>
+<p>Speed against the same server without a draft, on two H200s with SGLang 0.5.23, greedy decoding, the thinker’s CUDA graphs on and the default 8 running requests. Transcription uses held-out English and Chinese FLEURS, LibriSpeech, VoxPopuli and YODAS2 clips that the draft never saw. Audio questions are MMSU questions with a 512-token budget, which the model answers with an explanation. Audio chat asks what other held-out clips are about:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Workload, 1 at a time / 8 at a time</p></th>
+<th class="head text-right"><p>No draft</p></th>
+<th class="head text-right"><p>MTP</p></th>
+<th class="head text-right"><p>DFlash</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Transcription</p></td>
+<td class="text-right"><p>2.62 / 8.46 clips/s</p></td>
+<td class="text-right"><p>1.33x / 1.21x</p></td>
+<td class="text-right"><p>1.64x / 1.46x</p></td>
+</tr>
+<tr class="row-odd"><td><p>Audio questions, about 130-token answers</p></td>
+<td class="text-right"><p>136 / 529 tokens/s</p></td>
+<td class="text-right"><p>1.58x / 1.25x</p></td>
+<td class="text-right"><p>0.67x / 0.63x</p></td>
+</tr>
+<tr class="row-even"><td><p>Audio chat in English, about 34-token answers</p></td>
+<td class="text-right"><p>98 / 284 tokens/s</p></td>
+<td class="text-right"><p>1.30x / 1.20x</p></td>
+<td class="text-right"><p>0.98x / 0.98x</p></td>
+</tr>
+<tr class="row-odd"><td><p>Audio chat in Chinese, about 29-token answers</p></td>
+<td class="text-right"><p>89 / 253 tokens/s</p></td>
+<td class="text-right"><p>1.26x / 1.16x</p></td>
+<td class="text-right"><p>0.96x / 0.90x</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The draft accepts about 6.8 tokens per step on transcripts but only 1.3-2.5 on chat answers, so it slows chat down; MTP accepts 2.4-2.8 on every workload. Each server takes one algorithm, so pick the one that matches most of its traffic.</p>
+<p>More running requests on two GPUs, transcribing held-out clips with the load equal to <code class="docutils literal notranslate"><span class="pre">max_running_requests</span></code>:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Running requests</p></th>
+<th class="head text-right"><p>No draft</p></th>
+<th class="head text-right"><p>MTP</p></th>
+<th class="head text-right"><p>DFlash</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>8</p></td>
+<td class="text-right"><p>8.46 clips/s</p></td>
+<td class="text-right"><p>10.24 (1.21x)</p></td>
+<td class="text-right"><p>12.36 (1.46x)</p></td>
+</tr>
+<tr class="row-odd"><td><p>16</p></td>
+<td class="text-right"><p>10.59 clips/s</p></td>
+<td class="text-right"><p>13.36 (1.26x)</p></td>
+<td class="text-right"><p>Does not start</p></td>
+</tr>
+<tr class="row-even"><td><p>32</p></td>
+<td class="text-right"><p>13.46 clips/s</p></td>
+<td class="text-right"><p>16.63 (1.24x)</p></td>
+<td class="text-right"><p>Does not start</p></td>
+</tr>
+<tr class="row-odd"><td><p>64</p></td>
+<td class="text-right"><p>16.40 clips/s</p></td>
+<td class="text-right"><p>Does not start</p></td>
+<td class="text-right"><p>Does not start</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Usage notes:</p>
+<ul class="simple">
+<li><p>Verifying on the Kimi delta attention layers keeps one state per proposed token per running request, about 4.9 GB per GPU for the draft at 8 requests. Where a table says the server does not start, it stops at startup with <code class="docutils literal notranslate"><span class="pre">Loaded</span> <span class="pre">weights</span> <span class="pre">leave</span> <span class="pre">no</span> <span class="pre">GPU</span> <span class="pre">memory</span> <span class="pre">for</span> <span class="pre">the</span> <span class="pre">KV</span> <span class="pre">cache</span></code>, and raising <code class="docutils literal notranslate"><span class="pre">mem_fraction_static</span></code> does not help.</p></li>
+<li><p>On four GPUs (<code class="docutils literal notranslate"><span class="pre">--thinker.tp_size</span> <span class="pre">4</span></code>) the draft starts with 32 running requests and served 18.33 held-out clips/s, against 16.13 with MTP and 13.96 without a draft at the same cap.</p></li>
+<li><p>SeedTTS English WER is 1.227% and Chinese CER 0.747% with the draft, against 1.219% and 0.741% without it. One at a time, MTP output is identical to the server without a draft; the draft’s is identical on 81 of 84 held-out transcripts and differs more on long answers. At 8 at a time, both agree with the server without a draft on 263-264 of 280 transcripts, because greedy decoding on this thinker depends on the batch.</p></li>
+<li><p>The draft decodes synchronously. Keep <code class="docutils literal notranslate"><span class="pre">repetition_penalty=1</span></code>. The draft rejects a request <code class="docutils literal notranslate"><span class="pre">seed</span></code> when sampling; greedy and one-token requests still accept a seed. Standalone speech synthesis is unaffected.</p></li>
+</ul>
 </section>
 <section id="transcription">
 <h2>Transcription<a class="headerlink" href="#transcription" title="Link to this heading">#</a></h2>
@@ -826,6 +913,7 @@ sglang_omni_mlx/native/scripts/build_runtime.sh<span class="w"> </span><span cla
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installation-and-startup">Installation and Startup</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mtp-decoding">MTP decoding</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#dflash-decoding">DFlash decoding</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#transcription">Transcription</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-synthesis">Speech synthesis</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#audio-chat">Audio chat</a></li>
