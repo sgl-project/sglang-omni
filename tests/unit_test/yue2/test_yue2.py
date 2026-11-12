@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -36,6 +37,13 @@ from sglang_omni.models.yue2.request import (
     build_request,
 )
 from sglang_omni.models.yue2.runtime import Yue2Runtime, load_weights
+from sglang_omni.models.yue2.shared_weights import (
+    bind_ar_weights,
+    drop_ar_weights,
+    engine_tensors,
+    is_acoustic_only,
+    placeholder_tensors,
+)
 from sglang_omni.models.yue2.stages import (
     Yue2AcousticScheduler,
     create_acoustic_executor,
@@ -325,17 +333,21 @@ def test_tiled_vae_preserves_full_waveform_and_tail() -> None:
         vae.decode_tiled(latents, 31, 0, lambda: False)
 
 
+def is_token_head(name: str) -> bool:
+    return name.startswith("lm_head.")
+
+
 def test_weight_loading_rejects_missing_tensors(
     model: Yue2Model, tmp_path: Path
 ) -> None:
     weights = dict(model.state_dict())
     weights["lm_head.weight"] = torch.zeros(1)
     save_file(weights, tmp_path / "model.safetensors")
-    load_weights(model, tmp_path, skipped_prefix="lm_head.")
+    load_weights(model, tmp_path, skipped=is_token_head)
     weights.pop("llm2vae.weight")
     save_file(weights, tmp_path / "model.safetensors")
     with pytest.raises(RuntimeError, match="llm2vae.weight"):
-        load_weights(model, tmp_path, skipped_prefix="lm_head.")
+        load_weights(model, tmp_path, skipped=is_token_head)
 
 
 @torch.inference_mode()
@@ -358,6 +370,98 @@ def test_projection_fusion_preserves_outputs_and_checkpoint(model: Yue2Model) ->
     ]:
         torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
     assert set(model.state_dict()) == names
+
+
+def stacked_engine(model: Yue2Model) -> SimpleNamespace:
+    """The AR tensors in the layout SGLang's Qwen3 keeps them in."""
+
+    def weight(*tensors: torch.Tensor) -> SimpleNamespace:
+        return SimpleNamespace(weight=torch.cat(tensors).clone())
+
+    layers = [
+        SimpleNamespace(
+            input_layernorm=weight(layer.input_layernorm.weight),
+            post_attention_layernorm=weight(layer.post_attention_layernorm.weight),
+            self_attn=SimpleNamespace(
+                qkv_proj=weight(
+                    layer.self_attn.q_proj.weight,
+                    layer.self_attn.k_proj.weight,
+                    layer.self_attn.v_proj.weight,
+                ),
+                q_norm=weight(layer.self_attn.q_norm.weight),
+                k_norm=weight(layer.self_attn.k_norm.weight),
+                o_proj=weight(layer.self_attn.o_proj.weight),
+            ),
+            mlp=SimpleNamespace(
+                gate_up_proj=weight(
+                    layer.mlp.gate_proj.weight, layer.mlp.up_proj.weight
+                ),
+                down_proj=weight(layer.mlp.down_proj.weight),
+            ),
+        )
+        for layer in model.model.layers
+    ]
+    backbone = model.model
+    return SimpleNamespace(
+        model=SimpleNamespace(
+            embed_tokens=weight(backbone.embed_tokens.weight),
+            norm=weight(backbone.norm.weight),
+            layers=layers,
+        )
+    )
+
+
+@pytest.mark.parametrize("fused", [False, True])
+@torch.inference_mode()
+def test_acoustic_model_reads_ar_weights_from_engine_storage(
+    model: Yue2Model, tmp_path: Path, fused: bool
+) -> None:
+    tokens = torch.tensor([[1, 2, 3, 4]])
+    expected = TokenCache(capacity=4)
+    model(tokens, expected)
+    shared = engine_tensors(stacked_engine(model))
+    assert {name: tuple(tensor.shape) for name, tensor in shared.items()} == {
+        name: tuple(tensor.shape)
+        for name, tensor in placeholder_tensors(
+            model.config, torch.device("cpu")
+        ).items()
+    }
+    save_file(model.state_dict(), tmp_path / "model.safetensors")
+
+    borrower = Yue2Model(model.config).eval()
+    drop_ar_weights(borrower)
+    assert all(is_acoustic_only(name) for name in borrower.state_dict())
+    load_weights(borrower, tmp_path, skipped=lambda name: not is_acoustic_only(name))
+    bind_ar_weights(borrower, shared, fused=fused)
+
+    actual = TokenCache(capacity=4)
+    borrower(tokens, actual)
+    for layer_index in range(len(expected.keys)):
+        torch.testing.assert_close(
+            actual.keys[layer_index], expected.keys[layer_index], rtol=1e-5, atol=1e-6
+        )
+        torch.testing.assert_close(
+            actual.values[layer_index],
+            expected.values[layer_index],
+            rtol=1e-5,
+            atol=1e-6,
+        )
+    attention = borrower.model.layers[0].self_attn
+    assert attention.q_proj.weight.data_ptr() == shared["layer0_qkv"].data_ptr()
+    assert (attention.fused_qkv is not None) == fused
+    assert (
+        borrower.model.embed_tokens.weight.data_ptr()
+        == shared["embed_tokens"].data_ptr()
+    )
+    assert set(borrower.state_dict()) == set(model.state_dict())
+
+
+def test_stages_share_ar_weights_only_on_one_gpu() -> None:
+    config = Yue2PipelineConfig(model_path="model")
+    shared = config.stage_factory_kwargs("yue2_ar")
+    assert shared and shared == config.stage_factory_kwargs("yue2_acoustic")
+    config.stage_named("yue2_acoustic").gpu = 1
+    assert config.stage_factory_kwargs("yue2_ar") == {}
 
 
 def test_fused_kernels_reject_cpu_weights(model: Yue2Model) -> None:

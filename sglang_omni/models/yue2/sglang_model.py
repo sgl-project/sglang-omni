@@ -7,7 +7,7 @@ import torch
 from sglang.srt.models.qwen3 import Qwen3ForCausalLM
 from transformers import AutoConfig, Qwen3Config
 
-NAR_ONLY_PREFIXES = ("llm2vae.", "vae2llm.", "time_embedder.", "latent_pos_embed.")
+from sglang_omni.models.yue2.shared_weights import is_acoustic_only
 
 
 class Yue2ARConfig(Qwen3Config):
@@ -19,9 +19,7 @@ class Yue2ARForCausalLM(Qwen3ForCausalLM):
         # note (ruiling): Qwen3 fuses any name containing q_proj or gate_proj, so the
         # acoustic layers' nar_* copies must never reach its loader.
         super().load_weights(
-            (name, tensor)
-            for name, tensor in weights
-            if ".nar_" not in name and not name.startswith(NAR_ONLY_PREFIXES)
+            (name, tensor) for name, tensor in weights if not is_acoustic_only(name)
         )
 
 

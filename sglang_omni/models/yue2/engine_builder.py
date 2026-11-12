@@ -29,6 +29,7 @@ from .request import Yue2Tokenizer
 from .scheduler import Yue2Scheduler
 from .sglang_model import register_yue2_config
 from .sglang_request_builder import Yue2ARRequestData, Yue2RequestBuilder
+from .shared_weights import export_ar_weights
 
 DEFAULT_KV_CACHE_TOKENS = 65536
 
@@ -36,11 +37,14 @@ DEFAULT_KV_CACHE_TOKENS = 65536
 class Yue2EngineBuilder(TtsEngineBuilder[Yue2ARRequestData]):
     model_name = "yue2"
 
-    def __init__(self, *, max_running_requests: int) -> None:
+    def __init__(
+        self, *, max_running_requests: int, shared_weights_dir: str | None = None
+    ) -> None:
         if max_running_requests <= 0:
             raise ValueError("YuE2 max_running_requests must be positive")
         else:
             self.max_running_requests = max_running_requests
+            self.shared_weights_dir = shared_weights_dir
 
     def resolve_checkpoint(self, model_path: str) -> str:
         directory = resolve_checkpoint(model_path)
@@ -103,8 +107,13 @@ class Yue2EngineBuilder(TtsEngineBuilder[Yue2ARRequestData]):
         gpu_id: int,
         server_args: ServerArgs,
     ) -> None:
-        del checkpoint_dir, device, gpu_id, server_args
-        model_worker.model_runner.model.eval()
+        del device, gpu_id, server_args
+        model = model_worker.model_runner.model
+        model.eval()
+        if self.shared_weights_dir is None:
+            pass
+        else:
+            export_ar_weights(model, self.shared_weights_dir, checkpoint_dir)
 
     def make_model_runner(
         self, model_worker: ModelWorker, output_proc: SGLangOutputProcessor

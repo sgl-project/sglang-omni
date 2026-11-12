@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """YuE2 pipeline configuration: SGLang AR stage followed by the acoustic stage."""
 
+import atexit
+import functools
+import shutil
+import tempfile
 from typing import ClassVar
 
 from pydantic import Field
@@ -16,6 +20,14 @@ from sglang_omni.config import (
 PACKAGE = "sglang_omni.models.yue2"
 
 
+@functools.cache
+def shared_weights_directory() -> str:
+    """One private directory per launching process, where the AR stage publishes its weight handles."""
+    directory = tempfile.mkdtemp(prefix="sglang-omni-yue2-")
+    atexit.register(shutil.rmtree, directory, ignore_errors=True)
+    return directory
+
+
 class Yue2AcousticFactoryArgs(FactoryArgs):
     nar_cuda_graph: bool = False
     fuse_projections: bool = False
@@ -23,6 +35,7 @@ class Yue2AcousticFactoryArgs(FactoryArgs):
     vae_path: str = "m-a-p/YuE2-Vae"
     vae_core_frames: int = Field(default=512, gt=0)
     vae_halo_frames: int = Field(default=16, ge=0)
+    share_ar_weights: bool = True
 
 
 class Yue2AcousticStageConfig(StageConfig):
@@ -60,6 +73,19 @@ class Yue2PipelineConfig(PipelineConfig):
             require_memory_fraction_for_colocation=False
         )
     )
+
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, str]:
+        del stage_name
+        replicated = any(
+            process.num_replicas > 1 for process in self.processes.values()
+        )
+        ar_stage, acoustic_stage = self.stage_named("yue2_ar"), self.stage_named(
+            "yue2_acoustic"
+        )
+        if replicated or ar_stage.gpu != acoustic_stage.gpu:
+            return {}
+        else:
+            return {"shared_weights_dir": shared_weights_directory()}
 
 
 EntryClass = Yue2PipelineConfig

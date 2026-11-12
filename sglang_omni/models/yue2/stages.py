@@ -28,13 +28,16 @@ def create_ar_executor(
     gpu_id: int | None = None,
     device: str | None = None,
     max_concurrency: int = 16,
+    shared_weights_dir: str | None = None,
     server_args_overrides: Mapping[str, object] | None = None,
 ):
     cuda_device(device, gpu_id)
     # note (ruiling): imported here so only the AR process loads SGLang.
     from sglang_omni.models.yue2.engine_builder import Yue2EngineBuilder
 
-    builder = Yue2EngineBuilder(max_running_requests=max_concurrency)
+    builder = Yue2EngineBuilder(
+        max_running_requests=max_concurrency, shared_weights_dir=shared_weights_dir
+    )
     return builder.build(
         model_path,
         device=device,
@@ -80,6 +83,8 @@ def create_acoustic_executor(
     nar_cuda_graph: bool,
     fuse_projections: bool,
     fused_kernels: bool,
+    share_ar_weights: bool,
+    shared_weights_dir: str | None = None,
     gpu_id: int | None = None,
     device: str | None = None,
 ) -> Yue2AcousticScheduler:
@@ -92,5 +97,6 @@ def create_acoustic_executor(
         nar_cuda_graph=nar_cuda_graph,
         fuse_projections=fuse_projections,
         fused_kernels=fused_kernels,
+        shared_weights_dir=shared_weights_dir if share_ar_weights else None,
     )
     return Yue2AcousticScheduler(runtime)

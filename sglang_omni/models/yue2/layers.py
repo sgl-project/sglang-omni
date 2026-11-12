@@ -146,18 +146,26 @@ class Attention(nn.Module):
         self.register_buffer("fused_qkv", None, persistent=False)
 
     def fuse_projections(self) -> None:
-        self.fused_qkv = torch.cat(
-            (self.q_proj.weight, self.k_proj.weight, self.v_proj.weight)
-        )
+        if self.fused_qkv is None:
+            self.set_projections(
+                torch.cat((self.q_proj.weight, self.k_proj.weight, self.v_proj.weight)),
+                fused=True,
+            )
+        else:
+            pass
+
+    def set_projections(self, stacked: torch.Tensor, *, fused: bool) -> None:
+        """Point q, k and v at one stacked weight; fused also projects through it."""
         sizes = [
             self.num_heads * self.head_dim,
             self.num_kv_heads * self.head_dim,
             self.num_kv_heads * self.head_dim,
         ]
         for projection, weight in zip(
-            (self.q_proj, self.k_proj, self.v_proj), self.fused_qkv.split(sizes)
+            (self.q_proj, self.k_proj, self.v_proj), stacked.split(sizes)
         ):
             projection.weight = nn.Parameter(weight, requires_grad=False)
+        self.fused_qkv = stacked if fused else None
 
     def project_qkv(
         self,
@@ -247,10 +255,19 @@ class MLP(nn.Module):
         self.register_buffer("fused_gate_up", None, persistent=False)
 
     def fuse_projections(self) -> None:
-        self.fused_gate_up = torch.cat((self.gate_proj.weight, self.up_proj.weight))
-        gate, up = self.fused_gate_up.chunk(2)
+        if self.fused_gate_up is None:
+            self.set_projections(
+                torch.cat((self.gate_proj.weight, self.up_proj.weight)), fused=True
+            )
+        else:
+            pass
+
+    def set_projections(self, stacked: torch.Tensor, *, fused: bool) -> None:
+        """Point gate and up at one stacked weight; fused also projects through it."""
+        gate, up = stacked.chunk(2)
         self.gate_proj.weight = nn.Parameter(gate, requires_grad=False)
         self.up_proj.weight = nn.Parameter(up, requires_grad=False)
+        self.fused_gate_up = stacked if fused else None
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         if self.fused_kernels:
