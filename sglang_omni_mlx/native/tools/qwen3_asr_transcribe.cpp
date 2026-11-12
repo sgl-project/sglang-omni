@@ -2,6 +2,7 @@
 // Transcribes WAV files with the native runtime and prints one JSON line each,
 // for parity checks against the Python reference server.
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -18,6 +19,8 @@
 int main(int argc, char **argv) {
   using qwen3_asr::AudioLayout;
   std::string model_path;
+  std::string draft_model_path;
+  int draft_quantization_bits = 0;
   std::string encode_text;
   std::string dump_mel_filters;
   std::string encode_lines;
@@ -34,6 +37,10 @@ int main(int argc, char **argv) {
     };
     if (argument == "--model-path") {
       model_path = value();
+    } else if (argument == "--draft-model-path") {
+      draft_model_path = value();
+    } else if (argument == "--draft-bits") {
+      draft_quantization_bits = std::stoi(value());
     } else if (argument == "--layout") {
       options.layout = value() == "voxt_swift" ? AudioLayout::kVoxtSwift
                                                : AudioLayout::kReference;
@@ -45,6 +52,13 @@ int main(int argc, char **argv) {
       options.stop_on_token_loop = true;
     } else if (argument == "--max-new-tokens") {
       options.max_new_tokens = std::stoi(value());
+    } else if (argument == "--repetition-penalty") {
+      options.repetition_penalty = std::stof(value());
+      if (!std::isfinite(options.repetition_penalty) ||
+          options.repetition_penalty <= 0) {
+        throw std::invalid_argument(argument + " must be positive and finite");
+      } else {
+      }
     } else if (argument == "--encode") {
       encode = true;
       encode_text = value();
@@ -52,11 +66,20 @@ int main(int argc, char **argv) {
       encode_lines = value();
     } else if (argument == "--profile") {
       profile = true;
+    } else if (argument == "--cache-limit-bytes") {
+      mlx::core::set_cache_limit(std::stoull(value()));
     } else if (argument == "--dump-mel-filters") {
       dump_mel_filters = value();
     } else {
       files.push_back(argument);
     }
+  }
+  if (draft_quantization_bits != 0 && draft_quantization_bits != 4 &&
+      draft_quantization_bits != 6 && draft_quantization_bits != 8) {
+    throw std::invalid_argument("--draft-bits must be 4, 6 or 8");
+  } else if (draft_quantization_bits != 0 && draft_model_path.empty()) {
+    throw std::invalid_argument("--draft-bits needs --draft-model-path");
+  } else {
   }
   if (!dump_mel_filters.empty()) {
     std::ofstream out(dump_mel_filters, std::ios::binary);
@@ -139,7 +162,8 @@ int main(int argc, char **argv) {
   } else {
   }
   const auto load_started = std::chrono::steady_clock::now();
-  const qwen3_asr::Qwen3ASRTranscriber transcriber(model_path);
+  const qwen3_asr::Qwen3ASRTranscriber transcriber(model_path, draft_model_path,
+                                                   draft_quantization_bits);
   std::cerr << "loaded in "
             << std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                              load_started)
@@ -150,6 +174,7 @@ int main(int argc, char **argv) {
     std::ifstream stream(file, std::ios::binary);
     std::ostringstream bytes;
     bytes << stream.rdbuf();
+    mlx::core::reset_peak_memory();
     const auto started = std::chrono::steady_clock::now();
     const auto result = transcriber.Transcribe(
         omni_common::DecodeWav(bytes.str()), options, cancel);
@@ -161,9 +186,13 @@ int main(int argc, char **argv) {
                          : nlohmann::json()},
         {"generated_token_count", result.generated_token_count},
         {"finish_reason", qwen3_asr::FinishReasonName(result.finish_reason)},
+        {"verify_rounds", result.verify_round_count},
         {"seconds", std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - started)
                         .count()},
+        {"peak_active_bytes", mlx::core::get_peak_memory()},
+        {"active_bytes", mlx::core::get_active_memory()},
+        {"cache_bytes", mlx::core::get_cache_memory()},
     };
     std::cout << line.dump() << std::endl;
     // Note (Jiaxin Deng): as the server does between requests; buffers of one

@@ -40,6 +40,8 @@ concurrent load. Threaded preprocessing changes how requests arrive at the
 thinker, so greedy outputs of the bf16 MoE can differ from the serial default;
 keep the default when comparing accuracy across runs.
 
+Each preprocessing worker decodes a request's videos on parallel decoders that share min(16, the stage's CPUs divided by its workers) FFmpeg threads, split evenly among the request's videos. Set `--preprocessing.factory.video_decode_threads N` to choose that count. A value at or below the video reader's own threads (`TORCHCODEC_NUM_THREADS`, 8 by default) decodes each video on the reader alone.
+
 For MMSU-style audio-input / text-output benchmarks with short requests, use
 the fused text-path config so the full text path stays inside one worker
 process:
@@ -445,92 +447,7 @@ layout regardless, since TTFA is the latency users notice first.
 
 ### Realtime Speech with Server-Side Turn Detection
 
-The speech pipeline can stream spoken responses over `/v1/realtime`. Enable the
-WebSocket endpoint on the standard speech pipeline:
-
-```bash
-sgl-omni serve \
-  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
-  --port 8008 \
-  --enable-realtime
-```
-
-After connecting to `ws://localhost:8008/v1/realtime`, request text and audio
-output:
-
-```json
-{
-  "type": "session.update",
-  "session": {
-    "modalities": ["text", "audio"],
-    "input_audio_format": "pcm16",
-    "output_audio_format": "pcm16",
-    "turn_detection": {
-      "type": "semantic_vad",
-      "eagerness": "medium"
-    }
-  }
-}
-```
-
-Stream mono 16 kHz PCM16 input with `input_audio_buffer.append`. Turn
-detection auto-commits each utterance and starts generation. Check
-`session.created.capabilities.turn_detection` before requesting
-`semantic_vad` — older servers only support `server_vad`.
-
-`server_vad` (default) ends a turn after a fixed silence duration.
-`semantic_vad` adds a GPU Smart Turn v3.2 model on top of Silero speech
-detection, so a natural mid-thought pause doesn't end the turn early.
-`eagerness` (`low`/`medium`/`high`, default `medium`) trades latency for
-patience; `silence_duration_ms` only applies to `server_vad`.
-
-To enable `semantic_vad`, provision the BSD-2 licensed
-[Smart Turn v3.2](https://huggingface.co/pipecat-ai/smart-turn-v3)
-`smart-turn-v3.2-gpu.onnx` model and set `SGLANG_OMNI_SMART_TURN_MODEL_PATH`
-to its path (file or containing directory). The server never downloads it and
-verifies its SHA-256 on load. If the model is missing or invalid, the
-endpoint still works — semantic requests just fall back to `server_vad`.
-
-On the Session graph (`examples/qwen3_omni/session_h200.yaml`), `semantic_vad` is a node: declare `turn_detection: {stages: [turn_detection], inputs: ["input:pcm16", "input:session", "vad:session"]}` beside `vad`, let `dialog` read `turn_detection:session` in place of `vad:session` and publish `turn_detection: [session]` in place of `vad: [session]`; the stage loads the model from `pipecat-ai/smart-turn-v3` unless `factory.model_path` names a local copy. See [Turn detection node](../developer_reference/full_duplex_interactive_model.md#turn-detection-node).
-
-Text arrives in `response.text.delta` events; spoken output arrives as
-base64-encoded mono 24 kHz PCM16 in `response.audio.delta` events, followed by
-`response.audio.done` and `response.done`.
-
-Audio output is opt-in: sessions remain text-only unless both modalities are
-requested. A thinker-only server rejects audio negotiation because it has no
-`code2wav` stage.
-
-For text-and-audio sessions, server-owned barge-in is enabled by default. When
-the active turn detector emits `input_audio_buffer.speech_started`, the active
-response is cancelled with reason `turn_detected`; its user transcription still
-completes and enters conversation history before the next queued turn runs.
-Cancelled assistant output is not added to conversation history.
-
-Clients must stop buffered playback on `speech_started` and reject every later
-`response.audio.delta` for that response until its `response.done`. If speech
-starts before `response.created`, retain a pending-interruption flag and reject
-the response when its ID arrives. Automatic barge-in ends with
-`response.done.status="cancelled"` and reason `turn_detected`; explicit
-`response.cancel` uses reason `client_cancelled`.
-
-If assistant audio has already been scheduled for playback, the client must
-also send `conversation.item.truncate` with the assistant `item_id` from
-`response.audio.delta`, `content_index: 0`, and the played duration in
-`audio_end_ms`. The server replies with `conversation.item.truncated` and
-removes that assistant item from conversation history. The whole assistant
-transcript is removed because the endpoint cannot align text with played audio.
-
-Set `turn_detection.interrupt_response` to `false` in `session.update` to opt
-out. Partial updates preserve the active detector type and settings, so clients
-can change interruption behavior without dropping semantic VAD or its
-eagerness. Changing detector behavior rebuilds the detector and clears pending
-input audio; `interrupt_response` changes independently. Text-only responses
-are not interrupted automatically.
-
-The browser example in `playground/qwen-omni/realtime` captures microphone
-input, negotiates turn-detection support per connection, and lets the user
-select text-only output or text plus streamed PCM16 audio playback.
+The speech pipeline also streams spoken responses over `/v1/realtime` with `--enable-realtime`, with server-side turn detection and barge-in. Its protocol is in {ref}`Realtime on the speech pipeline <realtime-on-the-speech-pipeline>`; the Session graph that most realtime clients use is in [Turn-Based: Qwen3-Omni](../developer_reference/full_duplex_guide.md#turn-based-qwen3-omni).
 
 ## Single-GPU FP8 on H100/H20
 

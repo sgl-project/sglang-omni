@@ -14,6 +14,9 @@ from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.pending_text_queue import PendingTextTensorQueue
 from sglang_omni.scheduling.types import ARRequestData
 
+# ARRequestData.finish_reason of SGLang's FINISH_LENGTH: the request used up its token budget.
+FINISH_LENGTH_KIND = "length"
+
 
 @dataclass(frozen=True, kw_only=True)
 class EmbeddingSpan:
@@ -88,6 +91,7 @@ class SGLangARRequestData(ARRequestData):
     # note (Junnan Li): The bridge binds unit-relative spans to retained session history.
     unit_embedding_spans: list[EmbeddingSpan] = field(default_factory=list)
     session_embedding_spans: list[EmbeddingSpan] = field(default_factory=list)
+    session_history_length: int = 0
     synced: bool = False
     generation_steps: int = 0
     # Output tokens already handed to the runner and stream builder under
@@ -116,6 +120,18 @@ class SGLangARRequestData(ARRequestData):
     tts_pad_embed: torch.Tensor | None = None
     tts_eos_embed: torch.Tensor | None = None
     thinker_chunks_done: bool = True
+
+
+class ThinkerRequest(Req):
+    """A thinker request whose re-prefill after retraction gets back the multimodal inputs its first prefill consumed."""
+
+    omni_data: SGLangARRequestData | None
+
+    def reset_for_retract(self) -> None:
+        super().reset_for_retract()
+        assert self.omni_data is not None, "a retracted request still owns its data"
+        self.omni_model_inputs = self.omni_data.model_inputs or None
+        self._omni_consumed = None  # noqa: leading-underscore  # model runner contract
 
 
 class DllmRequest(Req):

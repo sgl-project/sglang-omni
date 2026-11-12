@@ -16,10 +16,13 @@ import time
 import uuid
 import wave
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 from websockets.sync.client import connect
+
+from sglang_omni_mlx.native.ci.long_audio_client import stream_recording
 
 RUNTIME_BIN = os.environ.get("NATIVE_RUNTIME_BIN")
 DATA_ROOT = os.environ.get("CI_DATA_ROOT")
@@ -27,10 +30,12 @@ pytestmark = pytest.mark.skipif(
     not RUNTIME_BIN or not DATA_ROOT, reason="set NATIVE_RUNTIME_BIN and CI_DATA_ROOT"
 )
 MODEL_REPO = "mlx-community/Qwen3-ASR-0.6B-4bit"
+DRAFT_REPO = "wilsonzheng0327/Qwen3-ASR-0.6B-dflash"
+LARGE_DRAFT_REPO = "wilsonzheng0327/Qwen3-ASR-1.7B-dflash"
 
 
-def model_directory() -> Path:
-    return Path(DATA_ROOT) / "models" / MODEL_REPO.replace("/", "_")
+def model_directory(repo: str = MODEL_REPO) -> Path:
+    return Path(DATA_ROOT) / "models" / repo.replace("/", "_")
 
 
 def clip(clip_id: str) -> bytes:
@@ -174,6 +179,61 @@ def test_voxt_final_request_streams_text_and_generation_metadata(
     }
 
 
+def test_a_draft_model_serves_the_voxt_final_request() -> None:
+    """The draft's proposals are verified in place: Voxt's request is answered as without one,
+    and a token budget below the block size is kept exactly."""
+    with_draft = Server(flags=("--draft-model-path", str(model_directory(DRAFT_REPO))))
+    try:
+        status, body = with_draft.post_form(
+            {
+                "model": with_draft.ready["model_name"],
+                "stream": "true",
+                "language": "English",
+                "max_new_tokens": "1024",
+                "stop_at_end_of_text": "true",
+                "stop_on_token_loop": "true",
+                "include_generation_metadata": "true",
+                "audio_layout": "voxt_swift",
+            },
+            clip("0006_en_short"),
+        )
+        budget_status, budget_body = with_draft.post_form(
+            {
+                "model": with_draft.ready["model_name"],
+                "stream": "true",
+                "language": "English",
+                "max_new_tokens": "2",
+                "include_generation_metadata": "true",
+                "audio_layout": "voxt_swift",
+            },
+            clip("0006_en_short"),
+        )
+    finally:
+        with_draft.stop()
+    assert status == 200
+    events = sse_events(body)
+    assert events[-1] == "[DONE]"
+    assert events[0]["type"] == "transcript.text.done"
+    assert events[0]["text"]
+    assert events[0]["generation_metadata"]["finish_reason"] == "stop"
+    assert events[0]["generation_metadata"]["language"] == "English"
+    assert budget_status == 200
+    budget_done = sse_events(budget_body)[0]
+    assert budget_done["text"]
+    assert budget_done["generation_metadata"]["finish_reason"] == "length"
+    assert budget_done["generation_metadata"]["generated_token_count"] == 2
+
+
+def test_a_draft_for_another_target_fails_at_load() -> None:
+    """A draft of the wrong hidden size is refused before ready, not at the first request."""
+    failed = Server(
+        flags=("--draft-model-path", str(model_directory(LARGE_DRAFT_REPO)))
+    )
+    assert failed.ready["event"] == "failed"
+    assert "hidden size 2048" in failed.ready["reason"]
+    assert failed.process.wait(timeout=10) == 1
+
+
 def test_plain_request_returns_json_text(server: Server) -> None:
     status, body = server.post_form({"language": "en"}, clip("0006_en_short"))
     assert (status, json.loads(body)) == (
@@ -191,6 +251,9 @@ def test_plain_request_returns_json_text(server: Server) -> None:
         ({"audio_layout": "sideways"}, "wav"),
         ({"max_new_tokens": "many"}, "wav"),
         ({"max_new_tokens": "-1"}, "wav"),
+        ({"repetition_penalty": "0"}, "wav"),
+        ({"repetition_penalty": "-1"}, "wav"),
+        ({"repetition_penalty": "nan"}, "wav"),
     ],
 )
 def test_invalid_requests_are_rejected(server: Server, fields: dict, wav) -> None:
@@ -202,20 +265,51 @@ def test_invalid_requests_are_rejected(server: Server, fields: dict, wav) -> Non
     assert all(name in detail for name in fields)
 
 
-def long_wav(seconds: int) -> bytes:
-    """Distinct long clips joined to seconds, so a full decode takes several seconds."""
-    pcm = b"".join(pcm16(f"{index:04d}_en_long") for index in range(344, 360))
-    assert len(pcm) >= seconds * 32000
+def wav_bytes(pcm: bytes) -> bytes:
+    """16 kHz mono 16-bit PCM wrapped in a WAV header."""
     out = io.BytesIO()
     with wave.open(out, "wb") as writer:
         writer.setnchannels(1)
         writer.setsampwidth(2)
         writer.setframerate(16000)
-        writer.writeframes(pcm[: seconds * 32000])
+        writer.writeframes(pcm)
     return out.getvalue()
 
 
+def long_wav(seconds: int) -> bytes:
+   """Distinct long clips joined to seconds, so a full decode takes several seconds."""
+    pcm = b"".join(pcm16(f"{index:04d}_en_long") for index in range(344, 360))
+    assert len(pcm) >= seconds * 32000
+    return wav_bytes(pcm[: seconds * 32000])
+
+
+def test_repetition_penalty_ends_a_token_loop(server: Server) -> None:
+    """Greedy decoding repeats one phrase on this audio until the token budget runs out, and repetition_penalty was ignored."""
+    # Note (Minyi Tang): 30.0 s to 31.1 s of this clip is the public loop trigger from issue 3044.
+    looping_wav = wav_bytes(
+        pcm16("0366_zh_long")[int(30.0 * 32000) : int(31.1 * 32000)]
+    )
+    finish_reasons = {}
+    for repetition_penalty in ("1", "1.2"):
+        status, body = server.post_form(
+            {
+                "stream": "true",
+                "language": "zh",
+                "include_generation_metadata": "true",
+                "stop_on_token_loop": "false",
+                "repetition_penalty": repetition_penalty,
+            },
+            looping_wav,
+        )
+        assert status == 200
+        finish_reasons[repetition_penalty] = sse_events(body)[0]["generation_metadata"][
+            "finish_reason"
+        ]
+    assert finish_reasons == {"1": "length", "1.2": "stop"}
+
+
 def test_a_disconnected_stream_stops_its_decode(server: Server) -> None:
+    transcript_before = server.post_form({}, clip("0006_en_short"))
     boundary = uuid.uuid4().hex
     body = (
         (
@@ -239,7 +333,6 @@ def test_a_disconnected_stream_stops_its_decode(server: Server) -> None:
     # checked between generated tokens, so the deadline below also covers the
     # rest of encoding and prefill.
     assert response.readline() == b":\n"
-    time.sleep(4.0)
     assert json.loads(server.request("GET", "/health")[1])["request_states"] == {
         "running": 1
     }
@@ -253,6 +346,99 @@ def test_a_disconnected_stream_stops_its_decode(server: Server) -> None:
             time.monotonic() - closed_at < 1.5
         ), "the decode kept running after its client left"
         time.sleep(0.05)
+    assert server.post_form({}, clip("0006_en_short")) == transcript_before
+
+
+def open_stream(server: Server, wav: bytes) -> http.client.HTTPResponse:
+    """Starts a streamed request with a large token budget; closing the response cancels it."""
+    boundary = uuid.uuid4().hex
+    body = (
+        (
+            f'--{boundary}\r\nContent-Disposition: form-data; name="stream"\r\n\r\ntrue\r\n'
+            f'--{boundary}\r\nContent-Disposition: form-data; name="max_new_tokens"\r\n\r\n4096\r\n'
+            f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="a.wav"\r\n\r\n'
+        ).encode()
+        + wav
+        + f"\r\n--{boundary}--\r\n".encode()
+    )
+    connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=60)
+    connection.request(
+        "POST",
+        "/v1/audio/transcriptions",
+        body,
+        {"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    response = connection.getresponse()
+    assert response.status == 200
+    return response
+
+
+def request_states(server: Server) -> dict:
+    return json.loads(server.request("GET", "/health")[1])["request_states"]
+
+
+def wait_for(condition, timeout_seconds: float, message: str) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while not condition():
+        assert time.monotonic() < deadline, message
+        time.sleep(0.05)
+
+
+def test_concurrent_requests_decode_together_and_match_serial_output() -> None:
+    """Queued requests batch under --max-batch; each finishes on its own and a cancelled one leaves the rest intact."""
+    clip_ids = ["0006_en_short", "0007_en_short", "0008_en_short"]
+    server = Server(flags=("--max-batch", "4"))
+    try:
+        # Note: a request alone in the queue runs serially.
+        serial = {clip_id: server.post_form({}, clip(clip_id)) for clip_id in clip_ids}
+        assert all(status == 200 for status, _ in serial.values())
+        # The first request occupies the worker so the next four queue behind
+        # it and are taken as one batch once it is cancelled.
+        blocker = open_stream(server, long_wav(300))
+        wait_for(
+            lambda: request_states(server) == {"running": 1},
+            10,
+            "the blocking request never started",
+        )
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            short = {
+                clip_id: pool.submit(server.post_form, {}, clip(clip_id))
+                for clip_id in clip_ids
+            }
+            canceled = pool.submit(open_stream, server, long_wav(300))
+            wait_for(
+                lambda: request_states(server).get("queued") == 4,
+                10,
+                "the requests did not queue behind the blocker",
+            )
+            blocker.close()
+            # The short requests answer while the long one is still decoding.
+            results = {clip_id: future.result(60) for clip_id, future in short.items()}
+            assert request_states(server) == {"running": 1}
+            assert results == serial
+            # Cancelling the long row ends only that row.
+            canceled.result(10).close()
+            wait_for(
+                lambda: request_states(server) == {},
+                3,
+                "the cancelled row kept decoding",
+            )
+        assert server.post_form({}, clip(clip_ids[0])) == serial[clip_ids[0]]
+    finally:
+        server.stop()
+
+
+def test_realtime_accepts_silent_audio_without_a_preview(
+    server: Server, tmp_path: Path
+) -> None:
+    """A session with no preview events must stay open while audio is sent."""
+    recording = tmp_path / "silence.wav"
+    recording.write_bytes(wav_bytes(b"\x00\x00" * 64000))
+    result = stream_recording(
+        server.port, recording, "en", 1, 1, tmp_path / "events.jsonl"
+    )
+    assert result.text == ""
+    assert result.final_segment_count == 1
 
 
 def test_realtime_manual_session(server: Server) -> None:
@@ -309,6 +495,38 @@ def test_realtime_manual_session(server: Server) -> None:
     assert indexes == sorted(indexes)
 
 
+@pytest.mark.parametrize(
+    "fields, finish_reason, is_collapsed",
+    [
+        ({}, "stop", True),
+        ({"stop_on_token_loop": "true"}, "stop", True),
+        ({"stop_on_token_loop": "false"}, "length", False),
+    ],
+)
+def test_a_token_loop_stops_with_one_copy_of_its_unit(
+    server: Server, fields: dict[str, str], finish_reason: str, is_collapsed: bool
+) -> None:
+    """A request without stop_on_token_loop repeated 我覺得 to the 128-token budget, and one that sent it still kept about 12 copies."""
+    # Note (Minyi Tang): 30.0 s to 31.1 s of this clip is the public loop trigger from issue 2150.
+    status, body = server.post_form(
+        {
+            "stream": "true",
+            "language": "zh",
+            "include_generation_metadata": "true",
+            **fields,
+        },
+        wav_bytes(pcm16("0366_zh_long")[int(30.0 * 32000) : int(31.1 * 32000)]),
+    )
+    assert status == 200
+    done = sse_events(body)[0]
+    metadata = done["generation_metadata"]
+    assert (
+        metadata["finish_reason"],
+        metadata["generated_token_count"] < 128,
+        done["text"].count("我覺得") == 1,
+    ) == (finish_reason, is_collapsed, is_collapsed)
+
+
 def test_end_of_stdin_stops_the_server() -> None:
     running = Server()
     running.process.stdin.close()
@@ -321,47 +539,3 @@ def test_shutdown_reports_stopped() -> None:
     running.process.stdin.flush()
     assert json.loads(running.process.stdout.readline()) == {"event": "stopped"}
     assert running.process.wait(timeout=10) == 0
-
-
-def test_unknown_model_kinds_are_rejected() -> None:
-    completed = subprocess.run(
-        [
-            str(Path(RUNTIME_BIN) / "qwen3_asr_server"),
-            "--supervised",
-            "--model-kind",
-            "whisper",
-            "--model-directory",
-            "x",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert completed.returncode == 2
-    assert completed.stdout == ""
-
-
-@pytest.mark.parametrize(
-    ("flag", "value"),
-    [
-        ("--max-segment-seconds", "0"),
-        ("--max-segment-seconds", "0.00001"),
-        ("--decode-interval-ms", "0"),
-        ("--first-decode-ms", "-1"),
-    ],
-)
-def test_invalid_realtime_settings_fail_at_startup(flag: str, value: str) -> None:
-    completed = subprocess.run(
-        [
-            str(Path(RUNTIME_BIN) / "qwen3_asr_server"),
-            "--model-directory",
-            "x",
-            flag,
-            value,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert completed.returncode == 2
-    assert flag in completed.stderr

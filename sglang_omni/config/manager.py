@@ -16,6 +16,7 @@ from sglang_omni.utils import (
     try_resolve_arch_from_nemo_config,
     try_resolve_arch_from_personaplex_layout,
     try_resolve_arch_from_raw_config,
+    try_resolve_arch_from_zonos3_layout,
     try_resolve_ming3_dense_tts,
 )
 
@@ -39,7 +40,10 @@ def resolve_config_cls_for_model_path(model_path: str):
     hf_kwargs = {"revision": revision} if revision else {}
     hf_config = None
     try:
-        hf_config = AutoConfig.from_pretrained(repo_id, **hf_kwargs)
+        # Checkpoints with custom code fall through to the config.json readers below, so transformers never prompts.
+        hf_config = AutoConfig.from_pretrained(
+            repo_id, trust_remote_code=False, **hf_kwargs
+        )
     except (OSError, ValueError, KeyError):
         hf_config = None
 
@@ -66,6 +70,10 @@ def resolve_config_cls_for_model_path(model_path: str):
         pass
     if arch is None:
         arch = try_resolve_arch_from_personaplex_layout(repo_id, revision=revision)
+    else:
+        pass
+    if arch is None:
+        arch = try_resolve_arch_from_zonos3_layout(repo_id, revision=revision)
     else:
         pass
     if arch is None:

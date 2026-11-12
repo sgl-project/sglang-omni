@@ -7,10 +7,14 @@ import subprocess
 import sys
 from types import ModuleType, SimpleNamespace
 
+import pytest
 from typer.testing import CliRunner
 
 import sglang_omni.diagnostics.gpu as gpu_diagnostics
 from sglang_omni.cli import app
+from sglang_omni.platforms import load_platform_class
+from sglang_omni.platforms.apple import AppleOmniPlatform
+from sglang_omni.platforms.cpu import CPUOmniPlatform
 
 
 class FakeCuda:
@@ -48,6 +52,23 @@ class FakeTorch:
 
     def __init__(self) -> None:
         self.cuda = FakeCuda()
+
+
+class FakePlatform:
+    """Stand in for the resolved platform so a report describes one arm."""
+
+    def __init__(self, device_type: str) -> None:
+        self.device_type = device_type
+
+    def is_xpu(self) -> bool:
+        return self.device_type == "xpu"
+
+    def is_npu(self) -> bool:
+        return self.device_type == "npu"
+
+
+def pin_platform(monkeypatch, device_type: str) -> None:
+    monkeypatch.setattr(gpu_diagnostics, "current_platform", FakePlatform(device_type))
 
 
 class FakeNVML(ModuleType):
@@ -101,6 +122,7 @@ def test_collect_gpu_diagnostics_preserves_reordered_visible_mapping(
     fake_torch.cuda.properties.reverse()
     monkeypatch.setattr(gpu_diagnostics, "cuda_runtime_version", lambda: "13.3")
     monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
+    pin_platform(monkeypatch, "cuda")
 
     report = gpu_diagnostics.collect_gpu_diagnostics(
         env={"CUDA_VISIBLE_DEVICES": "1,0"},
@@ -143,6 +165,7 @@ def test_nvml_inventory_failure_is_isolated_per_physical_device(
     fake_torch = FakeTorch()
     monkeypatch.setattr(gpu_diagnostics, "cuda_runtime_version", lambda: "13.3")
     monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
+    pin_platform(monkeypatch, "cuda")
 
     report = gpu_diagnostics.collect_gpu_diagnostics(
         env={"CUDA_VISIBLE_DEVICES": "0,2"},
@@ -169,6 +192,7 @@ def test_nvml_inventory_failure_is_isolated_per_device_field(monkeypatch) -> Non
     fake_torch = FakeTorch()
     monkeypatch.setattr(gpu_diagnostics, "cuda_runtime_version", lambda: "13.3")
     monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
+    pin_platform(monkeypatch, "cuda")
 
     report = gpu_diagnostics.collect_gpu_diagnostics(
         env={"CUDA_VISIBLE_DEVICES": "0,1"},
@@ -202,6 +226,7 @@ def test_mig_visible_device_emits_unsupported_mapping_warning(monkeypatch) -> No
     ]
     monkeypatch.setattr(gpu_diagnostics, "cuda_runtime_version", lambda: "13.3")
     monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
+    pin_platform(monkeypatch, "cuda")
 
     report = gpu_diagnostics.collect_gpu_diagnostics(
         env={"CUDA_VISIBLE_DEVICES": "MIG-instance-uuid"},
@@ -303,6 +328,161 @@ def test_module_import_probe_reports_import_error() -> None:
     assert "ModuleNotFoundError" in error
 
 
+class FakeXpu:
+    """Two cards, keyed by physical index so a mask can be checked by uuid."""
+
+    UUIDS = {0: "uuid-0", 1: "uuid-1", 2: "uuid-2", 5: "uuid-5"}
+
+    def __init__(self, physical_indices: list[int]) -> None:
+        self.physical_indices = physical_indices
+
+    def is_available(self) -> bool:
+        return True
+
+    def device_count(self) -> int:
+        return len(self.physical_indices)
+
+    def get_device_properties(self, index: int):
+        physical = self.physical_indices[index]
+        return SimpleNamespace(
+            name="Intel(R) Arc(TM) Pro B60 Graphics",
+            total_memory=24 * 1024**3,
+            uuid=self.UUIDS[physical],
+            driver_version="1.15.38646+6",
+        )
+
+    def mem_get_info(self, index: int) -> tuple[int, int]:
+        return (20 * 1024**3, 24 * 1024**3)
+
+
+class FakeXpuTorch:
+    __version__ = "2.14.0.dev+xpu"
+    version = SimpleNamespace(cuda=None)
+
+    def __init__(self, physical_indices: list[int]) -> None:
+        self.cuda = SimpleNamespace(is_available=lambda: False)
+        self.xpu = FakeXpu(physical_indices)
+
+    def get_device_module(self, device_type: str):
+        return self.xpu
+
+
+def test_a_non_cuda_accelerator_is_enumerated_through_its_device_module(
+    monkeypatch,
+) -> None:
+    """check-gpu reported no GPU at all on a healthy Intel host, because both
+    the inventory and the strict gate went through NVML and torch.cuda.
+    """
+    monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
+    pin_platform(monkeypatch, "xpu")
+
+    report = gpu_diagnostics.collect_gpu_diagnostics(
+        env={}, torch_module=FakeXpuTorch([0, 1])
+    )
+
+    environment = report["environment"]
+    assert environment["device_type"] == "xpu"
+    assert environment["visible_devices_variable"] == "ZE_AFFINITY_MASK"
+    assert environment["cuda_available"] is False
+    assert environment["logical_device_count"] == 2
+    assert environment["driver_version"] == "1.15.38646+6"
+    assert [gpu["name"] for gpu in report["gpus"]] == [
+        "Intel(R) Arc(TM) Pro B60 Graphics"
+    ] * 2
+    assert [gpu["free_memory_bytes"] for gpu in report["gpus"]] == [20 * 1024**3] * 2
+    assert report["warnings"] == []
+    rendered = gpu_diagnostics.render_gpu_diagnostics(report)
+    assert "logical 1 -> physical 1" in rendered
+    assert "name=Intel(R) Arc(TM) Pro B60 Graphics" in rendered
+
+
+def test_an_unset_affinity_mask_ignores_an_unrelated_cuda_mask(monkeypatch) -> None:
+    """With ZE_AFFINITY_MASK unset, a CUDA_VISIBLE_DEVICES left in the process
+    environment was parsed as the XPU mask, so two unmasked cards were reported
+    as physical 2 and 5 while their uuids said 0 and 1.
+    """
+    monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "5,2")
+    monkeypatch.delenv("ZE_AFFINITY_MASK", raising=False)
+    pin_platform(monkeypatch, "xpu")
+
+    report = gpu_diagnostics.collect_gpu_diagnostics(torch_module=FakeXpuTorch([0, 1]))
+
+    assert [gpu["physical_index"] for gpu in report["gpus"]] == [0, 1]
+    assert [gpu["uuid"] for gpu in report["gpus"]] == ["uuid-0", "uuid-1"]
+    assert report["environment"]["visible_devices"] is None
+
+
+@pytest.mark.parametrize(
+    "platform",
+    [
+        pytest.param(
+            load_platform_class("sglang.srt.platforms.interface.SRTPlatform")(),
+            id="no-device-fallback",
+        ),
+        pytest.param(CPUOmniPlatform(), id="cpu"),
+        # torch.mps has no get_device_properties, so the device-module arm
+        # would turn every healthy Apple host into a warning.
+        pytest.param(AppleOmniPlatform(), id="apple-mps"),
+    ],
+)
+def test_a_platform_without_a_device_module_keeps_the_nvml_report(
+    monkeypatch, platform
+) -> None:
+    """With no card visible, SGLang falls back to its base platform, whose
+    device_type is "cpu" while is_cpu() is False. On a CUDA host whose driver is
+    too old for torch, NVML is still the only source of the driver version, and
+    enumerating torch.cpu instead would list a device that does not exist.
+    """
+    fake_nvml = FakeNVML()
+    monkeypatch.setattr(gpu_diagnostics, "cuda_runtime_version", lambda: None)
+    monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
+    monkeypatch.setattr(gpu_diagnostics, "current_platform", platform)
+
+    def no_device_module(device_type: str) -> None:
+        pytest.fail(f"enumerated the {device_type!r} device module")
+
+    torch_without_cuda = SimpleNamespace(
+        __version__="2.11.0+cu130",
+        version=SimpleNamespace(cuda="13.0"),
+        cuda=SimpleNamespace(is_available=lambda: False),
+        get_device_module=no_device_module,
+    )
+
+    report = gpu_diagnostics.collect_gpu_diagnostics(
+        env={}, torch_module=torch_without_cuda, pynvml_module=fake_nvml
+    )
+
+    assert report["gpus"] == []
+    assert report["environment"]["driver_version"] == "610.43.02"
+    assert report["environment"]["visible_devices_variable"] == "CUDA_VISIBLE_DEVICES"
+    assert fake_nvml.shutdown_called is True
+    assert "No GPUs are visible to PyTorch." in (
+        gpu_diagnostics.render_gpu_diagnostics(report)
+    )
+
+
+@pytest.mark.parametrize("mask", ["5,2", "5,2,2", "2,5,5,2"])
+def test_an_affinity_mask_maps_to_physical_cards_in_ascending_order(
+    monkeypatch, mask
+) -> None:
+    """Level Zero admits each masked card once, in ascending order, however
+    often and in whatever order it was written, so ZE_AFFINITY_MASK=5,2 and
+    5,2,2 both make physical 2 the logical 0 and physical 5 the logical 1.
+    Reading it like CUDA_VISIBLE_DEVICES, or keeping a repeat, names the wrong
+    card.
+    """
+    monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
+    pin_platform(monkeypatch, "xpu")
+
+    report = gpu_diagnostics.collect_gpu_diagnostics(
+        env={"ZE_AFFINITY_MASK": mask}, torch_module=FakeXpuTorch([2, 5])
+    )
+
+    assert [gpu["physical_index"] for gpu in report["gpus"]] == [2, 5]
+    assert [gpu["uuid"] for gpu in report["gpus"]] == ["uuid-2", "uuid-5"]
+
+
 def test_check_gpu_json_output(monkeypatch) -> None:
     check_gpu_module = importlib.import_module("sglang_omni.cli.check_gpu")
     report = {
@@ -325,9 +505,8 @@ def test_check_gpu_json_output(monkeypatch) -> None:
 def test_check_gpu_strict_fails_on_warning(monkeypatch) -> None:
     check_gpu_module = importlib.import_module("sglang_omni.cli.check_gpu")
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "environment": {
-            "cuda_available": True,
             "logical_device_count": 1,
         },
         "gpus": [{"logical_index": 0}],
@@ -346,12 +525,11 @@ def test_check_gpu_strict_fails_on_warning(monkeypatch) -> None:
     assert json.loads(result.stdout) == report
 
 
-def test_check_gpu_strict_fails_without_visible_cuda_device(monkeypatch) -> None:
+def test_check_gpu_strict_fails_without_a_visible_accelerator(monkeypatch) -> None:
     check_gpu_module = importlib.import_module("sglang_omni.cli.check_gpu")
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "environment": {
-            "cuda_available": False,
             "logical_device_count": 0,
         },
         "gpus": [],
@@ -368,6 +546,32 @@ def test_check_gpu_strict_fails_without_visible_cuda_device(monkeypatch) -> None
 
     assert result.exit_code == 1
     assert json.loads(result.stdout) == report
+
+
+def test_check_gpu_strict_passes_with_gpus_and_no_cuda(monkeypatch) -> None:
+    """An Intel host has no CUDA but does list its cards, so strict must not key
+    off cuda_available, which is what made a healthy XPU host exit 1.
+    """
+    check_gpu_module = importlib.import_module("sglang_omni.cli.check_gpu")
+    report = {
+        "schema_version": 2,
+        "environment": {
+            "cuda_available": False,
+            "logical_device_count": 1,
+        },
+        "gpus": [{"logical_index": 0}],
+        "backends": [],
+        "warnings": [],
+    }
+    monkeypatch.setattr(
+        check_gpu_module,
+        "collect_gpu_diagnostics",
+        lambda: report,
+    )
+
+    result = CliRunner().invoke(app, ["check-gpu", "--json", "--strict"])
+
+    assert result.exit_code == 0
 
 
 def test_check_gpu_does_not_load_serving_entrypoints_in_subprocess() -> None:
