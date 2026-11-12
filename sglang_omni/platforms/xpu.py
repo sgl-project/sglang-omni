@@ -37,6 +37,13 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
         # models; torch_native makes SGLang disable both graph phases.
         return "torch_native"
 
+    def get_deterministic_attention_backend(self) -> str | None:
+        # Note (siju): SGLang 0.5.23's deterministic fallback picks fa3 below
+        # Blackwell without checking the device, so XPU dies in FlashAttention's
+        # SM assert. triton is what XPU resolves to without determinism, and it
+        # is the deterministic backend SGLang still allows radix cache with.
+        return "triton"
+
     def get_fused_qk_norm_rope_with_cos_sin_cache(self):
         try:
             from sgl_kernel import fused_inplace_qknorm_rope

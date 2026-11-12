@@ -222,6 +222,38 @@ def test_each_platform_names_the_graph_backend_its_hardware_uses() -> None:
             assert isinstance(backend, backend_class), platform_class.__name__
 
 
+def test_only_xpu_replaces_sglangs_deterministic_attention_fallback() -> None:
+    """SGLang 0.5.23 falls back to fa3 below Blackwell, which XPU cannot run.
+
+    The XPU answer must stay deterministic and keep radix cache available.
+    """
+    from sglang.srt.arg_groups.choices import (
+        DETERMINISTIC_ATTENTION_BACKEND_CHOICES,
+        RADIX_SUPPORTED_DETERMINISTIC_ATTENTION_BACKEND,
+    )
+
+    from sglang_omni.platforms.apple import AppleOmniPlatform
+    from sglang_omni.platforms.musa import MUSAOmniPlatform
+
+    backend = XPUOmniPlatform().get_deterministic_attention_backend()
+
+    assert backend == "triton"
+    assert backend in DETERMINISTIC_ATTENTION_BACKEND_CHOICES
+    assert backend in RADIX_SUPPORTED_DETERMINISTIC_ATTENTION_BACKEND
+    for platform_class in (
+        CUDAOmniPlatform,
+        ROCMOmniPlatform,
+        MUSAOmniPlatform,
+        NPUOmniPlatform,
+        CPUOmniPlatform,
+        AppleOmniPlatform,
+        OmniPlatform,
+    ):
+        assert (
+            platform_class().get_deterministic_attention_backend() is None
+        ), platform_class.__name__
+
+
 def test_npu_platform_opts_only_mimi_into_decode_graphs() -> None:
     platform = NPUOmniPlatform()
     assert platform.enable_mimi_decode_graph() is True
