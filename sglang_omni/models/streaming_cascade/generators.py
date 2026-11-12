@@ -187,9 +187,11 @@ class OpenAIChatGenerator(Replier):
         else:
             pass
         if self.config.constrain_style_tags and self.styles:
-            # note (Haoling Pu): built from the styles where the node is placed, so a configure that changes them changes the regex too.
+            # note (Haoling Pu): built from the styles where the node is placed, so a configure that changes them changes the regex too; a non-whitespace character must follow the tag, since a reply of the tag alone would stream no text and the turn would be silent.
             body["regex"] = (
-                r"\[(" + "|".join(map(re.escape, self.styles)) + r")\] [^\[\]]*"
+                r"\[("
+                + "|".join(map(re.escape, self.styles))
+                + r")\] [^\[\]\s][^\[\]]*"
             )
         else:
             pass

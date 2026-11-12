@@ -2434,6 +2434,7 @@ async def test_the_dialog_keeps_the_heard_sentences_and_the_heard_prefix_of_the_
         "qwen3-asr-qwen3-tts-vivian",
         "qwen3-asr-qwen3-tts-vivian-dflash",
         "qwen3-asr-qwen3.8-27b-vivian",
+        "qwen3-asr-qwen3.8-27b-vivian-styles",
         "qwen3-asr-qwen3-tts-base-clone",
     ],
 )
@@ -2683,7 +2684,7 @@ async def test_a_style_tag_leaves_the_reply_text_and_picks_the_recording_of_the_
 
 
 def test_the_styles_profile_holds_every_reply_to_a_tag_its_synthesizer_clones():
-    """Without the regex Qwen3.8-27B left the brackets off a tag or named a style the speech node lacks, and the speech service read the word out."""
+    """Without the regex Qwen3.8-27B left the brackets off a tag or named a style the speech node lacks, and the speech service read the word out; a reply of the tag alone would stream no text, so the turn would be silent."""
     graph = profile_config("qwen3-asr-qwen3.8-27b-vivian-styles").component_graph()
     regex = str(ComponentSession("llm", graph).component.request_body([])["regex"])
     for style in graph.node("tts").component.styles:
@@ -2694,6 +2695,8 @@ def test_the_styles_profile_holds_every_reply_to_a_tag_its_synthesizer_clones():
         "Cheerful] That is wonderful.",
         "[surprised] Oh, really?",
         "[calm] Take a [slow] breath.",
+        "[calm] ",
+        "[calm]  ",
     ):
         assert not re.fullmatch(regex, reply)
 
