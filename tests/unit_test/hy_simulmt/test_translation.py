@@ -1,17 +1,24 @@
 # SPDX-License-Identifier: Apache-2.0
 """Speech translation protocol and streaming state regression tests."""
 
+import base64
 import io
+import json
 import wave
 from dataclasses import dataclass
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 import torch
+from fastapi import WebSocket
+from starlette.websockets import WebSocketState
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from transformers import PreTrainedTokenizerFast, WhisperFeatureExtractor
 
+from sglang_omni.client import Client, CompletionResult, GenerateRequest
+from sglang_omni.models.hy_simulmt.config import HySimulMTPipelineConfig
 from sglang_omni.models.hy_simulmt.request_builders import (
     ASSISTANT_PREFIX,
     AUDIO_END,
@@ -31,6 +38,9 @@ from sglang_omni.models.hy_simulmt.stages import (
 from sglang_omni.models.hy_simulmt.streaming import HySimulMTStreamingStrategy
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.bootstrap import InfrastructureOptions
+from sglang_omni.serve.realtime.transcription_session import (
+    RealtimeTranscriptionSession,
+)
 
 
 def wav_bytes(sample_count: int, value: int = 100) -> bytes:
@@ -82,13 +92,16 @@ def payload(audio: bytes, parameters: dict[str, object]) -> StagePayload:
     )
 
 
-@pytest.mark.parametrize("sample_count", [15840, 16000, 16160, 25600, 480000])
+@pytest.mark.parametrize(
+    "sample_count", [1, 29, 160, 161, 15840, 16000, 16160, 25600, 480000]
+)
 def test_audio_span_matches_convolution_and_frame_stacking(
     builder: HySimulMTRequestBuilder, sample_count: int
 ) -> None:
-    """Convolution blocks pad independently at the one-second boundary."""
+    """Audio frames and token spans must stay valid for short and long inputs."""
     request = builder(payload(wav_bytes(sample_count), {}))
     audio = request.req.multimodal_inputs.mm_items[0]
+    assert audio.feature.shape[-1] == (sample_count + 159) // 160
     convolutions = torch.nn.Sequential(
         torch.nn.Conv2d(1, 1, 3, 2, padding=1),
         torch.nn.Conv2d(1, 1, 3, 2, padding=1),
@@ -126,26 +139,126 @@ def test_frame_stacking_preserves_the_odd_tail(frame_count: int, batched: bool) 
     torch.testing.assert_close(actual, expected)
 
 
+@pytest.mark.parametrize(
+    ("sample_count", "history_end_sample", "expected_mel_frames"),
+    [
+        (51200, 25600, [160, 160]),
+        (25629, 25600, [160, 1]),
+        (25629, 29, [1, 160]),
+    ],
+)
 def test_history_preserves_empty_turns_and_separate_audio_spans(
     builder: HySimulMTRequestBuilder,
+    sample_count: int,
+    history_end_sample: int,
+    expected_mel_frames: list[int],
 ) -> None:
     """WAIT turns still retain audio and EOT in the next model prompt."""
     request = builder(
         payload(
-            wav_bytes(51200),
+            wav_bytes(sample_count),
             {
-                "hy_simulmt_history": [{"end_sample": 25600, "text": ""}],
+                "hy_simulmt_history": [{"end_sample": history_end_sample, "text": ""}],
                 "language": "en",
             },
         )
     )
     items = request.req.multimodal_inputs.mm_items
     assert len(items) == 2
+    assert [item.feature.shape[-1] for item in items] == expected_mel_frames
     assert items[0].offsets[0][1] < items[1].offsets[0][0]
     tokens = request.input_ids.tolist()
     assert tokens.count(builder.tokenizer.convert_tokens_to_ids(USER_TOKEN)) == 2
     assert tokens.count(builder.tokenizer.convert_tokens_to_ids(TURN_END)) == 1
     assert request.target_language == "zh"
+
+
+@pytest.mark.parametrize("sample_count", [161, 319, 16000])
+def test_normal_audio_matches_whisper_features(
+    builder: HySimulMTRequestBuilder, sample_count: int
+) -> None:
+    """Padding short audio must not alter features for longer audio."""
+    waveform = np.full(sample_count, 100 / 32768, dtype=np.float32)
+    reference = builder.feature_extractor(
+        waveform,
+        sampling_rate=16000,
+        padding="longest",
+        pad_to_multiple_of=160,
+        truncation=False,
+        return_attention_mask=True,
+        return_tensors="pt",
+    )
+    request = builder(payload(wav_bytes(sample_count), {}))
+    audio = request.req.multimodal_inputs.mm_items[0]
+    mel_frame_count = int(reference.attention_mask.sum())
+    torch.testing.assert_close(
+        audio.feature, reference.input_features[0, :, :mel_frame_count], rtol=0, atol=0
+    )
+
+
+@pytest.mark.asyncio
+async def test_realtime_short_tail_preserves_committed_segments(
+    builder: HySimulMTRequestBuilder,
+) -> None:
+    """A 300-second stream with a short tail must finish without losing prior text."""
+    websocket = MagicMock(spec=WebSocket)
+    websocket.application_state = WebSocketState.CONNECTED
+    websocket.client_state = WebSocketState.CONNECTED
+
+    async def complete(
+        request: GenerateRequest, *, request_id: str
+    ) -> CompletionResult:
+        builder(
+            StagePayload(
+                request_id=request_id,
+                request=OmniRequest(inputs=request.prompt, params=request.extra_params),
+                data={},
+            )
+        )
+        return CompletionResult(request_id=request_id, text=request_id, language="en")
+
+    client = MagicMock(spec=Client)
+    client.completion.side_effect = complete
+    session = RealtimeTranscriptionSession(
+        websocket,
+        client=client,
+        model_name="translation",
+        transcription_config=HySimulMTPipelineConfig.realtime_transcription,
+        strategy=HySimulMTStreamingStrategy(),
+        session_id="short-tail",
+    )
+    speech_pcm_bytes = np.full(480000, 1000, dtype=np.int16).tobytes()
+    silence_pcm_bytes = np.zeros(480000, dtype=np.int16).tobytes()
+    tail_pcm_bytes = np.full(29, 1000, dtype=np.int16).tobytes()
+    try:
+        for pcm_bytes in [speech_pcm_bytes, *([silence_pcm_bytes] * 9), tail_pcm_bytes]:
+            await session.dispatch(
+                {
+                    "type": "input_audio_buffer.append",
+                    "audio": base64.b64encode(pcm_bytes).decode("ascii"),
+                }
+            )
+        await session.dispatch({"type": "transcription.done"})
+    finally:
+        await session.teardown()
+
+    events = [json.loads(call.args[0]) for call in websocket.send_text.await_args_list]
+    assert not [event for event in events if event["type"] == "error"]
+    finals = [
+        event
+        for event in events
+        if event["type"] == "transcription.segment" and event["is_final"]
+    ]
+    assert len(finals) == 11
+    assert (finals[-1]["audio_start_ms"], finals[-1]["audio_end_ms"]) == (
+        300000,
+        300001,
+    )
+    completed = [
+        event for event in events if event["type"] == "transcription.completed"
+    ]
+    assert len(completed) == 1
+    assert completed[0]["text"] == "short-tail:0:1 short-tail:10:1"
 
 
 @pytest.mark.parametrize(

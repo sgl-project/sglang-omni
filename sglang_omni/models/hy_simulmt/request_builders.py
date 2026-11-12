@@ -134,10 +134,12 @@ class HySimulMTRequestBuilder:
             else:
                 pass
             waveform = prepared.waveform[start_sample : turn.end_sample]
+            minimum_samples = self.feature_extractor.n_fft // 2 + 1
             extracted = self.feature_extractor(
                 waveform,
                 sampling_rate=SAMPLE_RATE,
-                padding="longest",
+                padding="max_length",
+                max_length=max(len(waveform), minimum_samples),
                 pad_to_multiple_of=HOP_LENGTH,
                 truncation=False,
                 return_attention_mask=True,
