@@ -13,6 +13,19 @@ from sglang_omni.models.moss_tts import config as graph_policy
 from sglang_omni.models.moss_tts_local import config as config_module
 
 
+def test_npu_recipe_enables_backbone_decode_graph() -> None:
+    """The recipe enables backbone decode graphs while keeping prefill eager."""
+    example = (
+        Path(__file__).resolve().parents[3] / "examples/configs/moss_tts_local_npu.yaml"
+    )
+    config = ConfigManager.from_file(str(example)).config
+    engine = config.stage_named("tts_engine").engine.overrides()
+    assert engine["cuda_graph_backend_prefill"] == "disabled"
+    assert engine["disable_cuda_graph"] is False
+    assert engine["attention_backend"] == "ascend"
+    assert config.stage_factory_kwargs("vocoder")["vocoder_cuda_graph"] is False
+
+
 @pytest.mark.parametrize(
     "hip_version,dxg_device,dxg_detection,expected",
     [
