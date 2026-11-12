@@ -233,7 +233,7 @@ class Drama3ForCausalLM(nn.Module):
             hidden_states, logits_output = self.backbone_logits(
                 input_ids, positions, forward_batch, frames
             )
-            self.audio_decoder.decode_step(
+            sampled_frames = self.audio_decoder.decode_step(
                 logits_output.next_token_logits,
                 hidden_states,
                 positions,
@@ -244,7 +244,6 @@ class Drama3ForCausalLM(nn.Module):
                 decode_buffers.top_p[:row_count],
                 PagedTowerAttention(self.tower_attention, forward_batch),
                 decode_buffers.epsilon_cutoff[:row_count],
-                out=decode_buffers.sampled_frames[:row_count],
             )
             decode_buffers.sampled_frames[:row_count].copy_(sampled_frames)
             state_pool.publish(request_slots, sampled_frames)
