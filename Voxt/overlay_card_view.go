@@ -86,7 +86,11 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 		cardWave(c, v, a.overlayMotion(), a.overlayPhase())
 		ui.Spacer(c)
 	} else {
-		ui.Text(c, v.title).FontSize(layout.CardTitleSize).FontWeight(600).TextColor(ui.RGB(255, 255, 255)).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
+		if !v.langCapsule() {
+			// A translation's capsule names it: with Continue beside it, a
+			// long language name left no room for the title (#3897).
+			ui.Text(c, v.title).FontSize(layout.CardTitleSize).FontWeight(600).TextColor(ui.RGB(255, 255, 255)).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
+		}
 		if v.busy {
 			// Voxt's spinner: an arc turning once in 0.9 s, 88 %.
 			busy := i18n.T("Translating…")
@@ -98,7 +102,7 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 		}
 		ui.Box(c).Grow(1).MinWidth(0) // Voxt's Spacer(minLength: 12): the gap
 	}
-	if v.kind == store.KindTranslate && v.failed == nil {
+	if v.langCapsule() {
 		a.cardLanguage(c, v)
 	}
 	switch {
@@ -166,6 +170,9 @@ func ovCardIconA(v cardView) float32 {
 	}
 	return 1
 }
+
+// langCapsule says whether the header shows Translate's language capsule.
+func (v cardView) langCapsule() bool { return v.kind == store.KindTranslate && v.failed == nil }
 
 // cardSpinning says whether the card shows a spinner (it turns).
 func (v cardView) spinning() bool { return !v.conversation && v.busy }

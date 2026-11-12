@@ -41,8 +41,9 @@ func (a *app) openAnswer(s session.Snapshot) {
 		card.msg, _, _ = sessionProblemText(p) // read it before inserting it
 	}
 	if s.Kind == store.KindRewrite {
-		// A follow-up continues the card's conversation.
-		if a.answer.kind == store.KindRewrite && a.answer.id == a.followUp {
+		// A follow-up continues the card's conversation (a translation's
+		// too: its card turns into Rewrite's).
+		if a.followUp != "" && a.answer.id == a.followUp {
 			card.turns = append(card.turns, a.answer.turns...)
 			card.conversation, card.quotesOpen = a.answer.conversation, a.answer.quotesOpen
 			if card.why == "" {
@@ -145,14 +146,21 @@ func (a *app) redoAnswer(req session.StartRequest) {
 	a.overlaySync()
 }
 
-// followUpAnswer records a follow-up to the card's Rewrite answer (the
-// Rewrite shortcut while the card shows one): the next instruction
-// rewrites that answer, in the card.
+// followUpAnswer records a follow-up to the card's Rewrite answer or
+// translation (Continue, or the Rewrite shortcut while the card shows
+// one): the next instruction rewrites that answer, in the card. A
+// translation is the conversation's first turn, its source as the
+// selection (#3897).
 func (a *app) followUpAnswer(hold string) bool {
-	card := a.answer
 	if !a.canFollowUp() {
 		return false
 	}
+	if a.answer.kind == store.KindTranslate {
+		in := a.answer.input
+		a.answer.turns = []compose.Turn{{Instruction: i18n.T("Translate into %s", uitext.TargetLanguageLabel(a.answer.lang)),
+			Selection: cmpOr(in.Selection, in.Raw), Answer: compose.Answer{Content: a.answer.text}}}
+	}
+	card := a.answer
 	a.followUp = card.id
 	if n := a.startSession(session.StartRequest{Kind: store.KindRewrite, Target: card.target, HoldBinding: hold, Previous: card.turns}); n != nil {
 		a.followUp = ""
@@ -166,10 +174,11 @@ func (a *app) followUpAnswer(hold string) bool {
 }
 
 // canFollowUp says whether the card takes a follow-up now: a Rewrite
-// answer written from an instruction, nothing running.
+// answer written from an instruction, or a translation, nothing running.
 func (a *app) canFollowUp() bool {
 	card := a.answer
-	return card.open && card.kind == store.KindRewrite && card.problem == nil && len(card.turns) > 0 && !a.sess.State.Live()
+	ok := card.kind == store.KindRewrite && len(card.turns) > 0 || card.kind == store.KindTranslate && card.text != ""
+	return card.open && ok && card.problem == nil && !a.sess.State.Live()
 }
 
 // closeAnswer closes the answer card (and cancels a follow-up, or another

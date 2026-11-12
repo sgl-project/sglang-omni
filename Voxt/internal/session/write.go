@@ -1,6 +1,7 @@
 package session
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"strings"
@@ -63,6 +64,9 @@ func (r *run) write(raw, selection string) {
 		r.endWriteFailed(&Problem{Code: ProblemNoLLM, Err: errors.New("no language model is ready")}, false)
 		return
 	}
+	if kind == store.KindTranslate && strings.TrimSpace(r.req.TargetLanguage) == "" {
+		r.target = TranslateInto(r.target, MainLanguage(r.settings, cfg.Locale()), cmp.Or(selection, raw))
+	}
 	in := r.writeInput(raw, selection)
 	// The feature's card switch: on, the answer waits in the answer card,
 	// which inserts it (or replaces the selection) when asked and, for
@@ -84,6 +88,9 @@ func (r *run) write(raw, selection string) {
 	keepSpeech := kind == store.KindTranslate && selection == "" && raw != ""
 	r.m.update(r, func(s *Snapshot) {
 		s.State, s.Selection, s.Card, s.CanSkip = Composing, selection, o.card != "" && !r.req.Try, keepSpeech
+		if kind == store.KindTranslate {
+			s.TargetLanguage = r.target
+		}
 	})
 
 	// Can it replace the selection? If not, the answer streams into the
