@@ -187,7 +187,6 @@ class GraphEngineFacts:
     enable_async_decode: bool
     async_decode_min_batch_size: int
     async_decode_resolve_before_prefill: bool
-    gdn_prefill_graph_status: str
 
 
 @dataclass(kw_only=True)

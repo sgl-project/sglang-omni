@@ -485,7 +485,6 @@ def engine_facts(
         prefill_capture_break_layer_ids=(
             builder.capture_break_recorder.layer_ids_by_token_count
         ),
-        gdn_prefill_graph_status=builder.gdn_prefill_graph_status(),
         first_frame_request_counts=(
             None if first_frame_graphs is None else sorted(first_frame_graphs.graphs)
         ),
