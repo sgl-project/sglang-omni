@@ -22,6 +22,7 @@ from benchmarks.duplex.lifecycle_stress.host_metrics import (
     read_rss_megabytes,
 )
 from benchmarks.duplex.lifecycle_stress.records import ServerMode, ServerSnapshot
+from sglang_omni.admission import QueueFullError
 from sglang_omni.audio import smart_turn as smart_turn_module
 from sglang_omni.audio.vad import Emit, VADConfig
 from sglang_omni.client.client import Client
@@ -78,19 +79,37 @@ class SilentVAD:
 
 
 @dataclass(kw_only=True)
+class ModelSlots:
+    """How many sessions the stand-in model holds at once, shared by every adapter of one app."""
+
+    limit: int
+    in_use: int = 0
+
+
+@dataclass(kw_only=True)
 class EchoAdapter(InteractionAdapter):
     """Answers every native unit with a short text response so the server keeps sending."""
 
     reply_text: str = DEFAULT_REPLY_TEXT
     process_delay_ms: float = 0.0
     close_delay_ms: float = 0.0
+    slots: ModelSlots | None = None
     output_sink: OutputSink | None = None
     unit_count: int = 0
+    is_holding_slot: bool = False
     is_closed: bool = False
 
     async def open(
         self, session_id: str, config: SessionConfiguration, emit: OutputSink
     ) -> None:
+        # note (Yi Zhao): a model server whose queue is full rejects session.update this way and keeps the socket open.
+        if self.slots is not None and self.slots.in_use >= self.slots.limit:
+            raise QueueFullError()
+        elif self.slots is not None:
+            self.slots.in_use += 1
+            self.is_holding_slot = True
+        else:
+            pass
         self.output_sink = emit
 
     async def process(self, unit: Unit) -> int:
@@ -120,6 +139,12 @@ class EchoAdapter(InteractionAdapter):
             await asyncio.sleep(self.close_delay_ms / MS_PER_SECOND)
         else:
             pass
+        if self.is_holding_slot:
+            assert self.slots is not None, "slot held without slots"
+            self.slots.in_use -= 1
+            self.is_holding_slot = False
+        else:
+            pass
         self.is_closed = True
 
 
@@ -127,6 +152,7 @@ class EchoAdapter(InteractionAdapter):
 class MockSettings:
     mode: ServerMode = "deployment"
     max_connections: int = 128
+    model_slots: int | None = None
     idle_timeout_s: float = RuntimeLimits().idle_timeout_s
     session_update_timeout_s: float = RuntimeLimits().session_update_timeout_s
     cleanup_timeout_s: float = RuntimeLimits().cleanup_timeout_s
@@ -139,12 +165,18 @@ def build_mock_app(settings: MockSettings) -> FastAPI:
     """The real app over fakes, plus a route for the session count and process resources a real server does not expose."""
     client = Client(HealthyCoordinator())
     if settings.mode == "deployment":
+        slots = (
+            None
+            if settings.model_slots is None
+            else ModelSlots(limit=settings.model_slots)
+        )
         deployment = RealtimeDeployment(
             capabilities=Capabilities(),
             adapter_factory=lambda: EchoAdapter(
                 reply_text=settings.reply_text,
                 process_delay_ms=settings.process_delay_ms,
                 close_delay_ms=settings.close_delay_ms,
+                slots=slots,
             ),
             limits=RuntimeLimits(
                 cleanup_timeout_s=settings.cleanup_timeout_s,

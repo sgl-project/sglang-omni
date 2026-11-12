@@ -16,7 +16,8 @@ Cancel mid-reply, idle timeout expiry, immediate reconnection and filling the co
 - Sessions left: the server's own session count after the last cycle, read from the mock's debug route. A real server does not expose it.
 - Cleanup latency: from the moment the last client of a cycle has left until the server's session count reaches zero, polled every 20 ms. The wait gives up after `--cleanup-wait-s` (default 35 s, above the server's default 30 s adapter cleanup timeout) and the cycle is marked timed out.
 - Capacity recovery: from the same moment until a probe that opens `--max-connections` sockets at once is admitted in full. This is the signal a real server gives, since a held slot shows up as a 503 denial.
-- RSS growth per cycle: the server's resident set after the last cycle minus before the first, divided by the number of cycles. The mock reports its own RSS; for a real server on the same host pass `--server-pid`.
+- RSS growth per cycle: the server's resident set after the last cycle minus after the fifth, divided by the cycles in between. The first five cycles are warm-up: the mock grows up to 15 MB once while its allocator and thread pool fill, which a run of ten cycles would otherwise read as 1.5 MB per cycle. A run of five cycles or fewer has no such figure. The mock reports its own RSS; for a real server on the same host pass `--server-pid`.
+- Denied: the server refused the session, either with a 503 at connect, when the connection cap is reached, or with an `admission_rejected` error in answer to `session.update`, when the model has no room. The client closes the socket and does not retry. Any other error event ends the session as errored, with the server's error recorded.
 - Final probe: one ordinary churn session run after the last cycle, which must complete.
 
 A summary lists `unmet_targets` for the checks that failed and `targets_not_measurable` for those the server gave no data for, so a run against a real server states what it could not check instead of passing it.
@@ -57,7 +58,7 @@ Not recorded yet. The intended command is `run` with the GPU server's URL, its `
 
 `benchmarks/duplex/lifecycle_stress` has three subcommands.
 
-- `mock` serves the real `/v1/realtime` route of `sglang_omni.serve.openai_api` over an adapter that answers each 20 ms unit with a short text response, and adds a `/debug/lifecycle` route with the session count, RSS, task, thread and file descriptor counts. `--mode deployment` (default) is the shared-session path with a connection cap; `--mode legacy` is the per-connection path with the Silero and Smart Turn loads replaced by a detector that never hears speech.
+- `mock` serves the real `/v1/realtime` route of `sglang_omni.serve.openai_api` over an adapter that answers each 20 ms unit with a short text response, and adds a `/debug/lifecycle` route with the session count, RSS, task, thread and file descriptor counts. `--mode deployment` (default) is the shared-session path with a connection cap; `--mode legacy` is the per-connection path with the Silero and Smart Turn loads replaced by a detector that never hears speech. `--model-slots N` makes the stand-in model hold at most N sessions and reject the rest on `session.update`, as a model server whose capacity is below its connection cap does.
 - `run` drives one scenario against any realtime URL and writes `samples.json` and `summary.json`. Both carry the server identity the operator passes (`--server-revision`, `--model`, and optionally `--model-revision` and `--runtime`), the model IDs the server lists at `/v1/models`, and the client's commit, Python and package versions.
 - `report` pools run directories into one summary per scenario, mode and server revision and writes `report.md`, so runs against two branches stay in separate rows.
 
@@ -93,7 +94,9 @@ python -m benchmarks.duplex.lifecycle_stress report runs/churn runs/drop runs/le
 
 ## Limitations
 
-- A real server has no debug route, so sessions left, cleanup latency and task counts are not measurable there; capacity recovery, denials, close codes, the final probe and, on the same host, RSS are.
+- A real server has no debug route, so sessions left, cleanup latency and task counts are not measurable there; capacity recovery, denials, close codes, the final probe and, on the same host, RSS are. None of this has been run against a model-backed server yet.
+- Without the debug route a leak shows as a capacity probe that is denied, which needs a connection cap. The legacy path has none: there the leak of the last row shows only as RSS growth, 1.95 MB per cycle against at most 0.31 in the rows that release every session, and without `--server-pid` not at all.
+- The capacity probe opens `--max-connections` sessions and expects all of them admitted, so against a model that holds fewer sessions than the server's connection cap, pass the number the model holds.
 - The capacity probe opens and closes `--max-connections` sockets of its own, so it perturbs the server it measures; the tool waits for those sessions to clear (or 0.5 s without a debug route) before the next cycle.
 - The mock answers every unit with text and never speaks; its RSS per leaked session is a floor, not the cost with a model.
 - One client process ran up to 64 sessions at once here at up to 0.4 of one core; above about 128 the duplex client needs its own host, see #3288.

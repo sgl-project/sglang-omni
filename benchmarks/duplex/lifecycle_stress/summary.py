@@ -22,6 +22,8 @@ from benchmarks.duplex.lifecycle_stress.records import (
 
 # note (Yi Zhao): a steady server should not grow a full megabyte per cycle of churn.
 RSS_GROWTH_BUDGET_MEGABYTES_PER_CYCLE = 1.0
+# note (Yi Zhao): the allocator and the thread pool fill once during the first cycles; on the mock that growth ends by the fifth.
+RSS_WARMUP_CYCLES = 5
 REVISION_DISPLAY_LENGTH = 9
 UNMEASURED_SNAPSHOT = ServerSnapshot(taken_s=0.0)
 REPORT_COLUMNS = (
@@ -127,10 +129,23 @@ def summarize(samples: list[StressSamples]) -> StressSummary:
         if cycle.capacity_probe is not None
     )
     server_changes: list[ServerChange] = []
+    settled_rss_growth_per_cycle: list[float] = []
     for sample in samples:
         last_snapshot = sample.cycles[-1].snapshot_after if sample.cycles else None
         baseline = sample.baseline or UNMEASURED_SNAPSHOT
         final = last_snapshot or UNMEASURED_SNAPSHOT
+        settled_cycles = len(sample.cycles) - RSS_WARMUP_CYCLES
+        warmed = (
+            sample.cycles[RSS_WARMUP_CYCLES - 1].snapshot_after
+            if settled_cycles > 0
+            else None
+        ) or UNMEASURED_SNAPSHOT
+        if warmed.rss_megabytes is not None and final.rss_megabytes is not None:
+            settled_rss_growth_per_cycle.append(
+                (final.rss_megabytes - warmed.rss_megabytes) / settled_cycles
+            )
+        else:
+            pass
         server_changes.append(
             ServerChange(
                 sessions_left=final.active_sessions,
@@ -149,15 +164,8 @@ def summarize(samples: list[StressSamples]) -> StressSummary:
             )
         )
     sessions_left = [change.sessions_left for change in server_changes]
-    measured_rss_growth = [
-        change.rss_growth_megabytes
-        for change in server_changes
-        if change.rss_growth_megabytes is not None
-    ]
     growth_per_cycle = (
-        None
-        if not measured_rss_growth
-        else max(measured_rss_growth) / max(1, first.cycles_requested)
+        max(settled_rss_growth_per_cycle) if settled_rss_growth_per_cycle else None
     )
     is_final_probe_completed = all(
         sample.final_probe is not None and sample.final_probe.outcome == "completed"

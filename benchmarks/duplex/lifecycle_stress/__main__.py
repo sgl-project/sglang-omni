@@ -47,6 +47,7 @@ def mock(arguments: argparse.Namespace) -> None:
     settings = MockSettings(
         mode=arguments.mode,
         max_connections=arguments.max_connections,
+        model_slots=arguments.model_slots,
         idle_timeout_s=arguments.idle_timeout_s,
         session_update_timeout_s=arguments.session_update_timeout_s,
         cleanup_timeout_s=arguments.cleanup_timeout_s,
@@ -134,6 +135,12 @@ def main() -> None:
     )
     mock_parser.add_argument(
         "--max-connections", type=int, default=mock_defaults.max_connections
+    )
+    mock_parser.add_argument(
+        "--model-slots",
+        type=int,
+        default=mock_defaults.model_slots,
+        help="sessions the stand-in model holds at once; further ones get an admission_rejected error on session.update",
     )
     mock_parser.add_argument(
         "--idle-timeout-s", type=float, default=mock_defaults.idle_timeout_s

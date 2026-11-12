@@ -21,7 +21,11 @@ from benchmarks.duplex.lifecycle_stress.records import (
 )
 from benchmarks.duplex.lifecycle_stress.scenarios import RunSettings, run_stress
 from benchmarks.duplex.lifecycle_stress.session_client import debug_url_of
-from benchmarks.duplex.lifecycle_stress.summary import render_report, summarize
+from benchmarks.duplex.lifecycle_stress.summary import (
+    RSS_WARMUP_CYCLES,
+    render_report,
+    summarize,
+)
 from sglang_omni.audio import smart_turn as smart_turn_module
 from sglang_omni.serve.realtime import session as session_module
 from sglang_omni.serve.realtime import turn_detector as turn_detector_module
@@ -119,6 +123,29 @@ def test_admission_denial_is_an_outcome_not_an_exception(tmp_path: Path) -> None
     assert samples.final_probe.outcome == "completed"
 
 
+def test_in_session_admission_rejection_is_a_denial_that_frees_its_socket(
+    tmp_path: Path,
+) -> None:
+    """A model with one slot rejects the second session.update; the client counts a denial and closes."""
+    samples = asyncio.run(
+        stress_against_mock(
+            MockSettings(max_connections=4, model_slots=1),
+            tmp_path,
+            concurrency=2,
+            appends_per_session=3,
+        )
+    )
+    cycle = samples.cycles[0]
+    sessions = sorted(cycle.sessions, key=lambda session: session.outcome)
+    assert [session.outcome for session in sessions] == ["completed", "denied"]
+    assert sessions[1].error is not None
+    assert "admission_rejected" in sessions[1].error
+    assert cycle.snapshot_after is not None
+    assert cycle.snapshot_after.active_sessions == 0
+    assert samples.final_probe is not None
+    assert samples.final_probe.outcome == "completed"
+
+
 def test_legacy_mock_serves_a_frame_closed_session_without_a_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -143,7 +170,7 @@ def test_legacy_mock_serves_a_frame_closed_session_without_a_model(
 
 
 def stress_samples(
-    active_sessions_left: int, rss_final_megabytes: float
+    active_sessions_left: int, rss_megabytes_after_cycles: list[float]
 ) -> StressSamples:
     outcome = SessionOutcome(
         outcome="completed", close_code=1000, wall_ms=5.0, ended_s=1.0
@@ -155,7 +182,7 @@ def stress_samples(
         source={"harness_git_head": None},
         platform="test",
         concurrency=1,
-        cycles_requested=2,
+        cycles_requested=len(rss_megabytes_after_cycles),
         appends_per_session=1,
         close_style="event",
         drop_point="none",
@@ -180,10 +207,10 @@ def stress_samples(
                     taken_s=1.0,
                     mode="deployment",
                     active_sessions=active_sessions_left,
-                    rss_megabytes=rss_final_megabytes,
+                    rss_megabytes=rss_megabytes,
                 ),
             )
-            for index in range(2)
+            for index, rss_megabytes in enumerate(rss_megabytes_after_cycles)
         ],
         final_probe=outcome,
         client_wall_s=1.0,
@@ -193,10 +220,16 @@ def stress_samples(
 
 
 def test_summary_targets_name_leftover_sessions_and_rss_growth() -> None:
-    """Leftover sessions and a megabyte per cycle of RSS growth each fail their own target."""
-    clean = summarize([stress_samples(0, 100.5)])
-    leaking = summarize([stress_samples(3, 104.0)])
+    """Leftover sessions and steady RSS growth each fail their own target; growth during warm-up fails none."""
+    warmed_then_flat = [103.0, 106.0, 108.0, 110.0, 110.0, 110.2, 110.4, 110.5]
+    growing_every_cycle = [102.0 + 2.0 * index for index in range(8)]
+    clean = summarize([stress_samples(0, warmed_then_flat)])
+    leaking = summarize([stress_samples(3, growing_every_cycle)])
+    short = summarize([stress_samples(0, warmed_then_flat[:RSS_WARMUP_CYCLES])])
     assert clean.unmet_targets == []
+    assert clean.rss_growth_per_cycle_megabytes == pytest.approx(0.5 / 3)
+    assert leaking.rss_growth_per_cycle_megabytes == pytest.approx(2.0)
+    assert "server RSS growth per cycle under budget" in short.targets_not_measurable
     assert leaking.unmet_targets == [
         "no sessions left after the last cycle",
         "server RSS growth per cycle under budget",

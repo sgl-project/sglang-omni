@@ -34,6 +34,7 @@ from benchmarks.duplex.lifecycle_stress.records import (
     ServerSnapshot,
     SessionOutcome,
 )
+from benchmarks.duplex.oracle_models import is_admission_rejection
 
 SESSION_TIMEOUT_S = 30.0
 MS_PER_SECOND = 1000
@@ -54,6 +55,14 @@ class SessionPlan:
     append_interval_s: float = PACKET_MS / MS_PER_SECOND
 
 
+class ServerErrorEvent(RuntimeError):
+    """The server answered with an error event while the client waited for another one."""
+
+    def __init__(self, event: dict[str, JsonValue]) -> None:
+        super().__init__(json.dumps(event.get("error")))
+        self.is_admission_rejection = is_admission_rejection(event)
+
+
 def client_event(
     event_type: str, event_id: str, fields: dict[str, JsonValue] | None = None
 ) -> str:
@@ -61,11 +70,13 @@ def client_event(
 
 
 async def receive_until(connection: ClientConnection, event_type: str) -> None:
-    """Read server events until one of the given type arrives."""
+    """Read server events until one of the given type arrives; an error event ends the wait."""
     while True:
         event = json.loads(await connection.recv())
         if event["type"] == event_type:
             return
+        elif event["type"] == "error":
+            raise ServerErrorEvent(event)
         else:
             pass
 
@@ -149,19 +160,27 @@ async def drive_session(
 async def run_lifecycle_session(url: str, plan: SessionPlan) -> SessionOutcome:
     """Connect, run the plan and classify how the session ended; never raises."""
     started_s = time.perf_counter()
+    outcome: Outcome
     try:
         async with asyncio.timeout(plan.timeout_s):
-            connection = await connect(
+            # note (Yi Zhao): a session that ends in an error still holds its connection slot until the socket closes.
+            async with connect(
                 url,
                 max_size=MAX_MESSAGE_BYTES,
                 compression=None,
                 ping_interval=None,
                 open_timeout=plan.timeout_s,
-            )
-            return await drive_session(connection, plan)
+            ) as connection:
+                return await drive_session(connection, plan)
     except InvalidStatus as exc:
-        outcome: Outcome
         if exc.response.status_code == ADMISSION_DENIED_STATUS:
+            outcome = "denied"
+        else:
+            outcome = "errored"
+        error = f"{type(exc).__name__}: {exc}"
+    except ServerErrorEvent as exc:
+        # note (Yi Zhao): a server whose model is full admits the socket and rejects session.update; that is a denial, like a 503.
+        if exc.is_admission_rejection:
             outcome = "denied"
         else:
             outcome = "errored"
