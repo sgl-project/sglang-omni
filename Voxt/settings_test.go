@@ -77,6 +77,9 @@ func TestShortcutsSettings(t *testing.T) {
 	if !has(tt, "None") {
 		t.Error("a feature without shortcut")
 	}
+	// The Strict shortcuts row above the table pushes this row near the
+	// bottom; with taller fonts (Linux CI) it is below the window.
+	scrollToText(tt, "Paste the last result ⌃⌥V")
 	click(t, tt, "Paste the last result ⌃⌥V")
 	if a.settingsOpen || a.shownPath() != "/transcribe" {
 		t.Fatalf("row click: %v %s", a.settingsOpen, a.shownPath())
