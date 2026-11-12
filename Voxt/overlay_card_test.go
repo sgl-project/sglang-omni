@@ -59,7 +59,7 @@ func cardSteps() []cardStep {
 		{name: "short", apply: func(a *app) {
 			snap(a, tr(session.Done, "goroutine 是由 Go 运行时管理的轻量级线程。", "goroutine 是由 Go 运行时管理的轻量级线程。"))
 		},
-			insert: true, copy: true, lang: true},
+			insert: true, copy: true, followUp: true, lang: true},
 		{name: "redo", apply: func(a *app) {
 			a.answer.redo, a.answer.redoLang = "t2", "ja"
 			snap(a, session.Snapshot{ID: "t2", Kind: store.KindTranslate, State: session.Composing, Card: true, Target: arc, Selection: sel, TargetLanguage: "ja", Draft: "ゴルーチン"})
@@ -67,12 +67,12 @@ func cardSteps() []cardStep {
 		{name: "redone-long", apply: func(a *app) {
 			snap(a, session.Snapshot{ID: "t2", Kind: store.KindTranslate, State: session.Done, Card: true, Delivery: deliver.ReasonCard, Target: arc,
 				Selection: sel, TargetLanguage: "ja", Result: cardLong})
-		}, body: layout.CardBodyMax, insert: true, copy: true, lang: true},
-		{name: "copied", apply: func(a *app) { a.answer.copied = true }, body: layout.CardBodyMax, insert: true, copy: true, lang: true},
+		}, body: layout.CardBodyMax, insert: true, copy: true, followUp: true, lang: true},
+		{name: "copied", apply: func(a *app) { a.answer.copied = true }, body: layout.CardBodyMax, insert: true, copy: true, followUp: true, lang: true},
 		{name: "insert-failed", apply: func(a *app) {
 			a.answer.copied, a.answer.text = false, "goroutine 是由 Go 运行时管理的轻量级线程。"
 			a.answer.msg = uitext.DeliveryText(deliver.Result{Reason: deliver.ReasonNotFront}, arc)
-		}, msg: true, insert: true, copy: true, lang: true},
+		}, msg: true, insert: true, copy: true, followUp: true, lang: true},
 		{name: "failed", apply: func(a *app) {
 			snap(a, session.Snapshot{ID: "t3", Kind: store.KindTranslate, State: session.Recording})
 			snap(a, session.Snapshot{ID: "t3", Kind: store.KindTranslate, State: session.Failed, Card: true, Target: arc, Selection: sel,
@@ -120,7 +120,7 @@ func cardSteps() []cardStep {
 			cut.Problem = &session.Problem{Code: session.ProblemTruncated, Degraded: true}
 			snap(a, session.Snapshot{ID: "t4", Kind: store.KindTranslate, State: session.Composing})
 			snap(a, cut)
-		}, msg: true, insert: true, copy: true, lang: true},
+		}, msg: true, insert: true, copy: true, followUp: true, lang: true},
 	}
 }
 
@@ -221,7 +221,7 @@ func TestAnswerCardInteraction(t *testing.T) {
 	steps[0].apply(a) // the short answer
 	tt := cardTester(t, a)
 	frames(tt)
-	for _, s := range []string{"Translation", "goroutine 是由 Go 运行时管理的轻量级线程。", "Simplified Chinese", "Insert", "Copy", "Close"} {
+	for _, s := range []string{"goroutine 是由 Go 运行时管理的轻量级线程。", "Simplified Chinese", "Continue", "Insert", "Copy", "Close"} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, firstTexts(tt))
 		}
@@ -389,7 +389,7 @@ func TestCardHeaderFits(t *testing.T) {
 			snap(a, session.Snapshot{ID: "h1", Kind: store.KindTranslate, State: session.Recording})
 			snap(a, session.Snapshot{ID: "h1", Kind: store.KindTranslate, State: session.Done, Card: true, Delivery: deliver.ReasonCard,
 				Selection: "x", TargetLanguage: "zh-Hant", Result: "你好。"}) // "Traditional Chinese": the widest name
-		}, []string{"Translate into", "Insert", "Copy", "Close"}},
+		}, []string{"Translate into", "Continue", "Insert", "Copy", "Close"}},
 		{"rewrite", func(a *app) {
 			snap(a, session.Snapshot{ID: "h2", Kind: store.KindRewrite, State: session.Recording})
 			snap(a, session.Snapshot{ID: "h2", Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard,
@@ -433,8 +433,10 @@ func TestCardHeaderFits(t *testing.T) {
 				}
 				if c.name == "translate" {
 					title, ok := tt.Find(i18n.T("Translation"))
-					if !ok || title.X+title.W > first.X-layout.CardHeadGap+0.5 {
-						t.Errorf("the title %+v runs into the capsule at %v", title, first.X)
+					// The capsule names the card: no title to cut to "…" beside
+					// Continue (#3897). (The Chinese icon's label is the title.)
+					if ok && title.W > layout.CardIcon+0.5 {
+						t.Errorf("a title %+v beside the capsule", title)
 					}
 				}
 				if c.name == "rewrite" {

@@ -535,6 +535,50 @@ func TestTranslateTarget(t *testing.T) {
 	}
 }
 
+// TestTranslateDirection: Translate goes between the user's main
+// language and the target by the source (#3897): a selection or speech
+// already in the target goes into the main language; the rest, and a
+// language the user picked on the card, keep the target. Scripts cannot
+// tell English from French, so Latin into Latin keeps the target.
+func TestTranslateDirection(t *testing.T) {
+	for _, tc := range []struct {
+		name, main, target, override, sel, want string
+	}{
+		{"Chinese into English", "zh", "", "", "早上好，团队。", "en"},
+		{"English into Chinese", "zh", "", "", "Good morning, team.", "zh-Hans"},
+		{"mostly Chinese, English words", "zh", "", "", "我用 Voxt 写 code", "en"},
+		{"mostly English, a Chinese name", "zh", "", "", "Ask 张伟 about the release", "zh-Hans"},
+		{"English main, Chinese into English", "en", "", "", "早上好", "en"},
+		{"English main, English into Chinese", "en", "", "", "Good morning", "zh-Hans"},
+		{"Japanese target, Japanese text", "zh", "ja", "", "おはようございます", "zh-Hans"},
+		{"French target, English text", "en", "fr", "", "Good morning", "fr"},
+		{"picked on the card", "zh", "", "en", "Good morning", "en"},
+		{"digits only", "zh", "", "", "2026-11-12 10:00", "en"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &fakeLLM{text: "x"}
+			h := newHarness(t, &fakeFile{text: "x"}, model, func(c *Config, s *settings.Settings) {
+				c.Select = &fakeSelector{text: tc.sel}
+				s.General.MainLanguage, s.Features.Translate.Target = tc.main, tc.target
+			})
+			if _, err := h.m.Start(StartRequest{Kind: store.KindTranslate, Target: slack, TargetLanguage: tc.override}); err != nil {
+				t.Fatal(err)
+			}
+			end := h.rec.wait(t)
+			if end.TargetLanguage != tc.want {
+				t.Errorf("into %q, want %q", end.TargetLanguage, tc.want)
+			}
+			name := compose.LanguageName(tc.want, compose.TemplateSet(tc.main))
+			if reqs := model.requests(); len(reqs) == 0 || !strings.Contains(reqs[0].Messages[0].Content, name) {
+				t.Errorf("the prompt does not say %q: %+v", name, reqs)
+			}
+			if es := h.hist.all(); len(es) != 1 || es[0].TargetLang != tc.want {
+				t.Errorf("entries %+v", es)
+			}
+		})
+	}
+}
+
 func TestAllowCopy(t *testing.T) {
 	for id, want := range map[string]bool{
 		"com.apple.TextEdit": true, "com.tinyspeck.slackmacgap": true, "": true,
@@ -629,7 +673,7 @@ func TestTranslateOpensNoSpeechModelItDoesNotUse(t *testing.T) {
 		speech []bool
 		asked  string // in the language model's last message
 	}{
-		{"a selection", &fakeSelector{text: "Voxt 把选中的 text 翻译成英文"}, StartRequest{}, false, []bool{false}, "Voxt 把选中的 text 翻译成英文"},
+		{"a selection", &fakeSelector{text: "Voxt translates the selected text"}, StartRequest{}, false, []bool{false}, "Voxt translates the selected text"},
 		{"no selection", &fakeSelector{}, StartRequest{}, true, []bool{false, true}, "hello VoxtNew"},
 		{"the selection is not read", &fakeSelector{err: errors.New("AX failed")}, StartRequest{}, true, []bool{false, true}, "hello VoxtNew"},
 		{"a typed text", &fakeSelector{text: "unused"}, StartRequest{Text: &TextInput{Selection: "Good morning"}}, false, []bool{false}, "Good morning"},
