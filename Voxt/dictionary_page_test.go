@@ -250,6 +250,9 @@ func dictShots(t *testing.T, a *app, tt *ui.Tester, save func(string)) {
 	save("page-dictionary-notes-empty")
 	a.updateSettings(func(s *settings.Settings) { s.Dictionary.Notes = reporterNotes(t) })
 	save("page-dictionary-notes")
+	a.dv.notesQuery, a.dv.notesFind = "401", finder{cur: 2}
+	save("page-dictionary-notes-find")
+	a.dv.notesQuery, a.dv.notesFind = "", finder{}
 	scrollToText(tt, i18n.T("How it is used"))
 	save("page-dictionary-notes-example")
 	a.updateSettings(func(s *settings.Settings) { s.Dictionary.Notes = longNotes(200) })
