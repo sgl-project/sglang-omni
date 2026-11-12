@@ -582,7 +582,7 @@ def test_a_request_speech_thinker_refuses_a_speculative_draft(
 
 
 def test_a_session_speech_thinker_keeps_its_speculative_draft(monkeypatch) -> None:
-    """A session thinker captures no talker rows and streams only token ids, so speech output no longer refuses its draft."""
+    """A session thinker captures no talker rows and streams only token ids, so speech output keeps its draft."""
     scheduler_calls = patch_thinker_startup(monkeypatch, expected_context_length=8192)
     monkeypatch.setattr(
         qwen_stages.AutoConfig,
