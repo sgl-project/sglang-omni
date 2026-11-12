@@ -61,8 +61,6 @@ class GDNPrefillGraphMetadata:
     max_sequences: int
     max_chunks: int
     max_conv_blocks: int
-    # note (Wenyao Gao): one int32 device buffer, so a single copy refreshes the
-    # four tables viewed from it.
     packed: torch.Tensor
     cumulative_sequence_lengths: torch.Tensor
     chunk_indices: torch.Tensor
