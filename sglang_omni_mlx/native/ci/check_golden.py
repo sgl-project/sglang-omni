@@ -34,6 +34,7 @@ import sortformer_golden
 import speech_golden
 import vad_golden
 import voxtral_golden
+import zonos3_golden
 from speech_golden import SpeechCase, SpeechOutputs
 from transcript_tokens import tokens
 
@@ -54,6 +55,7 @@ SPEECH_SYNTHESIZERS: dict[str, SpeechSynthesizer] = {
     "qwen3_tts": qwen3_tts_golden.synthesize,
     "fishaudio_drama3": fishaudio_drama3_golden.synthesize,
     "fish_s2_pro": fish_s2_pro_golden.synthesize,
+    "zonos3": zonos3_golden.synthesize,
 }
 COMPARED_FIELDS = ("text", "language", "generated_token_count", "finish_reason")
 QUALITY_GROUPS = {

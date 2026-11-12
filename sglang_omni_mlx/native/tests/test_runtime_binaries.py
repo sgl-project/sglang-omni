@@ -23,6 +23,7 @@ SERVED_KINDS = {
     "cosyvoice3_server": ("cosyvoice3",),
     "fishaudio_drama3_server": ("fishaudio_drama3",),
     "fish_s2_pro_server": ("fish_s2_pro",),
+    "zonos3_server": ("zonos3",),
     "music3_server": ("minimax_music3",),
     "ming3_audio_server": ("ming3_audio",),
     "ming_tts_server": ("ming_tts",),
@@ -122,6 +123,8 @@ def test_a_load_without_a_checkpoint_reports_failed(
         ("ming3_audio_server", ("--context-length", "0"), "--context-length must be a positive integer"),
         ("fish_s2_pro_server", ("--max-queued-requests", "-1"), "--max-queued-requests must not be negative"),
         ("fish_s2_pro_server", ("--request-timeout-s", "0"), "--request-timeout-s must be above 0"),
+        ("zonos3_server", ("--max-queued-requests", "-1"), "--max-queued-requests must not be negative"),
+        ("zonos3_server", ("--request-timeout-s", "0"), "--request-timeout-s must be above 0"),
     ],
 )  # fmt: skip
 def test_invalid_server_flags_exit_before_the_load(

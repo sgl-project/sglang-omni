@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-// The checkpoint's Qwen2 byte-level BPE tokenizer, with its added tokens.
+// A checkpoint's byte-level BPE tokenizer (Qwen2's, or a tokenizer.json with
+// its own split pattern, NFC or no normalizer), with its added tokens.
 #pragma once
 
 #include <filesystem>
@@ -51,6 +52,8 @@ private:
   std::vector<AddedToken> added_tokens_;
   std::unordered_map<int, size_t> added_token_index_by_id_;
   std::unique_ptr<Pcre2Regex> split_pattern_;
+  // False for a tokenizer.json whose normalizer is null.
+  bool normalizes_nfc_ = true;
 };
 
 } // namespace omni_common

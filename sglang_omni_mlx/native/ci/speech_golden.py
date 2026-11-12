@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """The check every speech golden shares (voxtral_golden.py, qwen3_tts_golden.py,
-fishaudio_drama3_golden.py, fish_s2_pro_golden.py): a chip with golden outputs must give each seeded case's
+fishaudio_drama3_golden.py, fish_s2_pro_golden.py, zonos3_golden.py): a chip with golden outputs must give each seeded case's
 prompt ids, audio codes, finish reason and, when the golden holds one, decoded-audio
 hash exactly; another chip, whose GPU arithmetic may sample other codes, only the
 prompt ids. Each chip's outputs keep one string of codes per audio frame, so a
@@ -24,7 +24,8 @@ class SpeechReference(TypedDict, total=False):
 
 class SpeechCase(TypedDict, total=False):
     """A seeded request; voice for Voxtral, speaker and language for Qwen3-TTS,
-    sampling and a reference for Drama 3, a reference for S2-Pro."""
+    sampling and a reference for Drama 3, a reference for S2-Pro; a voice,
+    sampling, speed, stream and a reference for ZONOS3."""
 
     text: Required[str]
     seed: Required[int]
@@ -35,6 +36,8 @@ class SpeechCase(TypedDict, total=False):
     temperature: float
     top_p: float
     top_k: int
+    speed: float
+    stream: bool
     reference: SpeechReference
 
 
