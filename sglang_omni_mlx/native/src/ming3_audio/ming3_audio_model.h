@@ -129,6 +129,8 @@ private:
                            std::vector<LayerCache> &caches) const;
   static mlx::core::array LastPosition(const mlx::core::array &hidden);
   mlx::core::array Logits(const mlx::core::array &hidden) const;
+  // Returns the last position's hidden state; earlier positions only fill the
+  // cache.
   mlx::core::array DraftForward(const mlx::core::array &next_embeddings,
                                 const mlx::core::array &hidden,
                                 qwen3_asr::KVCache &cache) const;

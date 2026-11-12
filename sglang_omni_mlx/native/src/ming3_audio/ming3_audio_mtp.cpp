@@ -29,9 +29,9 @@ mx::array Model::DraftForward(const mx::array &next_embeddings,
                        RmsNorm(hidden, prefix + ".hnorm")},
                       -1),
       prefix + ".eh_proj");
-  drafted = mx::add(
+  drafted = LastPosition(mx::add(
       drafted, LatentAttention(RmsNorm(drafted, prefix + ".input_layernorm"),
-                               prefix + ".attention", cache));
+                               prefix + ".attention", cache)));
   drafted = mx::add(drafted,
                     Moe(RmsNorm(drafted, prefix + ".post_attention_layernorm"),
                         prefix + ".mlp"));
@@ -55,8 +55,8 @@ Model::GenerateWithDraft(const mx::array &embeddings,
   const auto draft_token = [&](const mx::array &next_ids,
                                const mx::array &hidden,
                                qwen3_asr::KVCache &draft_cache) {
-    return mx::reshape(mx::astype(mx::argmax(Logits(LastPosition(DraftForward(
-                                      Embed(next_ids), hidden, draft_cache)))),
+    return mx::reshape(mx::astype(mx::argmax(Logits(DraftForward(
+                                      Embed(next_ids), hidden, draft_cache))),
                                   mx::int32),
                        {1, 1});
   };
