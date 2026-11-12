@@ -941,7 +941,6 @@ class Qwen3TTSStreamingVocoderScheduler(
             and num_quantizers > 0
             and not self.deterministic_inference
             and tts_model_size in {"0b6", "1b7"}
-            and not self.decodes_whole_requests
         )
         self.full_decode_stream: torch.cuda.Stream | None = None
         if tts_model_size == "0b6" and full_decode_graphs_enabled:
@@ -1107,8 +1106,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             sample_rate=sample_rate,
             stream_source_hint="Qwen3-TTS",
             max_batch_size=max_batch_size,
-            # note (ratish): whole requests batch on the initial worker, not on this clock.
-            max_batch_wait_ms=0 if self.decodes_whole_requests else max_batch_wait_ms,
+            max_batch_wait_ms=max_batch_wait_ms,
         )
 
     def build_codec_arena(
@@ -1457,7 +1455,15 @@ class Qwen3TTSStreamingVocoderScheduler(
             self.initial_tail_decode_graphs.capture()
         else:
             pass
-        self.full_decode_graphs.capture()
+        # note (ratish): whole requests step through the window graphs and batch on the initial
+        # worker; a server whose windows failed to capture decodes them whole, as before.
+        self.decodes_whole_requests = bool(
+            self.decodes_whole_requests and self.initial_window_decode_graphs.enabled
+        )
+        if self.decodes_whole_requests:
+            self.max_batch_wait_s = 0.0
+        else:
+            self.full_decode_graphs.capture()
 
     def on_serving_start(self) -> None:
         # note (Haoling Pu): decode workers are plain threads without the stage binding.
