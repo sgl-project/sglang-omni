@@ -123,42 +123,44 @@ def gemm_out(
         block_column_count,
         block_reduction_count,
         warp_count,
-        stage_count,
+        pipeline_stage_count,
     ) = config
-    rows = inputs.shape[0]
-    grid = triton.cdiv(rows, block_row_count) * triton.cdiv(3072, block_column_count)
-    if rows in (24, 48, 96, 192):
-        ffn_gemm_kernel[(grid,)](
+    row_count = inputs.shape[0]
+    launch_grid_size = triton.cdiv(row_count, block_row_count) * triton.cdiv(
+        3072, block_column_count
+    )
+    if row_count in (24, 48, 96, 192):
+        ffn_gemm_kernel[(launch_grid_size,)](
             inputs,
             weight,
             bias,
             out,
-            rows,
+            row_count,
             block_row_count,
             block_column_count,
             block_reduction_count,
             num_warps=warp_count,
-            num_stages=stage_count,
+            num_stages=pipeline_stage_count,
             enable_fp_fusion=True,
         )
-    elif rows == 384:
+    elif row_count == 384:
         assert config == (64, 64, 64, 4, 3)
         # note (Codex): retain the measured single-partition launch geometry.
-        packed_fp32_kernel[(grid, 1)](
+        packed_fp32_kernel[(launch_grid_size, 1)](
             inputs,
             weight,
             bias,
             out,
-            rows,
+            row_count,
             3072,
             1024,
             block_row_count,
             block_column_count,
             block_reduction_count,
             num_warps=warp_count,
-            num_stages=stage_count,
+            num_stages=pipeline_stage_count,
             enable_fp_fusion=True,
         )
     else:
-        raise ValueError(f"Unsupported FFN1/packed QKV row count: {rows}")
+        raise ValueError(f"Unsupported FFN1/packed QKV row count: {row_count}")
     return out

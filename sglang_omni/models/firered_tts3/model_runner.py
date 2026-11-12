@@ -99,7 +99,7 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
             pass
         assert forward_batch is not None
         self.release_retracted_flow_states()
-        prefill_launch_at = materialize_prefill_batch(
+        prefill_launch_seconds = materialize_prefill_batch(
             self.model,
             forward_batch,
             requests,
@@ -107,8 +107,8 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
             self.suspend_request_data,
             self.clear_request_data,
         )
-        if prefill_launch_at is not None:
-            self.prefill_launch_at = prefill_launch_at
+        if prefill_launch_seconds is not None:
+            self.prefill_launch_at = prefill_launch_seconds
         else:
             pass
 

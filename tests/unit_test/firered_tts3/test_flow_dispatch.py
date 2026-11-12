@@ -9,7 +9,11 @@ import pytest
 import torch
 
 from sglang_omni.models.firered_tts3.conv_cache import Conv1dWeightCache
-from sglang_omni.models.firered_tts3.ffn_gemm import FFN_CONFIGS, FfnGemmMode
+from sglang_omni.models.firered_tts3.ffn_gemm import (
+    FFN_CONFIGS,
+    QKV_CONFIGS,
+    FfnGemmMode,
+)
 from sglang_omni.models.firered_tts3.flow_time_cache import TimeGemmMode
 from sglang_omni.models.firered_tts3.weights import FfnWeight
 
@@ -80,15 +84,16 @@ def test_dispatch_modes_preserve_custom_operator_values_and_errors() -> None:
         for mode in modes:
             with mode:
                 actual = operation(inputs, payload, tag="reference")
-                with pytest.raises(RuntimeError) as actual_error:
-                    torch.ops.aten.add.Tensor(torch.ones(2), torch.ones(3))
             assert actual == expected == payload
-            assert str(actual_error.value) == str(expected_error.value)
     with pytest.raises(ValueError) as expected_custom_error:
         operation(inputs, None, tag="unsupported")
     for mode in modes:
-        with mode, pytest.raises(ValueError) as actual_custom_error:
-            operation(inputs, None, tag="unsupported")
+        with mode:
+            with pytest.raises(RuntimeError) as actual_error:
+                torch.ops.aten.add.Tensor(torch.ones(2), torch.ones(3))
+            with pytest.raises(ValueError) as actual_custom_error:
+                operation(inputs, None, tag="unsupported")
+        assert str(actual_error.value) == str(expected_error.value)
         assert str(actual_custom_error.value) == str(expected_custom_error.value)
 
 
@@ -111,9 +116,22 @@ def test_ffn_dispatch_preserves_addmm_keyword_fallback() -> None:
     assert mode.hits == 0 and mode.misses == 1
 
 
-@pytest.mark.parametrize("argument_style", ["positional", "keywords"])
+@pytest.mark.parametrize(
+    "rows,argument_style,override_config",
+    [
+        (24, "positional", False),
+        (48, "positional", False),
+        (96, "positional", False),
+        (192, "positional", False),
+        (384, "positional", False),
+        (24, "positional", True),
+        (24, "keywords", True),
+    ],
+)
 def test_ffn_dispatch_uses_real_addmm_inputs(
+    rows: int,
     argument_style: Literal["positional", "keywords"],
+    override_config: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with torch.random.fork_rng(devices=[]):
@@ -121,13 +139,21 @@ def test_ffn_dispatch_uses_real_addmm_inputs(
         layer = torch.nn.Linear(1024, 3072, dtype=torch.bfloat16).eval()
     generator = torch.Generator().manual_seed(802)
     assert layer.bias is not None
-    inputs = torch.randn(24, 1024, dtype=torch.bfloat16, generator=generator)
+    inputs = torch.randn(rows, 1024, dtype=torch.bfloat16, generator=generator)
     weight = layer.weight.t()
     mode = FfnGemmMode(layer)
     mode.enabled = True
-    mode.weights[weight.data_ptr()] = FfnWeight.from_linear("linear", layer)
-    launch_config = (32, 32, 128, 4, 2)
-    monkeypatch.setitem(FFN_CONFIGS, 24, launch_config)
+    if rows in FFN_CONFIGS:
+        mode.weights[weight.data_ptr()] = FfnWeight.from_linear("linear", layer)
+        configs = FFN_CONFIGS
+    else:
+        mode.packed_weights[weight.data_ptr()] = FfnWeight.from_linear("linear", layer)
+        configs = QKV_CONFIGS
+    if override_config:
+        launch_config = (32, 32, 128, 4, 2)
+        monkeypatch.setitem(configs, rows, launch_config)
+    else:
+        launch_config = configs[rows]
     selected_configs: list[tuple[int, int, int, int, int]] = []
 
     def cpu_gemm(
@@ -163,6 +189,7 @@ def test_ffn_dispatch_uses_real_addmm_inputs(
     assert torch.equal(output, expected)
     assert mode.hits == 1 and mode.misses == 0
     assert len(selected_configs) == 1 and selected_configs[0] is launch_config
+    assert type(selected_configs[0]) is tuple
 
 
 @pytest.mark.parametrize("operator", ["conv1d", "convolution"])
