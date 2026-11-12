@@ -28,7 +28,7 @@ The processor ships with the checkpoint, so no extra TTS package is needed. Deco
 
 ### Ascend NPU
 
-For single-NPU BF16 inference, use the A3 runtime pinned by `base-image-a3` in [`pyproject_npu.toml`](../../pyproject_npu.toml) and compatible [host drivers](../get_started/installation_npu.md#prerequisites). From that runtime's root shell, install this checkout and its audio dependencies:
+For single-NPU BF16 inference, use the A3 runtime pinned by `base-image-a3` in [`pyproject_npu.toml`](../../pyproject_npu.toml) and compatible [host drivers](../other_platforms/installation_npu.md#prerequisites). From that runtime's root shell, install this checkout and its audio dependencies:
 
 ```bash
 bash scripts/npu/install_npu.sh --install-system-deps
