@@ -598,6 +598,7 @@
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#apple-silicon">Apple Silicon</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-generation">Speech Generation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-editing">Speech Editing</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sampling">Sampling</a></li>
@@ -655,6 +656,7 @@
 </tbody>
 </table>
 </div>
+<p>Both checkpoints use Qwen2.5-Omni-3B weights under the <a class="reference external" href="https://huggingface.co/Qwen/Qwen2.5-Omni-3B/blob/f75b40e3da2003cdd6e1829b1f420ca70797c34e/LICENSE">Qwen Research License</a>: research and evaluation only; commercial use requires a separate license. The source-code licenses do not grant commercial rights to those weights. Built with Qwen.</p>
 <section id="prerequisites">
 <h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
 <p>Follow <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a>, then run from the repository root:</p>
@@ -665,6 +667,30 @@
 </pre></div>
 </div>
 <p>For Intel GPUs, follow the <a class="reference internal" href="../other_platforms/installation_xpu.html#auk-speech-generation-and-editing-single-xpu"><span class="std std-ref">AuK XPU recipe</span></a>.</p>
+</section>
+<section id="apple-silicon">
+<h2>Apple Silicon<a class="headerlink" href="#apple-silicon" title="Link to this heading">#</a></h2>
+<p>AuK and AuK-Flash run on the standalone native MLX server. Build it, then point it at local copies of the published <code class="docutils literal notranslate"><span class="pre">tencent/AuK-Flash</span></code> (or <code class="docutils literal notranslate"><span class="pre">tencent/AuK</span></code>) and <code class="docutils literal notranslate"><span class="pre">Qwen/Qwen2.5-Omni-3B</span></code> repositories:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sglang_omni_mlx/native/scripts/build_runtime.sh<span class="w"> </span>build/auk
+<span class="nv">MLX_ENABLE_TF32</span><span class="o">=</span><span class="m">0</span><span class="w"> </span>build/auk/bin/auk_server<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>/models/AuK-Flash<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--text-encoder-path<span class="w"> </span>/models/Qwen2.5-Omni-3B<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>Use the AuK checkpoint instead for the base model. The server reads both directories as published: <code class="docutils literal notranslate"><span class="pre">config.yaml</span></code>, <code class="docutils literal notranslate"><span class="pre">auk_flash.safetensors</span></code> or <code class="docutils literal notranslate"><span class="pre">auk_base.safetensors</span></code> and <code class="docutils literal notranslate"><span class="pre">vae.safetensors</span></code> from the AuK checkpoint, and the Thinker text and audio tensors with the tokenizer from Qwen2.5-Omni-3B. No conversion step or Python is needed.</p>
+<p>The server supports <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code>, answered with a WAV or PCM file, and <code class="docutils literal notranslate"><span class="pre">/generate</span></code>, answered with JSON holding a base64 WAV. Both follow the speech API the other native TTS servers share: one request runs at a time, <code class="docutils literal notranslate"><span class="pre">--max-queued-requests</span></code> more (2 by default) may wait and the rest get 503, and a request not finished within <code class="docutils literal notranslate"><span class="pre">--request-timeout-s</span></code> seconds (600 by default) gets 504. A <code class="docutils literal notranslate"><span class="pre">model</span></code> field is checked only against a name chosen with <code class="docutils literal notranslate"><span class="pre">--model-name</span></code>; another name gets 404. Reference audio is a base64 <code class="docutils literal notranslate"><span class="pre">data:</span></code> URL holding a WAV file (8 to 32-bit PCM or 32 or 64-bit float), its channels averaged. Client disconnects cancel synthesis at the next computation boundary. Keep both directions of the connection open until the response finishes; a TCP half-close is treated as cancellation. <code class="docutils literal notranslate"><span class="pre">--max-seconds</span></code> sets the duration cap, up to 30 seconds. <code class="docutils literal notranslate"><span class="pre">--cache-limit-gb</span></code> caps MLX’s reusable buffer cache in GiB (default: 1); set it to 0 to disable caching. It applies during loading and synthesis and does not cap total model memory. The server clears it whenever no request is running or waiting.</p>
+<p>The speech-generation example below works with either server. For cloning or editing on the native server, embed the WAV in <code class="docutils literal notranslate"><span class="pre">ref_audio</span></code> instead of using the HTTP URLs shown in the Torch examples. Native serving does not support structured <code class="docutils literal notranslate"><span class="pre">references</span></code>, remote audio fetching, streaming, or quantized weights. It keeps the model loaded until shutdown and is not integrated into the Voxt app.</p>
+<p>BF16 is the default matrix precision; <code class="docutils literal notranslate"><span class="pre">--dtype</span> <span class="pre">float32</span></code> selects FP32. Text residuals, hidden-state fusion, rotary positions, VAE computation and Euler integration stay in FP32. Use <code class="docutils literal notranslate"><span class="pre">MLX_ENABLE_TF32=0</span></code> for FP32 comparisons. Sampling follows each checkpoint’s released recipe.</p>
+<p>For a local Torch MPS comparison, use the ordinary Omni server with each stage’s <code class="docutils literal notranslate"><span class="pre">max_batch_size</span></code> set to 1 and DiT CUDA graphs, compilation, and fused Q/K normalization disabled. Run the two servers separately and send both the same Seed-TTS requests with the shared benchmark:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>benchmarks.eval.benchmark_tts_seedtts<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model<span class="w"> </span>tencent/AuK-Flash<span class="w"> </span>--meta<span class="w"> </span>zhaochenyang20/seed-tts-eval-arrow<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--base-url<span class="w"> </span>http://127.0.0.1:8000<span class="w"> </span>--use-existing-server<span class="w"> </span>--generate-only<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--inline-ref-audio<span class="w"> </span>--server-pid<span class="w"> </span><span class="s2">"</span><span class="nv">$SERVER_PID</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output-dir<span class="w"> </span>results/native-flash
+</pre></div>
+</div>
+<p>The AuK profile sends one request at a time after one warmup request, with <code class="docutils literal notranslate"><span class="pre">seed=1234</span></code>. <code class="docutils literal notranslate"><span class="pre">--inline-ref-audio</span></code> sends each reference WAV as a data URI, which the native server requires. <code class="docutils literal notranslate"><span class="pre">--server-pid</span></code> writes <code class="docutils literal notranslate"><span class="pre">memory.json</span></code>, the physical footprint of the server’s whole process tree sampled every 250 ms. Start a fresh server for each independent trial. The two backends use their own random generators, so equal seeds do not imply equal noise or waveforms.</p>
+<p>Native AuK model checks run locally, outside Mac CI. Use the shared <a class="reference internal" href="../developer_reference/tts_bench.html"><span class="std std-doc">TTS evaluation tools</span></a> for ASR scoring of generated audio.</p>
 </section>
 <section id="speech-generation">
 <h2>Speech Generation<a class="headerlink" href="#speech-generation" title="Link to this heading">#</a></h2>
@@ -819,6 +845,7 @@ python<span class="w"> </span>-m<span class="w"> </span>pytest<span class="w"> <
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#apple-silicon">Apple Silicon</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-generation">Speech Generation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-editing">Speech Editing</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sampling">Sampling</a></li>
