@@ -1,8 +1,6 @@
 # Architecture
 
-SGLang-Omni is the multi-stage runtime for omni models: models that accept
-mixed text, image, audio, and video inputs and may emit text, audio, or other
-modalities.
+SGLang-Omni is the multi-stage runtime for omni models: models that accept mixed text, image, audio, and video inputs and may emit text, audio, or other modalities.
 
 ## System Overview
 
@@ -57,9 +55,7 @@ models/<model>/
 `-- components/           # model modules, processors, vocoders, adapters
 ```
 
-Only model-local behavior belongs here. The framework-owned layers are still
-`Stage`, `Coordinator`, schedulers, model-runner bases, relay, runtime prep, and
-runners.
+Only model-local behavior belongs here. The framework-owned layers are still `Stage`, `Coordinator`, schedulers, model-runner bases, relay, runtime prep, and runners.
 
 <a id="naming-and-lint-checks"></a>
 <a id="documentation-checks"></a>
