@@ -354,16 +354,103 @@ def test_client_fails_once_the_admission_budget_is_exhausted(tmp_path: Path) -> 
 
     assert [
         r["event"]["attempt"] for r in records if r["direction"] == "admission"
-    ] == (list(range(1, ADMISSION_RETRIES + 1)))
-    assert records[-1]["direction"] == "error"
-    assert (
-        records[-1]["event"]["message"]
-        == f"RuntimeError: admission denied {ADMISSION_RETRIES + 1} times with HTTP 503"
-    )
+    ] == list(range(1, ADMISSION_RETRIES + 2))
+    assert not [record for record in records if record["direction"] == "error"]
     assert not peer.sent
     result = evaluate_trace(records)
     assert result["status"] == "fail", result
-    assert result["metrics"]["admission_denials"] == ADMISSION_RETRIES
+    assert result["metrics"]["admission_denials"] == ADMISSION_RETRIES + 1
+    assert result["failure_kind"] == "admission_rejected"
+
+
+def test_client_resends_a_rejected_session_update_on_the_same_socket(
+    tmp_path: Path,
+) -> None:
+    """An in-session admission_rejected used to abort the recording, though the session stays open for another session.update."""
+    peer = DuplexPeer(rejected_updates=ADMISSION_RETRIES)
+    records = asyncio.run(
+        capture_session(peer, tmp_path / "trace.jsonl", timeout_s=10.0)
+    )
+    updates = [
+        r
+        for r in records
+        if r["direction"] == "send" and r["event"]["type"] == "session.update"
+    ]
+
+    assert len(updates) == ADMISSION_RETRIES + 1
+    assert not [r for r in records if r["direction"] == "error"]
+    assert bytes(peer.pcm) == FIXTURE_PCM
+    result = evaluate_trace(records)
+    assert result["status"] == "pass", result
+    assert result["metrics"]["admission_rejections"] == ADMISSION_RETRIES
+
+
+def test_client_closes_once_the_rejection_budget_is_exhausted(tmp_path: Path) -> None:
+    peer = DuplexPeer(rejected_updates=ADMISSION_RETRIES + 1)
+    records = asyncio.run(
+        capture_session(peer, tmp_path / "trace.jsonl", timeout_s=10.0)
+    )
+    sends = [r["event"]["type"] for r in records if r["direction"] == "send"]
+
+    assert sends == ["session.update"] * (ADMISSION_RETRIES + 1) + ["session.close"]
+    assert records[-1]["event"]["type"] == "session.closed"
+    assert not [record for record in records if record["direction"] == "error"]
+    assert not peer.pcm
+    result = evaluate_trace(records)
+    assert result["status"] == "fail", result
+    assert result["metrics"]["admission_rejections"] == ADMISSION_RETRIES + 1
+    assert result["failure_kind"] == "admission_rejected"
+
+
+@pytest.mark.parametrize("rejected_updates", [1, 2])
+def test_handshake_and_session_rejections_share_one_retry_budget(
+    tmp_path: Path, rejected_updates: int
+) -> None:
+    """Changing rejection transport must not reset the admission retry budget."""
+    peer = DuplexPeer(rejected_updates=rejected_updates)
+    records = asyncio.run(capture_with_denials(peer, 2, tmp_path / "trace.jsonl"))
+    result = evaluate_trace(records, max_admission_attempts=ADMISSION_RETRIES)
+    assert result["metrics"]["admission_denials"] == 2
+    assert result["metrics"]["admission_rejections"] == rejected_updates
+    assert sum(event["type"] == "session.update" for event in peer.received) == 2
+    assert records[-1]["event"]["type"] == "session.closed"
+    if rejected_updates == 1:
+        assert result["status"] == "pass", result
+        assert result["failure_kind"] is None
+        assert bytes(peer.pcm) == FIXTURE_PCM
+    else:
+        assert result["failure_kind"] == "admission_rejected", result
+        assert not input_append_records(records)
+
+
+def test_client_does_not_resend_after_another_error(tmp_path: Path) -> None:
+    peer = DuplexPeer(rejected_updates=1, rejection_code="invalid_request")
+    records = asyncio.run(
+        capture_session(peer, tmp_path / "trace.jsonl", timeout_s=10.0)
+    )
+    sends = [r["event"]["type"] for r in records if r["direction"] == "send"]
+
+    assert sends == ["session.update", "session.close"]
+    result = evaluate_trace(records)
+    assert result["status"] == "fail", result
+    assert any("code=invalid_request" in item for item in result["violations"])
+
+
+def test_client_stops_retrying_when_the_session_fails_during_the_backoff(
+    tmp_path: Path,
+) -> None:
+    peer = DuplexPeer("deadline_after_rejection", rejected_updates=1)
+    records = asyncio.run(
+        capture_session(peer, tmp_path / "trace.jsonl", timeout_s=10.0)
+    )
+    sends = [r["event"]["type"] for r in records if r["direction"] == "send"]
+
+    assert sends == ["session.update"]
+    assert not [r for r in records if r["direction"] == "error"]
+    assert records[-1]["event"]["type"] == "session.closed"
+    result = evaluate_trace(records)
+    assert result["status"] == "fail"
+    assert result["failure_kind"] == "runtime"
 
 
 def test_client_enforces_the_session_deadline(tmp_path: Path) -> None:

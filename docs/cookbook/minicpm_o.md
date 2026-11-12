@@ -11,7 +11,7 @@
 
 Follow [Installation](../get_started/installation.md), then run from the repository root.
 
-For Intel GPUs, follow the [MiniCPM-o XPU recipe](../get_started/installation_xpu.md#minicpm-o-45-omni-chat-and-speech-single-xpu).
+For Intel GPUs, follow the [MiniCPM-o XPU recipe](../other_platforms/installation_xpu.md#minicpm-o-45-omni-chat-and-speech-single-xpu).
 
 Chat with speech output:
 
@@ -27,7 +27,7 @@ python -m sglang_omni.cli serve --model-path openbmb/MiniCPM-o-4_5 --text-only -
 
 ## Ascend NPU
 
-See [Installation — NPU](../get_started/installation_npu.md#minicpm-o)
+See [Installation — NPU](../other_platforms/installation_npu.md#minicpm-o)
 for the NPU launch command, configuration, and validated versions.
 
 ## Normal Usage
@@ -77,7 +77,26 @@ Those pixel options do not bound the initial native-resolution allocation.
 
 ## Native Full-Duplex Ability
 
-MiniCPM-o 4.5 also serves live full-duplex voice and video calls on `/v1/realtime`. Launching, settings, the browser demo and the protocol are in [Full Duplex Interactive Model](../developer_reference/full_duplex_guide.md#native-full-duplex-minicpm-o).
+MiniCPM-o 4.5 also serves live full-duplex voice and video calls on `/v1/realtime`. Launching, settings, the browser demo, the protocol and benchmarking are in [Full-Duplex Guide](../developer_reference/full_duplex_guide.md#native-full-duplex-minicpm-o).
+
+## Realtime-Venus
+
+[Realtime-Venus](https://huggingface.co/inclusionAI/Realtime-Venus) is a pair of MiniCPM-o 4.5 fine-tunes from inclusionAI: Realtime-Venus-Omni for audio-visual full-duplex calls and Realtime-Venus-Audio for audio-only chat and calls. Both keep the MiniCPM-o weight layout and serve with the commands on this page.
+
+The two checkpoints are subdirectories of one repository, and each config.json points at the repository's config.yaml, so download them with the repository's script, which keeps config.yaml beside the model directories:
+
+```bash
+hf download inclusionAI/Realtime-Venus download_models.py --local-dir .
+python download_models.py --model omni --local-dir Realtime-Venus
+```
+
+Pass the model directory, not the repository id, and serve a full-duplex call with the session variant:
+
+```bash
+python -m sglang_omni.cli serve --model-path Realtime-Venus/Realtime-Venus-Omni --variant session --enable-realtime --port 8000
+```
+
+`--model audio` downloads Realtime-Venus-Audio instead; it serves chat, speech and full-duplex calls with the MiniCPM-o 4.5 commands.
 
 ## Text to speech
 
@@ -93,3 +112,22 @@ audio = client.audio.speech.create(
 ```
 
 The speech output is non-streaming. The sampling fields you set, such as `temperature`, `top_p` and `max_new_tokens`, apply to the Talker, which generates the speech; the rest keep the Talker's defaults.
+
+## Speculative Decoding
+
+The Thinker can verify tokens proposed by a DSpark draft trained on its own answers to text, audio, image and video prompts, [`Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm`](https://huggingface.co/Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm):
+
+```bash
+python -m sglang_omni.cli serve --model-path openbmb/MiniCPM-o-4_5 --port 8000 \
+  --thinker.engine.speculative_algorithm DSPARK \
+  --thinker.engine.speculative_draft_model_path Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm
+```
+
+An EAGLE3 draft for Qwen3-8B, such as [`Tengyunw/qwen3_8b_eagle3`](https://huggingface.co/Tengyunw/qwen3_8b_eagle3), runs with `--thinker.engine.speculative_algorithm EAGLE3`, `speculative_num_steps 3`, `speculative_eagle_topk 1` and `speculative_num_draft_tokens 4`.
+
+- **Acceptance length.** Send `return_spec_tokens_details: true` with a chat request to get its `sglext.spec_tokens_details`: `spec_accept_length` (output tokens per verify, including the token sampled at prefill, so it can read higher than the scheduler log's `accept len`, which counts only verified tokens), `spec_accept_rate`, the draft counts and the per-verify histogram. A streamed response sends it in a chunk with empty `choices` before `[DONE]`. `spec_accept_rate` and `spec_num_proposed_drafts` are left out when no drafts were proposed or the draft width is adaptive. Only the Thinker draft is reported for now, including on speech responses; a per-stage field can follow once the Talker has a draft too.
+- **Speech output.** The Talker reads one Thinker hidden row per text token, and the draft's layer capture keeps the row of every verified token, so a speech server accepts drafts that verify one linear block per request: a chain EAGLE3 draft (`speculative_eagle_topk 1`), DFlash or DSpark. Qwen3-8B DFlash drafts mask with token 151669, which is `<image>` in MiniCPM-o, so they accept almost no tokens here.
+- **Supported settings.** DSpark uses static verification. DFlash and DSpark reject a request seed for sampled verification; greedy and prefill-only requests still accept a seed. Speech verification supports at most 8,192 hidden rows per batch, including graph padding. Prefill storage follows the configured token ceiling; text-only serving does not allocate speech hidden buffers.
+- **Sampling.** `length_penalty` applies to every verified token. Requests with `repetition_penalty`, `frequency_penalty`, `presence_penalty`, `min_p` or logprobs are rejected, because the draft workers cannot reproduce them. A prefill-only request keeps them, since the runner's own sampler draws its single token on the target prefill and never reaches a verify.
+- **Scheduling.** Speculative decoding runs with async decode overlap enabled, while the stage's own mixed-chunk default is turned off. An explicit `enable_mixed_chunk` is refused rather than silently turned off.
+- **Startup.** The thinker serves EAGLE3, DFlash and DSpark only, and `speculative_algorithm` and `speculative_draft_model_path` are given together. `max_seq_len` stays within the draft's own `max_position_embeddings`, so raising it for long video prompts needs a draft whose context reaches that far.

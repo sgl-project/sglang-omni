@@ -1,0 +1,6 @@
+{"@":"note","text":"Messages shaped after Model Studio, Fun-ASR-Realtime server events (help.aliyun.com/zh/model-studio/fun-asr-server-events: task-started, result-generated, task-finished, task-failed examples) and Voxt RemoteASRAliyunStreaming.swift; texts are made up."}
+{"@":"wait","for":"start"}
+{"header":{"task_id":"<task-id>","event":"task-started","attributes":{}},"payload":{}}
+{"@":"wait","for":"finish"}
+{"header":{"task_id":"<task-id>","event":"result-generated","attributes":{}},"payload":{"output":{"sentence":{"begin_time":0,"end_time":400,"text":"Kubernetes and MyGo.","heartbeat":false,"sentence_end":true,"sentence_id":1,"words":[]}},"usage":{"duration":1}}}
+{"header":{"task_id":"<task-id>","event":"task-finished","attributes":{}},"payload":{"output":{},"usage":null}}
