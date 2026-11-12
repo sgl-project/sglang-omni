@@ -88,7 +88,7 @@
   function editor(o) {
     return '<div class="vx-win" style="left:60px;top:18px;width:520px;height:220px"><div class="vx-tb"><i></i><i></i><i></i><span class="t">' + o.title + "</span></div>" +
       '<div class="vx-ed">' + o.body + "</div></div>" +
-      '<div class="vx-pill" id="pill" style="top:252px"><div class="row">' + ic(o.icon) + '<div class="vx-wave" id="wave">' + new Array(17).join("<i></i>") + '</div><div class="vx-dots">' + new Array(6).join("<i></i>") + '</div><span class="lbl" id="plbl"></span></div><div class="vx-live"><span id="live"></span></div></div>';
+      '<div class="vx-pill" id="pill" style="bottom:8px"><div class="row">' + ic(o.icon) + '<div class="vx-wave" id="wave">' + new Array(17).join("<i></i>") + '</div><div class="vx-dots">' + new Array(6).join("<i></i>") + '</div><span class="lbl" id="plbl"></span></div><div class="vx-live"><span id="live"></span></div></div>';
   }
   function tickWave(box, t, on) {
     var bars = box.querySelectorAll("#wave i");
