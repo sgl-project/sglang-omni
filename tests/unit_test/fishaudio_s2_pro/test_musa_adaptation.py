@@ -1,84 +1,41 @@
 # SPDX-License-Identifier: Apache-2.0
-"""MUSA platform adaptation tests for FishAudio S2-Pro."""
-
 from __future__ import annotations
 
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
-import pytest
-import torch
-
+from sglang_omni.models.fishaudio_s2_pro import engine_builder
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic import (
-    audio_decoder as fish_audio_decoder,
+    audio_decoder,
 )
 
 
-def test_fast_ar_attention_backend_uses_fa3_on_musa(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from sglang_omni.models.fishaudio_s2_pro import engine_builder
+def test_fast_ar_musa_uses_fa3(monkeypatch) -> None:
+    monkeypatch.setattr(engine_builder.current_platform, "is_musa", lambda: True)
+    assert engine_builder.resolve_fast_ar_attention_backend(gpu_id=0) == "fa3"
 
-    monkeypatch.setattr(
-        engine_builder,
-        "current_platform",
-        SimpleNamespace(is_npu=lambda: False, is_musa=lambda: True),
-    )
-
-    backend = engine_builder.resolve_fast_ar_attention_backend(gpu_id=0)
-
-    assert backend == "fa3"
-
-
-def test_musa_fast_ar_kvcache_reuses_sglang_flash_attn(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
     calls = []
+    flash_attn = ModuleType("flash_attn_interface")
 
-    def flash_attn_with_kvcache(**kwargs: object) -> torch.Tensor:
+    def flash_attn_with_kvcache(**kwargs):
         calls.append(kwargs)
         return kwargs["q"]
 
-    monkeypatch.setattr(
-        fish_audio_decoder,
-        "load_fast_ar_flash_attn_kvcache",
-        lambda: flash_attn_with_kvcache,
-    )
-    monkeypatch.setattr(
-        fish_audio_decoder,
-        "get_exec",
-        lambda: SimpleNamespace(
-            kernel=SimpleNamespace(attention_backend="fa3"),
-        ),
-    )
+    flash_attn.flash_attn_with_kvcache = flash_attn_with_kvcache
+    monkeypatch.setitem(sys.modules, "flash_attn_interface", flash_attn)
 
-    q = SimpleNamespace(device=SimpleNamespace(index=0))
-    k = torch.randn(2, 1, 2, 8)
-    v = torch.randn(2, 1, 2, 8)
-    k_cache = torch.zeros(2, 11, 2, 8)
-    v_cache = torch.zeros(2, 11, 2, 8)
-    cache_seqlens = torch.tensor([4, 4], dtype=torch.int32)
-
-    out = fish_audio_decoder.fast_ar_kvcache_attention(
-        q=q,
-        k_cache=k_cache,
-        v_cache=v_cache,
-        k=k,
-        v=v,
-        cache_seqlens=cache_seqlens,
-        causal=True,
-        num_splits=1,
-        cache_position=-1,
-    )
-
-    assert out is q
-    assert len(calls) == 1
-    assert calls[0] == {
-        "q": q,
-        "k_cache": k_cache,
-        "v_cache": v_cache,
-        "k": k,
-        "v": v,
-        "cache_seqlens": cache_seqlens,
-        "causal": True,
-        "num_splits": 1,
+    q = SimpleNamespace(device=SimpleNamespace(type="musa", index=0))
+    sentinels = {
+        name: object() for name in ("k_cache", "v_cache", "k", "v", "cache_seqlens")
     }
+
+    assert (
+        audio_decoder.cuda_kvcache_attention(
+            q=q, **sentinels, causal=True, num_splits=1, cache_position=-1
+        )
+        is q
+    )
+    assert calls[0]["q"] is q
+    assert all(calls[0][name] is value for name, value in sentinels.items())
+    assert calls[0]["causal"] is True
+    assert calls[0]["num_splits"] == 1

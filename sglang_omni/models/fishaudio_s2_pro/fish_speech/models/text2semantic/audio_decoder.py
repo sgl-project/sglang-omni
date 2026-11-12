@@ -5,11 +5,10 @@ from __future__ import annotations
 
 import math
 import os
-from typing import Callable
+from functools import cache
 
 import torch
 import torch.nn as nn
-from sglang.srt.runtime_context import get_exec
 from torch import Tensor
 from torch.nn import functional as F
 from transformers import PreTrainedModel
@@ -21,7 +20,6 @@ from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.utils 
     apply_rotary_emb,
     precompute_freqs_cis,
 )
-from sglang_omni.platforms import current_platform
 
 FISH_BATCH_INVARIANT = os.getenv("FISH_BATCH_INVARIANT", "false").lower() in (
     "true",
@@ -30,12 +28,22 @@ FISH_BATCH_INVARIANT = os.getenv("FISH_BATCH_INVARIANT", "false").lower() in (
 )
 
 
-def load_fast_ar_flash_attn_kvcache() -> Callable[..., torch.Tensor]:
-    if current_platform.is_musa():
-        from flash_attn_interface import flash_attn_with_kvcache
+@cache
+def fast_ar_uses_fa3(device_index: int) -> bool:
+    major, minor = torch.cuda.get_device_capability(device_index)
+    sm_version = major * 10 + minor
+    if sm_version == 90:
+        return True
     else:
-        from sgl_kernel.flash_attn import flash_attn_with_kvcache
-    return flash_attn_with_kvcache
+        pass
+    if sm_version in (89, 100, 120):
+        return False
+    else:
+        pass
+    raise RuntimeError(
+        f"FishAudio S2-Pro Fast-AR does not support SM{sm_version}; "
+        "supported architectures: SM89, SM90, SM100, SM120."
+    )
 
 
 def flashinfer_kvcache_attention(
@@ -133,7 +141,7 @@ def npu_kvcache_attention(
     return out
 
 
-def fast_ar_kvcache_attention(
+def cuda_kvcache_attention(
     *,
     q: torch.Tensor,
     k_cache: torch.Tensor,
@@ -145,34 +153,30 @@ def fast_ar_kvcache_attention(
     num_splits: int,
     cache_position: int,
 ) -> torch.Tensor:
-    """Dispatch Fast-AR attention to the SGLang-selected FAST backend."""
-    device_index = q.device.index
-    if device_index is None:
-        raise RuntimeError("FishAudio S2-Pro Fast-AR requires an indexed device")
+    """Run Fast-AR attention with the native FA3 path on CUDA/MUSA."""
+    if q.device.type == "musa":
+        from flash_attn_interface import flash_attn_with_kvcache
+    elif fast_ar_uses_fa3(q.device.index):
+        from sgl_kernel.flash_attn import flash_attn_with_kvcache
     else:
-        pass
-    if get_exec().kernel.attention_backend == "fa3":
-        flash_attn_with_kvcache = load_fast_ar_flash_attn_kvcache()
-        return flash_attn_with_kvcache(
+        return flashinfer_kvcache_attention(
             q=q,
             k_cache=k_cache,
             v_cache=v_cache,
             k=k,
             v=v,
-            cache_seqlens=cache_seqlens,
             causal=causal,
-            num_splits=num_splits,
+            cache_position=cache_position,
         )
-    else:
-        pass
-    return flashinfer_kvcache_attention(
+    return flash_attn_with_kvcache(
         q=q,
         k_cache=k_cache,
         v_cache=v_cache,
         k=k,
         v=v,
+        cache_seqlens=cache_seqlens,
         causal=causal,
-        cache_position=cache_position,
+        num_splits=num_splits,
     )
 
 
@@ -201,7 +205,7 @@ def flash_attn_kvcache_op(
             cache_position=cache_position,
         )
     elif device_type in ("cuda", "musa"):
-        output = fast_ar_kvcache_attention(
+        output = cuda_kvcache_attention(
             q=q,
             k_cache=k_cache,
             v_cache=v_cache,

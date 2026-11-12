@@ -44,7 +44,6 @@ from sglang_omni.models.fishaudio_s2_pro.tokenizer import (
     Reference,
     S2ProTokenizerAdapter,
 )
-from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
 from tests.unit_test.fixtures.fish_fakes import (
     FakeFishTokenizer,
@@ -1566,35 +1565,33 @@ def test_fish_checkpoint_config_remains_registered_without_hf_slow_model(
     "capability,expected",
     [((8, 9), False), ((9, 0), True), ((10, 0), False), ((12, 0), False)],
 )
-@pytest.mark.skipif(
-    current_platform.is_musa(), reason="CUDA compute-capability selection test"
-)
 def test_fast_ar_fa3_selection_follows_compute_capability(
     monkeypatch: pytest.MonkeyPatch,
     capability: tuple[int, int],
     expected: bool,
 ) -> None:
-    from sglang_omni.models.fishaudio_s2_pro import engine_builder
+    from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic import (
+        audio_decoder,
+    )
 
+    audio_decoder.fast_ar_uses_fa3.cache_clear()
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda _index: capability)
 
-    assert (
-        engine_builder.resolve_fast_ar_attention_backend(gpu_id=0) == "fa3"
-    ) is expected
+    assert audio_decoder.fast_ar_uses_fa3(0) is expected
 
 
-@pytest.mark.skipif(
-    current_platform.is_musa(), reason="CUDA compute-capability validation test"
-)
 def test_fast_ar_rejects_unsupported_capability(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from sglang_omni.models.fishaudio_s2_pro import engine_builder
+    from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic import (
+        audio_decoder,
+    )
 
+    audio_decoder.fast_ar_uses_fa3.cache_clear()
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda _index: (8, 0))
 
     with pytest.raises(RuntimeError, match="Fast-AR does not support SM80"):
-        engine_builder.resolve_fast_ar_attention_backend(gpu_id=0)
+        audio_decoder.fast_ar_uses_fa3(0)
 
 
 def test_flashinfer_fast_ar_updates_kv_cache(
