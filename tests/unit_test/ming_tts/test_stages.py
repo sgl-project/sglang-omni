@@ -162,7 +162,9 @@ def test_ming_tts_audio_decode_factory_rejects_a_device_it_cannot_serve(
 
     monkeypatch.setattr(current_platform, "device_type", "mps", raising=False)
 
-    with pytest.raises(ValueError, match="requires an available CUDA or XPU device"):
+    with pytest.raises(
+        ValueError, match="requires an available CUDA, MUSA, or XPU device"
+    ):
         stages.create_audio_decode_executor("unused", device="mps", gpu_id=0)
 
 
@@ -210,6 +212,60 @@ def test_ming_tts_audio_decode_factory_binds_an_xpu_device(
     stages.create_audio_decode_executor("unused", device="xpu", gpu_id=1)
 
     assert vae_loads[0]["device"] == torch.device("xpu", 1)
+
+
+def patch_musa_device_module(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    import torch
+
+    from sglang_omni.models.ming_tts import stages
+    from sglang_omni.platforms import current_platform
+
+    musa_device = SimpleNamespace(type="musa", index=1)
+    fake_musa = SimpleNamespace(
+        is_available=lambda: True,
+        device_count=lambda: 4,
+    )
+    real_get_device_module = torch.get_device_module
+
+    monkeypatch.setattr(current_platform, "device_type", "musa", raising=False)
+    # MUSA is unavailable on the generic unit-test runner. Keep the device
+    # resolution and model-loading boundaries synthetic while preserving the
+    # real factory acceptance branch.
+    monkeypatch.setattr(
+        "sglang_omni.utils.device.resolve_concrete_device",
+        lambda _device, _gpu_id: musa_device,
+    )
+    monkeypatch.setattr(
+        torch,
+        "get_device_module",
+        lambda device: (
+            fake_musa
+            if getattr(device, "type", None) == "musa"
+            else real_get_device_module(device)
+        ),
+    )
+    monkeypatch.setattr(stages, "process_memory_bytes", lambda _device: 0)
+    return musa_device
+
+
+def test_ming_tts_audio_decode_factory_binds_a_musa_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stages, decoder_calls, schedulers = patch_audio_decode_factory_dependencies(
+        monkeypatch
+    )
+    musa_device = patch_musa_device_module(monkeypatch)
+    vae_loads: list[dict] = []
+    monkeypatch.setattr(
+        stages,
+        "load_ming_tts_audio_vae",
+        lambda *args, **kwargs: vae_loads.append(kwargs) or object(),
+    )
+
+    stages.create_audio_decode_executor("unused", device="musa", gpu_id=1)
+
+    assert vae_loads[0]["device"] is musa_device
+    assert musa_device.index == 1
 
 
 def test_ming_tts_audio_decode_factory_enforces_the_process_budget_on_xpu(

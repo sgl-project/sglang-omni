@@ -74,6 +74,17 @@ class MpsGpuPaths:
         return self.pipe_dir / "control"
 
 
+# note (rsi): the control daemon also binds this socket beside control, and it
+# exits with status 1 once that path reaches the sun_path limit.
+PRIVILEGED_SOCKET_NAME = "control_privileged"
+
+
+def pipe_sockets_fit(paths: MpsGpuPaths) -> bool:
+    """Whether every socket the control daemon binds in the pipe directory fits."""
+    socket_path = paths.pipe_dir / PRIVILEGED_SOCKET_NAME
+    return len(str(socket_path).encode()) < _SUN_PATH_LIMIT
+
+
 def ensure_private_state_root(root: Path) -> None:
     """Create a private state root, or validate an existing caller path."""
 

@@ -1,0 +1,21 @@
+{"to":"helper","msg":{"id":"j1","method":"speech.recognize","params":{"lang":"zh","sampleRate":16000,"hints":["SGLang","Voxt"]}}}
+{"to":"app","msg":{"method":"speech.started","params":{"job":"j1","locale":"zh-CN"}}}
+{"to":"helper","msg":{"id":"c1","method":"speech.audio","params":{"job":"j1","data":"AAABAP//AAA="}}}
+{"to":"app","msg":{"id":"c1","result":{}}}
+{"to":"app","msg":{"method":"speech.partial","params":{"job":"j1","text":"你好"}}}
+{"to":"app","msg":{"method":"log","params":{"level":"debug","message":"speech j1: 0.1 s of audio","job":"j1"}}}
+{"to":"helper","msg":{"id":"c2","method":"speech.audio","params":{"job":"j1","data":"AAABAP//AAA=","end":true}}}
+{"to":"app","msg":{"id":"c2","result":{}}}
+{"to":"app","msg":{"method":"speech.partial","params":{"job":"j1","text":"你好 Voxt"}}}
+{"to":"app","msg":{"id":"j1","result":{"text":"你好，Voxt。"}}}
+{"to":"helper","msg":{"id":"c3","method":"speech.audio","params":{"job":"j1","end":true}}}
+{"to":"app","msg":{"id":"c3","error":{"code":"bad_request","message":"No speech.recognize job j1"}}}
+{"to":"helper","msg":{"id":"j2","method":"speech.recognize","params":{"lang":"tlh"}}}
+{"to":"app","msg":{"id":"j2","error":{"code":"unsupported","message":"macOS has no on-device speech recognition for tlh","data":{"capability":"onDeviceSpeech"}}}}
+{"to":"helper","msg":{"id":"j3","method":"speech.recognize"}}
+{"to":"app","msg":{"id":"j3","error":{"code":"permission_denied","message":"Speech Recognition is not allowed","data":{"permission":"speechRecognition"}}}}
+{"to":"helper","msg":{"id":"j4","method":"speech.recognize","params":{"lang":"en"}}}
+{"to":"app","msg":{"method":"speech.started","params":{"job":"j4","locale":"en-US"}}}
+{"to":"helper","msg":{"id":"c4","method":"job.cancel","params":{"job":"j4"}}}
+{"to":"app","msg":{"id":"j4","error":{"code":"cancelled","message":"Cancelled"}}}
+{"to":"app","msg":{"id":"c4","result":{"cancelled":true}}}

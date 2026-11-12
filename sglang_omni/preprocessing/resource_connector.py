@@ -23,6 +23,8 @@ import httpx
 import numpy as np
 import numpy.typing as npt
 
+from sglang_omni.utils.process import name_native_thread
+
 from .base import MediaIO
 
 if TYPE_CHECKING:
@@ -35,7 +37,11 @@ _M = TypeVar("_M")
 _MAX_HTTP_REDIRECTS = 5
 
 # Global thread pool for CPU-bound tasks (decoding/resampling)
-global_thread_pool = ThreadPoolExecutor(max_workers=8)
+global_thread_pool = ThreadPoolExecutor(
+    max_workers=8,
+    thread_name_prefix="media-decode",
+    initializer=name_native_thread,
+)
 atexit.register(global_thread_pool.shutdown)
 
 
@@ -705,6 +711,7 @@ class MultiModalResourceConnector:
         timeout: float = 30.0,
         extract_audio: bool = False,
         audio_target_sr: int = 16000,
+        decode_threads: int,
     ) -> tuple[torch.Tensor, float, npt.NDArray[np.float32] | None]:
         """Asynchronously load video from a URL.
 
@@ -719,6 +726,7 @@ class MultiModalResourceConnector:
             timeout: Timeout for HTTP requests in seconds.
             extract_audio: If True, extract audio from video and return as third element.
             audio_target_sr: Target sample rate for audio extraction (default: 16000).
+            decode_threads: FFmpeg threads this video's torchcodec decoders may use together.
 
         Returns:
             Tuple of (video_tensor, sample_fps, audio_or_None).
@@ -734,6 +742,7 @@ class MultiModalResourceConnector:
             image_mode=image_mode,
             extract_audio=extract_audio,
             audio_target_sr=audio_target_sr,
+            decode_threads=decode_threads,
             **self.media_io_kwargs.get("video", {}),
         )
 

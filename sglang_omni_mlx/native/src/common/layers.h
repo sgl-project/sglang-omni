@@ -5,6 +5,7 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -29,11 +30,13 @@ WeightMap LoadSafetensors(const std::filesystem::path &model_directory);
 class Checkpoint {
 public:
   // Evaluates the weights; layers stored with .scales are quantized with the
-  // config's top-level quantization, as the checkpoint was.
+  // config's quantization for their prefix, else its top-level quantization,
+  // as the checkpoint was.
   Checkpoint(WeightMap weights, const nlohmann::json &config);
 
   const mlx::core::array &Weight(const std::string &name) const;
   bool Has(const std::string &name) const;
+  const QuantizationConfig &Quantization(const std::string &prefix) const;
   mlx::core::array Linear(const mlx::core::array &x,
                           const std::string &prefix) const;
   mlx::core::array LayerNorm(const mlx::core::array &x,
@@ -50,11 +53,31 @@ public:
 private:
   WeightMap weights_;
   QuantizationConfig quantization_;
+  std::unordered_map<std::string, QuantizationConfig> quantization_by_prefix_;
 };
+
+// A scalar operand as MLX's Python and Swift bindings make one: a constant
+// of the other operand's dtype, so a half-precision tensor is not promoted.
+mlx::core::array Scalar(float value, mlx::core::Dtype dtype);
+mlx::core::array Scalar(float value, const mlx::core::array &like);
 
 // Activations in x's dtype.
 mlx::core::array Gelu(const mlx::core::array &x);
+// GELU's tanh approximation, mlx.nn.gelu_approx.
+mlx::core::array TanhGelu(const mlx::core::array &x);
 mlx::core::array Silu(const mlx::core::array &x);
+
+// A mixture of experts' outputs [tokens, experts_per_token, width] for hidden
+// [tokens, width] routed to indices [tokens, experts_per_token]. run_experts
+// applies each row's expert, gathering by row_experts: rows [tokens *
+// experts_per_token, 1, width] sorted by expert for more than one token, else
+// [tokens, 1, 1, width] under indices.
+using ExpertRunner = std::function<mlx::core::array(
+    const mlx::core::array &rows, const mlx::core::array &row_experts,
+    bool sorted)>;
+mlx::core::array RouteToExperts(const mlx::core::array &hidden,
+                                const mlx::core::array &indices,
+                                const ExpertRunner &run_experts);
 
 // Transformer-XL's relative shift of position scores [batch, heads, queries,
 // positions]: a left zero column, then rows reread one step along, so each
