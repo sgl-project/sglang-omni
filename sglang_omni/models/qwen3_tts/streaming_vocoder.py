@@ -3099,11 +3099,12 @@ class Qwen3TTSStreamingVocoderScheduler(
         return replay
 
     def release_whole_request_slot(self, request: Qwen3TTSWholeRequest) -> None:
-        if request.slot is not None:
+        # note (ratish): a retired slot held a decode never proven complete, so it is never reused.
+        if request.slot is not None and request.slot not in self.codec_arena.retired:
             self.idle_whole_request_slots.append(request.slot)
-            request.slot = None
         else:
             pass
+        request.slot = None
 
     def fail_whole_request(
         self, request: Qwen3TTSWholeRequest, error: BaseException

@@ -4211,6 +4211,33 @@ def test_qwen3_tts_whole_request_device_fault_on_its_slot_fails_only_itself(
     assert len(runner.calls) == 1
 
 
+def test_qwen3_tts_whole_request_never_reuses_a_retired_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, _, _ = whole_request_scheduler(monkeypatch)
+
+    def retire_and_fail(
+        plans: Sequence[IncrementalDecodePlan],
+        *,
+        stream: torch.Stream | None,
+        incremental: IncrementalDecodeBatch | None = None,
+    ) -> Qwen3TTSDecodeHandle:
+        for slot in incremental.slots:
+            scheduler.codec_arena.retire(slot)
+        raise RuntimeError("decode completion not proven")
+
+    monkeypatch.setattr(scheduler, "launch_decode_plans", retire_and_fail)
+
+    scheduler.run_non_streaming_batch(
+        [whole_request_message("whole", 4)], asyncio.new_event_loop()
+    )
+    scheduler.run_initial_pass()
+
+    assert scheduler.outbox.get_nowait().type == "error"
+    assert len(scheduler.idle_whole_request_slots) == WHOLE_REQUEST_SLOTS - 1
+    assert not scheduler.codec_arena.retired & set(scheduler.idle_whole_request_slots)
+
+
 def test_qwen3_tts_whole_requests_finish_on_the_stateful_decoder_without_window_graphs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
