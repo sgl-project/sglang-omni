@@ -73,6 +73,9 @@ class FakePlatform:
     def is_rocm(self) -> bool:
         return False
 
+    def is_cuda(self) -> bool:
+        return self.device_type == "cuda"
+
 
 def pin_platform(monkeypatch, device_type: str) -> None:
     monkeypatch.setattr(gpu_diagnostics, "current_platform", FakePlatform(device_type))
@@ -393,7 +396,7 @@ class FakeXpu:
 
 class FakeXpuTorch:
     __version__ = "2.14.0.dev+xpu"
-    version = SimpleNamespace(cuda=None, xpu="2026.1")
+    version = SimpleNamespace(cuda=None)
 
     def __init__(self, physical_indices: list[int]) -> None:
         self.cuda = SimpleNamespace(is_available=lambda: False)
@@ -422,7 +425,7 @@ def test_a_non_cuda_accelerator_is_enumerated_through_its_device_module(
     assert environment["cuda_available"] is False
     assert environment["logical_device_count"] == 2
     assert environment["driver_version"] == "1.15.38646+6"
-    assert environment["pytorch_accelerator_build"] == "2026.1"
+    assert environment["pytorch_accelerator_build"] is None
     assert environment["pytorch_accelerator_build_type"] == "xpu"
     assert [gpu["name"] for gpu in report["gpus"]] == [
         "Intel(R) Arc(TM) Pro B60 Graphics"
@@ -685,7 +688,9 @@ def test_musa_mtml_internal_dependency_failure_is_not_hidden(
     assert error.value.name == "mtml_dependency"
 
 
-def test_musa_uses_native_visibility_and_device_module(monkeypatch) -> None:
+def test_musa_uses_native_visibility_and_device_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """MUSA diagnostics used CUDA/NVML and ignored the native device mask."""
     monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
     pin_platform(monkeypatch, "musa")
@@ -725,7 +730,9 @@ def test_musa_uses_native_visibility_and_device_module(monkeypatch) -> None:
     )
 
 
-def test_musa_ignores_cuda_mask_when_native_mask_is_unset(monkeypatch) -> None:
+def test_musa_ignores_cuda_mask_when_native_mask_is_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A CUDA compatibility mask must not be mistaken for the MUSA mask."""
     monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
     pin_platform(monkeypatch, "musa")
@@ -740,7 +747,9 @@ def test_musa_ignores_cuda_mask_when_native_mask_is_unset(monkeypatch) -> None:
     assert [gpu["physical_index"] for gpu in report["gpus"]] == [0, 1]
 
 
-def test_unavailable_musa_does_not_fall_back_to_nvml(monkeypatch) -> None:
+def test_unavailable_musa_does_not_fall_back_to_nvml(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """An unavailable MUSA runtime must not report unrelated NVML devices."""
     monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
     pin_platform(monkeypatch, "musa")
@@ -755,7 +764,9 @@ def test_unavailable_musa_does_not_fall_back_to_nvml(monkeypatch) -> None:
     assert report["environment"]["logical_device_count"] == 0
 
 
-def test_musa_memory_failure_preserves_the_device(monkeypatch) -> None:
+def test_musa_memory_failure_preserves_the_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """One failed memory query must not hide an otherwise healthy MUSA card."""
     monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
     pin_platform(monkeypatch, "musa")
@@ -802,7 +813,7 @@ import builtins
 original_import = builtins.__import__
 
 def noisy_import(name, globals=None, locals=None, fromlist=(), level=0):
-    if name == "check_gpu" and level == 1:
+    if name == "sglang_omni.cli.check_gpu" and level == 0:
         print("Dependency startup log")
     return original_import(name, globals, locals, fromlist, level)
 

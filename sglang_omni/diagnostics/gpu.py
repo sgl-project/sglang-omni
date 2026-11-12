@@ -561,11 +561,17 @@ def collect_gpu_diagnostics(
             else:
                 pass
 
+    torch_version = torch.version
+    build_device_type = device_type if uses_accelerator_device_module else "cuda"
     if current_platform.is_rocm():
         build_device_type = "hip"
+        accelerator_build = torch_version.hip
+    elif current_platform.is_musa():
+        accelerator_build = torch_version.musa
+    elif current_platform.is_cuda():
+        accelerator_build = torch_version.cuda
     else:
-        build_device_type = device_type if uses_accelerator_device_module else "cuda"
-    torch_version = getattr(torch, "version", None)
+        accelerator_build = None
     backends = backend_inventory()
     warnings.extend(
         backend["reason"]
@@ -583,10 +589,8 @@ def collect_gpu_diagnostics(
             "cuda_runtime_version": cuda_runtime_version(),
             "pytorch_version": getattr(torch, "__version__", None),
             "pytorch_accelerator_build_type": build_device_type,
-            "pytorch_accelerator_build": getattr(
-                torch_version, build_device_type, None
-            ),
-            "pytorch_cuda_build": getattr(torch_version, "cuda", None),
+            "pytorch_accelerator_build": accelerator_build,
+            "pytorch_cuda_build": torch_version.cuda,
             "cuda_available": bool(torch.cuda.is_available()),
             "logical_device_count": len(devices),
         },
