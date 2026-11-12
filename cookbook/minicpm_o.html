@@ -603,7 +603,10 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#video-chat-inputs">Video Chat Inputs</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-full-duplex-ability">Native Full-Duplex Ability</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#realtime-venus">Realtime-Venus</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#text-to-speech">Text to speech</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#text-to-speech">Text to speech</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#hift-cuda-graphs">HiFT CUDA graphs</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speculative-decoding">Speculative Decoding</a></li>
 </ul>
             </nav>
@@ -727,6 +730,13 @@ python<span class="w"> </span>download_models.py<span class="w"> </span>--model<
 </pre></div>
 </div>
 <p>The speech output is non-streaming. The sampling fields you set, such as <code class="docutils literal notranslate"><span class="pre">temperature</span></code>, <code class="docutils literal notranslate"><span class="pre">top_p</span></code> and <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code>, apply to the Talker, which generates the speech; the rest keep the Talker’s defaults.</p>
+<section id="hift-cuda-graphs">
+<h3>HiFT CUDA graphs<a class="headerlink" href="#hift-cuda-graphs" title="Link to this heading">#</a></h3>
+<p>Set the Code2Wav factory’s <code class="docutils literal notranslate"><span class="pre">hift_cuda_graph_capture_shapes</span></code> to <code class="docutils literal notranslate"><span class="pre">[batch_size,</span> <span class="pre">mel_frames]</span></code> buckets, for example <code class="docutils literal notranslate"><span class="pre">[[1,</span> <span class="pre">64],</span> <span class="pre">[2,</span> <span class="pre">64],</span> <span class="pre">[1,</span> <span class="pre">128]]</span></code>, to capture HiFT’s decode body at startup on CUDA. The default empty list disables capture. Inputs use the smallest bucket by batch-times-frames that fits both dimensions; inputs outside all buckets use the original decode body. Non-CUDA devices skip capture.</p>
+<p>The graph pads inputs and masks intermediate convolutions at the real frame length, preventing the padded tail from feeding back into valid audio. STFT still sees the unpadded excitation, and spectra are cropped before inverse STFT to preserve the original window envelope. Code2Wav still groups rows by their real length; buckets reuse graphs across these groups rather than combining mixed-length rows. Wider buckets save captures but increase padded computation, so choose nearby lengths for frequent inputs.</p>
+<p>Padding can select different convolution algorithms, including different TF32 rounding, so bucketed output is not guaranteed to meet the benchmark’s strict pointwise tolerance against an unpadded decode. The benchmark accepts <code class="docutils literal notranslate"><span class="pre">--capture-shapes</span></code> independently of input <code class="docutils literal notranslate"><span class="pre">--shapes</span></code>; use <code class="docutils literal notranslate"><span class="pre">--deterministic</span> <span class="pre">--disable-tf32</span> <span class="pre">--emulate-precision-casts</span></code> to reduce convolution and compiler rounding differences when investigating boundaries, and evaluate speech quality under the precision settings used for serving. These diagnostic flags do not guarantee a passing comparison for every batch size and do not change the serving precision settings.</p>
+<p>This captures the convolution, upsampling and activation body, including its compiled form when <code class="docutils literal notranslate"><span class="pre">enable_hift_torch_compile</span></code> is enabled. F0 prediction, random excitation, STFT and inverse STFT remain outside the graphs. Graph inputs and outputs consume additional device memory, so select shapes from your workload. Invalid shapes or capture failures fail startup. This setting applies to the chat speech Code2Wav stage, not the separate full-duplex vocoder.</p>
+</section>
 </section>
 <section id="speculative-decoding">
 <h2>Speculative Decoding<a class="headerlink" href="#speculative-decoding" title="Link to this heading">#</a></h2>
@@ -801,7 +811,10 @@ python<span class="w"> </span>download_models.py<span class="w"> </span>--model<
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#video-chat-inputs">Video Chat Inputs</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-full-duplex-ability">Native Full-Duplex Ability</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#realtime-venus">Realtime-Venus</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#text-to-speech">Text to speech</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#text-to-speech">Text to speech</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#hift-cuda-graphs">HiFT CUDA graphs</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speculative-decoding">Speculative Decoding</a></li>
 </ul>
   </nav></div>
