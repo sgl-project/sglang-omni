@@ -18,6 +18,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -26,11 +27,16 @@ import (
 
 func (a *app) remotePage(c *ui.Context) {
 	t := c.Theme()
-	pageHeader(c, i18n.T("Language models"), nil)
+	columnPageHeader(c, i18n.T("Language models"), nil)
 	ui.Scroll(c.Key("remote-scroll")).Grow(1).MinHeight(0).Children(func() {
-		ui.Column(c).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp4)).MaxWidth(px(t, 880)).Children(func() {
-			caption(c, i18n.T("Transcribe's clean-up, Translate and Rewrite use the language model you set up here, over its OpenAI-compatible API. Voxt sends it the recognised or selected text, never your audio; keys stay in this Mac's Keychain."))
+		pageColumn(c).Gap(px(t, sp4)).Children(func() {
+			a.obBackBar(c, remotePath) // onboarding.go: left from the setup guide
+			caption(c, i18n.T("Voxt sends the language model the recognised or selected text, never your audio."))
 			a.providerCards(c, local.LLM)
+			a.llmWaitRow(c) // llm_wait.go
+			if ui.Button(c.Key("remote-debug"), i18n.T("Try prompts on a model…")).AlignSelf(ui.Start).Clicked() {
+				a.navigate(llmDebugPath)
+			}
 		})
 	})
 	a.providerDialogView(c) // remote_dialog.go
@@ -74,7 +80,7 @@ func (a *app) providerCards(c *ui.Context, kind local.Kind) {
 		}
 		if rest := append(here, online...); len(rest) > 0 {
 			sectionTitle(c, i18n.T("Online services"))
-			caption(c, i18n.T("Buy an API key from the service, then set it up here; a Whisper server on this Mac needs no key. Your recording goes to the service only for the features you choose it on."))
+			caption(c, i18n.T("A service gets your recordings only for the features you choose it for."))
 			grid("remote-asr-online", rest)
 		}
 		return
@@ -85,12 +91,11 @@ func (a *app) providerCards(c *ui.Context, kind local.Kind) {
 	}
 	if len(here) > 0 {
 		sectionTitle(c, i18n.T("On this Mac"))
-		caption(c, i18n.T("Free, and the text stays here: install Ollama, LM Studio or oMLX, download a model in it, then set it up here."))
+		caption(c, i18n.T("Free, and the text stays on this Mac."))
 		grid("remote-here", here)
 	}
 	if len(online) > 0 {
 		sectionTitle(c, i18n.T("Online services"))
-		caption(c, i18n.T("Buy an API key from the service, then set it up here."))
 		grid("remote-online", online)
 	}
 }
@@ -103,9 +108,14 @@ func (a *app) providerState(c *ui.Context, kind local.Kind, p settings.Provider,
 	}
 	switch a.setupMissing(kind, p) {
 	case providers.MissingKey:
-		return k.Warning, i18n.T("No key saved")
+		if lookupService(kind, p.ID).signIn {
+			return k.Warning, i18n.T("Sign-in needed")
+		}
+		return k.Warning, i18n.T("API key needed")
 	case providers.MissingEndpoint:
 		return k.Warning, i18n.T("No address")
+	case providers.MissingAddress:
+		return k.Warning, i18n.T("Address not allowed")
 	case providers.MissingModel:
 		return k.Warning, i18n.T("No model")
 	}
@@ -147,7 +157,7 @@ func (a *app) providerCard(c *ui.Context, sv service, w float32) {
 			switch {
 			case mask == "" && !read:
 				keyText = "…"
-			case mask == "" && missing == providers.MissingKey:
+			case missing != "":
 				keyText, keyCol = state, k.Warning
 			case mask == "":
 				keyText, keyCol = i18n.T("No key"), k.Text3
@@ -163,9 +173,10 @@ func (a *app) providerCard(c *ui.Context, sv service, w float32) {
 					kr := a.keys
 					a.testProvider(kind, p, func() (string, error) { return kr.Get(acct) })
 				}
-			case providers.MissingKey:
 			default:
-				ui.Text(c, state).FontSize(px(t, fsCaption)).TextColor(k.Text3).SingleLine().Shrink(0)
+				if ghostButton(c.Key("remote-complete-"+acct), i18n.T("Complete setup")).Label(i18n.T("Complete setup of %s", sv.name)).Clicked() {
+					a.openProviderDialog(kind, sv.id)
+				}
 			}
 		})
 	}
@@ -188,7 +199,7 @@ func (a *app) providerCard(c *ui.Context, sv service, w float32) {
 				}
 				ui.Row(c.Key("tags")).Gap(px(t, 6)).AlignItems(ui.Center).Wrap().Children(func() {
 					tagChip(c, whereText(sv, p))
-					if sv.stream {
+					if sv.speech.Streams(setupModel(kind, p)) {
 						tagChip(c, i18n.T("Realtime"))
 					}
 				})
@@ -257,12 +268,15 @@ func testStatus(c *ui.Context, tr providerTest, long bool) {
 		statusMark(c, icons.CheckCircle, k.Success, text).Shrink(1).Tooltip(text)
 	default:
 		msg, _ := uitext.ModelErrorText(tr.res.Err)
+		if long && llm.Code(tr.res.Err) == llm.CodeNoKey {
+			msg = i18n.T("Paste the service's API key above, then test again.") // the dialog has the key's field
+		}
 		tip := msg + "\n\n" + tr.detail
 		if !long {
 			statusMark(c, icons.CloseCircle, k.Danger, i18n.T("Failed")).Shrink(0).Tooltip(tip)
 			return
 		}
 		statusMark(c, icons.CloseCircle, k.Danger, msg).Shrink(1).Tooltip(tip)
-		infoTip(c, tr.detail).Shrink(0)
+		infoTip(c, tip).Shrink(0) // the reason is cut beside the button: the ⓘ tells all of it
 	}
 }

@@ -22,7 +22,7 @@ import (
 func (a *app) loadApps() {
 	p := &a.aePage
 	if !a.helperReady() {
-		p.appsErr = i18n.T("The helper is not running: add an app by its bundle ID.")
+		p.appsErr = i18n.T("The helper is not running. Add an app by its bundle ID instead.")
 		return
 	}
 	p.appsLoading, p.appsErr = true, ""
@@ -49,7 +49,7 @@ func (a *app) aeAppsDialog(c *ui.Context) {
 		p.appsOpen = false
 		return
 	}
-	dialogFrame(c, "ae-apps-dlg", &p.appsOpen, i18n.T("Add apps to %s", g.Name), i18n.T("Running apps first, then the ones in Applications."), 480, func() {
+	dialogFrame(c, "ae-apps-dlg", &p.appsOpen, i18n.T("Add apps to %s", g.Name), "", 480, func() {
 		ui.Row(c).Children(func() { searchField(c, "ae-apps-search", &p.appsQuery, i18n.T("Search apps"), 0) })
 		switch {
 		case p.appsLoading:
@@ -124,7 +124,7 @@ func (a *app) aeAppsDialog(c *ui.Context) {
 		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
 			in := ui.TextInput(c.Key("ae-bundle-in"), &p.bundleIn).Label(i18n.T("Bundle ID")).Placeholder("com.example.app").Font("monospace").Grow(1).MinWidth(0)
 			id := strings.TrimSpace(p.bundleIn)
-			if (ui.Button(c.Key("ae-bundle-add"), i18n.T("Add")).Label(i18n.T("Add the bundle ID")).Disabled(id == "" || strings.ContainsAny(id, " /")).Clicked() || in.Submitted()) && id != "" && !strings.ContainsAny(id, " /") {
+			if (ui.Button(c.Key("ae-bundle-add"), i18n.T("Add")).Label(i18n.T("Add bundle ID")).Disabled(id == "" || strings.ContainsAny(id, " /")).Clicked() || in.Submitted()) && id != "" && !strings.ContainsAny(id, " /") {
 				a.updateGroup(g.ID, func(g *appctx.Group) {
 					if !g.HasApp(id) {
 						g.Apps = append(g.Apps, appctx.App{BundleID: id})
@@ -176,7 +176,7 @@ func (a *app) aeBrowsersDialog(c *ui.Context) {
 	}
 	custom := a.prefs.AppEnhancement.Browsers
 	dialogFrame(c, "ae-browsers-dlg", &p.browsersOpen, i18n.T("Browsers"),
-		i18n.T("Read through Accessibility only: no browser permission to grant."), 520, func() {
+		"", 520, func() {
 			// The browsers on this Mac (once the helper listed the apps),
 			// the others in a line.
 			installed := map[string]bool{}
@@ -192,7 +192,7 @@ func (a *app) aeBrowsersDialog(c *ui.Context) {
 					others = append(others, b.Name)
 				}
 			}
-			caption(c, i18n.T("At each shortcut in a browser, Voxt reads its tab's address. A browser that shows none matches only as an app."))
+			caption(c, i18n.T("Voxt reads the current tab's address when you press a shortcut."))
 			ui.Column(c.Key("ae-browser-list")).Gap(px(t, 2)).Children(func() {
 				for _, b := range shown {
 					ui.Row(c.Key("ae-browser-" + b.BundleID)).Gap(px(t, sp2)).AlignItems(ui.Center).MinHeight(px(t, 30)).Children(func() {
@@ -225,15 +225,15 @@ func (a *app) aeBrowsersDialog(c *ui.Context) {
 				}
 			})
 			if len(others) > 0 {
-				caption(c, i18n.T("Also known when installed: %s.", strings.Join(others, i18n.T(", ")))).TextColor(k.Text3)
+				caption(c, i18n.T("Also recognised when installed: %s.", strings.Join(others, i18n.T(", ")))).TextColor(k.Text3)
 			}
 			ui.Box(c).Height(1).Background(k.Line).Shrink(0).Margin(px(t, sp1), 0)
-			caption(c, i18n.T("Another browser: its bundle ID (and a name)."))
+			caption(c, i18n.T("Add another browser by its bundle ID."))
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
 				ui.TextInput(c.Key("ae-br-id"), &p.brID).Label(i18n.T("Bundle ID")).Placeholder("com.example.browser").Font("monospace").Grow(1).Basis(px(t, 180)).MinWidth(0)
 				ui.TextInput(c.Key("ae-br-name"), &p.brName).Label(i18n.T("Name")).Placeholder(i18n.T("Name")).Width(px(t, 140))
 				id := strings.TrimSpace(p.brID)
-				if ui.Button(c.Key("ae-br-add"), i18n.T("Add")).Label(i18n.T("Add the browser")).Disabled(id == "" || strings.ContainsAny(id, " /") || appctx.IsBrowser(id, custom)).Clicked() {
+				if ui.Button(c.Key("ae-br-add"), i18n.T("Add")).Label(i18n.T("Add browser")).Disabled(id == "" || strings.ContainsAny(id, " /") || appctx.IsBrowser(id, custom)).Clicked() {
 					b := settings.Browser{BundleID: id, Name: strings.TrimSpace(p.brName)}
 					a.updateSettings(func(s *settings.Settings) {
 						s.AppEnhancement.Browsers = append(slices.Clone(s.AppEnhancement.Browsers), b)

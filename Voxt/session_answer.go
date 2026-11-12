@@ -44,7 +44,7 @@ func (a *app) openAnswer(s session.Snapshot) {
 		// A follow-up continues the card's conversation.
 		if a.answer.kind == store.KindRewrite && a.answer.id == a.followUp {
 			card.turns = append(card.turns, a.answer.turns...)
-			card.conversation = a.answer.conversation
+			card.conversation, card.quotesOpen = a.answer.conversation, a.answer.quotesOpen
 			if card.why == "" {
 				card.why = a.answer.why
 			}
@@ -77,7 +77,7 @@ func (a *app) endRedo(s session.Snapshot) {
 		a.answer.msg, a.answer.copied = "", false
 	case s.State == session.Cancelled:
 	default:
-		why := i18n.T("the language model answered nothing")
+		why := i18n.T("the language model returned an empty answer")
 		if s.Problem != nil && s.Problem.Code != session.ProblemEmpty && s.Problem.Code != session.ProblemNoSpeech {
 			why, _, _ = sessionProblemText(s.Problem)
 		}
@@ -115,7 +115,7 @@ func (a *app) retryAnswer(lang string) {
 		a.overlaySync()
 		return
 	}
-	if card.kind == store.KindRewrite && len(card.turns) > 0 && in.Selection == "" {
+	if card.kind == store.KindRewrite && len(card.turns) > 0 {
 		req.Previous = card.turns
 		if card.problem == nil {
 			return // nothing to ask again
@@ -164,7 +164,7 @@ func (a *app) canFollowUp() bool {
 // closeAnswer closes the answer card (and cancels a follow-up, or another
 // language, on its way).
 func (a *app) closeAnswer() {
-	if a.cardSessionLive() {
+	if a.cardSessionLive() || a.writingAnswer() {
 		a.cancelSession()
 	}
 	a.answer, a.followUp = answerCard{}, ""
