@@ -2,6 +2,17 @@
 from __future__ import annotations
 
 
+def window_stride(
+    strides: tuple[int, ...], stream_followup_stride: int, window_index: int
+) -> int:
+    """New frames of stream window window_index: the scheduled stride while the ramp
+    lasts, then the follow-up stride."""
+    if window_index < len(strides):
+        return strides[window_index]
+    else:
+        return stream_followup_stride
+
+
 def stream_window_lengths(
     *,
     stream_stride: int,
@@ -35,11 +46,7 @@ def stream_window_discards(
     emitted_frames = 0
     window_index = 0
     while True:
-        stride = (
-            strides[window_index]
-            if window_index < len(strides)
-            else stream_followup_stride
-        )
+        stride = window_stride(strides, stream_followup_stride, window_index)
         window_start_frame = max(0, emitted_frames - stream_overlap_tokens)
         discards[emitted_frames + stride - window_start_frame] = (
             emitted_frames - window_start_frame
@@ -67,19 +74,11 @@ def flush_window_shapes(
     emitted_frames = 0
     window_index = 0
     while True:
-        stride = (
-            strides[window_index]
-            if window_index < len(strides)
-            else stream_followup_stride
-        )
+        stride = window_stride(strides, stream_followup_stride, window_index)
         emitted_frames += stride
         window_index += 1
         overlap_frames = min(emitted_frames, stream_overlap_tokens)
-        next_stride = (
-            strides[window_index]
-            if window_index < len(strides)
-            else stream_followup_stride
-        )
+        next_stride = window_stride(strides, stream_followup_stride, window_index)
         for remaining_frames in range(1, next_stride + 1):
             window_shapes.add((overlap_frames + remaining_frames, overlap_frames))
         if window_index >= len(strides) and emitted_frames >= stream_overlap_tokens:
