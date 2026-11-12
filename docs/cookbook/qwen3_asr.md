@@ -81,7 +81,10 @@ The request builders also use the shared LM prefill-admission gate: prefill
 starts when 16 built requests are ready or after the oldest ready request waits
 40 ms. Once request-build work drains, a ready prefill is released immediately
 if decode is idle; while decode is active, it continues coalescing until the
-same request target or deadline.
+same request target or deadline. By default with a DFlash draft, a ready
+prefill is released as soon as request-build work drains, whether or not decode
+is active; set `--asr.factory.prefill_coalesce_after_builds_during_decode true`
+to keep coalescing during decode.
 
 ```bash
 sgl-omni serve \

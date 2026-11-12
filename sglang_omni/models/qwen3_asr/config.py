@@ -90,7 +90,6 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
                 prefill_coalesce_wait_ms=40,
                 prefill_coalesce_when_idle=True,
                 prefill_coalesce_requires_pending_builds=True,
-                prefill_coalesce_after_builds_during_decode=True,
             ),
             engine=EngineArgs(
                 max_running_requests=64,
