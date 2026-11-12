@@ -348,6 +348,7 @@ class OmniScheduler(Generic[RequestDataT]):
         one; the KV is still retained and the row still reused.
     """
 
+    model_runner: ModelRunner[RequestDataT] | None = None
     session_bridge: ARSessionBridge | None = None
     scheduler_thread_id: int | None = None
     previous_pending_decode: PendingDecode | None = None
@@ -2820,6 +2821,12 @@ class OmniScheduler(Generic[RequestDataT]):
             with self.forward_stream_ctx:
                 self.forward_stream.wait_stream(self.schedule_stream)
                 resolve_forward_inputs(batch, self.future_map)
+                if self.model_runner.speculative_verify_takes_logits_hooks:
+                    self.tp_worker.speculative_target_worker.verify_requests = (
+                        self.build_sched_output(batch).requests
+                    )
+                else:
+                    pass
                 with _Upstream._forward_isolation(
                     self, batch, overlap=True
                 ):  # noqa: leading-underscore  # native scheduler contract
@@ -2834,6 +2841,11 @@ class OmniScheduler(Generic[RequestDataT]):
                         )
                     else:
                         pass
+                self.model_runner.after_speculative_step(
+                    batch,
+                    is_prefill=is_prefill,
+                    num_draft_tokens=self.draft_worker.speculative_num_draft_tokens,
+                )
                 result.copy_done = self.device_module.Event()
                 _Upstream._relay_forward_payload(
                     self, batch, future_indices, result
@@ -4196,6 +4208,10 @@ class OmniScheduler(Generic[RequestDataT]):
             compact_decode_input_history(
                 req.omni_data
             )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            if self.model_runner is not None:
+                self.model_runner.on_request_retracted(req.rid)
+            else:
+                pass
         else:
             pass
         _Upstream._add_request_to_queue(self, req, is_retracted=is_retracted)
