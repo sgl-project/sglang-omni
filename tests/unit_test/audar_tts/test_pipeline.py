@@ -12,12 +12,12 @@ import time
 import types
 import wave
 from pathlib import Path
-from typing import Any, TypeVar, cast
+from typing import Any
 
 import numpy as np
 import pytest
 import torch
-from transformers import AutoFeatureExtractor, FeatureExtractionMixin, Wav2Vec2BertModel
+from transformers import AutoFeatureExtractor, Wav2Vec2BertModel
 
 from sglang_omni.client.client import Client
 from sglang_omni.comm import stage_io
@@ -610,28 +610,6 @@ def test_codec_model_and_lock_are_shared_between_stages(
     assert loads == 1
 
 
-CodecT = TypeVar("CodecT")
-
-
-def install_fake_neucodec(
-    monkeypatch: pytest.MonkeyPatch,
-    neu_codec: type[CodecT],
-    feature_extractor: type[AutoFeatureExtractor],
-    w2v_model: type[Wav2Vec2BertModel],
-) -> types.ModuleType:
-    model_module = types.ModuleType("neucodec.model")
-    model_module.NeuCodec = neu_codec
-    model_module.AutoFeatureExtractor = feature_extractor
-    model_module.Wav2Vec2BertModel = w2v_model
-    package = types.ModuleType("neucodec")
-    package.__path__ = []
-    package.NeuCodec = neu_codec
-    package.model = model_module
-    monkeypatch.setitem(sys.modules, "neucodec", package)
-    monkeypatch.setitem(sys.modules, "neucodec.model", model_module)
-    return model_module
-
-
 def test_load_codec_constructs_a_local_directory_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -655,11 +633,11 @@ def test_load_codec_constructs_a_local_directory_snapshot(
             model_name_or_path: str,
             *,
             local_files_only: bool = False,
-        ) -> FeatureExtractionMixin:
+        ) -> "RecordingFeatureExtractor":
             pretrained_calls.append(
                 ("feature_extractor", model_name_or_path, local_files_only, None)
             )
-            return cast(FeatureExtractionMixin, cls.__new__(cls))
+            return cls.__new__(cls)
 
     class RecordingW2VModel(Wav2Vec2BertModel):
         @classmethod
@@ -669,11 +647,11 @@ def test_load_codec_constructs_a_local_directory_snapshot(
             *,
             output_hidden_states: bool = False,
             local_files_only: bool = False,
-        ) -> Wav2Vec2BertModel:
+        ) -> "RecordingW2VModel":
             pretrained_calls.append(
                 ("w2v", model_name_or_path, local_files_only, output_hidden_states)
             )
-            return cast(Wav2Vec2BertModel, cls.__new__(cls))
+            return cls.__new__(cls)
 
     class RecordingCodec:
         def __init__(self, sample_rate: int, hop_length: int) -> None:
@@ -696,9 +674,16 @@ def test_load_codec_constructs_a_local_directory_snapshot(
             devices.append(device)
             return self
 
-    model_module = install_fake_neucodec(
-        monkeypatch, RecordingCodec, RecordingFeatureExtractor, RecordingW2VModel
-    )
+    model_module = types.ModuleType("neucodec.model")
+    model_module.NeuCodec = RecordingCodec
+    model_module.AutoFeatureExtractor = RecordingFeatureExtractor
+    model_module.Wav2Vec2BertModel = RecordingW2VModel
+    package = types.ModuleType("neucodec")
+    package.__path__ = []
+    package.NeuCodec = RecordingCodec
+    package.model = model_module
+    monkeypatch.setitem(sys.modules, "neucodec", package)
+    monkeypatch.setitem(sys.modules, "neucodec.model", model_module)
     state_dict = {
         "kept": torch.tensor([1.0]),
         "unexpected": torch.tensor([2.0]),
