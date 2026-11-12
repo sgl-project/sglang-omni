@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Graph-compatible decoder math preserving checkpoint rounding and request shapes."""
+"""Graph-compatible decoder math preserving checkpoint rounding."""
 
 from __future__ import annotations
 
@@ -44,52 +44,6 @@ def reference_rope_frequencies(head_dim: int, theta: float) -> torch.Tensor:
         torch.arange(0, head_dim, 2, device="cpu", dtype=torch.int64).float() / head_dim
     )
     return 1.0 / (theta**exponents)
-
-
-def request_linear(
-    hidden_states: torch.Tensor, weight: torch.Tensor, token_lengths: list[int]
-) -> torch.Tensor:
-    """Keep GEMM shapes independent of unrelated packed requests."""
-    assert sum(token_lengths) == hidden_states.shape[0]
-    if len(token_lengths) <= 1:
-        return torch.nn.functional.linear(hidden_states, weight)
-    else:
-        return torch.cat(
-            [
-                torch.nn.functional.linear(request_hidden_states, weight)
-                for request_hidden_states in hidden_states.split(token_lengths, dim=0)
-            ],
-            dim=0,
-        )
-
-
-def request_norm(
-    norm: MossSpeechRMSNorm,
-    hidden_states: torch.Tensor,
-    token_lengths: list[int],
-    residual: torch.Tensor | None = None,
-) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-    if len(token_lengths) <= 1:
-        return norm(hidden_states, residual)
-    elif residual is None:
-        return torch.cat(
-            [
-                norm(request_hidden_states)
-                for request_hidden_states in hidden_states.split(token_lengths, dim=0)
-            ]
-        )
-    else:
-        normalized = [
-            norm(request_hidden_states, request_residual)
-            for request_hidden_states, request_residual in zip(
-                hidden_states.split(token_lengths, dim=0),
-                residual.split(token_lengths, dim=0),
-            )
-        ]
-        return (
-            torch.cat([request_result[0] for request_result in normalized]),
-            torch.cat([request_result[1] for request_result in normalized]),
-        )
 
 
 class MossSpeechDecoderLayer(torch.nn.Module):
@@ -152,35 +106,22 @@ class MossSpeechDecoderLayer(torch.nn.Module):
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
-        token_lengths: list[int],
         residual: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if residual is None:
             residual = hidden_states
-            hidden_states = request_norm(
-                self.input_layernorm, hidden_states, token_lengths
-            )
+            hidden_states = self.input_layernorm(hidden_states)
         else:
-            hidden_states, residual = request_norm(
-                self.input_layernorm, hidden_states, token_lengths, residual
-            )
+            hidden_states, residual = self.input_layernorm(hidden_states, residual)
         attention = self.self_attn
         query_weight, key_weight, value_weight = attention.qkv_proj.weight.split(
             [attention.q_size, attention.kv_size, attention.kv_size], dim=0
         )
-        q = request_linear(hidden_states, query_weight, token_lengths)
-        k = request_linear(hidden_states, key_weight, token_lengths)
-        v = request_linear(hidden_states, value_weight, token_lengths)
-        q = request_norm(
-            attention.q_norm,
-            q.reshape(-1, attention.num_heads, attention.head_dim),
-            token_lengths,
-        )
-        k = request_norm(
-            attention.k_norm,
-            k.reshape(-1, attention.num_kv_heads, attention.head_dim),
-            token_lengths,
-        )
+        q = torch.nn.functional.linear(hidden_states, query_weight)
+        k = torch.nn.functional.linear(hidden_states, key_weight)
+        v = torch.nn.functional.linear(hidden_states, value_weight)
+        q = attention.q_norm(q.reshape(-1, attention.num_heads, attention.head_dim))
+        k = attention.k_norm(k.reshape(-1, attention.num_kv_heads, attention.head_dim))
         with torch.autocast(device_type=positions.device.type, enabled=False):
             frequencies = (
                 self.inverse_frequencies[None, :, None]
@@ -198,18 +139,14 @@ class MossSpeechDecoderLayer(torch.nn.Module):
             -1, attention.kv_size
         )
         hidden_states = attention.attn(q, k, v, forward_batch)
-        hidden_states = request_linear(
-            hidden_states, attention.o_proj.weight, token_lengths
+        hidden_states = torch.nn.functional.linear(
+            hidden_states, attention.o_proj.weight
         )
-        hidden_states, residual = request_norm(
-            self.post_attention_layernorm, hidden_states, token_lengths, residual
-        )
+        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
         gate_weight, up_weight = self.mlp.gate_up_proj.weight.chunk(2, dim=0)
-        gate = request_linear(hidden_states, gate_weight, token_lengths)
-        up = request_linear(hidden_states, up_weight, token_lengths)
-        hidden_states = request_linear(
-            torch.nn.functional.silu(gate) * up,
-            self.mlp.down_proj.weight,
-            token_lengths,
+        gate = torch.nn.functional.linear(hidden_states, gate_weight)
+        up = torch.nn.functional.linear(hidden_states, up_weight)
+        hidden_states = torch.nn.functional.linear(
+            torch.nn.functional.silu(gate) * up, self.mlp.down_proj.weight
         )
         return hidden_states, residual

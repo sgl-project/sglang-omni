@@ -20,7 +20,6 @@ from sglang_omni.models.moss_speech.hf_config import (
 from sglang_omni.models.moss_speech.model_layers import (
     MossSpeechRMSNorm,
     reference_rope_frequencies,
-    request_linear,
 )
 from sglang_omni.models.moss_speech.model_runner import MossSpeechModelRunner
 from sglang_omni.models.moss_speech.request_builders import MossSpeechSGLangRequestData
@@ -234,18 +233,6 @@ def test_bf16_normalization_rounds_residual_and_normalized_value() -> None:
     assert torch.equal(hidden_states, original_hidden)
 
 
-def test_projection_matches_each_request_in_isolation() -> None:
-    generator = torch.Generator().manual_seed(78)
-    hidden_states = torch.randn(7, 128, generator=generator).bfloat16()
-    weight = torch.randn(32, 128, generator=generator).bfloat16()
-    linear = torch.nn.functional.linear
-    expected = torch.cat(
-        [linear(hidden_states[:2], weight), linear(hidden_states[2:], weight)]
-    )
-    actual = request_linear(hidden_states, weight, [2, 5])
-    assert torch.equal(actual, expected)
-
-
 @pytest.mark.parametrize("head_dim,theta", [(8, 10000.0), (128, 1_000_000.0)])
 def test_rope_frequencies_keep_cpu_float32_reference_values(
     head_dim: int, theta: float
@@ -330,12 +317,17 @@ def test_prefill_projects_only_one_hidden_state_per_request() -> None:
             model.rows_to_embeddings(torch.tensor([[6, 0], [7, 0]])),
         ]
         with patch(
-            "sglang_omni.models.moss_speech.sglang_model.request_linear",
-            wraps=request_linear,
+            "torch.nn.functional.linear",
+            wraps=torch.nn.functional.linear,
         ) as projection:
             output, _ = prefill(model, prompts, ["long", "short"])
         assert output.text_logits.shape == (2, model.text_vocab_size)
         assert output.audio_logits.shape == (2, model.audio_vocab_size)
-        assert all(
-            call.args[0].shape[0] == len(prompts) for call in projection.call_args_list
-        )
+        head_calls = [
+            call
+            for call in projection.call_args_list
+            if call.args[1] is model.text_lm_head.weight
+            or call.args[1] is model.audio_lm_head.weight
+        ]
+        assert len(head_calls) == 2
+        assert all(call.args[0].shape[0] == len(prompts) for call in head_calls)
