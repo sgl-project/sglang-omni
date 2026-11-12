@@ -11842,7 +11842,6 @@ def test_real_base_whole_requests_on_reserved_slots_match_one_stateful_decode(
     else:
         pass
     monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
-    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
     scheduler = qwen3_stages.create_vocoder_executor(
         checkpoint,
         device="cuda",
