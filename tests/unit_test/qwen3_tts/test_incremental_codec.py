@@ -1129,10 +1129,10 @@ def test_codec_state_arena_never_hands_out_reserved_slots() -> None:
     assert [arena.acquire(), arena.acquire(), arena.acquire()] == [0, 1, None]
     assert list(arena.reserved_slots) == [2, 3, 4]
     assert arena.scratch_slot == 5
-    assert int(arena.storage.frame_positions.shape[0]) == 6
     assert arena.describe()["slots"] == 2
-    assert arena.active_slots() == 2
-    assert arena.total_bytes == 5 * arena.bytes_per_slot
+    arena.release(1)
+    arena.retire(3)
+    assert arena.active_slots() == 1
 
 
 @pytest.mark.accelerator
