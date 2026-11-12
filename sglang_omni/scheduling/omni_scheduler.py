@@ -3173,6 +3173,8 @@ class OmniScheduler(Generic[RequestDataT]):
 
             result = None
             terminal_error = None
+            # note (bianyutong): Read before the close below drops the unit, so a draft's terminal error stays inside like its other errors.
+            session_unit = self.active_session_unit(rid)
             try:
                 if self.draft_worker is not None and (
                     not self.enable_plain_fallback or data.decode_path == "spec"
@@ -3230,7 +3232,6 @@ class OmniScheduler(Generic[RequestDataT]):
                 else:
                     pass
                 self.flush_stream_output(rid, data)
-                session_unit = self.active_session_unit(rid)
                 if session_unit is None:
                     result = self.result_adapter(data)
                 else:
@@ -3268,7 +3269,10 @@ class OmniScheduler(Generic[RequestDataT]):
 
             if terminal_error is not None:
                 self.first_emit_done.discard(rid)
-                self.emit_request_error(rid, terminal_error)
+                if session_unit is None or not session_unit.is_draft:
+                    self.emit_request_error(rid, terminal_error)
+                else:
+                    pass
                 continue
             else:
                 pass

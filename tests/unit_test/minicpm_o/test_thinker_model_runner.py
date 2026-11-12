@@ -734,6 +734,7 @@ def unit_request(
             draft_token_ids=list(draft_token_ids),
             accepted_draft_count=0,
             unit_index=0,
+            noise_unit_index=0,
             is_draft=is_draft,
             pending_unit_token=pending_unit_token,
             talker_conditions=[],
@@ -1390,7 +1391,7 @@ def test_a_draft_unit_leaves_the_session_as_the_last_unit_left_it_and_hands_its_
     ]
     assert spans_of(draft) == [(2, 3, 2.0)]
     assert draft.unit_index == 2
-    assert state == snapshot
+    assert state == replace(snapshot, built_unit_count=snapshot.built_unit_count + 1)
     assert preparation == ARSessionPreparation()
     assert following.input_ids.tolist() == [
         SPECIAL_TOKENS.unit_end,
@@ -2193,3 +2194,28 @@ def test_a_drafted_prefill_commits_the_agreeing_tokens_and_hands_the_talker_thei
         assert int(batch.seq_lens_cpu[0]) == kept_token_count
         assert batch.seq_lens_sum == kept_token_count
         assert freed == [(kept_token_count, len(input_ids))]
+
+
+def test_a_draft_and_the_unit_that_verifies_it_share_the_noise_of_the_next_audio_unit_when_a_control_takes_a_sequence_number() -> (
+    None
+):
+    """Image and control chunks advance the chunk sequence without an audio unit, so a draft seeded at the next sequence number would draw other noise than the unit that verifies it and lose every sampled token; both count audio units instead."""
+    adapter, request = open_duplex_adapter()
+    payload = perception_payload(request, 0)
+    payload.data["silence_unit_plan"] = perception_payload(request, 1).data
+    listened = adapter.build(SESSION, audio_unit(0), payload)
+    complete_unit(
+        adapter,
+        listened,
+        prompt_length=FIRST_UNIT_PROMPT_LENGTH,
+        output_ids=[SPECIAL_TOKENS.listen],
+        generated_unit_ids=[],
+    )
+    draft = adapter.build_draft(
+        SESSION, StagePayload("draft", request, None), audio_unit(0)
+    )
+    following = adapter.build(SESSION, audio_unit(2), perception_payload(request, 1))
+
+    assert listened.noise_unit_index == 0
+    assert (draft.unit_index, draft.noise_unit_index) == (1, 1)
+    assert (following.unit_index, following.noise_unit_index) == (2, 1)

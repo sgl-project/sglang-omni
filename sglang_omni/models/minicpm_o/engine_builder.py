@@ -81,20 +81,22 @@ class MiniCPMOThinkerEngineBuilder(SGLangGenerationEngineBuilder):
 
     def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
         """Refuse settings that would split a unit's prefill or add a draft worker, before loading weights."""
-        cfg = resolved_view(server_args)
-        if cfg.chunked_prefill_size > 0:
+        server_settings = resolved_view(server_args)
+        if server_settings.chunked_prefill_size > 0:
             raise ValueError(
                 "MiniCPM-o draft verification needs the whole unit in one prefill; "
                 "set thinker.engine.chunked_prefill_size=-1 "
-                f"(got {cfg.chunked_prefill_size})"
+                f"(got {server_settings.chunked_prefill_size})"
             )
         else:
             pass
-        if not SpeculativeAlgorithm.from_string(cfg.speculative_algorithm).is_none():
+        if not SpeculativeAlgorithm.from_string(
+            server_settings.speculative_algorithm
+        ).is_none():
             raise ValueError(
                 "the MiniCPM-o session thinker verifies its own drafts and takes "
                 "no speculative draft worker; "
-                f"got speculative_algorithm={cfg.speculative_algorithm}"
+                f"got speculative_algorithm={server_settings.speculative_algorithm}"
             )
         else:
             pass

@@ -295,6 +295,8 @@ class ThinkerAdapter(ARSessionAdapter):
             ]
         state.draft_token_ids = []
         token_ids = [*prefix, *plan["token_ids"], *suffix, *draft_token_ids]
+        noise_unit_index = state.built_unit_count
+        state.built_unit_count += 1
         return DuplexUnitRequestData(
             req=self.unit_request(payload.request_id, token_ids, sampling),
             input_ids=torch.tensor(token_ids),
@@ -316,6 +318,7 @@ class ThinkerAdapter(ARSessionAdapter):
             is_interrupted=is_interrupted,
             hears_user=hears_user,
             unit_index=chunk.seq,
+            noise_unit_index=noise_unit_index,
             perception_token_ids=plan["token_ids"],
             perception_embedding_spans=plan_embedding_spans(plan, 0),
             is_turn_ended_at_start=state.is_turn_ended,
@@ -357,6 +360,7 @@ class ThinkerAdapter(ARSessionAdapter):
                 unit_token_index=1 + silence_plan["token_ids"].index(self.special.unit),
                 is_draft=True,
                 unit_index=chunk.seq + 1,
+                noise_unit_index=state.built_unit_count,
                 unit_embedding_spans=plan_embedding_spans(silence_plan, 1),
             )
 

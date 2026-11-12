@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import torch
 from sglang.srt.layers.logits_processor import LogitsMetadata, LogitsProcessorOutput
 from sglang.srt.managers.schedule_batch import ScheduleBatch
@@ -34,6 +36,8 @@ from sglang_omni.scheduling.types import (
     SchedulerOutput,
     SchedulerRequest,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
@@ -143,7 +147,7 @@ class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
                         requests[row].data.is_listen_forced for row in sampled_rows
                     ],
                     unit_indices=[
-                        requests[row].data.unit_index for row in sampled_rows
+                        requests[row].data.noise_unit_index for row in sampled_rows
                     ],
                 ),
                 strict=True,
@@ -175,7 +179,7 @@ class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
                     forbidden_token_index=self.forbidden_token_index,
                     generation_steps=[data.generation_steps + position],
                     listen_forced_flags=[data.is_listen_forced],
-                    unit_indices=[data.unit_index],
+                    unit_indices=[data.noise_unit_index],
                 )
                 if (
                     position == len(draft_token_ids)
@@ -186,6 +190,9 @@ class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
                     pass
             data.accepted_draft_count = position
             token_ids[row] = token_id
+            logger.debug(
+                f"unit {data.unit_index} of {data.req.rid}: accepted {position} of {len(draft_token_ids)} drafted tokens"
+            )
         for request in requests:
             data = request.data
             if data.is_listen_forced and data.generation_steps == 0:
