@@ -1,19 +1,19 @@
 # 用 Voxt 翻译
 
-<video controls playsinline preload="none" width="100%" src="../../_static/voxt-tutorials/translate.mp4"></video>
+[English](en/translate.md)
 
-[打开 MP4 视频](../../_static/voxt-tutorials/translate.mp4)
-
-可以翻译一段选中的文字，也可以直接说一句话，让 Voxt 输出目标语言。先[配置语言模型](byok.md)。语音翻译还需要[下载并选好语音识别模型](start.md#安装并下载-asr)。
+可以翻译一段选中的文字，也可以直接说一句话，让 Voxt 输出目标语言。先[配置语言模型](byok.md)。语音翻译还需要[下载并选好语音识别模型](start.md#下载-asr)。
 
 1. 在 Voxt 侧栏打开**翻译**，选择**目标语言**和**语言模型**。第一次可以把目标语言设为英语。
-2. **翻译说的话**。在空白文本框把光标放好，轻按 `⇧ Shift` + 右 `⌥ Option`，说「请在周五前确认时间」，再按一次同样的快捷键。
-3. **翻译选中的文字**。先选中「请在周五前确认时间」，按 `⇧ Shift` + 右 `⌥ Option`，等待译文即可。
-4. 如果启用了答案卡片，检查译文后点**插入**或**复制**。直接输出时，译文会出现在光标处或替换选区。
+2. **翻译说的话**。在空白文本框把光标放好、不要选中文字，轻按 `⇧ Shift` + 右 `⌥ Option`，说「请在周五前确认时间」，再按一次同样的快捷键。译文出现在光标处。
 
-可以在**翻译**页查看当前快捷键。如果第 2 步直接开始翻译已有文字，先取消文本选区再试。
+   <div class="vx-anim" data-scene="translate-voice" data-lang="zh"></div>
 
-![设置引导中的翻译结果和复制按钮](images/translate.png)
+3. **翻译选中的文字**。先选中一段文字，按 `⇧ Shift` + 右 `⌥ Option`，等待译文替换选区即可。
+
+   <div class="vx-anim" data-scene="translate-select" data-lang="zh"></div>
+
+如果第 2 步直接开始翻译已有文字，先取消文本选区再试。**翻译**页还可以设置**备用模型**（第一个模型失败时自动换用）和**你的规则**（例如“人名不翻译”）。当前快捷键以**翻译**页为准。
 
 ## 交给 Agent
 
