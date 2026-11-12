@@ -186,6 +186,9 @@ func skipText() ovSized { return ovSized{i18n.T("Use transcript"), 11, 600, 0} }
 // loading shows only the starting icon (the user, 10-21): the recording
 // works meanwhile, so no line is needed.
 func pillLine(s session.Snapshot) (text string, hint bool) {
+	if note := limitNote(s, time.Now()); note != "" {
+		return note, true
+	}
 	if text := liveLineText(s); text != "" {
 		return text, false
 	}
@@ -195,6 +198,26 @@ func pillLine(s session.Snapshot) (text string, hint bool) {
 		}
 	}
 	return "", false
+}
+
+// limitNote warns while recording that a limit of Settings → Audio is
+// near (#3840): in the last minute before the length limit stops the
+// recording, and from 30 s before it passes the upload size limit (it
+// then goes to the speech model in pieces); "" for none.
+func limitNote(s session.Snapshot, now time.Time) string {
+	if s.State != session.Recording {
+		return ""
+	}
+	at := s.Elapsed(now)
+	switch {
+	case s.MaxLen > 0 && s.MaxLen-at <= time.Minute:
+		return i18n.T("The length limit stops the recording in %s", clock(max(0, s.MaxLen-at)))
+	case s.UploadLen > 0 && at >= s.UploadLen:
+		return i18n.T("Over the upload size limit: Voxt sends the recording in pieces")
+	case s.UploadLen > 0 && s.UploadLen-at <= 30*time.Second:
+		return i18n.T("Near the upload size limit: Voxt will send the recording in pieces")
+	}
+	return ""
 }
 
 // startingIcon is the feature's icon while the microphone or the speech

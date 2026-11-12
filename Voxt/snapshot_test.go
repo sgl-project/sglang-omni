@@ -168,6 +168,10 @@ func snapshotsMain(t *testing.T, out string) {
 				a.checks = nil
 			}
 			if s.id == "audio" { // the sounds and the output's mute, under the fold
+				w, h := snapshotSize()
+				tt.SetSize(w, 1500) // the limits, under the fold (#3840)
+				save("settings-audio-limits")
+				tt.SetSize(w, h)
 				scrollToText(tt, i18n.T("Mute system audio while recording"))
 				save("settings-audio-sounds")
 				tt.Click(i18n.T("macOS")) // the macOS sounds' lines (settings_soundchoice.go)
