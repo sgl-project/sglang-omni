@@ -275,16 +275,16 @@ func TestSettingsFind(t *testing.T) {
 	// A section whose name matches shows whole: Return scrolls its match
 	// into view in a short window.
 	tt.SetSize(800, 400)
-	a.navigate("/settings/shortcuts")
-	a.settingsForm.search = "shortcuts"
+	a.navigate("/settings/audio")
+	a.settingsForm.search = "audio"
 	frames(tt)
-	if r, _ := tt.Find("Strict shortcuts"); r.Y < 400 {
+	if r, _ := tt.Find("Mute system audio while recording"); r.Y < 400 {
 		t.Fatalf("the match is in view before Return (y %v): the window is not short enough", r.Y)
 	}
 	click(t, tt, "Find in settings")
 	tt.Key(0, ui.KeyEnter)
 	frames(tt)
-	if r, ok := tt.Find("Strict shortcuts"); !ok || r.Y+r.H > 400 || !has(tt, "1 of 1") {
+	if r, ok := tt.Find("Mute system audio while recording"); !ok || r.Y+r.H > 400 || !has(tt, "1 of 1") {
 		t.Errorf("Return did not bring the match into view: %v, %q", r, firstTexts(tt))
 	}
 	i18n.SetLocale("zh-Hans")
