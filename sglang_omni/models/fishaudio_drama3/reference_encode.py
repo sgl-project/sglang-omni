@@ -54,7 +54,8 @@ class Drama3ReferenceEncodeHook(FishReferenceEncodeHook):
             self.graph_frame_counts: tuple[int, ...] = ()
         else:
             # note (Wenyao Gao): the encoder is causal, so zeros padded after a
-            # reference change none of its codes.
+            # reference feed none of its codes. The padded encode still rounds
+            # differently from an unpadded one, which flips some codes.
             frames_per_second = math.ceil(codec.sample_rate / self.frame_length)
             max_frame_count = math.ceil(
                 min(reference_encode_graph_max_seconds, max_reference_audio_seconds)
