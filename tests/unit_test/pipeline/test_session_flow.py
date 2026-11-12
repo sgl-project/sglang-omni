@@ -9,7 +9,11 @@ import pytest
 
 from sglang_omni.pipeline.sessions import Session
 from sglang_omni.proto import OmniRequest
-from sglang_omni.proto.session import TimedChunk, find_session_operation
+from sglang_omni.proto.session import (
+    SessionOperationKind,
+    TimedChunk,
+    find_session_operation,
+)
 from tests.unit_test.fixtures.session_outputs import control_chunk
 from tests.unit_test.fixtures.session_pipeline import chunk, event_log, pipeline
 
@@ -306,6 +310,52 @@ async def test_control_reaches_every_stage_of_the_route_or_the_named_stages(
         ("sink", "interrupt"),
         ("sink", "truncate"),
     ]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_control_stops_at_the_owners_a_close_overtakes(
+    linear_pair, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A control still going round the owners when the session closed reached an owner that had already closed, which failed the session with "unknown session open index"."""
+    coordinator, events, _ = linear_pair
+    session_identity = await coordinator.open_session(
+        OmniRequest(None), stages=["source", "sink"]
+    )
+    session = coordinator.sessions[session_identity.id]
+    session_operation = coordinator.session_operation
+
+    async def close_after_the_first_owner(
+        session: Session,
+        operation: SessionOperationKind,
+        *,
+        owner: str | None = None,
+        chunk: TimedChunk | None = None,
+        request_id: str | None = None,
+        should_preempt: bool = False,
+        preempted_request_ids: tuple[str, ...] = (),
+    ) -> None:
+        await session_operation(
+            session,
+            operation,
+            owner=owner,
+            chunk=chunk,
+            request_id=request_id,
+            should_preempt=should_preempt,
+            preempted_request_ids=preempted_request_ids,
+        )
+        if operation == "control" and owner == session.stages[0]:
+            await coordinator.close_session(session.session_identity)
+        else:
+            pass
+
+    monkeypatch.setattr(coordinator, "session_operation", close_after_the_first_owner)
+
+    with pytest.raises(RuntimeError, match="session is closing"):
+        await coordinator.control_session(
+            session_identity, control_chunk("turn.done"), is_ordered=False
+        )
+    assert session.error is None
+    assert control_owners(events) == [("source", "turn.done")]  
 
 
 @pytest.mark.asyncio
