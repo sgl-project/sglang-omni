@@ -568,6 +568,7 @@ var errHelperForTest = core.ErrHelper
 type fakeSelector struct {
 	text     string
 	copyText string
+	steps    []string
 	err      error
 	delay    time.Duration
 
@@ -595,7 +596,7 @@ func (f *fakeSelector) Selection(ctx context.Context, p proto.SelectionParams) (
 	case f.copyText != "" && p.AllowCopy:
 		return proto.SelectionResult{Text: f.copyText, Via: proto.ViaCopy, MS: 40}, nil
 	}
-	return proto.SelectionResult{Via: proto.ViaNone, MS: 1}, nil
+	return proto.SelectionResult{Via: proto.ViaNone, MS: 1, Steps: f.steps}, nil
 }
 
 func (f *fakeSelector) params() []proto.SelectionParams {

@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -38,7 +39,7 @@ func (o *OpenAI) Info() BackendInfo { return BackendInfo{ID: o.preset.ID} }
 
 type oaMessage struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	Content any    `json:"content"` // a string, or parts with an image
 }
 
 type oaUsage struct {
@@ -64,8 +65,15 @@ func (o *OpenAI) body(req Request, model string, stream, streamUsage, extra bool
 		msgs = withJSONInstruction(msgs, req.Schema, o.preset.JSONMode != JSONSchemaMode || req.Schema == nil)
 	}
 	oms := make([]oaMessage, len(msgs))
+	last := -1
 	for i, m := range msgs {
 		oms[i] = oaMessage{Role: string(m.Role), Content: m.Content}
+		if m.Role == User {
+			last = i
+		}
+	}
+	if req.Image != nil && last >= 0 {
+		oms[last].Content = o.withImage(msgs[last].Content, req.Image)
 	}
 	b := map[string]any{}
 	// A thinking mode the user chose replaces the preset's (ExtraBody).
@@ -200,6 +208,8 @@ relax:
 			sampling = false
 		case extra && o.mentionsExtra(detail):
 			extra = false
+		case req.Image != nil: // a model that takes no images
+			req.Image = nil
 		default:
 			break relax
 		}
@@ -228,6 +238,16 @@ relax:
 		return out, newErr(CodeFiltered, "provider", o.preset.ID)
 	}
 	return out, nil
+}
+
+// withImage is text and a JPEG as one message's content parts, in the
+// API's format.
+func (o *OpenAI) withImage(text string, jpeg []byte) []map[string]any {
+	url := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(jpeg)
+	if o.responsesAPI() {
+		return []map[string]any{{"type": "input_text", "text": text}, {"type": "input_image", "image_url": url}}
+	}
+	return []map[string]any{{"type": "text", "text": text}, {"type": "image_url", "image_url": map[string]any{"url": url}}}
 }
 
 // mentionsExtra reports whether a rejection names one of ExtraBody's keys

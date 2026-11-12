@@ -72,7 +72,8 @@ func (r *run) readSelection() string {
 	}
 	text := res.Text
 	if strings.TrimSpace(text) == "" {
-		r.logf("info", "no selection (%s, %.0f ms)", res.Via, res.MS)
+		// The helper's steps say which reading found nothing (#3835).
+		r.logf("info", "no selection (%s, %.0f ms; %s)", res.Via, res.MS, strings.Join(res.Steps, ", "))
 		return ""
 	}
 	for _, t := range r.req.Previous {
