@@ -315,7 +315,7 @@ func TestDictionaryNotes(t *testing.T) {
 	}
 	sys := out.Messages()[0].Content
 	if !strings.Contains(sys, "`罗斯` → Roth") || !strings.Contains(sys, "- VoxtNew") || strings.Contains(sys, "MyGo") ||
-		strings.Index(sys, "</dictionary>") > strings.Index(sys, "- VoxtNew") || !has(tt, sys) || !has(tt, out.Dictionary) {
+		strings.Contains(sys, "dictionary>") || strings.Index(sys, "`罗斯` → Roth") > strings.Index(sys, "- VoxtNew") || !has(tt, sys) || !has(tt, out.Dictionary) {
 		t.Errorf("the example's system prompt:\n%s", sys)
 	}
 	if !has(tt, trySample()) || !has(tt, "+ Speech recognition text") || !has(tt, "= What the language model receives") {
