@@ -133,19 +133,18 @@
 @keyframes vx-blink{50%{opacity:0}}
 .vx-selt{border-radius:2px;transition:background .2s}
 .vx-selt.on{background:#b3d4ff}
-.vx-pill{position:absolute;left:50%;transform:translateX(-50%) translateY(6px);background:rgba(22,22,26,.9);border:1px solid rgba(255,255,255,.12);box-shadow:0 4px 12px rgba(0,0,0,.22);border-radius:24px;color:#f5f5f7;padding:10px 14px;opacity:0;transition:opacity .15s,transform .15s;z-index:10;min-width:148px}
+.vx-pill{position:absolute;left:50%;transform:translateX(-50%) translateY(6px);background:rgba(22,22,26,.96);border:1px solid rgba(255,255,255,.12);box-shadow:0 4px 12px rgba(0,0,0,.22);border-radius:26px;color:#f5f5f7;padding:14px 18px;opacity:0;transition:opacity .15s,transform .15s;z-index:10;width:520px;max-width:calc(100% - 32px)}
 .vx-pill.on{opacity:1;transform:translateX(-50%)}
-.vx-pill .row{display:flex;align-items:center;gap:10px;height:28px}
-.vx-pill .row svg{width:15px;height:15px;color:rgba(255,255,255,.92)}
+.vx-pill-row{display:flex;align-items:center;justify-content:center;gap:10px;height:24px}
+.vx-pill-row svg{width:15px;height:15px;color:rgba(255,255,255,.92)}
 .vx-wave{display:flex;align-items:center;gap:2.5px;height:22px;width:94px}
 .vx-wave i{display:block;width:3px;border-radius:2px;background:rgba(255,255,255,.88);height:4px}
 .vx-dots{display:none;gap:6px;align-items:center;width:94px;height:22px}
 .vx-dots i{width:5px;height:5px;border-radius:50%;background:#fff}
 .vx-pill.work .vx-wave{display:none}
 .vx-pill.work .vx-dots{display:flex}
-.vx-pill .lbl{font-size:11px;color:rgba(235,235,245,.62)}
-.vx-live{font-size:12px;font-weight:500;color:rgba(255,255,255,.86);white-space:nowrap;max-width:260px;overflow:hidden;direction:rtl;text-align:left;margin-top:4px;display:none}
-.vx-live span{direction:ltr;unicode-bidi:isolate}
+.vx-pill .lbl{font-size:14px;font-weight:600;color:#f5f5f7}
+.vx-live{font-size:13px;line-height:1.5;font-weight:500;color:#f5f5f7;white-space:pre-wrap;overflow-wrap:anywhere;text-align:left;margin-top:8px;display:none}
 .vx-pill.live .vx-live{display:block}
 .vx-kc{position:absolute;left:16px;bottom:14px;display:flex;align-items:center;gap:6px;opacity:0;transition:opacity .15s;z-index:20}
 .vx-kc.on{opacity:1}
