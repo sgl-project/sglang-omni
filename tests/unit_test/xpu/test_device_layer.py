@@ -81,10 +81,11 @@ def test_sglang_caps_xpu_free_memory_against_the_allocator(monkeypatch) -> None:
     assert free_gb == (total_bytes - allocated_bytes) / (1 << 30)
 
 
-def test_xpu_joint_rope_dims_match_the_installed_kernel() -> None:
-    """XPUOmniPlatform copies the dims sgl_kernel's XPU RoPE compiles, because the
-    kernel keeps that list private. The XPU lane runs this file, so an SGLang bump
-    that changes the list, or renames it, fails here instead of going stale.
+def test_xpu_joint_rope_dimensions_match_the_installed_kernel() -> None:
+    """XPUOmniPlatform copies the rotary dimensions sgl_kernel's XPU RoPE
+    compiles, because the kernel keeps that list private. The XPU lane runs this
+    file, so an SGLang bump that changes the list, or renames it, fails here
+    instead of going stale.
     """
     import pytest
 
@@ -92,8 +93,8 @@ def test_xpu_joint_rope_dims_match_the_installed_kernel() -> None:
         pytest.skip("sgl_kernel's XPU RoPE ships only with sglang-kernel-xpu")
     from sgl_kernel.jit import rope
 
-    from sglang_omni.platforms.xpu import XPU_JOINT_ROPE_DIMS
+    from sglang_omni.platforms.xpu import XPU_JOINT_ROTARY_DIMENSIONS
 
-    kernel_dims = rope._SUPPORTED_XPU_ROPE_DIMS  # noqa: leading-underscore
+    kernel_dimensions = rope._SUPPORTED_XPU_ROPE_DIMS  # noqa: leading-underscore
 
-    assert tuple(kernel_dims) == XPU_JOINT_ROPE_DIMS
+    assert tuple(kernel_dimensions) == XPU_JOINT_ROTARY_DIMENSIONS

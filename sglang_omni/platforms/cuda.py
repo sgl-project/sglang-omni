@@ -140,7 +140,7 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
         return rmsnorm
 
     def get_joint_rope_inplace_kernel(
-        self, *, rope_dim: int | None = None
+        self, *, rotary_dimension: int | None = None
     ) -> JointRopeInplaceKernel:
         from sglang.kernels.ops.attention.rope import apply_rope_inplace
 

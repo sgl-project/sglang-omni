@@ -277,8 +277,8 @@ def test_image_encoder_preserves_outputs_with_platform_rotary(
     )
     assert kernel.call_count == expected_kernel_calls
     if platform_device == "cpu":
-        # note (siju): the platform must see the serving head dim to decline it.
-        provider.assert_called_once_with(rope_dim=72)
+        # note (siju): the platform must see the serving head dimension to decline it.
+        provider.assert_called_once_with(rotary_dimension=72)
     else:
         provider.assert_not_called()
 
