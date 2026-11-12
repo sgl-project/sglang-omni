@@ -226,10 +226,11 @@ void SocketClosed(const mg_connection *connection, void *) {
 
 class AsrService : public omni_server::Service {
 public:
-  AsrService(const std::filesystem::path &directory, const ModelLoader &load) {
+  AsrService(const std::filesystem::path &directory, const ModelLoader &load,
+             int max_batch) {
     worker_ = std::make_unique<TranscriptionWorker>(
         [&]() { model_ = load(directory); },
-        [this]() { model_->ReleaseIdleMemory(); });
+        [this]() { model_->ReleaseIdleMemory(); }, max_batch);
   }
 
   void SetModelName(const std::string &model_name,
@@ -326,8 +327,10 @@ void AddRealtimeHandler(mg_context *context, const RealtimeFactory &factory) {
 omni_server::ServedKind CreateServedKind(const ServedKind &kind) {
   return {
       kind.model_kind,
-      [load = kind.load](const std::filesystem::path &directory) {
-        return std::make_unique<AsrService>(directory, load);
+      [load = kind.load,
+       max_batch = kind.max_batch](const std::filesystem::path &directory) {
+        return std::make_unique<AsrService>(directory, load,
+                                            max_batch ? max_batch() : 1);
       },
       kind.flags,
       kind.check_flags,

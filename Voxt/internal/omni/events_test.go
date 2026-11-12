@@ -87,7 +87,7 @@ func TestModelEvents(t *testing.T) {
 	f := newFake(t, omnitest.Opts{}, h.tune)
 	ctx := context.Background()
 	a := f.asr(t, ASRFast)
-	l1, err := f.rt.acquire(ctx, a.spec, a.dir)
+	l1, err := f.rt.acquire(ctx, a.spec, a.dir, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestModelEvents(t *testing.T) {
 	if got := h.beforeLoads(); !slices.Equal(got, []string{ASRFast}) {
 		t.Errorf("BeforeLoad %v", got)
 	}
-	l2, err := f.rt.acquire(ctx, a.spec, a.dir)
+	l2, err := f.rt.acquire(ctx, a.spec, a.dir, "")
 	if err != nil {
 		t.Fatal(err)
 	}

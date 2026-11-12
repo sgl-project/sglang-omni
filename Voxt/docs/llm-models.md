@@ -1,5 +1,7 @@
 # The language models
 
+*History: Voxt's own language models retired in 2.1 (its language models are the remote services the user sets up), and their process `voxtnew-llm` (`llm/`, `internal/llmrt`, the llm protocol) was removed after. This page keeps what was measured on them; the links into `llm/` and the protocol point at the code as it was (git history).*
+
 VoxtNew runs three curated language models in `voxtnew-llm`, and two of the ActNow family's that other apps install ([below](#borrowed-models-family-f1)) ([llm/](../llm/README.md), [llm-protocol.md](llm-protocol.md)). Their catalogue entries (repository, revision, files) are `internal/models/catalog.go`; how they run is one table, `internal/llmrt/models.go`, sent with every chat (the process keeps no settings).
 
 | id | model | runtime | what it does |

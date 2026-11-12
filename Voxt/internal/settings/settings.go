@@ -41,8 +41,9 @@ type Settings struct {
 	Updates        Updates        `json:"updates,omitzero"`
 	Network        Network        `json:"network,omitzero"`
 	Family         Family         `json:"family,omitzero"`
-	Models         Models         `json:"models,omitzero"`  // models.go
-	History        History        `json:"history,omitzero"` // history.go
+	Models         Models         `json:"models,omitzero"`    // models.go
+	History        History        `json:"history,omitzero"`   // history.go
+	Providers      Providers      `json:"providers,omitzero"` // providers.go
 }
 
 // General: languages and how the app stays around.
@@ -64,6 +65,13 @@ type General struct {
 	// there when its window closes, so the shortcuts keep working.
 	MenuBar     bool `json:"menuBar"`
 	CloseToTray bool `json:"closeToTray"`
+	// HideDock leaves VoxtNew out of the Dock (Voxt 1.x's "Show in Dock"
+	// off); the menu bar icon is then on, so that VoxtNew can be reached.
+	HideDock bool `json:"hideDock,omitempty"`
+	// CopyResult leaves each finished result on the clipboard: a paste
+	// does not restore what was there, and a result the answer card shows
+	// is copied too (Voxt 1.x's "Also copy result to clipboard").
+	CopyResult bool `json:"copyResult,omitempty"`
 }
 
 // Appearance: theme, scale and the sidebar.
@@ -91,6 +99,15 @@ type Privacy struct {
 	// LogText writes recognised and generated text to the log; off, the
 	// log has only lengths and timings.
 	LogText bool `json:"logText,omitempty"`
+	// HistoryAccess opens `Voxt history` to programs on this Mac
+	// (docs/history-access.md); HistorySelection adds the selected text to
+	// what they and Export text get.
+	HistoryAccess    bool `json:"historyAccess,omitempty"`
+	HistorySelection bool `json:"historySelection,omitempty"`
+	// SendWindow sends a picture of the window the user speaks into to
+	// the language model, with the text (session/window.go); off by
+	// default.
+	SendWindow bool `json:"sendWindow,omitempty"`
 }
 
 // Audio: the microphone and the sounds around a recording.
@@ -126,6 +143,11 @@ type Audio struct {
 	// Clean is the light sound processing of the speech model's copy
 	// of a recording (10-16).
 	Clean Clean `json:"clean,omitzero"`
+	// LiveResult makes a local speech model's live text the result: after
+	// Stop it finishes the last few seconds instead of recognising the
+	// whole recording once more (the Final), so the text comes sooner and
+	// is a little less accurate (#3644 FB7). Off: the Final runs.
+	LiveResult bool `json:"liveResult,omitempty"`
 }
 
 // MuteOn reports whether recordings mute the system's output: the user's
@@ -197,6 +219,16 @@ type Overlay struct {
 	// ShowTime shows the recording's time in the pill (off: Voxt's pill,
 	// an icon and the waveform).
 	ShowTime bool `json:"showTime,omitempty"`
+	// HideLiveText leaves the words out of the pill: what was heard while
+	// recording, and the answer as the model writes it (Voxt 1.x's
+	// "Show Realtime Text" off).
+	HideLiveText bool `json:"hideLiveText,omitempty"`
+	// LiveLines shows the live text in lines that wrap, in a wide face
+	// from the first word, growing up to ten lines, then the newest ones
+	// (#3644 FB5); off, one line that scrolls sideways. On by default
+	// since 11-09 (the user: the pill should grow in lines, not sideways);
+	// no omitempty, so One line is kept.
+	LiveLines bool `json:"liveLines"`
 }
 
 // DefaultOpacity and DefaultRadius are the overlay face's: translucent
@@ -223,80 +255,6 @@ const (
 	TriggerLong   = "long"
 )
 
-// Features: the three features and the shared paste-last and cancel
-// shortcuts.
-type Features struct {
-	Transcribe Transcribe `json:"transcribe"`
-	Translate  Translate  `json:"translate"`
-	Rewrite    Rewrite    `json:"rewrite"`
-	// PasteLast pastes the latest result again (⌃⌥V by default).
-	PasteLast Hotkey `json:"pasteLast"`
-	// Cancel cancels the session while it records or the answer card
-	// shows (Escape by default; empty keys: off). Only a tap, and only
-	// through the helper's event tap: it never takes the keys while
-	// nothing records.
-	Cancel Hotkey `json:"cancel"`
-}
-
-// Feature is what every feature has: its shortcuts, the local models it
-// uses (internal/local's Model.ID; "" = the first one installed, the
-// recommended one) and the user's addition to its task prompt, which the
-// composer merges with the built-in rules.
-type Feature struct {
-	Hotkeys []Hotkey `json:"hotkeys,omitempty"`
-	ASR     string   `json:"asr,omitempty"`
-	LLM     string   `json:"llm,omitempty"`
-	Prompt  string   `json:"prompt,omitempty"`
-}
-
-// Transcribe: speech → text, inserted where the cursor is.
-type Transcribe struct {
-	Feature
-	// Enhance runs the LLM over the transcript; Cleanup and Structure
-	// are the composer's capability layers it uses.
-	Enhance   bool `json:"enhance"`
-	Cleanup   bool `json:"cleanup"`
-	Structure bool `json:"structure,omitempty"`
-}
-
-// Translate: speech or selected text → a translation.
-type Translate struct {
-	Feature
-	Cleanup bool `json:"cleanup"`
-	// Target is the language to translate into (a lang code, "zh-Hans",
-	// "zh-Hant"); "" = English, or Chinese when the main language is
-	// English (session.TranslateTarget).
-	Target string `json:"target,omitempty"`
-	// ShowCard shows the result in a card instead of inserting it (speech
-	// and selections alike).
-	ShowCard bool `json:"showCard,omitempty"`
-}
-
-// Rewrite: a spoken instruction rewrites the selection, or writes new
-// text when nothing is selected.
-type Rewrite struct {
-	Feature
-	// Cleanup reads past fillers and self-corrections in the spoken
-	// instruction (never applied to the selection). Every answer shows in
-	// the answer card (Voxt's; the field cardChars of 0.1.0 is dropped).
-	Cleanup bool `json:"cleanup"`
-}
-
-// AppEnhancement: scene rules by app and URL. The groups are the
-// document "appctx:rules"; these are the switches around them.
-type AppEnhancement struct {
-	Enabled bool `json:"enabled"`
-	// Browsers are browsers the user added to the built-in ones, whose
-	// tab URL VoxtNew tries to read.
-	Browsers []Browser `json:"browsers,omitempty"`
-}
-
-// Browser is a browser by bundle id.
-type Browser struct {
-	BundleID string `json:"bundleID"`
-	Name     string `json:"name,omitempty"`
-}
-
 // Dictionary: the user's terms. The terms are a table of the store
 // (dictionary_terms); these say where they go.
 type Dictionary struct {
@@ -305,6 +263,22 @@ type Dictionary struct {
 	// adds them to the LLM prompt.
 	ASRHints bool `json:"asrHints"`
 	Glossary bool `json:"glossary"`
+	// SpeechContext is free text about the speech (who speaks, about
+	// what) that the speech model gets before the hints, with the
+	// dictionary on or off; a service that takes no prompt ignores it.
+	SpeechContext string `json:"speechContext,omitempty"`
+	// Notes is the personal dictionary: Markdown the user writes once (a
+	// table of standard spelling, what recognition makes of it, and when
+	// it applies, or any notes) that goes into the language model's
+	// system prompt for Transcribe, Translate and Rewrite, never to
+	// speech recognition (compose.Input.Dictionary). NotesOff keeps it
+	// out of the prompt; notes are sent by default once written.
+	Notes    string `json:"notes,omitempty"`
+	NotesOff bool   `json:"notesOff,omitempty"`
+	// Learn watches the field a Transcribe result was pasted into for
+	// 30 s and proposes a term when the user corrects a word of it
+	// (internal/learn). Off by default.
+	Learn bool `json:"learn,omitempty"`
 }
 
 // Setup: the first-run guide.
@@ -316,15 +290,23 @@ type Setup struct {
 	Tried bool `json:"tried,omitempty"`
 }
 
-// Updates: what the updater offers (Settings → About → Updates). Its
-// other preferences (automatic checks and installs) are the updater
-// plugin's, in its own updater.json.
+// Updates: what the updater offers (Settings → About → Updates). With an
+// update feed, its other preferences (automatic checks and installs) are
+// the updater plugin's, in its own updater.json; without one, the check
+// of GitHub's releases (updates_github.go) keeps its own here.
 type Updates struct {
 	// Beta offers beta versions (the feed's beta channel) too. Nil until the
 	// user chooses: then on while the running version is a beta (BetaOn),
 	// so that a beta's users get the next one. No migration: older
 	// documents have none.
 	Beta *bool `json:"beta,omitempty"`
+	// NoAutoCheck turns off the daily check of GitHub's releases (on by
+	// default); LastCheck is when one last succeeded.
+	NoAutoCheck bool      `json:"noAutoCheck,omitempty"`
+	LastCheck   time.Time `json:"lastCheck,omitzero"`
+	// Dismissed is the version whose "is available" card the user
+	// dismissed: no card for it again, one for a newer version.
+	Dismissed string `json:"dismissed,omitempty"`
 }
 
 // BetaOn reports whether updates include betas for the app of version
@@ -350,6 +332,9 @@ const (
 	// DefaultCancel is the cancel shortcut's default, in one place: it
 	// only acts while a session records or the answer card shows.
 	DefaultCancel = "Escape"
+	// DefaultNote is the note shortcut's default, Voxt 1.x's: right
+	// Command tapped alone, which no ActNow app has.
+	DefaultNote = "RightCommand"
 )
 
 // Defaults returns the settings of a fresh install.
@@ -360,13 +345,14 @@ func Defaults() Settings {
 		Appearance: Appearance{Theme: "system", Scale: 1},
 		Privacy:    Privacy{KeepHistory: true},
 		Audio:      Audio{Sounds: true},
-		Overlay:    Overlay{Position: "bottom", Opacity: DefaultOpacity, Radius: DefaultRadius, Margin: 96},
+		Overlay:    Overlay{Position: "bottom", Opacity: DefaultOpacity, Radius: DefaultRadius, Margin: 96, LiveLines: true},
 		Features: Features{
 			Transcribe: Transcribe{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranscribe, Trigger: TriggerTap}}}, Enhance: true, Cleanup: true},
 			Translate:  Translate{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranslate, Trigger: TriggerTap}}}, Cleanup: true},
-			Rewrite:    Rewrite{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultRewrite, Trigger: TriggerTap}}}, Cleanup: true},
+			Rewrite:    Rewrite{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultRewrite, Trigger: TriggerTap}}}, Cleanup: true, ShowCard: true},
 			PasteLast:  Hotkey{Keys: DefaultPasteLast, Trigger: TriggerTap},
 			Cancel:     Hotkey{Keys: DefaultCancel, Trigger: TriggerTap},
+			Note:       Hotkey{Keys: DefaultNote, Trigger: TriggerTap},
 		},
 		AppEnhancement: AppEnhancement{Enabled: true},
 		Dictionary:     Dictionary{Enabled: true, ASRHints: true, Glossary: true},
@@ -396,7 +382,10 @@ func Migrate(data []byte) (Settings, error) {
 	if s.Version < 4 {
 		migrateShortcuts(&s.Features)
 	}
+	migrateNoteKeys(data, &s.Features)
+	migrateShowCard(data, &s.Features)
 	migrateSoundPreset(&s.Audio)
+	migrateOptionsJSON(data, &s.Providers)
 	s.Version = Version
 	return normalize(s), nil
 }
@@ -448,7 +437,8 @@ func migrateSoundPreset(a *Audio) {
 // migrateShortcuts moves version 3's default shortcuts, Auralink's (fn,
 // fn+Shift, fn+Control, Control+Command+V), to the family's (version 4):
 // each one that is still exactly its default; a shortcut the user
-// changed, added or removed stays.
+// changed, added or removed stays. It is history, kept apart from
+// ApplyPreset: a preset added later must not take a version 3 user's keys.
 func migrateShortcuts(f *Features) {
 	old := func(hs []Hotkey, keys string) bool {
 		return len(hs) == 1 && oldDefault(hs[0], keys)
@@ -470,6 +460,37 @@ func migrateShortcuts(f *Features) {
 // oldDefault reports whether h is keys tapped, as version 3 wrote it.
 func oldDefault(h Hotkey, keys string) bool {
 	return h.Keys == keys && (h.Trigger == "" || h.Trigger == TriggerTap)
+}
+
+// migrateNoteKeys gives a document from before the note shortcut the
+// default, unless another shortcut already taps those keys: the note then
+// stays off, and the Notes page asks for a shortcut. Such a document has
+// no note key; one that has it is the user's.
+func migrateNoteKeys(data []byte, f *Features) {
+	var doc struct {
+		Features struct {
+			Note json.RawMessage `json:"note"`
+		} `json:"features"`
+	}
+	if json.Unmarshal(data, &doc) != nil || doc.Features.Note != nil {
+		return
+	}
+	if tapsKeys(*f, DefaultNote) {
+		f.Note = Hotkey{}
+	}
+}
+
+// tapsKeys reports whether a shortcut in f taps keys by itself, as
+// hotkey.Check counts a clash.
+func tapsKeys(f Features, keys string) bool {
+	all := append([]Hotkey{f.PasteLast, f.Cancel}, f.Transcribe.Hotkeys...)
+	all = append(append(all, f.Translate.Hotkeys...), f.Rewrite.Hotkeys...)
+	for _, h := range all {
+		if strings.TrimSpace(h.Keys) == keys && (h.Trigger == "" || h.Trigger == TriggerTap) {
+			return true
+		}
+	}
+	return false
 }
 
 // Changed is published after an update is saved. Topic "settings.changed".
@@ -495,6 +516,11 @@ type Service interface {
 type Network struct {
 	Proxy       string `json:"proxy,omitempty"`
 	HFEndpoints string `json:"hfEndpoints,omitempty"`
+	// ProxyUser is a custom proxy's user name and ProxyAuthHost the proxy
+	// host it and its password (the Keychain's "proxy.<host>") are for:
+	// Voxt's only, never the family's (models_proxy_auth.go).
+	ProxyUser     string `json:"proxyUser,omitempty"`
+	ProxyAuthHost string `json:"proxyAuthHost,omitempty"`
 }
 
 // Family is VoxtNew's part in the ActNow family (internal/actnow).

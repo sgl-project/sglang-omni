@@ -30,7 +30,12 @@ type run struct {
 	ctx       context.Context // the session's: cancelled by Cancel and at the end
 	cancel    context.CancelFunc
 	cancelled atomic.Bool
-	stop      chan struct{}
+	// llmCtx is the language model's requests': SkipLLM cancels it
+	// (llmStop), and skipped says so; the session goes on.
+	llmCtx  context.Context
+	llmStop context.CancelFunc
+	skipped atomic.Bool
+	stop    chan struct{}
 	// recorded is closed once listen's recording loop has the capture's
 	// end: the stream's Finish waits for it, so that the Final's answer
 	// never comes while that loop still runs.
@@ -63,6 +68,12 @@ type run struct {
 	// retry's entry.
 	dsp    string
 	gainDB float64
+	// shot is the picture of the target's window for the language model
+	// (window.go); nil: none.
+	shot func() []byte
+	// heard takes the stream's live texts to the recording loop while it
+	// listens for the end word (endword.go); nil otherwise.
+	heard chan string
 }
 
 type capResult struct {
@@ -118,12 +129,13 @@ func (r *run) firstState() State {
 }
 
 // canSelect says whether the session reads the selection: Translate and
-// Rewrite with a selector, not a try, not a follow-up, in an app that is
-// not VoxtNew.
+// Rewrite with a selector (a Rewrite follow-up too: the user may have
+// selected more text since, #3816), not a try, in an app that is not
+// VoxtNew.
 func (r *run) canSelect() bool {
 	cfg := r.m.cfg
 	t := r.req.Target
-	return cfg.Select != nil && !r.req.Try && len(r.req.Previous) == 0 && t.PID != 0 && (cfg.Self == 0 || t.PID != cfg.Self) &&
+	return cfg.Select != nil && !r.req.Try && t.PID != 0 && (cfg.Self == 0 || t.PID != cfg.Self) &&
 		(r.req.Kind == store.KindTranslate || r.req.Kind == store.KindRewrite)
 }
 
@@ -131,7 +143,6 @@ func (r *run) canSelect() bool {
 // recognition, composition, delivery, history.
 func (r *run) main() {
 	defer r.cancel()
-	cfg := r.m.cfg
 	kind := r.req.Kind
 	switch kind {
 	case store.KindTranscribe, store.KindTranslate, store.KindRewrite:
@@ -140,17 +151,12 @@ func (r *run) main() {
 		return
 	}
 	r.logf("info", "start %s in %s", kind, r.req.Target.BundleID)
+	r.shootWindow()
 
-	// The services and the dictionary, meanwhile.
-	r.svcDone = make(chan svcResult, 1)
-	go func() {
-		svc, err := cfg.Resolve(r.ctx, kind, r.settings)
-		var terms []store.Term
-		if err == nil && r.settings.Dictionary.Enabled && cfg.Glossary != nil {
-			terms, _ = cfg.Glossary(r.ctx)
-		}
-		r.svcDone <- svcResult{svc, terms, err}
-	}()
+	// The services and the dictionary, meanwhile. A typed text or a
+	// selection to translate is not heard: no speech model (#3838).
+	selTranslate := kind == store.KindTranslate && r.canSelect()
+	r.resolve(r.req.Text == nil && !selTranslate)
 
 	if t := r.req.Text; t != nil {
 		if r.awaitServices() {
@@ -160,7 +166,7 @@ func (r *run) main() {
 	}
 	var selDone chan string
 	switch {
-	case kind == store.KindTranslate && r.canSelect():
+	case selTranslate:
 		sel := r.readSelection()
 		if r.ctx.Err() != nil {
 			r.endCancelled(nil)
@@ -172,6 +178,8 @@ func (r *run) main() {
 			}
 			return
 		}
+		// No selection: Translate hears the text, with a speech model.
+		r.resolve(true)
 		r.m.update(r, func(s *Snapshot) { s.State = Recording })
 	case kind == store.KindRewrite && r.canSelect():
 		selDone = make(chan string, 1)
@@ -202,6 +210,23 @@ func (r *run) main() {
 	}
 }
 
+// resolve opens the session's services and reads the dictionary,
+// meanwhile, into a new svcDone (an earlier resolve's result is
+// dropped); speech: as Resolver's.
+func (r *run) resolve(speech bool) {
+	cfg := r.m.cfg
+	done := make(chan svcResult, 1)
+	r.svcDone = done
+	go func() {
+		svc, err := cfg.Resolve(r.ctx, r.req.Kind, r.settings, speech)
+		var terms []store.Term
+		if err == nil && r.settings.Dictionary.Enabled && cfg.Glossary != nil {
+			terms, _ = cfg.Glossary(r.ctx)
+		}
+		done <- svcResult{svc, terms, err}
+	}()
+}
+
 // finishOpts say how a result is delivered: card, when set, sends it to
 // the answer card without trying to insert it (the reason it shows
 // there); replace replaces the selection, only in the app it was made in
@@ -211,13 +236,21 @@ type finishOpts struct {
 	replace bool
 }
 
-// finish delivers result (unless it is a try or empty), keeps the
-// history entry and ends the session.
+// finish delivers result (unless it is a try or empty; a note's is
+// saved), keeps the history entry and ends the session.
 func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 	cfg := r.m.cfg
 	var dres deliver.Result
+	noted := false
 	switch {
 	case result == "" || r.req.Try:
+	case r.req.Note:
+		if err := r.saveNote(result); err != nil {
+			r.logf("error", "note not saved, the card shows it: %v", err)
+			problem = &Problem{Code: ProblemInternal, Err: err, Degraded: true}
+			break
+		}
+		noted = true
 	case o.card != "":
 		dres.Reason = o.card
 		r.m.update(r, func(s *Snapshot) { s.Result, s.Card = result, true })
@@ -226,7 +259,7 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 		press := r.press(o.replace) // app enhancement's auto key
 		ctx, cancel := context.WithTimeout(context.Background(), cfg.DeliverTime)
 		dres = deliver.Insert(ctx, cfg.Text, deliver.Request{Text: result, Target: r.req.Target, Press: press, Self: cfg.Self, Activate: cfg.Activate,
-			Replace: o.replace, VerifyMS: deliver.DefaultVerifyMS, Stop: r.ctx})
+			Replace: o.replace, VerifyMS: deliver.DefaultVerifyMS, Stop: r.ctx, KeepClipboard: r.settings.General.CopyResult})
 		cancel()
 		if r.cancelled.Load() && errors.Is(dres.Err, context.Canceled) {
 			// Cancelled before the paste was sent: nothing went in.
@@ -255,12 +288,16 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 	total := r.now().Sub(snap.StartedAt)
 	r.m.end(r, st, func(s *Snapshot) {
 		s.Result, s.Problem = result, problem
-		s.Recording = r.keepsRecording()
+		s.Recording = r.keepsRecording(store.StatusDone)
 		s.Inserted = dres.Inserted
-		if dres.Inserted {
-			s.InsertedInto = dres.To
+		if l, ok := dres.Landing(); ok {
+			s.Landing = &l
 		}
-		s.Card = result != "" && !r.req.Try && !dres.Inserted
+		// A text that did not go in shows in the card only when it must (a
+		// forced card, an unsaved note, Rewrite's follow-ups) or the
+		// feature's card is on; else the app copies it and says so.
+		s.Card = result != "" && !r.req.Try && !dres.Inserted && !noted &&
+			(o.card != "" || r.req.Note || r.req.Kind == store.KindRewrite || r.settings.Features.ShowsCard(string(r.req.Kind)))
 		s.Delivery = dres.Reason
 		s.Timings.Deliver, s.Timings.Total = dres.Elapsed, total
 	}, func(s Snapshot) { r.keep(s, store.StatusDone) })
@@ -287,7 +324,7 @@ func (r *run) endFailed(p *Problem, stream asr.Stream, more ...func(*Snapshot)) 
 		s.Problem = p
 		s.Timings.Total = total
 		s.Timings.Audio = audio
-		s.Recording = audio >= r.m.cfg.MinRecording && r.keepsRecording()
+		s.Recording = audio >= r.m.cfg.MinRecording && r.keepsRecording(store.StatusFailed)
 		for _, fn := range more {
 			fn(s)
 		}
@@ -309,7 +346,7 @@ func (r *run) endCancelled(stream asr.Stream) {
 	r.m.end(r, Cancelled, func(s *Snapshot) {
 		s.Timings.Total = total
 		s.Timings.Audio = audio
-		s.Recording = audio >= r.m.cfg.MinRecording && r.keepsRecording()
+		s.Recording = audio >= r.m.cfg.MinRecording && r.keepsRecording(store.StatusCancelled)
 	}, func(s Snapshot) {
 		if audio >= r.m.cfg.MinRecording {
 			r.keep(s, store.StatusCancelled)
@@ -336,11 +373,21 @@ func (r *run) timeoutProblem(ctx context.Context) *Problem {
 	return &Problem{Code: ProblemASR, Err: r.ctxErr(ctx)}
 }
 
+// saveNote saves a note session's result (Config.Notes).
+func (r *run) saveNote(text string) error {
+	if r.m.cfg.Notes == nil {
+		return errors.New("no notes store")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return r.m.cfg.Notes.Put(ctx, store.Note{ID: r.id, Text: text, CreatedAt: r.m.Current().StartedAt})
+}
+
 // keep writes the history entry of an ended session (and its recording),
-// when the settings keep history. Not for tries.
+// when inHistory says so.
 func (r *run) keep(s Snapshot, status store.Status) {
 	cfg := r.m.cfg
-	if r.req.Try || cfg.History == nil || !r.settings.Privacy.KeepHistory {
+	if !r.inHistory(status) {
 		return
 	}
 	e := store.Entry{
@@ -369,7 +416,7 @@ func (r *run) keep(s Snapshot, status store.Status) {
 	switch {
 	case s.Inserted:
 		e.Delivery = "insert"
-		if to := s.InsertedInto; to.PID != 0 && to.PID != s.Target.PID {
+		if to := s.Landing.App; to.PID != 0 && to.PID != s.Target.PID {
 			e.InsertedBundle, e.InsertedName = to.BundleID, to.Name // where it went; the app and the rule stay the start app's
 		}
 	case s.Card:
@@ -400,13 +447,23 @@ func (r *run) keep(s Snapshot, status store.Status) {
 	}
 }
 
+// inHistory reports whether the session's history entry is written: not
+// for a try, nor for a note saved from its recognition (the Notes page
+// keeps it). A note whose recognition failed, or that was cancelled, keeps
+// its entry and recording, as a dictation does.
+func (r *run) inHistory(status store.Status) bool {
+	if r.req.Try || r.m.cfg.History == nil || !r.settings.Privacy.KeepHistory {
+		return false
+	}
+	return !(r.req.Note && status == store.StatusDone && !r.recognitionFailed)
+}
+
 // keepsRecording reports whether the session's history entry keeps the
 // recording: the settings keep recordings, recognition failed, or the
 // user cancelled (for a while: Config.AudioRetention), so Retry can
-// recover it. Not for tries.
-func (r *run) keepsRecording() bool {
-	cfg := r.m.cfg
-	if r.req.Try || r.req.Text != nil || cfg.History == nil || !r.settings.Privacy.KeepHistory || len(r.pcm.bytes()) == 0 {
+// recover it.
+func (r *run) keepsRecording(status store.Status) bool {
+	if !r.inHistory(status) || r.req.Text != nil || len(r.pcm.bytes()) == 0 {
 		return false
 	}
 	return r.settings.Privacy.KeepAudio || r.recognitionFailed || r.cancelled.Load()

@@ -14,6 +14,7 @@ from sglang.srt.layers.attention.flashinfer_backend import (
     FlashInferIndicesUpdaterPrefill,
 )
 from sglang.srt.mem_cache.kv_loc_plan import IdSpaceKind
+from sglang.srt.sampling.sampling_params import TOP_K_ALL
 from torch import nn
 from transformers import WhisperConfig
 
@@ -245,3 +246,133 @@ def test_draft_decode_graphs_are_captured_without_torch_compile(monkeypatch) -> 
 
     assert seen == [(True, False)]
     assert flags.capture.enable_torch_compile is True
+
+
+def chain_batch(
+    num_requests: int,
+    *,
+    greedy: list[bool] | None = None,
+    temperature: float = 1.0,
+    custom_params: list[dict | None] | None = None,
+    output_ids: list[list[int]] | None = None,
+) -> SimpleNamespace:
+    greedy = greedy if greedy is not None else [False] * num_requests
+    custom_params = custom_params or [None] * num_requests
+    output_ids = output_ids or [[5]] * num_requests
+    return SimpleNamespace(
+        sampling_info=SimpleNamespace(
+            logit_bias=None,
+            is_all_greedy=all(greedy),
+            top_ks=torch.tensor([1 if row else TOP_K_ALL for row in greedy]),
+            temperatures=torch.tensor(
+                [[1.0 if row else temperature] for row in greedy]
+            ),
+        ),
+        reqs=[
+            SimpleNamespace(
+                sampling_params=SimpleNamespace(custom_params=params), output_ids=ids
+            )
+            for params, ids in zip(custom_params, output_ids, strict=True)
+        ],
+    )
+
+
+def test_sampled_chain_commits_tokens_from_the_target_distribution() -> None:
+    """A sampled draft that disagrees with the target must not pull the committed tokens toward it."""
+    torch.manual_seed(0)
+    num_requests = 200_000
+    draft_logits = torch.tensor([2.0, 0.0, -1.0, 1.0])
+    target_logits = torch.tensor([[0.0, 1.5, 0.5, -0.5], [1.0, -1.0, 0.0, 2.0]])
+    sampler = speculative.ChainSampler(chain_batch(num_requests, temperature=0.8))
+
+    drafts = sampler.draw(draft_logits.expand(num_requests, -1))[:, None]
+    num_correct, committed = sampler.verify(
+        target_logits.expand(num_requests, -1, -1), drafts
+    )
+
+    first = torch.bincount(committed[:, 0], minlength=4).float() / num_requests
+    expected_first = torch.softmax(target_logits[0] / 0.8, dim=-1)
+    torch.testing.assert_close(first, expected_first, atol=5e-3, rtol=0)
+    accepted = num_correct == 1
+    bonus = torch.bincount(committed[accepted, 1], minlength=4).float()
+    expected_bonus = torch.softmax(target_logits[1] / 0.8, dim=-1)
+    torch.testing.assert_close(bonus / bonus.sum(), expected_bonus, atol=5e-3, rtol=0)
+
+
+def test_greedy_rows_of_a_mixed_chain_keep_argmax_matching() -> None:
+    torch.manual_seed(0)
+    sampler = speculative.ChainSampler(chain_batch(2, greedy=[True, False]))
+    draft_logits = torch.tensor([[0.0, 3.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]])
+    target_logits = torch.tensor(
+        [
+            [[0.0, 3.0, 0.0, 0.0], [0.0, 0.0, 3.0, 0.0], [5.0, 0.0, 0.0, 0.0]],
+            [[0.0, 0.0, 0.0, 0.0]] * 3,
+        ]
+    )
+
+    drafts = torch.stack([sampler.draw(draft_logits), sampler.draw(draft_logits)], 1)
+    num_correct, committed = sampler.verify(target_logits, drafts)
+
+    assert drafts[0].tolist() == [1, 1]
+    assert num_correct[0].item() == 1
+    assert committed[0, :2].tolist() == [1, 2]
+
+
+def test_all_greedy_chain_commits_the_target_argmax_of_every_row() -> None:
+    sampler = speculative.ChainSampler(chain_batch(1, greedy=[True]))
+    draft_logits = torch.tensor([[0.0, 3.0, 0.0, 0.0]])
+    target_logits = torch.tensor(
+        [[[0.0, 3.0, 0.0, 0.0], [0.0, 3.0, 0.0, 0.0], [0.0, 0.0, 0.0, 4.0]]]
+    )
+
+    drafts = torch.stack([sampler.draw(draft_logits), sampler.draw(draft_logits)], 1)
+    num_correct, committed = sampler.verify(target_logits, drafts)
+
+    assert num_correct.tolist() == [2]
+    assert committed.tolist() == [[1, 1, 3]]
+
+
+def test_timestamp_rows_see_the_drafts_ahead_of_them() -> None:
+    """A verify row predicts the token after every draft before it, so the timestamp rules must count them."""
+    from sglang_omni.models.whisper_asr.timestamp_logit_processor import (
+        apply_timestamp_rules,
+    )
+
+    torch.manual_seed(0)
+    vocab, eos, no_timestamps, timestamp_begin = 40, 20, 29, 30
+    params = {
+        "segment_timestamps": True,
+        "timestamp_begin_id": timestamp_begin,
+        "no_timestamps_token_id": no_timestamps,
+        "eos_token_id": eos,
+        "max_initial_timestamp_index": None,
+    }
+    histories = [[5, 31], [31, 33], [7], [32, 8, 9]]
+    num_requests, draft_steps = len(histories), 4
+    draft_logits = torch.randn(draft_steps, num_requests, vocab) * 4
+    target_logits = torch.randn(num_requests, draft_steps + 1, vocab) * 4
+    sampler = speculative.ChainSampler(
+        chain_batch(
+            num_requests,
+            greedy=[True] * num_requests,
+            custom_params=[params] * num_requests,
+            output_ids=histories,
+        )
+    )
+
+    drafts = torch.stack([sampler.draw(step) for step in draft_logits], dim=1)
+    num_correct, committed = sampler.verify(target_logits, drafts)
+
+    for row, history in enumerate(histories):
+        expected_drafts = []
+        for step in range(draft_steps):
+            scores = draft_logits[step, row].clone()
+            apply_timestamp_rules(scores, history + expected_drafts, params)
+            expected_drafts.append(int(scores.argmax()))
+        assert drafts[row].tolist() == expected_drafts
+        expected_targets = []
+        for position in range(draft_steps + 1):
+            scores = target_logits[row, position].clone()
+            apply_timestamp_rules(scores, history + expected_drafts[:position], params)
+            expected_targets.append(int(scores.argmax()))
+        assert committed[row].tolist() == expected_targets

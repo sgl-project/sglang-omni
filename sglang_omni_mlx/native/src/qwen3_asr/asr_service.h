@@ -74,6 +74,9 @@ struct ServedKind {
   std::map<std::string, std::function<void(const std::string &)>> flags;
   // Checks the parsed flags together; throws std::invalid_argument.
   std::function<void()> check_flags;
+  // Most queued requests the worker decodes together, read once the flags are
+  // parsed; unset means one at a time.
+  std::function<int()> max_batch;
 };
 
 // A form field as given, or as an integer or a finite number; the latter two

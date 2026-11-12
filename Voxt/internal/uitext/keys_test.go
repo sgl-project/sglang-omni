@@ -14,8 +14,18 @@ func TestHotkeyText(t *testing.T) {
 		"RightCommand":         "Right ⌘",
 		"RightOption":          "Right ⌥",
 		"Control+Command+V":    "⌃⌘V",
-		"Control+Option+Space": "⌃⌥ Space",
+		"Control+Option+Space": "⌃⌥Space",
+		"Option+Space":         "⌥Space",
+		"Escape":               "Esc",
+		"Return":               "Return",
+		"Control+Delete":       "⌃Delete",
+		"Option+Tab":           "⌥Tab",
+		"Fn+Space":             "fn Space",
+		"Control+RightOption":  "⌃ Right ⌥",
+		"Option+Shift":         "⌥⇧",
 		"Fn+F5":                "fn F5",
+		"Mouse3":               "Middle mouse button",
+		"Option+Mouse4":        "⌥ Mouse button 4",
 		"bogus":                "bogus",
 	} {
 		if got := HotkeyText(keys); got != want {
@@ -29,7 +39,7 @@ func TestParseErrorText(t *testing.T) {
 		"":         "Type the keys, as in Control+Option+Space.",
 		"A+B":      "Only one key besides the modifiers.",
 		"LeftFn":   "fn has no left or right side.",
-		"Hyper+K":  "A key is unknown. Write the modifiers first, then one key: Fn, RightCommand, Control+Option+Space, Fn+F5.",
+		"Hyper+K":  "Unknown key. Type the modifiers first, then one key, as in Fn, RightCommand, Control+Option+Space or Fn+F5.",
 		"Option+K": "",
 	} {
 		_, err := hotkey.Parse(keys)
@@ -45,7 +55,7 @@ func TestParseErrorText(t *testing.T) {
 func TestHotkeyGlyphs(t *testing.T) {
 	for keys, want := range map[string]string{
 		"Fn": "fn", "Fn+Shift": "fn ⇧", "Fn+Control": "fn ⌃", "Control+Command+V": "⌃⌘V",
-		"RightCommand": "Right ⌘", "RightOption+Shift": "Right ⌥ ⇧", "Option+Space": "⌥ Space", "": "—", "Command+Shift+k": "⇧⌘K",
+		"RightCommand": "Right ⌘", "RightOption+Shift": "Right ⌥ ⇧", "Option+Space": "⌥Space", "": "—", "Command+Shift+k": "⇧⌘K",
 	} {
 		if got := HotkeyGlyphs(keys); got != want {
 			t.Errorf("%q → %q, want %q", keys, got, want)

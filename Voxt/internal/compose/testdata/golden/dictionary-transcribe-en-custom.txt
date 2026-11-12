@@ -1,0 +1,34 @@
+# profile: custom:dictionary+scene+glossary
+# layers: custom dictionary scene glossary
+
+My own prompt for English.
+
+<dictionary>
+| Standard spelling | Correction mapping | Condition / cue |
+|---|---|---|
+| 101; 280; I-80; SR-85 | `幺零幺` → 101 | Bay Area highways; keep the I- / SR- prefix as spoken |
+| 401(k); Roth | `401 K` / `四零一 K` → 401(k); `罗斯` → Roth | retirement accounts |
+| AAPL; NVDA; TSLA | — | tickers, all caps, only when the ticker itself is said |
+</dictionary>
+
+Scene: the text goes into Slack. The user's rules for it:
+Casual.
+Use the scene to choose wording and form only; do not add facts that were not said.
+
+Glossary: write these terms exactly as below, also when the recognizer heard them differently.
+- Kubernetes
+- VoxtNew (heard as: aura link, 奥拉链接)
+- DeepSeek (heard as: deep seek)
+
+---- user ----
+<input>
+Um, can you send the, uh, the weekly report to Tom, sorry, I mean to Anna, before five? I need it before five, I really, I really need it before five.
+</input>
+
+---- assistant ----
+Can you send the weekly report to Anna before 5? I really need it before 5.
+
+---- user ----
+<input>
+我走幺零幺去 罗斯 账户
+</input>

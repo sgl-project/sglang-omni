@@ -6,7 +6,9 @@ VoxtNew derives from Auralink (https://github.com/hehehai/Auralink) at
 commit 748cf55, by the same author, who licenses that code for VoxtNew
 under the Apache License 2.0: almost all of VoxtNew's Go code, the Swift
 helper, its tests and its documentation started there, and were renamed
-and stripped of Auralink's remote services (docs/architecture.md, §5).
+and stripped of Auralink's remote services (docs/architecture.md, §5);
+its remote language models (the OpenAI-compatible transport, the services'
+presets and the Keychain code) came back in 2.1.
 
 Third-party material
 ====================
@@ -17,8 +19,7 @@ CC BY 4.0 (for the icons, which are artwork rather than code) ask for
 their notices to be kept, which this file and LICENSES/ do. Full licence
 texts: LICENSES/Apache-2.0.txt, LICENSES/Unicode-3.0.txt,
 third_party/mygo/LICENSE, LICENSES/go/ (the Go modules' own files,
-copied unchanged), LICENSES/omni/ and LICENSES/llm/ (the runtimes'
-libraries).
+copied unchanged) and LICENSES/omni/ (the speech runtime's libraries).
 
 AudioSmith
   Portions of this product come from AudioSmith
@@ -113,9 +114,9 @@ MyGo
   https://sqlite.org, in the public domain).
 
 The Omni native runtime (VoxtNew.app/Contents/Resources/omni)
-  bin/qwen3_asr_server is built from sglang-omni's sglang_omni_mlx/native
-  (this repository, Apache License 2.0) by scripts/build-omni.sh. It
-  carries, linked in or beside it:
+  bin/qwen3_asr_server (and its copy bin/silero_vad_server) is built from
+  sglang-omni's sglang_omni_mlx/native (this repository, Apache License
+  2.0) by scripts/build-omni.sh. It carries, linked in or beside it:
   - MLX 0.32.3 (libmlx.dylib, libjaccl.dylib, mlx.metallib), Copyright
     2023 Apple Inc., MIT (LICENSES/omni/mlx.LICENSE.txt)
   - CivetWeb 1.16, Copyright 2013-2021 the CivetWeb developers, 2004-2013
@@ -129,33 +130,6 @@ The Omni native runtime (VoxtNew.app/Contents/Resources/omni)
   The models it runs are downloaded by the user, not shipped:
   Qwen3-ASR (Qwen, Apache License 2.0) in the MLX conversions of
   mlx-community, and Silero VAD (MIT).
-
-The language models' runtime (VoxtNew.app/Contents/Resources/llm)
-  voxtnew-llm is built from llm/ (this repository, Apache License 2.0)
-  by scripts/build-llm.sh. Its MLX loader (ModelLoader.swift,
-  PrequantizedModelLoading.swift, LocalTokenizerLoader.swift) and its
-  GGUF runtime come from Voxt (https://github.com/hehehai/voxt,
-  Voxt/Core/Models), Copyright the Voxt authors, Apache License 2.0. It
-  carries, linked in or beside it (licence texts in LICENSES/llm/):
-  - mlx-swift 0.31.6, Copyright (c) 2023 ml-explore, MIT, with MLX
-    (mlx.metallib), Copyright 2023 Apple Inc., MIT; mlx-c, Copyright 2023
-    Apple Inc., MIT; {fmt}, Copyright (c) 2012 - present Victor Zverovich
-    and {fmt} contributors, MIT; JSON for Modern C++, Copyright 2013-2022
-    Niels Lohmann, MIT; metal-cpp, Copyright 2022 Apple Inc., Apache
-    License 2.0
-  - mlx-swift-lm (revision c6446cf), Copyright (c) 2024 ml-explore, MIT
-  - llama.cpp b10549 (llama.framework), Copyright (c) 2023-2026 The ggml
-    authors, MIT, through llama.swift 2.10549.0, Copyright 2025 Mattt, MIT
-  - swift-transformers 1.3.4 (Tokenizers, Hub;
-    swift-transformers_Hub.bundle), swift-huggingface 0.13.0, swift-jinja
-    2.5.1 (Hugging Face), swift-collections 1.7.3, swift-numerics 1.1.1,
-    swift-crypto 4.5.2 and swift-asn1 1.7.3 (Apple; their NOTICE files are
-    in LICENSES/llm/), all Apache License 2.0 (LICENSES/Apache-2.0.txt)
-  - EventSource 1.5.1, Copyright 2025 Mattt, MIT; yyjson 0.12.0,
-    Copyright (c) 2020 YaoYuan, MIT
-  The models it runs are downloaded by the user, not shipped: Qwen3.5
-  (Qwen, Apache License 2.0) in the MLX conversions of mlx-community, and
-  Hy-MT2 (Tencent, Apache License 2.0).
 
 React Bits Sound Lab (the recording's cues, in official builds only)
   VoxtNew's official builds (from actnow.dev) carry sounds from React Bits

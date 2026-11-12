@@ -18,7 +18,7 @@ import (
 // ---- Text of shortcuts and their problems ----
 
 // HotkeyText shows keys as macOS writes them: "fn ⇧", "Right ⌘",
-// "⌃⌥ Space", "⌃⌘V". Keys that do not parse show as written.
+// "⌃⌥Space", "⌃⌘V". Keys that do not parse show as written.
 func HotkeyText(keys string) string {
 	c, err := hotkey.Parse(keys)
 	if err != nil {
@@ -46,10 +46,13 @@ func HotkeyText(keys string) string {
 	if c.Key != "" {
 		parts = append(parts, keyGlyph(c.Key))
 	}
-	// Glyphs run together (⌃⌥⇧⌘V); words keep a space around them.
+	// Glyphs run together, and a key's name follows them (⌃⌥⇧⌘V,
+	// ⌥Space, as macOS writes them); other words keep a space around them
+	// (fn F5, Right ⌘, ⌥ Mouse button 4).
 	var b strings.Builder
 	for i, p := range parts {
-		if i > 0 && (len([]rune(p)) > 1 || len([]rune(parts[i-1])) > 1) {
+		key := i == len(parts)-1 && c.Key != "" && !c.Mouse()
+		if i > 0 && (len([]rune(p)) > 1 && !key || len([]rune(parts[i-1])) > 1) {
 			b.WriteString(" ")
 		}
 		b.WriteString(p)
@@ -57,19 +60,20 @@ func HotkeyText(keys string) string {
 	return b.String()
 }
 
-// keyGlyph is a key as macOS shows it.
+// keyGlyph is a key as macOS shows it; the keys whose glyphs few people
+// know (⎋ ↩ ⌫ ⇥) by their names, as Voxt 1.x does.
 func keyGlyph(k string) string {
 	switch k {
 	case "Space":
 		return i18n.T("Space")
 	case "Return":
-		return "↩"
+		return i18n.T("Return")
 	case "Tab":
-		return "⇥"
+		return i18n.T("Tab")
 	case "Escape":
-		return "⎋"
+		return i18n.T("Esc")
 	case "Delete":
-		return "⌫"
+		return i18n.T("Delete")
 	case "ForwardDelete":
 		return "⌦"
 	case "Left":
@@ -88,6 +92,11 @@ func keyGlyph(k string) string {
 		return "↖"
 	case "End":
 		return "↘"
+	case "Mouse3":
+		return i18n.T("Middle mouse button")
+	}
+	if n, ok := strings.CutPrefix(k, "Mouse"); ok {
+		return i18n.T("Mouse button %s", n)
 	}
 	return k
 }
@@ -104,7 +113,7 @@ func ParseErrorText(err error) string {
 	case errors.Is(err, hotkey.ErrFnSide):
 		return i18n.T("fn has no left or right side.")
 	}
-	return i18n.T("A key is unknown. Write the modifiers first, then one key: Fn, RightCommand, Control+Option+Space, Fn+F5.")
+	return i18n.T("Unknown key. Type the modifiers first, then one key, as in Fn, RightCommand, Control+Option+Space or Fn+F5.")
 }
 
 // systemShortcutName names what macOS uses keys for.
@@ -132,11 +141,11 @@ func HotkeyProblemText(p hotkey.Problem) string {
 	case hotkey.ProblemDuplicate:
 		return i18n.T("The same keys as shortcut %d.", p.OtherIndex+1)
 	case hotkey.ProblemConflict:
-		return i18n.T("%s has the same keys and trigger: only one of them works.", FeatureTitle(p.Other))
+		return i18n.T("%s has the same keys and trigger, so only one of them works.", FeatureTitle(p.Other))
 	case hotkey.ProblemSystem:
 		return i18n.T("macOS uses these keys for %s.", systemShortcutName(p.System))
 	case hotkey.ProblemBareKey:
-		return i18n.T("A key alone would be taken from every app: add ⌃, ⌥, ⇧, ⌘ or fn.")
+		return i18n.T("A single key would be taken from every app. Add ⌃, ⌥, ⇧, ⌘ or fn.")
 	}
 	return ""
 }
@@ -152,7 +161,7 @@ func HotkeyProblems(f settings.Features, feature string) map[int][]string {
 			out[p.Index] = append(out[p.Index], HotkeyProblemText(p))
 		case p.Code == hotkey.ProblemConflict && p.Other == feature:
 			out[p.OtherIndex] = append(out[p.OtherIndex],
-				i18n.T("%s has the same keys and trigger: only one of them works.", FeatureTitle(p.Feature)))
+				i18n.T("%s has the same keys and trigger, so only one of them works.", FeatureTitle(p.Feature)))
 		}
 	}
 	return out
@@ -197,6 +206,8 @@ func FeaturePrefix(feature string) string {
 		return "tl"
 	case hotkey.Rewrite:
 		return "rw"
+	case hotkey.Meeting:
+		return "mt"
 	}
 	return "tr"
 }
@@ -211,7 +222,11 @@ func FeatureTitle(feature string) string {
 	case hotkey.PasteLast:
 		return i18n.T("Paste the last result")
 	case hotkey.CancelID:
-		return i18n.T("Cancel transcription")
+		return i18n.T("Cancel recording")
+	case hotkey.Note:
+		return i18n.T("Notes")
+	case hotkey.Meeting:
+		return i18n.T("Meetings")
 	}
 	return i18n.T("Transcribe")
 }

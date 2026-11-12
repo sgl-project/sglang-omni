@@ -37,10 +37,11 @@ type muteState struct {
 	// muting is the session whose output is muted, or will be once its
 	// start cue ended ("" for none).
 	muting string
-	// muteNote is the line the pill shows about the output while its
-	// session records; seq numbers them, so that a note's timer clears
-	// only itself.
-	muteNote struct {
+	// pillNote is the line the pill shows for a moment while its session
+	// records (the output that cannot be muted, the microphone that
+	// changed); seq numbers them, so that a note's timer clears only
+	// itself.
+	pillNote struct {
 		id, text string
 		seq      int
 	}
@@ -53,7 +54,7 @@ type muteState struct {
 const (
 	startCueMax  = time.Second
 	stopCueMax   = 300 * time.Millisecond
-	muteNoteTime = 3 * time.Second
+	pillNoteTime = 3 * time.Second
 )
 
 // startCueWait is how long the mute waits for the start cue t, unless it
@@ -205,41 +206,62 @@ func (a *app) closeMute() {
 
 // showMuteNote says in the pill that session id's output could not be
 // muted, while it records.
-func (a *app) showMuteNote(id string) {
+func (a *app) showMuteNote(id string) { a.showPillNote(id, muteNoteText()) }
+
+// clearMuteNote takes that note away (not another one, such as the
+// microphone's).
+func (a *app) clearMuteNote(id string) { a.clearPillNote(id, muteNoteText()) }
+
+func muteNoteText() string { return i18n.T("This output device cannot be muted. Recording continues.") }
+
+// inputSwitched says in the pill which microphone records now that the
+// one in use went away.
+func (a *app) inputSwitched(was, s session.Snapshot) {
+	if s.ID == was.ID && s.Switched > was.Switched {
+		a.showPillNote(s.ID, i18n.T("Switched the microphone to %s. Recording continues.", s.Device))
+	}
+}
+
+// showPillNote shows text in session id's pill for pillNoteTime, while it
+// records.
+func (a *app) showPillNote(id, text string) {
 	if a.sess.ID != id || a.sess.State != session.Recording || a.sess.Try {
 		return // a try's page shows no pill; a recording that stopped needs no word
 	}
-	a.muteNote.seq++
-	seq := a.muteNote.seq
-	a.muteNote.id, a.muteNote.text = id, i18n.T("This output device cannot be muted. Recording continues.")
+	a.pillNote.seq++
+	seq := a.pillNote.seq
+	a.pillNote.id, a.pillNote.text = id, text
 	a.overlaySync()
-	a.later(muteNoteTime, func() {
-		if a.muteNote.seq == seq {
-			a.clearMuteNote(id)
+	a.later(pillNoteTime, func() {
+		if a.pillNote.seq == seq {
+			a.clearPillNote(id, "")
 		}
 	})
 }
 
-// clearMuteNote takes session id's note away; the pill goes back to its
-// size (the live text's rule, only growing, is for the speech).
-func (a *app) clearMuteNote(id string) {
-	if a.muteNote.id != id || a.muteNote.text == "" {
+// clearPillNote takes session id's note away (only when it says text,
+// unless text is ""); the pill goes back to its size (the live text's
+// rule, only growing, is for the speech).
+func (a *app) clearPillNote(id, text string) {
+	if a.pillNote.id != id || a.pillNote.text == "" || text != "" && a.pillNote.text != text {
 		return
 	}
-	a.muteNote.id, a.muteNote.text = "", ""
+	a.pillNote.id, a.pillNote.text = "", ""
 	if a.ov.live.id == id {
 		a.ov.live.w = 0
 	}
 	a.overlaySync()
 }
 
-// pillSession is the session as the pill shows it: the output's note on
-// the live text's line while it shows (Voxt's status line comes before
-// the text).
+// pillSession is the session as the pill shows it: its note on the live
+// text's line while it shows (Voxt's status line comes before the text).
 func (a *app) pillSession() session.Snapshot {
 	s := a.sess
-	if a.muteNote.text != "" && a.muteNote.id == s.ID && s.State == session.Recording {
-		s.Partial = a.muteNote.text
+	if a.prefs.Overlay.HideLiveText {
+		s.Partial, s.Draft, s.Selection = "", "", "" // "Show live text" off: no words
+	}
+	if a.pillNote.text != "" && a.pillNote.id == s.ID && s.State == session.Recording {
+		s.Partial = a.pillNote.text
 	}
 	return s
 }

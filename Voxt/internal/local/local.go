@@ -4,8 +4,8 @@
 //
 // Library is the Services of the app: the models internal/models
 // installed, opened by the runtimes' openers (Openers: the Omni native
-// MLX servers for speech, the voxtnew-llm process for language). Without
-// a runtime an open fails with ErrNoRuntime. NotInstalled lists nothing
+// MLX servers for speech; no runtime opens a language model since the
+// local ones retired). Without a runtime an open fails with ErrNoRuntime. NotInstalled lists nothing
 // and fails every open with ErrNotInstalled.
 //
 // Installed reads memory only, so that views may call it while they
@@ -45,12 +45,16 @@ type Model struct {
 	// ID is the model's stable id in the catalogue; settings.Feature's
 	// ASR and LLM hold it ("" there: the first installed).
 	ID string
-	// Name is what the UI shows: a plain description of what it is good
-	// at, not its family, size or quantisation (the plan's model policy).
+	// Name is what the UI shows: the model's family, size and
+	// quantisation ("Qwen3-ASR 1.7B (8bit)"), or a remote model's service
+	// and model ("OpenAI · gpt-4.1-mini", internal/providers).
 	Name string
 	// Features are the only features it serves ("translate"), nil for
 	// every one (ForFeature).
 	Features []string
+	// Stream: a speech model that recognises while the user speaks, so
+	// the text shows as it comes (Voxt 1.x's Realtime tag).
+	Stream bool
 }
 
 // For says whether m serves feature ("transcribe", "translate",

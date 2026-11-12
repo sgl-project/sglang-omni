@@ -4,12 +4,13 @@ package main
 // room, opening the folders, moving the data folder (internal/datadir) and
 // the reset tiers: the look, all settings, everything
 // (settings_storage_erase.go). The local models are not in the data
-// folder: they are in the ActNow family's library ($HUB, by default
-// ~/Library/Application Support/ActNow/models/hub), which every family
-// app shares; the page shows how much of it is VoxtNew's alone and how
-// much it shares.
+// folder: they are in the model library ($HUB, by default
+// ~/Library/Application Support/SGLang Omni/models, models.HubIn, or the
+// family's models.root, which the family apps share); the page shows how
+// much of it is VoxtNew's alone and how much it shares.
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	fammodels "github.com/hehehai/actnowkit/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/datadir"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/recordings"
@@ -51,6 +53,11 @@ type storageState struct {
 	eraseKept      []string
 	eraseKeptBytes int64
 	erasing        bool
+
+	// The model folder's change (settings_storage_erase.go).
+	modelMoving     bool
+	modelMoveTo     string
+	modelMoveCancel context.CancelFunc
 }
 
 // storageReport is what takes room.
@@ -63,6 +70,9 @@ type storageReport struct {
 	// other ActNow apps (blobs counted once).
 	models                   string
 	modelsMine, modelsShared int64
+	// shared: another app keeps its models in the folder too (its claims
+	// name it).
+	shared bool
 }
 
 // storageCat is a category of files.
@@ -74,11 +84,11 @@ type storageCat struct {
 
 // Test seams: relaunching the app, choosing a folder.
 var (
-	appRelaunch   = func() { mygo.App.Relaunch() }
-	chooseMoveDir = func(a *app, then func(string)) {
+	appRelaunch = func() { mygo.App.Relaunch() }
+	chooseDir   = func(a *app, title, button string, then func(string)) {
 		go func() {
-			dirs, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.win, Title: i18n.T("Move the data folder to…"),
-				Directory: true, CreateDirectories: true, ButtonLabel: i18n.T("Move here")})
+			dirs, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.win, Title: title,
+				Directory: true, CreateDirectories: true, ButtonLabel: button})
 			if err != nil || len(dirs) == 0 {
 				return
 			}
@@ -121,13 +131,21 @@ func (a *app) loadStorage() {
 	hist := a.lib.store.History()
 	data, logs, audio := a.dataDir(), a.logDir, hist.AudioDir()
 	m := a.models
-	family := a.fam.Dir().Root
+	fam, bundleID := a.fam.Dir(), a.fam.BundleID()
+	family := fam.Root
 	a.stLoc = datadir.ReadLocation(a.home())
 	a.async(func() {
 		ctx := context.Background()
 		r := &storageReport{models: m.Hub()}
 		if u, err := m.Usage(); err == nil {
 			r.modelsMine, r.modelsShared = u.Mine, u.Shared
+		}
+		all, _ := fammodels.ReadAllClaims(fam)
+		for id, cs := range all {
+			// An empty root is the family's default library.
+			if id != bundleID && fammodels.SameHub(cmp.Or(cs.Root, fammodels.DefaultHubIn(fam)), r.models) {
+				r.shared = true
+			}
 		}
 		rec, _ := datadir.TreeSize(ctx, audio, nil)
 		if audio != hist.DefaultAudioDir() {
@@ -136,6 +154,10 @@ func (a *app) loadStorage() {
 			_, rec, _ = recordings.Usage(ctx, hist)
 		}
 		r.cats = append(r.cats, storageCat{id: "audio", title: i18n.T("Recordings kept with the history"), bytes: rec, dir: audio})
+		meetDir := filepath.Join(data, "meetings")
+		if meet, err := datadir.TreeSize(ctx, meetDir, nil); err == nil && meet > 0 {
+			r.cats = append(r.cats, storageCat{id: "meetings", title: i18n.T("Meeting recordings"), bytes: meet, dir: meetDir})
+		}
 		var db int64
 		if ents, err := os.ReadDir(data); err == nil {
 			for _, e := range ents {
@@ -299,7 +321,7 @@ func (a *app) storageSettings(c *ui.Context) {
 	settingRow(c, "st-data", uitext.ShortPath(a.dataDir()), i18n.T("Your history and its recordings, your dictionary and the database."), func() {
 		open("st-open-data", a.dataDir())
 		if ui.Button(c.Key("st-move"), i18n.T("Move…")).Disabled(a.moving).Clicked() {
-			chooseMoveDir(a, a.startMove)
+			chooseDir(a, i18n.T("Move the data folder to…"), i18n.T("Move here"), a.startMove)
 		}
 	})
 	if dir := a.prefs.History.AudioDir; dir != "" {
@@ -318,7 +340,7 @@ func (a *app) storageSettings(c *ui.Context) {
 		})
 	}
 	if l := a.stLoc; l.Failed != "" {
-		settingRowNote(c, "st-failed", i18n.T("The last move did not happen"), l.Failed, func() {
+		settingRowNote(c, "st-failed", i18n.T("The last move failed"), l.Failed, func() {
 			if ui.Button(c.Key("st-failed-ok"), i18n.T("Dismiss")).Clicked() {
 				a.dismissMoveFailure()
 			}
@@ -330,7 +352,7 @@ func (a *app) storageSettings(c *ui.Context) {
 
 	a.modelFolderRows(c, r, open) // settings_storage_erase.go
 
-	sectionTitle(c, i18n.T("What takes room"))
+	sectionTitle(c, i18n.T("What takes up space"))
 	if r == nil {
 		ui.Row(c).Gap(px(t, sp2)).Children(func() {
 			ui.Spinner(c)
@@ -358,7 +380,7 @@ func (a *app) storageSettings(c *ui.Context) {
 			a.resetAsk = "settings"
 		}
 	})
-	settingRow(c, "st-erase", i18n.T("Erase everything"), i18n.T("Deletes your history, recordings, dictionary, app enhancement rules, the local models no other app uses, settings and logs, then restarts Voxt as new."), func() {
+	settingRow(c, "st-erase", i18n.T("Erase everything"), i18n.T("Deletes all your data and settings, then restarts Voxt from scratch."), func() {
 		if ui.Button(c.Key("st-erase"), i18n.T("Erase…")).Disabled(a.erasing).Clicked() {
 			a.askErase()
 		}
@@ -377,7 +399,7 @@ func (a *app) storageDialogs(c *ui.Context) {
 			if ui.Button(c.Key("st-ask-cancel"), i18n.T("Cancel")).AutoFocus().Clicked() {
 				a.resetAsk = ""
 			}
-			if ui.Button(c.Key("st-ask-ok"), i18n.T("Reset the settings")).Clicked() {
+			if ui.Button(c.Key("st-ask-ok"), i18n.T("Reset settings")).Clicked() {
 				a.resetAsk = ""
 				a.resetSettings()
 			}
@@ -386,14 +408,15 @@ func (a *app) storageDialogs(c *ui.Context) {
 	if !open && a.resetAsk == "settings" {
 		a.resetAsk = ""
 	}
-	a.eraseDialog(c) // settings_storage_erase.go
+	a.eraseDialog(c)     // settings_storage_erase.go
+	a.modelMoveDialog(c) // settings_storage_erase.go
 	moving := a.moving
 	ui.DialogBase(c.Key("st-moving"), &moving, func(backdrop, panel ui.Element) {
 		backdrop.Background(ui.RGBA(0, 0, 0, 0.3))
 		panel.Width(px(t, 440)).Radius(px(t, radiusCard)).Background(t.Background).Border(1, t.Border).Padding(px(t, sp5)).Label(i18n.T("Moving the data folder"))
 		ui.Column(c).Gap(px(t, 10)).Children(func() {
 			ui.Text(c, i18n.T("Moving the data folder")).Bold()
-			ui.Text(c, i18n.T("Copying to %s. Voxt restarts when the copy is checked, and finishes the move as it starts.", uitext.ShortPath(a.moveTo))).FontSize(px(t, fsCaption))
+			ui.Text(c, i18n.T("Copying to %s. Once the copy is checked, Voxt restarts to finish the move.", uitext.ShortPath(a.moveTo))).FontSize(px(t, fsCaption))
 			frac := 0.0
 			if a.moveTotal > 0 {
 				frac = float64(a.moveDone) / float64(a.moveTotal)

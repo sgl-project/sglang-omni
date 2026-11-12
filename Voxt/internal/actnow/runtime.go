@@ -1,7 +1,7 @@
 package actnow
 
 // VoxtNew's runtime file (runtime/<bundle id>.json, spec §11.1): the
-// models its runtimes hold (the omni servers', voxtnew-llm's), each with
+// models its runtimes hold (the omni servers'), each with
 // its repo, commit, worker, bytes and since when it is idle; its memory
 // budget against the other apps'; its paste in progress. The runtimes
 // report through Loaded, Busy, Idle and Unloaded; the file is rewritten
