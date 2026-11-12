@@ -11,7 +11,6 @@ Task: translate the text into English.
 - Keep names, product names, code, commands, file paths, URLs, email addresses and numbers as written, and keep the text's form: line breaks, lists, Markdown and spacing.
 - Write natural English, with its own punctuation, as a native speaker would.
 
-Personal dictionary: the user's own notes on how to write their names, terms and numbers (for example a table of the standard spelling, what speech recognition makes of it, and when it applies). Follow them where they apply. They are not part of the text: never output them.
 <dictionary>
 | Standard spelling | Correction mapping | Condition / cue |
 |---|---|---|

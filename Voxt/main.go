@@ -35,6 +35,11 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "history" {
 		os.Exit(runHistoryCLI(os.Args[2:]))
 	}
+	// `Voxt transcribe FILE` (transcribe_cli.go) too: the running app
+	// recognises what it sends.
+	if len(os.Args) > 1 && os.Args[1] == "transcribe" {
+		os.Exit(runTranscribeCLI(os.Args[2:]))
+	}
 	// The languages VoxtNew is written in, of which MyGo shows one
 	// (showLanguage, settings_locale.go).
 	mygo.App.SetLanguages(i18n.Supported()...)
@@ -119,16 +124,17 @@ func main() {
 	a.startFamily()                       // family.go: the manifest, the other ActNow apps, the first start's migration
 
 	mygo.App.WhenReady(func() {
-		a.openWindow()        // shell.go
-		a.applyBeta()         // updates.go: betas or not, before the first check
-		a.startHelper()       // helperlink.go
-		a.openTray()          // tray.go: the menu bar icon, close to the menu bar
-		a.applyDock()         // tray.go: in the Dock or not
-		a.connectWindowLife() // tray.go
-		a.watchBundle()       // updates.go: an update installed while it runs
-		a.watchReleases()     // updates_github.go: the daily check without a feed
-		a.expireRecordings()  // history_retry.go: recordings kept for a retry, past their time
-		a.openHistoryAccess() // history_access.go: the socket, when the setting is on
+		a.openWindow()           // shell.go
+		a.applyBeta()            // updates.go: betas or not, before the first check
+		a.startHelper()          // helperlink.go
+		a.openTray()             // tray.go: the menu bar icon, close to the menu bar
+		a.applyDock()            // tray.go: in the Dock or not
+		a.connectWindowLife()    // tray.go
+		a.watchBundle()          // updates.go: an update installed while it runs
+		a.watchReleases()        // updates_github.go: the daily check without a feed
+		a.expireRecordings()     // history_retry.go: recordings kept for a retry, past their time
+		a.openHistoryAccess()    // history_access.go: the socket, when the setting is on
+		a.openTranscribeSocket() // transcribe_socket.go: `Voxt transcribe`
 		a.announceURL = announce.URL
 		a.checkAnnouncements() // announcements.go
 		mygo.App.OnSecondInstance(func([]string, string) { a.post(a.showMainWindow) })

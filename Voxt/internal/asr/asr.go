@@ -42,9 +42,10 @@ type Caps struct {
 	// of words to favour (hot words), the dictionary's terms.
 	Prompt bool
 	Hints  bool
-	// MaxBytes bounds a recording's size (0: no bound known); MaxDuration
-	// a recording (0: none known). Longer recordings fail with KindAudio
-	// before anything is sent.
+	// MaxBytes bounds one upload (0: no bound known); MaxDuration a
+	// recording (0: none known). A PCM recording over MaxBytes goes in
+	// pieces (TranscribeInPieces); others fail with KindAudio before
+	// anything is sent.
 	MaxBytes    int64
 	MaxDuration time.Duration
 }

@@ -164,7 +164,8 @@ func TestRulesCaretInView(t *testing.T) {
 }
 
 // TestRulesFindShowsMatch: Return in Find shows the match in the default
-// window, the page scrolling to it; the match stayed below the window.
+// window, the page scrolling to it, marked in red (#3869); the match
+// stayed below the window.
 func TestRulesFindShowsMatch(t *testing.T) {
 	_, tt := openLongRules(t, "zebra")
 	tt.Key(ui.Cmd, ui.KeyF)
@@ -176,23 +177,23 @@ func TestRulesFindShowsMatch(t *testing.T) {
 	if !ok {
 		t.Fatal("no rules field")
 	}
-	img, accent := tt.Image(), tok(ui.LightTheme()).Accent
+	img, red := tt.Image(), tok(ui.LightTheme()).Danger
 	seen := 0
 	for y := max(int(field.Y)+4, titleBarHeight); y < min(int(field.Y+field.H)-4, windowHeight); y++ {
 		for x := int(field.X) + 4; x < int(field.X+field.W)-4; x++ {
-			if near(img.RGBAAt(x, y), accent) {
+			if near(img.RGBAAt(x, y), red) {
 				seen++
 			}
 		}
 	}
 	if seen < 10 {
-		t.Errorf("the match is not in view: %d accent pixels in the field's part of the window", seen)
+		t.Errorf("the match is not in view: %d red pixels in the field's part of the window", seen)
 	}
 }
 
 // TestRulesFind: ⌘F on a feature page opens Your rules with Find
 // focused; Find counts the matches, ignoring case, and Return steps
-// through them, back to the first after the last.
+// through them, back to the first after the last, Shift+Return back.
 func TestRulesFind(t *testing.T) {
 	a, tt := pageTester(t, "/transcribe")
 	u := a.fui(hotkey.Transcribe)
@@ -209,7 +210,13 @@ func TestRulesFind(t *testing.T) {
 	for _, want := range []string{"1 of 2", "2 of 2", "1 of 2"} {
 		tt.Key(0, ui.KeyEnter)
 		if !has(tt, want) {
-			t.Errorf("after Return: no %q (found %d)", want, u.found)
+			t.Errorf("after Return: no %q (found %d)", want, u.finder.cur)
+		}
+	}
+	for _, want := range []string{"2 of 2", "1 of 2"} {
+		tt.Key(ui.Shift, ui.KeyEnter)
+		if !has(tt, want) {
+			t.Errorf("after Shift+Return: no %q (found %d)", want, u.finder.cur)
 		}
 	}
 	if got := findFolded(u.prompt, "DLLM"); !slices.Equal(got, [][2]int{{4, 8}, {29, 33}}) {

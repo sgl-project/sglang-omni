@@ -2,6 +2,7 @@ package helpertest
 
 import (
 	"bytes"
+	"fmt"
 	"hash/fnv"
 	"image"
 	"image/color"
@@ -93,3 +94,7 @@ func known(bundleID string) bool {
 	}
 	return false
 }
+
+// Shot is the fake screen.window's picture of pid's window: a JPEG's
+// start and end markers around the pid, enough to tell pictures apart.
+func Shot(pid int) []byte { return fmt.Appendf([]byte{0xff, 0xd8}, "window-%d\xff\xd9", pid) }
