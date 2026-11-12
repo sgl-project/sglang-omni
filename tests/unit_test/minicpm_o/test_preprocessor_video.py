@@ -29,7 +29,10 @@ from sglang_omni.models.minicpm_o.components.audio_encoder import (
 )
 from sglang_omni.models.minicpm_o.components.image_processing import CUDAImageProcessor
 from sglang_omni.models.minicpm_o.components.preprocessor import MiniCPMOPreprocessor
-from sglang_omni.models.minicpm_o.prompt_frontend import video_to_images
+from sglang_omni.models.minicpm_o.prompt_frontend import (
+    video_frame_sizes,
+    video_to_images,
+)
 from sglang_omni.models.minicpm_o.request_builders import apply_mm_pad_values
 from sglang_omni.models.minicpm_o.video_frontend import MiniCPMVideoIO, TimedVideo
 from sglang_omni.preprocessing import resource_connector
@@ -40,6 +43,7 @@ from sglang_omni.preprocessing.resource_connector import (
 from sglang_omni.preprocessing.video import load_video_path
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
+from sglang_omni.scheduling.stage_cache import StageOutputCache
 from tests.unit_test.minicpm_o.test_preprocessor_prompt import (
     CHAT_TEMPLATE,
     ProcessorOutput,
@@ -668,6 +672,84 @@ def test_image_cache_distinguishes_video_processing_policy(
     )
 
 
+@pytest.mark.parametrize("layout", ["pil", "channels_first", "channels_last"])
+def test_video_frame_sizes_match_converted_images(layout: str) -> None:
+    """Frame sizes must survive the pixel-free path unchanged."""
+    if layout == "pil":
+        video = [Image.new("RGB", (7, 5)), Image.new("RGB", (11, 13))]
+    elif layout == "channels_first":
+        video = torch.zeros(2, 3, 5, 7)
+    else:
+        video = np.zeros((2, 5, 7, 3), dtype=np.uint8)
+
+    assert video_frame_sizes(video) == [frame.size for frame in video_to_images(video)]
+
+
+def test_warm_image_cache_skips_pixel_construction(
+    video_preprocessor: MiniCPMOPreprocessor,
+    video_processor: VideoRecordingProcessor,
+    decoded_video: TimedVideo,
+) -> None:
+    """A cache hit must not ship pixel values the image encoder never reads."""
+    video_preprocessor.image_cache = StageOutputCache(max_size=8, max_bytes=1 << 20)
+    video_processor.image_processor = object()
+    image = Image.new("RGB", (896, 896), "red")
+    decoded_video.frames = [image]
+
+    def preprocess() -> StagePayload:
+        return asyncio.run(
+            video_preprocessor(
+                StagePayload(
+                    request_id="warm-image-cache",
+                    request=OmniRequest(
+                        inputs=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "video_url",
+                                        "video_url": {"url": "clip.mp4"},
+                                    }
+                                ],
+                            }
+                        ]
+                    ),
+                    data=None,
+                )
+            )
+        )
+
+    cold = preprocess()
+    cold_inputs = cold.data["encoder_inputs"]["image_encoder"]
+    assert cold_inputs["pixel_values"]
+    cached_result = {"image_embeds": torch.zeros(2, 3)}
+    video_preprocessor.image_cache.put(cold_inputs["cache_key"], cached_result)
+
+    warm = preprocess()
+    warm_inputs = warm.data["encoder_inputs"]["image_encoder"]
+    assert "pixel_values" not in warm_inputs
+    assert warm_inputs["_active"] is True
+    assert warm_inputs["cached_result"] is not None
+    torch.testing.assert_close(
+        warm_inputs["cached_result"]["image_embeds"],
+        cached_result["image_embeds"],
+        rtol=0,
+        atol=0,
+    )
+    torch.testing.assert_close(
+        warm.data["prompt"]["input_ids"],
+        cold.data["prompt"]["input_ids"],
+        rtol=0,
+        atol=0,
+    )
+    warm_bounds = warm.data["mm_inputs"]["image"]["bounds"]
+    cold_bounds = cold.data["mm_inputs"]["image"]["bounds"]
+    assert len(warm_bounds) == len(cold_bounds)
+    for warm_bound, cold_bound in zip(warm_bounds, cold_bounds, strict=True):
+        torch.testing.assert_close(warm_bound, cold_bound, rtol=0, atol=0)
+    assert not hasattr(video_processor, "process_image")
+
+
 @pytest.mark.asyncio
 async def test_cancelled_local_timed_video_drains_decoder(
     monkeypatch: pytest.MonkeyPatch,
@@ -1116,6 +1198,71 @@ def test_real_processor_visual_packing(
         torch.testing.assert_close(
             actual_slice.cpu().bfloat16(), expected_slice.bfloat16(), rtol=0, atol=0
         )
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("as_video", [False, True])
+def test_metadata_only_processor_matches_the_pixel_processor(
+    monkeypatch: pytest.MonkeyPatch,
+    checkpoint_processor: ProcessorMixin,
+    as_video: bool,
+) -> None:
+    """A cache hit must reproduce the pixel run's text inputs without pixel work."""
+    pixels = np.random.default_rng(17).integers(0, 256, (672, 1120, 3), dtype=np.uint8)
+    frames = (
+        video_to_images(
+            torch.from_numpy(
+                np.stack([pixels, np.flip(pixels, axis=1).copy()])
+            ).permute(0, 3, 1, 2)
+        )
+        if as_video
+        else [Image.fromarray(pixels)]
+    )
+    options = (
+        {"max_slice_nums": 1, "use_image_id": False}
+        if as_video
+        else {"max_slice_nums": 4}
+    )
+    prompt = "Describe " + " ".join(["<image>./</image>"] * len(frames))
+    preprocessor = object.__new__(MiniCPMOPreprocessor)
+    preprocessor._processor = None  # noqa: leading-underscore  # production contract
+    preprocessor._processor_lock = (  # noqa: leading-underscore  # production contract
+        threading.Lock()
+    )
+    preprocessor.model_dir = "checkpoint-fixture"
+    preprocessor.device = torch.device("cuda", torch.cuda.device_count() - 1)
+    monkeypatch.setattr(
+        preprocessor_mod.AutoProcessor,
+        "from_pretrained",
+        lambda *args, **kwargs: checkpoint_processor,
+    )
+
+    cold = preprocessor.processor(
+        prompt,
+        images=[frames],
+        audios=None,
+        do_pad=False,
+        return_tensors="pt",
+        **options,
+    )
+    warm = preprocessor.processor_without_pixels()(
+        prompt,
+        images=[frames],
+        audios=None,
+        do_pad=False,
+        return_tensors="pt",
+        **options,
+    )
+
+    assert warm["pixel_values"][0] == []
+    torch.testing.assert_close(warm["input_ids"], cold["input_ids"], rtol=0, atol=0)
+    torch.testing.assert_close(
+        warm["image_bound"][0], cold["image_bound"][0], rtol=0, atol=0
+    )
+    torch.testing.assert_close(
+        warm["tgt_sizes"][0], cold["tgt_sizes"][0], rtol=0, atol=0
+    )
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")

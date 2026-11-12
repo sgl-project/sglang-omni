@@ -43,9 +43,11 @@ class ModalityInputs(TypedDict):
 
 
 class ImageEncoderInputs(TypedDict):
-    pixel_values: list[object]
-    tgt_sizes: object
+    pixel_values: NotRequired[list[torch.Tensor]]
+    tgt_sizes: NotRequired[torch.Tensor]
     cache_key: str | None
+    _active: NotRequired[bool]
+    cached_result: NotRequired[dict[str, torch.Tensor]]
 
 
 class AudioEncoderInputs(TypedDict):
