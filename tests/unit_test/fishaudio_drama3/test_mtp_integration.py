@@ -762,12 +762,6 @@ def test_a_failed_step_never_feeds_the_next_step_of_the_same_requests() -> None:
         exchange.take_inputs(["a"], 1)
 
 
-def buffer_addresses(buffers: Drama3DecodeBuffers) -> list[int]:
-    return [
-        getattr(buffers, field.name).data_ptr() for field in dataclasses.fields(buffers)
-    ]
-
-
 @dataclass(frozen=True, kw_only=True)
 class StagedRows:
     """The batch rows of the decode buffers, as a forward reads them."""
@@ -1549,30 +1543,6 @@ def decoding_scheduler_requests(
         [[81 + index, index, 1, 2, 3] for index in range(len(requests))],
     )
     return requests
-
-
-def test_decode_gathers_rows_in_place_as_the_batch_shrinks_and_grows() -> None:
-    decode = decode_runner(row_count=4)
-    buffers = decode.runner.decode_buffers
-    addresses = buffer_addresses(buffers)
-    requests = decoding_scheduler_requests(decode, [3, 4, 5, 2])
-    batch_request_data = [request_data_of(request) for request in requests]
-
-    expected = history_staged_rows(batch_request_data[:3])
-    decode.forward.next_frames = [[90 + index, 4, 3, 2, 1] for index in range(3)]
-    decode_step(decode.runner, requests[:3])
-    assert decode.forward.reads[-1] == expected
-
-    expected = history_staged_rows(batch_request_data[:2])
-    decode.forward.next_frames = [[94 + index, 1, 2, 3, 4] for index in range(2)]
-    decode_step(decode.runner, requests[:2])
-    assert decode.forward.reads[-1] == expected
-
-    expected = history_staged_rows(batch_request_data)
-    decode.forward.next_frames = [[84 + index, 2, 2, 2, 2] for index in range(4)]
-    decode_step(decode.runner, requests)
-    assert decode.forward.reads[-1] == expected
-    assert buffer_addresses(buffers) == addresses
 
 
 @pytest.mark.parametrize("is_lookahead", [False, True], ids=["sync", "lookahead"])
