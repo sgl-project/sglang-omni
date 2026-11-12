@@ -78,7 +78,7 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
         prefill_graph_runner = sglang_runner.prefill_cuda_graph_runner
         decode_graph_runner = sglang_runner.decode_cuda_graph_runner
         decode_buffers = model.decode_buffers
-        decode_state = model.decode_state
+        state_pool = model.state_pool
         if not isinstance(attention_backend, HybridLinearAttnBackend):
             raise RuntimeError(
                 f"Drama 3 needs the hybrid linear-attention backend; got "
@@ -110,10 +110,7 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
                 "the Drama 3 decode buffers need a row for every request slot and "
                 "every captured decode batch size"
             )
-        elif (
-            decode_state is None
-            or decode_state.frames.shape[0] != request_pool.size + 1
-        ):
+        elif state_pool is None or state_pool.frames.shape[0] != request_pool.size + 1:
             raise RuntimeError(
                 "the Drama 3 decode state pool needs a row for every request slot "
                 "and the padding slot 0"
@@ -139,7 +136,7 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
             pass
         self.decode_buffers: Drama3DecodeBuffers = decode_buffers
         self.request_slot_count = request_pool.size
-        self.state_pool: Drama3DecodeStatePool = decode_state
+        self.state_pool: Drama3DecodeStatePool = state_pool
         self.prefill_inputs: Drama3StepInputs | None = None
 
     def lookahead_eligible(self, batch: ScheduleBatch) -> bool:

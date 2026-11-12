@@ -271,7 +271,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             frame_width=frame_width,
             device=torch.device(device),
         )
-        model.decode_state = Drama3DecodeStatePool.allocate(
+        model.state_pool = Drama3DecodeStatePool.allocate(
             request_slot_count=sglang_runner.req_to_token_pool.size,
             frame_width=frame_width,
             device=torch.device(device),

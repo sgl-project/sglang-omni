@@ -168,7 +168,7 @@ class Drama3ForCausalLM(nn.Module):
         self.step_exchange = StepExchange()
         # The engine builder allocates these once the request pool is sized.
         self.decode_buffers: Drama3DecodeBuffers | None = None
-        self.decode_state: Drama3DecodeStatePool | None = None
+        self.state_pool: Drama3DecodeStatePool | None = None
         self.first_frame_graphs: Drama3FirstFrameGraphs | None = None
 
     @property
@@ -189,12 +189,12 @@ class Drama3ForCausalLM(nn.Module):
     ) -> LogitsProcessorOutput:
         forward_mode = forward_batch.forward_mode
         decode_buffers = self.decode_buffers
-        decode_state = self.decode_state
+        state_pool = self.state_pool
         if forward_mode == ForwardMode.EXTEND:
             return self.forward_extend(input_ids, positions, forward_batch)
         elif forward_mode != ForwardMode.DECODE:
             raise NotImplementedError(f"forward mode {forward_mode} is not supported")
-        elif decode_buffers is None or decode_state is None:
+        elif decode_buffers is None or state_pool is None:
             raise RuntimeError(
                 "the engine allocated no Drama 3 decode buffers or state pool"
             )
@@ -221,14 +221,14 @@ class Drama3ForCausalLM(nn.Module):
                 decode_buffers.epsilon_cutoff[:row_count],
             )
             decode_buffers.sampled_frames[:row_count].copy_(sampled_frames)
-            decode_state.publish(request_slots, sampled_frames)
+            state_pool.publish(request_slots, sampled_frames)
             return logits_output
 
     def stage_decode_rows(self, request_slots: torch.Tensor) -> None:
         decode_buffers = self.decode_buffers
-        decode_state = self.decode_state
-        assert decode_buffers is not None and decode_state is not None
-        decode_state.gather(request_slots, decode_buffers)
+        state_pool = self.state_pool
+        assert decode_buffers is not None and state_pool is not None
+        state_pool.gather(request_slots, decode_buffers)
 
     def forward_extend(
         self,
