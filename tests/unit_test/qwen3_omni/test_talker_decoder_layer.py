@@ -143,6 +143,7 @@ def test_talker_layer_builds_exactly_one_talker_moe_block(
 
     assert len(built) == 2
     assert prefixed.mlp.kwargs["layer_id"] == 2
+    assert prefixed.mlp.kwargs["config"] is config
     assert prefixed.mlp.kwargs["prefix"] == "talker.layers.2.mlp"
     assert len(attention_calls) == 2
     assert prefixed.self_attn.kwargs is attention_calls[1]
