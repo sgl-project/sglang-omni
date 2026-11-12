@@ -175,21 +175,6 @@ def chunk_message(
     )
 
 
-def stream_frame_by_frame(vocoder: Drama3VocoderScheduler, frame_count: int) -> None:
-    """Queue one chunk per numbered frame, handle the queue, then end the stream."""
-    frames = numbered_frames(frame_count)
-    for chunk_id in range(frame_count):
-        vocoder.inbox.put(
-            chunk_message("request-a", chunk_id, frames[chunk_id : chunk_id + 1])
-        )
-    while not vocoder.inbox.empty():
-        vocoder.handle_message(vocoder.get_batch_message(), None)
-    vocoder.handle_streaming_new_request(
-        "request-a", final_payload(frames, is_streaming=True)
-    )
-    vocoder.handle_stream_done("request-a")
-
-
 def final_audio(result: StagePayload) -> np.ndarray:
     """The non-streaming audio as the client decodes it: float32 bytes plus shape."""
     assert isinstance(result.data, dict)
@@ -444,38 +429,37 @@ def test_windows_with_a_discard_get_their_own_graphs_beside_the_whole_ones() -> 
     }
 
 
-class ZeroingSuffixDecoder:
-    """Decodes with the frame-number codec but zeroes the discarded frames' audio, as
-    a graph that skips them leaves it, and records each (frames, discard)."""
+class RecordingBatchDecoder:
+    """Decodes same-length windows together with the frame-number codec, zeroes the
+    discarded frames' audio as a graph that skips them leaves it, and records each
+    decode's window count and (frames, discard)."""
 
     def __init__(self, codec: FrameNumberCodec) -> None:
         self.codec = codec
+        self.window_counts: list[int] = []
         self.shapes: list[tuple[int, int]] = []
-
-    def __call__(
-        self, indices: torch.Tensor, *, discard_frames: int = 0
-    ) -> torch.Tensor:
-        self.shapes.append((int(indices.shape[-1]), discard_frames))
-        audio = self.codec.from_indices(indices)
-        audio[..., : discard_frames * SAMPLES_PER_FRAME] = 0
-        return audio
 
     def decode_windows(
         self, codebook_codes: list[torch.Tensor], discard_frames: int = 0
     ) -> list[torch.Tensor]:
-        return [
-            self(codes[None], discard_frames=discard_frames) for codes in codebook_codes
-        ]
+        self.window_counts.append(len(codebook_codes))
+        self.shapes.append((int(codebook_codes[0].shape[-1]), discard_frames))
+        audio = self.codec.from_indices(torch.stack(codebook_codes))
+        audio[..., : discard_frames * SAMPLES_PER_FRAME] = 0
+        return list(audio.split(1))
+
+    def __call__(self, indices: torch.Tensor) -> torch.Tensor:
+        return torch.cat(self.decode_windows(list(indices)))
+
+
+# (frames, discarded frames) of each decode of a 214-frame stream.
+SHAPES_TO_214 = [(4, 0), (14, 4), (26, 14), (58, 26), (96, 32), (96, 32), (60, 32)]
 
 
 @pytest.mark.parametrize(
     ("stream_crossfade_samples", "expected_shapes"),
     [
-        pytest.param(
-            0,
-            [(4, 0), (14, 4), (26, 14), (58, 26), (96, 32), (96, 32), (60, 32)],
-            id="no-crossfade",
-        ),
+        pytest.param(0, SHAPES_TO_214, id="no-crossfade"),
         pytest.param(
             40,
             [(4, 0), (14, 0), (26, 4), (58, 16), (96, 22), (96, 22), (60, 22)],
@@ -486,19 +470,21 @@ class ZeroingSuffixDecoder:
 def test_the_stream_never_reads_the_frames_a_window_skips(
     stream_crossfade_samples: int, expected_shapes: list[tuple[int, int]]
 ) -> None:
-    codec = FrameNumberCodec()
-    decoder = ZeroingSuffixDecoder(codec)
+    decoder = RecordingBatchDecoder(FrameNumberCodec())
     factory_args = Drama3VocoderFactoryArgs(
         stream_crossfade_samples=stream_crossfade_samples
     )
-    vocoder = vocoder_with(
-        codec, factory_args=factory_args, window_batch_decoder=decoder
+    _, messages = streamed(
+        214,
+        [1] * 214,
+        is_done_first=False,
+        factory_args=factory_args,
+        window_batch_decoder=decoder,
     )
-    stream_frame_by_frame(vocoder, 214)
 
     assert decoder.shapes == expected_shapes
     np.testing.assert_allclose(
-        streamed_audio(drained(vocoder)),
+        streamed_audio(messages),
         np.repeat(np.arange(214, dtype=np.float32), SAMPLES_PER_FRAME),
         rtol=1e-6,
     )
@@ -541,20 +527,6 @@ def test_every_streamed_window_decodes_through_the_given_window_decoder() -> Non
     )
 
 
-class RecordingBatchDecoder:
-    """Decodes same-length windows together with the frame-number codec."""
-
-    def __init__(self, codec: FrameNumberCodec) -> None:
-        self.codec = codec
-        self.window_counts: list[int] = []
-
-    def decode_windows(
-        self, codebook_codes: list[torch.Tensor], discard_frames: int = 0
-    ) -> list[torch.Tensor]:
-        self.window_counts.append(len(codebook_codes))
-        return list(self.codec.from_indices(torch.stack(codebook_codes)).split(1))
-
-
 def test_coalesced_chunks_vocode_each_request_like_one_chunk_at_a_time() -> None:
     """Requests start out of phase, so a drained group holds several windows of one
     request, windows of different lengths, and same-length windows of several
@@ -569,40 +541,29 @@ def test_coalesced_chunks_vocode_each_request_like_one_chunk_at_a_time() -> None
         start_steps[request_id] + frame_counts[request_id]
         for request_id in frame_counts
     )
-    chunk_messages = [
-        chunk_message(
-            request_id,
-            frame_index,
-            frames[request_id][frame_index : frame_index + 1],
-        )
-        for step in range(step_count)
-        for request_id in frame_counts
-        if 0
-        <= (frame_index := step - start_steps[request_id])
-        < frame_counts[request_id]
-    ]
     batch_decoder = RecordingBatchDecoder(FrameNumberCodec())
     coalescing_vocoder = vocoder_with(
         FrameNumberCodec(), window_batch_decoder=batch_decoder
     )
     one_at_a_time_vocoder = vocoder_with(FrameNumberCodec())
 
-    for group_start_step in range(0, step_count, 16):
-        group_end_step = group_start_step + 16
-        for message in chunk_messages:
-            if (
-                group_start_step
-                <= start_steps[message.request_id] + message.data.chunk_id
-                < group_end_step
-            ):
+    for step in range(step_count):
+        for request_id, request_frames in frames.items():
+            frame_index = step - start_steps[request_id]
+            if 0 <= frame_index < frame_counts[request_id]:
+                frame = request_frames[frame_index : frame_index + 1]
+                message = chunk_message(request_id, frame_index, frame)
                 coalescing_vocoder.inbox.put(message)
-                one_at_a_time_vocoder.handle_stream_chunk(
-                    message.request_id, message.data
-                )
+                one_at_a_time_vocoder.handle_stream_chunk(request_id, message.data)
             else:
                 pass
-        coalescing_vocoder.handle_message(coalescing_vocoder.get_batch_message(), None)
-        assert coalescing_vocoder.inbox.empty()
+        if step % 16 == 15 or step == step_count - 1:
+            coalescing_vocoder.handle_message(
+                coalescing_vocoder.get_batch_message(), None
+            )
+            assert coalescing_vocoder.inbox.empty()
+        else:
+            pass
     for vocoder in (coalescing_vocoder, one_at_a_time_vocoder):
         for request_id in frame_counts:
             vocoder.handle_streaming_new_request(
@@ -636,29 +597,22 @@ def test_coalesced_chunks_vocode_each_request_like_one_chunk_at_a_time() -> None
         )
 
 
-class FailingBatchDecoder:
-    """Fails every decode, after the client of one request went away during it."""
-
-    def __init__(self, aborted_request_id: str) -> None:
-        self.aborted_request_id = aborted_request_id
-        self.vocoder: Drama3VocoderScheduler | None = None
-
-    def decode_windows(
-        self, codebook_codes: list[torch.Tensor], discard_frames: int = 0
-    ) -> list[torch.Tensor]:
-        assert self.vocoder is not None
-        self.vocoder.record_aborted_request_id(self.aborted_request_id)
-        raise RuntimeError("decode failed")
-
-
 def test_a_failed_window_decode_reports_no_error_for_a_request_aborted_during_it() -> (
     None
 ):
     """A client that went away while its window decoded with others got an error
     message when that decode failed."""
-    decoder = FailingBatchDecoder("request-b")
-    vocoder = vocoder_with(FrameNumberCodec(), window_batch_decoder=decoder)
-    decoder.vocoder = vocoder
+
+    def abort_then_fail(
+        codebook_codes: list[torch.Tensor], discard_frames: int = 0
+    ) -> list[torch.Tensor]:
+        vocoder.record_aborted_request_id("request-b")
+        raise RuntimeError("decode failed")
+
+    vocoder = vocoder_with(
+        FrameNumberCodec(),
+        window_batch_decoder=SimpleNamespace(decode_windows=abort_then_fail),
+    )
     for request_id in ("request-a", "request-b"):
         vocoder.inbox.put(chunk_message(request_id, 0, numbered_frames(4)))
 

@@ -37,9 +37,12 @@ from tests.unit_test.fishaudio_drama3.test_speech_request import (
     toy_config,
 )
 from tests.unit_test.fishaudio_drama3.test_vocoder import (
+    SHAPES_TO_214,
     FrameNumberCodec,
-    ZeroingSuffixDecoder,
-    stream_frame_by_frame,
+    RecordingBatchDecoder,
+    chunk_message,
+    final_payload,
+    numbered_frames,
 )
 
 COMMIT = "1de9996b6be38b745688de084d87a5633f714e4e"
@@ -461,30 +464,24 @@ def test_stream_windows_skip_their_discarded_frames_at_window_batch_size_one(
     whole, discarded frames included."""
     codec_file = tmp_path / "codec.pth"
     codec_file.write_bytes(b"")
-    decoder = ZeroingSuffixDecoder(FrameNumberCodec())
+    decoder = RecordingBatchDecoder(FrameNumberCodec())
     monkeypatch.setattr(stages, "ChannelsLastDecoder", ChannelsLastStandIn)
     monkeypatch.setattr(
         stages, "WindowGraphDecoder", lambda decode, **graph_shapes: decoder
     )
-
-    stream_frame_by_frame(
-        cpu_vocoder(
-            Drama3VocoderFactoryArgs(
-                codec_path=str(codec_file), stream_window_batch_size=1
-            )
-        ),
-        214,
+    vocoder = cpu_vocoder(
+        Drama3VocoderFactoryArgs(codec_path=str(codec_file), stream_window_batch_size=1)
     )
+    frames = numbered_frames(214)
 
-    assert decoder.shapes == [
-        (4, 0),
-        (14, 4),
-        (26, 14),
-        (58, 26),
-        (96, 32),
-        (96, 32),
-        (60, 32),
-    ]
+    vocoder.inbox.put(chunk_message("request-a", 0, frames))
+    vocoder.handle_message(vocoder.get_batch_message(), None)
+    vocoder.handle_streaming_new_request(
+        "request-a", final_payload(frames, is_streaming=True)
+    )
+    vocoder.handle_stream_done("request-a")
+
+    assert decoder.shapes == SHAPES_TO_214
 
 
 def bytes_per_frame_decoder(bytes_per_frame: int) -> WindowDecoder:
