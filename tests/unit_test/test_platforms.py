@@ -182,7 +182,7 @@ def test_xpu_set_device_accepts_an_index_or_a_device(
 
 @pytest.mark.parametrize("rotary_dimension", [72, 160])
 def test_xpu_joint_rope_declines_a_rotary_dimension_its_kernel_cannot_compile(
-    monkeypatch, rotary_dimension
+    monkeypatch: pytest.MonkeyPatch, rotary_dimension: int
 ) -> None:
     # A None module makes any import of the kernel raise, so a decline that
     # still reached the import fails here.
@@ -200,7 +200,7 @@ def test_xpu_joint_rope_declines_a_rotary_dimension_its_kernel_cannot_compile(
     "rotary_dimension", [None, *xpu_platform.XPU_JOINT_ROTARY_DIMENSIONS]
 )
 def test_xpu_joint_rope_returns_the_kernel_for_a_supported_or_unstated_rotary_dimension(
-    monkeypatch, rotary_dimension
+    monkeypatch: pytest.MonkeyPatch, rotary_dimension: int | None
 ) -> None:
     kernel = object()
     rope_module = ModuleType("sgl_kernel.jit.rope")
