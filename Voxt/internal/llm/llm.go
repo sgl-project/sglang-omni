@@ -32,7 +32,7 @@ const (
 	Assistant Role = "assistant"
 )
 
-// Message is one chat turn. Text only: VoxtNew sends no images.
+// Message is one chat turn: text (Request.Image adds a picture).
 type Message struct {
 	Role    Role   `json:"role"`
 	Content string `json:"content"`
@@ -51,6 +51,10 @@ type Request struct {
 	// Model is the backend's model id. Empty: the backend's default.
 	Model    string
 	Messages []Message
+	// Image, a JPEG, goes with the last user message, for a model that
+	// takes images (the window the user speaks into). A server that
+	// refuses the request (400) gets it again without the image.
+	Image []byte
 
 	Temperature *float64 // nil: the backend's default
 	TopP        *float64

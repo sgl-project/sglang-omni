@@ -131,7 +131,7 @@ func formRow(c *ui.Context, key, title, info string, control func()) {
 	// The control goes under the name when both do not fit on a line.
 	ui.Row(c.Key(key)).Wrap().GapX(px(t, sp4)).GapY(px(t, 6)).AlignItems(ui.Center).MinHeight(px(t, 32)).Children(func() {
 		ui.Row(c).Grow(1).Basis(px(t, 160)).MinWidth(px(t, 120)).Gap(px(t, 6)).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, title).MinWidth(0)
+			settingsName(c, title).MinWidth(0)
 			if info != "" {
 				infoTip(c, info)
 			}
@@ -173,27 +173,6 @@ func searchField(c *ui.Context, key string, value *string, placeholder string, m
 		})
 	})
 	return in
-}
-
-// filterBar is the bar of a page's search field and its filters
-// (segmented controls, selects, a selection button): on one line when
-// the search keeps 240 DIPs beside the filters (filtersW wide, in DIPs at
-// 100 %) in room (the bar's width), else the search on a line of its own
-// and the filters under it. It returns whether it took two lines.
-func filterBar(c *ui.Context, room, filtersW float32, search, filters func()) (twoLines bool) {
-	t := c.Theme()
-	if room-px(t, filtersW+sp2) >= px(t, 240) {
-		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Shrink(0).Children(func() {
-			search()
-			filters()
-		})
-		return false
-	}
-	ui.Column(c).Gap(px(t, sp2)).Shrink(0).Children(func() {
-		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(search)
-		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(filters)
-	})
-	return true
 }
 
 // emptyState is a page's or a list's empty state: a large icon, a title,

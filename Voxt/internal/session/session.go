@@ -197,6 +197,9 @@ type Snapshot struct {
 	// Retried: Translate asked again, strictly (the first answer looked
 	// untranslated).
 	Retried bool
+	// CanSkip: while Composing, SkipLLM inserts the recognised text in
+	// place of the model's answer (Transcribe, and Translate of speech).
+	CanSkip bool
 	// Inserted: the result was pasted; Card: it shows in the answer card
 	// (Delivery says why it was not inserted). While the model writes,
 	// Card says the answer streams into the card.
@@ -284,9 +287,11 @@ type Services struct {
 }
 
 // Resolver opens the models a session of kind uses with settings s; it
-// may block (it may start a runtime). A model that is not ready is nil
+// may block (it may start a runtime). speech false: the session hears
+// nothing (a selection to translate, a typed text), so no speech model
+// is opened and ASR stays nil (#3838). A model that is not ready is nil
 // in Services (an error wrapping ErrNoASR works too).
-type Resolver func(ctx context.Context, kind Kind, s settings.Settings) (Services, error)
+type Resolver func(ctx context.Context, kind Kind, s settings.Settings, speech bool) (Services, error)
 
 // ErrNoASR: no speech model is ready.
 var ErrNoASR = errors.New("session: no speech model is ready")
@@ -308,6 +313,10 @@ type Config struct {
 	// Select reads the selection (nil: Translate and Rewrite never see
 	// one).
 	Select Selector
+	// Window takes a JPEG of app pid's front window (the helper's
+	// screen.window; nil without a picture) for the language model, when
+	// the settings send one (Privacy.SendWindow). Nil: never.
+	Window func(ctx context.Context, pid int) ([]byte, error)
 	// History keeps finished sessions (nil: none); Glossary lists the
 	// dictionary's enabled terms (nil: none).
 	History  store.History
@@ -337,7 +346,6 @@ type Config struct {
 	NewID func() string
 
 	// Limits (0: the defaults).
-	MaxRecording time.Duration // DefaultMaxRecording
 	MinRecording time.Duration // DefaultMinRecording
 	// Recognition after Stop gets ASRTimeout plus ASRPerSecond per second
 	// of the recording (asrLimit): a local model that stopped answering is
@@ -384,7 +392,6 @@ type Config struct {
 
 // Defaults of Config's limits.
 const (
-	DefaultMaxRecording   = 10 * time.Minute
 	DefaultMinRecording   = 300 * time.Millisecond
 	DefaultASRTimeout     = 60 * time.Second
 	DefaultASRPerSecond   = time.Second

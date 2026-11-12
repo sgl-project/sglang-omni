@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"slices"
@@ -93,6 +94,8 @@ type answerCard struct {
 	// the card shows them as one (Voxt's conversation mode), from then on.
 	turns        []compose.Turn
 	conversation bool
+	// quotesOpen are the turns whose selection shows whole (#3816).
+	quotesOpen map[int]bool
 	// redo is the session translating the text into redoLang, another
 	// language chosen in the card, while it runs: the card keeps the text
 	// it shows, with a spinner, until the new one replaces it (Voxt's).
@@ -142,9 +145,17 @@ func (a *app) openSessions() {
 	logs := a.logs
 	st := a.settings
 	a.mgr = session.New(session.Config{
-		Audio:   session.HelperAudio{H: sup},
-		Text:    a.textIO(), // family_runtime.go: the family's paste rule
-		Select:  session.HelperText{H: sup},
+		Audio:  session.HelperAudio{H: sup},
+		Text:   a.textIO(), // family_runtime.go: the family's paste rule
+		Select: session.HelperText{H: sup},
+		Window: func(ctx context.Context, pid int) ([]byte, error) {
+			var r proto.ScreenWindowResult
+			raw, err := sup.Call(ctx, "", proto.MethodScreenWindow, proto.ScreenWindowParams{PID: pid}, nil)
+			if err == nil {
+				err = json.Unmarshal(raw, &r)
+			}
+			return r.JPEG, err
+		},
 		Resolve: resolver(lm),
 		History: lib.store.History(),
 		Glossary: func(ctx context.Context) ([]store.Term, error) {
@@ -167,18 +178,21 @@ func (a *app) openSessions() {
 
 // resolver opens a session's local models (off the main thread: opening
 // one may start its runtime). A model that is not installed stays nil:
-// the session says what it lacks when it needs it (a selection to
-// translate needs no speech model).
+// the session says what it lacks when it needs it. Without speech the
+// speech model is not opened at all: loading it again after it went
+// idle cost a selection Translate seconds (#3838).
 func resolver(lm local.Services) session.Resolver {
-	return func(ctx context.Context, kind session.Kind, s settings.Settings) (session.Services, error) {
+	return func(ctx context.Context, kind session.Kind, s settings.Settings, speech bool) (session.Services, error) {
 		f := featureOf(s, string(kind))
 		var svc session.Services
-		p, m, err := lm.ASR(ctx, f.ASR)
-		switch {
-		case err == nil:
-			svc.ASR, svc.ASRInfo = p, sessionModel(m)
-		case !errors.Is(err, local.ErrNotInstalled):
-			return svc, err
+		if speech {
+			p, m, err := lm.ASR(ctx, f.ASR)
+			switch {
+			case err == nil:
+				svc.ASR, svc.ASRInfo = p, sessionModel(m)
+			case !errors.Is(err, local.ErrNotInstalled):
+				return svc, err
+			}
 		}
 		if va, ok := svc.ASR.(local.VoiceActivity); ok {
 			// No model: speech is found by energy.
@@ -267,6 +281,13 @@ func (a *app) sessionEnded(s session.Snapshot) {
 		a.openAnswer(s)
 		a.syncHotkeys() // the cancel shortcut closes the card
 	}
+	var copied *sessionNotice
+	if !s.Card && !s.Inserted && s.Delivery != "" && s.Result != "" && s.State == session.Done {
+		// Not inserted and the card is off: the clipboard has it (Voxt 1.x).
+		a.copyRecent(s.Result)
+		// One short line: a notice is one line, cut past NoticeW2.
+		copied = &sessionNotice{text: i18n.T("Not inserted. Copied: press ⌘V to paste."), warn: true}
+	}
 	if s.ID != "" && a.followUp != "" && !s.Card {
 		a.followUp = "" // a follow-up that ended without an answer: the card keeps the last one
 	}
@@ -287,10 +308,17 @@ func (a *app) sessionEnded(s session.Snapshot) {
 			if p.Code == session.ProblemASR && s.Recording {
 				n.action, n.entry = actionRetry, s.ID // the entry kept the recording: Retry
 			}
+			if copied != nil {
+				n.then = func() { a.showNotice(*copied) }
+			}
 			a.showNotice(n)
+		} else if copied != nil {
+			a.showNotice(*copied)
 		}
 	} else if s.Note && s.State == session.Done && s.Result != "" {
 		a.showNotice(sessionNotice{text: i18n.T("Saved to Notes")})
+	} else if copied != nil {
+		a.showNotice(*copied)
 	}
 	if s.State != session.Cancelled {
 		a.historyChanged()

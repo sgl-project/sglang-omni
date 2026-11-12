@@ -69,7 +69,8 @@ type fakeAudio struct {
 	late    map[string]func(AudioEvent) // the callback of an ended recording
 	frames  int
 	stopped int
-	running int // Records that have not returned
+	params  []proto.CaptureParams // of each Record
+	running int                   // Records that have not returned
 }
 
 func newFakeAudio() *fakeAudio {
@@ -82,6 +83,7 @@ func (f *fakeAudio) Record(ctx context.Context, id string, p proto.CaptureParams
 	}
 	stop := make(chan struct{})
 	f.mu.Lock()
+	f.params = append(f.params, p)
 	f.stops[id] = stop
 	f.running++
 	f.mu.Unlock()
@@ -566,6 +568,7 @@ var errHelperForTest = core.ErrHelper
 type fakeSelector struct {
 	text     string
 	copyText string
+	steps    []string
 	err      error
 	delay    time.Duration
 
@@ -593,7 +596,7 @@ func (f *fakeSelector) Selection(ctx context.Context, p proto.SelectionParams) (
 	case f.copyText != "" && p.AllowCopy:
 		return proto.SelectionResult{Text: f.copyText, Via: proto.ViaCopy, MS: 40}, nil
 	}
-	return proto.SelectionResult{Via: proto.ViaNone, MS: 1}, nil
+	return proto.SelectionResult{Via: proto.ViaNone, MS: 1, Steps: f.steps}, nil
 }
 
 func (f *fakeSelector) params() []proto.SelectionParams {

@@ -72,8 +72,17 @@ func (r *run) readSelection() string {
 	}
 	text := res.Text
 	if strings.TrimSpace(text) == "" {
-		r.logf("info", "no selection (%s, %.0f ms)", res.Via, res.MS)
+		// The helper's steps say which reading found nothing (#3835).
+		r.logf("info", "no selection (%s, %.0f ms; %s)", res.Via, res.MS, strings.Join(res.Steps, ", "))
 		return ""
+	}
+	for _, t := range r.req.Previous {
+		// A follow-up's: the text selected before, still selected, is in
+		// the conversation already (#3816).
+		if strings.TrimSpace(t.Selection) == strings.TrimSpace(text) {
+			r.logf("info", "the selection is in the conversation already")
+			return ""
+		}
 	}
 	r.logf("info", "selection: %s via %s in %.0f ms", r.logText(text), res.Via, res.MS)
 	r.m.update(r, func(s *Snapshot) { s.Selection, s.SelectionVia = text, res.Via })
@@ -93,7 +102,7 @@ func (r *run) listen() (string, bool) {
 	defer capCancel()
 	capDone := make(chan capResult, 1)
 	go func() {
-		params := proto.CaptureParams{Devices: r.settings.Audio.Devices, SampleRate: asr.SampleRate, MaxSeconds: cfg.MaxRecording.Seconds()}
+		params := proto.CaptureParams{Devices: r.settings.Audio.Devices, SampleRate: asr.SampleRate} // no maxSeconds: a podcast runs until Stop (StopGrace covers a lost stop)
 		res, err := cfg.Audio.Record(capCtx, r.id, params, r.onAudio)
 		r.pcm.close()
 		capDone <- capResult{res, err}
@@ -430,8 +439,8 @@ func (r *run) transcribeInput(raw string) compose.Input {
 	return compose.Input{
 		Task: compose.Transcribe, Cleanup: f.Cleanup, Structure: f.Structure, TaskPrompt: f.Prompt,
 		MainLanguage: MainLanguage(r.settings, r.m.cfg.Locale()), OtherLanguages: r.settings.General.OtherLanguages, Text: raw,
-		Glossary: r.glossary(),
-		Scene:    r.composeScene(),
+		Glossary: r.glossary(), Dictionary: PromptDictionary(r.settings),
+		Scene: r.composeScene(),
 	}
 }
 
