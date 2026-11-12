@@ -149,6 +149,9 @@ func requestBody(req llm.Request) map[string]any {
 	if req.Format == llm.FormatJSON {
 		body["response_format"] = map[string]any{"type": "json_object"}
 	}
+	if req.Thinking != nil {
+		body["thinking"] = *req.Thinking
+	}
 	return body
 }
 

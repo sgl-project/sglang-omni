@@ -436,6 +436,10 @@ type StartRequest struct {
 	Text *TextInput
 	// TargetLanguage overrides Translate's target ("": the settings').
 	TargetLanguage string
+	// Thinking overrides the language model's thinking for Translate's
+	// and Rewrite's answer (the answer card's thinking menu); nil: the
+	// service's setting.
+	Thinking *llm.Thinking
 	// Card keeps the answer in the answer card, never inserted: the
 	// card's text into another language (Voxt's language menu replaces
 	// the card's answer).

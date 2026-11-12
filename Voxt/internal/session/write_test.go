@@ -268,6 +268,17 @@ func TestWrite(t *testing.T) {
 			states: "composing done", state: Done, result: "おはよう", card: deliver.ReasonCard,
 		},
 		{
+			// The card's thinking menu: the level goes with the request.
+			name: "again with another thinking level, in the card", kind: store.KindRewrite, sel: &fakeSelector{text: "unused"}, llm: &fakeLLM{text: "We ship on Friday."},
+			req:    StartRequest{Text: &TextInput{Raw: "make it short", Selection: "We will ship it on Friday."}, Card: true, Thinking: &llm.Thinking{Mode: llm.ThinkEffort, Effort: "low"}},
+			states: "composing done", state: Done, result: "We ship on Friday.", card: deliver.ReasonCard,
+			check: func(t *testing.T, h *harness, end Snapshot, model *fakeLLM, sel *fakeSelector) {
+				if r := model.requests(); len(r) != 1 || r[0].Thinking == nil || *r[0].Thinking != (llm.Thinking{Mode: llm.ThinkEffort, Effort: "low"}) || len(sel.params()) != 0 {
+					t.Errorf("requests %+v, %d reads", r, len(sel.params()))
+				}
+			},
+		},
+		{
 			// A follow-up answers in plain text, a conversation's turn (Voxt's).
 			name: "a follow-up", kind: store.KindRewrite, sel: &fakeSelector{}, llm: &fakeLLM{text: "Friday."},
 			req:   StartRequest{Previous: []compose.Turn{{Instruction: "write it", Answer: compose.Answer{Title: "Friday", Content: "We ship on Friday."}}}},

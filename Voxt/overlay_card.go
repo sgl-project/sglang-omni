@@ -34,6 +34,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -66,6 +67,10 @@ type cardView struct {
 	why       string   // why it is in the card (Insert's tip)
 	lang      string   // Translate's target
 	target    string   // the app it came from
+	// think is the answer's thinking level (nil: the service's setting);
+	// thinks: the card offers the levels, canThink: now.
+	think            *llm.Thinking
+	thinks, canThink bool
 	// conversation: the turns of a Rewrite conversation, as bubbles.
 	conversation bool
 	bubbles      []cardBubble
@@ -150,13 +155,16 @@ func (a *app) cardNow() cardView {
 		target: card.target.Name, copied: card.copied, busy: own, conversation: card.conversation || follow,
 		size: layout.CardSizes[a.prefs.Features.CardSize(string(card.kind))]}
 	v.title = uitext.CardTitle(card.kind, card.title)
+	v.think = card.think
 	if redo {
-		v.lang = card.redoLang
+		v.lang, v.think = card.redoLang, card.redoThink
 	}
 	v.canCopy = card.text != ""
 	v.canInsert = card.problem == nil && card.text != "" && !own
 	v.canLang = card.kind == store.KindTranslate && card.problem == nil && !s.State.Live()
 	v.canFollowUp = a.canFollowUp()
+	v.thinks = card.problem == nil && !v.conversation && len(card.turns) <= 1 && len(a.cardThinkLevels()) > 1
+	v.canThink = v.thinks && !s.State.Live()
 	v.canStop = follow && s.State == session.Recording
 	v.canRetry = card.problem != nil && !s.State.Live()
 	v.follow = a.featureKeys(hotkey.Rewrite)

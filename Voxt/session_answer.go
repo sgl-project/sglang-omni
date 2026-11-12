@@ -24,7 +24,7 @@ import (
 func (a *app) openAnswer(s session.Snapshot) {
 	card := answerCard{
 		open: true, id: s.ID, kind: s.Kind, text: s.Result, title: s.Title, target: s.Target,
-		input: session.TextInput{Raw: s.Raw, Selection: s.Selection}, lang: s.TargetLanguage,
+		input: session.TextInput{Raw: s.Raw, Selection: s.Selection}, lang: s.TargetLanguage, llmID: s.LLM.ID,
 		why: uitext.WhyInCard(s.Delivery, s.Selection != "", s.Target.Name),
 	}
 	if s.State == session.Failed {
@@ -64,24 +64,31 @@ func (a *app) openAnswer(s session.Snapshot) {
 	a.answer = card
 }
 
-// endRedo ends the card's translation into another language: its text
-// replaces the card's; a failure (or nothing) leaves the card as it was,
-// in the language it was, and says so under it (Voxt goes back to the
-// language without a word); a cancel just goes back.
+// endRedo ends the card's answer again, in another language or with
+// another thinking level: its text replaces the card's; a failure (or
+// nothing) leaves the card as it was, and says so under it (Voxt goes
+// back to the language without a word); a cancel just goes back.
 func (a *app) endRedo(s session.Snapshot) {
-	lang := a.answer.redoLang
-	a.answer.redo, a.answer.redoLang = "", ""
+	lang, think := a.answer.redoLang, a.answer.redoThink
+	a.answer.redo, a.answer.redoLang, a.answer.redoThink = "", "", nil
 	switch {
 	case s.State == session.Done && s.Result != "":
-		a.answer.id, a.answer.text, a.answer.lang = s.ID, s.Result, s.TargetLanguage
-		a.answer.msg, a.answer.copied = "", false
+		a.answer.id, a.answer.text, a.answer.lang, a.answer.think = s.ID, s.Result, s.TargetLanguage, think
+		a.answer.title, a.answer.msg, a.answer.copied = s.Title, "", false
+		if a.answer.kind == store.KindRewrite && len(a.answer.turns) == 1 {
+			a.answer.turns[0].Answer = compose.Answer{Title: s.Title, Content: s.Result}
+		}
 	case s.State == session.Cancelled:
 	default:
 		why := i18n.T("the language model returned an empty answer")
 		if s.Problem != nil && s.Problem.Code != session.ProblemEmpty && s.Problem.Code != session.ProblemNoSpeech {
 			why, _, _ = sessionProblemText(s.Problem)
 		}
-		a.answer.msg = i18n.T("Not translated into %s: %s", uitext.TargetLanguageLabel(lang), why)
+		if lang != a.answer.lang {
+			a.answer.msg = i18n.T("Not translated into %s: %s", uitext.TargetLanguageLabel(lang), why)
+		} else {
+			a.answer.msg = i18n.T("Not answered again (%s): %s", thinkText(think), why)
+		}
 	}
 }
 
@@ -94,25 +101,12 @@ func (a *app) retryAnswer(lang string) {
 		return
 	}
 	in := card.input
-	req := session.StartRequest{Kind: card.kind, Target: card.target, Text: &in, TargetLanguage: lang}
+	req := session.StartRequest{Kind: card.kind, Target: card.target, Text: &in, TargetLanguage: lang, Thinking: card.think}
 	if req.TargetLanguage == "" {
 		req.TargetLanguage = card.lang
 	}
 	if lang != "" && card.problem == nil {
-		// Another language for the card's text: it stays in the card,
-		// which shows its text until the new one comes (Voxt's).
-		req.Card = true
-		a.answer.msg = ""
-		if n := a.sessionBlocker(card.kind); n != nil {
-			a.answer.msg = n.text
-			return
-		}
-		id, err := a.mgr.Start(req)
-		if err == nil {
-			a.answer.redo, a.answer.redoLang = id, lang
-		}
-		a.syncHotkeys()
-		a.overlaySync()
+		a.redoAnswer(req)
 		return
 	}
 	if card.kind == store.KindRewrite && len(card.turns) > 0 {
@@ -129,6 +123,23 @@ func (a *app) retryAnswer(lang string) {
 	}
 	if _, err := a.mgr.Start(req); err == nil && len(req.Previous) == 0 {
 		a.answer = answerCard{}
+	}
+	a.syncHotkeys()
+	a.overlaySync()
+}
+
+// redoAnswer asks for the card's answer again, into req's language or
+// with its thinking level: it stays in the card, which shows its text
+// until the new one comes (Voxt's).
+func (a *app) redoAnswer(req session.StartRequest) {
+	req.Card = true
+	a.answer.msg = ""
+	if n := a.sessionBlocker(req.Kind); n != nil {
+		a.answer.msg = n.text
+		return
+	}
+	if id, err := a.mgr.Start(req); err == nil {
+		a.answer.redo, a.answer.redoLang, a.answer.redoThink = id, req.TargetLanguage, req.Thinking
 	}
 	a.syncHotkeys()
 	a.overlaySync()
