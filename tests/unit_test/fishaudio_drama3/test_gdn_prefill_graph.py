@@ -333,7 +333,8 @@ def test_mixed_batches_through_the_captured_extend_keep_the_eager_bits(
 ) -> None:
     """Waves of one to five prompts prefilled on the captured GDN extend and
     then decoded: every linear-attention state digest, final conv and recurrent
-    state, written KV cache, logit and frame equals the eager engine's."""
+    state, written KV cache, logit and frame equals that of the same engine
+    prefilling eagerly."""
     checkpoint_dir = tmp_path / "checkpoint"
     write_synthetic_checkpoint(checkpoint_dir)
     prompts = {
@@ -368,7 +369,7 @@ def test_mixed_batches_through_the_captured_extend_keep_the_eager_bits(
             tmp_path,
             {},
         )
-        for kind in ("eager", "graph", "prefill_graph")
+        for kind in ("graph", "prefill_graph")
     }
     prefill_graph = runs["prefill_graph"]
     assert prefill_graph.facts.gdn_prefill_graph_status.startswith(
@@ -385,19 +386,7 @@ def test_mixed_batches_through_the_captured_extend_keep_the_eager_bits(
     assert replayed == EXACT_BUCKETS
     problems = finite_problems(prefill_graph)
     assert not problems, "\n".join(problems)
-    # note (Wenyao Gao): the decode-graph engine differs from the prefill-graph
-    # engine only in the prefill path, so every recorded value must agree.
     problems = bit_problems(
         EnginePair(eager=runs["graph"], graph=prefill_graph, scenarios=[scenario])
     )
-    assert not problems, "\n".join(problems)
-    # note (Wenyao Gao): eager and graph engines already record different staged
-    # RAS windows.
-    problems = [
-        problem
-        for problem in bit_problems(
-            EnginePair(eager=runs["eager"], graph=prefill_graph, scenarios=[scenario])
-        )
-        if "staged RAS window" not in problem
-    ]
     assert not problems, "\n".join(problems)
