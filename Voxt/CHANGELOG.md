@@ -6,6 +6,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
+- **Upload size and recording length limits in Settings → Audio** (#3840): Upload size limit sets the largest piece Voxt sends to OpenAI or Doubao file recognition (0, the default, keeps the service's own: 25 MB and 100 MB). Recording length limit stops a recording at that many minutes and recognises it (0, the default, means no limit). Both apply to Transcribe, Translate and Rewrite. While you record, the recording window warns in the last minute before the length limit, and from 30 seconds before a recording passes the upload size and goes in pieces.
 - **Transcribe a recording from the command line** (#3845): `Voxt transcribe meeting.m4a -o meeting.srt` turns an audio file, or the sound of an mp4 or mov video, into SRT subtitles (or plain text with `--format txt`) with Transcribe's speech model, while Voxt runs. It splits the recording at pauses as meetings do, writes the file only when it finishes, and exits with a clear message when the file cannot be read or the model fails. Nothing goes into History. See docs/transcribe.md.
 - **Send a screenshot to language models that read images** (#3846): turn on Settings → Privacy → Send the window to the language model, and when you start Transcribe, Translate or Rewrite, Voxt takes a screenshot of the window you speak into and sends it to the language model with the text, so names and terms on screen come out right. Off by default. It needs Screen Recording permission, which Voxt asks for when you turn it on. A model that takes no images gets the text alone, as before.
 - **Rewrite: Continue adds the text you select now**: select more text (say, the messages that came in since) before you press Continue or the Rewrite shortcut in the answer card, and the follow-up sends it to the language model with your new instruction, next to the text selected the first time. The card shows it under what you said, shortened until you click Show all. With nothing new selected, the follow-up works as before.
@@ -54,6 +55,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 新增
 
+- **“设置 → 音频”里可以设上传大小上限和录音时长上限**（#3840）：上传大小上限决定 Voxt 每次发给 OpenAI 或豆包极速版的录音最大多大（默认 0，用服务自己的 25 MB 和 100 MB）。录音时长上限让录音到这么多分钟时自动停下并识别（默认 0，不限时长）。两项对转录、翻译和改写都生效。录音时，离时长上限还剩一分钟，录音窗口会提醒；录音还差 30 秒超过上传大小、要分段发送时，也会提醒。
 - **在命令行里转录录音**（#3845）：Voxt 运行时，`Voxt transcribe meeting.m4a -o meeting.srt` 用转录功能的语音识别模型，把音频文件或 mp4、mov 视频的声音转成 SRT 字幕（`--format txt` 输出纯文本）。它像会议一样按停顿切段，转完才写文件；文件读不了或模型出错时说明原因并以非零状态退出。不会写进历史。用法见 docs/transcribe.md。
 - **给能看图的语言模型发截图**（#3846）：在“设置 → 隐私”打开“把窗口截图发给语言模型”后，每次开始转录、翻译或改写时，Voxt 会截取你正在输入的窗口，和文字一起发给语言模型，让屏幕上的名字和术语写对。默认关闭。需要“屏幕录制”权限，打开时 Voxt 会请求。不能看图的模型照旧只收到文字。
 - **改写：“继续”会带上现在选中的文字**：在答案卡片里点“继续”或按改写快捷键之前，先选中更多文字（比如之后新来的消息），追问时这段文字会和新的指令一起发给语言模型，和第一次选中的文字都在对话里。卡片在你说的话下面显示这段文字，长的先截短，点“展开”看全文。没有新选中文字时，追问和以前一样。

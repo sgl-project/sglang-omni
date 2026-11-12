@@ -169,6 +169,11 @@ type Snapshot struct {
 	// StartedAt: the shortcut; HeardAt: the first audio (zero until then:
 	// the user's first words are not heard yet); StoppedAt: Stop.
 	StartedAt, HeardAt, StoppedAt time.Time
+	// MaxLen is the length a recording stops at (Audio.MaxSeconds; 0:
+	// none); UploadLen how long a recording gets before it is past the
+	// speech model's upload limit and goes in pieces (0: none applies).
+	// The pill warns as either nears (#3840).
+	MaxLen, UploadLen time.Duration
 	// Levels are the last Bars input levels, 0–1, oldest first.
 	Levels []float64
 	// Waiting is what the session still waits for, once it waited

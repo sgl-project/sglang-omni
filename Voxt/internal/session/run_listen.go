@@ -37,7 +37,24 @@ func (r *run) awaitServices() bool {
 // useServices keeps the resolved services.
 func (r *run) useServices(s svcResult) {
 	r.resolved, r.svc, r.terms = true, s.svc, s.terms
-	r.m.update(r, func(sn *Snapshot) { sn.ASR, sn.LLM = s.svc.ASRInfo, s.svc.LLMInfo })
+	up := uploadLen(s.svc.ASR, r.settings.Audio.UploadMB)
+	r.m.update(r, func(sn *Snapshot) { sn.ASR, sn.LLM, sn.UploadLen = s.svc.ASRInfo, s.svc.LLMInfo, up })
+}
+
+// uploadLen is how much recording fits in one upload to p, under the
+// user's limit of userMB when it is the smaller (0: p splits no uploads).
+func uploadLen(p asr.Provider, userMB int) time.Duration {
+	if p == nil {
+		return 0
+	}
+	most := p.Caps().MaxBytes
+	if u := int64(userMB) << 20; u > 0 && u < most {
+		most = u
+	}
+	if most <= 44 {
+		return 0
+	}
+	return time.Duration(most-44) * time.Second / (2 * asr.SampleRate) // 44: the WAV header
 }
 
 // needs reports what the services lack for the session: a speech
@@ -340,7 +357,7 @@ func (r *run) listen() (string, bool) {
 		}
 		sent := asr.Duration(upload, asr.SampleRate)
 		r.m.update(r, func(s *Snapshot) { s.Timings.Sent = sent })
-		res, err = ft.Transcribe(actx, asr.FileRequest{Audio: upload, Format: "pcm", SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext()})
+		res, err = ft.Transcribe(actx, asr.FileRequest{Audio: upload, Format: "pcm", SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext(), MaxBytes: r.settings.Audio.UploadMB << 20})
 		if err != nil && actx.Err() != nil {
 			err = r.ctxErr(actx)
 		}
