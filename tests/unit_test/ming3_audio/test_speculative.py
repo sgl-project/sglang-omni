@@ -9,14 +9,19 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+import torch
 from pydantic import JsonValue
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
+import sglang_omni.platforms as platforms
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.models.ming3_audio import stages
 from sglang_omni.models.ming3_audio.config import Ming3AudioPipelineConfig
 from sglang_omni.modules.ming_audio.hf_config import Ming3AudioConfig
 from sglang_omni.modules.ming_audio.thinker import Ming3AudioThinker
+from sglang_omni.proto.request import OmniRequest, StagePayload
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.speculative.dflash_draft import ReducedVocabularyDFlashWorker
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -128,6 +133,80 @@ def test_dflash_draft_keeps_its_own_architecture(
     assert infrastructure.call_args.kwargs["supports_speculative_decoding"] is True
     [draft_copy] = draft_copies
     assert not draft_copy.exists()
+
+
+@pytest.mark.parametrize(
+    ("params", "refused"),
+    [
+        ({"temperature": 0.7, "seed": 42, "max_new_tokens": 32}, True),
+        ({"temperature": 0.0, "seed": 42, "max_new_tokens": 32}, False),
+        ({"temperature": 0.7, "seed": 42, "max_new_tokens": 1}, False),
+    ],
+    ids=["sampled", "greedy", "one-token"],
+)
+def test_dflash_admission_refuses_a_seed_the_verify_would_ignore(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    params: dict[str, JsonValue],
+    refused: bool,
+) -> None:
+    """A seeded sampled request was accepted under DFLASH, though the verify draws every later token without its seed."""
+    write_dflash_checkpoint(tmp_path)
+    monkeypatch.setattr(
+        platforms.current_platform, "get_device", lambda index: "cpu", raising=False
+    )
+    monkeypatch.setattr(stages, "build_sglang_server_args", Mock())
+    monkeypatch.setattr(
+        stages,
+        "create_sglang_infrastructure",
+        Mock(
+            return_value=(
+                Mock(gpu_id=0),
+                None,
+                None,
+                None,
+                SimpleNamespace(vocab_size=157184),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        stages, "get_tokenizer", Mock(return_value=SimpleNamespace(eos_token_id=1))
+    )
+    scheduler_factory = Mock()
+    monkeypatch.setattr(stages, "OmniScheduler", scheduler_factory)
+    stages.create_thinker_executor(
+        "unused",
+        max_seq_len=8192,
+        enable_async_decode=False,
+        device="cpu",
+        server_args_overrides={
+            "speculative_algorithm": "DFLASH",
+            "speculative_draft_model_path": str(tmp_path),
+        },
+    )
+    scheduler_kwargs = scheduler_factory.call_args.kwargs
+    request_data = scheduler_kwargs["request_builder"](
+        StagePayload(
+            request_id="audio-chat",
+            request=OmniRequest(inputs="", params=params),
+            data={
+                "input_ids": torch.tensor([3, 4, 5]),
+                "audio_positions": torch.tensor([1]),
+                "audio_embeddings": torch.zeros(1, 2560),
+            },
+        )
+    )
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.draft_worker = Mock()
+    scheduler.spec_algorithm = scheduler.draft_algorithm = SpeculativeAlgorithm.DFLASH
+    scheduler.model_runner = scheduler_kwargs["model_runner"]
+
+    error = scheduler.speculative_request_error(request_data.req, request_data)
+
+    if refused:
+        assert error is not None and "seed" in error
+    else:
+        assert error is None
 
 
 def test_dflash_capture_reuses_the_layer_output_capture() -> None:
