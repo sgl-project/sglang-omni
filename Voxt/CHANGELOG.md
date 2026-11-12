@@ -6,13 +6,71 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
+- **Rewrite: Continue adds the text you select now**: select more text (say, the messages that came in since) before you press Continue or the Rewrite shortcut in the answer card, and the follow-up sends it to the language model with your new instruction, next to the text selected the first time. The card shows it under what you said, shortened until you click Show all. With nothing new selected, the follow-up works as before.
+- **Personal dictionary** on the Dictionary page: write your names, terms and numbers once in Markdown, for example a table of the standard spelling, what speech recognition writes instead, and when it applies. Transcribe, Translate and Rewrite add it to the language model's prompt, right after the task's rules (also with your own full prompt), and speech recognition does not get it. How it is used, under the editor, shows an example built from your settings: the system prompt, the dictionary, your input and the speech recognition text, then what the model receives. The switch Add to the language model prompt keeps it out; terms and aliases work as before.
+- **Use transcript while the language model works, and a longer wait if you need it**: while Transcribe or Translate waits for the language model, the overlay shows Use transcript; click it or press the cancel shortcut (Esc unless you changed it) to insert the recognised text right away. When a translation of speech runs out of time, the recognised speech is inserted with a warning, as Transcribe already did. Language models → Wait for the language model sets how long Voxt waits at least (Automatic, 1, 2, 5 or 10 minutes) for Transcribe, Translate and Rewrite.
 - **Voxt 1.x on Apple silicon updates to Voxt 2 by itself**: each release also has the app as `Voxt-X.Y.Z-macOS.zip`, which Voxt 1.x's in-app update installs on a Mac with Apple silicon (first for those who turned on Beta Updates, then for everyone there) and the Homebrew cask (`brew install --cask hehehai/tap/voxt`, Apple silicon only) installs. Voxt 1.x on an Intel Mac is not offered Voxt 2, which does not run there, and stays on Voxt 1.x. After the update, allow the microphone and accessibility again: macOS sees Voxt 2 as another app.
+- **Voxt tells you when a new version is out** (#3786): Check for Updates… is back in the app menu, the menu bar menu, ⌘K and Settings → Diagnostics & About. It opens a dialog that asks GitHub for the newest release and shows its notes with Download (its disk image), says you are up to date, or says why the check failed, with Try again. Once a day Voxt also checks in the background (Settings → Diagnostics & About → Check automatically, on by default) and shows a card in the sidebar when a new version is out; dismiss it and it stays away until the next version. Voxt still does not install updates itself: install the new version from its disk image, or with `brew upgrade --cask voxt`. The check sends only Voxt's version to GitHub.
+- **Strict shortcuts** in Settings → Shortcuts: while you record, only the shortcut that started the recording stops it. Another feature's shortcut does nothing. Off by default, so any feature's shortcut stops the recording, as in Voxt 1.x (#3823).
+
+### Changed
+
+- **The speech model loads before the first dictation**: Voxt now loads Transcribe's on-device speech model when it starts and when you choose another one, instead of at the first press of the shortcut. The first live text after a launch or a change of model no longer waits for the load (0.2 to 0.5 s on an M-series Mac with 36 GB, longer on a busy Mac or one with less memory). The model leaves memory after 10 idle minutes, as before.
+- **A large dictionary no longer slows dictation down**: after you dictate, Voxt replaces the dictionary's aliases with their terms. It now checks only the aliases that start with the letter at each place. With 1,000 terms, a 4 KB transcript took 57 ms and now takes 2 ms; a 20 KB one took 280 ms and now takes 8 ms (Apple M5 Max). The result is the same.
+
+### Fixed
+
+- **The answer card no longer jumps while a fast model writes a long answer** (#3836): when the language model wrote quickly (a fast remote model writing a long Rewrite answer), the card grew by a few lines on every chunk, several times a second. The card now shows the answer at a steady pace, a little behind the model, and grows about four lines at a time. The whole answer shows as soon as the model finishes, without waiting for the pace to catch up. A follow-up's answer streams the same way.
+- **The answer card stays shut when its switch is off**: when a result could not go in (no text field had the focus, a password field, or the paste did not show), Transcribe and Translate opened the answer card even with their answer card turned off. Now the card opens only when it is on; otherwise Voxt copies the result and the overlay says to press ⌘V. The result is in History either way. Rewrite still keeps such an answer in the card, where you can ask a follow-up.
+- **A dictation is no longer cut off at 10 minutes**: Transcribe, Translate and Rewrite stopped recording by themselves after 10 minutes, so a long dictation such as a podcast ended without a key press. A recording now has no time limit: it runs until you stop it.
+- **Meetings use your main language**: the live transcript and the transcript made after a meeting now give the speech model the same language hint as dictation (your main language in Settings → General, such as Simplified or Traditional Chinese). Before, meetings gave no hint and the model guessed the language. The speech model still picks the Chinese script itself: Voxt does not convert between Simplified and Traditional.
+- **Dictation goes into Raycast and other launcher panels**: a panel that takes the keyboard without bringing its app to the front (Raycast, Tinycast) got nothing and Voxt showed the answer card instead. The text is now pasted into the panel's field.
+- **Meeting live text no longer repeats a sentence after a pause** (development builds): when the model changed the last words of a sentence after Voxt had shown it, the next live line started the whole sentence again. Now it shows only the words after the part that stayed the same. The transcript made after the meeting was not affected.
+- **System dictation keeps what was said before a pause**: some macOS versions restart their speech recognition after a short pause, and the result held only the words after it, in History and in the app the text went to. Voxt now keeps each part and joins them.
+- **One Escape closes a dialog** (History settings, the setup guide, Network, a language model's settings): with the keyboard focus on a button that shows a tip, such as the dialog's ×, the first Escape only hid the tip and the second closed the dialog.
+- **Logs says when the filter matches nothing**: a filter that matches no line shows "Nothing matches" with Clear filter, on the Logs page and in the logs panel, instead of "No log lines yet."
+- **Language model debug closes with Esc or ×**: opened from Try prompts on a model…, it had no close control: only the sidebar, or Open Language models before a model is set up, led away from it. Esc and the × at the top right now go back to Language models; Esc in an open menu still closes only the menu.
+- **A dictation survives a speech model that quit**: when the on-device speech model's process died during a recording (a crash, or macOS ending it under memory pressure), stopping gave only the live text heard until then, with a warning. Voxt now starts the model again and recognises the whole recording, about 0.2 s later on an M5 Max.
+- **The overlay preview keeps the pill on the chosen side** (Settings → Overlay style): at a large distance from the screen edge, Top centre drew the pill near the bottom of the preview and Bottom centre near the top. The pill now moves toward the middle as the distance grows and stays in its own half.
+- **Show in the Dock** (Settings → General → Menu bar and login): Voxt 2.0.0 and 2.0.1 did not read Voxt 1.x's Show in Dock, so who set up Voxt 2 with Show in Dock off in Voxt 1.x stayed in the Dock. Unless Voxt 2.0.2 or later imported Voxt 1.x's data, or the switch is already off, Voxt reads it at the next start, once; turned back on, the Dock stays. Find in settings finds a setting by its name in any section (before, "Dock" or "clipboard" found nothing in General), and in Chinese by its English name too ("Dock" finds 在程序坞中显示). Turning the switch off keeps the Voxt window in front.
+- **A connection test without an API key says why in words**: in a language model's dialog, Test connection with no key saved or typed now says "Paste the service's API key above, then test again." The ⓘ beside it now gives that whole sentence before the error's detail. Before, it showed only the error code (`llm.no_key provider="anthropic"`), and the message pointed you to the Language models page you were already on.
+- **The command palette no longer offers Meetings in a release build.** Meetings is only in development builds, and choosing it in the palette opened a "Not found" page.
+- **A crash leaves something to send**: when Voxt crashes in its own code, what it was doing is now in `~/Library/Logs/VoxtNew/crash.log`, which the next start renames `crash.log.1` and names in the log. Before, such a crash left no report (macOS writes none for it), so there was nothing to send. Save a diagnostic bundle (Settings → About) takes both files.
 
 ### 中文
 
 #### 新增
 
+- **改写：“继续”会带上现在选中的文字**：在答案卡片里点“继续”或按改写快捷键之前，先选中更多文字（比如之后新来的消息），追问时这段文字会和新的指令一起发给语言模型，和第一次选中的文字都在对话里。卡片在你说的话下面显示这段文字，长的先截短，点“展开”看全文。没有新选中文字时，追问和以前一样。
+- **个人词典**（词典页）：用 Markdown 把名字、术语和数字的写法写一次，例如一张表：标准写法、语音识别会写成什么、什么情况下适用。转录、翻译和改写会把它加到语言模型的提示词里，紧跟在任务规则后面（用自己的完整提示词时也加），语音识别不会收到。编辑框下面的“怎么使用”用你的设置举例：系统提示词、个人词典、你的输入、语音识别文本，以及模型最后收到的内容。关掉“加到语言模型的提示词里”就不发送；词条和别名照旧生效。
+- **语言模型处理时可以直接用识别原文，也可以让它多等一会**：转录或翻译在等语言模型时，浮窗显示“用识别原文”，点它或按取消键（默认 Esc），马上插入识别出的原文。语音翻译超时后插入识别原文并提示，和转录一样。语言模型页的“等待语言模型”设置转录、翻译、改写至少等多久（自动、1、2、5、10 分钟）。
 - **Apple 芯片上的 Voxt 1.x 自己更新到 Voxt 2**：每个版本还附带 app 的 `Voxt-X.Y.Z-macOS.zip`，在 Apple 芯片的 Mac 上，Voxt 1.x 的应用内更新安装它（先给打开了“Beta 更新”的用户，再给其他人），Homebrew 的 cask（`brew install --cask hehehai/tap/voxt`，只支持 Apple 芯片）也装它。Intel Mac 上的 Voxt 1.x 不会收到 Voxt 2（Voxt 2 不能在 Intel 上运行），继续用 Voxt 1.x。更新后要重新允许麦克风和辅助功能：macOS 把 Voxt 2 当成另一个 app。
+- **有新版本时 Voxt 会告诉你**（#3786）：应用菜单、菜单栏菜单、⌘K 和 设置 → 诊断与关于 里又有了“检查更新…”。它打开一个对话框，向 GitHub 查最新版本：有新版本就显示更新说明和“下载”（打开它的 dmg）；已是最新就直说；查不到就说明原因，可以重试。Voxt 每天还会在后台查一次（设置 → 诊断与关于 →“自动检查”，默认打开），有新版本时侧边栏出现一张卡片；关掉以后，下一个版本出来之前不再出现。Voxt 仍然不会自己安装更新：新版本从 dmg 安装，或者运行 `brew upgrade --cask voxt`。检查时只把 Voxt 的版本号发给 GitHub。
+- **快捷键严格模式**（设置 → 快捷键）：录音时只有开始录音的那个快捷键能停止它，按别的功能的快捷键不起作用。默认关闭，和 Voxt 1.x 一样，任何功能的快捷键都能停止录音（#3823）。
+
+#### 变更
+
+- **语音识别模型在第一次听写前就加载好**：Voxt 启动时、换语音识别模型时就加载转录用的本地模型，不再等到第一次按快捷键。启动后和换模型后的第一次实时文字不用再等加载（36 GB 的 M 系列 Mac 上是 0.2 到 0.5 秒，机器忙或内存小时更久）。模型空闲 10 分钟后照旧从内存卸载。
+- **词典很大时听写不再变慢**：听写完成后，Voxt 会把词典里的别名换成对应的词条，现在每个位置只检查以该字开头的别名。词典有 1000 个词条时，4 KB 的转录稿从 57 毫秒降到 2 毫秒，20 KB 的从 280 毫秒降到 8 毫秒（Apple M5 Max）。替换结果不变。
+
+#### 修复
+
+- **快速模型写长回答时，答案卡片不再跳动**（#3836）：模型出字很快时（比如快速的远程模型写一段长的改写回答），卡片每收到一段文字就往下长几行，一秒跳好几次。现在卡片以稳定的速度逐字显示回答，略落后于模型，每次长四行左右。模型一写完，整段回答马上全部显示，不用等动画。追问的回答也一样。
+- **关掉答案卡片后不再弹出卡片**：结果插不进去时（没有选中输入框、焦点在密码框，或者粘贴后没有出现），即使转录、翻译的答案卡片关着，Voxt 也会打开卡片。现在只有开着时才打开；关着时 Voxt 把结果复制到剪贴板，浮窗提示按 ⌘V 粘贴。两种情况历史里都有这条结果。改写插不进去时仍然放在卡片里，方便继续追问。
+- **长时间口述不再在 10 分钟时被截断**：转录、翻译和改写录到 10 分钟会自己停下，录播客这样的长段口述没按快捷键就结束了。现在录音没有时长上限，录到你按停止为止。
+- **会议也按主语言识别**：会议的实时字幕和会后整理的转录稿，现在和听写一样把主语言（设置 → 通用 → 主语言，比如简体中文或繁体中文）告诉语音识别模型。以前会议不告诉模型，由模型自己猜语言。简体还是繁体仍由模型决定，Voxt 不做简繁转换。
+- **听写的文字能输入到 Raycast 等启动器的面板里**：Raycast、Tinycast 这类面板接管键盘，但它们的 App 不到前台，以前文字进不去，Voxt 改为弹出结果卡片。现在文字会粘贴到面板的输入框里。
+- **会议实时文字停顿后不再重复整句**（开发版）：Voxt 已经显示一句话之后，模型又改了句尾几个字，下一行实时文字会把整句从头再出一遍。现在只显示没变的那部分之后的字。会议结束后生成的转录稿不受影响。
+- **系统听写不再丢掉停顿之前说的话**：有些 macOS 版本在短暂停顿后会重新开始识别，结果里只剩停顿之后的话，历史记录和输入的 app 里都一样。现在 Voxt 把每一段都留下，再接起来。
+- **按一次 Esc 就能关对话框**（历史设置、设置引导、网络、语言模型的设置）：焦点在带提示的按钮上时（比如对话框右上角的 ×），第一次 Esc 只收起提示，第二次才关掉对话框。
+- **日志筛选没有匹配时如实说明**：筛选不到任何一行时，日志页和日志面板显示“没有匹配的记录”和“清除筛选”，不再显示“还没有日志。”
+- **语言模型调试页可以按 Esc 或 × 关掉**：从“调试提示词…”打开后，页面上原来没有关闭按钮，只能点侧边栏，或者在还没设置模型时点“打开语言模型页”离开。现在按 Esc 或点右上角的 × 都会回到语言模型页；菜单打开时按 Esc 仍然只关菜单。
+- **语音识别模型中途退出，口述也不丢**：录音时本地语音识别模型的进程退出了（崩溃，或内存紧张时被 macOS 结束），停止后以前只得到退出前的实时文字，并带一条警告。现在 Voxt 重新启动模型，识别整段录音，在 M5 Max 上多等约 0.2 秒。
+- **浮窗预览里的胶囊留在所选的一侧**（设置 → 浮窗样式）：与屏幕边缘的距离调大时，选“顶部居中”预览里的胶囊画在靠下的位置，选“底部居中”画在靠上的位置。现在距离越大，胶囊越靠近中间，但始终留在自己那一半。
+- **在程序坞中显示**（设置 → 通用 → 菜单栏与登录）：Voxt 2.0.0 和 2.0.1 不读 Voxt 1.x 的“在程序坞中显示”，在 Voxt 1.x 里关了它的用户装上 Voxt 2 后仍在程序坞里。没有用 Voxt 2.0.2 或更新的版本导入过 Voxt 1.x 的数据、开关也没关的，下次启动时补读一次；之后再打开，程序坞图标就留着。“在设置中查找”能按名称找到任何一部分里的设置（以前在“通用”里搜“Dock”或“clipboard”什么也找不到），中文界面下也能用英文名称找（搜“Dock”能找到“在程序坞中显示”）。关掉这个开关后，Voxt 窗口仍在最前面。
+- **没有 API Key 时测试连接，会用文字说明原因**：在语言模型的对话框里，没保存也没填写 Key 就点“测试连接”，提示改为“请在上方粘贴该服务的 API Key，然后再测试。”旁边的 ⓘ 先给出这句完整的话，再给错误详情。以前 ⓘ 只显示错误代码（`llm.no_key provider="anthropic"`），提示还让你去当前已经在的“语言模型”页。
+- **正式版的命令面板不再列出“会议”。** 会议只在开发版里有，在命令面板里选它会打开“未找到”页面。
+- **崩溃后有东西可发**：Voxt 在自己的代码里崩溃时，出错时在做什么现在写进 `~/Library/Logs/VoxtNew/crash.log`，下次启动改名为 `crash.log.1`，并在日志里写明。以前这种崩溃不留任何报告（macOS 不为它写），没有东西可以发给我们。「保存诊断包」（设置 → 关于）会带上这两个文件。
 
 ## [2.0.3] - 2026-11-10
 

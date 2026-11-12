@@ -35,7 +35,7 @@ func (r *run) transcribe(text string) {
 	result := text
 	var problem *Problem
 	if f := r.settings.Features.Transcribe; f.Enhance && r.svc.LLM != nil {
-		r.m.update(r, func(s *Snapshot) { s.State = Composing })
+		r.m.update(r, func(s *Snapshot) { s.State, s.CanSkip = Composing, true })
 		llmStart := r.now()
 		cleaned, profile, err := r.cleanUp(text)
 		llmTime := r.now().Sub(llmStart)
@@ -46,6 +46,9 @@ func (r *run) transcribe(text string) {
 		r.m.update(r, func(s *Snapshot) { s.Profile, s.Timings.LLM = profile, llmTime })
 		result = cleaned
 		switch {
+		case r.skipped.Load():
+			r.logf("info", "the language model was skipped after %v: the text goes on as recognised", llmTime.Round(time.Millisecond))
+			result = text
 		case err != nil:
 			r.logf("warning", "language model %s (%s) failed after %v, the text goes on as recognised: %v", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, llmTime.Round(time.Millisecond), err)
 			problem = &Problem{Code: ProblemLLM, Err: err, Degraded: true}
@@ -80,10 +83,10 @@ func (r *run) cleanUp(text string) (string, string, error) {
 	for i, p := range parts {
 		draft := newDrafter(r, parts[:i+1], answers)
 		req := llm.Request{Messages: llmMessages(p.Output), Skill: llm.SkillTranscribeEnhance, OnDelta: draft.add}
-		resp, err := r.llmChat(r.m.cfg.llmDeadlines(req, utf8.RuneCountInString(p.Text), r.m.cfg.LLMTimeout))
+		resp, err := r.llmChat(r.m.cfg.llmDeadlines(req, utf8.RuneCountInString(p.Text), r.llmFloor(r.m.cfg.LLMTimeout)))
 		switch {
-		case r.ctx.Err() != nil:
-			return text, p.Profile(), r.ctx.Err()
+		case r.ctx.Err() != nil || r.skipped.Load():
+			return text, p.Profile(), err
 		case err != nil:
 			if len(parts) > 1 {
 				err = fmt.Errorf("piece %d of %d: %w", i+1, len(parts), err)

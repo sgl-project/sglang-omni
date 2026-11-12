@@ -175,27 +175,6 @@ func searchField(c *ui.Context, key string, value *string, placeholder string, m
 	return in
 }
 
-// filterBar is the bar of a page's search field and its filters
-// (segmented controls, selects, a selection button): on one line when
-// the search keeps 240 DIPs beside the filters (filtersW wide, in DIPs at
-// 100 %) in room (the bar's width), else the search on a line of its own
-// and the filters under it. It returns whether it took two lines.
-func filterBar(c *ui.Context, room, filtersW float32, search, filters func()) (twoLines bool) {
-	t := c.Theme()
-	if room-px(t, filtersW+sp2) >= px(t, 240) {
-		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Shrink(0).Children(func() {
-			search()
-			filters()
-		})
-		return false
-	}
-	ui.Column(c).Gap(px(t, sp2)).Shrink(0).Children(func() {
-		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(search)
-		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(filters)
-	})
-	return true
-}
-
 // emptyState is a page's or a list's empty state: a large icon, a title,
 // a line of text and actions (one primary at most).
 func emptyState(c *ui.Context, ic icons.Icon, title, body string, actions func()) ui.Element {
