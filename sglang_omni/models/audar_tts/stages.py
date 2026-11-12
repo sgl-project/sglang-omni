@@ -346,14 +346,20 @@ def create_tts_engine_executor(
     else:
         pass
     model_file = resolve_gguf(model_path, gguf_filename, model_revision)
-    llm = llama_cpp.Llama(
-        model_path=model_file,
-        n_ctx=n_ctx,
-        n_gpu_layers=n_gpu_layers,
-        split_mode=llama_cpp.LLAMA_SPLIT_MODE_NONE,
-        main_gpu=main_gpu,
-        verbose=False,
-    )
+    llama_kwargs: dict[str, object] = {
+        "model_path": model_file,
+        "n_ctx": n_ctx,
+        "n_gpu_layers": n_gpu_layers,
+        "split_mode": llama_cpp.LLAMA_SPLIT_MODE_NONE,
+        "main_gpu": main_gpu,
+        "verbose": False,
+    }
+    if current_platform.is_musa() and not use_cpu_backend:
+        # MUSA llama.cpp aborts for physical batches above 8 tokens.
+        llama_kwargs["n_ubatch"] = 8
+    else:
+        pass
+    llm = llama_cpp.Llama(**llama_kwargs)
     stop_tokens = llm.tokenize(
         TARGET_CODES_END.encode("utf-8"), add_bos=False, special=True
     )

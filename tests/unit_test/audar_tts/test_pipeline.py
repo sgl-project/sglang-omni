@@ -616,6 +616,7 @@ class LlamaInit:
     model_path: str
     n_ctx: int
     n_gpu_layers: int
+    n_ubatch: int | None
     split_mode: int
     main_gpu: int
     verbose: bool
@@ -647,12 +648,14 @@ def test_llama_cpp_stage_keeps_a_cpu_resolution_off_the_gpu(
         split_mode: int,
         main_gpu: int,
         verbose: bool,
+        n_ubatch: int | None = None,
     ) -> NoReturn:
         nonlocal captured
         captured = LlamaInit(
             model_path=model_path,
             n_ctx=n_ctx,
             n_gpu_layers=n_gpu_layers,
+            n_ubatch=n_ubatch,
             split_mode=split_mode,
             main_gpu=main_gpu,
             verbose=verbose,
@@ -686,6 +689,7 @@ def test_llama_cpp_stage_keeps_a_cpu_resolution_off_the_gpu(
     assert captured is not None
     assert captured.n_gpu_layers == 0
     assert captured.main_gpu == 0
+    assert captured.n_ubatch is None
 
 
 @pytest.mark.parametrize(
@@ -694,11 +698,12 @@ def test_llama_cpp_stage_keeps_a_cpu_resolution_off_the_gpu(
         "requested_gpu_layers",
         "expected_gpu_layers",
         "expected_main_gpu",
+        "expected_n_ubatch",
         "expect_warning",
     ),
     [
-        (False, -1, 0, 0, True),
-        (True, 17, 17, 1, False),
+        (False, -1, 0, 0, None, True),
+        (True, 17, 17, 1, 8, False),
     ],
 )
 def test_llama_cpp_stage_selects_musa_backend(
@@ -708,6 +713,7 @@ def test_llama_cpp_stage_selects_musa_backend(
     requested_gpu_layers: int,
     expected_gpu_layers: int,
     expected_main_gpu: int,
+    expected_n_ubatch: int | None,
     expect_warning: bool,
 ) -> None:
     captured: LlamaInit | None = None
@@ -723,12 +729,14 @@ def test_llama_cpp_stage_selects_musa_backend(
         split_mode: int,
         main_gpu: int,
         verbose: bool,
+        n_ubatch: int | None = None,
     ) -> NoReturn:
         nonlocal captured
         captured = LlamaInit(
             model_path=model_path,
             n_ctx=n_ctx,
             n_gpu_layers=n_gpu_layers,
+            n_ubatch=n_ubatch,
             split_mode=split_mode,
             main_gpu=main_gpu,
             verbose=verbose,
@@ -768,6 +776,7 @@ def test_llama_cpp_stage_selects_musa_backend(
     assert captured is not None
     assert captured.n_gpu_layers == expected_gpu_layers
     assert captured.main_gpu == expected_main_gpu
+    assert captured.n_ubatch == expected_n_ubatch
     assert backend_queries == [b"MUSA"]
     assert ("llama.cpp MUSA backend not detected" in caplog.text) is expect_warning
 
@@ -821,11 +830,13 @@ def test_llama_cpp_stage_offloads_to_the_xpu_and_warms_it(
             split_mode: int,
             main_gpu: int,
             verbose: bool,
+            n_ubatch: int | None = None,
         ) -> None:
             self.init = LlamaInit(
                 model_path=model_path,
                 n_ctx=n_ctx,
                 n_gpu_layers=n_gpu_layers,
+                n_ubatch=n_ubatch,
                 split_mode=split_mode,
                 main_gpu=main_gpu,
                 verbose=verbose,
@@ -878,11 +889,13 @@ def test_llama_cpp_stage_matches_official_generation_loop(
             split_mode: int,
             main_gpu: int,
             verbose: bool,
+            n_ubatch: int | None = None,
         ) -> None:
             self.init = LlamaInit(
                 model_path=model_path,
                 n_ctx=n_ctx,
                 n_gpu_layers=n_gpu_layers,
+                n_ubatch=n_ubatch,
                 split_mode=split_mode,
                 main_gpu=main_gpu,
                 verbose=verbose,
