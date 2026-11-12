@@ -1,6 +1,7 @@
 package main
 
-// Settings → Privacy: what leaves this Mac (only text, to the language
+// Settings → Privacy: what leaves this Mac (text, and a screenshot of the
+// window when the user turns that on, to the language
 // model the user set up; the speech models run here; the network is also
 // for update checks and model downloads), and what VoxtNew keeps here:
 // the history, its recordings, the text in the logs.
@@ -9,8 +10,10 @@ package main
 
 import (
 	"context"
+	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
@@ -33,6 +36,15 @@ func (a *app) privacySettings(c *ui.Context) {
 			i18n.T("If you let programs on this Mac read the history (below), where that text goes next is up to them."),
 		} {
 			ui.Text(c, "• "+s).FontSize(px(t, fsCaption)).TextColor(t.TextMuted)
+		}
+	})
+	settingRow(c, "priv-window", i18n.T("Send a screenshot"), i18n.T("For language models that read images: when you start speaking, Voxt takes a screenshot of the window you speak into and sends it to the language model with the text, so names on screen come out right. Needs Screen Recording permission. A model that takes no images gets the text alone."), func() {
+		if ui.Switch(c.Key("priv-window"), &a.settingsForm.sendWindow).Label(i18n.T("Send the window to the language model")).Changed() {
+			on := a.settingsForm.sendWindow
+			a.updateSettings(func(s *settings.Settings) { s.Privacy.SendWindow = on })
+			if on {
+				a.askScreenRecording()
+			}
 		}
 	})
 
@@ -75,6 +87,19 @@ func (a *app) privacySettings(c *ui.Context) {
 		}
 	})
 	a.clearHistoryDialog(c)
+}
+
+// askScreenRecording shows macOS's Screen Recording prompt (once) and,
+// while Voxt is not allowed, says where to allow it.
+func (a *app) askScreenRecording() {
+	if !a.hstatus.Has(proto.MethodScreenWindow) {
+		return
+	}
+	helperCall(a, proto.MethodPermissionsRequest, proto.PermissionsRequestParams{Permission: proto.PermissionScreenRecording}, 10*time.Second, func(r proto.PermissionsResult, err error) {
+		if err == nil && !r.ScreenRecording {
+			a.toast(i18n.T("To send screenshots, allow Voxt in System Settings → Privacy & Security → Screen & System Audio Recording."))
+		}
+	})
 }
 
 // clearHistoryDialog confirms Clear the history.

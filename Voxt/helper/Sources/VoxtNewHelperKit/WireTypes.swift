@@ -65,6 +65,7 @@ public enum PermissionName {
     public static let microphone = "microphone"
     public static let accessibility = "accessibility"
     public static let speechRecognition = "speechRecognition"
+    public static let screenRecording = "screenRecording"
 }
 
 public struct PermissionsResult: Codable, Sendable {
@@ -73,11 +74,14 @@ public struct PermissionsResult: Codable, Sendable {
     public var accessibility: Bool
     /// As microphone; nil from a helper without it (Go's omitempty).
     public var speechRecognition: String?
+    /// Screen Recording (screen.window); nil while not allowed (Go's omitempty).
+    public var screenRecording: Bool?
 
-    public init(microphone: String, accessibility: Bool, speechRecognition: String) {
+    public init(microphone: String, accessibility: Bool, speechRecognition: String, screenRecording: Bool = false) {
         self.microphone = microphone
         self.accessibility = accessibility
         self.speechRecognition = speechRecognition
+        self.screenRecording = screenRecording ? true : nil
     }
 }
 
@@ -625,6 +629,33 @@ public struct AppIcon: Codable, Sendable, Equatable {
     }
 }
 
+// MARK: screen.window
+
+public struct ScreenWindowParams: Codable, Sendable {
+    public var pid: Int
+    /// The picture's longer side in pixels: screenMaxSide when nil or 0, at most screenMaxSide.
+    public var maxSide: Int?
+
+    public init(pid: Int, maxSide: Int? = nil) {
+        self.pid = pid
+        self.maxSide = maxSide
+    }
+}
+
+public struct ScreenWindowResult: Codable, Sendable {
+    /// A JPEG; base64 on the wire. nil: the app has no window on screen.
+    public var jpeg: Data?
+    public init(jpeg: Data? = nil) { self.jpeg = jpeg }
+}
+
+public let screenMaxSide = 1600
+
+/// The longer side screen.window draws for a request's maxSide.
+public func screenSide(_ maxSide: Int?) -> Int {
+    guard let n = maxSide, n > 0 else { return screenMaxSide }
+    return min(n, screenMaxSide)
+}
+
 // MARK: output.*
 
 /// An output device; uid is its identity (the id may change).
@@ -737,6 +768,7 @@ public enum WireTypes {
         case Method.appList: AppListParams.self
         case Method.appConfigure: AppConfigureParams.self
         case Method.appIcons: AppIconsParams.self
+        case Method.screenWindow: ScreenWindowParams.self
         case Method.outputWatch: OutputWatchParams.self
         case Method.outputMute: OutputMuteParams.self
         case Method.outputRelease: OutputReleaseParams.self
@@ -780,6 +812,7 @@ public enum WireTypes {
         case Method.browserURL: BrowserURLResult.self
         case Method.appList: AppListResult.self
         case Method.appIcons: AppIconsResult.self
+        case Method.screenWindow: ScreenWindowResult.self
         case Method.outputWatch: OutputState.self
         case Method.outputMute: OutputMuteResult.self
         case Method.outputRelease: OutputReleaseResult.self
