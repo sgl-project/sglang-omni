@@ -63,6 +63,7 @@ from sglang_omni.utils.channels_last_conv import (
     channels_last_conv_transpose1d,
 )
 from tests.unit_test.fishaudio_s2_pro.test_vocoder import tiny_codec
+from tests.unit_test.fixtures.accelerator import require_cuda
 from tests.unit_test.fixtures.torch_backend_flags import (  # noqa: F401  # fixture
     CublasFlagSetter,
     cublas_flags,
@@ -1069,10 +1070,7 @@ def test_the_snake_kernel_follows_the_formula_on_a_trimmed_activation(
 
 @pytest.mark.accelerator
 def test_the_snake_folds_a_conv_bias_bitwise_like_a_separate_add() -> None:
-    if not torch.cuda.is_available():
-        pytest.skip("needs a CUDA device")
-    else:
-        pass
+    require_cuda()
     generator = torch.Generator(device="cuda").manual_seed(11)
     channel_count = 96
     snake = Snake1d(channel_count).cuda()
@@ -1102,10 +1100,7 @@ def test_the_snake_folds_a_conv_bias_bitwise_like_a_separate_add() -> None:
 def test_the_residual_add_folds_both_biases_bitwise_like_separate_adds(
     hidden_bias: bool, residual_bias: bool
 ) -> None:
-    if not torch.cuda.is_available():
-        pytest.skip("needs a CUDA device")
-    else:
-        pass
+    require_cuda()
     generator = torch.Generator(device="cuda").manual_seed(12)
     channel_count = 96
     decoder = ChannelsLastDecoder.__new__(ChannelsLastDecoder)
@@ -1129,13 +1124,9 @@ def test_the_residual_add_folds_both_biases_bitwise_like_separate_adds(
     ]
 
     fused = decoder.residual_add(hidden_states[:, :125], biases[0], residual, biases[1])
-    expected = hidden_states[:, :125]
-    if biases[0] is not None:
-        expected = expected + biases[0]
-    else:
-        pass
-    separate_residual = residual if biases[1] is None else residual + biases[1]
-    expected = expected + separate_residual
+    expected = add_bias(hidden_states[:, :125], biases[0]) + add_bias(
+        residual, biases[1]
+    )
 
     assert torch.equal(fused.view(torch.uint8), expected.view(torch.uint8))
 
@@ -1144,10 +1135,7 @@ def test_the_residual_add_folds_both_biases_bitwise_like_separate_adds(
 def test_graph_replays_of_the_decoder_keep_the_bits_of_convs_adding_their_own_bias(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    if not torch.cuda.is_available():
-        pytest.skip("needs a CUDA device")
-    else:
-        pass
+    require_cuda()
     decoders = []
     for _ in range(2):
         codec = tiny_codec().cuda()
@@ -1246,10 +1234,7 @@ def test_the_channels_last_decoder_decodes_like_the_codec(
 @pytest.fixture(scope="module")
 def float16_codec() -> DAC:
     """The real codec with its quantizer in float16, as the vocoder runs it."""
-    if not torch.cuda.is_available():
-        pytest.skip("needs a CUDA device")
-    else:
-        pass
+    require_cuda()
     codec = load_codec(resolve_codec_directory(DEFAULT_CODEC_PATH), "cuda")
     codec.fold_weight_norm()
     codec.quantizer.to(torch.float16)
@@ -1284,10 +1269,7 @@ def test_the_fused_post_module_decodes_like_the_codec_in_float16(
 def test_the_decoder_tail_fuses_snake_conv_and_tanh_like_the_modules(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    if not torch.cuda.is_available():
-        pytest.skip("needs a CUDA device")
-    else:
-        pass
+    require_cuda()
     torch.manual_seed(1)
     tail = torch.nn.Sequential(
         Snake1d(96), CausalConvNet(96, 1, kernel_size=7), torch.nn.Tanh()
@@ -1333,10 +1315,7 @@ def test_decoding_from_a_frame_on_matches_that_suffix_of_the_whole_decode(
 ) -> None:
     """The conv stack starts at the kept frames minus its receptive field, so the
     kept audio sees the same inputs as in a whole-window decode."""
-    if not torch.cuda.is_available():
-        pytest.skip("needs a CUDA device")
-    else:
-        pass
+    require_cuda()
     monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
     codec = tiny_codec().cuda()
     codec.fold_weight_norm()
@@ -1646,10 +1625,7 @@ def test_serving_starts_after_the_default_streams_in_flight_work() -> None:
     """Construction writes the codec weights on the default stream and serving runs on
     the decode stream; serving must start after that work, or its first decodes read
     weights not yet written."""
-    if not torch.cuda.is_available():
-        pytest.skip("needs a CUDA device")
-    else:
-        pass
+    require_cuda()
     codec = tiny_codec().cuda()
     codec.fold_weight_norm()
     window_graph_decoder = WindowGraphDecoder(
