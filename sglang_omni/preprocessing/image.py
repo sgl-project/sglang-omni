@@ -19,9 +19,9 @@ from .cache_key import compute_media_cache_key
 from .resource_connector import await_media_cleanup
 
 
-def load_image_path(path: str | Path) -> Image.Image:
-    """Load an image from disk as RGB."""
-    return Image.open(path).convert("RGB")
+def load_image_path(path: str | Path, *, image_mode: str = "RGB") -> Image.Image:
+    """Load an image from disk as image_mode."""
+    return Image.open(path).convert(image_mode)
 
 
 class ImageMediaIO(MediaIO[Image.Image]):
@@ -121,7 +121,7 @@ async def ensure_image_list_async(
                     normalized.append(None)  # note (Teery): Placeholder
                 else:
                     path = media_connector.local_media_path(item)
-                    normalized.append(load_image_path(path))
+                    normalized.append(load_image_path(path, image_mode=image_mode))
             else:
                 # note (Teery): Already processed (PIL Image, etc.)
                 normalized.append(item)
