@@ -63,8 +63,8 @@ def window_graph_keys(
     window_lengths: tuple[int, ...],
     utterance_lengths: tuple[int, ...],
     max_batch_size: int,
-    window_discards: Mapping[int, int] | None = None,
-    flush_keys: Iterable[tuple[int, int]] = (),
+    window_discards: Mapping[int, int],
+    flush_keys: Iterable[tuple[int, int]],
 ) -> list[GraphKey]:
     """(batch size, frames, discarded frames) of each graph to capture, largest
     first: batch 1 whole for every length and at each stream window's or flush
@@ -72,13 +72,12 @@ def window_graph_keys(
     batched_frame_limit = BATCHED_WINDOW_FRAME_LIMIT_IN_LONGEST_WINDOWS * max(
         window_lengths
     )
-    discards = window_discards or {}
     graph_keys = {
         *((1, length, 0) for length in (*window_lengths, *utterance_lengths)),
         *(
-            (1, length, discards[length])
+            (1, length, window_discards[length])
             for length in window_lengths
-            if discards.get(length)
+            if window_discards.get(length)
         ),
         *(
             (1, length, discard_frames)
@@ -86,7 +85,7 @@ def window_graph_keys(
             if discard_frames
         ),
         *(
-            (batch_size, window_length, discards.get(window_length, 0))
+            (batch_size, window_length, window_discards.get(window_length, 0))
             for window_length in window_lengths
             for batch_size in range(2, max_batch_size + 1)
             if batch_size * window_length <= batched_frame_limit

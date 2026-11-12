@@ -322,7 +322,7 @@ class ChannelsLastDecoder:
         snake_module: Snake1d,
         conv_module: CausalConvNet,
         hidden_states: torch.Tensor,
-        bias: torch.Tensor | None = None,
+        bias: torch.Tensor | None,
     ) -> torch.Tensor:
         """tanh(conv_module(snake_module(x + bias))) of a (B, L, C) half activation, for
         the final conv onto one channel: cuDNN has only a slow channels-last engine for
@@ -352,7 +352,7 @@ class ChannelsLastDecoder:
         self,
         module: torch.nn.Module,
         hidden_states: torch.Tensor,
-        pending_bias: torch.Tensor | None = None,
+        pending_bias: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         if isinstance(module, CausalConvNet):
             return (
