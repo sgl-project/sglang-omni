@@ -35,7 +35,8 @@ struct Qwen3DecoderConfig {
   static Qwen3DecoderConfig FromJson(const nlohmann::json &text_config);
 };
 
-// Per-layer key/value cache that grows in fixed steps.
+// Per-layer key/value cache that grows in fixed steps. Keys and values may
+// differ in head width, as in MLA.
 class KVCache {
 public:
   std::pair<mlx::core::array, mlx::core::array>
@@ -45,11 +46,33 @@ public:
   int offset() const { return offset_; }
   // The cache's buffers, to evaluate; empty before the first update.
   std::vector<mlx::core::array> Arrays() const;
+  // The filled keys and values, [1, kv_heads, offset, head_dim].
+  std::pair<mlx::core::array, mlx::core::array> Filled() const;
 
 private:
   std::optional<mlx::core::array> keys_;
   std::optional<mlx::core::array> values_;
   int offset_ = 0;
+};
+
+// Key/value cache for sequences decoded in lockstep. Rows are left-padded to
+// the longest, so every row appends at the same index; the pad slots are
+// masked out of attention.
+class BatchedKVCache {
+public:
+  // Each row is one sequence's filled [1, kv_heads, length, head_dim].
+  explicit BatchedKVCache(
+      const std::vector<std::pair<mlx::core::array, mlx::core::array>> &rows);
+  // Appends [batch, kv_heads, 1, head_dim] and returns everything filled.
+  std::pair<mlx::core::array, mlx::core::array>
+  Append(const mlx::core::array &keys, const mlx::core::array &values);
+  int length() const { return end_; }
+  int capacity() const { return keys_.shape(2); }
+
+private:
+  mlx::core::array keys_;
+  mlx::core::array values_;
+  int end_ = 0;
 };
 
 class Qwen3Decoder {
@@ -80,6 +103,13 @@ public:
   mlx::core::array Logits(const mlx::core::array &hidden_states) const;
   std::vector<KVCache> NewCaches() const;
   const Qwen3DecoderConfig &config() const { return config_; }
+  // One decode step for a batch, embeddings [batch, 1, hidden]. offsets is
+  // each row's true position, int32 [batch]; pads is each row's count of
+  // left-padding cache slots, int32 [batch, 1]. Returns logits [batch, vocab].
+  mlx::core::array DecodeBatch(const mlx::core::array &embeddings,
+                               std::vector<BatchedKVCache> &caches,
+                               const mlx::core::array &offsets,
+                               const mlx::core::array &pads) const;
 
 private:
   // A step's rotary tables [1, 1, length, head_dim] and, for a step of more
@@ -93,6 +123,10 @@ private:
   std::string Name(const std::string &suffix) const;
   mlx::core::array Layer(const mlx::core::array &x, int layer, KVCache &cache,
                          const std::optional<RotaryInputs> &rotary) const;
+  mlx::core::array BatchLayer(const mlx::core::array &x, int layer,
+                              BatchedKVCache &cache,
+                              const mlx::core::array &offsets,
+                              const mlx::core::array &mask) const;
   RotaryInputs Rotary(int length, int offset, mlx::core::Dtype dtype) const;
   // Rotates heads [batch, heads, length, head_dim] at the cache's next
   // positions: with the step's tables when given, else with the fused rope.

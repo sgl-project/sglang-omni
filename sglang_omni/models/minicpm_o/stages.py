@@ -71,6 +71,7 @@ def create_preprocessing_executor(
         video_decode_threads = automatic_video_decode_threads(max_concurrency)
     else:
         pass
+    register_minicpm_o_hf_config()
     preprocessor = MiniCPMOPreprocessor(
         model_path,
         speech_enabled=speech_enabled,
@@ -401,6 +402,7 @@ def create_code2wav_executor(
 
 
 def create_decode_executor(model_path: str) -> StreamingDetokenizeScheduler:
+    register_minicpm_o_hf_config()
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     eos_token_id = tokenizer.eos_token_id
     return StreamingDetokenizeScheduler(
@@ -478,9 +480,8 @@ def create_sglang_thinker_executor_from_config(
             )
         else:
             pass
-        # note (0xtoward): the draft worker verifies whole blocks in a synchronous loop.
+        # note (0xtoward): the draft worker verifies whole blocks without mixed-chunk prefill.
         overrides["enable_mixed_chunk"] = False
-        enable_async_decode = False
         # The draft has its own positional capacity; the target serves within it.
         draft_context_length = int(
             AutoConfig.from_pretrained(

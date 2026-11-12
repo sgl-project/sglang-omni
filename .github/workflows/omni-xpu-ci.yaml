@@ -13,7 +13,7 @@ name: XPU CI
 #
 # preflight (ubuntu-latest) enforces the PR gate: fetches live label/draft
 # state, blocks draft PRs, resolves the CI labels (xpu-ci runs with
-# `run-intel-xpu-ci` or `run-all-ci`), and runs
+# `run-intel-xpu-ci`), and runs
 # .github/scripts/pr_ci_gate.py for lint + mergeability. It pins the exact
 # SHA that xpu-ci checks out, so a force-push mid-run cannot split
 # preflight and test across two commits.
@@ -83,6 +83,7 @@ jobs:
               - 'sglang_omni/**'
               - 'tests/unit_test/xpu/**'
               - 'tests/unit_test/dots_tts/**'
+              - 'tests/unit_test/nemotron3_5_asr/**'
               - 'pyproject_xpu.toml'
               - 'scripts/xpu/**'
               - 'docker/xpu.Dockerfile'
@@ -116,7 +117,7 @@ jobs:
             const labels = pr.data.labels.map((label) => label.name);
             core.setOutput("labels", JSON.stringify(labels));
             core.setOutput("draft", pr.data.draft ? "true" : "false");
-            core.setOutput("is_selected", labels.includes("run-all-ci") || labels.includes("run-intel-xpu-ci"));
+            core.setOutput("is_selected", labels.includes("run-intel-xpu-ci"));
 
       - name: Log PR gate state
         if: ${{ github.event_name == 'pull_request' }}
@@ -276,7 +277,9 @@ jobs:
           docker exec -w /workspace/sglang-omni-pr "${CONTAINER_NAME}" \
             pytest tests/unit_test/xpu/test_device_layer.py \
               tests/unit_test/dots_tts/test_flow_head.py \
-              tests/unit_test/dots_tts/test_tail.py -v -x
+              tests/unit_test/dots_tts/test_tail.py \
+              tests/unit_test/nemotron3_5_asr/test_hf_compat.py \
+              tests/unit_test/nemotron3_5_asr/test_model_runner.py -v -x
 
       - name: Cleanup container and image
         if: always()
