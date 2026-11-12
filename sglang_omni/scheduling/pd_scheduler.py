@@ -133,7 +133,7 @@ class OmniPrefillScheduler(PDKVLifecycle):
         state_builder: Callable,
         **kwargs,
     ) -> None:
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, **synchronous_speculative_prefill(kwargs))
         validate_pd_runtime(self)
 
         self.pd_stage_name = stage_name
@@ -569,6 +569,19 @@ def validate_pd_runtime(scheduler: OmniScheduler) -> None:
         raise NotImplementedError("PD requires a device-resident DFLASH draft KV pool")
     else:
         pass
+
+
+def synchronous_speculative_prefill(kwargs: dict[str, object]) -> dict[str, object]:
+    """Keep a speculative Prefill half off the overlapped decode loop.
+
+    The overlapped loop submits a request's next round before it consumes the
+    previous result, so it would decode a request whose KV the handoff has
+    already leased to the transfer.
+    """
+    if kwargs["tp_worker"].speculative_worker is None:
+        return kwargs
+    else:
+        return {**kwargs, "enable_async_decode": False}
 
 
 def pd_draft_kv_pool(scheduler: OmniScheduler):

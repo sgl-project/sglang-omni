@@ -12,6 +12,7 @@ from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.pd_scheduler import (
     OmniDecodeScheduler,
     OmniPrefillScheduler,
+    synchronous_speculative_prefill,
     validate_pd_runtime,
 )
 from sglang_omni.scheduling.pd_utils import DecodeAdmission, build_kv_pool
@@ -169,3 +170,18 @@ def test_speculative_decode_leaves_the_first_token_to_committed_emission(
     assert calls == [reqs]
     scheduler.stream_output_builder.assert_not_called()
     assert scheduler.outbox.empty()
+
+
+@pytest.mark.parametrize("speculative", [False, True])
+def test_speculative_prefill_runs_synchronously(speculative: bool) -> None:
+    kwargs = {
+        "tp_worker": SimpleNamespace(
+            speculative_worker=object() if speculative else None
+        ),
+        "enable_async_decode": True,
+    }
+
+    resolved = synchronous_speculative_prefill(kwargs)
+
+    assert resolved["enable_async_decode"] is not speculative
+    assert kwargs["enable_async_decode"] is True
