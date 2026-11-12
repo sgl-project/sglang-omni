@@ -203,17 +203,6 @@ def test_xpu_joint_rope_returns_the_kernel_for_a_supported_or_unstated_dim(
     assert XPUOmniPlatform().get_joint_rope_inplace_kernel(rope_dim=rope_dim) is kernel
 
 
-def test_xpu_joint_rope_dims_match_the_installed_kernel() -> None:
-    rope = pytest.importorskip("sgl_kernel.jit.rope")
-    # The kernel's own list is private to sgl_kernel; this test is what keeps
-    # the platform's copy of it honest.
-    dims = getattr(rope, "_SUPPORTED_XPU_ROPE_DIMS", None)  # noqa: leading-underscore
-    if dims is None:
-        pytest.skip("the installed sgl_kernel does not list its XPU RoPE dims")
-
-    assert tuple(dims) == xpu_platform.XPU_JOINT_ROPE_DIMS
-
-
 def test_xpu_platform_resolves_to_the_omni_xpu_platform() -> None:
     platform = platforms.as_omni_platform(XpuSRTPlatform())
 

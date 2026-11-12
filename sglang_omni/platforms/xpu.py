@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 # The rotary dimensions sgl_kernel.jit.rope compiles on XPU (sglang-kernel-xpu
 # 0.5.0); it raises ValueError on the first call with any other dimension.
+# tests/unit_test/xpu/test_device_layer.py checks this copy on the XPU lane.
 XPU_JOINT_ROPE_DIMS = (64, 80, 96, 128, 256, 512)
 
 if TYPE_CHECKING:
