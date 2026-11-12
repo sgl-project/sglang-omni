@@ -164,9 +164,13 @@ class OmniPlatform(DeviceMixin):
         """The RMS normalization kernel for a bare norm call on this device."""
         return reference_rmsnorm
 
-    def get_joint_rope_inplace_kernel(self) -> JointRopeInplaceKernel | None:
+    def get_joint_rope_inplace_kernel(
+        self, *, rope_dim: int | None = None
+    ) -> JointRopeInplaceKernel | None:
         # Note(yzxiao): None means this platform has no implementation. The
         # model decides whether this capability is required or optional.
+        # A caller that knows its rotary dimension passes rope_dim and gets None
+        # when this platform's kernel cannot run that dimension.
         return None
 
     def apply_model_worker_backend_policy(

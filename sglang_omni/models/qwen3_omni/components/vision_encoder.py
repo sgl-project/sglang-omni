@@ -106,6 +106,9 @@ def instantiate_visual(
         with no_init_weights():
             return Qwen3OmniVisionEncoder._from_config(  # noqa: leading-underscore  # Transformers construction API
                 vision_config,
-                joint_rope_kernel=current_platform.get_joint_rope_inplace_kernel(),
+                # note (siju): the vision rotary covers the whole head dimension.
+                joint_rope_kernel=current_platform.get_joint_rope_inplace_kernel(
+                    rope_dim=vision_config.hidden_size // vision_config.num_heads
+                ),
                 packed_attention=packed_attention,
             )

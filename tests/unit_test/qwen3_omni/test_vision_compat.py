@@ -276,7 +276,11 @@ def test_image_encoder_preserves_outputs_with_platform_rotary(
         2 * vision_encoder.config.depth if should_use_joint_kernel else 0
     )
     assert kernel.call_count == expected_kernel_calls
-    assert provider.call_count == (1 if platform_device == "cpu" else 0)
+    if platform_device == "cpu":
+        # note (siju): the platform must see the serving head dim to decline it.
+        provider.assert_called_once_with(rope_dim=72)
+    else:
+        provider.assert_not_called()
 
 
 @pytest.mark.parametrize(

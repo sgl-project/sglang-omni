@@ -13,6 +13,10 @@ from sglang_omni.platforms.interface import JointRopeInplaceKernel, OmniPlatform
 
 logger = logging.getLogger(__name__)
 
+# The rotary dimensions sgl_kernel.jit.rope compiles on XPU (sglang-kernel-xpu
+# 0.5.0); it raises ValueError on the first call with any other dimension.
+XPU_JOINT_ROPE_DIMS = (64, 80, 96, 128, 256, 512)
+
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
     from sglang.srt.server_args import ServerArgs
@@ -48,7 +52,19 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
             return None
         return fused_inplace_qknorm_rope
 
-    def get_joint_rope_inplace_kernel(self) -> JointRopeInplaceKernel:
+    def get_joint_rope_inplace_kernel(
+        self, *, rope_dim: int | None = None
+    ) -> JointRopeInplaceKernel | None:
+        if rope_dim is not None and rope_dim not in XPU_JOINT_ROPE_DIMS:
+            # Note (siju): Qwen3-Omni's vision encoder rotates a head dim of 72,
+            # which the kernel would only reject at the first image request.
+            logger.info(
+                f"XPU joint RoPE kernel does not support rope_dim={rope_dim} "
+                f"(supported: {list(XPU_JOINT_ROPE_DIMS)}); using the unfused RoPE path"
+            )
+            return None
+        else:
+            pass
         from sgl_kernel.jit.rope import apply_rope_inplace
 
         return apply_rope_inplace

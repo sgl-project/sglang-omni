@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import sys
 from contextlib import nullcontext
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
@@ -177,6 +178,40 @@ def test_xpu_set_device_accepts_an_index_or_a_device(
     XPUOmniPlatform().set_device(argument)
 
     assert seen == [expected_index]
+
+
+@pytest.mark.parametrize("rope_dim", [72, 160])
+def test_xpu_joint_rope_declines_a_dim_its_kernel_cannot_compile(
+    monkeypatch, rope_dim
+) -> None:
+    # A None module makes any import of the kernel raise, so a decline that
+    # still reached the import fails here.
+    monkeypatch.setitem(sys.modules, "sgl_kernel.jit.rope", None)
+
+    assert XPUOmniPlatform().get_joint_rope_inplace_kernel(rope_dim=rope_dim) is None
+
+
+@pytest.mark.parametrize("rope_dim", [None, *xpu_platform.XPU_JOINT_ROPE_DIMS])
+def test_xpu_joint_rope_returns_the_kernel_for_a_supported_or_unstated_dim(
+    monkeypatch, rope_dim
+) -> None:
+    kernel = object()
+    rope_module = ModuleType("sgl_kernel.jit.rope")
+    rope_module.apply_rope_inplace = kernel
+    monkeypatch.setitem(sys.modules, "sgl_kernel.jit.rope", rope_module)
+
+    assert XPUOmniPlatform().get_joint_rope_inplace_kernel(rope_dim=rope_dim) is kernel
+
+
+def test_xpu_joint_rope_dims_match_the_installed_kernel() -> None:
+    rope = pytest.importorskip("sgl_kernel.jit.rope")
+    # The kernel's own list is private to sgl_kernel; this test is what keeps
+    # the platform's copy of it honest.
+    dims = getattr(rope, "_SUPPORTED_XPU_ROPE_DIMS", None)  # noqa: leading-underscore
+    if dims is None:
+        pytest.skip("the installed sgl_kernel does not list its XPU RoPE dims")
+
+    assert tuple(dims) == xpu_platform.XPU_JOINT_ROPE_DIMS
 
 
 def test_xpu_platform_resolves_to_the_omni_xpu_platform() -> None:
