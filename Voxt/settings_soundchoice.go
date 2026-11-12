@@ -152,7 +152,7 @@ func (a *app) soundsRow(c *ui.Context) {
 	switch {
 	case src == soundSystem:
 		a.systemCueRows(c) // settingRows: the search finds them by their own names
-	case src == soundBuiltIn && settingsTextMatches(settingsSearchQuery, i18n.T("Sound")):
+	case src == soundBuiltIn && settingsSearchShows(i18n.T("Sound")):
 		ui.Column(c.Key("audio-cues")).Gap(px(t, sp1)).Padding(0, 0, 0, px(t, sp4)).Children(func() { a.soundPairRows(c) })
 	}
 	if src != soundNone {

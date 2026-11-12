@@ -167,7 +167,9 @@ final class TextIO: @unchecked Sendable {
         var frontPid = 0
         if let target = p.targetPid, target != 0 {
             let now = await front.current()
-            if now.pid != target {
+            var owner: pid_t = 0
+            if now.pid != target, let e = focusedElement(pid: pid_t(now.pid)) { AXUIElementGetPid(e, &owner) }
+            if !PasteChecker.targetReached(target, front: now.pid, focusOwner: owner != 0 ? Int(owner) : nil) {
                 return PasteResult(posted: false, restored: false, clipboardTaken: false, ms: round1(monotonicMs() - t0), front: now)
             }
             frontPid = now.pid

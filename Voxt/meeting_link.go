@@ -201,20 +201,6 @@ func (a *app) meetingSetMode(mode meeting.Mode) {
 	})
 }
 
-func (a *app) meetingSetTranslate(target string) {
-	if a.meetMgr == nil || a.meetSnap.ID == "" {
-		return
-	}
-	id := a.meetSnap.ID
-	a.async(func() {
-		if err := a.meetMgr.SetTranslate(id, target); err != nil {
-			a.post(func() {
-				a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: err.Error()})
-			})
-		}
-	})
-}
-
 func (a *app) meetingDiscard() {
 	if a.meetMgr == nil {
 		return

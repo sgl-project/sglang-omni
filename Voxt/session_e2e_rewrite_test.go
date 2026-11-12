@@ -6,10 +6,13 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // TestRewriteAnswerFollowUp: nothing selected and nothing takes text: the
@@ -56,5 +59,47 @@ func TestRewriteAnswerFollowUp(t *testing.T) {
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
 	if a.answer.open {
 		t.Error("Escape did not close the card")
+	}
+}
+
+// TestStrictShortcuts: Rewrite started with its shortcut, then the
+// Transcribe shortcut. By default it stops the recording (Voxt 1.x's
+// common stop); with Strict shortcuts it does nothing, and the session
+// keeps recording until Rewrite's own shortcut stops it (#3823).
+func TestStrictShortcuts(t *testing.T) {
+	for _, strict := range []bool{false, true} {
+		t.Run(map[bool]string{false: "default", true: "strict"}[strict], func(t *testing.T) {
+			chat := &fakeChat{text: "Sorry, I am running late."}
+			set, keys, _ := fileSetup(t, "write that I am late", chat)
+			a := newSessionApp(t, "readonly,"+script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger)), func(s *settings.Settings) {
+				set(s)
+				s.Features.StrictShortcuts = strict
+			}, keys)
+			a.pump("the recording", func() bool { return a.sess.State == session.Recording && len(a.sess.Levels) >= 5 })
+			front := helpertest.Apps["com.tinyspeck.slackmacgap"]
+			press := func(binding string) {
+				a.hotkeyFired(proto.HotkeyEventParams{Binding: binding, Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: &front})
+			}
+			press("transcribe/0")
+			if !strict {
+				a.pump("the stop", func() bool { return a.sess.State != session.Recording })
+				if a.sess.Kind != store.KindRewrite {
+					t.Errorf("switched to %s", a.sess.Kind)
+				}
+				return
+			}
+			// Half a second of audio: a stop would have ended the recording by then.
+			pressed := time.Now()
+			a.pump("more audio", func() bool { return time.Since(pressed) > 500*time.Millisecond || a.sess.State != session.Recording })
+			if a.sess.State != session.Recording || !a.sess.StoppedAt.IsZero() || a.sess.Kind != store.KindRewrite {
+				t.Fatalf("the Transcribe shortcut acted: %s %s", a.sess.Kind, a.sess.State)
+			}
+			press("rewrite/0")
+			a.pump("the stop", func() bool { return a.sess.State != session.Recording })
+			a.pump("the end", func() bool { return a.sess.State.Ended() })
+			if a.sess.State != session.Done || a.sess.Kind != store.KindRewrite {
+				t.Errorf("end %s %s", a.sess.Kind, a.sess.State)
+			}
+		})
 	}
 }

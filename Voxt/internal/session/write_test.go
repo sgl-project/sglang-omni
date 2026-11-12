@@ -268,27 +268,45 @@ func TestWrite(t *testing.T) {
 		},
 		{
 			// A follow-up answers in plain text, a conversation's turn (Voxt's).
-			name: "a follow-up", kind: store.KindRewrite, sel: &fakeSelector{text: "unused"}, llm: &fakeLLM{text: "Friday."},
+			name: "a follow-up", kind: store.KindRewrite, sel: &fakeSelector{}, llm: &fakeLLM{text: "Friday."},
 			req:   StartRequest{Previous: []compose.Turn{{Instruction: "write it", Answer: compose.Answer{Title: "Friday", Content: "We ship on Friday."}}}},
 			speak: true, states: "recording recognizing composing done", state: Done, result: "Friday.", card: deliver.ReasonCard,
 			check: func(t *testing.T, h *harness, end Snapshot, model *fakeLLM, sel *fakeSelector) {
 				req := model.requests()[0]
 				msgs := req.Messages
 				if len(msgs) != 4 || msgs[2].Role != llm.Assistant || msgs[2].Content != "We ship on Friday." || !strings.Contains(msgs[0].Content, "Follow-up") ||
-					req.Format == llm.FormatJSON || len(sel.params()) != 0 || end.Title != "" {
+					req.Format == llm.FormatJSON || len(sel.params()) != 1 || end.Title != "" {
 					t.Errorf("request %+v, end %+v", req, end)
 				}
 			},
 		},
 		{
-			// A rewritten selection takes follow-ups too: its turn holds it.
-			name: "a follow-up on a selection", kind: store.KindRewrite, sel: &fakeSelector{text: "unused"}, llm: &fakeLLM{text: "Team: Friday."},
+			// A rewritten selection takes follow-ups too: its turn holds it;
+			// still selected, it does not go twice (#3816).
+			name: "a follow-up on a selection", kind: store.KindRewrite, sel: &fakeSelector{text: "ship friday\n"}, llm: &fakeLLM{text: "Team: Friday."},
 			req:   StartRequest{Previous: []compose.Turn{{Instruction: "more formal", Selection: "ship friday", Answer: compose.Answer{Content: "Team: we ship on Friday."}}}},
 			speak: true, states: "recording recognizing composing done", state: Done, result: "Team: Friday.", card: deliver.ReasonCard,
 			check: func(t *testing.T, h *harness, end Snapshot, model *fakeLLM, sel *fakeSelector) {
 				msgs := model.requests()[0].Messages
-				if len(msgs) != 4 || !strings.Contains(msgs[1].Content, "<selected_text>\nship friday") || msgs[3].Content != "<instruction>\nhello VoxtNew\n</instruction>" {
-					t.Errorf("messages %+v", msgs)
+				if len(msgs) != 4 || !strings.Contains(msgs[1].Content, "<selected_text>\nship friday") || msgs[3].Content != "<instruction>\nhello VoxtNew\n</instruction>" || end.Selection != "" {
+					t.Errorf("messages %+v, end %+v", msgs, end)
+				}
+			},
+		},
+		{
+			// Text selected since goes with the follow-up, its own block
+			// after the instruction, and with its turn (#3816).
+			name: "a follow-up with a new selection", kind: store.KindRewrite, sel: &fakeSelector{text: "Ben: tests passed"}, llm: &fakeLLM{text: "Team: Friday, tests pass."},
+			req:   StartRequest{Previous: []compose.Turn{{Instruction: "more formal", Selection: "ship friday", Answer: compose.Answer{Content: "Team: we ship on Friday."}}}},
+			speak: true, states: "recording recognizing composing done", state: Done, result: "Team: Friday, tests pass.", card: deliver.ReasonCard,
+			check: func(t *testing.T, h *harness, end Snapshot, model *fakeLLM, sel *fakeSelector) {
+				msgs := model.requests()[0].Messages
+				if len(msgs) != 4 || !strings.Contains(msgs[1].Content, "<selected_text>\nship friday") ||
+					msgs[3].Content != "<instruction>\nhello VoxtNew\n</instruction>\n\n<selected_text>\nBen: tests passed\n</selected_text>" || end.Selection != "Ben: tests passed" {
+					t.Errorf("messages %+v, end %+v", msgs, end)
+				}
+				if e := h.hist.all()[0]; e.SourceText != "Ben: tests passed" {
+					t.Errorf("entry %+v", e)
 				}
 			},
 		},

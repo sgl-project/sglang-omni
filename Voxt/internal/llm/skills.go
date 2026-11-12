@@ -13,8 +13,3 @@ const (
 	// prompt.
 	SkillRewrite Skill = "rewrite"
 )
-
-// Skills lists every skill, in settings order.
-func Skills() []Skill {
-	return []Skill{SkillTranscribeEnhance, SkillTranslateText, SkillRewrite}
-}
