@@ -62,6 +62,7 @@ from sglang_omni.models.qwen3_tts.incremental_codec import (
     PointwiseConv,
     Qwen3TTSIncrementalCodecState,
     Qwen3TTSIncrementalCodecStateSpec,
+    Qwen3TTSIncrementalDecoder,
 )
 from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
     Qwen3TTSIncrementalCodecCudaGraphRunner,
@@ -11827,6 +11828,82 @@ def test_real_base_padded_decoder_graph_matches_padded_eager(
         actual = graph.decode(codes)
     assert actual is not None
     assert torch.equal(actual, expected)
+
+
+@pytest.mark.benchmark
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_real_base_whole_requests_on_reserved_slots_match_one_stateful_decode() -> None:
+    checkpoint = os.environ.get("QWEN3_TTS_BASE_1_7B_PATH")
+    if checkpoint is None:
+        pytest.skip("Set QWEN3_TTS_BASE_1_7B_PATH to run the real checkpoint gate")
+    else:
+        pass
+    scheduler = qwen3_stages.create_vocoder_executor(
+        checkpoint,
+        device="cuda:0",
+        dtype="float32",
+        codec_state_slots=2,
+        followup_worker_count=1,
+        incremental_codec_compile=False,
+        shares_engine_speech_tokenizer=False,
+    )
+    assert scheduler.decodes_whole_requests
+    assert scheduler.max_batch_wait_s == 0.0
+    assert not scheduler.full_decode_graphs.graphs
+    assert sorted(scheduler.idle_whole_request_slots) == [2, 3]
+    generator = torch.Generator().manual_seed(42)
+    lengths = {"tail": (200, 150), "padded": (0, 37), "reused": (30, 100)}
+    codes = {
+        name: torch.randint(
+            scheduler.decoder.config.codebook_size,
+            (reference + generated, scheduler.decoder.config.num_quantizers),
+            generator=generator,
+        )
+        for name, (reference, generated) in lengths.items()
+    }
+
+    def message(name: str) -> IncomingMessage:
+        payload = make_payload(inputs=name)
+        payload.request_id = name
+        payload.data = Qwen3TTSState(
+            audio_codes=codes[name], ref_code_len=lengths[name][0]
+        ).to_dict()
+        return IncomingMessage(name, "new_request", payload)
+
+    scheduler.activate_decode_worker(scheduler.decode_stream)
+    results: dict[str, OutgoingMessage] = {}
+    for names in (["tail", "padded"], ["reused"]):
+        scheduler.run_non_streaming_batch(
+            [message(name) for name in names], asyncio.new_event_loop()
+        )
+        while not scheduler.initial_queue.empty() or scheduler.whole_requests:
+            scheduler.run_initial_pass()
+        while not scheduler.outbox.empty():
+            result = scheduler.outbox.get_nowait()
+            results[result.request_id] = result
+
+    graph_stats = scheduler.codec_state_stats()["cuda_graphs"]
+    assert graph_stats["tail"]["runtime"]["replays"] > 0
+    assert graph_stats["window"]["runtime"]["replays"] > 0
+    assert sorted(scheduler.idle_whole_request_slots) == [2, 3]
+    for name, (reference, generated) in lengths.items():
+        assert results[name].type == "result"
+        data = results[name].data.data
+        assert data["sample_rate"] == scheduler.sample_rate
+        assert data["audio_waveform_shape"] == [generated * scheduler.samples_per_frame]
+        with torch.inference_mode():
+            expected = Qwen3TTSIncrementalDecoder(scheduler.decoder).decode(
+                codes[name].T.unsqueeze(0).to("cuda:0"),
+                Qwen3TTSIncrementalCodecState(),
+            )
+        actual = np.frombuffer(data["audio_waveform"], dtype=np.float32)
+        torch.testing.assert_close(
+            torch.from_numpy(actual.copy()),
+            expected.flatten()[reference * scheduler.samples_per_frame :].cpu(),
+            rtol=2e-4,
+            atol=2e-5,
+        )
 
 
 @pytest.mark.parametrize("frame_lengths", [(1,), (3, 7), (8, 6), (4, 8, 5)])
