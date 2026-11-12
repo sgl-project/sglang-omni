@@ -48,7 +48,6 @@ def tuned_tile(block_size_m: int, group_size_m: int) -> dict[str, int]:
 # 80GB HBM3 under Triton 3.8.0; keys are token counts M. Decode runs one token per
 # running request (up to 64 at concurrency 64); a prefill runs every prompt token of
 # its batch (about 200 at concurrency 16, 500 to 1,000 at concurrency 64).
-# BLOCK_SIZE_K stays 128 at every count, as in the default tile.
 TUNED_CONFIGS: dict[int, dict[str, int]] = {
     8: tuned_tile(16, 64),
     16: tuned_tile(16, 64),
