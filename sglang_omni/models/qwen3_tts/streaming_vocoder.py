@@ -51,7 +51,10 @@ from sglang_omni.scheduling.streaming_vocoder import (
     resolve_initial_codec_chunk_frames,
     vocoder_decode_stream_priority,
 )
-from sglang_omni.utils.audio_payload import audio_waveform_payload
+from sglang_omni.utils.audio_payload import (
+    audio_waveform_payload,
+    float32_waveform_payload,
+)
 from sglang_omni.utils.cuda_staging import GrowablePinnedBuffer, PinnedTransferSlot
 from sglang_omni.utils.device import has_device_streams, supports_device_streams
 from sglang_omni.utils.process import name_native_thread
@@ -95,6 +98,7 @@ _QWEN3_TTS_INCREMENTAL_CODEC_WARM_GRAPH_BATCH_SIZES = (1, 2, 4, 8)
 _QWEN3_TTS_CODEBOOK_SIZE = 2048
 _BOOTSTRAP_SILENCE_MAX_RMS = 0.001
 _BOOTSTRAP_SILENCE_MAX_PEAK = 0.0032
+AudioResultValue = bytes | bytearray | list[int] | str | int | dict[str, int | float]
 
 
 def decode_graph_frame_counts(
@@ -3161,13 +3165,12 @@ class Qwen3TTSStreamingVocoderScheduler(
             self.free_whole_request_slot(row)
             row.payload.data = self.audio_result_data(
                 row.final_state,
-                {
-                    "audio_waveform": row.audio,
-                    "audio_waveform_shape": [row.stored_samples],
-                    "audio_waveform_dtype": "float32",
-                    "sample_rate": self.sample_rate,
-                    "modality": "audio",
-                },
+                float32_waveform_payload(
+                    row.audio,
+                    [row.stored_samples],
+                    sample_rate=self.sample_rate,
+                    modality="audio",
+                ),
             )
             self.emit_result(row.request_id, row.payload)
 
@@ -4097,13 +4100,9 @@ class Qwen3TTSStreamingVocoderScheduler(
         return payload
 
     def audio_result_data(
-        self,
-        state: Qwen3TTSState,
-        audio_payload: dict[str, bytes | bytearray | list[int] | str | int],
-    ) -> dict[str, bytes | bytearray | list[int] | str | int | dict[str, int | float]]:
-        data: dict[
-            str, bytes | bytearray | list[int] | str | int | dict[str, int | float]
-        ] = dict(audio_payload)
+        self, state: Qwen3TTSState, audio_payload: Mapping[str, AudioResultValue]
+    ) -> dict[str, AudioResultValue]:
+        data: dict[str, AudioResultValue] = dict(audio_payload)
         usage = build_usage(state)
         if usage is not None:
             data["usage"] = usage

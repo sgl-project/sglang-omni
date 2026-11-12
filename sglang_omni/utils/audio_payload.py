@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import TypeVar
 
 import numpy as np
 import torch
 from numpy.typing import ArrayLike
+
+SampleBufferT = TypeVar("SampleBufferT", bytes, bytearray)
 
 
 def audio_data_uri_from_reference(reference: Mapping[str, object]) -> str | None:
@@ -49,9 +52,25 @@ def audio_waveform_payload(
             f"Unsupported {source_hint} audio output type: {type(audio)}"
         ) from exc
     array = np.ascontiguousarray(array)
-    payload: dict[str, bytes | list[int] | str | int] = {
-        "audio_waveform": array.tobytes(),
-        "audio_waveform_shape": list(array.shape),
+    return float32_waveform_payload(
+        array.tobytes(),
+        list(array.shape),
+        sample_rate=sample_rate,
+        modality=modality,
+    )
+
+
+def float32_waveform_payload(
+    samples: SampleBufferT,
+    shape: list[int],
+    *,
+    sample_rate: int | None = None,
+    modality: str | None = None,
+) -> dict[str, SampleBufferT | list[int] | str | int]:
+    """The relay payload of float32 samples already in a host buffer, which it carries as is."""
+    payload: dict[str, SampleBufferT | list[int] | str | int] = {
+        "audio_waveform": samples,
+        "audio_waveform_shape": shape,
         "audio_waveform_dtype": "float32",
     }
     if sample_rate is not None:
