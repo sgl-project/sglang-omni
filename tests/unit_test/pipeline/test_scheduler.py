@@ -3416,6 +3416,7 @@ def test_request_timeout_fails_only_the_expired_request(
     monkeypatch: pytest.MonkeyPatch, timeout_env: str, placement: str, tp_size: int
 ) -> None:
     """The entry rank fails an expired request once, and every rank drops it."""
+    monkeypatch.setattr(time, "perf_counter", lambda: 120.0)
     install_tp_broadcast(monkeypatch)
     ranks = [tp_rank_scheduler(rank, tp_size, placement) for rank in range(tp_size)]
 

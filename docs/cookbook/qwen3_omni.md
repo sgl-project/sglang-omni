@@ -129,7 +129,7 @@ The session profile serves Qwen3-Omni as a turn-based realtime voice assistant o
 
 ## Speculative Decoding
 
-The thinker can verify tokens proposed by SpeechSpec's DFlash draft [`yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8`](https://huggingface.co/yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8) or EAGLE3 draft [`yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio`](https://huggingface.co/yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio) on a text-only server.
+The thinker can verify tokens proposed by SpeechSpec's DFlash draft [`yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8`](https://huggingface.co/yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8) or EAGLE3 draft [`yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio`](https://huggingface.co/yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio) on a text-only server or in the session profile.
 
 ```bash
 # DFlash: one 8-token block per step
@@ -156,10 +156,11 @@ sgl-omni serve \
 - **Acceptance length.** Send `return_spec_tokens_details: true` with a chat request to get its `sglext.spec_tokens_details`: `spec_accept_length` (output tokens per verify, including the token sampled at prefill, so it can read higher than the scheduler log's `accept len`, which counts only verified tokens), `spec_accept_rate`, the draft counts and the per-verify histogram. A streamed response sends it in a chunk with empty `choices` before `[DONE]`. `spec_accept_rate` and `spec_num_proposed_drafts` are left out when no drafts were proposed or the draft width is adaptive. Only the Thinker draft is reported for now; a per-stage field can follow once the Talker has a draft too.
 - **Context.** The drafts shown above have an 8,192-token context. The prompt, output budget and speculative reservations must fit within it. Use `--preprocessing.factory.max_seq_len 8192` to reject oversized prompts early.
 - **Sampling.** Keep `repetition_penalty=1`, `frequency_penalty=0`, `presence_penalty=0`, and `min_p=0`. Disable logprobs and `return_hidden_states`. For `/generate`, send `return_logprob: false`.
-- **Scheduling.** Speculative decoding is synchronous by default. Add `--thinker.factory.enable_async_decode true` to either command to enable overlap, keeping `async_decode_min_batch_size=1`. Mixed prefill/decode batches (`enable_mixed_chunk=true`), sessions and weight updates are unsupported with a draft.
+- **Scheduling.** Speculative decoding is synchronous by default. Add `--thinker.factory.enable_async_decode true` to either command to enable overlap, keeping `async_decode_min_batch_size=1`. Mixed prefill/decode batches (`enable_mixed_chunk=true`) and weight updates are unsupported with a draft.
 - **Overlap trade-offs.** Overlap can improve decode throughput. Prefill-heavy workloads or short outputs can see higher TTFT and lower throughput.
 - **Prefill boundary.** Set `SGLANG_DISABLE_CONSECUTIVE_PREFILL_OVERLAP=1` before launch to process the previous prefill batch's result before launching the next consecutive prefill batch. This can lower TTFT at a throughput cost. Decode rounds continue to overlap.
 - **Execution failure.** An execution failure in speculative overlap stops the pipeline and fails its pending requests.
-- **Speech output.** Speech generation is unsupported with a draft; use `--text-only`.
+- **Speech output.** A request server needs `--text-only` with a draft. The session profile keeps speech output with either draft.
+- **Sessions.** The session profile takes either draft with synchronous decoding. The draft's 8,192-token context bounds the whole conversation, so add `--thinker.factory.max_seq_len 8192 --preprocessing.factory.max_seq_len 8192` to the session command along with the draft flags above.
 
 Compare modes with matching workloads and prefix-cache conditions. Measure TTFT, throughput and accuracy for your workload.

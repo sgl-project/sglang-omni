@@ -108,6 +108,12 @@ outside the upstream scheduler. (Overlap scheduling is explicitly unsupported:
 `OmniScheduler._event_loop_overlap` refuses to run because the
 `Req.inflight_middle_chunks` decrement would lag one iteration on that loop.)
 
+An AR stage can pair an `ARSessionAdapter` with synchronous DFlash or EAGLE3 decoding when its builder already opts into speculative decoding. This requires unquantized static NHD KV pools with page size 1, a shared request-to-token table, and a draft using shared full-dimension Neox RoPE without draft windowing; an EAGLE3 draft must also run on one draft runner (`enable_multi_layer_eagle` off). Other configurations are rejected at startup.
+
+Session admission reserves space for the draft block, including other pending appends. A finished speculative turn retains the same KV prefix as plain decoding: it ends before the final output token, which the next unit's prefill recomputes. A history cut moves and repositions both target and draft KV before releasing their shared tail slots. Under TP above 1, each rank applies the same session edits to its own shard of both pools. Terminal session stages stream each committed token through the session adapter's stream method.
+
+An EAGLE3 draft's KV at a position also encodes the token after it. The retained prefix ends just before the final output token, which starts the next prefill, so the draft's last retained position already holds that token and the next draft extend covers only the new positions. After a rewind or a history cut, the draft position just before each boundary keeps the token that used to follow it, which can lower acceptance there.
+
 ### SimpleScheduler
 
 `SimpleScheduler` is for non-AR stages such as preprocessing, encoders,
