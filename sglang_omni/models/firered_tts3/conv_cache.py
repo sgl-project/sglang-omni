@@ -93,19 +93,23 @@ class ControlledConvPlan:
         self.frontend: ModuleType = cudnn
         self.device: torch.device = inputs.device
         with torch.cuda.device(self.device):
-            self.handle = cudnn.create_handle()
+            self.handle: cudnn.Handle = cudnn.create_handle()
             self.release_handle: weakref.finalize = weakref.finalize(
                 self, cudnn.destroy_handle, self.handle
             )
-            self.graph = cudnn.pygraph(
+            self.graph: cudnn.pygraph = cudnn.pygraph(
                 handle=self.handle,
                 io_data_type=cudnn.data_type.BFLOAT16,
                 intermediate_data_type=cudnn.data_type.FLOAT,
                 compute_data_type=cudnn.data_type.FLOAT,
             )
-            self.x = self.graph.tensor(dim=INPUT_SHAPE, stride=INPUT_STRIDE, name="x")
-            self.w = self.graph.tensor(dim=WEIGHT_SHAPE, stride=WEIGHT_STRIDE, name="w")
-            self.y = self.graph.conv_fprop(
+            self.x: cudnn.Tensor = self.graph.tensor(
+                dim=INPUT_SHAPE, stride=INPUT_STRIDE, name="x"
+            )
+            self.w: cudnn.Tensor = self.graph.tensor(
+                dim=WEIGHT_SHAPE, stride=WEIGHT_STRIDE, name="w"
+            )
+            self.y: cudnn.Tensor = self.graph.conv_fprop(
                 image=self.x,
                 weight=self.w,
                 padding=[0, 1],
@@ -162,10 +166,8 @@ class CachedConvWeight:
 
 
 class Conv1dWeightCache(TorchDispatchMode):
-    """Keep the original compiled graph and replace its external convolution calls.
-
-    Construct after final weight loading, device placement, and dtype conversion.
-    Retain the cache until captured graphs are destroyed; recreate after weights change.
+    """Cache compiled-graph convolutions after placement until graph destruction.
+    Rebuild after every weight change.
     """
 
     def __init__(
@@ -289,9 +291,9 @@ class Conv1dWeightCache(TorchDispatchMode):
             self.misses += 1
             return func(*args, **(kwargs or {}))
         elif not all(
-            isinstance(item, int | torch.SymInt)
+            isinstance(dimension_value, int | torch.SymInt)
             for values in (output_padding, stride, padding, dilation)
-            for item in values
+            for dimension_value in values
         ):
             self.misses += 1
             return func(*args, **(kwargs or {}))

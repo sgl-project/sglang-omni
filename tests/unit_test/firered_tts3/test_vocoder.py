@@ -364,8 +364,7 @@ def test_rematerialize_istft_window_repairs_meta_materialization(
 
 
 def test_istft_stream_envelope_clamp_keeps_output_finite() -> None:
-    """A degenerate (zeroed) window collapses the fold envelope; the clamp
-    keeps the normalized output finite instead of emitting NaN/inf."""
+    """The envelope clamp keeps output finite for a zeroed window."""
     n_fft, hop = 1920, 480
     istft = ISTFT(n_fft=n_fft, hop_length=hop, win_length=n_fft)
     istft.window = torch.zeros_like(istft.window)

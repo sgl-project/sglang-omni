@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import threading
 from _thread import LockType
+from typing import NamedTuple
 
 import torch
 
@@ -33,7 +34,12 @@ from sglang_omni.scheduling.reference_encoder import (
 )
 from sglang_omni.utils.audio import load_audio
 
-ReferenceAudioInput = tuple[str, float | None]
+
+class ReferenceAudioInput(NamedTuple):
+    audio_path: str
+    max_audio_seconds: float | None
+
+
 ReferenceConditioning = dict[str, torch.Tensor]
 
 logger = logging.getLogger(__name__)
@@ -159,16 +165,18 @@ class FireRedReferenceHook(
             return None
         else:
             pass
-        path = item[0]
-        return reference_path_cache_key(path, trust_stat=False) or hash_media_item(path)
+        reference_audio_path, _ = item
+        return reference_path_cache_key(
+            reference_audio_path, trust_stat=False
+        ) or hash_media_item(reference_audio_path)
 
     def options_key(self, item: ReferenceAudioInput) -> str:
-        cap_seconds = item[1]
-        return "" if cap_seconds is None else f"cap{cap_seconds}"
+        _, max_audio_seconds = item
+        return "" if max_audio_seconds is None else f"cap{max_audio_seconds}"
 
     def encode_one(self, item: ReferenceAudioInput) -> ReferenceConditioning:
-        path, cap_seconds = item
-        return self.bundle.encode(path, max_seconds=cap_seconds)
+        reference_audio_path, max_audio_seconds = item
+        return self.bundle.encode(reference_audio_path, max_seconds=max_audio_seconds)
 
     @staticmethod
     def store_artifact(artifact: ReferenceConditioning) -> ReferenceConditioning:
@@ -219,7 +227,10 @@ class FireRedReferenceEncoder:
         state = load_firered_tts3_state(payload)
         if state.prompt_audio_path is not None:
             artifact = self.service.get_or_encode(
-                (state.prompt_audio_path, None), desc=repr(state.prompt_audio_path)
+                ReferenceAudioInput(
+                    audio_path=state.prompt_audio_path, max_audio_seconds=None
+                ),
+                desc=repr(state.prompt_audio_path),
             )
             state.prompt_latents = artifact["prompt_latents"]
             state.speaker_embedding = artifact.get("speaker_embedding")
@@ -228,7 +239,10 @@ class FireRedReferenceEncoder:
             pass
         if state.audio_in_path is not None:
             artifact = self.service.get_or_encode(
-                (state.audio_in_path, MAX_EDIT_SECONDS), desc=repr(state.audio_in_path)
+                ReferenceAudioInput(
+                    audio_path=state.audio_in_path, max_audio_seconds=MAX_EDIT_SECONDS
+                ),
+                desc=repr(state.audio_in_path),
             )
             state.audio_in_latents = artifact["prompt_latents"]
         else:

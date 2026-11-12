@@ -44,7 +44,7 @@ class ProfilingProbe:
             torch.cuda.synchronize()
         else:
             pass
-        start = time.perf_counter()
+        start_seconds = time.perf_counter()
         try:
             yield
         finally:
@@ -53,7 +53,7 @@ class ProfilingProbe:
             else:
                 pass
             self.segments[name] = (
-                self.segments.get(name, 0.0) + time.perf_counter() - start
+                self.segments.get(name, 0.0) + time.perf_counter() - start_seconds
             )
 
     @staticmethod
@@ -70,7 +70,7 @@ class ProfilingProbe:
             torch.cuda.synchronize()
         else:
             pass
-        start = time.perf_counter()
+        start_seconds = time.perf_counter()
         try:
             yield
         finally:
@@ -78,9 +78,9 @@ class ProfilingProbe:
                 torch.cuda.synchronize()
             else:
                 pass
-            elapsed = time.perf_counter() - start
+            elapsed_seconds = time.perf_counter() - start_seconds
             for probe in active:
-                probe.segments[name] = probe.segments.get(name, 0.0) + elapsed
+                probe.segments[name] = probe.segments.get(name, 0.0) + elapsed_seconds
 
     def log(self, request_id: str) -> None:
         if not self.enabled:

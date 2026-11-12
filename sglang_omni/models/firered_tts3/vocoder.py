@@ -346,9 +346,9 @@ class FireRedTTS3StreamingVocoder(
             row_parts = self.latent_parts(state)
             assert row_parts
             latent_parts.append(tuple(row_parts))
-        first_key = self.step_group_key(participants[0][1])
+        first_group_key = self.step_group_key(participants[0][1])
         for _request_id, state in participants[1:]:
-            assert self.step_group_key(state) == first_key
+            assert self.step_group_key(state) == first_group_key
         return FireRedCoalescedStep(latent_parts=tuple(latent_parts))
 
     def run_step(

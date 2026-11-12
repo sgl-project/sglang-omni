@@ -87,7 +87,6 @@ def test_prepare_flow_dit_bf16_deepcopy_isolation() -> None:
     run_dit, fallback_dit = prepare_flow_dit(source, "bf16")
     assert run_dit is fallback_dit and run_dit is not source
     assert next(run_dit.parameters()).dtype == torch.bfloat16
-    # The caller's fp32 DiT (the eager reference path) is never mutated.
     assert source_weight.dtype == torch.float32
     assert torch.equal(source_weight.detach(), original)
     with torch.no_grad():

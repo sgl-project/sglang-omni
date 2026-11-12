@@ -77,7 +77,7 @@ def test_request_layout_is_speaker_plus_text_plus_prompt_patches(
     assert request_data.req.origin_input_ids == [CONTROL_TOKEN_ID] * prefill_token_count
     assert request_data.max_new_tokens == engine_token_budget
     assert request_data.req.sampling_params.max_new_tokens == engine_token_budget
-    # temperature=0.0 normalizes to the greedy convention (top_k == 1).
+    # note (kermit): Greedy SGLang sampling uses top_k=1.
     assert request_data.req.sampling_params.top_k == 1
     assert request_data.req.sampling_params.stop_token_ids in (None, [])
     assert request_data.req.eos_token_ids == set()
@@ -123,12 +123,10 @@ def streaming_data(
 def test_stream_output_follows_the_patch_ramp() -> None:
     request_data = streaming_data(8)
 
-    # chunk 0: one patch as soon as it exists; chunk 1: two; then four.
     sizes = []
     while request_data.streamed_patches < 8:
         messages = build_stream_output("rid", request_data, None)
         if not messages:
-            # Hold a patch back the way the decode loop would.
             break
         else:
             pass
@@ -138,7 +136,6 @@ def test_stream_output_follows_the_patch_ramp() -> None:
         assert chunk.target == "vocoder"
         assert chunk.metadata["modality"] == "audio_latents"
         assert chunk.metadata["stream"] is True
-        # CPU chunks carry no readiness event.
         assert "codes_ready_event" not in chunk.metadata
         sizes.append(int(chunk.data.shape[1]) // 4)
     assert sizes == [1, 2, 4]
@@ -181,15 +178,14 @@ def test_instruct_request_uses_real_tokens_and_text_budget() -> None:
         text_temperature=0.0,
     )
     request_data = build(state)
-    # Real chatml tokens (the pad slots ride inline), no placeholder row.
+    # note (kermit): ChatML pad slots are inline rather than a placeholder row.
     assert request_data.prefill_token_count == 5
     assert request_data.req.origin_input_ids == [11, 22, 33, 151655, 151655]
     assert request_data.prompt_patch_count == 0
     assert request_data.text_ar_mode == "text"
     assert request_data.req.sampling_params.max_new_tokens == 622
-    # Greedy task: no engine sampling seed installed.
     assert request_data.req.sampling_params.sampling_seed is None
-    # The text-phase terminator must never be an engine stop id.
+    # note (kermit): The text-phase terminator must not end the engine request.
     assert TEXT_EOT_ID not in (request_data.req.sampling_params.stop_token_ids or [])
     assert request_data.req.eos_token_ids == set()
 
@@ -226,10 +222,9 @@ def test_instruct_tts_task_has_no_text_phase() -> None:
     )
     request_data = build(state)
     assert request_data.text_ar_mode == "audio"
-    # ICL prompt patches are the trailing video_pad slots.
+    # note (kermit): Prompt patches occupy the trailing video_pad slots.
     assert request_data.prompt_patch_count == 2
     assert request_data.prefill_token_count == 4
-    # temperature 0.0 normalizes to the greedy convention (top_k == 1).
     assert request_data.req.sampling_params.top_k == 1
 
 
@@ -249,12 +244,13 @@ def test_apply_result_decodes_gen_text() -> None:
     restored = load_firered_tts3_state(payload)
     assert restored.gen_text == "tok100 tok200"
 
-    # No text phase -> no gen_text.
     second_state = FireRedTTS3State(input_ids=[11], max_patches=10)
     second_request_data = build(second_state)
     second_request_data.latent_patches = [torch.zeros(1, 4, 64)]
-    payload2 = apply_latent_result(second_request_data, text_tokenizer=StubTokenizer())
-    assert load_firered_tts3_state(payload2).gen_text is None
+    second_payload = apply_latent_result(
+        second_request_data, text_tokenizer=StubTokenizer()
+    )
+    assert load_firered_tts3_state(second_payload).gen_text is None
 
 
 def build_with_ratio(
@@ -269,8 +265,6 @@ def build_with_ratio(
 
 
 def test_speaker_prefill_request_uses_real_chatml_tokens() -> None:
-    # The speaker variant's prefill form: the full chatml row (text already
-    # scattered into the holder slots by preprocessing), no placeholder row.
     state = FireRedTTS3State(
         variant="speaker",
         input_ids=[11, 22, 33, 151672],
@@ -345,7 +339,6 @@ def test_dual_stream_stream_output_emits_every_patch() -> None:
     request_data.latent_patches = [
         torch.full((1, 4, 64), float(index)) for index in range(3)
     ]
-    # One patch per chunk, the moment it exists (reference per-patch decode).
     sizes = []
     for _ in range(3):
         messages = build_stream_output("rid", request_data, None)

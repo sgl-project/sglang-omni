@@ -125,10 +125,10 @@ def test_speaker_known_ids_survive_finalize(batch_size: int, prefill: bool) -> N
     )
     assert output.host_token_ids.device.type == "cpu"
     assert output.host_token_ids.tolist() == [CONTROL_TOKEN_ID] * batch_size
-    assert [output.outputs[r.request_id].data for r in requests] == [
+    assert [output.outputs[request.request_id].data for request in requests] == [
         CONTROL_TOKEN_ID
     ] * batch_size
-    assert all(r.data.generation_steps == 1 for r in requests)
+    assert all(request.data.generation_steps == 1 for request in requests)
 
 
 @pytest.mark.parametrize("prefill", [False, True])
@@ -253,20 +253,20 @@ def test_min_patch_stop_boundary_is_unchanged(
     runner.skip_min_patch_stop = skip
     runner.async_enabled = async_enabled
     request = make_request("tts")
-    data = request.data
-    data.state.variant = variant
-    data.dual_stream = dual_stream
-    data.state.min_patches = min_patches
-    data.state.stop_threshold = 0.5
-    data.text_ar_mode = TEXT_MODE_AUDIO
-    data.flow_state.patch_count = patch_count
+    request_data = request.data
+    request_data.state.variant = variant
+    request_data.dual_stream = dual_stream
+    request_data.state.min_patches = min_patches
+    request_data.state.stop_threshold = 0.5
+    request_data.text_ar_mode = TEXT_MODE_AUDIO
+    request_data.flow_state.patch_count = patch_count
     with torch.no_grad():
         runner.model.stop_head.weight.zero_()
         runner.model.stop_head.bias.fill_(logit)
     with patch.object(
         runner.model.stop_head, "forward", wraps=runner.model.stop_head.forward
     ) as forward:
-        assert runner.stop_predicted(data, torch.zeros(1, 8)) is expected_stop
+        assert runner.stop_predicted(request_data, torch.zeros(1, 8)) is expected_stop
     assert forward.call_count == expected_calls
 
 

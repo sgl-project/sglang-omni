@@ -132,8 +132,7 @@ def test_bucket_zero_pad_up(tiny_dit: DiT, device: torch.device) -> None:
             device,
         )
     assert actual.shape == (3, PATCH_SIZE, REDAE_DIM)
-    # Cross-batch GEMM tiling keeps the padded replay off the bit-exact
-    # contract; the drift must stay at fp32 roundoff scale.
+    # note (kermit): Cross-batch GEMM tiling permits fp32 roundoff in padded replay.
     torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-5)
     stats = runner.stats()
     assert stats["padded"] == 1 and stats["captures"] == 1
@@ -251,8 +250,6 @@ def test_bf16_mode_graph_bit_exact_vs_bf16_eager(
             dit_dtype=torch.bfloat16,
         )
     assert actual is not None
-    # Same stack, exact bucket hit: graph replay is bit-exact vs the eager
-    # loop, and the blend/integration state stayed fp32.
     assert actual.dtype == torch.float32
     assert torch.equal(actual, expected)
     assert next(tiny_dit.parameters()).dtype == torch.float32
@@ -327,7 +324,6 @@ def test_compile_fp32_graph_captures_and_runs(
             device,
         )
     assert actual is not None
-    assert runner.dit is run_dit  # no degradation: compile captured cleanly
-    # Inductor reassociates fp32 math; the drift stays far inside the
-    # batched-GEMM roundoff envelope (~5e-3) the plan budgets for c>=2.
+    assert runner.dit is run_dit
+    # note (kermit): Inductor reassociates fp32 math within the ~5e-3 batched GEMM roundoff envelope.
     torch.testing.assert_close(actual, expected, rtol=1e-2, atol=1e-4)

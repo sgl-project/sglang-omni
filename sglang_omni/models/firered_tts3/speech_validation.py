@@ -39,9 +39,11 @@ class FireRedTTS3GenerationOverrides(BaseModel):
     @field_validator("*", mode="before")
     @classmethod
     def validate_numeric_value(
-        cls, value: JsonValue, info: ValidationInfo
+        cls, value: JsonValue, validation_info: ValidationInfo
     ) -> JsonValue:
-        if isinstance(value, bool) or (value is None and info.field_name != "seed"):
+        if isinstance(value, bool) or (
+            value is None and validation_info.field_name != "seed"
+        ):
             raise ValueError("generation parameters must be numeric values")
         else:
             return value

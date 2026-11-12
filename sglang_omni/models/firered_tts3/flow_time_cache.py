@@ -157,24 +157,24 @@ class TimeGemmMode(TorchDispatchMode):
             return func(*args, **kwargs)
         else:
             pass
-        name = self.weights.get(weight.data_ptr())
-        if name is None:
+        layer_name = self.weights.get(weight.data_ptr())
+        if layer_name is None:
             return func(*args, **kwargs)
         else:
             pass
         call = self.active_call.get()
-        if call is None or name in call.seen:
-            raise TimeCacheUnavailable(f"Unscoped or repeated time addmm: {name}")
+        if call is None or layer_name in call.seen:
+            raise TimeCacheUnavailable(f"Unscoped or repeated time addmm: {layer_name}")
         else:
             pass
         if kwargs.get("alpha", 1) != 1 or kwargs.get("beta", 1) != 1:
-            raise TimeCacheUnavailable(f"Unsupported time addmm scaling: {name}")
+            raise TimeCacheUnavailable(f"Unsupported time addmm scaling: {layer_name}")
         else:
             pass
-        call.seen.add(name)
+        call.seen.add(layer_name)
         out = kwargs.get("out")
         if not isinstance(out, torch.Tensor):
-            raise TimeCacheUnavailable(f"Unsupported time addmm output: {name}")
+            raise TimeCacheUnavailable(f"Unsupported time addmm output: {layer_name}")
         else:
             pass
         signature = GemmSignature(
@@ -190,22 +190,22 @@ class TimeGemmMode(TorchDispatchMode):
             device=out.device,
         )
         if self.phase == "collect":
-            if name in self.collected[call.index]:
-                raise TimeCacheUnavailable(f"Repeated time table entry: {name}")
+            if layer_name in self.collected[call.index]:
+                raise TimeCacheUnavailable(f"Repeated time table entry: {layer_name}")
             else:
                 pass
             result = func(*args, **kwargs)
-            self.collected[call.index][name] = TimeGemmValue(
+            self.collected[call.index][layer_name] = TimeGemmValue(
                 signature=signature,
                 output=out.clone(memory_format=torch.preserve_format),
             )
             return result
         else:
             assert self.table is not None
-            value = self.table.steps[call.index].get(name)
+            value = self.table.steps[call.index].get(layer_name)
             if value is None or value.signature != signature:
                 raise TimeCacheUnavailable(
-                    f"Time table signature changed: step={call.index}, operation={name}"
+                    f"Time table signature changed: step={call.index}, operation={layer_name}"
                 )
             else:
                 pass
@@ -219,10 +219,13 @@ class TimeConditionCache:
     def __init__(self, dit: DiT) -> None:
         self.source: DiT = dit
         weights = {
-            module.weight.data_ptr(): name
-            for name, module in dit.named_modules()
+            module.weight.data_ptr(): layer_name
+            for layer_name, module in dit.named_modules()
             if isinstance(module, torch.nn.Linear)
-            and (name.startswith("t_embedder.") or ".adaLN_modulation." in name)
+            and (
+                layer_name.startswith("t_embedder.")
+                or ".adaLN_modulation." in layer_name
+            )
         }
         expected = 2 + len(dit.blocks) + 1
         if len(weights) != expected:
@@ -233,7 +236,7 @@ class TimeConditionCache:
             pass
         self.weights: Mapping[int, str] = MappingProxyType(weights)
         self.parameters: dict[str, TimeParameter] = {
-            name: TimeParameter(
+            parameter_name: TimeParameter(
                 pointer=parameter.data_ptr(),
                 shape=tuple(parameter.shape),
                 stride=tuple(parameter.stride()),
@@ -243,8 +246,9 @@ class TimeConditionCache:
                     None if torch.is_inference(parameter) else parameter._version
                 ),  # noqa: SLF001  # leading-underscore: PyTorch tensor version API
             )
-            for name, parameter in dit.named_parameters()
-            if name.startswith("t_embedder.") or ".adaLN_modulation." in name
+            for parameter_name, parameter in dit.named_parameters()
+            if parameter_name.startswith("t_embedder.")
+            or ".adaLN_modulation." in parameter_name
         }
         self.version_checks_available: bool = all(
             parameter.version is not None for parameter in self.parameters.values()
@@ -253,10 +257,12 @@ class TimeConditionCache:
     def validate_weights(self) -> None:
         """Recreate the runner after weight changes, including unversioned writes."""
         current = dict(self.source.named_parameters())
-        for name, expected in self.parameters.items():
-            parameter = current.get(name)
+        for parameter_name, expected in self.parameters.items():
+            parameter = current.get(parameter_name)
             if parameter is None:
-                raise TimeCacheUnavailable(f"Time parameter was removed: {name}")
+                raise TimeCacheUnavailable(
+                    f"Time parameter was removed: {parameter_name}"
+                )
             else:
                 pass
             actual = TimeParameter(
@@ -271,7 +277,7 @@ class TimeConditionCache:
             )
             if actual != expected:
                 raise TimeCacheUnavailable(
-                    f"Time parameter changed; rebuild cache: {name}"
+                    f"Time parameter changed; rebuild cache: {parameter_name}"
                 )
             else:
                 pass

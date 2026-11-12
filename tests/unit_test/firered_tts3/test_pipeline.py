@@ -198,9 +198,9 @@ def test_firered_tts3_shares_generation_schedule_via_shared() -> None:
     resolved = ConfigResolver(config).resolve(patches).config
 
     for name in ("preprocessing", "talker"):
-        kwargs = resolve_stage_typed_kwargs(resolved.stage_named(name))
-        assert kwargs["n_timesteps"] == 8
-        assert kwargs["max_patches"] == 256
+        factory_parameters = resolve_stage_typed_kwargs(resolved.stage_named(name))
+        assert factory_parameters["n_timesteps"] == 8
+        assert factory_parameters["max_patches"] == 256
     assert resolved.stage_factory_kwargs("preprocessing") == {
         "n_timesteps": 8,
         "max_patches": 256,
@@ -211,7 +211,7 @@ def test_firered_tts3_shares_generation_schedule_via_shared() -> None:
 def test_firered_tts3_rejects_conflicting_preprocessing_schedule() -> None:
 
     config_values = FireRedTTS3PipelineConfig(model_path="model").model_dump()
-    stages = {item["name"]: item for item in config_values["stages"]}
+    stages = {stage["name"]: stage for stage in config_values["stages"]}
     stages["talker"]["factory"] = {"n_timesteps": 10}
     stages["preprocessing"]["factory"] = {"n_timesteps": 8}
     with pytest.raises(ValueError, match="n_timesteps"):
@@ -221,7 +221,7 @@ def test_firered_tts3_rejects_conflicting_preprocessing_schedule() -> None:
 def test_firered_tts3_rejects_mismatched_vocoder_stream_slots() -> None:
 
     config_values = FireRedTTS3PipelineConfig(model_path="model").model_dump()
-    stages = {item["name"]: item for item in config_values["stages"]}
+    stages = {stage["name"]: stage for stage in config_values["stages"]}
     stages["talker"]["engine"]["max_running_requests"] = 8
     stages["vocoder"]["factory"]["stream_slots"] = 16
     with pytest.raises(ValueError, match="stream_slots"):
@@ -231,7 +231,9 @@ def test_firered_tts3_rejects_mismatched_vocoder_stream_slots() -> None:
 def test_firered_tts3_rejects_tp() -> None:
 
     config_values = FireRedTTS3PipelineConfig(model_path="model").model_dump()
-    stage = next(item for item in config_values["stages"] if item["name"] == "talker")
+    stage = next(
+        stage for stage in config_values["stages"] if stage["name"] == "talker"
+    )
     stage["tp_size"] = 2
     stage["gpu"] = [0, 1]
     stage["process"] = "talker"

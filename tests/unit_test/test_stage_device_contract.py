@@ -422,19 +422,19 @@ def test_engine_factories_bind_the_placed_gpu(monkeypatch, model):
     monkeypatch.setattr(
         platforms.current_platform, "device_type", "cuda", raising=False
     )
-    factory_kwargs = (
+    stage_factory_arguments = (
         pipeline_wiring("firered_tts3", "default", "talker")
         if model == "firered_tts3"
         else {}
     )
 
     with pytest.raises(Stop):
-        factory(model_path="unused", device=None, gpu_id=2, **factory_kwargs)
+        factory(model_path="unused", device=None, gpu_id=2, **stage_factory_arguments)
     assert final == {"device": "cuda:2", "gpu_id": 2}
 
     final.clear()
     with pytest.raises(Stop):
-        factory(model_path="unused", device="cuda", gpu_id=2, **factory_kwargs)
+        factory(model_path="unused", device="cuda", gpu_id=2, **stage_factory_arguments)
     assert final == {"device": "cuda:2", "gpu_id": 2}
 
 

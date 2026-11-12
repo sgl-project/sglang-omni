@@ -167,35 +167,37 @@ class FireRedTTS3SGLangModel(nn.Module):
         else:
             pass
         backbone_weights: list[tuple[str, torch.Tensor]] = []
-        side_params = dict(self.side_path_parameters())
-        loaded: set[str] = set()
-        for name, tensor in weights:
-            bucket = route_root_key(name)
-            if bucket == "backbone":
-                backbone_weights.append((strip_backbone_prefix(name), tensor))
+        side_parameters = dict(self.side_path_parameters())
+        loaded_checkpoint_keys: set[str] = set()
+        for checkpoint_key, tensor in weights:
+            component = route_root_key(checkpoint_key)
+            if component == "backbone":
+                backbone_weights.append((strip_backbone_prefix(checkpoint_key), tensor))
                 continue
             else:
                 pass
-            if bucket == "lm_head":
+            if component == "lm_head":
                 continue
             else:
                 pass
-            if bucket == "unknown":
-                raise ValueError(f"unexpected FireRedTTS3 checkpoint key {name!r}")
+            if component == "unknown":
+                raise ValueError(
+                    f"unexpected FireRedTTS3 checkpoint key {checkpoint_key!r}"
+                )
             else:
                 pass
-            parameter = side_params.get(name)
+            parameter = side_parameters.get(checkpoint_key)
             assert (
                 parameter is not None
-            ), f"FireRedTTS3 checkpoint key {name!r} routed to {bucket} but no such side-path parameter exists"
-            loader = getattr(parameter, "weight_loader", default_weight_loader)
-            loader(parameter, tensor)
-            loaded.add(name)
+            ), f"FireRedTTS3 checkpoint key {checkpoint_key!r} routed to {component} but no such side-path parameter exists"
+            weight_loader = getattr(parameter, "weight_loader", default_weight_loader)
+            weight_loader(parameter, tensor)
+            loaded_checkpoint_keys.add(checkpoint_key)
         self.backbone.load_weights(backbone_weights)
         device = next(self.backbone.parameters()).device
         for module in self.side_path_modules():
             module.to(device=device, dtype=torch.float32)
-        return loaded
+        return loaded_checkpoint_keys
 
     def side_path_modules(self) -> list[nn.Module]:
         modules: list[nn.Module] = [
@@ -269,9 +271,11 @@ class FireRedTTS3SGLangModel(nn.Module):
         else:
             pass
         if forward_batch.forward_mode.is_extend():
-            extend_seq_lens = forward_batch.extend_seq_lens
+            extended_sequence_lengths = forward_batch.extend_seq_lens
             request_count = (
-                int(extend_seq_lens.numel()) if extend_seq_lens is not None else 1
+                int(extended_sequence_lengths.numel())
+                if extended_sequence_lengths is not None
+                else 1
             )
         else:
             request_count = int(hidden_states.shape[0])

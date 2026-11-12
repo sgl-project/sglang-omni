@@ -46,11 +46,7 @@ class GemmOutput(Protocol):
 
 
 class FfnGemmMode(TorchDispatchMode):
-    """Own small FFN1 and large packed-QKV resources for their CUDA graph lifetime.
-
-    Inference weights are immutable: rebuild after every weight update, including
-    in-place updates of inference tensors without a version counter.
-    """
+    """Own FFN1 and packed-QKV graph resources; rebuild after any weight update."""
 
     def __init__(self, source: torch.nn.Module) -> None:
         super().__init__()
@@ -252,10 +248,12 @@ class FfnGemmMode(TorchDispatchMode):
             provided_names = set(parameter_names[: len(args)]) | set(kwargs)
             provided_names.update(("alpha", "beta"))
             weight = kwargs.get("mat2", args[2] if len(args) > 2 else None)
-            pointer = weight.data_ptr() if isinstance(weight, torch.Tensor) else None
-            entry = self.weights.get(pointer)
+            weight_address = (
+                weight.data_ptr() if isinstance(weight, torch.Tensor) else None
+            )
+            entry = self.weights.get(weight_address)
             if entry is None:
-                entry = self.packed_weights.get(pointer)
+                entry = self.packed_weights.get(weight_address)
                 configs = QKV_CONFIGS
             else:
                 configs = FFN_CONFIGS

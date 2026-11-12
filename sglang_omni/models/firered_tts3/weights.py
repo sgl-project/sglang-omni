@@ -81,17 +81,17 @@ def read_component_tensors(
     tensors: dict[str, torch.Tensor] = {}
     for shard in sorted(checkpoint_dir.glob("*.safetensors")):
         with safe_open(str(shard), framework="pt", device="cpu") as handle:
-            for key in handle.keys():
-                if not key.startswith(prefix):
+            for checkpoint_key in handle.keys():
+                if not checkpoint_key.startswith(prefix):
                     continue
                 else:
                     pass
-                stripped = key[len(prefix) :]
-                if stripped in skip_if:
+                component_key = checkpoint_key[len(prefix) :]
+                if component_key in skip_if:
                     continue
                 else:
                     pass
-                tensors[stripped] = handle.get_tensor(key)
+                tensors[component_key] = handle.get_tensor(checkpoint_key)
     return tensors
 
 

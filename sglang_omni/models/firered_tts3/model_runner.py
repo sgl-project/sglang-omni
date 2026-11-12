@@ -186,12 +186,12 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
         else:
             pass
         if self.prefill_launch_at is not None:
-            engine_prefill = time.perf_counter() - self.prefill_launch_at
+            engine_prefill_seconds = time.perf_counter() - self.prefill_launch_at
             self.prefill_launch_at = None
             for request in requests:
                 probe = scheduler_request_data(request).probe
                 if probe is not None and probe.enabled:
-                    probe.segments["engine_prefill"] = engine_prefill
+                    probe.segments["engine_prefill"] = engine_prefill_seconds
                 else:
                     pass
         else:

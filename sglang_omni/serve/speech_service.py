@@ -602,7 +602,7 @@ class SpeechRequestValidator:
         )
 
     def resolve_encode_speed(self, request: CreateSpeechRequest) -> float:
-        return float(request.speed)
+        return request.speed
 
     def validate_extra_params(self, request: CreateSpeechRequest) -> None:
         """Override to validate model-owned parameters before dispatch."""
