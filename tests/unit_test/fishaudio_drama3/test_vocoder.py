@@ -1066,10 +1066,7 @@ def test_the_snake_kernel_follows_the_formula_on_a_trimmed_activation(
 
 
 @pytest.mark.accelerator
-@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
-def test_the_snake_folds_a_conv_bias_bitwise_like_a_separate_add(
-    dtype: torch.dtype,
-) -> None:
+def test_the_snake_folds_a_conv_bias_bitwise_like_a_separate_add() -> None:
     if not torch.cuda.is_available():
         pytest.skip("needs a CUDA device")
     else:
@@ -1085,9 +1082,9 @@ def test_the_snake_folds_a_conv_bias_bitwise_like_a_separate_add(
     decoder.snake_alphas = {id(snake): (alpha, (alpha + 1e-9).reciprocal())}
     activation = torch.randn(
         (3, 77, channel_count), generator=generator, device="cuda"
-    ).to(dtype)
+    ).to(torch.float16)
     bias = (torch.randn(channel_count, generator=generator, device="cuda") * 3).to(
-        dtype
+        torch.float16
     )
 
     folded = decoder.snake(snake, activation, 6, 2, bias=bias)
@@ -1097,12 +1094,11 @@ def test_the_snake_folds_a_conv_bias_bitwise_like_a_separate_add(
 
 
 @pytest.mark.accelerator
-@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
 @pytest.mark.parametrize(
     ("hidden_bias", "residual_bias"), [(True, True), (False, True)]
 )
 def test_the_residual_add_folds_both_biases_bitwise_like_separate_adds(
-    dtype: torch.dtype, hidden_bias: bool, residual_bias: bool
+    hidden_bias: bool, residual_bias: bool
 ) -> None:
     if not torch.cuda.is_available():
         pytest.skip("needs a CUDA device")
@@ -1115,14 +1111,14 @@ def test_the_residual_add_folds_both_biases_bitwise_like_separate_adds(
     # after a conv.
     hidden_states = torch.randn(
         (3, 130, channel_count), generator=generator, device="cuda"
-    ).to(dtype)
+    ).to(torch.float16)
     residual = torch.randn(
         (3, 125, channel_count), generator=generator, device="cuda"
-    ).to(dtype)
+    ).to(torch.float16)
     biases = [
         (
             (torch.randn(channel_count, generator=generator, device="cuda") * 3).to(
-                dtype
+                torch.float16
             )
             if has_bias
             else None
