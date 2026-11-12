@@ -163,6 +163,17 @@ def final_payload(
     )
 
 
+def chunk_message(
+    request_id: str, chunk_id: int, frames: torch.Tensor
+) -> IncomingMessage:
+    """The engine's stream chunk carrying [frames, 1 + num_codebooks] rows."""
+    return IncomingMessage(
+        request_id=request_id,
+        type="stream_chunk",
+        data=StreamItem(chunk_id=chunk_id, data=frames.T, from_stage="tts_engine"),
+    )
+
+
 def final_audio(result: StagePayload) -> np.ndarray:
     """The non-streaming audio as the client decodes it: float32 bytes plus shape."""
     assert isinstance(result.data, dict)
@@ -464,15 +475,7 @@ def test_the_stream_never_reads_the_frames_a_window_skips(
     frames = numbered_frames(214)
     for chunk_id in range(214):
         vocoder.inbox.put(
-            IncomingMessage(
-                request_id="request-a",
-                type="stream_chunk",
-                data=StreamItem(
-                    chunk_id=chunk_id,
-                    data=frames[chunk_id : chunk_id + 1].T,
-                    from_stage="tts_engine",
-                ),
-            )
+            chunk_message("request-a", chunk_id, frames[chunk_id : chunk_id + 1])
         )
     while not vocoder.inbox.empty():
         vocoder.handle_message(vocoder.get_batch_message(), None)
@@ -555,14 +558,10 @@ def test_coalesced_chunks_vocode_each_request_like_one_chunk_at_a_time() -> None
         for request_id in frame_counts
     )
     chunk_messages = [
-        IncomingMessage(
-            request_id=request_id,
-            type="stream_chunk",
-            data=StreamItem(
-                chunk_id=frame_index,
-                data=frames[request_id][frame_index : frame_index + 1].T,
-                from_stage="tts_engine",
-            ),
+        chunk_message(
+            request_id,
+            frame_index,
+            frames[request_id][frame_index : frame_index + 1],
         )
         for step in range(step_count)
         for request_id in frame_counts
@@ -649,15 +648,7 @@ def test_a_failed_window_decode_reports_no_error_for_a_request_aborted_during_it
     vocoder = vocoder_with(FrameNumberCodec(), window_batch_decoder=decoder)
     decoder.vocoder = vocoder
     for request_id in ("request-a", "request-b"):
-        vocoder.inbox.put(
-            IncomingMessage(
-                request_id=request_id,
-                type="stream_chunk",
-                data=StreamItem(
-                    chunk_id=0, data=numbered_frames(4).T, from_stage="tts_engine"
-                ),
-            )
-        )
+        vocoder.inbox.put(chunk_message(request_id, 0, numbered_frames(4)))
 
     vocoder.handle_message(vocoder.get_batch_message(), None)
 
