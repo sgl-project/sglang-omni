@@ -27,6 +27,13 @@ import (
 // cardLong is a translation longer than the card's 220 of text.
 var cardLong = strings.Repeat("goroutine 是由 Go 运行时管理的轻量级线程，启动成本很低，一个程序里同时运行成千上万个也很常见。", 12)
 
+// cardQuote and cardQuoteLong are text selected for a follow-up: a
+// short one, and one of 3,000 characters.
+var (
+	cardQuote     = "Anna: I can start the meeting."
+	cardQuoteLong = strings.Repeat("Ben: I will send the notes after the meeting. ", 66)[:3000]
+)
+
 // cardStep is one state of the answer card, set on an app.
 type cardStep struct {
 	name  string
@@ -89,6 +96,22 @@ func cardSteps() []cardStep {
 			snap(a, session.Snapshot{ID: "r2", Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard, Raw: "shorter",
 				Title: "Late", Result: "Ten minutes late: start without me."})
 		}, body: -1, insert: true, copy: true, followUp: true, convo: true},
+		// Continue with more text selected (#3816): it shows under the
+		// follow-up, a long one cut until Show all.
+		{name: "follow-up-selected", apply: func(a *app) {
+			a.followUp = "r2"
+			snap(a, session.Snapshot{ID: "r3", Kind: store.KindRewrite, State: session.Recording, Selection: cardQuote})
+			snap(a, session.Snapshot{ID: "r3", Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard, Raw: "add these",
+				Selection: cardQuote, Result: "Ten minutes late, Anna starts."})
+		}, body: -1, insert: true, copy: true, followUp: true, convo: true},
+		{name: "follow-up-selected-long", apply: func(a *app) {
+			a.followUp = "r3"
+			snap(a, session.Snapshot{ID: "r4", Kind: store.KindRewrite, State: session.Recording, Selection: cardQuoteLong})
+			snap(a, session.Snapshot{ID: "r4", Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard, Raw: "and these",
+				Selection: cardQuoteLong, Result: "Late; Anna starts; notes later."})
+		}, body: -1, insert: true, copy: true, followUp: true, convo: true},
+		{name: "follow-up-selected-open", apply: func(a *app) { a.toggleQuote(3) },
+			body: -1, insert: true, copy: true, followUp: true, convo: true},
 		// Cut off at the model's length limit: in the card, which says so.
 		{name: "cut-off", apply: func(a *app) {
 			a.closeAnswer()

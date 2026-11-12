@@ -23,6 +23,8 @@ import httpx
 import numpy as np
 import numpy.typing as npt
 
+from sglang_omni.utils.process import name_native_thread
+
 from .base import MediaIO
 
 if TYPE_CHECKING:
@@ -35,7 +37,11 @@ _M = TypeVar("_M")
 _MAX_HTTP_REDIRECTS = 5
 
 # Global thread pool for CPU-bound tasks (decoding/resampling)
-global_thread_pool = ThreadPoolExecutor(max_workers=8)
+global_thread_pool = ThreadPoolExecutor(
+    max_workers=8,
+    thread_name_prefix="media-decode",
+    initializer=name_native_thread,
+)
 atexit.register(global_thread_pool.shutdown)
 
 

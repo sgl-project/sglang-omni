@@ -13,11 +13,3 @@ func (a *app) meetingEnabled() bool {
 	}
 	return mygo.IsDev()
 }
-
-// navPageVisible hides dev-only routes in release builds.
-func (a *app) navPageVisible(path string) bool {
-	if path == "/meetings" {
-		return a.meetingEnabled()
-	}
-	return true
-}

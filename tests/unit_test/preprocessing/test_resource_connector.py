@@ -14,6 +14,8 @@ zero load_file calls.
 from __future__ import annotations
 
 import asyncio
+import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -24,6 +26,18 @@ from sglang_omni.preprocessing.base import MediaIO
 from sglang_omni.preprocessing.image import ensure_image_list_async
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
 from sglang_omni.preprocessing.video import ensure_video_list_async
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="comm names live in /proc")
+def test_media_decode_workers_have_their_python_name_in_proc_comm() -> None:
+    worker = resource_connector.global_thread_pool.submit(
+        threading.current_thread
+    ).result(timeout=5.0)
+
+    native_name = Path(f"/proc/self/task/{worker.native_id}/comm").read_text().strip()
+
+    assert worker.name.startswith("media-decode_")
+    assert native_name == worker.name[:15]
 
 
 class RecordingMediaIO(MediaIO[Path]):

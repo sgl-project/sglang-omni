@@ -70,6 +70,9 @@ type modelsState struct {
 	modelAdvanced bool
 	modelKeepSel  string
 	modelKeepFor  string
+	// llmWaitSel and llmWaitFor are the Language models page's wait
+	// select, as modelKeepSel and modelKeepFor (llm_wait.go).
+	llmWaitSel, llmWaitFor string
 	// modelHiddenOpen: the Hidden models section is open (models_cards.go).
 	modelHiddenOpen bool
 	// speechContext is the Speech context field (models_context.go).
