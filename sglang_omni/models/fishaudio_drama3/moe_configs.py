@@ -84,7 +84,9 @@ def get_moe_configs(
     per_channel_quant: bool = False,
     down_moe: bool = False,
 ) -> dict[int, dict[str, int]] | None:
-    """sglang's get_moe_configs, with CONFIGS for the Drama 3 expert shape."""
+    """sglang's get_moe_configs, returning CONFIGS for the Drama 3 expert shape. A
+    down_moe lookup of that shape still reads sglang's files first; without a
+    down-projection file, sglang retries the up lookup here and also gets CONFIGS."""
     if (
         (E, N, dtype, block_n, block_k) == EXPERT_SHAPE
         and not per_channel_quant
@@ -105,8 +107,8 @@ def get_moe_configs(
 
 
 def install_tuned_moe_configs() -> None:
-    """Serve CONFIGS for the Drama 3 expert shape from sglang's config lookup; other
-    shapes, devices and Triton versions keep sglang's lookup."""
+    """Serve CONFIGS for the Drama 3 expert shape, down projection included, from
+    sglang's config lookup; other shapes, devices and Triton versions keep sglang's."""
     device_name = fused_moe_triton_config.get_device_name()
     if device_name != DEVICE_NAME or triton.__version__ != TRITON_VERSION:
         logger.info(
