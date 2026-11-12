@@ -536,6 +536,31 @@ graphs stay on by default. All three are applied automatically.
 
 **Expected result:** Play `out.wav` to hear the input in the reference voice.
 
+### Zonos3 (single XPU)
+
+Zonos3 needs no model-specific dependencies. `params.json` auto-selects the
+architecture, so `--model-path` is all that is needed.
+
+**Launch**
+
+```bash
+sgl-omni serve --model-path Zyphra/ZONOS3-Mini --host 0.0.0.0 --port 8000
+```
+
+**Request**
+
+```bash
+curl -s -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input":"Hello from Intel XPU."}' \
+  -o out.wav
+```
+
+Reference audio is optional and needs no transcript; add `references` as in
+[Zonos2](#zonos2-moe-tts-single-xpu) to clone a voice.
+
+**Expected result:** Play `out.wav` to hear the generated 44.1 kHz mono audio.
+
 ### PersonaPlex (speech-to-speech, single XPU)
 
 Follow the [PersonaPlex prerequisites](../cookbook/personaplex.md#prerequisites)
@@ -801,9 +826,9 @@ Health check for any of the above: `curl http://localhost:8000/v1/models`.
 > **Expected on XPU:** `Failed to import mooncake` / `Failed to import nixl` warnings are harmless
 > — those CUDA-only transfer backends are omitted; tensors move through the `shm` relay instead.
 
-> Support status: **Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, Zonos2,
+> Support status: **Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, Zonos2, Zonos3,
 > Audar-TTS, Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni, Ming-Omni-TTS, Nemotron VoiceChat, PersonaPlex, AuK/AuK-Flash and dots.tts all serve end-to-end on Intel XPU**
 > (Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, Audar-TTS, MiniCPM-o, PersonaPlex, AuK/AuK-Flash and dots.tts single-card;
-> Zonos2 single-card with decode graphs; MiniMax Music 3, Ming-Omni-TTS and Nemotron VoiceChat need two cards;
+> Zonos2 and Zonos3 single-card with decode graphs; MiniMax Music 3, Ming-Omni-TTS and Nemotron VoiceChat need two cards;
 > Ming-Omni chat single-card and speech two-card, with the thinker offloaded to host memory;
 > Qwen3-Omni thinker across 8 cards with tensor parallelism).
