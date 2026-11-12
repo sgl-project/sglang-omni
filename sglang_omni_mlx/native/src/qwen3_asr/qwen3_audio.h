@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-// Qwen3-ASR's audio prompt layout and its chunked log-mel features.
+// Qwen3-ASR's audio prompt layout and its audio token counts.
 #pragma once
-
-#include <vector>
-
-#include "mlx/mlx.h"
 
 namespace qwen3_asr {
 
@@ -16,16 +12,6 @@ inline constexpr int kChunkTokenCount = 13;
 // checkpoint's processor; kVoxtSwift reproduces Voxt's Swift port (one more
 // mel frame, and a token count computed with float32 true division).
 enum class AudioLayout { kReference, kVoxtSwift };
-
-// Whisper-style log-mel in float32 on MLX, [mel_bins, frames]. The reference
-// layout drops the final centered STFT frame; the Swift layout keeps it.
-mlx::core::array LogMel(const std::vector<float> &samples, AudioLayout layout);
-// LogMel's two steps: the log10 mel power before the floor, [frames, mel_bins],
-// then the floor below max_log_mel and the scaling, [mel_bins, frames].
-mlx::core::array RawLogMel(const std::vector<float> &samples,
-                           AudioLayout layout);
-mlx::core::array ApplyFloor(const mlx::core::array &raw_log_mel,
-                            const mlx::core::array &max_log_mel);
 
 int ConvOutputFrames(int frame_count);
 int ReferenceTokenCount(int frame_count);

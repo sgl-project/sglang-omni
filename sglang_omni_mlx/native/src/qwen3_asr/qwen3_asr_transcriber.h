@@ -4,8 +4,8 @@
 
 #include <atomic>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
-#include <functional>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -80,6 +80,18 @@ std::optional<std::string> NormalizeLanguage(const std::string &language);
 
 class StreamingEncoder;
 
+struct BatchRequest {
+  const std::vector<float> *samples;
+  const TranscriptionOptions *options;
+  const std::atomic<bool> *cancel;
+};
+
+// A finished request's result, or the exception that ended it.
+struct BatchOutcome {
+  std::optional<TranscriptionResult> result;
+  std::exception_ptr error;
+};
+
 class Qwen3ASRTranscriber {
 public:
   // With a DFlash draft directory, decoding verifies the draft's proposals
@@ -100,16 +112,53 @@ public:
                                  const TranscriptionOptions &options,
                                  const std::atomic<bool> &cancel,
                                  StreamingEncoder *encoder = nullptr) const;
+  // Whether the request can decode together with others: the batched loop
+  // has neither the draft nor the repetition penalty.
+  bool CanBatch(const TranscriptionOptions &options) const {
+    return !draft_.has_value() && options.repetition_penalty == 1.0f;
+  }
+  // Transcribes several requests, decoding them together. Greedy output
+  // matches Transcribe's. on_finished gets each request's index and outcome as
+  // soon as that request finishes, once per request.
+  using BatchFinished = std::function<void(size_t, BatchOutcome)>;
+  void TranscribeBatch(const std::vector<BatchRequest> &requests,
+                       const BatchFinished &on_finished) const;
 
 private:
-  // Greedy decoding with the draft: each round the target verifies the block
-  // the draft proposed, cut to the tokens remaining allows, and commits the
-  // accepted tokens plus one more. Tokens go to commit until it reports the
-  // output complete; returns the rounds.
-  int DecodeWithDraft(const mlx::core::array &embeddings,
-                      const std::function<bool(int)> &commit,
-                      const std::function<int()> &remaining,
-                      const std::atomic<bool> &cancel) const;
+  struct Prompt {
+    mlx::core::array embeddings;
+    int max_new_tokens;
+  };
+  // Mel, audio encoder and prompt embeddings [1, length, hidden], plus the
+  // token budget; with an encoder, as in Transcribe.
+  Prompt BuildPrompt(const std::vector<float> &samples,
+                     const TranscriptionOptions &options,
+                     StreamingEncoder *encoder = nullptr) const;
+  bool IsStopToken(int token_id, const TranscriptionOptions &options) const;
+  // The result for a finished output; a stop on a token loop keeps one copy
+  // of the looping unit.
+  TranscriptionResult FinishedResult(const std::vector<int> &output_ids,
+                                     const TranscriptionOptions &options,
+                                     FinishReason finish_reason,
+                                     bool stopped_on_token_loop,
+                                     int verify_round_count = 0) const;
+
+  struct BatchRow;
+  // Prefills every request; one that fails is reported finished with its
+  // error and gets no row.
+  std::vector<BatchRow> PrefillRows(const std::vector<BatchRequest> &requests,
+                                    const BatchFinished &on_finished) const;
+  static std::vector<BatchedKVCache>
+  StackCaches(const std::vector<BatchRow> &rows);
+  // Decodes the rows together until each has finished or been cancelled,
+  // reporting each as it does.
+  void DecodeRows(const std::vector<BatchRequest> &requests,
+                  std::vector<BatchRow> &rows,
+                  const BatchFinished &on_finished) const;
+  // Appends the token to the row; true once the row's result is final.
+  bool AcceptToken(BatchRow &row, int token_id,
+                   const TranscriptionOptions &options,
+                   BatchOutcome &outcome) const;
   std::pair<std::string, std::optional<std::string>>
   SplitOutput(const std::vector<int> &output_ids,
               const TranscriptionOptions &options) const;
@@ -146,6 +195,19 @@ private:
   std::optional<mlx::core::array> cached_rows_; // encoded full windows
   std::optional<float> cached_max_;             // log-mel max they used
   std::optional<mlx::core::array> tail_mel_;    // frames after them
+};
+
+// One request the worker may decode together with others. Called alone it
+// transcribes serially; the worker finds it through
+// std::function::target<BatchableTranscription>().
+struct BatchableTranscription {
+  const Qwen3ASRTranscriber *transcriber;
+  std::vector<float> samples;
+  TranscriptionOptions options;
+
+  TranscriptionResult operator()(const std::atomic<bool> &cancel) const {
+    return transcriber->Transcribe(samples, options, cancel);
+  }
 };
 
 } // namespace qwen3_asr

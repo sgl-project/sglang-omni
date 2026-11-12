@@ -4,7 +4,8 @@
 Greedy decoding follows each Apple chip's GPU arithmetic, so a golden file keeps
 exact outputs per chip; other chips are gated on error rates within tolerance.
 Silero VAD and Sortformer golden files are checked within kernel tolerances.
-Voxtral TTS golden files hold seeded speech requests' codes, exact per chip.
+Voxtral TTS and Fish S2-Pro golden files hold seeded speech requests' codes,
+exact per chip.
 A request with draft_model_path ({"model": repo}) decodes with that DFlash draft.
 """
 
@@ -16,14 +17,16 @@ import os
 import re
 import subprocess
 import sys
-import unicodedata
 from pathlib import Path
 from typing import Callable, Protocol
+
+from rapidfuzz.distance import Levenshtein
 
 # (runtime bin, data root, golden file, manifest of the clips to run) -> outputs
 TranscribeCorpus = Callable[[Path, Path, dict, dict[str, dict]], dict[str, dict]]
 
 import cosyvoice3_golden
+import fish_s2_pro_golden
 import fishaudio_drama3_golden
 import music3_golden
 import qwen3_tts_golden
@@ -32,6 +35,7 @@ import speech_golden
 import vad_golden
 import voxtral_golden
 from speech_golden import SpeechCase, SpeechOutputs
+from transcript_tokens import tokens
 
 CI_DIRECTORY = Path(__file__).resolve().parent
 
@@ -49,6 +53,7 @@ SPEECH_SYNTHESIZERS: dict[str, SpeechSynthesizer] = {
     "voxtral_tts": voxtral_golden.synthesize,
     "qwen3_tts": qwen3_tts_golden.synthesize,
     "fishaudio_drama3": fishaudio_drama3_golden.synthesize,
+    "fish_s2_pro": fish_s2_pro_golden.synthesize,
 }
 COMPARED_FIELDS = ("text", "language", "generated_token_count", "finish_reason")
 QUALITY_GROUPS = {
@@ -62,31 +67,6 @@ QUALITY_GROUPS = {
 MOSS_TAG = re.compile(r"\[\d+(?:[.,]\d+)?\]|\[S\d+\]|\[[a-z][a-z0-9 _-]{0,31}\]")
 
 
-def tokens(text: str, lang: str) -> list[str]:
-    text = unicodedata.normalize("NFKC", text).lower()
-    if lang == "en":
-        text = re.sub(r"[^a-z0-9' ]+", " ", text)
-        return [token.strip("'") for token in text.split() if token.strip("'")]
-    else:
-        return re.findall(r"[㐀-鿿豈-﫿]|[a-z0-9']+", text)
-
-
-def edit_distance(reference: list[str], hypothesis: list[str]) -> int:
-    previous = list(range(len(hypothesis) + 1))
-    for i, expected in enumerate(reference, 1):
-        current = [i]
-        for j, actual in enumerate(hypothesis, 1):
-            current.append(
-                min(
-                    current[j - 1] + 1,
-                    previous[j] + 1,
-                    previous[j - 1] + (expected != actual),
-                )
-            )
-        previous = current
-    return previous[-1]
-
-
 def quality(manifest: dict[str, dict], texts: dict[str, str]) -> dict[str, float]:
     metrics = {}
     for name, keep in QUALITY_GROUPS.items():
@@ -96,7 +76,7 @@ def quality(manifest: dict[str, dict], texts: dict[str, str]) -> dict[str, float
             if keep(clip):
                 lang = "en" if clip["lang"] == "en" else "zh"
                 reference = tokens(clip["reference"], lang)
-                errors += edit_distance(reference, tokens(text, lang))
+                errors += Levenshtein.distance(reference, tokens(text, lang))
                 total += len(reference)
             else:
                 pass

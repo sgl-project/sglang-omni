@@ -1,0 +1,29 @@
+{"to":"helper","msg":{"id":"c1","method":"output.recover","params":{"journal":"/Users/me/Library/Caches/VoxtNew/output-mute"}}}
+{"to":"app","msg":{"id":"c1","result":{"restored":[{"id":52,"uid":"BuiltInSpeakerDevice","name":"MacBook Air Speakers"}]}}}
+{"to":"helper","msg":{"id":"c2","method":"output.recover","params":{"journal":"/Users/me/Library/Caches/VoxtNew/output-mute"}}}
+{"to":"app","msg":{"id":"c2","result":{}}}
+{"to":"helper","msg":{"id":"c3","method":"output.watch","params":{"on":true}}}
+{"to":"app","msg":{"id":"c3","result":{"device":{"id":52,"uid":"BuiltInSpeakerDevice","name":"MacBook Air Speakers"},"muted":false,"settable":true}}}
+{"to":"helper","msg":{"id":"c4","method":"output.mute","params":{"device":{"id":52,"uid":"BuiltInSpeakerDevice","name":"MacBook Air Speakers"},"journal":"/Users/me/Library/Caches/VoxtNew/output-mute"}}}
+{"to":"app","msg":{"method":"output.changed","params":{"device":{"id":52,"uid":"BuiltInSpeakerDevice","name":"MacBook Air Speakers"},"muted":true,"settable":true}}}
+{"to":"app","msg":{"id":"c4","result":{"took":true,"state":{"device":{"id":52,"uid":"BuiltInSpeakerDevice","name":"MacBook Air Speakers"},"muted":true,"settable":true}}}}
+{"to":"app","msg":{"method":"output.changed","params":{"device":{"id":91,"uid":"5C-52-30-AA-01-02:output","name":"AirPods Pro"},"muted":false,"settable":true}}}
+{"to":"helper","msg":{"id":"c5","method":"output.release","params":{"device":{"id":52,"uid":"BuiltInSpeakerDevice","name":"MacBook Air Speakers"},"unmute":true}}}
+{"to":"app","msg":{"id":"c5","result":{"unmuted":true}}}
+{"to":"helper","msg":{"id":"c6","method":"output.mute","params":{"device":{"id":91,"uid":"5C-52-30-AA-01-02:output","name":"AirPods Pro"},"journal":"/Users/me/Library/Caches/VoxtNew/output-mute"}}}
+{"to":"app","msg":{"id":"c6","result":{"took":true,"state":{"device":{"id":91,"uid":"5C-52-30-AA-01-02:output","name":"AirPods Pro"},"muted":true,"settable":true}}}}
+{"to":"app","msg":{"method":"output.changed","params":{"device":{"id":91,"uid":"5C-52-30-AA-01-02:output","name":"AirPods Pro"},"muted":false,"settable":true}}}
+{"to":"helper","msg":{"id":"c7","method":"output.release","params":{"device":{"id":91,"uid":"5C-52-30-AA-01-02:output","name":"AirPods Pro"}}}}
+{"to":"app","msg":{"id":"c7","result":{"unmuted":false}}}
+{"to":"helper","msg":{"id":"c8","method":"output.mute","params":{"device":{"id":52,"uid":"BuiltInSpeakerDevice"}}}}
+{"to":"app","msg":{"id":"c8","result":{"took":false,"state":{"device":{"id":52,"uid":"BuiltInSpeakerDevice","name":"MacBook Air Speakers"},"muted":true,"settable":true}}}}
+{"to":"helper","msg":{"id":"c9","method":"output.watch","params":{"on":false}}}
+{"to":"app","msg":{"id":"c9","result":{"device":{"id":61,"uid":"DisplayPortAudio:1","name":"LG UltraFine"},"settable":false}}}
+{"to":"helper","msg":{"id":"c10","method":"output.mute","params":{"device":{"id":61,"uid":"DisplayPortAudio:1","name":"LG UltraFine"}}}}
+{"to":"app","msg":{"id":"c10","error":{"code":"unsupported","message":"LG UltraFine has no mute the helper can set","data":{"capability":"mute"}}}}
+{"to":"helper","msg":{"id":"c11","method":"output.mute","params":{"device":{"id":91,"uid":"5C-52-30-AA-01-02:output"}}}}
+{"to":"app","msg":{"id":"c11","error":{"code":"device_unavailable","message":"No output device has the UID 5C-52-30-AA-01-02:output","data":{"device":"5C-52-30-AA-01-02:output"}}}}
+{"to":"helper","msg":{"id":"c12","method":"output.watch","params":{"on":false}}}
+{"to":"app","msg":{"id":"c12","result":{"settable":false}}}
+{"to":"app","msg":{"method":"output.released","params":{"devices":[{"id":52,"uid":"BuiltInSpeakerDevice","name":"MacBook Air Speakers"}],"reason":"sleep"}}}
+{"to":"app","msg":{"method":"output.released","params":{"reason":"sleep"}}}

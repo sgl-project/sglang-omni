@@ -102,6 +102,7 @@ def save_wer_results(
                 "audio_duration_s": round(o.audio_duration_s, 4),
                 "latency_s": round(o.latency_s, 4),
                 "is_success": o.is_success,
+                "is_transcribed": o.is_transcribed,
                 "error": o.error or None,
             }
             for o in outputs

@@ -1,0 +1,13 @@
+# profile: custom
+# layers: custom
+
+Write like  people do; no emoji.
+
+---- user ----
+<instruction>
+嗯帮我精简一下，不对，改得正式一点，整理成列表
+</instruction>
+
+<selected_text>
+大家好，aura link 0.1 基本做完了，文档好了，测试还在跑，周五发？
+</selected_text>

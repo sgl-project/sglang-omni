@@ -17,10 +17,8 @@ from transformers.utils import generic
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 STAGES_PATH = REPO_ROOT / "sglang_omni/models/qwen3_tts/stages.py"
-INSTALL_DOCS = (
-    REPO_ROOT / "docs/cookbook/qwen3_tts.md",
-    REPO_ROOT / "docs/basic_usage/tts.md",
-)
+# Note (zhaochenyang20): the cookbook is the only page with qwen-tts install commands; docs/basic_usage/tts.md defers to it.
+INSTALL_DOC = REPO_ROOT / "docs/cookbook/qwen3_tts.md"
 
 # Note (Akazaakane): loaded by path so the module under test never imports sglang.
 COMPAT_PATH = REPO_ROOT / "sglang_omni/models/qwen3_tts/compat.py"
@@ -198,21 +196,16 @@ def test_shim_is_a_no_op_when_transformers_already_accepts_input_embeds(
     assert masking_utils.create_causal_mask is already_compatible
 
 
-def test_documented_install_commands_agree_across_pages() -> None:
-    cookbook, basic_usage = (documented_install_commands(p) for p in INSTALL_DOCS)
-    assert cookbook == basic_usage
-
-
 def test_documented_install_commands_keep_no_deps() -> None:
     """Resolving sox or onnxruntime lifts numpy past the numba==0.65.1 ceiling,
     which breaks librosa and so `import qwen_tts`. Dropping --no-deps here has
     regressed twice."""
-    for command in documented_install_commands(INSTALL_DOCS[0]):
+    for command in documented_install_commands(INSTALL_DOC):
         assert "--no-deps" in command, command
         assert "onnxruntime" not in command, command
 
 
 def test_runtime_install_hint_matches_the_documented_commands() -> None:
     hint = runtime_install_hint()
-    for command in documented_install_commands(INSTALL_DOCS[0]):
+    for command in documented_install_commands(INSTALL_DOC):
         assert command in hint, f"{command!r} missing from _QWEN_TTS_INSTALL_HINT"
