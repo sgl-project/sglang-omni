@@ -59,6 +59,8 @@ def test_each_factory_gets_the_defaults_written_once() -> None:
         "max_concurrency": 8,
         "reference_encode_dtype": "bfloat16",
         "max_reference_audio_seconds": 60.0,
+        "reference_encode_max_batch_size": 8,
+        "reference_encode_max_batch_wait_ms": 2,
         "max_prompt_rows": 8192,
         "codec_path": DEFAULT_CODEC_PATH,
     }
@@ -106,6 +108,8 @@ def test_preprocessing_follows_the_engine_cap_and_the_vocoder_codec() -> None:
         "max_concurrency": 8,
         "reference_encode_dtype": "bfloat16",
         "max_reference_audio_seconds": 60.0,
+        "reference_encode_max_batch_size": 8,
+        "reference_encode_max_batch_wait_ms": 2,
         "max_prompt_rows": 4096,
         "codec_path": "local/codec.pth",
     }
