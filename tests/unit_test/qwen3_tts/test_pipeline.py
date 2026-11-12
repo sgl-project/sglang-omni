@@ -11841,7 +11841,8 @@ def test_real_base_whole_requests_on_reserved_slots_match_one_stateful_decode() 
         pass
     scheduler = qwen3_stages.create_vocoder_executor(
         checkpoint,
-        device="cuda:0",
+        device="cuda",
+        gpu_id=0,
         dtype="float32",
         codec_state_slots=2,
         followup_worker_count=1,
