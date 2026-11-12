@@ -374,6 +374,7 @@ def build_code2wav_stage(
         prompt_cache_capacity=factory.prompt_cache_capacity,
         decode_stream_priority=factory.decode_stream_priority,
         enable_flow_block_compile=factory.enable_flow_block_compile,
+        n_timesteps=factory.n_timesteps,
     )
 
 
@@ -792,6 +793,15 @@ def test_code2wav_executor_uses_the_stage_batch_window(
         float(factory.max_batch_wait_ms) / MILLISECONDS_PER_SECOND
     )
     assert scheduler.batch_wait_when_idle is factory.batch_wait_when_idle
+
+
+def test_code2wav_stage_decodes_five_flow_steps_by_default(
+    build_code2wav_model: Code2WavBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deployment without flow settings decodes with the full-duplex path's five steps."""
+    build_code2wav_stage(build_code2wav_model(), monkeypatch)
+
+    assert stages.MiniCPMOCode2Wav.call_args.kwargs["n_timesteps"] == 5
 
 
 def test_cuda_flow_blocks_compile_with_packed_precision(

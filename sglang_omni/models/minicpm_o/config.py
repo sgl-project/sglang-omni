@@ -128,6 +128,7 @@ class MiniCPMOCode2WavFactoryArgs(FactoryArgs):
     packed_dit_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] = (
         SEEDTTS_EN_DENSE_PACKED_DIT_CUDA_GRAPH_SHAPES
     )
+    n_timesteps: int = Field(default=5, ge=1)
 
 
 class MiniCPMOCode2WavStageConfig(StageConfig):
