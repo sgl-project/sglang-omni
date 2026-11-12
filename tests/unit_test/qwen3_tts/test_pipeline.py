@@ -11833,12 +11833,16 @@ def test_real_base_padded_decoder_graph_matches_padded_eager(
 @pytest.mark.benchmark
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_real_base_whole_requests_on_reserved_slots_match_one_stateful_decode() -> None:
+def test_real_base_whole_requests_on_reserved_slots_match_one_stateful_decode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     checkpoint = os.environ.get("QWEN3_TTS_BASE_1_7B_PATH")
     if checkpoint is None:
         pytest.skip("Set QWEN3_TTS_BASE_1_7B_PATH to run the real checkpoint gate")
     else:
         pass
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
     scheduler = qwen3_stages.create_vocoder_executor(
         checkpoint,
         device="cuda",
@@ -11854,7 +11858,7 @@ def test_real_base_whole_requests_on_reserved_slots_match_one_stateful_decode() 
     assert not scheduler.full_decode_graphs.graphs
     assert sorted(scheduler.idle_whole_request_slots) == [2, 3]
     generator = torch.Generator().manual_seed(42)
-    lengths = {"tail": (200, 150), "padded": (0, 37), "reused": (30, 100)}
+    lengths = {"tail": (700, 150), "padded": (0, 37), "reused": (30, 100)}
     codes = {
         name: torch.randint(
             scheduler.decoder.config.codebook_size,
@@ -11898,13 +11902,14 @@ def test_real_base_whole_requests_on_reserved_slots_match_one_stateful_decode() 
                 codes[name].T.unsqueeze(0).to("cuda:0"),
                 Qwen3TTSIncrementalCodecState(),
             )
-        actual = np.frombuffer(data["audio_waveform"], dtype=np.float32)
-        torch.testing.assert_close(
-            torch.from_numpy(actual.copy()),
-            expected.flatten()[reference * scheduler.samples_per_frame :].cpu(),
-            rtol=2e-4,
-            atol=2e-5,
+        expected = expected.flatten()[reference * scheduler.samples_per_frame :].cpu()
+        actual = torch.from_numpy(
+            np.frombuffer(data["audio_waveform"], dtype=np.float32).copy()
         )
+        assert actual.shape == expected.shape
+        assert torch.linalg.vector_norm(
+            actual - expected
+        ) < 1e-4 * torch.linalg.vector_norm(expected)
 
 
 @pytest.mark.parametrize("frame_lengths", [(1,), (3, 7), (8, 6), (4, 8, 5)])
