@@ -45,7 +45,6 @@ current_platform: LazyImport = LazyImport("sglang_omni.platforms", "current_plat
 DEVICE_DECODE_MAX_FRAMES_PER_BATCH = 32
 # note (Rahul): bounds one batch's full-size frames on the card, which may be a thinker card.
 DEVICE_DECODE_BATCH_BUDGET_BYTES = 1 << 30
-DECODED_FRAME_BYTES_PER_PIXEL = 3
 # note (Rahul): measured on Arc Pro B60, 720p to 4K: the RGB frames plus the bicubic resize's float32 buffers.
 RESIZED_DECODE_BYTES_PER_PIXEL = 29
 # note (Rahul): WORKAROUND(torchcodec-xpu) two device decoders in one process fail, so device decodes run one at a time.
@@ -564,13 +563,12 @@ def read_video_torchcodec(
     return frames, sample_fps
 
 
-def warn_device_decode_fallback(decode_device: str, error: Exception) -> None:
+def warn_device_decode_fallback(decode_device: str, device_failure: str) -> None:
     """Log the first device decode failure in this process; later videos fall back silently."""
     if not DEVICE_DECODE_FALLBACK_LOGGED.is_set():
         DEVICE_DECODE_FALLBACK_LOGGED.set()
         logger.warning(
-            f"Video decode on {decode_device} failed, decoding on the CPU: "
-            f"{type(error).__name__}: {error}"
+            f"Video decode on {decode_device} failed, decoding on the CPU: {device_failure}"
         )
     else:
         pass
@@ -704,12 +702,13 @@ def load_video_path(
     else:
         pass
     decode_device = current_platform.get_video_decode_device()
+    device_failure: str | None = None
     if decode_device is not None and VideoDecoder is not None:
         try:
             return decode_video_on_device(path, ele, decode_device)
         except (RuntimeError, ValueError) as device_exc:
             # note (Rahul): the CPU reader below decodes the same frames and classifies invalid media.
-            warn_device_decode_fallback(decode_device, device_exc)
+            device_failure = f"{type(device_exc).__name__}: {device_exc}"
         finally:
             # note (Rahul): the caching allocator would otherwise keep the decode's peak reserved on the card.
             current_platform.empty_cache()
@@ -765,6 +764,11 @@ def load_video_path(
         interpolation=InterpolationMode.BICUBIC,
         antialias=True,
     ).float()
+    if decode_device is not None and device_failure is not None:
+        # note (Rahul): logged only once the CPU path accepted the video, so a bad upload is not blamed on the card.
+        warn_device_decode_fallback(decode_device, device_failure)
+    else:
+        pass
     return video, sample_fps
 
 

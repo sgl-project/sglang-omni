@@ -123,7 +123,7 @@ export CPATH="$(python -c 'import sys; print(sys.prefix)')/include"
 
 ### Video input on the media engine
 
-Video inputs (Qwen3-Omni, Ming-Omni, and MiniCPM-o, including its timed video input) can decode on a card's media engine through the `torchcodec-xpu` plugin, which this install includes, so MiniCPM-o needs no decord here; if a hardware decode fails, MiniCPM-o falls back to decord, which this install does not include. Frames are sampled as on the CPU path and handed to the processor on the CPU, so model inputs do not change. Hardware decode cuts the CPU time of video preprocessing by about 30% for Qwen3-Omni.
+Video inputs (Qwen3-Omni, Ming-Omni, and MiniCPM-o, including its timed video input) can decode on a card's media engine through the `torchcodec-xpu` plugin, which this install includes, so MiniCPM-o needs no decord here; if a hardware decode fails, MiniCPM-o falls back to decord, which this install does not include. Frames are sampled as on the CPU path and handed to the processor on the CPU; their pixels match the CPU path within colour-conversion rounding (at most 3 of 255 levels), so answers at temperature 0 can differ slightly in wording. Hardware decode cuts the CPU time of video preprocessing by about 30% for Qwen3-Omni.
 
 Hardware decode is off by default. Set `SGLANG_OMNI_XPU_VIDEO_DECODE=xpu:N` to decode on card `N`, counted among the visible cards, or `1` to decode on the current card. Pick a card with about 2 GB of memory to spare, since decoded frames stay on the card until they are resized; with `--thinker.gpu "[0, 1, 2, 3]"` and the encoders on card 0, `xpu:3` is a good choice.
 

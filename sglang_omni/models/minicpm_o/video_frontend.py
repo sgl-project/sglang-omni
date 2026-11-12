@@ -27,7 +27,6 @@ from sglang_omni.preprocessing.resource_connector import (
     global_thread_pool,
 )
 from sglang_omni.preprocessing.video import (
-    DECODED_FRAME_BYTES_PER_PIXEL,
     DEVICE_DECODE_LOCK,
     VideoDecodeError,
     VideoDecoder,
@@ -46,6 +45,7 @@ except ImportError:
 current_platform: LazyImport = LazyImport("sglang_omni.platforms", "current_platform")
 
 MAX_VIDEO_FRAMES = 64
+DECODED_FRAME_BYTES_PER_PIXEL = 3
 AUDIO_SAMPLE_RATE = 16000
 MIN_TAIL_AUDIO_SAMPLES = 1600
 LONG_VIDEO_SAMPLE_INTERVAL_SECONDS = 0.1
@@ -224,10 +224,12 @@ class MiniCPMVideoIO(MediaIO[TimedVideo]):
                 elif VideoReader is None:
                     raise
                 else:
-                    # note (Rahul): decord samples the same timeline and reports invalid media itself.
-                    warn_device_decode_fallback(decode_device, device_exc)
+                    # note (Rahul): decord samples the same timeline and reports invalid media itself, so warn only once it decoded.
                     frames, timestamps_seconds, duration_seconds = (
                         self.read_frames_with_decord(video_path)
+                    )
+                    warn_device_decode_fallback(
+                        decode_device, f"{type(device_exc).__name__}: {device_exc}"
                     )
             finally:
                 # note (Rahul): the caching allocator would otherwise keep the decode's peak reserved on the card.

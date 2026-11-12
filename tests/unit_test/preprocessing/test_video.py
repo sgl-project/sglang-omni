@@ -635,6 +635,36 @@ def test_a_failed_device_decode_falls_back_to_the_cpu_reader_and_warns_once(
     assert len(warnings) == 1
 
 
+def test_a_rejected_upload_is_not_logged_as_a_device_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A truncated upload used to log the once-per-process device warning, so a later real device failure went unlogged."""
+    pytest.importorskip("torchcodec")
+    valid_path = tmp_path / "moving.mp4"
+    write_h264_video(valid_path)
+    truncated_path = tmp_path / "truncated.mp4"
+    truncated_path.write_bytes(valid_path.read_bytes()[:200])
+    decode_on(monkeypatch, "cpu")
+    monkeypatch.setattr(video, "DEVICE_DECODE_FALLBACK_LOGGED", threading.Event())
+    with pytest.raises(video.VideoDecodeError) as rejected:
+        video.load_video_path(truncated_path, fps=5.0, decode_threads=16)
+    assert is_bad_request_error(rejected.value)
+    assert not video.DEVICE_DECODE_FALLBACK_LOGGED.is_set()
+
+    cpu_decoder = video.VideoDecoder
+
+    def failing_on_the_device(source: str, device: str = "cpu", **options: object):
+        if device == "cpu":
+            return cpu_decoder(source, **options)
+        else:
+            raise RuntimeError("Failed to import fd=9")
+
+    decode_on(monkeypatch, "xpu")
+    monkeypatch.setattr(video, "VideoDecoder", failing_on_the_device)
+    video.load_video_path(valid_path, fps=5.0, decode_threads=16)
+    assert video.DEVICE_DECODE_FALLBACK_LOGGED.is_set()
+
+
 def test_a_4k_device_decode_keeps_each_batch_within_the_device_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
