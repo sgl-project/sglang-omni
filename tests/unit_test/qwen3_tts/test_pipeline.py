@@ -3818,7 +3818,7 @@ def whole_request_scheduler(
         monkeypatch, widths=(1, 2, 4), fail_on_call=fail_on_call
     )
     scheduler.decodes_whole_requests = True
-    scheduler.free_whole_request_slots = [
+    scheduler.idle_whole_request_slots = [
         scheduler.codec_arena.acquire() for _ in range(WHOLE_REQUEST_SLOTS)
     ]
     return scheduler, incremental, runner
@@ -3864,13 +3864,13 @@ def run_initial_worker_pass(scheduler: Qwen3TTSStreamingVocoderScheduler) -> Non
 def run_whole_requests(
     scheduler: Qwen3TTSStreamingVocoderScheduler,
 ) -> dict[str, OutgoingMessage]:
-    while not scheduler.initial_queue.empty() or scheduler.whole_request_rows:
+    while not scheduler.initial_queue.empty() or scheduler.whole_requests:
         run_initial_worker_pass(scheduler)
     messages = {}
     while not scheduler.outbox.empty():
         message = scheduler.outbox.get_nowait()
         messages[message.request_id] = message
-    assert len(scheduler.free_whole_request_slots) == WHOLE_REQUEST_SLOTS
+    assert len(scheduler.idle_whole_request_slots) == WHOLE_REQUEST_SLOTS
     return messages
 
 
@@ -4050,18 +4050,18 @@ def test_qwen3_tts_whole_requests_past_their_slots_wait_for_a_row_to_finish(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scheduler, _, runner = whole_request_scheduler(monkeypatch)
-    held_slots = scheduler.free_whole_request_slots[1:]
-    scheduler.free_whole_request_slots = scheduler.free_whole_request_slots[:1]
+    held_slots = scheduler.idle_whole_request_slots[1:]
+    scheduler.idle_whole_request_slots = scheduler.idle_whole_request_slots[:1]
     messages = [whole_request_message("long", 8), whole_request_message("next", 8)]
 
     scheduler.run_non_streaming_batch(messages, asyncio.new_event_loop())
     run_initial_worker_pass(scheduler)
 
     assert [call[0][0] for call in runner.calls] == [1]
-    assert not scheduler.free_whole_request_slots
-    while scheduler.whole_request_rows:
+    assert not scheduler.idle_whole_request_slots
+    while scheduler.whole_requests:
         run_initial_worker_pass(scheduler)
-    scheduler.free_whole_request_slots.extend(held_slots)
+    scheduler.idle_whole_request_slots.extend(held_slots)
     results = run_whole_requests(scheduler)
     assert [call[0][0] for call in runner.calls] == [1, 1, 1, 1]
     assert chunk_samples(results["next"].data) == expected_whole_samples(scheduler, 8)
@@ -4318,7 +4318,7 @@ def test_qwen3_tts_whole_request_aborted_between_replays_frees_its_slot(
 
     scheduler.run_non_streaming_batch([message], asyncio.new_event_loop())
     run_initial_worker_pass(scheduler)
-    assert len(scheduler.free_whole_request_slots) == WHOLE_REQUEST_SLOTS - 1
+    assert len(scheduler.idle_whole_request_slots) == WHOLE_REQUEST_SLOTS - 1
     scheduler.abort("whole")
 
     assert run_whole_requests(scheduler) == {}

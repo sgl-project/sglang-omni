@@ -87,7 +87,7 @@ class Qwen3TTSCodecStateArena:
         self.dtype = dtype
         self._num_slots = int(num_slots)  # noqa: leading-underscore
         self.scratch_slot = int(num_slots) + int(reserved_slots)
-        self.reserved_slots = range(int(num_slots), self.scratch_slot)
+        self.reserved_slots: range = range(int(num_slots), self.scratch_slot)
         spec = decoder.state_spec()
         if decoder.fused_transformer is not None and in_place_frames > 0:
             self.ring_frames = spec.retained_context + int(in_place_frames)
