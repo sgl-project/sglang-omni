@@ -12,12 +12,12 @@ from sglang_omni.models.moss_tts.audio_tokenizer import MossAudioEncoder
 from sglang_omni.models.moss_tts.vocoder import autocast_if_supported
 
 
-def test_reference_audio_uses_shared_audio_loader(monkeypatch) -> None:
+def test_musa_audio_adaptations(monkeypatch) -> None:
     waveform = torch.zeros(1, 8)
-    calls = []
+    loader_calls = []
 
     def fake_load(path: str, *, source_name: str):
-        calls.append((path, source_name))
+        loader_calls.append((path, source_name))
         return waveform, 16_000
 
     monkeypatch.setattr(
@@ -29,18 +29,14 @@ def test_reference_audio_uses_shared_audio_loader(monkeypatch) -> None:
 
     loaded = encoder.load_paths(["reference.wav"])
 
-    assert calls == [("reference.wav", "reference")]
-    assert len(loaded) == 1
-    assert loaded[0][0] is waveform
-    assert loaded[0][1] == 16_000
+    assert loader_calls == [("reference.wav", "reference")]
+    assert loaded == [(waveform, 16_000)]
 
-
-def test_autocast_if_supported_enables_musa_bf16(monkeypatch) -> None:
-    calls = []
+    autocast_calls = []
 
     @contextmanager
     def fake_autocast(*, device_type: str, dtype: torch.dtype):
-        calls.append((device_type, dtype))
+        autocast_calls.append((device_type, dtype))
         yield
 
     monkeypatch.setattr(vocoder_module.torch, "autocast", fake_autocast)
@@ -50,4 +46,4 @@ def test_autocast_if_supported_enables_musa_bf16(monkeypatch) -> None:
     with autocast_if_supported(SimpleNamespace(type="musa"), torch.float32):
         pass
 
-    assert calls == [("musa", torch.bfloat16)]
+    assert autocast_calls == [("musa", torch.bfloat16)]
