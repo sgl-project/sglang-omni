@@ -21,7 +21,7 @@ class Yue2AcousticFactoryArgs(FactoryArgs):
     fuse_projections: bool = False
     fused_kernels: bool = False
     vae_path: str = "m-a-p/YuE2-Vae"
-    vae_core_frames: int = Field(default=1024, gt=0)
+    vae_core_frames: int = Field(default=512, gt=0)
     vae_halo_frames: int = Field(default=16, ge=0)
 
 

@@ -109,6 +109,7 @@ class Yue2Runtime:
         load_weights(vae, vae_directory, skipped_prefix="encoder.")
         model.to(device=device, dtype=torch.bfloat16).eval().requires_grad_(False)
         vae.to(device=device, dtype=torch.float32).eval().requires_grad_(False)
+        torch.cuda.empty_cache()
         return cls(
             model,
             vae,
@@ -138,11 +139,14 @@ class Yue2Runtime:
             cancelled,
             cuda_graph=self.nar_cuda_graph,
         )
+        # note (ruiling): flow matching and decoding cache blocks the other cannot reuse.
+        torch.cuda.empty_cache()
         audio = self.vae.decode_tiled(
             latents.T[None],
             self.vae_core_frames,
             self.vae_halo_frames,
             cancelled,
         )[0]
+        torch.cuda.empty_cache()
         check_cancelled(cancelled)
         return audio
