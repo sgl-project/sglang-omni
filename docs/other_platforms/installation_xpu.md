@@ -557,7 +557,9 @@ curl -s -X POST http://localhost:8000/v1/audio/speech \
 ```
 
 Reference audio is optional and needs no transcript; add `references` as in
-[Zonos2](#zonos2-moe-tts-single-xpu) to clone a voice.
+[Zonos2](#zonos2-moe-tts-single-xpu) to clone a voice. The codec's trunk graphs
+are captured before serving, which adds about 20 s to startup on one Arc Pro B60
+and is applied automatically.
 
 **Expected result:** Play `out.wav` to hear the generated 44.1 kHz mono audio.
 

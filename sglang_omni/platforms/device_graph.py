@@ -65,8 +65,13 @@ class DeviceGraphBackend(Protocol):
         pool: DeviceGraphPool | None = None,
         stream: torch.Stream | None = None,
         thread_local_errors: bool = False,
+        reclaim_memory: bool = True,
     ) -> AbstractContextManager[ReplayableGraph]:
-        """Open a capture and yield the graph it records into."""
+        """Open a capture and yield the graph it records into.
+
+        reclaim_memory=False opens the capture directly, for a caller that
+        cannot afford the capture context's device and pinned host cache flush.
+        """
         ...
 
     def graph_pool_handle(self) -> DeviceGraphPool:
@@ -87,6 +92,7 @@ class CudaDeviceGraphBackend:
         pool: CudaGraphPoolHandle | None = None,
         stream: torch.cuda.Stream | None = None,
         thread_local_errors: bool = False,
+        reclaim_memory: bool = True,
     ) -> Iterator[torch.cuda.CUDAGraph]:
         graph = torch.cuda.CUDAGraph()
         kwargs: CudaCaptureKwargs = {}
@@ -102,8 +108,23 @@ class CudaDeviceGraphBackend:
             kwargs["capture_error_mode"] = "thread_local"
         else:
             pass
-        with torch.cuda.graph(cuda_graph=graph, **kwargs):
-            yield graph
+        if reclaim_memory:
+            with torch.cuda.graph(cuda_graph=graph, **kwargs):
+                yield graph
+        else:
+            begin_kwargs = {
+                key: value for key, value in kwargs.items() if key != "stream"
+            }
+            with ExitStack() as stack:
+                if stream is not None:
+                    stack.enter_context(torch.cuda.stream(stream))
+                else:
+                    pass
+                graph.capture_begin(**begin_kwargs)
+                try:
+                    yield graph
+                finally:
+                    graph.capture_end()
 
 
 class NpuDeviceGraphBackend:
@@ -119,7 +140,11 @@ class NpuDeviceGraphBackend:
         pool: tuple[int, int] | None = None,
         stream: torch.Stream | None = None,
         thread_local_errors: bool = False,
+        reclaim_memory: bool = True,
     ) -> Iterator[ReplayableGraph]:
+        # The NPU capture context also sets the internal-format option, so a
+        # direct capture_begin would drop that; it reclaims on every capture.
+        del reclaim_memory
         graph = torch.npu.NPUGraph()
         kwargs: NpuCaptureKwargs = {}
         if pool is not None:
@@ -163,6 +188,7 @@ class XpuDeviceGraphBackend:
         pool: XpuGraphPoolHandle | None = None,
         stream: torch.xpu.Stream | None = None,
         thread_local_errors: bool = False,
+        reclaim_memory: bool = True,
     ) -> Iterator[torch.xpu.XPUGraph]:
         # Note (siju): XPU's graph context declares no capture_error_mode and
         # rejects it as a TypeError, so the request is dropped, not translated.
@@ -175,6 +201,20 @@ class XpuDeviceGraphBackend:
             pass
         if stream is not None:
             kwargs["stream"] = stream
+        else:
+            pass
+        if not reclaim_memory:
+            with ExitStack() as stack:
+                if stream is not None:
+                    stack.enter_context(torch.xpu.stream(stream))
+                else:
+                    pass
+                graph.capture_begin(*(() if pool is None else (pool,)))
+                try:
+                    yield graph
+                finally:
+                    graph.capture_end()
+            return
         else:
             pass
         capture = torch.xpu.graph(xpu_graph=graph, **kwargs)

@@ -31,6 +31,11 @@ from sglang_omni.models.zonos3.components.codec_transformer import (
 )
 from sglang_omni.models.zonos3.components.istft_head import ISTFT_HOP_SAMPLES, IstftHead
 from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.device_graph import (
+    DeviceGraphBackend,
+    DeviceGraphPool,
+    ReplayableGraph,
+)
 
 SAMPLE_RATE_HZ = 44100
 CODEBOOK_COUNT = 10
@@ -163,7 +168,7 @@ class SemanticResidualQuantizer(nn.Module):
 class CodecDecodeGraph:
     """A captured decoder trunk: replay reads codes and writes hidden_states in place."""
 
-    graph: torch.cuda.CUDAGraph
+    graph: ReplayableGraph
     codes: torch.Tensor
     hidden_states: torch.Tensor
 
@@ -186,9 +191,12 @@ class Zonos3CodecDecoder(nn.Module):
         # Graphs and once-eager shapes are keyed by (batch size, trunk frame count).
         self.decode_graphs: dict[tuple[int, int], CodecDecodeGraph] = {}
         self.eager_shapes: set[tuple[int, int]] = set()
-        self.graph_pool: tuple[int, int] | None = None
-        self.graph_stream: torch.cuda.Stream | None = None
+        self.graph_pool: DeviceGraphPool | None = None
+        self.graph_stream: torch.Stream | None = None
         self.uses_fused_trunk: bool = False
+        # The backend that records this decoder's trunk graphs, or None for a
+        # device whose platform records none; set when the weights land.
+        self.graph_backend: DeviceGraphBackend | None = None
 
     @classmethod
     def from_model_directory(
@@ -233,6 +241,9 @@ class Zonos3CodecDecoder(nn.Module):
             )
         else:
             pass
+        decoder.graph_backend = current_platform.get_device_graph_backend(
+            decoder.to_external_kernel.device
+        )
         return decoder
 
     def decode_trunk(self, codes: torch.Tensor) -> torch.Tensor:
@@ -267,27 +278,29 @@ class Zonos3CodecDecoder(nn.Module):
 
     def capture_trunk_graph(self, codes: torch.Tensor) -> CodecDecodeGraph:
         """Capture the trunk at the padded (batch, 10, trunk frames) codes' shape on the private capture stream and keep it."""
-        current_stream = torch.cuda.current_stream(codes.device)
+        assert self.graph_backend is not None
+        device_module = torch.get_device_module(codes.device)
+        current_stream = device_module.current_stream(codes.device)
         if self.graph_stream is None:
-            self.graph_stream = torch.cuda.Stream(device=codes.device)
-            self.graph_pool = torch.cuda.graph_pool_handle()
+            self.graph_stream = device_module.Stream(device=codes.device)
+            self.graph_pool = self.graph_backend.graph_pool_handle()
             # note (zhaochenyang20): Warm the private capture stream once; the trunk's kernels need no per-shape eager pass before capture, and graph replays matched eager decodes bit for bit at every batch size 1-4 and length 8-256 on one H100.
             self.graph_stream.wait_stream(current_stream)
-            with torch.cuda.stream(self.graph_stream):
+            with device_module.stream(self.graph_stream):
                 self.decode_trunk(codes)
             current_stream.wait_stream(self.graph_stream)
         else:
             pass
         static_codes = codes.clone()
         self.graph_stream.wait_stream(current_stream)
-        graph = torch.cuda.CUDAGraph()
         # note (zhaochenyang20): torch.cuda.graph empties the device and pinned host caches on entry; capturing while serving made the engine re-pin its batch uploads through cudaHostAlloc, which waits 13-30 ms behind other threads' blocking copies.
-        with torch.cuda.stream(self.graph_stream):
-            graph.capture_begin(pool=self.graph_pool, capture_error_mode="thread_local")
-            try:
-                hidden_states = self.decode_trunk(static_codes)
-            finally:
-                graph.capture_end()
+        with self.graph_backend.capture(
+            pool=self.graph_pool,
+            stream=self.graph_stream,
+            thread_local_errors=True,
+            reclaim_memory=False,
+        ) as graph:
+            hidden_states = self.decode_trunk(static_codes)
         decode_graph = CodecDecodeGraph(
             graph=graph, codes=static_codes, hidden_states=hidden_states
         )
@@ -323,13 +336,13 @@ class Zonos3CodecDecoder(nn.Module):
             self.synthesize(
                 hidden_states[..., : frame_count * HEAD_FRAMES_PER_CODE_FRAME]
             )
-        torch.cuda.synchronize(device)
+        torch.get_device_module(device).synchronize(device)
 
     @torch.inference_mode()
     def decode_hidden_states(self, codes: torch.Tensor) -> torch.Tensor:
         """Map (batch, 10, frames) codes to (batch, head width, frames * 16) trunk states.
 
-        A CUDA trunk shape not captured by capture_decode_graphs is captured as a graph on its second decode, so one-off shapes stay eager; replayed states stay valid until the next decode.
+        A trunk shape not captured by capture_decode_graphs is captured as a graph on its second decode, so one-off shapes stay eager; replayed states stay valid until the next decode.
         """
         assert codes.dim() == 3 and codes.shape[1] == CODEBOOK_COUNT, codes.shape
         codes = codes.to(self.to_external_kernel.device)
@@ -341,7 +354,8 @@ class Zonos3CodecDecoder(nn.Module):
         codes = F.pad(codes, (0, trunk_frame_count - frame_count))
         trunk_shape = (batch_size, trunk_frame_count)
         is_graph_shape = (
-            codes.is_cuda and 0 < trunk_frame_count <= MAX_DECODER_GRAPH_FRAMES
+            self.graph_backend is not None
+            and 0 < trunk_frame_count <= MAX_DECODER_GRAPH_FRAMES
         )
         decode_graph = self.decode_graphs.get(trunk_shape) if is_graph_shape else None
         if (
