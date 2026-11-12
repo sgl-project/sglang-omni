@@ -568,7 +568,7 @@ def collect_gpu_diagnostics(
         accelerator_build = torch_version.hip
     elif current_platform.is_musa():
         accelerator_build = torch_version.musa
-    elif current_platform.is_cuda():
+    elif build_device_type == "cuda":
         accelerator_build = torch_version.cuda
     else:
         accelerator_build = None

@@ -497,6 +497,11 @@ def test_a_platform_without_a_device_module_keeps_the_nvml_report(
     assert report["gpus"] == []
     assert report["environment"]["driver_version"] == "610.43.02"
     assert report["environment"]["visible_devices_variable"] == "CUDA_VISIBLE_DEVICES"
+    assert report["environment"]["pytorch_accelerator_build"] == "13.0"
+    assert report["environment"]["pytorch_cuda_build"] == "13.0"
+    assert "PyTorch/CUDA build: 2.11.0+cu130 / 13.0" in (
+        gpu_diagnostics.render_gpu_diagnostics(report)
+    )
     assert fake_nvml.shutdown_called is True
     assert "No GPUs are visible to PyTorch." in (
         gpu_diagnostics.render_gpu_diagnostics(report)
