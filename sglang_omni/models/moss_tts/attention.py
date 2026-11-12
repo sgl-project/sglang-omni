@@ -48,6 +48,14 @@ _SUPPORTED_ATTENTION_BACKENDS: frozenset[str] = frozenset(
 )
 
 
+def is_npu_graph_capture(device: torch.device) -> bool:
+    return (
+        current_platform.is_npu()
+        and device.type == current_platform.device_type
+        and torch.get_device_module(device).is_current_stream_capturing()
+    )
+
+
 def validate_attention_backend(attention_backend: str) -> str:
     if attention_backend not in _SUPPORTED_ATTENTION_BACKENDS:
         raise ValueError(
@@ -731,7 +739,7 @@ def apply_cached_streaming_rope(
     # note (Zhang Yiyang): Use the decoder stage's 30-minute position budget
     # so the RoPE table keeps a fixed address throughout graph replay.
     max_positions = cache.streaming_max_positions
-    if offset.device.type != "cuda":
+    if offset.device.type != "cuda" and not is_npu_graph_capture(offset.device):
         max_offset = int(offset.max().item())
         if max_offset + sequence_length > max_positions:
             raise ValueError(

@@ -31,6 +31,7 @@ from sglang_omni.models.moss_tts.attention import (
     MossPackedRopeCache,
     PositionIdsCache,
     StreamingExecutionContext,
+    is_npu_graph_capture,
     merge_attention_backend_resolutions,
     pack_padded_sequence,
     pack_padded_sequence_from_host_lengths,
@@ -2262,7 +2263,7 @@ class MossAudioTokenizerVocoder(MossAudioTokenizerStreamingModule):
         # note (Zhang Yiyang): Scheduler and graph inputs are trusted device
         # tensors. CPU value checks also cover direct callers without adding
         # GPU synchronization.
-        if device.type != "cuda":
+        if device.type != "cuda" and not is_npu_graph_capture(device):
             if bool(torch.any(state_slot_ids < 0)) or bool(
                 torch.any(state_slot_ids >= self.decoder_state_capacity)
             ):

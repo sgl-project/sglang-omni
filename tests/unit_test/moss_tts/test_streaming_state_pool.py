@@ -127,7 +127,13 @@ def test_native_decoder_rejects_padded_or_aliased_rows(slots, lengths, valid, er
         model.close_decoder_state_pool()
 
 
-def test_repository_codec_native_pool_keeps_compact_slots_isolated() -> None:
+@pytest.mark.parametrize("device_type", ["cpu", "npu"])
+def test_repository_codec_native_pool_keeps_compact_slots_isolated(
+    device_type: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CPU codecs must remain usable when the selected platform is NPU."""
+    monkeypatch.setattr(current_platform, "is_npu", lambda: device_type == "npu")
+    monkeypatch.setattr(current_platform, "device_type", device_type)
     from sglang_omni.models.moss_tts.codec_session import CodecStreamSession
 
     session = CodecStreamSession(tiny_repository_vocoder(), stream_slots=4, n_vq=1)
