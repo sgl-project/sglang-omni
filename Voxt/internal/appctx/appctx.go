@@ -42,6 +42,29 @@ const (
 	Rewrite    = "rewrite"
 )
 
+// Cleanup controls a group's Transcribe clean-up. The zero value follows
+// the global Transcribe setting, including documents written before it existed.
+type Cleanup string
+
+const (
+	CleanupDefault Cleanup = ""
+	CleanupOn      Cleanup = "on"
+	CleanupOff     Cleanup = "off"
+)
+
+// Enabled resolves the override against the global Transcribe setting.
+// Unknown values also follow the default.
+func (c Cleanup) Enabled(global bool) bool {
+	switch c {
+	case CleanupOn:
+		return true
+	case CleanupOff:
+		return false
+	default:
+		return global
+	}
+}
+
 // Rules is the document: the groups, in the user's order.
 type Rules struct {
 	Version int     `json:"version"`
@@ -65,6 +88,8 @@ type Group struct {
 	AutoKey string `json:"autoKey,omitempty"`
 	// Features are the features it applies to.
 	Features Features `json:"features"`
+	// TranscribeCleanup overrides only Transcribe's language-model clean-up.
+	TranscribeCleanup Cleanup `json:"transcribeCleanup,omitempty"`
 }
 
 // App is a member app: its bundle id, and its name as it was added.
@@ -144,6 +169,9 @@ func (r Rules) Normalized() Rules {
 func (g Group) Normalized() Group {
 	g.Name = strings.TrimSpace(g.Name)
 	g.AutoKey = strings.TrimSpace(g.AutoKey)
+	if g.TranscribeCleanup != CleanupOn && g.TranscribeCleanup != CleanupOff {
+		g.TranscribeCleanup = CleanupDefault
+	}
 	var apps []App
 	for _, a := range g.Apps {
 		a.BundleID = strings.TrimSpace(a.BundleID)

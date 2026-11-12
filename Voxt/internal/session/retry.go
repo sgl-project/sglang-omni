@@ -94,8 +94,9 @@ func (m *Manager) Retry(ctx context.Context, req RetryRequest) (store.Entry, err
 	return out, err
 }
 
-// retryScene decides a retry's app enhancement group from what its entry
-// recorded: the app, and the host of a browser's tab.
+// retryScene matches the recorded app and browser host. History keeps no
+// URL path, so Transcribe retains a recorded URL group when losing it would
+// change its current clean-up choice. Other features keep host/app matching.
 func (r *run) retryScene(e store.Entry) {
 	r.sc.done = make(chan struct{})
 	app := proto.App{BundleID: e.AppBundle, Name: e.AppName}
@@ -115,14 +116,26 @@ func (r *run) retryScene(e store.Entry) {
 	if e.URLHost != "" {
 		in.Browser, in.URL = true, "https://"+e.URLHost
 	}
-	r.setScene(appctx.Resolve(rules, in, string(e.Kind)), false)
+	match := appctx.Resolve(rules, in, string(e.Kind))
+	if e.Kind == store.KindTranscribe && !r.req.Note && !r.req.Try && e.RuleSource == string(appctx.SourceURL) {
+		global := r.settings.Features.Transcribe.Enhance
+		cleanup := global
+		if match.Matched() {
+			cleanup = match.Group.TranscribeCleanup.Enabled(global)
+		}
+		// Keep the existing scene/prompt match when the clean-up choices agree.
+		if g, ok := rules.Group(e.RuleID); ok && g.Enabled && g.Features.Has(string(e.Kind)) && g.TranscribeCleanup.Enabled(global) != cleanup {
+			match = appctx.Match{Source: appctx.SourceURL, Group: &g, App: app, Host: e.URLHost}
+		}
+	}
+	r.setScene(match, false)
 }
 
 // retry is Retry's work: e with its new texts, models and times, or the
 // first error (e as far as it got).
 func (r *run) retry(e store.Entry, pcm []byte, stage func(State)) (store.Entry, error) {
 	cfg := r.m.cfg
-	svc, err := cfg.Resolve(r.ctx, e.Kind, r.settings)
+	svc, err := r.resolveServices()
 	if err != nil {
 		return e, err
 	}
@@ -172,7 +185,7 @@ func (r *run) retry(e store.Entry, pcm []byte, stage func(State)) (store.Entry, 
 		e.RawText = raw
 	}
 	e.Result = text
-	if e.Kind == store.KindTranscribe && (!r.settings.Features.Transcribe.Enhance || svc.LLM == nil) {
+	if e.Kind == store.KindTranscribe && (!r.transcribeCleanup() || svc.LLM == nil) {
 		return e, nil
 	}
 	stage(Composing)

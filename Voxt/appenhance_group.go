@@ -80,6 +80,23 @@ func (a *app) aeDetail(c *ui.Context, g appctx.Group) {
 				})
 			}
 		})
+		if g.Features.Transcribe {
+			settingRow(c, "ae-cleanup", i18n.T("Transcribe clean-up"),
+				i18n.T("Use default follows the global Transcribe clean-up setting. Off skips the language model."), func() {
+					choices := []string{i18n.X("clean-up override", "Use default"), i18n.T("On"), i18n.T("Off")}
+					values := []appctx.Cleanup{appctx.CleanupDefault, appctx.CleanupOn, appctx.CleanupOff}
+					selected := choices[0]
+					for i, value := range values {
+						if g.TranscribeCleanup == value {
+							selected = choices[i]
+						}
+					}
+					if ui.Select(c.Key("ae-cleanup-sel"), &selected, choices).Label(i18n.T("Transcribe clean-up")).Width(px(t, 180)).Changed() {
+						value := values[slices.Index(choices, selected)]
+						a.updateGroup(g.ID, func(g *appctx.Group) { g.TranscribeCleanup = value })
+					}
+				})
+		}
 	})
 	a.aeScene(c, g)
 	a.aeApps(c, g)

@@ -34,7 +34,7 @@ func (r *run) spoken(raw string) string {
 func (r *run) transcribe(text string) {
 	result := text
 	var problem *Problem
-	if f := r.settings.Features.Transcribe; f.Enhance && r.svc.LLM != nil {
+	if r.transcribeCleanup() && r.svc.LLM != nil {
 		r.m.update(r, func(s *Snapshot) { s.State, s.CanSkip = Composing, true })
 		llmStart := r.now()
 		cleaned, profile, err := r.cleanUp(text)
