@@ -31,14 +31,6 @@ class WindowBatchDecoder(Protocol):
         the first discard_frames frames' audio may be left unset."""
 
 
-class SuffixDecoder(Protocol):
-    def __call__(
-        self, indices: torch.Tensor, *, discard_frames: int = 0
-    ) -> torch.Tensor:
-        """[1, 1, samples] audio of a [1, num_codebooks, frames] window; the first
-        discard_frames frames' audio may be zero."""
-
-
 GraphKey = tuple[int, int, int]
 
 

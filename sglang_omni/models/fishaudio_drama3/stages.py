@@ -352,11 +352,9 @@ def create_vocoder_executor(
         )
         decode_window: WindowDecoder = window_graph_decoder
         window_batch_decoder: WindowGraphDecoder | None = window_graph_decoder
-        suffix_decoder = window_graph_decoder if skips_discarded_frames else None
     else:
         decode_window = decode
         window_batch_decoder = None
-        suffix_decoder = None
     if torch_device.type == "cpu":
         max_padded_frames_per_decode = None
     else:
@@ -387,5 +385,4 @@ def create_vocoder_executor(
         decode_window=decode_window,
         max_padded_frames_per_decode=max_padded_frames_per_decode,
         window_batch_decoder=window_batch_decoder,
-        suffix_decoder=suffix_decoder,
     )

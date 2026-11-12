@@ -39,7 +39,6 @@ from sglang_omni.models.fishaudio_drama3.stream_windows import (
 )
 from sglang_omni.models.fishaudio_drama3.vocoder import Drama3VocoderScheduler
 from sglang_omni.models.fishaudio_drama3.window_graphs import (
-    SuffixDecoder,
     WindowBatchDecoder,
     WindowGraphDecoder,
     window_graph_keys,
@@ -120,7 +119,6 @@ def vocoder_with(
     factory_args: Drama3VocoderFactoryArgs | None = None,
     max_padded_frames_per_decode: int | None = None,
     window_batch_decoder: WindowBatchDecoder | None = None,
-    suffix_decoder: SuffixDecoder | None = None,
 ) -> Drama3VocoderScheduler:
     """The vocoder with the configured windows."""
     window_kwargs = (factory_args or Drama3VocoderFactoryArgs()).model_dump(
@@ -140,7 +138,6 @@ def vocoder_with(
         decode_window=decode_window,
         max_padded_frames_per_decode=max_padded_frames_per_decode,
         window_batch_decoder=window_batch_decoder,
-        suffix_decoder=suffix_decoder,
         **window_kwargs,
     )
 
@@ -482,10 +479,7 @@ def test_the_stream_never_reads_the_frames_a_window_skips(
         stream_crossfade_samples=stream_crossfade_samples
     )
     vocoder = vocoder_with(
-        codec,
-        factory_args=factory_args,
-        window_batch_decoder=decoder,
-        suffix_decoder=decoder,
+        codec, factory_args=factory_args, window_batch_decoder=decoder
     )
     stream_frame_by_frame(vocoder, 214)
 

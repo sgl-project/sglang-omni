@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import functools
 import logging
 from dataclasses import dataclass
 
@@ -14,10 +13,7 @@ from sglang_omni.models.fishaudio_drama3.stream_windows import (
     crossfade_frames,
     discarded_frames,
 )
-from sglang_omni.models.fishaudio_drama3.window_graphs import (
-    SuffixDecoder,
-    WindowBatchDecoder,
-)
+from sglang_omni.models.fishaudio_drama3.window_graphs import WindowBatchDecoder
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.dac.modded_dac import DAC
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto.request import StagePayload
@@ -114,7 +110,6 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
         decode_window: WindowDecoder | None = None,
         max_padded_frames_per_decode: int | None = None,
         window_batch_decoder: WindowBatchDecoder | None = None,
-        suffix_decoder: SuffixDecoder | None = None,
     ) -> None:
         if not all(stride > 0 for stride in stream_followup_stride_ramp):
             raise ValueError(
@@ -138,7 +133,6 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
         self.stream_window_counts: dict[str, int] = {}
         self.max_padded_frames_per_decode = max_padded_frames_per_decode
         self.window_batch_decoder = window_batch_decoder
-        self.suffix_decoder = suffix_decoder
         self.crossfade_frames = crossfade_frames(
             stream_crossfade_samples, int(codec.frame_length)
         )
@@ -171,11 +165,18 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
     def flush_decode_window(
         self, stream_state: StreamVocoderState
     ) -> WindowDecoder | None:
-        if self.suffix_decoder is None:
+        window_batch_decoder = self.window_batch_decoder
+        if window_batch_decoder is None:
             return self.decode_window
         else:
             _, discard_frames = self.window_start_and_discard(stream_state)
-            return functools.partial(self.suffix_decoder, discard_frames=discard_frames)
+
+            def decode(indices: torch.Tensor) -> torch.Tensor:
+                return window_batch_decoder.decode_windows(
+                    [indices[0]], discard_frames=discard_frames
+                )[0]
+
+            return decode
 
     def window_start_and_discard(
         self, stream_state: StreamVocoderState
