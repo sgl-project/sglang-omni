@@ -36,7 +36,11 @@ from tests.unit_test.fishaudio_drama3.test_speech_request import (
     refused,
     toy_config,
 )
-from tests.unit_test.fishaudio_drama3.test_vocoder import FrameNumberCodec
+from tests.unit_test.fishaudio_drama3.test_vocoder import (
+    FrameNumberCodec,
+    ZeroingSuffixDecoder,
+    stream_frame_by_frame,
+)
 
 COMMIT = "1de9996b6be38b745688de084d87a5633f714e4e"
 
@@ -441,6 +445,46 @@ def test_window_cuda_graphs_on_a_cpu_device_are_refused(
                 update={"decode_dtype": "float32"}
             )
         )
+
+
+class ChannelsLastStandIn:
+    """Stands in for ChannelsLastDecoder, which needs Triton and the real codec."""
+
+    def __init__(self, codec: FrameNumberCodec, *, dtype: torch.dtype) -> None:
+        self.codec = codec
+
+
+def test_stream_windows_skip_their_discarded_frames_at_window_batch_size_one(
+    codec_loads: CodecLoads, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """With stream_window_batch_size 1 every window but a stream's last decoded
+    whole, discarded frames included."""
+    codec_file = tmp_path / "codec.pth"
+    codec_file.write_bytes(b"")
+    decoder = ZeroingSuffixDecoder(FrameNumberCodec())
+    monkeypatch.setattr(stages, "ChannelsLastDecoder", ChannelsLastStandIn)
+    monkeypatch.setattr(
+        stages, "WindowGraphDecoder", lambda decode, **graph_shapes: decoder
+    )
+
+    stream_frame_by_frame(
+        cpu_vocoder(
+            Drama3VocoderFactoryArgs(
+                codec_path=str(codec_file), stream_window_batch_size=1
+            )
+        ),
+        214,
+    )
+
+    assert decoder.shapes == [
+        (4, 0),
+        (14, 4),
+        (26, 14),
+        (58, 26),
+        (96, 32),
+        (96, 32),
+        (60, 32),
+    ]
 
 
 def bytes_per_frame_decoder(bytes_per_frame: int) -> WindowDecoder:

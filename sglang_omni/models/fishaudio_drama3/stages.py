@@ -351,9 +351,7 @@ def create_vocoder_executor(
             ),
         )
         decode_window: WindowDecoder = window_graph_decoder
-        window_batch_decoder = (
-            window_graph_decoder if stream_window_batch_size > 1 else None
-        )
+        window_batch_decoder: WindowGraphDecoder | None = window_graph_decoder
         suffix_decoder = window_graph_decoder if skips_discarded_frames else None
     else:
         decode_window = decode

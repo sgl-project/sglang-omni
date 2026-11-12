@@ -174,6 +174,21 @@ def chunk_message(
     )
 
 
+def stream_frame_by_frame(vocoder: Drama3VocoderScheduler, frame_count: int) -> None:
+    """Queue one chunk per numbered frame, handle the queue, then end the stream."""
+    frames = numbered_frames(frame_count)
+    for chunk_id in range(frame_count):
+        vocoder.inbox.put(
+            chunk_message("request-a", chunk_id, frames[chunk_id : chunk_id + 1])
+        )
+    while not vocoder.inbox.empty():
+        vocoder.handle_message(vocoder.get_batch_message(), None)
+    vocoder.handle_streaming_new_request(
+        "request-a", final_payload(frames, is_streaming=True)
+    )
+    vocoder.handle_stream_done("request-a")
+
+
 def final_audio(result: StagePayload) -> np.ndarray:
     """The non-streaming audio as the client decodes it: float32 bytes plus shape."""
     assert isinstance(result.data, dict)
@@ -472,17 +487,7 @@ def test_the_stream_never_reads_the_frames_a_window_skips(
         window_batch_decoder=decoder,
         suffix_decoder=decoder,
     )
-    frames = numbered_frames(214)
-    for chunk_id in range(214):
-        vocoder.inbox.put(
-            chunk_message("request-a", chunk_id, frames[chunk_id : chunk_id + 1])
-        )
-    while not vocoder.inbox.empty():
-        vocoder.handle_message(vocoder.get_batch_message(), None)
-    vocoder.handle_streaming_new_request(
-        "request-a", final_payload(frames, is_streaming=True)
-    )
-    vocoder.handle_stream_done("request-a")
+    stream_frame_by_frame(vocoder, 214)
 
     assert decoder.shapes == expected_shapes
     np.testing.assert_allclose(
