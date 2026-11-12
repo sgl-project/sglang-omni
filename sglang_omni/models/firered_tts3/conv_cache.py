@@ -6,6 +6,7 @@ from __future__ import annotations
 import weakref
 from collections.abc import Sequence
 from dataclasses import dataclass
+from types import ModuleType
 
 import torch
 from torch._ops import OpOverload
@@ -89,11 +90,11 @@ class ControlledConvPlan:
             )
         else:
             pass
-        self.frontend = cudnn
+        self.frontend: ModuleType = cudnn
         self.device: torch.device = inputs.device
         with torch.cuda.device(self.device):
             self.handle = cudnn.create_handle()
-            self.release_handle = weakref.finalize(
+            self.release_handle: weakref.finalize = weakref.finalize(
                 self, cudnn.destroy_handle, self.handle
             )
             self.graph = cudnn.pygraph(

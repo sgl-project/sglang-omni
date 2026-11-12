@@ -108,18 +108,18 @@ class RedAEVocoderColdGraphRunner:
             pass
         for batch_size in sorted(self.batch_buckets, reverse=True):
             for latent_frame_count in sorted(self.latent_frame_buckets, reverse=True):
-                key = (latent_frame_count, batch_size)
-                if key in self.graphs or key in self.failed_keys:
+                graph_key = (latent_frame_count, batch_size)
+                if graph_key in self.graphs or graph_key in self.failed_keys:
                     continue
                 else:
                     pass
                 entry = self.capture(latent_frame_count, batch_size)
                 if entry is None:
-                    self.failed_keys.add(key)
+                    self.failed_keys.add(graph_key)
                     continue
                 else:
                     pass
-                self.graphs[key] = entry
+                self.graphs[graph_key] = entry
                 self.counters["captures"] += 1
         if not self.graphs:
             self.enabled = False

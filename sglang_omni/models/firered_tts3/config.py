@@ -222,16 +222,19 @@ class FireRedTTS3PipelineConfig(PipelineConfig):
         preprocessing_extra = (
             self.stage_named("preprocessing").factory.model_extra or {}
         )
-        for key, talker_value in (
+        for parameter_name, talker_value in (
             ("n_timesteps", n_timesteps),
             ("max_patches", max_patches),
         ):
-            pinned = preprocessing_extra.get(key)
-            if pinned is not None and int(pinned) != talker_value:
+            preprocessing_value = preprocessing_extra.get(parameter_name)
+            if (
+                preprocessing_value is not None
+                and int(preprocessing_value) != talker_value
+            ):
                 raise ValueError(
-                    f"FireRedTTS3 preprocessing {key!r} ({int(pinned)}) "
-                    f"disagrees with talker {key!r} ({talker_value}); "
-                    f"configure only talker.factory.{key} and let "
+                    f"FireRedTTS3 preprocessing {parameter_name!r} ({int(preprocessing_value)}) "
+                    f"disagrees with talker {parameter_name!r} ({talker_value}); "
+                    f"configure only talker.factory.{parameter_name} and let "
                     "preprocessing derive it, or set both to the same value"
                 )
             else:

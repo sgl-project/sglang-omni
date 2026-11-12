@@ -141,9 +141,11 @@ class FireRedTTS3SGLangModel(nn.Module):
             self.dit_head(hidden)
             self.stop_head(hidden[:, -1:])
             if self.spk_proj_llm is not None and self.spk_proj_dit is not None:
-                spk = torch.zeros(1, int(self.config.spk_in_dim), device=device)
-                self.spk_proj_llm(spk)
-                self.spk_proj_dit(spk)
+                speaker_embeddings = torch.zeros(
+                    1, int(self.config.spk_in_dim), device=device
+                )
+                self.spk_proj_llm(speaker_embeddings)
+                self.spk_proj_dit(speaker_embeddings)
             else:
                 pass
         if device.type == "cuda":

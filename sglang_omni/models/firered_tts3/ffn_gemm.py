@@ -151,10 +151,10 @@ class FfnGemmMode(TorchDispatchMode):
                         or layer.bias is None
                         or layer.bias.shape != (1024,)
                         or any(
-                            t.dtype != torch.bfloat16
-                            or t.device != device
-                            or not t.is_contiguous()
-                            for t in (layer.weight, layer.bias)
+                            tensor.dtype != torch.bfloat16
+                            or tensor.device != device
+                            or not tensor.is_contiguous()
+                            for tensor in (layer.weight, layer.bias)
                         )
                     ):
                         raise RuntimeError(
@@ -316,10 +316,14 @@ class FfnGemmMode(TorchDispatchMode):
                         self.misses += 1
                         return func(*args, **kwargs)
                     else:
-                        start, end = out.data_ptr(), out.data_ptr() + out.numel() * 2
+                        output_start_address = out.data_ptr()
+                        output_end_address = output_start_address + out.numel() * 2
                         if any(
-                            max(start, tensor.data_ptr())
-                            < min(end, tensor.data_ptr() + tensor.numel() * 2)
+                            max(output_start_address, tensor.data_ptr())
+                            < min(
+                                output_end_address,
+                                tensor.data_ptr() + tensor.numel() * 2,
+                            )
                             for tensor in (inputs, weight, bias)
                         ):
                             self.misses += 1
