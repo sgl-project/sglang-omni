@@ -54,6 +54,7 @@ def make_moss_engine_builder(
         enable_torch_compile=False,
         torch_compile_max_bs=4,
         enable_async_decode=enable_async_decode,
+        enable_plain_fallback=False,
         async_decode_min_batch_size=2,
         prefill_coalesce_requests=0,
         prefill_coalesce_wait_ms=0.0,
@@ -494,8 +495,9 @@ def write_speculators_config(directory: Path) -> None:
     )
 
 
+@pytest.mark.parametrize("enable_plain_fallback", [False, True])
 def test_factory_serves_a_draft_on_the_synchronous_verify_loop(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enable_plain_fallback: bool
 ) -> None:
     """Unset, async decode stays off under a draft, where it means speculative overlap;
     SGLang cannot read the speculators config, so the worker class and the flat copy must
@@ -549,6 +551,7 @@ def test_factory_serves_a_draft_on_the_synchronous_verify_loop(
 
     create_sglang_moss_transcribe_diarize_executor(
         "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        enable_plain_fallback=enable_plain_fallback,
         server_args_overrides={
             "speculative_algorithm": "DFLASH",
             "speculative_draft_model_path": str(tmp_path),
@@ -568,10 +571,13 @@ def test_factory_serves_a_draft_on_the_synchronous_verify_loop(
     assert server_args_kwargs["enable_torch_compile"] is False
     assert infrastructure_kwargs["enable_async_decode"] is False
     assert server_args_kwargs["disable_overlap_schedule"] is True
-    assert adapter_kwargs["speculative_reserve_tokens"] == 16
+    assert adapter_kwargs["speculative_reserve_tokens"] == (
+        0 if enable_plain_fallback else 16
+    )
     scheduler_kwargs = calls["scheduler_kwargs"][0]
     assert scheduler_kwargs["enable_async_decode"] is False
     assert scheduler_kwargs["async_prefill"] is False
+    assert scheduler_kwargs["model_runner"].speculative_ignores_request_seed is True
 
 
 def test_a_failed_build_leaves_no_draft_copy_behind(

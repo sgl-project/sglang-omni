@@ -32,19 +32,19 @@ func (a *app) tryIntro(feature string) string {
 	switch feature {
 	case hotkey.Translate:
 		if keys != "" {
-			return i18n.T("Press %s or Start and say a sentence or two: the translation shows here and is not typed anywhere.", keys)
+			return i18n.T("Press %s or Start, then say a sentence or two. The translation shows here and is not typed anywhere.", keys)
 		}
-		return i18n.T("Say a sentence or two: the translation shows here and is not typed anywhere.")
+		return i18n.T("Say a sentence or two. The translation shows here and is not typed anywhere.")
 	case hotkey.Rewrite:
 		if keys != "" {
-			return i18n.T("Press %s or Start and say what to write (\"a short note saying I will be late\"): the answer shows here and is not typed anywhere.", keys)
+			return i18n.T("Press %s or Start, then say what to write (\"a short note saying I will be late\"). The answer shows here and is not typed anywhere.", keys)
 		}
-		return i18n.T("Say what to write (\"a short note saying I will be late\"): the answer shows here and is not typed anywhere.")
+		return i18n.T("Say what to write (\"a short note saying I will be late\"). The answer shows here and is not typed anywhere.")
 	}
 	if keys != "" {
-		return i18n.T("Press %s or Start and say a sentence or two: the result shows here and is not typed anywhere.", keys)
+		return i18n.T("Press %s or Start, then say a sentence or two. The result shows here and is not typed anywhere.", keys)
 	}
-	return i18n.T("Say a sentence or two: the result shows here and is not typed anywhere.")
+	return i18n.T("Say a sentence or two. The result shows here and is not typed anywhere.")
 }
 
 func (a *app) featureTry(c *ui.Context, feature string) {
@@ -114,14 +114,14 @@ func (a *app) tryCard(c *ui.Context, o tryOpts) {
 				label = i18n.T("Try again")
 			}
 			busy := s.State.Live()
-			if recordButton(c.Key(p+"-try-start"), label).Label(i18n.T("Start a try")).Disabled(busy).Clicked() {
+			if recordButton(c.Key(p+"-try-start"), label).Label(i18n.T("Start a test")).Disabled(busy).Clicked() {
 				*o.block = o.start()
 			}
 			if busy {
 				if s.Kind == store.KindTranscribe {
 					caption(c, i18n.T("A transcription is running."))
 				} else {
-					caption(c, i18n.T("Another session is running."))
+					caption(c, i18n.T("Another task is running."))
 				}
 			}
 		})
@@ -217,7 +217,7 @@ func (a *app) tryEnded(c *ui.Context, p string, s session.Snapshot, clear func()
 	}
 	ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
 		ui.Text(c, i18n.T("Result")).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(k.Text2).Grow(1)
-		if ghostIconButton(c.Key(p+"-try-copy"), icons.Copy, i18n.T("Copy")).Label(i18n.T("Copy the result")).Disabled(s.Result == "").Clicked() {
+		if ghostIconButton(c.Key(p+"-try-copy"), icons.Copy, i18n.T("Copy")).Label(i18n.T("Copy result")).Disabled(s.Result == "").Clicked() {
 			c.Services().WriteClipboard(s.Result)
 			a.toast(i18n.T("Copied"))
 		}

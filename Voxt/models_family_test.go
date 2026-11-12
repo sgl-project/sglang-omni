@@ -222,7 +222,7 @@ func TestModelDeleteShared(t *testing.T) {
 
 func TestModelDeleteCancelShared(t *testing.T) {
 	a, _, tt := newTestApp(t)
-	tt.SetSize(windowWidth, 1600)
+	tt.SetSize(windowWidth, 4800) // the retired models under every speech model's card
 	seedModels(t, a, models.LLMTranslate)
 	useModels(t, a, models.LLMTranslate)
 	claimFor(t, a, dictaID, models.LLMTranslate)
@@ -454,7 +454,7 @@ func TestBorrowedModel(t *testing.T) {
 // VoxtNew's models uses them (rare: not in the catalogue today).
 func TestModelDeleteOwnModels(t *testing.T) {
 	res := []fammodels.Result{{OwnModels: []string{models.ASRAccurate}}}
-	if got := deleteOutcome(models.ASRFast, res, nil); got != "Qwen3-ASR 0.6B (4bit) was removed. Its files stay: Qwen3-ASR 1.7B (8bit) uses them too." {
+	if got := deleteOutcome(models.ASRFast, res, nil); got != "Qwen3-ASR 0.6B (4bit) was removed. Its files stay because Qwen3-ASR 1.7B (8bit) uses them too." {
 		t.Errorf("%q", got)
 	}
 	if got := deleteOutcome(models.ASRFast, []fammodels.Result{{Deleted: true}}, nil); got != "" {

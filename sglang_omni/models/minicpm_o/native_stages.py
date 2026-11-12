@@ -443,6 +443,7 @@ def create_perception_scheduler(
     max_open_sessions: int = DEFAULT_MAX_SESSIONS,
     batch_sessions: bool,
 ) -> SessionScheduler:
+    register_minicpm_o_hf_config()
     device = str(resolve_concrete_device(device, gpu_id))
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     encoder = MiniCPMOAudioEncoder(model_path, device=device, dtype=dtype)

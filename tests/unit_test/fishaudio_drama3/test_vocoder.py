@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import json
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -52,6 +54,7 @@ from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.dac.modded_dac impor
 from sglang_omni.models.fishaudio_s2_pro.stages import load_codec
 from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import WindowDecoder
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.profiler import event_recorder
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.types import RequestOutput
@@ -232,23 +235,32 @@ def streamed(
     is_done_first: bool,
     codec: FrameNumberCodec | None = None,
     decode_window: WindowDecoder | None = None,
+    factory_args: Drama3VocoderFactoryArgs | None = None,
+    window_batch_decoder: WindowBatchDecoder | None = None,
 ) -> tuple[FrameNumberCodec, list[OutgoingMessage]]:
     """Stream chunks of the given sizes, then hand over the final payload with all
-    total_frame_count frames and signal the end of the stream."""
+    total_frame_count frames and signal the end of the stream. With a window batch
+    decoder the chunks queue first, so one drain coalesces them."""
     codec = FrameNumberCodec() if codec is None else codec
-    vocoder = vocoder_with(codec, decode_window)
+    vocoder = vocoder_with(
+        codec,
+        decode_window,
+        factory_args=factory_args,
+        window_batch_decoder=window_batch_decoder,
+    )
     frames = numbered_frames(total_frame_count)
     start = 0
     for chunk_id, frame_count in enumerate(chunk_frame_counts):
-        vocoder.handle_stream_chunk(
-            "request-a",
-            StreamItem(
-                chunk_id=chunk_id,
-                data=frames[start : start + frame_count].T,
-                from_stage="tts_engine",
-            ),
+        message = chunk_message(
+            "request-a", chunk_id, frames[start : start + frame_count]
         )
+        if window_batch_decoder is None:
+            vocoder.handle_stream_chunk("request-a", message.data)
+        else:
+            vocoder.inbox.put(message)
         start += frame_count
+    while not vocoder.inbox.empty():
+        vocoder.handle_message(vocoder.get_batch_message(), None)
     payload = final_payload(frames, is_streaming=True)
     if is_done_first:
         vocoder.handle_stream_done("request-a")
@@ -1667,3 +1679,128 @@ def test_serving_starts_after_the_default_streams_in_flight_work() -> None:
     torch.cuda.synchronize()
 
     np.testing.assert_array_equal(in_flight, expected)
+
+
+FIRST_CHUNK_WINDOWS = [
+    (0, 0, 0, 4, 4),
+    (1, 0, 0, 10, 14),
+    (2, 0, 0, 12, 26),
+    (3, 0, 0, 32, 58),
+]
+
+
+@pytest.mark.parametrize(
+    (
+        "total_frame_count",
+        "chunk_frame_counts",
+        "is_done_first",
+        "crossfade_samples",
+        "is_batched",
+        "windows",
+    ),
+    [
+        pytest.param(
+            150,
+            [64, 86],
+            False,
+            0,
+            False,
+            FIRST_CHUNK_WINDOWS + [(4, 1, 0, 64, 96), (5, -1, 1, 28, 60)],
+            id="payload-before-done",
+        ),
+        pytest.param(
+            150,
+            [64, 86],
+            True,
+            0,
+            False,
+            FIRST_CHUNK_WINDOWS + [(4, 1, 0, 64, 96), (5, -1, 1, 28, 60)],
+            id="done-before-payload",
+        ),
+        pytest.param(
+            122,
+            [64, 58],
+            False,
+            0,
+            False,
+            FIRST_CHUNK_WINDOWS + [(4, 1, 0, 64, 96)],
+            id="ends-on-a-window",
+        ),
+        pytest.param(
+            150,
+            [64],
+            False,
+            0,
+            False,
+            FIRST_CHUNK_WINDOWS + [(4, -1, 0, 64, 96), (5, -1, 1, 28, 60)],
+            id="window-only-in-the-final-result",
+        ),
+        pytest.param(
+            150,
+            [64, 86],
+            False,
+            40,
+            False,
+            FIRST_CHUNK_WINDOWS + [(4, 1, 0, 64, 96), (5, -1, 1, 28, 60)],
+            id="crossfade-tail-not-yet-sent",
+        ),
+        pytest.param(
+            150,
+            [64, 86],
+            False,
+            0,
+            True,
+            FIRST_CHUNK_WINDOWS + [(4, 1, 0, 64, 96), (5, -1, 1, 28, 60)],
+            id="coalesced-chunks-through-the-window-batch-decoder",
+        ),
+    ],
+)
+def test_every_decoded_window_records_its_decode(
+    tmp_path: Path,
+    total_frame_count: int,
+    chunk_frame_counts: list[int],
+    is_done_first: bool,
+    crossfade_samples: int,
+    is_batched: bool,
+    windows: list[tuple[int, int, int, int, int]],
+) -> None:
+    path = event_recorder.get_recorder().start("drama3", str(tmp_path), "vocoder")
+    try:
+        streamed(
+            total_frame_count,
+            chunk_frame_counts,
+            is_done_first=is_done_first,
+            factory_args=Drama3VocoderFactoryArgs(
+                stream_crossfade_samples=crossfade_samples
+            ),
+            window_batch_decoder=(
+                RecordingBatchDecoder(FrameNumberCodec()) if is_batched else None
+            ),
+        )
+    finally:
+        event_recorder.get_recorder().stop(wait=True)
+
+    events = [json.loads(line) for line in Path(path).read_text().splitlines()]
+    assert [
+        (
+            event["event_name"].removeprefix("drama3_vocoder_window_decode_"),
+            event["metadata"]["window_index"],
+            event["metadata"]["chunk_id"],
+            event["metadata"]["is_final"],
+            event["metadata"]["emitted_frames"],
+            event["metadata"]["decoded_frames"],
+        )
+        for event in events
+    ] == [
+        (phase, window_index, chunk_id, is_final, emitted, decoded)
+        for window_index, chunk_id, is_final, emitted, decoded in windows
+        for phase in ("started", "finished")
+    ]
+    # note (Haoling Pu): a crossfade holds back the last decoded samples, unsent, until the next window blends them.
+    assert events[-1]["metadata"]["emitted_audio_s"] == pytest.approx(
+        (
+            sum(window[3] for window in windows[:-1]) * SAMPLES_PER_FRAME
+            - crossfade_samples
+        )
+        / SAMPLE_RATE
+    )

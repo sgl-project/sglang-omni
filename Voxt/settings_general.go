@@ -18,7 +18,7 @@ import (
 func (a *app) generalSettings(c *ui.Context) {
 	t := c.Theme()
 	sectionTitle(c, i18n.T("Languages"))
-	settingRow(c, "language", i18n.T("App language"), i18n.T("The language of Voxt's own text. Following the system uses English unless the system's language is supported."), func() {
+	settingRow(c, "language", i18n.T("App language"), "", func() {
 		opts := languageOptions()
 		if ui.Select(c.Key("language-select"), &a.settingsForm.language, opts).Label(i18n.T("App language")).Width(px(t, 220)).Changed() {
 			tag := ""
@@ -28,7 +28,7 @@ func (a *app) generalSettings(c *ui.Context) {
 			a.updateSettings(func(s *settings.Settings) { s.General.Language = tag })
 		}
 	})
-	settingRow(c, "main-language", i18n.T("Main language"), i18n.T("The language you mostly speak and write. Clean-up keeps your text in it; Translate writes in English, or in Chinese when this is English, unless the Translate page says otherwise."), func() {
+	settingRow(c, "main-language", i18n.T("Main language"), i18n.T("The language you mostly speak. Translate defaults to English, or Chinese if this is English."), func() {
 		opts := mainLanguageOptions()
 		if ui.Select(c.Key("main-language-select"), &a.settingsForm.mainLanguage, opts).Label(i18n.T("Main language")).Width(px(t, 220)).Changed() {
 			code := ""
@@ -41,7 +41,7 @@ func (a *app) generalSettings(c *ui.Context) {
 	a.otherLanguagesRow(c)
 
 	sectionTitle(c, i18n.T("Results"))
-	settingRow(c, "copy-result", i18n.T("Also copy the result to the clipboard"), i18n.T("Each finished result stays on the clipboard, also when it was pasted, or waits in the answer card."), func() {
+	settingRow(c, "copy-result", i18n.T("Also copy the result to the clipboard"), "", func() {
 		if ui.Switch(c.Key("copy-result-switch"), &a.settingsForm.copyResult).Label(i18n.T("Also copy the result to the clipboard")).Changed() {
 			on := a.settingsForm.copyResult
 			a.updateSettings(func(s *settings.Settings) { s.General.CopyResult = on })
@@ -49,7 +49,7 @@ func (a *app) generalSettings(c *ui.Context) {
 	})
 
 	sectionTitle(c, i18n.T("Menu bar and login"))
-	settingRow(c, "menu-bar", i18n.T("Show in the menu bar"), i18n.T("An icon in the menu bar to start a transcription, see the last result and open Voxt."), func() {
+	settingRow(c, "menu-bar", i18n.T("Show in the menu bar"), "", func() {
 		if ui.Switch(c.Key("menu-bar-switch"), &a.settingsForm.menuBar).Label(i18n.T("Show in the menu bar")).Changed() {
 			on := a.settingsForm.menuBar
 			a.updateSettings(func(s *settings.Settings) {
@@ -60,7 +60,7 @@ func (a *app) generalSettings(c *ui.Context) {
 			})
 		}
 	})
-	settingRow(c, "dock", i18n.T("Show in the Dock"), i18n.T("Off, Voxt is in the menu bar only."), func() {
+	settingRow(c, "dock", i18n.T("Show in the Dock"), i18n.T("When off, Voxt is only in the menu bar."), func() {
 		if ui.Switch(c.Key("dock-switch"), &a.settingsForm.dock).Label(i18n.T("Show in the Dock")).Changed() {
 			on := a.settingsForm.dock
 			a.updateSettings(func(s *settings.Settings) {
@@ -71,7 +71,7 @@ func (a *app) generalSettings(c *ui.Context) {
 			})
 		}
 	})
-	settingRow(c, "close-to-tray", i18n.T("Keep running when the window closes"), i18n.T("Closing the window leaves Voxt in the menu bar, so its shortcuts keep working. Quit from the menu bar icon or with ⌘Q."), func() {
+	settingRow(c, "close-to-tray", i18n.T("Keep running when the window closes"), i18n.T("Shortcuts keep working. Quit with ⌘Q or from the menu bar."), func() {
 		sw := ui.Switch(c.Key("close-to-tray-switch"), &a.settingsForm.closeToTray).Label(i18n.T("Keep running when the window closes")).Disabled(!a.prefs.General.MenuBar)
 		if sw.Changed() {
 			on := a.settingsForm.closeToTray
@@ -83,6 +83,23 @@ func (a *app) generalSettings(c *ui.Context) {
 			on := a.settingsForm.openAtLogin
 			a.updateSettings(func(s *settings.Settings) { s.General.LaunchAtLogin = on })
 		}
+	})
+
+	sectionTitle(c, i18n.T("Features"))
+	settingRow(c, "features", i18n.T("Shown features"), i18n.T("Unchecked features leave the sidebar, and their shortcuts stop. Their settings are kept."), func() {
+		ui.Row(c).Gap(px(t, sp3)).Wrap().AlignItems(ui.Center).Children(func() {
+			for _, id := range []string{settings.HideTranslate, settings.HideRewrite, settings.HideAppEnhancement} {
+				shown := !a.prefs.Features.IsHidden(id)
+				if ui.Checkbox(c.Key("feature-"+id), &shown, pageTitle("/"+id)).Label(i18n.T("Show %s", pageTitle("/"+id))).Changed() {
+					a.updateSettings(func(s *settings.Settings) {
+						s.Features.Hidden = slices.DeleteFunc(s.Features.Hidden, func(x string) bool { return x == id })
+						if !shown {
+							s.Features.Hidden = append(s.Features.Hidden, id)
+						}
+					})
+				}
+			}
+		})
 	})
 
 	sectionTitle(c, i18n.T("Getting started"))
@@ -105,7 +122,7 @@ func (a *app) otherLanguagesRow(c *ui.Context) {
 	k := tok(t)
 	main := lang.Canonical(session.MainLanguage(a.prefs, i18n.Locale()))
 	others := withoutLanguage(a.prefs.General.OtherLanguages, main)
-	settingRow(c, "other-languages", i18n.T("Other languages"), i18n.T("Languages you mix into what you say and write. Clean-up keeps them as they are instead of translating them into your main language."), func() {
+	settingRow(c, "other-languages", i18n.T("Other languages"), i18n.T("Languages you mix in. Clean-up keeps them as they are."), func() {
 		for _, code := range others {
 			label := uitext.LangLabel(code)
 			ui.Row(c.Key("other-lang-"+code)).Gap(px(t, 2)).AlignItems(ui.Center).Padding(px(t, 2), px(t, 2), px(t, 2), px(t, 10)).

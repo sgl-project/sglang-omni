@@ -95,6 +95,8 @@ Supporting events used for finer-grained breakdown:
 | Code2Wav | `code2wav_decode_start` | Each window's decode start: trigger, start/end/new/context/window frames, `rows` (the windows its replay decodes together), active and threshold-ready requests, inbox depth |
 | Code2Wav | `code2wav_decode_launched` | Pipelined window whose vocoder work and asynchronous D2H copy have been enqueued; includes execution mode, window/new-frame counts and `rows` |
 | Code2Wav | `code2wav_decode_end` | Repeats start metadata and adds the current decode's `audio_samples` plus execution metadata; output-overlap runs also include `pipelined` and the previous window's post-EOS-scan `d2h_wait_ns` |
+| Drama 3 vocoder | `drama3_vocoder_window_decode_started` | Each streaming window's decode start, and the tail flush's when frames remain after the last window: `window_index`, `chunk_id` (the stream chunk that completed the window, -1 for frames only the final result holds and for the tail), `is_final`, `emitted_frames`, `decoded_frames` (with the overlap context) and `emitted_audio_s` (audio the earlier windows produced) |
+| Drama 3 vocoder | `drama3_vocoder_window_decode_finished` | Repeats the start metadata once the window's audio chunk is built. The span from the start event is the scheduler thread's wall time for the window, not GPU decode time alone: it includes copying the audio to the host and serializing it, and for the tail flush, building the request's final result. Same-length windows of several requests that decode in one batch all start before that decode, so their spans overlap |
 
 Read `d2h_wait_ns` narrowly. With output overlap on, the lazy codec-EOS scan
 calls `.tolist()` on the staged frame heads, which is itself a host

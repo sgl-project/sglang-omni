@@ -38,6 +38,22 @@ func MainLanguage(s settings.Settings, locale string) string {
 	return lang.Canonical(locale)
 }
 
+// SpeechLang is the language hint of the speech model: the user's main
+// language (General.MainLanguage, else the UI's), but an English UI is no
+// hint. English is the UI of every system language but Simplified
+// Chinese, so it says nothing about what the user speaks, and forcing it
+// turned Chinese dictation into English (#3398); the Chinese UI's "zh"
+// costs nothing on English speech and keeps a long mixed dictation
+// Chinese (docs/eval.md). The model decides whether to use it.
+// Dictation and meetings both use it (#3387).
+func SpeechLang(s settings.Settings, locale string) string {
+	l := MainLanguage(s, locale)
+	if s.General.MainLanguage == "" && l == "en" {
+		return ""
+	}
+	return l
+}
+
 // AllowCopy says whether VoxtNew may press ⌘C in an app to read its
 // selection when Accessibility shows none (the helper's allowCopy).
 // Not in editors that copy the whole line when nothing is selected (VS
@@ -73,3 +89,12 @@ var copiesLine = map[string]bool{
 // copiesLinePrefixes are families of such apps: Cursor and other
 // ToDesktop builds, JetBrains, Windsurf (Exafunction), Trae, Qoder.
 var copiesLinePrefixes = []string{"com.todesktop.", "com.jetbrains.", "com.exafunction.", "com.trae.", "cn.trae.", "com.qoder."}
+
+// PromptDictionary is the personal dictionary for the language model's
+// prompt, when the settings send it; "" otherwise.
+func PromptDictionary(s settings.Settings) string {
+	if !s.Dictionary.Enabled || s.Dictionary.NotesOff {
+		return ""
+	}
+	return s.Dictionary.Notes
+}

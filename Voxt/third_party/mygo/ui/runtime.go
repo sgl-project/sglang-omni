@@ -216,7 +216,11 @@ type engine struct {
 	pointerIn          bool
 	hover              []uint64
 	// chain is a buffer for the elements under the pointer.
-	chain       []uint64
+	chain []uint64
+	// scrollLatch is the container the scroll gesture under way moves (0:
+	// none yet), scrollAt when the gesture's last event came (scroll).
+	scrollLatch uint64
+	scrollAt    time.Time
 	pressed     *state
 	pressButton int
 	// pressClicks is the press's count of clicks, which its release
@@ -280,9 +284,12 @@ type engine struct {
 	// revealIDs are the elements to scroll into view once the frame is
 	// laid out.
 	revealIDs []uint64
-	wakeMu    sync.Mutex
-	wakeAt    time.Time
-	cursor    Cursor
+	// revealParts are parts of elements to scroll into view once the
+	// frame is laid out: a text area's caret.
+	revealParts []revealPart
+	wakeMu      sync.Mutex
+	wakeAt      time.Time
+	cursor      Cursor
 	// ime is the text input state the host has, and base the rune of the
 	// focused editor its text starts at.
 	ime struct {
@@ -381,6 +388,9 @@ type shortcutReg struct {
 	// made serial-th in its pass: the overlay made last is on top.
 	overlay bool
 	serial  int32
+	// tip marks a tooltip's: it takes a key only when no other overlay
+	// does, so that Escape closes the dialog or popover the tip shows in.
+	tip bool
 	// retried marks a key delivered, or left unrouted, in the frame after
 	// the one it came to (settleKeys): it is not retried again.
 	retried bool

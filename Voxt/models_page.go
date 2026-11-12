@@ -70,6 +70,11 @@ type modelsState struct {
 	modelAdvanced bool
 	modelKeepSel  string
 	modelKeepFor  string
+	// llmWaitSel and llmWaitFor are the Language models page's wait
+	// select, as modelKeepSel and modelKeepFor (llm_wait.go).
+	llmWaitSel, llmWaitFor string
+	// modelHiddenOpen: the Hidden models section is open (models_cards.go).
+	modelHiddenOpen bool
 	// speechContext is the Speech context field (models_context.go).
 	speechContext speechContextState
 }
@@ -110,7 +115,7 @@ func (a *app) readModelStatus() (installed []string) {
 func (a *app) modelsChanged() {
 	before := a.modelStatus
 	for _, id := range a.readModelStatus() {
-		if m, _ := models.Lookup(id); m.Kind != models.VAD {
+		if m, _ := models.Lookup(id); m.Kind == models.ASR || m.Kind == models.LLM {
 			a.toast(i18n.T("%s is installed.", uitext.ModelName(id)))
 		}
 	}
