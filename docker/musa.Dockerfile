@@ -78,9 +78,7 @@ RUN python3 -m pip install --upgrade pip "setuptools<82" wheel \
 RUN python3 -m pip install --no-cache-dir --no-deps qwen-tts==0.1.1
 
 # Package extras cannot pass the CMake options required to build the MUSA backend.
-RUN mkdir -p /tmp/llama-cpp-wheels \
-    && CMAKE_ARGS="-DGGML_MUSA=ON -DGGML_CUDA=OFF -DMUSA_ARCHITECTURES=31" \
-        FORCE_CMAKE=1 \
+RUN CMAKE_ARGS="-DGGML_MUSA=ON -DMUSA_ARCHITECTURES=31" \
         python3 -m pip wheel --no-cache-dir --no-deps \
             --no-binary llama-cpp-python \
             "llama-cpp-python==${LLAMA_CPP_PYTHON_VERSION}" \
