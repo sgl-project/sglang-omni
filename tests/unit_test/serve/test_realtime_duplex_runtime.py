@@ -476,6 +476,11 @@ async def test_close_finishes_only_responses_the_client_has_seen() -> None:
             "context_exhausted",
             False,
         ),
+        (
+            RuntimeError("session_capacity_exhausted: session KV capacity exhausted"),
+            "session_capacity_exhausted",
+            False,
+        ),
         (RuntimeError("talker step failed"), "internal", True),
         (OutputBudgetError(), "output_budget_exhausted", False),
         (ContextLimitError(), "context_limit", False),

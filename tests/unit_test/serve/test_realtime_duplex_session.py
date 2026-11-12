@@ -608,6 +608,20 @@ def test_open_timeout_is_fatal_and_has_a_message(
             "context_exhausted",
         ),
         (
+            ScriptedAdapter(
+                reply=[
+                    TurnFailure(
+                        "server_error",
+                        "session_capacity_exhausted",
+                        "session KV capacity exhausted",
+                    )
+                ]
+            ),
+            "session_capacity_exhausted",
+            1013,
+            "session_capacity_exhausted",
+        ),
+        (
             ScriptedAdapter(reply=[TurnFailure("server_error", "é" * 100, "boom")]),
             "é" * 100,
             1011,
