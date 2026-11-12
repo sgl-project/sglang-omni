@@ -21,7 +21,6 @@ from sglang_omni.models.fishaudio_drama3.engine_builder import Drama3EngineBuild
 from sglang_omni.models.fishaudio_drama3.reference_encode import (
     GRAPH_WARMUP_RUNS,
     Drama3ReferenceEncodeHook,
-    reference_codes_of,
 )
 from sglang_omni.models.fishaudio_drama3.speech_request import Drama3SpeechPreprocessor
 from sglang_omni.models.fishaudio_drama3.vocoder import Drama3VocoderScheduler
@@ -270,17 +269,6 @@ def test_preprocessing_warms_the_encoder_up_once_on_an_accelerator(
     assert codec.encoded_shapes == expected_encoded_shapes
 
 
-def test_the_reference_codes_are_the_codec_encode_codes() -> None:
-    codec = tiny_codec()
-    audio = 0.1 * torch.randn(1, 3 * codec.frame_length)
-
-    with torch.no_grad():
-        expected_codes, _ = codec.encode(audio, torch.tensor([audio.shape[-1]]))
-        codes = reference_codes_of(codec.quantizer, codec.encoder(audio.unsqueeze(1)))
-
-    assert torch.equal(codes, expected_codes)
-
-
 @pytest.mark.accelerator
 @pytest.mark.parametrize(
     "autocast_dtype", [torch.bfloat16, None], ids=["bfloat16", "float32"]
@@ -355,7 +343,7 @@ def test_the_prepared_codec_encodes_bitwise_like_the_module(
         # kernels, which TorchScript installs after a shape's first runs.
         for _ in range(GRAPH_WARMUP_RUNS):
             expected_latent = module_codec.encoder(audio)
-        expected_codes = reference_codes_of(module_codec.quantizer, expected_latent)
+        expected_codes = module_codec.quantizer(expected_latent).codes
         codes = hook.encode_padded(audio)
         latent = hook.codec_encoder(audio)
 

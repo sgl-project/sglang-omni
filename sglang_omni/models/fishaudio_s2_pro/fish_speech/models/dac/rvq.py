@@ -1,6 +1,7 @@
 import math
 import typing as tp
 from dataclasses import dataclass
+from itertools import islice
 
 import torch
 import torch.nn as nn
@@ -333,7 +334,25 @@ class DownsampleResidualVectorQuantize(nn.Module):
     def encode_codes(
         self, z: torch.Tensor, n_quantizers: int | None = None
     ) -> torch.Tensor:
-        return self.quantize_latents(z, n_quantizers).codes
+        """The codes of quantize_latents by the same operations, minus the losses and
+        the projection after the last codebook, which no code reads."""
+        residual = self.pre_module(self.downsample(z))
+        *leading_quantizers, last_quantizer = (
+            *self.semantic_quantizer.quantizers,
+            *islice(self.quantizer.quantizers, n_quantizers),
+        )
+        codes = []
+        for vector_quantizer in leading_quantizers:
+            projected = vector_quantizer.in_proj(residual)
+            nearest, quantizer_codes = vector_quantizer.decode_latents(projected)
+            codes.append(quantizer_codes)
+            # note (Wenyao Gao): VectorQuantize.forward's straight-through sum rounds
+            # differently from nearest, and the next codebook quantizes what is left.
+            residual = residual - vector_quantizer.out_proj(
+                projected + (nearest - projected)
+            )
+        codes.append(last_quantizer.decode_latents(last_quantizer.in_proj(residual))[1])
+        return torch.stack(codes, dim=1)
 
     def forward(
         self, z, n_quantizers: int = None, semantic_len: torch.Tensor = None, **kwargs

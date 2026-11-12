@@ -9,13 +9,9 @@ import math
 import time
 
 import torch
-from dac.nn.quantize import VectorQuantize
 
 from sglang_omni.models.fishaudio_drama3.codec_encoder import CodecEncoder
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.dac.modded_dac import DAC
-from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.dac.rvq import (
-    DownsampleResidualVectorQuantize,
-)
 from sglang_omni.models.fishaudio_s2_pro.stages import FishReferenceEncodeHook
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.device_graph import ReplayableGraph
@@ -25,38 +21,6 @@ logger = logging.getLogger(__name__)
 # note (Wenyao Gao): a new shape's first runs compile and specialize its kernels, so
 # each shape runs twice before its capture records the final ones.
 GRAPH_WARMUP_RUNS = 2
-
-
-def vector_quantized(
-    vector_quantizer: VectorQuantize, residual: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """The codes and output of VectorQuantize.forward, without its training losses."""
-    projected = vector_quantizer.in_proj(residual)
-    nearest, codes = vector_quantizer.decode_latents(projected)
-    # note (Wenyao Gao): the forward's straight-through sum rounds differently from
-    # nearest, and the next codebook quantizes what is left after it.
-    return codes, vector_quantizer.out_proj(projected + (nearest - projected))
-
-
-def reference_codes_of(
-    quantizer: DownsampleResidualVectorQuantize, latent: torch.Tensor
-) -> torch.Tensor:
-    """quantizer.encode_codes(latent) by the same operations, minus the losses and the
-    projection after the last codebook, which no code reads."""
-    hidden_states = quantizer.pre_module(quantizer.downsample(latent))
-    (semantic_quantizer,) = quantizer.semantic_quantizer.quantizers
-    semantic_codes, semantic_latent = vector_quantized(
-        semantic_quantizer, hidden_states
-    )
-    residual = hidden_states - semantic_latent
-    codes = [semantic_codes]
-    *leading_quantizers, last_quantizer = quantizer.quantizer.quantizers
-    for vector_quantizer in leading_quantizers:
-        quantizer_codes, quantized_latent = vector_quantized(vector_quantizer, residual)
-        codes.append(quantizer_codes)
-        residual = residual - quantized_latent
-    codes.append(last_quantizer.decode_latents(last_quantizer.in_proj(residual))[1])
-    return torch.stack(codes, dim=1)
 
 
 class Drama3ReferenceEncodeHook(FishReferenceEncodeHook):
@@ -188,7 +152,7 @@ class Drama3ReferenceEncodeHook(FishReferenceEncodeHook):
                 cache_enabled=False,
             ),
         ):
-            return reference_codes_of(self.codec.quantizer, self.codec_encoder(audio))
+            return self.codec.quantizer.encode_codes(self.codec_encoder(audio))
 
     def encode_reference_waveform(self, audio: torch.Tensor, sr: int) -> torch.Tensor:
         if self.device.type == "cpu":
