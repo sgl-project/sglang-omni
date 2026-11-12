@@ -99,7 +99,8 @@ var (
 // TestParseVersion: versions compare as numbers, a beta before its
 // release; other forms are not Voxt's versions.
 func TestParseVersion(t *testing.T) {
-	order := []string{"1.16.3", "2.0.3", "2.0.4-beta.1", "2.0.4-beta.2", "2.0.4-beta.10", "2.0.4", "2.0.9", "2.0.10", "2.1.0", "10.0.0"}
+	order := []string{"1.16.3", "2.0.3", "2.0.4-beta.1", "2.0.4-beta.2", "2.0.4-beta.10",
+		"2.0.4-beta.20261111.9", "2.0.4-beta.20261111.10", "2.0.4-beta.20261112.1", "2.0.4", "2.0.9", "2.0.10", "2.1.0", "10.0.0"}
 	for i := 1; i < len(order); i++ {
 		a, _ := parseVersion(order[i-1])
 		b, ok := parseVersion(order[i])
@@ -107,12 +108,13 @@ func TestParseVersion(t *testing.T) {
 			t.Errorf("%s < %s: ok %v, %v %v", order[i-1], order[i], ok, a, b)
 		}
 	}
-	for _, s := range []string{"", "2.0", "v2.0.3", "2.0.3-dev", "2.0.3-rc.1", "2.0.3 "} {
+	for _, s := range []string{"", "2.0", "v2.0.3", "2.0.3-dev", "2.0.3-rc.1", "2.0.3 ",
+		"2.0.3-beta.", "2.0.3-beta.1.2.3", "2.0.3-nightly.20261111"} {
 		if _, ok := parseVersion(s); ok {
 			t.Errorf("%q parsed", s)
 		}
 	}
-	if !checksReleases(false, "2.0.3") || !checksReleases(false, "2.0.4-beta.1") || checksReleases(true, "2.0.3") || checksReleases(false, "0.0.0-dev") {
+	if !checksReleases(false, "2.0.3") || !checksReleases(false, "2.0.4-beta.1") || !checksReleases(false, "2.0.4-beta.20261111.120") || checksReleases(true, "2.0.3") || checksReleases(false, "0.0.0-dev") {
 		t.Error("checksReleases")
 	}
 }
@@ -186,6 +188,48 @@ func TestReleaseCheck(t *testing.T) {
 	srv.set(func(s *ghServer) { s.hang, s.list = false, `[]` })
 	if rel, newer, err = check(); err != nil || newer || rel.Version != "" {
 		t.Errorf("no release: %+v %v %v", rel, newer, err)
+	}
+}
+
+// TestReleaseCheckMergeBetas: the betas Voxt Beta publishes for each
+// merge (prereleases voxt-vX.Y.Z-beta.YYYYMMDD.N, #3850) reach a release
+// with Beta updates on and a beta by default, newest first; with the
+// switch off a release sees none, and the next release passes them.
+func TestReleaseCheckMergeBetas(t *testing.T) {
+	srv := &ghServer{list: ghList([]string{"voxt-v2.0.4-beta.20261112.3", "pre"}, []string{"voxt-v2.0.4-beta.20261111.121", "pre"},
+		[]string{"voxt-v2.0.4-beta.20261111.120", "pre"}, []string{"voxt-v2.0.3"})}
+	url := srv.start(t)
+	check := func(running string, beta bool) (release, bool) {
+		t.Helper()
+		r := newReleaseUpdates(settings.NewMemory(), url, running, nil)
+		r.SetPrereleases(beta)
+		rel, newer, err := r.check(context.Background(), &http.Client{})
+		if err != nil {
+			t.Fatalf("%s: %v", running, err)
+		}
+		return rel, newer
+	}
+	if rel, newer := check("2.0.3", false); newer || rel.Version != "2.0.3" {
+		t.Errorf("release, betas off: %+v %v", rel, newer)
+	}
+	if rel, newer := check("2.0.3", true); !newer || rel.Version != "2.0.4-beta.20261112.3" || rel.Download != "https://dl/dmg-2.0.4-beta.20261112.3" {
+		t.Errorf("release, betas on: %+v %v", rel, newer)
+	}
+	running := "2.0.4-beta.20261111.120"
+	if !checksReleases(false, running) || !(settings.Updates{}).BetaOn(running) {
+		t.Fatal("a beta does not check for betas")
+	}
+	if rel, newer := check(running, true); !newer || rel.Version != "2.0.4-beta.20261112.3" {
+		t.Errorf("older beta: %+v %v", rel, newer)
+	}
+	if _, newer := check("2.0.4-beta.20261112.3", true); newer {
+		t.Error("newest beta offered itself")
+	}
+	srv.set(func(s *ghServer) {
+		s.list = ghList([]string{"voxt-v2.0.4"}, []string{"voxt-v2.0.4-beta.20261112.3", "pre"})
+	})
+	if rel, newer := check("2.0.4-beta.20261112.3", true); !newer || rel.Version != "2.0.4" {
+		t.Errorf("release after betas: %+v %v", rel, newer)
 	}
 }
 

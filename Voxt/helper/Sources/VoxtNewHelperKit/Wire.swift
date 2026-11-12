@@ -42,6 +42,7 @@ public enum Method {
     public static let appConfigure = "app.configure"
     public static let appIcons = "app.icons"
     public static let browserURL = "browser.url"
+    public static let screenWindow = "screen.window"
     public static let outputWatch = "output.watch"
     public static let outputMute = "output.mute"
     public static let outputRelease = "output.release"
@@ -67,7 +68,7 @@ public enum Method {
         hello, shutdown, jobCancel, permissionsStatus, permissionsRequest,
         captureDevices, captureStart, captureStop, captureSystem, hotkeyConfigure, hotkeyStatus, hotkeyRecord, hotkeyCancelRecord,
         appFrontmost, appList, appConfigure, appIcons, textFocus, textSelection, textPaste, textRead,
-        browserURL, outputWatch, outputMute, outputRelease, outputRecover, speechRecognize, speechAudio,
+        browserURL, screenWindow, outputWatch, outputMute, outputRelease, outputRecover, speechRecognize, speechAudio,
     ]
     public static let notifications = [
         captureStarted, captureLevel, capturePCM, captureRestarted, hotkeyEvent, hotkeyState, appActivated,

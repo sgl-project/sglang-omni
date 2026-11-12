@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 
+	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 )
 
@@ -13,6 +14,36 @@ var (
 	settingsSearchQuery string
 	settingsSearchHits  int
 )
+
+// settingsFind is Find in settings while a section builds (#3869): the
+// matches of query in the names shown are marked (settingsName), n counts
+// them as they build, cur is the current one (from 1, 0 for none), and
+// reveal brings it into view in this frame.
+var settingsFind struct {
+	query  string
+	n, cur int
+	reveal bool
+}
+
+// settingsName is a row's or heading's name, the matches of Find in
+// settings marked.
+func settingsName(c *ui.Context, name string) ui.Element {
+	f := &settingsFind
+	m := len(findFolded(name, f.query))
+	if m == 0 {
+		return ui.Text(c, name)
+	}
+	cur := -1
+	if f.cur > f.n && f.cur <= f.n+m {
+		cur = f.cur - f.n - 1
+	}
+	f.n += m
+	el := markedText(c, name, f.query, cur)
+	if cur >= 0 && f.reveal {
+		el.ScrollIntoView()
+	}
+	return el
+}
 
 // settingsSearchShows reports whether a row or heading with these texts
 // matches settingsSearchQuery, counting it in settingsSearchHits.

@@ -133,6 +133,7 @@ func clone(s Settings) Settings {
 	s.Family.Conflicts = slices.Clone(s.Family.Conflicts)
 	s.Family.Prompted = slices.Clone(s.Family.Prompted)
 	s.Family.KeysSince = maps.Clone(s.Family.KeysSince)
+	s.Models.Faster = maps.Clone(s.Models.Faster)
 	return s
 }
 

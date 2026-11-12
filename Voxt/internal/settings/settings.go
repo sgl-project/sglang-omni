@@ -104,6 +104,10 @@ type Privacy struct {
 	// what they and Export text get.
 	HistoryAccess    bool `json:"historyAccess,omitempty"`
 	HistorySelection bool `json:"historySelection,omitempty"`
+	// SendWindow sends a picture of the window the user speaks into to
+	// the language model, with the text (session/window.go); off by
+	// default.
+	SendWindow bool `json:"sendWindow,omitempty"`
 }
 
 // Audio: the microphone and the sounds around a recording.

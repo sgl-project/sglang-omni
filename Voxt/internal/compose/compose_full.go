@@ -23,7 +23,7 @@ func buildFullPrompt(in Input, set string, vars, flags map[string]string, full s
 		layers = append(layers, layer)
 	}
 	add("custom", strings.TrimSpace(Render(full, vars, flags)))
-	dictionary := addDictionary(in, add, render)
+	dictionary := addDictionary(in, add)
 	if s := in.Scene; s != nil && strings.TrimSpace(s.AppName) != "" {
 		add("scene", render("scene", map[string]string{"SCENE_PROMPT": Render(strings.TrimSpace(s.Prompt), vars, nil)}))
 	}
