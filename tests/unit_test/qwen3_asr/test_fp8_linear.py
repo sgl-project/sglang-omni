@@ -15,7 +15,9 @@ else:
     pass
 
 # note (emre570): the kernel modules import CuTe DSL, so they load only after the platform skip.
+from sglang_omni.models.qwen3_asr import fp8_linear  # noqa: E402
 from sglang_omni.models.qwen3_asr.fp8_linear import (  # noqa: E402
+    install_fp8_linears,
     is_fp8_supported,
     set_fp8_weight,
 )
@@ -107,3 +109,34 @@ def test_fp8_linear_empty_batch() -> None:
         module, torch.empty(0, 2048, device="cuda", dtype=torch.bfloat16)
     )
     assert y.shape == (0, 2048)
+
+
+def test_install_skips_repack_without_conversion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An FP16 model converts nothing, so its tensors do not round-trip through the host."""
+    language_model = nn.Module()
+    language_model.lm_head = nn.Linear(
+        2048, 4096, bias=False, device="cuda", dtype=torch.float16
+    )
+    layer = nn.Module()
+    layer.mlp = nn.Module()
+    layer.mlp.gate_up_proj = nn.Linear(
+        2048, 12288, bias=False, device="cuda", dtype=torch.float16
+    )
+    layer.mlp.gate_up_proj.quant_method = None
+    language_model.model = nn.Module()
+    language_model.model.layers = nn.ModuleList([layer])
+
+    repacked_modules: list[nn.Module] = []
+    real_repack = fp8_linear.repack_on_device
+
+    def recording_repack(module: nn.Module) -> None:
+        repacked_modules.append(module)
+        real_repack(module)
+
+    monkeypatch.setattr(fp8_linear, "repack_on_device", recording_repack)
+
+    assert install_fp8_linears(language_model) == 0
+    assert isinstance(language_model.lm_head, nn.Linear)
+    assert repacked_modules == []

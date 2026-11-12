@@ -518,7 +518,8 @@ class Fp8LMHead(nn.Module):
 
 def install_fp8_linears(language_model: nn.Module) -> int:
     """Swap lm_head and the decoder linears to FP8 where is_fp8_supported allows. Returns the decoder count."""
-    if is_fp8_supported(language_model.lm_head.weight):
+    is_lm_head_converted = is_fp8_supported(language_model.lm_head.weight)
+    if is_lm_head_converted:
         language_model.lm_head = Fp8LMHead(language_model.lm_head.weight)
     else:
         pass
@@ -542,7 +543,11 @@ def install_fp8_linears(language_model: nn.Module) -> int:
             layer.mlp.dual_gemm.mode = None
         else:
             pass
-    repack_on_device(language_model)
+    # note (emre570): with no conversion there are no freed bf16 segments, so the host round trip only costs time.
+    if is_lm_head_converted or count > 0:
+        repack_on_device(language_model)
+    else:
+        pass
     return count
 
 
