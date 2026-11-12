@@ -28,6 +28,7 @@ from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_MAX_RUNNING_REQUESTS,
     DEFAULT_REFERENCE_SAMPLING,
     DEFAULT_REFERENCE_SAMPLING_FALLBACK,
+    DEFAULT_ROUTED_EXPERT_CACHE_SLOTS,
     DEFAULT_STREAM_FOLLOWUP_STRIDE,
     DEFAULT_STREAM_FOLLOWUP_STRIDE_RAMP,
     DEFAULT_STREAM_STRIDE,
@@ -54,6 +55,7 @@ from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 from sglang_omni.utils.device import resolve_concrete_device
+from sglang_omni.utils.imports import import_string
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +171,10 @@ def create_tts_engine_executor(
     tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS,
     enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
     async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
+    engine_builder_path: str | None = None,
+    routed_expert_cache_slots: int | None = DEFAULT_ROUTED_EXPERT_CACHE_SLOTS,
 ) -> OmniScheduler[Drama3RequestData]:
+    """Build the AR engine; engine_builder_path names a Drama3EngineBuilder subclass, such as an offline diagnostic, to build it instead."""
     overrides = dict(server_args_overrides or {})
     mem_fraction_static = overrides.get("mem_fraction_static")
     if total_gpu_memory_fraction is None:
@@ -185,7 +190,21 @@ def create_tts_engine_executor(
         )
     else:
         pass
-    return Drama3EngineBuilder(
+    if engine_builder_path is None:
+        engine_builder_class = Drama3EngineBuilder
+    else:
+        engine_builder_class = import_string(engine_builder_path)
+        if not (
+            isinstance(engine_builder_class, type)
+            and issubclass(engine_builder_class, Drama3EngineBuilder)
+        ):
+            raise ValueError(
+                f"tts_engine.factory.engine_builder_path={engine_builder_path!r} "
+                f"does not name a Drama3EngineBuilder subclass"
+            )
+        else:
+            pass
+    return engine_builder_class(
         context_length=context_length,
         max_running_requests=max_running_requests,
         stream_stride=stream_stride,
@@ -201,6 +220,7 @@ def create_tts_engine_executor(
         tower_fused_layers=tower_fused_layers,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
+        routed_expert_cache_slots=routed_expert_cache_slots,
     ).build(
         model_path,
         device=device,
