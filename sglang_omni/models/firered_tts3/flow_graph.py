@@ -51,29 +51,32 @@ class FlowGraphRunner:
         n_timesteps: int,
         patch_size: int,
         history_length: int,
-        max_graphs: int = 8,
+        max_graphs: int,
         capture_sizes: list[int] | tuple[int, ...] | None = None,
         mode: FlowMode = "fp32",
         dit_fallback: torch.nn.Module | None = None,
         precompute_time_conditions: bool | None = None,
     ) -> None:
-        self.mode = mode
-        self.precision_gate = FlowPrecisionGate.from_environment()
-        self.dit = dit
-        self.dit_dtype = flow_dit_dtype(mode)
-        self.dit_fallback = dit_fallback if dit_fallback is not None else dit
-        time_cache, self.optimize_convolution = flow_optimizations(mode)
-        self.precompute_time_conditions = (
+        self.mode: FlowMode = mode
+        self.precision_gate: FlowPrecisionGate = FlowPrecisionGate.from_environment()
+        self.dit: torch.nn.Module | CompiledDiTExecutor = dit
+        self.dit_dtype: torch.dtype = flow_dit_dtype(mode)
+        self.dit_fallback: torch.nn.Module | CompiledDiTExecutor = (
+            dit_fallback if dit_fallback is not None else dit
+        )
+        time_cache, optimize_convolution = flow_optimizations(mode)
+        self.optimize_convolution: bool = optimize_convolution
+        self.precompute_time_conditions: bool = (
             time_cache
             if precompute_time_conditions is None
             else precompute_time_conditions
         )
-        self.optimize_ffn = (
+        self.optimize_ffn: bool = (
             flow_ffn_optimization(mode)
             and t_span.device.type == "cuda"
             and torch.cuda.get_device_capability(t_span.device) == (12, 0)
         )
-        self.optimize = (
+        self.optimize: bool = (
             self.precompute_time_conditions
             or self.optimize_convolution
             or self.optimize_ffn
@@ -82,6 +85,7 @@ class FlowGraphRunner:
             raise ValueError("Flow time/convolution caches require a compile flow mode")
         else:
             pass
+        self.executor: CompiledDiTExecutor | None
         if isinstance(dit, CompiledDiTExecutor):
             self.executor = dit
         elif self.optimize:
@@ -89,18 +93,18 @@ class FlowGraphRunner:
             self.dit = self.executor
         else:
             self.executor = None
-        self.t_span = t_span.clone() if self.optimize else t_span
-        self.n_timesteps = int(n_timesteps)
-        self.patch_size = int(patch_size)
-        self.history_length = int(history_length)
-        self.capture_sizes = (
+        self.t_span: torch.Tensor = t_span.clone() if self.optimize else t_span
+        self.n_timesteps: int = int(n_timesteps)
+        self.patch_size: int = int(patch_size)
+        self.history_length: int = int(history_length)
+        self.capture_sizes: tuple[int, ...] | None = (
             tuple(sorted({int(size) for size in capture_sizes if int(size) > 0}))
             or None
             if capture_sizes
             else None
         )
-        self.max_graphs = max(int(max_graphs), len(self.capture_sizes or ()))
-        self.enabled = True
+        self.max_graphs: int = max(int(max_graphs), len(self.capture_sizes or ()))
+        self.enabled: bool = True
         self.cache: OrderedDict[
             tuple[int | None, int, tuple[int, ...]], FlowGraphEntry
         ] = OrderedDict()
@@ -115,7 +119,7 @@ class FlowGraphRunner:
             "ffn_captures": 0,
             "ffn_fallbacks": 0,
         }
-        self.graph_capture = FlowGraphCapture(
+        self.graph_capture: FlowGraphCapture = FlowGraphCapture(
             dit_fallback=self.dit_fallback,
             executor=self.executor,
             dit_dtype=self.dit_dtype,
@@ -189,10 +193,7 @@ class FlowGraphRunner:
         if entry is None:
             entry = self.capture(history_latents, initial_noise, conditioning)
             if entry is None and self.dit is not self.dit_fallback:
-                # The compiled stack failed to compile or capture; degrade
-                # to the same dtype without torch.compile (permanently —
-                # later buckets share the conclusion) before giving up on
-                # the graphs entirely.
+                # note (kermit): A failed compiled capture also disables compilation for later buckets.
                 logger.warning(
                     f"FireRedTTS3 flow mode {self.mode}: capture with the "
                     "compiled DiT failed; retrying without torch.compile"
@@ -224,7 +225,7 @@ class FlowGraphRunner:
         else:
             pass
         entry.graph.replay()
-        # The tail aliases the static buffer the next replay overwrites.
+        # note (kermit): The next replay overwrites the static buffer.
         return entry.xt[:, -self.patch_size :][:batch_size].clone()
 
     @staticmethod

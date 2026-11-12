@@ -19,12 +19,27 @@ from sglang_omni.models.firered_tts3.hf_config import (
     detect_fireredtts3_variant,
     load_checkpoint_hf_config,
 )
-from sglang_omni.serve.protocol import SUPPORTED_TTS_TASK_TYPES, CreateSpeechRequest
-from sglang_omni.serve.speech_errors import bad_request
-from sglang_omni.serve.speech_service import (
-    PreparedSpeechReferences,
-    SpeechRequestValidator,
+from sglang_omni.models.firered_tts3.speech_validation import (
+    FireRedTTS3SpeakerSpeechRequestValidator,
+    FireRedTTS3SpeechRequestValidator,
 )
+
+__all__ = [
+    "DEFAULT_MAX_PATCHES",
+    "DEFAULT_MAX_RUNNING_REQUESTS",
+    "DEFAULT_N_TIMESTEPS",
+    "EntryClass",
+    "FireRedTTS3PipelineConfig",
+    "FireRedTTS3SpeakerSpeechRequestValidator",
+    "FireRedTTS3SpeechRequestValidator",
+    "FireRedTTS3StageFactoryKwargs",
+    "FireRedTTS3VocoderFactoryArgs",
+    "FireRedTTS3VocoderStageConfig",
+    "PACKAGE_PATH",
+    "SPEAKER_MAX_PATCHES",
+    "TALKER_FACTORY_DEFAULTS",
+    "VOCODER_FACTORY_DEFAULTS",
+]
 
 PACKAGE_PATH = "sglang_omni.models.firered_tts3"
 
@@ -311,90 +326,6 @@ class FireRedTTS3PipelineConfig(PipelineConfig):
 
     def supports_uploaded_voice_references(self) -> bool:
         return True
-
-
-class FireRedTTS3SpeechRequestValidator(SpeechRequestValidator):
-    """Apply native editing, speed and checkpoint parameter rules at the API boundary."""
-
-    supports_dual_stream: ClassVar[bool] = False
-
-    @staticmethod
-    def normalize_task_type(value: str) -> str:
-        supported = SUPPORTED_TTS_TASK_TYPES | {"SemanticEdit", "AcousticEdit"}
-        normalized = value.strip().replace("_", "").replace("-", "").lower()
-        for task_type in supported:
-            if normalized == task_type.lower():
-                return task_type
-            else:
-                pass
-        raise bad_request(
-            f"task_type must be one of: {', '.join(sorted(supported))}",
-            param="task_type",
-        )
-
-    def validate_input_text(
-        self, input_text: str, *, task_type: str | None = None
-    ) -> None:
-        task_type = (
-            self.normalize_task_type(task_type) if task_type is not None else None
-        )
-        if (
-            task_type in {"SemanticEdit", "AcousticEdit"}
-            and isinstance(input_text, str)
-            and not input_text.strip()
-        ):
-            return
-        else:
-            super().validate_input_text(input_text, task_type=task_type)
-
-    def validate_extra_params(self, request: CreateSpeechRequest) -> None:
-        extra_params = request.extra_params or {}
-        if "dual_stream" in extra_params:
-            if not isinstance(extra_params["dual_stream"], bool):
-                raise bad_request(
-                    "extra_params.dual_stream must be a boolean", param="extra_params"
-                )
-            elif extra_params["dual_stream"] and not self.supports_dual_stream:
-                raise bad_request(
-                    "extra_params.dual_stream requires a dual-stream-capable "
-                    "checkpoint (this deployment does not support it)",
-                    param="extra_params",
-                )
-            else:
-                pass
-        else:
-            pass
-        if extra_params.get("style") is not None and not isinstance(
-            extra_params["style"], str
-        ):
-            raise bad_request(
-                "extra_params.style must be a string", param="extra_params"
-            )
-        else:
-            pass
-
-    def resolve_encode_speed(self, request: CreateSpeechRequest) -> float:
-        # note (kermit): FireRed consumes speed natively; encode-time resampling would apply it twice.
-        return 1.0
-
-
-class FireRedTTS3SpeakerSpeechRequestValidator(FireRedTTS3SpeechRequestValidator):
-    """Speaker checkpoints use speaker tokens and cannot consume reference audio."""
-
-    supports_dual_stream: ClassVar[bool] = True
-
-    def validate_speech_references(
-        self,
-        request: CreateSpeechRequest,
-        prepared_references: PreparedSpeechReferences,
-    ) -> None:
-        if prepared_references.reference_descriptors:
-            raise bad_request(
-                "this model does not accept speech references",
-                param="ref_audio" if request.ref_audio is not None else "references",
-            )
-        else:
-            super().validate_speech_references(request, prepared_references)
 
 
 EntryClass = FireRedTTS3PipelineConfig

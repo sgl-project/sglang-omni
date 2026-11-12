@@ -39,8 +39,7 @@ class ProfilingProbe:
             return
         else:
             pass
-        # Sync both ends so GPU work is attributed to the segment that
-        # launched it; the syncs themselves make this a profiling-only path.
+        # note (kermit): Synchronization attributes GPU work to its launching segment.
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         else:

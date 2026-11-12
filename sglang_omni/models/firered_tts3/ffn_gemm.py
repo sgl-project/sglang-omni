@@ -54,15 +54,17 @@ class FfnGemmMode(TorchDispatchMode):
 
     def __init__(self, source: torch.nn.Module) -> None:
         super().__init__()
-        self.source = source
+        self.source: torch.nn.Module = source
         self.weights: dict[int, FfnWeight] = {}
         self.packed_weights: dict[int, FfnWeight] = {}
         self.packed_qkv: PackedQkvModel | None = None
         self.packed_compiled: torch.nn.Module | None = None
-        self.hits = 0
-        self.misses = 0
-        self.enabled = False
-        self.reason = "DiT GEMM optimization requires eleven CUDA BF16 Linear layers"
+        self.hits: int = 0
+        self.misses: int = 0
+        self.enabled: bool = False
+        self.reason: str = (
+            "DiT GEMM optimization requires eleven CUDA BF16 Linear layers"
+        )
         self.gemm_out: GemmOutput | None = None
         layers = [
             (name, layer)
@@ -297,16 +299,17 @@ class FfnGemmMode(TorchDispatchMode):
                         or out.shape != (inputs.shape[0], 3072)
                         or not out.is_contiguous()
                         or any(
-                            t.dtype != torch.bfloat16
-                            or t.device != entry.device
-                            or t.is_neg()
-                            or t.is_conj()
-                            for t in (inputs, weight, bias, out)
+                            tensor.dtype != torch.bfloat16
+                            or tensor.device != entry.device
+                            or tensor.is_neg()
+                            or tensor.is_conj()
+                            for tensor in (inputs, weight, bias, out)
                         )
                         or (
                             torch.is_grad_enabled()
                             and any(
-                                t.requires_grad for t in (inputs, weight, bias, out)
+                                tensor.requires_grad
+                                for tensor in (inputs, weight, bias, out)
                             )
                         )
                     ):
@@ -315,9 +318,9 @@ class FfnGemmMode(TorchDispatchMode):
                     else:
                         start, end = out.data_ptr(), out.data_ptr() + out.numel() * 2
                         if any(
-                            max(start, t.data_ptr())
-                            < min(end, t.data_ptr() + t.numel() * 2)
-                            for t in (inputs, weight, bias)
+                            max(start, tensor.data_ptr())
+                            < min(end, tensor.data_ptr() + tensor.numel() * 2)
+                            for tensor in (inputs, weight, bias)
                         ):
                             self.misses += 1
                             return func(*args, **kwargs)

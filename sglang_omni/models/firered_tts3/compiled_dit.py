@@ -40,16 +40,18 @@ class CompiledDiTExecutor:
     """Keep dispatch modes outside Dynamo tracing and the original graph intact."""
 
     def __init__(self, dit: DiT, original: torch.nn.Module | None = None) -> None:
-        self.source = dit
+        self.source: DiT = dit
         self.active_modes: ContextVar[tuple[TorchDispatchMode, ...]] = ContextVar(
             "firered_dit_dispatch_modes", default=()
         )
-        self.original_compiled = (
+        self.original_compiled: torch.nn.Module = (
             torch.compile(dit, dynamic=False, options={"epilogue_fusion": False})
             if original is None
             else original
         )
-        self.observed = torch.compile(dit, backend=self.compile_backend, dynamic=False)
+        self.observed: torch.nn.Module = torch.compile(
+            dit, backend=self.compile_backend, dynamic=False
+        )
 
     def compile_backend(
         self, graph_module: torch.fx.GraphModule, example_inputs: list[torch.Tensor]

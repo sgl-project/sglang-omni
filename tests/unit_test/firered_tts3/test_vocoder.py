@@ -18,7 +18,7 @@ from sglang_omni.models.firered_tts3.redae_decoder import (
 from sglang_omni.models.firered_tts3.vocoder_batch import FireRedTTS3BatchVocoder
 from sglang_omni.models.firered_tts3.vocoder_graph import RedAEVocoderGraphRunner
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
-from sglang_omni.proto import StagePayload
+from sglang_omni.proto.request import StagePayload
 from tests.unit_test.fixtures.firered_tts3 import (
     audio_tensor,
     make_payload,

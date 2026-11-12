@@ -3,21 +3,18 @@
 
 from __future__ import annotations
 
-import base64
 import dataclasses
 import json
 from pathlib import Path
-from typing import Literal
 from unittest import mock
 
 import pytest
 import torch
-from fastapi.testclient import TestClient
 from sglang.srt.models.registry import ModelRegistry
 from transformers import AutoConfig
 
-import sglang_omni.serve.speech_service as speech_service
-from sglang_omni.client.client import Client
+from sglang_omni.cli.config import resolve_sources
+from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.resolver import ConfigResolver
 from sglang_omni.config.runtime import resolve_stage_typed_kwargs
 from sglang_omni.config.sources import patches_from_shared_block
@@ -35,9 +32,6 @@ from sglang_omni.models.firered_tts3.payload_types import (
 )
 from sglang_omni.models.firered_tts3.sglang_model import FireRedTTS3SGLangModel
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
-from sglang_omni.serve.openai_api import create_app
-from sglang_omni.serve.speech_errors import SpeechAPIError
-from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.utils.imports import import_string
 from sglang_omni.utils.json import JsonValue
 
@@ -47,6 +41,44 @@ def test_firered_tts3_pipeline_is_registered() -> None:
         PIPELINE_CONFIG_REGISTRY.get_config("FireRedTTS3ForConditionalGeneration")
         is FireRedTTS3PipelineConfig
     )
+
+
+@pytest.mark.parametrize(
+    "variant,reference_count,reference_text_required,has_reference_stage",
+    [
+        ("base", 1, True, True),
+        ("instruct", None, False, True),
+        ("speaker", None, False, False),
+    ],
+)
+def test_example_config_selects_pipeline_without_local_checkpoint(
+    variant: FireRedTTS3Variant,
+    reference_count: int | None,
+    reference_text_required: bool,
+    has_reference_stage: bool,
+) -> None:
+    """A remote checkpoint must select validation and stages before download."""
+    config_path = (
+        Path(__file__).resolve().parents[3]
+        / "examples"
+        / "configs"
+        / f"firered_tts3_{variant}.yaml"
+    )
+    with mock.patch(
+        "sglang_omni.models.firered_tts3.config.load_checkpoint_hf_config",
+        return_value=None,
+    ):
+        pipeline = ConfigManager.from_file(str(config_path)).config
+    assert isinstance(pipeline, FireRedTTS3PipelineConfig)
+    assert pipeline.required_speech_reference_count == reference_count
+    assert pipeline.speech_reference_text_required is reference_text_required
+    assert any(stage.name == "reference_encode" for stage in pipeline.stages) is (
+        has_reference_stage
+    )
+    validator = import_string(pipeline.speech_request_validator_factory)(
+        default_model="tts"
+    )
+    assert validator.supports_dual_stream is (variant == "speaker")
 
 
 @pytest.mark.parametrize(
@@ -84,7 +116,7 @@ def test_firered_tts3_pipeline_is_registered() -> None:
 )
 def test_checkpoint_config_drives_pipeline_topology(
     tmp_path: Path,
-    variant: str,
+    variant: FireRedTTS3Variant,
     markers: dict[str, JsonValue],
     stage_names: list[str],
     reference_count: int | None,
@@ -106,6 +138,22 @@ def test_checkpoint_config_drives_pipeline_topology(
     assert pipeline.terminal_stages == ["vocoder"]
     assert pipeline.required_speech_reference_count == reference_count
     assert pipeline.speech_reference_text_required is text_required
+    config_path = (
+        Path(__file__).resolve().parents[3]
+        / "examples"
+        / "configs"
+        / f"firered_tts3_{variant}.yaml"
+    )
+    resolved = resolve_sources(
+        model_path=str(tmp_path),
+        config_file=str(config_path),
+        text_only=False,
+        variant=None,
+        mem_fraction_static=None,
+        argv=[],
+    ).resolved.config
+    assert resolved.model_path == str(tmp_path)
+    assert [stage.name for stage in resolved.stages] == stage_names
     service = import_string(pipeline.speech_request_validator_factory)(
         default_model="tts",
     )
@@ -320,105 +368,3 @@ def test_legacy_state_wire_defaults_and_overrides(
         state.min_patches,
     ) == expected_fields
     assert engine_token_budget(state) == expected_budget
-
-
-@pytest.mark.parametrize(
-    "variant,extra_params,delivery",
-    [
-        ("base", {"dual_stream": True}, "single"),
-        ("speaker", {"dual_stream": "yes"}, "batch"),
-        ("speaker", {"style": 3}, "single"),
-        ("speaker", [1], "single"),
-    ],
-)
-def test_speech_parameters_rejected_before_generation(
-    variant: FireRedTTS3Variant,
-    extra_params: dict[str, JsonValue] | list[int],
-    delivery: Literal["single", "batch"],
-) -> None:
-    """Invalid model parameters must return 400 before any backend dispatch."""
-    pipeline = FireRedTTS3PipelineConfig(model_path="model", variant=variant)
-    backend = mock.create_autospec(Client, instance=True)
-    client = TestClient(
-        create_app(
-            backend,
-            model_name="tts",
-            speech_request_validator_cls=import_string(
-                pipeline.speech_request_validator_factory
-            ),
-        )
-    )
-    payload = {"input": "hello", "extra_params": extra_params}
-    if delivery == "batch":
-        response = client.post("/v1/audio/speech/batch", json={"items": [payload]})
-        assert response.status_code == 200
-        result = response.json()["results"][0]
-        assert result["status"] == "error"
-        assert result["error"]["code"] == 400
-        assert result["error"]["param"] == "items.0.extra_params"
-    else:
-        response = client.post("/v1/audio/speech", json=payload)
-        assert response.status_code == 400
-        assert response.json()["error"]["param"] == "extra_params"
-    backend.speech.assert_not_called()
-    backend.generate.assert_not_called()
-
-
-@pytest.mark.parametrize("reference_state", ["missing", "oversized"])
-def test_reference_audio_rejects_invalid_bare_path(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    reference_state: Literal["missing", "oversized"],
-) -> None:
-    """Restoring local audio loading must preserve missing-file and size errors."""
-    audio_path = tmp_path / "reference.wav"
-    if reference_state == "oversized":
-        audio_path.write_bytes(b"RIFF")
-        monkeypatch.setattr(speech_service, "MAX_REFERENCE_AUDIO_BYTES", 3)
-    else:
-        pass
-    service = SpeechRequestValidator(default_model="tts")
-    with pytest.raises(SpeechAPIError) as failure:
-        service.parse_request({"input": "hello", "ref_audio": str(audio_path)})
-    assert failure.value.status_code == 400
-    assert failure.value.param == "ref_audio"
-
-
-def test_speaker_rejects_reference_audio() -> None:
-    """Speaker-token checkpoints must reject references at the API boundary."""
-    pipeline = FireRedTTS3PipelineConfig(model_path="model", variant="speaker")
-    service = import_string(pipeline.speech_request_validator_factory)(
-        default_model="tts"
-    )
-    reference = "data:audio/wav;base64," + base64.b64encode(b"RIFF").decode("ascii")
-    for fields in (
-        {"ref_audio": reference},
-        {"references": [{"audio_path": reference}]},
-    ):
-        with pytest.raises(SpeechAPIError) as failure:
-            service.parse_request({"input": "hello", **fields})
-        assert failure.value.status_code == 400
-        assert "does not accept speech references" in failure.value.message
-    service.parse_request({"input": "hello"})
-
-
-@pytest.mark.parametrize("task_type", ["semantic_edit", "AcousticEdit"])
-def test_editing_policy_is_scoped_to_firered(task_type: str) -> None:
-    """FireRed editing must not enable empty input or native speed for other models."""
-    pipeline = FireRedTTS3PipelineConfig(model_path="model", variant="instruct")
-    editing = import_string(pipeline.speech_request_validator_factory)(
-        default_model="tts"
-    )
-    generic = SpeechRequestValidator(default_model="tts")
-    payload = {"input": "", "task_type": task_type, "speed": 0.8}
-    prepared = editing.parse_generation_request(payload)
-    assert prepared.request.task_type in {"SemanticEdit", "AcousticEdit"}
-    assert editing.resolve_encode_speed(prepared.request) == 1.0
-    with pytest.raises(SpeechAPIError) as failure:
-        generic.parse_generation_request(payload)
-    assert failure.value.param == "input"
-    with pytest.raises(SpeechAPIError) as failure:
-        generic.parse_generation_request({**payload, "input": "hello"})
-    assert failure.value.param == "task_type"
-    prepared = generic.parse_generation_request({"input": "hello", "speed": 0.8})
-    assert generic.resolve_encode_speed(prepared.request) == 0.8

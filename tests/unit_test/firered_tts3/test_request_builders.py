@@ -21,7 +21,7 @@ from sglang_omni.models.firered_tts3.request_builders import (
     build_stream_output,
     flush_stream_output,
 )
-from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.proto.request import OmniRequest, StagePayload
 
 PATCH_SIZE = 4
 VOCAB_SIZE = 151936

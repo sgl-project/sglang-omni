@@ -36,6 +36,7 @@ from sglang_omni.models.firered_tts3.request_builders import (
     FireRedFlowResume,
     FireRedTTS3SGLangRequestData,
     FlowState,
+    scheduler_request_data,
 )
 from sglang_omni.models.firered_tts3.sglang_model import FireRedTTS3SGLangModel
 from sglang_omni.sampling.seed import derive_sampling_seed
@@ -67,13 +68,14 @@ def materialize_prefill_batch(
     device = forward_batch.input_ids.device
     embedding_dtype = next(model.parameters()).dtype
     model.text_logits_requested = any(
-        request.data.text_ar_mode == TEXT_MODE_TEXT for request in requests
+        scheduler_request_data(request).text_ar_mode == TEXT_MODE_TEXT
+        for request in requests
     )
     embedding_rows: list[torch.Tensor] = []
     materialized_requests: list[tuple[str, FireRedTTS3SGLangRequestData]] = []
     try:
         for request in requests:
-            request_data = request.data
+            request_data = scheduler_request_data(request)
             if request_data.flow_state is not None and (
                 not isinstance(request_data.flow_state, FireRedFlowResume)
             ):

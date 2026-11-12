@@ -90,7 +90,7 @@ class ControlledConvPlan:
         else:
             pass
         self.frontend = cudnn
-        self.device = inputs.device
+        self.device: torch.device = inputs.device
         with torch.cuda.device(self.device):
             self.handle = cudnn.create_handle()
             self.release_handle = weakref.finalize(
@@ -127,7 +127,7 @@ class ControlledConvPlan:
             self.graph.select_plan(0)
             self.graph.check_support()
             self.graph.build_plan_at_index(0)
-            self.workspace = torch.empty(
+            self.workspace: torch.Tensor = torch.empty(
                 self.graph.get_workspace_size(), dtype=torch.uint8, device=self.device
             )
 
@@ -171,8 +171,8 @@ class Conv1dWeightCache(TorchDispatchMode):
         self, module: torch.nn.Module, *, use_controlled_plan: bool = False
     ) -> None:
         super().__init__()
-        self.module = module
-        self.use_controlled_plan = use_controlled_plan
+        self.module: torch.nn.Module = module
+        self.use_controlled_plan: bool = use_controlled_plan
         self.weights: dict[int, CachedConvWeight] = {}
         for name, layer in module.named_modules():
             if isinstance(layer, torch.nn.Conv1d):
@@ -190,12 +190,12 @@ class Conv1dWeightCache(TorchDispatchMode):
                 )
             else:
                 pass
-        self.version_checks_available = all(
+        self.version_checks_available: bool = all(
             entry.version is not None for entry in self.weights.values()
         )
         self.controlled_plan: ControlledConvPlan | None = None
-        self.hits = 0
-        self.misses = 0
+        self.hits: int = 0
+        self.misses: int = 0
 
     def validate_weights(self) -> None:
         """Check weights before capture; live weight updates require a new worker."""

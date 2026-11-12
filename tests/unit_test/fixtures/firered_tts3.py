@@ -124,36 +124,36 @@ def tiny_runner(
 def make_inputs(
     device: torch.device, generator: torch.Generator, batch_size: int
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    hist = torch.randn(
+    history_latents = torch.randn(
         batch_size, HISTORY_LENGTH, REDAE_DIM, device=device, generator=generator
     )
-    x0 = torch.randn(
+    initial_noise = torch.randn(
         batch_size, PATCH_SIZE, REDAE_DIM, device=device, generator=generator
     )
-    cond = torch.randn(
+    conditioning = torch.randn(
         batch_size,
         HISTORY_LENGTH + PATCH_SIZE,
         COND_CHANNELS,
         device=device,
         generator=generator,
     )
-    return hist, x0, cond
+    return history_latents, initial_noise, conditioning
 
 
 def eager_patch(
     dit: torch.nn.Module,
-    hist: torch.Tensor,
-    x0: torch.Tensor,
-    cond: torch.Tensor,
-    cfg: torch.Tensor,
+    history_latents: torch.Tensor,
+    initial_noise: torch.Tensor,
+    conditioning: torch.Tensor,
+    guidance_scales: torch.Tensor,
     device: torch.device,
 ) -> torch.Tensor:
     return euler_flow_loop(
         dit,
-        torch.cat([hist, x0], dim=1),
-        cond,
+        torch.cat([history_latents, initial_noise], dim=1),
+        conditioning,
         flow_t_span(N_TIMESTEPS, device),
-        cfg,
+        guidance_scales,
         N_TIMESTEPS,
         PATCH_SIZE,
     )

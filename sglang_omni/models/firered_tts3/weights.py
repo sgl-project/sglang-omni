@@ -278,9 +278,11 @@ class PackedQkvModel:
     """Share immutable model tensors and validate copied QKV parameters before capture."""
 
     def __init__(self, source: torch.nn.Module) -> None:
-        self.source = source
+        self.source: torch.nn.Module = source
         original = dict(chain(source.named_parameters(), source.named_buffers()))
-        self.model = copy.deepcopy(source, memo={id(t): t for t in original.values()})
+        self.model: torch.nn.Module = copy.deepcopy(
+            source, memo={id(tensor): tensor for tensor in original.values()}
+        )
         self.layers: dict[str, PackedAttention] = {}
         for name, attention in list(self.model.named_modules()):
             if name.endswith(".attn"):
@@ -303,7 +305,7 @@ class PackedQkvModel:
             )
         else:
             pass
-        self.projections = {
+        self.projections: dict[str, TensorBinding] = {
             f"{name}.{role}.{parameter}": TensorBinding(
                 value=value,
                 pointer=value.data_ptr(),
@@ -319,7 +321,9 @@ class PackedQkvModel:
             for role in ("to_q", "to_k", "to_v")
             for parameter, value in layer.get_submodule(role).named_parameters()
         }
-        self.tensors = tuple(chain(self.model.parameters(), self.model.buffers()))
+        self.tensors: tuple[torch.Tensor, ...] = tuple(
+            chain(self.model.parameters(), self.model.buffers())
+        )
 
     def validate_weights(self) -> None:
         """Reject changes to source projections copied into the packed weights."""

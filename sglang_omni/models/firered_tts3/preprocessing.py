@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import regex
 from transformers import PreTrainedTokenizerBase
 
 from sglang_omni.models.firered_tts3.hf_config import (
@@ -20,6 +19,24 @@ from sglang_omni.models.firered_tts3.payload_types import (
     resolve_request_reference,
     store_firered_tts3_state,
 )
+from sglang_omni.models.firered_tts3.speaker_prompts import (
+    SPACE_BEFORE_HAN_PATTERN,
+    SPEAKER_AUDIO_START,
+    SPEAKER_TEXT_HOLDER,
+    SPEAKER_TEXT_PAD,
+    compose_speaker_chatml,
+    encode_speaker_dual_stream_prompt,
+    encode_speaker_prefill_ids,
+    encode_speaker_text,
+)
+from sglang_omni.models.firered_tts3.speaker_prompts import is_han_character
+from sglang_omni.models.firered_tts3.speaker_prompts import (
+    is_han_character as is_cjk_char,
+)
+from sglang_omni.models.firered_tts3.speaker_prompts import resolve_speaker_token_id
+from sglang_omni.models.firered_tts3.speech_validation import (
+    FireRedTTS3GenerationOverrides,
+)
 from sglang_omni.models.firered_tts3.task_prompts import (
     compose_base_state,
     compose_instruct_state,
@@ -27,11 +44,25 @@ from sglang_omni.models.firered_tts3.task_prompts import (
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.utils.json import JsonValue
 
+__all__ = [
+    "MAX_TEXT_CHARS",
+    "SPACE_BEFORE_HAN_PATTERN",
+    "SPEAKER_AUDIO_START",
+    "SPEAKER_TEXT_HOLDER",
+    "SPEAKER_TEXT_PAD",
+    "TASK_GUIDANCE_SCALES",
+    "compose_speaker_chatml",
+    "compose_speaker_state",
+    "encode_speaker_dual_stream_prompt",
+    "encode_speaker_prefill_ids",
+    "encode_speaker_text",
+    "is_cjk_char",
+    "is_han_character",
+    "preprocess_firered_tts3_payload",
+    "resolve_speaker_token_id",
+]
+
 MAX_TEXT_CHARS = 400
-SPEAKER_TEXT_HOLDER = "<|text_holder|>"
-SPEAKER_TEXT_PAD = "<|text_pad|>"
-SPEAKER_AUDIO_START = "<|audio_start|>"
-SPACE_BEFORE_HAN_PATTERN = regex.compile(r"\s+(?=\p{Han})")
 
 
 TASK_GUIDANCE_SCALES: dict[str, float] = {
@@ -132,11 +163,6 @@ def preprocess_firered_tts3_payload(
         )
     else:
         raise AssertionError(f"unhandled FireRedTTS3 variant: {variant}")
-    request_state.n_timesteps = int(
-        resolve_number(
-            "n_timesteps", generation_defaults.get("n_timesteps", n_timesteps)
-        )
-    )
     guidance_default = generation_defaults.get("inference_cfg", 2.0)
     if variant == "instruct":
         guidance_default = TASK_GUIDANCE_SCALES.get(
@@ -144,17 +170,33 @@ def preprocess_firered_tts3_payload(
         )
     else:
         pass
-    request_state.inference_cfg = float(
-        resolve_number("inference_cfg", guidance_default)
+    generation_parameters = FireRedTTS3GenerationOverrides.model_validate(
+        {
+            "n_timesteps": resolve_number(
+                "n_timesteps", generation_defaults.get("n_timesteps", n_timesteps)
+            ),
+            "inference_cfg": resolve_number("inference_cfg", guidance_default),
+            "stop_threshold": resolve_number(
+                "stop_threshold", generation_defaults.get("stop_threshold", 0.5)
+            ),
+            "min_patches": resolve_number(
+                "min_patches", generation_defaults.get("min_patches", 6)
+            ),
+            "max_patches": resolve_number("max_patches", max_patches),
+            "seed": sampling_seed,
+        }
     )
-    request_state.stop_threshold = float(
-        resolve_number("stop_threshold", generation_defaults.get("stop_threshold", 0.5))
-    )
-    request_state.min_patches = int(
-        resolve_number("min_patches", generation_defaults.get("min_patches", 6))
-    )
-    request_state.max_patches = int(resolve_number("max_patches", max_patches))
-    request_state.seed = None if sampling_seed is None else int(sampling_seed)
+    assert generation_parameters.n_timesteps is not None
+    assert generation_parameters.inference_cfg is not None
+    assert generation_parameters.stop_threshold is not None
+    assert generation_parameters.min_patches is not None
+    assert generation_parameters.max_patches is not None
+    request_state.n_timesteps = generation_parameters.n_timesteps
+    request_state.inference_cfg = generation_parameters.inference_cfg
+    request_state.stop_threshold = generation_parameters.stop_threshold
+    request_state.min_patches = generation_parameters.min_patches
+    request_state.max_patches = generation_parameters.max_patches
+    request_state.seed = generation_parameters.seed
     request_state.stream = should_stream
     request_state.max_engine_tokens = int(
         request_parameters.get("max_new_tokens")
@@ -252,152 +294,3 @@ def compose_speaker_state(
             tokenizer, text=text.strip(), speaker_token=speaker_token
         ),
     )
-
-
-def compose_speaker_chatml(
-    speaker_token: str,
-    *,
-    style: str = "",
-    text_len: int = 0,
-    dual_stream: bool = False,
-    interleave_ratio: tuple[int, int] = (2, 1),
-) -> str:
-    """Build the speaker prefix through its audio-start token."""
-    if dual_stream:
-        user_prompt = f"{style} Align the interleaved text and speech chunks.".strip()
-        text_steps, audio_steps = interleave_ratio
-        if text_steps < 1 or audio_steps < 1:
-            raise ValueError(
-                f"FireRedTTS3 interleave_ratio {interleave_ratio!r} invalid; "
-                "expected [text_steps, audio_steps] with both >= 1"
-            )
-        else:
-            pass
-    else:
-        user_prompt = f"{style} Convert text to speech.".strip()
-        user_prompt = f"{user_prompt}\n{SPEAKER_TEXT_HOLDER * text_len}"
-    return (
-        f"<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
-        f"<|im_start|>user\n{user_prompt}<|im_end|>\n"
-        f"<|im_start|>assistant\n<think>\n\n</think>\n\n"
-        f"{speaker_token}{SPEAKER_AUDIO_START}"
-    )
-
-
-def is_cjk_char(character: str) -> bool:
-    return (
-        "一" <= character <= "鿿"
-        or "㐀" <= character <= "䶿"
-        or "豈" <= character <= "﫿"
-        or "\U00020000" <= character <= "\U0002a6df"
-    )
-
-
-def encode_speaker_text(tokenizer: PreTrainedTokenizerBase, text: str) -> list[int]:
-    """Expand multi-character Han tokens while preserving unencodable words."""
-    text = SPACE_BEFORE_HAN_PATTERN.sub("", text)
-    tokens = tokenizer(text, add_special_tokens=False)["input_ids"]
-    unknown_token_id = tokenizer.unk_token_id
-    out: list[int] = []
-    for token_id in tokens:
-        decoded = tokenizer.decode([int(token_id)]).strip()
-        if len(decoded) < 2 or not all(is_cjk_char(c) for c in decoded):
-            out.append(int(token_id))
-            continue
-        else:
-            pass
-        char_ids: list[int] = []
-        for character in decoded:
-            ids = tokenizer(character, add_special_tokens=False)["input_ids"]
-            if unknown_token_id is not None and unknown_token_id in ids:
-                char_ids = []
-                break
-            else:
-                pass
-            char_ids.extend(int(i) for i in ids)
-        if char_ids:
-            out.extend(char_ids)
-        else:
-            out.append(int(token_id))
-    return out
-
-
-def resolve_speaker_token_id(tokenizer: PreTrainedTokenizerBase, token: str) -> int:
-    """Reject a tokenizer missing a required speaker token."""
-    token_id = tokenizer.convert_tokens_to_ids(token)
-    if token_id is None:
-        raise ValueError(
-            f"FireRedTTS3 speaker requests require a tokenizer with the "
-            f"{token} token — this model's tokenizer has none (the speaker "
-            "variant is a separate checkpoint)"
-        )
-    else:
-        pass
-    return int(token_id)
-
-
-def encode_speaker_prefill_ids(
-    tokenizer: PreTrainedTokenizerBase,
-    *,
-    text: str,
-    speaker_token: str,
-    style: str | None = None,
-) -> list[int]:
-    """Replace speaker text holders with the character-level token stream."""
-    text_ids = encode_speaker_text(tokenizer, text)
-    if not text_ids:
-        raise ValueError("FireRedTTS3 speaker text encoded to zero tokens")
-    else:
-        pass
-    chatml = compose_speaker_chatml(
-        speaker_token,
-        style="" if style is None else style,
-        text_len=len(text_ids),
-    )
-    ids = encode_speaker_text(tokenizer, chatml)
-    holder_id = resolve_speaker_token_id(tokenizer, SPEAKER_TEXT_HOLDER)
-    prompt_ids: list[int] = []
-    fed = 0
-    for tid in ids:
-        if int(tid) == holder_id:
-            prompt_ids.append(text_ids[fed])
-            fed += 1
-        else:
-            prompt_ids.append(int(tid))
-    if fed != len(text_ids):
-        raise ValueError(
-            f"FireRedTTS3 speaker template carries {fed} text slots "
-            f"for {len(text_ids)} text tokens — composition bug"
-        )
-    else:
-        pass
-    return prompt_ids
-
-
-def encode_speaker_dual_stream_prompt(
-    tokenizer: PreTrainedTokenizerBase,
-    *,
-    text: str,
-    speaker_token: str,
-    style: str | None = None,
-    interleave_ratio: tuple[int, int] = (2, 1),
-) -> tuple[list[int], list[int], int]:
-    """Return the speaker prefix, interleaved text tokens, and text-padding id."""
-    if not text.strip():
-        raise ValueError("FireRedTTS3 speaker requests require non-empty text")
-    else:
-        pass
-    text_ids = encode_speaker_text(tokenizer, text)
-    if not text_ids:
-        raise ValueError("FireRedTTS3 speaker text encoded to zero tokens")
-    else:
-        pass
-    chatml = compose_speaker_chatml(
-        speaker_token,
-        style="Use a 中性 tone." if style is None else style,
-        dual_stream=True,
-        interleave_ratio=interleave_ratio,
-    )
-    prompt_ids = encode_speaker_text(tokenizer, chatml)
-    text_pad_id = resolve_speaker_token_id(tokenizer, SPEAKER_TEXT_PAD)
-    return prompt_ids, text_ids, text_pad_id

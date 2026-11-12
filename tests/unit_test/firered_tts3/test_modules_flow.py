@@ -11,7 +11,11 @@ from sglang_omni.models.firered_tts3.config import FireRedTTS3PipelineConfig
 from sglang_omni.models.firered_tts3.conv_cache import Conv1dWeightCache
 from sglang_omni.models.firered_tts3.dit import DiT
 from sglang_omni.models.firered_tts3.engine_builder import FireRedTTS3EngineBuilder
-from sglang_omni.models.firered_tts3.flow_execution import prepare_flow_dit
+from sglang_omni.models.firered_tts3.flow_execution import (
+    euler_flow_loop,
+    flow_t_span,
+    prepare_flow_dit,
+)
 from sglang_omni.models.firered_tts3.flow_graph import FlowGraphRunner
 from sglang_omni.models.firered_tts3.flow_graph import flow_t_span as legacy_flow_t_span
 from sglang_omni.models.firered_tts3.flow_graph import (
@@ -35,6 +39,23 @@ from tests.unit_test.fixtures.firered_tts3 import (
 pytestmark = pytest.mark.usefixtures("disable_flow_optimization_environment")
 
 
+@pytest.mark.parametrize("n_timesteps", [-1, 0])
+def test_flow_rejects_nonpositive_timestep_count(n_timesteps: int) -> None:
+    """Invalid restored state must not publish an unintegrated noise patch."""
+    with pytest.raises(AssertionError, match="positive timestep count"):
+        flow_t_span(n_timesteps, torch.device("cpu"))
+    with pytest.raises(AssertionError, match="positive timestep count"):
+        euler_flow_loop(
+            torch.nn.Identity(),
+            torch.ones(1, 2, 2),
+            torch.ones(1, 2, 2),
+            torch.empty(0),
+            torch.ones(1, 1, 1),
+            n_timesteps,
+            1,
+        )
+
+
 def test_flow_mode_validation() -> None:
     dit = tiny_cpu_dit()
     with pytest.raises(ValueError, match="unknown flow mode"):
@@ -46,6 +67,7 @@ def test_flow_mode_validation() -> None:
             n_timesteps=N_TIMESTEPS,
             patch_size=PATCH_SIZE,
             history_length=HISTORY_LENGTH,
+            max_graphs=8,
             mode="fp16",
         )
     with pytest.raises(ValueError, match="flow_mode"):
@@ -107,6 +129,7 @@ def test_explicit_time_cache_protects_original_compiled_call(
         n_timesteps=1,
         patch_size=1,
         history_length=0,
+        max_graphs=8,
         mode="compile_fp32",
         dit_fallback=torch.nn.Identity(),
         precompute_time_conditions=True,

@@ -90,25 +90,25 @@ MULTI_DIALECT_TAGS = tuple(
 
 
 def convert_to_chatml(
-    text_in: str,
-    latent_in_len: int = 0,
-    text_out: str = "",
-    latent_out_len: int = 0,
+    input_text: str,
+    audio_input_patch_count: int = 0,
+    output_text: str = "",
+    audio_output_patch_count: int = 0,
 ) -> str:
     audio_input = (
-        f"<|sosp|>{CHATML_LATENT_IN_PAD_SYM * latent_in_len}<|eosp|>\n"
-        if latent_in_len > 0
+        f"<|sosp|>{CHATML_LATENT_IN_PAD_SYM * audio_input_patch_count}<|eosp|>\n"
+        if audio_input_patch_count > 0
         else ""
     )
     audio_output = (
-        f"<|sosp|>{CHATML_LATENT_OUT_PAD_SYM * latent_out_len}<|eosp|>\n"
-        if latent_out_len > 0
+        f"<|sosp|>{CHATML_LATENT_OUT_PAD_SYM * audio_output_patch_count}<|eosp|>\n"
+        if audio_output_patch_count > 0
         else ""
     )
     return (
         "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
-        f"<|im_start|>user\n{audio_input}{text_in} /no_think<|im_end|>\n"
-        f"<|im_start|>assistant\n<think>\n\n</think>\n\n{text_out}{audio_output}<|im_end|>\n"
+        f"<|im_start|>user\n{audio_input}{input_text} /no_think<|im_end|>\n"
+        f"<|im_start|>assistant\n<think>\n\n</think>\n\n{output_text}{audio_output}<|im_end|>\n"
     )
 
 
@@ -288,8 +288,8 @@ def compose_instruct_state(
         prompt_text = str(prompt_text_value).strip()
         prompt_patch_count = count_audio_patches(prompt_audio_path, cap_seconds=None)
         prompt_template = convert_to_chatml(
-            text_in=f"Convert text to speech.\n{prompt_text}{text.strip()}",
-            latent_out_len=prompt_patch_count,
+            input_text=f"Convert text to speech.\n{prompt_text}{text.strip()}",
+            audio_output_patch_count=prompt_patch_count,
         ).removesuffix("<|eosp|>\n<|im_end|>\n")
     elif task_type == "voice_design":
         if not text.strip():
@@ -301,8 +301,8 @@ def compose_instruct_state(
         else:
             pass
         prompt_template = convert_to_chatml(
-            text_in=f"{instruction_text}\n\n根据上述音色描述，首先整理成语音属性，再合成以下文本对应的音频：\n{text.strip()}",
-            text_out="<|sot|>",
+            input_text=f"{instruction_text}\n\n根据上述音色描述，首先整理成语音属性，再合成以下文本对应的音频：\n{text.strip()}",
+            output_text="<|sot|>",
         ).removesuffix("<|im_end|>\n")
     elif task_type == "semantic_edit":
         if not instruction_text:
@@ -314,9 +314,9 @@ def compose_instruct_state(
             audio_input_path, cap_seconds=MAX_EDIT_SECONDS
         )
         prompt_template = convert_to_chatml(
-            text_in=f"Identify the content of the audio. {instruction_text.strip()}",
-            latent_in_len=audio_input_patch_count,
-            text_out="<|sot|>",
+            input_text=f"Identify the content of the audio. {instruction_text.strip()}",
+            audio_input_patch_count=audio_input_patch_count,
+            output_text="<|sot|>",
         ).removesuffix("<|im_end|>\n")
     elif task_type == "acoustic_edit":
         audio_input_path = require_edit_source(reference_audio, task_type)
@@ -327,9 +327,9 @@ def compose_instruct_state(
             audio_input_path, cap_seconds=MAX_EDIT_SECONDS
         )
         prompt_template = convert_to_chatml(
-            text_in=instruction,
-            latent_in_len=audio_input_patch_count,
-            latent_out_len=1,
+            input_text=instruction,
+            audio_input_patch_count=audio_input_patch_count,
+            audio_output_patch_count=1,
         ).removesuffix("<|video_pad|><|eosp|>\n<|im_end|>\n")
     else:
         raise AssertionError(f"unhandled FireRedTTS3-Instruct task: {task_type}")

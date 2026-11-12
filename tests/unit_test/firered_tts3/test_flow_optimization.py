@@ -6,6 +6,7 @@ from __future__ import annotations
 import collections
 import gc
 import weakref
+from typing import Literal
 from unittest.mock import create_autospec
 
 import pytest
@@ -37,7 +38,9 @@ pytestmark = pytest.mark.usefixtures("disable_flow_optimization_environment")
 
 
 @pytest.mark.parametrize("mode_name", ["convolution", "ffn", "time"])
-def test_dispatch_modes_preserve_unrelated_operator_returns(mode_name: str) -> None:
+def test_dispatch_modes_preserve_unrelated_operator_returns(
+    mode_name: Literal["convolution", "ffn", "time"],
+) -> None:
     source = torch.nn.Identity()
     if mode_name == "convolution":
         mode = Conv1dWeightCache(source)
@@ -111,7 +114,9 @@ def test_ffn_dispatch_preserves_addmm_keyword_fallback() -> None:
 
 
 @pytest.mark.parametrize("argument_style", ["positional", "keywords"])
-def test_ffn_dispatch_uses_real_addmm_inputs(argument_style: str) -> None:
+def test_ffn_dispatch_uses_real_addmm_inputs(
+    argument_style: Literal["positional", "keywords"],
+) -> None:
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(801)
         layer = torch.nn.Linear(1024, 3072, dtype=torch.bfloat16).eval()
@@ -157,7 +162,9 @@ def test_ffn_dispatch_uses_real_addmm_inputs(argument_style: str) -> None:
 
 
 @pytest.mark.parametrize("operator", ["conv1d", "convolution"])
-def test_convolution_dispatch_accepts_keyword_arguments(operator: str) -> None:
+def test_convolution_dispatch_accepts_keyword_arguments(
+    operator: Literal["conv1d", "convolution"],
+) -> None:
     source = torch.nn.Conv1d(2, 2, 3, padding=1).eval()
     inputs = torch.arange(24, dtype=torch.float32).reshape(1, 2, 12)
     cache = Conv1dWeightCache(source)
@@ -214,7 +221,7 @@ def test_flow_tolerance_only_relaxes_convolution_gate(
     device: torch.device,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
-    corrupted_stage: str,
+    corrupted_stage: Literal["conv", "observed", "time"],
     atol: float,
     conv_enabled: bool,
     accepted: bool,
@@ -243,10 +250,10 @@ def test_flow_tolerance_only_relaxes_convolution_gate(
 
     def perturb_selected_flow(
         dit: torch.nn.Module | CompiledDiTExecutor,
-        xt: torch.Tensor,
-        cond: torch.Tensor,
+        flow_state: torch.Tensor,
+        conditioning: torch.Tensor,
         t_span: torch.Tensor,
-        cfg: torch.Tensor,
+        guidance_scales: torch.Tensor,
         n_timesteps: int,
         patch_size: int,
         *,
@@ -258,10 +265,10 @@ def test_flow_tolerance_only_relaxes_convolution_gate(
         nonlocal corrupted_calls
         patch = original_loop(
             dit,
-            xt,
-            cond,
+            flow_state,
+            conditioning,
             t_span,
-            cfg,
+            guidance_scales,
             n_timesteps,
             patch_size,
             dit_dtype=dit_dtype,
@@ -286,18 +293,22 @@ def test_flow_tolerance_only_relaxes_convolution_gate(
 
     monkeypatch.setattr(flow_graph_module, "euler_flow_loop", perturb_selected_flow)
     generator = torch.Generator(device=device).manual_seed(71)
-    hist, noise, cond = make_inputs(device, generator, 1)
-    cfg = torch.full((1, 1, 1), 1.2, device=device)
+    history_latents, initial_noise, conditioning = make_inputs(device, generator, 1)
+    guidance_scales = torch.full((1, 1, 1), 1.2, device=device)
     with torch.inference_mode():
-        got = runner.run(hist, noise, cond, cfg, N_TIMESTEPS)
+        got = runner.run(
+            history_latents, initial_noise, conditioning, guidance_scales, N_TIMESTEPS
+        )
         calls_after_capture = corrupted_calls
-        repeated = runner.run(hist, noise, cond, cfg, N_TIMESTEPS)
+        repeated = runner.run(
+            history_latents, initial_noise, conditioning, guidance_scales, N_TIMESTEPS
+        )
         expected = original_loop(
             execution.original,
-            torch.cat([hist, noise], dim=1),
-            cond,
+            torch.cat([history_latents, initial_noise], dim=1),
+            conditioning,
             runner.t_span,
-            cfg,
+            guidance_scales,
             N_TIMESTEPS,
             PATCH_SIZE,
             dit_dtype=torch.bfloat16,
@@ -352,16 +363,18 @@ def test_optimized_flow_hits_dispatch_and_retains_time_table(
         capture_sizes=(1,),
     )
     generator = torch.Generator(device=device).manual_seed(73)
-    hist, noise, cond = make_inputs(device, generator, 1)
-    cfg = torch.full((1, 1, 1), 2.0, device=device)
+    history_latents, initial_noise, conditioning = make_inputs(device, generator, 1)
+    guidance_scales = torch.full((1, 1, 1), 2.0, device=device)
     with torch.inference_mode():
-        got = runner.run(hist, noise, cond, cfg, N_TIMESTEPS)
+        got = runner.run(
+            history_latents, initial_noise, conditioning, guidance_scales, N_TIMESTEPS
+        )
         expected = euler_flow_loop(
             execution.original,
-            torch.cat([hist, noise], dim=1),
-            cond,
+            torch.cat([history_latents, initial_noise], dim=1),
+            conditioning,
             runner.t_span,
-            cfg,
+            guidance_scales,
             N_TIMESTEPS,
             PATCH_SIZE,
             dit_dtype=torch.bfloat16,
@@ -417,7 +430,9 @@ def test_optimized_flow_hits_dispatch_and_retains_time_table(
 
     monkeypatch.setattr(TimeConditionCache, "validate_weights", reject_time_weight_scan)
     with torch.inference_mode():
-        repeated = runner.run(hist, noise, cond, cfg, N_TIMESTEPS)
+        repeated = runner.run(
+            history_latents, initial_noise, conditioning, guidance_scales, N_TIMESTEPS
+        )
     assert torch.equal(got, repeated)
     assert dispatch.call_count == 0
     assert runner.stats()["captures"] == 1 and runner.stats()["hits"] == 1
@@ -451,11 +466,17 @@ def test_time_tables_follow_graph_lru_eviction(
     table_refs = []
     with torch.inference_mode():
         for batch in (1, 2, 3):
-            hist, noise, cond = make_inputs(device, generator, batch)
-            actual = runner.run(
-                hist, noise, cond, torch.ones(batch, device=device), N_TIMESTEPS
+            history_latents, initial_noise, conditioning = make_inputs(
+                device, generator, batch
             )
-            assert actual is not None and torch.equal(actual, noise)
+            actual = runner.run(
+                history_latents,
+                initial_noise,
+                conditioning,
+                torch.ones(batch, device=device),
+                N_TIMESTEPS,
+            )
+            assert actual is not None and torch.equal(actual, initial_noise)
             entry = next(iter(runner.cache.values()))
             table_refs.append(weakref.ref(entry.time_table))
             del entry
@@ -465,10 +486,14 @@ def test_time_tables_follow_graph_lru_eviction(
         stream.wait_stream(torch.cuda.current_stream(device))
         with torch.cuda.stream(stream):
             replayed = runner.run(
-                hist, noise, cond, torch.ones(batch, device=device), N_TIMESTEPS
+                history_latents,
+                initial_noise,
+                conditioning,
+                torch.ones(batch, device=device),
+                N_TIMESTEPS,
             )
         runner.cache.clear()
         gc.collect()
         assert all(ref() is None for ref in table_refs)
     stream.synchronize()
-    assert torch.equal(replayed, noise)
+    assert torch.equal(replayed, initial_noise)

@@ -14,6 +14,7 @@ from sglang_omni.models.firered_tts3.request_builders import (
     TEXT_MODE_AUDIO_ZERO,
     TEXT_MODE_SOSP,
     FireRedTTS3SGLangRequestData,
+    scheduler_request_data,
 )
 from sglang_omni.models.firered_tts3.sglang_model import FireRedTTS3SGLangModel
 from sglang_omni.scheduling.types import SchedulerRequest
@@ -224,7 +225,7 @@ def materialize_decode_embeddings(
     """Stage feedback and text embeddings in upcoming batch row order."""
     embedding_rows = []
     for request_row_index, request in enumerate(requests):
-        request_data = request.data
+        request_data = scheduler_request_data(request)
         feed_is_patch = (
             not request_data.dual_stream
             and request_data.text_ar_mode == TEXT_MODE_AUDIO

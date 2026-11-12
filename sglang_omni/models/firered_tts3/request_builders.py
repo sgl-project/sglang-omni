@@ -23,7 +23,7 @@ from sglang_omni.models.firered_tts3.profiling import ProfilingProbe
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
-from sglang_omni.scheduling.types import RequestOutput
+from sglang_omni.scheduling.types import RequestOutput, SchedulerRequest
 
 TextDecodeMode = Literal["text", "finalize", "sosp", "audio_zero", "audio"]
 DualStreamStage = Literal["text", "patch"]
@@ -84,6 +84,13 @@ class FireRedTTS3SGLangRequestData(SGLangARRequestData):
     dual_stream_step_index: int = 0
     text_token_index: int = 0
     stop_pending: bool = False
+
+
+def scheduler_request_data(request: SchedulerRequest) -> FireRedTTS3SGLangRequestData:
+    """Check the FireRed request invariant at the scheduler boundary."""
+    request_data = request.data
+    assert isinstance(request_data, FireRedTTS3SGLangRequestData)
+    return request_data
 
 
 def build_sglang_firered_tts3_request(

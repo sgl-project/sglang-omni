@@ -7,66 +7,27 @@ from pathlib import Path
 import numpy as np
 import pytest
 import soundfile as sf
-from transformers import PreTrainedTokenizerFast
 
 from sglang_omni.models.firered_tts3.hf_config import FireRedTTS3Config
-from sglang_omni.models.firered_tts3.payload_types import FireRedTTS3State
-from sglang_omni.models.firered_tts3.preprocessing import (
-    preprocess_firered_tts3_payload,
-)
 from sglang_omni.models.firered_tts3.request_builders import (
     build_sglang_firered_tts3_request,
 )
-from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.proto.request import StagePayload
 from sglang_omni.utils.json import JsonValue
 from tests.unit_test.fixtures.firered_tts3 import make_speaker_tokenizer
-
-
-def make_payload(
-    *,
-    inputs: dict[str, JsonValue] | None = None,
-    params: dict[str, JsonValue] | None = None,
-    tts_params: dict[str, JsonValue] | None = None,
-) -> StagePayload:
-    return StagePayload(
-        request_id="rid",
-        request=OmniRequest(
-            inputs=inputs
-            or {
-                "text": "欢迎使用点点语音合成系统。",
-                "references": [{"audio_path": "ref.wav", "text": "今天天气很好。"}],
-            },
-            params=params or {},
-            metadata={"tts_params": tts_params or {}},
-        ),
-        data={},
-    )
-
-
-def preprocess(
-    payload: StagePayload,
-    *,
-    config: FireRedTTS3Config | None = None,
-    tokenizer: PreTrainedTokenizerFast | None = None,
-    max_patches: int = 400,
-) -> FireRedTTS3State:
-    preprocess_firered_tts3_payload(
-        payload,
-        tokenizer=tokenizer or make_speaker_tokenizer(),
-        config=config or FireRedTTS3Config(spk_in_dim=512, dit_in_channels=1600),
-        n_timesteps=10,
-        max_patches=max_patches,
-    )
-    return FireRedTTS3State.from_dict(payload.data)
+from tests.unit_test.fixtures.firered_tts3_preprocessing import (
+    make_preprocessing_payload,
+    preprocess_payload,
+)
 
 
 @pytest.mark.parametrize("max_patches,engine_tokens", [(400, 420), (256, 276)])
 def test_preprocessing_composes_base_template(
     max_patches: int, engine_tokens: int
 ) -> None:
-    payload = make_payload()
+    payload = make_preprocessing_payload()
     tokenizer = make_speaker_tokenizer()
-    state = preprocess(payload, max_patches=max_patches, tokenizer=tokenizer)
+    state = preprocess_payload(payload, max_patches=max_patches, tokenizer=tokenizer)
     expected = "<|Chinese|><|sot|>今天天气很好。欢迎使用点点语音合成系统。<|eot|>"
     assert tokenizer.decode(state.input_ids) == expected
     assert state.variant == "base"
@@ -82,11 +43,11 @@ def test_preprocessing_composes_base_template(
 
 
 def test_preprocessing_param_precedence() -> None:
-    payload = make_payload(
+    payload = make_preprocessing_payload(
         params={"seed": 7, "stage_params": {"talker": {"inference_cfg": 1.5}}},
         tts_params={"stop_threshold": "0.7"},
     )
-    preprocess(payload)
+    preprocess_payload(payload)
     request = build_sglang_firered_tts3_request(
         payload, patch_size=4, vocab_size=151936
     )
@@ -95,28 +56,85 @@ def test_preprocessing_param_precedence() -> None:
     assert request.state.stop_threshold == 0.7
 
 
+@pytest.mark.parametrize(
+    "parameter_name,parameter_value",
+    [
+        ("n_timesteps", -1),
+        ("n_timesteps", 0),
+        ("n_timesteps", 1.5),
+        ("n_timesteps", []),
+        ("n_timesteps", True),
+        ("inference_cfg", {}),
+        ("stop_threshold", "nan"),
+        ("min_patches", "invalid"),
+        ("min_patches", -1),
+        ("max_patches", 0),
+        ("max_patches", -100),
+        ("max_patches", []),
+        ("seed", {}),
+    ],
+)
+def test_preprocessing_rejects_invalid_generation_parameters(
+    parameter_name: str, parameter_value: JsonValue
+) -> None:
+    """Invalid solver steps must not reach Flow and return the initial noise."""
+    payload = make_preprocessing_payload(params={parameter_name: parameter_value})
+    with pytest.raises(ValueError, match=parameter_name):
+        preprocess_payload(payload)
+
+
+def test_preprocessing_preserves_generation_parameter_precedence() -> None:
+    payload = make_preprocessing_payload(
+        inputs={
+            "text": "Hello",
+            "references": [{"audio_path": "ref.wav", "text": "Hello"}],
+            "n_timesteps": "6",
+        },
+        params={
+            "n_timesteps": "3",
+            "stage_params": {"talker": {"n_timesteps": "4"}},
+            "inference_cfg": "1.25",
+            "min_patches": "3",
+            "max_patches": "100",
+            "seed": "7",
+        },
+        tts_params={"n_timesteps": "5", "stop_threshold": "0.7"},
+    )
+    state = preprocess_payload(payload)
+    assert state.n_timesteps == 6
+    assert state.inference_cfg == 1.25
+    assert state.stop_threshold == 0.7
+    assert state.min_patches == 3
+    assert state.max_patches == 100
+    assert state.seed == 7
+
+
 def test_preprocessing_requires_text_and_reference() -> None:
-    payload = make_payload(inputs={"text": "  "})
+    payload = make_preprocessing_payload(inputs={"text": "  "})
     with pytest.raises(ValueError, match="non-empty input text"):
-        preprocess(payload)
-    payload = make_payload(inputs={"text": "你好"})
+        preprocess_payload(payload)
+    payload = make_preprocessing_payload(inputs={"text": "你好"})
     with pytest.raises(ValueError, match="reference audio"):
-        preprocess(payload)
-    payload = make_payload(
+        preprocess_payload(payload)
+    payload = make_preprocessing_payload(
         inputs={"text": "你好", "references": [{"audio_path": "ref.wav"}]}
     )
     with pytest.raises(ValueError, match="transcript"):
-        preprocess(payload)
+        preprocess_payload(payload)
 
 
 def test_preprocessing_accepts_streaming_and_bad_language_rejected() -> None:
-    state = preprocess(make_payload(params={"stream": True}))
+    state = preprocess_payload(make_preprocessing_payload(params={"stream": True}))
     assert state.stream is True
-    state = preprocess(make_payload())
+    state = preprocess_payload(make_preprocessing_payload())
     assert state.stream is False
     with pytest.raises(ValueError, match="unsupported FireRedTTS3 language"):
-        preprocess(make_payload(tts_params={"language": "Klingon"}))
-    state = preprocess(make_payload(tts_params={"language": "ZH_Shanghai"}))
+        preprocess_payload(
+            make_preprocessing_payload(tts_params={"language": "Klingon"})
+        )
+    state = preprocess_payload(
+        make_preprocessing_payload(tts_params={"language": "ZH_Shanghai"})
+    )
     assert state.language == "ZH_Shanghai"
 
 
@@ -147,28 +165,32 @@ def instruct_payload(
         (tts_params := dict(tts_params or {}))["task_type"] = task_type
     else:
         pass
-    return make_payload(inputs=inputs, params=params or {}, tts_params=tts_params)
+    return make_preprocessing_payload(
+        inputs=inputs, params=params or {}, tts_params=tts_params
+    )
 
 
 def test_instruct_task_validation() -> None:
     with pytest.raises(ValueError, match="task_type"):
-        preprocess(instruct_payload(task_type="Base2"), config=INSTRUCT_CONFIG)
+        preprocess_payload(instruct_payload(task_type="Base2"), config=INSTRUCT_CONFIG)
     with pytest.raises(ValueError, match="instructions"):
-        preprocess(instruct_payload(task_type="VoiceDesign"), config=INSTRUCT_CONFIG)
+        preprocess_payload(
+            instruct_payload(task_type="VoiceDesign"), config=INSTRUCT_CONFIG
+        )
     with pytest.raises(ValueError, match="non-empty input text"):
-        preprocess(
+        preprocess_payload(
             instruct_payload(task_type="VoiceDesign", instructions="x", text=" "),
             config=INSTRUCT_CONFIG,
         )
     with pytest.raises(ValueError, match="edit source"):
-        preprocess(
+        preprocess_payload(
             instruct_payload(task_type="AcousticEdit", text=""), config=INSTRUCT_CONFIG
         )
     with pytest.raises(ValueError, match="reference audio"):
-        preprocess(instruct_payload(text="你好"), config=INSTRUCT_CONFIG)
+        preprocess_payload(instruct_payload(text="你好"), config=INSTRUCT_CONFIG)
     with pytest.raises(ValueError, match="transcript"):
-        preprocess(
-            make_payload(
+        preprocess_payload(
+            make_preprocessing_payload(
                 inputs={"text": "你好", "references": [{"audio_path": "ref.wav"}]}
             ),
             config=INSTRUCT_CONFIG,
@@ -187,7 +209,7 @@ def test_instruct_explicit_sampling_overrides_task_default(
     expected_sampling: tuple[float, float, int],
 ) -> None:
     """Supplied sampling fields must override VoiceDesign defaults without metadata."""
-    state = preprocess(
+    state = preprocess_payload(
         instruct_payload(
             task_type="VoiceDesign",
             instructions="a calm deep voice",
@@ -200,144 +222,6 @@ def test_instruct_explicit_sampling_overrides_task_default(
         state.text_top_p,
         state.text_top_k,
     ) == expected_sampling
-
-
-SPEAKER_CONFIG = FireRedTTS3Config(
-    text_latent_interleave_ratio=[2, 1],
-    speaker_token="<|f531_speaker|>",
-    dit_in_channels=1088,
-    use_lm_head=False,
-    redae_scale=0.4,
-    generation_defaults={
-        "n_timesteps": 10,
-        "inference_cfg": 1.2,
-        "stop_threshold": 0.5,
-        "min_patches": 6,
-        "max_patches": 600,
-    },
-)
-
-
-def speaker_payload(
-    *,
-    inputs: dict[str, JsonValue] | None = None,
-    params: dict[str, JsonValue] | None = None,
-    tts_params: dict[str, JsonValue] | None = None,
-) -> StagePayload:
-    return make_payload(
-        inputs=inputs or {"text": "晚上好，欢迎收听今天的节目。"},
-        params=params,
-        tts_params=tts_params,
-    )
-
-
-@pytest.mark.parametrize(
-    "text,request_parameters,engine_token_budget",
-    [
-        ("你 好", {"dual_stream": False}, 620),
-        ("你 好", {"dual_stream": True}, 1820),
-        (
-            "晚上好，欢迎收听今天的节目。",
-            {"dual_stream": True, "max_new_tokens": 300},
-            300,
-        ),
-    ],
-)
-def test_speaker_preprocessing_composes_prompt_and_budget(
-    text: str, request_parameters: dict[str, JsonValue], engine_token_budget: int
-) -> None:
-    tokenizer = make_speaker_tokenizer()
-    payload = speaker_payload(inputs={"text": text}, params=request_parameters)
-    state = preprocess(
-        payload,
-        tokenizer=tokenizer,
-        config=SPEAKER_CONFIG,
-        max_patches=600,
-    )
-    request = build_sglang_firered_tts3_request(
-        payload,
-        patch_size=4,
-        vocab_size=151936,
-        interleave_ratio=tuple(SPEAKER_CONFIG.text_latent_interleave_ratio),
-    )
-    assert request.max_new_tokens == engine_token_budget
-    assert request.req.sampling_params.max_new_tokens == engine_token_budget
-    dual_stream = request_parameters["dual_stream"]
-    spoken_text = text.replace(" ", "")
-    assert state.variant == "speaker"
-    assert state.task_type == "tts"
-    assert state.dual_stream is dual_stream
-    assert state.inference_cfg == 1.2
-    assert state.max_engine_tokens == engine_token_budget
-    assert state.max_patches == 600
-    if dual_stream:
-        user_prompt = "Use a中性 tone. Align the interleaved text and speech chunks."
-        assert state.text_stream_ids == [
-            tokenizer.convert_tokens_to_ids(char) for char in spoken_text
-        ]
-        assert state.text_pad_id == tokenizer.convert_tokens_to_ids("<|text_pad|>")
-    else:
-        user_prompt = f"Convert text to speech.\n{spoken_text}"
-        assert state.text_stream_ids == []
-        assert state.text_pad_id == -1
-    expected = f"<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n{user_prompt}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n<|f531_speaker|><|audio_start|>"
-    assert tokenizer.decode(state.input_ids) == expected
-    assert tokenizer.convert_tokens_to_ids("<|text_holder|>") not in state.input_ids
-
-
-def test_speaker_dual_stream_style_passthrough() -> None:
-    tokenizer = make_speaker_tokenizer()
-    styled = preprocess(
-        speaker_payload(params={"dual_stream": True, "style": "Use a 活泼 tone."}),
-        tokenizer=tokenizer,
-        config=SPEAKER_CONFIG,
-        max_patches=600,
-    )
-    prompt = tokenizer.decode(styled.input_ids)
-    assert "Use a活泼 tone. Align the interleaved text and speech chunks." in prompt
-    assert "Use a中性 tone." not in prompt
-    plain = preprocess(
-        speaker_payload(), tokenizer=tokenizer, config=SPEAKER_CONFIG, max_patches=600
-    )
-    styled_prefill = preprocess(
-        speaker_payload(params={"style": "Use a 活泼 tone."}),
-        tokenizer=tokenizer,
-        config=SPEAKER_CONFIG,
-        max_patches=600,
-    )
-    assert styled_prefill.input_ids == plain.input_ids
-
-
-def test_speaker_rejects_references_and_foreign_tasks() -> None:
-    with pytest.raises(ValueError, match="text-only tts"):
-        preprocess(
-            speaker_payload(
-                inputs={
-                    "text": "你好",
-                    "references": [{"audio_path": "ref.wav", "text": "参考"}],
-                }
-            ),
-            config=SPEAKER_CONFIG,
-            max_patches=600,
-        )
-    with pytest.raises(ValueError, match="text-only tts"):
-        preprocess(
-            speaker_payload(tts_params={"ref_text": "参考"}),
-            config=SPEAKER_CONFIG,
-            max_patches=600,
-        )
-    with pytest.raises(ValueError, match="task_type"):
-        preprocess(
-            speaker_payload(tts_params={"task_type": "VoiceDesign"}),
-            config=SPEAKER_CONFIG,
-            max_patches=600,
-        )
-    with pytest.raises(ValueError, match="non-empty input text"):
-        preprocess(
-            speaker_payload(inputs={"text": "  "}),
-            config=SPEAKER_CONFIG,
-            max_patches=600,
-        )
 
 
 @pytest.mark.parametrize(
@@ -411,7 +295,7 @@ def test_instruct_preprocessing_routes_tasks_to_model_prompts(
     sf.write(audio_path, np.zeros(69120, dtype=np.float32), 24000, subtype="FLOAT")
     is_edit = task in ("SemanticEdit", "AcousticEdit")
     tokenizer = make_speaker_tokenizer()
-    state = preprocess(
+    state = preprocess_payload(
         instruct_payload(
             task_type=None if task == "tts" else task,
             instructions=instructions,

@@ -96,6 +96,7 @@ def prepare_flow_dit(
 
 def flow_t_span(n_timesteps: int, device: torch.device) -> torch.Tensor:
     """The cosine t_span schedule (fp32 red line), n_timesteps + 1 knots."""
+    assert n_timesteps > 0, "Flow requires a positive timestep count"
     t = torch.linspace(0.0, 1.0, n_timesteps + 1, device=device, dtype=torch.float32)
     return 1.0 - torch.cos(t * 0.5 * torch.pi)
 
@@ -115,6 +116,7 @@ def euler_flow_loop(
     time_mode: TimeGemmMode | None = None,
 ) -> torch.Tensor:
     """Integrate the flow state in place and return its patch tail."""
+    assert n_timesteps > 0, "Flow requires a positive timestep count"
     flow_state, conditioning, guidance_scales = xt, cond, cfg
     batch_size = flow_state.shape[0]
     for timestep_index in range(n_timesteps):

@@ -41,16 +41,6 @@ class TimeCacheUnavailable(RuntimeError):
     """The caller must retry the complete flow using the original compiled DiT."""
 
 
-def finite_byte_equal(actual: torch.Tensor, expected: torch.Tensor) -> bool:
-    if actual.shape != expected.shape or actual.dtype != expected.dtype:
-        return False
-    else:
-        return bool(torch.isfinite(actual).all().item()) and torch.equal(
-            actual.contiguous().view(torch.uint8),
-            expected.contiguous().view(torch.uint8),
-        )
-
-
 @dataclass(frozen=True, kw_only=True)
 class GemmSignature:
     input_shape: tuple[int, ...]
@@ -112,10 +102,10 @@ class TimeGemmMode(TorchDispatchMode):
             )
         else:
             pass
-        self.weights = weights
-        self.phase = phase
-        self.n_timesteps = n_timesteps
-        self.table = table
+        self.weights: Mapping[int, str] = weights
+        self.phase: Literal["collect", "cached"] = phase
+        self.n_timesteps: int = n_timesteps
+        self.table: TimeGemmTable | None = table
         self.collected: list[dict[str, TimeGemmValue]] = [
             {} for _ in range(n_timesteps)
         ]
@@ -227,7 +217,7 @@ class TimeConditionCache:
     """Prepare tables owned by their active graph entries and dispatch modes."""
 
     def __init__(self, dit: DiT) -> None:
-        self.source = dit
+        self.source: DiT = dit
         weights = {
             module.weight.data_ptr(): name
             for name, module in dit.named_modules()
@@ -241,8 +231,8 @@ class TimeConditionCache:
             )
         else:
             pass
-        self.weights = MappingProxyType(weights)
-        self.parameters = {
+        self.weights: Mapping[int, str] = MappingProxyType(weights)
+        self.parameters: dict[str, TimeParameter] = {
             name: TimeParameter(
                 pointer=parameter.data_ptr(),
                 shape=tuple(parameter.shape),
@@ -256,7 +246,7 @@ class TimeConditionCache:
             for name, parameter in dit.named_parameters()
             if name.startswith("t_embedder.") or ".adaLN_modulation." in name
         }
-        self.version_checks_available = all(
+        self.version_checks_available: bool = all(
             parameter.version is not None for parameter in self.parameters.values()
         )
 

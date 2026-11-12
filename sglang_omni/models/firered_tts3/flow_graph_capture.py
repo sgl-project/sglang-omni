@@ -50,22 +50,22 @@ class FlowGraphCapture:
         precision_gate: FlowPrecisionGate,
         counters: FlowGraphCounters,
     ) -> None:
-        self.dit_fallback = dit_fallback
-        self.executor = executor
-        self.dit_dtype = dit_dtype
-        self.t_span = t_span
-        self.n_timesteps = n_timesteps
-        self.patch_size = patch_size
-        self.optimize = optimize
-        self.precompute_time_conditions = precompute_time_conditions
-        self.optimize_convolution = optimize_convolution
-        self.optimize_ffn = optimize_ffn
-        self.precision_gate = precision_gate
-        self.counters = counters
+        self.dit_fallback: torch.nn.Module | CompiledDiTExecutor = dit_fallback
+        self.executor: CompiledDiTExecutor | None = executor
+        self.dit_dtype: torch.dtype = dit_dtype
+        self.t_span: torch.Tensor = t_span
+        self.n_timesteps: int = n_timesteps
+        self.patch_size: int = patch_size
+        self.optimize: bool = optimize
+        self.precompute_time_conditions: bool = precompute_time_conditions
+        self.optimize_convolution: bool = optimize_convolution
+        self.optimize_ffn: bool = optimize_ffn
+        self.precision_gate: FlowPrecisionGate = precision_gate
+        self.counters: FlowGraphCounters = counters
         self.time_cache: TimeConditionCache | None = None
         self.conv_cache: Conv1dWeightCache | None = None
         self.ffn_mode: FfnGemmMode | None = None
-        self.resources = FlowGraphResources()
+        self.resources: FlowGraphResources = FlowGraphResources()
 
     def capture(
         self,

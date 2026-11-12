@@ -158,7 +158,9 @@ class PackedAttention(Attention):
         self.training = source.training
         self.to_q, self.to_k, self.to_v = source.to_q, source.to_k, source.to_v
         self.to_out = source.to_out
-        self.to_qkv = torch.nn.Linear(self.dim, 3 * self.inner_dim, device="meta")
+        self.to_qkv: torch.nn.Linear = torch.nn.Linear(
+            self.dim, 3 * self.inner_dim, device="meta"
+        )
         projections = (self.to_q, self.to_k, self.to_v)
         self.to_qkv.weight = torch.nn.Parameter(
             torch.cat([layer.weight.detach() for layer in projections]),

@@ -184,7 +184,11 @@ class FlowGraphResources:
     """Keep the graph pool and capture stream alive across bucket captures."""
 
     def __init__(self) -> None:
-        self.graph_pool = torch.cuda.graph_pool_handle()
+        self.graph_pool: (
+            torch.cuda._POOL_HANDLE
+        ) = (  # noqa: SLF001  # leading-underscore: PyTorch graph pool handle type
+            torch.cuda.graph_pool_handle()
+        )
         # note (kermit): A dedicated capture stream prevents cuBLAS workspace races across graph families.
         self.capture_stream: torch.cuda.Stream | None = None
 

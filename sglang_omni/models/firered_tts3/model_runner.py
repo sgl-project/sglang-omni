@@ -37,6 +37,7 @@ from sglang_omni.models.firered_tts3.request_builders import (
     FireRedFlowResume,
     FireRedTTS3SGLangRequestData,
     FlowState,
+    scheduler_request_data,
 )
 from sglang_omni.models.firered_tts3.sglang_model import FireRedTTS3SGLangModel
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
@@ -125,7 +126,8 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
             pass
         assert forward_batch is not None
         self.model.text_logits_requested = any(
-            (request.data.text_ar_mode == TEXT_MODE_TEXT for request in requests)
+            scheduler_request_data(request).text_ar_mode == TEXT_MODE_TEXT
+            for request in requests
         )
         materialize_decode_embeddings(self.model, forward_batch, requests)
 
@@ -152,7 +154,8 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
         requests: list[SchedulerRequest],
     ) -> bool:
         return any(
-            (request.data.text_ar_mode == TEXT_MODE_TEXT for request in requests)
+            scheduler_request_data(request).text_ar_mode == TEXT_MODE_TEXT
+            for request in requests
         )
 
     def sample_before_post_decode(
@@ -162,7 +165,8 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
         requests: list[SchedulerRequest],
     ) -> bool:
         return any(
-            (request.data.text_ar_mode == TEXT_MODE_TEXT for request in requests)
+            scheduler_request_data(request).text_ar_mode == TEXT_MODE_TEXT
+            for request in requests
         )
 
     def post_prefill(
@@ -185,7 +189,7 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
             engine_prefill = time.perf_counter() - self.prefill_launch_at
             self.prefill_launch_at = None
             for request in requests:
-                probe = request.data.probe
+                probe = scheduler_request_data(request).probe
                 if probe is not None and probe.enabled:
                     probe.segments["engine_prefill"] = engine_prefill
                 else:
@@ -205,7 +209,7 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
         next_token_ids: list[int] = []
         flow_rows: list[FlowRow] | None = [] if self.flow_batching else None
         for request_row_index, request in enumerate(requests):
-            request_data = request.data
+            request_data = scheduler_request_data(request)
             request_token_count = request_data.req.extend_len
             request_hidden = hidden_states[
                 hidden_row_offset : hidden_row_offset + request_token_count
@@ -280,7 +284,10 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
         """Separate known reporting tokens from device control-token inputs."""
         if (
             self.control_token_fastpath
-            and all((self.is_sync_speaker_audio(request.data) for request in requests))
+            and all(
+                self.is_sync_speaker_audio(scheduler_request_data(request))
+                for request in requests
+            )
             and all((token_id == CONTROL_TOKEN_ID for token_id in next_token_ids))
         ):
             return (
@@ -342,7 +349,7 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
     ) -> None:
         """Apply deferred stops only to requests still owned by this batch."""
         for request in requests:
-            self.resolve_pending_stop(request.data)
+            self.resolve_pending_stop(scheduler_request_data(request))
 
     def run_post_decode(
         self,
@@ -368,7 +375,7 @@ class FireRedTTS3ModelRunner(ModelRunner[FireRedTTS3SGLangRequestData]):
         next_token_ids: list[int] = []
         flow_rows: list[FlowRow] | None = [] if self.flow_batching else None
         for request_row_index, request in enumerate(requests):
-            request_data = request.data
+            request_data = scheduler_request_data(request)
             if request_data.stop_pending:
                 next_token_ids.append(CONTROL_TOKEN_ID)
                 if not defer_stop:

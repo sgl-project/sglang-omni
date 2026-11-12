@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from types import SimpleNamespace
+from typing import Literal
 from unittest.mock import Mock, patch
 
 import pytest
@@ -12,13 +13,13 @@ import torch
 from sglang.srt.managers.schedule_batch import FINISH_MATCHED_TOKEN
 from sglang.srt.managers.utils import GenerationBatchResult
 
+from sglang_omni.models.firered_tts3.embeddings import text_output_token_count
 from sglang_omni.models.firered_tts3.model_runner import (
     AUDIO_SOS_ID,
     TEXT_EOT_ID,
     FireRedTTS3ModelRunner,
 )
 from sglang_omni.models.firered_tts3.payload_types import TEXT_TOKEN_BUDGET
-from sglang_omni.models.firered_tts3.prefill import text_output_token_count
 from sglang_omni.models.firered_tts3.profiling import ProfilingProbe
 from sglang_omni.models.firered_tts3.request_builders import (
     CONTROL_TOKEN_ID,
@@ -266,7 +267,9 @@ def test_prefill_stop_finishes_on_next_sync_decode(dual: bool) -> None:
 
 @pytest.mark.parametrize("defer_stop", [False, True])
 @pytest.mark.parametrize("status", ["active", "retracted", "finished"])
-def test_pending_stop_resolve_ownership(defer_stop: bool, status: str) -> None:
+def test_pending_stop_resolve_ownership(
+    defer_stop: bool, status: Literal["active", "retracted", "finished"]
+) -> None:
     runner, request = make_runner(), make_request(task_type="tts")
     request_data = request.data
     request_data.stop_pending = True
@@ -344,9 +347,9 @@ def test_deferred_stop_survives_repeated_retraction_until_decode(
             torch.full((excess,), CONTROL_TOKEN_ID, dtype=torch.long)
         )
         torch.testing.assert_close(rows[-excess:], expected)
-        cond = request_data.flow_state.backbone_conditioning
+        conditioning = request_data.flow_state.backbone_conditioning
         assert prefill(runner, request) == CONTROL_TOKEN_ID
-        assert request_data.flow_state.backbone_conditioning is cond
+        assert request_data.flow_state.backbone_conditioning is conditioning
         assert list(request_data.req.output_ids) == output_ids
         assert (
             request_data.text_ar_mode,
