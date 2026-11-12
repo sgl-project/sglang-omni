@@ -41,20 +41,7 @@ curl -i http://localhost:8000/health
 
 ## Synthesizing Speech
 
-```bash
-curl --fail-with-body http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
-    "input": "Hello! This is Qwen3-TTS running with SGLang-Omni.",
-    "voice": "Ryan",
-    "language": "English",
-    "instructions": "Speak clearly and calmly."
-  }' \
-  --output output.wav
-```
-
-Open `output.wav` in an audio player. The response is WAV audio by default. For Python or the OpenAI SDK, use the [TTS client examples](../basic_usage/tts.md#python).
+With the 1.7B CustomVoice server running, use the [cURL example](../basic_usage/tts.md#curl) in TTS Model Usage to generate `output.wav`. The same guide includes [Python and OpenAI SDK examples](../basic_usage/tts.md#python).
 
 ## Choose a model
 
@@ -108,25 +95,7 @@ Use the full checkpoint ID in `--model-path` and the request's `model` field.
 
 ## Streaming
 
-With the CustomVoice server running, send a streaming request:
-
-```bash
-curl --fail-with-body -N http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
-    "input": "Hello! This is Qwen3-TTS running with SGLang-Omni.",
-    "voice": "Ryan",
-    "language": "English",
-    "stream": true,
-    "response_format": "wav"
-  }' \
-  --output streaming.wav
-```
-
-This saves the streamed audio to `streaming.wav`.
-
-All three voice modes support streaming. For detailed examples, see [TTS streaming examples](../basic_usage/tts.md#raw-wav-and-pcm), [SSE](../basic_usage/tts.md#sse-event-framing), and [WebSocket](../basic_usage/tts.md#websocket-speech-streaming).
+All three voice modes support streaming. With the CustomVoice server running, use the [raw WAV and PCM examples](../basic_usage/tts.md#raw-wav-and-pcm) in TTS Model Usage. The guide also includes [SSE](../basic_usage/tts.md#sse-event-framing) and [WebSocket](../basic_usage/tts.md#websocket-speech-streaming) clients.
 
 The default chunk schedule favors early audio. If playback stalls under load, see [first-audio chunk tuning](qwen3_tts/tuning.md#first-audio-chunk-ramp).
 
@@ -135,22 +104,7 @@ The default chunk schedule favors early audio. If playback stalls under load, se
 
 ## Common options
 
-With the 1.7B CustomVoice server running, customize the language, speaking style, generation limit, and sampling seed:
-
-```bash
-curl --fail-with-body http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
-    "input": "你好，欢迎使用 SGLang-Omni。",
-    "voice": "Vivian",
-    "language": "Chinese",
-    "instructions": "用平静、自然的语气说话。",
-    "max_new_tokens": 512,
-    "seed": 42
-  }' \
-  --output chinese-speech.wav
-```
+The 1.7B CustomVoice checkpoint supports speaking-style control through `instructions`; see [CustomVoice](#customvoice) for checkpoint differences.
 
 Reaching `max_new_tokens` can truncate speech. A fixed `seed` does not guarantee byte-identical audio; see [deterministic inference](qwen3_tts/tuning.md#deterministic-inference).
 
