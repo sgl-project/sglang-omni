@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/appctx"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/appicons"
@@ -82,8 +83,15 @@ func TestAppIcons(t *testing.T) {
 	// never more than a batch a request.
 	manyApps(fs, 200)
 	*asked = nil
+	add, ok := tt.Find("Add apps…")
+	if !ok {
+		t.Fatal("Add apps button is missing")
+	}
+	tt.Scroll(float32(windowWidth)*0.8, float32(windowHeight)*0.5, 0, add.Y-float32(windowHeight)*0.5)
 	click(t, tt, "Add apps…")
-	frames(tt)
+	if !a.aePage.appsOpen {
+		t.Fatal("Add apps dialog did not open")
+	}
 	count := func() (n int) {
 		for _, ids := range *asked {
 			if len(ids) > iconBatch {
@@ -97,6 +105,8 @@ func TestAppIcons(t *testing.T) {
 	if before == 0 || before > 2*iconBatch {
 		t.Errorf("asked for %d icons of 200 rows: %v", before, *asked)
 	}
+	// End the page's scroll gesture before scrolling inside the dialog.
+	tt.Advance(time.Second)
 	for range 10 {
 		tt.Scroll(400, 300, 0, 300)
 		frames(tt)

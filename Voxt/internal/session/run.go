@@ -153,10 +153,13 @@ func (r *run) main() {
 	// The services and the dictionary, meanwhile.
 	r.svcDone = make(chan svcResult, 1)
 	go func() {
-		svc, err := cfg.Resolve(r.ctx, kind, r.settings)
+		svc, err := r.resolveServices()
 		var terms []store.Term
 		if err == nil && r.settings.Dictionary.Enabled && cfg.Glossary != nil {
 			terms, _ = cfg.Glossary(r.ctx)
+		}
+		if r.ctx.Err() != nil {
+			return
 		}
 		r.svcDone <- svcResult{svc, terms, err}
 	}()

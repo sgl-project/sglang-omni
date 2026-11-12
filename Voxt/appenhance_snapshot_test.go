@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
@@ -71,6 +72,15 @@ func snapshotsAppEnhance(t *testing.T, out string) {
 			a.aePage.sel = "g-chat"
 			a.navigate("/app-enhancement")
 			save("ae-page")
+			scrollTo("Transcribe clean-up")
+			clickControl(t, tt, i18n.T("Transcribe clean-up"))
+			save("ae-cleanup-options")
+			tt.Key(0, ui.KeyEnd)
+			tt.Key(0, ui.KeyEnter)
+			save("ae-cleanup-off")
+			clickControl(t, tt, i18n.T("Transcribe clean-up"))
+			tt.Key(0, ui.KeyHome)
+			tt.Key(0, ui.KeyEnter)
 			scrollTo("Group prompt")
 			save("ae-scene")
 			scrollTo("Apps")
