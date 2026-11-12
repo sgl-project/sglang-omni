@@ -375,6 +375,9 @@ class MossTTSDelaySamplingCudaGraphRunner:
 
         captured = self.graphs[key]
         captured.graph.replay()
+        torch.cuda.current_stream(control_logits.device).wait_stream(
+            self.capture_stream
+        )
         return DelaySamplingOutput(
             rows=captured.rows[:batch_size],
             next_delay_state=captured.next_delay_state[:batch_size],

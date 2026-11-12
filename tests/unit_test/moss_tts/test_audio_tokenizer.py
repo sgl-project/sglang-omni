@@ -21,6 +21,7 @@ from sglang_omni.models.moss_tts.audio_tokenizer import (
     ResidualLFQ,
     RotaryEmbedding,
 )
+from sglang_omni.platforms import current_platform
 
 
 class FakeLayerScale(nn.Module):
@@ -571,6 +572,9 @@ def test_attention_backend_policy(monkeypatch: pytest.MonkeyPatch) -> None:
     ("capability", "requires_chunks"),
     [((8, 9), True), ((9, 0), False), ((10, 0), False), ((12, 0), False)],
 )
+@pytest.mark.skipif(
+    current_platform.is_musa(), reason="CUDA compute-capability policy test"
+)
 def test_packed_flash_query_chunk_policy_uses_sm(
     monkeypatch: pytest.MonkeyPatch,
     capability: tuple[int, int],
@@ -593,6 +597,9 @@ def test_packed_flash_query_chunk_policy_uses_sm(
 @pytest.mark.parametrize(
     ("capability", "version", "is_flash_available"),
     [((9, 0), 3, True), ((8, 9), 3, False), ((12, 0), 4, True), ((12, 0), 4, False)],
+)
+@pytest.mark.skipif(
+    current_platform.is_musa(), reason="CUDA capability-based backend selection test"
 )
 def test_auto_backend_selects_available_flash_version(
     monkeypatch: pytest.MonkeyPatch,
@@ -1464,6 +1471,9 @@ def test_vocoder_decoder_computes_output_lengths_on_host() -> None:
     assert wrapped.output_lengths([3, 5]) == [12, 20]
 
 
+@pytest.mark.skipif(
+    current_platform.is_musa(), reason="CUDA packed-attention requirement test"
+)
 def test_vocoder_decoder_requires_packed_attention_for_every_transformer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
