@@ -29,7 +29,6 @@ class FireRedASR2EngineBuilder(AsrEngineBuilder[FireRedRequestData]):
 
     def __init__(
         self,
-        *,
         max_new_tokens: int,
         max_running_requests: int,
         mm_embedding_cache_size_bytes: int,
@@ -50,7 +49,7 @@ class FireRedASR2EngineBuilder(AsrEngineBuilder[FireRedRequestData]):
         self.feature_extractor = FireRedFeatureExtractor.from_pretrained(checkpoint_dir)
         self.config = AutoConfig.from_pretrained(checkpoint_dir)
 
-    def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
+    def generation_defaults(self, dtype: str) -> GenerationDefaults:
         return {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": True,
@@ -76,7 +75,6 @@ class FireRedASR2EngineBuilder(AsrEngineBuilder[FireRedRequestData]):
         self,
         model: torch.nn.Module,
         server_args: ServerArgs,
-        *,
         generation_cuda_graph_enabled: bool,
     ) -> None:
         # note (cocoa00): Local model registration bypasses SGLang multimodal cache setup.

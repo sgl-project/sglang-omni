@@ -11,7 +11,7 @@ from sglang_omni.proto.request import OmniRequest, StagePayload
 class Tokenizer:
     unk_token_id = None
 
-    def encode(self, text: str, *, add_special_tokens: bool) -> list[int]:
+    def encode(self, text: str, add_special_tokens: bool) -> list[int]:
         return [1, 2] if text.endswith("user\n") else [3, 4, 5]
 
     def convert_tokens_to_ids(self, token: str) -> int:
@@ -26,7 +26,11 @@ def build_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> request_builders.FireRedRequestBuilder:
     audio = PreparedAudio(np.zeros(16000), 16000, 1.0, "0123456789abcdef")
-    monkeypatch.setattr(request_builders, "prepare_audio", lambda *a, **kw: audio)
+    monkeypatch.setattr(
+        request_builders,
+        "prepare_audio",
+        lambda payload, source_name, max_duration_s: audio,
+    )
     builder, _ = request_builders.make_firered_asr2_scheduler_adapters(
         tokenizer=Tokenizer(),
         feature_extractor=lambda wave: torch.zeros(21, 80),
@@ -36,7 +40,8 @@ def build_request(
     return builder
 
 
-def payload(**params: int) -> StagePayload:
+def payload(max_new_tokens: int | None = None) -> StagePayload:
+    params = {} if max_new_tokens is None else {"max_new_tokens": max_new_tokens}
     return StagePayload(
         request_id="asr-test", request=OmniRequest(inputs={}, params=params), data={}
     )

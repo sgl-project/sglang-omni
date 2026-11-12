@@ -10,7 +10,6 @@ from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
 def create_sglang_firered_asr2_executor(
     model_path: str,
-    *,
     dtype: str,
     max_new_tokens: int,
     max_running_requests: int,

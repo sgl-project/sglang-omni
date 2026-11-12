@@ -86,7 +86,7 @@ def test_prompt_places_exact_audio_span() -> None:
     class Tokenizer:
         unk_token_id = None
 
-        def encode(self, text: str, *, add_special_tokens: bool) -> list[int]:
+        def encode(self, text: str, add_special_tokens: bool) -> list[int]:
             return [1, 2] if text.endswith("user\n") else [3, 4, 5]
 
         def convert_tokens_to_ids(self, token: str) -> int:

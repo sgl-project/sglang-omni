@@ -72,7 +72,6 @@ def build_prompt_ids(
 
 
 def make_firered_asr2_scheduler_adapters(
-    *,
     tokenizer: PreTrainedTokenizerBase,
     feature_extractor: FireRedFeatureExtractor,
     max_new_tokens: int,

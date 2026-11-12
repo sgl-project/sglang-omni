@@ -99,7 +99,6 @@ class FireRedASR2ForConditionalGeneration(nn.Module):
         input_ids: torch.Tensor,
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
-        **kwargs: torch.Tensor | None,
     ) -> LogitsProcessorOutput:
         return general_mm_embed_routine(
             input_ids=input_ids,

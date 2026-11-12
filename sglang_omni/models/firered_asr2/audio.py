@@ -32,7 +32,6 @@ class FireRedFeatureExtractor:
         self,
         means: Sequence[float] | NDArray[np.float64],
         inverse_std_variences: Sequence[float] | NDArray[np.float64],
-        *,
         sample_rate: int = 16000,
     ) -> None:
         self.means = np.asarray(means, dtype=np.float64)
