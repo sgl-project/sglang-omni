@@ -61,6 +61,7 @@ FetchContent_MakeAvailable(nlohmann_json pcre2 civetweb yaml_cpp)
 
 add_library(common STATIC
   src/common/audio.cpp
+  src/common/audio_chunks.cpp
   src/common/campplus.cpp
   src/common/form.cpp
   src/common/layers.cpp
@@ -79,6 +80,10 @@ set_source_files_properties(src/common/npz.cpp src/common/reference_audio.cpp
 # Note (XXXXRT666): campplus keeps the rounding it was built with as part of
 # cosyvoice3.
 set_source_files_properties(src/common/campplus.cpp
+  PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
+# Note (Mengwei Liu): energy cuts retain Cohere's and MOSS's separate float
+# operations.
+set_source_files_properties(src/common/audio_chunks.cpp
   PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 
 add_library(qwen3_asr STATIC
@@ -449,4 +454,10 @@ target_link_libraries(stub_server PRIVATE speech_service ming3_audio_service
   ming_tts_request)
 target_compile_options(stub_server PRIVATE -Wall -Wextra)
 set_target_properties(stub_server PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
+
+add_executable(audio_chunk_test EXCLUDE_FROM_ALL tests/audio_chunk_test.cpp)
+target_link_libraries(audio_chunk_test PRIVATE common)
+target_compile_options(audio_chunk_test PRIVATE -Wall -Wextra)
+set_target_properties(audio_chunk_test PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
