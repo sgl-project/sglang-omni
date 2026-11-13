@@ -264,7 +264,7 @@ func TestEntry(t *testing.T) {
 	if q, _ := Lookup(LLMQwen3); q.Entry("").Files != nil || q.Claim("", "").Files != nil {
 		t.Error("a borrowed model is the whole snapshot")
 	}
-	if got, want := SnapshotDir("/h", acc, ""), "/h/models--mlx-community--Qwen3-ASR-1.7B-8bit/snapshots/"+acc.Revision; got != want {
+	if got, want := SnapshotDir("/h", acc, ""), filepath.Join("/h", "models--mlx-community--Qwen3-ASR-1.7B-8bit", "snapshots", acc.Revision); got != want {
 		t.Errorf("snapshot %s, want %s", got, want)
 	}
 }
