@@ -163,6 +163,7 @@ Go modules compiled into VoxtNew
     authors, Unlicense OR BSD-3-Clause
   - golang.org/x/image v0.46.0, Copyright 2009 The Go Authors,
     BSD-3-Clause, with Google's patent grant (PATENTS)
+  - golang.org/x/sys v0.50.0, Copyright 2009 The Go Authors, BSD-3-Clause
   - golang.org/x/text v0.43.0, Copyright 2009 The Go Authors,
     BSD-3-Clause, with Google's patent grant (PATENTS)
 
