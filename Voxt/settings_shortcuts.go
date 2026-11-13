@@ -131,6 +131,34 @@ func shortcutIcon(code string) icons.Icon {
 	default:
 		return icons.Microphone3
 	}
+// presetTitle is a shortcut preset's name ("": custom).
+func presetTitle(p string) string {
+	switch p {
+	case settings.PresetOption:
+		return i18n.T("%s (default)", uitext.HotkeyText("RightOption"))
+	case settings.PresetFn:
+		return i18n.T("fn (Auralink's keys)")
+	case settings.PresetCommand:
+		return i18n.T("%s combination", uitext.HotkeyText("RightCommand"))
+	case settings.PresetMouseMiddle:
+		return i18n.T("Middle mouse + %s", uitext.HotkeyText("Fn+Shift"))
+	}
+	return i18n.T("Custom")
+}
+
+// presetAbout is one line on who a preset suits (setup guide).
+func presetAbout(p string) string {
+	switch p {
+	case settings.PresetOption:
+		return i18n.T("%s: one-handed and Voxt's default. Good when fn is the Globe key or shared with Auralink.", uitext.HotkeyText("RightOption"))
+	case settings.PresetFn:
+		return i18n.T("fn: matches Auralink and many Voxt 1.x setups. Watch for clashes with the Globe key and input sources.")
+	case settings.PresetCommand:
+		return i18n.T("%s combination: %s only, away from the letter keys. Good if you keep Option for typing.", uitext.HotkeyText("RightCommand"), uitext.HotkeyText("RightCommand"))
+	case settings.PresetMouseMiddle:
+		return i18n.T("Middle mouse + %s: click the wheel to transcribe, double-click to rewrite. Mouse shortcuts need Accessibility.", uitext.HotkeyText("Fn+Shift"))
+	}
+	return ""
 }
 
 // shortcutPresetPicker is the preset dropdown and warnings (settings and
