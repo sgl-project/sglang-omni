@@ -7,11 +7,11 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Note (Jiaxin Deng): exactly the MLX build the Python reference server runs
-# on, so both produce bit-identical outputs.
-set(SGLANG_OMNI_MLX_VERSION 0.32.3)
+# Note (XXXXRT666): the version of the MLX commit scripts/build_runtime.sh pins;
+# MLX's version does not tell commits of its main branch apart.
+set(SGLANG_OMNI_MLX_VERSION 0.32.5)
 if(NOT MLX_DIR OR NOT EXISTS "${MLX_DIR}/MLXConfig.cmake")
-  message(FATAL_ERROR "Set MLX_DIR to <mlx ${SGLANG_OMNI_MLX_VERSION} wheel>/share/cmake/MLX")
+  message(FATAL_ERROR "Set MLX_DIR to <MLX ${SGLANG_OMNI_MLX_VERSION} install>/share/cmake/MLX: scripts/build_runtime.sh builds it")
 endif()
 find_package(MLX ${SGLANG_OMNI_MLX_VERSION} EXACT CONFIG REQUIRED PATHS "${MLX_DIR}" NO_DEFAULT_PATH)
 

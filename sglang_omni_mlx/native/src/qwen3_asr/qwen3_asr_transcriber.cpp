@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdint>
 #include <map>
+#include <utility>
 
 namespace qwen3_asr {
 
@@ -23,6 +24,9 @@ constexpr const char *kAsrTextMarker = "<asr_text>";
 constexpr const char *kAudioPad = "<|audio_pad|>";
 constexpr int kOutputTokensPerAudioSecond = 10;
 constexpr int kMinDefaultOutputTokens = 128;
+// The last mel frames, whose STFT windows take the reflected tail, change as
+// realtime audio arrives.
+constexpr int kReflectedTailFrames = 2;
 
 const std::map<std::string, std::string> &LanguageCodeToName() {
   static const std::map<std::string, std::string> table = {
@@ -160,7 +164,7 @@ Qwen3ASRTranscriber::PromptIds(int audio_token_count,
   return ids;
 }
 
-std::pair<std::vector<int>, std::string>
+RetainedText
 Qwen3ASRTranscriber::RetainedPrefix(const std::string &text,
                                     int rollback_token_count) const {
   const std::vector<int> token_ids = tokenizer_.Encode(text);
@@ -177,10 +181,24 @@ Qwen3ASRTranscriber::RetainedPrefix(const std::string &text,
                         replacement) == 0) {
       retained.pop_back();
     } else {
-      return {retained, decoded};
+      return {retained, decoded,
+              std::vector<int>(token_ids.begin() + retained.size(),
+                               token_ids.end())};
     }
   }
-  return {{}, ""};
+  return {{}, "", token_ids};
+}
+
+int Qwen3ASRTranscriber::MaxNewTokens(size_t sample_count,
+                                      const TranscriptionOptions &options) {
+  // Note (Jiaxin Deng): an unset or zero budget means the default.
+  return options.max_new_tokens.value_or(0) != 0
+             ? *options.max_new_tokens
+             : std::max(kMinDefaultOutputTokens,
+                        static_cast<int>(
+                            std::ceil(static_cast<double>(sample_count) /
+                                      omni_common::kSampleRate *
+                                      kOutputTokensPerAudioSecond)));
 }
 
 Qwen3ASRTranscriber::Prompt
@@ -210,30 +228,92 @@ Qwen3ASRTranscriber::BuildPrompt(const std::vector<float> &samples,
                                  embeddings.dtype()),
                       0),
       {0, audio_start, 0}, {1, audio_start + filled, hidden});
-
-  // Note (Jiaxin Deng): an unset or zero budget means the default.
-  const int max_new_tokens =
-      options.max_new_tokens.value_or(0) != 0
-          ? *options.max_new_tokens
-          : std::max(
-                kMinDefaultOutputTokens,
-                static_cast<int>(std::ceil(static_cast<double>(samples.size()) /
-                                           omni_common::kSampleRate *
-                                           kOutputTokensPerAudioSecond)));
-  return {embeddings, max_new_tokens};
+  return {embeddings, MaxNewTokens(samples.size(), options)};
 }
 
-TranscriptionResult
-Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
-                                const TranscriptionOptions &options,
-                                const std::atomic<bool> &cancel) const {
+Qwen3ASRTranscriber::RefreshPrompt
+Qwen3ASRTranscriber::BuildRefreshPrompt(const std::vector<float> &samples,
+                                        const TranscriptionOptions &options,
+                                        RefreshReuse &held) const {
+  const mx::array mel = LogMel(samples, options.layout);
+  const int mel_bins = mel.shape(0);
+  const int frame_count = mel.shape(-1);
+  const int audio_token_count = TokenCount(frame_count, options.layout);
+  const std::vector<int> prompt_ids = PromptIds(audio_token_count, options);
+  const int audio_start = static_cast<int>(
+      std::find(prompt_ids.begin(), prompt_ids.end(), audio_pad_id_) -
+      prompt_ids.begin());
+  const std::vector<int> head_ids(prompt_ids.begin(),
+                                  prompt_ids.begin() + audio_start);
+  int held_frames = held.mel.has_value() ? held.mel->shape(1) : 0;
+  int held_rows = held.audio_rows.has_value() ? held.audio_rows->shape(0) : 0;
+  bool is_reusable = held_frames > 0 && held_frames <= frame_count &&
+                     held.head_ids == head_ids && !held.caches.empty() &&
+                     held.caches[0].offset() == audio_start + held_rows;
+  if (is_reusable) {
+    is_reusable =
+        mx::array_equal(mx::slice(mel, {0, 0}, {mel_bins, held_frames}),
+                        *held.mel)
+            .item<bool>();
+  } else {
+  }
+  if (!is_reusable) {
+    held = RefreshReuse();
+    held.caches = model_.NewCaches();
+    held_frames = 0;
+    held_rows = 0;
+  } else {
+  }
+  const mx::array new_rows = model_.EncodeAudio(
+      mx::slice(mel, {0, held_frames}, {mel_bins, frame_count}),
+      options.layout);
+  const int reused_length = held_rows > 0 ? audio_start + held_rows : 0;
+  const std::vector<int> rest_ids(prompt_ids.begin() + reused_length,
+                                  prompt_ids.end());
+  mx::array embeddings = model_.EmbedTokens(mx::array(
+      rest_ids.data(), {1, static_cast<int>(rest_ids.size())}, mx::int32));
+  // Note (Jiaxin Deng): the Swift layout can reserve more placeholders than
+  // encoder rows; those keep the audio_pad embedding, surplus rows are dropped.
+  const int filled =
+      std::min(audio_token_count, held_rows + new_rows.shape(0)) - held_rows;
+  const int rows_start = audio_start + held_rows - reused_length;
+  const int hidden = embeddings.shape(2);
+  embeddings = mx::slice_update(
+      embeddings,
+      mx::expand_dims(
+          mx::astype(mx::slice(new_rows, {0, 0}, {filled, new_rows.shape(1)}),
+                     embeddings.dtype()),
+          0),
+      {0, rows_start, 0}, {1, rows_start + filled, hidden});
+
+  const int window_frame_count = model_.WindowFrameCount();
+  const int complete_frames = std::max(0, frame_count - kReflectedTailFrames) /
+                              window_frame_count * window_frame_count;
+  const int complete_rows =
+      complete_frames > 0 ? TokenCount(complete_frames, options.layout) : 0;
+  if (complete_frames > held_frames && complete_rows <= held_rows + filled) {
+    const mx::array completed_rows = mx::slice(
+        new_rows, {0, 0}, {complete_rows - held_rows, new_rows.shape(1)});
+    held.mel = mx::slice(mel, {0, 0}, {mel_bins, complete_frames});
+    held.audio_rows =
+        held_rows > 0 ? mx::concatenate({*held.audio_rows, completed_rows}, 0)
+                      : completed_rows;
+  } else {
+  }
+  held.head_ids = head_ids;
+  return {embeddings, held.audio_rows.has_value()
+                          ? audio_start + held.audio_rows->shape(0)
+                          : 0};
+}
+
+TranscriptionResult Qwen3ASRTranscriber::Transcribe(
+    const std::vector<float> &samples, const TranscriptionOptions &options,
+    const std::atomic<bool> &cancel, RefreshReuse *reuse) const {
   if (cancel.load()) {
     throw TranscriptionCancelled();
   } else {
   }
-  const Prompt prompt = BuildPrompt(samples, options);
-  const mx::array &embeddings = prompt.embeddings;
-  const int max_new_tokens = prompt.max_new_tokens;
+  const int max_new_tokens = MaxNewTokens(samples.size(), options);
   const auto is_stop = [&](int token_id) {
     return IsStopToken(token_id, options);
   };
@@ -258,42 +338,98 @@ Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
   // note (wilsonzheng0327): a penalty would have to be applied per block
   // position with the block's own earlier tokens; a request that asks for one
   // decodes without the draft.
-  if (draft_.has_value() && options.repetition_penalty == 1.0f) {
-    verify_round_count = draft_->Decode(model_.decoder(), embeddings,
-                                        max_new_tokens, 0, commit, cancel);
+  if (reuse == nullptr && draft_.has_value() &&
+      options.repetition_penalty == 1.0f) {
+    verify_round_count = draft_->Decode(
+        model_.decoder(), BuildPrompt(samples, options).embeddings,
+        max_new_tokens, 0, commit, cancel);
   } else {
-    std::vector<KVCache> caches = model_.NewCaches();
-    const mx::array prefill_logits = model_.Decode(embeddings, caches);
-    mx::array next_token = mx::argmax(prefill_logits);
-    mx::async_eval({next_token});
+    // A failed refresh leaves reuse empty, so the next one starts over.
+    RefreshReuse held;
+    std::optional<RefreshPrompt> refresh;
+    if (reuse != nullptr) {
+      held = std::exchange(*reuse, RefreshReuse());
+      refresh = BuildRefreshPrompt(samples, options, held);
+    } else {
+      held.caches = model_.NewCaches();
+    }
+    std::vector<KVCache> &caches = held.caches;
+    const mx::array embeddings = refresh.has_value()
+                                     ? refresh->embeddings
+                                     : BuildPrompt(samples, options).embeddings;
+    const std::vector<int> &guessed_ids = options.guessed_token_ids;
+    // A penalty would have to apply to the guesses' logits too.
+    const int guessed_count = options.repetition_penalty == 1.0f
+                                  ? static_cast<int>(guessed_ids.size())
+                                  : 0;
+    std::optional<mx::array> next_token;
+    bool finished = false;
+    if (guessed_count == 0) {
+      next_token = mx::argmax(model_.Decode(embeddings, caches));
+    } else {
+      // Note (XXXXRT666): the guesses ride in the prompt's pass; the logits
+      // of the prompt's last position and of each guess check them.
+      const mx::array hidden_states = model_.decoder().Forward(
+          mx::concatenate({embeddings, model_.EmbedTokens(mx::array(
+                                           guessed_ids.data(),
+                                           {1, guessed_count}, mx::int32))},
+                          1),
+          caches);
+      const int length = hidden_states.shape(1);
+      const mx::array predicted =
+          mx::argmax(model_.decoder().Logits(mx::slice(
+                         hidden_states, {0, length - guessed_count - 1, 0},
+                         {1, length, hidden_states.shape(2)})),
+                     -1);
+      mx::eval(predicted);
+      const uint32_t *predicted_ids = predicted.data<uint32_t>();
+      int accepted_count = 0;
+      while (!finished && accepted_count < guessed_count &&
+             static_cast<int>(predicted_ids[accepted_count]) ==
+                 guessed_ids[accepted_count]) {
+        finished = commit(guessed_ids[accepted_count]);
+        ++accepted_count;
+      }
+      for (KVCache &cache : caches) {
+        cache.Trim(guessed_count - accepted_count);
+      }
+      next_token = mx::reshape(
+          mx::slice(predicted, {accepted_count}, {accepted_count + 1}), {});
+    }
+    mx::async_eval({*next_token});
     // Note (Minyi Tang): only generated tokens are penalized, as on CUDA; the
     // scales stay lazy so penalizing adds no host sync to the queued step.
-    mx::array penalty_by_token_id =
-        mx::ones(prefill_logits.shape(), mx::float32);
-    bool finished = false;
+    std::optional<mx::array> penalty_by_token_id;
     while (!finished) {
       if (cancel.load()) {
         throw TranscriptionCancelled();
       } else {
       }
-      const mx::array token = next_token;
+      const mx::array token = *next_token;
       // Note (Jiaxin Deng): queue the next step before reading this token, so
       // the GPU decodes while the stop rules are checked.
       mx::array logits =
           model_.Decode(model_.EmbedTokens(mx::reshape(token, {1, 1})), caches);
       if (options.repetition_penalty != 1.0f) {
-        penalty_by_token_id =
-            mx::put_along_axis(penalty_by_token_id, mx::reshape(token, {1}),
-                               mx::array(options.repetition_penalty), 0);
+        penalty_by_token_id = mx::put_along_axis(
+            penalty_by_token_id.value_or(mx::ones(logits.shape(), mx::float32)),
+            mx::reshape(token, {1}), mx::array(options.repetition_penalty), 0);
         logits = mx::astype(logits, mx::float32);
         logits = mx::where(mx::less(logits, mx::array(0.0f)),
-                           mx::multiply(logits, penalty_by_token_id),
-                           mx::divide(logits, penalty_by_token_id));
+                           mx::multiply(logits, *penalty_by_token_id),
+                           mx::divide(logits, *penalty_by_token_id));
       } else {
       }
       next_token = mx::argmax(logits);
-      mx::async_eval({next_token});
+      mx::async_eval({*next_token});
       finished = commit(static_cast<int>(token.item<uint32_t>()));
+    }
+    if (refresh.has_value()) {
+      for (KVCache &cache : caches) {
+        cache.Trim(cache.offset() - refresh->kept_length);
+      }
+      *reuse = std::move(held);
+    } else {
     }
   }
   return FinishedResult(output_ids, options, finish_reason,

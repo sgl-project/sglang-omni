@@ -54,7 +54,7 @@ Classifier-free guidance is on in both stages and has no flag. See [Guidance](#g
 The standalone `music3_server` runs entirely in C++ under
 `sglang_omni_mlx/native/`; it uses the same HTTP request fields as the examples
 below. Download the pinned converted checkpoint, then build with the native
-runtime's existing MLX 0.32.3 toolchain:
+runtime's pinned MLX toolchain:
 
 ```bash
 python sglang_omni_mlx/native/ci/provision_models.py "$MUSIC3_DATA" \

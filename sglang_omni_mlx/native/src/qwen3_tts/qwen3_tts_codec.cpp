@@ -230,8 +230,8 @@ mx::array SpeechDecoder::TransformerLayer(const mx::array &x, int layer,
   const mx::array values = heads("v_proj");
   const mx::array attended = mx::fast::scaled_dot_product_attention(
       queries, keys, values,
-      static_cast<float>(std::pow(static_cast<double>(head_dim_), -0.5)), "",
-      mask);
+      static_cast<float>(std::pow(static_cast<double>(head_dim_), -0.5)),
+      /*window_size=*/-1, "", mask);
   const mx::array attention_output = checkpoint_.Linear(
       mx::reshape(mx::transpose(attended, {0, 2, 1, 3}), {batch, length, -1}),
       prefix + ".self_attn.o_proj");

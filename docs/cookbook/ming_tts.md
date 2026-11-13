@@ -261,7 +261,7 @@ Streaming playback continuity:
 
 ## Apple Silicon: native MLX
 
-The standalone `ming_tts_server` serves `/v1/audio/speech` on an Apple Silicon Mac. Inference runs in C++ with the native runtime's MLX 0.32.3 toolchain, without Python, PyTorch or CUDA. It reads the official BF16 checkpoint and the pinned 4-bit conversion `mlx-community/Ming-omni-tts-16.8B-A3B-4bit`, which also quantizes the acoustic and AudioVAE linear layers; quantization is read from the checkpoint.
+The standalone `ming_tts_server` serves `/v1/audio/speech` on an Apple Silicon Mac. Inference runs in C++ with the native runtime's pinned MLX toolchain, without Python, PyTorch or CUDA. It reads the official BF16 checkpoint and the pinned 4-bit conversion `mlx-community/Ming-omni-tts-16.8B-A3B-4bit`, which also quantizes the acoustic and AudioVAE linear layers; quantization is read from the checkpoint.
 
 ```bash
 python sglang_omni_mlx/native/ci/provision_models.py "$MING_TTS_DATA" \

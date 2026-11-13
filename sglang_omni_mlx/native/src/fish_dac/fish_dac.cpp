@@ -307,7 +307,8 @@ mx::array AudioCodec::TransformerLayer(
   const mx::array attended = mx::fast::scaled_dot_product_attention(
       mx::transpose(queries, {0, 2, 1, 3}), mx::transpose(keys, {0, 2, 1, 3}),
       mx::transpose(values, {0, 2, 1, 3}),
-      static_cast<float>(1.0 / std::sqrt(kTransformerHeadDim)), "", mask);
+      static_cast<float>(1.0 / std::sqrt(kTransformerHeadDim)),
+      /*window_size=*/-1, "", mask);
   const mx::array attention = mx::matmul(
       mx::reshape(mx::transpose(attended, {0, 2, 1, 3}), {batch, time, width}),
       mx::transpose(checkpoint_.Weight(prefix + ".attention.wo.weight")));

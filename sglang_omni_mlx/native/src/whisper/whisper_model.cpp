@@ -209,10 +209,11 @@ mx::array WhisperModel::Attention(const mx::array &queries_input,
       SplitHeads(Linear(queries_input, prefix + ".query"), head_count);
   const float scale = std::pow(static_cast<float>(width / head_count), -0.5f);
   const mx::array attended =
-      mask.has_value() ? mx::fast::scaled_dot_product_attention(
-                             queries, keys, values, scale, "", *mask)
-                       : mx::fast::scaled_dot_product_attention(queries, keys,
-                                                                values, scale);
+      mask.has_value()
+          ? mx::fast::scaled_dot_product_attention(
+                queries, keys, values, scale, /*window_size=*/-1, "", *mask)
+          : mx::fast::scaled_dot_product_attention(queries, keys, values,
+                                                   scale);
   return Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
                             {batch, length, width}),
                 prefix + ".out");

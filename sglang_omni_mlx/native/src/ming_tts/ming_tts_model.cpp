@@ -283,7 +283,7 @@ mx::array MingBackbone::Forward(const mx::array &embeddings,
     const mx::array attended = mx::fast::scaled_dot_product_attention(
         queries, cached_keys, cached_values,
         static_cast<float>(std::pow(static_cast<double>(head_dim), -0.5)),
-        length > 1 ? "causal" : "");
+        /*window_size=*/-1, length > 1 ? "causal" : "");
     hidden = mx::add(
         hidden,
         checkpoint_.Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),

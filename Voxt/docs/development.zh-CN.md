@@ -11,7 +11,7 @@
 
 ## 从源码构建
 
-需要 Go 1.27.1（`GOTOOLCHAIN=auto` 会自动下载）；构建 app 需要 Apple 芯片、macOS 15 及以上的 Mac，Xcode（编译辅助进程），以及 [uv](https://docs.astral.sh/uv/) 或 Python 3（Omni 运行时的构建工具：`scripts/build-omni.sh` 用固定版本的 MLX 编译 `sglang_omni_mlx/native`，CMake 会从 GitHub 下载 C++ 依赖，需要时走 shell 的 `https_proxy`）。在 `Voxt/` 下执行：
+需要 Go 1.27.1（`GOTOOLCHAIN=auto` 会自动下载）；构建 app 需要 Apple 芯片、macOS 15 及以上的 Mac，Xcode（编译辅助进程），以及 [uv](https://docs.astral.sh/uv/) 或 Python 3（Omni 运行时的构建工具：`scripts/build-omni.sh` 编译 `sglang_omni_mlx/native`，第一次还会编译它固定的 MLX commit；git 和 CMake 会从 GitHub 下载 MLX 和 C++ 依赖，从 developer.apple.com 下载 metal-cpp，需要时走 shell 的 `https_proxy`）。在 `Voxt/` 下执行：
 
 ```sh
 scripts/build-helper.sh              # Swift 辅助进程，输出到 resources/darwin-arm64/helper/

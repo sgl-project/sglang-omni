@@ -16,8 +16,8 @@
 #   scripts/build-omni.sh --clean       # delete the build tree afterwards (~1 GB)
 #   scripts/mac.sh 'scripts/build-omni.sh && go tool mygo build'
 #
-# It reuses sglang_omni_mlx/native/scripts/build_runtime.sh (uv, the pinned
-# MLX wheel, CMake, Ninja). The sources are the repository's
+# It reuses sglang_omni_mlx/native/scripts/build_runtime.sh (uv, CMake, Ninja,
+# and MLX built from its pinned commit). The sources are the repository's
 # ($ROOT/../sglang_omni_mlx/native), or the copy scripts/mac.sh syncs
 # beside the project (.omni-native), or $OMNI_NATIVE. Without uv on PATH a
 # private one is installed into the build tree (python3 -m venv).

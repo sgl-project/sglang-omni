@@ -97,7 +97,7 @@ mx::array Drama3Model::TowerLayer(
   const mx::array attended = mx::fast::scaled_dot_product_attention(
       queries, cached_keys, cached_values,
       static_cast<float>(std::pow(static_cast<double>(tower_head_dim_), -0.5)),
-      time > 1 ? "causal" : "");
+      /*window_size=*/-1, time > 1 ? "causal" : "");
   const mx::array attention = checkpoint_.Linear(
       mx::multiply(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
                                {batch, time, query_width}),
