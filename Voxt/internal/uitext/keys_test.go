@@ -2,13 +2,14 @@ package uitext
 
 import (
 	"errors"
+	"runtime"
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 )
 
 func TestHotkeyText(t *testing.T) {
-	for keys, want := range map[string]string{
+	cases := map[string]string{
 		"Fn":                   "fn",
 		"Fn+Shift":             "fn ⇧",
 		"RightCommand":         "Right ⌘",
@@ -27,7 +28,18 @@ func TestHotkeyText(t *testing.T) {
 		"Mouse3":               "Middle mouse button",
 		"Option+Mouse4":        "⌥ Mouse button 4",
 		"bogus":                "bogus",
-	} {
+	}
+	if runtime.GOOS == "windows" {
+		for keys, want := range map[string]string{
+			"Fn+Shift": "fn Shift", "RightCommand": "Right Win", "RightOption": "Right Alt",
+			"Control+Command+V": "Ctrl Win V", "Control+Option+Space": "Ctrl Alt Space", "Option+Space": "Alt Space",
+			"Control+Delete": "Ctrl Delete", "Option+Tab": "Alt Tab", "Control+RightOption": "Ctrl Right Alt",
+			"Option+Shift": "Alt Shift", "Option+Mouse4": "Alt Mouse button 4",
+		} {
+			cases[keys] = want
+		}
+	}
+	for keys, want := range cases {
 		if got := HotkeyText(keys); got != want {
 			t.Errorf("HotkeyText(%q) = %q, want %q", keys, got, want)
 		}
@@ -53,10 +65,19 @@ func TestParseErrorText(t *testing.T) {
 }
 
 func TestHotkeyGlyphs(t *testing.T) {
-	for keys, want := range map[string]string{
+	cases := map[string]string{
 		"Fn": "fn", "Fn+Shift": "fn ⇧", "Fn+Control": "fn ⌃", "Control+Command+V": "⌃⌘V",
 		"RightCommand": "Right ⌘", "RightOption+Shift": "Right ⌥ ⇧", "Option+Space": "⌥Space", "": "—", "Command+Shift+k": "⇧⌘K",
-	} {
+	}
+	if runtime.GOOS == "windows" {
+		for keys, want := range map[string]string{
+			"Fn+Shift": "fn Shift", "Fn+Control": "fn Ctrl", "Control+Command+V": "Ctrl Win V",
+			"RightCommand": "Right Win", "RightOption+Shift": "Right Alt Shift", "Option+Space": "Alt Space", "Command+Shift+k": "Shift Win K",
+		} {
+			cases[keys] = want
+		}
+	}
+	for keys, want := range cases {
 		if got := HotkeyGlyphs(keys); got != want {
 			t.Errorf("%q → %q, want %q", keys, got, want)
 		}

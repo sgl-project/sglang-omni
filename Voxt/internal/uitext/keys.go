@@ -18,8 +18,8 @@ import (
 
 // ---- Text of shortcuts and their problems ----
 
-// HotkeyText shows keys as macOS writes them: "fn ⇧", "Right ⌘",
-// "⌃⌥Space", "⌃⌘V". Keys that do not parse show as written.
+// HotkeyText shows keys as the current OS writes them: macOS glyphs, or
+// Ctrl, Alt, Shift and Win on Windows. Keys that do not parse show as written.
 func HotkeyText(keys string) string {
 	c, err := hotkey.Parse(keys)
 	if err != nil {
@@ -171,9 +171,8 @@ func HotkeyProblems(f settings.Features, feature string) map[int][]string {
 	return out
 }
 
-// HotkeyGlyphs shows a settings.Hotkey's keys as macOS writes them:
-// "Fn+Shift" → "fn ⇧", "Control+Command+V" → "⌃⌘V", "RightCommand" →
-// "Right ⌘" (HotkeyText, feature_keys_text.go); "—" for none.
+// HotkeyGlyphs shows a settings.Hotkey's keys as the current OS writes
+// them (HotkeyText, feature_keys_text.go); "—" for none.
 func HotkeyGlyphs(keys string) string {
 	if strings.TrimSpace(keys) == "" {
 		return "—"
