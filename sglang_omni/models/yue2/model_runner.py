@@ -50,6 +50,20 @@ def sampling_rows(requests: list[SchedulerRequest]) -> list[SamplingRow]:
     return rows
 
 
+def rewind_sampling(data: Yue2ARRequestData, output_ids: list[int]) -> None:
+    """Set a row's sampling position and penalty window back to its committed tokens."""
+    data.generated_tokens = len(output_ids)
+    recent = data.recent_tokens
+    if recent is None:
+        return
+    else:
+        window = recent.shape[0]
+        values = torch.full((window,), -1, dtype=torch.long)
+        for position in range(max(0, len(output_ids) - window), len(output_ids)):
+            values[position % window] = output_ids[position]
+        data.recent_tokens = to_device(values, recent.device)
+
+
 def to_device(values: torch.Tensor, device: torch.device) -> torch.Tensor:
     """Copy a small host tensor without blocking the stream on CUDA."""
     if device.type == "cuda":

@@ -16,6 +16,7 @@ from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
+from .model_runner import rewind_sampling
 from .request import ABC_END
 from .sglang_request_builder import (
     Yue2ARRequestData,
@@ -27,7 +28,7 @@ from .sglang_request_builder import (
 
 
 def request_data(req: Req) -> Yue2ARRequestData | None:
-    return getattr(req, "omni_data", None)
+    return req.omni_data
 
 
 def admission_width(queue: list[Req], index: int) -> int:
@@ -42,6 +43,32 @@ def admission_width(queue: list[Req], index: int) -> int:
         return 2
     else:
         return 1
+
+
+def paired_queue(queue: list[Req]) -> list[Req]:
+    """The queue with each unconditional row moved right behind its request."""
+    queued = {id(req) for req in queue}
+    twins = {
+        id(data.cfg_uncond.req)
+        for req in queue
+        if (data := request_data(req)) is not None
+        and data.cfg_uncond is not None
+        and id(data.cfg_uncond.req) in queued
+    }
+    ordered: list[Req] = []
+    for req in queue:
+        data = request_data(req)
+        if id(req) in twins:
+            pass
+        elif (
+            data is not None
+            and data.cfg_uncond is not None
+            and id(data.cfg_uncond.req) in twins
+        ):
+            ordered.extend([req, data.cfg_uncond.req])
+        else:
+            ordered.append(req)
+    return ordered
 
 
 def prefill_token_count(req: Req) -> int:
@@ -96,6 +123,13 @@ class Yue2Scheduler(OmniScheduler[Yue2ARRequestData]):
         *,
         request_admission_lock_held: bool = False,
     ) -> None:
+        capacity_error = self.kv_capacity_error(req_data)
+        if capacity_error is not None:
+            self.emit_request_error(payload.request_id, ValueError(capacity_error))
+            self.abort(payload.request_id)
+            return
+        else:
+            pass
         super().enqueue_built_request(
             payload,
             pending_stream_done,
@@ -110,6 +144,32 @@ class Yue2Scheduler(OmniScheduler[Yue2ARRequestData]):
         else:
             with self.request_admission_lock:
                 self.enqueue_unconditional(req_data, unconditional)
+
+    def kv_capacity_error(self, req_data: Yue2ARRequestData) -> str | None:
+        """Reject a request whose rows can never hold the KV cache together."""
+        guided = req_data.cfg_uncond is not None
+        rows = [req_data, req_data.cfg_uncond] if guided else [req_data]
+        required = sum(
+            len(row.req.origin_input_ids) + row.req.sampling_params.max_new_tokens
+            for row in rows
+        )
+        # note (ruiling): SGLang admits a row only with one spare page, and keeps one token free.
+        capacity = (
+            self.tp_worker.model_runner.effective_max_total_num_tokens
+            - 1
+            - len(rows) * self.page_size
+        )
+        if required <= capacity:
+            return None
+        else:
+            # note (ruiling): SGLang checks each row alone; a CFG pair that never fits would wait forever and block the queue.
+            rows_note = " for its two classifier-free guidance rows" if guided else ""
+            budget = "abc_max_tokens" if req_data.phase == "abc" else "max_new_tokens"
+            return (
+                f"YuE2 request: needs {required} KV cache tokens{rows_note}, above "
+                f"the {capacity}-token limit. Lower {budget} or raise "
+                "--yue2_ar.engine.max_total_tokens."
+            )
 
     def enqueue_unconditional(
         self, req_data: Yue2ARRequestData, unconditional: Yue2ARRequestData
@@ -243,7 +303,22 @@ class Yue2Scheduler(OmniScheduler[Yue2ARRequestData]):
         ):
             self.requeue_cfg_pair(req, data, batch)
         else:
-            super()._add_request_to_queue(req, is_retracted=is_retracted)
+            self.requeue(req, is_retracted)
+
+    def requeue(self, req: Req, is_retracted: bool) -> None:
+        data = request_data(req)
+        if req.is_retracted and data is not None:
+            # note (ruiling): SGLang drops the token a retracted row sampled one step ahead.
+            rewind_sampling(data, req.output_ids)
+        else:
+            pass
+        super()._add_request_to_queue(req, is_retracted=is_retracted)
+
+    def retract_running_requests(self) -> int:
+        retracted = super().retract_running_requests()
+        # note (ruiling): this path queues rows one by one in batch order, which SGLang reorders when it retracts for memory.
+        self.waiting_queue[:] = paired_queue(self.waiting_queue)
+        return retracted
 
     def requeue_cfg_pair(
         self, req: Req, data: Yue2ARRequestData, batch: ScheduleBatch
@@ -296,7 +371,7 @@ class Yue2Scheduler(OmniScheduler[Yue2ARRequestData]):
                     ]
                 )
         for row in pair:
-            super()._add_request_to_queue(row, is_retracted=True)
+            self.requeue(row, True)
 
     def emit_request_error(self, request_id: str, error: Exception) -> None:
         super().emit_request_error(public_request_id(request_id), error)

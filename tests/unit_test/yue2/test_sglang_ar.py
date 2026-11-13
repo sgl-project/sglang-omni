@@ -10,7 +10,11 @@ import torch
 from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
 
 from sglang_omni.models.yue2.engine_builder import Yue2EngineBuilder
-from sglang_omni.models.yue2.model_runner import Yue2ModelRunner, sampling_rows
+from sglang_omni.models.yue2.model_runner import (
+    Yue2ModelRunner,
+    rewind_sampling,
+    sampling_rows,
+)
 from sglang_omni.models.yue2.payload_types import Yue2State
 from sglang_omni.models.yue2.request import (
     ABC_END,
@@ -20,7 +24,11 @@ from sglang_omni.models.yue2.request import (
     SamplingConfig,
     Yue2Tokenizer,
 )
-from sglang_omni.models.yue2.scheduler import Yue2PrefillAdder, Yue2Scheduler
+from sglang_omni.models.yue2.scheduler import (
+    Yue2PrefillAdder,
+    Yue2Scheduler,
+    paired_queue,
+)
 from sglang_omni.models.yue2.sglang_request_builder import (
     Yue2ARRequestData,
     Yue2RequestBuilder,
@@ -191,7 +199,9 @@ def test_retracting_one_cfg_row_requeues_the_pair(
     monkeypatch: pytest.MonkeyPatch,
     retraction_order: list[int],
 ) -> None:
-    single = builder(payload("a", abc="X:1\nK:C\nCDEF")).req
+    unguided = builder(payload("a", abc="X:1\nK:C\nCDEF"))
+    unguided.req.omni_data = unguided
+    single = unguided.req
     rows = cfg_pair(builder, "b")
     retracted = [rows[index] for index in retraction_order]
     batch = SimpleNamespace(
@@ -270,6 +280,96 @@ def test_cfg_pair_above_the_prefill_budget_is_admitted_whole(
     scheduler.get_new_batch_prefill(SimpleNamespace(reqs=[]))
     assert budgets == [2 * pair_tokens - 1]
     assert scheduler.max_prefill_tokens == pair_tokens - 1
+
+
+def capacity_scheduler(kv_tokens: int) -> Yue2Scheduler:
+    scheduler = object.__new__(Yue2Scheduler)
+    scheduler.tp_worker = SimpleNamespace(
+        model_runner=SimpleNamespace(effective_max_total_num_tokens=kv_tokens)
+    )
+    scheduler.page_size = 1
+    scheduler.emit_request_error = Mock()
+    scheduler.abort = Mock()
+    return scheduler
+
+
+def test_cfg_pair_that_cannot_fit_the_kv_cache_is_a_client_error(
+    builder: Yue2RequestBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each row fit alone, so the pair waited forever and blocked the queue."""
+    enqueued = []
+    monkeypatch.setattr(
+        OmniScheduler,
+        "enqueue_built_request",
+        lambda scheduler, payload, done, data, **kwargs: enqueued.append(data),
+    )
+    scheduler = capacity_scheduler(4096)
+    scheduler.waiting_queue = []
+    guided = builder(payload("b", token_budget=2500, cot="off"))
+    row_tokens = len(guided.prefix) + 2500
+    assert row_tokens < 4096 < 2 * row_tokens
+    pair_tokens = row_tokens + len(guided.cfg_uncond.prefix) + 2500
+    # SGLang admits the pair only with a spare page per row and one free token.
+    assert capacity_scheduler(pair_tokens + 3).kv_capacity_error(guided) is None
+    assert capacity_scheduler(pair_tokens + 2).kv_capacity_error(guided) is not None
+    scheduler.enqueue_built_request(guided.stage_payload, False, guided)
+    assert enqueued == []
+    request_id, error = scheduler.emit_request_error.call_args.args
+    assert request_id == "b" and generation_error_status_code(error) == 400
+    assert "max_new_tokens" in str(error) and "max_total_tokens" in str(error)
+    scheduler.abort.assert_called_once_with("b")
+
+    unguided = builder(payload("c", token_budget=2500, abc="X:1\nK:C\nCDEF"))
+    scheduler.enqueue_built_request(unguided.stage_payload, False, unguided)
+    assert enqueued == [unguided]
+
+
+def test_score_budget_above_the_kv_cache_names_its_own_setting(
+    builder: Yue2RequestBuilder,
+) -> None:
+    score = builder(payload("a"))
+    error = capacity_scheduler(4096).kv_capacity_error(score)
+    assert "abc_max_tokens" in error and "thinker" not in error
+    assert capacity_scheduler(8192).kv_capacity_error(score) is None
+
+
+def test_paused_generation_requeues_cfg_rows_next_to_their_request(
+    builder: Yue2RequestBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unguided = builder(payload("a", abc="X:1\nK:C\nCDEF"))
+    unguided.req.omni_data = unguided
+    single = unguided.req
+    first, second = cfg_pair(builder, "b"), cfg_pair(builder, "c")
+    # SGLang orders a batch by length when it retracts for memory.
+    batch_order = [second[1], first[1], single, second[0], first[0]]
+    monkeypatch.setattr(
+        OmniScheduler,
+        "retract_running_requests",
+        lambda scheduler: scheduler.waiting_queue.extend(batch_order) or 5,
+    )
+    scheduler = object.__new__(Yue2Scheduler)
+    scheduler.waiting_queue = []
+    assert scheduler.retract_running_requests() == 5
+    expected = [single, *second, *first]
+    assert [id(req) for req in scheduler.waiting_queue] == [id(req) for req in expected]
+    lone_twin = [first[1], single]
+    assert [id(req) for req in paired_queue(lone_twin)] == [
+        id(req) for req in lone_twin
+    ]
+
+
+def test_retracted_row_resumes_sampling_from_its_committed_tokens() -> None:
+    """The lookahead step SGLang drops left the position and window one token ahead."""
+    data = Yue2ARRequestData(sampling=SamplingConfig(penalty_window=4))
+    rewind_sampling(data, [])
+    assert data.generated_tokens == 0 and data.recent_tokens is None
+    data.generated_tokens = 7
+    data.recent_tokens = torch.tensor([14, 15, 16, 13])
+    rewind_sampling(data, [10, 11, 12, 13, 14, 15])
+    assert data.generated_tokens == 6
+    assert data.recent_tokens.tolist() == [14, 15, 12, 13]
+    rewind_sampling(data, [10, 11])
+    assert data.recent_tokens.tolist() == [10, 11, -1, -1]
 
 
 def test_finished_score_starts_the_audio_request(builder: Yue2RequestBuilder) -> None:
