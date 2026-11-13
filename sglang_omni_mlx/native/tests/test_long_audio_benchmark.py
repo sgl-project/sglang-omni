@@ -442,16 +442,30 @@ def test_stop_server_fails_a_server_that_already_exited(exit_code: int) -> None:
 
 
 @pytest.mark.parametrize(
-    ("flags", "text", "model_kind"),
+    (
+        "flags",
+        "text",
+        "model_kind",
+        "deleted_reference_tokens",
+        "longest_deleted_reference_token_run",
+    ),
     [
-        (("--mode", "http"), "48000", "qwen3_asr"),
+        (("--mode", "http"), "48000", "qwen3_asr", 2, 2),
         (
             ("--mode", "http", "--chunk-seconds", "1"),
             "16000 16000 16000",
             "qwen3_asr",
+            0,
+            0,
         ),
-        (("--mode", "realtime", "--speed", "20"), "48000", "qwen3_asr"),
-        (("--model-kind", "parakeet", "--mode", "http"), "48000", "parakeet"),
+        (("--mode", "realtime", "--speed", "20"), "48000", "qwen3_asr", 2, 2),
+        (
+            ("--model-kind", "parakeet", "--mode", "http"),
+            "48000",
+            "parakeet",
+            2,
+            2,
+        ),
     ],
 )
 def test_benchmark_measures_a_case_on_the_stub_server(
@@ -461,6 +475,8 @@ def test_benchmark_measures_a_case_on_the_stub_server(
     flags: tuple[str, ...],
     text: str,
     model_kind: str,
+    deleted_reference_tokens: int,
+    longest_deleted_reference_token_run: int,
 ) -> None:
     exit_code, output, result = run_benchmark(
         monkeypatch, tmp_path, stub_runtime_bin, *flags, *STUB_KIND_FLAGS
@@ -470,13 +486,10 @@ def test_benchmark_measures_a_case_on_the_stub_server(
     assert result["error"] == ""
     assert result["transcription"]["text"] == text
     assert result["score"]["reference_tokens"] == 3
-    expected_deleted_reference_tokens = 2 if text == "48000" else 0
-    assert (
-        result["score"]["deleted_reference_tokens"] == expected_deleted_reference_tokens
-    )
+    assert result["score"]["deleted_reference_tokens"] == deleted_reference_tokens
     assert (
         result["score"]["longest_deleted_reference_token_run"]
-        == expected_deleted_reference_tokens
+        == longest_deleted_reference_token_run
     )
     assert result["recovery_matches_warmup"] is True
     assert result["server_exit_code"] == 0
@@ -496,7 +509,7 @@ def test_benchmark_measures_a_case_on_the_stub_server(
     [
         (("--mode", "realtime", "--languages", "en"), "requires --mode http"),
         (("--mode", "http", "--languages", "zh"), "requires --languages en"),
-        (("--mode", "http"), "requires --languages en"),
+        (("--mode", "http", "--languages", "en", "zh"), "requires --languages en"),
     ],
 )
 def test_parakeet_rejects_unsupported_cases_before_creating_output(

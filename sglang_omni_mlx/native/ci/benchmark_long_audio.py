@@ -44,6 +44,8 @@ from sglang_omni_mlx.native.tests.native_server import (
 # The worker returns MLX's cache after a request, with no signal to wait for.
 MEMORY_SETTLE_SECONDS = 2
 SHUTDOWN_TIMEOUT_SECONDS = 10
+# Parakeet v3 has no Chinese.
+DEFAULT_LANGUAGES = {"qwen3_asr": ("en", "zh"), "parakeet": ("en",)}
 
 
 @dataclass(kw_only=True)
@@ -291,7 +293,10 @@ def main() -> None:
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
-        "--languages", nargs="+", choices=("en", "zh"), default=["en", "zh"]
+        "--languages",
+        nargs="+",
+        choices=("en", "zh"),
+        help="Defaults to en zh, or en for Parakeet",
     )
     parser.add_argument("--minutes", nargs="+", type=float, default=[5, 10, 30, 60])
     parser.add_argument("--mode", choices=("http", "realtime"), required=True)
@@ -325,6 +330,10 @@ def main() -> None:
         help="Server flags after --, such as -- --cache-limit-mb 512",
     )
     arguments = parser.parse_args()
+    if arguments.languages is None:
+        arguments.languages = list(DEFAULT_LANGUAGES[arguments.model_kind])
+    else:
+        pass
     if platform.system() != "Darwin":
         parser.error("Requires macOS for its process accounting")
     elif not all(
