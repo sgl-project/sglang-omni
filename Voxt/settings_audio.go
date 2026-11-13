@@ -285,6 +285,20 @@ func (a *app) audioSettings(c *ui.Context) {
 			a.updateSettings(func(s *settings.Settings) { s.Audio.LiveResult = live })
 		}
 	})
+	settingRow(c, "audio-upload", i18n.T("Upload size limit"), i18n.T("For speech services that take the whole recording (OpenAI, Doubao): a longer recording goes in pieces of at most this size. 0 uses the service's own limit: 25 MB for OpenAI, 100 MB for Doubao."), func() {
+		if numberInput(c.Key("audio-upload-mb"), &a.settingsForm.uploadMB, 0, 100, 1, numOpts{Label: i18n.T("Upload size limit in MB")}) {
+			v := int(a.settingsForm.uploadMB)
+			a.updateSettings(func(s *settings.Settings) { s.Audio.UploadMB = v })
+		}
+		caption(c, i18n.T("MB"))
+	})
+	settingRow(c, "audio-length", i18n.T("Recording length limit"), i18n.T("Stops a recording at this length and recognises it; the recording window warns in the last minute. 0 means no limit."), func() {
+		if numberInput(c.Key("audio-length-min"), &a.settingsForm.maxMinutes, 0, 240, 5, numOpts{Label: i18n.T("Recording length limit in minutes")}) {
+			v := int(a.settingsForm.maxMinutes * 60)
+			a.updateSettings(func(s *settings.Settings) { s.Audio.MaxSeconds = v })
+		}
+		caption(c, i18n.T("min"))
+	})
 
 	sectionTitle(c, i18n.T("Sounds"))
 	a.soundsRow(c) // settings_sounds.go

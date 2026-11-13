@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "qwen3_asr/qwen3_asr_transcriber.h"
+#include "common/audio.h"
 #include "common/text.h"
 
 #include <algorithm>
@@ -185,7 +186,10 @@ Qwen3ASRTranscriber::RetainedPrefix(const std::string &text,
 Qwen3ASRTranscriber::Prompt
 Qwen3ASRTranscriber::BuildPrompt(const std::vector<float> &samples,
                                  const TranscriptionOptions &options) const {
-  const mx::array mel = LogMel(samples, options.layout);
+  const mx::array mel =
+      omni_common::LogMel(samples, options.layout == AudioLayout::kReference
+                                       ? omni_common::FinalStftFrame::kDropped
+                                       : omni_common::FinalStftFrame::kKept);
   const int audio_token_count = TokenCount(mel.shape(-1), options.layout);
   const std::vector<int> prompt_ids = PromptIds(audio_token_count, options);
   const mx::array audio_features = model_.EncodeAudio(mel, options.layout);

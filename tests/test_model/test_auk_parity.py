@@ -56,6 +56,7 @@ def models():
         device="cuda:0",
         qwen_path=qwen,
     )
+    upstream.model.text_encoder.config.text_config.use_cache = False
     conditioning = create_conditioning_executor(
         checkpoint, device="cuda", gpu_id=0, text_encoder_path=qwen
     )
