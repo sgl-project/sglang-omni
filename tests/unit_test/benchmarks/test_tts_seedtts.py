@@ -358,7 +358,10 @@ async def test_raw_stream_selects_audio_and_uses_model_native_format(
 
     async def speech(request: web.Request) -> web.StreamResponse:
         payload = await request.json()
-        if payload.get("stream_format") != "audio":
+        if (
+            payload.get("stream_format") != "audio"
+            or payload.get("response_format") != "pcm"
+        ):
             return web.Response(body=b"data: {}\n\n", content_type="text/event-stream")
         else:
             response = web.StreamResponse(
