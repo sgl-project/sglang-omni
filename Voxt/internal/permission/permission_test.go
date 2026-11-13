@@ -24,9 +24,15 @@ func TestFake(t *testing.T) {
 }
 
 // TestNative reads the real permissions: on a Mac with VOXTNEW_MAC=1 it
-// logs them (they depend on the machine); elsewhere they are unknown.
+// logs them; Windows has no macOS-style gate; elsewhere they are unknown.
 func TestNative(t *testing.T) {
 	n := Native()
+	if runtime.GOOS == "windows" {
+		if n.Microphone() != Granted || !n.AccessibilityTrusted() || n.SpeechRecognition() != Granted {
+			t.Error("a Windows permission is not granted")
+		}
+		return
+	}
 	if runtime.GOOS != "darwin" {
 		if n.Microphone() != Unknown || n.AccessibilityTrusted() || n.SpeechRecognition() != Unknown {
 			t.Error("a permission off macOS")
