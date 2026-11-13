@@ -48,6 +48,7 @@ type windowsEventLoop struct {
 	closeOnce   sync.Once
 	callback    uintptr
 	startupDone chan error
+	hotkeys     *windowsHotkeys
 }
 
 func startWindowsEventLoop(onForeground func(uintptr)) (*windowsEventLoop, error) {
@@ -91,6 +92,11 @@ func (loop *windowsEventLoop) run(onForeground func(uintptr)) {
 	loop.foreground = hook
 	loop.startupDone <- nil
 	defer procUnhookWinEvent.Call(loop.foreground)
+	defer func() {
+		if loop.hotkeys != nil {
+			loop.hotkeys.close()
+		}
+	}()
 
 	for {
 		var message windowMessage
@@ -101,6 +107,9 @@ func (loop *windowsEventLoop) run(onForeground func(uintptr)) {
 			return
 		case 0:
 			return
+		}
+		if message.message == hotkeyWindowMessage && loop.hotkeys != nil {
+			loop.hotkeys.registeredHotkey(int(message.wParam))
 		}
 		if message.message == eventLoopRunAction {
 			for {
@@ -125,6 +134,20 @@ func (loop *windowsEventLoop) call(action func()) {
 	result, _, callErr := procPostThreadMessage.Call(uintptr(loop.threadID), eventLoopRunAction, 0, 0)
 	if result == 0 {
 		fmt.Fprintln(os.Stderr, "PostThreadMessageW:", callErr)
+	}
+}
+
+func (loop *windowsEventLoop) callAndWait(action func()) bool {
+	executed := make(chan struct{})
+	loop.call(func() {
+		action()
+		close(executed)
+	})
+	select {
+	case <-executed:
+		return true
+	case <-loop.done:
+		return false
 	}
 }
 
