@@ -270,10 +270,15 @@ func (s *Store) DeleteModel(ctx context.Context, ref Ref, model string, scope Sc
 	return s.Delete(ctx, ref, scope)
 }
 
+type snapshotBlob struct {
+	sizeBytes     int64
+	snapshotLinks uint32
+}
+
 // snapshotBlobs maps the blobs a snapshot links (absolute paths) to their
-// sizes.
-func snapshotBlobs(snap string) map[string]int64 {
-	out := map[string]int64{}
+// sizes and the snapshot entries hard-linked to them.
+func snapshotBlobs(snap string) map[string]snapshotBlob {
+	out := map[string]snapshotBlob{}
 	repoDir := filepath.Dir(filepath.Dir(snap))
 	_ = filepath.WalkDir(snap, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -283,9 +288,15 @@ func snapshotBlobs(snap string) map[string]int64 {
 		if err != nil {
 			return nil
 		}
-		if fi, err := os.Stat(target); err == nil {
-			out[target] = fi.Size()
+		targetInfo, err := os.Stat(target)
+		if err != nil {
+			return nil
 		}
+		blob := snapshotBlob{sizeBytes: targetInfo.Size(), snapshotLinks: out[target].snapshotLinks}
+		if linkInfo, err := os.Stat(p); err == nil && os.SameFile(targetInfo, linkInfo) {
+			blob.snapshotLinks++
+		}
+		out[target] = blob
 		return nil
 	})
 	return out
@@ -319,13 +330,14 @@ func freeable(hub string, ref Ref) (int64, bool) {
 	repoDir := RepoDir(hub, ref.Repo)
 	used, others := usedBlobNames(repoDir, ref.Revision)
 	var n int64
-	for p, size := range snapshotBlobs(SnapshotDir(hub, ref)) {
-		if fi, err := os.Stat(p); err == nil && linkedElsewhere(fi) {
+	for p, blob := range snapshotBlobs(SnapshotDir(hub, ref)) {
+		if used[filepath.Base(p)] {
+			continue
+		}
+		if fi, err := os.Stat(p); err == nil && linkedElsewhere(p, fi, blob.snapshotLinks) {
 			continue // an imported blob the Hugging Face cache still holds
 		}
-		if !used[filepath.Base(p)] {
-			n += size
-		}
+		n += blob.sizeBytes
 	}
 	return n, others == 0
 }
@@ -401,7 +413,8 @@ func removeSize(p string) int64 {
 	if err != nil {
 		return 0
 	}
-	if os.Remove(p) != nil || linkedElsewhere(fi) {
+	linked := linkedElsewhere(p, fi, 0)
+	if os.Remove(p) != nil || linked {
 		return 0
 	}
 	return fi.Size()
@@ -443,7 +456,7 @@ func (s *Store) Orphans() ([]Orphan, error) {
 			for p, n := range snapshotBlobs(SnapshotDir(s.Hub, c.Ref())) {
 				if !seen[p] {
 					seen[p] = true
-					o.Bytes += n
+					o.Bytes += n.sizeBytes
 				}
 			}
 		}
@@ -546,9 +559,9 @@ func (s *Store) Usage() (Usage, error) {
 			}
 			seen[p] = true
 			if d.InUse() {
-				u.Shared += n
+				u.Shared += n.sizeBytes
 			} else {
-				u.Mine += n
+				u.Mine += n.sizeBytes
 			}
 		}
 	}

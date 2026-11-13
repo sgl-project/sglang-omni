@@ -13,7 +13,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"time"
 )
 
 // checkBlob hashes a file: sha256 for LFS files, the git blob id for others.
@@ -85,7 +87,17 @@ func writeAtomic(path string, data []byte) error {
 		os.Remove(tmp.Name())
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	for attempt := 0; ; attempt++ {
+		err := os.Rename(tmp.Name(), path)
+		if err == nil {
+			return nil
+		}
+		if runtime.GOOS != "windows" || attempt == 99 {
+			os.Remove(tmp.Name())
+			return err
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // linkSnapshot makes snapshots/<commit>/<path> → ../../blobs/<blob> for

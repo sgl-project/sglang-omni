@@ -201,7 +201,8 @@ func TestDiscover(t *testing.T) {
 }
 
 func TestBundleOf(t *testing.T) {
-	if got := bundleOf("/Applications/Dicta.app/Contents/MacOS/Dicta"); got != "/Applications/Dicta.app" {
+	exe := filepath.Join("/Applications", "Dicta.app", "Contents", "MacOS", "Dicta")
+	if got := bundleOf(exe); got != filepath.Join("/Applications", "Dicta.app") {
 		t.Error(got)
 	}
 	if got := bundleOf("/usr/local/bin/tool"); got != "" {

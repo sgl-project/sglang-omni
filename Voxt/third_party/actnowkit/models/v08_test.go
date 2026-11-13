@@ -4,19 +4,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
-	"syscall"
 	"testing"
 )
-
-func inode(t *testing.T, p string) uint64 {
-	t.Helper()
-	fi, err := os.Stat(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return fi.Sys().(*syscall.Stat_t).Ino
-}
 
 // A3: a truncated blob is not "installed".
 func TestCheckSizes(t *testing.T) {
@@ -26,7 +17,10 @@ func TestCheckSizes(t *testing.T) {
 	if st := Check(e.hub, c); st.State != Installed {
 		t.Fatalf("before %+v", st)
 	}
-	weights, _ := filepath.EvalSymlinks(filepath.Join(SnapshotDir(e.hub, Ref{repoA, revA}), "model.safetensors"))
+	weights, err := ResolveBlob(RepoDir(e.hub, repoA), filepath.Join(SnapshotDir(e.hub, Ref{repoA, revA}), "model.safetensors"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	// Without recorded sizes, only the catalogue's size tells.
 	os.Truncate(weights, 100)
 	if st := Check(e.hub, c); st.State != Installed {
@@ -151,11 +145,21 @@ func TestImport(t *testing.T) {
 	// Hard links: same inode, the source untouched.
 	a := filepath.Join(SnapshotDir(e.hub, Ref{repoA, revA}), "model.safetensors")
 	b := filepath.Join(SnapshotDir(old, Ref{repoA, revA}), "model.safetensors")
-	if inode(t, a) != inode(t, b) {
+	aInfo, err := os.Stat(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bInfo, err := os.Stat(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(aInfo, bInfo) {
 		t.Fatal("not hard-linked")
 	}
-	if l, _ := os.Readlink(a); !strings.HasPrefix(l, "../../blobs/") {
-		t.Fatalf("link %q", l)
+	if runtime.GOOS != "windows" {
+		if l, _ := os.Readlink(a); !strings.HasPrefix(l, "../../blobs/") {
+			t.Fatalf("link %q", l)
+		}
 	}
 	if data, _ := os.ReadFile(filepath.Join(RepoDir(e.hub, repoA), "refs", "main")); string(data) != revA {
 		t.Fatalf("refs/main %q", data)
