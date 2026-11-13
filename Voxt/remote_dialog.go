@@ -131,9 +131,9 @@ func (a *app) providerDialogView(c *ui.Context) {
 			a.chatgptFields(c, d) // remote_chatgpt.go
 		}
 		mask := a.keyMasks[providers.Account(d.kind, d.id)]
-		keyInfo := i18n.T("Saved in this Mac's Keychain.")
+		keyInfo := i18n.Platform("Saved in this Mac's Keychain.", "Credential storage is unavailable on Windows.")
 		if sv.keyOptional {
-			keyInfo = i18n.T("Optional for a server on this Mac. Saved in this Mac's Keychain.")
+			keyInfo = i18n.Platform("Optional for a server on this Mac. Saved in this Mac's Keychain.", "Optional for a server on this PC. Credential storage is unavailable on Windows.")
 		}
 		if !sv.signIn {
 			fieldInfo(c, i18n.T("API key"), keyInfo, func() {
@@ -152,14 +152,14 @@ func (a *app) providerDialogView(c *ui.Context) {
 				}
 			})
 		}
-		epInfo := i18n.T("The API root, ending in /v1. Leave it empty for the service's own. Only https://, or http:// to this Mac.")
+		epInfo := i18n.Platform("The API root, ending in /v1. Leave it empty for the service's own. Only https://, or http:// to this Mac.", "The API root, ending in /v1. Leave it empty for the service's own. Only https://, or http:// to this PC.")
 		switch {
 		case streams:
-			epInfo = i18n.T("Leave it empty for the service's own. Only wss://, or ws:// to this Mac.")
+			epInfo = i18n.Platform("Leave it empty for the service's own. Only wss://, or ws:// to this Mac.", "Leave it empty for the service's own. Only wss://, or ws:// to this PC.")
 		case d.kind == local.ASR:
-			epInfo = i18n.T("Leave it empty for the service's own. Only https://, or http:// to this Mac.")
+			epInfo = i18n.Platform("Leave it empty for the service's own. Only https://, or http:// to this Mac.", "Leave it empty for the service's own. Only https://, or http:// to this PC.")
 		case sv.endpoint == "":
-			epInfo = i18n.T("The API root of any OpenAI-compatible server, ending in /v1. Only https://, or http:// to this Mac.")
+			epInfo = i18n.Platform("The API root of any OpenAI-compatible server, ending in /v1. Only https://, or http:// to this Mac.", "The API root of any OpenAI-compatible server, ending in /v1. Only https://, or http:// to this PC.")
 		}
 		if !sv.signIn {
 			fieldInfo(c, i18n.T("Address"), epInfo, func() {

@@ -19,7 +19,7 @@ github.com/sgl-project/sglang-omni/Voxt
 │   ├── helper/           supervisor of voxtnew-helper: handshake, restarts, stderr to the log, call traces
 │   │   ├── proto/        the helper protocol's wire types (leaf); fixtures in helper/Fixtures/
 │   │   └── helpertest/   a fake helper for tests (the test binary re-runs itself); cmd/fakehelper
-│   ├── i18n/             T / N / X keyed by English source; locales/*.json; dates              (leaf)
+│   ├── i18n/             T / N / X / Platform keyed by English source; locales/*.json; dates              (leaf)
 │   ├── icons/            Solar icons (names.txt → solar_gen.go)
 │   ├── logs/             log ring + rotated files
 │   ├── notify/           the notification centre (kept in the store's documents)

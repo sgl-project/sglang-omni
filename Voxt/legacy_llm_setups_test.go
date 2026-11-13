@@ -251,14 +251,14 @@ func TestLegacyImportAsksForOptionalKey(t *testing.T) {
 func TestLegacyImportPlainHTTPElsewhere(t *testing.T) {
 	r := importSetups(t, `[{"providerID":"ollama","model":"qwen3","endpoint":"http://192.168.1.20:11434/api/chat"},
 	 {"providerID":"lmStudio","model":"m","endpoint":"http://127.0.0.1:1234/v1"}]`)
-	if !hasTodo(r, "ollama", "http to this Mac") || hasTodo(r, "ollama", "may not work") {
+	if !hasTodo(r, "ollama", platformText("http to this Mac")) || hasTodo(r, "ollama", "may not work") {
 		t.Errorf("no to-do naming the address rule: %q", r.text())
 	}
 	if hasTodo(r, "lmstudio", "http") {
 		t.Errorf("a server on this Mac was flagged: %q", r.text())
 	}
 	r = importSetups(t, `[{"providerID":"ollama","model":"qwen3","endpoint":"http://192.168.1.20:11434/api/chat","storedCredentialPresence":{"apiKey":true}}]`)
-	if len(r.todo) != 2 || !hasTodo(r, "ollama", "needs its API key") || !hasTodo(r, "ollama", "http to this Mac") {
+	if len(r.todo) != 2 || !hasTodo(r, "ollama", "needs its API key") || !hasTodo(r, "ollama", platformText("http to this Mac")) {
 		t.Errorf("a key that existed there and a refused address are two to-dos: %q", r.text())
 	}
 	p, _ := oneLLM(t, `{"providerID":"ollama","model":"qwen3","endpoint":"http://192.168.1.20:11434/api/chat"}`)
@@ -325,7 +325,7 @@ func TestLegacyRefusedAddressNotReady(t *testing.T) {
 	if !a.provDlg.open || a.provDlg.id != "ollama" {
 		t.Errorf("Complete setup: %+v", a.provDlg.open)
 	}
-	if got := setupNeedsText(local.LLM, lan, providers.MissingAddress); !strings.Contains(got, "http to this Mac") {
+	if got := setupNeedsText(local.LLM, lan, providers.MissingAddress); !strings.Contains(got, platformText("http to this Mac")) {
 		t.Errorf("the notice says %q", got)
 	}
 }

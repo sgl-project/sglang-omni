@@ -98,7 +98,7 @@ func deleteOutcome(id string, res []fammodels.Result, err error) string {
 		return i18n.T("%s was removed. Its files stay because %s uses them too.", name, uitext.Names(names))
 	}
 	if apps := r.Decision.UserNames(); len(apps) > 0 {
-		return i18n.T("%s was removed from Voxt. Its files stay on this Mac for %s.", name, uitext.Names(apps))
+		return i18n.Platform("%s was removed from Voxt. Its files stay on this Mac for %s.", "%s was removed from Voxt. Its files stay on this PC for %s.", name, uitext.Names(apps))
 	}
 	return ""
 }
@@ -194,8 +194,9 @@ func (a *app) modelSharedDialog(c *ui.Context) {
 			return
 		}
 		ui.Text(c, i18n.T("Remove \"%s\" from Voxt?", name)).Bold()
-		ui.Text(c, i18n.N(len(sd.apps), "%s also uses this model, so its files (%s) stay on this Mac.",
-			"%s also use this model, so its files (%s) stay on this Mac.", apps, size)).Width(px(t, 400))
+		ui.Text(c, i18n.PlatformN(len(sd.apps), "%s also uses this model, so its files (%s) stay on this Mac.",
+			"%s also use this model, so its files (%s) stay on this Mac.", "%s also uses this model, so its files (%s) stay on this PC.",
+			"%s also use this model, so its files (%s) stay on this PC.", apps, size)).Width(px(t, 400))
 		ui.Row(c).Gap(px(t, sp2)).Justify(ui.End).Wrap().Children(func() {
 			if ui.Button(c.Key("model-shared-cancel"), i18n.T("Cancel")).Clicked() {
 				a.modelShared = nil

@@ -41,8 +41,8 @@ func (a *app) modelsPage(c *ui.Context) {
 	ui.Scroll(c.Key("models-scroll")).Grow(1).MinHeight(0).Children(func() {
 		pageColumn(c).Gap(px(t, sp3)).Children(func() {
 			a.obBackBar(c, modelsPath) // onboarding.go: left from the setup guide
-			sectionTitle(c, i18n.T("On this Mac"))
-			caption(c, i18n.T("Free, and your audio stays on this Mac."))
+			sectionTitle(c, i18n.Platform("On this Mac", "On this PC"))
+			caption(c, i18n.Platform("Free, and your audio stays on this Mac.", "Free, and your audio stays on this PC."))
 			a.modelCards(c, models.ASR)
 			if !a.modelHidden(dictation.ModelID) {
 				a.dictationCard(c)
@@ -432,7 +432,7 @@ func modelFamilyText(m models.Model, st models.Status) string {
 	switch {
 	case (m.Borrowed || st.OnDisk) && !st.Installed:
 		if len(st.Users) == 0 {
-			return i18n.T("Already on this Mac")
+			return i18n.Platform("Already on this Mac", "Already on this PC")
 		}
 		return i18n.T("Installed by %s", uitext.Names(st.Users))
 	case st.Installed && len(st.Users) > 0:

@@ -364,7 +364,7 @@ func TestModelFamilyText(t *testing.T) {
 		{qwen, models.Status{OnDisk: true}, "Already on this Mac"},
 		{qwen, models.Status{OnDisk: true, Installed: true, Mine: true, Users: []string{"Dicta"}}, "Shared with Dicta"},
 	} {
-		if got := modelFamilyText(c.m, c.st); got != c.want {
+		if got := modelFamilyText(c.m, c.st); got != platformText(c.want) {
 			t.Errorf("%s %+v: %q, want %q", c.m.ID, c.st, got, c.want)
 		}
 	}

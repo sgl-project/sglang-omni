@@ -17,26 +17,26 @@ import (
 
 func (a *app) privacySettings(c *ui.Context) {
 	t := c.Theme()
-	sectionTitle(c, i18n.T("What leaves this Mac"))
+	sectionTitle(c, i18n.Platform("What leaves this Mac", "What leaves this PC"))
 	online := i18n.T("Otherwise, Voxt goes online only to download models and read its announcements. Reading them sends nothing about you.")
 	if a.upd != nil { // a build with an update feed (updates.go)
 		online = i18n.T("Otherwise, Voxt goes online only to check for updates, download models and read its announcements. Reading them sends nothing about you.")
 	}
 	ui.Column(c.Key("priv-list")).Gap(px(t, sp1)).Children(func() {
 		for _, s := range []string{
-			i18n.T("Your recordings are recognised on this Mac. If a feature uses a speech service you set up on the Speech models page, its recordings go to that service. Voxt has no server of its own."),
-			i18n.T("Text to clean up, translate or rewrite goes to the language model you set up on the Language models page. With a local server such as Ollama, it stays on this Mac. Otherwise it goes to that service."),
+			i18n.Platform("Your recordings are recognised on this Mac. If a feature uses a speech service you set up on the Speech models page, its recordings go to that service. Voxt has no server of its own.", "Your recordings are recognised on this PC. If a feature uses a speech service you set up on the Speech models page, its recordings go to that service. Voxt has no server of its own."),
+			i18n.Platform("Text to clean up, translate or rewrite goes to the language model you set up on the Language models page. With a local server such as Ollama, it stays on this Mac. Otherwise it goes to that service.", "Text to clean up, translate or rewrite goes to the language model you set up on the Language models page. With a local server such as Ollama, it stays on this PC. Otherwise it goes to that service."),
 			i18n.T("With ChatGPT (Codex), that text goes to OpenAI under your account and its terms."),
 			online,
 			i18n.T("Voxt reads the address of the current browser tab only to pick your app enhancement rules. The language model never sees it, only the app's name."),
 			i18n.T("Voxt collects no usage data, crash reports or identifiers."),
-			i18n.T("If you let programs on this Mac read the history (below), where that text goes next is up to them."),
+			i18n.Platform("If you let programs on this Mac read the history (below), where that text goes next is up to them.", "If you let programs on this PC read the history (below), where that text goes next is up to them."),
 		} {
 			ui.Text(c, "• "+s).FontSize(px(t, fsCaption)).TextColor(t.TextMuted)
 		}
 	})
 
-	sectionTitle(c, i18n.T("Kept on this Mac"))
+	sectionTitle(c, i18n.Platform("Kept on this Mac", "Kept on this PC"))
 	settingRow(c, "priv-history", i18n.T("Keep a history"), "", func() {
 		if ui.Switch(c.Key("priv-history"), &a.settingsForm.keepHistory).Label(i18n.T("Save each result")).Changed() {
 			on := a.settingsForm.keepHistory

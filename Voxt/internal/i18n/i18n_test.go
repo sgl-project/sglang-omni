@@ -1,6 +1,7 @@
 package i18n
 
 import (
+	"runtime"
 	"testing"
 	"time"
 )
@@ -23,6 +24,18 @@ func TestEnglishIsIdentity(t *testing.T) {
 		t.Error(got)
 	}
 	if got := X("verb", "Record"); got != "Record" {
+		t.Error(got)
+	}
+	platformWant := "macOS"
+	pluralWant := "1 Mac"
+	if runtime.GOOS == "windows" {
+		platformWant = "Windows"
+		pluralWant = "1 PC"
+	}
+	if got := Platform("macOS", "Windows"); got != platformWant {
+		t.Error(got)
+	}
+	if got := PlatformN(1, "%d Mac", "%d Macs", "%d PC", "%d PCs", 1); got != pluralWant {
 		t.Error(got)
 	}
 }

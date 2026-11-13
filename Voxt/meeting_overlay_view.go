@@ -76,7 +76,7 @@ func meetingOverlayProblemText(key string) string {
 	case meeting.ProblemKeyLiveBacklog:
 		return i18n.T("Live captions are falling behind. The final transcript will catch up after you end the meeting.")
 	case meeting.ProblemKeyDiskLow:
-		return i18n.T("Disk space is running low. End the meeting soon or free space on this Mac.")
+		return i18n.Platform("Disk space is running low. End the meeting soon or free space on this Mac.", "Disk space is running low. End the meeting soon or free space on this PC.")
 	case meeting.ProblemKeyHelperOld:
 		return i18n.T("Recording system audio needs a newer Voxt helper. Update Voxt, or record the microphone only.")
 	default:

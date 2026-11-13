@@ -306,6 +306,12 @@ func frames(tt *ui.Tester) {
 }
 
 var windowsHotkeyExpectation = strings.NewReplacer(
+	"Optional for a server on this Mac. Saved in this Mac's Keychain.", "Optional for a server on this PC. Credential storage is unavailable on Windows.",
+	"Saved in this Mac's Keychain.", "Credential storage is unavailable on Windows.",
+	"The sign-in is kept only in this Mac's Keychain. Signing out deletes it.", "The sign-in cannot be saved on Windows because credential storage is unavailable.",
+	"this Mac's", "this PC's",
+	"this Mac", "this PC",
+	"这台 Mac", "这台电脑",
 	"Right ⌥ ⇧", "Right Alt Shift",
 	"⌃ Right ⌥", "Ctrl Right Alt",
 	"⌃⌥Space", "Ctrl Alt Space",

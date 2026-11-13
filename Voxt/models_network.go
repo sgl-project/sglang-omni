@@ -154,7 +154,7 @@ func (a *app) networkDialog(c *ui.Context) {
 		segmentedFit(c.Key("net-proxy"), &f.proxyMode, i18n.T("Automatic"), i18n.T("No proxy"), i18n.T("Custom")).Label(i18n.T("Proxy"))
 		switch f.proxyMode {
 		case proxyAuto:
-			caption(c, i18n.T("The proxy in this Mac's network settings, or one set by an environment variable."))
+			caption(c, i18n.Platform("The proxy in this Mac's network settings, or one set by an environment variable.", "The proxy in this PC's network settings, or one set by an environment variable."))
 		case proxyNone:
 			caption(c, i18n.T("Downloads connect to the server directly."))
 		default:

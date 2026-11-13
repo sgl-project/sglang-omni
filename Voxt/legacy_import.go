@@ -256,7 +256,7 @@ func (a *app) offerLegacy() {
 		log.Printf("legacy import: %v", err)
 		return
 	}
-	a.notes.Post(core.Notification{ID: legacyOffered, Title: i18n.T("The previous Voxt is on this Mac"),
+	a.notes.Post(core.Notification{ID: legacyOffered, Title: i18n.Platform("The previous Voxt is on this Mac", "The previous Voxt is on this PC"),
 		Body: i18n.T("Bring its dictionary, history and settings over."), Link: linkImportLegacy})
 }
 

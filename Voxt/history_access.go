@@ -249,7 +249,7 @@ func (a *app) historyAccessSection(c *ui.Context) {
 	f := &a.settingsForm
 	on := a.prefs.Privacy.HistoryAccess
 	sectionTitle(c, i18n.T("Other programs"))
-	settingRow(c, "priv-access", i18n.T("Let programs on this Mac read the history"), i18n.T("When off, Voxt's read command stops working. Programs running under your account can still open Voxt's data files directly."), func() {
+	settingRow(c, "priv-access", i18n.Platform("Let programs on this Mac read the history", "Let programs on this PC read the history"), i18n.T("When off, Voxt's read command stops working. Programs running under your account can still open Voxt's data files directly."), func() {
 		if ui.Switch(c.Key("priv-access"), &f.historyAccess).Label(i18n.T("Allow reading")).Changed() {
 			if f.historyAccess {
 				f.historyAccess = false // only the question turns it on
@@ -297,7 +297,7 @@ func (a *app) historyAccessDialogs(c *ui.Context) {
 	ha := &a.histAccess
 	if ha.ask {
 		ui.Modal(c.Key("priv-access-ask"), &ha.ask, func() {
-			ui.Text(c, i18n.T("Let programs on this Mac read the history?")).Bold()
+			ui.Text(c, i18n.Platform("Let programs on this Mac read the history?", "Let programs on this PC read the history?")).Bold()
 			ui.Text(c, i18n.T("Any program you run can then read the text Voxt transcribed, translated and rewrote and the app names, but not the recordings or web addresses. Voxt cannot see where a program sends it.")).Width(px(t, 380))
 			ui.Row(c).Gap(px(t, sp2)).Justify(ui.End).Children(func() {
 				if ui.Button(c.Key("priv-access-cancel"), i18n.T("Cancel")).AutoFocus().Clicked() {

@@ -202,7 +202,7 @@ func (a *app) obLanguageRow(c *ui.Context) {
 		if ready {
 			return
 		}
-		caption(c, i18n.T("Cleans up, translates and rewrites the text. Run one on this Mac with Ollama, LM Studio or oMLX, or use a service's API key."))
+		caption(c, i18n.Platform("Cleans up, translates and rewrites the text. Run one on this Mac with Ollama, LM Studio or oMLX, or use a service's API key.", "Cleans up, translates and rewrites the text. Run one on this PC with Ollama, LM Studio or oMLX, or use a service's API key."))
 		ui.Row(c).Children(func() {
 			if ui.Button(c.Key("ob-llm-setup"), i18n.T("Set up a language model")).Clicked() {
 				a.obLeave(remotePath) // onboarding.go: the page offers the way back
@@ -237,7 +237,7 @@ func (a *app) obReuseCard(c *ui.Context, found []models.Found) {
 			ui.Icon(c, icons.CheckCircle.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Success).Shrink(0)
 			ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp2)).Children(func() {
 				ui.Column(c).Gap(px(t, 2)).Children(func() {
-					ui.Text(c, i18n.N(len(found), "%d model is already on this Mac", "%d models are already on this Mac", len(found))).FontWeight(600)
+					ui.Text(c, i18n.PlatformN(len(found), "%d model is already on this Mac", "%d models are already on this Mac", "%d model is already on this PC", "%d models are already on this PC", len(found))).FontWeight(600)
 					caption(c, sub)
 				})
 				ui.Text(c, strings.Join(names, " · ")).FontSize(px(t, fsCaption))
@@ -273,7 +273,7 @@ func (a *app) obModelRow(c *ui.Context, id, name string, ready, underCard bool) 
 				statusMark(c, icons.CheckCircle, k.Success, i18n.T("Ready: %s", name))
 			case onDisk:
 				ui.Text(c, name).FontWeight(600)
-				from := i18n.T("Already on this Mac")
+				from := i18n.Platform("Already on this Mac", "Already on this PC")
 				if len(found.By) > 0 {
 					from = i18n.T("Installed · from %s", found.By[0])
 				}

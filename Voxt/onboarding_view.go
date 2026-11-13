@@ -161,7 +161,7 @@ func (a *app) obTitle(c *ui.Context) {
 		sub = i18n.T("Voxt needs the microphone to hear you, and Accessibility to type the result where your cursor is. Allow them here, or later in Settings → Permissions.")
 	case obModels:
 		title = i18n.T("Models")
-		sub = i18n.T("Voxt recognises speech with a model on this Mac and cleans up, translates and rewrites with a language model you set up. The model below is the best start, and the Speech models page has others.")
+		sub = i18n.Platform("Voxt recognises speech with a model on this Mac and cleans up, translates and rewrites with a language model you set up. The model below is the best start, and the Speech models page has others.", "Voxt recognises speech with a model on this PC and cleans up, translates and rewrites with a language model you set up. The model below is the best start, and the Speech models page has others.")
 	case obTranscribe:
 		title = i18n.T("Try Transcribe")
 		sub = i18n.T("Transcribe writes down what you say. Press the shortcut (or Start), read the sentence below, then press it again to stop.")

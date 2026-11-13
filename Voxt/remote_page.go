@@ -90,8 +90,8 @@ func (a *app) providerCards(c *ui.Context, kind local.Kind) {
 		grid("remote-mine", mine)
 	}
 	if len(here) > 0 {
-		sectionTitle(c, i18n.T("On this Mac"))
-		caption(c, i18n.T("Free, and the text stays on this Mac."))
+		sectionTitle(c, i18n.Platform("On this Mac", "On this PC"))
+		caption(c, i18n.Platform("Free, and the text stays on this Mac.", "Free, and the text stays on this PC."))
 		grid("remote-here", here)
 	}
 	if len(online) > 0 {
@@ -235,7 +235,7 @@ func whereText(sv service, p settings.Provider) string {
 		ep = sv.endpoint
 	}
 	if onThisMac(ep) {
-		return i18n.T("On this Mac")
+		return i18n.Platform("On this Mac", "On this PC")
 	}
 	return i18n.T("Remote")
 }

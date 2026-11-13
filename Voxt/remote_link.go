@@ -303,7 +303,7 @@ func setupNeedsText(kind local.Kind, p settings.Provider, missing string) string
 	case providers.MissingEndpoint:
 		return i18n.T("%s needs its address.", name)
 	case providers.MissingAddress:
-		return i18n.T("Change the address of %s. Voxt connects only over https, or http to this Mac, and the address cannot contain a user name or password.", name)
+		return i18n.Platform("Change the address of %s. Voxt connects only over https, or http to this Mac, and the address cannot contain a user name or password.", "Change the address of %s. Voxt connects only over https, or http to this PC, and the address cannot contain a user name or password.", name)
 	}
 	return i18n.T("%s needs a model.", name)
 }
