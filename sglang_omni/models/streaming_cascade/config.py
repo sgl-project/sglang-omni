@@ -406,12 +406,13 @@ class ComponentGraphConfig(BaseModel):
         ]
 
     def check_languages(self) -> None:
-        """A dialog's language is one every speech node takes, since a speech node may send it as a sentence's language tag and a tag its service does not take fails the session."""
+        """A dialog's language is one every speech node with language="auto" takes, since that node may send it as a sentence's language tag and a tag its service does not take fails the session."""
         for dialog in self.nodes:
             for speaker in self.nodes:
                 if (
                     isinstance(dialog.component, DialogConfig)
                     and isinstance(speaker.component, OpenAISpeechSynthesizerConfig)
+                    and speaker.component.language == "auto"
                     and dialog.component.language
                     and dialog.component.language
                     not in speaker.component.supported_languages
