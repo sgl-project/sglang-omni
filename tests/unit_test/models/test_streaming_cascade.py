@@ -208,9 +208,23 @@ async def test_sentences_keep_the_reply_spacing_and_split_cjk_without_spaces():
         for delta in deltas:
             yield delta
 
-    spans = [span async for span in sentences(stream(), max_words=24)]
+    spans = [span async for span, _ in sentences(stream(), max_words=24)]
     assert spans == ["One two.", "\nThree four.", " 五六。", "七八。"]
     assert "".join(spans) == REPLY
+
+
+@pytest.mark.asyncio
+async def test_sentences_say_which_spans_end_their_sentence():
+    """A span cut by max_words does not end its sentence, also in the reply's last sentence, which is cut only once the reply is complete."""
+
+    async def stream():
+        yield text_chunk("Sure. Alpha beta gamma delta.", 1)
+
+    assert [pair async for pair in sentences(stream(), max_words=3)] == [
+        ("Sure.", True),
+        (" Alpha beta", False),
+        (" gamma delta.", True),
+    ]
 
 
 async def spans_of(*parts: str, max_words: int = 24) -> list[str]:
@@ -218,7 +232,7 @@ async def spans_of(*parts: str, max_words: int = 24) -> list[str]:
         for part in parts:
             yield text_chunk(part, 1)
 
-    return [span async for span in sentences(stream(), max_words)]
+    return [span async for span, _ in sentences(stream(), max_words)]
 
 
 @pytest.mark.asyncio
@@ -1374,6 +1388,56 @@ async def test_openai_speech_flushes_each_reply_before_turn_done(backends):
         np.frombuffer(o.payload, dtype="<f4") for o in outputs if o.modality == AUDIO
     ]
     assert np.concatenate(samples).tolist() == [0.0, 0.5, -0.5] * 3
+
+
+@pytest.mark.asyncio
+async def test_openai_speech_pauses_before_each_sentence_after_the_first_audio(
+    backends,
+):
+    """A pause goes before each spoken sentence after the reply's first audio, not before that audio, not at a cut inside a sentence even across a span with no word, and not for a sentence with no word, but still when a span with no word sits between two sentences, and reply.progress counts it."""
+    settings, _, spoken, _ = backends
+    tts = settings.component_graph().node("tts").component.model_dump()
+    outputs = await drain(
+        build({**tts, "max_sentence_words": 2, "sentence_pause_ms": 0.125}),
+        [
+            text_chunk(
+                "😀. Hello there my friend 😀. Second one. 😀 😀 Third one. "
+                "Four five 😀 😀 six seven. 😀.",
+                1,
+            ),
+            control_chunk(TURN_DONE, turn=1),
+        ],
+    )
+    played = np.concatenate(
+        [np.frombuffer(o.payload, dtype="<f4") for o in outputs if o.modality == AUDIO]
+    )
+    progress = [o.payload for o in outputs if control_type(o) == REPLY_PROGRESS]
+    speech = [0.0, 0.5, -0.5]
+    pause = [0.0, 0.0, 0.0]
+    assert spoken == [
+        "Hello there",
+        "my friend",
+        "Second one.",
+        "Third one.",
+        "Four five",
+        "six seven.",
+    ]
+    assert played.tolist() == (
+        speech + speech + pause + speech + pause + speech + pause + speech + speech
+    )
+    assert [point["audio_ms"] for point in progress] == [
+        0.0,
+        0.125,
+        0.25,
+        0.25,
+        0.5,
+        0.5,
+        0.75,
+        1.0,
+        1.0,
+        1.125,
+        1.125,
+    ]
 
 
 @pytest.mark.asyncio

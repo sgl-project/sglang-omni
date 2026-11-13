@@ -415,17 +415,17 @@ def sentence_end(text: str, max_words: int, *, is_complete: bool = False) -> int
 
 async def sentences(
     inputs: AsyncIterator[TimedChunk], max_words: int
-) -> AsyncIterator[str]:
-    """The reply text cut into the spans sent to speech, each with its own spacing, so the spans join back to the text."""
+) -> AsyncIterator[tuple[str, bool]]:
+    """The reply text cut into the spans sent to speech, each with its own spacing so the spans join back to the text, and whether the span ends its sentence rather than at a cut by max_words."""
     pending = ""
     async for text in texts(inputs):
         pending += text
         while (end := sentence_end(pending, max_words)) is not None:
-            yield pending[:end]
+            yield pending[:end], end == first_sentence_end(pending, False)
             pending = pending[end:]
     while pending:
         end = sentence_end(pending, max_words, is_complete=True)
-        yield pending[:end]
+        yield pending[:end], end == first_sentence_end(pending, True)
         pending = pending[end:]
 
 

@@ -71,7 +71,9 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     it, which is tagged by its script, and any other name tags every sentence
     without Chinese characters. Without a known user language `auto` tags by
     script like `English`. A sentence tagged English reaches the service with
-    its numbers read out as words.
+    its numbers read out as words. sentence_pause_ms of silence goes before
+    each spoken sentence after the reply's first audio, but not inside a
+    sentence cut by max_sentence_words.
     """
 
     kind: Literal["openai_speech"] = "openai_speech"
@@ -82,6 +84,7 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     reference_text: str = ""
     language: str = ""
     max_sentence_words: int = Field(default=24, gt=0)
+    sentence_pause_ms: float = Field(default=0, ge=0)
     api_key_env: str = "OPENAI_API_KEY"
 
 
@@ -280,7 +283,11 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
     ) -> None:
         text_end = 0
         audio_ms = 0.0
-        async for span in sentences(
+        pause_samples = round(
+            self.config.sentence_pause_ms * self.sample_rate_hz / 1000
+        )
+        follows_sentence_end = True
+        async for span, ends_sentence in sentences(
             self.follow_language(deltas), self.config.max_sentence_words
         ):
             text = UNSPOKEN_SYMBOLS.sub("", MARKDOWN_LINK.sub(r"\1", span))
@@ -297,11 +304,25 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
             )
             # Note (ruoyu): Qwen3-TTS answers 500 to a sentence with no word in it, which would close the session.
             if re.search(r"\w", sentence):
+                if audio_ms and pause_samples and follows_sentence_end:
+                    # note (Haoling Pu): each request ends at its last word, so back-to-back requests leave about 0.12 s between sentences, against about 0.35 s when one request reads the whole reply; a cut inside a sentence gets no pause.
+                    audio_ms += pause_samples * 1000 / self.sample_rate_hz
+                    emit(
+                        audio_chunk(
+                            np.zeros(pause_samples, dtype="<f4"),
+                            self.sample_rate_hz,
+                            turn,
+                        )
+                    )
+                else:
+                    pass
                 async for samples in self.speak(sentence, language):
                     audio_ms += len(samples) * 1000 / self.sample_rate_hz
                     emit(audio_chunk(samples, self.sample_rate_hz, turn))
+                follows_sentence_end = ends_sentence
             else:
-                pass
+                # note (Haoling Pu): a span with no word plays nothing, so a sentence end before it or at its end still puts a pause before the next spoken sentence.
+                follows_sentence_end = follows_sentence_end or ends_sentence
             text_end += len(span)
             self.progress(emit, turn, text_end, audio_ms)
 
