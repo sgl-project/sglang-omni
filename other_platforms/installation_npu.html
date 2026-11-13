@@ -616,6 +616,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#model-notes">Model notes</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchcodec-installation-for-tts-models">TorchCodec installation for TTS models</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#minicpm-o">MiniCPM-o</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#minimax-music3">MiniMax-Music3</a></li>
 </ul>
 </li>
 </ul>
@@ -900,6 +901,13 @@ On NPU the reference audio for voice cloning is decoded through the soundfile
 fallback because torchcodec is not usable in NPU images. Validated on Ascend
 910 / CANN 9.1.0 / torch 2.10 / torch_npu 2.10.0.post6 / SGLang 0.5.22.</p>
 </section>
+<section id="minimax-music3">
+<h3>MiniMax-Music3<a class="headerlink" href="#minimax-music3" title="Link to this heading">#</a></h3>
+<p>Use this command to launch MiniMax-Music3 on Ascend NPU:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>MiniMaxAI/MiniMax-Music3<span class="w"> </span>--dit_dav.factory.compile_acoustic<span class="w"> </span>False<span class="w"> </span>--minimax_music3_ar.engine.enable_deterministic_inference<span class="w"> </span>False
+</pre></div>
+</div>
+</section>
 </section>
 </section>
 
@@ -969,6 +977,7 @@ fallback because torchcodec is not usable in NPU images. Validated on Ascend
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#model-notes">Model notes</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchcodec-installation-for-tts-models">TorchCodec installation for TTS models</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#minicpm-o">MiniCPM-o</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#minimax-music3">MiniMax-Music3</a></li>
 </ul>
 </li>
 </ul>
