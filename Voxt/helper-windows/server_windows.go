@@ -47,7 +47,8 @@ type helperServer struct {
 	jobsMu sync.Mutex
 	jobs   map[string]*helperJob
 
-	events *windowsEventLoop
+	events     *windowsEventLoop
+	automation *automationThread
 }
 
 func implementedMethods() []string {
@@ -58,6 +59,8 @@ func implementedMethods() []string {
 		proto.MethodPermissionsStatus,
 		proto.MethodPermissionsRequest,
 		proto.MethodAppFrontmost,
+		proto.MethodTextFocus,
+		proto.MethodTextPaste,
 	}
 }
 
@@ -74,6 +77,12 @@ func runHelper() error {
 	}
 	server.events = events
 	defer events.close()
+	automation, err := startAutomationThread()
+	if err != nil {
+		return err
+	}
+	server.automation = automation
+	defer automation.close()
 
 	messages := make(chan proto.Message)
 	readErrors := make(chan error, 1)
@@ -91,9 +100,11 @@ func runHelper() error {
 				go server.serve(message)
 			}
 		case err := <-readErrors:
+			server.stopOnce.Do(func() { close(server.shutdown) })
 			server.cancelAllJobs()
 			return err
 		case <-interrupts:
+			server.stopOnce.Do(func() { close(server.shutdown) })
 			server.cancelAllJobs()
 			return nil
 		case <-server.shutdown:
@@ -196,6 +207,8 @@ func (server *helperServer) serve(message proto.Message) {
 			return
 		}
 		server.result(message.ID, app)
+	case proto.MethodTextFocus, proto.MethodTextPaste:
+		server.serveTextIO(message)
 	default:
 		server.fail(message.ID, proto.CodeMethodNotFound, "Unknown method %s", message.Method)
 	}
