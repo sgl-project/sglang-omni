@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-// Parakeet TDT transcription as Voxt's Swift path runs it: the audio decoded
-// in overlapping chunks, each with greedy TDT decoding, the chunks' tokens
-// merged on their overlap, and the tokens grouped into timed sentences.
+// Parakeet TDT transcription with greedy decoding and timed sentences.
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -14,12 +14,20 @@
 
 namespace parakeet {
 
+// Note (Mengwei Liu): each process serves one model; the server and the
+// multi-file CLI bound freed buffers during requests, not only when idle.
+inline constexpr size_t kBufferCacheLimitBytes = 256ULL << 20;
+
 struct ParakeetOptions {
-  // The chunk length Voxt asks for; the Swift port decodes 5 s chunks for
-  // 1199 s or more and at least 0.5 s otherwise, each overlapping the last
-  // by 1 s.
-  double chunk_duration_seconds = 1200.0;
+  // Fixed windows overlapping by 1 s; unset cuts automatic chunks at quiet
+  // boundaries.
+  std::optional<double> window_seconds;
 };
+
+// The options for a requested chunk_duration: 2 to 300 seconds for fixed
+// windows, or 1199 or more (Voxt's whole recording) for automatic chunks.
+// Throws std::invalid_argument for anything else.
+ParakeetOptions ChunkDurationOptions(double chunk_duration_seconds);
 
 // One emitted token: its id, its text with the word marker read as a space,
 // and its time.
@@ -47,6 +55,13 @@ private:
   // The tokens greedy TDT decoding emits on one chunk, in sentence order.
   std::vector<AlignedToken> DecodeChunk(const std::vector<float> &samples,
                                         const std::atomic<bool> &cancel) const;
+
+  // DecodeChunk, then bounded retries of an audible tail it left blank;
+  // samples hold at most max_chunk_samples.
+  std::vector<AlignedToken>
+  DecodeWithBlankTailRecovery(const std::vector<float> &samples,
+                              size_t max_chunk_samples,
+                              const std::atomic<bool> &cancel) const;
 
   ParakeetModel model_;
   std::vector<std::string> token_texts_;

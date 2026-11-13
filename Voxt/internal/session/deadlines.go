@@ -1,6 +1,7 @@
 package session
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -26,10 +27,26 @@ func (cfg *Config) llmDeadlines(req llm.Request, chars int, floor time.Duration)
 	return req
 }
 
-// llmChat runs req within its deadlines; an error says which one passed.
+// llmFloor is a request's least deadline: the wait the user chose
+// (settings.Models.LLMWait, #3821), else auto.
+func (r *run) llmFloor(auto time.Duration) time.Duration {
+	return cmp.Or(r.settings.Models.LLMWaitFor(), auto)
+}
+
+// TimedOut says err is a language model's deadline passing: llmChat's,
+// or the client's own.
+func TimedOut(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || llm.Code(err) == llm.CodeTimeout
+}
+
+// llmChat runs req within its deadlines, until SkipLLM; an error says
+// which one passed.
 func (r *run) llmChat(req llm.Request) (llm.Response, error) {
-	ctx, cancel := context.WithTimeout(r.ctx, req.Timeout)
+	ctx, cancel := context.WithTimeout(r.llmCtx, req.Timeout)
 	defer cancel()
+	if r.shot != nil {
+		req.Image = r.shot()
+	}
 	resp, err := r.svc.LLM.Chat(ctx, req)
 	if err == nil || r.ctx.Err() != nil {
 		return resp, err

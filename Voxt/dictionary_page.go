@@ -6,7 +6,8 @@ package main
 // Terms go to the speech model as hints (dict.Hints) and to the
 // language model as a glossary (compose.Glossary); the switches at the
 // top say where. Search, add, edit, delete, and import or export CSV and
-// plain text (internal/dict).
+// plain text (internal/dict). The Personal dictionary view, Markdown notes
+// for the language model: dictionary_notes.go.
 //
 // The page keeps the terms of its search in memory, read in the
 // background when it shows and after each change; sessions read the
@@ -48,6 +49,7 @@ type dictionaryState struct {
 
 type dictView struct {
 	query string
+	find  finder // Return steps through the matches (find_marks.go)
 	// list holds the terms read for listFor (the search); "\x00" before
 	// the first read. seq numbers the reads: only the last one lands.
 	list    []store.Term
@@ -70,6 +72,18 @@ type dictView struct {
 	allSuggestions bool
 	// scan is the history scan's dialog (dictionary_scan.go).
 	scan scanState
+	// tab is the view: the terms or the personal dictionary
+	// (dictionary_notes.go), whose editor is notes and whose example is
+	// of notesFeatures[notesFeature].
+	tab          int
+	notes        speechContextState
+	notesFeature int
+	// notesQuery and notesFind are the view's search (find_marks.go).
+	notesQuery string
+	notesFind  finder
+	// all are the terms of the last read without a search, for the
+	// example's glossary.
+	all []store.Term
 }
 
 // termEdit is the term dialog's fields: a new term when id is "".
@@ -135,7 +149,7 @@ func (a *app) loadDict() {
 			}
 			d.list, d.err = list, ""
 			if q == "" {
-				d.total = len(list)
+				d.total, d.all = len(list), list
 			}
 		})
 	})
@@ -184,11 +198,25 @@ func (a *app) dictionaryPage(c *ui.Context) {
 		}
 	})
 	pageBody(c).Children(func() {
+		ui.Row(c).Padding(px(t, sp1), px(t, sp6), 0).Shrink(0).Children(func() {
+			segmentedFit(c.Key("dict-tab"), &d.tab, i18n.T("Terms"), i18n.T("Personal dictionary")).Label(i18n.T("Dictionary view"))
+		})
+		if d.tab == dictNotesTab {
+			a.notesView(c)
+			return
+		}
+		list := d.list
+		hits := findHits(d.listFor, len(list), func(i int) []string { return termTexts(list[i]) })
+		if d.find.advance(hits[len(list)]) {
+			row, _ := rowOf(hits, d.find.cur)
+			d.listUI.ScrollIntoView(row)
+		}
 		ui.Column(c).Padding(px(t, sp1), px(t, sp6), px(t, sp2)).Gap(px(t, sp2)).Shrink(0).Children(func() {
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
-				if searchField(c, "dict-search", &d.query, i18n.T("Search terms"), px(t, 320)).Label(i18n.T("Search dictionary")).Changed() {
+				if d.find.field(c, "dict-search", &d.query, i18n.T("Search terms"), px(t, 320)).Label(i18n.T("Search dictionary")).Changed() {
 					a.loadDict()
 				}
+				d.find.count(c, d.listFor, hits[len(list)])
 				a.dictSwitches(c)
 			})
 			if !canScan {
@@ -212,7 +240,7 @@ func (a *app) dictionaryPage(c *ui.Context) {
 			}
 		})
 		a.suggestionsSection(c)
-		list := d.list
+		cur, curAt := rowOf(hits, d.find.cur)
 		ui.Column(c).Grow(1).MinHeight(0).Children(func() {
 			switch {
 			case !d.read:
@@ -221,7 +249,11 @@ func (a *app) dictionaryPage(c *ui.Context) {
 			default:
 				ui.List(c.Key("dict-list"), &d.listUI, len(list)).Grow(1).MinHeight(0).Gap(px(t, 2)).Padding(0, 0, px(t, sp4)).
 					ItemKey(func(i int) any { return list[i].ID }).Rows(func(r ui.ListRow) {
-					a.termRow(c, list[r.Index])
+					at := -1
+					if r.Index == cur {
+						at = curAt
+					}
+					a.termRow(c, list[r.Index], at)
 				})
 			}
 		})
@@ -264,6 +296,7 @@ func (a *app) dictGuide(c *ui.Context) {
 		caption(c, i18n.T("Speech recognition: with Speech hints on, terms go to the speech model as words to expect. Aliases are not sent."))
 		caption(c, i18n.T("Language model: with Glossary for the language model on, the model writes terms as spelled here. With more than %d terms, only those found in the text are sent, up to %d.", compose.GlossaryAllUpTo, compose.MaxGlossaryTerms))
 		caption(c, i18n.T("Aliases: misspellings Voxt replaces with the term, even without a language model."))
+		caption(c, i18n.T("Rules a term cannot hold, such as when a spelling applies, go in the Personal dictionary: Markdown notes for the language model only, with an example of the prompt."))
 	})
 }
 
@@ -290,11 +323,21 @@ func (a *app) dictEmpty(c *ui.Context) {
 		})
 }
 
+// termTexts are the texts a term's row shows, where the search marks
+// its matches: the term, its aliases and its note.
+func termTexts(term store.Term) []string {
+	return []string{term.Term, strings.Join(term.Aliases, i18n.T(", ")), term.Note}
+}
+
 // termRow is a term in the list: its switch, the term, its aliases and
-// note, Edit and Delete.
-func (a *app) termRow(c *ui.Context, term store.Term) {
+// note, Edit and Delete, the search's matches marked; at is the current
+// match's index within the row (-1 for none).
+func (a *app) termRow(c *ui.Context, term store.Term, at int) {
 	t := c.Theme()
 	k := tok(t)
+	q := a.dv.listFor
+	texts := termTexts(term)
+	nTerm, nAliases := len(findFolded(texts[0], q)), len(findFolded(texts[1], q))
 	row := ui.Row(c.Key("term-"+term.ID)).Padding(px(t, 6), px(t, sp2)).Margin(0, px(t, sp4)).Radius(px(t, radiusControl)).
 		Gap(px(t, sp2)).AlignItems(ui.Center)
 	if row.Hovered() {
@@ -309,16 +352,21 @@ func (a *app) termRow(c *ui.Context, term store.Term) {
 		})
 		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, 2)).Children(func() {
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-				tx := ui.Text(c, term.Term).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
+				tx := markedText(c, term.Term, q, curIn(at, 0)).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
 				if !term.Enabled {
 					tx.TextColor(k.Text3)
 				}
 				if len(term.Aliases) > 0 {
-					truncText(c, i18n.T("heard as %s", strings.Join(term.Aliases, i18n.T(", ")))).FontSize(px(t, fsCaption)).TextColor(k.Text2).Grow(1)
+					heard := i18n.T("heard as %s", texts[1])
+					before, after, _ := strings.Cut(i18n.T("heard as %s", "\x00"), "\x00")
+					spans := append([]ui.Span{{Text: before}}, markSpans(k.Danger, ui.Span{}, texts[1], q, curIn(at, nTerm))...)
+					ui.RichText(c, append(spans, ui.Span{Text: after})...).Label(heard).Tooltip(heard).
+						FontSize(px(t, fsCaption)).TextColor(k.Text2).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
 				}
 			})
 			if term.Note != "" {
-				truncText(c, term.Note).FontSize(px(t, fsCaption)).TextColor(k.Text3)
+				markedText(c, term.Note, q, curIn(at, nTerm+nAliases)).Tooltip(term.Note).
+					FontSize(px(t, fsCaption)).TextColor(k.Text3).SingleLine().Ellipsis("…").MinWidth(0)
 			}
 		})
 		if iconButton(c.Key("edit"), icons.Pen2, i18n.T("Edit %s", term.Term)).Clicked() {

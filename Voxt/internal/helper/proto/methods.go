@@ -44,6 +44,8 @@ const (
 
 	MethodBrowserURL = "browser.url" // request: the front tab's URL of a browser (Accessibility only)
 
+	MethodScreenWindow = "screen.window" // request: a JPEG of an app's front window (Screen Recording)
+
 	MethodOutputWatch   = "output.watch"   // request: the default output and its mute; output.changed while on
 	MethodOutputMute    = "output.mute"    // request: mute a device and claim it (not when it was muted already)
 	MethodOutputRelease = "output.release" // request: give a claim back (unmuting it, unless the user did)
@@ -153,6 +155,8 @@ func ParamsFor(method string) any {
 		return new(AppConfigureParams)
 	case MethodAppIcons:
 		return new(AppIconsParams)
+	case MethodScreenWindow:
+		return new(ScreenWindowParams)
 	case MethodOutputWatch:
 		return new(OutputWatchParams)
 	case MethodOutputMute:
@@ -232,6 +236,8 @@ func ResultFor(method string) any {
 		return new(AppListResult)
 	case MethodAppIcons:
 		return new(AppIconsResult)
+	case MethodScreenWindow:
+		return new(ScreenWindowResult)
 	case MethodOutputWatch:
 		return new(OutputState)
 	case MethodOutputMute:
@@ -256,7 +262,7 @@ var (
 		MethodHotkeyConfigure, MethodHotkeyStatus, MethodHotkeyRecord, MethodHotkeyCancelRecord,
 		MethodAppFrontmost, MethodAppList, MethodAppConfigure, MethodAppIcons,
 		MethodTextFocus, MethodTextSelection, MethodTextPaste, MethodTextRead,
-		MethodBrowserURL,
+		MethodBrowserURL, MethodScreenWindow,
 		MethodOutputWatch, MethodOutputMute, MethodOutputRelease, MethodOutputRecover,
 		MethodSpeechRecognize, MethodSpeechAudio,
 	}

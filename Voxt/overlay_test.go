@@ -325,6 +325,10 @@ func overlayShots(t *testing.T, a *app, out, suffix string, dark bool) {
 		{"overlay-recording", session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-12 * time.Second), Levels: wave()}, nil, nil},
 		{"overlay-recording-time", session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-12 * time.Second), Levels: wave()},
 			func() { a.prefs.Overlay.ShowTime = true }, nil},
+		// The limits of Settings → Audio near (#3840).
+		{"overlay-length-limit", session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-9*time.Minute - 18*time.Second), Levels: wave(), MaxLen: 10 * time.Minute},
+			func() { a.prefs.Overlay.ShowTime = true }, nil},
+		{"overlay-upload-limit", session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-13*time.Minute - 20*time.Second), Levels: wave(), UploadLen: 13*time.Minute + 39*time.Second}, nil, nil},
 		{"overlay-live-short", session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-3 * time.Second), Levels: wave(),
 			Partial: "Meet at three tomorrow"}, nil, nil},
 		{"overlay-live-short-zh", session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-3 * time.Second), Levels: wave(),
@@ -349,6 +353,7 @@ func overlayShots(t *testing.T, a *app, out, suffix string, dark bool) {
 			Scene: sceneMatch("Code review", appctx.SourceURL, "github.com")}, nil, nil},
 		{"overlay-recognizing", session.Snapshot{State: session.Recognizing}, nil, nil},
 		{"overlay-composing", session.Snapshot{State: session.Composing, Partial: "那个我们明天，不对，后天下午三点开会，讨论一下 VoxtNew 的发布计划"}, nil, nil},
+		{"overlay-composing-skip", session.Snapshot{Kind: store.KindTranscribe, State: session.Composing, CanSkip: true, Partial: "那个我们明天，不对，后天下午三点开会，讨论一下 VoxtNew 的发布计划"}, nil, nil}, // Use transcript (#3821)
 		{"overlay-error", session.Snapshot{State: session.Failed, Problem: &session.Problem{Code: session.ProblemASR, Err: &asr.Error{Kind: asr.KindAuth}}}, nil, nil},
 		{"overlay-no-speech", session.Snapshot{State: session.Done, Problem: &session.Problem{Code: session.ProblemNoSpeech}}, nil, nil},
 		{"overlay-warning", session.Snapshot{State: session.Done, Result: "x", Inserted: true, Problem: &session.Problem{Code: session.ProblemLLM, Degraded: true,
