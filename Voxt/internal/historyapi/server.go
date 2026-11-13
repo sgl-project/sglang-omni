@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"net"
-	"os"
 	"slices"
 	"strings"
 	"time"
@@ -15,7 +14,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
-// SocketName is the socket's name in the default data folder.
+// SocketName is the socket or Windows endpoint file's name in the default data folder.
 const SocketName = "history.sock"
 
 // WriteTimeout is how long one write may take before the client is
@@ -35,7 +34,7 @@ const (
 )
 
 // Request is a client's one line. Since and Until are Unix milliseconds,
-// 0 for no bound. The socket's wire format is internal to Voxt.
+// 0 for no bound. The connection's wire format is internal to Voxt.
 type Request struct {
 	Op    string `json:"op"`
 	Since int64  `json:"since,omitempty"`
@@ -93,26 +92,6 @@ type Server struct {
 	Peer func(net.Conn) string
 	// Timeout replaces WriteTimeout (tests).
 	Timeout time.Duration
-}
-
-// Listen makes the socket at path, 0600, replacing one a crash left
-// behind. Binding then changing the mode leaves a moment with the umask's
-// mode, inside a home other accounts cannot enter.
-func Listen(path string) (net.Listener, error) {
-	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSocket != 0 {
-		if err := os.Remove(path); err != nil {
-			return nil, err
-		}
-	}
-	ln, err := net.Listen("unix", path)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		ln.Close()
-		return nil, err
-	}
-	return ln, nil
 }
 
 // Serve answers connections until ctx ends; ln closes then, and with a

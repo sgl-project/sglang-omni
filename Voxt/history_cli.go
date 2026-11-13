@@ -1,7 +1,7 @@
 package main
 
 // `Voxt history export|status` (docs/history-access.md): a documented,
-// read-only command that talks to the running app over the socket of
+// read-only command that talks to the running app over the connection of
 // internal/historyapi. It opens no database and takes no lock; its
 // messages are English, as the app's other developer commands.
 

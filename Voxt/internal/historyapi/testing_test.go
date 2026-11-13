@@ -93,7 +93,7 @@ func socketPath(t *testing.T) string {
 	return filepath.Join(dir, SocketName)
 }
 
-// startServer serves f on a socket in a new folder; the returned stop
+// startServer serves f on a listener in a new folder; the returned stop
 // waits for it to end.
 func startServer(t *testing.T, s *Server) (path string, cancel func()) {
 	t.Helper()
