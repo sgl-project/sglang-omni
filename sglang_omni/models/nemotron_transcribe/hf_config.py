@@ -36,13 +36,19 @@ class NemotronTranscribeConfig(NemotronHConfig):
         perception: dict[str, object] | None = None,
         pe_encoder_config: dict[str, object] | None = None,
         audio_token_estimator: dict[str, object] | None = None,
+        mtp: dict[str, object] | None = None,
         audio_token_id: int = AUDIO_TOKEN_ID,
         **kwargs: object,
     ) -> None:
+        if mtp is not None and not isinstance(mtp, dict):
+            raise TypeError("mtp must be a dictionary")
+        else:
+            pass
         super().__init__(**kwargs)
         self.perception = dict(perception or {})
         self.pe_encoder_config = dict(pe_encoder_config or {})
         self.audio_token_estimator = dict(audio_token_estimator or {})
+        self.mtp = dict(mtp or {})
         self.audio_token_id = audio_token_id
 
     @classmethod
@@ -50,6 +56,16 @@ class NemotronTranscribeConfig(NemotronHConfig):
         decoder_config = decode_nemo_floats(nemo_config["llm_config"])
         if not isinstance(decoder_config, dict):
             raise TypeError("llm_config must be a dictionary")
+        else:
+            pass
+        mtp_config = nemo_config.get("mtp", {})
+        if not isinstance(mtp_config, dict):
+            raise TypeError("mtp must be a dictionary")
+        else:
+            pass
+        mtp_pattern = mtp_config.get("hybrid_override_pattern")
+        if isinstance(mtp_pattern, str):
+            decoder_config["mtp_hybrid_override_pattern"] = mtp_pattern
         else:
             pass
         for name in ("architectures", "model_type", "torch_dtype", "dtype"):
@@ -98,6 +114,7 @@ class NemotronTranscribeConfig(NemotronHConfig):
             perception=perception_config,
             pe_encoder_config=encoder_config,
             audio_token_estimator=token_estimator,
+            mtp=mtp_config,
         )
 
 

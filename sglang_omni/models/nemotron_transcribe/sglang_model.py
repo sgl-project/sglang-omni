@@ -77,6 +77,14 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
     def get_input_embeddings(self) -> nn.Module:
         return self.language_model.get_input_embeddings()
 
+    @property
+    def lm_head(self) -> nn.Module:
+        return self.language_model.lm_head
+
+    def get_embed_and_head(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Expose the target decoder's shared vocabulary weights to NEXTN."""
+        return self.language_model.get_embed_and_head()
+
     def pad_input_ids(
         self, input_ids: list[int], mm_inputs: MultimodalInputs
     ) -> list[int]:

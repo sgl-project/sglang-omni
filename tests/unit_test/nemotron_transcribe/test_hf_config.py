@@ -5,9 +5,13 @@ import math
 from pathlib import Path
 
 import pytest
+from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.configs.nemotron_h import NemotronHConfig
 from transformers import AutoConfig
 
+from sglang_omni.models.nemotron_transcribe.engine_builder import (
+    validate_nemotron_mtp_metadata,
+)
 from sglang_omni.models.nemotron_transcribe.hf_config import (
     NemotronTranscribeConfig,
     num_audio_tokens,
@@ -19,11 +23,18 @@ def raw_checkpoint_config() -> dict[str, object]:
     return {
         "llm_config": {
             "time_step_limit": [0.0, {"__float__": "Infinity"}],
-            "num_nextn_predict_layers": 2,
+            "num_nextn_predict_layers": 1,
         },
         "eos_token_id": [11],
         "perception": {},
         "pe_encoder_config": {},
+        "mtp": {
+            "enabled": True,
+            "trained_depths": 2,
+            "use_repeated_layer": True,
+            "hybrid_override_pattern": "*E",
+            "num_nextn_predict_layers": 2,
+        },
     }
 
 
@@ -32,12 +43,16 @@ def test_conversion_retains_hybrid_decoder_identity() -> None:
     assert isinstance(configuration, NemotronHConfig)
     assert configuration.architectures == ["NemotronHForCausalLM"]
     assert configuration.num_nextn_predict_layers == 0
+    assert configuration.mtp_hybrid_override_pattern == "*E"
+    assert configuration.mtp_layers_block_type == ["attention", "moe"]
     assert configuration.eos_token_id == 11
     assert configuration.time_step_limit[0] == 0.0
     assert math.isinf(configuration.time_step_limit[1])
 
 
-def test_hf_config_round_trip(tmp_path: Path) -> None:
+def test_hf_config_round_trip_preserves_distinct_target_and_draft_configs(
+    tmp_path: Path,
+) -> None:
     register_nemotron_transcribe_hf_config()
     configuration = NemotronTranscribeConfig.from_nemo_dict(raw_checkpoint_config())
     configuration.save_pretrained(tmp_path)
@@ -46,6 +61,23 @@ def test_hf_config_round_trip(tmp_path: Path) -> None:
     assert restored.architectures == configuration.architectures
     assert restored.audio_token_id == configuration.audio_token_id
     assert restored.eos_token_id == configuration.eos_token_id
+    assert restored.num_nextn_predict_layers == 0
+    assert restored.mtp == raw_checkpoint_config()["mtp"]
+    validate_nemotron_mtp_metadata(restored.to_dict())
+
+    draft_model_config = ModelConfig(
+        model_path=str(tmp_path),
+        trust_remote_code=False,
+        is_draft_model=True,
+        speculative_algorithm="NEXTN",
+    )
+
+    assert draft_model_config.hf_config.architectures == ["NemotronHForCausalLMMTP"]
+    assert draft_model_config.hf_config.num_nextn_predict_layers == 1
+    assert draft_model_config.hf_config.mtp_hybrid_override_pattern == "*E"
+    assert draft_model_config.hf_config.mtp_layers_block_type == ["attention", "moe"]
+    assert restored.architectures == ["NemotronHForCausalLM"]
+    assert restored.num_nextn_predict_layers == 0
 
 
 @pytest.mark.parametrize(
@@ -55,6 +87,7 @@ def test_hf_config_round_trip(tmp_path: Path) -> None:
         ("perception", []),
         ("pe_encoder_config", None),
         ("audio_token_estimator", 1),
+        ("mtp", []),
     ],
 )
 def test_malformed_checkpoint_sections_are_rejected(

@@ -102,6 +102,7 @@ def make_scheduler_adapters(
     vocab_size: int = AUDIO_TOKEN_ID,
     audio_encoder_service: NemotronTranscribePreLMEncoderService | None = None,
     should_wait_for_encode: Callable[[], bool] | None = None,
+    greedy_only: bool = False,
 ) -> tuple[
     RequestBuilder,
     ResultAdapter,
@@ -112,6 +113,14 @@ def make_scheduler_adapters(
         NemotronTranscribeRequestData | DeferredAdmission[NemotronTranscribeRequestData]
     ):
         params = payload.request.params or {}
+        temperature = float(params.get("temperature") or 0.0)
+        if greedy_only and temperature != 0.0:
+            raise ValueError(
+                "This Nemotron Transcribe NEXTN configuration supports only "
+                "greedy decoding; set temperature=0"
+            )
+        else:
+            pass
         prepared = prepare_audio(
             payload,
             source_name="Nemotron Transcribe",
@@ -165,7 +174,6 @@ def make_scheduler_adapters(
         mm_inputs.audio_token_id = audio_token_id
 
         request_max_new_tokens = int(params.get("max_new_tokens") or max_new_tokens)
-        temperature = float(params.get("temperature") or 0.0)
         sampling_params = SamplingParams(
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,
