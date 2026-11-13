@@ -51,10 +51,7 @@ from sglang_omni.scheduling.streaming_vocoder import (
     resolve_initial_codec_chunk_frames,
     vocoder_decode_stream_priority,
 )
-from sglang_omni.utils.audio_payload import (
-    audio_waveform_payload,
-    float32_waveform_payload,
-)
+from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.cuda_staging import GrowablePinnedBuffer, PinnedTransferSlot
 from sglang_omni.utils.device import has_device_streams, supports_device_streams
 from sglang_omni.utils.process import name_native_thread
@@ -98,7 +95,6 @@ _QWEN3_TTS_INCREMENTAL_CODEC_WARM_GRAPH_BATCH_SIZES = (1, 2, 4, 8)
 _QWEN3_TTS_CODEBOOK_SIZE = 2048
 _BOOTSTRAP_SILENCE_MAX_RMS = 0.001
 _BOOTSTRAP_SILENCE_MAX_PEAK = 0.0032
-AudioResultValue = bytes | bytearray | list[int] | str | int | dict[str, int | float]
 
 
 def decode_graph_frame_counts(
@@ -198,8 +194,7 @@ class Qwen3TTSWholeRequest:
     reference_frames: int
     next_frame: int
     tail_frames: int
-    # note (ratish): the result carries this buffer, so finishing a long request
-    # copies no samples on the first-audio worker.
+    # note (ratish): each window's samples land here as it resolves, so finishing joins no pieces.
     audio: bytearray
     stored_samples: int = 0
     slot: int | None = None
@@ -3193,11 +3188,13 @@ class Qwen3TTSStreamingVocoderScheduler(
             self.release_whole_request_slot(request)
             request.payload.data = self.audio_result_data(
                 request.final_state,
-                float32_waveform_payload(
-                    request.audio,
-                    [request.stored_samples],
+                audio_waveform_payload(
+                    np.frombuffer(request.audio, dtype=np.float32)[
+                        : request.stored_samples
+                    ],
                     sample_rate=self.sample_rate,
                     modality="audio",
+                    source_hint="Qwen3-TTS",
                 ),
             )
             self.emit_result(request.request_id, request.payload)
@@ -4128,9 +4125,13 @@ class Qwen3TTSStreamingVocoderScheduler(
         return payload
 
     def audio_result_data(
-        self, state: Qwen3TTSState, audio_payload: Mapping[str, AudioResultValue]
-    ) -> dict[str, AudioResultValue]:
-        data: dict[str, AudioResultValue] = dict(audio_payload)
+        self,
+        state: Qwen3TTSState,
+        audio_payload: dict[str, bytes | list[int] | str | int],
+    ) -> dict[str, bytes | list[int] | str | int | dict[str, int | float]]:
+        data: dict[str, bytes | list[int] | str | int | dict[str, int | float]] = dict(
+            audio_payload
+        )
         usage = build_usage(state)
         if usage is not None:
             data["usage"] = usage
