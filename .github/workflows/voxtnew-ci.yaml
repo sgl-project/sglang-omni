@@ -3,8 +3,8 @@ name: Voxt CI
 # Voxt (Voxt/: Go + MyGo, no cgo; VoxtNew inside) on Linux: gofmt, every Go test (the
 # views in MyGo's ui.Tester, the store, the session against fake models, the
 # helper and model runtime protocols against their fixtures and fakes, i18n
-# key parity, archtest), MyGo's vet, and the vendored MyGo checked against
-# its patches. The Swift helper, the Omni runtime and the real
+# key parity, archtest), MyGo's vet, and vendored MyGo and actnowkit checked
+# against their patches. The Swift helper, the Omni runtime and the real
 # models are checked on a Mac by hand: Voxt/scripts/mac-regress.sh and
 # Voxt/docs/manual-test.md. Voxt Nightly runs it before its build.
 
@@ -140,6 +140,9 @@ jobs:
 
       - name: Vendored MyGo is MyGo with the patches
         run: scripts/vendor-mygo.sh --check
+
+      - name: Vendored actnowkit is actnowkit with the patches
+        run: scripts/vendor-actnowkit.sh --check
 
   windows:
     # The same Go suite natively on Windows: the build-tagged shims and the
