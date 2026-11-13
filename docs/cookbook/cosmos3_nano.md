@@ -50,6 +50,31 @@ For native generation without interleaving, change `config_cls` to `Cosmos3Pipel
 
 The Policy-DROID checkpoint uses `raw_action_dim=8` in the joint position action space, as NVIDIA's reference policy server does. Match observation layout, units and normalization to the checkpoint.
 
+## Edge integration
+
+Cosmos3 Edge uses the same generation, Reasoner and interleaved configurations. Its architecture alias selects the shared stages; model loading and Edge sampling defaults remain in the pinned SGLang runtime. A checkpoint written as `model_path: nvidia/Cosmos3-Edge@<revision>` resolves to a fixed snapshot before either native stage reads metadata or loads weights. A conflicting `server_args_overrides.revision` fails before native startup. Local checkpoint directory names containing `@` remain local paths, and served model names stay separate from resolved snapshot paths.
+
+For standalone generation:
+
+```bash
+sgl-omni serve --model-path nvidia/Cosmos3-Edge --host 127.0.0.1 --port 8000
+```
+
+For understanding, use `--text-only` or the pinned `examples/configs/cosmos3_edge_reasoner.yaml`. That YAML preserves the original single-GPU validation settings, including disabled CUDA graphs; it is a reproduction configuration, not a tuned performance default.
+
+For interleaving, use the configuration above with an Edge checkpoint. The shared adapter supports image/video generation and text/image/video understanding. Edge interleaving, concurrency and deployment topology require separate hardware qualification; the Nano results do not establish Edge quality or performance. Edge does not generate sound.
+
+Policy and inverse dynamics use the native `/v1/actions` route family. Use the Edge Policy-DROID checkpoint for DROID policy. SDK generation currently returns visual media, including forward-dynamics video; the old Edge SDK action-to-JSON adapter has not been ported to the shared generation stage. Action outputs are not interleaved segments.
+
+The visual regression test compares decoded pixels between native residency configurations, checks dimensions and nonempty content, and verifies that delivered output files survive shutdown:
+
+```bash
+RUN_COSMOS3_EDGE_TESTS=1 SGLANG_DISABLE_COSMOS3_GUARDRAILS=1 \
+  python -m pytest tests/test_model/test_cosmos3_edge_generation.py -s
+```
+
+This checks visual output equality, not latency improvement or semantic quality. Timing and pixel hashes are retained with each run. Changes to numerical execution require bit-exact comparisons against the fixed pre-change baseline before being enabled.
+
 ## Reusing the serving pipeline
 
 The interleaving controller is model agnostic. Another unified model implements `UMMAdapter` from `sglang_omni.pipeline.umm` with `start`, `advance`, `usage` and `close`, and subclasses `UMMPipelineConfig`, as `Cosmos3UMMAdapter` and `Cosmos3UMMPipelineConfig` do. Keep prompts, decision formats, media conversion and modality rules in the adapter. The developer reference describes the controller contract.
