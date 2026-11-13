@@ -9,6 +9,7 @@ import re
 import threading
 import time
 import wave
+from collections.abc import AsyncIterator
 from dataclasses import replace
 from pathlib import Path
 
@@ -1402,6 +1403,61 @@ async def test_openai_speech_reports_each_sentence_end_as_a_character_offset(bac
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("drop_spec", "quiet_start_samples", "dropped_samples"),
+    [
+        pytest.param(
+            {"drop_quiet_start": True},
+            3600,
+            2400,
+            id="on-keeps-a-preroll-of-the-quiet-start",
+        ),
+        pytest.param(
+            {"drop_quiet_start": True},
+            600,
+            0,
+            id="on-keeps-a-quiet-start-shorter-than-the-preroll",
+        ),
+        pytest.param({}, 3600, 0, id="off-by-default-plays-quiet-audio-whole"),
+    ],
+)
+async def test_openai_speech_drops_a_sentence_quiet_start_only_when_asked(
+    drop_spec, quiet_start_samples, dropped_samples
+):
+    """A Qwen3-TTS Base clone given its reference transcript opened every sentence with about 0.4 s of room tone, so the listener heard each sentence that much later, but another voice may speak below the onset amplitude."""
+    sample_rate_hz = 24000
+    preroll_samples = 1200  # 50 ms at 24 kHz
+    room_tone = np.full(3 * preroll_samples, 164, dtype="<i2")  # 0.005 of full scale
+    speech = np.full(preroll_samples, 16384, dtype="<i2")
+    samples = np.concatenate(
+        [room_tone[:quiet_start_samples], speech, room_tone, speech]
+    )
+    stream = samples.tobytes()
+
+    async def odd_chunks() -> AsyncIterator[bytes]:
+        for start in range(0, len(stream), 1001):
+            yield stream[start : start + 1001]
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=odd_chunks(), headers={"X-Sample-Rate": str(sample_rate_hz)}
+        )
+
+    tts = build({"kind": "openai_speech", **HTTP_SERVICE, **drop_spec})
+    tts.client = httpx.AsyncClient(transport=httpx.MockTransport(answer))
+    outputs = await drain(
+        tts, [text_chunk("Hello there.", 1), control_chunk(TURN_DONE, turn=1)]
+    )
+    played = np.concatenate(
+        [np.frombuffer(o.payload, dtype="<f4") for o in outputs if o.modality == AUDIO]
+    )
+    kept = samples[dropped_samples:].tolist()
+    assert (played * 32768).round().tolist() == kept
+    progress = [o.payload for o in outputs if control_type(o) == REPLY_PROGRESS]
+    assert progress[-1]["audio_ms"] == pytest.approx(len(kept) * 1000 / sample_rate_hz)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("reply", "expected_spoken"),
     [
         pytest.param("太好了😄，祝你开心！🎉", ["太好了，祝你开心！"], id="emoji"),
@@ -2661,6 +2717,23 @@ def test_openai_speech_keeps_the_user_language_across_a_replacement():
 def test_profiles_speak_the_user_language(profile):
     config = profile_config(profile)
     assert config.component_graph().node("tts").component.language == "auto"
+
+
+@pytest.mark.parametrize("profile", PROFILE_NAMES)
+def test_profiles_cloning_vivian_send_its_transcript_and_drop_the_quiet_start(profile):
+    """The DFlash vivian profile was copied without the transcript the other vivian profiles send."""
+    tts = profile_config(profile).component_graph().node("tts").component
+    clones_vivian = (
+        tts.reference_audio_path == "examples/streaming_cascade/voices/vivian.wav"
+    )
+    sends_vivian_transcript = (
+        tts.reference_text
+        == "Hi there, it is nice to meet you, and I am happy to help with whatever you need today."
+    )
+    assert (sends_vivian_transcript, tts.drop_quiet_start) == (
+        clones_vivian,
+        clones_vivian,
+    )
 
 
 @pytest.mark.parametrize(
