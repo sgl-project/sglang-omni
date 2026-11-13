@@ -255,7 +255,7 @@ def make_qwen3_asr_scheduler_adapters(
         temperature = float(params.get("temperature") or 0.0)
         if greedy_only and temperature != 0.0:
             raise ValueError(
-                "Qwen3-ASR Apple backend currently supports only greedy decoding; "
+                "This Qwen3-ASR configuration supports only greedy decoding; "
                 "set temperature=0"
             )
         else:
@@ -438,7 +438,7 @@ def make_qwen3_asr_scheduler_adapters(
         seq_len = len(input_ids)
         positions = torch.arange(seq_len, dtype=torch.long)
         mm_inputs.mrope_positions = positions.unsqueeze(0).expand(3, -1).clone()
-        mm_inputs.mrope_position_delta = torch.tensor([0], dtype=torch.long)
+        mm_inputs.mrope_position_delta = torch.zeros((1, 1), dtype=torch.long)
         # Mark the input as degenerate-mrope so the vectorized decode fast path
         # (mrope_fast_path.py) can skip the per-request position loop for it.
         setattr(mm_inputs, mrope_fast_path.DEGENERATE_MROPE_FLAG, True)
@@ -452,6 +452,7 @@ def make_qwen3_asr_scheduler_adapters(
             temperature=temperature,
             top_p=1.0,
             stop_token_ids=[eos_token_id],
+            repetition_penalty=float(params.get("repetition_penalty", 1.0)),
         )
         sampling_params.normalize(tokenizer=None)
 
@@ -562,7 +563,9 @@ def make_qwen3_asr_scheduler_adapters(
                 "language": resolved_language,
                 "duration_s": data.audio_duration_s,
                 "asr_latency_s": engine_time_s,
+                "finish_reason": data.finish_reason,
                 "usage": {"engine_time_s": engine_time_s},
+                "spec_tokens_details": data.spec_tokens_details,
                 "modality": "text",
             },
         )

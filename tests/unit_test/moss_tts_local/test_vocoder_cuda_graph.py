@@ -43,7 +43,7 @@ def session_bundle():
     from huggingface_hub.errors import LocalEntryNotFoundError
 
     from sglang_omni.models.moss_tts.audio_tokenizer import load_moss_audio_vocoder
-    from sglang_omni.models.moss_tts_local.streaming_vocoder import CodecStreamSession
+    from sglang_omni.models.moss_tts.codec_session import CodecStreamSession
 
     try:
         model_path = snapshot_download(CODEC_MODEL_ID, local_files_only=True)
@@ -159,7 +159,7 @@ def test_indexed_streaming_matches_sequential_precision_and_cache_order(session_
 
 
 def test_cuda_graph_capture_uses_thread_local_error_mode():
-    from sglang_omni.models.moss_tts_local.vocoder_cuda_graph import (
+    from sglang_omni.models.moss_tts.vocoder_cuda_graph import (
         MossVocoderCudaGraphRunner,
     )
 
@@ -304,7 +304,7 @@ def test_replay_failure_disables_runner_and_serves_eager_bit_identical(session_b
 def test_vram_guard_skips_capture_and_falls_back_to_eager(session_bundle):
     """Below the configured VRAM headroom, warmup skips capture (empty graph set, serving uses eager);
     forced via an absurd min_free_gb."""
-    from sglang_omni.models.moss_tts_local.vocoder_cuda_graph import (
+    from sglang_omni.models.moss_tts.vocoder_cuda_graph import (
         MossVocoderCudaGraphRunner,
     )
 
@@ -327,7 +327,7 @@ def test_vram_guard_skips_capture_and_falls_back_to_eager(session_bundle):
 @pytest.mark.skipif(not HAS_CUDA, reason="needs CUDA + real codec")
 def test_capture_failure_falls_back_to_eager(session_bundle):
     """A capture exception drops that shape and leaves eager decode available."""
-    from sglang_omni.models.moss_tts_local.vocoder_cuda_graph import (
+    from sglang_omni.models.moss_tts.vocoder_cuda_graph import (
         MossVocoderCudaGraphRunner,
     )
 

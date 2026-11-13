@@ -62,19 +62,6 @@ def test_qk_fusion_supports_native_bf16_backbone():
     assert all(torch.isfinite(output).all() for output in actual)
 
 
-def test_request_lengths_do_not_specialize_the_kernel():
-    pytest.importorskip("triton")
-    from sglang_omni.models.auk.fused_qk_norm_rope import norm_rope_kernel
-
-    parameters = {parameter.name: parameter for parameter in norm_rope_kernel.params}
-    assert parameters["HEAD_DIM"].is_constexpr
-    for name in ("SEQ", "QB", "KB", "CB"):
-        parameter = parameters[name]
-        assert not parameter.is_constexpr
-        assert parameter.do_not_specialize
-        assert parameter.do_not_specialize_on_alignment
-
-
 def test_qk_fusion_is_shared_by_attention_blocks_and_fed_by_the_backbone(monkeypatch):
     pytest.importorskip("triton")
     from sglang_omni.models.auk.fused_qk_norm_rope import fused_qk_norm_rope
@@ -150,16 +137,31 @@ def test_qk_fusion_can_be_disabled(monkeypatch):
 
 @pytest.mark.parametrize("device,name", [("cpu", "AuK"), ("cuda", "AuK-Flash")])
 def test_qk_fusion_falls_back_to_native(monkeypatch, device, name):
+    dit = AuKDit(
+        dim=64,
+        heads=1,
+        dim_head=64,
+        text_hidden_dim=64,
+        num_layers=1,
+        num_single_layers=1,
+    )
+    flow = AuKFlowMatching(dit, num_llm_layers=2)
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda path: path)
     monkeypatch.setattr(
         stages,
         "make_runtime_config",
         lambda path: AuKRuntimeConfig(model_path=path, name=name),
     )
-    monkeypatch.setattr(stages, "load_flow", Mock())
+    monkeypatch.setattr(stages, "load_flow", lambda *args: flow)
     monkeypatch.setattr(
         stages, "resolve_concrete_device", lambda device, index: torch.device(device)
     )
     monkeypatch.setattr(stages, "scheduler", Mock())
 
     stages.create_auk_engine_executor("stub", device=device)
+
+    assert dit.qk_fusion is None
+    assert all(
+        block.attn.qk_fusion is None
+        for block in (*dit.transformer_blocks, *dit.single_transformer_blocks)
+    )

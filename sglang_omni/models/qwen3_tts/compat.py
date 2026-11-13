@@ -39,10 +39,7 @@ _MASK_FACTORY_NAMES = (
 def compute_default_rope_parameters(
     config: PretrainedConfig,
     device: torch.device | None = None,
-    seq_len: int | None = None,
-    layer_type: str | None = None,
 ) -> tuple[torch.Tensor, float]:
-    del seq_len, layer_type
     base = getattr(config, "rope_theta", getattr(config, "default_theta", 10000.0))
     partial_rotary_factor = getattr(config, "partial_rotary_factor", 1.0)
     head_dim = getattr(config, "head_dim", None)
@@ -113,6 +110,8 @@ def apply_qwen_tts_transformers_compatibility_patches() -> None:
     from transformers.utils import generic
 
     with _APPLY_LOCK:
+        # note (ratish): qwen-tts reads the default rope initializer from the
+        # registry by key, and the pinned Transformers registers only the scaled types.
         ROPE_INIT_FUNCTIONS.setdefault("default", compute_default_rope_parameters)
         patch_mask_factories()
 

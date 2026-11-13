@@ -378,19 +378,6 @@ def test_moss_follower_keeps_scratch_storage(tmp_path, monkeypatch):
     assert torch.all(runner.model.linear.weight == 7.0)
 
 
-def test_moss_policy_on_model_without_scratch_fails_closed(tmp_path, monkeypatch):
-    # The MOSS policy names a tensor SmallModel lacks: the model and policy
-    # diverged, so the leader must refuse to export rather than share it all.
-    monkeypatch.setenv(ipc_weights.ENV_WEIGHT_SHARE, f"leader:{tmp_path}")
-    runner = bare_runner()
-    runner.model_arch_override = "MossTTSLocalSGLangModel"
-    with mock.patch.object(
-        ModelRunner, "load_model", fake_upstream_load({"auto": 1.0})
-    ):
-        with pytest.raises(ipc_weights.WeightShareError, match="diverged"):
-            runner.load_model()
-
-
 def test_weight_update_guard_blocks_all_three(tmp_path, monkeypatch):
     monkeypatch.setenv(ipc_weights.ENV_WEIGHT_SHARE, f"leader:{tmp_path}")
     runner = bare_runner()

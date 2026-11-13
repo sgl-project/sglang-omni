@@ -105,13 +105,14 @@ from benchmarks.benchmarker.runner import (
     SendFn,
     resolve_warmup,
 )
-from benchmarks.benchmarker.utils import managed_omni_server
+from benchmarks.benchmarker.utils import managed_omni_server, save_json_results
 from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
 from benchmarks.metrics.performance import (
     build_speed_results,
     compute_speed_metrics,
     print_speed_summary,
 )
+from benchmarks.runtime_metrics import ProcessTreeMemoryMonitor, ResourceMonitor
 from benchmarks.tasks.asr import (
     DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
     QWEN3_ASR_MODEL_PATH,
@@ -120,6 +121,7 @@ from benchmarks.tasks.tts import (
     MOSS_TTS_TOKEN_COUNT_AUTO,
     build_base_url,
     make_tts_send_fn,
+    preload_reference_audio,
     run_seedtts_similarity,
     run_seedtts_transcribe,
     run_seedtts_utmos,
@@ -156,8 +158,21 @@ _AUK_BENCHMARK_PROFILE = _ModelBenchmarkProfile(
         "seed": 1234,
     },
     forward_sglang_engine=False,
+    # note (Xuchen Wei): AuK sets its length with gen_seconds, and the native
+    # server rejects max_new_tokens.
+    max_new_tokens=None,
 )
 _MODEL_BENCHMARK_PROFILES: dict[str, _ModelBenchmarkProfile] = {
+    **{
+        checkpoint: _ModelBenchmarkProfile(max_new_tokens=None)
+        for checkpoint in (
+            "qwen3-tts-12hz-0.6b-base",
+            "qwen3-tts-12hz-0.6b-customvoice",
+            "qwen3-tts-12hz-1.7b-base",
+            "qwen3-tts-12hz-1.7b-customvoice",
+            "qwen3-tts-12hz-1.7b-voicedesign",
+        )
+    },
     "auk": _AUK_BENCHMARK_PROFILE,
     "auk-flash": _AUK_BENCHMARK_PROFILE,
     # note (Yucheng Hu): Fun-CosyVoice3 caps generation at min(2048, 20x target
@@ -200,6 +215,8 @@ class TtsSeedttsBenchmarkConfig:
     instructions: str | None = None
     voice_clone: bool = True
     ref_format: str = "flat"
+    # Note (Xuchen Wei): native servers read ref_audio only as a data URI.
+    inline_ref_audio: bool = False
     no_ref_text: bool = False
     response_format: str = "wav"
     output_dir: str = "results/tts_seedtts"
@@ -225,6 +242,8 @@ class TtsSeedttsBenchmarkConfig:
     arrival_seed: int | None = None
     stream: bool = False
     collect_stream_outcomes: bool = True
+    # A macOS server PID whose process-tree footprint goes to memory.json.
+    server_process_id: int | None = None
     initial_codec_chunk_frames: int | None = None
     disable_tqdm: bool = False
     max_running_requests: int = 64
@@ -243,6 +262,7 @@ class TtsSeedttsBenchmarkConfig:
     asr_model_path: str = QWEN3_ASR_MODEL_PATH
     asr_concurrency: int = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
     environment_fingerprint: BenchmarkFingerprint | None = None
+    measure_gpu_memory: bool = False
 
 
 def resolve_max_new_tokens(config: TtsSeedttsBenchmarkConfig) -> int | None:
@@ -405,6 +425,16 @@ async def run_tts_seedtts_benchmark(
     api_url = f"{base_url}/v1/audio/speech"
     if samples is None:
         samples = _load_benchmark_samples(config)
+    else:
+        pass
+    if config.inline_ref_audio and config.voice_clone:
+        reference_audio_by_path = preload_reference_audio(samples)
+        samples = [
+            replace(sample, ref_audio=reference_audio_by_path[sample.ref_audio])
+            for sample in samples
+        ]
+    else:
+        pass
     logger.info(f"Prepared {len(samples)} requests (offset {config.sample_offset})")
 
     save_audio_dir = None
@@ -445,14 +475,35 @@ async def run_tts_seedtts_benchmark(
             arrival_seed=config.arrival_seed,
         )
     )
-    if config.stream and config.collect_stream_outcomes:
-        async with stream_outcome_collector(api_url) as collect:
-            outputs = await runner.run(samples, send_fn, after_send=collect)
-    else:
-        outputs = await runner.run(samples, send_fn)
+    monitor = ResourceMonitor().start() if config.measure_gpu_memory else None
+    memory_monitor = (
+        ProcessTreeMemoryMonitor(config.server_process_id).start()
+        if config.server_process_id is not None
+        else None
+    )
+    try:
+        if config.stream and config.collect_stream_outcomes:
+            async with stream_outcome_collector(api_url) as collect:
+                outputs = await runner.run(samples, send_fn, after_send=collect)
+        else:
+            outputs = await runner.run(samples, send_fn)
+    finally:
+        resources = monitor.stop() if monitor is not None else None
+        if memory_monitor is not None:
+            save_json_results(memory_monitor.stop(), config.output_dir, "memory.json")
+        else:
+            pass
     warn_if_tail_percentile_is_thin(len(outputs))
 
     metrics = compute_speed_metrics(outputs, wall_clock_s=runner.wall_clock_s)
+    metrics["wall_clock_s"] = runner.wall_clock_s
+    if resources is None:
+        pass
+    elif resources["available"]:
+        metrics["gpu_memory_peak_mib"] = resources["gpu_memory_used_mib"]["max"]
+    else:
+        metrics["gpu_memory_peak_mib"] = None
+        logger.warning(f"TTS GPU memory unavailable: {resources['error']}")
     results_config = _build_results_config(config, base_url=base_url)
     benchmark_results = build_speed_results(outputs, metrics, results_config)
     save_speed_results(outputs, metrics, results_config, config.output_dir)
@@ -516,6 +567,7 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         instructions=args.instructions,
         voice_clone=voice_clone,
         ref_format=args.ref_format,
+        inline_ref_audio=args.inline_ref_audio,
         no_ref_text=args.no_ref_text,
         response_format=response_format,
         output_dir=args.output_dir,
@@ -535,7 +587,9 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         arrival_seed=args.arrival_seed,
         stream=args.stream,
         collect_stream_outcomes=args.collect_stream_outcomes,
+        server_process_id=args.server_process_id,
         initial_codec_chunk_frames=args.initial_codec_chunk_frames,
+        measure_gpu_memory=args.measure_gpu_memory,
         disable_tqdm=args.disable_tqdm,
         max_running_requests=args.max_running_requests,
         max_queued_requests=args.max_queued_requests,
@@ -872,6 +926,24 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--inline-ref-audio",
+        action="store_true",
+        help=(
+            "Send each reference WAV as a base64 data URI, encoded before timing "
+            "starts, for servers that do not read local paths."
+        ),
+    )
+    parser.add_argument(
+        "--server-pid",
+        type=int,
+        default=None,
+        dest="server_process_id",
+        help=(
+            "macOS only: sample this server's process-tree physical footprint "
+            "every 250 ms while generating, written to memory.json."
+        ),
+    )
+    parser.add_argument(
         "--response-format",
         type=str,
         default="wav",
@@ -1001,6 +1073,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Legacy flag kept for backward compatibility. The unified "
         "benchmark always saves generated WAVs so the transcribe phase can "
         "reuse them; passing this flag is a no-op.",
+    )
+    parser.add_argument(
+        "--measure-gpu-memory",
+        action="store_true",
+        help="Sample memory used on the first visible local GPU during TTS generation.",
     )
     parser.add_argument("--disable-tqdm", action="store_true")
     parser.add_argument(

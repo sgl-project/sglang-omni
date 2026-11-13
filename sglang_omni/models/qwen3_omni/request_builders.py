@@ -4,18 +4,21 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypedDict, overload
 
 import torch
 import xxhash
+from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
 from sglang.srt.tokenizer.tiktoken_tokenizer import TiktokenTokenizer
 from transformers import PreTrainedTokenizerBase
 
 from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
 from sglang_omni.models.qwen3_omni.mrope_positions import talker_can_use_linear_mrope
 from sglang_omni.models.qwen3_omni.payload_types import (
+    NO_SPEECH,
     EncoderInputs,
     Qwen3OmniPipelineState,
     StreamState,
@@ -28,8 +31,15 @@ from sglang_omni.scheduling.pending_text_queue import (
     PendingTextTensorQueue,
     coerce_pending_text_queue,
 )
-from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
-from sglang_omni.scheduling.sglang_backend.request_data import validate_prompt_token_ids
+from sglang_omni.scheduling.sglang_backend.prompt_hidden import (
+    PromptHiddenRequest,
+    PromptHiddenStore,
+)
+from sglang_omni.scheduling.sglang_backend.request_data import (
+    SGLangARRequestData,
+    ThinkerRequest,
+    validate_prompt_token_ids,
+)
 from sglang_omni.scheduling.types import ARRequestData, RequestOutput
 
 if TYPE_CHECKING:
@@ -54,8 +64,50 @@ TALKER_STAGE = "talker_ar"
 CODE2WAV_STAGE = "code2wav"
 MM_AGGREGATE_STAGE = "mm_aggregate"
 
+THINKER_DEFAULT_MAX_NEW_TOKENS = 2048
+TALKER_DEFAULT_MAX_NEW_TOKENS = 4096
+# note (luojiaxuan): Over 193 replies of Qwen3-Omni-30B-A3B-Instruct's default voice that ended on their own (6 to 1830 thinker tokens, English and Chinese), a reply of n tokens never took more than 6.905 n codec frames nor more than 600 + 4.405 n (a list of numbers read out is the slowest). A spoken reply's thinker budget lets 1.5 times that fit in the talker's: a split by prompt left 0.21 of about 96 held-out replies above 1.5 times the envelope fitted on the rest, and 0.17 above twice it.
+SLOWEST_SPEECH_FRAMES_PER_TOKEN = 6.905
+SLOWEST_LONG_SPEECH_FRAMES = 600
+SLOWEST_LONG_SPEECH_FRAMES_PER_TOKEN = 4.405
+SPEECH_BUDGET_MARGIN = 1.5
+
 # Note(Chenchen Hong): PyTorch sampling_seed must fit a positive int32.
 MAX_INT32_POSITIVE = 0x7FFFFFFF
+
+
+class QwenThinkerRequest(ThinkerRequest):
+    """Also restore generated-text M-RoPE positions when rebuilding KV."""
+
+    def init_next_round_input(
+        self,
+        tree_cache: BasePrefixCache | None = None,
+        cow_mamba: bool | None = None,
+    ) -> None:
+        super().init_next_round_input(tree_cache, cow_mamba)
+        multimodal_inputs = self.multimodal_inputs
+        if not self.is_retracted or multimodal_inputs is None:
+            return
+        else:
+            pass
+        prompt_token_count = len(self.origin_input_ids)
+        # note (evanderfan): the base hook appends generated positions from the prompt's last position on every call, but decode resumes past the prompt's maximum, which audio-in-video can put above the last when nothing follows its block.
+        prompt_positions = multimodal_inputs.mrope_positions[:, :prompt_token_count]
+        generated_positions = (
+            torch.arange(
+                prompt_token_count,
+                prompt_token_count + len(self.output_ids),
+                device=prompt_positions.device,
+            )
+            + multimodal_inputs.mrope_position_delta
+        )
+        multimodal_inputs.mrope_positions = torch.cat(
+            (prompt_positions, generated_positions.expand(3, -1)), dim=1
+        )
+
+
+class QwenPromptHiddenRequest(QwenThinkerRequest, PromptHiddenRequest):
+    """Restore multimodal state on retraction for requests that also capture prompt rows."""
 
 
 class OptionalTalkerSamplingConfig(TypedDict, total=False):
@@ -117,6 +169,32 @@ def should_generate_audio_output(
     )
     modalities = output_modalities(request)
     return modalities is None or "audio" in modalities
+
+
+def speech_token_budget(talker_max_new_tokens: int) -> int:
+    """The thinker tokens of a spoken reply whose slowest speech, with the margin, fits in talker_max_new_tokens codec frames; a thinker writes at least one."""
+    frames = talker_max_new_tokens / SPEECH_BUDGET_MARGIN
+    return max(
+        1,
+        math.floor(frames / SLOWEST_SPEECH_FRAMES_PER_TOKEN),
+        math.floor(
+            (frames - SLOWEST_LONG_SPEECH_FRAMES) / SLOWEST_LONG_SPEECH_FRAMES_PER_TOKEN
+        ),
+    )
+
+
+def thinker_max_new_tokens(params: Mapping[str, object], *, speaks: bool) -> int:
+    """The thinker's budget: its own, and for a spoken reply no more than its talker can say."""
+    budget = int(params.get("max_new_tokens", THINKER_DEFAULT_MAX_NEW_TOKENS))
+    if speaks:
+        return min(
+            budget,
+            speech_token_budget(
+                int(params.get("talker_max_new_tokens", TALKER_DEFAULT_MAX_NEW_TOKENS))
+            ),
+        )
+    else:
+        return budget
 
 
 def resolve_thinker_next_stages(
@@ -198,10 +276,13 @@ def resolve_mm_aggregate_wait_sources(
 
 
 def project_thinker_to_decode(payload: StagePayload) -> StagePayload:
-    """Keep decode payload focused on text detokenization state."""
+    """Keep decode payload to the text detokenization state decode reads: the prompt, the thinker's output and the stream state."""
     state = Qwen3OmniPipelineState.from_dict(payload.data)
-    state.thinker_inputs = {}
-    state.stream_state = copy_mutable_containers(state.stream_state)
+    # note (ratish): the multimodal inputs hold the audio encoder's lengths on the device when they came by CUDA IPC, and the send would copy them to the host.
+    decode_state = Qwen3OmniPipelineState(
+        prompt=state.prompt,
+        stream_state=copy_mutable_containers(state.stream_state),
+    )
 
     if isinstance(state.thinker_out, dict):
         thinker_out = dict(state.thinker_out)
@@ -209,30 +290,25 @@ def project_thinker_to_decode(payload: StagePayload) -> StagePayload:
             thinker_out["extra_model_outputs"] = {}
         else:
             pass
-        state.thinker_out = thinker_out
+        decode_state.thinker_out = thinker_out
     else:
         pass
 
-    if state.engine_outputs:
-        engine_outputs = dict(state.engine_outputs)
-        thinker_engine_out = engine_outputs.get(THINKER_STAGE)
-        if isinstance(thinker_engine_out, dict):
-            thinker_engine_out = dict(thinker_engine_out)
-            if "extra_model_outputs" in thinker_engine_out:
-                thinker_engine_out["extra_model_outputs"] = {}
-            else:
-                pass
-            engine_outputs[THINKER_STAGE] = thinker_engine_out
+    thinker_engine_out = state.engine_outputs.get(THINKER_STAGE)
+    if isinstance(thinker_engine_out, dict):
+        thinker_engine_out = dict(thinker_engine_out)
+        if "extra_model_outputs" in thinker_engine_out:
+            thinker_engine_out["extra_model_outputs"] = {}
         else:
             pass
-        state.engine_outputs = engine_outputs
+        decode_state.engine_outputs = {THINKER_STAGE: thinker_engine_out}
     else:
         pass
 
     return StagePayload(
         request_id=payload.request_id,
         request=payload.request,
-        data=state.to_dict(),
+        data=decode_state.to_dict(),
     )
 
 
@@ -241,7 +317,7 @@ def project_talker_to_code2wav(payload: StagePayload) -> StagePayload:
     return StagePayload(
         request_id=payload.request_id,
         request=payload.request,
-        data={},
+        data={NO_SPEECH: True} if NO_SPEECH in payload.data else {},
     )
 
 
@@ -341,8 +417,8 @@ def project_encoder_to_mm_aggregate(payload: StagePayload) -> StagePayload:
     return payload_with_state(payload, projected)
 
 
-# note (ratish): the talker projects zeros at multimodal prompt rows, so of the encoder
-# outputs it reads only what its MRoPE positions need.
+# note (ratish): the talker reads multimodal prompt rows from the thinker's hidden states, so of
+# the encoder outputs it reads only what its MRoPE positions need.
 TALKER_ENCODER_OUT_KEYS = ("image_grid_thw", "video_grid_thw", "audio_feature_lengths")
 
 
@@ -680,8 +756,11 @@ def compute_mrope_positions(
         second_per_grid_ts=second_per_grid_ts,
         **kwargs,
     )
+    # note (ratish): positions are served as int64, so floor them after the audio-in-video merge and take the delta from the floored largest.
     # mrope_positions: [3, 1, seq_len] -> [3, seq_len]
-    return mrope_positions.squeeze(1), mrope_position_delta
+    positions = mrope_positions.squeeze(1).floor()
+    delta = positions.max() + 1 - positions.shape[-1]
+    return positions, delta.view_as(mrope_position_delta)
 
 
 def build_sglang_thinker_request(
@@ -692,13 +771,15 @@ def build_sglang_thinker_request(
     vocab_size: int,
     request_id: str | None = None,
     thinker_config: Qwen3OmniMoeThinkerConfig | None = None,
+    capture_prompt_hidden_states: bool,
+    speaks: bool,
 ) -> "SGLangARRequestData":
     """Build SGLangARRequestData from pipeline state.
 
     Constructs a SGLang Req with normalized SamplingParams, then wraps it
     in SGLangARRequestData (which inherits ARRequestData).
     """
-    from sglang.srt.managers.schedule_batch import MultimodalInputs, Req
+    from sglang.srt.managers.schedule_batch import MultimodalInputs
     from sglang.srt.sampling.sampling_params import SamplingParams
 
     # SGLangARRequestData already imported at module level
@@ -749,7 +830,7 @@ def build_sglang_thinker_request(
         pass
     input_ids_list = input_ids.to(dtype=torch.long).tolist()
 
-    max_new_tokens = params.get("max_new_tokens", 2048)
+    max_new_tokens = thinker_max_new_tokens(params, speaks=speaks)
     temperature = params.get("temperature", 0.0)
     top_p = params.get("top_p", 1.0)
     top_k = params.get("top_k", -1)
@@ -774,9 +855,30 @@ def build_sglang_thinker_request(
     sampling_params.normalize(tokenizer)
     sampling_params.verify(vocab_size)
 
+    # note (ratish): any request's cached multimodal slots can serve a later speech request's
+    # prefix, so every request with media writes its rows, not only a speech request.
+    multimodal_positions = None
+    if capture_prompt_hidden_states and thinker_config is not None:
+        multimodal_positions = torch.isin(
+            original_input_ids,
+            original_input_ids.new_tensor(
+                [
+                    thinker_config.image_token_id,
+                    thinker_config.video_token_id,
+                    thinker_config.audio_token_id,
+                ]
+            ),
+        ).nonzero(as_tuple=True)[0]
+    else:
+        pass
+
     # Build SGLang Req
     rid = request_id or "req-0"
-    req = Req(
+    has_prompt_rows = multimodal_positions is not None and bool(
+        multimodal_positions.numel()
+    )
+    request_class = QwenPromptHiddenRequest if has_prompt_rows else QwenThinkerRequest
+    req = request_class(
         rid=rid,
         origin_input_text="",
         origin_input_ids=input_ids_list,
@@ -784,6 +886,10 @@ def build_sglang_thinker_request(
         vocab_size=vocab_size,
     )
     req.tokenizer = tokenizer
+    if has_prompt_rows:
+        req.prompt_hidden_positions = multimodal_positions
+    else:
+        pass
 
     # Compute M-RoPE positions and attach multimodal_inputs to Req
     if thinker_config is not None and model_inputs:
@@ -981,6 +1087,8 @@ def build_sglang_talker_request(
     else:
         req.omni_model_inputs = None
 
+    # note (ratish): sglang's request limits cut the frame cap to the context the
+    # replayed prompt leaves, so a long spoken prompt gets shorter audio, not an error.
     data = SGLangARRequestData(
         input_ids=input_ids_tensor,
         max_new_tokens=max_new_tokens,
@@ -988,6 +1096,7 @@ def build_sglang_talker_request(
         output_ids=req.output_ids,
         req=req,
         prefill_input_embeds=prefill_embeds_tensor,
+        enforce_request_limits=True,
     )
     data.suppress_tokens = list(
         req._codec_suppress_tokens or []
@@ -1034,6 +1143,11 @@ def apply_thinker_result(
     else:
         pass
 
+    if result.spec_tokens_details is not None:
+        thinker_out["spec_tokens_details"] = result.spec_tokens_details
+    else:
+        pass
+
     output_token_logprobs = getattr(result, "output_token_logprobs", None)
     if output_token_logprobs is not None:
         thinker_out["output_token_logprobs"] = output_token_logprobs
@@ -1046,7 +1160,7 @@ def apply_thinker_result(
 
 
 def make_thinker_stream_output_builder(
-    *, speech_enabled: bool
+    *, speech_enabled: bool, prompt_hidden_store: PromptHiddenStore | None
 ) -> Callable[[str, SGLangARRequestData, RequestOutput], list[OutgoingMessage]]:
     def _build_stream_output(
         request_id: str, req_data: SGLangARRequestData, req_output: RequestOutput
@@ -1077,18 +1191,35 @@ def make_thinker_stream_output_builder(
 
         token_id = int(req_output.data)
         # note (ratish): a cross-process stream chunk must be a tensor, and one
-        # this small is pickled inline with the control message
+        # this small rides packed in its target's batched control message
         token_tensor = torch.tensor([token_id], dtype=torch.long)
-        return [
-            OutgoingMessage(
+        messages = []
+        for target in stream_targets:
+            message = OutgoingMessage(
                 request_id=request_id,
                 type="stream",
                 data=token_tensor,
                 target=target,
                 metadata={"token_id": token_id},
             )
-            for target in stream_targets
-        ]
+            # note (ratish): the first talker chunk carries the prompt's hidden rows; its
+            # token id rides in the metadata the talker reads it from.
+            if (
+                target == TALKER_STAGE
+                and isinstance(req_data.req, PromptHiddenRequest)
+                and not req_data.req.is_prompt_hidden_handed_off
+            ):
+                message.data = prompt_hidden_store.read(
+                    req_data.req.kv.req_pool_idx, req_data.req.prompt_hidden_positions
+                )
+                message.metadata["prompt_hidden_positions"] = (
+                    req_data.req.prompt_hidden_positions.tolist()
+                )
+                req_data.req.is_prompt_hidden_handed_off = True
+            else:
+                pass
+            messages.append(message)
+        return messages
 
     return _build_stream_output
 
@@ -1099,6 +1230,9 @@ def make_thinker_scheduler_adapters(
     vocab_size: int,
     thinker_config: Qwen3OmniMoeThinkerConfig | None = None,
     stage_name: str = "thinker",
+    capture_prompt_hidden_states: bool,
+    speech_enabled: bool,
+    is_speculative: bool = False,
 ) -> tuple[
     Callable[[StagePayload], SGLangARRequestData],
     Callable[[SGLangARRequestData], StagePayload],
@@ -1115,8 +1249,19 @@ def make_thinker_scheduler_adapters(
             vocab_size=vocab_size,
             request_id=payload.request_id,
             thinker_config=thinker_config,
+            capture_prompt_hidden_states=capture_prompt_hidden_states,
+            speaks=speech_enabled and should_generate_audio_output(payload),
         )
         req_data.stage_payload = payload
+        multimodal_inputs = req_data.req.multimodal_inputs
+        if is_speculative and multimodal_inputs is not None:
+            # note (wilsonzheng0327): verify adds the delta to integer positions without
+            # the integer cast decode applies, so it is cast here the same way.
+            multimodal_inputs.mrope_position_delta = (
+                multimodal_inputs.mrope_position_delta.long()
+            )
+        else:
+            pass
         return req_data
 
     def result_adapter(data: SGLangARRequestData) -> StagePayload:
@@ -1196,7 +1341,9 @@ def make_talker_scheduler_adapters(
             if token_id != codec_eos_id
         ]
         return {
-            "max_new_tokens": int(params.get("talker_max_new_tokens", 4096)),
+            "max_new_tokens": int(
+                params.get("talker_max_new_tokens", TALKER_DEFAULT_MAX_NEW_TOKENS)
+            ),
             "temperature": float(params.get("talker_temperature", 0.9)),
             "top_k": int(params.get("talker_top_k", 50)),
             "top_p": float(params.get("talker_top_p", 1.0)),

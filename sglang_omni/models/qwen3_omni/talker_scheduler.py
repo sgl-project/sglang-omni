@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from collections import deque
+from dataclasses import replace
 
 from sglang.srt.managers.schedule_batch import ScheduleBatch
 from sglang.srt.server_args import ServerArgs
@@ -15,15 +16,21 @@ from sglang_omni.models.qwen3_omni.config import (
     MIN_PARTIAL_START_CHUNKS,
     TALKER_START_MIN_CHUNKS,
 )
+from sglang_omni.models.qwen3_omni.payload_types import NO_SPEECH
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler, OmniSchedulerArguments
+from sglang_omni.scheduling.sglang_backend.ar_session import SessionUnit
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
 logger = logging.getLogger(__name__)
 
 _CHUNK_WAIT_LOG_INTERVAL_S = 10.0
+
+# note (ratish): a reply with no spoken token has nothing to speak; a reply of one
+# token terminates.
+MIN_SPOKEN_TOKENS = 1
 
 
 def configure_talker_server_args(
@@ -121,6 +128,22 @@ class QwenTalkerScheduler(OmniScheduler[SGLangARRequestData]):
         else:
             pass
         return usable >= self.partial_start_min_chunks
+
+    def complete_without_generation(
+        self, payload: StagePayload, session_unit: SessionUnit | None
+    ) -> StagePayload | None:
+        """A finished reply too short to speak passes on without audio."""
+        if not payload.prefetched_stream_done or (
+            self.count_usable_prefetched_chunks(payload.prefetched_chunks)
+            >= MIN_SPOKEN_TOKENS
+        ):
+            return None
+        elif session_unit is None:
+            return replace(payload, data={**payload.data, NO_SPEECH: True})
+        else:
+            return self.session_bridge.adapter.complete_without_generation(
+                session_unit.session_identity, session_unit.chunk, payload
+            )
 
     def initialize_request_stream_state(
         self, req_data: SGLangARRequestData, payload: StagePayload

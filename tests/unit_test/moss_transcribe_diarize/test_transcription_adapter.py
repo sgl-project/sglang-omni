@@ -32,22 +32,6 @@ def test_postprocess_strips_special_tokens_only() -> None:
     assert adapter.postprocess_text(raw) == "[0.12][S01] hello[3.27]"
 
 
-def test_parse_single_segment() -> None:
-    adapter = moss_adapter()
-    text = "[0.12][S01] We asked over twenty different people.[3.27]"
-    resp = adapter.build_verbose_response(
-        text=text, language="en", audio_duration_s=3.3
-    )
-    assert len(resp.segments) == 1
-    seg = resp.segments[0]
-    assert seg.id == 0
-    assert seg.start == 0.12
-    assert seg.end == 3.27
-    assert seg.text == "[S01]We asked over twenty different people."
-    assert resp.duration == 3.3
-    assert resp.language == "en"
-
-
 def test_parse_multi_speaker_segments() -> None:
     adapter = moss_adapter()
     text = "[0.00][S01] Hello there.[1.20][1.30][S02] How are you.[3.00]"

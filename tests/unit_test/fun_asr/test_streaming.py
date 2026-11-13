@@ -240,7 +240,7 @@ def test_fun_asr_strategy_waits_for_unfixed_chunks_before_using_prefix() -> None
     )
 
     assert first.extra_params["_asr_streaming_prefix_text"] is None
-    assert first.sampling.repetition_penalty == 1.0
+    assert first.sampling.repetition_penalty is None
     assert second.extra_params["_asr_streaming_prefix_text"] is None
     assert third.extra_params["_asr_streaming_prefix_text"] == "hello world"
     assert third.extra_params["_asr_streaming_rollback_chars"] == 8

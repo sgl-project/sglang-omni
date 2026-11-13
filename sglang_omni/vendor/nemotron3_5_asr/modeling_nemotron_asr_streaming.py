@@ -502,6 +502,7 @@ class NemotronAsrStreamingEncoderConvolutionModule(nn.Module):
         hidden_states: torch.Tensor,
         all_masked_rows: torch.Tensor | None = None,
         padding_cache: NemotronAsrStreamingEncoderCausalConvPaddingCache | None = None,
+        use_linear_pointwise: bool = False,
     ):
         """
         Compute convolution module.
@@ -509,16 +510,26 @@ class NemotronAsrStreamingEncoderConvolutionModule(nn.Module):
         Args:
             hidden_states (`torch.Tensor` of shape `(batch, time, channels)`): Input tensor.
             attention_mask (`torch.Tensor` of shape `(batch, 1, time, time)`): Attention mask.
+            use_linear_pointwise (`bool`): Run both pointwise convolutions as F.linear.
 
         Returns:
             `torch.Tensor`: Output tensor of shape `(batch, time, channels)`.
 
         """
-        hidden_states = hidden_states.transpose(1, 2)  # (B, C, T)
-
         # GLU mechanism
-        hidden_states = self.pointwise_conv1(hidden_states)
-        hidden_states = nn.functional.glu(hidden_states, dim=1)
+        if use_linear_pointwise:
+            # note (Emre): As nn.Conv1d, cuDNN transposes the whole kernel-size-1 weight on every call.
+            hidden_states = nn.functional.linear(
+                hidden_states,
+                self.pointwise_conv1.weight.squeeze(-1),
+                self.pointwise_conv1.bias,
+            )
+            hidden_states = nn.functional.glu(hidden_states, dim=-1)
+            hidden_states = hidden_states.transpose(1, 2)  # (B, C, T)
+        else:
+            hidden_states = hidden_states.transpose(1, 2)  # (B, C, T)
+            hidden_states = self.pointwise_conv1(hidden_states)
+            hidden_states = nn.functional.glu(hidden_states, dim=1)
 
         # Zero out fully-masked (padding) frames before convolution so they don't leak into valid frames.
         # `all_masked_rows` is derived from the attention mask once in the encoder and shared across layers.
@@ -531,11 +542,19 @@ class NemotronAsrStreamingEncoderConvolutionModule(nn.Module):
         # LayerNorm expects (B, T, C).
         hidden_states = hidden_states.transpose(1, 2)
         hidden_states = self.norm(hidden_states)
-        hidden_states = hidden_states.transpose(1, 2)
 
-        hidden_states = self.activation(hidden_states)
-        hidden_states = self.pointwise_conv2(hidden_states)
-        hidden_states = hidden_states.transpose(1, 2)  # (B, T, C)
+        if use_linear_pointwise:
+            hidden_states = self.activation(hidden_states)
+            hidden_states = nn.functional.linear(
+                hidden_states,
+                self.pointwise_conv2.weight.squeeze(-1),
+                self.pointwise_conv2.bias,
+            )
+        else:
+            hidden_states = hidden_states.transpose(1, 2)
+            hidden_states = self.activation(hidden_states)
+            hidden_states = self.pointwise_conv2(hidden_states)
+            hidden_states = hidden_states.transpose(1, 2)  # (B, T, C)
 
         return hidden_states
 
@@ -898,6 +917,7 @@ class NemotronAsrStreamingEncoderBlock(GradientCheckpointingLayer):
         position_embeddings: torch.Tensor | None = None,
         past_key_values: Cache | None = None,
         padding_cache: NemotronAsrStreamingEncoderCausalConvPaddingCache | None = None,
+        use_linear_pointwise: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> torch.Tensor:
         residual = hidden_states
@@ -920,6 +940,7 @@ class NemotronAsrStreamingEncoderBlock(GradientCheckpointingLayer):
             self.norm_conv(hidden_states),
             all_masked_rows=all_masked_rows,
             padding_cache=padding_cache,
+            use_linear_pointwise=use_linear_pointwise,
         )
         hidden_states = hidden_states + conv_output
 

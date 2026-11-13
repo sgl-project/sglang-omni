@@ -208,6 +208,7 @@ async def run_asr_realtime_once(
     mode: str = "vad",
     lang: str = "en",
     paced: bool = True,
+    decode_interval_ms: int | None = None,
     trailing_silence_ms: int = DEFAULT_TRAILING_SILENCE_MS,
     timeout_s: float = 120.0,
     with_http_baseline: bool = False,
@@ -234,6 +235,7 @@ async def run_asr_realtime_once(
         "concurrency": concurrency,
         "packet_ms": packet_ms,
         "paced": paced,
+        "decode_interval_ms": decode_interval_ms,
         "trailing_silence_ms": trailing_silence_ms,
         "timeout_s": timeout_s,
         "lang": lang,
@@ -285,6 +287,7 @@ async def run_asr_realtime_once(
                 packet_ms=packet_ms,
                 paced=paced,
                 language=lang,
+                decode_interval_ms=decode_interval_ms,
                 trailing_silence_ms=trailing_silence_ms,
                 timeout_s=timeout_s,
                 **session_kwargs,
@@ -418,6 +421,12 @@ def parse_args() -> argparse.Namespace:
         help="Send packets as fast as possible (throughput only).",
     )
     parser.add_argument(
+        "--decode-interval-ms",
+        type=_positive_int,
+        default=None,
+        help="Audio between partial decodes; omit to keep the server default.",
+    )
+    parser.add_argument(
         "--trailing-silence-ms", type=int, default=DEFAULT_TRAILING_SILENCE_MS
     )
     parser.add_argument("--timeout-s", type=float, default=120.0)
@@ -476,6 +485,7 @@ def main() -> None:
                 mode=args.mode,
                 lang=args.lang,
                 paced=not args.no_pace,
+                decode_interval_ms=args.decode_interval_ms,
                 trailing_silence_ms=args.trailing_silence_ms,
                 timeout_s=args.timeout_s,
                 with_http_baseline=args.http_baseline,

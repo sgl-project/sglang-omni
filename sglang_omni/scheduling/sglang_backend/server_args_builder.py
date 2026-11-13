@@ -79,7 +79,7 @@ def apply_platform_decode_cuda_graph_backend(kwargs: dict[str, object]) -> None:
 
 def build_sglang_server_args(
     model_path: str,
-    context_length: int,
+    context_length: int | None,
     *,
     chunked_prefill_size: int | None = None,
     max_prefill_tokens: int = 16384,
@@ -128,8 +128,8 @@ def build_sglang_server_args(
     resolved = resolved_view(server_args)
     # DP attention is unsupported; reject at configuration time. Mixed
     # chunked prefill stays allowed (the bridge handles it natively).
-    if resolved.enable_dp_attention:
-        raise ValueError("sglang-omni does not support enable_dp_attention")
+    if resolved.attn_dp_size > 1:
+        raise ValueError("sglang-omni does not support attention data parallelism")
     else:
         pass
     # note (ratish): NVLS is controlled through the process environment and

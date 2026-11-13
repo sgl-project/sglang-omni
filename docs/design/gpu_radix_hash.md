@@ -27,7 +27,7 @@ and radix hashing into one Triton kernel on CUDA. The hash algorithm is
 unchanged; inputs unsupported by the Triton path use the original int64 Torch
 implementation:
 
-```
+```text
 acc = 0
 for channel in range(C):                       # C is fixed by the model configuration
     acc = (acc * BASE + row[:, channel]) % MOD

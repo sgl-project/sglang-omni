@@ -891,7 +891,7 @@ def test_overlap_replay_failure_with_pending_aborts_and_releases(monkeypatch) ->
             self.error = error
             self.runs = 0
 
-        def available_batch_sizes(self, frames: int) -> tuple[int, ...]:
+        def available_batch_sizes(self, frames: int, decode: str) -> tuple[int, ...]:
             return (1,)
 
         def run(self, codes: torch.Tensor, *, eligible: bool) -> Code2WavRunResult:
@@ -1138,7 +1138,7 @@ def test_overlap_borrowed_output_copied_before_next_replay(monkeypatch) -> None:
             self.static_output = torch.zeros((1, 1, 2), dtype=torch.float32)
             self.replays = 0
 
-        def available_batch_sizes(self, frames: int) -> tuple[int, ...]:
+        def available_batch_sizes(self, frames: int, decode: str) -> tuple[int, ...]:
             return (1,)
 
         def run(self, codes: torch.Tensor, *, eligible: bool) -> Code2WavRunResult:
