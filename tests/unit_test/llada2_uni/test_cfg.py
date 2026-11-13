@@ -23,6 +23,7 @@ from sglang.srt.layers.radix_attention import AttentionType, RadixAttention
 from sglang.srt.mem_cache.allocator import TokenToKVPoolAllocator
 from sglang.srt.mem_cache.kv_index_translator import KVIndexTranslator
 from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool, ReqToTokenPool
+from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
 from sglang.srt.model_executor.runner.decode_cuda_graph_runner import (
     DecodeCudaGraphRunner,
@@ -31,6 +32,7 @@ from sglang.srt.sampling.sampling_params import SamplingParams
 
 import sglang_omni.models.llada2_uni.cfg_attention_backend as cfg_attention_backend
 from sglang_omni.model_runner.sglang_model_runner import CFGCudaGraphRunner
+from sglang_omni.models.llada2_uni.bootstrap import validate_cfg
 from sglang_omni.models.llada2_uni.low_confidence_cfg import LowConfidenceCFG
 from sglang_omni.models.llada2_uni.request_builders import LLaDA2UniRequest
 from sglang_omni.scheduling.dllm_scheduler import DllmForwardBatch, DllmScheduler
@@ -46,6 +48,32 @@ class RaggedWrapperStub:
 
     def begin_forward(self, *args, **kwargs) -> None:
         self.plan = (args, kwargs)
+
+
+@pytest.mark.parametrize("paged_only", [False, True])
+@pytest.mark.parametrize(
+    "decode_backend", [CudaGraphBackend.DISABLED, CudaGraphBackend.FULL]
+)
+def test_cfg_rejects_paged_only_with_resolved_decode_graphs(
+    monkeypatch: pytest.MonkeyPatch, paged_only: bool, decode_backend: str
+) -> None:
+    monkeypatch.setenv("SGLANG_FLASHINFER_USE_PAGED", "1" if paged_only else "0")
+    server_args = NS(
+        dllm_algorithm="LowConfidenceCFG",
+        attention_backend=cfg_attention_backend.CFG_ATTENTION_BACKEND,
+        prefill_attention_backend=None,
+        decode_attention_backend=None,
+        dllm_fdfo=False,
+        cuda_graph_config=NS(decode=NS(backend=CudaGraphBackend.DISABLED)),
+        _resolved_overrides=[  # noqa: leading-underscore  # SGLang resolution record
+            ("test", {"cuda_graph_config": NS(decode=NS(backend=decode_backend))})
+        ],
+    )
+    if paged_only and decode_backend != CudaGraphBackend.DISABLED:
+        with pytest.raises(ValueError, match="SGLANG_FLASHINFER_USE_PAGED=1"):
+            validate_cfg(server_args)
+    else:
+        validate_cfg(server_args)
 
 
 def make_config(*, fdfo: bool = False) -> DllmConfig:

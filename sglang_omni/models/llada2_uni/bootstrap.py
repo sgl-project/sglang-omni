@@ -9,6 +9,8 @@ from sglang.srt.arg_groups.model_override_base import (
 )
 from sglang.srt.dllm.algorithm import algo_name_to_cls
 from sglang.srt.dllm.config import DllmConfig
+from sglang.srt.environ import envs
+from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
@@ -47,6 +49,17 @@ def validate_cfg(server_args: ServerArgs) -> None:
         pass
     if cfg.dllm_fdfo:
         raise ValueError("LowConfidenceCFG requires synchronous DLLM, not FDFO")
+    else:
+        pass
+    if (
+        envs.SGLANG_FLASHINFER_USE_PAGED.get()
+        and cfg.cuda_graph_config.decode.backend != CudaGraphBackend.DISABLED
+    ):
+        raise ValueError(
+            "LowConfidenceCFG decode CUDA graphs do not support "
+            "SGLANG_FLASHINFER_USE_PAGED=1; unset it or set "
+            "cuda_graph_backend_decode=disabled"
+        )
     else:
         pass
 
