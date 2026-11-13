@@ -88,10 +88,7 @@ func TestSessionMutesOutput(t *testing.T) {
 			if a.sess.State != tc.end {
 				t.Fatalf("end %s %+v", a.sess.State, a.sess.Problem)
 			}
-			a.mute.Wait()
-			if muted() {
-				t.Fatal("still muted after the session")
-			}
+			a.pump("the output back", func() bool { a.mute.Wait(); return !muted() })
 			mu.Lock()
 			back := slices.Clone(backAfter)
 			mu.Unlock()
@@ -112,10 +109,7 @@ func TestSessionMutesOutput(t *testing.T) {
 			time.Sleep(300 * time.Millisecond)
 			a.hotkeyFired(proto.HotkeyEventParams{Binding: "rewrite/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: &front})
 			a.pump("the follow-up's end", func() bool { return a.sess.State.Ended() })
-			a.mute.Wait()
-			if muted() {
-				t.Fatal("still muted after the follow-up")
-			}
+			a.pump("the follow-up's output back", func() bool { a.mute.Wait(); return !muted() })
 		})
 	}
 }

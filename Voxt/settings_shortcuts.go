@@ -166,13 +166,13 @@ func (a *app) shortcutRow(c *ui.Context, feature string, i int, h *settings.Hotk
 func presetTitle(p string) string {
 	switch p {
 	case settings.PresetOption:
-		return i18n.T("Right ⌥ (default)")
+		return i18n.T("%s (default)", uitext.HotkeyText("RightOption"))
 	case settings.PresetFn:
 		return i18n.T("fn (Auralink's keys)")
 	case settings.PresetCommand:
-		return i18n.T("⌘ combination")
+		return i18n.T("%s combination", uitext.HotkeyText("RightCommand"))
 	case settings.PresetMouseMiddle:
-		return i18n.T("Middle mouse + fn⇧")
+		return i18n.T("Middle mouse + %s", uitext.HotkeyText("Fn+Shift"))
 	}
 	return i18n.T("Custom")
 }
@@ -181,13 +181,13 @@ func presetTitle(p string) string {
 func presetAbout(p string) string {
 	switch p {
 	case settings.PresetOption:
-		return i18n.T("Right ⌥: one-handed and Voxt's default. Good when fn is the Globe key or shared with Auralink.")
+		return i18n.T("%s: one-handed and Voxt's default. Good when fn is the Globe key or shared with Auralink.", uitext.HotkeyText("RightOption"))
 	case settings.PresetFn:
 		return i18n.T("fn: matches Auralink and many Voxt 1.x setups. Watch for clashes with the Globe key and input sources.")
 	case settings.PresetCommand:
-		return i18n.T("⌘ combination: right ⌘ only, away from the letter keys. Good if you keep Option for typing.")
+		return i18n.T("%s combination: %s only, away from the letter keys. Good if you keep Option for typing.", uitext.HotkeyText("RightCommand"), uitext.HotkeyText("RightCommand"))
 	case settings.PresetMouseMiddle:
-		return i18n.T("Middle mouse + fn⇧: click the wheel to transcribe, double-click to rewrite. Mouse shortcuts need Accessibility.")
+		return i18n.T("Middle mouse + %s: click the wheel to transcribe, double-click to rewrite. Mouse shortcuts need Accessibility.", uitext.HotkeyText("Fn+Shift"))
 	}
 	return ""
 }
