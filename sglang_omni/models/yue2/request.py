@@ -57,7 +57,7 @@ class Yue2Options(BaseModel):
     abc: str | None = None
     cfg_scale: float | None = Field(default=None, ge=0, le=20)
     abc_max_tokens: int = Field(default=4096, ge=1)
-    ode_steps: int = Field(default=32, ge=1)
+    ode_steps: int = Field(default=32, ge=1, le=200)
 
     @model_validator(mode="after")
     def validate_score(self) -> "Yue2Options":

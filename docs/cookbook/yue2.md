@@ -63,7 +63,7 @@ Model-specific settings use the existing `stage_params` field:
 | `abc` | An optional supplied score, used without generating a new one. Requires `full` or `melody`. |
 | `abc_max_tokens` | Planning budget. Default: 4096. |
 | `cfg_scale` | Semantic classifier-free guidance. Defaults to 1.0 for score modes and 1.01 for `off`, matching the model's generation protocol. |
-| `ode_steps` | Midpoint flow-matching steps. Default: 32. |
+| `ode_steps` | Midpoint flow-matching steps, at most 200. Default: 32. |
 
 Voice selection, reference-audio conditioning, speed changes and streaming output are unsupported. Cancellation is checked between AR tokens, acoustic solver evaluations and VAE tiles; an already submitted GPU operation finishes before cancellation takes effect.
 

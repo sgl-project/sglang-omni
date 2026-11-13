@@ -131,6 +131,7 @@ def test_invalid_seed_rejected(seed: object) -> None:
         {"abc": "X:1", "cot": "off"},
         {"abc": " "},
         {"ode_steps": 0},
+        {"ode_steps": 201},
         {"abc_max_tokens": True},
         {"unknown_knob": 3},
     ],
