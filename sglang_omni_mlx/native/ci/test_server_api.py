@@ -297,10 +297,10 @@ def wav_bytes(pcm: bytes) -> bytes:
 
 
 def long_wav(seconds: int) -> bytes:
-    """A clip repeated to about seconds long, so a full decode takes several seconds."""
-    pcm = pcm16("0344_en_long")
-    repeated = pcm * (seconds * 32000 // len(pcm) + 1)
-    return wav_bytes(repeated[: seconds * 32000])
+    """Distinct long clips joined to seconds, so a full decode takes several seconds."""
+    pcm = b"".join(pcm16(f"{index:04d}_en_long") for index in range(344, 360))
+    assert len(pcm) >= seconds * 32000
+    return wav_bytes(pcm[: seconds * 32000])
 
 
 def test_repetition_penalty_ends_a_token_loop(server: Server) -> None:
@@ -349,9 +349,10 @@ def test_a_disconnected_stream_stops_its_decode(server: Server) -> None:
     )
     response = connection.getresponse()
     assert response.status == 200
-    # Note (Jiaxin Deng): cancellation is checked between generated tokens, so
-    # give the request time to get past encoding and prefill.
-    time.sleep(4.0)
+    # Note (evanderfan): disconnect at the first heartbeat. Cancellation is
+    # checked between generated tokens, so the deadline below also covers the
+    # rest of encoding and prefill.
+    assert response.readline() == b":\n"
     assert json.loads(server.request("GET", "/health")[1])["request_states"] == {
         "running": 1
     }
