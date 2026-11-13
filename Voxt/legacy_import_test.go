@@ -6,9 +6,11 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/datadir"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
@@ -190,10 +192,7 @@ func TestLegacyReadable(t *testing.T) {
 		t.Error("a folder without a database is readable")
 	}
 	db := legacyDatabase(lib)
-	if err := os.Chmod(db, 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(db, 0o644) })
+	denyLegacyRead(t, db)
 	if legacyReadable(lib) {
 		t.Error("a database that cannot be opened is readable")
 	}
@@ -345,7 +344,11 @@ func TestSmokeLegacy(t *testing.T) {
 		if c.fixture != "" {
 			lib = copyFixture(t, c.fixture)
 		}
-		if err := os.Symlink(lib, filepath.Join(container, "Library")); err != nil {
+		if runtime.GOOS == "windows" {
+			if err := datadir.CopyTree(context.Background(), lib, filepath.Join(container, "Library"), func(string) bool { return false }, nil); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := os.Symlink(lib, filepath.Join(container, "Library")); err != nil {
 			t.Fatal(err)
 		}
 		t.Setenv("VOXTNEW_LEGACY_HOME", home)
@@ -357,6 +360,9 @@ func TestSmokeLegacy(t *testing.T) {
 		os.Stdout = out
 		code := runSmoke(t.TempDir())
 		os.Stdout = stdout
+		if err := out.Close(); err != nil {
+			t.Fatal(err)
+		}
 		printed, _ := os.ReadFile(out.Name())
 		if !strings.Contains(string(printed), c.want) || (code == 0) != (c.fixture != "") {
 			t.Errorf("%q: exit %d, printed:\n%s\nwant a line %q", c.fixture, code, printed, c.want)

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -33,6 +34,10 @@ func fakeLegacyPlutil(t *testing.T, values map[string]string) {
 	}
 	script := filepath.Join(dir, "plutil")
 	body := "#!/bin/sh\n[ \"$1\" = -lint ] && exit 0\nexec cat \"" + dir + "/$2\" 2>/dev/null\n"
+	if runtime.GOOS == "windows" {
+		script += ".bat"
+		body = "@echo off\r\nif \"%1\"==\"-lint\" exit /b 0\r\ntype \"%~dp0%2\" 2>NUL\r\n"
+	}
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
