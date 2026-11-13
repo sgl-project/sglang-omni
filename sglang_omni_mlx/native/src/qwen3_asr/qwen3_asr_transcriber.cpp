@@ -126,12 +126,14 @@ std::optional<std::string> NormalizeLanguage(const std::string &language) {
 
 Qwen3ASRTranscriber::Qwen3ASRTranscriber(
     const std::filesystem::path &model_directory,
-    const std::filesystem::path &draft_directory, int draft_quantization_bits)
+    const std::filesystem::path &draft_directory, int draft_quantization_bits,
+    DraftPolicy draft_policy)
     : model_(model_directory), tokenizer_(model_directory),
       audio_pad_id_(tokenizer_.AddedTokenId(kAudioPad)),
       end_of_text_id_(tokenizer_.AddedTokenId("<|endoftext|>")),
       im_end_id_(tokenizer_.AddedTokenId("<|im_end|>")),
-      asr_text_ids_(tokenizer_.Encode(kAsrTextMarker)) {
+      asr_text_ids_(tokenizer_.Encode(kAsrTextMarker)),
+      draft_policy_(draft_policy) {
   if (!draft_directory.empty()) {
     draft_.emplace(draft_directory, draft_quantization_bits,
                    model_.decoder().config());
@@ -259,42 +261,16 @@ Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
   // position with the block's own earlier tokens; a request that asks for one
   // decodes without the draft.
   if (draft_.has_value() && options.repetition_penalty == 1.0f) {
-    verify_round_count = draft_->Decode(model_.decoder(), embeddings,
-                                        max_new_tokens, 0, commit, cancel);
+    verify_round_count =
+        draft_->Decode(model_.decoder(), embeddings, max_new_tokens, 0, commit,
+                       cancel, draft_policy_);
   } else {
     std::vector<KVCache> caches = model_.NewCaches();
     const mx::array prefill_logits = model_.Decode(embeddings, caches);
     mx::array next_token = mx::argmax(prefill_logits);
     mx::async_eval({next_token});
-    // Note (Minyi Tang): only generated tokens are penalized, as on CUDA; the
-    // scales stay lazy so penalizing adds no host sync to the queued step.
-    mx::array penalty_by_token_id =
-        mx::ones(prefill_logits.shape(), mx::float32);
-    bool finished = false;
-    while (!finished) {
-      if (cancel.load()) {
-        throw TranscriptionCancelled();
-      } else {
-      }
-      const mx::array token = next_token;
-      // Note (Jiaxin Deng): queue the next step before reading this token, so
-      // the GPU decodes while the stop rules are checked.
-      mx::array logits =
-          model_.Decode(model_.EmbedTokens(mx::reshape(token, {1, 1})), caches);
-      if (options.repetition_penalty != 1.0f) {
-        penalty_by_token_id =
-            mx::put_along_axis(penalty_by_token_id, mx::reshape(token, {1}),
-                               mx::array(options.repetition_penalty), 0);
-        logits = mx::astype(logits, mx::float32);
-        logits = mx::where(mx::less(logits, mx::array(0.0f)),
-                           mx::multiply(logits, penalty_by_token_id),
-                           mx::divide(logits, penalty_by_token_id));
-      } else {
-      }
-      next_token = mx::argmax(logits);
-      mx::async_eval({next_token});
-      finished = commit(static_cast<int>(token.item<uint32_t>()));
-    }
+    model_.decoder().DecodePlain(next_token, caches, options.repetition_penalty,
+                                 commit, cancel);
   }
   return FinishedResult(output_ids, options, finish_reason,
                         stopped_on_token_loop, verify_round_count);

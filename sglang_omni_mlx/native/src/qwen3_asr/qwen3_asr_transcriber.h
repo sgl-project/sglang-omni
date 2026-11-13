@@ -97,7 +97,8 @@ public:
   explicit Qwen3ASRTranscriber(
       const std::filesystem::path &model_directory,
       const std::filesystem::path &draft_directory = {},
-      int draft_quantization_bits = 0);
+      int draft_quantization_bits = 0,
+      DraftPolicy draft_policy = DraftPolicy::kAdaptive);
 
   std::vector<int> PromptIds(int audio_token_count,
                              const TranscriptionOptions &options) const;
@@ -164,6 +165,7 @@ private:
   int im_end_id_;
   std::vector<int> asr_text_ids_;
   std::optional<DFlashDraft> draft_;
+  DraftPolicy draft_policy_;
 };
 
 // One request the worker may decode together with others. Called alone it

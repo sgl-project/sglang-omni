@@ -130,6 +130,7 @@ def test_a_load_without_a_checkpoint_reports_failed(
         ("qwen3_asr_server", ("--max-segment-seconds", "0.00001"), "--max-segment-seconds must span one sample"),
         ("qwen3_asr_server", ("--decode-interval-ms", "0"), "--decode-interval-ms must be positive"),
         ("qwen3_asr_server", ("--first-decode-ms", "-1"), "--first-decode-ms must not be negative"),
+        ("qwen3_asr_server", ("--draft-policy", "unknown"), "--draft-policy must be adaptive or fixed"),
         ("qwen3_asr_server", ("--draft-bits", "-1"), "--draft-bits must be 4, 6 or 8"),
         ("qwen3_asr_server", ("--draft-bits", "8"), "--draft-bits needs --draft-model-path"),
         ("moss_transcribe_diarize_server", ("--draft-bits", "-1"), "--draft-bits must be 4, 6 or 8"),
@@ -169,6 +170,7 @@ def test_invalid_server_flags_exit_before_the_load(
             ("qwen3_asr_transcribe", ("--repetition-penalty", penalty), "--repetition-penalty must be positive and finite")
             for penalty in ("0", "-1", "nan", "inf")
         ],
+        ("qwen3_asr_transcribe", ("--draft-policy", "unknown"), "--draft-policy must be adaptive or fixed"),
         ("music3_synthesize", ("--stage-offload-components", "dit"), "requires both ar,dit"),
         ("ming3_audio_chat", ("--context-length", "0"), "--context-length must be a positive integer"),
         ("ming3_audio_chat", ("--speculative-algorithm", "EAGLE3"), "--speculative-algorithm must be NEXTN"),

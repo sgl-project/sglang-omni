@@ -4,6 +4,8 @@
 // without the query/key norms and with traditional rotary embeddings.
 #pragma once
 
+#include <atomic>
+#include <functional>
 #include <optional>
 #include <string>
 #include <utility>
@@ -82,6 +84,7 @@ public:
   // table.
   Qwen3Decoder(const omni_common::Checkpoint &checkpoint, std::string prefix,
                Qwen3DecoderConfig config);
+  Qwen3Decoder(const Qwen3Decoder &other, bool batch_single_row_projections);
 
   // Token ids [1, length] to embeddings [1, length, hidden].
   mlx::core::array EmbedTokens(const mlx::core::array &ids) const;
@@ -101,6 +104,14 @@ public:
   mlx::core::array LastLogits(const mlx::core::array &hidden_states) const;
   // Logits of every position of the hidden states, [length, vocab].
   mlx::core::array Logits(const mlx::core::array &hidden_states) const;
+  // Continues the queued next token; leaves its successor queued when commit
+  // stops. Probes capture hidden states to resume the draft without prefill.
+  void DecodePlain(
+      mlx::core::array &next_token, std::vector<KVCache> &caches,
+      float repetition_penalty, const std::function<bool(int)> &commit,
+      const std::atomic<bool> &cancel,
+      const std::vector<int> &capture_layers = {},
+      std::vector<std::vector<mlx::core::array>> *captured = nullptr) const;
   std::vector<KVCache> NewCaches() const;
   const Qwen3DecoderConfig &config() const { return config_; }
   // One decode step for a batch, embeddings [batch, 1, hidden]. offsets is
@@ -121,6 +132,8 @@ private:
   };
 
   std::string Name(const std::string &suffix) const;
+  mlx::core::array Project(const mlx::core::array &x, const std::string &prefix,
+                           bool tied_embedding = false) const;
   mlx::core::array Layer(const mlx::core::array &x, int layer, KVCache &cache,
                          const std::optional<RotaryInputs> &rotary) const;
   mlx::core::array BatchLayer(const mlx::core::array &x, int layer,
@@ -142,6 +155,7 @@ private:
   const omni_common::Checkpoint &checkpoint_;
   std::string prefix_;
   Qwen3DecoderConfig config_;
+  bool batch_single_row_projections_ = false;
 };
 
 } // namespace qwen3_asr

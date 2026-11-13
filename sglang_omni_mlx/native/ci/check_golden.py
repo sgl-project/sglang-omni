@@ -107,7 +107,13 @@ def transcribe(
         "--max-new-tokens", str(request["max_new_tokens"]),
     ]  # fmt: skip
     if draft_directory is not None:
-        command += ["--draft-model-path", str(draft_directory)]
+        # Exact goldens predate timing-dependent adaptive backoff.
+        command += [
+            "--draft-model-path",
+            str(draft_directory),
+            "--draft-policy",
+            "fixed",
+        ]
     else:
         pass
     if request["stop_at_end_of_text"]:
