@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -636,18 +637,45 @@ func TestFind(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("VOXTNEW_HELPER", "")
 	os.Unsetenv("VOXTNEW_HELPER")
-	if Find(dir) != "" {
-		t.Error("found nothing as something")
+	if got := Find(dir); got != "" {
+		t.Errorf("found nothing as %q", got)
 	}
-	bin := filepath.Join(dir, "helper", BinName)
-	os.MkdirAll(filepath.Dir(bin), 0o755)
-	os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755)
-	if Find(dir) != bin {
-		t.Errorf("Find = %q", Find(dir))
+	name := BinName
+	if runtime.GOOS == "windows" {
+		name += ".exe"
 	}
-	t.Setenv("VOXTNEW_HELPER", "/opt/x")
-	if Find(dir) != "/opt/x" {
-		t.Error("the environment does not win")
+	write := func(path string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("helper"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	beside := filepath.Join(exeDir(), name)
+	if _, err := os.Stat(beside); !os.IsNotExist(err) {
+		t.Fatalf("the test executable already has a helper beside it: %s", beside)
+	}
+	write(beside)
+	t.Cleanup(func() { os.Remove(beside) })
+	if got := Find(dir); got != beside {
+		t.Errorf("beside the executable: Find = %q, want %q", got, beside)
+	}
+	platform := filepath.Join(dir, runtime.GOOS+"-"+runtime.GOARCH, "helper", name)
+	write(platform)
+	if got := Find(dir); got != platform {
+		t.Errorf("platform resources: Find = %q, want %q", got, platform)
+	}
+	bin := filepath.Join(dir, "helper", name)
+	write(bin)
+	if got := Find(dir); got != bin {
+		t.Errorf("generic resources: Find = %q, want %q", got, bin)
+	}
+	environment := filepath.Join(dir, "environment", name)
+	t.Setenv("VOXTNEW_HELPER", environment)
+	if got := Find(dir); got != environment {
+		t.Errorf("the environment: Find = %q, want %q", got, environment)
 	}
 }
 
