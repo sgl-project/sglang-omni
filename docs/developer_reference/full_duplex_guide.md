@@ -1426,7 +1426,7 @@ Keeps the conversation history, opens a turn for each final transcript and sends
 | Option | Type | Default | Effect |
 | --- | --- | --- | --- |
 | `system_prompt` | string | `You are a helpful voice assistant. Answer concisely.` | The system message; realtime `instructions` set it. |
-| `language` | string | `""` | The reply language preferred for a short utterance, written as the recognizer reports it. It must be one of the `supported_languages` of every `openai_speech` node, which by default are the languages of Qwen3-TTS, the speech model of the bundled profiles. Empty follows the language remembered from the last utterance of at least 3 words; a clear utterance carries the language the recognizer heard instead. |
+| `language` | string | `""` | The reply language preferred for a short utterance, written as the recognizer reports it. It must be one of the `supported_languages` of every `openai_speech` node with `language: auto`, which by default are the languages of Qwen3-TTS, the speech model of the bundled profiles. Empty follows the language remembered from the last utterance of at least 3 words; a clear utterance carries the language the recognizer heard instead. |
 | `max_history_chars` | integer > 0 | `65536` | The bound on the history: a turn whose history plus utterance plus `max_text_chars` would exceed it fails the session. |
 | `max_text_chars` | integer > 0 | `16000` | The longest utterance transcript and the longest reply. |
 
@@ -1574,7 +1574,7 @@ Each rule is followed by the error it raises.
 - `method: asr` without them — `the asr method needs heard_asr_url and heard_asr_model`.
 - `heard_asr_url` with `method: sentence` — `heard_asr_url belongs to the asr and forced methods`.
 - `extra_body` sets `model`, `messages`, `stream`, `max_tokens` or `temperature` — `extra_body cannot set [...]`.
-- A `dialog` `language` that is not one of the `supported_languages` of an `openai_speech` node, also when an open frame or a `configure` sets it — `language '<language>' of node '<name>' is not one of the supported_languages of node '<name>': [...]`.
+- A `dialog` `language` that is not one of the `supported_languages` of an `openai_speech` node with `language: auto`, also when an open frame or a `configure` sets either — `language '<language>' of node '<name>' is not one of the supported_languages of node '<name>': [...]`.
 - `temperature` outside 0 to 2, a non-positive `max_tokens`, `max_sentence_words`, `max_history_chars`, `max_text_chars` or `timeout_s`, or a negative `tail_ms` — a pydantic range error naming the field.
 - Two `services` with one name or one port — `services must have distinct names and ports`.
 - An empty `model_path` — `Model path is required`.
