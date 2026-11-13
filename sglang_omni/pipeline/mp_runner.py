@@ -48,6 +48,7 @@ from sglang_omni.pipeline.stage_workers import (
     stage_gpu_ids,
 )
 from sglang_omni.pipeline.weight_share import WeightSharePlan, plan_weight_share
+from sglang_omni.platforms import current_platform
 from sglang_omni.utils.cpu import effective_cpu_count, gpu_local_affinity
 from sglang_omni.utils.imports import import_string
 from sglang_omni.utils.port_claim import NCCL_PORT_BASE, NCCL_PORT_SPAN, claim_tcp_port
@@ -735,6 +736,12 @@ class MultiProcessPipelineRunner:
             self._prep = prep  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             self.ipc_runtime_dir = prep.runtime_dir
             validate_gpu_capacity(prep.placement_plan)
+            # note (Rahul): resolved before spawn, so an invalid setting fails the launch instead of every video request.
+            video_decode_device = current_platform.get_video_decode_device()
+            if video_decode_device is not None:
+                logger.info(f"Request videos decode on {video_decode_device}")
+            else:
+                pass
             groups = build_stage_groups(
                 self.config,
                 ctx,

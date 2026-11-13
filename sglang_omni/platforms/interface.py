@@ -243,6 +243,10 @@ class OmniPlatform(DeviceMixin):
         """Default backend for all attention in encoder-decoder models, if needed."""
         return None
 
+    def get_video_decode_device(self) -> str | None:
+        """Device torchcodec decodes request videos on, or None to decode them on the CPU."""
+        return None
+
     def supports_fp8_moe(self) -> bool:
         return True
 

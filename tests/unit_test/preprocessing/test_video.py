@@ -17,6 +17,7 @@ import torch
 from sglang_omni.preprocessing import audio, image, video
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
 from sglang_omni.serve.openai_errors import is_bad_request_error
+from tests.unit_test.fixtures.accelerator import require_xpu_media_engine
 
 MPEG4_KEYFRAME_INTERVAL = 2
 
@@ -525,3 +526,193 @@ def test_torchcodec_reader_of_record_runs_when_the_native_decoder_is_unavailable
     assert reader_calls == [str(mpeg4_video)]
     assert frames.shape[0] == 2
     assert sample_fps == 2.0
+
+
+def write_h264_video(path: Path, frame_count: int = 40, frame_rate: int = 10) -> None:
+    """An H.264 clip whose frames differ, so a wrong frame selection changes the pixels."""
+    with video.av.open(str(path), mode="w") as container:
+        stream = container.add_stream("libx264", rate=frame_rate)
+        stream.width, stream.height = 128, 96
+        stream.pix_fmt = "yuv420p"
+        columns = np.arange(128, dtype=np.int32)[None, :, None]
+        for index in range(frame_count):
+            pixels = np.broadcast_to((columns + 5 * index) % 256, (96, 128, 3))
+            frame = video.av.VideoFrame.from_ndarray(
+                np.ascontiguousarray(pixels, dtype=np.uint8), format="rgb24"
+            )
+            for packet in stream.encode(frame):
+                container.mux(packet)
+        for packet in stream.encode():
+            container.mux(packet)
+
+
+def decode_on(monkeypatch: pytest.MonkeyPatch, decode_device: str | None) -> list[str]:
+    """Routes request videos to decode_device; returns the log of device cache releases."""
+    cache_releases: list[str] = []
+    monkeypatch.setattr(
+        video,
+        "current_platform",
+        SimpleNamespace(
+            get_video_decode_device=lambda: decode_device,
+            empty_cache=lambda: cache_releases.append("released"),
+        ),
+    )
+    return cache_releases
+
+
+@pytest.mark.parametrize(
+    "sampling", [{}, {"fps": 5.0, "max_frames": 8}], ids=["default", "fps5_max8"]
+)
+def test_device_decode_hands_the_processor_the_cpu_reader_frames(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sampling: dict[str, float]
+) -> None:
+    """The device path picks, resizes, and returns the frames and sampled FPS of the CPU reader."""
+    pytest.importorskip("torchcodec")
+    path = tmp_path / "moving.mp4"
+    write_h264_video(path)
+    decode_on(monkeypatch, None)
+    reference, reference_fps = video.load_video_path(
+        path, **sampling, decode_threads=16
+    )
+
+    cache_releases = decode_on(monkeypatch, "cpu")
+    monkeypatch.setattr(video, "DEVICE_DECODE_FALLBACK_LOGGED", threading.Event())
+    frames, sample_fps = video.load_video_path(path, **sampling, decode_threads=16)
+
+    assert not video.DEVICE_DECODE_FALLBACK_LOGGED.is_set()
+    assert cache_releases == ["released"]
+    assert frames.dtype == torch.float32 and frames.device.type == "cpu"
+    assert sample_fps == reference_fps
+    assert torch.equal(frames, reference)
+
+
+def test_a_failed_device_decode_falls_back_to_the_cpu_reader_and_warns_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Device decoders run one at a time, and any device failure still returns the CPU frames."""
+    pytest.importorskip("torchcodec")
+    path = tmp_path / "moving.mp4"
+    write_h264_video(path)
+    decode_on(monkeypatch, None)
+    reference, reference_fps = video.load_video_path(path, fps=5.0, decode_threads=16)
+    lock_held: list[bool] = []
+
+    class FailingDeviceDecoder:
+        def __init__(self, source: str, device: str) -> None:
+            lock_held.append(video.DEVICE_DECODE_LOCK.locked())
+            self.metadata = SimpleNamespace(
+                average_fps=10.0, num_frames=40, width=128, height=96
+            )
+
+        def get_frames_at(self, indices: list[int]) -> SimpleNamespace:
+            lock_held.append(video.DEVICE_DECODE_LOCK.locked())
+            raise RuntimeError("Failed to import fd=9")
+
+    cpu_decoder = video.VideoDecoder
+
+    def failing_on_the_device(source: str, device: str = "cpu", **options: object):
+        if device == "cpu":
+            return cpu_decoder(source, **options)
+        else:
+            return FailingDeviceDecoder(source, device)
+
+    cache_releases = decode_on(monkeypatch, "xpu")
+    monkeypatch.setattr(video, "VideoDecoder", failing_on_the_device)
+    monkeypatch.setattr(video, "DEVICE_DECODE_FALLBACK_LOGGED", threading.Event())
+    with caplog.at_level("WARNING", logger=video.__name__):
+        results = [
+            video.load_video_path(path, fps=5.0, decode_threads=16) for _ in range(2)
+        ]
+
+    assert lock_held and all(lock_held)
+    assert len(cache_releases) == 2
+    for frames, sample_fps in results:
+        assert sample_fps == reference_fps
+        assert torch.equal(frames, reference)
+    warnings = [
+        record for record in caplog.records if "decoding on the CPU" in record.message
+    ]
+    assert len(warnings) == 1
+
+
+def test_a_rejected_upload_is_not_logged_as_a_device_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A truncated upload used to log the once-per-process device warning, so a later real device failure went unlogged."""
+    pytest.importorskip("torchcodec")
+    valid_path = tmp_path / "moving.mp4"
+    write_h264_video(valid_path)
+    truncated_path = tmp_path / "truncated.mp4"
+    truncated_path.write_bytes(valid_path.read_bytes()[:200])
+    decode_on(monkeypatch, "cpu")
+    monkeypatch.setattr(video, "DEVICE_DECODE_FALLBACK_LOGGED", threading.Event())
+    with pytest.raises(video.VideoDecodeError) as rejected:
+        video.load_video_path(truncated_path, fps=5.0, decode_threads=16)
+    assert is_bad_request_error(rejected.value)
+    assert not video.DEVICE_DECODE_FALLBACK_LOGGED.is_set()
+
+    cpu_decoder = video.VideoDecoder
+
+    def failing_on_the_device(source: str, device: str = "cpu", **options: object):
+        if device == "cpu":
+            return cpu_decoder(source, **options)
+        else:
+            raise RuntimeError("Failed to import fd=9")
+
+    decode_on(monkeypatch, "xpu")
+    monkeypatch.setattr(video, "VideoDecoder", failing_on_the_device)
+    video.load_video_path(valid_path, fps=5.0, decode_threads=16)
+    assert video.DEVICE_DECODE_FALLBACK_LOGGED.is_set()
+
+
+def test_a_4k_device_decode_keeps_each_batch_within_the_device_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 4K clip used to decode 32 full-size frames per batch, about 7 GiB on the card with the resize."""
+    pytest.importorskip("torchcodec")
+    path = tmp_path / "moving.mp4"
+    write_h264_video(path)
+    batch_frame_counts: list[int] = []
+
+    class UltraHighDefinitionDecoder:
+        def __init__(self, source: str, device: str) -> None:
+            self.metadata = SimpleNamespace(
+                average_fps=30.0, num_frames=600, width=3840, height=2160
+            )
+
+        def get_frames_at(self, indices: list[int]) -> SimpleNamespace:
+            batch_frame_counts.append(len(indices))
+            return SimpleNamespace(
+                data=torch.zeros(len(indices), 3, 96, 128, dtype=torch.uint8)
+            )
+
+    decode_on(monkeypatch, "xpu")
+    monkeypatch.setattr(video, "VideoDecoder", UltraHighDefinitionDecoder)
+    frames, _ = video.load_video_path(path, fps=2.0, decode_threads=16)
+
+    batch_bytes = (
+        max(batch_frame_counts) * 3840 * 2160 * video.RESIZED_DECODE_BYTES_PER_PIXEL
+    )
+    assert sum(batch_frame_counts) == frames.shape[0] > max(batch_frame_counts)
+    assert batch_bytes <= video.DEVICE_DECODE_BATCH_BUDGET_BYTES
+
+
+@pytest.mark.accelerator
+def test_xpu_media_engine_decode_matches_the_cpu_reader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Media-engine frames differ from CPU frames only by colour-conversion rounding."""
+    require_xpu_media_engine()
+    path = tmp_path / "moving.mp4"
+    write_h264_video(path, frame_count=120)
+    decode_on(monkeypatch, None)
+    reference, reference_fps = video.load_video_path(path, fps=5.0, decode_threads=16)
+
+    decode_on(monkeypatch, "xpu")
+    monkeypatch.setattr(video, "DEVICE_DECODE_FALLBACK_LOGGED", threading.Event())
+    frames, sample_fps = video.load_video_path(path, fps=5.0, decode_threads=16)
+
+    assert not video.DEVICE_DECODE_FALLBACK_LOGGED.is_set()
+    assert frames.shape == reference.shape and sample_fps == reference_fps
+    # note (Rahul): measured max 3 levels on an Arc Pro B60 across 60 to 720 frames of 720p H.264.
+    assert (frames - reference).abs().max().item() <= 4.0

@@ -10,6 +10,7 @@ import threading
 from fractions import Fraction
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Literal
 from unittest.mock import AsyncMock, Mock
 
@@ -33,6 +34,7 @@ from sglang_omni.models.minicpm_o.prompt_frontend import video_to_images
 from sglang_omni.models.minicpm_o.request_builders import apply_mm_pad_values
 from sglang_omni.models.minicpm_o.video_frontend import MiniCPMVideoIO, TimedVideo
 from sglang_omni.preprocessing import resource_connector
+from sglang_omni.preprocessing import video as preprocessing_video
 from sglang_omni.preprocessing.resource_connector import (
     MultiModalResourceConnector,
     ResourceHTTPConnection,
@@ -40,6 +42,7 @@ from sglang_omni.preprocessing.resource_connector import (
 from sglang_omni.preprocessing.video import load_video_path
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
+from sglang_omni.serve.openai_errors import is_bad_request_error
 from tests.unit_test.minicpm_o.test_preprocessor_prompt import (
     CHAT_TEMPLATE,
     ProcessorOutput,
@@ -47,7 +50,36 @@ from tests.unit_test.minicpm_o.test_preprocessor_prompt import (
 )
 
 
+def decode_timed_video_on(
+    monkeypatch: pytest.MonkeyPatch, decode_device: str | None
+) -> None:
+    monkeypatch.setattr(
+        video_frontend,
+        "current_platform",
+        SimpleNamespace(
+            get_video_decode_device=lambda: decode_device, empty_cache=lambda: None
+        ),
+    )
+
+
+@pytest.fixture(params=["decord", "device"])
+def frame_source(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> str:
+    """Runs a timed-video case on decord and on the device path (torchcodec on the CPU).
+
+    The device variant removes decord, so a failing device path cannot pass by falling back.
+    """
+    if request.param == "decord":
+        decode_timed_video_on(monkeypatch, None)
+    else:
+        decode_timed_video_on(monkeypatch, "cpu")
+        monkeypatch.setattr(video_frontend, "VideoReader", None)
+    return request.param
+
+
 def test_timed_video_reports_missing_decoder(monkeypatch: pytest.MonkeyPatch) -> None:
+    decode_timed_video_on(monkeypatch, None)
     monkeypatch.setattr(video_frontend, "VideoReader", None)
     with pytest.raises(RuntimeError, match="decord==0.6.0.*x86_64 only"):
         MiniCPMVideoIO(use_audio=False).load_file(Path("unused.mp4"))
@@ -807,6 +839,7 @@ def test_top_level_video_real_processor_bounds_match_embedding_rows(
 )
 def test_video_decoder_samples_matching_frames_and_audio_intervals(
     encoded_video_path: Path,
+    frame_source: str,
     monkeypatch: pytest.MonkeyPatch,
     fps: float | None,
     max_frames: int | None,
@@ -925,6 +958,7 @@ def test_inline_video_rejects_unsupported_frame_stacking(
 )
 def test_video_pixel_budgets_resize_decoded_frames(
     encoded_video_path: Path,
+    frame_source: str,
     minimum_pixels: int | None,
     maximum_pixels: int | None,
     total_pixels: int | None,
@@ -938,6 +972,79 @@ def test_video_pixel_budgets_resize_decoded_frames(
     ).load_file(encoded_video_path)
     assert [frame.size for frame in video.frames] == [expected_size] * 3
     assert video.audio_segments == []
+
+
+def test_timed_video_decodes_on_the_device_without_decord(
+    encoded_video_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """XPU installs do not ship decord, so the device path must not need it."""
+    decode_timed_video_on(monkeypatch, "cpu")
+    monkeypatch.setattr(video_frontend, "VideoReader", None)
+    video = MiniCPMVideoIO(use_audio=False).load_file(encoded_video_path)
+    assert video.timestamps_seconds == [0.0, 1.0, 2.0]
+    assert [round(float(np.asarray(frame).mean()) / 100) for frame in video.frames] == [
+        0,
+        1,
+        2,
+    ]
+
+
+def test_a_failed_device_timed_video_decode_falls_back_to_decord(
+    encoded_video_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    decode_timed_video_on(monkeypatch, None)
+    reference = MiniCPMVideoIO(use_audio=False).load_file(encoded_video_path)
+
+    class FailingDeviceDecoder:
+        def __init__(self, source: str, device: str, dimension_order: str) -> None:
+            raise RuntimeError("Failed to import fd=9")
+
+    decode_timed_video_on(monkeypatch, "xpu")
+    monkeypatch.setattr(video_frontend, "VideoDecoder", FailingDeviceDecoder)
+    monkeypatch.setattr(
+        preprocessing_video, "DEVICE_DECODE_FALLBACK_LOGGED", threading.Event()
+    )
+    video = MiniCPMVideoIO(use_audio=False).load_file(encoded_video_path)
+
+    assert video.timestamps_seconds == reference.timestamps_seconds
+    assert [np.asarray(frame).tobytes() for frame in video.frames] == [
+        np.asarray(frame).tobytes() for frame in reference.frames
+    ]
+    assert preprocessing_video.DEVICE_DECODE_FALLBACK_LOGGED.is_set()
+
+
+@pytest.mark.parametrize(
+    ("media", "max_frames", "expected_error"),
+    [
+        ("valid", 0, ValueError),
+        ("corrupt", None, preprocessing_video.VideoDecodeError),
+    ],
+    ids=["zero_max_frames", "corrupt_upload"],
+)
+def test_a_bad_timed_video_request_without_decord_is_a_bad_request(
+    encoded_video_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    media: str,
+    max_frames: int | None,
+    expected_error: type[Exception],
+) -> None:
+    """Without decord, a bad request on the device path used to surface as the requires-decord server error."""
+    if media == "corrupt":
+        video_path = tmp_path / "corrupt.mp4"
+        video_path.write_bytes(encoded_video_path.read_bytes()[:200])
+    else:
+        video_path = encoded_video_path
+    decode_timed_video_on(monkeypatch, "cpu")
+    monkeypatch.setattr(video_frontend, "VideoReader", None)
+    monkeypatch.setattr(
+        preprocessing_video, "DEVICE_DECODE_FALLBACK_LOGGED", threading.Event()
+    )
+    with pytest.raises(expected_error) as raised:
+        MiniCPMVideoIO(use_audio=False, max_frames=max_frames).load_file(video_path)
+
+    assert is_bad_request_error(raised.value)
+    assert not preprocessing_video.DEVICE_DECODE_FALLBACK_LOGGED.is_set()
 
 
 def test_video_audio_decoder_uses_fallback_when_backend_is_unavailable(
