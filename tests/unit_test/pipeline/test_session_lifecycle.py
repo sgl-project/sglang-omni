@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from pathlib import Path
 from typing import Literal
 
@@ -14,6 +15,7 @@ from sglang_omni.pipeline.types import SessionIdleTimeoutError, SessionOutputBud
 from sglang_omni.proto import OmniRequest
 from sglang_omni.proto.messages import CompleteMessage
 from sglang_omni.proto.session import SessionLimits, TimedChunk
+from tests.unit_test.fixtures.session_outputs import control_chunk
 from tests.unit_test.fixtures.session_pipeline import (
     PipelineResources,
     block_request_abort,
@@ -364,6 +366,57 @@ async def test_close_fences_queued_outputs(linear_pair):
     assert not session.outputs and session.output_bytes == 0
     with pytest.raises(StopAsyncIteration):
         await asyncio.wait_for(anext(output), 5)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_close_lets_a_returned_turn_done_reach_every_owner_first(
+    linear_pair, monkeypatch
+) -> None:
+    """A close that arrived while an unordered turn.done was still going out closed the sink first, so that control failed with an unknown session open index."""
+    coordinator, events, _ = linear_pair
+    session_identity = await coordinator.open_session(
+        OmniRequest(None), stages=["source", "sink"]
+    )
+    session = coordinator.sessions[session_identity.id]
+    submit = coordinator.submit_session_operation
+    held, release = asyncio.Event(), asyncio.Event()
+    closing_owners: list[str] = []
+
+    async def hold_control_before_sink(session, operation, *, owner=None, **kwargs):
+        if operation == "control" and owner == "sink":
+            held.set()
+            await release.wait()
+        elif operation == "close":
+            closing_owners.append(owner)
+        else:
+            pass
+        return await submit(session, operation, owner=owner, **kwargs)
+
+    monkeypatch.setattr(
+        coordinator, "submit_session_operation", hold_control_before_sink
+    )
+    control = asyncio.create_task(
+        coordinator.control_session(
+            session_identity, control_chunk("turn.done", turn=1), is_ordered=False
+        )
+    )
+    await asyncio.wait_for(held.wait(), 5)
+    close = asyncio.create_task(coordinator.close_session(session_identity))
+    with contextlib.suppress(TimeoutError):
+        await wait_until(lambda: "sink" in closing_owners, timeout=1)
+    release.set()
+    control_result, close_result = await asyncio.wait_for(
+        asyncio.gather(control, close, return_exceptions=True), 5
+    )
+    assert control_result is None
+    assert close_result is None
+    assert session.error is None
+    sink_events = [
+        event[0]
+        for event in event_log(events)
+        if event[1] == "sink" and event[2] == session_identity.id
+    ]
+    assert sink_events.index("control") < sink_events.index("close")
 
 
 @pytest.mark.asyncio(loop_scope="session")
