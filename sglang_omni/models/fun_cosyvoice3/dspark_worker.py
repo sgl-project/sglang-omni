@@ -48,6 +48,7 @@ from sglang_omni.models.fun_cosyvoice3.dspark_draft import (
     FunCosyVoice3DSparkDraftModel,
     MirroredMarkovHead,
 )
+from sglang_omni.models.fun_cosyvoice3.dspark_noise import draw_seeded_noise
 from sglang_omni.models.fun_cosyvoice3.dspark_sampling import (
     ACCEPTANCE_NOISE_SEED_SALT,
     EMPTY_HISTORY_TOKEN,
@@ -238,6 +239,15 @@ class ExactVerifyExecutor(TargetVerifyExecutor):
             exponential_noise = torch.empty(
                 (bs, TOTAL_VOCAB_SIZE), device=draft_tokens.device
             ).exponential_()
+        elif draft_state.seeds.device.type == "cuda":
+            exponential_noise, uniform_noise = draw_seeded_noise(
+                draft_state.seeds,
+                draft_state.output_lengths,
+                exponential_columns=TOTAL_VOCAB_SIZE,
+                exponential_salt=RESIDUAL_NOISE_SEED_SALT,
+                acceptance_columns=draft_tokens.shape[1],
+                acceptance_salt=ACCEPTANCE_NOISE_SEED_SALT,
+            )
         else:
             uniform_noise = (
                 seeded_uniform_noise(

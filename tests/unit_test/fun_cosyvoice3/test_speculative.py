@@ -25,6 +25,7 @@ from sglang_omni.models.fun_cosyvoice3.dspark_draft import (
     MirroredMarkovHead,
     materialize_draft_checkpoint,
 )
+from sglang_omni.models.fun_cosyvoice3.dspark_noise import draw_seeded_noise
 from sglang_omni.models.fun_cosyvoice3.dspark_sampling import (
     ACCEPTANCE_NOISE_SEED_SALT,
     DRAFT_NOISE_SEED_SALT,
@@ -59,6 +60,95 @@ from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 REQUIRES_CUDA = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="the seeded noise hashes with a CUDA kernel"
 )
+
+
+@pytest.mark.accelerator
+@REQUIRES_CUDA
+@pytest.mark.parametrize("batch_size", [1, 3, 64])
+@pytest.mark.parametrize("captured", [False, True])
+def test_fused_seeded_noise_preserves_the_existing_draws(
+    batch_size: int, captured: bool
+) -> None:
+    """Fusion must keep seeded proposals and acceptance decisions bit-identical."""
+    seeds = torch.arange(batch_size * 2, device="cuda", dtype=torch.int64)[::2]
+    output_lengths = torch.arange(batch_size, device="cuda", dtype=torch.int64) * 100003
+    draft_columns = DRAFT_TOKENS_PER_STEP * TOTAL_VOCAB_SIZE
+
+    def draw() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        draft = seeded_exponential_noise(
+            seeds,
+            output_lengths,
+            salt=DRAFT_NOISE_SEED_SALT,
+            column_count=draft_columns,
+        )
+        residual, uniform = draw_seeded_noise(
+            seeds,
+            output_lengths,
+            exponential_columns=TOTAL_VOCAB_SIZE,
+            exponential_salt=RESIDUAL_NOISE_SEED_SALT,
+            acceptance_columns=DRAFT_TOKENS_PER_STEP,
+            acceptance_salt=ACCEPTANCE_NOISE_SEED_SALT,
+        )
+        return draft, residual, uniform
+
+    if captured:
+        draw()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            actual_draft, actual_residual, actual_uniform = draw()
+    else:
+        pass
+    seeds[-1] = 2**31 - 1
+    if batch_size >= 3:
+        # note (ruiling): These counters hit acceptance hashes 0 and 2**32 - 1 at column zero.
+        seeds[:2] = 0
+        output_lengths[:2] = torch.tensor([1639430020, 284207454], device="cuda")
+    else:
+        pass
+    if captured:
+        graph.replay()
+    else:
+        actual_draft, actual_residual, actual_uniform = draw()
+    expected_draft = (
+        -seeded_uniform_noise(
+            seeds,
+            output_lengths,
+            salt=DRAFT_NOISE_SEED_SALT,
+            column_count=draft_columns,
+        )
+        .log()
+        .float()
+    )
+    expected_residual = (
+        -seeded_uniform_noise(
+            seeds,
+            output_lengths,
+            salt=RESIDUAL_NOISE_SEED_SALT,
+            column_count=TOTAL_VOCAB_SIZE,
+        )
+        .log()
+        .float()
+    )
+    expected_uniform = (
+        seeded_uniform_noise(
+            seeds,
+            output_lengths,
+            salt=ACCEPTANCE_NOISE_SEED_SALT,
+            column_count=DRAFT_TOKENS_PER_STEP,
+        )
+        .float()
+        .clamp_(max=LARGEST_FLOAT32_BELOW_ONE)
+    )
+    assert torch.equal(actual_draft, expected_draft)
+    assert torch.equal(actual_residual, expected_residual)
+    assert torch.equal(actual_uniform, expected_uniform)
+    assert torch.isfinite(actual_draft).all() and (actual_draft > 0).all()
+    assert (actual_uniform > 0).all() and (actual_uniform < 1).all()
+    if batch_size >= 3:
+        assert actual_uniform[0, 0] == 2**-33
+        assert actual_uniform[1, 0] == 1.0 - 2**-24
+    else:
+        pass
 
 
 def stage_distribution(
