@@ -4,9 +4,9 @@ package main
 // names: when $ACTNOW_SOUNDS had no catalog.json, the script ran rm -rf on
 // it before trying a fresh clone, so a mistyped or half-copied library
 // (and everything else in that folder) was gone. Only the script's own
-// cache may be replaced. Runs on Linux too: git and go are fakes at the
-// front of PATH. A future diff that removes $ACTNOW_SOUNDS again, or that
-// stops refreshing the cache, turns this red.
+// cache may be replaced. Runs on Linux too: the clone uses a local fixture,
+// and go is fake at the front of PATH. A future diff that removes
+// $ACTNOW_SOUNDS again, or that stops refreshing the cache, turns this red.
 
 import (
 	"os"
@@ -46,26 +46,37 @@ func TestSyncSoundsOnlyReplacesItsOwnCache(t *testing.T) {
 				t.Fatal(err)
 			}
 			goLogPath := filepath.Join(root, "go.log")
-			fakes := map[string]string{
-				// Not a repository; clone gives a library with a catalogue.
-				"git": `#!/bin/sh
-[ "$1" = clone ] || exit 1
-for last; do :; done
-mkdir -p "$last" && echo '{}' > "$last/catalog.json"
-`,
-				"go": "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FAKE_GO_LOG\"\n",
+			if err := os.WriteFile(filepath.Join(fakeBinDir, "go"), []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FAKE_GO_LOG\"\n"), 0o755); err != nil {
+				t.Fatal(err)
 			}
-			for name, fake := range fakes {
-				if err := os.WriteFile(filepath.Join(fakeBinDir, name), []byte(fake), 0o755); err != nil {
-					t.Fatal(err)
+			remote := filepath.Join(root, "remote.git")
+			work := filepath.Join(root, "work")
+			remoteURL := "file:///" + filepath.ToSlash(remote)
+			if runtime.GOOS == "windows" {
+				remoteURL = "file://" + filepath.ToSlash(remote)
+			}
+			git := func(args ...string) {
+				t.Helper()
+				command := exec.Command("git", args...)
+				if output, err := command.CombinedOutput(); err != nil {
+					t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
 				}
 			}
+			git("init", "--bare", remote)
+			git("init", work)
+			if err := os.WriteFile(filepath.Join(work, "catalog.json"), []byte("{}"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			git("-C", work, "add", "catalog.json")
+			git("-C", work, "-c", "user.name=Voxt Test", "-c", "user.email=voxt@example.invalid", "commit", "-m", "catalog")
+			git("-C", work, "remote", "add", "origin", remoteURL)
+			git("-C", work, "push", "-u", "origin", "HEAD")
 			cacheHome := filepath.Join(root, "cache")
 			library := filepath.Join(cacheHome, "actnow-sounds")
 			environment := append(os.Environ(),
-				"PATH="+bashPathWithFakeBin(fakeBinDir),
 				"XDG_CACHE_HOME="+cacheHome,
-				"FAKE_GO_LOG="+goLogPath)
+				"FAKE_GO_LOG="+goLogPath,
+				"ACTNOW_SOUNDS_GIT_URL="+remoteURL)
 			if testCase.userDir {
 				library = filepath.Join(root, "my-sounds")
 				environment = append(environment, "ACTNOW_SOUNDS="+library)
@@ -82,7 +93,7 @@ mkdir -p "$last" && echo '{}' > "$last/catalog.json"
 					t.Fatal(err)
 				}
 			}
-			command := exec.Command("sh", filepath.Join(root, "scripts/sync-sounds.sh"))
+			command := shellWithFakeBin("sh", fakeBinDir, filepath.Join(root, "scripts/sync-sounds.sh"))
 			command.Env = environment
 			output, err := command.CombinedOutput()
 			_, statErr := os.Stat(ownFile)
