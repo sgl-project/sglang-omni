@@ -87,6 +87,8 @@ func implementedMethods() []string {
 		proto.MethodCaptureSystem,
 		proto.MethodHotkeyConfigure,
 		proto.MethodHotkeyStatus,
+		proto.MethodHotkeyRecord,
+		proto.MethodHotkeyCancelRecord,
 		proto.MethodOutputWatch,
 		proto.MethodOutputMute,
 		proto.MethodOutputRelease,
@@ -266,6 +268,21 @@ func (server *helperServer) serve(message proto.Message) {
 		server.result(message.ID, status)
 	case proto.MethodHotkeyStatus:
 		server.result(message.ID, server.hotkeys.status())
+	case proto.MethodHotkeyRecord:
+		var params proto.HotkeyRecordParams
+		if err := message.DecodeParams(&params); err != nil {
+			server.fail(message.ID, proto.CodeBadRequest, "Bad params: %v", err)
+			return
+		}
+		keys, recordErr := server.hotkeys.record(params.TimeoutSeconds)
+		if recordErr != nil {
+			server.send(proto.NewError(message.ID, recordErr))
+			return
+		}
+		server.result(message.ID, proto.HotkeyRecordResult{Keys: keys})
+	case proto.MethodHotkeyCancelRecord:
+		server.hotkeys.cancelRecord()
+		server.result(message.ID, proto.Empty{})
 	case proto.MethodOutputWatch, proto.MethodOutputMute, proto.MethodOutputRelease, proto.MethodOutputRecover:
 		server.serveOutput(message)
 	case proto.MethodTextFocus, proto.MethodTextSelection, proto.MethodTextPaste, proto.MethodTextRead:

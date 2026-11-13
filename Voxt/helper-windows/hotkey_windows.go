@@ -75,6 +75,8 @@ type windowsHotkeys struct {
 	physicalKeys      map[uint16]bool
 	physicalModifiers map[modifierMask]bool
 	timer             *time.Timer
+	recording         *windowsHotkeyRecording
+	recordGeneration  uint64
 	events            int
 	maxCallbackMicros float64
 	lastError         string
@@ -141,6 +143,9 @@ func (manager *windowsHotkeys) configureOnThread(config recognizerConfig) {
 		manager.installOnThread()
 		manager.armTimer()
 	}
+	if manager.recording != nil && !manager.ensureRecordingHooks() {
+		manager.finishRecording(hotkeyRecordOutcome{err: deniedRecordError()})
+	}
 	if wasInstalled != manager.installedOnThread() {
 		manager.server.notify(proto.MethodHotkeyState, manager.statusOnThread())
 	}
@@ -206,6 +211,9 @@ func (manager *windowsHotkeys) uninstallOnThread() {
 
 func (manager *windowsHotkeys) close() {
 	manager.closeOnce.Do(func() {
+		if manager.recording != nil {
+			manager.finishRecording(hotkeyRecordOutcome{err: recordError(proto.CodeCancelled, "Cancelled")})
+		}
 		manager.uninstallOnThread()
 		close(manager.done)
 	})
@@ -263,6 +271,9 @@ func registeredModifierFlags(modifiers map[string]string) uint32 {
 }
 
 func (manager *windowsHotkeys) registeredHotkey(id int) {
+	if manager.recording != nil {
+		return
+	}
 	bindingID, found := manager.registered[id]
 	if !found {
 		return
@@ -306,6 +317,16 @@ func (manager *windowsHotkeys) keyboardHookCallback(code int32, message uintptr,
 	down := message == windowKeyDown || message == windowSystemKeyDown
 	up := message == windowKeyUp || message == windowSystemKeyUp
 	if !down && !up {
+		return manager.callNext(code, message, dataPointer)
+	}
+	if manager.recording != nil {
+		recorded := manager.recording.chords.keyboard(virtualKey, down)
+		if recorded.finished {
+			manager.finishRecording(hotkeyRecordOutcome{keys: recorded.chord})
+		}
+		if recorded.swallow {
+			return 1
+		}
 		return manager.callNext(code, message, dataPointer)
 	}
 	var result recognizerResult
@@ -357,6 +378,16 @@ func (manager *windowsHotkeys) mouseHookCallback(code int32, message uintptr, da
 	}
 	press, down, up, ok := mousePress(message, data.mouseData)
 	if !ok {
+		return manager.callNext(code, message, dataPointer)
+	}
+	if manager.recording != nil {
+		recorded := manager.recording.chords.mouse(press.button, down)
+		if recorded.finished {
+			manager.finishRecording(hotkeyRecordOutcome{keys: recorded.chord})
+		}
+		if recorded.swallow {
+			return 1
+		}
 		return manager.callNext(code, message, dataPointer)
 	}
 	var result recognizerResult
