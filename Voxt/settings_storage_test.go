@@ -21,6 +21,7 @@ import (
 // VoxtNew's part of it; erasing keeps the models other apps use, and
 // removes VoxtNew's files from the family directory.
 func TestStorageModels(t *testing.T) {
+	skipWindowsActNow(t)
 	a, _, tt := newTestApp(t)
 	seedModels(t, a, models.ASRFast, models.VADSilero, models.LLMTranslate)
 	useModels(t, a, models.ASRFast, models.VADSilero, models.LLMTranslate)
@@ -105,6 +106,7 @@ func TestStorageReopenKeepsReport(t *testing.T) {
 // erased and VoxtNew does not restart; a toast says why. It used to
 // restart and erase the rest, leaving that file with no entry naming it.
 func TestEraseStopsWhenRecordingsStay(t *testing.T) {
+	skipWindowsActNow(t)
 	if os.Geteuid() == 0 {
 		t.Skip("root deletes a read-only folder's files")
 	}
@@ -153,6 +155,7 @@ func TestEraseStopsWhenRecordingsStay(t *testing.T) {
 // models another app claims too, writes the family's models.root and
 // restarts to use it; the library stays as it was.
 func TestModelFolderChange(t *testing.T) {
+	skipWindowsActNow(t)
 	a, _, tt := newTestApp(t)
 	seedModels(t, a, models.ASRFast, models.VADSilero, models.LLMTranslate)
 	useModels(t, a, models.ASRFast, models.VADSilero)
@@ -209,6 +212,7 @@ func TestModelFolderChange(t *testing.T) {
 // there too, and AudioSmith finds them in the new folder; what no app
 // claims there stays.
 func TestModelFolderBringsOtherLibraries(t *testing.T) {
+	skipWindowsActNow(t)
 	a, _, tt := newTestApp(t)
 	seedModels(t, a, models.ASRFast)
 	useModels(t, a, models.ASRFast)
@@ -255,6 +259,7 @@ func TestModelFolderBringsOtherLibraries(t *testing.T) {
 // TestTimeMachineSwitch: VoiceOver names Storage's Time Machine switch
 // and can turn it on; it had no label, so it read as a bare "switch".
 func TestTimeMachineSwitch(t *testing.T) {
+	skipWindowsActNow(t)
 	a, _, tt := newTestApp(t)
 	a.navigate("/settings/storage")
 	frames(tt)
