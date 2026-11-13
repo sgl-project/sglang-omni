@@ -14,7 +14,7 @@ hf download inclusionAI/Ming-flash-omni-2.0
 
 For Intel GPUs, follow the [Ming-Omni XPU recipe](../other_platforms/installation_xpu.md#ming-omni-omni-chat-and-speech-one-or-two-xpus).
 
-The speech path expects the checkpoint to include the `talker/` assets, including `talker/data/voice_name.json` and `talker/vae/`. The default voice in the current Ming speech pipeline is `DB30`. `campplus.onnx` and `talker_tn` are optional runtime helpers: missing `campplus.onnx` disables speaker embedding extraction, and missing `talker_tn` falls back to identity text normalization.
+The speech path loads the talker from the checkpoint's `talker/` directory, including `talker/vae/`. Voice presets come from `talker/data/voice_name.json` when the checkpoint has one; prompt-wav paths in it are relative to `talker/`. The published checkpoint has no such manifest, so SGLang-Omni falls back to its bundled copy of the default voice `DB30` and logs which manifest it used. To use other upstream presets (for example `lingguang`), copy `data/voice_name.json` and the wav files it references from the [Ming GitHub repository](https://github.com/inclusionAI/Ming) into `talker/data/`, keeping their `data/...` relative paths under `talker/`. Voice setup is validated when the server starts, so a missing preset or wav fails the launch instead of every speech request. `campplus.onnx` and `talker_tn` are optional runtime helpers: missing `campplus.onnx` disables speaker embedding extraction, and missing `talker_tn` falls back to identity text normalization.
 
 `Ming-flash-omni-2.0` on HF does not ship top-level thinker tokenizer files. `load_ming_tokenizer` falls back to `inclusionAI/Ming-flash-omni-Preview` (~12 MB) to copy `tokenizer.json`, `tokenizer_config.json`, and `special_tokens_map.json`. In offline environments, download those files too:
 
@@ -70,7 +70,7 @@ The **Hardware** toggle sets `--mem-fraction-static`:
 | H100 | 80 GB | `0.80` | Baseline; weights plus a smaller KV pool fit at 0.80. |
 | H200 | 141 GB | `0.90` | The MoE weights occupy roughly the same absolute space but a larger share is free, so a higher fraction is needed for the static budget to cover weights and still leave room for the KV pool; `0.80` can OOM at TP=2 because the reserved pool lands too small. |
 
-Other large-memory parts (e.g. H20-3e 144 GB) behave like H200 — start at `0.9`. If your machine cannot fit the thinker without CPU offload, remove `--cpu-offload-gb 0` and let the launcher use its default offload setting (improves fit, reduces throughput).
+Other large-memory parts (e.g. H20-3e 144 GB) behave like H200 — start at `0.9`. The generated commands do not offload thinker weights to CPU. If your machine cannot fit the thinker, add `--thinker.engine.cpu_offload_gb <GB>` (improves fit, reduces throughput).
 
 For a smaller smoke run that uses OmniServe's default placement:
 
@@ -494,7 +494,7 @@ At c=1 streaming delivers first audio ~2.2× sooner at a ~38% throughput cost. T
 
 ### SeedTTS English Speech Results
 
-Results for the full 1,088-sample English SeedTTS split on 3× H200 (Thinker TP=2 and a dedicated Talker GPU), at concurrency 4 with voice `DB30`, temperature 0.7, seed 42, and `max_new_tokens=256`. AudioVAE uses FlashAttention-2. WER is corpus WER from Qwen3-ASR-1.7B. Each mode was measured once after four warmup requests.
+Results for the full 1,088-sample English SeedTTS split on 3× H200 (Thinker TP=2 and a dedicated Talker GPU), at concurrency 4 with voice `DB30`, temperature 0.7, seed 42, and `max_new_tokens=256`. These numbers were measured with the AudioVAE on FlashAttention-2. SGLang-Omni now always runs the AudioVAE on SDPA, which matched FlashAttention-2's accuracy against an fp32 reference and decoded about 20% faster on H100, with unchanged end-to-end talker latency. WER is corpus WER from Qwen3-ASR-1.7B. Each mode was measured once after four warmup requests.
 
 | Mode | Throughput (req/s) | Mean latency (s) | First audio (s) | Audio throughput (audio-s/s) | EN WER |
 | --- | ---: | ---: | ---: | ---: | ---: |

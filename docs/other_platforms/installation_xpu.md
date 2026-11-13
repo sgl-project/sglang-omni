@@ -744,7 +744,7 @@ curl -s -X POST http://localhost:8000/v1/chat/completions \
 ```
 **Expected result:** Check `choices[0].message.content` for a text reply to the chat request.
 
-Speech needs a voice preset, and the published checkpoint ships no `talker/data`. Register a short
+The published checkpoint ships no `talker/data`, so speech uses SGLang-Omni's bundled `DB30` preset by default. To use your own voice instead, register a short
 reference recording and its transcript in the downloaded checkpoint, then select it with
 `--talker.factory.voice`; the talker takes a second card:
 **Launch**
